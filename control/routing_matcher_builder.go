@@ -21,6 +21,7 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 )
 
 type RoutingMatcherBuilder struct {
@@ -44,6 +45,8 @@ func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.Routing
 	rulesBuilder.RegisterFunctionParser(consts.Function_L4Proto, routing.L4ProtoParserFactory(b.addL4Proto))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Mac, routing.MacParserFactory(b.addSourceMac))
 	rulesBuilder.RegisterFunctionParser(consts.Function_ProcessName, routing.ProcessNameParserFactory(b.addProcessName))
+	rulesBuilder.RegisterFunctionParser(consts.Function_IfIndex, routing.UintParserFactory(b.addIfIndex))
+	rulesBuilder.RegisterFunctionParser(consts.Function_IfName, routing.EmptyKeyPlainParserFactory(b.addIfName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
 	if err = rulesBuilder.Apply(rules); err != nil {
@@ -274,6 +277,58 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 		}
 		copy(matchSet.Value[:], value[:])
 		b.rules = append(b.rules, matchSet)
+	}
+	return nil
+}
+
+func (b *RoutingMatcherBuilder) addIfIndex(f *config_parser.Function, values []uint32, outbound *routing.Outbound) (err error) {
+	for i, value := range values {
+		outboundName := consts.OutboundLogicalOr.String()
+		if i == len(values)-1 {
+			outboundName = outbound.Name
+		}
+		outboundId, err := b.outboundToId(outboundName)
+		if err != nil {
+			return err
+		}
+		set := bpfMatchSet{
+			Value:    [16]byte{},
+			Type:     uint8(consts.MatchType_IfIndex),
+			Not:      f.Not,
+			Outbound: outboundId,
+			Mark:     outbound.Mark,
+			Must:     outbound.Must,
+		}
+		binary.LittleEndian.PutUint32(set.Value[:], uint32(value))
+		b.rules = append(b.rules, set)
+	}
+	return nil
+}
+
+func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {
+	for i, value := range values {
+		outboundName := consts.OutboundLogicalOr.String()
+		if i == len(values)-1 {
+			outboundName = outbound.Name
+		}
+		outboundId, err := b.outboundToId(outboundName)
+		if err != nil {
+			return err
+		}
+		set := bpfMatchSet{
+			Value:    [16]byte{},
+			Type:     uint8(consts.MatchType_IfIndex),
+			Not:      f.Not,
+			Outbound: outboundId,
+			Mark:     outbound.Mark,
+			Must:     outbound.Must,
+		}
+		link, err := netlink.LinkByName(value)
+		if err != nil {
+			return fmt.Errorf("addIfName: specified interface does not exist: %v", value)
+		}
+		binary.LittleEndian.PutUint32(set.Value[:], uint32(link.Attrs().Index))
+		b.rules = append(b.rules, set)
 	}
 	return nil
 }

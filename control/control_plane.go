@@ -644,9 +644,12 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 		switch c.dialMode {
 		case consts.DialMode_Domain:
 			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
-				// Has A/AAAA records. It is a real domain.
+				// Has Cached A/AAAA records. It is a real domain.
+				// For this case, It should be able to handle domain match set directly in kernel
 				dialMode = consts.DialMode_Domain
 			} else {
+				// Successful sniff without DNS lookup record.
+				// In this case, the kernel may not handle domain match set, so re-route is required.
 				// Check if the domain is in real-domain set (bloom filter).
 				c.muRealDomainSet.Lock()
 				if c.realDomainSet.TestString(domain) {
