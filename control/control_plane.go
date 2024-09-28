@@ -372,7 +372,7 @@ func NewControlPlane(
 		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}
 	// Parse rules and build.
-	builder, err := NewRoutingMatcherBuilder(log, rules, outboundName2Id, core.bpf, routingA.Fallback)
+	builder, err := NewRoutingMatcherBuilder(log, rules, outboundName2Id, core, routingA.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}

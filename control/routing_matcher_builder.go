@@ -22,11 +22,13 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 type RoutingMatcherBuilder struct {
 	log                *logrus.Logger
 	outboundName2Id    map[string]uint8
+	core               *controlPlaneCore
 	bpf                *bpfObjects
 	rules              []bpfMatchSet
 	simulatedLpmTries  [][]netip.Prefix
@@ -34,8 +36,8 @@ type RoutingMatcherBuilder struct {
 	fallback           *routing.Outbound
 }
 
-func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{log: log, outboundName2Id: outboundName2Id, bpf: bpf}
+func NewRoutingMatcherBuilder(log *logrus.Logger, rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, core *controlPlaneCore, fallback config.FunctionOrString) (b *RoutingMatcherBuilder, err error) {
+	b = &RoutingMatcherBuilder{log: log, outboundName2Id: outboundName2Id, core: core, bpf: core.bpf}
 	rulesBuilder := routing.NewRulesBuilder(log)
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
@@ -323,11 +325,39 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 			Mark:     outbound.Mark,
 			Must:     outbound.Must,
 		}
-		link, err := netlink.LinkByName(value)
-		if err != nil {
-			return fmt.Errorf("addIfName: specified interface does not exist: %v", value)
+		index := len(b.rules)
+		newlinkCallback := func() {
+			b.log.Warnf("New link creation of '%v' is detected. Re-fetching ifindex for it.", value)
+			link, err := netlink.LinkByName(value)
+			if err != nil {
+				b.log.Errorf("Could now get interface '%v': %w", value, err)
+			}
+			binary.LittleEndian.PutUint32(set.Value[:], uint32(link.Attrs().Index))
+			if err = b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
+				b.log.Errorf("Update failed: %w", err)
+			}
 		}
-		binary.LittleEndian.PutUint32(set.Value[:], uint32(link.Attrs().Index))
+		addNewlinkCallback := func() {
+			if err := b.core.addLinkCb(value, unix.RTM_NEWLINK, newlinkCallback); err != nil {
+				b.log.Errorf("Failed to add callback for re-fetching ifindex for '%v': %w", value, err)
+			}
+		}
+		link, err := netlink.LinkByName(value)
+		if err == nil {
+			binary.LittleEndian.PutUint32(set.Value[:], uint32(link.Attrs().Index))
+			if err := b.core.addLinkCb(value, unix.RTM_DELLINK, func() {
+				b.log.Warnf("Link deletion of '%v' is detected. Re-fetching ifindex once it is re-created.", value)
+				// Clear ifindex value while interface is not exist
+				binary.LittleEndian.PutUint32(set.Value[:], uint32(0))
+				addNewlinkCallback()
+			}); err != nil {
+				return fmt.Errorf("failed to add re-fetching callback: %w", err)
+			}
+		} else {
+			// ifindex = 0 by default, so it will never match
+			binary.LittleEndian.PutUint32(set.Value[:], uint32(0))  // needed?
+			addNewlinkCallback()
+		}
 		b.rules = append(b.rules, set)
 	}
 	return nil
