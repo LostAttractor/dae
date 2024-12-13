@@ -274,7 +274,11 @@ func NewControlPlane(
 	if dialMode == consts.DialMode_Ip {
 		sniffingTimeout = 0
 	}
-	disableKernelAliveCallback := dialMode != consts.DialMode_Ip
+	disableKernelAliveCallback, err := strconv.ParseBool(global.NotBlockingEvenNodeNotAlive)
+	disableKernelAliveCallback = !disableKernelAliveCallback
+	if err != nil {
+		disableKernelAliveCallback = dialMode != consts.DialMode_Ip // Not block when sniff is available
+	}
 	_direct, directProperty := dialer.NewDirectDialer(option, true)
 	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
 	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
