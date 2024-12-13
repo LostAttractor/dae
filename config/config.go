@@ -37,14 +37,15 @@ type Global struct {
 	EnableLocalTcpFastRedirect bool          `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
 	AutoConfigKernelParameter  bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/458
-	AutoConfigFirewallRule bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
-	SniffingTimeout        time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
-	TlsImplementation      string        `mapstructure:"tls_implementation" default:"tls"`
-	UtlsImitate            string        `mapstructure:"utls_imitate" default:"chrome_auto"`
-	PprofPort              uint16        `mapstructure:"pprof_port" default:"0"`
-	Mptcp                  bool          `mapstructure:"mptcp" default:"false"`
-	BandwidthMaxTx         string        `mapstructure:"bandwidth_max_tx" default:"0"`
-	BandwidthMaxRx         string        `mapstructure:"bandwidth_max_rx" default:"0"`
+	AutoConfigFirewallRule      bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
+	SniffingTimeout             time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
+	TlsImplementation           string        `mapstructure:"tls_implementation" default:"tls"`
+	UtlsImitate                 string        `mapstructure:"utls_imitate" default:"chrome_auto"`
+	PprofPort                   uint16        `mapstructure:"pprof_port" default:"0"`
+	Mptcp                       bool          `mapstructure:"mptcp" default:"false"`
+	BandwidthMaxTx              string        `mapstructure:"bandwidth_max_tx" default:"0"`
+	BandwidthMaxRx              string        `mapstructure:"bandwidth_max_rx" default:"0"`
+	NotBlockingEvenNodeNotAlive string        `mapstructure:"not_blocking_even_node_not_alive" default:"auto"`
 }
 
 type Utls struct {
