@@ -71,6 +71,8 @@ func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
 		outboundId = uint8(consts.OutboundLogicalAnd)
 	case consts.OutboundMustRules.String():
 		outboundId = uint8(consts.OutboundMustRules)
+	case consts.OutboundControlPlaneRouting.String():
+		outboundId = uint8(consts.OutboundControlPlaneRouting)
 	default:
 		var ok bool
 		outboundId, ok = b.outboundName2Id[outbound]
@@ -353,7 +355,7 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 			}
 		} else {
 			// ifindex = 0 by default, so it will never match
-			binary.LittleEndian.PutUint32(set.Value[:], uint32(0))  // needed?
+			binary.LittleEndian.PutUint32(set.Value[:], uint32(0)) // needed?
 			addNewlinkCallback()
 		}
 		b.rules = append(b.rules, set)
