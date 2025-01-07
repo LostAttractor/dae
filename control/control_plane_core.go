@@ -45,6 +45,10 @@ type controlPlaneCore struct {
 	isReload   bool
 	bpfEjected bool
 
+	domainBumpMap    map[netip.Addr][]uint32
+	domainRoutingMap map[netip.Addr][]uint32
+	bumpMapMu        sync.Mutex
+
 	closed context.Context
 	close  context.CancelFunc
 }
@@ -64,16 +68,18 @@ func newControlPlaneCore(log *logrus.Logger,
 	}
 	closed, toClose := context.WithCancel(context.Background())
 	return &controlPlaneCore{
-		log:             log,
-		deferFuncs:      deferFuncs,
-		bpf:             bpf,
-		outboundId2Name: outboundId2Name,
-		kernelVersion:   kernelVersion,
-		flip:            coreFlip,
-		isReload:        isReload,
-		bpfEjected:      false,
-		closed:          closed,
-		close:           toClose,
+		log:              log,
+		deferFuncs:       deferFuncs,
+		bpf:              bpf,
+		outboundId2Name:  outboundId2Name,
+		kernelVersion:    kernelVersion,
+		flip:             coreFlip,
+		isReload:         isReload,
+		bpfEjected:       false,
+		domainBumpMap:    make(map[netip.Addr][]uint32),
+		domainRoutingMap: make(map[netip.Addr][]uint32),
+		closed:           closed,
+		close:            toClose,
 	}
 }
 
@@ -618,9 +624,92 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	return
 }
 
-// BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should
-// be invoked every A/AAAA-record lookup.
-func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
+// // BatchUpdateDomainRouting update bpf map domain_routing. Since one IP may have multiple domains, this function should
+// // be invoked every A/AAAA-record lookup.
+// func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
+// 	// Parse ips from DNS resp answers.
+// 	var ips []netip.Addr
+// 	for _, ans := range cache.Answer {
+// 		var (
+// 			ip netip.Addr
+// 			ok bool
+// 		)
+// 		switch body := ans.(type) {
+// 		case *dnsmessage.A:
+// 			ip, ok = netip.AddrFromSlice(body.A)
+// 		case *dnsmessage.AAAA:
+// 			ip, ok = netip.AddrFromSlice(body.AAAA)
+// 		}
+// 		if !ok || ip.IsUnspecified() {
+// 			continue
+// 		}
+// 		ips = append(ips, ip)
+// 	}
+// 	if len(ips) == 0 {
+// 		return nil
+// 	}
+
+// 	// Update bpf map.
+// 	// Construct keys and vals, and BpfMapBatchUpdate.
+// 	var keys [][4]uint32
+// 	var vals []bpfDomainRouting
+// 	for _, ip := range ips {
+// 		ip6 := ip.As16()
+// 		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+// 		r := bpfDomainRouting{}
+// 		if len(cache.DomainBitmap) != len(r.Bitmap) {
+// 			return fmt.Errorf("domain bitmap length not sync with kern program")
+// 		}
+// 		copy(r.Bitmap[:], cache.DomainBitmap)
+// 		vals = append(vals, r)
+// 	}
+// 	if _, err := BpfMapBatchUpdate(c.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
+// 		ElemFlags: uint64(ebpf.UpdateAny),
+// 	}); err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
+
+// // BatchRemoveDomainRouting remove bpf map domain_routing.
+// func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
+// 	// Parse ips from DNS resp answers.
+// 	var ips []netip.Addr
+// 	for _, ans := range cache.Answer {
+// 		var (
+// 			ip netip.Addr
+// 			ok bool
+// 		)
+// 		switch body := ans.(type) {
+// 		case *dnsmessage.A:
+// 			ip, ok = netip.AddrFromSlice(body.A)
+// 		case *dnsmessage.AAAA:
+// 			ip, ok = netip.AddrFromSlice(body.AAAA)
+// 		}
+// 		if !ok || ip.IsUnspecified() {
+// 			continue
+// 		}
+// 		ips = append(ips, ip)
+// 	}
+// 	if len(ips) == 0 {
+// 		return nil
+// 	}
+
+// 	// Update bpf map.
+// 	// Construct keys and vals, and BpfMapBatchUpdate.
+// 	var keys [][4]uint32
+// 	for _, ip := range ips {
+// 		ip6 := ip.As16()
+// 		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+// 	}
+// 	if _, err := BpfMapBatchDelete(c.bpf.DomainRoutingMap, keys); err != nil {
+// 		return err
+// 	}
+// 	return nil
+// }
+
+// BatchNewDomain update bpf map domain_bump and domain_routing. This function should be invoked every new cache.
+func (c *controlPlaneCore) BatchNewDomain(cache *DnsCache) error {
 	// Parse ips from DNS resp answers.
 	var ips []netip.Addr
 	for _, ans := range cache.Answer {
@@ -644,20 +733,74 @@ func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 	}
 
 	// Update bpf map.
-	// Construct keys and vals, and BpfMapBatchUpdate.
+	// Construct keys_bump and vals, and BpfMapBatchUpdate.
 	var keys [][4]uint32
-	var vals []bpfDomainRouting
+	var vals_bump []bpfDomainRouting
+	var vals_routing []bpfDomainRouting
+	// TODO: 一个 IP -> 多个域名, 原先存储这个 ip 对应的域名匹配每个 domain_set 的匹配情况
+	//                          现在存储每个 domain_set 在这个 ip 对应的所有域名中匹配几个
+	// 控制平面数据结构:
+	// ip -> 数组: index: domain_set index, val: 有几个域名匹配这条规则
+	// 内核态数据结构
+	// ip -> 数组: index: domain_set index, val: 是否有域名匹配这条规则
+
+	// TODO: 一个 IP -> 多个域名, 原先存储这个 ip 最新对应的域名匹配每个 domain_set 的匹配情况
+	//                          现在存储这个 ip 指代的所有域名是否都匹配这个 domain_set
+	// 控制平面/内核态数据结构:
+	// ip -> 数组: index: domain_set index, val: 是否所有域名都匹配这条规则
+	// 删除, 即 IP 不再指代某个域名, 若还有其他域名匹配这个domain_set, 则状态不变
+	//      即 IP 当前所指代的所有域名仍然都匹配这个 domain_set
+	//      若 IP 指代的域名均不再匹配任何 domain_set, 则删除这个 key
+
+	c.bumpMapMu.Lock()
+	defer c.bumpMapMu.Unlock()
+
 	for _, ip := range ips {
 		ip6 := ip.As16()
 		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+
+		newBumpMap, exists := c.domainBumpMap[ip]
+		if !exists {
+			newBumpMap = make([]uint32, consts.MaxMatchSetLen)
+		}
+		for index := 0; index < consts.MaxMatchSetLen; index++ {
+			newBumpMap[index] += cache.DomainBitmap[index/32] >> (index % 32) & 1
+		}
 		r := bpfDomainRouting{}
-		if len(cache.DomainBitmap) != len(r.Bitmap) {
+		for index, v := range newBumpMap {
+			if v > 0 {
+				r.Bitmap[index/32] |= 1 << (index % 32)
+			}
+		}
+		c.domainBumpMap[ip] = newBumpMap
+		vals_bump = append(vals_bump, r)
+
+		if !exists {
+			// 新 IP, 初始化 routingMap
+			c.domainRoutingMap[ip] = cache.DomainBitmap
+		} else {
+			// 旧 IP, 更新 routingMap
+			for index := 0; index < consts.MaxMatchSetLen; index++ {
+				if (cache.DomainBitmap[index/32]>>(index%32)&1) == 1 && (c.domainRoutingMap[ip][index/32]>>(index%32)&1) == 1 {
+					// 若该域名匹配当前规则, 之前的所有域名也都匹配当前规则, 则仍然匹配
+					c.domainRoutingMap[ip][index/32] |= 1 << (index % 32)
+				} else {
+					c.domainRoutingMap[ip][index/32] &^= 1 << (index % 32)
+				}
+			}
+		}
+		if len(c.domainRoutingMap[ip]) != len(r.Bitmap) {
 			return fmt.Errorf("domain bitmap length not sync with kern program")
 		}
 		copy(r.Bitmap[:], cache.DomainBitmap)
-		vals = append(vals, r)
+		vals_routing = append(vals_routing, r)
 	}
-	if _, err := BpfMapBatchUpdate(c.bpf.DomainRoutingMap, keys, vals, &ebpf.BatchOptions{
+	if _, err := BpfMapBatchUpdate(c.bpf.DomainBumpMap, keys, vals_bump, &ebpf.BatchOptions{
+		ElemFlags: uint64(ebpf.UpdateAny),
+	}); err != nil {
+		return err
+	}
+	if _, err := BpfMapBatchUpdate(c.bpf.DomainRoutingMap, keys, vals_routing, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return err
@@ -665,8 +808,8 @@ func (c *controlPlaneCore) BatchUpdateDomainRouting(cache *DnsCache) error {
 	return nil
 }
 
-// BatchRemoveDomainRouting remove bpf map domain_routing.
-func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
+// BatchRemoveDomainBump update or remove bpf map domain_bump and domain_routing.
+func (c *controlPlaneCore) BatchRemoveDomain(cache *DnsCache) error {
 	// Parse ips from DNS resp answers.
 	var ips []netip.Addr
 	for _, ans := range cache.Answer {
@@ -692,13 +835,48 @@ func (c *controlPlaneCore) BatchRemoveDomainRouting(cache *DnsCache) error {
 	// Update bpf map.
 	// Construct keys and vals, and BpfMapBatchUpdate.
 	var keys [][4]uint32
+	var keys_modify [][4]uint32
+	var vals_modify []bpfDomainRouting
+
+	c.bumpMapMu.Lock()
+	defer c.bumpMapMu.Unlock()
+
 	for _, ip := range ips {
 		ip6 := ip.As16()
-		keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+		newBumpMap := c.domainBumpMap[ip]
+		for index := 0; index < consts.MaxMatchSetLen; index++ {
+			newBumpMap[index] -= cache.DomainBitmap[index/32] >> (index % 32) & 1
+		}
+		del := true
+		r := bpfDomainRouting{}
+		for index, v := range newBumpMap {
+			if v > 0 {
+				del = false
+				r.Bitmap[index/32] |= 1 << (index % 32)
+			}
+		}
+		if del {
+			delete(c.domainBumpMap, ip)
+			delete(c.domainRoutingMap, ip)
+			keys = append(keys, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+		} else {
+			c.domainBumpMap[ip] = newBumpMap
+			keys_modify = append(keys_modify, common.Ipv6ByteSliceToUint32Array(ip6[:]))
+			vals_modify = append(vals_modify, r)
+		}
+	}
+	if _, err := BpfMapBatchDelete(c.bpf.DomainBumpMap, keys); err != nil {
+		return err
 	}
 	if _, err := BpfMapBatchDelete(c.bpf.DomainRoutingMap, keys); err != nil {
 		return err
 	}
+	if _, err := BpfMapBatchUpdate(c.bpf.DomainBumpMap, keys_modify, vals_modify, &ebpf.BatchOptions{
+		ElemFlags: uint64(ebpf.UpdateAny),
+	}); err != nil {
+		return err
+	}
+
 	return nil
 }
 
