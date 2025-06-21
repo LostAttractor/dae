@@ -980,22 +980,22 @@ static __always_inline void copy_reversed_tuples(struct tuples_key *key,
 static __always_inline struct udp_conn_state *
 refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_direction)
 {
-	struct udp_conn_state *old_conn_state =
+	struct udp_conn_state *conn_state =
 		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	struct udp_conn_state new_conn_state = { 0 };
 
-	if (old_conn_state)
-		new_conn_state.is_wan_ingress_direction =
-			old_conn_state->is_wan_ingress_direction; // Keep the value.
-	else
-		new_conn_state.is_wan_ingress_direction = is_wan_ingress_direction;
-	long ret = bpf_map_update_elem(&udp_conn_state_map, key,
-				       &new_conn_state, BPF_ANY);
-	if (unlikely(ret))
+	if (conn_state) {
+		bpf_timer_start(&conn_state->timer, TIMEOUT_UDP_CONN_STATE, 0);
+		return conn_state;
+	}
+	struct udp_conn_state new_conn_state = {
+		.is_wan_ingress_direction = is_wan_ingress_direction,
+	};
+	if (bpf_map_update_elem(&udp_conn_state_map, key,
+				&new_conn_state, BPF_ANY))
 		return NULL;
 	struct udp_conn_state *value =
 		bpf_map_lookup_elem(&udp_conn_state_map, key);
-	if (unlikely(!value))
+	if (!value)
 		return NULL;
 
 	if ((bpf_timer_init(&value->timer, &udp_conn_state_map,
@@ -1008,9 +1008,8 @@ refresh_udp_conn_state_timer(struct tuples_key *key, bool is_wan_ingress_directi
 
 	if ((bpf_timer_start(&value->timer, TIMEOUT_UDP_CONN_STATE, 0)))
 		goto retn;
-
 retn:
-	return value;
+		return value;
 }
 
 SEC("tc/egress")
