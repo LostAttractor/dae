@@ -281,10 +281,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL2.FD()
+		filterIngress.Fd = c.bpf.bpfPrograms.LanIngressL2.FD()
 		filterIngress.Name = filterIngress.Name + "_l2"
 	} else {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyLanIngressL3.FD()
+		filterIngress.Fd = c.bpf.bpfPrograms.LanIngressL3.FD()
 		filterIngress.Name = filterIngress.Name + "_l3"
 	}
 	// Remove and add.
@@ -318,10 +318,10 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		DirectAction: true,
 	}
 	if linkHdrLen > 0 {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL2.FD()
+		filterEgress.Fd = c.bpf.bpfPrograms.LanEgressL2.FD()
 		filterEgress.Name = filterEgress.Name + "_l2"
 	} else {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyLanEgressL3.FD()
+		filterEgress.Fd = c.bpf.bpfPrograms.LanEgressL3.FD()
 		filterEgress.Name = filterEgress.Name + "_l3"
 	}
 	// Remove and add.
