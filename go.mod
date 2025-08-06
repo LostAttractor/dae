@@ -72,6 +72,7 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/ulikunitz/xz v0.5.12 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
+	github.com/xtaci/smux v1.5.34 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/otel v1.35.0 // indirect
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
@@ -110,6 +111,7 @@ require (
 )
 
 // replace github.com/daeuniverse/outbound => ../outbound
+replace github.com/daeuniverse/outbound => github.com/lostattractor/outbound v0.0.0-20250830083753-db3006ce7251
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 

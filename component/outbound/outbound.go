@@ -6,7 +6,7 @@
 package outbound
 
 import (
-	// _ "github.com/daeuniverse/outbound/dialer/anytls"
+	_ "github.com/daeuniverse/outbound/dialer/anytls"
 	_ "github.com/daeuniverse/outbound/dialer/http"
 	_ "github.com/daeuniverse/outbound/dialer/hysteria2"
 	// _ "github.com/daeuniverse/outbound/dialer/juicity"
