@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
@@ -361,7 +362,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 	}
 }
 
-func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
+func (d *Dialer) ActivateCheck(wg *common.TimedWaitGroup) {
 	if len(d.registeredAliveSets) == 0 {
 		return
 	}
@@ -373,12 +374,12 @@ func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 
 	CheckOpts := d.createCheckOptions()
 
-	wg.Add(1)
+	id := wg.Add(30*time.Second, "initial check for "+d.Name)
 
 	go func() {
 		// at startup, check all network types to determine which are supported
 		checkOpt := d.runInitialCheck(CheckOpts)
-		wg.Done()
+		wg.Done(id)
 		if checkOpt == nil {
 			return
 		}

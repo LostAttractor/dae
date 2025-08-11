@@ -130,7 +130,7 @@ func NewControlPlane(
 			consts.BasicFeatureVersion.String())
 	}
 
-	var wg sync.WaitGroup
+	wg := common.NewTimedWaitGroup()
 	var deferFuncs []func() error
 
 	/// Allow the current process to lock memory for eBPF resources.
@@ -316,7 +316,7 @@ func NewControlPlane(
 	for _, g := range outbounds {
 		for _, d := range g.Dialers {
 			// We only activate check of nodes that have a group.
-			d.ActivateCheck(&wg)
+			d.ActivateCheck(wg)
 		}
 	}
 
@@ -397,7 +397,7 @@ func NewControlPlane(
 	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
 		return nil, err
 	}
-	dnsUpstream.InitUpstreams(&wg)
+	dnsUpstream.InitUpstreams(wg)
 	/// Dns controller.
 	fixedDomainTtl, err := ParseFixedDomainTtl(dnsConfig.FixedDomainTtl)
 	if err != nil {
@@ -447,6 +447,7 @@ func NewControlPlane(
 
 	wg.Wait()
 
+	log.Infof("Initialization is completed. Start to Proxying...")
 	for _, g := range outbounds {
 		g.PrintLatency()
 	}
