@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -124,15 +125,15 @@ func (s *Dns) CheckUpstreamsFormat() error {
 	return nil
 }
 
-func (s *Dns) InitUpstreams(wg *sync.WaitGroup) {
+func (s *Dns) InitUpstreams(wg *common.TimedWaitGroup) {
 	for _, upstream := range s.upstream {
-		wg.Add(1)
+		id := wg.Add(30*time.Second, "resolve upstream for "+upstream.Raw.String())
 		go func() {
 			_, err := upstream.GetUpstream()
 			if err != nil {
 				log.Debugf("%+v", oops.Wrapf(err, "Dns.GetUpstream"))
 			}
-			wg.Done()
+			wg.Done(id)
 		}()
 	}
 }
