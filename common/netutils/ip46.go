@@ -30,6 +30,19 @@ func FromAddr(addr netip.Addr) (ip46 *Ip46) {
 	return
 }
 
+func ParseOrResolveIp46(host string) (*Ip46, error) {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		ipv46 := new(Ip46)
+		if addr.Is4() || addr.Is4In6() {
+			ipv46.Ip4 = addr
+		} else if addr.Is6() {
+			ipv46.Ip6 = addr
+		}
+		return ipv46, nil
+	}
+	return ResolveIp46(host)
+}
+
 func ResolveIp46(host string) (ipv46 *Ip46, err error) {
 	addrs, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
 	if err != nil {

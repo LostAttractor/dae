@@ -161,7 +161,7 @@ func ParseTcpCheckOption(rawURL []string, method string) (opt *TcpCheckOption, e
 			return nil, oops.Wrapf(err, "ParseTcpCheckOption: failed to parse ip from list")
 		}
 	} else {
-		ip46, err = netutils.ResolveIp46(u.Hostname())
+		ip46, err = netutils.ParseOrResolveIp46(u.Hostname())
 		if err != nil {
 			return nil, oops.Wrapf(err, "ParseTcpCheckOption: failed to resolve ip for %v", u.Hostname())
 		}
@@ -191,25 +191,18 @@ func ParseCheckDnsOption(dnsHostPort []string) (opt *CheckDnsOption, err error) 
 	if err != nil {
 		return nil, oops.Wrapf(err, "ParseCheckDnsOption: failed to split host and port")
 	}
-	hostIP, err := netip.ParseAddr(host)
-	hostIsIP := err == nil
 	port, err := strconv.ParseUint(_port, 10, 16)
 	if err != nil {
 		return nil, oops.Errorf("bad port: %v", err)
 	}
 	var ip46 *netutils.Ip46
-	if hostIsIP {
-		if len(dnsHostPort) > 1 {
-			return nil, oops.Errorf("ParseCheckDnsOption: format error, format should be hostport,ip,ip6,...")
-		}
-		ip46 = netutils.FromAddr(hostIP)
-	} else if len(dnsHostPort) > 1 {
+	if len(dnsHostPort) > 1 {
 		ip46, err = parseIp46FromList(dnsHostPort[1:])
 		if err != nil {
 			return nil, oops.Wrapf(err, "ParseCheckDnsOption: failed to parse ip from list")
 		}
 	} else {
-		ip46, err = netutils.ResolveIp46(host)
+		ip46, err = netutils.ParseOrResolveIp46(host)
 		if err != nil {
 			return nil, oops.Wrapf(err, "ParseCheckDnsOption: failed to resolve ip for %v", host)
 		}
