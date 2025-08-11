@@ -231,40 +231,6 @@ func ResolveSOA(d netproxy.Dialer, dns netip.AddrPort, host string, network stri
 }
 
 func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
-	fqdn := dnsmessage.CanonicalName(host)
-	switch typ {
-	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-		if addr, err := netip.ParseAddr(host); err == nil {
-			if (addr.Is4() || addr.Is4In6()) && typ == dnsmessage.TypeA {
-				return []dnsmessage.RR{
-					&dnsmessage.A{
-						Hdr: dnsmessage.RR_Header{
-							Name:   dnsmessage.CanonicalName(fqdn),
-							Class:  dnsmessage.ClassINET,
-							Ttl:    0,
-							Rrtype: typ,
-						},
-						A: addr.AsSlice(),
-					},
-				}, nil
-			} else if addr.Is6() && typ == dnsmessage.TypeAAAA {
-				return []dnsmessage.RR{
-					&dnsmessage.AAAA{
-						Hdr: dnsmessage.RR_Header{
-							Name:   dnsmessage.CanonicalName(fqdn),
-							Class:  dnsmessage.ClassINET,
-							Ttl:    0,
-							Rrtype: typ,
-						},
-						AAAA: addr.AsSlice(),
-					},
-				}, nil
-			}
-			// MUST No record.
-			return nil, nil
-		}
-	default:
-	}
 	// Build DNS req.
 	msg := dnsmessage.Msg{
 		MsgHdr: dnsmessage.MsgHdr{
@@ -276,7 +242,7 @@ func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uin
 			Authoritative:    false,
 		},
 	}
-	msg.SetQuestion(fqdn, typ)
+	msg.SetQuestion(dnsmessage.CanonicalName(host), typ)
 
 	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()

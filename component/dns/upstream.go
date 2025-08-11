@@ -103,7 +103,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	ip46, err := netutils.ResolveIp46(hostname)
+	ip46, err := netutils.ParseOrResolveIp46(hostname)
 	if err != nil {
 		return nil, oops.Wrapf(err, "failed to resolve dns_upstream %v", upstream.String())
 	}
