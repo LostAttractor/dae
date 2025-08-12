@@ -14,6 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/samber/oops"
@@ -32,7 +33,8 @@ type UdpEndpoint struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	dialer *dialer.Dialer
+	dialer   *dialer.Dialer
+	outbound *outbound.DialerGroup
 }
 
 func (ue *UdpEndpoint) run() error {
@@ -81,7 +83,8 @@ type UdpEndpointOptions struct {
 	NatTimeout time.Duration
 	Src        netip.AddrPort
 
-	Dialer *dialer.Dialer
+	Dialer   *dialer.Dialer
+	Outbound *outbound.DialerGroup
 }
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
@@ -126,6 +129,7 @@ func (p *UdpEndpointPool) Create(key netip.AddrPort, createOption *UdpEndpointOp
 		ctx:        ctx,
 		cancel:     cancel,
 		dialer:     createOption.Dialer,
+		outbound:   createOption.Outbound,
 	}
 	udpEndpoint.deadlineTimer = time.AfterFunc(createOption.NatTimeout, func() {
 		p.Remove(key)

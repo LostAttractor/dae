@@ -80,8 +80,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		err = oops.
 			In("DialContext").
 			With("Is NetError", ok).
-			With("Is Temporary", netErr != nil && netErr.Temporary()).
-			With("Is Timeout", netErr != nil && netErr.Timeout()).
+			With("Is Temporary", ok && netErr.Temporary()).
+			With("Is Timeout", ok && netErr.Timeout()).
 			With("Outbound", dialOption.Outbound.Name).
 			With("Dialer", dialOption.Dialer.Name).
 			With("src", src.String()).
@@ -91,8 +91,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		if !ok {
 			return err
 		} else if !netErr.Timeout() {
-			dialOption.Dialer.ReportUnavailable(networkType, err)
-			if !dialOption.OutboundIndex.IsReserved() {
+			if !dialOption.Outbound.NeedAliveState() {
+				dialOption.Dialer.ReportUnavailable(err)
 				return err
 			}
 		}
@@ -124,8 +124,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		err = oops.
 			In("RelayTCP").
 			With("Is NetError", ok).
-			With("Is Temporary", netErr != nil && netErr.Temporary()).
-			With("Is Timeout", netErr != nil && netErr.Timeout()).
+			With("Is Temporary", ok && netErr.Temporary()).
+			With("Is Timeout", ok && netErr.Timeout()).
 			With("Outbound", dialOption.Outbound.Name).
 			With("Dialer", dialOption.Dialer.Name).
 			With("src", src.String()).
@@ -135,8 +135,8 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		if !ok {
 			return err
 		} else if !netErr.Timeout() {
-			dialOption.Dialer.ReportUnavailable(networkType, err)
-			if !dialOption.OutboundIndex.IsReserved() {
+			if !dialOption.Outbound.NeedAliveState() {
+				dialOption.Dialer.ReportUnavailable(err)
 				return err
 			}
 		}

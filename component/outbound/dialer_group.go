@@ -56,6 +56,10 @@ func NewDialerGroup(
 	}
 }
 
+func (g *DialerGroup) NeedAliveState() bool {
+	return g.aliveDialerSet != nil
+}
+
 func (g *DialerGroup) Close() error {
 	for _, d := range g.Dialers {
 		d.UnregisterAliveDialerSet(g.aliveDialerSet)
@@ -106,7 +110,7 @@ func (g *DialerGroup) Select(networkType *dialer.NetworkType) (dialer *dialer.Di
 		// No alive dialer.
 		return nil, ErrNoAliveDialer
 	}
-	if g.aliveDialerSet != nil && !dialer.GetAlive() {
+	if g.NeedAliveState() && !dialer.GetAlive() {
 		return nil, ErrFixedDialerNotAlive
 	}
 

@@ -39,7 +39,6 @@ type DialOption struct {
 	DialTarget        string
 	Dialer            *dialer.Dialer
 	Outbound          *outbound.DialerGroup
-	OutboundIndex     consts.OutboundIndex
 	FallbackIpVersion bool
 	FallbackDialer    bool
 	// Mark          uint32
@@ -104,7 +103,6 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 		DialTarget:        dialTarget,
 		Dialer:            dialer,
 		Outbound:          outbound,
-		OutboundIndex:     outboundIndex,
 		FallbackIpVersion: fallback,
 		FallbackDialer:    fallbackDialer,
 		// Mark:          mark,
