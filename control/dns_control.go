@@ -240,18 +240,13 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 			err = c.handleDNSRequest(dnsMessage, req, queryInfo)
 		}
 		if err != nil {
-			var netErr net.Error
+			netErr, ok := IsNetError(err)
 			err = oops.
-				With("Is NetError", errors.As(err, &netErr)).
-				With("Is Temporary", netErr != nil && netErr.Temporary()).
-				With("Is Timeout", netErr != nil && netErr.Timeout()).
+				With("Is NetError", ok).
+				With("Is Temporary", ok && netErr.Temporary()).
+				With("Is Timeout", ok && netErr.Timeout()).
 				Wrapf(err, "failed to make dns request")
-			// TODO: 不是neterr也需要展示, 需要同步这个行为到其他代码
-			if errors.As(err, &netErr) {
-				if !netErr.Temporary() {
-					log.Warningf("%+v", err)
-				}
-			} else {
+			if !ok || !netErr.Temporary() {
 				log.Warningf("%+v", err)
 			}
 			return
@@ -326,16 +321,21 @@ Dial:
 		// TODO: 这里可能不可以这样做
 		err = c.dialSend(dnsMessage, upstream, dialArgument, queryInfo)
 		if err != nil {
-			var netErr net.Error
+			netErr, ok := IsNetError(err)
 			err = oops.
-				With("Is NetError", errors.As(err, &netErr)).
-				With("Is Temporary", netErr != nil && netErr.Temporary()).
-				With("Is Timeout", netErr != nil && netErr.Timeout()).
+				In("DialContext").
+				With("Is NetError", ok).
+				With("Is Temporary", ok && netErr.Temporary()).
+				With("Is Timeout", ok && netErr.Timeout()).
 				Wrapf(err, "DNS dialSend error")
-			if errors.As(err, &netErr) && !netErr.Temporary() {
-				dialArgument.Dialer.ReportUnavailable(&dialArgument.networkType, err)
+			if !ok {
+				return err
+			} else if !netErr.Timeout() {
+				if !dialArgument.Outbound.NeedAliveState() {
+					dialArgument.Dialer.ReportUnavailable(err)
+					return err
+				}
 			}
-			return err
 		}
 
 		// Route response.

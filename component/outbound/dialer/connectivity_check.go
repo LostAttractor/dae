@@ -501,7 +501,7 @@ func (d *Dialer) informDialerGroupUpdate() {
 	}
 }
 
-func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
+func (d *Dialer) ReportUnavailable(err error) {
 	if !d.collection.Alive {
 		return
 	}
