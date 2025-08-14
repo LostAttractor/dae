@@ -29,7 +29,7 @@ import (
 
 type RouteParam struct {
 	routingResult *bpfRoutingResult
-	networkType   *dialer.NetworkType
+	networkType   *common.NetworkType
 	Domain        string
 	Src           netip.AddrPort
 	Dest          netip.AddrPort
@@ -109,7 +109,7 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 	}, nil
 }
 
-func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *dialer.NetworkType, routingResult *bpfRoutingResult) {
+func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *common.NetworkType, routingResult *bpfRoutingResult) {
 	if log.IsLevelEnabled(log.InfoLevel) {
 		fields := log.Fields{
 			"network": networkType.String(),

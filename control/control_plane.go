@@ -850,7 +850,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		bestTarget   netip.AddrPort
 		// dialMark     uint32
 	)
-	var networkType dialer.NetworkType
+	var networkType common.NetworkType
 	// Get the min latency path.
 	for _, ver := range ipversions {
 		for _, proto := range l4protos {

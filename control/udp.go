@@ -12,8 +12,8 @@ import (
 
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -126,7 +126,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
-	networkType := &dialer.NetworkType{
+	networkType := &common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
@@ -139,7 +139,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	// If the udp endpoint has been not alive, remove it from pool and retry
 	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
 	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
-	if ok && !ue.dialer.GetAlive() {
+	if ok && !ue.dialer.Alive() {
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
@@ -192,7 +192,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 				return err
 			} else if !netErr.Timeout() {
 				if dialOption.Outbound.NeedAliveState() {
-					dialOption.Dialer.ReportUnavailable(err)
+					dialOption.Dialer.ReportUnavailable()
 					return err
 				}
 			}
@@ -224,7 +224,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 					log.Warnf("%+v", err)
 				} else if !netErr.Timeout() {
 					if !dialOption.Outbound.NeedAliveState() {
-						ue.dialer.ReportUnavailable(err)
+						ue.dialer.ReportUnavailable()
 						log.Warnf("%+v", err)
 					}
 				}
@@ -249,7 +249,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			return err
 		} else if !netErr.Timeout() {
 			if !ue.outbound.NeedAliveState() {
-				ue.dialer.ReportUnavailable(err)
+				ue.dialer.ReportUnavailable()
 				return err
 			}
 		}

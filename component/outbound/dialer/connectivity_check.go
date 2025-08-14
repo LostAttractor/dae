@@ -30,92 +30,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type NetworkType struct {
-	L4Proto   consts.L4ProtoStr
-	IpVersion consts.IpVersionStr
+func (d *Dialer) Alive() bool {
+	return d.Dialer.Alive() && d.alive
 }
 
-func (t *NetworkType) String() string {
-	return string(t.L4Proto) + string(t.IpVersion)
-}
-
-// networkTypeToIndex 将网络类型映射到集合索引
-// collections:
-// 0: TCP4 DNS
-// 1: TCP6 DNS
-// 2: UDP4 DNS
-// 3: UDP6 DNS
-func NetworkTypeToIndex(typ *NetworkType) int {
-	switch typ.L4Proto {
-	case consts.L4ProtoStr_TCP:
-		switch typ.IpVersion {
-		case consts.IpVersionStr_4:
-			return 0
-		case consts.IpVersionStr_6:
-			return 1
-		}
-	case consts.L4ProtoStr_UDP:
-		// UDP share the DNS check result.
-		switch typ.IpVersion {
-		case consts.IpVersionStr_4:
-			return 2
-		case consts.IpVersionStr_6:
-			return 3
-		}
-	}
-	panic("invalid network type")
-}
-
-func IndexToNetworkType(index int) *NetworkType {
-	switch index {
-	case 0:
-		return &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_4,
-		}
-	case 1:
-		return &NetworkType{
-			L4Proto:   consts.L4ProtoStr_TCP,
-			IpVersion: consts.IpVersionStr_6,
-		}
-	case 2:
-		return &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_4,
-		}
-	case 3:
-		return &NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStr_6,
-		}
-	}
-	panic("invalid network type")
-}
-
-// TODO: 现在 dialer 是否测速以及 dialerGroup 是否需要 AliveState 依赖于 AliveDialerSet 的注册
-// 不需要AliveState的节点是不是应该始终Alive?
-type collection struct {
-	Latencies10   *LatenciesN
-	MovingAverage time.Duration
-	Alive         bool // Always not alive if there is no AliveDialerSet include the dialer.
-	// 用于追踪连续错误
-	// ErrorCount    int
-	// LastErrorTime time.Time
-}
-
-func newCollection() *collection {
-	return &collection{
-		Latencies10: NewLatenciesN(10),
-		Alive:       false,
-	}
-}
-
-func (d *Dialer) GetAlive() bool {
-	return d.collection.Alive
-}
-
-func (d *Dialer) Supported(typ *NetworkType) bool {
-	return d.supported[NetworkTypeToIndex(typ)]
+func (d *Dialer) Supported(typ *common.NetworkType) bool {
+	return d.supported[common.NetworkTypeToIndex(typ)]
 }
 
 func parseIp46FromList(ip []string) (ip46 *netutils.Ip46, err error) {
@@ -257,8 +177,8 @@ func (c *CheckDnsOptionRaw) Option() (opt *CheckDnsOption, err error) {
 }
 
 type CheckOption struct {
-	networkType *NetworkType
-	CheckFunc   func(typ *NetworkType) (ok bool, err error)
+	networkType *common.NetworkType
+	CheckFunc   func(typ *common.NetworkType) (ok bool, err error)
 }
 
 // // createTcpCheckFunc 创建TCP检查函数
@@ -293,8 +213,8 @@ type CheckOption struct {
 // createDnsCheckFunc 创建DNS检查函数
 // TODO: Context 应该随情况生成, 而非传入
 // TODO: 为什么不直接编写一个 CheckFUnc
-func (d *Dialer) createDnsCheckFunc(ipVersion consts.IpVersionStr, network string) func(typ *NetworkType) (ok bool, err error) {
-	return func(typ *NetworkType) (ok bool, err error) {
+func (d *Dialer) createDnsCheckFunc(ipVersion consts.IpVersionStr, network string) func(typ *common.NetworkType) (ok bool, err error) {
+	return func(typ *common.NetworkType) (ok bool, err error) {
 		opt, err := d.CheckDnsOptionRaw.Option()
 		if err != nil {
 			return false, err
@@ -325,28 +245,28 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 	return []*CheckOption{
 		// 优先 TCP, 因为 TCP 可以避免长时间占用 NAT 端口
 		{
-			networkType: &NetworkType{
+			networkType: &common.NetworkType{
 				L4Proto:   consts.L4ProtoStr_TCP,
 				IpVersion: consts.IpVersionStr_6,
 			},
 			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, "tcp"),
 		},
 		{
-			networkType: &NetworkType{
+			networkType: &common.NetworkType{
 				L4Proto:   consts.L4ProtoStr_TCP,
 				IpVersion: consts.IpVersionStr_4,
 			},
 			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_4, "tcp"),
 		},
 		{
-			networkType: &NetworkType{
+			networkType: &common.NetworkType{
 				L4Proto:   consts.L4ProtoStr_UDP,
 				IpVersion: consts.IpVersionStr_6,
 			},
 			CheckFunc: d.createDnsCheckFunc(consts.IpVersionStr_6, "udp"),
 		},
 		{
-			networkType: &NetworkType{
+			networkType: &common.NetworkType{
 				L4Proto:   consts.L4ProtoStr_UDP,
 				IpVersion: consts.IpVersionStr_4,
 			},
@@ -356,7 +276,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 }
 
 func (d *Dialer) ActivateCheck(wg *common.TimedWaitGroup) {
-	if len(d.registeredAliveSets) == 0 {
+	if len(d.registeredDialerGroups) == 0 {
 		return
 	}
 
@@ -416,29 +336,37 @@ func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
 		case <-d.ctx.Done():
 			return
 		case <-d.checkCh:
-			for i := 0; i < 3; i++ {
-				fmt.Printf("[DEBUG] runCheck: %v, count: %v\n", d.Name, i)
-				ok, latency, err := d.Check(checkOpt)
-				d.Update(ok, latency, checkOpt.networkType, err)
-				if ok {
-					break
+			if !d.Alive() {
+				d.NotifyStatusChange()
+				err := d.Connect()
+				if err != nil {
+					continue
 				}
-				time.Sleep(5 * time.Second)
 			}
+			ok, latency, err := d.Check(checkOpt)
+			d.Update(ok, latency, checkOpt.networkType, err)
+			d.NotifyStatusChange()
 		}
 	}
 }
 
 // TODO: Log
 func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
+	defer d.NotifyStatusChange()
+
 	var wg sync.WaitGroup
 	var latency [4]time.Duration
 	var err [4]error
+	if err := d.Connect(); err != nil {
+		log.WithFields(log.Fields{
+			"node": d.Name,
+		}).Infoln(oops.Wrapf(err, "Failed to connect"))
+		return nil
+	}
 	for _, opt := range checkOpts {
-		i := NetworkTypeToIndex(opt.networkType)
+		i := common.NetworkTypeToIndex(opt.networkType)
 		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			d.supported[i], latency[i], err[i] = d.Check(opt)
 			if d.supported[i] {
 				log.WithFields(log.Fields{
@@ -459,78 +387,64 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 					}).Infoln(oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
 				}
 			}
+			wg.Done()
 		}()
 	}
 	wg.Wait()
 	for _, opt := range checkOpts {
-		i := NetworkTypeToIndex(opt.networkType)
+		i := common.NetworkTypeToIndex(opt.networkType)
 		if d.supported[i] {
 			d.Update(d.supported[i], latency[i], opt.networkType, err[i])
 			return opt
 		}
 	}
-	d.Update(false, 0, nil, errors.Join(err[:]...))
 	return nil
 }
 
-func (d *Dialer) MustGetLatencies10(typ *NetworkType) *LatenciesN {
-	return d.collection.Latencies10
-}
-
-// RegisterAliveDialerSet is thread-safe.
-func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet) {
+func (d *Dialer) RegisterAliveDialerSet(g DialerGroup) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.registeredAliveSets[a]++
+	d.registeredDialerGroups[g]++
 }
 
-// UnregisterAliveDialerSet is thread-safe.
-func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
+func (d *Dialer) UnregisterAliveDialerSet(g DialerGroup) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	delete(d.registeredAliveSets, a)
+	delete(d.registeredDialerGroups, g)
 }
 
-func (d *Dialer) informDialerGroupUpdate() {
+func (d *Dialer) NotifyStatusChange() {
 	// Inform DialerGroups to update state.
 	// We use lock because AliveDialerSetSet is a reference of that in collection.
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for a := range d.registeredAliveSets {
-		a.NotifyLatencyChange(d, d.collection.Alive)
+	for g := range d.registeredDialerGroups {
+		g.NotifyStatusChange(d)
 	}
 }
 
-func (d *Dialer) ReportUnavailable(err error) {
-	if !d.collection.Alive {
+// ReportUnavailable 意味着在测速之外, Dialer 变得不可用了
+func (d *Dialer) ReportUnavailable() {
+	if d.Alive() {
 		return
 	}
-
-	if len(d.registeredAliveSets) == 0 {
-		return
-	}
-
+	d.NotifyStatusChange()
 	d.NotifyCheck()
 }
 
-func (d *Dialer) Update(ok bool, latency time.Duration, networkType *NetworkType, err error) {
+func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
 	if ok {
-		d.collection.Latencies10.AppendLatency(latency)
-		avg, _ := d.collection.Latencies10.AvgLatency()
-		d.collection.MovingAverage = (d.collection.MovingAverage + latency) / 2
+		d.Latencies10.AppendLatency(latency)
+		avg, _ := d.Latencies10.AvgLatency()
+		d.MovingAverage = (d.MovingAverage + latency) / 2
 
-		// // Reset error count.
-		// if time.Since(d.collection.LastErrorTime) > 30*time.Second {
-		// 	d.collection.ErrorCount = 0
-		// }
-
-		if !d.collection.Alive {
+		if !d.alive {
 			log.WithFields(log.Fields{
 				"network": networkType.String(),
 				"node":    d.Name,
 				"last":    latency.Truncate(time.Millisecond).String(),
 				"avg_10":  avg.Truncate(time.Millisecond),
-				"mov_avg": d.collection.MovingAverage.Truncate(time.Millisecond),
+				"mov_avg": d.MovingAverage.Truncate(time.Millisecond),
 			}).Infoln("Connectivity Check")
 		} else {
 			log.WithFields(log.Fields{
@@ -538,10 +452,10 @@ func (d *Dialer) Update(ok bool, latency time.Duration, networkType *NetworkType
 				"node":    d.Name,
 				"last":    latency.Truncate(time.Millisecond).String(),
 				"avg_10":  avg.Truncate(time.Millisecond),
-				"mov_avg": d.collection.MovingAverage.Truncate(time.Millisecond),
+				"mov_avg": d.MovingAverage.Truncate(time.Millisecond),
 			}).Debugln("Connectivity Check")
 		}
-		d.collection.Alive = true
+		d.alive = true
 	} else {
 		fields := log.Fields{
 			"node": d.Name,
@@ -549,14 +463,13 @@ func (d *Dialer) Update(ok bool, latency time.Duration, networkType *NetworkType
 		if networkType != nil {
 			fields["network"] = networkType.String()
 		}
-		if d.collection.Alive {
+		if d.alive {
 			log.WithFields(fields).Warnln(oops.Wrapf(err, "Connectivity Check Failed"))
 		} else {
 			log.WithFields(fields).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
 		}
-		d.collection.Alive = false
+		d.alive = false
 	}
-	d.informDialerGroupUpdate()
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, latency time.Duration, err error) {
@@ -586,11 +499,8 @@ func (d *Dialer) HttpCheck(u *netutils.URL, ip netip.Addr, method string, networ
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
 				// Force to dial "ip".
-				conn, err := d.Dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), u.Port()))
-				if err != nil {
-					return nil, err
-				}
-				return conn, nil
+				// TODO: 对于开了 sniff 的节点来说, 这仍然可能导致测得错误的连接性
+				return d.Dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), u.Port()))
 			},
 		},
 	}

@@ -7,13 +7,13 @@ package control
 
 import (
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *dialer.NetworkType) {
-	return func(alive bool, networkType *dialer.NetworkType) {
+func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *common.NetworkType) {
+	return func(alive bool, networkType *common.NetworkType) {
 		if c.closed.Err() != nil {
 			return
 		}
