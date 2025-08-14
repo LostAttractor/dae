@@ -24,7 +24,9 @@ var (
 	InvalidParameterErr = fmt.Errorf("invalid parameters")
 )
 
-type AliveDialerSetSet map[*AliveDialerSet]int
+type DialerGroup interface {
+	NotifyStatusChange(*Dialer)
+}
 
 type Dialer struct {
 	*GlobalOption
@@ -32,10 +34,13 @@ type Dialer struct {
 	netproxy.Dialer
 	*Property
 
-	collection          *collection
-	supported           [4]bool
-	mu                  sync.Mutex
-	registeredAliveSets AliveDialerSetSet
+	alive         bool
+	supported     [4]bool
+	Latencies10   *LatenciesN
+	MovingAverage time.Duration
+
+	mu                     sync.Mutex
+	registeredDialerGroups map[DialerGroup]int
 
 	tickerMu sync.Mutex
 	ticker   *time.Ticker
@@ -141,17 +146,17 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
-		GlobalOption:        option,
-		InstanceOption:      iOption,
-		Dialer:              dialer,
-		Property:            property,
-		collection:          newCollection(),
-		registeredAliveSets: make(AliveDialerSetSet),
-		tickerMu:            sync.Mutex{},
-		ticker:              nil,
-		checkCh:             make(chan time.Time, 1),
-		ctx:                 ctx,
-		cancel:              cancel,
+		GlobalOption:           option,
+		InstanceOption:         iOption,
+		Dialer:                 dialer,
+		Property:               property,
+		Latencies10:            NewLatenciesN(10),
+		registeredDialerGroups: make(map[DialerGroup]int),
+		tickerMu:               sync.Mutex{},
+		ticker:                 nil,
+		checkCh:                make(chan time.Time, 1),
+		ctx:                    ctx,
+		cancel:                 cancel,
 	}
 	d.initPrometheus(d.Name)
 	log.WithField("dialer", d.Name).

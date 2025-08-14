@@ -15,7 +15,6 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/samber/oops"
@@ -50,7 +49,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	dst = common.ConvergeAddrPort(dst)
 
 	// Route
-	networkType := &dialer.NetworkType{
+	networkType := &common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
@@ -92,7 +91,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			return err
 		} else if !netErr.Timeout() {
 			if !dialOption.Outbound.NeedAliveState() {
-				dialOption.Dialer.ReportUnavailable(err)
+				dialOption.Dialer.ReportUnavailable()
 				return err
 			}
 		}
@@ -136,7 +135,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			return err
 		} else if !netErr.Timeout() {
 			if !dialOption.Outbound.NeedAliveState() {
-				dialOption.Dialer.ReportUnavailable(err)
+				dialOption.Dialer.ReportUnavailable()
 				return err
 			}
 		}

@@ -158,7 +158,7 @@ type udpRequest struct {
 }
 
 type dialArgument struct {
-	networkType dialer.NetworkType
+	networkType common.NetworkType
 	Dialer      *dialer.Dialer
 	Outbound    *outbound.DialerGroup
 	Target      netip.AddrPort
@@ -332,7 +332,7 @@ Dial:
 				return err
 			} else if !netErr.Timeout() {
 				if !dialArgument.Outbound.NeedAliveState() {
-					dialArgument.Dialer.ReportUnavailable(err)
+					dialArgument.Dialer.ReportUnavailable()
 					return err
 				}
 			}
