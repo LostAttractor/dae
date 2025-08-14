@@ -21,6 +21,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	// Value from OpenWRT default sysctl config
+	DefaultNatTimeoutTCPEstablished = 21600 * time.Second
+)
+
 func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	defer lConn.Close()
 
@@ -158,7 +163,7 @@ type ConnWithReadTimeout struct {
 }
 
 func (c *ConnWithReadTimeout) Read(p []byte) (int, error) {
-	c.Conn.SetReadDeadline(time.Now().Add(consts.DefaultReadTimeout))
+	c.Conn.SetReadDeadline(time.Now().Add(DefaultNatTimeoutTCPEstablished))
 	return c.Conn.Read(p)
 }
 
