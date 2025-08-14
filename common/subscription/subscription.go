@@ -139,7 +139,7 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
-func ResolveSubscription(client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
+func ResolveSubscription(client *http.Client, subscriptionDir string, subscription string) (tag string, nodes []string, err error) {
 	/// Get tag.
 	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
 
@@ -159,7 +159,7 @@ func ResolveSubscription(client *http.Client, configDir string, subscription str
 
 	switch u.Scheme {
 	case "file":
-		b, err = ResolveFile(u, configDir)
+		b, err = ResolveFile(u, subscriptionDir)
 		if err != nil {
 			return "", nil, err
 		}
@@ -170,8 +170,6 @@ func ResolveSubscription(client *http.Client, configDir string, subscription str
 		}
 		persistToFile = true
 		subscription = strings.Replace(subscription, "-file", "", 1)
-		break
-	default:
 	}
 	req, err = http.NewRequest("GET", subscription, nil)
 	if err != nil {
@@ -184,7 +182,7 @@ func ResolveSubscription(client *http.Client, configDir string, subscription str
 			log.Warnln("failed to fetch subscription, try to read from file")
 			u.Host = "persist.d/" + tag + ".sub"
 			u.Path = ""
-			b, err = ResolveFile(u, configDir)
+			b, err = ResolveFile(u, subscriptionDir)
 
 			if err != nil {
 				return "", nil, err
@@ -201,7 +199,7 @@ func ResolveSubscription(client *http.Client, configDir string, subscription str
 	}
 
 	if persistToFile {
-		path := filepath.Join(configDir, "persist.d")
+		path := filepath.Join(subscriptionDir, "persist.d")
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			err := os.MkdirAll(path, 0700)
 			if err != nil {
