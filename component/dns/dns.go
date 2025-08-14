@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"net/url"
 	"sync"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -18,8 +17,6 @@ import (
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
-	log "github.com/sirupsen/logrus"
 )
 
 var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
@@ -66,7 +63,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 			Network: opt.UpstreamResolverNetwork,
 			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) {
 				return func(raw *url.URL, upstream *Upstream) {
-					go opt.UpstreamReadyCallback(upstream)
+					opt.UpstreamReadyCallback(upstream)
 					s.upstream2IndexMu.Lock()
 					s.upstream2Index[upstream] = i
 					s.upstream2IndexMu.Unlock()
@@ -123,19 +120,6 @@ func (s *Dns) CheckUpstreamsFormat() error {
 		}
 	}
 	return nil
-}
-
-func (s *Dns) InitUpstreams(wg *common.TimedWaitGroup) {
-	for _, upstream := range s.upstream {
-		id := wg.Add(30*time.Second, "resolve upstream for "+upstream.Raw.String())
-		go func() {
-			_, err := upstream.GetUpstream()
-			if err != nil {
-				log.Debugf("%+v", oops.Wrapf(err, "Dns.GetUpstream"))
-			}
-			wg.Done(id)
-		}()
-	}
 }
 
 func (s *Dns) GetUpstream(upstreamIndex consts.DnsRequestOutboundIndex) (upstream *Upstream, err error) {

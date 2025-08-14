@@ -61,7 +61,6 @@ type ControlPlane struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
-	ready  chan struct{}
 
 	muRealDomainSet sync.Mutex
 	realDomainSet   *bloom.BloomFilter
@@ -365,7 +364,6 @@ func NewControlPlane(
 		routingMatcher:         routingMatcher,
 		ctx:                    ctx,
 		cancel:                 cancel,
-		ready:                  make(chan struct{}),
 		muRealDomainSet:        sync.Mutex{},
 		realDomainSet:          bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:           global.LanInterface,
@@ -386,7 +384,7 @@ func NewControlPlane(
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
 		LocationFinder:          locationFinder,
-		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
+		UpstreamReadyCallback:   plane.cacheDnsUpstream,
 		UpstreamResolverNetwork: "udp",
 	})
 	if err != nil {
@@ -397,7 +395,6 @@ func NewControlPlane(
 	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
 		return nil, err
 	}
-	dnsUpstream.InitUpstreams(wg)
 	/// Dns controller.
 	fixedDomainTtl, err := ParseFixedDomainTtl(dnsConfig.FixedDomainTtl)
 	if err != nil {
@@ -496,7 +493,6 @@ func NewControlPlane(
 		return nil, oops.Errorf("bindDaens: %w", err)
 	}
 
-	close(plane.ready)
 	return plane, nil
 }
 
@@ -552,14 +548,7 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
-func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) {
-	// Waiting for ready.
-	select {
-	case <-c.ctx.Done():
-		return
-	case <-c.ready:
-	}
-
+func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
 	/// Updates dns cache to support domain routing for hostname of dns_upstream.
 	deadline := time.Hour * 24 * 365 * 10 // Ten years later.
 	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
