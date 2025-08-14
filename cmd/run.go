@@ -340,12 +340,8 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 		epo := 5 * time.Second
 		client := http.Client{
 			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-					conn, err := direct.Direct.DialContext(ctx, "tcp", addr)
-					if err != nil {
-						return nil, err
-					}
-					return conn, nil
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return direct.Direct.DialContext(ctx, "tcp", addr)
 				},
 			},
 			Timeout: epo,
@@ -377,18 +373,18 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	}
 	client := http.Client{
 		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				conn, err := direct.Direct.DialContext(ctx, "tcp", addr)
-				if err != nil {
-					return nil, err
-				}
-				return conn, nil
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return direct.Direct.DialContext(ctx, "tcp", addr)
 			},
 		},
 		Timeout: 30 * time.Second,
 	}
+	subscriptionDir := os.Getenv("DAE_LOCATION_SUBSCRIPTION")
+	if subscriptionDir == "" {
+		subscriptionDir = filepath.Dir(cfgFile)
+	}
 	for _, sub := range conf.Subscription {
-		tag, nodes, err := subscription.ResolveSubscription(&client, filepath.Dir(cfgFile), string(sub))
+		tag, nodes, err := subscription.ResolveSubscription(&client, subscriptionDir, string(sub))
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 			resolvingfailed = true
@@ -399,14 +395,14 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	}
 
 	// Delete all files in persist.d that are not in tagToNodeList
-	files, err := os.ReadDir(filepath.Join(filepath.Dir(cfgFile), "persist.d"))
+	files, err := os.ReadDir(filepath.Join(subscriptionDir, "persist.d"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	for _, file := range files {
 		tag := strings.TrimSuffix(file.Name(), ".sub")
 		if _, ok := tagToNodeList[tag]; !ok {
-			err := os.Remove(filepath.Join(filepath.Dir(cfgFile), "persist.d", file.Name()))
+			err := os.Remove(filepath.Join(subscriptionDir, "persist.d", file.Name()))
 			if err != nil {
 				return nil, err
 			}
