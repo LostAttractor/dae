@@ -30,6 +30,7 @@ import (
 
 // coreFlip should be 0 or 1
 var coreFlip = 0
+var exitHandlerClose func() error
 
 type controlPlaneCore struct {
 	mu sync.Mutex
@@ -415,7 +416,18 @@ func (c *controlPlaneCore) setupLocalTcpFastRedirect() (err error) {
 		return oops.Errorf("AttachSkMsgVerdict: %w", err)
 	}
 	return nil
+}
 
+func (c *controlPlaneCore) setupExitHandler() (err error) {
+	if exitHandlerClose != nil {
+		exitHandlerClose()
+	}
+	link, err := link.Tracepoint("sched", "sched_process_exit", c.bpf.HandleExit, nil)
+	if err != nil {
+		return oops.Errorf("Tracepoint: %w", err)
+	}
+	exitHandlerClose = link.Close
+	return nil
 }
 
 // bindWan supports lazy-bind if interface `ifname` is not found.
@@ -778,5 +790,4 @@ func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
 		c.bpfEjected = false
 		c.deferFuncs = append([]func() error{bpf.Close}, c.deferFuncs...)
 	}
-	return
 }
