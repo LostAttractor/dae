@@ -190,7 +190,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			if !ok {
 				return err
 			} else if !netErr.Timeout() {
-				if dialOption.Outbound.NeedAliveState() {
+				if dialOption.Dialer.NeedAliveState() {
 					dialOption.Dialer.ReportUnavailable()
 					return err
 				}
@@ -204,7 +204,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			},
 			NatTimeout: natTimeout,
 			Dialer:     dialOption.Dialer,
-			Outbound:   dialOption.Outbound,
 		})
 		// Receive UDP messages.
 		go func() {
@@ -222,7 +221,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 				if !ok {
 					log.Warnf("%+v", err)
 				} else if !netErr.Timeout() {
-					if !dialOption.Outbound.NeedAliveState() {
+					if dialOption.Dialer.NeedAliveState() {
 						ue.dialer.ReportUnavailable()
 						log.Warnf("%+v", err)
 					}
@@ -247,7 +246,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		if !ok {
 			return err
 		} else if !netErr.Timeout() {
-			if !ue.outbound.NeedAliveState() {
+			if ue.dialer.NeedAliveState() {
 				ue.dialer.ReportUnavailable()
 				return err
 			}

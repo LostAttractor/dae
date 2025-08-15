@@ -331,7 +331,7 @@ Dial:
 			if !ok {
 				return err
 			} else if !netErr.Timeout() {
-				if !dialArgument.Outbound.NeedAliveState() {
+				if dialArgument.Dialer.NeedAliveState() {
 					dialArgument.Dialer.ReportUnavailable()
 					return err
 				}

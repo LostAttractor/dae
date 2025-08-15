@@ -240,22 +240,22 @@ func NewControlPlane(
 	}
 
 	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, &dialer.Property{Property: *directProperty})
+	direct := dialer.NewDialer(_direct, option, &dialer.Property{Property: *directProperty}, false, prometheusRegistry)
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, &dialer.Property{Property: *blockProperty})
+	block := dialer.NewDialer(_block, option, &dialer.Property{Property: *blockProperty}, false, prometheusRegistry)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
 			dialer.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, false, nil),
+			}, nil),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
 			[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
 			dialer.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, false, nil),
+			}, nil),
 	}
 
 	// Filter out groups.
@@ -299,7 +299,7 @@ func NewControlPlane(
 		id := uint8(len(outbounds))
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
-			true, core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
+			core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
 		outbounds = append(outbounds, dialerGroup)
 	}
 
@@ -458,7 +458,10 @@ func NewControlPlane(
 	wg.Wait()
 
 	log.Infof("Initialization is completed. Start to Proxying...")
-	for _, g := range outbounds {
+	for i, g := range outbounds {
+		if consts.OutboundIndex(i).IsReserved() {
+			continue
+		}
 		g.PrintLatency()
 	}
 

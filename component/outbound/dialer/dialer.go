@@ -30,14 +30,14 @@ type DialerGroup interface {
 
 type Dialer struct {
 	*GlobalOption
-	InstanceOption
 	netproxy.Dialer
 	*Property
 
-	alive         bool
-	supported     [4]bool
-	Latencies10   *LatenciesN
-	MovingAverage time.Duration
+	needAliveState bool
+	alive          bool
+	supported      [4]bool
+	Latencies10    *LatenciesN
+	MovingAverage  time.Duration
 
 	mu                     sync.Mutex
 	registeredDialerGroups map[DialerGroup]int
@@ -108,10 +108,6 @@ type GlobalOption struct {
 	CheckDnsTcp       bool
 }
 
-type InstanceOption struct {
-	DisableCheck bool
-}
-
 type Property struct {
 	D.Property
 	SubscriptionTag string
@@ -139,13 +135,14 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 }
 
 // NewDialer is for register in general.
-func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property, registry prometheus.Registerer) *Dialer {
+func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, needAliveState bool, registry prometheus.Registerer) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption:           option,
-		InstanceOption:         iOption,
 		Dialer:                 dialer,
 		Property:               property,
+		needAliveState:         needAliveState,
+		alive:                  !needAliveState,
 		Latencies10:            NewLatenciesN(10),
 		registeredDialerGroups: make(map[DialerGroup]int),
 		tickerMu:               sync.Mutex{},
@@ -161,8 +158,12 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOpt
 	return d
 }
 
+func (d *Dialer) NeedAliveState() bool {
+	return d.needAliveState
+}
+
 func (d *Dialer) Clone() *Dialer {
-	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.Property, d.registry)
+	return NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState, d.registry)
 }
 
 func (d *Dialer) Close() error {

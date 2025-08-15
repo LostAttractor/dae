@@ -95,7 +95,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		if !ok {
 			return err
 		} else if !netErr.Timeout() {
-			if !dialOption.Outbound.NeedAliveState() {
+			if dialOption.Dialer.NeedAliveState() {
 				dialOption.Dialer.ReportUnavailable()
 				return err
 			}
@@ -139,7 +139,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		if !ok {
 			return err
 		} else if !netErr.Timeout() {
-			if !dialOption.Outbound.NeedAliveState() {
+			if dialOption.Dialer.NeedAliveState() {
 				dialOption.Dialer.ReportUnavailable()
 				return err
 			}
