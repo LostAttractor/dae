@@ -5,6 +5,12 @@ import (
 )
 
 var (
+	TotalConnections                                              prometheus.Counter
+	ActiveConnections, ActiveConnectionsTCP, ActiveConnectionsUDP prometheus.Gauge
+	DialLatency                                                   prometheus.Histogram
+)
+
+func initPrometheus(registry *prometheus.Registry) {
 	ActiveConnections = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "dae_active_connections",
@@ -36,12 +42,9 @@ var (
 			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
 		},
 	)
-)
-
-func init() {
-	prometheus.MustRegister(ActiveConnections)
-	prometheus.MustRegister(ActiveConnectionsTCP)
-	prometheus.MustRegister(ActiveConnectionsUDP)
-	prometheus.MustRegister(TotalConnections)
-	prometheus.MustRegister(DialLatency)
+	registry.MustRegister(ActiveConnections)
+	registry.MustRegister(ActiveConnectionsTCP)
+	registry.MustRegister(ActiveConnectionsUDP)
+	registry.MustRegister(TotalConnections)
+	registry.MustRegister(DialLatency)
 }

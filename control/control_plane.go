@@ -36,6 +36,7 @@ import (
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
@@ -74,6 +75,8 @@ type ControlPlane struct {
 	sniffVerifyMode    consts.SniffVerifyMode
 	tproxyPortProtect  bool
 	soMarkFromDae      uint32
+
+	PrometheusRegistry *prometheus.Registry
 }
 
 // TODO: 统一 Outbound 中的DNS解析器
@@ -208,6 +211,9 @@ func NewControlPlane(
 		}
 	}()
 
+	prometheusRegistry := prometheus.NewRegistry()
+	initPrometheus(prometheusRegistry)
+
 	/// DialerGroups (outbounds).
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
@@ -257,8 +263,7 @@ func NewControlPlane(
 	grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
 
-	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
-	deferFuncs = append(deferFuncs, dialerSet.Close)
+	dialerSet := outbound.NewDialerSetFromLinks(option, prometheusRegistry, tagToNodeList)
 	for _, group := range groups {
 		// Parse policy.
 		policy, err := dialer.NewDialerSelectionPolicyFromGroupParam(&group)
@@ -284,7 +289,6 @@ func NewControlPlane(
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
 				newDialer := d.Clone()
-				deferFuncs = append(deferFuncs, newDialer.Close)
 				newDialer.GlobalOption = groupOption
 				newDialers = append(newDialers, newDialer)
 			}
@@ -297,6 +301,14 @@ func NewControlPlane(
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
 			true, core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
 		outbounds = append(outbounds, dialerGroup)
+	}
+
+	// Init Prometheus and deferFuncs.
+	for _, g := range outbounds {
+		for _, d := range g.Dialers {
+			d.InitPrometheus(d.Property.SubscriptionTag + "_" + d.Name)
+			deferFuncs = append(deferFuncs, d.Close)
+		}
 	}
 
 	// Generate outboundName2Id from outbounds.
@@ -374,6 +386,7 @@ func NewControlPlane(
 		sniffingTimeout:        sniffingTimeout,
 		tproxyPortProtect:      global.TproxyPortProtect,
 		soMarkFromDae:          global.SoMarkFromDae,
+		PrometheusRegistry:     prometheusRegistry,
 	}
 	defer func() {
 		if err != nil {
@@ -868,14 +881,6 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			if err != nil {
 				continue
 			}
-			//if c.log.IsLevelEnabled(logrus.TraceLevel) {
-			//	c.log.WithFields(logrus.Fields{
-			//		"name":     d.Name(),
-			//		"latency":  latency,
-			//		"network":  networkType.String(),
-			//		"outbound": dialerGroup.Name,
-			//	}).Traceln("Choice")
-			//}
 			bestDialer = d
 			bestOutbound = dialerGroup
 			l4proto = proto

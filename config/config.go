@@ -48,6 +48,7 @@ type Global struct {
 	TlsFragmentLength      string `mapstructure:"tls_fragment_length" default:"50-100"`
 	TlsFragmentInterval    string `mapstructure:"tls_fragment_interval" default:"10-20"`
 	PprofPort              uint16 `mapstructure:"pprof_port" default:"0"`
+	MetricsPort            uint16 `mapstructure:"metrics_port" default:"0"`
 	Mptcp                  bool   `mapstructure:"mptcp" default:"false"`
 	FallbackResolver       string `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
 	BandwidthMaxTx         string `mapstructure:"bandwidth_max_tx" default:"0"`

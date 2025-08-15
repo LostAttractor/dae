@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/dlclark/regexp2"
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -39,7 +40,7 @@ type NodeInfo struct {
 	CreatedDialer *dialer.Dialer
 }
 
-func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (*dialer.Dialer, error) {
+func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer, prometheusRegistry prometheus.Registerer) (*dialer.Dialer, error) {
 	if n.CreatedDialer == nil {
 		for _, dialer := range n.Dialers {
 			var err error
@@ -48,24 +49,26 @@ func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.
 				return nil, err
 			}
 		}
-		n.CreatedDialer = dialer.NewDialer(d, option, dialer.InstanceOption{DisableCheck: false}, n.Property)
+		n.CreatedDialer = dialer.NewDialer(d, option, dialer.InstanceOption{DisableCheck: false}, n.Property, prometheusRegistry)
 	}
 	return n.CreatedDialer, nil
 }
 
 type DialerSet struct {
-	option       *dialer.GlobalOption
-	nodeInfos    []*NodeInfo
-	nodeInfosMap map[dialer.Property]*NodeInfo
-	nodeToTagMap map[*dialer.Dialer]string // Only for created dialers
+	option             *dialer.GlobalOption
+	prometheusRegistry prometheus.Registerer
+	nodeInfos          []*NodeInfo
+	nodeInfosMap       map[dialer.Property]*NodeInfo
+	nodeToTagMap       map[*dialer.Dialer]string // Only for created dialers
 }
 
-func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
+func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prometheus.Registerer, tagToNodeList map[string][]string) *DialerSet {
 	s := &DialerSet{
-		option:       option,
-		nodeInfos:    make([]*NodeInfo, 0),
-		nodeInfosMap: make(map[dialer.Property]*NodeInfo),
-		nodeToTagMap: make(map[*dialer.Dialer]string),
+		option:             option,
+		prometheusRegistry: prometheusRegistry,
+		nodeInfos:          make([]*NodeInfo, 0),
+		nodeInfosMap:       make(map[dialer.Property]*NodeInfo),
+		nodeToTagMap:       make(map[*dialer.Dialer]string),
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
 		for _, node := range nodes {
@@ -188,7 +191,7 @@ nextDialerLoop:
 	for _, nodeInfo := range s.nodeInfos {
 		if len(filters) == 0 {
 			// No filters, create all dialers
-			d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+			d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
 			if err != nil {
 				log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
 				continue
@@ -208,7 +211,7 @@ nextDialerLoop:
 					}
 					s.nodeInfosMap[property] = nextHopNodeInfo
 				}
-				d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+				d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
 				if err != nil {
 					log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
 					continue
@@ -226,7 +229,7 @@ nextDialerLoop:
 			}
 			if hit {
 				// Create dialer if it hasn't been created yet
-				d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+				d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
 				if err != nil {
 					log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
 					continue nextDialerLoop
@@ -246,7 +249,7 @@ nextDialerLoop:
 						}
 						s.nodeInfosMap[property] = nextHopNodeInfo
 					}
-					d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+					d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
 					if err != nil {
 						log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
 						continue nextDialerLoop
@@ -277,16 +280,4 @@ func (s *DialerSet) findNextHop(nextHop string) (*NodeInfo, error) {
 		}
 	}
 	return nil, fmt.Errorf("next_hop node '%s' not found", nextHop)
-}
-
-func (s *DialerSet) Close() error {
-	var err error
-	for _, nodeInfo := range s.nodeInfos {
-		if nodeInfo.CreatedDialer != nil {
-			if e := nodeInfo.CreatedDialer.Close(); e != nil {
-				err = e
-			}
-		}
-	}
-	return err
 }

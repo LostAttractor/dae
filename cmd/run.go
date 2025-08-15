@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/samber/oops"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -53,9 +54,10 @@ var (
 		"http://www.gstatic.com/generate_204",
 		"http://www.qualcomm.cn/generate_204",
 	}
-	std          = log.New()
-	pprofServer  *http.Server
-	controlPlane *control.ControlPlane
+	std              = log.New()
+	pprofServer      *http.Server
+	prometheusServer *http.Server
+	controlPlane     *control.ControlPlane
 )
 
 func init() {
@@ -127,13 +129,14 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	_ = os.Remove(AbortFile)
 
 	startPprofServer(conf.Global.PprofPort)
-	startPrometheusServer()
 
 	// New ControlPlane.
 	c, err := newControlPlane(nil, conf, externGeoDataDirs)
 	if err != nil {
 		std.Fatalln(err)
 	}
+
+	startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
 
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
@@ -285,6 +288,7 @@ loop:
 				oldC.Close()
 
 				startPprofServer(conf.Global.PprofPort)
+				startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
 			case syscall.SIGHUP:
 				// Ignore.
 				continue
@@ -305,18 +309,27 @@ func startPprofServer(port uint16) {
 		pprofServer = nil
 	}
 
-	if port != 0 {
-		pprofAddr := fmt.Sprintf("localhost:%d", port)
-		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-		go pprofServer.ListenAndServe()
-		runtime.SetBlockProfileRate(1)
-		runtime.SetMutexProfileFraction(1)
+	if port == 0 {
+		return
 	}
+	pprofServer = &http.Server{Addr: fmt.Sprintf("localhost:%d", port)}
+	go pprofServer.ListenAndServe()
+	runtime.SetBlockProfileRate(1)
+	runtime.SetMutexProfileFraction(1)
 }
 
-func startPrometheusServer() {
-	http.Handle("/metrics", promhttp.Handler())
-	go http.ListenAndServe(":2112", nil)
+func startPrometheusServer(port uint16, prometheusRegistry *prometheus.Registry) {
+	if prometheusServer != nil {
+		prometheusServer.Shutdown(context.Background())
+		prometheusServer = nil
+	}
+
+	if port == 0 {
+		return
+	}
+
+	prometheusServer = &http.Server{Addr: fmt.Sprintf("localhost:%d", port), Handler: promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{})}
+	go prometheusServer.ListenAndServe()
 }
 
 func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
