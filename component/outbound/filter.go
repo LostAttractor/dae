@@ -49,7 +49,7 @@ func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.
 				return nil, err
 			}
 		}
-		n.CreatedDialer = dialer.NewDialer(d, option, dialer.InstanceOption{DisableCheck: false}, n.Property, prometheusRegistry)
+		n.CreatedDialer = dialer.NewDialer(d, option, n.Property, true, prometheusRegistry)
 	}
 	return n.CreatedDialer, nil
 }

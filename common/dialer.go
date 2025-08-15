@@ -11,7 +11,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 )
 
-func showDuration(d time.Duration) string {
+func ShowDuration(d time.Duration) string {
 	return d.Truncate(time.Millisecond).String()
 }
 
@@ -23,10 +23,10 @@ func LatencyString(realLatency, latencyOffset time.Duration) string {
 
 	var offsetPart string = ""
 	if latencyOffset != 0 {
-		offsetPart = "(" + offsetSign + showDuration(latencyOffset.Abs()) + "=" + showDuration(realLatency+latencyOffset) + ")"
+		offsetPart = "(" + offsetSign + ShowDuration(latencyOffset.Abs()) + "=" + ShowDuration(realLatency+latencyOffset) + ")"
 	}
 
-	return showDuration(realLatency) + offsetPart
+	return ShowDuration(realLatency) + offsetPart
 }
 
 type NetworkType struct {

@@ -280,7 +280,7 @@ func (d *Dialer) ActivateCheck(wg *common.TimedWaitGroup) {
 		return
 	}
 
-	if d.InstanceOption.DisableCheck || d.checkActivated {
+	if !d.needAliveState || d.checkActivated {
 		return
 	}
 	d.checkActivated = true
@@ -401,19 +401,22 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 	return nil
 }
 
-func (d *Dialer) RegisterAliveDialerSet(g DialerGroup) {
+func (d *Dialer) RegisterDialerGroup(g DialerGroup) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.registeredDialerGroups[g]++
 }
 
-func (d *Dialer) UnregisterAliveDialerSet(g DialerGroup) {
+func (d *Dialer) UnregisterDialerGroup(g DialerGroup) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.registeredDialerGroups, g)
 }
 
 func (d *Dialer) NotifyStatusChange() {
+	if !d.needAliveState {
+		return
+	}
 	// Inform DialerGroups to update state.
 	// We use lock because AliveDialerSetSet is a reference of that in collection.
 	d.mu.Lock()
@@ -425,10 +428,9 @@ func (d *Dialer) NotifyStatusChange() {
 
 // ReportUnavailable 意味着在测速之外, Dialer 变得不可用了
 func (d *Dialer) ReportUnavailable() {
-	if d.Alive() {
-		return
+	if !d.Alive() {
+		d.NotifyStatusChange()
 	}
-	d.NotifyStatusChange()
 	d.NotifyCheck()
 }
 
