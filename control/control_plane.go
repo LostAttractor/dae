@@ -466,6 +466,9 @@ func NewControlPlane(
 	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
+	if err = core.setupExitHandler(); err != nil {
+		return nil, oops.Errorf("failed to setup exit handler: %w", err)
+	}
 	// Bind to LAN
 	if len(global.LanInterface) > 0 {
 		if global.AutoConfigKernelParameter {

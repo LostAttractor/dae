@@ -337,6 +337,13 @@ struct {
 } udp_conn_state_map SEC(".maps");
 // 16.78 MB
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u8);
+} exited_map SEC(".maps");
+
 // Functions:
 
 static __always_inline __u8 ipv4_get_dscp(const struct iphdr *iph)
@@ -1147,6 +1154,11 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 // Routing and redirect the packet back.
 static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 link_h_len)
 {
+	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
+	if (exited && *exited) {
+		return TC_ACT_PIPE;
+	}
+
 	// Parse transport.
 	struct ethhdr ethh;
 	struct iphdr iph;
@@ -1848,6 +1860,24 @@ int sk_msg_fast_redirect(struct sk_msg_md *msg)
 			   bpf_ntohs(rev_tuple.dport));
 
 	return SK_PASS;
+}
+
+
+SEC("tp/sched/sched_process_exit")
+int handle_exit(struct trace_event_raw_sched_process_template* ctx)
+{
+    /* get PID and TID of exiting thread/process */
+    __u64 id = bpf_get_current_pid_tgid();
+    __u32 pid = id >> 32;
+    __u32 tid = id;
+
+    /* ignore thread exits */
+    if (pid != tid)
+		return 0;
+
+	if (pid == PARAM.control_plane_pid)
+		bpf_map_update_elem(&exited_map, &zero_key, &one_key, BPF_ANY);
+	return 0;
 }
 
 SEC("license") const char __license[] = "Dual BSD/GPL";
