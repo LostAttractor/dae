@@ -64,8 +64,12 @@ func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, e
 	switch outboundIndex {
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneRouting:
+		domain := p.Domain
+		if !verified {
+			domain = ""
+		}
 		// if outboundIndex, mark, _, err = c.Route(p.Src, p.Dest, p.Domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
-		if outboundIndex, _, _, err = c.Route(p.Src, p.Dest, p.Domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
+		if outboundIndex, _, _, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
 			oops.Wrap(err)
 			return
 		}
@@ -146,7 +150,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 	ipVersion := consts.IpVersionFromAddr(dst.Addr())
 	bSrc := src.Addr().As16()
 	bDst := dst.Addr().As16()
-	if outboundIndex, mark, must, err = c.routingMatcher.Match(
+	return c.routingMatcher.Match(
 		bSrc[:],
 		bDst[:],
 		src.Port(),
@@ -158,11 +162,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		routingResult.Ifindex,
 		routingResult.Dscp,
 		append([]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, routingResult.Mac[:]...),
-	); err != nil {
-		return 0, 0, false, err
-	}
-
-	return outboundIndex, mark, false, nil
+	)
 }
 
 func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (result *bpfRoutingResult, err error) {
