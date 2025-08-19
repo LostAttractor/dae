@@ -172,13 +172,45 @@ check_routing_ipv4_tcp(struct __sk_buff *skb,
 }
 
 static __always_inline void
-set_routing_fallback(__u8 outbound, bool must)
+set_outbound_connectivity(__u8 outbound)
 {
-	struct match_set ms = {};
-	ms.not = false;
-	ms.type = MatchType_Fallback;
-	ms.outbound = outbound;
-	ms.must = must;
-	ms.mark = 0;
-	bpf_map_update_elem(&routing_map, &one_key, &ms, BPF_ANY);
+	struct outbound_connectivity_query query = {
+		.outbound = outbound,
+		.ipversion = 4,
+		.l4proto = IPPROTO_TCP,
+	};
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &zero_key, BPF_ANY);
+
+	struct outbound_connectivity_query query2 = {
+		.outbound = outbound,
+		.ipversion = 6,
+		.l4proto = IPPROTO_TCP,
+	};
+	bpf_map_update_elem(&outbound_connectivity_map, &query2, &zero_key, BPF_ANY);
+
+	struct outbound_connectivity_query query3 = {
+		.outbound = outbound,
+		.ipversion = 4,
+		.l4proto = IPPROTO_UDP,
+	};
+	bpf_map_update_elem(&outbound_connectivity_map, &query3, &zero_key, BPF_ANY);
+	
+	struct outbound_connectivity_query query4 = {
+		.outbound = outbound,
+		.ipversion = 6,
+		.l4proto = IPPROTO_UDP,
+	};
+	bpf_map_update_elem(&outbound_connectivity_map, &query4, &zero_key, BPF_ANY);
+}
+
+static __always_inline void
+set_routing_fallback(__u8 outbound, bool must, const void *key)
+{
+	struct match_set ms = {
+		.type = MatchType_Fallback,
+		.outbound = outbound,
+		.must = must,
+	};
+	bpf_map_update_elem(&routing_map, key, &ms, BPF_ANY);
+	set_outbound_connectivity(outbound);
 }
