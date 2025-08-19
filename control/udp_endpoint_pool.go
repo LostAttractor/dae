@@ -41,7 +41,7 @@ func (ue *UdpEndpoint) run() error {
 	for {
 		n, from, err := ue.conn.ReadFrom(buf)
 		if err != nil {
-			if ue.ctx.Err() != nil {
+			if ue.IsClosed() {
 				break
 			}
 			return oops.Wrapf(err, "failed to ReadFrom")
@@ -56,16 +56,20 @@ func (ue *UdpEndpoint) run() error {
 	return nil
 }
 
+func (ue *UdpEndpoint) IsClosed() bool {
+	return ue.ctx.Err() != nil
+}
+
 func (ue *UdpEndpoint) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return ue.conn.WriteTo(b, addr)
 }
 
 // Close should only called by UdpEndpointPool.Remove
 func (ue *UdpEndpoint) Close() error {
-	ue.cancel()
 	ue.mu.Lock()
 	ue.deadlineTimer.Stop()
 	ue.mu.Unlock()
+	ue.cancel()
 	return ue.conn.Close()
 }
 

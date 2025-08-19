@@ -206,34 +206,38 @@ func (d *DoTLS) ForwardDNS(msg *dnsmessage.Msg) error {
 type DoTCP struct {
 	dns.Upstream
 	dialArgument dialArgument
+	dnsManager   *DnsManager
 }
 
 // TODO: Connection reuse
 func (d *DoTCP) ForwardDNS(msg *dnsmessage.Msg) error {
-	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
-	defer cancel()
-	conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
-	if err != nil {
-		return err
+	if d.dnsManager == nil || d.dnsManager.IsClosed() {
+		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+		defer cancel()
+		conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
+		if err != nil {
+			return err
+		}
+		d.dnsManager = NewDnsManager(conn, true)
 	}
-
-	defer conn.Close()
-	return netutils.ResolveStream(conn, msg, false)
+	return d.dnsManager.Resolve(msg)
 }
 
 type DoUDP struct {
 	dns.Upstream
 	dialArgument dialArgument
+	dnsManager   *DnsManager
 }
 
 func (d *DoUDP) ForwardDNS(msg *dnsmessage.Msg) error {
-	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
-	defer cancel()
-	conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
-	if err != nil {
-		return err
+	if d.dnsManager == nil || d.dnsManager.IsClosed() {
+		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+		defer cancel()
+		conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
+		if err != nil {
+			return err
+		}
+		d.dnsManager = NewDnsManager(conn, false)
 	}
-
-	defer conn.Close()
-	return netutils.ResolveUDP(conn, msg)
+	return d.dnsManager.Resolve(msg)
 }
