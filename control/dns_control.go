@@ -336,6 +336,7 @@ Dial:
 					return err
 				}
 			}
+			log.WithError(err).Error("DNS dialSend error")
 		}
 
 		// Route response.
@@ -362,17 +363,17 @@ Dial:
 				case consts.DnsResponseOutboundIndex_Accept:
 					log.WithFields(fields).Infof("[DNS] %v <-> %v", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.Target))
 				case consts.DnsResponseOutboundIndex_Reject:
-					log.WithFields(fields).Infof("[DNS] %v <-> %v", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.Target))
+					log.WithFields(fields).Infof("[DNS] %v <-> %v Reject with empty answer", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.Target))
 				}
 			}
 			switch ResponseIndex {
-			case consts.DnsResponseOutboundIndex_Accept:
-				// Accept.
-				break Dial
 			case consts.DnsResponseOutboundIndex_Reject:
 				// Reject
 				// TODO: cache response reject.
 				c.reject(dnsMessage)
+				fallthrough
+			case consts.DnsResponseOutboundIndex_Accept:
+				// Accept.
 				break Dial
 			default:
 				return oops.Errorf("unknown upstream: %v", ResponseIndex.String())
@@ -396,6 +397,7 @@ Dial:
 	// TODO: RemoveCache
 	// TODO: 不再存储Bitmap, 提高更新代码可读性
 	// 但在有bump_map的情况下这不是大问题
+	// TOOD: 细分日志
 	switch {
 	case !dnsMessage.Response,
 		len(dnsMessage.Answer) == 0,
@@ -499,22 +501,31 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 		return err
 	}
 
+	log.WithFields(log.Fields{
+		"qname": queryInfo.qname,
+		"qtype": queryInfo.qtype,
+		"rcode": msg.Rcode,
+		"ans":   FormatDnsRsc(msg.Answer),
+	}).Debugf("Got DNS response")
+
+	// TODO: 细分日志
 	switch {
 	case !msg.Response,
 		len(msg.Question) == 0,               // Check healthy resp.
 		msg.Rcode != dnsmessage.RcodeSuccess: // Check suc resp.
+		log.Tracef("Not a valid DNS response")
 		return nil
 	}
 
 	ans := deepcopy.Copy(msg.Answer).([]dnsmessage.RR)
 	ttl := c.NormalizeDnsResp(ans)
-	if log.IsLevelEnabled(log.TraceLevel) {
+	if log.IsLevelEnabled(log.DebugLevel) {
 		log.WithFields(log.Fields{
 			"qname": queryInfo.qname,
 			"qtype": queryInfo.qtype,
 			"rcode": msg.Rcode,
 			"ans":   FormatDnsRsc(ans),
-		}).Tracef("Update DNS record cache")
+		}).Debugf("Update DNS record cache")
 	}
 	c.UpdateDnsCacheTtl(cacheKey, queryInfo.qname, ans, ttl)
 
