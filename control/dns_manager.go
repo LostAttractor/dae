@@ -150,7 +150,7 @@ func (m *DnsManager) Resolve(msg *dnsmessage.Msg) error {
 	case <-m.ctx.Done():
 		return net.ErrClosed
 	case <-ctx.Done():
-		return ctx.Err()
+		return net.ErrClosed
 	case err := <-errCh:
 		return err
 	case recvMsg := <-recvCh:
