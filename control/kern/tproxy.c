@@ -152,6 +152,21 @@ struct tuples {
 	__u8 dscp;
 };
 
+struct l4_hdr {
+	union {
+		struct tcphdr tcph;
+		struct udphdr udph;
+		struct icmp6hdr icmp6h;
+	};
+};
+
+struct l3_hdr {
+	union {
+		struct iphdr iph;
+		struct ipv6hdr ipv6h;
+	};
+};
+
 struct dae_param {
 	__u32 tproxy_port;
 	__u32 control_plane_pid;
@@ -358,35 +373,34 @@ static __always_inline __u8 ipv6_get_dscp(const struct ipv6hdr *ipv6h)
 
 static __always_inline void
 get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
-	   const struct iphdr *iph, const struct ipv6hdr *ipv6h,
-	   const struct tcphdr *tcph, const struct udphdr *udph, __u8 l4proto)
+	   const struct l3_hdr *l3h, const struct l4_hdr *l4h, __u8 l4proto)
 {
 	__builtin_memset(tuples, 0, sizeof(*tuples));
 	tuples->five.l4proto = l4proto;
 
 	if (skb->protocol == bpf_htons(ETH_P_IP)) {
 		tuples->five.sip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-		tuples->five.sip.u6_addr32[3] = iph->saddr;
+		tuples->five.sip.u6_addr32[3] = l3h->iph.saddr;
 
 		tuples->five.dip.u6_addr32[2] = bpf_htonl(0x0000ffff);
-		tuples->five.dip.u6_addr32[3] = iph->daddr;
+		tuples->five.dip.u6_addr32[3] = l3h->iph.daddr;
 
-		tuples->dscp = ipv4_get_dscp(iph);
+		tuples->dscp = ipv4_get_dscp(&l3h->iph);
 
 	} else {
-		__builtin_memcpy(&tuples->five.dip, &ipv6h->daddr,
+		__builtin_memcpy(&tuples->five.dip, &l3h->ipv6h.daddr,
 				 IPV6_BYTE_LENGTH);
-		__builtin_memcpy(&tuples->five.sip, &ipv6h->saddr,
+		__builtin_memcpy(&tuples->five.sip, &l3h->ipv6h.saddr,
 				 IPV6_BYTE_LENGTH);
 
-		tuples->dscp = ipv6_get_dscp(ipv6h);
+		tuples->dscp = ipv6_get_dscp(&l3h->ipv6h);
 	}
 	if (l4proto == IPPROTO_TCP) {
-		tuples->five.sport = tcph->source;
-		tuples->five.dport = tcph->dest;
+		tuples->five.sport = l4h->tcph.source;
+		tuples->five.dport = l4h->tcph.dest;
 	} else {
-		tuples->five.sport = udph->source;
-		tuples->five.dport = udph->dest;
+		tuples->five.sport = l4h->udph.source;
+		tuples->five.dport = l4h->udph.dest;
 	}
 }
 
@@ -450,14 +464,10 @@ static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 
 static __always_inline int
 parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
-		struct ethhdr *ethh, struct iphdr *iph, struct ipv6hdr *ipv6h,
-		struct icmp6hdr *icmp6h, struct tcphdr *tcph,
-		struct udphdr *udph, __u8 *ihl, __u8 *l4proto, __u32 *offset)
+		struct ethhdr *ethh, struct l3_hdr *l3h, struct l4_hdr *l4h, __u8 *ihl, __u8 *l4proto, __u32 *offset)
 {
-	int ret;
-
 	if (link_h_len == ETH_HLEN) {
-		ret = bpf_skb_load_bytes(skb, *offset, ethh,
+		int ret = bpf_skb_load_bytes(skb, *offset, ethh,
 					 sizeof(struct ethhdr));
 		if (ret) {
 			bpf_printk("not ethernet packet");
@@ -472,27 +482,24 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 
 	*ihl = 0;
 	*l4proto = 0;
-	__builtin_memset(iph, 0, sizeof(struct iphdr));
-	__builtin_memset(ipv6h, 0, sizeof(struct ipv6hdr));
-	__builtin_memset(icmp6h, 0, sizeof(struct icmp6hdr));
-	__builtin_memset(tcph, 0, sizeof(struct tcphdr));
-	__builtin_memset(udph, 0, sizeof(struct udphdr));
+	__builtin_memset(l3h, 0, sizeof(struct l3_hdr));
+	__builtin_memset(l4h, 0, sizeof(struct l4_hdr));
 
 	// bpf_printk("parse_transport: h_proto: %u ? %u %u", ethh->h_proto,
 	//						bpf_htons(ETH_P_IP), bpf_htons(ETH_P_IPV6));
 	if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
-		ret = bpf_skb_load_bytes(skb, *offset, iph,
+		int ret = bpf_skb_load_bytes(skb, *offset, l3h,
 					 sizeof(struct iphdr));
 		if (ret)
 			return -EFAULT;
 		// Skip ipv4hdr and options for next hdr.
-		*offset += iph->ihl * 4;
+		*offset += l3h->iph.ihl * 4;
 
 		// We only process TCP and UDP traffic.
-		*l4proto = iph->protocol;
-		switch (iph->protocol) {
+		*l4proto = l3h->iph.protocol;
+		switch (l3h->iph.protocol) {
 		case IPPROTO_TCP:
-			ret = bpf_skb_load_bytes(skb, *offset, tcph,
+			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct tcphdr));
 			if (ret) {
 				// Not a complete tcphdr.
@@ -501,7 +508,7 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			*offset += sizeof(struct tcphdr);
 			break;
 		case IPPROTO_UDP:
-			ret = bpf_skb_load_bytes(skb, *offset, udph,
+			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct udphdr));
 			if (ret) {
 				// Not a complete udphdr.
@@ -512,10 +519,10 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		default:
 			return 1;
 		}
-		*ihl = iph->ihl;
+		*ihl = l3h->iph.ihl;
 		return 0;
 	} else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
-		ret = bpf_skb_load_bytes(skb, *offset, ipv6h,
+		int ret = bpf_skb_load_bytes(skb, *offset, l3h,
 					 sizeof(struct ipv6hdr));
 		if (ret) {
 			bpf_printk("not a valid IPv6 packet");
@@ -524,7 +531,7 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 
 		*offset += sizeof(struct ipv6hdr);
 		*ihl = sizeof(struct ipv6hdr) / 4;
-		__u8 nexthdr = ipv6h->nexthdr;
+		__u8 nexthdr = l3h->ipv6h.nexthdr;
 
 		// Skip all extension headers.
 		struct ipv6_ext_ctx ext_ctx = {
@@ -549,7 +556,7 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 
 		switch (nexthdr) {
 		case IPPROTO_TCP:
-			ret = bpf_skb_load_bytes(skb, *offset, tcph,
+			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct tcphdr));
 			if (ret) {
 				// Not a complete tcphdr.
@@ -558,7 +565,7 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			*offset += sizeof(struct tcphdr);
 			break;
 		case IPPROTO_UDP:
-			ret = bpf_skb_load_bytes(skb, *offset, udph,
+			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct udphdr));
 			if (ret) {
 				// Not a complete udphdr.
@@ -567,7 +574,7 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			*offset += sizeof(struct udphdr);
 			break;
 		case IPPROTO_ICMPV6:
-			ret = bpf_skb_load_bytes(skb, *offset, icmp6h,
+			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct icmp6hdr));
 			if (ret) {
 				// Not a complete icmp6hdr.
@@ -1040,7 +1047,7 @@ static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
 
 static __always_inline void prep_redirect_to_control_plane(
 	struct __sk_buff *skb, bool from_wan, __u32 link_h_len, struct tuples *tuples,
-	__u8 l4proto, struct ethhdr *ethh, struct tcphdr *tcph)
+	__u8 l4proto, struct ethhdr *ethh, struct l4_hdr *l4h)
 {
 	/* Redirect from L3 dev to L2 dev, e.g. wg/ipip/ppp/tun -> veth */
 	if (!link_h_len) {
@@ -1079,7 +1086,7 @@ static __always_inline void prep_redirect_to_control_plane(
 
 	skb->cb[0] = TPROXY_MARK;
 	skb->cb[1] = 0;
-	if ((l4proto == IPPROTO_TCP && tcph->syn) || l4proto == IPPROTO_UDP)
+	if ((l4proto == IPPROTO_TCP && l4h->tcph.syn) || l4proto == IPPROTO_UDP)
 		skb->cb[1] = l4proto;
 }
 
@@ -1161,17 +1168,13 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 	// Parse transport.
 	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
 	__u8 ihl;
 	__u8 l4proto;
 	__u32 offset = 0;
 
-	if (parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-			    &tcph, &udph, &ihl, &l4proto, &offset))
+	if (parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl, &l4proto, &offset))
 		return TC_ACT_PIPE;
 	if (l4proto == IPPROTO_ICMPV6)
 		return TC_ACT_PIPE;
@@ -1179,7 +1182,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	// Prepare five tuples.
 	struct tuples tuples;
 
-	get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+	get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
 
 	// Backup for feature use.
 	// 由于向helper function传递了skb, 一旦verifier无法推断出skb是否被修改, 则可能在访问skb时出现问题
@@ -1201,7 +1204,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 		routing_tuples_key.dport = 0;
 	}
 
-	if (l4proto == IPPROTO_TCP && !(tcph.syn && !tcph.ack)) {
+	if (l4proto == IPPROTO_TCP && !(l4h.tcph.syn && !l4h.tcph.ack)) {
 		// Established TCP Connection.
 		struct routing_result *routing_result =
 			bpf_map_lookup_elem(&routing_tuples_map,
@@ -1230,11 +1233,10 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	// Fill route_params.
 	struct route_params params = { 0 };
 
+	params.l4hdr = &l4h;
 	if (l4proto == IPPROTO_TCP) {
-		params.l4hdr = &tcph;
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
-		params.l4hdr = &udph;
 		params.flag[0] = L4ProtoType_UDP;
 		if (is_utp(skb, l4proto, offset)) {
 			params.flag[0] |= (1 << 2);
@@ -1327,6 +1329,10 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 			.l4proto = l4proto
 		};
 
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+		bpf_printk("outbound_connectivity_query: outbound: %u, ipversion: %u, l4proto: %u", q.outbound, q.ipversion, q.l4proto);
+#endif
+
 		__u32 *alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 
 		if (!alive) {
@@ -1351,7 +1357,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 control_plane:
 	// Assign to control plane.
-	prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples, l4proto, &ethh, &tcph);
+	prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples, l4proto, &ethh, &l4h);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
@@ -1364,24 +1370,20 @@ block:
 static __always_inline int do_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
 	__u8 ihl;
 	__u8 l4proto;
 	__u32 offset = 0;
 
-	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-				  &tcph, &udph, &ihl, &l4proto, &offset);
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl, &l4proto, &offset);
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
 		return TC_ACT_PIPE;
 	}
 
 	if (skb->ingress_ifindex == NOWHERE_IFINDEX &&  // Only drop NDP_REDIRECT packets from localhost
-		l4proto == IPPROTO_ICMPV6 && icmp6h.icmp6_type == NDP_REDIRECT) {
+		l4proto == IPPROTO_ICMPV6 && l4h.icmp6h.icmp6_type == NDP_REDIRECT) {
 		// REDIRECT (NDP)
 		return TC_ACT_SHOT;
 	}
@@ -1391,7 +1393,7 @@ static __always_inline int do_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
 
-		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+		get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
@@ -1428,17 +1430,13 @@ int lan_ingress_l3(struct __sk_buff *skb)
 static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
 {
 	struct ethhdr ethh;
-	struct iphdr iph;
-	struct ipv6hdr ipv6h;
-	struct icmp6hdr icmp6h;
-	struct tcphdr tcph;
-	struct udphdr udph;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
 	__u8 ihl;
 	__u8 l4proto;
 	__u32 offset = 0;
 
-	int ret = parse_transport(skb, link_h_len, &ethh, &iph, &ipv6h, &icmp6h,
-				  &tcph, &udph, &ihl, &l4proto, &offset);
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl, &l4proto, &offset);
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
 		return TC_ACT_PIPE;
@@ -1449,7 +1447,7 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 		struct tuples tuples;
 		struct tuples_key reversed_tuples_key;
 
-		get_tuples(skb, &tuples, &iph, &ipv6h, &tcph, &udph, l4proto);
+		get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
