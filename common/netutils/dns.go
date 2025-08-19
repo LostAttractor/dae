@@ -118,43 +118,44 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 	// TODO: SetDeadline 可能会不被支持, 特别是 SetWriteDeadline
 	conn.SetDeadline(time.Now().Add(consts.DefaultDNSTimeout))
 	ctx, cancel := context.WithCancel(context.TODO())
-	// ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDNSTimeout)
+	defer cancel()
 
-	errCh := make(chan error, 1)
+	sendCh := make(chan error, 1)
+	recvCh := make(chan error, 1)
 	go func() {
 		for i := 0; i < consts.DefaultDNSRetryCount; i++ {
 			_, err := conn.Write(data)
 			if err != nil {
-				errCh <- err
+				sendCh <- err
 				return
 			}
 			select {
 			case <-ctx.Done():
-				errCh <- nil
 				return
 			case <-time.After(consts.DefaultDNSRetryInterval):
 			}
 		}
 	}()
 
-	// Wait for response.
 	respBuf := pool.GetBuffer(consts.EthernetMtu)
 	defer pool.PutBuffer(respBuf)
-	// n, err := common.Invoke(ctx, func() (int, error) {
-	// 	return conn.Read(respBuf)
-	// }, nil)
-	n, err := conn.Read(respBuf)
-	cancel()
-	if err != nil {
+	var n int
+	go func() {
+		// Wait for response.
+		n, err = conn.Read(respBuf)
+		recvCh <- err
+	}()
+
+	select {
+	case err := <-sendCh:
 		return err
+	case err := <-recvCh:
+		if err != nil {
+			return err
+		}
 	}
-	if err = <-errCh; err != nil {
-		return err
-	}
-	if err = msg.Unpack(respBuf[:n]); err != nil {
-		return err
-	}
-	return nil
+
+	return msg.Unpack(respBuf[:n])
 }
 
 func ResolveNetip(d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
