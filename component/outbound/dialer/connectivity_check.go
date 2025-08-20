@@ -30,6 +30,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const (
+	TimeoutPenalty = 10 * time.Minute
+	Alpha          = 0.18
+)
+
 func (d *Dialer) Alive() bool {
 	return d.Dialer.Alive() && d.alive
 }
@@ -435,29 +440,27 @@ func (d *Dialer) ReportUnavailable() {
 }
 
 func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
+	if !ok {
+		latency = TimeoutPenalty
+	}
+	d.MovingAverage = time.Duration(float64(d.MovingAverage)*(1-Alpha) + float64(latency)*Alpha)
+	d.Latencies10.AppendLatency(latency)
 	if ok {
-		d.Latencies10.AppendLatency(latency)
 		avg, _ := d.Latencies10.AvgLatency()
-		d.MovingAverage = (d.MovingAverage + latency) / 2
-
-		if !d.alive {
-			log.WithFields(log.Fields{
-				"network": networkType.String(),
-				"node":    d.Name,
-				"last":    latency.Truncate(time.Millisecond).String(),
-				"avg_10":  avg.Truncate(time.Millisecond),
-				"mov_avg": d.MovingAverage.Truncate(time.Millisecond),
-			}).Infoln("Connectivity Check")
-		} else {
-			log.WithFields(log.Fields{
-				"network": networkType.String(),
-				"node":    d.Name,
-				"last":    latency.Truncate(time.Millisecond).String(),
-				"avg_10":  avg.Truncate(time.Millisecond),
-				"mov_avg": d.MovingAverage.Truncate(time.Millisecond),
-			}).Debugln("Connectivity Check")
+		fields := log.Fields{
+			"node":    d.Name,
+			"last":    latency.Truncate(time.Millisecond).String(),
+			"avg_10":  avg.Truncate(time.Millisecond),
+			"mov_avg": d.MovingAverage.Truncate(time.Millisecond),
 		}
-		d.alive = true
+		if networkType != nil {
+			fields["network"] = networkType.String()
+		}
+		if !d.alive {
+			log.WithFields(fields).Infoln("Connectivity Check")
+		} else {
+			log.WithFields(fields).Debugln("Connectivity Check")
+		}
 	} else {
 		fields := log.Fields{
 			"node": d.Name,
@@ -470,8 +473,8 @@ func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.Netw
 		} else {
 			log.WithFields(fields).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
 		}
-		d.alive = false
 	}
+	d.alive = ok
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, latency time.Duration, err error) {
