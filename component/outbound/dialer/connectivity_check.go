@@ -431,7 +431,7 @@ func (d *Dialer) NotifyStatusChange() {
 	}
 }
 
-// ReportUnavailable 意味着在测速之外, Dialer 变得不可用了
+// ReportUnavailable 意味着在测速之外, Dialer 似乎不可用了
 func (d *Dialer) ReportUnavailable() {
 	if !d.Alive() {
 		d.NotifyStatusChange()
@@ -443,7 +443,11 @@ func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.Netw
 	if !ok {
 		latency = TimeoutPenalty
 	}
-	d.MovingAverage = time.Duration(float64(d.MovingAverage)*(1-Alpha) + float64(latency)*Alpha)
+	if d.MovingAverage == 0 {
+		d.MovingAverage = latency
+	} else {
+		d.MovingAverage = time.Duration(float64(d.MovingAverage)*(1-Alpha) + float64(latency)*Alpha)
+	}
 	d.Latencies10.AppendLatency(latency)
 	if ok {
 		avg, _ := d.Latencies10.AvgLatency()
