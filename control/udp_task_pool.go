@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -16,9 +17,9 @@ const UdpTaskQueueLength = 128
 type UdpTask = func()
 
 // UdpTaskQueue make sure packets with the same key (4 tuples) will be sent in order.
-type UdpTaskQueue struct {
-	key       string
-	p         *UdpTaskPool
+type UdpTaskQueue[K comparable] struct {
+	key       K
+	p         *UdpTaskPool[K]
 	ch        chan UdpTask
 	timer     *time.Timer
 	agingTime time.Duration
@@ -27,7 +28,7 @@ type UdpTaskQueue struct {
 }
 
 // TODO: Timout?
-func (q *UdpTaskQueue) convoy() {
+func (q *UdpTaskQueue[K]) convoy() {
 	for {
 		select {
 		case <-q.ctx.Done():
@@ -40,32 +41,31 @@ func (q *UdpTaskQueue) convoy() {
 	}
 }
 
-type UdpTaskPool struct {
+type UdpTaskPool[K comparable] struct {
 	queueChPool sync.Pool
 	// mu protects m
 	mu sync.Mutex
-	m  map[string]*UdpTaskQueue
+	m  map[K]*UdpTaskQueue[K]
 }
 
-func NewUdpTaskPool() *UdpTaskPool {
-	p := &UdpTaskPool{
+func NewUdpTaskPool[K comparable]() *UdpTaskPool[K] {
+	p := &UdpTaskPool[K]{
 		queueChPool: sync.Pool{New: func() any {
 			return make(chan UdpTask, UdpTaskQueueLength)
 		}},
-		mu: sync.Mutex{},
-		m:  map[string]*UdpTaskQueue{},
+		m: make(map[K]*UdpTaskQueue[K]),
 	}
 	return p
 }
 
 // EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
-func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
+func (p *UdpTaskPool[K]) EmitTask(key K, task UdpTask) {
 	p.mu.Lock()
 	q, ok := p.m[key]
 	if !ok {
 		ch := p.queueChPool.Get().(chan UdpTask)
 		ctx, cancel := context.WithCancel(context.Background())
-		q = &UdpTaskQueue{
+		q = &UdpTaskQueue[K]{
 			key:       key,
 			p:         p,
 			ch:        ch,
@@ -100,5 +100,5 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 }
 
 var (
-	DefaultUdpTaskPool = NewUdpTaskPool()
+	DefaultUdpTaskPool = NewUdpTaskPool[netip.AddrPort]()
 )

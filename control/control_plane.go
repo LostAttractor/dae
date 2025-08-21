@@ -785,7 +785,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 			// Debug:
 			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
+			DefaultUdpTaskPool.EmitTask(convergeSrc, func() {
 				defer pool.PutBuffer(data)
 				var routingResult *bpfRoutingResult
 				// Use an empty AddrPort for dst
