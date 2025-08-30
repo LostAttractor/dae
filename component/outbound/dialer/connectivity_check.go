@@ -33,6 +33,8 @@ import (
 const (
 	TimeoutPenalty = 10 * time.Minute
 	Alpha          = 0.18
+	RetryCount     = 3
+	RetryInterval  = 5 * time.Second
 )
 
 func (d *Dialer) Alive() bool {
@@ -341,16 +343,21 @@ func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
 		case <-d.ctx.Done():
 			return
 		case <-d.checkCh:
-			if !d.Alive() {
-				d.NotifyStatusChange()
-				err := d.Connect()
-				if err != nil {
-					continue
+			for i := 0; i < RetryCount; i++ {
+				if !d.Alive() {
+					d.NotifyStatusChange()
+					if err := d.Connect(); err != nil {
+						continue
+					}
 				}
+				ok, latency, err := d.Check(checkOpt)
+				d.Update(ok, latency, checkOpt.networkType, err)
+				d.NotifyStatusChange()
+				if ok {
+					break
+				}
+				time.Sleep(RetryInterval)
 			}
-			ok, latency, err := d.Check(checkOpt)
-			d.Update(ok, latency, checkOpt.networkType, err)
-			d.NotifyStatusChange()
 		}
 	}
 }
