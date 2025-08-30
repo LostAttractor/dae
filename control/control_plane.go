@@ -37,13 +37,13 @@ import (
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/sys/unix"
 
 	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 type ControlPlane struct {
@@ -775,26 +775,40 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 				break
 			}
-
 			dst := RetrieveOriginalDest(oob[:oobn])
-			convergeSrc := common.ConvergeAddrPort(src)
-			convergeDst := common.ConvergeAddrPort(dst)
+
+			src = common.ConvergeAddrPort(src)
+			dst = common.ConvergeAddrPort(dst)
 
 			data := pool.GetBuffer(n)
 			copy(data, buf[:n])
 
-			// Debug:
-			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(convergeSrc, func() {
-				defer pool.PutBuffer(data)
-				var routingResult *bpfRoutingResult
-				// Use an empty AddrPort for dst
+			/// Handle DNS
+			// To keep consistency with kernel program, we only sniff DNS request sent to 53.
+			if dst.Port() == 53 {
 				routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
 				if err != nil {
 					log.Warningf("%+v", oops.Wrapf(err, "No AddrPort presented"))
-					return
+					continue
 				}
-				if e := c.handlePkt(udpConn, data, convergeSrc, convergeDst, routingResult, false); e != nil && c.ctx.Err() == nil {
+				if routingResult.Must == 0 {
+					var dnsMessage dnsmessage.Msg
+					if err := dnsMessage.Unpack(data); err == nil {
+						c.dnsController.Handle(&dnsMessage, &udpRequest{
+							src:           src,
+							dst:           dst,
+							routingResult: routingResult,
+						})
+						continue
+					}
+				}
+			}
+
+			// Debug:
+			// t := time.Now()
+			DefaultUdpTaskPool.EmitTask(src, func() {
+				defer pool.PutBuffer(data)
+				if e := c.handlePkt(udpConn, data, src, dst, false); e != nil && c.ctx.Err() == nil {
 					log.Warningf("%+v", oops.Wrapf(e, "handlePkt"))
 				}
 			})

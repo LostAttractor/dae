@@ -15,9 +15,9 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/sniffing"
-	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -31,17 +31,6 @@ const (
 	MaxRetry       = 2
 )
 
-func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
-	if sniffDns {
-		var dnsmsg dnsmessage.Msg
-		if err := dnsmsg.Unpack(data); err == nil {
-			//log.Printf("DEBUG: lookup %v", dnsmsg.Question[0].Name)
-			return &dnsmsg, DnsNatTimeout
-		}
-	}
-	return nil, DefaultNatTimeoutUDP
-}
-
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(data []byte, from, to netip.AddrPort) (err error) {
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout)
@@ -52,21 +41,8 @@ func sendPkt(data []byte, from, to netip.AddrPort) (err error) {
 	return err
 }
 
-func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
+func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip.AddrPort, skipSniffing bool) (err error) {
 	var domain string
-
-	/// Handle DNS
-	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
-	dnsMessage, natTimeout := ChooseNatTimeout(data, dst.Port() == 53)
-	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
-	isDns := dnsMessage != nil && routingResult.Must == 0 // Regard as plain traffic
-	if isDns {
-		return c.dnsController.Handle(dnsMessage, &udpRequest{
-			src:           src,
-			dst:           dst,
-			routingResult: routingResult,
-		})
-	}
 
 	/// Sniff
 	if !skipSniffing {
@@ -107,7 +83,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 				defer func() {
 					if err == nil {
 						for _, d := range toRehandle {
-							err := c.handlePkt(lConn, d, src, dst, routingResult, true)
+							err := c.handlePkt(lConn, d, src, dst, true)
 							if err != nil {
 								log.Warnf("%+v", oops.Wrapf(err, "rehandlePkt"))
 							}
@@ -150,6 +126,11 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		ok = false
 	}
 	if !ok {
+		// Use an empty AddrPort for dst
+		routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
+		if err != nil {
+			return oops.Wrapf(err, "No AddrPort presented")
+		}
 		// Route
 		dialOption, err := c.RouteDialOption(&RouteParam{
 			routingResult: routingResult,
@@ -202,7 +183,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			Handler: func(data []byte, from netip.AddrPort) (err error) {
 				return sendPkt(data, from, src)
 			},
-			NatTimeout: natTimeout,
+			NatTimeout: DefaultNatTimeoutUDP,
 			Dialer:     dialOption.Dialer,
 		})
 		// Receive UDP messages.
