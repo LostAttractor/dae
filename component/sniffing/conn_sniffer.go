@@ -8,19 +8,38 @@ package sniffing
 import (
 	"errors"
 	"net"
-	"strings"
 	"time"
+
+	"github.com/daeuniverse/outbound/netproxy"
 )
+
+type ConnSnifferInterface interface {
+	net.Conn
+	SniffTcp() (string, error)
+}
 
 type ConnSniffer struct {
 	net.Conn
 	*Sniffer
 }
 
-func NewConnSniffer(conn net.Conn, timeout time.Duration) *ConnSniffer {
+type ConnSnifferCloseWriter struct {
+	*ConnSniffer
+}
+
+func (c *ConnSnifferCloseWriter) CloseWrite() error {
+	return c.Conn.(netproxy.CloseWriter).CloseWrite()
+}
+
+func NewConnSniffer(conn net.Conn, timeout time.Duration) ConnSnifferInterface {
 	s := &ConnSniffer{
 		Conn:    conn,
 		Sniffer: NewStreamSniffer(conn, timeout),
+	}
+	if _, ok := conn.(netproxy.CloseWriter); ok {
+		return &ConnSnifferCloseWriter{
+			ConnSniffer: s,
+		}
 	}
 	return s
 }
@@ -29,16 +48,6 @@ func (s *ConnSniffer) Read(p []byte) (n int, err error) {
 	return s.Sniffer.Read(p)
 }
 
-func (s *ConnSniffer) Close() (err error) {
-	var errs []string
-	if err = s.Sniffer.Close(); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if err = s.Conn.Close(); err != nil {
-		errs = append(errs, err.Error())
-	}
-	if len(errs) > 0 {
-		return errors.New(strings.Join(errs, "; "))
-	}
-	return nil
+func (s *ConnSniffer) Close() error {
+	return errors.Join(s.Conn.Close(), s.Sniffer.Close())
 }
