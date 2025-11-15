@@ -179,7 +179,7 @@ func ResolveSubscription(client *http.Client, subscriptionDir string, subscripti
 	resp, err = client.Do(req)
 	if err != nil {
 		if persistToFile {
-			log.Warnln("failed to fetch subscription, try to read from file")
+			log.Warnf("failed to fetch subscription '%s', try to read from file\n", tag)
 			u.Host = "persist.d/" + tag + ".sub"
 			u.Path = ""
 			b, err = ResolveFile(u, subscriptionDir)
