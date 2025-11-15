@@ -15,7 +15,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -26,6 +25,8 @@ var (
 
 type DialerGroup interface {
 	NotifyStatusChange(*Dialer)
+	GetEmaAlpha() float64
+	GetTimeoutPenalty() time.Duration
 }
 
 type Dialer struct {
@@ -36,8 +37,8 @@ type Dialer struct {
 	needAliveState bool
 	alive          bool
 	supported      [4]bool
-	Latencies10    *LatenciesN
-	MovingAverage  time.Duration
+	Latencies10    map[DialerGroup]*LatenciesN
+	MovingAverage  map[DialerGroup]time.Duration
 
 	mu                     sync.Mutex
 	registeredDialerGroups map[DialerGroup]int
@@ -49,56 +50,7 @@ type Dialer struct {
 	cancel   context.CancelFunc
 
 	checkActivated bool
-
-	DialerPrometheus
 }
-
-type DialerPrometheus struct {
-	registry                                                      prometheus.Registerer
-	TotalConnections                                              prometheus.Counter
-	ActiveConnections, ActiveConnectionsTCP, ActiveConnectionsUDP prometheus.Gauge
-	DialLatency                                                   prometheus.Histogram
-}
-
-func (d *DialerPrometheus) InitPrometheus(name string) {
-	d.ActiveConnections = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: fmt.Sprintf("dae_active_connections_%s", name),
-			Help: fmt.Sprintf("Number of active connections in %s", name),
-		},
-	)
-	d.ActiveConnectionsTCP = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: fmt.Sprintf("dae_active_connections_%s_tcp", name),
-			Help: fmt.Sprintf("Number of active TCP connections in %s", name),
-		},
-	)
-	d.ActiveConnectionsUDP = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: fmt.Sprintf("dae_active_connections_%s_udp", name),
-			Help: fmt.Sprintf("Number of active UDP connections in %s", name),
-		},
-	)
-	d.TotalConnections = prometheus.NewCounter(
-		prometheus.CounterOpts{
-			Name: fmt.Sprintf("dae_total_connections_%s", name),
-			Help: fmt.Sprintf("Total number of connections handled in %s", name),
-		},
-	)
-	d.DialLatency = prometheus.NewHistogram(
-		prometheus.HistogramOpts{
-			Name:    fmt.Sprintf("dae_dial_latency_seconds_%s", name),
-			Help:    fmt.Sprintf("Dial latency in seconds in %s", name),
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
-		},
-	)
-	d.registry.MustRegister(d.TotalConnections)
-	d.registry.MustRegister(d.ActiveConnections)
-	d.registry.MustRegister(d.ActiveConnectionsTCP)
-	d.registry.MustRegister(d.ActiveConnectionsUDP)
-	d.registry.MustRegister(d.DialLatency)
-}
-
 type GlobalOption struct {
 	D.ExtraOption
 	// TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
@@ -135,7 +87,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 }
 
 // NewDialer is for register in general.
-func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, needAliveState bool, registry prometheus.Registerer) *Dialer {
+func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, needAliveState bool) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption:           option,
@@ -143,14 +95,14 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 		Property:               property,
 		needAliveState:         needAliveState,
 		alive:                  !needAliveState,
-		Latencies10:            NewLatenciesN(10),
+		Latencies10:            make(map[DialerGroup]*LatenciesN),
+		MovingAverage:          make(map[DialerGroup]time.Duration),
 		registeredDialerGroups: make(map[DialerGroup]int),
 		tickerMu:               sync.Mutex{},
 		ticker:                 nil,
 		checkCh:                make(chan time.Time, 1),
 		ctx:                    ctx,
 		cancel:                 cancel,
-		DialerPrometheus:       DialerPrometheus{registry: registry},
 	}
 	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
@@ -163,7 +115,7 @@ func (d *Dialer) NeedAliveState() bool {
 }
 
 func (d *Dialer) Clone() *Dialer {
-	return NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState, d.registry)
+	return NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState)
 }
 
 func (d *Dialer) Close() error {

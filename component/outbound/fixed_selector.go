@@ -68,7 +68,7 @@ func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 	}
 }
 
-func (s *FixedSelector) PrintLatencies(networkType *common.NetworkType, level log.Level) {
+func (s *FixedSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
 	var builder strings.Builder
 	if networkType != nil {
 		builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", s.dialerGroup.Name, networkType.String()))
@@ -96,9 +96,5 @@ func (s *FixedSelector) PrintLatencies(networkType *common.NetworkType, level lo
 			builder.WriteString("\t<Not Alive>\n")
 		}
 	}
-	if level == log.InfoLevel {
-		log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
-	} else {
-		log.Warnln(strings.TrimSuffix(builder.String(), "\n"))
-	}
+	logfn(strings.TrimSuffix(builder.String(), "\n"))
 }

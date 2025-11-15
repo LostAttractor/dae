@@ -40,7 +40,7 @@ type NodeInfo struct {
 	CreatedDialer *dialer.Dialer
 }
 
-func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer, prometheusRegistry prometheus.Registerer) (*dialer.Dialer, error) {
+func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (*dialer.Dialer, error) {
 	if n.CreatedDialer == nil {
 		for _, dialer := range n.Dialers {
 			var err error
@@ -49,7 +49,7 @@ func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.
 				return nil, err
 			}
 		}
-		n.CreatedDialer = dialer.NewDialer(d, option, n.Property, true, prometheusRegistry)
+		n.CreatedDialer = dialer.NewDialer(d, option, n.Property, true)
 	}
 	return n.CreatedDialer, nil
 }
@@ -191,7 +191,7 @@ nextDialerLoop:
 	for _, nodeInfo := range s.nodeInfos {
 		if len(filters) == 0 {
 			// No filters, create all dialers
-			d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
+			d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
 			if err != nil {
 				log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
 				continue
@@ -211,7 +211,7 @@ nextDialerLoop:
 					}
 					s.nodeInfosMap[property] = nextHopNodeInfo
 				}
-				d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
+				d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
 				if err != nil {
 					log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
 					continue
@@ -229,7 +229,7 @@ nextDialerLoop:
 			}
 			if hit {
 				// Create dialer if it hasn't been created yet
-				d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
+				d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
 				if err != nil {
 					log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
 					continue nextDialerLoop
@@ -249,7 +249,7 @@ nextDialerLoop:
 						}
 						s.nodeInfosMap[property] = nextHopNodeInfo
 					}
-					d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct, s.prometheusRegistry)
+					d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
 					if err != nil {
 						log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
 						continue nextDialerLoop
