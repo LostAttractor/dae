@@ -212,7 +212,7 @@ func NewControlPlane(
 	}()
 
 	prometheusRegistry := prometheus.NewRegistry()
-	initPrometheus(prometheusRegistry)
+	common.InitPrometheus(prometheusRegistry)
 
 	/// DialerGroups (outbounds).
 	if global.AllowInsecure {
@@ -240,9 +240,9 @@ func NewControlPlane(
 	}
 
 	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(_direct, option, &dialer.Property{Property: *directProperty}, false, prometheusRegistry)
+	direct := dialer.NewDialer(_direct, option, &dialer.Property{Property: *directProperty}, false)
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, &dialer.Property{Property: *blockProperty}, false, prometheusRegistry)
+	block := dialer.NewDialer(_block, option, &dialer.Property{Property: *blockProperty}, false)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -301,14 +301,6 @@ func NewControlPlane(
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
 		outbounds = append(outbounds, dialerGroup)
-	}
-
-	// Init Prometheus and deferFuncs.
-	for _, g := range outbounds {
-		for _, d := range g.Dialers {
-			d.InitPrometheus(d.Property.SubscriptionTag + "_" + d.Name)
-			deferFuncs = append(deferFuncs, d.Close)
-		}
 	}
 
 	// Generate outboundName2Id from outbounds.

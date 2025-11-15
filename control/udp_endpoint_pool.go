@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/oops"
 )
 
@@ -33,9 +34,12 @@ type UdpEndpoint struct {
 	cancel context.CancelFunc
 
 	dialer *dialer.Dialer
+	labels prometheus.Labels
 }
 
 func (ue *UdpEndpoint) run() error {
+	common.ActiveConnections.With(ue.labels).Inc()
+	defer common.ActiveConnections.With(ue.labels).Dec()
 	buf := pool.GetBuffer(consts.EthernetMtu)
 	defer pool.PutBuffer(buf)
 	for {
@@ -86,6 +90,7 @@ type UdpEndpointOptions struct {
 	Src        netip.AddrPort
 
 	Dialer *dialer.Dialer
+	labels prometheus.Labels
 }
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
@@ -93,11 +98,6 @@ var DefaultUdpEndpointPool = UdpEndpointPool{}
 func (p *UdpEndpointPool) Remove(key netip.AddrPort) (err error) {
 	if ue, ok := p.pool.LoadAndDelete(key); ok {
 		ue.(*UdpEndpoint).Close()
-
-		ActiveConnections.Dec()
-		ActiveConnectionsUDP.Dec()
-		ue.(*UdpEndpoint).dialer.ActiveConnections.Dec()
-		ue.(*UdpEndpoint).dialer.ActiveConnectionsUDP.Dec()
 	}
 	return nil
 }
@@ -116,12 +116,6 @@ func (p *UdpEndpointPool) Get(key netip.AddrPort) (udpEndpoint *UdpEndpoint, ok 
 }
 
 func (p *UdpEndpointPool) Create(key netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint) {
-	TotalConnections.Inc()
-	ActiveConnections.Inc()
-	ActiveConnectionsUDP.Inc()
-	createOption.Dialer.TotalConnections.Inc()
-	createOption.Dialer.ActiveConnections.Inc()
-	createOption.Dialer.ActiveConnectionsUDP.Inc()
 	ctx, cancel := context.WithCancel(context.Background())
 	udpEndpoint = &UdpEndpoint{
 		conn:       createOption.PacketConn,
@@ -130,6 +124,7 @@ func (p *UdpEndpointPool) Create(key netip.AddrPort, createOption *UdpEndpointOp
 		ctx:        ctx,
 		cancel:     cancel,
 		dialer:     createOption.Dialer,
+		labels:     createOption.labels,
 	}
 	udpEndpoint.deadlineTimer = time.AfterFunc(createOption.NatTimeout, func() {
 		p.Remove(key)

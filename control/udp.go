@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -149,6 +150,13 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
 		dialOption.DialTarget = dst.String()
 
+		labels := prometheus.Labels{
+			"outbound": dialOption.Outbound.Name,
+			"subtag":   dialOption.Dialer.Property.SubscriptionTag,
+			"dialer":   dialOption.Dialer.Name,
+			"network":  networkType.String(),
+		}
+
 		// Dial
 		// Only print routing for new connection to avoid the log exploded (Quic and BT).
 		LogDial(src, dst, domain, dialOption, networkType, routingResult)
@@ -172,6 +180,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 				return err
 			} else if !netErr.Timeout() {
 				if dialOption.Dialer.NeedAliveState() {
+					common.ErrorCount.With(labels).Inc()
 					dialOption.Dialer.ReportUnavailable()
 					return err
 				}
@@ -185,6 +194,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			},
 			NatTimeout: DefaultNatTimeoutUDP,
 			Dialer:     dialOption.Dialer,
+			labels:     labels,
 		})
 		// Receive UDP messages.
 		go func() {
@@ -203,6 +213,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 					log.Warnf("%+v", err)
 				} else if !netErr.Timeout() {
 					if dialOption.Dialer.NeedAliveState() {
+						common.ErrorCount.With(labels).Inc()
 						ue.dialer.ReportUnavailable()
 						log.Warnf("%+v", err)
 					}
@@ -228,6 +239,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			return err
 		} else if !netErr.Timeout() {
 			if ue.dialer.NeedAliveState() {
+				common.ErrorCount.With(ue.labels).Inc()
 				ue.dialer.ReportUnavailable()
 				return err
 			}
