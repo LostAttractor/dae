@@ -142,19 +142,22 @@ func (c *commonDnsCache[K]) AllTimeout(caches []*DnsCache) bool {
 	return true
 }
 
-// TODO: Delete callback
+// TODO: Delete callback for kernel bpf maps
 // gc must be called under write lock
 func (c *commonDnsCache[K]) gc() {
+	lruElement := c.lruList.Back()
 	for c.lruList.Len() > c.maxSize {
-		lruElement := c.lruList.Back()
 		if lruElement == nil {
 			return
 		}
 		entry := lruElement.Value.(*cacheEntry[K])
+		// Save the previous element before removing current one
+		prevElement := lruElement.Prev()
 		if c.AllTimeout(entry.value) {
 			delete(c.cache, entry.key)
 			c.lruList.Remove(lruElement)
 		}
+		lruElement = prevElement
 	}
 }
 
