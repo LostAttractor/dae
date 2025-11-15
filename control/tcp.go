@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/oops"
 	"golang.org/x/sys/unix"
 )
@@ -67,6 +68,13 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		return err
 	}
 
+	labels := prometheus.Labels{
+		"outbound": dialOption.Outbound.Name,
+		"subtag":   dialOption.Dialer.Property.SubscriptionTag,
+		"dialer":   dialOption.Dialer.Name,
+		"network":  networkType.String(),
+	}
+
 	// Dial
 	LogDial(src, dst, domain, dialOption, networkType, routingResult)
 	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
@@ -94,6 +102,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			return err
 		} else if !netErr.Timeout() {
 			if dialOption.Dialer.NeedAliveState() {
+				common.ErrorCount.With(labels).Inc()
 				dialOption.Dialer.ReportUnavailable()
 				return err
 			}
@@ -102,22 +111,9 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	}
 
 	elapsed := time.Since(start).Seconds()
-	DialLatency.Observe(elapsed)
-	ActiveConnections.Inc()
-	ActiveConnectionsTCP.Inc()
-	TotalConnections.Inc()
-	dialOption.Dialer.DialLatency.Observe(elapsed)
-	dialOption.Dialer.TotalConnections.Inc()
-	dialOption.Dialer.ActiveConnections.Inc()
-	dialOption.Dialer.ActiveConnectionsTCP.Inc()
-
-	defer func() {
-		ActiveConnections.Dec()
-		ActiveConnectionsTCP.Dec()
-		dialOption.Dialer.ActiveConnections.Dec()
-		dialOption.Dialer.ActiveConnectionsTCP.Dec()
-	}()
-
+	common.DialLatency.With(labels).Observe(elapsed)
+	common.ActiveConnections.With(labels).Inc()
+	defer common.ActiveConnections.With(labels).Dec()
 	defer rConn.Close()
 
 	// Relay
@@ -136,11 +132,10 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			Wrapf(err, "failed to RelayTCP")
 		if !ok {
 			return err
-		} else if !netErr.Timeout() {
-			if dialOption.Dialer.NeedAliveState() {
-				dialOption.Dialer.ReportUnavailable()
-				return err
-			}
+		} else if !netErr.Timeout() && dialOption.Dialer.NeedAliveState() {
+			common.ErrorCount.With(labels).Inc()
+			dialOption.Dialer.ReportUnavailable()
+			return err
 		}
 	}
 	// case strings.HasSuffix(err.Error(), "write: broken pipe"),

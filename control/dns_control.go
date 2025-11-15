@@ -16,6 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/dns"
@@ -333,6 +334,13 @@ Dial:
 				return err
 			} else if !netErr.Timeout() {
 				if dialArgument.Dialer.NeedAliveState() {
+					labels := prometheus.Labels{
+						"outbound": dialArgument.Outbound.Name,
+						"subtag":   dialArgument.Dialer.Property.SubscriptionTag,
+						"dialer":   dialArgument.Dialer.Name,
+						"network":  dialArgument.networkType.String(),
+					}
+					common.ErrorCount.With(labels).Inc()
 					dialArgument.Dialer.ReportUnavailable()
 					return err
 				}
@@ -532,8 +540,8 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 			"rcode":    msg.Rcode,
 			"ans":      FormatDnsRsc(ans),
 			"upstream": cacheKey.upstream,
-			"dialer":   cacheKey.dialArgument.Dialer,
-			"outbound": cacheKey.dialArgument.Outbound,
+			"dialer":   cacheKey.dialArgument.Dialer.Name,
+			"outbound": cacheKey.dialArgument.Outbound.Name,
 		}).Debugf("Update DNS record cache")
 	}
 	c.UpdateDnsCacheTtl(cacheKey, queryInfo.qname, ans, ttl)
