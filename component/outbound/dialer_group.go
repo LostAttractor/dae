@@ -27,9 +27,8 @@ type DialerGroup struct {
 	selectionPolicy *dialer.DialerSelectionPolicy
 	selector        Selector
 
-	mu                    sync.Mutex
-	dialerToPriority      map[*dialer.Dialer]int
-	dialerToLatencyOffset map[*dialer.Dialer]time.Duration
+	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
+	mu                 sync.Mutex
 }
 
 func NewDialerGroup(
@@ -45,11 +44,14 @@ func NewDialerGroup(
 	}
 
 	g := &DialerGroup{
-		Name:                  name,
-		Dialers:               dialers,
-		selectionPolicy:       &selectionPolicy,
-		dialerToPriority:      make(map[*dialer.Dialer]int),
-		dialerToLatencyOffset: make(map[*dialer.Dialer]time.Duration),
+		Name:               name,
+		Dialers:            dialers,
+		selectionPolicy:    &selectionPolicy,
+		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
+	}
+
+	for i, d := range dialers {
+		g.dialerToAnnotation[d] = dialersAnnotations[i]
 	}
 
 	switch selectionPolicy.Policy {
@@ -67,10 +69,6 @@ func NewDialerGroup(
 		d.RegisterDialerGroup(g)
 	}
 
-	for i, d := range dialers {
-		g.dialerToPriority[d] = dialersAnnotations[i].Priority
-		g.dialerToLatencyOffset[d] = dialersAnnotations[i].AddLatency
-	}
 	return g
 }
 
@@ -81,8 +79,16 @@ func (g *DialerGroup) Close() error {
 	return nil
 }
 
-func (g *DialerGroup) GetPriority(d *dialer.Dialer) int {
-	return g.dialerToPriority[d]
+// Returns the priority given an observed latency.
+// If a "ConditionalPriority" is present, it is applied;
+// Otherwise the default fixed Priority is returned.
+func (g *DialerGroup) GetPriority(d *dialer.Dialer, latency time.Duration) int {
+	for _, p := range g.dialerToAnnotation[d].ConditionalPriority {
+		if latency >= p.Low && latency <= p.High {
+			return p.Pri
+		}
+	}
+	return g.dialerToAnnotation[d].Priority
 }
 
 func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy) {
@@ -126,7 +132,7 @@ select_dialer:
 func (g *DialerGroup) PrintLatency() {
 	for i := 0; i < 4; i++ {
 		networkType := common.IndexToNetworkType(i)
-		g.selector.PrintLatencies(networkType, log.InfoLevel)
+		g.selector.PrintLatencies(networkType, log.Infoln)
 	}
 }
 
@@ -135,4 +141,12 @@ func (g *DialerGroup) NotifyStatusChange(dialer *dialer.Dialer) {
 	defer g.mu.Unlock()
 
 	g.selector.NotifyStatusChange(dialer)
+}
+
+func (g *DialerGroup) GetEmaAlpha() float64 {
+	return g.selectionPolicy.EmaAlpha
+}
+
+func (g *DialerGroup) GetTimeoutPenalty() time.Duration {
+	return g.selectionPolicy.TimeoutPenalty
 }

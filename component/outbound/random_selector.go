@@ -58,11 +58,11 @@ func (s *RandomSelector) updateDialerAliveState(dialer *dialer.Dialer, alive boo
 func (s *RandomSelector) getLatencyData(dialer *dialer.Dialer) (latency time.Duration, hasLatency bool) {
 	switch s.dialerGroup.selectionPolicy.Policy {
 	case consts.DialerSelectionPolicy_MinLastLatency:
-		latency, hasLatency = dialer.Latencies10.LastLatency()
+		latency, hasLatency = dialer.Latencies10[s.dialerGroup].LastLatency()
 	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		latency, hasLatency = dialer.Latencies10.AvgLatency()
+		latency, hasLatency = dialer.Latencies10[s.dialerGroup].AvgLatency()
 	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		latency = dialer.MovingAverage
+		latency = dialer.MovingAverage[s.dialerGroup]
 		hasLatency = latency > 0
 	}
 	return
@@ -71,7 +71,7 @@ func (s *RandomSelector) getLatencyData(dialer *dialer.Dialer) (latency time.Dur
 func (s *RandomSelector) getSortedHighestPriorityAliveDialers(networkType *common.NetworkType) (aliveDialers []*dialer.Dialer) {
 	highestPriority := s.getHighestPriority(networkType)
 	for _, d := range s.dialerGroup.Dialers {
-		if isDialerAlive(d, networkType) && s.dialerGroup.GetPriority(d) == highestPriority {
+		if isDialerAlive(d, networkType) && s.dialerGroup.dialerToAnnotation[d].Priority == highestPriority {
 			aliveDialers = append(aliveDialers, d)
 		}
 	}
@@ -82,7 +82,7 @@ func (s *RandomSelector) getHighestPriority(networkType *common.NetworkType) (hi
 	highestPriority = math.MinInt
 	for _, d := range s.dialerGroup.Dialers {
 		if isDialerAlive(d, networkType) {
-			priority := s.dialerGroup.GetPriority(d)
+			priority := s.dialerGroup.dialerToAnnotation[d].Priority
 			if priority > highestPriority {
 				highestPriority = priority
 			}
@@ -106,7 +106,7 @@ func (s *RandomSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 	}
 }
 
-func (s *RandomSelector) PrintLatencies(networkType *common.NetworkType, level log.Level) {
+func (s *RandomSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
 	var builder strings.Builder
 	if networkType != nil {
 		builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", s.dialerGroup.Name, networkType.String()))
@@ -133,9 +133,5 @@ func (s *RandomSelector) PrintLatencies(networkType *common.NetworkType, level l
 			builder.WriteString(fmt.Sprintf("%4d.%v %v: %v\n", i+1, tagStr, dialer.Name, latencyStr))
 		}
 	}
-	if level == log.InfoLevel {
-		log.Infoln(strings.TrimSuffix(builder.String(), "\n"))
-	} else {
-		log.Warnln(strings.TrimSuffix(builder.String(), "\n"))
-	}
+	logfn(strings.TrimSuffix(builder.String(), "\n"))
 }

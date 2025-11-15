@@ -31,10 +31,8 @@ import (
 )
 
 const (
-	TimeoutPenalty = 10 * time.Minute
-	Alpha          = 0.18
-	RetryCount     = 3
-	RetryInterval  = 5 * time.Second
+	RetryCount    = 3
+	RetryInterval = 5 * time.Second
 )
 
 func (d *Dialer) Alive() bool {
@@ -251,6 +249,7 @@ func (d *Dialer) createDnsCheckFunc(ipVersion consts.IpVersionStr, network strin
 func (d *Dialer) createCheckOptions() []*CheckOption {
 	return []*CheckOption{
 		// 优先 TCP, 因为 TCP 可以避免长时间占用 NAT 端口
+		// TODO: UDP?
 		{
 			networkType: &common.NetworkType{
 				L4Proto:   consts.L4ProtoStr_TCP,
@@ -362,7 +361,6 @@ func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
 	}
 }
 
-// TODO: Log
 func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 	defer d.NotifyStatusChange()
 
@@ -417,12 +415,16 @@ func (d *Dialer) RegisterDialerGroup(g DialerGroup) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.registeredDialerGroups[g]++
+	d.Latencies10[g] = NewLatenciesN(10)
+	d.MovingAverage[g] = 0
 }
 
 func (d *Dialer) UnregisterDialerGroup(g DialerGroup) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.registeredDialerGroups, g)
+	delete(d.Latencies10, g)
+	delete(d.MovingAverage, g)
 }
 
 func (d *Dialer) NotifyStatusChange() {
@@ -447,42 +449,45 @@ func (d *Dialer) ReportUnavailable() {
 }
 
 func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
-	if !ok {
-		latency = TimeoutPenalty
-	}
-	if d.MovingAverage == 0 {
-		d.MovingAverage = latency
-	} else {
-		d.MovingAverage = time.Duration(float64(d.MovingAverage)*(1-Alpha) + float64(latency)*Alpha)
-	}
-	d.Latencies10.AppendLatency(latency)
-	if ok {
-		avg, _ := d.Latencies10.AvgLatency()
-		fields := log.Fields{
-			"node":    d.Name,
-			"last":    latency.Truncate(time.Millisecond).String(),
-			"avg_10":  avg.Truncate(time.Millisecond),
-			"mov_avg": d.MovingAverage.Truncate(time.Millisecond),
+	for g := range d.registeredDialerGroups {
+		if !ok {
+			latency = g.GetTimeoutPenalty()
 		}
-		if networkType != nil {
-			fields["network"] = networkType.String()
-		}
-		if !d.alive {
-			log.WithFields(fields).Infoln("Connectivity Check")
+		alpha := g.GetEmaAlpha()
+		if d.MovingAverage[g] == 0 {
+			d.MovingAverage[g] = latency
 		} else {
-			log.WithFields(fields).Debugln("Connectivity Check")
+			d.MovingAverage[g] = time.Duration(float64(d.MovingAverage[g])*(1-alpha) + float64(latency)*alpha)
 		}
-	} else {
-		fields := log.Fields{
-			"node": d.Name,
-		}
-		if networkType != nil {
-			fields["network"] = networkType.String()
-		}
-		if d.alive {
-			log.WithFields(fields).Warnln(oops.Wrapf(err, "Connectivity Check Failed"))
+		d.Latencies10[g].AppendLatency(latency)
+		if ok {
+			avg, _ := d.Latencies10[g].AvgLatency()
+			fields := log.Fields{
+				"node":    d.Name,
+				"last":    latency.Truncate(time.Millisecond).String(),
+				"avg_10":  avg.Truncate(time.Millisecond),
+				"mov_avg": d.MovingAverage[g].Truncate(time.Millisecond),
+			}
+			if networkType != nil {
+				fields["network"] = networkType.String()
+			}
+			if !d.alive {
+				log.WithFields(fields).Infoln("Connectivity Check")
+			} else {
+				log.WithFields(fields).Debugln("Connectivity Check")
+			}
 		} else {
-			log.WithFields(fields).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
+			fields := log.Fields{
+				"node": d.Name,
+			}
+			if networkType != nil {
+				fields["network"] = networkType.String()
+			}
+			if d.alive {
+				log.WithFields(fields).Warnln(oops.Wrapf(err, "Connectivity Check Failed"))
+			} else {
+				log.WithFields(fields).Infoln(oops.Wrapf(err, "Connectivity Check Failed"))
+			}
 		}
 	}
 	d.alive = ok

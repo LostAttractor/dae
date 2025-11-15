@@ -9,7 +9,7 @@ import (
 type Selector interface {
 	Select(networkType *common.NetworkType) (dialer *dialer.Dialer)
 	NotifyStatusChange(dialer *dialer.Dialer)
-	PrintLatencies(networkType *common.NetworkType, level log.Level)
+	PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{}))
 }
 
 type BaseSelector struct {
