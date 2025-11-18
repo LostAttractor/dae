@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -19,6 +20,7 @@ type RandomSelector struct {
 	dialerToLatency map[*dialer.Dialer]time.Duration
 
 	networkIndexToDialers [4][]*dialer.Dialer
+	mu                    sync.RWMutex
 }
 
 func NewRandomSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive bool, networkType *common.NetworkType)) Selector {
@@ -32,6 +34,9 @@ func NewRandomSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive 
 }
 
 func (s *RandomSelector) Select(networkType *common.NetworkType) (dialer *dialer.Dialer) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	index := common.NetworkTypeToIndex(networkType)
 	return s.networkIndexToDialers[index][fastrand.Intn(len(s.networkIndexToDialers[index]))]
 }
@@ -92,6 +97,9 @@ func (s *RandomSelector) getHighestPriority(networkType *common.NetworkType) (hi
 }
 
 func (s *RandomSelector) NotifyStatusChange(dialer *dialer.Dialer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.updateDialerAliveState(dialer, dialer.Alive())
 
 	latency, hasLatency := s.getLatencyData(dialer)
@@ -107,6 +115,9 @@ func (s *RandomSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 }
 
 func (s *RandomSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	var builder strings.Builder
 	if networkType != nil {
 		builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", s.dialerGroup.Name, networkType.String()))

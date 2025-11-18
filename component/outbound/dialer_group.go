@@ -8,7 +8,6 @@ package outbound
 import (
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -28,7 +27,6 @@ type DialerGroup struct {
 	selector        Selector
 
 	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
-	mu                 sync.Mutex
 }
 
 func NewDialerGroup(
@@ -137,9 +135,6 @@ func (g *DialerGroup) PrintLatency() {
 }
 
 func (g *DialerGroup) NotifyStatusChange(dialer *dialer.Dialer) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
 	g.selector.NotifyStatusChange(dialer)
 }
 

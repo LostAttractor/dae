@@ -22,6 +22,7 @@ type LatencyBasedSelector struct {
 	dialerToLatency map[*dialer.Dialer]time.Duration
 
 	networkIndexToDialer [4]*dialer.Dialer
+	mu                   sync.RWMutex
 }
 
 func NewLatencyBasedSelector(dialerGroup *DialerGroup, tolerance time.Duration, aliveChangeCallback func(alive bool, networkType *common.NetworkType)) Selector {
@@ -37,6 +38,9 @@ func NewLatencyBasedSelector(dialerGroup *DialerGroup, tolerance time.Duration, 
 }
 
 func (s *LatencyBasedSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	index := common.NetworkTypeToIndex(networkType)
 	return s.networkIndexToDialer[index]
 }
@@ -86,10 +90,14 @@ func isDialerAlive(dialer *dialer.Dialer, networkType *common.NetworkType) bool 
 }
 
 func (s *LatencyBasedSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	aliveDialers := s.getSortedAliveDialers(networkType)
 	s.printLatencies(aliveDialers, networkType, logfn)
 }
 
+// TODO: 由于tolerance 的存在, 第一个 aliveDialer 并不一定是当前选定的 dialer, 该方法需要修改
 func (s *LatencyBasedSelector) printLatencies(aliveDialers []*dialer.Dialer, networkType *common.NetworkType, logfn func(args ...interface{})) {
 	var builder strings.Builder
 	if networkType != nil {
@@ -216,6 +224,9 @@ func (s *LatencyBasedSelector) logCheckLatency(aliveDialers []*dialer.Dialer, di
 }
 
 func (s *LatencyBasedSelector) NotifyStatusChange(d *dialer.Dialer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.updateDialerAliveState(d, d.Alive())
 
 	latency, hasLatency := s.getLatencyData(d)
@@ -260,7 +271,7 @@ func (s *LatencyBasedSelector) NotifyStatusChange(d *dialer.Dialer) {
 			}
 		}
 		oncePrintLatencies.Do(func() {
-			s.PrintLatencies(networkType, log.Infoln)
+			s.printLatencies(aliveDialers, networkType, log.Infoln)
 		})
 		s.handleAliveStateChange(newDialer != nil, networkType)
 	}
