@@ -331,7 +331,6 @@ func (d *Dialer) NotifyCheck() {
 		return
 	// If fail to push elem to chan, the check is in process.
 	case d.checkCh <- time.Now():
-		fmt.Printf("[DEBUG] NotifyCheck: %v\n", d.Name)
 	default:
 	}
 }
