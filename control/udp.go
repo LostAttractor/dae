@@ -107,7 +107,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
 
-	l := DefaultUdpEndpointPool.UdpEndpointKeyLocker.Lock(src)
+	l, _ := DefaultUdpEndpointPool.UdpEndpointKeyLocker.Lock(src)
 	defer DefaultUdpEndpointPool.UdpEndpointKeyLocker.Unlock(src, l)
 
 	// Get udp endpoint.

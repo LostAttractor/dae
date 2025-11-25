@@ -475,8 +475,9 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	// get forwarder from cache
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
 	cacheKey := dnsCacheKey{queryInfo: queryInfo, dnsForwarderKey: key}
+
 	// No parallel for the same lookup.
-	l := c.dnsKeyLocker.Lock(cacheKey)
+	l, isNew := c.dnsKeyLocker.Lock(cacheKey)
 	defer c.dnsKeyLocker.Unlock(cacheKey, l)
 	var forwarder DnsForwarder
 	value, ok := c.dnsForwarderCache.Load(key)
@@ -492,6 +493,12 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 				}
 				return nil
 			}
+		}
+		if !isNew {
+			if log.IsLevelEnabled(log.DebugLevel) {
+				log.Debugf("UDP(DNS) <-> Drop failed duplicate lookup: %v %v", queryInfo.qname, queryInfo.qtype)
+			}
+			return nil
 		}
 		forwarder = value.(DnsForwarder)
 	} else {

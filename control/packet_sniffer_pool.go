@@ -68,7 +68,7 @@ func (p *PacketSnifferPool) GetOrCreate(key PacketSnifferKey, createOption *Pack
 	_qs, ok := p.pool.Load(key)
 begin:
 	if !ok {
-		l := p.snifferKeyLocker.Lock(key)
+		l, _ := p.snifferKeyLocker.Lock(key)
 		defer p.snifferKeyLocker.Unlock(key, l)
 
 		_qs, ok = p.pool.Load(key)
