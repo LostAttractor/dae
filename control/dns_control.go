@@ -517,12 +517,14 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 		return err
 	}
 
-	log.WithFields(log.Fields{
-		"qname": queryInfo.qname,
-		"qtype": queryInfo.qtype,
-		"rcode": msg.Rcode,
-		"ans":   FormatDnsRsc(msg.Answer),
-	}).Debugf("Got DNS response")
+	if log.IsLevelEnabled(log.DebugLevel) {
+		log.WithFields(log.Fields{
+			"qname": queryInfo.qname,
+			"qtype": queryInfo.qtype,
+			"rcode": msg.Rcode,
+			"ans":   FormatDnsRsc(msg.Answer),
+		}).Debugf("Got DNS response")
+	}
 
 	// TODO: 细分日志
 	switch {
