@@ -173,23 +173,27 @@ func (c *commonDnsCache[K]) UpdateDeadline(key K, answer dnsmessage.RR, deadline
 	if elem, ok := c.cache[key]; ok {
 		entry := elem.Value.(*cacheEntry[K])
 		c.lruList.MoveToFront(elem)
-		for _, c := range entry.value {
-			if c.Answer.String() == answer.String() {
-				c.Deadline = deadline
-				return c
+		for _, existingCache := range entry.value {
+			if c.compareAnswerHeaders(existingCache.Answer.Header(), answer.Header()) {
+				existingCache.Deadline = deadline
+				return existingCache
 			}
 		}
 		entry.value = append(entry.value, cache)
-		return
+	} else {
+		entry := &cacheEntry[K]{
+			key:   key,
+			value: []*DnsCache{cache},
+		}
+		elem := c.lruList.PushFront(entry)
+		c.cache[key] = elem
+		c.gc()
 	}
-	entry := &cacheEntry[K]{
-		key:   key,
-		value: []*DnsCache{cache},
-	}
-	elem := c.lruList.PushFront(entry)
-	c.cache[key] = elem
-	c.gc()
 	return
+}
+
+func (c *commonDnsCache[K]) compareAnswerHeaders(h1, h2 *dnsmessage.RR_Header) bool {
+	return h1.Name == h2.Name && h1.Rrtype == h2.Rrtype && h1.Class == h2.Class
 }
 
 func (c *commonDnsCache[K]) UpdateTtl(key K, answer dnsmessage.RR, ttl int) *DnsCache {
