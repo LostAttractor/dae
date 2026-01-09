@@ -559,6 +559,18 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 }
 
 func (c *DnsController) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Clean up all deadline timers to prevent goroutine leaks
+	for _, timer := range c.deadlineTimers {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+	c.deadlineTimers = make(map[*DnsCache]*time.Timer)
+
+	// Close all DNS forwarders
 	c.dnsForwarderCache.Range(func(key, value any) bool {
 		if forwarder, ok := value.(io.Closer); ok {
 			forwarder.Close()
