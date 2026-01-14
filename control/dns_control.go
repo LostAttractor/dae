@@ -214,7 +214,7 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 				err = c.handleDNSRequest(dnsMessage, req, queryInfo)
 			} else {
 				// Try to make both A and AAAA lookups.
-				dnsMessage2 := deepcopy.Copy(dnsMessage).(*dnsmessage.Msg)
+				dnsMessage2 := dnsMessage.Copy()
 				dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
 				switch queryInfo.qtype {
 				case dnsmessage.TypeA:
@@ -304,7 +304,8 @@ func (c *DnsController) handleDNSRequest(
 	}
 
 	// Dial and re-route
-	reqMsg := deepcopy.Copy(dnsMessage).(*dnsmessage.Msg)
+	reqMsg := new(dnsmessage.Msg)
+	*reqMsg = *dnsMessage // shallow copy is just fine we don't modify the slice's values
 Dial:
 	for invokingDepth := 1; invokingDepth <= MaxDnsLookupDepth; invokingDepth++ {
 		if log.IsLevelEnabled(log.DebugLevel) {
