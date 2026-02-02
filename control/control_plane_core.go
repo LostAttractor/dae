@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/link"
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -495,36 +494,11 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 	return nil
 }
 
-func (c *controlPlaneCore) setupLocalTcpFastRedirect() (err error) {
-	cgroupPath, err := detectCgroupPath()
-	if err != nil {
-		return
-	}
-	cg, err := link.AttachCgroup(link.CgroupOptions{
-		Path:    cgroupPath,
-		Program: c.bpf.LocalTcpSockops, // todo@gray: rename
-		Attach:  ebpf.AttachCGroupSockOps,
-	})
-	if err != nil {
-		return oops.Errorf("AttachCgroupSockOps: %w", err)
-	}
-	c.addCleanup(cg.Close)
-
-	if err = link.RawAttachProgram(link.RawAttachProgramOptions{
-		Target:  c.bpf.FastSock.FD(),
-		Program: c.bpf.SkMsgFastRedirect,
-		Attach:  ebpf.AttachSkMsgVerdict,
-	}); err != nil {
-		return oops.Errorf("AttachSkMsgVerdict: %w", err)
-	}
-	return nil
-}
-
 func (c *controlPlaneCore) setupExitHandler() (err error) {
 	if exitHandlerClose != nil {
 		exitHandlerClose()
 	}
-	link, err := link.Tracepoint("sched", "sched_process_exit", c.bpf.HandleExit, nil)
+	link, err := ciliumLink.Tracepoint("sched", "sched_process_exit", c.bpf.HandleExit, nil)
 	if err != nil {
 		return oops.Errorf("Tracepoint: %w", err)
 	}
