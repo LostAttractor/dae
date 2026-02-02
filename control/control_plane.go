@@ -72,8 +72,7 @@ type ControlPlane struct {
 	lanInterface []string
 
 	// Fields below are saved at NewControlPlane and consumed by Activate.
-	autoConfigKernelParameter  bool
-	enableLocalTcpFastRedirect bool
+	autoConfigKernelParameter bool
 
 	dialTargetOverride bool
 	rerouteMode        consts.RerouteMode
@@ -356,25 +355,24 @@ func NewControlPlane(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
-		core:                       core,
-		outbounds:                  outbounds,
-		noConnectivityOutbound:     noConnectivityOutbound,
-		routingMatcher:             routingMatcher,
-		routingMatcherBuilder:      builder,
-		ctx:                        ctx,
-		cancel:                     cancel,
-		realDomainSet:              bloom.NewWithEstimates(2048, 0.001),
-		lanInterface:               common.Deduplicate(global.LanInterface),
-		wanInterface:               global.WanInterface,
-		autoConfigKernelParameter:  global.AutoConfigKernelParameter,
-		enableLocalTcpFastRedirect: global.EnableLocalTcpFastRedirect,
-		dialTargetOverride:         global.DialTargetOverride,
-		rerouteMode:                global.RerouteMode,
-		sniffVerifyMode:            global.SniffVerifyMode,
-		sniffingTimeout:            sniffingTimeout,
-		tproxyPortProtect:          global.TproxyPortProtect,
-		soMarkFromDae:              global.SoMarkFromDae,
-		PrometheusRegistry:         prometheusRegistry,
+		core:                      core,
+		outbounds:                 outbounds,
+		noConnectivityOutbound:    noConnectivityOutbound,
+		routingMatcher:            routingMatcher,
+		routingMatcherBuilder:     builder,
+		ctx:                       ctx,
+		cancel:                    cancel,
+		realDomainSet:             bloom.NewWithEstimates(2048, 0.001),
+		lanInterface:              common.Deduplicate(global.LanInterface),
+		wanInterface:              global.WanInterface,
+		autoConfigKernelParameter: global.AutoConfigKernelParameter,
+		dialTargetOverride:        global.DialTargetOverride,
+		rerouteMode:               global.RerouteMode,
+		sniffVerifyMode:           global.SniffVerifyMode,
+		sniffingTimeout:           sniffingTimeout,
+		tproxyPortProtect:         global.TproxyPortProtect,
+		soMarkFromDae:             global.SoMarkFromDae,
+		PrometheusRegistry:        prometheusRegistry,
 	}
 	// Stop connectivity checks after DNS forwarders have been retired. A
 	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
@@ -511,11 +509,6 @@ func (c *ControlPlane) Activate() error {
 	if len(c.wanInterface) > 0 {
 		if err := core.setupSkPidMonitor(); err != nil {
 			log.Warnf("%+v", oops.Wrapf(err, "cgroup2 is not enabled; pname routing cannot be used"))
-		}
-		if c.enableLocalTcpFastRedirect {
-			if err := core.setupLocalTcpFastRedirect(); err != nil {
-				log.Warnf("%+v", oops.Wrapf(err, "failed to setup local tcp fast redirect"))
-			}
 		}
 		for _, ifname := range c.wanInterface {
 			if len(c.lanInterface) > 0 && c.autoConfigKernelParameter {
