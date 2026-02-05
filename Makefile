@@ -25,6 +25,8 @@ else
 endif
 
 GOARCH ?= $(shell go env GOARCH)
+GO_VERSION ?= $(shell go env GOVERSION 2>/dev/null)
+.DEFAULT_GOAL := dae
 
 # Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
@@ -41,14 +43,55 @@ endif
 
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
 
-.PHONY: clean-ebpf ebpf dae submodule submodules
+.PHONY: check-go-version clean-ebpf ebpf dae submodule submodules
+
+check-go-version:
+	@version='$(GO_VERSION)'; \
+	case "$$version" in \
+		devel\ go*) version=$${version#devel }; version=$${version%%-*} ;; \
+		go*) ;; \
+		*) echo "ERROR: unable to determine the Go version (found '$$version')." >&2; exit 1 ;; \
+	esac; \
+	version=$${version#go}; \
+	major=$${version%%.*}; \
+	rest=$${version#*.}; \
+	if [ "$$rest" = "$$version" ]; then \
+		minor=0; patch=0; \
+	else \
+		minor=$${rest%%.*}; \
+		if [ "$$minor" = "$$rest" ]; then \
+			patch=0; \
+		else \
+			patch=$${rest#*.}; patch=$${patch%%[!0-9]*}; patch=$${patch:-0}; \
+		fi; \
+	fi; \
+	case "$$major.$$minor.$$patch" in *[!0-9.]*) \
+		echo "ERROR: unsupported Go version format '$(GO_VERSION)'." >&2; exit 1 ;; \
+	esac; \
+	supported=0; \
+	if [ "$$major" -gt 1 ]; then \
+		supported=1; \
+	elif [ "$$major" -eq 1 ]; then \
+		if [ "$$minor" -gt 25 ]; then \
+			supported=1; \
+		elif [ "$$minor" -eq 25 ] && [ "$$patch" -ge 7 ]; then \
+			supported=1; \
+		elif [ "$$minor" -eq 24 ] && [ "$$patch" -ge 13 ]; then \
+			supported=1; \
+		fi; \
+	fi; \
+	if [ "$$supported" -ne 1 ]; then \
+		echo "ERROR: Go 1.24.13+, Go 1.25.7+, or Go 1.26+ is required (found $(GO_VERSION))." >&2; \
+		echo "Older releases lack crypto/tls session resumption hardening related to golang/go#77217." >&2; \
+		exit 1; \
+	fi
 
 ## Begin Dae Build
 dae: export GOOS=linux
 ifndef CGO_ENABLED
 dae: export CGO_ENABLED=0
 endif
-dae: ebpf
+dae: check-go-version ebpf
 	@echo $(CFLAGS)
 	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
@@ -81,7 +124,7 @@ clean-ebpf:
 		rm -f trace/bpf_bpf*.o
 	@rm -f control/kern/tests/bpftest_bpf*.go && \
 		rm -f control/kern/tests/bpftest_bpf*.o
-fmt:
+fmt: check-go-version
 	go fmt ./...
 
 # $BPF_CLANG is used in go:generate invocations.
@@ -90,7 +133,7 @@ ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET := $(GOARCH)
-ebpf: submodule clean-ebpf
+ebpf: check-go-version submodule clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
@@ -106,7 +149,7 @@ ebpf-test: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf-test: export BPF_CFLAGS := $(CFLAGS)
 ebpf-test: export BPF_TARGET := $(TARGET)
 ebpf-test: export BPF_TRACE_TARGET := $(GOARCH)
-ebpf-test: submodule clean-ebpf
+ebpf-test: check-go-version submodule clean-ebpf
 	@unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
