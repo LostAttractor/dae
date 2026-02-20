@@ -1265,8 +1265,15 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 			bpf_map_lookup_elem(&routing_tuples_map,
 					    &routing_tuples_key);
 
-		if (routing_result)
+		if (routing_result) {
+			if (routing_result->outbound == OUTBOUND_DIRECT) {
+				// Restore the policy-routing mark for the rest of a
+				// direct(mark:N) TCP flow.
+				skb->mark = routing_result->mark;
+				return TC_ACT_PIPE;
+			}
 			goto control_plane;
+		}
 
 		// Non-proxy connections or previous connections.
 		return TC_ACT_PIPE;
@@ -1368,6 +1375,14 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("GO OUTBOUND_DIRECT");
 #endif
+		// Plain direct routes must not occupy this shared map, but marked
+		// TCP routes need an entry for subsequent packets.
+		if (l4proto == IPPROTO_TCP && routing_result.mark &&
+		    bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
+					&routing_result, BPF_ANY)) {
+			bpf_printk("shot save direct routing result: %d", s64_ret);
+			return TC_ACT_SHOT;
+		}
 		goto direct;
 	case OUTBOUND_BLOCK:
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -1419,6 +1434,7 @@ control_plane:
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
+	skb->mark = routing_result.mark;
 	return TC_ACT_PIPE;
 
 block:
