@@ -10,7 +10,6 @@ import (
 	"io"
 	"math"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
@@ -191,55 +190,55 @@ func (c *DnsController) prepareQueryInfo(dnsMessage *dnsmessage.Msg) (queryInfo 
 }
 
 func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
-	if log.IsLevelEnabled(log.TraceLevel) && len(dnsMessage.Question) > 0 {
-		q := dnsMessage.Question[0]
-		log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
-			RefineSourceToShow(req.src, req.dst.Addr()), req.dst.String(), strings.ToLower(q.Name), QtypeToString(q.Qtype),
-		)
+	if dnsMessage.Response {
+		panic("DNS request expected but DNS response received")
 	}
 
-	if dnsMessage.Response {
-		return fmt.Errorf("DNS request expected but DNS response received")
+	if len(dnsMessage.Question) == 0 {
+		panic("no question in dns message")
 	}
 
 	queryInfo := c.prepareQueryInfo(dnsMessage)
+
+	if log.IsLevelEnabled(log.TraceLevel) {
+		log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
+			RefineSourceToShow(req.src, req.dst.Addr()), req.dst.String(), queryInfo.qname, queryInfo.qtype,
+		)
+	}
+
 	id := dnsMessage.Id
 
 	go func() {
 		var err error
 		// Check ip version preference and qtype.
-		switch queryInfo.qtype {
-		case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-			if c.qtypePrefer == 0 {
-				err = c.handleDNSRequest(dnsMessage, req, queryInfo)
-			} else {
-				// Try to make both A and AAAA lookups.
-				dnsMessage2 := dnsMessage.Copy()
-				dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
-				switch queryInfo.qtype {
-				case dnsmessage.TypeA:
-					dnsMessage2.Question[0].Qtype = dnsmessage.TypeAAAA
-				case dnsmessage.TypeAAAA:
-					dnsMessage2.Question[0].Qtype = dnsmessage.TypeA
-				}
-
-				// TODO: ignoreFixedTTL?
-				errCh := make(chan error, 1)
-				go func() {
-					err = c.handleDNSRequest(dnsMessage2, req, queryInfo)
-					errCh <- err
-				}()
-				err = oops.Join(c.handleDNSRequest(dnsMessage, req, queryInfo), <-errCh)
-				if err != nil {
-					break
-				}
-				if c.qtypePrefer != queryInfo.qtype && dnsMessage2 != nil && IncludeAnyIpInMsg(dnsMessage2) {
-					c.reject(dnsMessage)
-				}
+		if (queryInfo.qtype == dnsmessage.TypeA || queryInfo.qtype == dnsmessage.TypeAAAA) && c.qtypePrefer != 0 {
+			// Try to make both A and AAAA lookups.
+			dnsMessage2 := dnsMessage.Copy()
+			dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
+			switch queryInfo.qtype {
+			case dnsmessage.TypeA:
+				dnsMessage2.Question[0].Qtype = dnsmessage.TypeAAAA
+			case dnsmessage.TypeAAAA:
+				dnsMessage2.Question[0].Qtype = dnsmessage.TypeA
 			}
-		default:
+
+			// TODO: ignoreFixedTTL?
+			errCh := make(chan error, 1)
+			go func() {
+				err = c.handleDNSRequest(dnsMessage2, req, queryInfo)
+				errCh <- err
+			}()
+			err = oops.Join(c.handleDNSRequest(dnsMessage, req, queryInfo), <-errCh)
+			if err != nil {
+				goto err
+			}
+			if c.qtypePrefer != queryInfo.qtype && dnsMessage2 != nil && IncludeAnyIpInMsg(dnsMessage2) {
+				c.reject(dnsMessage)
+			}
+		} else {
 			err = c.handleDNSRequest(dnsMessage, req, queryInfo)
 		}
+	err:
 		if err != nil {
 			netErr, ok := IsNetError(err)
 			err = oops.
@@ -304,8 +303,7 @@ func (c *DnsController) handleDNSRequest(
 	}
 
 	// Dial and re-route
-	reqMsg := new(dnsmessage.Msg)
-	*reqMsg = *dnsMessage // shallow copy is just fine we don't modify the slice's values
+	reqMsg := dnsMessage.Copy()
 Dial:
 	for invokingDepth := 1; invokingDepth <= MaxDnsLookupDepth; invokingDepth++ {
 		if log.IsLevelEnabled(log.DebugLevel) {
@@ -489,8 +487,11 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 				FillInto(msg, cache)
 				if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
 					log.WithFields(log.Fields{
-						"answer": msg.Answer,
-					}).Debugf("UDP(DNS) <-> Cache: %v %v", queryInfo.qname, queryInfo.qtype)
+						"qname":  queryInfo.qname,
+						"qtype":  queryInfo.qtype,
+						"rcode":  msg.Rcode,
+						"answer": FormatDnsRsc(msg.Answer),
+					}).Debugf("UDP(DNS) <-> Cache")
 				}
 				return nil
 			}
@@ -518,13 +519,14 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 		return err
 	}
 
+	// TODO: 直接加入到上面的日志
 	if log.IsLevelEnabled(log.DebugLevel) {
 		log.WithFields(log.Fields{
-			"qname": queryInfo.qname,
-			"qtype": queryInfo.qtype,
-			"rcode": msg.Rcode,
-			"ans":   FormatDnsRsc(msg.Answer),
-		}).Debugf("Got DNS response")
+			"qname":  queryInfo.qname,
+			"qtype":  queryInfo.qtype,
+			"rcode":  msg.Rcode,
+			"answer": FormatDnsRsc(msg.Answer),
+		}).Debugf("UDP(DNS) <-> %v", dialArgument.Target.String())
 	}
 
 	// TODO: 细分日志
@@ -533,14 +535,15 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 		len(msg.Question) == 0,               // Check healthy resp.
 		msg.Rcode != dnsmessage.RcodeSuccess: // Check suc resp.
 		log.WithFields(log.Fields{
-			"qname": queryInfo.qname,
-			"qtype": queryInfo.qtype,
-			"rcode": msg.Rcode,
-			"ans":   FormatDnsRsc(msg.Answer),
+			"qname":  queryInfo.qname,
+			"qtype":  queryInfo.qtype,
+			"rcode":  msg.Rcode,
+			"answer": FormatDnsRsc(msg.Answer),
 		}).Tracef("Not a valid DNS response")
 		return nil
 	}
 
+	// TODO: 不缓存ans为空的响应?
 	ans := deepcopy.Copy(msg.Answer).([]dnsmessage.RR)
 	ttl := c.NormalizeDnsResp(ans)
 	if log.IsLevelEnabled(log.DebugLevel) {
