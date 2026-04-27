@@ -24,7 +24,7 @@ import (
 
 const (
 	// Value from OpenWRT default sysctl config
-	DefaultNatTimeoutTCPEstablished = 21600 * time.Second
+	DefaultNatTimeoutTCPEstablished = 7440 * time.Second
 )
 
 func (c *ControlPlane) handleConn(lConn net.Conn) error {
