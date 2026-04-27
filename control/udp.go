@@ -23,7 +23,7 @@ import (
 
 var (
 	// Values from OpenWRT default sysctl config
-	DefaultNatTimeoutUDP = 90 * time.Second
+	DefaultNatTimeoutUDP = 60 * time.Second
 )
 
 const (
