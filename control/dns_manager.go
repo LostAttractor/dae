@@ -108,6 +108,8 @@ func (m *DnsManager) feed(msg *dnsmessage.Msg) {
 	if len(msg.Question) == 0 ||
 		msg.Question[0].Name != pending.qname ||
 		msg.Question[0].Qtype != pending.qtype {
+		log.Errorf("DNSManager: received message with mismatched question: got %v, expected %v %v",
+			msg.Question, pending.qname, pending.qtype)
 		return
 	}
 
