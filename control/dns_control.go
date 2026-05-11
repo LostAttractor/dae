@@ -181,11 +181,9 @@ type dnsCacheKey struct {
 }
 
 func (c *DnsController) prepareQueryInfo(dnsMessage *dnsmessage.Msg) (queryInfo queryInfo) {
-	if len(dnsMessage.Question) != 0 {
-		q := dnsMessage.Question[0]
-		queryInfo.qname = dnsmessage.CanonicalName(q.Name)
-		queryInfo.qtype = q.Qtype
-	}
+	q := dnsMessage.Question[0]
+	queryInfo.qname = dnsmessage.CanonicalName(q.Name)
+	queryInfo.qtype = q.Qtype
 	return
 }
 
