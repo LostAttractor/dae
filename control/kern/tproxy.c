@@ -294,8 +294,13 @@ struct domain_routing {
 	__u32 bitmap[MAX_MATCH_SET_LEN / 32];
 };
 
+// domain_routing_map / domain_bump_map are fully managed by user space
+// (control plane). Use BPF_MAP_TYPE_HASH (not LRU) so the kernel never
+// silently evicts entries; entries are only inserted/removed when user
+// space adds/removes a DNS lookup cache entry, keeping the two states
+// in sync.
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __be32[4]);
 	__type(value, struct domain_routing);
 	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
@@ -305,7 +310,7 @@ struct {
 // 13.63 MB
 
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __be32[4]);
 	__type(value, struct domain_routing);
 	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
