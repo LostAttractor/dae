@@ -27,14 +27,13 @@ var (
 )
 
 const (
-	DnsNatTimeout  = 17 * time.Second // RFC 5452
-	AnyfromTimeout = 5 * time.Second  // Do not cache too long.
-	MaxRetry       = 2
+	DnsNatTimeout = 17 * time.Second // RFC 5452
+	MaxRetry      = 2
 )
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
 func sendPkt(data []byte, from, to netip.AddrPort) (err error) {
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout)
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, DefaultAnyfromCacheTTL)
 	if err != nil {
 		return
 	}

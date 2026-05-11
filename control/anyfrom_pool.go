@@ -22,10 +22,22 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// DefaultAnyfromCacheTTL is the eviction interval when GetOrCreate is called with ttl <= 0.
+// Pooled sockets always use a positive TTL so they are removed from the pool and closed
+// without requiring callers to Close (e.g. sendPkt).
+const DefaultAnyfromCacheTTL = 5 * time.Second
+
+func normalizeAnyfromPoolTTL(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return DefaultAnyfromCacheTTL
+	}
+	return ttl
+}
+
 type Anyfrom struct {
 	*net.UDPConn
-	deadlineTimer *time.Timer
-	ttl           time.Duration
+	idleEvictTimer *time.Timer
+	idleTTL        time.Duration
 	// GSO support is modified from quic-go with many thanks.
 	gso         bool
 	gotGSOError bool
@@ -35,11 +47,13 @@ func (a *Anyfrom) afterWrite(err error) {
 	if !a.gotGSOError && isGSOError(err) {
 		a.gotGSOError = true
 	}
-	a.RefreshTtl()
+	a.refreshIdleDeadline()
 }
-func (a *Anyfrom) RefreshTtl() {
-	if a.deadlineTimer != nil {
-		a.deadlineTimer.Reset(a.ttl)
+
+// refreshIdleDeadline extends the pool eviction timer by the connection's idle TTL.
+func (a *Anyfrom) refreshIdleDeadline() {
+	if a.idleEvictTimer != nil {
+		a.idleEvictTimer.Reset(a.idleTTL)
 	}
 }
 func (a *Anyfrom) SupportGso(size int) bool {
@@ -49,45 +63,45 @@ func (a *Anyfrom) SupportGso(size int) bool {
 	return a.gso && !a.gotGSOError
 }
 func (a *Anyfrom) ReadFrom(b []byte) (int, net.Addr, error) {
-	defer a.RefreshTtl()
+	defer a.refreshIdleDeadline()
 	return a.UDPConn.ReadFrom(b)
 }
 func (a *Anyfrom) ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error) {
-	defer a.RefreshTtl()
+	defer a.refreshIdleDeadline()
 	return a.UDPConn.ReadFromUDP(b)
 }
 func (a *Anyfrom) ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err error) {
-	defer a.RefreshTtl()
+	defer a.refreshIdleDeadline()
 	return a.UDPConn.ReadFromUDPAddrPort(b)
 }
 func (a *Anyfrom) ReadMsgUDP(b []byte, oob []byte) (n int, oobn int, flags int, addr *net.UDPAddr, err error) {
-	defer a.RefreshTtl()
+	defer a.refreshIdleDeadline()
 	return a.UDPConn.ReadMsgUDP(b, oob)
 }
 func (a *Anyfrom) ReadMsgUDPAddrPort(b []byte, oob []byte) (n int, oobn int, flags int, addr netip.AddrPort, err error) {
-	defer a.RefreshTtl()
+	defer a.refreshIdleDeadline()
 	return a.UDPConn.ReadMsgUDPAddrPort(b, oob)
 }
 func (a *Anyfrom) SyscallConn() (syscall.RawConn, error) {
-	defer a.RefreshTtl()
+	defer a.refreshIdleDeadline()
 	return a.UDPConn.SyscallConn()
 }
 func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, oobn int, err error) {
-	defer a.afterWrite(err)
+	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		return a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(oob, uint16(len(b))), addr)
 	}
 	return a.UDPConn.WriteMsgUDP(b, oob, addr)
 }
 func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort) (n int, oobn int, err error) {
-	defer a.afterWrite(err)
+	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		return a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(oob, uint16(len(b))), addr)
 	}
 	return a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
 }
 func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
-	defer a.afterWrite(err)
+	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr.(*net.UDPAddr))
 		return n, err
@@ -95,7 +109,7 @@ func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	return a.UDPConn.WriteTo(b, addr)
 }
 func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
-	defer a.afterWrite(err)
+	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr)
 		return n, err
@@ -103,7 +117,7 @@ func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
 	return a.UDPConn.WriteToUDP(b, addr)
 }
 func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
-	defer a.afterWrite(err)
+	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		n, _, err = a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr)
 		return n, err
@@ -173,13 +187,17 @@ func NewAnyfromPool() *AnyfromPool {
 	}
 }
 
+// GetOrCreate returns a pooled UDP socket bound to lAddr. ttl is the idle time before eviction;
+// if ttl <= 0, DefaultAnyfromCacheTTL is used so entries are always pooled and closed on idle.
 func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	ttl = normalizeAnyfromPoolTTL(ttl)
+
 	af, ok := p.pool[lAddr]
 	if ok {
-		af.RefreshTtl()
+		af.refreshIdleDeadline()
 		return af, false, nil
 	}
 
@@ -202,25 +220,21 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 
 	uConn := pc.(*net.UDPConn)
 	af = &Anyfrom{
-		UDPConn:       uConn,
-		deadlineTimer: nil,
-		ttl:           ttl,
-		gotGSOError:   false,
-		gso:           isGSOSupported(uConn),
+		UDPConn:     uConn,
+		idleTTL:     ttl,
+		gotGSOError: false,
+		gso:         isGSOSupported(uConn),
 	}
-
-	if ttl > 0 {
-		af.deadlineTimer = time.AfterFunc(ttl, func() {
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			_af := p.pool[lAddr]
-			if _af == af {
-				delete(p.pool, lAddr)
-				af.Close()
-			}
-		})
-		p.pool[lAddr] = af
-	}
+	af.idleEvictTimer = time.AfterFunc(ttl, func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		_af := p.pool[lAddr]
+		if _af == af {
+			delete(p.pool, lAddr)
+			af.Close()
+		}
+	})
+	p.pool[lAddr] = af
 
 	return af, true, nil
 }
