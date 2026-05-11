@@ -618,44 +618,46 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 //     return true;
 // }
 
+// Only work for first packet of a new connection.
 static __always_inline bool
 is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset)
 {
-	const __u32 min_size = offset + 40;
-
-	if (l4proto != IPPROTO_UDP || skb->len < min_size) {
+	if (l4proto != IPPROTO_UDP || skb->len < (offset + 160)) {
 		return false;
 	}
 
 	__u8 header[2];
     int ret = bpf_skb_load_bytes(skb, offset, header, sizeof(header));
-	if (ret) {
-	return false;
-    }
+	if (ret)
+		return false;
 
-	__u8 version = header[0] & 0x0F;
     __u8 typ = header[0] >> 4;
-	if (version != 1 || typ > 4) {
-	return false;
-    }
+	__u8 version = header[0] & 0x0F;
+	if (version != 1 || typ > 4)
+		return false;
 
 	__u8 extension = header[1];
 
-	offset += 20;
+	u32 timestamp_difference_microseconds;
+	ret = bpf_skb_load_bytes(skb, offset+64, &timestamp_difference_microseconds, sizeof(timestamp_difference_microseconds));
+	if (ret)
+		return false;
+	if (timestamp_difference_microseconds != 0)
+		return false; // This should be 0. for new connection.
+
+	offset += 160;
 
 	for (int i = 0; i < UTP_MAX_EXTENSIONS; i++) {
 		if (extension == 0) {
 			// return is_bittorrent(skb, offset);
 			return true;
 		}
-		if (extension > 0x04) {
+		if (extension > 0x04)
 			return false;
-		}
 
 		ret = bpf_skb_load_bytes(skb, offset, header, sizeof(header));
-		if (ret) {
+		if (ret)
 			return false;
-		}
 
 		extension = header[0];
 		offset += header[1] + sizeof(header);
