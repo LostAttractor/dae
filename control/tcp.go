@@ -129,7 +129,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			With("src", src.String()).
 			With("dst", dst.String()).
 			With("domain", domain).
-			Wrapf(err, "failed to RelayTCP")
+			Wrapf(err, "Failed to RelayTCP")
 		if !ok {
 			return err
 		} else if !netErr.Timeout() && dialOption.Dialer.NeedAliveState() {

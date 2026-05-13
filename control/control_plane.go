@@ -744,7 +744,11 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
 				if err := c.handleConn(lconn); err != nil && c.ctx.Err() == nil {
-					log.Warningf("%+v", oops.Wrapf(err, "handleConn"))
+					if log.IsLevelEnabled(log.DebugLevel) {
+						log.Warnf("%+v", oops.Wrapf(err, "handleConn"))
+					} else {
+						log.Warnf("%v", oops.Wrapf(err, "handleConn"))
+					}
 				}
 			}(lconn)
 		}
@@ -801,7 +805,11 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			DefaultUdpTaskPool.EmitTask(src, func() {
 				defer pool.PutBuffer(data)
 				if e := c.handlePkt(udpConn, data, src, dst, false); e != nil && c.ctx.Err() == nil {
-					log.Warningf("%+v", oops.Wrapf(e, "handlePkt"))
+					if log.IsLevelEnabled(log.DebugLevel) {
+						log.Warnf("%+v", oops.Wrapf(e, "handlePkt"))
+					} else {
+						log.Warnf("%v", oops.Wrapf(e, "handlePkt"))
+					}
 				}
 			})
 			// if d := time.Since(t); d > 100*time.Millisecond {
