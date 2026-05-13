@@ -201,21 +201,19 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 			DefaultUdpEndpointPool.Remove(src)
 			if err != nil {
 				netErr, ok := IsNetError(err)
-				err = oops.
-					In("UdpEndpoint r -> l relay").
-					With("Is NetError", ok).
-					With("Is Temporary", ok && netErr.Temporary()).
-					With("Is Timeout", ok && netErr.Timeout()).
-					With("Dialer", ue.dialer.Name).
-					Wrap(err)
-				if !ok {
-					log.Warnf("%+v", err)
-				} else if !netErr.Timeout() {
+				if ok {
+					if netErr.Timeout() {
+						return
+					}
 					if dialOption.Dialer.NeedAliveState() {
 						common.ErrorCount.With(labels).Inc()
 						ue.dialer.ReportUnavailable()
-						log.Warnf("%+v", err)
 					}
+				}
+				if log.IsLevelEnabled(log.DebugLevel) {
+					log.Warnf("%+v", err)
+				} else {
+					log.Warnf("%v", err)
 				}
 			}
 		}()
