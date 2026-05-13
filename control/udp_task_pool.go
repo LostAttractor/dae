@@ -10,6 +10,9 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/samber/oops"
+	log "github.com/sirupsen/logrus"
 )
 
 const UdpTaskQueueLength = 128
@@ -95,6 +98,7 @@ func (p *UdpTaskPool[K]) EmitTask(key K, task UdpTask) {
 	case q.ch <- task:
 		// OK
 	default:
+		log.Errorf("%+v", oops.New("UDP Task Pool: Channel full, drop the packet"))
 		// Channel full, drop the packet
 	}
 }
