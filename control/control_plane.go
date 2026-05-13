@@ -49,7 +49,6 @@ import (
 type ControlPlane struct {
 	core       *controlPlaneCore
 	deferFuncs []func() error
-	listenIp   string
 
 	// TODO: add mutex?
 	outbounds              []*outbound.DialerGroup
@@ -361,7 +360,6 @@ func NewControlPlane(
 	plane := &ControlPlane{
 		core:                   core,
 		deferFuncs:             deferFuncs,
-		listenIp:               "0.0.0.0",
 		outbounds:              outbounds,
 		noConnectivityOutbound: noConnectivityOutbound,
 		dnsController:          nil,
@@ -828,7 +826,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 			return dialer.TproxyControl(c)
 		},
 	}
-	listenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
+	listenAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(int(port)))
 	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
 	if err != nil {
 		return nil, oops.Errorf("listenTCP: %w", err)
