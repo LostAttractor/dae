@@ -259,7 +259,7 @@ loop:
 						sdnotify.Stopping()
 						obj.Close()
 						c.Close()
-						std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to roll back configuration"))
+						std.Panicf("%+v", oops.Wrapf(err, "[Reload] Failed to roll back configuration"))
 					}
 					newConf = conf
 					std.Errorln("[Reload] Last reload failed; rolled back configuration")
