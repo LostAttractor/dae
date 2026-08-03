@@ -33,6 +33,13 @@ type RoutingMatcherBuilder struct {
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
 	fallback           *routing.Outbound
+
+	// kernspaceBuilders collect side effects that must run against the
+	// shared eBPF state (e.g. registering interface watchers that update
+	// RoutingMap on link events). They are deferred until BuildKernspace so
+	// that NewRoutingMatcherBuilder stays free of BPF map writes and can
+	// run during the validation phase of a reload.
+	kernspaceBuilders []func()
 }
 
 func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfObjects, fallback config.FunctionOrString, ifmgr *component.InterfaceManager) (b *RoutingMatcherBuilder, err error) {
@@ -324,26 +331,36 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 			Mark:     outbound.Mark,
 			Must:     outbound.Must,
 		}
-		index := len(b.rules)
-		initlinkCallback := func(link netlink.Link) {
-			binary.LittleEndian.PutUint32(set.Value[:], uint32(link.Attrs().Index))
-			if err = b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
-				log.Errorf("Update failed: %v", err)
-			}
-		}
-		newlinkCallback := func(link netlink.Link) {
-			log.Warnf("New link creation of '%v' is detected. Re-fetching ifindex for it.", link.Attrs().Name)
-			initlinkCallback(link)
-		}
-		dellinkCallback := func(link netlink.Link) {
-			log.Warnf("Link deletion of '%v' is detected. Re-fetching ifindex once it is re-created.", link.Attrs().Name)
-			binary.LittleEndian.PutUint32(set.Value[:], uint32(0))
-			if err = b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
-				log.Errorf("Update failed: %v", err)
-			}
-		}
-		b.ifmgr.Register(value, initlinkCallback, newlinkCallback, dellinkCallback)
+		index := uint32(len(b.rules))
 		b.rules = append(b.rules, set)
+
+		// Defer the ifmgr.Register call until BuildKernspace. Register may
+		// fire its init callback synchronously and the callback writes to
+		// bpf.RoutingMap, which is shared with the previously running plane
+		// during a reload. Deferring keeps the validation phase side-effect
+		// free; once BuildKernspace has uploaded the rule table, the init
+		// callback simply patches in the resolved ifindex.
+		ifname := value
+		b.kernspaceBuilders = append(b.kernspaceBuilders, func() {
+			updateIndex := func(ifindex uint32) {
+				binary.LittleEndian.PutUint32(set.Value[:], ifindex)
+				if err := b.bpf.RoutingMap.Update(index, set, ebpf.UpdateAny); err != nil {
+					log.Errorf("Update failed: %v", err)
+				}
+			}
+			initlinkCallback := func(link netlink.Link) {
+				updateIndex(uint32(link.Attrs().Index))
+			}
+			newlinkCallback := func(link netlink.Link) {
+				log.Warnf("New link creation of '%v' is detected. Re-fetching ifindex for it.", link.Attrs().Name)
+				updateIndex(uint32(link.Attrs().Index))
+			}
+			dellinkCallback := func(link netlink.Link) {
+				log.Warnf("Link deletion of '%v' is detected. Re-fetching ifindex once it is re-created.", link.Attrs().Name)
+				updateIndex(0)
+			}
+			b.ifmgr.Register(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
+		})
 	}
 	return nil
 }
@@ -422,6 +439,13 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
 	}
 	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
+
+	// Run side-effects (e.g. interface watchers) once the routing table is
+	// in place so that any callback writes patch the entries we just uploaded.
+	for _, fn := range b.kernspaceBuilders {
+		fn()
+	}
+	b.kernspaceBuilders = nil
 
 	return nil
 }

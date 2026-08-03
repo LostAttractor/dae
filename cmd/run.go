@@ -35,7 +35,6 @@ import (
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/logger"
 	"github.com/mohae/deepcopy"
 	"github.com/okzk/sdnotify"
@@ -135,6 +134,10 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	if err != nil {
 		std.Fatalln(err)
 	}
+	if err = c.Activate(); err != nil {
+		_ = c.Close()
+		std.Fatalln(err)
+	}
 
 	startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
 
@@ -219,67 +222,64 @@ loop:
 				var newConf *config.Config
 				if isSuspend {
 					isSuspend = false
-					newConf, err = emptyConfig()
-					if err != nil {
-						std.WithFields(log.Fields{
-							"err": err,
-						}).Errorln("[Reload] Failed to reload")
-						sdnotify.Ready()
-						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
-						continue
-					}
-					newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
+					newConf = deepcopy.Copy(conf).(*config.Config)
 					newConf.Global.WanInterface = nil
 					newConf.Global.LanInterface = nil
 					newConf.Global.LogLevel = "warning"
 				} else {
 					var includes []string
-					newConf, includes, err = readConfig(cfgFile)
-					if err != nil {
-						std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to reload"))
-						sdnotify.Ready()
-						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
-						continue
+					if newConf, includes, err = readConfig(cfgFile); err == nil {
+						std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
 					}
-					std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
+				}
+				if err != nil {
+					reloadingErr = err
+					std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to load config; keeping current control plane"))
+					sdnotify.Ready()
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+					continue
 				}
 				// New logger.
 				logger.SetLogger(newConf.Global.LogLevel, disableTimestamp, nil)
 
-				// New control plane.
+				// Phase 1: build the new control plane in memory. This step
+				// loads external resources (e.g. geoip) and validates the
+				// configuration without touching shared BPF maps or interface
+				// bindings, so the existing plane keeps serving traffic if it
+				// fails.
+				std.Warnln("[Reload] Build new control plane")
 				obj := c.EjectBpf()
-				std.Warnln("[Reload] Load new control plane")
 				newC, err := newControlPlane(obj, newConf, externGeoDataDirs)
 				if err != nil {
+					// Restore BPF ownership on the old plane and keep it running.
+					c.InjectBpf(obj)
 					reloadingErr = err
-					std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to reload; try to roll back configuration"))
-					// Load last config back.
-					newC, err = newControlPlane(obj, conf, externGeoDataDirs)
-					if err != nil {
-						sdnotify.Stopping()
-						obj.Close()
-						c.Close()
-						std.Panicf("%+v", oops.Wrapf(err, "[Reload] Failed to roll back configuration"))
-					}
-					newConf = conf
-					std.Errorln("[Reload] Last reload failed; rolled back configuration")
-				} else {
-					std.Warnln("[Reload] Stopped old control plane")
+					std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to build new control plane; keeping current control plane"))
+					sdnotify.Ready()
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+					continue
 				}
 
-				// Inject bpf objects into the new control plane life-cycle.
+				// Phase 2: commit. The new plane now owns BPF and pushes
+				// rules into the kernel. Failures past this point leave the
+				// system in an inconsistent state, so we tear everything down.
 				newC.InjectBpf(obj)
+				if err = newC.Activate(); err != nil {
+					sdnotify.Stopping()
+					_ = c.Close()
+					_ = newC.Close()
+					std.Panicf("%+v", oops.Wrapf(err, "[Reload] Failed to activate new control plane"))
+				}
 
-				// Prepare new context.
-				oldC := c
+				if abortConnections {
+					c.AbortConnections()
+				}
+				c.Close()
+				std.Warnln("[Reload] Stopped old control plane")
+
+				// Swap and tear down the old plane.
 				c = newC
 				conf = newConf
-
-				// Ready to close.
-				if abortConnections {
-					oldC.AbortConnections()
-				}
-				oldC.Close()
 
 				startPprofServer(conf.Global.PprofPort)
 				startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
@@ -490,17 +490,6 @@ func readConfig(cfgFile string) (conf *config.Config, includes []string, err err
 		return nil, nil, err
 	}
 	return conf, includes, nil
-}
-
-func emptyConfig() (conf *config.Config, err error) {
-	sections, err := config_parser.Parse(`global{} routing{}`)
-	if err != nil {
-		return nil, err
-	}
-	if conf, err = config.New(sections); err != nil {
-		return nil, err
-	}
-	return conf, nil
 }
 
 func init() {
