@@ -43,7 +43,7 @@ type sip008Server struct {
 }
 
 func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
-	log.Debugln("Try to resolve as base64")
+	log.Traceln("Try to resolve as base64")
 
 	// base64 decode
 	raw, e := common.Base64StdDecode(string(b))
@@ -68,7 +68,7 @@ func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
 }
 
 func ResolveSubscriptionAsSIP008(b []byte) (nodes []string, err error) {
-	log.Debugln("Try to resolve as sip008")
+	log.Traceln("Try to resolve as sip008")
 
 	var sip sip008
 	err = json.Unmarshal(b, &sip)
@@ -223,9 +223,12 @@ func ResolveSubscription(client *http.Client, configDir string, subscription str
 	}
 resolve:
 	if nodes, err = ResolveSubscriptionAsSIP008(b); err == nil {
+		log.Debugln("Resolve as sip008")
 		return tag, nodes, nil
 	} else {
-		log.Debugln(err)
+		log.Traceln(err)
 	}
-	return tag, ResolveSubscriptionAsBase64(b), nil
+	nodes = ResolveSubscriptionAsBase64(b)
+	log.Debugln("Resolve as base64")
+	return tag, nodes, nil
 }

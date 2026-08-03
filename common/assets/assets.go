@@ -107,7 +107,7 @@ func (c *LocationFinder) GetLocationAsset(filename string) (path string, err err
 			searchDirs = append(searchDirs, pwd)
 		}
 	}
-	log.Debugf(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
+	log.Tracef(`Search "%v" in [%v]`, filename, strings.Join(searchDirs, ", "))
 	for _, searchDir := range searchDirs {
 		searchPath := filepath.Join(searchDir, filename)
 		if _, err = os.Stat(searchPath); err != nil {

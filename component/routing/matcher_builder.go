@@ -77,7 +77,7 @@ func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 					if f.Not {
 						symNot = "!"
 					}
-					log.Debugf("\t%v%v(%v) -> %v", symNot, f.Name, key, overrideOutbound.Name)
+					log.Tracef("\t%v%v(%v) -> %v", symNot, f.Name, key, overrideOutbound.Name)
 				}
 
 				if err = functionParser(f, key, paramValueGroup, overrideOutbound); err != nil {

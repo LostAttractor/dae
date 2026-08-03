@@ -18,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/geodata"
 	"github.com/mohae/deepcopy"
 	"github.com/oschwald/maxminddb-golang/v2"
+	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -160,7 +161,6 @@ type mmdbCache struct {
 	fieldCache map[string]map[string][]string // fieldName -> fieldValue -> subnets
 }
 
-// DatReaderOptimizer 添加缓存字段
 type DatReaderOptimizer struct {
 	LocationFinder  *assets.LocationFinder
 	mmdbCaches      map[string]mmdbCache // filename -> cache
@@ -173,8 +173,9 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	}
 	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		log.Debugf("Failed to read geosite \"%v:%v\": %v", filename, code, err)
-		return nil, err
+		return nil, oops.
+			With("filename", filename).
+			Wrapf(err, "Failed to read geosite")
 	}
 	log.Debugf("Read geosite \"%v:%v\" from %v", filename, code, filePath)
 	code, attr, _ := strings.Cut(code, "@")
@@ -233,8 +234,9 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	}
 	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		log.Debugf("Failed to read geoip \"%v:%v\": %v", filename, code, err)
-		return nil, err
+		return nil, oops.
+			With("filename", filename).
+			Wrapf(err, "Failed to read geoip")
 	}
 	log.Debugf("Read geoip \"%v:%v\" from %v", filename, code, filePath)
 	geoIp, err := geodata.UnmarshalGeoIp(filePath, code)
@@ -264,10 +266,15 @@ func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value strin
 
 	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		log.Debugf("Failed to read mmdb \"%v:%v=%v\": %v", filename, field, value, err)
-		return nil, err
+		return nil, oops.
+			With("filename", filename).
+			Wrapf(err, "Failed to read mmdb")
 	}
 	log.Debugf("Read mmdb \"%v:%v=%v\" from %v", filename, field, value, filePath)
+
+	if o.mmdbCaches == nil {
+		o.mmdbCaches = make(map[string]mmdbCache)
+	}
 
 	// 检查缓存中是否已有结果
 	o.mmdbCachesMutex.RLock()
