@@ -87,6 +87,7 @@ func newControlPlaneCore(
 func (c *controlPlaneCore) Flip() {
 	coreFlip = coreFlip&1 ^ 1
 }
+
 func (c *controlPlaneCore) Close() (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
