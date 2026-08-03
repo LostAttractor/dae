@@ -44,8 +44,9 @@
 #endif
 #define MAX_LPM_SIZE 2048000
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
-#define MAX_DST_MAPPING_NUM (65536 * 2)
-#define MAX_COOKIE_PID_PNAME_MAPPING_NUM (65536)
+#define MAX_DST_MAPPING_NUM (65536 * 4)
+#define MAX_DST_MAPPING_NUM_UDP (65536 * 2)
+#define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
 
@@ -120,6 +121,7 @@ struct {
 	__type(value, struct redirect_entry);
 	__uint(max_entries, 65536);
 } redirect_track SEC(".maps");
+// 7.86 MB
 
 struct ip_port {
 	union ip6 ip;
@@ -169,6 +171,7 @@ struct {
 	/// NOTICE: It MUST be pinned.
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_tuples_map SEC(".maps");
+// 18.87 MB
 
 /* Sockets in fast_sock map are used for fast-redirecting via
  * sk_msg/fast_redirect. Sockets are automactically deleted from map once
@@ -180,6 +183,7 @@ struct {
 	__type(value, __u64);
 	__uint(max_entries, 65535);
 } fast_sock SEC(".maps");
+// 1.04 MB
 
 // Array of LPM tries:
 struct lpm_key {
@@ -283,6 +287,7 @@ struct {
 	/// NOTICE: No persistence.
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_routing_map SEC(".maps");
+// 13.63 MB
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -292,6 +297,7 @@ struct {
 	/// NOTICE: No persistence.
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_bump_map SEC(".maps");
+// 13.63 MB
 
 struct ip_port_proto {
 	__u32 ip[4];
@@ -312,6 +318,7 @@ struct {
 	/// NOTICE: No persistence.
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } cookie_pid_map SEC(".maps");
+// 6.29 MB
 
 struct udp_conn_state {
 	// For each flow (echo symmetric path), note the original flow direction.
@@ -324,10 +331,11 @@ struct udp_conn_state {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, MAX_DST_MAPPING_NUM);
+	__uint(max_entries, MAX_DST_MAPPING_NUM_UDP);
 	__type(key, struct tuples_key);
 	__type(value, struct udp_conn_state);
 } udp_conn_state_map SEC(".maps");
+// 16.78 MB
 
 // Functions:
 
@@ -464,8 +472,7 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 	__builtin_memset(udph, 0, sizeof(struct udphdr));
 
 	// bpf_printk("parse_transport: h_proto: %u ? %u %u", ethh->h_proto,
-	//						bpf_htons(ETH_P_IP),
-	// bpf_htons(ETH_P_IPV6));
+	//						bpf_htons(ETH_P_IP), bpf_htons(ETH_P_IPV6));
 	if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
 		ret = bpf_skb_load_bytes(skb, *offset, iph,
 					 sizeof(struct iphdr));
@@ -1176,11 +1183,17 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 	bool isdns = tuples.five.dport == bpf_htons(53) && l4proto == IPPROTO_UDP;
 
+	struct tuples_key routing_tuples_key = tuples.five;
+	if (l4proto == IPPROTO_UDP) {
+		__builtin_memset(&routing_tuples_key.dip, 0, sizeof(routing_tuples_key.dip));
+		routing_tuples_key.dport = 0;
+	}
+
 	if (l4proto == IPPROTO_TCP && !(tcph.syn && !tcph.ack)) {
 		// Established TCP Connection.
 		struct routing_result *routing_result =
 			bpf_map_lookup_elem(&routing_tuples_map,
-					    &tuples.five);
+					    &routing_tuples_key);
 
 		if (routing_result)
 			goto control_plane;
@@ -1304,14 +1317,21 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 		__u32 *alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 
-		if (alive && *alive == 0) {
-			// Outbound is not alive.
+		if (!alive) {
+			// Outbound is not ready. skip
+			return TC_ACT_PIPE;
+		}
+
+		switch (*alive) {
+		case 1:
+			goto direct;
+		case 2:
 			goto block;
 		}
 	}
 
 	// Only proxy traffic should be saved.
-	if (bpf_map_update_elem(&routing_tuples_map, &tuples.five,
+	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
 				&routing_result, BPF_ANY)) {
 		bpf_printk("shot save routing result: %d", s64_ret);
 		return TC_ACT_SHOT;

@@ -6,48 +6,35 @@
 package control
 
 import (
-	"strconv"
-
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
-func FormatL4Proto(l4proto uint8) string {
-	if l4proto == unix.IPPROTO_TCP {
-		return "tcp"
-	}
-	if l4proto == unix.IPPROTO_UDP {
-		return "udp"
-	}
-	return strconv.Itoa(int(l4proto))
-}
-
-func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bool) func(alive bool, networkType *dialer.NetworkType, isInit bool) {
-	return func(alive bool, networkType *dialer.NetworkType, isInit bool) {
-		select {
-		case <-c.closed.Done():
-			return
-		default:
-		}
-		if !isInit && dryrun {
+func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *dialer.NetworkType) {
+	return func(alive bool, networkType *dialer.NetworkType) {
+		if c.closed.Err() != nil {
 			return
 		}
-		if !isInit || log.IsLevelEnabled(log.TraceLevel) {
+		if log.IsLevelEnabled(log.DebugLevel) {
 			strAlive := "NOT ALIVE"
 			if alive {
 				strAlive = "ALIVE"
 			}
 			log.WithFields(log.Fields{
 				"outboundId": outbound,
-			}).Tracef("Outbound <%v> %v -> %v, notify the kernel program.", c.outboundId2Name[outbound], networkType.StringWithoutDns(), strAlive)
+			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", outboundName, networkType.String(), strAlive)
 		}
 
+		// 0: go control plane
+		// 1: direct
+		// 2: block
 		value := uint32(0)
-		if alive {
-			value = 1
+		if !alive && !noConnectivityTrySniff {
+			value = uint32(noConnectivityOutbound) + 1
 		}
+
 		if err := c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
 			Outbound:  outbound,
 			L4proto:   networkType.L4Proto.ToL4Proto(),
@@ -55,8 +42,8 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, dryrun bo
 		}, value, ebpf.UpdateAny); err != nil {
 			log.WithFields(log.Fields{
 				"alive":    alive,
-				"network":  networkType.StringWithoutDns(),
-				"outbound": c.outboundId2Name[outbound],
+				"network":  networkType.String(),
+				"outbound": outboundName,
 			}).Warnf("Failed to notify the kernel program: %v", err)
 		}
 	}

@@ -16,7 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/samber/oops"
 )
 
 var (
@@ -96,25 +96,19 @@ type Upstream struct {
 	*netutils.Ip46
 }
 
+// TODO: Sync with outbound
 func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string) (up *Upstream, err error) {
 	scheme, hostname, port, path, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	systemDns, err := netutils.SystemDns()
+	ip46, err := netutils.ResolveIp46(hostname)
 	if err != nil {
-		return nil, err
+		return nil, oops.Wrapf(err, "failed to resolve dns_upstream %v", upstream.String())
 	}
-	defer func() {
-		if err != nil {
-			_ = netutils.TryUpdateSystemDnsElapse(time.Second)
-		}
-	}()
-
-	ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, hostname, resolverNetwork, false)
-	if !ip46.Ip4.IsValid() && !ip46.Ip6.IsValid() {
-		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
+	if !ip46.IsValid() {
+		return nil, oops.Errorf("dns_upstream %v has no record", upstream.String())
 	}
 
 	return &Upstream{
@@ -156,7 +150,7 @@ type UpstreamResolver struct {
 	Raw     *url.URL
 	Network string
 	// FinishInitCallback may be invoked again if err is not nil
-	FinishInitCallback func(raw *url.URL, upstream *Upstream) (err error)
+	FinishInitCallback func(raw *url.URL, upstream *Upstream)
 	mu                 sync.Mutex
 	upstream           *Upstream
 	init               bool
@@ -166,20 +160,13 @@ func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if !u.init {
-		defer func() {
-			if err == nil {
-				if err = u.FinishInitCallback(u.Raw, u.upstream); err != nil {
-					u.upstream = nil
-					return
-				}
-				u.init = true
-			}
-		}()
 		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
 		defer cancel()
 		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
 		}
+		u.FinishInitCallback(u.Raw, u.upstream)
+		u.init = true
 	}
 	return u.upstream, nil
 }

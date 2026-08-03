@@ -12,7 +12,6 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,8 +21,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/samber/oops"
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	_ "net/http/pprof"
@@ -31,7 +31,6 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -54,7 +53,9 @@ var (
 		"http://www.gstatic.com/generate_204",
 		"http://www.qualcomm.cn/generate_204",
 	}
-	std = log.New()
+	std          = log.New()
+	pprofServer  *http.Server
+	controlPlane *control.ControlPlane
 )
 
 func init() {
@@ -116,33 +117,28 @@ var (
 			logger.SetLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
-			if err := Run(conf, []string{filepath.Dir(cfgFile)}); err != nil {
-				std.Fatalln(err)
-			}
+			Run(conf, []string{filepath.Dir(cfgFile)})
 		},
 	}
 )
 
-func Run(conf *config.Config, externGeoDataDirs []string) (err error) {
+func Run(conf *config.Config, externGeoDataDirs []string) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 
-	// New ControlPlane.
-	c, err := newControlPlane(nil, nil, conf, externGeoDataDirs)
-	if err != nil {
-		return err
-	}
+	startPprofServer(conf.Global.PprofPort)
+	startPrometheusServer()
 
-	var pprofServer *http.Server
-	if conf.Global.PprofPort != 0 {
-		pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
-		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-		go pprofServer.ListenAndServe()
+	// New ControlPlane.
+	c, err := newControlPlane(nil, conf, externGeoDataDirs)
+	if err != nil {
+		std.Fatalln(err)
 	}
 
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
+	errCh := make(chan error, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
 	go func() {
 		readyChan := make(chan bool, 1)
@@ -154,36 +150,49 @@ func Run(conf *config.Config, externGeoDataDirs []string) (err error) {
 			}
 			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadDone}, 0644)
 		}()
-		control.GetDaeNetns().With(func() error {
+		err := control.GetDaeNetns().With(func() error {
 			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
-				std.Errorln("ListenAndServe:", err)
+				return oops.Wrapf(err, "ListenAndServe")
 			}
-			return err
+			return nil
 		})
-		sigs <- nil
+		if err != nil {
+			errCh <- err
+		} else {
+			sigs <- nil
+		}
 	}()
-	reloading := false
+
+	defer func() {
+		os.Remove(PidFilePath)
+		control.GetDaeNetns().Close()
+		if e := c.Close(); e != nil {
+			std.Errorf("%+v", oops.Wrapf(e, "failed to close control plane"))
+		}
+	}()
+
 	reloadingErr := error(nil)
 	isSuspend := false
 	abortConnections := false
 loop:
-	for sig := range sigs {
-		switch sig {
-		case nil:
-			if reloading {
+	for {
+		select {
+		case sig := <-sigs:
+			switch sig {
+			case nil:
 				if listener == nil {
 					// Failed to listen. Exit.
 					break loop
 				}
 				// Serve.
-				reloading = false
 				std.Infoln("[Reload] Serve")
 				readyChan := make(chan bool, 1)
 				go func() {
 					if err := c.Serve(readyChan, listener); err != nil {
-						std.Errorln("Serve:", err)
+						errCh <- oops.Wrapf(err, "Serve")
+					} else {
+						sigs <- nil
 					}
-					sigs <- nil
 				}()
 				<-readyChan
 				sdnotify.Ready()
@@ -193,130 +202,124 @@ loop:
 					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
 				}
 				std.Warnln("[Reload] Finished")
-			} else {
-				// Listening error.
+			case syscall.SIGUSR2:
+				isSuspend = true
+				fallthrough
+			case syscall.SIGUSR1:
+				// Reload signal.
+				if isSuspend {
+					std.Warnln("[Reload] Received suspend signal; prepare to suspend")
+				} else {
+					std.Warnln("[Reload] Received reload signal; prepare to reload")
+				}
+				sdnotify.Reloading()
+				_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
+				reloadingErr = nil
+
+				// Load new config.
+				abortConnections = os.Remove(AbortFile) == nil
+				std.Warnln("[Reload] Load new config")
+				var newConf *config.Config
+				if isSuspend {
+					isSuspend = false
+					newConf, err = emptyConfig()
+					if err != nil {
+						std.WithFields(log.Fields{
+							"err": err,
+						}).Errorln("[Reload] Failed to reload")
+						sdnotify.Ready()
+						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+						continue
+					}
+					newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
+					newConf.Global.WanInterface = nil
+					newConf.Global.LanInterface = nil
+					newConf.Global.LogLevel = "warning"
+				} else {
+					var includes []string
+					newConf, includes, err = readConfig(cfgFile)
+					if err != nil {
+						std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to reload"))
+						sdnotify.Ready()
+						_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+						continue
+					}
+					std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
+				}
+				// New logger.
+				logger.SetLogger(newConf.Global.LogLevel, disableTimestamp, nil)
+
+				// New control plane.
+				obj := c.EjectBpf()
+				std.Warnln("[Reload] Load new control plane")
+				newC, err := newControlPlane(obj, newConf, externGeoDataDirs)
+				if err != nil {
+					reloadingErr = err
+					std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to reload; try to roll back configuration"))
+					// Load last config back.
+					newC, err = newControlPlane(obj, conf, externGeoDataDirs)
+					if err != nil {
+						sdnotify.Stopping()
+						obj.Close()
+						c.Close()
+						std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to roll back configuration"))
+					}
+					newConf = conf
+					std.Errorln("[Reload] Last reload failed; rolled back configuration")
+				} else {
+					std.Warnln("[Reload] Stopped old control plane")
+				}
+
+				// Inject bpf objects into the new control plane life-cycle.
+				newC.InjectBpf(obj)
+
+				// Prepare new context.
+				oldC := c
+				c = newC
+				conf = newConf
+
+				// Ready to close.
+				if abortConnections {
+					oldC.AbortConnections()
+				}
+				oldC.Close()
+
+				startPprofServer(conf.Global.PprofPort)
+			case syscall.SIGHUP:
+				// Ignore.
+				continue
+			default:
+				std.Infof("Received signal: %v", sig.String())
 				break loop
 			}
-		case syscall.SIGUSR2:
-			isSuspend = true
-			fallthrough
-		case syscall.SIGUSR1:
-			// Reload signal.
-			if isSuspend {
-				std.Warnln("[Reload] Received suspend signal; prepare to suspend")
-			} else {
-				std.Warnln("[Reload] Received reload signal; prepare to reload")
-			}
-			sdnotify.Reloading()
-			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
-			reloadingErr = nil
-
-			// Load new config.
-			abortConnections = os.Remove(AbortFile) == nil
-			std.Warnln("[Reload] Load new config")
-			var newConf *config.Config
-			if isSuspend {
-				isSuspend = false
-				newConf, err = emptyConfig()
-				if err != nil {
-					std.WithFields(log.Fields{
-						"err": err,
-					}).Errorln("[Reload] Failed to reload")
-					sdnotify.Ready()
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
-					continue
-				}
-				newConf.Global = deepcopy.Copy(conf.Global).(config.Global)
-				newConf.Global.WanInterface = nil
-				newConf.Global.LanInterface = nil
-				newConf.Global.LogLevel = "warning"
-			} else {
-				var includes []string
-				newConf, includes, err = readConfig(cfgFile)
-				if err != nil {
-					std.WithFields(log.Fields{
-						"err": err,
-					}).Errorln("[Reload] Failed to reload")
-					sdnotify.Ready()
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
-					continue
-				}
-				std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
-			}
-			// New logger.
-			logger.SetLogger(newConf.Global.LogLevel, disableTimestamp, nil)
-
-			// New control plane.
-			obj := c.EjectBpf()
-			var dnsCache map[string]*control.DnsCache
-			if conf.Dns.IpVersionPrefer == newConf.Dns.IpVersionPrefer {
-				// Only keep dns cache when ip version preference not change.
-				dnsCache = c.CloneDnsCache()
-			}
-			std.Infoln("[Reload] Load new control plane")
-			newC, err := newControlPlane(obj, dnsCache, newConf, externGeoDataDirs)
-			if err != nil {
-				reloadingErr = err
-				std.WithFields(log.Fields{
-					"err": err,
-				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
-				// Load last config back.
-				newC, err = newControlPlane(obj, dnsCache, conf, externGeoDataDirs)
-				if err != nil {
-					sdnotify.Stopping()
-					obj.Close()
-					c.Close()
-					std.WithFields(log.Fields{
-						"err": err,
-					}).Fatalln("[Reload] Failed to roll back configuration")
-				}
-				newConf = conf
-				std.Errorln("[Reload] Last reload failed; rolled back configuration")
-			} else {
-				std.Warnln("[Reload] Stopped old control plane")
-			}
-
-			// Inject bpf objects into the new control plane life-cycle.
-			newC.InjectBpf(obj)
-
-			// Prepare new context.
-			oldC := c
-			c = newC
-			conf = newConf
-			reloading = true
-
-			// Ready to close.
-			if abortConnections {
-				oldC.AbortConnections()
-			}
-			oldC.Close()
-
-			if pprofServer != nil {
-				pprofServer.Shutdown(context.Background())
-				pprofServer = nil
-			}
-			if newConf.Global.PprofPort != 0 {
-				pprofAddr := fmt.Sprintf("localhost:%d", conf.Global.PprofPort)
-				pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
-				go pprofServer.ListenAndServe()
-			}
-		case syscall.SIGHUP:
-			// Ignore.
-			continue
-		default:
-			std.Infof("Received signal: %v", sig.String())
+		case err := <-errCh:
+			std.Errorf("%+v", err)
 			break loop
 		}
 	}
-	defer os.Remove(PidFilePath)
-	defer control.GetDaeNetns().Close()
-	if e := c.Close(); e != nil {
-		return fmt.Errorf("close control plane: %w", e)
-	}
-	return nil
 }
 
-func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func startPprofServer(port uint16) {
+	if pprofServer != nil {
+		pprofServer.Shutdown(context.Background())
+		pprofServer = nil
+	}
+
+	if port != 0 {
+		pprofAddr := fmt.Sprintf("localhost:%d", port)
+		pprofServer = &http.Server{Addr: pprofAddr, Handler: nil}
+		go pprofServer.ListenAndServe()
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
+	}
+}
+
+func startPrometheusServer() {
+	http.Handle("/metrics", promhttp.Handler())
+	go http.ListenAndServe(":2112", nil)
+}
+
+func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -329,8 +332,7 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 	}
 
 	/// Init Direct Dialers.
-	direct.InitDirectDialers(conf.Global.FallbackResolver)
-	netutils.FallbackDns = netip.MustParseAddrPort(conf.Global.FallbackResolver)
+	direct.InitDirectDialers(conf.Global.FallbackResolver, conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
 
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
@@ -339,15 +341,11 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 		client := http.Client{
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-					conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae, conf.Global.Mptcp), addr)
+					conn, err := direct.Direct.DialContext(ctx, "tcp", addr)
 					if err != nil {
 						return nil, err
 					}
-					return &netproxy.FakeNetConn{
-						Conn:  conn,
-						LAddr: nil,
-						RAddr: nil,
-					}, nil
+					return conn, nil
 				},
 			},
 			Timeout: epo,
@@ -356,7 +354,7 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 		for i := 0; ; i++ {
 			resp, err := client.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
 			if err != nil {
-				log.Debugln("CheckNetwork:", err)
+				log.Debugf("%+v", oops.Wrapf(err, "CheckNetwork"))
 				var neterr net.Error
 				if errors.As(err, &neterr) && neterr.Timeout() {
 					// Do not sleep.
@@ -380,15 +378,11 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (c net.Conn, err error) {
-				conn, err := direct.SymmetricDirect.DialContext(ctx, common.MagicNetwork("tcp", conf.Global.SoMarkFromDae, conf.Global.Mptcp), addr)
+				conn, err := direct.Direct.DialContext(ctx, "tcp", addr)
 				if err != nil {
 					return nil, err
 				}
-				return &netproxy.FakeNetConn{
-					Conn:  conn,
-					LAddr: nil,
-					RAddr: nil,
-				}, nil
+				return conn, nil
 			},
 		},
 		Timeout: 30 * time.Second,
@@ -437,7 +431,6 @@ func newControlPlane(bpf interface{}, dnsCache map[string]*control.DnsCache, con
 
 	c, err = control.NewControlPlane(
 		bpf,
-		dnsCache,
 		tagToNodeList,
 		conf.Group,
 		&conf.Routing,
@@ -461,7 +454,7 @@ func preprocessWanInterfaceAuto(params *config.Config) error {
 		if ifname == "auto" {
 			defaultIfs, err := common.GetDefaultIfnames()
 			if err != nil {
-				return fmt.Errorf("failed to convert 'auto': %w", err)
+				return oops.Errorf("failed to convert 'auto': %w", err)
 			}
 			ifs = append(ifs, defaultIfs...)
 		} else {

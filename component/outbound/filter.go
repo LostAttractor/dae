@@ -11,6 +11,9 @@ import (
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/dlclark/regexp2"
 	log "github.com/sirupsen/logrus"
 )
@@ -28,31 +31,65 @@ const (
 	FilterInput_SubscriptionTag_Regex = "regex"
 )
 
+// NodeInfo stores the original node information for lazy creation
+type NodeInfo struct {
+	Link          string
+	Property      *dialer.Property
+	Dialers       []D.Dialer
+	CreatedDialer *dialer.Dialer
+}
+
+func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (*dialer.Dialer, error) {
+	if n.CreatedDialer == nil {
+		for _, dialer := range n.Dialers {
+			var err error
+			d, err = dialer.Dialer(&option.ExtraOption, d)
+			if err != nil {
+				return nil, err
+			}
+		}
+		n.CreatedDialer = dialer.NewDialer(d, option, dialer.InstanceOption{DisableCheck: false}, n.Property)
+	}
+	return n.CreatedDialer, nil
+}
+
 type DialerSet struct {
-	dialers      []*dialer.Dialer
-	nodeToTagMap map[*dialer.Dialer]string
+	option       *dialer.GlobalOption
+	nodeInfos    []*NodeInfo
+	nodeInfosMap map[dialer.Property]*NodeInfo
+	nodeToTagMap map[*dialer.Dialer]string // Only for created dialers
 }
 
 func NewDialerSetFromLinks(option *dialer.GlobalOption, tagToNodeList map[string][]string) *DialerSet {
 	s := &DialerSet{
-		dialers:      make([]*dialer.Dialer, 0),
+		option:       option,
+		nodeInfos:    make([]*NodeInfo, 0),
+		nodeInfosMap: make(map[dialer.Property]*NodeInfo),
 		nodeToTagMap: make(map[*dialer.Dialer]string),
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
 		for _, node := range nodes {
-			d, err := dialer.NewFromLink(option, dialer.InstanceOption{DisableCheck: false}, node, subscriptionTag)
+			d, p, err := D.NewFromLink(node)
 			if err != nil {
-				log.Infof("failed to parse node: %v", err)
+				log.Warnf("failed to parse node %v: %v", node, err)
 				continue
 			}
-			s.dialers = append(s.dialers, d)
-			s.nodeToTagMap[d] = subscriptionTag
+			nodeInfo := &NodeInfo{
+				Link: node,
+				Property: &dialer.Property{
+					Property:        *p,
+					SubscriptionTag: subscriptionTag,
+				},
+				Dialers: d,
+			}
+			s.nodeInfos = append(s.nodeInfos, nodeInfo)
+			s.nodeInfosMap[*nodeInfo.Property] = nodeInfo
 		}
 	}
 	return s
 }
 
-func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Function) (hit bool, err error) {
+func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) (hit bool, err error) {
 	if len(filters) == 0 {
 		// No filter.
 		return true, nil
@@ -78,19 +115,19 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 					if err != nil {
 						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
 					}
-					matched, _ := regex.MatchString(dialer.Property().Name)
+					matched, _ := regex.MatchString(nodeInfo.Property.Name)
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 					if matched {
 						subFilterHit = true
 						break loop
 					}
 				case FilterKey_Name_Keyword:
-					if strings.Contains(dialer.Property().Name, param.Val) {
+					if strings.Contains(nodeInfo.Property.Name, param.Val) {
 						subFilterHit = true
 						break loop
 					}
 				case "":
-					if dialer.Property().Name == param.Val {
+					if nodeInfo.Property.Name == param.Val {
 						subFilterHit = true
 						break loop
 					}
@@ -108,7 +145,7 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 					if err != nil {
 						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
 					}
-					matched, _ := regex.MatchString(s.nodeToTagMap[dialer])
+					matched, _ := regex.MatchString(nodeInfo.Property.SubscriptionTag)
 					if matched {
 						subFilterHit = true
 						break loop2
@@ -116,7 +153,7 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 					//logrus.Warnln(param.Val, matched, dialer.Name())
 				case "":
 					// Full
-					if s.nodeToTagMap[dialer] == param.Val {
+					if nodeInfo.Property.SubscriptionTag == param.Val {
 						subFilterHit = true
 						break loop2
 					}
@@ -136,26 +173,86 @@ func (s *DialerSet) filterHit(dialer *dialer.Dialer, filters []*config_parser.Fu
 	return true, nil
 }
 
-func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param) (dialers []*dialer.Dialer, filterAnnotations []*dialer.Annotation, err error) {
+func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param, nextHop string) (dialers []*dialer.Dialer, filterAnnotations []*dialer.Annotation, err error) {
 	if len(filters) != len(annotations) {
 		return nil, nil, fmt.Errorf("[CODE BUG]: unmatched annotations length: %v filters and %v annotations", len(filters), len(annotations))
 	}
-	if len(filters) == 0 {
-		anno := make([]*dialer.Annotation, len(s.dialers))
-		for i := range anno {
-			anno[i] = &dialer.Annotation{}
-		}
-		return s.dialers, anno, nil
+
+	// Find NextHop dialer if specified
+	nextHopInfo, err := s.findNextHop(nextHop)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to find next_hop '%s': %w", nextHop, err)
 	}
+
 nextDialerLoop:
-	for _, d := range s.dialers {
+	for _, nodeInfo := range s.nodeInfos {
+		if len(filters) == 0 {
+			// No filters, create all dialers
+			d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+			if err != nil {
+				log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
+				continue
+			}
+			if nextHopInfo != nil {
+				property := *nodeInfo.Property
+				property.Name = fmt.Sprintf("%s->%s", nodeInfo.Property.Name, nextHopInfo.Property.Name)
+				property.Protocol = fmt.Sprintf("%s->%s", nodeInfo.Property.Protocol, nextHopInfo.Property.Protocol)
+				property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
+				var nextHopNodeInfo *NodeInfo
+				var ok bool
+				if nextHopNodeInfo, ok = s.nodeInfosMap[property]; !ok {
+					nextHopNodeInfo = &NodeInfo{
+						Property: &property,
+						Dialers:  append(nodeInfo.Dialers, nextHopInfo.Dialers...),
+						Link:     fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link),
+					}
+					s.nodeInfosMap[property] = nextHopNodeInfo
+				}
+				d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+				if err != nil {
+					log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
+					continue
+				}
+			}
+			dialers = append(dialers, d)
+			filterAnnotations = append(filterAnnotations, &dialer.Annotation{})
+			continue
+		}
 		// Hit any.
-		for j, f := range filters {
-			hit, err := s.filterHit(d, f)
+		for j, filter := range filters {
+			hit, err := s.filterHit(nodeInfo, filter)
 			if err != nil {
 				return nil, nil, err
 			}
 			if hit {
+				// Create dialer if it hasn't been created yet
+				d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+				if err != nil {
+					log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
+					continue nextDialerLoop
+				}
+				if nextHopInfo != nil {
+					property := *nodeInfo.Property
+					property.Name = fmt.Sprintf("%s->%s", nodeInfo.Property.Name, nextHopInfo.Property.Name)
+					property.Protocol = fmt.Sprintf("%s->%s", nodeInfo.Property.Protocol, nextHopInfo.Property.Protocol)
+					property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
+					var nextHopNodeInfo *NodeInfo
+					var ok bool
+					if nextHopNodeInfo, ok = s.nodeInfosMap[property]; !ok {
+						nextHopNodeInfo = &NodeInfo{
+							Property: &property,
+							Dialers:  append(nodeInfo.Dialers, nextHopInfo.Dialers...),
+							Link:     fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link),
+						}
+						s.nodeInfosMap[property] = nextHopNodeInfo
+					}
+					d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+					if err != nil {
+						log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
+						continue nextDialerLoop
+					}
+				}
+
 				anno, err := dialer.NewAnnotation(annotations[j])
 				if err != nil {
 					return nil, nil, fmt.Errorf("apply filter annotation: %w", err)
@@ -169,11 +266,26 @@ nextDialerLoop:
 	return dialers, filterAnnotations, nil
 }
 
+func (s *DialerSet) findNextHop(nextHop string) (*NodeInfo, error) {
+	if nextHop == "" {
+		return nil, nil
+	}
+	// Search for the next hop node by name
+	for _, nodeInfo := range s.nodeInfos {
+		if nodeInfo.Property.Name == nextHop {
+			return nodeInfo, nil
+		}
+	}
+	return nil, fmt.Errorf("next_hop node '%s' not found", nextHop)
+}
+
 func (s *DialerSet) Close() error {
 	var err error
-	for _, d := range s.dialers {
-		if e := d.Close(); e != nil {
-			err = e
+	for _, nodeInfo := range s.nodeInfos {
+		if nodeInfo.CreatedDialer != nil {
+			if e := nodeInfo.CreatedDialer.Close(); e != nil {
+				err = e
+			}
 		}
 	}
 	return err

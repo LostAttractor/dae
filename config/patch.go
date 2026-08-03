@@ -8,9 +8,6 @@ package config
 import (
 	"strings"
 
-	"github.com/daeuniverse/dae/common"
-	log "github.com/sirupsen/logrus"
-
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
@@ -18,18 +15,18 @@ import (
 type patch func(params *Config) error
 
 var patches = []patch{
-	patchTcpCheckHttpMethod,
+	// patchTcpCheckHttpMethod,
 	patchEmptyDns,
 	patchMustOutbound,
 }
 
-func patchTcpCheckHttpMethod(params *Config) error {
-	if !common.IsValidHttpMethod(params.Global.TcpCheckHttpMethod) {
-		log.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
-		params.Global.TcpCheckHttpMethod = "CONNECT"
-	}
-	return nil
-}
+// func patchTcpCheckHttpMethod(params *Config) error {
+// 	if !common.IsValidHttpMethod(params.Global.TcpCheckHttpMethod) {
+// 		log.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
+// 		params.Global.TcpCheckHttpMethod = "CONNECT"
+// 	}
+// 	return nil
+// }
 
 func patchEmptyDns(params *Config) error {
 	if params.Dns.Routing.Request.Fallback == nil {

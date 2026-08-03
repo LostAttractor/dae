@@ -7,20 +7,34 @@ package consts
 
 import "fmt"
 
-type DialMode string
+type SniffVerifyMode string
 
 const (
-	DialMode_Ip         DialMode = "ip"
-	DialMode_Domain     DialMode = "domain"
-	DialMode_DomainPlus DialMode = "domain+"
-	DialMode_DomainCao  DialMode = "domain++"
+	SniffVerifyMode_None   SniffVerifyMode = "none"
+	SniffVerifyMode_Loose  SniffVerifyMode = "loose"
+	SniffVerifyMode_Strict SniffVerifyMode = "strict"
 )
 
-func ParseDialMode(mode string) (DialMode, error) {
+type RerouteMode string
+
+const (
+	RerouteMode_None      RerouteMode = "none"
+	RerouteMode_WhileNeed RerouteMode = "while_needed"
+	RerouteMode_Force     RerouteMode = "force"
+)
+
+func VerifySniffVerifyMode(mode string) {
 	switch mode {
-	case "ip", "domain", "domain+", "domain++":
-		return DialMode(mode), nil
+	case "none", "loose", "strict":
 	default:
-		return "", fmt.Errorf("unsupported dial mode: %v", mode)
+		panic(fmt.Sprintf("unsupported sniff verify mode: %v", mode))
+	}
+}
+
+func VerifyRerouteMode(mode string) {
+	switch mode {
+	case "none", "while_needed", "force":
+	default:
+		panic(fmt.Sprintf("unsupported reroute mode: %v", mode))
 	}
 }

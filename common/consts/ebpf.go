@@ -6,6 +6,7 @@
 package consts
 
 import (
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -135,6 +136,18 @@ const (
 	IpVersion_6 IpVersionType = 0b10
 	IpVersion_X IpVersionType = 0b11
 )
+
+func IpVersionFromAddr(addr netip.Addr) (ipversion IpVersionType) {
+	switch {
+	case addr.Is4() || addr.Is4In6():
+		ipversion = IpVersion_4
+	case addr.Is6():
+		ipversion = IpVersion_6
+	default:
+		ipversion = IpVersion_X
+	}
+	return
+}
 
 func (v IpVersionType) ToIpVersionStr() IpVersionStr {
 	switch v {

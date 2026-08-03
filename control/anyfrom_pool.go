@@ -161,7 +161,7 @@ func appendUDPSegmentSizeMsg(b []byte, size uint16) []byte {
 
 // AnyfromPool is a full-cone udp listener pool
 type AnyfromPool struct {
-	pool map[string]*Anyfrom
+	pool map[netip.AddrPort]*Anyfrom
 	mu   sync.Mutex
 }
 
@@ -169,11 +169,11 @@ var DefaultAnyfromPool = NewAnyfromPool()
 
 func NewAnyfromPool() *AnyfromPool {
 	return &AnyfromPool{
-		pool: make(map[string]*Anyfrom, 64),
+		pool: make(map[netip.AddrPort]*Anyfrom, 64),
 	}
 }
 
-func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
+func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn *Anyfrom, isNew bool, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -192,7 +192,7 @@ func (p *AnyfromPool) GetOrCreate(lAddr string, ttl time.Duration) (conn *Anyfro
 
 	var pc net.PacketConn
 	GetDaeNetns().With(func() error {
-		pc, err = lc.ListenPacket(context.Background(), "udp", lAddr)
+		pc, err = lc.ListenPacket(context.Background(), "udp", lAddr.String())
 		return nil
 	})
 

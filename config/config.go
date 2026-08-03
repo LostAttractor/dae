@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -24,33 +25,37 @@ type Global struct {
 	LogLevel          string `mapstructure:"log_level" default:"info"`
 	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
 	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
-	TcpCheckUrl                []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
-	TcpCheckHttpMethod         string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
-	UdpCheckDns                []string      `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
-	CheckInterval              time.Duration `mapstructure:"check_interval" default:"30s"`
-	CheckTolerance             time.Duration `mapstructure:"check_tolerance" default:"0"`
-	LanInterface               []string      `mapstructure:"lan_interface"`
-	WanInterface               []string      `mapstructure:"wan_interface"`
-	AllowInsecure              bool          `mapstructure:"allow_insecure" default:"false"`
-	DialMode                   string        `mapstructure:"dial_mode" default:"domain"`
-	DisableWaitingNetwork      bool          `mapstructure:"disable_waiting_network" default:"false"`
-	EnableLocalTcpFastRedirect bool          `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
-	AutoConfigKernelParameter  bool          `mapstructure:"auto_config_kernel_parameter" default:"false"`
+	// TcpCheckUrl                []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
+	// TcpCheckHttpMethod         string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
+	UdpCheckDns                []string               `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
+	CheckInterval              time.Duration          `mapstructure:"check_interval" default:"30s"`
+	CheckTolerance             time.Duration          `mapstructure:"check_tolerance" default:"0"`
+	LanInterface               []string               `mapstructure:"lan_interface"`
+	WanInterface               []string               `mapstructure:"wan_interface"`
+	AllowInsecure              bool                   `mapstructure:"allow_insecure" default:"false"`
+	DialTargetOverride         bool                   `mapstructure:"dial_target_override" default:"true"`
+	RerouteMode                consts.RerouteMode     `mapstructure:"reroute_mode" default:"while_needed"`
+	SniffVerifyMode            consts.SniffVerifyMode `mapstructure:"sniff_verify_mode" default:"loose"`
+	SniffingTimeout            time.Duration          `mapstructure:"sniffing_timeout" default:"100ms"`
+	DisableWaitingNetwork      bool                   `mapstructure:"disable_waiting_network" default:"false"`
+	EnableLocalTcpFastRedirect bool                   `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
+	AutoConfigKernelParameter  bool                   `mapstructure:"auto_config_kernel_parameter" default:"false"`
 	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/458
-	AutoConfigFirewallRule      bool          `mapstructure:"auto_config_firewall_rule" default:"false"`
-	SniffingTimeout             time.Duration `mapstructure:"sniffing_timeout" default:"100ms"`
-	TlsImplementation           string        `mapstructure:"tls_implementation" default:"tls"`
-	UtlsImitate                 string        `mapstructure:"utls_imitate" default:"chrome_auto"`
-	TlsFragment                 bool          `mapstructure:"tls_fragment" default:"false"`
-	TlsFragmentLength           string        `mapstructure:"tls_fragment_length" default:"50-100"`
-	TlsFragmentInterval         string        `mapstructure:"tls_fragment_interval" default:"10-20"`
-	PprofPort                   uint16        `mapstructure:"pprof_port" default:"0"`
-	Mptcp                       bool          `mapstructure:"mptcp" default:"false"`
-	FallbackResolver            string        `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
-	BandwidthMaxTx              string        `mapstructure:"bandwidth_max_tx" default:"0"`
-	BandwidthMaxRx              string        `mapstructure:"bandwidth_max_rx" default:"0"`
-	NotBlockingEvenNodeNotAlive string        `mapstructure:"not_blocking_even_node_not_alive" default:"auto"`
-	UDPHopInterval              time.Duration `mapstructure:"udphop_interval" default:"30s"`
+	AutoConfigFirewallRule bool   `mapstructure:"auto_config_firewall_rule" default:"false"`
+	TlsImplementation      string `mapstructure:"tls_implementation" default:"tls"`
+	UtlsImitate            string `mapstructure:"utls_imitate" default:"chrome_auto"`
+	TlsFragment            bool   `mapstructure:"tls_fragment" default:"false"`
+	TlsFragmentLength      string `mapstructure:"tls_fragment_length" default:"50-100"`
+	TlsFragmentInterval    string `mapstructure:"tls_fragment_interval" default:"10-20"`
+	PprofPort              uint16 `mapstructure:"pprof_port" default:"0"`
+	Mptcp                  bool   `mapstructure:"mptcp" default:"false"`
+	FallbackResolver       string `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
+	BandwidthMaxTx         string `mapstructure:"bandwidth_max_tx" default:"0"`
+	BandwidthMaxRx         string `mapstructure:"bandwidth_max_rx" default:"0"`
+	NoConnectivityTrySniff bool   `mapstructure:"no_connectivity_try_sniff" default:"true"`
+	// TODO: skip?
+	NoConnectivityBehavior string        `mapstructure:"no_connectivity_behavior" default:"block"`
+	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
 }
 
 type Utls struct {
@@ -97,12 +102,13 @@ type Group struct {
 	Filter           [][]*config_parser.Function `mapstructure:"filter" repeatable:""`
 	FilterAnnotation [][]*config_parser.Param    `mapstructure:"_"`
 	Policy           FunctionListOrString        `mapstructure:"policy" required:""`
+	NextHop          string                      `mapstructure:"next_hop"`
 
-	TcpCheckUrl        []string      `mapstructure:"tcp_check_url"`
-	TcpCheckHttpMethod string        `mapstructure:"tcp_check_http_method"`
-	UdpCheckDns        []string      `mapstructure:"udp_check_dns"`
-	CheckInterval      time.Duration `mapstructure:"check_interval"`
-	CheckTolerance     time.Duration `mapstructure:"check_tolerance"`
+	// TcpCheckUrl        []string      `mapstructure:"tcp_check_url"`
+	// TcpCheckHttpMethod string        `mapstructure:"tcp_check_http_method"`
+	UdpCheckDns    []string      `mapstructure:"udp_check_dns"`
+	CheckInterval  time.Duration `mapstructure:"check_interval"`
+	CheckTolerance time.Duration `mapstructure:"check_tolerance"`
 }
 
 type DnsRequestRouting struct {

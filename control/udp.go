@@ -6,19 +6,17 @@
 package control
 
 import (
-	"fmt"
+	"context"
 	"net"
 	"net/netip"
 
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	ob "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
+	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -34,14 +32,6 @@ const (
 	MaxRetry       = 2
 )
 
-type DialOption struct {
-	Target        string
-	Dialer        *dialer.Dialer
-	Outbound      *ob.DialerGroup
-	Network       string
-	SniffedDomain string
-}
-
 func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout time.Duration) {
 	if sniffDns {
 		var dnsmsg dnsmessage.Msg
@@ -54,59 +44,37 @@ func ChooseNatTimeout(data []byte, sniffDns bool) (dmsg *dnsmessage.Msg, timeout
 }
 
 // sendPkt uses bind first, and fallback to send hdr if addr is in use.
-func sendPkt(data []byte, from netip.AddrPort, realTo, to netip.AddrPort, lConn *net.UDPConn) (err error) {
-	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from.String(), AnyfromTimeout)
+func sendPkt(data []byte, from, to netip.AddrPort) (err error) {
+	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, AnyfromTimeout)
 	if err != nil {
 		return
 	}
-	_, err = uConn.WriteToUDPAddrPort(data, realTo)
+	_, err = uConn.WriteToUDPAddrPort(data, to)
 	return err
 }
 
-func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, realDst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
-	var realSrc netip.AddrPort
+func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip.AddrPort, routingResult *bpfRoutingResult, skipSniffing bool) (err error) {
 	var domain string
-	realSrc = src
-	ue, ueExists := DefaultUdpEndpointPool.Get(realSrc)
-	if ueExists && ue.SniffedDomain != "" {
-		// It is quic ...
-		// Fast path.
-		domain := ue.SniffedDomain
-		dialTarget := realDst.String()
 
-		if log.IsLevelEnabled(log.TraceLevel) {
-			fields := log.Fields{
-				"network":  "udp(fp)",
-				"outbound": ue.Outbound.Name,
-				"policy":   ue.Outbound.GetSelectionPolicy(),
-				"dialer":   ue.Dialer.Property().Name,
-				"sniffed":  domain,
-				"ip":       RefineAddrPortToShow(realDst),
-				"pid":      routingResult.Pid,
-				"ifindex":  routingResult.Ifindex,
-				"dscp":     routingResult.Dscp,
-				"pname":    ProcessName2String(routingResult.Pname[:]),
-				"mac":      Mac2String(routingResult.Mac[:]),
-			}
-			log.WithFields(fields).Tracef("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
-		}
-
-		_, err = ue.WriteTo(data, dialTarget)
-		if err != nil {
-			return err
-		}
-		return nil
+	/// Handle DNS
+	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
+	dnsMessage, natTimeout := ChooseNatTimeout(data, dst.Port() == 53)
+	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
+	isDns := dnsMessage != nil && routingResult.Must == 0 // Regard as plain traffic
+	if isDns {
+		return c.dnsController.Handle(dnsMessage, &udpRequest{
+			src:           src,
+			dst:           dst,
+			routingResult: routingResult,
+		})
 	}
 
-	// To keep consistency with kernel program, we only sniff DNS request sent to 53.
-	dnsMessage, natTimeout := ChooseNatTimeout(data, realDst.Port() == 53)
-	// We should cache DNS records and set record TTL to 0, in order to monitor the dns req and resp in real time.
-	isDns := dnsMessage != nil
-	if !isDns && !skipSniffing && !ueExists {
+	/// Sniff
+	if !skipSniffing {
 		// Sniff Quic, ...
 		key := PacketSnifferKey{
-			LAddr: realSrc,
-			RAddr: realDst,
+			LAddr: src,
+			RAddr: dst,
 		}
 		_sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
 		_sniffer.Mu.Lock()
@@ -117,17 +85,20 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			domain, err = sniffer.SniffUdp()
 			if err != nil && !sniffing.IsSniffingError(err) {
 				sniffer.Mu.Unlock()
-				return err
+				return oops.
+					With("from", src).
+					With("to", dst).
+					Wrapf(err, "sniffUDP non sniffing error")
 			}
 			if sniffer.NeedMore() {
 				sniffer.Mu.Unlock()
 				return nil
 			}
-			if err != nil {
-				log.WithError(err).
-					WithField("from", realSrc).
-					WithField("to", realDst).
-					Trace("sniffUdp")
+			if err != nil && log.IsLevelEnabled(log.TraceLevel) {
+				log.Tracef("%+v", oops.
+					With("from", src).
+					With("to", dst).
+					Wrapf(err, "sniffUDP"))
 			}
 			defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
 			// Re-handlePkt after self func.
@@ -137,9 +108,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 				defer func() {
 					if err == nil {
 						for _, d := range toRehandle {
-							dCopy := pool.Get(len(d))
-							copy(dCopy, d)
-							go c.handlePkt(lConn, dCopy, src, pktDst, realDst, routingResult, true)
+							err := c.handlePkt(lConn, d, src, dst, routingResult, true)
+							if err != nil {
+								log.Warnf("%+v", oops.Wrapf(err, "rehandlePkt"))
+							}
 						}
 					}
 				}()
@@ -149,185 +121,158 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, pktDst, r
 			// sniffer may be nil.
 		}
 	}
-	if routingResult.Must > 0 {
-		isDns = false // Regard as plain traffic.
-	}
-	if routingResult.Mark == 0 {
-		routingResult.Mark = c.soMarkFromDae
-	}
-	if isDns {
-		return c.dnsController.Handle(dnsMessage, &udpRequest{
-			realSrc:       realSrc,
-			realDst:       realDst,
-			src:           src,
-			lConn:         lConn,
-			routingResult: routingResult,
-		})
-	}
 
-	// Dial and send.
+	/// Dial and send.
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
-
-	// Get udp endpoint.
-	retry := 0
 	networkType := &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionFromAddr(realDst.Addr()),
-		IsDns:     false,
-	}
-	// Get outbound.
-	outboundIndex := consts.OutboundIndex(routingResult.Outbound)
-	var (
-		dialTarget    string
-		shouldReroute bool
-		dialIp        bool
-	)
-	_, shouldReroute, _ = c.ChooseDialTarget(outboundIndex, realDst, domain)
-	// Do not overwrite target.
-	// This fixes a problem that quic connection to google servers.
-	// Reproduce:
-	// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
-	dialTarget = realDst.String()
-	dialIp = true
-getNew:
-	if retry > MaxRetry {
-		log.WithFields(log.Fields{
-			"src":     RefineSourceToShow(realSrc, realDst.Addr()),
-			"network": networkType.String(),
-			"dialer":  ue.Dialer.Property().Name,
-			"retry":   retry,
-		}).Warnln("Touch max retry limit.")
-		return fmt.Errorf("touch max retry limit")
-	}
-	ue, isNew, err := DefaultUdpEndpointPool.GetOrCreate(realSrc, &UdpEndpointOptions{
-		// Handler handles response packets and send it to the client.
-		Handler: func(data []byte, from netip.AddrPort) (err error) {
-			// Do not return conn-unrelated err in this func.
-			return sendPkt(data, from, realSrc, src, lConn)
-		},
-		NatTimeout: natTimeout,
-		GetDialOption: func() (option *DialOption, err error) {
-			if shouldReroute {
-				outboundIndex = consts.OutboundControlPlaneRouting
-			}
-
-			switch outboundIndex {
-			case consts.OutboundDirect:
-			case consts.OutboundControlPlaneRouting:
-				if isDns {
-					// Routing of DNS packets are managed by DNS controller.
-					break
-				}
-
-				if outboundIndex, routingResult.Mark, _, err = c.Route(realSrc, realDst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
-					return nil, err
-				}
-				routingResult.Outbound = uint8(outboundIndex)
-				if log.IsLevelEnabled(log.TraceLevel) {
-					log.Tracef("outbound: %v => <Control Plane Routing>",
-						outboundIndex.String(),
-					)
-				}
-				// Do not overwrite target.
-				// This fixes quic problem from google.
-				// Reproduce:
-				// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
-			default:
-			}
-
-			if int(outboundIndex) >= len(c.outbounds) {
-				if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
-					return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
-				}
-				return nil, fmt.Errorf("outbound %v out of range [0, %v]", outboundIndex, len(c.outbounds)-1)
-			}
-			outbound := c.outbounds[outboundIndex]
-
-			// Select dialer from outbound (dialer group).
-			strictIpVersion := dialIp
-			dialerForNew, _, err := outbound.Select(networkType, strictIpVersion)
-			if err != nil {
-				return nil, fmt.Errorf("failed to select dialer from group %v (%v, dns?:%v,from: %v): %w", outbound.Name, networkType.StringWithoutDns(), isDns, realSrc.String(), err)
-			}
-			return &DialOption{
-				Target:        dialTarget,
-				Dialer:        dialerForNew,
-				Outbound:      outbound,
-				Network:       common.MagicNetwork("udp", routingResult.Mark, c.mptcp),
-				SniffedDomain: domain,
-			}, nil
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to GetOrCreate: %w", err)
+		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
 
-	// If the udp endpoint has been not alive, remove it from pool and get a new one.
-	if !isNew && ue.Outbound.GetSelectionPolicy() != consts.DialerSelectionPolicy_Fixed && !ue.Dialer.MustGetAlive(networkType) {
+	l := DefaultUdpEndpointPool.UdpEndpointKeyLocker.Lock(src)
+	defer DefaultUdpEndpointPool.UdpEndpointKeyLocker.Unlock(src, l)
 
+	// Get udp endpoint.
+	ue, ok := DefaultUdpEndpointPool.Get(src)
+	// If the udp endpoint has been not alive, remove it from pool and retry
+	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
+	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
+	if ok && !ue.dialer.GetAlive() {
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
-				"src":     RefineSourceToShow(realSrc, realDst.Addr()),
+				"src":     RefineSourceToShow(src, dst.Addr()),
 				"network": networkType.String(),
-				"dialer":  ue.Dialer.Property().Name,
-				"retry":   retry,
+				"dialer":  ue.dialer.Name,
 			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
-		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
-		retry++
-		goto getNew
+		_ = DefaultUdpEndpointPool.Remove(src)
+		ok = false
 	}
-	if domain == "" {
-		// It is used for showing.
-		domain = ue.SniffedDomain
+	if !ok {
+		// Route
+		dialOption, err := c.RouteDialOption(&RouteParam{
+			routingResult: routingResult,
+			networkType:   networkType,
+			Domain:        domain,
+			Src:           src,
+			Dest:          dst,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Do not overwrite target.
+		// This fixes a problem that quic connection to google servers.
+		// Reproduce:
+		// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
+		dialOption.DialTarget = dst.String()
+
+		// Dial
+		// Only print routing for new connection to avoid the log exploded (Quic and BT).
+		LogDial(src, dst, domain, dialOption, networkType, routingResult)
+		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+		defer cancel()
+		udpConn, err := dialOption.Dialer.ListenPacket(ctx, dialOption.DialTarget)
+		if err != nil {
+			netErr, ok := IsNetError(err)
+			err = oops.
+				In("ListenPacket").
+				With("Is NetError", ok).
+				With("Is Temporary", netErr != nil && netErr.Temporary()).
+				With("Is Timeout", netErr != nil && netErr.Timeout()).
+				With("Outbound", dialOption.Outbound.Name).
+				With("Dialer", dialOption.Dialer.Name).
+				With("src", src.String()).
+				With("dst", dst.String()).
+				With("domain", domain).
+				Wrapf(err, "failed to ListenPacket")
+			if !ok {
+				return err
+			} else if !netErr.Timeout() {
+				dialOption.Dialer.ReportUnavailable(networkType, err)
+				if !dialOption.OutboundIndex.IsReserved() {
+					return err
+				}
+			}
+			return nil
+		}
+		ue = DefaultUdpEndpointPool.Create(src, &UdpEndpointOptions{
+			PacketConn: udpConn,
+			Handler: func(data []byte, from netip.AddrPort) (err error) {
+				return sendPkt(data, from, src)
+			},
+			NatTimeout: natTimeout,
+			Dialer:     dialOption.Dialer,
+		})
+		// Receive UDP messages.
+		go func() {
+			err = ue.run()
+			DefaultUdpEndpointPool.Remove(src)
+			if err != nil {
+				netErr, ok := IsNetError(err)
+				err = oops.
+					In("UdpEndpoint r -> l relay").
+					With("Is NetError", ok).
+					With("Is Temporary", netErr != nil && netErr.Temporary()).
+					With("Is Timeout", netErr != nil && netErr.Timeout()).
+					With("Dialer", ue.dialer.Name).
+					Wrap(err)
+				if !ok {
+					log.Warnf("%+v", err)
+				} else if !netErr.Timeout() {
+					ue.dialer.ReportUnavailable(networkType, err)
+					if !dialOption.OutboundIndex.IsReserved() {
+						log.Warnf("%+v", err)
+					}
+				}
+			}
+		}()
 	}
 
-	_, err = ue.WriteTo(data, dialTarget)
+	// TODO: What is realSrc/Dst?
+	// Try to write data
+	_, err = ue.WriteTo(data, net.UDPAddrFromAddrPort(dst))
 	if err != nil {
-		if log.IsLevelEnabled(log.DebugLevel) {
-			log.WithFields(log.Fields{
-				"to":      realDst.String(),
-				"domain":  domain,
-				"pid":     routingResult.Pid,
-				"ifindex": routingResult.Ifindex,
-				"dscp":    routingResult.Dscp,
-				"pname":   ProcessName2String(routingResult.Pname[:]),
-				"mac":     Mac2String(routingResult.Mac[:]),
-				"from":    realSrc.String(),
-				"network": networkType.StringWithoutDns(),
-				"err":     err.Error(),
-				"retry":   retry,
-			}).Debugln("Failed to write UDP packet request. Try to remove old UDP endpoint and retry.")
+		DefaultUdpEndpointPool.Remove(src)
+		netErr, ok := IsNetError(err)
+		err = oops.
+			In("UdpEndpoint l -> r relay").
+			With("Is NetError", ok).
+			With("Is Temporary", netErr != nil && netErr.Temporary()).
+			With("Is Timeout", netErr != nil && netErr.Timeout()).
+			With("Dialer", ue.dialer.Name).
+			Wrapf(err, "failed to write UDP packet")
+		if !ok {
+			return err
+		} else if !netErr.Timeout() {
+			ue.dialer.ReportUnavailable(networkType, err)
+			return err
 		}
-		_ = DefaultUdpEndpointPool.Remove(realSrc, ue)
-		retry++
-		goto getNew
 	}
 
-	// Print log.
-	// Only print routing for new connection to avoid the log exploded (Quic and BT).
-	if (isNew && log.IsLevelEnabled(log.InfoLevel)) || log.IsLevelEnabled(log.DebugLevel) {
-		fields := log.Fields{
-			"network":  networkType.StringWithoutDns(),
-			"outbound": ue.Outbound.Name,
-			"policy":   ue.Outbound.GetSelectionPolicy(),
-			"dialer":   ue.Dialer.Property().Name,
-			"sniffed":  domain,
-			"ip":       RefineAddrPortToShow(realDst),
-			"pid":      routingResult.Pid,
-			"ifindex":  routingResult.Ifindex,
-			"dscp":     routingResult.Dscp,
-			"pname":    ProcessName2String(routingResult.Pname[:]),
-			"mac":      Mac2String(routingResult.Mac[:]),
-		}
-		logger := log.WithFields(fields).Infof
-		if !isNew && log.IsLevelEnabled(log.DebugLevel) {
-			logger = log.WithFields(fields).Debugf
-		}
-		logger("%v <-> %v", RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
-	}
-
+	// // Print log.
+	// // Only print routing for new connection to avoid the log exploded (Quic and BT).
+	// if (isNew && c.log.IsLevelEnabled(logrus.InfoLevel)) || c.log.IsLevelEnabled(logrus.DebugLevel) {
+	// 	fields := logrus.Fields{
+	// 		"network":  networkType.StringWithoutDns(),
+	// 		"outbound": ue.Outbound.Name,
+	// 		"policy":   ue.Outbound.GetSelectionPolicy(),
+	// 		"dialer":   ue.Dialer.Property().Name,
+	// 		"sniffed":  domain,
+	// 		"ip":       RefineAddrPortToShow(realDst),
+	// 		"pid":      routingResult.Pid,
+	// 		"ifindex":  routingResult.Ifindex,
+	// 		"dscp":     routingResult.Dscp,
+	// 		"pname":    ProcessName2String(routingResult.Pname[:]),
+	// 		"mac":      Mac2String(routingResult.Mac[:]),
+	// 	}
+	// 	logger := c.log.WithFields(fields).Infof
+	// 	if !isNew && c.log.IsLevelEnabled(logrus.DebugLevel) {
+	// 		logger = c.log.WithFields(fields).Debugf
+	// 	}
+	// 	logger("[%v] %v <-> %v", strings.ToUpper(networkType.String()), RefineSourceToShow(realSrc, realDst.Addr()), dialTarget)
+	// }
 	return nil
 }

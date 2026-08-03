@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -26,6 +26,7 @@ type UdpTaskQueue struct {
 	closed    chan struct{}
 }
 
+// TODO: Timout?
 func (q *UdpTaskQueue) convoy() {
 	for {
 		select {
@@ -81,7 +82,7 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 			delete(p.m, key)
 			p.mu.Unlock()
 			<-q.closed
-			if len(ch) == 0 { // Otherwise let it be GCed
+			if len(ch) == 0 { // Otherwise let it to be gc
 				p.queueChPool.Put(ch)
 			}
 		})
@@ -92,9 +93,14 @@ func (p *UdpTaskPool) EmitTask(key string, task UdpTask) {
 	// if task cannot be executed within 180s(DefaultNatTimeout), GC may be triggered, so skip the task when GC occurs
 	select {
 	case q.ch <- task:
-	case <-q.ctx.Done():
+		// OK
+	default:
+		// Channel full, drop the packet
 	}
 }
+
+// 目前没有实现在遇到连接错误时将节点设置为不可用
+// 因此一旦节点失效，将必然最终导致队列拥塞，导致阻塞所有新连接
 
 var (
 	DefaultUdpTaskPool = NewUdpTaskPool()

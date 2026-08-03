@@ -12,10 +12,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -24,14 +24,18 @@ var (
 	InvalidParameterErr = fmt.Errorf("invalid parameters")
 )
 
+type AliveDialerSetSet map[*AliveDialerSet]int
+
 type Dialer struct {
 	*GlobalOption
 	InstanceOption
 	netproxy.Dialer
-	property *Property
+	*Property
 
-	collectionFineMu sync.Mutex
-	collections      [6]*collection
+	collection          *collection
+	supported           [4]bool
+	mu                  sync.Mutex
+	registeredAliveSets AliveDialerSetSet
 
 	tickerMu sync.Mutex
 	ticker   *time.Ticker
@@ -40,11 +44,63 @@ type Dialer struct {
 	cancel   context.CancelFunc
 
 	checkActivated bool
+
+	DialerPrometheus
+}
+
+type DialerPrometheus struct {
+	TotalConnections                                              prometheus.Counter
+	ActiveConnections, ActiveConnectionsTCP, ActiveConnectionsUDP prometheus.Gauge
+	DialLatency                                                   prometheus.Histogram
+}
+
+func (d *DialerPrometheus) initPrometheus(name string) {
+	d.ActiveConnections = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: fmt.Sprintf("dae_active_connections_%s", name),
+			Help: fmt.Sprintf("Number of active connections in %s", name),
+		},
+	)
+	d.ActiveConnectionsTCP = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: fmt.Sprintf("dae_active_connections_%s_tcp", name),
+			Help: fmt.Sprintf("Number of active TCP connections in %s", name),
+		},
+	)
+	d.ActiveConnectionsUDP = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: fmt.Sprintf("dae_active_connections_%s_udp", name),
+			Help: fmt.Sprintf("Number of active UDP connections in %s", name),
+		},
+	)
+	d.TotalConnections = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: fmt.Sprintf("dae_total_connections_%s", name),
+			Help: fmt.Sprintf("Total number of connections handled in %s", name),
+		},
+	)
+	d.DialLatency = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    fmt.Sprintf("dae_dial_latency_seconds_%s", name),
+			Help:    fmt.Sprintf("Dial latency in seconds in %s", name),
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms ~ ~16s
+		},
+	)
+	prometheus.Unregister(d.TotalConnections)
+	prometheus.Unregister(d.ActiveConnections)
+	prometheus.Unregister(d.ActiveConnectionsTCP)
+	prometheus.Unregister(d.ActiveConnectionsUDP)
+	prometheus.Unregister(d.DialLatency)
+	prometheus.Register(d.TotalConnections)
+	prometheus.Register(d.ActiveConnections)
+	prometheus.Register(d.ActiveConnectionsTCP)
+	prometheus.Register(d.ActiveConnectionsUDP)
+	prometheus.Register(d.DialLatency)
 }
 
 type GlobalOption struct {
 	D.ExtraOption
-	TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
+	// TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
 	CheckTolerance    time.Duration
@@ -60,8 +116,6 @@ type Property struct {
 	SubscriptionTag string
 }
 
-type AliveDialerSetSet map[*AliveDialerSet]int
-
 func NewGlobalOption(global *config.Global) *GlobalOption {
 	return &GlobalOption{
 		ExtraOption: D.ExtraOption{
@@ -75,8 +129,8 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 			TlsFragmentInterval: global.TlsFragmentInterval,
 			UDPHopInterval:      global.UDPHopInterval,
 		},
-		TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Method: global.TcpCheckHttpMethod},
-		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns, ResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp), Somark: global.SoMarkFromDae},
+		// TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Method: global.TcpCheckHttpMethod},
+		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
@@ -85,32 +139,29 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, iOption InstanceOption, property *Property) *Dialer {
-	var collections [6]*collection
-	for i := range collections {
-		collections[i] = newCollection()
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
-		GlobalOption:     option,
-		InstanceOption:   iOption,
-		Dialer:           dialer,
-		property:         property,
-		collectionFineMu: sync.Mutex{},
-		collections:      collections,
-		tickerMu:         sync.Mutex{},
-		ticker:           nil,
-		checkCh:          make(chan time.Time, 1),
-		ctx:              ctx,
-		cancel:           cancel,
+		GlobalOption:        option,
+		InstanceOption:      iOption,
+		Dialer:              dialer,
+		Property:            property,
+		collection:          newCollection(),
+		registeredAliveSets: make(AliveDialerSetSet),
+		tickerMu:            sync.Mutex{},
+		ticker:              nil,
+		checkCh:             make(chan time.Time, 1),
+		ctx:                 ctx,
+		cancel:              cancel,
 	}
-	log.WithField("dialer", d.Property().Name).
+	d.initPrometheus(d.Name)
+	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
 	return d
 }
 
 func (d *Dialer) Clone() *Dialer {
-	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.property)
+	return NewDialer(d.Dialer, d.GlobalOption, d.InstanceOption, d.Property)
 }
 
 func (d *Dialer) Close() error {
@@ -121,8 +172,4 @@ func (d *Dialer) Close() error {
 	}
 	d.tickerMu.Unlock()
 	return nil
-}
-
-func (d *Dialer) Property() *Property {
-	return d.property
 }

@@ -85,6 +85,7 @@ min: Select node by the latency of last check.
 min_avg10: Select node by the average of latencies of last 10 checks.
 min_moving_avg: Select node by the moving average of latencies of checks, which means more recent latencies have higher weight.
 `,
+	"next_hop":              "Specify a node name as the next hop dialer. All dialers in this group will use the specified node as their next dialer instead of direct connection.",
 	"tcp_check_url":         "Override global config.",
 	"tcp_check_http_method": "Override global config.",
 	"udp_check_dns":         "Override global config.",

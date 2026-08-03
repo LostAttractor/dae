@@ -8,7 +8,6 @@ package control
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -35,12 +34,13 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/daeuniverse/outbound/protocol/direct"
+
 	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
+	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -51,13 +51,11 @@ type ControlPlane struct {
 	listenIp   string
 
 	// TODO: add mutex?
-	outbounds     []*outbound.DialerGroup
-	inConnections sync.Map
+	outbounds              []*outbound.DialerGroup
+	noConnectivityOutbound consts.OutboundIndex
+	inConnections          sync.Map
 
-	dnsController    *DnsController
-	onceNetworkReady sync.Once
-
-	dialMode consts.DialMode
+	dnsController *DnsController
 
 	routingMatcher *RoutingMatcher
 
@@ -71,15 +69,20 @@ type ControlPlane struct {
 	wanInterface []string
 	lanInterface []string
 
-	sniffingTimeout   time.Duration
-	tproxyPortProtect bool
-	soMarkFromDae     uint32
-	mptcp             bool
+	dialTargetOverride bool
+	rerouteMode        consts.RerouteMode
+	sniffingTimeout    time.Duration
+	sniffVerifyMode    consts.SniffVerifyMode
+	tproxyPortProtect  bool
+	soMarkFromDae      uint32
 }
 
+// TODO: 统一 Outbound 中的DNS解析器
+// TODO: Hy2 的 mark 支持
+// TODO: Connectivity Check Failed 仅将状态变更作为 Warning、
+// HandlePkt HandleConn 分割 Route 和 Dial
 func NewControlPlane(
 	_bpf interface{},
-	dnsCache map[string]*DnsCache,
 	tagToNodeList map[string][]string,
 	groups []config.Group,
 	routingA *config.Routing,
@@ -87,7 +90,7 @@ func NewControlPlane(
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
 ) (*ControlPlane, error) {
-	// TODO: Some users reported that enabling GSO on the client would affect the performance of watching YouTube, so we disabled it by default.
+	// TODO: Some users reported that enabling GSO on the client wgrpcould affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
@@ -96,51 +99,53 @@ func NewControlPlane(
 
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
-		return nil, fmt.Errorf("failed to get kernel version: %w", e)
+		return nil, oops.Errorf("failed to get kernel version: %w", e)
 	}
 	/// Check linux kernel requirements.
 	// Check version from high to low to reduce the number of user upgrading kernel.
 	if err := features.HaveProgramHelper(ebpf.SchedCLS, asm.FnLoop); err != nil {
-		return nil, fmt.Errorf("%w: your kernel version %v does not support bpf_loop (needed by routing); expect >=%v; upgrade your kernel and try again",
+		return nil, oops.Errorf("%w: your kernel version %v does not support bpf_loop (needed by routing); expect >=%v; upgrade your kernel and try again",
 			err,
 			kernelVersion.String(),
 			consts.BpfLoopFeatureVersion.String())
 	}
 	if requirement := consts.ChecksumFeatureVersion; kernelVersion.Less(requirement) {
-		return nil, fmt.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
+		return nil, oops.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
 			kernelVersion.String(),
 			requirement.String())
 	}
 	if requirement := consts.BpfTimerFeatureVersion; len(global.WanInterface) > 0 && kernelVersion.Less(requirement) {
-		return nil, fmt.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
+		return nil, oops.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
 			kernelVersion.String(),
 			requirement.String())
 	}
 	if requirement := consts.SkAssignFeatureVersion; len(global.LanInterface) > 0 && kernelVersion.Less(requirement) {
-		return nil, fmt.Errorf("your kernel version %v does not support bind to LAN; expect >=%v; remove lan_interface in config file and try again",
+		return nil, oops.Errorf("your kernel version %v does not support bind to LAN; expect >=%v; remove lan_interface in config file and try again",
 			kernelVersion.String(),
 			requirement.String())
 	}
 	if kernelVersion.Less(consts.BasicFeatureVersion) {
-		return nil, fmt.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v",
+		return nil, oops.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v",
 			kernelVersion.String(),
 			consts.BasicFeatureVersion.String())
 	}
 
+	var wg sync.WaitGroup
 	var deferFuncs []func() error
 
 	/// Allow the current process to lock memory for eBPF resources.
 	if err = rlimit.RemoveMemlock(); err != nil {
-		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
+		return nil, oops.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 
+	/// Init DaeNetns.
 	InitDaeNetns()
 	if err = InitSysctlManager(); err != nil {
 		return nil, err
 	}
 
 	if err = GetDaeNetns().Setup(); err != nil {
-		return nil, fmt.Errorf("failed to setup dae netns: %w", err)
+		return nil, oops.Errorf("failed to setup dae netns: %w", err)
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
 	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
@@ -174,7 +179,7 @@ func NewControlPlane(
 		if _bpf, ok := _bpf.(*bpfObjects); ok {
 			bpf = _bpf
 		} else {
-			return nil, fmt.Errorf("unexpected bpf type: %T", _bpf)
+			return nil, oops.Errorf("unexpected bpf type: %T", _bpf)
 		}
 	} else {
 		bpf = new(bpfObjects)
@@ -183,18 +188,16 @@ func NewControlPlane(
 			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
 			CollectionOptions:   collectionOpts,
 		}); err != nil {
+			err = oops.Wrapf(err, "load eBPF objects")
 			if log.IsLevelEnabled(log.PanicLevel) {
-				log.Panicln(err)
+				log.Panicln("%+v", err)
 			}
-			return nil, fmt.Errorf("load eBPF objects: %w", err)
+			return nil, err
 		}
 	}
 	log.Infof("Loaded eBPF programs and maps")
-	// outboundId2Name can be modified later.
-	outboundId2Name := make(map[uint8]string)
 	core := newControlPlaneCore(
 		bpf,
-		outboundId2Name,
 		&kernelVersion,
 		_bpf != nil,
 	)
@@ -212,60 +215,66 @@ func NewControlPlane(
 	}
 	option := dialer.NewGlobalOption(global)
 
-	// Dial mode.
-	dialMode, err := consts.ParseDialMode(global.DialMode)
-	if err != nil {
-		return nil, err
-	}
+	consts.VerifyRerouteMode(string(global.RerouteMode))
+	consts.VerifySniffVerifyMode(string(global.SniffVerifyMode))
+
 	sniffingTimeout := global.SniffingTimeout
-	if dialMode == consts.DialMode_Ip {
+	if !global.DialTargetOverride && global.RerouteMode == consts.RerouteMode_None {
+		// Sniff is not needed.
 		sniffingTimeout = 0
 	}
-	disableKernelAliveCallback, err := strconv.ParseBool(global.NotBlockingEvenNodeNotAlive)
-	disableKernelAliveCallback = !disableKernelAliveCallback
-	if err != nil {
-		disableKernelAliveCallback = dialMode != consts.DialMode_Ip // Not block when sniff is available
+
+	/// Init DialerGroups.
+	var noConnectivityOutbound consts.OutboundIndex
+	if global.NoConnectivityBehavior == "direct" {
+		noConnectivityOutbound = consts.OutboundDirect
+	} else if global.NoConnectivityBehavior == "block" {
+		noConnectivityOutbound = consts.OutboundBlock
+	} else {
+		return nil, oops.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
 	}
-	_direct, directProperty := dialer.NewDirectDialer(option, true)
-	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, directProperty)
-	_block, blockProperty := dialer.NewBlockDialer(option, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, blockProperty)
+
+	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
+	direct := dialer.NewDialer(_direct, option, dialer.InstanceOption{DisableCheck: true}, &dialer.Property{Property: *directProperty})
+	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
+	block := dialer.NewDialer(_block, option, dialer.InstanceOption{DisableCheck: true}, &dialer.Property{Property: *blockProperty})
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
-			outbound.DialerSelectionPolicy{
+			dialer.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, core.outboundAliveChangeCallback(0, disableKernelAliveCallback)),
+			}, false, nil),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
 			[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
-			outbound.DialerSelectionPolicy{
+			dialer.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
-			}, core.outboundAliveChangeCallback(1, disableKernelAliveCallback)),
+			}, false, nil),
 	}
 
 	// Filter out groups.
 	// FIXME: Ugly code here: reset grpc and meek clients manually.
 	grpc.CleanGlobalClientConnectionCache()
 	meek.CleanGlobalRoundTripperCache()
+
 	dialerSet := outbound.NewDialerSetFromLinks(option, tagToNodeList)
 	deferFuncs = append(deferFuncs, dialerSet.Close)
 	for _, group := range groups {
 		// Parse policy.
-		policy, err := outbound.NewDialerSelectionPolicyFromGroupParam(&group)
+		policy, err := dialer.NewDialerSelectionPolicyFromGroupParam(&group)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create group %v: %w", group.Name, err)
+			return nil, oops.Errorf("failed to create group %v: %w", group.Name, err)
 		}
 		// Filter nodes with user given filters.
-		dialers, annos, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation)
+		dialers, annos, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation, group.NextHop)
 		if err != nil {
-			return nil, fmt.Errorf(`failed to create group "%v": %w`, group.Name, err)
+			return nil, oops.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}
 		// Convert node links to dialers.
 		log.Infof(`Group "%v" node list:`, group.Name)
 		for _, d := range dialers {
-			log.Infoln("\t" + d.Property().Name)
+			log.Infoln("\t" + d.Name)
 		}
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
@@ -284,33 +293,34 @@ func NewControlPlane(
 			dialers = newDialers
 			finalOption = groupOption
 		}
+		id := uint8(len(outbounds))
 		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
-			core.outboundAliveChangeCallback(uint8(len(outbounds)), disableKernelAliveCallback))
+			true, core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
 		outbounds = append(outbounds, dialerGroup)
+	}
+
+	// Generate outboundName2Id from outbounds.
+	if len(outbounds) > int(consts.OutboundUserDefinedMax) {
+		return nil, oops.Errorf("too many outbounds")
+	}
+	outboundName2Id := make(map[string]uint8)
+	for i, o := range outbounds {
+		if _, exist := outboundName2Id[o.Name]; exist {
+			return nil, oops.Errorf("duplicated outbound name: %v", o.Name)
+		}
+		outboundName2Id[o.Name] = uint8(i)
 	}
 
 	/// Node Connectivity Check.
 	for _, g := range outbounds {
 		for _, d := range g.Dialers {
 			// We only activate check of nodes that have a group.
-			d.ActivateCheck()
+			d.ActivateCheck(&wg)
 		}
 	}
 
 	/// Routing.
-	// Generate outboundName2Id from outbounds.
-	if len(outbounds) > int(consts.OutboundUserDefinedMax) {
-		return nil, fmt.Errorf("too many outbounds")
-	}
-	outboundName2Id := make(map[string]uint8)
-	for i, o := range outbounds {
-		if _, exist := outboundName2Id[o.Name]; exist {
-			return nil, fmt.Errorf("duplicated outbound name: %v", o.Name)
-		}
-		outboundName2Id[o.Name] = uint8(i)
-		outboundId2Name[uint8(i)] = o.Name
-	}
 	// Apply rules optimizers.
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	var rules []*config_parser.RoutingRule
@@ -320,7 +330,7 @@ func NewControlPlane(
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
 	); err != nil {
-		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
+		return nil, oops.Errorf("ApplyRulesOptimizers error:\n%w", err)
 	}
 	routingA.Rules = nil // Release.
 	if log.IsLevelEnabled(log.DebugLevel) {
@@ -333,38 +343,39 @@ func NewControlPlane(
 	// Parse rules and build.
 	builder, err := NewRoutingMatcherBuilder(rules, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
 	if err != nil {
-		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
+		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
 	if err = builder.BuildKernspace(); err != nil {
-		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+		return nil, oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
-		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
+		return nil, oops.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
 
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
-		core:              core,
-		deferFuncs:        deferFuncs,
-		listenIp:          "0.0.0.0",
-		outbounds:         outbounds,
-		dnsController:     nil,
-		onceNetworkReady:  sync.Once{},
-		dialMode:          dialMode,
-		routingMatcher:    routingMatcher,
-		ctx:               ctx,
-		cancel:            cancel,
-		ready:             make(chan struct{}),
-		muRealDomainSet:   sync.Mutex{},
-		realDomainSet:     bloom.NewWithEstimates(2048, 0.001),
-		lanInterface:      global.LanInterface,
-		wanInterface:      global.WanInterface,
-		sniffingTimeout:   sniffingTimeout,
-		tproxyPortProtect: global.TproxyPortProtect,
-		soMarkFromDae:     global.SoMarkFromDae,
-		mptcp:             global.Mptcp,
+		core:                   core,
+		deferFuncs:             deferFuncs,
+		listenIp:               "0.0.0.0",
+		outbounds:              outbounds,
+		noConnectivityOutbound: noConnectivityOutbound,
+		dnsController:          nil,
+		routingMatcher:         routingMatcher,
+		ctx:                    ctx,
+		cancel:                 cancel,
+		ready:                  make(chan struct{}),
+		muRealDomainSet:        sync.Mutex{},
+		realDomainSet:          bloom.NewWithEstimates(2048, 0.001),
+		lanInterface:           global.LanInterface,
+		wanInterface:           global.WanInterface,
+		dialTargetOverride:     global.DialTargetOverride,
+		rerouteMode:            global.RerouteMode,
+		sniffVerifyMode:        global.SniffVerifyMode,
+		sniffingTimeout:        sniffingTimeout,
+		tproxyPortProtect:      global.TproxyPortProtect,
+		soMarkFromDae:          global.SoMarkFromDae,
 	}
 	defer func() {
 		if err != nil {
@@ -376,41 +387,39 @@ func NewControlPlane(
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
 		LocationFinder:          locationFinder,
 		UpstreamReadyCallback:   plane.dnsUpstreamReadyCallback,
-		UpstreamResolverNetwork: common.MagicNetwork("udp", global.SoMarkFromDae, global.Mptcp),
+		UpstreamResolverNetwork: "udp",
 	})
 	if err != nil {
 		return nil, err
 	}
+	// Init immediately to avoid DNS leaking in the very beginning because param control_plane_dns_routing will
+	// be set in callback.
+	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
+		return nil, err
+	}
+	dnsUpstream.InitUpstreams(&wg)
 	/// Dns controller.
 	fixedDomainTtl, err := ParseFixedDomainTtl(dnsConfig.FixedDomainTtl)
 	if err != nil {
 		return nil, err
 	}
 	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
-		CacheAccessCallback: func(cache *DnsCache) (err error) {
-			return nil
+		MatchBitmap: func(fqdn string) []uint32 {
+			return plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn)
 		},
-		CacheRemoveCallback: func(cache *DnsCache) (err error) {
+		NewLookupCache: func(ip netip.Addr, domainBitmap []uint32) error {
 			// Write mappings into eBPF map:
 			// IP record (from dns lookup) -> domain routing
-			if err = core.BatchRemoveDomain(cache); err != nil {
-				return fmt.Errorf("BatchRemoveDomain: %w", err)
+			if err := core.BatchNewDomain(ip, domainBitmap); err != nil {
+				return oops.Wrapf(err, "BatchNewDomain")
 			}
 			return nil
 		},
-		NewCache: func(fqdn string, answers []dnsmessage.RR, deadline time.Time, originalDeadline time.Time) (cache *DnsCache, err error) {
-			cache = &DnsCache{
-				DomainBitmap:     plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn),
-				Answer:           answers,
-				Deadline:         deadline,
-				OriginalDeadline: originalDeadline,
+		LookupCacheTimeout: func(ip netip.Addr, domainBitmap []uint32) error {
+			if err := core.BatchRemoveDomain(ip, domainBitmap); err != nil {
+				return oops.Wrapf(err, "BatchRemoveDomain")
 			}
-			// Write mappings into eBPF map:
-			// IP record (from dns lookup) -> domain routing
-			if err = core.BatchNewDomain(cache); err != nil {
-				return cache, fmt.Errorf("BatchNewDomain: %w", err)
-			}
-			return cache, nil
+			return nil
 		},
 		BestDialerChooser: plane.chooseBestDnsDialer,
 		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
@@ -418,45 +427,29 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
-	// Refresh domain routing cache with new routing.
-	// FIXME: We temperarily disable it because we want to make change of DNS section take effects immediately.
-	// TODO: Add change detection.
-	if false && len(dnsCache) > 0 {
-		for cacheKey, cache := range dnsCache {
-			// Also refresh out-dated routing because kernel map items have no expiration.
-			lastDot := strings.LastIndex(cacheKey, ".")
-			if lastDot == -1 || lastDot == len(cacheKey)-1 {
-				// Not a valid key.
-				log.Warnln("Invalid cache key:", cacheKey)
-				continue
-			}
-			host := cacheKey[:lastDot]
-			_typ := cacheKey[lastDot+1:]
-			typ, err := strconv.ParseUint(_typ, 10, 16)
-			if err != nil {
-				// Unexpected.
-				return nil, err
-			}
-			_ = plane.dnsController.UpdateDnsCacheDeadline(host, uint16(typ), cache.Answer, cache.Deadline)
-		}
-	} else if _bpf != nil {
-		// Is reloading, and dnsCache == nil.
-		// Remove all map items.
-		// Normally, it is due to the change of ip version preference.
+	plane.deferFuncs = append(deferFuncs, plane.dnsController.Close)
+	// TODO: 保留 LookupCache?
+	// TODO: 在 DNS Config 不变的情况下，保留 DNSCache
+	// Lookup Cache 存储任何 lookup 所产生的记录, 这些记录是否需要GC?
+	// 规则改变不会使得记录失效, 因为程序仍会访问那个域名, 但我们需要保留记录的条目以便 GC
+	if _bpf != nil {
 		var key [4]uint32
 		var val bpfDomainRouting
 		iter := core.bpf.DomainRoutingMap.Iterate()
 		for iter.Next(&key, &val) {
 			_ = core.bpf.DomainRoutingMap.Delete(&key)
 		}
+		iter = core.bpf.DomainBumpMap.Iterate()
+		for iter.Next(&key, &val) {
+			_ = core.bpf.DomainBumpMap.Delete(&key)
+		}
 	}
 
-	// Init immediately to avoid DNS leaking in the very beginning because param control_plane_dns_routing will
-	// be set in callback.
-	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
-		return nil, err
+	wg.Wait()
+
+	for _, g := range outbounds {
+		g.PrintLatency()
 	}
-	go dnsUpstream.InitUpstreams()
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
 	// Bind to LAN
@@ -473,11 +466,11 @@ func NewControlPlane(
 	// Bind to WAN
 	if len(global.WanInterface) > 0 {
 		if err = core.setupSkPidMonitor(); err != nil {
-			log.WithError(err).Warnln("cgroup2 is not enabled; pname routing cannot be used")
+			log.Warnf("%+v", oops.Wrapf(err, "cgroup2 is not enabled; pname routing cannot be used"))
 		}
 		if global.EnableLocalTcpFastRedirect {
 			if err = core.setupLocalTcpFastRedirect(); err != nil {
-				log.WithError(err).Warnln("failed to setup local tcp fast redirect")
+				log.Warnf("%+v", oops.Wrapf(err, "failed to setup local tcp fast redirect"))
 			}
 		}
 		for _, ifname := range global.WanInterface {
@@ -499,7 +492,7 @@ func NewControlPlane(
 	}
 	// Bind to dae0 and dae0peer
 	if err = core.bindDaens(); err != nil {
-		return nil, fmt.Errorf("bindDaens: %w", err)
+		return nil, oops.Errorf("bindDaens: %w", err)
 	}
 
 	close(plane.ready)
@@ -510,11 +503,12 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 	m := make(map[string]int)
 	for _, k := range ks {
 		key, value, _ := strings.Cut(string(k), ":")
+		key = dnsmessage.CanonicalName(strings.TrimSpace(key))
 		ttl, err := strconv.ParseInt(strings.TrimSpace(value), 0, strconv.IntSize)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse ttl: %v", err)
+			return nil, oops.Errorf("failed to parse ttl: %v", err)
 		}
-		m[strings.TrimSpace(key)] = int(ttl)
+		m[key] = int(ttl)
 	}
 	return m, nil
 }
@@ -522,14 +516,14 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer.GlobalOption, error) {
 	result := global
 	changed := false
-	if group.TcpCheckUrl != nil {
-		result.TcpCheckUrl = group.TcpCheckUrl
-		changed = true
-	}
-	if group.TcpCheckHttpMethod != "" {
-		result.TcpCheckHttpMethod = group.TcpCheckHttpMethod
-		changed = true
-	}
+	// if group.TcpCheckUrl != nil {
+	// 	result.TcpCheckUrl = group.TcpCheckUrl
+	// 	changed = true
+	// }
+	// if group.TcpCheckHttpMethod != "" {
+	// 	result.TcpCheckHttpMethod = group.TcpCheckHttpMethod
+	// 	changed = true
+	// }
 	if group.UdpCheckDns != nil {
 		result.UdpCheckDns = group.UdpCheckDns
 		changed = true
@@ -557,35 +551,16 @@ func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
 }
 
-func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
-	c.dnsController.dnsCacheMu.Lock()
-	defer c.dnsController.dnsCacheMu.Unlock()
-	return deepcopy.Copy(c.dnsController.dnsCache).(map[string]*DnsCache)
-}
-
-func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
+func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) {
 	// Waiting for ready.
 	select {
 	case <-c.ctx.Done():
-		return nil
+		return
 	case <-c.ready:
 	}
 
-	///  Notify dialers to check.
-	c.onceNetworkReady.Do(func() {
-		for _, out := range c.outbounds {
-			for _, d := range out.Dialers {
-				d.NotifyCheck()
-			}
-		}
-	})
-	if dnsUpstream == nil {
-		return nil
-	}
-
 	/// Updates dns cache to support domain routing for hostname of dns_upstream.
-	// Ten years later.
-	deadline := time.Now().Add(time.Hour * 24 * 365 * 10)
+	deadline := time.Hour * 24 * 365 * 10 // Ten years later.
 	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
 
 	if dnsUpstream.Ip4.IsValid() {
@@ -599,9 +574,7 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			A: dnsUpstream.Ip4.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
-			return err
-		}
+		c.dnsController.LookupCache(queryInfo{qname: fqdn, qtype: typ}, answers, int(deadline.Seconds()))
 	}
 
 	if dnsUpstream.Ip6.IsValid() {
@@ -615,70 +588,63 @@ func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err 
 			},
 			AAAA: dnsUpstream.Ip6.AsSlice(),
 		}}
-		if err = c.dnsController.UpdateDnsCacheDeadline(dnsUpstream.Hostname, typ, answers, deadline); err != nil {
-			return err
-		}
+		c.dnsController.LookupCache(queryInfo{qname: fqdn, qtype: typ}, answers, int(deadline.Seconds()))
 	}
-	return nil
 }
 
-func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (dialTarget string, shouldReroute bool, dialIp bool) {
-	dialMode := consts.DialMode_Ip
-
-	if !outbound.IsReserved() && domain != "" {
-		switch c.dialMode {
-		case consts.DialMode_Domain:
-			if cache := c.dnsController.LookupDnsRespCache(c.dnsController.cacheKey(domain, common.AddrToDnsType(dst.Addr())), true); cache != nil {
-				// Has Cached A/AAAA records. It is a real domain.
-				// For this case, It should be able to handle domain match set directly in kernel
-				dialMode = consts.DialMode_Domain
-			} else {
-				// Successful sniff without DNS lookup record.
-				// In this case, the kernel may not handle domain match set, so re-route is required.
-				// Check if the domain is in real-domain set (bloom filter).
-				c.muRealDomainSet.Lock()
-				if c.realDomainSet.TestString(domain) {
+// verified 返回 domain 是不是 dst 的域名
+// shouldReroute 返回 Kernel 是否有可能没有正确 Route
+// SniffVerifyMode_Loose 在这个域名存在时, 通过认证
+// SniffVerifyMode_Strict 在这个域名尝试过对应的 DNS 解析时, 通过认证
+func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (verified bool, shouldReroute bool) {
+	if domain == "" {
+		return
+	}
+	fqdn := dnsmessage.CanonicalName(domain)
+	if dnsCache := c.dnsController.lookupCache.Get(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}); dnsCache != nil {
+		includeInCache := IncludeIp(dst.Addr(), dnsCache)
+		// Successful sniff without DNS lookup record.
+		// In this case, the kernel may not handle domain match set, so re-route is required.
+		shouldReroute = !includeInCache
+		switch c.sniffVerifyMode {
+		case consts.SniffVerifyMode_None, consts.SniffVerifyMode_Loose:
+			verified = true
+		case consts.SniffVerifyMode_Strict:
+			verified = includeInCache
+		}
+	} else {
+		// Successful sniff without DNS lookup record.
+		shouldReroute = true
+		// Check if the domain is in real-domain set (bloom filter).
+		switch c.sniffVerifyMode {
+		case consts.SniffVerifyMode_None:
+			verified = true
+		case consts.SniffVerifyMode_Strict:
+			verified = false
+		case consts.SniffVerifyMode_Loose:
+			// TODO: 产生一个真的DNS查询? 这样能被缓存
+			c.muRealDomainSet.Lock()
+			verified = c.realDomainSet.TestString(fqdn) // Test if the domain is in real-domain set.
+			c.muRealDomainSet.Unlock()
+			if !verified {
+				// Lookup A/AAAA to make sure it is a real domain.
+				// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
+				if ip46, err := netutils.ResolveIp46(fqdn); err == nil && ip46.IsValid() {
+					// Has A/AAAA records. It is a real domain.
+					// Add it to real-domain set.
+					c.muRealDomainSet.Lock()
+					c.realDomainSet.AddString(fqdn)
 					c.muRealDomainSet.Unlock()
-					dialMode = consts.DialMode_Domain
-
-					// Should use this domain to reroute
-					shouldReroute = true
-				} else {
-					c.muRealDomainSet.Unlock()
-					// Lookup A/AAAA to make sure it is a real domain.
-					ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
-					defer cancel()
-					// TODO: use DNS controller and re-route by control plane.
-					systemDns, err := netutils.SystemDns()
-					if err == nil {
-						if ip46, _, _ := netutils.ResolveIp46(ctx, direct.SymmetricDirect, systemDns, domain, common.MagicNetwork("udp", c.soMarkFromDae, c.mptcp), true); ip46.Ip4.IsValid() || ip46.Ip6.IsValid() {
-							// Has A/AAAA records. It is a real domain.
-							dialMode = consts.DialMode_Domain
-							// Add it to real-domain set.
-							c.muRealDomainSet.Lock()
-							c.realDomainSet.AddString(domain)
-							c.muRealDomainSet.Unlock()
-
-							// Should use this domain to reroute
-							shouldReroute = true
-						}
-					}
+					verified = true
 				}
-
 			}
-		case consts.DialMode_DomainCao:
-			shouldReroute = true
-			fallthrough
-		case consts.DialMode_DomainPlus:
-			dialMode = consts.DialMode_Domain
 		}
 	}
+	return
+}
 
-	switch dialMode {
-	case consts.DialMode_Ip:
-		dialTarget = dst.String()
-		dialIp = true
-	case consts.DialMode_Domain:
+func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string, override bool) (dialTarget string, dialIp bool) {
+	if override {
 		if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
 			// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
 			domain = domain[1 : len(domain)-1]
@@ -687,11 +653,9 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			// domain is IPv4 or IPv6 (has colon)
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
 			dialIp = true
-
 		} else if _, _, err := net.SplitHostPort(domain); err == nil {
 			// domain is already domain:port
 			dialTarget = domain
-
 		} else {
 			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
 		}
@@ -699,8 +663,11 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 			"from": dst.String(),
 			"to":   dialTarget,
 		}).Debugln("Rewrite dial target to domain")
+	} else {
+		dialTarget = dst.String()
+		dialIp = true
 	}
-	return dialTarget, shouldReroute, dialIp
+	return
 }
 
 type Listener struct {
@@ -718,7 +685,7 @@ func (l *Listener) Close() error {
 		if err == nil {
 			err = err2
 		} else {
-			err = fmt.Errorf("%w: %v", err, err2)
+			err = oops.Errorf("%w: %v", err, err2)
 		}
 	}
 	return err
@@ -736,7 +703,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	// TCP socket.
 	tcpFile, err := listener.tcpListener.(*net.TCPListener).File()
 	if err != nil {
-		return fmt.Errorf("failed to retrieve copy of the underlying TCP connection file")
+		return oops.Errorf("failed to retrieve copy of the underlying TCP connection file")
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		return tcpFile.Close()
@@ -747,7 +714,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	// UDP socket.
 	udpFile, err := udpConn.File()
 	if err != nil {
-		return fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
+		return oops.Errorf("failed to retrieve copy of the underlying UDP connection file")
 	}
 	c.deferFuncs = append(c.deferFuncs, func() error {
 		return udpFile.Close()
@@ -768,67 +735,62 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			lconn, err := listener.tcpListener.Accept()
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
-					log.Errorf("Error when accept: %v", err)
+					log.Errorf("%+v", oops.Wrapf(err, "Error when accept"))
 				}
 				break
 			}
 			go func(lconn net.Conn) {
 				c.inConnections.Store(lconn, struct{}{})
 				defer c.inConnections.Delete(lconn)
-				if err := c.handleConn(lconn); err != nil {
-					log.Warnln("handleConn:", err)
+				if err := c.handleConn(lconn); err != nil && c.ctx.Err() == nil {
+					log.Warningf("%+v", oops.Wrapf(err, "handleConn"))
 				}
 			}(lconn)
 		}
 	}()
 	go func() {
-		buf := pool.GetFullCap(consts.EthernetMtu)
-		var oob [120]byte // Size for original dest
-		defer buf.Put()
+		buf := pool.GetBuffer(consts.EthernetMtu)
+		oob := pool.GetBuffer(120)
+		defer pool.PutBuffer(buf)
+		defer pool.PutBuffer(oob)
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			default:
 			}
-			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf, oob[:])
+			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf, oob)
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
-					log.Errorf("ReadFromUDPAddrPort: %v, %v", src.String(), err)
+					log.Errorf("%+v", oops.Wrapf(err, "ReadFromUDPAddrPort: %v", src.String()))
 				}
 				break
 			}
-			newBuf := pool.Get(n)
-			copy(newBuf, buf[:n])
-			newOob := pool.Get(oobn)
-			copy(newOob, oob[:oobn])
-			newSrc := src
+
+			dst := RetrieveOriginalDest(oob[:oobn])
 			convergeSrc := common.ConvergeAddrPort(src)
+			convergeDst := common.ConvergeAddrPort(dst)
+
+			data := pool.GetBuffer(n)
+			copy(data, buf[:n])
+
 			// Debug:
 			// t := time.Now()
 			DefaultUdpTaskPool.EmitTask(convergeSrc.String(), func() {
-				data := newBuf
-				oob := newOob
-				src := newSrc
-
-				defer data.Put()
-				defer oob.Put()
-				var realDst netip.AddrPort
+				defer pool.PutBuffer(data)
 				var routingResult *bpfRoutingResult
-				pktDst := RetrieveOriginalDest(oob)
-				routingResult, err := c.core.RetrieveRoutingResult(src, pktDst, unix.IPPROTO_UDP)
+				// Use an empty AddrPort for dst
+				routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
 				if err != nil {
-					log.Warnf("No AddrPort presented: %v", err)
+					log.Warningf("%+v", oops.Wrapf(err, "No AddrPort presented"))
 					return
-				} else {
-					realDst = pktDst
 				}
-				if e := c.handlePkt(udpConn, data, convergeSrc, common.ConvergeAddrPort(pktDst), common.ConvergeAddrPort(realDst), routingResult, false); e != nil {
-					log.Warnln("handlePkt:", e)
+				if e := c.handlePkt(udpConn, data, convergeSrc, convergeDst, routingResult, false); e != nil && c.ctx.Err() == nil {
+					log.Warningf("%+v", oops.Wrapf(e, "handlePkt"))
 				}
 			})
 			// if d := time.Since(t); d > 100*time.Millisecond {
-			// 	logrus.Println(d)
+			// 	log.Println(d)
 			// }
 		}
 	}()
@@ -846,12 +808,12 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 	listenAddr := net.JoinHostPort(c.listenIp, strconv.Itoa(int(port)))
 	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
 	if err != nil {
-		return nil, fmt.Errorf("listenTCP: %w", err)
+		return nil, oops.Errorf("listenTCP: %w", err)
 	}
 	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp", listenAddr)
 	if err != nil {
 		_ = tcpListener.Close()
-		return nil, fmt.Errorf("listenUDP: %w", err)
+		return nil, oops.Errorf("listenUDP: %w", err)
 	}
 	listener = &Listener{
 		tcpListener: tcpListener,
@@ -866,7 +828,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 
 	// Serve
 	if err = c.Serve(readyChan, listener); err != nil {
-		return nil, fmt.Errorf("failed to serve: %w", err)
+		return nil, oops.Errorf("failed to serve: %w", err)
 	}
 
 	return listener, nil
@@ -880,18 +842,15 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
 	var (
-		bestLatency  time.Duration
 		l4proto      consts.L4ProtoStr
 		ipversion    consts.IpVersionStr
 		bestDialer   *dialer.Dialer
 		bestOutbound *outbound.DialerGroup
 		bestTarget   netip.AddrPort
-		dialMark     uint32
+		// dialMark     uint32
 	)
+	var networkType dialer.NetworkType
 	// Get the min latency path.
-	networkType := dialer.NetworkType{
-		IsDns: true,
-	}
 	for _, ver := range ipversions {
 		for _, proto := range l4protos {
 			networkType.L4Proto = proto
@@ -903,21 +862,19 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			case consts.IpVersionStr_6:
 				dAddr = dnsUpstream.Ip6
 			default:
-				return nil, fmt.Errorf("unexpected ipversion: %v", ver)
+				return nil, oops.Errorf("unexpected ipversion: %v", ver)
 			}
-			outboundIndex, mark, _, err := c.Route(req.realSrc, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
+			// TODO: Mark
+			outboundIndex, _, _, err := c.Route(req.src, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
 			}
-			if mark == 0 {
-				mark = c.soMarkFromDae
-			}
 			if int(outboundIndex) >= len(c.outbounds) {
-				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)
+				return nil, oops.Errorf("bad outbound index: %v", outboundIndex)
 			}
 			dialerGroup := c.outbounds[outboundIndex]
 			// DNS always dial IP.
-			d, latency, err := dialerGroup.Select(&networkType, true)
+			d, err := dialerGroup.Select(&networkType)
 			if err != nil {
 				continue
 			}
@@ -929,22 +886,16 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			//		"outbound": dialerGroup.Name,
 			//	}).Traceln("Choice")
 			//}
-			if bestDialer == nil || latency < bestLatency {
-				bestDialer = d
-				bestOutbound = dialerGroup
-				bestLatency = latency
-				l4proto = proto
-				ipversion = ver
-				dialMark = mark
-
-				if bestLatency == 0 {
-					break
-				}
-			}
+			bestDialer = d
+			bestOutbound = dialerGroup
+			l4proto = proto
+			ipversion = ver
+			// dialMark = mark
+			break
 		}
 	}
 	if bestDialer == nil {
-		return nil, fmt.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
+		return nil, oops.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
 	}
 	switch ipversion {
 	case consts.IpVersionStr_4:
@@ -960,17 +911,15 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			"choose":     string(l4proto) + "+" + string(ipversion),
 			"use":        bestTarget.String(),
 			"outbound":   bestOutbound.Name,
-			"dialer":     bestDialer.Property().Name,
+			"dialer":     bestDialer.Name,
 		}).Traceln("Choose DNS path")
 	}
 	return &dialArgument{
-		l4proto:      l4proto,
-		ipversion:    ipversion,
-		bestDialer:   bestDialer,
-		bestOutbound: bestOutbound,
-		bestTarget:   bestTarget,
-		mark:         dialMark,
-		mptcp:        c.mptcp,
+		networkType: networkType,
+		Dialer:      bestDialer,
+		Outbound:    bestOutbound,
+		Target:      bestTarget,
+		// mark:         dialMark,
 	}, nil
 }
 
@@ -990,7 +939,7 @@ func (c *ControlPlane) Close() (err error) {
 		if e := c.deferFuncs[i](); e != nil {
 			// Combine errors.
 			if err != nil {
-				err = fmt.Errorf("%w; %v", err, e)
+				err = oops.Errorf("%w; %v", err, e)
 			} else {
 				err = e
 			}

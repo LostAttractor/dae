@@ -25,6 +25,7 @@ const (
 const (
 	UdpCheckLookupHost = "connectivitycheck.gstatic.com."
 	DefaultDialTimeout = 8 * time.Second
+	DefaultReadTimeout = 3600 * time.Second
 )
 
 type L4ProtoStr string
@@ -39,7 +40,7 @@ func (l L4ProtoStr) ToL4Proto() uint8 {
 	case L4ProtoStr_TCP:
 		return unix.IPPROTO_TCP
 	case L4ProtoStr_UDP:
-		return unix.IPPROTO_IDP
+		return unix.IPPROTO_UDP
 	}
 	panic("unsupported l4proto")
 }
@@ -81,13 +82,12 @@ func (v IpVersionStr) ToIpVersionType() IpVersionType {
 	panic("unsupported ipversion")
 }
 
-func IpVersionFromAddr(addr netip.Addr) IpVersionStr {
-	var ipversion IpVersionStr
+func IpVersionStrFromAddr(addr netip.Addr) (ipversion IpVersionStr) {
 	switch {
 	case addr.Is4() || addr.Is4In6():
 		ipversion = IpVersionStr_4
 	case addr.Is6():
 		ipversion = IpVersionStr_6
 	}
-	return ipversion
+	return
 }
