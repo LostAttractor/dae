@@ -57,7 +57,8 @@ type ControlPlane struct {
 
 	dnsController *DnsController
 
-	routingMatcher *RoutingMatcher
+	routingMatcher        *RoutingMatcher
+	routingMatcherBuilder *RoutingMatcherBuilder
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -67,6 +68,10 @@ type ControlPlane struct {
 
 	wanInterface []string
 	lanInterface []string
+
+	// Fields below are saved at NewControlPlane and consumed by Activate.
+	autoConfigKernelParameter  bool
+	enableLocalTcpFastRedirect bool
 
 	dialTargetOverride bool
 	rerouteMode        consts.RerouteMode
@@ -82,6 +87,13 @@ type ControlPlane struct {
 // TODO: Hy2 的 mark 支持
 // TODO: Connectivity Check Failed 仅将状态变更作为 Warning、
 // HandlePkt HandleConn 分割 Route 和 Dial
+//
+// NewControlPlane validates the configuration and builds a control plane in
+// memory. It loads external resources (e.g. geoip) and verifies they are
+// usable, but it does NOT modify shared BPF maps and does NOT bind to any
+// network interfaces. Call Activate to commit the configuration to the kernel.
+// This split lets reload abort cleanly when the new config or its referenced
+// resources are invalid, leaving the previously running control plane intact.
 func NewControlPlane(
 	_bpf interface{},
 	tagToNodeList map[string][]string,
@@ -130,9 +142,6 @@ func NewControlPlane(
 			kernelVersion.String(),
 			consts.BasicFeatureVersion.String())
 	}
-
-	wg := common.NewTimedWaitGroup()
-	var deferFuncs []func() error
 
 	/// Allow the current process to lock memory for eBPF resources.
 	if err = rlimit.RemoveMemlock(); err != nil {
@@ -314,14 +323,6 @@ func NewControlPlane(
 		outboundName2Id[o.Name] = uint8(i)
 	}
 
-	/// Node Connectivity Check.
-	for _, g := range outbounds {
-		for _, d := range g.Dialers {
-			// We only activate check of nodes that have a group.
-			d.ActivateCheck(wg)
-		}
-	}
-
 	/// Routing.
 	// Apply rules optimizers.
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
@@ -342,13 +343,11 @@ func NewControlPlane(
 		}
 		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}
-	// Parse rules and build.
+	// Parse rules and build. BuildUserspace is in-memory only and is safe to
+	// run during the validation phase; BuildKernspace is deferred to Activate.
 	builder, err := NewRoutingMatcherBuilder(rules, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
 	if err != nil {
 		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
-	}
-	if err = builder.BuildKernspace(); err != nil {
-		return nil, oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
@@ -358,25 +357,25 @@ func NewControlPlane(
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
-		core:                   core,
-		deferFuncs:             deferFuncs,
-		outbounds:              outbounds,
-		noConnectivityOutbound: noConnectivityOutbound,
-		dnsController:          nil,
-		routingMatcher:         routingMatcher,
-		ctx:                    ctx,
-		cancel:                 cancel,
-		muRealDomainSet:        sync.Mutex{},
-		realDomainSet:          bloom.NewWithEstimates(2048, 0.001),
-		lanInterface:           global.LanInterface,
-		wanInterface:           global.WanInterface,
-		dialTargetOverride:     global.DialTargetOverride,
-		rerouteMode:            global.RerouteMode,
-		sniffVerifyMode:        global.SniffVerifyMode,
-		sniffingTimeout:        sniffingTimeout,
-		tproxyPortProtect:      global.TproxyPortProtect,
-		soMarkFromDae:          global.SoMarkFromDae,
-		PrometheusRegistry:     prometheusRegistry,
+		core:                       core,
+		outbounds:                  outbounds,
+		noConnectivityOutbound:     noConnectivityOutbound,
+		routingMatcher:             routingMatcher,
+		routingMatcherBuilder:      builder,
+		ctx:                        ctx,
+		cancel:                     cancel,
+		realDomainSet:              bloom.NewWithEstimates(2048, 0.001),
+		lanInterface:               common.Deduplicate(global.LanInterface),
+		wanInterface:               global.WanInterface,
+		autoConfigKernelParameter:  global.AutoConfigKernelParameter,
+		enableLocalTcpFastRedirect: global.EnableLocalTcpFastRedirect,
+		dialTargetOverride:         global.DialTargetOverride,
+		rerouteMode:                global.RerouteMode,
+		sniffVerifyMode:            global.SniffVerifyMode,
+		sniffingTimeout:            sniffingTimeout,
+		tproxyPortProtect:          global.TproxyPortProtect,
+		soMarkFromDae:              global.SoMarkFromDae,
+		PrometheusRegistry:         prometheusRegistry,
 	}
 	defer func() {
 		if err != nil {
@@ -427,12 +426,37 @@ func NewControlPlane(
 	}); err != nil {
 		return nil, err
 	}
-	plane.deferFuncs = append(deferFuncs, plane.dnsController.Close)
+	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
 	// TODO: 保留 LookupCache?
 	// TODO: 在 DNS Config 不变的情况下，保留 DNSCache
 	// Lookup Cache 存储任何 lookup 所产生的记录, 这些记录是否需要GC?
 	// 规则改变不会使得记录失效, 因为程序仍会访问那个域名, 但我们需要保留记录的条目以便 GC
-	if _bpf != nil {
+
+	return plane, nil
+}
+
+// Activate commits the in-memory control plane to the kernel:
+//   - writes routing rules to BPF maps,
+//   - drops stale domain routing entries inherited from the previous plane
+//     (when reloading),
+//   - binds eBPF programs to LAN/WAN interfaces and the dae netns,
+//   - runs the initial connectivity check for outbound dialers.
+//
+// It must be called exactly once after NewControlPlane succeeds. Failures here
+// are not recoverable: the BPF state may be partially committed, so the caller
+// is expected to close the plane and exit.
+func (c *ControlPlane) Activate() error {
+	core := c.core
+	builder := c.routingMatcherBuilder
+	c.routingMatcherBuilder = nil
+
+	if err := builder.BuildKernspace(); err != nil {
+		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+	}
+
+	// On reload, evict domain routing entries inherited from the previous
+	// plane so that they cannot leak into the new rule set.
+	if core.isReload {
 		var key [4]uint32
 		var val bpfDomainRouting
 		iter := core.bpf.DomainRoutingMap.Iterate()
@@ -445,10 +469,17 @@ func NewControlPlane(
 		}
 	}
 
+	// Run initial connectivity checks. We wait for completion so that
+	// OutboundConnectivityMap reflects a sensible state before traffic starts.
+	wg := common.NewTimedWaitGroup()
+	for _, g := range c.outbounds {
+		for _, d := range g.Dialers {
+			d.ActivateCheck(wg)
+		}
+	}
 	wg.Wait()
-
 	log.Infof("Initialization is completed. Start to Proxying...")
-	for i, g := range outbounds {
+	for i, g := range c.outbounds {
 		if consts.OutboundIndex(i).IsReserved() {
 			continue
 		}
@@ -456,53 +487,45 @@ func NewControlPlane(
 	}
 
 	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
-	if err = core.setupExitHandler(); err != nil {
-		return nil, oops.Errorf("failed to setup exit handler: %w", err)
+	if err := core.setupExitHandler(); err != nil {
+		return oops.Errorf("failed to setup exit handler: %w", err)
 	}
-	// Bind to LAN
-	if len(global.LanInterface) > 0 {
-		if global.AutoConfigKernelParameter {
+	if len(c.lanInterface) > 0 {
+		if c.autoConfigKernelParameter {
 			_ = SetIpv4forward("1")
 			_ = setForwarding("all", consts.IpVersionStr_6, "1")
 		}
-		global.LanInterface = common.Deduplicate(global.LanInterface)
-		for _, ifname := range global.LanInterface {
-			core.bindLan(ifname, global.AutoConfigKernelParameter)
+		for _, ifname := range c.lanInterface {
+			core.bindLan(ifname, c.autoConfigKernelParameter)
 		}
 	}
-	// Bind to WAN
-	if len(global.WanInterface) > 0 {
-		if err = core.setupSkPidMonitor(); err != nil {
+	if len(c.wanInterface) > 0 {
+		if err := core.setupSkPidMonitor(); err != nil {
 			log.Warnf("%+v", oops.Wrapf(err, "cgroup2 is not enabled; pname routing cannot be used"))
 		}
-		if global.EnableLocalTcpFastRedirect {
-			if err = core.setupLocalTcpFastRedirect(); err != nil {
+		if c.enableLocalTcpFastRedirect {
+			if err := core.setupLocalTcpFastRedirect(); err != nil {
 				log.Warnf("%+v", oops.Wrapf(err, "failed to setup local tcp fast redirect"))
 			}
 		}
-		for _, ifname := range global.WanInterface {
-			if len(global.LanInterface) > 0 {
+		for _, ifname := range c.wanInterface {
+			if len(c.lanInterface) > 0 && c.autoConfigKernelParameter {
 				// FIXME: Code is not elegant here.
 				// bindLan setting conf.ipv6.all.forwarding=1 suppresses accept_ra=1,
 				// thus we set it 2 as a workaround.
 				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
-				if global.AutoConfigKernelParameter {
-					acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
-					val, _ := acceptRa.Get()
-					if val == "1" {
-						_ = acceptRa.Set("2", false)
-					}
+				acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
+				if val, _ := acceptRa.Get(); val == "1" {
+					_ = acceptRa.Set("2", false)
 				}
 			}
-			core.bindWan(ifname, global.AutoConfigKernelParameter)
+			core.bindWan(ifname, c.autoConfigKernelParameter)
 		}
 	}
-	// Bind to dae0 and dae0peer
-	if err = core.bindDaens(); err != nil {
-		return nil, oops.Errorf("bindDaens: %w", err)
+	if err := core.bindDaens(); err != nil {
+		return oops.Errorf("bindDaens: %w", err)
 	}
-
-	return plane, nil
+	return nil
 }
 
 func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
