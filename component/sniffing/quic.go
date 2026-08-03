@@ -137,12 +137,12 @@ func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*
 	// This function will modify the packet in place, thus we should save the first byte and MaxPacketNumberLength
 	// and recover it later.
 	firstByte := header[0]
-	rawPacketNumber := pool.Get(quicutils.MaxPacketNumberLength)
+	rawPacketNumber := pool.GetBuffer(quicutils.MaxPacketNumberLength)
+	defer pool.PutBuffer(rawPacketNumber)
 	copy(rawPacketNumber, header[boundary-quicutils.MaxPacketNumberLength:])
 	defer func() {
 		header[0] = firstByte
 		copy(header[boundary-quicutils.MaxPacketNumberLength:], rawPacketNumber)
-		pool.Put(rawPacketNumber)
 	}()
 	plaintext, err := quicutils.DecryptQuic_(header, blockEnd, destConnId)
 	if err != nil {

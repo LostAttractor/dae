@@ -6,6 +6,7 @@
 package sniffing
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,9 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/daeuniverse/outbound/pool/bytes"
 )
 
 type Sniffer struct {
@@ -41,7 +42,7 @@ type Sniffer struct {
 
 func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	buffer := pool.GetBuffer()
+	buffer := pool.GetBytesBuffer()
 	buffer.Grow(AssumedTlsClientHelloMaxLength)
 	buffer.Reset()
 	s := &Sniffer{
@@ -56,7 +57,7 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 }
 
 func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
-	buffer := pool.GetBuffer()
+	buffer := pool.GetBytesBuffer()
 	buffer.Write(data)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	s := &Sniffer{
@@ -106,12 +107,16 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	for {
 		if s.stream {
 			go func() {
+				defer close(s.dataReady)
 				// Read once.
-				_, err := s.buf.ReadFromOnce(s.r)
+				buf := pool.GetBuffer(consts.EthernetMtu)
+				defer pool.PutBuffer(buf)
+				n, err := s.r.Read(buf)
 				if err != nil {
 					s.dataError = err
+					return
 				}
-				close(s.dataReady)
+				s.buf.Write(buf[:n])
 			}()
 
 			// Waiting 100ms for data.
@@ -220,7 +225,7 @@ func (s *Sniffer) Close() (err error) {
 	default:
 		s.cancel()
 		if s.buf.Len() == 0 {
-			pool.PutBuffer(s.buf)
+			pool.PutBytesBuffer(s.buf)
 		}
 	}
 	return nil

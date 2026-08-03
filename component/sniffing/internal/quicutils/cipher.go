@@ -38,10 +38,10 @@ type Keys struct {
 }
 
 func (k *Keys) Close() error {
-	pool.Put(k.clientInitialSecret)
-	pool.Put(k.headerProtectionKey)
-	pool.Put(k.iv)
-	pool.Put(k.key)
+	pool.PutBuffer(k.clientInitialSecret)
+	pool.PutBuffer(k.headerProtectionKey)
+	pool.PutBuffer(k.iv)
+	pool.PutBuffer(k.key)
 	return nil
 }
 
@@ -90,8 +90,8 @@ func (k *Keys) HeaderProtection_(sample []byte, longHeader bool, firstByte *byte
 		return nil, err
 	}
 	// Get mask.
-	mask := pool.Get(block.BlockSize())
-	defer pool.Put(mask)
+	mask := pool.GetBuffer(block.BlockSize())
+	defer pool.PutBuffer(mask)
 	block.Encrypt(mask, sample)
 	// Encrypt/decrypt first byte.
 	if longHeader {
