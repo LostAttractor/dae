@@ -47,3 +47,16 @@ func QtypeToString(qtype uint16) string {
 	}
 	return str
 }
+
+// CopyDnsAnswers deep-copies a slice of DNS resource records, keeping any
+// nil entries as-is (dnsmessage.Copy would panic on a nil RR).
+func CopyDnsAnswers(ans []dnsmessage.RR) []dnsmessage.RR {
+	copied := make([]dnsmessage.RR, len(ans))
+	for i, rr := range ans {
+		if rr == nil {
+			continue
+		}
+		copied[i] = dnsmessage.Copy(rr)
+	}
+	return copied
+}
