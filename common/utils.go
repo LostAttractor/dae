@@ -10,7 +10,6 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/netip"
@@ -20,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	dnsmessage "github.com/miekg/dns"
@@ -427,15 +425,12 @@ func AddrToDnsType(addr netip.Addr) uint16 {
 
 // Htons converts the unsigned short integer hostshort from host byte order to network byte order.
 func Htons(i uint16) uint16 {
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, i)
-	return *(*uint16)(unsafe.Pointer(&b[0]))
+	return i<<8 | i>>8
 }
 
 // Ntohs converts the unsigned short integer hostshort from host byte order to network byte order.
 func Ntohs(i uint16) uint16 {
-	bytes := *(*[2]byte)(unsafe.Pointer(&i))
-	return binary.BigEndian.Uint16(bytes[:])
+	return i<<8 | i>>8
 }
 
 func GetDefaultIfnames() (defaultIfs []string, err error) {
