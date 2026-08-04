@@ -8,6 +8,7 @@ package routing
 import (
 	"testing"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -65,5 +66,35 @@ func TestParseOutboundSkipWhileNoalive(t *testing.T) {
 				t.Fatalf("SkipWhileNoalive = %v, want %v", outbound.SkipWhileNoalive, tt.want)
 			}
 		})
+	}
+}
+
+func TestAliasOptimizer(t *testing.T) {
+	rule := func(name string) *config_parser.RoutingRule {
+		return &config_parser.RoutingRule{
+			AndFunctions: []*config_parser.Function{{Name: name, Params: []*config_parser.Param{{Val: "0.0.0.0"}}}},
+			Outbound:     config_parser.Function{Name: "direct"},
+		}
+	}
+	rules := []*config_parser.RoutingRule{
+		rule("ip"),
+		rule("dip"),
+		rule("port"),
+		rule("dport"),
+	}
+	optimized, err := (&AliasOptimizer{}).Optimize(rules)
+	if err != nil {
+		t.Fatalf("Optimize: %v", err)
+	}
+	want := []string{
+		consts.Function_DestIp,
+		consts.Function_DestIp,
+		consts.Function_DestPort,
+		consts.Function_DestPort,
+	}
+	for i, r := range optimized {
+		if got := r.AndFunctions[0].Name; got != want[i] {
+			t.Errorf("rule %d: function = %v, want %v", i, got, want[i])
+		}
 	}
 }

@@ -271,8 +271,14 @@ func (c *DnsController) handleDNSRequest(
 	req *udpRequest,
 	queryInfo queryInfo,
 ) error {
-	// Route Requset
-	RequestIndex, err := c.routing.RequestSelect(queryInfo.qname, queryInfo.qtype)
+	// Route Request.
+	RequestIndex, err := c.routing.RequestSelect(
+		queryInfo.qname,
+		queryInfo.qtype,
+		req.routingResult.Ifindex,
+		req.dst.Addr(),
+		req.src.Addr(),
+	)
 	if err != nil {
 		return err
 	}

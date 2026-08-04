@@ -104,6 +104,9 @@ func Prefix2bin128(prefix netip.Prefix) (bin128 string) {
 	if prefix.Addr().Is4() {
 		n += 96
 	}
+	if n == 0 {
+		return ""
+	}
 	ip := prefix.Addr().As16()
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
