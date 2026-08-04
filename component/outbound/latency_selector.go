@@ -79,16 +79,6 @@ func (s *LatencyBasedSelector) getSortedAliveDialers(networkType *common.Network
 	return aliveDialers
 }
 
-func isDialerAlive(dialer *dialer.Dialer, networkType *common.NetworkType) bool {
-	if !dialer.Alive() {
-		return false
-	}
-	if networkType != nil && !dialer.Supported(networkType) {
-		return false
-	}
-	return true
-}
-
 func (s *LatencyBasedSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

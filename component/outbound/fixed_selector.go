@@ -30,7 +30,7 @@ func (s *FixedSelector) Select(networkType *common.NetworkType) (dialer *dialer.
 		return nil
 	}
 	dialer = s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex]
-	if !dialer.Alive() {
+	if !isDialerAlive(dialer, networkType) {
 		return nil
 	}
 	return
