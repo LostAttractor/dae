@@ -47,6 +47,15 @@ func (d *Dialer) Supported(typ *common.NetworkType) bool {
 	return d.supported[common.NetworkTypeToIndex(typ)]
 }
 
+// SetSupported marks whether the dialer supports the given network type. It
+// is intended for tests that drive dialer state without running the real
+// connectivity probes.
+func (d *Dialer) SetSupported(typ *common.NetworkType, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.supported[common.NetworkTypeToIndex(typ)] = ok
+}
+
 func parseIp46FromList(ip []string) (ip46 *netutils.Ip46, err error) {
 	ip46 = new(netutils.Ip46)
 	for _, ip := range ip {

@@ -118,6 +118,14 @@ func (d *Dialer) SetCheckAsync(checkAsync bool) {
 	d.checkAsync = checkAsync
 }
 
+// CheckAsync reports whether the dialer's connectivity check was marked to
+// run asynchronously (via the "check_async" filter annotation).
+func (d *Dialer) CheckAsync() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.checkAsync
+}
+
 func (d *Dialer) Clone() *Dialer {
 	return NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState)
 }
