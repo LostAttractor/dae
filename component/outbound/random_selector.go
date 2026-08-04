@@ -26,7 +26,8 @@ type RandomSelector struct {
 func NewRandomSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive bool, networkType *common.NetworkType)) Selector {
 	return &RandomSelector{
 		BaseSelector: BaseSelector{
-			dialerGroup: dialerGroup,
+			dialerGroup:         dialerGroup,
+			aliveChangeCallback: aliveChangeCallback,
 		},
 		dialerToAlive:   make(map[*dialer.Dialer]bool),
 		dialerToLatency: make(map[*dialer.Dialer]time.Duration),

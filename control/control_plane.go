@@ -200,7 +200,7 @@ func NewControlPlane(
 		}); err != nil {
 			err = oops.Wrapf(err, "load eBPF objects")
 			if log.IsLevelEnabled(log.PanicLevel) {
-				log.Panicln("%+v", err)
+				log.Panicf("%+v", err)
 			}
 			return nil, err
 		}
