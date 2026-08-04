@@ -20,7 +20,10 @@ var (
 	// VmRssKb            prometheus.Gauge
 )
 
-func InitPrometheus(registry *prometheus.Registry) {
+// newMetrics constructs all metric collectors. It is called once at package
+// init so that the collectors are never nil (e.g., in tests that do not build
+// a control plane).
+func newMetrics() {
 	labels := []string{"outbound", "subtag", "dialer", "network"}
 	ActiveConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -98,6 +101,21 @@ func InitPrometheus(registry *prometheus.Registry) {
 	// 		Name: "dae_vm_rss_kb",
 	// 	},
 	// )
+}
+
+func init() {
+	newMetrics()
+}
+
+func InitPrometheus(registry *prometheus.Registry) {
+	// Drop stale series from a previous control plane (reload), then register.
+	ActiveConnections.Reset()
+	CheckLatency.Reset()
+	CheckMovingLatency.Reset()
+	CheckSelectLatency.Reset()
+	DialerSelectIndex.Reset()
+	DialLatency.Reset()
+	ErrorCount.Reset()
 	registry.MustRegister(ActiveConnections)
 	// registry.MustRegister(CoreIpDomainBitmap)
 	// registry.MustRegister(DeadlineTimers)
