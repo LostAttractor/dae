@@ -14,9 +14,9 @@ const (
 	RoutingDomainKey_Regex   RoutingDomainKey = "regex"
 
 	Function_Domain      = "domain"
-	Function_Ip          = "ip"
+	Function_DestIp      = "dip"
 	Function_SourceIp    = "sip"
-	Function_Port        = "port"
+	Function_DestPort    = "dport"
 	Function_SourcePort  = "sport"
 	Function_L4Proto     = "l4proto"
 	Function_IpVersion   = "ipversion"
@@ -29,6 +29,8 @@ const (
 	Function_QName    = "qname"
 	Function_QType    = "qtype"
 	Function_Upstream = "upstream"
+
+	Function_Ip = "ip"
 
 	OutboundParam_Mark             = "mark"
 	OutboundParam_SkipWhileNoalive = "skip_while_noalive"

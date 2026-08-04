@@ -48,10 +48,10 @@ func (o *AliasOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config
 	for _, rule := range rules {
 		for _, function := range rule.AndFunctions {
 			switch function.Name {
-			case "dport":
-				function.Name = consts.Function_Port
-			case "dip":
-				function.Name = consts.Function_Ip
+			case "port":
+				function.Name = consts.Function_DestPort
+			case "ip":
+				function.Name = consts.Function_DestIp
 			}
 			for _, param := range function.Params {
 				switch function.Name {
@@ -103,7 +103,7 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 	// Sort ParamList.
 	for i := range newRules {
 		for _, function := range newRules[i].AndFunctions {
-			if function.Name == consts.Function_Ip || function.Name == consts.Function_SourceIp {
+			if function.Name == consts.Function_DestIp || function.Name == consts.Function_SourceIp {
 				// Sort by IPv4, IPv6, vals.
 				sort.SliceStable(function.Params, func(i, j int) bool {
 					vi, vj := 4, 4
@@ -367,7 +367,7 @@ func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*co
 					switch f.Name {
 					case consts.Function_Domain, consts.Function_QName:
 						params, err = o.loadGeoSite(fields[0], fields[1])
-					case consts.Function_Ip:
+					case consts.Function_DestIp, consts.Function_SourceIp:
 						params, err = o.loadGeoIp(fields[0], fields[1])
 					default:
 						return nil, fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
