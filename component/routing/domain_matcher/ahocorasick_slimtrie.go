@@ -116,13 +116,13 @@ func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32)
 	}
 	// Keyword matching.
 	// Add magic chars as head and tail.
-	acDomain := "^" + domain + "$"
+	acDomain := []byte("^" + domain + "$")
 	for _, i := range n.validAcIndexes {
 		if bitmap[i/32]&(1<<(i%32)) > 0 {
 			// Already matched.
 			continue
 		}
-		if n.ac[i].Contains([]byte(acDomain)) {
+		if n.ac[i].Contains(acDomain) {
 			bitmap[i/32] |= 1 << (i % 32)
 		}
 	}
