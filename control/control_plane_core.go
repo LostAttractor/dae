@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -53,6 +54,17 @@ type controlPlaneCore struct {
 	closed context.Context
 	close  context.CancelFunc
 	ifmgr  *component.InterfaceManager
+
+	// outboundConnectivityMap is the in-memory mirror of the eBPF
+	// outbound_connectivity_map, indexed by [outbound][NetworkTypeToIndex].
+	// It is written by outboundAliveChangeCallback — the same writer that
+	// maintains the kernel map — and read by the userspace routing matcher
+	// to evaluate skip_while_noalive rules without BPF map lookups in the
+	// hot path. It stores "map value == 0" as a bool rather than the raw
+	// map value: the kernel treats a missing entry as "not ready / not
+	// usable", and a zero-valued bool (false) preserves exactly that
+	// semantics, whereas a zero-valued uint32 (0) would read as "alive".
+	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][4]atomic.Bool
 }
 
 func newControlPlaneCore(

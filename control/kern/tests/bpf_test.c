@@ -883,3 +883,76 @@ int testcheck_not_mismtach(struct __sk_buff *skb)
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
+
+SEC("tc/pktgen/skip_while_noalive_alive")
+int testpktgen_skip_while_noalive_alive(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/setup/skip_while_noalive_alive")
+int testsetup_skip_while_noalive_alive(struct __sk_buff *skb)
+{
+	/* dport(80) -> proxy(skip_while_noalive); proxy group is alive */
+	struct match_set ms = {
+		.port_range = {80, 80},
+		.type = MatchType_Port,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+		.skip_while_noalive = true,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/skip_while_noalive_alive")
+int testcheck_skip_while_noalive_alive(struct __sk_buff *skb)
+{
+	/* The group is usable, so the rule hits and traffic is proxied. */
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_REDIRECT,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
+				      19233, 80);
+}
+
+SEC("tc/pktgen/skip_while_noalive_dead")
+int testpktgen_skip_while_noalive_dead(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/setup/skip_while_noalive_dead")
+int testsetup_skip_while_noalive_dead(struct __sk_buff *skb)
+{
+	/* dport(80) -> proxy(skip_while_noalive); proxy group is dead */
+	struct match_set ms = {
+		.port_range = {80, 80},
+		.type = MatchType_Port,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+		.skip_while_noalive = true,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+	set_outbound_connectivity_dead(OUTBOUND_USER_DEFINED_MIN);
+
+	/* fallback: must_direct */
+	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/skip_while_noalive_dead")
+int testcheck_skip_while_noalive_dead(struct __sk_buff *skb)
+{
+	/* The group is not usable, so the rule is skipped and traffic falls
+	 * through to the must_direct fallback. */
+	return check_routing_ipv4_tcp(skb,
+				      TC_ACT_PIPE,
+				      IPV4(192,168,0,1), IPV4(1,1,1,1),
+				      19233, 80);
+}

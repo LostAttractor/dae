@@ -101,6 +101,22 @@ dip(ext:"yourdatfile.dat:yourtag")->direct
 # 3. Set routing rules in dae config file.
 domain(geosite:disney) -> direct(mark: 0x800)
 
+### Skip rules while the target group is not alive
+# If a rule is annotated with "skip_while_noalive", it only applies while the target
+# group can serve the traffic's network type (l4proto x ipversion). When the group
+# has no dialer alive for that network type, the rule is treated as not hit and
+# routing falls through to the following rules (and finally the fallback).
+# This is useful when you prefer a specific egress for specific traffic, but do not
+# require it: on failure the traffic transparently degrades to the general rules.
+# It can be written as a bare parameter (like "must") or with an explicit value:
+domain(geosite:category-games) -> game_proxy(skip_while_noalive)
+domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
+# Notes:
+# - It only works with user-defined groups. "direct" and "block" do not participate
+#   in connectivity checks, so the annotation has no effect on them.
+# - It cannot be used on the fallback rule.
+# - It can be combined with other parameters, e.g. -> my_group(must, skip_while_noalive).
+
 ### Must rules
 # For following rules, DNS requests will be forcibly redirected to dae except from mosdns.
 # Different from must_direct/must_my_group, traffic from mosdns will continue to match other rules.

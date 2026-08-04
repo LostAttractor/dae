@@ -100,6 +100,20 @@ dip(ext:"yourdatfile.dat:yourtag")->direct
 # 3. 在dae配置文件中设置路由规则。
 domain(geosite:disney) -> direct(mark: 0x800)
 
+### 目标 group 不存活时跳过规则
+# 如果一条规则带有 "skip_while_noalive" 注解，那么只有当目标 group 能够为当前流量的
+# 网络类型（l4proto x ipversion）提供服务时，该规则才生效。当 group 在该网络类型下没有
+# 存活的 dialer 时，该规则被视为未命中，路由继续向下匹配后续规则（直至 fallback）。
+# 当你希望特定流量走特定出口、但这并非必需时很有用：出口故障时流量会透明地降级到
+# 通用规则。
+# 它可以像 "must" 一样作为裸参数书写，也可以显式给出值：
+domain(geosite:category-games) -> game_proxy(skip_while_noalive)
+domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
+# 注意：
+# - 只对用户自定义 group 生效。"direct" 和 "block" 不参与连通性检查，该注解对它们无效。
+# - 不能用于 fallback 规则。
+# - 可以与其他参数组合，例如 -> my_group(must, skip_while_noalive)。
+
 ### Must规则
 # 使用下面给出的规则，DNS请求将被强制重定向到dae，除了来自mosdns的请求。
 # 与must_direct/must_my_group不同，来自mosdns的流量将继续匹配其他规则。

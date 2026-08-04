@@ -279,6 +279,9 @@ struct match_set {
 	enum MatchType type;
 	__u8 outbound; // User-defined value range is [0, 252].
 	bool must;
+	// If set, the rule is skipped (treated as not hit) when the target
+	// outbound group has no connectivity for the traffic's network type.
+	bool skip_while_noalive;
 	__u32 mark;
 };
 
@@ -929,6 +932,27 @@ before_next_loop:
 
 			// DNS requests should routed by control plane if outbound is not
 			// must_direct.
+
+			if (match_set->skip_while_noalive &&
+			    match_set->outbound < OUTBOUND_MUST_RULES) {
+				// The rule is conditional on the connectivity of the
+				// target outbound group. If the group cannot serve the
+				// network type of the current traffic (or its state is
+				// not ready yet), treat the rule as not hit and fall
+				// through to the next rule.
+				struct outbound_connectivity_query q = {
+					.outbound = match_set->outbound,
+					.ipversion = (_ipversion_type & IpVersionType_4) ? 4 : 6,
+					.l4proto = (_l4proto_type & L4ProtoType_TCP) ? IPPROTO_TCP : IPPROTO_UDP,
+				};
+
+				__u32 *alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+
+				if (!alive || *alive != 0) {
+					// Group is not usable. Skip this rule.
+					return 0;
+				}
+			}
 
 			if (unlikely(match_set->outbound == OUTBOUND_MUST_RULES)) {
 				ctx->must = true;

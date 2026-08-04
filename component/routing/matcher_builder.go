@@ -24,6 +24,11 @@ type Outbound struct {
 	Name string
 	Mark uint32
 	Must bool
+	// SkipWhileNoalive makes the rule conditional on the target outbound
+	// group's connectivity: if the group cannot serve the network type of
+	// the current traffic, the rule is treated as not hit and routing falls
+	// through to the next rule.
+	SkipWhileNoalive bool
 }
 
 type RulesBuilder struct {
@@ -60,9 +65,10 @@ func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 				paramValueGroup := paramValueGroups[key]
 				// Preprocess the outbound.
 				overrideOutbound := &Outbound{
-					Name: consts.OutboundLogicalOr.String(),
-					Mark: outbound.Mark,
-					Must: outbound.Must,
+					Name:             consts.OutboundLogicalOr.String(),
+					Mark:             outbound.Mark,
+					Must:             outbound.Must,
+					SkipWhileNoalive: outbound.SkipWhileNoalive,
 				}
 				if jMatchSet == len(keyOrder)-1 {
 					overrideOutbound.Name = consts.OutboundLogicalAnd.String()
@@ -115,9 +121,17 @@ func ParseOutbound(rawOutbound *config_parser.Function) (outbound *Outbound, err
 				return nil, fmt.Errorf("failed to parse mark: %v", err)
 			}
 			outbound.Mark = uint32(_mark)
+		case consts.OutboundParam_SkipWhileNoalive:
+			skip, parseErr := strconv.ParseBool(p.Val)
+			if parseErr != nil {
+				return nil, fmt.Errorf("failed to parse %v: %v", consts.OutboundParam_SkipWhileNoalive, parseErr)
+			}
+			outbound.SkipWhileNoalive = skip
 		case "":
 			if p.Val == "must" {
 				outbound.Must = true
+			} else if p.Val == consts.OutboundParam_SkipWhileNoalive {
+				outbound.SkipWhileNoalive = true
 			} else {
 				return nil, fmt.Errorf("unknown outbound param: %v", p.Val)
 			}

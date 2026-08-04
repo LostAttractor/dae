@@ -30,5 +30,6 @@ const (
 	Function_QType    = "qtype"
 	Function_Upstream = "upstream"
 
-	OutboundParam_Mark = "mark"
+	OutboundParam_Mark             = "mark"
+	OutboundParam_SkipWhileNoalive = "skip_while_noalive"
 )
