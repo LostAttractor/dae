@@ -12,6 +12,9 @@ global {
     # Set non-zero value to enable pprof.
     pprof_port: 0
 
+    # Set non-zero value to enable the Prometheus metrics endpoint.
+    metrics_port: 0
+
     # If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy
     # rules.
     so_mark_from_dae: 0
@@ -42,16 +45,6 @@ global {
     ##### Node connectivity check.
     # These options, as defaults, are effective when no definition is given in the group.
 
-    # Host of URL should have both IPv4 and IPv6 if you have double stack in local.
-    # First is URL, others are IP addresses if given.
-    # Considering traffic consumption, it is recommended to choose a site with anycast IP and less response.
-    #tcp_check_url: 'http://cp.cloudflare.com'
-    tcp_check_url: 'http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111'
-
-    # The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass
-    # accounting for this kind of traffic.
-    tcp_check_http_method: HEAD
-
     # This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check
     # TCP DNS connectivity of nodes.
     # First is URL, others are IP addresses if given.
@@ -67,28 +60,38 @@ global {
 
     ##### Connecting options.
 
-    # Optional values of dial_mode are:
-    # 1. "ip". Dial proxy using the IP from DNS directly. This allows your ipv4, ipv6 to choose the optimal path
-    #       respectively, and makes the IP version requested by the application meet expectations. For example, if you
-    #       use curl -4 ip.sb, you will request IPv4 via proxy and get a IPv4 echo. And curl -6 ip.sb will request IPv6.
-    #       This may solve some wierd full-cone problem if your are be your node support that. Sniffing will be disabled
-    #       in this mode.
-    # 2. "domain". Dial proxy using the domain from sniffing. This will relieve DNS pollution problem to a great extent
-    #       if have impure DNS environment. Generally, this mode brings faster proxy response time because proxy will
-    #       re-resolve the domain in remote, thus get better IP result to connect. This policy does not impact routing.
-    #       That is to say, domain rewrite will be after traffic split of routing and dae will not re-route it.
-    # 3. "domain+". Based on domain mode but do not check the reality of sniffed domain. It is useful for users whose
-    #       DNS requests do not go through dae but want faster proxy response time. Notice that, if DNS requests do not
-    #       go through dae, dae cannot split traffic by domain.
-    # 4. "domain++". Based on domain+ mode but force to re-route traffic using sniffed domain to partially recover
-    #       domain based traffic split ability. It doesn't work for direct traffic and consumes more CPU resources.
-    dial_mode: domain
+    # Use the sniffed domain to override the dial target (destination) when it is available and verified.
+    # This will relieve DNS pollution problem to a great extent if you have impure DNS environment. Generally,
+    # it brings faster proxy response time because the proxy will re-resolve the domain in remote, thus get
+    # better IP result to connect. Set it false to always dial using the original destination IP; sniffing
+    # will be disabled if reroute_mode is also "none".
+    dial_target_override: true
+
+    # Whether to re-route traffic using the sniffed domain. Optional values:
+    # 1. "none". Never re-route using the sniffed domain. Routing decisions purely rely on the original
+    #       destination (IP/port). Sniffed domains are only used to override the dial target (see
+    #       dial_target_override).
+    # 2. "while_needed". Re-route using the sniffed domain only when the kernel may not have routed correctly,
+    #       e.g. the sniffed domain is not backed by a DNS lookup that went through dae. This is the default
+    #       and recovers most domain based traffic split ability in such cases.
+    # 3. "force". Always re-route traffic using the sniffed domain. It fully recovers domain based traffic
+    #       split ability but consumes more CPU resources.
+    reroute_mode: while_needed
+
+    # How strictly the sniffed domain is verified before being trusted. Optional values:
+    # 1. "none". Trust any sniffed domain.
+    # 2. "loose". Trust the sniffed domain if it looks like a real domain (it has A/AAAA records). This is
+    #       the default.
+    # 3. "strict". Trust the sniffed domain only if the destination IP matches a DNS record of the domain
+    #       that was resolved through dae. It is the most reliable but requires DNS requests to go through dae.
+    sniff_verify_mode: loose
 
     # Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.
     allow_insecure: false
 
-    # Timeout to waiting for first data sending for sniffing. It is always 0 if dial_mode is ip. Set it higher is useful
-    # in high latency LAN network.
+    # Timeout to waiting for first data sending for sniffing. It is always 0 if sniffing is not needed
+    # (dial_target_override is false and reroute_mode is "none"). Set it higher is useful in high latency
+    # LAN network.
     sniffing_timeout: 100ms
 
     # TLS implementation. tls is to use Go's crypto/tls. utls is to use uTLS, which can imitate browser's Client Hello.
@@ -111,6 +114,9 @@ global {
     # effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.
     mptcp: false
 
+    # The UDP port hopping interval for protocols that support it (e.g., Hysteria2 with a port range).
+    #udphop_interval: 30s
+
     # The maximum bandwidth for accessing the Internet. It is useful for some specific protocols (e.g., Hysteria2),
     # which will perform better with bandwith information provided. The unit can be b, kb, mb, gb, tb or bytes per second.
     # supported formats: https://v2.hysteria.network/docs/advanced/Full-Client-Config/#bandwidth
@@ -125,11 +131,17 @@ global {
     # Fallback resolver will always be available, even if you do not specify it in the configuration file.
     # fallback_resolver: '8.8.8.8:53'
 
-    # "auto" means it will not be enabled when sniffing is available.
-    # In a dual-stack environment, if the node does not support IPv6, the program may still attempt to use an IPv6 connection first. 
-    # If the connection is directly blocked, some programs that do not support "Happy Eyeballs" may need to wait for a while before retrying with IPv4.
-    # When sniffing is enabled, it may allow programs attempting to use an IPv6 connection to actually dial to the target using IPv4.
-    not_blocking_even_node_not_alive: auto
+    # Behavior when all nodes of a group have no connectivity.
+    # If no_connectivity_try_sniff is true (default), traffic of the group is still sent to the control plane
+    # so that sniffing and re-routing may recover it. If it is false, traffic immediately falls back to
+    # no_connectivity_behavior.
+    #no_connectivity_try_sniff: true
+
+    # What to do with traffic when the group has no connectivity (and no_connectivity_try_sniff does not
+    # apply): "block" (default) drops it; "direct" sends it directly without proxy. In a dual-stack
+    # environment, if the node does not support IPv6, "direct" may allow programs attempting to use an IPv6
+    # connection to actually dial to the target using IPv4.
+    #no_connectivity_behavior: block
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
@@ -262,6 +274,9 @@ group {
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
+
+        # Chain every node in this group with the given node as the next hop (dial node -> next_hop).
+        #next_hop: node1
     }
 
     steam {
@@ -270,10 +285,6 @@ group {
         # Select the node with min moving average of latencies from the group for every connection.
         policy: min_moving_avg
 
-        # Override tcp_check_url in global.
-        tcp_check_url: 'http://test.steampowered.com'
-        # Override tcp_check_http_method in global
-        #tcp_check_http_method: HEAD
         # Override udp_check_dns in global
         #udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
         # Override check_interval in global
