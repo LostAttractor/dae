@@ -6,56 +6,58 @@
 package dialer
 
 import (
-	"container/list"
 	"sync"
 	"time"
 )
 
+// LatenciesN keeps track of the most recent N latencies using a ring buffer.
+// It is thread-safe.
 type LatenciesN struct {
-	N              int
-	LastNLatencies *list.List
-	SumNLatencies  time.Duration
-
-	mu sync.Mutex
+	mu    sync.Mutex
+	buf   []time.Duration
+	next  int // Ring buffer index of the next write.
+	count int // Number of latencies currently stored.
+	sum   time.Duration
 }
 
 func NewLatenciesN(n int) *LatenciesN {
 	return &LatenciesN{
-		N:              n,
-		LastNLatencies: list.New(),
-		SumNLatencies:  0,
+		buf: make([]time.Duration, n),
 	}
 }
 
-// AppendLatency appends a new latency to the back and keep the number in the list. Appending a fixed duration for
+// AppendLatency appends a new latency and keeps at most N entries in the
+// buffer, dropping the oldest one when full. Appending a fixed duration for
 // failed or timeout situation is recommended.
-//
-// It is thread-safe.
 func (ln *LatenciesN) AppendLatency(l time.Duration) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
-	if ln.LastNLatencies.Len() >= ln.N {
-		ln.SumNLatencies -= ln.LastNLatencies.Front().Value.(time.Duration)
-		ln.LastNLatencies.Remove(ln.LastNLatencies.Front())
+	if ln.count == len(ln.buf) {
+		ln.sum -= ln.buf[ln.next]
+	} else {
+		ln.count++
 	}
-	ln.SumNLatencies += l
-	ln.LastNLatencies.PushBack(l)
+	ln.buf[ln.next] = l
+	ln.sum += l
+	ln.next = (ln.next + 1) % len(ln.buf)
 }
 
 func (ln *LatenciesN) LastLatency() (time.Duration, bool) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
-	if ln.LastNLatencies.Len() == 0 {
+	if ln.count == 0 {
 		return 0, false
 	}
-	return ln.LastNLatencies.Back().Value.(time.Duration), true
+	// The most recent entry is the one written just before ln.next.
+	last := (ln.next - 1 + len(ln.buf)) % len(ln.buf)
+	return ln.buf[last], true
 }
 
 func (ln *LatenciesN) AvgLatency() (time.Duration, bool) {
 	ln.mu.Lock()
 	defer ln.mu.Unlock()
-	if ln.LastNLatencies.Len() == 0 {
+	if ln.count == 0 {
 		return 0, false
 	}
-	return ln.SumNLatencies / time.Duration(ln.LastNLatencies.Len()), true
+	return ln.sum / time.Duration(ln.count), true
 }
