@@ -101,10 +101,6 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
-	networkType := &common.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
-	}
 
 	l, _ := DefaultUdpEndpointPool.UdpEndpointKeyLocker.Lock(src)
 	defer DefaultUdpEndpointPool.UdpEndpointKeyLocker.Unlock(src, l)
@@ -116,6 +112,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
 	if ok && !ue.dialer.Alive() {
 		if log.IsLevelEnabled(log.DebugLevel) {
+			networkType := &common.NetworkType{
+				L4Proto:   consts.L4ProtoStr_UDP,
+				IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
+			}
 			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
 				"network": networkType.String(),
@@ -126,6 +126,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		ok = false
 	}
 	if !ok {
+		networkType := &common.NetworkType{
+			L4Proto:   consts.L4ProtoStr_UDP,
+			IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
+		}
 		// Use an empty AddrPort for dst
 		routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
 		if err != nil {
