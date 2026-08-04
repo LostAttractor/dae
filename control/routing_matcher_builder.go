@@ -65,6 +65,26 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 		return nil, err
 	}
 
+	// Validate skip_while_noalive usage. The flag is carried by every match
+	// set of a rule but only takes effect on the rule tail.
+	for i := range b.rules {
+		r := &b.rules[i]
+		if !r.SkipWhileNoalive {
+			continue
+		}
+		outbound := consts.OutboundIndex(r.Outbound)
+		if outbound&consts.OutboundLogicalMask == consts.OutboundLogicalMask {
+			// Intermediate match set of a subrule.
+			continue
+		}
+		if r.Type == uint8(consts.MatchType_Fallback) {
+			return nil, fmt.Errorf("skip_while_noalive cannot be used on fallback: skipping fallback leaves traffic unroutable")
+		}
+		if outbound == consts.OutboundDirect || outbound == consts.OutboundBlock {
+			log.Warnf("skip_while_noalive has no effect on outbound %v: it does not participate in connectivity checks", outbound.String())
+		}
+	}
+
 	return b, nil
 }
 
@@ -108,11 +128,12 @@ func (b *RoutingMatcherBuilder) addDomain(f *config_parser.Function, key string,
 		return err
 	}
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint8(consts.MatchType_DomainSet),
-		Not:      f.Not,
-		Outbound: outboundId,
-		Mark:     outbound.Mark,
-		Must:     outbound.Must,
+		Type:             uint8(consts.MatchType_DomainSet),
+		Not:              f.Not,
+		Outbound:         outboundId,
+		Mark:             outbound.Mark,
+		Must:             outbound.Must,
+		SkipWhileNoalive: outbound.SkipWhileNoalive,
 	})
 	return nil
 }
@@ -132,12 +153,13 @@ func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs
 		return err
 	}
 	set := bpfMatchSet{
-		Value:    [16]byte{},
-		Type:     uint8(consts.MatchType_Mac),
-		Not:      f.Not,
-		Outbound: outboundId,
-		Mark:     outbound.Mark,
-		Must:     outbound.Must,
+		Value:            [16]byte{},
+		Type:             uint8(consts.MatchType_Mac),
+		Not:              f.Not,
+		Outbound:         outboundId,
+		Mark:             outbound.Mark,
+		Must:             outbound.Must,
+		SkipWhileNoalive: outbound.SkipWhileNoalive,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
@@ -152,12 +174,13 @@ func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.
 		return err
 	}
 	set := bpfMatchSet{
-		Value:    [16]byte{},
-		Type:     uint8(consts.MatchType_IpSet),
-		Not:      f.Not,
-		Outbound: outboundId,
-		Mark:     outbound.Mark,
-		Must:     outbound.Must,
+		Value:            [16]byte{},
+		Type:             uint8(consts.MatchType_IpSet),
+		Not:              f.Not,
+		Outbound:         outboundId,
+		Mark:             outbound.Mark,
+		Must:             outbound.Must,
+		SkipWhileNoalive: outbound.SkipWhileNoalive,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
@@ -180,10 +203,11 @@ func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]u
 				PortStart: value[0],
 				PortEnd:   value[1],
 			}.Encode(),
-			Not:      f.Not,
-			Outbound: outboundId,
-			Mark:     outbound.Mark,
-			Must:     outbound.Must,
+			Not:              f.Not,
+			Outbound:         outboundId,
+			Mark:             outbound.Mark,
+			Must:             outbound.Must,
+			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		})
 	}
 	return nil
@@ -197,12 +221,13 @@ func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []
 		return err
 	}
 	set := bpfMatchSet{
-		Value:    [16]byte{},
-		Type:     uint8(consts.MatchType_SourceIpSet),
-		Not:      f.Not,
-		Outbound: outboundId,
-		Mark:     outbound.Mark,
-		Must:     outbound.Must,
+		Value:            [16]byte{},
+		Type:             uint8(consts.MatchType_SourceIpSet),
+		Not:              f.Not,
+		Outbound:         outboundId,
+		Mark:             outbound.Mark,
+		Must:             outbound.Must,
+		SkipWhileNoalive: outbound.SkipWhileNoalive,
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
@@ -225,10 +250,11 @@ func (b *RoutingMatcherBuilder) addSourcePort(f *config_parser.Function, values 
 				PortStart: value[0],
 				PortEnd:   value[1],
 			}.Encode(),
-			Not:      f.Not,
-			Outbound: outboundId,
-			Mark:     outbound.Mark,
-			Must:     outbound.Must,
+			Not:              f.Not,
+			Outbound:         outboundId,
+			Mark:             outbound.Mark,
+			Must:             outbound.Must,
+			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		})
 	}
 	return nil
@@ -240,12 +266,13 @@ func (b *RoutingMatcherBuilder) addL4Proto(f *config_parser.Function, values con
 		return err
 	}
 	b.rules = append(b.rules, bpfMatchSet{
-		Value:    [16]byte{byte(values)},
-		Type:     uint8(consts.MatchType_L4Proto),
-		Not:      f.Not,
-		Outbound: outboundId,
-		Mark:     outbound.Mark,
-		Must:     outbound.Must,
+		Value:            [16]byte{byte(values)},
+		Type:             uint8(consts.MatchType_L4Proto),
+		Not:              f.Not,
+		Outbound:         outboundId,
+		Mark:             outbound.Mark,
+		Must:             outbound.Must,
+		SkipWhileNoalive: outbound.SkipWhileNoalive,
 	})
 	return nil
 }
@@ -256,12 +283,13 @@ func (b *RoutingMatcherBuilder) addIpVersion(f *config_parser.Function, values c
 		return err
 	}
 	b.rules = append(b.rules, bpfMatchSet{
-		Value:    [16]byte{byte(values)},
-		Type:     uint8(consts.MatchType_IpVersion),
-		Not:      f.Not,
-		Outbound: outboundId,
-		Mark:     outbound.Mark,
-		Must:     outbound.Must,
+		Value:            [16]byte{byte(values)},
+		Type:             uint8(consts.MatchType_IpVersion),
+		Not:              f.Not,
+		Outbound:         outboundId,
+		Mark:             outbound.Mark,
+		Must:             outbound.Must,
+		SkipWhileNoalive: outbound.SkipWhileNoalive,
 	})
 	return nil
 }
@@ -277,11 +305,12 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 			return err
 		}
 		matchSet := bpfMatchSet{
-			Type:     uint8(consts.MatchType_ProcessName),
-			Not:      f.Not,
-			Outbound: outboundId,
-			Mark:     outbound.Mark,
-			Must:     outbound.Must,
+			Type:             uint8(consts.MatchType_ProcessName),
+			Not:              f.Not,
+			Outbound:         outboundId,
+			Mark:             outbound.Mark,
+			Must:             outbound.Must,
+			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		}
 		copy(matchSet.Value[:], value[:])
 		b.rules = append(b.rules, matchSet)
@@ -300,12 +329,13 @@ func (b *RoutingMatcherBuilder) addIfIndex(f *config_parser.Function, values []u
 			return err
 		}
 		set := bpfMatchSet{
-			Value:    [16]byte{},
-			Type:     uint8(consts.MatchType_IfIndex),
-			Not:      f.Not,
-			Outbound: outboundId,
-			Mark:     outbound.Mark,
-			Must:     outbound.Must,
+			Value:            [16]byte{},
+			Type:             uint8(consts.MatchType_IfIndex),
+			Not:              f.Not,
+			Outbound:         outboundId,
+			Mark:             outbound.Mark,
+			Must:             outbound.Must,
+			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		}
 		binary.LittleEndian.PutUint32(set.Value[:], uint32(value))
 		b.rules = append(b.rules, set)
@@ -324,12 +354,13 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 			return err
 		}
 		set := bpfMatchSet{
-			Value:    [16]byte{},
-			Type:     uint8(consts.MatchType_IfIndex),
-			Not:      f.Not,
-			Outbound: outboundId,
-			Mark:     outbound.Mark,
-			Must:     outbound.Must,
+			Value:            [16]byte{},
+			Type:             uint8(consts.MatchType_IfIndex),
+			Not:              f.Not,
+			Outbound:         outboundId,
+			Mark:             outbound.Mark,
+			Must:             outbound.Must,
+			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		}
 		index := uint32(len(b.rules))
 		b.rules = append(b.rules, set)
@@ -376,11 +407,12 @@ func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint
 			return err
 		}
 		matchSet := bpfMatchSet{
-			Type:     uint8(consts.MatchType_Dscp),
-			Not:      f.Not,
-			Outbound: outboundId,
-			Mark:     outbound.Mark,
-			Must:     outbound.Must,
+			Type:             uint8(consts.MatchType_Dscp),
+			Not:              f.Not,
+			Outbound:         outboundId,
+			Mark:             outbound.Mark,
+			Must:             outbound.Must,
+			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		}
 		matchSet.Value[0] = value
 		b.rules = append(b.rules, matchSet)
@@ -398,10 +430,11 @@ func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrSt
 		return err
 	}
 	b.rules = append(b.rules, bpfMatchSet{
-		Type:     uint8(consts.MatchType_Fallback),
-		Outbound: outboundId,
-		Mark:     outbound.Mark,
-		Must:     outbound.Must,
+		Type:             uint8(consts.MatchType_Fallback),
+		Outbound:         outboundId,
+		Mark:             outbound.Mark,
+		Must:             outbound.Must,
+		SkipWhileNoalive: outbound.SkipWhileNoalive,
 	})
 	return nil
 }

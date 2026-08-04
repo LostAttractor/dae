@@ -21,6 +21,11 @@ type RoutingMatcher struct {
 	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
 	matches []bpfMatchSet
+
+	// outboundUsable reports whether an outbound group can serve the given
+	// network type; it backs skip_while_noalive rule evaluation. It may be
+	// nil (e.g. in tests), in which case every group is considered usable.
+	outboundUsable func(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool
 }
 
 // Match is modified from kern/tproxy.c; please keep sync.
@@ -133,6 +138,16 @@ func (m *RoutingMatcher) Match(
 				}
 				if outbound == consts.OutboundMustRules {
 					must = true
+					continue
+				}
+				if match.SkipWhileNoalive &&
+					outbound >= consts.OutboundUserDefinedMin &&
+					m.outboundUsable != nil &&
+					!m.outboundUsable(uint8(outbound), l4proto, ipVersion) {
+					// The rule is conditional on the connectivity of the
+					// target outbound group, and the group cannot serve
+					// this network type. Treat the rule as not hit and
+					// fall through to the next rule.
 					continue
 				}
 				if must {

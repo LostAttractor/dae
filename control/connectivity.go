@@ -35,6 +35,12 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 			value = uint32(noConnectivityOutbound) + 1
 		}
 
+		// Keep the in-memory mirror of OutboundConnectivityMap in sync for
+		// the userspace routing matcher (skip_while_noalive rules).
+		if outbound <= uint8(consts.OutboundUserDefinedMax) {
+			c.outboundConnectivityMap[outbound][common.NetworkTypeToIndex(networkType)].Store(value == 0)
+		}
+
 		if err := c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
 			Outbound:  outbound,
 			L4proto:   networkType.L4Proto.ToL4Proto(),
@@ -47,4 +53,35 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 			}).Warnf("Failed to notify the kernel program: %v", err)
 		}
 	}
+}
+
+// outboundUsable reports whether the outbound group can currently serve the
+// given network type. It reads the in-memory mirror of
+// outbound_connectivity_map and follows the kernel-side semantics: a group is
+// usable iff the map value is 0 (alive, or dead but no_connectivity_try_sniff
+// is on); a group whose state has never been reported (e.g. before the first
+// check completes) is not usable. Unknown network types conservatively report
+// usable so that traffic is not unexpectedly rerouted.
+func (c *controlPlaneCore) outboundUsable(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool {
+	if outbound > uint8(consts.OutboundUserDefinedMax) {
+		return true
+	}
+	var networkType common.NetworkType
+	switch {
+	case l4proto&consts.L4ProtoType_TCP != 0:
+		networkType.L4Proto = consts.L4ProtoStr_TCP
+	case l4proto&consts.L4ProtoType_UDP != 0:
+		networkType.L4Proto = consts.L4ProtoStr_UDP
+	default:
+		return true
+	}
+	switch {
+	case ipVersion&consts.IpVersion_4 != 0:
+		networkType.IpVersion = consts.IpVersionStr_4
+	case ipVersion&consts.IpVersion_6 != 0:
+		networkType.IpVersion = consts.IpVersionStr_6
+	default:
+		return true
+	}
+	return c.outboundConnectivityMap[outbound][common.NetworkTypeToIndex(&networkType)].Load()
 }

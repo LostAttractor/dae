@@ -353,6 +353,9 @@ func NewControlPlane(
 	if err != nil {
 		return nil, oops.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
+	// Back skip_while_noalive rule evaluation with the core's in-memory
+	// mirror of outbound connectivity.
+	routingMatcher.outboundUsable = core.outboundUsable
 
 	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
