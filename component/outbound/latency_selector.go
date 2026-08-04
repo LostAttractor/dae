@@ -182,10 +182,6 @@ func (s *LatencyBasedSelector) logCheckLatency(aliveDialers []*dialer.Dialer, di
 	if !dialer.Supported(networkType) {
 		return
 	}
-	if common.CheckLatency == nil {
-		// Metrics are not initialized.
-		return
-	}
 	labels := prometheus.Labels{
 		"outbound": s.dialerGroup.Name,
 		"subtag":   dialer.Property.SubscriptionTag,
