@@ -23,7 +23,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
@@ -412,7 +411,7 @@ Dial:
 		return nil
 	}
 
-	ans := deepcopy.Copy(dnsMessage.Answer).([]dnsmessage.RR)
+	ans := CopyDnsAnswers(dnsMessage.Answer)
 	ttl := c.NormalizeDnsResp(ans)
 	c.LookupCache(queryInfo, ans, ttl)
 	return nil
@@ -542,7 +541,7 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	}
 
 	// TODO: 不缓存ans为空的响应?
-	ans := deepcopy.Copy(msg.Answer).([]dnsmessage.RR)
+	ans := CopyDnsAnswers(msg.Answer)
 	ttl := c.NormalizeDnsResp(ans)
 	if log.IsLevelEnabled(log.DebugLevel) {
 		log.WithFields(log.Fields{
