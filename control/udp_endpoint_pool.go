@@ -22,6 +22,15 @@ import (
 
 type UdpHandler func(data []byte, from netip.AddrPort) error
 
+// addrPortOf converts a net.Addr returned by a PacketConn into a netip.AddrPort.
+// It avoids the string round-trip for the common *net.UDPAddr case.
+func addrPortOf(addr net.Addr) netip.AddrPort {
+	if udpAddr, ok := addr.(*net.UDPAddr); ok {
+		return udpAddr.AddrPort()
+	}
+	return netip.MustParseAddrPort(addr.String())
+}
+
 type UdpEndpoint struct {
 	conn net.PacketConn
 	// mu protects deadlineTimer
@@ -53,7 +62,7 @@ func (ue *UdpEndpoint) run() error {
 		ue.mu.Lock()
 		ue.deadlineTimer.Reset(ue.NatTimeout)
 		ue.mu.Unlock()
-		if err = ue.handler(buf[:n], netip.MustParseAddrPort(from.String())); err != nil {
+		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
 			break
 		}
 	}
