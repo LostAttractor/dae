@@ -391,6 +391,7 @@ func NewControlPlane(
 		LocationFinder:          locationFinder,
 		UpstreamReadyCallback:   plane.cacheDnsUpstream,
 		UpstreamResolverNetwork: "udp",
+		InterfaceManager:        core.ifmgr,
 	})
 	if err != nil {
 		return nil, err

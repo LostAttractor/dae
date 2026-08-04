@@ -5,7 +5,10 @@
 
 package trie
 
-import "testing"
+import (
+	"net/netip"
+	"testing"
+)
 
 func TestTrie(t *testing.T) {
 	trie, err := NewTrie([]string{
@@ -122,5 +125,24 @@ func TestTrie(t *testing.T) {
 	}
 	if !(trie.HasPrefix("moc.cbatnetnoc^") == true) {
 		t.Fatal("contentabc.com")
+	}
+}
+
+func TestIPv6ZeroLengthPrefix(t *testing.T) {
+	prefix := netip.MustParsePrefix("::/0")
+	if got := Prefix2bin128(prefix); got != "" {
+		t.Fatalf("Prefix2bin128(%v) = %q, want empty string", prefix, got)
+	}
+
+	trie, err := NewTrieFromPrefixes([]netip.Prefix{prefix})
+	if err != nil {
+		t.Fatalf("NewTrieFromPrefixes: %v", err)
+	}
+	for _, value := range []string{"::", "2001:db8::1", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"} {
+		addr := netip.MustParseAddr(value)
+		key := Prefix2bin128(netip.PrefixFrom(addr, addr.BitLen()))
+		if !trie.HasPrefix(key) {
+			t.Errorf("trie does not match IPv6 address %v", addr)
+		}
 	}
 }

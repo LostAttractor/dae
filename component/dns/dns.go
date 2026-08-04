@@ -14,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
 	dnsmessage "github.com/miekg/dns"
@@ -33,6 +34,10 @@ type NewOption struct {
 	LocationFinder          *assets.LocationFinder
 	UpstreamReadyCallback   func(dnsUpstream *Upstream)
 	UpstreamResolverNetwork string
+	// InterfaceManager resolves ifname in request routing rules to ifindex and
+	// keeps it in sync with the interface lifecycle. It may be nil, in which
+	// case ifname rules never match.
+	InterfaceManager *component.InterfaceManager
 }
 
 func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
@@ -92,7 +97,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		return nil, err
 	}
 	// Parse request routing.
-	reqMatcherBuilder, err := NewRequestMatcherBuilder(dns.Routing.Request.Rules, upstreamName2Id, dns.Routing.Request.Fallback)
+	reqMatcherBuilder, err := NewRequestMatcherBuilder(dns.Routing.Request.Rules, upstreamName2Id, dns.Routing.Request.Fallback, opt.InterfaceManager)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
@@ -126,9 +131,15 @@ func (s *Dns) GetUpstream(upstreamIndex consts.DnsRequestOutboundIndex) (upstrea
 	return s.upstream[upstreamIndex].GetUpstream()
 }
 
-func (s *Dns) RequestSelect(qname string, qtype uint16) (upstreamIndex consts.DnsRequestOutboundIndex, err error) {
+func (s *Dns) RequestSelect(
+	qname string,
+	qtype uint16,
+	ifindex uint32,
+	dip netip.Addr,
+	sip netip.Addr,
+) (upstreamIndex consts.DnsRequestOutboundIndex, err error) {
 	// Route.
-	upstreamIndex, err = s.reqMatcher.Match(qname, qtype)
+	upstreamIndex, err = s.reqMatcher.Match(qname, qtype, ifindex, dip, sip)
 	if err != nil {
 		return 0, err
 	}

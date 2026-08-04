@@ -31,7 +31,7 @@ func NewResponseMatcherBuilder(rules []*config_parser.RoutingRule, upstreamName2
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_QName, routing.PlainParserFactory(b.addQName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_QType, TypeParserFactory(b.addQType))
-	rulesBuilder.RegisterFunctionParser(consts.Function_Ip, routing.IpParserFactory(b.addIp))
+	rulesBuilder.RegisterFunctionParser(consts.Function_ResponseIp, routing.IpParserFactory(b.addIp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Upstream, routing.EmptyKeyPlainParserFactory(b.addUpstream))
 	if err = rulesBuilder.Apply(rules); err != nil {
 		return nil, err
@@ -225,7 +225,7 @@ func (m *ResponseMatcher) Match(
 	domainMatchBitmap := m.domainMatcher.MatchDomainBitmap(qName)
 	bin128 := make([]string, 0, len(ips))
 	for _, ip := range ips {
-		bin128 = append(bin128, trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(ip.As16()), 128)))
+		bin128 = append(bin128, addrToBin128(ip))
 	}
 
 	goodSubrule := false

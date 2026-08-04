@@ -30,7 +30,7 @@ const (
 	Function_QType    = "qtype"
 	Function_Upstream = "upstream"
 
-	Function_Ip = "ip"
+	Function_ResponseIp = "ip"
 
 	OutboundParam_Mark             = "mark"
 	OutboundParam_SkipWhileNoalive = "skip_while_noalive"

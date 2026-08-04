@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/netip"
 	"strconv"
-	"strings"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -125,11 +124,14 @@ func ProcessNameParserFactory(callback func(f *config_parser.Function, procNames
 
 func parsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
 	for _, value := range values {
-		toParse := value
-		if strings.LastIndexByte(value, '/') == -1 {
-			toParse += "/32"
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			addr, addrErr := netip.ParseAddr(value)
+			if addrErr == nil {
+				prefix = netip.PrefixFrom(addr, addr.BitLen())
+				err = nil
+			}
 		}
-		prefix, err := netip.ParsePrefix(toParse)
 		if err != nil {
 			return nil, fmt.Errorf("cannot parse %v: %w", value, err)
 		}
