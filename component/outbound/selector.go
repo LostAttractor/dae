@@ -38,3 +38,13 @@ func (s *BaseSelector) handleAliveStateChange(alive bool, networkType *common.Ne
 	s.networkIndexToAlive[index] = &alive
 	s.aliveChangeCallback(alive, networkType)
 }
+
+func isDialerAlive(dialer *dialer.Dialer, networkType *common.NetworkType) bool {
+	if !dialer.Alive() {
+		return false
+	}
+	if networkType != nil && !dialer.Supported(networkType) && dialer.NeedAliveState() {
+		return false
+	}
+	return true
+}
