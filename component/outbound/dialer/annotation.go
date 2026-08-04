@@ -51,6 +51,9 @@ func NewAnnotation(annotation []*config_parser.Param) (*Annotation, error) {
 			// <default priority>; <priority>(<latency_low>,<latency_high>); <more...>
 			reDefault := regexp.MustCompile(`^\s*(\d+)\s*`)
 			defaultMatch := reDefault.FindStringSubmatch(param.Val)
+			if defaultMatch == nil {
+				return nil, fmt.Errorf("incorrect priority format: %v", param.Val)
+			}
 			priority, err := strconv.Atoi(defaultMatch[1])
 			if err != nil {
 				return nil, fmt.Errorf("incorrect priority number: %w", err)

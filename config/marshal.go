@@ -151,7 +151,7 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		switch from.Index(0).Interface().(type) {
 		case fmt.Stringer, string,
 			uint8, uint16, uint32, uint64,
-			int8, int16, int32, int64,
+			int, int8, int16, int32, int64,
 			float32, float64,
 			bool:
 			var vals []string
@@ -179,13 +179,18 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		switch val := from.Interface().(type) {
 		case fmt.Stringer, string,
 			uint8, uint16, uint32, uint64,
-			int8, int16, int32, int64,
+			int, int8, int16, int32, int64,
 			float32, float64,
 			bool:
 			m.writeLine(depth, key+":"+strconv.Quote(fmt.Sprintf("%v", val)))
 		case *config_parser.Function:
 			m.writeLine(depth, key+":"+val.String(true, true, false))
 		default:
+			// Named string types (e.g., consts.RerouteMode).
+			if from.Kind() == reflect.String {
+				m.writeLine(depth, key+":"+strconv.Quote(from.String()))
+				return nil
+			}
 			return fmt.Errorf("unknown leaf type: %T", val)
 		}
 	}
@@ -210,6 +215,8 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		if key == "_" {
 			switch structField.Name {
 			case "Name":
+			case "FilterAnnotation":
+				// Marshaled together with the Filter field.
 			case "Rules":
 				// Expand.
 				rules, ok := field.Interface().([]*config_parser.RoutingRule)
@@ -235,10 +242,50 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		}
 
 		// Normal field.
+		// Fields with a sibling "<Name>Annotation" field (e.g., Filter) are
+		// marshaled together with their annotations.
+		if annotationField := from.FieldByName(structField.Name + "Annotation"); annotationField.IsValid() {
+			if err = m.marshalLeafWithAnnotation(key, field, annotationField, depth); err != nil {
+				return err
+			}
+			continue
+		}
 		if err = m.marshalLeaf(key, field, depth); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
+func (m *Marshaller) marshalLeafWithAnnotation(key string, from reflect.Value, annotation reflect.Value, depth int) (err error) {
+	if m.IgnoreZero && from.IsZero() {
+		return nil
+	}
+	functionLists, ok := from.Interface().([][]*config_parser.Function)
+	if !ok {
+		return fmt.Errorf("annotatable leaf should be [][]*config_parser.Function: %v", from.Type())
+	}
+	annotationLists, ok := annotation.Interface().([][]*config_parser.Param)
+	if !ok {
+		return fmt.Errorf("annotation leaf should be [][]*config_parser.Param: %v", annotation.Type())
+	}
+	if len(functionLists) != len(annotationLists) {
+		return fmt.Errorf("unmatched annotations length: %v function lists and %v annotation lists", len(functionLists), len(annotationLists))
+	}
+	for i, functions := range functionLists {
+		var vals []string
+		for _, f := range functions {
+			vals = append(vals, f.String(true, true, false))
+		}
+		line := key + ":" + strings.Join(vals, "&&")
+		if annotation := annotationLists[i]; len(annotation) > 0 {
+			var params []string
+			for _, p := range annotation {
+				params = append(params, p.String(true, true))
+			}
+			line += " [" + strings.Join(params, ", ") + "]"
+		}
+		m.writeLine(depth, line)
+	}
 	return nil
 }
