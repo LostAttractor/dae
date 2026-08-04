@@ -45,7 +45,9 @@ func TestPacketSniffer_Mismatched(t *testing.T) {
 	for _, _data := range testPacketSnifferData {
 		data, _ := hex.DecodeString(_data)
 		sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(PacketSnifferKey{
-			LAddr: netip.MustParseAddrPort("1.1.1.1:1111"),
+			// Use a key different from TestPacketSniffer_Normal: sessions
+			// stay in the pool after Close and would otherwise be reused.
+			LAddr: netip.MustParseAddrPort("3.3.3.3:3333"),
 			RAddr: dst,
 		}, nil)
 		sniffer.AppendData(data)
