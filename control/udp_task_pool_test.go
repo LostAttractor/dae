@@ -6,47 +6,132 @@
 package control
 
 import (
+	"fmt"
+	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/stretchr/testify/require"
 )
 
-// Should run successfully in less than 3.2 seconds.
-func TestUdpTaskPool(t *testing.T) {
-	c, err := cpu.Times(false)
-	require.NoError(t, err)
-	t.Log(c)
-	DefaultNatTimeoutUDP = 1000 * time.Millisecond
+func testUdpKey(port uint16) netip.AddrPort {
+	return netip.MustParseAddrPort(fmt.Sprintf("10.0.0.1:%d", port))
+}
 
-	// Test task execution
-	for i := 0; i <= UdpTaskQueueLength; i++ {
-		err = DefaultUdpTaskPool.EmitTask("testkey", func() { time.Sleep(500 * time.Millisecond) }, 5*time.Second)
-		require.NoError(t, err)
-	} // Fill the queue to full
-	time.Sleep(400 * time.Millisecond) // Task should be executed
-	err = DefaultUdpTaskPool.EmitTask("testkey", func() {}, 5*time.Second)
-	require.NoError(t, err)
+func TestUdpTaskPool_TaskExecution(t *testing.T) {
+	pool := NewUdpTaskPool[netip.AddrPort]()
+	key := testUdpKey(10001)
 
-	// Test task timeout
-	for i := 0; i <= UdpTaskQueueLength; i++ {
-		err = DefaultUdpTaskPool.EmitTask("testkey2", func() { time.Sleep(500 * time.Millisecond) }, 100*time.Millisecond)
-		require.NoError(t, err)
-	} // Fill the queue to full
-	time.Sleep(200 * time.Millisecond) // Task should be executed
-	err = DefaultUdpTaskPool.EmitTask("testkey2", func() {}, 5*time.Second)
-	require.NoError(t, err)
+	done := make(chan struct{})
+	pool.EmitTask(key, func() { close(done) })
 
-	// Test task gc with pending emit
-	for i := 0; i <= UdpTaskQueueLength; i++ {
-		err = DefaultUdpTaskPool.EmitTask("testkey3", func() { time.Sleep(100 * time.Second) }, 5*time.Second)
-		require.NoError(t, err)
-	} // Fill the queue
-	err = DefaultUdpTaskPool.EmitTask("testkey3", func() {}, 5*time.Second)
-	require.Error(t, err) // expect TaskPool is closed
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("task was not executed")
+	}
+}
 
-	c, err = cpu.Times(false)
-	require.NoError(t, err)
-	t.Log(c)
+func TestUdpTaskPool_TasksWithSameKeyAreOrdered(t *testing.T) {
+	pool := NewUdpTaskPool[netip.AddrPort]()
+	key := testUdpKey(10002)
+
+	const n = 100
+	var mu sync.Mutex
+	executed := make([]int, 0, n)
+	done := make(chan struct{})
+	for i := 0; i < n; i++ {
+		i := i
+		pool.EmitTask(key, func() {
+			mu.Lock()
+			executed = append(executed, i)
+			mu.Unlock()
+			if i == n-1 {
+				close(done)
+			}
+		})
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("tasks were not fully executed")
+	}
+	for i := 0; i < n; i++ {
+		if executed[i] != i {
+			t.Fatalf("tasks executed out of order: executed[%v] = %v", i, executed[i])
+		}
+	}
+}
+
+func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
+	pool := NewUdpTaskPool[netip.AddrPort]()
+	key := testUdpKey(10003)
+
+	// Block the convoy goroutine so the queue channel can be filled.
+	unblock := make(chan struct{})
+	started := make(chan struct{})
+	pool.EmitTask(key, func() {
+		close(started)
+		<-unblock
+	})
+	<-started
+
+	// Fill the queue channel.
+	for i := 0; i < UdpTaskQueueLength; i++ {
+		pool.EmitTask(key, func() {})
+	}
+
+	// The queue is full now: this task should be dropped instead of blocking.
+	emitDone := make(chan struct{})
+	go func() {
+		pool.EmitTask(key, func() {})
+		close(emitDone)
+	}()
+	select {
+	case <-emitDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("EmitTask blocked on a full queue")
+	}
+	close(unblock)
+}
+
+func TestUdpTaskPool_QueueAging(t *testing.T) {
+	oldNatTimeout := DefaultNatTimeoutUDP
+	DefaultNatTimeoutUDP = 100 * time.Millisecond
+	defer func() { DefaultNatTimeoutUDP = oldNatTimeout }()
+
+	pool := NewUdpTaskPool[netip.AddrPort]()
+	key := testUdpKey(10004)
+
+	done := make(chan struct{})
+	pool.EmitTask(key, func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("task was not executed")
+	}
+
+	pool.mu.Lock()
+	_, ok := pool.m[key]
+	pool.mu.Unlock()
+	require.True(t, ok, "queue should exist right after emitting a task")
+
+	// The queue should be GCed after agingTime of inactivity.
+	require.Eventually(t, func() bool {
+		pool.mu.Lock()
+		defer pool.mu.Unlock()
+		_, ok = pool.m[key]
+		return !ok
+	}, 3*time.Second, 20*time.Millisecond, "queue should be GCed after aging timeout")
+
+	// A new task should recreate the queue.
+	done2 := make(chan struct{})
+	pool.EmitTask(key, func() { close(done2) })
+	select {
+	case <-done2:
+	case <-time.After(3 * time.Second):
+		t.Fatal("task was not executed after queue recreation")
+	}
 }
