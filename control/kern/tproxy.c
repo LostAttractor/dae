@@ -183,7 +183,8 @@ struct dae_param {
 	__u32 dae0_ifindex;
 	__u32 dae_netns_id;
 	__u8 dae0peer_mac[6];
-	__u8 padding[2];
+	__u8 has_bpf_get_current_task;
+	__u8 padding;
 };
 
 volatile const struct dae_param PARAM = {};
@@ -1643,6 +1644,17 @@ static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
 static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 {
 	int ret;
+
+	if (!PARAM.has_bpf_get_current_task) {
+		// Fallback to bpf_get_current_comm when bpf_get_current_task is
+		// unavailable; process names may be truncated or less accurate.
+		pid_pname->pid = bpf_get_current_pid_tgid() >> 32;
+		if (bpf_get_current_comm(&pid_pname->pname,
+					 sizeof(pid_pname->pname)))
+			pid_pname->pname[0] = '\0';
+		return 0;
+	}
+
 	// Get pointer to args string.
 	struct task_struct *task = (void *)bpf_get_current_task();
 	char *args = (void *)BPF_CORE_READ(task, mm, arg_start);

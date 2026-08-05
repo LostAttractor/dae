@@ -18,6 +18,8 @@ import (
 	"sync"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/features"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
@@ -227,20 +229,29 @@ retryLoadBpf:
 	if err != nil {
 		return fmt.Errorf("failed to get netns id: %w", err)
 	}
+	hasBpfGetCurrentTask := uint8(0)
+	if err := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask); err == nil {
+		hasBpfGetCurrentTask = 1
+		log.Debugf("bpf_get_current_task is supported")
+	} else {
+		log.Warnf("Kernel does not support bpf_get_current_task helper: %v; process names may be truncated or less accurate (degraded to bpf_get_current_comm)", err)
+	}
 	constants := map[string]interface{}{
 		"PARAM": struct {
-			tproxyPort      uint32
-			controlPlanePid uint32
-			dae0Ifindex     uint32
-			dae0NetnsId     uint32
-			dae0peerMac     [6]byte
-			padding         [2]byte
+			tproxyPort           uint32
+			controlPlanePid      uint32
+			dae0Ifindex          uint32
+			dae0NetnsId          uint32
+			dae0peerMac          [6]byte
+			hasBpfGetCurrentTask uint8
+			padding              uint8
 		}{
-			tproxyPort:      uint32(opts.BigEndianTproxyPort),
-			controlPlanePid: uint32(os.Getpid()),
-			dae0Ifindex:     uint32(GetDaeNetns().Dae0().Attrs().Index),
-			dae0NetnsId:     uint32(netnsID),
-			dae0peerMac:     [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
+			tproxyPort:           uint32(opts.BigEndianTproxyPort),
+			controlPlanePid:      uint32(os.Getpid()),
+			dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
+			dae0NetnsId:          uint32(netnsID),
+			dae0peerMac:          [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
+			hasBpfGetCurrentTask: hasBpfGetCurrentTask,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {
