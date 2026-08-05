@@ -38,7 +38,10 @@ var (
 		Use:   "reload [pid]",
 		Short: "To reload config file without interrupt connections.",
 		Run: func(cmd *cobra.Command, args []string) {
-            internal.AutoSu()
+			internal.AutoSu()
+			// Last progress message printed while polling, so intermediate
+			// reload steps are shown only once.
+			var lastContent string
 			if len(args) == 0 {
 				_pid, err := os.ReadFile(PidFilePath)
 				if err != nil {
@@ -78,16 +81,22 @@ var (
 				goto fallback
 			}
 
+			// Print the progress messages the daemon writes while reloading,
+			// so the user can see which step is in progress.
 			for {
 				time.Sleep(200 * time.Millisecond)
 				code, content, err := readSignalProgressFile()
 				if err != nil {
-					// Unexpecetd case.
+					// Unexpected case.
 					goto fallback
 				}
 				if code == consts.ReloadDone || code == consts.ReloadError {
 					fmt.Println(content)
 					return
+				}
+				if content != "" && content != lastContent {
+					lastContent = content
+					fmt.Println(content)
 				}
 			}
 		fallback:
