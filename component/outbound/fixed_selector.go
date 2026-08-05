@@ -36,6 +36,10 @@ func (s *FixedSelector) Select(networkType *common.NetworkType) (dialer *dialer.
 	return
 }
 
+func (s *FixedSelector) SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer) {
+	return s.Select(networkType)
+}
+
 func (s *FixedSelector) updateAliveState(dialer *dialer.Dialer, alive bool) {
 	if s.alive == alive {
 		return

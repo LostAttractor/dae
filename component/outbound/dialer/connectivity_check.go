@@ -23,6 +23,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
@@ -444,6 +445,9 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOptio
 			return opt
 		}
 	}
+	// All network types failed; record the failure so that the node gets
+	// failure/check timestamps even though it has never been usable.
+	d.Update(false, 0, nil, err[0])
 	return nil
 }
 
@@ -478,6 +482,7 @@ func (d *Dialer) NotifyStatusChange() {
 
 // ReportUnavailable 意味着在测速之外, Dialer 似乎不可用了
 func (d *Dialer) ReportUnavailable() {
+	stats.RecordNodeConnFail(d.StatsKey())
 	if !d.Alive() {
 		d.NotifyStatusChange()
 	}
@@ -527,6 +532,7 @@ func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.Netw
 		}
 	}
 	d.alive = ok
+	stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, ok, true)
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, latency time.Duration, err error) {

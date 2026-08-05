@@ -45,6 +45,10 @@ func (s *LatencyBasedSelector) Select(networkType *common.NetworkType) *dialer.D
 	return s.networkIndexToDialer[index]
 }
 
+func (s *LatencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
+	return s.Select(networkType)
+}
+
 func (s *LatencyBasedSelector) getSortingLatency(d *dialer.Dialer) time.Duration {
 	return s.dialerToLatency[d] + s.dialerGroup.dialerToAnnotation[d].AddLatency
 }

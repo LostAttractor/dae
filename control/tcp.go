@@ -114,6 +114,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	common.DialLatency.With(labels).Observe(elapsed)
 	common.ActiveConnections.With(labels).Inc()
 	defer common.ActiveConnections.With(labels).Dec()
+	common.TotalConnections.With(labels).Inc()
 	defer rConn.Close()
 
 	// Relay

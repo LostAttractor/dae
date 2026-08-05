@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -104,11 +105,43 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
+	if !needAliveState {
+		stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, true, false)
+	}
 	return d
+}
+
+// StatsKey returns the process-lifetime identity of the node backing this
+// dialer. It is stable across control-plane reloads.
+func (d *Dialer) StatsKey() string {
+	id := d.Property.Link
+	if id == "" {
+		id = d.Property.Protocol + "://" + d.Property.Address
+	}
+	return d.Property.SubscriptionTag + "\x1f" + id
 }
 
 func (d *Dialer) NeedAliveState() bool {
 	return d.needAliveState
+}
+
+// LatencySnapshot returns the last, avg10 and moving-average latencies of
+// this dialer in the given group. hasLatency is false if no check sample has
+// been recorded yet.
+func (d *Dialer) LatencySnapshot(g DialerGroup) (last, avg10, movingAvg time.Duration, hasLatency bool) {
+	d.mu.Lock()
+	latencies, ok := d.Latencies10[g]
+	movingAvg = d.MovingAverage[g]
+	d.mu.Unlock()
+	if !ok {
+		return 0, 0, 0, false
+	}
+	last, ok = latencies.LastLatency()
+	if !ok {
+		return 0, 0, 0, false
+	}
+	avg10, _ = latencies.AvgLatency()
+	return last, avg10, movingAvg, true
 }
 
 // SetCheckAsync marks the dialer's initial connectivity check to run in

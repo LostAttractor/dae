@@ -252,13 +252,13 @@ func NewControlPlane(
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
 	block := dialer.NewDialer(_block, option, &dialer.Property{Property: *blockProperty}, false)
 	outbounds := []*outbound.DialerGroup{
-		outbound.NewDialerGroup(option, consts.OutboundDirect.String(),
+		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindAlwaysAlive,
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
 			dialer.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
 				FixedIndex: 0,
 			}, nil),
-		outbound.NewDialerGroup(option, consts.OutboundBlock.String(),
+		outbound.NewDialerGroup(option, consts.OutboundBlock.String(), outbound.GroupKindInvisible,
 			[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
 			dialer.DialerSelectionPolicy{
 				Policy:     consts.DialerSelectionPolicy_Fixed,
@@ -306,7 +306,7 @@ func NewControlPlane(
 		}
 		id := uint8(len(outbounds))
 		// Create dialer group and append it to outbounds.
-		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, dialers, annos, *policy,
+		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, outbound.GroupKindNormal, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
 		outbounds = append(outbounds, dialerGroup)
 	}

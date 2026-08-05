@@ -20,8 +20,26 @@ var ErrNoDialer = fmt.Errorf("no dialer")
 var ErrNoAliveDialer = fmt.Errorf("no alive dialer")
 var ErrFixedDialerNotAlive = fmt.Errorf("fixed dialer is not alive")
 
+// GroupKind describes the availability semantics of a group and how it is
+// presented in status output.
+type GroupKind int
+
+const (
+	// GroupKindNormal is a regular group whose dialers are subject to
+	// connectivity checks.
+	GroupKindNormal GroupKind = iota
+	// GroupKindAlwaysAlive groups dialers that need no connectivity checks
+	// (e.g. the built-in direct group); only its connection counts are
+	// meaningful.
+	GroupKindAlwaysAlive
+	// GroupKindInvisible groups dialers that never carry real traffic (e.g.
+	// the built-in block group); it is hidden from status output.
+	GroupKindInvisible
+)
+
 type DialerGroup struct {
 	Name            string
+	Kind            GroupKind
 	Dialers         []*dialer.Dialer
 	selectionPolicy *dialer.DialerSelectionPolicy
 	selector        Selector
@@ -32,6 +50,7 @@ type DialerGroup struct {
 func NewDialerGroup(
 	option *dialer.GlobalOption,
 	name string,
+	kind GroupKind,
 	dialers []*dialer.Dialer,
 	dialersAnnotations []*dialer.Annotation,
 	selectionPolicy dialer.DialerSelectionPolicy,
@@ -43,6 +62,7 @@ func NewDialerGroup(
 
 	g := &DialerGroup{
 		Name:               name,
+		Kind:               kind,
 		Dialers:            dialers,
 		selectionPolicy:    &selectionPolicy,
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
@@ -94,6 +114,13 @@ func (g *DialerGroup) GetPriority(d *dialer.Dialer, latency time.Duration) int {
 
 func (g *DialerGroup) GetSelectionPolicy() (policy consts.DialerSelectionPolicy) {
 	return g.selectionPolicy.Policy
+}
+
+// SelectedDialer returns the dialer currently selected for the given network
+// type. It returns nil for policies without a stable selection (e.g. random)
+// or when no dialer is alive.
+func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
+	return g.selector.SelectedDialer(networkType)
 }
 
 // SelectFallbackIpVersion selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
