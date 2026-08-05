@@ -5,22 +5,28 @@ import (
 )
 
 var (
-	ActiveConnections *prometheus.GaugeVec
 	// CoreIpDomainBitmap prometheus.Gauge
 	// DeadlineTimers     *prometheus.GaugeVec
 	// DnsCacheSize       prometheus.Gauge
 	// DnsCacheHit        *prometheus.CounterVec
+
+	// The metrics below are periodically overwritten by the health-check
+	// loop, so they are reset on control-plane reload to drop series of
+	// removed nodes/dialers.
 	CheckLatency       *prometheus.GaugeVec
 	CheckMovingLatency *prometheus.GaugeVec
 	CheckSelectLatency *prometheus.GaugeVec
 	DialerSelectIndex  *prometheus.GaugeVec
-	DialLatency        *prometheus.HistogramVec
-	ErrorCount         *prometheus.CounterVec
+
+	// The metrics below keep process-lifetime values and are not reset on
+	// control-plane reload, because what they measure also survives reloads
+	// (e.g. connections outlive the control plane that accepted them).
+	ActiveConnections *prometheus.GaugeVec
+	DialLatency       *prometheus.HistogramVec
+	ErrorCount        *prometheus.CounterVec
 	// TrafficBytes       *prometheus.CounterVec
 	// VmRssKb            prometheus.Gauge
 
-	// The metrics below keep process-lifetime values and are not reset on
-	// control-plane reload.
 	TotalConnections *prometheus.CounterVec
 	NodeAlive        *prometheus.GaugeVec
 	NodeLastFailure  *prometheus.GaugeVec
@@ -140,13 +146,15 @@ func init() {
 
 func InitPrometheus(registry *prometheus.Registry) {
 	// Drop stale series from a previous control plane (reload), then register.
-	ActiveConnections.Reset()
+	// Only periodically-overwritten gauges are reset here; connection gauges,
+	// counters and histograms keep process-lifetime values because what they
+	// measure survives reloads, and resetting them would desync the metric
+	// from reality (e.g. ActiveConnections going negative when a pre-reload
+	// connection closes).
 	CheckLatency.Reset()
 	CheckMovingLatency.Reset()
 	CheckSelectLatency.Reset()
 	DialerSelectIndex.Reset()
-	DialLatency.Reset()
-	ErrorCount.Reset()
 	registry.MustRegister(ActiveConnections)
 	// registry.MustRegister(CoreIpDomainBitmap)
 	// registry.MustRegister(DeadlineTimers)

@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -58,8 +59,13 @@ var (
 	std              = log.New()
 	pprofServer      *http.Server
 	prometheusServer *http.Server
-	statusServer     *control.StatusServer
-	controlPlane     *control.ControlPlane
+	// prometheusPort is the port prometheusServer listens on; 0 means disabled.
+	prometheusPort uint16
+	// prometheusHandler holds the handler bound to the current control plane's
+	// registry, so it can be swapped on reload without restarting the server.
+	prometheusHandler atomic.Value // http.Handler
+	statusServer      *control.StatusServer
+	controlPlane      *control.ControlPlane
 )
 
 func init() {
@@ -343,17 +349,33 @@ func startPprofServer(port uint16) {
 	runtime.SetMutexProfileFraction(1)
 }
 
+// startPrometheusServer rebinds the metrics handler to the given registry,
+// restarting the HTTP server only when the listen port changed.
 func startPrometheusServer(port uint16, prometheusRegistry *prometheus.Registry) {
+	if prometheusServer != nil && prometheusPort == port && port != 0 {
+		// Port unchanged: keep the listener, just swap the registry.
+		prometheusHandler.Store(promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{}))
+		return
+	}
+
 	if prometheusServer != nil {
 		prometheusServer.Shutdown(context.Background())
 		prometheusServer = nil
+		prometheusPort = 0
 	}
 
 	if port == 0 {
 		return
 	}
 
-	prometheusServer = &http.Server{Addr: fmt.Sprintf("localhost:%d", port), Handler: promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{})}
+	prometheusHandler.Store(promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{}))
+	prometheusServer = &http.Server{
+		Addr: fmt.Sprintf("localhost:%d", port),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			prometheusHandler.Load().(http.Handler).ServeHTTP(w, r)
+		}),
+	}
+	prometheusPort = port
 	go prometheusServer.ListenAndServe()
 }
 
