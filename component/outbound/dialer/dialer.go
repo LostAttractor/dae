@@ -43,13 +43,12 @@ type Dialer struct {
 	mu                     sync.Mutex
 	registeredDialerGroups map[DialerGroup]int
 
-	tickerMu sync.Mutex
-	ticker   *time.Ticker
-	checkCh  chan time.Time
-	ctx      context.Context
-	cancel   context.CancelFunc
+	checkCh chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	checkActivated bool
+	checkAsync     bool
 }
 type GlobalOption struct {
 	D.ExtraOption
@@ -98,9 +97,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 		Latencies10:            make(map[DialerGroup]*LatenciesN),
 		MovingAverage:          make(map[DialerGroup]time.Duration),
 		registeredDialerGroups: make(map[DialerGroup]int),
-		tickerMu:               sync.Mutex{},
-		ticker:                 nil,
-		checkCh:                make(chan time.Time, 1),
+		checkCh:                make(chan struct{}, 1),
 		ctx:                    ctx,
 		cancel:                 cancel,
 	}
@@ -114,16 +111,18 @@ func (d *Dialer) NeedAliveState() bool {
 	return d.needAliveState
 }
 
+// SetCheckAsync marks the dialer's initial connectivity check to run in
+// background without blocking startup. The dialer stays unavailable until
+// the first successful check.
+func (d *Dialer) SetCheckAsync(checkAsync bool) {
+	d.checkAsync = checkAsync
+}
+
 func (d *Dialer) Clone() *Dialer {
 	return NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState)
 }
 
 func (d *Dialer) Close() error {
 	d.cancel()
-	d.tickerMu.Lock()
-	if d.ticker != nil {
-		d.ticker.Stop()
-	}
-	d.tickerMu.Unlock()
 	return nil
 }
