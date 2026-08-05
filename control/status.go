@@ -15,12 +15,13 @@ import (
 )
 
 type StatusSnapshot struct {
-	Version     string        `json:"version"`
-	StartedAt   time.Time     `json:"started_at"`
-	ActiveConns int64         `json:"active_conns"`
-	TotalConns  int64         `json:"total_conns"`
-	ActiveByNet [4]int64      `json:"active_by_net"` // tcp4, tcp6, udp4, udp6
-	Groups      []GroupStatus `json:"groups"`
+	Version      string        `json:"version"`
+	StartedAt    time.Time     `json:"started_at"`
+	LastReloadAt *time.Time    `json:"last_reload_at,omitempty"`
+	ActiveConns  int64         `json:"active_conns"`
+	TotalConns   int64         `json:"total_conns"`
+	ActiveByNet  [4]int64      `json:"active_by_net"` // tcp4, tcp6, udp4, udp6
+	Groups       []GroupStatus `json:"groups"`
 }
 
 type GroupStatus struct {
@@ -211,8 +212,9 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 	conns := c.collectConnCounts()
 	snapshot := &StatusSnapshot{
-		Version:   version,
-		StartedAt: stats.ProcessStart,
+		Version:      version,
+		StartedAt:    stats.ProcessStart,
+		LastReloadAt: timePtr(stats.LastReload()),
 	}
 	snapshot.ActiveConns, snapshot.TotalConns = conns.sum(func(connKey) bool { return true })
 	for i := 0; i < 4; i++ {
