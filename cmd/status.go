@@ -179,7 +179,11 @@ func printTable(out io.Writer, rows [][]string) {
 }
 
 func printStatus(s *control.StatusSnapshot) {
-	fmt.Printf("Daemon:      %v up %v (since %v)\n", s.Version, formatUptime(time.Since(s.StartedAt)), s.StartedAt.Local().Format("2006-01-02 15:04:05"))
+	fmt.Printf("Daemon:      %v up %v (since %v)", s.Version, formatUptime(time.Since(s.StartedAt)), s.StartedAt.Local().Format("2006-01-02 15:04:05"))
+	if s.LastReloadAt != nil {
+		fmt.Printf(", last reload %v", formatAgo(s.LastReloadAt))
+	}
+	fmt.Println()
 	var perNet []string
 	for i, n := range s.ActiveByNet {
 		perNet = append(perNet, fmt.Sprintf("%v %v", networkNames[i], n))

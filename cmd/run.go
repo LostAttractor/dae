@@ -32,6 +32,7 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -297,6 +298,7 @@ loop:
 				if statusServer != nil {
 					statusServer.SetControlPlane(c)
 				}
+				stats.RecordReload()
 			case syscall.SIGHUP:
 				// Ignore.
 				continue

@@ -10,6 +10,7 @@ package stats
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -17,6 +18,21 @@ import (
 )
 
 var ProcessStart = time.Now()
+
+var lastReload atomic.Int64 // unix seconds, zero until the first reload
+
+func RecordReload() {
+	lastReload.Store(time.Now().Unix())
+}
+
+// LastReload returns when the last control-plane reload finished, or the
+// zero time if no reload has happened since process start.
+func LastReload() time.Time {
+	if sec := lastReload.Load(); sec > 0 {
+		return time.Unix(sec, 0)
+	}
+	return time.Time{}
+}
 
 // Availability is a point-in-time view of the uptime of a node, or of a
 // group on one network type.
