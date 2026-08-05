@@ -42,6 +42,10 @@ func (s *RandomSelector) Select(networkType *common.NetworkType) (dialer *dialer
 	return s.networkIndexToDialers[index][fastrand.Intn(len(s.networkIndexToDialers[index]))]
 }
 
+func (s *RandomSelector) SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer) {
+	return nil
+}
+
 func (s *RandomSelector) updateDialerAliveState(dialer *dialer.Dialer, alive bool) {
 	if s.dialerToAlive[dialer] == alive {
 		return

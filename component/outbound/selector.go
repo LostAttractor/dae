@@ -2,12 +2,14 @@ package outbound
 
 import (
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	log "github.com/sirupsen/logrus"
 )
 
 type Selector interface {
 	Select(networkType *common.NetworkType) (dialer *dialer.Dialer)
+	SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer)
 	NotifyStatusChange(dialer *dialer.Dialer)
 	PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{}))
 }
@@ -36,6 +38,7 @@ func (s *BaseSelector) handleAliveStateChange(alive bool, networkType *common.Ne
 		}).Infof("Group has no dialer alive")
 	}
 	s.networkIndexToAlive[index] = &alive
+	stats.RecordGroup(s.dialerGroup.Name, index, alive)
 	s.aliveChangeCallback(alive, networkType)
 }
 

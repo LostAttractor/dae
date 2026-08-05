@@ -49,6 +49,7 @@ type UdpEndpoint struct {
 func (ue *UdpEndpoint) run() error {
 	common.ActiveConnections.With(ue.labels).Inc()
 	defer common.ActiveConnections.With(ue.labels).Dec()
+	common.TotalConnections.With(ue.labels).Inc()
 	buf := pool.GetBuffer(consts.EthernetMtu)
 	defer pool.PutBuffer(buf)
 	for {

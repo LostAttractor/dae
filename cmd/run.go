@@ -45,6 +45,7 @@ import (
 const (
 	PidFilePath            = "/var/run/dae.pid"
 	SignalProgressFilePath = "/var/run/dae.progress"
+	StatusSocketPath       = "/var/run/dae.sock"
 )
 
 var (
@@ -56,6 +57,7 @@ var (
 	std              = log.New()
 	pprofServer      *http.Server
 	prometheusServer *http.Server
+	statusServer     *control.StatusServer
 	controlPlane     *control.ControlPlane
 )
 
@@ -140,6 +142,15 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	}
 
 	startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
+
+	if statusServer == nil {
+		if statusServer, err = control.StartStatusServer(StatusSocketPath, Version); err != nil {
+			std.Warnf("Failed to start status server: %v", err)
+		}
+	}
+	if statusServer != nil {
+		statusServer.SetControlPlane(c)
+	}
 
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
@@ -283,6 +294,9 @@ loop:
 
 				startPprofServer(conf.Global.PprofPort)
 				startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
+				if statusServer != nil {
+					statusServer.SetControlPlane(c)
+				}
 			case syscall.SIGHUP:
 				// Ignore.
 				continue
@@ -298,6 +312,9 @@ loop:
 }
 
 func exit(c *control.ControlPlane) {
+	if statusServer != nil {
+		statusServer.Close()
+	}
 	if err := os.Remove(PidFilePath); err != nil {
 		std.Errorf("%+v", oops.Wrapf(err, "failed to remove pid file"))
 	}

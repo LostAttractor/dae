@@ -7,7 +7,7 @@ import (
 var (
 	ActiveConnections *prometheus.GaugeVec
 	// CoreIpDomainBitmap prometheus.Gauge
-	// DeadlineTimers     prometheus.Gauge
+	// DeadlineTimers     *prometheus.GaugeVec
 	// DnsCacheSize       prometheus.Gauge
 	// DnsCacheHit        *prometheus.CounterVec
 	CheckLatency       *prometheus.GaugeVec
@@ -18,6 +18,13 @@ var (
 	ErrorCount         *prometheus.CounterVec
 	// TrafficBytes       *prometheus.CounterVec
 	// VmRssKb            prometheus.Gauge
+
+	// The metrics below keep process-lifetime values and are not reset on
+	// control-plane reload.
+	TotalConnections *prometheus.CounterVec
+	NodeAlive        *prometheus.GaugeVec
+	NodeLastFailure  *prometheus.GaugeVec
+	GroupAlive       *prometheus.GaugeVec
 )
 
 // newMetrics constructs all metric collectors. It is called once at package
@@ -90,6 +97,30 @@ func newMetrics() {
 		},
 		labels,
 	)
+	TotalConnections = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dae_total_connections",
+		},
+		labels,
+	)
+	NodeAlive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_node_alive",
+		},
+		[]string{"subtag", "dialer"},
+	)
+	NodeLastFailure = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_node_last_failure_timestamp_seconds",
+		},
+		[]string{"subtag", "dialer"},
+	)
+	GroupAlive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_group_alive",
+		},
+		[]string{"outbound", "network"},
+	)
 	// TrafficBytes = prometheus.NewCounterVec(
 	// 	prometheus.CounterOpts{
 	// 		Name: "dae_traffic_bytes",
@@ -127,6 +158,10 @@ func InitPrometheus(registry *prometheus.Registry) {
 	registry.MustRegister(DialerSelectIndex)
 	registry.MustRegister(DialLatency)
 	registry.MustRegister(ErrorCount)
+	registry.MustRegister(TotalConnections)
+	registry.MustRegister(NodeAlive)
+	registry.MustRegister(NodeLastFailure)
+	registry.MustRegister(GroupAlive)
 	// registry.MustRegister(TrafficBytes)
 	// registry.MustRegister(VmRssKb)
 }
