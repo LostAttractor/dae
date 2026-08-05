@@ -19,6 +19,7 @@ import (
 const (
 	AnnotationKey_AddLatency = "add_latency"
 	AnnotationKey_Priority   = "priority"
+	AnnotationKey_CheckAsync = "check_async"
 )
 
 type Priority struct {
@@ -32,6 +33,8 @@ type Annotation struct {
 	Priority   int
 	// Optional conditional priorities based on latency range.
 	ConditionalPriority []*Priority
+	// CheckAsync makes the dialer's initial connectivity check not block startup.
+	CheckAsync bool
 }
 
 func NewAnnotation(annotation []*config_parser.Param) (*Annotation, error) {
@@ -83,6 +86,12 @@ func NewAnnotation(annotation []*config_parser.Param) (*Annotation, error) {
 					High: high,
 				})
 			}
+		case AnnotationKey_CheckAsync:
+			checkAsync, err := strconv.ParseBool(strings.TrimSpace(param.Val))
+			if err != nil {
+				return nil, fmt.Errorf("incorrect check_async format: %w", err)
+			}
+			anno.CheckAsync = checkAsync
 		default:
 			return nil, fmt.Errorf("unknown filter annotation: %v", param.Key)
 		}

@@ -475,7 +475,7 @@ func (c *ControlPlane) Activate() error {
 
 	// Run initial connectivity checks. We wait for completion so that
 	// OutboundConnectivityMap reflects a sensible state before traffic starts.
-	wg := common.NewTimedWaitGroup()
+	wg := new(sync.WaitGroup)
 	for _, g := range c.outbounds {
 		for _, d := range g.Dialers {
 			d.ActivateCheck(wg)

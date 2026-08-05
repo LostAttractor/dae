@@ -50,6 +50,9 @@ func NewDialerGroup(
 
 	for i, d := range dialers {
 		g.dialerToAnnotation[d] = dialersAnnotations[i]
+		if dialersAnnotations[i].CheckAsync {
+			d.SetCheckAsync(true)
+		}
 	}
 
 	switch selectionPolicy.Policy {

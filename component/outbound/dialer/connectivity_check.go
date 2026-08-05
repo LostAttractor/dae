@@ -33,6 +33,10 @@ import (
 const (
 	RetryCount    = 3
 	RetryInterval = 5 * time.Second
+	// InitialCheckTimeout is the maximum time the control plane startup waits
+	// for a dialer's initial connectivity check. The check itself keeps
+	// retrying in background every CheckInterval after the timeout.
+	InitialCheckTimeout = 60 * time.Second
 )
 
 func (d *Dialer) Alive() bool {
@@ -281,7 +285,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 	}
 }
 
-func (d *Dialer) ActivateCheck(wg *common.TimedWaitGroup) {
+func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 	if len(d.registeredDialerGroups) == 0 {
 		return
 	}
@@ -293,34 +297,34 @@ func (d *Dialer) ActivateCheck(wg *common.TimedWaitGroup) {
 
 	CheckOpts := d.createCheckOptions()
 
-	id := wg.Add(30*time.Second, "initial check for "+d.Name)
+	if !d.checkAsync {
+		wg.Add(1)
+	}
 
+	done := make(chan struct{})
 	go func() {
-		// at startup, check all network types to determine which are supported
+		// at startup, check all network types to determine which are supported;
+		// if all fail, runInitialCheck keeps rechecking every CheckInterval
 		checkOpt := d.runInitialCheck(CheckOpts)
-		wg.Done(id)
 		if checkOpt == nil {
 			return
 		}
+		close(done)
 		// after startup, only run check on one network type
-		go d.startCheckTicker()
-		go d.runCheckLoop(checkOpt)
+		d.runCheckLoop(checkOpt)
 	}()
-}
-
-func (d *Dialer) startCheckTicker() {
-	// Sleep to avoid avalanche.
-	time.Sleep(time.Duration(fastrand.Int63n(int64(d.CheckInterval))))
-	d.tickerMu.Lock()
-	d.ticker = time.NewTicker(d.CheckInterval)
-	d.tickerMu.Unlock()
-	for {
-		select {
-		case <-d.ctx.Done():
-			return
-		case t := <-d.ticker.C:
-			d.checkCh <- t
-		}
+	if !d.checkAsync {
+		go func() {
+			select {
+			case <-done:
+			case <-time.After(InitialCheckTimeout):
+				log.WithFields(log.Fields{
+					"node": d.Name,
+				}).Warnf("Initial check not finished in %v, startup continues and check keeps running in background", InitialCheckTimeout)
+			case <-d.ctx.Done():
+			}
+			wg.Done()
+		}()
 	}
 }
 
@@ -330,39 +334,63 @@ func (d *Dialer) NotifyCheck() {
 	case <-d.ctx.Done():
 		return
 	// If fail to push elem to chan, the check is in process.
-	case d.checkCh <- time.Now():
+	case d.checkCh <- struct{}{}:
 	default:
 	}
 }
 
 func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
+	// Sleep to avoid avalanche.
+	checkInterval := time.Duration(fastrand.Int63n(int64(d.CheckInterval)))
 	for {
 		select {
 		case <-d.ctx.Done():
 			return
 		case <-d.checkCh:
-			for i := 0; i < RetryCount; i++ {
-				if !d.Alive() {
-					d.NotifyStatusChange()
-					if err := d.Connect(); err != nil {
-						continue
-					}
-				}
-				ok, latency, err := d.Check(checkOpt)
-				d.Update(ok, latency, checkOpt.networkType, err)
-				d.NotifyStatusChange()
-				if ok {
-					break
-				}
-				time.Sleep(RetryInterval)
+			d.runCheck(checkOpt)
+		case <-time.After(checkInterval):
+			d.runCheck(checkOpt)
+		}
+		checkInterval = d.CheckInterval
+	}
+}
+
+func (d *Dialer) runCheck(checkOpt *CheckOption) {
+	for i := 0; i < RetryCount; i++ {
+		if !d.Alive() {
+			d.NotifyStatusChange()
+			if err := d.Connect(); err != nil {
+				continue
 			}
 		}
+		ok, latency, err := d.Check(checkOpt)
+		d.Update(ok, latency, checkOpt.networkType, err)
+		d.NotifyStatusChange()
+		if ok {
+			break
+		}
+		time.Sleep(RetryInterval)
 	}
 }
 
 func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 	defer d.NotifyStatusChange()
 
+	for i := 1; ; i++ {
+		if opt = d.checkAllNetworkTypes(checkOpts); opt != nil {
+			return opt
+		}
+		// All network types failed. Wait for the next tick of startCheckTicker
+		// (CheckInterval) and recheck all network types again.
+		select {
+		case <-d.ctx.Done():
+			return nil
+		case <-time.After(d.CheckInterval * time.Duration(i)):
+		}
+	}
+}
+
+func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOption) {
 	var wg sync.WaitGroup
 	var latency [4]time.Duration
 	var err [4]error
