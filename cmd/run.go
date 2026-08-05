@@ -48,6 +48,15 @@ const (
 	PidFilePath            = "/var/run/dae.pid"
 	SignalProgressFilePath = "/var/run/dae.progress"
 	StatusSocketPath       = "/var/run/dae.sock"
+
+	// Time bounds applied to the reload path only. A reload must not hang for
+	// a long time when the network is down, because the old control plane
+	// keeps serving traffic while the new one is being built. Startup, in
+	// contrast, may wait for the network without a bound, since the network
+	// may not be online yet when dae first starts.
+	reloadNetworkWaitTimeout       = 15 * time.Second
+	reloadSubscriptionTimeout      = 10 * time.Second
+	reloadSubscriptionPhaseTimeout = 30 * time.Second
 )
 
 var (
@@ -132,10 +141,15 @@ var (
 	}
 )
 
+// writeReloadProgress reports the current reload step through the signal
+// progress file, so `dae reload` can display it to the user.
+func writeReloadProgress(format string, args ...any) {
+	_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadProcessing}, []byte("\n"+fmt.Sprintf(format, args...))...), 0644)
+}
+
 func Run(conf *config.Config, externGeoDataDirs []string) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
-
 	startPprofServer(conf.Global.PprofPort)
 
 	// New ControlPlane.
@@ -266,6 +280,7 @@ loop:
 				// bindings, so the existing plane keeps serving traffic if it
 				// fails.
 				std.Warnln("[Reload] Build new control plane")
+				writeReloadProgress("Building new control plane...")
 				obj := c.EjectBpf()
 				newC, err := newControlPlane(obj, newConf, externGeoDataDirs)
 				if err != nil {
@@ -281,6 +296,8 @@ loop:
 				// Phase 2: commit. The new plane now owns BPF and pushes
 				// rules into the kernel. Failures past this point leave the
 				// system in an inconsistent state, so we tear everything down.
+				std.Warnln("[Reload] Activate new control plane")
+				writeReloadProgress("Activating new control plane...")
 				newC.InjectBpf(obj)
 				if err = newC.Activate(); err != nil {
 					sdnotify.Stopping()
@@ -292,6 +309,8 @@ loop:
 				if abortConnections {
 					c.AbortConnections()
 				}
+				std.Warnln("[Reload] Stop old control plane")
+				writeReloadProgress("Switching to the new control plane...")
 				c.Close()
 				std.Warnln("[Reload] Stopped old control plane")
 
@@ -379,9 +398,72 @@ func startPrometheusServer(port uint16, prometheusRegistry *prometheus.Registry)
 	go prometheusServer.ListenAndServe()
 }
 
+// reloadDeadline returns the deadline after which a reload step must give up
+// waiting. At startup (isReload == false) it returns the zero time, i.e. no
+// bound.
+func reloadDeadline(isReload bool, timeout time.Duration) time.Time {
+	if !isReload {
+		return time.Time{}
+	}
+	return time.Now().Add(timeout)
+}
+
+// waitForNetworkOnline blocks until the network is reachable. Startup waits
+// indefinitely because the network may not be online yet when dae first
+// starts. During a reload the wait is bounded by reloadNetworkWaitTimeout:
+// the old control plane keeps serving traffic, so a reload must not hang on
+// a dead network.
+func waitForNetworkOnline(isReload bool) {
+	epo := 5 * time.Second
+	client := http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return direct.Direct.DialContext(ctx, "tcp", addr)
+			},
+		},
+		Timeout: epo,
+	}
+	deadline := reloadDeadline(isReload, reloadNetworkWaitTimeout)
+	if isReload {
+		writeReloadProgress("Checking network...")
+	}
+	log.Infoln("Waiting for network...")
+	for i := 0; ; i++ {
+		if isReload && time.Now().After(deadline) {
+			log.Warnf("Network is still not online after %v; continuing without network check", reloadNetworkWaitTimeout)
+			return
+		}
+		resp, err := client.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
+		if err != nil {
+			log.Debugf("%+v", oops.Wrapf(err, "CheckNetwork"))
+			var neterr net.Error
+			if errors.As(err, &neterr) && neterr.Timeout() {
+				// Do not sleep.
+				continue
+			}
+			time.Sleep(epo)
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+			log.Infoln("Network online.")
+			return
+		}
+		log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
+		time.Sleep(epo)
+	}
+}
+
 func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
+
+	// A non-nil bpf means this is a reload (or suspend/resume): the ejected
+	// bpf object of the previous control plane is reused. During a reload the
+	// old control plane keeps serving traffic, so the network check and the
+	// subscription fetches below must be bounded and must not block for too
+	// long.
+	isReload := bpf != nil
 
 	/// Get tag -> nodeList mapping.
 	tagToNodeList := map[string][]string{}
@@ -397,38 +479,12 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	// Resolve subscriptions to nodes.
 	resolvingfailed := false
 	if !conf.Global.DisableWaitingNetwork {
-		epo := 5 * time.Second
-		client := http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return direct.Direct.DialContext(ctx, "tcp", addr)
-				},
-			},
-			Timeout: epo,
-		}
-		log.Infoln("Waiting for network...")
-		for i := 0; ; i++ {
-			resp, err := client.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
-			if err != nil {
-				log.Debugf("%+v", oops.Wrapf(err, "CheckNetwork"))
-				var neterr net.Error
-				if errors.As(err, &neterr) && neterr.Timeout() {
-					// Do not sleep.
-					continue
-				}
-				time.Sleep(epo)
-				continue
-			}
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				break
-			}
-			log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
-			time.Sleep(epo)
-		}
-		log.Infoln("Network online.")
+		waitForNetworkOnline(isReload)
 	}
 	if len(conf.Subscription) > 0 {
+		if isReload {
+			writeReloadProgress("Fetching subscriptions...")
+		}
 		log.Infoln("Fetching subscriptions...")
 	}
 	client := http.Client{
@@ -439,15 +495,28 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 		},
 		Timeout: 30 * time.Second,
 	}
+	// Bound the time a reload may spend on unreachable subscription servers:
+	// the old control plane keeps serving traffic, and subscriptions can be
+	// fetched again on the next reload. Startup keeps the full timeout since
+	// the network may not be online yet.
+	if isReload {
+		client.Timeout = reloadSubscriptionTimeout
+	}
 	subscriptionDir := os.Getenv("DAE_LOCATION_SUBSCRIPTION")
 	if subscriptionDir == "" {
 		subscriptionDir = filepath.Dir(cfgFile)
 	}
+	subDeadline := reloadDeadline(isReload, reloadSubscriptionPhaseTimeout)
 	for _, sub := range conf.Subscription {
+		if isReload && time.Now().After(subDeadline) {
+			log.Warnf("Subscription resolution exceeded %v; skipping the remaining subscriptions", reloadSubscriptionPhaseTimeout)
+			break
+		}
 		tag, nodes, err := subscription.ResolveSubscription(&client, subscriptionDir, string(sub))
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 			resolvingfailed = true
+			continue
 		}
 		if len(nodes) > 0 {
 			tagToNodeList[tag] = append(tagToNodeList[tag], nodes...)
