@@ -201,7 +201,10 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 		}
 	}()
 
-	defer exit(c)
+	// Close the CURRENT plane on exit: c is re-assigned on every reload, and
+	// a deferred exit(c) would capture the startup plane, closing the retired
+	// plane a second time while the final, bpf-owning plane is never closed.
+	defer func() { exit(c) }()
 
 	reloadingErr := error(nil)
 	isSuspend := false
@@ -248,6 +251,15 @@ loop:
 				_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
 				reloadingErr = nil
 
+				// On failure keep the current control plane running and
+				// report the error through the log and the progress file.
+				reloadFailed := func(step string, err error) {
+					reloadingErr = err
+					std.Errorf("%+v", oops.Wrapf(err, "[Reload] %v; keeping current control plane", step))
+					sdnotify.Ready()
+					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+				}
+
 				// Load new config.
 				abortConnections = os.Remove(AbortFile) == nil
 				std.Warnln("[Reload] Load new config")
@@ -265,10 +277,15 @@ loop:
 					}
 				}
 				if err != nil {
-					reloadingErr = err
-					std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to load config; keeping current control plane"))
-					sdnotify.Ready()
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+					reloadFailed("Failed to load config", err)
+					continue
+				}
+				// The tproxy listener and the tproxy port baked into the
+				// shared eBPF programs are reused across reloads, so a
+				// tproxy_port change cannot take effect without a restart.
+				if newConf.Global.TproxyPort != conf.Global.TproxyPort {
+					reloadFailed("Failed to reload",
+						fmt.Errorf("tproxy_port (%v -> %v) cannot be changed by reload; restart dae to apply it", conf.Global.TproxyPort, newConf.Global.TproxyPort))
 					continue
 				}
 				// New logger.
@@ -285,27 +302,19 @@ loop:
 				newC, err := newControlPlane(obj, newConf, externGeoDataDirs)
 				if err != nil {
 					// Restore BPF ownership on the old plane and keep it running.
-					c.InjectBpf(obj)
-					reloadingErr = err
-					std.Errorf("%+v", oops.Wrapf(err, "[Reload] Failed to build new control plane; keeping current control plane"))
-					sdnotify.Ready()
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+					c.InjectBpf()
+					reloadFailed("Failed to build new control plane", err)
 					continue
 				}
 
-				// Phase 2: commit. The new plane now owns BPF and pushes
-				// rules into the kernel. Failures past this point leave the
-				// system in an inconsistent state, so we tear everything down.
-				std.Warnln("[Reload] Activate new control plane")
-				writeReloadProgress("Activating new control plane...")
-				newC.InjectBpf(obj)
-				if err = newC.Activate(); err != nil {
-					sdnotify.Stopping()
-					_ = c.Close()
-					_ = newC.Close()
-					std.Panicf("%+v", oops.Wrapf(err, "[Reload] Failed to activate new control plane"))
-				}
-
+				// Phase 2a: retire the old plane BEFORE the new plane pushes
+				// rules into the kernel. Once BuildKernspace runs, the shared
+				// routing maps carry the new config's outbound ids; the old
+				// plane must not accept connections in that window, or it
+				// would route them through the wrong outbounds. New
+				// connections just queue in the kernel until the new plane
+				// serves the same listener, and the old plane's dialers stop
+				// writing connectivity state into the shared maps.
 				if abortConnections {
 					c.AbortConnections()
 				}
@@ -314,7 +323,19 @@ loop:
 				c.Close()
 				std.Warnln("[Reload] Stopped old control plane")
 
-				// Swap and tear down the old plane.
+				// Phase 2b: commit. The new plane now owns BPF and pushes
+				// rules into the kernel. Failures past this point leave the
+				// system in an inconsistent state, so we tear everything down.
+				std.Warnln("[Reload] Activate new control plane")
+				writeReloadProgress("Activating new control plane...")
+				newC.InjectBpf()
+				if err = newC.Activate(); err != nil {
+					sdnotify.Stopping()
+					_ = newC.Close()
+					std.Panicf("%+v", oops.Wrapf(err, "[Reload] Failed to activate new control plane"))
+				}
+
+				// Swap in the new plane.
 				c = newC
 				conf = newConf
 

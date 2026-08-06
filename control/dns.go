@@ -209,6 +209,15 @@ type DoTCP struct {
 	dnsManager   *DnsManager
 }
 
+// Close releases the persistent upstream connection, if any, so its socket
+// and the DnsManager recv loop do not outlive the owning control plane.
+func (d *DoTCP) Close() error {
+	if d.dnsManager != nil {
+		return d.dnsManager.Close()
+	}
+	return nil
+}
+
 // TODO: Connection reuse
 func (d *DoTCP) ForwardDNS(msg *dnsmessage.Msg) error {
 	if d.dnsManager == nil || d.dnsManager.IsClosed() {
@@ -227,6 +236,15 @@ type DoUDP struct {
 	dns.Upstream
 	dialArgument dialArgument
 	dnsManager   *DnsManager
+}
+
+// Close releases the persistent upstream connection, if any, so its socket
+// and the DnsManager recv loop do not outlive the owning control plane.
+func (d *DoUDP) Close() error {
+	if d.dnsManager != nil {
+		return d.dnsManager.Close()
+	}
+	return nil
 }
 
 func (d *DoUDP) ForwardDNS(msg *dnsmessage.Msg) error {

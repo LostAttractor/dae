@@ -30,6 +30,15 @@ func InitSysctlManager() (err error) {
 	return err
 }
 
+// CloseSysctlManager closes the global sysctl manager, if any, so that its
+// fsnotify watcher and expectations are released.
+func CloseSysctlManager() {
+	if sysctl != nil {
+		_ = sysctl.Close()
+		sysctl = nil
+	}
+}
+
 func NewSysctlManager() (*SysctlManager, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -78,6 +87,15 @@ func (s *SysctlManager) startWatch() {
 			log.Errorf("sysctl watcher error: %v", err)
 		}
 	}
+}
+
+func (s *SysctlManager) Close() error {
+	if s == nil {
+		return nil
+	}
+	// Closing the watcher also closes its Events/Errors channels, which makes
+	// the startWatch goroutine exit.
+	return s.watcher.Close()
 }
 
 type SysctlKey string

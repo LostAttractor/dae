@@ -93,9 +93,13 @@ func NewDialerGroup(
 	return g
 }
 
+// Close stops the connectivity checks of all dialers in the group. It is
+// called when the owning control plane is retired; the dialers themselves
+// must not be reused afterwards.
 func (g *DialerGroup) Close() error {
 	for _, d := range g.Dialers {
 		d.UnregisterDialerGroup(g)
+		_ = d.Close()
 	}
 	return nil
 }

@@ -41,9 +41,12 @@ type controlPlaneCore struct {
 
 	kernelVersion *internal.Version
 
-	flip       int
-	isReload   bool
-	bpfEjected bool
+	flip     int
+	isReload bool
+	// bpfOwned reports whether this core currently owns the bpf objects and
+	// closes them on Close. At most one core owns them at any time; the
+	// ownership moves to the next plane via EjectBpf/InjectBpf on reload.
+	bpfOwned bool
 
 	// IP -> per-rule match state. Single source of truth for both
 	// domain_bump_map and domain_routing_map in eBPF; pushed verbatim
@@ -75,25 +78,32 @@ func newControlPlaneCore(
 	if isReload {
 		coreFlip = coreFlip&1 ^ 1
 	}
-	var deferFuncs []func() error
-	if !isReload {
-		deferFuncs = append(deferFuncs, bpf.Close)
-	}
 	closed, toClose := context.WithCancel(context.Background())
 	ifmgr := component.NewInterfaceManager()
-	deferFuncs = append(deferFuncs, ifmgr.Close)
-	return &controlPlaneCore{
-		deferFuncs:    deferFuncs,
+	core := &controlPlaneCore{
 		bpf:           bpf,
 		kernelVersion: kernelVersion,
 		flip:          coreFlip,
 		isReload:      isReload,
-		bpfEjected:    false,
-		ifmgr:         ifmgr,
-		domainStates:  make(map[netip.Addr]*domainState),
-		closed:        closed,
-		close:         toClose,
+		// A core built for a reload does not own the bpf objects yet — they
+		// are still owned by the previously running core; it takes over the
+		// ownership via InjectBpf when the reload commits.
+		bpfOwned:     !isReload,
+		ifmgr:        ifmgr,
+		domainStates: make(map[netip.Addr]*domainState),
+		closed:       closed,
+		close:        toClose,
 	}
+	core.deferFuncs = append(core.deferFuncs, core.closeBpf, ifmgr.Close)
+	return core
+}
+
+// closeBpf closes the bpf objects if this core still owns them (see bpfOwned).
+func (c *controlPlaneCore) closeBpf() error {
+	if !c.bpfOwned {
+		return nil
+	}
+	return c.bpf.Close()
 }
 
 func (c *controlPlaneCore) Flip() {
@@ -759,17 +769,11 @@ func (c *controlPlaneCore) BatchRemoveDomain(ip netip.Addr, domainBitmap []uint3
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
-	if !c.bpfEjected && !c.isReload {
-		c.deferFuncs = c.deferFuncs[1:]
-	}
-	c.bpfEjected = true
+	c.bpfOwned = false
 	return c.bpf
 }
 
 // InjectBpf will inject bpf back.
-func (c *controlPlaneCore) InjectBpf(bpf *bpfObjects) {
-	if c.bpfEjected {
-		c.bpfEjected = false
-		c.deferFuncs = append([]func() error{bpf.Close}, c.deferFuncs...)
-	}
+func (c *controlPlaneCore) InjectBpf() {
+	c.bpfOwned = true
 }
