@@ -6,9 +6,11 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/netip"
 	"sync"
 	"time"
@@ -75,6 +77,11 @@ type DnsController struct {
 	// mu protects deadlineTimers
 	mu             sync.Mutex
 	deadlineTimers map[*DnsCache]*time.Timer
+	// closed is canceled by Close: once closed, the controller must not serve
+	// new requests — its forwarders are closed, and its writes would land on
+	// the shared eBPF maps the next control plane owns.
+	closed context.Context
+	close  context.CancelFunc
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -97,6 +104,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		return nil, err
 	}
 
+	closed, close := context.WithCancel(context.Background())
 	return &DnsController{
 		routing:     routing,
 		qtypePrefer: prefer,
@@ -111,6 +119,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		dnsCache:          newCommonDnsCache[dnsCacheKey](32768),
 		lookupCache:       newCommonDnsCache[queryInfo](16384),
 		deadlineTimers:    make(map[*DnsCache]*time.Timer),
+		closed:            closed,
+		close:             close,
 	}, nil
 }
 
@@ -187,6 +197,10 @@ func (c *DnsController) prepareQueryInfo(dnsMessage *dnsmessage.Msg) (queryInfo 
 }
 
 func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
+	if c.closed.Err() != nil {
+		// Drop requests arriving while the owning plane is being retired.
+		return nil
+	}
 	if dnsMessage.Response {
 		panic("DNS request expected but DNS response received")
 	}
@@ -438,6 +452,11 @@ func (c *DnsController) LookupCache(queryInfo queryInfo, answers []dnsmessage.RR
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed.Err() != nil {
+		// Do not create timers or write the shared eBPF maps after Close;
+		// the next control plane owns them now.
+		return nil
+	}
 	for _, answer := range answers {
 		cache := c.lookupCache.UpdateTtl(queryInfo, answer, ttl)
 		ip, ok := cache.GetIp()
@@ -473,6 +492,11 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 
 // TODO: 简化 cacheKey?
 func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) error {
+	if c.closed.Err() != nil {
+		// The cached forwarders are closed by Close; dialing here would
+		// recreate connections nobody closes anymore.
+		return net.ErrClosed
+	}
 	/// Dial and send.
 	// get forwarder from cache
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
@@ -566,6 +590,10 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 }
 
 func (c *DnsController) Close() error {
+	// Close first: LookupCache checks closed while holding mu, so no new
+	// deadline timers can appear while the existing ones are stopped below.
+	c.close()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

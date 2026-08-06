@@ -102,13 +102,11 @@ func NewControlPlane(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
-) (*ControlPlane, error) {
+) (c *ControlPlane, err error) {
 	// TODO: Some users reported that enabling GSO on the client wgrpcould affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
 	}
-
-	var err error
 
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
@@ -150,6 +148,11 @@ func NewControlPlane(
 
 	/// Init DaeNetns.
 	InitDaeNetns()
+	if _bpf != nil {
+		// A reload creates a new sysctl manager; close the previous one so
+		// its fsnotify watcher and expectations are not leaked.
+		CloseSysctlManager()
+	}
 	if err = InitSysctlManager(); err != nil {
 		return nil, err
 	}
@@ -267,10 +270,6 @@ func NewControlPlane(
 	}
 
 	// Filter out groups.
-	// FIXME: Ugly code here: reset grpc and meek clients manually.
-	grpc.CleanGlobalClientConnectionCache()
-	meek.CleanGlobalRoundTripperCache()
-
 	dialerSet := outbound.NewDialerSetFromLinks(option, prometheusRegistry, tagToNodeList)
 	for _, group := range groups {
 		// Parse policy.
@@ -380,6 +379,12 @@ func NewControlPlane(
 		soMarkFromDae:              global.SoMarkFromDae,
 		PrometheusRegistry:         prometheusRegistry,
 	}
+	// Stop the dialers' connectivity checks when the plane is closed: a
+	// retired plane's checks would otherwise keep writing connectivity state
+	// into the shared eBPF maps and the stats. Registered first, so it runs
+	// last (defer funcs run in reverse order), after in-flight DNS forwarders
+	// have been released.
+	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
 	defer func() {
 		if err != nil {
 			cancel()
@@ -453,6 +458,13 @@ func (c *ControlPlane) Activate() error {
 	core := c.core
 	builder := c.routingMatcherBuilder
 	c.routingMatcherBuilder = nil
+
+	// Reset the global grpc/meek transport caches so dials made from now on
+	// use the new configuration. This belongs to the commit phase: during
+	// the build phase of a reload the previous plane is still serving and
+	// must keep its cached transports, and a failed build must not wipe them.
+	grpc.CleanGlobalClientConnectionCache()
+	meek.CleanGlobalRoundTripperCache()
 
 	if err := builder.BuildKernspace(); err != nil {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
@@ -580,8 +592,8 @@ func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer
 func (c *ControlPlane) EjectBpf() *bpfObjects {
 	return c.core.EjectBpf()
 }
-func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
-	c.core.InjectBpf(bpf)
+func (c *ControlPlane) InjectBpf() {
+	c.core.InjectBpf()
 }
 
 func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
@@ -724,9 +736,11 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			readyChan <- false
 		}
 	}()
-	udpConn := listener.packetConn.(*net.UDPConn)
-	/// Serve.
-	// TCP socket.
+	// Serve on duplicates of the shared listener sockets. The duplicates are
+	// closed when this plane is retired, so the loops below stop accepting
+	// immediately instead of racing the next plane for the shared listener;
+	// connections and packets already queued on the shared sockets are left
+	// for the next plane.
 	tcpFile, err := listener.tcpListener.(*net.TCPListener).File()
 	if err != nil {
 		return oops.Errorf("failed to retrieve copy of the underlying TCP connection file")
@@ -737,8 +751,13 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	if err := c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
 		return err
 	}
-	// UDP socket.
-	udpFile, err := udpConn.File()
+	tcpListener, err := net.FileListener(tcpFile)
+	if err != nil {
+		return oops.Errorf("failed to duplicate the TCP listener: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, tcpListener.Close)
+
+	udpFile, err := listener.packetConn.(*net.UDPConn).File()
 	if err != nil {
 		return oops.Errorf("failed to retrieve copy of the underlying UDP connection file")
 	}
@@ -748,6 +767,12 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	if err := c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
 		return err
 	}
+	udpPacketConn, err := net.FilePacketConn(udpFile)
+	if err != nil {
+		return oops.Errorf("failed to duplicate the UDP socket: %w", err)
+	}
+	c.deferFuncs = append(c.deferFuncs, udpPacketConn.Close)
+	serveUdpConn := udpPacketConn.(*net.UDPConn)
 
 	sentReady = true
 	readyChan <- true
@@ -758,7 +783,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				return
 			default:
 			}
-			lconn, err := listener.tcpListener.Accept()
+			lconn, err := tcpListener.Accept()
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
 					log.Errorf("%+v", oops.Wrapf(err, "Error when accept"))
@@ -789,7 +814,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				return
 			default:
 			}
-			n, oobn, _, src, err := udpConn.ReadMsgUDPAddrPort(buf, oob)
+			n, oobn, _, src, err := serveUdpConn.ReadMsgUDPAddrPort(buf, oob)
 			if err != nil {
 				if !strings.Contains(err.Error(), "use of closed network connection") {
 					log.Errorf("%+v", oops.Wrapf(err, "ReadFromUDPAddrPort: %v", src.String()))
@@ -829,7 +854,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// t := time.Now()
 			DefaultUdpTaskPool.EmitTask(src, func() {
 				defer pool.PutBuffer(data)
-				if e := c.handlePkt(udpConn, data, src, dst, false); e != nil && c.ctx.Err() == nil {
+				if e := c.handlePkt(serveUdpConn, data, src, dst, false); e != nil && c.ctx.Err() == nil {
 					if log.IsLevelEnabled(log.DebugLevel) {
 						log.Warnf("%+v", oops.Wrapf(e, "handlePkt"))
 					} else {
@@ -973,6 +998,22 @@ func (c *ControlPlane) AbortConnections() (err error) {
 	})
 	return errors.Join(errs...)
 }
+
+// closeOutbounds stops the connectivity checks of all outbound groups.
+func (c *ControlPlane) closeOutbounds() (err error) {
+	for _, g := range c.outbounds {
+		if e := g.Close(); e != nil {
+			// Combine errors.
+			if err != nil {
+				err = oops.Errorf("%w; %v", err, e)
+			} else {
+				err = e
+			}
+		}
+	}
+	return err
+}
+
 func (c *ControlPlane) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
