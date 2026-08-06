@@ -148,11 +148,6 @@ func NewControlPlane(
 
 	/// Init DaeNetns.
 	InitDaeNetns()
-	if _bpf != nil {
-		// A reload creates a new sysctl manager; close the previous one so
-		// its fsnotify watcher and expectations are not leaked.
-		CloseSysctlManager()
-	}
 	if err = InitSysctlManager(); err != nil {
 		return nil, err
 	}

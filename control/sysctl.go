@@ -25,7 +25,14 @@ type SysctlManager struct {
 	expectations map[string]string
 }
 
+// InitSysctlManager creates the global sysctl manager on first use. The
+// manager is process-lifetime and shared by all control planes: re-creating
+// it on reload would churn the fsnotify watcher, and a failed reload build
+// would leave the running plane without its expectations.
 func InitSysctlManager() (err error) {
+	if sysctl != nil {
+		return nil
+	}
 	sysctl, err = NewSysctlManager()
 	return err
 }
