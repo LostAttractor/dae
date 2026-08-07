@@ -11,6 +11,7 @@ require (
 	github.com/daeuniverse/outbound v0.0.0-20250722064253-00c4fbb38759
 	github.com/daeuniverse/quic-go v0.0.0-20250210145620-2083199a7851
 	github.com/fsnotify/fsnotify v1.9.0
+	github.com/jedib0t/go-pretty/v6 v6.8.3
 	github.com/json-iterator/go v1.1.12
 	github.com/mholt/archiver/v3 v3.5.1
 	github.com/miekg/dns v1.1.68
@@ -18,6 +19,7 @@ require (
 	github.com/okzk/sdnotify v0.0.0-20240725214427-1c1fdd37c5ac
 	github.com/oschwald/maxminddb-golang/v2 v2.1.1
 	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
 	github.com/safchain/ethtool v0.7.0
 	github.com/samber/oops v1.19.4
 	github.com/shirou/gopsutil/v4 v4.25.10
@@ -55,7 +57,7 @@ require (
 	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
-	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
+	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nwaples/rardecode v1.1.3 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
@@ -63,13 +65,11 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.4 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/samber/lo v1.52.0 // indirect
-	github.com/tklauser/go-sysconf v0.3.15 // indirect
-	github.com/tklauser/numcpus v0.10.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 	github.com/xtaci/smux v1.5.44 // indirect
@@ -106,8 +106,8 @@ require (
 	github.com/refraction-networking/utls v1.8.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	gitlab.com/yawning/chacha20.git v0.0.0-20230427033715-7877545b1b37 // indirect
-	golang.org/x/term v0.37.0 // indirect
-	golang.org/x/text v0.31.0
+	golang.org/x/term v0.37.0
+	golang.org/x/text v0.31.0 // indirect
 )
 
 // replace github.com/daeuniverse/outbound => ../outbound
