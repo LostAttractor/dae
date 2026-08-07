@@ -29,13 +29,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// TODO: Lookup Cache 的 GC
-// TODO: reload时保留lookup cache
+// TODO: 在 DNS Config 不变的情况下，保留 DNSCache
 
-const (
-	MaxDnsLookupDepth = 3
-	minLookupTTL      = 86400
-)
+const MaxDnsLookupDepth = 3
 
 type IpVersionPrefer int
 
@@ -45,38 +41,26 @@ const (
 	IpVersionPrefer_6  IpVersionPrefer = 6
 )
 
-var (
-	UnspecifiedAddressA        = netip.MustParseAddr("0.0.0.0")
-	UnspecifiedAddressAAAA     = netip.MustParseAddr("::")
-	ErrUnsupportedQuestionType = fmt.Errorf("unsupported question type")
-)
-
 type DnsControllerOption struct {
-	MatchBitmap        func(fqdn string) []uint32
-	NewLookupCache     func(ip netip.Addr, domainBitmap []uint32) error
-	LookupCacheTimeout func(ip netip.Addr, domainBitmap []uint32) error
-	BestDialerChooser  func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
-	IpVersionPrefer    int
-	FixedDomainTtl     map[string]int
+	MatchBitmap       func(fqdn string) []uint32
+	DomainRegistry    *DomainRegistry
+	BestDialerChooser func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	IpVersionPrefer   int
+	FixedDomainTtl    map[string]int
 }
 
 type DnsController struct {
 	routing     *dns.Dns
 	qtypePrefer uint16
 
-	matchBitmap        func(fqdn string) []uint32
-	newLookupCache     func(ip netip.Addr, domainBitmap []uint32) error
-	lookupCacheTimeout func(ip netip.Addr, domainBitmap []uint32) error
-	bestDialerChooser  func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	matchBitmap       func(fqdn string) []uint32
+	registry          *DomainRegistry
+	bestDialerChooser func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 
 	fixedDomainTtl    map[string]int
-	lookupCache       *commonDnsCache[queryInfo]
 	dnsCache          *commonDnsCache[dnsCacheKey]
 	dnsKeyLocker      common.KeyLocker[dnsCacheKey]
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
-	// mu protects deadlineTimers
-	mu             sync.Mutex
-	deadlineTimers map[*DnsCache]*time.Timer
 	// closed is canceled by Close: once closed, the controller must not serve
 	// new requests — its forwarders are closed, and its writes would land on
 	// the shared eBPF maps the next control plane owns.
@@ -109,55 +93,55 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		routing:     routing,
 		qtypePrefer: prefer,
 
-		matchBitmap:        option.MatchBitmap,
-		newLookupCache:     option.NewLookupCache,
-		lookupCacheTimeout: option.LookupCacheTimeout,
-		bestDialerChooser:  option.BestDialerChooser,
+		matchBitmap:       option.MatchBitmap,
+		registry:          option.DomainRegistry,
+		bestDialerChooser: option.BestDialerChooser,
 
 		fixedDomainTtl:    option.FixedDomainTtl,
 		dnsForwarderCache: sync.Map{},
 		dnsCache:          newCommonDnsCache[dnsCacheKey](32768),
-		lookupCache:       newCommonDnsCache[queryInfo](16384),
-		deadlineTimers:    make(map[*DnsCache]*time.Timer),
 		closed:            closed,
 		close:             close,
 	}, nil
 }
 
-func (c *DnsController) NormalizeDnsResp(answers []dnsmessage.RR) (ttl int) {
-	// Get TTL.
-	for _, ans := range answers {
-		if ttl == 0 {
-			ttl = int(ans.Header().Ttl)
-			break
+func (c *DnsController) effectiveTTL(fqdn string, ttl int) int {
+	if fixedTTL, ok := c.fixedDomainTtl[fqdn]; ok {
+		return fixedTTL
+	}
+	return ttl
+}
+
+func (c *DnsController) applyFixedTTL(fqdn string, answers []dnsmessage.RR) {
+	fixedTTL, ok := c.fixedDomainTtl[fqdn]
+	if !ok {
+		return
+	}
+	var ttl uint32
+	if fixedTTL > 0 {
+		if uint64(fixedTTL) > uint64(math.MaxUint32) {
+			ttl = math.MaxUint32
+		} else {
+			ttl = uint32(fixedTTL)
 		}
 	}
-
-	// Set TTL = zero. This requests applications must resend every request.
-	// However, it may be not defined in the standard.
-	for i := range answers {
-		answers[i].Header().Ttl = 0
-	}
-	return
-}
-
-func (c *DnsController) UpdateDnsCacheDeadline(cacheKey dnsCacheKey, fqdn string, answers []dnsmessage.RR, deadline time.Time) {
-	if fixedTtl, ok := c.fixedDomainTtl[fqdn]; ok {
-		deadline = time.Now().Add(time.Duration(fixedTtl) * time.Second)
-	}
 	for _, answer := range answers {
-		c.dnsCache.UpdateDeadline(cacheKey, answer, deadline)
+		answer.Header().Ttl = ttl
 	}
 }
 
-func (c *DnsController) UpdateDnsCacheTtl(cacheKey dnsCacheKey, fqdn string, answers []dnsmessage.RR, ttl int) {
-	finalTTL := ttl
-	if fixedTtl, ok := c.fixedDomainTtl[fqdn]; ok {
-		finalTTL = fixedTtl
+func (c *DnsController) UpdateDnsCache(cacheKey dnsCacheKey, fqdn string, answers []dnsmessage.RR) {
+	now := time.Now()
+	deadlines := make([]time.Time, len(answers))
+	for i, answer := range answers {
+		if answer == nil {
+			deadlines[i] = now
+			continue
+		}
+		ttl := c.effectiveTTL(fqdn, int(answer.Header().Ttl))
+		deadlines[i] = now.Add(time.Duration(ttl) * time.Second)
 	}
-	for _, answer := range answers {
-		c.dnsCache.UpdateTtl(cacheKey, answer, finalTTL)
-	}
+	c.dnsCache.ReplaceDeadlines(cacheKey, answers, deadlines)
 }
 
 type udpRequest struct {
@@ -226,18 +210,24 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 			// Try to make both A and AAAA lookups.
 			dnsMessage2 := dnsMessage.Copy()
 			dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
+			// The flipped query must carry its own queryInfo: deriving every
+			// downstream key (domain registry, dnsCache, DNS request
+			// routing) from the original qtype would file AAAA answers
+			// under the A key and break per-family verification.
+			queryInfo2 := queryInfo
 			switch queryInfo.qtype {
 			case dnsmessage.TypeA:
 				dnsMessage2.Question[0].Qtype = dnsmessage.TypeAAAA
+				queryInfo2.qtype = dnsmessage.TypeAAAA
 			case dnsmessage.TypeAAAA:
 				dnsMessage2.Question[0].Qtype = dnsmessage.TypeA
+				queryInfo2.qtype = dnsmessage.TypeA
 			}
 
 			// TODO: ignoreFixedTTL?
 			errCh := make(chan error, 1)
 			go func() {
-				err = c.handleDNSRequest(dnsMessage2, req, queryInfo)
-				errCh <- err
+				errCh <- c.handleDNSRequest(dnsMessage2, req, queryInfo2)
 			}()
 			err = oops.Join(c.handleDNSRequest(dnsMessage, req, queryInfo), <-errCh)
 			if err != nil {
@@ -321,6 +311,7 @@ func (c *DnsController) handleDNSRequest(
 
 	// Dial and re-route
 	reqMsg := dnsMessage.Copy()
+	responseFromCache := false
 Dial:
 	for invokingDepth := 1; invokingDepth <= MaxDnsLookupDepth; invokingDepth++ {
 		if log.IsLevelEnabled(log.DebugLevel) {
@@ -337,7 +328,7 @@ Dial:
 		}
 
 		// TODO: 这里可能不可以这样做
-		err = c.dialSend(dnsMessage, upstream, dialArgument, queryInfo)
+		responseFromCache, err = c.dialSend(dnsMessage, upstream, dialArgument, queryInfo)
 		if err != nil {
 			netErr, ok := IsNetError(err)
 			err = oops.
@@ -431,54 +422,73 @@ Dial:
 		return nil
 	}
 
-	ans := CopyDnsAnswers(dnsMessage.Answer)
-	ttl := c.NormalizeDnsResp(ans)
-	c.LookupCache(queryInfo, ans, ttl)
+	c.finalizeAcceptedResponse(queryInfo, dnsMessage, responseFromCache)
 	return nil
 }
 
-func (c *DnsController) LookupCache(queryInfo queryInfo, answers []dnsmessage.RR, ttl int) error {
-	domainBitmap := c.matchBitmap(queryInfo.qname)
-	allZero := true
-	for _, v := range domainBitmap {
-		if v != 0 {
-			allZero = false
-			break
-		}
+// finalizeAcceptedResponse applies upstream-only side effects. Cached answers
+// already carry their remaining effective TTL from FillInto, and their domain
+// registrations were created by the original upstream response; treating a
+// hit as fresh would restart both lifetimes without revalidation.
+func (c *DnsController) finalizeAcceptedResponse(queryInfo queryInfo, msg *dnsmessage.Msg, fromCache bool) {
+	if fromCache {
+		return
 	}
-	lookupTTL := ttl
-	if lookupTTL < minLookupTTL {
-		lookupTTL = minLookupTTL
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	ans := CopyDnsAnswers(msg.Answer)
+	c.registerAnswers(queryInfo, ans)
+	c.applyFixedTTL(queryInfo.qname, msg.Answer)
+}
+
+// registerAnswers registers every A/AAAA record of a DNS response in the
+// domain registry. The registry is the single source of truth that keeps
+// the kernel domain routing maps and sniff verification in sync with what
+// clients resolved; it owns all GC and kernel-map accounting.
+//
+// fixed_ttl, when configured, is the effective TTL for both the response
+// cache and registry lifetimes. The registry floors it at MinDomainTTL, so a
+// zero fixed TTL still updates kernel routing while forcing every client DNS
+// query back to the upstream.
+func (c *DnsController) registerAnswers(queryInfo queryInfo, answers []dnsmessage.RR) {
+	c.registerAnswersInternal(queryInfo, answers, false)
+}
+
+// registerAnswersNoExpiry keeps synthetic DNS-upstream addresses registered
+// without a time-based deadline. Their RR headers intentionally retain TTL 0
+// because this lifetime is internal and is never sent to clients.
+func (c *DnsController) registerAnswersNoExpiry(queryInfo queryInfo, answers []dnsmessage.RR) {
+	c.registerAnswersInternal(queryInfo, answers, true)
+}
+
+func (c *DnsController) registerAnswersInternal(queryInfo queryInfo, answers []dnsmessage.RR, noExpiry bool) {
 	if c.closed.Err() != nil {
-		// Do not create timers or write the shared eBPF maps after Close;
-		// the next control plane owns them now.
-		return nil
+		// Do not write the shared eBPF maps after Close; the next control
+		// plane owns them now.
+		return
 	}
+	// The match bitmap only depends on the domain, so it is shared by all
+	// records of this answer set.
+	domainBitmap := c.matchBitmap(queryInfo.qname)
+	now := time.Now()
 	for _, answer := range answers {
-		cache := c.lookupCache.UpdateTtl(queryInfo, answer, ttl)
-		ip, ok := cache.GetIp()
-		if !ok || allZero {
+		var ip netip.Addr
+		var ok bool
+		switch body := answer.(type) {
+		case *dnsmessage.A:
+			ip, ok = netip.AddrFromSlice(body.A)
+		case *dnsmessage.AAAA:
+			ip, ok = netip.AddrFromSlice(body.AAAA)
+		}
+		if !ok || ip.IsUnspecified() {
 			continue
 		}
-		if timer, ok := c.deadlineTimers[cache]; ok {
-			timer.Reset(time.Duration(lookupTTL) * time.Second)
+		if noExpiry {
+			c.registry.UpsertNoExpiry(queryInfo, ip, domainBitmap, now)
 			continue
 		}
-		err := c.newLookupCache(ip, domainBitmap)
-		if err != nil {
-			return err
-		}
-		c.deadlineTimers[cache] = time.AfterFunc(time.Duration(lookupTTL)*time.Second, func() {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			c.lookupCacheTimeout(ip, domainBitmap)
-			delete(c.deadlineTimers, cache)
-		})
+		ttl := int(answer.Header().Ttl)
+		ttl = c.effectiveTTL(queryInfo.qname, ttl)
+		c.registry.Upsert(queryInfo, ip, domainBitmap, ttl, now)
 	}
-	return nil
 }
 
 func (c *DnsController) reject(msg *dnsmessage.Msg) {
@@ -491,11 +501,11 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 }
 
 // TODO: 简化 cacheKey?
-func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) error {
+func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) (bool, error) {
 	if c.closed.Err() != nil {
 		// The cached forwarders are closed by Close; dialing here would
 		// recreate connections nobody closes anymore.
-		return net.ErrClosed
+		return false, net.ErrClosed
 	}
 	/// Dial and send.
 	// get forwarder from cache
@@ -510,8 +520,7 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	if ok {
 		// Lookup Cache
 		if cache := c.dnsCache.Get(cacheKey); cache != nil {
-			if !c.dnsCache.AllTimeout(cache) {
-				FillInto(msg, cache)
+			if FillInto(msg, cache) {
 				if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
 					log.WithFields(log.Fields{
 						"qname":  queryInfo.qname,
@@ -520,21 +529,21 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 						"answer": FormatDnsRsc(msg.Answer),
 					}).Debugf("UDP(DNS) <-> Cache")
 				}
-				return nil
+				return true, nil
 			}
 		}
 		if !isNew {
 			if log.IsLevelEnabled(log.DebugLevel) {
 				log.Debugf("UDP(DNS) <-> Drop failed duplicate lookup: %v %v", queryInfo.qname, queryInfo.qtype)
 			}
-			return nil
+			return false, nil
 		}
 		forwarder = value.(DnsForwarder)
 	} else {
 		var err error
 		forwarder, err = newDnsForwarder(upstream, *dialArgument)
 		if err != nil {
-			return err
+			return false, err
 		}
 		// Try to store the new forwarder, but use LoadOrStore to handle concurrent creation
 		actualValue, _ := c.dnsForwarderCache.LoadOrStore(key, forwarder)
@@ -543,7 +552,7 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 
 	err := forwarder.ForwardDNS(msg)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// TODO: 直接加入到上面的日志
@@ -567,12 +576,11 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 			"rcode":  msg.Rcode,
 			"answer": FormatDnsRsc(msg.Answer),
 		}).Tracef("Not a valid DNS response")
-		return nil
+		return false, nil
 	}
 
 	// TODO: 不缓存ans为空的响应?
 	ans := CopyDnsAnswers(msg.Answer)
-	ttl := c.NormalizeDnsResp(ans)
 	if log.IsLevelEnabled(log.DebugLevel) {
 		log.WithFields(log.Fields{
 			"qname":    queryInfo.qname,
@@ -584,26 +592,15 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 			"outbound": cacheKey.dialArgument.Outbound.Name,
 		}).Debugf("Update DNS record cache")
 	}
-	c.UpdateDnsCacheTtl(cacheKey, queryInfo.qname, ans, ttl)
+	c.UpdateDnsCache(cacheKey, queryInfo.qname, ans)
 
-	return nil
+	return false, nil
 }
 
 func (c *DnsController) Close() error {
-	// Close first: LookupCache checks closed while holding mu, so no new
-	// deadline timers can appear while the existing ones are stopped below.
+	// Cancel first: registerAnswers/dialSend check closed, so no new registry
+	// writes or dials can start while the forwarders are closed below.
 	c.close()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Clean up all deadline timers to prevent goroutine leaks
-	for _, timer := range c.deadlineTimers {
-		if timer != nil {
-			timer.Stop()
-		}
-	}
-	c.deadlineTimers = make(map[*DnsCache]*time.Timer)
 
 	// Close all DNS forwarders
 	c.dnsForwarderCache.Range(func(key, value any) bool {

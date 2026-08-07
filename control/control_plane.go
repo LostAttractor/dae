@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -79,6 +80,11 @@ type ControlPlane struct {
 	sniffVerifyMode    consts.SniffVerifyMode
 	tproxyPortProtect  bool
 	soMarkFromDae      uint32
+
+	// closedDone is set once Close has fully run (all defer funcs executed,
+	// kernel filters detached). InheritDomainRegistry asserts it on the
+	// retired plane before rewriting the shared kernel domain maps.
+	closedDone atomic.Bool
 
 	PrometheusRegistry *prometheus.Registry
 }
@@ -410,20 +416,7 @@ func NewControlPlane(
 		MatchBitmap: func(fqdn string) []uint32 {
 			return plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn)
 		},
-		NewLookupCache: func(ip netip.Addr, domainBitmap []uint32) error {
-			// Write mappings into eBPF map:
-			// IP record (from dns lookup) -> domain routing
-			if err := core.BatchNewDomain(ip, domainBitmap); err != nil {
-				return oops.Wrapf(err, "BatchNewDomain")
-			}
-			return nil
-		},
-		LookupCacheTimeout: func(ip netip.Addr, domainBitmap []uint32) error {
-			if err := core.BatchRemoveDomain(ip, domainBitmap); err != nil {
-				return oops.Wrapf(err, "BatchRemoveDomain")
-			}
-			return nil
-		},
+		DomainRegistry:    core.domainRegistry,
 		BestDialerChooser: plane.chooseBestDnsDialer,
 		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
 		FixedDomainTtl:    fixedDomainTtl,
@@ -431,10 +424,7 @@ func NewControlPlane(
 		return nil, err
 	}
 	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
-	// TODO: 保留 LookupCache?
 	// TODO: 在 DNS Config 不变的情况下，保留 DNSCache
-	// Lookup Cache 存储任何 lookup 所产生的记录, 这些记录是否需要GC?
-	// 规则改变不会使得记录失效, 因为程序仍会访问那个域名, 但我们需要保留记录的条目以便 GC
 
 	return plane, nil
 }
@@ -442,7 +432,7 @@ func NewControlPlane(
 // Activate commits the in-memory control plane to the kernel:
 //   - writes routing rules to BPF maps,
 //   - drops stale domain routing entries inherited from the previous plane
-//     (when reloading),
+//     (when reloading without an adopted domain registry),
 //   - binds eBPF programs to LAN/WAN interfaces and the dae netns,
 //   - runs the initial connectivity check for outbound dialers.
 //
@@ -465,9 +455,12 @@ func (c *ControlPlane) Activate() error {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 
-	// On reload, evict domain routing entries inherited from the previous
-	// plane so that they cannot leak into the new rule set.
-	if core.isReload {
+	// On reload without an adopted registry, evict domain routing entries
+	// inherited from the previous plane so that they cannot leak into the
+	// new rule set. An adopted registry is already in sync with the maps and
+	// must not be wiped.
+	if core.isReload && !core.domainRegistry.Adopted() {
+		log.Warnln("Reload without an adopted domain registry: wiping inherited kernel domain maps; domain routing restarts from scratch")
 		var key [4]uint32
 		var val bpfDomainRouting
 		iter := core.bpf.DomainRoutingMap.Iterate()
@@ -591,9 +584,33 @@ func (c *ControlPlane) InjectBpf() {
 	c.core.InjectBpf()
 }
 
+// InheritDomainRegistry transfers the domain -> IP registrations of a
+// retired plane into this plane's registry, recomputing every domain's match
+// bitmap with this plane's routing rules, and syncs the shared kernel domain
+// maps to the adopted state. It must be called after the old plane is
+// retired (its writers stopped, its kernel programs detached) and before
+// Activate, which then skips wiping the kernel maps. Domain routing and
+// sniff verification therefore survive a reload instead of waiting for every
+// domain to be re-resolved.
+//
+// It panics if the old plane is not fully closed: adoption rewrites the
+// shared kernel maps while the old plane's tc filters might still read
+// them (old rules with new-rule bitmaps = misrouting), and the old
+// registry's writers would fight the adopted state.
+func (c *ControlPlane) InheritDomainRegistry(old *ControlPlane) {
+	if !old.closedDone.Load() {
+		panic("InheritDomainRegistry: old control plane is not fully closed")
+	}
+	c.core.domainRegistry.AdoptFrom(
+		old.core.domainRegistry,
+		c.routingMatcher.domainMatcher.MatchDomainBitmap,
+		time.Now(),
+	)
+}
+
 func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
-	/// Updates dns cache to support domain routing for hostname of dns_upstream.
-	deadline := time.Hour * 24 * 365 * 10 // Ten years later.
+	// Register resolved upstream addresses without expiry so hostname-based
+	// domain routing remains valid for the upstream's lifetime.
 	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
 
 	if dnsUpstream.Ip4.IsValid() {
@@ -607,7 +624,7 @@ func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
 			},
 			A: dnsUpstream.Ip4.AsSlice(),
 		}}
-		c.dnsController.LookupCache(queryInfo{qname: fqdn, qtype: typ}, answers, int(deadline.Seconds()))
+		c.dnsController.registerAnswersNoExpiry(queryInfo{qname: fqdn, qtype: typ}, answers)
 	}
 
 	if dnsUpstream.Ip6.IsValid() {
@@ -621,7 +638,7 @@ func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
 			},
 			AAAA: dnsUpstream.Ip6.AsSlice(),
 		}}
-		c.dnsController.LookupCache(queryInfo{qname: fqdn, qtype: typ}, answers, int(deadline.Seconds()))
+		c.dnsController.registerAnswersNoExpiry(queryInfo{qname: fqdn, qtype: typ}, answers)
 	}
 }
 
@@ -634,16 +651,19 @@ func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.Addr
 		return
 	}
 	fqdn := dnsmessage.CanonicalName(domain)
-	if dnsCache := c.dnsController.lookupCache.Get(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}); dnsCache != nil {
-		includeInCache := IncludeIp(dst.Addr(), dnsCache)
+	// A present registration certifies the domain/IP pairing; registrations
+	// are only reclaimed under memory pressure (see domain_registry.go), so
+	// verification here does not expire on its own.
+	registered, paired := c.core.domainRegistry.Verify(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}, dst.Addr())
+	if registered {
 		// Successful sniff without DNS lookup record.
 		// In this case, the kernel may not handle domain match set, so re-route is required.
-		shouldReroute = !includeInCache
+		shouldReroute = !paired
 		switch c.sniffVerifyMode {
 		case consts.SniffVerifyMode_None, consts.SniffVerifyMode_Loose:
 			verified = true
 		case consts.SniffVerifyMode_Strict:
-			verified = includeInCache
+			verified = paired
 		}
 	} else {
 		// Successful sniff without DNS lookup record.
@@ -1022,5 +1042,7 @@ func (c *ControlPlane) Close() (err error) {
 		}
 	}
 	c.cancel()
-	return c.core.Close()
+	err = c.core.Close()
+	c.closedDone.Store(true)
+	return err
 }

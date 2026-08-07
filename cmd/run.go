@@ -329,6 +329,11 @@ loop:
 				std.Warnln("[Reload] Activate new control plane")
 				writeReloadProgress("Activating new control plane...")
 				newC.InjectBpf()
+				// Hand over the retired plane's domain registry (recomputing
+				// match bitmaps against the new rules) so domain routing and
+				// sniff verification survive the reload; Activate then skips
+				// wiping the kernel domain maps.
+				newC.InheritDomainRegistry(c)
 				if err = newC.Activate(); err != nil {
 					sdnotify.Stopping()
 					_ = newC.Close()

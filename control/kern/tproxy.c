@@ -728,6 +728,12 @@ struct route_ctx {
 	volatile bool goodsubrule : 1;
 	volatile bool badrule : 1;
 	volatile bool must : 1;
+	// Some domain match set of the current rule hit via domain_bump_map,
+	// i.e. the destination IP maps to domains that only partially match the
+	// rule. The rule tail then bumps the traffic to the control plane for
+	// an exact (sniffed) domain match. Kept in the ctx (not a callback
+	// local) so it survives across the match sets of a compound rule.
+	volatile bool need_control_plane_routing : 1;
 };
 
 static int route_loop_cb(__u32 index, void *data)
@@ -748,7 +754,6 @@ static int route_loop_cb(__u32 index, void *data)
 	// set is like: suffix:baidu.com
 	struct domain_routing *domain_routing;
 	struct domain_routing *domain_bump;
-	bool need_control_plane_routing = false;
 
 	if (unlikely(index / 32 >= MAX_MATCH_SET_LEN / 32)) {
 		ctx->result = -EFAULT;
@@ -867,7 +872,7 @@ lookup_lpm:
 				ctx->goodsubrule = true;
 				// The current IP has mapped domains that match this rule, but not all of them do.
 				// jump to control plane.
-				need_control_plane_routing = true;
+				ctx->need_control_plane_routing = true;
 			}
 		}
 		break;
@@ -960,17 +965,25 @@ before_next_loop:
 				__u32 *alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 
 				if (!alive || *alive != 0) {
-					// Group is not usable. Skip this rule.
+					// Group is not usable. Skip this rule; the
+					// partial-domain-match flag must not leak
+					// into the next rule.
+					ctx->need_control_plane_routing = false;
 					return 0;
 				}
 			}
 
 			if (unlikely(match_set->outbound == OUTBOUND_MUST_RULES)) {
 				ctx->must = true;
+				// The must-rule ends without committing: drop the
+				// partial-domain-match flag so it cannot leak
+				// into the next rule.
+				ctx->need_control_plane_routing = false;
 			} else {
 				bool must = ctx->must || match_set->must;
 
-				if ((!must && ctx->params->isdns) || need_control_plane_routing) {
+				if ((!must && ctx->params->isdns) ||
+				    ctx->need_control_plane_routing) {
 					ctx->result =
 						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 						((__s64)match_set->mark << 8) |
@@ -993,6 +1006,9 @@ before_next_loop:
 			}
 		}
 		ctx->badrule = false;
+		// The rule ended without committing: drop the partial-domain-match
+		// flag so it cannot leak into the next rule.
+		ctx->need_control_plane_routing = false;
 	}
 	return 0;
 #undef _l4proto_type

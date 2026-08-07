@@ -107,6 +107,28 @@ var (
 	MaxMatchSetLen  = 32 * 32
 )
 
+// Domain registry sizing and lifetime (see control/domain_registry.go).
+// The kernel-side domain maps are created with a fixed max_entries
+// (MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c); the userspace registry
+// mirrors their occupancy and never lets them overflow. The userspace
+// registry itself is larger and allowed to exceed its soft limit while its
+// entries are still alive, so that sniff verification keeps working.
+var (
+	// MinDomainTTL is the lower bound (seconds) for both the lifetime of an
+	// IP->domain-rules mapping in the kernel maps and the eviction-priority
+	// deadline of its userspace registration. Many apps ignore the DNS TTL
+	// and keep using a cached answer for a long time, so short DNS TTLs need
+	// a wide floor for domain routing and sniff verification to keep working.
+	// The userspace deadline does not bound validity: it only orders
+	// reclamation when the registry exceeds DomainRegistryMaxSize.
+	MinDomainTTL = 7 * 24 * 3600
+	// DomainRegistryMaxSize is the soft limit of userspace registrations.
+	// Entries past their TTL are reclaimed on the update path once this size
+	// is exceeded; live entries are never evicted (the registry may grow
+	// beyond the limit).
+	DomainRegistryMaxSize = 4 * 65536
+)
+
 func init() {
 	if MaxMatchSetLen_ != "" {
 		i, err := strconv.Atoi(MaxMatchSetLen_)

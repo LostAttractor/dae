@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -48,11 +49,12 @@ type controlPlaneCore struct {
 	// ownership moves to the next plane via EjectBpf/InjectBpf on reload.
 	bpfOwned bool
 
-	// IP -> per-rule match state. Single source of truth for both
-	// domain_bump_map and domain_routing_map in eBPF; pushed verbatim
-	// to the kernel on every change so the two states stay in sync.
-	domainStates  map[netip.Addr]*domainState
-	domainStateMu sync.Mutex
+	// domainRegistry tracks every (domain, qtype) -> IP registration learned
+	// from DNS. It is the single source of truth for both domain_bump_map
+	// and domain_routing_map in eBPF; every mutation recomputes the affected
+	// IP's bitmaps and pushes them to the kernel, so user space and BPF stay
+	// in sync.
+	domainRegistry *DomainRegistry
 
 	closed context.Context
 	close  context.CancelFunc
@@ -88,13 +90,22 @@ func newControlPlaneCore(
 		// A core built for a reload does not own the bpf objects yet — they
 		// are still owned by the previously running core; it takes over the
 		// ownership via InjectBpf when the reload commits.
-		bpfOwned:     !isReload,
-		ifmgr:        ifmgr,
-		domainStates: make(map[netip.Addr]*domainState),
-		closed:       closed,
-		close:        toClose,
+		bpfOwned: !isReload,
+		ifmgr:    ifmgr,
+		closed:   closed,
+		close:    toClose,
 	}
-	core.deferFuncs = append(core.deferFuncs, core.closeBpf, ifmgr.Close)
+	// The kernel-side capacity is read back from the map itself so it can
+	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.
+	core.domainRegistry = newDomainRegistry(
+		int(bpf.DomainRoutingMap.MaxEntries()),
+		consts.DomainRegistryMaxSize,
+		time.Duration(consts.MinDomainTTL)*time.Second,
+	)
+	core.domainRegistry.update = core.writeDomainBitmaps
+	core.domainRegistry.remove = core.deleteDomainBitmaps
+	core.domainRegistry.StartSweeper()
+	core.deferFuncs = append(core.deferFuncs, core.closeBpf, ifmgr.Close, core.domainRegistry.Close)
 	return core
 }
 
@@ -662,109 +673,53 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	return
 }
 
-func getBit(bitmap []uint32, index int) uint32 {
-	return bitmap[index/32] >> (index % 32) & 1
-}
-
-func setBit(bitmap []uint32, index int) {
-	bitmap[index/32] |= 1 << (index % 32)
-}
-
-// domainState tracks the per-rule match counts for a single IP. It is the
-// sole source of truth for the two eBPF maps (domain_bump_map and
-// domain_routing_map): every mutation recomputes both bitmaps from this
-// struct and pushes them to the kernel, so user space and BPF stay in sync.
-type domainState struct {
-	// matched[i] = number of currently cached domains for this IP whose
-	// match bitmap has rule i set.
-	matched []uint32
-	// total = number of currently cached domains for this IP.
-	total uint32
-}
-
-// flush pushes the bitmaps derived from s to the eBPF maps for ip.
+// writeDomainBitmaps pushes the derived bitmaps of one IP to the kernel
+// domain maps. It is bound to domainRegistry.update; the registry computes
+// the bitmaps from the registrations of the IP:
 //
-// Invariants exposed to BPF:
+//	bump bit i    = any cached domain of this IP matches rule i
+//	routing bit i = all cached domains of this IP match rule i
 //
-//	domain_bump_map[ip]    bit i = (matched[i] > 0)            // any cached
-//	                                                           // domain matches
-//	domain_routing_map[ip] bit i = (matched[i] == total)       // all cached
-//	                                                           // domains match
-func (c *controlPlaneCore) flushDomainState(ip netip.Addr, s *domainState) error {
-	var bump, routing bpfDomainRouting
-	if consts.MaxMatchSetLen/32 != len(bump.Bitmap) {
+// Failures panic (see panicDomainMapWrite).
+func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uint32) {
+	var bumpVal, routingVal bpfDomainRouting
+	if consts.MaxMatchSetLen/32 != len(bumpVal.Bitmap) || len(bump) != len(bumpVal.Bitmap) || len(routing) != len(routingVal.Bitmap) {
 		panic("domain bitmap length not sync with kern program")
 	}
-	for i := uint32(0); i < uint32(consts.MaxMatchSetLen); i++ {
-		if s.matched[i] == 0 {
-			continue
-		}
-		setBit(bump.Bitmap[:], int(i))
-		if s.matched[i] == s.total {
-			setBit(routing.Bitmap[:], int(i))
-		}
-	}
+	copy(bumpVal.Bitmap[:], bump)
+	copy(routingVal.Bitmap[:], routing)
 
 	ip6 := ip.As16()
 	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
-	if err := c.bpf.DomainBumpMap.Update(key, bump, ebpf.UpdateAny); err != nil {
-		return err
+	if err := c.bpf.DomainBumpMap.Update(key, bumpVal, ebpf.UpdateAny); err != nil {
+		panicDomainMapWrite("DomainBumpMap.Update", ip, err)
 	}
-	return c.bpf.DomainRoutingMap.Update(key, routing, ebpf.UpdateAny)
+	if err := c.bpf.DomainRoutingMap.Update(key, routingVal, ebpf.UpdateAny); err != nil {
+		panicDomainMapWrite("DomainRoutingMap.Update", ip, err)
+	}
 }
 
-// deleteDomainState removes ip from both eBPF maps.
-func (c *controlPlaneCore) deleteDomainState(ip netip.Addr) error {
+// panicDomainMapWrite panics on a kernel domain-map write failure. Such a
+// failure indicates a logic bug (e.g. bitmap length drift) or bpf state
+// tampered with externally (e.g. another process pinning its maps over
+// ours); neither is recoverable at runtime, and silently degrading domain
+// routing would be far harder to diagnose.
+func panicDomainMapWrite(op string, ip netip.Addr, err error) {
+	panic(oops.Wrapf(err, op+"(%v): kernel domain map write failed (logic bug, or the bpf maps were tampered with externally)", ip))
+}
+
+// deleteDomainBitmaps removes ip from both kernel domain maps. It is bound
+// to domainRegistry.remove. A missing key is tolerated (the desired end
+// state is already reached); any other failure panics.
+func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
 	ip6 := ip.As16()
 	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
 	if err := c.bpf.DomainBumpMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return err
+		panicDomainMapWrite("DomainBumpMap.Delete", ip, err)
 	}
 	if err := c.bpf.DomainRoutingMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		return err
+		panicDomainMapWrite("DomainRoutingMap.Delete", ip, err)
 	}
-	return nil
-}
-
-// BatchNewDomain registers a new (ip, domain) mapping discovered via DNS.
-// domainBitmap describes which routing rules the domain matches.
-func (c *controlPlaneCore) BatchNewDomain(ip netip.Addr, domainBitmap []uint32) error {
-	c.domainStateMu.Lock()
-	defer c.domainStateMu.Unlock()
-
-	s, ok := c.domainStates[ip]
-	if !ok {
-		s = &domainState{matched: make([]uint32, consts.MaxMatchSetLen)}
-		c.domainStates[ip] = s
-	}
-	s.total++
-	for i := 0; i < consts.MaxMatchSetLen; i++ {
-		s.matched[i] += getBit(domainBitmap, i)
-	}
-	return c.flushDomainState(ip, s)
-}
-
-// BatchRemoveDomain unregisters a previously registered (ip, domain) mapping.
-// domainBitmap MUST be the same bitmap passed to BatchNewDomain for this
-// (ip, domain) pair. When the last cached domain for ip is removed, ip is
-// also evicted from the eBPF maps.
-func (c *controlPlaneCore) BatchRemoveDomain(ip netip.Addr, domainBitmap []uint32) error {
-	c.domainStateMu.Lock()
-	defer c.domainStateMu.Unlock()
-
-	s, ok := c.domainStates[ip]
-	if !ok {
-		return nil
-	}
-	s.total--
-	for i := 0; i < consts.MaxMatchSetLen; i++ {
-		s.matched[i] -= getBit(domainBitmap, i)
-	}
-	if s.total == 0 {
-		delete(c.domainStates, ip)
-		return c.deleteDomainState(ip)
-	}
-	return c.flushDomainState(ip, s)
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane core.
