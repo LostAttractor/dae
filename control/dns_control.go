@@ -419,7 +419,10 @@ Dial:
 	case !dnsMessage.Response,
 		len(dnsMessage.Answer) == 0,
 		len(dnsMessage.Question) == 0,               // Check healthy resp.
-		dnsMessage.Rcode != dnsmessage.RcodeSuccess: // Check suc resp.
+		dnsMessage.Rcode != dnsmessage.RcodeSuccess, // Check suc resp.
+		// A truncated answer is partial data; leave it to the client to
+		// retry over TCP instead of registering an incomplete address set.
+		dnsMessage.Truncated:
 		return nil
 	}
 
@@ -566,7 +569,12 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	switch {
 	case !msg.Response,
 		len(msg.Question) == 0,               // Check healthy resp.
-		msg.Rcode != dnsmessage.RcodeSuccess: // Check suc resp.
+		msg.Rcode != dnsmessage.RcodeSuccess, // Check suc resp.
+		// A truncated response carries a partial answer; caching it would
+		// serve the incomplete RRset with the TC bit cleared (FillInto
+		// forces Truncated=false) and short-circuit the client's TCP
+		// fallback until the TTL expires. Pass it through uncached.
+		msg.Truncated:
 		log.WithFields(log.Fields{
 			"qname":  queryInfo.qname,
 			"qtype":  queryInfo.qtype,
