@@ -110,7 +110,8 @@ domain(geosite:disney) -> direct(mark: 0x800)
 domain(geosite:category-games) -> game_proxy(skip_while_noalive)
 domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 # 注意：
-# - 只对用户自定义 group 生效。"direct" 和 "block" 不参与连通性检查，该注解对它们无效。
+# - 该规则级注解优先于全局 "no_connectivity_try_sniff"：目标不可用时立即跳过规则；未带该注解的规则仍遵循全局配置。
+# - 只允许用于用户自定义 group。"direct" 和 "block" 不参与连通性检查，对它们使用该注解会导致配置错误。
 # - 不能用于 fallback 规则。
 # - 可以与其他参数组合，例如 -> my_group(must, skip_while_noalive)。
 

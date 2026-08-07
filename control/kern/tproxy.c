@@ -91,10 +91,17 @@ struct outbound_connectivity_query {
 	__u8 ipversion;
 };
 
+enum outbound_connectivity_state {
+	OUTBOUND_CONNECTIVITY_ALIVE = 0,
+	OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT,
+	OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK,
+	OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF,
+};
+
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct outbound_connectivity_query);
-	__type(value, __u32); // true, false
+	__type(value, __u32); // enum outbound_connectivity_state
 	__uint(max_entries, 256 * 2 * 2); // outbound * l4proto * ipversion
 } outbound_connectivity_map SEC(".maps");
 
@@ -950,6 +957,7 @@ before_next_loop:
 			// must_direct.
 
 			if (match_set->skip_while_noalive &&
+			    match_set->outbound > OUTBOUND_BLOCK &&
 			    match_set->outbound < OUTBOUND_MUST_RULES) {
 				// The rule is conditional on the connectivity of the
 				// target outbound group. If the group cannot serve the
@@ -962,9 +970,9 @@ before_next_loop:
 					.l4proto = (_l4proto_type & L4ProtoType_TCP) ? IPPROTO_TCP : IPPROTO_UDP,
 				};
 
-				__u32 *alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+				__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 
-				if (!alive || *alive != 0) {
+				if (!state || *state != OUTBOUND_CONNECTIVITY_ALIVE) {
 					// Group is not usable. Skip this rule; the
 					// partial-domain-match flag must not leak
 					// into the next rule.
@@ -1391,18 +1399,21 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 		bpf_printk("outbound_connectivity_query: outbound: %u, ipversion: %u, l4proto: %u", q.outbound, q.ipversion, q.l4proto);
 #endif
 
-		__u32 *alive = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+		__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 
-		if (!alive) {
+		if (!state) {
 			// Outbound is not ready. skip
 			return TC_ACT_PIPE;
 		}
 
-		switch (*alive) {
-		case 1:
+		switch (*state) {
+		case OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT:
 			goto direct;
-		case 2:
+		case OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK:
 			goto block;
+		case OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF:
+			// Preserve try-sniff for rules without skip_while_noalive.
+			break;
 		}
 	}
 

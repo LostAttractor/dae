@@ -12,6 +12,25 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const (
+	// Values stored in outbound_connectivity_map. They encode both the
+	// group's actual connectivity and the action for an unannotated rule.
+	outboundConnectivityAlive uint32 = iota
+	outboundConnectivityNoAliveDirect
+	outboundConnectivityNoAliveBlock
+	outboundConnectivityNoAliveTrySniff
+)
+
+func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) uint32 {
+	if alive {
+		return outboundConnectivityAlive
+	}
+	if noConnectivityTrySniff {
+		return outboundConnectivityNoAliveTrySniff
+	}
+	return uint32(noConnectivityOutbound) + outboundConnectivityNoAliveDirect
+}
+
 func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *common.NetworkType) {
 	return func(alive bool, networkType *common.NetworkType) {
 		if c.closed.Err() != nil {
@@ -27,18 +46,14 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", outboundName, networkType.String(), strAlive)
 		}
 
-		// 0: go control plane
-		// 1: direct
-		// 2: block
-		value := uint32(0)
-		if !alive && !noConnectivityTrySniff {
-			value = uint32(noConnectivityOutbound) + 1
-		}
+		value := encodeOutboundConnectivity(alive, noConnectivityTrySniff, noConnectivityOutbound)
 
-		// Keep the in-memory mirror of OutboundConnectivityMap in sync for
-		// the userspace routing matcher (skip_while_noalive rules).
+		// Keep the actual liveness in memory for the userspace routing matcher.
+		// The eBPF map value also carries the global no-connectivity action, so
+		// deriving liveness from that action would conflate alive with
+		// dead-but-try-sniff.
 		if outbound <= uint8(consts.OutboundUserDefinedMax) {
-			c.outboundConnectivityMap[outbound][common.NetworkTypeToIndex(networkType)].Store(value == 0)
+			c.outboundConnectivityMap[outbound][common.NetworkTypeToIndex(networkType)].Store(alive)
 		}
 
 		if err := c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
@@ -55,13 +70,10 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 	}
 }
 
-// outboundUsable reports whether the outbound group can currently serve the
-// given network type. It reads the in-memory mirror of
-// outbound_connectivity_map and follows the kernel-side semantics: a group is
-// usable iff the map value is 0 (alive, or dead but no_connectivity_try_sniff
-// is on); a group whose state has never been reported (e.g. before the first
-// check completes) is not usable. Unknown network types conservatively report
-// usable so that traffic is not unexpectedly rerouted.
+// outboundUsable reports whether the outbound group has a live dialer for the
+// given network type. A group whose state has never been reported (e.g. before
+// the first check completes) is not usable. Unknown network types
+// conservatively report usable so that traffic is not unexpectedly rerouted.
 func (c *controlPlaneCore) outboundUsable(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool {
 	if outbound > uint8(consts.OutboundUserDefinedMax) {
 		return true

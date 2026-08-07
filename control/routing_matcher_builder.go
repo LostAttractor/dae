@@ -90,7 +90,7 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 			return nil, fmt.Errorf("skip_while_noalive cannot be used on fallback: skipping fallback leaves traffic unroutable")
 		}
 		if outbound == consts.OutboundDirect || outbound == consts.OutboundBlock {
-			log.Warnf("skip_while_noalive has no effect on outbound %v: it does not participate in connectivity checks", outbound.String())
+			return nil, fmt.Errorf("skip_while_noalive cannot be used on outbound %v: built-in outbounds do not participate in connectivity checks", outbound.String())
 		}
 	}
 
