@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strconv"
+	"sync"
 
 	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/pkg/trie"
@@ -30,6 +31,7 @@ type RoutingMatcherBuilder struct {
 	ifmgr              *component.InterfaceManager
 	bpf                *bpfObjects
 	rules              []bpfMatchSet
+	rulesMu            sync.RWMutex
 	simulatedLpmTries  [][]netip.Prefix
 	simulatedDomainSet []routing.DomainSet
 	fallback           *routing.Outbound
@@ -343,6 +345,12 @@ func (b *RoutingMatcherBuilder) addIfIndex(f *config_parser.Function, values []u
 	return nil
 }
 
+func (b *RoutingMatcherBuilder) storeIfindex(index int, ifindex uint32) {
+	b.rulesMu.Lock()
+	defer b.rulesMu.Unlock()
+	binary.LittleEndian.PutUint32(b.rules[index].Value[:], ifindex)
+}
+
 func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {
 	for i, value := range values {
 		outboundName := consts.OutboundLogicalOr.String()
@@ -362,7 +370,7 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 			Must:             outbound.Must,
 			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		}
-		index := uint32(len(b.rules))
+		index := len(b.rules)
 		b.rules = append(b.rules, set)
 
 		// Defer the ifmgr.Register call until BuildKernspace. Register may
@@ -370,14 +378,17 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 		// bpf.RoutingMap, which is shared with the previously running plane
 		// during a reload. Deferring keeps the validation phase side-effect
 		// free; once BuildKernspace has uploaded the rule table, the init
-		// callback simply patches in the resolved ifindex.
+		// callback patches the resolved ifindex into both the kernel rule and
+		// the rule table shared with the userspace matcher.
 		ifname := value
 		b.kernspaceBuilders = append(b.kernspaceBuilders, func() {
 			updateIndex := func(ifindex uint32) {
 				binary.LittleEndian.PutUint32(set.Value[:], ifindex)
-				if err := b.bpf.RoutingMap.Update(index, set, ebpf.UpdateAny); err != nil {
+				if err := b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
 					log.Errorf("Update failed: %v", err)
+					return
 				}
+				b.storeIfindex(index, ifindex)
 			}
 			initlinkCallback := func(link netlink.Link) {
 				updateIndex(uint32(link.Attrs().Index))
@@ -512,5 +523,6 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		lpmMatcher:    lpmMatcher,
 		domainMatcher: domainMatcher,
 		matches:       b.rules,
+		rulesMu:       &b.rulesMu,
 	}, nil
 }

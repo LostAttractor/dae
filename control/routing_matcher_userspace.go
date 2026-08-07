@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
@@ -21,6 +22,7 @@ type RoutingMatcher struct {
 	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
 	matches []bpfMatchSet
+	rulesMu *sync.RWMutex
 
 	// outboundUsable reports whether an outbound group can serve the given
 	// network type; it backs skip_while_noalive rule evaluation. It may be
@@ -55,6 +57,8 @@ func (m *RoutingMatcher) Match(
 	if domain != "" {
 		domainMatchBitmap = m.domainMatcher.MatchDomainBitmap(domain)
 	}
+	m.rulesMu.RLock()
+	defer m.rulesMu.RUnlock()
 
 	goodSubrule := false
 	badRule := false
