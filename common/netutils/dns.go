@@ -116,21 +116,34 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
+	if len(data) > math.MaxUint16 {
+		return fmt.Errorf("DNS message exceeds stream size limit: %d", len(data))
+	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
 	if quic {
 		// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
 		// msg id should set to 0 when transport over QUIC.
 		// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
-		binary.Write(buf, binary.BigEndian, uint16(0))
-	} else {
-		// We should write two byte length in the front of stream DNS request.
-		binary.Write(buf, binary.BigEndian, uint16(len(data)))
+		binary.BigEndian.PutUint16(data[0:2], 0)
 	}
+	// DNS over TCP, TLS and QUIC all use a two-byte message length.
+	binary.Write(buf, binary.BigEndian, uint16(len(data)))
 	buf.Write(data)
-	_, err = stream.Write(buf.Bytes())
+	n, err := stream.Write(buf.Bytes())
 	if err != nil {
 		return oops.Wrapf(err, "failed to write DNS req")
+	}
+	if n != buf.Len() {
+		return oops.Wrapf(io.ErrShortWrite, "failed to write DNS req")
+	}
+
+	if quic {
+		// RFC 9250 section 4.2 requires the query to be followed by STREAM FIN.
+		if c, ok := stream.(interface{ Close() error }); ok {
+			// Half-close the send side so the server knows the query is complete.
+			_ = c.Close()
+		}
 	}
 
 	lenBuf := pool.GetBuffer(2)
@@ -146,6 +159,20 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 	}
 	if err = msg.Unpack(respBuf); err != nil {
 		return err
+	}
+	if quic {
+		if msg.Id != 0 {
+			return fmt.Errorf("DoQ response has non-zero DNS message ID: %d", msg.Id)
+		}
+		// Ordinary queries have one response. Wait for the required server FIN
+		// and reject a second framed message or trailing bytes.
+		extra, err := io.ReadAll(io.LimitReader(stream, 1))
+		if err != nil {
+			return oops.Wrapf(err, "failed to read DoQ stream FIN")
+		}
+		if len(extra) != 0 {
+			return fmt.Errorf("unexpected trailing data after DoQ response")
+		}
 	}
 	return nil
 }
