@@ -277,7 +277,9 @@ loop:
 					}
 				}()
 				if ready := <-readyChan; !ready {
-					writeReloadState(consts.ReloadError, "failed to start the new control plane listener")
+					serveErr := <-errCh
+					std.Errorf("%+v", serveErr)
+					writeReloadState(consts.ReloadError, serveErr.Error())
 					break loop
 				}
 				sdnotify.Ready()
