@@ -4,13 +4,11 @@
  */
 
 // Package stats keeps process-lifetime availability statistics of nodes and
-// outbound groups. Single-value state (current aliveness and event
-// timestamps) lives solely in the prometheus gauges declared in package
-// common, which survive control-plane reloads; this package only keeps the
-// uptime accounting that gauges cannot represent (cumulative up time since
-// first seen) together with the per-identity gauge handles, so there is a
-// single source of truth and every recorded value is also exposed to
-// prometheus.
+// outbound groups. Single-value state (current aliveness and event timestamps)
+// lives in the prometheus gauges declared in package common, which survive
+// control-plane reloads. Uptime accounting and rolling-window history live
+// here because the prometheus client registry retains current samples, not a
+// queryable time series.
 package stats
 
 import (
@@ -60,6 +58,8 @@ type Availability struct {
 	ChecksFailed     int64 // failed checks
 	ChecksSinceAlive int64 // checks since the current up-streak began, inclusive; stale while down
 	ChecksSinceFail  int64 // checks since the last failure, inclusive; counts all checks if none failed
+
+	Recent24h AvailabilityWindow // statistics observed during the trailing 24 hours
 }
 
 func metricValue(m prometheus.Metric) float64 {
@@ -107,6 +107,7 @@ type availability struct {
 	aliveSince prometheus.Gauge // set on transitions to alive; stale while down
 	lastFail   prometheus.Gauge
 	checks     *nodeChecks // nil for groups, which run no connectivity checks
+	recent     recentAvailability
 }
 
 // nodeChecks holds the check-related series of a node. Each connectivity
@@ -158,9 +159,11 @@ func (a *availability) record(alive, checked bool, now time.Time) {
 	if !alive {
 		setGaugeTime(a.lastFail, now)
 	}
-	if checked && a.checks != nil {
+	isCheck := checked && a.checks != nil
+	if isCheck {
 		a.checks.record(alive, alive != prevAlive, now)
 	}
+	a.recent.record(now, alive, isCheck)
 }
 
 func (a *availability) recordConnFail(now time.Time) {
@@ -180,6 +183,7 @@ func (a *availability) snapshot() Availability {
 		Seen:       true,
 		Alive:      gaugeBool(a.alive),
 		LastFailAt: gaugeTime(a.lastFail),
+		Recent24h:  a.recent.snapshot(a.firstSeen, now),
 	}
 	if c := a.checks; c != nil {
 		snap.LastCheckAt = gaugeTime(c.lastCheck)

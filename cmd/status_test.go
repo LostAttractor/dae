@@ -55,12 +55,15 @@ func TestNodeStatusRow(t *testing.T) {
 		UpRatio:            0.998,
 		ChecksTotal:        1000,
 		ChecksFailed:       2,
+		UpRatio24h:         0.995,
+		ChecksTotal24h:     100,
+		ChecksFailed24h:    1,
 		ActiveConns:        2,
 		TotalConns:         9000,
 	})
 	want := []string{
 		"node-a", "-", "vless", "yes", "tcp4,tcp6,udp4,udp6", "tcp4",
-		"42/45/50", "99.8% (2/1000)", "-", "-", "-", "-", "2/9000",
+		"42/45/50", "99.8% (2/1000)", "99.5% (1/100)", "-", "-", "-", "-", "2/9000",
 	}
 	if len(row) != len(want) {
 		t.Fatalf("nodeStatusRow() has %d cells, want %d", len(row), len(want))
@@ -95,7 +98,7 @@ func TestNodeStatusRowHighlightsRecentFailure(t *testing.T) {
 	}{
 		{cell: 0, ansi: "\x1b[36m"},
 		{cell: 6, ansi: "\x1b[91;1m"},
-		{cell: 9, ansi: "\x1b[31m"},
+		{cell: 10, ansi: "\x1b[31m"},
 	}
 	for _, tt := range tests {
 		if got := row[tt.cell].(string); !strings.Contains(got, tt.ansi) {
