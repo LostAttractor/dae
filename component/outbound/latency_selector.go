@@ -119,16 +119,19 @@ func (s *LatencyBasedSelector) printLatencies(aliveDialers []*dialer.Dialer, net
 }
 
 func (s *LatencyBasedSelector) getLatencyData(dialer *dialer.Dialer) (latency time.Duration, hasLatency bool) {
+	last, avg10, moving, ok := dialer.LatencySnapshot(s.dialerGroup)
+	if !ok {
+		return 0, false
+	}
 	switch s.dialerGroup.selectionPolicy.Policy {
 	case consts.DialerSelectionPolicy_MinLastLatency:
-		latency, hasLatency = dialer.Latencies10[s.dialerGroup].LastLatency()
+		return last, true
 	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		latency, hasLatency = dialer.Latencies10[s.dialerGroup].AvgLatency()
+		return avg10, true
 	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		latency = dialer.MovingAverage[s.dialerGroup]
-		hasLatency = latency > 0
+		return moving, moving > 0
 	}
-	return
+	return 0, false
 }
 
 func (s *LatencyBasedSelector) updateDialerAliveState(dialer *dialer.Dialer, alive bool) {
@@ -193,14 +196,13 @@ func (s *LatencyBasedSelector) logCheckLatency(aliveDialers []*dialer.Dialer, di
 		"network":  networkType.String(),
 	}
 
-	lastLatency, ok := dialer.Latencies10[s.dialerGroup].LastLatency()
+	lastLatency, _, movingLatency, ok := dialer.LatencySnapshot(s.dialerGroup)
 	if !ok {
 		return
 	}
 	latencyMs := float64(lastLatency.Milliseconds())
 	common.CheckLatency.With(labels).Set(latencyMs)
 
-	movingLatency := dialer.MovingAverage[s.dialerGroup]
 	if movingLatency > 0 {
 		common.CheckMovingLatency.With(labels).Set(float64(movingLatency.Milliseconds()))
 	}

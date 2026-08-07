@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +39,34 @@ func (fakeDialer) ListenPacket(ctx context.Context, address string) (net.PacketC
 	return nil, fmt.Errorf("not implemented")
 }
 
+type blockingCheckDialer struct {
+	started chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	servers []net.Conn
+}
+
+func (d *blockingCheckDialer) Alive() bool    { return true }
+func (d *blockingCheckDialer) Connect() error { return nil }
+func (d *blockingCheckDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	client, server := net.Pipe()
+	d.mu.Lock()
+	d.servers = append(d.servers, server)
+	d.mu.Unlock()
+	d.once.Do(func() { close(d.started) })
+	return client, nil
+}
+func (d *blockingCheckDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (d *blockingCheckDialer) closeServers() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, server := range d.servers {
+		_ = server.Close()
+	}
+}
+
 func newTestOption() *dialer.GlobalOption {
 	return &dialer.GlobalOption{
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.google:53", "8.8.8.8", "2001:4860:4860::8888"}},
@@ -46,7 +75,10 @@ func newTestOption() *dialer.GlobalOption {
 }
 
 func newTestDialer(option *dialer.GlobalOption, name string) *dialer.Dialer {
-	return dialer.NewDialer(fakeDialer{}, option, &dialer.Property{Property: D.Property{Name: name}}, true)
+	return dialer.NewDialer(fakeDialer{}, option, &dialer.Property{Property: D.Property{
+		Name: name,
+		Link: "test://" + name,
+	}}, true)
 }
 
 // simulateCheck simulates a connectivity check round of the dialer: it marks
@@ -391,5 +423,121 @@ func TestDialerGroup_CheckAsyncAnnotation(t *testing.T) {
 	}
 	if !dialers[1].CheckAsync() {
 		t.Errorf("node1 should be marked check_async")
+	}
+}
+
+func TestDialerRuntimeStatusConcurrentUpdate(t *testing.T) {
+	option := newTestOption()
+	d := newTestDialer(option, t.Name())
+	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies})
+	defer g.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			d.SetSupported(testNetworkType, i%2 == 0)
+			d.Update(i%2 == 0, time.Duration(i+1)*time.Millisecond, testNetworkType, errors.New("test"))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			_ = d.RuntimeStatus(g)
+		}
+	}()
+	wg.Wait()
+
+	if snapshot := d.RuntimeStatus(g); !snapshot.HasLatency {
+		t.Fatalf("runtime snapshot should contain the recorded latency")
+	}
+}
+
+func TestFixedSelectorConcurrentNotifications(t *testing.T) {
+	option := newTestOption()
+	d := newTestDialer(option, t.Name())
+	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed})
+	defer g.Close()
+
+	// Prepare the first state transition without notifying the selector. All
+	// goroutines below will therefore contend on its initially empty state.
+	d.SetSupported(testNetworkType, true)
+	d.Update(true, time.Millisecond, testNetworkType, nil)
+
+	const workers = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 20; j++ {
+				d.NotifyStatusChange()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if selected := g.SelectedDialer(testNetworkType); selected != d {
+		t.Fatalf("selected dialer = %v, want %v", selected, d)
+	}
+}
+
+func TestDialerCloseRejectsLaterUpdates(t *testing.T) {
+	option := newTestOption()
+	d := newTestDialer(option, t.Name())
+	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency})
+
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	d.Update(true, 10*time.Millisecond, testNetworkType, nil)
+	if snapshot := d.RuntimeStatus(g); snapshot.HasLatency || snapshot.Availability.Seen {
+		t.Fatalf("closed dialer accepted a status update: %+v", snapshot)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDialerCloseWaitsForAndCancelsHealthCheck(t *testing.T) {
+	option := newTestOption()
+	blocking := &blockingCheckDialer{started: make(chan struct{})}
+	d := dialer.NewDialer(blocking, option, &dialer.Property{Property: D.Property{
+		Name: t.Name(), Link: "test://" + t.Name(),
+	}}, true)
+	d.SetCheckAsync(true)
+	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency})
+	defer blocking.closeServers()
+
+	d.ActivateCheck(new(sync.WaitGroup))
+	select {
+	case <-blocking.started:
+	case <-time.After(time.Second):
+		t.Fatal("health check did not start")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- d.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel and join the health check")
+	}
+	if snapshot := d.RuntimeStatus(g); snapshot.Availability.Seen {
+		t.Fatalf("canceled check wrote availability after close: %+v", snapshot.Availability)
+	}
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
