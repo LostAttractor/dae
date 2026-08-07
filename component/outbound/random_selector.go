@@ -66,16 +66,19 @@ func (s *RandomSelector) updateDialerAliveState(dialer *dialer.Dialer, alive boo
 }
 
 func (s *RandomSelector) getLatencyData(dialer *dialer.Dialer) (latency time.Duration, hasLatency bool) {
+	last, avg10, moving, ok := dialer.LatencySnapshot(s.dialerGroup)
+	if !ok {
+		return 0, false
+	}
 	switch s.dialerGroup.selectionPolicy.Policy {
 	case consts.DialerSelectionPolicy_MinLastLatency:
-		latency, hasLatency = dialer.Latencies10[s.dialerGroup].LastLatency()
+		return last, true
 	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		latency, hasLatency = dialer.Latencies10[s.dialerGroup].AvgLatency()
+		return avg10, true
 	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		latency = dialer.MovingAverage[s.dialerGroup]
-		hasLatency = latency > 0
+		return moving, moving > 0
 	}
-	return
+	return 0, false
 }
 
 func (s *RandomSelector) getSortedHighestPriorityAliveDialers(networkType *common.NetworkType) (aliveDialers []*dialer.Dialer) {

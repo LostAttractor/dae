@@ -41,7 +41,7 @@ type Dialer struct {
 	Latencies10    map[DialerGroup]*LatenciesN
 	MovingAverage  map[DialerGroup]time.Duration
 
-	mu                     sync.Mutex
+	mu                     sync.RWMutex
 	registeredDialerGroups map[DialerGroup]int
 
 	checkCh chan struct{}
@@ -50,6 +50,21 @@ type Dialer struct {
 
 	checkActivated bool
 	checkAsync     bool
+	checkWG        sync.WaitGroup
+	closeOnce      sync.Once
+	closed         bool
+}
+
+// RuntimeSnapshot is a coherent view of the mutable status fields of a
+// dialer. Callers should prefer this over reading the fields one by one.
+type RuntimeSnapshot struct {
+	Alive         bool
+	Supported     [4]bool
+	HasLatency    bool
+	LastLatency   time.Duration
+	Avg10Latency  time.Duration
+	MovingAverage time.Duration
+	Availability  stats.Availability
 }
 type GlobalOption struct {
 	D.ExtraOption
@@ -129,10 +144,10 @@ func (d *Dialer) NeedAliveState() bool {
 // this dialer in the given group. hasLatency is false if no check sample has
 // been recorded yet.
 func (d *Dialer) LatencySnapshot(g DialerGroup) (last, avg10, movingAvg time.Duration, hasLatency bool) {
-	d.mu.Lock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	latencies, ok := d.Latencies10[g]
 	movingAvg = d.MovingAverage[g]
-	d.mu.Unlock()
 	if !ok {
 		return 0, 0, 0, false
 	}
@@ -144,18 +159,44 @@ func (d *Dialer) LatencySnapshot(g DialerGroup) (last, avg10, movingAvg time.Dur
 	return last, avg10, movingAvg, true
 }
 
+// RuntimeStatus returns a snapshot whose state, latency-map selection and
+// availability sample cannot be interleaved with a connectivity update.
+func (d *Dialer) RuntimeStatus(g DialerGroup) RuntimeSnapshot {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	latencies := d.Latencies10[g]
+	snapshot := RuntimeSnapshot{
+		Alive:         d.Dialer.Alive() && d.alive,
+		Supported:     d.supported,
+		MovingAverage: d.MovingAverage[g],
+	}
+
+	if latencies != nil {
+		last, ok := latencies.LastLatency()
+		if ok {
+			snapshot.HasLatency = true
+			snapshot.LastLatency = last
+			snapshot.Avg10Latency, _ = latencies.AvgLatency()
+		}
+	}
+	snapshot.Availability = stats.GetNode(d.StatsKey())
+	return snapshot
+}
+
 // SetCheckAsync marks the dialer's initial connectivity check to run in
 // background without blocking startup. The dialer stays unavailable until
 // the first successful check.
 func (d *Dialer) SetCheckAsync(checkAsync bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.checkAsync = checkAsync
 }
 
 // CheckAsync reports whether the dialer's connectivity check was marked to
 // run asynchronously (via the "check_async" filter annotation).
 func (d *Dialer) CheckAsync() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return d.checkAsync
 }
 
@@ -164,6 +205,12 @@ func (d *Dialer) Clone() *Dialer {
 }
 
 func (d *Dialer) Close() error {
-	d.cancel()
+	d.closeOnce.Do(func() {
+		d.mu.Lock()
+		d.closed = true
+		d.cancel()
+		d.mu.Unlock()
+	})
+	d.checkWG.Wait()
 	return nil
 }

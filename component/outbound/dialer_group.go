@@ -98,8 +98,8 @@ func NewDialerGroup(
 // must not be reused afterwards.
 func (g *DialerGroup) Close() error {
 	for _, d := range g.Dialers {
-		d.UnregisterDialerGroup(g)
 		_ = d.Close()
+		d.UnregisterDialerGroup(g)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package outbound
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -12,8 +13,9 @@ import (
 
 type FixedSelector struct {
 	BaseSelector
-	alive   bool
-	latency time.Duration
+	alive    bool
+	latency  time.Duration
+	notifyMu sync.Mutex
 }
 
 func NewFixedSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive bool, networkType *common.NetworkType)) Selector {
@@ -60,14 +62,18 @@ func (s *FixedSelector) updateAliveState(dialer *dialer.Dialer, alive bool) {
 }
 
 func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+
 	if s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
 		return
 	}
 	if dialer == s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex] {
-		s.updateAliveState(dialer, dialer.Alive())
+		alive := dialer.Alive()
+		s.updateAliveState(dialer, alive)
 		for i := 0; i < 4; i++ {
 			networkType := common.IndexToNetworkType(i)
-			s.handleAliveStateChange(dialer.Alive() && dialer.Supported(networkType), networkType)
+			s.handleAliveStateChange(alive && dialer.Supported(networkType), networkType)
 		}
 	}
 }

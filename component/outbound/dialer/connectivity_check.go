@@ -41,10 +41,14 @@ const (
 )
 
 func (d *Dialer) Alive() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return d.Dialer.Alive() && d.alive
 }
 
 func (d *Dialer) Supported(typ *common.NetworkType) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return d.supported[common.NetworkTypeToIndex(typ)]
 }
 
@@ -54,6 +58,9 @@ func (d *Dialer) Supported(typ *common.NetworkType) bool {
 func (d *Dialer) SetSupported(typ *common.NetworkType, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.closed {
+		return
+	}
 	d.supported[common.NetworkTypeToIndex(typ)] = ok
 }
 
@@ -296,23 +303,25 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 }
 
 func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
-	if len(d.registeredDialerGroups) == 0 {
-		return
-	}
-
-	if !d.needAliveState || d.checkActivated {
+	d.mu.Lock()
+	if len(d.registeredDialerGroups) == 0 || !d.needAliveState || d.checkActivated || d.closed {
+		d.mu.Unlock()
 		return
 	}
 	d.checkActivated = true
+	checkAsync := d.checkAsync
+	d.checkWG.Add(1)
+	d.mu.Unlock()
 
 	CheckOpts := d.createCheckOptions()
 
-	if !d.checkAsync {
+	if !checkAsync {
 		wg.Add(1)
 	}
 
 	done := make(chan struct{})
 	go func() {
+		defer d.checkWG.Done()
 		// at startup, check all network types to determine which are supported;
 		// if all fail, runInitialCheck keeps rechecking every CheckInterval
 		checkOpt := d.runInitialCheck(CheckOpts)
@@ -323,7 +332,7 @@ func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 		// after startup, only run check on one network type
 		d.runCheckLoop(checkOpt)
 	}()
-	if !d.checkAsync {
+	if !checkAsync {
 		go func() {
 			select {
 			case <-done:
@@ -367,19 +376,35 @@ func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
 
 func (d *Dialer) runCheck(checkOpt *CheckOption) {
 	for i := 0; i < RetryCount; i++ {
+		if d.ctx.Err() != nil {
+			return
+		}
 		if !d.Alive() {
 			d.NotifyStatusChange()
 			if err := d.Connect(); err != nil {
+				if d.ctx.Err() != nil {
+					return
+				}
 				continue
 			}
 		}
+		if d.ctx.Err() != nil {
+			return
+		}
 		ok, latency, err := d.Check(checkOpt)
+		if d.ctx.Err() != nil {
+			return
+		}
 		d.Update(ok, latency, checkOpt.networkType, err)
 		d.NotifyStatusChange()
 		if ok {
 			break
 		}
-		time.Sleep(RetryInterval)
+		select {
+		case <-time.After(RetryInterval):
+		case <-d.ctx.Done():
+			return
+		}
 	}
 }
 
@@ -402,6 +427,7 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 
 func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOption) {
 	var wg sync.WaitGroup
+	var supported [4]bool
 	var latency [4]time.Duration
 	var err [4]error
 	if err := d.Connect(); err != nil {
@@ -414,8 +440,9 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOptio
 		i := common.NetworkTypeToIndex(opt.networkType)
 		wg.Add(1)
 		go func() {
-			d.supported[i], latency[i], err[i] = d.Check(opt)
-			if d.supported[i] {
+			defer wg.Done()
+			supported[i], latency[i], err[i] = d.Check(opt)
+			if supported[i] {
 				log.WithFields(log.Fields{
 					"network": opt.networkType.String(),
 					"node":    d.Name,
@@ -434,14 +461,23 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOptio
 					}).Infoln(oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
 				}
 			}
-			wg.Done()
 		}()
 	}
 	wg.Wait()
+	if d.ctx.Err() != nil {
+		return nil
+	}
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil
+	}
+	d.supported = supported
+	d.mu.Unlock()
 	for _, opt := range checkOpts {
 		i := common.NetworkTypeToIndex(opt.networkType)
-		if d.supported[i] {
-			d.Update(d.supported[i], latency[i], opt.networkType, err[i])
+		if supported[i] {
+			d.Update(true, latency[i], opt.networkType, err[i])
 			return opt
 		}
 	}
@@ -472,10 +508,14 @@ func (d *Dialer) NotifyStatusChange() {
 		return
 	}
 	// Inform DialerGroups to update state.
-	// We use lock because AliveDialerSetSet is a reference of that in collection.
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	// Copy under the lock because callbacks call back into Dialer.Alive.
+	d.mu.RLock()
+	groups := make([]DialerGroup, 0, len(d.registeredDialerGroups))
 	for g := range d.registeredDialerGroups {
+		groups = append(groups, g)
+	}
+	d.mu.RUnlock()
+	for _, g := range groups {
 		g.NotifyStatusChange(d)
 	}
 }
@@ -490,22 +530,29 @@ func (d *Dialer) ReportUnavailable() {
 }
 
 func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return
+	}
+
 	for g := range d.registeredDialerGroups {
+		groupLatency := latency
 		if !ok {
-			latency = g.GetTimeoutPenalty()
+			groupLatency = g.GetTimeoutPenalty()
 		}
 		alpha := g.GetEmaAlpha()
 		if d.MovingAverage[g] == 0 {
-			d.MovingAverage[g] = latency
+			d.MovingAverage[g] = groupLatency
 		} else {
-			d.MovingAverage[g] = time.Duration(float64(d.MovingAverage[g])*(1-alpha) + float64(latency)*alpha)
+			d.MovingAverage[g] = time.Duration(float64(d.MovingAverage[g])*(1-alpha) + float64(groupLatency)*alpha)
 		}
-		d.Latencies10[g].AppendLatency(latency)
+		d.Latencies10[g].AppendLatency(groupLatency)
 		if ok {
 			avg, _ := d.Latencies10[g].AvgLatency()
 			fields := log.Fields{
 				"node":    d.Name,
-				"last":    latency.Truncate(time.Millisecond).String(),
+				"last":    groupLatency.Truncate(time.Millisecond).String(),
 				"avg_10":  avg.Truncate(time.Millisecond),
 				"mov_avg": d.MovingAverage[g].Truncate(time.Millisecond),
 			}
@@ -567,7 +614,7 @@ func (d *Dialer) HttpCheck(u *netutils.URL, ip netip.Addr, method string, networ
 			},
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	ctx, cancel := context.WithTimeout(d.ctx, consts.DefaultDialTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
@@ -602,7 +649,9 @@ func (d *Dialer) HttpCheck(u *netutils.URL, ip netip.Addr, method string, networ
 }
 
 func (d *Dialer) DnsCheck(dns netip.AddrPort, network string) (ok bool, err error) {
-	addrs, err := netutils.ResolveNetip(d.Dialer, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA, network)
+	ctx, cancel := context.WithTimeout(d.ctx, consts.DefaultDialTimeout)
+	defer cancel()
+	addrs, err := netutils.ResolveNetipContext(ctx, d.Dialer, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA, network)
 	if err != nil {
 		return false, err
 	}

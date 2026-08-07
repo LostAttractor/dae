@@ -159,7 +159,16 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 }
 
 func ResolveNetip(d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
-	resources, err := resolve(d, dns, host, typ, network)
+	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+	defer cancel()
+	return ResolveNetipContext(ctx, d, dns, host, typ, network)
+}
+
+// ResolveNetipContext is ResolveNetip with caller-controlled cancellation.
+// Canceling ctx also closes an established DNS connection, so a health-check
+// goroutine cannot remain stuck in a TCP/UDP read while its dialer is closing.
+func ResolveNetipContext(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
+	resources, err := resolveContext(ctx, d, dns, host, typ, network)
 	if err != nil {
 		return nil, err
 	}
@@ -232,6 +241,12 @@ func ResolveSOA(d netproxy.Dialer, dns netip.AddrPort, host string, network stri
 }
 
 func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+	defer cancel()
+	return resolveContext(ctx, dialer, server, host, typ, network)
+}
+
+func resolveContext(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
 	// Build DNS req.
 	msg := dnsmessage.Msg{
 		MsgHdr: dnsmessage.MsgHdr{
@@ -245,13 +260,13 @@ func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uin
 	}
 	msg.SetQuestion(dnsmessage.CanonicalName(host), typ)
 
-	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
-	defer cancel()
 	conn, err := dialer.DialContext(ctx, network, server.String())
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
 
 	if network == "tcp" {
 		err = ResolveStream(conn, &msg, false)
