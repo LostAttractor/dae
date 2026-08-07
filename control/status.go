@@ -57,6 +57,7 @@ type NodeStatus struct {
 	Avg10LatencyMs     float64       `json:"avg10_latency_ms"`
 	MovingAvgLatencyMs float64       `json:"moving_avg_latency_ms"`
 	UpRatio            float64       `json:"up_ratio"`
+	UpRatio24h         float64       `json:"up_ratio_24h"`
 	UpDuration         time.Duration `json:"up_duration"`
 	AliveSince         *time.Time    `json:"alive_since,omitempty"`
 	LastFailAt         *time.Time    `json:"last_fail_at,omitempty"`
@@ -64,6 +65,8 @@ type NodeStatus struct {
 	LastConnFailAt     *time.Time    `json:"last_conn_fail_at,omitempty"`
 	ChecksTotal        int64         `json:"checks_total"`
 	ChecksFailed       int64         `json:"checks_failed"`
+	ChecksTotal24h     int64         `json:"checks_total_24h"`
+	ChecksFailed24h    int64         `json:"checks_failed_24h"`
 	ChecksSinceAlive   int64         `json:"checks_since_alive"`
 	ChecksSinceFail    int64         `json:"checks_since_fail"`
 	ActiveConns        int64         `json:"active_conns"`
@@ -233,6 +236,9 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 	ns.LastConnFailAt = timePtr(avail.LastConnFailAt)
 	ns.ChecksTotal = avail.ChecksTotal
 	ns.ChecksFailed = avail.ChecksFailed
+	ns.UpRatio24h = avail.Recent24h.UpRatio
+	ns.ChecksTotal24h = avail.Recent24h.ChecksTotal
+	ns.ChecksFailed24h = avail.Recent24h.ChecksFailed
 	ns.ChecksSinceAlive = avail.ChecksSinceAlive
 	ns.ChecksSinceFail = avail.ChecksSinceFail
 	values := conns.byGroupNode[groupNodeKey{group: g.Name, id: ns.ID}]

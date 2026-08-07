@@ -197,6 +197,9 @@ func TestRecordNode_CheckCounters(t *testing.T) {
 	if avail.ChecksTotal != 4 || avail.ChecksFailed != 2 {
 		t.Errorf("want 4/2 checks, got %v/%v", avail.ChecksTotal, avail.ChecksFailed)
 	}
+	if avail.Recent24h.ChecksTotal != 4 || avail.Recent24h.ChecksFailed != 2 {
+		t.Errorf("want recent 4/2 checks, got %v/%v", avail.Recent24h.ChecksTotal, avail.Recent24h.ChecksFailed)
+	}
 	if avail.ChecksSinceFail != 1 {
 		t.Errorf("every failed check resets ChecksSinceFail to 1, got %v", avail.ChecksSinceFail)
 	}

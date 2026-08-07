@@ -104,6 +104,13 @@ func formatRatio(ratio float64) string {
 	return fmt.Sprintf("%.1f%%", ratio*100)
 }
 
+func formatAvailability(ratio float64, failed, total int64) string {
+	if total == 0 {
+		return formatRatio(ratio)
+	}
+	return fmt.Sprintf("%s (%d/%d)", formatRatio(ratio), failed, total)
+}
+
 func shouldEnableColors() bool {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return false
@@ -258,10 +265,8 @@ func nodeStatusRow(status control.NodeStatus) table.Row {
 		}
 	}
 
-	upRatio := formatRatio(status.UpRatio)
-	if status.ChecksTotal > 0 {
-		upRatio = fmt.Sprintf("%s (%d/%d)", upRatio, status.ChecksFailed, status.ChecksTotal)
-	}
+	upRatio := formatAvailability(status.UpRatio, status.ChecksFailed, status.ChecksTotal)
+	upRatio24h := formatAvailability(status.UpRatio24h, status.ChecksFailed24h, status.ChecksTotal24h)
 
 	lastFail := formatAgoWithChecks(status.LastFailAt, status.ChecksSinceFail)
 	if recentFailure {
@@ -277,6 +282,7 @@ func nodeStatusRow(status control.NodeStatus) table.Row {
 		colorSelected(selectedNetworks, selected),
 		latency,
 		colorRatio(status.UpRatio, upRatio),
+		colorRatio(status.UpRatio24h, upRatio24h),
 		formatAgoWithChecks(status.AliveSince, status.ChecksSinceAlive),
 		lastFail,
 		formatAgo(status.LastCheckAt),
@@ -315,7 +321,7 @@ func printGroupStatus(group control.GroupStatus) {
 	}
 	printTable(table.Row{
 		"NODE", "SUB", "PROTO", "ALIVE", "SUPPORT", "SELECTED",
-		"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "ALIVE-SINCE",
+		"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "24H UP% (FAIL/CHK)", "ALIVE-SINCE",
 		"LAST-FAIL", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)",
 	}, rows)
 }
