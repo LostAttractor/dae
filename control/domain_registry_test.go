@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/common/consts"
 )
 
 // fakeKernelDomainMaps records what the registry pushed to the kernel domain
@@ -167,6 +169,90 @@ func TestDomainRegistryUpsertFlushesKernel(t *testing.T) {
 		t.Fatalf("Lookup: got %v", got)
 	}
 	checkInvariants(t, g, fake)
+}
+
+func TestDomainRegistryVerifyKernelCoverage(t *testing.T) {
+	now := time.Now()
+	qi := queryInfo{qname: "example.com.", qtype: 1}
+	otherQI := queryInfo{qname: "other.example.", qtype: 1}
+	ip := netip.MustParseAddr("1.1.1.1")
+	otherIP := netip.MustParseAddr("2.2.2.2")
+
+	t.Run("active contribution", func(t *testing.T) {
+		g, _ := newTestRegistry(16, 16, time.Second)
+		g.Upsert(qi, ip, testBitmap(0), 60, now)
+
+		if got := g.Verify(qi, ip); got != (DomainVerification{Registered: true, Paired: true, KernelCovered: true}) {
+			t.Fatalf("Verify paired active record: got %+v", got)
+		}
+		if got := g.Verify(qi, otherIP); got != (DomainVerification{Registered: true}) {
+			t.Fatalf("Verify unpaired IP: got %+v", got)
+		}
+		if got := g.Verify(otherQI, ip); got != (DomainVerification{}) {
+			t.Fatalf("Verify unknown domain: got %+v", got)
+		}
+	})
+
+	t.Run("expired contribution remains historical evidence", func(t *testing.T) {
+		g, _ := newTestRegistry(16, 16, time.Second)
+		g.Upsert(qi, ip, testBitmap(0), 1, now)
+		g.Sweep(now.Add(2 * time.Second))
+
+		if got := g.Verify(qi, ip); got != (DomainVerification{Registered: true, Paired: true}) {
+			t.Fatalf("Verify expired kernel contribution: got %+v", got)
+		}
+	})
+
+	t.Run("capacity-evicted contribution remains historical evidence", func(t *testing.T) {
+		g, _ := newTestRegistry(1, 16, time.Second)
+		g.Upsert(qi, ip, testBitmap(0), 60, now)
+		g.Upsert(otherQI, otherIP, testBitmap(1), 60, now.Add(time.Second))
+
+		if got := g.Verify(qi, ip); got != (DomainVerification{Registered: true, Paired: true}) {
+			t.Fatalf("Verify capacity-evicted contribution: got %+v", got)
+		}
+	})
+
+	t.Run("zero bitmap needs no standalone kernel state", func(t *testing.T) {
+		g, _ := newTestRegistry(16, 16, time.Second)
+		g.Upsert(qi, ip, testBitmap(), 60, now)
+		if got := g.Verify(qi, ip); got != (DomainVerification{Registered: true, Paired: true, KernelCovered: true}) {
+			t.Fatalf("Verify standalone zero-bitmap record: got %+v", got)
+		}
+
+		// Once another domain creates state for the same IP, omitting this
+		// zero-bitmap record makes the kernel view ambiguous.
+		g.Upsert(otherQI, ip, testBitmap(0), 60, now)
+		if got := g.Verify(qi, ip); got != (DomainVerification{Registered: true, Paired: true}) {
+			t.Fatalf("Verify shared-IP zero-bitmap record: got %+v", got)
+		}
+	})
+}
+
+func TestVerifySniffReroutesHistoricalPairMissingFromKernel(t *testing.T) {
+	g, _ := newTestRegistry(16, 16, time.Second)
+	now := time.Now()
+	qi := queryInfo{qname: "example.com.", qtype: 1}
+	dst := netip.MustParseAddrPort("1.1.1.1:443")
+	g.Upsert(qi, dst.Addr(), testBitmap(0), 1, now)
+	c := &ControlPlane{
+		core:            &controlPlaneCore{domainRegistry: g},
+		sniffVerifyMode: consts.SniffVerifyMode_Strict,
+	}
+
+	verified, shouldReroute := c.VerifySniff(consts.OutboundUserDefinedMin, dst, "example.com")
+	if !verified || shouldReroute {
+		t.Fatalf("active pair: verified=%v shouldReroute=%v", verified, shouldReroute)
+	}
+
+	// Kernel expiry must not revoke historical proof used by strict sniff
+	// verification, but while_needed must rerun routing because the kernel no
+	// longer has the corresponding domain contribution.
+	g.Sweep(now.Add(2 * time.Second))
+	verified, shouldReroute = c.VerifySniff(consts.OutboundUserDefinedMin, dst, "example.com")
+	if !verified || !shouldReroute {
+		t.Fatalf("historical pair: verified=%v shouldReroute=%v", verified, shouldReroute)
+	}
 }
 
 func TestDomainRegistrySharedIpBitmaps(t *testing.T) {

@@ -676,18 +676,18 @@ func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.Addr
 		return
 	}
 	fqdn := dnsmessage.CanonicalName(domain)
-	// A present registration certifies the domain/IP pairing; registrations
-	// are only reclaimed under memory pressure (see domain_registry.go), so
-	// verification here does not expire on its own.
-	registered, paired := c.core.domainRegistry.Verify(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}, dst.Addr())
-	if registered {
-		// In this case, the kernel may not handle domain match set, so re-route is required.
-		shouldReroute = !paired
+	// Historical pairing remains valid for sniff verification after the
+	// corresponding kernel contribution expires or is capacity-evicted. Keep
+	// that trust decision separate from whether the current kernel maps could
+	// route this connection accurately.
+	verification := c.core.domainRegistry.Verify(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}, dst.Addr())
+	if verification.Registered {
+		shouldReroute = !verification.KernelCovered
 		switch c.sniffVerifyMode {
 		case consts.SniffVerifyMode_None, consts.SniffVerifyMode_Loose:
 			verified = true
 		case consts.SniffVerifyMode_Strict:
-			verified = paired
+			verified = verification.Paired
 		}
 	} else {
 		// Successful sniff without DNS lookup record.
