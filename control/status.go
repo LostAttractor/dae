@@ -21,7 +21,18 @@ type StatusSnapshot struct {
 	ActiveConns  int64         `json:"active_conns"`
 	TotalConns   int64         `json:"total_conns"`
 	ActiveByNet  [4]int64      `json:"active_by_net"` // tcp4, tcp6, udp4, udp6
+	Tables       []TableUsage  `json:"tables"`
 	Groups       []GroupStatus `json:"groups"`
+}
+
+// TableUsage is the fill level of one capacity-limited DNS/domain table.
+// Soft limits (LRU, memory-pressure GC) may be exceeded under churn; hard
+// limits (eBPF map max_entries) cannot.
+type TableUsage struct {
+	Name  string `json:"name"`
+	Used  int    `json:"used"`
+	Limit int    `json:"limit"`
+	Soft  bool   `json:"soft"`
 }
 
 type GroupStatus struct {
@@ -256,6 +267,21 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 	snapshot.ActiveConns, snapshot.TotalConns = conns.all.active, conns.all.total
 	for i := 0; i < 4; i++ {
 		snapshot.ActiveByNet[i] = conns.byNetwork[i].active
+	}
+	if c.dnsController != nil {
+		snapshot.Tables = append(snapshot.Tables, TableUsage{
+			Name:  "dns-cache",
+			Used:  c.dnsController.dnsCache.Len(),
+			Limit: c.dnsController.dnsCache.MaxSize(),
+			Soft:  true,
+		})
+	}
+	if c.core != nil && c.core.domainRegistry != nil {
+		usage := c.core.domainRegistry.Usage()
+		snapshot.Tables = append(snapshot.Tables,
+			TableUsage{Name: "domain-verify", Used: usage.UserUsed, Limit: usage.UserMax, Soft: true},
+			TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
+		)
 	}
 	for _, g := range c.outbounds {
 		if g.Kind == outbound.GroupKindInvisible {

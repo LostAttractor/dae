@@ -503,6 +503,27 @@ func (g *DomainRegistry) KernelSize() int {
 	return len(g.byIP)
 }
 
+// RegistryUsage is the fill of the userspace registry and the kernel maps
+// against their respective limits.
+type RegistryUsage struct {
+	UserUsed   int
+	UserMax    int
+	KernelUsed int
+	KernelMax  int
+}
+
+// Usage reports the current fill of both sides in one lock acquisition.
+func (g *DomainRegistry) Usage() RegistryUsage {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return RegistryUsage{
+		UserUsed:   g.size,
+		UserMax:    g.userMax,
+		KernelUsed: len(g.byIP),
+		KernelMax:  g.kernelMax,
+	}
+}
+
 // StartSweeper launches the periodic GC goroutine. Called once by the
 // control plane core after the flush functions are bound.
 func (g *DomainRegistry) StartSweeper() {
