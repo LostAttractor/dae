@@ -86,11 +86,13 @@ func (m *DnsManager) read() (data []byte, err error) {
 			return nil, oops.Wrapf(err, "failed to read DNS resp payload")
 		}
 	} else {
-		data = pool.GetBuffer(consts.EthernetMtu)
-		if _, err = m.conn.Read(data); err != nil {
+		data = pool.GetBuffer(consts.MaxDnsMessageSize)
+		var n int
+		if n, err = m.conn.Read(data); err != nil {
 			pool.PutBuffer(data)
 			return nil, oops.Wrapf(err, "failed to read DNS resp payload")
 		}
+		data = data[:n]
 	}
 	return
 }
