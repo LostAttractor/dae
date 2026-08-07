@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,9 +23,10 @@ import (
 // It carries the original question so feed() can drop late/stray responses
 // whose transaction ID happens to collide with a reused slot.
 type dnsPendingQuery struct {
-	ch    chan *dnsmessage.Msg
-	qname string
-	qtype uint16
+	ch     chan *dnsmessage.Msg
+	qname  string
+	qtype  uint16
+	qclass uint16
 }
 
 type DnsManager struct {
@@ -111,11 +113,14 @@ func (m *DnsManager) feed(msg *dnsmessage.Msg) {
 
 	// Drop late/stray responses whose question doesn't match the pending query
 	// (e.g. an old response arriving after the transaction ID has been reused).
-	if len(msg.Question) == 0 ||
-		msg.Question[0].Name != pending.qname ||
-		msg.Question[0].Qtype != pending.qtype {
-		log.Errorf("DNSManager: received message with mismatched question: got %v, expected %v %v",
-			msg.Question, pending.qname, pending.qtype)
+	// Names compare case-insensitively: some upstreams echo the question with
+	// 0x20-randomized case.
+	if !msg.Response || len(msg.Question) == 0 ||
+		!strings.EqualFold(msg.Question[0].Name, pending.qname) ||
+		msg.Question[0].Qtype != pending.qtype ||
+		msg.Question[0].Qclass != pending.qclass {
+		log.Debugf("DNSManager: drop non-response or mismatched question: got %v, expected %v %v %v",
+			msg.Question, pending.qname, pending.qtype, pending.qclass)
 		return
 	}
 
@@ -156,9 +161,10 @@ func (m *DnsManager) Resolve(msg *dnsmessage.Msg) error {
 	defer func() { msg.Id = originalId }()
 
 	pending := &dnsPendingQuery{
-		ch:    make(chan *dnsmessage.Msg, 1),
-		qname: msg.Question[0].Name,
-		qtype: msg.Question[0].Qtype,
+		ch:     make(chan *dnsmessage.Msg, 1),
+		qname:  msg.Question[0].Name,
+		qtype:  msg.Question[0].Qtype,
+		qclass: msg.Question[0].Qclass,
 	}
 	// Allocate a unique transaction ID via a monotonic counter. After 65536
 	// queries the counter wraps around and may collide with a still-pending
