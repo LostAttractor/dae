@@ -65,6 +65,13 @@ func waitForReload(opts reloadWaitOptions) (string, bool, error) {
 		if err != nil {
 			return "", false, fmt.Errorf("failed to read reload progress: %w", err)
 		}
+
+		if opts.processAlive != nil {
+			if err := opts.processAlive(); err != nil && !errors.Is(err, syscall.EPERM) {
+				return "", false, fmt.Errorf("dae stopped while reloading: %w", err)
+			}
+		}
+
 		switch code {
 		case consts.ReloadSend:
 			if protocolObserved {
@@ -94,12 +101,6 @@ func waitForReload(opts reloadWaitOptions) (string, bool, error) {
 			return "", false, errors.New(content)
 		default:
 			return "", false, fmt.Errorf("unexpected reload progress code %q", code)
-		}
-
-		if opts.processAlive != nil {
-			if err := opts.processAlive(); err != nil && !errors.Is(err, syscall.EPERM) {
-				return "", false, fmt.Errorf("dae stopped while reloading: %w", err)
-			}
 		}
 
 		select {

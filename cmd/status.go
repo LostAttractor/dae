@@ -112,12 +112,12 @@ func formatAvailability(ratio float64, failed, total int64) string {
 }
 
 func shouldEnableColors() bool {
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
-		return false
-	}
 	forceColor := os.Getenv("FORCE_COLOR")
 	if forceColor != "" && forceColor != "0" && forceColor != "false" {
 		return true
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
 	}
 	if noColor := os.Getenv("NO_COLOR"); noColor != "" && noColor != "0" {
 		return false
