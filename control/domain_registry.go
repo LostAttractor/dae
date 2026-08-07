@@ -338,19 +338,41 @@ func (g *DomainRegistry) Lookup(qi queryInfo) []netip.Addr {
 	return ips
 }
 
-// Verify reports whether the (domain, qtype) has any registration and, if
-// so, whether ip is among the registered addresses. It is the O(1),
-// allocation-free form of Lookup for sniff verification. The same validity
-// guarantees as Lookup apply.
-func (g *DomainRegistry) Verify(qi queryInfo, ip netip.Addr) (registered, paired bool) {
+// DomainVerification separates historical DNS evidence from the current
+// kernel routing state. A registration may remain Paired for sniff
+// verification after its kernel contribution expires or is capacity-evicted;
+// KernelCovered is false in those cases so while_needed routing can rerun the
+// rule matcher in userspace.
+type DomainVerification struct {
+	Registered    bool
+	Paired        bool
+	KernelCovered bool
+}
+
+// Verify reports the historical verification state of (domain, qtype) and
+// whether the current kernel domain maps cover the requested domain/IP pair.
+// It is the O(1), allocation-free form of Lookup for sniff verification.
+//
+// An all-zero domain bitmap needs no kernel entry when the IP has no other
+// domain-routing state: both kernel and userspace will miss every domain rule.
+// If another domain does have state for the same IP, however, the zero-bitmap
+// registration is not covered; the shared IP is ambiguous and userspace must
+// rerun routing for the sniffed domain.
+func (g *DomainRegistry) Verify(qi queryInfo, ip netip.Addr) (result DomainVerification) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	m := g.byName[qi]
 	if len(m) == 0 {
-		return false, false
+		return result
 	}
-	_, paired = m[ip]
-	return true, paired
+	result.Registered = true
+	r := m[ip]
+	if r == nil {
+		return result
+	}
+	result.Paired = true
+	result.KernelCovered = r.inKernel || (domainBitmapAllZero(r.bitmap) && g.byIP[ip] == nil)
+	return result
 }
 
 // Sweep reaps expired kernel contributions (registrations survive in
