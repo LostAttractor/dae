@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -195,12 +196,16 @@ func (d *DoTLS) ForwardDNS(msg *dnsmessage.Msg) error {
 		InsecureSkipVerify: false,
 		ServerName:         d.Upstream.Hostname,
 	})
+	defer tlsConn.Close()
+	// The dial ctx only covers the handshake's underlying dial; bound the
+	// handshake and the whole DNS exchange explicitly.
+	if err = tlsConn.SetDeadline(time.Now().Add(consts.DefaultDNSTimeout)); err != nil {
+		return err
+	}
 	if err = tlsConn.Handshake(); err != nil {
 		return err
 	}
-
-	defer tlsConn.Close()
-	return netutils.ResolveStream(conn, msg, false)
+	return netutils.ResolveStream(tlsConn, msg, false)
 }
 
 type DoTCP struct {
