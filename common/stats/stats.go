@@ -4,34 +4,36 @@
  */
 
 // Package stats keeps process-lifetime availability statistics of nodes and
-// outbound groups. The registries survive control-plane reloads so that
-// uptime information is not reset by `dae reload`.
+// outbound groups. Single-value state (current aliveness and event
+// timestamps) lives solely in the prometheus gauges declared in package
+// common, which survive control-plane reloads; this package only keeps the
+// uptime accounting that gauges cannot represent (cumulative up time since
+// first seen) together with the per-identity gauge handles, so there is a
+// single source of truth and every recorded value is also exposed to
+// prometheus.
 package stats
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 var ProcessStart = time.Now()
 
-var lastReload atomic.Int64 // unix seconds, zero until the first reload
-
 func RecordReload() {
-	lastReload.Store(time.Now().Unix())
+	common.LastReloadTime.Set(float64(time.Now().Unix()))
 }
 
 // LastReload returns when the last control-plane reload finished, or the
 // zero time if no reload has happened since process start.
 func LastReload() time.Time {
-	if sec := lastReload.Load(); sec > 0 {
-		return time.Unix(sec, 0)
-	}
-	return time.Time{}
+	return gaugeTime(common.LastReloadTime)
 }
 
 // Availability is a point-in-time view of the uptime of a node, or of a
@@ -47,67 +49,98 @@ type Availability struct {
 	UpDuration     time.Duration // length of the current up-streak
 }
 
+func gaugeValue(g prometheus.Gauge) float64 {
+	if g == nil {
+		return 0
+	}
+	var m dto.Metric
+	if err := g.Write(&m); err != nil {
+		return 0
+	}
+	return m.GetGauge().GetValue()
+}
+
+func gaugeBool(g prometheus.Gauge) bool {
+	return gaugeValue(g) != 0
+}
+
+func gaugeTime(g prometheus.Gauge) time.Time {
+	if sec := gaugeValue(g); sec > 0 {
+		return time.Unix(int64(sec), 0)
+	}
+	return time.Time{}
+}
+
+func setGaugeTime(g prometheus.Gauge, t time.Time) {
+	g.Set(float64(t.Unix()))
+}
+
+// availability keeps the uptime accounting of one identity; all
+// single-value state is stored in the gauge handles below.
 type availability struct {
-	mu             sync.Mutex
-	firstSeen      time.Time // zero until the first record
-	alive          bool
-	aliveSince     time.Time
-	lastFailAt     time.Time
-	lastCheckAt    time.Time
-	lastConnFailAt time.Time
-	totalUp        time.Duration
-	lastAcc        time.Time // last time totalUp was brought up to date
+	mu           sync.Mutex
+	firstSeen    time.Time // zero until the first record
+	totalUp      time.Duration
+	lastAcc      time.Time // last time totalUp was brought up to date
+	alive        prometheus.Gauge
+	aliveSince   prometheus.Gauge // set on transitions to alive; stale while down
+	lastFail     prometheus.Gauge
+	lastCheck    prometheus.Gauge // nil for groups
+	lastConnFail prometheus.Gauge // nil for groups
+}
+
+func (a *availability) setAlive(alive bool, now time.Time) {
+	if alive {
+		a.alive.Set(1)
+		setGaugeTime(a.aliveSince, now)
+	} else {
+		a.alive.Set(0)
+		setGaugeTime(a.lastFail, now)
+	}
 }
 
 func (a *availability) record(alive, checked bool, now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if checked {
-		a.lastCheckAt = now
+		setGaugeTime(a.lastCheck, now)
 	}
 	if a.firstSeen.IsZero() {
 		a.firstSeen, a.lastAcc = now, now
-		a.alive = alive
-		if alive {
-			a.aliveSince = now
-		} else {
-			a.lastFailAt = now
-		}
+		a.setAlive(alive, now)
 		return
 	}
-	if a.alive {
+	prevAlive := gaugeBool(a.alive)
+	if prevAlive {
 		a.totalUp += now.Sub(a.lastAcc)
 	}
 	a.lastAcc = now
 	if !alive {
-		a.lastFailAt = now
+		setGaugeTime(a.lastFail, now)
 	}
-	if alive == a.alive {
+	if alive == prevAlive {
 		return
 	}
-	a.alive = alive
-	if alive {
-		a.aliveSince = now
-	}
+	a.setAlive(alive, now)
 }
 
 func (a *availability) snapshot(now time.Time) Availability {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	snap := Availability{
-		Seen:           !a.firstSeen.IsZero(),
-		Alive:          a.alive,
-		LastFailAt:     a.lastFailAt,
-		LastCheckAt:    a.lastCheckAt,
-		LastConnFailAt: a.lastConnFailAt,
+	if a.firstSeen.IsZero() {
+		return Availability{}
 	}
-	if !snap.Seen {
-		return snap
+	snap := Availability{
+		Seen:           true,
+		Alive:          gaugeBool(a.alive),
+		LastFailAt:     gaugeTime(a.lastFail),
+		LastCheckAt:    gaugeTime(a.lastCheck),
+		LastConnFailAt: gaugeTime(a.lastConnFail),
 	}
 	totalUp := a.totalUp
-	if a.alive {
-		snap.AliveSince = a.aliveSince
-		snap.UpDuration = now.Sub(a.aliveSince)
+	if snap.Alive {
+		snap.AliveSince = gaugeTime(a.aliveSince)
+		snap.UpDuration = now.Sub(snap.AliveSince)
 		totalUp += now.Sub(a.lastAcc)
 	}
 	if total := now.Sub(a.firstSeen); total > 0 {
@@ -120,31 +153,46 @@ func (a *availability) snapshot(now time.Time) Availability {
 // control-plane reloads.
 var nodes sync.Map // key -> *availability
 
-func nodeAvailability(key string) *availability {
-	v, _ := nodes.LoadOrStore(key, &availability{})
+// nodeID is the value of the "id" label of node-level series: a short hash
+// of the node identity, keeping series of same-named nodes apart.
+func nodeID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:4])
+}
+
+func nodeAvailability(key, subtag, name string) *availability {
+	if v, ok := nodes.Load(key); ok {
+		return v.(*availability)
+	}
+	labels := prometheus.Labels{"id": nodeID(key), "subtag": subtag, "dialer": name}
+	a := &availability{
+		alive:        common.NodeAlive.With(labels),
+		aliveSince:   common.NodeAliveSince.With(labels),
+		lastFail:     common.NodeLastFailure.With(labels),
+		lastCheck:    common.NodeLastCheck.With(labels),
+		lastConnFail: common.NodeLastConnFailure.With(labels),
+	}
+	v, _ := nodes.LoadOrStore(key, a)
 	return v.(*availability)
 }
 
 // RecordNode records the state of a node. checked should be true when the
 // state comes from a connectivity check (as opposed to registration).
 func RecordNode(key, subtag, name string, alive, checked bool) {
-	nodeAvailability(key).record(alive, checked, time.Now())
-
-	labels := prometheus.Labels{"subtag": subtag, "dialer": name}
-	if alive {
-		common.NodeAlive.With(labels).Set(1)
-	} else {
-		common.NodeAlive.With(labels).Set(0)
-		common.NodeLastFailure.With(labels).SetToCurrentTime()
-	}
+	nodeAvailability(key, subtag, name).record(alive, checked, time.Now())
 }
 
 // RecordNodeConnFail records that traffic through the node failed outside of
-// scheduled connectivity checks.
+// scheduled connectivity checks. It is a no-op for nodes never recorded,
+// which cannot carry traffic anyway.
 func RecordNodeConnFail(key string) {
-	a := nodeAvailability(key)
+	v, ok := nodes.Load(key)
+	if !ok {
+		return
+	}
+	a := v.(*availability)
 	a.mu.Lock()
-	a.lastConnFailAt = time.Now()
+	setGaugeTime(a.lastConnFail, time.Now())
 	a.mu.Unlock()
 }
 
@@ -158,18 +206,23 @@ func GetNode(key string) Availability {
 
 var groups sync.Map // group name -> *[4]availability
 
-func RecordGroup(name string, networkIndex int, alive bool) {
-	v, _ := groups.LoadOrStore(name, &[4]availability{})
-	v.(*[4]availability)[networkIndex].record(alive, false, time.Now())
-
-	value := 0.0
-	if alive {
-		value = 1
+func newGroupAvailability(name string) *[4]availability {
+	var arr [4]availability
+	for i := 0; i < 4; i++ {
+		labels := prometheus.Labels{
+			"outbound": name,
+			"network":  common.IndexToNetworkType(i).String(),
+		}
+		arr[i].alive = common.GroupAlive.With(labels)
+		arr[i].aliveSince = common.GroupAliveSince.With(labels)
+		arr[i].lastFail = common.GroupLastFailure.With(labels)
 	}
-	common.GroupAlive.With(prometheus.Labels{
-		"outbound": name,
-		"network":  common.IndexToNetworkType(networkIndex).String(),
-	}).Set(value)
+	return &arr
+}
+
+func RecordGroup(name string, networkIndex int, alive bool) {
+	v, _ := groups.LoadOrStore(name, newGroupAvailability(name))
+	v.(*[4]availability)[networkIndex].record(alive, false, time.Now())
 }
 
 func GetGroup(name string, networkIndex int) Availability {

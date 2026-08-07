@@ -28,9 +28,24 @@ var (
 	// VmRssKb            prometheus.Gauge
 
 	TotalConnections *prometheus.CounterVec
-	NodeAlive        *prometheus.GaugeVec
-	NodeLastFailure  *prometheus.GaugeVec
-	GroupAlive       *prometheus.GaugeVec
+
+	// Node/group availability metrics are the single source of truth for
+	// the single-value availability state (current aliveness and event
+	// timestamps); common/stats stores this state only in these gauges.
+	// Node-level series carry an "id" label (a hash of the node identity)
+	// so that nodes sharing the same (subtag, dialer) display labels do
+	// not alias each other's state.
+	NodeAlive           *prometheus.GaugeVec
+	NodeAliveSince      *prometheus.GaugeVec
+	NodeLastFailure     *prometheus.GaugeVec
+	NodeLastCheck       *prometheus.GaugeVec
+	NodeLastConnFailure *prometheus.GaugeVec
+	GroupAlive          *prometheus.GaugeVec
+	GroupAliveSince     *prometheus.GaugeVec
+	GroupLastFailure    *prometheus.GaugeVec
+
+	StartTime      prometheus.Gauge
+	LastReloadTime prometheus.Gauge
 )
 
 // newMetrics constructs all metric collectors. It is called once at package
@@ -109,23 +124,66 @@ func newMetrics() {
 		},
 		labels,
 	)
+	nodeLabels := []string{"id", "subtag", "dialer"}
 	NodeAlive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dae_node_alive",
 		},
-		[]string{"subtag", "dialer"},
+		nodeLabels,
+	)
+	NodeAliveSince = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_node_alive_since_timestamp_seconds",
+		},
+		nodeLabels,
 	)
 	NodeLastFailure = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dae_node_last_failure_timestamp_seconds",
 		},
-		[]string{"subtag", "dialer"},
+		nodeLabels,
 	)
+	NodeLastCheck = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_node_last_check_timestamp_seconds",
+		},
+		nodeLabels,
+	)
+	NodeLastConnFailure = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_node_last_conn_failure_timestamp_seconds",
+		},
+		nodeLabels,
+	)
+	groupLabels := []string{"outbound", "network"}
 	GroupAlive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dae_group_alive",
 		},
-		[]string{"outbound", "network"},
+		groupLabels,
+	)
+	GroupAliveSince = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_group_alive_since_timestamp_seconds",
+		},
+		groupLabels,
+	)
+	GroupLastFailure = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_group_last_failure_timestamp_seconds",
+		},
+		groupLabels,
+	)
+	StartTime = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dae_start_time_seconds",
+		},
+	)
+	StartTime.SetToCurrentTime()
+	LastReloadTime = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dae_last_reload_timestamp_seconds",
+		},
 	)
 	// TrafficBytes = prometheus.NewCounterVec(
 	// 	prometheus.CounterOpts{
@@ -168,8 +226,15 @@ func InitPrometheus(registry *prometheus.Registry) {
 	registry.MustRegister(ErrorCount)
 	registry.MustRegister(TotalConnections)
 	registry.MustRegister(NodeAlive)
+	registry.MustRegister(NodeAliveSince)
 	registry.MustRegister(NodeLastFailure)
+	registry.MustRegister(NodeLastCheck)
+	registry.MustRegister(NodeLastConnFailure)
 	registry.MustRegister(GroupAlive)
+	registry.MustRegister(GroupAliveSince)
+	registry.MustRegister(GroupLastFailure)
+	registry.MustRegister(StartTime)
+	registry.MustRegister(LastReloadTime)
 	// registry.MustRegister(TrafficBytes)
 	// registry.MustRegister(VmRssKb)
 }
