@@ -63,7 +63,7 @@ func simulateCheck(d *dialer.Dialer, ok bool, latency time.Duration) {
 }
 
 func newTestGroup(option *dialer.GlobalOption, dialers []*dialer.Dialer, annotations []*dialer.Annotation, policy dialer.DialerSelectionPolicy) *DialerGroup {
-	return NewDialerGroup(option, "test-group", dialers, annotations, policy,
+	return NewDialerGroup(option, "test-group", GroupKindNormal, dialers, annotations, policy,
 		func(alive bool, networkType *common.NetworkType) {})
 }
 
