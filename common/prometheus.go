@@ -40,9 +40,15 @@ var (
 	NodeLastFailure     *prometheus.GaugeVec
 	NodeLastCheck       *prometheus.GaugeVec
 	NodeLastConnFailure *prometheus.GaugeVec
-	GroupAlive          *prometheus.GaugeVec
-	GroupAliveSince     *prometheus.GaugeVec
-	GroupLastFailure    *prometheus.GaugeVec
+	// Node check counters: one increment per connectivity check (each check
+	// also appends one latency sample, so they double as sample counts).
+	NodeChecksTotal        *prometheus.CounterVec
+	NodeCheckFailures      *prometheus.CounterVec
+	NodeChecksSinceAlive   *prometheus.GaugeVec
+	NodeChecksSinceFailure *prometheus.GaugeVec
+	GroupAlive             *prometheus.GaugeVec
+	GroupAliveSince        *prometheus.GaugeVec
+	GroupLastFailure       *prometheus.GaugeVec
 
 	StartTime      prometheus.Gauge
 	LastReloadTime prometheus.Gauge
@@ -155,6 +161,30 @@ func newMetrics() {
 		},
 		nodeLabels,
 	)
+	NodeChecksTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dae_node_checks_total",
+		},
+		nodeLabels,
+	)
+	NodeCheckFailures = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dae_node_check_failures_total",
+		},
+		nodeLabels,
+	)
+	NodeChecksSinceAlive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_node_checks_since_alive",
+		},
+		nodeLabels,
+	)
+	NodeChecksSinceFailure = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dae_node_checks_since_failure",
+		},
+		nodeLabels,
+	)
 	groupLabels := []string{"outbound", "network"}
 	GroupAlive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -230,6 +260,10 @@ func InitPrometheus(registry *prometheus.Registry) {
 	registry.MustRegister(NodeLastFailure)
 	registry.MustRegister(NodeLastCheck)
 	registry.MustRegister(NodeLastConnFailure)
+	registry.MustRegister(NodeChecksTotal)
+	registry.MustRegister(NodeCheckFailures)
+	registry.MustRegister(NodeChecksSinceAlive)
+	registry.MustRegister(NodeChecksSinceFailure)
 	registry.MustRegister(GroupAlive)
 	registry.MustRegister(GroupAliveSince)
 	registry.MustRegister(GroupLastFailure)

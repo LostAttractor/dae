@@ -61,6 +61,10 @@ type NodeStatus struct {
 	LastFailAt         *time.Time    `json:"last_fail_at,omitempty"`
 	LastCheckAt        *time.Time    `json:"last_check_at,omitempty"`
 	LastConnFailAt     *time.Time    `json:"last_conn_fail_at,omitempty"`
+	ChecksTotal        int64         `json:"checks_total"`
+	ChecksFailed       int64         `json:"checks_failed"`
+	ChecksSinceAlive   int64         `json:"checks_since_alive"`
+	ChecksSinceFail    int64         `json:"checks_since_fail"`
 	ActiveConns        int64         `json:"active_conns"`
 	TotalConns         int64         `json:"total_conns"`
 }
@@ -203,6 +207,10 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 	ns.LastFailAt = timePtr(avail.LastFailAt)
 	ns.LastCheckAt = timePtr(avail.LastCheckAt)
 	ns.LastConnFailAt = timePtr(avail.LastConnFailAt)
+	ns.ChecksTotal = avail.ChecksTotal
+	ns.ChecksFailed = avail.ChecksFailed
+	ns.ChecksSinceAlive = avail.ChecksSinceAlive
+	ns.ChecksSinceFail = avail.ChecksSinceFail
 	ns.ActiveConns, ns.TotalConns = conns.sum(func(k connKey) bool {
 		return k.group == g.Name && k.subtag == ns.Subtag && k.node == ns.Name
 	})

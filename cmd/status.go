@@ -131,6 +131,15 @@ func emptyDash(s string) string {
 	return s
 }
 
+// withChecks appends a check counter to a relative timestamp, telling how
+// many checks (i.e. latency samples) have run since that moment.
+func withChecks(s string, t *time.Time, checks int64) string {
+	if t == nil || checks <= 0 {
+		return s
+	}
+	return fmt.Sprintf("%v (+%v chk)", s, checks)
+}
+
 // displayWidth returns the number of terminal cells occupied by s, treating
 // East Asian wide/fullwidth runes as two cells.
 func displayWidth(s string) int {
@@ -224,12 +233,16 @@ func printStatus(s *control.StatusSnapshot) {
 
 		fmt.Printf("\nNodes of group '%v':\n", g.Name)
 		rows = [][]string{
-			{"NODE", "SUB", "PROTO", "ALIVE", "SUPPORT", "SELECTED", "LATENCY last/avg10/mov(ms)", "UP%", "ALIVE-SINCE", "LAST-FAIL", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)"},
+			{"NODE", "SUB", "PROTO", "ALIVE", "SUPPORT", "SELECTED", "LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "ALIVE-SINCE", "LAST-FAIL", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)"},
 		}
 		for _, n := range g.Nodes {
 			latency := "-"
 			if n.HasLatency && n.Alive {
 				latency = fmt.Sprintf("%.0f/%.0f/%.0f", n.LastLatencyMs, n.Avg10LatencyMs, n.MovingAvgLatencyMs)
+			}
+			up := formatRatio(n.UpRatio)
+			if n.ChecksTotal > 0 {
+				up = fmt.Sprintf("%v (%v/%v)", up, n.ChecksFailed, n.ChecksTotal)
 			}
 			rows = append(rows, []string{
 				n.Name,
@@ -239,9 +252,9 @@ func printStatus(s *control.StatusSnapshot) {
 				networkFlags(n.Supported),
 				networkFlags(n.Selected),
 				latency,
-				formatRatio(n.UpRatio),
-				formatAgo(n.AliveSince),
-				formatAgo(n.LastFailAt),
+				up,
+				withChecks(formatAgo(n.AliveSince), n.AliveSince, n.ChecksSinceAlive),
+				withChecks(formatAgo(n.LastFailAt), n.LastFailAt, n.ChecksSinceFail),
 				formatAgo(n.LastCheckAt),
 				formatAgo(n.LastConnFailAt),
 				fmt.Sprintf("%v/%v", n.ActiveConns, n.TotalConns),

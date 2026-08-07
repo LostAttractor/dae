@@ -170,6 +170,63 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	}
 }
 
+func TestRecordNode_CheckCounters(t *testing.T) {
+	key, subtag, name := t.Name()+"\x1fnode", "sub", "node-e"
+	labels := func() prometheus.Labels {
+		return prometheus.Labels{"id": nodeID(key), "subtag": subtag, "dialer": name}
+	}
+	RecordNode(key, subtag, name, true, false) // registration: not a check
+	if avail := GetNode(key); avail.ChecksTotal != 0 {
+		t.Fatalf("registration should not count as check: %+v", avail)
+	}
+
+	RecordNode(key, subtag, name, true, true)
+	RecordNode(key, subtag, name, true, true)
+	avail := GetNode(key)
+	if avail.ChecksTotal != 2 || avail.ChecksFailed != 0 {
+		t.Errorf("want 2/0 checks, got %v/%v", avail.ChecksTotal, avail.ChecksFailed)
+	}
+	if avail.ChecksSinceAlive != 2 {
+		t.Errorf("want ChecksSinceAlive 2, got %v", avail.ChecksSinceAlive)
+	}
+
+	RecordNode(key, subtag, name, false, true)
+	RecordNode(key, subtag, name, false, true)
+	avail = GetNode(key)
+	if avail.ChecksTotal != 4 || avail.ChecksFailed != 2 {
+		t.Errorf("want 4/2 checks, got %v/%v", avail.ChecksTotal, avail.ChecksFailed)
+	}
+	if avail.ChecksSinceFail != 1 {
+		t.Errorf("every failed check resets ChecksSinceFail to 1, got %v", avail.ChecksSinceFail)
+	}
+
+	RecordNode(key, subtag, name, true, true)
+	avail = GetNode(key)
+	if avail.ChecksSinceAlive != 1 {
+		t.Errorf("recovery check resets ChecksSinceAlive to 1, got %v", avail.ChecksSinceAlive)
+	}
+	if avail.ChecksSinceFail != 2 {
+		t.Errorf("want ChecksSinceFail 2 after recovery check, got %v", avail.ChecksSinceFail)
+	}
+	RecordNode(key, subtag, name, true, true)
+	if avail = GetNode(key); avail.ChecksSinceAlive != 2 || avail.ChecksSinceFail != 3 {
+		t.Errorf("want since counters 2/3, got %v/%v", avail.ChecksSinceAlive, avail.ChecksSinceFail)
+	}
+
+	if v := counterValue(common.NodeChecksTotal.With(labels())); v != avail.ChecksTotal {
+		t.Errorf("dae_node_checks_total disagrees: %v", v)
+	}
+	if v := counterValue(common.NodeCheckFailures.With(labels())); v != avail.ChecksFailed {
+		t.Errorf("dae_node_check_failures_total disagrees: %v", v)
+	}
+	if v := int64(gaugeValue(common.NodeChecksSinceAlive.With(labels()))); v != avail.ChecksSinceAlive {
+		t.Errorf("dae_node_checks_since_alive disagrees: %v", v)
+	}
+	if v := int64(gaugeValue(common.NodeChecksSinceFailure.With(labels()))); v != avail.ChecksSinceFail {
+		t.Errorf("dae_node_checks_since_failure disagrees: %v", v)
+	}
+}
+
 func TestRecordReload(t *testing.T) {
 	before := time.Now().Unix()
 	RecordReload()
