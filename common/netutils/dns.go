@@ -73,10 +73,6 @@ func ValidateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16) err
 }
 
 func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
-	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return fmt.Errorf("do not use a server that will redirect, url: %v", url.String())
-	}
 	data, err := msg.Pack()
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
@@ -101,6 +97,9 @@ func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected DoH response status: %v", resp.Status)
+	}
 	buf, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
