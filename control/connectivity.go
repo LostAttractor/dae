@@ -15,10 +15,12 @@ import (
 const (
 	// Values stored in outbound_connectivity_map. They encode both the
 	// group's actual connectivity and the action for an unannotated rule.
-	outboundConnectivityAlive uint32 = iota
-	outboundConnectivityNoAliveDirect
-	outboundConnectivityNoAliveBlock
-	outboundConnectivityNoAliveTrySniff
+	// Keep the explicit values in sync with enum outbound_connectivity_state
+	// in control/kern/tproxy.c: this map is a Go/eBPF ABI boundary.
+	outboundConnectivityAlive           uint32 = 0
+	outboundConnectivityNoAliveDirect   uint32 = 1
+	outboundConnectivityNoAliveBlock    uint32 = 2
+	outboundConnectivityNoAliveTrySniff uint32 = 3
 )
 
 func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) uint32 {
@@ -28,7 +30,14 @@ func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConne
 	if noConnectivityTrySniff {
 		return outboundConnectivityNoAliveTrySniff
 	}
-	return uint32(noConnectivityOutbound) + outboundConnectivityNoAliveDirect
+	switch noConnectivityOutbound {
+	case consts.OutboundDirect:
+		return outboundConnectivityNoAliveDirect
+	case consts.OutboundBlock:
+		return outboundConnectivityNoAliveBlock
+	default:
+		panic("invalid no-connectivity outbound")
+	}
 }
 
 func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *common.NetworkType) {

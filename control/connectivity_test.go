@@ -53,3 +53,12 @@ func TestEncodeOutboundConnectivity(t *testing.T) {
 		})
 	}
 }
+
+func TestEncodeOutboundConnectivityRejectsInvalidFallback(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected invalid no-connectivity outbound to panic")
+		}
+	}()
+	encodeOutboundConnectivity(false, false, consts.OutboundUserDefinedMin)
+}
