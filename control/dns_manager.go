@@ -53,11 +53,9 @@ func NewDnsManager(conn net.Conn, stream bool) *DnsManager {
 }
 
 func (m *DnsManager) run() error {
-	data := pool.GetBuffer(consts.EthernetMtu)
-	defer pool.PutBuffer(data)
 	for {
-		var err error
-		if data, err = m.read(); err != nil {
+		data, err := m.read()
+		if err != nil {
 			m.Close()
 			return err
 		}
