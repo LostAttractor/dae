@@ -34,6 +34,8 @@ type Dialer struct {
 	*GlobalOption
 	netproxy.Dialer
 	*Property
+	statsKey string
+	statsID  string
 
 	needAliveState bool
 	alive          bool
@@ -103,6 +105,10 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 
 // NewDialer is for register in general.
 func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, needAliveState bool) *Dialer {
+	return newDialer(dialer, option, property, needAliveState, "")
+}
+
+func newDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, needAliveState bool, statsScope string) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption:           option,
@@ -117,6 +123,7 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 		ctx:                    ctx,
 		cancel:                 cancel,
 	}
+	d.setStatsScope(statsScope)
 	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
@@ -126,15 +133,28 @@ func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 	return d
 }
 
+func makeStatsKey(property *Property, scope string) string {
+	id := property.Link
+	if id == "" {
+		id = property.Protocol + "://" + property.Address
+	}
+	key := property.SubscriptionTag + "\x1f" + id
+	if scope != "" {
+		key += "\x1f" + scope
+	}
+	return key
+}
+
+func (d *Dialer) setStatsScope(scope string) {
+	d.statsKey = makeStatsKey(d.Property, scope)
+	d.statsID = stats.NodeID(d.statsKey)
+}
+
 // StatsKey returns the process-lifetime identity of the node backing this
 // dialer. It is stable across control-plane reloads.
-func (d *Dialer) StatsKey() string {
-	id := d.Property.Link
-	if id == "" {
-		id = d.Property.Protocol + "://" + d.Property.Address
-	}
-	return d.Property.SubscriptionTag + "\x1f" + id
-}
+func (d *Dialer) StatsKey() string { return d.statsKey }
+
+func (d *Dialer) StatsID() string { return d.statsID }
 
 func (d *Dialer) NeedAliveState() bool {
 	return d.needAliveState
@@ -202,6 +222,12 @@ func (d *Dialer) CheckAsync() bool {
 
 func (d *Dialer) Clone() *Dialer {
 	return NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState)
+}
+
+// CloneForStatsScope gives a group-specific checker its own availability
+// identity. This prevents override groups from merging independent samples.
+func (d *Dialer) CloneForStatsScope(scope string) *Dialer {
+	return newDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState, scope)
 }
 
 func (d *Dialer) Close() error {

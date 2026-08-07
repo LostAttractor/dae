@@ -69,6 +69,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	}
 
 	labels := prometheus.Labels{
+		"id":       dialOption.Dialer.StatsID(),
 		"outbound": dialOption.Outbound.Name,
 		"subtag":   dialOption.Dialer.Property.SubscriptionTag,
 		"dialer":   dialOption.Dialer.Name,

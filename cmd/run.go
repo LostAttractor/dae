@@ -144,7 +144,46 @@ var (
 // writeReloadProgress reports the current reload step through the signal
 // progress file, so `dae reload` can display it to the user.
 func writeReloadProgress(format string, args ...any) {
-	_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadProcessing}, []byte("\n"+fmt.Sprintf(format, args...))...), 0644)
+	writeReloadState(consts.ReloadProcessing, fmt.Sprintf(format, args...))
+}
+
+func writeReloadState(code byte, content string) {
+	data := []byte{code}
+	if content != "" {
+		data = append(data, []byte("\n"+content)...)
+	}
+	if err := writeFileAtomic(SignalProgressFilePath, data, 0644); err != nil {
+		std.Warnf("Failed to update reload progress: %v", err)
+	}
+}
+
+// writeFileAtomic prevents readers from observing a partially-written
+// progress record while the daemon and CLI communicate through a file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		if err != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err = tmp.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err = tmp.Write(data); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func Run(conf *config.Config, externGeoDataDirs []string) {
@@ -169,27 +208,17 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 			std.Warnf("Failed to start status server: %v", err)
 		}
 	}
-	if statusServer != nil {
-		statusServer.SetControlPlane(c)
-	}
-
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
 	errCh := make(chan error, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGKILL, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
+	startupPlane := c
+	startupPort := conf.Global.TproxyPort
+	readyChan := make(chan bool, 1)
 	go func() {
-		readyChan := make(chan bool, 1)
-		go func() {
-			<-readyChan
-			sdnotify.Ready()
-			if !disablePidFile {
-				_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
-			}
-			_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadDone}, 0644)
-		}()
 		err := control.GetDaeNetns().With(func() error {
-			if listener, err = c.ListenAndServe(readyChan, conf.Global.TproxyPort); err != nil {
+			if listener, err = startupPlane.ListenAndServe(readyChan, startupPort); err != nil {
 				return oops.Wrapf(err, "ListenAndServe")
 			}
 			return nil
@@ -205,8 +234,26 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	// a deferred exit(c) would capture the startup plane, closing the retired
 	// plane a second time while the final, bpf-owning plane is never closed.
 	defer func() { exit(c) }()
+	select {
+	case ready := <-readyChan:
+		if !ready {
+			std.Errorf("%+v", <-errCh)
+			return
+		}
+	case startupErr := <-errCh:
+		std.Errorf("%+v", startupErr)
+		return
+	}
+	if statusServer != nil {
+		statusServer.SetControlPlane(startupPlane)
+	}
+	sdnotify.Ready()
+	if !disablePidFile {
+		_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
+	}
+	writeReloadState(consts.ReloadDone, "")
 
-	reloadingErr := error(nil)
+	pendingReload := false
 	isSuspend := false
 	abortConnections := false
 loop:
@@ -229,18 +276,34 @@ loop:
 						sigs <- nil
 					}
 				}()
-				<-readyChan
-				sdnotify.Ready()
-				if reloadingErr == nil {
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadDone}, []byte("\nOK")...), 0644)
-				} else {
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+reloadingErr.Error())...), 0644)
+				if ready := <-readyChan; !ready {
+					writeReloadState(consts.ReloadError, "failed to start the new control plane listener")
+					break loop
 				}
+				sdnotify.Ready()
+				if pendingReload {
+					startPprofServer(conf.Global.PprofPort)
+					startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
+					stats.RecordReload()
+					if statusServer != nil {
+						statusServer.SetControlPlane(c)
+					}
+					pendingReload = false
+				}
+				writeReloadState(consts.ReloadDone, "OK")
 				std.Warnln("[Reload] Finished")
 			case syscall.SIGUSR2:
+				if pendingReload {
+					std.Warnln("[Reload] Ignoring suspend signal until the new control plane starts serving")
+					continue
+				}
 				isSuspend = true
 				fallthrough
 			case syscall.SIGUSR1:
+				if pendingReload {
+					std.Warnln("[Reload] Ignoring reload signal until the new control plane starts serving")
+					continue
+				}
 				// Reload signal.
 				if isSuspend {
 					std.Warnln("[Reload] Received suspend signal; prepare to suspend")
@@ -248,16 +311,14 @@ loop:
 					std.Warnln("[Reload] Received reload signal; prepare to reload")
 				}
 				sdnotify.Reloading()
-				_ = os.WriteFile(SignalProgressFilePath, []byte{consts.ReloadProcessing}, 0644)
-				reloadingErr = nil
+				writeReloadState(consts.ReloadProcessing, "")
 
 				// On failure keep the current control plane running and
 				// report the error through the log and the progress file.
 				reloadFailed := func(step string, err error) {
-					reloadingErr = err
 					std.Errorf("%+v", oops.Wrapf(err, "[Reload] %v; keeping current control plane", step))
 					sdnotify.Ready()
-					_ = os.WriteFile(SignalProgressFilePath, append([]byte{consts.ReloadError}, []byte("\n"+err.Error())...), 0644)
+					writeReloadState(consts.ReloadError, err.Error())
 				}
 
 				// Load new config.
@@ -320,7 +381,12 @@ loop:
 				}
 				std.Warnln("[Reload] Stop old control plane")
 				writeReloadProgress("Switching to the new control plane...")
-				c.Close()
+				if statusServer != nil {
+					statusServer.SetControlPlane(nil)
+				}
+				if closeErr := c.Close(); closeErr != nil {
+					std.Warnf("[Reload] Failed to fully close old control plane: %+v", closeErr)
+				}
 				std.Warnln("[Reload] Stopped old control plane")
 
 				// Phase 2b: commit. The new plane now owns BPF and pushes
@@ -343,13 +409,7 @@ loop:
 				// Swap in the new plane.
 				c = newC
 				conf = newConf
-
-				startPprofServer(conf.Global.PprofPort)
-				startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
-				if statusServer != nil {
-					statusServer.SetControlPlane(c)
-				}
-				stats.RecordReload()
+				pendingReload = true
 			case syscall.SIGHUP:
 				// Ignore.
 				continue

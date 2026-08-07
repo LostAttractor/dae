@@ -26,14 +26,15 @@ import (
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show the status of the running dae daemon.",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
 		internal.AutoSu()
 		snapshot, err := fetchStatus()
 		if err != nil {
-			fmt.Println("Failed to get status:", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to get status: %w", err)
 		}
 		printStatus(snapshot)
+		return nil
 	},
 }
 
@@ -103,7 +104,21 @@ func formatRatio(ratio float64) string {
 	return fmt.Sprintf("%.1f%%", ratio*100)
 }
 
-var colorsEnabled = term.IsTerminal(int(os.Stdout.Fd()))
+func shouldEnableColors() bool {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
+	forceColor := os.Getenv("FORCE_COLOR")
+	if forceColor != "" && forceColor != "0" && forceColor != "false" {
+		return true
+	}
+	if noColor := os.Getenv("NO_COLOR"); noColor != "" && noColor != "0" {
+		return false
+	}
+	return os.Getenv("TERM") != "dumb"
+}
+
+var colorsEnabled = shouldEnableColors()
 
 const (
 	avgLatencyWindowChecks = 10
@@ -117,7 +132,7 @@ func colorize(s string, colors ...text.Color) string {
 	if !colorsEnabled {
 		return s
 	}
-	return text.Colors(colors).Sprint(s)
+	return text.Escape(s, text.Colors(colors).EscapeSeq())
 }
 
 func colorAlive(alive bool) string {

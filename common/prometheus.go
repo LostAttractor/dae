@@ -58,7 +58,7 @@ var (
 // init so that the collectors are never nil (e.g., in tests that do not build
 // a control plane).
 func newMetrics() {
-	labels := []string{"outbound", "subtag", "dialer", "network"}
+	labels := []string{"id", "outbound", "subtag", "dialer", "network"}
 	ActiveConnections = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dae_active_connections",
@@ -233,20 +233,9 @@ func init() {
 }
 
 func InitPrometheus(registry *prometheus.Registry) {
-	// Drop stale series from a previous control plane (reload), then
-	// register. Only periodically-overwritten gauges are reset here;
-	// connection gauges, counters and histograms keep process-lifetime
-	// values because what they measure survives reloads, and resetting
-	// them would desync the metric from reality (e.g. ActiveConnections
-	// going negative when a pre-reload connection closes).
-	for _, vec := range []*prometheus.GaugeVec{
-		CheckLatency,
-		CheckMovingLatency,
-		CheckSelectLatency,
-		DialerSelectIndex,
-	} {
-		vec.Reset()
-	}
+	// Building a candidate control plane must not mutate process-global
+	// metrics: the candidate may fail validation while the current plane is
+	// still serving. Reload-scoped gauges are reset later, during Activate.
 	for _, c := range []prometheus.Collector{
 		// registry.MustRegister(CoreIpDomainBitmap)
 		// registry.MustRegister(DeadlineTimers)
@@ -278,5 +267,19 @@ func InitPrometheus(registry *prometheus.Registry) {
 		// registry.MustRegister(VmRssKb)
 	} {
 		registry.MustRegister(c)
+	}
+}
+
+// ResetReloadMetrics drops gauges that the newly activated health-check
+// loops will repopulate. Connection gauges, counters and histograms retain
+// process-lifetime values because active connections can outlive a reload.
+func ResetReloadMetrics() {
+	for _, vec := range []*prometheus.GaugeVec{
+		CheckLatency,
+		CheckMovingLatency,
+		CheckSelectLatency,
+		DialerSelectIndex,
+	} {
+		vec.Reset()
 	}
 }

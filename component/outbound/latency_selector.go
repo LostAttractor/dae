@@ -190,6 +190,7 @@ func (s *LatencyBasedSelector) logCheckLatency(aliveDialers []*dialer.Dialer, di
 		return
 	}
 	labels := prometheus.Labels{
+		"id":       dialer.StatsID(),
 		"outbound": s.dialerGroup.Name,
 		"subtag":   dialer.Property.SubscriptionTag,
 		"dialer":   dialer.Name,
@@ -213,6 +214,7 @@ func (s *LatencyBasedSelector) logCheckLatency(aliveDialers []*dialer.Dialer, di
 	}
 
 	for i, d := range aliveDialers {
+		labels["id"] = d.StatsID()
 		labels["subtag"] = d.Property.SubscriptionTag
 		labels["dialer"] = d.Name
 		common.DialerSelectIndex.With(labels).Set(float64(i))
