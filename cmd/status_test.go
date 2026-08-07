@@ -51,7 +51,7 @@ func TestTableUsageRow(t *testing.T) {
 		}
 	}
 
-	soft := tableUsageRow(control.TableUsage{Name: "dns-cache", Used: 65536, Limit: 32768, Soft: true})
+	soft := tableUsageRow(control.TableUsage{Name: "domain-verify", Used: 65536, Limit: 32768, Soft: true})
 	if got := soft[2].(string); got != "32768 (soft)" {
 		t.Errorf("soft limit cell = %q, want %q", got, "32768 (soft)")
 	}

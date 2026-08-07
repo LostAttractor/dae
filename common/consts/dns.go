@@ -30,7 +30,7 @@ const (
 	// buffer must hold. EDNS(0) (RFC 6891) lets a requestor advertise a UDP
 	// payload size of up to 65535, and 4096 is a common advertisement; a
 	// link-MTU-sized buffer would silently truncate such datagrams.
-	MaxDnsMessageSize = 1 << 16
+	MaxDnsMessageSize = 1<<16 - 1
 )
 
 func (i DnsRequestOutboundIndex) String() string {
