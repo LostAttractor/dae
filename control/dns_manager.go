@@ -188,55 +188,84 @@ func (m *DnsManager) Resolve(msg *dnsmessage.Msg) error {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
 
-	buf := pool.GetBytesBuffer()
-	defer pool.PutBytesBuffer(buf)
-	if m.stream {
-		binary.Write(buf, binary.BigEndian, uint16(len(data)))
-	}
-	buf.Write(data)
-
 	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 	defer cancel()
 
 	errCh := make(chan error, 1)
-	go func() {
-		for i := 0; i < consts.DefaultDNSRetryCount; i++ {
-			_, err := m.conn.Write(buf.Bytes())
-			if err != nil {
-				errCh <- err
-				return
+	var streamWriteCh chan error
+	if m.stream {
+		// A stream write either lands or the connection is broken; there is
+		// nothing to retransmit (and re-sending the same transaction ID on a
+		// live stream is not legal pipelining anyway, RFC 7766 section 6.2.1).
+		payload := make([]byte, 2+len(data))
+		binary.BigEndian.PutUint16(payload[:2], uint16(len(data)))
+		copy(payload[2:], data)
+		streamWriteCh = make(chan error, 1)
+		go func() {
+			n, err := m.conn.Write(payload)
+			if err == nil && n != len(payload) {
+				err = io.ErrShortWrite
 			}
-			select {
-			case <-m.ctx.Done():
-				return
-			case <-ctx.Done():
-				// Success received
-				return
-			case <-time.After(consts.DefaultDNSRetryInterval):
+			streamWriteCh <- err
+		}()
+	} else {
+		// The retry goroutine owns the packed payload for its whole lifetime;
+		// a plain allocation cannot race a pooled buffer handed out again
+		// while a retry is still writing.
+		go func() {
+			for i := 0; i < consts.DefaultDNSRetryCount; i++ {
+				if _, err := m.conn.Write(data); err != nil {
+					errCh <- err
+					return
+				}
+				if i+1 == consts.DefaultDNSRetryCount {
+					return
+				}
+				select {
+				case <-m.ctx.Done():
+					return
+				case <-ctx.Done():
+					// Success received
+					return
+				case <-time.After(consts.DefaultDNSRetryInterval):
+				}
 			}
-		}
-	}()
+		}()
+	}
 
-	select {
-	case <-m.ctx.Done():
-		return net.ErrClosed
-	case <-ctx.Done():
-		// Report a real timeout (Timeout()==true) so callers can tell an
-		// unresponsive upstream apart from a dead dialer; net.ErrClosed
-		// would be misclassified as the dialer's fault.
-		return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
-	case err := <-errCh:
-		return err
-	case recvMsg := <-pending.ch:
-		// feed() already guarantees the question matches; reaching this branch
-		// with a mismatched question would indicate a bug in DnsManager itself.
-		if len(recvMsg.Question) == 0 ||
-			msg.Question[0].Name != recvMsg.Question[0].Name ||
-			msg.Question[0].Qtype != recvMsg.Question[0].Qtype {
-			panic(fmt.Sprintf("DNSManager: feed delivered a mismatched response: got %v, expected %v %v",
-				recvMsg.Question, msg.Question[0].Name, msg.Question[0].Qtype))
+	for {
+		select {
+		case <-m.ctx.Done():
+			return net.ErrClosed
+		case <-ctx.Done():
+			// If a stream write is still outstanding, its framing state is
+			// unknown. Close the manager so Close unblocks Write and no later
+			// query reuses a potentially partial frame.
+			if streamWriteCh != nil {
+				_ = m.Close()
+			}
+			// Report a real timeout (Timeout()==true) so callers can tell an
+			// unresponsive upstream apart from a dead dialer.
+			return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
+		case err := <-streamWriteCh:
+			streamWriteCh = nil
+			if err != nil {
+				_ = m.Close()
+				return oops.Wrapf(err, "failed to write DNS req")
+			}
+		case err := <-errCh:
+			return err
+		case recvMsg := <-pending.ch:
+			// feed() already guarantees the question matches; reaching this branch
+			// with a mismatched question would indicate a bug in DnsManager itself.
+			if len(recvMsg.Question) == 0 ||
+				msg.Question[0].Name != recvMsg.Question[0].Name ||
+				msg.Question[0].Qtype != recvMsg.Question[0].Qtype {
+				panic(fmt.Sprintf("DNSManager: feed delivered a mismatched response: got %v, expected %v %v",
+					recvMsg.Question, msg.Question[0].Name, msg.Question[0].Qtype))
+			}
+			*msg = *recvMsg
+			return nil
 		}
-		*msg = *recvMsg
-		return nil
 	}
 }
