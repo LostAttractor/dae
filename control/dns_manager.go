@@ -33,16 +33,18 @@ type DnsManager struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 
-	stream bool
+	stream  bool
+	timeout time.Duration
 }
 
 func NewDnsManager(conn net.Conn, stream bool) *DnsManager {
 	ctx, cancel := context.WithCancel(context.TODO())
 	m := &DnsManager{
-		conn:   conn,
-		ctx:    ctx,
-		cancel: cancel,
-		stream: stream,
+		conn:    conn,
+		ctx:     ctx,
+		cancel:  cancel,
+		stream:  stream,
+		timeout: consts.DefaultDNSTimeout,
 	}
 	go func() {
 		if err := m.run(); err != nil {
@@ -183,7 +185,7 @@ func (m *DnsManager) Resolve(msg *dnsmessage.Msg) error {
 	}
 	buf.Write(data)
 
-	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDNSTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), m.timeout)
 	defer cancel()
 
 	errCh := make(chan error, 1)
@@ -209,7 +211,10 @@ func (m *DnsManager) Resolve(msg *dnsmessage.Msg) error {
 	case <-m.ctx.Done():
 		return net.ErrClosed
 	case <-ctx.Done():
-		return net.ErrClosed
+		// Report a real timeout (Timeout()==true) so callers can tell an
+		// unresponsive upstream apart from a dead dialer; net.ErrClosed
+		// would be misclassified as the dialer's fault.
+		return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
 	case err := <-errCh:
 		return err
 	case recvMsg := <-pending.ch:
