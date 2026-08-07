@@ -213,8 +213,8 @@ func TestRoutingMatcherSkipWhileNoalive(t *testing.T) {
 }
 
 func TestRoutingMatcherSkipWhileNoaliveOnDirect(t *testing.T) {
-	// skip_while_noalive on direct/block must be a no-op: they do not
-	// participate in connectivity checks and are always usable.
+	// The builder rejects this configuration. Keep manually constructed
+	// matchers defensive as direct/block have no connectivity state.
 	usable := false
 	m := &RoutingMatcher{
 		rulesMu: new(sync.RWMutex),

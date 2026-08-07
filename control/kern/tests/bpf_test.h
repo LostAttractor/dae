@@ -215,10 +215,9 @@ set_routing_fallback(__u8 outbound, bool must, const void *key)
 	set_outbound_connectivity(outbound);
 }
 static __always_inline void
-set_outbound_connectivity_dead(__u8 outbound)
+set_outbound_connectivity_dead_try_sniff(__u8 outbound)
 {
-	/* 2 is the "block" value: the group has no connectivity. */
-	__u32 dead = 2;
+	__u32 dead = OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF;
 
 	struct outbound_connectivity_query query = {
 		.outbound = outbound,

@@ -60,15 +60,12 @@ type controlPlaneCore struct {
 	close  context.CancelFunc
 	ifmgr  *component.InterfaceManager
 
-	// outboundConnectivityMap is the in-memory mirror of the eBPF
-	// outbound_connectivity_map, indexed by [outbound][NetworkTypeToIndex].
-	// It is written by outboundAliveChangeCallback — the same writer that
-	// maintains the kernel map — and read by the userspace routing matcher
-	// to evaluate skip_while_noalive rules without BPF map lookups in the
-	// hot path. It stores "map value == 0" as a bool rather than the raw
-	// map value: the kernel treats a missing entry as "not ready / not
-	// usable", and a zero-valued bool (false) preserves exactly that
-	// semantics, whereas a zero-valued uint32 (0) would read as "alive".
+	// outboundConnectivityMap stores actual outbound liveness, indexed by
+	// [outbound][NetworkTypeToIndex]. It is written by the same callback that
+	// maintains the eBPF outbound_connectivity_map and read by the userspace
+	// routing matcher to evaluate skip_while_noalive rules without BPF map
+	// lookups in the hot path. A zero-valued bool also represents a state that
+	// has not been reported yet, which is conservatively treated as unusable.
 	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][4]atomic.Bool
 }
 
