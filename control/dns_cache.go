@@ -90,12 +90,13 @@ func (c *commonDnsCache[K]) Get(cacheKey K) []*DnsCache {
 }
 
 func liveDnsCaches(caches []*DnsCache, now time.Time) []*DnsCache {
-	live := make([]*DnsCache, 0, len(caches))
+	live := caches[:0]
 	for _, cache := range caches {
 		if cache.Answer != nil && cache.Deadline.After(now) {
 			live = append(live, cache)
 		}
 	}
+	clear(caches[len(live):])
 	return live
 }
 
@@ -124,21 +125,17 @@ func (c *commonDnsCache[K]) MaxSize() int {
 
 // gc must be called with c.mu held.
 func (c *commonDnsCache[K]) gc() {
-	lruElement := c.lruList.Back()
-	now := time.Now()
+	// Enforce the hard cap in O(1) per eviction. Expired answers are compacted
+	// when their key is read or updated; scanning every key here would turn
+	// each post-cap insertion into an O(maxSize) operation under the cache lock.
 	for c.lruList.Len() > c.maxSize {
-		if lruElement == nil {
+		elem := c.lruList.Back()
+		if elem == nil {
 			return
 		}
-		entry := lruElement.Value.(*cacheEntry[K])
-		// Save the previous element before removing current one
-		prevElement := lruElement.Prev()
-		entry.value = liveDnsCaches(entry.value, now)
-		if len(entry.value) == 0 {
-			delete(c.cache, entry.key)
-			c.lruList.Remove(lruElement)
-		}
-		lruElement = prevElement
+		entry := elem.Value.(*cacheEntry[K])
+		delete(c.cache, entry.key)
+		c.lruList.Remove(elem)
 	}
 }
 
@@ -202,9 +199,7 @@ func (c *commonDnsCache[K]) ReplaceDeadlines(key K, answers []dnsmessage.RR, dea
 	if len(answers) != len(deadlines) {
 		panic("DNS answer/deadline length mismatch")
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	now := time.Now()
 	values := make([]*DnsCache, 0, len(answers))
 	for i, answer := range answers {
 		if answer == nil {
@@ -245,6 +240,10 @@ func (c *commonDnsCache[K]) ReplaceDeadlines(key K, answers []dnsmessage.RR, dea
 			}
 		}
 	}
+	values = liveDnsCaches(values, now)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if elem, ok := c.cache[key]; ok {
 		if len(values) == 0 {

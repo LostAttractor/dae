@@ -103,7 +103,7 @@ func TestCommonDnsCache_LruEviction(t *testing.T) {
 	expired := time.Now().Add(-time.Minute)
 	future := time.Now().Add(time.Minute)
 
-	// gc only evicts entries whose answers all timed out.
+	// The expired entry is also the least recently used entry.
 	c.UpdateDeadline("key1", testARecord("a.com.", "1.1.1.1"), expired)
 	c.UpdateDeadline("key2", testARecord("b.com.", "2.2.2.2"), future)
 	c.UpdateDeadline("key3", testARecord("c.com.", "3.3.3.3"), future)
@@ -113,6 +113,58 @@ func TestCommonDnsCache_LruEviction(t *testing.T) {
 	}
 	if c.Get("key2") == nil || c.Get("key3") == nil {
 		t.Errorf("fresh entries should be kept")
+	}
+}
+
+func TestCommonDnsCache_LruHardCapEvictsLive(t *testing.T) {
+	c := newCommonDnsCache[string](2)
+	future := time.Now().Add(time.Minute)
+
+	// All entries are live; the oldest must still be evicted once the cache
+	// grows past maxSize.
+	c.UpdateDeadline("key1", testARecord("a.com.", "1.1.1.1"), future)
+	c.UpdateDeadline("key2", testARecord("b.com.", "2.2.2.2"), future)
+	c.UpdateDeadline("key3", testARecord("c.com.", "3.3.3.3"), future)
+
+	if c.Len() != 2 {
+		t.Fatalf("cache should be capped at maxSize: got %v entries", c.Len())
+	}
+	if c.Get("key1") != nil {
+		t.Errorf("least-recently-used live entry should be evicted")
+	}
+	if c.Get("key2") == nil || c.Get("key3") == nil {
+		t.Errorf("recent live entries should be kept")
+	}
+}
+
+func TestCommonDnsCache_HardCapDoesNotCompactEveryLiveEntry(t *testing.T) {
+	c := newCommonDnsCache[string](2)
+	future := time.Now().Add(time.Minute)
+	c.UpdateDeadline("key1", testARecord("a.com.", "1.1.1.1"), future)
+	c.UpdateDeadline("key2", testARecord("b.com.", "2.2.2.2"), future)
+
+	entry := c.cache["key2"].Value.(*cacheEntry[string])
+	valueBefore := &entry.value[0]
+	c.UpdateDeadline("key3", testARecord("c.com.", "3.3.3.3"), future)
+
+	entry = c.cache["key2"].Value.(*cacheEntry[string])
+	if valueAfter := &entry.value[0]; valueAfter != valueBefore {
+		t.Fatal("hard-cap eviction compacted an unrelated live entry")
+	}
+}
+
+func TestCommonDnsCache_ExpiredReplacementDoesNotEvictLiveEntry(t *testing.T) {
+	c := newCommonDnsCache[string](2)
+	future := time.Now().Add(time.Minute)
+	c.ReplaceDeadline("key1", []dnsmessage.RR{testARecord("a.com.", "1.1.1.1")}, future)
+	c.ReplaceDeadline("key2", []dnsmessage.RR{testARecord("b.com.", "2.2.2.2")}, future)
+	c.ReplaceDeadline("key3", []dnsmessage.RR{testARecord("c.com.", "3.3.3.3")}, time.Now())
+
+	if c.Len() != 2 || c.Get("key1") == nil || c.Get("key2") == nil {
+		t.Fatalf("expired replacement evicted a live entry: len=%d", c.Len())
+	}
+	if c.Get("key3") != nil {
+		t.Fatal("expired replacement should not occupy the cache")
 	}
 }
 
@@ -199,16 +251,15 @@ func TestCommonDnsCache_ReplaceRRSetDropsHistoricalAnswers(t *testing.T) {
 		t.Fatalf("cache should contain exactly the current RRset: %v", caches)
 	}
 
-	// Even a hot fixed_ttl=0 key remains bounded by its current RRset.
+	// A fixed_ttl=0 replacement removes the old RRset and never occupies the cache.
 	expired := time.Now()
 	for i := 1; i <= 100; i++ {
 		c.ReplaceDeadline("key1", []dnsmessage.RR{
 			testARecord("example.com.", fmt.Sprintf("10.0.0.%d", i)),
 		}, expired)
 	}
-	entry := c.cache["key1"].Value.(*cacheEntry[string])
-	if len(entry.value) != 1 {
-		t.Fatalf("rotating zero-TTL answers must not accumulate: %v", len(entry.value))
+	if _, ok := c.cache["key1"]; ok {
+		t.Fatal("rotating zero-TTL answers must not remain in storage")
 	}
 }
 

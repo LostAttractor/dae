@@ -273,7 +273,6 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			Name:  "dns-cache",
 			Used:  c.dnsController.dnsCache.Len(),
 			Limit: c.dnsController.dnsCache.MaxSize(),
-			Soft:  true,
 		})
 	}
 	if c.core != nil && c.core.domainRegistry != nil {
