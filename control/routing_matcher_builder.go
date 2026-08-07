@@ -67,6 +67,13 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 		return nil, err
 	}
 
+	// The kernel routing_map is a fixed-size ARRAY and both the eBPF program
+	// and the userspace matcher index match sets by position; overflowing it
+	// must be a configuration error, not a runtime panic.
+	if len(b.rules) > consts.MaxMatchSetLen {
+		return nil, fmt.Errorf("too many routing match sets: %v > %v (MaxMatchSetLen); please reduce routing rules (e.g. merge domains into a routing.dls file)", len(b.rules), consts.MaxMatchSetLen)
+	}
+
 	// Validate skip_while_noalive usage. The flag is carried by every match
 	// set of a rule but only takes effect on the rule tail.
 	for i := range b.rules {
