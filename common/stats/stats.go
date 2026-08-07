@@ -164,9 +164,10 @@ func (a *availability) recordConnFail(now time.Time) {
 	setGaugeTime(a.checks.lastConnFail, now)
 }
 
-func (a *availability) snapshot(now time.Time) Availability {
+func (a *availability) snapshot() Availability {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := time.Now()
 	if a.firstSeen.IsZero() {
 		return Availability{}
 	}
@@ -250,7 +251,7 @@ func GetNode(key string) Availability {
 	if !ok {
 		return Availability{}
 	}
-	return v.(*availability).snapshot(time.Now())
+	return v.(*availability).snapshot()
 }
 
 var groups sync.Map // group name -> *[4]availability
@@ -269,9 +270,17 @@ func newGroupAvailability(name string) *[4]availability {
 	return &arr
 }
 
+func groupAvailability(name string) *[4]availability {
+	if v, ok := groups.Load(name); ok {
+		return v.(*[4]availability)
+	}
+	a := newGroupAvailability(name)
+	v, _ := groups.LoadOrStore(name, a)
+	return v.(*[4]availability)
+}
+
 func RecordGroup(name string, networkIndex int, alive bool) {
-	v, _ := groups.LoadOrStore(name, newGroupAvailability(name))
-	v.(*[4]availability)[networkIndex].record(alive, false, time.Now())
+	groupAvailability(name)[networkIndex].record(alive, false, time.Now())
 }
 
 func GetGroup(name string, networkIndex int) Availability {
@@ -279,5 +288,5 @@ func GetGroup(name string, networkIndex int) Availability {
 	if !ok {
 		return Availability{}
 	}
-	return v.(*[4]availability)[networkIndex].snapshot(time.Now())
+	return v.(*[4]availability)[networkIndex].snapshot()
 }

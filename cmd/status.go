@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -18,8 +17,10 @@ import (
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/control"
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
-	"golang.org/x/text/width"
+	"golang.org/x/term"
 )
 
 var statusCmd = &cobra.Command{
@@ -102,11 +103,62 @@ func formatRatio(ratio float64) string {
 	return fmt.Sprintf("%.1f%%", ratio*100)
 }
 
-func boolYesNo(b bool) string {
-	if b {
-		return "yes"
+var colorsEnabled = term.IsTerminal(int(os.Stdout.Fd()))
+
+const (
+	avgLatencyWindowChecks = 10
+	healthyUpRatio         = 0.99
+	degradedUpRatio        = 0.9
+	fastLatencyMs          = 200
+	slowLatencyMs          = 500
+)
+
+func colorize(s string, colors ...text.Color) string {
+	if !colorsEnabled {
+		return s
 	}
-	return "no"
+	return text.Colors(colors).Sprint(s)
+}
+
+func colorAlive(alive bool) string {
+	if alive {
+		return colorize("yes", text.FgGreen)
+	}
+	return colorize("no", text.FgRed)
+}
+
+func colorSelected(s string, selected bool) string {
+	if !selected {
+		return s
+	}
+	return colorize(s, text.FgCyan)
+}
+
+func colorRatio(ratio float64, s string) string {
+	switch {
+	case ratio >= healthyUpRatio:
+		return colorize(s, text.FgGreen)
+	case ratio >= degradedUpRatio:
+		return colorize(s, text.FgYellow)
+	default:
+		return colorize(s, text.FgRed)
+	}
+}
+
+func colorLatency(latencyMs float64, s string) string {
+	switch {
+	case latencyMs < fastLatencyMs:
+		return colorize(s, text.FgGreen)
+	case latencyMs < slowLatencyMs:
+		return colorize(s, text.FgYellow)
+	default:
+		return colorize(s, text.FgRed)
+	}
+}
+
+// A recent failure leaves a timeout penalty in the avg10 latency window.
+func hasRecentFailure(lastFailAt *time.Time, checksSinceFail int64) bool {
+	return lastFailAt != nil && checksSinceFail > 0 && checksSinceFail <= avgLatencyWindowChecks
 }
 
 var networkNames = [4]string{"tcp4", "tcp6", "udp4", "udp6"}
@@ -131,136 +183,147 @@ func emptyDash(s string) string {
 	return s
 }
 
-// withChecks appends a check counter to a relative timestamp, telling how
-// many checks (i.e. latency samples) have run since that moment.
-func withChecks(s string, t *time.Time, checks int64) string {
+func formatAgoWithChecks(t *time.Time, checks int64) string {
+	s := formatAgo(t)
 	if t == nil || checks <= 0 {
 		return s
 	}
-	return fmt.Sprintf("%v (+%v chk)", s, checks)
+	return fmt.Sprintf("%s (+%d chk)", s, checks)
 }
 
-// displayWidth returns the number of terminal cells occupied by s, treating
-// East Asian wide/fullwidth runes as two cells.
-func displayWidth(s string) int {
-	w := 0
-	for _, r := range s {
-		switch width.LookupRune(r).Kind() {
-		case width.EastAsianFullwidth, width.EastAsianWide:
-			w += 2
-		default:
-			w++
+func formatConnCounts(active, total int64) string {
+	return fmt.Sprintf("%d/%d", active, total)
+}
+
+// printTable renders a borderless, left-aligned table with two-space column
+// gutters. go-pretty measures cell widths ANSI- and CJK-aware, so colored
+// cells and East Asian wide runes stay aligned.
+func printTable(header table.Row, rows []table.Row) {
+	t := table.NewWriter()
+	style := table.StyleDefault
+	style.Options.DrawBorder = false
+	style.Options.SeparateHeader = false
+	style.Options.SeparateColumns = false
+	style.Box.PaddingLeft = ""
+	style.Box.PaddingRight = "  "
+	style.Format.Header = text.FormatDefault
+	t.SetStyle(style)
+	t.AppendHeader(header)
+	t.AppendRows(rows)
+	for _, line := range strings.Split(t.Render(), "\n") {
+		fmt.Println(strings.TrimRight(line, " "))
+	}
+}
+
+func networkStatusRow(status control.NetworkStatus) table.Row {
+	selected := emptyDash(status.Selected)
+	return table.Row{
+		status.Network,
+		colorAlive(status.Alive),
+		colorSelected(selected, status.Selected != ""),
+		colorRatio(status.UpRatio, formatRatio(status.UpRatio)),
+		formatAgo(status.AliveSince),
+		formatAgo(status.LastFailAt),
+		formatConnCounts(status.ActiveConns, status.TotalConns),
+	}
+}
+
+func nodeStatusRow(status control.NodeStatus) table.Row {
+	selected := status.Selected != [4]bool{}
+	selectedNetworks := networkFlags(status.Selected)
+	recentFailure := hasRecentFailure(status.LastFailAt, status.ChecksSinceFail)
+
+	latency := "-"
+	if status.HasLatency && status.Alive {
+		latency = fmt.Sprintf("%.0f/%.0f/%.0f", status.LastLatencyMs, status.Avg10LatencyMs, status.MovingAvgLatencyMs)
+		if recentFailure {
+			latency = colorize(latency, text.FgHiRed, text.Bold)
+		} else {
+			latency = colorLatency(status.MovingAvgLatencyMs, latency)
 		}
 	}
-	return w
+
+	upRatio := formatRatio(status.UpRatio)
+	if status.ChecksTotal > 0 {
+		upRatio = fmt.Sprintf("%s (%d/%d)", upRatio, status.ChecksFailed, status.ChecksTotal)
+	}
+
+	lastFail := formatAgoWithChecks(status.LastFailAt, status.ChecksSinceFail)
+	if recentFailure {
+		lastFail = colorize(lastFail, text.FgRed)
+	}
+
+	return table.Row{
+		colorSelected(status.Name, selected),
+		emptyDash(status.Subtag),
+		emptyDash(status.Protocol),
+		colorAlive(status.Alive),
+		networkFlags(status.Supported),
+		colorSelected(selectedNetworks, selected),
+		latency,
+		colorRatio(status.UpRatio, upRatio),
+		formatAgoWithChecks(status.AliveSince, status.ChecksSinceAlive),
+		lastFail,
+		formatAgo(status.LastCheckAt),
+		formatAgo(status.LastConnFailAt),
+		formatConnCounts(status.ActiveConns, status.TotalConns),
+	}
 }
 
-func printTable(out io.Writer, rows [][]string) {
-	if len(rows) == 0 {
+func printGroupStatus(group control.GroupStatus) {
+	if group.NoCheck {
+		fmt.Printf("\nGroup '%s' [policy: %s] (no connectivity checks)\n", group.Name, group.Policy)
+		rows := make([]table.Row, 0, len(group.Networks))
+		for _, status := range group.Networks {
+			rows = append(rows, table.Row{
+				status.Network,
+				formatConnCounts(status.ActiveConns, status.TotalConns),
+			})
+		}
+		printTable(table.Row{"NETWORK", "CONNS(A/T)"}, rows)
 		return
 	}
-	cols := 0
-	for _, row := range rows {
-		if len(row) > cols {
-			cols = len(row)
-		}
+
+	fmt.Printf("\nGroup '%s' [policy: %s]\n", group.Name, group.Policy)
+	rows := make([]table.Row, 0, len(group.Networks))
+	for _, status := range group.Networks {
+		rows = append(rows, networkStatusRow(status))
 	}
-	widths := make([]int, cols)
-	for _, row := range rows {
-		for i, cell := range row {
-			if w := displayWidth(cell); w > widths[i] {
-				widths[i] = w
-			}
-		}
+	printTable(table.Row{
+		"NETWORK", "ALIVE", "SELECTED", "UP%", "ALIVE-SINCE", "LAST-FAIL", "CONNS(A/T)",
+	}, rows)
+
+	fmt.Printf("\nNodes of group '%s':\n", group.Name)
+	rows = make([]table.Row, 0, len(group.Nodes))
+	for _, status := range group.Nodes {
+		rows = append(rows, nodeStatusRow(status))
 	}
-	for _, row := range rows {
-		for i, cell := range row {
-			if i > 0 {
-				fmt.Fprint(out, "  ")
-			}
-			fmt.Fprint(out, cell)
-			if i < len(row)-1 {
-				fmt.Fprint(out, strings.Repeat(" ", widths[i]-displayWidth(cell)))
-			}
-		}
-		fmt.Fprintln(out)
-	}
+	printTable(table.Row{
+		"NODE", "SUB", "PROTO", "ALIVE", "SUPPORT", "SELECTED",
+		"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "ALIVE-SINCE",
+		"LAST-FAIL", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)",
+	}, rows)
 }
 
 func printStatus(s *control.StatusSnapshot) {
-	fmt.Printf("Daemon:      %v up %v (since %v)", s.Version, formatUptime(time.Since(s.StartedAt)), s.StartedAt.Local().Format("2006-01-02 15:04:05"))
+	fmt.Printf(
+		"Daemon:      %s up %s (since %s)",
+		s.Version,
+		formatUptime(time.Since(s.StartedAt)),
+		s.StartedAt.Local().Format("2006-01-02 15:04:05"),
+	)
 	if s.LastReloadAt != nil {
-		fmt.Printf(", last reload %v", formatAgo(s.LastReloadAt))
+		fmt.Printf(", last reload %s", formatAgo(s.LastReloadAt))
 	}
 	fmt.Println()
-	var perNet []string
+	perNet := make([]string, len(s.ActiveByNet))
 	for i, n := range s.ActiveByNet {
-		perNet = append(perNet, fmt.Sprintf("%v %v", networkNames[i], n))
+		perNet[i] = fmt.Sprintf("%s %d", networkNames[i], n)
 	}
-	fmt.Printf("Connections: %v active (%v), %v total\n", s.ActiveConns, strings.Join(perNet, ", "), s.TotalConns)
+	fmt.Printf("Connections: %d active (%s), %d total\n", s.ActiveConns, strings.Join(perNet, ", "), s.TotalConns)
 
-	for _, g := range s.Groups {
-		if g.NoCheck {
-			fmt.Printf("\nGroup '%v' [policy: %v] (no connectivity checks)\n", g.Name, g.Policy)
-			rows := [][]string{
-				{"NETWORK", "CONNS(A/T)"},
-			}
-			for _, ns := range g.Networks {
-				rows = append(rows, []string{
-					ns.Network,
-					fmt.Sprintf("%v/%v", ns.ActiveConns, ns.TotalConns),
-				})
-			}
-			printTable(os.Stdout, rows)
-			continue
-		}
-		fmt.Printf("\nGroup '%v' [policy: %v]\n", g.Name, g.Policy)
-		rows := [][]string{
-			{"NETWORK", "ALIVE", "SELECTED", "UP%", "ALIVE-SINCE", "LAST-FAIL", "CONNS(A/T)"},
-		}
-		for _, ns := range g.Networks {
-			rows = append(rows, []string{
-				ns.Network,
-				boolYesNo(ns.Alive),
-				emptyDash(ns.Selected),
-				formatRatio(ns.UpRatio),
-				formatAgo(ns.AliveSince),
-				formatAgo(ns.LastFailAt),
-				fmt.Sprintf("%v/%v", ns.ActiveConns, ns.TotalConns),
-			})
-		}
-		printTable(os.Stdout, rows)
-
-		fmt.Printf("\nNodes of group '%v':\n", g.Name)
-		rows = [][]string{
-			{"NODE", "SUB", "PROTO", "ALIVE", "SUPPORT", "SELECTED", "LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "ALIVE-SINCE", "LAST-FAIL", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)"},
-		}
-		for _, n := range g.Nodes {
-			latency := "-"
-			if n.HasLatency && n.Alive {
-				latency = fmt.Sprintf("%.0f/%.0f/%.0f", n.LastLatencyMs, n.Avg10LatencyMs, n.MovingAvgLatencyMs)
-			}
-			up := formatRatio(n.UpRatio)
-			if n.ChecksTotal > 0 {
-				up = fmt.Sprintf("%v (%v/%v)", up, n.ChecksFailed, n.ChecksTotal)
-			}
-			rows = append(rows, []string{
-				n.Name,
-				emptyDash(n.Subtag),
-				emptyDash(n.Protocol),
-				boolYesNo(n.Alive),
-				networkFlags(n.Supported),
-				networkFlags(n.Selected),
-				latency,
-				up,
-				withChecks(formatAgo(n.AliveSince), n.AliveSince, n.ChecksSinceAlive),
-				withChecks(formatAgo(n.LastFailAt), n.LastFailAt, n.ChecksSinceFail),
-				formatAgo(n.LastCheckAt),
-				formatAgo(n.LastConnFailAt),
-				fmt.Sprintf("%v/%v", n.ActiveConns, n.TotalConns),
-			})
-		}
-		printTable(os.Stdout, rows)
+	for _, group := range s.Groups {
+		printGroupStatus(group)
 	}
 }
 
