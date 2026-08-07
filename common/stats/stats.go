@@ -26,6 +26,10 @@ import (
 
 var ProcessStart = time.Now()
 
+// registryMu serializes identity reconciliation with records and snapshots.
+// Availability itself has a finer-grained lock for normal concurrent updates.
+var registryMu sync.RWMutex
+
 func RecordReload() {
 	common.LastReloadTime.Set(float64(time.Now().Unix()))
 }
@@ -95,6 +99,7 @@ func boolFloat(b bool) float64 {
 // single-value state is stored in the prometheus handles below.
 type availability struct {
 	mu         sync.Mutex
+	labels     prometheus.Labels
 	firstSeen  time.Time // zero until the first record
 	totalUp    time.Duration
 	lastAcc    time.Time // last time totalUp was brought up to date
@@ -200,19 +205,24 @@ func (a *availability) snapshot() Availability {
 // control-plane reloads.
 var nodes sync.Map // key -> *availability
 
-// nodeID is the value of the "id" label of node-level series: a short hash
-// of the node identity, keeping series of same-named nodes apart.
-func nodeID(key string) string {
+// NodeID is the value of the "id" label of node-level series. A 128-bit
+// prefix keeps labels compact while making accidental identity collisions
+// negligible.
+func NodeID(key string) string {
 	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:4])
+	return hex.EncodeToString(sum[:16])
 }
+
+// Kept for package-local tests and older internal call sites.
+func nodeID(key string) string { return NodeID(key) }
 
 func nodeAvailability(key, subtag, name string) *availability {
 	if v, ok := nodes.Load(key); ok {
 		return v.(*availability)
 	}
-	labels := prometheus.Labels{"id": nodeID(key), "subtag": subtag, "dialer": name}
+	labels := prometheus.Labels{"id": NodeID(key), "subtag": subtag, "dialer": name}
 	a := &availability{
+		labels:     labels,
 		alive:      common.NodeAlive.With(labels),
 		aliveSince: common.NodeAliveSince.With(labels),
 		lastFail:   common.NodeLastFailure.With(labels),
@@ -232,6 +242,8 @@ func nodeAvailability(key, subtag, name string) *availability {
 // RecordNode records the state of a node. checked should be true when the
 // state comes from a connectivity check (as opposed to registration).
 func RecordNode(key, subtag, name string, alive, checked bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	nodeAvailability(key, subtag, name).record(alive, checked, time.Now())
 }
 
@@ -239,6 +251,8 @@ func RecordNode(key, subtag, name string, alive, checked bool) {
 // scheduled connectivity checks. It is a no-op for nodes never recorded,
 // which cannot carry traffic anyway.
 func RecordNodeConnFail(key string) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	v, ok := nodes.Load(key)
 	if !ok {
 		return
@@ -247,6 +261,8 @@ func RecordNodeConnFail(key string) {
 }
 
 func GetNode(key string) Availability {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	v, ok := nodes.Load(key)
 	if !ok {
 		return Availability{}
@@ -263,6 +279,7 @@ func newGroupAvailability(name string) *[4]availability {
 			"outbound": name,
 			"network":  common.IndexToNetworkType(i).String(),
 		}
+		arr[i].labels = labels
 		arr[i].alive = common.GroupAlive.With(labels)
 		arr[i].aliveSince = common.GroupAliveSince.With(labels)
 		arr[i].lastFail = common.GroupLastFailure.With(labels)
@@ -280,13 +297,98 @@ func groupAvailability(name string) *[4]availability {
 }
 
 func RecordGroup(name string, networkIndex int, alive bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	groupAvailability(name)[networkIndex].record(alive, false, time.Now())
 }
 
 func GetGroup(name string, networkIndex int) Availability {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	v, ok := groups.Load(name)
 	if !ok {
 		return Availability{}
 	}
 	return v.(*[4]availability)[networkIndex].snapshot()
+}
+
+// NodeIdentity describes an availability identity retained by the currently
+// committed control plane.
+type NodeIdentity struct {
+	Key    string
+	Subtag string
+	Name   string
+}
+
+func sameLabels(a, b prometheus.Labels) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func deleteNodeMetrics(labels prometheus.Labels) {
+	common.NodeAlive.Delete(labels)
+	common.NodeAliveSince.Delete(labels)
+	common.NodeLastFailure.Delete(labels)
+	common.NodeLastCheck.Delete(labels)
+	common.NodeLastConnFailure.Delete(labels)
+	common.NodeChecksTotal.Delete(labels)
+	common.NodeCheckFailures.Delete(labels)
+	common.NodeChecksSinceAlive.Delete(labels)
+	common.NodeChecksSinceFailure.Delete(labels)
+}
+
+func deleteGroupMetrics(group *[4]availability) {
+	for i := range group {
+		labels := group[i].labels
+		common.GroupAlive.Delete(labels)
+		common.GroupAliveSince.Delete(labels)
+		common.GroupLastFailure.Delete(labels)
+	}
+}
+
+// Reconcile removes availability state and prometheus series that do not
+// belong to the newly committed control plane. Retained identities preserve
+// their process-lifetime history across reloads; identities removed and later
+// re-added start a fresh history rather than counting their absence as uptime.
+// Call it only after the retired plane's health-check goroutines have stopped.
+func Reconcile(activeNodes []NodeIdentity, activeGroups []string) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+
+	nodeLabels := make(map[string]prometheus.Labels, len(activeNodes))
+	for _, node := range activeNodes {
+		nodeLabels[node.Key] = prometheus.Labels{
+			"id":     NodeID(node.Key),
+			"subtag": node.Subtag,
+			"dialer": node.Name,
+		}
+	}
+	nodes.Range(func(key, value any) bool {
+		labels, keep := nodeLabels[key.(string)]
+		a := value.(*availability)
+		if !keep || !sameLabels(a.labels, labels) {
+			deleteNodeMetrics(a.labels)
+			nodes.Delete(key)
+		}
+		return true
+	})
+
+	groupNames := make(map[string]struct{}, len(activeGroups))
+	for _, name := range activeGroups {
+		groupNames[name] = struct{}{}
+	}
+	groups.Range(func(key, value any) bool {
+		if _, keep := groupNames[key.(string)]; !keep {
+			deleteGroupMetrics(value.(*[4]availability))
+			groups.Delete(key)
+		}
+		return true
+	})
 }

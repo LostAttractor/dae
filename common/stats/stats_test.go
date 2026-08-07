@@ -6,6 +6,7 @@
 package stats
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -237,4 +238,90 @@ func TestRecordReload(t *testing.T) {
 	if v := gaugeValue(common.LastReloadTime); v != float64(last.Unix()) {
 		t.Errorf("dae_last_reload_timestamp_seconds disagrees with LastReload: %v", v)
 	}
+}
+
+func collectorHasLabelValue(t *testing.T, collector prometheus.Collector, labelName, labelValue string) bool {
+	t.Helper()
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collector)
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == labelName && label.GetValue() == labelValue {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func TestReconcileRetiresRemovedIdentities(t *testing.T) {
+	keepKey := t.Name() + "\x1fkeep"
+	removeKey := t.Name() + "\x1fremove"
+	keepGroup := t.Name() + "-keep-group"
+	removeGroup := t.Name() + "-remove-group"
+
+	RecordNode(keepKey, "sub", "keep", true, true)
+	RecordNode(removeKey, "sub", "remove", true, true)
+	RecordNode(removeKey, "sub", "remove", true, true)
+	RecordGroup(keepGroup, 0, true)
+	RecordGroup(removeGroup, 0, true)
+
+	Reconcile([]NodeIdentity{{Key: keepKey, Subtag: "sub", Name: "keep"}}, []string{keepGroup})
+
+	if avail := GetNode(keepKey); !avail.Seen || avail.ChecksTotal != 1 {
+		t.Fatalf("retained node lost its history: %+v", avail)
+	}
+	if avail := GetNode(removeKey); avail.Seen {
+		t.Fatalf("removed node is still visible: %+v", avail)
+	}
+	if avail := GetGroup(keepGroup, 0); !avail.Seen {
+		t.Fatalf("retained group lost its history")
+	}
+	if avail := GetGroup(removeGroup, 0); avail.Seen {
+		t.Fatalf("removed group is still visible: %+v", avail)
+	}
+	if collectorHasLabelValue(t, common.NodeAlive, "id", NodeID(removeKey)) {
+		t.Fatalf("removed node prometheus series still exists")
+	}
+	if collectorHasLabelValue(t, common.GroupAlive, "outbound", removeGroup) {
+		t.Fatalf("removed group prometheus series still exists")
+	}
+
+	// Re-adding a retired identity starts fresh instead of treating the time
+	// it was absent from the configuration as part of its history.
+	RecordNode(removeKey, "sub", "remove", true, true)
+	if avail := GetNode(removeKey); avail.ChecksTotal != 1 {
+		t.Fatalf("re-added node should have fresh counters: %+v", avail)
+	}
+}
+
+func TestReconcileConcurrentWithNodeAccess(t *testing.T) {
+	key := t.Name() + "\x1fnode"
+	identity := NodeIdentity{Key: key, Subtag: "sub", Name: "node"}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			RecordNode(key, identity.Subtag, identity.Name, i%2 == 0, true)
+			_ = GetNode(key)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if i%2 == 0 {
+				Reconcile([]NodeIdentity{identity}, nil)
+			} else {
+				Reconcile(nil, nil)
+			}
+		}
+	}()
+	wg.Wait()
 }

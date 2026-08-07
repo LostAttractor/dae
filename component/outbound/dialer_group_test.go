@@ -488,6 +488,17 @@ func TestFixedSelectorConcurrentNotifications(t *testing.T) {
 	}
 }
 
+func TestCloneForStatsScopeUsesDistinctIdentity(t *testing.T) {
+	base := newTestDialer(newTestOption(), t.Name())
+	clone := base.CloneForStatsScope("override-group")
+	defer base.Close()
+	defer clone.Close()
+
+	if base.StatsKey() == clone.StatsKey() || base.StatsID() == clone.StatsID() {
+		t.Fatalf("group-specific checker clone must have a distinct stats identity")
+	}
+}
+
 func TestDialerCloseRejectsLaterUpdates(t *testing.T) {
 	option := newTestOption()
 	d := newTestDialer(option, t.Name())
@@ -539,5 +550,37 @@ func TestDialerCloseWaitsForAndCancelsHealthCheck(t *testing.T) {
 	}
 	if err := g.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNextHopDialerIdentityIncludesEffectivePath(t *testing.T) {
+	option := newTestOption()
+	s := &DialerSet{
+		option:       option,
+		nodeInfosMap: make(map[dialer.Property]*NodeInfo),
+	}
+	source := &NodeInfo{
+		Link: "source-link",
+		Property: &dialer.Property{Property: D.Property{
+			Name: "source", Protocol: "source-proto", Address: "source-address", Link: "source-link",
+		}},
+	}
+	nextHop := &NodeInfo{
+		Link: "next-hop-link",
+		Property: &dialer.Property{Property: D.Property{
+			Name: "next-hop", Protocol: "next-proto", Address: "next-address", Link: "next-hop-link",
+		}},
+	}
+
+	d, err := s.createNextHopDialer(source, nextHop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if want := "source-link->next-hop-link"; d.Property.Link != want {
+		t.Fatalf("effective property link = %q, want %q", d.Property.Link, want)
+	}
+	if want := "\x1fsource-link->next-hop-link"; d.StatsKey() != want {
+		t.Fatalf("effective stats key = %q, want %q", d.StatsKey(), want)
 	}
 }

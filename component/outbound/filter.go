@@ -176,6 +176,29 @@ func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Funct
 	return true, nil
 }
 
+func (s *DialerSet) createNextHopDialer(nodeInfo, nextHopInfo *NodeInfo) (*dialer.Dialer, error) {
+	property := *nodeInfo.Property
+	property.Name = fmt.Sprintf("%s->%s", nodeInfo.Property.Name, nextHopInfo.Property.Name)
+	property.Protocol = fmt.Sprintf("%s->%s", nodeInfo.Property.Protocol, nextHopInfo.Property.Protocol)
+	property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
+	effectiveLink := fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link)
+	property.Link = effectiveLink
+
+	nextHopNodeInfo, ok := s.nodeInfosMap[property]
+	if !ok {
+		dialers := make([]D.Dialer, 0, len(nodeInfo.Dialers)+len(nextHopInfo.Dialers))
+		dialers = append(dialers, nodeInfo.Dialers...)
+		dialers = append(dialers, nextHopInfo.Dialers...)
+		nextHopNodeInfo = &NodeInfo{
+			Property: &property,
+			Dialers:  dialers,
+			Link:     effectiveLink,
+		}
+		s.nodeInfosMap[property] = nextHopNodeInfo
+	}
+	return nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+}
+
 func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param, nextHop string) (dialers []*dialer.Dialer, filterAnnotations []*dialer.Annotation, err error) {
 	if len(filters) != len(annotations) {
 		return nil, nil, fmt.Errorf("[CODE BUG]: unmatched annotations length: %v filters and %v annotations", len(filters), len(annotations))
@@ -197,23 +220,9 @@ nextDialerLoop:
 				continue
 			}
 			if nextHopInfo != nil {
-				property := *nodeInfo.Property
-				property.Name = fmt.Sprintf("%s->%s", nodeInfo.Property.Name, nextHopInfo.Property.Name)
-				property.Protocol = fmt.Sprintf("%s->%s", nodeInfo.Property.Protocol, nextHopInfo.Property.Protocol)
-				property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
-				var nextHopNodeInfo *NodeInfo
-				var ok bool
-				if nextHopNodeInfo, ok = s.nodeInfosMap[property]; !ok {
-					nextHopNodeInfo = &NodeInfo{
-						Property: &property,
-						Dialers:  append(nodeInfo.Dialers, nextHopInfo.Dialers...),
-						Link:     fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link),
-					}
-					s.nodeInfosMap[property] = nextHopNodeInfo
-				}
-				d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+				d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
 				if err != nil {
-					log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
+					log.Infof("failed to create dialer for node %v->%v: %v", nodeInfo.Link, nextHopInfo.Link, err)
 					continue
 				}
 			}
@@ -235,23 +244,9 @@ nextDialerLoop:
 					continue nextDialerLoop
 				}
 				if nextHopInfo != nil {
-					property := *nodeInfo.Property
-					property.Name = fmt.Sprintf("%s->%s", nodeInfo.Property.Name, nextHopInfo.Property.Name)
-					property.Protocol = fmt.Sprintf("%s->%s", nodeInfo.Property.Protocol, nextHopInfo.Property.Protocol)
-					property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
-					var nextHopNodeInfo *NodeInfo
-					var ok bool
-					if nextHopNodeInfo, ok = s.nodeInfosMap[property]; !ok {
-						nextHopNodeInfo = &NodeInfo{
-							Property: &property,
-							Dialers:  append(nodeInfo.Dialers, nextHopInfo.Dialers...),
-							Link:     fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link),
-						}
-						s.nodeInfosMap[property] = nextHopNodeInfo
-					}
-					d, err = nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+					d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
 					if err != nil {
-						log.Infof("failed to create dialer for node %v: %v", nextHopNodeInfo.Link, err)
+						log.Infof("failed to create dialer for node %v->%v: %v", nodeInfo.Link, nextHopInfo.Link, err)
 						continue nextDialerLoop
 					}
 				}

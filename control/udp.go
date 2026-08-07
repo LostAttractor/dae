@@ -154,6 +154,7 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		dialOption.DialTarget = dst.String()
 
 		labels := prometheus.Labels{
+			"id":       dialOption.Dialer.StatsID(),
 			"outbound": dialOption.Outbound.Name,
 			"subtag":   dialOption.Dialer.Property.SubscriptionTag,
 			"dialer":   dialOption.Dialer.Name,

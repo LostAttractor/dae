@@ -44,6 +44,7 @@ type NetworkStatus struct {
 }
 
 type NodeStatus struct {
+	ID                 string        `json:"id"`
 	Name               string        `json:"name"`
 	Subtag             string        `json:"subtag"`
 	Protocol           string        `json:"protocol"`
@@ -69,43 +70,61 @@ type NodeStatus struct {
 	TotalConns         int64         `json:"total_conns"`
 }
 
-// connCounts holds per-(group, node, network) connection counts collected
-// from the prometheus vectors maintained by the data plane.
-type connKey struct {
-	group, subtag, node string
-	network             int
-}
-
 type connValues struct{ active, total int64 }
 
-type connCounts map[connKey]connValues
-
-func (c connCounts) add(key connKey, active bool, value int64) {
-	v := c[key]
+func (v *connValues) add(active bool, value int64) {
 	if active {
 		v.active += value
 	} else {
 		v.total += value
 	}
-	c[key] = v
 }
 
-func (c connCounts) sum(match func(connKey) bool) (active, total int64) {
-	for key, v := range c {
-		if match(key) {
-			active += v.active
-			total += v.total
-		}
+type groupNetworkKey struct {
+	group   string
+	network int
+}
+
+type groupNodeKey struct {
+	group string
+	id    string
+}
+
+// connCounts is pre-aggregated once while gathering prometheus metrics. This
+// keeps status rendering O(series + groups + nodes), rather than scanning all
+// series again for every row.
+type connCounts struct {
+	all            connValues
+	byNetwork      [4]connValues
+	byGroupNetwork map[groupNetworkKey]connValues
+	byGroupNode    map[groupNodeKey]connValues
+}
+
+func newConnCounts() connCounts {
+	return connCounts{
+		byGroupNetwork: make(map[groupNetworkKey]connValues),
+		byGroupNode:    make(map[groupNodeKey]connValues),
 	}
-	return active, total
+}
+
+func (c *connCounts) add(group, id string, network int, active bool, value int64) {
+	c.all.add(active, value)
+	c.byNetwork[network].add(active, value)
+
+	groupNetwork := groupNetworkKey{group: group, network: network}
+	v := c.byGroupNetwork[groupNetwork]
+	v.add(active, value)
+	c.byGroupNetwork[groupNetwork] = v
+
+	groupNode := groupNodeKey{group: group, id: id}
+	v = c.byGroupNode[groupNode]
+	v.add(active, value)
+	c.byGroupNode[groupNode] = v
 }
 
 func (c *ControlPlane) collectConnCounts() connCounts {
-	counts := make(connCounts)
-	families, err := c.PrometheusRegistry.Gather()
-	if err != nil {
-		return counts
-	}
+	counts := newConnCounts()
+	families, _ := c.PrometheusRegistry.Gather()
 	for _, family := range families {
 		var active bool
 		switch family.GetName() {
@@ -117,34 +136,38 @@ func (c *ControlPlane) collectConnCounts() connCounts {
 			continue
 		}
 		for _, metric := range family.GetMetric() {
-			key := connKey{network: -1}
+			group, id, network := "", "", -1
 			for _, label := range metric.GetLabel() {
 				switch label.GetName() {
+				case "id":
+					id = label.GetValue()
 				case "outbound":
-					key.group = label.GetValue()
-				case "subtag":
-					key.subtag = label.GetValue()
-				case "dialer":
-					key.node = label.GetValue()
+					group = label.GetValue()
 				case "network":
 					for i := 0; i < 4; i++ {
 						if common.IndexToNetworkType(i).String() == label.GetValue() {
-							key.network = i
+							network = i
 							break
 						}
 					}
 				}
 			}
-			if key.network < 0 {
+			if network < 0 || group == "" || id == "" {
 				continue
 			}
 			var value int64
 			if active {
+				if metric.GetGauge() == nil {
+					continue
+				}
 				value = int64(metric.GetGauge().GetValue())
 			} else {
+				if metric.GetCounter() == nil {
+					continue
+				}
 				value = int64(metric.GetCounter().GetValue())
 			}
-			counts.add(key, active, value)
+			counts.add(group, id, network, active, value)
 		}
 	}
 	return counts
@@ -175,32 +198,33 @@ func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) Network
 		ns.Selected = selected.Name
 		ns.Alive = true
 	}
-	ns.ActiveConns, ns.TotalConns = conns.sum(func(k connKey) bool {
-		return k.group == g.Name && k.network == index
-	})
+	values := conns.byGroupNetwork[groupNetworkKey{group: g.Name, network: index}]
+	ns.ActiveConns, ns.TotalConns = values.active, values.total
 	return ns
 }
 
 func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) NodeStatus {
+	runtime := d.RuntimeStatus(g)
 	ns := NodeStatus{
-		Name:     d.Name,
-		Subtag:   d.Property.SubscriptionTag,
-		Protocol: d.Property.Protocol,
-		Address:  d.Property.Address,
-		Alive:    d.Alive(),
+		ID:        d.StatsID(),
+		Name:      d.Name,
+		Subtag:    d.Property.SubscriptionTag,
+		Protocol:  d.Property.Protocol,
+		Address:   d.Property.Address,
+		Alive:     runtime.Alive,
+		Supported: runtime.Supported,
 	}
 	for i := 0; i < 4; i++ {
 		networkType := common.IndexToNetworkType(i)
-		ns.Supported[i] = d.Supported(networkType)
 		ns.Selected[i] = g.SelectedDialer(networkType) == d
 	}
-	if last, avg10, movingAvg, ok := d.LatencySnapshot(g); ok {
+	if runtime.HasLatency {
 		ns.HasLatency = true
-		ns.LastLatencyMs = millis(last)
-		ns.Avg10LatencyMs = millis(avg10)
-		ns.MovingAvgLatencyMs = millis(movingAvg)
+		ns.LastLatencyMs = millis(runtime.LastLatency)
+		ns.Avg10LatencyMs = millis(runtime.Avg10Latency)
+		ns.MovingAvgLatencyMs = millis(runtime.MovingAverage)
 	}
-	avail := stats.GetNode(d.StatsKey())
+	avail := runtime.Availability
 	ns.UpRatio = avail.UpRatio
 	ns.UpDuration = avail.UpDuration
 	ns.AliveSince = timePtr(avail.AliveSince)
@@ -211,9 +235,8 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 	ns.ChecksFailed = avail.ChecksFailed
 	ns.ChecksSinceAlive = avail.ChecksSinceAlive
 	ns.ChecksSinceFail = avail.ChecksSinceFail
-	ns.ActiveConns, ns.TotalConns = conns.sum(func(k connKey) bool {
-		return k.group == g.Name && k.subtag == ns.Subtag && k.node == ns.Name
-	})
+	values := conns.byGroupNode[groupNodeKey{group: g.Name, id: ns.ID}]
+	ns.ActiveConns, ns.TotalConns = values.active, values.total
 	return ns
 }
 
@@ -224,9 +247,9 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 		StartedAt:    stats.ProcessStart,
 		LastReloadAt: timePtr(stats.LastReload()),
 	}
-	snapshot.ActiveConns, snapshot.TotalConns = conns.sum(func(connKey) bool { return true })
+	snapshot.ActiveConns, snapshot.TotalConns = conns.all.active, conns.all.total
 	for i := 0; i < 4; i++ {
-		snapshot.ActiveByNet[i], _ = conns.sum(func(k connKey) bool { return k.network == i })
+		snapshot.ActiveByNet[i] = conns.byNetwork[i].active
 	}
 	for _, g := range c.outbounds {
 		if g.Kind == outbound.GroupKindInvisible {

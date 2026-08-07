@@ -337,6 +337,7 @@ Dial:
 			} else if !netErr.Timeout() {
 				if dialArgument.Dialer.NeedAliveState() {
 					labels := prometheus.Labels{
+						"id":       dialArgument.Dialer.StatsID(),
 						"outbound": dialArgument.Outbound.Name,
 						"subtag":   dialArgument.Dialer.Property.SubscriptionTag,
 						"dialer":   dialArgument.Dialer.Name,

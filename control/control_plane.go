@@ -28,6 +28,7 @@ import (
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -293,7 +294,7 @@ func NewControlPlane(
 		if err == nil && groupOption != nil {
 			newDialers := make([]*dialer.Dialer, 0)
 			for _, d := range dialers {
-				newDialer := d.Clone()
+				newDialer := d.CloneForStatsScope(group.Name)
 				newDialer.GlobalOption = groupOption
 				newDialers = append(newDialers, newDialer)
 			}
@@ -450,6 +451,12 @@ func (c *ControlPlane) Activate() error {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 
+	// This is the first point at which the candidate plane is committed.
+	// The caller has already retired the previous plane on reload, so it is
+	// now safe to discard stale identities and reload-scoped gauge series.
+	c.reconcileStats()
+	common.ResetReloadMetrics()
+
 	// On reload without an adopted registry, evict domain routing entries
 	// inherited from the previous plane so that they cannot leak into the
 	// new rule set. An adopted registry is already in sync with the maps and
@@ -525,6 +532,29 @@ func (c *ControlPlane) Activate() error {
 		return oops.Errorf("bindDaens: %w", err)
 	}
 	return nil
+}
+
+func (c *ControlPlane) reconcileStats() {
+	nodesByKey := make(map[string]stats.NodeIdentity)
+	groups := make([]string, 0, len(c.outbounds))
+	for _, group := range c.outbounds {
+		if group.Kind == outbound.GroupKindNormal {
+			groups = append(groups, group.Name)
+		}
+		for _, d := range group.Dialers {
+			key := d.StatsKey()
+			nodesByKey[key] = stats.NodeIdentity{
+				Key:    key,
+				Subtag: d.Property.SubscriptionTag,
+				Name:   d.Name,
+			}
+		}
+	}
+	nodes := make([]stats.NodeIdentity, 0, len(nodesByKey))
+	for _, node := range nodesByKey {
+		nodes = append(nodes, node)
+	}
+	stats.Reconcile(nodes, groups)
 }
 
 func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
