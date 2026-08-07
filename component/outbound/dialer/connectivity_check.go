@@ -10,11 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,7 +60,7 @@ func (d *Dialer) Supported(typ *common.NetworkType) bool {
 func (d *Dialer) SetSupported(typ *common.NetworkType, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closed {
+	if d.ctx.Err() != nil {
 		return
 	}
 	d.supported[common.NetworkTypeToIndex(typ)] = ok
@@ -304,7 +306,7 @@ func (d *Dialer) createCheckOptions() []*CheckOption {
 
 func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 	d.mu.Lock()
-	if len(d.registeredDialerGroups) == 0 || !d.needAliveState || d.checkActivated || d.closed {
+	if len(d.registeredDialerGroups) == 0 || !d.needAliveState || d.checkActivated || d.ctx.Err() != nil {
 		d.mu.Unlock()
 		return
 	}
@@ -382,23 +384,16 @@ func (d *Dialer) runCheck(checkOpt *CheckOption) {
 		if !d.Alive() {
 			d.NotifyStatusChange()
 			if err := d.Connect(); err != nil {
-				if d.ctx.Err() != nil {
-					return
-				}
 				continue
 			}
 		}
-		if d.ctx.Err() != nil {
-			return
-		}
 		ok, latency, err := d.Check(checkOpt)
-		if d.ctx.Err() != nil {
-			return
-		}
+		// Update and SetSupported reject a canceled dialer, so a check
+		// interrupted by Close never records its result.
 		d.Update(ok, latency, checkOpt.networkType, err)
 		d.NotifyStatusChange()
 		if ok {
-			break
+			return
 		}
 		select {
 		case <-time.After(RetryInterval):
@@ -425,11 +420,11 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 	}
 }
 
-func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOption) {
+func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (best *CheckOption) {
 	var wg sync.WaitGroup
 	var supported [4]bool
 	var latency [4]time.Duration
-	var err [4]error
+	var checkErr [4]error
 	if err := d.Connect(); err != nil {
 		log.WithFields(log.Fields{
 			"node": d.Name,
@@ -441,7 +436,7 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOptio
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			supported[i], latency[i], err[i] = d.Check(opt)
+			supported[i], latency[i], checkErr[i] = d.Check(opt)
 			if supported[i] {
 				log.WithFields(log.Fields{
 					"network": opt.networkType.String(),
@@ -453,12 +448,12 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOptio
 					log.WithFields(log.Fields{
 						"network": opt.networkType.String(),
 						"node":    d.Name,
-					}).Infof("%+v\n", oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
+					}).Infof("%+v\n", oops.Wrapf(checkErr[i], "Inital Connectivity Check Failed"))
 				} else {
 					log.WithFields(log.Fields{
 						"network": opt.networkType.String(),
 						"node":    d.Name,
-					}).Infoln(oops.Wrapf(err[i], "Inital Connectivity Check Failed"))
+					}).Infoln(oops.Wrapf(checkErr[i], "Inital Connectivity Check Failed"))
 				}
 			}
 		}()
@@ -468,7 +463,7 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOptio
 		return nil
 	}
 	d.mu.Lock()
-	if d.closed {
+	if d.ctx.Err() != nil {
 		d.mu.Unlock()
 		return nil
 	}
@@ -477,13 +472,13 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (opt *CheckOptio
 	for _, opt := range checkOpts {
 		i := common.NetworkTypeToIndex(opt.networkType)
 		if supported[i] {
-			d.Update(true, latency[i], opt.networkType, err[i])
+			d.Update(true, latency[i], opt.networkType, checkErr[i])
 			return opt
 		}
 	}
 	// All network types failed; record the failure so that the node gets
 	// failure/check timestamps even though it has never been usable.
-	d.Update(false, 0, nil, err[0])
+	d.Update(false, 0, nil, checkErr[0])
 	return nil
 }
 
@@ -510,10 +505,7 @@ func (d *Dialer) NotifyStatusChange() {
 	// Inform DialerGroups to update state.
 	// Copy under the lock because callbacks call back into Dialer.Alive.
 	d.mu.RLock()
-	groups := make([]DialerGroup, 0, len(d.registeredDialerGroups))
-	for g := range d.registeredDialerGroups {
-		groups = append(groups, g)
-	}
+	groups := slices.Collect(maps.Keys(d.registeredDialerGroups))
 	d.mu.RUnlock()
 	for _, g := range groups {
 		g.NotifyStatusChange(d)
@@ -532,7 +524,7 @@ func (d *Dialer) ReportUnavailable() {
 func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closed {
+	if d.ctx.Err() != nil {
 		return
 	}
 

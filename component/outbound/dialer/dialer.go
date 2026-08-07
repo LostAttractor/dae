@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
@@ -53,19 +54,25 @@ type Dialer struct {
 	checkActivated bool
 	checkAsync     bool
 	checkWG        sync.WaitGroup
-	closeOnce      sync.Once
-	closed         bool
+}
+
+// LatencyStats is a coherent view of the latency samples of a dialer in one
+// dialer group.
+type LatencyStats struct {
+	Last      time.Duration
+	Avg10     time.Duration
+	MovingAvg time.Duration
 }
 
 // RuntimeSnapshot is a coherent view of the mutable status fields of a
 // dialer. Callers should prefer this over reading the fields one by one.
+// Availability is sampled from the stats registry outside the dialer lock and
+// is not coherent with the other fields.
 type RuntimeSnapshot struct {
 	Alive         bool
 	Supported     [4]bool
 	HasLatency    bool
-	LastLatency   time.Duration
-	Avg10Latency  time.Duration
-	MovingAverage time.Duration
+	Latency       LatencyStats
 	Availability  stats.Availability
 }
 type GlobalOption struct {
@@ -160,45 +167,56 @@ func (d *Dialer) NeedAliveState() bool {
 	return d.needAliveState
 }
 
-// LatencySnapshot returns the last, avg10 and moving-average latencies of
-// this dialer in the given group. hasLatency is false if no check sample has
-// been recorded yet.
-func (d *Dialer) LatencySnapshot(g DialerGroup) (last, avg10, movingAvg time.Duration, hasLatency bool) {
+// LatencyStats returns the latency samples of this dialer in the given
+// group. ok is false if no check sample has been recorded yet.
+func (d *Dialer) LatencyStats(g DialerGroup) (lat LatencyStats, ok bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	latencies, ok := d.Latencies10[g]
-	movingAvg = d.MovingAverage[g]
-	if !ok {
-		return 0, 0, 0, false
-	}
-	last, ok = latencies.LastLatency()
-	if !ok {
-		return 0, 0, 0, false
-	}
-	avg10, _ = latencies.AvgLatency()
-	return last, avg10, movingAvg, true
+	return d.latencyStatsLocked(g)
 }
 
-// RuntimeStatus returns a snapshot whose state, latency-map selection and
-// availability sample cannot be interleaved with a connectivity update.
+func (d *Dialer) latencyStatsLocked(g DialerGroup) (lat LatencyStats, ok bool) {
+	latencies, ok := d.Latencies10[g]
+	if !ok {
+		return LatencyStats{}, false
+	}
+	lat.Last, ok = latencies.LastLatency()
+	if !ok {
+		return LatencyStats{}, false
+	}
+	lat.Avg10, _ = latencies.AvgLatency()
+	lat.MovingAvg = d.MovingAverage[g]
+	return lat, true
+}
+
+// SelectionLatency returns the latency of this dialer in the group according
+// to the given selection policy. ok is false when no sample qualifies.
+func (d *Dialer) SelectionLatency(g DialerGroup, policy consts.DialerSelectionPolicy) (time.Duration, bool) {
+	lat, ok := d.LatencyStats(g)
+	if !ok {
+		return 0, false
+	}
+	switch policy {
+	case consts.DialerSelectionPolicy_MinLastLatency:
+		return lat.Last, true
+	case consts.DialerSelectionPolicy_MinAverage10Latencies:
+		return lat.Avg10, true
+	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		return lat.MovingAvg, lat.MovingAvg > 0
+	}
+	return 0, false
+}
+
+// RuntimeStatus returns a snapshot whose state and latency-map selection
+// cannot be interleaved with a connectivity update.
 func (d *Dialer) RuntimeStatus(g DialerGroup) RuntimeSnapshot {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-	latencies := d.Latencies10[g]
 	snapshot := RuntimeSnapshot{
-		Alive:         d.Dialer.Alive() && d.alive,
-		Supported:     d.supported,
-		MovingAverage: d.MovingAverage[g],
+		Alive:     d.Dialer.Alive() && d.alive,
+		Supported: d.supported,
 	}
-
-	if latencies != nil {
-		last, ok := latencies.LastLatency()
-		if ok {
-			snapshot.HasLatency = true
-			snapshot.LastLatency = last
-			snapshot.Avg10Latency, _ = latencies.AvgLatency()
-		}
-	}
+	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked(g)
+	d.mu.RUnlock()
 	snapshot.Availability = stats.GetNode(d.StatsKey())
 	return snapshot
 }
@@ -230,13 +248,10 @@ func (d *Dialer) CloneForStatsScope(scope string) *Dialer {
 	return newDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState, scope)
 }
 
+// Close cancels the connectivity check and waits for its goroutine to exit.
+// The dialer must not be reused afterwards.
 func (d *Dialer) Close() error {
-	d.closeOnce.Do(func() {
-		d.mu.Lock()
-		d.closed = true
-		d.cancel()
-		d.mu.Unlock()
-	})
+	d.cancel()
 	d.checkWG.Wait()
 	return nil
 }
