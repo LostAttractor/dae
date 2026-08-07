@@ -132,7 +132,6 @@ func (c *controlPlaneCore) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
-			// Combine errors.
 			if err != nil {
 				err = oops.Errorf("%w; %v", err, e)
 			} else {
@@ -145,7 +144,6 @@ func (c *controlPlaneCore) Close() (err error) {
 }
 
 func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
-	// Get link offload features.
 	et, err := ethtool.NewEthtool()
 	if err != nil {
 		return bpfIfParams{}, err
@@ -295,7 +293,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err != nil {
 		return err
 	}
-	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
 		return err
@@ -304,7 +301,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return err
 	}
 
-	// Insert filters.
 	filterIngress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
@@ -324,7 +320,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		filterIngress.Fd = c.bpf.bpfPrograms.LanIngressL3.FD()
 		filterIngress.Name = filterIngress.Name + "_l3"
 	}
-	// Remove and add.
 	_ = netlink.FilterDel(filterIngress)
 	if !c.isReload {
 		// Clean up thoroughly.
@@ -361,7 +356,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		filterEgress.Fd = c.bpf.bpfPrograms.LanEgressL3.FD()
 		filterEgress.Name = filterEgress.Name + "_l3"
 	}
-	// Remove and add.
 	_ = netlink.FilterDel(filterEgress)
 	if !c.isReload {
 		// Clean up thoroughly.
@@ -383,14 +377,11 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 }
 
 func (c *controlPlaneCore) setupSkPidMonitor() error {
-	/// Set-up SrcPidMapper.
-	/// Attach programs to support pname routing.
-	// Get the first-mounted cgroupv2 path.
+	/// Set-up SrcPidMapper to support pname routing.
 	cgroupPath, err := detectCgroupPath()
 	if err != nil {
 		return err
 	}
-	// Bind cg programs
 	type cgProg struct {
 		Name   string
 		Prog   *ebpf.Program
@@ -510,7 +501,6 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		return err
 	}
 
-	/// Insert an elem into IfindexParamsMap.
 	ifParams, err := getIfParamsFromLink(link)
 	if err != nil {
 		return err
@@ -520,7 +510,6 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	}
 
 	/// Set-up WAN ingress/egress TC programs.
-	// Insert TC filters
 	filterEgress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
@@ -540,7 +529,6 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		filterEgress.Name = filterEgress.Name + "_l3"
 	}
 	_ = netlink.FilterDel(filterEgress)
-	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
@@ -576,7 +564,6 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		filterIngress.Name = filterIngress.Name + "_l3"
 	}
 	_ = netlink.FilterDel(filterIngress)
-	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
@@ -618,7 +605,6 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	daens.With(func() error {
 		return netlink.FilterDel(filterDae0peerIngress)
 	})
-	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
@@ -654,7 +640,6 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		DirectAction: true,
 	}
 	_ = netlink.FilterDel(filterDae0Ingress)
-	// Remove and add.
 	if !c.isReload {
 		// Clean up thoroughly.
 		filterEgressFlipped := deepcopy.Copy(filterDae0Ingress).(*netlink.BpfFilter)
@@ -722,7 +707,8 @@ func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
 	}
 }
 
-// EjectBpf will resect bpf from destroying life-cycle of control plane core.
+// EjectBpf removes the bpf objects from this core's ownership so its Close
+// will not destroy them; the successor core takes them over via InjectBpf.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
 	c.bpfOwned = false
 	return c.bpf

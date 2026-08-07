@@ -75,7 +75,6 @@ begin:
 		if ok {
 			goto begin
 		}
-		// Create an PacketSniffer.
 		if createOption == nil {
 			createOption = &PacketSnifferOptions{}
 		}
@@ -99,7 +98,6 @@ begin:
 		})
 		_qs = qs
 		p.pool.Store(key, qs)
-		// Receive UDP messages.
 		isNew = true
 	}
 	return _qs.(*PacketSniffer), isNew

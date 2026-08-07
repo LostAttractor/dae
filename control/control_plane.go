@@ -273,17 +273,14 @@ func NewControlPlane(
 	// Filter out groups.
 	dialerSet := outbound.NewDialerSetFromLinks(option, prometheusRegistry, tagToNodeList)
 	for _, group := range groups {
-		// Parse policy.
 		policy, err := dialer.NewDialerSelectionPolicyFromGroupParam(&group)
 		if err != nil {
 			return nil, oops.Errorf("failed to create group %v: %w", group.Name, err)
 		}
-		// Filter nodes with user given filters.
 		dialers, annos, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation, group.NextHop)
 		if err != nil {
 			return nil, oops.Errorf(`failed to create group "%v": %w`, group.Name, err)
 		}
-		// Convert node links to dialers.
 		log.Infof(`Group "%v" node list:`, group.Name)
 		for _, d := range dialers {
 			log.Infoln("\t" + d.Name)
@@ -305,7 +302,6 @@ func NewControlPlane(
 			finalOption = groupOption
 		}
 		id := uint8(len(outbounds))
-		// Create dialer group and append it to outbounds.
 		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, outbound.GroupKindNormal, dialers, annos, *policy,
 			core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
 		outbounds = append(outbounds, dialerGroup)
@@ -357,7 +353,6 @@ func NewControlPlane(
 	// mirror of outbound connectivity.
 	routingMatcher.outboundUsable = core.outboundUsable
 
-	// New control plane.
 	ctx, cancel := context.WithCancel(context.Background())
 	plane := &ControlPlane{
 		core:                       core,
@@ -656,7 +651,6 @@ func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.Addr
 	// verification here does not expire on its own.
 	registered, paired := c.core.domainRegistry.Verify(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}, dst.Addr())
 	if registered {
-		// Successful sniff without DNS lookup record.
 		// In this case, the kernel may not handle domain match set, so re-route is required.
 		shouldReroute = !paired
 		switch c.sniffVerifyMode {
@@ -677,13 +671,11 @@ func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.Addr
 		case consts.SniffVerifyMode_Loose:
 			// TODO: 产生一个真的DNS查询? 这样能被缓存
 			c.muRealDomainSet.Lock()
-			verified = c.realDomainSet.TestString(fqdn) // Test if the domain is in real-domain set.
+			verified = c.realDomainSet.TestString(fqdn)
 			c.muRealDomainSet.Unlock()
 			if !verified {
-				// Lookup A/AAAA to make sure it is a real domain.
 				// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
 				if ip46, err := netutils.ResolveIp46(fqdn); err == nil && ip46.IsValid() {
-					// Has A/AAAA records. It is a real domain.
 					// Add it to real-domain set.
 					c.muRealDomainSet.Lock()
 					c.realDomainSet.AddString(fqdn)
@@ -1018,7 +1010,6 @@ func (c *ControlPlane) AbortConnections() (err error) {
 func (c *ControlPlane) closeOutbounds() (err error) {
 	for _, g := range c.outbounds {
 		if e := g.Close(); e != nil {
-			// Combine errors.
 			if err != nil {
 				err = oops.Errorf("%w; %v", err, e)
 			} else {
@@ -1033,7 +1024,6 @@ func (c *ControlPlane) Close() (err error) {
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
-			// Combine errors.
 			if err != nil {
 				err = oops.Errorf("%w; %v", err, e)
 			} else {

@@ -82,7 +82,6 @@ func parseIpVersionPreference(prefer int) (uint16, error) {
 }
 
 func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsController, err error) {
-	// Parse ip version preference.
 	prefer, err := parseIpVersionPreference(option.IpVersionPrefer)
 	if err != nil {
 		return nil, err
@@ -205,9 +204,8 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 
 	go func() {
 		var err error
-		// Check ip version preference and qtype.
+		// Try to make both A and AAAA lookups.
 		if (queryInfo.qtype == dnsmessage.TypeA || queryInfo.qtype == dnsmessage.TypeAAAA) && c.qtypePrefer != 0 {
-			// Try to make both A and AAAA lookups.
 			dnsMessage2 := dnsMessage.Copy()
 			dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
 			// The flipped query must carry its own queryInfo: deriving every
@@ -275,7 +273,6 @@ func (c *DnsController) handleDNSRequest(
 	req *udpRequest,
 	queryInfo queryInfo,
 ) error {
-	// Route Request.
 	RequestIndex, err := c.routing.RequestSelect(
 		queryInfo.qname,
 		queryInfo.qtype,
@@ -302,7 +299,6 @@ func (c *DnsController) handleDNSRequest(
 			Ip46:     netutils.FromAddr(req.dst.Addr()),
 		}
 	} else {
-		// Get corresponding upstream.
 		upstream, err = c.routing.GetUpstream(RequestIndex)
 		if err != nil {
 			return err
@@ -321,7 +317,6 @@ Dial:
 			}).Debugln("Request to DNS upstream")
 		}
 
-		// Select best dial arguments (outbound, dialer, l4proto, ipversion, etc.)
 		dialArgument, err := c.bestDialerChooser(req, upstream)
 		if err != nil {
 			return err
@@ -354,7 +349,6 @@ Dial:
 			}
 		}
 
-		// Route response.
 		ResponseIndex, nextUpstream, err := c.routing.ResponseSelect(dnsMessage, upstream)
 		if err != nil {
 			return err
@@ -383,12 +377,10 @@ Dial:
 			}
 			switch ResponseIndex {
 			case consts.DnsResponseOutboundIndex_Reject:
-				// Reject
 				// TODO: cache response reject.
 				c.reject(dnsMessage)
 				fallthrough
 			case consts.DnsResponseOutboundIndex_Accept:
-				// Accept.
 				break Dial
 			default:
 				return oops.Errorf("unknown upstream: %v", ResponseIndex.String())
@@ -492,7 +484,6 @@ func (c *DnsController) registerAnswersInternal(queryInfo queryInfo, answers []d
 }
 
 func (c *DnsController) reject(msg *dnsmessage.Msg) {
-	// Reject with empty answer.
 	msg.Answer = []dnsmessage.RR{}
 	msg.Rcode = dnsmessage.RcodeSuccess
 	msg.Response = true
@@ -507,8 +498,6 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 		// recreate connections nobody closes anymore.
 		return false, net.ErrClosed
 	}
-	/// Dial and send.
-	// get forwarder from cache
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
 	cacheKey := dnsCacheKey{queryInfo: queryInfo, dnsForwarderKey: key}
 
@@ -518,7 +507,6 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	var forwarder DnsForwarder
 	value, ok := c.dnsForwarderCache.Load(key)
 	if ok {
-		// Lookup Cache
 		if cache := c.dnsCache.Get(cacheKey); cache != nil {
 			if FillInto(msg, cache) {
 				if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
