@@ -108,6 +108,20 @@ func (c *commonDnsCache[K]) Delete(cacheKey K) {
 	}
 }
 
+// Len returns the number of cache keys currently held. Keys whose answers
+// all expired still count until the LRU gc prunes them: they occupy memory
+// and gc pressure is measured against maxSize in the same unit.
+func (c *commonDnsCache[K]) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.cache)
+}
+
+// MaxSize returns the key-count limit the LRU gc enforces.
+func (c *commonDnsCache[K]) MaxSize() int {
+	return c.maxSize
+}
+
 // gc must be called with c.mu held.
 func (c *commonDnsCache[K]) gc() {
 	lruElement := c.lruList.Back()

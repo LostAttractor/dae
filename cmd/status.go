@@ -133,6 +133,8 @@ const (
 	degradedUpRatio        = 0.9
 	fastLatencyMs          = 200
 	slowLatencyMs          = 500
+	ampleUsageRatio        = 0.7
+	tightUsageRatio        = 0.9
 )
 
 func colorize(s string, colors ...text.Color) string {
@@ -172,6 +174,17 @@ func colorLatency(latencyMs float64, s string) string {
 	case latencyMs < fastLatencyMs:
 		return colorize(s, text.FgGreen)
 	case latencyMs < slowLatencyMs:
+		return colorize(s, text.FgYellow)
+	default:
+		return colorize(s, text.FgRed)
+	}
+}
+
+func colorUsage(ratio float64, s string) string {
+	switch {
+	case ratio < ampleUsageRatio:
+		return colorize(s, text.FgGreen)
+	case ratio < tightUsageRatio:
 		return colorize(s, text.FgYellow)
 	default:
 		return colorize(s, text.FgRed)
@@ -234,6 +247,23 @@ func printTable(header table.Row, rows []table.Row) {
 	t.AppendRows(rows)
 	for _, line := range strings.Split(t.Render(), "\n") {
 		fmt.Println(strings.TrimRight(line, " "))
+	}
+}
+
+func tableUsageRow(usage control.TableUsage) table.Row {
+	ratio := 0.0
+	if usage.Limit > 0 {
+		ratio = float64(usage.Used) / float64(usage.Limit)
+	}
+	limit := fmt.Sprintf("%d", usage.Limit)
+	if usage.Soft {
+		limit += " (soft)"
+	}
+	return table.Row{
+		usage.Name,
+		usage.Used,
+		limit,
+		colorUsage(ratio, formatRatio(ratio)),
 	}
 }
 
@@ -342,6 +372,15 @@ func printStatus(s *control.StatusSnapshot) {
 		perNet[i] = fmt.Sprintf("%s %d", networkNames[i], n)
 	}
 	fmt.Printf("Connections: %d active (%s), %d total\n", s.ActiveConns, strings.Join(perNet, ", "), s.TotalConns)
+
+	if len(s.Tables) > 0 {
+		fmt.Println("\nTables:")
+		rows := make([]table.Row, 0, len(s.Tables))
+		for _, usage := range s.Tables {
+			rows = append(rows, tableUsageRow(usage))
+		}
+		printTable(table.Row{"TABLE", "USED", "LIMIT", "USAGE"}, rows)
+	}
 
 	for _, group := range s.Groups {
 		printGroupStatus(group)

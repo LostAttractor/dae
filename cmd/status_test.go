@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,55 @@ func TestHasRecentFailure(t *testing.T) {
 				t.Fatalf("hasRecentFailure() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTableUsageRow(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	row := tableUsageRow(control.TableUsage{Name: "domain-kernel", Used: 6554, Limit: 65536})
+	want := []string{"domain-kernel", "6554", "65536", "10.0%"}
+	for i, expected := range want {
+		if got := fmt.Sprint(row[i]); got != expected {
+			t.Errorf("tableUsageRow()[%d] = %q, want %q", i, got, expected)
+		}
+	}
+
+	soft := tableUsageRow(control.TableUsage{Name: "dns-cache", Used: 65536, Limit: 32768, Soft: true})
+	if got := soft[2].(string); got != "32768 (soft)" {
+		t.Errorf("soft limit cell = %q, want %q", got, "32768 (soft)")
+	}
+	if got := soft[3].(string); got != "200.0%" {
+		t.Errorf("soft usage cell = %q, want %q", got, "200.0%")
+	}
+
+	zero := tableUsageRow(control.TableUsage{Name: "domain-kernel"})
+	if got := zero[3].(string); got != "0.0%" {
+		t.Errorf("zero-limit usage cell = %q, want %q", got, "0.0%")
+	}
+}
+
+func TestTableUsageRowColors(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = true
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	tests := []struct {
+		used, limit int
+		ansi        string
+	}{
+		{used: 6554, limit: 65536, ansi: "\x1b[32m"},  // 10%: green
+		{used: 52429, limit: 65536, ansi: "\x1b[33m"}, // 80%: yellow
+		{used: 62260, limit: 65536, ansi: "\x1b[31m"}, // 95%: red
+		{used: 65536, limit: 32768, ansi: "\x1b[31m"}, // 200%: red
+	}
+	for _, tt := range tests {
+		row := tableUsageRow(control.TableUsage{Used: tt.used, Limit: tt.limit})
+		if got := row[3].(string); !strings.Contains(got, tt.ansi) {
+			t.Errorf("usage %d/%d = %q, want ANSI prefix %q", tt.used, tt.limit, got, tt.ansi)
+		}
 	}
 }
 
