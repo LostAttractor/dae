@@ -181,6 +181,7 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
+	reqId := msg.Id
 
 	// TODO: SetReadDeadline 无法生效的情况下, 这里就会stuck
 	// TODO: SetDeadline 可能会不被支持, 特别是 SetWriteDeadline
@@ -205,25 +206,38 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 		}
 	}()
 
-	respBuf := pool.GetBuffer(consts.EthernetMtu)
-	defer pool.PutBuffer(respBuf)
-	var n int
+	// A plain heap buffer: on the write-error return path the read goroutine
+	// stays blocked until the caller closes the conn, so a pooled buffer
+	// could be handed out again underneath a pending Read.
+	respBuf := make([]byte, consts.MaxDnsMessageSize)
 	go func() {
-		// Wait for response.
-		n, err = conn.Read(respBuf)
-		recvCh <- err
+		// Wait for the response to this query; ignore stray/late datagrams
+		// whose transaction ID does not match.
+		for {
+			n, err := conn.Read(respBuf)
+			if err != nil {
+				recvCh <- err
+				return
+			}
+			var resp dnsmessage.Msg
+			if err := resp.Unpack(respBuf[:n]); err != nil {
+				continue
+			}
+			if !resp.Response || resp.Id != reqId {
+				continue
+			}
+			*msg = resp
+			recvCh <- nil
+			return
+		}
 	}()
 
 	select {
 	case err := <-sendCh:
 		return err
 	case err := <-recvCh:
-		if err != nil {
-			return err
-		}
+		return err
 	}
-
-	return msg.Unpack(respBuf[:n])
 }
 
 func ResolveNetip(d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
