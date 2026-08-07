@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	log "github.com/sirupsen/logrus"
@@ -65,20 +64,8 @@ func (s *RandomSelector) updateDialerAliveState(dialer *dialer.Dialer, alive boo
 	s.dialerToAlive[dialer] = alive
 }
 
-func (s *RandomSelector) getLatencyData(dialer *dialer.Dialer) (latency time.Duration, hasLatency bool) {
-	last, avg10, moving, ok := dialer.LatencySnapshot(s.dialerGroup)
-	if !ok {
-		return 0, false
-	}
-	switch s.dialerGroup.selectionPolicy.Policy {
-	case consts.DialerSelectionPolicy_MinLastLatency:
-		return last, true
-	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		return avg10, true
-	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		return moving, moving > 0
-	}
-	return 0, false
+func (s *RandomSelector) selectionLatency(d *dialer.Dialer) (time.Duration, bool) {
+	return d.SelectionLatency(s.dialerGroup, s.dialerGroup.selectionPolicy.Policy)
 }
 
 func (s *RandomSelector) getSortedHighestPriorityAliveDialers(networkType *common.NetworkType) (aliveDialers []*dialer.Dialer) {
@@ -110,7 +97,7 @@ func (s *RandomSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 
 	s.updateDialerAliveState(dialer, dialer.Alive())
 
-	latency, hasLatency := s.getLatencyData(dialer)
+	latency, hasLatency := s.selectionLatency(dialer)
 	if hasLatency {
 		s.dialerToLatency[dialer] = latency
 	}

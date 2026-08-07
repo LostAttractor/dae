@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
@@ -118,20 +117,8 @@ func (s *LatencyBasedSelector) printLatencies(aliveDialers []*dialer.Dialer, net
 	logfn(strings.TrimSuffix(builder.String(), "\n"))
 }
 
-func (s *LatencyBasedSelector) getLatencyData(dialer *dialer.Dialer) (latency time.Duration, hasLatency bool) {
-	last, avg10, moving, ok := dialer.LatencySnapshot(s.dialerGroup)
-	if !ok {
-		return 0, false
-	}
-	switch s.dialerGroup.selectionPolicy.Policy {
-	case consts.DialerSelectionPolicy_MinLastLatency:
-		return last, true
-	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		return avg10, true
-	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		return moving, moving > 0
-	}
-	return 0, false
+func (s *LatencyBasedSelector) selectionLatency(d *dialer.Dialer) (time.Duration, bool) {
+	return d.SelectionLatency(s.dialerGroup, s.dialerGroup.selectionPolicy.Policy)
 }
 
 func (s *LatencyBasedSelector) updateDialerAliveState(dialer *dialer.Dialer, alive bool) {
@@ -197,15 +184,15 @@ func (s *LatencyBasedSelector) logCheckLatency(aliveDialers []*dialer.Dialer, di
 		"network":  networkType.String(),
 	}
 
-	lastLatency, _, movingLatency, ok := dialer.LatencySnapshot(s.dialerGroup)
+	lat, ok := dialer.LatencyStats(s.dialerGroup)
 	if !ok {
 		return
 	}
-	latencyMs := float64(lastLatency.Milliseconds())
+	latencyMs := float64(lat.Last.Milliseconds())
 	common.CheckLatency.With(labels).Set(latencyMs)
 
-	if movingLatency > 0 {
-		common.CheckMovingLatency.With(labels).Set(float64(movingLatency.Milliseconds()))
+	if lat.MovingAvg > 0 {
+		common.CheckMovingLatency.With(labels).Set(float64(lat.MovingAvg.Milliseconds()))
 	}
 
 	selectLatency := s.getSortingLatency(dialer)
@@ -227,7 +214,7 @@ func (s *LatencyBasedSelector) NotifyStatusChange(d *dialer.Dialer) {
 
 	s.updateDialerAliveState(d, d.Alive())
 
-	latency, hasLatency := s.getLatencyData(d)
+	latency, hasLatency := s.selectionLatency(d)
 	if hasLatency {
 		s.dialerToLatency[d] = latency
 	}

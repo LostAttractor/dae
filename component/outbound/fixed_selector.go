@@ -13,9 +13,9 @@ import (
 
 type FixedSelector struct {
 	BaseSelector
-	alive    bool
-	latency  time.Duration
-	notifyMu sync.Mutex
+	alive   bool
+	latency time.Duration
+	mu      sync.Mutex
 }
 
 func NewFixedSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive bool, networkType *common.NetworkType)) Selector {
@@ -62,8 +62,8 @@ func (s *FixedSelector) updateAliveState(dialer *dialer.Dialer, alive bool) {
 }
 
 func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
-	s.notifyMu.Lock()
-	defer s.notifyMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
 		return
@@ -71,6 +71,9 @@ func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 	if dialer == s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex] {
 		alive := dialer.Alive()
 		s.updateAliveState(dialer, alive)
+		if lat, ok := dialer.LatencyStats(s.dialerGroup); ok {
+			s.latency = lat.Last
+		}
 		for i := 0; i < 4; i++ {
 			networkType := common.IndexToNetworkType(i)
 			s.handleAliveStateChange(alive && dialer.Supported(networkType), networkType)
@@ -79,6 +82,9 @@ func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 }
 
 func (s *FixedSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var builder strings.Builder
 	if networkType != nil {
 		builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", s.dialerGroup.Name, networkType.String()))

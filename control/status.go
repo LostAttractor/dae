@@ -223,9 +223,9 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 	}
 	if runtime.HasLatency {
 		ns.HasLatency = true
-		ns.LastLatencyMs = millis(runtime.LastLatency)
-		ns.Avg10LatencyMs = millis(runtime.Avg10Latency)
-		ns.MovingAvgLatencyMs = millis(runtime.MovingAverage)
+		ns.LastLatencyMs = millis(runtime.Latency.Last)
+		ns.Avg10LatencyMs = millis(runtime.Latency.Avg10)
+		ns.MovingAvgLatencyMs = millis(runtime.Latency.MovingAvg)
 	}
 	avail := runtime.Availability
 	ns.UpRatio = avail.UpRatio
