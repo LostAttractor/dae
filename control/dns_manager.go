@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -46,6 +47,9 @@ func NewDnsManager(conn net.Conn, stream bool) *DnsManager {
 		stream:  stream,
 		timeout: consts.DefaultDNSTimeout,
 	}
+	// Start the transaction ID counter at a random offset: sequential IDs
+	// from zero are trivially predictable to an off-path spoofer.
+	m.nextId.Store(fastrand.Uint32())
 	go func() {
 		if err := m.run(); err != nil {
 			log.WithError(err).Error("DNS manager recv loop exited")
