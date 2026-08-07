@@ -250,12 +250,20 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 			}
 			return
 		}
+		if !dnsMessage.Response {
+			// No response was produced (a duplicate lookup was dropped, or a
+			// soft-failed lookup fell through response routing with the
+			// request untouched). Echoing the QR=0 request back would only
+			// confuse the client; let it retransmit instead.
+			return
+		}
 		// Keep the id the same with request.
 		dnsMessage.Id = id
 		dnsMessage.Compress = true
 		var data []byte
 		if data, err = dnsMessage.Pack(); err != nil {
 			log.Errorf("%+v", oops.Wrapf(err, "failed to pack dns message"))
+			return
 		}
 		if err = sendPkt(data, req.dst, req.src); err != nil {
 			log.Warningf("%+v", oops.Wrapf(err, "failed to send dns message back"))
