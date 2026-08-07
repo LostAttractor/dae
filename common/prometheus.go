@@ -233,42 +233,50 @@ func init() {
 }
 
 func InitPrometheus(registry *prometheus.Registry) {
-	// Drop stale series from a previous control plane (reload), then register.
-	// Only periodically-overwritten gauges are reset here; connection gauges,
-	// counters and histograms keep process-lifetime values because what they
-	// measure survives reloads, and resetting them would desync the metric
-	// from reality (e.g. ActiveConnections going negative when a pre-reload
-	// connection closes).
-	CheckLatency.Reset()
-	CheckMovingLatency.Reset()
-	CheckSelectLatency.Reset()
-	DialerSelectIndex.Reset()
-	registry.MustRegister(ActiveConnections)
-	// registry.MustRegister(CoreIpDomainBitmap)
-	// registry.MustRegister(DeadlineTimers)
-	// registry.MustRegister(DnsCacheSize)
-	// registry.MustRegister(DnsCacheHit)
-	registry.MustRegister(CheckLatency)
-	registry.MustRegister(CheckMovingLatency)
-	registry.MustRegister(CheckSelectLatency)
-	registry.MustRegister(DialerSelectIndex)
-	registry.MustRegister(DialLatency)
-	registry.MustRegister(ErrorCount)
-	registry.MustRegister(TotalConnections)
-	registry.MustRegister(NodeAlive)
-	registry.MustRegister(NodeAliveSince)
-	registry.MustRegister(NodeLastFailure)
-	registry.MustRegister(NodeLastCheck)
-	registry.MustRegister(NodeLastConnFailure)
-	registry.MustRegister(NodeChecksTotal)
-	registry.MustRegister(NodeCheckFailures)
-	registry.MustRegister(NodeChecksSinceAlive)
-	registry.MustRegister(NodeChecksSinceFailure)
-	registry.MustRegister(GroupAlive)
-	registry.MustRegister(GroupAliveSince)
-	registry.MustRegister(GroupLastFailure)
-	registry.MustRegister(StartTime)
-	registry.MustRegister(LastReloadTime)
-	// registry.MustRegister(TrafficBytes)
-	// registry.MustRegister(VmRssKb)
+	// Drop stale series from a previous control plane (reload), then
+	// register. Only periodically-overwritten gauges are reset here;
+	// connection gauges, counters and histograms keep process-lifetime
+	// values because what they measure survives reloads, and resetting
+	// them would desync the metric from reality (e.g. ActiveConnections
+	// going negative when a pre-reload connection closes).
+	for _, vec := range []*prometheus.GaugeVec{
+		CheckLatency,
+		CheckMovingLatency,
+		CheckSelectLatency,
+		DialerSelectIndex,
+	} {
+		vec.Reset()
+	}
+	for _, c := range []prometheus.Collector{
+		// registry.MustRegister(CoreIpDomainBitmap)
+		// registry.MustRegister(DeadlineTimers)
+		// registry.MustRegister(DnsCacheSize)
+		// registry.MustRegister(DnsCacheHit)
+		ActiveConnections,
+		CheckLatency,
+		CheckMovingLatency,
+		CheckSelectLatency,
+		DialerSelectIndex,
+		DialLatency,
+		ErrorCount,
+		TotalConnections,
+		NodeAlive,
+		NodeAliveSince,
+		NodeLastFailure,
+		NodeLastCheck,
+		NodeLastConnFailure,
+		NodeChecksTotal,
+		NodeCheckFailures,
+		NodeChecksSinceAlive,
+		NodeChecksSinceFailure,
+		GroupAlive,
+		GroupAliveSince,
+		GroupLastFailure,
+		StartTime,
+		LastReloadTime,
+		// registry.MustRegister(TrafficBytes)
+		// registry.MustRegister(VmRssKb)
+	} {
+		registry.MustRegister(c)
+	}
 }

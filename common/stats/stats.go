@@ -48,7 +48,7 @@ type Availability struct {
 	UpRatio        float64       // up time / total time since first seen
 	UpDuration     time.Duration // length of the current up-streak
 
-	// Check counters are node-only (groups run no checks) and count
+	// Check counters are zero for groups (which run no checks) and count
 	// per-network-type checks; each check appends one latency sample, so
 	// ChecksSinceAlive also tells how many fresh samples the avg10 window
 	// and the moving average have absorbed.
@@ -58,123 +58,110 @@ type Availability struct {
 	ChecksSinceFail  int64 // checks since the last failure, inclusive; counts all checks if none failed
 }
 
-func gaugeValue(g prometheus.Gauge) float64 {
-	if g == nil {
+func metricValue(m prometheus.Metric) float64 {
+	var d dto.Metric
+	if err := m.Write(&d); err != nil {
 		return 0
 	}
-	var m dto.Metric
-	if err := g.Write(&m); err != nil {
-		return 0
+	if g := d.GetGauge(); g != nil {
+		return g.GetValue()
 	}
-	return m.GetGauge().GetValue()
+	return d.GetCounter().GetValue()
 }
 
-func gaugeBool(g prometheus.Gauge) bool {
-	return gaugeValue(g) != 0
-}
+func gaugeValue(g prometheus.Gauge) float64   { return metricValue(g) }
+func counterValue(c prometheus.Counter) int64 { return int64(metricValue(c)) }
+func gaugeBool(g prometheus.Gauge) bool       { return metricValue(g) != 0 }
 
 func gaugeTime(g prometheus.Gauge) time.Time {
-	if sec := gaugeValue(g); sec > 0 {
+	if sec := metricValue(g); sec > 0 {
 		return time.Unix(int64(sec), 0)
 	}
 	return time.Time{}
-}
-
-func counterValue(c prometheus.Counter) int64 {
-	if c == nil {
-		return 0
-	}
-	var m dto.Metric
-	if err := c.Write(&m); err != nil {
-		return 0
-	}
-	return int64(m.GetCounter().GetValue())
 }
 
 func setGaugeTime(g prometheus.Gauge, t time.Time) {
 	g.Set(float64(t.Unix()))
 }
 
-// availability keeps the uptime accounting of one identity; all
-// single-value state is stored in the gauge handles below.
-type availability struct {
-	mu           sync.Mutex
-	firstSeen    time.Time // zero until the first record
-	totalUp      time.Duration
-	lastAcc      time.Time // last time totalUp was brought up to date
-	alive        prometheus.Gauge
-	aliveSince   prometheus.Gauge // set on transitions to alive; stale while down
-	lastFail     prometheus.Gauge
-	lastCheck    prometheus.Gauge // nil for groups
-	lastConnFail prometheus.Gauge // nil for groups
-
-	// Check counters; nil for groups.
-	checksTotal        prometheus.Counter
-	checksFailed       prometheus.Counter
-	checksSinceAlive   prometheus.Gauge // reset at the check that starts an up-streak
-	checksSinceFailure prometheus.Gauge // reset at every failed check
+func boolFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
-func (a *availability) setAlive(alive bool, now time.Time) {
-	if alive {
-		a.alive.Set(1)
-		setGaugeTime(a.aliveSince, now)
-	} else {
-		a.alive.Set(0)
-		setGaugeTime(a.lastFail, now)
+// availability keeps the uptime accounting of one identity; all
+// single-value state is stored in the prometheus handles below.
+type availability struct {
+	mu         sync.Mutex
+	firstSeen  time.Time // zero until the first record
+	totalUp    time.Duration
+	lastAcc    time.Time // last time totalUp was brought up to date
+	alive      prometheus.Gauge
+	aliveSince prometheus.Gauge // set on transitions to alive; stale while down
+	lastFail   prometheus.Gauge
+	checks     *nodeChecks // nil for groups, which run no connectivity checks
+}
+
+// nodeChecks holds the check-related series of a node. Each connectivity
+// check appends one latency sample, so the counters double as
+// latency-sample counts.
+type nodeChecks struct {
+	lastCheck    prometheus.Gauge
+	lastConnFail prometheus.Gauge
+	total        prometheus.Counter
+	failed       prometheus.Counter
+	sinceAlive   prometheus.Gauge // reset at the check that starts an up-streak
+	sinceFailure prometheus.Gauge // reset at every failed check
+}
+
+// record updates the check counters for one connectivity check; transition
+// is true when the check flipped the aliveness state.
+func (c *nodeChecks) record(alive, transition bool, now time.Time) {
+	setGaugeTime(c.lastCheck, now)
+	c.total.Inc()
+	if !alive {
+		c.failed.Inc()
+		c.sinceFailure.Set(1)
+		return
 	}
+	if transition {
+		c.sinceAlive.Set(1)
+	} else {
+		c.sinceAlive.Inc()
+	}
+	c.sinceFailure.Inc()
 }
 
 func (a *availability) record(alive, checked bool, now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if checked {
-		setGaugeTime(a.lastCheck, now)
-	}
-	if a.firstSeen.IsZero() {
-		a.firstSeen, a.lastAcc = now, now
-		a.setAlive(alive, now)
-		if checked {
-			a.recordCheck(alive, true)
-		}
-		return
-	}
 	prevAlive := gaugeBool(a.alive)
-	if prevAlive {
+	if a.firstSeen.IsZero() {
+		a.firstSeen = now
+	} else if prevAlive {
 		a.totalUp += now.Sub(a.lastAcc)
 	}
 	a.lastAcc = now
+	if alive != prevAlive {
+		a.alive.Set(boolFloat(alive))
+		if alive {
+			setGaugeTime(a.aliveSince, now)
+		}
+	}
 	if !alive {
 		setGaugeTime(a.lastFail, now)
 	}
-	if checked {
-		a.recordCheck(alive, alive != prevAlive)
+	if checked && a.checks != nil {
+		a.checks.record(alive, alive != prevAlive, now)
 	}
-	if alive == prevAlive {
-		return
-	}
-	a.setAlive(alive, now)
 }
 
-// recordCheck updates the check counters for one connectivity check.
-// transition is true when this check flipped the aliveness state (or is the
-// first record).
-func (a *availability) recordCheck(alive, transition bool) {
-	if a.checksTotal == nil {
-		return
-	}
-	a.checksTotal.Inc()
-	if alive {
-		if transition {
-			a.checksSinceAlive.Set(1)
-		} else {
-			a.checksSinceAlive.Inc()
-		}
-		a.checksSinceFailure.Inc()
-		return
-	}
-	a.checksFailed.Inc()
-	a.checksSinceFailure.Set(1)
+func (a *availability) recordConnFail(now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	setGaugeTime(a.checks.lastConnFail, now)
 }
 
 func (a *availability) snapshot(now time.Time) Availability {
@@ -184,17 +171,17 @@ func (a *availability) snapshot(now time.Time) Availability {
 		return Availability{}
 	}
 	snap := Availability{
-		Seen:           true,
-		Alive:          gaugeBool(a.alive),
-		LastFailAt:     gaugeTime(a.lastFail),
-		LastCheckAt:    gaugeTime(a.lastCheck),
-		LastConnFailAt: gaugeTime(a.lastConnFail),
-		ChecksTotal:    counterValue(a.checksTotal),
-		ChecksFailed:   counterValue(a.checksFailed),
+		Seen:       true,
+		Alive:      gaugeBool(a.alive),
+		LastFailAt: gaugeTime(a.lastFail),
 	}
-	if snap.ChecksTotal > 0 {
-		snap.ChecksSinceAlive = int64(gaugeValue(a.checksSinceAlive))
-		snap.ChecksSinceFail = int64(gaugeValue(a.checksSinceFailure))
+	if c := a.checks; c != nil {
+		snap.LastCheckAt = gaugeTime(c.lastCheck)
+		snap.LastConnFailAt = gaugeTime(c.lastConnFail)
+		snap.ChecksTotal = counterValue(c.total)
+		snap.ChecksFailed = counterValue(c.failed)
+		snap.ChecksSinceAlive = int64(metricValue(c.sinceAlive))
+		snap.ChecksSinceFail = int64(metricValue(c.sinceFailure))
 	}
 	totalUp := a.totalUp
 	if snap.Alive {
@@ -225,15 +212,17 @@ func nodeAvailability(key, subtag, name string) *availability {
 	}
 	labels := prometheus.Labels{"id": nodeID(key), "subtag": subtag, "dialer": name}
 	a := &availability{
-		alive:              common.NodeAlive.With(labels),
-		aliveSince:         common.NodeAliveSince.With(labels),
-		lastFail:           common.NodeLastFailure.With(labels),
-		lastCheck:          common.NodeLastCheck.With(labels),
-		lastConnFail:       common.NodeLastConnFailure.With(labels),
-		checksTotal:        common.NodeChecksTotal.With(labels),
-		checksFailed:       common.NodeCheckFailures.With(labels),
-		checksSinceAlive:   common.NodeChecksSinceAlive.With(labels),
-		checksSinceFailure: common.NodeChecksSinceFailure.With(labels),
+		alive:      common.NodeAlive.With(labels),
+		aliveSince: common.NodeAliveSince.With(labels),
+		lastFail:   common.NodeLastFailure.With(labels),
+		checks: &nodeChecks{
+			lastCheck:    common.NodeLastCheck.With(labels),
+			lastConnFail: common.NodeLastConnFailure.With(labels),
+			total:        common.NodeChecksTotal.With(labels),
+			failed:       common.NodeCheckFailures.With(labels),
+			sinceAlive:   common.NodeChecksSinceAlive.With(labels),
+			sinceFailure: common.NodeChecksSinceFailure.With(labels),
+		},
 	}
 	v, _ := nodes.LoadOrStore(key, a)
 	return v.(*availability)
@@ -253,10 +242,7 @@ func RecordNodeConnFail(key string) {
 	if !ok {
 		return
 	}
-	a := v.(*availability)
-	a.mu.Lock()
-	setGaugeTime(a.lastConnFail, time.Now())
-	a.mu.Unlock()
+	v.(*availability).recordConnFail(time.Now())
 }
 
 func GetNode(key string) Availability {
