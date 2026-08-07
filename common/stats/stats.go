@@ -47,6 +47,15 @@ type Availability struct {
 	LastConnFailAt time.Time     // last connection failure reported by the data plane; zero if none
 	UpRatio        float64       // up time / total time since first seen
 	UpDuration     time.Duration // length of the current up-streak
+
+	// Check counters are node-only (groups run no checks) and count
+	// per-network-type checks; each check appends one latency sample, so
+	// ChecksSinceAlive also tells how many fresh samples the avg10 window
+	// and the moving average have absorbed.
+	ChecksTotal      int64 // total connectivity checks
+	ChecksFailed     int64 // failed checks
+	ChecksSinceAlive int64 // checks since the current up-streak began, inclusive; stale while down
+	ChecksSinceFail  int64 // checks since the last failure, inclusive; counts all checks if none failed
 }
 
 func gaugeValue(g prometheus.Gauge) float64 {
@@ -71,6 +80,17 @@ func gaugeTime(g prometheus.Gauge) time.Time {
 	return time.Time{}
 }
 
+func counterValue(c prometheus.Counter) int64 {
+	if c == nil {
+		return 0
+	}
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		return 0
+	}
+	return int64(m.GetCounter().GetValue())
+}
+
 func setGaugeTime(g prometheus.Gauge, t time.Time) {
 	g.Set(float64(t.Unix()))
 }
@@ -87,6 +107,12 @@ type availability struct {
 	lastFail     prometheus.Gauge
 	lastCheck    prometheus.Gauge // nil for groups
 	lastConnFail prometheus.Gauge // nil for groups
+
+	// Check counters; nil for groups.
+	checksTotal        prometheus.Counter
+	checksFailed       prometheus.Counter
+	checksSinceAlive   prometheus.Gauge // reset at the check that starts an up-streak
+	checksSinceFailure prometheus.Gauge // reset at every failed check
 }
 
 func (a *availability) setAlive(alive bool, now time.Time) {
@@ -108,6 +134,9 @@ func (a *availability) record(alive, checked bool, now time.Time) {
 	if a.firstSeen.IsZero() {
 		a.firstSeen, a.lastAcc = now, now
 		a.setAlive(alive, now)
+		if checked {
+			a.recordCheck(alive, true)
+		}
 		return
 	}
 	prevAlive := gaugeBool(a.alive)
@@ -118,10 +147,34 @@ func (a *availability) record(alive, checked bool, now time.Time) {
 	if !alive {
 		setGaugeTime(a.lastFail, now)
 	}
+	if checked {
+		a.recordCheck(alive, alive != prevAlive)
+	}
 	if alive == prevAlive {
 		return
 	}
 	a.setAlive(alive, now)
+}
+
+// recordCheck updates the check counters for one connectivity check.
+// transition is true when this check flipped the aliveness state (or is the
+// first record).
+func (a *availability) recordCheck(alive, transition bool) {
+	if a.checksTotal == nil {
+		return
+	}
+	a.checksTotal.Inc()
+	if alive {
+		if transition {
+			a.checksSinceAlive.Set(1)
+		} else {
+			a.checksSinceAlive.Inc()
+		}
+		a.checksSinceFailure.Inc()
+		return
+	}
+	a.checksFailed.Inc()
+	a.checksSinceFailure.Set(1)
 }
 
 func (a *availability) snapshot(now time.Time) Availability {
@@ -136,6 +189,12 @@ func (a *availability) snapshot(now time.Time) Availability {
 		LastFailAt:     gaugeTime(a.lastFail),
 		LastCheckAt:    gaugeTime(a.lastCheck),
 		LastConnFailAt: gaugeTime(a.lastConnFail),
+		ChecksTotal:    counterValue(a.checksTotal),
+		ChecksFailed:   counterValue(a.checksFailed),
+	}
+	if snap.ChecksTotal > 0 {
+		snap.ChecksSinceAlive = int64(gaugeValue(a.checksSinceAlive))
+		snap.ChecksSinceFail = int64(gaugeValue(a.checksSinceFailure))
 	}
 	totalUp := a.totalUp
 	if snap.Alive {
@@ -166,11 +225,15 @@ func nodeAvailability(key, subtag, name string) *availability {
 	}
 	labels := prometheus.Labels{"id": nodeID(key), "subtag": subtag, "dialer": name}
 	a := &availability{
-		alive:        common.NodeAlive.With(labels),
-		aliveSince:   common.NodeAliveSince.With(labels),
-		lastFail:     common.NodeLastFailure.With(labels),
-		lastCheck:    common.NodeLastCheck.With(labels),
-		lastConnFail: common.NodeLastConnFailure.With(labels),
+		alive:              common.NodeAlive.With(labels),
+		aliveSince:         common.NodeAliveSince.With(labels),
+		lastFail:           common.NodeLastFailure.With(labels),
+		lastCheck:          common.NodeLastCheck.With(labels),
+		lastConnFail:       common.NodeLastConnFailure.With(labels),
+		checksTotal:        common.NodeChecksTotal.With(labels),
+		checksFailed:       common.NodeCheckFailures.With(labels),
+		checksSinceAlive:   common.NodeChecksSinceAlive.With(labels),
+		checksSinceFailure: common.NodeChecksSinceFailure.With(labels),
 	}
 	v, _ := nodes.LoadOrStore(key, a)
 	return v.(*availability)
