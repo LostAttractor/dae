@@ -6,11 +6,15 @@
 package control
 
 import (
+	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/dns"
 	dnsmessage "github.com/miekg/dns"
 )
@@ -19,7 +23,43 @@ type failDnsForwarder struct {
 	t *testing.T
 }
 
-func (f failDnsForwarder) ForwardDNS(*dnsmessage.Msg) error {
+type closeTrackingDnsForwarder struct {
+	closed chan struct{}
+}
+
+type cancelAwareDnsForwarder struct {
+	started chan struct{}
+	closed  chan struct{}
+}
+
+type countingDnsForwarder struct {
+	closeCalls int
+}
+
+func (f *countingDnsForwarder) ForwardDNS(context.Context, *dnsmessage.Msg) error { return nil }
+func (f *countingDnsForwarder) Close() error {
+	f.closeCalls++
+	return nil
+}
+
+func (f *cancelAwareDnsForwarder) ForwardDNS(ctx context.Context, _ *dnsmessage.Msg) error {
+	close(f.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *cancelAwareDnsForwarder) Close() error {
+	close(f.closed)
+	return nil
+}
+
+func (f *closeTrackingDnsForwarder) ForwardDNS(context.Context, *dnsmessage.Msg) error { return nil }
+func (f *closeTrackingDnsForwarder) Close() error {
+	close(f.closed)
+	return nil
+}
+
+func (f failDnsForwarder) ForwardDNS(context.Context, *dnsmessage.Msg) error {
 	f.t.Fatal("cached response unexpectedly reached the forwarder")
 	return nil
 }
@@ -178,6 +218,9 @@ func TestUpdateDnsCacheFixedDomain(t *testing.T) {
 
 	noCacheKey := dnsCacheKey{queryInfo: queryInfo{qname: "nocache.com.", qtype: dnsmessage.TypeA}}
 	c.UpdateDnsCache(noCacheKey, "nocache.com.", []dnsmessage.RR{testARecord("nocache.com.", "2.2.2.2")})
+	if c.dnsCache.Len() != 1 {
+		t.Fatalf("fixed_ttl=0 entry should not occupy the cache: len=%d", c.dnsCache.Len())
+	}
 	if caches := c.dnsCache.Get(noCacheKey); caches != nil {
 		t.Fatalf("fixed_ttl=0 response must be expired immediately: %v", caches)
 	}
@@ -254,7 +297,7 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 	c.dnsForwarderCache.Store(forwarderKey, failDnsForwarder{t: t})
 	c.dnsCache.ReplaceDeadline(cacheKey, upstreamResponse.Answer, time.Now().Add(5*time.Second))
 	cachedResponse := &dnsmessage.Msg{Question: []dnsmessage.Question{{Name: qi.qname, Qtype: qi.qtype}}}
-	fromCache, err := c.dialSend(cachedResponse, upstream, dialArg, qi)
+	fromCache, err := c.dialSend(context.Background(), cachedResponse, upstream, dialArg, qi, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,15 +337,176 @@ func TestRegisterAnswersNoExpiryIgnoresFixedTtl(t *testing.T) {
 	checkInvariants(t, registry, fake)
 }
 
-func TestRegisterAnswersAfterClose(t *testing.T) {
+func TestRegisterAnswersNoExpiryAfterCloseIsNoop(t *testing.T) {
 	c, registry, _ := newTestDnsController(t, nil)
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// A retired controller must not write the (shared) registry.
-	c.registerAnswers(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA},
-		[]dnsmessage.RR{testARecord("example.com.", "1.2.3.4")})
+	qi := queryInfo{qname: "resolver.example.", qtype: dnsmessage.TypeA}
+	c.registerAnswersNoExpiry(qi, []dnsmessage.RR{testARecord(qi.qname, "1.1.1.1")})
 	if registry.Size() != 0 {
-		t.Fatalf("registerAnswers after Close must be a no-op: size=%v", registry.Size())
+		t.Fatal("synthetic registration mutated the registry after Close")
+	}
+}
+
+func TestSelectDnsForwarderOwnership(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	ephemeral := &countingDnsForwarder{}
+	selected, release := c.selectDnsForwarder(dnsForwarderKey{}, ephemeral, false)
+	if selected != ephemeral {
+		t.Fatal("ephemeral forwarder was replaced")
+	}
+	release()
+	if ephemeral.closeCalls != 1 {
+		t.Fatalf("ephemeral forwarder close calls = %d, want 1", ephemeral.closeCalls)
+	}
+
+	key := dnsForwarderKey{upstream: "udp://resolver.example:53"}
+	first := &countingDnsForwarder{}
+	selected, release = c.selectDnsForwarder(key, first, true)
+	release()
+	if selected != first || first.closeCalls != 0 {
+		t.Fatal("new cached forwarder was not retained")
+	}
+	loser := &countingDnsForwarder{}
+	selected, release = c.selectDnsForwarder(key, loser, true)
+	release()
+	if selected != first || loser.closeCalls != 1 {
+		t.Fatal("LoadOrStore loser was not closed")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if first.closeCalls != 1 {
+		t.Fatalf("cached forwarder close calls = %d, want 1", first.closeCalls)
+	}
+}
+
+func TestHandleAfterClose(t *testing.T) {
+	c, registry, _ := newTestDnsController(t, nil)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	msg := testQuery("example.com.", dnsmessage.TypeA, 1)
+	if err := c.Handle(msg, nil); err != nil {
+		t.Fatal(err)
+	}
+	if registry.Size() != 0 {
+		t.Fatalf("Handle after Close must be a no-op: size=%v", registry.Size())
+	}
+}
+
+func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	forwarder := &closeTrackingDnsForwarder{closed: make(chan struct{})}
+	c.dnsForwarderCache.Store(dnsForwarderKey{}, forwarder)
+	if !c.beginRequest() {
+		t.Fatal("open controller rejected request registration")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.Close() }()
+	deadline := time.After(time.Second)
+	for c.closed.Err() == nil {
+		select {
+		case <-deadline:
+			t.Fatal("Close did not cancel the controller")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	select {
+	case <-forwarder.closed:
+		t.Fatal("forwarder closed while a request was still in flight")
+	default:
+	}
+
+	c.endRequest()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after the request ended")
+	}
+	select {
+	case <-forwarder.closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not release the forwarder")
+	}
+	if c.beginRequest() {
+		t.Fatal("closed controller accepted a new request")
+	}
+}
+
+func TestDnsControllerCloseCancelsInFlightForwarder(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+	dialArg := &dialArgument{
+		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
+		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	forwarder := &cancelAwareDnsForwarder{
+		started: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+	c.dnsForwarderCache.Store(key, forwarder)
+	if !c.beginRequest() {
+		t.Fatal("open controller rejected request registration")
+	}
+	requestDone := make(chan error, 1)
+	go func() {
+		defer c.endRequest()
+		_, err := c.dialSend(c.closed, testQuery("example.com.", dnsmessage.TypeA, 1), upstream, dialArg,
+			queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, true)
+		requestDone <- err
+	}()
+	<-forwarder.started
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- c.Close() }()
+	select {
+	case err := <-requestDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("forwarder error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel the in-flight forwarder")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after cancellation")
+	}
+	select {
+	case <-forwarder.closed:
+	default:
+		t.Fatal("Close did not release the forwarder")
+	}
+}
+
+func TestAcceptedResponseRegistersDuringClose(t *testing.T) {
+	c, registry, _ := newTestDnsController(t, nil)
+	if !c.beginRequest() {
+		t.Fatal("open controller rejected request registration")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- c.Close() }()
+	for c.closed.Err() == nil {
+		time.Sleep(time.Millisecond)
+	}
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	msg := &dnsmessage.Msg{Answer: []dnsmessage.RR{testARecord(qi.qname, "1.2.3.4")}}
+	c.finalizeAcceptedResponse(qi, msg, false)
+	c.endRequest()
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.Lookup(qi); len(got) != 1 || got[0] != netip.MustParseAddr("1.2.3.4") {
+		t.Fatalf("accepted response was not registered during Close: %v", got)
 	}
 }

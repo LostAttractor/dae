@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -61,6 +62,9 @@ type DnsController struct {
 	dnsCache          *commonDnsCache[dnsCacheKey]
 	dnsKeyLocker      common.KeyLocker[dnsCacheKey]
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
+	requestMu         sync.Mutex
+	requestWG         sync.WaitGroup
+	closeOnce         sync.Once
 	// closed is canceled by Close: once closed, the controller must not serve
 	// new requests — its forwarders are closed, and its writes would land on
 	// the shared eBPF maps the next control plane owns.
@@ -179,6 +183,20 @@ func (c *DnsController) prepareQueryInfo(dnsMessage *dnsmessage.Msg) (queryInfo 
 	return
 }
 
+func (c *DnsController) beginRequest() bool {
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	if c.closed.Err() != nil {
+		return false
+	}
+	c.requestWG.Add(1)
+	return true
+}
+
+func (c *DnsController) endRequest() {
+	c.requestWG.Done()
+}
+
 func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
 	if c.closed.Err() != nil {
 		// Drop requests arriving while the owning plane is being retired.
@@ -190,6 +208,9 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 
 	if len(dnsMessage.Question) == 0 {
 		panic("no question in dns message")
+	}
+	if !c.beginRequest() {
+		return nil
 	}
 
 	queryInfo := c.prepareQueryInfo(dnsMessage)
@@ -203,6 +224,7 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 	id := dnsMessage.Id
 
 	go func() {
+		defer c.endRequest()
 		var err error
 		// Try to make both A and AAAA lookups.
 		if (queryInfo.qtype == dnsmessage.TypeA || queryInfo.qtype == dnsmessage.TypeAAAA) && c.qtypePrefer != 0 {
@@ -225,9 +247,9 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 			// TODO: ignoreFixedTTL?
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- c.handleDNSRequest(dnsMessage2, req, queryInfo2)
+				errCh <- c.handleDNSRequest(c.closed, dnsMessage2, req, queryInfo2)
 			}()
-			err = oops.Join(c.handleDNSRequest(dnsMessage, req, queryInfo), <-errCh)
+			err = oops.Join(c.handleDNSRequest(c.closed, dnsMessage, req, queryInfo), <-errCh)
 			if err != nil {
 				goto err
 			}
@@ -235,10 +257,13 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 				c.reject(dnsMessage)
 			}
 		} else {
-			err = c.handleDNSRequest(dnsMessage, req, queryInfo)
+			err = c.handleDNSRequest(c.closed, dnsMessage, req, queryInfo)
 		}
 	err:
 		if err != nil {
+			if errors.Is(err, context.Canceled) && c.closed.Err() != nil {
+				return
+			}
 			netErr, ok := IsNetError(err)
 			err = oops.
 				With("Is NetError", ok).
@@ -277,6 +302,7 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 // TODO: qname=. qtype=2 的查询是什么, 为什么没有缓存, 因为AsIs?
 // TODO: 如果AsIs都不缓存的话，如果一个server可用一个不可用，那就是远端sever的问题?
 func (c *DnsController) handleDNSRequest(
+	ctx context.Context,
 	dnsMessage *dnsmessage.Msg,
 	req *udpRequest,
 	queryInfo queryInfo,
@@ -331,8 +357,11 @@ Dial:
 		}
 
 		// TODO: 这里可能不可以这样做
-		responseFromCache, err = c.dialSend(dnsMessage, upstream, dialArgument, queryInfo)
+		responseFromCache, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryInfo)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			netErr, ok := IsNetError(err)
 			err = oops.
 				In("DialContext").
@@ -460,15 +489,14 @@ func (c *DnsController) registerAnswers(queryInfo queryInfo, answers []dnsmessag
 // without a time-based deadline. Their RR headers intentionally retain TTL 0
 // because this lifetime is internal and is never sent to clients.
 func (c *DnsController) registerAnswersNoExpiry(queryInfo queryInfo, answers []dnsmessage.RR) {
+	if !c.beginRequest() {
+		return
+	}
+	defer c.endRequest()
 	c.registerAnswersInternal(queryInfo, answers, true)
 }
 
 func (c *DnsController) registerAnswersInternal(queryInfo queryInfo, answers []dnsmessage.RR, noExpiry bool) {
-	if c.closed.Err() != nil {
-		// Do not write the shared eBPF maps after Close; the next control
-		// plane owns them now.
-		return
-	}
 	// The match bitmap only depends on the domain, so it is shared by all
 	// records of this answer set.
 	domainBitmap := c.matchBitmap(queryInfo.qname)
@@ -504,7 +532,7 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 }
 
 // TODO: 简化 cacheKey?
-func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) (bool, error) {
+func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) (bool, error) {
 	if c.closed.Err() != nil {
 		// The cached forwarders are closed by Close; dialing here would
 		// recreate connections nobody closes anymore.
@@ -516,6 +544,9 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 	// No parallel for the same lookup.
 	l, isNew := c.dnsKeyLocker.Lock(cacheKey)
 	defer c.dnsKeyLocker.Unlock(cacheKey, l)
+	if c.closed.Err() != nil {
+		return false, net.ErrClosed
+	}
 	var forwarder DnsForwarder
 	value, ok := c.dnsForwarderCache.Load(key)
 	if ok {
@@ -550,7 +581,7 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 		forwarder = actualValue.(DnsForwarder)
 	}
 
-	err := forwarder.ForwardDNS(msg)
+	err := forwarder.ForwardDNS(ctx, msg)
 	if err != nil {
 		return false, err
 	}
@@ -603,16 +634,20 @@ func (c *DnsController) dialSend(msg *dnsmessage.Msg, upstream *dns.Upstream, di
 }
 
 func (c *DnsController) Close() error {
-	// Cancel first: registerAnswers/dialSend check closed, so no new registry
-	// writes or dials can start while the forwarders are closed below.
-	c.close()
+	c.closeOnce.Do(func() {
+		// Serialize cancellation with request registration. Once this lock is
+		// released, Wait is safe because no later request can call Add.
+		c.requestMu.Lock()
+		c.close()
+		c.requestMu.Unlock()
+		c.requestWG.Wait()
 
-	// Close all DNS forwarders
-	c.dnsForwarderCache.Range(func(key, value any) bool {
-		if forwarder, ok := value.(io.Closer); ok {
-			forwarder.Close()
-		}
-		return true
+		c.dnsForwarderCache.Range(func(key, value any) bool {
+			if forwarder, ok := value.(io.Closer); ok {
+				_ = forwarder.Close()
+			}
+			return true
+		})
 	})
 	return nil
 }
