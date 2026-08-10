@@ -92,6 +92,28 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	}}, true)
 }
 
+func TestInitialCheckExponentialBackoff(t *testing.T) {
+	if InitialCheckMaxInterval != 3600*time.Second {
+		t.Fatalf("maximum initial-check interval = %v, want 3600s", InitialCheckMaxInterval)
+	}
+	interval := 3 * time.Minute
+	want := []time.Duration{
+		3 * time.Minute,
+		6 * time.Minute,
+		12 * time.Minute,
+		24 * time.Minute,
+		48 * time.Minute,
+		InitialCheckMaxInterval,
+		InitialCheckMaxInterval,
+	}
+	for i, expected := range want {
+		if interval != expected {
+			t.Fatalf("backoff[%d] = %v, want %v", i, interval, expected)
+		}
+		interval = nextInitialCheckInterval(interval)
+	}
+}
+
 func TestRunCheckRecordsFailedConnectAttempts(t *testing.T) {
 	transport := &blockingFailConnectDialer{
 		started: make(chan struct{}),
