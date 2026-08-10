@@ -6,7 +6,9 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +18,23 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
+	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+type statusTestDialer struct{}
+
+func (statusTestDialer) Alive() bool    { return true }
+func (statusTestDialer) Connect() error { return nil }
+func (statusTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (statusTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return nil, fmt.Errorf("not implemented")
+}
 
 func TestStatusServerReturnsUnavailableWithoutPublishedPlane(t *testing.T) {
 	server := &StatusServer{version: "test"}
@@ -171,5 +188,135 @@ func TestFailureEpisodeJSONFields(t *testing.T) {
 		if _, ok := fields["last_fail_at"]; ok {
 			t.Errorf("%s status still exposes last_fail_at", name)
 		}
+	}
+}
+
+func TestGroupHealth(t *testing.T) {
+	tests := []struct {
+		name     string
+		group    GroupStatus
+		critical bool
+		want     HealthStatus
+	}{
+		{
+			name:     "supported modes are alive",
+			group:    GroupStatus{Networks: [4]NetworkStatus{{Supported: true, Alive: true}}},
+			critical: true,
+			want:     HealthHealthy,
+		},
+		{
+			name: "unsupported mode is ignored",
+			group: GroupStatus{Networks: [4]NetworkStatus{
+				{Supported: true, Alive: true},
+				{Supported: false, Alive: false},
+			}},
+			critical: true,
+			want:     HealthHealthy,
+		},
+		{
+			name:     "critical supported mode is unavailable",
+			group:    GroupStatus{Networks: [4]NetworkStatus{{Supported: true}}},
+			critical: true,
+			want:     HealthDegraded,
+		},
+		{
+			name:  "non-critical supported mode is unavailable",
+			group: GroupStatus{Networks: [4]NetworkStatus{{Supported: true}}},
+			want:  HealthWarning,
+		},
+		{
+			name:     "critical group supports no modes",
+			critical: true,
+			want:     HealthDegraded,
+		},
+		{
+			name: "non-critical group supports no modes",
+			want: HealthWarning,
+		},
+		{
+			name:     "no-check group",
+			group:    GroupStatus{NoCheck: true},
+			critical: true,
+			want:     HealthHealthy,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := groupHealth(tt.group, tt.critical); got != tt.want {
+				t.Fatalf("groupHealth() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCombineHealth(t *testing.T) {
+	health := combineHealth(HealthHealthy, HealthWarning)
+	health = combineHealth(health, HealthDegraded)
+	health = combineHealth(health, HealthHealthy)
+	if health != HealthDegraded {
+		t.Fatalf("combined health = %q, want %q", health, HealthDegraded)
+	}
+}
+
+func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	common.InitPrometheus(registry)
+	option := &dialer.GlobalOption{}
+	policy := dialer.DialerSelectionPolicy{
+		Policy:     consts.DialerSelectionPolicy_Fixed,
+		FixedIndex: 0,
+	}
+	callback := func(bool, *common.NetworkType) {}
+	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindAlwaysAlive, nil, nil, policy, callback)
+	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible, nil, nil, policy, callback)
+
+	node := dialer.NewDialer(statusTestDialer{}, option, &dialer.Property{Property: D.Property{
+		Name: t.Name(),
+		Link: "test://" + t.Name(),
+	}}, true)
+	group := outbound.NewDialerGroup(
+		option,
+		t.Name(),
+		outbound.GroupKindNormal,
+		[]*dialer.Dialer{node},
+		[]*dialer.Annotation{{}},
+		policy,
+		callback,
+	)
+	defer group.Close()
+
+	tcp4 := common.IndexToNetworkType(0)
+	node.SetSupported(tcp4, true)
+	node.Update(true, time.Millisecond, tcp4, nil)
+	node.NotifyStatusChange()
+
+	plane := &ControlPlane{
+		outbounds:          []*outbound.DialerGroup{direct, block, group},
+		criticalOutbounds:  []bool{false, false, true},
+		PrometheusRegistry: registry,
+	}
+	snapshot := plane.StatusSnapshot("test")
+	if snapshot.Health != HealthHealthy || snapshot.Groups[1].Health != HealthHealthy {
+		t.Fatalf("health = %q/%q, want healthy", snapshot.Health, snapshot.Groups[1].Health)
+	}
+	if !snapshot.Groups[1].Networks[0].Supported || !snapshot.Groups[1].Networks[0].Alive {
+		t.Fatalf("tcp4 status = %+v, want supported and alive", snapshot.Groups[1].Networks[0])
+	}
+	if snapshot.Groups[1].Networks[1].Supported {
+		t.Fatalf("tcp6 status = %+v, want unsupported", snapshot.Groups[1].Networks[1])
+	}
+
+	node.Update(false, 0, tcp4, fmt.Errorf("unavailable"))
+	node.NotifyStatusChange()
+	snapshot = plane.StatusSnapshot("test")
+	if snapshot.Health != HealthDegraded || snapshot.Groups[1].Health != HealthDegraded {
+		t.Fatalf("health = %q/%q, want degraded", snapshot.Health, snapshot.Groups[1].Health)
+	}
+
+	plane.criticalOutbounds[2] = false
+	snapshot = plane.StatusSnapshot("test")
+	if snapshot.Health != HealthWarning || snapshot.Groups[1].Health != HealthWarning {
+		t.Fatalf("health = %q/%q, want warning", snapshot.Health, snapshot.Groups[1].Health)
 	}
 }

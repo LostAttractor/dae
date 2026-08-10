@@ -42,3 +42,68 @@ func TestRoutingMatcherBuilderRejectsSkipWhileNoaliveOnBuiltins(t *testing.T) {
 		})
 	}
 }
+
+func TestRoutingMatcherBuilderCriticalOutbounds(t *testing.T) {
+	const (
+		criticalID = uint8(consts.OutboundUserDefinedMin) + iota
+		skipOnlyID
+		mixedID
+		unusedID
+		fallbackID
+	)
+	rule := func(port, outbound string, skip bool) *config_parser.RoutingRule {
+		var params []*config_parser.Param
+		if skip {
+			params = []*config_parser.Param{{Val: consts.OutboundParam_SkipWhileNoalive}}
+		}
+		return &config_parser.RoutingRule{
+			AndFunctions: []*config_parser.Function{{
+				Name:   consts.Function_DestPort,
+				Params: []*config_parser.Param{{Val: port}},
+			}},
+			Outbound: config_parser.Function{Name: outbound, Params: params},
+		}
+	}
+
+	builder, err := NewRoutingMatcherBuilder(
+		[]*config_parser.RoutingRule{
+			rule("80", "critical", false),
+			rule("81", "skip-only", true),
+			rule("82", "mixed", true),
+			rule("83", "mixed", false),
+		},
+		map[string]uint8{
+			"critical":  criticalID,
+			"skip-only": skipOnlyID,
+			"mixed":     mixedID,
+			"unused":    unusedID,
+			"fallback":  fallbackID,
+		},
+		nil,
+		"fallback",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	critical := builder.criticalOutbounds(int(fallbackID) + 1)
+	tests := []struct {
+		name string
+		id   uint8
+		want bool
+	}{
+		{name: "ordinary rule", id: criticalID, want: true},
+		{name: "skip-only rules", id: skipOnlyID},
+		{name: "mixed rules", id: mixedID, want: true},
+		{name: "unreferenced", id: unusedID},
+		{name: "fallback", id: fallbackID, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := critical[tt.id]; got != tt.want {
+				t.Fatalf("criticalOutbounds()[%d] = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+}

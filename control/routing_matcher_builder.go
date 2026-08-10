@@ -97,6 +97,20 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 	return b, nil
 }
 
+// criticalOutbounds marks groups referenced by any rule that remains active
+// when the group is unavailable. Skip-only and unreferenced groups are not.
+func (b *RoutingMatcherBuilder) criticalOutbounds(outboundCount int) []bool {
+	critical := make([]bool, outboundCount)
+	for _, rule := range b.rules {
+		outboundID := int(rule.Outbound)
+		if outboundID < int(consts.OutboundUserDefinedMin) || outboundID >= outboundCount || rule.SkipWhileNoalive {
+			continue
+		}
+		critical[outboundID] = true
+	}
+	return critical
+}
+
 func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
 	var outboundId uint8
 	switch outbound {

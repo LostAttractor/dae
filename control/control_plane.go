@@ -54,6 +54,7 @@ type ControlPlane struct {
 
 	// TODO: add mutex?
 	outbounds              []*outbound.DialerGroup
+	criticalOutbounds      []bool
 	noConnectivityOutbound consts.OutboundIndex
 	inConnections          sync.Map
 
@@ -345,6 +346,7 @@ func NewControlPlane(
 	if err != nil {
 		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
+	criticalOutbounds := builder.criticalOutbounds(len(outbounds))
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, oops.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
@@ -357,6 +359,7 @@ func NewControlPlane(
 	plane := &ControlPlane{
 		core:                      core,
 		outbounds:                 outbounds,
+		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
 		routingMatcher:            routingMatcher,
 		routingMatcherBuilder:     builder,

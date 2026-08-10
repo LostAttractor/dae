@@ -14,8 +14,17 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
 
+type HealthStatus string
+
+const (
+	HealthHealthy  HealthStatus = "healthy"
+	HealthWarning  HealthStatus = "warning"
+	HealthDegraded HealthStatus = "degraded"
+)
+
 type StatusSnapshot struct {
 	Version      string        `json:"version"`
+	Health       HealthStatus  `json:"health"` // aggregate connectivity of visible groups
 	StartedAt    time.Time     `json:"started_at"`
 	LastReloadAt *time.Time    `json:"last_reload_at,omitempty"`
 	ActiveConns  int64         `json:"active_conns"`
@@ -38,6 +47,7 @@ type TableUsage struct {
 type GroupStatus struct {
 	Name     string           `json:"name"`
 	Policy   string           `json:"policy"`
+	Health   HealthStatus     `json:"health"`   // connectivity across supported network modes
 	NoCheck  bool             `json:"no_check"` // groups not subject to connectivity checks (direct)
 	Networks [4]NetworkStatus `json:"networks"` // tcp4, tcp6, udp4, udp6
 	Nodes    []NodeStatus     `json:"nodes"`
@@ -45,6 +55,7 @@ type GroupStatus struct {
 
 type NetworkStatus struct {
 	Network              string        `json:"network"`
+	Supported            bool          `json:"supported"`
 	Alive                bool          `json:"alive"`
 	Selected             string        `json:"selected"` // dialer name, empty if none
 	UpRatio              float64       `json:"up_ratio"`
@@ -263,10 +274,48 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 	return ns
 }
 
+func groupHealth(group GroupStatus, critical bool) HealthStatus {
+	if group.NoCheck {
+		return HealthHealthy
+	}
+
+	hasSupportedNetwork := false
+	for _, network := range group.Networks {
+		if !network.Supported {
+			continue
+		}
+		hasSupportedNetwork = true
+		if !network.Alive {
+			if critical {
+				return HealthDegraded
+			}
+			return HealthWarning
+		}
+	}
+	if hasSupportedNetwork {
+		return HealthHealthy
+	}
+	if critical {
+		return HealthDegraded
+	}
+	return HealthWarning
+}
+
+func combineHealth(current, next HealthStatus) HealthStatus {
+	if current == HealthDegraded || next == HealthDegraded {
+		return HealthDegraded
+	}
+	if current == HealthWarning || next == HealthWarning {
+		return HealthWarning
+	}
+	return HealthHealthy
+}
+
 func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 	conns := c.collectConnCounts()
 	snapshot := &StatusSnapshot{
 		Version:      version,
+		Health:       HealthHealthy,
 		StartedAt:    stats.ProcessStart,
 		LastReloadAt: timePtr(stats.LastReload()),
 	}
@@ -288,7 +337,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
 		)
 	}
-	for _, g := range c.outbounds {
+	for outboundID, g := range c.outbounds {
 		if g.Kind == outbound.GroupKindInvisible {
 			continue
 		}
@@ -297,12 +346,21 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			Policy:  string(g.GetSelectionPolicy()),
 			NoCheck: g.Kind == outbound.GroupKindAlwaysAlive,
 		}
-		for i := 0; i < 4; i++ {
-			gs.Networks[i] = networkStatus(g, i, conns)
-		}
 		for _, d := range g.Dialers {
 			gs.Nodes = append(gs.Nodes, nodeStatus(g, d, conns))
 		}
+		for i := 0; i < 4; i++ {
+			gs.Networks[i] = networkStatus(g, i, conns)
+			for _, node := range gs.Nodes {
+				if node.Supported[i] {
+					gs.Networks[i].Supported = true
+					break
+				}
+			}
+		}
+		critical := outboundID < len(c.criticalOutbounds) && c.criticalOutbounds[outboundID]
+		gs.Health = groupHealth(gs, critical)
+		snapshot.Health = combineHealth(snapshot.Health, gs.Health)
 		snapshot.Groups = append(snapshot.Groups, gs)
 	}
 	return snapshot
