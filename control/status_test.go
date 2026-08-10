@@ -6,6 +6,7 @@
 package control
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -127,5 +128,48 @@ func TestCollectConnCountsKeepsSameNamedNodesSeparate(t *testing.T) {
 	}
 	if got := counts.byGroupNetwork[groupNetworkKey{group: group, network: 0}]; got != (connValues{active: 7, total: 10}) {
 		t.Fatalf("group/network counts = %+v", got)
+	}
+}
+
+func TestFailureEpisodeJSONFields(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	payload := struct {
+		Network NetworkStatus `json:"network"`
+		Node    NodeStatus    `json:"node"`
+	}{
+		Network: NetworkStatus{
+			LastFailureStartedAt: &startedAt,
+			LastFailureDuration:  17 * time.Minute,
+		},
+		Node: NodeStatus{
+			LastFailureStartedAt: &startedAt,
+			LastFailureDuration:  17 * time.Minute,
+		},
+	}
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Network map[string]json.RawMessage `json:"network"`
+		Node    map[string]json.RawMessage `json:"node"`
+	}
+	if err = json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	for name, fields := range map[string]map[string]json.RawMessage{"network": got.Network, "node": got.Node} {
+		if _, ok := fields["last_failure_started_at"]; !ok {
+			t.Errorf("%s status omitted last_failure_started_at: %s", name, b)
+		}
+		var duration time.Duration
+		if err = json.Unmarshal(fields["last_failure_duration"], &duration); err != nil {
+			t.Errorf("decode %s failure duration: %v", name, err)
+		} else if duration != 17*time.Minute {
+			t.Errorf("%s failure duration = %v, want 17m", name, duration)
+		}
+		if _, ok := fields["last_fail_at"]; ok {
+			t.Errorf("%s status still exposes last_fail_at", name)
+		}
 	}
 }

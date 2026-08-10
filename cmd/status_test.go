@@ -14,30 +14,6 @@ import (
 	"github.com/daeuniverse/dae/control"
 )
 
-func TestHasRecentFailure(t *testing.T) {
-	failedAt := time.Now()
-	tests := []struct {
-		name            string
-		lastFailAt      *time.Time
-		checksSinceFail int64
-		want            bool
-	}{
-		{name: "never failed", checksSinceFail: 2},
-		{name: "missing counter", lastFailAt: &failedAt},
-		{name: "latest check failed", lastFailAt: &failedAt, checksSinceFail: 1, want: true},
-		{name: "failure at window edge", lastFailAt: &failedAt, checksSinceFail: avgLatencyWindowChecks, want: true},
-		{name: "failure outside window", lastFailAt: &failedAt, checksSinceFail: avgLatencyWindowChecks + 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := hasRecentFailure(tt.lastFailAt, tt.checksSinceFail); got != tt.want {
-				t.Fatalf("hasRecentFailure() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestTableUsageRow(t *testing.T) {
 	previousColorsEnabled := colorsEnabled
 	colorsEnabled = false
@@ -125,22 +101,23 @@ func TestNodeStatusRow(t *testing.T) {
 	}
 }
 
-func TestNodeStatusRowHighlightsRecentFailure(t *testing.T) {
+func TestNodeStatusRowHighlightsAvg10Failure(t *testing.T) {
 	previousColorsEnabled := colorsEnabled
 	colorsEnabled = true
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
 	failedAt := time.Now()
 	row := nodeStatusRow(control.NodeStatus{
-		Name:               "node-a",
-		Alive:              true,
-		Selected:           [4]bool{true, false, false, false},
-		HasLatency:         true,
-		LastLatencyMs:      42,
-		Avg10LatencyMs:     60045,
-		MovingAvgLatencyMs: 60045,
-		LastFailAt:         &failedAt,
-		ChecksSinceFail:    avgLatencyWindowChecks,
+		Name:                 "node-a",
+		Alive:                true,
+		Selected:             [4]bool{true, false, false, false},
+		HasLatency:           true,
+		LastLatencyMs:        42,
+		Avg10LatencyMs:       60045,
+		MovingAvgLatencyMs:   60045,
+		Avg10HasFailure:      true,
+		LastFailureStartedAt: &failedAt,
+		LastFailureDuration:  2 * time.Minute,
 	})
 	tests := []struct {
 		cell int
@@ -148,11 +125,41 @@ func TestNodeStatusRowHighlightsRecentFailure(t *testing.T) {
 	}{
 		{cell: 0, ansi: "\x1b[36m"},
 		{cell: 6, ansi: "\x1b[91;1m"},
-		{cell: 10, ansi: "\x1b[31m"},
 	}
 	for _, tt := range tests {
 		if got := row[tt.cell].(string); !strings.Contains(got, tt.ansi) {
 			t.Errorf("nodeStatusRow()[%d] = %q, want ANSI prefix %q", tt.cell, got, tt.ansi)
 		}
+	}
+	if got := row[10].(string); strings.Contains(got, "\x1b[") {
+		t.Errorf("completed failure episode should not inherit avg10 coloring: %q", got)
+	}
+}
+
+func TestNodeStatusRowFormatsFailureEpisode(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	startedAt := time.Now().Add(-10 * time.Minute)
+	row := nodeStatusRow(control.NodeStatus{
+		Name:                 "node-a",
+		LastFailureStartedAt: &startedAt,
+		LastFailureDuration:  2 * time.Minute,
+	})
+	failure := row[10].(string)
+	if !strings.Contains(failure, " / 2m0s") {
+		t.Fatalf("failure episode = %q, want start and duration", failure)
+	}
+	if strings.Contains(failure, "chk") {
+		t.Fatalf("failure episode should not associate sample count with its start: %q", failure)
+	}
+
+	row = nodeStatusRow(control.NodeStatus{
+		Name:                 "node-a",
+		LastFailureStartedAt: &startedAt,
+	})
+	if got := row[10].(string); !strings.HasSuffix(got, " / 0s") {
+		t.Fatalf("zero-duration failure episode = %q, want 0s", got)
 	}
 }

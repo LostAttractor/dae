@@ -59,9 +59,10 @@ type Dialer struct {
 // LatencyStats is a coherent view of the latency samples of a dialer in one
 // dialer group.
 type LatencyStats struct {
-	Last      time.Duration
-	Avg10     time.Duration
-	MovingAvg time.Duration
+	Last            time.Duration
+	Avg10           time.Duration
+	MovingAvg       time.Duration
+	Avg10HasFailure bool
 }
 
 // RuntimeSnapshot is a coherent view of the mutable status fields of a
@@ -186,6 +187,7 @@ func (d *Dialer) latencyStatsLocked(g DialerGroup) (lat LatencyStats, ok bool) {
 	}
 	lat.Avg10, _ = latencies.AvgLatency()
 	lat.MovingAvg = d.MovingAverage[g]
+	lat.Avg10HasFailure = latencies.HasFailure()
 	return lat, true
 }
 

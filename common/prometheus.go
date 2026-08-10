@@ -35,11 +35,11 @@ var (
 	// Node-level series carry an "id" label (a hash of the node identity)
 	// so that nodes sharing the same (subtag, dialer) display labels do
 	// not alias each other's state.
-	NodeAlive           *prometheus.GaugeVec
-	NodeAliveSince      *prometheus.GaugeVec
-	NodeLastFailure     *prometheus.GaugeVec
-	NodeLastCheck       *prometheus.GaugeVec
-	NodeLastConnFailure *prometheus.GaugeVec
+	NodeAlive            *prometheus.GaugeVec
+	NodeAliveSince       *prometheus.GaugeVec
+	NodeLastFailureStart *prometheus.GaugeVec
+	NodeLastCheck        *prometheus.GaugeVec
+	NodeLastConnFailure  *prometheus.GaugeVec
 	// Node check counters: one increment per connectivity check (each check
 	// also appends one latency sample, so they double as sample counts).
 	NodeChecksTotal        *prometheus.CounterVec
@@ -48,7 +48,7 @@ var (
 	NodeChecksSinceFailure *prometheus.GaugeVec
 	GroupAlive             *prometheus.GaugeVec
 	GroupAliveSince        *prometheus.GaugeVec
-	GroupLastFailure       *prometheus.GaugeVec
+	GroupLastFailureStart  *prometheus.GaugeVec
 
 	StartTime      prometheus.Gauge
 	LastReloadTime prometheus.Gauge
@@ -143,9 +143,10 @@ func newMetrics() {
 		},
 		nodeLabels,
 	)
-	NodeLastFailure = prometheus.NewGaugeVec(
+	NodeLastFailureStart = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "dae_node_last_failure_timestamp_seconds",
+			Name: "dae_node_last_failure_start_timestamp_seconds",
+			Help: "Unix timestamp when the current or most recently completed node failure started.",
 		},
 		nodeLabels,
 	)
@@ -198,9 +199,10 @@ func newMetrics() {
 		},
 		groupLabels,
 	)
-	GroupLastFailure = prometheus.NewGaugeVec(
+	GroupLastFailureStart = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "dae_group_last_failure_timestamp_seconds",
+			Name: "dae_group_last_failure_start_timestamp_seconds",
+			Help: "Unix timestamp when the current or most recently completed group failure started.",
 		},
 		groupLabels,
 	)
@@ -251,7 +253,7 @@ func InitPrometheus(registry *prometheus.Registry) {
 		TotalConnections,
 		NodeAlive,
 		NodeAliveSince,
-		NodeLastFailure,
+		NodeLastFailureStart,
 		NodeLastCheck,
 		NodeLastConnFailure,
 		NodeChecksTotal,
@@ -260,7 +262,7 @@ func InitPrometheus(registry *prometheus.Registry) {
 		NodeChecksSinceFailure,
 		GroupAlive,
 		GroupAliveSince,
-		GroupLastFailure,
+		GroupLastFailureStart,
 		StartTime,
 		LastReloadTime,
 		// registry.MustRegister(TrafficBytes)

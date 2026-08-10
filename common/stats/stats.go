@@ -6,9 +6,9 @@
 // Package stats keeps process-lifetime availability statistics of nodes and
 // outbound groups. Single-value state (current aliveness and event timestamps)
 // lives in the prometheus gauges declared in package common, which survive
-// control-plane reloads. Uptime accounting and rolling-window history live
-// here because the prometheus client registry retains current samples, not a
-// queryable time series.
+// control-plane reloads. Uptime and duration accounting plus rolling-window
+// history live here because the prometheus client registry retains current
+// samples, not a queryable time series.
 package stats
 
 import (
@@ -41,14 +41,15 @@ func LastReload() time.Time {
 // Availability is a point-in-time view of the uptime of a node, or of a
 // group on one network type.
 type Availability struct {
-	Seen           bool          // false until the first record
-	Alive          bool          // current state
-	AliveSince     time.Time     // start of the current up-streak; zero while down
-	LastFailAt     time.Time     // last recorded check failure; zero if none
-	LastCheckAt    time.Time     // last connectivity check; zero if none (groups, unchecked nodes)
-	LastConnFailAt time.Time     // last connection failure reported by the data plane; zero if none
-	UpRatio        float64       // up time / total time since first seen
-	UpDuration     time.Duration // length of the current up-streak
+	Seen                 bool          // false until the first record
+	Alive                bool          // current state
+	AliveSince           time.Time     // start of the current up-streak; zero while down
+	LastFailureStartedAt time.Time     // start of the current or most recently completed failure
+	LastFailureDuration  time.Duration // current failure duration while down; final duration while alive
+	LastCheckAt          time.Time     // last connectivity check; zero if none (groups, unchecked nodes)
+	LastConnFailAt       time.Time     // last connection failure reported by the data plane; zero if none
+	UpRatio              float64       // up time / total time since first seen
+	UpDuration           time.Duration // length of the current up-streak
 
 	// Check counters are zero for groups (which run no checks) and count
 	// per-network-type checks; each check appends one latency sample, so
@@ -57,7 +58,7 @@ type Availability struct {
 	ChecksTotal      int64 // total connectivity checks
 	ChecksFailed     int64 // failed checks
 	ChecksSinceAlive int64 // checks since the current up-streak began, inclusive; stale while down
-	ChecksSinceFail  int64 // checks since the last failure, inclusive; counts all checks if none failed
+	ChecksSinceFail  int64 // checks since the latest failed sample, inclusive; counts all checks if none failed
 
 	Recent24h AvailabilityWindow // statistics observed during the trailing 24 hours
 }
@@ -95,19 +96,21 @@ func boolFloat(b bool) float64 {
 	return 0
 }
 
-// availability keeps the uptime accounting of one identity; all
-// single-value state is stored in the prometheus handles below.
+// availability keeps uptime and duration accounting for one identity. Its
+// wall-clock state is mirrored to the prometheus handles below.
 type availability struct {
-	mu         sync.Mutex
-	labels     prometheus.Labels
-	firstSeen  time.Time // zero until the first record
-	totalUp    time.Duration
-	lastAcc    time.Time // last time totalUp was brought up to date
-	alive      prometheus.Gauge
-	aliveSince prometheus.Gauge // set on transitions to alive; stale while down
-	lastFail   prometheus.Gauge
-	checks     *nodeChecks // nil for groups, which run no connectivity checks
-	recent     recentAvailability
+	mu                       sync.Mutex
+	labels                   prometheus.Labels
+	firstSeen                time.Time // zero until the first record
+	totalUp                  time.Duration
+	lastAcc                  time.Time // last time totalUp was brought up to date
+	failureStartedAt         time.Time // retains monotonic time for duration accounting
+	completedFailureDuration time.Duration
+	alive                    prometheus.Gauge
+	aliveSince               prometheus.Gauge // set on transitions to alive; stale while down
+	failureStart             prometheus.Gauge // wall-clock start retained after recovery
+	checks                   *nodeChecks      // nil for groups, which run no connectivity checks
+	recent                   recentAvailability
 }
 
 // nodeChecks holds the check-related series of a node. Each connectivity
@@ -144,7 +147,8 @@ func (a *availability) record(alive, checked bool, now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	prevAlive := gaugeBool(a.alive)
-	if a.firstSeen.IsZero() {
+	firstObservation := a.firstSeen.IsZero()
+	if firstObservation {
 		a.firstSeen = now
 	} else if prevAlive {
 		a.totalUp += now.Sub(a.lastAcc)
@@ -154,10 +158,15 @@ func (a *availability) record(alive, checked bool, now time.Time) {
 		a.alive.Set(boolFloat(alive))
 		if alive {
 			setGaugeTime(a.aliveSince, now)
+			if !a.failureStartedAt.IsZero() {
+				a.completedFailureDuration = max(now.Sub(a.failureStartedAt), 0)
+			}
 		}
 	}
-	if !alive {
-		setGaugeTime(a.lastFail, now)
+	if !alive && (firstObservation || prevAlive) {
+		a.failureStartedAt = now
+		a.completedFailureDuration = 0
+		setGaugeTime(a.failureStart, now)
 	}
 	isCheck := checked && a.checks != nil
 	if isCheck {
@@ -175,15 +184,24 @@ func (a *availability) recordConnFail(now time.Time) {
 func (a *availability) snapshot() Availability {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	now := time.Now()
+	return a.snapshotLocked(time.Now())
+}
+
+func (a *availability) snapshotAt(now time.Time) Availability {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.snapshotLocked(now)
+}
+
+func (a *availability) snapshotLocked(now time.Time) Availability {
 	if a.firstSeen.IsZero() {
 		return Availability{}
 	}
 	snap := Availability{
-		Seen:       true,
-		Alive:      gaugeBool(a.alive),
-		LastFailAt: gaugeTime(a.lastFail),
-		Recent24h:  a.recent.snapshot(a.firstSeen, now),
+		Seen:                 true,
+		Alive:                gaugeBool(a.alive),
+		LastFailureStartedAt: gaugeTime(a.failureStart),
+		Recent24h:            a.recent.snapshot(a.firstSeen, now),
 	}
 	if c := a.checks; c != nil {
 		snap.LastCheckAt = gaugeTime(c.lastCheck)
@@ -198,6 +216,12 @@ func (a *availability) snapshot() Availability {
 		snap.AliveSince = gaugeTime(a.aliveSince)
 		snap.UpDuration = now.Sub(snap.AliveSince)
 		totalUp += now.Sub(a.lastAcc)
+	}
+	if !snap.LastFailureStartedAt.IsZero() {
+		snap.LastFailureDuration = a.completedFailureDuration
+		if !snap.Alive && !a.failureStartedAt.IsZero() {
+			snap.LastFailureDuration = max(now.Sub(a.failureStartedAt), 0)
+		}
 	}
 	if total := now.Sub(a.firstSeen); total > 0 {
 		snap.UpRatio = float64(totalUp) / float64(total)
@@ -226,10 +250,10 @@ func nodeAvailability(key, subtag, name string) *availability {
 	}
 	labels := prometheus.Labels{"id": NodeID(key), "subtag": subtag, "dialer": name}
 	a := &availability{
-		labels:     labels,
-		alive:      common.NodeAlive.With(labels),
-		aliveSince: common.NodeAliveSince.With(labels),
-		lastFail:   common.NodeLastFailure.With(labels),
+		labels:       labels,
+		alive:        common.NodeAlive.With(labels),
+		aliveSince:   common.NodeAliveSince.With(labels),
+		failureStart: common.NodeLastFailureStart.With(labels),
 		checks: &nodeChecks{
 			lastCheck:    common.NodeLastCheck.With(labels),
 			lastConnFail: common.NodeLastConnFailure.With(labels),
@@ -286,7 +310,7 @@ func newGroupAvailability(name string) *[4]availability {
 		arr[i].labels = labels
 		arr[i].alive = common.GroupAlive.With(labels)
 		arr[i].aliveSince = common.GroupAliveSince.With(labels)
-		arr[i].lastFail = common.GroupLastFailure.With(labels)
+		arr[i].failureStart = common.GroupLastFailureStart.With(labels)
 	}
 	return &arr
 }
@@ -339,7 +363,7 @@ func sameLabels(a, b prometheus.Labels) bool {
 func deleteNodeMetrics(labels prometheus.Labels) {
 	common.NodeAlive.Delete(labels)
 	common.NodeAliveSince.Delete(labels)
-	common.NodeLastFailure.Delete(labels)
+	common.NodeLastFailureStart.Delete(labels)
 	common.NodeLastCheck.Delete(labels)
 	common.NodeLastConnFailure.Delete(labels)
 	common.NodeChecksTotal.Delete(labels)
@@ -353,7 +377,7 @@ func deleteGroupMetrics(group *[4]availability) {
 		labels := group[i].labels
 		common.GroupAlive.Delete(labels)
 		common.GroupAliveSince.Delete(labels)
-		common.GroupLastFailure.Delete(labels)
+		common.GroupLastFailureStart.Delete(labels)
 	}
 }
 

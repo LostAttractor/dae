@@ -44,44 +44,47 @@ type GroupStatus struct {
 }
 
 type NetworkStatus struct {
-	Network     string     `json:"network"`
-	Alive       bool       `json:"alive"`
-	Selected    string     `json:"selected"` // dialer name, empty if none
-	UpRatio     float64    `json:"up_ratio"`
-	AliveSince  *time.Time `json:"alive_since,omitempty"`
-	LastFailAt  *time.Time `json:"last_fail_at,omitempty"`
-	ActiveConns int64      `json:"active_conns"`
-	TotalConns  int64      `json:"total_conns"`
+	Network              string        `json:"network"`
+	Alive                bool          `json:"alive"`
+	Selected             string        `json:"selected"` // dialer name, empty if none
+	UpRatio              float64       `json:"up_ratio"`
+	AliveSince           *time.Time    `json:"alive_since,omitempty"`
+	LastFailureStartedAt *time.Time    `json:"last_failure_started_at,omitempty"`
+	LastFailureDuration  time.Duration `json:"last_failure_duration"`
+	ActiveConns          int64         `json:"active_conns"`
+	TotalConns           int64         `json:"total_conns"`
 }
 
 type NodeStatus struct {
-	ID                 string        `json:"id"`
-	Name               string        `json:"name"`
-	Subtag             string        `json:"subtag"`
-	Protocol           string        `json:"protocol"`
-	Address            string        `json:"address"`
-	Alive              bool          `json:"alive"`
-	Supported          [4]bool       `json:"supported"`
-	Selected           [4]bool       `json:"selected"`
-	HasLatency         bool          `json:"has_latency"`
-	LastLatencyMs      float64       `json:"last_latency_ms"`
-	Avg10LatencyMs     float64       `json:"avg10_latency_ms"`
-	MovingAvgLatencyMs float64       `json:"moving_avg_latency_ms"`
-	UpRatio            float64       `json:"up_ratio"`
-	UpRatio24h         float64       `json:"up_ratio_24h"`
-	UpDuration         time.Duration `json:"up_duration"`
-	AliveSince         *time.Time    `json:"alive_since,omitempty"`
-	LastFailAt         *time.Time    `json:"last_fail_at,omitempty"`
-	LastCheckAt        *time.Time    `json:"last_check_at,omitempty"`
-	LastConnFailAt     *time.Time    `json:"last_conn_fail_at,omitempty"`
-	ChecksTotal        int64         `json:"checks_total"`
-	ChecksFailed       int64         `json:"checks_failed"`
-	ChecksTotal24h     int64         `json:"checks_total_24h"`
-	ChecksFailed24h    int64         `json:"checks_failed_24h"`
-	ChecksSinceAlive   int64         `json:"checks_since_alive"`
-	ChecksSinceFail    int64         `json:"checks_since_fail"`
-	ActiveConns        int64         `json:"active_conns"`
-	TotalConns         int64         `json:"total_conns"`
+	ID                   string        `json:"id"`
+	Name                 string        `json:"name"`
+	Subtag               string        `json:"subtag"`
+	Protocol             string        `json:"protocol"`
+	Address              string        `json:"address"`
+	Alive                bool          `json:"alive"`
+	Supported            [4]bool       `json:"supported"`
+	Selected             [4]bool       `json:"selected"`
+	HasLatency           bool          `json:"has_latency"`
+	LastLatencyMs        float64       `json:"last_latency_ms"`
+	Avg10LatencyMs       float64       `json:"avg10_latency_ms"`
+	MovingAvgLatencyMs   float64       `json:"moving_avg_latency_ms"`
+	Avg10HasFailure      bool          `json:"avg10_has_failure"`
+	UpRatio              float64       `json:"up_ratio"`
+	UpRatio24h           float64       `json:"up_ratio_24h"`
+	UpDuration           time.Duration `json:"up_duration"`
+	AliveSince           *time.Time    `json:"alive_since,omitempty"`
+	LastFailureStartedAt *time.Time    `json:"last_failure_started_at,omitempty"`
+	LastFailureDuration  time.Duration `json:"last_failure_duration"`
+	LastCheckAt          *time.Time    `json:"last_check_at,omitempty"`
+	LastConnFailAt       *time.Time    `json:"last_conn_fail_at,omitempty"`
+	ChecksTotal          int64         `json:"checks_total"`
+	ChecksFailed         int64         `json:"checks_failed"`
+	ChecksTotal24h       int64         `json:"checks_total_24h"`
+	ChecksFailed24h      int64         `json:"checks_failed_24h"`
+	ChecksSinceAlive     int64         `json:"checks_since_alive"`
+	ChecksSinceFail      int64         `json:"checks_since_fail"`
+	ActiveConns          int64         `json:"active_conns"`
+	TotalConns           int64         `json:"total_conns"`
 }
 
 type connValues struct{ active, total int64 }
@@ -202,11 +205,12 @@ func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) Network
 	networkType := common.IndexToNetworkType(index)
 	avail := stats.GetGroup(g.Name, index)
 	ns := NetworkStatus{
-		Network:    networkType.String(),
-		Alive:      avail.Alive,
-		UpRatio:    avail.UpRatio,
-		AliveSince: timePtr(avail.AliveSince),
-		LastFailAt: timePtr(avail.LastFailAt),
+		Network:              networkType.String(),
+		Alive:                avail.Alive,
+		UpRatio:              avail.UpRatio,
+		AliveSince:           timePtr(avail.AliveSince),
+		LastFailureStartedAt: timePtr(avail.LastFailureStartedAt),
+		LastFailureDuration:  avail.LastFailureDuration,
 	}
 	if selected := g.SelectedDialer(networkType); selected != nil {
 		ns.Selected = selected.Name
@@ -237,12 +241,14 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 		ns.LastLatencyMs = millis(runtime.Latency.Last)
 		ns.Avg10LatencyMs = millis(runtime.Latency.Avg10)
 		ns.MovingAvgLatencyMs = millis(runtime.Latency.MovingAvg)
+		ns.Avg10HasFailure = runtime.Latency.Avg10HasFailure
 	}
 	avail := runtime.Availability
 	ns.UpRatio = avail.UpRatio
 	ns.UpDuration = avail.UpDuration
 	ns.AliveSince = timePtr(avail.AliveSince)
-	ns.LastFailAt = timePtr(avail.LastFailAt)
+	ns.LastFailureStartedAt = timePtr(avail.LastFailureStartedAt)
+	ns.LastFailureDuration = avail.LastFailureDuration
 	ns.LastCheckAt = timePtr(avail.LastCheckAt)
 	ns.LastConnFailAt = timePtr(avail.LastConnFailAt)
 	ns.ChecksTotal = avail.ChecksTotal
