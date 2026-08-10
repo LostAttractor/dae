@@ -10,8 +10,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"testing"
 	"time"
 
@@ -19,6 +22,10 @@ import (
 )
 
 type blockingDNSDialer struct{ conn net.Conn }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 type doqTestStream struct {
 	response *bytes.Reader
@@ -57,13 +64,144 @@ func TestResolveNetipContextCancellationClosesConnection(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("canceled DNS request unexpectedly succeeded")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled DNS request error = %v, want context.Canceled", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("canceled DNS request did not unblock")
 	}
 }
+
+func TestResolveUDPCancellationClosesConnection(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		query := new(dnsmessage.Msg)
+		query.SetQuestion("example.com.", dnsmessage.TypeA)
+		done <- ResolveUDP(ctx, client, query)
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled UDP request error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled UDP request did not unblock")
+	}
+	_ = server.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Fatal("canceled UDP request left the connection open")
+	}
+}
+
+func TestResolveHttpAppliesAge(t *testing.T) {
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 42
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		response := new(dnsmessage.Msg)
+		response.SetReply(query)
+		response.Id = 0
+		response.Answer = []dnsmessage.RR{
+			&dnsmessage.A{Hdr: dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60}, A: net.ParseIP("192.0.2.1").To4()},
+			&dnsmessage.A{Hdr: dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 10}, A: net.ParseIP("192.0.2.2").To4()},
+		}
+		payload, err := response.Pack()
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header: http.Header{
+				"Content-Type": []string{"application/dns-message"},
+				"Age":          []string{"50"},
+			},
+			Body: io.NopCloser(bytes.NewReader(payload)),
+		}, nil
+	})}
+	if err := ResolveHttp(context.Background(), client, &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query"}, query); err != nil {
+		t.Fatal(err)
+	}
+	if got := query.Answer[0].Header().Ttl; got != 10 {
+		t.Fatalf("aged TTL = %d, want 10", got)
+	}
+	if got := query.Answer[1].Header().Ttl; got != 0 {
+		t.Fatalf("saturated aged TTL = %d, want 0", got)
+	}
+}
+
+func TestResolveStreamFraming(t *testing.T) {
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 42
+
+	response := new(dnsmessage.Msg)
+	response.SetReply(query)
+	response.Id = query.Id
+	response.Answer = []dnsmessage.RR{&dnsmessage.A{
+		Hdr: dnsmessage.RR_Header{
+			Name:   "example.com.",
+			Rrtype: dnsmessage.TypeA,
+			Class:  dnsmessage.ClassINET,
+			Ttl:    60,
+		},
+		A: net.ParseIP("192.0.2.1").To4(),
+	}}
+	responsePayload, err := response.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseFrame := make([]byte, 2+len(responsePayload))
+	binary.BigEndian.PutUint16(responseFrame[:2], uint16(len(responsePayload)))
+	copy(responseFrame[2:], responsePayload)
+
+	stream := &doqTestStream{response: bytes.NewReader(responseFrame)}
+	if err := ResolveStream(stream, query); err != nil {
+		t.Fatal(err)
+	}
+
+	written := stream.written.Bytes()
+	if len(written) < 2 {
+		t.Fatalf("stream query is missing its length prefix: %x", written)
+	}
+	if got, want := int(binary.BigEndian.Uint16(written[:2])), len(written)-2; got != want {
+		t.Fatalf("stream query length prefix = %d, want %d", got, want)
+	}
+	var wireQuery dnsmessage.Msg
+	if err := wireQuery.Unpack(written[2:]); err != nil {
+		t.Fatalf("unpack framed stream query: %v", err)
+	}
+	if wireQuery.Id != 42 {
+		t.Fatalf("stream query ID = %d, want 42", wireQuery.Id)
+	}
+	if !query.Response || query.Id != 42 || len(query.Answer) != 1 {
+		t.Fatalf("unexpected stream response: %+v", query)
+	}
+}
+
+func TestResolveStreamRejectsUnframedResponse(t *testing.T) {
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 42
+	response := new(dnsmessage.Msg)
+	response.SetReply(query)
+	response.Id = query.Id
+	payload, err := response.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream := &doqTestStream{response: bytes.NewReader(payload)}
+	err = ResolveStream(stream, query)
+	if err == nil {
+		t.Fatal("unframed stream response unexpectedly succeeded")
+	}
+}
+
 func TestValidateDnsResponseRestoresHeaderOnlyErrorQuestion(t *testing.T) {
 	query := new(dnsmessage.Msg)
 	query.SetQuestion("example.com.", dnsmessage.TypeA)
@@ -99,76 +237,5 @@ func TestCheckDnsMessageSize(t *testing.T) {
 	}
 	if err := CheckDnsMessageSize(65536); err == nil {
 		t.Fatal("oversized DNS message unexpectedly accepted")
-	}
-}
-
-func TestResolveStreamDoQFraming(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
-	query.Id = 42
-
-	response := new(dnsmessage.Msg)
-	response.SetReply(query)
-	response.Id = 0
-	response.Answer = []dnsmessage.RR{&dnsmessage.A{
-		Hdr: dnsmessage.RR_Header{
-			Name:   "example.com.",
-			Rrtype: dnsmessage.TypeA,
-			Class:  dnsmessage.ClassINET,
-			Ttl:    60,
-		},
-		A: net.ParseIP("192.0.2.1").To4(),
-	}}
-	responsePayload, err := response.Pack()
-	if err != nil {
-		t.Fatal(err)
-	}
-	responseFrame := make([]byte, 2+len(responsePayload))
-	binary.BigEndian.PutUint16(responseFrame[:2], uint16(len(responsePayload)))
-	copy(responseFrame[2:], responsePayload)
-
-	stream := &doqTestStream{response: bytes.NewReader(responseFrame)}
-	if err := ResolveStream(stream, query, true); err != nil {
-		t.Fatal(err)
-	}
-	if !stream.closed {
-		t.Fatal("DoQ query did not close its send side")
-	}
-
-	written := stream.written.Bytes()
-	if len(written) < 2 {
-		t.Fatalf("DoQ query is missing its length prefix: %x", written)
-	}
-	if got, want := int(binary.BigEndian.Uint16(written[:2])), len(written)-2; got != want {
-		t.Fatalf("DoQ query length prefix = %d, want %d", got, want)
-	}
-	var wireQuery dnsmessage.Msg
-	if err := wireQuery.Unpack(written[2:]); err != nil {
-		t.Fatalf("unpack framed DoQ query: %v", err)
-	}
-	if wireQuery.Id != 0 {
-		t.Fatalf("DoQ query ID = %d, want 0", wireQuery.Id)
-	}
-	if !query.Response || query.Id != 0 || len(query.Answer) != 1 {
-		t.Fatalf("unexpected DoQ response: %+v", query)
-	}
-}
-
-func TestResolveStreamDoQRejectsUnframedResponse(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
-	query.Id = 42
-	response := new(dnsmessage.Msg)
-	response.SetReply(query)
-	response.Id = 0
-	payload, err := response.Pack()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	stream := &doqTestStream{response: bytes.NewReader(payload)}
-	err = ResolveStream(stream, query, true)
-	if err == nil {
-		t.Fatal("unframed DoQ response unexpectedly succeeded")
 	}
 }
