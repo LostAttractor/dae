@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -161,5 +162,124 @@ func TestNodeStatusRowFormatsFailureEpisode(t *testing.T) {
 	})
 	if got := row[10].(string); !strings.HasSuffix(got, " / 0s") {
 		t.Fatalf("zero-duration failure episode = %q, want 0s", got)
+	}
+}
+
+func TestNetworkStatusRowUnsupported(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	row := networkStatusRow(control.NetworkStatus{
+		Network:     "tcp6",
+		ActiveConns: 2,
+		TotalConns:  10,
+	})
+	want := []string{"tcp6", "n/a", "-", "-", "-", "-", "2/10"}
+	for i, expected := range want {
+		if got := row[i].(string); got != expected {
+			t.Errorf("networkStatusRow()[%d] = %q, want %q", i, got, expected)
+		}
+	}
+}
+
+func TestStatusSummary(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	tests := []struct {
+		name     string
+		snapshot control.StatusSnapshot
+		want     string
+	}{
+		{
+			name:     "healthy",
+			snapshot: control.StatusSnapshot{Health: control.HealthHealthy},
+			want:     "healthy",
+		},
+		{
+			name: "warning",
+			snapshot: control.StatusSnapshot{
+				Health: control.HealthWarning,
+				Groups: []control.GroupStatus{{Name: "optional", Health: control.HealthWarning}},
+			},
+			want: "warning (warning groups: optional)",
+		},
+		{
+			name: "degraded with warnings",
+			snapshot: control.StatusSnapshot{
+				Health: control.HealthDegraded,
+				Groups: []control.GroupStatus{
+					{Name: "optional", Health: control.HealthWarning},
+					{Name: "proxy-a", Health: control.HealthDegraded},
+					{Name: "proxy-b", Health: control.HealthDegraded},
+				},
+			},
+			want: "degraded (degraded groups: proxy-a, proxy-b; warning groups: optional)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := statusSummary(&tt.snapshot); got != tt.want {
+				t.Fatalf("statusSummary() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestColorHealth(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = true
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	tests := []struct {
+		health control.HealthStatus
+		ansi   string
+	}{
+		{health: control.HealthHealthy, ansi: "\x1b[32m"},
+		{health: control.HealthWarning, ansi: "\x1b[33m"},
+		{health: control.HealthDegraded, ansi: "\x1b[31m"},
+	}
+	for _, tt := range tests {
+		if got := colorHealth(tt.health); !strings.Contains(got, tt.ansi) {
+			t.Errorf("colorHealth(%q) = %q, want ANSI prefix %q", tt.health, got, tt.ansi)
+		}
+	}
+}
+
+func TestColorHealthDefaultsToUnknown(t *testing.T) {
+	if got := colorHealth(""); got != "unknown" {
+		t.Fatalf("colorHealth(\"\") = %q, want %q", got, "unknown")
+	}
+}
+
+func TestNormalizeLegacyStatus(t *testing.T) {
+	var legacy control.StatusSnapshot
+	if err := json.Unmarshal([]byte(`{
+		"groups": [{
+			"name": "proxy",
+			"networks": [{"network": "tcp4", "alive": false}]
+		}]
+	}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	normalizeLegacyStatus(&legacy)
+	for i, network := range legacy.Groups[0].Networks {
+		if !network.Supported {
+			t.Fatalf("legacy network %d remains unsupported", i)
+		}
+	}
+
+	current := control.StatusSnapshot{
+		Health: control.HealthHealthy,
+		Groups: []control.GroupStatus{{
+			Networks: [4]control.NetworkStatus{{Supported: false}},
+		}},
+	}
+	normalizeLegacyStatus(&current)
+	if current.Groups[0].Networks[0].Supported {
+		t.Fatal("current unsupported network was overwritten")
 	}
 }

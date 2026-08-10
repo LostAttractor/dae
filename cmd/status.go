@@ -62,7 +62,24 @@ func fetchStatus() (*control.StatusSnapshot, error) {
 	if err = json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
 		return nil, err
 	}
+	normalizeLegacyStatus(&snapshot)
 	return &snapshot, nil
+}
+
+func normalizeLegacyStatus(snapshot *control.StatusSnapshot) {
+	if snapshot.Health != "" {
+		return
+	}
+	// Older daemons expose neither health nor per-network support. Preserve
+	// their original ALIVE rows while reporting the overall status as unknown.
+	for i := range snapshot.Groups {
+		if snapshot.Groups[i].NoCheck {
+			continue
+		}
+		for j := range snapshot.Groups[i].Networks {
+			snapshot.Groups[i].Networks[j].Supported = true
+		}
+	}
 }
 
 func formatUptime(d time.Duration) string {
@@ -148,6 +165,22 @@ func colorAlive(alive bool) string {
 		return colorize("yes", text.FgGreen)
 	}
 	return colorize("no", text.FgRed)
+}
+
+func colorHealth(health control.HealthStatus) string {
+	switch health {
+	case control.HealthHealthy:
+		return colorize(string(health), text.FgGreen)
+	case control.HealthWarning:
+		return colorize(string(health), text.FgYellow)
+	case control.HealthDegraded:
+		return colorize(string(health), text.FgRed)
+	default:
+		if health == "" {
+			return "unknown"
+		}
+		return string(health)
+	}
 }
 
 func colorSelected(s string, selected bool) string {
@@ -273,6 +306,17 @@ func tableUsageRow(usage control.TableUsage) table.Row {
 }
 
 func networkStatusRow(status control.NetworkStatus) table.Row {
+	if !status.Supported {
+		return table.Row{
+			status.Network,
+			"n/a",
+			"-",
+			"-",
+			"-",
+			"-",
+			formatConnCounts(status.ActiveConns, status.TotalConns),
+		}
+	}
 	selected := emptyDash(status.Selected)
 	return table.Row{
 		status.Network,
@@ -355,6 +399,32 @@ func printGroupStatus(group control.GroupStatus) {
 	}, rows)
 }
 
+func statusSummary(s *control.StatusSnapshot) string {
+	var degradedGroups, warningGroups []string
+	for _, group := range s.Groups {
+		switch group.Health {
+		case control.HealthDegraded:
+			degradedGroups = append(degradedGroups, group.Name)
+		case control.HealthWarning:
+			warningGroups = append(warningGroups, group.Name)
+		}
+	}
+
+	var details []string
+	if len(degradedGroups) > 0 {
+		details = append(details, "degraded groups: "+strings.Join(degradedGroups, ", "))
+	}
+	if len(warningGroups) > 0 {
+		details = append(details, "warning groups: "+strings.Join(warningGroups, ", "))
+	}
+
+	summary := colorHealth(s.Health)
+	if len(details) > 0 {
+		summary += " (" + strings.Join(details, "; ") + ")"
+	}
+	return summary
+}
+
 func printStatus(s *control.StatusSnapshot) {
 	fmt.Printf(
 		"Daemon:      %s up %s (since %s)",
@@ -366,6 +436,7 @@ func printStatus(s *control.StatusSnapshot) {
 		fmt.Printf(", last reload %s", formatAgo(s.LastReloadAt))
 	}
 	fmt.Println()
+	fmt.Printf("Status:      %s\n", statusSummary(s))
 	perNet := make([]string, len(s.ActiveByNet))
 	for i, n := range s.ActiveByNet {
 		perNet[i] = fmt.Sprintf("%s %d", networkNames[i], n)
