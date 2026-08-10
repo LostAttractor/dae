@@ -13,10 +13,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -72,10 +74,14 @@ func ValidateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16) err
 	return nil
 }
 
-func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
+func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
+	query := msg.Copy()
 	data, err := msg.Pack()
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
+	}
+	if err := CheckDnsMessageSize(len(data)); err != nil {
+		return err
 	}
 
 	// According https://datatracker.ietf.org/doc/html/rfc8484#section-4
@@ -86,7 +92,7 @@ func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
 	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
 	url.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, url.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
 	if err != nil {
 		return err
 	}
@@ -97,36 +103,64 @@ func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("unexpected DoH response status: %v", resp.Status)
 	}
-	buf, err := io.ReadAll(resp.Body)
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/dns-message" {
+		return fmt.Errorf("unexpected DoH response content type: %q", resp.Header.Get("Content-Type"))
+	}
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, math.MaxUint16+1))
 	if err != nil {
 		return err
 	}
-	if err = msg.Unpack(buf); err != nil {
+	if err := CheckDnsMessageSize(len(buf)); err != nil {
 		return err
 	}
+	var response dnsmessage.Msg
+	if err = response.Unpack(buf); err != nil {
+		return err
+	}
+	if err = ValidateDnsResponse(query, &response, 0); err != nil {
+		return err
+	}
+	if ageValue := resp.Header.Get("Age"); ageValue != "" {
+		age, err := strconv.ParseUint(ageValue, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid DoH Age header %q: %w", ageValue, err)
+		}
+		ageRRs := func(rrs []dnsmessage.RR) {
+			for _, rr := range rrs {
+				if rr == nil || rr.Header().Rrtype == dnsmessage.TypeOPT {
+					continue
+				}
+				if uint64(rr.Header().Ttl) <= age {
+					rr.Header().Ttl = 0
+				} else {
+					rr.Header().Ttl -= uint32(age)
+				}
+			}
+		}
+		ageRRs(response.Answer)
+		ageRRs(response.Ns)
+		ageRRs(response.Extra)
+	}
+	*msg = response
 	return nil
 }
 
-func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
+func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
+	query := msg.Copy()
 	data, err := msg.Pack()
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
-	if len(data) > math.MaxUint16 {
-		return fmt.Errorf("DNS message exceeds stream size limit: %d", len(data))
+	if err := CheckDnsMessageSize(len(data)); err != nil {
+		return err
 	}
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
-	if quic {
-		// According https://datatracker.ietf.org/doc/html/rfc9250#section-4.2.1
-		// msg id should set to 0 when transport over QUIC.
-		// thanks https://github.com/natesales/q/blob/1cb2639caf69bd0a9b46494a3c689130df8fb24a/transport/quic.go#L97
-		binary.BigEndian.PutUint16(data[0:2], 0)
-	}
-	// DNS over TCP, TLS and QUIC all use a two-byte message length.
+	// DNS over TCP and TLS use a two-byte message length.
 	binary.Write(buf, binary.BigEndian, uint16(len(data)))
 	buf.Write(data)
 	n, err := stream.Write(buf.Bytes())
@@ -135,14 +169,6 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 	}
 	if n != buf.Len() {
 		return oops.Wrapf(io.ErrShortWrite, "failed to write DNS req")
-	}
-
-	if quic {
-		// RFC 9250 section 4.2 requires the query to be followed by STREAM FIN.
-		if c, ok := stream.(interface{ Close() error }); ok {
-			// Half-close the send side so the server knows the query is complete.
-			_ = c.Close()
-		}
 	}
 
 	lenBuf := pool.GetBuffer(2)
@@ -156,41 +182,44 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, quic bool) error {
 	if _, err = io.ReadFull(stream, respBuf); err != nil {
 		return oops.Wrapf(err, "failed to read DNS resp payload")
 	}
-	if err = msg.Unpack(respBuf); err != nil {
+	var response dnsmessage.Msg
+	if err = response.Unpack(respBuf); err != nil {
 		return err
 	}
-	if quic {
-		if msg.Id != 0 {
-			return fmt.Errorf("DoQ response has non-zero DNS message ID: %d", msg.Id)
-		}
-		// Ordinary queries have one response. Wait for the required server FIN
-		// and reject a second framed message or trailing bytes.
-		extra, err := io.ReadAll(io.LimitReader(stream, 1))
-		if err != nil {
-			return oops.Wrapf(err, "failed to read DoQ stream FIN")
-		}
-		if len(extra) != 0 {
-			return fmt.Errorf("unexpected trailing data after DoQ response")
-		}
+	if err = ValidateDnsResponse(query, &response, query.Id); err != nil {
+		return err
 	}
+	*msg = response
 	return nil
 }
 
-func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
+func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
+	query := msg.Copy()
 	data, err := msg.Pack()
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
+	if err := CheckDnsMessageSize(len(data)); err != nil {
+		return err
+	}
+	success := false
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer func() {
+		stopClose()
+		if !success {
+			_ = conn.Close()
+		}
+	}()
 	reqId := msg.Id
-
-	// TODO: SetReadDeadline 无法生效的情况下, 这里就会stuck
-	// TODO: SetDeadline 可能会不被支持, 特别是 SetWriteDeadline
-	conn.SetDeadline(time.Now().Add(consts.DefaultDNSTimeout))
-	ctx, cancel := context.WithCancel(context.TODO())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	sendCh := make(chan error, 1)
-	recvCh := make(chan error, 1)
+	type recvResult struct {
+		msg *dnsmessage.Msg
+		err error
+	}
+	recvCh := make(chan recvResult, 1)
 	go func() {
 		for i := 0; i < consts.DefaultDNSRetryCount; i++ {
 			_, err := conn.Write(data)
@@ -209,34 +238,49 @@ func ResolveUDP(conn net.Conn, msg *dnsmessage.Msg) error {
 	// A plain heap buffer: on the write-error return path the read goroutine
 	// stays blocked until the caller closes the conn, so a pooled buffer
 	// could be handed out again underneath a pending Read.
-	respBuf := make([]byte, consts.MaxDnsMessageSize)
+	respBuf := make([]byte, consts.MaxDnsMessageSize+1)
 	go func() {
 		// Wait for the response to this query; ignore stray/late datagrams
 		// whose transaction ID does not match.
 		for {
 			n, err := conn.Read(respBuf)
 			if err != nil {
-				recvCh <- err
+				recvCh <- recvResult{err: err}
 				return
+			}
+			if n > consts.MaxDnsMessageSize {
+				continue
 			}
 			var resp dnsmessage.Msg
 			if err := resp.Unpack(respBuf[:n]); err != nil {
 				continue
 			}
-			if !resp.Response || resp.Id != reqId {
+			if err := ValidateDnsResponse(query, &resp, reqId); err != nil {
 				continue
 			}
-			*msg = resp
-			recvCh <- nil
+			recvCh <- recvResult{msg: &resp}
 			return
 		}
 	}()
 
 	select {
 	case err := <-sendCh:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
-	case err := <-recvCh:
-		return err
+	case result := <-recvCh:
+		if result.err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return result.err
+		}
+		*msg = *result.msg
+		success = true
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -351,9 +395,12 @@ func resolveContext(ctx context.Context, dialer netproxy.Dialer, server netip.Ad
 	defer stopClose()
 
 	if network == "tcp" {
-		err = ResolveStream(conn, &msg, false)
+		err = ResolveStream(conn, &msg)
 	} else {
-		err = ResolveUDP(conn, &msg)
+		err = ResolveUDP(ctx, conn, &msg)
+	}
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	if err != nil {
 		return nil, err
