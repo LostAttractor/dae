@@ -338,6 +338,7 @@ func (c *DnsController) handleDNSRequest(
 			return err
 		}
 	}
+	cacheForwarder := RequestIndex != consts.DnsRequestOutboundIndex_AsIs
 
 	// Dial and re-route
 	reqMsg := dnsMessage.Copy()
@@ -357,7 +358,7 @@ Dial:
 		}
 
 		// TODO: 这里可能不可以这样做
-		responseFromCache, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryInfo)
+		responseFromCache, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryInfo, cacheForwarder)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
@@ -435,6 +436,7 @@ Dial:
 			}).Debugln("Change DNS upstream and resend")
 		}
 		upstream = nextUpstream
+		cacheForwarder = true
 		*dnsMessage = *reqMsg
 	}
 	// TODO: dial_mode: domain 的逻辑失效问题
@@ -531,8 +533,26 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 	msg.Truncated = false
 }
 
+func closeDnsForwarder(forwarder DnsForwarder) {
+	if closer, ok := forwarder.(io.Closer); ok {
+		_ = closer.Close()
+	}
+}
+
+func (c *DnsController) selectDnsForwarder(key dnsForwarderKey, candidate DnsForwarder, cache bool) (DnsForwarder, func()) {
+	if !cache {
+		return candidate, func() { closeDnsForwarder(candidate) }
+	}
+	actual, loaded := c.dnsForwarderCache.LoadOrStore(key, candidate)
+	if loaded {
+		closeDnsForwarder(candidate)
+		return actual.(DnsForwarder), func() {}
+	}
+	return candidate, func() {}
+}
+
 // TODO: 简化 cacheKey?
-func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) (bool, error) {
+func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo, cacheForwarder bool) (bool, error) {
 	if c.closed.Err() != nil {
 		// The cached forwarders are closed by Close; dialing here would
 		// recreate connections nobody closes anymore.
@@ -547,41 +567,34 @@ func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstr
 	if c.closed.Err() != nil {
 		return false, net.ErrClosed
 	}
-	var forwarder DnsForwarder
-	value, ok := c.dnsForwarderCache.Load(key)
-	if ok {
-		if cache := c.dnsCache.Get(cacheKey); cache != nil {
-			if FillInto(msg, cache) {
-				if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
-					log.WithFields(log.Fields{
-						"qname":  queryInfo.qname,
-						"qtype":  queryInfo.qtype,
-						"rcode":  msg.Rcode,
-						"answer": FormatDnsRsc(msg.Answer),
-					}).Debugf("UDP(DNS) <-> Cache")
-				}
-				return true, nil
+	if cache := c.dnsCache.Get(cacheKey); cache != nil {
+		if FillInto(msg, cache) {
+			if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
+				log.WithFields(log.Fields{
+					"qname":  queryInfo.qname,
+					"qtype":  queryInfo.qtype,
+					"rcode":  msg.Rcode,
+					"answer": FormatDnsRsc(msg.Answer),
+				}).Debugf("UDP(DNS) <-> Cache")
 			}
+			return true, nil
 		}
-		if !isNew {
-			if log.IsLevelEnabled(log.DebugLevel) {
-				log.Debugf("UDP(DNS) <-> Drop failed duplicate lookup: %v %v", queryInfo.qname, queryInfo.qtype)
-			}
-			return false, nil
+	}
+	if !isNew {
+		if log.IsLevelEnabled(log.DebugLevel) {
+			log.Debugf("UDP(DNS) <-> Drop failed duplicate lookup: %v %v", queryInfo.qname, queryInfo.qtype)
 		}
-		forwarder = value.(DnsForwarder)
-	} else {
-		var err error
-		forwarder, err = newDnsForwarder(upstream, *dialArgument)
-		if err != nil {
-			return false, err
-		}
-		// Try to store the new forwarder, but use LoadOrStore to handle concurrent creation
-		actualValue, _ := c.dnsForwarderCache.LoadOrStore(key, forwarder)
-		forwarder = actualValue.(DnsForwarder)
+		return false, nil
 	}
 
-	err := forwarder.ForwardDNS(ctx, msg)
+	forwarder, err := newDnsForwarder(upstream, *dialArgument)
+	if err != nil {
+		return false, err
+	}
+	forwarder, releaseForwarder := c.selectDnsForwarder(key, forwarder, cacheForwarder)
+	defer releaseForwarder()
+
+	err = forwarder.ForwardDNS(ctx, msg)
 	if err != nil {
 		return false, err
 	}
