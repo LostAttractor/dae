@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -27,8 +28,49 @@ import (
 )
 
 var (
-	ErrBadDnsAns = fmt.Errorf("bad dns answer")
+	ErrBadDnsAns      = errors.New("bad dns answer")
+	ErrBadDnsResponse = errors.New("bad dns response")
 )
+
+func CheckDnsMessageSize(size int) error {
+	if size > math.MaxUint16 {
+		return fmt.Errorf("DNS message exceeds 65535-byte limit: %d", size)
+	}
+	return nil
+}
+
+// ValidateDnsResponse validates a response against the query sent on the wire.
+// Error responses are allowed to omit the question section; restore it so
+// response routing can still identify the original lookup.
+func ValidateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16) error {
+	if !response.Response {
+		return fmt.Errorf("%w: QR bit is not set", ErrBadDnsResponse)
+	}
+	if response.Id != expectedId {
+		return fmt.Errorf("%w: transaction ID %d, want %d", ErrBadDnsResponse, response.Id, expectedId)
+	}
+	if response.Opcode != query.Opcode {
+		return fmt.Errorf("%w: opcode %d, want %d", ErrBadDnsResponse, response.Opcode, query.Opcode)
+	}
+	if len(response.Question) == 0 {
+		if response.Rcode == dnsmessage.RcodeSuccess {
+			return fmt.Errorf("%w: successful response has no question", ErrBadDnsResponse)
+		}
+		response.Question = append([]dnsmessage.Question(nil), query.Question...)
+		return nil
+	}
+	if len(response.Question) != len(query.Question) {
+		return fmt.Errorf("%w: question count %d, want %d", ErrBadDnsResponse, len(response.Question), len(query.Question))
+	}
+	for i := range query.Question {
+		got, want := response.Question[i], query.Question[i]
+		if dnsmessage.CanonicalName(got.Name) != dnsmessage.CanonicalName(want.Name) ||
+			got.Qtype != want.Qtype || got.Qclass != want.Qclass {
+			return fmt.Errorf("%w: question %v, want %v", ErrBadDnsResponse, got, want)
+		}
+	}
+	return nil
+}
 
 func ResolveHttp(client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
 	// disable redirect https://github.com/daeuniverse/dae/pull/649#issuecomment-2379577896

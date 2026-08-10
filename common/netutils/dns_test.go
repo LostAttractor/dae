@@ -49,3 +49,40 @@ func TestResolveNetipContextCancellationClosesConnection(t *testing.T) {
 		t.Fatal("canceled DNS request did not unblock")
 	}
 }
+func TestValidateDnsResponseRestoresHeaderOnlyErrorQuestion(t *testing.T) {
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 7
+	response := &dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{
+		Id:       7,
+		Response: true,
+		Rcode:    dnsmessage.RcodeRefused,
+	}}
+	if err := ValidateDnsResponse(query, response, 7); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Question) != 1 || response.Question[0] != query.Question[0] {
+		t.Fatalf("question was not restored: %v", response.Question)
+	}
+}
+
+func TestValidateDnsResponseRejectsMismatch(t *testing.T) {
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 7
+	response := new(dnsmessage.Msg)
+	response.SetReply(query)
+	response.Question[0].Name = "other.example."
+	if err := ValidateDnsResponse(query, response, 7); !errors.Is(err, ErrBadDnsResponse) {
+		t.Fatalf("mismatched response error = %v", err)
+	}
+}
+
+func TestCheckDnsMessageSize(t *testing.T) {
+	if err := CheckDnsMessageSize(65535); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckDnsMessageSize(65536); err == nil {
+		t.Fatal("oversized DNS message unexpectedly accepted")
+	}
+}
