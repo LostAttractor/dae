@@ -368,35 +368,45 @@ func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
 		case <-d.ctx.Done():
 			return
 		case <-d.checkCh:
-			d.runCheck(checkOpt)
+			d.runCheck(checkOpt, RetryInterval)
 		case <-time.After(checkInterval):
-			d.runCheck(checkOpt)
+			d.runCheck(checkOpt, RetryInterval)
 		}
 		checkInterval = d.CheckInterval
 	}
 }
 
-func (d *Dialer) runCheck(checkOpt *CheckOption) {
+func (d *Dialer) runCheck(checkOpt *CheckOption, retryInterval time.Duration) {
 	for i := 0; i < RetryCount; i++ {
 		if d.ctx.Err() != nil {
 			return
 		}
+		var ok bool
+		var latency time.Duration
+		var err error
+		var networkType *common.NetworkType
 		if !d.Alive() {
 			d.NotifyStatusChange()
-			if err := d.Connect(); err != nil {
-				continue
-			}
+			err = d.Connect()
 		}
-		ok, latency, err := d.Check(checkOpt)
-		// Update and SetSupported reject a canceled dialer, so a check
-		// interrupted by Close never records its result.
-		d.Update(ok, latency, checkOpt.networkType, err)
+		if err == nil {
+			ok, latency, err = d.Check(checkOpt)
+			networkType = checkOpt.networkType
+		}
+		// Update rejects a canceled dialer, so an interrupted attempt is not recorded.
+		d.Update(ok, latency, networkType, err)
+		if d.ctx.Err() != nil {
+			return
+		}
 		d.NotifyStatusChange()
 		if ok {
 			return
 		}
+		if i+1 == RetryCount {
+			return
+		}
 		select {
-		case <-time.After(RetryInterval):
+		case <-time.After(retryInterval):
 		case <-d.ctx.Done():
 			return
 		}
@@ -404,10 +414,16 @@ func (d *Dialer) runCheck(checkOpt *CheckOption) {
 }
 
 func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
-	defer d.NotifyStatusChange()
-
 	for i := 1; ; i++ {
-		if opt = d.checkAllNetworkTypes(checkOpts); opt != nil {
+		if d.ctx.Err() != nil {
+			return nil
+		}
+		opt = d.checkAllNetworkTypes(checkOpts)
+		if d.ctx.Err() != nil {
+			return nil
+		}
+		d.NotifyStatusChange()
+		if opt != nil {
 			return opt
 		}
 		// All network types failed. Wait for the next tick of startCheckTicker
@@ -425,10 +441,14 @@ func (d *Dialer) checkAllNetworkTypes(checkOpts []*CheckOption) (best *CheckOpti
 	var supported [4]bool
 	var latency [4]time.Duration
 	var checkErr [4]error
+	if d.ctx.Err() != nil {
+		return nil
+	}
 	if err := d.Connect(); err != nil {
-		log.WithFields(log.Fields{
-			"node": d.Name,
-		}).Infoln(oops.Wrapf(err, "Failed to connect"))
+		if d.ctx.Err() != nil {
+			return nil
+		}
+		d.Update(false, 0, nil, err)
 		return nil
 	}
 	for _, opt := range checkOpts {
@@ -539,7 +559,7 @@ func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.Netw
 		} else {
 			d.MovingAverage[g] = time.Duration(float64(d.MovingAverage[g])*(1-alpha) + float64(groupLatency)*alpha)
 		}
-		d.Latencies10[g].AppendLatency(groupLatency)
+		d.Latencies10[g].AppendSample(groupLatency, !ok)
 		if ok {
 			avg, _ := d.Latencies10[g].AvgLatency()
 			fields := log.Fields{

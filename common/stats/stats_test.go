@@ -35,8 +35,8 @@ func TestRecordNode_Snapshot(t *testing.T) {
 	if avail.LastCheckAt.IsZero() {
 		t.Errorf("checked record should set LastCheckAt")
 	}
-	if !avail.LastFailAt.IsZero() {
-		t.Errorf("never-failed node should have zero LastFailAt")
+	if !avail.LastFailureStartedAt.IsZero() || avail.LastFailureDuration != 0 {
+		t.Errorf("never-failed node should have no failure episode: %+v", avail)
 	}
 	if avail.UpRatio <= 0 || avail.UpRatio > 1 {
 		t.Errorf("UpRatio out of range: %v", avail.UpRatio)
@@ -47,8 +47,8 @@ func TestRecordNode_Snapshot(t *testing.T) {
 	if avail.Alive {
 		t.Errorf("node should be down")
 	}
-	if avail.LastFailAt.IsZero() {
-		t.Errorf("failed record should set LastFailAt")
+	if avail.LastFailureStartedAt.IsZero() {
+		t.Errorf("failed record should start a failure episode")
 	}
 	if !avail.AliveSince.IsZero() || avail.UpDuration != 0 {
 		t.Errorf("down node should not report AliveSince/UpDuration: %+v", avail)
@@ -88,12 +88,12 @@ func TestRecordNode_GaugesAreSourceOfTruth(t *testing.T) {
 	if v := nodeGaugeValue(t, common.NodeAlive, key, subtag, name); v != 0 {
 		t.Errorf("dae_node_alive should be 0, got %v", v)
 	}
-	if v := nodeGaugeValue(t, common.NodeLastFailure, key, subtag, name); v == 0 {
-		t.Errorf("dae_node_last_failure_timestamp_seconds should be set")
+	if v := nodeGaugeValue(t, common.NodeLastFailureStart, key, subtag, name); v == 0 {
+		t.Errorf("dae_node_last_failure_start_timestamp_seconds should be set")
 	}
 	avail := GetNode(key)
-	if got := float64(avail.LastFailAt.Unix()); got != nodeGaugeValue(t, common.NodeLastFailure, key, subtag, name) {
-		t.Errorf("LastFailAt disagrees with gauge: %v", got)
+	if got := float64(avail.LastFailureStartedAt.Unix()); got != nodeGaugeValue(t, common.NodeLastFailureStart, key, subtag, name) {
+		t.Errorf("LastFailureStartedAt disagrees with gauge: %v", got)
 	}
 	if got := float64(avail.LastCheckAt.Unix()); got != nodeGaugeValue(t, common.NodeLastCheck, key, subtag, name) {
 		t.Errorf("LastCheckAt disagrees with gauge: %v", got)
@@ -110,8 +110,8 @@ func TestRecordNode_SameNameDistinctIdentity(t *testing.T) {
 	if avail := GetNode(key1); !avail.Alive {
 		t.Errorf("node-1 should stay alive")
 	}
-	if avail := GetNode(key2); avail.Alive || avail.LastFailAt.IsZero() {
-		t.Errorf("node-2 should be down with LastFailAt: %+v", avail)
+	if avail := GetNode(key2); avail.Alive || avail.LastFailureStartedAt.IsZero() {
+		t.Errorf("node-2 should have an active failure episode: %+v", avail)
 	}
 	if nodeID(key1) == nodeID(key2) {
 		t.Fatalf("distinct keys must produce distinct ids")
@@ -130,8 +130,8 @@ func TestRecordNodeConnFail(t *testing.T) {
 	if avail.LastConnFailAt.IsZero() {
 		t.Errorf("LastConnFailAt should be set")
 	}
-	if !avail.Alive || !avail.LastFailAt.IsZero() {
-		t.Errorf("conn-fail should not affect aliveness or LastFailAt: %+v", avail)
+	if !avail.Alive || !avail.LastFailureStartedAt.IsZero() {
+		t.Errorf("conn-fail should not affect aliveness or failure episodes: %+v", avail)
 	}
 	if v := nodeGaugeValue(t, common.NodeLastConnFailure, key, subtag, name); v == 0 {
 		t.Errorf("dae_node_last_conn_failure_timestamp_seconds should be set")
@@ -156,8 +156,8 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 		t.Errorf("groups never set check/conn-fail timestamps: %+v", avail)
 	}
 	avail = GetGroup(name, 2)
-	if avail.Alive || avail.LastFailAt.IsZero() {
-		t.Errorf("group network 2 should be down with LastFailAt: %+v", avail)
+	if avail.Alive || avail.LastFailureStartedAt.IsZero() {
+		t.Errorf("group network 2 should have an active failure episode: %+v", avail)
 	}
 	if avail := GetGroup(name, 1); avail.Seen {
 		t.Errorf("unrecorded network index should not be seen")
@@ -166,8 +166,62 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	if v := gaugeValue(common.GroupAlive.With(labels)); v != 0 {
 		t.Errorf("dae_group_alive should be 0, got %v", v)
 	}
-	if v := gaugeValue(common.GroupLastFailure.With(labels)); v == 0 {
-		t.Errorf("dae_group_last_failure_timestamp_seconds should be set")
+	if v := gaugeValue(common.GroupLastFailureStart.With(labels)); v == 0 {
+		t.Errorf("dae_group_last_failure_start_timestamp_seconds should be set")
+	}
+}
+
+func TestRecordNode_FailureEpisodes(t *testing.T) {
+	key, subtag, name := t.Name()+"\x1fnode", "sub", "node-episode"
+	a := nodeAvailability(key, subtag, name)
+	startedAt := time.Now().Add(-time.Hour).Truncate(time.Second)
+
+	a.record(false, true, startedAt)
+	snap := a.snapshotAt(startedAt.Add(2 * time.Minute))
+	if snap.Alive || !snap.LastFailureStartedAt.Equal(startedAt) || snap.LastFailureDuration != 2*time.Minute {
+		t.Fatalf("first down observation should start a failure episode: %+v", snap)
+	}
+
+	a.record(false, true, startedAt.Add(3*time.Minute))
+	snap = a.snapshotAt(startedAt.Add(5 * time.Minute))
+	if !snap.LastFailureStartedAt.Equal(startedAt) || snap.LastFailureDuration != 5*time.Minute {
+		t.Fatalf("repeated failures should preserve the episode start: %+v", snap)
+	}
+	if snap.ChecksFailed != 2 || snap.ChecksSinceFail != 1 {
+		t.Fatalf("failed samples should still be counted independently: %+v", snap)
+	}
+
+	recoveredAt := startedAt.Add(7 * time.Minute)
+	a.record(true, true, recoveredAt)
+	snap = a.snapshotAt(startedAt.Add(30 * time.Minute))
+	if !snap.Alive || !snap.AliveSince.Equal(recoveredAt) || snap.LastFailureDuration != 7*time.Minute {
+		t.Fatalf("recovery should freeze the completed failure duration: %+v", snap)
+	}
+
+	a.record(true, true, startedAt.Add(35*time.Minute))
+	snap = a.snapshotAt(startedAt.Add(40 * time.Minute))
+	if snap.LastFailureDuration != 7*time.Minute {
+		t.Fatalf("successful checks should not extend a completed failure: %+v", snap)
+	}
+
+	secondStartedAt := startedAt.Add(45 * time.Minute)
+	a.record(false, true, secondStartedAt)
+	snap = a.snapshotAt(secondStartedAt.Add(4 * time.Minute))
+	if !snap.LastFailureStartedAt.Equal(secondStartedAt) || snap.LastFailureDuration != 4*time.Minute {
+		t.Fatalf("a new outage should replace the previous episode: %+v", snap)
+	}
+}
+
+func TestRecordNode_SubsecondFailureDuration(t *testing.T) {
+	key, subtag, name := t.Name()+"\x1fnode", "sub", "node-short-episode"
+	a := nodeAvailability(key, subtag, name)
+	startedAt := time.Now()
+
+	a.record(false, true, startedAt)
+	a.record(true, true, startedAt.Add(150*time.Millisecond))
+	snap := a.snapshotAt(startedAt.Add(time.Second))
+	if snap.LastFailureDuration != 150*time.Millisecond {
+		t.Fatalf("subsecond failure duration = %v, want 150ms", snap.LastFailureDuration)
 	}
 }
 
@@ -261,6 +315,28 @@ func collectorHasLabelValue(t *testing.T, collector prometheus.Collector, labelN
 		}
 	}
 	return false
+}
+
+func TestReconcilePreservesFailureEpisode(t *testing.T) {
+	key, subtag, name := t.Name()+"\x1fnode", "sub", "node"
+	identity := NodeIdentity{Key: key, Subtag: subtag, Name: name}
+	a := nodeAvailability(key, subtag, name)
+	startedAt := time.Now()
+	a.record(false, true, startedAt)
+
+	Reconcile([]NodeIdentity{identity}, nil)
+	v, ok := nodes.Load(key)
+	if !ok || v.(*availability) != a {
+		t.Fatal("reconcile replaced the retained availability state")
+	}
+	if snap := a.snapshotAt(startedAt.Add(2 * time.Second)); snap.LastFailureDuration != 2*time.Second {
+		t.Fatalf("active failure did not continue across reconcile: %+v", snap)
+	}
+
+	a.record(true, true, startedAt.Add(3*time.Second))
+	if snap := a.snapshotAt(startedAt.Add(10 * time.Second)); snap.LastFailureDuration != 3*time.Second {
+		t.Fatalf("post-reconcile recovery did not freeze the failure duration: %+v", snap)
+	}
 }
 
 func TestReconcileRetiresRemovedIdentities(t *testing.T) {

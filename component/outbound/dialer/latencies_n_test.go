@@ -65,6 +65,20 @@ func TestLatenciesN_RingBufferWraps(t *testing.T) {
 	}
 }
 
+func TestLatenciesN_TracksFailuresInWindow(t *testing.T) {
+	ln := NewLatenciesN(3)
+	ln.AppendSample(time.Second, true)
+	ln.AppendLatency(100 * time.Millisecond)
+	ln.AppendLatency(200 * time.Millisecond)
+	if !ln.HasFailure() {
+		t.Fatal("window should contain the failed sample")
+	}
+	ln.AppendLatency(300 * time.Millisecond)
+	if ln.HasFailure() {
+		t.Fatal("overwriting the failed sample should clear the failure marker")
+	}
+}
+
 func TestLatenciesN_Concurrent(t *testing.T) {
 	ln := NewLatenciesN(10)
 	var wg sync.WaitGroup
@@ -76,6 +90,7 @@ func TestLatenciesN_Concurrent(t *testing.T) {
 				ln.AppendLatency(100 * time.Millisecond)
 				ln.LastLatency()
 				ln.AvgLatency()
+				ln.HasFailure()
 			}
 		}()
 	}

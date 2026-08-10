@@ -128,13 +128,12 @@ func shouldEnableColors() bool {
 var colorsEnabled = shouldEnableColors()
 
 const (
-	avgLatencyWindowChecks = 10
-	healthyUpRatio         = 0.99
-	degradedUpRatio        = 0.9
-	fastLatencyMs          = 200
-	slowLatencyMs          = 500
-	ampleUsageRatio        = 0.7
-	tightUsageRatio        = 0.9
+	healthyUpRatio  = 0.99
+	degradedUpRatio = 0.9
+	fastLatencyMs   = 200
+	slowLatencyMs   = 500
+	ampleUsageRatio = 0.7
+	tightUsageRatio = 0.9
 )
 
 func colorize(s string, colors ...text.Color) string {
@@ -191,11 +190,6 @@ func colorUsage(ratio float64, s string) string {
 	}
 }
 
-// A recent failure leaves a timeout penalty in the avg10 latency window.
-func hasRecentFailure(lastFailAt *time.Time, checksSinceFail int64) bool {
-	return lastFailAt != nil && checksSinceFail > 0 && checksSinceFail <= avgLatencyWindowChecks
-}
-
 var networkNames = [4]string{"tcp4", "tcp6", "udp4", "udp6"}
 
 func networkFlags(flags [4]bool) string {
@@ -224,6 +218,17 @@ func formatAgoWithChecks(t *time.Time, checks int64) string {
 		return s
 	}
 	return fmt.Sprintf("%s (+%d chk)", s, checks)
+}
+
+func formatFailure(startedAt *time.Time, duration time.Duration) string {
+	if startedAt == nil {
+		return "-"
+	}
+	durationText := "0s"
+	if duration > 0 {
+		durationText = formatUptime(duration)
+	}
+	return fmt.Sprintf("%s / %s", formatAgo(startedAt), durationText)
 }
 
 func formatConnCounts(active, total int64) string {
@@ -275,7 +280,7 @@ func networkStatusRow(status control.NetworkStatus) table.Row {
 		colorSelected(selected, status.Selected != ""),
 		colorRatio(status.UpRatio, formatRatio(status.UpRatio)),
 		formatAgo(status.AliveSince),
-		formatAgo(status.LastFailAt),
+		formatFailure(status.LastFailureStartedAt, status.LastFailureDuration),
 		formatConnCounts(status.ActiveConns, status.TotalConns),
 	}
 }
@@ -283,12 +288,11 @@ func networkStatusRow(status control.NetworkStatus) table.Row {
 func nodeStatusRow(status control.NodeStatus) table.Row {
 	selected := status.Selected != [4]bool{}
 	selectedNetworks := networkFlags(status.Selected)
-	recentFailure := hasRecentFailure(status.LastFailAt, status.ChecksSinceFail)
 
 	latency := "-"
 	if status.HasLatency && status.Alive {
 		latency = fmt.Sprintf("%.0f/%.0f/%.0f", status.LastLatencyMs, status.Avg10LatencyMs, status.MovingAvgLatencyMs)
-		if recentFailure {
+		if status.Avg10HasFailure {
 			latency = colorize(latency, text.FgHiRed, text.Bold)
 		} else {
 			latency = colorLatency(status.MovingAvgLatencyMs, latency)
@@ -297,11 +301,6 @@ func nodeStatusRow(status control.NodeStatus) table.Row {
 
 	upRatio := formatAvailability(status.UpRatio, status.ChecksFailed, status.ChecksTotal)
 	upRatio24h := formatAvailability(status.UpRatio24h, status.ChecksFailed24h, status.ChecksTotal24h)
-
-	lastFail := formatAgoWithChecks(status.LastFailAt, status.ChecksSinceFail)
-	if recentFailure {
-		lastFail = colorize(lastFail, text.FgRed)
-	}
 
 	return table.Row{
 		colorSelected(status.Name, selected),
@@ -314,7 +313,7 @@ func nodeStatusRow(status control.NodeStatus) table.Row {
 		colorRatio(status.UpRatio, upRatio),
 		colorRatio(status.UpRatio24h, upRatio24h),
 		formatAgoWithChecks(status.AliveSince, status.ChecksSinceAlive),
-		lastFail,
+		formatFailure(status.LastFailureStartedAt, status.LastFailureDuration),
 		formatAgo(status.LastCheckAt),
 		formatAgo(status.LastConnFailAt),
 		formatConnCounts(status.ActiveConns, status.TotalConns),
@@ -341,7 +340,7 @@ func printGroupStatus(group control.GroupStatus) {
 		rows = append(rows, networkStatusRow(status))
 	}
 	printTable(table.Row{
-		"NETWORK", "ALIVE", "SELECTED", "UP%", "ALIVE-SINCE", "LAST-FAIL", "CONNS(A/T)",
+		"NETWORK", "ALIVE", "SELECTED", "UP%", "ALIVE-SINCE", "FAILURE (START/DURATION)", "CONNS(A/T)",
 	}, rows)
 
 	fmt.Printf("\nNodes of group '%s':\n", group.Name)
@@ -352,7 +351,7 @@ func printGroupStatus(group control.GroupStatus) {
 	printTable(table.Row{
 		"NODE", "SUB", "PROTO", "ALIVE", "SUPPORT", "SELECTED",
 		"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "24H UP% (FAIL/CHK)", "ALIVE-SINCE",
-		"LAST-FAIL", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)",
+		"FAILURE (START/DURATION)", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)",
 	}, rows)
 }
 
