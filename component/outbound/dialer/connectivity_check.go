@@ -34,11 +34,12 @@ import (
 )
 
 const (
-	RetryCount    = 3
-	RetryInterval = 5 * time.Second
+	RetryCount              = 3
+	RetryInterval           = 5 * time.Second
+	InitialCheckMaxInterval = 3600 * time.Second
 	// InitialCheckTimeout is the maximum time the control plane startup waits
 	// for a dialer's initial connectivity check. The check itself keeps
-	// retrying in background every CheckInterval after the timeout.
+	// retrying in the background with exponential backoff after the timeout.
 	InitialCheckTimeout = 60 * time.Second
 )
 
@@ -413,8 +414,16 @@ func (d *Dialer) runCheck(checkOpt *CheckOption, retryInterval time.Duration) {
 	}
 }
 
+func nextInitialCheckInterval(current time.Duration) time.Duration {
+	if current >= InitialCheckMaxInterval/2 {
+		return InitialCheckMaxInterval
+	}
+	return current * 2
+}
+
 func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
-	for i := 1; ; i++ {
+	checkInterval := min(d.CheckInterval, InitialCheckMaxInterval)
+	for {
 		if d.ctx.Err() != nil {
 			return nil
 		}
@@ -426,13 +435,13 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 		if opt != nil {
 			return opt
 		}
-		// All network types failed. Wait for the next tick of startCheckTicker
-		// (CheckInterval) and recheck all network types again.
+		// All network types failed. Back off before trying every type again.
 		select {
 		case <-d.ctx.Done():
 			return nil
-		case <-time.After(d.CheckInterval * time.Duration(i)):
+		case <-time.After(checkInterval):
 		}
+		checkInterval = nextInitialCheckInterval(checkInterval)
 	}
 }
 
