@@ -48,20 +48,61 @@ type doqStream interface {
 	io.Closer
 	CancelRead(quic.StreamErrorCode)
 	CancelWrite(quic.StreamErrorCode)
-	Context() context.Context
 }
 
 func newDoqProtocolError(err error) error {
 	return &doqProtocolErrorCause{err: err}
 }
 
-func hasDoqTcpKeepalive(msg *dnsmessage.Msg) bool {
-	opt := msg.IsEdns0()
-	if opt == nil {
-		return false
+func validateDoqOptions(msg *dnsmessage.Msg) error {
+	for _, section := range [][]dnsmessage.RR{msg.Answer, msg.Ns} {
+		for _, rr := range section {
+			if rr != nil && rr.Header().Rrtype == dnsmessage.TypeOPT {
+				return errors.New("DoQ message contains OPT outside the additional section")
+			}
+		}
 	}
-	for _, option := range opt.Option {
-		if _, ok := option.(*dnsmessage.EDNS0_TCP_KEEPALIVE); ok {
+	var opt *dnsmessage.OPT
+	for _, rr := range msg.Extra {
+		if rr == nil {
+			continue
+		}
+		switch rr.Header().Rrtype {
+		case dnsmessage.TypeOPT:
+			if opt != nil {
+				return errors.New("DoQ message contains multiple OPT records")
+			}
+			var ok bool
+			opt, ok = rr.(*dnsmessage.OPT)
+			if !ok {
+				return errors.New("DoQ message contains malformed OPT record")
+			}
+			if opt.Hdr.Name != "." {
+				return errors.New("DoQ OPT record owner is not the root name")
+			}
+			paddingCount := 0
+			for _, option := range opt.Option {
+				if option == nil {
+					return errors.New("DoQ message contains a nil EDNS option")
+				}
+				switch option.Option() {
+				case dnsmessage.EDNS0TCPKEEPALIVE:
+					return errors.New("DoQ message contains EDNS TCP keepalive")
+				case dnsmessage.EDNS0PADDING:
+					paddingCount++
+				}
+			}
+			if paddingCount > 1 {
+				return errors.New("DoQ message contains multiple EDNS padding options")
+			}
+		}
+	}
+	return nil
+}
+
+func hasDnsTransactionSignature(msg *dnsmessage.Msg) bool {
+	for _, rr := range msg.Extra {
+		if rr != nil && (rr.Header().Rrtype == dnsmessage.TypeTSIG || rr.Header().Rrtype == dnsmessage.TypeSIG) {
 			return true
 		}
 	}
@@ -75,8 +116,11 @@ func packDoqQuery(msg *dnsmessage.Msg) (*dnsmessage.Msg, []byte, error) {
 			return nil, nil, errors.New("DoQ zone transfers are not supported")
 		}
 	}
-	if hasDoqTcpKeepalive(msg) {
-		return nil, nil, errors.New("DoQ query contains EDNS TCP keepalive")
+	if err := validateDoqOptions(msg); err != nil {
+		return nil, nil, err
+	}
+	if hasDnsTransactionSignature(msg) {
+		return nil, nil, errors.New("DoQ forwarder does not support transaction signatures")
 	}
 
 	query := msg.Copy()
@@ -97,7 +141,7 @@ func packDoqQuery(msg *dnsmessage.Msg) (*dnsmessage.Msg, []byte, error) {
 	}
 	options := opt.Option[:0]
 	for _, option := range opt.Option {
-		if _, ok := option.(*dnsmessage.EDNS0_PADDING); !ok {
+		if option.Option() != dnsmessage.EDNS0PADDING {
 			options = append(options, option)
 		}
 	}
@@ -144,7 +188,10 @@ func resolveDoQ(stream doqStream, msg *dnsmessage.Msg) error {
 		stream.CancelWrite(doqRequestCancelled)
 		return err
 	}
+	return resolvePreparedDoQ(stream, msg, query, frame)
+}
 
+func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []byte) error {
 	n, err := stream.Write(frame)
 	if err != nil || n != len(frame) {
 		stream.CancelWrite(doqRequestCancelled)
@@ -176,13 +223,16 @@ func resolveDoQ(stream doqStream, msg *dnsmessage.Msg) error {
 		return fmt.Errorf("read DoQ response: %w", err)
 	}
 	var response dnsmessage.Msg
-	if err := response.Unpack(responsePayload); err != nil {
+	if err := netutils.UnpackDnsMessage(responsePayload, &response); err != nil {
 		return newDoqProtocolError(fmt.Errorf("unpack DoQ response: %w", err))
 	}
-	if hasDoqTcpKeepalive(&response) {
-		return newDoqProtocolError(errors.New("DoQ response contains EDNS TCP keepalive"))
+	if err := validateDoqOptions(&response); err != nil {
+		return newDoqProtocolError(err)
 	}
-	if err := netutils.ValidateDnsResponse(query, &response, 0); err != nil {
+	if hasDnsTransactionSignature(&response) {
+		return errors.New("DoQ forwarder cannot verify transaction signatures")
+	}
+	if err := netutils.ValidateDnsResponseAllowEmptyQuestion(query, &response, 0); err != nil {
 		return newDoqProtocolError(err)
 	}
 
@@ -409,7 +459,8 @@ func (d *DoQ) getConn(ctx context.Context) (quic.Connection, error) {
 }
 
 func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	if _, _, err := packDoqQuery(msg); err != nil {
+	query, frame, err := packDoqQuery(msg)
+	if err != nil {
 		return err
 	}
 	conn, err := d.getConn(ctx)
@@ -440,7 +491,7 @@ func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 		return err
 	}
 	stopDeadline := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
-	err = resolveDoQ(stream, msg)
+	err = resolvePreparedDoQ(stream, msg, query, frame)
 	stopDeadline()
 	if err != nil && parentCtx.Err() != nil {
 		return parentCtx.Err()
