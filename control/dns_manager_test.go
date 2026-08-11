@@ -672,6 +672,7 @@ func TestDnsManagerCloseFailsInFlightResolve(t *testing.T) {
 type dnsWriteErrorConn struct {
 	net.Conn
 	err error
+	n   int
 }
 
 type dnsCloseErrorConn struct {
@@ -684,7 +685,7 @@ func (c *dnsCloseErrorConn) Close() error {
 	return c.err
 }
 
-func (c *dnsWriteErrorConn) Write([]byte) (int, error) { return 0, c.err }
+func (c *dnsWriteErrorConn) Write([]byte) (int, error) { return c.n, c.err }
 
 type blockingDNSWriteConn struct {
 	net.Conn
@@ -723,8 +724,24 @@ func TestDnsManagerReturnsTerminalWriteError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Resolve returned %v, want terminal write error %v", err, wantErr)
 	}
+	if !errors.Is(err, errDnsManagerUnavailable) {
+		t.Fatalf("zero-byte write returned %v, want manager unavailable", err)
+	}
 	if !m.canReplace() {
 		t.Fatal("manager was not immediately replaceable after its write returned")
+	}
+}
+
+func TestDnsManagerTreatsPartialWriteAsInterrupted(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	wantErr := errors.New("partial upstream write failed")
+	m := NewDnsManager(&dnsWriteErrorConn{Conn: clientConn, err: wantErr, n: 1})
+	defer m.Close()
+
+	err := m.Resolve(testQuery("example.com.", dnsmessage.TypeA, 5))
+	if !errors.Is(err, wantErr) || !errors.Is(err, errDnsExchangeInterrupted) {
+		t.Fatalf("partial write returned %v, want interrupted error wrapping %v", err, wantErr)
 	}
 }
 

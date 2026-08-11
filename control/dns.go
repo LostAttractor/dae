@@ -659,29 +659,32 @@ func (d *DoQ) runDial(dial *doqDialState) {
 		closeConn, closePacket = conn, packetConn
 	}
 	dial.err = err
-	if d.dial == dial {
-		d.dial = nil
-	}
-	close(dial.done)
 	d.mu.Unlock()
 
 	if closeConn != nil {
 		_ = closeConn.CloseWithError(doqNoError, "")
 	}
-	closeAsync(closePacket)
-	if err != nil {
-		return
+	if closePacket != nil {
+		_ = closePacket.Close()
 	}
-	go func(connection quic.Connection, packet net.PacketConn) {
-		<-connection.Context().Done()
-		d.mu.Lock()
-		if d.conn == connection {
-			d.conn = nil
-			d.packetConn = nil
-		}
-		d.mu.Unlock()
-		closeAsync(packet)
-	}(conn, packetConn)
+	if err == nil {
+		go func(connection quic.Connection, packet net.PacketConn) {
+			<-connection.Context().Done()
+			d.mu.Lock()
+			if d.conn == connection {
+				d.conn = nil
+				d.packetConn = nil
+			}
+			d.mu.Unlock()
+			closeAsync(packet)
+		}(conn, packetConn)
+	}
+	d.mu.Lock()
+	if d.dial == dial {
+		d.dial = nil
+	}
+	close(dial.done)
+	d.mu.Unlock()
 }
 
 func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
@@ -821,12 +824,12 @@ func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (quic.Ea
 	d.mu.Lock()
 	if d.state.isClosed() || d.dial != dial {
 		d.mu.Unlock()
-		closeAsync(packetConn)
-		return nil, nil, net.ErrClosed
+		return nil, packetConn, net.ErrClosed
 	}
 	dial.packetConn = packetConn
 	d.mu.Unlock()
-	stopClose := context.AfterFunc(ctx, func() { closeAsync(packetConn) })
+	contextCloseDone := make(chan error, 1)
+	stopClose := context.AfterFunc(ctx, func() { contextCloseDone <- packetConn.Close() })
 
 	tlsCfg := &tls.Config{
 		NextProtos:         []string{"doq"},
@@ -839,6 +842,7 @@ func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (quic.Ea
 		MaxIncomingUniStreams: -1,
 	})
 	if !stopClose() {
+		closeErr := <-contextCloseDone
 		d.mu.Lock()
 		if dial.packetConn == packetConn {
 			dial.packetConn = nil
@@ -847,20 +851,16 @@ func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (quic.Ea
 		if connection != nil {
 			_ = connection.CloseWithError(doqNoError, "")
 		}
-		closeAsync(packetConn)
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, ctxErr
+		if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
 		}
-		return nil, nil, context.Canceled
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, errors.Join(ctxErr, err)
+		}
+		return nil, nil, errors.Join(context.Canceled, err)
 	}
 	if err != nil {
-		d.mu.Lock()
-		if dial.packetConn == packetConn {
-			dial.packetConn = nil
-		}
-		d.mu.Unlock()
-		closeAsync(packetConn)
-		return nil, nil, err
+		return nil, packetConn, err
 	}
 	return connection, packetConn, nil
 }
