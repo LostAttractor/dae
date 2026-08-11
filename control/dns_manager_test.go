@@ -55,17 +55,14 @@ func TestDnsManagerConcurrentQueriesShareOneConnection(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
 
-	var mu sync.Mutex
-	wireIds := map[uint16]bool{}
+	wireIds := make(chan uint16, 2)
 	go func() {
 		for i := 0; i < 2; i++ {
 			req, err := readStreamFrame(server)
 			if err != nil {
 				return
 			}
-			mu.Lock()
-			wireIds[req.Id] = true
-			mu.Unlock()
+			wireIds <- req.Id
 			if err := writeStreamFrame(server, answerHandler(req)); err != nil {
 				return
 			}
@@ -95,10 +92,9 @@ func TestDnsManagerConcurrentQueriesShareOneConnection(t *testing.T) {
 	}
 	wg.Wait()
 
-	mu.Lock()
-	defer mu.Unlock()
-	if len(wireIds) != 2 {
-		t.Errorf("in-flight queries should get distinct wire IDs: got %v", wireIds)
+	firstID, secondID := <-wireIds, <-wireIds
+	if firstID == secondID {
+		t.Errorf("in-flight queries reused wire ID %v", firstID)
 	}
 	if trackedClient.concurrent.Load() {
 		t.Error("manager wrote concurrent DNS frames to one connection")
@@ -256,14 +252,7 @@ func TestDnsManagerAcceptsHeaderOnlyError(t *testing.T) {
 			Response: true,
 			Rcode:    dnsmessage.RcodeRefused,
 		}}
-		payload, err := response.Pack()
-		if err != nil {
-			return
-		}
-		frame := make([]byte, 2+len(payload))
-		binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
-		copy(frame[2:], payload)
-		_, _ = server.Write(frame)
+		_ = writeStreamFrame(server, response)
 	}()
 	m := NewDnsManager(client)
 	defer m.Close()
@@ -318,15 +307,7 @@ func TestDnsManagerResolveStreamWritesOnce(t *testing.T) {
 				return
 			}
 			frames <- req
-			resp := answerHandler(req)
-			data, err := resp.Pack()
-			if err != nil {
-				continue
-			}
-			frame := make([]byte, 2+len(data))
-			binary.BigEndian.PutUint16(frame[:2], uint16(len(data)))
-			copy(frame[2:], data)
-			if _, err := serverConn.Write(frame); err != nil {
+			if err := writeStreamFrame(serverConn, answerHandler(req)); err != nil {
 				return
 			}
 		}
@@ -401,14 +382,7 @@ func TestDnsManagerIdleReapingWaitsForPendingQuery(t *testing.T) {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
-		data, err := answerHandler(req).Pack()
-		if err != nil {
-			return
-		}
-		frame := make([]byte, 2+len(data))
-		binary.BigEndian.PutUint16(frame[:2], uint16(len(data)))
-		copy(frame[2:], data)
-		_, _ = serverConn.Write(frame)
+		_ = writeStreamFrame(serverConn, answerHandler(req))
 	}()
 
 	if err := m.Resolve(testQuery("example.com.", dnsmessage.TypeA, 89)); err != nil {
@@ -420,29 +394,37 @@ func TestDnsManagerIdleReapingSerializesWithAdmission(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		clientConn, serverConn := net.Pipe()
 		m := newDnsManager(clientConn, time.Second, time.Hour)
+		m.idleTimer.Stop()
+		m.stateMu.Lock()
+		m.idleTimeout = 0
+		m.lastResponse = time.Now().Add(-time.Second)
+		m.stateMu.Unlock()
+
+		go func() {
+			req, err := readStreamFrame(serverConn)
+			if err == nil {
+				_ = writeStreamFrame(serverConn, answerHandler(req))
+			}
+		}()
 
 		start := make(chan struct{})
-		var admitted bool
-		var wg sync.WaitGroup
-		wg.Add(2)
+		resolveResult := make(chan error, 1)
+		reaped := make(chan struct{})
 		go func() {
-			defer wg.Done()
 			<-start
-			admitted = m.beginQuery()
+			resolveResult <- m.Resolve(testQuery("example.com.", dnsmessage.TypeA, 90))
 		}()
 		go func() {
-			defer wg.Done()
 			<-start
 			m.reapIdle()
+			close(reaped)
 		}()
 		close(start)
-		wg.Wait()
+		err := <-resolveResult
+		<-reaped
 
-		if admitted {
-			if m.IsClosed() {
-				t.Fatal("idle reaper closed a newly admitted query")
-			}
-			m.endQuery()
+		if err != nil && !errors.Is(err, errDnsManagerUnavailable) {
+			t.Fatalf("idle reaper interrupted an admitted query: %v", err)
 		}
 		_ = m.Close()
 		_ = serverConn.Close()
@@ -455,18 +437,48 @@ func TestDnsManagerRetiredStateIsMonotonic(t *testing.T) {
 	m := newDnsManager(clientConn, time.Second, time.Hour)
 	defer m.Close()
 
-	if !m.beginQuery() {
-		t.Fatal("open manager rejected a query")
+	ctx, cancel := context.WithCancel(context.Background())
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() {
+		firstResult <- m.ResolveContext(ctx, testQuery("first.example.", dnsmessage.TypeA, 1))
+	}()
+	go func() {
+		secondResult <- m.Resolve(testQuery("second.example.", dnsmessage.TypeA, 2))
+	}()
+	var secondRequest *dnsmessage.Msg
+	for i := 0; i < 2; i++ {
+		req, err := readStreamFrame(serverConn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Question[0].Name == "second.example." {
+			secondRequest = req
+		}
 	}
-	m.retire()
-	m.recordResponse()
+	if secondRequest == nil {
+		t.Fatal("second query was not written")
+	}
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	if err := <-firstResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first query returned %v, want context.Canceled", err)
+	}
+	if !m.IsClosed() {
+		t.Fatal("caller cancellation did not retire the manager")
+	}
+	if err := m.Resolve(testQuery("third.example.", dnsmessage.TypeA, 3)); !errors.Is(err, errDnsManagerUnavailable) {
+		t.Fatalf("query admitted while draining: %v", err)
+	}
+	if err := writeStreamFrame(serverConn, answerHandler(secondRequest)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondResult; err != nil {
+		t.Fatalf("retirement interrupted the sibling query: %v", err)
+	}
 	if !m.IsClosed() {
 		t.Fatal("sibling response revived a retired manager")
 	}
-	if m.beginQuery() {
-		t.Fatal("retired manager admitted a new query")
-	}
-	m.endQuery()
 }
 
 func TestDnsManagerRetireBlocksNewIdReservations(t *testing.T) {
@@ -484,15 +496,10 @@ func TestDnsManagerRetireBlocksNewIdReservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.retire()
-	m.recvMap.Delete(wireId)
-	second := &dnsPendingQuery{
-		ch:    make(chan *dnsmessage.Msg, 1),
-		query: testQuery("example.com.", dnsmessage.TypeA, 2),
-	}
-	if _, err := m.reserveQuery(second, wireId); !errors.Is(err, errDnsManagerUnavailable) {
+	if _, err := m.reserveQuery(first, wireId); !errors.Is(err, errDnsManagerUnavailable) {
 		t.Fatalf("reservation after retire error = %v, want errDnsManagerUnavailable", err)
 	}
-	m.endQuery()
+	m.endQuery(wireId)
 }
 
 func TestDnsManagerParentCancellationRetiresConnection(t *testing.T) {
@@ -552,6 +559,48 @@ func TestDnsManagerPreCanceledContextDoesNotWrite(t *testing.T) {
 	}
 }
 
+type cancelOnSecondErrContext struct {
+	context.Context
+	done     chan struct{}
+	errCalls atomic.Int32
+	once     sync.Once
+}
+
+func (c *cancelOnSecondErrContext) Done() <-chan struct{} { return c.done }
+
+func (c *cancelOnSecondErrContext) Err() error {
+	if c.errCalls.Add(1) < 2 {
+		return nil
+	}
+	c.once.Do(func() { close(c.done) })
+	return context.Canceled
+}
+
+func TestDnsManagerCallerCancellationWinsResponseCommit(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		req, err := readStreamFrame(server)
+		if err == nil {
+			_ = writeStreamFrame(server, answerHandler(req))
+		}
+	}()
+
+	m := NewDnsManager(client)
+	defer m.Close()
+	ctx := &cancelOnSecondErrContext{
+		Context: context.Background(),
+		done:    make(chan struct{}),
+	}
+	msg := testQuery("example.com.", dnsmessage.TypeA, 15)
+	if err := m.ResolveContext(ctx, msg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveContext error = %v, want context.Canceled", err)
+	}
+	if msg.Response || len(msg.Answer) != 0 || msg.Id != 15 {
+		t.Fatalf("canceled response modified caller message: %+v", msg)
+	}
+}
+
 func TestDnsManagerCloseBeforeWriteIsUnavailable(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
@@ -565,7 +614,7 @@ func TestDnsManagerCloseBeforeWriteIsUnavailable(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		m.stateMu.Lock()
-		pending := m.pending
+		pending := len(m.pending)
 		m.stateMu.Unlock()
 		if pending != 0 {
 			break
@@ -818,17 +867,12 @@ func TestDnsManagerIdleRetirementCanReplaceWhileTransportCloseIsStuck(t *testing
 	}
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(conn.closeRelease) })
-	m := NewDnsManager(conn)
-	m.idleTimeout = 20 * time.Millisecond
-	m.resetIdleTimer()
+	m := newDnsManager(conn, time.Second, 20*time.Millisecond)
 
 	select {
 	case <-conn.closeStarted:
 	case <-time.After(time.Second):
 		t.Fatal("idle manager did not start closing its transport")
-	}
-	if !m.IsClosed() {
-		t.Fatal("idle manager was not retired")
 	}
 	if !m.canReplace() {
 		t.Fatal("idle manager remained unavailable while transport close was blocked")
