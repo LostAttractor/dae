@@ -552,6 +552,43 @@ func TestDnsManagerPreCanceledContextDoesNotWrite(t *testing.T) {
 	}
 }
 
+func TestDnsManagerCloseBeforeWriteIsUnavailable(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	m := NewDnsManager(client)
+	m.writeMu.Lock()
+
+	query := testQuery("example.com.", dnsmessage.TypeSOA, 1)
+	query.Opcode = dnsmessage.OpcodeNotify
+	result := make(chan error, 1)
+	go func() { result <- m.Resolve(query) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		m.stateMu.Lock()
+		pending := m.pending
+		m.stateMu.Unlock()
+		if pending != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			m.writeMu.Unlock()
+			t.Fatal("query was not admitted")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	m.startClose()
+	m.writeMu.Unlock()
+
+	if err := <-result; !errors.Is(err, errDnsManagerUnavailable) {
+		t.Fatalf("unsent NOTIFY returned %v, want manager unavailable", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := m.waitClosed(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDnsManagerObsoleteIdleCallbackPreservesActivity(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -630,4 +667,156 @@ func TestDnsManagerCloseFailsInFlightResolve(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Errorf("in-flight Resolve should be unblocked by Close")
 	}
+}
+
+type dnsWriteErrorConn struct {
+	net.Conn
+	err error
+}
+
+type dnsCloseErrorConn struct {
+	net.Conn
+	err error
+}
+
+func (c *dnsCloseErrorConn) Close() error {
+	_ = c.Conn.Close()
+	return c.err
+}
+
+func (c *dnsWriteErrorConn) Write([]byte) (int, error) { return 0, c.err }
+
+type blockingDNSWriteConn struct {
+	net.Conn
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+type blockingDNSCloseConn struct {
+	net.Conn
+	closeStarted chan struct{}
+	closeRelease chan struct{}
+	once         sync.Once
+}
+
+func (c *blockingDNSCloseConn) Close() error {
+	c.once.Do(func() { close(c.closeStarted) })
+	<-c.closeRelease
+	return c.Conn.Close()
+}
+
+func (c *blockingDNSWriteConn) Write([]byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	return 0, net.ErrClosed
+}
+
+func TestDnsManagerReturnsTerminalWriteError(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	wantErr := errors.New("upstream write failed")
+	m := NewDnsManager(&dnsWriteErrorConn{Conn: clientConn, err: wantErr})
+	defer m.Close()
+
+	err := m.Resolve(testQuery("example.com.", dnsmessage.TypeA, 5))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Resolve returned %v, want terminal write error %v", err, wantErr)
+	}
+	if !m.canReplace() {
+		t.Fatal("manager was not immediately replaceable after its write returned")
+	}
+}
+
+func TestDnsManagerCloseReturnsTransportError(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	wantErr := errors.New("transport close failed")
+	m := NewDnsManager(&dnsCloseErrorConn{Conn: clientConn, err: wantErr})
+	if err := m.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("Close returned %v, want %v", err, wantErr)
+	}
+}
+
+func TestDnsManagerDoesNotReplaceWhileStreamWriteIsStuck(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	conn := &blockingDNSWriteConn{
+		Conn: clientConn, started: make(chan struct{}), release: make(chan struct{}),
+	}
+	m := NewDnsManager(conn)
+	m.timeout = 20 * time.Millisecond
+	err := m.Resolve(testQuery("example.com.", dnsmessage.TypeA, 5))
+	if err == nil {
+		t.Fatal("stuck stream write unexpectedly succeeded")
+	}
+	<-conn.started
+	if m.canReplace() {
+		t.Fatal("closed manager became replaceable while its transport write was still blocked")
+	}
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- m.Close() }()
+	select {
+	case err := <-closeResult:
+		t.Fatalf("Close returned while the transport write was still blocked: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(conn.release)
+	deadline := time.Now().Add(time.Second)
+	for !m.canReplace() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !m.canReplace() {
+		t.Fatal("manager did not become replaceable after the blocked write exited")
+	}
+	if err := <-closeResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDnsManagerCanceledCanReplaceWhileTransportCloseIsStuck(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	conn := &blockingDNSCloseConn{
+		Conn: clientConn, closeStarted: make(chan struct{}), closeRelease: make(chan struct{}),
+	}
+	m := NewDnsManager(conn)
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- m.Close() }()
+	<-conn.closeStarted
+	if !m.canReplace() {
+		t.Fatal("canceled manager remained unavailable while transport close was blocked")
+	}
+	close(conn.closeRelease)
+	if err := <-closeResult; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDnsManagerIdleRetirementCanReplaceWhileTransportCloseIsStuck(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	conn := &blockingDNSCloseConn{
+		Conn: clientConn, closeStarted: make(chan struct{}), closeRelease: make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(conn.closeRelease) })
+	m := NewDnsManager(conn)
+	m.idleTimeout = 20 * time.Millisecond
+	m.resetIdleTimer()
+
+	select {
+	case <-conn.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("idle manager did not start closing its transport")
+	}
+	if !m.IsClosed() {
+		t.Fatal("idle manager was not retired")
+	}
+	if !m.canReplace() {
+		t.Fatal("idle manager remained unavailable while transport close was blocked")
+	}
+	releaseOnce.Do(func() { close(conn.closeRelease) })
+	<-m.closeDone
+	<-m.runDone
 }

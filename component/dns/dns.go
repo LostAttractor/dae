@@ -6,6 +6,7 @@
 package dns
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"net/url"
@@ -127,8 +128,8 @@ func (s *Dns) CheckUpstreamsFormat() error {
 	return nil
 }
 
-func (s *Dns) GetUpstream(upstreamIndex consts.DnsRequestOutboundIndex) (upstream *Upstream, err error) {
-	return s.upstream[upstreamIndex].GetUpstream()
+func (s *Dns) GetUpstream(ctx context.Context, upstreamIndex consts.DnsRequestOutboundIndex) (upstream *Upstream, err error) {
+	return s.upstream[upstreamIndex].GetUpstream(ctx)
 }
 
 func (s *Dns) RequestSelect(
@@ -154,7 +155,7 @@ func (s *Dns) RequestSelect(
 	return upstreamIndex, nil
 }
 
-func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
 	if !msg.Response {
 		return 0, nil, fmt.Errorf("DNS response expected but DNS request received")
 	}
@@ -189,8 +190,13 @@ func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstr
 	}
 
 	s.upstream2IndexMu.Lock()
-	from := s.upstream2Index[fromUpstream]
+	from, found := s.upstream2Index[fromUpstream]
 	s.upstream2IndexMu.Unlock()
+	if !found {
+		// An AsIs request uses an ad-hoc upstream representing the packet's
+		// original destination, so it is intentionally absent from this map.
+		from = int(consts.DnsRequestOutboundIndex_AsIs)
+	}
 	// Route.
 	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, consts.DnsRequestOutboundIndex(from))
 	if err != nil {
@@ -201,7 +207,7 @@ func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, fromUpstream *Upstream) (upstr
 		if int(upstreamIndex) >= len(s.upstream) {
 			return 0, nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
 		}
-		upstream, err = s.upstream[upstreamIndex].GetUpstream()
+		upstream, err = s.upstream[upstreamIndex].GetUpstream(ctx)
 		if err != nil {
 			return 0, nil, err
 		}

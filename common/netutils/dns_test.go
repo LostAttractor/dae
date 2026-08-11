@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +42,19 @@ func (s *doqTestStream) Close() error {
 	return nil
 }
 
+type blockingCloseConn struct {
+	net.Conn
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingCloseConn) Close() error {
+	<-c.release
+	var err error
+	c.once.Do(func() { err = c.Conn.Close() })
+	return err
+}
+
 func (d blockingDNSDialer) Alive() bool { return true }
 func (d blockingDNSDialer) Connect() error {
 	return nil
@@ -55,10 +69,13 @@ func (d blockingDNSDialer) ListenPacket(context.Context, string) (net.PacketConn
 func TestResolveNetipContextCancellationClosesConnection(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
+	releaseClose := make(chan struct{})
+	defer close(releaseClose)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := ResolveNetipContext(ctx, blockingDNSDialer{conn: client}, netip.MustParseAddrPort("127.0.0.1:53"), "example.com", dnsmessage.TypeA, "tcp")
+		conn := &blockingCloseConn{Conn: client, release: releaseClose}
+		_, err := ResolveNetipContext(ctx, blockingDNSDialer{conn: conn}, netip.MustParseAddrPort("127.0.0.1:53"), "example.com", dnsmessage.TypeA, "tcp")
 		done <- err
 	}()
 	cancel()
@@ -150,6 +167,9 @@ func TestResolveHttpAppliesAge(t *testing.T) {
 			})}
 			if err := ResolveHttp(context.Background(), client, &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query"}, query); err != nil {
 				t.Fatal(err)
+			}
+			if query.Id != 42 {
+				t.Fatalf("DoH response ID = %d, want 42", query.Id)
 			}
 			if got := query.Answer[0].Header().Ttl; got != tt.want {
 				t.Fatalf("aged TTL = %d, want %d", got, tt.want)
