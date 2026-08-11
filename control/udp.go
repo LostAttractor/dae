@@ -37,7 +37,7 @@ func sendPkt(data []byte, from, to netip.AddrPort) (err error) {
 	if err != nil {
 		return
 	}
-	_, err = uConn.WriteToUDPAddrPort(data, to)
+	_, err = uConn.WriteToUDPAddrPortWithDeadline(data, to, time.Now().Add(consts.DefaultDNSTimeout))
 	return err
 }
 
@@ -202,10 +202,10 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 		})
 		// Receive UDP messages.
 		go func() {
-			err = ue.run()
+			runErr := ue.run()
 			DefaultUdpEndpointPool.Remove(src)
-			if err != nil {
-				netErr, ok := IsNetError(err)
+			if runErr != nil {
+				netErr, ok := IsNetError(runErr)
 				if ok {
 					if netErr.Timeout() {
 						return
@@ -216,9 +216,9 @@ func (c *ControlPlane) handlePkt(lConn *net.UDPConn, data []byte, src, dst netip
 					}
 				}
 				if log.IsLevelEnabled(log.DebugLevel) {
-					log.Warnf("%+v", err)
+					log.Warnf("%+v", runErr)
 				} else {
-					log.Warnf("%v", err)
+					log.Warnf("%v", runErr)
 				}
 			}
 		}()
