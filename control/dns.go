@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -30,6 +31,7 @@ import (
 // TODO: Connection reuse
 type DnsForwarder interface {
 	ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error
+	io.Closer
 }
 
 const (
@@ -259,59 +261,92 @@ func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []by
 	}
 }
 
-// ownedPacketConnEarlyConnection closes the caller-created packet socket with
-// the QUIC connection. quic.DialEarly deliberately leaves supplied sockets
-// under caller ownership.
-type ownedPacketConnEarlyConnection struct {
-	quic.EarlyConnection
-	packetConn net.PacketConn
-	closeOnce  sync.Once
-}
-
-func ownPacketConn(conn quic.EarlyConnection, packetConn net.PacketConn) quic.EarlyConnection {
-	owned := &ownedPacketConnEarlyConnection{
-		EarlyConnection: conn,
-		packetConn:      packetConn,
+func closeAsync(closer io.Closer) {
+	if closer != nil {
+		go func() { _ = closer.Close() }()
 	}
-	go func() {
-		<-conn.Context().Done()
-		owned.closePacketConn()
-	}()
-	return owned
 }
 
-func (c *ownedPacketConnEarlyConnection) closePacketConn() error {
-	var err error
-	c.closeOnce.Do(func() { err = c.packetConn.Close() })
-	return err
+type dnsForwarderState struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	closed atomic.Bool
 }
 
-func (c *ownedPacketConnEarlyConnection) CloseWithError(code quic.ApplicationErrorCode, reason string) error {
-	return errors.Join(c.EarlyConnection.CloseWithError(code, reason), c.closePacketConn())
+func newDNSForwarderState(parent context.Context) *dnsForwarderState {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	return &dnsForwarderState{ctx: ctx, cancel: cancel}
 }
 
-func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForwarder, error) {
+func (s *dnsForwarderState) isClosed() bool {
+	return s != nil && s.closed.Load()
+}
+
+func (s *dnsForwarderState) context() context.Context {
+	if s == nil || s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
+func (s *dnsForwarderState) close() bool {
+	if s == nil {
+		return true
+	}
+	if !s.closed.CompareAndSwap(false, true) {
+		return false
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	return true
+}
+
+func (s *dnsForwarderState) deriveContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	derived, cancel := context.WithCancel(ctx)
+	if s.context().Err() != nil {
+		cancel()
+		return derived, cancel
+	}
+	stop := context.AfterFunc(s.context(), cancel)
+	return derived, func() {
+		stop()
+		cancel()
+	}
+}
+
+func newDnsForwarder(parent context.Context, upstream *dns.Upstream, dialArgument dialArgument) (DnsForwarder, error) {
+	state := newDNSForwarderState(parent)
 	forwarder, err := func() (DnsForwarder, error) {
 		switch dialArgument.networkType.L4Proto {
 		case consts.L4ProtoStr_TCP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_TCP, dns.UpstreamScheme_TCP_UDP:
-				return &DoTCP{Upstream: *upstream, dialArgument: dialArgument}, nil
+				return newManagedDNSForwarder(upstream, dialArgument, state), nil
 			case dns.UpstreamScheme_TLS:
-				return &DoTLS{Upstream: *upstream, dialArgument: dialArgument}, nil
+				return &DoTLS{
+					Upstream: *upstream, dialArgument: dialArgument, state: state,
+					exchanges: make(map[*dnsTLSExchange]struct{}),
+				}, nil
 			case dns.UpstreamScheme_HTTPS:
-				return &DoH{Upstream: *upstream, dialArgument: dialArgument, http3: false}, nil
+				return &DoH{Upstream: *upstream, dialArgument: dialArgument, http3: false, state: state}, nil
 			default:
 				return nil, fmt.Errorf("unexpected scheme: %v", upstream.Scheme)
 			}
 		case consts.L4ProtoStr_UDP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_UDP, dns.UpstreamScheme_TCP_UDP:
-				return &DoUDP{Upstream: *upstream, dialArgument: dialArgument}, nil
+				return &DoUDP{Upstream: *upstream, dialArgument: dialArgument, state: state}, nil
 			case dns.UpstreamScheme_QUIC:
-				return &DoQ{Upstream: *upstream, dialArgument: dialArgument}, nil
+				return &DoQ{Upstream: *upstream, dialArgument: dialArgument, state: state}, nil
 			case dns.UpstreamScheme_H3:
-				return &DoH{Upstream: *upstream, dialArgument: dialArgument, http3: true}, nil
+				return &DoH{Upstream: *upstream, dialArgument: dialArgument, http3: true, state: state}, nil
 			default:
 				return nil, fmt.Errorf("unexpected scheme: %v", upstream.Scheme)
 			}
@@ -320,6 +355,7 @@ func newDnsForwarder(upstream *dns.Upstream, dialArgument dialArgument) (DnsForw
 		}
 	}()
 	if err != nil {
+		state.close()
 		return nil, err
 	}
 	return forwarder, nil
@@ -329,21 +365,27 @@ type DoH struct {
 	dns.Upstream
 	dialArgument dialArgument
 	http3        bool
+	state        *dnsForwarderState
 
-	mu     sync.Mutex
-	client *http.Client
-	rt     http.RoundTripper
+	mu          sync.Mutex
+	client      *http.Client
+	rt          http.RoundTripper
+	packetConns map[net.PacketConn]struct{}
 }
 
 // getClient lazily builds and caches one HTTP client per forwarder so
-// connections (TCP+TLS for DoH, QUIC for DoH3) are reused across queries
-// instead of leaking a transport, its goroutines and its idle connections
-// on every lookup.
-func (d *DoH) getClient() *http.Client {
+// connections (TCP+TLS for DoH, QUIC for DoH3) are reused across queries.
+func (d *DoH) getClient() (*http.Client, error) {
+	if d.state.isClosed() {
+		return nil, net.ErrClosed
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.state.isClosed() {
+		return nil, net.ErrClosed
+	}
 	if d.client != nil {
-		return d.client
+		return d.client, nil
 	}
 	var roundTripper http.RoundTripper
 	if d.http3 {
@@ -360,33 +402,75 @@ func (d *DoH) getClient() *http.Client {
 			return fmt.Errorf("do not use a server that will redirect, url: %v", d.Upstream.String())
 		},
 	}
-	return d.client
+	return d.client, nil
 }
 
 // Close releases the cached client, its idle connections and, for DoH3, the
-// underlying QUIC connection.
+// underlying QUIC packet sockets.
 func (d *DoH) Close() error {
+	if !d.state.close() {
+		return nil
+	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	var err error
-	if closer, ok := d.rt.(io.Closer); ok {
-		err = closer.Close()
-	} else if d.client != nil {
-		d.client.CloseIdleConnections()
+	client := d.client
+	roundTripper := d.rt
+	packetConns := make([]net.PacketConn, 0, len(d.packetConns))
+	for conn := range d.packetConns {
+		packetConns = append(packetConns, conn)
 	}
 	d.client = nil
 	d.rt = nil
+	d.packetConns = nil
+	d.mu.Unlock()
+
+	if client != nil {
+		client.CloseIdleConnections()
+	}
+	var err error
+	for _, conn := range packetConns {
+		if closeErr := conn.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
+		}
+	}
+	if closer, ok := roundTripper.(io.Closer); ok {
+		if closeErr := closer.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
+		}
+	}
 	return err
 }
 
 func (d *DoH) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+	parentCtx := ctx
 	serverURL := &url.URL{
 		Scheme: "https",
 		Host:   net.JoinHostPort(d.Upstream.Hostname, fmt.Sprint(d.Upstream.Port)),
 		Path:   d.Upstream.Path,
 	}
 
-	return netutils.ResolveHttp(ctx, d.getClient(), serverURL, msg)
+	client, err := d.getClient()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := d.state.deriveContext(ctx)
+	defer cancel()
+	originalID := msg.Id
+	response := msg.Copy()
+	if err := netutils.ResolveHttp(ctx, client, serverURL, response); err != nil {
+		if parentCtx != nil && parentCtx.Err() != nil {
+			return parentCtx.Err()
+		}
+		if d.state.isClosed() {
+			return net.ErrClosed
+		}
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	response.Id = originalID
+	*msg = *response
+	return nil
 }
 
 func (d *DoH) getHttpRoundTripper() *http.Transport {
@@ -400,11 +484,9 @@ func (d *DoH) getHttpRoundTripper() *http.Transport {
 		ForceAttemptHTTP2: true,
 		IdleConnTimeout:   90 * time.Second,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
-			if err != nil {
-				return nil, err
-			}
-			return conn, nil
+			ctx, cancel := d.state.deriveContext(ctx)
+			defer cancel()
+			return d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
 		},
 	}
 
@@ -420,17 +502,62 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 		},
 		QUICConfig: &quic.Config{},
 		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
+			ctx, cancel := d.state.deriveContext(ctx)
+			defer cancel()
 			udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
 			packetConn, err := d.dialArgument.Dialer.ListenPacket(ctx, d.dialArgument.Target.String())
 			if err != nil {
 				return nil, err
 			}
-			conn, err := quic.DialEarly(ctx, packetConn, udpAddr, tlsCfg, cfg)
+			d.mu.Lock()
+			if d.state.isClosed() {
+				d.mu.Unlock()
+				closeAsync(packetConn)
+				return nil, net.ErrClosed
+			}
+			if d.packetConns == nil {
+				d.packetConns = make(map[net.PacketConn]struct{})
+			}
+			d.packetConns[packetConn] = struct{}{}
+			d.mu.Unlock()
+			stopClose := context.AfterFunc(ctx, func() { closeAsync(packetConn) })
+			connection, err := quic.DialEarly(ctx, packetConn, udpAddr, tlsCfg, cfg)
+			if !stopClose() {
+				d.mu.Lock()
+				delete(d.packetConns, packetConn)
+				d.mu.Unlock()
+				if connection != nil {
+					_ = connection.CloseWithError(doqNoError, "")
+				}
+				closeAsync(packetConn)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				return nil, context.Canceled
+			}
 			if err != nil {
-				_ = packetConn.Close()
+				d.mu.Lock()
+				delete(d.packetConns, packetConn)
+				d.mu.Unlock()
+				closeAsync(packetConn)
 				return nil, err
 			}
-			return ownPacketConn(conn, packetConn), nil
+			d.mu.Lock()
+			if d.state.isClosed() {
+				d.mu.Unlock()
+				_ = connection.CloseWithError(doqNoError, "")
+				closeAsync(packetConn)
+				return nil, net.ErrClosed
+			}
+			d.mu.Unlock()
+			go func() {
+				<-connection.Context().Done()
+				d.mu.Lock()
+				delete(d.packetConns, packetConn)
+				d.mu.Unlock()
+				closeAsync(packetConn)
+			}()
+			return connection, nil
 		},
 	}
 	return roundTripper
@@ -439,29 +566,126 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 type DoQ struct {
 	dns.Upstream
 	dialArgument dialArgument
+	state        *dnsForwarderState
 	mu           sync.Mutex
 	conn         quic.Connection
+	packetConn   net.PacketConn
+	dial         *doqDialState
 }
 
-// getConn lazily dials the shared QUIC connection. The mutex keeps
-// concurrent first queries from each creating a connection and leaking all
-// but one.
-func (d *DoQ) getConn(ctx context.Context) (quic.Connection, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.conn == nil || d.conn.Context().Err() != nil {
-		ctx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-		defer cancel()
-		conn, err := d.createConnection(ctx)
-		if err != nil {
-			return nil, err
-		}
-		d.conn = conn
+type doqDialState struct {
+	done       chan struct{}
+	cancel     context.CancelFunc
+	conn       quic.Connection
+	packetConn net.PacketConn
+	err        error
+}
+
+// getConn lazily dials the shared QUIC connection. One shared dial runs outside
+// mu so Close can cancel it without allowing concurrent requests to accumulate
+// blocked dials or packet sockets.
+func (d *DoQ) getConn(requestCtx context.Context) (quic.Connection, error) {
+	if d.state.isClosed() {
+		return nil, net.ErrClosed
 	}
-	return d.conn, nil
+	d.mu.Lock()
+	if d.state.isClosed() {
+		d.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	if d.conn != nil && d.conn.Context().Err() == nil {
+		conn := d.conn
+		d.mu.Unlock()
+		return conn, nil
+	}
+	if d.dial != nil {
+		dial := d.dial
+		d.mu.Unlock()
+		return d.waitForDial(requestCtx, dial)
+	}
+	staleConn, stalePacket := d.conn, d.packetConn
+	d.conn = nil
+	d.packetConn = nil
+	dial := &doqDialState{done: make(chan struct{})}
+	d.dial = dial
+	d.mu.Unlock()
+	if staleConn != nil {
+		_ = staleConn.CloseWithError(doqNoError, "")
+	}
+	closeAsync(stalePacket)
+	go d.runDial(dial)
+	return d.waitForDial(requestCtx, dial)
+}
+
+func (d *DoQ) waitForDial(requestCtx context.Context, dial *doqDialState) (quic.Connection, error) {
+	ctx, cancelState := d.state.deriveContext(requestCtx)
+	defer cancelState()
+	select {
+	case <-dial.done:
+		return dial.conn, dial.err
+	case <-ctx.Done():
+		if d.state.isClosed() {
+			return nil, net.ErrClosed
+		}
+		if requestCtx != nil && requestCtx.Err() != nil {
+			return nil, requestCtx.Err()
+		}
+		return nil, ctx.Err()
+	}
+}
+
+func (d *DoQ) runDial(dial *doqDialState) {
+	ctx, cancel := context.WithTimeout(d.state.context(), consts.DefaultDialTimeout)
+	d.mu.Lock()
+	dial.cancel = cancel
+	d.mu.Unlock()
+	conn, packetConn, err := d.createConnection(ctx, dial)
+	cancel()
+
+	var closeConn quic.Connection
+	var closePacket net.PacketConn
+	d.mu.Lock()
+	if dial.packetConn == packetConn {
+		dial.packetConn = nil
+	}
+	if err == nil && !d.state.isClosed() {
+		d.conn = conn
+		d.packetConn = packetConn
+		dial.conn = conn
+	} else {
+		if d.state.isClosed() {
+			err = net.ErrClosed
+		}
+		closeConn, closePacket = conn, packetConn
+	}
+	dial.err = err
+	if d.dial == dial {
+		d.dial = nil
+	}
+	close(dial.done)
+	d.mu.Unlock()
+
+	if closeConn != nil {
+		_ = closeConn.CloseWithError(doqNoError, "")
+	}
+	closeAsync(closePacket)
+	if err != nil {
+		return
+	}
+	go func(connection quic.Connection, packet net.PacketConn) {
+		<-connection.Context().Done()
+		d.mu.Lock()
+		if d.conn == connection {
+			d.conn = nil
+			d.packetConn = nil
+		}
+		d.mu.Unlock()
+		closeAsync(packet)
+	}(conn, packetConn)
 }
 
 func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+	originalID := msg.Id
 	query, frame, err := packDoqQuery(msg)
 	if err != nil {
 		return err
@@ -472,18 +696,22 @@ func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	}
 
 	parentCtx := ctx
-	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
-	defer cancel()
+	ctx, cancelState := d.state.deriveContext(ctx)
+	defer cancelState()
+	ctx, cancelTimeout := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+	defer cancelTimeout()
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		// A local stream-limit timeout doesn't make the shared connection bad.
 		// Only discard it when quic-go has already closed the connection.
 		if conn.Context().Err() != nil {
-			d.mu.Lock()
-			if d.conn == conn {
-				d.conn = nil
-			}
-			d.mu.Unlock()
+			d.detachConnection(conn, doqNoError, "")
+		}
+		if parentCtx != nil && parentCtx.Err() != nil {
+			return parentCtx.Err()
+		}
+		if d.state.isClosed() {
+			return net.ErrClosed
 		}
 		return err
 	}
@@ -494,47 +722,111 @@ func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 		return err
 	}
 	stopDeadline := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
-	err = resolvePreparedDoQ(stream, msg, query, frame)
+	response := msg.Copy()
+	err = resolvePreparedDoQ(stream, response, query, frame)
 	stopDeadline()
-	if err != nil && parentCtx.Err() != nil {
+	if err != nil && parentCtx != nil && parentCtx.Err() != nil {
 		return parentCtx.Err()
+	}
+	if err != nil && d.state.isClosed() {
+		return net.ErrClosed
 	}
 	var protocolErr *doqProtocolErrorCause
 	if errors.As(err, &protocolErr) {
-		d.closeConnection(conn, doqProtocolError, "DoQ protocol error")
+		d.detachConnection(conn, doqProtocolError, "DoQ protocol error")
 		return err
 	}
 	if err != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return err
-}
-
-func (d *DoQ) closeConnection(conn quic.Connection, code quic.ApplicationErrorCode, reason string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.conn == conn {
-		_ = d.conn.CloseWithError(code, reason)
-		d.conn = nil
-	}
-}
-
-func (d *DoQ) Close() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.conn != nil {
-		err := d.conn.CloseWithError(doqNoError, "")
-		d.conn = nil
+	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	response.Id = originalID
+	*msg = *response
 	return nil
 }
 
-func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error) {
+func (d *DoQ) detachConnection(conn quic.Connection, code quic.ApplicationErrorCode, reason string) {
+	d.mu.Lock()
+	if d.conn != conn {
+		d.mu.Unlock()
+		return
+	}
+	packetConn := d.packetConn
+	d.conn = nil
+	d.packetConn = nil
+	d.mu.Unlock()
+	go func() {
+		_ = conn.CloseWithError(code, reason)
+		if packetConn != nil {
+			_ = packetConn.Close()
+		}
+	}()
+}
+
+func (d *DoQ) Close() error {
+	if !d.state.close() {
+		return nil
+	}
+	d.mu.Lock()
+	conn, packetConn := d.conn, d.packetConn
+	dial := d.dial
+	var dialPacket net.PacketConn
+	var dialCancel context.CancelFunc
+	if dial != nil {
+		dialPacket = dial.packetConn
+		dialCancel = dial.cancel
+	}
+	d.conn = nil
+	d.packetConn = nil
+	d.mu.Unlock()
+	if dialCancel != nil {
+		dialCancel()
+	}
+	var err error
+	if conn != nil {
+		if closeErr := conn.CloseWithError(doqNoError, ""); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = closeErr
+		}
+	}
+	if packetConn != nil {
+		if closeErr := packetConn.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
+		}
+	}
+	if dialPacket != nil && dialPacket != packetConn {
+		closeAsync(dialPacket)
+	}
+	if dial != nil {
+		timer := time.NewTimer(consts.DefaultDialTimeout)
+		defer timer.Stop()
+		select {
+		case <-dial.done:
+		case <-timer.C:
+			err = errors.Join(err, fmt.Errorf("DoQ dial shutdown timeout: %w", context.DeadlineExceeded))
+		}
+	}
+	return err
+}
+
+func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (quic.EarlyConnection, net.PacketConn, error) {
 	packetConn, err := d.dialArgument.Dialer.ListenPacket(ctx, d.dialArgument.Target.String())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	d.mu.Lock()
+	if d.state.isClosed() || d.dial != dial {
+		d.mu.Unlock()
+		closeAsync(packetConn)
+		return nil, nil, net.ErrClosed
+	}
+	dial.packetConn = packetConn
+	d.mu.Unlock()
+	stopClose := context.AfterFunc(ctx, func() { closeAsync(packetConn) })
 
 	tlsCfg := &tls.Config{
 		NextProtos:         []string{"doq"},
@@ -542,123 +834,327 @@ func (d *DoQ) createConnection(ctx context.Context) (quic.EarlyConnection, error
 		ServerName:         d.Upstream.Hostname,
 	}
 	addr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
-	conn, err := quic.DialEarly(ctx, packetConn, addr, tlsCfg, &quic.Config{
+	connection, err := quic.DialEarly(ctx, packetConn, addr, tlsCfg, &quic.Config{
 		MaxIncomingStreams:    -1,
 		MaxIncomingUniStreams: -1,
 	})
-	if err != nil {
-		_ = packetConn.Close()
-		return nil, err
+	if !stopClose() {
+		d.mu.Lock()
+		if dial.packetConn == packetConn {
+			dial.packetConn = nil
+		}
+		d.mu.Unlock()
+		if connection != nil {
+			_ = connection.CloseWithError(doqNoError, "")
+		}
+		closeAsync(packetConn)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, ctxErr
+		}
+		return nil, nil, context.Canceled
 	}
-	return ownPacketConn(conn, packetConn), nil
+	if err != nil {
+		d.mu.Lock()
+		if dial.packetConn == packetConn {
+			dial.packetConn = nil
+		}
+		d.mu.Unlock()
+		closeAsync(packetConn)
+		return nil, nil, err
+	}
+	return connection, packetConn, nil
+}
+
+type dnsTLSExchange struct {
+	conn      *tls.Conn
+	closeOnce sync.Once
+}
+
+func (e *dnsTLSExchange) close() {
+	e.closeOnce.Do(func() { _ = e.conn.Close() })
 }
 
 type DoTLS struct {
 	dns.Upstream
 	dialArgument dialArgument
+	state        *dnsForwarderState
+	mu           sync.Mutex
+	exchanges    map[*dnsTLSExchange]struct{}
+	workers      sync.WaitGroup
 }
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	dialCtx, cancelDial := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+	if d.state.isClosed() {
+		return net.ErrClosed
+	}
+	forwardCtx, cancelState := d.state.deriveContext(ctx)
+	defer cancelState()
+	dialCtx, cancelDial := context.WithTimeout(forwardCtx, consts.DefaultDialTimeout)
 	conn, err := d.dialArgument.Dialer.DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
 	cancelDial()
 	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.state.isClosed() {
+			return net.ErrClosed
+		}
 		return err
+	}
+	if d.state.isClosed() {
+		closeAsync(conn)
+		return net.ErrClosed
 	}
 	tlsConn := tls.Client(conn, &tls.Config{
 		InsecureSkipVerify: false,
 		ServerName:         d.Upstream.Hostname,
 	})
-	defer tlsConn.Close()
-	queryCtx, cancelQuery := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
-	defer cancelQuery()
-	stopClose := context.AfterFunc(queryCtx, func() { _ = tlsConn.Close() })
-	defer stopClose()
-	if err = tlsConn.HandshakeContext(queryCtx); err != nil {
-		if queryCtx.Err() != nil {
-			return queryCtx.Err()
+	exchange := &dnsTLSExchange{conn: tlsConn}
+	d.mu.Lock()
+	if d.state.isClosed() {
+		d.mu.Unlock()
+		closeAsync(tlsConn)
+		return net.ErrClosed
+	}
+	if d.exchanges == nil {
+		d.exchanges = make(map[*dnsTLSExchange]struct{})
+	}
+	d.exchanges[exchange] = struct{}{}
+	d.workers.Add(1)
+	d.mu.Unlock()
+
+	exchangeCtx, exchangeCancel := context.WithTimeout(forwardCtx, consts.DefaultDNSTimeout)
+	defer exchangeCancel()
+	request := msg.Copy()
+	result := make(chan error, 1)
+	go func() {
+		defer d.workers.Done()
+		defer func() {
+			exchange.close()
+			d.mu.Lock()
+			delete(d.exchanges, exchange)
+			d.mu.Unlock()
+		}()
+		if deadline, ok := exchangeCtx.Deadline(); ok {
+			if exchangeErr := exchange.conn.SetDeadline(deadline); exchangeErr != nil {
+				result <- exchangeErr
+				return
+			}
+		}
+		exchangeErr := exchange.conn.HandshakeContext(exchangeCtx)
+		if exchangeErr == nil {
+			exchangeErr = netutils.ResolveStream(exchange.conn, request)
+		}
+		result <- exchangeErr
+	}()
+	select {
+	case err = <-result:
+		if err == nil {
+			if ctx != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if d.state.context().Err() != nil {
+				return net.ErrClosed
+			}
+			if err := exchangeCtx.Err(); err != nil {
+				return err
+			}
+			*msg = *request
 		}
 		return err
+	case <-exchangeCtx.Done():
+		go exchange.close()
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.state.isClosed() {
+			return net.ErrClosed
+		}
+		return exchangeCtx.Err()
 	}
-	err = netutils.ResolveStream(tlsConn, msg)
-	if err != nil && queryCtx.Err() != nil {
-		return queryCtx.Err()
+}
+
+func (d *DoTLS) Close() error {
+	if !d.state.close() {
+		return nil
+	}
+	d.mu.Lock()
+	exchanges := make([]*dnsTLSExchange, 0, len(d.exchanges))
+	for exchange := range d.exchanges {
+		exchanges = append(exchanges, exchange)
+	}
+	d.mu.Unlock()
+	for _, exchange := range exchanges {
+		go exchange.close()
+	}
+	done := make(chan struct{})
+	go func() {
+		d.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(consts.DefaultDialTimeout):
+		return fmt.Errorf("DoT exchange shutdown timeout: %w", context.DeadlineExceeded)
+	}
+}
+
+// managedDNSForwarder is the persistent TCP forwarder. UDP deliberately uses
+// DoUDP so concurrent exchanges cannot share a source port.
+type managedDNSForwarder struct {
+	dns.Upstream
+	dialArgument dialArgument
+	state        *dnsForwarderState
+	mu           sync.Mutex
+	dnsManager   *DnsManager
+	retiring     *DnsManager
+	closeErr     error
+}
+
+// DoTCP remains the transport-specific public name used by the target branch.
+type DoTCP = managedDNSForwarder
+
+func newManagedDNSForwarder(upstream *dns.Upstream, dialArgument dialArgument, state *dnsForwarderState) *managedDNSForwarder {
+	return &managedDNSForwarder{
+		Upstream:     *upstream,
+		dialArgument: dialArgument,
+		state:        state,
+	}
+}
+
+func (d *managedDNSForwarder) Close() error {
+	if !d.state.close() {
+		return nil
+	}
+	d.mu.Lock()
+	manager, retiring, priorErr := d.dnsManager, d.retiring, d.closeErr
+	d.dnsManager = nil
+	d.retiring = nil
+	d.closeErr = nil
+	d.mu.Unlock()
+	err := priorErr
+	if manager != nil {
+		manager.startClose()
+	}
+	if retiring != nil && retiring != manager {
+		retiring.startClose()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
+	defer cancel()
+	if manager != nil {
+		err = errors.Join(err, manager.waitClosed(ctx))
+	}
+	if retiring != nil && retiring != manager {
+		err = errors.Join(err, retiring.waitClosed(ctx))
 	}
 	return err
 }
 
-type DoTCP struct {
-	dns.Upstream
-	dialArgument dialArgument
-	mu           sync.Mutex
-	dnsManager   *DnsManager
-	dnsManagers  map[*DnsManager]struct{}
-	closed       bool
-}
-
-// Close releases the persistent upstream connection, if any, so its socket
-// and the DnsManager recv loop do not outlive the owning control plane.
-func (d *DoTCP) Close() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.closed = true
-	var errs []error
-	for manager := range d.dnsManagers {
-		errs = append(errs, manager.Close())
+func (d *managedDNSForwarder) clearRetiringLocked() bool {
+	if d.retiring == nil {
+		return true
 	}
-	return errors.Join(errs...)
+	if !d.retiring.closeComplete() {
+		return false
+	}
+	d.closeErr = errors.Join(d.closeErr, d.retiring.closeErr)
+	d.retiring = nil
+	return true
 }
 
-// getManager lazily dials the shared upstream connection. The mutex keeps
-// concurrent first queries from each creating a DnsManager and leaking all
-// but one (socket and recv goroutine included).
-func (d *DoTCP) getManager(ctx context.Context) (*DnsManager, error) {
+func (d *managedDNSForwarder) allowIdleClose(manager *DnsManager) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closed {
+	if d.state.isClosed() || d.dnsManager != manager {
+		return true
+	}
+	return d.clearRetiringLocked()
+}
+
+func (d *managedDNSForwarder) getManager(ctx context.Context) (*DnsManager, error) {
+	if d.state.isClosed() {
+		return nil, net.ErrClosed
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.state.isClosed() {
 		return nil, net.ErrClosed
 	}
 	if d.dnsManager == nil || d.dnsManager.IsClosed() {
-		if d.dnsManager != nil {
-			d.dnsManager.retire()
+		if d.dnsManager != nil && !d.dnsManager.canReplace() {
+			return nil, net.ErrClosed
 		}
-		ctx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+		if !d.clearRetiringLocked() {
+			return nil, net.ErrClosed
+		}
+		previous := d.dnsManager
+		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		defer cancel()
-		conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
+		conn, err := d.dialArgument.Dialer.DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
 		if err != nil {
 			return nil, err
 		}
-		manager := NewDnsManager(conn)
-		d.dnsManager = manager
-		if d.dnsManagers == nil {
-			d.dnsManagers = make(map[*DnsManager]struct{})
+		if d.state.isClosed() {
+			closeAsync(conn)
+			return nil, net.ErrClosed
 		}
-		d.dnsManagers[manager] = struct{}{}
-		go func() {
-			<-manager.closeDone
-			d.mu.Lock()
-			delete(d.dnsManagers, manager)
-			d.mu.Unlock()
-		}()
+		var manager *DnsManager
+		manager = newDnsManagerWithIdlePolicy(
+			conn,
+			consts.DefaultDNSTimeout,
+			2*consts.DefaultDNSTimeout,
+			func() bool { return d.allowIdleClose(manager) },
+		)
+		if previous != nil {
+			if previous.closeComplete() {
+				d.closeErr = errors.Join(d.closeErr, previous.closeErr)
+			} else {
+				d.retiring = previous
+			}
+		}
+		d.dnsManager = manager
 	}
 	return d.dnsManager, nil
 }
 
-func (d *DoTCP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+func (d *managedDNSForwarder) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	if hasDnsTransactionSignature(msg) {
 		return errors.New("TCP forwarder does not support transaction signatures")
 	}
-	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
-	defer cancel()
+	parentCtx := ctx
+	ctx, cancelState := d.state.deriveContext(ctx)
+	defer cancelState()
+	ctx, cancelTimeout := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+	defer cancelTimeout()
 	var lastErr error
 	for attempts := 0; attempts < 2; attempts++ {
-		m, err := d.getManager(ctx)
+		manager, err := d.getManager(ctx)
 		if err != nil {
+			if parentCtx != nil && parentCtx.Err() != nil {
+				return parentCtx.Err()
+			}
+			if d.state.isClosed() {
+				return net.ErrClosed
+			}
 			return err
 		}
-		err = m.ResolveContext(ctx, msg)
+		response := msg.Copy()
+		err = manager.ResolveContext(ctx, response)
 		lastErr = err
 		if !shouldRetryDnsManager(err, msg) || ctx.Err() != nil {
+			if err != nil && parentCtx != nil && parentCtx.Err() != nil {
+				return parentCtx.Err()
+			}
+			if err != nil && d.state.isClosed() {
+				return net.ErrClosed
+			}
+			if err == nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				*msg = *response
+			}
 			return err
 		}
 	}
@@ -675,6 +1171,7 @@ func shouldRetryDnsManager(err error, msg *dnsmessage.Msg) bool {
 type DoUDP struct {
 	dns.Upstream
 	dialArgument    dialArgument
+	state           *dnsForwarderState
 	mu              sync.Mutex
 	connections     map[net.Conn]struct{}
 	lifecycleCtx    context.Context
@@ -685,9 +1182,8 @@ type DoUDP struct {
 	closed          bool
 }
 
-// Close releases the persistent upstream connection, if any, so its socket
-// and the DnsManager recv loop do not outlive the owning control plane.
 func (d *DoUDP) Close() error {
+	d.state.close()
 	d.mu.Lock()
 	d.ensureLifecycleLocked()
 	if d.closed {
@@ -706,7 +1202,9 @@ func (d *DoUDP) Close() error {
 	d.mu.Unlock()
 	var errs []error
 	for _, conn := range connections {
-		errs = append(errs, conn.Close())
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			errs = append(errs, err)
+		}
 	}
 	d.active.Wait()
 	close(d.closeDone)
@@ -715,7 +1213,7 @@ func (d *DoUDP) Close() error {
 
 func (d *DoUDP) ensureLifecycleLocked() {
 	if d.lifecycleCtx == nil {
-		d.lifecycleCtx, d.lifecycleCancel = context.WithCancel(context.Background())
+		d.lifecycleCtx, d.lifecycleCancel = context.WithCancel(d.state.context())
 		d.slots = make(chan struct{}, maxConcurrentDnsUDPExchanges)
 		d.closeDone = make(chan struct{})
 	}
@@ -724,7 +1222,7 @@ func (d *DoUDP) ensureLifecycleLocked() {
 func (d *DoUDP) beginExchange(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	d.mu.Lock()
 	d.ensureLifecycleLocked()
-	if d.closed {
+	if d.closed || d.state.isClosed() {
 		d.mu.Unlock()
 		return nil, nil, false
 	}
@@ -756,7 +1254,7 @@ func (d *DoUDP) beginExchange(ctx context.Context) (context.Context, context.Can
 func (d *DoUDP) registerConnection(conn net.Conn) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.closed {
+	if d.closed || d.state.isClosed() {
 		return false
 	}
 	if d.connections == nil {
@@ -778,12 +1276,17 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 		return errors.New("UDP forwarder does not support transaction signatures")
 	}
 	parentCtx := ctx
-	ctx, cancel := context.WithTimeout(parentCtx, consts.DefaultDNSTimeout)
-	defer cancel()
+	ctx, cancelState := d.state.deriveContext(ctx)
+	defer cancelState()
+	ctx, cancelTimeout := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+	defer cancelTimeout()
 	exchangeCtx, endExchange, started := d.beginExchange(ctx)
 	if !started {
-		if err := parentCtx.Err(); err != nil {
-			return err
+		if parentCtx != nil && parentCtx.Err() != nil {
+			return parentCtx.Err()
+		}
+		if d.state.isClosed() {
+			return net.ErrClosed
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -794,6 +1297,12 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	ctx = exchangeCtx
 	conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
 	if err != nil {
+		if parentCtx != nil && parentCtx.Err() != nil {
+			return parentCtx.Err()
+		}
+		if d.state.isClosed() {
+			return net.ErrClosed
+		}
 		return err
 	}
 	if !d.registerConnection(conn) {
@@ -803,16 +1312,25 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	defer d.releaseConnection(conn)
 
 	wireQuery := msg.Copy()
-	var randomId [2]byte
-	if _, err := rand.Read(randomId[:]); err != nil {
+	var randomID [2]byte
+	if _, err := rand.Read(randomID[:]); err != nil {
 		return fmt.Errorf("generate DNS transaction ID: %w", err)
 	}
-	originalId := msg.Id
-	wireQuery.Id = binary.BigEndian.Uint16(randomId[:])
+	originalID := msg.Id
+	wireQuery.Id = binary.BigEndian.Uint16(randomID[:])
 	if err := netutils.ResolveUDP(ctx, conn, wireQuery); err != nil {
+		if parentCtx != nil && parentCtx.Err() != nil {
+			return parentCtx.Err()
+		}
+		if d.state.isClosed() {
+			return net.ErrClosed
+		}
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	*msg = *wireQuery
-	msg.Id = originalId
+	msg.Id = originalID
 	return nil
 }

@@ -6,8 +6,18 @@
 package netutils
 
 import (
+	"context"
+	"errors"
 	"testing"
 )
+
+func TestResolveIp46ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ResolveIp46Context(ctx, "context-cancellation.invalid"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveIp46Context returned %v, want context cancellation", err)
+	}
+}
 
 func TestResolveIp46(t *testing.T) {
 	ip46, err := ResolveIp46("ipv6.google.com")

@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -146,7 +147,14 @@ func validateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16, all
 	return nil
 }
 
+func closeConnAsync(conn net.Conn) {
+	if conn != nil {
+		go func() { _ = conn.Close() }()
+	}
+}
+
 func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
+	requestID := msg.Id
 	query := msg.Copy()
 	query.Id = 0
 	data, err := query.Pack()
@@ -219,6 +227,7 @@ func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dn
 		ageRRs(response.Ns)
 		ageRRs(response.Extra)
 	}
+	response.Id = requestID
 	*msg = response
 	return nil
 }
@@ -300,8 +309,6 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 	// could be handed out again underneath a pending Read.
 	respBuf := make([]byte, consts.MaxDnsMessageSize+1)
 	go func() {
-		// Wait for the response to this query; ignore stray/late datagrams
-		// whose transaction ID does not match.
 		for {
 			n, err := conn.Read(respBuf)
 			if err != nil {
@@ -322,7 +329,6 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 			return
 		}
 	}()
-
 	attempts := consts.DefaultDNSRetryCount
 	if msg.Opcode != dnsmessage.OpcodeQuery && msg.Opcode != dnsmessage.OpcodeNotify {
 		attempts = 1
@@ -334,6 +340,17 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 		if _, err := conn.Write(data); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			// A previous retry may already have produced a valid response.
+			// Commit it instead of losing it to a later write failure.
+			select {
+			case result := <-recvCh:
+				if result.err == nil {
+					*msg = *result.msg
+					success = true
+					return nil
+				}
+			default:
 			}
 			return err
 		}
@@ -460,20 +477,32 @@ func resolveContext(ctx context.Context, dialer netproxy.Dialer, server netip.Ad
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	var closeOnce sync.Once
+	closeConn := func() { closeOnce.Do(func() { closeConnAsync(conn) }) }
+	defer closeConn()
+	stopClose := context.AfterFunc(ctx, closeConn)
 	defer stopClose()
 
-	if network == "tcp" {
-		err = ResolveStream(conn, &msg)
-	} else {
-		err = ResolveUDP(ctx, conn, &msg)
-	}
-	if err != nil && ctx.Err() != nil {
+	result := make(chan error, 1)
+	request := msg.Copy()
+	go func() {
+		if network == "tcp" {
+			result <- ResolveStream(conn, request)
+		} else {
+			result <- ResolveUDP(ctx, conn, request)
+		}
+	}()
+	select {
+	case err = <-result:
+		if err != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err != nil {
+			return nil, err
+		}
+		msg = *request
+	case <-ctx.Done():
 		return nil, ctx.Err()
-	}
-	if err != nil {
-		return nil, err
 	}
 	return msg.Answer, nil
 }

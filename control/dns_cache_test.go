@@ -26,37 +26,29 @@ func cacheIncludesA(caches []*DnsCache, ip string) bool {
 	return false
 }
 
-func testARecord(name string, ip string) *dnsmessage.A {
-	return &dnsmessage.A{
-		Hdr: dnsmessage.RR_Header{
-			Name:   name,
-			Rrtype: dnsmessage.TypeA,
-			Class:  dnsmessage.ClassINET,
-			Ttl:    60,
-		},
-		A: net.ParseIP(ip).To4(),
+func replaceTestCache(c *commonDnsCache[string], key string, answers []dnsmessage.RR, deadline time.Time) {
+	values := make([]*DnsCache, 0, len(answers))
+	for _, answer := range answers {
+		values = append(values, newDnsCache(answer, deadline))
 	}
+	c.Replace(key, values, time.Time{})
 }
 
-func testCNAMERecord(name, target string) *dnsmessage.CNAME {
-	return &dnsmessage.CNAME{
-		Hdr: dnsmessage.RR_Header{
-			Name:   name,
-			Rrtype: dnsmessage.TypeCNAME,
-			Class:  dnsmessage.ClassINET,
-			Ttl:    60,
-		},
-		Target: target,
+func replaceTestCacheDeadlines(c *commonDnsCache[string], key string, answers []dnsmessage.RR, deadlines []time.Time) {
+	values := make([]*DnsCache, 0, len(answers))
+	for i, answer := range answers {
+		values = append(values, newDnsCache(answer, deadlines[i]))
 	}
+	c.Replace(key, values, time.Time{})
 }
 
 func TestCommonDnsCache_UpdateAndGet(t *testing.T) {
 	c := newCommonDnsCache[string](4)
 	answer := testARecord("example.com.", "1.2.3.4")
-	c.UpdateTtl("key1", answer, 60)
+	replaceTestCache(c, "key1", []dnsmessage.RR{answer}, time.Now().Add(time.Minute))
 
 	caches := c.Get("key1")
-	if len(caches) != 1 || !c.sameAnswer(caches[0].Answer, answer) {
+	if len(caches) != 1 || dnsAnswerIdentity(caches[0].Answer) != dnsAnswerIdentity(answer) {
 		t.Fatalf("Get: got %+v", caches)
 	}
 	if c.Get("nonexistent") != nil {
@@ -67,10 +59,10 @@ func TestCommonDnsCache_UpdateAndGet(t *testing.T) {
 func TestCommonDnsCache_UpdateSameAnswer(t *testing.T) {
 	c := newCommonDnsCache[string](4)
 	answer := testARecord("example.com.", "1.2.3.4")
-	c.UpdateTtl("key1", answer, 60)
-	// Updating the same answer refreshes the deadline in
-	// place instead of appending a duplicate.
-	c.UpdateTtl("key1", answer, 120)
+	replaceTestCache(c, "key1", []dnsmessage.RR{answer}, time.Now().Add(time.Minute))
+	// Replacing the same answer refreshes its deadline without retaining a
+	// historical duplicate.
+	replaceTestCache(c, "key1", []dnsmessage.RR{answer}, time.Now().Add(2*time.Minute))
 
 	caches := c.Get("key1")
 	if len(caches) != 1 {
@@ -83,33 +75,35 @@ func TestCommonDnsCache_UpdateSameAnswer(t *testing.T) {
 
 func TestCommonDnsCache_UpdateDifferentAnswers(t *testing.T) {
 	c := newCommonDnsCache[string](4)
-	c.UpdateTtl("key1", testARecord("example.com.", "1.2.3.4"), 60)
-	c.UpdateTtl("key1", &dnsmessage.AAAA{
-		Hdr: dnsmessage.RR_Header{
-			Name:   "example.com.",
-			Rrtype: dnsmessage.TypeAAAA,
-			Class:  dnsmessage.ClassINET,
-		},
-		AAAA: net.ParseIP("::1"),
-	}, 60)
+	replaceTestCacheDeadlines(c, "key1", []dnsmessage.RR{
+		testARecord("example.com.", "1.2.3.4"),
+		&dnsmessage.AAAA{
+			Hdr: dnsmessage.RR_Header{
+				Name:   "example.com.",
+				Rrtype: dnsmessage.TypeAAAA,
+				Class:  dnsmessage.ClassINET,
+			},
+			AAAA: net.ParseIP("::1"),
+		}}, []time.Time{time.Now().Add(time.Minute), time.Now().Add(time.Minute)})
 
 	if caches := c.Get("key1"); len(caches) != 2 {
 		t.Fatalf("answers with different headers should both be cached: got %v caches", len(caches))
 	}
 }
 
-func TestCommonDnsCache_LruEviction(t *testing.T) {
+func TestCommonDnsCache_ExpiredInsertDoesNotConsumeCapacity(t *testing.T) {
 	c := newCommonDnsCache[string](2)
 	expired := time.Now().Add(-time.Minute)
 	future := time.Now().Add(time.Minute)
 
-	// The expired entry is also the least recently used entry.
-	c.UpdateDeadline("key1", testARecord("a.com.", "1.1.1.1"), expired)
-	c.UpdateDeadline("key2", testARecord("b.com.", "2.2.2.2"), future)
-	c.UpdateDeadline("key3", testARecord("c.com.", "3.3.3.3"), future)
+	// An already-expired replacement is discarded before it can force a live
+	// entry through hard-cap eviction.
+	replaceTestCache(c, "key1", []dnsmessage.RR{testARecord("a.com.", "1.1.1.1")}, expired)
+	replaceTestCache(c, "key2", []dnsmessage.RR{testARecord("b.com.", "2.2.2.2")}, future)
+	replaceTestCache(c, "key3", []dnsmessage.RR{testARecord("c.com.", "3.3.3.3")}, future)
 
 	if c.Get("key1") != nil {
-		t.Errorf("expired least-recently-used entry should be evicted")
+		t.Errorf("expired entry should not be stored")
 	}
 	if c.Get("key2") == nil || c.Get("key3") == nil {
 		t.Errorf("fresh entries should be kept")
@@ -122,9 +116,9 @@ func TestCommonDnsCache_LruHardCapEvictsLive(t *testing.T) {
 
 	// All entries are live; the oldest must still be evicted once the cache
 	// grows past maxSize.
-	c.UpdateDeadline("key1", testARecord("a.com.", "1.1.1.1"), future)
-	c.UpdateDeadline("key2", testARecord("b.com.", "2.2.2.2"), future)
-	c.UpdateDeadline("key3", testARecord("c.com.", "3.3.3.3"), future)
+	replaceTestCache(c, "key1", []dnsmessage.RR{testARecord("a.com.", "1.1.1.1")}, future)
+	replaceTestCache(c, "key2", []dnsmessage.RR{testARecord("b.com.", "2.2.2.2")}, future)
+	replaceTestCache(c, "key3", []dnsmessage.RR{testARecord("c.com.", "3.3.3.3")}, future)
 
 	if c.Len() != 2 {
 		t.Fatalf("cache should be capped at maxSize: got %v entries", c.Len())
@@ -140,12 +134,12 @@ func TestCommonDnsCache_LruHardCapEvictsLive(t *testing.T) {
 func TestCommonDnsCache_HardCapDoesNotCompactEveryLiveEntry(t *testing.T) {
 	c := newCommonDnsCache[string](2)
 	future := time.Now().Add(time.Minute)
-	c.UpdateDeadline("key1", testARecord("a.com.", "1.1.1.1"), future)
-	c.UpdateDeadline("key2", testARecord("b.com.", "2.2.2.2"), future)
+	replaceTestCache(c, "key1", []dnsmessage.RR{testARecord("a.com.", "1.1.1.1")}, future)
+	replaceTestCache(c, "key2", []dnsmessage.RR{testARecord("b.com.", "2.2.2.2")}, future)
 
 	entry := c.cache["key2"].Value.(*cacheEntry[string])
 	valueBefore := &entry.value[0]
-	c.UpdateDeadline("key3", testARecord("c.com.", "3.3.3.3"), future)
+	replaceTestCache(c, "key3", []dnsmessage.RR{testARecord("c.com.", "3.3.3.3")}, future)
 
 	entry = c.cache["key2"].Value.(*cacheEntry[string])
 	if valueAfter := &entry.value[0]; valueAfter != valueBefore {
@@ -153,31 +147,32 @@ func TestCommonDnsCache_HardCapDoesNotCompactEveryLiveEntry(t *testing.T) {
 	}
 }
 
-func TestCommonDnsCache_ExpiredReplacementDoesNotEvictLiveEntry(t *testing.T) {
+func TestCommonDnsCache_ExpiredDependencyDoesNotEvictLiveEntry(t *testing.T) {
 	c := newCommonDnsCache[string](2)
 	future := time.Now().Add(time.Minute)
-	c.ReplaceDeadline("key1", []dnsmessage.RR{testARecord("a.com.", "1.1.1.1")}, future)
-	c.ReplaceDeadline("key2", []dnsmessage.RR{testARecord("b.com.", "2.2.2.2")}, future)
-	c.ReplaceDeadline("key3", []dnsmessage.RR{testARecord("c.com.", "3.3.3.3")}, time.Now())
+	replaceTestCache(c, "key1", []dnsmessage.RR{testARecord("a.com.", "1.1.1.1")}, future)
+	replaceTestCache(c, "key2", []dnsmessage.RR{testARecord("b.com.", "2.2.2.2")}, future)
+	c.Replace("key3", []*DnsCache{
+		newDnsCache(testARecord("c.com.", "3.3.3.3"), future),
+	}, time.Now())
 
 	if c.Len() != 2 || c.Get("key1") == nil || c.Get("key2") == nil {
-		t.Fatalf("expired replacement evicted a live entry: len=%d", c.Len())
+		t.Fatalf("expired dependency evicted a live entry: len=%d", c.Len())
 	}
 	if c.Get("key3") != nil {
-		t.Fatal("expired replacement should not occupy the cache")
+		t.Fatal("expired dependency should not occupy the cache")
 	}
 }
 
 func TestCommonDnsCache_LruOrder(t *testing.T) {
 	c := newCommonDnsCache[string](2)
-	expired := time.Now().Add(-time.Minute)
 	future := time.Now().Add(time.Minute)
 
-	c.UpdateDeadline("key1", testARecord("a.com.", "1.1.1.1"), future)
-	c.UpdateDeadline("key2", testARecord("b.com.", "2.2.2.2"), expired)
+	replaceTestCache(c, "key1", []dnsmessage.RR{testARecord("a.com.", "1.1.1.1")}, future)
+	replaceTestCache(c, "key2", []dnsmessage.RR{testARecord("b.com.", "2.2.2.2")}, future)
 	// Touch key1 so key2 becomes the least recently used.
 	c.Get("key1")
-	c.UpdateDeadline("key3", testARecord("c.com.", "3.3.3.3"), expired)
+	replaceTestCache(c, "key3", []dnsmessage.RR{testARecord("c.com.", "3.3.3.3")}, future)
 
 	if c.Get("key2") != nil {
 		t.Errorf("key2 is the least recently used and should be evicted first")
@@ -190,57 +185,32 @@ func TestCommonDnsCache_LruOrder(t *testing.T) {
 func TestCommonDnsCache_GetPrunesIndividualExpiredAnswers(t *testing.T) {
 	c := newCommonDnsCache[string](4)
 	future := time.Now().Add(time.Minute)
-	expired := time.Now().Add(-time.Minute)
-	c.UpdateDeadline("key1", testARecord("example.com.", "1.1.1.1"), future)
-	c.UpdateDeadline("key1", testARecord("example.com.", "2.2.2.2"), expired)
+	answers := []dnsmessage.RR{
+		testARecord("example.com.", "1.1.1.1"),
+		testARecord("example.com.", "2.2.2.2"),
+	}
+	replaceTestCache(c, "key1", answers, future)
+	entry := c.cache["key1"].Value.(*cacheEntry[string])
+	entry.value[1].Deadline = time.Now().Add(-time.Minute)
 
 	caches := c.Get("key1")
 	if len(caches) != 1 || !cacheIncludesA(caches, "1.1.1.1") {
 		t.Fatalf("Get should retain only the live answer: %v", caches)
 	}
-	entry := c.cache["key1"].Value.(*cacheEntry[string])
+	entry = c.cache["key1"].Value.(*cacheEntry[string])
 	if len(entry.value) != 1 {
 		t.Fatalf("expired answer should be removed from storage: %v", len(entry.value))
-	}
-}
-
-func TestCommonDnsCache_CNAMEChainExpiresAsUnit(t *testing.T) {
-	now := time.Now()
-	expired := now.Add(-time.Minute)
-	future := now.Add(time.Minute)
-	answers := []dnsmessage.RR{
-		testCNAMERecord("example.com.", "target.example."),
-		testARecord("target.example.", "1.1.1.1"),
-	}
-	tests := []struct {
-		name      string
-		deadlines []time.Time
-	}{
-		{name: "cname expired", deadlines: []time.Time{expired, future}},
-		{name: "terminal expired", deadlines: []time.Time{future, expired}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := newCommonDnsCache[string](4)
-			c.ReplaceDeadlines("key1", answers, tt.deadlines)
-			if caches := c.Get("key1"); caches != nil {
-				t.Fatalf("an incomplete CNAME chain must miss the cache: %v", caches)
-			}
-			if _, ok := c.cache["key1"]; ok {
-				t.Fatal("expired CNAME chain should be removed from storage")
-			}
-		})
 	}
 }
 
 func TestCommonDnsCache_ReplaceRRSetDropsHistoricalAnswers(t *testing.T) {
 	c := newCommonDnsCache[string](4)
 	future := time.Now().Add(time.Minute)
-	c.ReplaceDeadline("key1", []dnsmessage.RR{
+	replaceTestCache(c, "key1", []dnsmessage.RR{
 		testARecord("example.com.", "1.1.1.1"),
 		testARecord("example.com.", "2.2.2.2"),
 	}, future)
-	c.ReplaceDeadline("key1", []dnsmessage.RR{
+	replaceTestCache(c, "key1", []dnsmessage.RR{
 		testARecord("example.com.", "2.2.2.2"),
 		testARecord("example.com.", "3.3.3.3"),
 	}, future)
@@ -254,7 +224,7 @@ func TestCommonDnsCache_ReplaceRRSetDropsHistoricalAnswers(t *testing.T) {
 	// A fixed_ttl=0 replacement removes the old RRset and never occupies the cache.
 	expired := time.Now()
 	for i := 1; i <= 100; i++ {
-		c.ReplaceDeadline("key1", []dnsmessage.RR{
+		replaceTestCache(c, "key1", []dnsmessage.RR{
 			testARecord("example.com.", fmt.Sprintf("10.0.0.%d", i)),
 		}, expired)
 	}
@@ -263,30 +233,27 @@ func TestCommonDnsCache_ReplaceRRSetDropsHistoricalAnswers(t *testing.T) {
 	}
 }
 
-func TestCommonDnsCache_Delete(t *testing.T) {
-	c := newCommonDnsCache[string](4)
-	c.UpdateTtl("key1", testARecord("example.com.", "1.2.3.4"), 60)
-	c.Delete("key1")
-	if c.Get("key1") != nil {
-		t.Errorf("deleted entry should not be returned")
-	}
-	// Deleting a missing key should not panic.
-	c.Delete("nonexistent")
-}
-
 func TestCommonDnsCache_FillIntoSkipsExpired(t *testing.T) {
-	var caches []*DnsCache
 	c := newCommonDnsCache[string](4)
-	caches = append(caches, c.UpdateTtl("key1", testARecord("a.com.", "1.1.1.1"), 60))
-	caches = append(caches, c.UpdateDeadline("key1", testARecord("b.com.", "2.2.2.2"), time.Now().Add(-time.Minute)))
+	future := time.Now().Add(time.Minute)
+	c.Replace("key1", []*DnsCache{
+		newDnsCache(testARecord("a.com.", "1.1.1.1"), future),
+		newDnsCache(testARecord("b.com.", "2.2.2.2"), future),
+	}, time.Time{})
+	c.cache["key1"].Value.(*cacheEntry[string]).value[1].Deadline = time.Now().Add(-time.Minute)
 
-	msg := new(dnsmessage.Msg)
-	FillInto(msg, caches)
+	msg := &dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{AuthenticatedData: true}}
+	if !c.FillInto("key1", msg) {
+		t.Fatal("live cache entry should fill the response")
+	}
 	if len(msg.Answer) != 1 {
 		t.Fatalf("expired answers should be skipped: got %v answers", len(msg.Answer))
 	}
 	if !msg.Response || msg.Rcode != dnsmessage.RcodeSuccess {
 		t.Errorf("FillInto should mark the message as a successful response")
+	}
+	if msg.AuthenticatedData {
+		t.Error("cache hit must not echo the query AD bit as an authentication assertion")
 	}
 	ttl := msg.Answer[0].Header().Ttl
 	if ttl == 0 || ttl > 60 {
@@ -294,21 +261,47 @@ func TestCommonDnsCache_FillIntoSkipsExpired(t *testing.T) {
 	}
 }
 
+func TestCommonDnsCache_FillIntoHonorsUnitDeadline(t *testing.T) {
+	c := newCommonDnsCache[string](4)
+	c.Replace("key1", []*DnsCache{
+		newDnsCache(testARecord("a.com.", "1.1.1.1"), time.Now().Add(time.Minute)),
+	}, time.Now().Add(time.Minute))
+	c.cache["key1"].Value.(*cacheEntry[string]).validUntil = time.Now().Add(-time.Minute)
+
+	msg := new(dnsmessage.Msg)
+	if c.FillInto("key1", msg) {
+		t.Fatal("expired dependency deadline should miss the cache")
+	}
+	if len(msg.Answer) != 0 {
+		t.Fatalf("expired dependency appended answers: %+v", msg.Answer)
+	}
+	if _, ok := c.cache["key1"]; ok {
+		t.Fatal("expired dependency should be removed from storage")
+	}
+}
+
 func TestCommonDnsCache_MultiARecordsSameName(t *testing.T) {
 	// Regression: a response with multiple A records for the same name must
 	// cache every address. Header-only dedup used to drop all but the first.
 	c := newCommonDnsCache[string](4)
-	c.UpdateTtl("key1", testARecord("example.com.", "1.1.1.1"), 60)
-	c.UpdateTtl("key1", testARecord("example.com.", "2.2.2.2"), 60)
-	c.UpdateTtl("key1", testARecord("example.com.", "3.3.3.3"), 60)
+	answers := []dnsmessage.RR{
+		testARecord("example.com.", "1.1.1.1"),
+		testARecord("example.com.", "2.2.2.2"),
+		testARecord("example.com.", "3.3.3.3"),
+	}
+	replaceTestCache(c, "key1", answers, time.Now().Add(time.Minute))
 
 	caches := c.Get("key1")
 	if len(caches) != 3 {
 		t.Fatalf("all A records of the same name should be cached: got %v", len(caches))
 	}
 
-	// Refreshing one address must not duplicate it nor touch the others.
-	c.UpdateTtl("key1", testARecord("example.com.", "2.2.2.2"), 120)
+	// Replacing the RRset must keep every address without duplication.
+	replaceTestCacheDeadlines(c, "key1", answers, []time.Time{
+		time.Now().Add(time.Minute),
+		time.Now().Add(2 * time.Minute),
+		time.Now().Add(time.Minute),
+	})
 	caches = c.Get("key1")
 	if len(caches) != 3 {
 		t.Fatalf("refreshing an existing record should not duplicate: got %v", len(caches))

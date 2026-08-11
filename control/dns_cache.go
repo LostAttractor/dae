@@ -6,9 +6,8 @@
 package control
 
 import (
-	"bytes"
 	"container/list"
-	"strings"
+	"reflect"
 	"sync"
 	"time"
 
@@ -20,8 +19,97 @@ type DnsCache struct {
 	Deadline time.Time
 }
 
-func FillInto(msg *dnsmessage.Msg, caches []*DnsCache) bool {
-	now := time.Now()
+type dnsAnswerKey struct {
+	name   string
+	rrtype uint16
+	class  uint16
+	rdata  string
+}
+
+// dnsQueryVariant returns a collision-free wire fingerprint for every
+// response-varying part of a conventional one-question query except qname and
+// qtype, which are represented directly in dnsCacheKey. Keeping those two
+// fields out of the fingerprint lets a derived CNAME target key retain QCLASS,
+// header flags, EDNS version/size/flags, and every supported EDNS option.
+func dnsQueryVariant(msg *dnsmessage.Msg) (string, bool) {
+	if msg == nil || msg.Response || msg.Opcode != dnsmessage.OpcodeQuery ||
+		msg.Authoritative || msg.Truncated || msg.RecursionAvailable || msg.Zero ||
+		msg.Rcode != dnsmessage.RcodeSuccess || len(msg.Question) != 1 ||
+		len(msg.Answer) != 0 || len(msg.Ns) != 0 {
+		return "", false
+	}
+	if _, ok := dnsmessage.IsDomainName(msg.Question[0].Name); !ok || !dnsmessage.IsFqdn(msg.Question[0].Name) {
+		return "", false
+	}
+	switch msg.Question[0].Qtype {
+	case dnsmessage.TypeAXFR, dnsmessage.TypeIXFR, dnsmessage.TypeTKEY:
+		return "", false
+	}
+	if len(msg.Extra) > 1 {
+		return "", false
+	}
+	if len(msg.Extra) == 1 {
+		opt, ok := msg.Extra[0].(*dnsmessage.OPT)
+		if !ok || opt == nil || opt.Hdr.Rrtype != dnsmessage.TypeOPT || opt.Hdr.Name != "." {
+			return "", false
+		}
+		for _, option := range opt.Option {
+			if nilEDNSQueryOption(option) || !supportedEDNSQueryOption(option) {
+				return "", false
+			}
+		}
+	}
+
+	canonical := msg.Copy()
+	canonical.Id = 0
+	canonical.Compress = false
+	canonical.Question[0].Name = "."
+	canonical.Question[0].Qtype = 0
+	canonical.Question[0].Qclass = 0
+	wire, err := canonical.Pack()
+	if err != nil || len(wire) > 4096 {
+		return "", false
+	}
+	return string(wire), true
+}
+
+func nilEDNSQueryOption(option dnsmessage.EDNS0) bool {
+	if option == nil {
+		return true
+	}
+	v := reflect.ValueOf(option)
+	return v.Kind() == reflect.Ptr && v.IsNil()
+}
+
+func supportedEDNSQueryOption(option dnsmessage.EDNS0) bool {
+	switch option.(type) {
+	case *dnsmessage.EDNS0_NSID,
+		*dnsmessage.EDNS0_SUBNET,
+		*dnsmessage.EDNS0_DAU,
+		*dnsmessage.EDNS0_DHU,
+		*dnsmessage.EDNS0_N3U,
+		*dnsmessage.EDNS0_PADDING,
+		*dnsmessage.EDNS0_EDE,
+		*dnsmessage.EDNS0_ESU:
+		return true
+	default:
+		// EDNS0_LOCAL represents options whose semantics this code does not
+		// know. Bypass caching/coalescing instead of risking normalization
+		// that aliases two response-varying requests.
+		return false
+	}
+}
+
+// The answer-only persistent cache cannot reconstruct a response OPT record.
+// Queries carrying OPT therefore use exact-key flight sharing but bypass the
+// persistent cache. Non-IN responses are also kept out of domain routing and
+// the cache.
+func dnsQueryCacheable(msg *dnsmessage.Msg) bool {
+	return msg != nil && len(msg.Question) == 1 &&
+		msg.Question[0].Qclass == dnsmessage.ClassINET && len(msg.Extra) == 0
+}
+
+func fillDnsCacheInto(msg *dnsmessage.Msg, caches []*DnsCache, now time.Time) bool {
 	appended := false
 	for _, cache := range caches {
 		if cache.Deadline.After(now) && cache.Answer != nil {
@@ -37,6 +125,9 @@ func FillInto(msg *dnsmessage.Msg, caches []*DnsCache) bool {
 	msg.Response = true
 	msg.RecursionAvailable = true
 	msg.Truncated = false
+	// AD=1 in a request only asks for authenticated data; echoing it in a
+	// cached response would falsely assert that dae validated the answer.
+	msg.AuthenticatedData = false
 	return true
 }
 
@@ -51,8 +142,9 @@ func IncludeAnyIpInMsg(msg *dnsmessage.Msg) bool {
 }
 
 type cacheEntry[K comparable] struct {
-	key   K
-	value []*DnsCache
+	key        K
+	value      []*DnsCache
+	validUntil time.Time
 }
 
 type commonDnsCache[K comparable] struct {
@@ -75,7 +167,13 @@ func (c *commonDnsCache[K]) Get(cacheKey K) []*DnsCache {
 	defer c.mu.Unlock()
 	if elem, ok := c.cache[cacheKey]; ok {
 		entry := elem.Value.(*cacheEntry[K])
-		entry.value = liveDnsCaches(entry.value, time.Now())
+		now := time.Now()
+		if !entry.validUntil.IsZero() && !entry.validUntil.After(now) {
+			delete(c.cache, cacheKey)
+			c.lruList.Remove(elem)
+			return nil
+		}
+		entry.value = liveDnsCaches(entry.value, now)
 		if len(entry.value) == 0 {
 			delete(c.cache, cacheKey)
 			c.lruList.Remove(elem)
@@ -89,6 +187,32 @@ func (c *commonDnsCache[K]) Get(cacheKey K) []*DnsCache {
 	return nil
 }
 
+// FillInto validates dependency and record deadlines under one lock, so a
+// CNAME entry cannot cross its unit deadline between lookup and response fill.
+func (c *commonDnsCache[K]) FillInto(cacheKey K, msg *dnsmessage.Msg) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	elem, ok := c.cache[cacheKey]
+	if !ok {
+		return false
+	}
+	entry := elem.Value.(*cacheEntry[K])
+	now := time.Now()
+	if !entry.validUntil.IsZero() && !entry.validUntil.After(now) {
+		delete(c.cache, cacheKey)
+		c.lruList.Remove(elem)
+		return false
+	}
+	entry.value = liveDnsCaches(entry.value, now)
+	if len(entry.value) == 0 {
+		delete(c.cache, cacheKey)
+		c.lruList.Remove(elem)
+		return false
+	}
+	c.lruList.MoveToFront(elem)
+	return fillDnsCacheInto(msg, entry.value, now)
+}
+
 func liveDnsCaches(caches []*DnsCache, now time.Time) []*DnsCache {
 	live := caches[:0]
 	for _, cache := range caches {
@@ -100,18 +224,8 @@ func liveDnsCaches(caches []*DnsCache, now time.Time) []*DnsCache {
 	return live
 }
 
-func (c *commonDnsCache[K]) Delete(cacheKey K) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if elem, ok := c.cache[cacheKey]; ok {
-		delete(c.cache, cacheKey)
-		c.lruList.Remove(elem)
-	}
-}
-
-// Len returns the number of cache keys currently held. Keys whose answers
-// all expired still count until the LRU gc prunes them: they occupy memory
-// and gc pressure is measured against maxSize in the same unit.
+// Len returns the number of cache keys currently held. Naturally expired keys
+// count until they are read or evicted because they still occupy memory.
 func (c *commonDnsCache[K]) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -125,8 +239,8 @@ func (c *commonDnsCache[K]) MaxSize() int {
 
 // gc must be called with c.mu held.
 func (c *commonDnsCache[K]) gc() {
-	// Enforce the hard cap in O(1) per eviction. Expired answers are compacted
-	// when their key is read or updated; scanning every key here would turn
+	// Enforce the hard cap in O(1) per eviction. Expired answers are discarded
+	// when their key is read or replaced; scanning every key here would turn
 	// each post-cap insertion into an O(maxSize) operation under the cache lock.
 	for c.lruList.Len() > c.maxSize {
 		elem := c.lruList.Back()
@@ -139,37 +253,6 @@ func (c *commonDnsCache[K]) gc() {
 	}
 }
 
-func (c *commonDnsCache[K]) UpdateDeadline(key K, answer dnsmessage.RR, deadline time.Time) (cache *DnsCache) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	cache = newDnsCache(answer, deadline)
-
-	if elem, ok := c.cache[key]; ok {
-		entry := elem.Value.(*cacheEntry[K])
-		c.lruList.MoveToFront(elem)
-		entry.value = liveDnsCaches(entry.value, time.Now())
-		for i, existingCache := range entry.value {
-			if c.sameAnswer(existingCache.Answer, cache.Answer) {
-				// Replace instead of mutating an object that a concurrent Get
-				// may already have returned.
-				entry.value[i] = cache
-				return cache
-			}
-		}
-		entry.value = append(entry.value, cache)
-	} else {
-		entry := &cacheEntry[K]{
-			key:   key,
-			value: []*DnsCache{cache},
-		}
-		elem := c.lruList.PushFront(entry)
-		c.cache[key] = elem
-		c.gc()
-	}
-	return
-}
-
 func newDnsCache(answer dnsmessage.RR, deadline time.Time) *DnsCache {
 	if answer == nil {
 		return &DnsCache{Deadline: deadline}
@@ -179,117 +262,65 @@ func newDnsCache(answer dnsmessage.RR, deadline time.Time) *DnsCache {
 	return &DnsCache{Answer: answer, Deadline: deadline}
 }
 
-// ReplaceDeadline atomically replaces one key's cached answer set. This is
-// the production update path for DNS responses: records absent from the new
-// RRset are superseded instead of accumulating as historical values.
-func (c *commonDnsCache[K]) ReplaceDeadline(key K, answers []dnsmessage.RR, deadline time.Time) {
-	deadlines := make([]time.Time, len(answers))
-	for i := range deadlines {
-		deadlines[i] = deadline
-	}
-	c.ReplaceDeadlines(key, answers, deadlines)
-}
-
-// ReplaceDeadlines is ReplaceDeadline with one deadline per RR. Ordinary
-// RRsets retain independent lifetimes. An answer containing a CNAME is cached
-// as one dependent chain, however, and expires at its earliest RR deadline so
-// lookup pruning can never return a CNAME without its terminal answer (or a
-// terminal answer whose owner no longer matches the question).
-func (c *commonDnsCache[K]) ReplaceDeadlines(key K, answers []dnsmessage.RR, deadlines []time.Time) {
-	if len(answers) != len(deadlines) {
-		panic("DNS answer/deadline length mismatch")
-	}
-	now := time.Now()
-	values := make([]*DnsCache, 0, len(answers))
-	for i, answer := range answers {
-		if answer == nil {
+// Replace atomically replaces one key's prepared answer set. validUntil is an
+// optional dependency deadline for records, such as one complete CNAME chain.
+func (c *commonDnsCache[K]) Replace(key K, values []*DnsCache, validUntil time.Time) {
+	prepared := make([]*DnsCache, 0, len(values))
+	for _, value := range values {
+		if value == nil || value.Answer == nil {
 			continue
 		}
-		candidate := newDnsCache(answer, deadlines[i])
-		duplicate := -1
-		for j, existing := range values {
-			if c.sameAnswer(existing.Answer, candidate.Answer) {
-				duplicate = j
-				break
-			}
-		}
-		if duplicate >= 0 {
-			if candidate.Deadline.After(values[duplicate].Deadline) {
-				values[duplicate] = candidate
-			}
-			continue
-		}
-		values = append(values, candidate)
+		prepared = append(prepared, value)
 	}
-	if len(values) > 1 {
-		chainDeadline := time.Time{}
-		for _, value := range values {
-			if _, ok := value.Answer.(*dnsmessage.CNAME); ok {
-				chainDeadline = value.Deadline
-				break
-			}
-		}
-		if !chainDeadline.IsZero() {
-			for _, value := range values {
-				if value.Deadline.Before(chainDeadline) {
-					chainDeadline = value.Deadline
-				}
-			}
-			for _, value := range values {
-				value.Deadline = chainDeadline
-			}
-		}
-	}
-	values = liveDnsCaches(values, now)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	now := time.Now()
+	if !validUntil.IsZero() && !validUntil.After(now) {
+		prepared = nil
+	} else {
+		prepared = liveDnsCaches(prepared, now)
+	}
 	if elem, ok := c.cache[key]; ok {
-		if len(values) == 0 {
+		if len(prepared) == 0 {
 			delete(c.cache, key)
 			c.lruList.Remove(elem)
 			return
 		}
 		entry := elem.Value.(*cacheEntry[K])
-		entry.value = values
+		entry.value = prepared
+		entry.validUntil = validUntil
 		c.lruList.MoveToFront(elem)
 		return
 	}
-	if len(values) == 0 {
+	if len(prepared) == 0 {
 		return
 	}
-	entry := &cacheEntry[K]{key: key, value: values}
+	entry := &cacheEntry[K]{key: key, value: prepared, validUntil: validUntil}
 	c.cache[key] = c.lruList.PushFront(entry)
 	c.gc()
 }
 
-// sameAnswer reports whether two RRs are the same record, comparing both the
-// header (excluding TTL) and the rdata. Comparing headers alone would
-// collapse all A/AAAA records of one name into the first one, dropping every
-// other address of a multi-answer response from the cache.
-func (c *commonDnsCache[K]) sameAnswer(a, b dnsmessage.RR) bool {
-	ha, hb := a.Header(), b.Header()
-	if ha.Name != hb.Name || ha.Rrtype != hb.Rrtype || ha.Class != hb.Class {
-		return false
+func dnsAnswerIdentity(answer dnsmessage.RR) dnsAnswerKey {
+	header := answer.Header()
+	key := dnsAnswerKey{
+		name:   dnsmessage.CanonicalName(header.Name),
+		rrtype: header.Rrtype,
+		class:  header.Class,
 	}
-	switch aa := a.(type) {
+	switch body := answer.(type) {
 	case *dnsmessage.A:
-		bb, ok := b.(*dnsmessage.A)
-		return ok && bytes.Equal(aa.A, bb.A)
+		key.rdata = string(body.A)
 	case *dnsmessage.AAAA:
-		bb, ok := b.(*dnsmessage.AAAA)
-		return ok && bytes.Equal(aa.AAAA, bb.AAAA)
+		key.rdata = string(body.AAAA)
 	case *dnsmessage.CNAME:
-		bb, ok := b.(*dnsmessage.CNAME)
-		return ok && strings.EqualFold(aa.Target, bb.Target)
+		key.rdata = dnsmessage.CanonicalName(body.Target)
 	default:
-		// Cached answers have their TTL normalized to zero, so the string
-		// form is a safe fallback for the remaining record types.
-		return a.String() == b.String()
+		copied := dnsmessage.Copy(answer)
+		copied.Header().Name = key.name
+		copied.Header().Ttl = 0
+		key.rdata = copied.String()
 	}
-}
-
-func (c *commonDnsCache[K]) UpdateTtl(key K, answer dnsmessage.RR, ttl int) *DnsCache {
-	return c.UpdateDeadline(key, answer, time.Now().Add(time.Duration(ttl)*time.Second))
+	return key
 }

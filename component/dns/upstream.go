@@ -103,7 +103,7 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
 	}
 
-	ip46, err := netutils.ParseOrResolveIp46(hostname)
+	ip46, err := netutils.ParseOrResolveIp46Context(ctx, hostname)
 	if err != nil {
 		return nil, oops.Wrapf(err, "failed to resolve dns_upstream %v", upstream.String())
 	}
@@ -156,11 +156,11 @@ type UpstreamResolver struct {
 	init               bool
 }
 
-func (u *UpstreamResolver) GetUpstream() (_ *Upstream, err error) {
+func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if !u.init {
-		ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)

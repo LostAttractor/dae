@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -32,21 +33,32 @@ var (
 	errDnsExchangeInterrupted = errors.New("DNS exchange interrupted after admission")
 )
 
+type dnsManagerTerminalError struct{ err error }
+
 type DnsManager struct {
 	conn          net.Conn
 	recvMap       sync.Map // map[uint16]*dnsPendingQuery
-	ctx           context.Context
-	cancel        context.CancelFunc
-	closeDone     chan struct{}
-	closeDoneOnce sync.Once
+	terminalErr   atomic.Pointer[dnsManagerTerminalError]
+	blockedWrites atomic.Int32
 	writeMu       sync.Mutex
 
-	stateMu      sync.Mutex
-	pending      int
-	lastResponse time.Time
-	retired      bool
-	closed       bool
-	idleTimer    *time.Timer
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	closeOnce   sync.Once
+	closeDone   chan struct{}
+	runDone     chan struct{}
+	writersDone chan struct{}
+	closeErr    error
+	writers     sync.WaitGroup
+
+	stateMu        sync.Mutex
+	pending        int
+	lastResponse   time.Time
+	retired        bool
+	closed         bool
+	idleTimer      *time.Timer
+	allowIdleClose func() bool
 
 	timeout time.Duration
 	// idleTimeout bounds how long the connection may go without delivering
@@ -59,18 +71,30 @@ func NewDnsManager(conn net.Conn) *DnsManager {
 }
 
 func newDnsManager(conn net.Conn, timeout, idleTimeout time.Duration) *DnsManager {
+	return newDnsManagerWithIdlePolicy(conn, timeout, idleTimeout, nil)
+}
+
+func newDnsManagerWithIdlePolicy(
+	conn net.Conn,
+	timeout, idleTimeout time.Duration,
+	allowIdleClose func() bool,
+) *DnsManager {
 	ctx, cancel := context.WithCancel(context.TODO())
 	m := &DnsManager{
-		conn:         conn,
-		ctx:          ctx,
-		cancel:       cancel,
-		timeout:      timeout,
-		idleTimeout:  idleTimeout,
-		lastResponse: time.Now(),
-		closeDone:    make(chan struct{}),
+		conn:           conn,
+		ctx:            ctx,
+		cancel:         cancel,
+		timeout:        timeout,
+		idleTimeout:    idleTimeout,
+		lastResponse:   time.Now(),
+		closeDone:      make(chan struct{}),
+		runDone:        make(chan struct{}),
+		writersDone:    make(chan struct{}),
+		allowIdleClose: allowIdleClose,
 	}
 	m.idleTimer = time.AfterFunc(idleTimeout, m.reapIdle)
 	go func() {
+		defer close(m.runDone)
 		if err := m.run(); err != nil {
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
@@ -90,21 +114,64 @@ func newDnsManager(conn net.Conn, timeout, idleTimeout time.Duration) *DnsManage
 
 func (m *DnsManager) reapIdle() {
 	m.stateMu.Lock()
+	if m.closed || m.pending != 0 {
+		m.stateMu.Unlock()
+		return
+	}
+	remaining := m.idleTimeout - time.Since(m.lastResponse)
+	if remaining > 0 {
+		// Stop can lose a race with an already queued callback. In that case,
+		// preserve the newer activity and re-arm from its timestamp.
+		m.idleTimer.Reset(remaining)
+		m.stateMu.Unlock()
+		return
+	}
+	m.stateMu.Unlock()
+
+	// The policy can take the owning forwarder's lock. Do not call it while
+	// holding stateMu, because manager admission takes the locks in reverse.
+	if m.allowIdleClose != nil && !m.allowIdleClose() {
+		m.stateMu.Lock()
+		if !m.closed && m.pending == 0 {
+			m.idleTimer.Reset(m.idleTimeout)
+		}
+		m.stateMu.Unlock()
+		return
+	}
+
+	m.stateMu.Lock()
 	closeNow := false
 	if !m.closed && m.pending == 0 {
-		remaining := m.idleTimeout - time.Since(m.lastResponse)
-		if remaining <= 0 {
+		remaining = m.idleTimeout - time.Since(m.lastResponse)
+		if m.retired || remaining <= 0 {
 			closeNow = m.markClosedLocked()
 		} else {
-			// Stop can lose a race with an already queued callback. In that
-			// case, preserve the newer activity and re-arm from its timestamp.
 			m.idleTimer.Reset(remaining)
 		}
 	}
 	m.stateMu.Unlock()
 	if closeNow {
-		_ = m.closeConn()
+		m.startTransportClose()
 	}
+}
+
+// resetIdleTimer applies a changed idle timeout without treating query writes
+// or malformed responses as upstream activity.
+func (m *DnsManager) resetIdleTimer() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.closed {
+		return
+	}
+	if m.pending != 0 {
+		m.idleTimer.Stop()
+		return
+	}
+	remaining := m.idleTimeout - time.Since(m.lastResponse)
+	if remaining < 0 {
+		remaining = 0
+	}
+	m.idleTimer.Reset(remaining)
 }
 
 func (m *DnsManager) markClosedLocked() bool {
@@ -117,10 +184,43 @@ func (m *DnsManager) markClosedLocked() bool {
 	return true
 }
 
-func (m *DnsManager) closeConn() error {
-	err := m.conn.Close()
-	m.closeDoneOnce.Do(func() { close(m.closeDone) })
-	return err
+func (m *DnsManager) startTransportClose() {
+	m.closeOnce.Do(func() {
+		go func() {
+			m.writers.Wait()
+			close(m.writersDone)
+		}()
+		go func() {
+			m.closeErr = m.conn.Close()
+			if errors.Is(m.closeErr, net.ErrClosed) {
+				m.closeErr = nil
+			}
+			close(m.closeDone)
+		}()
+	})
+}
+
+func (m *DnsManager) beginWrite() bool {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.closed {
+		return false
+	}
+	m.blockedWrites.Add(1)
+	m.writers.Add(1)
+	return true
+}
+
+func (m *DnsManager) endWrite() {
+	m.blockedWrites.Add(-1)
+	m.writers.Done()
+}
+
+func (m *DnsManager) startClose() {
+	m.stateMu.Lock()
+	m.markClosedLocked()
+	m.stateMu.Unlock()
+	m.startTransportClose()
 }
 
 func (m *DnsManager) beginQuery() bool {
@@ -140,7 +240,7 @@ func (m *DnsManager) reserveQuery(pending *dnsPendingQuery, startId uint16) (uin
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	if m.closed || m.retired {
-		return 0, errDnsManagerUnavailable
+		return 0, m.unavailableError()
 	}
 	for offset := 0; offset < 1<<16; offset++ {
 		wireId := startId + uint16(offset)
@@ -171,7 +271,7 @@ func (m *DnsManager) endQuery() {
 	}
 	m.stateMu.Unlock()
 	if closeNow {
-		_ = m.closeConn()
+		m.startTransportClose()
 	}
 }
 
@@ -187,7 +287,7 @@ func (m *DnsManager) retire() {
 	closeNow := m.pending == 0 && m.markClosedLocked()
 	m.stateMu.Unlock()
 	if closeNow {
-		_ = m.closeConn()
+		m.startTransportClose()
 	}
 }
 
@@ -195,14 +295,18 @@ func (m *DnsManager) run() error {
 	for {
 		data, err := m.read()
 		if err != nil {
-			m.Close()
+			if m.ctx.Err() != nil {
+				return nil
+			}
+			m.terminalErr.CompareAndSwap(nil, &dnsManagerTerminalError{err: err})
+			m.startClose()
 			return err
 		}
 		var msg dnsmessage.Msg
 		err = netutils.UnpackDnsMessage(data, &msg)
 		pool.PutBuffer(data)
 		if err != nil {
-			// Invalid message, this is fine - just wait for the next
+			// Invalid messages do not extend the lifetime of a silent upstream.
 			continue
 		}
 		m.feed(&msg)
@@ -220,13 +324,13 @@ func (m *DnsManager) read() (data []byte, err error) {
 		pool.PutBuffer(data)
 		return nil, oops.Wrapf(err, "failed to read DNS resp payload")
 	}
-	return
+	return data, nil
 }
 
 func (m *DnsManager) feed(msg *dnsmessage.Msg) bool {
 	v, ok := m.recvMap.Load(msg.Id)
 	if !ok {
-		// Ignore message from unknown session
+		// Ignore messages from unknown sessions.
 		return false
 	}
 	pending := v.(*dnsPendingQuery)
@@ -240,26 +344,81 @@ func (m *DnsManager) feed(msg *dnsmessage.Msg) bool {
 	case pending.ch <- msg:
 		return true
 	default:
-		// Channel full, drop the message
+		// Channel full, drop the message.
 		return false
 	}
 }
 
 func (m *DnsManager) Close() error {
-	m.stateMu.Lock()
-	closeNow := m.markClosedLocked()
-	m.stateMu.Unlock()
-	if closeNow {
-		return m.closeConn()
-	}
-	<-m.closeDone
-	return nil
+	m.startClose()
+	return m.waitClosed(context.Background())
 }
 
 func (m *DnsManager) IsClosed() bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	return m.closed || m.retired
+}
+
+func (m *DnsManager) canReplace() bool {
+	if m.blockedWrites.Load() != 0 {
+		return false
+	}
+	// A canceled manager may be replaced before its transport Close returns,
+	// but never while an old write could still be completing a stream frame.
+	return m.IsClosed()
+}
+
+func (m *DnsManager) closeComplete() bool {
+	select {
+	case <-m.closeDone:
+	default:
+		return false
+	}
+	select {
+	case <-m.runDone:
+	default:
+		return false
+	}
+	select {
+	case <-m.writersDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *DnsManager) waitClosed(ctx context.Context) error {
+	select {
+	case <-m.closeDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-m.runDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-m.writersDone:
+		return m.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *DnsManager) unavailableError() error {
+	if terminal := m.terminalErr.Load(); terminal != nil {
+		return fmt.Errorf("%w: %w", errDnsManagerUnavailable, terminal.err)
+	}
+	return fmt.Errorf("%w: %w", errDnsManagerUnavailable, net.ErrClosed)
+}
+
+func (m *DnsManager) interruptedError() error {
+	if terminal := m.terminalErr.Load(); terminal != nil {
+		return fmt.Errorf("%w: %w", errDnsExchangeInterrupted, terminal.err)
+	}
+	return fmt.Errorf("%w: %w", errDnsExchangeInterrupted, net.ErrClosed)
 }
 
 func (m *DnsManager) Resolve(msg *dnsmessage.Msg) error {
@@ -279,6 +438,10 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if m.IsClosed() {
+		return m.unavailableError()
+	}
+
 	originalId := msg.Id
 	wireQuery := msg.Copy()
 	pending := &dnsPendingQuery{
@@ -315,46 +478,91 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 	binary.BigEndian.PutUint16(payload[:2], uint16(len(data)))
 	copy(payload[2:], data)
 	writeCh := make(chan error, 1)
+	var writeFinished atomic.Bool
+	var writeStarted atomic.Bool
+	if !m.beginWrite() {
+		return m.unavailableError()
+	}
 	go func() {
 		m.writeMu.Lock()
-		defer m.writeMu.Unlock()
-		if ctx.Err() != nil {
-			writeCh <- ctx.Err()
-			return
+		var writeErr error
+		if err := ctx.Err(); err != nil {
+			writeErr = err
+		} else if m.ctx.Err() != nil {
+			writeErr = m.unavailableError()
+		} else {
+			var n int
+			writeStarted.Store(true)
+			n, writeErr = m.conn.Write(payload)
+			if writeErr == nil && n != len(payload) {
+				writeErr = io.ErrShortWrite
+			}
 		}
-		n, err := m.conn.Write(payload)
-		if err == nil && n != len(payload) {
-			err = io.ErrShortWrite
+		m.writeMu.Unlock()
+		writeFinished.Store(true)
+		m.endWrite()
+		if writeErr != nil {
+			if !errors.Is(writeErr, context.Canceled) && !errors.Is(writeErr, context.DeadlineExceeded) &&
+				!errors.Is(writeErr, errDnsManagerUnavailable) && !errors.Is(writeErr, errDnsExchangeInterrupted) {
+				writeErr = oops.Wrapf(writeErr, "failed to write DNS req")
+				m.terminalErr.CompareAndSwap(nil, &dnsManagerTerminalError{err: writeErr})
+				m.startClose()
+			}
 		}
-		writeCh <- err
+		writeCh <- writeErr
 	}()
 
+	writeCompleted := false
 	for {
 		select {
 		case <-m.ctx.Done():
-			if parentCtx.Err() != nil {
-				return parentCtx.Err()
+			if err := parentCtx.Err(); err != nil {
+				return err
 			}
-			return fmt.Errorf("%w: %w", errDnsExchangeInterrupted, net.ErrClosed)
+			if !writeStarted.Load() {
+				return m.unavailableError()
+			}
+			return m.interruptedError()
 		case <-ctx.Done():
-			if writeCh != nil {
-				_ = m.Close()
-			} else {
+			if writeCompleted || writeFinished.Load() {
 				m.retire()
+			} else {
+				// A timed-out stream write may have emitted a partial frame.
+				m.startClose()
 			}
-			if parentCtx.Err() != nil {
-				return parentCtx.Err()
+			if err := parentCtx.Err(); err != nil {
+				return err
+			}
+			if terminal := m.terminalErr.Load(); terminal != nil {
+				return m.interruptedError()
 			}
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
 			}
 			return ctx.Err()
-		case err := <-writeCh:
+		case writeErr := <-writeCh:
 			writeCh = nil
-			if err != nil {
-				_ = m.Close()
-				return fmt.Errorf("%w: %w", errDnsExchangeInterrupted, oops.Wrapf(err, "failed to write DNS req"))
+			if writeErr == nil {
+				writeCompleted = true
+				continue
 			}
+			if err := parentCtx.Err(); err != nil {
+				if writeFinished.Load() {
+					m.retire()
+				} else {
+					m.startClose()
+				}
+				return err
+			}
+			if ctx.Err() != nil {
+				m.startClose()
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
+				}
+				return ctx.Err()
+			}
+			m.startClose()
+			return m.interruptedError()
 		case recvMsg := <-pending.ch:
 			*msg = *recvMsg
 			msg.Id = originalId

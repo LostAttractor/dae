@@ -8,15 +8,19 @@ package control
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"net/netip"
-	"sync"
+	"reflect"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/config"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -37,51 +41,17 @@ type countingDnsForwarder struct {
 	closeCalls int
 }
 
-type blockingAnswerDnsForwarder struct {
-	mu      sync.Mutex
-	calls   int
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
-	err     error
-}
-
-func (f *blockingAnswerDnsForwarder) ForwardDNS(_ context.Context, msg *dnsmessage.Msg) error {
-	f.mu.Lock()
-	f.calls++
-	call := f.calls
-	f.mu.Unlock()
-	if call == 1 {
-		f.once.Do(func() { close(f.started) })
-		<-f.release
-	}
-	if f.err != nil {
-		return f.err
-	}
-	response := new(dnsmessage.Msg)
-	response.SetReply(msg)
-	response.Answer = []dnsmessage.RR{testARecord(msg.Question[0].Name, "1.2.3.4")}
-	*msg = *response
-	return nil
-}
-
-func (f *blockingAnswerDnsForwarder) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-func waitForDnsFlightParticipants(t *testing.T, c *DnsController, key dnsCacheKey, want int) {
+func waitForDnsFlightParticipants(t *testing.T, c *DnsController, key dnsFlightKey, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		c.dnsFlights.mu.Lock()
-		flight := c.dnsFlights.flights[key]
+		c.flightMu.Lock()
+		flight := c.dnsFlights[key]
 		got := 0
 		if flight != nil {
 			got = flight.participants
 		}
-		c.dnsFlights.mu.Unlock()
+		c.flightMu.Unlock()
 		if got == want {
 			return
 		}
@@ -118,21 +88,35 @@ func (f failDnsForwarder) ForwardDNS(context.Context, *dnsmessage.Msg) error {
 	return nil
 }
 
-func testAAAARecord(name string, ip string) *dnsmessage.AAAA {
-	return &dnsmessage.AAAA{
-		Hdr: dnsmessage.RR_Header{
-			Name:   name,
-			Rrtype: dnsmessage.TypeAAAA,
-			Class:  dnsmessage.ClassINET,
-			Ttl:    60,
-		},
-		AAAA: net.ParseIP(ip),
+func (f failDnsForwarder) Close() error { return nil }
+
+type blockingDnsForwarder struct {
+	calls     atomic.Int32
+	closes    atomic.Int32
+	started   chan struct{}
+	closed    chan struct{}
+	startOnce atomic.Bool
+}
+
+func (f *blockingDnsForwarder) ForwardDNS(_ context.Context, _ *dnsmessage.Msg) error {
+	f.calls.Add(1)
+	if f.startOnce.CompareAndSwap(false, true) {
+		close(f.started)
 	}
+	<-f.closed
+	return net.ErrClosed
+}
+
+func (f *blockingDnsForwarder) Close() error {
+	if f.closes.Add(1) == 1 {
+		close(f.closed)
+	}
+	return nil
 }
 
 // newTestDnsController builds a DnsController wired to a fake-kernel
-// registry. routing/dialer are nil: registerAnswers and the cache helpers never
-// touch them.
+// registry. routing/dialer are nil because response planning and publication
+// do not use them.
 func newTestDnsController(t *testing.T, fixedDomainTtl map[string]int) (*DnsController, *DomainRegistry, *fakeKernelDomainMaps) {
 	t.Helper()
 	registry, fake := newTestRegistry(16, 16, 10*time.Second)
@@ -146,7 +130,65 @@ func newTestDnsController(t *testing.T, fixedDomainTtl map[string]int) (*DnsCont
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = c.Close() })
 	return c, registry, fake
+}
+
+func registerTestDNSResponse(c *DnsController, qi queryInfo, answers []dnsmessage.RR) {
+	c.registerResponsePlan(c.planDNSResponse(qi, answers), time.Now())
+}
+
+func cacheTestDNSResponse(c *DnsController, key dnsCacheKey, answers []dnsmessage.RR) {
+	c.cacheResponsePlan(key, c.planDNSResponse(key.queryInfo, answers), time.Now())
+}
+
+func TestDnsControllerReturnsFormerrForMultipleQuestions(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	sent := make(chan []byte, 1)
+	c.sendPacket = func(data []byte, _, _ netip.AddrPort) error {
+		sent <- append([]byte(nil), data...)
+		return nil
+	}
+	msg := testDNSQuery("one.example.", dnsmessage.TypeA, 7)
+	for len(msg.Question) < 64 {
+		msg.Question = append(msg.Question, dnsmessage.Question{
+			Name: "a-long-extra-question.example.", Qtype: dnsmessage.TypeAAAA, Qclass: dnsmessage.ClassINET,
+		})
+	}
+	if err := c.Handle(msg, &udpRequest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case data := <-sent:
+		if len(data) > dnsmessage.MinMsgSize {
+			t.Fatalf("FORMERR response exceeds classic UDP DNS size: %d", len(data))
+		}
+		var response dnsmessage.Msg
+		if err := response.Unpack(data); err != nil {
+			t.Fatal(err)
+		}
+		if !response.Response || response.Rcode != dnsmessage.RcodeFormatError {
+			t.Fatalf("multiple-question response: QR=%v rcode=%v", response.Response, response.Rcode)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("multiple-question request did not receive FORMERR")
+	}
+}
+
+func TestDnsControllerClosedHandleIgnoresMalformedMessages(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	response := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
+	response.Response = true
+	if err := c.Handle(response, &udpRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Handle(&dnsmessage.Msg{}, &udpRequest{}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRegisterAnswersByQtype(t *testing.T) {
@@ -156,8 +198,8 @@ func TestRegisterAnswersByQtype(t *testing.T) {
 	ip4 := netip.MustParseAddr("1.2.3.4")
 	ip6 := netip.MustParseAddr("2606:4700::1234")
 
-	c.registerAnswers(qiA, []dnsmessage.RR{testARecord("example.com.", "1.2.3.4")})
-	c.registerAnswers(qiAAAA, []dnsmessage.RR{testAAAARecord("example.com.", "2606:4700::1234")})
+	registerTestDNSResponse(c, qiA, []dnsmessage.RR{testARecord("example.com.", "1.2.3.4")})
+	registerTestDNSResponse(c, qiAAAA, []dnsmessage.RR{testAAAARecord("example.com.", "2606:4700::1234")})
 
 	// Records land under their own family's key.
 	if got := registry.Lookup(qiA); len(got) != 1 || got[0] != ip4 {
@@ -173,7 +215,7 @@ func TestRegisterAnswersByQtype(t *testing.T) {
 	checkInvariants(t, registry, fake)
 }
 
-func TestRegisterAnswersKeepsPerAddressTtl(t *testing.T) {
+func TestRegisterAnswersNormalizesRRSetTtl(t *testing.T) {
 	c, registry, fake := newTestDnsController(t, nil)
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
 	short := testARecord("example.com.", "1.1.1.1")
@@ -182,14 +224,14 @@ func TestRegisterAnswersKeepsPerAddressTtl(t *testing.T) {
 	long.Hdr.Ttl = 120
 	start := time.Now()
 
-	c.registerAnswers(qi, []dnsmessage.RR{short, long})
+	registerTestDNSResponse(c, qi, []dnsmessage.RR{short, long})
 	shortExpiry := registry.byName[qi][netip.MustParseAddr("1.1.1.1")].expiry
 	longExpiry := registry.byName[qi][netip.MustParseAddr("2.2.2.2")].expiry
 	if d := shortExpiry.Sub(start); d < 25*time.Second || d > 35*time.Second {
 		t.Errorf("short-lived IP should keep its own registry TTL: %v", d)
 	}
-	if d := longExpiry.Sub(start); d < 115*time.Second || d > 125*time.Second {
-		t.Errorf("long-lived IP should keep its own registry TTL: %v", d)
+	if d := longExpiry.Sub(start); d < 25*time.Second || d > 35*time.Second {
+		t.Errorf("one RRset should use its shortest TTL: %v", d)
 	}
 	checkInvariants(t, registry, fake)
 }
@@ -198,7 +240,7 @@ func TestRegisterAnswersSkipsNonAddressAnswers(t *testing.T) {
 	c, registry, _ := newTestDnsController(t, nil)
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
 
-	c.registerAnswers(qi, []dnsmessage.RR{
+	registerTestDNSResponse(c, qi, []dnsmessage.RR{
 		&dnsmessage.CNAME{
 			Hdr:    dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeCNAME, Class: dnsmessage.ClassINET},
 			Target: "cdn.example.",
@@ -222,7 +264,7 @@ func TestRegisterAnswersFixedTtlSemantics(t *testing.T) {
 	start := time.Now()
 	qiPinned := queryInfo{qname: "pinned.com.", qtype: dnsmessage.TypeA}
 	ipPinned := netip.MustParseAddr("1.1.1.1")
-	c.registerAnswers(qiPinned, []dnsmessage.RR{testARecord("pinned.com.", "1.1.1.1")})
+	registerTestDNSResponse(c, qiPinned, []dnsmessage.RR{testARecord("pinned.com.", "1.1.1.1")})
 	r := registry.byName[qiPinned][ipPinned]
 	if r == nil {
 		t.Fatalf("pinned.com. should be registered")
@@ -238,7 +280,7 @@ func TestRegisterAnswersFixedTtlSemantics(t *testing.T) {
 	// enters the kernel for at least MinDomainTTL.
 	qiNocache := queryInfo{qname: "nocache.com.", qtype: dnsmessage.TypeA}
 	ipNocache := netip.MustParseAddr("2.2.2.2")
-	c.registerAnswers(qiNocache, []dnsmessage.RR{testARecord("nocache.com.", "2.2.2.2")})
+	registerTestDNSResponse(c, qiNocache, []dnsmessage.RR{testARecord("nocache.com.", "2.2.2.2")})
 	if !fake.has(ipNocache) {
 		t.Errorf("fixed_ttl=0 must still write the kernel maps")
 	}
@@ -252,7 +294,7 @@ func TestRegisterAnswersFixedTtlSemantics(t *testing.T) {
 	checkInvariants(t, registry, fake)
 }
 
-func TestUpdateDnsCacheFixedDomain(t *testing.T) {
+func TestResponseCacheFixedDomain(t *testing.T) {
 	fixed := map[string]int{"pinned.com.": 30, "nocache.com.": 0}
 	c, _, _ := newTestDnsController(t, fixed)
 	key := dnsCacheKey{queryInfo: queryInfo{qname: "pinned.com.", qtype: dnsmessage.TypeA}}
@@ -261,7 +303,7 @@ func TestUpdateDnsCacheFixedDomain(t *testing.T) {
 	// fixed_ttl (its only sphere of influence).
 	answer := testARecord("pinned.com.", "1.1.1.1")
 	answer.Hdr.Ttl = 3600
-	c.UpdateDnsCache(key, "pinned.com.", []dnsmessage.RR{answer})
+	cacheTestDNSResponse(c, key, []dnsmessage.RR{answer})
 	caches := c.dnsCache.Get(key)
 	if len(caches) != 1 {
 		t.Fatalf("expected one cached answer: %v", len(caches))
@@ -271,228 +313,160 @@ func TestUpdateDnsCacheFixedDomain(t *testing.T) {
 	}
 
 	noCacheKey := dnsCacheKey{queryInfo: queryInfo{qname: "nocache.com.", qtype: dnsmessage.TypeA}}
-	c.UpdateDnsCache(noCacheKey, "nocache.com.", []dnsmessage.RR{testARecord("nocache.com.", "2.2.2.2")})
-	if c.dnsCache.Len() != 1 {
-		t.Fatalf("fixed_ttl=0 entry should not occupy the cache: len=%d", c.dnsCache.Len())
-	}
+	cacheTestDNSResponse(c, noCacheKey, []dnsmessage.RR{testARecord("nocache.com.", "2.2.2.2")})
 	if caches := c.dnsCache.Get(noCacheKey); caches != nil {
 		t.Fatalf("fixed_ttl=0 response must be expired immediately: %v", caches)
 	}
 }
 
-func TestDialSendCoalescesTtlZeroDuplicates(t *testing.T) {
+func TestDNSFlightCoalescesTtlZeroDuplicates(t *testing.T) {
 	c, _, _ := newTestDnsController(t, map[string]int{"example.com.": 0})
-	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
-	dialArg := &dialArgument{
-		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
-		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
-	}
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
-	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: key}
-	forwarder := &blockingAnswerDnsForwarder{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+	key := dnsFlightKey{cacheKey: dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET, variant: "ttl-zero"}}
+	leaderMsg := testDNSQuery("ExAmPlE.com.", qi.qtype, 1)
+	followerMsg := testDNSQuery("eXaMpLe.com.", qi.qtype, 2)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	leaderDone := make(chan error, 1)
+	go func() {
+		leaderDone <- c.shareDNSResult(context.Background(), key, leaderMsg, func() error {
+			calls.Add(1)
+			close(started)
+			<-release
+			response := new(dnsmessage.Msg)
+			response.SetReply(leaderMsg)
+			response.Answer = []dnsmessage.RR{testARecord(qi.qname, "1.2.3.4")}
+			*leaderMsg = *response
+			c.finalizeAcceptedResponse(leaderMsg, &pendingDNSResponse{
+				cacheKey: key.cacheKey, receivedAt: time.Now(),
+			})
+			return nil
+		})
+	}()
+	<-started
+	followerDone := make(chan error, 1)
+	var followerResolved atomic.Bool
+	go func() {
+		followerDone <- c.shareDNSResult(context.Background(), key, followerMsg, func() error {
+			followerResolved.Store(true)
+			return nil
+		})
+	}()
+	waitForDnsFlightParticipants(t, c, key, 2)
+	close(release)
+	if err := <-leaderDone; err != nil {
+		t.Fatal(err)
 	}
-	c.dnsForwarderCache.Store(key, forwarder)
-
-	type result struct {
-		msg     *dnsmessage.Msg
-		dropped bool
-		err     error
+	if err := <-followerDone; err != nil {
+		t.Fatal(err)
 	}
-	results := make(chan result, 2)
-	names := map[uint16]string{1: "ExAmPlE.com.", 2: "eXaMpLe.com."}
-	lookup := func(id uint16) {
-		msg := testQuery(names[id], qi.qtype, id)
-		_, dropped, err := c.dialSend(context.Background(), msg, upstream, dialArg, qi, true)
-		results <- result{msg: msg, dropped: dropped, err: err}
+	if calls.Load() != 1 {
+		t.Fatalf("TTL=0 flight resolutions = %d, want 1", calls.Load())
 	}
-	go lookup(1)
-	<-forwarder.started
-	go lookup(2)
-	waitForDnsFlightParticipants(t, c, cacheKey, 2)
-	close(forwarder.release)
-
-	responseIds := make(map[uint16]bool)
-	for i := 0; i < 2; i++ {
-		result := <-results
-		if result.err != nil || result.dropped || !result.msg.Response {
-			t.Fatalf("TTL=0 duplicate result: response=%v dropped=%v err=%v", result.msg.Response, result.dropped, result.err)
-		}
-		responseIds[result.msg.Id] = true
-		if got := result.msg.Question[0].Name; got != names[result.msg.Id] {
-			t.Fatalf("shared response question = %q, want %q", got, names[result.msg.Id])
-		}
+	if followerResolved.Load() {
+		t.Fatal("follower unexpectedly resolved upstream")
 	}
-	if !responseIds[1] || !responseIds[2] {
-		t.Fatalf("shared responses did not restore client IDs: %v", responseIds)
-	}
-	if calls := forwarder.callCount(); calls != 1 {
-		t.Fatalf("TTL=0 upstream calls = %d, want 1 shared call", calls)
+	if !leaderMsg.Response || !followerMsg.Response || followerMsg.Id != 2 || followerMsg.Question[0].Name != "eXaMpLe.com." {
+		t.Fatalf("TTL=0 response fan-out lost client identity: %+v", followerMsg)
 	}
 	if c.dnsCache.Len() != 0 {
 		t.Fatalf("TTL=0 answers occupied cache: len=%d", c.dnsCache.Len())
 	}
 }
 
-func TestDialSendCoalescesUpstreamErrors(t *testing.T) {
+func TestDNSFlightCoalescesUpstreamErrors(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
-	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
-	dialArg := &dialArgument{
-		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
-		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
-	}
-	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
-	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: key}
+	key := dnsFlightKey{cacheKey: dnsCacheKey{
+		queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, variant: "error",
+	}}
 	wantErr := errors.New("upstream failure")
-	forwarder := &blockingAnswerDnsForwarder{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-		err:     wantErr,
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	leaderDone := make(chan error, 1)
+	go func() {
+		leaderDone <- c.shareDNSResult(context.Background(), key, testDNSQuery("example.com.", dnsmessage.TypeA, 1), func() error {
+			calls.Add(1)
+			close(started)
+			<-release
+			return wantErr
+		})
+	}()
+	<-started
+	followerDone := make(chan error, 1)
+	var followerResolved atomic.Bool
+	go func() {
+		followerDone <- c.shareDNSResult(context.Background(), key, testDNSQuery("example.com.", dnsmessage.TypeA, 2), func() error {
+			followerResolved.Store(true)
+			return nil
+		})
+	}()
+	waitForDnsFlightParticipants(t, c, key, 2)
+	close(release)
+	if err := <-leaderDone; !errors.Is(err, wantErr) {
+		t.Fatalf("leader error = %v, want %v", err, wantErr)
 	}
-	c.dnsForwarderCache.Store(key, forwarder)
-
-	results := make(chan error, 2)
-	lookup := func(id uint16) {
-		_, _, err := c.dialSend(context.Background(), testQuery(qi.qname, qi.qtype, id), upstream, dialArg, qi, true)
-		results <- err
+	if err := <-followerDone; !errors.Is(err, wantErr) {
+		t.Fatalf("follower error = %v, want %v", err, wantErr)
 	}
-	go lookup(1)
-	<-forwarder.started
-	go lookup(2)
-	waitForDnsFlightParticipants(t, c, cacheKey, 2)
-	close(forwarder.release)
-	for i := 0; i < 2; i++ {
-		if err := <-results; !errors.Is(err, wantErr) {
-			t.Fatalf("shared upstream error = %v, want %v", err, wantErr)
-		}
+	if calls.Load() != 1 {
+		t.Fatalf("failed flight resolutions = %d, want 1", calls.Load())
 	}
-	if calls := forwarder.callCount(); calls != 1 {
-		t.Fatalf("failed upstream calls = %d, want 1 shared call", calls)
+	if followerResolved.Load() {
+		t.Fatal("follower unexpectedly resolved upstream")
 	}
 }
 
-func TestDnsFlightGroupLimit(t *testing.T) {
-	var group dnsFlightGroup
-	key := dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}
-	flight, leader, admitted := group.join(key, 2)
-	if !leader || !admitted {
+func TestDNSFlightParticipantLimit(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	key := dnsFlightKey{cacheKey: dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}}
+	flight, leader, err := c.startDNSFlight(key)
+	if err != nil || !leader || flight == nil {
 		t.Fatal("first participant was not admitted as leader")
 	}
-	if _, leader, admitted := group.join(key, 2); leader || !admitted {
-		t.Fatal("second participant was not admitted as follower")
+	for i := 1; i < maxDnsDuplicateConcurrent; i++ {
+		joined, leader, err := c.startDNSFlight(key)
+		if err != nil || leader || joined != flight {
+			t.Fatalf("participant %d was not admitted as follower", i+1)
+		}
 	}
-	if _, _, admitted := group.join(key, 2); admitted {
+	if joined, _, err := c.startDNSFlight(key); err != nil || joined != nil {
 		t.Fatal("participant above the flight limit was admitted")
 	}
-	group.leave(key, flight)
-	if _, leader, admitted := group.join(key, 2); leader || !admitted {
+	c.leaveDNSFlight(key, flight)
+	if joined, leader, err := c.startDNSFlight(key); err != nil || leader || joined != flight {
 		t.Fatal("a departed waiter did not release its flight slot")
 	}
-	group.finish(key, flight, dnsFlightResult{})
+	c.finishDNSFlight(key, flight, nil, nil)
 }
 
-func TestDialSendDropsStaleDuplicateWaiter(t *testing.T) {
+func TestDNSFlightDropsStaleDuplicateWaiter(t *testing.T) {
 	oldTimeout := dnsDuplicateWaitTimeout
 	dnsDuplicateWaitTimeout = 20 * time.Millisecond
 	defer func() { dnsDuplicateWaitTimeout = oldTimeout }()
 
 	c, _, _ := newTestDnsController(t, nil)
-	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
-	dialArg := &dialArgument{
-		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
-		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
+	key := dnsFlightKey{cacheKey: dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}}
+	flight, leader, err := c.startDNSFlight(key)
+	if err != nil || !leader {
+		t.Fatal("leader was not admitted")
 	}
-	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
-	forwarder := &blockingAnswerDnsForwarder{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+	follower, followerLeader, err := c.startDNSFlight(key)
+	if err != nil || followerLeader || follower != flight {
+		t.Fatal("follower did not join")
 	}
-	c.dnsForwarderCache.Store(key, forwarder)
-
-	leaderDone := make(chan error, 1)
-	go func() {
-		_, _, err := c.dialSend(context.Background(), testQuery(qi.qname, qi.qtype, 1), upstream, dialArg, qi, true)
-		leaderDone <- err
-	}()
-	<-forwarder.started
-	_, dropped, err := c.dialSend(context.Background(), testQuery(qi.qname, qi.qtype, 2), upstream, dialArg, qi, true)
-	if err != nil || !dropped {
-		t.Fatalf("stale duplicate: dropped=%v err=%v", dropped, err)
-	}
-	close(forwarder.release)
-	if err := <-leaderDone; err != nil {
+	msg := testDNSQuery("example.com.", dnsmessage.TypeA, 2)
+	if err := c.waitDNSFlight(context.Background(), key, follower, msg); err != nil {
 		t.Fatal(err)
 	}
-	if calls := forwarder.callCount(); calls != 1 {
-		t.Fatalf("stale duplicate reached upstream: calls=%d", calls)
+	if msg.Response {
+		t.Fatal("stale duplicate unexpectedly received a response")
 	}
+	c.finishDNSFlight(key, flight, nil, nil)
 }
 
-func TestDialSendComplexQueryBypassesCache(t *testing.T) {
-	c, _, _ := newTestDnsController(t, nil)
-	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
-	dialArg := &dialArgument{
-		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
-		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
-	}
-	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
-	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: key}
-	c.UpdateDnsCache(cacheKey, qi.qname, []dnsmessage.RR{testARecord(qi.qname, "192.0.2.1")})
-	forwarder := &blockingAnswerDnsForwarder{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	close(forwarder.release)
-	c.dnsForwarderCache.Store(key, forwarder)
-
-	msg := testQuery(qi.qname, qi.qtype, 1)
-	msg.CheckingDisabled = true
-	fromCache, dropped, err := c.dialSend(context.Background(), msg, upstream, dialArg, qi, true)
-	if err != nil || dropped || fromCache {
-		t.Fatalf("complex query: fromCache=%v dropped=%v err=%v", fromCache, dropped, err)
-	}
-	if calls := forwarder.callCount(); calls != 1 {
-		t.Fatalf("complex query upstream calls = %d, want 1", calls)
-	}
-	if got := msg.Answer[0].(*dnsmessage.A).A.String(); got != "1.2.3.4" {
-		t.Fatalf("complex query used cached answer %s", got)
-	}
-}
-
-func TestIsSimpleDnsQuery(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*dnsmessage.Msg)
-		want   bool
-	}{
-		{name: "standard query", want: true},
-		{name: "EDNS", mutate: func(msg *dnsmessage.Msg) { msg.SetEdns0(1232, false) }},
-		{name: "checking disabled", mutate: func(msg *dnsmessage.Msg) { msg.CheckingDisabled = true }},
-		{name: "notify", mutate: func(msg *dnsmessage.Msg) { msg.Opcode = dnsmessage.OpcodeNotify }},
-		{name: "transfer", mutate: func(msg *dnsmessage.Msg) { msg.Question[0].Qtype = dnsmessage.TypeAXFR }},
-		{name: "preset answer", mutate: func(msg *dnsmessage.Msg) {
-			msg.Answer = []dnsmessage.RR{testARecord("example.com.", "192.0.2.1")}
-		}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			msg := testQuery("example.com.", dnsmessage.TypeA, 1)
-			if tt.mutate != nil {
-				tt.mutate(msg)
-			}
-			if got := isSimpleDnsQuery(msg); got != tt.want {
-				t.Fatalf("isSimpleDnsQuery() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestUpdateDnsCacheKeepsPerAnswerDeadlines(t *testing.T) {
+func TestResponseCacheNormalizesRRSetDeadlines(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
 	key := dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}
 	short := testARecord("example.com.", "1.1.1.1")
@@ -501,7 +475,7 @@ func TestUpdateDnsCacheKeepsPerAnswerDeadlines(t *testing.T) {
 	long.Hdr.Ttl = 120
 	start := time.Now()
 
-	c.UpdateDnsCache(key, "example.com.", []dnsmessage.RR{short, long})
+	cacheTestDNSResponse(c, key, []dnsmessage.RR{short, long})
 	caches := c.dnsCache.Get(key)
 	if len(caches) != 2 {
 		t.Fatalf("expected both answers: %v", caches)
@@ -514,8 +488,8 @@ func TestUpdateDnsCacheKeepsPerAnswerDeadlines(t *testing.T) {
 	if d := deadlines["1.1.1.1"].Sub(start); d < 25*time.Second || d > 35*time.Second {
 		t.Errorf("short-lived IP should keep its own TTL: %v", d)
 	}
-	if d := deadlines["2.2.2.2"].Sub(start); d < 115*time.Second || d > 125*time.Second {
-		t.Errorf("long-lived IP should keep its own TTL: %v", d)
+	if d := deadlines["2.2.2.2"].Sub(start); d < 25*time.Second || d > 35*time.Second {
+		t.Errorf("one RRset should use its shortest TTL: %v", d)
 	}
 }
 
@@ -539,14 +513,191 @@ func TestApplyFixedTtlToResponse(t *testing.T) {
 	}
 }
 
+func TestParseFixedDomainTtlRange(t *testing.T) {
+	valid := []config.KeyableString{
+		"zero.example: 0",
+		config.KeyableString("max.example: " + strconv.FormatUint(uint64(math.MaxInt32), 10)),
+	}
+	if _, err := ParseFixedDomainTtl(valid); err != nil {
+		t.Fatalf("valid TTL range rejected: %v", err)
+	}
+	for _, value := range []config.KeyableString{
+		"negative.example: -1",
+		config.KeyableString("large.example: " + strconv.FormatUint(uint64(math.MaxInt32)+1, 10)),
+	} {
+		if _, err := ParseFixedDomainTtl([]config.KeyableString{value}); err == nil {
+			t.Fatalf("out-of-range TTL accepted: %v", value)
+		}
+	}
+}
+
+func TestDNSQueryVariantSeparatesResponseVaryingData(t *testing.T) {
+	variant := func(t *testing.T, msg *dnsmessage.Msg) string {
+		t.Helper()
+		got, ok := dnsQueryVariant(msg)
+		if !ok {
+			t.Fatalf("query was not fingerprintable: %+v", msg)
+		}
+		return got
+	}
+	edns := func(size uint16) *dnsmessage.Msg {
+		msg := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
+		msg.SetEdns0(size, false)
+		return msg
+	}
+	ecs := func(address string) *dnsmessage.Msg {
+		msg := edns(1232)
+		msg.IsEdns0().Option = append(msg.IsEdns0().Option, &dnsmessage.EDNS0_SUBNET{
+			Code:          dnsmessage.EDNS0SUBNET,
+			Family:        1,
+			SourceNetmask: 24,
+			Address:       net.ParseIP(address).To4(),
+		})
+		return msg
+	}
+	base := testDNSQuery("EXAMPLE.COM.", dnsmessage.TypeA, 1)
+	same := testDNSQuery("example.com.", dnsmessage.TypeA, 65535)
+	if variant(t, base) != variant(t, same) {
+		t.Fatal("ID and qname case must not split an otherwise identical query")
+	}
+
+	tests := []struct {
+		name string
+		a    *dnsmessage.Msg
+		b    *dnsmessage.Msg
+	}{
+		{
+			name: "rd",
+			a:    testDNSQuery("example.com.", dnsmessage.TypeA, 1),
+			b: func() *dnsmessage.Msg {
+				msg := testDNSQuery("example.com.", dnsmessage.TypeA, 2)
+				msg.RecursionDesired = false
+				return msg
+			}(),
+		},
+		{
+			name: "cd",
+			a:    testDNSQuery("example.com.", dnsmessage.TypeA, 1),
+			b: func() *dnsmessage.Msg {
+				msg := testDNSQuery("example.com.", dnsmessage.TypeA, 2)
+				msg.CheckingDisabled = true
+				return msg
+			}(),
+		},
+		{
+			name: "do",
+			a:    edns(1232),
+			b: func() *dnsmessage.Msg {
+				msg := edns(1232)
+				msg.IsEdns0().SetDo(true)
+				return msg
+			}(),
+		},
+		{name: "udp size", a: edns(1232), b: edns(4096)},
+		{
+			name: "edns version",
+			a:    edns(1232),
+			b: func() *dnsmessage.Msg {
+				msg := edns(1232)
+				msg.IsEdns0().SetVersion(1)
+				return msg
+			}(),
+		},
+		{name: "ecs", a: ecs("192.0.2.1"), b: ecs("198.51.100.1")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if variant(t, tt.a) == variant(t, tt.b) {
+				t.Fatal("response-varying queries produced the same variant")
+			}
+			if tt.name != "ecs" && tt.name != "udp size" {
+				return
+			}
+			upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+			dialArg := &dialArgument{}
+			qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+			keyA, flightA, _ := makeDNSCacheKey(tt.a, upstream, dialArg, qi)
+			keyB, flightB, _ := makeDNSCacheKey(tt.b, upstream, dialArg, qi)
+			if !flightA || !flightB || keyA == keyB {
+				t.Fatalf("cache/flight keys were not separated: a=%+v b=%+v", keyA, keyB)
+			}
+			cache := newCommonDnsCache[dnsCacheKey](2)
+			cache.Replace(keyA, []*DnsCache{newDnsCache(testARecord(qi.qname, "1.2.3.4"), time.Now().Add(time.Minute))}, time.Time{})
+			if cache.FillInto(keyB, tt.b.Copy()) {
+				t.Fatal("one query variant consumed another variant's cache entry")
+			}
+		})
+	}
+
+	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+	dialArg := &dialArgument{}
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	in := testDNSQuery(qi.qname, qi.qtype, 1)
+	chaos := testDNSQuery(qi.qname, qi.qtype, 2)
+	chaos.Question[0].Qclass = dnsmessage.ClassCHAOS
+	inKey, inFlight, inCache := makeDNSCacheKey(in, upstream, dialArg, qi)
+	chaosKey, chaosFlight, chaosCache := makeDNSCacheKey(chaos, upstream, dialArg, qi)
+	if !inFlight || !inCache || !chaosFlight || chaosCache || inKey == chaosKey {
+		t.Fatalf("QCLASS/reuse policy mismatch: in=%+v chaos=%+v", inKey, chaosKey)
+	}
+	_, ednsFlight, ednsCache := makeDNSCacheKey(edns(1232), upstream, dialArg, qi)
+	if !ednsFlight || ednsCache {
+		t.Fatal("EDNS queries should share exact flights but bypass the answer-only cache")
+	}
+
+	cookie := edns(1232)
+	cookie.IsEdns0().Option = append(cookie.IsEdns0().Option, &dnsmessage.EDNS0_COOKIE{
+		Code: dnsmessage.EDNS0COOKIE, Cookie: "0011223344556677",
+	})
+	if _, ok := dnsQueryVariant(cookie); ok {
+		t.Fatal("source-bound cookies must bypass caching and coalescing")
+	}
+
+	unsupported := edns(1232)
+	unsupported.IsEdns0().Option = append(unsupported.IsEdns0().Option, &dnsmessage.EDNS0_LOCAL{
+		Code: dnsmessage.EDNS0LOCALSTART,
+		Data: []byte{1},
+	})
+	if _, ok := dnsQueryVariant(unsupported); ok {
+		t.Fatal("unknown EDNS options must bypass caching and coalescing")
+	}
+	for _, qtype := range []uint16{dnsmessage.TypeAXFR, dnsmessage.TypeIXFR, dnsmessage.TypeTKEY} {
+		query := testDNSQuery("example.com.", qtype, 1)
+		if _, ok := dnsQueryVariant(query); ok {
+			t.Fatalf("stateful or multi-message query type %d must bypass caching and coalescing", qtype)
+		}
+	}
+}
+
+func TestDNSUDPPayloadSizeBounds(t *testing.T) {
+	query := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
+	if got := dnsUDPPayloadSize(query); got != dnsmessage.MinMsgSize {
+		t.Fatalf("plain DNS payload size = %d, want %d", got, dnsmessage.MinMsgSize)
+	}
+	query.SetEdns0(0, false)
+	if got := dnsUDPPayloadSize(query); got != dnsmessage.MinMsgSize {
+		t.Fatalf("undersized EDNS payload size = %d, want %d", got, dnsmessage.MinMsgSize)
+	}
+	query.IsEdns0().SetUDPSize(1232)
+	if got := dnsUDPPayloadSize(query); got != 1232 {
+		t.Fatalf("EDNS payload size = %d, want 1232", got)
+	}
+}
+
 func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 	c, registry, _ := newTestDnsController(t, map[string]int{"pinned.com.": 30})
 	qi := queryInfo{qname: "pinned.com.", qtype: dnsmessage.TypeA}
 	ip := netip.MustParseAddr("1.1.1.1")
 
-	upstreamResponse := &dnsmessage.Msg{Answer: []dnsmessage.RR{testARecord("pinned.com.", ip.String())}}
+	upstreamResponse := testDNSQuery(qi.qname, qi.qtype, 1)
+	upstreamResponse.Response = true
+	upstreamResponse.AuthenticatedData = true
+	upstreamResponse.Answer = []dnsmessage.RR{testARecord("pinned.com.", ip.String())}
 	upstreamResponse.Answer[0].Header().Ttl = 3600
-	c.finalizeAcceptedResponse(qi, upstreamResponse, false)
+	c.finalizeAcceptedResponse(upstreamResponse, &pendingDNSResponse{
+		cacheKey:   dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET},
+		receivedAt: time.Now(),
+	})
 	registration := registry.byName[qi][ip]
 	if registration == nil {
 		t.Fatal("upstream response should register its address")
@@ -555,23 +706,28 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 	if got := upstreamResponse.Answer[0].Header().Ttl; got != 30 {
 		t.Fatalf("fresh upstream response should apply fixed TTL: %v", got)
 	}
+	if upstreamResponse.AuthenticatedData {
+		t.Fatal("fresh forwarded response must not assert validation dae did not perform")
+	}
 
 	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
 	dialArg := &dialArgument{}
 	forwarderKey := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
-	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: forwarderKey}
-	c.dnsForwarderCache.Store(forwarderKey, failDnsForwarder{t: t})
-	c.dnsCache.ReplaceDeadline(cacheKey, upstreamResponse.Answer, time.Now().Add(5*time.Second))
-	cachedResponse := testQuery(qi.qname, qi.qtype, 1)
-	fromCache, dropped, err := c.dialSend(context.Background(), cachedResponse, upstream, dialArg, qi, true)
+	cachedResponse := testDNSQuery(qi.qname, qi.qtype, 7)
+	cacheKey, _, cacheable := makeDNSCacheKey(cachedResponse, upstream, dialArg, qi)
+	if !cacheable {
+		t.Fatal("plain IN query should be cacheable")
+	}
+	c.dnsForwarderCache[forwarderKey] = failDnsForwarder{t: t}
+	c.dnsCache.Replace(cacheKey, []*DnsCache{
+		newDnsCache(upstreamResponse.Answer[0], time.Now().Add(5*time.Second)),
+	}, time.Time{})
+	pending, err := c.dialSend(context.Background(), cachedResponse, upstream, dialArg, qi, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dropped {
-		t.Fatal("cached response was dropped as a stale duplicate")
-	}
-	if !fromCache {
-		t.Fatal("dialSend should identify a cached response")
+	if pending != nil {
+		t.Fatal("cache hit should have no pending upstream work")
 	}
 	if len(cachedResponse.Answer) != 1 {
 		t.Fatalf("expected one cached answer: %v", cachedResponse.Answer)
@@ -581,12 +737,277 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 		t.Fatalf("cached response should expose its remaining TTL: %v", remainingTTL)
 	}
 
-	c.finalizeAcceptedResponse(qi, cachedResponse, fromCache)
+	c.finalizeAcceptedResponse(cachedResponse, pending)
 	if got := cachedResponse.Answer[0].Header().Ttl; got != remainingTTL {
 		t.Fatalf("fixed TTL must not restart on a cache hit: got %v, want %v", got, remainingTTL)
 	}
 	if got := registry.byName[qi][ip].expiry; !got.Equal(registryDeadline) {
 		t.Fatalf("cache hit must not refresh the registry: got %v, want %v", got, registryDeadline)
+	}
+}
+
+func TestValidateDNSResponseIdentity(t *testing.T) {
+	request := testDNSQuery("example.com.", dnsmessage.TypeA, 42)
+	valid := request.Copy()
+	valid.Response = true
+	valid.Question[0].Name = "EXAMPLE.COM."
+	if err := validateDNSResponseIdentity(request, valid); err != nil {
+		t.Fatalf("case-insensitive matching response was rejected: %v", err)
+	}
+
+	tests := map[string]func(*dnsmessage.Msg){
+		"request bit": func(msg *dnsmessage.Msg) { msg.Response = false },
+		"id":          func(msg *dnsmessage.Msg) { msg.Id++ },
+		"opcode":      func(msg *dnsmessage.Msg) { msg.Opcode++ },
+		"qname":       func(msg *dnsmessage.Msg) { msg.Question[0].Name = "other.example." },
+		"qtype":       func(msg *dnsmessage.Msg) { msg.Question[0].Qtype = dnsmessage.TypeAAAA },
+		"qclass":      func(msg *dnsmessage.Msg) { msg.Question[0].Qclass = dnsmessage.ClassCHAOS },
+		"no question": func(msg *dnsmessage.Msg) { msg.Question = nil },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			response := valid.Copy()
+			mutate(response)
+			if err := validateDNSResponseIdentity(request, response); err == nil {
+				t.Fatal("mismatched response was accepted")
+			}
+		})
+	}
+}
+
+func TestFinalizeUsesUpstreamReceiveTimeForTTL(t *testing.T) {
+	c, registry, _ := newTestDnsController(t, nil)
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	receivedAt := time.Now().Add(-5 * time.Second)
+	response := testDNSQuery(qi.qname, qi.qtype, 1)
+	response.Response = true
+	answer := testARecord(qi.qname, "1.2.3.4")
+	answer.Hdr.Ttl = 10
+	response.Answer = []dnsmessage.RR{answer}
+	c.finalizeAcceptedResponse(response, &pendingDNSResponse{
+		cacheKey:   dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET},
+		receivedAt: receivedAt,
+	})
+
+	ip := netip.MustParseAddr("1.2.3.4")
+	if got := registry.byName[qi][ip].expiry; !got.Equal(receivedAt.Add(10 * time.Second)) {
+		t.Fatalf("registry TTL started after response routing: %v", got)
+	}
+	if got := response.Answer[0].Header().Ttl; got < 4 || got > 5 {
+		t.Fatalf("wire TTL did not account for response-routing delay: %v", got)
+	}
+}
+
+func TestDNSFlightFansOutNonCacheableResponse(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	key := dnsFlightKey{cacheKey: dnsCacheKey{
+		queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA},
+		qclass:    dnsmessage.ClassINET,
+		variant:   "non-cacheable-flight",
+	}}
+	leaderMsg := testDNSQuery("EXAMPLE.COM.", dnsmessage.TypeA, 1)
+	followerMsg := testDNSQuery("example.com.", dnsmessage.TypeA, 2)
+	leaderStarted := make(chan struct{})
+	releaseLeader := make(chan struct{})
+	var calls atomic.Int32
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		leaderDone <- c.shareDNSResult(context.Background(), key, leaderMsg, func() error {
+			calls.Add(1)
+			close(leaderStarted)
+			<-releaseLeader
+			leaderMsg.Response = true
+			leaderMsg.Rcode = dnsmessage.RcodeSuccess
+			leaderMsg.Truncated = true
+			leaderMsg.Answer = []dnsmessage.RR{testARecord("example.com.", "1.2.3.4")}
+			return nil
+		})
+	}()
+	<-leaderStarted
+
+	c.flightMu.Lock()
+	flight := c.dnsFlights[key]
+	c.flightMu.Unlock()
+	if flight == nil {
+		t.Fatal("leader did not publish its flight")
+	}
+	followerFlight, followerIsLeader, err := c.startDNSFlight(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if followerIsLeader || followerFlight != flight {
+		t.Fatal("follower did not join the existing flight")
+	}
+	followerDone := make(chan error, 1)
+	go func() { followerDone <- c.waitDNSFlight(context.Background(), key, followerFlight, followerMsg) }()
+	close(releaseLeader)
+
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader failed: %v", err)
+	}
+	if err := <-followerDone; err != nil {
+		t.Fatalf("follower failed: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("one flight performed %v resolutions", calls.Load())
+	}
+	if !leaderMsg.Truncated || !followerMsg.Truncated || len(followerMsg.Answer) != 1 {
+		t.Fatalf("non-cacheable response was not fanned out: %+v", followerMsg)
+	}
+	if followerMsg.Id != 2 || !reflect.DeepEqual(followerMsg.Question, testDNSQuery("example.com.", dnsmessage.TypeA, 2).Question) {
+		t.Fatalf("follower transaction identity was not preserved: %+v", followerMsg.Question)
+	}
+	followerMsg.Answer[0].(*dnsmessage.A).A[0] = 9
+	if leaderMsg.Answer[0].(*dnsmessage.A).A[0] == 9 {
+		t.Fatal("flight followers must receive independent deep copies")
+	}
+}
+
+func TestDNSFlightKeyIncludesRerouteContext(t *testing.T) {
+	cacheKey := dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}
+	first := dnsFlightKey{cacheKey: cacheKey, src: netip.MustParseAddrPort("192.0.2.1:1000")}
+	second := first
+	second.src = netip.MustParseAddrPort("192.0.2.2:1000")
+	if first == second {
+		t.Fatal("source-dependent reroute contexts shared one flight key")
+	}
+	second = first
+	second.routingResult.Pname[0] = 1
+	if first == second {
+		t.Fatal("process-dependent reroute contexts shared one flight key")
+	}
+}
+
+func TestDNSFlightCloseUnblocksWaiter(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	key := dnsFlightKey{cacheKey: dnsCacheKey{
+		queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, variant: "close-flight",
+	}}
+	leaderStarted := make(chan struct{})
+	leaderDone := make(chan error, 1)
+	go func() {
+		msg := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
+		leaderDone <- c.shareDNSResult(context.Background(), key, msg, func() error {
+			close(leaderStarted)
+			<-c.closed.Done()
+			return net.ErrClosed
+		})
+	}()
+	<-leaderStarted
+
+	c.flightMu.Lock()
+	flight := c.dnsFlights[key]
+	c.flightMu.Unlock()
+	followerFlight, followerIsLeader, err := c.startDNSFlight(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if followerIsLeader || followerFlight != flight {
+		t.Fatal("follower did not join the existing flight")
+	}
+	followerDone := make(chan error, 1)
+	go func() {
+		msg := testDNSQuery("example.com.", dnsmessage.TypeA, 2)
+		followerDone <- c.waitDNSFlight(context.Background(), key, followerFlight, msg)
+	}()
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-leaderDone; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("leader close result: %v", err)
+	}
+	if err := <-followerDone; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("follower close result: %v", err)
+	}
+}
+
+func TestDnsControllerCloseInterruptsForwarderAndPreventsReuse(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+	dialArg := &dialArgument{}
+	forwarder := &blockingDnsForwarder{started: make(chan struct{}), closed: make(chan struct{})}
+	forwarderKey := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	c.dnsForwarderCache[forwarderKey] = forwarder
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+
+	requestDone := make(chan error, 1)
+	go func() {
+		_, err := c.dialSend(context.Background(), testDNSQuery(qi.qname, qi.qtype, 1), upstream, dialArg, qi, true)
+		requestDone <- err
+	}()
+	<-forwarder.started
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-requestDone; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("active request was not interrupted: %v", err)
+	}
+	if _, err := c.dialSend(context.Background(), testDNSQuery(qi.qname, qi.qtype, 2), upstream, dialArg, qi, true); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("request after Close did not fail closed: %v", err)
+	}
+	if forwarder.calls.Load() != 1 || forwarder.closes.Load() != 1 {
+		t.Fatalf("forwarder lifecycle: calls=%v closes=%v", forwarder.calls.Load(), forwarder.closes.Load())
+	}
+}
+
+func TestDnsControllerCloseWaitsForAdmittedRequestSend(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	c.sendPacket = func([]byte, netip.AddrPort, netip.AddrPort) error {
+		close(started)
+		<-release
+		return nil
+	}
+	sendDone := make(chan error, 1)
+	if !c.admitDNSRequest() {
+		t.Fatal("open controller rejected request admission")
+	}
+	go func() {
+		defer c.activeRequests.Done()
+		sendDone <- c.sendDNSPacket(nil, netip.AddrPort{}, netip.AddrPort{})
+	}()
+	<-started
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- c.Close() }()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before the admitted send finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-sendDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := c.sendDNSPacket(nil, netip.AddrPort{}, netip.AddrPort{}); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("send after Close did not fail closed: %v", err)
+	}
+}
+
+func TestDnsControllerCloseWaitsForAdmittedRequest(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	if !c.admitDNSRequest() {
+		t.Fatal("open controller rejected request admission")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- c.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before admitted request finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	c.activeRequests.Done()
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if c.admitDNSRequest() {
+		c.activeRequests.Done()
+		t.Fatal("closed controller admitted a request")
 	}
 }
 
@@ -615,6 +1036,45 @@ func TestRegisterAnswersNoExpiryAfterCloseIsNoop(t *testing.T) {
 	c.registerAnswersNoExpiry(qi, []dnsmessage.RR{testARecord(qi.qname, "1.1.1.1")})
 	if registry.Size() != 0 {
 		t.Fatal("synthetic registration mutated the registry after Close")
+	}
+}
+
+func TestRegisterResponsePlanAfterCloseIsNoop(t *testing.T) {
+	c, registry, _ := newTestDnsController(t, nil)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	registerTestDNSResponse(c, queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA},
+		[]dnsmessage.RR{testARecord("example.com.", "1.2.3.4")})
+	if registry.Size() != 0 {
+		t.Fatal("response plan mutated the registry after Close")
+	}
+}
+
+func TestAcceptedResponseDuringCloseDoesNotPublish(t *testing.T) {
+	c, registry, _ := newTestDnsController(t, nil)
+	if !c.admitDNSRequest() {
+		t.Fatal("open controller rejected request admission")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- c.Close() }()
+	for c.closed.Err() == nil {
+		time.Sleep(time.Millisecond)
+	}
+
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	msg := testDNSQuery(qi.qname, qi.qtype, 1)
+	msg.Response = true
+	msg.Answer = []dnsmessage.RR{testARecord(qi.qname, "1.2.3.4")}
+	c.finalizeAcceptedResponse(msg, &pendingDNSResponse{
+		cacheKey: dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}, receivedAt: time.Now(),
+	})
+	c.activeRequests.Done()
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if registry.Size() != 0 {
+		t.Fatal("retiring controller published an accepted response")
 	}
 }
 
@@ -656,7 +1116,7 @@ func TestHandleAfterClose(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
-	msg := testQuery("example.com.", dnsmessage.TypeA, 1)
+	msg := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
 	if err := c.Handle(msg, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -668,8 +1128,8 @@ func TestHandleAfterClose(t *testing.T) {
 func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
 	forwarder := &closeTrackingDnsForwarder{closed: make(chan struct{})}
-	c.dnsForwarderCache.Store(dnsForwarderKey{}, forwarder)
-	if !c.beginRequest() {
+	c.dnsForwarderCache[dnsForwarderKey{}] = forwarder
+	if !c.admitDNSRequest() {
 		t.Fatal("open controller rejected request registration")
 	}
 
@@ -689,7 +1149,7 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 	default:
 	}
 
-	c.endRequest()
+	c.activeRequests.Done()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -703,7 +1163,8 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Close did not release the forwarder")
 	}
-	if c.beginRequest() {
+	if c.admitDNSRequest() {
+		c.activeRequests.Done()
 		t.Fatal("closed controller accepted a new request")
 	}
 }
@@ -720,14 +1181,14 @@ func TestDnsControllerCloseCancelsInFlightForwarder(t *testing.T) {
 		started: make(chan struct{}),
 		closed:  make(chan struct{}),
 	}
-	c.dnsForwarderCache.Store(key, forwarder)
-	if !c.beginRequest() {
+	c.dnsForwarderCache[key] = forwarder
+	if !c.admitDNSRequest() {
 		t.Fatal("open controller rejected request registration")
 	}
 	requestDone := make(chan error, 1)
 	go func() {
-		defer c.endRequest()
-		_, _, err := c.dialSend(c.closed, testQuery("example.com.", dnsmessage.TypeA, 1), upstream, dialArg,
+		defer c.activeRequests.Done()
+		_, err := c.dialSend(c.closed, testDNSQuery("example.com.", dnsmessage.TypeA, 1), upstream, dialArg,
 			queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, true)
 		requestDone <- err
 	}()
@@ -755,27 +1216,5 @@ func TestDnsControllerCloseCancelsInFlightForwarder(t *testing.T) {
 	case <-forwarder.closed:
 	default:
 		t.Fatal("Close did not release the forwarder")
-	}
-}
-
-func TestAcceptedResponseRegistersDuringClose(t *testing.T) {
-	c, registry, _ := newTestDnsController(t, nil)
-	if !c.beginRequest() {
-		t.Fatal("open controller rejected request registration")
-	}
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- c.Close() }()
-	for c.closed.Err() == nil {
-		time.Sleep(time.Millisecond)
-	}
-	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-	msg := &dnsmessage.Msg{Answer: []dnsmessage.RR{testARecord(qi.qname, "1.2.3.4")}}
-	c.finalizeAcceptedResponse(qi, msg, false)
-	c.endRequest()
-	if err := <-closeDone; err != nil {
-		t.Fatal(err)
-	}
-	if got := registry.Lookup(qi); len(got) != 1 || got[0] != netip.MustParseAddr("1.2.3.4") {
-		t.Fatalf("accepted response was not registered during Close: %v", got)
 	}
 }
