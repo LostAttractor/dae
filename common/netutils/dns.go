@@ -19,11 +19,11 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -109,6 +109,14 @@ func skipDnsWireName(payload []byte, offset int) (int, error) {
 // Error responses are allowed to omit the question section; restore it so
 // response routing can still identify the original lookup.
 func ValidateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16) error {
+	return validateDnsResponse(query, response, expectedId, false)
+}
+
+func ValidateDnsResponseAllowEmptyQuestion(query, response *dnsmessage.Msg, expectedId uint16) error {
+	return validateDnsResponse(query, response, expectedId, true)
+}
+
+func validateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16, allowEmptyQuestion bool) error {
 	if !response.Response {
 		return fmt.Errorf("%w: QR bit is not set", ErrBadDnsResponse)
 	}
@@ -119,8 +127,8 @@ func ValidateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16) err
 		return fmt.Errorf("%w: opcode %d, want %d", ErrBadDnsResponse, response.Opcode, query.Opcode)
 	}
 	if len(response.Question) == 0 {
-		if response.Rcode == dnsmessage.RcodeSuccess {
-			return fmt.Errorf("%w: successful response has no question", ErrBadDnsResponse)
+		if !allowEmptyQuestion || response.Rcode == dnsmessage.RcodeSuccess {
+			return fmt.Errorf("%w: response has no question", ErrBadDnsResponse)
 		}
 		response.Question = append([]dnsmessage.Question(nil), query.Question...)
 		return nil
@@ -140,17 +148,14 @@ func ValidateDnsResponse(query, response *dnsmessage.Msg, expectedId uint16) err
 
 func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
 	query := msg.Copy()
-	data, err := msg.Pack()
+	query.Id = 0
+	data, err := query.Pack()
 	if err != nil {
 		return oops.Wrapf(err, "pack DNS packet")
 	}
 	if err := CheckDnsMessageSize(len(data)); err != nil {
 		return err
 	}
-
-	// According https://datatracker.ietf.org/doc/html/rfc8484#section-4
-	// msg id should set to 0 when transport over HTTPS for cache friendly.
-	binary.BigEndian.PutUint16(data[0:2], 0)
 
 	q := url.Query()
 	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
@@ -182,16 +187,21 @@ func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dn
 		return err
 	}
 	var response dnsmessage.Msg
-	if err = response.Unpack(buf); err != nil {
+	if err = UnpackDnsMessage(buf, &response); err != nil {
 		return err
 	}
-	if err = ValidateDnsResponse(query, &response, 0); err != nil {
+	if err = ValidateDnsResponseAllowEmptyQuestion(query, &response, 0); err != nil {
 		return err
 	}
 	if ageValue := resp.Header.Get("Age"); ageValue != "" {
-		age, err := strconv.ParseUint(ageValue, 10, 64)
+		ageValue, _, _ = strings.Cut(ageValue, ",")
+		age, err := strconv.ParseUint(strings.TrimSpace(ageValue), 10, 64)
 		if err != nil {
-			return fmt.Errorf("invalid DoH Age header %q: %w", ageValue, err)
+			if errors.Is(err, strconv.ErrRange) {
+				age = math.MaxUint64
+			} else {
+				age = 0
+			}
 		}
 		ageRRs := func(rrs []dnsmessage.RR) {
 			for _, rr := range rrs {
@@ -247,10 +257,10 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
 		return oops.Wrapf(err, "failed to read DNS resp payload")
 	}
 	var response dnsmessage.Msg
-	if err = response.Unpack(respBuf); err != nil {
+	if err = UnpackDnsMessage(respBuf, &response); err != nil {
 		return err
 	}
-	if err = ValidateDnsResponse(query, &response, query.Id); err != nil {
+	if err = ValidateDnsResponseAllowEmptyQuestion(query, &response, query.Id); err != nil {
 		return err
 	}
 	*msg = response
@@ -258,6 +268,10 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
 }
 
 func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
+	if err := ctx.Err(); err != nil {
+		_ = conn.Close()
+		return err
+	}
 	query := msg.Copy()
 	data, err := msg.Pack()
 	if err != nil {
@@ -266,6 +280,8 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 	if err := CheckDnsMessageSize(len(data)); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+	defer cancel()
 	success := false
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer func() {
@@ -274,31 +290,11 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 			_ = conn.Close()
 		}
 	}()
-	reqId := msg.Id
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	sendCh := make(chan error, 1)
 	type recvResult struct {
 		msg *dnsmessage.Msg
 		err error
 	}
 	recvCh := make(chan recvResult, 1)
-	go func() {
-		for i := 0; i < consts.DefaultDNSRetryCount; i++ {
-			_, err := conn.Write(data)
-			if err != nil {
-				sendCh <- err
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(consts.DefaultDNSRetryInterval):
-			}
-		}
-	}()
-
 	// A plain heap buffer: on the write-error return path the read goroutine
 	// stays blocked until the caller closes the conn, so a pooled buffer
 	// could be handed out again underneath a pending Read.
@@ -316,10 +312,10 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 				continue
 			}
 			var resp dnsmessage.Msg
-			if err := resp.Unpack(respBuf[:n]); err != nil {
+			if err := UnpackDnsMessage(respBuf[:n], &resp); err != nil {
 				continue
 			}
-			if err := ValidateDnsResponse(query, &resp, reqId); err != nil {
+			if err := ValidateDnsResponse(query, &resp, query.Id); err != nil {
 				continue
 			}
 			recvCh <- recvResult{msg: &resp}
@@ -327,25 +323,45 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 		}
 	}()
 
-	select {
-	case err := <-sendCh:
-		if ctx.Err() != nil {
-			return ctx.Err()
+	attempts := consts.DefaultDNSRetryCount
+	if msg.Opcode != dnsmessage.OpcodeQuery && msg.Opcode != dnsmessage.OpcodeNotify {
+		attempts = 1
+	}
+	for i := 0; i < attempts; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		return err
-	case result := <-recvCh:
-		if result.err != nil {
+		if _, err := conn.Write(data); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return result.err
+			return err
 		}
-		*msg = *result.msg
-		success = true
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+
+		wait := consts.DefaultDNSRetryInterval
+		if attempts == 1 {
+			wait = consts.DefaultDNSTimeout
+		}
+		retryTimer := time.NewTimer(wait)
+		select {
+		case result := <-recvCh:
+			retryTimer.Stop()
+			if result.err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return result.err
+			}
+			*msg = *result.msg
+			success = true
+			return nil
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return ctx.Err()
+		case <-retryTimer.C:
+		}
 	}
+	return fmt.Errorf("DNS query timed out after %d attempts: %w", attempts, context.DeadlineExceeded)
 }
 
 func ResolveNetip(d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
@@ -437,17 +453,7 @@ func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uin
 }
 
 func resolveContext(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
-	// Build DNS req.
-	msg := dnsmessage.Msg{
-		MsgHdr: dnsmessage.MsgHdr{
-			Id:               uint16(fastrand.Intn(math.MaxUint16 + 1)),
-			Response:         false,
-			Opcode:           0,
-			Truncated:        false,
-			RecursionDesired: true,
-			Authoritative:    false,
-		},
-	}
+	var msg dnsmessage.Msg
 	msg.SetQuestion(dnsmessage.CanonicalName(host), typ)
 
 	conn, err := dialer.DialContext(ctx, network, server.String())
