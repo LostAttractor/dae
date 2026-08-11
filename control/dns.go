@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
@@ -35,6 +36,8 @@ const (
 	doqNoError          quic.ApplicationErrorCode = 0x0
 	doqProtocolError    quic.ApplicationErrorCode = 0x2
 	doqRequestCancelled quic.StreamErrorCode      = 0x3
+
+	maxConcurrentDnsUDPExchanges = 256
 )
 
 type doqProtocolErrorCause struct{ err error }
@@ -671,67 +674,145 @@ func shouldRetryDnsManager(err error, msg *dnsmessage.Msg) bool {
 
 type DoUDP struct {
 	dns.Upstream
-	dialArgument dialArgument
-	mu           sync.Mutex
-	dnsManager   *DnsManager
-	dnsManagers  map[*DnsManager]struct{}
-	closed       bool
+	dialArgument    dialArgument
+	mu              sync.Mutex
+	connections     map[net.Conn]struct{}
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	slots           chan struct{}
+	closeDone       chan struct{}
+	active          sync.WaitGroup
+	closed          bool
 }
 
 // Close releases the persistent upstream connection, if any, so its socket
 // and the DnsManager recv loop do not outlive the owning control plane.
 func (d *DoUDP) Close() error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.closed = true
-	var errs []error
-	for manager := range d.dnsManagers {
-		errs = append(errs, manager.Close())
+	d.ensureLifecycleLocked()
+	if d.closed {
+		closeDone := d.closeDone
+		d.mu.Unlock()
+		<-closeDone
+		return nil
 	}
+	d.closed = true
+	d.lifecycleCancel()
+	connections := make([]net.Conn, 0, len(d.connections))
+	for conn := range d.connections {
+		connections = append(connections, conn)
+	}
+	d.connections = nil
+	d.mu.Unlock()
+	var errs []error
+	for _, conn := range connections {
+		errs = append(errs, conn.Close())
+	}
+	d.active.Wait()
+	close(d.closeDone)
 	return errors.Join(errs...)
 }
 
-// See DoTCP.getManager.
-func (d *DoUDP) getManager(ctx context.Context) (*DnsManager, error) {
+func (d *DoUDP) ensureLifecycleLocked() {
+	if d.lifecycleCtx == nil {
+		d.lifecycleCtx, d.lifecycleCancel = context.WithCancel(context.Background())
+		d.slots = make(chan struct{}, maxConcurrentDnsUDPExchanges)
+		d.closeDone = make(chan struct{})
+	}
+}
+
+func (d *DoUDP) beginExchange(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	d.mu.Lock()
+	d.ensureLifecycleLocked()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, nil, false
+	}
+	d.active.Add(1)
+	lifecycleCtx := d.lifecycleCtx
+	slots := d.slots
+	d.mu.Unlock()
+
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		d.active.Done()
+		return nil, nil, false
+	case <-lifecycleCtx.Done():
+		d.active.Done()
+		return nil, nil, false
+	}
+
+	exchangeCtx, cancel := context.WithCancel(ctx)
+	stopLifecycleCancel := context.AfterFunc(lifecycleCtx, cancel)
+	return exchangeCtx, func() {
+		stopLifecycleCancel()
+		cancel()
+		<-slots
+		d.active.Done()
+	}, true
+}
+
+func (d *DoUDP) registerConnection(conn net.Conn) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return nil, net.ErrClosed
+		return false
 	}
-	if d.dnsManager == nil || d.dnsManager.IsClosed() {
-		ctx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-		defer cancel()
-		conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
-		if err != nil {
-			return nil, err
-		}
-		manager := NewDnsManager(conn, false)
-		d.dnsManager = manager
-		if d.dnsManagers == nil {
-			d.dnsManagers = make(map[*DnsManager]struct{})
-		}
-		dnsManagers := d.dnsManagers
-		dnsManagers[manager] = struct{}{}
-		go func() {
-			<-manager.closeDone
-			d.mu.Lock()
-			delete(dnsManagers, manager)
-			d.mu.Unlock()
-		}()
+	if d.connections == nil {
+		d.connections = make(map[net.Conn]struct{})
 	}
-	return d.dnsManager, nil
+	d.connections[conn] = struct{}{}
+	return true
+}
+
+func (d *DoUDP) releaseConnection(conn net.Conn) {
+	d.mu.Lock()
+	delete(d.connections, conn)
+	d.mu.Unlock()
+	_ = conn.Close()
 }
 
 func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	for attempts := 0; attempts < 2; attempts++ {
-		m, err := d.getManager(ctx)
-		if err != nil {
-			return err
-		}
-		err = m.ResolveContext(ctx, msg)
-		if !errors.Is(err, net.ErrClosed) || ctx.Err() != nil {
-			return err
-		}
+	if hasDnsTransactionSignature(msg) {
+		return errors.New("UDP forwarder does not support transaction signatures")
 	}
-	return net.ErrClosed
+	parentCtx := ctx
+	ctx, cancel := context.WithTimeout(parentCtx, consts.DefaultDNSTimeout)
+	defer cancel()
+	exchangeCtx, endExchange, started := d.beginExchange(ctx)
+	if !started {
+		if err := parentCtx.Err(); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return net.ErrClosed
+	}
+	defer endExchange()
+	ctx = exchangeCtx
+	conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
+	if err != nil {
+		return err
+	}
+	if !d.registerConnection(conn) {
+		_ = conn.Close()
+		return net.ErrClosed
+	}
+	defer d.releaseConnection(conn)
+
+	wireQuery := msg.Copy()
+	var randomId [2]byte
+	if _, err := rand.Read(randomId[:]); err != nil {
+		return fmt.Errorf("generate DNS transaction ID: %w", err)
+	}
+	originalId := msg.Id
+	wireQuery.Id = binary.BigEndian.Uint16(randomId[:])
+	if err := netutils.ResolveUDP(ctx, conn, wireQuery); err != nil {
+		return err
+	}
+	*msg = *wireQuery
+	msg.Id = originalId
+	return nil
 }
