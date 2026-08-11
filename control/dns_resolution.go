@@ -37,10 +37,9 @@ type responseView struct {
 }
 
 type responsePlan struct {
-	views               []responseView
-	publishDerivedCache bool
-	suppressCache       bool
-	signed              bool
+	views         []responseView
+	suppressCache bool
+	signed        bool
 }
 
 type normalizedAnswer struct {
@@ -161,12 +160,8 @@ func (c *DnsController) planDNSResponseAt(qi queryInfo, answers []dnsmessage.RR,
 		})
 	}
 
-	hasRRSIG := containsRRType(normalized, dnsmessage.TypeRRSIG)
 	views := c.planCNAMEViews(qi, normalized, links, terminalName, terminalAnswers)
-	return finish(&responsePlan{
-		views:               views,
-		publishDerivedCache: !hasRRSIG,
-	})
+	return finish(&responsePlan{views: views})
 }
 
 func constrainSignedRRSetTTLs(answers []normalizedAnswer, observedAt time.Time) ([]normalizedAnswer, bool) {
@@ -260,15 +255,6 @@ func rrsigRemainingTTL(signature *dnsmessage.RRSIG, observedAt time.Time) (int, 
 		remaining--
 	}
 	return int(remaining), true
-}
-
-func containsRRType(answers []normalizedAnswer, rrtype uint16) bool {
-	for _, answer := range answers {
-		if answer.answer.Header().Rrtype == rrtype {
-			return true
-		}
-	}
-	return false
 }
 
 func cnameOwnersAreExclusive(answers []normalizedAnswer, byOwner map[string][]cnameLink) bool {

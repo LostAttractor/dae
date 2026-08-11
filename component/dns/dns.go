@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
-	"sync"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -24,11 +23,9 @@ import (
 var ErrBadUpstreamFormat = fmt.Errorf("bad upstream format")
 
 type Dns struct {
-	upstream         []*UpstreamResolver
-	upstream2IndexMu sync.Mutex
-	upstream2Index   map[*Upstream]int
-	reqMatcher       *RequestMatcher
-	respMatcher      *ResponseMatcher
+	upstream    []*UpstreamResolver
+	reqMatcher  *RequestMatcher
+	respMatcher *ResponseMatcher
 }
 
 type NewOption struct {
@@ -42,11 +39,7 @@ type NewOption struct {
 }
 
 func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
-	s = &Dns{
-		upstream2Index: map[*Upstream]int{
-			nil: int(consts.DnsRequestOutboundIndex_AsIs),
-		},
-	}
+	s = &Dns{}
 	// Parse upstream.
 	upstreamName2Id := map[string]uint8{}
 	for i, upstreamRaw := range dns.Upstream {
@@ -67,17 +60,9 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		r := &UpstreamResolver{
 			Raw:     u,
 			Network: opt.UpstreamResolverNetwork,
-			FinishInitCallback: func(i int) func(raw *url.URL, upstream *Upstream) {
-				return func(raw *url.URL, upstream *Upstream) {
-					opt.UpstreamReadyCallback(upstream)
-					s.upstream2IndexMu.Lock()
-					s.upstream2Index[upstream] = i
-					s.upstream2IndexMu.Unlock()
-				}
-			}(i),
-			mu:       sync.Mutex{},
-			upstream: nil,
-			init:     false,
+			FinishInitCallback: func(_ *url.URL, upstream *Upstream) {
+				opt.UpstreamReadyCallback(upstream)
+			},
 		}
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)
@@ -155,7 +140,7 @@ func (s *Dns) RequestSelect(
 	return upstreamIndex, nil
 }
 
-func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, fromUpstream *Upstream) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, from consts.DnsRequestOutboundIndex) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
 	if !msg.Response {
 		return 0, nil, fmt.Errorf("DNS response expected but DNS request received")
 	}
@@ -189,16 +174,8 @@ func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, fromUpstr
 		}
 	}
 
-	s.upstream2IndexMu.Lock()
-	from, found := s.upstream2Index[fromUpstream]
-	s.upstream2IndexMu.Unlock()
-	if !found {
-		// An AsIs request uses an ad-hoc upstream representing the packet's
-		// original destination, so it is intentionally absent from this map.
-		from = int(consts.DnsRequestOutboundIndex_AsIs)
-	}
 	// Route.
-	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, consts.DnsRequestOutboundIndex(from))
+	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, from)
 	if err != nil {
 		return 0, nil, err
 	}

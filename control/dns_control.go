@@ -195,11 +195,7 @@ func (c *DnsController) cacheResponsePlanOpen(cacheKey dnsCacheKey, plan *respon
 	if plan.suppressCache {
 		return
 	}
-	views := plan.views
-	if !plan.publishDerivedCache && len(views) > 1 {
-		views = views[:1]
-	}
-	for _, view := range views {
+	for _, view := range plan.views {
 		c.cacheResponseView(cacheKey, acceptedAt, view)
 	}
 }
@@ -512,7 +508,7 @@ func (c *DnsController) handleDNSRequest(
 		flightKey.routingResult = *req.routingResult
 	}
 	resolve := func() error {
-		return c.resolveDNSRequest(ctx, dnsMessage, req, queryInfo, upstream, firstDialArgument, cacheForwarder)
+		return c.resolveDNSRequest(ctx, dnsMessage, req, queryInfo, RequestIndex, upstream, firstDialArgument, cacheForwarder)
 	}
 	if canShare {
 		return c.shareDNSResult(ctx, flightKey, dnsMessage, resolve)
@@ -531,6 +527,7 @@ func (c *DnsController) resolveDNSRequest(
 	dnsMessage *dnsmessage.Msg,
 	req *udpRequest,
 	queryInfo queryInfo,
+	upstreamIndex consts.DnsRequestOutboundIndex,
 	upstream *dns.Upstream,
 	dialArgument *dialArgument,
 	cacheForwarder bool,
@@ -581,7 +578,7 @@ Dial:
 			return err
 		}
 
-		ResponseIndex, nextUpstream, err := c.routing.ResponseSelect(ctx, dnsMessage, upstream)
+		ResponseIndex, nextUpstream, err := c.routing.ResponseSelect(ctx, dnsMessage, upstreamIndex)
 		if err != nil {
 			return err
 		}
@@ -629,6 +626,7 @@ Dial:
 			}).Debugln("Change DNS upstream and resend")
 		}
 		pending = nil
+		upstreamIndex = consts.DnsRequestOutboundIndex(ResponseIndex)
 		upstream = nextUpstream
 		cacheForwarder = true
 		dialArgument = nil
