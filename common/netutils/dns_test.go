@@ -8,6 +8,7 @@ package netutils
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -94,43 +95,66 @@ func TestResolveUDPCancellationClosesConnection(t *testing.T) {
 	_ = server.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := server.Read(make([]byte, 1)); err == nil {
 		t.Fatal("canceled UDP request left the connection open")
+	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatal("canceled UDP request did not close the connection")
 	}
 }
 
 func TestResolveHttpAppliesAge(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
-	query.Id = 42
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		response := new(dnsmessage.Msg)
-		response.SetReply(query)
-		response.Id = 0
-		response.Answer = []dnsmessage.RR{
-			&dnsmessage.A{Hdr: dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60}, A: net.ParseIP("192.0.2.1").To4()},
-			&dnsmessage.A{Hdr: dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 10}, A: net.ParseIP("192.0.2.2").To4()},
-		}
-		payload, err := response.Pack()
-		if err != nil {
-			return nil, err
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header: http.Header{
-				"Content-Type": []string{"application/dns-message"},
-				"Age":          []string{"50"},
-			},
-			Body: io.NopCloser(bytes.NewReader(payload)),
-		}, nil
-	})}
-	if err := ResolveHttp(context.Background(), client, &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query"}, query); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		age  string
+		want uint32
+	}{
+		{name: "valid", age: "50", want: 10},
+		{name: "combined", age: "50, 999", want: 10},
+		{name: "invalid", age: "invalid", want: 60},
+		{name: "overflow", age: "18446744073709551616", want: 0},
 	}
-	if got := query.Answer[0].Header().Ttl; got != 10 {
-		t.Fatalf("aged TTL = %d, want 10", got)
-	}
-	if got := query.Answer[1].Header().Ttl; got != 0 {
-		t.Fatalf("saturated aged TTL = %d, want 0", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query := new(dnsmessage.Msg)
+			query.SetQuestion("example.com.", dnsmessage.TypeA)
+			query.Id = 42
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				wire, err := base64.RawURLEncoding.DecodeString(req.URL.Query().Get("dns"))
+				if err != nil {
+					return nil, err
+				}
+				var wireQuery dnsmessage.Msg
+				if err := wireQuery.Unpack(wire); err != nil {
+					return nil, err
+				}
+				if wireQuery.Id != 0 {
+					t.Fatalf("DoH query ID = %d, want 0", wireQuery.Id)
+				}
+				response := new(dnsmessage.Msg)
+				response.SetReply(&wireQuery)
+				response.Answer = []dnsmessage.RR{&dnsmessage.A{
+					Hdr: dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
+					A:   net.ParseIP("192.0.2.1").To4(),
+				}}
+				payload, err := response.Pack()
+				if err != nil {
+					return nil, err
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header: http.Header{
+						"Content-Type": []string{"application/dns-message"},
+						"Age":          []string{tt.age},
+					},
+					Body: io.NopCloser(bytes.NewReader(payload)),
+				}, nil
+			})}
+			if err := ResolveHttp(context.Background(), client, &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query"}, query); err != nil {
+				t.Fatal(err)
+			}
+			if got := query.Answer[0].Header().Ttl; got != tt.want {
+				t.Fatalf("aged TTL = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -211,11 +235,25 @@ func TestValidateDnsResponseRestoresHeaderOnlyErrorQuestion(t *testing.T) {
 		Response: true,
 		Rcode:    dnsmessage.RcodeRefused,
 	}}
-	if err := ValidateDnsResponse(query, response, 7); err != nil {
+	if err := ValidateDnsResponseAllowEmptyQuestion(query, response, 7); err != nil {
 		t.Fatal(err)
 	}
 	if len(response.Question) != 1 || response.Question[0] != query.Question[0] {
 		t.Fatalf("question was not restored: %v", response.Question)
+	}
+}
+
+func TestValidateDnsResponseRejectsHeaderOnlyUDPError(t *testing.T) {
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 7
+	response := &dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{
+		Id:       7,
+		Response: true,
+		Rcode:    dnsmessage.RcodeRefused,
+	}}
+	if err := ValidateDnsResponse(query, response, 7); !errors.Is(err, ErrBadDnsResponse) {
+		t.Fatalf("header-only UDP response error = %v", err)
 	}
 }
 
