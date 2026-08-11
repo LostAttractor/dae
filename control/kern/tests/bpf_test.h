@@ -69,10 +69,12 @@ set_ipv4_tcp(struct __sk_buff *skb,
 }
 
 static __always_inline int
-check_routing_ipv4_tcp(struct __sk_buff *skb,
-		    __u32 expected_status_code,
-		    __u32 saddr, __u32 daddr,
-		    __u16 sport, __u16 dport)
+check_routing_ipv4_tcp_with_result(struct __sk_buff *skb,
+				   __u32 expected_status_code,
+				   __u8 expected_outbound,
+				   __u8 expected_must,
+				   __u32 saddr, __u32 daddr,
+				   __u16 sport, __u16 dport)
 {
 	__u32 *status_code;
 
@@ -162,13 +164,62 @@ check_routing_ipv4_tcp(struct __sk_buff *skb,
 			return TC_ACT_SHOT;
 		}
 
-		if (routing_result->outbound != OUTBOUND_USER_DEFINED_MIN) {
-			bpf_printk("routing_result->outbound != OUTBOUND_USER_DEFINED_MIN\n");
+		if (routing_result->outbound != expected_outbound) {
+			bpf_printk("routing_result->outbound(%u) != %u\n",
+				   routing_result->outbound, expected_outbound);
+			return TC_ACT_SHOT;
+		}
+		if (routing_result->must != expected_must) {
+			bpf_printk("routing_result->must(%u) != %u\n",
+				   routing_result->must, expected_must);
 			return TC_ACT_SHOT;
 		}
 	}
 
 	return TC_ACT_OK;
+}
+
+static __always_inline int
+check_routing_ipv4_tcp_with_outbound(struct __sk_buff *skb,
+				     __u32 expected_status_code,
+				     __u8 expected_outbound,
+				     __u32 saddr, __u32 daddr,
+				     __u16 sport, __u16 dport)
+{
+	return check_routing_ipv4_tcp_with_result(
+		skb, expected_status_code, expected_outbound, false,
+		saddr, daddr, sport, dport);
+}
+
+static __always_inline int
+check_routing_ipv4_tcp(struct __sk_buff *skb,
+			       __u32 expected_status_code,
+		       __u32 saddr, __u32 daddr,
+		       __u16 sport, __u16 dport)
+{
+	return check_routing_ipv4_tcp_with_outbound(
+		skb, expected_status_code, OUTBOUND_USER_DEFINED_MIN,
+		saddr, daddr, sport, dport);
+}
+
+static __always_inline void
+set_domain_routing_word(__u32 daddr, __u32 word, __u32 bump_bits,
+			__u32 routing_bits)
+{
+	__be32 key[4] = {};
+	key[2] = bpf_htonl(0x0000ffff);
+	key[3] = bpf_htonl(daddr);
+
+	struct domain_routing value = {};
+	value.bump[word] = bump_bits;
+	value.routing[word] = routing_bits;
+	bpf_map_update_elem(&domain_routing_map, &key, &value, BPF_ANY);
+}
+
+static __always_inline void
+set_domain_routing(__u32 daddr, __u32 bump_bits, __u32 routing_bits)
+{
+	set_domain_routing_word(daddr, 0, bump_bits, routing_bits);
 }
 
 static __always_inline void

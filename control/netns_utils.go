@@ -87,19 +87,19 @@ func (ns *DaeNetns) Close() (err error) {
 
 func (ns *DaeNetns) With(f func() error) (err error) {
 	if err = daeNetns.Setup(); err != nil {
-		return fmt.Errorf("failed to setup dae netns: %v", err)
+		return fmt.Errorf("failed to setup dae netns: %w", err)
 	}
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
 	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %v", err)
+		return fmt.Errorf("failed to switch to daens: %w", err)
 	}
 	defer netns.Set(ns.hostNs)
 
 	if err = f(); err != nil {
-		return fmt.Errorf("failed to run func in dae netns: %v", err)
+		return fmt.Errorf("failed to run func in dae netns: %w", err)
 	}
 	return
 }

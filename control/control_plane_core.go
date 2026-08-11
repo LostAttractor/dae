@@ -35,10 +35,16 @@ var coreFlip = 0
 var exitHandlerClose func() error
 
 type controlPlaneCore struct {
-	mu sync.Mutex
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	closeOnce   sync.Once
+	closeErr    error
 
-	deferFuncs []func() error
-	bpf        *bpfObjects
+	cleanupMu      sync.Mutex
+	deferFuncs     []func() error
+	filterCleanups map[filterCleanupKey]func() error
+	filterOrder    []filterCleanupKey
+	bpf            *bpfObjects
 
 	kernelVersion *internal.Version
 
@@ -50,10 +56,9 @@ type controlPlaneCore struct {
 	bpfOwned bool
 
 	// domainRegistry tracks every (domain, qtype) -> IP registration learned
-	// from DNS. It is the single source of truth for both domain_bump_map
-	// and domain_routing_map in eBPF; every mutation recomputes the affected
-	// IP's bitmaps and pushes them to the kernel, so user space and BPF stay
-	// in sync.
+	// from DNS. It is the single source of truth for domain_routing_map in
+	// eBPF; every mutation atomically replaces the affected IP's combined
+	// bump/routing value, so user space and BPF stay in sync.
 	domainRegistry *DomainRegistry
 
 	closed context.Context
@@ -67,6 +72,13 @@ type controlPlaneCore struct {
 	// lookups in the hot path. A zero-valued bool also represents a state that
 	// has not been reported yet, which is conservatively treated as unusable.
 	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][4]atomic.Bool
+}
+
+type filterCleanupKey struct {
+	namespace string
+	linkIndex int
+	parent    uint32
+	handle    uint32
 }
 
 func newControlPlaneCore(
@@ -87,10 +99,11 @@ func newControlPlaneCore(
 		// A core built for a reload does not own the bpf objects yet — they
 		// are still owned by the previously running core; it takes over the
 		// ownership via InjectBpf when the reload commits.
-		bpfOwned: !isReload,
-		ifmgr:    ifmgr,
-		closed:   closed,
-		close:    toClose,
+		bpfOwned:       !isReload,
+		ifmgr:          ifmgr,
+		closed:         closed,
+		close:          toClose,
+		filterCleanups: make(map[filterCleanupKey]func() error),
 	}
 	// The kernel-side capacity is read back from the map itself so it can
 	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.
@@ -102,12 +115,80 @@ func newControlPlaneCore(
 	core.domainRegistry.update = core.writeDomainBitmaps
 	core.domainRegistry.remove = core.deleteDomainBitmaps
 	core.domainRegistry.StartSweeper()
-	core.deferFuncs = append(core.deferFuncs, core.closeBpf, ifmgr.Close, core.domainRegistry.Close)
+	core.addCleanup(core.closeBpf)
+	core.addCleanup(core.domainRegistry.Close)
 	return core
+}
+
+func (c *controlPlaneCore) addCleanup(cleanup func() error) {
+	c.cleanupMu.Lock()
+	c.deferFuncs = append(c.deferFuncs, cleanup)
+	c.cleanupMu.Unlock()
+}
+
+func (c *controlPlaneCore) ownFilter(key filterCleanupKey, cleanup func() error) {
+	c.cleanupMu.Lock()
+	if _, exists := c.filterCleanups[key]; !exists {
+		c.filterOrder = append(c.filterOrder, key)
+	}
+	c.filterCleanups[key] = cleanup
+	c.cleanupMu.Unlock()
+}
+
+func (c *controlPlaneCore) releaseLinkFilters(namespace string, linkIndex int) {
+	c.cleanupMu.Lock()
+	for key := range c.filterCleanups {
+		if key.namespace == namespace && key.linkIndex == linkIndex {
+			delete(c.filterCleanups, key)
+		}
+	}
+	kept := c.filterOrder[:0]
+	for _, key := range c.filterOrder {
+		if key.namespace != namespace || key.linkIndex != linkIndex {
+			kept = append(kept, key)
+		}
+	}
+	c.filterOrder = kept
+	c.cleanupMu.Unlock()
+}
+
+func (c *controlPlaneCore) takeCleanups() []func() error {
+	c.cleanupMu.Lock()
+	defer c.cleanupMu.Unlock()
+
+	cleanups := make([]func() error, 0, len(c.filterCleanups)+len(c.deferFuncs))
+	for i := len(c.filterOrder) - 1; i >= 0; i-- {
+		if cleanup := c.filterCleanups[c.filterOrder[i]]; cleanup != nil {
+			cleanups = append(cleanups, cleanup)
+		}
+	}
+	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
+		cleanups = append(cleanups, c.deferFuncs[i])
+	}
+	c.filterCleanups = nil
+	c.filterOrder = nil
+	c.deferFuncs = nil
+	return cleanups
+}
+
+func hostFilterCleanupKey(filter *netlink.BpfFilter) filterCleanupKey {
+	attrs := filter.Attrs()
+	return filterCleanupKey{
+		namespace: "host",
+		linkIndex: attrs.LinkIndex,
+		parent:    attrs.Parent,
+		handle:    attrs.Handle,
+	}
+}
+
+func filterAlreadyGone(err error) bool {
+	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENODEV)
 }
 
 // closeBpf closes the bpf objects if this core still owns them (see bpfOwned).
 func (c *controlPlaneCore) closeBpf() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if !c.bpfOwned {
 		return nil
 	}
@@ -119,25 +200,30 @@ func (c *controlPlaneCore) Flip() {
 }
 
 func (c *controlPlaneCore) Close() (err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	select {
-	case <-c.closed.Done():
-		return nil
-	default:
-	}
-	// Invoke defer funcs in reverse order.
-	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
-		if e := c.deferFuncs[i](); e != nil {
-			if err != nil {
-				err = oops.Errorf("%w; %v", err, e)
-			} else {
-				err = e
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	return c.closeLocked()
+}
+
+func (c *controlPlaneCore) closeLocked() (err error) {
+	c.closeOnce.Do(func() {
+		// Cancel before joining InterfaceManager callbacks. A callback waiting
+		// for c.mu can then acquire it and return without touching shared maps.
+		c.close()
+		c.closeErr = c.ifmgr.Close()
+		// Interface callbacks can register filter ownership. Waiting for the
+		// monitor first freezes dynamic registration before cleanup is drained.
+		for _, cleanup := range c.takeCleanups() {
+			if e := cleanup(); e != nil {
+				if c.closeErr != nil {
+					c.closeErr = oops.Errorf("%w; %v", c.closeErr, e)
+				} else {
+					c.closeErr = e
+				}
 			}
 		}
-	}
-	c.close()
-	return err
+	})
+	return c.closeErr
 }
 
 func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
@@ -260,6 +346,7 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 		if link.Attrs().Name == HostVethName {
 			return
 		}
+		c.releaseLinkFilters("host", link.Attrs().Index)
 		log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
 	}
 	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
@@ -327,8 +414,8 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err := netlink.FilterAdd(filterIngress); err != nil {
 		return oops.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterIngress); err != nil {
+	c.ownFilter(hostFilterCleanupKey(filterIngress), func() error {
+		if err := netlink.FilterDel(filterIngress); err != nil && !filterAlreadyGone(err) {
 			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
 		}
 		return nil
@@ -363,8 +450,8 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err := netlink.FilterAdd(filterEgress); err != nil {
 		return oops.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterEgress); err != nil {
+	c.ownFilter(hostFilterCleanupKey(filterEgress), func() error {
+		if err := netlink.FilterDel(filterEgress); err != nil && !filterAlreadyGone(err) {
 			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
 		}
 		return nil
@@ -401,7 +488,7 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		if err != nil {
 			return oops.Wrapf(err, "AttachCgroup: %v", prog.Prog.String())
 		}
-		c.deferFuncs = append(c.deferFuncs, func() error {
+		c.addCleanup(func() error {
 			return oops.Wrapf(attached.Close(), "inet6Bind.Close()")
 		})
 	}
@@ -421,7 +508,7 @@ func (c *controlPlaneCore) setupLocalTcpFastRedirect() (err error) {
 	if err != nil {
 		return oops.Errorf("AttachCgroupSockOps: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, cg.Close)
+	c.addCleanup(cg.Close)
 
 	if err = link.RawAttachProgram(link.RawAttachProgramOptions{
 		Target:  c.bpf.FastSock.FD(),
@@ -471,6 +558,7 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 		if link.Attrs().Name == HostVethName {
 			return
 		}
+		c.releaseLinkFilters("host", link.Attrs().Index)
 		log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
 	}
 	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
@@ -535,8 +623,8 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := netlink.FilterAdd(filterEgress); err != nil {
 		return oops.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterEgress); err != nil && !os.IsNotExist(err) {
+	c.ownFilter(hostFilterCleanupKey(filterEgress), func() error {
+		if err := netlink.FilterDel(filterEgress); err != nil && !filterAlreadyGone(err) {
 			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
 		}
 		return nil
@@ -570,8 +658,8 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if err := netlink.FilterAdd(filterIngress); err != nil {
 		return oops.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterIngress); err != nil && !os.IsNotExist(err) {
+	c.ownFilter(hostFilterCleanupKey(filterIngress), func() error {
+		if err := netlink.FilterDel(filterIngress); err != nil && !filterAlreadyGone(err) {
 			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
 		}
 		return nil
@@ -607,7 +695,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
 		filterIngressFlipped.FilterAttrs.Handle ^= 1
 		daens.With(func() error {
-			return netlink.FilterDel(filterDae0peerIngress)
+			return netlink.FilterDel(filterIngressFlipped)
 		})
 	}
 	if err = daens.With(func() error {
@@ -615,10 +703,14 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	}); err != nil {
 		return oops.Errorf("cannot attach ebpf object to filter ingress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		daens.With(func() error {
+	daePeerKey := hostFilterCleanupKey(filterDae0peerIngress)
+	daePeerKey.namespace = "dae"
+	c.ownFilter(daePeerKey, func() error {
+		if err := daens.With(func() error {
 			return netlink.FilterDel(filterDae0peerIngress)
-		})
+		}); err != nil && !filterAlreadyGone(err) {
+			return oops.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
+		}
 		return nil
 	})
 
@@ -646,8 +738,8 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	if err := netlink.FilterAdd(filterDae0Ingress); err != nil {
 		return oops.Errorf("cannot attach ebpf object to filter egress: %w", err)
 	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !os.IsNotExist(err) {
+	c.ownFilter(hostFilterCleanupKey(filterDae0Ingress), func() error {
+		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !filterAlreadyGone(err) {
 			return oops.Errorf("FilterDel(%v:%v): %w", daens.Dae0().Attrs().Name, filterDae0Ingress.Name, err)
 		}
 		return nil
@@ -656,7 +748,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 }
 
 // writeDomainBitmaps pushes the derived bitmaps of one IP to the kernel
-// domain maps. It is bound to domainRegistry.update; the registry computes
+// domain map. It is bound to domainRegistry.update; the registry computes
 // the bitmaps from the registrations of the IP:
 //
 //	bump bit i    = any cached domain of this IP matches rule i
@@ -664,19 +756,16 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 //
 // Failures panic (see panicDomainMapWrite).
 func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uint32) {
-	var bumpVal, routingVal bpfDomainRouting
-	if consts.MaxMatchSetLen/32 != len(bumpVal.Bitmap) || len(bump) != len(bumpVal.Bitmap) || len(routing) != len(routingVal.Bitmap) {
+	var value bpfDomainRouting
+	if consts.MaxMatchSetLen/32 != len(value.Bump) || len(bump) != len(value.Bump) || len(routing) != len(value.Routing) {
 		panic("domain bitmap length not sync with kern program")
 	}
-	copy(bumpVal.Bitmap[:], bump)
-	copy(routingVal.Bitmap[:], routing)
+	copy(value.Bump[:], bump)
+	copy(value.Routing[:], routing)
 
 	ip6 := ip.As16()
 	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
-	if err := c.bpf.DomainBumpMap.Update(key, bumpVal, ebpf.UpdateAny); err != nil {
-		panicDomainMapWrite("DomainBumpMap.Update", ip, err)
-	}
-	if err := c.bpf.DomainRoutingMap.Update(key, routingVal, ebpf.UpdateAny); err != nil {
+	if err := c.bpf.DomainRoutingMap.Update(key, value, ebpf.UpdateAny); err != nil {
 		panicDomainMapWrite("DomainRoutingMap.Update", ip, err)
 	}
 }
@@ -690,15 +779,12 @@ func panicDomainMapWrite(op string, ip netip.Addr, err error) {
 	panic(oops.Wrapf(err, op+"(%v): kernel domain map write failed (logic bug, or the bpf maps were tampered with externally)", ip))
 }
 
-// deleteDomainBitmaps removes ip from both kernel domain maps. It is bound
+// deleteDomainBitmaps removes ip from the kernel domain map. It is bound
 // to domainRegistry.remove. A missing key is tolerated (the desired end
 // state is already reached); any other failure panics.
 func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
 	ip6 := ip.As16()
 	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
-	if err := c.bpf.DomainBumpMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		panicDomainMapWrite("DomainBumpMap.Delete", ip, err)
-	}
 	if err := c.bpf.DomainRoutingMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		panicDomainMapWrite("DomainRoutingMap.Delete", ip, err)
 	}
@@ -707,11 +793,15 @@ func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
 // EjectBpf removes the bpf objects from this core's ownership so its Close
 // will not destroy them; the successor core takes them over via InjectBpf.
 func (c *controlPlaneCore) EjectBpf() *bpfObjects {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.bpfOwned = false
 	return c.bpf
 }
 
 // InjectBpf will inject bpf back.
 func (c *controlPlaneCore) InjectBpf() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.bpfOwned = true
 }

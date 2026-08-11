@@ -1029,3 +1029,308 @@ int testcheck_skip_while_noalive_block(struct __sk_buff *skb)
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
+
+SEC("tc/pktgen/domain_not_partial_and_port_match")
+int testpktgen_domain_not_partial_and_port_match(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,1), 19233, 80);
+}
+
+SEC("tc/setup/domain_not_partial_and_port_match")
+int testsetup_domain_not_partial_and_port_match(struct __sk_buff *skb)
+{
+	/* !domain(...) is ambiguous for this shared IP; dport(80) still matches. */
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.not = true,
+		.outbound = OUTBOUND_LOGICAL_AND,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
+
+	struct match_set port = {
+		.port_range = {80, 80},
+		.type = MatchType_Port,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+	};
+	bpf_map_update_elem(&routing_map, &one_key, &port, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+
+	/* Rule 0 matches some, but not all, domains mapped to 4.4.4.1. */
+	set_domain_routing(IPV4(4,4,4,1), 1 << 0, 0);
+	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_not_partial_and_port_match")
+int testcheck_domain_not_partial_and_port_match(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp_with_outbound(
+		skb, TC_ACT_REDIRECT, OUTBOUND_CONTROL_PLANE_ROUTING,
+		IPV4(192,168,0,1), IPV4(4,4,4,1), 19233, 80);
+}
+
+SEC("tc/pktgen/domain_not_partial_and_port_mismatch")
+int testpktgen_domain_not_partial_and_port_mismatch(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,2), 19233, 79);
+}
+
+SEC("tc/setup/domain_not_partial_and_port_mismatch")
+int testsetup_domain_not_partial_and_port_mismatch(struct __sk_buff *skb)
+{
+	/* The ambiguous domain must not override a later failed AND condition. */
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.not = true,
+		.outbound = OUTBOUND_LOGICAL_AND,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
+
+	struct match_set port = {
+		.port_range = {80, 80},
+		.type = MatchType_Port,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+	};
+	bpf_map_update_elem(&routing_map, &one_key, &port, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+
+	set_domain_routing(IPV4(4,4,4,2), 1 << 0, 0);
+	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_not_partial_and_port_mismatch")
+int testcheck_domain_not_partial_and_port_mismatch(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(
+		skb, TC_ACT_PIPE,
+		IPV4(192,168,0,1), IPV4(4,4,4,2), 19233, 79);
+}
+
+SEC("tc/pktgen/domain_partial_resolved_by_or")
+int testpktgen_domain_partial_resolved_by_or(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,3), 19233, 80);
+}
+
+SEC("tc/setup/domain_partial_resolved_by_or")
+int testsetup_domain_partial_resolved_by_or(struct __sk_buff *skb)
+{
+	/* Rule 0 is partial, but rule 1 definitively satisfies the same OR
+	 * subrule, so no control-plane lookup is needed. */
+	struct match_set partial = {
+		.type = MatchType_DomainSet,
+		.outbound = OUTBOUND_LOGICAL_OR,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &partial, BPF_ANY);
+
+	struct match_set definite = {
+		.type = MatchType_DomainSet,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+	};
+	bpf_map_update_elem(&routing_map, &one_key, &definite, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+
+	set_domain_routing(IPV4(4,4,4,3), (1 << 0) | (1 << 1), 1 << 1);
+	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_partial_resolved_by_or")
+int testcheck_domain_partial_resolved_by_or(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(
+		skb, TC_ACT_REDIRECT,
+		IPV4(192,168,0,1), IPV4(4,4,4,3), 19233, 80);
+}
+
+SEC("tc/pktgen/domain_partial_must_rules")
+int testpktgen_domain_partial_must_rules(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,4), 19233, 80);
+}
+
+SEC("tc/setup/domain_partial_must_rules")
+int testsetup_domain_partial_must_rules(struct __sk_buff *skb)
+{
+	/* An uncertain must_rules line cannot establish must. Exact routing has
+	 * to decide whether this domain actually matches the line. */
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.outbound = OUTBOUND_MUST_RULES,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
+
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &one_key);
+	set_domain_routing(IPV4(4,4,4,4), 1 << 0, 0);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_partial_must_rules")
+int testcheck_domain_partial_must_rules(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp_with_result(
+		skb, TC_ACT_REDIRECT, OUTBOUND_CONTROL_PLANE_ROUTING, false,
+		IPV4(192,168,0,1), IPV4(4,4,4,4), 19233, 80);
+}
+
+SEC("tc/pktgen/domain_partial_terminal_must")
+int testpktgen_domain_partial_terminal_must(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,5), 19233, 80);
+}
+
+SEC("tc/setup/domain_partial_terminal_must")
+int testsetup_domain_partial_terminal_must(struct __sk_buff *skb)
+{
+	/* A terminal must belongs to the uncertain current rule and must not be
+	 * copied into the control-plane routing result. */
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+		.must = true,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	set_domain_routing(IPV4(4,4,4,5), 1 << 0, 0);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_partial_terminal_must")
+int testcheck_domain_partial_terminal_must(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp_with_result(
+		skb, TC_ACT_REDIRECT, OUTBOUND_CONTROL_PLANE_ROUTING, false,
+		IPV4(192,168,0,1), IPV4(4,4,4,5), 19233, 80);
+}
+
+SEC("tc/pktgen/domain_partial_keeps_prior_must")
+int testpktgen_domain_partial_keeps_prior_must(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,6), 19233, 80);
+}
+
+SEC("tc/setup/domain_partial_keeps_prior_must")
+int testsetup_domain_partial_keeps_prior_must(struct __sk_buff *skb)
+{
+	/* A definite earlier must_rules line remains valid when a later rule
+	 * requires an exact userspace domain match. */
+	struct match_set must_port = {
+		.port_range = {80, 80},
+		.type = MatchType_Port,
+		.outbound = OUTBOUND_MUST_RULES,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &must_port, BPF_ANY);
+
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+		.must = true,
+	};
+	bpf_map_update_elem(&routing_map, &one_key, &domain, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+
+	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+	set_domain_routing(IPV4(4,4,4,6), 1 << 1, 0);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_partial_keeps_prior_must")
+int testcheck_domain_partial_keeps_prior_must(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp_with_result(
+		skb, TC_ACT_REDIRECT, OUTBOUND_CONTROL_PLANE_ROUTING, true,
+		IPV4(192,168,0,1), IPV4(4,4,4,6), 19233, 80);
+}
+
+SEC("tc/pktgen/domain_bitmap_second_word")
+int testpktgen_domain_bitmap_second_word(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,7), 19233, 80);
+}
+
+SEC("tc/setup/domain_bitmap_second_word")
+int testsetup_domain_bitmap_second_word(struct __sk_buff *skb)
+{
+	/* Fill rule indices 0..31 with definite misses so the domain rule lands
+	 * at index 32, the first bit in the second bitmap word. */
+	struct match_set miss = {
+		.port_range = {1, 1},
+		.type = MatchType_Port,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+	};
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+	for (__u32 i = 0; i < 32; i++)
+		bpf_map_update_elem(&routing_map, &i, &miss, BPF_ANY);
+
+	__u32 domain_key = 32;
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+	};
+	bpf_map_update_elem(&routing_map, &domain_key, &domain, BPF_ANY);
+	set_domain_routing_word(IPV4(4,4,4,7), 1, 1 << 0, 1 << 0);
+
+	__u32 fallback_key = 33;
+	set_routing_fallback(OUTBOUND_DIRECT, true, &fallback_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_bitmap_second_word")
+int testcheck_domain_bitmap_second_word(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(
+		skb, TC_ACT_REDIRECT,
+		IPV4(192,168,0,1), IPV4(4,4,4,7), 19233, 80);
+}
+
+SEC("tc/pktgen/domain_partial_skips_noalive")
+int testpktgen_domain_partial_skips_noalive(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,8), 19233, 80);
+}
+
+SEC("tc/setup/domain_partial_skips_noalive")
+int testsetup_domain_partial_skips_noalive(struct __sk_buff *skb)
+{
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+		.skip_while_noalive = true,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
+	struct outbound_connectivity_query connectivity = {
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+		.ipversion = 4,
+		.l4proto = IPPROTO_TCP,
+	};
+	bpf_map_delete_elem(&outbound_connectivity_map, &connectivity);
+	set_domain_routing(IPV4(4,4,4,8), 1 << 0, 0);
+	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/domain_partial_skips_noalive")
+int testcheck_domain_partial_skips_noalive(struct __sk_buff *skb)
+{
+	return check_routing_ipv4_tcp(
+		skb, TC_ACT_PIPE,
+		IPV4(192,168,0,1), IPV4(4,4,4,8), 19233, 80);
+}

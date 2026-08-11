@@ -313,14 +313,14 @@ struct {
 } routing_map SEC(".maps");
 
 struct domain_routing {
-	__u32 bitmap[MAX_MATCH_SET_LEN / 32];
+	__u32 bump[MAX_MATCH_SET_LEN / 32];
+	__u32 routing[MAX_MATCH_SET_LEN / 32];
 };
 
-// domain_routing_map / domain_bump_map are fully managed by user space
-// (control plane). Use BPF_MAP_TYPE_HASH (not LRU) so the kernel never
-// silently evicts entries; entries are only inserted/removed when user
-// space adds/removes a DNS lookup cache entry, keeping the two states
-// in sync.
+// domain_routing_map is fully managed by user space (control plane). Keep both
+// bitmaps in one value so readers observe an atomic aggregate update. Use
+// BPF_MAP_TYPE_HASH (not LRU) so the kernel never silently evicts entries;
+// entries are inserted/removed only with the corresponding registry state.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, __be32[4]);
@@ -329,17 +329,7 @@ struct {
 	/// NOTICE: No persistence.
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_routing_map SEC(".maps");
-// 13.63 MB
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __be32[4]);
-	__type(value, struct domain_routing);
-	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
-	/// NOTICE: No persistence.
-	// __uint(pinning, LIBBPF_PIN_BY_NAME);
-} domain_bump_map SEC(".maps");
-// 13.63 MB
+// 21.63 MB
 
 struct ip_port_proto {
 	__u32 ip[4];
@@ -734,13 +724,15 @@ struct route_ctx {
 	__s64 result; // high -> low: sign(1b) unused(23b) mark(32b) outbound(8b)
 	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
 	volatile bool goodsubrule : 1;
+	// A domain match set in the current OR subrule matched only some of the
+	// domains mapped to the destination IP. Keep evaluating the subrule: a
+	// later OR branch may still turn the result into a definite match.
+	volatile bool uncertain_subrule : 1;
 	volatile bool badrule : 1;
 	volatile bool must : 1;
-	// Some domain match set of the current rule hit via domain_bump_map,
-	// i.e. the destination IP maps to domains that only partially match the
-	// rule. The rule tail then bumps the traffic to the control plane for
-	// an exact (sniffed) domain match. Kept in the ctx (not a callback
-	// local) so it survives across the match sets of a compound rule.
+	// A completed subrule of the current rule is still ambiguous. The rule
+	// tail bumps traffic to the control plane only if every later AND
+	// subrule also matches.
 	volatile bool need_control_plane_routing : 1;
 };
 
@@ -760,8 +752,7 @@ static int route_loop_cb(__u32 index, void *data)
 	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
-	struct domain_routing *domain_routing;
-	struct domain_routing *domain_bump;
+	struct domain_routing *domain;
 
 	if (unlikely(index / 32 >= MAX_MATCH_SET_LEN / 32)) {
 		ctx->result = -EFAULT;
@@ -862,26 +853,19 @@ lookup_lpm:
 			match_set->type, match_set->not, match_set->outbound);
 #endif
 
-		// Get domain routing bitmap.
-		domain_routing = bpf_map_lookup_elem(&domain_routing_map,
-						     ctx->params->daddr);
+		// Get both domain bitmaps in one atomic map lookup.
+		domain = bpf_map_lookup_elem(&domain_routing_map,
+					     ctx->params->daddr);
 
-		// We use key instead of k to pass checker.
-		if (domain_routing &&
-		    (domain_routing->bitmap[index / 32] >> (index % 32)) & 1) {
-			// All domains mapeed by the current IP address are matched.
+		if (domain &&
+		    (domain->routing[index / 32] >> (index % 32)) & 1) {
+			// All domains mapped by the current IP address are matched.
 			ctx->goodsubrule = true;
-		} else {
-			// Get domain bump bitmap.
-			domain_bump = bpf_map_lookup_elem(&domain_bump_map,
-							  ctx->params->daddr);
-			if (domain_bump &&
-			    (domain_bump->bitmap[index / 32] >> (index % 32)) & 1) {
-				ctx->goodsubrule = true;
-				// The current IP has mapped domains that match this rule, but not all of them do.
-				// jump to control plane.
-				ctx->need_control_plane_routing = true;
-			}
+		} else if (domain &&
+			   (domain->bump[index / 32] >> (index % 32)) & 1) {
+			// The current IP has mapped domains that match this rule, but not
+			// all of them do.
+			ctx->uncertain_subrule = true;
 		}
 		break;
 	case MatchType_ProcessName:
@@ -924,21 +908,27 @@ lookup_lpm:
 
 before_next_loop:
 #ifdef __DEBUG_ROUTING
-	bpf_printk("good_subrule: %d, bad_rule: %d",
-		   ctx->goodsubrule, ctx->badrule);
+	bpf_printk("good_subrule: %d, uncertain_subrule: %d, bad_rule: %d",
+		   ctx->goodsubrule, ctx->uncertain_subrule, ctx->badrule);
 #endif
 	if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
 		// This match_set reaches the end of subrule.
 		// We are now at end of rule, or next match_set belongs to another
 		// subrule.
 
-		if (ctx->goodsubrule == match_set->not) {
+		if (!ctx->goodsubrule && ctx->uncertain_subrule) {
+			// Whether this subrule (including a negated one) hits depends on
+			// the exact domain. Let the remaining AND subrules decide whether
+			// userspace needs to resolve it.
+			ctx->need_control_plane_routing = true;
+		} else if (ctx->goodsubrule == match_set->not) {
 			// This subrule does not hit.
 			ctx->badrule = true;
 		}
 
-		// Reset good_subrule.
+		// Reset subrule-local state.
 		ctx->goodsubrule = false;
+		ctx->uncertain_subrule = false;
 	}
 #ifdef __DEBUG_ROUTING
 	bpf_printk("_bad_rule: %d", ctx->badrule);
@@ -982,17 +972,27 @@ before_next_loop:
 				}
 			}
 
+			if (ctx->need_control_plane_routing) {
+				// Exact-domain routing must run before this uncertain rule's
+				// tail can commit must_rules, terminal must, or mark. Only
+				// definite must_rules from earlier rules survive.
+				ctx->result =
+					(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
+					((__s64)ctx->must << 40);
+#ifdef __DEBUG_ROUTING
+				bpf_printk(
+					"OUTBOUND_CONTROL_PLANE_ROUTING: %ld",
+					ctx->result);
+#endif
+				return 1;
+			}
+
 			if (unlikely(match_set->outbound == OUTBOUND_MUST_RULES)) {
 				ctx->must = true;
-				// The must-rule ends without committing: drop the
-				// partial-domain-match flag so it cannot leak
-				// into the next rule.
-				ctx->need_control_plane_routing = false;
 			} else {
 				bool must = ctx->must || match_set->must;
 
-				if ((!must && ctx->params->isdns) ||
-				    ctx->need_control_plane_routing) {
+				if (!must && ctx->params->isdns) {
 					ctx->result =
 						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 						((__s64)match_set->mark << 8) |
