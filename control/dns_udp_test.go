@@ -65,6 +65,37 @@ func TestDoUDPCloseClosesActiveConnections(t *testing.T) {
 	}
 }
 
+func TestDoUDPTracksConnectionUntilAsyncCloseFinishes(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	conn := &blockingDNSCloseConn{
+		Conn: client, closeStarted: make(chan struct{}), closeRelease: make(chan struct{}),
+	}
+	d := &DoUDP{connections: map[net.Conn]struct{}{conn: {}}}
+	d.releaseConnection(conn)
+	<-conn.closeStarted
+	d.mu.Lock()
+	_, tracked := d.connections[conn]
+	d.mu.Unlock()
+	if !tracked {
+		t.Fatal("connection was untracked before Close completed")
+	}
+	close(conn.closeRelease)
+	deadline := time.Now().Add(time.Second)
+	for {
+		d.mu.Lock()
+		_, tracked = d.connections[conn]
+		d.mu.Unlock()
+		if !tracked {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("closed connection remained tracked")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestDoUDPUsesDistinctSocketsForConcurrentQueries(t *testing.T) {
 	server, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {

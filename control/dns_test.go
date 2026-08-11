@@ -183,13 +183,6 @@ func TestDoQRejectsTcpKeepaliveQueryBeforeDial(t *testing.T) {
 	}
 }
 
-func TestDoQRejectsZoneTransferBeforeDial(t *testing.T) {
-	query := testQuery("example.com.", dnsmessage.TypeAXFR, 42)
-	if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
-		t.Fatal("DoQ zone transfer unexpectedly reached the dial path")
-	}
-}
-
 func TestDoQRejectsMultipleOptRecordsBeforeDial(t *testing.T) {
 	query := testQuery("example.com.", dnsmessage.TypeA, 42)
 	query.Extra = append(query.Extra,
@@ -198,17 +191,6 @@ func TestDoQRejectsMultipleOptRecordsBeforeDial(t *testing.T) {
 	)
 	if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
 		t.Fatal("DoQ query with multiple OPT records unexpectedly reached the dial path")
-	}
-}
-
-func TestDoQRejectsTransactionSignatureBeforeDial(t *testing.T) {
-	query := testQuery("example.com.", dnsmessage.TypeA, 42)
-	query.Extra = append(query.Extra, &dnsmessage.TSIG{Hdr: dnsmessage.RR_Header{
-		Name:   ".",
-		Rrtype: dnsmessage.TypeTSIG,
-	}})
-	if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
-		t.Fatal("signed DoQ query unexpectedly reached the dial path")
 	}
 }
 

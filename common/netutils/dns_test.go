@@ -32,21 +32,45 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 type doqTestStream struct {
 	response *bytes.Reader
 	written  bytes.Buffer
-	closed   bool
 }
 
 func (s *doqTestStream) Read(p []byte) (int, error)  { return s.response.Read(p) }
 func (s *doqTestStream) Write(p []byte) (int, error) { return s.written.Write(p) }
-func (s *doqTestStream) Close() error {
-	s.closed = true
-	return nil
-}
 
 type blockingCloseConn struct {
 	net.Conn
 	release <-chan struct{}
 	once    sync.Once
 }
+
+type shortWriteConn struct{ net.Conn }
+
+func (c *shortWriteConn) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+type queuedDNSResponseConn struct {
+	net.Conn
+	response     []byte
+	readReturned chan struct{}
+	onRead       func()
+}
+
+func (c *queuedDNSResponseConn) Read(p []byte) (int, error) {
+	n := copy(p, c.response)
+	if c.onRead != nil {
+		c.onRead()
+	}
+	close(c.readReturned)
+	return n, nil
+}
+
+func (c *queuedDNSResponseConn) Write(p []byte) (int, error) {
+	<-c.readReturned
+	// Let ResolveUDP validate and queue the response before Write returns.
+	time.Sleep(20 * time.Millisecond)
+	return len(p), nil
+}
+
+func (c *queuedDNSResponseConn) Close() error { return nil }
 
 func (c *blockingCloseConn) Close() error {
 	<-c.release
@@ -96,8 +120,7 @@ func TestResolveUDPCancellationClosesConnection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		query := new(dnsmessage.Msg)
-		query.SetQuestion("example.com.", dnsmessage.TypeA)
+		query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 		done <- ResolveUDP(ctx, client, query)
 	}()
 	cancel()
@@ -117,6 +140,87 @@ func TestResolveUDPCancellationClosesConnection(t *testing.T) {
 	}
 }
 
+func TestResolveUDPCancellationDoesNotWaitForClose(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	releaseClose := make(chan struct{})
+	defer close(releaseClose)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
+		done <- ResolveUDP(ctx, &blockingCloseConn{Conn: client, release: releaseClose}, query)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled UDP request error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled UDP request waited for Close")
+	}
+}
+
+func TestResolveUDPRejectsShortWrite(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
+
+	err := ResolveUDP(context.Background(), &shortWriteConn{Conn: client}, query)
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short UDP write error = %v, want io.ErrShortWrite", err)
+	}
+}
+
+func TestResolveUDPPrefersQueuedResponseOverRetryTimer(t *testing.T) {
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 42
+	response := new(dnsmessage.Msg)
+	response.SetReply(query)
+	payload, err := response.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := &queuedDNSResponseConn{
+		response:     payload,
+		readReturned: make(chan struct{}),
+	}
+
+	if err := resolveUDP(context.Background(), conn, query, 0, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if !query.Response || query.Id != 42 {
+		t.Fatalf("unexpected UDP response: %+v", query)
+	}
+}
+
+func TestResolveUDPDoesNotCommitAfterCancellation(t *testing.T) {
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 42
+	response := new(dnsmessage.Msg)
+	response.SetReply(query)
+	payload, err := response.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := &queuedDNSResponseConn{
+		response:     payload,
+		readReturned: make(chan struct{}),
+		onRead:       cancel,
+	}
+
+	err = resolveUDP(ctx, conn, query, 0, time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled UDP response error = %v, want context.Canceled", err)
+	}
+	if query.Response {
+		t.Fatalf("canceled UDP response was committed: %+v", query)
+	}
+}
+
 func TestResolveHttpAppliesAge(t *testing.T) {
 	tests := []struct {
 		name string
@@ -130,10 +234,12 @@ func TestResolveHttpAppliesAge(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query := new(dnsmessage.Msg)
-			query.SetQuestion("example.com.", dnsmessage.TypeA)
+			query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 			query.Id = 42
 			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if got := req.URL.Query().Get("existing"); got != "value" {
+					t.Fatalf("existing DoH query parameter = %q, want value", got)
+				}
 				wire, err := base64.RawURLEncoding.DecodeString(req.URL.Query().Get("dns"))
 				if err != nil {
 					return nil, err
@@ -165,8 +271,13 @@ func TestResolveHttpAppliesAge(t *testing.T) {
 					Body: io.NopCloser(bytes.NewReader(payload)),
 				}, nil
 			})}
-			if err := ResolveHttp(context.Background(), client, &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query"}, query); err != nil {
+			endpoint := &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query", RawQuery: "existing=value"}
+			originalURL := endpoint.String()
+			if err := ResolveHttp(context.Background(), client, endpoint, query); err != nil {
 				t.Fatal(err)
+			}
+			if got := endpoint.String(); got != originalURL {
+				t.Fatalf("ResolveHttp mutated endpoint to %q, want %q", got, originalURL)
 			}
 			if query.Id != 42 {
 				t.Fatalf("DoH response ID = %d, want 42", query.Id)
@@ -178,14 +289,49 @@ func TestResolveHttpAppliesAge(t *testing.T) {
 	}
 }
 
+func TestResolveHttpDoesNotCommitAfterCancellation(t *testing.T) {
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
+	query.Id = 42
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		wire, err := base64.RawURLEncoding.DecodeString(req.URL.Query().Get("dns"))
+		if err != nil {
+			return nil, err
+		}
+		var wireQuery dnsmessage.Msg
+		if err := wireQuery.Unpack(wire); err != nil {
+			return nil, err
+		}
+		response := new(dnsmessage.Msg)
+		response.SetReply(&wireQuery)
+		payload, err := response.Pack()
+		if err != nil {
+			return nil, err
+		}
+		cancel()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/dns-message"}},
+			Body:       io.NopCloser(bytes.NewReader(payload)),
+		}, nil
+	})}
+
+	err := ResolveHttp(ctx, client, &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query"}, query)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled DoH response error = %v, want context.Canceled", err)
+	}
+	if query.Response {
+		t.Fatalf("canceled DoH response was committed: %+v", query)
+	}
+}
+
 func TestResolveStreamFraming(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 	query.Id = 42
 
 	response := new(dnsmessage.Msg)
 	response.SetReply(query)
-	response.Id = query.Id
 	response.Answer = []dnsmessage.RR{&dnsmessage.A{
 		Hdr: dnsmessage.RR_Header{
 			Name:   "example.com.",
@@ -228,12 +374,10 @@ func TestResolveStreamFraming(t *testing.T) {
 }
 
 func TestResolveStreamRejectsUnframedResponse(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 	query.Id = 42
 	response := new(dnsmessage.Msg)
 	response.SetReply(query)
-	response.Id = query.Id
 	payload, err := response.Pack()
 	if err != nil {
 		t.Fatal(err)
@@ -247,8 +391,7 @@ func TestResolveStreamRejectsUnframedResponse(t *testing.T) {
 }
 
 func TestValidateDnsResponseRestoresHeaderOnlyErrorQuestion(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 	query.Id = 7
 	response := &dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{
 		Id:       7,
@@ -264,8 +407,7 @@ func TestValidateDnsResponseRestoresHeaderOnlyErrorQuestion(t *testing.T) {
 }
 
 func TestValidateDnsResponseRejectsHeaderOnlyUDPError(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 	query.Id = 7
 	response := &dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{
 		Id:       7,
@@ -278,8 +420,7 @@ func TestValidateDnsResponseRejectsHeaderOnlyUDPError(t *testing.T) {
 }
 
 func TestValidateDnsResponseRejectsMismatch(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 	query.Id = 7
 	response := new(dnsmessage.Msg)
 	response.SetReply(query)
@@ -299,8 +440,7 @@ func TestCheckDnsMessageSize(t *testing.T) {
 }
 
 func TestUnpackDnsMessageWireBoundaries(t *testing.T) {
-	query := new(dnsmessage.Msg)
-	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
 	payload, err := query.Pack()
 	if err != nil {
 		t.Fatal(err)

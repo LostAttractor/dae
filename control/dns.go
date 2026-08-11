@@ -69,37 +69,34 @@ func validateDoqOptions(msg *dnsmessage.Msg) error {
 	}
 	var opt *dnsmessage.OPT
 	for _, rr := range msg.Extra {
-		if rr == nil {
+		if rr == nil || rr.Header().Rrtype != dnsmessage.TypeOPT {
 			continue
 		}
-		switch rr.Header().Rrtype {
-		case dnsmessage.TypeOPT:
-			if opt != nil {
-				return errors.New("DoQ message contains multiple OPT records")
+		if opt != nil {
+			return errors.New("DoQ message contains multiple OPT records")
+		}
+		var ok bool
+		opt, ok = rr.(*dnsmessage.OPT)
+		if !ok {
+			return errors.New("DoQ message contains malformed OPT record")
+		}
+		if opt.Hdr.Name != "." {
+			return errors.New("DoQ OPT record owner is not the root name")
+		}
+		paddingCount := 0
+		for _, option := range opt.Option {
+			if option == nil {
+				return errors.New("DoQ message contains a nil EDNS option")
 			}
-			var ok bool
-			opt, ok = rr.(*dnsmessage.OPT)
-			if !ok {
-				return errors.New("DoQ message contains malformed OPT record")
+			switch option.Option() {
+			case dnsmessage.EDNS0TCPKEEPALIVE:
+				return errors.New("DoQ message contains EDNS TCP keepalive")
+			case dnsmessage.EDNS0PADDING:
+				paddingCount++
 			}
-			if opt.Hdr.Name != "." {
-				return errors.New("DoQ OPT record owner is not the root name")
-			}
-			paddingCount := 0
-			for _, option := range opt.Option {
-				if option == nil {
-					return errors.New("DoQ message contains a nil EDNS option")
-				}
-				switch option.Option() {
-				case dnsmessage.EDNS0TCPKEEPALIVE:
-					return errors.New("DoQ message contains EDNS TCP keepalive")
-				case dnsmessage.EDNS0PADDING:
-					paddingCount++
-				}
-			}
-			if paddingCount > 1 {
-				return errors.New("DoQ message contains multiple EDNS padding options")
-			}
+		}
+		if paddingCount > 1 {
+			return errors.New("DoQ message contains multiple EDNS padding options")
 		}
 	}
 	return nil
@@ -114,12 +111,41 @@ func hasDnsTransactionSignature(msg *dnsmessage.Msg) bool {
 	return false
 }
 
-func packDoqQuery(msg *dnsmessage.Msg) (*dnsmessage.Msg, []byte, error) {
-	if len(msg.Question) != 0 {
-		switch msg.Question[0].Qtype {
-		case dnsmessage.TypeAXFR, dnsmessage.TypeIXFR:
-			return nil, nil, errors.New("DoQ zone transfers are not supported")
+func validateDNSForwardQuery(msg *dnsmessage.Msg, transport string, rejectZoneTransfer bool) error {
+	for _, question := range msg.Question {
+		if rejectZoneTransfer && (question.Qtype == dnsmessage.TypeAXFR || question.Qtype == dnsmessage.TypeIXFR) {
+			return fmt.Errorf("%s zone transfers are not supported", transport)
 		}
+	}
+	if hasDnsTransactionSignature(msg) {
+		return fmt.Errorf("%s forwarder does not support transaction signatures", transport)
+	}
+	return nil
+}
+
+func dnsForwarderOperationError(callerCtx context.Context, state *dnsForwarderState, operationCtx context.Context, operationErr error) error {
+	if callerCtx != nil {
+		if err := callerCtx.Err(); err != nil {
+			return err
+		}
+	}
+	if state.isClosed() {
+		return net.ErrClosed
+	}
+	if err := state.context().Err(); err != nil {
+		return err
+	}
+	if operationCtx != nil {
+		if err := operationCtx.Err(); err != nil {
+			return err
+		}
+	}
+	return operationErr
+}
+
+func packDoqQuery(msg *dnsmessage.Msg) (*dnsmessage.Msg, []byte, error) {
+	if len(msg.Question) != 0 && (msg.Question[0].Qtype == dnsmessage.TypeAXFR || msg.Question[0].Qtype == dnsmessage.TypeIXFR) {
+		return nil, nil, errors.New("DoQ zone transfers are not supported")
 	}
 	if err := validateDoqOptions(msg); err != nil {
 		return nil, nil, err
@@ -328,11 +354,10 @@ func newDnsForwarder(parent context.Context, upstream *dns.Upstream, dialArgumen
 		case consts.L4ProtoStr_TCP:
 			switch upstream.Scheme {
 			case dns.UpstreamScheme_TCP, dns.UpstreamScheme_TCP_UDP:
-				return newManagedDNSForwarder(upstream, dialArgument, state), nil
+				return &DoTCP{Upstream: *upstream, dialArgument: dialArgument, state: state}, nil
 			case dns.UpstreamScheme_TLS:
 				return &DoTLS{
 					Upstream: *upstream, dialArgument: dialArgument, state: state,
-					exchanges: make(map[*dnsTLSExchange]struct{}),
 				}, nil
 			case dns.UpstreamScheme_HTTPS:
 				return &DoH{Upstream: *upstream, dialArgument: dialArgument, http3: false, state: state}, nil
@@ -441,22 +466,22 @@ func (d *DoH) Close() error {
 }
 
 func (d *DoH) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	parentCtx := ctx
-	serverURL := &url.URL{
-		Scheme: "https",
-		Host:   net.JoinHostPort(d.Upstream.Hostname, fmt.Sprint(d.Upstream.Port)),
-		Path:   d.Upstream.Path,
+	if err := validateDNSForwardQuery(msg, "DoH", false); err != nil {
+		return err
 	}
-
+	parentCtx := ctx
 	client, err := d.getClient()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := d.state.deriveContext(ctx)
 	defer cancel()
-	originalID := msg.Id
 	response := msg.Copy()
-	if err := netutils.ResolveHttp(ctx, client, serverURL, response); err != nil {
+	if err := netutils.ResolveHttp(ctx, client, &url.URL{
+		Scheme: "https",
+		Host:   net.JoinHostPort(d.Upstream.Hostname, fmt.Sprint(d.Upstream.Port)),
+		Path:   d.Upstream.Path,
+	}, response); err != nil {
 		if parentCtx != nil && parentCtx.Err() != nil {
 			return parentCtx.Err()
 		}
@@ -468,7 +493,6 @@ func (d *DoH) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	response.Id = originalID
 	*msg = *response
 	return nil
 }
@@ -866,7 +890,7 @@ func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (quic.Ea
 }
 
 type dnsTLSExchange struct {
-	conn      *tls.Conn
+	conn      net.Conn
 	closeOnce sync.Once
 }
 
@@ -884,93 +908,100 @@ type DoTLS struct {
 }
 
 func (d *DoTLS) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+	if err := validateDNSForwardQuery(msg, "DoT", true); err != nil {
+		return err
+	}
+	d.mu.Lock()
 	if d.state.isClosed() {
+		d.mu.Unlock()
 		return net.ErrClosed
 	}
+	d.workers.Add(1)
+	d.mu.Unlock()
+	workerStarted := false
+	defer func() {
+		if !workerStarted {
+			d.workers.Done()
+		}
+	}()
+
 	forwardCtx, cancelState := d.state.deriveContext(ctx)
 	defer cancelState()
 	dialCtx, cancelDial := context.WithTimeout(forwardCtx, consts.DefaultDialTimeout)
 	conn, err := d.dialArgument.Dialer.DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
+	if err != nil {
+		err = dnsForwarderOperationError(ctx, d.state, dialCtx, err)
+	} else {
+		err = dnsForwarderOperationError(ctx, d.state, forwardCtx, nil)
+	}
 	cancelDial()
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if d.state.isClosed() {
-			return net.ErrClosed
+		if conn != nil {
+			workerStarted = true
+			go func() {
+				defer d.workers.Done()
+				_ = conn.Close()
+			}()
 		}
 		return err
-	}
-	if d.state.isClosed() {
-		closeAsync(conn)
-		return net.ErrClosed
 	}
 	tlsConn := tls.Client(conn, &tls.Config{
 		InsecureSkipVerify: false,
 		ServerName:         d.Upstream.Hostname,
 	})
-	exchange := &dnsTLSExchange{conn: tlsConn}
+	exchange := &dnsTLSExchange{conn: conn}
 	d.mu.Lock()
 	if d.state.isClosed() {
 		d.mu.Unlock()
-		closeAsync(tlsConn)
+		workerStarted = true
+		go func() {
+			defer d.workers.Done()
+			_ = conn.Close()
+		}()
 		return net.ErrClosed
 	}
 	if d.exchanges == nil {
 		d.exchanges = make(map[*dnsTLSExchange]struct{})
 	}
 	d.exchanges[exchange] = struct{}{}
-	d.workers.Add(1)
 	d.mu.Unlock()
 
 	exchangeCtx, exchangeCancel := context.WithTimeout(forwardCtx, consts.DefaultDNSTimeout)
 	defer exchangeCancel()
 	request := msg.Copy()
 	result := make(chan error, 1)
+	workerStarted = true
 	go func() {
 		defer d.workers.Done()
 		defer func() {
-			exchange.close()
 			d.mu.Lock()
 			delete(d.exchanges, exchange)
 			d.mu.Unlock()
 		}()
-		if deadline, ok := exchangeCtx.Deadline(); ok {
-			if exchangeErr := exchange.conn.SetDeadline(deadline); exchangeErr != nil {
-				result <- exchangeErr
-				return
+		defer exchange.close()
+		deadline, _ := exchangeCtx.Deadline()
+		err := tlsConn.SetDeadline(deadline)
+		if err == nil {
+			stopContextClose := context.AfterFunc(exchangeCtx, exchange.close)
+			err = tlsConn.HandshakeContext(exchangeCtx)
+			if err == nil {
+				err = netutils.ResolveStream(tlsConn, request)
 			}
+			stopContextClose()
 		}
-		exchangeErr := exchange.conn.HandshakeContext(exchangeCtx)
-		if exchangeErr == nil {
-			exchangeErr = netutils.ResolveStream(exchange.conn, request)
-		}
-		result <- exchangeErr
+		result <- err
 	}()
+
 	select {
 	case err = <-result:
-		if err == nil {
-			if ctx != nil && ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if d.state.context().Err() != nil {
-				return net.ErrClosed
-			}
-			if err := exchangeCtx.Err(); err != nil {
-				return err
-			}
-			*msg = *request
+		if err := dnsForwarderOperationError(ctx, d.state, exchangeCtx, err); err != nil {
+			return err
 		}
-		return err
+		*msg = *request
+		return nil
 	case <-exchangeCtx.Done():
 		go exchange.close()
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if d.state.isClosed() {
-			return net.ErrClosed
-		}
-		return exchangeCtx.Err()
+		return dnsForwarderOperationError(ctx, d.state, exchangeCtx, exchangeCtx.Err())
 	}
 }
 
@@ -1000,9 +1031,9 @@ func (d *DoTLS) Close() error {
 	}
 }
 
-// managedDNSForwarder is the persistent TCP forwarder. UDP deliberately uses
+// DoTCP is the persistent TCP forwarder. UDP deliberately uses
 // DoUDP so concurrent exchanges cannot share a source port.
-type managedDNSForwarder struct {
+type DoTCP struct {
 	dns.Upstream
 	dialArgument dialArgument
 	state        *dnsForwarderState
@@ -1012,18 +1043,7 @@ type managedDNSForwarder struct {
 	closeErr     error
 }
 
-// DoTCP remains the transport-specific public name used by the target branch.
-type DoTCP = managedDNSForwarder
-
-func newManagedDNSForwarder(upstream *dns.Upstream, dialArgument dialArgument, state *dnsForwarderState) *managedDNSForwarder {
-	return &managedDNSForwarder{
-		Upstream:     *upstream,
-		dialArgument: dialArgument,
-		state:        state,
-	}
-}
-
-func (d *managedDNSForwarder) Close() error {
+func (d *DoTCP) Close() error {
 	if !d.state.close() {
 		return nil
 	}
@@ -1051,7 +1071,7 @@ func (d *managedDNSForwarder) Close() error {
 	return err
 }
 
-func (d *managedDNSForwarder) clearRetiringLocked() bool {
+func (d *DoTCP) clearRetiringLocked() bool {
 	if d.retiring == nil {
 		return true
 	}
@@ -1063,7 +1083,7 @@ func (d *managedDNSForwarder) clearRetiringLocked() bool {
 	return true
 }
 
-func (d *managedDNSForwarder) allowIdleClose(manager *DnsManager) bool {
+func (d *DoTCP) allowIdleClose(manager *DnsManager) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.state.isClosed() || d.dnsManager != manager {
@@ -1072,7 +1092,7 @@ func (d *managedDNSForwarder) allowIdleClose(manager *DnsManager) bool {
 	return d.clearRetiringLocked()
 }
 
-func (d *managedDNSForwarder) getManager(ctx context.Context) (*DnsManager, error) {
+func (d *DoTCP) getManager(ctx context.Context) (*DnsManager, error) {
 	if d.state.isClosed() {
 		return nil, net.ErrClosed
 	}
@@ -1118,9 +1138,9 @@ func (d *managedDNSForwarder) getManager(ctx context.Context) (*DnsManager, erro
 	return d.dnsManager, nil
 }
 
-func (d *managedDNSForwarder) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	if hasDnsTransactionSignature(msg) {
-		return errors.New("TCP forwarder does not support transaction signatures")
+func (d *DoTCP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+	if err := validateDNSForwardQuery(msg, "TCP", true); err != nil {
+		return err
 	}
 	parentCtx := ctx
 	ctx, cancelState := d.state.deriveContext(ctx)
@@ -1178,6 +1198,7 @@ type DoUDP struct {
 	lifecycleCancel context.CancelFunc
 	slots           chan struct{}
 	closeDone       chan struct{}
+	closeErr        error
 	active          sync.WaitGroup
 	closed          bool
 }
@@ -1187,10 +1208,8 @@ func (d *DoUDP) Close() error {
 	d.mu.Lock()
 	d.ensureLifecycleLocked()
 	if d.closed {
-		closeDone := d.closeDone
 		d.mu.Unlock()
-		<-closeDone
-		return nil
+		return d.waitForShutdown()
 	}
 	d.closed = true
 	d.lifecycleCancel()
@@ -1200,15 +1219,31 @@ func (d *DoUDP) Close() error {
 	}
 	d.connections = nil
 	d.mu.Unlock()
-	var errs []error
+	closeResults := make(chan error, len(connections))
 	for _, conn := range connections {
-		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			errs = append(errs, err)
-		}
+		go func() { closeResults <- conn.Close() }()
 	}
-	d.active.Wait()
-	close(d.closeDone)
-	return errors.Join(errs...)
+	go func() {
+		var errs []error
+		for range connections {
+			if err := <-closeResults; err != nil && !errors.Is(err, net.ErrClosed) {
+				errs = append(errs, err)
+			}
+		}
+		d.active.Wait()
+		d.closeErr = errors.Join(errs...)
+		close(d.closeDone)
+	}()
+	return d.waitForShutdown()
+}
+
+func (d *DoUDP) waitForShutdown() error {
+	select {
+	case <-d.closeDone:
+		return d.closeErr
+	case <-time.After(consts.DefaultDialTimeout):
+		return fmt.Errorf("UDP exchange shutdown timeout: %w", context.DeadlineExceeded)
+	}
 }
 
 func (d *DoUDP) ensureLifecycleLocked() {
@@ -1265,15 +1300,17 @@ func (d *DoUDP) registerConnection(conn net.Conn) bool {
 }
 
 func (d *DoUDP) releaseConnection(conn net.Conn) {
-	d.mu.Lock()
-	delete(d.connections, conn)
-	d.mu.Unlock()
-	_ = conn.Close()
+	go func() {
+		_ = conn.Close()
+		d.mu.Lock()
+		delete(d.connections, conn)
+		d.mu.Unlock()
+	}()
 }
 
 func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	if hasDnsTransactionSignature(msg) {
-		return errors.New("UDP forwarder does not support transaction signatures")
+	if err := validateDNSForwardQuery(msg, "UDP", true); err != nil {
+		return err
 	}
 	parentCtx := ctx
 	ctx, cancelState := d.state.deriveContext(ctx)
@@ -1306,7 +1343,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 		return err
 	}
 	if !d.registerConnection(conn) {
-		_ = conn.Close()
+		closeAsync(conn)
 		return net.ErrClosed
 	}
 	defer d.releaseConnection(conn)
