@@ -36,27 +36,27 @@ var (
 type dnsManagerTerminalError struct{ err error }
 
 type DnsManager struct {
-	conn          net.Conn
-	recvMap       sync.Map // map[uint16]*dnsPendingQuery
-	terminalErr   atomic.Pointer[dnsManagerTerminalError]
-	blockedWrites atomic.Int32
-	writeMu       sync.Mutex
+	conn        net.Conn
+	recvMap     sync.Map // map[uint16]*dnsPendingQuery
+	terminalErr atomic.Pointer[dnsManagerTerminalError]
+	writeMu     sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
 	closeOnce   sync.Once
-	closeDone   chan struct{}
+	done        chan struct{}
 	runDone     chan struct{}
 	writersDone chan struct{}
 	closeErr    error
-	writers     sync.WaitGroup
 
 	stateMu        sync.Mutex
 	pending        int
 	lastResponse   time.Time
 	retired        bool
 	closed         bool
+	writers        int
+	writersClosed  bool
 	idleTimer      *time.Timer
 	allowIdleClose func() bool
 
@@ -87,7 +87,7 @@ func newDnsManagerWithIdlePolicy(
 		timeout:        timeout,
 		idleTimeout:    idleTimeout,
 		lastResponse:   time.Now(),
-		closeDone:      make(chan struct{}),
+		done:           make(chan struct{}),
 		runDone:        make(chan struct{}),
 		writersDone:    make(chan struct{}),
 		allowIdleClose: allowIdleClose,
@@ -181,21 +181,27 @@ func (m *DnsManager) markClosedLocked() bool {
 	m.closed = true
 	m.cancel()
 	m.idleTimer.Stop()
+	m.finishWritersLocked()
 	return true
+}
+
+func (m *DnsManager) finishWritersLocked() {
+	if m.closed && m.writers == 0 && !m.writersClosed {
+		m.writersClosed = true
+		close(m.writersDone)
+	}
 }
 
 func (m *DnsManager) startTransportClose() {
 	m.closeOnce.Do(func() {
 		go func() {
-			m.writers.Wait()
-			close(m.writersDone)
-		}()
-		go func() {
 			m.closeErr = m.conn.Close()
 			if errors.Is(m.closeErr, net.ErrClosed) {
 				m.closeErr = nil
 			}
-			close(m.closeDone)
+			<-m.runDone
+			<-m.writersDone
+			close(m.done)
 		}()
 	})
 }
@@ -206,14 +212,15 @@ func (m *DnsManager) beginWrite() bool {
 	if m.closed {
 		return false
 	}
-	m.blockedWrites.Add(1)
-	m.writers.Add(1)
+	m.writers++
 	return true
 }
 
 func (m *DnsManager) endWrite() {
-	m.blockedWrites.Add(-1)
-	m.writers.Done()
+	m.stateMu.Lock()
+	m.writers--
+	m.finishWritersLocked()
+	m.stateMu.Unlock()
 }
 
 func (m *DnsManager) startClose() {
@@ -361,23 +368,7 @@ func (m *DnsManager) IsClosed() bool {
 }
 
 func (m *DnsManager) canReplace() bool {
-	if m.blockedWrites.Load() != 0 {
-		return false
-	}
-	// A canceled manager may be replaced before its transport Close returns,
-	// but never while an old write could still be completing a stream frame.
-	return m.IsClosed()
-}
-
-func (m *DnsManager) closeComplete() bool {
-	select {
-	case <-m.closeDone:
-	default:
-		return false
-	}
-	select {
-	case <-m.runDone:
-	default:
+	if !m.IsClosed() {
 		return false
 	}
 	select {
@@ -388,19 +379,18 @@ func (m *DnsManager) closeComplete() bool {
 	}
 }
 
+func (m *DnsManager) closeComplete() bool {
+	select {
+	case <-m.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *DnsManager) waitClosed(ctx context.Context) error {
 	select {
-	case <-m.closeDone:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	select {
-	case <-m.runDone:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	select {
-	case <-m.writersDone:
+	case <-m.done:
 		return m.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
