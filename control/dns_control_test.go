@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,59 @@ type cancelAwareDnsForwarder struct {
 
 type countingDnsForwarder struct {
 	closeCalls int
+}
+
+type blockingAnswerDnsForwarder struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	err     error
+}
+
+func (f *blockingAnswerDnsForwarder) ForwardDNS(_ context.Context, msg *dnsmessage.Msg) error {
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	f.mu.Unlock()
+	if call == 1 {
+		f.once.Do(func() { close(f.started) })
+		<-f.release
+	}
+	if f.err != nil {
+		return f.err
+	}
+	response := new(dnsmessage.Msg)
+	response.SetReply(msg)
+	response.Answer = []dnsmessage.RR{testARecord(msg.Question[0].Name, "1.2.3.4")}
+	*msg = *response
+	return nil
+}
+
+func (f *blockingAnswerDnsForwarder) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func waitForDnsFlightParticipants(t *testing.T, c *DnsController, key dnsCacheKey, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		c.dnsFlights.mu.Lock()
+		flight := c.dnsFlights.flights[key]
+		got := 0
+		if flight != nil {
+			got = flight.participants
+		}
+		c.dnsFlights.mu.Unlock()
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("flight participants did not reach %d", want)
 }
 
 func (f *countingDnsForwarder) ForwardDNS(context.Context, *dnsmessage.Msg) error { return nil }
@@ -226,6 +280,218 @@ func TestUpdateDnsCacheFixedDomain(t *testing.T) {
 	}
 }
 
+func TestDialSendCoalescesTtlZeroDuplicates(t *testing.T) {
+	c, _, _ := newTestDnsController(t, map[string]int{"example.com.": 0})
+	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+	dialArg := &dialArgument{
+		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
+		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: key}
+	forwarder := &blockingAnswerDnsForwarder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	c.dnsForwarderCache.Store(key, forwarder)
+
+	type result struct {
+		msg     *dnsmessage.Msg
+		dropped bool
+		err     error
+	}
+	results := make(chan result, 2)
+	names := map[uint16]string{1: "ExAmPlE.com.", 2: "eXaMpLe.com."}
+	lookup := func(id uint16) {
+		msg := testQuery(names[id], qi.qtype, id)
+		_, dropped, err := c.dialSend(context.Background(), msg, upstream, dialArg, qi, true)
+		results <- result{msg: msg, dropped: dropped, err: err}
+	}
+	go lookup(1)
+	<-forwarder.started
+	go lookup(2)
+	waitForDnsFlightParticipants(t, c, cacheKey, 2)
+	close(forwarder.release)
+
+	responseIds := make(map[uint16]bool)
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err != nil || result.dropped || !result.msg.Response {
+			t.Fatalf("TTL=0 duplicate result: response=%v dropped=%v err=%v", result.msg.Response, result.dropped, result.err)
+		}
+		responseIds[result.msg.Id] = true
+		if got := result.msg.Question[0].Name; got != names[result.msg.Id] {
+			t.Fatalf("shared response question = %q, want %q", got, names[result.msg.Id])
+		}
+	}
+	if !responseIds[1] || !responseIds[2] {
+		t.Fatalf("shared responses did not restore client IDs: %v", responseIds)
+	}
+	if calls := forwarder.callCount(); calls != 1 {
+		t.Fatalf("TTL=0 upstream calls = %d, want 1 shared call", calls)
+	}
+	if c.dnsCache.Len() != 0 {
+		t.Fatalf("TTL=0 answers occupied cache: len=%d", c.dnsCache.Len())
+	}
+}
+
+func TestDialSendCoalescesUpstreamErrors(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+	dialArg := &dialArgument{
+		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
+		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: key}
+	wantErr := errors.New("upstream failure")
+	forwarder := &blockingAnswerDnsForwarder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		err:     wantErr,
+	}
+	c.dnsForwarderCache.Store(key, forwarder)
+
+	results := make(chan error, 2)
+	lookup := func(id uint16) {
+		_, _, err := c.dialSend(context.Background(), testQuery(qi.qname, qi.qtype, id), upstream, dialArg, qi, true)
+		results <- err
+	}
+	go lookup(1)
+	<-forwarder.started
+	go lookup(2)
+	waitForDnsFlightParticipants(t, c, cacheKey, 2)
+	close(forwarder.release)
+	for i := 0; i < 2; i++ {
+		if err := <-results; !errors.Is(err, wantErr) {
+			t.Fatalf("shared upstream error = %v, want %v", err, wantErr)
+		}
+	}
+	if calls := forwarder.callCount(); calls != 1 {
+		t.Fatalf("failed upstream calls = %d, want 1 shared call", calls)
+	}
+}
+
+func TestDnsFlightGroupLimit(t *testing.T) {
+	var group dnsFlightGroup
+	key := dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}
+	flight, leader, admitted := group.join(key, 2)
+	if !leader || !admitted {
+		t.Fatal("first participant was not admitted as leader")
+	}
+	if _, leader, admitted := group.join(key, 2); leader || !admitted {
+		t.Fatal("second participant was not admitted as follower")
+	}
+	if _, _, admitted := group.join(key, 2); admitted {
+		t.Fatal("participant above the flight limit was admitted")
+	}
+	group.leave(key, flight)
+	if _, leader, admitted := group.join(key, 2); leader || !admitted {
+		t.Fatal("a departed waiter did not release its flight slot")
+	}
+	group.finish(key, flight, dnsFlightResult{})
+}
+
+func TestDialSendDropsStaleDuplicateWaiter(t *testing.T) {
+	oldTimeout := dnsDuplicateWaitTimeout
+	dnsDuplicateWaitTimeout = 20 * time.Millisecond
+	defer func() { dnsDuplicateWaitTimeout = oldTimeout }()
+
+	c, _, _ := newTestDnsController(t, nil)
+	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+	dialArg := &dialArgument{
+		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
+		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	forwarder := &blockingAnswerDnsForwarder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	c.dnsForwarderCache.Store(key, forwarder)
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, _, err := c.dialSend(context.Background(), testQuery(qi.qname, qi.qtype, 1), upstream, dialArg, qi, true)
+		leaderDone <- err
+	}()
+	<-forwarder.started
+	_, dropped, err := c.dialSend(context.Background(), testQuery(qi.qname, qi.qtype, 2), upstream, dialArg, qi, true)
+	if err != nil || !dropped {
+		t.Fatalf("stale duplicate: dropped=%v err=%v", dropped, err)
+	}
+	close(forwarder.release)
+	if err := <-leaderDone; err != nil {
+		t.Fatal(err)
+	}
+	if calls := forwarder.callCount(); calls != 1 {
+		t.Fatalf("stale duplicate reached upstream: calls=%d", calls)
+	}
+}
+
+func TestDialSendComplexQueryBypassesCache(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
+	dialArg := &dialArgument{
+		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
+		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
+	}
+	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: key}
+	c.UpdateDnsCache(cacheKey, qi.qname, []dnsmessage.RR{testARecord(qi.qname, "192.0.2.1")})
+	forwarder := &blockingAnswerDnsForwarder{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	close(forwarder.release)
+	c.dnsForwarderCache.Store(key, forwarder)
+
+	msg := testQuery(qi.qname, qi.qtype, 1)
+	msg.CheckingDisabled = true
+	fromCache, dropped, err := c.dialSend(context.Background(), msg, upstream, dialArg, qi, true)
+	if err != nil || dropped || fromCache {
+		t.Fatalf("complex query: fromCache=%v dropped=%v err=%v", fromCache, dropped, err)
+	}
+	if calls := forwarder.callCount(); calls != 1 {
+		t.Fatalf("complex query upstream calls = %d, want 1", calls)
+	}
+	if got := msg.Answer[0].(*dnsmessage.A).A.String(); got != "1.2.3.4" {
+		t.Fatalf("complex query used cached answer %s", got)
+	}
+}
+
+func TestIsSimpleDnsQuery(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*dnsmessage.Msg)
+		want   bool
+	}{
+		{name: "standard query", want: true},
+		{name: "EDNS", mutate: func(msg *dnsmessage.Msg) { msg.SetEdns0(1232, false) }},
+		{name: "checking disabled", mutate: func(msg *dnsmessage.Msg) { msg.CheckingDisabled = true }},
+		{name: "notify", mutate: func(msg *dnsmessage.Msg) { msg.Opcode = dnsmessage.OpcodeNotify }},
+		{name: "transfer", mutate: func(msg *dnsmessage.Msg) { msg.Question[0].Qtype = dnsmessage.TypeAXFR }},
+		{name: "preset answer", mutate: func(msg *dnsmessage.Msg) {
+			msg.Answer = []dnsmessage.RR{testARecord("example.com.", "192.0.2.1")}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := testQuery("example.com.", dnsmessage.TypeA, 1)
+			if tt.mutate != nil {
+				tt.mutate(msg)
+			}
+			if got := isSimpleDnsQuery(msg); got != tt.want {
+				t.Fatalf("isSimpleDnsQuery() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUpdateDnsCacheKeepsPerAnswerDeadlines(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
 	key := dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}
@@ -296,10 +562,13 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 	cacheKey := dnsCacheKey{queryInfo: qi, dnsForwarderKey: forwarderKey}
 	c.dnsForwarderCache.Store(forwarderKey, failDnsForwarder{t: t})
 	c.dnsCache.ReplaceDeadline(cacheKey, upstreamResponse.Answer, time.Now().Add(5*time.Second))
-	cachedResponse := &dnsmessage.Msg{Question: []dnsmessage.Question{{Name: qi.qname, Qtype: qi.qtype}}}
-	fromCache, err := c.dialSend(context.Background(), cachedResponse, upstream, dialArg, qi, true)
+	cachedResponse := testQuery(qi.qname, qi.qtype, 1)
+	fromCache, dropped, err := c.dialSend(context.Background(), cachedResponse, upstream, dialArg, qi, true)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if dropped {
+		t.Fatal("cached response was dropped as a stale duplicate")
 	}
 	if !fromCache {
 		t.Fatal("dialSend should identify a cached response")
@@ -458,7 +727,7 @@ func TestDnsControllerCloseCancelsInFlightForwarder(t *testing.T) {
 	requestDone := make(chan error, 1)
 	go func() {
 		defer c.endRequest()
-		_, err := c.dialSend(c.closed, testQuery("example.com.", dnsmessage.TypeA, 1), upstream, dialArg,
+		_, _, err := c.dialSend(c.closed, testQuery("example.com.", dnsmessage.TypeA, 1), upstream, dialArg,
 			queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, true)
 		requestDone <- err
 	}()
