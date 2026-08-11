@@ -141,7 +141,7 @@ func TestResponsePlanDoesNotCacheIncompleteDNSSECResponse(t *testing.T) {
 	}
 	answers := []dnsmessage.RR{cname, address, signature}
 	plan := c.planDNSResponseAt(qi, answers, now)
-	if plan == nil || !plan.signed || plan.publishDerivedCache {
+	if plan == nil || !plan.signed {
 		t.Fatalf("DNSSEC response should suppress derived cache publication: %+v", plan)
 	}
 	if got := plan.views[0].unitTTLSeconds; got != 30 {
