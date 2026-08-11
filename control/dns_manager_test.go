@@ -817,6 +817,5 @@ func TestDnsManagerIdleRetirementCanReplaceWhileTransportCloseIsStuck(t *testing
 		t.Fatal("idle manager remained unavailable while transport close was blocked")
 	}
 	releaseOnce.Do(func() { close(conn.closeRelease) })
-	<-m.closeDone
-	<-m.runDone
+	<-m.done
 }
