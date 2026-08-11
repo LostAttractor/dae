@@ -388,10 +388,9 @@ func NewControlPlane(
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
-		LocationFinder:          locationFinder,
-		UpstreamReadyCallback:   plane.cacheDnsUpstream,
-		UpstreamResolverNetwork: "udp",
-		InterfaceManager:        core.ifmgr,
+		LocationFinder:        locationFinder,
+		UpstreamReadyCallback: plane.cacheDnsUpstream,
+		InterfaceManager:      core.ifmgr,
 	})
 	if err != nil {
 		return nil, err
@@ -644,31 +643,15 @@ func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
 	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
 
 	if dnsUpstream.Ip4.IsValid() {
-		typ := dnsmessage.TypeA
-		answers := []dnsmessage.RR{&dnsmessage.A{
-			Hdr: dnsmessage.RR_Header{
-				Name:   dnsmessage.CanonicalName(fqdn),
-				Rrtype: typ,
-				Class:  dnsmessage.ClassINET,
-				Ttl:    0, // Must be zero.
-			},
-			A: dnsUpstream.Ip4.AsSlice(),
-		}}
-		c.dnsController.registerAnswersNoExpiry(queryInfo{qname: fqdn, qtype: typ}, answers)
+		c.dnsController.registerAddressNoExpiry(
+			queryInfo{qname: fqdn, qtype: dnsmessage.TypeA}, dnsUpstream.Ip4,
+		)
 	}
 
 	if dnsUpstream.Ip6.IsValid() {
-		typ := dnsmessage.TypeAAAA
-		answers := []dnsmessage.RR{&dnsmessage.AAAA{
-			Hdr: dnsmessage.RR_Header{
-				Name:   dnsmessage.CanonicalName(fqdn),
-				Rrtype: typ,
-				Class:  dnsmessage.ClassINET,
-				Ttl:    0, // Must be zero.
-			},
-			AAAA: dnsUpstream.Ip6.AsSlice(),
-		}}
-		c.dnsController.registerAnswersNoExpiry(queryInfo{qname: fqdn, qtype: typ}, answers)
+		c.dnsController.registerAddressNoExpiry(
+			queryInfo{qname: fqdn, qtype: dnsmessage.TypeAAAA}, dnsUpstream.Ip6,
+		)
 	}
 }
 
@@ -957,11 +940,10 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
 	var (
-		l4proto      consts.L4ProtoStr
-		ipversion    consts.IpVersionStr
-		bestDialer   *dialer.Dialer
-		bestOutbound *outbound.DialerGroup
-		bestTarget   netip.AddrPort
+		bestNetworkType common.NetworkType
+		bestDialer      *dialer.Dialer
+		bestOutbound    *outbound.DialerGroup
+		bestTarget      netip.AddrPort
 		// dialMark     uint32
 	)
 	var networkType common.NetworkType
@@ -980,7 +962,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 				return nil, oops.Errorf("unexpected ipversion: %v", ver)
 			}
 			// TODO: Mark
-			outboundIndex, _, _, err := c.Route(req.src, netip.AddrPortFrom(dAddr, dnsUpstream.Port), dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
+			target := netip.AddrPortFrom(dAddr, dnsUpstream.Port)
+			outboundIndex, _, _, err := c.Route(req.src, target, dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
 			}
@@ -995,8 +978,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			}
 			bestDialer = d
 			bestOutbound = dialerGroup
-			l4proto = proto
-			ipversion = ver
+			bestNetworkType = networkType
+			bestTarget = target
 			// dialMark = mark
 			break
 		}
@@ -1004,25 +987,19 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	if bestDialer == nil {
 		return nil, oops.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
 	}
-	switch ipversion {
-	case consts.IpVersionStr_4:
-		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip4, dnsUpstream.Port)
-	case consts.IpVersionStr_6:
-		bestTarget = netip.AddrPortFrom(dnsUpstream.Ip6, dnsUpstream.Port)
-	}
 	if log.IsLevelEnabled(log.TraceLevel) {
 		log.WithFields(log.Fields{
 			"ipversions": ipversions,
 			"l4protos":   l4protos,
 			"upstream":   dnsUpstream.String(),
-			"choose":     string(l4proto) + "+" + string(ipversion),
+			"choose":     string(bestNetworkType.L4Proto) + "+" + string(bestNetworkType.IpVersion),
 			"use":        bestTarget.String(),
 			"outbound":   bestOutbound.Name,
 			"dialer":     bestDialer.Name,
 		}).Traceln("Choose DNS path")
 	}
 	return &dialArgument{
-		networkType: networkType,
+		networkType: bestNetworkType,
 		Dialer:      bestDialer,
 		Outbound:    bestOutbound,
 		Target:      bestTarget,

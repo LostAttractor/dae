@@ -66,6 +66,26 @@ func newTestRegistry(kernelMax, userMax int, minTTL time.Duration) (*DomainRegis
 	return g, fake
 }
 
+// These test-only adapters keep the DNS behavior tests readable without
+// retaining test-only methods in the production API.
+func (g *DomainRegistry) Upsert(qi queryInfo, ip netip.Addr, bitmap []uint32, ttl int, now time.Time) {
+	g.UpsertObserved(qi, ip, bitmap, ttl, now, now)
+}
+
+func (g *DomainRegistry) Lookup(qi queryInfo) []netip.Addr {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ips := make([]netip.Addr, 0, len(g.byName[qi]))
+	for ip := range g.byName[qi] {
+		ips = append(ips, ip)
+	}
+	return ips
+}
+
+func (g *DomainRegistry) Size() int {
+	return g.Usage().UserUsed
+}
+
 func TestDomainRoutingMapValueLayout(t *testing.T) {
 	var value bpfDomainRouting
 	bitmapBytes := uintptr(consts.MaxMatchSetLen / 8)
@@ -94,7 +114,7 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	if len(g.kernelIPHeap) != len(g.byIP) {
 		t.Errorf("kernelIPHeap len %v != byIP len %v", len(g.kernelIPHeap), len(g.byIP))
 	}
-	registrations := make(map[*domainRegistration]struct{}, g.size)
+	registrations := make(map[*domainRegistration]struct{}, g.verifyHeap.Len())
 	inKernel := 0
 	for qi, m := range g.byName {
 		if len(m) == 0 {
@@ -105,12 +125,9 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			if r.queryInfo != qi || r.ip != ip {
 				t.Errorf("%v/%v: registration key mismatch: %+v/%v", qi, ip, r.queryInfo, r.ip)
 			}
-			wantExpiry := r.finiteExpiry
-			if r.noExpiry {
-				wantExpiry = time.Time{}
-			}
-			if !r.expiry.Equal(wantExpiry) {
-				t.Errorf("%v/%v: effective expiry %v, want %v", qi.qname, ip, r.expiry, wantExpiry)
+			expiry := r.effectiveExpiry()
+			if (r.noExpiry && !expiry.IsZero()) || (!r.noExpiry && !expiry.Equal(r.finiteExpiry)) {
+				t.Errorf("%v/%v: effective expiry %v inconsistent with finite=%v noExpiry=%v", qi.qname, ip, expiry, r.finiteExpiry, r.noExpiry)
 			}
 			if r.finiteExpiry.IsZero() && !r.noExpiry {
 				t.Errorf("%v/%v: registration has no finite or no-expiry provenance", qi.qname, ip)
@@ -130,7 +147,7 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 					t.Errorf("%v/%v: in-kernel registration missing from refs", qi.qname, ip)
 				}
 			}
-			if s := g.byIP[ip]; s != nil && domainExpiryAlive(r.expiry, checkedAt) {
+			if s := g.byIP[ip]; s != nil && domainExpiryAlive(r.effectiveExpiry(), checkedAt) {
 				if !r.inKernel {
 					t.Errorf("%v/%v: live registration missing from resident shared-IP state", qi.qname, ip)
 				} else if _, ok := s.refs[r]; !ok {
@@ -142,8 +159,8 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			}
 		}
 	}
-	if len(registrations) != g.size {
-		t.Errorf("byName contains %v registrations, size is %v", len(registrations), g.size)
+	if len(registrations) != g.verifyHeap.Len() {
+		t.Errorf("byName contains %v registrations, verifyHeap has %v", len(registrations), g.verifyHeap.Len())
 	}
 	for ip, refs := range g.byAddr {
 		if len(refs) == 0 {
@@ -161,10 +178,11 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			}
 			if !domainBitmapAllZero(r.bitmap) {
 				nonzero++
-				if r.expiry.IsZero() {
+				expiry := r.effectiveExpiry()
+				if expiry.IsZero() {
 					noExpiry++
-				} else if latest.IsZero() || r.expiry.After(latest) {
-					latest = r.expiry
+				} else if latest.IsZero() || expiry.After(latest) {
+					latest = expiry
 				}
 			}
 		}
@@ -185,8 +203,8 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	if g.kernelHeap.Len() != inKernel {
 		t.Errorf("kernelHeap len %v != in-kernel registrations %v", g.kernelHeap.Len(), inKernel)
 	}
-	if g.verifyHeap.Len() != g.size {
-		t.Errorf("verifyHeap len %v != size %v", g.verifyHeap.Len(), g.size)
+	if g.verifyHeap.Len() != len(registrations) {
+		t.Errorf("verifyHeap len %v != registrations %v", g.verifyHeap.Len(), len(registrations))
 	}
 	for i, r := range g.verifyHeap.items {
 		if _, ok := registrations[r]; !ok {
@@ -238,9 +256,9 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 				t.Errorf("%v: state registration %v missing from byAddr", ip, r.qname)
 			}
 			if first {
-				expiry = r.expiry
+				expiry = r.effectiveExpiry()
 			} else {
-				expiry = combineKernelIPExpiry(expiry, r.expiry)
+				expiry = combineKernelIPExpiry(expiry, r.effectiveExpiry())
 			}
 			for w, bits := range r.bitmap {
 				bump[w] |= bits
@@ -449,7 +467,7 @@ func TestDomainRegistrySharedIPRemovesStateWhenOnlyZeroRefsRemain(t *testing.T) 
 	// still live. A zero-only aggregate is represented by a map miss, and no
 	// ref may remain marked in-kernel.
 	g.Sweep(now.Add(11 * time.Second))
-	if fake.has(ip) || g.KernelSize() != 0 {
+	if fake.has(ip) || g.Usage().KernelUsed != 0 {
 		t.Fatalf("zero-only shared state must be removed: bump=%v", fake.bump)
 	}
 	if g.byName[nonzeroQI][ip].inKernel || g.byName[zeroQI][ip].inKernel {
@@ -521,7 +539,7 @@ func TestDomainRegistryZeroAggregateDoesNotConsumeKernelCapacity(t *testing.T) {
 
 	g.Upsert(queryInfo{qname: "zero.example.", qtype: 1}, zeroIP, testBitmap(), 3600, now)
 	g.Upsert(queryInfo{qname: "match.example.", qtype: 1}, nonzeroIP, testBitmap(0), 10, now)
-	if fake.has(zeroIP) || !fake.has(nonzeroIP) || g.KernelSize() != 1 {
+	if fake.has(zeroIP) || !fake.has(nonzeroIP) || g.Usage().KernelUsed != 1 {
 		t.Fatalf("zero aggregate must not consume the only kernel slot: %v", fake.bump)
 	}
 	checkInvariants(t, g, fake)
@@ -542,7 +560,7 @@ func TestDomainRegistryHighCardinalityZeroBitmapSharedIPStaysNonResident(t *test
 		g.Upsert(queryInfo{qname: fmt.Sprintf("zero-%04d.example.", i), qtype: 1}, ip, testBitmap(), 60, now)
 	}
 
-	if updates != 0 || fake.has(ip) || g.KernelSize() != 0 {
+	if updates != 0 || fake.has(ip) || g.Usage().KernelUsed != 0 {
 		t.Fatalf("zero-only shared IP must stay non-resident: updates=%d kernel=%v", updates, fake.bump)
 	}
 	if g.nonzeroByIP[ip] != nil {
@@ -896,7 +914,7 @@ func TestDomainRegistryNoExpiryLifecycle(t *testing.T) {
 		t.Fatalf("no-expiry IP should outrank a finite resident at capacity: %v", fake.bump)
 	}
 	r := g.byName[permanentQI][permanentIP]
-	if r == nil || !r.expiry.IsZero() {
+	if r == nil || !r.effectiveExpiry().IsZero() {
 		t.Fatalf("no-expiry registration should use zero deadlines: %+v", r)
 	}
 
@@ -908,7 +926,7 @@ func TestDomainRegistryNoExpiryLifecycle(t *testing.T) {
 	g.Upsert(sharedFiniteQI, permanentIP, testBitmap(1), 1, now.Add(time.Second))
 	g.Upsert(otherQI, otherIP, testBitmap(0), 3600, now.Add(time.Second))
 	r = g.byName[permanentQI][permanentIP]
-	if !r.expiry.IsZero() || !r.noExpiry {
+	if !r.effectiveExpiry().IsZero() || !r.noExpiry {
 		t.Fatal("finite refresh must not downgrade an existing no-expiry lease")
 	}
 	finiteDeadline := now.Add(121 * time.Second)
@@ -943,7 +961,7 @@ func TestDomainRegistryNoExpiryLifecycle(t *testing.T) {
 		t.Fatalf("adoption must preserve finite evidence for the exact tuple: %v", got)
 	}
 	adopted := next.byName[permanentQI][permanentIP]
-	if adopted == nil || adopted.noExpiry || !adopted.expiry.Equal(finiteDeadline) || !adopted.finiteExpiry.Equal(finiteDeadline) {
+	if adopted == nil || adopted.noExpiry || !adopted.effectiveExpiry().Equal(finiteDeadline) || !adopted.finiteExpiry.Equal(finiteDeadline) {
 		t.Fatalf("adoption did not drop only no-expiry provenance: %+v", adopted)
 	}
 	if fake.has(permanentIP) {
@@ -1012,7 +1030,7 @@ func TestDomainRegistryAdoptFromSkipsNoExpiryOnSharedIP(t *testing.T) {
 		t.Fatalf("mixed registration's finite component should survive adoption: %v", got)
 	}
 	mixed := next.byName[mixedQI][ip]
-	if mixed == nil || mixed.noExpiry || !mixed.expiry.Equal(now.Add(120*time.Second)) {
+	if mixed == nil || mixed.noExpiry || !mixed.effectiveExpiry().Equal(now.Add(120*time.Second)) {
 		t.Fatalf("mixed registration should retain only finite provenance: %+v", mixed)
 	}
 	if !fake.has(ip) || !bitmapHas(fake.bump[ip], 2) || bitmapHas(fake.routing[ip], 2) {
@@ -1159,8 +1177,8 @@ func TestDomainRegistryAdoptFrom(t *testing.T) {
 	// soft limit (and are the first reclamation candidates under memory
 	// pressure).
 	for _, r := range next.byName[queryInfo{qname: "a.com.", qtype: 1}] {
-		if !r.expiry.Equal(now.Add(60 * time.Second)) {
-			t.Fatalf("adoption must carry the original expiry: %v", r.expiry)
+		if !r.effectiveExpiry().Equal(now.Add(60 * time.Second)) {
+			t.Fatalf("adoption must carry the original expiry: %v", r.effectiveExpiry())
 		}
 	}
 }
@@ -1360,8 +1378,8 @@ func TestDomainRegistryConcurrent(t *testing.T) {
 	// registrations (they are only reclaimed by memory-pressure GC).
 	g.Sweep(start.Add(time.Hour))
 	checkInvariants(t, g, fake)
-	if g.KernelSize() != 0 {
-		t.Fatalf("all kernel entries should be reaped after a full sweep: %v", g.KernelSize())
+	if kernelUsed := g.Usage().KernelUsed; kernelUsed != 0 {
+		t.Fatalf("all kernel entries should be reaped after a full sweep: %v", kernelUsed)
 	}
 	if len(fake.bump) != 0 || len(fake.routing) != 0 {
 		t.Fatalf("kernel map should be empty after a full sweep")

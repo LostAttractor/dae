@@ -68,7 +68,7 @@ type DnsController struct {
 	bestDialerChooser func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 
 	fixedDomainTtl    map[string]int
-	dnsCache          *commonDnsCache[dnsCacheKey]
+	dnsCache          *commonDnsCache
 	dnsForwarderCache map[dnsForwarderKey]DnsForwarder
 
 	flightMu   sync.Mutex
@@ -119,19 +119,12 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 
 		fixedDomainTtl:    option.FixedDomainTtl,
 		dnsForwarderCache: make(map[dnsForwarderKey]DnsForwarder),
-		dnsCache:          newCommonDnsCache[dnsCacheKey](32768),
+		dnsCache:          newCommonDnsCache(32768),
 		dnsFlights:        make(map[dnsFlightKey]*dnsFlight),
 		sendPacket:        sendPkt,
 		closed:            closed,
 		close:             close,
 	}, nil
-}
-
-func (c *DnsController) effectiveTTL(fqdn string, ttl int) int {
-	if fixedTTL, ok := c.fixedDomainTtl[fqdn]; ok {
-		return fixedTTL
-	}
-	return ttl
 }
 
 func (c *DnsController) applyFixedTTL(fqdn string, answers []dnsmessage.RR) {
@@ -145,7 +138,7 @@ func (c *DnsController) applyFixedTTL(fqdn string, answers []dnsmessage.RR) {
 	}
 }
 
-func (c *DnsController) applyResponsePlanTTL(fqdn string, answers []dnsmessage.RR, plan *responsePlan, acceptedAt time.Time) {
+func (c *DnsController) applyResponsePlanTTL(fqdn string, answers []dnsmessage.RR, plan *responsePlan) {
 	if plan == nil || len(plan.views) == 0 {
 		c.applyFixedTTL(fqdn, answers)
 		return
@@ -153,12 +146,8 @@ func (c *DnsController) applyResponsePlanTTL(fqdn string, answers []dnsmessage.R
 	ttlByAnswer := make(map[dnsAnswerKey]int, len(plan.views[0].answers))
 	now := time.Now()
 	for _, answer := range plan.views[0].answers {
-		remaining := acceptedAt.Add(time.Duration(answer.ttlSeconds) * time.Second).Sub(now)
-		remainingSeconds := 0
-		if remaining > 0 {
-			remainingSeconds = int((remaining + time.Second - 1) / time.Second)
-		}
-		ttlByAnswer[dnsAnswerIdentity(answer.answer)] = remainingSeconds
+		remainingSeconds := max(0, int((answer.absoluteDeadline.Sub(now)+time.Second-1)/time.Second))
+		ttlByAnswer[dnsAnswerIdentity(answer.rr)] = remainingSeconds
 	}
 	for _, answer := range answers {
 		if ttl, exists := ttlByAnswer[dnsAnswerIdentity(answer)]; exists {
@@ -177,7 +166,7 @@ func dnsTTLToUint32(ttl int) uint32 {
 	return uint32(ttl)
 }
 
-func (c *DnsController) cacheResponsePlan(cacheKey dnsCacheKey, plan *responsePlan, acceptedAt time.Time) {
+func (c *DnsController) cacheResponsePlan(cacheKey dnsCacheKey, plan *responsePlan) {
 	if plan == nil {
 		return
 	}
@@ -186,34 +175,30 @@ func (c *DnsController) cacheResponsePlan(cacheKey dnsCacheKey, plan *responsePl
 	if c.closed.Err() != nil {
 		return
 	}
-	c.cacheResponsePlanOpen(cacheKey, plan, acceptedAt)
+	c.cacheResponsePlanOpen(cacheKey, plan)
 }
 
 // cacheResponsePlanOpen requires lifecycleMu to be held and the controller to
 // be open.
-func (c *DnsController) cacheResponsePlanOpen(cacheKey dnsCacheKey, plan *responsePlan, acceptedAt time.Time) {
-	if plan.suppressCache {
+func (c *DnsController) cacheResponsePlanOpen(cacheKey dnsCacheKey, plan *responsePlan) {
+	if !plan.cacheEligible {
 		return
 	}
 	for _, view := range plan.views {
-		c.cacheResponseView(cacheKey, acceptedAt, view)
+		c.cacheResponseView(cacheKey, plan.observedAt, view)
 	}
 }
 
 func (c *DnsController) cacheResponseView(cacheKey dnsCacheKey, observedAt time.Time, view responseView) {
 	values := make([]*DnsCache, 0, len(view.answers))
 	for _, answer := range view.answers {
-		deadline := observedAt.Add(time.Duration(answer.ttlSeconds) * time.Second)
-		if deadline.After(observedAt) {
-			values = append(values, newDnsCache(answer.answer, deadline))
+		if answer.absoluteDeadline.After(observedAt) {
+			values = append(values, newDnsCache(answer.rr, answer.absoluteDeadline))
 		}
 	}
-	validUntil := time.Time{}
-	if view.expiresAsUnit {
-		validUntil = observedAt.Add(time.Duration(view.unitTTLSeconds) * time.Second)
-		if !validUntil.After(observedAt) {
-			values = nil
-		}
+	validUntil := view.validUntil
+	if !validUntil.IsZero() && !validUntil.After(observedAt) {
+		values = nil
 	}
 	cacheKey.queryInfo = view.query
 	c.dnsCache.Replace(cacheKey, values, validUntil)
@@ -242,8 +227,10 @@ type dialArgument struct {
 }
 
 type dnsForwarderKey struct {
-	upstream     string
-	dialArgument dialArgument
+	upstream    string
+	networkType common.NetworkType
+	dialer      *dialer.Dialer
+	target      netip.AddrPort
 }
 
 type queryInfo struct {
@@ -251,29 +238,43 @@ type queryInfo struct {
 	qtype uint16
 }
 
-type dnsCacheKey struct {
+type dnsQueryKey struct {
 	queryInfo
-	dnsForwarderKey
 	qclass uint16
 	// variant is a canonical representation of all response-varying request
-	// data other than qname/qtype. It therefore survives CNAME-derived keys.
+	// data other than qname/qtype/qclass.
 	variant string
 }
 
+type dnsCacheKey struct {
+	queryInfo
+	variant string
+	dnsForwarderKey
+}
+
 type pendingDNSResponse struct {
-	cacheKey    dnsCacheKey
-	bypassCache bool
-	receivedAt  time.Time
+	cacheKey   dnsCacheKey
+	register   bool
+	cacheable  bool
+	receivedAt time.Time
 }
 
 // A flight covers response rerouting as well as the initial exchange. Include
 // the complete request routing context because choosing a later upstream's
 // dialer can produce a different result even when the first hop was identical.
 type dnsFlightKey struct {
-	cacheKey      dnsCacheKey
-	src           netip.AddrPort
-	dst           netip.AddrPort
-	routingResult bpfRoutingResult
+	query         dnsQueryKey
+	upstreamIndex consts.DnsRequestOutboundIndex
+	dnsForwarderKey
+	route dnsRerouteKey
+}
+
+type dnsRerouteKey struct {
+	src     netip.AddrPort
+	pname   [16]uint8
+	ifindex uint32
+	dscp    uint8
+	mac     [6]uint8
 }
 
 type dnsFlight struct {
@@ -302,21 +303,45 @@ func (c *DnsController) prepareQueryInfo(dnsMessage *dnsmessage.Msg) (queryInfo 
 	return
 }
 
-func makeDNSCacheKey(msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo) (dnsCacheKey, bool, bool) {
+func makeDNSQueryKey(msg *dnsmessage.Msg, queryInfo queryInfo) (dnsQueryKey, bool, bool) {
 	variant, flightOK := dnsQueryVariant(msg)
 	var qclass uint16
 	if msg != nil && len(msg.Question) == 1 {
 		qclass = msg.Question[0].Qclass
 	}
-	return dnsCacheKey{
+	return dnsQueryKey{
 		queryInfo: queryInfo,
-		dnsForwarderKey: dnsForwarderKey{
-			upstream:     upstream.String(),
-			dialArgument: *dialArgument,
-		},
-		qclass:  qclass,
-		variant: variant,
+		qclass:    qclass,
+		variant:   variant,
 	}, flightOK, flightOK && dnsQueryCacheable(msg)
+}
+
+func makeDNSForwarderKey(upstream *dns.Upstream, argument *dialArgument) dnsForwarderKey {
+	return dnsForwarderKey{
+		upstream:    upstream.String(),
+		networkType: argument.networkType,
+		dialer:      argument.Dialer,
+		target:      argument.Target,
+	}
+}
+
+func makeDNSCacheKey(query dnsQueryKey, forwarder dnsForwarderKey) dnsCacheKey {
+	return dnsCacheKey{
+		queryInfo:       query.queryInfo,
+		variant:         query.variant,
+		dnsForwarderKey: forwarder,
+	}
+}
+
+func makeDNSRerouteKey(req *udpRequest) dnsRerouteKey {
+	key := dnsRerouteKey{src: req.src}
+	if req.routingResult != nil {
+		key.pname = req.routingResult.Pname
+		key.ifindex = req.routingResult.Ifindex
+		key.dscp = req.routingResult.Dscp
+		key.mac = req.routingResult.Mac
+	}
+	return key
 }
 
 func (c *DnsController) sendDNSPacket(data []byte, from, to netip.AddrPort) error {
@@ -502,13 +527,14 @@ func (c *DnsController) handleDNSRequest(
 	if err != nil {
 		return err
 	}
-	cacheKey, canShare, _ := makeDNSCacheKey(dnsMessage, upstream, firstDialArgument, queryInfo)
-	flightKey := dnsFlightKey{cacheKey: cacheKey, src: req.src, dst: req.dst}
-	if req.routingResult != nil {
-		flightKey.routingResult = *req.routingResult
+	queryKey, canShare, cacheable := makeDNSQueryKey(dnsMessage, queryInfo)
+	forwarderKey := makeDNSForwarderKey(upstream, firstDialArgument)
+	flightKey := dnsFlightKey{
+		query: queryKey, upstreamIndex: RequestIndex,
+		dnsForwarderKey: forwarderKey, route: makeDNSRerouteKey(req),
 	}
 	resolve := func() error {
-		return c.resolveDNSRequest(ctx, dnsMessage, req, queryInfo, RequestIndex, upstream, firstDialArgument, cacheForwarder)
+		return c.resolveDNSRequest(ctx, dnsMessage, req, queryKey, cacheable, RequestIndex, upstream, firstDialArgument, cacheForwarder)
 	}
 	if canShare {
 		return c.shareDNSResult(ctx, flightKey, dnsMessage, resolve)
@@ -526,12 +552,14 @@ func (c *DnsController) resolveDNSRequest(
 	ctx context.Context,
 	dnsMessage *dnsmessage.Msg,
 	req *udpRequest,
-	queryInfo queryInfo,
+	queryKey dnsQueryKey,
+	queryCacheable bool,
 	upstreamIndex consts.DnsRequestOutboundIndex,
 	upstream *dns.Upstream,
 	dialArgument *dialArgument,
 	cacheForwarder bool,
 ) error {
+	queryInfo := queryKey.queryInfo
 	reqMsg := dnsMessage.Copy()
 	var pending *pendingDNSResponse
 	var err error
@@ -552,7 +580,7 @@ Dial:
 		}
 
 		// TODO: 这里可能不可以这样做
-		pending, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryInfo, cacheForwarder)
+		pending, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryKey, queryCacheable, cacheForwarder)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
@@ -578,7 +606,7 @@ Dial:
 			return err
 		}
 
-		ResponseIndex, nextUpstream, err := c.routing.ResponseSelect(ctx, dnsMessage, upstreamIndex)
+		ResponseIndex, err := c.routing.ResponseSelect(dnsMessage, upstreamIndex)
 		if err != nil {
 			return err
 		}
@@ -618,6 +646,11 @@ Dial:
 		if invokingDepth == MaxDnsLookupDepth {
 			return oops.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
 		}
+		nextUpstreamIndex := consts.DnsRequestOutboundIndex(ResponseIndex)
+		nextUpstream, err := c.routing.GetUpstream(ctx, nextUpstreamIndex)
+		if err != nil {
+			return err
+		}
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
 				"question":      dnsMessage.Question,
@@ -626,7 +659,7 @@ Dial:
 			}).Debugln("Change DNS upstream and resend")
 		}
 		pending = nil
-		upstreamIndex = consts.DnsRequestOutboundIndex(ResponseIndex)
+		upstreamIndex = nextUpstreamIndex
 		upstream = nextUpstream
 		cacheForwarder = true
 		dialArgument = nil
@@ -648,7 +681,7 @@ func (c *DnsController) shareDNSResult(ctx context.Context, flightKey dnsFlightK
 	}
 	if flight == nil {
 		if log.IsLevelEnabled(log.DebugLevel) {
-			log.Debugf("UDP(DNS) <-> Drop excess duplicate lookup: %v %v", flightKey.cacheKey.qname, flightKey.cacheKey.qtype)
+			log.Debugf("UDP(DNS) <-> Drop excess duplicate lookup: %v %v", flightKey.query.qname, flightKey.query.qtype)
 		}
 		return nil
 	}
@@ -705,7 +738,7 @@ func (c *DnsController) waitDNSFlight(ctx context.Context, flightKey dnsFlightKe
 			return ctx.Err()
 		}
 		if log.IsLevelEnabled(log.DebugLevel) {
-			log.Debugf("UDP(DNS) <-> Drop stale duplicate lookup: %v %v", flightKey.cacheKey.qname, flightKey.cacheKey.qtype)
+			log.Debugf("UDP(DNS) <-> Drop stale duplicate lookup: %v %v", flightKey.query.qname, flightKey.query.qtype)
 		}
 		return nil
 	}
@@ -761,12 +794,12 @@ func (c *DnsController) finalizeAcceptedResponse(msg *dnsmessage.Msg, pending *p
 }
 
 func (c *DnsController) commitAcceptedResponse(msg *dnsmessage.Msg, pending *pendingDNSResponse, acceptedAt time.Time) {
-	if pending.cacheKey.qclass != dnsmessage.ClassINET {
+	if !pending.register {
 		return
 	}
 	plan := c.planDNSResponseAt(pending.cacheKey.queryInfo, msg.Answer, acceptedAt)
 	if plan == nil {
-		c.applyResponsePlanTTL(pending.cacheKey.qname, msg.Answer, nil, acceptedAt)
+		c.applyResponsePlanTTL(pending.cacheKey.qname, msg.Answer, nil)
 		return
 	}
 	c.lifecycleMu.Lock()
@@ -774,17 +807,19 @@ func (c *DnsController) commitAcceptedResponse(msg *dnsmessage.Msg, pending *pen
 	if c.closed.Err() != nil {
 		return
 	}
-	c.registerResponsePlanOpen(plan, acceptedAt, time.Now())
-	if !pending.bypassCache && !plan.signed && !plan.suppressCache {
-		c.cacheResponsePlanOpen(pending.cacheKey, plan, acceptedAt)
+	c.registerResponsePlanOpen(plan, time.Now())
+	if pending.cacheable && plan.cacheEligible && !msg.Authoritative && msg.RecursionAvailable {
+		c.cacheResponsePlanOpen(pending.cacheKey, plan)
 	}
-	c.applyResponsePlanTTL(pending.cacheKey.qname, msg.Answer, plan, acceptedAt)
+	c.applyResponsePlanTTL(pending.cacheKey.qname, msg.Answer, plan)
 }
 
-// registerAnswersNoExpiry keeps synthetic DNS-upstream addresses registered
-// without a time-based deadline. Their RR headers intentionally retain TTL 0
-// because this lifetime is internal and is never sent to clients.
-func (c *DnsController) registerAnswersNoExpiry(queryInfo queryInfo, answers []dnsmessage.RR) {
+// registerAddressNoExpiry keeps a DNS-upstream address registered for the
+// lifetime of the control plane.
+func (c *DnsController) registerAddressNoExpiry(queryInfo queryInfo, ip netip.Addr) {
+	if !ip.IsValid() || ip.IsUnspecified() {
+		return
+	}
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 	if c.closed.Err() != nil {
@@ -794,17 +829,10 @@ func (c *DnsController) registerAnswersNoExpiry(queryInfo queryInfo, answers []d
 	}
 	queryInfo.qname = dnsmessage.CanonicalName(queryInfo.qname)
 	domainBitmap := c.matchBitmap(queryInfo.qname)
-	now := time.Now()
-	for _, answer := range answers {
-		ip, ok := dnsAnswerAddress(queryInfo.qtype, answer)
-		if !ok {
-			continue
-		}
-		c.registry.UpsertNoExpiry(queryInfo, ip, domainBitmap, now)
-	}
+	c.registry.UpsertNoExpiry(queryInfo, ip, domainBitmap, time.Now())
 }
 
-func (c *DnsController) registerResponsePlan(plan *responsePlan, acceptedAt time.Time) {
+func (c *DnsController) registerResponsePlan(plan *responsePlan, evaluatedAt time.Time) {
 	if plan == nil {
 		return
 	}
@@ -813,24 +841,27 @@ func (c *DnsController) registerResponsePlan(plan *responsePlan, acceptedAt time
 	if c.closed.Err() != nil {
 		return
 	}
-	c.registerResponsePlanOpen(plan, acceptedAt, acceptedAt)
+	c.registerResponsePlanOpen(plan, evaluatedAt)
 }
 
 // registerResponsePlanOpen requires lifecycleMu to be held and the controller
 // to be open.
-func (c *DnsController) registerResponsePlanOpen(plan *responsePlan, acceptedAt, evaluatedAt time.Time) {
+func (c *DnsController) registerResponsePlanOpen(plan *responsePlan, evaluatedAt time.Time) {
 	for _, view := range plan.views {
 		if len(view.addresses) == 0 {
 			continue
 		}
 		domainBitmap := c.matchBitmap(view.query.qname)
 		for _, address := range view.addresses {
-			if address.exactDeadline {
-				deadline := acceptedAt.Add(time.Duration(address.ttlSeconds) * time.Second)
-				c.registry.UpsertWithDeadline(view.query, address.ip, domainBitmap, deadline, evaluatedAt)
+			if view.addressExactLease {
+				c.registry.UpsertWithDeadline(view.query, address, domainBitmap, view.addressDeadline, evaluatedAt)
 				continue
 			}
-			c.registry.UpsertObserved(view.query, address.ip, domainBitmap, address.ttlSeconds, acceptedAt, evaluatedAt)
+			c.registry.UpsertObserved(
+				view.query, address, domainBitmap,
+				deadlineSeconds(view.addressDeadline, plan.observedAt),
+				plan.observedAt, evaluatedAt,
+			)
 		}
 	}
 }
@@ -885,11 +916,20 @@ func (c *DnsController) selectDnsForwarder(key dnsForwarderKey, candidate DnsFor
 	return candidate, func() {}
 }
 
-// TODO: 简化 cacheKey?
-func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo, cacheForwarder bool) (*pendingDNSResponse, error) {
+func (c *DnsController) dialSend(
+	ctx context.Context,
+	msg *dnsmessage.Msg,
+	upstream *dns.Upstream,
+	dialArgument *dialArgument,
+	queryKey dnsQueryKey,
+	queryCacheable bool,
+	cacheForwarder bool,
+) (*pendingDNSResponse, error) {
+	queryInfo := queryKey.queryInfo
 	request := msg.Copy()
-	cacheKey, _, cacheable := makeDNSCacheKey(msg, upstream, dialArgument, queryInfo)
-	if cacheable {
+	forwarderKey := makeDNSForwarderKey(upstream, dialArgument)
+	cacheKey := makeDNSCacheKey(queryKey, forwarderKey)
+	if queryCacheable {
 		fromCache, err := c.fillDNSCache(cacheKey, msg)
 		if err != nil {
 			return nil, err
@@ -907,7 +947,7 @@ func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstr
 		}
 	}
 
-	forwarder, releaseForwarder, err := c.getDNSForwarder(cacheKey.dnsForwarderKey, upstream, *dialArgument, cacheForwarder)
+	forwarder, releaseForwarder, err := c.getDNSForwarder(forwarderKey, upstream, *dialArgument, cacheForwarder)
 	if err != nil {
 		return nil, err
 	}
@@ -950,7 +990,10 @@ func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstr
 		}).Tracef("Not a valid DNS response")
 	}
 
-	return &pendingDNSResponse{cacheKey: cacheKey, bypassCache: !cacheable, receivedAt: receivedAt}, nil
+	return &pendingDNSResponse{
+		cacheKey: cacheKey, register: queryKey.qclass == dnsmessage.ClassINET,
+		cacheable: queryCacheable, receivedAt: receivedAt,
+	}, nil
 }
 
 func validateDNSResponseIdentity(request, response *dnsmessage.Msg) error {

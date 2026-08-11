@@ -15,51 +15,38 @@ import (
 
 const maxCNAMEChainDepth = 16
 
-type timedAnswer struct {
-	answer     dnsmessage.RR
-	ttlSeconds int
-}
-
-type timedAddress struct {
-	ip            netip.Addr
-	ttlSeconds    int
-	exactDeadline bool
+type plannedRR struct {
+	rr               dnsmessage.RR
+	absoluteDeadline time.Time
+	exactLease       bool
 }
 
 // responseView is the cache and registration state derived for one name in a
 // DNS response. A CNAME response has one view for every suffix of its chain.
 type responseView struct {
-	query          queryInfo
-	answers        []timedAnswer
-	addresses      []timedAddress
-	expiresAsUnit  bool
-	unitTTLSeconds int
+	query             queryInfo
+	answers           []plannedRR
+	addresses         []netip.Addr
+	validUntil        time.Time
+	addressDeadline   time.Time
+	addressExactLease bool
 }
 
 type responsePlan struct {
+	observedAt    time.Time
 	views         []responseView
-	suppressCache bool
-	signed        bool
-}
-
-type normalizedAnswer struct {
-	answer     dnsmessage.RR
-	ttlSeconds int
-	signed     bool
+	cacheEligible bool
 }
 
 type dnsRRSetKey struct {
 	name   string
 	rrtype uint16
-	class  uint16
-	// covered distinguishes RRSIG records for different covered RRsets.
-	covered uint16
 }
 
 type cnameLink struct {
 	owner  string
 	target string
-	answer normalizedAnswer
+	answer plannedRR
 }
 
 // planDNSResponse normalizes RRsets and classifies the response before
@@ -76,21 +63,31 @@ func (c *DnsController) planDNSResponseAt(qi queryInfo, answers []dnsmessage.RR,
 			return nil
 		}
 	}
-	normalized := normalizeDNSAnswers(answers)
+	normalized := normalizeDNSAnswers(answers, observedAt)
 	normalized, signed := constrainSignedRRSetTTLs(normalized, observedAt)
+	for i := range normalized {
+		answer := &normalized[i]
+		ttl := deadlineSeconds(answer.absoluteDeadline, observedAt)
+		if fixedTTL, ok := c.fixedDomainTtl[dnsmessage.CanonicalName(answer.rr.Header().Name)]; ok &&
+			(!answer.exactLease || fixedTTL <= ttl) {
+			ttl = fixedTTL
+		}
+		answer.absoluteDeadline = observedAt.Add(time.Duration(ttl) * time.Second)
+	}
 	finish := func(plan *responsePlan) *responsePlan {
 		if plan != nil {
-			plan.signed = signed
+			plan.observedAt = observedAt
+			plan.cacheEligible = plan.cacheEligible && !signed
 		}
 		return plan
 	}
 	if len(normalized) == 0 {
-		return finish(&responsePlan{views: []responseView{{query: qi}}})
+		return finish(&responsePlan{views: []responseView{{query: qi}}, cacheEligible: true})
 	}
 
 	cnameByOwner := make(map[string][]cnameLink)
 	for _, answer := range normalized {
-		cname, ok := answer.answer.(*dnsmessage.CNAME)
+		cname, ok := answer.rr.(*dnsmessage.CNAME)
 		if !ok {
 			continue
 		}
@@ -105,7 +102,7 @@ func (c *DnsController) planDNSResponseAt(qi queryInfo, answers []dnsmessage.RR,
 		view := c.planDirectView(qi, normalized)
 		return finish(&responsePlan{
 			views:         []responseView{view},
-			suppressCache: !view.expiresAsUnit,
+			cacheEligible: !view.validUntil.IsZero(),
 		})
 	}
 	if !cnameOwnersAreExclusive(normalized, cnameByOwner) {
@@ -120,7 +117,7 @@ func (c *DnsController) planDNSResponseAt(qi queryInfo, answers []dnsmessage.RR,
 			requested := c.planDirectView(qi, normalized)
 			return finish(&responsePlan{
 				views:         []responseView{c.planAtomicView(qi, normalized)},
-				suppressCache: !requested.expiresAsUnit,
+				cacheEligible: !requested.validUntil.IsZero(),
 			})
 		}
 		// Ignore disconnected CNAME data when the response contains a direct
@@ -129,15 +126,12 @@ func (c *DnsController) planDNSResponseAt(qi queryInfo, answers []dnsmessage.RR,
 		if len(direct.addresses) == 0 {
 			return nil
 		}
-		return finish(&responsePlan{views: []responseView{direct}})
+		return finish(&responsePlan{views: []responseView{direct}, cacheEligible: true})
 	}
 
-	links, terminalName, ok := followCNAMEChain(qi.qname, cnameByOwner)
-	if !ok {
-		return nil
-	}
+	links, terminalName := followCNAMEChain(qi.qname, cnameByOwner)
 	if qi.qtype == dnsmessage.TypeCNAME {
-		return finish(&responsePlan{views: []responseView{c.planAtomicView(qi, normalized)}})
+		return finish(&responsePlan{views: []responseView{c.planAtomicView(qi, normalized)}, cacheEligible: true})
 	}
 	terminalRRSet := rrsetAnswersOwnedBy(normalized, terminalName, qi.qtype)
 	if len(terminalRRSet) == 0 {
@@ -145,65 +139,60 @@ func (c *DnsController) planDNSResponseAt(qi queryInfo, answers []dnsmessage.RR,
 		// only its Answer section would discard the authoritative denial and
 		// turn it into a misleading positive CNAME cache entry.
 		return finish(&responsePlan{
-			views:         []responseView{c.planAtomicView(qi, normalized)},
-			suppressCache: true,
+			views: []responseView{c.planAtomicView(qi, normalized)},
 		})
 	}
 	if qi.qtype != dnsmessage.TypeA && qi.qtype != dnsmessage.TypeAAAA {
-		return finish(&responsePlan{views: []responseView{c.planAtomicView(qi, normalized)}})
+		return finish(&responsePlan{views: []responseView{c.planAtomicView(qi, normalized)}, cacheEligible: true})
 	}
 	terminalAnswers := addressAnswersOwnedBy(normalized, terminalName, qi.qtype)
 	if len(terminalAnswers) == 0 {
 		return finish(&responsePlan{
-			views:         []responseView{c.planAtomicView(qi, normalized)},
-			suppressCache: true,
+			views: []responseView{c.planAtomicView(qi, normalized)},
 		})
 	}
 
 	views := c.planCNAMEViews(qi, normalized, links, terminalName, terminalAnswers)
-	return finish(&responsePlan{views: views})
+	return finish(&responsePlan{views: views, cacheEligible: true})
 }
 
-func constrainSignedRRSetTTLs(answers []normalizedAnswer, observedAt time.Time) ([]normalizedAnswer, bool) {
+func constrainSignedRRSetTTLs(answers []plannedRR, observedAt time.Time) ([]plannedRR, bool) {
 	type signatureConstraint struct {
-		present bool
-		usable  bool
-		ttl     int
+		usable bool
+		ttl    int
 	}
 	rrsets := make(map[dnsRRSetKey]struct{})
 	for _, answer := range answers {
-		if answer.answer.Header().Rrtype != dnsmessage.TypeRRSIG {
-			rrsets[dnsRRSetKeyFor(answer.answer)] = struct{}{}
+		if answer.rr.Header().Rrtype != dnsmessage.TypeRRSIG {
+			rrsets[dnsRRSetKeyFor(answer.rr)] = struct{}{}
 		}
 	}
 	constraints := make(map[dnsRRSetKey]signatureConstraint)
 	signed := false
 	for i := range answers {
 		answer := &answers[i]
-		signature, ok := answer.answer.(*dnsmessage.RRSIG)
+		signature, ok := answer.rr.(*dnsmessage.RRSIG)
 		if !ok {
 			continue
 		}
 		signed = true
-		answer.signed = true
-		cap := min(answer.ttlSeconds, normalizedDNSTTL(signature.OrigTtl))
+		answer.exactLease = true
+		cap := min(deadlineSeconds(answer.absoluteDeadline, observedAt), normalizedDNSTTL(signature.OrigTtl))
 		remaining, valid := rrsigRemainingTTL(signature, observedAt)
 		if !valid {
 			cap = 0
 		} else {
 			cap = min(cap, remaining)
 		}
-		answer.ttlSeconds = cap
+		answer.absoluteDeadline = observedAt.Add(time.Duration(cap) * time.Second)
 		key := dnsRRSetKey{
 			name:   dnsmessage.CanonicalName(signature.Hdr.Name),
 			rrtype: signature.TypeCovered,
-			class:  signature.Hdr.Class,
 		}
 		if _, exists := rrsets[key]; !exists {
 			continue
 		}
 		constraint := constraints[key]
-		constraint.present = true
 		if valid && (!constraint.usable || cap > constraint.ttl) {
 			constraint.usable = true
 			constraint.ttl = cap
@@ -214,24 +203,23 @@ func constrainSignedRRSetTTLs(answers []normalizedAnswer, observedAt time.Time) 
 		return answers, false
 	}
 	for i := range answers {
-		if answers[i].answer.Header().Rrtype == dnsmessage.TypeRRSIG {
+		if answers[i].rr.Header().Rrtype == dnsmessage.TypeRRSIG {
 			continue
 		}
-		header := answers[i].answer.Header()
+		header := answers[i].rr.Header()
 		key := dnsRRSetKey{
 			name:   dnsmessage.CanonicalName(header.Name),
 			rrtype: header.Rrtype,
-			class:  header.Class,
 		}
 		constraint, exists := constraints[key]
-		if !exists || !constraint.present {
+		if !exists {
 			continue
 		}
-		answers[i].signed = true
+		answers[i].exactLease = true
 		if !constraint.usable {
-			answers[i].ttlSeconds = 0
-		} else if answers[i].ttlSeconds > constraint.ttl {
-			answers[i].ttlSeconds = constraint.ttl
+			answers[i].absoluteDeadline = observedAt
+		} else if deadlineSeconds(answers[i].absoluteDeadline, observedAt) > constraint.ttl {
+			answers[i].absoluteDeadline = observedAt.Add(time.Duration(constraint.ttl) * time.Second)
 		}
 	}
 	return answers, true
@@ -257,12 +245,12 @@ func rrsigRemainingTTL(signature *dnsmessage.RRSIG, observedAt time.Time) (int, 
 	return int(remaining), true
 }
 
-func cnameOwnersAreExclusive(answers []normalizedAnswer, byOwner map[string][]cnameLink) bool {
+func cnameOwnersAreExclusive(answers []plannedRR, byOwner map[string][]cnameLink) bool {
 	for _, answer := range answers {
-		if len(byOwner[dnsmessage.CanonicalName(answer.answer.Header().Name)]) == 0 {
+		if len(byOwner[dnsmessage.CanonicalName(answer.rr.Header().Name)]) == 0 {
 			continue
 		}
-		switch answer.answer.Header().Rrtype {
+		switch answer.rr.Header().Rrtype {
 		case dnsmessage.TypeCNAME, dnsmessage.TypeRRSIG, dnsmessage.TypeNSEC:
 		default:
 			return false
@@ -295,7 +283,7 @@ func cnameGraphIsValid(byOwner map[string][]cnameLink) bool {
 	return true
 }
 
-func normalizeDNSAnswers(answers []dnsmessage.RR) []normalizedAnswer {
+func normalizeDNSAnswers(answers []dnsmessage.RR, observedAt time.Time) []plannedRR {
 	rrsetTTL := make(map[dnsRRSetKey]int)
 	answerTTL := make(map[dnsAnswerKey]int)
 	unique := make([]dnsmessage.RR, 0, len(answers))
@@ -305,9 +293,6 @@ func normalizeDNSAnswers(answers []dnsmessage.RR) []normalizedAnswer {
 			continue
 		}
 		header := answer.Header()
-		if header.Class != dnsmessage.ClassINET {
-			continue
-		}
 		rrset := dnsRRSetKeyFor(answer)
 		ttl := normalizedDNSTTL(header.Ttl)
 		if current, exists := rrsetTTL[rrset]; header.Rrtype != dnsmessage.TypeRRSIG && (!exists || ttl < current) {
@@ -324,15 +309,15 @@ func normalizeDNSAnswers(answers []dnsmessage.RR) []normalizedAnswer {
 		unique = append(unique, answer)
 	}
 
-	normalized := make([]normalizedAnswer, 0, len(unique))
+	normalized := make([]plannedRR, 0, len(unique))
 	for _, answer := range unique {
 		ttl := rrsetTTL[dnsRRSetKeyFor(answer)]
 		if answer.Header().Rrtype == dnsmessage.TypeRRSIG {
 			ttl = answerTTL[dnsAnswerIdentity(answer)]
 		}
-		normalized = append(normalized, normalizedAnswer{
-			answer:     answer,
-			ttlSeconds: ttl,
+		normalized = append(normalized, plannedRR{
+			rr:               answer,
+			absoluteDeadline: observedAt.Add(time.Duration(ttl) * time.Second),
 		})
 	}
 	return normalized
@@ -340,15 +325,10 @@ func normalizeDNSAnswers(answers []dnsmessage.RR) []normalizedAnswer {
 
 func dnsRRSetKeyFor(answer dnsmessage.RR) dnsRRSetKey {
 	header := answer.Header()
-	key := dnsRRSetKey{
+	return dnsRRSetKey{
 		name:   dnsmessage.CanonicalName(header.Name),
 		rrtype: header.Rrtype,
-		class:  header.Class,
 	}
-	if signature, ok := answer.(*dnsmessage.RRSIG); ok {
-		key.covered = signature.TypeCovered
-	}
-	return key
 }
 
 func normalizedDNSTTL(ttl uint32) int {
@@ -358,55 +338,40 @@ func normalizedDNSTTL(ttl uint32) int {
 	return int(ttl)
 }
 
-func followCNAMEChain(root string, byOwner map[string][]cnameLink) ([]cnameLink, string, bool) {
+func deadlineSeconds(deadline, observedAt time.Time) int {
+	remaining := deadline.Sub(observedAt)
+	if remaining <= 0 {
+		return 0
+	}
+	return int(remaining / time.Second)
+}
+
+func followCNAMEChain(root string, byOwner map[string][]cnameLink) ([]cnameLink, string) {
 	current := root
-	visited := make(map[string]struct{})
 	links := make([]cnameLink, 0)
 	for {
-		if _, exists := visited[current]; exists {
-			return nil, "", false
-		}
-		visited[current] = struct{}{}
 		candidates := byOwner[current]
 		if len(candidates) == 0 {
-			return links, current, true
-		}
-		if len(candidates) != 1 || len(links) >= maxCNAMEChainDepth {
-			return nil, "", false
+			return links, current
 		}
 		links = append(links, candidates[0])
 		current = candidates[0].target
 	}
 }
 
-func (c *DnsController) effectivePlanTTL(fqdn string, ttl int, signed bool) int {
-	effective := c.effectiveTTL(fqdn, ttl)
-	if signed && effective > ttl {
-		return ttl
-	}
-	return effective
-}
-
-func (c *DnsController) effectiveAnswerTTL(answer normalizedAnswer) int {
-	return c.effectivePlanTTL(
-		dnsmessage.CanonicalName(answer.answer.Header().Name),
-		answer.ttlSeconds,
-		answer.signed,
-	)
-}
-
-func (c *DnsController) planDirectView(qi queryInfo, answers []normalizedAnswer) responseView {
-	view := responseView{query: qi, answers: make([]timedAnswer, 0, len(answers))}
+func (c *DnsController) planDirectView(qi queryInfo, answers []plannedRR) responseView {
+	view := responseView{query: qi, answers: make([]plannedRR, 0, len(answers))}
 	for _, answer := range answers {
-		ttl := c.effectiveAnswerTTL(answer)
-		view.answers = append(view.answers, timedAnswer{answer: answer.answer, ttlSeconds: ttl})
-		if dnsmessage.CanonicalName(answer.answer.Header().Name) != qi.qname {
+		view.answers = append(view.answers, answer)
+		if dnsmessage.CanonicalName(answer.rr.Header().Name) != qi.qname {
 			continue
 		}
-		if ip, ok := dnsAnswerAddress(qi.qtype, answer.answer); ok {
-			view.addresses = append(view.addresses, timedAddress{
-				ip: ip, ttlSeconds: ttl, exactDeadline: answer.signed,
-			})
+		if ip, ok := dnsAnswerAddress(qi.qtype, answer.rr); ok {
+			view.addresses = append(view.addresses, ip)
+			if view.addressDeadline.IsZero() || answer.absoluteDeadline.Before(view.addressDeadline) {
+				view.addressDeadline = answer.absoluteDeadline
+			}
+			view.addressExactLease = view.addressExactLease || answer.exactLease
 		}
 	}
 	dependencies := rrsetAnswersOwnedBy(answers, qi.qname, qi.qtype)
@@ -414,34 +379,24 @@ func (c *DnsController) planDirectView(qi queryInfo, answers []normalizedAnswer)
 		dependencies = answersOwnedBy(answers, qi.qname)
 	}
 	if len(dependencies) > 0 {
-		view.expiresAsUnit = true
-		view.unitTTLSeconds = c.minimumPlanTTL(dependencies)
+		view.validUntil = minimumPlanDeadline(dependencies)
 	}
 	return view
 }
 
-func (c *DnsController) planAtomicView(qi queryInfo, answers []normalizedAnswer) responseView {
-	view := responseView{
-		query:          qi,
-		answers:        make([]timedAnswer, 0, len(answers)),
-		expiresAsUnit:  true,
-		unitTTLSeconds: c.minimumPlanTTL(answers),
+func (c *DnsController) planAtomicView(qi queryInfo, answers []plannedRR) responseView {
+	return responseView{
+		query:      qi,
+		answers:    append([]plannedRR(nil), answers...),
+		validUntil: minimumPlanDeadline(answers),
 	}
-	for _, answer := range answers {
-		ttl := c.effectiveAnswerTTL(answer)
-		view.answers = append(view.answers, timedAnswer{
-			answer:     answer.answer,
-			ttlSeconds: ttl,
-		})
-	}
-	return view
 }
 
-func (c *DnsController) minimumPlanTTL(answers []normalizedAnswer) int {
-	minimum := c.effectiveAnswerTTL(answers[0])
+func minimumPlanDeadline(answers []plannedRR) time.Time {
+	minimum := answers[0].absoluteDeadline
 	for _, answer := range answers[1:] {
-		if ttl := c.effectiveAnswerTTL(answer); ttl < minimum {
-			minimum = ttl
+		if answer.absoluteDeadline.Before(minimum) {
+			minimum = answer.absoluteDeadline
 		}
 	}
 	return minimum
@@ -449,108 +404,86 @@ func (c *DnsController) minimumPlanTTL(answers []normalizedAnswer) int {
 
 func (c *DnsController) planCNAMEViews(
 	qi queryInfo,
-	rootAnswers []normalizedAnswer,
+	rootAnswers []plannedRR,
 	links []cnameLink,
 	terminalName string,
-	terminalAnswers []normalizedAnswer,
+	terminalAnswers []plannedRR,
 ) []responseView {
 	views := make([]responseView, len(links)+1)
 	terminal := responseView{
 		query:   queryInfo{qname: terminalName, qtype: qi.qtype},
-		answers: make([]timedAnswer, 0, len(terminalAnswers)),
+		answers: append([]plannedRR(nil), terminalAnswers...),
 	}
 	for _, answer := range terminalAnswers {
-		ttl := c.effectiveAnswerTTL(answer)
-		terminal.answers = append(terminal.answers, timedAnswer{answer: answer.answer, ttlSeconds: ttl})
-		if ip, ok := dnsAnswerAddress(qi.qtype, answer.answer); ok {
-			terminal.addresses = append(terminal.addresses, timedAddress{
-				ip: ip, ttlSeconds: ttl, exactDeadline: answer.signed,
-			})
+		if ip, ok := dnsAnswerAddress(qi.qtype, answer.rr); ok {
+			terminal.addresses = append(terminal.addresses, ip)
+			if terminal.addressDeadline.IsZero() || answer.absoluteDeadline.Before(terminal.addressDeadline) {
+				terminal.addressDeadline = answer.absoluteDeadline
+			}
+			terminal.addressExactLease = terminal.addressExactLease || answer.exactLease
 		}
 	}
 	views[len(links)] = terminal
 
-	suffix := append([]normalizedAnswer(nil), terminalAnswers...)
+	suffix := append([]plannedRR(nil), terminalAnswers...)
 	for i := len(links) - 1; i >= 1; i-- {
 		link := links[i]
-		suffix = append([]normalizedAnswer{link.answer}, suffix...)
-		unitTTL := c.minimumPlanTTL(suffix)
-		exactDeadline := containsSignedAnswer(suffix)
+		suffix = append([]plannedRR{link.answer}, suffix...)
+		validUntil := minimumPlanDeadline(suffix)
 		view := responseView{
-			query:          queryInfo{qname: link.owner, qtype: qi.qtype},
-			answers:        make([]timedAnswer, 0, len(suffix)),
-			addresses:      make([]timedAddress, 0, len(terminal.addresses)),
-			expiresAsUnit:  true,
-			unitTTLSeconds: unitTTL,
-		}
-		for _, answer := range suffix {
-			view.answers = append(view.answers, timedAnswer{
-				answer:     answer.answer,
-				ttlSeconds: c.effectiveAnswerTTL(answer),
-			})
-		}
-		for _, address := range terminal.addresses {
-			view.addresses = append(view.addresses, timedAddress{
-				ip: address.ip, ttlSeconds: unitTTL, exactDeadline: exactDeadline,
-			})
+			query:             queryInfo{qname: link.owner, qtype: qi.qtype},
+			answers:           append([]plannedRR(nil), suffix...),
+			addresses:         append([]netip.Addr(nil), terminal.addresses...),
+			validUntil:        validUntil,
+			addressDeadline:   validUntil,
+			addressExactLease: containsExactLease(suffix),
 		}
 		views[i] = view
 	}
 
 	// The root cache preserves relevant ancillary records from the original
 	// answer, but none may outlive the CNAME chain on which it depends.
-	dependencies := make([]normalizedAnswer, 0, len(links)+len(terminalAnswers))
+	dependencies := make([]plannedRR, 0, len(links)+len(terminalAnswers))
 	for _, link := range links {
 		dependencies = append(dependencies, link.answer)
 	}
 	dependencies = append(dependencies, terminalAnswers...)
-	rootUnitTTL := c.minimumPlanTTL(dependencies)
-	rootExactDeadline := containsSignedAnswer(dependencies)
+	rootValidUntil := minimumPlanDeadline(dependencies)
 	root := responseView{
-		query:          qi,
-		answers:        make([]timedAnswer, 0, len(rootAnswers)),
-		addresses:      make([]timedAddress, 0, len(terminal.addresses)),
-		expiresAsUnit:  true,
-		unitTTLSeconds: rootUnitTTL,
-	}
-	for _, answer := range rootAnswers {
-		root.answers = append(root.answers, timedAnswer{
-			answer:     answer.answer,
-			ttlSeconds: c.effectiveAnswerTTL(answer),
-		})
-	}
-	for _, address := range terminal.addresses {
-		root.addresses = append(root.addresses, timedAddress{
-			ip: address.ip, ttlSeconds: rootUnitTTL, exactDeadline: rootExactDeadline,
-		})
+		query:             qi,
+		answers:           append([]plannedRR(nil), rootAnswers...),
+		addresses:         append([]netip.Addr(nil), terminal.addresses...),
+		validUntil:        rootValidUntil,
+		addressDeadline:   rootValidUntil,
+		addressExactLease: containsExactLease(dependencies),
 	}
 	views[0] = root
 	return views
 }
 
-func containsSignedAnswer(answers []normalizedAnswer) bool {
+func containsExactLease(answers []plannedRR) bool {
 	for _, answer := range answers {
-		if answer.signed {
+		if answer.exactLease {
 			return true
 		}
 	}
 	return false
 }
 
-func answersOwnedBy(answers []normalizedAnswer, owner string) []normalizedAnswer {
-	filtered := make([]normalizedAnswer, 0)
+func answersOwnedBy(answers []plannedRR, owner string) []plannedRR {
+	filtered := make([]plannedRR, 0)
 	for _, answer := range answers {
-		if dnsmessage.CanonicalName(answer.answer.Header().Name) == owner {
+		if dnsmessage.CanonicalName(answer.rr.Header().Name) == owner {
 			filtered = append(filtered, answer)
 		}
 	}
 	return filtered
 }
 
-func rrsetAnswersOwnedBy(answers []normalizedAnswer, owner string, qtype uint16) []normalizedAnswer {
-	filtered := make([]normalizedAnswer, 0)
+func rrsetAnswersOwnedBy(answers []plannedRR, owner string, qtype uint16) []plannedRR {
+	filtered := make([]plannedRR, 0)
 	for _, answer := range answers {
-		header := answer.answer.Header()
+		header := answer.rr.Header()
 		if dnsmessage.CanonicalName(header.Name) == owner && header.Rrtype == qtype {
 			filtered = append(filtered, answer)
 		}
@@ -558,13 +491,13 @@ func rrsetAnswersOwnedBy(answers []normalizedAnswer, owner string, qtype uint16)
 	return filtered
 }
 
-func addressAnswersOwnedBy(answers []normalizedAnswer, owner string, qtype uint16) []normalizedAnswer {
-	filtered := make([]normalizedAnswer, 0)
+func addressAnswersOwnedBy(answers []plannedRR, owner string, qtype uint16) []plannedRR {
+	filtered := make([]plannedRR, 0)
 	for _, answer := range answers {
-		if dnsmessage.CanonicalName(answer.answer.Header().Name) != owner {
+		if dnsmessage.CanonicalName(answer.rr.Header().Name) != owner {
 			continue
 		}
-		switch answer.answer.(type) {
+		switch answer.rr.(type) {
 		case *dnsmessage.A:
 			if qtype == dnsmessage.TypeA {
 				filtered = append(filtered, answer)

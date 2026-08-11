@@ -29,9 +29,8 @@ type Dns struct {
 }
 
 type NewOption struct {
-	LocationFinder          *assets.LocationFinder
-	UpstreamReadyCallback   func(dnsUpstream *Upstream)
-	UpstreamResolverNetwork string
+	LocationFinder        *assets.LocationFinder
+	UpstreamReadyCallback func(dnsUpstream *Upstream)
 	// InterfaceManager resolves ifname in request routing rules to ifindex and
 	// keeps it in sync with the interface lifecycle. It may be nil, in which
 	// case ifname rules never match.
@@ -58,11 +57,8 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 			return nil, fmt.Errorf("%w: %v", ErrBadUpstreamFormat, err)
 		}
 		r := &UpstreamResolver{
-			Raw:     u,
-			Network: opt.UpstreamResolverNetwork,
-			FinishInitCallback: func(_ *url.URL, upstream *Upstream) {
-				opt.UpstreamReadyCallback(upstream)
-			},
+			Raw:                u,
+			FinishInitCallback: opt.UpstreamReadyCallback,
 		}
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)
@@ -114,6 +110,12 @@ func (s *Dns) CheckUpstreamsFormat() error {
 }
 
 func (s *Dns) GetUpstream(ctx context.Context, upstreamIndex consts.DnsRequestOutboundIndex) (upstream *Upstream, err error) {
+	if upstreamIndex < 0 {
+		return nil, fmt.Errorf("bad upstream index: %v is negative", upstreamIndex)
+	}
+	if int(upstreamIndex) >= len(s.upstream) {
+		return nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
+	}
 	return s.upstream[upstreamIndex].GetUpstream(ctx)
 }
 
@@ -124,25 +126,12 @@ func (s *Dns) RequestSelect(
 	dip netip.Addr,
 	sip netip.Addr,
 ) (upstreamIndex consts.DnsRequestOutboundIndex, err error) {
-	// Route.
-	upstreamIndex, err = s.reqMatcher.Match(qname, qtype, ifindex, dip, sip)
-	if err != nil {
-		return 0, err
-	}
-	// nil indicates AsIs.
-	if upstreamIndex == consts.DnsRequestOutboundIndex_AsIs ||
-		upstreamIndex == consts.DnsRequestOutboundIndex_Reject {
-		return upstreamIndex, nil
-	}
-	if int(upstreamIndex) >= len(s.upstream) {
-		return 0, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
-	}
-	return upstreamIndex, nil
+	return s.reqMatcher.Match(qname, qtype, ifindex, dip, sip)
 }
 
-func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, from consts.DnsRequestOutboundIndex) (upstreamIndex consts.DnsResponseOutboundIndex, upstream *Upstream, err error) {
+func (s *Dns) ResponseSelect(msg *dnsmessage.Msg, from consts.DnsRequestOutboundIndex) (upstreamIndex consts.DnsResponseOutboundIndex, err error) {
 	if !msg.Response {
-		return 0, nil, fmt.Errorf("DNS response expected but DNS request received")
+		return 0, fmt.Errorf("DNS response expected but DNS request received")
 	}
 
 	// Prepare routing.
@@ -177,20 +166,7 @@ func (s *Dns) ResponseSelect(ctx context.Context, msg *dnsmessage.Msg, from cons
 	// Route.
 	upstreamIndex, err = s.respMatcher.Match(qname, qtype, ips, from)
 	if err != nil {
-		return 0, nil, err
+		return 0, err
 	}
-	// Get corresponding upstream if upstream is neither 'accept' nor 'reject'.
-	if !upstreamIndex.IsReserved() {
-		if int(upstreamIndex) >= len(s.upstream) {
-			return 0, nil, fmt.Errorf("bad upstream index: %v not in [0, %v]", upstreamIndex, len(s.upstream)-1)
-		}
-		upstream, err = s.upstream[upstreamIndex].GetUpstream(ctx)
-		if err != nil {
-			return 0, nil, err
-		}
-	} else {
-		// Assign explicitly to let coder know.
-		upstream = nil
-	}
-	return upstreamIndex, upstream, nil
+	return upstreamIndex, nil
 }

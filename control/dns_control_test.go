@@ -139,7 +139,7 @@ func registerTestDNSResponse(c *DnsController, qi queryInfo, answers []dnsmessag
 }
 
 func cacheTestDNSResponse(c *DnsController, key dnsCacheKey, answers []dnsmessage.RR) {
-	c.cacheResponsePlan(key, c.planDNSResponse(key.queryInfo, answers), time.Now())
+	c.cacheResponsePlan(key, c.planDNSResponse(key.queryInfo, answers))
 }
 
 func TestDnsControllerReturnsFormerrForMultipleQuestions(t *testing.T) {
@@ -225,8 +225,8 @@ func TestRegisterAnswersNormalizesRRSetTtl(t *testing.T) {
 	start := time.Now()
 
 	registerTestDNSResponse(c, qi, []dnsmessage.RR{short, long})
-	shortExpiry := registry.byName[qi][netip.MustParseAddr("1.1.1.1")].expiry
-	longExpiry := registry.byName[qi][netip.MustParseAddr("2.2.2.2")].expiry
+	shortExpiry := registry.byName[qi][netip.MustParseAddr("1.1.1.1")].effectiveExpiry()
+	longExpiry := registry.byName[qi][netip.MustParseAddr("2.2.2.2")].effectiveExpiry()
 	if d := shortExpiry.Sub(start); d < 25*time.Second || d > 35*time.Second {
 		t.Errorf("short-lived IP should keep its own registry TTL: %v", d)
 	}
@@ -269,7 +269,7 @@ func TestRegisterAnswersFixedTtlSemantics(t *testing.T) {
 	if r == nil {
 		t.Fatalf("pinned.com. should be registered")
 	}
-	if d := r.expiry.Sub(start); d < 25*time.Second || d > 35*time.Second {
+	if d := r.effectiveExpiry().Sub(start); d < 25*time.Second || d > 35*time.Second {
 		t.Errorf("registration lifetime should follow fixed_ttl (30s): %v", d)
 	}
 	if !fake.has(ipPinned) {
@@ -288,7 +288,7 @@ func TestRegisterAnswersFixedTtlSemantics(t *testing.T) {
 		t.Errorf("fixed_ttl=0 record should still verify: %v", got)
 	}
 	r = registry.byName[qiNocache][ipNocache]
-	if d := r.expiry.Sub(start); d < 5*time.Second || d > 15*time.Second {
+	if d := r.effectiveExpiry().Sub(start); d < 5*time.Second || d > 15*time.Second {
 		t.Errorf("fixed_ttl=0 registration lifetime should be floored by MinDomainTTL: %v", d)
 	}
 	checkInvariants(t, registry, fake)
@@ -304,7 +304,7 @@ func TestResponseCacheFixedDomain(t *testing.T) {
 	answer := testARecord("pinned.com.", "1.1.1.1")
 	answer.Hdr.Ttl = 3600
 	cacheTestDNSResponse(c, key, []dnsmessage.RR{answer})
-	caches := c.dnsCache.Get(key)
+	caches := getTestDNSCache(c.dnsCache, key)
 	if len(caches) != 1 {
 		t.Fatalf("expected one cached answer: %v", len(caches))
 	}
@@ -314,7 +314,7 @@ func TestResponseCacheFixedDomain(t *testing.T) {
 
 	noCacheKey := dnsCacheKey{queryInfo: queryInfo{qname: "nocache.com.", qtype: dnsmessage.TypeA}}
 	cacheTestDNSResponse(c, noCacheKey, []dnsmessage.RR{testARecord("nocache.com.", "2.2.2.2")})
-	if caches := c.dnsCache.Get(noCacheKey); caches != nil {
+	if caches := getTestDNSCache(c.dnsCache, noCacheKey); caches != nil {
 		t.Fatalf("fixed_ttl=0 response must be expired immediately: %v", caches)
 	}
 }
@@ -322,7 +322,7 @@ func TestResponseCacheFixedDomain(t *testing.T) {
 func TestDNSFlightCoalescesTtlZeroDuplicates(t *testing.T) {
 	c, _, _ := newTestDnsController(t, map[string]int{"example.com.": 0})
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-	key := dnsFlightKey{cacheKey: dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET, variant: "ttl-zero"}}
+	key := testDNSFlightKey(qi, "ttl-zero")
 	leaderMsg := testDNSQuery("ExAmPlE.com.", qi.qtype, 1)
 	followerMsg := testDNSQuery("eXaMpLe.com.", qi.qtype, 2)
 	started := make(chan struct{})
@@ -339,7 +339,7 @@ func TestDNSFlightCoalescesTtlZeroDuplicates(t *testing.T) {
 			response.Answer = []dnsmessage.RR{testARecord(qi.qname, "1.2.3.4")}
 			*leaderMsg = *response
 			c.finalizeAcceptedResponse(leaderMsg, &pendingDNSResponse{
-				cacheKey: key.cacheKey, receivedAt: time.Now(),
+				cacheKey: dnsCacheKey{queryInfo: qi, variant: key.query.variant}, register: true, receivedAt: time.Now(),
 			})
 			return nil
 		})
@@ -377,9 +377,7 @@ func TestDNSFlightCoalescesTtlZeroDuplicates(t *testing.T) {
 
 func TestDNSFlightCoalescesUpstreamErrors(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
-	key := dnsFlightKey{cacheKey: dnsCacheKey{
-		queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, variant: "error",
-	}}
+	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "error")
 	wantErr := errors.New("upstream failure")
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -420,7 +418,7 @@ func TestDNSFlightCoalescesUpstreamErrors(t *testing.T) {
 
 func TestDNSFlightParticipantLimit(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
-	key := dnsFlightKey{cacheKey: dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}}
+	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "")
 	flight, leader, err := c.startDNSFlight(key)
 	if err != nil || !leader || flight == nil {
 		t.Fatal("first participant was not admitted as leader")
@@ -447,7 +445,7 @@ func TestDNSFlightDropsStaleDuplicateWaiter(t *testing.T) {
 	defer func() { dnsDuplicateWaitTimeout = oldTimeout }()
 
 	c, _, _ := newTestDnsController(t, nil)
-	key := dnsFlightKey{cacheKey: dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}}
+	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "")
 	flight, leader, err := c.startDNSFlight(key)
 	if err != nil || !leader {
 		t.Fatal("leader was not admitted")
@@ -476,7 +474,7 @@ func TestResponseCacheNormalizesRRSetDeadlines(t *testing.T) {
 	start := time.Now()
 
 	cacheTestDNSResponse(c, key, []dnsmessage.RR{short, long})
-	caches := c.dnsCache.Get(key)
+	caches := getTestDNSCache(c.dnsCache, key)
 	if len(caches) != 2 {
 		t.Fatalf("expected both answers: %v", caches)
 	}
@@ -616,12 +614,15 @@ func TestDNSQueryVariantSeparatesResponseVaryingData(t *testing.T) {
 			upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
 			dialArg := &dialArgument{}
 			qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-			keyA, flightA, _ := makeDNSCacheKey(tt.a, upstream, dialArg, qi)
-			keyB, flightB, _ := makeDNSCacheKey(tt.b, upstream, dialArg, qi)
-			if !flightA || !flightB || keyA == keyB {
-				t.Fatalf("cache/flight keys were not separated: a=%+v b=%+v", keyA, keyB)
+			queryA, flightA, _ := makeDNSQueryKey(tt.a, qi)
+			queryB, flightB, _ := makeDNSQueryKey(tt.b, qi)
+			if !flightA || !flightB || queryA == queryB {
+				t.Fatalf("flight keys were not separated: a=%+v b=%+v", queryA, queryB)
 			}
-			cache := newCommonDnsCache[dnsCacheKey](2)
+			forwarderKey := makeDNSForwarderKey(upstream, dialArg)
+			keyA := makeDNSCacheKey(queryA, forwarderKey)
+			keyB := makeDNSCacheKey(queryB, forwarderKey)
+			cache := newCommonDnsCache(2)
 			cache.Replace(keyA, []*DnsCache{newDnsCache(testARecord(qi.qname, "1.2.3.4"), time.Now().Add(time.Minute))}, time.Time{})
 			if cache.FillInto(keyB, tt.b.Copy()) {
 				t.Fatal("one query variant consumed another variant's cache entry")
@@ -629,18 +630,16 @@ func TestDNSQueryVariantSeparatesResponseVaryingData(t *testing.T) {
 		})
 	}
 
-	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
-	dialArg := &dialArgument{}
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
 	in := testDNSQuery(qi.qname, qi.qtype, 1)
 	chaos := testDNSQuery(qi.qname, qi.qtype, 2)
 	chaos.Question[0].Qclass = dnsmessage.ClassCHAOS
-	inKey, inFlight, inCache := makeDNSCacheKey(in, upstream, dialArg, qi)
-	chaosKey, chaosFlight, chaosCache := makeDNSCacheKey(chaos, upstream, dialArg, qi)
+	inKey, inFlight, inCache := makeDNSQueryKey(in, qi)
+	chaosKey, chaosFlight, chaosCache := makeDNSQueryKey(chaos, qi)
 	if !inFlight || !inCache || !chaosFlight || chaosCache || inKey == chaosKey {
 		t.Fatalf("QCLASS/reuse policy mismatch: in=%+v chaos=%+v", inKey, chaosKey)
 	}
-	_, ednsFlight, ednsCache := makeDNSCacheKey(edns(1232), upstream, dialArg, qi)
+	_, ednsFlight, ednsCache := makeDNSQueryKey(edns(1232), qi)
 	if !ednsFlight || ednsCache {
 		t.Fatal("EDNS queries should share exact flights but bypass the answer-only cache")
 	}
@@ -695,14 +694,14 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 	upstreamResponse.Answer = []dnsmessage.RR{testARecord("pinned.com.", ip.String())}
 	upstreamResponse.Answer[0].Header().Ttl = 3600
 	c.finalizeAcceptedResponse(upstreamResponse, &pendingDNSResponse{
-		cacheKey:   dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET},
+		cacheKey: testDNSCacheKey(qi), register: true,
 		receivedAt: time.Now(),
 	})
 	registration := registry.byName[qi][ip]
 	if registration == nil {
 		t.Fatal("upstream response should register its address")
 	}
-	registryDeadline := registration.expiry
+	registryDeadline := registration.effectiveExpiry()
 	if got := upstreamResponse.Answer[0].Header().Ttl; got != 30 {
 		t.Fatalf("fresh upstream response should apply fixed TTL: %v", got)
 	}
@@ -712,9 +711,10 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 
 	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
 	dialArg := &dialArgument{}
-	forwarderKey := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	forwarderKey := makeDNSForwarderKey(upstream, dialArg)
 	cachedResponse := testDNSQuery(qi.qname, qi.qtype, 7)
-	cacheKey, _, cacheable := makeDNSCacheKey(cachedResponse, upstream, dialArg, qi)
+	queryKey, _, cacheable := makeDNSQueryKey(cachedResponse, qi)
+	cacheKey := makeDNSCacheKey(queryKey, forwarderKey)
 	if !cacheable {
 		t.Fatal("plain IN query should be cacheable")
 	}
@@ -722,7 +722,7 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 	c.dnsCache.Replace(cacheKey, []*DnsCache{
 		newDnsCache(upstreamResponse.Answer[0], time.Now().Add(5*time.Second)),
 	}, time.Time{})
-	pending, err := c.dialSend(context.Background(), cachedResponse, upstream, dialArg, qi, true)
+	pending, err := c.dialSend(context.Background(), cachedResponse, upstream, dialArg, queryKey, cacheable, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +741,7 @@ func TestCachedFixedTtlResponseKeepsRemainingLifetime(t *testing.T) {
 	if got := cachedResponse.Answer[0].Header().Ttl; got != remainingTTL {
 		t.Fatalf("fixed TTL must not restart on a cache hit: got %v, want %v", got, remainingTTL)
 	}
-	if got := registry.byName[qi][ip].expiry; !got.Equal(registryDeadline) {
+	if got := registry.byName[qi][ip].effectiveExpiry(); !got.Equal(registryDeadline) {
 		t.Fatalf("cache hit must not refresh the registry: got %v, want %v", got, registryDeadline)
 	}
 }
@@ -785,12 +785,12 @@ func TestFinalizeUsesUpstreamReceiveTimeForTTL(t *testing.T) {
 	answer.Hdr.Ttl = 10
 	response.Answer = []dnsmessage.RR{answer}
 	c.finalizeAcceptedResponse(response, &pendingDNSResponse{
-		cacheKey:   dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET},
+		cacheKey: testDNSCacheKey(qi), register: true,
 		receivedAt: receivedAt,
 	})
 
 	ip := netip.MustParseAddr("1.2.3.4")
-	if got := registry.byName[qi][ip].expiry; !got.Equal(receivedAt.Add(10 * time.Second)) {
+	if got := registry.byName[qi][ip].effectiveExpiry(); !got.Equal(receivedAt.Add(10 * time.Second)) {
 		t.Fatalf("registry TTL started after response routing: %v", got)
 	}
 	if got := response.Answer[0].Header().Ttl; got < 4 || got > 5 {
@@ -800,11 +800,7 @@ func TestFinalizeUsesUpstreamReceiveTimeForTTL(t *testing.T) {
 
 func TestDNSFlightFansOutNonCacheableResponse(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
-	key := dnsFlightKey{cacheKey: dnsCacheKey{
-		queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA},
-		qclass:    dnsmessage.ClassINET,
-		variant:   "non-cacheable-flight",
-	}}
+	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "non-cacheable-flight")
 	leaderMsg := testDNSQuery("EXAMPLE.COM.", dnsmessage.TypeA, 1)
 	followerMsg := testDNSQuery("example.com.", dnsmessage.TypeA, 2)
 	leaderStarted := make(chan struct{})
@@ -865,15 +861,15 @@ func TestDNSFlightFansOutNonCacheableResponse(t *testing.T) {
 }
 
 func TestDNSFlightKeyIncludesRerouteContext(t *testing.T) {
-	cacheKey := dnsCacheKey{queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}}
-	first := dnsFlightKey{cacheKey: cacheKey, src: netip.MustParseAddrPort("192.0.2.1:1000")}
+	first := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "")
+	first.route.src = netip.MustParseAddrPort("192.0.2.1:1000")
 	second := first
-	second.src = netip.MustParseAddrPort("192.0.2.2:1000")
+	second.route.src = netip.MustParseAddrPort("192.0.2.2:1000")
 	if first == second {
 		t.Fatal("source-dependent reroute contexts shared one flight key")
 	}
 	second = first
-	second.routingResult.Pname[0] = 1
+	second.route.pname[0] = 1
 	if first == second {
 		t.Fatal("process-dependent reroute contexts shared one flight key")
 	}
@@ -881,9 +877,7 @@ func TestDNSFlightKeyIncludesRerouteContext(t *testing.T) {
 
 func TestDNSFlightCloseUnblocksWaiter(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
-	key := dnsFlightKey{cacheKey: dnsCacheKey{
-		queryInfo: queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, variant: "close-flight",
-	}}
+	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "close-flight")
 	leaderStarted := make(chan struct{})
 	leaderDone := make(chan error, 1)
 	go func() {
@@ -927,13 +921,15 @@ func TestDnsControllerCloseInterruptsForwarderAndPreventsReuse(t *testing.T) {
 	upstream := &dns.Upstream{Scheme: dns.UpstreamScheme_UDP, Hostname: "8.8.8.8", Port: 53}
 	dialArg := &dialArgument{}
 	forwarder := &blockingDnsForwarder{started: make(chan struct{}), closed: make(chan struct{})}
-	forwarderKey := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	forwarderKey := makeDNSForwarderKey(upstream, dialArg)
 	c.dnsForwarderCache[forwarderKey] = forwarder
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
 
 	requestDone := make(chan error, 1)
 	go func() {
-		_, err := c.dialSend(context.Background(), testDNSQuery(qi.qname, qi.qtype, 1), upstream, dialArg, qi, true)
+		query := testDNSQuery(qi.qname, qi.qtype, 1)
+		queryKey, _, cacheable := makeDNSQueryKey(query, qi)
+		_, err := c.dialSend(context.Background(), query, upstream, dialArg, queryKey, cacheable, true)
 		requestDone <- err
 	}()
 	<-forwarder.started
@@ -943,7 +939,9 @@ func TestDnsControllerCloseInterruptsForwarderAndPreventsReuse(t *testing.T) {
 	if err := <-requestDone; !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("active request was not interrupted: %v", err)
 	}
-	if _, err := c.dialSend(context.Background(), testDNSQuery(qi.qname, qi.qtype, 2), upstream, dialArg, qi, true); !errors.Is(err, net.ErrClosed) {
+	query := testDNSQuery(qi.qname, qi.qtype, 2)
+	queryKey, _, cacheable := makeDNSQueryKey(query, qi)
+	if _, err := c.dialSend(context.Background(), query, upstream, dialArg, queryKey, cacheable, true); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("request after Close did not fail closed: %v", err)
 	}
 	if forwarder.calls.Load() != 1 || forwarder.closes.Load() != 1 {
@@ -1015,13 +1013,13 @@ func TestRegisterAnswersNoExpiryIgnoresFixedTtl(t *testing.T) {
 	c, registry, fake := newTestDnsController(t, map[string]int{"resolver.example.": 0})
 	qi := queryInfo{qname: "resolver.example.", qtype: dnsmessage.TypeA}
 	ip := netip.MustParseAddr("1.1.1.1")
-	c.registerAnswersNoExpiry(qi, []dnsmessage.RR{testARecord(qi.qname, ip.String())})
+	c.registerAddressNoExpiry(qi, ip)
 
 	registration := registry.byName[qi][ip]
 	if registration == nil || !fake.has(ip) {
 		t.Fatal("synthetic upstream address should be registered in the kernel maps")
 	}
-	if !registration.expiry.IsZero() {
+	if !registration.effectiveExpiry().IsZero() {
 		t.Fatalf("synthetic upstream address should have no expiry: %+v", registration)
 	}
 	checkInvariants(t, registry, fake)
@@ -1033,7 +1031,7 @@ func TestRegisterAnswersNoExpiryAfterCloseIsNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	qi := queryInfo{qname: "resolver.example.", qtype: dnsmessage.TypeA}
-	c.registerAnswersNoExpiry(qi, []dnsmessage.RR{testARecord(qi.qname, "1.1.1.1")})
+	c.registerAddressNoExpiry(qi, netip.MustParseAddr("1.1.1.1"))
 	if registry.Size() != 0 {
 		t.Fatal("synthetic registration mutated the registry after Close")
 	}
@@ -1067,7 +1065,7 @@ func TestAcceptedResponseDuringCloseDoesNotPublish(t *testing.T) {
 	msg.Response = true
 	msg.Answer = []dnsmessage.RR{testARecord(qi.qname, "1.2.3.4")}
 	c.finalizeAcceptedResponse(msg, &pendingDNSResponse{
-		cacheKey: dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}, receivedAt: time.Now(),
+		cacheKey: testDNSCacheKey(qi), register: true, receivedAt: time.Now(),
 	})
 	c.activeRequests.Done()
 	if err := <-closeDone; err != nil {
@@ -1176,7 +1174,7 @@ func TestDnsControllerCloseCancelsInFlightForwarder(t *testing.T) {
 		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_UDP},
 		Target:      netip.MustParseAddrPort("8.8.8.8:53"),
 	}
-	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArg}
+	key := makeDNSForwarderKey(upstream, dialArg)
 	forwarder := &cancelAwareDnsForwarder{
 		started: make(chan struct{}),
 		closed:  make(chan struct{}),
@@ -1188,8 +1186,10 @@ func TestDnsControllerCloseCancelsInFlightForwarder(t *testing.T) {
 	requestDone := make(chan error, 1)
 	go func() {
 		defer c.activeRequests.Done()
-		_, err := c.dialSend(c.closed, testDNSQuery("example.com.", dnsmessage.TypeA, 1), upstream, dialArg,
-			queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, true)
+		qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
+		query := testDNSQuery(qi.qname, qi.qtype, 1)
+		queryKey, _, cacheable := makeDNSQueryKey(query, qi)
+		_, err := c.dialSend(c.closed, query, upstream, dialArg, queryKey, cacheable, true)
 		requestDone <- err
 	}()
 	<-forwarder.started

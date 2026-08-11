@@ -37,16 +37,6 @@ const (
 	UpstreamScheme_H3            UpstreamScheme = "h3"
 )
 
-func (s UpstreamScheme) ContainsTcp() bool {
-	switch s {
-	case UpstreamScheme_TCP,
-		UpstreamScheme_TCP_UDP:
-		return true
-	default:
-		return false
-	}
-}
-
 func ParseRawUpstream(raw *url.URL) (scheme UpstreamScheme, hostname string, port uint16, path string, err error) {
 	var __port string
 	var __path string
@@ -97,7 +87,7 @@ type Upstream struct {
 }
 
 // TODO: Sync with outbound
-func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string) (up *Upstream, err error) {
+func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err error) {
 	scheme, hostname, port, path, err := ParseRawUpstream(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrFormat, err)
@@ -121,14 +111,11 @@ func NewUpstream(ctx context.Context, upstream *url.URL, resolverNetwork string)
 }
 
 func (u *Upstream) SupportedNetworks() (ipversions []consts.IpVersionStr, l4protos []consts.L4ProtoStr) {
-	if u.Ip4.IsValid() && u.Ip6.IsValid() {
-		ipversions = []consts.IpVersionStr{consts.IpVersionStr_4, consts.IpVersionStr_6}
-	} else {
-		if u.Ip4.IsValid() {
-			ipversions = []consts.IpVersionStr{consts.IpVersionStr_4}
-		} else {
-			ipversions = []consts.IpVersionStr{consts.IpVersionStr_6}
-		}
+	if u.Ip4.IsValid() {
+		ipversions = append(ipversions, consts.IpVersionStr_4)
+	}
+	if u.Ip6.IsValid() {
+		ipversions = append(ipversions, consts.IpVersionStr_6)
 	}
 	switch u.Scheme {
 	case UpstreamScheme_TCP, UpstreamScheme_HTTPS, UpstreamScheme_TLS:
@@ -147,26 +134,27 @@ func (u *Upstream) String() string {
 }
 
 type UpstreamResolver struct {
-	Raw     *url.URL
-	Network string
+	Raw *url.URL
 	// FinishInitCallback may be invoked again if err is not nil
-	FinishInitCallback func(raw *url.URL, upstream *Upstream)
+	FinishInitCallback func(upstream *Upstream)
 	mu                 sync.Mutex
 	upstream           *Upstream
-	init               bool
 }
 
 func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if !u.init {
+	if u.upstream == nil {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		if u.upstream, err = NewUpstream(ctx, u.Raw, u.Network); err != nil {
+		upstream, err := NewUpstream(ctx, u.Raw)
+		if err != nil {
 			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
 		}
-		u.FinishInitCallback(u.Raw, u.upstream)
-		u.init = true
+		if u.FinishInitCallback != nil {
+			u.FinishInitCallback(upstream)
+		}
+		u.upstream = upstream
 	}
 	return u.upstream, nil
 }

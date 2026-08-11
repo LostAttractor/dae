@@ -7,6 +7,7 @@ package control
 
 import (
 	"net"
+	"time"
 
 	dnsmessage "github.com/miekg/dns"
 )
@@ -23,6 +24,43 @@ func testDNSQuery(name string, qtype uint16, id uint16) *dnsmessage.Msg {
 			Qclass: dnsmessage.ClassINET,
 		}},
 	}
+}
+
+func testDNSQueryKey(qi queryInfo, variant string) dnsQueryKey {
+	return dnsQueryKey{queryInfo: qi, qclass: dnsmessage.ClassINET, variant: variant}
+}
+
+func testDNSCacheKey(qi queryInfo) dnsCacheKey {
+	return dnsCacheKey{queryInfo: qi}
+}
+
+func testDNSFlightKey(qi queryInfo, variant string) dnsFlightKey {
+	return dnsFlightKey{query: testDNSQueryKey(qi, variant)}
+}
+
+func testPlannedRRSeconds(plan *responsePlan, rr plannedRR) int {
+	return deadlineSeconds(rr.absoluteDeadline, plan.observedAt)
+}
+
+func testViewDeadlineSeconds(plan *responsePlan, deadline time.Time) int {
+	if deadline.IsZero() {
+		return 0
+	}
+	return int(deadline.Sub(plan.observedAt) / time.Second)
+}
+
+func getTestDNSCache(c *commonDnsCache, key dnsCacheKey) []*DnsCache {
+	if !c.FillInto(key, new(dnsmessage.Msg)) {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	elem := c.cache[key]
+	if elem == nil {
+		return nil
+	}
+	entry := elem.Value.(*cacheEntry)
+	return append([]*DnsCache(nil), entry.value...)
 }
 
 func testARecord(name, ip string) *dnsmessage.A {
@@ -58,23 +96,5 @@ func testCNAMERecord(name, target string) *dnsmessage.CNAME {
 			Ttl:    60,
 		},
 		Target: target,
-	}
-}
-
-func testSOARecord(name string) *dnsmessage.SOA {
-	return &dnsmessage.SOA{
-		Hdr: dnsmessage.RR_Header{
-			Name:   name,
-			Rrtype: dnsmessage.TypeSOA,
-			Class:  dnsmessage.ClassINET,
-			Ttl:    60,
-		},
-		Ns:      "ns1." + name,
-		Mbox:    "hostmaster." + name,
-		Serial:  1,
-		Refresh: 3600,
-		Retry:   600,
-		Expire:  86400,
-		Minttl:  60,
 	}
 }
