@@ -32,7 +32,16 @@ import (
 
 // TODO: 在 DNS Config 不变的情况下，保留 DNSCache
 
-const MaxDnsLookupDepth = 3
+const (
+	MaxDnsLookupDepth         = 3
+	maxDnsDuplicateConcurrent = 128
+)
+
+// RFC 1035 and RFC 1123 recommend an initial retry interval around five
+// seconds but do not prescribe a total query timeout. Bound duplicate waiters
+// below the leader's 15-second retry window; the flight participant cap bounds
+// memory even when abusive clients send identical queries at high rates.
+var dnsDuplicateWaitTimeout = consts.DefaultDNSTimeout - consts.DefaultDNSRetryInterval
 
 type IpVersionPrefer int
 
@@ -60,7 +69,7 @@ type DnsController struct {
 
 	fixedDomainTtl    map[string]int
 	dnsCache          *commonDnsCache[dnsCacheKey]
-	dnsKeyLocker      common.KeyLocker[dnsCacheKey]
+	dnsFlights        dnsFlightGroup
 	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
 	requestMu         sync.Mutex
 	requestWG         sync.WaitGroup
@@ -174,6 +183,62 @@ type queryInfo struct {
 type dnsCacheKey struct {
 	queryInfo
 	dnsForwarderKey
+}
+
+type dnsFlightResult struct {
+	response  *dnsmessage.Msg
+	fromCache bool
+	err       error
+}
+
+type dnsFlight struct {
+	done         chan struct{}
+	participants int
+	result       dnsFlightResult
+}
+
+type dnsFlightGroup struct {
+	mu      sync.Mutex
+	flights map[dnsCacheKey]*dnsFlight
+}
+
+func (g *dnsFlightGroup) join(key dnsCacheKey, limit int) (flight *dnsFlight, leader, admitted bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if flight = g.flights[key]; flight != nil {
+		if limit > 0 && flight.participants >= limit {
+			return nil, false, false
+		}
+		flight.participants++
+		return flight, false, true
+	}
+	if g.flights == nil {
+		g.flights = make(map[dnsCacheKey]*dnsFlight)
+	}
+	flight = &dnsFlight{done: make(chan struct{}), participants: 1}
+	g.flights[key] = flight
+	return flight, true, true
+}
+
+func (g *dnsFlightGroup) leave(key dnsCacheKey, flight *dnsFlight) {
+	g.mu.Lock()
+	if g.flights[key] == flight {
+		flight.participants--
+	}
+	g.mu.Unlock()
+}
+
+func (g *dnsFlightGroup) finish(key dnsCacheKey, flight *dnsFlight, result dnsFlightResult) {
+	if result.response != nil {
+		result.response = result.response.Copy()
+	}
+	g.mu.Lock()
+	if g.flights[key] == flight {
+		flight.result = result
+		delete(g.flights, key)
+		close(flight.done)
+	}
+	g.mu.Unlock()
 }
 
 func (c *DnsController) prepareQueryInfo(dnsMessage *dnsmessage.Msg) (queryInfo queryInfo) {
@@ -358,7 +423,11 @@ Dial:
 		}
 
 		// TODO: 这里可能不可以这样做
-		responseFromCache, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryInfo, cacheForwarder)
+		var dropped bool
+		responseFromCache, dropped, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryInfo, cacheForwarder)
+		if dropped {
+			return nil
+		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
@@ -370,22 +439,18 @@ Dial:
 				With("Is Temporary", ok && netErr.Temporary()).
 				With("Is Timeout", ok && netErr.Timeout()).
 				Wrapf(err, "DNS dialSend error")
-			if !ok {
-				return err
-			} else if !netErr.Timeout() {
-				if dialArgument.Dialer.NeedAliveState() {
-					labels := prometheus.Labels{
-						"id":       dialArgument.Dialer.StatsID(),
-						"outbound": dialArgument.Outbound.Name,
-						"subtag":   dialArgument.Dialer.Property.SubscriptionTag,
-						"dialer":   dialArgument.Dialer.Name,
-						"network":  dialArgument.networkType.String(),
-					}
-					common.ErrorCount.With(labels).Inc()
-					dialArgument.Dialer.ReportUnavailable()
-					return err
+			if ok && !netErr.Timeout() && dialArgument.Dialer.NeedAliveState() {
+				labels := prometheus.Labels{
+					"id":       dialArgument.Dialer.StatsID(),
+					"outbound": dialArgument.Outbound.Name,
+					"subtag":   dialArgument.Dialer.Property.SubscriptionTag,
+					"dialer":   dialArgument.Dialer.Name,
+					"network":  dialArgument.networkType.String(),
 				}
+				common.ErrorCount.With(labels).Inc()
+				dialArgument.Dialer.ReportUnavailable()
 			}
+			return err
 		}
 
 		ResponseIndex, nextUpstream, err := c.routing.ResponseSelect(dnsMessage, upstream)
@@ -552,51 +617,93 @@ func (c *DnsController) selectDnsForwarder(key dnsForwarderKey, candidate DnsFor
 }
 
 // TODO: 简化 cacheKey?
-func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo, cacheForwarder bool) (bool, error) {
+func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstream *dns.Upstream, dialArgument *dialArgument, queryInfo queryInfo, cacheForwarder bool) (fromCache, dropped bool, err error) {
 	if c.closed.Err() != nil {
 		// The cached forwarders are closed by Close; dialing here would
 		// recreate connections nobody closes anymore.
-		return false, net.ErrClosed
+		return false, false, net.ErrClosed
 	}
 	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
 	cacheKey := dnsCacheKey{queryInfo: queryInfo, dnsForwarderKey: key}
+	cacheable := isSimpleDnsQuery(msg)
 
-	// No parallel for the same lookup.
-	l, isNew := c.dnsKeyLocker.Lock(cacheKey)
-	defer c.dnsKeyLocker.Unlock(cacheKey, l)
-	if c.closed.Err() != nil {
-		return false, net.ErrClosed
-	}
-	if cache := c.dnsCache.Get(cacheKey); cache != nil {
-		if FillInto(msg, cache) {
-			if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
-				log.WithFields(log.Fields{
-					"qname":  queryInfo.qname,
-					"qtype":  queryInfo.qtype,
-					"rcode":  msg.Rcode,
-					"answer": FormatDnsRsc(msg.Answer),
-				}).Debugf("UDP(DNS) <-> Cache")
+	if cacheable {
+		if cache := c.dnsCache.Get(cacheKey); cache != nil {
+			if FillInto(msg, cache) {
+				if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
+					log.WithFields(log.Fields{
+						"qname":  queryInfo.qname,
+						"qtype":  queryInfo.qtype,
+						"rcode":  msg.Rcode,
+						"answer": FormatDnsRsc(msg.Answer),
+					}).Debugf("UDP(DNS) <-> Cache")
+				}
+				return true, false, nil
 			}
-			return true, nil
 		}
-	}
-	if !isNew {
-		if log.IsLevelEnabled(log.DebugLevel) {
-			log.Debugf("UDP(DNS) <-> Drop failed duplicate lookup: %v %v", queryInfo.qname, queryInfo.qtype)
+
+		flight, leader, admitted := c.dnsFlights.join(cacheKey, maxDnsDuplicateConcurrent)
+		if !admitted {
+			if ctx.Err() != nil {
+				return false, false, ctx.Err()
+			}
+			if log.IsLevelEnabled(log.DebugLevel) {
+				log.Debugf("UDP(DNS) <-> Drop excess duplicate lookup: %v %v", queryInfo.qname, queryInfo.qtype)
+			}
+			return false, true, nil
 		}
-		return false, nil
+		if !leader {
+			question := append([]dnsmessage.Question(nil), msg.Question...)
+			waitCtx, cancelWait := context.WithTimeout(ctx, dnsDuplicateWaitTimeout)
+			defer cancelWait()
+			select {
+			case <-flight.done:
+				if flight.result.err != nil {
+					return false, false, flight.result.err
+				}
+				if flight.result.response != nil {
+					id := msg.Id
+					*msg = *flight.result.response.Copy()
+					msg.Id = id
+					msg.Question = question
+				}
+				return flight.result.fromCache, false, nil
+			case <-waitCtx.Done():
+				c.dnsFlights.leave(cacheKey, flight)
+				if ctx.Err() != nil {
+					return false, false, ctx.Err()
+				}
+				if log.IsLevelEnabled(log.DebugLevel) {
+					log.Debugf("UDP(DNS) <-> Drop stale duplicate lookup: %v %v", queryInfo.qname, queryInfo.qtype)
+				}
+				return false, true, nil
+			}
+		}
+		defer func() {
+			c.dnsFlights.finish(cacheKey, flight, dnsFlightResult{
+				response:  msg,
+				fromCache: fromCache,
+				err:       err,
+			})
+		}()
+
+		// A leader can be delayed between the first cache check and joining the
+		// flight. Recheck so a just-completed prior flight is not sent upstream.
+		if cache := c.dnsCache.Get(cacheKey); cache != nil && FillInto(msg, cache) {
+			return true, false, nil
+		}
 	}
 
 	forwarder, err := newDnsForwarder(upstream, *dialArgument)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	forwarder, releaseForwarder := c.selectDnsForwarder(key, forwarder, cacheForwarder)
 	defer releaseForwarder()
 
 	err = forwarder.ForwardDNS(ctx, msg)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 
 	// TODO: 直接加入到上面的日志
@@ -625,7 +732,7 @@ func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstr
 			"rcode":  msg.Rcode,
 			"answer": FormatDnsRsc(msg.Answer),
 		}).Tracef("Not a valid DNS response")
-		return false, nil
+		return false, false, nil
 	}
 
 	// TODO: 不缓存ans为空的响应?
@@ -641,9 +748,25 @@ func (c *DnsController) dialSend(ctx context.Context, msg *dnsmessage.Msg, upstr
 			"outbound": cacheKey.dialArgument.Outbound.Name,
 		}).Debugf("Update DNS record cache")
 	}
-	c.UpdateDnsCache(cacheKey, queryInfo.qname, ans)
+	if cacheable {
+		c.UpdateDnsCache(cacheKey, queryInfo.qname, ans)
+	}
 
-	return false, nil
+	return false, false, nil
+}
+
+func isSimpleDnsQuery(msg *dnsmessage.Msg) bool {
+	if msg.Opcode != dnsmessage.OpcodeQuery || len(msg.Question) != 1 ||
+		msg.Question[0].Qclass != dnsmessage.ClassINET || !msg.RecursionDesired ||
+		msg.CheckingDisabled || msg.AuthenticatedData || len(msg.Answer) != 0 ||
+		len(msg.Ns) != 0 || len(msg.Extra) != 0 {
+		return false
+	}
+	switch msg.Question[0].Qtype {
+	case dnsmessage.TypeAXFR, dnsmessage.TypeIXFR, dnsmessage.TypeTKEY:
+		return false
+	}
+	return true
 }
 
 func (c *DnsController) Close() error {
