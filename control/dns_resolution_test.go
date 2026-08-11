@@ -48,43 +48,43 @@ func TestResponsePlanCachesAndRegistersCNAMEViews(t *testing.T) {
 	if alias.query.qname != "www.example." || len(alias.answers) != 2 || len(alias.addresses) != 1 {
 		t.Fatalf("unexpected alias view: %+v", alias)
 	}
-	if alias.unitTTLSeconds != 60 || !alias.expiresAsUnit {
+	if testViewDeadlineSeconds(plan, alias.validUntil) != 60 {
 		t.Fatalf("alias cache should expire as one 60s chain: %+v", alias)
 	}
-	if alias.answers[0].ttlSeconds != 60 || alias.answers[1].ttlSeconds != 3600 {
+	if testPlannedRRSeconds(plan, alias.answers[0]) != 60 || testPlannedRRSeconds(plan, alias.answers[1]) != 3600 {
 		t.Fatalf("wire TTLs should remain RRset-specific: %+v", alias.answers)
 	}
-	if terminal.query.qname != "edge.cdn.example." || len(terminal.answers) != 1 || terminal.answers[0].ttlSeconds != 3600 {
+	if terminal.query.qname != "edge.cdn.example." || len(terminal.answers) != 1 || testPlannedRRSeconds(plan, terminal.answers[0]) != 3600 {
 		t.Fatalf("terminal view should preserve its RRset TTL: %+v", terminal)
 	}
 
 	baseKey := dnsCacheKey{
 		queryInfo:       alias.query,
 		dnsForwarderKey: dnsForwarderKey{upstream: "resolver-one"},
-		qclass:          dnsmessage.ClassINET,
 	}
 	targetKey := baseKey
 	targetKey.queryInfo = terminal.query
-	if cached := c.dnsCache.Get(baseKey); cached != nil {
+	if cached := getTestDNSCache(c.dnsCache, baseKey); cached != nil {
 		t.Fatalf("cache must not be visible before response acceptance: %+v", cached)
 	}
 
 	msg := &dnsmessage.Msg{Answer: answers}
+	msg.RecursionAvailable = true
 	c.commitAcceptedResponse(msg, &pendingDNSResponse{
-		cacheKey: baseKey,
+		cacheKey: baseKey, register: true, cacheable: true,
 	}, now)
 	if msg.Answer[0].Header().Ttl != 60 || msg.Answer[1].Header().Ttl != 3600 {
 		t.Fatalf("client response should preserve RRset TTLs: %+v", msg.Answer)
 	}
-	aliasCache := c.dnsCache.Get(baseKey)
-	targetCache := c.dnsCache.Get(targetKey)
+	aliasCache := getTestDNSCache(c.dnsCache, baseKey)
+	targetCache := getTestDNSCache(c.dnsCache, targetKey)
 	if len(aliasCache) != 2 || len(targetCache) != 1 {
 		t.Fatalf("accepted response did not publish all cache views: alias=%+v target=%+v", aliasCache, targetCache)
 	}
 	if !aliasCache[0].Deadline.Equal(now.Add(60*time.Second)) || !aliasCache[1].Deadline.Equal(now.Add(3600*time.Second)) {
 		t.Fatalf("alias cache should preserve wire deadlines: %+v", aliasCache)
 	}
-	entry := c.dnsCache.cache[baseKey].Value.(*cacheEntry[dnsCacheKey])
+	entry := c.dnsCache.cache[baseKey].Value.(*cacheEntry)
 	if !entry.validUntil.Equal(now.Add(60 * time.Second)) {
 		t.Fatalf("alias dependency deadline: got %v", entry.validUntil)
 	}
@@ -93,7 +93,7 @@ func TestResponsePlanCachesAndRegistersCNAMEViews(t *testing.T) {
 	}
 	otherUpstreamKey := targetKey
 	otherUpstreamKey.upstream = "resolver-two"
-	if cached := c.dnsCache.Get(otherUpstreamKey); cached != nil {
+	if cached := getTestDNSCache(c.dnsCache, otherUpstreamKey); cached != nil {
 		t.Fatalf("derived cache leaked across upstreams: %+v", cached)
 	}
 	ip := netip.MustParseAddr("1.2.3.4")
@@ -102,11 +102,11 @@ func TestResponsePlanCachesAndRegistersCNAMEViews(t *testing.T) {
 	if aliasRegistration == nil || targetRegistration == nil {
 		t.Fatalf("both names should be registered: alias=%+v target=%+v", aliasRegistration, targetRegistration)
 	}
-	if !aliasRegistration.expiry.Equal(now.Add(60 * time.Second)) {
-		t.Fatalf("alias registration expiry: %v", aliasRegistration.expiry)
+	if !aliasRegistration.effectiveExpiry().Equal(now.Add(60 * time.Second)) {
+		t.Fatalf("alias registration expiry: %v", aliasRegistration.effectiveExpiry())
 	}
-	if !targetRegistration.expiry.Equal(now.Add(3600 * time.Second)) {
-		t.Fatalf("target registration expiry: %v", targetRegistration.expiry)
+	if !targetRegistration.effectiveExpiry().Equal(now.Add(3600 * time.Second)) {
+		t.Fatalf("target registration expiry: %v", targetRegistration.effectiveExpiry())
 	}
 	if !bitmapHas(fake.bump[ip], 1) || !bitmapHas(fake.bump[ip], 2) {
 		t.Fatalf("kernel bump bitmap should include both names: %v", fake.bump[ip])
@@ -141,25 +141,27 @@ func TestResponsePlanDoesNotCacheIncompleteDNSSECResponse(t *testing.T) {
 	}
 	answers := []dnsmessage.RR{cname, address, signature}
 	plan := c.planDNSResponseAt(qi, answers, now)
-	if plan == nil || !plan.signed {
+	if plan == nil || plan.cacheEligible {
 		t.Fatalf("DNSSEC response should suppress derived cache publication: %+v", plan)
 	}
-	if got := plan.views[0].unitTTLSeconds; got != 30 {
+	if got := testViewDeadlineSeconds(plan, plan.views[0].validUntil); got != 30 {
 		t.Fatalf("signature expiration should cap the response at 30s: %v", got)
 	}
-	baseKey := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
-	c.commitAcceptedResponse(&dnsmessage.Msg{Answer: answers}, &pendingDNSResponse{cacheKey: baseKey}, now)
+	baseKey := testDNSCacheKey(qi)
+	msg := &dnsmessage.Msg{Answer: answers}
+	msg.RecursionAvailable = true
+	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: baseKey, register: true, cacheable: true}, now)
 	targetKey := baseKey
 	targetKey.queryInfo.qname = "edge.example."
-	if cached := c.dnsCache.Get(targetKey); cached != nil {
+	if cached := getTestDNSCache(c.dnsCache, targetKey); cached != nil {
 		t.Fatalf("derived DNSSEC cache omitted signatures: %+v", cached)
 	}
-	if cached := c.dnsCache.Get(baseKey); cached != nil {
+	if cached := getTestDNSCache(c.dnsCache, baseKey); cached != nil {
 		t.Fatalf("answer-only cache must not retain signed responses: %+v", cached)
 	}
 	ip := netip.MustParseAddr("1.2.3.4")
 	registration := registry.byName[targetKey.queryInfo][ip]
-	if registration == nil || !registration.expiry.Equal(now.Add(30*time.Second)) {
+	if registration == nil || !registration.effectiveExpiry().Equal(now.Add(30*time.Second)) {
 		t.Fatal("accepted DNSSEC response should still register the terminal DNS evidence")
 	}
 }
@@ -186,23 +188,23 @@ func TestResponsePlanFixedTTLCannotExtendRRSIG(t *testing.T) {
 	}
 	answers := []dnsmessage.RR{address, signature}
 	plan := c.planDNSResponseAt(qi, answers, now)
-	if plan == nil || !plan.signed || len(plan.views[0].addresses) != 1 || plan.views[0].addresses[0].ttlSeconds != 20 {
+	if plan == nil || plan.cacheEligible || len(plan.views[0].addresses) != 1 || testViewDeadlineSeconds(plan, plan.views[0].addressDeadline) != 20 {
 		t.Fatalf("signed plan was not capped by signature validity: %+v", plan)
 	}
 	for _, answer := range plan.views[0].answers {
-		if answer.ttlSeconds != 20 {
+		if testPlannedRRSeconds(plan, answer) != 20 {
 			t.Fatalf("fixed TTL extended signed data: %+v", plan.views[0].answers)
 		}
 	}
 
-	key := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
+	key := testDNSCacheKey(qi)
 	msg := &dnsmessage.Msg{Answer: answers}
-	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: key}, now)
-	if cached := c.dnsCache.Get(key); cached != nil {
+	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: key, register: true}, now)
+	if cached := getTestDNSCache(c.dnsCache, key); cached != nil {
 		t.Fatalf("signed answer entered the answer-only cache: %+v", cached)
 	}
 	ip := netip.MustParseAddr("1.2.3.4")
-	if got := registry.byName[qi][ip].expiry; !got.Equal(now.Add(20 * time.Second)) {
+	if got := registry.byName[qi][ip].effectiveExpiry(); !got.Equal(now.Add(20 * time.Second)) {
 		t.Fatalf("signed registry lease exceeded signature validity: %v", got)
 	}
 	for _, answer := range msg.Answer {
@@ -234,13 +236,13 @@ func TestResponsePlanRRSIGBoundsOnlyCoveredRRSet(t *testing.T) {
 	if plan == nil || len(plan.views) != 1 || len(plan.views[0].addresses) != 1 {
 		t.Fatalf("unexpected signed plan: %+v", plan)
 	}
-	if got := plan.views[0].addresses[0].ttlSeconds; got != 20 {
+	if got := testViewDeadlineSeconds(plan, plan.views[0].addressDeadline); got != 20 {
 		t.Fatalf("orphan RRSIG changed the A RRset bound: %v", got)
 	}
 	var signatureTTLs = make(map[uint16]int)
 	for _, answer := range plan.views[0].answers {
-		if signature, ok := answer.answer.(*dnsmessage.RRSIG); ok {
-			signatureTTLs[signature.TypeCovered] = answer.ttlSeconds
+		if signature, ok := answer.rr.(*dnsmessage.RRSIG); ok {
+			signatureTTLs[signature.TypeCovered] = testPlannedRRSeconds(plan, answer)
 		}
 	}
 	if signatureTTLs[dnsmessage.TypeA] != 20 || signatureTTLs[dnsmessage.TypeTXT] != 0 {
@@ -272,7 +274,7 @@ func TestResponsePlanUsesLongestUsableRRSIGAlternative(t *testing.T) {
 	if plan == nil || len(plan.views) != 1 || len(plan.views[0].addresses) != 1 {
 		t.Fatalf("unexpected signed plan: %+v", plan)
 	}
-	if got := plan.views[0].addresses[0].ttlSeconds; got != 80 {
+	if got := testViewDeadlineSeconds(plan, plan.views[0].addressDeadline); got != 80 {
 		t.Fatalf("covered RRset used the shortest signature instead of the longest usable alternative: %v", got)
 	}
 	wantSignatureTTLs := map[uint32]int{
@@ -281,12 +283,12 @@ func TestResponsePlanUsesLongestUsableRRSIGAlternative(t *testing.T) {
 		uint32(now.Add(-time.Second).Unix()):     0,
 	}
 	for _, answer := range plan.views[0].answers {
-		signature, ok := answer.answer.(*dnsmessage.RRSIG)
+		signature, ok := answer.rr.(*dnsmessage.RRSIG)
 		if !ok {
 			continue
 		}
-		if want := wantSignatureTTLs[signature.Expiration]; answer.ttlSeconds != want {
-			t.Errorf("signature %v TTL: got %v, want %v", signature.Expiration, answer.ttlSeconds, want)
+		if want, got := wantSignatureTTLs[signature.Expiration], testPlannedRRSeconds(plan, answer); got != want {
+			t.Errorf("signature %v TTL: got %v, want %v", signature.Expiration, got, want)
 		}
 	}
 }
@@ -312,15 +314,15 @@ func TestSignedCNAMEDoesNotMakeTerminalAddressSigned(t *testing.T) {
 	t.Run("fixed ttl", func(t *testing.T) {
 		c, registry, _ := newTestDnsController(t, map[string]int{"edge.example.": 30})
 		plan := c.planDNSResponseAt(qi, newAnswers(100), now)
-		if plan == nil || len(plan.views) != 2 || plan.views[1].addresses[0].exactDeadline {
+		if plan == nil || len(plan.views) != 2 || plan.views[1].addressExactLease {
 			t.Fatalf("terminal address inherited CNAME signedness: %+v", plan)
 		}
-		if got := plan.views[1].addresses[0].ttlSeconds; got != 30 {
+		if got := testViewDeadlineSeconds(plan, plan.views[1].addressDeadline); got != 30 {
 			t.Fatalf("unsigned terminal did not retain fixed TTL: %v", got)
 		}
 		c.registerResponsePlan(plan, now)
 		terminalQI := queryInfo{qname: "edge.example.", qtype: dnsmessage.TypeA}
-		if got := registry.byName[terminalQI][ip].expiry; !got.Equal(now.Add(30 * time.Second)) {
+		if got := registry.byName[terminalQI][ip].effectiveExpiry(); !got.Equal(now.Add(30 * time.Second)) {
 			t.Fatalf("terminal registration deadline: %v", got)
 		}
 	})
@@ -330,7 +332,7 @@ func TestSignedCNAMEDoesNotMakeTerminalAddressSigned(t *testing.T) {
 		plan := c.planDNSResponseAt(qi, newAnswers(1), now)
 		c.registerResponsePlan(plan, now)
 		terminalQI := queryInfo{qname: "edge.example.", qtype: dnsmessage.TypeA}
-		if got := registry.byName[terminalQI][ip].expiry; !got.Equal(now.Add(10 * time.Second)) {
+		if got := registry.byName[terminalQI][ip].effectiveExpiry(); !got.Equal(now.Add(10 * time.Second)) {
 			t.Fatalf("unsigned terminal lost the ordinary registry floor: %v", got)
 		}
 	})
@@ -367,11 +369,11 @@ func TestSignedRegistryDeadlineBypassesMinTTL(t *testing.T) {
 		Inception: uint32(now.Add(-time.Minute).Unix()), Expiration: uint32(now.Add(30 * time.Second).Unix()),
 		SignerName: "example.", Signature: "AA==",
 	}
-	key := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
-	c.commitAcceptedResponse(&dnsmessage.Msg{Answer: []dnsmessage.RR{address, signature}}, &pendingDNSResponse{cacheKey: key}, now)
+	key := testDNSCacheKey(qi)
+	c.commitAcceptedResponse(&dnsmessage.Msg{Answer: []dnsmessage.RR{address, signature}}, &pendingDNSResponse{cacheKey: key, register: true}, now)
 	ip := netip.MustParseAddr("1.2.3.4")
 	registration := registry.byName[qi][ip]
-	if registration == nil || !registration.expiry.Equal(now.Add(30*time.Second)) || !fake.has(ip) {
+	if registration == nil || !registration.effectiveExpiry().Equal(now.Add(30*time.Second)) || !fake.has(ip) {
 		t.Fatalf("signed evidence did not keep its exact deadline: %+v", registration)
 	}
 }
@@ -387,10 +389,10 @@ func TestResponsePlanDoesNotCacheCNAMENODATA(t *testing.T) {
 		},
 		Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 10,
 	}
-	key := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
+	key := testDNSCacheKey(qi)
 	msg := &dnsmessage.Msg{Answer: []dnsmessage.RR{cname}, Ns: []dnsmessage.RR{soa}}
-	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: key}, time.Now())
-	if cached := c.dnsCache.Get(key); cached != nil {
+	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: key, register: true}, time.Now())
+	if cached := getTestDNSCache(c.dnsCache, key); cached != nil {
 		t.Fatalf("CNAME NODATA lost its Authority section in cache: %+v", cached)
 	}
 	if registry.Size() != 0 {
@@ -410,9 +412,9 @@ func TestResponsePlanRejectsMixedAnswerClasses(t *testing.T) {
 	if plan := c.planDNSResponse(qi, []dnsmessage.RR{in, chaos}); plan != nil {
 		t.Fatalf("mixed-class response must bypass answer-only planning: %+v", plan)
 	}
-	key := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
-	c.commitAcceptedResponse(&dnsmessage.Msg{Answer: []dnsmessage.RR{in, chaos}}, &pendingDNSResponse{cacheKey: key}, time.Now())
-	if c.dnsCache.Get(key) != nil || registry.Size() != 0 {
+	key := testDNSCacheKey(qi)
+	c.commitAcceptedResponse(&dnsmessage.Msg{Answer: []dnsmessage.RR{in, chaos}}, &pendingDNSResponse{cacheKey: key, register: true}, time.Now())
+	if getTestDNSCache(c.dnsCache, key) != nil || registry.Size() != 0 {
 		t.Fatal("mixed-class response produced cache or routing evidence")
 	}
 }
@@ -420,12 +422,12 @@ func TestResponsePlanRejectsMixedAnswerClasses(t *testing.T) {
 func TestCommitRejectsReservedQClass(t *testing.T) {
 	c, registry, _ := newTestDnsController(t, nil)
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
-	key := dnsCacheKey{queryInfo: qi, qclass: 0}
+	key := testDNSCacheKey(qi)
 	c.commitAcceptedResponse(
 		&dnsmessage.Msg{Answer: []dnsmessage.RR{testARecord(qi.qname, "1.2.3.4")}},
 		&pendingDNSResponse{cacheKey: key}, time.Now(),
 	)
-	if c.dnsCache.Get(key) != nil || registry.Size() != 0 {
+	if getTestDNSCache(c.dnsCache, key) != nil || registry.Size() != 0 {
 		t.Fatal("reserved QCLASS produced cache or routing evidence")
 	}
 }
@@ -437,15 +439,15 @@ func TestCNAMECacheExpiresRootAsUnit(t *testing.T) {
 	cname.Hdr.Ttl = 60
 	address := testARecord("edge.example.", "1.2.3.4")
 	address.Hdr.Ttl = 3600
-	plan := c.planDNSResponse(qi, []dnsmessage.RR{cname, address})
-	baseKey := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
-	c.cacheResponsePlan(baseKey, plan, time.Now().Add(-61*time.Second))
-	if cached := c.dnsCache.Get(baseKey); cached != nil {
+	plan := c.planDNSResponseAt(qi, []dnsmessage.RR{cname, address}, time.Now().Add(-61*time.Second))
+	baseKey := testDNSCacheKey(qi)
+	c.cacheResponsePlan(baseKey, plan)
+	if cached := getTestDNSCache(c.dnsCache, baseKey); cached != nil {
 		t.Fatalf("expired CNAME dependency left a partial root response: %+v", cached)
 	}
 	targetKey := baseKey
 	targetKey.queryInfo.qname = "edge.example."
-	if cached := c.dnsCache.Get(targetKey); len(cached) != 1 {
+	if cached := getTestDNSCache(c.dnsCache, targetKey); len(cached) != 1 {
 		t.Fatalf("terminal RRset should retain its independent lifetime: %+v", cached)
 	}
 }
@@ -459,10 +461,10 @@ func TestDirectCacheExpiresWithRequestedRRSet(t *testing.T) {
 		Hdr: dnsmessage.RR_Header{Name: "other.example.", Rrtype: dnsmessage.TypeTXT, Class: dnsmessage.ClassINET, Ttl: 300},
 		Txt: []string{"still live"},
 	}
-	plan := c.planDNSResponse(qi, []dnsmessage.RR{address, unrelated})
-	key := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
-	c.cacheResponsePlan(key, plan, time.Now().Add(-2*time.Second))
-	if cached := c.dnsCache.Get(key); cached != nil {
+	plan := c.planDNSResponseAt(qi, []dnsmessage.RR{address, unrelated}, time.Now().Add(-2*time.Second))
+	key := testDNSCacheKey(qi)
+	c.cacheResponsePlan(key, plan)
+	if cached := getTestDNSCache(c.dnsCache, key); cached != nil {
 		t.Fatalf("unrelated Answer data kept an expired requested RRset cacheable: %+v", cached)
 	}
 }
@@ -475,12 +477,12 @@ func TestDirectResponseWithoutRequestedRRSetBypassesCache(t *testing.T) {
 		Txt: []string{"unrelated"},
 	}
 	plan := c.planDNSResponse(qi, []dnsmessage.RR{unrelated})
-	if plan == nil || !plan.suppressCache {
+	if plan == nil || plan.cacheEligible {
 		t.Fatalf("response without the requested RRset should bypass answer-only cache: %+v", plan)
 	}
-	key := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
-	c.cacheResponsePlan(key, plan, time.Now())
-	if cached := c.dnsCache.Get(key); cached != nil || registry.Size() != 0 {
+	key := testDNSCacheKey(qi)
+	c.cacheResponsePlan(key, plan)
+	if cached := getTestDNSCache(c.dnsCache, key); cached != nil || registry.Size() != 0 {
 		t.Fatalf("unrelated response created state: cache=%+v registry=%v", cached, registry.Size())
 	}
 }
@@ -494,7 +496,7 @@ func TestDisconnectedCNAMEWithoutRequestedRRSetBypassesCache(t *testing.T) {
 		Txt: []string{"unrelated"},
 	}
 	plan := c.planDNSResponse(qi, []dnsmessage.RR{cname, txt})
-	if plan == nil || !plan.suppressCache {
+	if plan == nil || plan.cacheEligible {
 		t.Fatalf("disconnected CNAME response without the requested RRset should bypass cache: %+v", plan)
 	}
 }
@@ -513,7 +515,7 @@ func TestDelayedSignedResponseCannotRegisterExpiredEvidence(t *testing.T) {
 	}
 	msg := &dnsmessage.Msg{Answer: []dnsmessage.RR{address, signature}}
 	c.commitAcceptedResponse(msg, &pendingDNSResponse{
-		cacheKey: dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET},
+		cacheKey: testDNSCacheKey(qi), register: true,
 	}, observedAt)
 	if registry.Size() != 0 {
 		t.Fatalf("expired signed evidence was registered after routing delay: %v", registry.Size())
@@ -528,7 +530,7 @@ func TestResponsePlanTreatsHighBitTTLAsZero(t *testing.T) {
 	answer := testARecord("example.com.", "1.2.3.4")
 	answer.Hdr.Ttl = uint32(math.MaxInt32) + 1
 	plan := c.planDNSResponse(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, []dnsmessage.RR{answer})
-	if got := plan.views[0].answers[0].ttlSeconds; got != 0 {
+	if got := testPlannedRRSeconds(plan, plan.views[0].answers[0]); got != 0 {
 		t.Fatalf("TTL with the high bit set should be treated as zero: %v", got)
 	}
 }
@@ -558,12 +560,12 @@ func TestResponsePlanBuildsEveryCNAMEChainSuffix(t *testing.T) {
 			t.Errorf("view %v: got %+v", i, view)
 			continue
 		}
-		if view.unitTTLSeconds != wantUnitTTLs[i] {
-			t.Errorf("view %v unit TTL: got %v, want %v", i, view.unitTTLSeconds, wantUnitTTLs[i])
+		if got := testViewDeadlineSeconds(plan, view.validUntil); got != wantUnitTTLs[i] {
+			t.Errorf("view %v unit TTL: got %v, want %v", i, got, wantUnitTTLs[i])
 		}
 		for j, answer := range view.answers {
-			if answer.ttlSeconds != wantWireTTLs[i][j] {
-				t.Errorf("view %v answer %v TTL: got %v, want %v", i, j, answer.ttlSeconds, wantWireTTLs[i][j])
+			if got := testPlannedRRSeconds(plan, answer); got != wantWireTTLs[i][j] {
+				t.Errorf("view %v answer %v TTL: got %v, want %v", i, j, got, wantWireTTLs[i][j])
 			}
 		}
 	}
@@ -585,19 +587,19 @@ func TestResponsePlanNormalizesRRSetToShortestTTL(t *testing.T) {
 		t.Fatalf("unexpected normalized plan: %+v", plan)
 	}
 	for _, answer := range plan.views[0].answers {
-		if answer.ttlSeconds != 30 {
+		if testPlannedRRSeconds(plan, answer) != 30 {
 			t.Fatalf("one RRset should use its shortest TTL: %+v", plan.views[0].answers)
 		}
 	}
 	msg := &dnsmessage.Msg{Answer: []dnsmessage.RR{long, shortDuplicate, secondAddress}}
-	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}}, now)
+	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: testDNSCacheKey(qi), register: true}, now)
 	for _, answer := range msg.Answer {
 		if answer.Header().Ttl != 30 {
 			t.Fatalf("client response did not use the normalized RRset TTL: %+v", msg.Answer)
 		}
 	}
 	for _, ip := range []netip.Addr{netip.MustParseAddr("1.2.3.4"), netip.MustParseAddr("5.6.7.8")} {
-		if got := registry.byName[qi][ip].expiry; !got.Equal(now.Add(30 * time.Second)) {
+		if got := registry.byName[qi][ip].effectiveExpiry(); !got.Equal(now.Add(30 * time.Second)) {
 			t.Errorf("%v expiry: got %v", ip, got)
 		}
 	}
@@ -621,13 +623,13 @@ func TestResponsePlanAppliesFixedTTLPerView(t *testing.T) {
 	if plan == nil || len(plan.views) != 2 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	if got := plan.views[0].answers[0].ttlSeconds; got != 45 {
+	if got := testPlannedRRSeconds(plan, plan.views[0].answers[0]); got != 45 {
 		t.Fatalf("alias fixed_ttl was not applied: %+v", plan.views[0])
 	}
-	if got := plan.views[0].answers[1].ttlSeconds; got != 120 {
+	if got := testPlannedRRSeconds(plan, plan.views[0].answers[1]); got != 120 {
 		t.Fatalf("terminal owner fixed_ttl was not preserved in alias response: %+v", plan.views[0])
 	}
-	if got := plan.views[1].answers[0].ttlSeconds; got != 120 {
+	if got := testPlannedRRSeconds(plan, plan.views[1].answers[0]); got != 120 {
 		t.Fatalf("terminal fixed_ttl: got %v, want 120", got)
 	}
 }
@@ -639,19 +641,20 @@ func TestResponsePlanCNAMEAAAAKeepsRegistryFloor(t *testing.T) {
 	address := testAAAARecord("edge.example.", "2001:db8::1")
 	address.Hdr.Ttl = 30
 	now := time.Now()
-	plan := c.planDNSResponse(
+	plan := c.planDNSResponseAt(
 		queryInfo{qname: "www.example.", qtype: dnsmessage.TypeAAAA},
 		[]dnsmessage.RR{cname, address},
+		now,
 	)
 	c.registerResponsePlan(plan, now)
 
 	ip := netip.MustParseAddr("2001:db8::1")
 	aliasQI := queryInfo{qname: "www.example.", qtype: dnsmessage.TypeAAAA}
 	targetQI := queryInfo{qname: "edge.example.", qtype: dnsmessage.TypeAAAA}
-	if got := registry.byName[aliasQI][ip].expiry; !got.Equal(now.Add(10 * time.Second)) {
+	if got := registry.byName[aliasQI][ip].effectiveExpiry(); !got.Equal(now.Add(10 * time.Second)) {
 		t.Fatalf("alias should retain the registry TTL floor: %v", got)
 	}
-	if got := registry.byName[targetQI][ip].expiry; !got.Equal(now.Add(30 * time.Second)) {
+	if got := registry.byName[targetQI][ip].effectiveExpiry(); !got.Equal(now.Add(30 * time.Second)) {
 		t.Fatalf("terminal should retain its RRset TTL: %v", got)
 	}
 	checkInvariants(t, registry, fake)
@@ -673,10 +676,10 @@ func TestResponsePlanAtomicallyCachesCNAMEForOtherQtypes(t *testing.T) {
 	if plan == nil || len(plan.views) != 1 {
 		t.Fatalf("unexpected plan: %+v", plan)
 	}
-	if !plan.views[0].expiresAsUnit || plan.views[0].unitTTLSeconds != 30 {
+	if testViewDeadlineSeconds(plan, plan.views[0].validUntil) != 30 {
 		t.Fatalf("non-address CNAME response must expire atomically: %+v", plan.views[0])
 	}
-	if plan.views[0].answers[0].ttlSeconds != 30 || plan.views[0].answers[1].ttlSeconds != 300 {
+	if testPlannedRRSeconds(plan, plan.views[0].answers[0]) != 30 || testPlannedRRSeconds(plan, plan.views[0].answers[1]) != 300 {
 		t.Fatalf("non-address wire TTLs should remain RRset-specific: %+v", plan.views[0].answers)
 	}
 }
@@ -705,7 +708,7 @@ func TestResponsePlanClassifiesMalformedAndIncompleteCNAME(t *testing.T) {
 			queryInfo{qname: "www.example.", qtype: dnsmessage.TypeA},
 			[]dnsmessage.RR{first, second},
 		)
-		if plan == nil || !plan.suppressCache {
+		if plan == nil || plan.cacheEligible {
 			t.Fatalf("CNAME-to-NODATA must retain wire planning while bypassing the answer-only cache: %+v", plan)
 		}
 	})
@@ -806,15 +809,15 @@ func TestMalformedResponseStillAppliesFixedTTL(t *testing.T) {
 	address := testARecord(qi.qname, "1.1.1.1")
 	cname := testCNAMERecord(qi.qname, "edge.example.")
 	msg := &dnsmessage.Msg{Answer: []dnsmessage.RR{address, cname}}
-	key := dnsCacheKey{queryInfo: qi, qclass: dnsmessage.ClassINET}
-	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: key}, time.Now())
+	key := testDNSCacheKey(qi)
+	c.commitAcceptedResponse(msg, &pendingDNSResponse{cacheKey: key, register: true}, time.Now())
 
 	for _, answer := range msg.Answer {
 		if answer.Header().Ttl != 15 {
 			t.Fatalf("malformed response skipped fixed TTL: %+v", msg.Answer)
 		}
 	}
-	if c.dnsCache.Get(key) != nil || registry.Size() != 0 {
+	if getTestDNSCache(c.dnsCache, key) != nil || registry.Size() != 0 {
 		t.Fatal("malformed response produced cache or routing state")
 	}
 }
@@ -826,12 +829,15 @@ func TestDomainRegistryLeaseDoesNotShrink(t *testing.T) {
 	firstAt := time.Now()
 	long := testARecord(qi.qname, ip.String())
 	long.Hdr.Ttl = 300
-	c.registerResponsePlan(c.planDNSResponse(qi, []dnsmessage.RR{long}), firstAt)
+	c.registerResponsePlan(c.planDNSResponseAt(qi, []dnsmessage.RR{long}, firstAt), firstAt)
 
 	short := testARecord(qi.qname, ip.String())
 	short.Hdr.Ttl = 30
-	c.registerResponsePlan(c.planDNSResponse(qi, []dnsmessage.RR{short}), firstAt.Add(time.Second))
-	if got := registry.byName[qi][ip].expiry; !got.Equal(firstAt.Add(300 * time.Second)) {
+	c.registerResponsePlan(
+		c.planDNSResponseAt(qi, []dnsmessage.RR{short}, firstAt.Add(time.Second)),
+		firstAt.Add(time.Second),
+	)
+	if got := registry.byName[qi][ip].effectiveExpiry(); !got.Equal(firstAt.Add(300 * time.Second)) {
 		t.Fatalf("shorter observation revoked a longer lease: %v", got)
 	}
 	checkInvariants(t, registry, fake)

@@ -77,12 +77,18 @@ type domainRegistration struct {
 	queryInfo
 	ip            netip.Addr
 	bitmap        []uint32  // match bitmap of the domain, length MaxMatchSetLen/32
-	expiry        time.Time // effective heap/kernel deadline; zero means no expiry
 	finiteExpiry  time.Time // longest finite observation; retained under no-expiry
 	noExpiry      bool      // plane-local no-expiry observation
 	inKernel      bool
 	kernelHeapIdx int
 	verifyHeapIdx int
+}
+
+func (r *domainRegistration) effectiveExpiry() time.Time {
+	if r.noExpiry {
+		return time.Time{}
+	}
+	return r.finiteExpiry
 }
 
 // ipKernelState is the set of in-kernel registrations of one IP. Its cached
@@ -154,7 +160,7 @@ type expiryHeap struct {
 
 func (h expiryHeap) Len() int { return len(h.items) }
 func (h expiryHeap) Less(i, j int) bool {
-	return compareDomainExpiry(h.items[i].expiry, h.items[j].expiry) < 0
+	return compareDomainExpiry(h.items[i].effectiveExpiry(), h.items[j].effectiveExpiry()) < 0
 }
 func (h expiryHeap) Swap(i, j int) {
 	h.items[i], h.items[j] = h.items[j], h.items[i]
@@ -216,7 +222,6 @@ type DomainRegistry struct {
 	kernelHeap   expiryHeap   // in-kernel registrations, by expiry
 	kernelIPHeap ipExpiryHeap // in-kernel IP states, by earliest expiry
 	verifyHeap   expiryHeap   // all registrations, by expiry
-	size         int          // total registrations
 	evaluatedAt  time.Time    // latest observation/sweep time used for liveness
 
 	kernelMax int
@@ -275,16 +280,6 @@ func domainBitmapAllZero(bitmap []uint32) bool {
 	return true
 }
 
-// Upsert registers or refreshes a (domain, qtype) -> IP record learned from
-// a DNS response. ttl is the effective TTL in seconds after CNAME dependency
-// and fixed_ttl processing. Its expiry — kernel lifetime and userspace eviction
-// priority alike — is the longest max(ttl, minTTL) lease observed for this
-// registration, because independent DNS caches may overlap.
-// Capacity limits are enforced on this path (see the type doc).
-func (g *DomainRegistry) Upsert(qi queryInfo, ip netip.Addr, bitmap []uint32, ttl int, now time.Time) {
-	g.UpsertObserved(qi, ip, bitmap, ttl, now, now)
-}
-
 // UpsertObserved records an ordinary DNS lease from observedAt while using
 // evaluatedAt to decide whether delayed publication is still live.
 func (g *DomainRegistry) UpsertObserved(qi queryInfo, ip netip.Addr, bitmap []uint32, ttl int, observedAt, evaluatedAt time.Time) {
@@ -332,7 +327,7 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 	}
 	if r := g.byName[qi][ip]; r != nil {
 		oldNonzero := !domainBitmapAllZero(r.bitmap)
-		oldExpiry := r.expiry
+		oldExpiry := r.effectiveExpiry()
 		// Registrations aggregate observations from caches with different
 		// upstream/dialer keys. A plane-local no-expiry observation dominates
 		// the effective lifetime, but it must not erase finite evidence that a
@@ -342,16 +337,12 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 		} else if r.finiteExpiry.Before(expiry) {
 			r.finiteExpiry = expiry
 		}
-		r.expiry = r.finiteExpiry
-		if r.noExpiry {
-			r.expiry = time.Time{}
-		}
 		heap.Fix(&g.verifyHeap, r.verifyHeapIdx)
 		bitmapChanged := !slices.Equal(r.bitmap, bitmap)
 		if bitmapChanged {
 			r.bitmap = cloneDomainBitmap(bitmap)
 		}
-		g.replaceNonzeroContribution(ip, oldNonzero, oldExpiry, !domainBitmapAllZero(r.bitmap), r.expiry)
+		g.replaceNonzeroContribution(ip, oldNonzero, oldExpiry, !domainBitmapAllZero(r.bitmap), r.effectiveExpiry())
 		if r.inKernel {
 			heap.Fix(&g.kernelHeap, r.kernelHeapIdx)
 			s := g.byIP[r.ip]
@@ -378,32 +369,9 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 		kernelHeapIdx: -1,
 		verifyHeapIdx: -1,
 	}
-	if !noExpiry {
-		r.expiry = expiry
-	}
 	g.addRegistration(r)
 	g.attachKernel(r, now)
 	g.gcUser(now)
-}
-
-// Lookup returns the IPs the given (domain, qtype) is registered with. A
-// present registration always proves the domain/IP pairing was learned from
-// DNS — registrations are only removed by memory-pressure GC (gcUser), so
-// this never expires on its own and can be trusted for sniff verification.
-// An empty result means "no record" and the caller should fall back to
-// other verification.
-func (g *DomainRegistry) Lookup(qi queryInfo) []netip.Addr {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	m := g.byName[qi]
-	if len(m) == 0 {
-		return nil
-	}
-	ips := make([]netip.Addr, 0, len(m))
-	for ip := range m {
-		ips = append(ips, ip)
-	}
-	return ips
 }
 
 // DomainVerification separates historical DNS evidence from the current
@@ -419,7 +387,7 @@ type DomainVerification struct {
 
 // Verify reports the historical verification state of (domain, qtype) and
 // whether the current kernel domain map covers the requested domain/IP pair.
-// It is the O(1), allocation-free form of Lookup for sniff verification.
+// It is the O(1), allocation-free form of lookup for sniff verification.
 //
 // An all-zero domain bitmap needs no kernel entry when the IP has no other
 // domain-routing state: both kernel and userspace will miss every domain rule.
@@ -467,7 +435,7 @@ func (g *DomainRegistry) reapExpiredKernel(now time.Time) {
 	var affected map[netip.Addr]*ipKernelState
 	for g.kernelHeap.Len() > 0 {
 		top := g.kernelHeap.items[0]
-		if domainExpiryAlive(top.expiry, now) {
+		if domainExpiryAlive(top.effectiveExpiry(), now) {
 			break
 		}
 		heap.Pop(&g.kernelHeap)
@@ -515,8 +483,8 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(fqdn st
 	if g.closed {
 		return
 	}
-	if g.size != 0 || len(g.byName) != 0 || len(g.byAddr) != 0 || len(g.nonzeroByIP) != 0 || g.kernelHeap.Len() != 0 || len(g.kernelIPHeap) != 0 || g.verifyHeap.Len() != 0 {
-		panic(fmt.Errorf("domain registry adopted into a non-empty registry (size=%v)", g.size))
+	if g.verifyHeap.Len() != 0 || len(g.byName) != 0 || len(g.byAddr) != 0 || len(g.nonzeroByIP) != 0 || g.kernelHeap.Len() != 0 || len(g.kernelIPHeap) != 0 {
+		panic(fmt.Errorf("domain registry adopted into a non-empty registry (size=%v)", g.verifyHeap.Len()))
 	}
 	if !old.closed {
 		panic(fmt.Errorf("domain registry adopted from a registry that is still live"))
@@ -544,7 +512,6 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(fqdn st
 				queryInfo:     qi,
 				ip:            ip,
 				bitmap:        cloneDomainBitmap(bitmap),
-				expiry:        or.finiteExpiry,
 				finiteExpiry:  or.finiteExpiry,
 				kernelHeapIdx: -1,
 				verifyHeapIdx: -1,
@@ -611,20 +578,6 @@ func (g *DomainRegistry) Adopted() bool {
 	return g.adopted
 }
 
-// Size returns the total number of userspace registrations.
-func (g *DomainRegistry) Size() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.size
-}
-
-// KernelSize returns the number of IPs currently present in the kernel map.
-func (g *DomainRegistry) KernelSize() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return len(g.byIP)
-}
-
 // RegistryUsage is the fill of the userspace registry and the kernel map
 // against their respective limits.
 type RegistryUsage struct {
@@ -639,7 +592,7 @@ func (g *DomainRegistry) Usage() RegistryUsage {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return RegistryUsage{
-		UserUsed:   g.size,
+		UserUsed:   g.verifyHeap.Len(),
 		UserMax:    g.userMax,
 		KernelUsed: len(g.byIP),
 		KernelMax:  g.kernelMax,
@@ -705,8 +658,7 @@ func (g *DomainRegistry) addRegistration(r *domainRegistration) {
 		g.byAddr[r.ip] = refs
 	}
 	refs[r] = struct{}{}
-	g.replaceNonzeroContribution(r.ip, false, time.Time{}, !domainBitmapAllZero(r.bitmap), r.expiry)
-	g.size++
+	g.replaceNonzeroContribution(r.ip, false, time.Time{}, !domainBitmapAllZero(r.bitmap), r.effectiveExpiry())
 	heap.Push(&g.verifyHeap, r)
 }
 
@@ -748,10 +700,11 @@ func (g *DomainRegistry) rebuildNonzeroIPState(ip netip.Addr) *nonzeroIPState {
 			continue
 		}
 		s.count++
-		if r.expiry.IsZero() {
+		expiry := r.effectiveExpiry()
+		if expiry.IsZero() {
 			s.noExpiry++
-		} else if s.latest.IsZero() || r.expiry.After(s.latest) {
-			s.latest = r.expiry
+		} else if s.latest.IsZero() || expiry.After(s.latest) {
+			s.latest = expiry
 		}
 	}
 	if s.count == 0 {
@@ -786,7 +739,8 @@ func (g *DomainRegistry) hasLiveNonzero(ip netip.Addr, now time.Time) bool {
 // create a state unless another live registration makes the aggregate bump
 // nonzero. Already-expired registrations are ignored.
 func (g *DomainRegistry) attachKernel(r *domainRegistration, now time.Time) {
-	if r.inKernel || !domainExpiryAlive(r.expiry, now) {
+	expiry := r.effectiveExpiry()
+	if r.inKernel || !domainExpiryAlive(expiry, now) {
 		return
 	}
 	s, ok := g.byIP[r.ip]
@@ -799,7 +753,7 @@ func (g *DomainRegistry) attachKernel(r *domainRegistration, now time.Time) {
 			s.bump[w] = bump
 			s.routing[w] = routing
 		}
-		s.expiry = combineKernelIPExpiry(s.expiry, r.expiry)
+		s.expiry = combineKernelIPExpiry(s.expiry, expiry)
 		r.inKernel = true
 		heap.Push(&g.kernelHeap, r)
 		g.reconcileIP(s)
@@ -848,7 +802,7 @@ func (g *DomainRegistry) buildKernelIPState(ip netip.Addr, now time.Time) *ipKer
 		heapIdx: -1,
 	}
 	for r := range g.byAddr[ip] {
-		if domainExpiryAlive(r.expiry, now) {
+		if domainExpiryAlive(r.effectiveExpiry(), now) {
 			s.refs[r] = struct{}{}
 		}
 	}
@@ -903,10 +857,10 @@ func (g *DomainRegistry) fixKernelIPExpiry(s *ipKernelState) {
 	var expiry time.Time
 	for r := range s.refs {
 		if first {
-			expiry = r.expiry
+			expiry = r.effectiveExpiry()
 			first = false
 		} else {
-			expiry = combineKernelIPExpiry(expiry, r.expiry)
+			expiry = combineKernelIPExpiry(expiry, r.effectiveExpiry())
 		}
 	}
 	s.expiry = expiry
@@ -929,8 +883,7 @@ func (g *DomainRegistry) unregister(r *domainRegistration) {
 	if len(refs) == 0 {
 		delete(g.byAddr, r.ip)
 	}
-	g.replaceNonzeroContribution(r.ip, !domainBitmapAllZero(r.bitmap), r.expiry, false, time.Time{})
-	g.size--
+	g.replaceNonzeroContribution(r.ip, !domainBitmapAllZero(r.bitmap), r.effectiveExpiry(), false, time.Time{})
 }
 
 // gcUser enforces the userspace soft limit: while over userMax, reclaim the
@@ -938,9 +891,9 @@ func (g *DomainRegistry) unregister(r *domainRegistration) {
 // live records are never evicted and the registry may exceed userMax.
 func (g *DomainRegistry) gcUser(now time.Time) {
 	g.reapExpiredKernel(now)
-	for g.size > g.userMax && g.verifyHeap.Len() > 0 {
+	for g.verifyHeap.Len() > g.userMax && g.verifyHeap.Len() > 0 {
 		top := g.verifyHeap.items[0]
-		if domainExpiryAlive(top.expiry, now) {
+		if domainExpiryAlive(top.effectiveExpiry(), now) {
 			return
 		}
 		g.unregister(top)
@@ -964,9 +917,9 @@ func aggregateKernelRefs(refs map[*domainRegistration]struct{}) (bump, routing [
 			}
 		}
 		if first {
-			expiry = r.expiry
+			expiry = r.effectiveExpiry()
 		} else {
-			expiry = combineKernelIPExpiry(expiry, r.expiry)
+			expiry = combineKernelIPExpiry(expiry, r.effectiveExpiry())
 		}
 		first = false
 	}

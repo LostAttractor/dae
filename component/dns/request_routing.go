@@ -29,7 +29,6 @@ type ifnameReg struct {
 type RequestMatcherBuilder struct {
 	upstreamName2Id    map[string]uint8
 	simulatedDomainSet []routing.DomainSet
-	fallback           *routing.Outbound
 	rules              []requestMatchSet
 	ipSet              []*trie.Trie
 	ifnameRegs         []ifnameReg
