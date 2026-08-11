@@ -190,6 +190,109 @@ func TestDoQRejectsZoneTransferBeforeDial(t *testing.T) {
 	}
 }
 
+func TestDoQRejectsMultipleOptRecordsBeforeDial(t *testing.T) {
+	query := testQuery("example.com.", dnsmessage.TypeA, 42)
+	query.Extra = append(query.Extra,
+		&dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT}},
+		&dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT}},
+	)
+	if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
+		t.Fatal("DoQ query with multiple OPT records unexpectedly reached the dial path")
+	}
+}
+
+func TestDoQRejectsTransactionSignatureBeforeDial(t *testing.T) {
+	query := testQuery("example.com.", dnsmessage.TypeA, 42)
+	query.Extra = append(query.Extra, &dnsmessage.TSIG{Hdr: dnsmessage.RR_Header{
+		Name:   ".",
+		Rrtype: dnsmessage.TypeTSIG,
+	}})
+	if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
+		t.Fatal("signed DoQ query unexpectedly reached the dial path")
+	}
+}
+
+func TestDoQRejectsInvalidOptBeforeDial(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  *dnsmessage.OPT
+	}{
+		{
+			name: "non-root owner",
+			opt:  &dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeOPT}},
+		},
+		{
+			name: "multiple padding",
+			opt: &dnsmessage.OPT{
+				Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT},
+				Option: []dnsmessage.EDNS0{
+					&dnsmessage.EDNS0_PADDING{},
+					&dnsmessage.EDNS0_PADDING{},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query := testQuery("example.com.", dnsmessage.TypeA, 42)
+			query.Extra = append(query.Extra, tt.opt)
+			if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
+				t.Fatal("invalid DoQ OPT unexpectedly reached the dial path")
+			}
+		})
+	}
+}
+
+func TestDoQRejectsOptOutsideAdditional(t *testing.T) {
+	msg := testQuery("example.com.", dnsmessage.TypeA, 42)
+	msg.Answer = append(msg.Answer, &dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT}})
+	if err := validateDoqOptions(msg); err == nil {
+		t.Fatal("OPT outside the additional section was accepted")
+	}
+}
+
+func TestResolveDoQDoesNotTreatSignatureAsProtocolError(t *testing.T) {
+	query := testQuery("example.com.", dnsmessage.TypeA, 42)
+	response := new(dnsmessage.Msg)
+	response.SetReply(query)
+	response.Id = 0
+	response.Extra = append(response.Extra, &dnsmessage.TSIG{
+		Hdr:       dnsmessage.RR_Header{Name: "key.example.", Rrtype: dnsmessage.TypeTSIG, Class: dnsmessage.ClassANY},
+		Algorithm: dnsmessage.HmacSHA256,
+		Fudge:     300,
+	})
+	payload, err := response.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := make([]byte, 2+len(payload))
+	binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
+	copy(frame[2:], payload)
+	stream := &doqTestStream{response: bytes.NewReader(frame)}
+	err = resolveDoQ(stream, query)
+	if err == nil {
+		t.Fatal("signed DoQ response unexpectedly succeeded")
+	}
+	var protocolErr *doqProtocolErrorCause
+	if errors.As(err, &protocolErr) {
+		t.Fatalf("unsupported signature was treated as a DoQ protocol error: %v", err)
+	}
+}
+
+func TestResolveDoQRejectsTrailingData(t *testing.T) {
+	query := testQuery("example.com.", dnsmessage.TypeA, 42)
+	response := append(framedDoqResponse(t, query), 0)
+	stream := &doqTestStream{response: bytes.NewReader(response)}
+	err := resolveDoQ(stream, query)
+	var protocolErr *doqProtocolErrorCause
+	if !errors.As(err, &protocolErr) {
+		t.Fatalf("trailing DoQ data error = %v, want protocol error", err)
+	}
+	if query.Response {
+		t.Fatal("response with trailing data mutated the query")
+	}
+}
+
 func TestPackDoqQueryUsesAvailableNearLimitPadding(t *testing.T) {
 	query := testQuery("example.com.", dnsmessage.TypeA, 42)
 	null := &dnsmessage.NULL{Hdr: dnsmessage.RR_Header{
