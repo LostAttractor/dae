@@ -392,6 +392,11 @@ func (m *DnsManager) waitClosed(ctx context.Context) error {
 	select {
 	case <-m.done:
 		return m.closeErr
+	default:
+	}
+	select {
+	case <-m.done:
+		return m.closeErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -467,21 +472,26 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 	payload := make([]byte, 2+len(data))
 	binary.BigEndian.PutUint16(payload[:2], uint16(len(data)))
 	copy(payload[2:], data)
-	writeCh := make(chan error, 1)
+	type writeResult struct {
+		n   int
+		err error
+	}
+	writeCh := make(chan writeResult, 1)
 	var writeFinished atomic.Bool
 	var writeStarted atomic.Bool
+	var writeBytes atomic.Int64
 	if !m.beginWrite() {
 		return m.unavailableError()
 	}
 	go func() {
 		m.writeMu.Lock()
+		var n int
 		var writeErr error
 		if err := ctx.Err(); err != nil {
 			writeErr = err
 		} else if m.ctx.Err() != nil {
 			writeErr = m.unavailableError()
 		} else {
-			var n int
 			writeStarted.Store(true)
 			n, writeErr = m.conn.Write(payload)
 			if writeErr == nil && n != len(payload) {
@@ -489,6 +499,7 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 			}
 		}
 		m.writeMu.Unlock()
+		writeBytes.Store(int64(n))
 		writeFinished.Store(true)
 		m.endWrite()
 		if writeErr != nil {
@@ -499,7 +510,7 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 				m.startClose()
 			}
 		}
-		writeCh <- writeErr
+		writeCh <- writeResult{n: n, err: writeErr}
 	}()
 
 	writeCompleted := false
@@ -509,7 +520,7 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 			if err := parentCtx.Err(); err != nil {
 				return err
 			}
-			if !writeStarted.Load() {
+			if !writeStarted.Load() || (writeFinished.Load() && writeBytes.Load() == 0) {
 				return m.unavailableError()
 			}
 			return m.interruptedError()
@@ -530,9 +541,9 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 				return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
 			}
 			return ctx.Err()
-		case writeErr := <-writeCh:
+		case result := <-writeCh:
 			writeCh = nil
-			if writeErr == nil {
+			if result.err == nil {
 				writeCompleted = true
 				continue
 			}
@@ -552,6 +563,9 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 				return ctx.Err()
 			}
 			m.startClose()
+			if result.n == 0 {
+				return m.unavailableError()
+			}
 			return m.interruptedError()
 		case recvMsg := <-pending.ch:
 			*msg = *recvMsg
