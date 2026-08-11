@@ -38,6 +38,7 @@ type Anyfrom struct {
 	*net.UDPConn
 	idleEvictTimer *time.Timer
 	idleTTL        time.Duration
+	writeMu        sync.Mutex
 	// GSO support is modified from quic-go with many thanks.
 	gso         bool
 	gotGSOError bool
@@ -87,6 +88,8 @@ func (a *Anyfrom) SyscallConn() (syscall.RawConn, error) {
 	return a.UDPConn.SyscallConn()
 }
 func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, oobn int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		return a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(oob, uint16(len(b))), addr)
@@ -94,6 +97,8 @@ func (a *Anyfrom) WriteMsgUDP(b []byte, oob []byte, addr *net.UDPAddr) (n int, o
 	return a.UDPConn.WriteMsgUDP(b, oob, addr)
 }
 func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort) (n int, oobn int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		return a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(oob, uint16(len(b))), addr)
@@ -101,6 +106,8 @@ func (a *Anyfrom) WriteMsgUDPAddrPort(b []byte, oob []byte, addr netip.AddrPort)
 	return a.UDPConn.WriteMsgUDPAddrPort(b, oob, addr)
 }
 func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr.(*net.UDPAddr))
@@ -109,6 +116,8 @@ func (a *Anyfrom) WriteTo(b []byte, addr net.Addr) (n int, err error) {
 	return a.UDPConn.WriteTo(b, addr)
 }
 func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		n, _, err = a.UDPConn.WriteMsgUDP(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr)
@@ -117,6 +126,22 @@ func (a *Anyfrom) WriteToUDP(b []byte, addr *net.UDPAddr) (n int, err error) {
 	return a.UDPConn.WriteToUDP(b, addr)
 }
 func (a *Anyfrom) WriteToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	return a.writeToUDPAddrPort(b, addr)
+}
+
+func (a *Anyfrom) WriteToUDPAddrPortWithDeadline(b []byte, addr netip.AddrPort, deadline time.Time) (n int, err error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	if err := a.UDPConn.SetWriteDeadline(deadline); err != nil {
+		return 0, err
+	}
+	defer a.UDPConn.SetWriteDeadline(time.Time{})
+	return a.writeToUDPAddrPort(b, addr)
+}
+
+func (a *Anyfrom) writeToUDPAddrPort(b []byte, addr netip.AddrPort) (n int, err error) {
 	defer func() { a.afterWrite(err) }()
 	if a.SupportGso(len(b)) {
 		n, _, err = a.UDPConn.WriteMsgUDPAddrPort(b, appendUDPSegmentSizeMsg(nil, uint16(len(b))), addr)
