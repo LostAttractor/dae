@@ -616,6 +616,9 @@ func (d *DoTCP) getManager(ctx context.Context) (*DnsManager, error) {
 		return nil, net.ErrClosed
 	}
 	if d.dnsManager == nil || d.dnsManager.IsClosed() {
+		if d.dnsManager != nil {
+			d.dnsManager.retire()
+		}
 		ctx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		defer cancel()
 		conn, err := d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
@@ -639,17 +642,31 @@ func (d *DoTCP) getManager(ctx context.Context) (*DnsManager, error) {
 }
 
 func (d *DoTCP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
+	if hasDnsTransactionSignature(msg) {
+		return errors.New("TCP forwarder does not support transaction signatures")
+	}
+	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+	defer cancel()
+	var lastErr error
 	for attempts := 0; attempts < 2; attempts++ {
 		m, err := d.getManager(ctx)
 		if err != nil {
 			return err
 		}
 		err = m.ResolveContext(ctx, msg)
-		if !errors.Is(err, net.ErrClosed) || ctx.Err() != nil {
+		lastErr = err
+		if !shouldRetryDnsManager(err, msg) || ctx.Err() != nil {
 			return err
 		}
 	}
-	return net.ErrClosed
+	return lastErr
+}
+
+func shouldRetryDnsManager(err error, msg *dnsmessage.Msg) bool {
+	if errors.Is(err, errDnsManagerUnavailable) {
+		return true
+	}
+	return msg.Opcode == dnsmessage.OpcodeQuery && errors.Is(err, errDnsExchangeInterrupted)
 }
 
 type DoUDP struct {
