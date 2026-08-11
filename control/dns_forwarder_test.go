@@ -26,6 +26,7 @@ type concurrentTLSTestDialer struct {
 
 type pipeTLSTestDialer struct {
 	server chan net.Conn
+	wrap   func(net.Conn) net.Conn
 }
 
 type retryTCPTestDialer struct {
@@ -52,6 +53,9 @@ func (d *pipeTLSTestDialer) ListenPacket(context.Context, string) (net.PacketCon
 func (d *pipeTLSTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	client, server := net.Pipe()
 	d.server <- server
+	if d.wrap != nil {
+		client = d.wrap(client)
+	}
 	return client, nil
 }
 
@@ -114,6 +118,23 @@ func (d *concurrentTLSTestDialer) DialContext(ctx context.Context, _, _ string) 
 	}
 }
 
+func waitForDoTLSExchange(t *testing.T, forwarder *DoTLS) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		forwarder.mu.Lock()
+		active := len(forwarder.exchanges) != 0
+		forwarder.mu.Unlock()
+		if active {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("DoT exchange was not registered")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestDoTLSAllowsConcurrentExchanges(t *testing.T) {
 	transport := &concurrentTLSTestDialer{
 		entered: make(chan struct{}, 2),
@@ -163,12 +184,88 @@ func TestDoTLSAllowsConcurrentExchanges(t *testing.T) {
 	}
 }
 
+func TestDNSForwardersRejectUnsupportedQueriesBeforeDial(t *testing.T) {
+	forwarders := []struct {
+		name              string
+		forwarder         DnsForwarder
+		allowZoneTransfer bool
+	}{
+		{name: "DoH", forwarder: &DoH{}, allowZoneTransfer: true},
+		{name: "DoQ", forwarder: &DoQ{}},
+		{name: "DoT", forwarder: &DoTLS{}},
+		{name: "TCP", forwarder: &DoTCP{}},
+		{name: "UDP", forwarder: &DoUDP{}},
+	}
+	signatures := map[string]dnsmessage.RR{
+		"TSIG": &dnsmessage.TSIG{Hdr: dnsmessage.RR_Header{Rrtype: dnsmessage.TypeTSIG}},
+		"SIG(0)": &dnsmessage.SIG{RRSIG: dnsmessage.RRSIG{Hdr: dnsmessage.RR_Header{
+			Rrtype: dnsmessage.TypeSIG,
+		}}},
+	}
+	for _, forwarder := range forwarders {
+		t.Run(forwarder.name, func(t *testing.T) {
+			for name, signature := range signatures {
+				t.Run(name, func(t *testing.T) {
+					query := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
+					query.Extra = append(query.Extra, signature)
+					if err := forwarder.forwarder.ForwardDNS(context.Background(), query); err == nil {
+						t.Fatal("signed query unexpectedly reached the dial path")
+					}
+				})
+			}
+			if forwarder.allowZoneTransfer {
+				return
+			}
+			for _, qtype := range []uint16{dnsmessage.TypeAXFR, dnsmessage.TypeIXFR} {
+				t.Run(dnsmessage.Type(qtype).String(), func(t *testing.T) {
+					query := testDNSQuery("example.com.", qtype, 1)
+					if err := forwarder.forwarder.ForwardDNS(context.Background(), query); err == nil {
+						t.Fatal("zone transfer unexpectedly reached the dial path")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDNSForwarderOperationErrorPriority(t *testing.T) {
+	wantOperationErr := errors.New("operation failed")
+
+	callerCtx, cancelCaller := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelCaller()
+	closedState := newDNSForwarderState(context.Background())
+	closedState.close()
+	operationCtx, cancelOperation := context.WithCancel(context.Background())
+	cancelOperation()
+	if err := dnsForwarderOperationError(callerCtx, closedState, operationCtx, wantOperationErr); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("caller priority error = %v, want context deadline", err)
+	}
+
+	if err := dnsForwarderOperationError(context.Background(), closedState, operationCtx, wantOperationErr); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("state priority error = %v, want net.ErrClosed", err)
+	}
+
+	stateParent, cancelState := context.WithCancel(context.Background())
+	activeState := newDNSForwarderState(stateParent)
+	cancelState()
+	if err := dnsForwarderOperationError(context.Background(), activeState, operationCtx, wantOperationErr); !errors.Is(err, context.Canceled) {
+		t.Fatalf("state context priority error = %v, want context cancellation", err)
+	}
+
+	activeState = newDNSForwarderState(context.Background())
+	if err := dnsForwarderOperationError(context.Background(), activeState, operationCtx, wantOperationErr); !errors.Is(err, context.Canceled) {
+		t.Fatalf("operation context priority error = %v, want context cancellation", err)
+	}
+	if err := dnsForwarderOperationError(context.Background(), activeState, context.Background(), wantOperationErr); !errors.Is(err, wantOperationErr) {
+		t.Fatalf("operation error = %v, want %v", err, wantOperationErr)
+	}
+}
+
 func TestDoTLSCloseWaitsForExchange(t *testing.T) {
 	transport := &pipeTLSTestDialer{server: make(chan net.Conn, 1)}
 	forwarder := &DoTLS{
 		dialArgument: dialArgument{Dialer: &dialer.Dialer{Dialer: transport}},
 		state:        newDNSForwarderState(context.Background()),
-		exchanges:    make(map[*dnsTLSExchange]struct{}),
 	}
 	forwarder.Upstream.Hostname = "resolver.example"
 	requestDone := make(chan error, 1)
@@ -177,19 +274,7 @@ func TestDoTLSCloseWaitsForExchange(t *testing.T) {
 	}()
 	server := <-transport.server
 	defer server.Close()
-	deadline := time.Now().Add(time.Second)
-	for {
-		forwarder.mu.Lock()
-		active := len(forwarder.exchanges)
-		forwarder.mu.Unlock()
-		if active != 0 || time.Now().After(deadline) {
-			if active == 0 {
-				t.Fatal("DoT exchange was not registered")
-			}
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitForDoTLSExchange(t, forwarder)
 
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- forwarder.Close() }()
@@ -203,11 +288,77 @@ func TestDoTLSCloseWaitsForExchange(t *testing.T) {
 	}
 	select {
 	case err := <-requestDone:
-		if err == nil {
-			t.Fatal("closed DoT exchange unexpectedly succeeded")
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("closed DoT exchange error = %v, want net.ErrClosed", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("DoT request remained blocked after Close")
+	}
+}
+
+func TestDoTLSCallerCancellationStopsExchange(t *testing.T) {
+	transport := &pipeTLSTestDialer{server: make(chan net.Conn, 1)}
+	forwarder := &DoTLS{
+		dialArgument: dialArgument{Dialer: &dialer.Dialer{Dialer: transport}},
+		state:        newDNSForwarderState(context.Background()),
+	}
+	forwarder.Upstream.Hostname = "resolver.example"
+	ctx, cancel := context.WithCancel(context.Background())
+	requestDone := make(chan error, 1)
+	go func() {
+		requestDone <- forwarder.ForwardDNS(ctx, testDNSQuery("example.com.", dnsmessage.TypeA, 1))
+	}()
+	server := <-transport.server
+	defer server.Close()
+	waitForDoTLSExchange(t, forwarder)
+	cancel()
+	select {
+	case err := <-requestDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled DoT exchange error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("caller cancellation did not stop the synchronous DoT exchange")
+	}
+	if err := forwarder.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDoTLSCancellationDoesNotWaitForBlockingClose(t *testing.T) {
+	closeRelease := make(chan struct{})
+	closeStarted := make(chan struct{})
+	transport := &pipeTLSTestDialer{
+		server: make(chan net.Conn, 1),
+		wrap: func(conn net.Conn) net.Conn {
+			return &blockingDNSCloseConn{Conn: conn, closeStarted: closeStarted, closeRelease: closeRelease}
+		},
+	}
+	forwarder := &DoTLS{
+		dialArgument: dialArgument{Dialer: &dialer.Dialer{Dialer: transport}},
+		state:        newDNSForwarderState(context.Background()),
+	}
+	forwarder.Upstream.Hostname = "resolver.example"
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- forwarder.ForwardDNS(ctx, testDNSQuery("example.com.", dnsmessage.TypeA, 1))
+	}()
+	server := <-transport.server
+	defer server.Close()
+	cancel()
+	<-closeStarted
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ForwardDNS error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ForwardDNS waited for blocking Close")
+	}
+	close(closeRelease)
+	if err := forwarder.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -225,7 +376,7 @@ func TestManagedDNSForwarderBoundsBlockedRetirement(t *testing.T) {
 	currentClient, currentServer := net.Pipe()
 	defer currentServer.Close()
 	currentManager := NewDnsManager(currentClient)
-	forwarder := &managedDNSForwarder{
+	forwarder := &DoTCP{
 		state:      newDNSForwarderState(context.Background()),
 		dnsManager: currentManager,
 		retiring:   oldManager,
@@ -263,7 +414,7 @@ func TestManagedDNSForwarderRetriesDialBeforeOccupyingRetiringSlot(t *testing.T)
 
 	wantErr := errors.New("temporary dial failure")
 	transport := &retryTCPTestDialer{firstErr: wantErr, server: make(chan net.Conn, 1)}
-	forwarder := &managedDNSForwarder{
+	forwarder := &DoTCP{
 		state:      newDNSForwarderState(context.Background()),
 		dnsManager: oldManager,
 		dialArgument: dialArgument{
@@ -305,7 +456,7 @@ func TestManagedDNSForwarderRecoversAfterTransportCloseError(t *testing.T) {
 	}
 
 	transport := &pipeTLSTestDialer{server: make(chan net.Conn, 1)}
-	forwarder := &managedDNSForwarder{
+	forwarder := &DoTCP{
 		state:      newDNSForwarderState(context.Background()),
 		dnsManager: oldManager,
 		dialArgument: dialArgument{

@@ -153,7 +153,7 @@ func closeConnAsync(conn net.Conn) {
 	}
 }
 
-func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dnsmessage.Msg) error {
+func ResolveHttp(ctx context.Context, client *http.Client, endpoint *url.URL, msg *dnsmessage.Msg) error {
 	requestID := msg.Id
 	query := msg.Copy()
 	query.Id = 0
@@ -165,16 +165,16 @@ func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dn
 		return err
 	}
 
-	q := url.Query()
+	requestURL := *endpoint
+	q := requestURL.Query()
 	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
-	url.RawQuery = q.Encode()
+	requestURL.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/dns-message")
-	req.Host = url.Host
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -203,15 +203,8 @@ func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dn
 	}
 	if ageValue := resp.Header.Get("Age"); ageValue != "" {
 		ageValue, _, _ = strings.Cut(ageValue, ",")
-		age, err := strconv.ParseUint(strings.TrimSpace(ageValue), 10, 64)
-		if err != nil {
-			if errors.Is(err, strconv.ErrRange) {
-				age = math.MaxUint64
-			} else {
-				age = 0
-			}
-		}
-		ageRRs := func(rrs []dnsmessage.RR) {
+		age, _ := strconv.ParseUint(strings.TrimSpace(ageValue), 10, 64)
+		for _, rrs := range [][]dnsmessage.RR{response.Answer, response.Ns, response.Extra} {
 			for _, rr := range rrs {
 				if rr == nil || rr.Header().Rrtype == dnsmessage.TypeOPT {
 					continue
@@ -223,9 +216,9 @@ func ResolveHttp(ctx context.Context, client *http.Client, url *url.URL, msg *dn
 				}
 			}
 		}
-		ageRRs(response.Answer)
-		ageRRs(response.Ns)
-		ageRRs(response.Extra)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	response.Id = requestID
 	*msg = response
@@ -277,8 +270,12 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
 }
 
 func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
+	return resolveUDP(ctx, conn, msg, consts.DefaultDNSRetryInterval, consts.DefaultDNSTimeout)
+}
+
+func resolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg, retryInterval, timeout time.Duration) error {
 	if err := ctx.Err(); err != nil {
-		_ = conn.Close()
+		closeConnAsync(conn)
 		return err
 	}
 	query := msg.Copy()
@@ -289,21 +286,18 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 	if err := CheckDnsMessageSize(len(data)); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	success := false
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer func() {
 		stopClose()
 		if !success {
-			_ = conn.Close()
+			closeConnAsync(conn)
 		}
 	}()
-	type recvResult struct {
-		msg *dnsmessage.Msg
-		err error
-	}
-	recvCh := make(chan recvResult, 1)
+	recvCh := make(chan error, 1)
+	var response dnsmessage.Msg
 	// A plain heap buffer: on the write-error return path the read goroutine
 	// stays blocked until the caller closes the conn, so a pooled buffer
 	// could be handed out again underneath a pending Read.
@@ -312,7 +306,7 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 		for {
 			n, err := conn.Read(respBuf)
 			if err != nil {
-				recvCh <- recvResult{err: err}
+				recvCh <- err
 				return
 			}
 			if n > consts.MaxDnsMessageSize {
@@ -325,10 +319,30 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 			if err := ValidateDnsResponse(query, &resp, query.Id); err != nil {
 				continue
 			}
-			recvCh <- recvResult{msg: &resp}
+			response = resp
+			recvCh <- nil
 			return
 		}
 	}()
+	commitResult := func(err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		*msg = response
+		success = true
+		return nil
+	}
+	pollResult := func() (bool, error) {
+		select {
+		case err := <-recvCh:
+			return true, commitResult(err)
+		default:
+			return false, nil
+		}
+	}
 	attempts := consts.DefaultDNSRetryCount
 	if msg.Opcode != dnsmessage.OpcodeQuery && msg.Opcode != dnsmessage.OpcodeNotify {
 		attempts = 1
@@ -337,46 +351,48 @@ func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := conn.Write(data); err != nil {
+		n, err := conn.Write(data)
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			// A previous retry may already have produced a valid response.
 			// Commit it instead of losing it to a later write failure.
-			select {
-			case result := <-recvCh:
-				if result.err == nil {
-					*msg = *result.msg
-					success = true
-					return nil
-				}
-			default:
+			if received, resultErr := pollResult(); received {
+				return resultErr
 			}
 			return err
 		}
+		// Prefer an already validated response over a retry timer that is also ready.
+		if received, err := pollResult(); received {
+			return err
+		}
 
-		wait := consts.DefaultDNSRetryInterval
+		wait := retryInterval
 		if attempts == 1 {
-			wait = consts.DefaultDNSTimeout
+			wait = timeout
 		}
-		retryTimer := time.NewTimer(wait)
 		select {
-		case result := <-recvCh:
-			retryTimer.Stop()
-			if result.err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return result.err
-			}
-			*msg = *result.msg
-			success = true
-			return nil
+		case err := <-recvCh:
+			return commitResult(err)
 		case <-ctx.Done():
-			retryTimer.Stop()
 			return ctx.Err()
-		case <-retryTimer.C:
+		case <-time.After(wait):
+			// The response send may have raced with timer delivery.
+			if received, err := pollResult(); received {
+				return err
+			}
 		}
+	}
+	// Give a response concurrent with the final timer one last chance to win.
+	if received, err := pollResult(); received {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return fmt.Errorf("DNS query timed out after %d attempts: %w", attempts, context.DeadlineExceeded)
 }
@@ -494,8 +510,8 @@ func resolveContext(ctx context.Context, dialer netproxy.Dialer, server netip.Ad
 	}()
 	select {
 	case err = <-result:
-		if err != nil && ctx.Err() != nil {
-			return nil, ctx.Err()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
 		if err != nil {
 			return nil, err
