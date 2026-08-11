@@ -239,3 +239,32 @@ func TestCheckDnsMessageSize(t *testing.T) {
 		t.Fatal("oversized DNS message unexpectedly accepted")
 	}
 }
+
+func TestUnpackDnsMessageWireBoundaries(t *testing.T) {
+	query := new(dnsmessage.Msg)
+	query.SetQuestion("example.com.", dnsmessage.TypeA)
+	payload, err := query.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		payload []byte
+		wantErr bool
+	}{
+		{name: "valid", payload: payload},
+		{name: "trailing byte", payload: append(append([]byte(nil), payload...), 0), wantErr: true},
+		{name: "truncated question", payload: payload[:len(payload)-1], wantErr: true},
+		{name: "forward pointer", payload: append(append([]byte(nil), payload[:12]...), 0xc0, 0x0e, 0, 1, 0, 1), wantErr: true},
+		{name: "reserved label type", payload: append(append([]byte(nil), payload[:12]...), 0x40, 0, 1, 0, 1), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg dnsmessage.Msg
+			err := UnpackDnsMessage(tt.payload, &msg)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("UnpackDnsMessage() error = %v, wantErr=%v", err, tt.wantErr)
+			}
+		})
+	}
+}

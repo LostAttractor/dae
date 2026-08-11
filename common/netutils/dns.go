@@ -41,6 +41,70 @@ func CheckDnsMessageSize(size int) error {
 	return nil
 }
 
+func UnpackDnsMessage(payload []byte, msg *dnsmessage.Msg) error {
+	if len(payload) < 12 {
+		return fmt.Errorf("%w: DNS header is truncated", ErrBadDnsResponse)
+	}
+	offset := 12
+	questions := int(binary.BigEndian.Uint16(payload[4:6]))
+	records := int(binary.BigEndian.Uint16(payload[6:8])) +
+		int(binary.BigEndian.Uint16(payload[8:10])) +
+		int(binary.BigEndian.Uint16(payload[10:12]))
+	for i := 0; i < questions; i++ {
+		next, err := skipDnsWireName(payload, offset)
+		if err != nil || next+4 > len(payload) {
+			return fmt.Errorf("%w: malformed DNS question", ErrBadDnsResponse)
+		}
+		offset = next + 4
+	}
+	for i := 0; i < records; i++ {
+		next, err := skipDnsWireName(payload, offset)
+		if err != nil || next+10 > len(payload) {
+			return fmt.Errorf("%w: malformed DNS resource record", ErrBadDnsResponse)
+		}
+		rdataLength := int(binary.BigEndian.Uint16(payload[next+8 : next+10]))
+		offset = next + 10 + rdataLength
+		if offset > len(payload) {
+			return fmt.Errorf("%w: truncated DNS resource record", ErrBadDnsResponse)
+		}
+	}
+	if offset != len(payload) {
+		return fmt.Errorf("%w: %d trailing bytes after DNS message", ErrBadDnsResponse, len(payload)-offset)
+	}
+	return msg.Unpack(payload)
+}
+
+func skipDnsWireName(payload []byte, offset int) (int, error) {
+	for {
+		if offset >= len(payload) {
+			return 0, io.ErrUnexpectedEOF
+		}
+		length := payload[offset]
+		switch length & 0xc0 {
+		case 0:
+			offset++
+			if length == 0 {
+				return offset, nil
+			}
+			if offset+int(length) > len(payload) {
+				return 0, io.ErrUnexpectedEOF
+			}
+			offset += int(length)
+		case 0xc0:
+			if offset+1 >= len(payload) {
+				return 0, io.ErrUnexpectedEOF
+			}
+			pointer := int(length&0x3f)<<8 | int(payload[offset+1])
+			if pointer >= offset {
+				return 0, errors.New("DNS compression pointer does not point backward")
+			}
+			return offset + 2, nil
+		default:
+			return 0, errors.New("invalid DNS label encoding")
+		}
+	}
+}
+
 // ValidateDnsResponse validates a response against the query sent on the wire.
 // Error responses are allowed to omit the question section; restore it so
 // response routing can still identify the original lookup.
