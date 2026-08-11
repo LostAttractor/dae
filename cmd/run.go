@@ -387,7 +387,12 @@ loop:
 					statusServer.SetControlPlane(nil)
 				}
 				if closeErr := c.Close(); closeErr != nil {
-					std.Warnf("[Reload] Failed to fully close old control plane: %+v", closeErr)
+					// The old filters may still interpret shared maps with the old
+					// rule layout. Do not install new rules or adopt bitmaps into
+					// that state; transfer BPF ownership only so teardown can close it.
+					newC.InjectBpf()
+					_ = newC.Close()
+					std.Panicf("%+v", oops.Wrapf(closeErr, "[Reload] Failed to retire old control plane safely"))
 				}
 				std.Warnln("[Reload] Stopped old control plane")
 
@@ -433,13 +438,13 @@ func exit(c *control.ControlPlane) {
 	if err := os.Remove(PidFilePath); err != nil {
 		std.Errorf("%+v", oops.Wrapf(err, "failed to remove pid file"))
 	}
+	if e := c.Close(); e != nil {
+		std.Errorf("%+v", oops.Wrapf(e, "failed to close control plane"))
+	}
 	if err := control.GetDaeNetns().Close(); err != nil {
 		std.Errorf("%+v", oops.Wrapf(err, "failed to close netns"))
 	}
 	control.CloseSysctlManager()
-	if e := c.Close(); e != nil {
-		std.Errorf("%+v", oops.Wrapf(e, "failed to close control plane"))
-	}
 }
 
 func startPprofServer(port uint16) {

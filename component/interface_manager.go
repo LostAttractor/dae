@@ -24,6 +24,8 @@ type callbackSet struct {
 type InterfaceManager struct {
 	closed    context.Context
 	close     context.CancelFunc
+	closeOnce sync.Once
+	done      chan struct{}
 	mu        sync.Mutex
 	callbacks []callbackSet
 	upLinks   map[string]bool
@@ -35,6 +37,7 @@ func NewInterfaceManager() *InterfaceManager {
 		callbacks: make([]callbackSet, 0),
 		closed:    closed,
 		close:     toClose,
+		done:      make(chan struct{}),
 		upLinks:   make(map[string]bool),
 	}
 
@@ -54,6 +57,7 @@ func NewInterfaceManager() *InterfaceManager {
 }
 
 func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struct{}) {
+	defer close(m.done)
 	for {
 		select {
 		case <-m.closed.Done():
@@ -147,8 +151,9 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 	})
 }
 
-// Close cancels the context to stop the monitor goroutine
+// Close stops the monitor and waits for any callback already in progress.
 func (m *InterfaceManager) Close() error {
-	m.close()
+	m.closeOnce.Do(m.close)
+	<-m.done
 	return nil
 }

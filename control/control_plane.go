@@ -84,7 +84,7 @@ type ControlPlane struct {
 
 	// closedDone is set once Close has fully run (all defer funcs executed,
 	// kernel filters detached). InheritDomainRegistry asserts it on the
-	// retired plane before rewriting the shared kernel domain maps.
+	// retired plane before rewriting the shared kernel domain map.
 	closedDone atomic.Bool
 
 	PrometheusRegistry *prometheus.Registry
@@ -376,11 +376,9 @@ func NewControlPlane(
 		soMarkFromDae:              global.SoMarkFromDae,
 		PrometheusRegistry:         prometheusRegistry,
 	}
-	// Stop the dialers' connectivity checks when the plane is closed: a
-	// retired plane's checks would otherwise keep writing connectivity state
-	// into the shared eBPF maps and the stats. Registered first, so it runs
-	// last (defer funcs run in reverse order), after in-flight DNS forwarders
-	// have been released.
+	// Stop connectivity checks after DNS forwarders have been retired. A
+	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
+	// the remainder of control-plane shutdown indefinitely.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
 	defer func() {
 		if err != nil {
@@ -437,6 +435,11 @@ func NewControlPlane(
 // is expected to close the plane and exit.
 func (c *ControlPlane) Activate() error {
 	core := c.core
+	core.lifecycleMu.Lock()
+	defer core.lifecycleMu.Unlock()
+	if core.closed.Err() != nil {
+		return net.ErrClosed
+	}
 	builder := c.routingMatcherBuilder
 	c.routingMatcherBuilder = nil
 
@@ -459,19 +462,20 @@ func (c *ControlPlane) Activate() error {
 
 	// On reload without an adopted registry, evict domain routing entries
 	// inherited from the previous plane so that they cannot leak into the
-	// new rule set. An adopted registry is already in sync with the maps and
+	// new rule set. An adopted registry is already in sync with the map and
 	// must not be wiped.
 	if core.isReload && !core.domainRegistry.Adopted() {
-		log.Warnln("Reload without an adopted domain registry: wiping inherited kernel domain maps; domain routing restarts from scratch")
+		log.Warnln("Reload without an adopted domain registry: wiping the inherited kernel domain map; domain routing restarts from scratch")
 		var key [4]uint32
 		var val bpfDomainRouting
 		iter := core.bpf.DomainRoutingMap.Iterate()
 		for iter.Next(&key, &val) {
-			_ = core.bpf.DomainRoutingMap.Delete(&key)
+			if err := core.bpf.DomainRoutingMap.Delete(&key); err != nil {
+				return oops.Errorf("failed to wipe inherited domain routing entry %v: %w", key, err)
+			}
 		}
-		iter = core.bpf.DomainBumpMap.Iterate()
-		for iter.Next(&key, &val) {
-			_ = core.bpf.DomainBumpMap.Delete(&key)
+		if err := iter.Err(); err != nil {
+			return oops.Errorf("failed to iterate inherited domain routing map: %w", err)
 		}
 	}
 
@@ -562,7 +566,7 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 	for _, k := range ks {
 		key, value, _ := strings.Cut(string(k), ":")
 		key = dnsmessage.CanonicalName(strings.TrimSpace(key))
-		ttl, err := strconv.ParseInt(strings.TrimSpace(value), 0, strconv.IntSize)
+		ttl, err := strconv.ParseUint(strings.TrimSpace(value), 0, 31)
 		if err != nil {
 			return nil, oops.Errorf("failed to parse ttl: %v", err)
 		}
@@ -609,18 +613,19 @@ func (c *ControlPlane) InjectBpf() {
 	c.core.InjectBpf()
 }
 
-// InheritDomainRegistry transfers the domain -> IP registrations of a
+// InheritDomainRegistry transfers the finite domain -> IP registrations of a
 // retired plane into this plane's registry, recomputing every domain's match
 // bitmap with this plane's routing rules, and syncs the shared kernel domain
-// maps to the adopted state. It must be called after the old plane is
+// map to the adopted state. Plane-local no-expiry upstream observations are
+// rebuilt by the new resolver. This must be called after the old plane is
 // retired (its writers stopped, its kernel programs detached) and before
-// Activate, which then skips wiping the kernel maps. Domain routing and
+// Activate, which then skips wiping the kernel map. Domain routing and
 // sniff verification therefore survive a reload instead of waiting for every
 // domain to be re-resolved.
 //
 // It panics if the old plane is not fully closed: adoption rewrites the
-// shared kernel maps while the old plane's tc filters might still read
-// them (old rules with new-rule bitmaps = misrouting), and the old
+// shared kernel map while the old plane's tc filters might still read
+// it (old rules with new-rule bitmaps = misrouting), and the old
 // registry's writers would fight the adopted state.
 func (c *ControlPlane) InheritDomainRegistry(old *ControlPlane) {
 	if !old.closedDone.Load() {
@@ -678,7 +683,7 @@ func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.Addr
 	fqdn := dnsmessage.CanonicalName(domain)
 	// Historical pairing remains valid for sniff verification after the
 	// corresponding kernel contribution expires or is capacity-evicted. Keep
-	// that trust decision separate from whether the current kernel maps could
+	// that trust decision separate from whether the current kernel map could
 	// route this connection accurately.
 	verification := c.core.domainRegistry.Verify(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}, dst.Addr())
 	if verification.Registered {
@@ -1051,6 +1056,8 @@ func (c *ControlPlane) closeOutbounds() (err error) {
 }
 
 func (c *ControlPlane) Close() (err error) {
+	c.core.lifecycleMu.Lock()
+	defer c.core.lifecycleMu.Unlock()
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
@@ -1062,7 +1069,15 @@ func (c *ControlPlane) Close() (err error) {
 		}
 	}
 	c.cancel()
-	err = c.core.Close()
-	c.closedDone.Store(true)
+	if coreErr := c.core.closeLocked(); coreErr != nil {
+		if err != nil {
+			err = oops.Errorf("%w; %v", err, coreErr)
+		} else {
+			err = coreErr
+		}
+	}
+	if err == nil {
+		c.closedDone.Store(true)
+	}
 	return err
 }
