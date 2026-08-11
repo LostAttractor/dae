@@ -138,6 +138,35 @@ func TestDnsManagerConcurrentQueriesShareOneConnection(t *testing.T) {
 	}
 }
 
+func TestDnsManagerWireIdsAreNotSequential(t *testing.T) {
+	client, server := testUDPSocketPair(t)
+	wireIds := make(chan uint16, 16)
+	go serveUDP(server, func(req *dnsmessage.Msg) *dnsmessage.Msg {
+		wireIds <- req.Id
+		return answerHandler(req)
+	})
+	m := NewDnsManager(client, false)
+	defer m.Close()
+
+	for i := 0; i < cap(wireIds); i++ {
+		if err := m.Resolve(testQuery("example.com.", dnsmessage.TypeA, uint16(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := <-wireIds
+	allSequential := true
+	for i := 1; i < cap(wireIds); i++ {
+		current := <-wireIds
+		if current != previous+1 {
+			allSequential = false
+		}
+		previous = current
+	}
+	if allSequential {
+		t.Fatal("DNS transaction IDs followed a predictable incrementing sequence")
+	}
+}
+
 func TestDnsManagerTimeoutIsTimeoutError(t *testing.T) {
 	client, _ := testUDPSocketPair(t) // server never answers
 
@@ -262,15 +291,28 @@ func TestDnsManagerDropsNonResponseAndWrongClass(t *testing.T) {
 }
 
 func TestDnsManagerAcceptsHeaderOnlyError(t *testing.T) {
-	client, server := testUDPSocketPair(t)
-	go serveUDP(server, func(req *dnsmessage.Msg) *dnsmessage.Msg {
-		return &dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		req, err := readStreamFrame(server)
+		if err != nil {
+			return
+		}
+		response := &dnsmessage.Msg{MsgHdr: dnsmessage.MsgHdr{
 			Id:       req.Id,
 			Response: true,
 			Rcode:    dnsmessage.RcodeRefused,
 		}}
-	})
-	m := NewDnsManager(client, false)
+		payload, err := response.Pack()
+		if err != nil {
+			return
+		}
+		frame := make([]byte, 2+len(payload))
+		binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
+		copy(frame[2:], payload)
+		_, _ = server.Write(frame)
+	}()
+	m := NewDnsManager(client, true)
 	defer m.Close()
 	msg := testQuery("example.com.", dnsmessage.TypeA, 11)
 	if err := m.Resolve(msg); err != nil {
@@ -466,6 +508,75 @@ func TestDnsManagerSiblingResponseClearsStaleState(t *testing.T) {
 	}
 }
 
+func TestDnsManagerRetiredStateIsMonotonic(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	m := newDnsManager(clientConn, true, time.Second, time.Hour)
+	defer m.Close()
+
+	if !m.beginQuery() {
+		t.Fatal("open manager rejected a query")
+	}
+	m.markStale()
+	m.retire()
+	m.recordResponse()
+	if !m.IsClosed() {
+		t.Fatal("sibling response revived a retired manager")
+	}
+	if m.beginQuery() {
+		t.Fatal("retired manager admitted a new query")
+	}
+	m.endQuery()
+}
+
+func TestDnsManagerParentCancellationKeepsConnection(t *testing.T) {
+	client, _ := testUDPSocketPair(t)
+	m := NewDnsManager(client, false)
+	defer m.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.ResolveContext(ctx, testQuery("example.com.", dnsmessage.TypeA, 12)) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveContext error = %v, want context.Canceled", err)
+	}
+	if m.IsClosed() {
+		t.Fatal("caller cancellation retired a healthy manager")
+	}
+}
+
+func TestDnsManagerParentDeadlineRetiresSilentConnection(t *testing.T) {
+	client, _ := testUDPSocketPair(t)
+	m := NewDnsManager(client, false)
+	defer m.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := m.ResolveContext(ctx, testQuery("example.com.", dnsmessage.TypeA, 14))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ResolveContext error = %v, want context.DeadlineExceeded", err)
+	}
+	if !m.IsClosed() {
+		t.Fatal("deadline did not retire a silent manager")
+	}
+}
+
+func TestDnsManagerPreCanceledContextDoesNotWrite(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	m := NewDnsManager(client, true)
+	defer m.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.ResolveContext(ctx, testQuery("example.com.", dnsmessage.TypeA, 13)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveContext error = %v, want context.Canceled", err)
+	}
+	_ = server.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Fatal("pre-canceled query wrote to the connection")
+	}
+}
+
 func TestDnsManagerObsoleteIdleCallbackPreservesActivity(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -496,25 +607,28 @@ func TestDnsManagerObsoleteIdleCallbackDoesNotRearmAfterClose(t *testing.T) {
 	}
 }
 
-func TestDoUDPCloseClosesRetiredManagers(t *testing.T) {
-	client1, server1 := net.Pipe()
-	defer server1.Close()
-	client2, server2 := net.Pipe()
-	defer server2.Close()
-	retired := newDnsManager(client1, false, time.Second, time.Hour)
-	current := newDnsManager(client2, false, time.Second, time.Hour)
-	d := &DoUDP{
-		dnsManager:  current,
-		dnsManagers: map[*DnsManager]struct{}{retired: {}, current: {}},
+func TestShouldRetryDnsManager(t *testing.T) {
+	query := testQuery("example.com.", dnsmessage.TypeA, 1)
+	update := query.Copy()
+	update.Opcode = dnsmessage.OpcodeUpdate
+	tests := []struct {
+		name string
+		err  error
+		msg  *dnsmessage.Msg
+		want bool
+	}{
+		{name: "unavailable query", err: errDnsManagerUnavailable, msg: query, want: true},
+		{name: "unavailable update", err: errDnsManagerUnavailable, msg: update, want: true},
+		{name: "interrupted query", err: errDnsExchangeInterrupted, msg: query, want: true},
+		{name: "interrupted update", err: errDnsExchangeInterrupted, msg: update, want: false},
+		{name: "unclassified closed", err: net.ErrClosed, msg: query, want: false},
 	}
-	if err := d.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if retired.ctx.Err() == nil || current.ctx.Err() == nil {
-		t.Fatal("forwarder Close did not close every owned manager")
-	}
-	if _, err := d.getManager(context.Background()); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("closed forwarder getManager error = %v, want net.ErrClosed", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldRetryDnsManager(tt.err, tt.msg); got != tt.want {
+				t.Fatalf("shouldRetryDnsManager() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
