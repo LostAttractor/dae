@@ -628,7 +628,7 @@ func (d *DoTCP) getManager(ctx context.Context) (*DnsManager, error) {
 		if err != nil {
 			return nil, err
 		}
-		manager := NewDnsManager(conn, true)
+		manager := NewDnsManager(conn)
 		d.dnsManager = manager
 		if d.dnsManagers == nil {
 			d.dnsManagers = make(map[*DnsManager]struct{})

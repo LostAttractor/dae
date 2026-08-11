@@ -39,33 +39,31 @@ type DnsManager struct {
 	cancel        context.CancelFunc
 	closeDone     chan struct{}
 	closeDoneOnce sync.Once
+	writeMu       sync.Mutex
 
 	stateMu      sync.Mutex
 	pending      int
 	lastResponse time.Time
-	stale        bool
 	retired      bool
 	closed       bool
 	idleTimer    *time.Timer
 
-	stream  bool
 	timeout time.Duration
 	// idleTimeout bounds how long the connection may go without delivering
 	// a response before the recv loop closes it.
 	idleTimeout time.Duration
 }
 
-func NewDnsManager(conn net.Conn, stream bool) *DnsManager {
-	return newDnsManager(conn, stream, consts.DefaultDNSTimeout, 2*consts.DefaultDNSTimeout)
+func NewDnsManager(conn net.Conn) *DnsManager {
+	return newDnsManager(conn, consts.DefaultDNSTimeout, 2*consts.DefaultDNSTimeout)
 }
 
-func newDnsManager(conn net.Conn, stream bool, timeout, idleTimeout time.Duration) *DnsManager {
+func newDnsManager(conn net.Conn, timeout, idleTimeout time.Duration) *DnsManager {
 	ctx, cancel := context.WithCancel(context.TODO())
 	m := &DnsManager{
 		conn:         conn,
 		ctx:          ctx,
 		cancel:       cancel,
-		stream:       stream,
 		timeout:      timeout,
 		idleTimeout:  idleTimeout,
 		lastResponse: time.Now(),
@@ -128,7 +126,7 @@ func (m *DnsManager) closeConn() error {
 func (m *DnsManager) beginQuery() bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	if m.closed || m.stale || m.retired {
+	if m.closed || m.retired {
 		return false
 	}
 	if m.pending == 0 {
@@ -138,13 +136,34 @@ func (m *DnsManager) beginQuery() bool {
 	return true
 }
 
+func (m *DnsManager) reserveQuery(pending *dnsPendingQuery, startId uint16) (uint16, error) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.closed || m.retired {
+		return 0, errDnsManagerUnavailable
+	}
+	for offset := 0; offset < 1<<16; offset++ {
+		wireId := startId + uint16(offset)
+		pending.query.Id = wireId
+		if _, loaded := m.recvMap.LoadOrStore(wireId, pending); loaded {
+			continue
+		}
+		if m.pending == 0 {
+			m.idleTimer.Stop()
+		}
+		m.pending++
+		return wireId, nil
+	}
+	return 0, oops.Errorf("DNSManager: no free DNS transaction ID")
+}
+
 func (m *DnsManager) endQuery() {
 	m.stateMu.Lock()
 	m.pending--
 	closeNow := false
 	if m.pending == 0 && !m.closed {
 		remaining := m.idleTimeout - time.Since(m.lastResponse)
-		if m.stale || m.retired || remaining <= 0 {
+		if m.retired || remaining <= 0 {
 			closeNow = m.markClosedLocked()
 		} else {
 			m.idleTimer.Reset(remaining)
@@ -159,9 +178,6 @@ func (m *DnsManager) endQuery() {
 func (m *DnsManager) recordResponse() {
 	m.stateMu.Lock()
 	m.lastResponse = time.Now()
-	if !m.retired {
-		m.stale = false
-	}
 	m.stateMu.Unlock()
 }
 
@@ -169,16 +185,6 @@ func (m *DnsManager) retire() {
 	m.stateMu.Lock()
 	m.retired = true
 	closeNow := m.pending == 0 && m.markClosedLocked()
-	m.stateMu.Unlock()
-	if closeNow {
-		_ = m.closeConn()
-	}
-}
-
-func (m *DnsManager) markStale() {
-	m.stateMu.Lock()
-	m.stale = true
-	closeNow := m.pending <= 1 && m.markClosedLocked()
 	m.stateMu.Unlock()
 	if closeNow {
 		_ = m.closeConn()
@@ -204,31 +210,15 @@ func (m *DnsManager) run() error {
 }
 
 func (m *DnsManager) read() (data []byte, err error) {
-	if m.stream {
-		lenBuf := pool.GetBuffer(2)
-		defer pool.PutBuffer(lenBuf)
-		// Read two byte length.
-		if _, err = io.ReadFull(m.conn, lenBuf); err != nil {
-			return nil, oops.Wrapf(err, "failed to read DNS resp payload length")
-		}
-		data = pool.GetBuffer(int(binary.BigEndian.Uint16(lenBuf)))
-		if _, err = io.ReadFull(m.conn, data); err != nil {
-			pool.PutBuffer(data)
-			return nil, oops.Wrapf(err, "failed to read DNS resp payload")
-		}
-	} else {
-		data = pool.GetBuffer(consts.MaxDnsMessageSize + 1)
-		for {
-			var n int
-			if n, err = m.conn.Read(data); err != nil {
-				pool.PutBuffer(data)
-				return nil, oops.Wrapf(err, "failed to read DNS resp payload")
-			}
-			if n <= consts.MaxDnsMessageSize {
-				data = data[:n]
-				break
-			}
-		}
+	lenBuf := pool.GetBuffer(2)
+	defer pool.PutBuffer(lenBuf)
+	if _, err = io.ReadFull(m.conn, lenBuf); err != nil {
+		return nil, oops.Wrapf(err, "failed to read DNS resp payload length")
+	}
+	data = pool.GetBuffer(int(binary.BigEndian.Uint16(lenBuf)))
+	if _, err = io.ReadFull(m.conn, data); err != nil {
+		pool.PutBuffer(data)
+		return nil, oops.Wrapf(err, "failed to read DNS resp payload")
 	}
 	return
 }
@@ -240,13 +230,7 @@ func (m *DnsManager) feed(msg *dnsmessage.Msg) bool {
 		return false
 	}
 	pending := v.(*dnsPendingQuery)
-	var err error
-	if m.stream {
-		err = netutils.ValidateDnsResponseAllowEmptyQuestion(pending.query, msg, pending.query.Id)
-	} else {
-		err = netutils.ValidateDnsResponse(pending.query, msg, pending.query.Id)
-	}
-	if err != nil {
+	if err := netutils.ValidateDnsResponseAllowEmptyQuestion(pending.query, msg, pending.query.Id); err != nil {
 		log.Debugf("DNSManager: drop invalid response: %v", err)
 		return false
 	}
@@ -275,7 +259,7 @@ func (m *DnsManager) Close() error {
 func (m *DnsManager) IsClosed() bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
-	return m.closed || m.stale || m.retired
+	return m.closed || m.retired
 }
 
 func (m *DnsManager) Resolve(msg *dnsmessage.Msg) error {
@@ -295,11 +279,6 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !m.beginQuery() {
-		return errDnsManagerUnavailable
-	}
-	defer m.endQuery()
-
 	originalId := msg.Id
 	wireQuery := msg.Copy()
 	pending := &dnsPendingQuery{
@@ -311,19 +290,11 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 		return fmt.Errorf("generate DNS transaction ID: %w", err)
 	}
 	startId := binary.BigEndian.Uint16(randomId[:])
-	var newId uint16
-	allocated := false
-	for offset := 0; offset < 1<<16; offset++ {
-		newId = startId + uint16(offset)
-		wireQuery.Id = newId
-		if _, loaded := m.recvMap.LoadOrStore(newId, pending); !loaded {
-			allocated = true
-			break
-		}
+	newId, err := m.reserveQuery(pending, startId)
+	if err != nil {
+		return err
 	}
-	if !allocated {
-		return oops.Errorf("DNSManager: no free DNS transaction ID")
-	}
+	defer m.endQuery()
 	defer m.recvMap.Delete(newId)
 
 	data, err := wireQuery.Pack()
@@ -338,58 +309,25 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 	ctx, cancel := context.WithTimeout(parentCtx, m.timeout)
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	var streamWriteCh chan error
-	if m.stream {
-		// A stream write either lands or the connection is broken; there is
-		// nothing to retransmit (and re-sending the same transaction ID on a
-		// live stream is not legal pipelining anyway, RFC 7766 section 6.2.1).
-		payload := make([]byte, 2+len(data))
-		binary.BigEndian.PutUint16(payload[:2], uint16(len(data)))
-		copy(payload[2:], data)
-		streamWriteCh = make(chan error, 1)
-		go func() {
-			if ctx.Err() != nil {
-				streamWriteCh <- ctx.Err()
-				return
-			}
-			n, err := m.conn.Write(payload)
-			if err == nil && n != len(payload) {
-				err = io.ErrShortWrite
-			}
-			streamWriteCh <- err
-		}()
-	} else {
-		// The retry goroutine owns the packed payload for its whole lifetime;
-		// a plain allocation cannot race a pooled buffer handed out again
-		// while a retry is still writing.
-		go func() {
-			attempts := consts.DefaultDNSRetryCount
-			if msg.Opcode != dnsmessage.OpcodeQuery && msg.Opcode != dnsmessage.OpcodeNotify {
-				attempts = 1
-			}
-			for i := 0; i < attempts; i++ {
-				if ctx.Err() != nil || m.ctx.Err() != nil {
-					return
-				}
-				if _, err := m.conn.Write(data); err != nil {
-					errCh <- err
-					return
-				}
-				if i+1 == attempts {
-					return
-				}
-				select {
-				case <-m.ctx.Done():
-					return
-				case <-ctx.Done():
-					// Success received
-					return
-				case <-time.After(consts.DefaultDNSRetryInterval):
-				}
-			}
-		}()
-	}
+	// DNS over TCP frames each message with a two-byte length prefix. Writes
+	// are never retransmitted on a live stream (RFC 7766 section 6.2.1).
+	payload := make([]byte, 2+len(data))
+	binary.BigEndian.PutUint16(payload[:2], uint16(len(data)))
+	copy(payload[2:], data)
+	writeCh := make(chan error, 1)
+	go func() {
+		m.writeMu.Lock()
+		defer m.writeMu.Unlock()
+		if ctx.Err() != nil {
+			writeCh <- ctx.Err()
+			return
+		}
+		n, err := m.conn.Write(payload)
+		if err == nil && n != len(payload) {
+			err = io.ErrShortWrite
+		}
+		writeCh <- err
+	}()
 
 	for {
 		select {
@@ -399,10 +337,10 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 			}
 			return fmt.Errorf("%w: %w", errDnsExchangeInterrupted, net.ErrClosed)
 		case <-ctx.Done():
-			if streamWriteCh != nil {
+			if writeCh != nil {
 				_ = m.Close()
-			} else if parentCtx.Err() == nil || errors.Is(parentCtx.Err(), context.DeadlineExceeded) {
-				m.markStale()
+			} else {
+				m.retire()
 			}
 			if parentCtx.Err() != nil {
 				return parentCtx.Err()
@@ -411,15 +349,12 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 				return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
 			}
 			return ctx.Err()
-		case err := <-streamWriteCh:
-			streamWriteCh = nil
+		case err := <-writeCh:
+			writeCh = nil
 			if err != nil {
 				_ = m.Close()
 				return fmt.Errorf("%w: %w", errDnsExchangeInterrupted, oops.Wrapf(err, "failed to write DNS req"))
 			}
-		case err := <-errCh:
-			_ = m.Close()
-			return fmt.Errorf("%w: %w", errDnsExchangeInterrupted, err)
 		case recvMsg := <-pending.ch:
 			*msg = *recvMsg
 			msg.Id = originalId
