@@ -28,7 +28,8 @@ type Global struct {
 	// TcpCheckUrl                []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
 	// TcpCheckHttpMethod         string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
 	UdpCheckDns           []string               `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
-	CheckInterval         time.Duration          `mapstructure:"check_interval" default:"30s"`
+	CheckInterval         time.Duration          `mapstructure:"check_interval" default:"3m"`
+	CheckIntervalMax      time.Duration          `mapstructure:"check_interval_max" default:"1h"`
 	CheckTolerance        time.Duration          `mapstructure:"check_tolerance" default:"0"`
 	LanInterface          []string               `mapstructure:"lan_interface"`
 	WanInterface          []string               `mapstructure:"wan_interface"`
@@ -108,9 +109,10 @@ type Group struct {
 
 	// TcpCheckUrl        []string      `mapstructure:"tcp_check_url"`
 	// TcpCheckHttpMethod string        `mapstructure:"tcp_check_http_method"`
-	UdpCheckDns    []string      `mapstructure:"udp_check_dns"`
-	CheckInterval  time.Duration `mapstructure:"check_interval"`
-	CheckTolerance time.Duration `mapstructure:"check_tolerance"`
+	UdpCheckDns      []string      `mapstructure:"udp_check_dns"`
+	CheckInterval    time.Duration `mapstructure:"check_interval"`
+	CheckIntervalMax time.Duration `mapstructure:"check_interval_max"`
+	CheckTolerance   time.Duration `mapstructure:"check_tolerance"`
 }
 
 type DnsRequestRouting struct {

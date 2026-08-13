@@ -70,17 +70,18 @@ type LatencyStats struct {
 // Availability is sampled from the stats registry outside the dialer lock and
 // is not coherent with the other fields.
 type RuntimeSnapshot struct {
-	Alive         bool
-	Supported     [4]bool
-	HasLatency    bool
-	Latency       LatencyStats
-	Availability  stats.Availability
+	Alive        bool
+	Supported    [4]bool
+	HasLatency   bool
+	Latency      LatencyStats
+	Availability stats.Availability
 }
 type GlobalOption struct {
 	D.ExtraOption
 	// TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
+	CheckIntervalMax  time.Duration
 	CheckTolerance    time.Duration
 	CheckDnsTcp       bool
 }
@@ -106,6 +107,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 		// TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Method: global.TcpCheckHttpMethod},
 		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
+		CheckIntervalMax:  global.CheckIntervalMax,
 		CheckTolerance:    global.CheckTolerance,
 		CheckDnsTcp:       true,
 	}

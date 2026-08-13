@@ -49,7 +49,10 @@ global {
     #udp_check_dns: 'dns.google:53'
     udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
 
-    check_interval: 30s
+    # Check interval while the node is alive. Failed check rounds retry from 1s with exponential backoff.
+    check_interval: 3m
+    # Maximum interval after an available node fails a check. Initial checks use an independent interval.
+    check_interval_max: 1h
 
     # Group will switch node only when new_latency <= old_latency - tolerance.
     check_tolerance: 50ms
@@ -285,7 +288,9 @@ group {
         # Override udp_check_dns in global
         #udp_check_dns: 'dns.google:53,8.8.8.8,2001:4860:4860::8888'
         # Override check_interval in global
-        #check_interval: 30s
+        #check_interval: 3m
+        # Override check_interval_max in global
+        #check_interval_max: 1h
         # Override check_tolerance in global
         #check_tolerance: 50ms
     }

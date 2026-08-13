@@ -42,7 +42,8 @@ var GlobalDesc = Desc{
 	"tcp_check_url":         "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
 	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass accounting for this kind of traffic.",
 	"udp_check_dns":         "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
-	"check_interval":        "Interval of connectivity check for TCP and UDP",
+	"check_interval":        "Interval of connectivity checks while the node is alive.",
+	"check_interval_max":    "Maximum connectivity check interval after a previously available node fails a check. Initial connectivity checks use an independent interval.",
 	"check_tolerance":       "Group will switch node only when new_latency <= old_latency - tolerance.",
 	"lan_interface":         "The LAN interface to bind. Use it if you want to proxy LAN.",
 	"wan_interface":         "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to auto detect.",
@@ -89,6 +90,7 @@ min_moving_avg: Select node by the moving average of latencies of checks, which 
 	"tcp_check_url":         "Override global config.",
 	"tcp_check_http_method": "Override global config.",
 	"udp_check_dns":         "Override global config.",
-	"check_interval":        "Override global config.",
+	"check_interval":        "Override global config when non-zero.",
+	"check_interval_max":    "Override global config when non-zero.",
 	"check_tolerance":       "Override global config.",
 }

@@ -6,7 +6,10 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -16,6 +19,7 @@ type patch func(params *Config) error
 
 var patches = []patch{
 	// patchTcpCheckHttpMethod,
+	validateCheckIntervals,
 	patchEmptyDns,
 	patchMustOutbound,
 }
@@ -27,6 +31,30 @@ var patches = []patch{
 // 	}
 // 	return nil
 // }
+
+func validateCheckIntervals(params *Config) error {
+	if params.Global.CheckInterval <= 0 {
+		return fmt.Errorf("check_interval must be positive")
+	}
+	if params.Global.CheckIntervalMax < time.Second {
+		return fmt.Errorf("check_interval_max must be at least 1s")
+	}
+	if params.Global.CheckIntervalMax > time.Duration(math.MaxInt64/2) {
+		return fmt.Errorf("check_interval_max is too large")
+	}
+	for _, group := range params.Group {
+		if group.CheckInterval < 0 {
+			return fmt.Errorf("group %q: check_interval must be positive", group.Name)
+		}
+		if group.CheckIntervalMax != 0 && group.CheckIntervalMax < time.Second {
+			return fmt.Errorf("group %q: check_interval_max must be at least 1s", group.Name)
+		}
+		if group.CheckIntervalMax > time.Duration(math.MaxInt64/2) {
+			return fmt.Errorf("group %q: check_interval_max is too large", group.Name)
+		}
+	}
+	return nil
+}
 
 func patchEmptyDns(params *Config) error {
 	if params.Dns.Routing.Request.Fallback == nil {
