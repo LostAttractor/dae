@@ -56,7 +56,7 @@ type ControlPlane struct {
 	outbounds              []*outbound.DialerGroup
 	criticalOutbounds      []bool
 	noConnectivityOutbound consts.OutboundIndex
-	inConnections          sync.Map
+	inConnections          *sync.Map
 
 	dnsController *DnsController
 
@@ -361,6 +361,7 @@ func NewControlPlane(
 		outbounds:                 outbounds,
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
+		inConnections:             new(sync.Map),
 		routingMatcher:            routingMatcher,
 		routingMatcherBuilder:     builder,
 		ctx:                       ctx,
@@ -815,17 +816,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 				break
 			}
-			go func(lconn net.Conn) {
-				c.inConnections.Store(lconn, struct{}{})
-				defer c.inConnections.Delete(lconn)
-				if err := c.handleConn(lconn); err != nil && c.ctx.Err() == nil {
-					if log.IsLevelEnabled(log.DebugLevel) {
-						log.Warnf("%+v", oops.Wrapf(err, "handleConn"))
-					} else {
-						log.Warnf("%v", oops.Wrapf(err, "handleConn"))
-					}
-				}
-			}(lconn)
+			go serveTCPConnection(c, lconn, c.ctx, c.inConnections)
 		}
 	}()
 	go func() {
@@ -1008,6 +999,9 @@ func (c *ControlPlane) chooseBestDnsDialer(
 }
 
 func (c *ControlPlane) AbortConnections() (err error) {
+	if c.inConnections == nil {
+		return nil
+	}
 	var errs []error
 	c.inConnections.Range(func(key, value any) bool {
 		if err = key.(net.Conn).Close(); err != nil {

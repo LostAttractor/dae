@@ -9,7 +9,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -19,6 +21,7 @@ import (
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/oops"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,19 +30,55 @@ const (
 	DefaultNatTimeoutTCPEstablished = 7440 * time.Second
 )
 
-func (c *ControlPlane) handleConn(lConn net.Conn) error {
+type tcpRelay struct {
+	lConn  net.Conn
+	rConn  net.Conn
+	dialer interface {
+		NeedAliveState() bool
+		ReportUnavailable()
+	}
+	labels       prometheus.Labels
+	outboundName string
+	dialerName   string
+	src          netip.AddrPort
+	dst          netip.AddrPort
+	domain       string
+}
+
+func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, connections *sync.Map) {
+	connections.Store(lConn, struct{}{})
+	defer connections.Delete(lConn)
+	relay, err := c.prepareTCPRelay(lConn)
+	// Established relays must not retain the retired control plane across reloads.
+	c = nil
+	if relay != nil {
+		err = relay.run()
+	}
+	if err != nil && ctx.Err() == nil {
+		if log.IsLevelEnabled(log.DebugLevel) {
+			log.Warnf("%+v", oops.Wrapf(err, "handleConn"))
+		} else {
+			log.Warnf("%v", oops.Wrapf(err, "handleConn"))
+		}
+	}
+}
+
+func (c *ControlPlane) prepareTCPRelay(lConn net.Conn) (relay *tcpRelay, err error) {
 	// Sniff target domain.
 	sniffer := sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
-	// ConnSniffer should be used later, so we cannot close it now.
-	defer sniffer.Close()
+	defer func() {
+		if relay == nil {
+			_ = sniffer.Close()
+		}
+	}()
 
 	domain, err := sniffer.SniffTcp()
 	if err != nil && !sniffing.IsSniffingError(err) {
 		// We ignore lConn errors or temporary network errors
 		if _, ok := IsNetError(err); ok {
-			return nil
+			return nil, nil
 		}
-		return oops.Wrapf(err, "Sniff Failed")
+		return nil, oops.Wrapf(err, "Sniff Failed")
 	}
 
 	// Get tuples and outbound.
@@ -47,7 +86,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
 	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
-		return oops.Wrapf(err, "failed to retrieve target info %v", dst.String())
+		return nil, oops.Wrapf(err, "failed to retrieve target info %v", dst.String())
 	}
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
@@ -65,7 +104,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 		Dest:          dst,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	labels := prometheus.Labels{
@@ -100,43 +139,60 @@ func (c *ControlPlane) handleConn(lConn net.Conn) error {
 			With("domain", domain).
 			Wrapf(err, "failed to DialContext")
 		if !ok {
-			return err
+			return nil, err
 		} else if !netErr.Timeout() {
 			if dialOption.Dialer.NeedAliveState() {
 				common.ErrorCount.With(labels).Inc()
 				dialOption.Dialer.ReportUnavailable()
-				return err
+				return nil, err
 			}
 		}
-		return nil
+		return nil, nil
 	}
 
 	elapsed := time.Since(start).Seconds()
 	common.DialLatency.With(labels).Observe(elapsed)
+	relay = &tcpRelay{
+		lConn:        sniffer,
+		rConn:        rConn,
+		dialer:       dialOption.Dialer,
+		labels:       labels,
+		outboundName: dialOption.Outbound.Name,
+		dialerName:   dialOption.Dialer.Name,
+		src:          src,
+		dst:          dst,
+		domain:       domain,
+	}
+	return relay, nil
+}
+
+func (r *tcpRelay) run() error {
+	defer r.lConn.Close()
+	defer r.rConn.Close()
+	labels := r.labels
 	common.ActiveConnections.With(labels).Inc()
 	defer common.ActiveConnections.With(labels).Dec()
 	common.TotalConnections.With(labels).Inc()
-	defer rConn.Close()
 
 	// Relay
-	if err := RelayTCP(sniffer, rConn); err != nil {
+	if err := RelayTCP(r.lConn, r.rConn); err != nil {
 		netErr, ok := IsNetError(err)
 		err = oops.
 			In("RelayTCP").
 			With("Is NetError", ok).
 			With("Is Temporary", ok && netErr.Temporary()).
 			With("Is Timeout", ok && netErr.Timeout()).
-			With("Outbound", dialOption.Outbound.Name).
-			With("Dialer", dialOption.Dialer.Name).
-			With("src", src.String()).
-			With("dst", dst.String()).
-			With("domain", domain).
+			With("Outbound", r.outboundName).
+			With("Dialer", r.dialerName).
+			With("src", r.src.String()).
+			With("dst", r.dst.String()).
+			With("domain", r.domain).
 			Wrapf(err, "Failed to RelayTCP")
 		if !ok {
 			return err
-		} else if !netErr.Timeout() && dialOption.Dialer.NeedAliveState() {
+		} else if !netErr.Timeout() && r.dialer.NeedAliveState() {
 			common.ErrorCount.With(labels).Inc()
-			dialOption.Dialer.ReportUnavailable()
+			r.dialer.ReportUnavailable()
 			return err
 		}
 	}
