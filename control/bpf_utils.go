@@ -19,6 +19,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -241,6 +242,9 @@ func fullLoadBpfObjects(
 	bpf *bpfObjects,
 	opts *loadBpfOptions,
 ) (err error) {
+	// The daemon reuses loaded BPF objects across reloads, so kernel and module
+	// BTF are no longer needed after this initial CO-RE relocation pass.
+	defer btf.FlushKernelSpec()
 retryLoadBpf:
 	netnsID, err := GetDaeNetns().NetnsID()
 	if err != nil {
