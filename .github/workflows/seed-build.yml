@@ -91,7 +91,7 @@ jobs:
           date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
           commit=$(echo ${REF} | cut -c1-6)
           if [[ "${{ inputs.build-type }}" == "pr-build" ]]; then
-            count=$(git rev-list --count origin/main..HEAD)
+            count=$(git rev-list --count origin/next..HEAD)
             version="unstable-${date}.pr-${{ inputs.pr-number }}.r${count}.${commit}"
           else
             count=$(git rev-list --count HEAD)

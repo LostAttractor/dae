@@ -15,7 +15,7 @@ name: Trigger downstream sync workflow
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ next ]
 
 env:
   DOWNSTREAM_REPO: flake.nix

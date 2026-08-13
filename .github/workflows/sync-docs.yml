@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - next
       - 'ci/**'
       - 'release/**'
     tags:
@@ -107,4 +107,3 @@ jobs:
           team-reviewers: |
             docs
           draft: false
-
