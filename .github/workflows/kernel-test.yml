@@ -60,7 +60,6 @@ jobs:
           test-name: dae-test
           image-version: ${{ matrix.kernel }}
           host-mount: ./
-          dns-resolver: '1.1.1.1'
           install-dependencies: 'true'
           cmd: |
             chmod +x /host/dae/dae
@@ -168,7 +167,17 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             cat dae.log
 
       - name: Check WAN IPv4 TCP
@@ -211,7 +220,14 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            for i in 1 2 3; do
+              if docker exec dae dig @2606:4700:4700::1111 one.one.one.one; then
+                break
+              elif [ "$i" -eq 3 ]; then
+                exit 1
+              fi
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup WAN UDP port conflict
@@ -224,7 +240,17 @@ jobs:
             docker restart -t0 dae v2ray
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             nohup docker exec dae nc -lu 53 &> nc.log &
 
       - name: Check WAN IPv4 UDP with port conflict
@@ -245,7 +271,14 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae dig @2606:4700:4700::1111 one.one.one.one
+            for i in 1 2 3; do
+              if docker exec dae dig @2606:4700:4700::1111 one.one.one.one; then
+                break
+              elif [ "$i" -eq 3 ]; then
+                exit 1
+              fi
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
 
       - name: Setup LAN
@@ -321,7 +354,17 @@ jobs:
 
             chmod 600 ./conf.dae
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             cat dae.log
 
       - name: Check LAN IPv4 TCP
@@ -364,7 +407,14 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            for i in 1 2 3; do
+              if docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one; then
+                break
+              elif [ "$i" -eq 3 ]; then
+                exit 1
+              fi
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
 
       - name: Setup LAN UDP port conflict
@@ -383,8 +433,22 @@ jobs:
 
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
-            sleep 5s
+            for i in {1..30}; do
+              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+                break
+              fi
+              sleep 1
+            done
+            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
+              echo "dae exited before ready"
+              cat dae.log
+              exit 1
+            fi
             nohup docker exec dae nc -lu 53 &> nc.log &
+
+            # Wait for IPv6 connectivity to converge after namespace rebuild
+            sleep 3
+            docker exec dae ping -c1 fd00:ffff::1
 
       - name: Check LAN IPv4 UDP with port conflict
         uses: cilium/little-vm-helper@v0.0.28
@@ -404,5 +468,12 @@ jobs:
           cmd: |
             set -ex
 
-            docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one
+            for i in 1 2 3; do
+              if docker exec dae ip net e dae dig @2001:4860:4860::8844 one.one.one.one; then
+                break
+              elif [ "$i" -eq 3 ]; then
+                exit 1
+              fi
+              sleep 2
+            done
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
