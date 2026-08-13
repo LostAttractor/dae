@@ -34,9 +34,9 @@ import (
 )
 
 const (
-	RetryCount              = 3
-	RetryInterval           = 5 * time.Second
-	InitialCheckMaxInterval = 3600 * time.Second
+	CheckBackoffInitialInterval = time.Second
+	InitialCheckInterval        = 180 * time.Second
+	InitialCheckMaxInterval     = time.Hour
 	// InitialCheckTimeout is the maximum time the control plane startup waits
 	// for a dialer's initial connectivity check. The check itself keeps
 	// retrying in the background with exponential backoff after the timeout.
@@ -326,7 +326,7 @@ func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 	go func() {
 		defer d.checkWG.Done()
 		// at startup, check all network types to determine which are supported;
-		// if all fail, runInitialCheck keeps rechecking every CheckInterval
+		// If all fail, runInitialCheck keeps retrying with its own backoff.
 		checkOpt := d.runInitialCheck(CheckOpts)
 		if checkOpt == nil {
 			return
@@ -362,72 +362,62 @@ func (d *Dialer) NotifyCheck() {
 }
 
 func (d *Dialer) runCheckLoop(checkOpt *CheckOption) {
-	// Sleep to avoid avalanche.
+	// Stagger the first regular check so nodes do not check at the same time.
 	checkInterval := time.Duration(fastrand.Int63n(int64(d.CheckInterval)))
+	backingOff := false
 	for {
 		select {
 		case <-d.ctx.Done():
 			return
 		case <-d.checkCh:
-			d.runCheck(checkOpt, RetryInterval)
 		case <-time.After(checkInterval):
-			d.runCheck(checkOpt, RetryInterval)
+			if backingOff {
+				checkInterval = min(checkInterval*2, d.CheckIntervalMax)
+			}
 		}
-		checkInterval = d.CheckInterval
-	}
-}
-
-func (d *Dialer) runCheck(checkOpt *CheckOption, retryInterval time.Duration) {
-	for i := 0; i < RetryCount; i++ {
 		if d.ctx.Err() != nil {
 			return
 		}
-		var ok bool
-		var latency time.Duration
-		var err error
-		var networkType *common.NetworkType
+		var (
+			ok          bool
+			latency     time.Duration
+			networkType *common.NetworkType
+			err         error
+		)
 		if !d.Alive() {
+			// Publish the transport disconnect immediately so selectors avoid this dialer;
+			// this is separate from publishing the connectivity check result.
 			d.NotifyStatusChange()
 			err = d.Connect()
 		}
-		if err == nil {
+		if err == nil && d.ctx.Err() == nil {
 			ok, latency, err = d.Check(checkOpt)
 			networkType = checkOpt.networkType
 		}
-		// Update rejects a canceled dialer, so an interrupted attempt is not recorded.
-		d.Update(ok, latency, networkType, err)
 		if d.ctx.Err() != nil {
 			return
 		}
-		d.NotifyStatusChange()
 		if ok {
-			return
+			checkInterval = d.CheckInterval
+			backingOff = false
+		} else if !backingOff {
+			backingOff = true
+			checkInterval = CheckBackoffInitialInterval
+			d.NotifyCheck()
+			continue
 		}
-		if i+1 == RetryCount {
-			return
-		}
-		select {
-		case <-time.After(retryInterval):
-		case <-d.ctx.Done():
-			return
-		}
+		d.Update(ok, latency, networkType, err)
+		d.NotifyStatusChange()
 	}
 }
 
-func nextInitialCheckInterval(current time.Duration) time.Duration {
-	if current >= InitialCheckMaxInterval/2 {
-		return InitialCheckMaxInterval
-	}
-	return current * 2
-}
-
-func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
-	checkInterval := min(d.CheckInterval, InitialCheckMaxInterval)
+func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) *CheckOption {
+	checkInterval := InitialCheckInterval
 	for {
 		if d.ctx.Err() != nil {
 			return nil
 		}
-		opt = d.checkAllNetworkTypes(checkOpts)
+		opt := d.checkAllNetworkTypes(checkOpts)
 		if d.ctx.Err() != nil {
 			return nil
 		}
@@ -441,7 +431,7 @@ func (d *Dialer) runInitialCheck(checkOpts []*CheckOption) (opt *CheckOption) {
 			return nil
 		case <-time.After(checkInterval):
 		}
-		checkInterval = nextInitialCheckInterval(checkInterval)
+		checkInterval = min(checkInterval*2, InitialCheckMaxInterval)
 	}
 }
 

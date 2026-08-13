@@ -589,6 +589,10 @@ func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer
 		result.CheckInterval = group.CheckInterval
 		changed = true
 	}
+	if group.CheckIntervalMax != 0 {
+		result.CheckIntervalMax = group.CheckIntervalMax
+		changed = true
+	}
 	if group.CheckTolerance != 0 {
 		result.CheckTolerance = group.CheckTolerance
 		changed = true

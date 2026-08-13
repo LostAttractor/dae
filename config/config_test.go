@@ -43,8 +43,11 @@ routing {
 	if g.LogLevel != "info" {
 		t.Errorf("LogLevel: got %v", g.LogLevel)
 	}
-	if g.CheckInterval != 30*time.Second {
+	if g.CheckInterval != 3*time.Minute {
 		t.Errorf("CheckInterval: got %v", g.CheckInterval)
+	}
+	if g.CheckIntervalMax != time.Hour {
+		t.Errorf("CheckIntervalMax: got %v", g.CheckIntervalMax)
 	}
 	if !g.DialTargetOverride {
 		t.Errorf("DialTargetOverride should default to true")
@@ -89,6 +92,8 @@ global {
 	dial_target_override: false
 	no_connectivity_try_sniff: false
 	no_connectivity_behavior: direct
+	check_interval: 45s
+	check_interval_max: 10m
 	udphop_interval: 5s
 	metrics_port: 9090
 	pprof_port: 6060
@@ -112,6 +117,12 @@ routing {
 	}
 	if g.NoConnectivityBehavior != "direct" {
 		t.Errorf("NoConnectivityBehavior: got %v", g.NoConnectivityBehavior)
+	}
+	if g.CheckInterval != 45*time.Second {
+		t.Errorf("CheckInterval: got %v", g.CheckInterval)
+	}
+	if g.CheckIntervalMax != 10*time.Minute {
+		t.Errorf("CheckIntervalMax: got %v", g.CheckIntervalMax)
 	}
 	if g.UDPHopInterval != 5*time.Second {
 		t.Errorf("UDPHopInterval: got %v", g.UDPHopInterval)
@@ -139,6 +150,43 @@ func TestNew_RequiredSections(t *testing.T) {
 	}
 	if _, err = New(sections); err == nil {
 		t.Errorf("New should fail without the required global section")
+	}
+}
+
+func TestNew_RejectsInvalidCheckIntervals(t *testing.T) {
+	for _, field := range []string{"check_interval", "check_interval_max"} {
+		for _, value := range []string{"0s", "-1s"} {
+			sections, err := config_parser.Parse(`
+global { ` + field + `: ` + value + ` }
+routing { fallback: direct }
+`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = New(sections); err == nil {
+				t.Errorf("%s: %s should be rejected", field, value)
+			}
+		}
+	}
+	sections, err := config_parser.Parse(`
+global { check_interval_max: 500ms }
+routing { fallback: direct }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = New(sections); err == nil {
+		t.Error("check_interval_max below the 1s initial backoff should be rejected")
+	}
+	sections, err = config_parser.Parse(`
+global { check_interval_max: 1281024h }
+routing { fallback: direct }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = New(sections); err == nil {
+		t.Error("check_interval_max above half the time.Duration range should be rejected")
 	}
 }
 

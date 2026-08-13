@@ -66,15 +66,14 @@ func (d *failOnceConnectDialer) ListenPacket(context.Context, string) (net.Packe
 }
 
 type statusRecordingGroup struct {
-	notified chan int64
+	notified chan stats.Availability
 }
 
 var testDialerSequence atomic.Uint64
 
 func (g *statusRecordingGroup) NotifyStatusChange(d *Dialer) {
-	checksFailed := stats.GetNode(d.StatsKey()).ChecksFailed
 	select {
-	case g.notified <- checksFailed:
+	case g.notified <- stats.GetNode(d.StatsKey()):
 	default:
 	}
 }
@@ -92,56 +91,49 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	}}, true)
 }
 
-func TestInitialCheckExponentialBackoff(t *testing.T) {
-	if InitialCheckMaxInterval != 3600*time.Second {
-		t.Fatalf("maximum initial-check interval = %v, want 3600s", InitialCheckMaxInterval)
-	}
-	interval := 3 * time.Minute
-	want := []time.Duration{
-		3 * time.Minute,
-		6 * time.Minute,
-		12 * time.Minute,
-		24 * time.Minute,
-		48 * time.Minute,
-		InitialCheckMaxInterval,
-		InitialCheckMaxInterval,
-	}
-	for i, expected := range want {
-		if interval != expected {
-			t.Fatalf("backoff[%d] = %v, want %v", i, interval, expected)
-		}
-		interval = nextInitialCheckInterval(interval)
-	}
-}
-
-func TestRunCheckRecordsFailedConnectAttempts(t *testing.T) {
+func TestRunCheckLoopPublishesConsecutiveFailure(t *testing.T) {
 	transport := &blockingFailConnectDialer{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
 	close(transport.release)
 	d := newTestDialer(t, transport)
-	group := &statusRecordingGroup{notified: make(chan int64, 2*RetryCount)}
+	d.CheckInterval = time.Hour
+	d.CheckIntervalMax = time.Hour
+	group := &statusRecordingGroup{notified: make(chan stats.Availability, 3)}
 	d.RegisterDialerGroup(group)
 
-	d.runCheck(nil, 0)
+	d.checkWG.Add(1)
+	go func() {
+		defer d.checkWG.Done()
+		d.runCheckLoop(nil)
+	}()
+	d.NotifyCheck()
+	timeout := time.After(time.Second)
 
+waitForFailure:
+	for {
+		select {
+		case avail := <-group.notified:
+			if avail.ChecksFailed == 1 {
+				break waitForFailure
+			}
+		case <-timeout:
+			t.Fatal("consecutive failure was not published")
+		}
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
 	avail := stats.GetNode(d.StatsKey())
-	if avail.ChecksTotal != RetryCount || avail.ChecksFailed != RetryCount {
-		t.Fatalf("failed Connect attempts were not recorded: %+v", avail)
+	if avail.ChecksTotal != 1 || avail.ChecksFailed != 1 {
+		t.Fatalf("consecutive failure was not recorded once: %+v", avail)
 	}
 	if avail.LastFailureStartedAt.IsZero() {
-		t.Fatalf("failed Connect should start a failure episode: %+v", avail)
+		t.Fatalf("consecutive failure should start a failure episode: %+v", avail)
 	}
-	if got := transport.calls.Load(); got != RetryCount {
-		t.Fatalf("Connect calls = %d, want %d", got, RetryCount)
-	}
-	var notifiedFailures int64
-	for len(group.notified) > 0 {
-		notifiedFailures = <-group.notified
-	}
-	if notifiedFailures != RetryCount {
-		t.Fatalf("last notification observed %d failed checks, want %d", notifiedFailures, RetryCount)
+	if got := transport.calls.Load(); got != 2 {
+		t.Fatalf("Connect calls = %d, want 2", got)
 	}
 }
 
@@ -153,7 +145,7 @@ func TestInitialCheckPublishesFailedConnect(t *testing.T) {
 	close(transport.release)
 	d := newTestDialer(t, transport)
 	d.CheckInterval = time.Hour
-	group := &statusRecordingGroup{notified: make(chan int64, 1)}
+	group := &statusRecordingGroup{notified: make(chan stats.Availability, 1)}
 	d.RegisterDialerGroup(group)
 
 	done := make(chan struct{})
@@ -162,9 +154,9 @@ func TestInitialCheckPublishesFailedConnect(t *testing.T) {
 		close(done)
 	}()
 	select {
-	case checksFailed := <-group.notified:
-		if checksFailed != 1 {
-			t.Fatalf("notification observed %d failed checks, want 1", checksFailed)
+	case avail := <-group.notified:
+		if avail.ChecksFailed != 1 {
+			t.Fatalf("notification observed %d failed checks, want 1", avail.ChecksFailed)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("initial failed Connect did not publish the dialer state")
@@ -196,10 +188,12 @@ func TestInitialCheckDoesNotConnectAfterCancellation(t *testing.T) {
 	}
 }
 
-func TestRunCheckRecoversAfterFailedConnect(t *testing.T) {
+func TestRunCheckLoopIgnoresTransientFailure(t *testing.T) {
 	transport := &failOnceConnectDialer{}
 	d := newTestDialer(t, transport)
-	group := &statusRecordingGroup{}
+	d.CheckInterval = time.Hour
+	d.CheckIntervalMax = time.Hour
+	group := &statusRecordingGroup{notified: make(chan stats.Availability, 2)}
 	d.RegisterDialerGroup(group)
 	checkOpt := &CheckOption{
 		networkType: common.IndexToNetworkType(0),
@@ -208,37 +202,68 @@ func TestRunCheckRecoversAfterFailedConnect(t *testing.T) {
 		},
 	}
 
-	d.runCheck(checkOpt, 0)
+	d.checkWG.Add(1)
+	go func() {
+		defer d.checkWG.Done()
+		d.runCheckLoop(checkOpt)
+	}()
+	d.NotifyCheck()
+	timeout := time.After(time.Second)
+
+waitForRetry:
+	for {
+		select {
+		case avail := <-group.notified:
+			if avail.Alive && avail.ChecksTotal == 1 {
+				break waitForRetry
+			}
+		case <-timeout:
+			t.Fatal("successful immediate retry was not published")
+		}
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	avail := stats.GetNode(d.StatsKey())
-	if !avail.Alive || avail.ChecksTotal != 2 || avail.ChecksFailed != 1 || avail.ChecksSinceAlive != 1 {
-		t.Fatalf("unexpected recovery stats: %+v", avail)
+	if !avail.Alive || avail.ChecksTotal != 1 || avail.ChecksFailed != 0 || avail.ChecksSinceAlive != 1 {
+		t.Fatalf("transient failure should only publish the successful retry: %+v", avail)
 	}
 	if got := transport.calls.Load(); got != 2 {
 		t.Fatalf("Connect calls = %d, want 2", got)
 	}
 	latency, ok := d.LatencyStats(group)
-	if !ok || !latency.Avg10HasFailure {
-		t.Fatalf("failed Connect should remain represented in avg10: %+v, ok=%v", latency, ok)
+	if !ok || latency.Avg10HasFailure {
+		t.Fatalf("transient failure should not enter avg10: %+v, ok=%v", latency, ok)
 	}
 }
 
-func TestRunCheckStopsRetryingConnectAfterClose(t *testing.T) {
+func TestRunCheckLoopDoesNotPublishAfterClose(t *testing.T) {
 	transport := &blockingFailConnectDialer{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
 	d := newTestDialer(t, transport)
+	d.CheckInterval = time.Hour
+	d.CheckIntervalMax = time.Hour
+	group := &statusRecordingGroup{notified: make(chan stats.Availability, 2)}
+	d.RegisterDialerGroup(group)
 
 	d.checkWG.Add(1)
 	go func() {
 		defer d.checkWG.Done()
-		d.runCheck(nil, 0)
+		d.runCheckLoop(nil)
 	}()
+	d.NotifyCheck()
 	select {
 	case <-transport.started:
 	case <-time.After(time.Second):
 		t.Fatal("Connect did not start")
+	}
+	select {
+	case <-group.notified:
+	case <-time.After(time.Second):
+		t.Fatal("transport disconnect was not published before Connect")
 	}
 
 	closed := make(chan error, 1)
@@ -263,5 +288,25 @@ func TestRunCheckStopsRetryingConnectAfterClose(t *testing.T) {
 	}
 	if avail := stats.GetNode(d.StatsKey()); avail.Seen {
 		t.Fatalf("canceled Connect should not be recorded: %+v", avail)
+	}
+	select {
+	case <-group.notified:
+		t.Fatal("canceled Connect unexpectedly published its result")
+	default:
+	}
+}
+
+func TestRunCheckLoopDoesNotStartQueuedCheckAfterClose(t *testing.T) {
+	transport := &failOnceConnectDialer{}
+	d := newTestDialer(t, transport)
+	d.CheckInterval = time.Hour
+	d.CheckIntervalMax = time.Hour
+	d.NotifyCheck()
+	d.cancel()
+
+	d.runCheckLoop(nil)
+
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("Connect calls after cancellation = %d, want 0", got)
 	}
 }

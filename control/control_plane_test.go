@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -19,8 +20,26 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 )
+
+func TestParseGroupOverrideOptionCheckIntervals(t *testing.T) {
+	global := config.Global{
+		CheckInterval:    30 * time.Second,
+		CheckIntervalMax: time.Hour,
+	}
+	option, err := ParseGroupOverrideOption(config.Group{
+		CheckInterval:    45 * time.Second,
+		CheckIntervalMax: 10 * time.Minute,
+	}, global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if option.CheckInterval != 45*time.Second || option.CheckIntervalMax != 10*time.Minute {
+		t.Fatalf("unexpected check intervals: %v, %v", option.CheckInterval, option.CheckIntervalMax)
+	}
+}
 
 type dnsPathDialer struct{}
 
