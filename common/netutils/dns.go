@@ -298,11 +298,11 @@ func resolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg, retryIn
 	}()
 	recvCh := make(chan error, 1)
 	var response dnsmessage.Msg
-	// A plain heap buffer: on the write-error return path the read goroutine
-	// stays blocked until the caller closes the conn, so a pooled buffer
-	// could be handed out again underneath a pending Read.
-	respBuf := make([]byte, consts.MaxDnsMessageSize+1)
+	// The read goroutine owns the buffer and returns it only after Read exits.
+	// On cancellation the caller may return before a blocking Close completes.
+	respBuf := pool.GetBuffer(consts.MaxDnsMessageSize + 1)
 	go func() {
+		defer pool.PutBuffer(respBuf)
 		for {
 			n, err := conn.Read(respBuf)
 			if err != nil {
