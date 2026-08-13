@@ -8,6 +8,7 @@
 # Pin the default clang to a stable version.
 CLANG ?= clang
 STRIP ?= llvm-strip
+LLVM_OBJDUMP ?= llvm-objdump
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
 TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
@@ -43,7 +44,7 @@ endif
 
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
 
-.PHONY: check-go-version clean-ebpf ebpf dae submodule submodules
+.PHONY: check-go-version clean-ebpf ebpf ebpf-audit dae submodule submodules
 
 check-go-version:
 	@version='$(GO_VERSION)'; \
@@ -161,5 +162,8 @@ ebpf-test: check-go-version submodule clean-ebpf
     go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
     go test -v ./control/kern/tests/...
+
+ebpf-audit: check-go-version
+	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh
 
 ## End Ebpf
