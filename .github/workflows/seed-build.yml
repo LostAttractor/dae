@@ -78,7 +78,7 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
@@ -109,7 +109,7 @@ jobs:
           echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           cache-dependency-path: |
             go.mod
@@ -147,7 +147,7 @@ jobs:
         run: ./build/dae-$ASSET_NAME --version
 
       - name: Upload files to Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
           path: build/*
