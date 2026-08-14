@@ -6,6 +6,7 @@
 package sniffing
 
 import (
+	"encoding/binary"
 	"errors"
 	"io/fs"
 
@@ -24,8 +25,9 @@ const (
 	QuicFlag_HeaderForm
 )
 const (
-	QuicFlag_HeaderForm_LongHeader  = 1
-	QuicFlag_LongPacketType_Initial = 0
+	QuicFlag_HeaderForm_LongHeader    = 1
+	QuicFlag_LongPacketType_InitialV1 = 0
+	QuicFlag_LongPacketType_InitialV2 = 1
 )
 
 type QuicReassemblePolicy int
@@ -66,15 +68,18 @@ func (s *Sniffer) SniffQuic() (d string, err error) {
 	}
 	// Is quic.
 	s.quicNextRead = s.buf.Len()
-	sni, err := extractSniFromTls(quicutils.NewLinearLocator(s.quicCryptos))
+	sni, err := extractSniFromTls(s.quicCryptos)
 	if err != nil {
+		if s.quicCryptos.WindowComplete() {
+			return "", ErrNotFound
+		}
 		s.needMore = true
 		return "", ErrNotFound
 	}
 	return sni, nil
 }
 
-func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*quicutils.CryptoFrameOffset, next []byte, err error) {
+func sniffQuicBlock(cryptos *quicutils.CryptoReassembler, buf []byte) (new *quicutils.CryptoReassembler, next []byte, err error) {
 	// QUIC: A UDP-Based Multiplexed and Secure Transport
 	// https://datatracker.ietf.org/doc/html/rfc9000#name-initial-packet
 	const dstConnIdPos = 6
@@ -89,41 +94,55 @@ func sniffQuicBlock(cryptos []*quicutils.CryptoFrameOffset, buf []byte) (new []*
 	if ((protectedFlag >> QuicFlag_HeaderForm) & 0b11) != QuicFlag_HeaderForm_LongHeader {
 		return cryptos, nil, ErrNotApplicable
 	}
-	if ((protectedFlag >> QuicFlag_LongPacketType) & 0b11) != QuicFlag_LongPacketType_Initial {
+	version, err := quicutils.ParseVersion(binary.BigEndian.Uint32(buf[1:5]))
+	if err != nil {
+		return cryptos, nil, ErrNotApplicable
+	}
+	initialType := byte(QuicFlag_LongPacketType_InitialV1)
+	if version == quicutils.Version_V2 {
+		initialType = QuicFlag_LongPacketType_InitialV2
+	}
+	if ((protectedFlag >> QuicFlag_LongPacketType) & 0b11) != initialType {
 		return cryptos, nil, ErrNotApplicable
 	}
 
-	// Skip version.
-
 	destConnIdLength := int(buf[boundary-1])
-	boundary += destConnIdLength + 1 // +1 because next field has 1B length
-	if len(buf) < boundary {
+	if destConnIdLength > len(buf)-boundary {
 		return cryptos, nil, ErrNotApplicable
 	}
 	destConnId := buf[dstConnIdPos : dstConnIdPos+destConnIdLength]
+	boundary += destConnIdLength
 
-	srcConnIdLength := int(buf[boundary-1])
-	boundary += srcConnIdLength + quicutils.MaxVarintLen64 // The next fields may have quic.MaxVarintLen64 bytes length
-	if len(buf) < boundary {
+	if boundary >= len(buf) {
 		return cryptos, nil, ErrNotApplicable
 	}
-	tokenLength, n, err := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
+	srcConnIdLength := int(buf[boundary])
+	boundary++
+	if srcConnIdLength > len(buf)-boundary {
+		return cryptos, nil, ErrNotApplicable
+	}
+	boundary += srcConnIdLength
+
+	tokenLength, n, err := quicutils.BigEndianUvarint(buf[boundary:])
 	if err != nil {
 		return cryptos, nil, ErrNotApplicable
 	}
-	boundary = boundary - quicutils.MaxVarintLen64 + n      // Correct boundary.
-	boundary += int(tokenLength) + quicutils.MaxVarintLen64 // Next fields may have quic.MaxVarintLen64 bytes length
-	if len(buf) < boundary {
+	boundary += n
+	if tokenLength > uint64(len(buf)-boundary) {
 		return cryptos, nil, ErrNotApplicable
 	}
+	boundary += int(tokenLength)
 	// https://datatracker.ietf.org/doc/html/rfc9000#name-variable-length-integer-enc
-	length, n, err := quicutils.BigEndianUvarint(buf[boundary-quicutils.MaxVarintLen64:])
+	length, n, err := quicutils.BigEndianUvarint(buf[boundary:])
 	if err != nil {
 		return cryptos, nil, ErrNotApplicable
 	}
-	boundary = boundary - quicutils.MaxVarintLen64 + n // Correct boundary.
+	boundary += n
+	if length > uint64(len(buf)-boundary) {
+		return cryptos, nil, ErrNotApplicable
+	}
 	blockEnd := boundary + int(length)
-	if len(buf) < blockEnd {
+	if blockEnd-boundary < quicutils.MaxPacketNumberLength {
 		return cryptos, nil, ErrNotApplicable
 	}
 	boundary += quicutils.MaxPacketNumberLength

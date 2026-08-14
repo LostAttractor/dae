@@ -39,7 +39,7 @@ type Sniffer struct {
 	data         [][]byte
 	needMore     bool
 	quicNextRead int
-	quicCryptos  []*quicutils.CryptoFrameOffset
+	quicCryptos  *quicutils.CryptoReassembler
 }
 
 type streamReadResult struct {

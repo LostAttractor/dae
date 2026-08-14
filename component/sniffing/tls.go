@@ -19,7 +19,7 @@ const (
 	TlsExtension_ServerName              uint16 = 0
 	TlsExtension_ServerNameType_HostName byte   = 0
 
-	AssumedTlsClientHelloMaxLength = 4096
+	AssumedTlsClientHelloMaxLength = quicutils.MaxCryptoReassemblySize
 )
 
 var (
@@ -139,28 +139,36 @@ func findSniExtension(search quicutils.Locator) (d string, err error) {
 			return "", ErrNotApplicable
 		}
 		if typ == TlsExtension_ServerName {
+			if extLength < 2 {
+				return "", ErrNotApplicable
+			}
 			b, err = search.Range(i+4, i+6)
 			if err != nil {
 				return "", err
 			}
-			sniLen := int(binary.BigEndian.Uint16(b))
-			if extLength < sniLen+2 {
+			serverNameListLen := int(binary.BigEndian.Uint16(b))
+			if serverNameListLen == 0 || serverNameListLen != extLength-2 {
 				return "", ErrNotApplicable
 			}
 			// Search HostName type SNI.
-			for j, indicatorLen := i+6, 0; j+3 <= iNextField; j += indicatorLen {
+			for j := i + 6; j < iNextField; {
+				if j+3 > iNextField {
+					return "", ErrNotApplicable
+				}
 				b, err = search.Range(j, j+3)
 				if err != nil {
 					return "", err
 				}
-				indicatorLen = int(binary.BigEndian.Uint16(b[1:]))
-				if b[0] != TlsExtension_ServerNameType_HostName {
-					continue
-				}
-				if j+3+indicatorLen > iNextField {
+				indicatorLen := int(binary.BigEndian.Uint16(b[1:]))
+				nextName := j + 3 + indicatorLen
+				if indicatorLen == 0 || nextName > iNextField {
 					return "", ErrNotApplicable
 				}
-				b, err = search.Range(j+3, j+3+indicatorLen)
+				if b[0] != TlsExtension_ServerNameType_HostName {
+					j = nextName
+					continue
+				}
+				b, err = search.Range(j+3, nextName)
 				if err != nil {
 					return "", err
 				}
