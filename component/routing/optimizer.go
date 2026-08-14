@@ -362,15 +362,21 @@ func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*co
 				case "geoip":
 					params, err = o.loadGeoIp("geoip", param.Val)
 				case "mmdb":
-					fields := strings.SplitN(param.Val, "=", 2)
-					params, err = o.loadMMDB("geoip", strings.ToLower(fields[0]), strings.ToLower(fields[1]))
+					field, value, ok := strings.Cut(param.Val, "=")
+					if !ok || field == "" || value == "" {
+						return nil, fmt.Errorf("invalid mmdb parameter %q: expected <field>=<value>", param.Val)
+					}
+					params, err = o.loadMMDB("geoip", strings.ToLower(field), strings.ToLower(value))
 				case "ext":
-					fields := strings.SplitN(param.Val, ":", 2)
+					filename, code, ok := strings.Cut(param.Val, ":")
+					if !ok || filename == "" || code == "" {
+						return nil, fmt.Errorf("invalid ext parameter %q: expected <filename>:<code>", param.Val)
+					}
 					switch f.Name {
 					case consts.Function_Domain, consts.Function_QName:
-						params, err = o.loadGeoSite(fields[0], fields[1])
+						params, err = o.loadGeoSite(filename, code)
 					case consts.Function_DestIp, consts.Function_SourceIp:
-						params, err = o.loadGeoIp(fields[0], fields[1])
+						params, err = o.loadGeoIp(filename, code)
 					default:
 						return nil, fmt.Errorf("unsupported extension file extraction in function %v", f.Name)
 					}

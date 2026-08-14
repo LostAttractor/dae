@@ -102,3 +102,30 @@ func TestAliasOptimizer(t *testing.T) {
 		}
 	}
 }
+
+func TestDatReaderOptimizerRejectsMalformedSpecialParams(t *testing.T) {
+	for _, test := range []struct {
+		key   string
+		value string
+	}{
+		{key: "mmdb", value: "country"},
+		{key: "mmdb", value: "=cn"},
+		{key: "mmdb", value: "country="},
+		{key: "ext", value: "geoip.dat"},
+		{key: "ext", value: ":cn"},
+		{key: "ext", value: "geoip.dat:"},
+	} {
+		rules := []*config_parser.RoutingRule{{
+			AndFunctions: []*config_parser.Function{{
+				Name: consts.Function_DestIp,
+				Params: []*config_parser.Param{{
+					Key: test.key,
+					Val: test.value,
+				}},
+			}},
+		}}
+		if _, err := (&DatReaderOptimizer{}).Optimize(rules); err == nil {
+			t.Errorf("%s:%q unexpectedly succeeded", test.key, test.value)
+		}
+	}
+}
