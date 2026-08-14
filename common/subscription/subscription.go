@@ -42,6 +42,33 @@ type sip008Server struct {
 	PluginOpts string `json:"plugin_opts"`
 }
 
+const maxRemoteSubscriptionSize int64 = 10 * 1024 * 1024
+
+func fetchRemoteSubscription(client *http.Client, subscription string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, subscription, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.ContentLength > maxRemoteSubscriptionSize {
+		return nil, fmt.Errorf("subscription response is too large: %d bytes exceeds %d", resp.ContentLength, maxRemoteSubscriptionSize)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteSubscriptionSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > maxRemoteSubscriptionSize {
+		return nil, fmt.Errorf("subscription response exceeds %d bytes", maxRemoteSubscriptionSize)
+	}
+	return b, nil
+}
+
 func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
 	log.Traceln("Try to resolve as base64")
 
@@ -149,11 +176,7 @@ func ResolveSubscription(client *http.Client, subscriptionDir string, subscripti
 		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
 	}
 	log.Debugf("ResolveSubscription: %v", subscription)
-	var (
-		b    []byte
-		req  *http.Request
-		resp *http.Response
-	)
+	var b []byte
 
 	persistToFile := false
 
@@ -171,12 +194,7 @@ func ResolveSubscription(client *http.Client, subscriptionDir string, subscripti
 		persistToFile = true
 		subscription = strings.Replace(subscription, "-file", "", 1)
 	}
-	req, err = http.NewRequest("GET", subscription, nil)
-	if err != nil {
-		return "", nil, err
-	}
-	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
-	resp, err = client.Do(req)
+	b, err = fetchRemoteSubscription(client, subscription)
 	if err != nil {
 		if persistToFile {
 			log.Warnf("failed to fetch subscription '%s', try to read from file\n", tag)
@@ -190,11 +208,6 @@ func ResolveSubscription(client *http.Client, subscriptionDir string, subscripti
 			goto resolve
 		}
 
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-	b, err = io.ReadAll(resp.Body)
-	if err != nil {
 		return "", nil, err
 	}
 
