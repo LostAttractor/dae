@@ -8,10 +8,12 @@ package sniffing
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"io"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,6 +40,8 @@ func TestSniffer_SniffTls(t *testing.T) {
 		Domain: "web.telegram.org",
 		Stream: io.MultiReader(bytes.NewReader(tlsWebTelegramOrm), bytes.NewReader(tlsWebTelegramOrm2)),
 	}}
+	oldLevel := log.GetLevel()
+	t.Cleanup(func() { log.SetLevel(oldLevel) })
 	log.SetLevel(log.DebugLevel)
 	for _, test := range tests {
 		sniffer := NewStreamSniffer(test.Stream, 300*time.Millisecond)
@@ -49,5 +53,22 @@ func TestSniffer_SniffTls(t *testing.T) {
 			t.Fatal(d)
 		}
 		t.Log(d)
+	}
+}
+
+func TestFindSniExtensionRejectsMalformedLists(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data []byte
+	}{
+		{name: "short extension", data: []byte{0, 0, 0, 1, 0}},
+		{name: "zero length unknown name", data: []byte{0, 0, 0, 5, 0, 3, 1, 0, 0}},
+		{name: "truncated name header", data: []byte{0, 0, 0, 4, 0, 2, 1, 0}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := findSniExtension(quicutils.BuiltinBytesLocator(test.data)); !errors.Is(err, ErrNotApplicable) {
+				t.Fatalf("findSniExtension error = %v, want ErrNotApplicable", err)
+			}
+		})
 	}
 }
