@@ -29,6 +29,8 @@ GOARCH ?= $(shell go env GOARCH)
 GO_VERSION ?= $(shell go env GOVERSION 2>/dev/null)
 .DEFAULT_GOAL := dae
 
+BIG_ENDIAN_GOARCHES := mips mips64 mips64p32 ppc64 s390 s390x sparc sparc64
+
 # Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
 
@@ -44,7 +46,13 @@ endif
 
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
 
-.PHONY: check-go-version clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules test
+.PHONY: check-go-arch check-go-version clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules test
+
+check-go-arch:
+	@if [ -n "$(filter $(GOARCH),$(BIG_ENDIAN_GOARCHES))" ]; then \
+		echo "ERROR: dae does not support big-endian GOARCH=$(GOARCH); use a little-endian target." >&2; \
+		exit 1; \
+	fi
 
 check-go-version:
 	@version='$(GO_VERSION)'; \
@@ -92,7 +100,7 @@ dae: export GOOS=linux
 ifndef CGO_ENABLED
 dae: export CGO_ENABLED=0
 endif
-dae: check-go-version ebpf
+dae: check-go-arch check-go-version ebpf
 	@echo $(CFLAGS)
 	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
