@@ -63,7 +63,9 @@ type Utls struct {
 
 type FunctionOrString interface{}
 
-func FunctionOrStringToFunction(fs FunctionOrString) (f *config_parser.Function) {
+// FunctionOrStringToFunction preserves the original conversion API. New code
+// should use ParseFunctionOrString when the input may be untrusted.
+func FunctionOrStringToFunction(fs FunctionOrString) *config_parser.Function {
 	switch fs := fs.(type) {
 	case string:
 		return &config_parser.Function{Name: fs}
@@ -72,17 +74,40 @@ func FunctionOrStringToFunction(fs FunctionOrString) (f *config_parser.Function)
 	case []*config_parser.Function:
 		if len(fs) == 1 {
 			return fs[0]
-		} else {
-			panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
 		}
+		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
 	default:
 		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
 	}
 }
 
+func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error) {
+	switch fs := fs.(type) {
+	case string:
+		return &config_parser.Function{Name: fs}, nil
+	case *config_parser.Function:
+		if fs == nil {
+			return nil, fmt.Errorf("function must not be nil")
+		}
+		return fs, nil
+	case []*config_parser.Function:
+		if len(fs) != 1 {
+			return nil, fmt.Errorf("expected exactly 1 function, got %d", len(fs))
+		}
+		if fs[0] == nil {
+			return nil, fmt.Errorf("function must not be nil")
+		}
+		return fs[0], nil
+	default:
+		return nil, fmt.Errorf("unsupported function-or-string value type: %T", fs)
+	}
+}
+
 type FunctionListOrString interface{}
 
-func FunctionListOrStringToFunctionList(fs FunctionListOrString) (f []*config_parser.Function) {
+// FunctionListOrStringToFunctionList preserves the original conversion API.
+// New code should use ParseFunctionListOrString for checked conversion.
+func FunctionListOrStringToFunctionList(fs FunctionListOrString) []*config_parser.Function {
 	switch fs := fs.(type) {
 	case string:
 		return []*config_parser.Function{{Name: fs}}
@@ -92,6 +117,30 @@ func FunctionListOrStringToFunctionList(fs FunctionListOrString) (f []*config_pa
 		return fs
 	default:
 		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
+	}
+}
+
+func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Function, error) {
+	switch fs := fs.(type) {
+	case string:
+		return []*config_parser.Function{{Name: fs}}, nil
+	case *config_parser.Function:
+		if fs == nil {
+			return nil, fmt.Errorf("function must not be nil")
+		}
+		return []*config_parser.Function{fs}, nil
+	case []*config_parser.Function:
+		if fs == nil {
+			return nil, fmt.Errorf("function list must not be nil")
+		}
+		for i, f := range fs {
+			if f == nil {
+				return nil, fmt.Errorf("function at index %d must not be nil", i)
+			}
+		}
+		return fs, nil
+	default:
+		return nil, fmt.Errorf("unsupported function-list-or-string value type: %T", fs)
 	}
 }
 

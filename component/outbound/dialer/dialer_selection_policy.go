@@ -28,7 +28,10 @@ const (
 )
 
 func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *DialerSelectionPolicy, err error) {
-	fs := config.FunctionListOrStringToFunctionList(param.Policy)
+	fs, err := config.ParseFunctionListOrString(param.Policy)
+	if err != nil {
+		return nil, fmt.Errorf("invalid group policy: %w", err)
+	}
 	if len(fs) != 1 {
 		return nil, fmt.Errorf("policy should be exact 1 function: got %v", len(fs))
 	}
