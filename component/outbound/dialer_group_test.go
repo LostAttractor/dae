@@ -363,6 +363,20 @@ func TestDialerWithoutHealthCheckHasConfirmedSupport(t *testing.T) {
 	}
 }
 
+func TestDialerGroup_Select_Fixed_NegativeIndex(t *testing.T) {
+	option := newTestOption()
+	d := newTestDialer(option, "node0")
+	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
+		dialer.DialerSelectionPolicy{
+			Policy:     consts.DialerSelectionPolicy_Fixed,
+			FixedIndex: -1,
+		})
+	simulateCheck(d, true, 100*time.Millisecond)
+	if _, err := g.Select(testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
+		t.Fatalf("expected ErrNoAliveDialer, got %v", err)
+	}
+}
+
 func TestDialerGroup_Select_MinLastLatency(t *testing.T) {
 	option := newTestOption()
 	dialers := make([]*dialer.Dialer, 0, 10)

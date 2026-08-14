@@ -28,7 +28,7 @@ func NewFixedSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive b
 }
 
 func (s *FixedSelector) Select(networkType *common.NetworkType) (dialer *dialer.Dialer) {
-	if s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
+	if s.dialerGroup.selectionPolicy.FixedIndex < 0 || s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
 		return nil
 	}
 	dialer = s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex]
@@ -65,7 +65,7 @@ func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
+	if s.dialerGroup.selectionPolicy.FixedIndex < 0 || s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
 		return
 	}
 	if dialer == s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex] {
@@ -92,7 +92,7 @@ func (s *FixedSelector) PrintLatencies(networkType *common.NetworkType, logfn fu
 		builder.WriteString(fmt.Sprintf("Group '%v':\n", s.dialerGroup.Name))
 	}
 
-	if s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
+	if s.dialerGroup.selectionPolicy.FixedIndex < 0 || s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
 		builder.WriteString("\t<Index Out Of Range>\n")
 	} else {
 		dialer := s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex]
