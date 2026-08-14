@@ -23,8 +23,8 @@ import (
 
 const (
 	NsName       = "daens"
-	HostVethName = "dae0"
-	NsVethName   = "dae0peer"
+	hostLinkName = "dae0"
+	peerLinkName = "dae0peer"
 )
 
 var (
@@ -81,12 +81,12 @@ func (ns *DaeNetns) Setup() (err error) {
 
 func (ns *DaeNetns) Close() (err error) {
 	DeleteNamedNetns(NsName)
-	DeleteLink(HostVethName)
+	DeleteLink(hostLinkName)
 	return
 }
 
 func (ns *DaeNetns) With(f func() error) (err error) {
-	if err = daeNetns.Setup(); err != nil {
+	if err = ns.Setup(); err != nil {
 		return fmt.Errorf("failed to setup dae netns: %w", err)
 	}
 
@@ -115,25 +115,19 @@ func (ns *DaeNetns) setup() (err error) {
 	}
 	defer netns.Set(ns.hostNs)
 
-	if err = ns.setupVeth(); err != nil {
-		return
+	for _, setup := range []func() error{
+		ns.setupLinkPair,
+		ns.setupNetns,
+		ns.setupSysctl,
+		ns.setupIPv4Datapath,
+		ns.setupIPv6Datapath,
+		ns.setupRoutingPolicy,
+	} {
+		if err = setup(); err != nil {
+			return err
+		}
 	}
-	if err = ns.setupNetns(); err != nil {
-		return
-	}
-	if err = ns.setupSysctl(); err != nil {
-		return
-	}
-	if err = ns.setupIPv4Datapath(); err != nil {
-		return
-	}
-	if err = ns.setupIPv6Datapath(); err != nil {
-		return
-	}
-	if err = ns.setupRoutingPolicy(); err != nil {
-		return
-	}
-	return
+	return nil
 }
 
 func (ns *DaeNetns) setupRoutingPolicy() (err error) {
@@ -217,29 +211,50 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 	}
 	return nil
 }
-func (ns *DaeNetns) setupVeth() (err error) {
-	// ip l a dae0 type veth peer name dae0peer
-	DeleteLink(HostVethName)
-	if err = netlink.LinkAdd(&netlink.Veth{
-		LinkAttrs: netlink.LinkAttrs{
-			Name:   HostVethName,
-			TxQLen: 1000,
-		},
-		PeerName: NsVethName,
-	}); err != nil {
-		return fmt.Errorf("failed to add veth pair: %v", err)
+
+func createNetkitPair(name, peerName string) error {
+	attrs := netlink.NewLinkAttrs()
+	attrs.Name = name
+	peerAttrs := netlink.NewLinkAttrs()
+	peerAttrs.Name = peerName
+
+	link := &netlink.Netkit{
+		LinkAttrs:  attrs,
+		Mode:       netlink.NETKIT_MODE_L2,
+		Policy:     netlink.NETKIT_POLICY_FORWARD,
+		PeerPolicy: netlink.NETKIT_POLICY_FORWARD,
+		Scrub:      netlink.NETKIT_SCRUB_DEFAULT,
+		PeerScrub:  netlink.NETKIT_SCRUB_DEFAULT,
 	}
-	if ns.dae0, err = netlink.LinkByName(HostVethName); err != nil {
-		return fmt.Errorf("failed to get link dae0: %v", err)
+	link.SetPeerAttrs(&peerAttrs)
+	if err := netlink.LinkAdd(link); err != nil {
+		return fmt.Errorf("create netkit pair (Linux 6.13+ with CONFIG_NETKIT is required): %w", err)
 	}
-	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
-		return fmt.Errorf("failed to get link dae0peer: %v", err)
+	return nil
+}
+
+func (ns *DaeNetns) setupLinkPair() (err error) {
+	DeleteLink(hostLinkName)
+	if err = createNetkitPair(hostLinkName, peerLinkName); err != nil {
+		return err
 	}
-	// ip l s dae0 up
+	defer func() {
+		if err != nil {
+			DeleteLink(hostLinkName)
+		}
+	}()
+
+	if ns.dae0, err = netlink.LinkByName(hostLinkName); err != nil {
+		return fmt.Errorf("failed to get link dae0: %w", err)
+	}
+	if ns.dae0peer, err = netlink.LinkByName(peerLinkName); err != nil {
+		return fmt.Errorf("failed to get link dae0peer: %w", err)
+	}
 	if err = netlink.LinkSetUp(ns.dae0); err != nil {
-		return fmt.Errorf("failed to set link dae0 up: %v", err)
+		return fmt.Errorf("failed to set link dae0 up: %w", err)
 	}
-	return
+	log.Info("Using netkit for the dae network namespace")
+	return nil
 }
 
 func (ns *DaeNetns) setupNetns() (err error) {
@@ -267,7 +282,7 @@ func (ns *DaeNetns) setupNetns() (err error) {
 		return fmt.Errorf("failed to set link dae0peer up: %v", err)
 	}
 	// re-fetch dae0peer to make sure we have the latest mac address
-	if ns.dae0peer, err = netlink.LinkByName(NsVethName); err != nil {
+	if ns.dae0peer, err = netlink.LinkByName(peerLinkName); err != nil {
 		return fmt.Errorf("failed to get link dae0peer: %v", err)
 	}
 	lo, err := netlink.LinkByName("lo")
@@ -283,11 +298,11 @@ func (ns *DaeNetns) setupNetns() (err error) {
 
 func (ns *DaeNetns) setupSysctl() (err error) {
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
-	if err = sysctl.Keyf("net.ipv6.conf.%s.disable_ipv6", HostVethName).Set("0", true); err != nil {
+	if err = sysctl.Keyf("net.ipv6.conf.%s.disable_ipv6", hostLinkName).Set("0", true); err != nil {
 		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
 	}
 	// sysctl net.ipv6.conf.dae0.forwarding=1
-	if err = sysctl.Keyf("net.ipv6.conf.%s.forwarding", HostVethName).Set("1", true); err != nil {
+	if err = sysctl.Keyf("net.ipv6.conf.%s.forwarding", hostLinkName).Set("1", true); err != nil {
 		return fmt.Errorf("failed to set forwarding for dae0: %v", err)
 	}
 
@@ -306,13 +321,13 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	if err = sysctl.Keyf("net.ipv4.conf.all.rp_filter").Set("0", false); err != nil {
 		return fmt.Errorf("failed to set rp_filter for all in daens: %v", err)
 	}
-	if err = sysctl.Keyf("net.ipv4.conf.%s.rp_filter", NsVethName).Set("0", false); err != nil {
+	if err = sysctl.Keyf("net.ipv4.conf.%s.rp_filter", peerLinkName).Set("0", false); err != nil {
 		return fmt.Errorf("failed to set rp_filter for dae0peer: %v", err)
 	}
 
 	// (ip net e daens) sysctl net.ipv4.conf.dae0peer.accept_local=1
 	// This is to prevent kernel from dropping skb due to "martian source" check: https://elixir.bootlin.com/linux/v6.6/source/net/ipv4/fib_frontend.c#L381
-	if err = sysctl.Keyf("net.ipv4.conf.%s.accept_local", NsVethName).Set("1", false); err != nil {
+	if err = sysctl.Keyf("net.ipv4.conf.%s.accept_local", peerLinkName).Set("1", false); err != nil {
 		return fmt.Errorf("failed to set accept_local for dae0peer: %v", err)
 	}
 	return

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net/netip"
 	"os"
-	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,9 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/mohae/deepcopy"
-	"github.com/safchain/ethtool"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -44,8 +41,6 @@ type controlPlaneCore struct {
 	filterCleanups map[filterCleanupKey]func() error
 	filterOrder    []filterCleanupKey
 	bpf            *bpfState
-
-	kernelVersion *internal.Version
 
 	flip     int
 	isReload bool
@@ -82,7 +77,6 @@ type filterCleanupKey struct {
 
 func newControlPlaneCore(
 	bpf *bpfState,
-	kernelVersion *internal.Version,
 	isReload bool,
 ) *controlPlaneCore {
 	if isReload {
@@ -91,10 +85,9 @@ func newControlPlaneCore(
 	closed, toClose := context.WithCancel(context.Background())
 	ifmgr := component.NewInterfaceManager()
 	core := &controlPlaneCore{
-		bpf:           bpf,
-		kernelVersion: kernelVersion,
-		flip:          coreFlip,
-		isReload:      isReload,
+		bpf:      bpf,
+		flip:     coreFlip,
+		isReload: isReload,
 		// A reload candidate starts without BPF cleanup ownership. The caller
 		// released it from the old core before construction and assigns it to
 		// this core via InjectBpf only after the old core is retired.
@@ -225,37 +218,6 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 	return c.closeErr
 }
 
-func getIfParamsFromLink(link netlink.Link) (ifParams bpfIfParams, err error) {
-	et, err := ethtool.NewEthtool()
-	if err != nil {
-		return bpfIfParams{}, err
-	}
-	defer et.Close()
-	features, err := et.Features(link.Attrs().Name)
-	if err != nil {
-		return bpfIfParams{}, err
-	}
-	if features["tx-checksum-ip-generic"] {
-		ifParams.TxL4CksmIp4Offload = true
-		ifParams.TxL4CksmIp6Offload = true
-	}
-	if features["tx-checksum-ipv4"] {
-		ifParams.TxL4CksmIp4Offload = true
-	}
-	if features["tx-checksum-ipv6"] {
-		ifParams.TxL4CksmIp6Offload = true
-	}
-	if features["rx-checksum"] {
-		ifParams.RxCksmOffload = true
-	}
-	switch {
-	case regexp.MustCompile(`^docker\d+$`).MatchString(link.Attrs().Name):
-		ifParams.UseNonstandardOffloadAlgorithm = true
-	default:
-	}
-	return ifParams, nil
-}
-
 func (c *controlPlaneCore) linkHdrLen(ifname string) (uint32, error) {
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
@@ -319,7 +281,7 @@ func (c *controlPlaneCore) delQdisc(ifname string) error {
 // bindLan supports rebinding when the interface `ifname` is detected in the future.
 func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool) {
 	initlinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == HostVethName {
+		if link.Attrs().Name == hostLinkName {
 			return
 		}
 		if autoConfigKernelParameter {
@@ -331,7 +293,7 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 		}
 	}
 	newlinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == HostVethName {
+		if link.Attrs().Name == hostLinkName {
 			return
 		}
 		log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
@@ -342,7 +304,7 @@ func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool
 		initlinkCallback(link)
 	}
 	dellinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == HostVethName {
+		if link.Attrs().Name == hostLinkName {
 			return
 		}
 		c.releaseLinkFilters("host", link.Attrs().Index)
@@ -376,14 +338,6 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 	if err != nil {
 		return err
 	}
-	ifParams, err := getIfParamsFromLink(link)
-	if err != nil {
-		return err
-	}
-	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
-		return err
-	}
-
 	filterIngress := &netlink.BpfFilter{
 		FilterAttrs: netlink.FilterAttrs{
 			LinkIndex: link.Attrs().Index,
@@ -510,7 +464,7 @@ func (c *controlPlaneCore) setupExitHandler() (err error) {
 // bindWan supports rebinding when the interface `ifname` is detected in the future.
 func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) {
 	initlinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == HostVethName {
+		if link.Attrs().Name == hostLinkName {
 			return
 		}
 		if err := c._bindWan(link.Attrs().Name); err != nil {
@@ -518,7 +472,7 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 		}
 	}
 	newlinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == HostVethName {
+		if link.Attrs().Name == hostLinkName {
 			return
 		}
 		log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
@@ -529,7 +483,7 @@ func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool
 		initlinkCallback(link)
 	}
 	dellinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == HostVethName {
+		if link.Attrs().Name == hostLinkName {
 			return
 		}
 		c.releaseLinkFilters("host", link.Attrs().Index)
@@ -557,14 +511,6 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	_ = c.addQdisc(ifname)
 	linkHdrLen, err := c.linkHdrLen(ifname)
 	if err != nil {
-		return err
-	}
-
-	ifParams, err := getIfParamsFromLink(link)
-	if err != nil {
-		return err
-	}
-	if err = ifParams.CheckVersionRequirement(c.kernelVersion); err != nil {
 		return err
 	}
 
@@ -642,83 +588,46 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	return nil
 }
 
-func (c *controlPlaneCore) bindDaens() (err error) {
+func (c *controlPlaneCore) bindDaens() error {
 	daens := GetDaeNetns()
+	return c.bindDaensTCX(daens)
+}
 
-	// tproxy_dae0peer_ingress@eth0 at dae netns
-	daens.With(func() error {
-		return c.addQdisc(daens.Dae0Peer().Attrs().Name)
-	})
-	filterDae0peerIngress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: daens.Dae0Peer().Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  0,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyDae0peerIngress.FD(),
-		Name:         consts.AppName + "_dae0peer_ingress",
-		DirectAction: true,
-	}
-	daens.With(func() error {
-		return netlink.FilterDel(filterDae0peerIngress)
-	})
-	if !c.isReload {
-		// Clean up thoroughly.
-		filterIngressFlipped := deepcopy.Copy(filterDae0peerIngress).(*netlink.BpfFilter)
-		filterIngressFlipped.FilterAttrs.Handle ^= 1
-		daens.With(func() error {
-			return netlink.FilterDel(filterIngressFlipped)
+func (c *controlPlaneCore) bindDaensTCX(daens *DaeNetns) error {
+	var peerLink ciliumLink.Link
+	if err := daens.With(func() error {
+		var err error
+		peerLink, err = ciliumLink.AttachTCX(ciliumLink.TCXOptions{
+			Interface: daens.Dae0Peer().Attrs().Index,
+			Program:   c.bpf.bpfPrograms.TproxyDae0peerIngress,
+			Attach:    ebpf.AttachTCXIngress,
+			Anchor:    ciliumLink.Head(),
 		})
-	}
-	if err = daens.With(func() error {
-		return netlink.FilterAdd(filterDae0peerIngress)
+		return err
 	}); err != nil {
-		return oops.Errorf("cannot attach ebpf object to filter ingress: %w", err)
+		return oops.Errorf("cannot attach TCX program to dae0peer ingress: %w", err)
 	}
-	daePeerKey := hostFilterCleanupKey(filterDae0peerIngress)
-	daePeerKey.namespace = "dae"
-	c.ownFilter(daePeerKey, func() error {
-		if err := daens.With(func() error {
-			return netlink.FilterDel(filterDae0peerIngress)
-		}); err != nil && !filterAlreadyGone(err) {
-			return oops.Errorf("FilterDel(%v:%v): %w", daens.Dae0Peer().Attrs().Name, filterDae0peerIngress.Name, err)
-		}
-		return nil
-	})
 
-	// tproxy_dae0_ingress@dae0 at host netns
-	c.addQdisc(daens.Dae0().Attrs().Name)
-	filterDae0Ingress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: daens.Dae0().Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2022, 0b010+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  0,
-		},
-		Fd:           c.bpf.bpfPrograms.TproxyDae0Ingress.FD(),
-		Name:         consts.AppName + "_dae0_ingress",
-		DirectAction: true,
-	}
-	_ = netlink.FilterDel(filterDae0Ingress)
-	if !c.isReload {
-		// Clean up thoroughly.
-		filterEgressFlipped := deepcopy.Copy(filterDae0Ingress).(*netlink.BpfFilter)
-		filterEgressFlipped.FilterAttrs.Handle ^= 1
-		_ = netlink.FilterDel(filterEgressFlipped)
-	}
-	if err := netlink.FilterAdd(filterDae0Ingress); err != nil {
-		return oops.Errorf("cannot attach ebpf object to filter egress: %w", err)
-	}
-	c.ownFilter(hostFilterCleanupKey(filterDae0Ingress), func() error {
-		if err := netlink.FilterDel(filterDae0Ingress); err != nil && !filterAlreadyGone(err) {
-			return oops.Errorf("FilterDel(%v:%v): %w", daens.Dae0().Attrs().Name, filterDae0Ingress.Name, err)
-		}
-		return nil
+	hostLink, err := ciliumLink.AttachTCX(ciliumLink.TCXOptions{
+		Interface: daens.Dae0().Attrs().Index,
+		Program:   c.bpf.bpfPrograms.TproxyDae0Ingress,
+		Attach:    ebpf.AttachTCXIngress,
+		Anchor:    ciliumLink.Head(),
 	})
-	return
+	if err != nil {
+		attachErr := oops.Errorf("cannot attach TCX program to dae0 ingress: %w", err)
+		if closeErr := peerLink.Close(); closeErr != nil {
+			return errors.Join(attachErr, oops.Wrapf(closeErr, "close dae0peer TCX link"))
+		}
+		return attachErr
+	}
+	c.addCleanup(func() error {
+		return oops.Wrapf(peerLink.Close(), "close dae0peer TCX link")
+	})
+	c.addCleanup(func() error {
+		return oops.Wrapf(hostLink.Close(), "close dae0 TCX link")
+	})
+	return nil
 }
 
 // writeDomainBitmaps pushes the derived bitmaps of one IP to the kernel

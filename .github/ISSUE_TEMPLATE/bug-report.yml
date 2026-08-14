@@ -48,7 +48,7 @@ body:
         examples:
           - **Dae version (use `dae --version`)**: v0.2.4
           - **OS (e.g `cat /etc/os-release`)**: Debian 12
-          - **Kernel (e.g. `uname -a`)**: 6.4.8-arch1-1
+          - **Kernel (e.g. `uname -a`)**: 6.13.0-arch1-1
           - **Others**: NA
       value: |
           - **Dae version (use `dae --version`)**:

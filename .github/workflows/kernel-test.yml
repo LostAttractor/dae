@@ -39,12 +39,15 @@ jobs:
       run: |
         git submodule update --init
         make GOFLAGS="-buildvcs=false" CC=clang
+        CGO_ENABLED=0 go test -c ./control -o control.test
 
     - name: Store executable
       uses: actions/upload-artifact@v6
       with:
         name: dae
-        path: dae
+        path: |
+          dae
+          control.test
 
   test:
     runs-on: ubuntu-22.04
@@ -53,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: [ '6.1-20250527.055456', '6.6-20250527.055456', '6.12-20250527.055456' ]
+        kernel: [ '6.18-20260810.013220' ]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -73,9 +76,14 @@ jobs:
           install-dependencies: 'true'
           cmd: |
             chmod +x /host/dae/dae
+            chmod +x /host/dae/control.test
 
             apt update
             apt install -y unzip
+
+            DAE_NETKIT_TEST=1 /host/dae/control.test \
+              -test.run '^TestCreateNetkitPairIntegration$' \
+              -test.count=1
 
       - name: Setup network
         uses: cilium/little-vm-helper@v0.0.28
@@ -188,6 +196,7 @@ jobs:
               cat dae.log
               exit 1
             fi
+            grep -q 'Using netkit for the dae network namespace' dae.log
             cat dae.log
 
       - name: Check WAN IPv4 TCP

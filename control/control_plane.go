@@ -128,33 +128,12 @@ func NewControlPlane(
 	if e != nil {
 		return nil, oops.Errorf("failed to get kernel version: %w", e)
 	}
-	/// Check linux kernel requirements.
-	// Check version from high to low to reduce the number of user upgrading kernel.
+	if kernelVersion.Less(consts.MinimumKernelVersion) {
+		return nil, oops.Errorf("your kernel version %v does not satisfy the minimum requirement; expect >=%v",
+			kernelVersion.String(), consts.MinimumKernelVersion.String())
+	}
 	if err := features.HaveProgramHelper(ebpf.SchedCLS, asm.FnLoop); err != nil {
-		return nil, oops.Errorf("%w: your kernel version %v does not support bpf_loop (needed by routing); expect >=%v; upgrade your kernel and try again",
-			err,
-			kernelVersion.String(),
-			consts.BpfLoopFeatureVersion.String())
-	}
-	if requirement := consts.ChecksumFeatureVersion; kernelVersion.Less(requirement) {
-		return nil, oops.Errorf("your kernel version %v does not support checksum related features; expect >=%v; upgrade your kernel and try again",
-			kernelVersion.String(),
-			requirement.String())
-	}
-	if requirement := consts.BpfTimerFeatureVersion; len(global.WanInterface) > 0 && kernelVersion.Less(requirement) {
-		return nil, oops.Errorf("your kernel version %v does not support bind to WAN; expect >=%v; remove wan_interface in config file and try again",
-			kernelVersion.String(),
-			requirement.String())
-	}
-	if requirement := consts.SkAssignFeatureVersion; len(global.LanInterface) > 0 && kernelVersion.Less(requirement) {
-		return nil, oops.Errorf("your kernel version %v does not support bind to LAN; expect >=%v; remove lan_interface in config file and try again",
-			kernelVersion.String(),
-			requirement.String())
-	}
-	if kernelVersion.Less(consts.BasicFeatureVersion) {
-		return nil, oops.Errorf("your kernel version %v does not satisfy basic requirement; expect >=%v",
-			kernelVersion.String(),
-			consts.BasicFeatureVersion.String())
+		return nil, oops.Errorf("%w: bpf_loop is unavailable but required by routing", err)
 	}
 
 	/// Allow the current process to lock memory for eBPF resources.
@@ -222,7 +201,6 @@ func NewControlPlane(
 	log.Infof("Loaded eBPF programs and maps")
 	core := newControlPlaneCore(
 		bpf,
-		&kernelVersion,
 		_bpf != nil,
 	)
 	defer func() {
