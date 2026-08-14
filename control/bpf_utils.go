@@ -15,15 +15,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -85,7 +82,7 @@ func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map,
 	if len(keys) == 0 {
 		return m, nil
 	}
-	if _, err = BpfMapBatchUpdate(m, keys, values, &ebpf.BatchOptions{
+	if _, err = m.BatchUpdate(keys, values, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		_ = m.Close()
@@ -104,62 +101,6 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 		PrefixLen: uint32(bits),
 		Data:      common.Ipv6ByteSliceToUint32Array(ip[:]),
 	}
-}
-
-var (
-	CheckBatchUpdateFeatureOnce sync.Once
-	SimulateBatchUpdate         bool
-	SimulateBatchUpdateLpmTrie  bool
-)
-
-func BpfMapBatchUpdate(m *ebpf.Map, keys interface{}, values interface{}, opts *ebpf.BatchOptions) (n int, err error) {
-	CheckBatchUpdateFeatureOnce.Do(func() {
-		version, e := internal.KernelVersion()
-		if e != nil {
-			SimulateBatchUpdate = true
-			SimulateBatchUpdateLpmTrie = true
-			return
-		}
-		if version.Less(consts.UserspaceBatchUpdateFeatureVersion) {
-			SimulateBatchUpdate = true
-		}
-		if version.Less(consts.UserspaceBatchUpdateLpmTrieFeatureVersion) {
-			SimulateBatchUpdateLpmTrie = true
-		}
-	})
-
-	simulate := SimulateBatchUpdate
-	if m.Type() == ebpf.LPMTrie {
-		simulate = SimulateBatchUpdateLpmTrie
-	}
-
-	if !simulate {
-		// Genuine BpfMapBatchUpdate
-		return m.BatchUpdate(keys, values, opts)
-	}
-
-	// Simulate
-	vKeys := reflect.ValueOf(keys)
-	if vKeys.Kind() != reflect.Slice {
-		return 0, fmt.Errorf("keys must be slice")
-	}
-	vVals := reflect.ValueOf(values)
-	if vVals.Kind() != reflect.Slice {
-		return 0, fmt.Errorf("values must be slice")
-	}
-	length := vKeys.Len()
-	if vVals.Len() != length {
-		return 0, fmt.Errorf("keys and values must have same length")
-	}
-
-	for i := 0; i < length; i++ {
-		vKey := vKeys.Index(i)
-		vVal := vVals.Index(i)
-		if err = m.Update(vKey.Interface(), vVal.Interface(), ebpf.MapUpdateFlags(opts.ElemFlags)); err != nil {
-			return i, err
-		}
-	}
-	return vKeys.Len(), nil
 }
 
 // BpfMapBatchDelete deletes keys and ignores ErrKeyNotExist.
@@ -200,25 +141,6 @@ func detectCgroupPath() (string, error) {
 	}
 
 	return "", errors.New("cgroup2 not mounted")
-}
-
-type bpfIfParams struct {
-	RxCksmOffload                  bool
-	TxL4CksmIp4Offload             bool
-	TxL4CksmIp6Offload             bool
-	UseNonstandardOffloadAlgorithm bool
-}
-
-func (p bpfIfParams) CheckVersionRequirement(version *internal.Version) (err error) {
-	if !p.TxL4CksmIp4Offload ||
-		!p.TxL4CksmIp6Offload {
-		// Need calc checksum on CPU. And need BPF_F_ADJ_ROOM_NO_CSUM_RESET.
-		if version.Less(consts.ChecksumFeatureVersion) {
-			return fmt.Errorf("your NIC does not support checksum offload and your kernel version %v does not support related BPF features; expect >=%v; upgrade your kernel and try again", version.String(),
-				consts.ChecksumFeatureVersion.String())
-		}
-	}
-	return nil
 }
 
 type loadBpfOptions struct {

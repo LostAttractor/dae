@@ -7,27 +7,27 @@
 使用 `uname -r` 来查看内核版本。
 
 > **注意**
-> 如果你的内核版本低于 `5.17`，可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级你的内核。
+> dae 要求 Linux 6.13 或更新版本。如果内核版本较低，可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md)。
 
-`绑定到 LAN 接口: >= 5.17`
+`绑定到 LAN 接口: >= 6.13`
 
 如果你想作为路由器、网桥等中间设备，为其他设备提供代理服务，需要把 dae 绑定到 LAN 接口上。
 
-该特性要求 dae 所在的设备的内核版本 >= 5.17。
+该特性要求 Linux 6.13 或更新版本。
 
 如果你只在 `lan_interface` 中填写了接口，而未在 `wan_interface` 中填写内容，那么本地程序将无法被代理。如果你期望代理本地程序，需要在 `wan_interface` 中填写 `auto` 或是手动输入 WAN 接口。
 
-`绑定到 WAN 接口: >= 5.17`
+`绑定到 WAN 接口: >= 6.13`
 
 如果你想为本地程序提供代理服务，需要把 dae 绑定到 WAN 接口上。
 
-该特性要求 dae 所在的设备的内核版本 >= 5.17。
+该特性要求 Linux 6.13 或更新版本。
 
 如果你只在 `wan_interface` 中填写了接口或 `auto`，而未在 `lan_interface` 中填写内容，那么从局域网中传来的流量将无法被代理。如果你想同时代理本机和局域网流量，请同时填写 `wan_interface` 和 `lan_interface`。
 
 `使用 trace 命令`
 
-如果你想用 `dae trace` 命令来诊断网络连通性问题，所在的设备内核版本要求 >= 5.15 。
+`dae trace` 命令同样要求 Linux 6.13 或更新版本。
 
 ## 内核配置选项
 
@@ -50,6 +50,7 @@ CONFIG_NET_EGRESS=y
 CONFIG_NET_SCH_INGRESS=m
 CONFIG_NET_CLS_BPF=m
 CONFIG_NET_CLS_ACT=y
+CONFIG_NETKIT=y
 CONFIG_BPF_STREAM_PARSER=y
 CONFIG_DEBUG_INFO=y
 # CONFIG_DEBUG_INFO_REDUCED is not set
@@ -63,13 +64,13 @@ CONFIG_BPF_EVENTS=y
 bash和其他POSIX兼容的shell:
 
 ```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
 fish shell:
 
 ```fish
-begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
 > **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
@@ -154,10 +155,6 @@ sudo dnf install dae
 ### Alpine
 
 详见 [run on alpine](../en/tutorials/run-on-alpine.md)。
-
-### macOS
-
-我们提供了一种比较 hacky 的方式在 macOS 上运行 dae，见 [run on macOS](../en/tutorials/run-on-macos.md)。
 
 ### Docker
 

@@ -9,27 +9,27 @@
 Use `uname -r` to check the kernel version on your machine.
 
 > **Note**
-> If you find your kernel version is `< 5.17`, follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to the minimum required version.
+> Linux 6.13 or newer is required. Follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) if your kernel is older.
 
-`Bind to LAN: >= 5.17`
+`Bind to LAN: >= 6.13`
 
 You need bind dae to LAN interface, if you want to provide network service for LAN as an intermediate device.
 
-This feature requires the kernel version of machine on which dae install >= 5.17.
+This feature requires Linux 6.13 or newer.
 
 Note that if you bind dae to LAN only, dae only provide network service for traffic from LAN, and not impact local programs.
 
-`Bind to WAN: >= 5.17`
+`Bind to WAN: >= 6.13`
 
 You need bind dae to WAN interface, if you want dae to provide network service for local programs.
 
-This feature requires kernel version of the machine >= 5.17.
+This feature requires Linux 6.13 or newer.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
 `Use trace command`
 
-If you want to use `dae trace` command to triage network connectivity issue, the kernel version is required to be >= 5.15.
+The `dae trace` command also requires Linux 6.13 or newer.
 
 ## Kernel Configurations
 
@@ -54,6 +54,7 @@ CONFIG_NET_EGRESS=y
 CONFIG_NET_SCH_INGRESS=m
 CONFIG_NET_CLS_BPF=m
 CONFIG_NET_CLS_ACT=y
+CONFIG_NETKIT=y
 CONFIG_BPF_STREAM_PARSER=y
 CONFIG_DEBUG_INFO=y
 # CONFIG_DEBUG_INFO_REDUCED is not set
@@ -67,13 +68,13 @@ Check them using command like:
 for bash and other POSIX compliant shell:
 
 ```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
 for fish shell:
 
 ```fish
-begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
 ```
 
 > **Note**: `Armbian` users can follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
@@ -160,10 +161,6 @@ sudo dnf install dae
 ### Alpine
 
 See [run on alpine](tutorials/run-on-alpine.md).
-
-### macOS
-
-We provide a hacky way to run dae on your macOS. See [run on macOS](tutorials/run-on-macos.md).
 
 ### Docker
 

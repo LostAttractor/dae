@@ -1,9 +1,9 @@
 # Run on Alpine Linux
 
 **Note:** 
-1. Alpine Linux 3.18 or newer verison has full eBPF support out-of-box, older version of Alpine Linux need to build kernel by yourself.
-2. From version 3.20, Alpine Linux has officially disabled some features dae needed beacuse of Alpine Linux's cross CPU architectures compatibility, so only `linux-virt` can be used to run dae defaultly. For `linux-lts` or `linux-edge`, you should build the kernel by yourself.
-3. This tutorial is for Alpine Linux 3.20 and newer.
+1. dae requires Linux 6.13 or newer with `CONFIG_NETKIT=y`; check the actual kernel rather than the Alpine release version.
+2. From version 3.20, Alpine Linux has officially disabled some features dae needed beacuse of Alpine Linux's cross CPU architectures compatibility, so only a suitably configured `linux-virt` kernel can run dae. For `linux-lts` or `linux-edge`, you may need to build the kernel yourself.
+3. This tutorial is for Alpine Linux 3.20 and newer with a supported kernel.
 
 ## Enable Community Repo
 

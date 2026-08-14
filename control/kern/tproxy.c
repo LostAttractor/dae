@@ -469,7 +469,8 @@ static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 
 static __always_inline int
 parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
-		struct ethhdr *ethh, struct l3_hdr *l3h, struct l4_hdr *l4h, __u8 *ihl, __u8 *l4proto, __u32 *offset)
+		struct ethhdr *ethh, struct l3_hdr *l3h, struct l4_hdr *l4h,
+		__u8 *ihl, __u8 *l4proto, __u32 *offset)
 {
 	if (link_h_len == ETH_HLEN) {
 		int ret = bpf_skb_load_bytes(skb, *offset, ethh,
@@ -598,57 +599,36 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 	return 1;
 }
 
-// static __always_inline bool
-// is_bittorrent(const struct __sk_buff *skb, __u32 offset)
-// {
-//     __u8 buf[20];
-//     int ret = bpf_skb_load_bytes(skb, offset, buf, sizeof(buf));
-
-//     if (ret) {
-// 	return false;
-//     }
-
-//     if (buf[0] != 0x13) {
-// 	return false;
-//     }
-
-//     const char *protocol = "BitTorrent protocol";
-
-//     for (int i = 0; i < 19; i++) {
-// 	if (buf[i + 1] != protocol[i]) {
-// 	    return false;
-// 	}
-//     }
-
-//     return true;
-// }
-
 // Only work for first packet of a new connection.
 static __always_inline bool
 is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset)
 {
-	if (l4proto != IPPROTO_UDP || skb->len < (offset + 160)) {
+	if (l4proto != IPPROTO_UDP || skb->len < (offset + 160))
 		return false;
-	}
 
 	__u8 header[2];
-    int ret = bpf_skb_load_bytes(skb, offset, header, sizeof(header));
+	int ret = bpf_skb_load_bytes(skb, offset, header, sizeof(header));
+
 	if (ret)
 		return false;
 
-    __u8 typ = header[0] >> 4;
+	__u8 typ = header[0] >> 4;
 	__u8 version = header[0] & 0x0F;
+
 	if (version != 1 || typ > 4)
 		return false;
 
 	__u8 extension = header[1];
 
 	u32 timestamp_difference_microseconds;
-	ret = bpf_skb_load_bytes(skb, offset+64, &timestamp_difference_microseconds, sizeof(timestamp_difference_microseconds));
+
+	ret = bpf_skb_load_bytes(skb, offset + 64,
+				 &timestamp_difference_microseconds,
+				 sizeof(timestamp_difference_microseconds));
 	if (ret)
 		return false;
 	if (timestamp_difference_microseconds != 0)
-		return false; // This should be 0. for new connection.
+		return false; // This should be 0 for a new connection.
 
 	offset += 160;
 
@@ -669,32 +649,6 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset)
 	}
 	return false;
 }
-
-// static __always_inline bool
-// is_udp_tracker(const struct __sk_buff *skb, __u8 l4proto, __u32 offset) {
-// 	const __u32 tracker_connect_min_size = 16;
-//     const __u64 tracker_protocol_id = 0x41727101980;
-//     const __u32 tracker_connect_action = 0;
-
-// 	if (l4proto != IPPROTO_UDP || skb->len < offset + tracker_connect_min_size) {
-// 		return false;
-// 	}
-
-// 	__u64 id;
-// 	__u32 action;
-// 	int ret = bpf_skb_load_bytes(skb, offset, &id, sizeof(id));
-
-// 	if (ret || id != tracker_protocol_id) {
-// 		return false;
-// 	}
-
-// 	ret = bpf_skb_load_bytes(skb, offset + sizeof(id), &action, sizeof(action));
-// 	if (ret || action != tracker_connect_action) {
-// 		return false;
-// 	}
-
-// 	return true;
-// }
 
 struct route_params {
 	__u32 flag[8];
@@ -946,7 +900,8 @@ before_next_loop:
 				struct outbound_connectivity_query q = {
 					.outbound = match_set->outbound,
 					.ipversion = (_ipversion_type & IpVersionType_4) ? 4 : 6,
-					.l4proto = (_l4proto_type & L4ProtoType_TCP) ? IPPROTO_TCP : IPPROTO_UDP,
+					.l4proto = (_l4proto_type & L4ProtoType_TCP) ?
+						IPPROTO_TCP : IPPROTO_UDP,
 				};
 
 				__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1104,7 +1059,7 @@ static __always_inline void prep_redirect_to_control_plane(
 	struct __sk_buff *skb, bool from_wan, __u32 link_h_len, struct tuples *tuples,
 	__u8 l4proto, struct ethhdr *ethh, struct l4_hdr *l4h)
 {
-	/* Redirect from L3 dev to L2 dev, e.g. wg/ipip/ppp/tun -> veth */
+	/* Redirect from L3 dev to L2 dev, e.g. wg/ipip/ppp/tun -> netkit */
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
 
@@ -1217,9 +1172,9 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 link_h_len)
 {
 	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
-	if (exited && *exited) {
+
+	if (exited && *exited)
 		return TC_ACT_PIPE;
-	}
 
 	// Parse transport.
 	struct ethhdr ethh;
@@ -1254,6 +1209,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	bool isdns = tuples.five.dport == bpf_htons(53) && l4proto == IPPROTO_UDP;
 
 	struct tuples_key routing_tuples_key = tuples.five;
+
 	if (l4proto == IPPROTO_UDP) {
 		__builtin_memset(&routing_tuples_key.dip, 0, sizeof(routing_tuples_key.dip));
 		routing_tuples_key.dport = 0;
@@ -1300,9 +1256,8 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
 		params.flag[0] = L4ProtoType_UDP;
-		if (is_utp(skb, l4proto, offset)) {
+		if (is_utp(skb, l4proto, offset))
 			params.flag[0] |= (1 << 2);
-		}
 	}
 	if (protocol == bpf_htons(ETH_P_IP))
 		params.flag[1] = IpVersionType_4;
@@ -1400,7 +1355,8 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 		};
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("outbound_connectivity_query: outbound: %u, ipversion: %u, l4proto: %u", q.outbound, q.ipversion, q.l4proto);
+		bpf_printk("outbound_connectivity_query: outbound: %u, ipversion: %u, l4proto: %u",
+			   q.outbound, q.ipversion, q.l4proto);
 #endif
 
 		__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
@@ -1450,7 +1406,9 @@ static __always_inline int do_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 	__u8 l4proto;
 	__u32 offset = 0;
 
-	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl, &l4proto, &offset);
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
+				  &l4proto, &offset);
+
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
 		return TC_ACT_PIPE;
@@ -1510,7 +1468,9 @@ static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link
 	__u8 l4proto;
 	__u32 offset = 0;
 
-	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl, &l4proto, &offset);
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
+				  &l4proto, &offset);
+
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
 		return TC_ACT_PIPE;
@@ -1828,7 +1788,7 @@ int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx)
 }
 
 SEC("tp/sched/sched_process_exit")
-int handle_exit(struct trace_event_raw_sched_process_template* ctx)
+int handle_exit(struct trace_event_raw_sched_process_template *ctx)
 {
     /* get PID and TID of exiting thread/process */
     __u64 id = bpf_get_current_pid_tgid();
@@ -1836,7 +1796,7 @@ int handle_exit(struct trace_event_raw_sched_process_template* ctx)
     __u32 tid = id;
 
     /* ignore thread exits */
-    if (pid != tid)
+	if (pid != tid)
 		return 0;
 
 	if (pid == PARAM.control_plane_pid)

@@ -492,7 +492,6 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 		if err != nil {
 			return fmt.Errorf("newLpmMap: %w", err)
 		}
-		// We cannot invoke BpfMapBatchUpdate when value is ebpf.Map.
 		if err = b.bpf.LpmArrayMap.Update(uint32(i), m, ebpf.UpdateAny); err != nil {
 			m.Close()
 			return fmt.Errorf("Update: %w", err)
@@ -506,10 +505,10 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	}
 	routingsLen := uint32(len(b.rules))
 	routingsKeys := common.ARangeU32(routingsLen)
-	if _, err = BpfMapBatchUpdate(b.bpf.RoutingMap, routingsKeys, b.rules, &ebpf.BatchOptions{
+	if _, err = b.bpf.RoutingMap.BatchUpdate(routingsKeys, b.rules, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
-		return fmt.Errorf("BpfMapBatchUpdate: %w", err)
+		return fmt.Errorf("batch update routing map: %w", err)
 	}
 	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
 
