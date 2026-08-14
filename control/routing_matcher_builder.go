@@ -453,7 +453,11 @@ func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint
 }
 
 func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrString) (err error) {
-	outbound, err := routing.ParseOutbound(config.FunctionOrStringToFunction(fallbackOutbound))
+	fallback, err := config.ParseFunctionOrString(fallbackOutbound)
+	if err != nil {
+		return fmt.Errorf("invalid routing fallback: %w", err)
+	}
+	outbound, err := routing.ParseOutbound(fallback)
 	if err != nil {
 		return err
 	}

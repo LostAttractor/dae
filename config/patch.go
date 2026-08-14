@@ -20,6 +20,7 @@ type patch func(params *Config) error
 var patches = []patch{
 	validateCheckIntervals,
 	patchEmptyDns,
+	validateFallbacks,
 	patchMustOutbound,
 }
 
@@ -57,6 +58,23 @@ func patchEmptyDns(params *Config) error {
 	return nil
 }
 
+func validateFallbacks(params *Config) error {
+	fallbacks := []struct {
+		name  string
+		value FunctionOrString
+	}{
+		{name: "routing.fallback", value: params.Routing.Fallback},
+		{name: "dns.routing.request.fallback", value: params.Dns.Routing.Request.Fallback},
+		{name: "dns.routing.response.fallback", value: params.Dns.Routing.Response.Fallback},
+	}
+	for _, fallback := range fallbacks {
+		if _, err := ParseFunctionOrString(fallback.value); err != nil {
+			return fmt.Errorf("invalid %s: %w", fallback.name, err)
+		}
+	}
+	return nil
+}
+
 func patchMustOutbound(params *Config) error {
 	for i := range params.Routing.Rules {
 		if strings.HasPrefix(params.Routing.Rules[i].Outbound.Name, "must_") {
@@ -70,7 +88,11 @@ func patchMustOutbound(params *Config) error {
 			})
 		}
 	}
-	if f := FunctionOrStringToFunction(params.Routing.Fallback); strings.HasPrefix(f.Name, "must_") {
+	f, err := ParseFunctionOrString(params.Routing.Fallback)
+	if err != nil {
+		return fmt.Errorf("invalid routing fallback: %w", err)
+	}
+	if strings.HasPrefix(f.Name, "must_") {
 		f.Name = strings.TrimPrefix(f.Name, "must_")
 		f.Params = append(f.Params, &config_parser.Param{
 			Val: "must",

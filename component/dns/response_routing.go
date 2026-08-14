@@ -154,7 +154,11 @@ func (b *ResponseMatcherBuilder) addQType(f *config_parser.Function, values []ui
 }
 
 func (b *ResponseMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrString) (err error) {
-	upstream, err := routing.ParseOutbound(config.FunctionOrStringToFunction(fallbackOutbound))
+	fallback, err := config.ParseFunctionOrString(fallbackOutbound)
+	if err != nil {
+		return fmt.Errorf("invalid DNS response fallback: %w", err)
+	}
+	upstream, err := routing.ParseOutbound(fallback)
 	if err != nil {
 		return err
 	}

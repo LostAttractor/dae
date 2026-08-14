@@ -219,7 +219,10 @@ routing {
 	if len(rule.Outbound.Params) != 1 || rule.Outbound.Params[0].Val != "must" {
 		t.Fatalf("must param expected: got %+v", rule.Outbound.Params)
 	}
-	fallback := FunctionOrStringToFunction(conf.Routing.Fallback)
+	fallback, err := ParseFunctionOrString(conf.Routing.Fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if fallback.Name != "my_group" {
 		t.Fatalf("must_ prefix should be trimmed from fallback: got %v", fallback.Name)
 	}
@@ -233,10 +236,18 @@ func TestNew_PatchEmptyDns(t *testing.T) {
 global {}
 routing { fallback: direct }
 `)
-	if FunctionOrStringToFunction(conf.Dns.Routing.Request.Fallback).Name != consts.DnsRequestOutboundIndex_AsIs.String() {
+	requestFallback, err := ParseFunctionOrString(conf.Dns.Routing.Request.Fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestFallback.Name != consts.DnsRequestOutboundIndex_AsIs.String() {
 		t.Errorf("dns request fallback should default to %v", consts.DnsRequestOutboundIndex_AsIs)
 	}
-	if FunctionOrStringToFunction(conf.Dns.Routing.Response.Fallback).Name != consts.DnsResponseOutboundIndex_Accept.String() {
+	responseFallback, err := ParseFunctionOrString(conf.Dns.Routing.Response.Fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if responseFallback.Name != consts.DnsResponseOutboundIndex_Accept.String() {
 		t.Errorf("dns response fallback should default to %v", consts.DnsResponseOutboundIndex_Accept)
 	}
 }
