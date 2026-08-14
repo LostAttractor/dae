@@ -1,3 +1,5 @@
+//go:build trace
+
 /*
  * SPDX-License-Identifier: AGPL-3.0-only
  * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
@@ -11,6 +13,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"slices"
@@ -26,7 +29,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags trace -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
 
 var nativeEndian binary.ByteOrder
 
@@ -42,6 +45,95 @@ func init() {
 	default:
 		panic("Could not determine native endianness.")
 	}
+}
+
+type traceEvent struct {
+	Pc          uint64
+	Skb         uint64
+	SecondParam uint64
+	Mark        uint32
+	Netns       uint32
+	Ifindex     uint32
+	Pid         uint32
+	Ifname      [16]uint8
+	Pname       [32]uint8
+	Saddr       [16]byte
+	Daddr       [16]byte
+	Sport       uint16
+	Dport       uint16
+	L3Proto     uint16
+	L4Proto     uint8
+	TcpFlags    uint8
+	PayloadLen  uint16
+}
+
+type eventAccumulator struct {
+	events  map[uint64][]traceEvent
+	symbols map[uint64][]string
+}
+
+func newEventAccumulator() *eventAccumulator {
+	return &eventAccumulator{
+		events:  make(map[uint64][]traceEvent),
+		symbols: make(map[uint64][]string),
+	}
+}
+
+func (a *eventAccumulator) add(event traceEvent, symbol string, dropOnly bool) ([]traceEvent, bool) {
+	a.events[event.Skb] = append(a.events[event.Skb], event)
+	a.symbols[event.Skb] = append(a.symbols[event.Skb], symbol)
+	if symbol != "__kfree_skb" && symbol != "kfree_skbmem" {
+		return nil, false
+	}
+
+	events := a.events[event.Skb]
+	shouldWrite := !dropOnly || slices.Contains(a.symbols[event.Skb], "kfree_skb_reason")
+	delete(a.events, event.Skb)
+	delete(a.symbols, event.Skb)
+	return events, shouldWrite
+}
+
+func writeTraceEvents(writer io.Writer, events []traceEvent, kfreeSkbReasons map[uint64]string, complete bool) error {
+	for _, event := range events {
+		if _, err := fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", event.Skb, event.Mark, event.Netns, event.Ifindex, TrimNull(string(event.Ifname[:])), event.Pid, TrimNull(string(event.Pname[:]))); err != nil {
+			return err
+		}
+		if event.L3Proto == syscall.ETH_P_IP {
+			if _, err := fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(event.Saddr[:4]).String(), Ntohs(event.Sport), net.IP(event.Daddr[:4]).String(), Ntohs(event.Dport)); err != nil {
+				return err
+			}
+		} else {
+			if _, err := fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(event.Saddr[:]).String(), Ntohs(event.Sport), net.IP(event.Daddr[:]).String(), Ntohs(event.Dport)); err != nil {
+				return err
+			}
+		}
+		if event.L4Proto == syscall.IPPROTO_TCP {
+			if _, err := fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(event.TcpFlags)); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen); err != nil {
+			return err
+		}
+		sym := NearestSymbol(event.Pc)
+		if _, err := fmt.Fprint(writer, sym.Name); err != nil {
+			return err
+		}
+		if sym.Name == "kfree_skb_reason" {
+			if _, err := fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[event.SecondParam]); err != nil {
+				return err
+			}
+		}
+		if !complete {
+			if _, err := fmt.Fprint(writer, " incomplete"); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(writer); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, dropOnly bool, outputFile string) (err error) {
@@ -92,18 +184,20 @@ func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int) (_ *bpfObjects
 	if err != nil {
 		return nil, fmt.Errorf("failed to load BPF: %+v\n", err)
 	}
-	if err := spec.RewriteConstants(map[string]interface{}{
-		"tracing_cfg": struct {
-			port      uint16
-			l4Proto   uint16
-			ipVersion uint8
-			pad       uint8
-		}{
-			port:      Htons(uint16(port)),
-			l4Proto:   uint16(l4ProtoNo),
-			ipVersion: uint8(ipVersion),
-			pad:       0,
-		},
+	tracingCfg := spec.Variables["tracing_cfg"]
+	if tracingCfg == nil {
+		return nil, fmt.Errorf("failed to rewrite constants: missing tracing_cfg in BPF object; run make ebpf to regenerate trace objects")
+	}
+	if err := tracingCfg.Set(struct {
+		port      uint16
+		l4Proto   uint16
+		ipVersion uint8
+		pad       uint8
+	}{
+		port:      Htons(uint16(port)),
+		l4Proto:   uint16(l4ProtoNo),
+		ipVersion: uint8(ipVersion),
+		pad:       0,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to rewrite constants: %+v\n", err)
 	}
@@ -190,9 +284,12 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 	kp, err := link.Kprobe("kfree_skbmem", objs.KprobeSkbLifetimeTermination, nil)
 	if err != nil {
 		log.Warnf("failed to attach kprobe to kfree_skbmem: %+v\n", err)
+	} else {
+		links = append(links, kp)
 	}
 
 	i := 0
+	attachedTargets := 0
 	for fn, pos := range targets {
 		i++
 		fmt.Printf("attaching kprobes: %04d/%04d\r", i, len(targets))
@@ -214,11 +311,14 @@ func attachBpfToTargets(objs *bpfObjects, targets map[string]int) (links []link.
 			continue
 		}
 		links = append(links, kp)
+		attachedTargets++
 	}
-	if len(links) == 0 {
-		err = fmt.Errorf("failed to attach kprobes to any target")
+	if attachedTargets == 0 {
+		for _, l := range links {
+			_ = l.Close()
+		}
+		return nil, fmt.Errorf("failed to attach kprobes to any target")
 	}
-	links = append(links, kp)
 	return links, nil
 }
 
@@ -227,92 +327,65 @@ func handleEvents(ctx context.Context, objs *bpfObjects, outputFile string, kfre
 	if err != nil {
 		return
 	}
+	defer func() {
+		if closeErr := writer.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	eventsReader, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
 		return fmt.Errorf("failed to create ringbuf reader: %+v\n", err)
 	}
-	defer eventsReader.Close()
+	defer func() { _ = eventsReader.Close() }()
 
+	stopFlush := make(chan struct{})
+	defer close(stopFlush)
 	go func() {
-		<-ctx.Done()
-		eventsReader.Close()
+		select {
+		case <-ctx.Done():
+			if err := eventsReader.Flush(); err != nil {
+				_ = eventsReader.Close()
+			}
+		case <-stopFlush:
+		}
 	}()
 
-	type bpfEvent struct {
-		Pc          uint64
-		Skb         uint64
-		SecondParam uint64
-		Mark        uint32
-		Netns       uint32
-		Ifindex     uint32
-		Pid         uint32
-		Ifname      [16]uint8
-		Pname       [32]uint8
-		Saddr       [16]byte
-		Daddr       [16]byte
-		Sport       uint16
-		Dport       uint16
-		L3Proto     uint16
-		L4Proto     uint8
-		TcpFlags    uint8
-		PayloadLen  uint16
+	accumulator := newEventAccumulator()
+	flushPendingEvents := func() error {
+		if dropOnly {
+			return nil
+		}
+		for _, events := range accumulator.events {
+			if err := writeTraceEvents(writer, events, kfreeSkbReasons, false); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-
-	skb2events := make(map[uint64][]bpfEvent)
-	// a map to save slices of bpfEvent of the Skb
-	skb2symNames := make(map[uint64][]string)
-	// a map to save slices of function name called with the Skb
 	for {
 		rec, err := eventsReader.Read()
 		if err != nil {
-			if errors.Is(err, ringbuf.ErrClosed) {
-				return nil
+			if errors.Is(err, ringbuf.ErrFlushed) || errors.Is(err, ringbuf.ErrClosed) {
+				return flushPendingEvents()
+			}
+			if ctx.Err() != nil {
+				return flushPendingEvents()
 			}
 			log.Debugf("failed to read ringbuf: %+v", err)
 			continue
 		}
 
-		var event bpfEvent
+		var event traceEvent
 		if err = binary.Read(bytes.NewBuffer(rec.RawSample), nativeEndian, &event); err != nil {
 			log.Debugf("failed to parse ringbuf event: %+v", err)
 			continue
 		}
-		if skb2events[event.Skb] == nil {
-			skb2events[event.Skb] = []bpfEvent{}
-		}
-		skb2events[event.Skb] = append(skb2events[event.Skb], event)
-
 		sym := NearestSymbol(event.Pc)
-		if skb2symNames[event.Skb] == nil {
-			skb2symNames[event.Skb] = []string{}
-		}
-		skb2symNames[event.Skb] = append(skb2symNames[event.Skb], sym.Name)
-		switch sym.Name {
-		case "__kfree_skb", "kfree_skbmem":
-			// most skb end in the call of kfree_skbmem
-			if !dropOnly || slices.Contains(skb2symNames[event.Skb], "kfree_skb_reason") {
-				// trace dropOnly with drop reason or all skb
-				for _, skb_ev := range skb2events[event.Skb] {
-					fmt.Fprintf(writer, "%x mark=%x netns=%010d if=%d(%s) proc=%d(%s) ", skb_ev.Skb, skb_ev.Mark, skb_ev.Netns, skb_ev.Ifindex, TrimNull(string(skb_ev.Ifname[:])), skb_ev.Pid, TrimNull(string(skb_ev.Pname[:])))
-					if event.L3Proto == syscall.ETH_P_IP {
-						fmt.Fprintf(writer, "%s:%d > %s:%d ", net.IP(skb_ev.Saddr[:4]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:4]).String(), Ntohs(skb_ev.Dport))
-					} else {
-						fmt.Fprintf(writer, "[%s]:%d > [%s]:%d ", net.IP(skb_ev.Saddr[:]).String(), Ntohs(skb_ev.Sport), net.IP(skb_ev.Daddr[:]).String(), Ntohs(skb_ev.Dport))
-					}
-					if event.L4Proto == syscall.IPPROTO_TCP {
-						fmt.Fprintf(writer, "tcp_flags=%s ", TcpFlags(skb_ev.TcpFlags))
-					}
-					fmt.Fprintf(writer, "payload_len=%d ", event.PayloadLen)
-					sym := NearestSymbol(skb_ev.Pc)
-					fmt.Fprintf(writer, "%s", sym.Name)
-					if sym.Name == "kfree_skb_reason" {
-						fmt.Fprintf(writer, "(%s)", kfreeSkbReasons[skb_ev.SecondParam])
-					}
-					fmt.Fprintf(writer, "\n")
-				}
-				delete(skb2events, event.Skb)
-				delete(skb2symNames, event.Skb)
+		events, shouldWrite := accumulator.add(event, sym.Name, dropOnly)
+		if shouldWrite {
+			if err := writeTraceEvents(writer, events, kfreeSkbReasons, true); err != nil {
+				return err
 			}
 		}
 	}
