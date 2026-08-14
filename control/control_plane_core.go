@@ -43,15 +43,15 @@ type controlPlaneCore struct {
 	deferFuncs     []func() error
 	filterCleanups map[filterCleanupKey]func() error
 	filterOrder    []filterCleanupKey
-	bpf            *bpfObjects
+	bpf            *bpfState
 
 	kernelVersion *internal.Version
 
 	flip     int
 	isReload bool
 	// bpfOwned reports whether this core currently owns the bpf objects and
-	// closes them on Close. At most one core owns them at any time; the
-	// ownership moves to the next plane via EjectBpf/InjectBpf on reload.
+	// closes them on Close. At most one core owns them; during reload neither
+	// core owns them between the old core's EjectBpf and the new core's InjectBpf.
 	bpfOwned bool
 
 	// domainRegistry tracks every (domain, qtype) -> IP registration learned
@@ -81,7 +81,7 @@ type filterCleanupKey struct {
 }
 
 func newControlPlaneCore(
-	bpf *bpfObjects,
+	bpf *bpfState,
 	kernelVersion *internal.Version,
 	isReload bool,
 ) *controlPlaneCore {
@@ -95,9 +95,9 @@ func newControlPlaneCore(
 		kernelVersion: kernelVersion,
 		flip:          coreFlip,
 		isReload:      isReload,
-		// A core built for a reload does not own the bpf objects yet — they
-		// are still owned by the previously running core; it takes over the
-		// ownership via InjectBpf when the reload commits.
+		// A reload candidate starts without BPF cleanup ownership. The caller
+		// released it from the old core before construction and assigns it to
+		// this core via InjectBpf only after the old core is retired.
 		bpfOwned:       !isReload,
 		ifmgr:          ifmgr,
 		closed:         closed,
@@ -764,16 +764,16 @@ func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
 	}
 }
 
-// EjectBpf removes the bpf objects from this core's ownership so its Close
-// will not destroy them; the successor core takes them over via InjectBpf.
-func (c *controlPlaneCore) EjectBpf() *bpfObjects {
+// EjectBpf releases this core's cleanup ownership so Close will not destroy the
+// BPF objects. They remain unowned until a core later calls InjectBpf.
+func (c *controlPlaneCore) EjectBpf() *bpfState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bpfOwned = false
 	return c.bpf
 }
 
-// InjectBpf will inject bpf back.
+// InjectBpf makes this core responsible for closing the BPF objects.
 func (c *controlPlaneCore) InjectBpf() {
 	c.mu.Lock()
 	defer c.mu.Unlock()

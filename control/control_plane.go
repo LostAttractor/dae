@@ -189,16 +189,16 @@ func NewControlPlane(
 		},
 		Programs: ProgramOptions,
 	}
-	var bpf *bpfObjects
+	var bpf *bpfState
 	if _bpf != nil {
-		if _bpf, ok := _bpf.(*bpfObjects); ok {
+		if _bpf, ok := _bpf.(*bpfState); ok {
 			bpf = _bpf
 		} else {
 			return nil, oops.Errorf("unexpected bpf type: %T", _bpf)
 		}
 	} else {
-		bpf = new(bpfObjects)
-		if err = fullLoadBpfObjects(bpf, &loadBpfOptions{
+		bpf = &bpfState{bpfObjects: new(bpfObjects)}
+		if err = fullLoadBpfObjects(bpf.bpfObjects, &loadBpfOptions{
 			PinPath:             pinPath,
 			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
 			CollectionOptions:   collectionOpts,
@@ -606,7 +606,7 @@ func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer
 }
 
 // EjectBpf will resect bpf from destroying life-cycle of control plane.
-func (c *ControlPlane) EjectBpf() *bpfObjects {
+func (c *ControlPlane) EjectBpf() *bpfState {
 	return c.core.EjectBpf()
 }
 func (c *ControlPlane) InjectBpf() {
