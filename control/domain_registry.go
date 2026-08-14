@@ -619,7 +619,7 @@ func (g *DomainRegistry) StartSweeper() {
 	g.mu.Unlock()
 	go func() {
 		defer close(g.doneCh)
-		ticker := time.NewTicker(dnsStateSweepInterval)
+		ticker := time.NewTicker(consts.DnsStateSweepInterval)
 		defer ticker.Stop()
 		for {
 			select {
