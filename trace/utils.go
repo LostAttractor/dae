@@ -1,4 +1,4 @@
-//go:build trace
+//go:build trace && (amd64 || arm64 || riscv64 || loong64 || ppc64 || ppc64le)
 
 /*
  * SPDX-License-Identifier: AGPL-3.0-only

@@ -109,6 +109,7 @@ endif
 
 ## Begin Ebpf
 clean-ebpf:
+	@rm -f $(BUILD_TAGS_FILE)
 	@rm -f control/bpf_*bpf*.go && \
 		rm -f control/bpf_*bpf*.o
 	@rm -f control/internal/splice/bpf_*bpf*.go && \
@@ -128,14 +129,16 @@ ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET := $(GOARCH)
 ebpf: check-go-version submodule clean-ebpf
 	@unset GOOS && \
-    unset GOARCH && \
+	unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
     go generate ./control/control.go && \
 	tags='' && \
-    if go generate ./trace/trace.go; then \
-		tags=trace; \
-	fi && \
+	case "$(GOARCH)" in \
+		amd64|arm64|riscv64|loong64|ppc64|ppc64le) \
+			go generate ./trace/trace.go && tags=trace ;; \
+		*) echo "trace disabled on $(GOARCH): BPF probe argument ABI is unsupported" ;; \
+	esac && \
 	go generate ./control/internal/splice/generate.go && \
 	if [ -n "$$tags" ]; then tags="$$tags,dae_splice"; else tags=dae_splice; fi && \
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
