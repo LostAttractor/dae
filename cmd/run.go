@@ -249,8 +249,9 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	readyChan := make(chan bool, 1)
 	go func() {
 		err := control.GetDaeNetns().With(func() error {
-			if listener, err = startupPlane.ListenAndServe(readyChan, startupPort); err != nil {
-				return oops.Wrapf(err, "ListenAndServe")
+			var listenErr error
+			if listener, listenErr = startupPlane.ListenAndServe(readyChan, startupPort); listenErr != nil {
+				return oops.Wrapf(listenErr, "ListenAndServe")
 			}
 			return nil
 		})
