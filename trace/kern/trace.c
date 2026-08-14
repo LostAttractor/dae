@@ -55,7 +55,7 @@ struct tracing_config {
 	u8 ip_vsn;
 };
 
-static volatile const struct tracing_config tracing_cfg;
+const volatile struct tracing_config tracing_cfg = {};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -66,8 +66,51 @@ struct {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1<<29);
+	__uint(max_entries, 1 << 24);
 } events SEC(".maps");
+
+// Walk supported IPv6 extension headers and update off to the final L4 header.
+// Non-initial fragments return protocol 0 since they don't contain L4 ports.
+static __always_inline __u8
+skip_ipv6_exthdr(struct sk_buff *skb, __u32 *off, __u8 nexthdr)
+{
+	void *skb_head = BPF_CORE_READ(skb, head);
+
+#pragma unroll
+	for (int i = 0; i < 4; i++) {
+		switch (nexthdr) {
+		case 0:  // Hop-by-Hop
+		case 43: // Routing
+		case 60: // Destination Options
+			{
+				__u8 hdrlen;
+
+				if (bpf_probe_read_kernel(&nexthdr, 1, skb_head + *off) < 0)
+					return nexthdr;
+				if (bpf_probe_read_kernel(&hdrlen, 1, skb_head + *off + 1) < 0)
+					return nexthdr;
+				*off += (__u32)(hdrlen + 1) * 8;
+			}
+			break;
+		case 44: // Fragment
+			{
+				__be16 frag_off;
+
+				if (bpf_probe_read_kernel(&nexthdr, 1, skb_head + *off) < 0)
+					return nexthdr;
+				if (bpf_probe_read_kernel(&frag_off, 2, skb_head + *off + 2) < 0)
+					return nexthdr;
+				*off += 8;
+				if (frag_off & bpf_htons(0xfff8))
+					return 0;
+			}
+			break;
+		default:
+			return nexthdr;
+		}
+	}
+	return nexthdr;
+}
 
 static __always_inline u32
 get_netns(struct sk_buff *skb)
@@ -88,8 +131,8 @@ static __always_inline bool
 filter_l3_and_l4(struct sk_buff *skb)
 {
 	void *skb_head = BPF_CORE_READ(skb, head);
-	u16 l3_off = BPF_CORE_READ(skb, network_header);
-	u16 l4_off = BPF_CORE_READ(skb, transport_header);
+	u32 l3_off = BPF_CORE_READ(skb, network_header);
+	u32 l4_off = BPF_CORE_READ(skb, transport_header);
 
 	struct iphdr *l3_hdr = (struct iphdr *) (skb_head + l3_off);
 	u8 ip_vsn = BPF_CORE_READ_BITFIELD_PROBED(l3_hdr, version);
@@ -102,7 +145,11 @@ filter_l3_and_l4(struct sk_buff *skb)
 		l4_proto = BPF_CORE_READ(ip4, protocol);
 	} else if (ip_vsn == 6) {
 		struct ipv6hdr *ip6 = (struct ipv6hdr *) l3_hdr;
-		l4_proto = BPF_CORE_READ(ip6, nexthdr);
+		__u32 exthdr_off = l3_off + sizeof(struct ipv6hdr);
+
+		l4_proto = skip_ipv6_exthdr(skb, &exthdr_off,
+					     BPF_CORE_READ(ip6, nexthdr));
+		l4_off = exthdr_off;
 	} else {
 		return false;
 	}
@@ -150,13 +197,13 @@ static __always_inline void
 set_tuple(struct tuple *tpl, struct sk_buff *skb)
 {
 	void *skb_head = BPF_CORE_READ(skb, head);
-	u16 l3_off = BPF_CORE_READ(skb, network_header);
-	u16 l4_off = BPF_CORE_READ(skb, transport_header);
+	u32 l3_off = BPF_CORE_READ(skb, network_header);
+	u32 l4_off = BPF_CORE_READ(skb, transport_header);
 
 	struct iphdr *l3_hdr = (struct iphdr *) (skb_head + l3_off);
 	u8 ip_vsn = BPF_CORE_READ_BITFIELD_PROBED(l3_hdr, version);
 
-	u16 l3_total_len;
+	u32 l3_total_len;
 	if (ip_vsn == 4) {
 		struct iphdr *ip4 = (struct iphdr *) l3_hdr;
 		BPF_CORE_READ_INTO(&tpl->saddr, ip4, saddr);
@@ -166,15 +213,22 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 		l3_total_len = bpf_ntohs(BPF_CORE_READ(ip4, tot_len));
 	} else if (ip_vsn == 6) {
 		struct ipv6hdr *ip6 = (struct ipv6hdr *) l3_hdr;
+		__u32 exthdr_off = l3_off + sizeof(struct ipv6hdr);
+
 		BPF_CORE_READ_INTO(&tpl->saddr, ip6, saddr);
 		BPF_CORE_READ_INTO(&tpl->daddr, ip6, daddr);
-		tpl->l4_proto = BPF_CORE_READ(ip6, nexthdr);
+		tpl->l4_proto = skip_ipv6_exthdr(skb, &exthdr_off,
+						 BPF_CORE_READ(ip6, nexthdr));
 		tpl->l3_proto = ETH_P_IPV6;
-		l3_total_len = bpf_ntohs(BPF_CORE_READ(ip6, payload_len));
+		l3_total_len = bpf_ntohs(BPF_CORE_READ(ip6, payload_len)) +
+			       sizeof(struct ipv6hdr);
+		l4_off = exthdr_off;
+	} else {
+		return;
 	}
-	u16 l3_hdr_len = l4_off - l3_off;
+	u32 l3_hdr_len = l4_off - l3_off;
 
-	u16 l4_hdr_len;
+	u32 l4_hdr_len;
 	if (tpl->l4_proto == IPPROTO_TCP) {
 		struct tcphdr *tcp = (struct tcphdr *) (skb_head + l4_off);
 		tpl->sport= BPF_CORE_READ(tcp, source);
@@ -182,7 +236,10 @@ set_tuple(struct tuple *tpl, struct sk_buff *skb)
 		bpf_probe_read_kernel(&tpl->tcp_flags, sizeof(tpl->tcp_flags),
 				    (void *)tcp + offsetof(struct tcphdr, ack_seq) + 5);
 		l4_hdr_len = BPF_CORE_READ_BITFIELD_PROBED(tcp, doff) * 4;
-		tpl->payload_len = l3_total_len - l3_hdr_len - l4_hdr_len;
+		u32 total_hdr_len = l3_hdr_len + l4_hdr_len;
+
+		if (l3_total_len >= total_hdr_len)
+			tpl->payload_len = l3_total_len - total_hdr_len;
 	} else if (tpl->l4_proto == IPPROTO_UDP) {
 		struct udphdr *udp = (struct udphdr *) (skb_head + l4_off);
 		tpl->sport= BPF_CORE_READ(udp, source);
