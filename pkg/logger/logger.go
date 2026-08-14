@@ -21,7 +21,7 @@ func SetLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Lo
 	log.SetFormatter(&prefixed.TextFormatter{
 		DisableTimestamp: disableTimestamp,
 		FullTimestamp:    true,
-		TimestampFormat:  "Jan 02 15:04:05",
+		TimestampFormat:  "2006-01-02 15:04:05",
 	})
 	if logFileOpt != nil {
 		log.SetOutput(logFileOpt)
