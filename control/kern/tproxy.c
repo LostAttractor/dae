@@ -17,12 +17,14 @@
 #include "headers/pkt_cls_defs.h"
 #include "headers/socket_defs.h"
 #include "headers/upai_in6_defs.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-declarations"
 #include "headers/vmlinux.h"
+#pragma clang diagnostic pop
 
 #include "headers/bpf_core_read.h"
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
-#include "headers/bpf_timer.h"
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -46,6 +48,7 @@
 #define PACKET_OTHERHOST 3
 
 #define NOWHERE_IFINDEX 0
+#define CLOCK_MONOTONIC 1
 
 #define MAX_INTERFACE_NUM 256
 #ifndef MAX_MATCH_SET_LEN
@@ -186,10 +189,9 @@ struct l3_hdr {
 };
 
 struct dae_param {
-	__u32 tproxy_port;
 	__u32 control_plane_pid;
 	__u32 dae0_ifindex;
-	__u32 dae_netns_id;
+	__u32 dae0peer_ifindex;
 	__u8 dae0peer_mac[6];
 	__u8 has_bpf_get_current_task;
 	__u8 padding;
@@ -209,7 +211,7 @@ struct {
 
 // Array of LPM tries:
 struct lpm_key {
-	struct bpf_lpm_trie_key trie_key;
+	struct bpf_lpm_trie_key_hdr trie_key;
 	__be32 data[4];
 };
 
@@ -974,14 +976,6 @@ before_next_loop:
 
 static __always_inline __s64 route(const struct route_params *params)
 {
-#define _l4proto_type params->flag[0]
-#define _ipversion_type params->flag[1]
-#define _pname (&params->flag[2])
-#define _is_wan params->flag[2]
-#define _dscp params->flag[6]
-#define _ifindex params->flag[7]
-#define _l7proto_type params->flag[8]
-
 	int ret;
 	struct route_ctx ctx = {};
 
@@ -989,7 +983,7 @@ static __always_inline __s64 route(const struct route_params *params)
 	ctx.result = -ENOEXEC;
 
 	// Variables for further use.
-	if (_l4proto_type == L4ProtoType_TCP) {
+	if (params->flag[0] == L4ProtoType_TCP) {
 		ctx.h_dport = bpf_ntohs(((struct tcphdr *)params->l4hdr)->dest);
 		ctx.h_sport =
 			bpf_ntohs(((struct tcphdr *)params->l4hdr)->source);
@@ -1003,18 +997,9 @@ static __always_inline __s64 route(const struct route_params *params)
 	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
 	// set is like: suffix:baidu.com
 
-	struct lpm_key lpm_key_saddr = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_saddr = lpm_key_saddr;
-	struct lpm_key lpm_key_daddr = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_daddr = lpm_key_daddr;
-	struct lpm_key lpm_key_mac = {
-		.trie_key = { IPV6_BYTE_LENGTH * 8, {} },
-	};
-	ctx.lpm_key_mac = lpm_key_mac;
+	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
+	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
 	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
@@ -1029,35 +1014,11 @@ static __always_inline __s64 route(const struct route_params *params)
 	bpf_printk(
 		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
 	return -EPERM;
-#undef _l4proto_type
-#undef _ipversion_type
-#undef _pname
-#undef _is_wan
-#undef _dscp
-#undef _ifindex
-}
-
-static __always_inline int assign_listener(struct __sk_buff *skb, __u8 l4proto)
-{
-	struct bpf_sock *sk;
-
-	if (l4proto == IPPROTO_TCP)
-		sk = bpf_map_lookup_elem(&listen_socket_map, &zero_key);
-	else
-		sk = bpf_map_lookup_elem(&listen_socket_map, &one_key);
-
-	if (!sk)
-		return -1;
-
-	int ret = bpf_sk_assign(skb, sk, 0);
-
-	bpf_sk_release(sk);
-	return ret;
 }
 
 static __always_inline void prep_redirect_to_control_plane(
-	struct __sk_buff *skb, bool from_wan, __u32 link_h_len, struct tuples *tuples,
-	__u8 l4proto, struct ethhdr *ethh, struct l4_hdr *l4h)
+	struct __sk_buff *skb, bool from_wan, __u32 link_h_len,
+	struct tuples *tuples, struct ethhdr *ethh)
 {
 	/* Redirect from L3 dev to L2 dev, e.g. wg/ipip/ppp/tun -> netkit */
 	if (!link_h_len) {
@@ -1095,9 +1056,6 @@ static __always_inline void prep_redirect_to_control_plane(
 			    BPF_ANY);
 
 	skb->cb[0] = TPROXY_MARK;
-	skb->cb[1] = 0;
-	if ((l4proto == IPPROTO_TCP && l4h->tcph.syn) || l4proto == IPPROTO_UDP)
-		skb->cb[1] = l4proto;
 }
 
 static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
@@ -1386,7 +1344,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 control_plane:
 	// Assign to control plane.
-	prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples, l4proto, &ethh, &l4h);
+	prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples, &ethh);
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
@@ -1527,12 +1485,13 @@ int tproxy_wan_egress_l3(struct __sk_buff *skb)
 }
 
 // Proxy traffic.
-SEC("tc/dae0peer_ingress")
+SEC("netkit/primary")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 {
 	// Only packets redirected from wan_egress or lan_ingress have this cb mark.
 	if (skb->cb[0] != TPROXY_MARK)
 		return TC_ACT_SHOT;
+	skb->cb[0] = 0;
 
 	/*
    * ip rule add fwmark 0x8000000/0x8000000 table 2023
@@ -1544,24 +1503,16 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
    * ip route del local default dev lo table 2023
    * ip -6 rule del fwmark 0x8000000/0x8000000 table 2023
    * ip -6 route del local default dev lo table 2023
-   */
+	 */
 	// TODO: 直接redirect到lo?
 	skb->mark = TPROXY_MARK;
-	bpf_skb_change_type(skb, PACKET_HOST);
-
-	/* l4proto is stored in skb->cb[1] only for UDP and new TCP. As for
-   * established TCP, kernel can take care of socket lookup, so just
-   * return them to stack without calling bpf_sk_assign.
-   */
-	__u8 l4proto = skb->cb[1];
-
-	if (l4proto != 0)
-		assign_listener(skb, l4proto);
+	if (bpf_skb_change_type(skb, PACKET_HOST))
+		return TC_ACT_SHOT;
 	return TC_ACT_OK;
 }
 
 // Reply traffic.
-SEC("tc/dae0_ingress")
+SEC("netkit/peer")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {
 	// reverse the tuple!
@@ -1604,6 +1555,35 @@ int tproxy_dae0_ingress(struct __sk_buff *skb)
 	__u64 flags = redirect_entry->from_wan ? BPF_F_INGRESS : 0;
 
 	return bpf_redirect(redirect_entry->ifindex, flags);
+}
+
+SEC("sk_lookup")
+int tproxy_sk_lookup(struct bpf_sk_lookup *ctx)
+{
+	__u32 key;
+	struct bpf_sock *sk;
+	long ret;
+
+	if (ctx->ingress_ifindex != PARAM.dae0peer_ifindex)
+		return SK_PASS;
+	if (ctx->family != AF_INET && ctx->family != AF_INET6)
+		return SK_PASS;
+
+	if (ctx->protocol == IPPROTO_TCP)
+		key = 0;
+	else if (ctx->protocol == IPPROTO_UDP)
+		key = 1;
+	else
+		return SK_PASS;
+
+	sk = bpf_map_lookup_elem(&listen_socket_map, &key);
+	if (!sk)
+		return SK_DROP;
+
+	ret = bpf_sk_assign(ctx, sk, BPF_SK_LOOKUP_F_REPLACE |
+				     BPF_SK_LOOKUP_F_NO_REUSEPORT);
+	bpf_sk_release(sk);
+	return ret ? SK_DROP : SK_PASS;
 }
 
 struct get_real_comm_ctx {

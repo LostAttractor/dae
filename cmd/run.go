@@ -356,9 +356,8 @@ loop:
 					reloadFailed("Failed to load config", err)
 					continue
 				}
-				// The tproxy listener and the tproxy port baked into the
-				// shared eBPF programs are reused across reloads, so a
-				// tproxy_port change cannot take effect without a restart.
+				// The tproxy listener is reused across reloads, so a port
+				// change cannot take effect without a restart.
 				if newConf.Global.TproxyPort != conf.Global.TproxyPort {
 					reloadFailed("Failed to reload",
 						fmt.Errorf("tproxy_port (%v -> %v) cannot be changed by reload; restart dae to apply it", conf.Global.TproxyPort, newConf.Global.TproxyPort))

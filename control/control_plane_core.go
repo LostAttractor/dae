@@ -588,46 +588,51 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	return nil
 }
 
-func (c *controlPlaneCore) bindDaens() error {
+func (c *controlPlaneCore) bindDaens() (err error) {
 	daens := GetDaeNetns()
-	return c.bindDaensTCX(daens)
-}
+	links := make([]ciliumLink.Link, 0, 3)
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, closeBpfLinks(links))
+			return
+		}
+		c.addCleanup(func() error { return closeBpfLinks(links) })
+	}()
 
-func (c *controlPlaneCore) bindDaensTCX(daens *DaeNetns) error {
-	var peerLink ciliumLink.Link
-	if err := daens.With(func() error {
-		var err error
-		peerLink, err = ciliumLink.AttachTCX(ciliumLink.TCXOptions{
-			Interface: daens.Dae0Peer().Attrs().Index,
-			Program:   c.bpf.bpfPrograms.TproxyDae0peerIngress,
-			Attach:    ebpf.AttachTCXIngress,
-			Anchor:    ciliumLink.Head(),
-		})
-		return err
-	}); err != nil {
-		return oops.Errorf("cannot attach TCX program to dae0peer ingress: %w", err)
+	skLookupLink, err := ciliumLink.AttachNetNs(int(daens.daeNs), c.bpf.bpfPrograms.TproxySkLookup)
+	if err != nil {
+		return oops.Errorf("attach SK_LOOKUP program to dae netns: %w", err)
 	}
+	links = append(links, skLookupLink)
 
-	hostLink, err := ciliumLink.AttachTCX(ciliumLink.TCXOptions{
+	primaryLink, err := ciliumLink.AttachNetkit(ciliumLink.NetkitOptions{
 		Interface: daens.Dae0().Attrs().Index,
-		Program:   c.bpf.bpfPrograms.TproxyDae0Ingress,
-		Attach:    ebpf.AttachTCXIngress,
-		Anchor:    ciliumLink.Head(),
+		Program:   c.bpf.bpfPrograms.TproxyDae0peerIngress,
+		Attach:    ebpf.AttachNetkitPrimary,
 	})
 	if err != nil {
-		attachErr := oops.Errorf("cannot attach TCX program to dae0 ingress: %w", err)
-		if closeErr := peerLink.Close(); closeErr != nil {
-			return errors.Join(attachErr, oops.Wrapf(closeErr, "close dae0peer TCX link"))
-		}
-		return attachErr
+		return oops.Errorf("attach primary Netkit program: %w", err)
 	}
-	c.addCleanup(func() error {
-		return oops.Wrapf(peerLink.Close(), "close dae0peer TCX link")
+	links = append(links, primaryLink)
+
+	peerLink, err := ciliumLink.AttachNetkit(ciliumLink.NetkitOptions{
+		Interface: daens.Dae0().Attrs().Index,
+		Program:   c.bpf.bpfPrograms.TproxyDae0Ingress,
+		Attach:    ebpf.AttachNetkitPeer,
 	})
-	c.addCleanup(func() error {
-		return oops.Wrapf(hostLink.Close(), "close dae0 TCX link")
-	})
+	if err != nil {
+		return oops.Errorf("attach peer Netkit program: %w", err)
+	}
+	links = append(links, peerLink)
 	return nil
+}
+
+func closeBpfLinks(links []ciliumLink.Link) error {
+	var err error
+	for i := len(links) - 1; i >= 0; i-- {
+		err = errors.Join(err, links[i].Close())
+	}
+	return err
 }
 
 // writeDomainBitmaps pushes the derived bitmaps of one IP to the kernel

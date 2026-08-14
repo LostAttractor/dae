@@ -19,28 +19,6 @@ const (
 	TaskCommLen = 16
 )
 
-type ParamKey uint32
-
-const (
-	ZeroKey ParamKey = iota
-	BigEndianTproxyPortKey
-	DisableL4TxChecksumKey
-	DisableL4RxChecksumKey
-	ControlPlanePidKey
-	ControlPlaneNatDirectKey
-	ControlPlaneDnsRoutingKey
-
-	OneKey ParamKey = 1
-)
-
-type DisableL4ChecksumPolicy uint32
-
-const (
-	DisableL4ChecksumPolicy_EnableL4Checksum DisableL4ChecksumPolicy = iota
-	DisableL4ChecksumPolicy_Restore
-	DisableL4ChecksumPolicy_SetZero
-)
-
 type MatchType uint8
 
 const (
@@ -184,10 +162,8 @@ func (v IpVersionType) ToIpVersionStr() IpVersionStr {
 var MinimumKernelVersion = internal.Version{6, 13, 0}
 
 var (
-	TproxyMark       uint32 = 0x08000000
-	TproxyMarkString string = "0x08000000" // Should be aligned with nftables
-	Recognize        uint16 = 0x2017
-	LoopbackIfIndex         = 1
+	TproxyMark      uint32 = 0x08000000
+	LoopbackIfIndex        = 1
 )
 
 const (

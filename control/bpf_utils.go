@@ -143,12 +143,6 @@ func detectCgroupPath() (string, error) {
 	return "", errors.New("cgroup2 not mounted")
 }
 
-type loadBpfOptions struct {
-	PinPath             string
-	BigEndianTproxyPort uint32
-	CollectionOptions   *ebpf.CollectionOptions
-}
-
 func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
 	spec, err := loadBpf()
 	if err != nil {
@@ -162,16 +156,13 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 
 func fullLoadBpfObjects(
 	bpf *bpfObjects,
-	opts *loadBpfOptions,
+	pinPath string,
+	opts *ebpf.CollectionOptions,
 ) (err error) {
 	// The daemon reuses loaded BPF objects across reloads, so kernel and module
 	// BTF are no longer needed after this initial CO-RE relocation pass.
 	defer btf.FlushKernelSpec()
 retryLoadBpf:
-	netnsID, err := GetDaeNetns().NetnsID()
-	if err != nil {
-		return fmt.Errorf("failed to get netns id: %w", err)
-	}
 	hasBpfGetCurrentTask := uint8(0)
 	if err := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask); err == nil {
 		hasBpfGetCurrentTask = 1
@@ -181,23 +172,21 @@ retryLoadBpf:
 	}
 	constants := map[string]interface{}{
 		"PARAM": struct {
-			tproxyPort           uint32
 			controlPlanePid      uint32
 			dae0Ifindex          uint32
-			dae0NetnsId          uint32
+			dae0peerIfindex      uint32
 			dae0peerMac          [6]byte
 			hasBpfGetCurrentTask uint8
 			padding              uint8
 		}{
-			tproxyPort:           uint32(opts.BigEndianTproxyPort),
 			controlPlanePid:      uint32(os.Getpid()),
 			dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
-			dae0NetnsId:          uint32(netnsID),
+			dae0peerIfindex:      uint32(GetDaeNetns().Dae0Peer().Attrs().Index),
 			dae0peerMac:          [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
 			hasBpfGetCurrentTask: hasBpfGetCurrentTask,
 		},
 	}
-	if err = loadBpfObjectsWithConstants(bpf, opts.CollectionOptions, constants); err != nil {
+	if err = loadBpfObjectsWithConstants(bpf, opts, constants); err != nil {
 		if errors.Is(err, ebpf.ErrMapIncompatible) {
 			// Map property is incompatible. Remove the old map and try again.
 			prefix := "use pinned map "
@@ -206,7 +195,7 @@ retryLoadBpf:
 				return fmt.Errorf("loading objects: bad format: %w", err)
 			}
 			mapName, _, _ := strings.Cut(after, ":")
-			_ = os.Remove(filepath.Join(opts.PinPath, mapName))
+			_ = os.Remove(filepath.Join(pinPath, mapName))
 			log.Infof("Incompatible new map format with existing map %v detected; removed the old one.", mapName)
 			goto retryLoadBpf
 		}

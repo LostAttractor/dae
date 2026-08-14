@@ -82,7 +82,7 @@ jobs:
             apt install -y unzip
 
             DAE_NETKIT_TEST=1 /host/dae/control.test \
-              -test.run '^TestCreateNetkitPairIntegration$' \
+              -test.run '^(TestCreateNetkitPairIntegration|TestInternalNetkitProgramSpecs)$' \
               -test.count=1
 
       - name: Setup network

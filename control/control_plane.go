@@ -89,7 +89,6 @@ type ControlPlane struct {
 	rerouteMode        consts.RerouteMode
 	sniffingTimeout    time.Duration
 	sniffVerifyMode    consts.SniffVerifyMode
-	tproxyPortProtect  bool
 	soMarkFromDae      uint32
 
 	// closedDone is set after Close completes successfully. InheritDomainRegistry
@@ -186,11 +185,7 @@ func NewControlPlane(
 		}
 	} else {
 		bpf = &bpfState{bpfObjects: new(bpfObjects)}
-		if err = fullLoadBpfObjects(bpf.bpfObjects, &loadBpfOptions{
-			PinPath:             pinPath,
-			BigEndianTproxyPort: uint32(common.Htons(global.TproxyPort)),
-			CollectionOptions:   collectionOpts,
-		}); err != nil {
+		if err = fullLoadBpfObjects(bpf.bpfObjects, pinPath, collectionOpts); err != nil {
 			err = oops.Wrapf(err, "load eBPF objects")
 			if log.IsLevelEnabled(log.PanicLevel) {
 				log.Panicf("%+v", err)
@@ -366,7 +361,6 @@ func NewControlPlane(
 		rerouteMode:               global.RerouteMode,
 		sniffVerifyMode:           global.SniffVerifyMode,
 		sniffingTimeout:           sniffingTimeout,
-		tproxyPortProtect:         global.TproxyPortProtect,
 		soMarkFromDae:             global.SoMarkFromDae,
 		PrometheusRegistry:        prometheusRegistry,
 	}
@@ -493,6 +487,9 @@ func (c *ControlPlane) Activate() error {
 	if err := core.setupExitHandler(); err != nil {
 		return oops.Errorf("failed to setup exit handler: %w", err)
 	}
+	if err := core.bindDaens(); err != nil {
+		return oops.Errorf("bindDaens: %w", err)
+	}
 	if len(c.lanInterface) > 0 {
 		if c.autoConfigKernelParameter {
 			_ = SetIpv4forward("1")
@@ -519,9 +516,6 @@ func (c *ControlPlane) Activate() error {
 			}
 			core.bindWan(ifname, c.autoConfigKernelParameter)
 		}
-	}
-	if err := core.bindDaens(); err != nil {
-		return oops.Errorf("bindDaens: %w", err)
 	}
 	return nil
 }
@@ -742,7 +736,6 @@ func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip
 type Listener struct {
 	tcpListener net.Listener
 	packetConn  net.PacketConn
-	port        uint16
 }
 
 // controlPlaneIngress owns only the duplicated descriptors used by one plane.
@@ -791,7 +784,7 @@ func (c *ControlPlane) openIngress(listener *Listener) (tcpListener net.Listener
 		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying TCP connection file")
 	}
 	ingress.closeFuncs = append(ingress.closeFuncs, tcpFile.Close)
-	if err = c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
+	if err = c.core.bpf.ListenSocketMap.Update(uint32(0), uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
 		return nil, nil, nil, err
 	}
 	tcpListener, err = net.FileListener(tcpFile)
@@ -805,7 +798,7 @@ func (c *ControlPlane) openIngress(listener *Listener) (tcpListener net.Listener
 		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying UDP connection file")
 	}
 	ingress.closeFuncs = append(ingress.closeFuncs, udpFile.Close)
-	if err = c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
+	if err = c.core.bpf.ListenSocketMap.Update(uint32(1), uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
 		return nil, nil, nil, err
 	}
 	udpPacketConn, err := net.FilePacketConn(udpFile)
@@ -967,7 +960,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 			return dialer.TproxyControl(c)
 		},
 	}
-	listenAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(int(port)))
+	listenAddr := net.JoinHostPort("", strconv.Itoa(int(port)))
 	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
 	if err != nil {
 		return nil, oops.Errorf("listenTCP: %w", err)
@@ -980,7 +973,6 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 	listener = &Listener{
 		tcpListener: tcpListener,
 		packetConn:  packetConn,
-		port:        port,
 	}
 	defer func() {
 		if err != nil {
