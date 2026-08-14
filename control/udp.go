@@ -7,8 +7,10 @@ package control
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"strings"
 
 	"time"
 
@@ -31,13 +33,58 @@ const (
 	MaxRetry      = 2
 )
 
-// sendPkt uses bind first, and fallback to send hdr if addr is in use.
-func sendPkt(data []byte, from, to netip.AddrPort) (err error) {
+func shouldTryRawUDPFallback(err error, from, to netip.AddrPort) bool {
+	if err == nil || !from.IsValid() || !to.IsValid() || from.Port() != 53 {
+		return false
+	}
+	from4 := from.Addr().Is4() || from.Addr().Is4In6()
+	to4 := to.Addr().Is4() || to.Addr().Is4In6()
+	if from4 != to4 {
+		return false
+	}
+	if errors.Is(err, unix.EADDRINUSE) || errors.Is(err, unix.EADDRNOTAVAIL) {
+		return true
+	}
+	errString := strings.ToLower(err.Error())
+	return strings.Contains(errString, "address already in use") ||
+		strings.Contains(errString, "cannot assign requested address")
+}
+
+func tryRawUDPFallback(data []byte, from, to netip.AddrPort, mark uint32, reason string, trigger error) bool {
+	if !shouldTryRawUDPFallback(trigger, from, to) {
+		return false
+	}
+	var err error
+	if from.Addr().Is4() || from.Addr().Is4In6() {
+		err = sendUDPv4RawInDaeNetns(data, from, to, mark)
+	} else {
+		err = sendUDPv6RawInDaeNetns(data, from, to, mark)
+	}
+	if err == nil {
+		log.WithFields(log.Fields{"from": from, "to": to, "reason": reason}).Debug("sendPkt: used raw UDP fallback")
+		return true
+	}
+	log.WithFields(log.Fields{
+		"from": from, "to": to, "reason": reason,
+		"trigger": trigger, "fallback": err,
+	}).Error("sendPkt: raw UDP fallback failed")
+	return false
+}
+
+// sendPkt uses a transparent UDP socket first and falls back to a raw DNS
+// response when the source address cannot be bound.
+func sendPktWithMark(data []byte, from, to netip.AddrPort, mark uint32) (err error) {
 	uConn, _, err := DefaultAnyfromPool.GetOrCreate(from, DefaultAnyfromCacheTTL)
 	if err != nil {
+		if tryRawUDPFallback(data, from, to, mark, "get-or-create", err) {
+			return nil
+		}
 		return
 	}
 	_, err = uConn.WriteToUDPAddrPortWithDeadline(data, to, time.Now().Add(consts.DefaultDNSTimeout))
+	if err != nil && tryRawUDPFallback(data, from, to, mark, "write-to-udp", err) {
+		return nil
+	}
 	return err
 }
 
@@ -227,7 +274,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		ue = newUdpEndpoint(&UdpEndpointOptions{
 			PacketConn: udpConn,
 			Handler: func(data []byte, from netip.AddrPort) (err error) {
-				return sendPkt(data, from, src)
+				return sendPktWithMark(data, from, src, c.soMarkFromDae)
 			},
 			NatTimeout: DefaultNatTimeoutUDP,
 			Dialer:     dialOption.Dialer,

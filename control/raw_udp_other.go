@@ -1,0 +1,21 @@
+//go:build !linux
+
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2026, daeuniverse Organization <dae@v2raya.org>
+ */
+
+package control
+
+import (
+	"fmt"
+	"net/netip"
+)
+
+func sendUDPv4RawInDaeNetns(_ []byte, from, to netip.AddrPort, _ uint32) error {
+	return fmt.Errorf("raw IPv4 UDP fallback unsupported on this platform: from=%v to=%v", from, to)
+}
+
+func sendUDPv6RawInDaeNetns(_ []byte, from, to netip.AddrPort, _ uint32) error {
+	return fmt.Errorf("raw IPv6 UDP fallback unsupported on this platform: from=%v to=%v", from, to)
+}
