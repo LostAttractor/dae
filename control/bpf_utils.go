@@ -45,6 +45,19 @@ type _bpfPortRange struct {
 	PortEnd   uint16
 }
 
+// bpfState keeps reload-persistent process metadata with the shared BPF
+// objects. During reload, cleanup ownership is released by the old core and
+// acquired later by the successor while this state remains alive.
+type bpfState struct {
+	*bpfObjects
+
+	// activeLpmTrieCount is the LPM trie count from the last BuildKernspace
+	// that committed successfully. BuildKernspace advances it only after its
+	// writes complete; any activation failure is terminal because kernel state
+	// may be partially written.
+	activeLpmTrieCount uint32
+}
+
 func (r _bpfPortRange) Encode() (b [16]byte) {
 	binary.LittleEndian.PutUint16(b[:2], r.PortStart)
 	binary.LittleEndian.PutUint16(b[2:], r.PortEnd)
@@ -68,9 +81,13 @@ func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map,
 	if err != nil {
 		return nil, err
 	}
+	if len(keys) == 0 {
+		return m, nil
+	}
 	if _, err = BpfMapBatchUpdate(m, keys, values, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
+		_ = m.Close()
 		return nil, err
 	}
 	return m, nil
