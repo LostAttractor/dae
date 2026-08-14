@@ -440,6 +440,7 @@ func NewControlPlane(
 		BestDialerChooser: plane.chooseBestDnsDialer,
 		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
 		FixedDomainTtl:    fixedDomainTtl,
+		SoMarkFromDae:     global.SoMarkFromDae,
 	}); err != nil {
 		return nil, err
 	}

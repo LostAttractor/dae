@@ -89,10 +89,15 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
+	original, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("failed to get current netns: %w", err)
+	}
+	defer original.Close()
 	if err = netns.Set(ns.daeNs); err != nil {
 		return fmt.Errorf("failed to switch to daens: %w", err)
 	}
-	defer netns.Set(ns.hostNs)
+	defer func() { _ = netns.Set(original) }()
 
 	if err = f(); err != nil {
 		return fmt.Errorf("failed to run func in dae netns: %w", err)
@@ -293,6 +298,15 @@ func (ns *DaeNetns) setupNetns() (err error) {
 }
 
 func (ns *DaeNetns) setupSysctl() (err error) {
+	// Raw IPv4 DNS replies re-enter the host through dae0 with a remote source.
+	// Include its socket mark in loose reverse-path validation without
+	// weakening filtering on unrelated host interfaces.
+	for _, setting := range rawUDPHostSysctlSettings() {
+		if err = sysctl.Keyf(setting.key).Set(setting.value, true); err != nil {
+			return fmt.Errorf("failed to set %s: %v", setting.name, err)
+		}
+	}
+
 	// sysctl net.ipv6.conf.dae0.disable_ipv6=0
 	if err = sysctl.Keyf("net.ipv6.conf.%s.disable_ipv6", hostLinkName).Set("0", true); err != nil {
 		return fmt.Errorf("failed to set disable_ipv6 for dae0: %v", err)
@@ -327,6 +341,18 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 		return fmt.Errorf("failed to set accept_local for dae0peer: %v", err)
 	}
 	return
+}
+
+type netnsSysctlSetting struct {
+	key, value, name string
+}
+
+func rawUDPHostSysctlSettings() []netnsSysctlSetting {
+	return []netnsSysctlSetting{
+		{fmt.Sprintf("net.ipv4.conf.%s.rp_filter", hostLinkName), "2", "rp_filter for dae0"},
+		{fmt.Sprintf("net.ipv4.conf.%s.src_valid_mark", hostLinkName), "1", "src_valid_mark for dae0"},
+		{fmt.Sprintf("net.ipv4.conf.%s.accept_local", hostLinkName), "1", "accept_local for dae0"},
+	}
 }
 
 func (ns *DaeNetns) setupIPv4Datapath() (err error) {

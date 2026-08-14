@@ -46,6 +46,7 @@ type DnsControllerOption struct {
 	BestDialerChooser func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
 	IpVersionPrefer   int
 	FixedDomainTtl    map[string]int
+	SoMarkFromDae     uint32
 }
 
 type DnsController struct {
@@ -116,10 +117,12 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		dnsCache:                newCommonDnsCache(32768),
 		dnsFlights:              make(map[dnsFlightKey]*dnsFlight),
 		dnsDuplicateWaitTimeout: consts.DnsDuplicateWaitTimeout,
-		sendPacket:              sendPkt,
-		closed:                  closed,
-		close:                   close,
-		cacheSweeperDone:        make(chan struct{}),
+		sendPacket: func(data []byte, from, to netip.AddrPort) error {
+			return sendPktWithMark(data, from, to, option.SoMarkFromDae)
+		},
+		closed:           closed,
+		close:            close,
+		cacheSweeperDone: make(chan struct{}),
 	}
 	go c.runDnsCacheSweeper()
 	return c, nil
