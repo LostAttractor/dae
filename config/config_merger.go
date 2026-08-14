@@ -25,18 +25,33 @@ type Merger struct {
 	entry             string
 	entryDir          string
 	entryToSectionMap map[string]map[string][]*config_parser.Item
+	initErr           error
 }
 
 func NewMerger(entry string) *Merger {
+	entry, err := filepath.Abs(entry)
+	if err == nil {
+		entry = filepath.Clean(entry)
+	}
 	return &Merger{
 		entry:             entry,
 		entryDir:          filepath.Dir(entry),
 		entryToSectionMap: map[string]map[string][]*config_parser.Item{},
+		initErr:           err,
 	}
 }
 
 func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, err error) {
-	err = m.dfsMerge(m.entry, "")
+	if m.initErr != nil {
+		return nil, nil, fmt.Errorf("failed to resolve config entry path: %w", m.initErr)
+	}
+	opener, err := newSecureFileOpener(m.entryDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize config file opener for %v: %w", m.entryDir, err)
+	}
+	defer opener.Close()
+
+	err = m.dfsMerge(opener, m.entry, "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -47,7 +62,22 @@ func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, e
 	return m.convertMapToSections(m.entryToSectionMap[m.entry]), entries, nil
 }
 
-func (m *Merger) readEntry(entry string) (err error) {
+func relativePathWithin(root, path string) (string, error) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("file is out of scope: %v", rel)
+	}
+	return rel, nil
+}
+
+func (m *Merger) relativeEntryPath(entry string) (string, error) {
+	return relativePathWithin(m.entryDir, entry)
+}
+
+func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 	// Check circular include.
 	_, exist := m.entryToSectionMap[entry]
 	if exist {
@@ -58,14 +88,19 @@ func (m *Merger) readEntry(entry string) (err error) {
 	if !strings.HasSuffix(entry, ".dae") {
 		return fmt.Errorf("invalid config filename %v: must has suffix .dae", entry)
 	}
-	// Check file path security.
-	if err = common.EnsureFileInSubDir(entry, m.entryDir); err != nil {
-		return fmt.Errorf("failed in checking path of config file %v: %w", entry, err)
+	var f *os.File
+	if entry == m.entry {
+		// The entry is explicitly selected by the user and may itself be a
+		// symlink managed by systems such as NixOS. Includes remain confined to
+		// the lexical entry directory below.
+		f, err = os.Open(entry)
+	} else {
+		f, err = opener.Open(entry)
 	}
-	f, err := os.Open(entry)
 	if err != nil {
-		return fmt.Errorf("failed to read config file %v: %w", entry, err)
+		return fmt.Errorf("failed to securely open config file %v: %w", entry, err)
 	}
+	defer f.Close()
 	// Check file access.
 	fi, err := f.Stat()
 	if err != nil {
@@ -118,9 +153,9 @@ func unsqueezeEntries(patternEntries []string) (unsqueezed []string, err error) 
 	return unsqueezed, nil
 }
 
-func (m *Merger) dfsMerge(entry string, fatherEntry string) (err error) {
+func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry string) (err error) {
 	// Read entry and check circular include.
-	if err = m.readEntry(entry); err != nil {
+	if err = m.readEntry(opener, entry); err != nil {
 		if errors.Is(err, ErrCircularInclude) {
 			return fmt.Errorf("%w: %v -> %v -> ... -> %v", err, fatherEntry, entry, fatherEntry)
 		}
@@ -134,7 +169,14 @@ func (m *Merger) dfsMerge(entry string, fatherEntry string) (err error) {
 		switch v := include.Value.(type) {
 		case *config_parser.Param:
 			nextEntry := v.String(true, false)
-			patterEntries = append(patterEntries, filepath.Join(m.entryDir, nextEntry))
+			if !filepath.IsAbs(nextEntry) {
+				nextEntry = filepath.Join(m.entryDir, nextEntry)
+			}
+			nextEntry = filepath.Clean(nextEntry)
+			if _, err := m.relativeEntryPath(nextEntry); err != nil {
+				return fmt.Errorf("invalid include path %v in %v: %w", nextEntry, entry, err)
+			}
+			patterEntries = append(patterEntries, nextEntry)
 		default:
 			return fmt.Errorf("unsupported include grammar in %v: %v", entry, include.String(false, false))
 		}
@@ -145,7 +187,8 @@ func (m *Merger) dfsMerge(entry string, fatherEntry string) (err error) {
 		return err
 	}
 	for _, nextEntry := range childEntries {
-		if err = m.dfsMerge(nextEntry, entry); err != nil {
+		nextEntry = filepath.Clean(nextEntry)
+		if err = m.dfsMerge(opener, nextEntry, entry); err != nil {
 			return err
 		}
 	}

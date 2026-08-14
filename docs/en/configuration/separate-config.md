@@ -21,12 +21,17 @@ Directory Structure:
 
 Config files:
 
+Relative include paths are resolved from the directory containing the entry
+configuration file. Absolute paths are used as-is, but included files must
+still be located below the entry configuration directory.
+
 ```jsonc
 # config.dae
 
 # load all dae files placed in ./config.d/
 include {
     config.d/*.dae
+    # /etc/dae/config.d/*.dae
 }
 global {
     tproxy_port: 12345

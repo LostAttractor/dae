@@ -1,3 +1,10 @@
+# Configuration can be split into files below the entry configuration directory:
+# include {
+#     config.d/*.dae
+#     /etc/dae/config.d/*.dae
+# }
+# Relative paths are resolved from the entry configuration directory. Absolute paths are used as-is.
+
 global {
     ##### Software options.
 
