@@ -117,6 +117,7 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	}
 	registrations := make(map[*domainRegistration]struct{}, g.verifyHeap.Len())
 	inKernel := 0
+	userLive := 0
 	for qi, m := range g.byName {
 		if len(m) == 0 {
 			t.Errorf("%v: empty byName bucket", qi)
@@ -135,6 +136,9 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			}
 			if r.verifyHeapIdx < 0 || r.verifyHeapIdx >= g.verifyHeap.Len() || g.verifyHeap.items[r.verifyHeapIdx] != r {
 				t.Errorf("%v/%v: bad verifyHeapIdx %v", qi.qname, ip, r.verifyHeapIdx)
+			}
+			if r.userLive {
+				userLive++
 			}
 			if r.inKernel {
 				inKernel++
@@ -206,6 +210,9 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	}
 	if g.verifyHeap.Len() != len(registrations) {
 		t.Errorf("verifyHeap len %v != registrations %v", g.verifyHeap.Len(), len(registrations))
+	}
+	if g.userLive != userLive {
+		t.Errorf("cached user live count %v != live registrations %v", g.userLive, userLive)
 	}
 	for i, r := range g.verifyHeap.items {
 		if _, ok := registrations[r]; !ok {
@@ -839,6 +846,10 @@ func TestDomainRegistrySweepLifetimes(t *testing.T) {
 	qi := queryInfo{qname: "a.com.", qtype: 1}
 	ip := netip.MustParseAddr("1.1.1.1")
 	g.Upsert(qi, ip, testBitmap(0), 1, now)
+	usage := g.Usage()
+	if usage.UserLive != 1 || usage.UserRetained != 0 {
+		t.Fatalf("live registration usage = %+v, want 1 live and 0 retained", usage)
+	}
 
 	// After expiry (ttl clamped to minTTL) the kernel entry is
 	// reaped but the userspace record survives.
@@ -848,6 +859,10 @@ func TestDomainRegistrySweepLifetimes(t *testing.T) {
 	}
 	if got := g.Lookup(qi); len(got) != 1 {
 		t.Fatalf("userspace record should survive kernel expiry")
+	}
+	usage = g.Usage()
+	if usage.UserUsed != 1 || usage.UserLive != 0 || usage.UserRetained != 1 {
+		t.Fatalf("retained registration usage = %+v, want 0 live and 1 retained", usage)
 	}
 
 	// Expiry passing is NOT a removal: under the soft limit the sweep
@@ -869,6 +884,73 @@ func TestDomainRegistrySweepLifetimes(t *testing.T) {
 		t.Fatalf("gcUser must not reclaim below the soft limit: size=%v", g.Size())
 	}
 	checkInvariants(t, g, fake)
+}
+
+func requireRegistryUsage(t *testing.T, g *DomainRegistry, used, live, retained int) {
+	t.Helper()
+	usage := g.Usage()
+	if usage.UserUsed != used || usage.UserLive != live || usage.UserRetained != retained {
+		t.Fatalf("registry usage = %+v, want used=%d live=%d retained=%d", usage, used, live, retained)
+	}
+	if usage.UserUsed != usage.UserLive+usage.UserRetained {
+		t.Fatalf("registry usage is inconsistent: %+v", usage)
+	}
+}
+
+func TestDomainRegistryUsageRefreshAndNoExpiry(t *testing.T) {
+	g, fake := newTestRegistry(16, 16, time.Second)
+	now := time.Now()
+	qi := queryInfo{qname: "usage.example.", qtype: 1}
+	ip := netip.MustParseAddr("1.1.1.1")
+
+	g.Upsert(qi, ip, testBitmap(0), 10, now)
+	requireRegistryUsage(t, g, 1, 1, 0)
+
+	g.Sweep(now.Add(11 * time.Second))
+	requireRegistryUsage(t, g, 1, 0, 1)
+
+	g.Upsert(qi, ip, testBitmap(0), 30, now.Add(12*time.Second))
+	requireRegistryUsage(t, g, 1, 1, 0)
+
+	g.Sweep(now.Add(43 * time.Second))
+	requireRegistryUsage(t, g, 1, 0, 1)
+
+	g.UpsertNoExpiry(qi, ip, testBitmap(0), now.Add(44*time.Second))
+	g.Sweep(now.Add(100 * 365 * 24 * time.Hour))
+	requireRegistryUsage(t, g, 1, 1, 0)
+	checkInvariants(t, g, fake)
+}
+
+func TestDomainRegistryUsageGcAndAdoption(t *testing.T) {
+	old, fake := newTestRegistry(16, 16, time.Second)
+	now := time.Now()
+	expiredQI := queryInfo{qname: "expired.example.", qtype: 1}
+	liveQI := queryInfo{qname: "live.example.", qtype: 1}
+	old.Upsert(expiredQI, netip.MustParseAddr("1.1.1.1"), testBitmap(0), 10, now)
+	old.Upsert(liveQI, netip.MustParseAddr("2.2.2.2"), testBitmap(1), 100, now)
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	next, _ := newTestRegistry(16, 16, time.Second)
+	next.update = fake.update
+	next.remove = fake.remove
+	adoptedAt := now.Add(20 * time.Second)
+	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(2) }, adoptedAt)
+	requireRegistryUsage(t, next, 2, 1, 1)
+
+	next.mu.Lock()
+	next.userMax = 1
+	next.gcUser(adoptedAt)
+	next.mu.Unlock()
+	requireRegistryUsage(t, next, 1, 1, 0)
+	if got := next.Lookup(expiredQI); len(got) != 0 {
+		t.Fatalf("GC should remove the retained adopted registration: %v", got)
+	}
+	if got := next.Lookup(liveQI); len(got) != 1 {
+		t.Fatalf("GC should preserve the live adopted registration: %v", got)
+	}
+	checkInvariants(t, next, fake)
 }
 
 func TestDomainRegistrySweepGcUser(t *testing.T) {

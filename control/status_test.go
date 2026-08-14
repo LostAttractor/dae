@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -256,6 +257,43 @@ func TestCombineHealth(t *testing.T) {
 	health = combineHealth(health, HealthHealthy)
 	if health != HealthDegraded {
 		t.Fatalf("combined health = %q, want %q", health, HealthDegraded)
+	}
+}
+
+func TestStatusSnapshotReportsDomainHistory(t *testing.T) {
+	prometheusRegistry := prometheus.NewRegistry()
+	common.InitPrometheus(prometheusRegistry)
+	domainRegistry, _ := newTestRegistry(16, 32, 0)
+	now := time.Now()
+	domainRegistry.Upsert(
+		queryInfo{qname: "live.example.", qtype: 1},
+		netip.MustParseAddr("1.1.1.1"),
+		testBitmap(),
+		60,
+		now,
+	)
+	domainRegistry.Upsert(
+		queryInfo{qname: "retained.example.", qtype: 1},
+		netip.MustParseAddr("2.2.2.2"),
+		testBitmap(),
+		1,
+		now.Add(-time.Minute),
+	)
+
+	plane := &ControlPlane{
+		core:               &controlPlaneCore{domainRegistry: domainRegistry},
+		PrometheusRegistry: prometheusRegistry,
+	}
+	tables := plane.StatusSnapshot("test").Tables
+	if len(tables) != 2 {
+		t.Fatalf("table count = %d, want 2", len(tables))
+	}
+	history := tables[0]
+	if history.Name != "domain-history" || history.Used != 2 || history.Breakdown == nil {
+		t.Fatalf("domain history table = %+v", history)
+	}
+	if history.Breakdown.Live != 1 || history.Breakdown.Retained != 1 {
+		t.Fatalf("domain history breakdown = %+v, want 1 live and 1 retained", history.Breakdown)
 	}
 }
 

@@ -38,10 +38,16 @@ type StatusSnapshot struct {
 // Soft limits (LRU, memory-pressure GC) may be exceeded under churn; hard
 // limits (eBPF map max_entries) cannot.
 type TableUsage struct {
-	Name  string `json:"name"`
-	Used  int    `json:"used"`
-	Limit int    `json:"limit"`
-	Soft  bool   `json:"soft"`
+	Name      string               `json:"name"`
+	Used      int                  `json:"used"`
+	Limit     int                  `json:"limit"`
+	Soft      bool                 `json:"soft"`
+	Breakdown *TableUsageBreakdown `json:"breakdown,omitempty"`
+}
+
+type TableUsageBreakdown struct {
+	Live     int `json:"live"`
+	Retained int `json:"retained"`
 }
 
 type GroupStatus struct {
@@ -333,7 +339,16 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 	if c.core != nil && c.core.domainRegistry != nil {
 		usage := c.core.domainRegistry.Usage()
 		snapshot.Tables = append(snapshot.Tables,
-			TableUsage{Name: "domain-verify", Used: usage.UserUsed, Limit: usage.UserMax, Soft: true},
+			TableUsage{
+				Name:  "domain-history",
+				Used:  usage.UserUsed,
+				Limit: usage.UserMax,
+				Soft:  true,
+				Breakdown: &TableUsageBreakdown{
+					Live:     usage.UserLive,
+					Retained: usage.UserRetained,
+				},
+			},
 			TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
 		)
 	}
