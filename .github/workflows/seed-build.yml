@@ -138,8 +138,11 @@ jobs:
           make
           cp ./install/dae.service ./build/
           cp ./example.dae ./build/
-          curl -L -o ./build/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
-          curl -L -o ./build/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          source ./install/geodata.env
+          curl --fail --show-error --location --retry 3 -o ./build/geoip.dat "https://github.com/v2fly/geoip/releases/download/${GEOIP_VERSION}/geoip.dat"
+          curl --fail --show-error --location --retry 3 -o ./build/geosite.dat "https://github.com/v2fly/domain-list-community/releases/download/${GEOSITE_VERSION}/dlc.dat"
+          echo "${GEOIP_SHA256}  ./build/geoip.dat" | sha256sum -c -
+          echo "${GEOSITE_SHA256}  ./build/geosite.dat" | sha256sum -c -
 
       - name: Smoking test
         if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'

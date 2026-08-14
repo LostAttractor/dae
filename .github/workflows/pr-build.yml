@@ -23,6 +23,7 @@ on:
       - "go.sum"
       - ".gitmodules"
       - "Makefile"
+      - "install/geodata.env"
       - ".github/workflows/pr-build.yml"
       - ".github/workflows/seed-build.yml"
       - "control/kern/headers"
