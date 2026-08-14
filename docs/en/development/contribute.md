@@ -34,7 +34,7 @@ pre-commit install
 - Create a new branch to work on! Branch from `next`.
 - Implement/fix your feature, comment your code.
 - Follow the code style of the project, including indentation.
-- If the project has tests run them! For routine unit tests, use `go test ./...`. For eBPF tests, use `make ebpf-test`.
+- If the project has tests run them! For routine unit tests, use `make test`. For eBPF tests, use `make ebpf-test`.
 - Write or adapt tests as needed.
 - Add or change the documentation as needed.
 - Squash your commits into a single commit with Git's [interactive rebase](https://help.github.com/articles/interactive-rebase). Create a new branch if necessary.
