@@ -109,3 +109,206 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 		t.Fatalf("target = %v, want %v", got.Target, want)
 	}
 }
+
+func newLifecycleTestControlPlane(udpEndpoints *UdpEndpointPool) *ControlPlane {
+	ctx, cancel := context.WithCancel(context.Background())
+	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
+	return &ControlPlane{
+		tcpConnections:  new(tcpConnectionTracker),
+		udpTaskPool:     newUdpTaskPool[netip.AddrPort](time.Hour),
+		udpEndpoints:    udpEndpoints,
+		ctx:             ctx,
+		cancel:          cancel,
+		tcpSetupCtx:     tcpSetupCtx,
+		cancelTCPSetups: cancelTCPSetups,
+	}
+}
+
+func TestControlPlaneRetireClosesIngressBeforeWaitAndDrainsUDPWithLiveContext(t *testing.T) {
+	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+	tcpIngressClosed := make(chan struct{})
+	udpIngressClosed := make(chan struct{})
+	plane.ingress = &controlPlaneIngress{closeFuncs: []func() error{
+		func() error {
+			close(tcpIngressClosed)
+			return nil
+		},
+		func() error {
+			close(udpIngressClosed)
+			return nil
+		},
+	}}
+
+	conn := newCloseTrackingConn()
+	if !plane.tcpConnections.beginSetup(conn) {
+		t.Fatal("failed to register TCP setup")
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	taskStarted := make(chan struct{})
+	releaseTask := make(chan struct{})
+	var releaseTaskOnce sync.Once
+	release := func() { releaseTaskOnce.Do(func() { close(releaseTask) }) }
+	t.Cleanup(release)
+	var finishSetupOnce sync.Once
+	finishSetup := func() { finishSetupOnce.Do(plane.tcpConnections.finishSetup) }
+	t.Cleanup(finishSetup)
+	taskContextErrors := make(chan error, 2)
+	if !plane.udpTaskPool.emit(testUdpKey(11001), func() {
+		taskContextErrors <- plane.ctx.Err()
+		close(taskStarted)
+		<-releaseTask
+		taskContextErrors <- plane.ctx.Err()
+	}) {
+		t.Fatal("failed to enqueue UDP task")
+	}
+	<-taskStarted
+
+	retireDone := make(chan error, 1)
+	go func() { retireDone <- plane.retireTraffic() }()
+	for name, closed := range map[string]<-chan struct{}{
+		"TCP": tcpIngressClosed,
+		"UDP": udpIngressClosed,
+	} {
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatalf("%s ingress was not closed before retirement wait", name)
+		}
+	}
+	select {
+	case <-plane.tcpSetupCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("TCP setup context was not canceled")
+	}
+	if err := <-taskContextErrors; err != nil {
+		t.Fatalf("accepted UDP task started with canceled context: %v", err)
+	}
+	if err := plane.ctx.Err(); err != nil {
+		t.Fatalf("control-plane context canceled before UDP drain: %v", err)
+	}
+	select {
+	case err := <-retireDone:
+		t.Fatalf("retirement returned before accepted work completed: %v", err)
+	default:
+	}
+
+	release()
+	if err := <-taskContextErrors; err != nil {
+		t.Fatalf("control-plane context canceled during UDP drain: %v", err)
+	}
+	select {
+	case err := <-retireDone:
+		t.Fatalf("retirement returned before TCP setup handoff: %v", err)
+	default:
+	}
+
+	finishSetup()
+	select {
+	case err := <-retireDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retirement did not finish after setup and UDP drain")
+	}
+	if plane.ctx.Err() == nil {
+		t.Fatal("control-plane context remained live after retirement")
+	}
+}
+
+func TestControlPlaneNormalRetirePreservesEstablishedUDPEndpoint(t *testing.T) {
+	udpEndpoints := new(UdpEndpointPool)
+	plane := newLifecycleTestControlPlane(udpEndpoints)
+	key := testUdpKey(11002)
+	conn := newTestPacketConn(false)
+	endpoint := newUdpEndpoint(&UdpEndpointOptions{
+		PacketConn: conn,
+		NatTimeout: time.Hour,
+	})
+	udpEndpoints.add(key, endpoint)
+	t.Cleanup(func() { udpEndpoints.remove(key, endpoint) })
+
+	if err := plane.retireTraffic(); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := udpEndpoints.Get(key)
+	if !ok || got != endpoint {
+		t.Fatal("normal retirement removed the established UDP endpoint")
+	}
+	select {
+	case <-conn.closed:
+		t.Fatal("normal retirement closed the established UDP endpoint")
+	default:
+	}
+}
+
+func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
+	udpEndpoints := new(UdpEndpointPool)
+	t.Cleanup(udpEndpoints.closeAll)
+	plane := newLifecycleTestControlPlane(udpEndpoints)
+	key := testUdpKey(11003)
+	oldConn := newTestPacketConn(false)
+	oldEndpoint := newUdpEndpoint(&UdpEndpointOptions{
+		PacketConn: oldConn,
+		NatTimeout: time.Hour,
+	})
+	udpEndpoints.add(key, oldEndpoint)
+
+	taskStarted := make(chan struct{})
+	releaseTask := make(chan struct{})
+	var releaseTaskOnce sync.Once
+	release := func() { releaseTaskOnce.Do(func() { close(releaseTask) }) }
+	t.Cleanup(release)
+	replacementPublished := make(chan *testPacketConn, 1)
+	if !plane.udpTaskPool.emit(key, func() {
+		close(taskStarted)
+		<-releaseTask
+		if err := plane.ctx.Err(); err != nil {
+			replacementPublished <- nil
+			return
+		}
+		conn := newTestPacketConn(false)
+		udpEndpoints.add(key, newUdpEndpoint(&UdpEndpointOptions{
+			PacketConn: conn,
+			NatTimeout: time.Hour,
+		}))
+		replacementPublished <- conn
+	}) {
+		t.Fatal("failed to enqueue UDP task")
+	}
+	<-taskStarted
+
+	if err := plane.StopAndAbortConnections(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-oldConn.closed:
+	case <-time.After(time.Second):
+		t.Fatal("abort did not close the established UDP endpoint")
+	}
+
+	retireDone := make(chan error, 1)
+	go func() { retireDone <- plane.retireTraffic() }()
+	release()
+	replacementConn := <-replacementPublished
+	if replacementConn == nil {
+		t.Fatal("accepted UDP task ran with a canceled control-plane context")
+	}
+	select {
+	case err := <-retireDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("abort retirement did not finish")
+	}
+	select {
+	case <-replacementConn.closed:
+	case <-time.After(time.Second):
+		t.Fatal("abort did not close endpoint published by an accepted UDP task")
+	}
+	if _, ok := udpEndpoints.Get(key); ok {
+		t.Fatal("abort left an established UDP endpoint in the global pool")
+	}
+}

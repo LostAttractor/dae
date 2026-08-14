@@ -7,10 +7,12 @@ package control
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -49,12 +51,23 @@ func IsNetError(err error) (netErr net.Error, ok bool) {
 	return
 }
 
-func (c *ControlPlane) RouteDialOption(p *RouteParam) (dialOption *DialOption, err error) {
+// closeInBackground starts cleanup without making control-plane shutdown wait
+// for transports whose Close may block. It does not guarantee cleanup completion.
+func closeInBackground(closer io.Closer) {
+	if closer != nil {
+		go func() { _ = closer.Close() }()
+	}
+}
+
+func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dialOption *DialOption, err error) {
 	// TODO: Why not directly transfer routingResult
 	outboundIndex := consts.OutboundIndex(p.routingResult.Outbound)
 	// mark := p.routingResult.Mark
 
-	verified, shouldReroute := c.VerifySniff(outboundIndex, p.Dest, p.Domain)
+	verified, shouldReroute, err := c.verifySniff(ctx, p.Dest, p.Domain)
+	if err != nil {
+		return nil, err
+	}
 	switch {
 	case c.rerouteMode == consts.RerouteMode_WhileNeed && shouldReroute,
 		c.rerouteMode == consts.RerouteMode_Force:

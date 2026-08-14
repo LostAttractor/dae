@@ -77,6 +77,19 @@ var (
 	controlPlane      *control.ControlPlane
 )
 
+type reloadControlPlaneRetirer interface {
+	StopAndAbortConnections() error
+	Close() error
+}
+
+func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections bool) error {
+	var abortErr error
+	if abortConnections {
+		abortErr = c.StopAndAbortConnections()
+	}
+	return errors.Join(abortErr, c.Close())
+}
+
 func init() {
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
 	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to std and stderr.")
@@ -378,27 +391,25 @@ loop:
 				// connections just queue in the kernel until the new plane
 				// serves the same listener, and the old plane's dialers stop
 				// writing connectivity state into the shared maps.
-				if abortConnections {
-					c.AbortConnections()
-				}
 				std.Warnln("[Reload] Stop old control plane")
 				writeReloadProgress("Switching to the new control plane...")
 				if statusServer != nil {
 					statusServer.SetControlPlane(nil)
 				}
-				if closeErr := c.Close(); closeErr != nil {
+				if closeErr := retireControlPlaneForReload(c, abortConnections); closeErr != nil {
 					// The old filters may still interpret shared maps with the old
 					// rule layout. Do not install new rules or adopt bitmaps into
-					// that state; transfer BPF ownership only so teardown can close it.
+					// that state; assign cleanup ownership to the candidate only so
+					// its teardown closes the otherwise unowned BPF objects.
 					newC.InjectBpf()
 					_ = newC.Close()
 					std.Panicf("%+v", oops.Wrapf(closeErr, "[Reload] Failed to retire old control plane safely"))
 				}
 				std.Warnln("[Reload] Stopped old control plane")
 
-				// Phase 2b: commit. The new plane now owns BPF and pushes
-				// rules into the kernel. Failures past this point leave the
-				// system in an inconsistent state, so we tear everything down.
+				// Phase 2b: commit. Assign BPF cleanup ownership to the new plane,
+				// then push its state into the kernel. Failures past this point are
+				// terminal, so we tear everything down.
 				std.Warnln("[Reload] Activate new control plane")
 				writeReloadProgress("Activating new control plane...")
 				newC.InjectBpf()

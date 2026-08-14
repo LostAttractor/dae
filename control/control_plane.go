@@ -56,16 +56,25 @@ type ControlPlane struct {
 	outbounds              []*outbound.DialerGroup
 	criticalOutbounds      []bool
 	noConnectivityOutbound consts.OutboundIndex
-	inConnections          *sync.Map
+	tcpConnections         *tcpConnectionTracker
 	udpTaskPool            *udpTaskPool[netip.AddrPort]
+	udpEndpoints           *UdpEndpointPool
 
 	dnsController *DnsController
 
 	routingMatcher        *RoutingMatcher
 	routingMatcherBuilder *RoutingMatcherBuilder
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx             context.Context
+	cancel          context.CancelFunc
+	tcpSetupCtx     context.Context
+	cancelTCPSetups context.CancelFunc
+
+	ingressMu      sync.Mutex
+	ingress        *controlPlaneIngress
+	ingressRetired bool
+
+	abortConnections atomic.Bool
 
 	muRealDomainSet sync.Mutex
 	realDomainSet   *bloom.BloomFilter
@@ -83,9 +92,8 @@ type ControlPlane struct {
 	tproxyPortProtect  bool
 	soMarkFromDae      uint32
 
-	// closedDone is set once Close has fully run (all defer funcs executed,
-	// kernel filters detached). InheritDomainRegistry asserts it on the
-	// retired plane before rewriting the shared kernel domain map.
+	// closedDone is set after Close completes successfully. InheritDomainRegistry
+	// checks it before rewriting the shared kernel domain map.
 	closedDone atomic.Bool
 
 	PrometheusRegistry *prometheus.Registry
@@ -357,17 +365,21 @@ func NewControlPlane(
 	routingMatcher.outboundUsable = core.outboundUsable
 
 	ctx, cancel := context.WithCancel(context.Background())
+	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	plane := &ControlPlane{
 		core:                      core,
 		outbounds:                 outbounds,
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
-		inConnections:             new(sync.Map),
+		tcpConnections:            new(tcpConnectionTracker),
 		udpTaskPool:               newUdpTaskPool[netip.AddrPort](DefaultNatTimeoutUDP),
+		udpEndpoints:              &DefaultUdpEndpointPool,
 		routingMatcher:            routingMatcher,
 		routingMatcherBuilder:     builder,
 		ctx:                       ctx,
 		cancel:                    cancel,
+		tcpSetupCtx:               tcpSetupCtx,
+		cancelTCPSetups:           cancelTCPSetups,
 		realDomainSet:             bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:              common.Deduplicate(global.LanInterface),
 		wanInterface:              global.WanInterface,
@@ -384,12 +396,6 @@ func NewControlPlane(
 	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
 	// the remainder of control-plane shutdown indefinitely.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
-	// Cleanup runs in reverse: drain accepted UDP tasks before closing their
-	// outbound dependencies.
-	plane.deferFuncs = append(plane.deferFuncs, func() error {
-		plane.udpTaskPool.close()
-		return nil
-	})
 	defer func() {
 		if err != nil {
 			cancel()
@@ -439,9 +445,9 @@ func NewControlPlane(
 //   - binds eBPF programs to LAN/WAN interfaces and the dae netns,
 //   - runs the initial connectivity check for outbound dialers.
 //
-// It must be called exactly once after NewControlPlane succeeds. Failures here
-// are not recoverable: the BPF state may be partially committed, so the caller
-// is expected to close the plane and exit.
+// It must be called exactly once after NewControlPlane succeeds. An activation
+// failure is terminal: the BPF state may be partially committed, so the caller
+// must close the plane and exit rather than retrying or restoring the old plane.
 func (c *ControlPlane) Activate() error {
 	core := c.core
 	core.lifecycleMu.Lock()
@@ -613,10 +619,13 @@ func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer
 	return nil, nil
 }
 
-// EjectBpf will resect bpf from destroying life-cycle of control plane.
+// EjectBpf releases this plane's cleanup ownership of the shared BPF state and
+// returns it for a reload candidate. The state remains unowned until InjectBpf.
 func (c *ControlPlane) EjectBpf() *bpfState {
 	return c.core.EjectBpf()
 }
+
+// InjectBpf makes this plane responsible for closing the shared BPF state.
 func (c *ControlPlane) InjectBpf() {
 	c.core.InjectBpf()
 }
@@ -668,7 +677,10 @@ func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
 // shouldReroute 返回 Kernel 是否有可能没有正确 Route
 // SniffVerifyMode_Loose 在这个域名存在时, 通过认证
 // SniffVerifyMode_Strict 在这个域名尝试过对应的 DNS 解析时, 通过认证
-func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.AddrPort, domain string) (verified bool, shouldReroute bool) {
+func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, domain string) (verified bool, shouldReroute bool, err error) {
+	if err = ctx.Err(); err != nil {
+		return
+	}
 	if domain == "" {
 		return
 	}
@@ -702,7 +714,14 @@ func (c *ControlPlane) VerifySniff(outbound consts.OutboundIndex, dst netip.Addr
 			c.muRealDomainSet.Unlock()
 			if !verified {
 				// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
-				if ip46, err := netutils.ResolveIp46(fqdn); err == nil && ip46.IsValid() {
+				ip46, resolveErr := netutils.ResolveIp46Context(ctx, fqdn)
+				if resolveErr != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						err = ctxErr
+					}
+					return
+				}
+				if ip46.IsValid() {
 					// Add it to real-domain set.
 					c.muRealDomainSet.Lock()
 					c.realDomainSet.AddString(fqdn)
@@ -748,6 +767,94 @@ type Listener struct {
 	port        uint16
 }
 
+// controlPlaneIngress owns only the duplicated descriptors used by one plane.
+// The original Listener remains open across reloads so packets can queue for
+// the successor after these descriptors are closed.
+type controlPlaneIngress struct {
+	closeOnce  sync.Once
+	closeErr   error
+	closeFuncs []func() error
+	loops      sync.WaitGroup
+}
+
+func (i *controlPlaneIngress) close() error {
+	i.closeOnce.Do(func() {
+		var errs []error
+		for j := len(i.closeFuncs) - 1; j >= 0; j-- {
+			if err := i.closeFuncs[j](); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		i.closeErr = errors.Join(errs...)
+	})
+	return i.closeErr
+}
+
+func (c *ControlPlane) openIngress(listener *Listener) (tcpListener net.Listener, serveUdpConn *net.UDPConn, ingress *controlPlaneIngress, err error) {
+	c.ingressMu.Lock()
+	defer c.ingressMu.Unlock()
+	if c.ingressRetired {
+		return nil, nil, nil, net.ErrClosed
+	}
+	if c.ingress != nil {
+		return nil, nil, nil, errors.New("control plane ingress is already open")
+	}
+
+	ingress = new(controlPlaneIngress)
+	ownedIngress := ingress
+	defer func() {
+		if err != nil {
+			_ = ownedIngress.close()
+		}
+	}()
+
+	tcpFile, err := listener.tcpListener.(*net.TCPListener).File()
+	if err != nil {
+		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying TCP connection file")
+	}
+	ingress.closeFuncs = append(ingress.closeFuncs, tcpFile.Close)
+	if err = c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
+		return nil, nil, nil, err
+	}
+	tcpListener, err = net.FileListener(tcpFile)
+	if err != nil {
+		return nil, nil, nil, oops.Errorf("failed to duplicate the TCP listener: %w", err)
+	}
+	ingress.closeFuncs = append(ingress.closeFuncs, tcpListener.Close)
+
+	udpFile, err := listener.packetConn.(*net.UDPConn).File()
+	if err != nil {
+		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying UDP connection file")
+	}
+	ingress.closeFuncs = append(ingress.closeFuncs, udpFile.Close)
+	if err = c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
+		return nil, nil, nil, err
+	}
+	udpPacketConn, err := net.FilePacketConn(udpFile)
+	if err != nil {
+		return nil, nil, nil, oops.Errorf("failed to duplicate the UDP socket: %w", err)
+	}
+	ingress.closeFuncs = append(ingress.closeFuncs, udpPacketConn.Close)
+	serveUdpConn = udpPacketConn.(*net.UDPConn)
+
+	// Register both loops before publishing ingress. Close may run as soon as
+	// this function unlocks and must not race a zero-count Wait with Add.
+	ingress.loops.Add(2)
+	c.ingress = ingress
+	return tcpListener, serveUdpConn, ingress, nil
+}
+
+func (c *ControlPlane) closeIngress() (*controlPlaneIngress, error) {
+	c.ingressMu.Lock()
+	c.ingressRetired = true
+	ingress := c.ingress
+	c.ingressMu.Unlock()
+	if ingress == nil {
+		return nil, nil
+	}
+	return ingress, ingress.close()
+}
+
 func (l *Listener) Close() error {
 	var (
 		err  error
@@ -770,47 +877,16 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			readyChan <- false
 		}
 	}()
-	// Serve on duplicates of the shared listener sockets. The duplicates are
-	// closed when this plane is retired, so the loops below stop accepting
-	// immediately instead of racing the next plane for the shared listener;
-	// connections and packets already queued on the shared sockets are left
-	// for the next plane.
-	tcpFile, err := listener.tcpListener.(*net.TCPListener).File()
+	// Serve on duplicates of the shared listener sockets. Close retires these
+	// duplicates before waiting for setup, leaving queued traffic on the shared
+	// sockets for the next plane.
+	tcpListener, serveUdpConn, ingress, err := c.openIngress(listener)
 	if err != nil {
-		return oops.Errorf("failed to retrieve copy of the underlying TCP connection file")
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		return tcpFile.Close()
-	})
-	if err := c.core.bpf.ListenSocketMap.Update(consts.ZeroKey, uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
 		return err
 	}
-	tcpListener, err := net.FileListener(tcpFile)
-	if err != nil {
-		return oops.Errorf("failed to duplicate the TCP listener: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, tcpListener.Close)
 
-	udpFile, err := listener.packetConn.(*net.UDPConn).File()
-	if err != nil {
-		return oops.Errorf("failed to retrieve copy of the underlying UDP connection file")
-	}
-	c.deferFuncs = append(c.deferFuncs, func() error {
-		return udpFile.Close()
-	})
-	if err := c.core.bpf.ListenSocketMap.Update(consts.OneKey, uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return err
-	}
-	udpPacketConn, err := net.FilePacketConn(udpFile)
-	if err != nil {
-		return oops.Errorf("failed to duplicate the UDP socket: %w", err)
-	}
-	c.deferFuncs = append(c.deferFuncs, udpPacketConn.Close)
-	serveUdpConn := udpPacketConn.(*net.UDPConn)
-
-	sentReady = true
-	readyChan <- true
 	go func() {
+		defer ingress.loops.Done()
 		for {
 			select {
 			case <-c.ctx.Done():
@@ -824,10 +900,14 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 				break
 			}
-			go serveTCPConnection(c, lconn, c.ctx, c.inConnections)
+			if !c.tcpConnections.beginSetup(lconn) {
+				continue
+			}
+			go serveTCPConnection(c, lconn, c.tcpSetupCtx, c.tcpConnections)
 		}
 	}()
 	go func() {
+		defer ingress.loops.Done()
 		buf := pool.GetBuffer(consts.EthernetMtu)
 		oob := pool.GetBuffer(120)
 		defer pool.PutBuffer(buf)
@@ -873,12 +953,14 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 			data := pool.GetBuffer(n)
 			copy(data, buf[:n])
+			taskCtx, cancelTask := context.WithTimeout(c.ctx, consts.DefaultDialTimeout)
 
 			// Debug:
 			// t := time.Now()
 			if !c.udpTaskPool.emit(src, func() {
+				defer cancelTask()
 				defer pool.PutBuffer(data)
-				if e := c.handlePkt(serveUdpConn, data, src, dst, false); e != nil && c.ctx.Err() == nil {
+				if e := c.handlePkt(taskCtx, data, src, dst, false); e != nil && taskCtx.Err() == nil {
 					if log.IsLevelEnabled(log.DebugLevel) {
 						log.Warnf("%+v", oops.Wrapf(e, "handlePkt"))
 					} else {
@@ -886,6 +968,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					}
 				}
 			}) {
+				cancelTask()
 				pool.PutBuffer(data)
 			}
 			// if d := time.Since(t); d > 100*time.Millisecond {
@@ -893,6 +976,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// }
 		}
 	}()
+	sentReady = true
+	readyChan <- true
 	<-c.ctx.Done()
 	return nil
 }
@@ -1008,17 +1093,24 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	}, nil
 }
 
-func (c *ControlPlane) AbortConnections() (err error) {
-	if c.inConnections == nil {
-		return nil
-	}
+func (c *ControlPlane) StopAndAbortConnections() (err error) {
+	c.abortConnections.Store(true)
 	var errs []error
-	c.inConnections.Range(func(key, value any) bool {
-		if err = key.(net.Conn).Close(); err != nil {
-			errs = append(errs, err)
+	// Retire ingress first: closing a large connection set must not leave the
+	// old Accept/Read calls consuming traffic intended for the successor.
+	if _, ingressErr := c.closeIngress(); ingressErr != nil {
+		errs = append(errs, ingressErr)
+	}
+	if c.tcpConnections != nil {
+		for _, conn := range c.tcpConnections.stopAndSnapshot() {
+			if err = conn.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		return true
-	})
+	}
+	if c.udpEndpoints != nil {
+		c.udpEndpoints.closeAll()
+	}
 	return errors.Join(errs...)
 }
 
@@ -1036,9 +1128,42 @@ func (c *ControlPlane) closeOutbounds() (err error) {
 	return err
 }
 
+func (c *ControlPlane) retireTraffic() error {
+	// Closing duplicated ingress first prevents blocked Accept/Read calls from
+	// consuming traffic after retirement. TCP setup is canceled independently;
+	// accepted UDP tasks drain before the plane context is canceled. Their task
+	// contexts can expire while queued and bound context-aware setup operations.
+	ingress, ingressErr := c.closeIngress()
+	if c.tcpConnections != nil {
+		c.tcpConnections.stopAccepting()
+	}
+	if c.cancelTCPSetups != nil {
+		c.cancelTCPSetups()
+	}
+	if ingress != nil {
+		ingress.loops.Wait()
+	}
+	if c.udpTaskPool != nil {
+		c.udpTaskPool.close()
+	}
+	if c.tcpConnections != nil {
+		c.tcpConnections.waitForSetups()
+	}
+	if c.abortConnections.Load() && c.udpEndpoints != nil {
+		// StopAndAbortConnections performs an initial sweep. Repeat after the
+		// task drain to catch an endpoint published by an already-accepted task.
+		c.udpEndpoints.closeAll()
+	}
+	if c.cancel != nil {
+		c.cancel()
+	}
+	return ingressErr
+}
+
 func (c *ControlPlane) Close() (err error) {
 	c.core.lifecycleMu.Lock()
 	defer c.core.lifecycleMu.Unlock()
+	err = c.retireTraffic()
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {
@@ -1049,7 +1174,6 @@ func (c *ControlPlane) Close() (err error) {
 			}
 		}
 	}
-	c.cancel()
 	if coreErr := c.core.closeLocked(); coreErr != nil {
 		if err != nil {
 			err = oops.Errorf("%w; %v", err, coreErr)

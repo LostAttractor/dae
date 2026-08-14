@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -392,7 +393,10 @@ func TestVerifySniffReroutesHistoricalPairMissingFromKernel(t *testing.T) {
 		sniffVerifyMode: consts.SniffVerifyMode_Strict,
 	}
 
-	verified, shouldReroute := c.VerifySniff(consts.OutboundUserDefinedMin, dst, "example.com")
+	verified, shouldReroute, err := c.verifySniff(context.Background(), dst, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !verified || shouldReroute {
 		t.Fatalf("active pair: verified=%v shouldReroute=%v", verified, shouldReroute)
 	}
@@ -401,7 +405,10 @@ func TestVerifySniffReroutesHistoricalPairMissingFromKernel(t *testing.T) {
 	// verification, but while_needed must rerun routing because the kernel no
 	// longer has the corresponding domain contribution.
 	g.Sweep(now.Add(2 * time.Second))
-	verified, shouldReroute = c.VerifySniff(consts.OutboundUserDefinedMin, dst, "example.com")
+	verified, shouldReroute, err = c.verifySniff(context.Background(), dst, "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !verified || !shouldReroute {
 		t.Fatalf("historical pair: verified=%v shouldReroute=%v", verified, shouldReroute)
 	}
