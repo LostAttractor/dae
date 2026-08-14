@@ -6,103 +6,139 @@
 package control
 
 import (
-	"context"
-	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
-const UdpTaskQueueLength = 128
+const (
+	udpTaskQueueLength           = 128
+	udpTaskSaturationLogInterval = time.Minute
+)
 
-type UdpTask = func()
+type udpTask = func()
 
-// UdpTaskQueue make sure packets with the same key (4 tuples) will be sent in order.
-type UdpTaskQueue[K comparable] struct {
+// udpTaskQueue executes tasks for one key in acceptance order.
+type udpTaskQueue[K comparable] struct {
 	key       K
-	p         *UdpTaskPool[K]
-	ch        chan UdpTask
-	timer     *time.Timer
+	pool      *udpTaskPool[K]
+	tasks     chan udpTask
 	agingTime time.Duration
-	ctx       context.Context
-	closed    chan struct{}
+	done      chan struct{}
 }
 
-// TODO: Timout?
-func (q *UdpTaskQueue[K]) convoy() {
+func (q *udpTaskQueue[K]) run() {
+	timer := time.NewTimer(q.agingTime)
+	defer func() {
+		timer.Stop()
+		close(q.done)
+	}()
 	for {
 		select {
-		case <-q.ctx.Done():
-			close(q.closed)
-			return
-		case task := <-q.ch:
-			task()
-			q.timer.Reset(q.agingTime)
-		}
-	}
-}
-
-type UdpTaskPool[K comparable] struct {
-	queueChPool sync.Pool
-	// mu protects m
-	mu sync.Mutex
-	m  map[K]*UdpTaskQueue[K]
-}
-
-func NewUdpTaskPool[K comparable]() *UdpTaskPool[K] {
-	p := &UdpTaskPool[K]{
-		queueChPool: sync.Pool{New: func() any {
-			return make(chan UdpTask, UdpTaskQueueLength)
-		}},
-		m: make(map[K]*UdpTaskQueue[K]),
-	}
-	return p
-}
-
-// EmitTask: Make sure packets with the same key (4 tuples) will be sent in order.
-func (p *UdpTaskPool[K]) EmitTask(key K, task UdpTask) {
-	p.mu.Lock()
-	q, ok := p.m[key]
-	if !ok {
-		ch := p.queueChPool.Get().(chan UdpTask)
-		ctx, cancel := context.WithCancel(context.Background())
-		q = &UdpTaskQueue[K]{
-			key:       key,
-			p:         p,
-			ch:        ch,
-			timer:     nil,
-			agingTime: DefaultNatTimeoutUDP,
-			ctx:       ctx,
-			closed:    make(chan struct{}),
-		}
-		q.timer = time.AfterFunc(q.agingTime, func() {
-			// if timer executed, there should no task in queue.
-			// q.closed should not blocking things.
-			p.mu.Lock()
-			cancel()
-			delete(p.m, key)
-			p.mu.Unlock()
-			<-q.closed
-			if len(ch) == 0 { // Otherwise let it to be gc
-				p.queueChPool.Put(ch)
+		case task, ok := <-q.tasks:
+			if !ok {
+				return
 			}
-		})
-		p.m[key] = q
-		go q.convoy()
-	}
-	p.mu.Unlock()
-	// if task cannot be executed within 180s(DefaultNatTimeout), GC may be triggered, so skip the task when GC occurs
-	select {
-	case q.ch <- task:
-		// OK
-	default:
-		log.Errorf("%+v", oops.New("UDP Task Pool: Channel full, drop the packet"))
-		// Channel full, drop the packet
+			task()
+			timer.Reset(q.agingTime)
+		case <-timer.C:
+			q.pool.mu.Lock()
+			// emit may have queued work after the timer fired but before run
+			// acquired the pool lock. Keep the queue in that case.
+			if len(q.tasks) != 0 {
+				timer.Reset(q.agingTime)
+				q.pool.mu.Unlock()
+				continue
+			}
+			if q.pool.queues[q.key] == q {
+				delete(q.pool.queues, q.key)
+			}
+			q.pool.mu.Unlock()
+			return
+		}
 	}
 }
 
-var (
-	DefaultUdpTaskPool = NewUdpTaskPool[netip.AddrPort]()
-)
+type udpTaskPool[K comparable] struct {
+	mu        sync.Mutex
+	queues    map[K]*udpTaskQueue[K]
+	agingTime time.Duration
+	closed    bool
+	closeOnce sync.Once
+
+	lastSaturationLog atomic.Int64
+}
+
+func newUdpTaskPool[K comparable](agingTime time.Duration) *udpTaskPool[K] {
+	return &udpTaskPool[K]{
+		queues:    make(map[K]*udpTaskQueue[K]),
+		agingTime: agingTime,
+	}
+}
+
+// emit transfers ownership of task and its captured resources when it returns
+// true. A false result means the caller retains ownership and task will not run.
+func (p *udpTaskPool[K]) emit(key K, task udpTask) bool {
+	p.mu.Lock()
+
+	if p.closed {
+		p.mu.Unlock()
+		return false
+	}
+	q, ok := p.queues[key]
+	if !ok {
+		q = &udpTaskQueue[K]{
+			key:       key,
+			pool:      p,
+			tasks:     make(chan udpTask, udpTaskQueueLength),
+			agingTime: p.agingTime,
+			done:      make(chan struct{}),
+		}
+		p.queues[key] = q
+		go q.run()
+	}
+	select {
+	case q.tasks <- task:
+		p.mu.Unlock()
+		return true
+	default:
+		p.mu.Unlock()
+		p.reportSaturation()
+		return false
+	}
+}
+
+func (p *udpTaskPool[K]) reportSaturation() {
+	now := time.Now().UnixNano()
+	for {
+		last := p.lastSaturationLog.Load()
+		if last != 0 && now >= last && now-last < int64(udpTaskSaturationLogInterval) {
+			return
+		}
+		if p.lastSaturationLog.CompareAndSwap(last, now) {
+			log.Warn("UDP task queue full; dropping packet")
+			return
+		}
+	}
+}
+
+// close rejects new tasks and waits for all accepted tasks to finish.
+func (p *udpTaskPool[K]) close() {
+	p.closeOnce.Do(func() {
+		p.mu.Lock()
+		p.closed = true
+		queues := make([]*udpTaskQueue[K], 0, len(p.queues))
+		for _, q := range p.queues {
+			queues = append(queues, q)
+			close(q.tasks)
+		}
+		clear(p.queues)
+		p.mu.Unlock()
+
+		for _, q := range queues {
+			<-q.done
+		}
+	})
+}
