@@ -142,9 +142,15 @@ func NewLinearLocator(o []*CryptoFrameOffset) *LinearLocator {
 	if len(o) == 0 {
 		return &LinearLocator{}
 	}
+	length := 0
+	for _, frame := range o {
+		if end := frame.UpperAppOffset + len(frame.Data); end > length {
+			length = end
+		}
+	}
 	return &LinearLocator{
 		left:      0,
-		length:    o[len(o)-1].UpperAppOffset + len(o[len(o)-1].Data),
+		length:    length,
 		iOuter:    0,
 		baseData:  o[0].Data,
 		baseStart: o[0].UpperAppOffset,
@@ -153,16 +159,30 @@ func NewLinearLocator(o []*CryptoFrameOffset) *LinearLocator {
 	}
 }
 
+func (l *LinearLocator) advance() (contiguous bool, err error) {
+	previousEnd := l.baseEnd
+	for l.iOuter+1 < len(l.o) {
+		next := l.o[l.iOuter+1]
+		nextStart := next.UpperAppOffset
+		nextEnd := nextStart + len(next.Data)
+		l.iOuter++
+		if nextEnd <= l.baseEnd {
+			continue
+		}
+		l.baseData = next.Data
+		l.baseStart = nextStart
+		l.baseEnd = nextEnd
+		return nextStart <= previousEnd, nil
+	}
+	return false, ErrMissingCrypto
+}
+
 func (l *LinearLocator) relocate(i int) error {
 	// Relocate ll.iOuter.
 	for i >= l.baseEnd {
-		if l.iOuter+1 >= len(l.o) {
-			return ErrMissingCrypto
+		if _, err := l.advance(); err != nil {
+			return err
 		}
-		l.iOuter++
-		l.baseData = l.o[l.iOuter].Data
-		l.baseStart = l.o[l.iOuter].UpperAppOffset
-		l.baseEnd = l.baseStart + len(l.baseData)
 	}
 	if i < l.baseStart {
 		return ErrMissingCrypto
@@ -199,14 +219,13 @@ func (l *LinearLocator) Range(i, j int) ([]byte, error) {
 		n := copy(b[k:], l.baseData[i-l.baseStart:])
 		k += n
 		i += n
-		if l.iOuter+1 >= len(l.o) || l.o[l.iOuter].UpperAppOffset+len(l.o[l.iOuter+1].Data) != l.o[l.iOuter].UpperAppOffset {
-			// Some crypto is missing.
+		contiguous, err := l.advance()
+		if err != nil {
+			return nil, err
+		}
+		if !contiguous {
 			return nil, ErrMissingCrypto
 		}
-		l.iOuter++
-		l.baseData = l.o[l.iOuter].Data
-		l.baseStart = l.o[l.iOuter].UpperAppOffset
-		l.baseEnd = l.baseStart + len(l.baseData)
 	}
 	copy(b[k:], l.baseData[i-l.baseStart:j-l.baseStart+1])
 	return b, nil
@@ -229,7 +248,7 @@ func (l *LinearLocator) Slice(i, j int) (Locator, error) {
 	// We do not care about right.
 	newLL := *l
 	newLL.left += i
-	newLL.length = j - i + 1
+	newLL.length = j - i
 	return &newLL, nil
 }
 
