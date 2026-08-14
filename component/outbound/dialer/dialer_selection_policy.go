@@ -90,6 +90,9 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 		if err != nil {
 			return nil, fmt.Errorf(`invalid "%v" param format: %w`, fName, err)
 		}
+		if index < 0 {
+			return nil, fmt.Errorf(`invalid "%v" param format: index must not be negative`, fName)
+		}
 		return &DialerSelectionPolicy{
 			Policy:     consts.DialerSelectionPolicy(fName),
 			FixedIndex: index,
