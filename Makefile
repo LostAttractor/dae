@@ -44,7 +44,7 @@ endif
 
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
 
-.PHONY: check-go-version clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules
+.PHONY: check-go-version clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules test
 
 check-go-version:
 	@version='$(GO_VERSION)'; \
@@ -131,6 +131,9 @@ ebpf: check-go-version submodule clean-ebpf
 		echo > $(BUILD_TAGS_FILE); \
 	fi
 
+test: ebpf
+	go test ./...
+
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/kern/tproxy.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
 
@@ -140,13 +143,18 @@ ebpf-test: export BPF_CFLAGS := $(CFLAGS)
 ebpf-test: export BPF_TARGET := $(TARGET)
 ebpf-test: export BPF_TRACE_TARGET := $(GOARCH)
 ebpf-test: check-go-version submodule clean-ebpf
-	@unset GOOS && \
+	@goos=$$(go env GOOS); \
+	if [ "$$goos" != "linux" ]; then \
+		echo "ERROR: eBPF tests require Linux (found $$goos)." >&2; \
+		exit 1; \
+	fi; \
+	unset GOOS && \
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
     go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
-    go test -v ./control/kern/tests/...
+    go test -v -tags dae_bpf_tests ./control/kern/tests/...
 
 ebpf-audit: check-go-version
 	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh
