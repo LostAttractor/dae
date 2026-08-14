@@ -84,7 +84,7 @@ SEC("tc/check/dport_mismatch")
 int testcheck_dport_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -125,7 +125,7 @@ SEC("tc/check/ipset_match")
 int testcheck_ipset_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(224,1,0,2),
 				      19233, 80);
 }
@@ -207,7 +207,7 @@ SEC("tc/check/source_ipset_match")
 int testcheck_source_ipset_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,50,1), IPV4(224,1,0,2),
 				      19233, 80);
 }
@@ -316,7 +316,7 @@ SEC("tc/check/sport_mismatch")
 int testcheck_sport_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -384,7 +384,7 @@ SEC("tc/check/l4proto_mismatch")
 int testcheck_l4proto_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -452,7 +452,7 @@ SEC("tc/check/ipversion_mismatch")
 int testcheck_ipversion_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -556,7 +556,7 @@ SEC("tc/check/mac_mismatch")
 int testcheck_mac_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -625,7 +625,7 @@ SEC("tc/check/dscp_mismatch")
 int testcheck_dscp_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 79);
 }
@@ -811,7 +811,7 @@ SEC("tc/check/and_mismatch")
 int testcheck_and_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 2333);
 }
@@ -845,7 +845,7 @@ SEC("tc/check/not_match")
 int testcheck_not_match(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
@@ -953,7 +953,7 @@ int testcheck_skip_while_noalive_dead(struct __sk_buff *skb)
 	/* The rule-level annotation takes precedence over try-sniff, so the rule
 	 * is skipped and traffic falls through to the must_direct fallback. */
 	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_PIPE,
+				      TCX_NEXT,
 				      IPV4(192,168,0,1), IPV4(1,1,1,1),
 				      19233, 80);
 }
@@ -1107,7 +1107,7 @@ SEC("tc/check/domain_not_partial_and_port_mismatch")
 int testcheck_domain_not_partial_and_port_mismatch(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(
-		skb, TC_ACT_PIPE,
+		skb, TCX_NEXT,
 		IPV4(192,168,0,1), IPV4(4,4,4,2), 19233, 79);
 }
 
@@ -1331,6 +1331,6 @@ SEC("tc/check/domain_partial_skips_noalive")
 int testcheck_domain_partial_skips_noalive(struct __sk_buff *skb)
 {
 	return check_routing_ipv4_tcp(
-		skb, TC_ACT_PIPE,
+		skb, TCX_NEXT,
 		IPV4(192,168,0,1), IPV4(4,4,4,8), 19233, 80);
 }

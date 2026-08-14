@@ -11,7 +11,13 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - ".gitmodules"
+      - "Dockerfile"
+      - "install/empty.dae"
+      - "Makefile"
       - ".github/workflows/docker.yml"
+      - "control/kern/headers"
+      - "trace/kern/headers"
   release:
     types: [ prereleased ]
 

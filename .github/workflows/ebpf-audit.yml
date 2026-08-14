@@ -8,12 +8,12 @@ on:
       - "**/*.c"
       - "**/*.h"
       - ".gitmodules"
-      - "control/kern/headers"
       - "go.mod"
       - "go.sum"
       - "Makefile"
       - "scripts/ebpf-audit.sh"
       - ".github/workflows/ebpf-audit.yml"
+      - "control/kern/headers"
   push:
     branches:
       - next
@@ -22,12 +22,12 @@ on:
       - "**/*.c"
       - "**/*.h"
       - ".gitmodules"
-      - "control/kern/headers"
       - "go.mod"
       - "go.sum"
       - "Makefile"
       - "scripts/ebpf-audit.sh"
       - ".github/workflows/ebpf-audit.yml"
+      - "control/kern/headers"
 
 permissions: read-all
 

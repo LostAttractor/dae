@@ -9,7 +9,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,15 +19,12 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component"
-	"github.com/mohae/deepcopy"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
-// coreFlip should be 0 or 1
-var coreFlip = 0
 var exitHandlerClose func() error
 
 type controlPlaneCore struct {
@@ -36,13 +33,11 @@ type controlPlaneCore struct {
 	closeOnce   sync.Once
 	closeErr    error
 
-	cleanupMu      sync.Mutex
-	deferFuncs     []func() error
-	filterCleanups map[filterCleanupKey]func() error
-	filterOrder    []filterCleanupKey
-	bpf            *bpfState
+	cleanupMu    sync.Mutex
+	deferFuncs   []func() error
+	hostTCXLinks []hostTCXLink
+	bpf          *bpfState
 
-	flip     int
 	isReload bool
 	// bpfOwned reports whether this core currently owns the bpf objects and
 	// closes them on Close. At most one core owns them; during reload neither
@@ -68,34 +63,47 @@ type controlPlaneCore struct {
 	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][4]atomic.Bool
 }
 
-type filterCleanupKey struct {
-	namespace string
+type hostTCXRole uint8
+
+const (
+	hostTCXLanIngress hostTCXRole = iota
+	hostTCXLanEgress
+	hostTCXWanIngress
+	hostTCXWanEgress
+)
+
+type hostTCXLink struct {
 	linkIndex int
-	parent    uint32
-	handle    uint32
+	role      hostTCXRole
+	link      ciliumLink.Link
+	close     func() error
+}
+
+type hostTCXProgram struct {
+	role    hostTCXRole
+	program *ebpf.Program
 }
 
 func newControlPlaneCore(
 	bpf *bpfState,
 	isReload bool,
-) *controlPlaneCore {
-	if isReload {
-		coreFlip = coreFlip&1 ^ 1
-	}
+) (*controlPlaneCore, error) {
 	closed, toClose := context.WithCancel(context.Background())
-	ifmgr := component.NewInterfaceManager()
+	ifmgr, err := component.NewInterfaceManager()
+	if err != nil {
+		toClose()
+		return nil, oops.Wrapf(err, "initialize interface manager")
+	}
 	core := &controlPlaneCore{
 		bpf:      bpf,
-		flip:     coreFlip,
 		isReload: isReload,
 		// A reload candidate starts without BPF cleanup ownership. The caller
 		// released it from the old core before construction and assigns it to
 		// this core via InjectBpf only after the old core is retired.
-		bpfOwned:       !isReload,
-		ifmgr:          ifmgr,
-		closed:         closed,
-		close:          toClose,
-		filterCleanups: make(map[filterCleanupKey]func() error),
+		bpfOwned: !isReload,
+		ifmgr:    ifmgr,
+		closed:   closed,
+		close:    toClose,
 	}
 	// The kernel-side capacity is read back from the map itself so it can
 	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.
@@ -109,7 +117,7 @@ func newControlPlaneCore(
 	core.domainRegistry.StartSweeper()
 	core.addCleanup(core.closeBpf)
 	core.addCleanup(core.domainRegistry.Close)
-	return core
+	return core, nil
 }
 
 func (c *controlPlaneCore) addCleanup(cleanup func() error) {
@@ -118,63 +126,64 @@ func (c *controlPlaneCore) addCleanup(cleanup func() error) {
 	c.cleanupMu.Unlock()
 }
 
-func (c *controlPlaneCore) ownFilter(key filterCleanupKey, cleanup func() error) {
+func (c *controlPlaneCore) ownHostTCXLink(owned hostTCXLink) bool {
 	c.cleanupMu.Lock()
-	if _, exists := c.filterCleanups[key]; !exists {
-		c.filterOrder = append(c.filterOrder, key)
+	defer c.cleanupMu.Unlock()
+	for _, existing := range c.hostTCXLinks {
+		if existing.linkIndex == owned.linkIndex && existing.role == owned.role {
+			return false
+		}
 	}
-	c.filterCleanups[key] = cleanup
-	c.cleanupMu.Unlock()
+	c.hostTCXLinks = append(c.hostTCXLinks, owned)
+	return true
 }
 
-func (c *controlPlaneCore) releaseLinkFilters(namespace string, linkIndex int) {
+func (c *controlPlaneCore) hostTCXLink(linkIndex int, role hostTCXRole) (ciliumLink.Link, bool) {
 	c.cleanupMu.Lock()
-	for key := range c.filterCleanups {
-		if key.namespace == namespace && key.linkIndex == linkIndex {
-			delete(c.filterCleanups, key)
+	defer c.cleanupMu.Unlock()
+	for _, owned := range c.hostTCXLinks {
+		if owned.linkIndex == linkIndex && owned.role == role {
+			return owned.link, true
 		}
 	}
-	kept := c.filterOrder[:0]
-	for _, key := range c.filterOrder {
-		if key.namespace != namespace || key.linkIndex != linkIndex {
-			kept = append(kept, key)
+	return nil, false
+}
+
+func (c *controlPlaneCore) closeHostTCXLinks(linkIndex int, roles ...hostTCXRole) error {
+	c.cleanupMu.Lock()
+	links := make([]hostTCXLink, 0, len(c.hostTCXLinks))
+	kept := make([]hostTCXLink, 0, len(c.hostTCXLinks))
+	for _, owned := range c.hostTCXLinks {
+		if owned.linkIndex != linkIndex || (len(roles) > 0 && !slices.Contains(roles, owned.role)) {
+			kept = append(kept, owned)
+			continue
 		}
+		links = append(links, owned)
 	}
-	c.filterOrder = kept
+	c.hostTCXLinks = kept
 	c.cleanupMu.Unlock()
+
+	var err error
+	for i := len(links) - 1; i >= 0; i-- {
+		err = errors.Join(err, links[i].close())
+	}
+	return err
 }
 
 func (c *controlPlaneCore) takeCleanups() []func() error {
 	c.cleanupMu.Lock()
 	defer c.cleanupMu.Unlock()
 
-	cleanups := make([]func() error, 0, len(c.filterCleanups)+len(c.deferFuncs))
-	for i := len(c.filterOrder) - 1; i >= 0; i-- {
-		if cleanup := c.filterCleanups[c.filterOrder[i]]; cleanup != nil {
-			cleanups = append(cleanups, cleanup)
-		}
+	cleanups := make([]func() error, 0, len(c.hostTCXLinks)+len(c.deferFuncs))
+	for i := len(c.hostTCXLinks) - 1; i >= 0; i-- {
+		cleanups = append(cleanups, c.hostTCXLinks[i].close)
 	}
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		cleanups = append(cleanups, c.deferFuncs[i])
 	}
-	c.filterCleanups = nil
-	c.filterOrder = nil
+	c.hostTCXLinks = nil
 	c.deferFuncs = nil
 	return cleanups
-}
-
-func hostFilterCleanupKey(filter *netlink.BpfFilter) filterCleanupKey {
-	attrs := filter.Attrs()
-	return filterCleanupKey{
-		namespace: "host",
-		linkIndex: attrs.LinkIndex,
-		parent:    attrs.Parent,
-		handle:    attrs.Handle,
-	}
-}
-
-func filterAlreadyGone(err error) bool {
-	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENODEV)
 }
 
 // closeBpf closes the bpf objects if this core still owns them (see bpfOwned).
@@ -185,10 +194,6 @@ func (c *controlPlaneCore) closeBpf() error {
 		return nil
 	}
 	return c.bpf.Close()
-}
-
-func (c *controlPlaneCore) Flip() {
-	coreFlip = coreFlip&1 ^ 1
 }
 
 func (c *controlPlaneCore) Close() (err error) {
@@ -203,7 +208,7 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 		// for c.mu can then acquire it and return without touching shared maps.
 		c.close()
 		c.closeErr = c.ifmgr.Close()
-		// Interface callbacks can register filter ownership. Waiting for the
+		// Interface callbacks can register TCX link ownership. Waiting for the
 		// monitor first freezes dynamic registration before cleanup is drained.
 		for _, cleanup := range c.takeCleanups() {
 			if e := cleanup(); e != nil {
@@ -218,102 +223,235 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 	return c.closeErr
 }
 
-func (c *controlPlaneCore) linkHdrLen(ifname string) (uint32, error) {
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return 0, err
-	}
-	var linkHdrLen uint32
+func linkHdrLen(link netlink.Link) uint32 {
 	switch link.Attrs().EncapType {
 	case "none", "ipip", "ppp", "tun":
-		linkHdrLen = consts.LinkHdrLen_None
+		return consts.LinkHdrLen_None
 	case "ether":
-		linkHdrLen = consts.LinkHdrLen_Ethernet
+		return consts.LinkHdrLen_Ethernet
 	default:
 		log.Warnf("Maybe unsupported link type %v, using default link header length", link.Attrs().EncapType)
-		linkHdrLen = consts.LinkHdrLen_Ethernet
+		return consts.LinkHdrLen_Ethernet
 	}
-	return linkHdrLen, nil
 }
 
-func (c *controlPlaneCore) addQdisc(ifname string) error {
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return err
+func legacyTCFilter(filter netlink.Filter, parent uint32) bool {
+	bpfFilter, ok := filter.(*netlink.BpfFilter)
+	if !ok || !bpfFilter.DirectAction {
+		return false
 	}
-	qdisc := &netlink.GenericQdisc{
-		QdiscAttrs: netlink.QdiscAttrs{
-			LinkIndex: link.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
-			Parent:    netlink.HANDLE_CLSACT,
-		},
-		QdiscType: "clsact",
+	attrs := bpfFilter.Attrs()
+	major, minor := netlink.MajorMinor(attrs.Handle)
+	if attrs.Protocol != unix.ETH_P_ALL {
+		return false
 	}
-	if err := netlink.QdiscAdd(qdisc); err != nil {
-		return oops.Errorf("cannot add clsact qdisc: %w", err)
+	if major == 0 && minor == 1 && attrs.Priority == 0 {
+		return parent == netlink.HANDLE_MIN_INGRESS && bpfFilter.Name == consts.AppName+"_ingress" ||
+			parent == netlink.HANDLE_MIN_EGRESS && bpfFilter.Name == consts.AppName+"_egress"
 	}
-	return nil
+	if major != 0x2023 || minor < 1 || minor > 5 {
+		return false
+	}
+	nameMatches := func(base string) bool {
+		return bpfFilter.Name == base || bpfFilter.Name == base+"_l2" || bpfFilter.Name == base+"_l3"
+	}
+	switch {
+	case nameMatches(consts.AppName + "_lan_ingress"):
+		return parent == netlink.HANDLE_MIN_INGRESS && attrs.Priority == 2
+	case nameMatches(consts.AppName + "_lan_egress"):
+		return parent == netlink.HANDLE_MIN_EGRESS && attrs.Priority == 1
+	case nameMatches(consts.AppName + "_wan_ingress"):
+		return parent == netlink.HANDLE_MIN_INGRESS && attrs.Priority == 1
+	case nameMatches(consts.AppName + "_wan_egress"):
+		return parent == netlink.HANDLE_MIN_EGRESS && (attrs.Priority == 1 || attrs.Priority == 2)
+	default:
+		return false
+	}
 }
 
-func (c *controlPlaneCore) delQdisc(ifname string) error {
-	link, err := netlink.LinkByName(ifname)
+func cleanupLegacyTCFilters() error {
+	links, err := netlink.LinkList()
 	if err != nil {
-		return err
+		return oops.Errorf("list interfaces for legacy TC cleanup: %w", err)
 	}
-	qdisc := &netlink.GenericQdisc{
-		QdiscAttrs: netlink.QdiscAttrs{
-			LinkIndex: link.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
-			Parent:    netlink.HANDLE_CLSACT,
-		},
-		QdiscType: "clsact",
-	}
-	if err := netlink.QdiscDel(qdisc); err != nil {
-		if !os.IsExist(err) {
-			return oops.Errorf("cannot add clsact qdisc: %w", err)
+	for _, link := range links {
+		if err := cleanupLegacyTCFiltersOnLink(link); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// bindLan automatically configures kernel parameters and bind to lan interface `ifname`.
-// bindLan supports lazy-bind if interface `ifname` is not found.
-// bindLan supports rebinding when the interface `ifname` is detected in the future.
-func (c *controlPlaneCore) bindLan(ifname string, autoConfigKernelParameter bool) {
+func cleanupLegacyTCFiltersOnLink(link netlink.Link) error {
+	for _, parent := range []uint32{netlink.HANDLE_MIN_INGRESS, netlink.HANDLE_MIN_EGRESS} {
+		filters, err := netlink.FilterList(link, parent)
+		if err != nil {
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EINVAL) {
+				continue
+			}
+			return oops.Errorf("list legacy TC filters on %s: %w", link.Attrs().Name, err)
+		}
+		for _, filter := range filters {
+			if !legacyTCFilter(filter, parent) {
+				continue
+			}
+			if err := netlink.FilterDel(filter); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ENODEV) {
+				return oops.Errorf("delete legacy TC filter on %s: %w", link.Attrs().Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (role hostTCXRole) attachType() ebpf.AttachType {
+	switch role {
+	case hostTCXLanIngress, hostTCXWanIngress:
+		return ebpf.AttachTCXIngress
+	case hostTCXLanEgress, hostTCXWanEgress:
+		return ebpf.AttachTCXEgress
+	default:
+		panic("invalid host TCX role")
+	}
+}
+
+func (role hostTCXRole) String() string {
+	switch role {
+	case hostTCXLanIngress:
+		return "LAN ingress"
+	case hostTCXLanEgress:
+		return "LAN egress"
+	case hostTCXWanIngress:
+		return "WAN ingress"
+	case hostTCXWanEgress:
+		return "WAN egress"
+	default:
+		return "unknown"
+	}
+}
+
+func (c *controlPlaneCore) attachHostTCXProgram(linkIndex int, spec hostTCXProgram) (bool, error) {
+	if _, exists := c.hostTCXLink(linkIndex, spec.role); exists {
+		return false, nil
+	}
+
+	var companionRole hostTCXRole
+	var before bool
+	switch spec.role {
+	case hostTCXLanIngress:
+		companionRole, before = hostTCXWanIngress, false
+	case hostTCXLanEgress:
+		companionRole, before = hostTCXWanEgress, true
+	case hostTCXWanIngress:
+		companionRole, before = hostTCXLanIngress, true
+	case hostTCXWanEgress:
+		companionRole, before = hostTCXLanEgress, false
+	default:
+		return false, oops.Errorf("invalid host TCX role %d", spec.role)
+	}
+
+	// Keep programs that were attached before dae ahead of its pair.
+	anchor := ciliumLink.Anchor(ciliumLink.Tail())
+	if companion, exists := c.hostTCXLink(linkIndex, companionRole); exists {
+		if before {
+			anchor = ciliumLink.BeforeLink(companion)
+		} else {
+			anchor = ciliumLink.AfterLink(companion)
+		}
+	}
+	attached, err := ciliumLink.AttachTCX(ciliumLink.TCXOptions{
+		Interface: linkIndex,
+		Program:   spec.program,
+		Attach:    spec.role.attachType(),
+		Anchor:    anchor,
+	})
+	if err != nil {
+		return false, oops.Errorf("attach %s TCX program: %w", spec.role, err)
+	}
+	if !c.ownHostTCXLink(hostTCXLink{
+		linkIndex: linkIndex,
+		role:      spec.role,
+		link:      attached,
+		close:     attached.Close,
+	}) {
+		return false, attached.Close()
+	}
+	return true, nil
+}
+
+func (c *controlPlaneCore) migrateHostTCXPrograms(link netlink.Link, programs ...hostTCXProgram) error {
+	linkIndex := link.Attrs().Index
+	attachedRoles := make([]hostTCXRole, 0, len(programs))
+	rollback := func(err error) error {
+		if len(attachedRoles) == 0 {
+			return err
+		}
+		return errors.Join(err, c.closeHostTCXLinks(linkIndex, attachedRoles...))
+	}
+	for _, program := range programs {
+		attached, err := c.attachHostTCXProgram(linkIndex, program)
+		if err != nil {
+			return rollback(err)
+		}
+		if attached {
+			attachedRoles = append(attachedRoles, program.role)
+		}
+	}
+	return nil
+}
+
+func (c *controlPlaneCore) bindInterfaces(pattern, label string, bind func(netlink.Link) error) error {
+	var initialErr error
 	initlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == hostLinkName {
 			return
 		}
-		if autoConfigKernelParameter {
-			SetSendRedirects(link.Attrs().Name, "0")
-			SetForwarding(link.Attrs().Name, "1")
-		}
-		if err := c._bindLan(link.Attrs().Name); err != nil {
-			log.Errorf("bindLan: %v", err)
+		if err := bind(link); err != nil {
+			var notFound netlink.LinkNotFoundError
+			if errors.As(err, &notFound) {
+				log.Debugf("Skip disappeared %s interface %s", label, link.Attrs().Name)
+				return
+			}
+			initialErr = errors.Join(initialErr, oops.Errorf("bind %s interface %s: %w", label, link.Attrs().Name, err))
 		}
 	}
 	newlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == hostLinkName {
 			return
 		}
-		log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
-		if err := c.addQdisc(link.Attrs().Name); err != nil {
-			log.Errorf("addQdisc: %v", err)
-			return
+		log.Warnf("New link creation of '%v' is detected. Bind %s program to it.", link.Attrs().Name, label)
+		if err := bind(link); err != nil {
+			log.Errorf("bind %s interface %s: %v", label, link.Attrs().Name, err)
 		}
-		initlinkCallback(link)
 	}
 	dellinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == hostLinkName {
 			return
 		}
-		c.releaseLinkFilters("host", link.Attrs().Index)
-		log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
+		c.mu.Lock()
+		if err := c.closeHostTCXLinks(link.Attrs().Index); err != nil {
+			log.Errorf("close TCX links on deleted %s interface %s: %v", label, link.Attrs().Name, err)
+		}
+		c.mu.Unlock()
+		log.Warnf("Link deletion of '%v' is detected. Bind %s program to it once it is re-created.", link.Attrs().Name, label)
 	}
-	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
+	if err := c.ifmgr.RegisterWithPattern(pattern, initlinkCallback, newlinkCallback, dellinkCallback); err != nil {
+		return errors.Join(initialErr, err)
+	}
+	return initialErr
 }
 
-func (c *controlPlaneCore) _bindLan(ifname string) error {
+// bindLan supports lazy binding and rebinding for matching LAN interfaces.
+func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter bool) error {
+	return c.bindInterfaces(pattern, "LAN", func(link netlink.Link) error {
+		if autoConfigKernelParameter {
+			SetSendRedirects(link.Attrs().Name, "0")
+			SetForwarding(link.Attrs().Name, "1")
+		}
+		return c.bindLanLink(link)
+	})
+}
+
+func (c *controlPlaneCore) bindLanLink(linkSnapshot netlink.Link) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	select {
@@ -321,96 +459,31 @@ func (c *controlPlaneCore) _bindLan(ifname string) error {
 		return nil
 	default:
 	}
+	ifname := linkSnapshot.Attrs().Name
 	log.Infof("Bind to LAN: %v", ifname)
 
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
 		return err
 	}
-	if err = CheckIpforward(ifname); err != nil {
+	if err := CheckIpforward(ifname); err != nil {
 		return err
 	}
-	if err = CheckSendRedirects(ifname); err != nil {
+	if err := CheckSendRedirects(ifname); err != nil {
 		return err
 	}
-	_ = c.addQdisc(ifname)
-	linkHdrLen, err := c.linkHdrLen(ifname)
-	if err != nil {
-		return err
-	}
-	filterIngress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			// Priority should be behind of WAN's
-			Priority: 2,
-		},
-		Name:         consts.AppName + "_lan_ingress",
-		DirectAction: true,
-	}
-	if linkHdrLen > 0 {
-		filterIngress.Fd = c.bpf.bpfPrograms.LanIngressL2.FD()
-		filterIngress.Name = filterIngress.Name + "_l2"
+	var ingressProgram, egressProgram *ebpf.Program
+	if linkHdrLen(link) > 0 {
+		ingressProgram = c.bpf.bpfPrograms.LanIngressL2
+		egressProgram = c.bpf.bpfPrograms.LanEgressL2
 	} else {
-		filterIngress.Fd = c.bpf.bpfPrograms.LanIngressL3.FD()
-		filterIngress.Name = filterIngress.Name + "_l3"
+		ingressProgram = c.bpf.bpfPrograms.LanIngressL3
+		egressProgram = c.bpf.bpfPrograms.LanEgressL3
 	}
-	_ = netlink.FilterDel(filterIngress)
-	if !c.isReload {
-		// Clean up thoroughly.
-		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
-		filterIngressFlipped.FilterAttrs.Handle ^= 1
-		_ = netlink.FilterDel(filterIngressFlipped)
-	}
-	if err := netlink.FilterAdd(filterIngress); err != nil {
-		return oops.Errorf("cannot attach ebpf object to filter ingress: %w", err)
-	}
-	c.ownFilter(hostFilterCleanupKey(filterIngress), func() error {
-		if err := netlink.FilterDel(filterIngress); err != nil && !filterAlreadyGone(err) {
-			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
-		}
-		return nil
-	})
-
-	filterEgress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			// Priority should be front of WAN's
-			Priority: 1,
-		},
-		Name:         consts.AppName + "_lan_egress",
-		DirectAction: true,
-	}
-	if linkHdrLen > 0 {
-		filterEgress.Fd = c.bpf.bpfPrograms.LanEgressL2.FD()
-		filterEgress.Name = filterEgress.Name + "_l2"
-	} else {
-		filterEgress.Fd = c.bpf.bpfPrograms.LanEgressL3.FD()
-		filterEgress.Name = filterEgress.Name + "_l3"
-	}
-	_ = netlink.FilterDel(filterEgress)
-	if !c.isReload {
-		// Clean up thoroughly.
-		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
-		filterEgressFlipped.FilterAttrs.Handle ^= 1
-		_ = netlink.FilterDel(filterEgressFlipped)
-	}
-	if err := netlink.FilterAdd(filterEgress); err != nil {
-		return oops.Errorf("cannot attach ebpf object to filter egress: %w", err)
-	}
-	c.ownFilter(hostFilterCleanupKey(filterEgress), func() error {
-		if err := netlink.FilterDel(filterEgress); err != nil && !filterAlreadyGone(err) {
-			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
-		}
-		return nil
-	})
-
-	return nil
+	return c.migrateHostTCXPrograms(link,
+		hostTCXProgram{role: hostTCXLanIngress, program: ingressProgram},
+		hostTCXProgram{role: hostTCXLanEgress, program: egressProgram},
+	)
 }
 
 func (c *controlPlaneCore) setupSkPidMonitor() error {
@@ -420,7 +493,6 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		return err
 	}
 	type cgProg struct {
-		Name   string
 		Prog   *ebpf.Program
 		Attach ebpf.AttachType
 	}
@@ -460,39 +532,12 @@ func (c *controlPlaneCore) setupExitHandler() (err error) {
 	return nil
 }
 
-// bindWan supports lazy-bind if interface `ifname` is not found.
-// bindWan supports rebinding when the interface `ifname` is detected in the future.
-func (c *controlPlaneCore) bindWan(ifname string, autoConfigKernelParameter bool) {
-	initlinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == hostLinkName {
-			return
-		}
-		if err := c._bindWan(link.Attrs().Name); err != nil {
-			log.Errorf("bindWan: %v", err)
-		}
-	}
-	newlinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == hostLinkName {
-			return
-		}
-		log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
-		if err := c.addQdisc(link.Attrs().Name); err != nil {
-			log.Errorf("addQdisc: %v", err)
-			return
-		}
-		initlinkCallback(link)
-	}
-	dellinkCallback := func(link netlink.Link) {
-		if link.Attrs().Name == hostLinkName {
-			return
-		}
-		c.releaseLinkFilters("host", link.Attrs().Index)
-		log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
-	}
-	c.ifmgr.RegisterWithPattern(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
+// bindWan supports lazy binding and rebinding for matching WAN interfaces.
+func (c *controlPlaneCore) bindWan(pattern string) error {
+	return c.bindInterfaces(pattern, "WAN", c.bindWanLink)
 }
 
-func (c *controlPlaneCore) _bindWan(ifname string) error {
+func (c *controlPlaneCore) bindWanLink(linkSnapshot netlink.Link) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	select {
@@ -500,6 +545,7 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 		return nil
 	default:
 	}
+	ifname := linkSnapshot.Attrs().Name
 	log.Infof("Bind to WAN: %v", ifname)
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
@@ -508,84 +554,19 @@ func (c *controlPlaneCore) _bindWan(ifname string) error {
 	if link.Attrs().Index == consts.LoopbackIfIndex {
 		return oops.Errorf("cannot bind to loopback interface")
 	}
-	_ = c.addQdisc(ifname)
-	linkHdrLen, err := c.linkHdrLen(ifname)
-	if err != nil {
-		return err
-	}
 
-	/// Set-up WAN ingress/egress TC programs.
-	filterEgress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_EGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 0b100+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  2,
-		},
-		Name:         consts.AppName + "_wan_egress",
-		DirectAction: true,
-	}
-	if linkHdrLen > 0 {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL2.FD()
-		filterEgress.Name = filterEgress.Name + "_l2"
+	var ingressProgram, egressProgram *ebpf.Program
+	if linkHdrLen(link) > 0 {
+		ingressProgram = c.bpf.bpfPrograms.TproxyWanIngressL2
+		egressProgram = c.bpf.bpfPrograms.TproxyWanEgressL2
 	} else {
-		filterEgress.Fd = c.bpf.bpfPrograms.TproxyWanEgressL3.FD()
-		filterEgress.Name = filterEgress.Name + "_l3"
+		ingressProgram = c.bpf.bpfPrograms.TproxyWanIngressL3
+		egressProgram = c.bpf.bpfPrograms.TproxyWanEgressL3
 	}
-	_ = netlink.FilterDel(filterEgress)
-	if !c.isReload {
-		// Clean up thoroughly.
-		filterEgressFlipped := deepcopy.Copy(filterEgress).(*netlink.BpfFilter)
-		filterEgressFlipped.FilterAttrs.Handle ^= 1
-		_ = netlink.FilterDel(filterEgressFlipped)
-	}
-	if err := netlink.FilterAdd(filterEgress); err != nil {
-		return oops.Errorf("cannot attach ebpf object to filter egress: %w", err)
-	}
-	c.ownFilter(hostFilterCleanupKey(filterEgress), func() error {
-		if err := netlink.FilterDel(filterEgress); err != nil && !filterAlreadyGone(err) {
-			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterEgress.Name, err)
-		}
-		return nil
-	})
-
-	filterIngress := &netlink.BpfFilter{
-		FilterAttrs: netlink.FilterAttrs{
-			LinkIndex: link.Attrs().Index,
-			Parent:    netlink.HANDLE_MIN_INGRESS,
-			Handle:    netlink.MakeHandle(0x2023, 0b010+uint16(c.flip)),
-			Protocol:  unix.ETH_P_ALL,
-			Priority:  1,
-		},
-		Name:         consts.AppName + "_wan_ingress",
-		DirectAction: true,
-	}
-	if linkHdrLen > 0 {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL2.FD()
-		filterIngress.Name = filterIngress.Name + "_l2"
-	} else {
-		filterIngress.Fd = c.bpf.bpfPrograms.TproxyWanIngressL3.FD()
-		filterIngress.Name = filterIngress.Name + "_l3"
-	}
-	_ = netlink.FilterDel(filterIngress)
-	if !c.isReload {
-		// Clean up thoroughly.
-		filterIngressFlipped := deepcopy.Copy(filterIngress).(*netlink.BpfFilter)
-		filterIngressFlipped.FilterAttrs.Handle ^= 1
-		_ = netlink.FilterDel(filterIngressFlipped)
-	}
-	if err := netlink.FilterAdd(filterIngress); err != nil {
-		return oops.Errorf("cannot attach ebpf object to filter ingress: %w", err)
-	}
-	c.ownFilter(hostFilterCleanupKey(filterIngress), func() error {
-		if err := netlink.FilterDel(filterIngress); err != nil && !filterAlreadyGone(err) {
-			return oops.Errorf("FilterDel(%v:%v): %w", ifname, filterIngress.Name, err)
-		}
-		return nil
-	})
-
-	return nil
+	return c.migrateHostTCXPrograms(link,
+		hostTCXProgram{role: hostTCXWanEgress, program: egressProgram},
+		hostTCXProgram{role: hostTCXWanIngress, program: ingressProgram},
+	)
 }
 
 func (c *controlPlaneCore) bindDaens() (err error) {

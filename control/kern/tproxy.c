@@ -1016,7 +1016,7 @@ static __always_inline __s64 route(const struct route_params *params)
 	return -EPERM;
 }
 
-static __always_inline void prep_redirect_to_control_plane(
+static __always_inline int prep_redirect_to_control_plane(
 	struct __sk_buff *skb, bool from_wan, __u32 link_h_len,
 	struct tuples *tuples, struct ethhdr *ethh)
 {
@@ -1024,14 +1024,16 @@ static __always_inline void prep_redirect_to_control_plane(
 	if (!link_h_len) {
 		__u16 l3proto = skb->protocol;
 
-		bpf_skb_change_head(skb, sizeof(struct ethhdr), 0);
-		bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
-				    &l3proto, sizeof(l3proto), 0);
+		if (bpf_skb_change_head(skb, sizeof(struct ethhdr), 0) ||
+		    bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_proto),
+					&l3proto, sizeof(l3proto), 0))
+			return -1;
 	}
 
-	bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
-			    (void *)&PARAM.dae0peer_mac, sizeof(ethh->h_dest),
-			    0);
+	if (bpf_skb_store_bytes(skb, offsetof(struct ethhdr, h_dest),
+				(void *)&PARAM.dae0peer_mac,
+				sizeof(ethh->h_dest), 0))
+		return -1;
 
 	struct redirect_tuple redirect_tuple = {};
 
@@ -1052,10 +1054,12 @@ static __always_inline void prep_redirect_to_control_plane(
 			 sizeof(ethh->h_source));
 	__builtin_memcpy(redirect_entry.dmac, ethh->h_dest,
 			 sizeof(ethh->h_dest));
-	bpf_map_update_elem(&redirect_track, &redirect_tuple, &redirect_entry,
-			    BPF_ANY);
+	if (bpf_map_update_elem(&redirect_track, &redirect_tuple,
+				&redirect_entry, BPF_ANY))
+		return -1;
 
 	skb->cb[0] = TPROXY_MARK;
+	return 0;
 }
 
 static int refresh_udp_conn_state_timer_cb(void *_udp_conn_state_map,
@@ -1132,7 +1136,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
 
 	if (exited && *exited)
-		return TC_ACT_PIPE;
+		return TCX_NEXT;
 
 	// Parse transport.
 	struct ethhdr ethh;
@@ -1143,9 +1147,9 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	__u32 offset = 0;
 
 	if (parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl, &l4proto, &offset))
-		return TC_ACT_PIPE;
+		return TCX_NEXT;
 	if (l4proto == IPPROTO_ICMPV6)
-		return TC_ACT_PIPE;
+		return TCX_NEXT;
 
 	// Prepare five tuples.
 	struct tuples tuples;
@@ -1161,7 +1165,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 	if (is_wan && pid_is_control_plane(skb, &pid_pname)) {
 		// From control plane. Direct.
-		return TC_ACT_PIPE;
+		return TCX_NEXT;
 	}
 
 	bool isdns = tuples.five.dport == bpf_htons(53) && l4proto == IPPROTO_UDP;
@@ -1184,24 +1188,24 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 				// Restore the policy-routing mark for the rest of a
 				// direct(mark:N) TCP flow.
 				skb->mark = routing_result->mark;
-				return TC_ACT_PIPE;
+				return TCX_NEXT;
 			}
 			goto control_plane;
 		}
 
 		// Non-proxy connections or previous connections.
-		return TC_ACT_PIPE;
+		return TCX_NEXT;
 	}
 
 	if (l4proto == IPPROTO_UDP) {
 		struct udp_conn_state *conn_state =
 			refresh_udp_conn_state_timer(&tuples.five, false);
 		if (!conn_state)
-			return TC_ACT_SHOT;
+			return TCX_DROP;
 		if (conn_state->is_wan_ingress_direction) {
 			// Replay (outbound) of an inbound flow
 			// => direct.
-			return TC_ACT_PIPE;
+			return TCX_NEXT;
 		}
 	}
 
@@ -1244,7 +1248,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 	if (s64_ret < 0) {
 		bpf_printk("shot routing: %d", s64_ret);
-		return TC_ACT_SHOT;
+		return TCX_DROP;
 	}
 
 	// Fill routing result.
@@ -1294,7 +1298,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 		    bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
 					&routing_result, BPF_ANY)) {
 			bpf_printk("shot save direct routing result: %d", s64_ret);
-			return TC_ACT_SHOT;
+			return TCX_DROP;
 		}
 		goto direct;
 	case OUTBOUND_BLOCK:
@@ -1321,7 +1325,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 
 		if (!state) {
 			// Outbound is not ready. skip
-			return TC_ACT_PIPE;
+			return TCX_NEXT;
 		}
 
 		switch (*state) {
@@ -1339,23 +1343,26 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
 				&routing_result, BPF_ANY)) {
 		bpf_printk("shot save routing result: %d", s64_ret);
-		return TC_ACT_SHOT;
+		return TCX_DROP;
 	}
 
 control_plane:
 	// Assign to control plane.
-	prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples, &ethh);
+	if (prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples,
+					   &ethh))
+		return TCX_DROP;
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
 	skb->mark = routing_result.mark;
-	return TC_ACT_PIPE;
+	return TCX_NEXT;
 
 block:
-	return TC_ACT_SHOT;
+	return TCX_DROP;
 }
 
-static __always_inline int do_lan_egress(struct __sk_buff *skb, u32 link_h_len)
+static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
+					 bool drop_ndp_redirect)
 {
 	struct ethhdr ethh;
 	struct l3_hdr l3h;
@@ -1369,13 +1376,13 @@ static __always_inline int do_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
-		return TC_ACT_PIPE;
+		return TCX_NEXT;
 	}
 
-	if (skb->ingress_ifindex == NOWHERE_IFINDEX &&  // Only drop NDP_REDIRECT packets from localhost
-		l4proto == IPPROTO_ICMPV6 && l4h.icmp6h.icmp6_type == NDP_REDIRECT) {
-		// REDIRECT (NDP)
-		return TC_ACT_SHOT;
+	if (drop_ndp_redirect && skb->ingress_ifindex == NOWHERE_IFINDEX &&
+	    l4proto == IPPROTO_ICMPV6 && l4h.icmp6h.icmp6_type == NDP_REDIRECT) {
+		// Only drop NDP_REDIRECT packets from localhost on LAN egress.
+		return TCX_DROP;
 	}
 
 	// Update UDP Conntrack
@@ -1387,22 +1394,22 @@ static __always_inline int do_lan_egress(struct __sk_buff *skb, u32 link_h_len)
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
 
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-			return TC_ACT_SHOT;
+			return TCX_DROP;
 	}
 
-	return TC_ACT_PIPE;
+	return TCX_NEXT;
 }
 
 SEC("tc/lan_egress_l2")
 int lan_egress_l2(struct __sk_buff *skb)
 {
-	return do_lan_egress(skb, ETH_HLEN);
+	return do_reply_path(skb, ETH_HLEN, true);
 }
 
 SEC("tc/lan_egress_l3")
 int lan_egress_l3(struct __sk_buff *skb)
 {
-	return do_lan_egress(skb, 0);
+	return do_reply_path(skb, 0, true);
 }
 
 SEC("tc/lan_ingress_l2")
@@ -1417,48 +1424,16 @@ int lan_ingress_l3(struct __sk_buff *skb)
 	return do_tproxy(skb, false, 0);
 }
 
-static __always_inline int do_tproxy_wan_ingress(struct __sk_buff *skb, u32 link_h_len)
-{
-	struct ethhdr ethh;
-	struct l3_hdr l3h;
-	struct l4_hdr l4h;
-	__u8 ihl;
-	__u8 l4proto;
-	__u32 offset = 0;
-
-	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
-				  &l4proto, &offset);
-
-	if (ret) {
-		bpf_printk("parse_transport: %d", ret);
-		return TC_ACT_PIPE;
-	}
-
-	// Update UDP Conntrack
-	if (l4proto == IPPROTO_UDP) {
-		struct tuples tuples;
-		struct tuples_key reversed_tuples_key;
-
-		get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
-		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
-
-		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
-			return TC_ACT_SHOT;
-	}
-
-	return TC_ACT_PIPE;
-}
-
 SEC("tc/wan_ingress_l2")
 int tproxy_wan_ingress_l2(struct __sk_buff *skb)
 {
-	return do_tproxy_wan_ingress(skb, ETH_HLEN);
+	return do_reply_path(skb, ETH_HLEN, false);
 }
 
 SEC("tc/wan_ingress_l3")
 int tproxy_wan_ingress_l3(struct __sk_buff *skb)
 {
-	return do_tproxy_wan_ingress(skb, 0);
+	return do_reply_path(skb, 0, false);
 }
 
 // We cannot modify the dest address here.
@@ -1467,7 +1442,7 @@ static __always_inline int do_tproxy_wan_egress(struct __sk_buff *skb, u32 link_
 {
 	// Skip packets not from localhost.
 	if (skb->ingress_ifindex != NOWHERE_IFINDEX)
-		return TC_ACT_PIPE;
+		return TCX_NEXT;
 
 	return do_tproxy(skb, true, link_h_len);
 }

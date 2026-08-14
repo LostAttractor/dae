@@ -11,6 +11,7 @@ on:
       - "Makefile"
       - "control/kern/tests/*.go"
       - ".github/workflows/bpf-test.yml"
+      - "control/kern/headers"
   push:
     branches:
       - next
@@ -23,6 +24,7 @@ on:
       - "Makefile"
       - "control/kern/tests/*.go"
       - ".github/workflows/bpf-test.yml"
+      - "control/kern/headers"
 
 permissions: read-all
 
@@ -30,7 +32,6 @@ jobs:
   bpf_tests:
     name: BPF Unit Test
     runs-on: ubuntu-latest
-    continue-on-error: true
     strategy:
       matrix:
         env:

@@ -8,7 +8,11 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - ".gitmodules"
+      - "Makefile"
       - ".github/workflows/kernel-test.yml"
+      - "control/kern/headers"
+      - "trace/kern/headers"
   push:
     branches:
       - next
@@ -18,7 +22,11 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - ".gitmodules"
+      - "Makefile"
       - ".github/workflows/kernel-test.yml"
+      - "control/kern/headers"
+      - "trace/kern/headers"
 
 jobs:
 
@@ -37,7 +45,6 @@ jobs:
 
     - name: Generate and build
       run: |
-        git submodule update --init
         make GOFLAGS="-buildvcs=false" CC=clang
         CGO_ENABLED=0 go test -c ./control -o control.test
 
@@ -82,7 +89,7 @@ jobs:
             apt install -y unzip
 
             DAE_NETKIT_TEST=1 /host/dae/control.test \
-              -test.run '^(TestCreateNetkitPairIntegration|TestInternalNetkitProgramSpecs)$' \
+              -test.run '^(TestCreateNetkitPairIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
               -test.count=1
 
       - name: Setup network
@@ -184,15 +191,16 @@ jobs:
             !
 
             chmod 600 ./conf.dae
+            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
+            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              echo "dae did not become ready"
               cat dae.log
               exit 1
             fi
@@ -231,6 +239,7 @@ jobs:
             docker exec dae nc -v -w1 2606:4700:4700::1111 443 &> /host/nc.log
             cat /host/nc.log | grep -q 'succeeded!'
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:443'
+            cat /host/v2ray.access.log | grep -Fq 'accepted tcp:[2606:4700:4700::1111]:443'
 
       - name: Check WAN IPv6 UDP
         uses: cilium/little-vm-helper@v0.0.28
@@ -248,6 +257,7 @@ jobs:
               sleep 2
             done
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1111]:53'
+            cat /host/v2ray.access.log | grep -Fq 'accepted udp:[2606:4700:4700::1111]:53'
 
       - name: Setup WAN UDP port conflict
         uses: cilium/little-vm-helper@v0.0.28
@@ -258,15 +268,16 @@ jobs:
 
             docker restart -t0 dae v2ray
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
+            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
+            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              echo "dae did not become ready"
               cat dae.log
               exit 1
             fi
@@ -372,15 +383,16 @@ jobs:
             !
 
             chmod 600 ./conf.dae
+            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
+            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              echo "dae did not become ready"
               cat dae.log
               exit 1
             fi
@@ -418,6 +430,7 @@ jobs:
             docker exec dae ip net e dae nc -v -w1 2606:4700:4700::1001 80 &> /host/nc.log
             cat /host/nc.log | grep -q 'succeeded!'
             cat /host/dae.log | grep -F -- '-> [2606:4700:4700::1001]:80'
+            cat /host/v2ray.access.log | grep -Fq 'accepted tcp:[2606:4700:4700::1001]:80'
 
       - name: Check LAN IPv6 UDP
         uses: cilium/little-vm-helper@v0.0.28
@@ -435,6 +448,7 @@ jobs:
               sleep 2
             done
             cat /host/dae.log | grep -F -- '-> [2001:4860:4860::8844]:53'
+            cat /host/v2ray.access.log | grep -Fq 'accepted udp:[2001:4860:4860::8844]:53'
 
       - name: Setup LAN UDP port conflict
         uses: cilium/little-vm-helper@v0.0.28
@@ -451,15 +465,16 @@ jobs:
             docker exec dae sysctl net.ipv6.conf.dae-veth-peer.forwarding=1
 
             nohup docker exec v2ray v2ray -c /host/v2ray.json &> v2ray.log &
+            docker exec dae rm -f /var/run/dae.pid
             nohup docker exec dae /host/dae/dae run -c /host/conf.dae &> dae.log &
             for i in {1..30}; do
-              if grep -Eq 'Loaded eBPF programs and maps|Started control plane|dae started' dae.log; then
+              if docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
                 break
               fi
               sleep 1
             done
-            if ! docker exec dae sh -c 'grep -qs "^dae$" /proc/[0-9]*/comm'; then
-              echo "dae exited before ready"
+            if ! docker exec dae sh -c 'pid=$(cat /var/run/dae.pid 2>/dev/null) && [ "$(cat /proc/$pid/comm 2>/dev/null)" = dae ]'; then
+              echo "dae did not become ready"
               cat dae.log
               exit 1
             fi

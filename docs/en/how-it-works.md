@@ -2,7 +2,7 @@
 
 [**简体中文**](../zh/how-it-works.md) | [**English**](./how-it-works.md)
 
-dae operates by loading a program into the tc (traffic control) mount point in the Linux kernel using [eBPF](https://en.wikipedia.org/wiki/EBPF). This program performs traffic splitting before the traffic enters the TCP/IP network stack. The position of tc in the Linux network protocol stack is illustrated in the diagram below (the diagram illustrates the receiving path, while the sending path is in the opposite direction), where netfilter represents the location of iptables/nftables.
+dae uses [eBPF](https://en.wikipedia.org/wiki/EBPF) programs attached through TCX at Linux traffic-control ingress and egress hooks. These programs split traffic before it enters the TCP/IP network stack without creating a `clsact` qdisc. The position of traffic control in the Linux network stack is illustrated below (the diagram shows the receive path; the send path is reversed), where netfilter represents iptables/nftables.
 
 ![Network Stack Path](../netstack-path.webp)
 
@@ -29,15 +29,13 @@ Hence, if DNS requests cannot pass through dae, domain-based splitting will not 
 >
 > Additionally, advanced users who have used alternative splitting solutions and don't wish to route DNS requests through dae but still want certain traffic to be split based on domain (e.g., splitting traffic to Netflix nodes and download nodes based on the target domain, with some directly connecting via the core) can enforce the use of sniffed domains for splitting by setting `dial_mode: domain++`.
 
-dae performs traffic splitting in the interface BPF programs. Depending on the result, traffic is either redirected into dae's private Netkit path for proxying or allowed to bypass dae and go directly.
+dae performs traffic splitting in the interface BPF programs. On an interface configured for both roles, TCX runs WAN before LAN on ingress and LAN before WAN on egress. Programs already attached through TCX retain precedence and must return `TCX_NEXT` for dae's programs on the same hook to run. Depending on the result, traffic is either redirected into dae's private Netkit path for proxying or allowed to bypass dae and go directly.
 
 ### Proxy Mechanism
 
 The proxy mechanism of dae is akin to other programs. The LAN/WAN programs redirect selected packets into a private L2 Netkit pair. Native Netkit hooks prepare those packets for local delivery in dae's network namespace, where a BPF SK_LOOKUP program assigns the TCP or UDP listener from dae's socket map. This keeps the original destination intact without relying on a tc hook on the private link.
 
 In terms of benchmarking, dae's proxy performance slightly surpasses that of other proxy programs, but the difference is not significant.
-
-As of [PR:implement stack bypass](https://github.com/daeuniverse/dae/pull/458), the hijack datapath has been changed to bypass stack for better performance and less stack influence (e.g. netfilter, systemd-sysctl). Please refer to the PR description for better understanding.
 
 ### Direct Connection Mechanism
 

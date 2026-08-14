@@ -123,7 +123,6 @@ jobs:
 
       - name: Get project dependencies
         run: |
-          git submodule update --init --recursive
           GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
           find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
           sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
