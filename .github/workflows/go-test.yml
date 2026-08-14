@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - ".gitmodules"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
@@ -13,6 +16,9 @@ on:
       - next
     paths:
       - "**/*.go"
+      - "**/*.c"
+      - "**/*.h"
+      - ".gitmodules"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
@@ -36,5 +42,10 @@ jobs:
             go.sum
           go-version: '>=1.25.7'
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang-15 llvm-15
+
       - name: Run tests
-        run: go test ./...
+        run: make test CLANG=clang-15 STRIP=llvm-strip-15
