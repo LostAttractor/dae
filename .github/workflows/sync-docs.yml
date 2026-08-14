@@ -13,6 +13,8 @@ on:
       - "README*.md"
       - "docs/**"
       - "example.dae"
+      - "hack/ci/config-doc-generator.py"
+      - "hack/templates/example-config.md"
       - "package.json"
       - ".autocorrectrc"
       - ".markdownlint-cli2.jsonc"
@@ -51,7 +53,7 @@ jobs:
         with:
           name: pre_flight_artifacts
           path: |
-            ./docs/sync/*.md
+            ./hack/sync/*.md
 
   sync-to-dae-docs:
     needs: [replicate-config]
@@ -77,11 +79,13 @@ jobs:
           git config user.email 'daebot@users.noreply.github.com'
           git ls-files --others --exclude-standard -- "*.md"
           git add "*.md"
-          git commit -m "ci(auto-release): push proposed documentation changes from upstream dae project"
+          if ! git diff --cached --quiet; then
+            git commit -m "ci(auto-release): push proposed documentation changes from upstream dae project"
+          fi
 
       - name: Create Pull Request
         id: create_pr
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           author: daebot <dae@v2raya.org>
           committer: daebot <dae@v2raya.org>
