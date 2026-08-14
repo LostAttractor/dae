@@ -23,18 +23,20 @@ const (
 	RerouteMode_Force     RerouteMode = "force"
 )
 
-func VerifySniffVerifyMode(mode string) {
+func VerifySniffVerifyMode(mode string) error {
 	switch mode {
 	case "none", "loose", "strict":
+		return nil
 	default:
-		panic(fmt.Sprintf("unsupported sniff verify mode: %v", mode))
+		return fmt.Errorf("unsupported sniff verify mode: %v", mode)
 	}
 }
 
-func VerifyRerouteMode(mode string) {
+func VerifyRerouteMode(mode string) error {
 	switch mode {
 	case "none", "while_needed", "force":
+		return nil
 	default:
-		panic(fmt.Sprintf("unsupported reroute mode: %v", mode))
+		return fmt.Errorf("unsupported reroute mode: %v", mode)
 	}
 }

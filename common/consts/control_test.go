@@ -9,46 +9,26 @@ import "testing"
 
 func TestVerifyRerouteMode(t *testing.T) {
 	for _, mode := range []string{"none", "while_needed", "force"} {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("VerifyRerouteMode(%q) should not panic: %v", mode, r)
-				}
-			}()
-			VerifyRerouteMode(mode)
-		}()
+		if err := VerifyRerouteMode(mode); err != nil {
+			t.Errorf("VerifyRerouteMode(%q) = %v", mode, err)
+		}
 	}
 	for _, mode := range []string{"", "NONE", "whileneeded", "always", "force "} {
-		func() {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Errorf("VerifyRerouteMode(%q) should panic", mode)
-				}
-			}()
-			VerifyRerouteMode(mode)
-		}()
+		if err := VerifyRerouteMode(mode); err == nil {
+			t.Errorf("VerifyRerouteMode(%q) unexpectedly succeeded", mode)
+		}
 	}
 }
 
 func TestVerifySniffVerifyMode(t *testing.T) {
 	for _, mode := range []string{"none", "loose", "strict"} {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("VerifySniffVerifyMode(%q) should not panic: %v", mode, r)
-				}
-			}()
-			VerifySniffVerifyMode(mode)
-		}()
+		if err := VerifySniffVerifyMode(mode); err != nil {
+			t.Errorf("VerifySniffVerifyMode(%q) = %v", mode, err)
+		}
 	}
 	for _, mode := range []string{"", "NONE", "lose", "strict ", "verify"} {
-		func() {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Errorf("VerifySniffVerifyMode(%q) should panic", mode)
-				}
-			}()
-			VerifySniffVerifyMode(mode)
-		}()
+		if err := VerifySniffVerifyMode(mode); err == nil {
+			t.Errorf("VerifySniffVerifyMode(%q) unexpectedly succeeded", mode)
+		}
 	}
 }

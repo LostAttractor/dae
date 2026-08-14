@@ -20,6 +20,7 @@ type patch func(params *Config) error
 
 var patches = []patch{
 	validateSoMarkFromDae,
+	validateControlModes,
 	validateCheckIntervals,
 	patchEmptyDns,
 	validateFallbacks,
@@ -28,6 +29,13 @@ var patches = []patch{
 
 func validateSoMarkFromDae(params *Config) error {
 	return common.ValidateSoMarkFromDae(params.Global.SoMarkFromDae)
+}
+
+func validateControlModes(params *Config) error {
+	if err := consts.VerifyRerouteMode(string(params.Global.RerouteMode)); err != nil {
+		return err
+	}
+	return consts.VerifySniffVerifyMode(string(params.Global.SniffVerifyMode))
 }
 
 func validateCheckIntervals(params *Config) error {
