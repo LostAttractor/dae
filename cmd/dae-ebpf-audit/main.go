@@ -24,14 +24,13 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-const daeParamSize = 24
+const daeParamSize = 20
 
 // daeParam must match struct dae_param in control/kern/tproxy.c.
 type daeParam struct {
-	TproxyPort           uint32
 	ControlPlanePid      uint32
 	Dae0Ifindex          uint32
-	DaeNetnsId           uint32
+	Dae0peerIfindex      uint32
 	Dae0peerMac          [6]uint8
 	HasBpfGetCurrentTask uint8
 	Padding              uint8
@@ -103,10 +102,9 @@ func run(objectPath string, outputDir string, hold bool) error {
 	}
 
 	baseParam := daeParam{
-		TproxyPort:      0x1234,
 		ControlPlanePid: 1,
 		Dae0Ifindex:     1,
-		DaeNetnsId:      1,
+		Dae0peerIfindex: 1,
 		Dae0peerMac:     [6]uint8{0x02, 0, 0, 0, 0, 1},
 	}
 	scenarios := []auditScenario{{name: "fallback", param: baseParam}}
@@ -224,10 +222,9 @@ func validateDaeParamType(typ btf.Type) error {
 		size       uint32
 		arrayElems uint32
 	}{
-		{"tproxy_port", unsafe.Offsetof(layout.TproxyPort), 4, 0},
 		{"control_plane_pid", unsafe.Offsetof(layout.ControlPlanePid), 4, 0},
 		{"dae0_ifindex", unsafe.Offsetof(layout.Dae0Ifindex), 4, 0},
-		{"dae_netns_id", unsafe.Offsetof(layout.DaeNetnsId), 4, 0},
+		{"dae0peer_ifindex", unsafe.Offsetof(layout.Dae0peerIfindex), 4, 0},
 		{"dae0peer_mac", unsafe.Offsetof(layout.Dae0peerMac), 1, uint32(len(layout.Dae0peerMac))},
 		{"has_bpf_get_current_task", unsafe.Offsetof(layout.HasBpfGetCurrentTask), 1, 0},
 		{"padding", unsafe.Offsetof(layout.Padding), 1, 0},

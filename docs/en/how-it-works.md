@@ -29,11 +29,11 @@ Hence, if DNS requests cannot pass through dae, domain-based splitting will not 
 >
 > Additionally, advanced users who have used alternative splitting solutions and don't wish to route DNS requests through dae but still want certain traffic to be split based on domain (e.g., splitting traffic to Netflix nodes and download nodes based on the target domain, with some directly connecting via the core) can enforce the use of sniffed domains for splitting by setting `dial_mode: domain++`.
 
-dae achieves traffic splitting by redirecting traffic using the program in the tc mount point. The redirection is based on the splitting result, either redirecting the traffic to dae's tproxy port or allowing it to bypass dae and go directly.
+dae performs traffic splitting in the interface BPF programs. Depending on the result, traffic is either redirected into dae's private Netkit path for proxying or allowed to bypass dae and go directly.
 
 ### Proxy Mechanism
 
-The proxy mechanism of dae is akin to other programs. However, when binding to the LAN interface, dae leverages eBPF to directly associate the socket buffer of the traffic to be proxied in the tc mount point with the socket of dae's tproxy listening port. While binding to the WAN interface, dae transfers the socket buffer of the traffic to be proxied from the egress queue of the network card to the ingress queue. It also disables checksums and modifies the destination address to the tproxy listening port.
+The proxy mechanism of dae is akin to other programs. The LAN/WAN programs redirect selected packets into a private L2 Netkit pair. Native Netkit hooks prepare those packets for local delivery in dae's network namespace, where a BPF SK_LOOKUP program assigns the TCP or UDP listener from dae's socket map. This keeps the original destination intact without relying on a tc hook on the private link.
 
 In terms of benchmarking, dae's proxy performance slightly surpasses that of other proxy programs, but the difference is not significant.
 

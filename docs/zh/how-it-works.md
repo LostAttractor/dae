@@ -27,11 +27,11 @@ dae 支持以域名、源 IP、目的 IP、源端口、目的端口、TCP/UDP、
 >
 > 同时，当高级用户已经使用了其他的分流方案，且不希望将 DNS 请求通过 dae，但希望被代理的那部分流量可以基于域名进行分流（例如基于目标域名，一部分分流到奈飞节点，一部分分流到下载节点，当然，也可以一部分通过 core 直连），可以通过 `dial_mode: domain++` 来强制使用嗅探的域名重新分流。
 
-dae 会通过在 tc 挂载点的程序将流量分流，根据分流结果决定重定向到 dae 的 tproxy 端口或放其直连。
+dae 通过接口上的 BPF 程序进行流量分流，根据结果决定将流量重定向到私有 Netkit 代理路径或直接放行。
 
 ### 代理原理
 
-dae 的代理原理和其他程序近似。区别是在绑定 LAN 接口时，dae 通过 eBPF 将 tc 挂载点的需代理流量的 socket buffer 直接关联至 dae 的 tproxy 侦听端口的 socket；在绑定 WAN 接口时，dae 将需代理流量 socket buffer 从网卡出队列移动至网卡的入队列，禁用其 checksum，并修改目的地址为 tproxy 侦听端口。
+dae 的代理原理和其他程序近似。LAN/WAN 程序会把需要代理的流量重定向到私有 L2 Netkit 设备，Netkit 原生 hook 在 dae 的网络命名空间中为本地投递准备数据包，再由 BPF SK_LOOKUP 程序从 socket map 中选择 TCP 或 UDP 监听 socket。该路径无需在私有链路上挂载 tc，并保留原始目的地址。
 
 以 benchmark 来看，dae 的代理性能比其他代理程序好一些，但不多。
 

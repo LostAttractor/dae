@@ -98,11 +98,6 @@ check_routing_ipv4_tcp_with_result(struct __sk_buff *skb,
 			return TC_ACT_SHOT;
 		}
 
-		if (skb->cb[1] != IPPROTO_TCP) {
-			bpf_printk("skb->cb[1] != IPPROTO_TCP\n");
-			return TC_ACT_SHOT;
-		}
-
 	}
 
 	struct ethhdr *eth = data + sizeof(*status_code);

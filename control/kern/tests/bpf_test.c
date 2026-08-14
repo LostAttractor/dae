@@ -107,7 +107,7 @@ int testsetup_ipset_match(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_DIRECT);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 112 , {} }, // */16
+		.trie_key = { .prefixlen = 112 }, // */16
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xe0010000); // 224.1.0.0
@@ -148,7 +148,7 @@ int testsetup_ipset_mismatch(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_DIRECT);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 112, {} }, // */16
+		.trie_key = { .prefixlen = 112 }, // */16
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xe0010000); // 224.1.0.0
@@ -189,7 +189,7 @@ int testsetup_source_ipset_match(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_DIRECT);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 120, {} },
+		.trie_key = { .prefixlen = 120 },
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
@@ -230,7 +230,7 @@ int testsetup_source_ipset_mismatch(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_DIRECT);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 120, {} },
+		.trie_key = { .prefixlen = 120 },
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0xc0a83200); // 192.168.50.0
@@ -475,7 +475,7 @@ int testsetup_mac_match(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 128, {} },
+		.trie_key = { .prefixlen = 128 },
 	};
 	__u8 *data = (__u8 *)&lpm_key.data;
 	data[10] = 0x6;
@@ -498,7 +498,7 @@ SEC("tc/check/mac_match")
 int testcheck_mac_match(struct __sk_buff *skb)
 {
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 128 , {} },
+		.trie_key = { .prefixlen = 128 },
 	};
 	__u8 *data = (__u8 *)&lpm_key.data;
 	data[10] = 0x6;
@@ -533,7 +533,7 @@ int testsetup_mac_mismatch(struct __sk_buff *skb)
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 128, {} },
+		.trie_key = { .prefixlen = 128 },
 	};
 	__u8 *data = (__u8 *)&lpm_key.data;
 	data[10] = 0x0;
@@ -647,7 +647,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 112 , {} }, // */16
+		.trie_key = { .prefixlen = 112 }, // */16
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
@@ -709,7 +709,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 112 , {} }, // */16
+		.trie_key = { .prefixlen = 112 }, // */16
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0
@@ -771,7 +771,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
 	struct lpm_key lpm_key = {
-		.trie_key = { .prefixlen = 112 , {} }, // */16
+		.trie_key = { .prefixlen = 112 }, // */16
 	};
 	lpm_key.data[2] = bpf_ntohl(0xffff);
 	lpm_key.data[3] = bpf_ntohl(0x01010000); // 1.1.0.0

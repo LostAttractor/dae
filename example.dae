@@ -1,8 +1,7 @@
 global {
     ##### Software options.
 
-    # tproxy port to listen on. It is NOT a HTTP/SOCKS port, and is just used by eBPF program.
-    # In normal case, you do not need to use it.
+    # Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.
     tproxy_port: 12345
 
     # Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed

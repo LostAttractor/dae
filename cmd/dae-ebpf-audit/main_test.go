@@ -25,13 +25,12 @@ func TestValidateDaeParamType(t *testing.T) {
 		Name: "dae_param",
 		Size: daeParamSize,
 		Members: []btf.Member{
-			{Name: "tproxy_port", Type: u32, Offset: 0},
-			{Name: "control_plane_pid", Type: u32, Offset: 32},
-			{Name: "dae0_ifindex", Type: u32, Offset: 64},
-			{Name: "dae_netns_id", Type: u32, Offset: 96},
-			{Name: "dae0peer_mac", Type: &btf.Array{Type: u8, Nelems: 6}, Offset: 128},
-			{Name: "has_bpf_get_current_task", Type: u8, Offset: 176},
-			{Name: "padding", Type: u8, Offset: 184},
+			{Name: "control_plane_pid", Type: u32, Offset: 0},
+			{Name: "dae0_ifindex", Type: u32, Offset: 32},
+			{Name: "dae0peer_ifindex", Type: u32, Offset: 64},
+			{Name: "dae0peer_mac", Type: &btf.Array{Type: u8, Nelems: 6}, Offset: 96},
+			{Name: "has_bpf_get_current_task", Type: u8, Offset: 144},
+			{Name: "padding", Type: u8, Offset: 152},
 		},
 	}
 	if err := validateDaeParamType(valid); err != nil {

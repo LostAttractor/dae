@@ -101,40 +101,79 @@ func TestCreateNetkitPairIntegration(t *testing.T) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		t.Fatal(err)
 	}
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Type:    ebpf.SchedCLS,
-		License: "GPL",
+	if err := netns.Set(hostNs); err != nil {
+		t.Fatal(err)
+	}
+
+	skLookupProg := newTestProgram(t, ebpf.SkLookup, ebpf.AttachSkLookup, 1)
+	skLookupLink, err := link.AttachNetNs(int(peerNs), skLookupProg)
+	if err != nil {
+		t.Fatalf("attach SK_LOOKUP to peer netns: %v", err)
+	}
+	t.Cleanup(func() { _ = skLookupLink.Close() })
+
+	primaryProg := newTestProgram(t, ebpf.SchedCLS, ebpf.AttachNetkitPrimary, 0)
+	primaryLink, err := link.AttachNetkit(link.NetkitOptions{
+		Interface: primary.Attrs().Index,
+		Program:   primaryProg,
+		Attach:    ebpf.AttachNetkitPrimary,
+	})
+	if err != nil {
+		t.Fatalf("attach Netkit primary to %s: %v", primary.Attrs().Name, err)
+	}
+	t.Cleanup(func() { _ = primaryLink.Close() })
+
+	peerProg := newTestProgram(t, ebpf.SchedCLS, ebpf.AttachNetkitPeer, 0)
+	peerLink, err := link.AttachNetkit(link.NetkitOptions{
+		Interface: primary.Attrs().Index,
+		Program:   peerProg,
+		Attach:    ebpf.AttachNetkitPeer,
+	})
+	if err != nil {
+		t.Fatalf("attach Netkit peer through %s: %v", primary.Attrs().Name, err)
+	}
+	t.Cleanup(func() { _ = peerLink.Close() })
+}
+
+func TestInternalNetkitProgramSpecs(t *testing.T) {
+	spec, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name        string
+		programType ebpf.ProgramType
+		attachType  ebpf.AttachType
+	}{
+		{"tproxy_dae0peer_ingress", ebpf.SchedCLS, ebpf.AttachNetkitPrimary},
+		{"tproxy_dae0_ingress", ebpf.SchedCLS, ebpf.AttachNetkitPeer},
+		{"tproxy_sk_lookup", ebpf.SkLookup, ebpf.AttachSkLookup},
+	}
+	for _, test := range tests {
+		program := spec.Programs[test.name]
+		if program == nil {
+			t.Fatalf("program %s not found", test.name)
+		}
+		if program.Type != test.programType || program.AttachType != test.attachType {
+			t.Errorf("program %s type/attach = %v/%v, want %v/%v", test.name, program.Type, program.AttachType, test.programType, test.attachType)
+		}
+	}
+}
+
+func newTestProgram(t *testing.T, programType ebpf.ProgramType, attachType ebpf.AttachType, ret int32) *ebpf.Program {
+	t.Helper()
+	program, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type:       programType,
+		AttachType: attachType,
+		License:    "GPL",
 		Instructions: asm.Instructions{
-			asm.Mov.Imm(asm.R0, 0),
+			asm.Mov.Imm(asm.R0, ret),
 			asm.Return(),
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = prog.Close() })
-	peerTCX, err := link.AttachTCX(link.TCXOptions{
-		Interface: peer.Attrs().Index,
-		Program:   prog,
-		Attach:    ebpf.AttachTCXIngress,
-		Anchor:    link.Head(),
-	})
-	if err != nil {
-		t.Fatalf("attach TCX to %s: %v", peer.Attrs().Name, err)
-	}
-	t.Cleanup(func() { _ = peerTCX.Close() })
-
-	if err := netns.Set(hostNs); err != nil {
-		t.Fatal(err)
-	}
-	primaryTCX, err := link.AttachTCX(link.TCXOptions{
-		Interface: primary.Attrs().Index,
-		Program:   prog,
-		Attach:    ebpf.AttachTCXIngress,
-		Anchor:    link.Head(),
-	})
-	if err != nil {
-		t.Fatalf("attach TCX to %s: %v", primary.Attrs().Name, err)
-	}
-	t.Cleanup(func() { _ = primaryTCX.Close() })
+	t.Cleanup(func() { _ = program.Close() })
+	return program
 }
