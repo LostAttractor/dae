@@ -73,6 +73,7 @@ type domainRegistration struct {
 	finiteExpiry  time.Time // longest finite observation; retained under no-expiry
 	noExpiry      bool      // plane-local no-expiry observation
 	inKernel      bool
+	userLive      bool
 	kernelHeapIdx int
 	verifyHeapIdx int
 }
@@ -202,6 +203,8 @@ func (h *expiryHeap) Pop() any {
 //     registry is a superset of the kernel state.
 //   - len(kernelHeap) == number of in-kernel registrations; both heaps'
 //     indices are consistent.
+//   - userLive is the number of registrations classified as live by their
+//     latest update or the latest periodic sweep.
 type DomainRegistry struct {
 	mu sync.Mutex
 
@@ -216,6 +219,7 @@ type DomainRegistry struct {
 	kernelIPHeap ipExpiryHeap // in-kernel IP states, by earliest expiry
 	verifyHeap   expiryHeap   // all registrations, by expiry
 	evaluatedAt  time.Time    // latest observation/sweep time used for liveness
+	userLive     int          // sweep-cached live userspace registrations
 
 	kernelMax int
 	userMax   int
@@ -331,6 +335,7 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 			r.finiteExpiry = expiry
 		}
 		heap.Fix(&g.verifyHeap, r.verifyHeapIdx)
+		g.refreshUserLiveness(r, now)
 		bitmapChanged := !slices.Equal(r.bitmap, bitmap)
 		if bitmapChanged {
 			r.bitmap = cloneDomainBitmap(bitmap)
@@ -362,7 +367,7 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 		kernelHeapIdx: -1,
 		verifyHeapIdx: -1,
 	}
-	g.addRegistration(r)
+	g.addRegistration(r, now)
 	g.attachKernel(r, now)
 	g.gcUser(now)
 }
@@ -417,7 +422,7 @@ func (g *DomainRegistry) Sweep(now time.Time) {
 	} else {
 		now = g.evaluatedAt
 	}
-	g.reapExpiredKernel(now)
+	g.refreshAllUserLiveness(now)
 	g.gcUser(now)
 }
 
@@ -476,7 +481,7 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(fqdn st
 	if g.closed {
 		return
 	}
-	if g.verifyHeap.Len() != 0 || len(g.byName) != 0 || len(g.byAddr) != 0 || len(g.nonzeroByIP) != 0 || g.kernelHeap.Len() != 0 || len(g.kernelIPHeap) != 0 {
+	if g.verifyHeap.Len() != 0 || g.userLive != 0 || len(g.byName) != 0 || len(g.byAddr) != 0 || len(g.nonzeroByIP) != 0 || g.kernelHeap.Len() != 0 || len(g.kernelIPHeap) != 0 {
 		panic(fmt.Errorf("domain registry adopted into a non-empty registry (size=%v)", g.verifyHeap.Len()))
 	}
 	if !old.closed {
@@ -509,7 +514,7 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(fqdn st
 				kernelHeapIdx: -1,
 				verifyHeapIdx: -1,
 			}
-			g.addRegistration(nr)
+			g.addRegistration(nr, now)
 		}
 	}
 
@@ -574,21 +579,31 @@ func (g *DomainRegistry) Adopted() bool {
 // RegistryUsage is the fill of the userspace registry and the kernel map
 // against their respective limits.
 type RegistryUsage struct {
-	UserUsed   int
-	UserMax    int
-	KernelUsed int
-	KernelMax  int
+	UserUsed     int
+	UserLive     int
+	UserRetained int
+	UserMax      int
+	KernelUsed   int
+	KernelMax    int
 }
 
-// Usage reports the current fill of both sides in one lock acquisition.
+// Usage reports the current fill of both sides in one lock acquisition. Live
+// and retained counts are cached by updates and the periodic sweep, so this
+// stays O(1) even when the userspace registry is at capacity. With the sweeper
+// running, time-driven transitions for untouched records lag wall time by at
+// most one sweep interval.
 func (g *DomainRegistry) Usage() RegistryUsage {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	userUsed := g.verifyHeap.Len()
+	userLive := g.userLive
 	return RegistryUsage{
-		UserUsed:   g.verifyHeap.Len(),
-		UserMax:    g.userMax,
-		KernelUsed: len(g.byIP),
-		KernelMax:  g.kernelMax,
+		UserUsed:     userUsed,
+		UserLive:     userLive,
+		UserRetained: userUsed - userLive,
+		UserMax:      g.userMax,
+		KernelUsed:   len(g.byIP),
+		KernelMax:    g.kernelMax,
 	}
 }
 
@@ -626,6 +641,11 @@ func (g *DomainRegistry) Close() error {
 		g.mu.Unlock()
 		return nil
 	}
+	now := time.Now()
+	if g.evaluatedAt.After(now) {
+		now = g.evaluatedAt
+	}
+	g.refreshAllUserLiveness(now)
 	g.closed = true
 	started := g.started
 	g.mu.Unlock()
@@ -638,7 +658,7 @@ func (g *DomainRegistry) Close() error {
 
 // addRegistration inserts a new registration into the userspace indexes.
 // Callers handle kernel admission separately.
-func (g *DomainRegistry) addRegistration(r *domainRegistration) {
+func (g *DomainRegistry) addRegistration(r *domainRegistration, now time.Time) {
 	m := g.byName[r.queryInfo]
 	if m == nil {
 		m = make(map[netip.Addr]*domainRegistration)
@@ -653,6 +673,37 @@ func (g *DomainRegistry) addRegistration(r *domainRegistration) {
 	refs[r] = struct{}{}
 	g.replaceNonzeroContribution(r.ip, false, time.Time{}, !domainBitmapAllZero(r.bitmap), r.effectiveExpiry())
 	heap.Push(&g.verifyHeap, r)
+	if domainExpiryAlive(r.effectiveExpiry(), now) {
+		r.userLive = true
+		g.userLive++
+	}
+}
+
+// refreshUserLiveness updates the status classification for one registration.
+// Untouched time-driven transitions are handled together by the periodic
+// sweep, keeping Usage itself constant-time.
+func (g *DomainRegistry) refreshUserLiveness(r *domainRegistration, now time.Time) {
+	live := domainExpiryAlive(r.effectiveExpiry(), now)
+	if live == r.userLive {
+		return
+	}
+	r.userLive = live
+	if live {
+		g.userLive++
+	} else {
+		g.userLive--
+	}
+}
+
+func (g *DomainRegistry) refreshAllUserLiveness(now time.Time) {
+	userLive := 0
+	for _, r := range g.verifyHeap.items {
+		r.userLive = domainExpiryAlive(r.effectiveExpiry(), now)
+		if r.userLive {
+			userLive++
+		}
+	}
+	g.userLive = userLive
 }
 
 func (g *DomainRegistry) replaceNonzeroContribution(ip netip.Addr, oldNonzero bool, oldExpiry time.Time, newNonzero bool, newExpiry time.Time) {
@@ -864,6 +915,9 @@ func (g *DomainRegistry) fixKernelIPExpiry(s *ipKernelState) {
 func (g *DomainRegistry) unregister(r *domainRegistration) {
 	if r.inKernel {
 		g.detachKernel(r)
+	}
+	if r.userLive {
+		g.userLive--
 	}
 	heap.Remove(&g.verifyHeap, r.verifyHeapIdx)
 	m := g.byName[r.queryInfo]

@@ -21,19 +21,31 @@ func TestTableUsageRow(t *testing.T) {
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
 	row := tableUsageRow(control.TableUsage{Name: "domain-kernel", Used: 6554, Limit: 65536})
-	want := []string{"domain-kernel", "6554", "65536", "10.0%"}
+	want := []string{"domain-kernel", "6554", "65536", "10.0%", "-"}
 	for i, expected := range want {
 		if got := fmt.Sprint(row[i]); got != expected {
 			t.Errorf("tableUsageRow()[%d] = %q, want %q", i, got, expected)
 		}
 	}
 
-	soft := tableUsageRow(control.TableUsage{Name: "domain-verify", Used: 65536, Limit: 32768, Soft: true})
+	soft := tableUsageRow(control.TableUsage{
+		Name:  "domain-history",
+		Used:  65536,
+		Limit: 32768,
+		Soft:  true,
+		Breakdown: &control.TableUsageBreakdown{
+			Live:     60000,
+			Retained: 5536,
+		},
+	})
 	if got := soft[2].(string); got != "32768 (soft)" {
 		t.Errorf("soft limit cell = %q, want %q", got, "32768 (soft)")
 	}
 	if got := soft[3].(string); got != "200.0%" {
 		t.Errorf("soft usage cell = %q, want %q", got, "200.0%")
+	}
+	if got := soft[4].(string); got != "60000/5536" {
+		t.Errorf("live/retained cell = %q, want %q", got, "60000/5536")
 	}
 
 	zero := tableUsageRow(control.TableUsage{Name: "domain-kernel"})
