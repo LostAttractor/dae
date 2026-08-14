@@ -45,13 +45,13 @@ func waitForDnsFlightParticipants(t *testing.T, c *DnsController, key dnsFlightK
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		c.flightMu.Lock()
+		c.dnsFlightMu.Lock()
 		flight := c.dnsFlights[key]
 		got := 0
 		if flight != nil {
-			got = flight.participants
+			got = flight.participantCount
 		}
-		c.flightMu.Unlock()
+		c.dnsFlightMu.Unlock()
 		if got == want {
 			return
 		}
@@ -419,38 +419,35 @@ func TestDNSFlightCoalescesUpstreamErrors(t *testing.T) {
 func TestDNSFlightParticipantLimit(t *testing.T) {
 	c, _, _ := newTestDnsController(t, nil)
 	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "")
-	flight, leader, err := c.startDNSFlight(key)
+	flight, leader, err := c.joinDNSFlight(key)
 	if err != nil || !leader || flight == nil {
 		t.Fatal("first participant was not admitted as leader")
 	}
-	for i := 1; i < maxDnsDuplicateConcurrent; i++ {
-		joined, leader, err := c.startDNSFlight(key)
+	for i := 1; i < consts.MaxDnsFlightParticipants; i++ {
+		joined, leader, err := c.joinDNSFlight(key)
 		if err != nil || leader || joined != flight {
 			t.Fatalf("participant %d was not admitted as follower", i+1)
 		}
 	}
-	if joined, _, err := c.startDNSFlight(key); err != nil || joined != nil {
+	if joined, _, err := c.joinDNSFlight(key); err != nil || joined != nil {
 		t.Fatal("participant above the flight limit was admitted")
 	}
 	c.leaveDNSFlight(key, flight)
-	if joined, leader, err := c.startDNSFlight(key); err != nil || leader || joined != flight {
+	if joined, leader, err := c.joinDNSFlight(key); err != nil || leader || joined != flight {
 		t.Fatal("a departed waiter did not release its flight slot")
 	}
 	c.finishDNSFlight(key, flight, nil, nil)
 }
 
 func TestDNSFlightDropsStaleDuplicateWaiter(t *testing.T) {
-	oldTimeout := dnsDuplicateWaitTimeout
-	dnsDuplicateWaitTimeout = 20 * time.Millisecond
-	defer func() { dnsDuplicateWaitTimeout = oldTimeout }()
-
 	c, _, _ := newTestDnsController(t, nil)
+	c.dnsDuplicateWaitTimeout = 20 * time.Millisecond
 	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "")
-	flight, leader, err := c.startDNSFlight(key)
+	flight, leader, err := c.joinDNSFlight(key)
 	if err != nil || !leader {
 		t.Fatal("leader was not admitted")
 	}
-	follower, followerLeader, err := c.startDNSFlight(key)
+	follower, followerLeader, err := c.joinDNSFlight(key)
 	if err != nil || followerLeader || follower != flight {
 		t.Fatal("follower did not join")
 	}
@@ -462,6 +459,83 @@ func TestDNSFlightDropsStaleDuplicateWaiter(t *testing.T) {
 		t.Fatal("stale duplicate unexpectedly received a response")
 	}
 	c.finishDNSFlight(key, flight, nil, nil)
+}
+
+func TestDNSFlightCompletionWinsTimeoutRace(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "")
+	flight, leader, err := c.joinDNSFlight(key)
+	if err != nil || !leader {
+		t.Fatal("leader was not admitted")
+	}
+	follower, followerLeader, err := c.joinDNSFlight(key)
+	if err != nil || followerLeader || follower != flight {
+		t.Fatal("follower did not join")
+	}
+	response := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
+	response.Response = true
+	c.finishDNSFlight(key, flight, response, nil)
+	if c.leaveDNSFlight(key, follower) {
+		t.Fatal("timeout won arbitration after flight completion")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	msg := testDNSQuery("ExAmPlE.com.", dnsmessage.TypeA, 2)
+	if err := c.waitDNSFlight(ctx, key, follower, msg); err != nil {
+		t.Fatal(err)
+	}
+	if !msg.Response || msg.Id != 2 || msg.Question[0].Name != "ExAmPlE.com." {
+		t.Fatalf("completed result lost to timeout: %+v", msg)
+	}
+}
+
+func TestDNSFlightPanicUnblocksFollower(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	c.dnsDuplicateWaitTimeout = time.Second
+	key := testDNSFlightKey(queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}, "panic")
+	leaderMsg := testDNSQuery("example.com.", dnsmessage.TypeA, 1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		_ = c.shareDNSResult(context.Background(), key, leaderMsg, func() error {
+			close(started)
+			<-release
+			leaderMsg.Answer = []dnsmessage.RR{(*dnsmessage.A)(nil)}
+			panic("boom")
+		})
+	}()
+	<-started
+
+	followerMsg := testDNSQuery("example.com.", dnsmessage.TypeA, 2)
+	followerDone := make(chan error, 1)
+	var followerResolved atomic.Bool
+	go func() {
+		followerDone <- c.shareDNSResult(context.Background(), key, followerMsg, func() error {
+			followerResolved.Store(true)
+			return nil
+		})
+	}()
+	waitForDnsFlightParticipants(t, c, key, 2)
+	close(release)
+
+	if recovered := <-panicked; recovered != "boom" {
+		t.Fatalf("leader panic = %v, want boom", recovered)
+	}
+	if err := <-followerDone; err == nil || err.Error() != "DNS flight panicked: boom" {
+		t.Fatalf("follower error = %v", err)
+	}
+	if followerResolved.Load() {
+		t.Fatal("follower unexpectedly became a leader")
+	}
+	c.dnsFlightMu.Lock()
+	remaining := len(c.dnsFlights)
+	c.dnsFlightMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("panic left %d flights behind", remaining)
+	}
 }
 
 func TestResponseCacheNormalizesRRSetDeadlines(t *testing.T) {
@@ -822,13 +896,13 @@ func TestDNSFlightFansOutNonCacheableResponse(t *testing.T) {
 	}()
 	<-leaderStarted
 
-	c.flightMu.Lock()
+	c.dnsFlightMu.Lock()
 	flight := c.dnsFlights[key]
-	c.flightMu.Unlock()
+	c.dnsFlightMu.Unlock()
 	if flight == nil {
 		t.Fatal("leader did not publish its flight")
 	}
-	followerFlight, followerIsLeader, err := c.startDNSFlight(key)
+	followerFlight, followerIsLeader, err := c.joinDNSFlight(key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -890,10 +964,10 @@ func TestDNSFlightCloseUnblocksWaiter(t *testing.T) {
 	}()
 	<-leaderStarted
 
-	c.flightMu.Lock()
+	c.dnsFlightMu.Lock()
 	flight := c.dnsFlights[key]
-	c.flightMu.Unlock()
-	followerFlight, followerIsLeader, err := c.startDNSFlight(key)
+	c.dnsFlightMu.Unlock()
+	followerFlight, followerIsLeader, err := c.joinDNSFlight(key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -925,8 +999,12 @@ func TestDnsControllerCloseInterruptsForwarderAndPreventsReuse(t *testing.T) {
 	c.dnsForwarderCache[forwarderKey] = forwarder
 	qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
 
+	if !c.admitDNSRequest() {
+		t.Fatal("open controller rejected request admission")
+	}
 	requestDone := make(chan error, 1)
 	go func() {
+		defer c.activeRequests.Done()
 		query := testDNSQuery(qi.qname, qi.qtype, 1)
 		queryKey, _, cacheable := makeDNSQueryKey(query, qi)
 		_, err := c.dialSend(context.Background(), query, upstream, dialArg, queryKey, cacheable, true)
@@ -1130,6 +1208,12 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 	if !c.admitDNSRequest() {
 		t.Fatal("open controller rejected request registration")
 	}
+	requestDone := false
+	defer func() {
+		if !requestDone {
+			c.activeRequests.Done()
+		}
+	}()
 
 	done := make(chan error, 1)
 	go func() { done <- c.Close() }()
@@ -1143,11 +1227,17 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 	}
 	select {
 	case <-forwarder.closed:
-		t.Fatal("forwarder closed while a request was still in flight")
+	case <-time.After(time.Second):
+		t.Fatal("Close did not interrupt forwarders while draining requests")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Close returned before the admitted request ended: %v", err)
 	default:
 	}
 
 	c.activeRequests.Done()
+	requestDone = true
 	select {
 	case err := <-done:
 		if err != nil {
@@ -1155,11 +1245,6 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Close did not finish after the request ended")
-	}
-	select {
-	case <-forwarder.closed:
-	case <-time.After(time.Second):
-		t.Fatal("Close did not release the forwarder")
 	}
 	if c.admitDNSRequest() {
 		c.activeRequests.Done()

@@ -32,20 +32,6 @@ import (
 
 // TODO: 在 DNS Config 不变的情况下，保留 DNSCache
 
-const (
-	MaxDnsLookupDepth         = 3
-	maxDnsDuplicateConcurrent = 128
-	// dnsStateSweepInterval bounds how long expired cache and domain-registry
-	// state can linger while otherwise idle.
-	dnsStateSweepInterval = time.Minute
-)
-
-// RFC 1035 and RFC 1123 recommend an initial retry interval around five
-// seconds but do not prescribe a total query timeout. Bound duplicate waiters
-// below the leader's 15-second retry window; the flight participant cap bounds
-// memory even when abusive clients send identical queries at high rates.
-var dnsDuplicateWaitTimeout = consts.DefaultDNSTimeout - consts.DefaultDNSRetryInterval
-
 type IpVersionPrefer int
 
 const (
@@ -74,8 +60,11 @@ type DnsController struct {
 	dnsCache          *commonDnsCache
 	dnsForwarderCache map[dnsForwarderKey]DnsForwarder
 
-	flightMu   sync.Mutex
-	dnsFlights map[dnsFlightKey]*dnsFlight
+	dnsFlightMu sync.Mutex
+	dnsFlights  map[dnsFlightKey]*dnsFlight
+	// Set per controller so timeout behavior can be tested without mutating
+	// process-wide state.
+	dnsDuplicateWaitTimeout time.Duration
 
 	// lifecycleMu linearizes shutdown with flight/forwarder creation and
 	// publication. Forwarder and response I/O run outside this mutex; admitted
@@ -122,14 +111,15 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		registry:          option.DomainRegistry,
 		bestDialerChooser: option.BestDialerChooser,
 
-		fixedDomainTtl:    option.FixedDomainTtl,
-		dnsForwarderCache: make(map[dnsForwarderKey]DnsForwarder),
-		dnsCache:          newCommonDnsCache(32768),
-		dnsFlights:        make(map[dnsFlightKey]*dnsFlight),
-		sendPacket:        sendPkt,
-		closed:            closed,
-		close:             close,
-		cacheSweeperDone:  make(chan struct{}),
+		fixedDomainTtl:          option.FixedDomainTtl,
+		dnsForwarderCache:       make(map[dnsForwarderKey]DnsForwarder),
+		dnsCache:                newCommonDnsCache(32768),
+		dnsFlights:              make(map[dnsFlightKey]*dnsFlight),
+		dnsDuplicateWaitTimeout: consts.DnsDuplicateWaitTimeout,
+		sendPacket:              sendPkt,
+		closed:                  closed,
+		close:                   close,
+		cacheSweeperDone:        make(chan struct{}),
 	}
 	go c.runDnsCacheSweeper()
 	return c, nil
@@ -137,7 +127,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 
 func (c *DnsController) runDnsCacheSweeper() {
 	defer close(c.cacheSweeperDone)
-	ticker := time.NewTicker(dnsStateSweepInterval)
+	ticker := time.NewTicker(consts.DnsStateSweepInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -287,8 +277,8 @@ type pendingDNSResponse struct {
 type dnsFlightKey struct {
 	query         dnsQueryKey
 	upstreamIndex consts.DnsRequestOutboundIndex
-	dnsForwarderKey
-	route dnsRerouteKey
+	forwarder     dnsForwarderKey
+	route         dnsRerouteKey
 }
 
 type dnsRerouteKey struct {
@@ -300,18 +290,18 @@ type dnsRerouteKey struct {
 }
 
 type dnsFlight struct {
-	done         chan struct{}
-	participants int
-	result       *dnsmessage.Msg
-	err          error
+	done             chan struct{}
+	participantCount int
+	result           *dnsmessage.Msg
+	err              error
 }
 
 func newDNSFlight() *dnsFlight {
-	return &dnsFlight{done: make(chan struct{}), participants: 1}
+	return &dnsFlight{done: make(chan struct{}), participantCount: 1}
 }
 
 func (f *dnsFlight) complete(msg *dnsmessage.Msg, err error) {
-	if msg != nil {
+	if err == nil && msg != nil {
 		f.result = msg.Copy()
 	}
 	f.err = err
@@ -553,7 +543,7 @@ func (c *DnsController) handleDNSRequest(
 	forwarderKey := makeDNSForwarderKey(upstream, firstDialArgument)
 	flightKey := dnsFlightKey{
 		query: queryKey, upstreamIndex: RequestIndex,
-		dnsForwarderKey: forwarderKey, route: makeDNSRerouteKey(req),
+		forwarder: forwarderKey, route: makeDNSRerouteKey(req),
 	}
 	resolve := func() error {
 		return c.resolveDNSRequest(ctx, dnsMessage, req, queryKey, cacheable, RequestIndex, upstream, firstDialArgument, cacheForwarder)
@@ -586,7 +576,7 @@ func (c *DnsController) resolveDNSRequest(
 	var pending *pendingDNSResponse
 	var err error
 Dial:
-	for invokingDepth := 1; invokingDepth <= MaxDnsLookupDepth; invokingDepth++ {
+	for invokingDepth := 1; invokingDepth <= consts.MaxDnsLookupDepth; invokingDepth++ {
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
 				"question": dnsMessage.Question,
@@ -665,8 +655,8 @@ Dial:
 				return oops.Errorf("unknown upstream: %v", ResponseIndex.String())
 			}
 		}
-		if invokingDepth == MaxDnsLookupDepth {
-			return oops.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", MaxDnsLookupDepth)
+		if invokingDepth == consts.MaxDnsLookupDepth {
+			return oops.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", consts.MaxDnsLookupDepth)
 		}
 		nextUpstreamIndex := consts.DnsRequestOutboundIndex(ResponseIndex)
 		nextUpstream, err := c.routing.GetUpstream(ctx, nextUpstreamIndex)
@@ -697,7 +687,7 @@ Dial:
 // the upstream exchange. This lets every concurrent identical request receive
 // the leader's final response even when that response cannot enter the cache.
 func (c *DnsController) shareDNSResult(ctx context.Context, flightKey dnsFlightKey, msg *dnsmessage.Msg, resolve func() error) (err error) {
-	flight, leader, err := c.startDNSFlight(flightKey)
+	flight, leader, err := c.joinDNSFlight(flightKey)
 	if err != nil {
 		return err
 	}
@@ -712,7 +702,7 @@ func (c *DnsController) shareDNSResult(ctx context.Context, flightKey dnsFlightK
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			c.finishDNSFlight(flightKey, flight, msg, fmt.Errorf("DNS flight panicked: %v", recovered))
+			c.finishDNSFlight(flightKey, flight, nil, fmt.Errorf("DNS flight panicked: %v", recovered))
 			panic(recovered)
 		}
 		c.finishDNSFlight(flightKey, flight, msg, err)
@@ -725,20 +715,22 @@ func (c *DnsController) shareDNSResult(ctx context.Context, flightKey dnsFlightK
 	return err
 }
 
-func (c *DnsController) startDNSFlight(flightKey dnsFlightKey) (*dnsFlight, bool, error) {
+// joinDNSFlight returns a nil flight without an error when an existing flight
+// has reached its participant limit.
+func (c *DnsController) joinDNSFlight(flightKey dnsFlightKey) (*dnsFlight, bool, error) {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
 	if c.closed.Err() != nil {
 		return nil, false, net.ErrClosed
 	}
 
-	c.flightMu.Lock()
-	defer c.flightMu.Unlock()
+	c.dnsFlightMu.Lock()
+	defer c.dnsFlightMu.Unlock()
 	if flight := c.dnsFlights[flightKey]; flight != nil {
-		if flight.participants >= maxDnsDuplicateConcurrent {
+		if flight.participantCount >= consts.MaxDnsFlightParticipants {
 			return nil, false, nil
 		}
-		flight.participants++
+		flight.participantCount++
 		return flight, false, nil
 	}
 	flight := newDNSFlight()
@@ -747,12 +739,17 @@ func (c *DnsController) startDNSFlight(flightKey dnsFlightKey) (*dnsFlight, bool
 }
 
 func (c *DnsController) waitDNSFlight(ctx context.Context, flightKey dnsFlightKey, flight *dnsFlight, msg *dnsmessage.Msg) error {
-	waitCtx, cancel := context.WithTimeout(ctx, dnsDuplicateWaitTimeout)
+	waitCtx, cancel := context.WithTimeout(ctx, c.dnsDuplicateWaitTimeout)
 	defer cancel()
 	select {
 	case <-flight.done:
 	case <-waitCtx.Done():
-		c.leaveDNSFlight(flightKey, flight)
+		if !c.leaveDNSFlight(flightKey, flight) {
+			// Completion won under dnsFlightMu, so done is already closed and its
+			// result should take precedence over the simultaneous timeout.
+			<-flight.done
+			return c.applyDNSFlightResult(flight, msg)
+		}
 		if c.closed.Err() != nil {
 			return net.ErrClosed
 		}
@@ -764,6 +761,10 @@ func (c *DnsController) waitDNSFlight(ctx context.Context, flightKey dnsFlightKe
 		}
 		return nil
 	}
+	return c.applyDNSFlightResult(flight, msg)
+}
+
+func (c *DnsController) applyDNSFlightResult(flight *dnsFlight, msg *dnsmessage.Msg) error {
 	if c.closed.Err() != nil {
 		return net.ErrClosed
 	}
@@ -781,17 +782,21 @@ func (c *DnsController) waitDNSFlight(ctx context.Context, flightKey dnsFlightKe
 	return flight.err
 }
 
-func (c *DnsController) leaveDNSFlight(flightKey dnsFlightKey, flight *dnsFlight) {
-	c.flightMu.Lock()
-	if c.dnsFlights[flightKey] == flight {
-		flight.participants--
+// leaveDNSFlight reports whether the flight was still active and the caller's
+// participant slot was released. A false result means completion already won.
+func (c *DnsController) leaveDNSFlight(flightKey dnsFlightKey, flight *dnsFlight) bool {
+	c.dnsFlightMu.Lock()
+	defer c.dnsFlightMu.Unlock()
+	if c.dnsFlights[flightKey] != flight {
+		return false
 	}
-	c.flightMu.Unlock()
+	flight.participantCount--
+	return true
 }
 
 func (c *DnsController) finishDNSFlight(flightKey dnsFlightKey, flight *dnsFlight, msg *dnsmessage.Msg, err error) {
-	c.flightMu.Lock()
-	defer c.flightMu.Unlock()
+	c.dnsFlightMu.Lock()
+	defer c.dnsFlightMu.Unlock()
 	if c.dnsFlights[flightKey] != flight {
 		return
 	}
@@ -1076,12 +1081,12 @@ func (c *DnsController) Close() error {
 		c.lifecycleMu.Lock()
 		c.close()
 
-		c.flightMu.Lock()
+		c.dnsFlightMu.Lock()
 		for key, flight := range c.dnsFlights {
 			delete(c.dnsFlights, key)
 			flight.complete(nil, net.ErrClosed)
 		}
-		c.flightMu.Unlock()
+		c.dnsFlightMu.Unlock()
 
 		for _, forwarder := range c.dnsForwarderCache {
 			forwarders = append(forwarders, forwarder)
@@ -1089,13 +1094,13 @@ func (c *DnsController) Close() error {
 		c.lifecycleMu.Unlock()
 
 		<-c.cacheSweeperDone
-		// ForwardDNS receives c.closed, so cancellation interrupts exchanges;
-		// wait until every admitted request has finished using its forwarder.
-		c.activeRequests.Wait()
 		closeResults := make(chan error, len(forwarders))
 		for _, forwarder := range forwarders {
 			go func(forwarder DnsForwarder) { closeResults <- closeDnsForwarder(forwarder) }(forwarder)
 		}
+		// Cancellation handles cooperative forwarders; concurrent Close is the
+		// fallback for implementations that need their connection interrupted.
+		c.activeRequests.Wait()
 		timer := time.NewTimer(consts.DefaultDialTimeout)
 		defer timer.Stop()
 		for range forwarders {

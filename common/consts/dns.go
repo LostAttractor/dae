@@ -22,9 +22,17 @@ const (
 
 	DnsRequestOutboundIndex_UserDefinedMax = DnsRequestOutboundIndex_Reject - 1
 
-	DefaultDNSRetryInterval = 5 * time.Second
-	DefaultDNSRetryCount    = 3
-	DefaultDNSTimeout       = DefaultDNSRetryInterval * DefaultDNSRetryCount
+	DefaultDNSRetryInterval  = 5 * time.Second
+	DefaultDNSRetryCount     = 3
+	DefaultDNSTimeout        = DefaultDNSRetryInterval * DefaultDNSRetryCount
+	MaxDnsLookupDepth        = 3
+	MaxDnsFlightParticipants = 128
+	// DnsDuplicateWaitTimeout makes early duplicate waiters release their
+	// flight slot one retry interval before a single upstream exchange expires.
+	DnsDuplicateWaitTimeout = DefaultDNSTimeout - DefaultDNSRetryInterval
+	// DnsStateSweepInterval bounds how long expired cache and domain-registry
+	// state can linger while otherwise idle.
+	DnsStateSweepInterval = time.Minute
 
 	// MaxDnsMessageSize is the largest DNS message the upstream receive
 	// buffer must hold. EDNS(0) (RFC 6891) lets a requestor advertise a UDP

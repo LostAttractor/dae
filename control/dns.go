@@ -30,6 +30,7 @@ import (
 
 // TODO: Connection reuse
 type DnsForwarder interface {
+	// ForwardDNS must return after ctx is canceled or Close interrupts it.
 	ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error
 	io.Closer
 }
