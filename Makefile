@@ -44,7 +44,7 @@ endif
 
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
 
-.PHONY: check-go-version clean-ebpf ebpf ebpf-audit dae submodule submodules
+.PHONY: check-go-version clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules
 
 check-go-version:
 	@version='$(GO_VERSION)'; \
@@ -98,33 +98,18 @@ dae: check-go-version ebpf
 ## End Dae Build
 
 ## Begin Git Submodules
-.gitmodules.d.mk: .gitmodules
-	@set -e && \
-	submodules=$$(grep '\[submodule "' .gitmodules | cut -d'"' -f2 | tr '\n' ' ' | tr ' \n' '\n') && \
-	echo "submodule_paths=$${submodules}" > $@
-
--include .gitmodules.d.mk
-
-$(submodule_paths): .gitmodules.d.mk
-	git submodule update --init --recursive -- $@ && \
-	touch $@
-
-submodule submodules: $(submodule_paths)
-	@if [ -z "$(submodule_paths)" ]; then \
-		rm -f .gitmodules.d.mk; \
-		echo "Failed to generate submodules list. Please try again."; \
-		exit 1; \
-	fi
+submodule submodules:
+	git submodule update --init --recursive
 ## End Git Submodules
 
 ## Begin Ebpf
 clean-ebpf:
-	@rm -f control/bpf_bpf*.go && \
-		rm -f control/bpf_bpf*.o
-	@rm -f trace/bpf_bpf*.go && \
-		rm -f trace/bpf_bpf*.o
-	@rm -f control/kern/tests/bpftest_bpf*.go && \
-		rm -f control/kern/tests/bpftest_bpf*.o
+	@rm -f control/bpf_*bpf*.go && \
+		rm -f control/bpf_*bpf*.o
+	@rm -f trace/bpf_*bpf*.go && \
+		rm -f trace/bpf_*bpf*.o
+	@rm -f control/kern/tests/bpftest_*bpf*.go && \
+		rm -f control/kern/tests/bpftest_*bpf*.o
 fmt: check-go-version
 	go fmt ./...
 
