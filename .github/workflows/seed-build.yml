@@ -17,7 +17,6 @@ on:
       ref:
         type: string
         required: true
-        default: ${{ github.ref }}
       pr-number:
         type: number
         required: false
