@@ -287,12 +287,6 @@ func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []by
 	}
 }
 
-func closeAsync(closer io.Closer) {
-	if closer != nil {
-		go func() { _ = closer.Close() }()
-	}
-}
-
 type dnsForwarderState struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -536,7 +530,7 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 			d.mu.Lock()
 			if d.state.isClosed() {
 				d.mu.Unlock()
-				closeAsync(packetConn)
+				closeInBackground(packetConn)
 				return nil, net.ErrClosed
 			}
 			if d.packetConns == nil {
@@ -544,7 +538,7 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 			}
 			d.packetConns[packetConn] = struct{}{}
 			d.mu.Unlock()
-			stopClose := context.AfterFunc(ctx, func() { closeAsync(packetConn) })
+			stopClose := context.AfterFunc(ctx, func() { closeInBackground(packetConn) })
 			connection, err := quic.DialEarly(ctx, packetConn, udpAddr, tlsCfg, cfg)
 			if !stopClose() {
 				d.mu.Lock()
@@ -553,7 +547,7 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 				if connection != nil {
 					_ = connection.CloseWithError(doqNoError, "")
 				}
-				closeAsync(packetConn)
+				closeInBackground(packetConn)
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return nil, ctxErr
 				}
@@ -563,14 +557,14 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 				d.mu.Lock()
 				delete(d.packetConns, packetConn)
 				d.mu.Unlock()
-				closeAsync(packetConn)
+				closeInBackground(packetConn)
 				return nil, err
 			}
 			d.mu.Lock()
 			if d.state.isClosed() {
 				d.mu.Unlock()
 				_ = connection.CloseWithError(doqNoError, "")
-				closeAsync(packetConn)
+				closeInBackground(packetConn)
 				return nil, net.ErrClosed
 			}
 			d.mu.Unlock()
@@ -579,7 +573,7 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 				d.mu.Lock()
 				delete(d.packetConns, packetConn)
 				d.mu.Unlock()
-				closeAsync(packetConn)
+				closeInBackground(packetConn)
 			}()
 			return connection, nil
 		},
@@ -636,7 +630,7 @@ func (d *DoQ) getConn(requestCtx context.Context) (quic.Connection, error) {
 	if staleConn != nil {
 		_ = staleConn.CloseWithError(doqNoError, "")
 	}
-	closeAsync(stalePacket)
+	closeInBackground(stalePacket)
 	go d.runDial(dial)
 	return d.waitForDial(requestCtx, dial)
 }
@@ -700,7 +694,7 @@ func (d *DoQ) runDial(dial *doqDialState) {
 				d.packetConn = nil
 			}
 			d.mu.Unlock()
-			closeAsync(packet)
+			closeInBackground(packet)
 		}(conn, packetConn)
 	}
 	d.mu.Lock()
@@ -826,7 +820,7 @@ func (d *DoQ) Close() error {
 		}
 	}
 	if dialPacket != nil && dialPacket != packetConn {
-		closeAsync(dialPacket)
+		closeInBackground(dialPacket)
 	}
 	if dial != nil {
 		timer := time.NewTimer(consts.DefaultDialTimeout)
@@ -1116,7 +1110,7 @@ func (d *DoTCP) getManager(ctx context.Context) (*DnsManager, error) {
 			return nil, err
 		}
 		if d.state.isClosed() {
-			closeAsync(conn)
+			closeInBackground(conn)
 			return nil, net.ErrClosed
 		}
 		var manager *DnsManager
@@ -1343,7 +1337,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 		return err
 	}
 	if !d.registerConnection(conn) {
-		closeAsync(conn)
+		closeInBackground(conn)
 		return net.ErrClosed
 	}
 	defer d.releaseConnection(conn)

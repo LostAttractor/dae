@@ -6,10 +6,10 @@
 package control
 
 import (
-	"context"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -33,20 +33,19 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 
 type UdpEndpoint struct {
 	conn net.PacketConn
-	// mu protects deadlineTimer
+	// mu protects the timer deadline and timer pointer.
 	mu            sync.Mutex
 	deadlineTimer *time.Timer
+	timerDeadline time.Time
 	handler       UdpHandler
 	NatTimeout    time.Duration
-
-	ctx    context.Context
-	cancel context.CancelFunc
+	closed        atomic.Bool
 
 	dialer *dialer.Dialer
 	labels prometheus.Labels
 }
 
-func (ue *UdpEndpoint) run() error {
+func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key netip.AddrPort) error {
 	common.ActiveConnections.With(ue.labels).Inc()
 	defer common.ActiveConnections.With(ue.labels).Dec()
 	common.TotalConnections.With(ue.labels).Inc()
@@ -60,9 +59,9 @@ func (ue *UdpEndpoint) run() error {
 			}
 			return oops.Wrapf(err, "failed to ReadFrom")
 		}
-		ue.mu.Lock()
-		ue.deadlineTimer.Reset(ue.NatTimeout)
-		ue.mu.Unlock()
+		if !endpointPool.refreshTimer(key, ue, time.Now()) {
+			break
+		}
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
 			break
 		}
@@ -71,19 +70,28 @@ func (ue *UdpEndpoint) run() error {
 }
 
 func (ue *UdpEndpoint) IsClosed() bool {
-	return ue.ctx.Err() != nil
+	return ue.closed.Load()
 }
 
-func (ue *UdpEndpoint) WriteTo(b []byte, addr net.Addr) (int, error) {
-	return ue.conn.WriteTo(b, addr)
-}
-
-// Close should only called by UdpEndpointPool.Remove
-func (ue *UdpEndpoint) Close() error {
+func (ue *UdpEndpoint) retire() {
 	ue.mu.Lock()
-	ue.deadlineTimer.Stop()
+	ue.retireLocked()
 	ue.mu.Unlock()
-	ue.cancel()
+}
+
+func (ue *UdpEndpoint) retireLocked() {
+	ue.closed.Store(true)
+	ue.timerDeadline = time.Time{}
+	if ue.deadlineTimer != nil {
+		ue.deadlineTimer.Stop()
+		ue.deadlineTimer = nil
+	}
+}
+
+// Close retires the endpoint and closes its connection. A published endpoint
+// must be removed from its pool before Close is called.
+func (ue *UdpEndpoint) Close() error {
+	ue.retire()
 	return ue.conn.Close()
 }
 
@@ -97,7 +105,6 @@ type UdpEndpointOptions struct {
 	PacketConn net.PacketConn
 	Handler    UdpHandler
 	NatTimeout time.Duration
-	Src        netip.AddrPort
 
 	Dialer *dialer.Dialer
 	labels prometheus.Labels
@@ -105,120 +112,164 @@ type UdpEndpointOptions struct {
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
 
-func (p *UdpEndpointPool) Remove(key netip.AddrPort) (err error) {
-	if ue, ok := p.pool.LoadAndDelete(key); ok {
-		ue.(*UdpEndpoint).Close()
+func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {
+	l, _ := p.UdpEndpointKeyLocker.Lock(key)
+	removed := p.removeLocked(key, endpoint)
+	if removed {
+		endpoint.retire()
 	}
-	return nil
+	p.UdpEndpointKeyLocker.Unlock(key, l)
+	if removed {
+		_ = endpoint.conn.Close()
+	}
 }
 
+func (p *UdpEndpointPool) removeInBackground(key netip.AddrPort, endpoint *UdpEndpoint) {
+	l, _ := p.UdpEndpointKeyLocker.Lock(key)
+	p.removeInBackgroundLocked(key, endpoint)
+	p.UdpEndpointKeyLocker.Unlock(key, l)
+}
+
+func (p *UdpEndpointPool) removeLocked(key netip.AddrPort, endpoint *UdpEndpoint) bool {
+	return p.pool.CompareAndDelete(key, endpoint)
+}
+
+func (p *UdpEndpointPool) removeInBackgroundLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
+	if p.removeLocked(key, endpoint) {
+		endpoint.retire()
+		closeInBackground(endpoint.conn)
+	}
+}
+
+// closeAll sweeps endpoints observed in the pool. CompareAndDelete prevents a
+// stale Range observation from closing a replacement published for the key.
+func (p *UdpEndpointPool) closeAll() {
+	p.pool.Range(func(key, value any) bool {
+		endpoint := value.(*UdpEndpoint)
+		if p.pool.CompareAndDelete(key, endpoint) {
+			endpoint.retire()
+			closeInBackground(endpoint.conn)
+		}
+		return true
+	})
+}
+
+// Get refreshes the current endpoint. Packet-processing callers hold the key
+// lock across Get and their packet use to serialize against timer expiry.
 func (p *UdpEndpointPool) Get(key netip.AddrPort) (udpEndpoint *UdpEndpoint, ok bool) {
 	_ue, ok := p.pool.Load(key)
 	if !ok {
 		return nil, ok
 	}
 	ue := _ue.(*UdpEndpoint)
-	// Postpone the deadline.
-	ue.mu.Lock()
-	ue.deadlineTimer.Reset(ue.NatTimeout)
-	ue.mu.Unlock()
-	return _ue.(*UdpEndpoint), ok
+	if !p.refreshTimerLocked(key, ue, time.Now()) {
+		return nil, false
+	}
+	return ue, true
 }
 
-func (p *UdpEndpointPool) Create(key netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint) {
-	ctx, cancel := context.WithCancel(context.Background())
-	udpEndpoint = &UdpEndpoint{
+func newUdpEndpoint(createOption *UdpEndpointOptions) *UdpEndpoint {
+	return &UdpEndpoint{
 		conn:       createOption.PacketConn,
 		handler:    createOption.Handler,
 		NatTimeout: createOption.NatTimeout,
-		ctx:        ctx,
-		cancel:     cancel,
 		dialer:     createOption.Dialer,
 		labels:     createOption.labels,
 	}
-	udpEndpoint.deadlineTimer = time.AfterFunc(createOption.NatTimeout, func() {
-		p.Remove(key)
-	})
-	p.pool.Store(key, udpEndpoint)
-	return
 }
 
-// func (p *UdpEndpointPool) GetOrCreate(lAddr netip.AddrPort, createOption *UdpEndpointOptions) (udpEndpoint *UdpEndpoint, reportUnavailable func(err error), isNew bool, err error) {
-// 	_ue, ok := p.pool.Load(lAddr)
-// begin:
-// 	if !ok {
-// 		l := p.udpEndpointKeyLocker.Lock(lAddr)
-// 		defer p.udpEndpointKeyLocker.Unlock(lAddr, l)
+func (p *UdpEndpointPool) add(key netip.AddrPort, endpoint *UdpEndpoint) {
+	l, _ := p.UdpEndpointKeyLocker.Lock(key)
+	defer p.UdpEndpointKeyLocker.Unlock(key, l)
+	p.addLocked(key, endpoint)
+}
 
-// 		_ue, ok = p.pool.Load(lAddr)
-// 		if ok {
-// 			goto begin
-// 		}
-// 		// Create an UdpEndpoint.
-// 		if createOption == nil {
-// 			createOption = &UdpEndpointOptions{}
-// 		}
-// 		if createOption.NatTimeout == 0 {
-// 			createOption.NatTimeout = DefaultNatTimeoutUDP
-// 		}
-// 		if createOption.Handler == nil {
-// 			return nil, nil, true, oops.Errorf("createOption.Handler cannot be nil")
-// 		}
+func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
+	endpoint.mu.Lock()
+	if endpoint.closed.Load() {
+		endpoint.mu.Unlock()
+		return
+	}
+	p.refreshTimerStateLocked(key, endpoint, time.Now())
+	previous, replaced := p.pool.Swap(key, endpoint)
+	endpoint.mu.Unlock()
 
-// 		dialOption, err := createOption.GetDialOption()
-// 		if err != nil {
-// 			return nil, nil, false, err
-// 		}
+	if replaced && previous != endpoint {
+		oldEndpoint := previous.(*UdpEndpoint)
+		oldEndpoint.retire()
+		closeInBackground(oldEndpoint.conn)
+	}
+}
 
-// 		reportUnavailable = func(err error) {
-// 			dialOption.Dialer.ReportUnavailable(dialOption.NetworkType, err)
-// 		}
+func (p *UdpEndpointPool) refreshTimerLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
+	current, ok := p.pool.Load(key)
+	if !ok || current != endpoint || endpoint.IsClosed() {
+		return false
+	}
+	return p.refreshTimer(key, endpoint, now)
+}
 
-// 		ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
-// 		defer cancel()
-// 		udpConn, err := dialOption.Dialer.DialContext(ctx, dialOption.Network, dialOption.Target)
-// 		if err != nil {
-// 			return nil, reportUnavailable, true, oops.
-// 				WithContext(ctx).
-// 				With("Target", dialOption.Target).
-// 				With("Dialer", dialOption.Dialer.Property().Name).
-// 				With("Outbound", dialOption.Outbound.Name).
-// 				With("Network", dialOption.Network).With("Target", dialOption.Target).
-// 				Wrapf(err, "Failed to DialContext")
-// 		}
-// 		if _, ok = udpConn.(netproxy.PacketConn); !ok {
-// 			return nil, reportUnavailable, true, oops.Errorf("protocol does not support udp")
-// 		}
-// 		ue := &UdpEndpoint{
-// 			conn:          udpConn.(netproxy.PacketConn),
-// 			deadlineTimer: nil,
-// 			handler:       createOption.Handler,
-// 			NatTimeout:    createOption.NatTimeout,
-// 			Dialer:        dialOption.Dialer,
-// 			Outbound:      dialOption.Outbound,
-// 			SniffedDomain: dialOption.SniffedDomain,
-// 			DialTarget:    dialOption.Target,
-// 		}
-// 		ue.deadlineTimer = time.AfterFunc(createOption.NatTimeout, func() {
-// 			if _ue, ok := p.pool.LoadAndDelete(lAddr); ok {
-// 				if _ue == ue {
-// 					ue.Close()
-// 				} else {
-// 					// FIXME: ?
-// 				}
-// 			}
-// 		})
-// 		_ue = ue
-// 		p.pool.Store(lAddr, ue)
-// 		// Receive UDP messages.
-// 		go ue.start()
-// 		isNew = true
-// 	} else {
-// 		ue := _ue.(*UdpEndpoint)
-// 		// Postpone the deadline.
-// 		ue.mu.Lock()
-// 		ue.deadlineTimer.Reset(ue.NatTimeout)
-// 		ue.mu.Unlock()
-// 	}
-// 	return _ue.(*UdpEndpoint), reportUnavailable, isNew, nil
-// }
+// refreshTimer is also used after a successful inbound read, where taking the
+// key lock would let an already-pending expiry win only due to lock scheduling.
+func (p *UdpEndpointPool) refreshTimer(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
+	endpoint.mu.Lock()
+	defer endpoint.mu.Unlock()
+	if endpoint.closed.Load() {
+		return false
+	}
+	p.refreshTimerStateLocked(key, endpoint, now)
+	return true
+}
+
+func (p *UdpEndpointPool) refreshTimerStateLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) {
+	deadline := now.Add(endpoint.NatTimeout)
+	delay := time.Until(deadline)
+	endpoint.timerDeadline = deadline
+	if endpoint.deadlineTimer == nil {
+		endpoint.deadlineTimer = time.AfterFunc(delay, func() {
+			p.expire(key, endpoint)
+		})
+		return
+	}
+	endpoint.deadlineTimer.Reset(delay)
+}
+
+func (p *UdpEndpointPool) expire(key netip.AddrPort, endpoint *UdpEndpoint) {
+	p.expireAt(key, endpoint, time.Time{})
+}
+
+func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) {
+	l, _ := p.UdpEndpointKeyLocker.Lock(key)
+	current, ok := p.pool.Load(key)
+	if !ok || current != endpoint {
+		p.UdpEndpointKeyLocker.Unlock(key, l)
+		return
+	}
+
+	endpoint.mu.Lock()
+	if now.IsZero() {
+		// Account for time spent waiting on both the key and timer state.
+		now = time.Now()
+	}
+	if endpoint.closed.Load() {
+		endpoint.mu.Unlock()
+		p.UdpEndpointKeyLocker.Unlock(key, l)
+		return
+	}
+	deadline := endpoint.timerDeadline
+	if now.Before(deadline) {
+		endpoint.deadlineTimer.Reset(deadline.Sub(now))
+		endpoint.mu.Unlock()
+		p.UdpEndpointKeyLocker.Unlock(key, l)
+		return
+	}
+	removed := p.removeLocked(key, endpoint)
+	if removed {
+		endpoint.retireLocked()
+	}
+	endpoint.mu.Unlock()
+	p.UdpEndpointKeyLocker.Unlock(key, l)
+	if removed {
+		_ = endpoint.conn.Close()
+	}
+}

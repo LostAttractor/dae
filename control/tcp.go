@@ -45,12 +45,67 @@ type tcpRelay struct {
 	domain       string
 }
 
-func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, connections *sync.Map) {
-	connections.Store(lConn, struct{}{})
-	defer connections.Delete(lConn)
-	relay, err := c.prepareTCPRelay(lConn)
+type tcpConnectionTracker struct {
+	// mu serializes setup Add calls with the stopped transition before Wait.
+	mu          sync.Mutex
+	connections map[net.Conn]struct{}
+	setups      sync.WaitGroup
+	stopped     bool
+}
+
+func (t *tcpConnectionTracker) beginSetup(conn net.Conn) bool {
+	t.mu.Lock()
+	if t.stopped {
+		t.mu.Unlock()
+		_ = conn.Close()
+		return false
+	}
+	if t.connections == nil {
+		t.connections = make(map[net.Conn]struct{})
+	}
+	t.connections[conn] = struct{}{}
+	t.setups.Add(1)
+	t.mu.Unlock()
+	return true
+}
+
+func (t *tcpConnectionTracker) removeConnection(conn net.Conn) {
+	t.mu.Lock()
+	delete(t.connections, conn)
+	t.mu.Unlock()
+}
+
+func (t *tcpConnectionTracker) stopAndSnapshot() []net.Conn {
+	t.mu.Lock()
+	t.stopped = true
+	connections := make([]net.Conn, 0, len(t.connections))
+	for conn := range t.connections {
+		connections = append(connections, conn)
+	}
+	t.mu.Unlock()
+	return connections
+}
+
+func (t *tcpConnectionTracker) stopAccepting() {
+	t.mu.Lock()
+	t.stopped = true
+	t.mu.Unlock()
+}
+
+func (t *tcpConnectionTracker) waitForSetups() {
+	t.setups.Wait()
+}
+
+func (t *tcpConnectionTracker) finishSetup() {
+	t.setups.Done()
+}
+
+func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, tracker *tcpConnectionTracker) {
+	defer tracker.removeConnection(lConn)
+	relay, err := c.prepareTCPRelay(ctx, lConn)
 	// Established relays must not retain the retired control plane across reloads.
 	c = nil
+	tracker.finishSetup()
 	if relay != nil {
 		err = relay.run()
 	}
@@ -63,12 +118,19 @@ func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, co
 	}
 }
 
-func (c *ControlPlane) prepareTCPRelay(lConn net.Conn) (relay *tcpRelay, err error) {
+func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn) (relay *tcpRelay, err error) {
 	// Sniff target domain.
 	sniffer := sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
+	stopClose := context.AfterFunc(setupCtx, func() { _ = lConn.Close() })
 	defer func() {
 		if relay == nil {
+			stopClose()
 			_ = sniffer.Close()
+		} else if !stopClose() {
+			_ = sniffer.Close()
+			closeInBackground(relay.rConn)
+			relay = nil
+			err = setupCtx.Err()
 		}
 	}()
 
@@ -96,7 +158,7 @@ func (c *ControlPlane) prepareTCPRelay(lConn net.Conn) (relay *tcpRelay, err err
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
-	dialOption, err := c.RouteDialOption(&RouteParam{
+	dialOption, err := c.RouteDialOption(setupCtx, &RouteParam{
 		routingResult: routingResult,
 		networkType:   networkType,
 		Domain:        domain,
@@ -117,11 +179,14 @@ func (c *ControlPlane) prepareTCPRelay(lConn net.Conn) (relay *tcpRelay, err err
 
 	// Dial
 	LogDial(src, dst, domain, dialOption, networkType, routingResult)
-	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
+	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
 	defer cancel()
 	start := time.Now()
 	rConn, err := dialOption.Dialer.DialContext(ctx, "tcp", dialOption.DialTarget)
 	if err != nil {
+		if ctxErr := setupCtx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		// TODO: UDP 是不是也有Direct Outbound出问题的情况?
 		// TODO: Control Plane Routing?
 		// TODO: 哪些错误说明节点不工作或GFW在工作?
@@ -148,6 +213,10 @@ func (c *ControlPlane) prepareTCPRelay(lConn net.Conn) (relay *tcpRelay, err err
 			}
 		}
 		return nil, nil
+	}
+	if err := setupCtx.Err(); err != nil {
+		closeInBackground(rConn)
+		return nil, err
 	}
 
 	elapsed := time.Since(start).Seconds()
