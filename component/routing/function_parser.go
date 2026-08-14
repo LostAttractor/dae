@@ -40,17 +40,17 @@ func EmptyKeyPlainParserFactory(callback func(f *config_parser.Function, values 
 }
 
 func IpParserFactory(callback func(f *config_parser.Function, cidrs []netip.Prefix, overrideOutbound *Outbound) (err error)) FunctionParser {
-	return func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		cidrs, err := parsePrefixes(paramValueGroup)
 		if err != nil {
 			return err
 		}
 		return callback(f, cidrs, overrideOutbound)
-	}
+	})
 }
 
 func MacParserFactory(callback func(f *config_parser.Function, macAddrs [][6]byte, overrideOutbound *Outbound) (err error)) FunctionParser {
-	return func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var macAddrs [][6]byte
 		for _, v := range paramValueGroup {
 			mac, err := common.ParseMac(v)
@@ -60,11 +60,11 @@ func MacParserFactory(callback func(f *config_parser.Function, macAddrs [][6]byt
 			macAddrs = append(macAddrs, mac)
 		}
 		return callback(f, macAddrs, overrideOutbound)
-	}
+	})
 }
 
 func PortRangeParserFactory(callback func(f *config_parser.Function, portRanges [][2]uint16, overrideOutbound *Outbound) (err error)) FunctionParser {
-	return func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var portRanges [][2]uint16
 		for _, v := range paramValueGroup {
 			portRange, err := common.ParsePortRange(v)
@@ -74,11 +74,11 @@ func PortRangeParserFactory(callback func(f *config_parser.Function, portRanges 
 			portRanges = append(portRanges, portRange)
 		}
 		return callback(f, portRanges, overrideOutbound)
-	}
+	})
 }
 
 func L4ProtoParserFactory(callback func(f *config_parser.Function, l4protoType consts.L4ProtoType, overrideOutbound *Outbound) (err error)) FunctionParser {
-	return func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var l4protoType consts.L4ProtoType
 		for _, v := range paramValueGroup {
 			switch v {
@@ -88,14 +88,16 @@ func L4ProtoParserFactory(callback func(f *config_parser.Function, l4protoType c
 				l4protoType |= consts.L4ProtoType_UDP
 			case "utp":
 				l4protoType |= consts.L4ProtoType_uTP
+			default:
+				return fmt.Errorf("unsupported l4proto %q", v)
 			}
 		}
 		return callback(f, l4protoType, overrideOutbound)
-	}
+	})
 }
 
 func IpVersionParserFactory(callback func(f *config_parser.Function, ipVersion consts.IpVersionType, overrideOutbound *Outbound) (err error)) FunctionParser {
-	return func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var ipVersion consts.IpVersionType
 		for _, v := range paramValueGroup {
 			switch v {
@@ -103,14 +105,16 @@ func IpVersionParserFactory(callback func(f *config_parser.Function, ipVersion c
 				ipVersion |= consts.IpVersion_4
 			case "6":
 				ipVersion |= consts.IpVersion_6
+			default:
+				return fmt.Errorf("unsupported ipversion %q", v)
 			}
 		}
 		return callback(f, ipVersion, overrideOutbound)
-	}
+	})
 }
 
 func ProcessNameParserFactory(callback func(f *config_parser.Function, procNames [][consts.TaskCommLen]byte, overrideOutbound *Outbound) (err error)) FunctionParser {
-	return func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var procNames [][consts.TaskCommLen]byte
 		for _, v := range paramValueGroup {
 			if len([]byte(v)) > consts.TaskCommLen {
@@ -119,7 +123,7 @@ func ProcessNameParserFactory(callback func(f *config_parser.Function, procNames
 			procNames = append(procNames, toProcessName(v))
 		}
 		return callback(f, procNames, overrideOutbound)
-	}
+	})
 }
 
 func parsePrefixes(values []string) (cidrs []netip.Prefix, err error) {
@@ -148,7 +152,7 @@ func toProcessName(processName string) (procName [consts.TaskCommLen]byte) {
 
 func UintParserFactory[T constraints.Unsigned](callback func(f *config_parser.Function, values []T, overrideOutbound *Outbound) (err error)) FunctionParser {
 	size := binary.Size(new(T))
-	return func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
+	return EmptyKeyPlainParserFactory(func(f *config_parser.Function, paramValueGroup []string, overrideOutbound *Outbound) (err error) {
 		var values []T
 		for _, v := range paramValueGroup {
 			val, err := strconv.ParseUint(v, 0, 8*size)
@@ -158,5 +162,5 @@ func UintParserFactory[T constraints.Unsigned](callback func(f *config_parser.Fu
 			values = append(values, T(val))
 		}
 		return callback(f, values, overrideOutbound)
-	}
+	})
 }
