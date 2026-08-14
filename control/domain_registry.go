@@ -16,13 +16,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 )
 
-// DomainRegistrySweepInterval is how often the registry reaps expired
-// kernel contributions and runs userspace memory-pressure GC. GC also
-// happens on the update path when size limits are exceeded, so this
-// interval only bounds how long reclaimable state lingers while the
-// registry is otherwise idle.
-const DomainRegistrySweepInterval = time.Minute
-
 // A zero domain expiry means no expiry. Keeping that meaning in one set of
 // helpers makes the heaps and capacity decisions treat it as positive
 // infinity without manufacturing a distant timestamp.
@@ -611,7 +604,7 @@ func (g *DomainRegistry) StartSweeper() {
 	g.mu.Unlock()
 	go func() {
 		defer close(g.doneCh)
-		ticker := time.NewTicker(DomainRegistrySweepInterval)
+		ticker := time.NewTicker(dnsStateSweepInterval)
 		defer ticker.Stop()
 		for {
 			select {

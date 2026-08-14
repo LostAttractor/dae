@@ -35,6 +35,9 @@ import (
 const (
 	MaxDnsLookupDepth         = 3
 	maxDnsDuplicateConcurrent = 128
+	// dnsStateSweepInterval bounds how long expired cache and domain-registry
+	// state can linger while otherwise idle.
+	dnsStateSweepInterval = time.Minute
 )
 
 // RFC 1035 and RFC 1123 recommend an initial retry interval around five
@@ -87,6 +90,8 @@ type DnsController struct {
 	// the shared eBPF maps the next control plane owns.
 	closed context.Context
 	close  context.CancelFunc
+
+	cacheSweeperDone chan struct{}
 }
 
 func parseIpVersionPreference(prefer int) (uint16, error) {
@@ -109,7 +114,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 	}
 
 	closed, close := context.WithCancel(context.Background())
-	return &DnsController{
+	c = &DnsController{
 		routing:     routing,
 		qtypePrefer: prefer,
 
@@ -124,7 +129,24 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		sendPacket:        sendPkt,
 		closed:            closed,
 		close:             close,
-	}, nil
+		cacheSweeperDone:  make(chan struct{}),
+	}
+	go c.runDnsCacheSweeper()
+	return c, nil
+}
+
+func (c *DnsController) runDnsCacheSweeper() {
+	defer close(c.cacheSweeperDone)
+	ticker := time.NewTicker(dnsStateSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.closed.Done():
+			return
+		case now := <-ticker.C:
+			c.dnsCache.sweep(now)
+		}
+	}
 }
 
 func (c *DnsController) applyFixedTTL(fqdn string, answers []dnsmessage.RR) {
@@ -1066,6 +1088,7 @@ func (c *DnsController) Close() error {
 		}
 		c.lifecycleMu.Unlock()
 
+		<-c.cacheSweeperDone
 		// ForwardDNS receives c.closed, so cancellation interrupts exchanges;
 		// wait until every admitted request has finished using its forwarder.
 		c.activeRequests.Wait()

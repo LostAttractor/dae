@@ -33,6 +33,7 @@ func TestResponsePlanCachesAndRegistersCNAMEViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = c.Close() })
 
 	cname := testCNAMERecord("WWW.Example.", "EDGE.CDN.Example.")
 	cname.Hdr.Ttl = 60

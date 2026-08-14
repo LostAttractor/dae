@@ -192,7 +192,7 @@ func liveDnsCaches(caches []*DnsCache, now time.Time) []*DnsCache {
 }
 
 // Len returns the number of cache keys currently held. Naturally expired keys
-// count until they are read or evicted because they still occupy memory.
+// count until they are read, swept, or evicted because they still occupy memory.
 func (c *commonDnsCache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -204,11 +204,32 @@ func (c *commonDnsCache) MaxSize() int {
 	return c.maxSize
 }
 
+// sweep removes expired dependencies and answers that have not been revisited
+// since their deadlines passed.
+func (c *commonDnsCache) sweep(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for elem := c.lruList.Back(); elem != nil; {
+		previous := elem.Prev()
+		entry := elem.Value.(*cacheEntry)
+		dependencyExpired := !entry.validUntil.IsZero() && !entry.validUntil.After(now)
+		if !dependencyExpired {
+			entry.value = liveDnsCaches(entry.value, now)
+		}
+		if dependencyExpired || len(entry.value) == 0 {
+			delete(c.cache, entry.key)
+			c.lruList.Remove(elem)
+		}
+		elem = previous
+	}
+}
+
 // gc must be called with c.mu held.
 func (c *commonDnsCache) gc() {
-	// Enforce the hard cap in O(1) per eviction. Expired answers are discarded
-	// when their key is read or replaced; scanning every key here would turn
-	// each post-cap insertion into an O(maxSize) operation under the cache lock.
+	// Enforce the hard cap in O(1) per eviction. The periodic sweep handles
+	// expired answers; scanning every key here would turn each post-cap insertion
+	// into an O(maxSize) operation under the cache lock.
 	for c.lruList.Len() > c.maxSize {
 		elem := c.lruList.Back()
 		entry := elem.Value.(*cacheEntry)

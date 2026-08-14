@@ -168,6 +168,43 @@ func TestCommonDnsCache_ExpiredDependencyDoesNotEvictLiveEntry(t *testing.T) {
 	}
 }
 
+func TestCommonDnsCache_SweepExpiredEntries(t *testing.T) {
+	c := newCommonDnsCache(4)
+	now := time.Now()
+	future := now.Add(time.Minute)
+	expired := now.Add(-time.Minute)
+
+	replaceTestCacheDeadlines(c, "partial", []dnsmessage.RR{
+		testARecord("partial.example.", "1.1.1.1"),
+		testARecord("partial.example.", "2.2.2.2"),
+	}, []time.Time{future, future})
+	replaceTestCache(c, "empty", []dnsmessage.RR{
+		testARecord("empty.example.", "3.3.3.3"),
+	}, future)
+	replaceTestCache(c, "dependency", []dnsmessage.RR{
+		testARecord("dependency.example.", "4.4.4.4"),
+	}, future)
+
+	c.cache[testCommonCacheKey("partial")].Value.(*cacheEntry).value[1].Deadline = expired
+	c.cache[testCommonCacheKey("empty")].Value.(*cacheEntry).value[0].Deadline = now
+	c.cache[testCommonCacheKey("dependency")].Value.(*cacheEntry).validUntil = now
+
+	c.sweep(now)
+
+	partial := c.cache[testCommonCacheKey("partial")].Value.(*cacheEntry)
+	if len(partial.value) != 1 || !cacheIncludesA(partial.value, "1.1.1.1") {
+		t.Fatalf("sweep should retain only live answers: %+v", partial.value)
+	}
+	for _, key := range []string{"empty", "dependency"} {
+		if _, ok := c.cache[testCommonCacheKey(key)]; ok {
+			t.Errorf("sweep retained expired cache key %q", key)
+		}
+	}
+	if c.Len() != 1 || c.lruList.Len() != 1 {
+		t.Fatalf("sweep left cache indexes inconsistent: map=%d lru=%d", c.Len(), c.lruList.Len())
+	}
+}
+
 func TestCommonDnsCache_LruOrder(t *testing.T) {
 	c := newCommonDnsCache(2)
 	future := time.Now().Add(time.Minute)
