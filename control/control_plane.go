@@ -194,15 +194,23 @@ func NewControlPlane(
 		}
 	}
 	log.Infof("Loaded eBPF programs and maps")
-	core := newControlPlaneCore(
+	core, err := newControlPlaneCore(
 		bpf,
 		_bpf != nil,
 	)
+	if err != nil {
+		if _bpf == nil {
+			if closeErr := bpf.Close(); closeErr != nil {
+				err = errors.Join(err, oops.Wrapf(closeErr, "close eBPF objects"))
+			}
+		}
+		return nil, err
+	}
 	defer func() {
 		if err != nil {
-			// Flip back.
-			core.Flip()
-			_ = core.Close()
+			if closeErr := core.Close(); closeErr != nil {
+				err = errors.Join(err, oops.Wrapf(closeErr, "close control plane core"))
+			}
 		}
 	}()
 
@@ -355,7 +363,7 @@ func NewControlPlane(
 		cancelTCPSetups:           cancelTCPSetups,
 		realDomainSet:             bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:              common.Deduplicate(global.LanInterface),
-		wanInterface:              global.WanInterface,
+		wanInterface:              common.Deduplicate(global.WanInterface),
 		autoConfigKernelParameter: global.AutoConfigKernelParameter,
 		dialTargetOverride:        global.DialTargetOverride,
 		rerouteMode:               global.RerouteMode,
@@ -427,6 +435,11 @@ func (c *ControlPlane) Activate() error {
 	if core.closed.Err() != nil {
 		return net.ErrClosed
 	}
+	if !core.isReload {
+		if err := cleanupLegacyTCFilters(); err != nil {
+			return err
+		}
+	}
 	builder := c.routingMatcherBuilder
 	c.routingMatcherBuilder = nil
 
@@ -496,7 +509,9 @@ func (c *ControlPlane) Activate() error {
 			_ = setForwarding("all", consts.IpVersionStr_6, "1")
 		}
 		for _, ifname := range c.lanInterface {
-			core.bindLan(ifname, c.autoConfigKernelParameter)
+			if err := core.bindLan(ifname, c.autoConfigKernelParameter); err != nil {
+				return err
+			}
 		}
 	}
 	if len(c.wanInterface) > 0 {
@@ -514,7 +529,9 @@ func (c *ControlPlane) Activate() error {
 					_ = acceptRa.Set("2", false)
 				}
 			}
-			core.bindWan(ifname, c.autoConfigKernelParameter)
+			if err := core.bindWan(ifname); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -613,7 +630,7 @@ func (c *ControlPlane) InjectBpf() {
 // domain to be re-resolved.
 //
 // It panics if the old plane is not fully closed: adoption rewrites the
-// shared kernel map while the old plane's tc filters might still read
+// shared kernel map while the old plane's TCX programs might still read
 // it (old rules with new-rule bitmaps = misrouting), and the old
 // registry's writers would fight the adopted state.
 func (c *ControlPlane) InheritDomainRegistry(old *ControlPlane) {

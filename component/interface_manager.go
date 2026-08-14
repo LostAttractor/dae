@@ -6,7 +6,7 @@
 package component
 
 import (
-	"context"
+	"fmt"
 	"path"
 	"sync"
 
@@ -22,106 +22,122 @@ type callbackSet struct {
 }
 
 type InterfaceManager struct {
-	closed    context.Context
-	close     context.CancelFunc
 	closeOnce sync.Once
+	stop      chan struct{}
 	done      chan struct{}
 	mu        sync.Mutex
 	callbacks []callbackSet
 	upLinks   map[string]bool
 }
 
-func NewInterfaceManager() *InterfaceManager {
-	closed, toClose := context.WithCancel(context.Background())
+type linkSubscribeFunc func(chan<- netlink.LinkUpdate, <-chan struct{}, netlink.LinkSubscribeOptions) error
+
+func NewInterfaceManager() (*InterfaceManager, error) {
+	return newInterfaceManager(netlink.LinkSubscribeWithOptions)
+}
+
+func newInterfaceManager(subscribe linkSubscribeFunc) (*InterfaceManager, error) {
 	mgr := &InterfaceManager{
-		callbacks: make([]callbackSet, 0),
-		closed:    closed,
-		close:     toClose,
-		done:      make(chan struct{}),
-		upLinks:   make(map[string]bool),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+		upLinks: make(map[string]bool),
 	}
 
 	ch := make(chan netlink.LinkUpdate)
-	done := make(chan struct{})
-	if e := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
+	if err := subscribe(ch, mgr.stop, netlink.LinkSubscribeOptions{
 		ErrorCallback: func(err error) {
-			log.Debug("LinkSubscribe:", err)
+			select {
+			case <-mgr.stop:
+				return
+			default:
+			}
+			log.Warn("LinkSubscribe: ", err)
 		},
 		ListExisting: true,
-	}); e != nil {
-		log.Errorf("Failed to subscribe to link updates: %v", e)
+	}); err != nil {
+		mgr.stopSubscription()
+		return nil, fmt.Errorf("subscribe to link updates: %w", err)
 	}
 
-	go mgr.monitor(ch, done)
-	return mgr
+	go mgr.monitor(ch)
+	return mgr, nil
 }
 
-func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, done chan struct{}) {
+func (m *InterfaceManager) stopSubscription() {
+	m.closeOnce.Do(func() { close(m.stop) })
+}
+
+func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate) {
 	defer close(m.done)
 	for {
 		select {
-		case <-m.closed.Done():
-			close(done)
+		case <-m.stop:
+			// LinkSubscribeWithOptions can block while sending an update. Drain
+			// until it closes ch so Close also joins the subscription goroutine.
+			for range ch {
+			}
 			return
-		case update := <-ch:
+		case update, ok := <-ch:
+			if !ok {
+				m.stopSubscription()
+				return
+			}
 			ifName := update.Link.Attrs().Name
 
+			m.mu.Lock()
+			isNew := false
 			switch update.Header.Type {
 			case unix.RTM_NEWLINK:
-				m.mu.Lock()
-				_, exists := m.upLinks[ifName]
-				if exists {
+				if m.upLinks[ifName] {
 					m.mu.Unlock()
 					continue
 				}
 				m.upLinks[ifName] = true
-				for _, callback := range m.callbacks {
-					matched, err := path.Match(callback.pattern, ifName)
-					if err != nil || !matched {
-						continue
-					}
-					if callback.newCallback != nil {
-						callback.newCallback(update.Link)
-					}
-				}
-				m.mu.Unlock()
-
+				isNew = true
 			case unix.RTM_DELLINK:
-				m.mu.Lock()
 				delete(m.upLinks, ifName)
-				for _, callback := range m.callbacks {
-					matched, err := path.Match(callback.pattern, ifName)
-					if err != nil || !matched {
-						continue
-					}
-					if callback.delCallback != nil {
-						callback.delCallback(update.Link)
-					}
-				}
+			default:
 				m.mu.Unlock()
+				continue
 			}
+			for _, callbacks := range m.callbacks {
+				matched, err := path.Match(callbacks.pattern, ifName)
+				if err != nil || !matched {
+					continue
+				}
+				callback := callbacks.delCallback
+				if isNew {
+					callback = callbacks.newCallback
+				}
+				if callback != nil {
+					callback(update.Link)
+				}
+			}
+			m.mu.Unlock()
 		}
 	}
 }
 
-func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) {
+func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) error {
+	if _, err := path.Match(pattern, ""); err != nil {
+		return fmt.Errorf("invalid interface pattern %q: %w", pattern, err)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	links, err := netlink.LinkList()
-	if err == nil {
-		for _, link := range links {
-			ifname := link.Attrs().Name
-			if matched, err := path.Match(pattern, ifname); err == nil && matched {
-				m.upLinks[ifname] = true
+	if err != nil {
+		return fmt.Errorf("list interfaces for pattern %q: %w", pattern, err)
+	}
+	for _, link := range links {
+		ifname := link.Attrs().Name
+		if matched, _ := path.Match(pattern, ifname); matched {
+			m.upLinks[ifname] = true
 
-				if initCallback != nil {
-					initCallback(link)
-				}
+			if initCallback != nil {
+				initCallback(link)
 			}
 		}
-	} else {
-		log.Errorf("Failed to get link list: %v", err)
 	}
 
 	m.callbacks = append(m.callbacks, callbackSet{
@@ -129,6 +145,7 @@ func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func
 		newCallback: newCallback,
 		delCallback: delCallback,
 	})
+	return nil
 }
 
 func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) {
@@ -153,7 +170,7 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 
 // Close stops the monitor and waits for any callback already in progress.
 func (m *InterfaceManager) Close() error {
-	m.closeOnce.Do(m.close)
+	m.stopSubscription()
 	<-m.done
 	return nil
 }

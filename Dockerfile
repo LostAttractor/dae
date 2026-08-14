@@ -5,7 +5,6 @@ WORKDIR /build/
 ADD go.mod go.sum ./
 RUN go mod download
 ADD . .
-RUN git submodule update --init
 RUN make OUTPUT=dae GOFLAGS="-buildvcs=false" CC=clang CGO_ENABLED=0
 
 FROM alpine

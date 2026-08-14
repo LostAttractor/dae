@@ -21,8 +21,12 @@ on:
       - "**/*.h"
       - "go.mod"
       - "go.sum"
+      - ".gitmodules"
+      - "Makefile"
       - ".github/workflows/pr-build.yml"
       - ".github/workflows/seed-build.yml"
+      - "control/kern/headers"
+      - "trace/kern/headers"
 
 jobs:
   pre-actions:

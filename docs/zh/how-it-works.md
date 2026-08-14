@@ -1,6 +1,6 @@
 # dae 的工作原理
 
-dae 通过 [eBPF](https://en.wikipedia.org/wiki/EBPF) 在 Linux 内核的 tc (traffic control) 挂载点加载一个程序，通过该程序在流量进入 TCP/IP 网络栈之前进行流量分流。tc 在 Linux 网络协议栈中的位置见下图所示（图为收包路径，发包路径方向相反），其中 netfilter 是 iptables/nftables 的位置。
+dae 通过 TCX 在 Linux traffic control 的 ingress 和 egress 挂载点加载 [eBPF](https://en.wikipedia.org/wiki/EBPF) 程序，在流量进入 TCP/IP 网络栈之前进行分流，且无需创建 `clsact` qdisc。traffic control 在 Linux 网络协议栈中的位置见下图所示（图为收包路径，发包路径方向相反），其中 netfilter 是 iptables/nftables 的位置。
 
 ![](../netstack-path.webp)
 
@@ -27,7 +27,7 @@ dae 支持以域名、源 IP、目的 IP、源端口、目的端口、TCP/UDP、
 >
 > 同时，当高级用户已经使用了其他的分流方案，且不希望将 DNS 请求通过 dae，但希望被代理的那部分流量可以基于域名进行分流（例如基于目标域名，一部分分流到奈飞节点，一部分分流到下载节点，当然，也可以一部分通过 core 直连），可以通过 `dial_mode: domain++` 来强制使用嗅探的域名重新分流。
 
-dae 通过接口上的 BPF 程序进行流量分流，根据结果决定将流量重定向到私有 Netkit 代理路径或直接放行。
+dae 通过接口上的 BPF 程序进行流量分流。同一接口同时作为 WAN 和 LAN 时，TCX 在 ingress 按 WAN、LAN 顺序执行，在 egress 按 LAN、WAN 顺序执行。已经挂载的 TCX 程序保留优先级，并且必须返回 `TCX_NEXT`，dae 在同一 hook 上的程序才会继续执行。程序根据分流结果决定将流量重定向到私有 Netkit 代理路径或直接放行。
 
 ### 代理原理
 
