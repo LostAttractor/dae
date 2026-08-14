@@ -10,13 +10,21 @@ import (
 	"testing"
 )
 
+func tightenAndCheck(t *testing.T, bm *CompactBitList) {
+	t.Helper()
+	bm.Tighten()
+	if bm.b.Cap() != bm.b.Len() {
+		t.Fatal("failed to tighten", bm.b.Cap(), bm.b.Len())
+	}
+}
+
 func TestBitList6(t *testing.T) {
 	bm := NewCompactBitList(6)
 	bm.Set(1, 0b110010)
 	if v := bm.Get(1); v != 0b110010 {
 		t.Fatal(fmt.Errorf("expect 0b%08b, got 0b%08b", 0b110010, v))
 	}
-	bm.Tighten()
+	tightenAndCheck(t, bm)
 	if v := bm.Get(1); v != 0b110010 {
 		t.Fatal(fmt.Errorf("expect 0b%08b, got 0b%08b", 0b110010, v))
 	}
@@ -24,10 +32,7 @@ func TestBitList6(t *testing.T) {
 	if v := bm.Get(13); v != 0b110010 {
 		t.Fatal(fmt.Errorf("expect 0b%08b, got 0b%08b", 0b110010, v))
 	}
-	bm.Tighten()
-	if bm.b.Cap() != 11 {
-		t.Fatal("failed to tighten", bm.b.Cap())
-	}
+	tightenAndCheck(t, bm)
 	if v := bm.Get(13); v != 0b110010 {
 		t.Fatal(fmt.Errorf("expect 0b%08b, got 0b%08b", 0b110010, v))
 	}
@@ -35,13 +40,7 @@ func TestBitList6(t *testing.T) {
 	if v := bm.Get(14); v != 0b110010 {
 		t.Fatal(fmt.Errorf("expect 0b%08b, got 0b%08b", 0b110010, v))
 	}
-	if bm.b.Cap() != 32 {
-		t.Fatal("unexpected grow behavior", bm.b.Cap())
-	}
-	bm.Tighten()
-	if bm.b.Cap() != 12 {
-		t.Fatal("failed to tighten", bm.b.Cap())
-	}
+	tightenAndCheck(t, bm)
 }
 
 func TestBitList19(t *testing.T) {
@@ -50,7 +49,7 @@ func TestBitList19(t *testing.T) {
 	if v := bm.Get(1); v != 0b1110010110010110010 {
 		t.Fatal(fmt.Errorf("expect 0b%019b, got 0b%019b", 0b1110010110010110010, v))
 	}
-	bm.Tighten()
+	tightenAndCheck(t, bm)
 	if v := bm.Get(1); v != 0b1110010110010110010 {
 		t.Fatal(fmt.Errorf("expect 0b%019b, got 0b%019b", 0b1110010110010110010, v))
 	}
@@ -58,10 +57,7 @@ func TestBitList19(t *testing.T) {
 	if v := bm.Get(13); v != 0b1110010110010110010 {
 		t.Fatal(fmt.Errorf("expect 0b%019b, got 0b%019b", 0b1110010110010110010, v))
 	}
-	bm.Tighten()
-	if bm.b.Cap() != 34 {
-		t.Fatal("failed to tighten", bm.b.Cap())
-	}
+	tightenAndCheck(t, bm)
 	if v := bm.Get(13); v != 0b1110010110010110010 {
 		t.Fatal(fmt.Errorf("expect 0b%019b, got 0b%019b", 0b1110010110010110010, v))
 	}
@@ -69,13 +65,7 @@ func TestBitList19(t *testing.T) {
 	if v := bm.Get(14); v != 0b1110010110010110010 {
 		t.Fatal(fmt.Errorf("expect 0b%019b, got 0b%019b", 0b1110010110010110010, v))
 	}
-	if bm.b.Cap() != 128 {
-		t.Fatal("unexpected grow behavior", bm.b.Cap())
-	}
-	bm.Tighten()
-	if bm.b.Cap() != 36 {
-		t.Fatal("failed to tighten", bm.b.Cap())
-	}
+	tightenAndCheck(t, bm)
 	bm.Set(1, 0b0000000000000000000)
 	if v := bm.Get(1); v != 0b0000000000000000000 {
 		t.Fatal(fmt.Errorf("expect 0b%019b, got 0b%019b", 0b0000000000000000000, v))
