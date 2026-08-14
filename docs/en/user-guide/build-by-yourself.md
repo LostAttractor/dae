@@ -27,9 +27,11 @@ make GOFLAGS="-buildvcs=false" \
 ## Cross compile
 # To armv7 CPU architect:
 #make CGO_ENABLED=0 GOARCH=arm GOARM=7
-# To mips CPU architect:
-#make CGO_ENABLED=0 GOARCH=mips
+# To little-endian MIPS CPU architecture:
+#make CGO_ENABLED=0 GOARCH=mipsle
 ```
+
+Big-endian architectures are not supported.
 
 ## Run
 
