@@ -124,8 +124,11 @@ jobs:
           install -Dm644 ./install/dae.service -t ./pkgdir/usr/lib/systemd/system/
           install -Dm640 ./example.dae -t ./pkgdir/etc/dae/
           install -d ./pkgdir/usr/share/dae/
-          curl -L -o ./pkgdir/usr/share/dae/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
-          curl -L -o ./pkgdir/usr/share/dae/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          source ./install/geodata.env
+          curl --fail --show-error --location --retry 3 -o ./pkgdir/usr/share/dae/geoip.dat "https://github.com/v2fly/geoip/releases/download/${GEOIP_VERSION}/geoip.dat"
+          curl --fail --show-error --location --retry 3 -o ./pkgdir/usr/share/dae/geosite.dat "https://github.com/v2fly/domain-list-community/releases/download/${GEOSITE_VERSION}/dlc.dat"
+          echo "${GEOIP_SHA256}  ./pkgdir/usr/share/dae/geoip.dat" | sha256sum -c -
+          echo "${GEOSITE_SHA256}  ./pkgdir/usr/share/dae/geosite.dat" | sha256sum -c -
           install -D pkgdir/usr/share/dae/geo{ip,site}.dat install/{dae.service,empty.dae} example.dae -t ./zip/
           install -D pkgdir/usr/bin/dae ./zip/dae-$ASSET_NAME
 
