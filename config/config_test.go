@@ -190,6 +190,24 @@ routing { fallback: direct }
 	}
 }
 
+func TestNewRejectsInvalidControlModes(t *testing.T) {
+	for field, value := range map[string]string{
+		"reroute_mode":      "always",
+		"sniff_verify_mode": "verify",
+	} {
+		sections, err := config_parser.Parse(`
+global { ` + field + `: ` + value + ` }
+routing { fallback: direct }
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(sections); err == nil {
+			t.Errorf("%s=%s unexpectedly succeeded", field, value)
+		}
+	}
+}
+
 func TestNew_UnknownSection(t *testing.T) {
 	sections, err := config_parser.Parse(`
 global {}

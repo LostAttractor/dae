@@ -256,8 +256,12 @@ func NewControlPlane(
 	}
 	option := dialer.NewGlobalOption(global)
 
-	consts.VerifyRerouteMode(string(global.RerouteMode))
-	consts.VerifySniffVerifyMode(string(global.SniffVerifyMode))
+	if err := consts.VerifyRerouteMode(string(global.RerouteMode)); err != nil {
+		return nil, err
+	}
+	if err := consts.VerifySniffVerifyMode(string(global.SniffVerifyMode)); err != nil {
+		return nil, err
+	}
 
 	sniffingTimeout := global.SniffingTimeout
 	if !global.DialTargetOverride && global.RerouteMode == consts.RerouteMode_None {
