@@ -6,9 +6,12 @@
 package outbound
 
 import (
+	"encoding/base64"
 	"fmt"
+	"net/url"
 	"strings"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
@@ -72,7 +75,7 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prome
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
 		for _, node := range nodes {
-			d, p, err := D.NewFromLink(node)
+			d, p, err := parseNodeLink(node)
 			if err != nil {
 				log.Warnf("failed to parse node %v: %v", node, err)
 				continue
@@ -90,6 +93,57 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prome
 		}
 	}
 	return s
+}
+
+func normalizeShadowsocksLink(link string) string {
+	name, link := common.GetTagFromLinkLikePlaintext(link)
+	links := strings.Split(link, "->")
+	for i := range links {
+		links[i] = normalizeShadowsocksLinkComponent(strings.TrimSpace(links[i]))
+	}
+	link = strings.Join(links, "->")
+	if name != "" {
+		link = name + ":" + link
+	}
+	return link
+}
+
+func normalizeShadowsocksLinkComponent(link string) string {
+	u, err := url.Parse(link)
+	if err != nil || u.Scheme != "ss" || u.User == nil {
+		return link
+	}
+	normalized := false
+	if plugin := u.Query().Get("plugin"); plugin != "" && !strings.Contains(plugin, ";") {
+		query := u.Query()
+		query.Set("plugin", plugin+";")
+		u.RawQuery = query.Encode()
+		normalized = true
+	}
+	method := u.User.Username()
+	password, hasPassword := u.User.Password()
+	if hasPassword && strings.HasPrefix(method, "2022-") {
+		u.User = url.User(base64.RawURLEncoding.EncodeToString([]byte(method + ":" + password)))
+		normalized = true
+	}
+	if !normalized {
+		return link
+	}
+	return u.String()
+}
+
+func parseNodeLink(link string) ([]D.Dialer, *D.Property, error) {
+	return D.NewFromLink(normalizeShadowsocksLink(link))
+}
+
+func ValidateNodeLink(link string) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("node parser panicked: %v", recovered)
+		}
+	}()
+	_, _, err = parseNodeLink(link)
+	return err
 }
 
 func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) (hit bool, err error) {

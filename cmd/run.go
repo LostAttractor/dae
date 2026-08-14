@@ -34,6 +34,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/common/subscription"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/logger"
@@ -133,7 +134,6 @@ var (
 					"err": err,
 				}).Fatalln("Failed to read config")
 			}
-
 			var logOpts *lumberjack.Logger
 			if logFile != "" {
 				logOpts = &lumberjack.Logger{
@@ -609,13 +609,23 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	if subscriptionDir == "" {
 		subscriptionDir = filepath.Dir(cfgFile)
 	}
+	activeSubscriptionTags, err := persistentSubscriptionTags(conf.Subscription)
+	if err != nil {
+		return nil, err
+	}
 	subDeadline := reloadDeadline(isReload, reloadSubscriptionPhaseTimeout)
+	subCtx := context.Background()
+	cancelSubscriptions := func() {}
+	if isReload {
+		subCtx, cancelSubscriptions = context.WithDeadline(subCtx, subDeadline)
+	}
+	defer cancelSubscriptions()
 	for _, sub := range conf.Subscription {
-		if isReload && time.Now().After(subDeadline) {
+		if err := subCtx.Err(); err != nil {
 			log.Warnf("Subscription resolution exceeded %v; skipping the remaining subscriptions", reloadSubscriptionPhaseTimeout)
 			break
 		}
-		tag, nodes, err := subscription.ResolveSubscription(&client, subscriptionDir, string(sub))
+		tag, nodes, err := subscription.ResolveSubscriptionContext(subCtx, &client, subscriptionDir, string(sub), outbound.ValidateNodeLink)
 		if err != nil {
 			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
 			resolvingfailed = true
@@ -626,19 +636,9 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 		}
 	}
 
-	// Delete all files in persist.d that are not in tagToNodeList
-	files, err := os.ReadDir(filepath.Join(subscriptionDir, "persist.d"))
-	if err != nil && !os.IsNotExist(err) {
+	// Delete caches that no configured persistent subscription can use.
+	if err := subscription.PrunePersistedSubscriptions(subscriptionDir, activeSubscriptionTags); err != nil {
 		return nil, err
-	}
-	for _, file := range files {
-		tag := strings.TrimSuffix(file.Name(), ".sub")
-		if _, ok := tagToNodeList[tag]; !ok {
-			err := os.Remove(filepath.Join(subscriptionDir, "persist.d", file.Name()))
-			if err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	if len(tagToNodeList) == 0 {
@@ -669,6 +669,21 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	runtime.GC()
 
 	return c, nil
+}
+
+func persistentSubscriptionTags(subscriptions []config.KeyableString) (map[string]struct{}, error) {
+	tags := make(map[string]struct{}, len(subscriptions))
+	for _, sub := range subscriptions {
+		tag, ok := subscription.PersistentTag(string(sub))
+		if !ok {
+			continue
+		}
+		if _, exists := tags[tag]; exists {
+			return nil, fmt.Errorf("duplicate persistent subscription tag %q", tag)
+		}
+		tags[tag] = struct{}{}
+	}
+	return tags, nil
 }
 
 func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
