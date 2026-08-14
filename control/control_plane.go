@@ -57,6 +57,7 @@ type ControlPlane struct {
 	criticalOutbounds      []bool
 	noConnectivityOutbound consts.OutboundIndex
 	inConnections          *sync.Map
+	udpTaskPool            *udpTaskPool[netip.AddrPort]
 
 	dnsController *DnsController
 
@@ -362,6 +363,7 @@ func NewControlPlane(
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
 		inConnections:             new(sync.Map),
+		udpTaskPool:               newUdpTaskPool[netip.AddrPort](DefaultNatTimeoutUDP),
 		routingMatcher:            routingMatcher,
 		routingMatcherBuilder:     builder,
 		ctx:                       ctx,
@@ -382,6 +384,12 @@ func NewControlPlane(
 	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
 	// the remainder of control-plane shutdown indefinitely.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
+	// Cleanup runs in reverse: drain accepted UDP tasks before closing their
+	// outbound dependencies.
+	plane.deferFuncs = append(plane.deferFuncs, func() error {
+		plane.udpTaskPool.close()
+		return nil
+	})
 	defer func() {
 		if err != nil {
 			cancel()
@@ -868,7 +876,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 			// Debug:
 			// t := time.Now()
-			DefaultUdpTaskPool.EmitTask(src, func() {
+			if !c.udpTaskPool.emit(src, func() {
 				defer pool.PutBuffer(data)
 				if e := c.handlePkt(serveUdpConn, data, src, dst, false); e != nil && c.ctx.Err() == nil {
 					if log.IsLevelEnabled(log.DebugLevel) {
@@ -877,7 +885,9 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 						log.Warnf("%v", oops.Wrapf(e, "handlePkt"))
 					}
 				}
-			})
+			}) {
+				pool.PutBuffer(data)
+			}
 			// if d := time.Since(t); d > 100*time.Millisecond {
 			// 	log.Println(d)
 			// }
