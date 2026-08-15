@@ -39,14 +39,13 @@ type TableUsage struct {
 	Name      string               `json:"name"`
 	Used      int                  `json:"used"`
 	Limit     int                  `json:"limit"`
-	Lazy      bool                 `json:"lazy"`
-	LimitGC   uint64               `json:"limit_gc"`
 	Breakdown *TableUsageBreakdown `json:"breakdown,omitempty"`
 }
 
 type TableUsageBreakdown struct {
-	Live     int `json:"live"`
-	Retained int `json:"retained"`
+	Live     int    `json:"live"`
+	Retained int    `json:"retained"`
+	LimitGC  uint64 `json:"limit_gc"`
 }
 
 type GroupStatus struct {
@@ -340,14 +339,13 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 		snapshot.Tables = append(snapshot.Tables,
 			TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
 			TableUsage{
-				Name:    "domain-history",
-				Used:    usage.UserUsed,
-				Limit:   usage.UserMax,
-				Lazy:    true,
-				LimitGC: usage.LimitGC,
+				Name:  "domain-history",
+				Used:  usage.UserUsed,
+				Limit: usage.UserMax,
 				Breakdown: &TableUsageBreakdown{
 					Live:     usage.UserLive,
 					Retained: usage.UserRetained,
+					LimitGC:  usage.LimitGC,
 				},
 			},
 		)

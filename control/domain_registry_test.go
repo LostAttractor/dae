@@ -143,7 +143,7 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			if r.userLive {
 				userLive++
 			}
-			if r.inKernel {
+			if r.kernelResident() {
 				inKernel++
 				if r.kernelHeapIdx < 0 || r.kernelHeapIdx >= g.kernelHeap.Len() || g.kernelHeap.items[r.kernelHeapIdx] != r {
 					t.Errorf("%v/%v: bad kernelHeapIdx %v", qi.qname, ip, r.kernelHeapIdx)
@@ -156,7 +156,7 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 				}
 			}
 			if s := g.byIP[ip]; s != nil && domainExpiryAlive(r.effectiveExpiry(), checkedAt) {
-				if !r.inKernel {
+				if !r.kernelResident() {
 					t.Errorf("%v/%v: live registration missing from resident shared-IP state", qi.qname, ip)
 				} else if _, ok := s.refs[r]; !ok {
 					t.Errorf("%v/%v: live registration missing from resident refs", qi.qname, ip)
@@ -257,7 +257,7 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 			if _, ok := registrations[r]; !ok {
 				t.Errorf("%v: state contains registration absent from byName", ip)
 			}
-			if !r.inKernel {
+			if !r.kernelResident() {
 				t.Errorf("%v: state contains non-kernel registration %v", ip, r.qname)
 			}
 			if r.ip != ip {
@@ -403,7 +403,7 @@ func TestDomainRegistryVerifyKernelCoverage(t *testing.T) {
 		if got := g.Verify(qi, ip); got != (DomainVerification{Registered: true, Paired: true, KernelCovered: true}) {
 			t.Fatalf("Verify shared-IP zero-bitmap record: got %+v", got)
 		}
-		if !g.byName[qi][ip].inKernel || bitmapHas(fake.routing[ip], 0) {
+		if !g.byName[qi][ip].kernelResident() || bitmapHas(fake.routing[ip], 0) {
 			t.Fatal("shared-IP zero-bitmap registration must join kernel state")
 		}
 	})
@@ -464,7 +464,7 @@ func TestDomainRegistrySharedIpBitmaps(t *testing.T) {
 	if bitmapHas(fake.routing[ip], 0) || bitmapHas(fake.routing[ip], 1) {
 		t.Fatalf("routing should have no bits: %v", fake.routing[ip])
 	}
-	if !g.byName[qiZero][ip].inKernel {
+	if !g.byName[qiZero][ip].kernelResident() {
 		t.Fatal("live zero-bitmap registration must be part of shared kernel state")
 	}
 
@@ -493,7 +493,7 @@ func TestDomainRegistrySharedIPRemovesStateWhenOnlyZeroRefsRemain(t *testing.T) 
 
 	g.Upsert(nonzeroQI, ip, testBitmap(0), 10, now)
 	g.Upsert(zeroQI, ip, testBitmap(), 100, now)
-	if !g.byName[nonzeroQI][ip].inKernel || !g.byName[zeroQI][ip].inKernel {
+	if !g.byName[nonzeroQI][ip].kernelResident() || !g.byName[zeroQI][ip].kernelResident() {
 		t.Fatal("all live shared-IP refs must be admitted together")
 	}
 
@@ -504,7 +504,7 @@ func TestDomainRegistrySharedIPRemovesStateWhenOnlyZeroRefsRemain(t *testing.T) 
 	if fake.has(ip) || g.Usage().KernelUsed != 0 {
 		t.Fatalf("zero-only shared state must be removed: bump=%v", fake.bump)
 	}
-	if g.byName[nonzeroQI][ip].inKernel || g.byName[zeroQI][ip].inKernel {
+	if g.byName[nonzeroQI][ip].kernelResident() || g.byName[zeroQI][ip].kernelResident() {
 		t.Fatal("removing zero-only state must mark every ref non-kernel")
 	}
 	if got := g.Verify(zeroQI, ip); got != (DomainVerification{Registered: true, Paired: true, KernelCovered: true}) {
@@ -522,7 +522,7 @@ func TestDomainRegistrySharedIPRemovalDropsZeroOnlyState(t *testing.T) {
 
 	g.Upsert(nonzeroQI, ip, testBitmap(0), 1, now)
 	g.UpsertNoExpiry(zeroQI, ip, testBitmap(), now)
-	if !fake.has(ip) || !g.byName[zeroQI][ip].inKernel {
+	if !fake.has(ip) || !g.byName[zeroQI][ip].kernelResident() {
 		t.Fatal("test setup did not create complete shared-IP state")
 	}
 
@@ -534,7 +534,7 @@ func TestDomainRegistrySharedIPRemovalDropsZeroOnlyState(t *testing.T) {
 	if got := g.Lookup(nonzeroQI); len(got) != 0 {
 		t.Fatalf("expired registration should be reclaimed over the limit: %v", got)
 	}
-	if fake.has(ip) || g.byName[zeroQI][ip].inKernel {
+	if fake.has(ip) || g.byName[zeroQI][ip].kernelResident() {
 		t.Fatal("removing the last nonzero ref must dismantle zero-only state")
 	}
 	checkInvariants(t, g, fake)
@@ -550,7 +550,7 @@ func TestDomainRegistrySharedIPBitmapChangeReconcilesCompleteState(t *testing.T)
 	g.Upsert(changingQI, ip, testBitmap(0), 60, now)
 	g.Upsert(zeroQI, ip, testBitmap(), 60, now)
 	g.Upsert(changingQI, ip, testBitmap(), 60, now)
-	if fake.has(ip) || g.byName[changingQI][ip].inKernel || g.byName[zeroQI][ip].inKernel {
+	if fake.has(ip) || g.byName[changingQI][ip].kernelResident() || g.byName[zeroQI][ip].kernelResident() {
 		t.Fatalf("changing the last nonzero bitmap to zero must remove the complete state")
 	}
 
@@ -560,7 +560,7 @@ func TestDomainRegistrySharedIPBitmapChangeReconcilesCompleteState(t *testing.T)
 	if !fake.has(ip) || !bitmapHas(fake.bump[ip], 1) || bitmapHas(fake.routing[ip], 1) {
 		t.Fatalf("complete state was not rebuilt after bitmap change: bump=%v routing=%v", fake.bump[ip], fake.routing[ip])
 	}
-	if !g.byName[changingQI][ip].inKernel || !g.byName[zeroQI][ip].inKernel {
+	if !g.byName[changingQI][ip].kernelResident() || !g.byName[zeroQI][ip].kernelResident() {
 		t.Fatal("readmission must mark every live shared-IP ref in-kernel")
 	}
 	checkInvariants(t, g, fake)
@@ -691,7 +691,7 @@ func TestDomainRegistryZeroRefreshReconsidersNonresidentNonzeroIP(t *testing.T) 
 	if !fake.has(firstIP) || fake.has(secondIP) {
 		t.Fatalf("zero refresh did not re-admit complete first-IP state: %v", fake.bump)
 	}
-	if !g.byName[matchQI][firstIP].inKernel || !g.byName[zeroQI][firstIP].inKernel || bitmapHas(fake.routing[firstIP], 0) {
+	if !g.byName[matchQI][firstIP].kernelResident() || !g.byName[zeroQI][firstIP].kernelResident() || bitmapHas(fake.routing[firstIP], 0) {
 		t.Fatal("re-admitted state did not include the zero ref in routing AND")
 	}
 	checkInvariants(t, g, fake)
@@ -764,7 +764,7 @@ func TestDomainRegistryKernelHardCapEvictsCompleteIPState(t *testing.T) {
 	if fake.has(sharedIP) || !fake.has(otherIP) || !fake.has(incomingIP) {
 		t.Fatalf("the complete earliest-expiring IP state should be evicted: %v", fake.bump)
 	}
-	if g.byName[qa][sharedIP].inKernel || g.byName[qb][sharedIP].inKernel {
+	if g.byName[qa][sharedIP].kernelResident() || g.byName[qb][sharedIP].kernelResident() {
 		t.Fatalf("all shared IP registrations must be evicted from kernel together")
 	}
 	if got := g.Lookup(qa); len(got) != 1 || got[0] != sharedIP {
@@ -796,7 +796,7 @@ func TestDomainRegistryKernelHardCapReadmitsCompleteIPState(t *testing.T) {
 	if !fake.has(sharedIP) || fake.has(otherIP) {
 		t.Fatalf("shared IP should be re-admitted as a complete state: %v", fake.bump)
 	}
-	if !g.byName[qa][sharedIP].inKernel || !g.byName[qb][sharedIP].inKernel || !g.byName[qzero][sharedIP].inKernel {
+	if !g.byName[qa][sharedIP].kernelResident() || !g.byName[qb][sharedIP].kernelResident() || !g.byName[qzero][sharedIP].kernelResident() {
 		t.Fatalf("all live shared-IP registrations must be re-admitted together")
 	}
 	if bitmapHas(fake.routing[sharedIP], 0) || bitmapHas(fake.routing[sharedIP], 1) {
@@ -1140,7 +1140,7 @@ func TestDomainRegistryAdoptFromSkipsNoExpiryOnSharedIP(t *testing.T) {
 	if !fake.has(ip) || !bitmapHas(fake.bump[ip], 2) || bitmapHas(fake.routing[ip], 2) {
 		t.Fatalf("adopted zero ref must clear shared routing AND: bump=%v routing=%v", fake.bump[ip], fake.routing[ip])
 	}
-	if !next.byName[finiteQI][ip].inKernel || !mixed.inKernel {
+	if !next.byName[finiteQI][ip].kernelResident() || !mixed.kernelResident() {
 		t.Fatal("all live adopted shared-IP refs, including zero, must be in-kernel")
 	}
 	if bitmapHas(fake.bump[ip], 0) || bitmapHas(fake.bump[ip], 1) || bitmapHas(fake.bump[ip], 3) || bitmapHas(fake.bump[ip], 4) {
@@ -1167,7 +1167,7 @@ func TestDomainRegistryAdoptionCannotMoveLivenessBackward(t *testing.T) {
 	if got := next.Lookup(qi); len(got) != 1 {
 		t.Fatalf("historical finite evidence should survive adoption: %v", got)
 	}
-	if fake.has(ip) || next.byName[qi][ip].inKernel {
+	if fake.has(ip) || next.byName[qi][ip].kernelResident() {
 		t.Fatal("adoption resurrected evidence already expired at the old registry's liveness watermark")
 	}
 	if !next.evaluatedAt.Equal(now.Add(10 * time.Second)) {
@@ -1253,7 +1253,7 @@ func TestDomainRegistryAdoptFrom(t *testing.T) {
 	if !bitmapHas(fake.bump[ip1], 0) || bitmapHas(fake.routing[ip1], 0) || bitmapHas(fake.bump[ip1], 1) {
 		t.Fatalf("ip1 should include its adopted zero ref: bump=%v routing=%v", fake.bump[ip1], fake.routing[ip1])
 	}
-	if !next.byName[queryInfo{qname: "b.com.", qtype: 1}][ip1].inKernel {
+	if !next.byName[queryInfo{qname: "b.com.", qtype: 1}][ip1].kernelResident() {
 		t.Fatal("adoption must include a live zero-bitmap ref in shared kernel state")
 	}
 	if !bitmapHas(fake.routing[ip2], 0) {

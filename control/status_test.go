@@ -292,8 +292,8 @@ func TestStatusSnapshotReportsDomainHistory(t *testing.T) {
 	if history.Name != "domain-history" || history.Used != 2 || history.Breakdown == nil {
 		t.Fatalf("domain history table = %+v", history)
 	}
-	if !history.Lazy || history.LimitGC != 0 {
-		t.Fatalf("domain history lazy/GC state = %+v", history)
+	if history.Breakdown.LimitGC != 0 {
+		t.Fatalf("domain history GC state = %+v", history)
 	}
 	if history.Breakdown.Live != 1 || history.Breakdown.Retained != 1 {
 		t.Fatalf("domain history breakdown = %+v, want 1 live and 1 retained", history.Breakdown)

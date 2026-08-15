@@ -678,7 +678,6 @@ Dial:
 		*dnsMessage = *reqMsg.Copy()
 	}
 	// TODO: dial_mode: domain 的逻辑失效问题
-	// TODO: AsIs也需要更新domain_routing_map? 不然没有办法sniff, 并且考虑到有些应用会使用不同的DNS, 必须对全部 upstream 更新
 	c.finalizeAcceptedResponse(dnsMessage, pending)
 	return nil
 }
