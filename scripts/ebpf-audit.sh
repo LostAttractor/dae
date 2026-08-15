@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329 # Cleanup functions are invoked by signal traps.
 set -euo pipefail
 
 OUT_DIR="${1:-build/ebpf-audit}"
@@ -102,21 +103,58 @@ mkdir -p "${OUT_DIR}/static" "${OUT_DIR}/bpftool/programs" "${OUT_DIR}/bpftool/m
 printf '%s\n' 'dae-ebpf-audit-output-v1' > "${OUTPUT_MARKER}"
 
 audit_pid=""
+audit_process_pid=""
 restore_ownership() {
   if [[ "${EUID}" -ne 0 ]]; then
     refuse_nested_mounts || return
     "${SUDO[@]}" chown -R --no-dereference "$(id -u):$(id -g)" "${OUT_DIR}" 2>/dev/null || true
   fi
 }
-# shellcheck disable=SC2329 # Invoked by the EXIT/INT/TERM trap.
+read_audit_process_pid() {
+  local executable
+  local pid
+  [[ -s "${OUT_DIR}/audit.pid" ]] || return 1
+  pid=$(<"${OUT_DIR}/audit.pid")
+  case "${pid}" in
+    ""|*[!0-9]*) return 1 ;;
+  esac
+  while [[ "${pid}" == 0* && "${#pid}" -gt 1 ]]; do
+    pid="${pid#0}"
+  done
+  if [[ "${pid}" == 0 || "${pid}" == 1 ]]; then
+    return 1
+  fi
+  executable=$("${SUDO[@]}" realpath -e -- "/proc/${pid}/exe" 2>/dev/null) || return 1
+  if [[ "${executable}" != "${AUDIT_BIN}" ]]; then
+    return 1
+  fi
+  audit_process_pid="${pid}"
+}
+stop_audit() {
+  if [[ -z "${audit_process_pid}" ]]; then
+    read_audit_process_pid || true
+  fi
+  local pid="${audit_process_pid:-${audit_pid}}"
+  if [[ -n "${pid}" ]] && "${SUDO[@]}" kill -0 "${pid}" 2>/dev/null; then
+    "${SUDO[@]}" kill -TERM "${pid}" 2>/dev/null || true
+  fi
+}
 cleanup() {
-  if [[ -n "${audit_pid}" ]] && "${SUDO[@]}" kill -0 "${audit_pid}" 2>/dev/null; then
-    "${SUDO[@]}" kill -TERM "${audit_pid}" 2>/dev/null || true
+  if [[ -n "${audit_pid}" ]]; then
+    stop_audit
     wait "${audit_pid}" 2>/dev/null || true
   fi
   restore_ownership
 }
-trap cleanup EXIT INT TERM
+handle_signal() {
+  local status="$1"
+  trap - EXIT INT TERM
+  cleanup
+  exit "${status}"
+}
+trap cleanup EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 {
   echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -154,7 +192,7 @@ audit_pid=$!
 
 ready=0
 for _ in $(seq 1 60); do
-  if [[ -f "${OUT_DIR}/audit.ready" ]]; then
+  if [[ -s "${OUT_DIR}/audit.ready" ]] && read_audit_process_pid; then
     ready=1
     break
   fi
@@ -173,18 +211,12 @@ if [[ "${ready}" -eq 1 && -s "${OUT_DIR}/manifest.tsv" ]]; then
     [[ -n "${kind}" ]] || continue
     case "${kind}" in
       program)
-        if ! "${SUDO[@]}" "${BPFTOOL_BIN}" prog show id "${id}" > "${OUT_DIR}/bpftool/programs/${name}.show.txt" 2>&1; then
-          audit_status=1
-        fi
-        if ! "${SUDO[@]}" "${BPFTOOL_BIN}" prog dump xlated id "${id}" > "${OUT_DIR}/bpftool/programs/${name}.xlated.txt" 2>&1; then
-          audit_status=1
-        fi
+        "${SUDO[@]}" "${BPFTOOL_BIN}" prog show id "${id}" > "${OUT_DIR}/bpftool/programs/${name}.show.txt" 2>&1 || audit_status=1
+        "${SUDO[@]}" "${BPFTOOL_BIN}" prog dump xlated id "${id}" > "${OUT_DIR}/bpftool/programs/${name}.xlated.txt" 2>&1 || audit_status=1
         "${SUDO[@]}" "${BPFTOOL_BIN}" prog dump jited id "${id}" > "${OUT_DIR}/bpftool/programs/${name}.jited.txt" 2>&1 || true
         ;;
       map)
-        if ! "${SUDO[@]}" "${BPFTOOL_BIN}" map show id "${id}" > "${OUT_DIR}/bpftool/maps/${name}.show.txt" 2>&1; then
-          audit_status=1
-        fi
+        "${SUDO[@]}" "${BPFTOOL_BIN}" map show id "${id}" > "${OUT_DIR}/bpftool/maps/${name}.show.txt" 2>&1 || audit_status=1
         ;;
     esac
   done < "${OUT_DIR}/manifest.tsv"
@@ -193,12 +225,11 @@ else
   audit_status=1
 fi
 
-if "${SUDO[@]}" kill -0 "${audit_pid}" 2>/dev/null; then
-  "${SUDO[@]}" kill -TERM "${audit_pid}" 2>/dev/null || true
-fi
+stop_audit
 loader_status=0
 wait "${audit_pid}" || loader_status=$?
 audit_pid=""
+audit_process_pid=""
 if [[ "${ready}" -eq 1 && "${loader_status}" -eq 143 ]]; then
   loader_status=0
 fi

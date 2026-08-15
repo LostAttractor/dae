@@ -6,11 +6,35 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"unsafe"
 
 	"github.com/cilium/ebpf/btf"
 )
+
+func TestRunPublishesPIDBeforeObjectLoad(t *testing.T) {
+	outputDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outputDir, "audit.ready"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(filepath.Join(outputDir, "missing.o"), outputDir, false); err == nil {
+		t.Fatal("missing object was accepted")
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "audit.ready")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale ready marker remains: %v", err)
+	}
+	pid, err := os.ReadFile(filepath.Join(outputDir, "audit.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strconv.Itoa(os.Getpid()) + "\n"; string(pid) != want {
+		t.Fatalf("pid marker = %q, want %q", pid, want)
+	}
+}
 
 func TestDaeParamSize(t *testing.T) {
 	if size := unsafe.Sizeof(daeParam{}); size != daeParamSize {
