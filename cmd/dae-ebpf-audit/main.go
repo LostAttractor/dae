@@ -71,6 +71,12 @@ func run(objectPath string, outputDir string, hold bool) error {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
+	if err := os.Remove(filepath.Join(outputDir, "audit.ready")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale ready marker: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "audit.pid"), fmt.Appendf(nil, "%d\n", os.Getpid()), 0o644); err != nil {
+		return fmt.Errorf("write pid marker: %w", err)
+	}
 
 	spec, err := ebpf.LoadCollectionSpec(objectPath)
 	if err != nil {
@@ -151,7 +157,7 @@ func run(objectPath string, outputDir string, hold bool) error {
 	if err := os.WriteFile(filepath.Join(outputDir, "active-scenario.txt"), []byte(activeScenario+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write active scenario: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(outputDir, "audit.ready"), fmt.Appendf(nil, "pid=%d\n", os.Getpid()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(outputDir, "audit.ready"), []byte("ready\n"), 0o644); err != nil {
 		return fmt.Errorf("write ready marker: %w", err)
 	}
 	if hold {
