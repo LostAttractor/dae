@@ -293,20 +293,25 @@ func tableUsageRow(usage control.TableUsage) table.Row {
 	if usage.Limit > 0 {
 		ratio = float64(usage.Used) / float64(usage.Limit)
 	}
-	limit := fmt.Sprintf("%d", usage.Limit)
-	if usage.Soft {
-		limit += " (soft)"
+	used := fmt.Sprintf("%d", usage.Used)
+	if usage.Lazy {
+		used += " (LAZY)"
 	}
 	breakdown := "-"
+	limitGC := "-"
 	if usage.Breakdown != nil {
 		breakdown = fmt.Sprintf("%d/%d", usage.Breakdown.Live, usage.Breakdown.Retained)
 	}
+	if usage.Lazy {
+		limitGC = fmt.Sprintf("%d", usage.LimitGC)
+	}
 	return table.Row{
 		usage.Name,
-		usage.Used,
-		limit,
+		used,
+		usage.Limit,
 		colorUsage(ratio, formatRatio(ratio)),
 		breakdown,
+		limitGC,
 	}
 }
 
@@ -454,7 +459,7 @@ func printStatus(s *control.StatusSnapshot) {
 		for _, usage := range s.Tables {
 			rows = append(rows, tableUsageRow(usage))
 		}
-		printTable(table.Row{"TABLE", "USED", "LIMIT", "USAGE", "LIVE/RETAINED"}, rows)
+		printTable(table.Row{"TABLE", "USED", "LIMIT", "USAGE", "LIVE/RETAINED", "LIMIT-GC"}, rows)
 	}
 
 	for _, group := range s.Groups {

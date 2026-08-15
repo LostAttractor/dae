@@ -68,7 +68,9 @@ func combineKernelIPExpiry(a, b time.Time) time.Time {
 //     fronting connections) for no other gain.
 type domainRegistration struct {
 	queryInfo
-	ip            netip.Addr
+	ip netip.Addr
+	// Registrations of the same query share this immutable bitmap in the
+	// common case. A changed bitmap is cloned for only the updated record.
 	bitmap        []uint32  // match bitmap of the domain, length MaxMatchSetLen/32
 	finiteExpiry  time.Time // longest finite observation; retained under no-expiry
 	noExpiry      bool      // plane-local no-expiry observation
@@ -186,13 +188,11 @@ func (h *expiryHeap) Pop() any {
 //     with the latest expiry. An evicted IP's registrations survive in
 //     userspace. Expired kernel contributions are also reaped periodically by
 //     Sweep.
-//   - Userspace side is a soft limit (userMax): once exceeded, memory-
-//     pressure GC reclaims registrations with the earliest expiry, but only
-//     expired ones; live registrations are never evicted, so the registry
-//     may grow past userMax under churn. GC runs on the update path and on
-//     the periodic sweep; expiry alone never removes a userspace
-//     registration, because keeping it costs only memory while losing it
-//     breaks sniff verification.
+//   - Userspace side is a hard limit (userMax): once exceeded, GC reclaims
+//     registrations with the earliest expiry, including live registrations
+//     when necessary. GC runs on the update path and on the periodic sweep;
+//     expiry alone never removes a userspace registration below the limit,
+//     because retained history remains useful for sniff verification.
 //
 // Invariants (checked by tests):
 //   - byIP contains exactly the IPs with >= 1 in-kernel registration, and
@@ -203,6 +203,7 @@ func (h *expiryHeap) Pop() any {
 //     registry is a superset of the kernel state.
 //   - len(kernelHeap) == number of in-kernel registrations; both heaps'
 //     indices are consistent.
+//   - len(verifyHeap) <= userMax.
 //   - userLive is the number of registrations classified as live by their
 //     latest update or the latest periodic sweep.
 type DomainRegistry struct {
@@ -220,6 +221,7 @@ type DomainRegistry struct {
 	verifyHeap   expiryHeap   // all registrations, by expiry
 	evaluatedAt  time.Time    // latest observation/sweep time used for liveness
 	userLive     int          // sweep-cached live userspace registrations
+	limitGC      uint64       // registrations reclaimed to enforce userMax
 
 	kernelMax int
 	userMax   int
@@ -266,6 +268,19 @@ func cloneDomainBitmap(bitmap []uint32) []uint32 {
 	c := make([]uint32, domainBitmapWords())
 	copy(c, bitmap)
 	return c
+}
+
+// shareDomainBitmap reuses an equal bitmap already owned by the same query.
+// Domain matching depends on qname, so all addresses observed for one query
+// normally have identical bitmaps. Keeping the slice on registrations avoids
+// another indexing layer while removing the dominant duplicate allocation.
+func (g *DomainRegistry) shareDomainBitmap(qi queryInfo, bitmap []uint32, except *domainRegistration) []uint32 {
+	for _, r := range g.byName[qi] {
+		if r != except && slices.Equal(r.bitmap, bitmap) {
+			return r.bitmap
+		}
+	}
+	return cloneDomainBitmap(bitmap)
 }
 
 func domainBitmapAllZero(bitmap []uint32) bool {
@@ -338,7 +353,7 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 		g.refreshUserLiveness(r, now)
 		bitmapChanged := !slices.Equal(r.bitmap, bitmap)
 		if bitmapChanged {
-			r.bitmap = cloneDomainBitmap(bitmap)
+			r.bitmap = g.shareDomainBitmap(qi, bitmap, r)
 		}
 		g.replaceNonzeroContribution(ip, oldNonzero, oldExpiry, !domainBitmapAllZero(r.bitmap), r.effectiveExpiry())
 		if r.inKernel {
@@ -361,7 +376,7 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 	r := &domainRegistration{
 		queryInfo:     qi,
 		ip:            ip,
-		bitmap:        cloneDomainBitmap(bitmap),
+		bitmap:        g.shareDomainBitmap(qi, bitmap, nil),
 		finiteExpiry:  expiry,
 		noExpiry:      noExpiry,
 		kernelHeapIdx: -1,
@@ -409,8 +424,7 @@ func (g *DomainRegistry) Verify(qi queryInfo, ip netip.Addr) (result DomainVerif
 }
 
 // Sweep reaps expired kernel contributions (registrations survive in
-// userspace) and runs the userspace memory-pressure GC, so an idle registry
-// over its soft limit does not hold stale records until the next insert.
+// userspace below the limit) and enforces the userspace history limit.
 func (g *DomainRegistry) Sweep(now time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -463,7 +477,7 @@ func (g *DomainRegistry) reapExpiredKernel(now time.Time) {
 //
 // Expirations are carried over unchanged: adoption does not extend the
 // lifetime of any record. Adoption ends with the memory-pressure GC, so
-// already-stale registrations over the userspace soft limit are reclaimed
+// already-stale registrations over the userspace limit are reclaimed
 // immediately rather than lingering until the first insert.
 //
 // It panics if this registry is not empty or the old one is still live:
@@ -494,22 +508,24 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(fqdn st
 		now = old.evaluatedAt
 	}
 	g.evaluatedAt = now
+	g.limitGC = old.limitGC
 
 	// Rebuild finite observations with this plane's rules. Historical expired
 	// observations remain userspace evidence, as they did before adoption.
 	for qi, m := range old.byName {
+		bitmap := matchBitmap(qi.qname)
+		if len(bitmap) != domainBitmapWords() {
+			panic(fmt.Errorf("domain bitmap length %v not in sync with MaxMatchSetLen", len(bitmap)))
+		}
+		sharedBitmap := cloneDomainBitmap(bitmap)
 		for ip, or := range m {
 			if or.finiteExpiry.IsZero() {
 				continue
 			}
-			bitmap := matchBitmap(qi.qname)
-			if len(bitmap) != domainBitmapWords() {
-				panic(fmt.Errorf("domain bitmap length %v not in sync with MaxMatchSetLen", len(bitmap)))
-			}
 			nr := &domainRegistration{
 				queryInfo:     qi,
 				ip:            ip,
-				bitmap:        cloneDomainBitmap(bitmap),
+				bitmap:        sharedBitmap,
 				finiteExpiry:  or.finiteExpiry,
 				kernelHeapIdx: -1,
 				verifyHeapIdx: -1,
@@ -583,6 +599,7 @@ type RegistryUsage struct {
 	UserLive     int
 	UserRetained int
 	UserMax      int
+	LimitGC      uint64
 	KernelUsed   int
 	KernelMax    int
 }
@@ -602,6 +619,7 @@ func (g *DomainRegistry) Usage() RegistryUsage {
 		UserLive:     userLive,
 		UserRetained: userUsed - userLive,
 		UserMax:      g.userMax,
+		LimitGC:      g.limitGC,
 		KernelUsed:   len(g.byIP),
 		KernelMax:    g.kernelMax,
 	}
@@ -933,17 +951,15 @@ func (g *DomainRegistry) unregister(r *domainRegistration) {
 	g.replaceNonzeroContribution(r.ip, !domainBitmapAllZero(r.bitmap), r.effectiveExpiry(), false, time.Time{})
 }
 
-// gcUser enforces the userspace soft limit: while over userMax, reclaim the
-// registrations with the earliest expiry, but only expired ones —
-// live records are never evicted and the registry may exceed userMax.
+// gcUser enforces the userspace history hard limit. Expired registrations
+// naturally sort first; live history is reclaimed only when it is necessary
+// to keep memory bounded.
 func (g *DomainRegistry) gcUser(now time.Time) {
 	g.reapExpiredKernel(now)
 	for g.verifyHeap.Len() > g.userMax && g.verifyHeap.Len() > 0 {
 		top := g.verifyHeap.items[0]
-		if domainExpiryAlive(top.effectiveExpiry(), now) {
-			return
-		}
 		g.unregister(top)
+		g.limitGC++
 	}
 }
 

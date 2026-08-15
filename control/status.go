@@ -35,13 +35,12 @@ type StatusSnapshot struct {
 }
 
 // TableUsage is the fill level of one capacity-limited DNS/domain table.
-// Soft limits (LRU, memory-pressure GC) may be exceeded under churn; hard
-// limits (eBPF map max_entries) cannot.
 type TableUsage struct {
 	Name      string               `json:"name"`
 	Used      int                  `json:"used"`
 	Limit     int                  `json:"limit"`
-	Soft      bool                 `json:"soft"`
+	Lazy      bool                 `json:"lazy"`
+	LimitGC   uint64               `json:"limit_gc"`
 	Breakdown *TableUsageBreakdown `json:"breakdown,omitempty"`
 }
 
@@ -339,17 +338,18 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 	if c.core != nil && c.core.domainRegistry != nil {
 		usage := c.core.domainRegistry.Usage()
 		snapshot.Tables = append(snapshot.Tables,
+			TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
 			TableUsage{
-				Name:  "domain-history",
-				Used:  usage.UserUsed,
-				Limit: usage.UserMax,
-				Soft:  true,
+				Name:    "domain-history",
+				Used:    usage.UserUsed,
+				Limit:   usage.UserMax,
+				Lazy:    true,
+				LimitGC: usage.LimitGC,
 				Breakdown: &TableUsageBreakdown{
 					Live:     usage.UserLive,
 					Retained: usage.UserRetained,
 				},
 			},
-			TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
 		)
 	}
 	for outboundID, g := range c.outbounds {
