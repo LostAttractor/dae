@@ -29,14 +29,13 @@ func TestTableUsageRow(t *testing.T) {
 	}
 
 	lazy := tableUsageRow(control.TableUsage{
-		Name:    "domain-history",
-		Used:    32768,
-		Limit:   32768,
-		Lazy:    true,
-		LimitGC: 123,
+		Name:  "domain-history",
+		Used:  32768,
+		Limit: 32768,
 		Breakdown: &control.TableUsageBreakdown{
 			Live:     60000,
 			Retained: 5536,
+			LimitGC:  123,
 		},
 	})
 	if got := lazy[1].(string); got != "32768 (LAZY)" {

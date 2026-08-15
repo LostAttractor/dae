@@ -294,16 +294,12 @@ func tableUsageRow(usage control.TableUsage) table.Row {
 		ratio = float64(usage.Used) / float64(usage.Limit)
 	}
 	used := fmt.Sprintf("%d", usage.Used)
-	if usage.Lazy {
-		used += " (LAZY)"
-	}
 	breakdown := "-"
 	limitGC := "-"
 	if usage.Breakdown != nil {
+		used += " (LAZY)"
 		breakdown = fmt.Sprintf("%d/%d", usage.Breakdown.Live, usage.Breakdown.Retained)
-	}
-	if usage.Lazy {
-		limitGC = fmt.Sprintf("%d", usage.LimitGC)
+		limitGC = fmt.Sprintf("%d", usage.Breakdown.LimitGC)
 	}
 	return table.Row{
 		usage.Name,

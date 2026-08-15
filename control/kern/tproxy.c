@@ -1172,6 +1172,8 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	struct tuples_key routing_tuples_key = tuples.five;
 
 	if (l4proto == IPPROTO_UDP) {
+		// UDP routing is socket-scoped. Datagrams from one source socket must
+		// share a route so userspace endpoint reuse and replies stay symmetric.
 		__builtin_memset(&routing_tuples_key.dip, 0, sizeof(routing_tuples_key.dip));
 		routing_tuples_key.dport = 0;
 	}
