@@ -112,6 +112,9 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	if len(g.byIP) > g.kernelMax {
 		t.Errorf("kernel occupancy %v exceeds hard limit %v", len(g.byIP), g.kernelMax)
 	}
+	if g.verifyHeap.Len() > g.userMax {
+		t.Errorf("history occupancy %v exceeds hard limit %v", g.verifyHeap.Len(), g.userMax)
+	}
 	if len(g.kernelIPHeap) != len(g.byIP) {
 		t.Errorf("kernelIPHeap len %v != byIP len %v", len(g.kernelIPHeap), len(g.byIP))
 	}
@@ -328,6 +331,23 @@ func TestDomainRegistryUpsertFlushesKernel(t *testing.T) {
 	checkInvariants(t, g, fake)
 }
 
+func TestDomainRegistrySharesQueryBitmap(t *testing.T) {
+	g, fake := newTestRegistry(16, 16, 0)
+	now := time.Now()
+	qi := queryInfo{qname: "shared.example.", qtype: 1}
+	firstIP := netip.MustParseAddr("1.1.1.1")
+	secondIP := netip.MustParseAddr("2.2.2.2")
+
+	g.Upsert(qi, firstIP, testBitmap(3), 60, now)
+	g.Upsert(qi, secondIP, testBitmap(3), 60, now)
+	first := g.byName[qi][firstIP].bitmap
+	second := g.byName[qi][secondIP].bitmap
+	if &first[0] != &second[0] {
+		t.Fatal("registrations of one query should share equal bitmap storage")
+	}
+	checkInvariants(t, g, fake)
+}
+
 func TestDomainRegistryVerifyKernelCoverage(t *testing.T) {
 	now := time.Now()
 	qi := queryInfo{qname: "example.com.", qtype: 1}
@@ -494,7 +514,7 @@ func TestDomainRegistrySharedIPRemovesStateWhenOnlyZeroRefsRemain(t *testing.T) 
 }
 
 func TestDomainRegistrySharedIPRemovalDropsZeroOnlyState(t *testing.T) {
-	g, fake := newTestRegistry(16, 1, time.Second)
+	g, fake := newTestRegistry(16, 2, time.Second)
 	now := time.Now()
 	ip := netip.MustParseAddr("1.1.1.1")
 	nonzeroQI := queryInfo{qname: "expired.example.", qtype: 1}
@@ -506,12 +526,13 @@ func TestDomainRegistrySharedIPRemovalDropsZeroOnlyState(t *testing.T) {
 		t.Fatal("test setup did not create complete shared-IP state")
 	}
 
-	// Exercise unregister directly through soft-limit GC, without sweeping the
+	// Exercise unregister directly through limit GC, without sweeping the
 	// expired kernel ref first. Removing the last nonzero ref must evict the
 	// still-live zero ref from kernel accounting as one complete state.
+	g.userMax = 1
 	g.gcUser(now.Add(2 * time.Second))
 	if got := g.Lookup(nonzeroQI); len(got) != 0 {
-		t.Fatalf("expired registration should be reclaimed over the soft limit: %v", got)
+		t.Fatalf("expired registration should be reclaimed over the limit: %v", got)
 	}
 	if fake.has(ip) || g.byName[zeroQI][ip].inKernel {
 		t.Fatal("removing the last nonzero ref must dismantle zero-only state")
@@ -622,7 +643,7 @@ func TestDomainRegistryExpiredNonzeroHistoryKeepsZeroInsertFastPath(t *testing.T
 
 func TestDomainRegistryGCReconcilesSharedIPOnce(t *testing.T) {
 	const zeroRegistrations = 2048
-	g, fake := newTestRegistry(16, 1, time.Second)
+	g, fake := newTestRegistry(16, zeroRegistrations+1, time.Second)
 	now := time.Now()
 	ip := netip.MustParseAddr("1.1.1.1")
 	updates := 0
@@ -639,6 +660,7 @@ func TestDomainRegistryGCReconcilesSharedIPOnce(t *testing.T) {
 		t.Fatalf("setup wrote shared state %d times, want 2", updates)
 	}
 
+	g.userMax = 1
 	g.gcUser(now.Add(2 * time.Second))
 	if updates != 3 {
 		t.Fatalf("batch GC reconciled the shared IP %d times, want 1 additional write", updates)
@@ -783,35 +805,29 @@ func TestDomainRegistryKernelHardCapReadmitsCompleteIPState(t *testing.T) {
 	checkInvariants(t, g, fake)
 }
 
-func TestDomainRegistryUserSoftCap(t *testing.T) {
+func TestDomainRegistryUserHardCap(t *testing.T) {
 	g, fake := newTestRegistry(16, 2, 10*time.Second)
 	now := time.Now()
 	ip := func(b byte) netip.Addr { return netip.AddrFrom4([4]byte{10, 0, 0, b}) }
 	qi := func(s string) queryInfo { return queryInfo{qname: s, qtype: 1} }
 
-	// Three live registrations exceed the soft limit: nothing may be
-	// evicted because none has expired.
+	// The third live registration evicts the earliest-expiring history.
 	for i, name := range []string{"a.com.", "b.com.", "c.com."} {
-		g.Upsert(qi(name), ip(byte(i+1)), testBitmap(0), 60, now)
+		g.Upsert(qi(name), ip(byte(i+1)), testBitmap(0), 60+i, now)
 	}
-	if g.Size() != 3 {
-		t.Fatalf("live registrations must survive the soft limit: size=%v", g.Size())
-	}
-
-	// Once expired, the earliest-expiring registrations are reclaimed on the
-	// update path.
-	past := now.Add(200 * time.Second)
-	g.Upsert(qi("d.com."), ip(4), testBitmap(0), 60, past)
-	if g.Size() > 2 {
-		t.Fatalf("expired registrations should be reclaimed over the soft limit: size=%v", g.Size())
+	if g.Size() != 2 {
+		t.Fatalf("history must stay within the hard limit: size=%v", g.Size())
 	}
 	if got := g.Lookup(qi("a.com.")); len(got) != 0 {
-		t.Fatalf("registration reclaimed by memory-pressure GC must be gone: %v", got)
+		t.Fatalf("earliest live registration should be reclaimed: %v", got)
+	}
+	if usage := g.Usage(); usage.LimitGC != 1 {
+		t.Fatalf("limit GC count = %v, want 1", usage.LimitGC)
 	}
 	checkInvariants(t, g, fake)
 }
 
-func TestDomainRegistryUserSoftCapGcOnRefresh(t *testing.T) {
+func TestDomainRegistryHardCapGcOnRefresh(t *testing.T) {
 	g, fake := newTestRegistry(16, 2, 10*time.Second)
 	now := time.Now()
 	ip := func(b byte) netip.Addr { return netip.AddrFrom4([4]byte{10, 0, 0, b}) }
@@ -820,8 +836,8 @@ func TestDomainRegistryUserSoftCapGcOnRefresh(t *testing.T) {
 	for i, name := range []string{"a.com.", "b.com.", "c.com."} {
 		g.Upsert(qi(name), ip(byte(i+1)), testBitmap(0), 60, now)
 	}
-	if g.Size() != 3 {
-		t.Fatalf("live registrations must be allowed over the soft limit: %v", g.Size())
+	if g.Size() != 2 {
+		t.Fatalf("history must stay within the hard limit: %v", g.Size())
 	}
 
 	// Refreshing only an existing hot record must still reclaim other records
@@ -829,7 +845,7 @@ func TestDomainRegistryUserSoftCapGcOnRefresh(t *testing.T) {
 	past := now.Add(200 * time.Second)
 	g.Upsert(qi("c.com."), ip(3), testBitmap(0), 60, past)
 	if g.Size() != 2 {
-		t.Fatalf("refresh-path GC should restore the soft limit: %v", g.Size())
+		t.Fatalf("refresh-path GC should preserve the hard limit: %v", g.Size())
 	}
 	if got := g.Lookup(qi("a.com.")); len(got) != 0 {
 		t.Fatalf("oldest expired registration should be reclaimed: %v", got)
@@ -865,7 +881,7 @@ func TestDomainRegistrySweepLifetimes(t *testing.T) {
 		t.Fatalf("retained registration usage = %+v, want 0 live and 1 retained", usage)
 	}
 
-	// Expiry passing is NOT a removal: under the soft limit the sweep
+	// Expiry passing is NOT a removal: under the hard limit the sweep
 	// never reaps userspace registrations (stale kernel bitmaps cost routing
 	// performance, stale userspace records cost only memory).
 	g.Sweep(now.Add(101 * time.Second))
@@ -881,7 +897,7 @@ func TestDomainRegistrySweepLifetimes(t *testing.T) {
 	// userMax is 16 and size 1: under the limit, nothing is reclaimed even
 	// when stale.
 	if g.Size() != 1 {
-		t.Fatalf("gcUser must not reclaim below the soft limit: size=%v", g.Size())
+		t.Fatalf("gcUser must not reclaim below the hard limit: size=%v", g.Size())
 	}
 	checkInvariants(t, g, fake)
 }
@@ -959,17 +975,16 @@ func TestDomainRegistrySweepGcUser(t *testing.T) {
 	ip := func(b byte) netip.Addr { return netip.AddrFrom4([4]byte{10, 0, 0, b}) }
 	qi := func(s string) queryInfo { return queryInfo{qname: s, qtype: 1} }
 
-	// Three live registrations sit over the soft limit; stagger their
-	// expiries so the reclamation order is deterministic.
+	// Stagger expiries so hard-limit reclamation order is deterministic.
 	g.Upsert(qi("a.com."), ip(1), testBitmap(0), 60, now)
 	g.Upsert(qi("b.com."), ip(2), testBitmap(0), 60, now.Add(time.Second))
 	g.Upsert(qi("c.com."), ip(3), testBitmap(0), 60, now.Add(2*time.Second))
-	if g.Size() != 3 {
-		t.Fatalf("live registrations must be allowed over the soft limit: %v", g.Size())
+	if g.Size() != 2 {
+		t.Fatalf("history must stay within the hard limit: %v", g.Size())
 	}
 
-	// All expired, no insert happening: the periodic sweep must reclaim the
-	// most stale ones until the registry is back at the soft limit.
+	// All expired, no insert happening: the periodic sweep keeps retained
+	// history because it is already within the hard limit.
 	g.Sweep(now.Add(200 * time.Second))
 	if g.Size() != 2 {
 		t.Fatalf("sweep should run memory-pressure GC on an idle registry: size=%v", g.Size())
@@ -1263,7 +1278,7 @@ func TestDomainRegistryAdoptFrom(t *testing.T) {
 
 	// Expirations are carried over, not extended; records adopted with an
 	// already-stale expiry are kept while the registry is under its
-	// soft limit (and are the first reclamation candidates under memory
+	// hard limit (and are the first reclamation candidates under memory
 	// pressure).
 	for _, r := range next.byName[queryInfo{qname: "a.com.", qtype: 1}] {
 		if !r.effectiveExpiry().Equal(now.Add(60 * time.Second)) {
@@ -1285,7 +1300,7 @@ func TestDomainRegistryAdoptFromGcUser(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Adopt after every record has expired, into a plane whose soft limit
+	// Adopt after every record has expired, into a plane whose hard limit
 	// is 2: the most stale registration is reclaimed during adoption
 	// instead of lingering until the first insert.
 	next, _ := newTestRegistry(16, 2, 10*time.Second)
@@ -1293,16 +1308,41 @@ func TestDomainRegistryAdoptFromGcUser(t *testing.T) {
 	next.remove = fake.remove
 	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(0) }, now.Add(200*time.Second))
 	if next.Size() != 2 {
-		t.Fatalf("adoption should reclaim expired registrations over the soft limit: size=%v", next.Size())
+		t.Fatalf("adoption should reclaim expired registrations over the hard limit: size=%v", next.Size())
 	}
 	if got := next.Lookup(qi("a.com.")); len(got) != 0 {
-		t.Fatalf("oldest expired registration should not survive adoption over the soft limit: %v", got)
+		t.Fatalf("oldest expired registration should not survive adoption over the hard limit: %v", got)
 	}
 	if got := next.Lookup(qi("b.com.")); len(got) != 1 {
 		t.Fatalf("newer registrations must survive adoption: %v", got)
 	}
 	if got := next.Lookup(qi("c.com.")); len(got) != 1 {
 		t.Fatalf("newer registrations must survive adoption: %v", got)
+	}
+	if usage := next.Usage(); usage.LimitGC != 1 {
+		t.Fatalf("adoption limit GC count = %v, want 1", usage.LimitGC)
+	}
+	checkInvariants(t, next, fake)
+}
+
+func TestDomainRegistryAdoptFromCarriesLimitGC(t *testing.T) {
+	old, fake := newTestRegistry(16, 1, 0)
+	now := time.Now()
+	old.Upsert(queryInfo{qname: "old.example.", qtype: 1}, netip.MustParseAddr("1.1.1.1"), testBitmap(0), 60, now)
+	old.Upsert(queryInfo{qname: "new.example.", qtype: 1}, netip.MustParseAddr("2.2.2.2"), testBitmap(0), 120, now)
+	if usage := old.Usage(); usage.LimitGC != 1 {
+		t.Fatalf("old limit GC count = %v, want 1", usage.LimitGC)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	next, _ := newTestRegistry(16, 1, 0)
+	next.update = fake.update
+	next.remove = fake.remove
+	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(0) }, now)
+	if usage := next.Usage(); usage.LimitGC != 1 {
+		t.Fatalf("adopted limit GC count = %v, want 1", usage.LimitGC)
 	}
 	checkInvariants(t, next, fake)
 }
@@ -1475,10 +1515,10 @@ func TestDomainRegistryConcurrent(t *testing.T) {
 	}
 	// Force memory pressure: everything is stale, so gcUser reclaims all.
 	g.gcUser(start.Add(time.Hour))
-	// gcUser stops at the soft limit: with size possibly <= userMax already,
+	// gcUser stops at the hard limit: with size possibly <= userMax already,
 	// it only reclaims while size > userMax.
 	if g.Size() > 512 {
-		t.Fatalf("gcUser should bring size back under the soft limit: %v", g.Size())
+		t.Fatalf("gcUser should bring size back under the hard limit: %v", g.Size())
 	}
 	checkInvariants(t, g, fake)
 	if err := g.Close(); err != nil {

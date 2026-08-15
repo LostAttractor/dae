@@ -89,8 +89,8 @@ var (
 // The kernel-side domain maps are created with a fixed max_entries
 // (MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c); the userspace registry
 // mirrors their occupancy and never lets them overflow. The userspace
-// registry itself is larger and allowed to exceed its soft limit while its
-// entries are still alive, so that sniff verification keeps working.
+// registry itself is larger and uses a hard limit to keep DNS churn from
+// growing userspace memory without bound.
 var (
 	// MinDomainTTL is the lower bound (seconds) for both the lifetime of an
 	// IP->domain-rules mapping in the kernel maps and the eviction-priority
@@ -100,10 +100,9 @@ var (
 	// The userspace deadline does not bound validity: it only orders
 	// reclamation when the registry exceeds DomainRegistryMaxSize.
 	MinDomainTTL = 7 * 24 * 3600
-	// DomainRegistryMaxSize is the soft limit of userspace registrations.
-	// Entries past their TTL are reclaimed on the update path once this size
-	// is exceeded; live entries are never evicted (the registry may grow
-	// beyond the limit).
+	// DomainRegistryMaxSize is the hard limit of userspace registrations.
+	// The earliest-expiring history is reclaimed on the update path when this
+	// size is exceeded, even if all retained observations are still live.
 	DomainRegistryMaxSize = 4 * 65536
 )
 
