@@ -10,6 +10,7 @@ import (
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/netip"
@@ -425,12 +426,14 @@ func AddrToDnsType(addr netip.Addr) uint16 {
 
 // Htons converts the unsigned short integer hostshort from host byte order to network byte order.
 func Htons(i uint16) uint16 {
-	return i<<8 | i>>8
+	var b [2]byte
+	binary.BigEndian.PutUint16(b[:], i)
+	return internal.NativeEndian.Uint16(b[:])
 }
 
-// Ntohs converts the unsigned short integer hostshort from host byte order to network byte order.
+// Ntohs converts the unsigned short integer netshort from network byte order to host byte order.
 func Ntohs(i uint16) uint16 {
-	return i<<8 | i>>8
+	return Htons(i)
 }
 
 func GetDefaultIfnames() (defaultIfs []string, err error) {

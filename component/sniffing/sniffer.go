@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ type Sniffer struct {
 	r         io.Reader
 	dataReady chan struct{}
 	dataError error
+	pending   <-chan streamReadResult
 
 	// Common
 	sniffed string
@@ -40,12 +42,17 @@ type Sniffer struct {
 	quicCryptos  []*quicutils.CryptoFrameOffset
 }
 
+type streamReadResult struct {
+	data []byte
+	err  error
+}
+
 func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	buffer := pool.GetBytesBuffer()
 	buffer.Grow(AssumedTlsClientHelloMaxLength)
 	buffer.Reset()
-	s := &Sniffer{
+	return &Sniffer{
 		stream:    true,
 		r:         r,
 		buf:       buffer,
@@ -53,14 +60,13 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 		ctx:       ctx,
 		cancel:    cancel,
 	}
-	return s
 }
 
 func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 	buffer := pool.GetBytesBuffer()
 	buffer.Write(data)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	s := &Sniffer{
+	return &Sniffer{
 		stream:    false,
 		r:         nil,
 		buf:       buffer,
@@ -69,7 +75,6 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 		ctx:       ctx,
 		cancel:    cancel,
 	}
-	return s
 }
 
 type sniff func() (d string, err error)
@@ -85,6 +90,77 @@ func sniffGroup(sniffs ...sniff) (d string, err error) {
 		}
 	}
 	return "", ErrNotApplicable
+}
+
+func (s *Sniffer) readStreamOnce() error {
+	if s.dataError != nil {
+		close(s.dataReady)
+		return s.dataError
+	}
+	if conn, ok := s.r.(net.Conn); ok {
+		return s.readConnOnce(conn)
+	}
+
+	defer close(s.dataReady)
+	if s.pending == nil {
+		result := make(chan streamReadResult, 1)
+		s.pending = result
+		go func() {
+			buf := make([]byte, consts.EthernetMtu)
+			n, err := s.r.Read(buf)
+			result <- streamReadResult{data: buf[:n], err: err}
+		}()
+	}
+	select {
+	case read := <-s.pending:
+		s.pending = nil
+		if len(read.data) > 0 {
+			s.buf.Write(read.data)
+		}
+		s.dataError = read.err
+		if read.err != nil && len(read.data) == 0 {
+			return read.err
+		}
+		return nil
+	case <-s.ctx.Done():
+		return fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
+	}
+}
+
+func (s *Sniffer) readConnOnce(conn net.Conn) error {
+	defer close(s.dataReady)
+	if err := s.ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
+	}
+
+	deadline, _ := s.ctx.Deadline()
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return fmt.Errorf("%w: set read deadline: %v", ErrNotApplicable, err)
+	}
+	defer func() {
+		// The sniffing deadline must not affect normal reads or direct handoff.
+		_ = conn.SetReadDeadline(time.Time{})
+	}()
+	buf := pool.GetBuffer(consts.EthernetMtu)
+	defer pool.PutBuffer(buf)
+	n, err := conn.Read(buf)
+	if n > 0 {
+		s.buf.Write(buf[:n])
+	}
+	if err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			if n > 0 {
+				return nil
+			}
+			return fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
+		}
+		s.dataError = err
+		if n > 0 {
+			return nil
+		}
+	}
+	return err
 }
 
 func (s *Sniffer) SniffTcp() (d string, err error) {
@@ -106,27 +182,8 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	}()
 	for {
 		if s.stream {
-			go func() {
-				defer close(s.dataReady)
-				// Read once.
-				buf := pool.GetBuffer(consts.EthernetMtu)
-				defer pool.PutBuffer(buf)
-				n, err := s.r.Read(buf)
-				if err != nil {
-					s.dataError = err
-					return
-				}
-				s.buf.Write(buf[:n])
-			}()
-
-			// Waiting 100ms for data.
-			select {
-			case <-s.dataReady:
-				if s.dataError != nil {
-					return "", s.dataError
-				}
-			case <-s.ctx.Done():
-				return "", fmt.Errorf("%w: %w", ErrNotApplicable, context.DeadlineExceeded)
+			if err := s.readStreamOnce(); err != nil {
+				return "", err
 			}
 		} else {
 			close(s.dataReady)
@@ -154,11 +211,6 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	if s.sniffed != "" {
 		return s.sniffed, nil
 	}
-	defer func() {
-		if err == nil {
-			s.sniffed = d
-		}
-	}()
 	defer func() {
 		if err == nil {
 			s.sniffed = d
@@ -203,15 +255,25 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
-
-	if s.dataError != nil {
-		n, _ = s.buf.Read(p)
-		return n, s.dataError
+	if s.pending != nil {
+		read := <-s.pending
+		s.pending = nil
+		if len(read.data) > 0 {
+			s.buf.Write(read.data)
+		}
+		s.dataError = read.err
 	}
 
-	if s.buf.Len() > 0 {
+	if s.buf != nil && s.buf.Len() > 0 {
 		// Read buf first.
-		return s.buf.Read(p)
+		n, _ = s.buf.Read(p)
+		if s.buf.Len() == 0 && s.dataError != nil {
+			return n, s.dataError
+		}
+		return n, nil
+	}
+	if s.dataError != nil {
+		return 0, s.dataError
 	}
 	if !s.stream {
 		return 0, io.EOF
@@ -219,14 +281,20 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 	return s.r.Read(p)
 }
 
-func (s *Sniffer) Close() (err error) {
-	select {
-	case <-s.ctx.Done():
-	default:
-		s.cancel()
-		if s.buf.Len() == 0 {
-			pool.PutBytesBuffer(s.buf)
-		}
+func (s *Sniffer) Close() error {
+	s.cancel()
+	conn, isConn := s.r.(net.Conn)
+	if isConn {
+		_ = conn.SetReadDeadline(time.Now())
+	}
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	if isConn {
+		_ = conn.SetReadDeadline(time.Time{})
+	}
+	if s.pending == nil && s.buf != nil && s.buf.Len() == 0 {
+		pool.PutBytesBuffer(s.buf)
+		s.buf = nil
 	}
 	return nil
 }

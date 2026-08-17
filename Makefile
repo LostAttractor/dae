@@ -111,6 +111,8 @@ endif
 clean-ebpf:
 	@rm -f control/bpf_*bpf*.go && \
 		rm -f control/bpf_*bpf*.o
+	@rm -f control/internal/splice/bpf_*bpf*.go && \
+		rm -f control/internal/splice/bpf_*bpf*.o
 	@rm -f trace/bpf_*bpf*.go && \
 		rm -f trace/bpf_*bpf*.o
 	@rm -f control/kern/tests/bpftest_*bpf*.go && \
@@ -130,16 +132,19 @@ ebpf: check-go-version submodule clean-ebpf
     unset GOARM && \
     echo $(STRIP_FLAG) && \
     go generate ./control/control.go && \
+	tags='' && \
     if go generate ./trace/trace.go; then \
-		echo trace > $(BUILD_TAGS_FILE); \
-	else \
-		echo > $(BUILD_TAGS_FILE); \
-	fi
+		tags=trace; \
+	fi && \
+	go generate ./control/internal/splice/generate.go && \
+	if [ -n "$$tags" ]; then tags="$$tags,dae_splice"; else tags=dae_splice; fi && \
+	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
 test: ebpf
-	go test ./...
+	go test -tags=$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
+	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/kern/tproxy.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
 
 ebpf-test: export BPF_CLANG := $(CLANG)

@@ -6,10 +6,10 @@ on:
       - "**/*.go"
       - "**/*.c"
       - "**/*.h"
+      - "Makefile"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
-      - "Makefile"
       - ".github/workflows/kernel-test.yml"
       - "control/kern/headers"
       - "trace/kern/headers"
@@ -20,10 +20,10 @@ on:
       - "**/*.go"
       - "**/*.c"
       - "**/*.h"
+      - "Makefile"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
-      - "Makefile"
       - ".github/workflows/kernel-test.yml"
       - "control/kern/headers"
       - "trace/kern/headers"
@@ -45,8 +45,10 @@ jobs:
 
     - name: Generate and build
       run: |
-        make GOFLAGS="-buildvcs=false" CC=clang
-        CGO_ENABLED=0 go test -c ./control -o control.test
+        make GOFLAGS="-buildvcs=false"
+        tags=$(cat .build_tags)
+        CGO_ENABLED=0 go test -c -tags="$tags" ./control -o control.test
+        CGO_ENABLED=0 go test -c -tags="$tags,dae_splice_tests" ./control/internal/splice -o splice.test
 
     - name: Store executable
       uses: actions/upload-artifact@v6
@@ -55,6 +57,7 @@ jobs:
         path: |
           dae
           control.test
+          splice.test
 
   test:
     runs-on: ubuntu-22.04
@@ -84,6 +87,7 @@ jobs:
           cmd: |
             chmod +x /host/dae/dae
             chmod +x /host/dae/control.test
+            chmod +x /host/dae/splice.test
 
             apt update
             apt install -y unzip
@@ -91,6 +95,8 @@ jobs:
             DAE_NETKIT_TEST=1 /host/dae/control.test \
               -test.run '^(TestCreateNetkitPairIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
               -test.count=1
+
+            /host/dae/splice.test -test.count=1
 
       - name: Setup network
         uses: cilium/little-vm-helper@v0.0.28
@@ -205,6 +211,7 @@ jobs:
               exit 1
             fi
             grep -q 'Using netkit for the dae network namespace' dae.log
+            grep -q 'Loaded optional TCP splice programs' dae.log
             cat dae.log
 
       - name: Check WAN IPv4 TCP
