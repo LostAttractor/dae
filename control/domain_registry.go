@@ -69,8 +69,7 @@ func combineKernelIPExpiry(a, b time.Time) time.Time {
 type domainRegistration struct {
 	queryInfo
 	ip netip.Addr
-	// Registrations of the same query share this immutable bitmap in the
-	// common case. A changed bitmap is cloned for only the updated record.
+	// Registrations of the same query share this immutable bitmap.
 	bitmap        []uint32  // match bitmap of the domain, length MaxMatchSetLen/32
 	finiteExpiry  time.Time // longest finite observation; retained under no-expiry
 	noExpiry      bool      // plane-local no-expiry observation
@@ -102,7 +101,6 @@ type ipKernelState struct {
 	refs    map[*domainRegistration]struct{}
 	bump    []uint32
 	routing []uint32
-	dirty   bool
 	// expiry is zero if any ref has no expiry; otherwise it is the earliest
 	// expiry among refs. It is used only for capacity eviction priority.
 	expiry  time.Time
@@ -271,15 +269,12 @@ func cloneDomainBitmap(bitmap []uint32) []uint32 {
 	return c
 }
 
-// shareDomainBitmap reuses an equal bitmap already owned by the same query.
-// Domain matching depends on qname, so all addresses observed for one query
-// normally have identical bitmaps. Keeping the slice on registrations avoids
-// another indexing layer while removing the dominant duplicate allocation.
+// shareDomainBitmap reuses the bitmap already owned by the same query. Routing
+// rules are immutable for a registry's lifetime; reload adoption builds a new
+// registry and recomputes the bitmap.
 func (g *DomainRegistry) shareDomainBitmap(qi queryInfo, bitmap []uint32) []uint32 {
 	for _, r := range g.byName[qi] {
-		if slices.Equal(r.bitmap, bitmap) {
-			return r.bitmap
-		}
+		return r.bitmap
 	}
 	return cloneDomainBitmap(bitmap)
 }
@@ -339,7 +334,6 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 		return
 	}
 	if r := g.byName[qi][ip]; r != nil {
-		oldNonzero := !domainBitmapAllZero(r.bitmap)
 		oldExpiry := r.effectiveExpiry()
 		// Registrations aggregate observations from caches with different
 		// upstream/dialer keys. A plane-local no-expiry observation dominates
@@ -352,20 +346,11 @@ func (g *DomainRegistry) upsertWithExpiry(qi queryInfo, ip netip.Addr, bitmap []
 		}
 		heap.Fix(&g.verifyHeap, r.verifyHeapIdx)
 		g.refreshUserLiveness(r, now)
-		bitmapChanged := !slices.Equal(r.bitmap, bitmap)
-		if bitmapChanged {
-			r.bitmap = g.shareDomainBitmap(qi, bitmap)
-		}
-		g.replaceNonzeroContribution(ip, oldNonzero, oldExpiry, !domainBitmapAllZero(r.bitmap), r.effectiveExpiry())
+		nonzero := !domainBitmapAllZero(r.bitmap)
+		g.replaceNonzeroContribution(ip, nonzero, oldExpiry, nonzero, r.effectiveExpiry())
 		if r.kernelResident() {
 			heap.Fix(&g.kernelHeap, r.kernelHeapIdx)
-			s := g.byIP[r.ip]
-			if bitmapChanged {
-				g.rebuildKernelIPState(s)
-				g.reconcileIP(s)
-			} else {
-				g.fixKernelIPExpiry(s)
-			}
+			g.fixKernelIPExpiry(g.byIP[r.ip])
 		} else {
 			g.attachKernel(r, now)
 		}
@@ -459,8 +444,7 @@ func (g *DomainRegistry) reapExpiredKernel(now time.Time) {
 		affected[top.ip] = s
 	}
 	for _, s := range affected {
-		g.rebuildKernelIPState(s)
-		g.reconcileIP(s)
+		g.reconcileIP(s, g.rebuildKernelIPState(s))
 	}
 }
 
@@ -575,7 +559,7 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(fqdn st
 		for nr := range s.refs {
 			heap.Push(&g.kernelHeap, nr)
 		}
-		g.reconcileIP(s)
+		g.reconcileIP(s, true)
 	}
 	g.gcUser(now)
 	g.adopted = true
@@ -805,16 +789,17 @@ func (g *DomainRegistry) attachKernel(r *domainRegistration, now time.Time) {
 	s, ok := g.byIP[r.ip]
 	if ok {
 		s.refs[r] = struct{}{}
+		changed := false
 		for w, bits := range r.bitmap {
 			bump := s.bump[w] | bits
 			routing := s.routing[w] & bits
-			s.dirty = s.dirty || bump != s.bump[w] || routing != s.routing[w]
+			changed = changed || bump != s.bump[w] || routing != s.routing[w]
 			s.bump[w] = bump
 			s.routing[w] = routing
 		}
 		s.expiry = combineKernelIPExpiry(s.expiry, expiry)
 		heap.Push(&g.kernelHeap, r)
-		g.reconcileIP(s)
+		g.reconcileIP(s, changed)
 		return
 	}
 	if domainBitmapAllZero(r.bitmap) && !g.hasLiveNonzero(r.ip, now) {
@@ -843,7 +828,7 @@ func (g *DomainRegistry) attachKernel(r *domainRegistration, now time.Time) {
 	for candidate := range s.refs {
 		heap.Push(&g.kernelHeap, candidate)
 	}
-	g.reconcileIP(s)
+	g.reconcileIP(s, true)
 }
 
 // buildKernelIPState collects every live registration for ip. It returns nil
@@ -867,7 +852,6 @@ func (g *DomainRegistry) buildKernelIPState(ip netip.Addr, now time.Time) *ipKer
 	if domainBitmapAllZero(s.bump) {
 		return nil
 	}
-	s.dirty = true
 	return s
 }
 
@@ -876,8 +860,7 @@ func (g *DomainRegistry) detachKernel(r *domainRegistration) {
 	heap.Remove(&g.kernelHeap, r.kernelHeapIdx)
 	s := g.byIP[r.ip]
 	delete(s.refs, r)
-	g.rebuildKernelIPState(s)
-	g.reconcileIP(s)
+	g.reconcileIP(s, g.rebuildKernelIPState(s))
 }
 
 // evictKernelIP withdraws a complete IP state without flushing any partial
@@ -972,24 +955,24 @@ func aggregateKernelRefs(refs map[*domainRegistration]struct{}) (bump, routing [
 
 // rebuildKernelIPState recomputes cached state after a ref changes or leaves.
 // New refs use the incremental path in attachKernel.
-func (g *DomainRegistry) rebuildKernelIPState(s *ipKernelState) {
+func (g *DomainRegistry) rebuildKernelIPState(s *ipKernelState) bool {
 	bump, routing, expiry := aggregateKernelRefs(s.refs)
-	s.dirty = s.dirty || !slices.Equal(s.bump, bump) || !slices.Equal(s.routing, routing)
+	changed := !slices.Equal(s.bump, bump) || !slices.Equal(s.routing, routing)
 	s.bump = bump
 	s.routing = routing
 	s.expiry = expiry
+	return changed
 }
 
 // reconcileIP is the single path that publishes or withdraws a resident IP's
 // cached kernel state. A zero bump is represented exactly by a map miss.
-func (g *DomainRegistry) reconcileIP(s *ipKernelState) {
+func (g *DomainRegistry) reconcileIP(s *ipKernelState, changed bool) {
 	if len(s.refs) == 0 || domainBitmapAllZero(s.bump) {
 		g.evictKernelIP(s)
 		return
 	}
 	heap.Fix(&g.kernelIPHeap, s.heapIdx)
-	if s.dirty {
+	if changed {
 		g.update(s.ip, s.bump, s.routing)
-		s.dirty = false
 	}
 }
