@@ -21,6 +21,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/control/internal/splice"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -48,12 +49,21 @@ type _bpfPortRange struct {
 // acquired later by the successor while this state remains alive.
 type bpfState struct {
 	*bpfObjects
+	splice *splice.Runtime
 
 	// activeLpmTrieCount is the LPM trie count from the last BuildKernspace
 	// that committed successfully. BuildKernspace advances it only after its
 	// writes complete; any activation failure is terminal because kernel state
 	// may be partially written.
 	activeLpmTrieCount uint32
+}
+
+func (b *bpfState) Close() error {
+	var spliceErr error
+	if b.splice != nil {
+		spliceErr = b.splice.Close()
+	}
+	return errors.Join(spliceErr, b.bpfObjects.Close())
 }
 
 func (r _bpfPortRange) Encode() (b [16]byte) {
@@ -121,9 +131,7 @@ func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
 	return vKeys.Len(), nil
 }
 
-// detectCgroupPath returns the first-found mount point of type cgroup2
-// and stores it in the cgroupPath global variable.
-// Copied from https://github.com/cilium/ebpf/blob/v0.10.0/examples/cgroup_skb/main.go
+// detectCgroupPath returns the first-found cgroup2 mount point.
 func detectCgroupPath() (string, error) {
 	f, err := os.Open("/proc/mounts")
 	if err != nil {
@@ -133,13 +141,14 @@ func detectCgroupPath() (string, error) {
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		// example fields: cgroup2 /sys/fs/cgroup/unified cgroup2 rw,nosuid,nodev,noexec,relatime 0 0
-		fields := strings.Split(scanner.Text(), " ")
+		fields := strings.Fields(scanner.Text())
 		if len(fields) >= 3 && fields[2] == "cgroup2" {
 			return fields[1], nil
 		}
 	}
-
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
 	return "", errors.New("cgroup2 not mounted")
 }
 

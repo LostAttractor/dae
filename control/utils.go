@@ -41,6 +41,7 @@ type DialOption struct {
 	DialTarget        string
 	Dialer            *dialer.Dialer
 	Outbound          *outbound.DialerGroup
+	Direct            bool
 	FallbackIpVersion bool
 	FallbackDialer    bool
 	// Mark          uint32
@@ -109,17 +110,20 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dial
 	dialTarget, dialIp := c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain, verified && c.dialTargetOverride)
 	dialer, fallback, err := outbound.SelectFallbackIpVersion(p.networkType, dialIp)
 	fallbackDialer := false
+	selectedOutboundIndex := outboundIndex
 	if err != nil {
 		dialer, err = c.outbounds[c.noConnectivityOutbound].Select(p.networkType)
 		if err != nil {
 			panic(fmt.Sprintf("fail to get fallback dialer %v(%v): %v", c.outbounds[c.noConnectivityOutbound], c.noConnectivityOutbound, err))
 		}
 		fallbackDialer = true
+		selectedOutboundIndex = c.noConnectivityOutbound
 	}
 	return &DialOption{
 		DialTarget:        dialTarget,
 		Dialer:            dialer,
 		Outbound:          outbound,
+		Direct:            selectedOutboundIndex == consts.OutboundDirect,
 		FallbackIpVersion: fallback,
 		FallbackDialer:    fallbackDialer,
 		// Mark:          mark,

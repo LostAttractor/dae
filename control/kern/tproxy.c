@@ -471,8 +471,9 @@ static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 
 static __always_inline int
 parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
-		struct ethhdr *ethh, struct l3_hdr *l3h, struct l4_hdr *l4h,
-		__u8 *ihl, __u8 *l4proto, __u32 *offset)
+		struct ethhdr *ethh, struct l3_hdr *l3h,
+		struct l4_hdr *l4h, __u8 *ihl, __u8 *l4proto,
+		__u32 *offset)
 {
 	if (link_h_len == ETH_HLEN) {
 		int ret = bpf_skb_load_bytes(skb, *offset, ethh,
@@ -635,10 +636,8 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset)
 	offset += 160;
 
 	for (int i = 0; i < UTP_MAX_EXTENSIONS; i++) {
-		if (extension == 0) {
-			// return is_bittorrent(skb, offset);
+		if (extension == 0)
 			return true;
-		}
 		if (extension > 0x04)
 			return false;
 
@@ -1371,8 +1370,8 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 	__u8 l4proto;
 	__u32 offset = 0;
 
-	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
-				  &l4proto, &offset);
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h,
+				  &ihl, &l4proto, &offset);
 
 	if (ret) {
 		bpf_printk("parse_transport: %d", ret);
@@ -1380,7 +1379,8 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 	}
 
 	if (drop_ndp_redirect && skb->ingress_ifindex == NOWHERE_IFINDEX &&
-	    l4proto == IPPROTO_ICMPV6 && l4h.icmp6h.icmp6_type == NDP_REDIRECT) {
+	    l4proto == IPPROTO_ICMPV6 &&
+	    l4h.icmp6h.icmp6_type == NDP_REDIRECT) {
 		// Only drop NDP_REDIRECT packets from localhost on LAN egress.
 		return TCX_DROP;
 	}
@@ -1745,12 +1745,12 @@ int tproxy_wan_cg_sendmsg6(struct bpf_sock_addr *ctx)
 SEC("tp/sched/sched_process_exit")
 int handle_exit(struct trace_event_raw_sched_process_template *ctx)
 {
-    /* get PID and TID of exiting thread/process */
-    __u64 id = bpf_get_current_pid_tgid();
-    __u32 pid = id >> 32;
-    __u32 tid = id;
+	/* Get PID and TID of exiting thread/process. */
+	__u64 id = bpf_get_current_pid_tgid();
+	__u32 pid = id >> 32;
+	__u32 tid = id;
 
-    /* ignore thread exits */
+	/* Ignore thread exits. */
 	if (pid != tid)
 		return 0;
 

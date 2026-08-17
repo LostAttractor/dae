@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,10 +31,17 @@ const (
 	DefaultNatTimeoutTCPEstablished = 7440 * time.Second
 )
 
+type directTCPSplice struct {
+	runtime  *splice.Runtime
+	accepted *net.TCPConn
+	remote   *net.TCPConn
+}
+
 type tcpRelay struct {
-	lConn  net.Conn
-	rConn  net.Conn
-	dialer interface {
+	lConn        sniffing.ConnSnifferInterface
+	rConn        net.Conn
+	directSplice *directTCPSplice
+	dialer       interface {
 		NeedAliveState() bool
 		ReportUnavailable()
 	}
@@ -232,19 +240,37 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		dst:          dst,
 		domain:       domain,
 	}
+	if dialOption.Direct && c.core.bpf.splice != nil {
+		if rawRConn, ok := rConn.(*net.TCPConn); ok {
+			relay.directSplice = &directTCPSplice{
+				c.core.bpf.splice, lConn.(*net.TCPConn), rawRConn,
+			}
+		}
+	}
 	return relay, nil
 }
 
-func (r *tcpRelay) run() error {
-	defer r.lConn.Close()
+func (r *tcpRelay) run() (err error) {
 	defer r.rConn.Close()
+	defer r.lConn.Close()
 	labels := r.labels
 	common.ActiveConnections.With(labels).Inc()
 	defer common.ActiveConnections.With(labels).Dec()
 	common.TotalConnections.With(labels).Inc()
 
 	// Relay
-	if err := RelayTCP(r.lConn, r.rConn); err != nil {
+	handled := false
+	if r.directSplice != nil {
+		err = r.lConn.WriteBufferedTo(r.rConn)
+		if err == nil {
+			handled, err = r.directSplice.runtime.Relay(
+				r.directSplice.accepted, r.directSplice.remote)
+		}
+	}
+	if !handled && err == nil {
+		err = RelayTCP(r.lConn, r.rConn)
+	}
+	if err != nil {
 		netErr, ok := IsNetError(err)
 		err = oops.
 			In("RelayTCP").

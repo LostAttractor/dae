@@ -34,6 +34,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	D "github.com/daeuniverse/outbound/dialer"
@@ -178,8 +179,8 @@ func NewControlPlane(
 	}
 	var bpf *bpfState
 	if _bpf != nil {
-		if _bpf, ok := _bpf.(*bpfState); ok {
-			bpf = _bpf
+		if inherited, ok := _bpf.(*bpfState); ok {
+			bpf = inherited
 		} else {
 			return nil, oops.Errorf("unexpected bpf type: %T", _bpf)
 		}
@@ -191,6 +192,16 @@ func NewControlPlane(
 				log.Panicf("%+v", err)
 			}
 			return nil, err
+		}
+		spliceRuntime, spliceErr := splice.New(
+			collectionOpts,
+			DefaultNatTimeoutTCPEstablished,
+		)
+		if spliceErr != nil {
+			log.Warnf("TCP splice is unavailable; falling back to userspace relay: %v", spliceErr)
+		} else if spliceRuntime != nil {
+			bpf.splice = spliceRuntime
+			log.Infof("Loaded optional TCP splice programs")
 		}
 	}
 	log.Infof("Loaded eBPF programs and maps")
