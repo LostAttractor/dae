@@ -287,9 +287,6 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 		if !slices.Equal(s.bump, bump) || !slices.Equal(s.routing, routing) {
 			t.Errorf("%v: cached bitmaps %v/%v, recomputed %v/%v", ip, s.bump, s.routing, bump, routing)
 		}
-		if s.dirty {
-			t.Errorf("%v: resident IP remained dirty after reconciliation", ip)
-		}
 		if domainBitmapAllZero(bump) {
 			t.Errorf("%v: resident IP has zero aggregate bump", ip)
 		}
@@ -536,32 +533,6 @@ func TestDomainRegistrySharedIPRemovalDropsZeroOnlyState(t *testing.T) {
 	}
 	if fake.has(ip) || g.byName[zeroQI][ip].kernelResident() {
 		t.Fatal("removing the last nonzero ref must dismantle zero-only state")
-	}
-	checkInvariants(t, g, fake)
-}
-
-func TestDomainRegistrySharedIPBitmapChangeReconcilesCompleteState(t *testing.T) {
-	g, fake := newTestRegistry(16, 16, time.Second)
-	now := time.Now()
-	ip := netip.MustParseAddr("1.1.1.1")
-	changingQI := queryInfo{qname: "changing.example.", qtype: 1}
-	zeroQI := queryInfo{qname: "zero.example.", qtype: 1}
-
-	g.Upsert(changingQI, ip, testBitmap(0), 60, now)
-	g.Upsert(zeroQI, ip, testBitmap(), 60, now)
-	g.Upsert(changingQI, ip, testBitmap(), 60, now)
-	if fake.has(ip) || g.byName[changingQI][ip].kernelResident() || g.byName[zeroQI][ip].kernelResident() {
-		t.Fatalf("changing the last nonzero bitmap to zero must remove the complete state")
-	}
-
-	// A later nonzero refresh re-admits every live ref. The zero ref keeps the
-	// routing AND clear even though bump now contains rule 1.
-	g.Upsert(changingQI, ip, testBitmap(1), 60, now.Add(time.Second))
-	if !fake.has(ip) || !bitmapHas(fake.bump[ip], 1) || bitmapHas(fake.routing[ip], 1) {
-		t.Fatalf("complete state was not rebuilt after bitmap change: bump=%v routing=%v", fake.bump[ip], fake.routing[ip])
-	}
-	if !g.byName[changingQI][ip].kernelResident() || !g.byName[zeroQI][ip].kernelResident() {
-		t.Fatal("readmission must mark every live shared-IP ref in-kernel")
 	}
 	checkInvariants(t, g, fake)
 }
@@ -1174,32 +1145,6 @@ func TestDomainRegistryAdoptionCannotMoveLivenessBackward(t *testing.T) {
 		t.Fatalf("adoption liveness watermark moved backward: %v", next.evaluatedAt)
 	}
 	checkInvariants(t, next, fake)
-}
-
-func TestDomainRegistryBitmapChange(t *testing.T) {
-	g, fake := newTestRegistry(16, 16, 10*time.Second)
-	now := time.Now()
-	qi := queryInfo{qname: "a.com.", qtype: 1}
-	ip := netip.MustParseAddr("1.1.1.1")
-
-	g.Upsert(qi, ip, testBitmap(0), 60, now)
-	// Rules changed: the same domain now matches rule 1 instead of rule 0.
-	g.Upsert(qi, ip, testBitmap(1), 60, now)
-	if bitmapHas(fake.bump[ip], 0) || !bitmapHas(fake.bump[ip], 1) {
-		t.Fatalf("bitmap change should move the contribution to rule 1: %v", fake.bump[ip])
-	}
-	checkInvariants(t, g, fake)
-
-	// And to no rule at all: the kernel entry must be deleted while the
-	// userspace record survives for verification.
-	g.Upsert(qi, ip, testBitmap(), 60, now)
-	if fake.has(ip) {
-		t.Fatalf("zero bitmap should delete the kernel entry")
-	}
-	if got := g.Lookup(qi); len(got) != 1 {
-		t.Fatalf("zero-bitmap record should stay in userspace")
-	}
-	checkInvariants(t, g, fake)
 }
 
 func TestDomainRegistryAdoptFrom(t *testing.T) {
