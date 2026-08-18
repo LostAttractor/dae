@@ -100,7 +100,6 @@ func (s NetworkSupportState) String() string {
 // is not coherent with the other fields.
 type RuntimeSnapshot struct {
 	Alive        bool
-	Supported    [4]bool
 	SupportState [4]NetworkSupportState
 	HasLatency   bool
 	Latency      LatencyStats
@@ -250,9 +249,6 @@ func (d *Dialer) RuntimeStatus(g DialerGroup) RuntimeSnapshot {
 	snapshot := RuntimeSnapshot{
 		Alive:        d.Dialer.Alive() && d.alive,
 		SupportState: d.support,
-	}
-	for i, state := range d.support {
-		snapshot.Supported[i] = state == NetworkSupportConfirmed
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked(g)
 	d.mu.RUnlock()

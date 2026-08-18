@@ -117,6 +117,21 @@ func TestNodeStatusRow(t *testing.T) {
 	}
 }
 
+func TestNodeStatusRowOnlyShowsConfirmedSupport(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	row := nodeStatusRow(control.NodeStatus{
+		Name:         "tor",
+		Supported:    [4]bool{true, true, true, true},
+		SupportState: [4]string{"confirmed", "confirmed", "unknown", "unsupported"},
+	})
+	if got := row[4].(string); got != "tcp4,tcp6" {
+		t.Fatalf("support = %q, want only confirmed modes", got)
+	}
+}
+
 func TestNodeStatusRowHighlightsAvg10Failure(t *testing.T) {
 	previousColorsEnabled := colorsEnabled
 	colorsEnabled = true

@@ -238,6 +238,24 @@ func networkFlags(flags [4]bool) string {
 	return strings.Join(parts, ",")
 }
 
+func networkSupport(states [4]string, supported [4]bool) string {
+	var parts []string
+	for i, state := range states {
+		switch state {
+		case "confirmed":
+			parts = append(parts, networkNames[i])
+		default:
+			if state == "" && supported[i] {
+				parts = append(parts, networkNames[i])
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ",")
+}
+
 func emptyDash(s string) string {
 	if s == "" {
 		return "-"
@@ -357,7 +375,7 @@ func nodeStatusRow(status control.NodeStatus) table.Row {
 		emptyDash(status.Subtag),
 		emptyDash(status.Protocol),
 		colorAlive(status.Alive),
-		networkFlags(status.Supported),
+		networkSupport(status.SupportState, status.Supported),
 		colorSelected(selectedNetworks, selected),
 		latency,
 		colorRatio(status.UpRatio, upRatio),

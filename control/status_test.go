@@ -328,7 +328,11 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	defer group.Close()
 
 	tcp4 := common.IndexToNetworkType(0)
+	tcp6 := common.IndexToNetworkType(1)
 	node.SetSupported(tcp4, true)
+	node.SetSupported(tcp6, false)
+	node.SetSupported(common.IndexToNetworkType(2), false)
+	node.SetSupported(common.IndexToNetworkType(3), false)
 	node.Update(true, time.Millisecond, tcp4, nil)
 	node.NotifyStatusChange()
 
@@ -347,6 +351,12 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	if snapshot.Groups[1].Networks[1].Supported {
 		t.Fatalf("tcp6 status = %+v, want unsupported", snapshot.Groups[1].Networks[1])
 	}
+	if got := snapshot.Groups[1].Nodes[0].SupportState[0]; got != "confirmed" {
+		t.Fatalf("tcp4 support state = %q, want confirmed", got)
+	}
+	if got := snapshot.Groups[1].Nodes[0].SupportState[1]; got != "unsupported" {
+		t.Fatalf("tcp6 support state = %q, want unsupported", got)
+	}
 
 	node.Update(false, 0, tcp4, fmt.Errorf("unavailable"))
 	node.NotifyStatusChange()
@@ -359,5 +369,51 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	snapshot = plane.StatusSnapshot("test")
 	if snapshot.Health != HealthWarning || snapshot.Groups[1].Health != HealthWarning {
 		t.Fatalf("health = %q/%q, want warning", snapshot.Health, snapshot.Groups[1].Health)
+	}
+}
+
+func TestStatusSnapshotDoesNotReportUnknownNetworkAlive(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	common.InitPrometheus(registry)
+	option := &dialer.GlobalOption{}
+	policy := dialer.DialerSelectionPolicy{
+		Policy:     consts.DialerSelectionPolicy_Fixed,
+		FixedIndex: 0,
+	}
+	node := dialer.NewDialer(statusTestDialer{}, option, &dialer.Property{Property: D.Property{
+		Name: t.Name(),
+		Link: "test://" + t.Name(),
+	}}, true)
+	group := outbound.NewDialerGroup(
+		option,
+		t.Name(),
+		outbound.GroupKindNormal,
+		[]*dialer.Dialer{node},
+		[]*dialer.Annotation{{}},
+		policy,
+		func(bool, *common.NetworkType) {},
+	)
+	defer group.Close()
+	node.Update(true, time.Millisecond, nil, nil)
+	node.NotifyStatusChange()
+
+	plane := &ControlPlane{
+		outbounds:          []*outbound.DialerGroup{group},
+		criticalOutbounds:  []bool{true},
+		PrometheusRegistry: registry,
+	}
+	snapshot := plane.StatusSnapshot("test")
+	status := snapshot.Groups[0].Networks[2]
+	if status.SupportState != "unknown" || status.Supported || status.Alive {
+		t.Fatalf("udp4 status = %+v, want unknown, not advertised as supported, and not alive", status)
+	}
+	if status.Selected != "" {
+		t.Fatalf("unknown capability exposed tentative selection %q", status.Selected)
+	}
+	if snapshot.Groups[0].Nodes[0].Supported[2] {
+		t.Fatal("unknown node capability was advertised as supported")
+	}
+	if snapshot.Groups[0].Nodes[0].Selected[2] {
+		t.Fatal("unknown node capability exposed tentative selection")
 	}
 }
