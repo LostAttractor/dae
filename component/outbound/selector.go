@@ -8,10 +8,17 @@ import (
 )
 
 type Selector interface {
+	InitializeConnectivity()
 	Select(networkType *common.NetworkType) (dialer *dialer.Dialer)
 	SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer)
 	NotifyStatusChange(dialer *dialer.Dialer)
 	PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{}))
+}
+
+func (s *BaseSelector) InitializeConnectivity() {
+	for i := 0; i < 4; i++ {
+		s.handleAliveStateChange(false, common.IndexToNetworkType(i))
+	}
 }
 
 type BaseSelector struct {
@@ -42,12 +49,17 @@ func (s *BaseSelector) handleAliveStateChange(alive bool, networkType *common.Ne
 	s.aliveChangeCallback(alive, networkType)
 }
 
-func isDialerAlive(dialer *dialer.Dialer, networkType *common.NetworkType) bool {
-	if !dialer.Alive() {
-		return false
+func isDialerAlive(d *dialer.Dialer, networkType *common.NetworkType) bool {
+	alive, support := d.SelectionState(networkType)
+	return alive && support == dialer.NetworkSupportConfirmed
+}
+
+func preferredAliveDialers(dialers []*dialer.Dialer, networkType *common.NetworkType) []*dialer.Dialer {
+	confirmed := make([]*dialer.Dialer, 0, len(dialers))
+	for _, d := range dialers {
+		if isDialerAlive(d, networkType) {
+			confirmed = append(confirmed, d)
+		}
 	}
-	if networkType != nil && !dialer.Supported(networkType) && dialer.NeedAliveState() {
-		return false
-	}
-	return true
+	return confirmed
 }

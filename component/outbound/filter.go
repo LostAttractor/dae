@@ -42,9 +42,9 @@ type NodeInfo struct {
 
 func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (*dialer.Dialer, error) {
 	if n.CreatedDialer == nil {
-		for _, dialer := range n.Dialers {
+		for _, descriptor := range n.Dialers {
 			var err error
-			d, err = dialer.Dialer(&option.ExtraOption, d)
+			d, err = descriptor.Dialer(&option.ExtraOption, d)
 			if err != nil {
 				return nil, err
 			}

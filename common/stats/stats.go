@@ -51,8 +51,8 @@ type Availability struct {
 	UpRatio              float64       // up time / total time since first seen
 	UpDuration           time.Duration // length of the current up-streak
 
-	// Check counters are zero for groups (which run no checks) and count
-	// per-network-type checks; each check appends one latency sample, so
+	// Check counters are zero for groups (which run no checks); each check
+	// appends one latency sample, so
 	// ChecksSinceAlive also tells how many fresh samples the avg10 window
 	// and the moving average have absorbed.
 	ChecksTotal      int64 // total connectivity checks

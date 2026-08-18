@@ -38,7 +38,11 @@ func (s *RandomSelector) Select(networkType *common.NetworkType) (dialer *dialer
 	defer s.mu.RUnlock()
 
 	index := common.NetworkTypeToIndex(networkType)
-	return s.networkIndexToDialers[index][fastrand.Intn(len(s.networkIndexToDialers[index]))]
+	dialers := s.networkIndexToDialers[index]
+	if len(dialers) == 0 {
+		return nil
+	}
+	return dialers[fastrand.Intn(len(dialers))]
 }
 
 func (s *RandomSelector) SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer) {
@@ -69,23 +73,22 @@ func (s *RandomSelector) selectionLatency(d *dialer.Dialer) (time.Duration, bool
 }
 
 func (s *RandomSelector) getSortedHighestPriorityAliveDialers(networkType *common.NetworkType) (aliveDialers []*dialer.Dialer) {
-	highestPriority := s.getHighestPriority(networkType)
-	for _, d := range s.dialerGroup.Dialers {
-		if isDialerAlive(d, networkType) && s.dialerGroup.dialerToAnnotation[d].Priority == highestPriority {
+	preferred := preferredAliveDialers(s.dialerGroup.Dialers, networkType)
+	highestPriority := s.getHighestPriority(preferred)
+	for _, d := range preferred {
+		if s.dialerGroup.dialerToAnnotation[d].Priority == highestPriority {
 			aliveDialers = append(aliveDialers, d)
 		}
 	}
 	return aliveDialers
 }
 
-func (s *RandomSelector) getHighestPriority(networkType *common.NetworkType) (highestPriority int) {
+func (s *RandomSelector) getHighestPriority(dialers []*dialer.Dialer) (highestPriority int) {
 	highestPriority = math.MinInt
-	for _, d := range s.dialerGroup.Dialers {
-		if isDialerAlive(d, networkType) {
-			priority := s.dialerGroup.dialerToAnnotation[d].Priority
-			if priority > highestPriority {
-				highestPriority = priority
-			}
+	for _, d := range dialers {
+		priority := s.dialerGroup.dialerToAnnotation[d].Priority
+		if priority > highestPriority {
+			highestPriority = priority
 		}
 	}
 	return
