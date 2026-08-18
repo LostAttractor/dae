@@ -243,7 +243,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		LogDial(src, dst, domain, dialOption, networkType, routingResult)
 		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		defer cancel()
-		udpConn, err := dialOption.Dialer.ListenPacket(dialCtx, dialOption.DialTarget)
+		udpConn, err := dialOption.dialerForConnection().ListenPacket(dialCtx, dialOption.DialTarget)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr

@@ -24,6 +24,8 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
+	protocolDirect "github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -40,11 +42,18 @@ type RouteParam struct {
 type DialOption struct {
 	DialTarget        string
 	Dialer            *dialer.Dialer
+	connectionDialer  netproxy.Dialer
 	Outbound          *outbound.DialerGroup
 	Direct            bool
 	FallbackIpVersion bool
 	FallbackDialer    bool
-	// Mark          uint32
+}
+
+func (o *DialOption) dialerForConnection() netproxy.Dialer {
+	if o.connectionDialer != nil {
+		return o.connectionDialer
+	}
+	return o.Dialer
 }
 
 func IsNetError(err error) (netErr net.Error, ok bool) {
@@ -63,7 +72,7 @@ func closeInBackground(closer io.Closer) {
 func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dialOption *DialOption, err error) {
 	// TODO: Why not directly transfer routingResult
 	outboundIndex := consts.OutboundIndex(p.routingResult.Outbound)
-	// mark := p.routingResult.Mark
+	mark := p.routingResult.Mark
 
 	verified, shouldReroute, err := c.verifySniff(ctx, p.Dest, p.Domain)
 	if err != nil {
@@ -82,8 +91,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dial
 		if !verified {
 			domain = ""
 		}
-		// if outboundIndex, mark, _, err = c.Route(p.Src, p.Dest, p.Domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
-		if outboundIndex, _, _, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
+		if outboundIndex, mark, _, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
 			oops.Wrap(err)
 			return
 		}
@@ -94,9 +102,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dial
 		}
 	default:
 	}
-	// if mark == 0 {
-	// 	mark = c.soMarkFromDae
-	// }
+	p.routingResult.Mark = mark
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
@@ -122,12 +128,28 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dial
 	return &DialOption{
 		DialTarget:        dialTarget,
 		Dialer:            dialer,
+		connectionDialer:  c.directDialerForMark(selectedOutboundIndex, mark),
 		Outbound:          outbound,
 		Direct:            selectedOutboundIndex == consts.OutboundDirect,
 		FallbackIpVersion: fallback,
 		FallbackDialer:    fallbackDialer,
-		// Mark:          mark,
 	}, nil
+}
+
+func (c *ControlPlane) directDialerForMark(outboundIndex consts.OutboundIndex, mark uint32) netproxy.Dialer {
+	if outboundIndex != consts.OutboundDirect || mark == 0 || mark == c.soMarkFromDae {
+		return nil
+	}
+	if cached, ok := c.markedDirectDialers.Load(mark); ok {
+		return cached.(netproxy.Dialer)
+	}
+	d := protocolDirect.NewDirectDialer(protocolDirect.Option{
+		FallbackDNS: c.fallbackResolver,
+		Mptcp:       c.mptcp,
+		Mark:        int(mark),
+	})
+	actual, _ := c.markedDirectDialers.LoadOrStore(mark, d)
+	return actual.(netproxy.Dialer)
 }
 
 func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *common.NetworkType, routingResult *bpfRoutingResult) {
