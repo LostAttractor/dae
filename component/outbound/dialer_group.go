@@ -8,6 +8,7 @@ package outbound
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -44,7 +45,8 @@ type DialerGroup struct {
 	selectionPolicy *dialer.DialerSelectionPolicy
 	selector        Selector
 
-	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
+	dialerToAnnotation  map[*dialer.Dialer]*dialer.Annotation
+	latencyTableLogging atomic.Bool
 }
 
 func NewDialerGroup(
@@ -173,6 +175,9 @@ func (g *DialerGroup) PrintLatency() {
 		networkType := common.IndexToNetworkType(i)
 		g.selector.PrintLatencies(networkType, log.Infoln)
 	}
+	// Initial checks update selectors incrementally. Enable detailed tables
+	// only after this complete startup snapshot has been printed.
+	g.latencyTableLogging.Store(true)
 }
 
 func (g *DialerGroup) NotifyStatusChange(dialer *dialer.Dialer) {

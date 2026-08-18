@@ -23,8 +23,6 @@ import (
 
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 )
 
 var (
@@ -434,35 +432,6 @@ func Htons(i uint16) uint16 {
 // Ntohs converts the unsigned short integer netshort from network byte order to host byte order.
 func Ntohs(i uint16) uint16 {
 	return Htons(i)
-}
-
-func GetDefaultIfnames() (defaultIfs []string, err error) {
-	linkList, err := netlink.LinkList()
-	if err != nil {
-		return nil, err
-	}
-nextLink:
-	for _, link := range linkList {
-		if link.Attrs().Flags&unix.RTF_UP != unix.RTF_UP {
-			// Interface is down.
-			continue
-		}
-		for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
-			rs, err := netlink.RouteList(link, family)
-			if err != nil {
-				return nil, err
-			}
-			for _, route := range rs {
-				if ones, _ := route.Dst.Mask.Size(); ones != 0 {
-					continue
-				}
-				// Have no dst, it is a default route.
-				defaultIfs = append(defaultIfs, link.Attrs().Name)
-				continue nextLink
-			}
-		}
-	}
-	return Deduplicate(defaultIfs), nil
 }
 
 func IsValidHttpMethod(method string) bool {

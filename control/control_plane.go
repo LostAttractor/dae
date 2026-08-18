@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -47,6 +49,7 @@ import (
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
 )
 
 type ControlPlane struct {
@@ -81,7 +84,11 @@ type ControlPlane struct {
 	realDomainSet   *bloom.BloomFilter
 
 	wanInterface []string
+	autoWan      bool
 	lanInterface []string
+
+	hostReconcileCh   chan struct{}
+	hostReconcileDone chan struct{}
 
 	// Fields below are saved at NewControlPlane and consumed by Activate.
 	autoConfigKernelParameter bool
@@ -97,6 +104,17 @@ type ControlPlane struct {
 	closedDone atomic.Bool
 
 	PrometheusRegistry *prometheus.Registry
+}
+
+func splitWanInterfaces(ifnames []string) (manual []string, auto bool) {
+	for _, ifname := range common.Deduplicate(ifnames) {
+		if ifname == "auto" {
+			auto = true
+			continue
+		}
+		manual = append(manual, ifname)
+	}
+	return manual, auto
 }
 
 // TODO: 统一 Outbound 中的DNS解析器
@@ -356,6 +374,8 @@ func NewControlPlane(
 	// mirror of outbound connectivity.
 	routingMatcher.outboundUsable = core.outboundUsable
 
+	wanInterface, autoWan := splitWanInterfaces(global.WanInterface)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	plane := &ControlPlane{
@@ -366,6 +386,7 @@ func NewControlPlane(
 		tcpConnections:            new(tcpConnectionTracker),
 		udpTaskPool:               newUdpTaskPool[netip.AddrPort](DefaultNatTimeoutUDP),
 		udpEndpoints:              &DefaultUdpEndpointPool,
+		hostReconcileCh:           make(chan struct{}, 1),
 		routingMatcher:            routingMatcher,
 		routingMatcherBuilder:     builder,
 		ctx:                       ctx,
@@ -374,7 +395,8 @@ func NewControlPlane(
 		cancelTCPSetups:           cancelTCPSetups,
 		realDomainSet:             bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:              common.Deduplicate(global.LanInterface),
-		wanInterface:              common.Deduplicate(global.WanInterface),
+		wanInterface:              wanInterface,
+		autoWan:                   autoWan,
 		autoConfigKernelParameter: global.AutoConfigKernelParameter,
 		dialTargetOverride:        global.DialTargetOverride,
 		rerouteMode:               global.RerouteMode,
@@ -488,11 +510,32 @@ func (c *ControlPlane) Activate() error {
 		}
 	}
 
+	core.netmon.Register(func(previous, current component.HostNetworkSnapshot) {
+		if c.ctx.Err() != nil {
+			return
+		}
+		if current.ConnectivityChanged(previous) {
+			c.requestConnectivityRechecks()
+		}
+		if c.autoWan {
+			c.requestHostReconcile()
+		}
+	})
+
 	// Run initial connectivity checks. We wait for completion so that
 	// OutboundConnectivityMap reflects a sensible state before traffic starts.
+	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
 	wg := new(sync.WaitGroup)
 	for _, g := range c.outbounds {
+		if g.Kind == outbound.GroupKindNormal {
+			g.InitializeConnectivity()
+		}
+	}
+	for _, g := range c.outbounds {
 		for _, d := range g.Dialers {
+			// Initialize all four map entries before asynchronous checks allow
+			// traffic to start with an absent connectivity state.
+			d.NotifyStatusChange()
 			d.ActivateCheck(wg)
 		}
 	}
@@ -512,6 +555,11 @@ func (c *ControlPlane) Activate() error {
 	if err := core.bindDaens(); err != nil {
 		return oops.Errorf("bindDaens: %w", err)
 	}
+	core.ifmgr.SetResetCallback(core.resetHostTCXLinks)
+	hostEnabled := len(c.lanInterface) > 0 || len(c.wanInterface) > 0 || c.autoWan
+	if hostEnabled {
+		core.ifmgr.SetChangeCallback(c.requestHostReconcile)
+	}
 	if len(c.lanInterface) > 0 {
 		if c.autoConfigKernelParameter {
 			_ = SetIpv4forward("1")
@@ -523,27 +571,169 @@ func (c *ControlPlane) Activate() error {
 			}
 		}
 	}
-	if len(c.wanInterface) > 0 {
+	wanEnabled := len(c.wanInterface) > 0 || c.autoWan
+	retryHost := false
+	if wanEnabled {
+		if err := core.ifmgr.RegisterWithPattern("*", nil, nil, core.invalidateWanLink); err != nil {
+			return oops.Errorf("register WAN link deletion handler: %w", err)
+		}
 		if err := core.setupSkPidMonitor(); err != nil {
 			log.Warnf("%+v", oops.Wrapf(err, "cgroup2 is not enabled; pname routing cannot be used"))
 		}
 		for _, ifname := range c.wanInterface {
-			if len(c.lanInterface) > 0 && c.autoConfigKernelParameter {
-				// FIXME: Code is not elegant here.
-				// bindLan setting conf.ipv6.all.forwarding=1 suppresses accept_ra=1,
-				// thus we set it 2 as a workaround.
-				// See https://sysctl-explorer.net/net/ipv6/accept_ra/ for more information.
-				acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
-				if val, _ := acceptRa.Get(); val == "1" {
-					_ = acceptRa.Set("2", false)
-				}
-			}
-			if err := core.bindWan(ifname); err != nil {
+			if err := core.bindWan(ifname, c.prepareWanInterface); err != nil {
 				return err
 			}
 		}
+		retryHost = c.reconcileWan()
+	}
+	if hostEnabled {
+		c.hostReconcileDone = make(chan struct{})
+		go c.runHostReconciler()
+		if retryHost {
+			c.requestHostReconcile()
+		}
 	}
 	return nil
+}
+
+func (c *ControlPlane) prepareWanInterface(ifname string) {
+	if len(c.lanInterface) == 0 || !c.autoConfigKernelParameter {
+		return
+	}
+	// IPv6 forwarding suppresses accept_ra=1. Routers that also consume an
+	// upstream RA need mode 2 instead.
+	acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
+	if val, _ := acceptRa.Get(); val == "1" {
+		_ = acceptRa.Set("2", false)
+	}
+}
+
+func (c *ControlPlane) reconcileWan() bool {
+	if c.ctx.Err() != nil {
+		return false
+	}
+	var snapshot *component.HostNetworkSnapshot
+	if c.autoWan {
+		current := c.core.netmon.Snapshot()
+		if current.Revision() != 0 {
+			for _, intf := range current.Interfaces {
+				c.prepareWanInterface(intf.Name)
+			}
+			snapshot = &current
+		}
+	}
+	return c.core.reconcileWan(snapshot)
+}
+
+func reconcileLanLinks(links []netlink.Link, patterns []string, bind func(netlink.Link) error) (retry bool) {
+	for _, link := range links {
+		if link.Attrs().Name == hostLinkName {
+			continue
+		}
+		for _, pattern := range patterns {
+			matched, _ := path.Match(pattern, link.Attrs().Name)
+			if !matched {
+				continue
+			}
+			if err := bind(link); err != nil {
+				log.Errorf("bind LAN interface %s: %v", link.Attrs().Name, err)
+				retry = true
+			}
+			break
+		}
+	}
+	return retry
+}
+
+func (c *ControlPlane) reconcileLan() bool {
+	if c.ctx.Err() != nil || len(c.lanInterface) == 0 {
+		return false
+	}
+	links, err := netlink.LinkList()
+	if err != nil {
+		log.Errorf("list LAN interfaces: %v", err)
+		return true
+	}
+	return reconcileLanLinks(links, c.lanInterface, func(link netlink.Link) error {
+		return c.core.prepareAndBindLanLink(link, c.autoConfigKernelParameter)
+	})
+}
+
+func (c *ControlPlane) reconcileHostInterfaces() bool {
+	retry := c.reconcileLan()
+	return c.reconcileWan() || retry
+}
+
+func (c *ControlPlane) requestHostReconcile() {
+	if c.ctx.Err() != nil {
+		return
+	}
+	select {
+	case c.hostReconcileCh <- struct{}{}:
+	default:
+	}
+}
+
+func (c *ControlPlane) runHostReconciler() {
+	defer close(c.hostReconcileDone)
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+	var retryCh <-chan time.Time
+	reconcile := func() {
+		if c.reconcileHostInterfaces() {
+			if retryCh == nil {
+				timer.Reset(5 * time.Second)
+				retryCh = timer.C
+			}
+			return
+		}
+		if retryCh != nil {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			retryCh = nil
+		}
+	}
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-c.hostReconcileCh:
+			reconcile()
+		case <-retryCh:
+			retryCh = nil
+			reconcile()
+		}
+	}
+}
+
+func (c *ControlPlane) requestConnectivityRechecks() {
+	if c.ctx.Err() != nil {
+		return
+	}
+	seen := make(map[*dialer.Dialer]struct{})
+	for _, group := range c.outbounds {
+		if group.Kind != outbound.GroupKindNormal {
+			continue
+		}
+		for _, d := range group.Dialers {
+			if !d.NeedAliveState() {
+				continue
+			}
+			if _, ok := seen[d]; ok {
+				continue
+			}
+			seen[d] = struct{}{}
+			d.NotifyConnectivityRecheck()
+		}
+	}
 }
 
 func (c *ControlPlane) reconcileStats() {
@@ -586,14 +776,6 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer.GlobalOption, error) {
 	result := global
 	changed := false
-	// if group.TcpCheckUrl != nil {
-	// 	result.TcpCheckUrl = group.TcpCheckUrl
-	// 	changed = true
-	// }
-	// if group.TcpCheckHttpMethod != "" {
-	// 	result.TcpCheckHttpMethod = group.TcpCheckHttpMethod
-	// 	changed = true
-	// }
 	if group.UdpCheckDns != nil {
 		result.UdpCheckDns = group.UdpCheckDns
 		changed = true
@@ -1029,7 +1211,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		// dialMark     uint32
 	)
 	var networkType common.NetworkType
-	// Get the min latency path.
+	// Get the first available path in upstream preference order.
+	searching := true
 	for _, ver := range ipversions {
 		for _, proto := range l4protos {
 			networkType.L4Proto = proto
@@ -1062,7 +1245,10 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			bestOutbound = dialerGroup
 			bestNetworkType = networkType
 			bestTarget = target
-			// dialMark = mark
+			searching = false
+			break
+		}
+		if !searching {
 			break
 		}
 	}
@@ -1160,6 +1346,9 @@ func (c *ControlPlane) Close() (err error) {
 	c.core.lifecycleMu.Lock()
 	defer c.core.lifecycleMu.Unlock()
 	err = c.retireTraffic()
+	if c.hostReconcileDone != nil {
+		<-c.hostReconcileDone
+	}
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		if e := c.deferFuncs[i](); e != nil {

@@ -6,10 +6,12 @@
 package outbound
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
+	log "github.com/sirupsen/logrus"
 )
 
 var testNetworkType = &common.NetworkType{
@@ -277,6 +280,47 @@ func TestDialerGroupNodeHealthAppliesToAllModes(t *testing.T) {
 				t.Fatalf("recovered availability = %+v", availability)
 			}
 		})
+	}
+}
+
+func TestLatencyTablePrintedAtStartupAndOnReselection(t *testing.T) {
+	option := newTestOption()
+	first := newTestDialer(option, "first")
+	second := newTestDialer(option, "second")
+	g := newTestGroup(option, []*dialer.Dialer{first, second}, emptyAnnotations(2),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency})
+	t.Cleanup(func() { _ = g.Close() })
+
+	logger := log.StandardLogger()
+	previousOutput := logger.Out
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	t.Cleanup(func() { logger.SetOutput(previousOutput) })
+	countTables := func() int {
+		return strings.Count(output.String(), "Group 'test-group' [tcp4]:")
+	}
+
+	simulateCheck(first, true, 20*time.Millisecond)
+	simulateCheck(second, true, 10*time.Millisecond)
+	if got := countTables(); got != 0 {
+		t.Fatalf("latency tables before startup completion = %d, want 0", got)
+	}
+
+	g.PrintLatency()
+	if got := countTables(); got != 1 {
+		t.Fatalf("startup tcp4 latency tables = %d, want 1", got)
+	}
+
+	output.Reset()
+	simulateCheck(first, true, time.Millisecond)
+	if got := countTables(); got != 1 {
+		t.Fatalf("latency tables after reselection = %d, want 1", got)
+	}
+
+	output.Reset()
+	simulateCheck(first, true, 2*time.Millisecond)
+	if got := countTables(); got != 0 {
+		t.Fatalf("latency tables without reselection = %d, want 0", got)
 	}
 }
 
