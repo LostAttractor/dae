@@ -7,9 +7,29 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"testing"
+	"time"
 )
+
+func TestUpstreamResolverWaitHonorsContext(t *testing.T) {
+	resolver := &UpstreamResolver{}
+	resolver.mu.Lock()
+	resolver.resolving = make(chan struct{})
+	resolver.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := resolver.GetUpstream(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GetUpstream error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("GetUpstream ignored context for %s", elapsed)
+	}
+}
 
 func TestUpstreamResolverCallbacks(t *testing.T) {
 	raw, err := url.Parse("udp://192.0.2.1")
