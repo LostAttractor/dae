@@ -12,6 +12,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -48,6 +49,32 @@ func TestGetUpstreamValidatesIndex(t *testing.T) {
 	}
 	if upstream.Ip4.String() != "192.0.2.1" {
 		t.Fatalf("upstream IPv4 = %v, want 192.0.2.1", upstream.Ip4)
+	}
+}
+
+func TestNewAppliesInterfaceAliasToRequestRouting(t *testing.T) {
+	rule := &config_parser.RoutingRule{
+		AndFunctions: []*config_parser.Function{{
+			Name:   "interface",
+			Params: []*config_parser.Param{{Val: "eth0"}},
+		}},
+		Outbound: config_parser.Function{Name: consts.DnsRequestOutboundIndex_AsIs.String()},
+	}
+	conf := &config.Dns{Routing: config.DnsRouting{
+		Request: config.DnsRequestRouting{
+			Rules:    []*config_parser.RoutingRule{rule},
+			Fallback: config.FunctionOrString(consts.DnsRequestOutboundIndex_AsIs.String()),
+		},
+		Response: config.DnsResponseRouting{
+			Fallback: config.FunctionOrString(consts.DnsResponseOutboundIndex_Accept.String()),
+		},
+	}}
+
+	if _, err := New(conf, &NewOption{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := conf.Routing.Request.Rules[0].AndFunctions[0].Name; got != consts.Function_IfName {
+		t.Fatalf("request function = %q, want %q", got, consts.Function_IfName)
 	}
 }
 

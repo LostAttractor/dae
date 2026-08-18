@@ -65,6 +65,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 	}
 	// Optimize routings.
 	if dns.Routing.Request.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Request.Rules,
+		&routing.AliasOptimizer{},
 		&routing.DatReaderOptimizer{LocationFinder: opt.LocationFinder},
 		&routing.MergeAndSortRulesOptimizer{},
 		&routing.DeduplicateParamsOptimizer{},
