@@ -228,6 +228,7 @@ func (s *LatencyBasedSelector) NotifyStatusChange(d *dialer.Dialer) {
 			newDialer = aliveDialers[0]
 		}
 		s.logCheckLatency(aliveDialers, d, networkType)
+		selectionChanged := false
 		if oldDialer != newDialer {
 			switch {
 			case oldDialer == nil,
@@ -236,9 +237,7 @@ func (s *LatencyBasedSelector) NotifyStatusChange(d *dialer.Dialer) {
 				!slices.Contains(aliveDialers, oldDialer):
 				s.networkIndexToDialer[i] = newDialer
 				s.logDialerSelection(oldDialer, newDialer, networkType)
-				oncePrintLatencies.Do(func() {
-					s.printLatencies(aliveDialers, networkType, log.Warnln)
-				})
+				selectionChanged = true
 			default:
 				oldLatency := s.getSortingLatency(oldDialer)
 				newLatency := s.getSortingLatency(newDialer)
@@ -249,15 +248,15 @@ func (s *LatencyBasedSelector) NotifyStatusChange(d *dialer.Dialer) {
 					newPriority == oldPriority && hasLatency && newLatency < oldLatency-s.tolerance:
 					s.networkIndexToDialer[i] = newDialer
 					s.logDialerSelection(oldDialer, newDialer, networkType)
-					oncePrintLatencies.Do(func() {
-						s.printLatencies(aliveDialers, networkType, log.Warnln)
-					})
+					selectionChanged = true
 				}
 			}
 		}
-		oncePrintLatencies.Do(func() {
-			s.printLatencies(aliveDialers, networkType, log.Infoln)
-		})
+		if selectionChanged && s.dialerGroup.latencyTableLogging.Load() {
+			oncePrintLatencies.Do(func() {
+				s.printLatencies(aliveDialers, networkType, log.Warnln)
+			})
+		}
 		s.handleAliveStateChange(newDialer != nil, networkType)
 	}
 }

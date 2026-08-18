@@ -42,6 +42,8 @@ func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConne
 
 func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *common.NetworkType) {
 	return func(alive bool, networkType *common.NetworkType) {
+		c.outboundCallbackMu.Lock()
+		defer c.outboundCallbackMu.Unlock()
 		if c.closed.Err() != nil {
 			return
 		}
@@ -61,9 +63,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 		// The eBPF map value also carries the global no-connectivity action, so
 		// deriving liveness from that action would conflate alive with
 		// dead-but-try-sniff.
-		if outbound <= uint8(consts.OutboundUserDefinedMax) {
-			c.outboundConnectivityMap[outbound][common.NetworkTypeToIndex(networkType)].Store(alive)
-		}
+		recovered := c.recordOutboundConnectivity(outbound, common.NetworkTypeToIndex(networkType), alive)
 
 		if err := c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
 			Outbound:  outbound,
@@ -76,7 +76,35 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 				"outbound": outboundName,
 			}).Warnf("Failed to notify the kernel program: %v", err)
 		}
+		if recovered != nil {
+			recovered()
+		}
 	}
+}
+
+func (c *controlPlaneCore) setOutboundRecoveryCallback(callback func()) {
+	c.outboundRecovery = callback
+}
+
+func (c *controlPlaneCore) recordOutboundConnectivity(outbound uint8, network int, alive bool) func() {
+	if outbound > uint8(consts.OutboundUserDefinedMax) {
+		return nil
+	}
+	wasAlive := c.anyOutboundAlive(network)
+	c.outboundConnectivityMap[outbound][network].Store(alive)
+	if !wasAlive && alive {
+		return c.outboundRecovery
+	}
+	return nil
+}
+
+func (c *controlPlaneCore) anyOutboundAlive(network int) bool {
+	for outbound := uint8(consts.OutboundUserDefinedMin); outbound <= uint8(consts.OutboundUserDefinedMax); outbound++ {
+		if c.outboundConnectivityMap[outbound][network].Load() {
+			return true
+		}
+	}
+	return false
 }
 
 // outboundUsable reports whether the outbound group has a live dialer for the

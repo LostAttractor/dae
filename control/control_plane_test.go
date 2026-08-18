@@ -7,9 +7,11 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -17,12 +19,159 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/vishvananda/netlink"
 )
+
+func TestSplitWanInterfacesPreservesAutoIntent(t *testing.T) {
+	manual, auto := splitWanInterfaces([]string{"eth0", "auto", "eth0", "ppp.*", "auto"})
+	if !auto {
+		t.Fatal("auto WAN discovery is disabled")
+	}
+	if want := []string{"eth0", "ppp.*"}; !reflect.DeepEqual(manual, want) {
+		t.Fatalf("manual interfaces = %v, want %v", manual, want)
+	}
+}
+
+func TestAutoWanTargetsUseOneOwnerPerInterface(t *testing.T) {
+	got := autoWanTargets(component.HostNetworkSnapshot{Interfaces: []component.DefaultRouteInterface{
+		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
+		{Index: 2, Name: "eth0", IPv4Default: true},
+		{Index: 3, Name: "eth1", IPv6Default: true},
+		{Index: 4, Name: "ppp0", IPv4Default: true, IPv6Default: true},
+	}})
+	want := map[int]string{2: "eth0", 3: "eth1", 4: "ppp0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("auto WAN targets = %v, want %v", got, want)
+	}
+}
+
+func TestManualWanRejectsLoopback(t *testing.T) {
+	closed, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	core := &controlPlaneCore{closed: closed, wanBindings: make(map[int]*wanBinding)}
+	core.setManualWan(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{
+		Index: consts.LoopbackIfIndex,
+		Name:  "lo",
+	}}, "*", true)
+	if len(core.wanBindings) != 0 {
+		t.Fatalf("loopback WAN binding = %+v", core.wanBindings)
+	}
+}
+
+func TestManualWanRenamePreservesAttachment(t *testing.T) {
+	closed, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const index = 2
+	core := &controlPlaneCore{
+		closed: closed,
+		wanBindings: map[int]*wanBinding{index: {
+			ifname:         "eth0",
+			manualPatterns: map[string]struct{}{"eth*": {}},
+		}},
+	}
+	core.setManualWan(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "wan0"}}, "wan*", true)
+	binding := core.wanBindings[index]
+	if binding.ifname != "wan0" {
+		t.Fatalf("renamed binding = %+v", binding)
+	}
+	if _, exists := binding.manualPatterns["eth*"]; exists {
+		t.Fatal("rename retained ownership from the old interface name")
+	}
+}
+
+func TestRemoveWanOwnerPreservesTCXForOtherOwners(t *testing.T) {
+	closed, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const index = 2
+	var closes int
+	core := &controlPlaneCore{
+		closed: closed,
+		wanBindings: map[int]*wanBinding{index: {
+			ifname:         "eth0",
+			automatic:      true,
+			manualPatterns: map[string]struct{}{"eth*": {}, "*0": {}},
+		}},
+		hostTCXLinks: []hostTCXLink{
+			{linkIndex: index, role: hostTCXWanIngress, close: func() error { closes++; return nil }},
+			{linkIndex: index, role: hostTCXWanEgress, close: func() error { closes++; return nil }},
+		},
+	}
+
+	core.removeWanLink(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}}, "eth*")
+	if closes != 0 || len(core.hostTCXLinks) != 2 {
+		t.Fatalf("removing one owner detached WAN TCX: closes=%d links=%v", closes, core.hostTCXLinks)
+	}
+	binding := core.wanBindings[index]
+	if _, exists := binding.manualPatterns["eth*"]; exists {
+		t.Fatal("manual WAN ownership retained after delete")
+	}
+	if _, exists := binding.manualPatterns["*0"]; !exists || !binding.automatic {
+		t.Fatalf("remaining WAN ownership was lost: %+v", binding)
+	}
+}
+
+func TestInvalidateAutoWanLinkClearsTCXOwnership(t *testing.T) {
+	closed, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const index = 2
+	var closes int
+	core := &controlPlaneCore{
+		closed: closed,
+		wanBindings: map[int]*wanBinding{index: {
+			ifname:         "eth0",
+			automatic:      true,
+			manualPatterns: make(map[string]struct{}),
+		}},
+		hostTCXLinks: []hostTCXLink{
+			{linkIndex: index, role: hostTCXWanIngress, close: func() error { closes++; return nil }},
+			{linkIndex: index, role: hostTCXWanEgress, close: func() error { closes++; return nil }},
+		},
+	}
+
+	core.invalidateWanLink(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}})
+	if closes != 2 || len(core.hostTCXLinks) != 0 {
+		t.Fatalf("auto-WAN TCX ownership retained after delete: closes=%d links=%v", closes, core.hostTCXLinks)
+	}
+	if !core.wanBindings[index].automatic {
+		t.Fatal("link deletion discarded automatic intent before reconciliation")
+	}
+}
+
+func TestReconcileLanLinksRetriesAndDeduplicatesPatterns(t *testing.T) {
+	links := []netlink.Link{
+		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "eth0"}},
+		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 3, Name: "eth1"}},
+		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 4, Name: hostLinkName}},
+	}
+	attempts := make(map[string]int)
+	bind := func(link netlink.Link) error {
+		name := link.Attrs().Name
+		attempts[name]++
+		if name == "eth1" && attempts[name] == 1 {
+			return errors.New("temporary attach failure")
+		}
+		return nil
+	}
+
+	if !reconcileLanLinks(links, []string{"eth*", "*0"}, bind) {
+		t.Fatal("failed LAN attachment did not request retry")
+	}
+	if reconcileLanLinks(links, []string{"eth*", "*0"}, bind) {
+		t.Fatal("successful LAN reconciliation requested retry")
+	}
+	if attempts["eth0"] != 2 || attempts["eth1"] != 2 {
+		t.Fatalf("bind attempts = %v, want each LAN once per pass", attempts)
+	}
+	if attempts[hostLinkName] != 0 {
+		t.Fatal("host link was treated as LAN")
+	}
+}
 
 func TestParseGroupOverrideOptionCheckIntervals(t *testing.T) {
 	global := config.Global{

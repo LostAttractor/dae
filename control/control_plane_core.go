@@ -37,6 +37,7 @@ type controlPlaneCore struct {
 	deferFuncs   []func() error
 	hostTCXLinks []hostTCXLink
 	bpf          *bpfState
+	wanBindings  map[int]*wanBinding
 
 	isReload bool
 	// bpfOwned reports whether this core currently owns the bpf objects and
@@ -53,6 +54,7 @@ type controlPlaneCore struct {
 	closed context.Context
 	close  context.CancelFunc
 	ifmgr  *component.InterfaceManager
+	netmon *component.HostNetworkMonitor
 
 	// outboundConnectivityMap stores actual outbound liveness, indexed by
 	// [outbound][NetworkTypeToIndex]. It is written by the same callback that
@@ -61,6 +63,8 @@ type controlPlaneCore struct {
 	// lookups in the hot path. A zero-valued bool also represents a state that
 	// has not been reported yet, which is conservatively treated as unusable.
 	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][4]atomic.Bool
+	outboundCallbackMu      sync.Mutex
+	outboundRecovery        func()
 }
 
 type hostTCXRole uint8
@@ -84,6 +88,12 @@ type hostTCXProgram struct {
 	program *ebpf.Program
 }
 
+type wanBinding struct {
+	ifname         string
+	manualPatterns map[string]struct{}
+	automatic      bool
+}
+
 func newControlPlaneCore(
 	bpf *bpfState,
 	isReload bool,
@@ -94,16 +104,19 @@ func newControlPlaneCore(
 		toClose()
 		return nil, oops.Wrapf(err, "initialize interface manager")
 	}
+	netmon := component.NewHostNetworkMonitor()
 	core := &controlPlaneCore{
 		bpf:      bpf,
 		isReload: isReload,
 		// A reload candidate starts without BPF cleanup ownership. The caller
 		// released it from the old core before construction and assigns it to
 		// this core via InjectBpf only after the old core is retired.
-		bpfOwned: !isReload,
-		ifmgr:    ifmgr,
-		closed:   closed,
-		close:    toClose,
+		bpfOwned:    !isReload,
+		ifmgr:       ifmgr,
+		netmon:      netmon,
+		closed:      closed,
+		close:       toClose,
+		wanBindings: make(map[int]*wanBinding),
 	}
 	// The kernel-side capacity is read back from the map itself so it can
 	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.
@@ -170,6 +183,20 @@ func (c *controlPlaneCore) closeHostTCXLinks(linkIndex int, roles ...hostTCXRole
 	return err
 }
 
+func (c *controlPlaneCore) resetHostTCXLinks() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cleanupMu.Lock()
+	links := c.hostTCXLinks
+	c.hostTCXLinks = nil
+	c.cleanupMu.Unlock()
+	for i := len(links) - 1; i >= 0; i-- {
+		if err := links[i].close(); err != nil {
+			log.Errorf("close stale %s TCX link on interface %d: %v", links[i].role, links[i].linkIndex, err)
+		}
+	}
+}
+
 func (c *controlPlaneCore) takeCleanups() []func() error {
 	c.cleanupMu.Lock()
 	defer c.cleanupMu.Unlock()
@@ -207,7 +234,20 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 		// Cancel before joining InterfaceManager callbacks. A callback waiting
 		// for c.mu can then acquire it and return without touching shared maps.
 		c.close()
-		c.closeErr = c.ifmgr.Close()
+		// Wait for callbacks that passed the closed check before cancellation.
+		// Later callbacks acquire the mutex, observe closed, and return.
+		c.outboundCallbackMu.Lock()
+		c.outboundCallbackMu.Unlock()
+		if c.netmon != nil {
+			c.closeErr = c.netmon.Close()
+		}
+		if err := c.ifmgr.Close(); err != nil {
+			if c.closeErr != nil {
+				c.closeErr = oops.Errorf("%w; %v", c.closeErr, err)
+			} else {
+				c.closeErr = err
+			}
+		}
 		// Interface callbacks can register TCX link ownership. Waiting for the
 		// monitor first freezes dynamic registration before cleanup is drained.
 		for _, cleanup := range c.takeCleanups() {
@@ -399,8 +439,12 @@ func (c *controlPlaneCore) migrateHostTCXPrograms(link netlink.Link, programs ..
 	return nil
 }
 
-func (c *controlPlaneCore) bindInterfaces(pattern, label string, bind func(netlink.Link) error) error {
+// bindLan supports lazy binding and rebinding for matching LAN interfaces.
+func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter bool) error {
 	var initialErr error
+	bind := func(link netlink.Link) error {
+		return c.prepareAndBindLanLink(link, autoConfigKernelParameter)
+	}
 	initlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == hostLinkName {
 			return
@@ -408,19 +452,19 @@ func (c *controlPlaneCore) bindInterfaces(pattern, label string, bind func(netli
 		if err := bind(link); err != nil {
 			var notFound netlink.LinkNotFoundError
 			if errors.As(err, &notFound) {
-				log.Debugf("Skip disappeared %s interface %s", label, link.Attrs().Name)
+				log.Debugf("Skip disappeared LAN interface %s", link.Attrs().Name)
 				return
 			}
-			initialErr = errors.Join(initialErr, oops.Errorf("bind %s interface %s: %w", label, link.Attrs().Name, err))
+			initialErr = errors.Join(initialErr, oops.Errorf("bind LAN interface %s: %w", link.Attrs().Name, err))
 		}
 	}
 	newlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == hostLinkName {
 			return
 		}
-		log.Warnf("New link creation of '%v' is detected. Bind %s program to it.", link.Attrs().Name, label)
+		log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
 		if err := bind(link); err != nil {
-			log.Errorf("bind %s interface %s: %v", label, link.Attrs().Name, err)
+			log.Errorf("bind LAN interface %s: %v", link.Attrs().Name, err)
 		}
 	}
 	dellinkCallback := func(link netlink.Link) {
@@ -428,11 +472,11 @@ func (c *controlPlaneCore) bindInterfaces(pattern, label string, bind func(netli
 			return
 		}
 		c.mu.Lock()
-		if err := c.closeHostTCXLinks(link.Attrs().Index); err != nil {
-			log.Errorf("close TCX links on deleted %s interface %s: %v", label, link.Attrs().Name, err)
+		if err := c.closeHostTCXLinks(link.Attrs().Index, hostTCXLanIngress, hostTCXLanEgress); err != nil {
+			log.Errorf("close TCX links on deleted LAN interface %s: %v", link.Attrs().Name, err)
 		}
 		c.mu.Unlock()
-		log.Warnf("Link deletion of '%v' is detected. Bind %s program to it once it is re-created.", link.Attrs().Name, label)
+		log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
 	}
 	if err := c.ifmgr.RegisterWithPattern(pattern, initlinkCallback, newlinkCallback, dellinkCallback); err != nil {
 		return errors.Join(initialErr, err)
@@ -440,15 +484,12 @@ func (c *controlPlaneCore) bindInterfaces(pattern, label string, bind func(netli
 	return initialErr
 }
 
-// bindLan supports lazy binding and rebinding for matching LAN interfaces.
-func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter bool) error {
-	return c.bindInterfaces(pattern, "LAN", func(link netlink.Link) error {
-		if autoConfigKernelParameter {
-			SetSendRedirects(link.Attrs().Name, "0")
-			SetForwarding(link.Attrs().Name, "1")
-		}
-		return c.bindLanLink(link)
-	})
+func (c *controlPlaneCore) prepareAndBindLanLink(link netlink.Link, autoConfigKernelParameter bool) error {
+	if autoConfigKernelParameter {
+		SetSendRedirects(link.Attrs().Name, "0")
+		SetForwarding(link.Attrs().Name, "1")
+	}
+	return c.bindLanLink(link)
 }
 
 func (c *controlPlaneCore) bindLanLink(linkSnapshot netlink.Link) error {
@@ -532,25 +573,179 @@ func (c *controlPlaneCore) setupExitHandler() (err error) {
 	return nil
 }
 
-// bindWan supports lazy binding and rebinding for matching WAN interfaces.
-func (c *controlPlaneCore) bindWan(pattern string) error {
-	return c.bindInterfaces(pattern, "WAN", c.bindWanLink)
+// bindWan registers manual ownership. TC changes are serialized by the WAN
+// reconciler instead of running in interface callbacks.
+func (c *controlPlaneCore) bindWan(pattern string, prepare func(string)) error {
+	set := func(link netlink.Link) {
+		if link.Attrs().Name == hostLinkName {
+			return
+		}
+		if link.Attrs().Index == consts.LoopbackIfIndex {
+			log.Errorf("cannot bind WAN to loopback interface")
+			return
+		}
+		if prepare != nil {
+			prepare(link.Attrs().Name)
+		}
+		c.setManualWan(link, pattern, true)
+	}
+	return c.ifmgr.RegisterWithPattern(pattern, func(link netlink.Link) {
+		set(link)
+	}, func(link netlink.Link) {
+		log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
+		set(link)
+	}, func(link netlink.Link) {
+		c.removeWanLink(link, pattern)
+		log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
+	})
 }
 
-func (c *controlPlaneCore) bindWanLink(linkSnapshot netlink.Link) error {
+func (c *controlPlaneCore) removeWanLink(link netlink.Link, pattern string) {
+	// This callback also represents a rename that stopped matching one
+	// pattern. Update only that owner; the global DELLINK callback handles
+	// physical deletion, and reconciliation detaches after all owners update.
+	c.setManualWan(link, pattern, false)
+}
+
+func (c *controlPlaneCore) invalidateWanLink(link netlink.Link) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	select {
-	case <-c.closed.Done():
-		return nil
-	default:
+	if err := c.closeHostTCXLinks(link.Attrs().Index, hostTCXWanIngress, hostTCXWanEgress); err != nil {
+		log.Errorf("close TCX links on deleted WAN interface %s: %v", link.Attrs().Name, err)
 	}
-	ifname := linkSnapshot.Attrs().Name
+}
+
+func (c *controlPlaneCore) setManualWan(link netlink.Link, pattern string, present bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Err() != nil {
+		return
+	}
+	index := link.Attrs().Index
+	if present && index == consts.LoopbackIfIndex {
+		return
+	}
+	binding := c.wanBindings[index]
+	if !present {
+		if binding != nil && binding.ifname == link.Attrs().Name {
+			delete(binding.manualPatterns, pattern)
+		}
+		return
+	}
+	if binding == nil {
+		binding = &wanBinding{manualPatterns: make(map[string]struct{})}
+		c.wanBindings[index] = binding
+	}
+	if binding.ifname != "" && binding.ifname != link.Attrs().Name {
+		clear(binding.manualPatterns)
+	}
+	binding.ifname = link.Attrs().Name
+	binding.manualPatterns[pattern] = struct{}{}
+}
+
+func autoWanTargets(snapshot component.HostNetworkSnapshot) map[int]string {
+	desired := make(map[int]string, len(snapshot.Interfaces))
+	for _, intf := range snapshot.Interfaces {
+		if intf.Index != consts.LoopbackIfIndex && (intf.IPv4Default || intf.IPv6Default) {
+			desired[intf.Index] = intf.Name
+		}
+	}
+	return desired
+}
+
+// reconcileWan attaches every required interface before dropping obsolete
+// automatic ownership, avoiding an interception gap during route replacement.
+// A nil snapshot retries existing state without changing automatic ownership.
+func (c *controlPlaneCore) reconcileWan(snapshot *component.HostNetworkSnapshot) (retry bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Err() != nil {
+		return false
+	}
+	var desired map[int]string
+	if snapshot != nil {
+		desired = autoWanTargets(*snapshot)
+		for index, ifname := range desired {
+			binding := c.wanBindings[index]
+			if binding == nil {
+				binding = &wanBinding{ifname: ifname, manualPatterns: make(map[string]struct{})}
+				c.wanBindings[index] = binding
+			}
+		}
+	}
+
+	autoReady := true
+	for index, binding := range c.wanBindings {
+		_, wantedAutomatically := desired[index]
+		required := len(binding.manualPatterns) > 0 || binding.automatic
+		if snapshot != nil {
+			required = len(binding.manualPatterns) > 0 || wantedAutomatically
+		}
+		if !required {
+			continue
+		}
+		link, err := netlink.LinkByIndex(index)
+		if err != nil {
+			log.Debugf("WAN link %d is no longer present: %v", index, err)
+			retry = true
+			if wantedAutomatically {
+				autoReady = false
+			}
+			continue
+		}
+		if wantedName := desired[index]; wantedName != "" && wantedName != link.Attrs().Name {
+			log.Debugf("WAN link %d changed from %q to %q", index, wantedName, link.Attrs().Name)
+			retry = true
+			autoReady = false
+			continue
+		}
+		// TC filters are attached by ifindex and remain valid across a rename.
+		binding.ifname = link.Attrs().Name
+		if !c.wanAttached(index) {
+			if err := c.attachWanLocked(link, binding); err != nil {
+				log.Errorf("bind WAN %v: %v", binding.ifname, err)
+				retry = true
+				if wantedAutomatically {
+					autoReady = false
+				}
+			}
+		}
+	}
+
+	if snapshot != nil && autoReady {
+		for index, binding := range c.wanBindings {
+			_, binding.automatic = desired[index]
+		}
+	}
+	for index, binding := range c.wanBindings {
+		_, provisionalAuto := desired[index]
+		if binding.automatic || len(binding.manualPatterns) > 0 || !autoReady && provisionalAuto {
+			continue
+		}
+		if err := c.detachWanLocked(index, binding); err != nil {
+			log.Errorf("unbind obsolete WAN %d: %v", index, err)
+			retry = true
+			continue
+		}
+		delete(c.wanBindings, index)
+	}
+	return retry
+}
+
+func (c *controlPlaneCore) wanAttached(linkIndex int) bool {
+	_, ingress := c.hostTCXLink(linkIndex, hostTCXWanIngress)
+	_, egress := c.hostTCXLink(linkIndex, hostTCXWanEgress)
+	return ingress && egress
+}
+
+func (c *controlPlaneCore) detachWanLocked(linkIndex int, binding *wanBinding) error {
+	log.Infof("Unbind from WAN: %v", binding.ifname)
+	return c.closeHostTCXLinks(linkIndex, hostTCXWanIngress, hostTCXWanEgress)
+}
+
+func (c *controlPlaneCore) attachWanLocked(link netlink.Link, binding *wanBinding) error {
+	ifname := link.Attrs().Name
 	log.Infof("Bind to WAN: %v", ifname)
-	link, err := netlink.LinkByName(ifname)
-	if err != nil {
-		return err
-	}
 	if link.Attrs().Index == consts.LoopbackIfIndex {
 		return oops.Errorf("cannot bind to loopback interface")
 	}
