@@ -7,9 +7,47 @@ package netutils
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
+	"sync"
+
+	"github.com/daeuniverse/dae/common"
 )
+
+var defaultResolverState struct {
+	sync.Mutex
+	configured bool
+	mark       uint32
+}
+
+// InstallDefaultResolver permanently replaces net.DefaultResolver with a
+// marked Go resolver. Call it only during single-threaded process startup,
+// before any goroutine or library can read net.DefaultResolver. Constructors
+// do not call this function, so embedders must opt in explicitly before
+// constructing dae. Repeated calls with the same effective mark are idempotent.
+func InstallDefaultResolver(mark uint32) error {
+	mark = common.EffectiveSoMarkFromDae(mark)
+	if err := common.ValidateSoMarkFromDae(mark); err != nil {
+		return err
+	}
+	defaultResolverState.Lock()
+	defer defaultResolverState.Unlock()
+	if defaultResolverState.configured {
+		if mark != defaultResolverState.mark {
+			return fmt.Errorf("default resolver SO_MARK already configured as %#x, cannot change to %#x", defaultResolverState.mark, mark)
+		}
+		return nil
+	}
+	resolver, err := newMarkedResolver(mark)
+	if err != nil {
+		return err
+	}
+	net.DefaultResolver = resolver
+	defaultResolverState.configured = true
+	defaultResolverState.mark = mark
+	return nil
+}
 
 type Ip46 struct {
 	Ip4 netip.Addr

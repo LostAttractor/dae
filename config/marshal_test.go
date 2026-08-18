@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -56,5 +57,23 @@ func TestMarshal(t *testing.T) {
 
 	if !reflect.DeepEqual(conf1, conf2) {
 		t.Fatal("not equal")
+	}
+}
+
+func TestMarshalPreservesOmittedSoMark(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+routing { fallback: direct }
+`)
+	b, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "so_mark_from_dae") {
+		t.Fatalf("marshal added an omitted so_mark_from_dae: %s", b)
+	}
+	reparsed := parseConfig(t, string(b))
+	if reparsed.Global.SoMarkFromDaeSet {
+		t.Fatal("omitted so_mark_from_dae became explicit after marshal round trip")
 	}
 }

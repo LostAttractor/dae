@@ -195,6 +195,7 @@ struct dae_param {
 	__u8 dae0peer_mac[6];
 	__u8 has_bpf_get_current_task;
 	__u8 padding;
+	__u32 so_mark_from_dae;
 };
 
 volatile const struct dae_param PARAM = {};
@@ -1120,12 +1121,12 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	__u64 cookie = bpf_get_socket_cookie(skb);
 	*pid_pname = bpf_map_lookup_elem(&cookie_pid_map, &cookie);
 
-	if (!*pid_pname)
-		return false;
 	if (!PARAM.control_plane_pid) {
 		bpf_printk("control_plane_pid is not set.");
 		return false;
 	}
+	if (!*pid_pname)
+		return false;
 	return (*pid_pname)->pid == PARAM.control_plane_pid;
 }
 

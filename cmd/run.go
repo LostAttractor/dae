@@ -31,7 +31,9 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/outbound"
@@ -134,6 +136,11 @@ var (
 					"err": err,
 				}).Fatalln("Failed to read config")
 			}
+			// AutoSu has returned in the final privileged process. Install the
+			// process-global resolver before constructors can resolve hostnames.
+			if err = configureDaemonResolver(&conf.Global); err != nil {
+				std.WithError(err).Fatalln("Failed to configure marked resolver")
+			}
 			var logOpts *lumberjack.Logger
 			if logFile != "" {
 				logOpts = &lumberjack.Logger{
@@ -152,6 +159,14 @@ var (
 		},
 	}
 )
+
+func configureDaemonResolver(global *config.Global) error {
+	mark := common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
+	if err := common.ValidateSoMarkFromDae(mark); err != nil {
+		return err
+	}
+	return netutils.InstallDefaultResolver(mark)
+}
 
 // writeReloadProgress reports the current reload step through the signal
 // progress file, so `dae reload` can display it to the user.
@@ -198,6 +213,9 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	return os.Rename(tmpPath, path)
 }
 
+// Run starts dae after command startup has configured process-wide name
+// resolution. Embedders calling Run directly must install a marked default
+// resolver before starting concurrent work.
 func Run(conf *config.Config, externGeoDataDirs []string) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
@@ -360,6 +378,13 @@ loop:
 				if newConf.Global.TproxyPort != conf.Global.TproxyPort {
 					reloadFailed("Failed to reload",
 						fmt.Errorf("tproxy_port (%v -> %v) cannot be changed by reload; restart dae to apply it", conf.Global.TproxyPort, newConf.Global.TproxyPort))
+					continue
+				}
+				oldSoMark := common.EffectiveSoMarkFromDae(conf.Global.SoMarkFromDae)
+				newSoMark := common.EffectiveSoMarkFromDae(newConf.Global.SoMarkFromDae)
+				if newSoMark != oldSoMark {
+					reloadFailed("Failed to reload",
+						fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot be changed by reload; restart dae to apply it", oldSoMark, newSoMark))
 					continue
 				}
 				// New logger.
@@ -560,6 +585,14 @@ func waitForNetworkOnline(isReload bool) {
 func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
+	var autoSelected bool
+	conf.Global.SoMarkFromDae, autoSelected = common.ResolveSoMarkFromDae(conf.Global.SoMarkFromDae, conf.Global.SoMarkFromDaeSet)
+	if err = common.ValidateSoMarkFromDae(conf.Global.SoMarkFromDae); err != nil {
+		return nil, err
+	}
+	if autoSelected {
+		log.Warn("so_mark_from_dae is unset; using reserved internal socket mark 0x100 for policy routing")
+	}
 
 	// A non-nil bpf means this is a reload (or suspend/resume): the ejected
 	// bpf object of the previous control plane is reused. During a reload the

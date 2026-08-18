@@ -217,6 +217,8 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 			case "Name":
 			case "FilterAnnotation":
 				// Marshaled together with the Filter field.
+			case "SoMarkFromDaeSet":
+				// Parser metadata; SoMarkFromDae itself is marshaled below.
 			case "Rules":
 				// Expand.
 				rules, ok := field.Interface().([]*config_parser.RoutingRule)
@@ -249,6 +251,11 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 				return err
 			}
 			continue
+		}
+		if structField.Name == "SoMarkFromDae" && field.IsZero() {
+			if configured := from.FieldByName("SoMarkFromDaeSet"); configured.IsValid() && !configured.Bool() {
+				continue
+			}
 		}
 		if err = m.marshalLeaf(key, field, depth); err != nil {
 			return err

@@ -8,8 +8,32 @@ package netutils
 import (
 	"context"
 	"errors"
+	"net"
+	"sync/atomic"
 	"testing"
+
+	outboundcommon "github.com/daeuniverse/outbound/common"
 )
+
+func TestOutboundResolverUsesDefaultResolver(t *testing.T) {
+	original := net.DefaultResolver
+	t.Cleanup(func() { net.DefaultResolver = original })
+
+	var dialed atomic.Bool
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(context.Context, string, string) (net.Conn, error) {
+			dialed.Store(true)
+			return nil, errors.New("resolver dial intercepted")
+		},
+	}
+	if _, err := outboundcommon.ResolveUDPAddr("default-resolver-integration.invalid:53"); err == nil {
+		t.Fatal("outbound resolver unexpectedly succeeded")
+	}
+	if !dialed.Load() {
+		t.Fatal("outbound resolver did not use net.DefaultResolver")
+	}
+}
 
 func TestResolveIp46ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

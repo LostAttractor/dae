@@ -55,6 +55,7 @@ func TestValidateDaeParamType(t *testing.T) {
 			{Name: "dae0peer_mac", Type: &btf.Array{Type: u8, Nelems: 6}, Offset: 96},
 			{Name: "has_bpf_get_current_task", Type: u8, Offset: 144},
 			{Name: "padding", Type: u8, Offset: 152},
+			{Name: "so_mark_from_dae", Type: u32, Offset: 160},
 		},
 	}
 	if err := validateDaeParamType(valid); err != nil {

@@ -49,13 +49,28 @@ type _bpfPortRange struct {
 // acquired later by the successor while this state remains alive.
 type bpfState struct {
 	*bpfObjects
-	splice *splice.Runtime
+	splice        *splice.Runtime
+	soMarkFromDae uint32
 
 	// activeLpmTrieCount is the LPM trie count from the last BuildKernspace
 	// that committed successfully. BuildKernspace advances it only after its
 	// writes complete; any activation failure is terminal because kernel state
 	// may be partially written.
 	activeLpmTrieCount uint32
+}
+
+func validateReusableBpfState(value interface{}, soMarkFromDae uint32) (*bpfState, error) {
+	if value == nil {
+		return nil, nil
+	}
+	state, ok := value.(*bpfState)
+	if !ok || state == nil {
+		return nil, fmt.Errorf("unexpected bpf type: %T", value)
+	}
+	if state.soMarkFromDae != soMarkFromDae {
+		return nil, fmt.Errorf("reused BPF objects were loaded with so_mark_from_dae %#x, requested %#x; restart dae to apply it", state.soMarkFromDae, soMarkFromDae)
+	}
+	return state, nil
 }
 
 func (b *bpfState) Close() error {
@@ -166,6 +181,7 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 func fullLoadBpfObjects(
 	bpf *bpfObjects,
 	pinPath string,
+	soMarkFromDae uint32,
 	opts *ebpf.CollectionOptions,
 ) (err error) {
 	// The daemon reuses loaded BPF objects across reloads, so kernel and module
@@ -187,12 +203,14 @@ retryLoadBpf:
 			dae0peerMac          [6]byte
 			hasBpfGetCurrentTask uint8
 			padding              uint8
+			soMarkFromDae        uint32
 		}{
 			controlPlanePid:      uint32(os.Getpid()),
 			dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
 			dae0peerIfindex:      uint32(GetDaeNetns().Dae0Peer().Attrs().Index),
 			dae0peerMac:          [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
 			hasBpfGetCurrentTask: hasBpfGetCurrentTask,
+			soMarkFromDae:        soMarkFromDae,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts, constants); err != nil {

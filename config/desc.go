@@ -37,7 +37,7 @@ var SectionDescription = map[string]Desc{
 var GlobalDesc = Desc{
 	"tproxy_port":         "Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.",
 	"tproxy_port_protect": "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
-	"so_mark_from_dae":    "If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy rules.",
+	"so_mark_from_dae":    "SO_MARK applied to traffic and hostname lookups sent by dae for policy routing. Zero or unset uses the reserved internal mark 0x100. A non-zero value overrides that mark and requires a restart to change. Ensure local fwmark rules do not accidentally match the selected value. Values containing the reserved tproxy bit 0x08000000 are rejected. The mark alone is never trusted as control-plane identity. Marked lookups use Go's resolver; hostname sources provided only by libc NSS modules are not supported.",
 	"log_level":           "Log level: error, warn, info, debug, trace.",
 	"udp_check_dns":       "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
 	"check_interval":      "Interval of connectivity checks while the node is alive.",

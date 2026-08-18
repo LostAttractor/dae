@@ -21,6 +21,93 @@ struct {
 	},
 };
 
+static __always_inline int check_setup_result(struct __sk_buff *skb,
+					       __u32 expected)
+{
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	__u32 *status = data;
+
+	if ((void *)(status + 1) > data_end)
+		return TC_ACT_SHOT;
+	if (*status != expected) {
+		bpf_printk("setup status(%u) != %u\n", *status, expected);
+		return TC_ACT_SHOT;
+	}
+	bpf_printk("setup status: %u\n", *status);
+	return TC_ACT_OK;
+}
+
+SEC("tc/pktgen/so_mark_exact")
+int testpktgen_so_mark_exact(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/setup/so_mark_exact")
+int testsetup_so_mark_exact(struct __sk_buff *skb)
+{
+	__u64 cookie = bpf_get_socket_cookie(skb);
+	struct pid_pname *pid_pname = NULL;
+
+	bpf_map_delete_elem(&cookie_pid_map, &cookie);
+	skb->mark = PARAM.so_mark_from_dae;
+	return pid_is_control_plane(skb, &pid_pname);
+}
+
+SEC("tc/check/so_mark_exact")
+int testcheck_so_mark_exact(struct __sk_buff *skb)
+{
+	return check_setup_result(skb, false);
+}
+
+SEC("tc/pktgen/so_mark_neighbor")
+int testpktgen_so_mark_neighbor(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/setup/so_mark_neighbor")
+int testsetup_so_mark_neighbor(struct __sk_buff *skb)
+{
+	__u64 cookie = bpf_get_socket_cookie(skb);
+	struct pid_pname *pid_pname = NULL;
+
+	bpf_map_delete_elem(&cookie_pid_map, &cookie);
+	skb->mark = PARAM.so_mark_from_dae ^ 1;
+	return pid_is_control_plane(skb, &pid_pname);
+}
+
+SEC("tc/check/so_mark_neighbor")
+int testcheck_so_mark_neighbor(struct __sk_buff *skb)
+{
+	return check_setup_result(skb, false);
+}
+
+SEC("tc/pktgen/so_mark_pid_precedence")
+int testpktgen_so_mark_pid_precedence(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/setup/so_mark_pid_precedence")
+int testsetup_so_mark_pid_precedence(struct __sk_buff *skb)
+{
+	__u64 cookie = bpf_get_socket_cookie(skb);
+	struct pid_pname value = { .pid = PARAM.control_plane_pid + 1 };
+	struct pid_pname *pid_pname = NULL;
+
+	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	skb->mark = PARAM.so_mark_from_dae;
+	return pid_is_control_plane(skb, &pid_pname);
+}
+
+SEC("tc/check/so_mark_pid_precedence")
+int testcheck_so_mark_pid_precedence(struct __sk_buff *skb)
+{
+	return check_setup_result(skb, false);
+}
+
 SEC("tc/pktgen/dport_match")
 int testpktgen_dport_match(struct __sk_buff *skb)
 {

@@ -38,6 +38,16 @@ func TestSplitWanInterfacesPreservesAutoIntent(t *testing.T) {
 	}
 }
 
+func TestValidateReusableBpfStateRejectsChangedSoMark(t *testing.T) {
+	state := &bpfState{soMarkFromDae: 0x100}
+	if _, err := validateReusableBpfState(state, 0x101); err == nil {
+		t.Fatal("changed so_mark_from_dae was accepted")
+	}
+	if got, err := validateReusableBpfState(state, state.soMarkFromDae); err != nil || got != state {
+		t.Fatalf("matching reusable BPF state = %p, %v; want %p", got, err, state)
+	}
+}
+
 func TestAutoWanTargetsUseOneOwnerPerInterface(t *testing.T) {
 	got := autoWanTargets(component.HostNetworkSnapshot{Interfaces: []component.DefaultRouteInterface{
 		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},

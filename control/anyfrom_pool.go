@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -209,6 +210,12 @@ type AnyfromPool struct {
 
 var DefaultAnyfromPool = NewAnyfromPool()
 
+var anyfromSoMark atomic.Uint32
+
+func SetAnyfromSoMark(mark uint32) {
+	anyfromSoMark.Store(mark)
+}
+
 func NewAnyfromPool() *AnyfromPool {
 	return &AnyfromPool{
 		pool: make(map[netip.AddrPort]*Anyfrom, 64),
@@ -231,7 +238,13 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 
 	lc := net.ListenConfig{
 		Control: func(network string, address string, c syscall.RawConn) error {
-			return dialer.TransparentControl(c)
+			if err := dialer.TransparentControl(c); err != nil {
+				return err
+			}
+			if mark := anyfromSoMark.Load(); mark != 0 {
+				return dialer.SoMarkControl(c, int(mark))
+			}
+			return nil
 		},
 		KeepAlive: 0,
 	}

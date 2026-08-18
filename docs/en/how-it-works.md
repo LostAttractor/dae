@@ -14,7 +14,7 @@ dae supports traffic splitting based on domain name, source IP, destination IP, 
 
 Among these, source IP, destination IP, source port, destination port, TCP/UDP, IPv4/IPv6, and MAC address can be obtained by parsing MACv2 frames.
 
-The **process name** is obtained by monitoring local process socket, connect, and sendmsg system calls in the cgroupv2 mount point. It then reads and parses the command line from the process control block. This method is significantly faster than user-space programs like Clash that scan the entire procfs to obtain process information (the latter might take even tens of milliseconds).
+The **process name** is obtained by monitoring local process socket, connect, and sendmsg system calls in the cgroupv2 mount point. It then reads and parses the command line from the process control block. This method is significantly faster than user-space programs like Clash that scan the entire procfs to obtain process information (the latter might take even tens of milliseconds). When WAN interface interception is enabled, the same cgroupv2 attachment identifies dae's own sockets and is therefore required.
 
 The **domain name** is obtained by intercepting DNS requests and associating the requested domain name with the corresponding IP address. However, this method has some potential issues:
 

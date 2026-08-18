@@ -12,7 +12,7 @@ dae 支持以域名、源 IP、目的 IP、源端口、目的端口、TCP/UDP、
 
 其中，源 IP、目的 IP、源端口、目的端口、TCP/UDP、IPv4/IPv6、MAC 地址均可解析 MACv2 帧而得到。
 
-**进程名**通过在 cgroupv2 挂载点侦听本地进程的 socket、connect、sendmsg 系统调用，并读取和解析进程控制块中的命令行来得到的。这种方式会比 clash 等用户态程序对传入的 socket 扫描整个 procfs 来得到进程信息要快得多（后者甚至是 10ms 级的）。
+**进程名**通过在 cgroupv2 挂载点侦听本地进程的 socket、connect、sendmsg 系统调用，并读取和解析进程控制块中的命令行来得到的。这种方式会比 clash 等用户态程序对传入的 socket 扫描整个 procfs 来得到进程信息要快得多（后者甚至是 10ms 级的）。启用 WAN 接口流量拦截时，同一组 cgroupv2 程序还用于识别 dae 自身的 socket，因此 cgroupv2 挂载和挂接必须可用。
 
 **域名**通过劫持 DNS 请求，将 DNS 请求的域名与所查 IP 进行关联来得到。尽管这种方式有一些问题：
 
