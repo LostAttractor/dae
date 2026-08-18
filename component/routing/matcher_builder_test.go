@@ -81,6 +81,8 @@ func TestAliasOptimizer(t *testing.T) {
 		rule("dip"),
 		rule("port"),
 		rule("dport"),
+		rule("interface"),
+		rule("ifname"),
 	}
 	optimized, err := (&AliasOptimizer{}).Optimize(rules)
 	if err != nil {
@@ -91,6 +93,8 @@ func TestAliasOptimizer(t *testing.T) {
 		consts.Function_DestIp,
 		consts.Function_DestPort,
 		consts.Function_DestPort,
+		consts.Function_IfName,
+		consts.Function_IfName,
 	}
 	for i, r := range optimized {
 		if got := r.AndFunctions[0].Name; got != want[i] {
