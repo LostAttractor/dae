@@ -19,14 +19,10 @@ var (
 )
 
 type Global struct {
-	TproxyPort        uint16 `mapstructure:"tproxy_port" default:"12345"`
-	TproxyPortProtect bool   `mapstructure:"tproxy_port_protect" default:"true"`
-	SoMarkFromDae     uint32 `mapstructure:"so_mark_from_dae"`
-	LogLevel          string `mapstructure:"log_level" default:"info"`
-	// We use DirectTcpCheckUrl to check (tcp)*(ipv4/ipv6) connectivity for direct.
-	//DirectTcpCheckUrl string `mapstructure:"direct_tcp_check_url" default:"http://www.qualcomm.cn/generate_204"`
-	// TcpCheckUrl                []string      `mapstructure:"tcp_check_url" default:"http://cp.cloudflare.com,1.1.1.1,2606:4700:4700::1111"`
-	// TcpCheckHttpMethod         string        `mapstructure:"tcp_check_http_method" default:"HEAD"` // Use 'HEAD' because some server implementations bypass accounting for this kind of traffic.
+	TproxyPort            uint16                 `mapstructure:"tproxy_port" default:"12345"`
+	TproxyPortProtect     bool                   `mapstructure:"tproxy_port_protect" default:"true"`
+	SoMarkFromDae         uint32                 `mapstructure:"so_mark_from_dae"`
+	LogLevel              string                 `mapstructure:"log_level" default:"info"`
 	UdpCheckDns           []string               `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
 	CheckInterval         time.Duration          `mapstructure:"check_interval" default:"3m"`
 	CheckIntervalMax      time.Duration          `mapstructure:"check_interval_max" default:"1h"`
@@ -107,8 +103,6 @@ type Group struct {
 	Policy           FunctionListOrString        `mapstructure:"policy" required:""`
 	NextHop          string                      `mapstructure:"next_hop"`
 
-	// TcpCheckUrl        []string      `mapstructure:"tcp_check_url"`
-	// TcpCheckHttpMethod string        `mapstructure:"tcp_check_http_method"`
 	UdpCheckDns      []string      `mapstructure:"udp_check_dns"`
 	CheckInterval    time.Duration `mapstructure:"check_interval"`
 	CheckIntervalMax time.Duration `mapstructure:"check_interval_max"`

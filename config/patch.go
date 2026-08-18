@@ -18,19 +18,10 @@ import (
 type patch func(params *Config) error
 
 var patches = []patch{
-	// patchTcpCheckHttpMethod,
 	validateCheckIntervals,
 	patchEmptyDns,
 	patchMustOutbound,
 }
-
-// func patchTcpCheckHttpMethod(params *Config) error {
-// 	if !common.IsValidHttpMethod(params.Global.TcpCheckHttpMethod) {
-// 		log.Warnf("Unknown HTTP Method '%v'. Fallback to 'CONNECT'.", params.Global.TcpCheckHttpMethod)
-// 		params.Global.TcpCheckHttpMethod = "CONNECT"
-// 	}
-// 	return nil
-// }
 
 func validateCheckIntervals(params *Config) error {
 	if params.Global.CheckInterval <= 0 {
