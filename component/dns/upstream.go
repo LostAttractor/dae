@@ -139,22 +139,48 @@ type UpstreamResolver struct {
 	FinishInitCallback func(upstream *Upstream)
 	mu                 sync.Mutex
 	upstream           *Upstream
+	resolving          chan struct{}
 }
 
 func (u *UpstreamResolver) GetUpstream(ctx context.Context) (_ *Upstream, err error) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if u.upstream == nil {
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		upstream, err := NewUpstream(ctx, u.Raw)
-		if err != nil {
-			return nil, fmt.Errorf("failed to init dns upstream: %w", err)
+	for {
+		u.mu.Lock()
+		if u.upstream != nil {
+			upstream := u.upstream
+			u.mu.Unlock()
+			return upstream, nil
 		}
-		if u.FinishInitCallback != nil {
+		if u.resolving != nil {
+			done := u.resolving
+			u.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-done:
+				continue
+			}
+		}
+		done := make(chan struct{})
+		u.resolving = done
+		u.mu.Unlock()
+
+		resolveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		upstream, resolveErr := NewUpstream(resolveCtx, u.Raw)
+		cancel()
+		if resolveErr == nil && u.FinishInitCallback != nil {
 			u.FinishInitCallback(upstream)
 		}
-		u.upstream = upstream
+
+		u.mu.Lock()
+		if resolveErr == nil {
+			u.upstream = upstream
+		}
+		u.resolving = nil
+		close(done)
+		u.mu.Unlock()
+		if resolveErr != nil {
+			return nil, fmt.Errorf("failed to init dns upstream: %w", resolveErr)
+		}
+		return upstream, nil
 	}
-	return u.upstream, nil
 }

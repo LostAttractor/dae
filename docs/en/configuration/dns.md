@@ -63,6 +63,8 @@ tcp+udp://<host>:<port>
 default port: 53
 ```
 
+`tcp+udp` prefers UDP, then retries replay-safe queries over TCP when UDP fails or returns a truncated response.
+
 ## Examples
 
 ```shell

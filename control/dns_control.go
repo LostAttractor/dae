@@ -542,16 +542,16 @@ func (c *DnsController) handleDNSRequest(
 	if err != nil {
 		return err
 	}
-	queryKey, canShare, cacheable := makeDNSQueryKey(dnsMessage, queryInfo)
+	queryKey, replaySafe, cacheable := makeDNSQueryKey(dnsMessage, queryInfo)
 	forwarderKey := makeDNSForwarderKey(upstream, firstDialArgument)
 	flightKey := dnsFlightKey{
 		query: queryKey, upstreamIndex: RequestIndex,
 		forwarder: forwarderKey, route: makeDNSRerouteKey(req),
 	}
 	resolve := func() error {
-		return c.resolveDNSRequest(ctx, dnsMessage, req, queryKey, cacheable, RequestIndex, upstream, firstDialArgument, cacheForwarder)
+		return c.resolveDNSRequest(ctx, dnsMessage, req, queryKey, replaySafe, cacheable, RequestIndex, upstream, firstDialArgument, cacheForwarder)
 	}
-	if canShare {
+	if replaySafe {
 		return c.shareDNSResult(ctx, flightKey, dnsMessage, resolve)
 	}
 	err = resolve()
@@ -568,6 +568,7 @@ func (c *DnsController) resolveDNSRequest(
 	dnsMessage *dnsmessage.Msg,
 	req *udpRequest,
 	queryKey dnsQueryKey,
+	queryReplaySafe bool,
 	queryCacheable bool,
 	upstreamIndex consts.DnsRequestOutboundIndex,
 	upstream *dns.Upstream,
@@ -594,8 +595,10 @@ Dial:
 			}
 		}
 
-		// TODO: 这里可能不可以这样做
-		pending, err = c.dialSend(ctx, dnsMessage, upstream, dialArgument, queryKey, queryCacheable, cacheForwarder)
+		pending, dialArgument, err = c.dialSendWithFallback(
+			ctx, dnsMessage, req, upstream, dialArgument, queryKey,
+			queryReplaySafe, queryCacheable, cacheForwarder,
+		)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
@@ -607,17 +610,6 @@ Dial:
 				With("Is Temporary", ok && netErr.Temporary()).
 				With("Is Timeout", ok && netErr.Timeout()).
 				Wrapf(err, "DNS dialSend error")
-			if ok && !netErr.Timeout() && dialArgument.Dialer.NeedAliveState() {
-				labels := prometheus.Labels{
-					"id":       dialArgument.Dialer.StatsID(),
-					"outbound": dialArgument.Outbound.Name,
-					"subtag":   dialArgument.Dialer.Property.SubscriptionTag,
-					"dialer":   dialArgument.Dialer.Name,
-					"network":  dialArgument.networkType.String(),
-				}
-				common.ErrorCount.With(labels).Inc()
-				dialArgument.Dialer.ReportUnavailable()
-			}
 			return err
 		}
 
@@ -925,6 +917,102 @@ func (c *DnsController) reject(msg *dnsmessage.Msg) {
 
 func closeDnsForwarder(forwarder DnsForwarder) error {
 	return forwarder.Close()
+}
+
+func (c *DnsController) reportDNSDialFailure(err error, argument *dialArgument) {
+	if err == nil || argument == nil || argument.Dialer == nil || argument.Outbound == nil ||
+		c.closed.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	netErr, ok := IsNetError(err)
+	if !ok || netErr.Timeout() || !argument.Dialer.NeedAliveState() {
+		return
+	}
+	labels := prometheus.Labels{
+		"id":       argument.Dialer.StatsID(),
+		"outbound": argument.Outbound.Name,
+		"subtag":   argument.Dialer.Property.SubscriptionTag,
+		"dialer":   argument.Dialer.Name,
+		"network":  argument.networkType.String(),
+	}
+	common.ErrorCount.With(labels).Inc()
+	argument.Dialer.ReportUnavailable()
+}
+
+func (c *DnsController) dialSendWithFallback(
+	ctx context.Context,
+	msg *dnsmessage.Msg,
+	req *udpRequest,
+	upstream *dns.Upstream,
+	primary *dialArgument,
+	queryKey dnsQueryKey,
+	queryReplaySafe bool,
+	queryCacheable bool,
+	cacheForwarder bool,
+) (*pendingDNSResponse, *dialArgument, error) {
+	fallbackEligible := queryReplaySafe && upstream != nil && upstream.Scheme == dns.UpstreamScheme_TCP_UDP &&
+		primary != nil && primary.networkType.L4Proto == consts.L4ProtoStr_UDP
+
+	request := msg.Copy()
+	primaryCtx := ctx
+	cancelPrimary := func() {}
+	if fallbackEligible {
+		udpBudget := consts.DefaultDNSRetryInterval
+		if deadline, ok := ctx.Deadline(); ok {
+			// Reserve half of a shorter caller budget for the TCP attempt.
+			udpBudget = min(udpBudget, time.Until(deadline)/2)
+		}
+		primaryCtx, cancelPrimary = context.WithTimeout(ctx, udpBudget)
+	}
+	pending, primaryErr := c.dialSend(primaryCtx, msg, upstream, primary, queryKey, queryCacheable, cacheForwarder)
+	cancelPrimary()
+	truncated := primaryErr == nil && msg.Truncated
+	if primaryErr == nil && !truncated {
+		return pending, primary, nil
+	}
+	if primaryErr != nil {
+		c.reportDNSDialFailure(primaryErr, primary)
+	}
+
+	if !fallbackEligible || ctx.Err() != nil || c.closed.Err() != nil {
+		return pending, primary, primaryErr
+	}
+
+	var truncatedResponse *dnsmessage.Msg
+	if truncated {
+		truncatedResponse = msg.Copy()
+	}
+	tcpUpstream := *upstream
+	tcpUpstream.Scheme = dns.UpstreamScheme_TCP
+	tcpArgument, chooseErr := c.bestDialerChooser(req, &tcpUpstream)
+	if chooseErr != nil || tcpArgument == nil || tcpArgument.networkType.L4Proto != consts.L4ProtoStr_TCP {
+		if truncatedResponse != nil {
+			*msg = *truncatedResponse
+			return pending, primary, nil
+		}
+		if chooseErr == nil {
+			chooseErr = errors.New("DNS TCP fallback chooser returned an invalid argument")
+		}
+		return nil, primary, errors.Join(
+			fmt.Errorf("UDP DNS exchange failed: %w", primaryErr),
+			fmt.Errorf("choose DNS TCP fallback: %w", chooseErr),
+		)
+	}
+
+	*msg = *request.Copy()
+	tcpPending, tcpErr := c.dialSend(ctx, msg, upstream, tcpArgument, queryKey, queryCacheable, cacheForwarder)
+	if tcpErr == nil {
+		return tcpPending, tcpArgument, nil
+	}
+	c.reportDNSDialFailure(tcpErr, tcpArgument)
+	if truncatedResponse != nil {
+		*msg = *truncatedResponse
+		return pending, primary, nil
+	}
+	return nil, tcpArgument, errors.Join(
+		fmt.Errorf("UDP DNS exchange failed: %w", primaryErr),
+		fmt.Errorf("TCP DNS fallback failed: %w", tcpErr),
+	)
 }
 
 func (c *DnsController) selectDnsForwarder(key dnsForwarderKey, candidate DnsForwarder, cache bool) (DnsForwarder, func()) {
