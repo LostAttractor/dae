@@ -40,12 +40,15 @@ type Dialer struct {
 
 	needAliveState bool
 	alive          bool
-	supported      [4]bool
-	Latencies10    map[DialerGroup]*LatenciesN
-	MovingAverage  map[DialerGroup]time.Duration
+	lastLatency    time.Duration
+	// support is monotonic protocol capability, independent of aggregate health.
+	support       [4]NetworkSupportState
+	Latencies10   map[DialerGroup]*LatenciesN
+	MovingAverage map[DialerGroup]time.Duration
 
 	mu                     sync.RWMutex
-	registeredDialerGroups map[DialerGroup]int
+	registeredDialerGroups map[DialerGroup]struct{}
+	connectMu              *sync.Mutex
 
 	checkCh chan struct{}
 	ctx     context.Context
@@ -65,6 +68,32 @@ type LatencyStats struct {
 	Avg10HasFailure bool
 }
 
+// NetworkSupportState describes protocol/remote capability, not node health.
+// Unknown becomes Confirmed only after a successful mode probe, or Unsupported
+// only after an explicit UnsupportedTunnelTypeError. Timeouts, local network
+// failures, and ordinary remote failures never imply Unsupported. Confirmed
+// and Unsupported are terminal; runtime health is tracked once in Dialer.alive.
+type NetworkSupportState uint8
+
+const (
+	NetworkSupportUnknown     NetworkSupportState = iota
+	NetworkSupportConfirmed                       // The mode has completed a successful probe.
+	NetworkSupportUnsupported                     // The protocol or remote explicitly rejected this mode.
+)
+
+func (s NetworkSupportState) String() string {
+	switch s {
+	case NetworkSupportUnknown:
+		return "unknown"
+	case NetworkSupportConfirmed:
+		return "confirmed"
+	case NetworkSupportUnsupported:
+		return "unsupported"
+	default:
+		return "invalid"
+	}
+}
+
 // RuntimeSnapshot is a coherent view of the mutable status fields of a
 // dialer. Callers should prefer this over reading the fields one by one.
 // Availability is sampled from the stats registry outside the dialer lock and
@@ -72,18 +101,17 @@ type LatencyStats struct {
 type RuntimeSnapshot struct {
 	Alive        bool
 	Supported    [4]bool
+	SupportState [4]NetworkSupportState
 	HasLatency   bool
 	Latency      LatencyStats
 	Availability stats.Availability
 }
 type GlobalOption struct {
 	D.ExtraOption
-	// TcpCheckOptionRaw TcpCheckOptionRaw // Lazy parse
 	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
 	CheckInterval     time.Duration
 	CheckIntervalMax  time.Duration
 	CheckTolerance    time.Duration
-	CheckDnsTcp       bool
 }
 
 type Property struct {
@@ -104,12 +132,10 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 			TlsFragmentInterval: global.TlsFragmentInterval,
 			UDPHopInterval:      global.UDPHopInterval,
 		},
-		// TcpCheckOptionRaw: TcpCheckOptionRaw{Raw: global.TcpCheckUrl, Method: global.TcpCheckHttpMethod},
 		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns},
 		CheckInterval:     global.CheckInterval,
 		CheckIntervalMax:  global.CheckIntervalMax,
 		CheckTolerance:    global.CheckTolerance,
-		CheckDnsTcp:       true,
 	}
 }
 
@@ -128,10 +154,16 @@ func newDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 		alive:                  !needAliveState,
 		Latencies10:            make(map[DialerGroup]*LatenciesN),
 		MovingAverage:          make(map[DialerGroup]time.Duration),
-		registeredDialerGroups: make(map[DialerGroup]int),
+		registeredDialerGroups: make(map[DialerGroup]struct{}),
+		connectMu:              new(sync.Mutex),
 		checkCh:                make(chan struct{}, 1),
 		ctx:                    ctx,
 		cancel:                 cancel,
+	}
+	if !needAliveState {
+		for i := range d.support {
+			d.support[i] = NetworkSupportConfirmed
+		}
 	}
 	d.setStatsScope(statsScope)
 	log.WithField("dialer", d.Name).
@@ -216,8 +248,11 @@ func (d *Dialer) SelectionLatency(g DialerGroup, policy consts.DialerSelectionPo
 func (d *Dialer) RuntimeStatus(g DialerGroup) RuntimeSnapshot {
 	d.mu.RLock()
 	snapshot := RuntimeSnapshot{
-		Alive:     d.Dialer.Alive() && d.alive,
-		Supported: d.supported,
+		Alive:        d.Dialer.Alive() && d.alive,
+		SupportState: d.support,
+	}
+	for i, state := range d.support {
+		snapshot.Supported[i] = state == NetworkSupportConfirmed
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked(g)
 	d.mu.RUnlock()
@@ -243,13 +278,17 @@ func (d *Dialer) CheckAsync() bool {
 }
 
 func (d *Dialer) Clone() *Dialer {
-	return NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState)
+	clone := NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState)
+	clone.connectMu = d.connectMu
+	return clone
 }
 
-// CloneForStatsScope gives a group-specific checker its own availability
-// identity. This prevents override groups from merging independent samples.
+// CloneForStatsScope gives group-specific health state a distinct identity
+// while sharing both the data-plane transport and its connection lock.
 func (d *Dialer) CloneForStatsScope(scope string) *Dialer {
-	return newDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState, scope)
+	clone := newDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState, scope)
+	clone.connectMu = d.connectMu
+	return clone
 }
 
 // Close cancels the connectivity check and waits for its goroutine to exit.

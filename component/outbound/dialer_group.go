@@ -104,6 +104,10 @@ func (g *DialerGroup) Close() error {
 	return nil
 }
 
+func (g *DialerGroup) InitializeConnectivity() {
+	g.selector.InitializeConnectivity()
+}
+
 // Returns the priority given an observed latency.
 // If a "ConditionalPriority" is present, it is applied;
 // Otherwise the default fixed Priority is returned.
@@ -153,7 +157,10 @@ select_dialer:
 		return nil, ErrNoAliveDialer
 	}
 
-	if !dialer.Alive() {
+	if !isDialerAlive(dialer, networkType) {
+		if dialer.Alive() {
+			dialer.NotifyStatusChange()
+		}
 		dialer.ReportUnavailable()
 		goto select_dialer
 	}

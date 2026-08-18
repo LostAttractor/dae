@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -58,15 +59,13 @@ func (s *LatencyBasedSelector) getSortedAliveDialers(networkType *common.Network
 		sortingLatency time.Duration
 		priority       int
 	}
-	for _, d := range s.dialerGroup.Dialers {
-		if isDialerAlive(d, networkType) {
-			sortingLatency := s.getSortingLatency(d)
-			alive = append(alive, &struct {
-				dialer         *dialer.Dialer
-				sortingLatency time.Duration
-				priority       int
-			}{d, sortingLatency, s.dialerGroup.GetPriority(d, sortingLatency)})
-		}
+	for _, d := range preferredAliveDialers(s.dialerGroup.Dialers, networkType) {
+		sortingLatency := s.getSortingLatency(d)
+		alive = append(alive, &struct {
+			dialer         *dialer.Dialer
+			sortingLatency time.Duration
+			priority       int
+		}{d, sortingLatency, s.dialerGroup.GetPriority(d, sortingLatency)})
 	}
 	sort.SliceStable(alive, func(i, j int) bool {
 		// First sort by priority (higher priority first)
@@ -173,7 +172,7 @@ func (s *LatencyBasedSelector) logDialerSelection(oldBestDialer *dialer.Dialer, 
 }
 
 func (s *LatencyBasedSelector) logCheckLatency(aliveDialers []*dialer.Dialer, dialer *dialer.Dialer, networkType *common.NetworkType) {
-	if !dialer.Supported(networkType) {
+	if !dialer.ConfirmedSupport(networkType) {
 		return
 	}
 	labels := prometheus.Labels{
@@ -233,7 +232,8 @@ func (s *LatencyBasedSelector) NotifyStatusChange(d *dialer.Dialer) {
 			switch {
 			case oldDialer == nil,
 				newDialer == nil,
-				!s.dialerToAlive[oldDialer]:
+				!s.dialerToAlive[oldDialer],
+				!slices.Contains(aliveDialers, oldDialer):
 				s.networkIndexToDialer[i] = newDialer
 				s.logDialerSelection(oldDialer, newDialer, networkType)
 				oncePrintLatencies.Do(func() {

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +37,20 @@ func (fakeDialer) DialContext(ctx context.Context, network, address string) (net
 	return nil, fmt.Errorf("not implemented")
 }
 func (fakeDialer) ListenPacket(ctx context.Context, address string) (net.PacketConn, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+type toggleDialer struct{ alive atomic.Bool }
+
+func (d *toggleDialer) Alive() bool { return d.alive.Load() }
+func (d *toggleDialer) Connect() error {
+	d.alive.Store(true)
+	return nil
+}
+func (d *toggleDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (d *toggleDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -85,7 +100,7 @@ func newTestDialer(option *dialer.GlobalOption, name string) *dialer.Dialer {
 // the supported state, feeds the latency/alive result to registered groups
 // and notifies selectors.
 func simulateCheck(d *dialer.Dialer, ok bool, latency time.Duration) {
-	d.SetSupported(testNetworkType, ok)
+	d.SetSupported(testNetworkType, true)
 	var err error
 	if !ok {
 		err = fmt.Errorf("simulated check failure")
@@ -174,6 +189,133 @@ func TestDialerGroup_Select_Fixed_NotAlive(t *testing.T) {
 	}
 	if d != dialers[1] {
 		t.Fatalf("dialers[1] expected, but got %v", d.Name)
+	}
+}
+
+func TestDialerGroup_Select_Fixed_UnknownSupport(t *testing.T) {
+	option := newTestOption()
+	d := newTestDialer(option, "node0")
+	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed})
+	defer g.Close()
+
+	// Connectivity through another mode proves the node is alive, while the
+	// requested mode remains unknown rather than conclusively unsupported.
+	d.Update(true, 100*time.Millisecond, common.IndexToNetworkType(1), nil)
+	d.NotifyStatusChange()
+	if _, err := g.Select(testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
+		t.Fatalf("unknown mode returned %v", err)
+	}
+
+	d.SetSupported(testNetworkType, true)
+	d.NotifyStatusChange()
+	if selected, err := g.Select(testNetworkType); err != nil || selected != d {
+		t.Fatalf("confirmed mode returned %v, %v", selected, err)
+	}
+}
+
+func TestDialerGroupNodeHealthAppliesToAllModes(t *testing.T) {
+	policies := []dialer.DialerSelectionPolicy{
+		{Policy: consts.DialerSelectionPolicy_Fixed},
+		{Policy: consts.DialerSelectionPolicy_Random},
+		{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+	}
+	for _, policy := range policies {
+		t.Run(string(policy.Policy), func(t *testing.T) {
+			option := newTestOption()
+			d := newTestDialer(option, fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()))
+			var groupAlive [4]bool
+			g := NewDialerGroup(option, "test-group", GroupKindNormal, []*dialer.Dialer{d}, emptyAnnotations(1), policy,
+				func(alive bool, networkType *common.NetworkType) {
+					groupAlive[common.NetworkTypeToIndex(networkType)] = alive
+				})
+			defer g.Close()
+
+			otherNetwork := common.IndexToNetworkType(1)
+			networks := []*common.NetworkType{testNetworkType, otherNetwork}
+			for _, networkType := range networks {
+				d.SetSupported(networkType, true)
+			}
+			d.Update(true, time.Millisecond, testNetworkType, nil)
+			d.NotifyStatusChange()
+
+			for _, networkType := range networks {
+				if selected, err := g.Select(networkType); err != nil || selected != d {
+					t.Fatalf("initial selection for %s = %v, %v", networkType, selected, err)
+				}
+				if !groupAlive[common.NetworkTypeToIndex(networkType)] {
+					t.Fatalf("group did not publish initial health for %s", networkType)
+				}
+			}
+
+			d.Update(false, 0, testNetworkType, errors.New("node health check failed"))
+			d.NotifyStatusChange()
+			for _, networkType := range networks {
+				if _, err := g.Select(networkType); !errors.Is(err, ErrNoAliveDialer) {
+					t.Fatalf("failed node returned for %s: %v", networkType, err)
+				}
+				if got := d.SupportState(networkType); got != dialer.NetworkSupportConfirmed {
+					t.Fatalf("node failure changed %s support to %s", networkType, got)
+				}
+				if groupAlive[common.NetworkTypeToIndex(networkType)] {
+					t.Fatalf("group remained alive for %s after node failure", networkType)
+				}
+			}
+
+			d.Update(true, time.Millisecond, testNetworkType, nil)
+			d.NotifyStatusChange()
+			for _, networkType := range networks {
+				if selected, err := g.Select(networkType); err != nil || selected != d {
+					t.Fatalf("recovered selection for %s = %v, %v", networkType, selected, err)
+				}
+				if !groupAlive[common.NetworkTypeToIndex(networkType)] {
+					t.Fatalf("group did not publish recovery for %s", networkType)
+				}
+			}
+			availability := d.RuntimeStatus(g).Availability
+			if !availability.Alive || availability.ChecksFailed != 1 {
+				t.Fatalf("recovered availability = %+v", availability)
+			}
+		})
+	}
+}
+
+func TestLatencySelectorIgnoresUnknownUntilConfirmed(t *testing.T) {
+	option := newTestOption()
+	option.CheckTolerance = time.Second
+	unknown := newTestDialer(option, "unknown")
+	confirmed := newTestDialer(option, "confirmed")
+	g := newTestGroup(option, []*dialer.Dialer{unknown, confirmed}, emptyAnnotations(2),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency})
+	defer g.Close()
+
+	otherNetwork := common.IndexToNetworkType(1)
+	unknown.SetSupported(otherNetwork, true)
+	unknown.Update(true, time.Millisecond, otherNetwork, nil)
+	unknown.NotifyStatusChange()
+	if _, err := g.Select(testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
+		t.Fatalf("unknown dialer returned %v", err)
+	}
+
+	confirmed.SetSupported(testNetworkType, true)
+	confirmed.Update(true, 500*time.Millisecond, testNetworkType, nil)
+	confirmed.NotifyStatusChange()
+	if selected, err := g.Select(testNetworkType); err != nil || selected != confirmed {
+		t.Fatalf("selection after confirmation = %v, %v; want confirmed dialer", selected, err)
+	}
+}
+
+func TestDialerWithoutHealthCheckHasConfirmedSupport(t *testing.T) {
+	d := dialer.NewDialer(fakeDialer{}, newTestOption(), &dialer.Property{Property: D.Property{
+		Name: "always-supported",
+		Link: "test://always-supported",
+	}}, false)
+	defer d.Close()
+	for i := 0; i < 4; i++ {
+		networkType := common.IndexToNetworkType(i)
+		if !d.ConfirmedSupport(networkType) {
+			t.Fatalf("network %v is not confirmed", networkType)
+		}
 	}
 }
 
@@ -356,6 +498,63 @@ func TestDialerGroup_Select_NoAliveDialer(t *testing.T) {
 	}
 }
 
+func TestDialerGroupInitializeConnectivity(t *testing.T) {
+	option := newTestOption()
+	seen := make(map[int]int)
+	g := NewDialerGroup(option, "empty", GroupKindNormal, nil, nil,
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Random},
+		func(alive bool, networkType *common.NetworkType) {
+			if alive {
+				t.Fatal("empty group initialized alive")
+			}
+			seen[common.NetworkTypeToIndex(networkType)]++
+		})
+
+	g.InitializeConnectivity()
+	g.InitializeConnectivity()
+	for i := 0; i < 4; i++ {
+		if seen[i] != 1 {
+			t.Fatalf("network %d callbacks = %d, want 1", i, seen[i])
+		}
+	}
+}
+
+func TestDialerGroupSelectInvalidatesDisconnectedTransport(t *testing.T) {
+	for _, policy := range []consts.DialerSelectionPolicy{
+		consts.DialerSelectionPolicy_MinLastLatency,
+		consts.DialerSelectionPolicy_Random,
+	} {
+		t.Run(string(policy), func(t *testing.T) {
+			option := newTestOption()
+			transport := new(toggleDialer)
+			transport.alive.Store(true)
+			d := dialer.NewDialer(transport, option, &dialer.Property{Property: D.Property{
+				Name: "node0",
+				Link: "test://node0",
+			}}, true)
+			g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
+				dialer.DialerSelectionPolicy{Policy: policy})
+			t.Cleanup(func() { _ = g.Close() })
+			simulateCheck(d, true, time.Millisecond)
+			transport.alive.Store(false)
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := g.Select(testNetworkType)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrNoAliveDialer) {
+					t.Fatalf("Select error = %v, want ErrNoAliveDialer", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Select looped on a disconnected transport")
+			}
+		})
+	}
+}
+
 func TestDialerGroup_Select_AnnotationAddLatency(t *testing.T) {
 	option := newTestOption()
 	dialers := []*dialer.Dialer{
@@ -432,13 +631,13 @@ func TestDialerRuntimeStatusConcurrentUpdate(t *testing.T) {
 	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinMovingAverageLatencies})
 	defer g.Close()
+	d.SetSupported(testNetworkType, true)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 500; i++ {
-			d.SetSupported(testNetworkType, i%2 == 0)
 			d.Update(i%2 == 0, time.Duration(i+1)*time.Millisecond, testNetworkType, errors.New("test"))
 		}
 	}()
@@ -488,12 +687,16 @@ func TestFixedSelectorConcurrentNotifications(t *testing.T) {
 	}
 }
 
-func TestCloneForStatsScopeUsesDistinctIdentity(t *testing.T) {
-	base := newTestDialer(newTestOption(), t.Name())
+func TestScopedDialerSharesTransportWithDistinctIdentity(t *testing.T) {
+	option := newTestOption()
+	base := newTestDialer(option, t.Name())
 	clone := base.CloneForStatsScope("override-group")
 	defer base.Close()
 	defer clone.Close()
 
+	if base.Dialer != clone.Dialer {
+		t.Fatal("group-specific checker did not share its underlying transport")
+	}
 	if base.StatsKey() == clone.StatsKey() || base.StatsID() == clone.StatsID() {
 		t.Fatalf("group-specific checker clone must have a distinct stats identity")
 	}

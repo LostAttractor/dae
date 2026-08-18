@@ -76,7 +76,7 @@ func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 		}
 		for i := 0; i < 4; i++ {
 			networkType := common.IndexToNetworkType(i)
-			s.handleAliveStateChange(alive && dialer.Supported(networkType), networkType)
+			s.handleAliveStateChange(isDialerAlive(dialer, networkType), networkType)
 		}
 	}
 }
