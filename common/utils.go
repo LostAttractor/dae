@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	dnsmessage "github.com/miekg/dns"
 )
@@ -427,6 +428,34 @@ func Htons(i uint16) uint16 {
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], i)
 	return internal.NativeEndian.Uint16(b[:])
+}
+
+const InternalSoMarkFromDae uint32 = 0x100
+
+// EffectiveSoMarkFromDae returns the mark used for dae's own sockets. A
+// reserved default lets policy-routing rules identify dae's own sockets when
+// so_mark_from_dae is left at zero.
+func EffectiveSoMarkFromDae(mark uint32) uint32 {
+	if mark != 0 {
+		return mark
+	}
+	return InternalSoMarkFromDae
+}
+
+// ResolveSoMarkFromDae also reports whether the default was selected because
+// the option was omitted, so callers can warn without warning for explicit 0.
+func ResolveSoMarkFromDae(mark uint32, explicitlyConfigured bool) (effective uint32, autoSelected bool) {
+	if mark != 0 {
+		return mark, false
+	}
+	return InternalSoMarkFromDae, !explicitlyConfigured
+}
+
+func ValidateSoMarkFromDae(mark uint32) error {
+	if mark&consts.TproxyMark != 0 {
+		return fmt.Errorf("so_mark_from_dae %#x contains reserved tproxy mark %#x", mark, consts.TproxyMark)
+	}
+	return nil
 }
 
 // Ntohs converts the unsigned short integer netshort from network byte order to host byte order.

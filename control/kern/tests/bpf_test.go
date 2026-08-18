@@ -28,6 +28,16 @@ type programSet struct {
 	check  *ebpf.Program
 }
 
+type testDaeParam struct {
+	ControlPlanePid      uint32
+	Dae0Ifindex          uint32
+	Dae0peerIfindex      uint32
+	Dae0peerMac          [6]uint8
+	HasBpfGetCurrentTask uint8
+	Padding              uint8
+	SoMarkFromDae        uint32
+}
+
 func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dataOut, ctxOut []byte, err error) {
 	dataOut = make([]byte, len(data))
 	if len(dataOut) > 0 {
@@ -53,7 +63,19 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 		return
 	}
 
-	if err = loadBpftestObjects(obj,
+	spec, err := loadBpftest()
+	if err != nil {
+		return nil, err
+	}
+	if err = spec.RewriteConstants(map[string]interface{}{
+		"PARAM": testDaeParam{
+			ControlPlanePid: uint32(os.Getpid()),
+			SoMarkFromDae:   0x100,
+		},
+	}); err != nil {
+		return nil, err
+	}
+	if err = spec.LoadAndAssign(obj,
 		&ebpf.CollectionOptions{
 			Maps: ebpf.MapOptions{
 				PinPath: pinPath,

@@ -137,6 +137,14 @@ func NewControlPlane(
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
 ) (c *ControlPlane, err error) {
+	global.SoMarkFromDae = common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
+	if err = common.ValidateSoMarkFromDae(global.SoMarkFromDae); err != nil {
+		return nil, err
+	}
+	reusedBpf, err := validateReusableBpfState(_bpf, global.SoMarkFromDae)
+	if err != nil {
+		return nil, err
+	}
 	// TODO: Some users reported that enabling GSO on the client wgrpcould affect the performance of watching YouTube, so we disabled it by default.
 	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
 		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
@@ -177,7 +185,7 @@ func NewControlPlane(
 	}
 
 	/// Load pre-compiled programs and maps into the kernel.
-	if _bpf == nil {
+	if reusedBpf == nil {
 		log.Infof("Loading eBPF programs and maps into the kernel...")
 		log.Infof("The loading process takes about 120MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
 	}
@@ -196,15 +204,11 @@ func NewControlPlane(
 		Programs: ProgramOptions,
 	}
 	var bpf *bpfState
-	if _bpf != nil {
-		if inherited, ok := _bpf.(*bpfState); ok {
-			bpf = inherited
-		} else {
-			return nil, oops.Errorf("unexpected bpf type: %T", _bpf)
-		}
+	if reusedBpf != nil {
+		bpf = reusedBpf
 	} else {
-		bpf = &bpfState{bpfObjects: new(bpfObjects)}
-		if err = fullLoadBpfObjects(bpf.bpfObjects, pinPath, collectionOpts); err != nil {
+		bpf = &bpfState{bpfObjects: new(bpfObjects), soMarkFromDae: global.SoMarkFromDae}
+		if err = fullLoadBpfObjects(bpf.bpfObjects, pinPath, global.SoMarkFromDae, collectionOpts); err != nil {
 			err = oops.Wrapf(err, "load eBPF objects")
 			if log.IsLevelEnabled(log.PanicLevel) {
 				log.Panicf("%+v", err)
@@ -225,10 +229,10 @@ func NewControlPlane(
 	log.Infof("Loaded eBPF programs and maps")
 	core, err := newControlPlaneCore(
 		bpf,
-		_bpf != nil,
+		reusedBpf != nil,
 	)
 	if err != nil {
-		if _bpf == nil {
+		if reusedBpf == nil {
 			if closeErr := bpf.Close(); closeErr != nil {
 				err = errors.Join(err, oops.Wrapf(closeErr, "close eBPF objects"))
 			}
@@ -579,7 +583,7 @@ func (c *ControlPlane) Activate() error {
 			return oops.Errorf("register WAN link deletion handler: %w", err)
 		}
 		if err := core.setupSkPidMonitor(); err != nil {
-			log.Warnf("%+v", oops.Wrapf(err, "cgroup2 is not enabled; pname routing cannot be used"))
+			return oops.Wrapf(err, "setup WAN socket identity monitor")
 		}
 		for _, ifname := range c.wanInterface {
 			if err := core.bindWan(ifname, c.prepareWanInterface); err != nil {
@@ -595,6 +599,7 @@ func (c *ControlPlane) Activate() error {
 			c.requestHostReconcile()
 		}
 	}
+	SetAnyfromSoMark(c.soMarkFromDae)
 	return nil
 }
 

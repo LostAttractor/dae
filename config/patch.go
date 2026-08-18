@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
@@ -18,10 +19,15 @@ import (
 type patch func(params *Config) error
 
 var patches = []patch{
+	validateSoMarkFromDae,
 	validateCheckIntervals,
 	patchEmptyDns,
 	validateFallbacks,
 	patchMustOutbound,
+}
+
+func validateSoMarkFromDae(params *Config) error {
+	return common.ValidateSoMarkFromDae(params.Global.SoMarkFromDae)
 }
 
 func validateCheckIntervals(params *Config) error {

@@ -21,8 +21,11 @@ global {
     # Set non-zero value to enable the Prometheus metrics endpoint.
     metrics_port: 0
 
-    # If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy
-    # rules.
+    # SO_MARK applied to traffic and hostname lookups sent by dae to prevent them from being captured again. Zero uses
+    # the reserved internal mark 0x100. Set a non-zero value only when policy-routing rules require it, ensure no unrelated
+    # fwmark rule matches the value, and restart
+    # dae after changing it. Values containing dae's reserved tproxy bit 0x08000000 are rejected. Marked lookups use
+    # Go's resolver, so hostname sources provided only by libc NSS modules are not supported.
     so_mark_from_dae: 0
 
     # Log level: error, warn, info, debug, trace.
