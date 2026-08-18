@@ -33,7 +33,6 @@ global {
 
     log_level: warn
 
-    tcp_check_url: 'http://cp.cloudflare.com'
     udp_check_dns: 'dns.google:53'
     check_interval: 600s
     check_tolerance: 50ms

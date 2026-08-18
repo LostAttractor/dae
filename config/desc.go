@@ -35,19 +35,17 @@ var SectionDescription = map[string]Desc{
 }
 
 var GlobalDesc = Desc{
-	"tproxy_port":           "Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.",
-	"tproxy_port_protect":   "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
-	"so_mark_from_dae":      "If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy rules.",
-	"log_level":             "Log level: error, warn, info, debug, trace.",
-	"tcp_check_url":         "Node connectivity check.\nHost of URL should have both IPv4 and IPv6 if you have double stack in local.\nConsidering traffic consumption, it is recommended to choose a site with anycast IP and less response.",
-	"tcp_check_http_method": "The HTTP request method to `tcp_check_url`. Use 'HEAD' by default because some server implementations bypass accounting for this kind of traffic.",
-	"udp_check_dns":         "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
-	"check_interval":        "Interval of connectivity checks while the node is alive.",
-	"check_interval_max":    "Maximum connectivity check interval after a previously available node fails a check. Initial connectivity checks use an independent interval.",
-	"check_tolerance":       "Group will switch node only when new_latency <= old_latency - tolerance.",
-	"lan_interface":         "The LAN interface to bind. Use it if you want to proxy LAN.",
-	"wan_interface":         "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to auto detect.",
-	"allow_insecure":        "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
+	"tproxy_port":         "Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.",
+	"tproxy_port_protect": "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
+	"so_mark_from_dae":    "If not zero, traffic sent from dae will be set SO_MARK. It is useful to avoid traffic loop with iptables tproxy rules.",
+	"log_level":           "Log level: error, warn, info, debug, trace.",
+	"udp_check_dns":       "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
+	"check_interval":      "Interval of connectivity checks while the node is alive.",
+	"check_interval_max":  "Maximum connectivity check interval after a previously available node fails a check. Initial connectivity checks use an independent interval.",
+	"check_tolerance":     "Group will switch node only when new_latency <= old_latency - tolerance.",
+	"lan_interface":       "The LAN interface to bind. Use it if you want to proxy LAN.",
+	"wan_interface":       "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to follow host default routes.",
+	"allow_insecure":      "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
 	"dial_mode": `Optional values of dial_mode are:
 1. "ip". Dial proxy using the IP from DNS directly. This allows your ipv4, ipv6 to choose the optimal path respectively, and makes the IP version requested by the application meet expectations. For example, if you use curl -4 ip.sb, you will request IPv4 via proxy and get a IPv4 echo. And curl -6 ip.sb will request IPv6. This may solve some weird full-cone problem if your are be your node support that.Sniffing will be disabled in this mode.
 2. "domain". Dial proxy using the domain from sniffing. This will relieve DNS pollution problem to a great extent if have impure DNS environment. Generally, this mode brings faster proxy response time because proxy will re-resolve the domain in remote, thus get better IP result to connect. This policy does not impact routing. That is to say, domain rewrite will be after traffic split of routing and dae will not re-route it.
@@ -86,11 +84,9 @@ min: Select node by the latency of last check.
 min_avg10: Select node by the average of latencies of last 10 checks.
 min_moving_avg: Select node by the moving average of latencies of checks, which means more recent latencies have higher weight.
 `,
-	"next_hop":              "Specify a node name as the next hop dialer. All dialers in this group will use the specified node as their next dialer instead of direct connection.",
-	"tcp_check_url":         "Override global config.",
-	"tcp_check_http_method": "Override global config.",
-	"udp_check_dns":         "Override global config.",
-	"check_interval":        "Override global config when non-zero.",
-	"check_interval_max":    "Override global config when non-zero.",
-	"check_tolerance":       "Override global config.",
+	"next_hop":           "Specify a node name as the next hop dialer. All dialers in this group will use the specified node as their next dialer instead of direct connection.",
+	"udp_check_dns":      "Override global config.",
+	"check_interval":     "Override global config when non-zero.",
+	"check_interval_max": "Override global config when non-zero.",
+	"check_tolerance":    "Override global config.",
 }
