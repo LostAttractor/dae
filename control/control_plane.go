@@ -93,11 +93,14 @@ type ControlPlane struct {
 	// Fields below are saved at NewControlPlane and consumed by Activate.
 	autoConfigKernelParameter bool
 
-	dialTargetOverride bool
-	rerouteMode        consts.RerouteMode
-	sniffingTimeout    time.Duration
-	sniffVerifyMode    consts.SniffVerifyMode
-	soMarkFromDae      uint32
+	dialTargetOverride  bool
+	rerouteMode         consts.RerouteMode
+	sniffingTimeout     time.Duration
+	sniffVerifyMode     consts.SniffVerifyMode
+	soMarkFromDae       uint32
+	fallbackResolver    string
+	mptcp               bool
+	markedDirectDialers sync.Map
 
 	// closedDone is set after Close completes successfully. InheritDomainRegistry
 	// checks it before rewriting the shared kernel domain map.
@@ -411,6 +414,8 @@ func NewControlPlane(
 		sniffVerifyMode:           global.SniffVerifyMode,
 		sniffingTimeout:           sniffingTimeout,
 		soMarkFromDae:             global.SoMarkFromDae,
+		fallbackResolver:          global.FallbackResolver,
+		mptcp:                     global.Mptcp,
 		PrometheusRegistry:        prometheusRegistry,
 	}
 	// Stop connectivity checks after DNS forwarders have been retired. A
@@ -1214,11 +1219,12 @@ func (c *ControlPlane) chooseBestDnsDialer(
 	// Get available ipversions and l4protos for DNS upstream.
 	ipversions, l4protos := dnsUpstream.SupportedNetworks()
 	var (
-		bestNetworkType common.NetworkType
-		bestDialer      *dialer.Dialer
-		bestOutbound    *outbound.DialerGroup
-		bestTarget      netip.AddrPort
-		// dialMark     uint32
+		bestNetworkType   common.NetworkType
+		bestDialer        *dialer.Dialer
+		bestOutbound      *outbound.DialerGroup
+		bestOutboundIndex consts.OutboundIndex
+		bestTarget        netip.AddrPort
+		dialMark          uint32
 	)
 	var networkType common.NetworkType
 	// Get the first available path in upstream preference order.
@@ -1236,9 +1242,8 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			default:
 				return nil, oops.Errorf("unexpected ipversion: %v", ver)
 			}
-			// TODO: Mark
 			target := netip.AddrPortFrom(dAddr, dnsUpstream.Port)
-			outboundIndex, _, _, err := c.Route(req.src, target, dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
+			outboundIndex, mark, _, err := c.Route(req.src, target, dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
 			if err != nil {
 				return nil, err
 			}
@@ -1253,8 +1258,10 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			}
 			bestDialer = d
 			bestOutbound = dialerGroup
+			bestOutboundIndex = outboundIndex
 			bestNetworkType = networkType
 			bestTarget = target
+			dialMark = mark
 			searching = false
 			break
 		}
@@ -1277,11 +1284,12 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		}).Traceln("Choose DNS path")
 	}
 	return &dialArgument{
-		networkType: bestNetworkType,
-		Dialer:      bestDialer,
-		Outbound:    bestOutbound,
-		Target:      bestTarget,
-		// mark:         dialMark,
+		networkType:      bestNetworkType,
+		Dialer:           bestDialer,
+		connectionDialer: c.directDialerForMark(bestOutboundIndex, dialMark),
+		Outbound:         bestOutbound,
+		Target:           bestTarget,
+		Mark:             dialMark,
 	}, nil
 }
 

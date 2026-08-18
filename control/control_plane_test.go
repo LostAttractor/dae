@@ -241,6 +241,7 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 			matches: []bpfMatchSet{{
 				Type:     uint8(consts.MatchType_Fallback),
 				Outbound: uint8(consts.OutboundDirect),
+				Mark:     42,
 			}},
 		},
 	}
@@ -266,6 +267,9 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	}
 	if want := netip.MustParseAddrPort("192.0.2.1:53"); got.Target != want {
 		t.Fatalf("target = %v, want %v", got.Target, want)
+	}
+	if got.Mark != 42 || got.connectionDialer == nil {
+		t.Fatalf("marked DNS path = mark %d, dialer %v", got.Mark, got.connectionDialer)
 	}
 }
 

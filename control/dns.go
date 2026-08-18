@@ -505,7 +505,7 @@ func (d *DoH) getHttpRoundTripper() *http.Transport {
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			ctx, cancel := d.state.deriveContext(ctx)
 			defer cancel()
-			return d.dialArgument.Dialer.DialContext(ctx, "tcp", d.dialArgument.Target.String())
+			return d.dialArgument.dialerForConnection().DialContext(ctx, "tcp", d.dialArgument.Target.String())
 		},
 	}
 
@@ -524,7 +524,7 @@ func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
 			ctx, cancel := d.state.deriveContext(ctx)
 			defer cancel()
 			udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
-			packetConn, err := d.dialArgument.Dialer.ListenPacket(ctx, d.dialArgument.Target.String())
+			packetConn, err := d.dialArgument.dialerForConnection().ListenPacket(ctx, d.dialArgument.Target.String())
 			if err != nil {
 				return nil, err
 			}
@@ -836,7 +836,7 @@ func (d *DoQ) Close() error {
 }
 
 func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (quic.EarlyConnection, net.PacketConn, error) {
-	packetConn, err := d.dialArgument.Dialer.ListenPacket(ctx, d.dialArgument.Target.String())
+	packetConn, err := d.dialArgument.dialerForConnection().ListenPacket(ctx, d.dialArgument.Target.String())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -923,7 +923,7 @@ func (d *DoTLS) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	forwardCtx, cancelState := d.state.deriveContext(ctx)
 	defer cancelState()
 	dialCtx, cancelDial := context.WithTimeout(forwardCtx, consts.DefaultDialTimeout)
-	conn, err := d.dialArgument.Dialer.DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
+	conn, err := d.dialArgument.dialerForConnection().DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
 	if err != nil {
 		err = dnsForwarderOperationError(ctx, d.state, dialCtx, err)
 	} else {
@@ -1106,7 +1106,7 @@ func (d *DoTCP) getManager(ctx context.Context) (*DnsManager, error) {
 		previous := d.dnsManager
 		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		defer cancel()
-		conn, err := d.dialArgument.Dialer.DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
+		conn, err := d.dialArgument.dialerForConnection().DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
 		if err != nil {
 			return nil, err
 		}
@@ -1327,7 +1327,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	}
 	defer endExchange()
 	ctx = exchangeCtx
-	conn, err := d.dialArgument.Dialer.DialContext(ctx, "udp", d.dialArgument.Target.String())
+	conn, err := d.dialArgument.dialerForConnection().DialContext(ctx, "udp", d.dialArgument.Target.String())
 	if err != nil {
 		if parentCtx != nil && parentCtx.Err() != nil {
 			return parentCtx.Err()

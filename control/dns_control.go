@@ -24,6 +24,7 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -234,11 +235,19 @@ type udpRequest struct {
 }
 
 type dialArgument struct {
-	networkType common.NetworkType
-	Dialer      *dialer.Dialer
-	Outbound    *outbound.DialerGroup
-	Target      netip.AddrPort
-	// mark        uint32
+	networkType      common.NetworkType
+	Dialer           *dialer.Dialer
+	connectionDialer netproxy.Dialer
+	Outbound         *outbound.DialerGroup
+	Target           netip.AddrPort
+	Mark             uint32
+}
+
+func (a *dialArgument) dialerForConnection() netproxy.Dialer {
+	if a.connectionDialer != nil {
+		return a.connectionDialer
+	}
+	return a.Dialer
 }
 
 type dnsForwarderKey struct {
@@ -246,6 +255,7 @@ type dnsForwarderKey struct {
 	networkType common.NetworkType
 	dialer      *dialer.Dialer
 	target      netip.AddrPort
+	mark        uint32
 }
 
 type queryInfo struct {
@@ -337,6 +347,7 @@ func makeDNSForwarderKey(upstream *dns.Upstream, argument *dialArgument) dnsForw
 		networkType: argument.networkType,
 		dialer:      argument.Dialer,
 		target:      argument.Target,
+		mark:        argument.Mark,
 	}
 }
 

@@ -190,7 +190,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
 	defer cancel()
 	start := time.Now()
-	rConn, err := dialOption.Dialer.DialContext(ctx, "tcp", dialOption.DialTarget)
+	rConn, err := dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
 	if err != nil {
 		if ctxErr := setupCtx.Err(); ctxErr != nil {
 			return nil, ctxErr
