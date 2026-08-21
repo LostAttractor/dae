@@ -6,14 +6,17 @@
 package outbound
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -53,16 +56,32 @@ func nodeLogID(node *NodeInfo) string {
 	return fmt.Sprintf("node %d from %q", node.sourceIndex+1, tag)
 }
 
-func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (*dialer.Dialer, error) {
+func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (created *dialer.Dialer, err error) {
 	if n.CreatedDialer == nil {
+		var owned io.Closer
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if owned != nil {
+					_ = owned.Close()
+				}
+				panic(recovered)
+			}
+			if err != nil && owned != nil {
+				_ = owned.Close()
+			}
+		}()
 		for _, descriptor := range n.Dialers {
-			var err error
 			d, err = descriptor.Dialer(&option.ExtraOption, d)
 			if err != nil {
 				return nil, err
 			}
+			if closer, ok := d.(io.Closer); ok {
+				// The outermost closeable transport owns the chain built so far.
+				owned = closer
+			}
 		}
 		n.CreatedDialer = dialer.NewDialer(d, option, n.Property, true)
+		owned = nil
 	}
 	return n.CreatedDialer, nil
 }
@@ -158,6 +177,65 @@ func ValidateNodeLink(link string) (err error) {
 		return errors.New("node parser rejected link")
 	}
 	return nil
+}
+
+const maxConcurrentNodeValidations = 4
+
+var nodeValidationSlots = make(chan struct{}, maxConcurrentNodeValidations)
+
+type nodeValidationFunc func(*dialer.GlobalOption, string) error
+
+// NewNodeValidator validates both link syntax and protocol construction using
+// the options that will be used by the control plane.
+func NewNodeValidator(ctx context.Context, global *config.Global) func(string) error {
+	return newNodeValidator(ctx, dialer.NewGlobalOption(global), validateNodeDialer)
+}
+
+func newNodeValidator(ctx context.Context, option *dialer.GlobalOption, validate nodeValidationFunc) func(string) error {
+	return func(link string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		select {
+		case nodeValidationSlots <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		result := make(chan error, 1)
+		go func() {
+			err := validate(option, link)
+			<-nodeValidationSlots
+			result <- err
+		}()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-result:
+			return err
+		}
+	}
+}
+
+func validateNodeDialer(option *dialer.GlobalOption, link string) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("node dialer construction panicked")
+		}
+	}()
+	dialers, property, err := parseNodeLink(link)
+	if err != nil {
+		return errors.New("node parser rejected link")
+	}
+	node := &NodeInfo{
+		Link:     link,
+		Property: &dialer.Property{Property: *property},
+		Dialers:  dialers,
+	}
+	created, err := node.createDialerIfNeeded(option, direct.Direct)
+	if err != nil {
+		return errors.New("node dialer construction failed")
+	}
+	return created.Close()
 }
 
 func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) (hit bool, err error) {

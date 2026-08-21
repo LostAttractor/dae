@@ -390,7 +390,7 @@ func validateSubscriptionNodes(ctx context.Context, nodes []string, validateNode
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := validateNode(node); err != nil {
+		if err := validateNodeSafely(validateNode, node); err != nil {
 			invalidNodes++
 			if firstValidationErr == nil {
 				firstValidationErr = fmt.Errorf("node %d: %w", i+1, err)
@@ -409,6 +409,15 @@ func validateSubscriptionNodes(ctx context.Context, nodes []string, validateNode
 		return nil, fmt.Errorf("subscription contains no usable nodes: %w", firstValidationErr)
 	}
 	return validNodes, nil
+}
+
+func validateNodeSafely(validateNode func(string) error, node string) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("node validator panicked")
+		}
+	}()
+	return validateNode(node)
 }
 
 func validatePersistDir(path string, info os.FileInfo) error {

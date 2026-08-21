@@ -6,12 +6,42 @@
 package outbound
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
+	"net"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/config"
+	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 )
+
+type testNodeDescriptor func(netproxy.Dialer) (netproxy.Dialer, error)
+
+func (f testNodeDescriptor) Dialer(_ *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
+	return f(parent)
+}
+
+type closeableTestDialer struct{ closed atomic.Bool }
+
+func (*closeableTestDialer) Alive() bool    { return true }
+func (*closeableTestDialer) Connect() error { return nil }
+func (*closeableTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("not implemented")
+}
+func (*closeableTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return nil, errors.New("not implemented")
+}
+func (d *closeableTestDialer) Close() error {
+	d.closed.Store(true)
+	return nil
+}
 
 func TestNewDialerSetFromLinksParsesSIP002UserinfoForms(t *testing.T) {
 	legacyUserinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:legacy-password"))
@@ -84,5 +114,98 @@ func TestValidateNodeLinkAcceptsSIP002PluginWithoutOptions(t *testing.T) {
 	link := "ss://" + userinfo + "@127.0.0.1:443/?plugin=v2ray-plugin"
 	if err := ValidateNodeLink(link); err != nil {
 		t.Fatalf("valid plugin-only link was rejected: %v", err)
+	}
+}
+
+func TestNodeValidatorRejectsUnsupportedCipher(t *testing.T) {
+	userinfo := base64.RawURLEncoding.EncodeToString([]byte("unsupported-cipher:password"))
+	link := "ss://" + userinfo + "@127.0.0.1:8388"
+	if err := ValidateNodeLink(link); err != nil {
+		t.Fatalf("syntax validation unexpectedly failed: %v", err)
+	}
+	if err := NewNodeValidator(context.Background(), &config.Global{})(link); err == nil {
+		t.Fatal("full validation accepted unsupported cipher")
+	}
+}
+
+func TestNodeValidatorHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	validator := NewNodeValidator(ctx, &config.Global{})
+	if err := validator("ss://unused"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("validator error = %v, want context cancellation", err)
+	}
+}
+
+func TestNodeDialerClosesPartiallyConstructedTransport(t *testing.T) {
+	transport := new(closeableTestDialer)
+	buildErr := errors.New("construction failed")
+	node := &NodeInfo{
+		Property: &dialer.Property{},
+		Dialers: []D.Dialer{
+			testNodeDescriptor(func(netproxy.Dialer) (netproxy.Dialer, error) { return transport, nil }),
+			testNodeDescriptor(func(netproxy.Dialer) (netproxy.Dialer, error) { return nil, buildErr }),
+		},
+	}
+	if _, err := node.createDialerIfNeeded(&dialer.GlobalOption{}, nil); !errors.Is(err, buildErr) {
+		t.Fatalf("createDialerIfNeeded error = %v, want %v", err, buildErr)
+	}
+	if !transport.closed.Load() {
+		t.Fatal("partially constructed transport was not closed")
+	}
+}
+
+func TestNodeValidatorBoundsPermanentlyBlockedConstruction(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, maxConcurrentNodeValidations)
+	validate := func(*dialer.GlobalOption, string) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}
+	validator := newNodeValidator(context.Background(), &dialer.GlobalOption{}, validate)
+	var blocked sync.WaitGroup
+	blocked.Add(maxConcurrentNodeValidations)
+	for range maxConcurrentNodeValidations {
+		go func() {
+			defer blocked.Done()
+			_ = validator("blocked")
+		}()
+	}
+	for range maxConcurrentNodeValidations {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("validation worker did not start")
+		}
+	}
+
+	var unexpected atomic.Int32
+	for range 100 {
+		ctx, cancel := context.WithCancel(context.Background())
+		queued := newNodeValidator(ctx, &dialer.GlobalOption{}, func(*dialer.GlobalOption, string) error {
+			unexpected.Add(1)
+			return nil
+		})
+		done := make(chan error, 1)
+		go func() { done <- queued("queued") }()
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("queued validation error = %v, want cancellation", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("queued validation ignored cancellation")
+		}
+	}
+	if got := unexpected.Load(); got != 0 {
+		t.Fatalf("started %d validations after all worker slots were blocked", got)
+	}
+
+	close(release)
+	blocked.Wait()
+	if got := len(nodeValidationSlots); got != 0 {
+		t.Fatalf("validation slots still occupied after release: %d", got)
 	}
 }
