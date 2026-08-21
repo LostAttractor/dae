@@ -150,7 +150,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			// Replay earlier datagrams with the completed sniff result before the
 			// triggering packet so routing is correct without reordering the flow.
 			toRehandle := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
-			if removeErr := DefaultPacketSnifferSessionMgr.Remove(key, sniffer); removeErr != nil {
+			if removeErr := DefaultPacketSnifferSessionMgr.removeLocked(key, sniffer); removeErr != nil {
 				log.Warnf("remove packet sniffer: %v", removeErr)
 			}
 			sniffer.Mu.Unlock()
