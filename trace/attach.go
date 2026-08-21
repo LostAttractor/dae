@@ -14,13 +14,17 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	log "github.com/sirupsen/logrus"
 )
 
-const maxDetachWorkers = 64
+const (
+	maxDetachWorkers = 64
+	traceCleanupWait = 5 * time.Second
+)
 
 func closeLinksConcurrently(links []link.Link, maxWorkers int) error {
 	closers := make([]func() error, 0, len(links))
@@ -143,6 +147,17 @@ func (d *producerDetacher) waitDetached() error {
 
 func (d *producerDetacher) releaseObjects() {
 	d.releaseOnce.Do(func() { close(d.release) })
+}
+
+func (d *producerDetacher) waitDone(timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-d.done:
+		return errors.Join(d.linksErr, d.ownerErr)
+	case <-timer.C:
+		return fmt.Errorf("trace cleanup did not finish within %s", timeout)
+	}
 }
 
 type probeAttachment interface {
