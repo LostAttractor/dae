@@ -56,9 +56,10 @@ const (
 	// keeps serving traffic while the new one is being built. Startup, in
 	// contrast, may wait for the network without a bound, since the network
 	// may not be online yet when dae first starts.
-	reloadNetworkWaitTimeout       = 15 * time.Second
-	reloadSubscriptionTimeout      = 10 * time.Second
-	reloadSubscriptionPhaseTimeout = 30 * time.Second
+	reloadNetworkWaitTimeout        = 15 * time.Second
+	reloadSubscriptionTimeout       = 10 * time.Second
+	reloadSubscriptionPhaseTimeout  = 30 * time.Second
+	startupSubscriptionPhaseTimeout = 2 * time.Minute
 )
 
 var (
@@ -646,19 +647,19 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	if err != nil {
 		return nil, err
 	}
-	subDeadline := reloadDeadline(isReload, reloadSubscriptionPhaseTimeout)
-	subCtx := context.Background()
-	cancelSubscriptions := func() {}
+	subscriptionPhaseTimeout := startupSubscriptionPhaseTimeout
 	if isReload {
-		subCtx, cancelSubscriptions = context.WithDeadline(subCtx, subDeadline)
+		subscriptionPhaseTimeout = reloadSubscriptionPhaseTimeout
 	}
+	subCtx, cancelSubscriptions := context.WithTimeout(context.Background(), subscriptionPhaseTimeout)
 	defer cancelSubscriptions()
+	validateNode := outbound.NewNodeValidator(subCtx, &conf.Global)
 	for _, sub := range conf.Subscription {
 		if err := subCtx.Err(); err != nil {
-			log.Warnf("Subscription resolution exceeded %v; skipping the remaining subscriptions", reloadSubscriptionPhaseTimeout)
+			log.Warnf("Subscription resolution exceeded %v; skipping the remaining subscriptions", subscriptionPhaseTimeout)
 			break
 		}
-		tag, nodes, err := subscription.ResolveSubscriptionContext(subCtx, &client, subscriptionDir, string(sub), outbound.ValidateNodeLink)
+		tag, nodes, err := subscription.ResolveSubscriptionContext(subCtx, &client, subscriptionDir, string(sub), validateNode)
 		if err != nil {
 			log.Warnf("failed to resolve subscription %q: %v", subscription.RedactURL(string(sub)), err)
 			resolvingfailed = true

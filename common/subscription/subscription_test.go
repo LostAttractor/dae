@@ -353,6 +353,15 @@ func writePersistedSubscription(t *testing.T, dir, tag string, content []byte) s
 	return path
 }
 
+func TestValidateSubscriptionNodesRejectsPanickingValidator(t *testing.T) {
+	nodes, err := validateSubscriptionNodes(context.Background(), []string{"ss://invalid"}, func(string) error {
+		panic("bad validator")
+	})
+	if err == nil || nodes != nil {
+		t.Fatalf("panicking validator returned nodes %v, error %v", nodes, err)
+	}
+}
+
 func persistentURL(tag, rawURL string) string {
 	return tag + ":" + strings.Replace(rawURL, "http://", "http-file://", 1)
 }
