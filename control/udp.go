@@ -110,12 +110,11 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 	return n, err
 }
 
-func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, skipSniffing bool) (err error) {
+func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, skipSniffing bool, domain string) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	udpEndpoints := c.udpEndpoints
-	var domain string
 
 	/// Sniff
 	if !skipSniffing {
@@ -148,21 +147,17 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 					With("to", dst).
 					Wrapf(err, "sniffUDP"))
 			}
-			defer DefaultPacketSnifferSessionMgr.Remove(key, sniffer)
-			// Re-handlePkt after self func.
+			// Replay earlier datagrams with the completed sniff result before the
+			// triggering packet so routing is correct without reordering the flow.
 			toRehandle := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
+			if removeErr := DefaultPacketSnifferSessionMgr.Remove(key, sniffer); removeErr != nil {
+				log.Warnf("remove packet sniffer: %v", removeErr)
+			}
 			sniffer.Mu.Unlock()
-			if len(toRehandle) > 0 {
-				defer func() {
-					if err == nil {
-						for _, d := range toRehandle {
-							err := c.handlePkt(ctx, d, src, dst, true)
-							if err != nil {
-								log.Warnf("%+v", oops.Wrapf(err, "rehandlePkt"))
-							}
-						}
-					}
-				}()
+			for _, d := range toRehandle {
+				if replayErr := c.handlePkt(ctx, d, src, dst, true, domain); replayErr != nil {
+					log.Warnf("%+v", oops.Wrapf(replayErr, "rehandlePkt"))
+				}
 			}
 		} else {
 			_sniffer.Mu.Unlock()
