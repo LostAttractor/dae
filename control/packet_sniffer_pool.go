@@ -6,7 +6,6 @@
 package control
 
 import (
-	"fmt"
 	"net/netip"
 	"sync"
 	"time"
@@ -46,11 +45,17 @@ func NewPacketSnifferPool() *PacketSnifferPool {
 }
 
 func (p *PacketSnifferPool) Remove(key PacketSnifferKey, sniffer *PacketSniffer) (err error) {
-	if ue, ok := p.pool.LoadAndDelete(key); ok {
-		sniffer.Close()
-		if ue != sniffer {
-			return fmt.Errorf("target udp endpoint is not in the pool")
+	sniffer.Mu.Lock()
+	defer sniffer.Mu.Unlock()
+	return p.removeLocked(key, sniffer)
+}
+
+func (p *PacketSnifferPool) removeLocked(key PacketSnifferKey, sniffer *PacketSniffer) error {
+	if p.pool.CompareAndDelete(key, sniffer) {
+		if sniffer.deadlineTimer != nil {
+			sniffer.deadlineTimer.Stop()
 		}
+		return sniffer.Close()
 	}
 	return nil
 }
@@ -82,22 +87,19 @@ begin:
 			createOption.Ttl = PacketSnifferTtl
 		}
 
-		qs = &PacketSniffer{
+		created := &PacketSniffer{
 			Sniffer:       sniffing.NewPacketSniffer(nil, createOption.Ttl),
 			Mu:            sync.Mutex{},
 			deadlineTimer: nil,
 		}
-		qs.deadlineTimer = time.AfterFunc(createOption.Ttl, func() {
-			if _qs, ok := p.pool.LoadAndDelete(key); ok {
-				if _qs.(*PacketSniffer) == qs {
-					qs.Close()
-				} else {
-					// FIXME: ?
-				}
-			}
+		created.Mu.Lock()
+		p.pool.Store(key, created)
+		created.deadlineTimer = time.AfterFunc(createOption.Ttl, func() {
+			_ = p.Remove(key, created)
 		})
-		_qs = qs
-		p.pool.Store(key, qs)
+		created.Mu.Unlock()
+		qs = created
+		_qs = created
 		isNew = true
 	}
 	return _qs.(*PacketSniffer), isNew
