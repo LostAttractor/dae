@@ -49,3 +49,7 @@ func (o *secureFileOpener) Open(path string) (*os.File, error) {
 func (o *secureFileOpener) Close() error {
 	return nil
 }
+
+func openConfigEntry(path string) (*os.File, error) {
+	return os.Open(path)
+}

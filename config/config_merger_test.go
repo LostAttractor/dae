@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -182,5 +184,61 @@ func TestMergerPreservesCircularIncludeDetection(t *testing.T) {
 
 	if _, _, err := NewMerger(entry).Merge(); !errors.Is(err, ErrCircularInclude) {
 		t.Fatalf("error = %v, want ErrCircularInclude", err)
+	}
+}
+
+func TestMergerRejectsExcessiveIncludeDepth(t *testing.T) {
+	dir := t.TempDir()
+	for depth := 0; depth <= maxIncludeDepth+1; depth++ {
+		path := filepath.Join(dir, fmt.Sprintf("%d.dae", depth))
+		content := "global {}\n"
+		if depth <= maxIncludeDepth {
+			content = fmt.Sprintf("include { %d.dae }\n", depth+1)
+		}
+		writeConfigFile(t, path, content)
+	}
+	if _, _, err := NewMerger(filepath.Join(dir, "0.dae")).Merge(); err == nil || !strings.Contains(err.Error(), "depth exceeds") {
+		t.Fatalf("Merge deep include error = %v, want depth limit", err)
+	}
+}
+
+func TestUnsqueezeEntriesEnforcesFileLimit(t *testing.T) {
+	dir := t.TempDir()
+	writeConfigFile(t, filepath.Join(dir, "a.dae"), "global {}\n")
+	writeConfigFile(t, filepath.Join(dir, "b.dae"), "global {}\n")
+	if _, err := unsqueezeEntries([]string{filepath.Join(dir, "*.dae")}, 1); err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("unsqueezeEntries error = %v, want file limit", err)
+	}
+}
+
+func TestUnsqueezeEntriesPreservesGlobOrderingAndDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.dae")
+	b := filepath.Join(dir, "nested", "b.dae")
+	writeConfigFile(t, a, "global {}\n")
+	writeConfigFile(t, b, "global {}\n")
+	writeConfigFile(t, filepath.Join(dir, "nested", "ignored.txt"), "ignored\n")
+
+	got, err := unsqueezeEntries([]string{b, filepath.Join(dir, "*", "*.dae"), filepath.Join(dir, "*.dae")}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{b, b, a}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unsqueezeEntries = %v, want %v", got, want)
+	}
+}
+
+func TestUnsqueezeEntriesAllowsExactFileLimit(t *testing.T) {
+	dir := t.TempDir()
+	writeConfigFile(t, filepath.Join(dir, "b.dae"), "global {}\n")
+	writeConfigFile(t, filepath.Join(dir, "a.dae"), "global {}\n")
+	got, err := unsqueezeEntries([]string{filepath.Join(dir, "*.dae")}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(dir, "a.dae"), filepath.Join(dir, "b.dae")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unsqueezeEntries = %v, want %v", got, want)
 	}
 }
