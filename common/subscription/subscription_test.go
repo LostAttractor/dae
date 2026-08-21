@@ -149,6 +149,37 @@ func TestResolveSubscriptionAsSIP008EncodesPlugin(t *testing.T) {
 	}
 }
 
+func TestResolveSubscriptionRejectsTooManyNodes(t *testing.T) {
+	servers := make([]sip008Server, maxSubscriptionNodes+1)
+	payload, err := json.Marshal(sip008{Version: 1, Servers: servers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveSubscriptionAsSIP008(payload); err == nil {
+		t.Fatal("oversized SIP008 node list was accepted")
+	}
+
+	var raw strings.Builder
+	for range maxSubscriptionNodes + 1 {
+		raw.WriteString("ss://node\n")
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(raw.String()))
+	if nodes, err := resolveSubscriptionAsBase64([]byte(encoded)); err == nil || nodes != nil {
+		t.Fatalf("oversized base64 node list = %d nodes, %v; want error", len(nodes), err)
+	}
+}
+
+func TestResolveSIP008FieldCompatibility(t *testing.T) {
+	capitalized := []byte(`{"Version":1,"Servers":[]}`)
+	if nodes, err := ResolveSubscriptionAsSIP008(capitalized); err != nil || len(nodes) != 0 {
+		t.Fatalf("capitalized fields = %v, %v; want accepted empty list", nodes, err)
+	}
+	duplicate := []byte(`{"version":1,"servers":[],"Servers":[]}`)
+	if _, err := ResolveSubscriptionAsSIP008(duplicate); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate fields error = %v, want duplicate rejection", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

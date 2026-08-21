@@ -49,7 +49,10 @@ type sip008Server struct {
 	PluginOpts string `json:"plugin_opts"`
 }
 
-const maxRemoteSubscriptionSize int64 = 10 * 1024 * 1024
+const (
+	maxRemoteSubscriptionSize int64 = 10 * 1024 * 1024
+	maxSubscriptionNodes            = 4096
+)
 
 func fetchRemoteSubscription(client *http.Client, subscription string) ([]byte, error) {
 	return fetchRemoteSubscriptionContext(context.Background(), client, subscription)
@@ -84,6 +87,11 @@ func fetchRemoteSubscriptionContext(ctx context.Context, client *http.Client, su
 }
 
 func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
+	nodes, _ = resolveSubscriptionAsBase64(b)
+	return nodes
+}
+
+func resolveSubscriptionAsBase64(b []byte) (nodes []string, err error) {
 	log.Traceln("Try to resolve as base64")
 
 	// base64 decode
@@ -92,10 +100,12 @@ func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
 		raw, _ = common.Base64UrlDecode(string(b))
 	}
 
-	// Simply check and preprocess.
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	// Check and preprocess without materializing an attacker-controlled number
+	// of substrings at once.
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	scanner.Buffer(nil, int(maxRemoteSubscriptionSize))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -103,18 +113,23 @@ func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
 		if len(protocol) == 0 || len(suffix) == 0 {
 			continue
 		}
+		if len(nodes) == maxSubscriptionNodes {
+			return nil, fmt.Errorf("subscription contains more than %d nodes", maxSubscriptionNodes)
+		}
 		nodes = append(nodes, line)
 	}
-	return nodes
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan subscription nodes: %w", err)
+	}
+	return nodes, nil
 }
 
 func ResolveSubscriptionAsSIP008(b []byte) (nodes []string, err error) {
 	log.Traceln("Try to resolve as sip008")
 
-	var sip sip008
-	err = json.Unmarshal(b, &sip)
+	sip, err := decodeSIP008(b)
 	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal json to sip008")
+		return nil, fmt.Errorf("failed to unmarshal json to sip008: %w", err)
 	}
 	if sip.Version != 1 || sip.Servers == nil {
 		return nil, fmt.Errorf("does not seems like a standard sip008 subscription")
@@ -143,6 +158,81 @@ func ResolveSubscriptionAsSIP008(b []byte) (nodes []string, err error) {
 		nodes = append(nodes, u.String())
 	}
 	return nodes, nil
+}
+
+func decodeSIP008(b []byte) (sip008, error) {
+	decoder := json.NewDecoder(bytes.NewReader(b))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return sip008{}, fmt.Errorf("expected JSON object")
+	}
+	var sip sip008
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return sip008{}, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return sip008{}, fmt.Errorf("expected object key")
+		}
+		key = strings.ToLower(key)
+		if _, duplicate := seen[key]; duplicate {
+			return sip008{}, fmt.Errorf("duplicate SIP008 field %q", key)
+		}
+		seen[key] = struct{}{}
+		switch key {
+		case "version":
+			err = decoder.Decode(&sip.Version)
+		case "bytes_used":
+			err = decoder.Decode(&sip.BytesUsed)
+		case "bytes_remaining":
+			err = decoder.Decode(&sip.BytesRemaining)
+		case "servers":
+			var start json.Token
+			start, err = decoder.Token()
+			if err == nil && start != json.Delim('[') {
+				err = fmt.Errorf("servers must be an array")
+			}
+			if err == nil {
+				sip.Servers = make([]sip008Server, 0)
+			}
+			for err == nil && decoder.More() {
+				if len(sip.Servers) == maxSubscriptionNodes {
+					return sip008{}, fmt.Errorf("subscription contains more than %d nodes", maxSubscriptionNodes)
+				}
+				var server sip008Server
+				if err = decoder.Decode(&server); err == nil {
+					sip.Servers = append(sip.Servers, server)
+				}
+			}
+			if err == nil {
+				var end json.Token
+				end, err = decoder.Token()
+				if err == nil && end != json.Delim(']') {
+					err = fmt.Errorf("unterminated servers array")
+				}
+			}
+		default:
+			var ignored json.RawMessage
+			err = decoder.Decode(&ignored)
+		}
+		if err != nil {
+			return sip008{}, err
+		}
+	}
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') {
+		if err == nil {
+			err = fmt.Errorf("unterminated JSON object")
+		}
+		return sip008{}, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return sip008{}, fmt.Errorf("unexpected trailing JSON data")
+	}
+	return sip, nil
 }
 
 func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
@@ -249,7 +339,10 @@ func resolveSubscriptionContent(ctx context.Context, b []byte, validateNode func
 	} else {
 		log.Traceln(err)
 	}
-	nodes = ResolveSubscriptionAsBase64(b)
+	nodes, err := resolveSubscriptionAsBase64(b)
+	if err != nil {
+		return nil, err
+	}
 	log.Debugln("Resolve as base64")
 	return validateSubscriptionNodes(ctx, nodes, validateNode)
 }
