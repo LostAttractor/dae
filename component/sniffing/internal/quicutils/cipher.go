@@ -129,7 +129,7 @@ func (k *Keys) PayloadDecrypt(ciphertext []byte, packetNumber []byte, header []b
 	plaintext = make([]byte, len(ciphertext)-aead.Overhead())
 	plaintext, err = aead.Open(plaintext[:0], k.iv, ciphertext, header)
 	if err != nil {
-		// Do nothing.
+		return nil, err
 	}
 	return plaintext, nil
 }
