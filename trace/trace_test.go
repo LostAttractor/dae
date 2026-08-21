@@ -145,6 +145,29 @@ func TestTraceBPFSpec(t *testing.T) {
 	}
 }
 
+func TestNearestSymbolHandlesEmptyAndFullAddressRange(t *testing.T) {
+	original := kallsyms
+	t.Cleanup(func() { kallsyms = original })
+
+	kallsyms = nil
+	if got := NearestSymbol(1).Name; got != "unknown" {
+		t.Fatalf("empty symbol lookup = %q, want unknown", got)
+	}
+	kallsyms = []Symbol{{Name: "hidden-first"}, {Name: "hidden-last"}}
+	if got := NearestSymbol(1).Name; got != "unknown" {
+		t.Fatalf("zero-address symbol lookup = %q, want unknown", got)
+	}
+
+	kallsyms = []Symbol{
+		{Name: "low", Addr: 0x100},
+		{Name: "kernel", Addr: 0xffff_8000_0000_0000},
+		{Name: "kernel-next", Addr: 0xffff_8000_0000_1000},
+	}
+	if got := NearestSymbol(0xffff_8000_0000_0800).Name; got != "kernel" {
+		t.Fatalf("high-address lookup = %q, want kernel", got)
+	}
+}
+
 func TestCompiledProducerStateTransitions(t *testing.T) {
 	spec, err := loadBpf()
 	if err != nil {
