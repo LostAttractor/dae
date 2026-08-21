@@ -7,6 +7,7 @@ package outbound
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -41,6 +42,15 @@ type NodeInfo struct {
 	Property      *dialer.Property
 	Dialers       []D.Dialer
 	CreatedDialer *dialer.Dialer
+	sourceIndex   int
+}
+
+func nodeLogID(node *NodeInfo) string {
+	tag := node.Property.SubscriptionTag
+	if tag == "" {
+		tag = "local"
+	}
+	return fmt.Sprintf("node %d from %q", node.sourceIndex+1, tag)
 }
 
 func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (*dialer.Dialer, error) {
@@ -74,10 +84,10 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prome
 		nodeToTagMap:       make(map[*dialer.Dialer]string),
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
-		for _, node := range nodes {
+		for i, node := range nodes {
 			d, p, err := parseNodeLink(node)
 			if err != nil {
-				log.Warnf("failed to parse node %v: %v", node, err)
+				log.Warnf("failed to parse node %d from %q (%T)", i+1, subscriptionTag, err)
 				continue
 			}
 			nodeInfo := &NodeInfo{
@@ -86,7 +96,8 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prome
 					Property:        *p,
 					SubscriptionTag: subscriptionTag,
 				},
-				Dialers: d,
+				Dialers:     d,
+				sourceIndex: i,
 			}
 			s.nodeInfos = append(s.nodeInfos, nodeInfo)
 			s.nodeInfosMap[*nodeInfo.Property] = nodeInfo
@@ -139,11 +150,14 @@ func parseNodeLink(link string) ([]D.Dialer, *D.Property, error) {
 func ValidateNodeLink(link string) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("node parser panicked: %v", recovered)
+			err = errors.New("node parser panicked")
 		}
 	}()
 	_, _, err = parseNodeLink(link)
-	return err
+	if err != nil {
+		return errors.New("node parser rejected link")
+	}
+	return nil
 }
 
 func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) (hit bool, err error) {
@@ -270,13 +284,13 @@ nextDialerLoop:
 			// No filters, create all dialers
 			d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
 			if err != nil {
-				log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
+				log.Infof("failed to create dialer for %s: %v", nodeLogID(nodeInfo), err)
 				continue
 			}
 			if nextHopInfo != nil {
 				d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
 				if err != nil {
-					log.Infof("failed to create dialer for node %v->%v: %v", nodeInfo.Link, nextHopInfo.Link, err)
+					log.Infof("failed to create dialer for %s via %s: %v", nodeLogID(nodeInfo), nodeLogID(nextHopInfo), err)
 					continue
 				}
 			}
@@ -294,13 +308,13 @@ nextDialerLoop:
 				// Create dialer if it hasn't been created yet
 				d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
 				if err != nil {
-					log.Infof("failed to create dialer for node %v: %v", nodeInfo.Link, err)
+					log.Infof("failed to create dialer for %s: %v", nodeLogID(nodeInfo), err)
 					continue nextDialerLoop
 				}
 				if nextHopInfo != nil {
 					d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
 					if err != nil {
-						log.Infof("failed to create dialer for node %v->%v: %v", nodeInfo.Link, nextHopInfo.Link, err)
+						log.Infof("failed to create dialer for %s via %s: %v", nodeLogID(nodeInfo), nodeLogID(nextHopInfo), err)
 						continue nextDialerLoop
 					}
 				}

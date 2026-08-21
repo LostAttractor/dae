@@ -180,6 +180,37 @@ func TestResolveSIP008FieldCompatibility(t *testing.T) {
 	}
 }
 
+func TestRedactURL(t *testing.T) {
+	const raw = "office:https://user:password@example.com:8443/private/token?key=secret#fragment"
+	if got, want := RedactURL(raw), "office:https://example.com:8443"; got != want {
+		t.Fatalf("RedactURL() = %q, want %q", got, want)
+	}
+	err := redactURLFromError(&url.Error{Op: "Get", URL: strings.TrimPrefix(raw, "office:"), Err: errors.New("failed")})
+	if text := err.Error(); strings.Contains(text, "password") || strings.Contains(text, "secret") || strings.Contains(text, "/private") {
+		t.Fatalf("redacted URL error leaked credentials: %q", text)
+	}
+}
+
+func TestResolveSubscriptionRedactsTransportErrorURL(t *testing.T) {
+	sentinel := errors.New("transport failed")
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, sentinel
+	})}
+	rawURL := "https://account:password@example.com/private/token?key=query-secret#fragment-secret"
+	_, _, err := ResolveSubscription(client, t.TempDir(), rawURL, componentoutbound.ValidateNodeLink)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("ResolveSubscription() error = %v, want wrapped transport error", err)
+	}
+	if !strings.Contains(err.Error(), "https://example.com") {
+		t.Fatalf("redacted error does not identify the endpoint: %v", err)
+	}
+	for _, secret := range []string{"account", "password", "private", "token", "query-secret", "fragment-secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("transport error contains %q: %v", secret, err)
+		}
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

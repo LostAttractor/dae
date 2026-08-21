@@ -66,7 +66,7 @@ func fetchRemoteSubscriptionContext(ctx context.Context, client *http.Client, su
 	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, redactURLFromError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -84,6 +84,34 @@ func fetchRemoteSubscriptionContext(ctx context.Context, client *http.Client, su
 		return nil, fmt.Errorf("subscription response exceeds %d bytes", maxRemoteSubscriptionSize)
 	}
 	return b, nil
+}
+
+// RedactURL identifies a subscription without exposing credentials, path
+// tokens, query parameters, or fragments.
+func RedactURL(subscription string) string {
+	tag, raw := common.GetTagFromLinkLikePlaintext(subscription)
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" {
+		if tag != "" {
+			return tag + ":<invalid>"
+		}
+		return "<invalid>"
+	}
+	redacted := u.Scheme + "://" + u.Host
+	if tag != "" {
+		return tag + ":" + redacted
+	}
+	return redacted
+}
+
+func redactURLFromError(err error) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	redacted := *urlErr
+	redacted.URL = RedactURL(urlErr.URL)
+	return &redacted
 }
 
 func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
@@ -651,9 +679,9 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 	/// Parse url.
 	u, err := url.Parse(subscription)
 	if err != nil {
-		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
+		return tag, nil, fmt.Errorf("failed to parse subscription %q: %w", RedactURL(subscription), err)
 	}
-	log.Debugf("ResolveSubscription: %v", subscription)
+	log.Debugf("ResolveSubscription: %s", RedactURL(subscription))
 	var b []byte
 
 	persistToFile := false

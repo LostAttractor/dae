@@ -160,7 +160,7 @@ var (
 				}
 			}
 			// Set the progress as ReloadSend.
-			if err = writeFileAtomic(SignalProgressFilePath, []byte{consts.ReloadSend}, 0644); err != nil {
+			if err = writeFileAtomic(SignalProgressFilePath, []byte{consts.ReloadSend}, 0600); err != nil {
 				cleanupAbortMarker()
 				return fmt.Errorf("failed to initialize reload progress: %w", err)
 			}
@@ -189,7 +189,7 @@ var (
 				// would mistake the old daemon's unchanged ReloadSend marker for
 				// an operation still in progress.
 				data := append([]byte{consts.ReloadDone}, []byte("\n"+result)...)
-				if err = writeFileAtomic(SignalProgressFilePath, data, 0644); err != nil {
+				if err = writeFileAtomic(SignalProgressFilePath, data, 0600); err != nil {
 					return fmt.Errorf("failed to finalize legacy reload progress: %w", err)
 				}
 			}

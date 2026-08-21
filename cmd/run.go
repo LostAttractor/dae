@@ -179,7 +179,7 @@ func writeReloadState(code byte, content string) {
 	if content != "" {
 		data = append(data, []byte("\n"+content)...)
 	}
-	if err := writeFileAtomic(SignalProgressFilePath, data, 0644); err != nil {
+	if err := writeFileAtomic(SignalProgressFilePath, data, 0600); err != nil {
 		std.Warnf("Failed to update reload progress: %v", err)
 	}
 }
@@ -660,7 +660,7 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 		}
 		tag, nodes, err := subscription.ResolveSubscriptionContext(subCtx, &client, subscriptionDir, string(sub), outbound.ValidateNodeLink)
 		if err != nil {
-			log.Warnf(`failed to resolve subscription "%v": %v`, sub, err)
+			log.Warnf("failed to resolve subscription %q: %v", subscription.RedactURL(string(sub)), err)
 			resolvingfailed = true
 			continue
 		}
