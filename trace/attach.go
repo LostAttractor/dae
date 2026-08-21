@@ -266,14 +266,15 @@ func probeKprobeMultiSupport(objs *traceObjects, targets []probeTarget) bool {
 }
 
 func attachBpfToTargets(objs *traceObjects, targets []probeTarget, useKfreeReason bool, useKprobeMulti bool) (links []link.Link, attachedTargets int, err error) {
-	for _, symbol := range []string{"kfree_skbmem", "__napi_kfree_skb"} {
-		lifetime, err := link.Kprobe(symbol, objs.lifetimeEnd, nil)
-		if err != nil {
-			_ = closeLinksConcurrently(links, maxDetachWorkers)
-			return nil, 0, fmt.Errorf("failed to attach skb lifetime probe to %s: %w", symbol, err)
-		}
-		links = append(links, lifetime)
+	// kfree_skbmem runs after kfree_skb's raw tracepoint, so it only closes
+	// direct-free paths that did not already report a terminal reason. Do not
+	// hook __napi_kfree_skb at entry: it calls the raw tracepoint later and an
+	// entry hook would delete state before the real drop reason is observed.
+	lifetime, err := link.Kprobe("kfree_skbmem", objs.lifetimeEnd, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to attach skb lifetime probe to kfree_skbmem: %w", err)
 	}
+	links = append(links, lifetime)
 
 	kfreeProgram := objs.kfreeSkb[legacyKfreeProgram]
 	if useKfreeReason {
