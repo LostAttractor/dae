@@ -340,6 +340,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	defer func() {
 		err = errors.Join(err, detacher.start())
 		detacher.releaseObjects()
+		err = errors.Join(err, detacher.waitDone(traceCleanupWait))
 	}()
 	fmt.Printf("\nstart tracing\n")
 	if err = handleEvents(ctx, objs, outputFile, dropReasons, dropOnly, coverage, detacher); err != nil {

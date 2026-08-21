@@ -623,11 +623,47 @@ func (r *stopAwareEventReader) Flush() error {
 
 type fakeTraceOwner struct {
 	closed atomic.Bool
+	err    error
 }
 
 func (o *fakeTraceOwner) Close() error {
 	o.closed.Store(true)
-	return nil
+	return o.err
+}
+
+func TestProducerDetacherWaitDoneReturnsCleanupError(t *testing.T) {
+	wantErr := errors.New("close owner")
+	detacher := newProducerDetacher(nil, &fakeTraceControl{}, &fakeTraceOwner{err: wantErr})
+	if err := detacher.start(); err != nil {
+		t.Fatal(err)
+	}
+	detacher.releaseObjects()
+	if err := detacher.waitDone(time.Second); !errors.Is(err, wantErr) {
+		t.Fatalf("waitDone error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestProducerDetacherWaitDoneIsBounded(t *testing.T) {
+	release := make(chan struct{})
+	detacher := &producerDetacher{
+		control:  &fakeTraceControl{},
+		owner:    &fakeTraceOwner{},
+		closers:  []func() error{func() error { <-release; return nil }},
+		done:     make(chan struct{}),
+		detached: make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	if err := detacher.start(); err != nil {
+		t.Fatal(err)
+	}
+	detacher.releaseObjects()
+	if err := detacher.waitDone(time.Millisecond); err == nil {
+		t.Fatal("waitDone did not report cleanup timeout")
+	}
+	close(release)
+	if err := detacher.waitDone(time.Second); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestStopTraceProducersSetsControlMap(t *testing.T) {
