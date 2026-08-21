@@ -1154,7 +1154,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			if !c.udpTaskPool.emit(src, func() {
 				defer cancelTask()
 				defer pool.PutBuffer(data)
-				if e := c.handlePkt(taskCtx, data, src, dst, false); e != nil && taskCtx.Err() == nil {
+				if e := c.handlePkt(taskCtx, data, src, dst, false, ""); e != nil && taskCtx.Err() == nil {
 					if log.IsLevelEnabled(log.DebugLevel) {
 						log.Warnf("%+v", oops.Wrapf(e, "handlePkt"))
 					} else {
