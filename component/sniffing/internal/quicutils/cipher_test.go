@@ -95,3 +95,14 @@ func TestKeys_PayloadDecrypt_(t *testing.T) {
 	}
 	t.Log(hex.EncodeToString(plaintext))
 }
+
+func TestKeysPayloadDecryptRejectsInvalidTag(t *testing.T) {
+	keys, err := NewKeys(destConnId, Version_V1, common.NewGcm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keys.Close()
+	if plaintext, err := keys.PayloadDecrypt(make([]byte, 16), []byte{1}, []byte("header")); err == nil || plaintext != nil {
+		t.Fatalf("PayloadDecrypt = %x, %v; want authentication error", plaintext, err)
+	}
+}
