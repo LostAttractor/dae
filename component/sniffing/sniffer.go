@@ -20,6 +20,11 @@ import (
 	"github.com/daeuniverse/outbound/pool"
 )
 
+const (
+	packetSniffingMaxBufferedBytes = 64 * 1024
+	packetSniffingMaxPackets       = 32
+)
+
 type Sniffer struct {
 	// Stream
 	stream    bool
@@ -38,6 +43,9 @@ type Sniffer struct {
 	// Packet
 	data         [][]byte
 	needMore     bool
+	packetBytes  int
+	packetCount  int
+	packetLimit  bool
 	quicNextRead int
 	quicCryptos  *quicutils.CryptoReassembler
 }
@@ -66,7 +74,7 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 	buffer := pool.GetBytesBuffer()
 	buffer.Write(data)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	return &Sniffer{
+	s := &Sniffer{
 		stream:    false,
 		r:         nil,
 		buf:       buffer,
@@ -75,6 +83,12 @@ func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
 		ctx:       ctx,
 		cancel:    cancel,
 	}
+	if len(data) != 0 {
+		s.packetBytes = len(data)
+		s.packetCount = 1
+		s.packetLimit = len(data) > packetSniffingMaxBufferedBytes
+	}
+	return s
 }
 
 type sniff func() (d string, err error)
@@ -229,6 +243,9 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 	if s.buf.Len() == 0 {
 		return "", ErrNotApplicable
 	}
+	if s.packetLimit {
+		return "", ErrNotApplicable
+	}
 
 	return sniffGroup(
 		s.SniffQuic,
@@ -237,9 +254,16 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 
 func (s *Sniffer) AppendData(data []byte) {
 	s.needMore = false
+	if !s.stream && (s.packetCount >= packetSniffingMaxPackets || s.packetBytes+len(data) > packetSniffingMaxBufferedBytes) {
+		// Retain the triggering datagram so the caller can process it normally
+		// after replaying earlier packets, then stop this sniffing session.
+		s.packetLimit = true
+	}
 	ori := s.buf.Len()
 	s.buf.Write(data)
 	s.data = append(s.data, s.buf.Bytes()[ori:])
+	s.packetBytes += len(data)
+	s.packetCount++
 }
 
 func (s *Sniffer) Data() [][]byte {
