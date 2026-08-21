@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
@@ -21,10 +22,18 @@ var (
 	ErrCircularInclude = fmt.Errorf("circular include is not allowed")
 )
 
+const (
+	maxConfigFileSize   = 4 * 1024 * 1024
+	maxMergedConfigSize = 16 * 1024 * 1024
+	maxConfigFiles      = 1024
+	maxIncludeDepth     = 32
+)
+
 type Merger struct {
 	entry             string
 	entryDir          string
 	entryToSectionMap map[string]map[string][]*config_parser.Item
+	mergedBytes       int64
 	initErr           error
 }
 
@@ -50,8 +59,9 @@ func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, e
 		return nil, nil, fmt.Errorf("failed to initialize config file opener for %v: %w", m.entryDir, err)
 	}
 	defer opener.Close()
+	m.mergedBytes = 0
 
-	err = m.dfsMerge(opener, m.entry, "")
+	err = m.dfsMerge(opener, m.entry, "", 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -83,6 +93,9 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 	if exist {
 		return ErrCircularInclude
 	}
+	if len(m.entryToSectionMap) == maxConfigFiles {
+		return fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
+	}
 
 	// Check filename
 	if !strings.HasSuffix(entry, ".dae") {
@@ -93,7 +106,7 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 		// The entry is explicitly selected by the user and may itself be a
 		// symlink managed by systems such as NixOS. Includes remain confined to
 		// the lexical entry directory below.
-		f, err = os.Open(entry)
+		f, err = openConfigEntry(entry)
 	} else {
 		f, err = opener.Open(entry)
 	}
@@ -106,16 +119,26 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 	if err != nil {
 		return err
 	}
-	if fi.IsDir() {
-		return fmt.Errorf("cannot include a directory: %v", entry)
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("config is not a regular file: %v", entry)
 	}
 	if fi.Mode()&0037 > 0 {
 		return fmt.Errorf("permissions %04o for '%v' are too open; requires the file is NOT writable by the same group and NOT accessible by others; suggest 0640 or 0600", fi.Mode()&0777, entry)
 	}
 	// Read and parse.
-	b, err := io.ReadAll(f)
+	if fi.Size() > maxConfigFileSize {
+		return fmt.Errorf("config file %v exceeds %d bytes", entry, maxConfigFileSize)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxConfigFileSize+1))
 	if err != nil {
 		return err
+	}
+	if len(b) > maxConfigFileSize {
+		return fmt.Errorf("config file %v exceeds %d bytes", entry, maxConfigFileSize)
+	}
+	m.mergedBytes += int64(len(b))
+	if m.mergedBytes > maxMergedConfigSize {
+		return fmt.Errorf("merged configuration exceeds %d bytes", maxMergedConfigSize)
 	}
 	entrySections, err := config_parser.Parse(string(b))
 	if err != nil {
@@ -125,27 +148,17 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 	return nil
 }
 
-func unsqueezeEntries(patternEntries []string) (unsqueezed []string, err error) {
-	unsqueezed = make([]string, 0, len(patternEntries))
+func unsqueezeEntries(patternEntries []string, limit int) (unsqueezed []string, err error) {
+	if limit < 0 {
+		return nil, fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
+	}
+	unsqueezed = make([]string, 0, min(len(patternEntries), limit))
 	for _, pattern := range patternEntries {
-		files, err := filepath.Glob(pattern)
+		files, err := globConfigFiles(pattern, limit-len(unsqueezed))
 		if err != nil {
 			return nil, err
 		}
-		for _, file := range files {
-			// We only support .dae
-			if !strings.HasSuffix(file, ".dae") {
-				continue
-			}
-			fi, err := os.Stat(file)
-			if err != nil {
-				return nil, err
-			}
-			if fi.IsDir() {
-				continue
-			}
-			unsqueezed = append(unsqueezed, file)
-		}
+		unsqueezed = append(unsqueezed, files...)
 	}
 	if len(unsqueezed) == 0 {
 		unsqueezed = nil
@@ -153,7 +166,94 @@ func unsqueezeEntries(patternEntries []string) (unsqueezed []string, err error) 
 	return unsqueezed, nil
 }
 
-func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry string) (err error) {
+func globConfigFiles(pattern string, limit int) ([]string, error) {
+	if _, err := filepath.Match(pattern, ""); err != nil {
+		return nil, err
+	}
+	volume := filepath.VolumeName(pattern)
+	remainder := strings.TrimPrefix(pattern, volume)
+	base := volume
+	if filepath.IsAbs(pattern) {
+		base += string(filepath.Separator)
+		remainder = strings.TrimLeft(remainder, string(filepath.Separator))
+	}
+	parts := strings.Split(remainder, string(filepath.Separator))
+	matches := make([]string, 0, min(limit, len(parts)))
+
+	var walk func(string, int) error
+	walk = func(path string, part int) error {
+		if part == len(parts) {
+			if !strings.HasSuffix(path, ".dae") {
+				return nil
+			}
+			fi, err := os.Stat(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if !fi.Mode().IsRegular() {
+				return nil
+			}
+			if len(matches) == limit {
+				return fmt.Errorf("configuration includes more than %d files", maxConfigFiles)
+			}
+			matches = append(matches, path)
+			return nil
+		}
+
+		component := parts[part]
+		if !strings.ContainsAny(component, `*?[\`) {
+			return walk(filepath.Join(path, component), part+1)
+		}
+		dir := path
+		if dir == "" {
+			dir = "."
+		}
+		fi, err := os.Stat(dir)
+		if err != nil || !fi.IsDir() {
+			return nil
+		}
+		f, err := os.Open(dir)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		for {
+			entries, readErr := f.ReadDir(128)
+			for _, entry := range entries {
+				matched, matchErr := filepath.Match(component, entry.Name())
+				if matchErr != nil {
+					return matchErr
+				}
+				if matched {
+					if err := walk(filepath.Join(path, entry.Name()), part+1); err != nil {
+						return err
+					}
+				}
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	if err := walk(base, 0); err != nil {
+		return nil, err
+	}
+	sort.Strings(matches)
+	return matches, nil
+}
+
+func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry string, depth int) (err error) {
+	if depth > maxIncludeDepth {
+		return fmt.Errorf("configuration include depth exceeds %d at %v", maxIncludeDepth, entry)
+	}
 	// Read entry and check circular include.
 	if err = m.readEntry(opener, entry); err != nil {
 		if errors.Is(err, ErrCircularInclude) {
@@ -182,13 +282,13 @@ func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry st
 		}
 	}
 	// DFS and merge children recursively.
-	childEntries, err := unsqueezeEntries(patterEntries)
+	childEntries, err := unsqueezeEntries(patterEntries, maxConfigFiles-len(m.entryToSectionMap))
 	if err != nil {
 		return err
 	}
 	for _, nextEntry := range childEntries {
 		nextEntry = filepath.Clean(nextEntry)
-		if err = m.dfsMerge(opener, nextEntry, entry); err != nil {
+		if err = m.dfsMerge(opener, nextEntry, entry, depth+1); err != nil {
 			return err
 		}
 	}

@@ -61,9 +61,17 @@ func (o *secureFileOpener) Open(path string) (*os.File, error) {
 		return nil, err
 	}
 	fd, err := unix.Openat2(int(o.root.Fd()), canonicalRel, &unix.OpenHow{
-		Flags:   unix.O_RDONLY | unix.O_CLOEXEC,
+		Flags:   unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NONBLOCK,
 		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+func openConfigEntry(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
