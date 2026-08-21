@@ -9,6 +9,7 @@ package trace
 
 import (
 	"bufio"
+	"cmp"
 	"os"
 	"sort"
 	"strconv"
@@ -89,7 +90,12 @@ func readKprobeSymbols() {
 }
 
 func NearestSymbol(addr uint64) Symbol {
-	idx, _ := slices.BinarySearchFunc(kallsyms, addr, func(x Symbol, addr uint64) int { return int(x.Addr - addr) })
+	if len(kallsyms) == 0 || kallsyms[len(kallsyms)-1].Addr == 0 {
+		return Symbol{Name: "unknown"}
+	}
+	idx, _ := slices.BinarySearchFunc(kallsyms, addr, func(x Symbol, addr uint64) int {
+		return cmp.Compare(x.Addr, addr)
+	})
 	if idx == len(kallsyms) {
 		return kallsyms[idx-1]
 	}
