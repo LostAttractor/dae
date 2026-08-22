@@ -6,8 +6,12 @@
 package cmd
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -15,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mholt/archiver/v3"
 	"github.com/shirou/gopsutil/v4/net"
 	"github.com/spf13/cobra"
 	"github.com/vishvananda/netlink"
@@ -47,12 +50,52 @@ func dumpNetworkInfo() {
 	dumpIPTables(tempDir)
 
 	tarFile := fmt.Sprintf("dae-sysdump.%d.tar.gz", time.Now().Unix())
-	if err := archiver.Archive([]string{tempDir}, tarFile); err != nil {
+	if err := archiveDirectory(tempDir, tarFile); err != nil {
 		fmt.Printf("Failed to create tar archive: %v\n", err)
 		return
 	}
 
 	fmt.Printf("System network information collected and saved to %s\n", tarFile)
+}
+
+func archiveDirectory(source, destination string) error {
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		return err
+	}
+	gzipWriter := gzip.NewWriter(output)
+	tarWriter := tar.NewWriter(gzipWriter)
+
+	err = filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		name, err := filepath.Rel(filepath.Dir(source), path)
+		if err != nil {
+			return err
+		}
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.ToSlash(name)
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(tarWriter, file)
+		return errors.Join(copyErr, file.Close())
+	})
+
+	return errors.Join(err, tarWriter.Close(), gzipWriter.Close(), output.Close())
 }
 
 // Translate scope enum into semantic words
