@@ -25,6 +25,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/vishvananda/netlink"
 )
 
@@ -211,7 +212,7 @@ func (dnsPathDialer) ListenPacket(context.Context, string) (net.PacketConn, erro
 
 func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	option := &dialer.GlobalOption{}
-	d := dialer.NewDialer(dnsPathDialer{}, option, &dialer.Property{Property: D.Property{
+	d := dialer.NewDialer(netproxy.NewRuntime(dnsPathDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: "dns-path",
 		Link: "test://dns-path",
 	}}, true)

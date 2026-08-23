@@ -254,13 +254,14 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	startupPort := conf.Global.TproxyPort
 	readyChan := make(chan bool, 1)
 	go func() {
-		err := control.GetDaeNetns().With(func() error {
-			var listenErr error
-			if listener, listenErr = startupPlane.ListenAndServe(readyChan, startupPort); listenErr != nil {
-				return oops.Wrapf(listenErr, "ListenAndServe")
+		startedListener, err := control.GetDaeNetns().With(func() (*control.Listener, error) {
+			startedListener, err := startupPlane.ListenAndServe(readyChan, startupPort)
+			if err != nil {
+				return nil, oops.Wrapf(err, "ListenAndServe")
 			}
-			return nil
+			return startedListener, nil
 		})
+		listener = startedListener
 		if err != nil {
 			errCh <- err
 		} else {

@@ -106,29 +106,15 @@ func (b *RequestMatcherBuilder) addQName(f *config_parser.Function, key string, 
 	return nil
 }
 
-func (b *RequestMatcherBuilder) appendLogicalOrRules(count int, upstream *routing.Outbound, build func(i int, upstreamId uint8) requestMatchSet) (err error) {
-	for i := 0; i < count; i++ {
-		upstreamName := consts.OutboundLogicalOr.String()
-		if i == count-1 {
-			upstreamName = upstream.Name
-		}
-		upstreamId, err := b.upstreamToId(upstreamName)
-		if err != nil {
-			return err
-		}
-		b.rules = append(b.rules, build(i, uint8(upstreamId)))
-	}
-	return nil
-}
-
 func (b *RequestMatcherBuilder) addQType(f *config_parser.Function, values []uint16, upstream *routing.Outbound) (err error) {
-	return b.appendLogicalOrRules(len(values), upstream, func(i int, upstreamId uint8) requestMatchSet {
-		return requestMatchSet{
+	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value uint16, upstreamId consts.DnsRequestOutboundIndex) error {
+		b.rules = append(b.rules, requestMatchSet{
 			Type:     consts.MatchType_QType,
-			Value:    uint16(values[i]),
+			Value:    value,
 			Not:      f.Not,
-			Upstream: upstreamId,
-		}
+			Upstream: uint8(upstreamId),
+		})
+		return nil
 	})
 }
 
@@ -160,27 +146,29 @@ func (b *RequestMatcherBuilder) addSip(f *config_parser.Function, cidrs []netip.
 }
 
 func (b *RequestMatcherBuilder) addIfindex(f *config_parser.Function, values []uint32, upstream *routing.Outbound) (err error) {
-	return b.appendLogicalOrRules(len(values), upstream, func(i int, upstreamId uint8) requestMatchSet {
-		return requestMatchSet{
+	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value uint32, upstreamId consts.DnsRequestOutboundIndex) error {
+		b.rules = append(b.rules, requestMatchSet{
 			Type:     consts.MatchType_IfIndex,
-			Ifindex:  values[i],
+			Ifindex:  value,
 			Not:      f.Not,
-			Upstream: upstreamId,
-		}
+			Upstream: uint8(upstreamId),
+		})
+		return nil
 	})
 }
 
 func (b *RequestMatcherBuilder) addIfname(f *config_parser.Function, values []string, upstream *routing.Outbound) (err error) {
-	return b.appendLogicalOrRules(len(values), upstream, func(i int, upstreamId uint8) requestMatchSet {
+	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value string, upstreamId consts.DnsRequestOutboundIndex) error {
 		b.ifnameRegs = append(b.ifnameRegs, ifnameReg{
 			ruleIndex: len(b.rules),
-			ifname:    values[i],
+			ifname:    value,
 		})
-		return requestMatchSet{
+		b.rules = append(b.rules, requestMatchSet{
 			Type:     consts.MatchType_IfIndex,
 			Not:      f.Not,
-			Upstream: upstreamId,
-		}
+			Upstream: uint8(upstreamId),
+		})
+		return nil
 	})
 }
 

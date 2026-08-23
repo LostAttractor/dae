@@ -110,15 +110,7 @@ func (b *ResponseMatcherBuilder) addQName(f *config_parser.Function, key string,
 }
 
 func (b *ResponseMatcherBuilder) addUpstream(f *config_parser.Function, values []string, upstream *routing.Outbound) (err error) {
-	for i, value := range values {
-		upstreamName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			upstreamName = upstream.Name
-		}
-		upstreamId, err := b.upstreamToId(upstreamName)
-		if err != nil {
-			return err
-		}
+	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value string, upstreamId consts.DnsResponseOutboundIndex) error {
 		lastUpstreamId, err := b.upstreamToId(value)
 		if err != nil {
 			return err
@@ -129,28 +121,20 @@ func (b *ResponseMatcherBuilder) addUpstream(f *config_parser.Function, values [
 			Not:      f.Not,
 			Upstream: uint8(upstreamId),
 		})
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *ResponseMatcherBuilder) addQType(f *config_parser.Function, values []uint16, upstream *routing.Outbound) (err error) {
-	for i, value := range values {
-		upstreamName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			upstreamName = upstream.Name
-		}
-		upstreamId, err := b.upstreamToId(upstreamName)
-		if err != nil {
-			return err
-		}
+	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value uint16, upstreamId consts.DnsResponseOutboundIndex) error {
 		b.rules = append(b.rules, responseMatchSet{
 			Type:     consts.MatchType_QType,
-			Value:    uint16(value),
+			Value:    value,
 			Not:      f.Not,
 			Upstream: uint8(upstreamId),
 		})
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *ResponseMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrString) (err error) {

@@ -25,10 +25,27 @@ type Outbound struct {
 	Mark uint32
 	Must bool
 	// SkipWhileNoalive makes the rule conditional on the target outbound
-	// group's connectivity: if the group cannot serve the network type of
-	// the current traffic, the rule is treated as not hit and routing falls
-	// through to the next rule.
+	// group's connectivity: if the group is unavailable, the rule is treated
+	// as not hit and routing falls through to the next rule.
 	SkipWhileNoalive bool
+}
+
+// ForEachLogicalOr resolves all but the final value to the logical-OR target.
+func (o *Outbound) ForEachLogicalOr[T, ID any](values []T, resolve func(string) (ID, error), visit func(T, ID) error) error {
+	for i, value := range values {
+		name := consts.OutboundLogicalOr.String()
+		if i == len(values)-1 {
+			name = o.Name
+		}
+		id, err := resolve(name)
+		if err != nil {
+			return err
+		}
+		if err := visit(value, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type RulesBuilder struct {

@@ -67,7 +67,7 @@ func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.
 			}
 			runtime = nextRuntime
 		}
-		n.CreatedDialer = dialer.NewDialerRuntime(runtime, option, n.Property, true)
+		n.CreatedDialer = dialer.NewDialer(runtime, option, n.Property, true)
 	}
 	return n.CreatedDialer, nil
 }

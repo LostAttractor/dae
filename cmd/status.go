@@ -62,64 +62,7 @@ func fetchStatus() (*control.StatusSnapshot, error) {
 	if err = json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
 		return nil, err
 	}
-	normalizeStatus(&snapshot)
 	return &snapshot, nil
-}
-
-func normalizeStatus(snapshot *control.StatusSnapshot) {
-	legacy := snapshot.Health == ""
-	for i := range snapshot.Groups {
-		group := &snapshot.Groups[i]
-		if group.NoCheck {
-			group.Available = true
-		}
-		for j := range group.Networks {
-			network := &group.Networks[j]
-			if legacy && !group.NoCheck {
-				network.Supported = true
-			}
-			if network.SupportState == "" {
-				network.SupportState = "unsupported"
-				if network.Supported {
-					network.SupportState = "confirmed"
-				}
-			}
-			group.Available = group.Available || network.Alive
-			if network.UpRatio > group.UpRatio {
-				group.UpRatio = network.UpRatio
-			}
-			if group.AliveSince == nil && network.AliveSince != nil {
-				group.AliveSince = network.AliveSince
-			}
-			if group.LastFailureStartedAt == nil && network.LastFailureStartedAt != nil {
-				group.LastFailureStartedAt = network.LastFailureStartedAt
-				group.LastFailureDuration = network.LastFailureDuration
-			}
-		}
-		for j := range group.Nodes {
-			node := &group.Nodes[j]
-			if node.DialerKind == "" {
-				node.DialerKind = "stateless"
-			}
-			if node.SessionState == "" {
-				node.SessionState = "n/a"
-			}
-			if node.HealthState == "" {
-				node.HealthState = "unhealthy"
-				if node.Alive {
-					node.HealthState = "healthy"
-				}
-			}
-			for k := range node.SupportState {
-				if node.SupportState[k] == "" {
-					node.SupportState[k] = "unsupported"
-					if node.Supported[k] {
-						node.SupportState[k] = "confirmed"
-					}
-				}
-			}
-		}
-	}
 }
 
 func formatUptime(d time.Duration) string {
@@ -425,12 +368,12 @@ func printGroupStatus(group control.GroupStatus) {
 	}
 
 	fmt.Printf(
-		"\nGroup '%s' [policy: %s, available: %s, up: %s, alive since: %s, failure: %s]\n",
+		"\nGroup '%s' [policy: %s, available: %s, up: %s, available since: %s, failure: %s]\n",
 		group.Name,
 		group.Policy,
 		colorAlive(group.Available),
 		colorRatio(group.UpRatio, formatRatio(group.UpRatio)),
-		formatAgo(group.AliveSince),
+		formatAgo(group.AvailableSince),
 		formatFailure(group.LastFailureStartedAt, group.LastFailureDuration),
 	)
 	rows := make([]table.Row, 0, len(group.Networks))

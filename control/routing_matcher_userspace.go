@@ -149,9 +149,8 @@ func (m *RoutingMatcher) Match(
 					m.outboundUsable != nil &&
 					!m.outboundUsable(uint8(outbound), l4proto, ipVersion) {
 					// The rule is conditional on the connectivity of the
-					// target outbound group, and the group cannot serve
-					// this network type. Treat the rule as not hit and
-					// fall through to the next rule.
+					// target outbound group. Treat an unavailable group as
+					// not hit and continue with the next rule.
 					continue
 				}
 				if must {

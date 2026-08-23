@@ -55,7 +55,7 @@ type GroupStatus struct {
 	NoCheck              bool             `json:"no_check"` // groups not subject to connectivity checks (direct)
 	Available            bool             `json:"available"`
 	UpRatio              float64          `json:"up_ratio"`
-	AliveSince           *time.Time       `json:"alive_since,omitempty"`
+	AvailableSince       *time.Time       `json:"available_since,omitempty"`
 	LastFailureStartedAt *time.Time       `json:"last_failure_started_at,omitempty"`
 	LastFailureDuration  time.Duration    `json:"last_failure_duration"`
 	Networks             [4]NetworkStatus `json:"networks"` // tcp4, tcp6, udp4, udp6
@@ -63,17 +63,11 @@ type GroupStatus struct {
 }
 
 type NetworkStatus struct {
-	Network              string        `json:"network"`
-	SupportState         string        `json:"support_state"`
-	Supported            bool          `json:"supported"` // Deprecated wire compatibility.
-	Alive                bool          `json:"alive"`     // Deprecated wire compatibility.
-	UpRatio              float64       `json:"up_ratio"`
-	AliveSince           *time.Time    `json:"alive_since,omitempty"`
-	LastFailureStartedAt *time.Time    `json:"last_failure_started_at,omitempty"`
-	LastFailureDuration  time.Duration `json:"last_failure_duration"`
-	Selected             string        `json:"selected"` // dialer name, empty if none
-	ActiveConns          int64         `json:"active_conns"`
-	TotalConns           int64         `json:"total_conns"`
+	Network      string `json:"network"`
+	SupportState string `json:"support_state"`
+	Selected     string `json:"selected"` // dialer name, empty if none
+	ActiveConns  int64  `json:"active_conns"`
+	TotalConns   int64  `json:"total_conns"`
 }
 
 type NodeStatus struct {
@@ -87,8 +81,6 @@ type NodeStatus struct {
 	SessionSeq           uint64        `json:"session_seq"`
 	SessionError         string        `json:"session_error,omitempty"`
 	HealthState          string        `json:"health_state"`
-	Alive                bool          `json:"alive"`     // Deprecated wire compatibility.
-	Supported            [4]bool       `json:"supported"` // Deprecated wire compatibility.
 	SupportState         [4]string     `json:"support_state"`
 	Selected             [4]bool       `json:"selected"`
 	HasLatency           bool          `json:"has_latency"`
@@ -255,7 +247,6 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 		DialerKind:   "stateless",
 		SessionState: "n/a",
 		HealthState:  "n/a",
-		Alive:        runtime.Healthy,
 	}
 	if runtime.HasSession {
 		session := runtime.Session
@@ -267,10 +258,9 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 		}
 	}
 	for i := 0; i < 4; i++ {
-		ns.Supported[i] = runtime.SupportState[i] == dialer.NetworkSupportConfirmed
 		ns.SupportState[i] = runtime.SupportState[i].String()
 		networkType := common.IndexToNetworkType(i)
-		ns.Selected[i] = ns.Supported[i] && g.SelectedDialer(networkType) == d
+		ns.Selected[i] = runtime.SupportState[i] == dialer.NetworkSupportConfirmed && g.SelectedDialer(networkType) == d
 	}
 	if runtime.HasLatency {
 		ns.HasLatency = true
@@ -378,7 +368,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 		availability := stats.GetGroup(g.Name)
 		gs.Available = g.Available()
 		gs.UpRatio = availability.UpRatio
-		gs.AliveSince = timePtr(availability.AliveSince)
+		gs.AvailableSince = timePtr(availability.AliveSince)
 		gs.LastFailureStartedAt = timePtr(availability.LastFailureStartedAt)
 		gs.LastFailureDuration = availability.LastFailureDuration
 		for _, d := range g.Dialers {
@@ -396,14 +386,6 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 						gs.Networks[i].SupportState = dialer.NetworkSupportUnknown.String()
 					}
 				}
-			}
-			gs.Networks[i].Supported = gs.Networks[i].SupportState == dialer.NetworkSupportConfirmed.String()
-			if gs.Networks[i].Supported {
-				gs.Networks[i].Alive = gs.Available
-				gs.Networks[i].UpRatio = gs.UpRatio
-				gs.Networks[i].AliveSince = gs.AliveSince
-				gs.Networks[i].LastFailureStartedAt = gs.LastFailureStartedAt
-				gs.Networks[i].LastFailureDuration = gs.LastFailureDuration
 			}
 		}
 		critical := outboundID < len(c.criticalOutbounds) && c.criticalOutbounds[outboundID]

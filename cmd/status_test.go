@@ -285,31 +285,3 @@ func TestColorHealthDefaultsToUnknown(t *testing.T) {
 		t.Fatalf("colorHealth(\"\") = %q, want %q", got, "unknown")
 	}
 }
-
-func TestNormalizeStatusFromPreviousSchema(t *testing.T) {
-	aliveSince := time.Now().Add(-time.Minute)
-	snapshot := control.StatusSnapshot{Groups: []control.GroupStatus{{
-		Networks: [4]control.NetworkStatus{{
-			Supported:  true,
-			Alive:      true,
-			UpRatio:    0.9,
-			AliveSince: &aliveSince,
-		}},
-		Nodes: []control.NodeStatus{{
-			Alive:     true,
-			Supported: [4]bool{true},
-		}},
-	}}}
-	normalizeStatus(&snapshot)
-	group := snapshot.Groups[0]
-	if !group.Available || group.UpRatio != 0.9 || group.AliveSince == nil {
-		t.Fatalf("normalized group = %+v", group)
-	}
-	if group.Networks[0].SupportState != "confirmed" {
-		t.Fatalf("network support = %q, want confirmed", group.Networks[0].SupportState)
-	}
-	node := group.Nodes[0]
-	if node.HealthState != "healthy" || node.SupportState[0] != "confirmed" {
-		t.Fatalf("normalized node = %+v", node)
-	}
-}

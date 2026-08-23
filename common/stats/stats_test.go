@@ -16,7 +16,7 @@ import (
 
 func nodeGaugeValue(t *testing.T, vec *prometheus.GaugeVec, key, subtag, name string) float64 {
 	t.Helper()
-	return gaugeValue(vec.With(prometheus.Labels{"id": nodeID(key), "subtag": subtag, "dialer": name}))
+	return gaugeValue(vec.With(prometheus.Labels{"id": NodeID(key), "subtag": subtag, "dialer": name}))
 }
 
 func TestRecordNode_Snapshot(t *testing.T) {
@@ -113,7 +113,7 @@ func TestRecordNode_SameNameDistinctIdentity(t *testing.T) {
 	if avail := GetNode(key2); avail.Alive || avail.LastFailureStartedAt.IsZero() {
 		t.Errorf("node-2 should have an active failure episode: %+v", avail)
 	}
-	if nodeID(key1) == nodeID(key2) {
+	if NodeID(key1) == NodeID(key2) {
 		t.Fatalf("distinct keys must produce distinct ids")
 	}
 }
@@ -159,14 +159,12 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	if avail.Alive || avail.LastFailureStartedAt.IsZero() {
 		t.Errorf("group should have an active failure episode: %+v", avail)
 	}
-	for i := 0; i < 4; i++ {
-		labels := prometheus.Labels{"outbound": name, "network": common.IndexToNetworkType(i).String()}
-		if v := gaugeValue(common.GroupAlive.With(labels)); v != 0 {
-			t.Errorf("dae_group_alive[%d] should be 0, got %v", i, v)
-		}
-		if v := gaugeValue(common.GroupLastFailureStart.With(labels)); v == 0 {
-			t.Errorf("dae_group_last_failure_start_timestamp_seconds[%d] should be set", i)
-		}
+	labels := prometheus.Labels{"outbound": name}
+	if v := gaugeValue(common.GroupAvailable.With(labels)); v != 0 {
+		t.Errorf("dae_group_available should be 0, got %v", v)
+	}
+	if v := gaugeValue(common.GroupLastFailureStart.With(labels)); v == 0 {
+		t.Error("dae_group_last_failure_start_timestamp_seconds should be set")
 	}
 }
 
@@ -227,7 +225,7 @@ func TestRecordNode_SubsecondFailureDuration(t *testing.T) {
 func TestRecordNode_CheckCounters(t *testing.T) {
 	key, subtag, name := t.Name()+"\x1fnode", "sub", "node-e"
 	labels := func() prometheus.Labels {
-		return prometheus.Labels{"id": nodeID(key), "subtag": subtag, "dialer": name}
+		return prometheus.Labels{"id": NodeID(key), "subtag": subtag, "dialer": name}
 	}
 	RecordNode(key, subtag, name, true, false) // registration: not a check
 	if avail := GetNode(key); avail.ChecksTotal != 0 {
@@ -367,7 +365,7 @@ func TestReconcileRetiresRemovedIdentities(t *testing.T) {
 	if collectorHasLabelValue(t, common.NodeAlive, "id", NodeID(removeKey)) {
 		t.Fatalf("removed node prometheus series still exists")
 	}
-	if collectorHasLabelValue(t, common.GroupAlive, "outbound", removeGroup) {
+	if collectorHasLabelValue(t, common.GroupAvailable, "outbound", removeGroup) {
 		t.Fatalf("removed group prometheus series still exists")
 	}
 

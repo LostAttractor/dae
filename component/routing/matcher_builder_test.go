@@ -6,11 +6,39 @@
 package routing
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+func TestOutboundForEachLogicalOrPreservesTypes(t *testing.T) {
+	type outboundID int16
+	type visit struct {
+		value string
+		id    outboundID
+	}
+	outbound := &Outbound{Name: "proxy"}
+	ids := map[string]outboundID{
+		consts.OutboundLogicalOr.String(): 0xfe,
+		"proxy":                           7,
+	}
+	var got []visit
+	err := outbound.ForEachLogicalOr([]string{"first", "second", "third"}, func(name string) (outboundID, error) {
+		return ids[name], nil
+	}, func(value string, id outboundID) error {
+		got = append(got, visit{value: value, id: id})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []visit{{"first", 0xfe}, {"second", 0xfe}, {"third", 7}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("visits = %#v, want %#v", got, want)
+	}
+}
 
 func TestParseOutboundSkipWhileNoalive(t *testing.T) {
 	tests := []struct {

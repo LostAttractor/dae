@@ -68,22 +68,6 @@ type gauge interface {
 	Write(*dto.Metric) error
 }
 
-type mirroredGauge []prometheus.Gauge
-
-func (g mirroredGauge) Set(value float64) {
-	for _, gauge := range g {
-		gauge.Set(value)
-	}
-}
-
-func (g mirroredGauge) Inc() {
-	for _, gauge := range g {
-		gauge.Inc()
-	}
-}
-
-func (g mirroredGauge) Write(metric *dto.Metric) error { return g[0].Write(metric) }
-
 func metricValue(m interface{ Write(*dto.Metric) error }) float64 {
 	var d dto.Metric
 	if err := m.Write(&d); err != nil {
@@ -262,9 +246,6 @@ func NodeID(key string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// Kept for package-local tests and older internal call sites.
-func nodeID(key string) string { return NodeID(key) }
-
 func nodeAvailability(key, subtag, name string) *availability {
 	if v, ok := nodes.Load(key); ok {
 		return v.(*availability)
@@ -322,23 +303,12 @@ func GetNode(key string) Availability {
 var groups sync.Map // group name -> *availability
 
 func newGroupAvailability(name string) *availability {
-	alive := make(mirroredGauge, 0, 4)
-	aliveSince := make(mirroredGauge, 0, 4)
-	failureStart := make(mirroredGauge, 0, 4)
-	for i := 0; i < 4; i++ {
-		labels := prometheus.Labels{
-			"outbound": name,
-			"network":  common.IndexToNetworkType(i).String(),
-		}
-		alive = append(alive, common.GroupAlive.With(labels))
-		aliveSince = append(aliveSince, common.GroupAliveSince.With(labels))
-		failureStart = append(failureStart, common.GroupLastFailureStart.With(labels))
-	}
+	labels := prometheus.Labels{"outbound": name}
 	return &availability{
-		labels:       prometheus.Labels{"outbound": name},
-		alive:        alive,
-		aliveSince:   aliveSince,
-		failureStart: failureStart,
+		labels:       labels,
+		alive:        common.GroupAvailable.With(labels),
+		aliveSince:   common.GroupAvailableSince.With(labels),
+		failureStart: common.GroupLastFailureStart.With(labels),
 	}
 }
 
@@ -400,15 +370,9 @@ func deleteNodeMetrics(labels prometheus.Labels) {
 }
 
 func deleteGroupMetrics(group *availability) {
-	for i := 0; i < 4; i++ {
-		labels := prometheus.Labels{
-			"outbound": group.labels["outbound"],
-			"network":  common.IndexToNetworkType(i).String(),
-		}
-		common.GroupAlive.Delete(labels)
-		common.GroupAliveSince.Delete(labels)
-		common.GroupLastFailureStart.Delete(labels)
-	}
+	common.GroupAvailable.Delete(group.labels)
+	common.GroupAvailableSince.Delete(group.labels)
+	common.GroupLastFailureStart.Delete(group.labels)
 }
 
 // Reconcile removes availability state and prometheus series that do not

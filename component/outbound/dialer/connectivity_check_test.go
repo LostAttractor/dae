@@ -178,7 +178,7 @@ func (g *statusRecordingGroup) NotifyStatusChange(d *Dialer) {
 func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	t.Helper()
 	id := testDialerSequence.Add(1)
-	return NewDialer(transport, &GlobalOption{}, &Property{Property: D.Property{
+	return NewDialer(netproxy.NewRuntime(transport), &GlobalOption{}, &Property{Property: D.Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
 	}}, true)
