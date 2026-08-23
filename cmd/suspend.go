@@ -20,34 +20,56 @@ var (
 	suspendCmd = &cobra.Command{
 		Use:   "suspend [pid]",
 		Short: "To suspend dae. This command puts dae into no-load state. Recover it by 'dae reload'.",
-		Run: func(cmd *cobra.Command, args []string) {
-			internal.AutoSu()
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			if len(args) == 0 {
 				_pid, err := os.ReadFile(PidFilePath)
 				if err != nil {
-					fmt.Println("Failed to read pid file:", err)
-					os.Exit(1)
+					return fmt.Errorf("failed to read pid file: %w", err)
 				}
 				args = []string{strings.TrimSpace(string(_pid))}
 			}
-			pid, err := strconv.Atoi(args[0])
+			pid, err := parsePositivePID(args[0])
 			if err != nil {
-				cmd.Help()
-				os.Exit(1)
+				return err
+			}
+			internal.AutoSu()
+
+			abortMarkerCreated := false
+			cleanupAbortMarker := func() {
+				if abortMarkerCreated {
+					_ = os.Remove(AbortFile)
+				}
 			}
 			if abort {
-				if f, err := os.Create(AbortFile); err == nil {
-					f.Close()
+				f, err := os.OpenFile(AbortFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+				if err != nil {
+					return fmt.Errorf("failed to create abort marker: %w", err)
+				}
+				abortMarkerCreated = true
+				if err = f.Close(); err != nil {
+					cleanupAbortMarker()
+					return fmt.Errorf("failed to close abort marker: %w", err)
 				}
 			}
 			if err = syscall.Kill(pid, syscall.SIGUSR2); err != nil {
-				fmt.Println(err)
-				os.Exit(1)
+				cleanupAbortMarker()
+				return fmt.Errorf("failed to signal dae: %w", err)
 			}
-			fmt.Println("OK")
+			fmt.Fprintln(cmd.OutOrStdout(), "OK")
+			return nil
 		},
 	}
 )
+
+func parsePositivePID(raw string) (int, error) {
+	pid, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("invalid pid %q", raw)
+	}
+	return int(pid), nil
+}
 
 func init() {
 	rootCmd.AddCommand(suspendCmd)
