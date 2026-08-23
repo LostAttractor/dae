@@ -40,6 +40,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sys/unix"
@@ -281,9 +282,9 @@ func NewControlPlane(
 	}
 
 	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(_direct, option, &dialer.Property{Property: *directProperty}, false)
+	direct := dialer.NewDialer(netproxy.NewRuntime(_direct), option, &dialer.Property{Property: *directProperty}, false)
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(_block, option, &dialer.Property{Property: *blockProperty}, false)
+	block := dialer.NewDialer(netproxy.NewRuntime(_block), option, &dialer.Property{Property: *blockProperty}, false)
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindAlwaysAlive,
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -549,8 +550,8 @@ func (c *ControlPlane) Activate() error {
 	}
 	for _, g := range c.outbounds {
 		for _, d := range g.Dialers {
-			// Initialize all four map entries before asynchronous checks allow
-			// traffic to start with an absent connectivity state.
+			// Initialize the map entry before asynchronous checks allow traffic
+			// to start with an absent connectivity state.
 			d.NotifyStatusChange()
 			d.ActivateCheck(wg)
 		}

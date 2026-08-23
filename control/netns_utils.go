@@ -81,9 +81,9 @@ func (ns *DaeNetns) Close() (err error) {
 	return
 }
 
-func (ns *DaeNetns) With(f func() error) (err error) {
+func (ns *DaeNetns) With[T any](f func() (T, error)) (value T, err error) {
 	if err = ns.Setup(); err != nil {
-		return fmt.Errorf("failed to setup dae netns: %w", err)
+		return value, fmt.Errorf("failed to setup dae netns: %w", err)
 	}
 
 	runtime.LockOSThread()
@@ -91,18 +91,19 @@ func (ns *DaeNetns) With(f func() error) (err error) {
 
 	original, err := netns.Get()
 	if err != nil {
-		return fmt.Errorf("failed to get current netns: %w", err)
+		return value, fmt.Errorf("failed to get current netns: %w", err)
 	}
 	defer original.Close()
 	if err = netns.Set(ns.daeNs); err != nil {
-		return fmt.Errorf("failed to switch to daens: %w", err)
+		return value, fmt.Errorf("failed to switch to daens: %w", err)
 	}
 	defer func() { _ = netns.Set(original) }()
 
-	if err = f(); err != nil {
-		return fmt.Errorf("failed to run func in dae netns: %w", err)
+	if value, err = f(); err != nil {
+		var zero T
+		return zero, fmt.Errorf("failed to run func in dae netns: %w", err)
 	}
-	return
+	return value, nil
 }
 
 func (ns *DaeNetns) setup() (err error) {

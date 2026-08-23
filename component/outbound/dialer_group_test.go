@@ -114,7 +114,7 @@ func newTestOption() *dialer.GlobalOption {
 }
 
 func newTestDialer(option *dialer.GlobalOption, name string) *dialer.Dialer {
-	return dialer.NewDialer(fakeDialer{}, option, &dialer.Property{Property: D.Property{
+	return dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: name,
 		Link: "test://" + name,
 	}}, true)
@@ -432,7 +432,7 @@ func TestAlwaysAliveGroupSeedsCachedSelectors(t *testing.T) {
 	for _, policy := range policies {
 		t.Run(string(policy.Policy), func(t *testing.T) {
 			option := newTestOption()
-			d := dialer.NewDialer(fakeDialer{}, option, &dialer.Property{Property: D.Property{
+			d := dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), option, &dialer.Property{Property: D.Property{
 				Name: t.Name(),
 				Link: "test://" + t.Name(),
 			}}, false)
@@ -528,7 +528,7 @@ func TestLatencySelectorIgnoresUnknownUntilConfirmed(t *testing.T) {
 }
 
 func TestDialerWithoutHealthCheckHasConfirmedSupport(t *testing.T) {
-	d := dialer.NewDialer(fakeDialer{}, newTestOption(), &dialer.Property{Property: D.Property{
+	d := dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), newTestOption(), &dialer.Property{Property: D.Property{
 		Name: "always-supported",
 		Link: "test://always-supported",
 	}}, false)
@@ -781,7 +781,7 @@ func TestDialerGroupSelectInvalidatesDisconnectedTransport(t *testing.T) {
 			option := newTestOption()
 			transport := new(toggleDialer)
 			transport.setConnected(true)
-			d := dialer.NewDialer(transport, option, &dialer.Property{Property: D.Property{
+			d := dialer.NewDialer(netproxy.NewRuntime(transport), option, &dialer.Property{Property: D.Property{
 				Name: "node0",
 				Link: "test://node0",
 			}}, true)
@@ -818,7 +818,7 @@ func TestDialerGroupSessionDisconnectPublishesState(t *testing.T) {
 			option := newTestOption()
 			transport := new(toggleDialer)
 			transport.setConnected(true)
-			d := dialer.NewDialer(transport, option, &dialer.Property{Property: D.Property{
+			d := dialer.NewDialer(netproxy.NewRuntime(transport), option, &dialer.Property{Property: D.Property{
 				Name: "node0",
 				Link: "test://node0",
 			}}, true)
@@ -1047,7 +1047,7 @@ func TestDialerCloseRejectsLaterUpdates(t *testing.T) {
 func TestDialerCloseWaitsForAndCancelsHealthCheck(t *testing.T) {
 	option := newTestOption()
 	blocking := &blockingCheckDialer{started: make(chan struct{})}
-	d := dialer.NewDialer(blocking, option, &dialer.Property{Property: D.Property{
+	d := dialer.NewDialer(netproxy.NewRuntime(blocking), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(), Link: "test://" + t.Name(),
 	}}, true)
 	d.SetCheckAsync(true)

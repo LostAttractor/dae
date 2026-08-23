@@ -290,7 +290,7 @@ struct match_set {
 	__u8 outbound; // User-defined value range is [0, 252].
 	bool must;
 	// If set, the rule is skipped (treated as not hit) when the target
-	// outbound group has no connectivity for the traffic's network type.
+	// outbound group is unavailable.
 	bool skip_while_noalive;
 	__u32 mark;
 };
@@ -1678,7 +1678,6 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 			.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
 			.l4proto = l4proto,
 		};
-
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 		bpf_printk("outbound_connectivity_query: outbound: %u, ipversion: %u, l4proto: %u",
 			   q.outbound, q.ipversion, q.l4proto);

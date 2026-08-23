@@ -233,7 +233,7 @@ func TestRoutingMatcherSkipWhileNoaliveOnDirect(t *testing.T) {
 				Outbound: uint8(consts.OutboundUserDefinedMin),
 			},
 		},
-		outboundUsable: func(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool {
+		outboundUsable: func(outbound uint8, _ consts.L4ProtoType, _ consts.IpVersionType) bool {
 			return usable
 		},
 	}

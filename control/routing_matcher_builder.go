@@ -211,15 +211,7 @@ func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.
 }
 
 func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]uint16, outbound *routing.Outbound) (err error) {
-	for i, value := range values {
-		outboundName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			outboundName = outbound.Name
-		}
-		outboundId, err := b.outboundToId(outboundName)
-		if err != nil {
-			return err
-		}
+	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value [2]uint16, outboundId uint8) error {
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint8(consts.MatchType_Port),
 			Value: _bpfPortRange{
@@ -232,8 +224,8 @@ func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]u
 			Must:             outbound.Must,
 			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		})
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
@@ -258,15 +250,7 @@ func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []
 }
 
 func (b *RoutingMatcherBuilder) addSourcePort(f *config_parser.Function, values [][2]uint16, outbound *routing.Outbound) (err error) {
-	for i, value := range values {
-		outboundName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			outboundName = outbound.Name
-		}
-		outboundId, err := b.outboundToId(outboundName)
-		if err != nil {
-			return err
-		}
+	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value [2]uint16, outboundId uint8) error {
 		b.rules = append(b.rules, bpfMatchSet{
 			Type: uint8(consts.MatchType_SourcePort),
 			Value: _bpfPortRange{
@@ -279,8 +263,8 @@ func (b *RoutingMatcherBuilder) addSourcePort(f *config_parser.Function, values 
 			Must:             outbound.Must,
 			SkipWhileNoalive: outbound.SkipWhileNoalive,
 		})
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *RoutingMatcherBuilder) addL4Proto(f *config_parser.Function, values consts.L4ProtoType, outbound *routing.Outbound) (err error) {
@@ -318,15 +302,7 @@ func (b *RoutingMatcherBuilder) addIpVersion(f *config_parser.Function, values c
 }
 
 func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values [][consts.TaskCommLen]byte, outbound *routing.Outbound) (err error) {
-	for i, value := range values {
-		outboundName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			outboundName = outbound.Name
-		}
-		outboundId, err := b.outboundToId(outboundName)
-		if err != nil {
-			return err
-		}
+	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value [consts.TaskCommLen]byte, outboundId uint8) error {
 		matchSet := bpfMatchSet{
 			Type:             uint8(consts.MatchType_ProcessName),
 			Not:              f.Not,
@@ -337,20 +313,12 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 		}
 		copy(matchSet.Value[:], value[:])
 		b.rules = append(b.rules, matchSet)
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *RoutingMatcherBuilder) addIfIndex(f *config_parser.Function, values []uint32, outbound *routing.Outbound) (err error) {
-	for i, value := range values {
-		outboundName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			outboundName = outbound.Name
-		}
-		outboundId, err := b.outboundToId(outboundName)
-		if err != nil {
-			return err
-		}
+	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value uint32, outboundId uint8) error {
 		set := bpfMatchSet{
 			Value:            [16]byte{},
 			Type:             uint8(consts.MatchType_IfIndex),
@@ -362,8 +330,8 @@ func (b *RoutingMatcherBuilder) addIfIndex(f *config_parser.Function, values []u
 		}
 		binary.LittleEndian.PutUint32(set.Value[:], uint32(value))
 		b.rules = append(b.rules, set)
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *RoutingMatcherBuilder) storeIfindex(index int, ifindex uint32) {
@@ -373,15 +341,7 @@ func (b *RoutingMatcherBuilder) storeIfindex(index int, ifindex uint32) {
 }
 
 func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {
-	for i, value := range values {
-		outboundName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			outboundName = outbound.Name
-		}
-		outboundId, err := b.outboundToId(outboundName)
-		if err != nil {
-			return err
-		}
+	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value string, outboundId uint8) error {
 		set := bpfMatchSet{
 			Value:            [16]byte{},
 			Type:             uint8(consts.MatchType_IfIndex),
@@ -431,20 +391,12 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 			}
 			return nil
 		})
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint8, outbound *routing.Outbound) (err error) {
-	for i, value := range values {
-		outboundName := consts.OutboundLogicalOr.String()
-		if i == len(values)-1 {
-			outboundName = outbound.Name
-		}
-		outboundId, err := b.outboundToId(outboundName)
-		if err != nil {
-			return err
-		}
+	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value uint8, outboundId uint8) error {
 		matchSet := bpfMatchSet{
 			Type:             uint8(consts.MatchType_Dscp),
 			Not:              f.Not,
@@ -455,8 +407,8 @@ func (b *RoutingMatcherBuilder) addDscp(f *config_parser.Function, values []uint
 		}
 		matchSet.Value[0] = value
 		b.rules = append(b.rules, matchSet)
-	}
-	return nil
+		return nil
+	})
 }
 
 func (b *RoutingMatcherBuilder) addFallback(fallbackOutbound config.FunctionOrString) (err error) {

@@ -105,9 +105,9 @@ dip(ext:"yourdatfile.dat:yourtag")->direct
 domain(geosite:disney) -> direct(mark: 0x800)
 
 ### 目标 group 不存活时跳过规则
-# 如果一条规则带有 "skip_while_noalive" 注解，那么只有当目标 group 能够为当前流量的
-# 网络类型（l4proto x ipversion）提供服务时，该规则才生效。当 group 在该网络类型下没有
-# 存活的 dialer 时，该规则被视为未命中，路由继续向下匹配后续规则（直至 fallback）。
+# 如果一条规则带有 "skip_while_noalive" 注解，那么只有当目标 group 可用时，该规则才
+# 生效。当 group 不可用时，该规则被视为未命中，路由继续向下匹配后续规则（直至
+# fallback）。
 # 当你希望特定流量走特定出口、但这并非必需时很有用：出口故障时流量会透明地降级到
 # 通用规则。
 # 它可以像 "must" 一样作为裸参数书写，也可以显式给出值：

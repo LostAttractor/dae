@@ -107,9 +107,8 @@ domain(geosite:disney) -> direct(mark: 0x800)
 
 ### Skip rules while the target group is not alive
 # If a rule is annotated with "skip_while_noalive", it only applies while the target
-# group can serve the traffic's network type (l4proto x ipversion). When the group
-# has no dialer alive for that network type, the rule is treated as not hit and
-# routing falls through to the following rules (and finally the fallback).
+# group is available. When the group is unavailable, the rule is treated as not hit
+# and routing falls through to the following rules (and finally the fallback).
 # This is useful when you prefer a specific egress for specific traffic, but do not
 # require it: on failure the traffic transparently degrades to the general rules.
 # It can be written as a bare parameter (like "must") or with an explicit value:

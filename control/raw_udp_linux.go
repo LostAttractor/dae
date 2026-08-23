@@ -93,7 +93,10 @@ func sendUDPv4RawInDaeNetns(data []byte, from, to netip.AddrPort, mark uint32) e
 	if ns == nil {
 		return fmt.Errorf("dae netns is not initialized")
 	}
-	return ns.With(func() error { return sendUDPv4RawDirect(data, from, to, mark) })
+	_, err := ns.With(func() (struct{}, error) {
+		return struct{}{}, sendUDPv4RawDirect(data, from, to, mark)
+	})
+	return err
 }
 
 func sendUDPv6RawDirect(data []byte, from, to netip.AddrPort, mark uint32) error {
@@ -182,7 +185,10 @@ func sendUDPv6RawInDaeNetns(data []byte, from, to netip.AddrPort, mark uint32) e
 	if ns == nil {
 		return fmt.Errorf("dae netns is not initialized")
 	}
-	return ns.With(func() error { return sendUDPv6RawDirect(data, from, to, mark) })
+	_, err := ns.With(func() (struct{}, error) {
+		return struct{}{}, sendUDPv6RawDirect(data, from, to, mark)
+	})
+	return err
 }
 
 func enableRawUDPFragmentation(fd, family int) error {

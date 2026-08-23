@@ -46,8 +46,8 @@ var (
 	NodeCheckFailures      *prometheus.CounterVec
 	NodeChecksSinceAlive   *prometheus.GaugeVec
 	NodeChecksSinceFailure *prometheus.GaugeVec
-	GroupAlive             *prometheus.GaugeVec
-	GroupAliveSince        *prometheus.GaugeVec
+	GroupAvailable         *prometheus.GaugeVec
+	GroupAvailableSince    *prometheus.GaugeVec
 	GroupLastFailureStart  *prometheus.GaugeVec
 
 	StartTime      prometheus.Gauge
@@ -186,16 +186,16 @@ func newMetrics() {
 		},
 		nodeLabels,
 	)
-	groupLabels := []string{"outbound", "network"}
-	GroupAlive = prometheus.NewGaugeVec(
+	groupLabels := []string{"outbound"}
+	GroupAvailable = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "dae_group_alive",
+			Name: "dae_group_available",
 		},
 		groupLabels,
 	)
-	GroupAliveSince = prometheus.NewGaugeVec(
+	GroupAvailableSince = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "dae_group_alive_since_timestamp_seconds",
+			Name: "dae_group_available_since_timestamp_seconds",
 		},
 		groupLabels,
 	)
@@ -260,8 +260,8 @@ func InitPrometheus(registry *prometheus.Registry) {
 		NodeCheckFailures,
 		NodeChecksSinceAlive,
 		NodeChecksSinceFailure,
-		GroupAlive,
-		GroupAliveSince,
+		GroupAvailable,
+		GroupAvailableSince,
 		GroupLastFailureStart,
 		StartTime,
 		LastReloadTime,

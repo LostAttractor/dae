@@ -81,17 +81,12 @@ check-go-version:
 	if [ "$$major" -gt 1 ]; then \
 		supported=1; \
 	elif [ "$$major" -eq 1 ]; then \
-		if [ "$$minor" -gt 25 ]; then \
-			supported=1; \
-		elif [ "$$minor" -eq 25 ] && [ "$$patch" -ge 7 ]; then \
-			supported=1; \
-		elif [ "$$minor" -eq 24 ] && [ "$$patch" -ge 13 ]; then \
+		if [ "$$minor" -ge 27 ]; then \
 			supported=1; \
 		fi; \
 	fi; \
 	if [ "$$supported" -ne 1 ]; then \
-		echo "ERROR: Go 1.24.13+, Go 1.25.7+, or Go 1.26+ is required (found $(GO_VERSION))." >&2; \
-		echo "Older releases lack crypto/tls session resumption hardening related to golang/go#77217." >&2; \
+		echo "ERROR: Go 1.27+ is required (found $(GO_VERSION))." >&2; \
 		exit 1; \
 	fi
 

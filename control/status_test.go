@@ -210,6 +210,40 @@ func TestFailureEpisodeJSONFields(t *testing.T) {
 	}
 }
 
+func TestStatusJSONUsesCurrentAvailabilitySchema(t *testing.T) {
+	availableSince := time.Now()
+	b, err := json.Marshal(GroupStatus{
+		AvailableSince: &availableSince,
+		Networks:       [4]NetworkStatus{{Network: "tcp4", SupportState: "confirmed"}},
+		Nodes:          []NodeStatus{{Name: "node", HealthState: "healthy"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		AvailableSince json.RawMessage              `json:"available_since"`
+		AliveSince     json.RawMessage              `json:"alive_since"`
+		Networks       []map[string]json.RawMessage `json:"networks"`
+		Nodes          []map[string]json.RawMessage `json:"nodes"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.AvailableSince == nil || got.AliveSince != nil {
+		t.Fatalf("availability timestamps use stale schema: %s", b)
+	}
+	for kind, fields := range map[string]map[string]json.RawMessage{
+		"network": got.Networks[0],
+		"node":    got.Nodes[0],
+	} {
+		for _, field := range []string{"alive", "supported"} {
+			if _, ok := fields[field]; ok {
+				t.Errorf("%s status exposes stale %q field: %s", kind, field, b)
+			}
+		}
+	}
+}
+
 func TestGroupHealth(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -306,11 +340,11 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 0,
 	}
-	callback := func(bool) error { return nil }
+	callback := func(bool, *common.NetworkType) error { return nil }
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindAlwaysAlive, nil, nil, policy, callback)
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible, nil, nil, policy, callback)
 
-	node := dialer.NewDialer(statusTestDialer{}, option, &dialer.Property{Property: D.Property{
+	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
 	}}, true)
@@ -343,10 +377,10 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	if snapshot.Health != HealthHealthy || snapshot.Groups[1].Health != HealthHealthy {
 		t.Fatalf("health = %q/%q, want healthy", snapshot.Health, snapshot.Groups[1].Health)
 	}
-	if !snapshot.Groups[1].Available || snapshot.Groups[1].Networks[0].SupportState != "confirmed" || !snapshot.Groups[1].Networks[0].Alive {
+	if !snapshot.Groups[1].Available || snapshot.Groups[1].Networks[0].SupportState != "confirmed" {
 		t.Fatalf("group/tcp4 status = %+v/%+v, want available and supported", snapshot.Groups[1], snapshot.Groups[1].Networks[0])
 	}
-	if snapshot.Groups[1].Networks[1].SupportState != "unsupported" || snapshot.Groups[1].Networks[1].Alive {
+	if snapshot.Groups[1].Networks[1].SupportState != "unsupported" {
 		t.Fatalf("tcp6 status = %+v, want unsupported", snapshot.Groups[1].Networks[1])
 	}
 	if got := snapshot.Groups[1].Nodes[0].SupportState[0]; got != "confirmed" {
@@ -370,7 +404,7 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	}
 }
 
-func TestStatusSnapshotDoesNotReportUnknownNetworkAlive(t *testing.T) {
+func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	common.InitPrometheus(registry)
 	option := &dialer.GlobalOption{}
@@ -378,7 +412,7 @@ func TestStatusSnapshotDoesNotReportUnknownNetworkAlive(t *testing.T) {
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 0,
 	}
-	node := dialer.NewDialer(statusTestDialer{}, option, &dialer.Property{Property: D.Property{
+	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
 	}}, true)
@@ -389,7 +423,7 @@ func TestStatusSnapshotDoesNotReportUnknownNetworkAlive(t *testing.T) {
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		policy,
-		func(bool) error { return nil },
+		func(bool, *common.NetworkType) error { return nil },
 	)
 	defer group.Close()
 	node.Update(true, time.Millisecond, nil, nil)
@@ -425,7 +459,7 @@ func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
 	option := &dialer.GlobalOption{}
 	session := newStatusTestSession(netproxy.SessionConnected)
 	transport := netproxy.WithSession(statusTestDialer{}, session)
-	node := dialer.NewDialer(transport, option, &dialer.Property{Property: D.Property{
+	node := dialer.NewDialer(netproxy.NewRuntime(transport), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
 	}}, true)
@@ -436,7 +470,7 @@ func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed},
-		func(bool) error { return nil },
+		func(bool, *common.NetworkType) error { return nil },
 	)
 	t.Cleanup(func() {
 		_ = group.Close()

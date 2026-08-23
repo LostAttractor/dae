@@ -152,12 +152,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 	}
 }
 
-// NewDialer is for register in general.
-func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, checkEnabled bool) *Dialer {
-	return NewDialerRuntime(netproxy.NewRuntime(dialer), option, property, checkEnabled)
-}
-
-func NewDialerRuntime(runtime *netproxy.Runtime, option *GlobalOption, property *Property, checkEnabled bool) *Dialer {
+func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, checkEnabled bool) *Dialer {
 	return newDialer(newTransportRuntime(runtime), option, property, checkEnabled, "")
 }
 
