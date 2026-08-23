@@ -140,14 +140,13 @@ func TestRecordNodeConnFail(t *testing.T) {
 
 func TestRecordGroup_Snapshot(t *testing.T) {
 	name := t.Name()
-	if avail := GetGroup(name, 0); avail.Seen {
+	if avail := GetGroup(name); avail.Seen {
 		t.Fatalf("unrecorded group should not be seen")
 	}
-	RecordGroup(name, 0, true)
-	RecordGroup(name, 2, false)
-	avail := GetGroup(name, 0)
+	RecordGroup(name, true)
+	avail := GetGroup(name)
 	if !avail.Seen || !avail.Alive {
-		t.Errorf("group network 0 should be seen and alive: %+v", avail)
+		t.Errorf("group should be seen and available: %+v", avail)
 	}
 	if avail.AliveSince.IsZero() || avail.UpDuration <= 0 {
 		t.Errorf("alive group should have AliveSince/UpDuration: %+v", avail)
@@ -155,19 +154,19 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	if !avail.LastCheckAt.IsZero() || !avail.LastConnFailAt.IsZero() {
 		t.Errorf("groups never set check/conn-fail timestamps: %+v", avail)
 	}
-	avail = GetGroup(name, 2)
+	RecordGroup(name, false)
+	avail = GetGroup(name)
 	if avail.Alive || avail.LastFailureStartedAt.IsZero() {
-		t.Errorf("group network 2 should have an active failure episode: %+v", avail)
+		t.Errorf("group should have an active failure episode: %+v", avail)
 	}
-	if avail := GetGroup(name, 1); avail.Seen {
-		t.Errorf("unrecorded network index should not be seen")
-	}
-	labels := prometheus.Labels{"outbound": name, "network": common.IndexToNetworkType(2).String()}
-	if v := gaugeValue(common.GroupAlive.With(labels)); v != 0 {
-		t.Errorf("dae_group_alive should be 0, got %v", v)
-	}
-	if v := gaugeValue(common.GroupLastFailureStart.With(labels)); v == 0 {
-		t.Errorf("dae_group_last_failure_start_timestamp_seconds should be set")
+	for i := 0; i < 4; i++ {
+		labels := prometheus.Labels{"outbound": name, "network": common.IndexToNetworkType(i).String()}
+		if v := gaugeValue(common.GroupAlive.With(labels)); v != 0 {
+			t.Errorf("dae_group_alive[%d] should be 0, got %v", i, v)
+		}
+		if v := gaugeValue(common.GroupLastFailureStart.With(labels)); v == 0 {
+			t.Errorf("dae_group_last_failure_start_timestamp_seconds[%d] should be set", i)
+		}
 	}
 }
 
@@ -348,8 +347,8 @@ func TestReconcileRetiresRemovedIdentities(t *testing.T) {
 	RecordNode(keepKey, "sub", "keep", true, true)
 	RecordNode(removeKey, "sub", "remove", true, true)
 	RecordNode(removeKey, "sub", "remove", true, true)
-	RecordGroup(keepGroup, 0, true)
-	RecordGroup(removeGroup, 0, true)
+	RecordGroup(keepGroup, true)
+	RecordGroup(removeGroup, true)
 
 	Reconcile([]NodeIdentity{{Key: keepKey, Subtag: "sub", Name: "keep"}}, []string{keepGroup})
 
@@ -359,10 +358,10 @@ func TestReconcileRetiresRemovedIdentities(t *testing.T) {
 	if avail := GetNode(removeKey); avail.Seen {
 		t.Fatalf("removed node is still visible: %+v", avail)
 	}
-	if avail := GetGroup(keepGroup, 0); !avail.Seen {
+	if avail := GetGroup(keepGroup); !avail.Seen {
 		t.Fatalf("retained group lost its history")
 	}
-	if avail := GetGroup(removeGroup, 0); avail.Seen {
+	if avail := GetGroup(removeGroup); avail.Seen {
 		t.Fatalf("removed group is still visible: %+v", avail)
 	}
 	if collectorHasLabelValue(t, common.NodeAlive, "id", NodeID(removeKey)) {

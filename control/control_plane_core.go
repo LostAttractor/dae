@@ -56,12 +56,9 @@ type controlPlaneCore struct {
 	ifmgr  *component.InterfaceManager
 	netmon *component.HostNetworkMonitor
 
-	// outboundConnectivityMap stores actual outbound liveness, indexed by
-	// [outbound][NetworkTypeToIndex]. It is written by the same callback that
-	// maintains the eBPF outbound_connectivity_map and read by the userspace
-	// routing matcher to evaluate skip_while_noalive rules without BPF map
-	// lookups in the hot path. A zero-valued bool also represents a state that
-	// has not been reported yet, which is conservatively treated as unusable.
+	// outboundConnectivityMap stores actual outbound usability per network. It
+	// mirrors the eBPF map for userspace skip_while_noalive evaluation. A zero
+	// value also represents state that has not been reported yet.
 	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][4]atomic.Bool
 	outboundCallbackMu      sync.Mutex
 	outboundRecovery        func()

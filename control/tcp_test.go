@@ -6,11 +6,25 @@
 package control
 
 import (
+	"context"
 	"net"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/control/internal/splice"
+	"github.com/daeuniverse/outbound/netproxy"
 )
+
+type tcpTestDialer struct{ conn net.Conn }
+
+func (d tcpTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return d.conn, nil
+}
+
+func (tcpTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return nil, net.ErrClosed
+}
 
 type closeTrackingConn struct {
 	closed chan struct{}
@@ -106,5 +120,43 @@ func TestTCPConnectionTrackerWaitsForSetups(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("wait did not return after setup handoff")
+	}
+}
+
+func TestRuntimeConnectionRetainsDirectSpliceCapability(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := make(chan *net.TCPConn, 1)
+	go func() {
+		conn, _ := listener.AcceptTCP()
+		accepted <- conn
+	}()
+	remote, err := net.DialTCP("tcp", nil, listener.Addr().(*net.TCPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := <-accepted
+	if server == nil {
+		t.Fatal("accept failed")
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	runtime := netproxy.NewRuntime(tcpTestDialer{conn: remote})
+	conn, err := runtime.Dialer().DialContext(context.Background(), "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := conn.(splice.TCPConn); !ok {
+		t.Fatal("runtime connection hid direct splice capability")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.Retire()
+	if err := runtime.Wait(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

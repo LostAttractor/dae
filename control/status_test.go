@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -23,18 +24,35 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	D "github.com/daeuniverse/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 type statusTestDialer struct{}
 
-func (statusTestDialer) Alive() bool    { return true }
-func (statusTestDialer) Connect() error { return nil }
 func (statusTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 func (statusTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("not implemented")
+}
+
+type statusTestSession struct{ state *netproxy.StateBroadcaster }
+
+func newStatusTestSession(state netproxy.SessionState) *statusTestSession {
+	return &statusTestSession{state: netproxy.NewStateBroadcaster(state)}
+}
+func (s *statusTestSession) Connect(context.Context) error {
+	s.state.Transition(netproxy.SessionConnected, nil)
+	return nil
+}
+func (s *statusTestSession) Snapshot() netproxy.StateEvent { return s.state.Snapshot() }
+func (s *statusTestSession) WatchState(ctx context.Context) <-chan netproxy.StateEvent {
+	return s.state.WatchState(ctx)
+}
+func (s *statusTestSession) Close() error {
+	s.state.Transition(netproxy.SessionClosed, nil)
+	return nil
 }
 
 func TestStatusServerReturnsUnavailableWithoutPublishedPlane(t *testing.T) {
@@ -152,10 +170,10 @@ func TestCollectConnCountsKeepsSameNamedNodesSeparate(t *testing.T) {
 func TestFailureEpisodeJSONFields(t *testing.T) {
 	startedAt := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
 	payload := struct {
-		Network NetworkStatus `json:"network"`
-		Node    NodeStatus    `json:"node"`
+		Group GroupStatus `json:"group"`
+		Node  NodeStatus  `json:"node"`
 	}{
-		Network: NetworkStatus{
+		Group: GroupStatus{
 			LastFailureStartedAt: &startedAt,
 			LastFailureDuration:  17 * time.Minute,
 		},
@@ -170,13 +188,13 @@ func TestFailureEpisodeJSONFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got struct {
-		Network map[string]json.RawMessage `json:"network"`
-		Node    map[string]json.RawMessage `json:"node"`
+		Group map[string]json.RawMessage `json:"group"`
+		Node  map[string]json.RawMessage `json:"node"`
 	}
 	if err = json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	for name, fields := range map[string]map[string]json.RawMessage{"network": got.Network, "node": got.Node} {
+	for name, fields := range map[string]map[string]json.RawMessage{"group": got.Group, "node": got.Node} {
 		if _, ok := fields["last_failure_started_at"]; !ok {
 			t.Errorf("%s status omitted last_failure_started_at: %s", name, b)
 		}
@@ -200,38 +218,18 @@ func TestGroupHealth(t *testing.T) {
 		want     HealthStatus
 	}{
 		{
-			name:     "supported modes are alive",
-			group:    GroupStatus{Networks: [4]NetworkStatus{{Supported: true, Alive: true}}},
+			name:     "available group",
+			group:    GroupStatus{Available: true},
 			critical: true,
 			want:     HealthHealthy,
 		},
 		{
-			name: "unsupported mode is ignored",
-			group: GroupStatus{Networks: [4]NetworkStatus{
-				{Supported: true, Alive: true},
-				{Supported: false, Alive: false},
-			}},
-			critical: true,
-			want:     HealthHealthy,
-		},
-		{
-			name:     "critical supported mode is unavailable",
-			group:    GroupStatus{Networks: [4]NetworkStatus{{Supported: true}}},
+			name:     "critical group is unavailable",
 			critical: true,
 			want:     HealthDegraded,
 		},
 		{
-			name:  "non-critical supported mode is unavailable",
-			group: GroupStatus{Networks: [4]NetworkStatus{{Supported: true}}},
-			want:  HealthWarning,
-		},
-		{
-			name:     "critical group supports no modes",
-			critical: true,
-			want:     HealthDegraded,
-		},
-		{
-			name: "non-critical group supports no modes",
+			name: "non-critical group is unavailable",
 			want: HealthWarning,
 		},
 		{
@@ -308,7 +306,7 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 0,
 	}
-	callback := func(bool, *common.NetworkType) {}
+	callback := func(bool) error { return nil }
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindAlwaysAlive, nil, nil, policy, callback)
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible, nil, nil, policy, callback)
 
@@ -345,10 +343,10 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	if snapshot.Health != HealthHealthy || snapshot.Groups[1].Health != HealthHealthy {
 		t.Fatalf("health = %q/%q, want healthy", snapshot.Health, snapshot.Groups[1].Health)
 	}
-	if !snapshot.Groups[1].Networks[0].Supported || !snapshot.Groups[1].Networks[0].Alive {
-		t.Fatalf("tcp4 status = %+v, want supported and alive", snapshot.Groups[1].Networks[0])
+	if !snapshot.Groups[1].Available || snapshot.Groups[1].Networks[0].SupportState != "confirmed" || !snapshot.Groups[1].Networks[0].Alive {
+		t.Fatalf("group/tcp4 status = %+v/%+v, want available and supported", snapshot.Groups[1], snapshot.Groups[1].Networks[0])
 	}
-	if snapshot.Groups[1].Networks[1].Supported {
+	if snapshot.Groups[1].Networks[1].SupportState != "unsupported" || snapshot.Groups[1].Networks[1].Alive {
 		t.Fatalf("tcp6 status = %+v, want unsupported", snapshot.Groups[1].Networks[1])
 	}
 	if got := snapshot.Groups[1].Nodes[0].SupportState[0]; got != "confirmed" {
@@ -391,7 +389,7 @@ func TestStatusSnapshotDoesNotReportUnknownNetworkAlive(t *testing.T) {
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		policy,
-		func(bool, *common.NetworkType) {},
+		func(bool) error { return nil },
 	)
 	defer group.Close()
 	node.Update(true, time.Millisecond, nil, nil)
@@ -404,16 +402,69 @@ func TestStatusSnapshotDoesNotReportUnknownNetworkAlive(t *testing.T) {
 	}
 	snapshot := plane.StatusSnapshot("test")
 	status := snapshot.Groups[0].Networks[2]
-	if status.SupportState != "unknown" || status.Supported || status.Alive {
-		t.Fatalf("udp4 status = %+v, want unknown, not advertised as supported, and not alive", status)
+	if status.SupportState != "unknown" {
+		t.Fatalf("udp4 status = %+v, want unknown and not advertised as supported", status)
 	}
 	if status.Selected != "" {
 		t.Fatalf("unknown capability exposed tentative selection %q", status.Selected)
 	}
-	if snapshot.Groups[0].Nodes[0].Supported[2] {
+	if snapshot.Groups[0].Nodes[0].SupportState[2] != "unknown" {
 		t.Fatal("unknown node capability was advertised as supported")
 	}
 	if snapshot.Groups[0].Nodes[0].Selected[2] {
 		t.Fatal("unknown node capability exposed tentative selection")
+	}
+	if !snapshot.Groups[0].Available {
+		t.Fatal("global node health did not make the group available")
+	}
+}
+
+func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	common.InitPrometheus(registry)
+	option := &dialer.GlobalOption{}
+	session := newStatusTestSession(netproxy.SessionConnected)
+	transport := netproxy.WithSession(statusTestDialer{}, session)
+	node := dialer.NewDialer(transport, option, &dialer.Property{Property: D.Property{
+		Name: t.Name(),
+		Link: "test://" + t.Name(),
+	}}, true)
+	group := outbound.NewDialerGroup(
+		option,
+		t.Name(),
+		outbound.GroupKindNormal,
+		[]*dialer.Dialer{node},
+		[]*dialer.Annotation{{}},
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed},
+		func(bool) error { return nil },
+	)
+	t.Cleanup(func() {
+		_ = group.Close()
+		_ = node.CloseTransport()
+	})
+	tcp4 := common.IndexToNetworkType(0)
+	node.SetSupported(tcp4, true)
+	node.Update(true, time.Millisecond, tcp4, nil)
+	node.NotifyStatusChange()
+
+	status := nodeStatus(group, node, newConnCounts())
+	if status.DialerKind != "stateful" || status.SessionState != "connected" || status.HealthState != "healthy" {
+		t.Fatalf("connected node status = %+v", status)
+	}
+	if status.SupportState[0] != "confirmed" {
+		t.Fatalf("connected node support = %+v", status.SupportState)
+	}
+
+	session.state.Transition(netproxy.SessionDisconnected, errors.New("transport lost"))
+	deadline := time.Now().Add(time.Second)
+	for node.RuntimeStatus(group).Healthy && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	status = nodeStatus(group, node, newConnCounts())
+	if status.SessionState != "disconnected" || status.SessionError != "transport lost" || status.HealthState != "unhealthy" {
+		t.Fatalf("disconnected node status = %+v", status)
+	}
+	if status.SupportState[0] != "confirmed" {
+		t.Fatalf("disconnect changed support: %+v", status.SupportState)
 	}
 }

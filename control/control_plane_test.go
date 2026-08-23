@@ -202,8 +202,6 @@ func TestParseGroupOverrideOptionCheckIntervals(t *testing.T) {
 
 type dnsPathDialer struct{}
 
-func (dnsPathDialer) Alive() bool    { return true }
-func (dnsPathDialer) Connect() error { return nil }
 func (dnsPathDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, fmt.Errorf("not implemented")
 }
@@ -224,7 +222,7 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 		[]*dialer.Dialer{d},
 		[]*dialer.Annotation{{}},
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed},
-		func(bool, *common.NetworkType) {},
+		func(bool, *common.NetworkType) error { return nil },
 	)
 	t.Cleanup(func() { _ = group.Close() })
 	wantNetwork := common.NetworkType{

@@ -33,8 +33,8 @@ const (
 
 type directTCPSplice struct {
 	runtime  *splice.Runtime
-	accepted *net.TCPConn
-	remote   *net.TCPConn
+	accepted splice.TCPConn
+	remote   splice.TCPConn
 }
 
 type tcpRelay struct {
@@ -42,7 +42,7 @@ type tcpRelay struct {
 	rConn        net.Conn
 	directSplice *directTCPSplice
 	dialer       interface {
-		NeedAliveState() bool
+		ChecksConnectivity() bool
 		ReportUnavailable()
 	}
 	labels       prometheus.Labels
@@ -214,7 +214,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		if !ok {
 			return nil, err
 		} else if !netErr.Timeout() {
-			if dialOption.Dialer.NeedAliveState() {
+			if dialOption.Dialer.ChecksConnectivity() {
 				common.ErrorCount.With(labels).Inc()
 				dialOption.Dialer.ReportUnavailable()
 				return nil, err
@@ -241,7 +241,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		domain:       domain,
 	}
 	if dialOption.Direct && c.core.bpf.splice != nil {
-		if rawRConn, ok := rConn.(*net.TCPConn); ok {
+		if rawRConn, ok := rConn.(splice.TCPConn); ok {
 			relay.directSplice = &directTCPSplice{
 				c.core.bpf.splice, lConn.(*net.TCPConn), rawRConn,
 			}
@@ -285,7 +285,7 @@ func (r *tcpRelay) run() (err error) {
 			Wrapf(err, "Failed to RelayTCP")
 		if !ok {
 			return err
-		} else if !netErr.Timeout() && r.dialer.NeedAliveState() {
+		} else if !netErr.Timeout() && r.dialer.ChecksConnectivity() {
 			common.ErrorCount.With(labels).Inc()
 			r.dialer.ReportUnavailable()
 			return err

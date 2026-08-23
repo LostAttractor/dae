@@ -258,7 +258,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			if !ok {
 				return err
 			} else if !netErr.Timeout() {
-				if dialOption.Dialer.NeedAliveState() {
+				if dialOption.Dialer.ChecksConnectivity() {
 					common.ErrorCount.With(labels).Inc()
 					dialOption.Dialer.ReportUnavailable()
 					return err
@@ -303,7 +303,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if !ok {
 			return err
 		} else if !netErr.Timeout() {
-			if ue.dialer.NeedAliveState() {
+			if ue.dialer.ChecksConnectivity() {
 				common.ErrorCount.With(ue.labels).Inc()
 				ue.dialer.ReportUnavailable()
 				return err
@@ -329,7 +329,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			if netErr.Timeout() {
 				return
 			}
-			if endpoint.dialer.NeedAliveState() {
+			if endpoint.dialer.ChecksConnectivity() {
 				common.ErrorCount.With(endpoint.labels).Inc()
 				endpoint.dialer.ReportUnavailable()
 			}

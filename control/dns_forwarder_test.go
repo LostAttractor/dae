@@ -45,8 +45,6 @@ type blockingPacketTestDialer struct {
 	once     sync.Once
 }
 
-func (d *pipeTLSTestDialer) Alive() bool    { return true }
-func (d *pipeTLSTestDialer) Connect() error { return nil }
 func (d *pipeTLSTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, errors.New("not implemented")
 }
@@ -59,8 +57,6 @@ func (d *pipeTLSTestDialer) DialContext(context.Context, string, string) (net.Co
 	return client, nil
 }
 
-func (d *retryTCPTestDialer) Alive() bool    { return true }
-func (d *retryTCPTestDialer) Connect() error { return nil }
 func (d *retryTCPTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, errors.New("not implemented")
 }
@@ -77,8 +73,6 @@ func (d *retryTCPTestDialer) DialContext(context.Context, string, string) (net.C
 	return client, nil
 }
 
-func (d *blockingPacketTestDialer) Alive() bool    { return true }
-func (d *blockingPacketTestDialer) Connect() error { return nil }
 func (d *blockingPacketTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("not implemented")
 }
@@ -103,8 +97,6 @@ func (d *blockingPacketTestDialer) callCount() int {
 	return d.calls
 }
 
-func (d *concurrentTLSTestDialer) Alive() bool    { return true }
-func (d *concurrentTLSTestDialer) Connect() error { return nil }
 func (d *concurrentTLSTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, errors.New("not implemented")
 }

@@ -10,8 +10,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
@@ -58,30 +58,16 @@ func nodeLogID(node *NodeInfo) string {
 
 func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (created *dialer.Dialer, err error) {
 	if n.CreatedDialer == nil {
-		var owned io.Closer
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				if owned != nil {
-					_ = owned.Close()
-				}
-				panic(recovered)
-			}
-			if err != nil && owned != nil {
-				_ = owned.Close()
-			}
-		}()
-		for _, descriptor := range n.Dialers {
-			d, err = descriptor.Dialer(&option.ExtraOption, d)
+		runtime := netproxy.NewRuntime(d)
+		for _, builder := range n.Dialers {
+			nextRuntime, err := D.BuildRuntime(builder, &option.ExtraOption, runtime)
 			if err != nil {
+				_ = runtime.Close()
 				return nil, err
 			}
-			if closer, ok := d.(io.Closer); ok {
-				// The outermost closeable transport owns the chain built so far.
-				owned = closer
-			}
+			runtime = nextRuntime
 		}
-		n.CreatedDialer = dialer.NewDialer(d, option, n.Property, true)
-		owned = nil
+		n.CreatedDialer = dialer.NewDialerRuntime(runtime, option, n.Property, true)
 	}
 	return n.CreatedDialer, nil
 }
@@ -91,7 +77,34 @@ type DialerSet struct {
 	prometheusRegistry prometheus.Registerer
 	nodeInfos          []*NodeInfo
 	nodeInfosMap       map[dialer.Property]*NodeInfo
-	nodeToTagMap       map[*dialer.Dialer]string // Only for created dialers
+	nodeToTagMap       map[*dialer.Dialer]string
+}
+
+func (s *DialerSet) Close() error {
+	nodes := make(map[*NodeInfo]struct{}, len(s.nodeInfos)+len(s.nodeInfosMap))
+	for _, node := range s.nodeInfos {
+		nodes[node] = struct{}{}
+	}
+	for _, node := range s.nodeInfosMap {
+		nodes[node] = struct{}{}
+	}
+	dialers := make(map[*dialer.Dialer]struct{})
+	transports := make(map[any]*dialer.Dialer)
+	for node := range nodes {
+		if node.CreatedDialer == nil {
+			continue
+		}
+		dialers[node.CreatedDialer] = struct{}{}
+		transports[node.CreatedDialer.TransportID()] = node.CreatedDialer
+	}
+	var err error
+	for d := range dialers {
+		err = errors.Join(err, d.Close())
+	}
+	for _, d := range transports {
+		err = errors.Join(err, d.CloseTransport())
+	}
+	return err
 }
 
 func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prometheus.Registerer, tagToNodeList map[string][]string) *DialerSet {
@@ -103,17 +116,21 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prome
 		nodeToTagMap:       make(map[*dialer.Dialer]string),
 	}
 	for subscriptionTag, nodes := range tagToNodeList {
+		occurrences := make(map[string]int)
 		for i, node := range nodes {
 			d, p, err := parseNodeLink(node)
 			if err != nil {
 				log.Warnf("failed to parse node %d from %q (%T)", i+1, subscriptionTag, err)
 				continue
 			}
+			identity := dialer.ComposeStatsIdentity("source", node, strconv.Itoa(occurrences[node]))
+			occurrences[node]++
 			nodeInfo := &NodeInfo{
 				Link: node,
 				Property: &dialer.Property{
 					Property:        *p,
 					SubscriptionTag: subscriptionTag,
+					StatsIdentity:   identity,
 				},
 				Dialers:     d,
 				sourceIndex: i,
@@ -235,6 +252,11 @@ func validateNodeDialer(option *dialer.GlobalOption, link string) (err error) {
 	if err != nil {
 		return errors.New("node dialer construction failed")
 	}
+	return closeValidatedDialer(created)
+}
+
+func closeValidatedDialer(created *dialer.Dialer) error {
+	defer created.RetireTransport()
 	return created.Close()
 }
 
@@ -329,12 +351,21 @@ func (s *DialerSet) createNextHopDialer(nodeInfo, nextHopInfo *NodeInfo) (*diale
 	property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
 	effectiveLink := fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link)
 	property.Link = effectiveLink
+	sourceIdentity := nodeInfo.Property.StatsIdentity
+	if sourceIdentity == "" {
+		sourceIdentity = nodeInfo.Link
+	}
+	nextHopIdentity := nextHopInfo.Property.StatsIdentity
+	if nextHopIdentity == "" {
+		nextHopIdentity = nextHopInfo.Link
+	}
+	property.StatsIdentity = dialer.ComposeStatsIdentity("next-hop", sourceIdentity, nextHopIdentity)
 
 	nextHopNodeInfo, ok := s.nodeInfosMap[property]
 	if !ok {
 		dialers := make([]D.Dialer, 0, len(nodeInfo.Dialers)+len(nextHopInfo.Dialers))
-		dialers = append(dialers, nodeInfo.Dialers...)
 		dialers = append(dialers, nextHopInfo.Dialers...)
+		dialers = append(dialers, nodeInfo.Dialers...)
 		nextHopNodeInfo = &NodeInfo{
 			Property: &property,
 			Dialers:  dialers,
@@ -356,56 +387,45 @@ func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annot
 		return nil, nil, fmt.Errorf("failed to find next_hop '%s': %w", nextHop, err)
 	}
 
-nextDialerLoop:
 	for _, nodeInfo := range s.nodeInfos {
-		if len(filters) == 0 {
-			// No filters, create all dialers
-			d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+		annotation := &dialer.Annotation{}
+		if len(filters) > 0 {
+			annotation = nil
+			for i, filter := range filters {
+				hit, err := s.filterHit(nodeInfo, filter)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !hit {
+					continue
+				}
+				annotation, err = dialer.NewAnnotation(annotations[i])
+				if err != nil {
+					return nil, nil, fmt.Errorf("apply filter annotation: %w", err)
+				}
+				break
+			}
+			if annotation == nil {
+				continue
+			}
+		}
+
+		var d *dialer.Dialer
+		if nextHopInfo == nil {
+			d, err = nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
 			if err != nil {
 				log.Infof("failed to create dialer for %s: %v", nodeLogID(nodeInfo), err)
 				continue
 			}
-			if nextHopInfo != nil {
-				d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
-				if err != nil {
-					log.Infof("failed to create dialer for %s via %s: %v", nodeLogID(nodeInfo), nodeLogID(nextHopInfo), err)
-					continue
-				}
-			}
-			dialers = append(dialers, d)
-			filterAnnotations = append(filterAnnotations, &dialer.Annotation{})
-			continue
-		}
-		// Hit any.
-		for j, filter := range filters {
-			hit, err := s.filterHit(nodeInfo, filter)
+		} else {
+			d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
 			if err != nil {
-				return nil, nil, err
-			}
-			if hit {
-				// Create dialer if it hasn't been created yet
-				d, err := nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
-				if err != nil {
-					log.Infof("failed to create dialer for %s: %v", nodeLogID(nodeInfo), err)
-					continue nextDialerLoop
-				}
-				if nextHopInfo != nil {
-					d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
-					if err != nil {
-						log.Infof("failed to create dialer for %s via %s: %v", nodeLogID(nodeInfo), nodeLogID(nextHopInfo), err)
-						continue nextDialerLoop
-					}
-				}
-
-				anno, err := dialer.NewAnnotation(annotations[j])
-				if err != nil {
-					return nil, nil, fmt.Errorf("apply filter annotation: %w", err)
-				}
-				dialers = append(dialers, d)
-				filterAnnotations = append(filterAnnotations, anno)
-				continue nextDialerLoop
+				log.Infof("failed to create dialer for %s via %s: %v", nodeLogID(nodeInfo), nodeLogID(nextHopInfo), err)
+				continue
 			}
 		}
+		dialers = append(dialers, d)
+		filterAnnotations = append(filterAnnotations, annotation)
 	}
 	return dialers, filterAnnotations, nil
 }

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 )
 
@@ -55,13 +56,27 @@ func TestEncodeOutboundConnectivity(t *testing.T) {
 	}
 }
 
+func TestOutboundConnectivityMapUsesNetworkKey(t *testing.T) {
+	spec, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := spec.Maps["outbound_connectivity_map"]
+	if m == nil {
+		t.Fatal("outbound_connectivity_map is missing")
+	}
+	if m.KeySize != 3 || m.ValueSize != 4 || m.MaxEntries != 256*2*2 {
+		t.Fatalf("map shape = key:%d value:%d entries:%d, want 3/4/1024", m.KeySize, m.ValueSize, m.MaxEntries)
+	}
+}
+
 func TestOutboundRecoveryCallbackFiresOnGlobalRecovery(t *testing.T) {
 	core := new(controlPlaneCore)
 	var recoveries atomic.Int32
 	core.setOutboundRecoveryCallback(func() { recoveries.Add(1) })
-	network := 0
 	first := uint8(consts.OutboundUserDefinedMin)
 	second := first + 1
+	network := 0
 
 	if callback := core.recordOutboundConnectivity(first, network, true); callback != nil {
 		callback()
@@ -86,7 +101,7 @@ func TestOutboundRecoveryCallbackFiresOnGlobalRecovery(t *testing.T) {
 	}
 }
 
-func TestOutboundRecoveryIsTrackedPerNetwork(t *testing.T) {
+func TestOutboundRecoveryIsPerNetwork(t *testing.T) {
 	core := new(controlPlaneCore)
 	var recoveries atomic.Int32
 	core.setOutboundRecoveryCallback(func() { recoveries.Add(1) })
@@ -99,7 +114,23 @@ func TestOutboundRecoveryIsTrackedPerNetwork(t *testing.T) {
 		callback()
 	}
 	if got := recoveries.Load(); got != 2 {
-		t.Fatalf("recoveries = %d, want one per network", got)
+		t.Fatalf("recoveries = %d, want one recovery per network", got)
+	}
+}
+
+func TestOutboundUsableUsesRequestedNetwork(t *testing.T) {
+	core := new(controlPlaneCore)
+	outbound := uint8(consts.OutboundUserDefinedMin)
+	tcp4 := common.NetworkTypeToIndex(common.IndexToNetworkType(0))
+	udp6 := common.NetworkTypeToIndex(common.IndexToNetworkType(3))
+	core.outboundConnectivityMap[outbound][tcp4].Store(true)
+	core.outboundConnectivityMap[outbound][udp6].Store(false)
+
+	if !core.outboundUsable(outbound, consts.L4ProtoType_TCP, consts.IpVersion_4) {
+		t.Fatal("tcp4 was not usable")
+	}
+	if core.outboundUsable(outbound, consts.L4ProtoType_UDP, consts.IpVersion_6) {
+		t.Fatal("udp6 inherited tcp4 availability")
 	}
 }
 

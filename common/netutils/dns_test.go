@@ -79,10 +79,6 @@ func (c *blockingCloseConn) Close() error {
 	return err
 }
 
-func (d blockingDNSDialer) Alive() bool { return true }
-func (d blockingDNSDialer) Connect() error {
-	return nil
-}
 func (d blockingDNSDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return d.conn, nil
 }

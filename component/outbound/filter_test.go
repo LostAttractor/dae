@@ -18,6 +18,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 )
@@ -103,6 +104,32 @@ func TestNewDialerSetFromLinksParsesSIP002UserinfoForms(t *testing.T) {
 	}
 }
 
+func TestDuplicateAndAliasNodesHaveDistinctStatsIdentity(t *testing.T) {
+	userinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
+	link := "ss://" + userinfo + "@127.0.0.1:443"
+	set := NewDialerSetFromLinks(&dialer.GlobalOption{}, nil, map[string][]string{
+		"test": {"alias-a:" + link, "alias-b:" + link, "alias-b:" + link},
+	})
+	t.Cleanup(func() { _ = set.Close() })
+
+	dialers, _, err := set.FilterAndAnnotate(nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dialers) != 3 {
+		t.Fatalf("dialers = %d, want 3", len(dialers))
+	}
+	keys := make(map[string]struct{}, len(dialers))
+	ids := make(map[string]struct{}, len(dialers))
+	for _, d := range dialers {
+		keys[d.StatsKey()] = struct{}{}
+		ids[d.StatsID()] = struct{}{}
+	}
+	if len(keys) != len(dialers) || len(ids) != len(dialers) {
+		t.Fatalf("stats identities were merged: keys=%d ids=%d dialers=%d", len(keys), len(ids), len(dialers))
+	}
+}
+
 func TestValidateNodeLinkRejectsHTMLErrorPage(t *testing.T) {
 	if err := ValidateNodeLink(`<a href="https://example.com/help">service unavailable</a>`); err == nil {
 		t.Fatal("HTML error page was accepted as a node")
@@ -152,6 +179,26 @@ func TestNodeDialerClosesPartiallyConstructedTransport(t *testing.T) {
 	}
 	if !transport.closed.Load() {
 		t.Fatal("partially constructed transport was not closed")
+	}
+}
+
+func TestCloseValidatedDialerRetiresTransport(t *testing.T) {
+	transport := new(closeableTestDialer)
+	created := dialer.NewDialer(
+		netproxy.NewRuntime(transport),
+		&dialer.GlobalOption{},
+		&dialer.Property{},
+		true,
+	)
+	if err := closeValidatedDialer(created); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !transport.closed.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !transport.closed.Load() {
+		t.Fatal("validated transport was not retired")
 	}
 }
 
@@ -207,5 +254,82 @@ func TestNodeValidatorBoundsPermanentlyBlockedConstruction(t *testing.T) {
 	blocked.Wait()
 	if got := len(nodeValidationSlots); got != 0 {
 		t.Fatalf("validation slots still occupied after release: %d", got)
+	}
+}
+
+type recordingBuilder struct {
+	name  string
+	order *[]string
+}
+
+func (b *recordingBuilder) Dialer(_ *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
+	*b.order = append(*b.order, b.name)
+	return parent, nil
+}
+
+func TestCreateNextHopDialerBuildsNextHopBeforeSource(t *testing.T) {
+	var order []string
+	source := &NodeInfo{
+		Link:     "source://node",
+		Property: &dialer.Property{Property: D.Property{Name: "source", Link: "source://node"}},
+		Dialers:  []D.Dialer{&recordingBuilder{name: "source", order: &order}},
+	}
+	nextHop := &NodeInfo{
+		Link:     "next://hop",
+		Property: &dialer.Property{Property: D.Property{Name: "next", Link: "next://hop"}},
+		Dialers:  []D.Dialer{&recordingBuilder{name: "next", order: &order}},
+	}
+	set := &DialerSet{
+		option:       &dialer.GlobalOption{},
+		nodeInfosMap: make(map[dialer.Property]*NodeInfo),
+	}
+	d, err := set.createNextHopDialer(source, nextHop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = d.Close()
+		_ = d.CloseTransport()
+	})
+	if len(order) != 2 || order[0] != "next" || order[1] != "source" {
+		t.Fatalf("builder order = %v, want [next source]", order)
+	}
+}
+
+func TestFilterAndAnnotateBuildsOnlyComposedNextHop(t *testing.T) {
+	var order []string
+	source := &NodeInfo{
+		Link:     "source://node",
+		Property: &dialer.Property{Property: D.Property{Name: "source", Link: "source://node"}},
+		Dialers:  []D.Dialer{&recordingBuilder{name: "source", order: &order}},
+	}
+	nextHop := &NodeInfo{
+		Link:     "next://hop",
+		Property: &dialer.Property{Property: D.Property{Name: "next", Link: "next://hop"}},
+		Dialers:  []D.Dialer{&recordingBuilder{name: "next", order: &order}},
+	}
+	set := &DialerSet{
+		option:       &dialer.GlobalOption{},
+		nodeInfos:    []*NodeInfo{source, nextHop},
+		nodeInfosMap: map[dialer.Property]*NodeInfo{*source.Property: source, *nextHop.Property: nextHop},
+	}
+	t.Cleanup(func() { _ = set.Close() })
+
+	filters := [][]*config_parser.Function{{{
+		Name:   FilterInput_Name,
+		Params: []*config_parser.Param{{Val: "source"}},
+	}}}
+	dialers, _, err := set.FilterAndAnnotate(filters, [][]*config_parser.Param{nil}, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dialers) != 1 {
+		t.Fatalf("created %d dialers, want 1", len(dialers))
+	}
+	if source.CreatedDialer != nil {
+		t.Fatal("created unused standalone source runtime")
+	}
+	if len(order) != 2 || order[0] != "next" || order[1] != "source" {
+		t.Fatalf("builder order = %v, want [next source]", order)
 	}
 }

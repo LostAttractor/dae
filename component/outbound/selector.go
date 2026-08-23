@@ -2,51 +2,28 @@ package outbound
 
 import (
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	log "github.com/sirupsen/logrus"
 )
 
 type Selector interface {
-	InitializeConnectivity()
-	Select(networkType *common.NetworkType) (dialer *dialer.Dialer)
-	SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer)
+	Select(networkType *common.NetworkType) *dialer.Dialer
+	SelectedDialer(networkType *common.NetworkType) *dialer.Dialer
 	NotifyStatusChange(dialer *dialer.Dialer)
 	PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{}))
 }
 
-func (s *BaseSelector) InitializeConnectivity() {
-	for i := 0; i < 4; i++ {
-		s.handleAliveStateChange(false, common.IndexToNetworkType(i))
+func logDialerAliveTransition(g *DialerGroup, d *dialer.Dialer, previous, current bool) bool {
+	if previous == current {
+		return current
 	}
-}
-
-type BaseSelector struct {
-	dialerGroup         *DialerGroup
-	aliveChangeCallback func(alive bool, networkType *common.NetworkType)
-	networkIndexToAlive [4]*bool
-}
-
-func (s *BaseSelector) handleAliveStateChange(alive bool, networkType *common.NetworkType) {
-	index := common.NetworkTypeToIndex(networkType)
-	if s.networkIndexToAlive[index] != nil && *s.networkIndexToAlive[index] == alive {
-		return
-	}
-
-	if alive {
-		log.WithFields(log.Fields{
-			"group":   s.dialerGroup.Name,
-			"network": networkType.String(),
-		}).Infof("Group is alive")
+	fields := log.Fields{"dialer": d.Name, "group": g.Name}
+	if current {
+		log.WithFields(fields).Warn("[NOT ALIVE --> ALIVE]")
 	} else {
-		log.WithFields(log.Fields{
-			"group":   s.dialerGroup.Name,
-			"network": networkType.String(),
-		}).Infof("Group has no dialer alive")
+		log.WithFields(fields).Info("[ALIVE --> NOT ALIVE]")
 	}
-	s.networkIndexToAlive[index] = &alive
-	stats.RecordGroup(s.dialerGroup.Name, index, alive)
-	s.aliveChangeCallback(alive, networkType)
+	return current
 }
 
 func isDialerAlive(d *dialer.Dialer, networkType *common.NetworkType) bool {

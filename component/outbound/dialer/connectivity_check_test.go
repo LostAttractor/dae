@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,20 +21,52 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
+type sessionStub struct {
+	once  sync.Once
+	state *netproxy.StateBroadcaster
+}
+
+func (s *sessionStub) initialize() {
+	s.once.Do(func() { s.state = netproxy.NewStateBroadcaster(netproxy.SessionDisconnected) })
+}
+func (s *sessionStub) Snapshot() netproxy.StateEvent {
+	s.initialize()
+	return s.state.Snapshot()
+}
+func (s *sessionStub) WatchState(ctx context.Context) <-chan netproxy.StateEvent {
+	s.initialize()
+	return s.state.WatchState(ctx)
+}
+func (s *sessionStub) transition(state netproxy.SessionState, err error) {
+	s.initialize()
+	s.state.Transition(state, err)
+}
+func (s *sessionStub) Close() error {
+	s.transition(netproxy.SessionClosed, nil)
+	return nil
+}
+
 type blockingFailConnectDialer struct {
+	sessionStub
 	started chan struct{}
 	release chan struct{}
 	calls   atomic.Int32
 }
 
-func (d *blockingFailConnectDialer) Alive() bool { return false }
-
-func (d *blockingFailConnectDialer) Connect() error {
+func (d *blockingFailConnectDialer) Connect(ctx context.Context) error {
+	d.transition(netproxy.SessionConnecting, nil)
 	if d.calls.Add(1) == 1 {
 		close(d.started)
 	}
-	<-d.release
-	return errors.New("connect failed")
+	select {
+	case <-d.release:
+		err := errors.New("connect failed")
+		d.transition(netproxy.SessionDisconnected, err)
+		return err
+	case <-ctx.Done():
+		d.transition(netproxy.SessionDisconnected, ctx.Err())
+		return ctx.Err()
+	}
 }
 
 func (d *blockingFailConnectDialer) DialContext(context.Context, string, string) (net.Conn, error) {
@@ -45,15 +78,18 @@ func (d *blockingFailConnectDialer) ListenPacket(context.Context, string) (net.P
 }
 
 type failOnceConnectDialer struct {
+	sessionStub
 	calls atomic.Int32
 }
 
-func (d *failOnceConnectDialer) Alive() bool { return true }
-
-func (d *failOnceConnectDialer) Connect() error {
+func (d *failOnceConnectDialer) Connect(context.Context) error {
+	d.transition(netproxy.SessionConnecting, nil)
 	if d.calls.Add(1) == 1 {
-		return errors.New("connect failed")
+		err := errors.New("connect failed")
+		d.transition(netproxy.SessionDisconnected, err)
+		return err
 	}
+	d.transition(netproxy.SessionConnected, nil)
 	return nil
 }
 
@@ -67,8 +103,6 @@ func (d *failOnceConnectDialer) ListenPacket(context.Context, string) (net.Packe
 
 type connectedTestDialer struct{}
 
-func (connectedTestDialer) Alive() bool    { return true }
-func (connectedTestDialer) Connect() error { return nil }
 func (connectedTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("not implemented")
 }
@@ -77,27 +111,32 @@ func (connectedTestDialer) ListenPacket(context.Context, string) (net.PacketConn
 }
 
 type statefulTestDialer struct {
-	alive      atomic.Bool
+	sessionStub
 	connects   atomic.Int32
 	connectErr error
 }
 
 type serializedConnectTestDialer struct {
-	alive   atomic.Bool
+	sessionStub
 	calls   atomic.Int32
 	started chan struct{}
 	release chan struct{}
 }
 
-func (d *serializedConnectTestDialer) Alive() bool { return d.alive.Load() }
-func (d *serializedConnectTestDialer) Connect() error {
+func (d *serializedConnectTestDialer) Connect(ctx context.Context) error {
 	if d.calls.Add(1) != 1 {
 		return errors.New("concurrent Connect replaced the new session")
 	}
+	d.transition(netproxy.SessionConnecting, nil)
 	close(d.started)
-	<-d.release
-	d.alive.Store(true)
-	return nil
+	select {
+	case <-d.release:
+		d.transition(netproxy.SessionConnected, nil)
+		return nil
+	case <-ctx.Done():
+		d.transition(netproxy.SessionDisconnected, ctx.Err())
+		return ctx.Err()
+	}
 }
 func (d *serializedConnectTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("not implemented")
@@ -106,11 +145,13 @@ func (d *serializedConnectTestDialer) ListenPacket(context.Context, string) (net
 	return nil, errors.New("not implemented")
 }
 
-func (d *statefulTestDialer) Alive() bool { return d.alive.Load() }
-func (d *statefulTestDialer) Connect() error {
+func (d *statefulTestDialer) Connect(context.Context) error {
+	d.transition(netproxy.SessionConnecting, nil)
 	d.connects.Add(1)
 	if d.connectErr == nil {
-		d.alive.Store(true)
+		d.transition(netproxy.SessionConnected, nil)
+	} else {
+		d.transition(netproxy.SessionDisconnected, d.connectErr)
 	}
 	return d.connectErr
 }
@@ -134,10 +175,6 @@ func (g *statusRecordingGroup) NotifyStatusChange(d *Dialer) {
 	}
 }
 
-func (g *statusRecordingGroup) GetEmaAlpha() float64 { return 0.5 }
-
-func (g *statusRecordingGroup) GetTimeoutPenalty() time.Duration { return time.Minute }
-
 func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	t.Helper()
 	id := testDialerSequence.Add(1)
@@ -157,16 +194,17 @@ func TestScopedDialersSerializeSharedTransportConnect(t *testing.T) {
 	t.Cleanup(func() {
 		_ = base.Close()
 		_ = clone.Close()
+		_ = base.CloseTransport()
 	})
-	if base.connectMu != clone.connectMu {
-		t.Fatal("scoped dialers do not share their transport connection lock")
+	if base.TransportID() != clone.TransportID() {
+		t.Fatal("scoped dialers do not share their transport runtime")
 	}
 
 	baseResult := make(chan error, 1)
 	cloneResult := make(chan error, 1)
-	go func() { baseResult <- base.ensureConnected() }()
+	go func() { baseResult <- base.runtime.connect(base.ctx, base) }()
 	<-transport.started
-	go func() { cloneResult <- clone.ensureConnected() }()
+	go func() { cloneResult <- clone.runtime.connect(clone.ctx, clone) }()
 
 	select {
 	case err := <-cloneResult:
@@ -182,6 +220,48 @@ func TestScopedDialersSerializeSharedTransportConnect(t *testing.T) {
 	}
 	if got := transport.calls.Load(); got != 1 {
 		t.Fatalf("shared transport Connect calls = %d, want 1", got)
+	}
+}
+
+func TestStatsKeyEncodingSeparatesIdentityAndScope(t *testing.T) {
+	left := makeStatsKey(&Property{SubscriptionTag: "sub", StatsIdentity: "a\x1fb"}, "c")
+	right := makeStatsKey(&Property{SubscriptionTag: "sub", StatsIdentity: "a"}, "b\x1fc")
+	if left == right {
+		t.Fatalf("structured stats keys collided: %q", left)
+	}
+	explicitChain := ComposeStatsIdentity("source", "a->b", "0")
+	nextHopChain := ComposeStatsIdentity(
+		"next-hop",
+		ComposeStatsIdentity("source", "a", "0"),
+		ComposeStatsIdentity("source", "b", "0"),
+	)
+	if explicitChain == nextHopChain {
+		t.Fatalf("explicit and next-hop chains collided: %q", explicitChain)
+	}
+}
+
+func TestConnectWakesOtherScopedDialers(t *testing.T) {
+	transport := new(statefulTestDialer)
+	base := newTestDialer(t, transport)
+	clone := base.CloneForStatsScope("override-group")
+	t.Cleanup(func() {
+		_ = base.Close()
+		_ = clone.Close()
+		_ = base.CloseTransport()
+	})
+
+	if err := base.runtime.connect(base.ctx, base); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-clone.checkCh:
+	case <-time.After(time.Second):
+		t.Fatal("successful shared Connect did not wake the other scoped dialer")
+	}
+	select {
+	case <-base.checkCh:
+		t.Fatal("successful shared Connect queued a duplicate check for its requester")
+	default:
 	}
 }
 
@@ -343,6 +423,115 @@ func TestRuntimeCapabilityCheckDoesNotReconnectNode(t *testing.T) {
 	}
 }
 
+func TestStaleHealthProbeCannotRecoverNewSession(t *testing.T) {
+	transport := new(statefulTestDialer)
+	transport.transition(netproxy.SessionConnected, nil)
+	d := newTestDialer(t, transport)
+	t.Cleanup(func() {
+		_ = d.Close()
+		_ = d.CloseTransport()
+	})
+	networkType := common.IndexToNetworkType(0)
+	d.SetSupported(networkType, true)
+	d.Update(true, time.Millisecond, networkType, nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	option := &checkOption{
+		networkType: networkType,
+		probe: func(context.Context, *common.NetworkType) (bool, error) {
+			close(started)
+			<-release
+			return true, nil
+		},
+	}
+	loop := newConnectivityCheckLoop(d, option, []*checkOption{option})
+	t.Cleanup(func() {
+		loop.healthTimer.Stop()
+		loop.capabilityTimer.Stop()
+	})
+	resultCh := make(chan healthCheckResult, 1)
+	go func() { resultCh <- loop.checkHealth() }()
+	<-started
+	transport.transition(netproxy.SessionDisconnected, errors.New("lost"))
+	deadline := time.Now().Add(time.Second)
+	for d.RuntimeStatus(nil).Healthy && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	transport.transition(netproxy.SessionConnected, nil)
+	close(release)
+	loop.publishHealth(<-resultCh)
+	if status := d.RuntimeStatus(nil); status.Healthy {
+		t.Fatalf("stale probe recovered node: %+v", status)
+	}
+}
+
+func TestRapidSessionRecoveryStillRequiresNewHealthProbe(t *testing.T) {
+	transport := new(statefulTestDialer)
+	transport.transition(netproxy.SessionConnected, nil)
+	d := newTestDialer(t, transport)
+	t.Cleanup(func() {
+		_ = d.Close()
+		_ = d.CloseTransport()
+	})
+	networkType := common.IndexToNetworkType(0)
+	d.SetSupported(networkType, true)
+	d.Update(true, time.Millisecond, networkType, nil)
+	if !d.Alive() {
+		t.Fatal("node did not become usable after health success")
+	}
+
+	transport.transition(netproxy.SessionDisconnected, errors.New("lost"))
+	transport.transition(netproxy.SessionConnected, nil)
+	if d.Alive() {
+		t.Fatal("session recovery reused health from an older session epoch")
+	}
+	status := d.RuntimeStatus(nil)
+	if status.Healthy {
+		t.Fatalf("recovered session retained old health: %+v", status)
+	}
+}
+
+func TestStaleCapabilityProbeCannotUpdateNewSession(t *testing.T) {
+	transport := new(statefulTestDialer)
+	transport.transition(netproxy.SessionConnected, nil)
+	d := newTestDialer(t, transport)
+	t.Cleanup(func() {
+		_ = d.Close()
+		_ = d.CloseTransport()
+	})
+	networkType := common.IndexToNetworkType(0)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	option := &checkOption{
+		networkType: networkType,
+		probe: func(context.Context, *common.NetworkType) (bool, error) {
+			close(started)
+			<-release
+			return true, nil
+		},
+	}
+	type capabilityResult struct {
+		best    *checkOption
+		changed bool
+	}
+	resultCh := make(chan capabilityResult, 1)
+	go func() {
+		best, changed := d.checkCapabilities([]*checkOption{option}, capabilityCheckRuntime)
+		resultCh <- capabilityResult{best: best, changed: changed}
+	}()
+	<-started
+	transport.transition(netproxy.SessionDisconnected, errors.New("lost"))
+	transport.transition(netproxy.SessionConnected, nil)
+	close(release)
+	result := <-resultCh
+	if result.best != nil || result.changed {
+		t.Fatalf("stale capability result = %+v", result)
+	}
+	if support := d.SupportState(networkType); support != NetworkSupportUnknown {
+		t.Fatalf("support = %v, want unknown", support)
+	}
+}
+
 func TestRuntimeCapabilitySuccessDoesNotRecoverNode(t *testing.T) {
 	d := newTestDialer(t, connectedTestDialer{})
 	t.Cleanup(func() { _ = d.Close() })
@@ -370,7 +559,7 @@ func TestRuntimeCapabilitySuccessDoesNotRecoverNode(t *testing.T) {
 func TestInitialCheckWakesForConnectivityRecheck(t *testing.T) {
 	d := newTestDialer(t, connectedTestDialer{})
 	group := &statusRecordingGroup{notified: make(chan stats.Availability, 4)}
-	d.RegisterDialerGroup(group)
+	d.RegisterDialerGroup(group, 0.5, time.Minute)
 	t.Cleanup(func() { _ = d.Close() })
 
 	var online atomic.Bool
@@ -500,7 +689,7 @@ func TestConnectivityRecheckUsesConfirmedAlternative(t *testing.T) {
 	d.CheckInterval = time.Hour
 	d.CheckIntervalMax = time.Hour
 	group := &statusRecordingGroup{notified: make(chan stats.Availability, 4)}
-	d.RegisterDialerGroup(group)
+	d.RegisterDialerGroup(group, 0.5, time.Minute)
 
 	primaryType := common.IndexToNetworkType(0)
 	alternativeType := common.IndexToNetworkType(1)
@@ -693,7 +882,7 @@ func TestConnectivityRecheckDoesNotProbeUnknownAfterNodeRecovery(t *testing.T) {
 	d.CheckInterval = time.Hour
 	d.CheckIntervalMax = time.Hour
 	group := &statusRecordingGroup{notified: make(chan stats.Availability, 4)}
-	d.RegisterDialerGroup(group)
+	d.RegisterDialerGroup(group, 0.5, time.Minute)
 
 	healthType := common.IndexToNetworkType(0)
 	unknownType := common.IndexToNetworkType(1)
@@ -720,14 +909,19 @@ func TestConnectivityRecheckDoesNotProbeUnknownAfterNodeRecovery(t *testing.T) {
 		d.runCheckLoop(healthOpt, []*checkOption{healthOpt, unknownOpt})
 	}()
 	d.NotifyConnectivityRecheck()
-	select {
-	case avail := <-group.notified:
-		if !avail.Alive {
-			t.Fatalf("connectivity recheck published unhealthy status: %+v", avail)
+	timeout := time.After(time.Second)
+	for {
+		select {
+		case avail := <-group.notified:
+			if avail.Alive {
+				goto recovered
+			}
+		case <-timeout:
+			t.Fatal("connectivity recheck did not recover node health")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("connectivity recheck did not recover node health")
 	}
+
+recovered:
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -756,7 +950,7 @@ func TestRunCheckLoopPublishesConsecutiveFailure(t *testing.T) {
 	d.CheckInterval = time.Hour
 	d.CheckIntervalMax = time.Hour
 	group := &statusRecordingGroup{notified: make(chan stats.Availability, 3)}
-	d.RegisterDialerGroup(group)
+	d.RegisterDialerGroup(group, 0.5, time.Minute)
 	var checks atomic.Int32
 	option := &checkOption{
 		networkType: common.IndexToNetworkType(0),
@@ -809,7 +1003,7 @@ func TestInitialCheckPublishesFailedConnect(t *testing.T) {
 	d := newTestDialer(t, transport)
 	d.CheckInterval = time.Hour
 	group := &statusRecordingGroup{notified: make(chan stats.Availability, 1)}
-	d.RegisterDialerGroup(group)
+	d.RegisterDialerGroup(group, 0.5, time.Minute)
 	checkOpts := []*checkOption{{
 		networkType: common.IndexToNetworkType(0),
 		probe: func(context.Context, *common.NetworkType) (bool, error) {
@@ -862,7 +1056,7 @@ func TestRunCheckLoopIgnoresTransientFailure(t *testing.T) {
 	d.CheckInterval = time.Hour
 	d.CheckIntervalMax = time.Hour
 	group := &statusRecordingGroup{notified: make(chan stats.Availability, 2)}
-	d.RegisterDialerGroup(group)
+	d.RegisterDialerGroup(group, 0.5, time.Minute)
 	var checks atomic.Int32
 	checkOpt := &checkOption{
 		networkType: common.IndexToNetworkType(0),
@@ -919,7 +1113,7 @@ func TestRunCheckLoopDoesNotPublishAfterClose(t *testing.T) {
 	d.CheckInterval = time.Hour
 	d.CheckIntervalMax = time.Hour
 	group := &statusRecordingGroup{notified: make(chan stats.Availability, 2)}
-	d.RegisterDialerGroup(group)
+	d.RegisterDialerGroup(group, 0.5, time.Minute)
 
 	d.checkWG.Add(1)
 	go func() {

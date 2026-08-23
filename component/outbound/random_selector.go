@@ -5,35 +5,28 @@ import (
 	"math"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
-	log "github.com/sirupsen/logrus"
 )
 
 type RandomSelector struct {
-	BaseSelector
-	dialerToAlive   map[*dialer.Dialer]bool
-	dialerToLatency map[*dialer.Dialer]time.Duration
+	dialerGroup   *DialerGroup
+	dialerToAlive map[*dialer.Dialer]bool
 
 	networkIndexToDialers [4][]*dialer.Dialer
 	mu                    sync.RWMutex
 }
 
-func NewRandomSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive bool, networkType *common.NetworkType)) Selector {
+func NewRandomSelector(dialerGroup *DialerGroup) Selector {
 	return &RandomSelector{
-		BaseSelector: BaseSelector{
-			dialerGroup:         dialerGroup,
-			aliveChangeCallback: aliveChangeCallback,
-		},
-		dialerToAlive:   make(map[*dialer.Dialer]bool),
-		dialerToLatency: make(map[*dialer.Dialer]time.Duration),
+		dialerGroup:   dialerGroup,
+		dialerToAlive: make(map[*dialer.Dialer]bool),
 	}
 }
 
-func (s *RandomSelector) Select(networkType *common.NetworkType) (dialer *dialer.Dialer) {
+func (s *RandomSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -45,31 +38,8 @@ func (s *RandomSelector) Select(networkType *common.NetworkType) (dialer *dialer
 	return dialers[fastrand.Intn(len(dialers))]
 }
 
-func (s *RandomSelector) SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer) {
+func (s *RandomSelector) SelectedDialer(*common.NetworkType) *dialer.Dialer {
 	return nil
-}
-
-func (s *RandomSelector) updateDialerAliveState(dialer *dialer.Dialer, alive bool) {
-	if s.dialerToAlive[dialer] == alive {
-		return
-	}
-	if alive {
-		log.WithFields(log.Fields{
-			"dialer": dialer.Name,
-			"group":  s.dialerGroup.Name,
-		}).Warnf("[NOT ALIVE --> ALIVE]")
-	} else {
-		log.WithFields(log.Fields{
-			"dialer": dialer.Name,
-			"group":  s.dialerGroup.Name,
-		}).Infof("[ALIVE --> NOT ALIVE]")
-
-	}
-	s.dialerToAlive[dialer] = alive
-}
-
-func (s *RandomSelector) selectionLatency(d *dialer.Dialer) (time.Duration, bool) {
-	return d.SelectionLatency(s.dialerGroup, s.dialerGroup.selectionPolicy.Policy)
 }
 
 func (s *RandomSelector) getSortedHighestPriorityAliveDialers(networkType *common.NetworkType) (aliveDialers []*dialer.Dialer) {
@@ -97,18 +67,12 @@ func (s *RandomSelector) getHighestPriority(dialers []*dialer.Dialer) (highestPr
 func (s *RandomSelector) NotifyStatusChange(dialer *dialer.Dialer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	s.updateDialerAliveState(dialer, dialer.Alive())
-
-	latency, hasLatency := s.selectionLatency(dialer)
-	if hasLatency {
-		s.dialerToLatency[dialer] = latency
-	}
+	s.dialerToAlive[dialer] = logDialerAliveTransition(
+		s.dialerGroup, dialer, s.dialerToAlive[dialer], dialer.Alive())
 
 	for i := 0; i < 4; i++ {
 		networkType := common.IndexToNetworkType(i)
 		s.networkIndexToDialers[i] = s.getSortedHighestPriorityAliveDialers(networkType)
-		s.handleAliveStateChange(len(s.networkIndexToDialers[i]) > 0, networkType)
 	}
 }
 
@@ -134,8 +98,8 @@ func (s *RandomSelector) PrintLatencies(networkType *common.NetworkType, logfn f
 				tagStr = fmt.Sprintf(" [%v]", dialer.SubscriptionTag)
 			}
 			var latencyStr string
-			if dialer.NeedAliveState() {
-				latencyStr = common.ShowDuration(s.dialerToLatency[dialer])
+			if dialer.ChecksConnectivity() {
+				latencyStr = common.ShowDuration(0)
 			} else {
 				latencyStr = "Always Alive"
 			}

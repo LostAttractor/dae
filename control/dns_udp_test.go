@@ -23,8 +23,6 @@ type blockingDnsTestDialer struct {
 	started chan struct{}
 }
 
-func (directDnsTestDialer) Alive() bool    { return true }
-func (directDnsTestDialer) Connect() error { return nil }
 func (directDnsTestDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, network, address)
 }
@@ -32,8 +30,6 @@ func (directDnsTestDialer) ListenPacket(ctx context.Context, address string) (ne
 	return (&net.ListenConfig{}).ListenPacket(ctx, "udp", address)
 }
 
-func (d blockingDnsTestDialer) Alive() bool    { return true }
-func (d blockingDnsTestDialer) Connect() error { return nil }
 func (d blockingDnsTestDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	close(d.started)
 	<-ctx.Done()
