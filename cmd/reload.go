@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -122,7 +121,6 @@ var (
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			internal.AutoSu()
 			if len(args) == 0 {
 				_pid, err := os.ReadFile(PidFilePath)
 				if err != nil {
@@ -130,10 +128,11 @@ var (
 				}
 				args = []string{strings.TrimSpace(string(_pid))}
 			}
-			pid, err := strconv.Atoi(args[0])
-			if err != nil || pid <= 0 {
-				return fmt.Errorf("invalid pid %q", args[0])
+			pid, err := parsePositivePID(args[0])
+			if err != nil {
+				return err
 			}
+			internal.AutoSu()
 			// Read the first line of SignalProgressFilePath.
 			code, _, err := readSignalProgressFile(SignalProgressFilePath)
 			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
