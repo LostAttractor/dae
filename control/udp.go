@@ -277,7 +277,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	// endpoint after the write completed before cancellation.
 	udpEndpoints.addLocked(src, ue)
 	go func(endpointPool *UdpEndpointPool, endpoint *UdpEndpoint) {
-		runErr := endpoint.run(endpointPool, src)
+		runErr := endpoint.run(endpointPool, src, dst)
 		endpointPool.remove(src, endpoint)
 		if runErr == nil {
 			return
@@ -295,7 +295,8 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.Warnf("%+v", runErr)
 		} else {
-			log.Warnf("%v", runErr)
+			oopsErr, _ := oops.AsOops(runErr)
+			log.WithFields(log.Fields(oopsErr.Context())).Warnf("%v", runErr)
 		}
 	}(udpEndpoints, ue)
 

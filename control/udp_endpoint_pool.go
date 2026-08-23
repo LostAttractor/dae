@@ -45,7 +45,7 @@ type UdpEndpoint struct {
 	labels prometheus.Labels
 }
 
-func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key netip.AddrPort) error {
+func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort) error {
 	common.ActiveConnections.With(ue.labels).Inc()
 	defer common.ActiveConnections.With(ue.labels).Dec()
 	common.TotalConnections.With(ue.labels).Inc()
@@ -57,9 +57,15 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key netip.AddrPort) er
 			if ue.IsClosed() {
 				break
 			}
-			return oops.Wrapf(err, "failed to ReadFrom")
+			return oops.With(
+				"dialer", ue.dialer.Name,
+				"outbound", ue.labels["outbound"],
+				"network", ue.labels["network"],
+				"src", src.String(),
+				"dst", dst.String(),
+			).Wrapf(err, "failed to ReadFrom")
 		}
-		if !endpointPool.refreshTimer(key, ue, time.Now()) {
+		if !endpointPool.refreshTimer(src, ue, time.Now()) {
 			break
 		}
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
