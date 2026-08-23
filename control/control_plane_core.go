@@ -441,29 +441,29 @@ func (c *controlPlaneCore) migrateHostTCXPrograms(link netlink.Link, programs ..
 
 // bindLan supports lazy binding and rebinding for matching LAN interfaces.
 func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter bool) error {
-	var initialErr error
 	bind := func(link netlink.Link) error {
 		return c.prepareAndBindLanLink(link, autoConfigKernelParameter)
 	}
-	initlinkCallback := func(link netlink.Link) {
+	initlinkCallback := func(link netlink.Link) error {
 		if link.Attrs().Name == hostLinkName {
-			return
+			return nil
 		}
 		if err := bind(link); err != nil {
 			var notFound netlink.LinkNotFoundError
 			if errors.As(err, &notFound) {
 				log.Debugf("Skip disappeared LAN interface %s", link.Attrs().Name)
-				return
+				return nil
 			}
-			initialErr = errors.Join(initialErr, oops.Errorf("bind LAN interface %s: %w", link.Attrs().Name, err))
+			return oops.Errorf("bind LAN interface %s: %w", link.Attrs().Name, err)
 		}
+		return nil
 	}
 	newlinkCallback := func(link netlink.Link) {
 		if link.Attrs().Name == hostLinkName {
 			return
 		}
 		log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
-		if err := bind(link); err != nil {
+		if err := initlinkCallback(link); err != nil {
 			log.Errorf("bind LAN interface %s: %v", link.Attrs().Name, err)
 		}
 	}
@@ -478,10 +478,7 @@ func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter boo
 		c.mu.Unlock()
 		log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
 	}
-	if err := c.ifmgr.RegisterWithPattern(pattern, initlinkCallback, newlinkCallback, dellinkCallback); err != nil {
-		return errors.Join(initialErr, err)
-	}
-	return initialErr
+	return c.ifmgr.RegisterWithPatternSync(pattern, initlinkCallback, newlinkCallback, dellinkCallback)
 }
 
 func (c *controlPlaneCore) prepareAndBindLanLink(link netlink.Link, autoConfigKernelParameter bool) error {
@@ -589,8 +586,9 @@ func (c *controlPlaneCore) bindWan(pattern string, prepare func(string)) error {
 		}
 		c.setManualWan(link, pattern, true)
 	}
-	return c.ifmgr.RegisterWithPattern(pattern, func(link netlink.Link) {
+	return c.ifmgr.RegisterWithPatternSync(pattern, func(link netlink.Link) error {
 		set(link)
+		return nil
 	}, func(link netlink.Link) {
 		log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
 		set(link)
