@@ -1146,8 +1146,8 @@ before_next_loop:
 					.l4proto = (_l4proto_type & L4ProtoType_TCP) ?
 						IPPROTO_TCP : IPPROTO_UDP,
 				};
-
-				__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+				__u32 *state = bpf_map_lookup_elem(
+					&outbound_connectivity_map, &q);
 
 				if (!state || *state != OUTBOUND_CONNECTIVITY_ALIVE) {
 					// Group is not usable. Skip this rule; the
@@ -1676,7 +1676,7 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 		struct outbound_connectivity_query q = {
 			.outbound = routing_result.outbound,
 			.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
-			.l4proto = l4proto
+			.l4proto = l4proto,
 		};
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -1684,7 +1684,8 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 			   q.outbound, q.ipversion, q.l4proto);
 #endif
 
-		__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+		__u32 *state = bpf_map_lookup_elem(
+			&outbound_connectivity_map, &q);
 
 		if (!state) {
 			// Outbound is not ready. skip

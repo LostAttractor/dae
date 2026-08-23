@@ -45,17 +45,21 @@ const (
 
 func (d *Dialer) Alive() bool {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.Dialer.Alive() && d.alive
+	alive := d.alive
+	sessionSeq := d.healthSeq
+	d.mu.RUnlock()
+	return d.runtime.connected() && d.runtime.matchesSession(sessionSeq) && alive
 }
 
 // SelectionState returns coherent aggregate health, mode health, and capability.
 func (d *Dialer) SelectionState(typ *common.NetworkType) (alive bool, support NetworkSupportState) {
 	d.mu.RLock()
-	defer d.mu.RUnlock()
 	index := common.NetworkTypeToIndex(typ)
 	support = d.support[index]
-	return d.Dialer.Alive() && d.alive && d.modeAlive[index], support
+	alive = d.alive && d.modeAlive[index]
+	sessionSeq := d.healthSeq
+	d.mu.RUnlock()
+	return d.runtime.connected() && d.runtime.matchesSession(sessionSeq) && alive, support
 }
 
 func (d *Dialer) ConfirmedSupport(typ *common.NetworkType) bool {
@@ -94,6 +98,21 @@ func (d *Dialer) setModeAlive(networkType *common.NetworkType, alive bool) bool 
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	index := common.NetworkTypeToIndex(networkType)
+	changed := d.modeAlive[index] != alive
+	d.modeAlive[index] = alive
+	return changed
+}
+
+func (d *Dialer) setModeAliveAt(networkType *common.NetworkType, alive bool, sessionSeq uint64) bool {
+	if networkType == nil || !d.runtime.matchesSession(sessionSeq) {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.runtime.matchesSession(sessionSeq) {
+		return false
+	}
 	index := common.NetworkTypeToIndex(networkType)
 	changed := d.modeAlive[index] != alive
 	d.modeAlive[index] = alive
@@ -218,7 +237,7 @@ func (d *Dialer) createCheckOptions() []*checkOption {
 
 func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 	d.mu.Lock()
-	if len(d.registeredDialerGroups) == 0 || !d.needAliveState || d.checkActivated || d.ctx.Err() != nil {
+	if len(d.groups) == 0 || !d.checkEnabled || d.checkActivated || d.ctx.Err() != nil {
 		d.mu.Unlock()
 		return
 	}
@@ -275,7 +294,7 @@ func (d *Dialer) NotifyCheck() {
 }
 
 // NotifyConnectivityRecheck wakes only aggregate health after a local network
-// change. Remote capability and mode-specific recovery keep their own timer.
+// change. Remote capability discovery and mode recovery keep their own timers.
 func (d *Dialer) NotifyConnectivityRecheck() { d.NotifyCheck() }
 
 func jitterCheckInterval(interval time.Duration) time.Duration {
@@ -292,6 +311,7 @@ type healthCheckResult struct {
 	latency     time.Duration
 	err         error
 	modeFailed  bool
+	sessionSeq  uint64
 }
 
 type connectivityCheckLoop struct {
@@ -310,8 +330,6 @@ type connectivityCheckLoop struct {
 
 	recoveryTimer  *time.Timer
 	recoveryActive bool
-
-	disconnectNotified bool
 }
 
 func newConnectivityCheckLoop(d *Dialer, primary *checkOption, options []*checkOption) *connectivityCheckLoop {
@@ -368,7 +386,7 @@ func (c *connectivityCheckLoop) scheduleModeRecovery() {
 }
 
 func (c *connectivityCheckLoop) discoverCapabilities() (ok, attempted bool) {
-	if !c.d.Dialer.Alive() {
+	if !c.d.runtime.connected() {
 		return true, false
 	}
 	_, changed := c.d.checkCapabilities(c.options, capabilityCheckRuntime)
@@ -381,51 +399,31 @@ func (c *connectivityCheckLoop) discoverCapabilities() (ok, attempted bool) {
 	return true, true
 }
 
-func (c *connectivityCheckLoop) notifyTransportDisconnect() {
-	c.d.mu.RLock()
-	healthWasAlive := c.d.alive
-	c.d.mu.RUnlock()
-	if healthWasAlive && !c.disconnectNotified {
-		c.d.NotifyStatusChange()
-		c.disconnectNotified = true
-	}
-}
-
-func (d *Dialer) ensureConnected() error {
-	d.connectMu.Lock()
-	defer d.connectMu.Unlock()
-	// Group-specific checkers share a transport. Recheck under their shared
-	// lock so a waiter cannot reset the session just established by its peer.
-	if d.Dialer.Alive() {
-		return nil
-	}
-	return d.Dialer.Connect()
-}
-
 func (c *connectivityCheckLoop) checkHealth() healthCheckResult {
 	var result healthCheckResult
 	if c.primary != nil {
 		result.networkType = c.primary.networkType
 	}
-	if !c.d.Dialer.Alive() {
-		c.notifyTransportDisconnect()
-		result.err = c.d.ensureConnected()
+	if !c.d.runtime.connected() {
+		result.err = c.d.runtime.connect(c.d.ctx, c.d)
 		if result.err != nil && c.d.ctx.Err() == nil {
-			result.err = c.d.ensureConnected()
+			result.err = c.d.runtime.connect(c.d.ctx, c.d)
 		}
 	}
+	result.sessionSeq = c.d.runtime.sessionSeq()
 	if result.err != nil || c.d.ctx.Err() != nil {
 		return result
 	}
+	sessionSeq := result.sessionSeq
 	if c.primary != nil {
-		checked := c.checkHealthOption(c.primary)
+		checked := c.checkHealthOptionAt(c.primary, sessionSeq)
 		checked.modeFailed = result.modeFailed
 		result = checked
 	}
 	if result.ok || c.d.ctx.Err() != nil {
 		return result
 	}
-	result.modeFailed = c.d.setModeAlive(result.networkType, false) || result.modeFailed
+	result.modeFailed = c.d.setModeAliveAt(result.networkType, false, sessionSeq) || result.modeFailed
 
 	c.d.mu.RLock()
 	support := c.d.support
@@ -440,25 +438,29 @@ func (c *connectivityCheckLoop) checkHealth() healthCheckResult {
 			continue
 		}
 		attempted[index] = true
-		candidateResult := c.checkHealthOption(candidate)
+		candidateResult := c.checkHealthOptionAt(candidate, sessionSeq)
 		candidateResult.modeFailed = result.modeFailed
 		result = candidateResult
 		if candidateResult.ok {
 			c.primary = candidate
 			return candidateResult
 		}
-		result.modeFailed = c.d.setModeAlive(candidateResult.networkType, false) || result.modeFailed
+		result.modeFailed = c.d.setModeAliveAt(candidateResult.networkType, false, sessionSeq) || result.modeFailed
 	}
 	return result
 }
 
 func (c *connectivityCheckLoop) checkHealthOption(option *checkOption) healthCheckResult {
+	return c.checkHealthOptionAt(option, c.d.runtime.sessionSeq())
+}
+
+func (c *connectivityCheckLoop) checkHealthOptionAt(option *checkOption, sessionSeq uint64) healthCheckResult {
 	ctx, cancel := context.WithCancel(c.d.ctx)
 	defer cancel()
 	results := make(chan healthCheckResult, 2)
 	probe := func() {
 		ok, latency, err := c.d.check(ctx, option)
-		results <- healthCheckResult{networkType: option.networkType, ok: ok, latency: latency, err: err}
+		results <- healthCheckResult{networkType: option.networkType, ok: ok, latency: latency, err: err, sessionSeq: sessionSeq}
 	}
 	go probe()
 	timer := time.NewTimer(healthCheckHedgeDelay(c.lastLatency))
@@ -489,6 +491,11 @@ func (c *connectivityCheckLoop) checkHealthOption(option *checkOption) healthChe
 }
 
 func (c *connectivityCheckLoop) publishHealth(result healthCheckResult) {
+	if !c.d.updateHealth(result.ok, result.latency, result.networkType, result.err, result.sessionSeq) {
+		c.d.NotifyCheck()
+		c.healthTimer.Reset(c.d.CheckInterval)
+		return
+	}
 	if result.ok {
 		c.healthInterval = c.d.CheckInterval
 		if c.staggerNext {
@@ -502,9 +509,7 @@ func (c *connectivityCheckLoop) publishHealth(result healthCheckResult) {
 		c.healthInterval = checkBackoffInitialInterval
 	}
 
-	c.d.updateHealth(result.ok, result.latency, result.networkType, result.err)
 	c.d.NotifyStatusChange()
-	c.disconnectNotified = !result.ok
 	c.healthTimer.Reset(c.healthInterval)
 	if result.modeFailed {
 		c.scheduleModeRecovery()
@@ -528,7 +533,7 @@ func (c *connectivityCheckLoop) run() {
 			continue
 		case <-c.recoveryTimer.C:
 			c.recoveryActive = false
-			if !c.d.Dialer.Alive() {
+			if !c.d.runtime.connected() {
 				c.scheduleModeRecovery()
 				continue
 			}
@@ -685,21 +690,27 @@ func (d *Dialer) checkCapabilities(checkOpts []*checkOption, mode capabilityChec
 	if len(pending) == 0 {
 		return nil, false
 	}
-	if mode != capabilityCheckInitial && !d.Dialer.Alive() {
+	if mode == capabilityCheckRuntime && !d.runtime.connected() {
 		return nil, false
 	}
 	if mode == capabilityCheckInitial {
-		if err := d.ensureConnected(); err != nil {
+		if err := d.runtime.connect(d.ctx, d); err != nil {
 			if d.ctx.Err() == nil {
 				d.Update(false, 0, nil, err)
 			}
 			return nil, false
 		}
 	}
+	sessionSeq := d.runtime.sessionSeq()
 	results := d.probeCapabilities(pending)
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
 		d.mu.Unlock()
+		return nil, false
+	}
+	if !d.runtime.matchesSession(sessionSeq) {
+		d.mu.Unlock()
+		d.NotifyCheck()
 		return nil, false
 	}
 	for _, result := range results {
@@ -745,7 +756,7 @@ func (d *Dialer) checkCapabilities(checkOpts []*checkOption, mode capabilityChec
 		if best != nil {
 			networkType = best.networkType
 		}
-		d.Update(best != nil, latency, networkType, firstErr)
+		d.updateHealth(best != nil, latency, networkType, firstErr, sessionSeq)
 	}
 	return best, changed
 }
@@ -759,10 +770,11 @@ func (d *Dialer) recoverModeHealth(checkOpts []*checkOption) bool {
 	if len(pending) == 0 {
 		return false
 	}
+	sessionSeq := d.runtime.sessionSeq()
 	results := d.probeCapabilities(pending)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.ctx.Err() != nil {
+	if d.ctx.Err() != nil || !d.runtime.matchesSession(sessionSeq) {
 		return false
 	}
 	changed := false
@@ -776,30 +788,30 @@ func (d *Dialer) recoverModeHealth(checkOpts []*checkOption) bool {
 	return changed
 }
 
-func (d *Dialer) RegisterDialerGroup(g DialerGroup) {
+func (d *Dialer) RegisterDialerGroup(g DialerGroup, emaAlpha float64, timeoutPenalty time.Duration) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.registeredDialerGroups[g] = struct{}{}
-	d.Latencies10[g] = NewLatenciesN(10)
-	d.MovingAverage[g] = 0
+	d.groups[g] = &groupState{
+		latencies:      NewLatenciesN(10),
+		emaAlpha:       emaAlpha,
+		timeoutPenalty: timeoutPenalty,
+	}
 }
 
 func (d *Dialer) UnregisterDialerGroup(g DialerGroup) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	delete(d.registeredDialerGroups, g)
-	delete(d.Latencies10, g)
-	delete(d.MovingAverage, g)
+	delete(d.groups, g)
 }
 
 func (d *Dialer) NotifyStatusChange() {
-	if !d.needAliveState {
+	if !d.checkEnabled {
 		return
 	}
 	// Inform DialerGroups to update state.
 	// Copy under the lock because callbacks call back into Dialer.Alive.
 	d.mu.RLock()
-	groups := slices.Collect(maps.Keys(d.registeredDialerGroups))
+	groups := slices.Collect(maps.Keys(d.groups))
 	d.mu.RUnlock()
 	for _, g := range groups {
 		g.NotifyStatusChange(d)
@@ -808,47 +820,96 @@ func (d *Dialer) NotifyStatusChange() {
 
 // ReportUnavailable 意味着在测速之外, Dialer 似乎不可用了
 func (d *Dialer) ReportUnavailable() {
+	d.mu.RLock()
+	if d.ctx.Err() != nil {
+		d.mu.RUnlock()
+		return
+	}
 	stats.RecordNodeConnFail(d.StatsKey())
+	d.mu.RUnlock()
 	if !d.Alive() {
 		d.NotifyStatusChange()
 	}
 	d.NotifyCheck()
 }
 
-func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
-	d.updateHealth(ok, latency, networkType, err)
+func (d *Dialer) handleSessionState(event netproxy.StateEvent, requestCheck bool) {
+	if !d.checkEnabled || d.ctx.Err() != nil {
+		return
+	}
+	if event.State == netproxy.SessionConnected {
+		if requestCheck {
+			d.NotifyCheck()
+		}
+		return
+	}
+
+	d.mu.Lock()
+	if d.ctx.Err() != nil {
+		d.mu.Unlock()
+		return
+	}
+	if event.Seq < d.healthSeq {
+		d.mu.Unlock()
+		return
+	}
+	changed := d.alive
+	d.alive = false
+	d.healthSeq = event.Seq
+	d.mu.Unlock()
+	if changed {
+		stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, false, false)
+		d.NotifyStatusChange()
+	}
+	if requestCheck {
+		d.NotifyCheck()
+	}
 }
 
-func (d *Dialer) updateHealth(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
+func (d *Dialer) Update(ok bool, latency time.Duration, networkType *common.NetworkType, err error) {
+	d.updateHealth(ok, latency, networkType, err, d.runtime.sessionSeq())
+}
+
+func (d *Dialer) updateHealth(ok bool, latency time.Duration, networkType *common.NetworkType, err error, sessionSeq uint64) bool {
+	if !d.runtime.matchesSession(sessionSeq) {
+		return false
+	}
+	if ok && !d.runtime.connected() {
+		ok = false
+		err = netproxy.ErrNotConnected
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.ctx.Err() != nil {
-		return
+		return false
 	}
+	if d.runtime.session != nil && sessionSeq < d.healthSeq {
+		return false
+	}
+	d.healthSeq = sessionSeq
 	if networkType != nil {
 		d.modeAlive[common.NetworkTypeToIndex(networkType)] = ok
 	}
-	for g := range d.registeredDialerGroups {
+	for _, state := range d.groups {
 		groupLatency := latency
 		if !ok {
-			groupLatency = g.GetTimeoutPenalty()
+			groupLatency = state.timeoutPenalty
 		}
-		alpha := g.GetEmaAlpha()
-		if d.MovingAverage[g] == 0 {
-			d.MovingAverage[g] = groupLatency
+		if state.movingAverage == 0 {
+			state.movingAverage = groupLatency
 		} else {
-			d.MovingAverage[g] = time.Duration(float64(d.MovingAverage[g])*(1-alpha) + float64(groupLatency)*alpha)
+			state.movingAverage = time.Duration(float64(state.movingAverage)*(1-state.emaAlpha) + float64(groupLatency)*state.emaAlpha)
 		}
-		d.Latencies10[g].AppendSample(groupLatency, !ok)
+		state.latencies.AppendSample(groupLatency, !ok)
 		fields := log.Fields{"node": d.Name}
 		if networkType != nil {
 			fields["network"] = networkType.String()
 		}
 		if ok {
-			avg, _ := d.Latencies10[g].AvgLatency()
+			avg, _ := state.latencies.AvgLatency()
 			fields["last"] = groupLatency.Truncate(time.Millisecond).String()
 			fields["avg_10"] = avg.Truncate(time.Millisecond)
-			fields["mov_avg"] = d.MovingAverage[g].Truncate(time.Millisecond)
+			fields["mov_avg"] = state.movingAverage.Truncate(time.Millisecond)
 			if !d.alive {
 				log.WithFields(fields).Infoln("Connectivity Check")
 			} else {
@@ -867,6 +928,7 @@ func (d *Dialer) updateHealth(ok bool, latency time.Duration, networkType *commo
 		d.lastLatency = latency
 	}
 	stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, ok, true)
+	return true
 }
 
 func (d *Dialer) check(ctx context.Context, opts *checkOption) (ok bool, latency time.Duration, err error) {

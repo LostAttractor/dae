@@ -49,24 +49,29 @@ type TableUsageBreakdown struct {
 }
 
 type GroupStatus struct {
-	Name     string           `json:"name"`
-	Policy   string           `json:"policy"`
-	Health   HealthStatus     `json:"health"`   // connectivity across supported network modes
-	NoCheck  bool             `json:"no_check"` // groups not subject to connectivity checks (direct)
-	Networks [4]NetworkStatus `json:"networks"` // tcp4, tcp6, udp4, udp6
-	Nodes    []NodeStatus     `json:"nodes"`
+	Name                 string           `json:"name"`
+	Policy               string           `json:"policy"`
+	Health               HealthStatus     `json:"health"`
+	NoCheck              bool             `json:"no_check"` // groups not subject to connectivity checks (direct)
+	Available            bool             `json:"available"`
+	UpRatio              float64          `json:"up_ratio"`
+	AliveSince           *time.Time       `json:"alive_since,omitempty"`
+	LastFailureStartedAt *time.Time       `json:"last_failure_started_at,omitempty"`
+	LastFailureDuration  time.Duration    `json:"last_failure_duration"`
+	Networks             [4]NetworkStatus `json:"networks"` // tcp4, tcp6, udp4, udp6
+	Nodes                []NodeStatus     `json:"nodes"`
 }
 
 type NetworkStatus struct {
 	Network              string        `json:"network"`
-	Supported            bool          `json:"supported"`
 	SupportState         string        `json:"support_state"`
-	Alive                bool          `json:"alive"`
-	Selected             string        `json:"selected"` // dialer name, empty if none
+	Supported            bool          `json:"supported"` // Deprecated wire compatibility.
+	Alive                bool          `json:"alive"`     // Deprecated wire compatibility.
 	UpRatio              float64       `json:"up_ratio"`
 	AliveSince           *time.Time    `json:"alive_since,omitempty"`
 	LastFailureStartedAt *time.Time    `json:"last_failure_started_at,omitempty"`
 	LastFailureDuration  time.Duration `json:"last_failure_duration"`
+	Selected             string        `json:"selected"` // dialer name, empty if none
 	ActiveConns          int64         `json:"active_conns"`
 	TotalConns           int64         `json:"total_conns"`
 }
@@ -77,8 +82,13 @@ type NodeStatus struct {
 	Subtag               string        `json:"subtag"`
 	Protocol             string        `json:"protocol"`
 	Address              string        `json:"address"`
-	Alive                bool          `json:"alive"`
-	Supported            [4]bool       `json:"supported"`
+	DialerKind           string        `json:"dialer_kind"`
+	SessionState         string        `json:"session_state"`
+	SessionSeq           uint64        `json:"session_seq"`
+	SessionError         string        `json:"session_error,omitempty"`
+	HealthState          string        `json:"health_state"`
+	Alive                bool          `json:"alive"`     // Deprecated wire compatibility.
+	Supported            [4]bool       `json:"supported"` // Deprecated wire compatibility.
 	SupportState         [4]string     `json:"support_state"`
 	Selected             [4]bool       `json:"selected"`
 	HasLatency           bool          `json:"has_latency"`
@@ -220,22 +230,13 @@ func millis(d time.Duration) float64 {
 
 func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) NetworkStatus {
 	networkType := common.IndexToNetworkType(index)
-	avail := stats.GetGroup(g.Name, index)
 	ns := NetworkStatus{
-		Network:              networkType.String(),
-		Alive:                avail.Alive,
-		UpRatio:              avail.UpRatio,
-		AliveSince:           timePtr(avail.AliveSince),
-		LastFailureStartedAt: timePtr(avail.LastFailureStartedAt),
-		LastFailureDuration:  avail.LastFailureDuration,
+		Network: networkType.String(),
 	}
 	if selected := g.SelectedDialer(networkType); selected != nil {
-		alive, support := selected.SelectionState(networkType)
+		_, support := selected.SelectionState(networkType)
 		if support == dialer.NetworkSupportConfirmed {
 			ns.Selected = selected.Name
-			ns.Alive = alive
-		} else {
-			ns.Alive = false
 		}
 	}
 	values := conns.byGroupNetwork[groupNetworkKey{group: g.Name, network: index}]
@@ -246,12 +247,24 @@ func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) Network
 func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) NodeStatus {
 	runtime := d.RuntimeStatus(g)
 	ns := NodeStatus{
-		ID:       d.StatsID(),
-		Name:     d.Name,
-		Subtag:   d.Property.SubscriptionTag,
-		Protocol: d.Property.Protocol,
-		Address:  d.Property.Address,
-		Alive:    runtime.Alive,
+		ID:           d.StatsID(),
+		Name:         d.Name,
+		Subtag:       d.Property.SubscriptionTag,
+		Protocol:     d.Property.Protocol,
+		Address:      d.Property.Address,
+		DialerKind:   "stateless",
+		SessionState: "n/a",
+		HealthState:  "n/a",
+		Alive:        runtime.Healthy,
+	}
+	if runtime.HasSession {
+		session := runtime.Session
+		ns.DialerKind = "stateful"
+		ns.SessionState = session.State.String()
+		ns.SessionSeq = session.Seq
+		if session.Cause != nil {
+			ns.SessionError = session.Cause.Error()
+		}
 	}
 	for i := 0; i < 4; i++ {
 		ns.Supported[i] = runtime.SupportState[i] == dialer.NetworkSupportConfirmed
@@ -267,6 +280,15 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) Nod
 		ns.Avg10HasFailure = runtime.Latency.Avg10HasFailure
 	}
 	avail := runtime.Availability
+	if d.ChecksConnectivity() {
+		ns.HealthState = "unknown"
+		if avail.Seen {
+			ns.HealthState = "unhealthy"
+			if runtime.Healthy {
+				ns.HealthState = "healthy"
+			}
+		}
+	}
 	ns.UpRatio = avail.UpRatio
 	ns.UpDuration = avail.UpDuration
 	ns.AliveSince = timePtr(avail.AliveSince)
@@ -290,21 +312,7 @@ func groupHealth(group GroupStatus, critical bool) HealthStatus {
 	if group.NoCheck {
 		return HealthHealthy
 	}
-
-	hasSupportedNetwork := false
-	for _, network := range group.Networks {
-		if !network.Supported {
-			continue
-		}
-		hasSupportedNetwork = true
-		if !network.Alive {
-			if critical {
-				return HealthDegraded
-			}
-			return HealthWarning
-		}
-	}
-	if hasSupportedNetwork {
+	if group.Available {
 		return HealthHealthy
 	}
 	if critical {
@@ -367,6 +375,12 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			Policy:  string(g.GetSelectionPolicy()),
 			NoCheck: g.Kind == outbound.GroupKindAlwaysAlive,
 		}
+		availability := stats.GetGroup(g.Name)
+		gs.Available = g.Available()
+		gs.UpRatio = availability.UpRatio
+		gs.AliveSince = timePtr(availability.AliveSince)
+		gs.LastFailureStartedAt = timePtr(availability.LastFailureStartedAt)
+		gs.LastFailureDuration = availability.LastFailureDuration
 		for _, d := range g.Dialers {
 			gs.Nodes = append(gs.Nodes, nodeStatus(g, d, conns))
 		}
@@ -376,7 +390,6 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			for _, node := range gs.Nodes {
 				switch node.SupportState[i] {
 				case dialer.NetworkSupportConfirmed.String():
-					gs.Networks[i].Supported = true
 					gs.Networks[i].SupportState = dialer.NetworkSupportConfirmed.String()
 				case dialer.NetworkSupportUnknown.String():
 					if gs.Networks[i].SupportState != dialer.NetworkSupportConfirmed.String() {
@@ -384,8 +397,13 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 					}
 				}
 			}
-			if gs.Networks[i].SupportState != dialer.NetworkSupportConfirmed.String() {
-				gs.Networks[i].Alive = false
+			gs.Networks[i].Supported = gs.Networks[i].SupportState == dialer.NetworkSupportConfirmed.String()
+			if gs.Networks[i].Supported {
+				gs.Networks[i].Alive = gs.Available
+				gs.Networks[i].UpRatio = gs.UpRatio
+				gs.Networks[i].AliveSince = gs.AliveSince
+				gs.Networks[i].LastFailureStartedAt = gs.LastFailureStartedAt
+				gs.Networks[i].LastFailureDuration = gs.LastFailureDuration
 			}
 		}
 		critical := outboundID < len(c.criticalOutbounds) && c.criticalOutbounds[outboundID]

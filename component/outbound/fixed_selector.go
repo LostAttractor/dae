@@ -3,88 +3,45 @@ package outbound
 import (
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	log "github.com/sirupsen/logrus"
 )
 
 type FixedSelector struct {
-	BaseSelector
-	alive   bool
-	latency time.Duration
-	mu      sync.Mutex
+	dialerGroup *DialerGroup
+	alive       bool
 }
 
-func NewFixedSelector(dialerGroup *DialerGroup, aliveChangeCallback func(alive bool, networkType *common.NetworkType)) Selector {
+func NewFixedSelector(dialerGroup *DialerGroup) Selector {
 	return &FixedSelector{
-		BaseSelector: BaseSelector{
-			dialerGroup:         dialerGroup,
-			aliveChangeCallback: aliveChangeCallback,
-		},
+		dialerGroup: dialerGroup,
 	}
 }
 
-func (s *FixedSelector) Select(networkType *common.NetworkType) (dialer *dialer.Dialer) {
+func (s *FixedSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
 	if s.dialerGroup.selectionPolicy.FixedIndex < 0 || s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
 		return nil
 	}
-	dialer = s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex]
-	if !isDialerAlive(dialer, networkType) {
+	d := s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex]
+	if !isDialerAlive(d, networkType) {
 		return nil
 	}
-	return
+	return d
 }
 
-func (s *FixedSelector) SelectedDialer(networkType *common.NetworkType) (dialer *dialer.Dialer) {
+func (s *FixedSelector) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
 	return s.Select(networkType)
 }
 
-func (s *FixedSelector) updateAliveState(dialer *dialer.Dialer, alive bool) {
-	if s.alive == alive {
-		return
-	}
-	if alive {
-		log.WithFields(log.Fields{
-			"dialer": dialer.Name,
-			"group":  s.dialerGroup.Name,
-		}).Warnf("[NOT ALIVE --> ALIVE]")
-	} else {
-		log.WithFields(log.Fields{
-			"dialer": dialer.Name,
-			"group":  s.dialerGroup.Name,
-		}).Infof("[ALIVE --> NOT ALIVE]")
-
-	}
-	s.alive = alive
-}
-
-func (s *FixedSelector) NotifyStatusChange(dialer *dialer.Dialer) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.dialerGroup.selectionPolicy.FixedIndex < 0 || s.dialerGroup.selectionPolicy.FixedIndex >= len(s.dialerGroup.Dialers) {
-		return
-	}
-	if dialer == s.dialerGroup.Dialers[s.dialerGroup.selectionPolicy.FixedIndex] {
-		alive := dialer.Alive()
-		s.updateAliveState(dialer, alive)
-		if lat, ok := dialer.LatencyStats(s.dialerGroup); ok {
-			s.latency = lat.Last
-		}
-		for i := 0; i < 4; i++ {
-			networkType := common.IndexToNetworkType(i)
-			s.handleAliveStateChange(isDialerAlive(dialer, networkType), networkType)
-		}
+func (s *FixedSelector) NotifyStatusChange(d *dialer.Dialer) {
+	index := s.dialerGroup.selectionPolicy.FixedIndex
+	if index >= 0 && index < len(s.dialerGroup.Dialers) && d == s.dialerGroup.Dialers[index] {
+		s.alive = logDialerAliveTransition(s.dialerGroup, d, s.alive, d.Alive())
 	}
 }
 
 func (s *FixedSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	var builder strings.Builder
 	if networkType != nil {
 		builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", s.dialerGroup.Name, networkType.String()))
@@ -102,8 +59,11 @@ func (s *FixedSelector) PrintLatencies(networkType *common.NetworkType, logfn fu
 				tagStr = fmt.Sprintf(" [%v]", dialer.SubscriptionTag)
 			}
 			var latencyStr string
-			if dialer.NeedAliveState() {
-				latencyStr = common.ShowDuration(s.latency)
+			if dialer.ChecksConnectivity() {
+				latencyStr = common.ShowDuration(0)
+				if latency, ok := dialer.LatencyStats(s.dialerGroup); ok {
+					latencyStr = common.ShowDuration(latency.Last)
+				}
 			} else {
 				latencyStr = "Always Alive"
 			}

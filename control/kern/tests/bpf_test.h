@@ -940,35 +940,27 @@ set_domain_routing(__u32 daddr, __u32 bump_bits, __u32 routing_bits)
 }
 
 static __always_inline void
-set_outbound_connectivity(__u8 outbound)
+set_outbound_connectivity_state(__u8 outbound, __u32 state)
 {
 	struct outbound_connectivity_query query = {
 		.outbound = outbound,
-		.ipversion = 4,
 		.l4proto = IPPROTO_TCP,
-	};
-	bpf_map_update_elem(&outbound_connectivity_map, &query, &zero_key, BPF_ANY);
-
-	struct outbound_connectivity_query query2 = {
-		.outbound = outbound,
-		.ipversion = 6,
-		.l4proto = IPPROTO_TCP,
-	};
-	bpf_map_update_elem(&outbound_connectivity_map, &query2, &zero_key, BPF_ANY);
-
-	struct outbound_connectivity_query query3 = {
-		.outbound = outbound,
 		.ipversion = 4,
-		.l4proto = IPPROTO_UDP,
 	};
-	bpf_map_update_elem(&outbound_connectivity_map, &query3, &zero_key, BPF_ANY);
-	
-	struct outbound_connectivity_query query4 = {
-		.outbound = outbound,
-		.ipversion = 6,
-		.l4proto = IPPROTO_UDP,
-	};
-	bpf_map_update_elem(&outbound_connectivity_map, &query4, &zero_key, BPF_ANY);
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	query.ipversion = 6;
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	query.l4proto = IPPROTO_UDP;
+	query.ipversion = 4;
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	query.ipversion = 6;
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+}
+
+static __always_inline void
+set_outbound_connectivity(__u8 outbound)
+{
+	set_outbound_connectivity_state(outbound, OUTBOUND_CONNECTIVITY_ALIVE);
 }
 
 static __always_inline void
@@ -992,12 +984,6 @@ static __always_inline void clear_routing_entry(const void *key)
 static __always_inline void
 set_outbound_connectivity_dead_try_sniff(__u8 outbound)
 {
-	__u32 dead = OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF;
-
-	struct outbound_connectivity_query query = {
-		.outbound = outbound,
-		.ipversion = 4,
-		.l4proto = IPPROTO_TCP,
-	};
-	bpf_map_update_elem(&outbound_connectivity_map, &query, &dead, BPF_ANY);
+	set_outbound_connectivity_state(
+		outbound, OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF);
 }

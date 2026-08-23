@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -29,6 +30,12 @@ type Runtime struct {
 	sessions    int
 	closing     bool
 	closeErr    error
+}
+
+type TCPConn interface {
+	net.Conn
+	syscall.Conn
+	CloseWrite() error
 }
 
 func (r *Runtime) beginSession() bool {
@@ -63,7 +70,7 @@ const (
 	maxDrainBytes     = 512 * 1024
 )
 
-func tcpSocketError(conn *net.TCPConn) (int, error) {
+func tcpSocketError(conn TCPConn) (int, error) {
 	raw, err := conn.SyscallConn()
 	if err != nil {
 		return 0, err
@@ -78,7 +85,7 @@ func tcpSocketError(conn *net.TCPConn) (int, error) {
 	return socketErr, controlErr
 }
 
-func spliceSocketEligible(conn *net.TCPConn) bool {
+func spliceSocketEligible(conn TCPConn) bool {
 	raw, err := conn.SyscallConn()
 	if err != nil {
 		return false
@@ -117,7 +124,7 @@ func (r *Runtime) cleanupMetadata(cookies ...uint64) {
 	}
 }
 
-func (r *Runtime) registerSocket(conn *net.TCPConn) (uint64, error) {
+func (r *Runtime) registerSocket(conn TCPConn) (uint64, error) {
 	raw, err := conn.SyscallConn()
 	if err != nil {
 		return 0, err
@@ -153,7 +160,7 @@ func (r *Runtime) registerSocket(conn *net.TCPConn) (uint64, error) {
 	return cookie, controlErr
 }
 
-func writeFull(conn *net.TCPConn, p []byte) error {
+func writeFull(conn net.Conn, p []byte) error {
 	for len(p) > 0 {
 		n, err := conn.Write(p)
 		if n > 0 {
@@ -169,7 +176,7 @@ func writeFull(conn *net.TCPConn, p []byte) error {
 	return nil
 }
 
-func drainTCP(src, dst *net.TCPConn) (eof, empty bool, err error) {
+func drainTCP(src, dst net.Conn) (eof, empty bool, err error) {
 	buf := make([]byte, 32*1024)
 	defer src.SetReadDeadline(time.Time{})
 	defer dst.SetWriteDeadline(time.Time{})
@@ -213,8 +220,8 @@ func (r *Runtime) setPass(cookie uint64) error {
 }
 
 type spliceDirectEdge struct {
-	src              *net.TCPConn
-	dst              *net.TCPConn
+	src              TCPConn
+	dst              TCPConn
 	srcCookie        uint64
 	dstCookie        uint64
 	userspace        bool
@@ -604,7 +611,7 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 	}
 }
 
-func (r *Runtime) Relay(acceptedConn, remoteConn *net.TCPConn) (handled bool, err error) {
+func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn) (handled bool, err error) {
 	if !r.beginSession() {
 		return false, nil
 	}

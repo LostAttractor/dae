@@ -6,7 +6,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -87,8 +86,10 @@ func TestNodeStatusRow(t *testing.T) {
 	row := nodeStatusRow(control.NodeStatus{
 		Name:               "node-a",
 		Protocol:           "vless",
-		Alive:              true,
-		Supported:          [4]bool{true, true, true, true},
+		DialerKind:         "stateful",
+		SessionState:       "connected",
+		HealthState:        "healthy",
+		SupportState:       [4]string{"confirmed", "confirmed", "confirmed", "confirmed"},
 		Selected:           [4]bool{true, false, false, false},
 		HasLatency:         true,
 		LastLatencyMs:      42,
@@ -104,7 +105,7 @@ func TestNodeStatusRow(t *testing.T) {
 		TotalConns:         9000,
 	})
 	want := []string{
-		"node-a", "-", "vless", "yes", "tcp4,tcp6,udp4,udp6", "tcp4",
+		"node-a", "-", "vless", "stateful", "connected", "healthy", "tcp4,tcp6,udp4,udp6", "tcp4",
 		"42/45/50", "99.8% (2/1000)", "99.5% (1/100)", "-", "-", "-", "-", "2/9000",
 	}
 	if len(row) != len(want) {
@@ -124,10 +125,9 @@ func TestNodeStatusRowOnlyShowsConfirmedSupport(t *testing.T) {
 
 	row := nodeStatusRow(control.NodeStatus{
 		Name:         "tor",
-		Supported:    [4]bool{true, true, true, true},
 		SupportState: [4]string{"confirmed", "confirmed", "unknown", "unsupported"},
 	})
-	if got := row[4].(string); got != "tcp4,tcp6" {
+	if got := row[6].(string); got != "tcp4,tcp6" {
 		t.Fatalf("support = %q, want only confirmed modes", got)
 	}
 }
@@ -140,7 +140,7 @@ func TestNodeStatusRowHighlightsAvg10Failure(t *testing.T) {
 	failedAt := time.Now()
 	row := nodeStatusRow(control.NodeStatus{
 		Name:                 "node-a",
-		Alive:                true,
+		HealthState:          "healthy",
 		Selected:             [4]bool{true, false, false, false},
 		HasLatency:           true,
 		LastLatencyMs:        42,
@@ -155,14 +155,14 @@ func TestNodeStatusRowHighlightsAvg10Failure(t *testing.T) {
 		ansi string
 	}{
 		{cell: 0, ansi: "\x1b[36m"},
-		{cell: 6, ansi: "\x1b[91;1m"},
+		{cell: 8, ansi: "\x1b[91;1m"},
 	}
 	for _, tt := range tests {
 		if got := row[tt.cell].(string); !strings.Contains(got, tt.ansi) {
 			t.Errorf("nodeStatusRow()[%d] = %q, want ANSI prefix %q", tt.cell, got, tt.ansi)
 		}
 	}
-	if got := row[10].(string); strings.Contains(got, "\x1b[") {
+	if got := row[12].(string); strings.Contains(got, "\x1b[") {
 		t.Errorf("completed failure episode should not inherit avg10 coloring: %q", got)
 	}
 }
@@ -178,7 +178,7 @@ func TestNodeStatusRowFormatsFailureEpisode(t *testing.T) {
 		LastFailureStartedAt: &startedAt,
 		LastFailureDuration:  2 * time.Minute,
 	})
-	failure := row[10].(string)
+	failure := row[12].(string)
 	if !strings.Contains(failure, " / 2m0s") {
 		t.Fatalf("failure episode = %q, want start and duration", failure)
 	}
@@ -190,7 +190,7 @@ func TestNodeStatusRowFormatsFailureEpisode(t *testing.T) {
 		Name:                 "node-a",
 		LastFailureStartedAt: &startedAt,
 	})
-	if got := row[10].(string); !strings.HasSuffix(got, " / 0s") {
+	if got := row[12].(string); !strings.HasSuffix(got, " / 0s") {
 		t.Fatalf("zero-duration failure episode = %q, want 0s", got)
 	}
 }
@@ -201,11 +201,12 @@ func TestNetworkStatusRowUnsupported(t *testing.T) {
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
 	row := networkStatusRow(control.NetworkStatus{
-		Network:     "tcp6",
-		ActiveConns: 2,
-		TotalConns:  10,
+		Network:      "tcp6",
+		SupportState: "unsupported",
+		ActiveConns:  2,
+		TotalConns:   10,
 	})
-	want := []string{"tcp6", "n/a", "-", "-", "-", "-", "2/10"}
+	want := []string{"tcp6", "unsupported", "-", "2/10"}
 	for i, expected := range want {
 		if got := row[i].(string); got != expected {
 			t.Errorf("networkStatusRow()[%d] = %q, want %q", i, got, expected)
@@ -285,31 +286,30 @@ func TestColorHealthDefaultsToUnknown(t *testing.T) {
 	}
 }
 
-func TestNormalizeLegacyStatus(t *testing.T) {
-	var legacy control.StatusSnapshot
-	if err := json.Unmarshal([]byte(`{
-		"groups": [{
-			"name": "proxy",
-			"networks": [{"network": "tcp4", "alive": false}]
-		}]
-	}`), &legacy); err != nil {
-		t.Fatal(err)
-	}
-	normalizeLegacyStatus(&legacy)
-	for i, network := range legacy.Groups[0].Networks {
-		if !network.Supported {
-			t.Fatalf("legacy network %d remains unsupported", i)
-		}
-	}
-
-	current := control.StatusSnapshot{
-		Health: control.HealthHealthy,
-		Groups: []control.GroupStatus{{
-			Networks: [4]control.NetworkStatus{{Supported: false}},
+func TestNormalizeStatusFromPreviousSchema(t *testing.T) {
+	aliveSince := time.Now().Add(-time.Minute)
+	snapshot := control.StatusSnapshot{Groups: []control.GroupStatus{{
+		Networks: [4]control.NetworkStatus{{
+			Supported:  true,
+			Alive:      true,
+			UpRatio:    0.9,
+			AliveSince: &aliveSince,
 		}},
+		Nodes: []control.NodeStatus{{
+			Alive:     true,
+			Supported: [4]bool{true},
+		}},
+	}}}
+	normalizeStatus(&snapshot)
+	group := snapshot.Groups[0]
+	if !group.Available || group.UpRatio != 0.9 || group.AliveSince == nil {
+		t.Fatalf("normalized group = %+v", group)
 	}
-	normalizeLegacyStatus(&current)
-	if current.Groups[0].Networks[0].Supported {
-		t.Fatal("current unsupported network was overwritten")
+	if group.Networks[0].SupportState != "confirmed" {
+		t.Fatalf("network support = %q, want confirmed", group.Networks[0].SupportState)
+	}
+	node := group.Nodes[0]
+	if node.HealthState != "healthy" || node.SupportState[0] != "confirmed" {
+		t.Fatalf("normalized node = %+v", node)
 	}
 }

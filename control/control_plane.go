@@ -44,8 +44,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sys/unix"
 
-	"github.com/daeuniverse/outbound/transport/grpc"
-	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
@@ -300,9 +298,23 @@ func NewControlPlane(
 				FixedIndex: 0,
 			}, nil),
 	}
-
 	// Filter out groups.
 	dialerSet := outbound.NewDialerSetFromLinks(option, prometheusRegistry, tagToNodeList)
+	var plane *ControlPlane
+	var cancel context.CancelFunc
+	defer func() {
+		if err != nil {
+			if plane == nil {
+				_ = closeDialerGroups(outbounds)
+			} else {
+				cancel()
+				for i := len(plane.deferFuncs) - 1; i >= 0; i-- {
+					_ = plane.deferFuncs[i]()
+				}
+			}
+			_ = dialerSet.Close()
+		}
+	}()
 	for _, group := range groups {
 		policy, err := dialer.NewDialerSelectionPolicyFromGroupParam(&group)
 		if err != nil {
@@ -389,7 +401,7 @@ func NewControlPlane(
 
 	ctx, cancel := context.WithCancel(context.Background())
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
-	plane := &ControlPlane{
+	plane = &ControlPlane{
 		core:                      core,
 		outbounds:                 outbounds,
 		criticalOutbounds:         criticalOutbounds,
@@ -422,11 +434,6 @@ func NewControlPlane(
 	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
 	// the remainder of control-plane shutdown indefinitely.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
-	defer func() {
-		if err != nil {
-			cancel()
-		}
-	}()
 
 	/// DNS upstream.
 	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
@@ -488,13 +495,6 @@ func (c *ControlPlane) Activate() error {
 	builder := c.routingMatcherBuilder
 	c.routingMatcherBuilder = nil
 
-	// Reset the global grpc/meek transport caches so dials made from now on
-	// use the new configuration. This belongs to the commit phase: during
-	// the build phase of a reload the previous plane is still serving and
-	// must keep its cached transports, and a failed build must not wipe them.
-	grpc.CleanGlobalClientConnectionCache()
-	meek.CleanGlobalRoundTripperCache()
-
 	if err := builder.BuildKernspace(); err != nil {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
@@ -542,7 +542,9 @@ func (c *ControlPlane) Activate() error {
 	wg := new(sync.WaitGroup)
 	for _, g := range c.outbounds {
 		if g.Kind == outbound.GroupKindNormal {
-			g.InitializeConnectivity()
+			if err := g.InitializeConnectivity(); err != nil {
+				return oops.Errorf("initialize outbound %q availability: %w", g.Name, err)
+			}
 		}
 	}
 	for _, g := range c.outbounds {
@@ -739,7 +741,7 @@ func (c *ControlPlane) requestConnectivityRechecks() {
 			continue
 		}
 		for _, d := range group.Dialers {
-			if !d.NeedAliveState() {
+			if !d.ChecksConnectivity() {
 				continue
 			}
 			if _, ok := seen[d]; ok {
@@ -1316,13 +1318,26 @@ func (c *ControlPlane) StopAndAbortConnections() (err error) {
 
 // closeOutbounds stops the connectivity checks of all outbound groups.
 func (c *ControlPlane) closeOutbounds() (err error) {
-	for _, g := range c.outbounds {
+	return closeDialerGroups(c.outbounds)
+}
+
+func closeDialerGroups(groups []*outbound.DialerGroup) (err error) {
+	transports := make(map[any]*dialer.Dialer)
+	for _, g := range groups {
+		for _, d := range g.Dialers {
+			transports[d.TransportID()] = d
+		}
 		if e := g.Close(); e != nil {
 			if err != nil {
 				err = oops.Errorf("%w; %v", err, e)
 			} else {
 				err = e
 			}
+		}
+	}
+	for _, d := range transports {
+		if e := d.CloseTransport(); e != nil {
+			err = errors.Join(err, e)
 		}
 	}
 	return err

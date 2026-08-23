@@ -936,7 +936,7 @@ func (c *DnsController) reportDNSDialFailure(err error, argument *dialArgument) 
 		return
 	}
 	netErr, ok := IsNetError(err)
-	if !ok || netErr.Timeout() || !argument.Dialer.NeedAliveState() {
+	if !ok || netErr.Timeout() || !argument.Dialer.ChecksConnectivity() {
 		return
 	}
 	labels := prometheus.Labels{

@@ -8,6 +8,8 @@ package dialer
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -27,8 +29,13 @@ var (
 
 type DialerGroup interface {
 	NotifyStatusChange(*Dialer)
-	GetEmaAlpha() float64
-	GetTimeoutPenalty() time.Duration
+}
+
+type groupState struct {
+	latencies      *LatenciesN
+	movingAverage  time.Duration
+	emaAlpha       float64
+	timeoutPenalty time.Duration
 }
 
 type Dialer struct {
@@ -37,20 +44,19 @@ type Dialer struct {
 	*Property
 	statsKey string
 	statsID  string
+	runtime  *transportRuntime
 
-	needAliveState bool
-	alive          bool
-	lastLatency    time.Duration
+	checkEnabled bool
+	alive        bool
+	healthSeq    uint64
+	lastLatency  time.Duration
 	// support is monotonic protocol capability. modeAlive records the latest
 	// health verdict for each confirmed mode independently of aggregate health.
-	support       [4]NetworkSupportState
-	modeAlive     [4]bool
-	Latencies10   map[DialerGroup]*LatenciesN
-	MovingAverage map[DialerGroup]time.Duration
+	support   [4]NetworkSupportState
+	modeAlive [4]bool
 
-	mu                     sync.RWMutex
-	registeredDialerGroups map[DialerGroup]struct{}
-	connectMu              *sync.Mutex
+	mu     sync.RWMutex
+	groups map[DialerGroup]*groupState
 
 	checkCh chan struct{}
 	ctx     context.Context
@@ -59,6 +65,7 @@ type Dialer struct {
 	checkActivated bool
 	checkAsync     bool
 	checkWG        sync.WaitGroup
+	closeOnce      sync.Once
 }
 
 // LatencyStats is a coherent view of the latency samples of a dialer in one
@@ -101,8 +108,10 @@ func (s NetworkSupportState) String() string {
 // Availability is sampled from the stats registry outside the dialer lock and
 // is not coherent with the other fields.
 type RuntimeSnapshot struct {
-	Alive        bool
+	Healthy      bool
 	SupportState [4]NetworkSupportState
+	Session      netproxy.StateEvent
+	HasSession   bool
 	HasLatency   bool
 	Latency      LatencyStats
 	Availability stats.Availability
@@ -118,6 +127,9 @@ type GlobalOption struct {
 type Property struct {
 	D.Property
 	SubscriptionTag string
+	// StatsIdentity distinguishes independently constructed entries whose
+	// parsed canonical links are equal, such as aliases and duplicates.
+	StatsIdentity string
 }
 
 func NewGlobalOption(global *config.Global) *GlobalOption {
@@ -141,27 +153,29 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 }
 
 // NewDialer is for register in general.
-func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, needAliveState bool) *Dialer {
-	return newDialer(dialer, option, property, needAliveState, "")
+func NewDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, checkEnabled bool) *Dialer {
+	return NewDialerRuntime(netproxy.NewRuntime(dialer), option, property, checkEnabled)
 }
 
-func newDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property, needAliveState bool, statsScope string) *Dialer {
+func NewDialerRuntime(runtime *netproxy.Runtime, option *GlobalOption, property *Property, checkEnabled bool) *Dialer {
+	return newDialer(newTransportRuntime(runtime), option, property, checkEnabled, "")
+}
+
+func newDialer(runtime *transportRuntime, option *GlobalOption, property *Property, checkEnabled bool, statsScope string) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
-		GlobalOption:           option,
-		Dialer:                 dialer,
-		Property:               property,
-		needAliveState:         needAliveState,
-		alive:                  !needAliveState,
-		Latencies10:            make(map[DialerGroup]*LatenciesN),
-		MovingAverage:          make(map[DialerGroup]time.Duration),
-		registeredDialerGroups: make(map[DialerGroup]struct{}),
-		connectMu:              new(sync.Mutex),
-		checkCh:                make(chan struct{}, 1),
-		ctx:                    ctx,
-		cancel:                 cancel,
+		GlobalOption: option,
+		Dialer:       runtime.owned.Dialer,
+		Property:     property,
+		runtime:      runtime,
+		checkEnabled: checkEnabled,
+		alive:        !checkEnabled,
+		groups:       make(map[DialerGroup]*groupState),
+		checkCh:      make(chan struct{}, 1),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
-	if !needAliveState {
+	if !checkEnabled {
 		for i := range d.support {
 			d.support[i] = NetworkSupportConfirmed
 			d.modeAlive[i] = true
@@ -171,22 +185,32 @@ func newDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
-	if !needAliveState {
+	if !checkEnabled {
 		stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, true, false)
 	}
+	runtime.register(d)
 	return d
 }
 
+func ComposeStatsIdentity(parts ...string) string {
+	var builder strings.Builder
+	for _, part := range parts {
+		builder.WriteString(strconv.Itoa(len(part)))
+		builder.WriteByte(':')
+		builder.WriteString(part)
+	}
+	return builder.String()
+}
+
 func makeStatsKey(property *Property, scope string) string {
-	id := property.Link
+	id := property.StatsIdentity
+	if id == "" {
+		id = property.Link
+	}
 	if id == "" {
 		id = property.Protocol + "://" + property.Address
 	}
-	key := property.SubscriptionTag + "\x1f" + id
-	if scope != "" {
-		key += "\x1f" + scope
-	}
-	return key
+	return ComposeStatsIdentity(property.SubscriptionTag, id, scope)
 }
 
 func (d *Dialer) setStatsScope(scope string) {
@@ -200,8 +224,8 @@ func (d *Dialer) StatsKey() string { return d.statsKey }
 
 func (d *Dialer) StatsID() string { return d.statsID }
 
-func (d *Dialer) NeedAliveState() bool {
-	return d.needAliveState
+func (d *Dialer) ChecksConnectivity() bool {
+	return d.checkEnabled
 }
 
 // LatencyStats returns the latency samples of this dialer in the given
@@ -213,17 +237,17 @@ func (d *Dialer) LatencyStats(g DialerGroup) (lat LatencyStats, ok bool) {
 }
 
 func (d *Dialer) latencyStatsLocked(g DialerGroup) (lat LatencyStats, ok bool) {
-	latencies, ok := d.Latencies10[g]
+	state, ok := d.groups[g]
 	if !ok {
 		return LatencyStats{}, false
 	}
-	lat.Last, ok = latencies.LastLatency()
+	lat.Last, ok = state.latencies.LastLatency()
 	if !ok {
 		return LatencyStats{}, false
 	}
-	lat.Avg10, _ = latencies.AvgLatency()
-	lat.MovingAvg = d.MovingAverage[g]
-	lat.Avg10HasFailure = latencies.HasFailure()
+	lat.Avg10, _ = state.latencies.AvgLatency()
+	lat.MovingAvg = state.movingAverage
+	lat.Avg10HasFailure = state.latencies.HasFailure()
 	return lat, true
 }
 
@@ -249,9 +273,14 @@ func (d *Dialer) SelectionLatency(g DialerGroup, policy consts.DialerSelectionPo
 // cannot be interleaved with a connectivity update.
 func (d *Dialer) RuntimeStatus(g DialerGroup) RuntimeSnapshot {
 	d.mu.RLock()
+	session, hasSession := d.runtime.sessionSnapshot()
+	connected := d.runtime.accepting() && (!hasSession || session.State == netproxy.SessionConnected)
+	health := d.ctx.Err() == nil && connected && (!hasSession || d.healthSeq == session.Seq) && d.alive
 	snapshot := RuntimeSnapshot{
-		Alive:        d.Dialer.Alive() && d.alive,
+		Healthy:      health,
 		SupportState: d.support,
+		Session:      session,
+		HasSession:   hasSession,
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked(g)
 	d.mu.RUnlock()
@@ -276,24 +305,25 @@ func (d *Dialer) CheckAsync() bool {
 	return d.checkAsync
 }
 
-func (d *Dialer) Clone() *Dialer {
-	clone := NewDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState)
-	clone.connectMu = d.connectMu
-	return clone
-}
-
 // CloneForStatsScope gives group-specific health state a distinct identity
-// while sharing both the data-plane transport and its connection lock.
+// while sharing the data-plane transport and Session lifecycle.
 func (d *Dialer) CloneForStatsScope(scope string) *Dialer {
-	clone := newDialer(d.Dialer, d.GlobalOption, d.Property, d.needAliveState, scope)
-	clone.connectMu = d.connectMu
-	return clone
+	return newDialer(d.runtime, d.GlobalOption, d.Property, d.checkEnabled, scope)
 }
 
 // Close cancels the connectivity check and waits for its goroutine to exit.
 // The dialer must not be reused afterwards.
 func (d *Dialer) Close() error {
-	d.cancel()
-	d.checkWG.Wait()
+	d.closeOnce.Do(func() {
+		d.mu.Lock()
+		d.cancel()
+		d.mu.Unlock()
+		d.checkWG.Wait()
+		d.runtime.unregister(d)
+	})
 	return nil
 }
+
+func (d *Dialer) CloseTransport() error { return d.runtime.close() }
+
+func (d *Dialer) TransportID() any { return d.runtime }

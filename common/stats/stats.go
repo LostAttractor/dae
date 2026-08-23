@@ -38,8 +38,7 @@ func LastReload() time.Time {
 	return gaugeTime(common.LastReloadTime)
 }
 
-// Availability is a point-in-time view of the uptime of a node, or of a
-// group on one network type.
+// Availability is a point-in-time view of the uptime of a node or group.
 type Availability struct {
 	Seen                 bool          // false until the first record
 	Alive                bool          // current state
@@ -63,7 +62,29 @@ type Availability struct {
 	Recent24h AvailabilityWindow // statistics observed during the trailing 24 hours
 }
 
-func metricValue(m prometheus.Metric) float64 {
+type gauge interface {
+	Set(float64)
+	Inc()
+	Write(*dto.Metric) error
+}
+
+type mirroredGauge []prometheus.Gauge
+
+func (g mirroredGauge) Set(value float64) {
+	for _, gauge := range g {
+		gauge.Set(value)
+	}
+}
+
+func (g mirroredGauge) Inc() {
+	for _, gauge := range g {
+		gauge.Inc()
+	}
+}
+
+func (g mirroredGauge) Write(metric *dto.Metric) error { return g[0].Write(metric) }
+
+func metricValue(m interface{ Write(*dto.Metric) error }) float64 {
 	var d dto.Metric
 	if err := m.Write(&d); err != nil {
 		return 0
@@ -74,18 +95,18 @@ func metricValue(m prometheus.Metric) float64 {
 	return d.GetCounter().GetValue()
 }
 
-func gaugeValue(g prometheus.Gauge) float64   { return metricValue(g) }
+func gaugeValue(g gauge) float64              { return metricValue(g) }
 func counterValue(c prometheus.Counter) int64 { return int64(metricValue(c)) }
-func gaugeBool(g prometheus.Gauge) bool       { return metricValue(g) != 0 }
+func gaugeBool(g gauge) bool                  { return metricValue(g) != 0 }
 
-func gaugeTime(g prometheus.Gauge) time.Time {
+func gaugeTime(g gauge) time.Time {
 	if sec := metricValue(g); sec > 0 {
 		return time.Unix(int64(sec), 0)
 	}
 	return time.Time{}
 }
 
-func setGaugeTime(g prometheus.Gauge, t time.Time) {
+func setGaugeTime(g gauge, t time.Time) {
 	g.Set(float64(t.Unix()))
 }
 
@@ -106,10 +127,10 @@ type availability struct {
 	lastAcc                  time.Time // last time totalUp was brought up to date
 	failureStartedAt         time.Time // retains monotonic time for duration accounting
 	completedFailureDuration time.Duration
-	alive                    prometheus.Gauge
-	aliveSince               prometheus.Gauge // set on transitions to alive; stale while down
-	failureStart             prometheus.Gauge // wall-clock start retained after recovery
-	checks                   *nodeChecks      // nil for groups, which run no connectivity checks
+	alive                    gauge
+	aliveSince               gauge       // set on transitions to alive; stale while down
+	failureStart             gauge       // wall-clock start retained after recovery
+	checks                   *nodeChecks // nil for groups, which run no connectivity checks
 	recent                   recentAvailability
 }
 
@@ -117,12 +138,12 @@ type availability struct {
 // check appends one latency sample, so the counters double as
 // latency-sample counts.
 type nodeChecks struct {
-	lastCheck    prometheus.Gauge
-	lastConnFail prometheus.Gauge
+	lastCheck    gauge
+	lastConnFail gauge
 	total        prometheus.Counter
 	failed       prometheus.Counter
-	sinceAlive   prometheus.Gauge // reset at the check that starts an up-streak
-	sinceFailure prometheus.Gauge // reset at every failed check
+	sinceAlive   gauge // reset at the check that starts an up-streak
+	sinceFailure gauge // reset at every failed check
 }
 
 // record updates the check counters for one connectivity check; transition
@@ -298,46 +319,52 @@ func GetNode(key string) Availability {
 	return v.(*availability).snapshot()
 }
 
-var groups sync.Map // group name -> *[4]availability
+var groups sync.Map // group name -> *availability
 
-func newGroupAvailability(name string) *[4]availability {
-	var arr [4]availability
+func newGroupAvailability(name string) *availability {
+	alive := make(mirroredGauge, 0, 4)
+	aliveSince := make(mirroredGauge, 0, 4)
+	failureStart := make(mirroredGauge, 0, 4)
 	for i := 0; i < 4; i++ {
 		labels := prometheus.Labels{
 			"outbound": name,
 			"network":  common.IndexToNetworkType(i).String(),
 		}
-		arr[i].labels = labels
-		arr[i].alive = common.GroupAlive.With(labels)
-		arr[i].aliveSince = common.GroupAliveSince.With(labels)
-		arr[i].failureStart = common.GroupLastFailureStart.With(labels)
+		alive = append(alive, common.GroupAlive.With(labels))
+		aliveSince = append(aliveSince, common.GroupAliveSince.With(labels))
+		failureStart = append(failureStart, common.GroupLastFailureStart.With(labels))
 	}
-	return &arr
+	return &availability{
+		labels:       prometheus.Labels{"outbound": name},
+		alive:        alive,
+		aliveSince:   aliveSince,
+		failureStart: failureStart,
+	}
 }
 
-func groupAvailability(name string) *[4]availability {
+func groupAvailability(name string) *availability {
 	if v, ok := groups.Load(name); ok {
-		return v.(*[4]availability)
+		return v.(*availability)
 	}
 	a := newGroupAvailability(name)
 	v, _ := groups.LoadOrStore(name, a)
-	return v.(*[4]availability)
+	return v.(*availability)
 }
 
-func RecordGroup(name string, networkIndex int, alive bool) {
+func RecordGroup(name string, available bool) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	groupAvailability(name)[networkIndex].record(alive, false, time.Now())
+	groupAvailability(name).record(available, false, time.Now())
 }
 
-func GetGroup(name string, networkIndex int) Availability {
+func GetGroup(name string) Availability {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	v, ok := groups.Load(name)
 	if !ok {
 		return Availability{}
 	}
-	return v.(*[4]availability)[networkIndex].snapshot()
+	return v.(*availability).snapshot()
 }
 
 // NodeIdentity describes an availability identity retained by the currently
@@ -372,9 +399,12 @@ func deleteNodeMetrics(labels prometheus.Labels) {
 	common.NodeChecksSinceFailure.Delete(labels)
 }
 
-func deleteGroupMetrics(group *[4]availability) {
-	for i := range group {
-		labels := group[i].labels
+func deleteGroupMetrics(group *availability) {
+	for i := 0; i < 4; i++ {
+		labels := prometheus.Labels{
+			"outbound": group.labels["outbound"],
+			"network":  common.IndexToNetworkType(i).String(),
+		}
 		common.GroupAlive.Delete(labels)
 		common.GroupAliveSince.Delete(labels)
 		common.GroupLastFailureStart.Delete(labels)
@@ -414,7 +444,7 @@ func Reconcile(activeNodes []NodeIdentity, activeGroups []string) {
 	}
 	groups.Range(func(key, value any) bool {
 		if _, keep := groupNames[key.(string)]; !keep {
-			deleteGroupMetrics(value.(*[4]availability))
+			deleteGroupMetrics(value.(*availability))
 			groups.Delete(key)
 		}
 		return true

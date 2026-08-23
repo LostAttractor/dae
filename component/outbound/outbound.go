@@ -16,7 +16,7 @@ import (
 	_ "github.com/daeuniverse/outbound/dialer/trojan"
 	// _ "github.com/daeuniverse/outbound/dialer/tuic"
 	// _ "github.com/daeuniverse/outbound/dialer/v2ray"
-	// _ "github.com/daeuniverse/outbound/protocol/anytls"
+	_ "github.com/daeuniverse/outbound/protocol/anytls"
 	_ "github.com/daeuniverse/outbound/protocol/hysteria2"
 	// _ "github.com/daeuniverse/outbound/protocol/juicity"
 	_ "github.com/daeuniverse/outbound/protocol/shadowsocks"

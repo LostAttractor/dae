@@ -6,6 +6,8 @@
 package control
 
 import (
+	"errors"
+
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -40,45 +42,53 @@ func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConne
 	}
 }
 
-func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(alive bool, networkType *common.NetworkType) {
-	return func(alive bool, networkType *common.NetworkType) {
+func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundName string, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) func(available bool, networkType *common.NetworkType) error {
+	return func(available bool, networkType *common.NetworkType) error {
 		c.outboundCallbackMu.Lock()
 		defer c.outboundCallbackMu.Unlock()
 		if c.closed.Err() != nil {
-			return
+			return c.closed.Err()
 		}
 		if log.IsLevelEnabled(log.DebugLevel) {
-			strAlive := "NOT ALIVE"
-			if alive {
-				strAlive = "ALIVE"
+			state := "UNAVAILABLE"
+			if available {
+				state = "AVAILABLE"
 			}
 			log.WithFields(log.Fields{
 				"outboundId": outbound,
-			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", outboundName, networkType.String(), strAlive)
+			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", outboundName, networkType.String(), state)
 		}
 
-		value := encodeOutboundConnectivity(alive, noConnectivityTrySniff, noConnectivityOutbound)
-
-		// Keep the actual liveness in memory for the userspace routing matcher.
-		// The eBPF map value also carries the global no-connectivity action, so
-		// deriving liveness from that action would conflate alive with
-		// dead-but-try-sniff.
-		recovered := c.recordOutboundConnectivity(outbound, common.NetworkTypeToIndex(networkType), alive)
-
-		if err := c.bpf.OutboundConnectivityMap.Update(bpfOutboundConnectivityQuery{
+		key := bpfOutboundConnectivityQuery{
 			Outbound:  outbound,
 			L4proto:   networkType.L4Proto.ToL4Proto(),
 			Ipversion: networkType.IpVersion.ToIpVersion(),
-		}, value, ebpf.UpdateAny); err != nil {
-			log.WithFields(log.Fields{
-				"alive":    alive,
-				"network":  networkType.String(),
-				"outbound": outboundName,
-			}).Warnf("Failed to notify the kernel program: %v", err)
 		}
+		updateKernel := func(value uint32) error {
+			if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
+				log.WithFields(log.Fields{
+					"network":  networkType.String(),
+					"outbound": outboundName,
+					"value":    value,
+				}).Warnf("Failed to notify the kernel program: %v", err)
+				return err
+			}
+			return nil
+		}
+
+		network := common.NetworkTypeToIndex(networkType)
+		previous := c.outboundConnectivityMap[outbound][network].Load()
+		value := encodeOutboundConnectivity(available, noConnectivityTrySniff, noConnectivityOutbound)
+		if err := updateKernel(value); err != nil {
+			rollbackValue := encodeOutboundConnectivity(previous, noConnectivityTrySniff, noConnectivityOutbound)
+			return errors.Join(err, updateKernel(rollbackValue))
+		}
+
+		recovered := c.recordOutboundConnectivity(outbound, network, available)
 		if recovered != nil {
 			recovered()
 		}
+		return nil
 	}
 }
 
@@ -86,19 +96,19 @@ func (c *controlPlaneCore) setOutboundRecoveryCallback(callback func()) {
 	c.outboundRecovery = callback
 }
 
-func (c *controlPlaneCore) recordOutboundConnectivity(outbound uint8, network int, alive bool) func() {
+func (c *controlPlaneCore) recordOutboundConnectivity(outbound uint8, network int, available bool) func() {
 	if outbound > uint8(consts.OutboundUserDefinedMax) {
 		return nil
 	}
-	wasAlive := c.anyOutboundAlive(network)
-	c.outboundConnectivityMap[outbound][network].Store(alive)
-	if !wasAlive && alive {
+	wasAvailable := c.anyOutboundAvailable(network)
+	c.outboundConnectivityMap[outbound][network].Store(available)
+	if !wasAvailable && available {
 		return c.outboundRecovery
 	}
 	return nil
 }
 
-func (c *controlPlaneCore) anyOutboundAlive(network int) bool {
+func (c *controlPlaneCore) anyOutboundAvailable(network int) bool {
 	for outbound := uint8(consts.OutboundUserDefinedMin); outbound <= uint8(consts.OutboundUserDefinedMax); outbound++ {
 		if c.outboundConnectivityMap[outbound][network].Load() {
 			return true
@@ -107,10 +117,8 @@ func (c *controlPlaneCore) anyOutboundAlive(network int) bool {
 	return false
 }
 
-// outboundUsable reports whether the outbound group has a live dialer for the
-// given network type. A group whose state has never been reported (e.g. before
-// the first check completes) is not usable. Unknown network types
-// conservatively report usable so that traffic is not unexpectedly rerouted.
+// outboundUsable reports whether the group can serve the requested network.
+// Unknown network masks conservatively remain usable.
 func (c *controlPlaneCore) outboundUsable(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool {
 	if outbound > uint8(consts.OutboundUserDefinedMax) {
 		return true

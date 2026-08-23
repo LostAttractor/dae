@@ -155,6 +155,9 @@ func newSkipWhileNoaliveMatcher(usable *bool, gotArgs *struct {
 				gotArgs.l4proto = l4proto
 				gotArgs.ipVersion = ipVersion
 			}
+			if l4proto != consts.L4ProtoType_TCP || ipVersion != consts.IpVersion_4 {
+				panic("matcher passed the wrong network type")
+			}
 			return *usable
 		}
 	}
