@@ -7,6 +7,7 @@ package component
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,7 +180,7 @@ func TestInterfaceManagerReportsSubscriptionFailure(t *testing.T) {
 func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 	oldLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "old0"}}
 	newLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "new0"}}
-	events := make(chan string, 3)
+	events := make(chan string, 4)
 	m := &InterfaceManager{
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
@@ -189,7 +190,8 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 			newCallback: func(link netlink.Link) { events <- "new:" + link.Attrs().Name },
 			delCallback: func(link netlink.Link) { events <- "del:" + link.Attrs().Name },
 		}},
-		onReset: func() { events <- "reset" },
+		onReset:  func() { events <- "reset" },
+		onChange: func() { events <- "change" },
 	}
 	subscribed := make(chan chan<- netlink.LinkUpdate, 1)
 	subscribe := func(ch chan<- netlink.LinkUpdate, done <-chan struct{}, _ netlink.LinkSubscribeOptions) error {
@@ -215,7 +217,7 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("monitor did not resubscribe")
 	}
-	for _, want := range []string{"reset", "del:old0", "new:new0"} {
+	for _, want := range []string{"reset", "del:old0", "new:new0", "change"} {
 		select {
 		case got := <-events:
 			if got != want {
@@ -230,5 +232,81 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 	}
 	if err := m.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInterfaceManagerCallbackCanRegisterAnotherInterface(t *testing.T) {
+	m := &InterfaceManager{
+		stop:         make(chan struct{}),
+		links:        make(map[int]netlink.Link),
+		listLinks:    func() ([]netlink.Link, error) { return nil, nil },
+		deliveryDone: make(chan struct{}),
+	}
+	m.deliveryCond = sync.NewCond(&m.deliveryMu)
+	go m.dispatchCallbacks()
+	t.Cleanup(m.stopCallbackDispatcher)
+
+	registered := make(chan struct{})
+	m.callbacks = []callbackSet{{
+		pattern: "first0",
+		newCallback: func(netlink.Link) {
+			m.Register("second0", nil, func(netlink.Link) { close(registered) }, nil)
+		},
+	}}
+	m.handleLinkUpdate(netlink.LinkUpdate{
+		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
+		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "first0"}},
+	})
+	m.handleLinkUpdate(netlink.LinkUpdate{
+		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
+		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "second0"}},
+	})
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("registration from callback did not receive a later event")
+	}
+}
+
+func TestInterfaceManagerSyncInitErrorDisablesRegistration(t *testing.T) {
+	initErr := errors.New("initial callback failed")
+	m := &InterfaceManager{
+		links: make(map[int]netlink.Link),
+		listLinks: func() ([]netlink.Link, error) {
+			return []netlink.Link{&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "test0"}}}, nil
+		},
+	}
+	called := false
+	err := m.RegisterSync("test0", func(netlink.Link) error { return initErr }, func(netlink.Link) { called = true }, nil)
+	if !errors.Is(err, initErr) {
+		t.Fatalf("RegisterSync error = %v, want %v", err, initErr)
+	}
+	if len(m.callbacks) != 0 {
+		t.Fatal("failed synchronous registration remained active")
+	}
+	m.handleLinkUpdate(netlink.LinkUpdate{
+		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
+		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "test0"}},
+	})
+	if called {
+		t.Fatal("failed registration received a dynamic callback")
+	}
+}
+
+func TestInterfaceManagerExactRegistrationTreatsNameLiterally(t *testing.T) {
+	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "test[0]"}}
+	m := &InterfaceManager{
+		links:     make(map[int]netlink.Link),
+		listLinks: func() ([]netlink.Link, error) { return []netlink.Link{link}, nil },
+	}
+	called := false
+	if err := m.RegisterSync("test[0]", func(netlink.Link) error {
+		called = true
+		return nil
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("literal interface name did not match")
 	}
 }

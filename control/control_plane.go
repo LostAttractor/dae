@@ -588,7 +588,7 @@ func (c *ControlPlane) Activate() error {
 	wanEnabled := len(c.wanInterface) > 0 || c.autoWan
 	retryHost := false
 	if wanEnabled {
-		if err := core.ifmgr.RegisterWithPattern("*", nil, nil, core.invalidateWanLink); err != nil {
+		if err := core.ifmgr.RegisterWithPatternSync("*", nil, nil, core.invalidateWanLink); err != nil {
 			return oops.Errorf("register WAN link deletion handler: %w", err)
 		}
 		if err := core.setupSkPidMonitor(); err != nil {

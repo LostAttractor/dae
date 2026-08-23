@@ -232,9 +232,15 @@ func (b *RequestMatcherBuilder) Build() (matcher *RequestMatcher, err error) {
 	if b.ifmgr != nil {
 		for _, reg := range b.ifnameRegs {
 			matchSet := &m.matches[reg.ruleIndex]
+			initIndex := func(link netlink.Link) error {
+				matchSet.storeIfindex(uint32(link.Attrs().Index))
+				return nil
+			}
 			updateIndex := func(link netlink.Link) { matchSet.storeIfindex(uint32(link.Attrs().Index)) }
 			resetIndex := func(netlink.Link) { matchSet.storeIfindex(0) }
-			b.ifmgr.Register(reg.ifname, updateIndex, updateIndex, resetIndex)
+			if err := b.ifmgr.RegisterSync(reg.ifname, initIndex, updateIndex, resetIndex); err != nil {
+				return nil, fmt.Errorf("initialize request interface %q: %w", reg.ifname, err)
+			}
 		}
 	}
 

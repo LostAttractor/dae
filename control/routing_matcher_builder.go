@@ -41,7 +41,7 @@ type RoutingMatcherBuilder struct {
 	// RoutingMap on link events). They are deferred until BuildKernspace so
 	// that NewRoutingMatcherBuilder stays free of BPF map writes and can
 	// run during the validation phase of a reload.
-	kernspaceBuilders []func()
+	kernspaceBuilders []func() error
 }
 
 func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *component.InterfaceManager) (b *RoutingMatcherBuilder, err error) {
@@ -402,27 +402,34 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 		// callback patches the resolved ifindex into both the kernel rule and
 		// the rule table shared with the userspace matcher.
 		ifname := value
-		b.kernspaceBuilders = append(b.kernspaceBuilders, func() {
-			updateIndex := func(ifindex uint32) {
+		b.kernspaceBuilders = append(b.kernspaceBuilders, func() error {
+			updateIndex := func(ifindex uint32) error {
 				binary.LittleEndian.PutUint32(set.Value[:], ifindex)
 				if err := b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
-					log.Errorf("Update failed: %v", err)
-					return
+					return err
 				}
 				b.storeIfindex(index, ifindex)
+				return nil
 			}
-			initlinkCallback := func(link netlink.Link) {
-				updateIndex(uint32(link.Attrs().Index))
+			initlinkCallback := func(link netlink.Link) error {
+				return updateIndex(uint32(link.Attrs().Index))
 			}
 			newlinkCallback := func(link netlink.Link) {
 				log.Warnf("New link creation of '%v' is detected. Re-fetching ifindex for it.", link.Attrs().Name)
-				updateIndex(uint32(link.Attrs().Index))
+				if err := updateIndex(uint32(link.Attrs().Index)); err != nil {
+					log.Errorf("Update failed: %v", err)
+				}
 			}
 			dellinkCallback := func(link netlink.Link) {
 				log.Warnf("Link deletion of '%v' is detected. Re-fetching ifindex once it is re-created.", link.Attrs().Name)
-				updateIndex(0)
+				if err := updateIndex(0); err != nil {
+					log.Errorf("Update failed: %v", err)
+				}
 			}
-			b.ifmgr.Register(ifname, initlinkCallback, newlinkCallback, dellinkCallback)
+			if err := b.ifmgr.RegisterSync(ifname, initlinkCallback, newlinkCallback, dellinkCallback); err != nil {
+				return fmt.Errorf("register interface %q: %w", ifname, err)
+			}
+			return nil
 		})
 	}
 	return nil
@@ -519,7 +526,9 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	// Run side-effects (e.g. interface watchers) once the routing table is
 	// in place so that any callback writes patch the entries we just uploaded.
 	for _, fn := range b.kernspaceBuilders {
-		fn()
+		if err := fn(); err != nil {
+			return fmt.Errorf("initialize interface routing: %w", err)
+		}
 	}
 	b.kernspaceBuilders = nil
 	b.bpf.activeLpmTrieCount = uint32(len(b.simulatedLpmTries))
