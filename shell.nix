@@ -13,7 +13,7 @@ pkgs.mkShell {
 
   buildInputs = with pkgs; [
     bpftools
-    go
+    go_1_27
     llvmPackages_latest.clang-unwrapped
     llvmPackages_latest.llvm
   ];
