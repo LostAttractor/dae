@@ -17,6 +17,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink/nl"
+	"golang.org/x/sys/unix"
 )
 
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../headers -I.
@@ -127,19 +128,37 @@ func printBpfDebugLog(t *testing.T) {
 }
 
 func readBpfDebugLog(t *testing.T) string {
-	file, err := os.Open("/sys/kernel/tracing/trace_pipe")
+	const maxDebugLogSize = 1024 * 1024
+
+	file, err := os.OpenFile("/sys/kernel/tracing/trace_pipe", os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatalf("Failed to open trace_pipe: %v", err)
 	}
 	defer file.Close()
 
 	buffer := make([]byte, 1024*64)
-	n, err := file.Read(buffer)
-	if err != nil {
-		t.Fatalf("Failed to read from trace_pipe: %v", err)
+	var logs strings.Builder
+	for logs.Len() < maxDebugLogSize {
+		n, err := unix.Read(int(file.Fd()), buffer)
+		if n > 0 {
+			remaining := maxDebugLogSize - logs.Len()
+			if n > remaining {
+				n = remaining
+			}
+			logs.Write(buffer[:n])
+		}
+		if errors.Is(err, unix.EAGAIN) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Failed to read from trace_pipe: %v", err)
+		}
+		if n == 0 {
+			break
+		}
 	}
 
-	return string(buffer[:n])
+	return logs.String()
 }
 
 func Test(t *testing.T) {
@@ -164,7 +183,6 @@ func Test(t *testing.T) {
 			printBpfDebugLog(t)
 			t.Fatalf("error while running pktgen program: unexpected status code: %d", statusCode)
 		}
-
 		statusCode, data, ctx, err = runBpfProgram(progset.setup, data, ctx)
 		if err != nil {
 			printBpfDebugLog(t)
