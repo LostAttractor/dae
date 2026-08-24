@@ -83,6 +83,8 @@ func newInterfaceManager(subscribe linkSubscribeFunc) (*InterfaceManager, error)
 
 func (m *InterfaceManager) subscribe(subscribe linkSubscribeFunc) (chan netlink.LinkUpdate, error) {
 	ch := make(chan netlink.LinkUpdate)
+	// Existing links are loaded during registration and after resubscription.
+	// ListExisting would broadcast its dump request to other link subscribers.
 	err := subscribe(ch, m.stop, netlink.LinkSubscribeOptions{
 		ErrorCallback: func(err error) {
 			select {
@@ -92,7 +94,6 @@ func (m *InterfaceManager) subscribe(subscribe linkSubscribeFunc) (chan netlink.
 			}
 			log.Warn("LinkSubscribe: ", err)
 		},
-		ListExisting: true,
 	})
 	return ch, err
 }

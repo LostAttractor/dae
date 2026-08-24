@@ -127,9 +127,10 @@ func NewHostNetworkMonitor() *HostNetworkMonitor {
 	subscriptions := &hostNetworkSubscriptions{
 		link: func(done <-chan struct{}) (<-chan netlink.LinkUpdate, error) {
 			ch := make(chan netlink.LinkUpdate, 16)
+			// reconcile performs the authoritative dump after subscriptions start.
+			// ListExisting would broadcast its dump request to other link subscribers.
 			err := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
 				ErrorCallback: subscribeError("link"),
-				ListExisting:  true,
 			})
 			return ch, err
 		},
