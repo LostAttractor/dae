@@ -152,11 +152,7 @@ func (f *Function) String(compact bool, quoteVal bool, omitEmpty bool) string {
 	if !(omitEmpty && len(f.Params) == 0) {
 		builder.WriteString("(")
 		var strParamList []string
-		for i, p := range f.Params {
-			if i >= 5 {
-				strParamList = append(strParamList, "...")
-				break
-			}
+		for _, p := range f.Params {
 			strParamList = append(strParamList, p.String(compact, quoteVal))
 		}
 		if compact {

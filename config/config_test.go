@@ -6,12 +6,147 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+func TestNodeAndSubscriptionOptions(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+subscription {
+	legacy: 'https://example.com/legacy'
+	my_sub {
+		link: 'https://example.com/subscription'
+		option {
+			multiplex: off
+			filter: protocol(shadowsocks) && name(regex: '^HK-\d+$') [multiplex: smux]
+			filter: name(HK-legacy, HK-2, HK-3, HK-4, HK-5, HK-6) [multiplex: off]
+		}
+	}
+}
+node {
+	hk: 'ss://example' [multiplex: smux-udp-passthrough]
+	'socks5://localhost:1080'
+}
+routing { fallback: direct }
+`)
+	if len(conf.Subscription) != 2 {
+		t.Fatalf("subscriptions = %d, want 2", len(conf.Subscription))
+	}
+	legacy := conf.Subscription[0]
+	if legacy.Name != "legacy" || legacy.Link != "https://example.com/legacy" || !legacy.Option.IsZero() {
+		t.Fatalf("unexpected legacy subscription: %+v", legacy)
+	}
+	subscription := conf.Subscription[1]
+	if subscription.Name != "my_sub" || subscription.Link != "https://example.com/subscription" {
+		t.Fatalf("unexpected expanded subscription: %+v", subscription)
+	}
+	if subscription.Option.Defaults.Multiplex != MultiplexModeOff {
+		t.Fatalf("default multiplex = %q, want off", subscription.Option.Defaults.Multiplex)
+	}
+	if len(subscription.Option.Rules) != 2 {
+		t.Fatalf("option rules = %d, want 2", len(subscription.Option.Rules))
+	}
+	if got := subscription.Option.Rules[0].Options.Multiplex; got != MultiplexModeSmux {
+		t.Fatalf("first rule multiplex = %q, want smux", got)
+	}
+	if len(conf.Node) != 2 || conf.Node[0].Name != "hk" || conf.Node[0].Options.Multiplex != MultiplexModeSmuxUDPPassthrough {
+		t.Fatalf("unexpected nodes: %+v", conf.Node)
+	}
+
+	marshaled, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sections, err := config_parser.Parse(string(marshaled))
+	if err != nil {
+		t.Fatalf("parse marshaled config: %v\n%s", err, marshaled)
+	}
+	roundTrip, err := New(sections)
+	if err != nil {
+		t.Fatalf("decode marshaled config: %v\n%s", err, marshaled)
+	}
+	if !reflect.DeepEqual(conf, roundTrip) {
+		t.Fatalf("config changed after round trip\nfirst:  %+v\nsecond: %+v", conf, roundTrip)
+	}
+}
+
+func TestNodeOptionsRejectInvalidValues(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "unknown inline option",
+			config: `
+global {}
+node { test: 'ss://example' [unknown: value] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "boolean multiplex",
+			config: `
+global {}
+node { test: 'ss://example' [multiplex: true] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "empty filter options",
+			config: `
+global {}
+subscription {
+	test {
+		link: 'https://example.com/subscription'
+		option { filter: name(test) }
+	}
+}
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "unreachable invalid filter",
+			config: `
+global {}
+subscription {
+	test {
+		link: 'https://example.com/subscription'
+		option { filter: name(absent) && typo(value) [multiplex: smux] }
+	}
+}
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "invalid filter regexp",
+			config: `
+global {}
+subscription {
+	test {
+		link: 'https://example.com/subscription'
+		option { filter: name(regex: '[') [multiplex: smux] }
+	}
+}
+routing { fallback: direct }
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sections, err := config_parser.Parse(test.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := New(sections); err == nil {
+				t.Fatal("invalid node options were accepted")
+			}
+		})
+	}
+}
 
 func parseConfig(t *testing.T, in string) *Config {
 	t.Helper()

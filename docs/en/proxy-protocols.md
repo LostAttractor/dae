@@ -40,6 +40,30 @@
 
   [SIP008](https://shadowsocks.org/doc/sip008.html)
 
+  SIP002 links describe only standard Shadowsocks connection information. Keep the link unchanged and use node options for dae-specific features:
+
+  ```shell
+  node {
+    hk: 'ss://LINK' [multiplex: smux]
+  }
+  ```
+
+  For subscription nodes, use an expanded subscription descriptor and match the parsed node name, protocol, or original link:
+
+  ```shell
+  subscription {
+    my_sub {
+      link: 'https://example.com/subscription'
+      option {
+        filter: protocol(shadowsocks) && name(regex: '^HK') [multiplex: smux]
+        filter: name(HK-legacy) [multiplex: off]
+      }
+    }
+  }
+  ```
+
+  `multiplex: smux` enables sing-box-compatible smux for both TCP and UDP. `multiplex: smux-udp-passthrough` multiplexes TCP while keeping UDP on the underlying proxy protocol, and `multiplex: off` explicitly disables multiplexing. The non-standard `?multiplex=1` URL parameter no longer has any effect.
+
 - [x] ShadowsocksR
 
 - [x] Trojan

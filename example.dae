@@ -157,7 +157,21 @@ global {
 # Support to give the subscription a tag, and filter nodes from a given subscription in the group section.
 subscription {
     # Add your subscription links here.
-    my_sub: 'https://www.example.com/subscription/link'
+    my_sub {
+        link: 'https://www.example.com/subscription/link'
+
+        # dae-specific options can be applied to selected nodes without changing their share links.
+        option {
+            # Apply an option to every node from this subscription.
+            #multiplex: smux
+            # Use smux for TCP while keeping UDP on the underlying protocol.
+            #multiplex: smux-udp-passthrough
+
+            # Or match parsed node properties. Later matching rules override earlier ones.
+            #filter: protocol(shadowsocks) && name(regex: '^HK') [multiplex: smux]
+            #filter: name(HK-legacy) [multiplex: off]
+        }
+    }
     another_sub: 'https://example.com/another_sub'
     'https://example.com/no_tag_link'
     'file://relative/path/to/mysub.sub' # Put subscription content in /etc/dae/relative/path/to/mysub.sub
@@ -175,6 +189,8 @@ node {
     # Full support list: https://github.com/daeuniverse/dae/blob/main/docs/en/proxy-protocols.md
     'socks5://localhost:1080'
     mylink: 'ss://LINK'
+    #multiplexed_ss: 'ss://LINK' [multiplex: smux]
+    #tcp_multiplexed_ss: 'ss://LINK' [multiplex: smux-udp-passthrough]
     node1: 'vmess://LINK'
     node2: 'vless://LINK'
     chains: 'tuic://LINK -> vmess://LINK'

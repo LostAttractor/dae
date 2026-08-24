@@ -73,8 +73,8 @@ Available functions: qname, qtype, ip, upstream`,
 
 var GroupDesc = Desc{
 	"filter": `Filter nodes from the global node pool defined by the "subscription" and "node" sections.
-Available functions: name, subtag. Not operator is supported.
-Available keys in name function: keyword, regex. No key indicates full match.
+Available functions: name, subtag, link, protocol. Not operator is supported.
+Available keys in name, link and protocol functions: keyword, regex. No key indicates full match.
 Available keys in subtag function: regex. No key indicates full match.`,
 	"policy": `Dialer selection policy. For each new connection, select a node as dialer from group by this policy.
 Available values: random, fixed, min, min_avg10, min_moving_avg.

@@ -72,6 +72,12 @@ func (m *Marshaller) marshalStringList(from reflect.Value, depth int, keyable bo
 func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) (err error) {
 	m.writeLine(depth, name+" {")
 	defer m.writeLine(depth, "}")
+	if from.Type() == reflect.TypeOf([]Node{}) {
+		return m.marshalNodes(from.Interface().([]Node), depth+1)
+	}
+	if from.Type() == reflect.TypeOf([]Subscription{}) {
+		return m.marshalSubscriptions(from.Interface().([]Subscription), depth+1)
+	}
 
 	switch from.Kind() {
 	case reflect.Slice:
@@ -136,6 +142,63 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 
 unsupported:
 	return fmt.Errorf("unsupported section type %v", from.Type())
+}
+
+func formatNodeOptions(options NodeOptions) string {
+	if options.Multiplex == "" {
+		return ""
+	}
+	return "multiplex:" + strconv.Quote(string(options.Multiplex))
+}
+
+func formatAnnotation(options NodeOptions) string {
+	if options := formatNodeOptions(options); options != "" {
+		return " [" + options + "]"
+	}
+	return ""
+}
+
+func (m *Marshaller) marshalNodes(nodes []Node, depth int) error {
+	for _, node := range nodes {
+		line := strconv.Quote(node.Link)
+		if node.Name != "" {
+			line = node.Name + ":" + line
+		}
+		m.writeLine(depth, line+formatAnnotation(node.Options))
+	}
+	return nil
+}
+
+func (m *Marshaller) marshalSubscriptions(subscriptions []Subscription, depth int) error {
+	for _, subscription := range subscriptions {
+		if subscription.Option.IsZero() {
+			line := strconv.Quote(subscription.Link)
+			if subscription.Name != "" {
+				line = subscription.Name + ":" + line
+			}
+			m.writeLine(depth, line)
+			continue
+		}
+		if subscription.Name == "" {
+			return fmt.Errorf("subscription options require a subscription name")
+		}
+		m.writeLine(depth, subscription.Name+" {")
+		m.writeLine(depth+1, "link:"+strconv.Quote(subscription.Link))
+		m.writeLine(depth+1, "option {")
+		if options := formatNodeOptions(subscription.Option.Defaults); options != "" {
+			m.writeLine(depth+2, options)
+		}
+		for _, rule := range subscription.Option.Rules {
+			functions := make([]string, 0, len(rule.Filter))
+			for _, function := range rule.Filter {
+				functions = append(functions, function.String(true, true, false))
+			}
+			m.writeLine(depth+2, "filter:"+strings.Join(functions, "&&")+formatAnnotation(rule.Options))
+		}
+		m.writeLine(depth+1, "}")
+		m.writeLine(depth, "}")
+	}
+	return nil
 }
 
 func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err error) {

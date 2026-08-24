@@ -43,7 +43,19 @@ func getValueFromLiteral(literal *dae_config.LiteralContext) string {
 		return literal.GetText()
 	}
 	text := quote.GetText()
-	return text[1 : len(text)-1]
+	if len(text) < 2 {
+		return text
+	}
+	quoteChar := text[0]
+	content := text[1 : len(text)-1]
+	var builder strings.Builder
+	for i := 0; i < len(content); i++ {
+		if content[i] == '\\' && i+1 < len(content) && (content[i+1] == quoteChar || content[i+1] == '\\') {
+			i++
+		}
+		builder.WriteByte(content[i])
+	}
+	return builder.String()
 }
 
 func (p *paramParser) parseParam(ctx *dae_config.ParameterContext) *Param {

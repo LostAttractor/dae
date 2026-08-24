@@ -206,6 +206,12 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 	if to.Kind() != reflect.Pointer {
 		return fmt.Errorf("SectionParser can only unmarshal section to a pointer")
 	}
+	switch target := to.Interface().(type) {
+	case *[]Node:
+		return parseNodeList(target, section)
+	case *[]Subscription:
+		return parseSubscriptionList(target, section)
+	}
 	to = to.Elem()
 	switch to.Kind() {
 	case reflect.Slice:

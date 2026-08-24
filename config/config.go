@@ -185,12 +185,12 @@ type Routing struct {
 }
 
 type Config struct {
-	Global       Global          `mapstructure:"global" required:"" desc:"GlobalDesc"`
-	Subscription []KeyableString `mapstructure:"subscription"`
-	Node         []KeyableString `mapstructure:"node"`
-	Group        []Group         `mapstructure:"group" desc:"GroupDesc"`
-	Routing      Routing         `mapstructure:"routing" required:""`
-	Dns          Dns             `mapstructure:"dns" desc:"DnsDesc"`
+	Global       Global         `mapstructure:"global" required:"" desc:"GlobalDesc"`
+	Subscription []Subscription `mapstructure:"subscription"`
+	Node         []Node         `mapstructure:"node"`
+	Group        []Group        `mapstructure:"group" desc:"GroupDesc"`
+	Routing      Routing        `mapstructure:"routing" required:""`
+	Dns          Dns            `mapstructure:"dns" desc:"DnsDesc"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {

@@ -1094,9 +1094,12 @@ func TestNextHopDialerIdentityIncludesEffectivePath(t *testing.T) {
 	}
 	nextHop := &NodeInfo{
 		Link: "next-hop-link",
-		Property: &dialer.Property{Property: D.Property{
-			Name: "next-hop", Protocol: "next-proto", Address: "next-address", Link: "next-hop-link",
-		}},
+		Property: &dialer.Property{
+			Property: D.Property{
+				Name: "next-hop", Protocol: "next-proto", Address: "next-address", Link: "next-hop-link",
+			},
+			SubscriptionTag: "next-sub",
+		},
 	}
 
 	d, err := s.createNextHopDialer(source, nextHop)
@@ -1107,7 +1110,7 @@ func TestNextHopDialerIdentityIncludesEffectivePath(t *testing.T) {
 	if want := "source-link->next-hop-link"; d.Property.Link != want {
 		t.Fatalf("effective property link = %q, want %q", d.Property.Link, want)
 	}
-	if want := dialer.ComposeStatsIdentity("next-hop", "source-link", "next-hop-link"); d.Property.StatsIdentity != want {
+	if want := dialer.ComposeStatsIdentity("next-hop", "source-link", dialer.ComposeStatsIdentity("next-sub", "next-hop-link")); d.Property.StatsIdentity != want {
 		t.Fatalf("effective stats identity = %q, want %q", d.Property.StatsIdentity, want)
 	}
 }

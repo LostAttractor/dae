@@ -40,6 +40,30 @@
 
   [SIP008](https://shadowsocks.org/doc/sip008.html)
 
+  SIP002 链接只描述标准 Shadowsocks 连接信息。需要启用 dae 专属功能时，应保持链接不变并使用节点选项：
+
+  ```shell
+  node {
+    hk: 'ss://LINK' [multiplex: smux]
+  }
+  ```
+
+  对订阅中的节点，可以使用展开的订阅描述，并按解析后的节点名称、协议或原始链接进行匹配：
+
+  ```shell
+  subscription {
+    my_sub {
+      link: 'https://example.com/subscription'
+      option {
+        filter: protocol(shadowsocks) && name(regex: '^HK') [multiplex: smux]
+        filter: name(HK-legacy) [multiplex: off]
+      }
+    }
+  }
+  ```
+
+  `multiplex: smux` 为 TCP 和 UDP 启用兼容 sing-box 的 smux；`multiplex: smux-udp-passthrough` 仅复用 TCP，UDP 继续使用底层代理协议；`multiplex: off` 显式禁用复用。URL 中的非标准 `?multiplex=1` 不再生效。
+
 - [x] ShadowsocksR
 
 - [x] Trojan

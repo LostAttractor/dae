@@ -724,12 +724,15 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	// long.
 	isReload := bpf != nil
 
-	/// Get tag -> nodeList mapping.
-	tagToNodeList := map[string][]string{}
-	if len(conf.Node) > 0 {
-		for _, node := range conf.Node {
-			tagToNodeList[""] = append(tagToNodeList[""], string(node))
-		}
+	/// Build descriptors for locally configured nodes.
+	nodeDescriptors := make([]outbound.NodeDescriptor, 0, len(conf.Node))
+	for i, node := range conf.Node {
+		nodeDescriptors = append(nodeDescriptors, outbound.NodeDescriptor{
+			Name:        node.Name,
+			Link:        node.Link,
+			Options:     node.Options,
+			SourceIndex: i,
+		})
 	}
 
 	/// Init Direct Dialers.
@@ -781,14 +784,23 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 			log.Warnf("Subscription resolution exceeded %v; skipping the remaining subscriptions", subscriptionPhaseTimeout)
 			break
 		}
-		tag, nodes, err := subscription.ResolveSubscriptionContext(subCtx, &client, subscriptionDir, string(sub), validateNode)
+		subscriptionLink := sub.String()
+		tag, nodes, err := subscription.ResolveSubscriptionContext(subCtx, &client, subscriptionDir, subscriptionLink, validateNode)
 		if err != nil {
-			log.Warnf("failed to resolve subscription %q: %v", subscription.RedactURL(string(sub)), err)
+			log.Warnf("failed to resolve subscription %q: %v", subscription.RedactURL(subscriptionLink), err)
 			resolvingfailed = true
 			continue
 		}
 		if len(nodes) > 0 {
-			tagToNodeList[tag] = append(tagToNodeList[tag], nodes...)
+			for i, link := range nodes {
+				nodeDescriptors = append(nodeDescriptors, outbound.NodeDescriptor{
+					Link:            link,
+					SubscriptionTag: tag,
+					Defaults:        sub.Option.Defaults,
+					Rules:           sub.Option.Rules,
+					SourceIndex:     i,
+				})
+			}
 		}
 	}
 
@@ -797,7 +809,7 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 		return nil, err
 	}
 
-	if len(tagToNodeList) == 0 {
+	if len(nodeDescriptors) == 0 {
 		if resolvingfailed {
 			log.Warnln("No node found because all subscription resolving failed.")
 		} else {
@@ -811,7 +823,7 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 
 	c, err = control.NewControlPlane(
 		bpf,
-		tagToNodeList,
+		nodeDescriptors,
 		conf.Group,
 		&conf.Routing,
 		&conf.Global,
@@ -827,10 +839,10 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	return c, nil
 }
 
-func persistentSubscriptionTags(subscriptions []config.KeyableString) (map[string]struct{}, error) {
+func persistentSubscriptionTags(subscriptions []config.Subscription) (map[string]struct{}, error) {
 	tags := make(map[string]struct{}, len(subscriptions))
 	for _, sub := range subscriptions {
-		tag, ok := subscription.PersistentTag(string(sub))
+		tag, ok := subscription.PersistentTag(sub.String())
 		if !ok {
 			continue
 		}

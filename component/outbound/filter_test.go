@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/transport/smux"
 )
 
 type testNodeDescriptor func(netproxy.Dialer) (netproxy.Dialer, error)
@@ -72,7 +74,10 @@ func TestNewDialerSetFromLinksParsesSIP002UserinfoForms(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			set := NewDialerSetFromLinks(&dialer.GlobalOption{}, nil, map[string][]string{"test": {tt.link}})
+			set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{{Link: tt.link, SubscriptionTag: "test"}})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(set.nodeInfos) != 1 {
 				t.Fatalf("parsed %d nodes, want 1", len(set.nodeInfos))
 			}
@@ -107,9 +112,14 @@ func TestNewDialerSetFromLinksParsesSIP002UserinfoForms(t *testing.T) {
 func TestDuplicateAndAliasNodesHaveDistinctStatsIdentity(t *testing.T) {
 	userinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
 	link := "ss://" + userinfo + "@127.0.0.1:443"
-	set := NewDialerSetFromLinks(&dialer.GlobalOption{}, nil, map[string][]string{
-		"test": {"alias-a:" + link, "alias-b:" + link, "alias-b:" + link},
+	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{
+		{Link: "alias-a:" + link, SubscriptionTag: "test", SourceIndex: 0},
+		{Link: "alias-b:" + link, SubscriptionTag: "test", SourceIndex: 1},
+		{Link: "alias-b:" + link, SubscriptionTag: "test", SourceIndex: 2},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = set.Close() })
 
 	dialers, _, err := set.FilterAndAnnotate(nil, nil, "")
@@ -127,6 +137,32 @@ func TestDuplicateAndAliasNodesHaveDistinctStatsIdentity(t *testing.T) {
 	}
 	if len(keys) != len(dialers) || len(ids) != len(dialers) {
 		t.Fatalf("stats identities were merged: keys=%d ids=%d dialers=%d", len(keys), len(ids), len(dialers))
+	}
+}
+
+func TestNodeStatsIdentityIsStableAcrossReordering(t *testing.T) {
+	nodes := []NodeDescriptor{
+		{Name: "alias-a", Link: testShadowsocksLink, Options: config.NodeOptions{Multiplex: config.MultiplexModeOff}},
+		{Name: "alias-b", Link: testShadowsocksLink, Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux}},
+	}
+	identities := func(nodes []NodeDescriptor) map[string]string {
+		set, err := NewDialerSet(&dialer.GlobalOption{}, nil, nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]string, len(set.nodeInfos))
+		for _, node := range set.nodeInfos {
+			got[node.Property.Name] = node.Property.StatsIdentity
+		}
+		return got
+	}
+
+	forward := identities(nodes)
+	reversed := identities([]NodeDescriptor{nodes[1], nodes[0]})
+	for name, identity := range forward {
+		if reversed[name] != identity {
+			t.Fatalf("identity for %q changed across reorder: %q != %q", name, identity, reversed[name])
+		}
 	}
 }
 
@@ -331,5 +367,111 @@ func TestFilterAndAnnotateBuildsOnlyComposedNextHop(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "next" || order[1] != "source" {
 		t.Fatalf("builder order = %v, want [next source]", order)
+	}
+}
+
+const testShadowsocksLink = "ss://YWVzLTEyOC1nY206cGFzcw@proxy.example.com:443"
+
+func nodeFilter(name string, params ...*config_parser.Param) []*config_parser.Function {
+	return []*config_parser.Function{{Name: name, Params: params}}
+}
+
+func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
+	nodes := []NodeDescriptor{{
+		Link:            testShadowsocksLink + "#HK-legacy",
+		SubscriptionTag: "my_sub",
+		Defaults:        config.NodeOptions{Multiplex: config.MultiplexModeOff},
+		Rules: []config.NodeOptionRule{
+			{
+				Filter: []*config_parser.Function{
+					{Name: FilterInput_Protocol, Params: []*config_parser.Param{{Val: "shadowsocks"}}},
+					{Name: FilterInput_Name, Params: []*config_parser.Param{{Key: "regex", Val: "^HK"}}},
+				},
+				Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux},
+			},
+			{
+				Filter:  nodeFilter(FilterInput_Name, &config_parser.Param{Val: "HK-legacy"}),
+				Options: config.NodeOptions{Multiplex: config.MultiplexModeOff},
+			},
+		},
+	}}
+	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.nodeInfos) != 1 {
+		t.Fatalf("nodes = %d, want 1", len(set.nodeInfos))
+	}
+	node := set.nodeInfos[0]
+	if len(node.Dialers) != 1 {
+		t.Fatalf("dialer layers = %d, want 1", len(node.Dialers))
+	}
+	if !strings.Contains(node.Property.Link, "multiplex=off") {
+		t.Fatalf("node identity does not include effective options: %q", node.Property.Link)
+	}
+}
+
+func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
+	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{{
+		Link: testShadowsocksLink + "#HK",
+		Rules: []config.NodeOptionRule{{
+			Filter:  nodeFilter(FilterInput_Name, &config_parser.Param{Val: "HK"}),
+			Options: config.NodeOptions{Multiplex: config.MultiplexModeOff},
+		}},
+		Options: config.NodeOptions{Multiplex: config.MultiplexModeSmuxUDPPassthrough},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := set.nodeInfos[0]
+	if !strings.Contains(node.Property.Link, "multiplex=smux-udp-passthrough") {
+		t.Fatalf("node identity does not include effective options: %q", node.Property.Link)
+	}
+	if len(node.Dialers) != 2 {
+		t.Fatalf("dialer layers = %d, want 2", len(node.Dialers))
+	}
+	smuxConfig, ok := node.Dialers[1].(*smux.SmuxConfig)
+	if !ok {
+		t.Fatalf("second dialer layer = %T, want *smux.SmuxConfig", node.Dialers[1])
+	}
+	if !smuxConfig.PassThroughUDP {
+		t.Fatal("smux UDP passthrough is disabled")
+	}
+}
+
+func TestMultiplexIsInsertedAfterChainEndpoint(t *testing.T) {
+	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{{
+		Link:    testShadowsocksLink + " -> socks5://localhost:1080",
+		Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	builders := set.nodeInfos[0].Dialers
+	if len(builders) != 3 {
+		t.Fatalf("dialer layers = %d, want 3", len(builders))
+	}
+	smuxConfig, ok := builders[1].(*smux.SmuxConfig)
+	if !ok {
+		t.Fatalf("second dialer layer = %T, want endpoint smux", builders[1])
+	}
+	if smuxConfig.PassThroughUDP {
+		t.Fatal("plain smux unexpectedly enables UDP passthrough")
+	}
+}
+
+func TestNodeIdentityIncludesEffectiveOptions(t *testing.T) {
+	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{
+		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{Multiplex: config.MultiplexModeOff}},
+		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.nodeInfosMap) != 2 {
+		t.Fatalf("node identity collapsed distinct options: map contains %d nodes", len(set.nodeInfosMap))
+	}
+	if set.nodeInfos[0].Property.Link == set.nodeInfos[1].Property.Link {
+		t.Fatalf("effective links are equal: %q", set.nodeInfos[0].Property.Link)
 	}
 }

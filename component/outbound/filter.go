@@ -21,6 +21,7 @@ import (
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/outbound/transport/smux"
 	"github.com/dlclark/regexp2"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
@@ -30,6 +31,7 @@ const (
 	FilterInput_Name            = "name"
 	FilterInput_SubscriptionTag = "subtag"
 	FilterInput_Link            = "link"
+	FilterInput_Protocol        = "protocol"
 )
 
 const (
@@ -54,6 +56,16 @@ func nodeLogID(node *NodeInfo) string {
 		tag = "local"
 	}
 	return fmt.Sprintf("node %d from %q", node.sourceIndex+1, tag)
+}
+
+type NodeDescriptor struct {
+	Name            string
+	Link            string
+	SubscriptionTag string
+	Defaults        config.NodeOptions
+	Rules           []config.NodeOptionRule
+	Options         config.NodeOptions
+	SourceIndex     int
 }
 
 func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (created *dialer.Dialer, err error) {
@@ -102,7 +114,24 @@ func (s *DialerSet) Close() error {
 	return err
 }
 
-func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prometheus.Registerer, tagToNodeList map[string][]string) *DialerSet {
+func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dialer, error) {
+	switch options.Multiplex {
+	case "", config.MultiplexModeOff:
+		return builders, nil
+	case config.MultiplexModeSmux, config.MultiplexModeSmuxUDPPassthrough:
+		if len(builders) == 0 {
+			return nil, fmt.Errorf("cannot apply node options to an empty dialer chain")
+		}
+		configured := []D.Dialer{builders[0], &smux.SmuxConfig{
+			PassThroughUDP: options.Multiplex == config.MultiplexModeSmuxUDPPassthrough,
+		}}
+		return append(configured, builders[1:]...), nil
+	default:
+		return nil, fmt.Errorf("unsupported multiplex mode %q", options.Multiplex)
+	}
+}
+
+func NewDialerSet(option *dialer.GlobalOption, prometheusRegistry prometheus.Registerer, nodes []NodeDescriptor) (*DialerSet, error) {
 	s := &DialerSet{
 		option:             option,
 		prometheusRegistry: prometheusRegistry,
@@ -110,31 +139,62 @@ func NewDialerSetFromLinks(option *dialer.GlobalOption, prometheusRegistry prome
 		nodeInfosMap:       make(map[dialer.Property]*NodeInfo),
 		nodeToTagMap:       make(map[*dialer.Dialer]string),
 	}
-	for subscriptionTag, nodes := range tagToNodeList {
-		occurrences := make(map[string]int)
-		for i, node := range nodes {
-			d, p, err := parseNodeLink(node)
-			if err != nil {
-				log.Warnf("failed to parse node %d from %q (%T)", i+1, subscriptionTag, err)
-				continue
+	occurrences := make(map[string]map[string]int)
+	for _, node := range nodes {
+		builders, property, err := parseNodeLink(node.Link)
+		if err != nil {
+			tag := node.SubscriptionTag
+			if tag == "" {
+				tag = "local"
 			}
-			identity := dialer.ComposeStatsIdentity("source", node, strconv.Itoa(occurrences[node]))
-			occurrences[node]++
-			nodeInfo := &NodeInfo{
-				Link: node,
-				Property: &dialer.Property{
-					Property:        *p,
-					SubscriptionTag: subscriptionTag,
-					StatsIdentity:   identity,
-				},
-				Dialers:     d,
-				sourceIndex: i,
-			}
-			s.nodeInfos = append(s.nodeInfos, nodeInfo)
-			s.nodeInfosMap[*nodeInfo.Property] = nodeInfo
+			log.Warnf("failed to parse node %d from %q (%T)", node.SourceIndex+1, tag, err)
+			continue
 		}
+		if node.Name != "" {
+			property.Name = node.Name
+		}
+		nodeInfo := &NodeInfo{
+			Link: node.Link,
+			Property: &dialer.Property{
+				Property:        *property,
+				SubscriptionTag: node.SubscriptionTag,
+			},
+			sourceIndex: node.SourceIndex,
+		}
+		effectiveOptions := node.Defaults
+		for _, rule := range node.Rules {
+			hit, err := s.filterHit(nodeInfo, rule.Filter)
+			if err != nil {
+				return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
+			}
+			if hit {
+				effectiveOptions.Overlay(rule.Options)
+			}
+		}
+		effectiveOptions.Overlay(node.Options)
+		builders, err = applyNodeOptions(builders, effectiveOptions)
+		if err != nil {
+			return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
+		}
+		nodeInfo.Property.Link = property.Link
+		identityLink := node.Link
+		if effectiveOptions.Multiplex != "" {
+			optionIdentity := "\x1emultiplex=" + string(effectiveOptions.Multiplex)
+			nodeInfo.Property.Link += optionIdentity
+			identityLink += optionIdentity
+		}
+		identity := dialer.ComposeStatsIdentity(node.Name, identityLink)
+		if occurrences[node.SubscriptionTag] == nil {
+			occurrences[node.SubscriptionTag] = make(map[string]int)
+		}
+		occurrence := occurrences[node.SubscriptionTag][identity]
+		occurrences[node.SubscriptionTag][identity]++
+		nodeInfo.Property.StatsIdentity = dialer.ComposeStatsIdentity("source", identity, strconv.Itoa(occurrence))
+		nodeInfo.Dialers = builders
+		s.nodeInfos = append(s.nodeInfos, nodeInfo)
+		s.nodeInfosMap[*nodeInfo.Property] = nodeInfo
 	}
-	return s
+	return s, nil
 }
 
 func normalizeShadowsocksLink(link string) string {
@@ -256,11 +316,6 @@ func closeValidatedDialer(created *dialer.Dialer) error {
 }
 
 func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) (hit bool, err error) {
-	if len(filters) == 0 {
-		// No filter.
-		return true, nil
-	}
-
 	// Example
 	// filter: name(regex:'^.*hk.*$', keyword:'sg') && name(keyword:'disney')
 	// filter: !name(regex: 'HK|TW|SG') && name(keyword: disney)
@@ -268,70 +323,44 @@ func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Funct
 
 	// And
 	for _, filter := range filters {
-		var subFilterHit bool
-
+		var value string
+		keywordSupported := true
 		switch filter.Name {
 		case FilterInput_Name:
-			// Or
-		loop:
-			for _, param := range filter.Params {
-				switch param.Key {
-				case FilterKey_Name_Regex:
-					regex, err := regexp2.Compile(param.Val, 0)
-					if err != nil {
-						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
-					}
-					matched, _ := regex.MatchString(nodeInfo.Property.Name)
-					//logrus.Warnln(param.Val, matched, dialer.Name())
-					if matched {
-						subFilterHit = true
-						break loop
-					}
-				case FilterKey_Name_Keyword:
-					if strings.Contains(nodeInfo.Property.Name, param.Val) {
-						subFilterHit = true
-						break loop
-					}
-				case "":
-					if nodeInfo.Property.Name == param.Val {
-						subFilterHit = true
-						break loop
-					}
-				default:
-					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
-				}
-			}
+			value = nodeInfo.Property.Name
 		case FilterInput_SubscriptionTag:
-			// Or
-		loop2:
-			for _, param := range filter.Params {
-				switch param.Key {
-				case FilterInput_SubscriptionTag_Regex:
-					regex, err := regexp2.Compile(param.Val, 0)
-					if err != nil {
-						return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
-					}
-					matched, _ := regex.MatchString(nodeInfo.Property.SubscriptionTag)
-					if matched {
-						subFilterHit = true
-						break loop2
-					}
-					//logrus.Warnln(param.Val, matched, dialer.Name())
-				case "":
-					// Full
-					if nodeInfo.Property.SubscriptionTag == param.Val {
-						subFilterHit = true
-						break loop2
-					}
-				default:
-					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
-				}
-			}
-
+			value, keywordSupported = nodeInfo.Property.SubscriptionTag, false
+		case FilterInput_Link:
+			value = nodeInfo.Link
+		case FilterInput_Protocol:
+			value = nodeInfo.Property.Protocol
 		default:
 			return false, fmt.Errorf(`unsupported filter input type: "%v"`, filter.Name)
 		}
 
+		var subFilterHit bool
+		for _, param := range filter.Params {
+			switch param.Key {
+			case FilterKey_Name_Regex:
+				regex, err := regexp2.Compile(param.Val, 0)
+				if err != nil {
+					return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
+				}
+				subFilterHit, _ = regex.MatchString(value)
+			case FilterKey_Name_Keyword:
+				if !keywordSupported {
+					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
+				}
+				subFilterHit = strings.Contains(value, param.Val)
+			case "":
+				subFilterHit = value == param.Val
+			default:
+				return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
+			}
+			if subFilterHit {
+				break
+			}
+		}
 		if subFilterHit == filter.Not {
 			return false, nil
 		}
@@ -345,14 +374,17 @@ func (s *DialerSet) createNextHopDialer(nodeInfo, nextHopInfo *NodeInfo) (*diale
 	property.Protocol = fmt.Sprintf("%s->%s", nodeInfo.Property.Protocol, nextHopInfo.Property.Protocol)
 	property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
 	effectiveLink := fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link)
-	property.Link = effectiveLink
+	property.Link = fmt.Sprintf("%s->%s", nodeInfo.Property.Link, nextHopInfo.Property.Link)
 	sourceIdentity := nodeInfo.Property.StatsIdentity
 	if sourceIdentity == "" {
-		sourceIdentity = nodeInfo.Link
+		sourceIdentity = nodeInfo.Property.Link
 	}
 	nextHopIdentity := nextHopInfo.Property.StatsIdentity
 	if nextHopIdentity == "" {
-		nextHopIdentity = nextHopInfo.Link
+		nextHopIdentity = nextHopInfo.Property.Link
+	}
+	if nextHopInfo.Property.SubscriptionTag != "" {
+		nextHopIdentity = dialer.ComposeStatsIdentity(nextHopInfo.Property.SubscriptionTag, nextHopIdentity)
 	}
 	property.StatsIdentity = dialer.ComposeStatsIdentity("next-hop", sourceIdentity, nextHopIdentity)
 

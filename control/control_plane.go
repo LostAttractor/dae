@@ -132,7 +132,7 @@ func splitWanInterfaces(ifnames []string) (manual []string, auto bool) {
 // resources are invalid, leaving the previously running control plane intact.
 func NewControlPlane(
 	_bpf interface{},
-	tagToNodeList map[string][]string,
+	nodes []outbound.NodeDescriptor,
 	groups []config.Group,
 	routingA *config.Routing,
 	global *config.Global,
@@ -300,7 +300,11 @@ func NewControlPlane(
 			}, nil),
 	}
 	// Filter out groups.
-	dialerSet := outbound.NewDialerSetFromLinks(option, prometheusRegistry, tagToNodeList)
+	dialerSet, err := outbound.NewDialerSet(option, prometheusRegistry, nodes)
+	if err != nil {
+		_ = closeDialerGroups(outbounds)
+		return nil, oops.Wrapf(err, "failed to apply node options")
+	}
 	var plane *ControlPlane
 	var cancel context.CancelFunc
 	defer func() {
