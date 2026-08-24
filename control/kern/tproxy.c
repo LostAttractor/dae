@@ -425,28 +425,45 @@ static __always_inline bool is_extension_header(__u8 nexthdr)
 	case IPPROTO_ROUTING:
 	case IPPROTO_FRAGMENT:
 	case IPPROTO_DSTOPTS:
+	case IPPROTO_AH:
 		return true;
 	default:
 		return false;
 	}
 }
 
+enum fragment_state {
+	FRAGMENT_NONE,
+	FRAGMENT_FIRST,
+	FRAGMENT_NONFIRST,
+};
+
 struct ipv6_ext_ctx {
 	const struct __sk_buff *skb;
 	__u32 *offset;
+	__u32 packet_end;
 	__u8 *nexthdr;
 	int result;
+	bool seen_ah;
+	bool seen_fragment;
+	enum fragment_state fragment_state;
 };
 
 static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 {
 	struct ipv6_ext_ctx *ctx = data;
+	__u8 current_nexthdr = *ctx->nexthdr;
 
 	if (*ctx->nexthdr == IPPROTO_NONE)
 		return 1;
 
 	if (!is_extension_header(*ctx->nexthdr))
 		return 1;
+
+	if (*ctx->offset >= ctx->packet_end) {
+		ctx->result = -EFAULT;
+		return 1;
+	}
 
 	int ret = bpf_skb_load_bytes(ctx->skb, *ctx->offset, ctx->nexthdr,
 					 sizeof(*ctx->nexthdr));
@@ -455,9 +472,54 @@ static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 		ctx->result = -EFAULT;
 		return 1;
 	}
+	if (current_nexthdr == IPPROTO_FRAGMENT) {
+		__be16 be_frag_off;
+
+		if (ctx->seen_fragment) {
+			ctx->result = -EINVAL;
+			return 1;
+		}
+		ctx->seen_fragment = true;
+		if (*ctx->offset + sizeof(struct frag_hdr) > ctx->packet_end) {
+			ctx->result = -EINVAL;
+			return 1;
+		}
+		ret = bpf_skb_load_bytes(ctx->skb, *ctx->offset + 2, &be_frag_off,
+					 sizeof(be_frag_off));
+		if (ret) {
+			ctx->result = -EFAULT;
+			return 1;
+		}
+		__u16 frag_off = bpf_ntohs(be_frag_off);
+
+		if (frag_off & 0xfff8)
+			ctx->fragment_state = FRAGMENT_NONFIRST;
+		else if (frag_off & 0x0001)
+			ctx->fragment_state = FRAGMENT_FIRST;
+		if (frag_off & 0x0006) {
+			ctx->result = -EINVAL;
+			return 1;
+		}
+		if ((frag_off & 0x0001) &&
+		    ((ctx->packet_end - *ctx->offset - sizeof(struct frag_hdr)) & 7)) {
+			ctx->result = -EINVAL;
+			return 1;
+		}
+		/* Non-first fragments do not contain a usable transport header. */
+		if (frag_off & 0xfff8) {
+			ctx->result = 1;
+			return 1;
+		}
+		*ctx->offset += 8;
+		return 0;
+	}
 
 	__u8 hdr_ext_len = 0;
 
+	if (*ctx->offset + 2 > ctx->packet_end) {
+		ctx->result = -EFAULT;
+		return 1;
+	}
 	ret = bpf_skb_load_bytes(ctx->skb, *ctx->offset + 1, &hdr_ext_len,
 				 sizeof(hdr_ext_len));
 	if (ret) {
@@ -466,7 +528,21 @@ static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
 		return 1;
 	}
 
-	*ctx->offset += ipv6_optlen(hdr_ext_len);
+	__u32 extension_len = current_nexthdr == IPPROTO_AH ?
+		(hdr_ext_len + 2) * 4 : ipv6_optlen(hdr_ext_len);
+	if (current_nexthdr == IPPROTO_AH) {
+		if (hdr_ext_len < 1) {
+			ctx->result = -EINVAL;
+			return 1;
+		}
+		ctx->seen_ah = true;
+	}
+
+	if (*ctx->offset + extension_len > ctx->packet_end) {
+		ctx->result = -EFAULT;
+		return 1;
+	}
+	*ctx->offset += extension_len;
 	return 0;
 }
 
@@ -474,8 +550,11 @@ static __always_inline int
 parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		struct ethhdr *ethh, struct l3_hdr *l3h,
 		struct l4_hdr *l4h, __u8 *ihl, __u8 *l4proto,
-		__u32 *offset)
+		__u32 *offset, __u32 *packet_end,
+		enum fragment_state *fragment_state)
 {
+	*fragment_state = FRAGMENT_NONE;
+	*packet_end = skb->len;
 	if (link_h_len == ETH_HLEN) {
 		int ret = bpf_skb_load_bytes(skb, *offset, ethh,
 					 sizeof(struct ethhdr));
@@ -498,32 +577,62 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 	// bpf_printk("parse_transport: h_proto: %u ? %u %u", ethh->h_proto,
 	//						bpf_htons(ETH_P_IP), bpf_htons(ETH_P_IPV6));
 	if (ethh->h_proto == bpf_htons(ETH_P_IP)) {
+		__u32 l3_offset = *offset;
 		int ret = bpf_skb_load_bytes(skb, *offset, l3h,
 					 sizeof(struct iphdr));
 		if (ret)
 			return -EFAULT;
+		__u32 ip_header_len = l3h->iph.ihl * 4;
+		__u32 packet_len = bpf_ntohs(l3h->iph.tot_len);
+
+		if (l3h->iph.version != 4 || l3h->iph.ihl < 5 ||
+		    packet_len < ip_header_len || l3_offset + packet_len > skb->len)
+			return -EINVAL;
+		*packet_end = l3_offset + packet_len;
+		__u16 frag_off = bpf_ntohs(l3h->iph.frag_off);
+
+		*l4proto = l3h->iph.protocol;
+		if (frag_off & 0x1fff)
+			*fragment_state = FRAGMENT_NONFIRST;
+		else if (frag_off & 0x2000)
+			*fragment_state = FRAGMENT_FIRST;
+		if ((frag_off & 0x8000) ||
+		    ((frag_off & 0x4000) && (frag_off & 0x3fff)))
+			return -EINVAL;
+		if ((frag_off & 0x2000) && ((packet_len - ip_header_len) & 7))
+			return -EINVAL;
+		if (frag_off & 0x1fff)
+			return 1;
 		// Skip ipv4hdr and options for next hdr.
-		*offset += l3h->iph.ihl * 4;
+		*offset += ip_header_len;
 
 		// We only process TCP and UDP traffic.
-		*l4proto = l3h->iph.protocol;
 		switch (l3h->iph.protocol) {
 		case IPPROTO_TCP:
+			if (*offset + sizeof(struct tcphdr) > *packet_end)
+				return -EFAULT;
 			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct tcphdr));
 			if (ret) {
 				// Not a complete tcphdr.
 				return -EFAULT;
 			}
-			*offset += sizeof(struct tcphdr);
+			if (l4h->tcph.doff < 5 ||
+			    *offset + l4h->tcph.doff * 4 > *packet_end)
+				return -EINVAL;
+			*offset += l4h->tcph.doff * 4;
 			break;
 		case IPPROTO_UDP:
+			if (*offset + sizeof(struct udphdr) > *packet_end)
+				return -EFAULT;
 			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct udphdr));
 			if (ret) {
 				// Not a complete udphdr.
 				return -EFAULT;
 			}
+			if (bpf_ntohs(l4h->udph.len) < sizeof(struct udphdr))
+				return -EINVAL;
 			*offset += sizeof(struct udphdr);
 			break;
 		default:
@@ -532,12 +641,19 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		*ihl = l3h->iph.ihl;
 		return 0;
 	} else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
+		__u32 l3_offset = *offset;
 		int ret = bpf_skb_load_bytes(skb, *offset, l3h,
 					 sizeof(struct ipv6hdr));
 		if (ret) {
 			bpf_printk("not a valid IPv6 packet");
 			return -EFAULT;
 		}
+		__u32 ip_packet_end = l3_offset + sizeof(struct ipv6hdr) +
+			bpf_ntohs(l3h->ipv6h.payload_len);
+
+		if (l3h->ipv6h.version != 6 || ip_packet_end > skb->len)
+			return -EINVAL;
+		*packet_end = ip_packet_end;
 
 		*offset += sizeof(struct ipv6hdr);
 		*ihl = sizeof(struct ipv6hdr) / 4;
@@ -547,43 +663,61 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		struct ipv6_ext_ctx ext_ctx = {
 			.skb = skb,
 			.offset = offset,
+			.packet_end = ip_packet_end,
 			.nexthdr = &nexthdr,
-			.result = 0
+			.result = 0,
+			.seen_ah = false,
+			.seen_fragment = false,
+			.fragment_state = FRAGMENT_NONE,
 		};
 
 		ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb, &ext_ctx, 0);
 		if (ret < 0)
 			return ret;
+		*fragment_state = ext_ctx.fragment_state;
 		if (ext_ctx.result)
 			return ext_ctx.result;
+		if (ext_ctx.seen_ah && ext_ctx.fragment_state == FRAGMENT_NONE)
+			return 1;
 
 		if (is_extension_header(nexthdr)) {
 			bpf_printk("Unexpected hdr or exceeds IPV6_MAX_EXTENSIONS limit");
-			return 1;
+			return -E2BIG;
 		}
 
 		*l4proto = nexthdr;
 
 		switch (nexthdr) {
 		case IPPROTO_TCP:
+			if (*offset + sizeof(struct tcphdr) > ip_packet_end)
+				return -EFAULT;
 			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct tcphdr));
 			if (ret) {
 				// Not a complete tcphdr.
 				return -EFAULT;
 			}
-			*offset += sizeof(struct tcphdr);
+			if (l4h->tcph.doff < 5 ||
+			    *offset + l4h->tcph.doff * 4 > ip_packet_end)
+				return -EINVAL;
+			*offset += l4h->tcph.doff * 4;
 			break;
 		case IPPROTO_UDP:
+			if (*offset + sizeof(struct udphdr) > ip_packet_end)
+				return -EFAULT;
 			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct udphdr));
 			if (ret) {
 				// Not a complete udphdr.
 				return -EFAULT;
 			}
+			if (bpf_ntohs(l4h->udph.len) < sizeof(struct udphdr))
+				return -EINVAL;
 			*offset += sizeof(struct udphdr);
 			break;
 		case IPPROTO_ICMPV6:
+			if (*offset + sizeof(struct icmp6hdr) > ip_packet_end)
+				return -EFAULT;
 			ret = bpf_skb_load_bytes(skb, *offset, l4h,
 						 sizeof(struct icmp6hdr));
 			if (ret) {
@@ -603,11 +737,112 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 	return 1;
 }
 
+enum fragment_dispatch {
+	FRAGMENT_DISPATCH_NORMAL,
+	FRAGMENT_DISPATCH_FIRST,
+	FRAGMENT_DISPATCH_PASS,
+	FRAGMENT_DISPATCH_DROP,
+};
+
+static int __noinline classify_fragment(const struct __sk_buff *skb,
+					__u32 link_h_len)
+{
+	__be16 h_proto;
+	__u32 offset = 0;
+
+	if (link_h_len == ETH_HLEN) {
+		if (bpf_skb_load_bytes(skb, offsetof(struct ethhdr, h_proto),
+				       &h_proto, sizeof(h_proto)))
+			return FRAGMENT_DISPATCH_NORMAL;
+		offset = sizeof(struct ethhdr);
+	} else {
+		h_proto = skb->protocol;
+	}
+
+	if (h_proto == bpf_htons(ETH_P_IP)) {
+		__be16 be_frag_off;
+
+		if (bpf_skb_load_bytes(skb, offset + offsetof(struct iphdr, frag_off),
+				       &be_frag_off, sizeof(be_frag_off)))
+			return FRAGMENT_DISPATCH_NORMAL;
+		__u16 frag_off = bpf_ntohs(be_frag_off);
+
+		/* DF alone is not fragmentation and stays on the normal fast path. */
+		if (!(frag_off & 0xbfff))
+			return FRAGMENT_DISPATCH_NORMAL;
+
+		struct iphdr iph;
+
+		if (bpf_skb_load_bytes(skb, offset, &iph, sizeof(iph)))
+			return FRAGMENT_DISPATCH_DROP;
+		__u32 header_len = iph.ihl * 4;
+		__u32 packet_len = bpf_ntohs(iph.tot_len);
+
+		if (iph.version != 4 || iph.ihl < 5 || packet_len < header_len ||
+		    offset + packet_len > skb->len || (frag_off & 0x8000) ||
+		    ((frag_off & 0x4000) && (frag_off & 0x3fff)))
+			return FRAGMENT_DISPATCH_DROP;
+		if ((frag_off & 0x2000) && ((packet_len - header_len) & 7))
+			return FRAGMENT_DISPATCH_DROP;
+
+		if (frag_off & 0x1fff)
+			return FRAGMENT_DISPATCH_PASS;
+		return FRAGMENT_DISPATCH_FIRST;
+	}
+	if (h_proto == bpf_htons(ETH_P_IPV6)) {
+		__u8 first_nexthdr;
+
+		if (bpf_skb_load_bytes(skb,
+				       offset + offsetof(struct ipv6hdr, nexthdr),
+				       &first_nexthdr, sizeof(first_nexthdr)))
+			return FRAGMENT_DISPATCH_NORMAL;
+		if (!is_extension_header(first_nexthdr))
+			return FRAGMENT_DISPATCH_NORMAL;
+
+		struct ipv6hdr ipv6h;
+
+		if (bpf_skb_load_bytes(skb, offset, &ipv6h, sizeof(ipv6h)))
+			return FRAGMENT_DISPATCH_NORMAL;
+		__u32 packet_end = offset + sizeof(ipv6h) +
+			bpf_ntohs(ipv6h.payload_len);
+		if (ipv6h.version != 6 || packet_end > skb->len)
+			return ipv6h.nexthdr == IPPROTO_FRAGMENT ?
+				FRAGMENT_DISPATCH_DROP : FRAGMENT_DISPATCH_NORMAL;
+
+		offset += sizeof(ipv6h);
+		__u8 nexthdr = ipv6h.nexthdr;
+		struct ipv6_ext_ctx ext_ctx = {
+			.skb = skb,
+			.offset = &offset,
+			.packet_end = packet_end,
+			.nexthdr = &nexthdr,
+			.result = 0,
+			.seen_ah = false,
+			.seen_fragment = false,
+			.fragment_state = FRAGMENT_NONE,
+		};
+		int ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb,
+				   &ext_ctx, 0);
+
+		if (ret < 0)
+			return FRAGMENT_DISPATCH_DROP;
+		if (ext_ctx.result < 0 && ext_ctx.seen_fragment)
+			return FRAGMENT_DISPATCH_DROP;
+		if (ext_ctx.fragment_state == FRAGMENT_NONFIRST)
+			return FRAGMENT_DISPATCH_PASS;
+		if (ext_ctx.fragment_state == FRAGMENT_FIRST)
+			return FRAGMENT_DISPATCH_FIRST;
+	}
+	return FRAGMENT_DISPATCH_NORMAL;
+}
+
 // Only work for first packet of a new connection.
 static __always_inline bool
-is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset)
+is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset,
+       __u32 packet_end)
 {
-	if (l4proto != IPPROTO_UDP || skb->len < (offset + 160))
+	if (l4proto != IPPROTO_UDP || offset > packet_end ||
+	    packet_end - offset < 160)
 		return false;
 
 	__u8 header[2];
@@ -641,13 +876,19 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset)
 			return true;
 		if (extension > 0x04)
 			return false;
+		if (offset > packet_end || packet_end - offset < sizeof(header))
+			return false;
 
 		ret = bpf_skb_load_bytes(skb, offset, header, sizeof(header));
 		if (ret)
 			return false;
 
+		__u32 extension_len = header[1] + sizeof(header);
+
+		if (extension_len > packet_end - offset)
+			return false;
 		extension = header[0];
-		offset += header[1] + sizeof(header);
+		offset += extension_len;
 	}
 	return false;
 }
@@ -1130,14 +1371,126 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return (*pid_pname)->pid == PARAM.control_plane_pid;
 }
 
-// Routing and redirect the packet back.
-static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 link_h_len)
+static int __noinline do_tproxy_first_fragment(
+	struct __sk_buff *skb, bool is_wan, __u32 link_h_len)
 {
-	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
+	struct ethhdr ethh;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
+	__u8 ihl;
+	__u8 l4proto;
+	__u32 payload_offset = 0;
+	__u32 packet_end;
+	enum fragment_state fragment_state;
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
+				  &l4proto, &payload_offset, &packet_end,
+				  &fragment_state);
 
-	if (exited && *exited)
+	if (fragment_state != FRAGMENT_FIRST)
+		return TCX_DROP;
+	if (l4proto != IPPROTO_TCP && l4proto != IPPROTO_UDP)
+		return l4proto && !is_extension_header(l4proto) ? TCX_NEXT : TCX_DROP;
+	if (ret)
+		return TCX_DROP;
+	struct tuples tuples;
+
+	get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
+	struct pid_pname *pid_pname = NULL;
+
+	if (is_wan && pid_is_control_plane(skb, &pid_pname))
 		return TCX_NEXT;
+	if (l4proto == IPPROTO_UDP) {
+		struct udp_conn_state *conn_state =
+			bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five);
 
+		if (conn_state && conn_state->is_wan_ingress_direction) {
+			if (skb->mark)
+				return TCX_DROP;
+			goto direct;
+		}
+	}
+
+	struct route_params params = {};
+
+	params.l4hdr = &l4h;
+	if (l4proto == IPPROTO_TCP) {
+		params.flag[0] = L4ProtoType_TCP;
+	} else {
+		params.flag[0] = L4ProtoType_UDP;
+		if (is_utp(skb, l4proto, payload_offset, packet_end))
+			params.flag[0] |= (1 << 2);
+	}
+	if (skb->protocol == bpf_htons(ETH_P_IP))
+		params.flag[1] = IpVersionType_4;
+	else
+		params.flag[1] = IpVersionType_6;
+	if (pid_pname)
+		__builtin_memcpy(&params.flag[2], pid_pname->pname, TASK_COMM_LEN);
+	params.flag[6] = tuples.dscp;
+	params.flag[7] = skb->ifindex;
+	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) |
+					(ethh.h_source[1]));
+	params.mac[3] = bpf_htonl((ethh.h_source[2] << 24) |
+					(ethh.h_source[3] << 16) |
+					(ethh.h_source[4] << 8) |
+					(ethh.h_source[5]));
+	params.saddr = tuples.five.sip.u6_addr32;
+	params.daddr = tuples.five.dip.u6_addr32;
+	params.isdns = tuples.five.dport == bpf_htons(53) &&
+			 l4proto == IPPROTO_UDP;
+
+	__s64 route_result = route(&params);
+
+	if (route_result < 0)
+		return TCX_DROP;
+	__u8 outbound = route_result;
+	__u32 mark = route_result >> 8;
+
+	if (outbound == OUTBOUND_DIRECT) {
+		if (mark || skb->mark)
+			return TCX_DROP;
+		goto direct;
+	}
+	if (outbound == OUTBOUND_BLOCK)
+		return TCX_DROP;
+
+	if (!params.isdns && outbound < OUTBOUND_MUST_RULES) {
+		struct outbound_connectivity_query q = {
+			.outbound = outbound,
+			.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
+			.l4proto = l4proto,
+		};
+		__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
+
+		if (!state) {
+			if (skb->mark)
+				return TCX_DROP;
+			goto direct;
+		}
+		if (*state == OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT) {
+			if (mark || skb->mark)
+				return TCX_DROP;
+			goto direct;
+		}
+		if (*state == OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK)
+			return TCX_DROP;
+	}
+
+	/* Proxying only the first fragment would split the datagram across paths. */
+	return TCX_DROP;
+
+direct:
+	if (l4proto == IPPROTO_UDP &&
+	    !refresh_udp_conn_state_timer(&tuples.five, false))
+		return TCX_DROP;
+	skb->mark = 0;
+	return TCX_NEXT;
+}
+
+// Routing and redirect the packet back.
+static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
+					     u32 link_h_len)
+{
 	// Parse transport.
 	struct ethhdr ethh;
 	struct l3_hdr l3h;
@@ -1145,8 +1498,16 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 	__u8 ihl;
 	__u8 l4proto;
 	__u32 offset = 0;
+	__u32 packet_end;
+	enum fragment_state fragment_state;
 
-	if (parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl, &l4proto, &offset))
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
+				  &l4proto, &offset, &packet_end, &fragment_state);
+	if (fragment_state != FRAGMENT_NONE)
+		return TCX_DROP;
+	if (ret < 0)
+		return TCX_DROP;
+	if (ret)
 		return TCX_NEXT;
 	if (l4proto == IPPROTO_ICMPV6)
 		return TCX_NEXT;
@@ -1220,7 +1581,7 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan, u32 lin
 		params.flag[0] = L4ProtoType_TCP;
 	} else {
 		params.flag[0] = L4ProtoType_UDP;
-		if (is_utp(skb, l4proto, offset))
+		if (is_utp(skb, l4proto, offset, packet_end))
 			params.flag[0] |= (1 << 2);
 	}
 	if (protocol == bpf_htons(ETH_P_IP))
@@ -1363,6 +1724,26 @@ block:
 	return TCX_DROP;
 }
 
+static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
+				     u32 link_h_len)
+{
+	__u8 *exited = bpf_map_lookup_elem(&exited_map, &zero_key);
+
+	if (exited && *exited)
+		return TCX_NEXT;
+
+	switch (classify_fragment(skb, link_h_len)) {
+	case FRAGMENT_DISPATCH_FIRST:
+		return do_tproxy_first_fragment(skb, is_wan, link_h_len);
+	case FRAGMENT_DISPATCH_PASS:
+		return TCX_NEXT;
+	case FRAGMENT_DISPATCH_DROP:
+		return TCX_DROP;
+	default:
+		return do_tproxy_unfragmented(skb, is_wan, link_h_len);
+	}
+}
+
 static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 					 bool drop_ndp_redirect)
 {
@@ -1372,14 +1753,20 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 	__u8 ihl;
 	__u8 l4proto;
 	__u32 offset = 0;
+	__u32 packet_end;
+	enum fragment_state fragment_state;
 
 	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h,
-				  &ihl, &l4proto, &offset);
-
-	if (ret) {
+				  &ihl, &l4proto, &offset, &packet_end,
+				  &fragment_state);
+	if (ret < 0) {
 		bpf_printk("parse_transport: %d", ret);
-		return TCX_NEXT;
+		return TCX_DROP;
 	}
+	if (fragment_state == FRAGMENT_NONFIRST)
+		return TCX_NEXT;
+	if (ret)
+		return TCX_NEXT;
 
 	if (drop_ndp_redirect && skb->ingress_ifindex == NOWHERE_IFINDEX &&
 	    l4proto == IPPROTO_ICMPV6 &&

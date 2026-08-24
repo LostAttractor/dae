@@ -4,8 +4,6 @@
 //go:build exclude
 
 #define __DEBUG
-#define __DEBUG_ROUTING
-#define __PRINT_ROUTING_RESULT
 
 #include "../tproxy.c"
 #include "./bpf_test.h"
@@ -13,11 +11,14 @@
 struct {
 	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
 	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, 1);
+	__uint(max_entries, 4);
 	__array(values, int());
 } entry_call_map SEC(".maps") = {
 	.values = {
 		[0] = &tproxy_wan_egress_l2,
+		[1] = &lan_egress_l2,
+		[2] = &tproxy_wan_ingress_l2,
+		[3] = &lan_ingress_l2,
 	},
 };
 
@@ -106,6 +107,1006 @@ SEC("tc/check/so_mark_pid_precedence")
 int testcheck_so_mark_pid_precedence(struct __sk_buff *skb)
 {
 	return check_setup_result(skb, false);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment")
+int testpktgen_ipv4_first_fragment(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,1), IPV4(1,1,1,1),
+				     19233, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment")
+int testsetup_ipv4_first_fragment(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment")
+int testcheck_ipv4_first_fragment(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_direct")
+int testpktgen_ipv4_first_fragment_direct(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,10), IPV4(1,1,1,10),
+				     19310, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_direct")
+int testsetup_ipv4_first_fragment_direct(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_direct")
+int testcheck_ipv4_first_fragment_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_premarked_direct")
+int testpktgen_ipv4_first_fragment_premarked_direct(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,21), IPV4(1,1,1,21),
+				     19321, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_premarked_direct")
+int testsetup_ipv4_first_fragment_premarked_direct(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	skb->mark = 42;
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_premarked_direct")
+int testcheck_ipv4_first_fragment_premarked_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_marked_direct")
+int testpktgen_ipv4_first_fragment_marked_direct(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,11), IPV4(1,1,1,11),
+				     19311, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_marked_direct")
+int testsetup_ipv4_first_fragment_marked_direct(struct __sk_buff *skb)
+{
+	struct match_set fallback = {
+		.type = MatchType_Fallback,
+		.outbound = OUTBOUND_DIRECT,
+		.mark = 42,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &fallback, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_marked_direct")
+int testcheck_ipv4_first_fragment_marked_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_no_ipv4_tcp_routing_result(skb, TCX_DROP,
+		IPV4(192,168,0,11), IPV4(1,1,1,11), 19311, 80);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_noalive_direct")
+int testpktgen_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,17), IPV4(1,1,1,17),
+				     19317, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_noalive_direct")
+int testsetup_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
+{
+	const __u8 outbound = OUTBOUND_USER_DEFINED_MIN + 20;
+	struct outbound_connectivity_query query = {
+		.outbound = outbound,
+		.ipversion = 4,
+		.l4proto = IPPROTO_TCP,
+	};
+	__u32 state = OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT;
+
+	set_routing_fallback(outbound, false, &zero_key);
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_noalive_direct")
+int testcheck_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_noalive_block")
+int testpktgen_ipv4_first_fragment_noalive_block(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,18), IPV4(1,1,1,18),
+				     19318, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_noalive_block")
+int testsetup_ipv4_first_fragment_noalive_block(struct __sk_buff *skb)
+{
+	const __u8 outbound = OUTBOUND_USER_DEFINED_MIN + 21;
+	struct outbound_connectivity_query query = {
+		.outbound = outbound,
+		.ipversion = 4,
+		.l4proto = IPPROTO_TCP,
+	};
+	__u32 state = OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK;
+
+	set_routing_fallback(outbound, false, &zero_key);
+	bpf_map_update_elem(&outbound_connectivity_map, &query, &state, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_noalive_block")
+int testcheck_ipv4_first_fragment_noalive_block(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_missing_connectivity")
+int testpktgen_ipv4_first_fragment_missing_connectivity(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,19), IPV4(1,1,1,19),
+				     19319, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_missing_connectivity")
+int testsetup_ipv4_first_fragment_missing_connectivity(struct __sk_buff *skb)
+{
+	struct match_set fallback = {
+		.type = MatchType_Fallback,
+		.outbound = OUTBOUND_USER_DEFINED_MIN + 22,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &fallback, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_missing_connectivity")
+int testcheck_ipv4_first_fragment_missing_connectivity(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_marked_missing_connectivity")
+int testpktgen_ipv4_first_fragment_marked_missing_connectivity(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,35), IPV4(1,1,1,35),
+				     19335, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_marked_missing_connectivity")
+int testsetup_ipv4_first_fragment_marked_missing_connectivity(struct __sk_buff *skb)
+{
+	struct match_set fallback = {
+		.type = MatchType_Fallback,
+		.outbound = OUTBOUND_USER_DEFINED_MIN + 23,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &fallback, BPF_ANY);
+	skb->mark = 42;
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_marked_missing_connectivity")
+int testcheck_ipv4_first_fragment_marked_missing_connectivity(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_proxy")
+int testpktgen_ipv4_first_fragment_proxy(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,12), IPV4(1,1,1,12),
+				     19312, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_proxy")
+int testsetup_ipv4_first_fragment_proxy(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_proxy")
+int testcheck_ipv4_first_fragment_proxy(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_no_ipv4_tcp_routing_result(skb, TCX_DROP,
+		IPV4(192,168,0,12), IPV4(1,1,1,12), 19312, 80);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_control_plane")
+int testpktgen_ipv4_first_fragment_control_plane(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,13), IPV4(1,1,1,13),
+				     19313, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_control_plane")
+int testsetup_ipv4_first_fragment_control_plane(struct __sk_buff *skb)
+{
+	__u64 cookie = bpf_get_socket_cookie(skb);
+	struct pid_pname value = { .pid = PARAM.control_plane_pid };
+
+	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_control_plane")
+int testcheck_ipv4_first_fragment_control_plane(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_padding")
+int testpktgen_ipv4_first_fragment_padding(struct __sk_buff *skb)
+{
+	return set_ipv4_short_first_fragment(skb, IPV4(192,168,0,14),
+		IPV4(1,1,1,14), IPPROTO_TCP);
+}
+
+SEC("tc/setup/ipv4_first_fragment_padding")
+int testsetup_ipv4_first_fragment_padding(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_padding")
+int testcheck_ipv4_first_fragment_padding(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_reserved_flag")
+int testpktgen_ipv4_first_fragment_reserved_flag(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,30), IPV4(1,1,1,30),
+				     19330, 80, 0x8000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_reserved_flag")
+int testsetup_ipv4_first_fragment_reserved_flag(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_reserved_flag")
+int testcheck_ipv4_first_fragment_reserved_flag(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_fragment_reserved_flag_reply")
+int testpktgen_ipv4_fragment_reserved_flag_reply(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,45), IPV4(1,1,1,45),
+				     19345, 80, 0x8000);
+}
+
+SEC("tc/setup/ipv4_fragment_reserved_flag_reply")
+int testsetup_ipv4_fragment_reserved_flag_reply(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 1);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_fragment_reserved_flag_reply")
+int testcheck_ipv4_fragment_reserved_flag_reply(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_df_mf")
+int testpktgen_ipv4_first_fragment_df_mf(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,31), IPV4(1,1,1,31),
+				     19331, 80, 0x6000);
+}
+
+SEC("tc/setup/ipv4_first_fragment_df_mf")
+int testsetup_ipv4_first_fragment_df_mf(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_df_mf")
+int testcheck_ipv4_first_fragment_df_mf(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_tcp_doff_small")
+int testpktgen_ipv4_first_fragment_tcp_doff_small(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment_doff(skb, 4);
+}
+
+SEC("tc/setup/ipv4_first_fragment_tcp_doff_small")
+int testsetup_ipv4_first_fragment_tcp_doff_small(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_tcp_doff_small")
+int testcheck_ipv4_first_fragment_tcp_doff_small(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_tcp_doff_truncated")
+int testpktgen_ipv4_first_fragment_tcp_doff_truncated(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment_doff(skb, 15);
+}
+
+SEC("tc/setup/ipv4_first_fragment_tcp_doff_truncated")
+int testsetup_ipv4_first_fragment_tcp_doff_truncated(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_tcp_doff_truncated")
+int testcheck_ipv4_first_fragment_tcp_doff_truncated(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_fragment_udp_len_small")
+int testpktgen_ipv4_first_fragment_udp_len_small(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment_len(skb, UDP_HLEN - 1);
+}
+
+SEC("tc/setup/ipv4_first_fragment_udp_len_small")
+int testsetup_ipv4_first_fragment_udp_len_small(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_fragment_udp_len_small")
+int testcheck_ipv4_first_fragment_udp_len_small(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_nonfirst_fragment")
+int testpktgen_ipv4_nonfirst_fragment(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp_fragment(skb, IPV4(192,168,0,1), IPV4(1,1,1,1),
+				     19233, 80, 1);
+}
+
+SEC("tc/setup/ipv4_nonfirst_fragment")
+int testsetup_ipv4_nonfirst_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_nonfirst_fragment")
+int testcheck_ipv4_nonfirst_fragment(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/ipv4_nonfirst_udp_fragment")
+int testpktgen_ipv4_nonfirst_udp_fragment(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment(skb, IPV4(192,168,0,15), IPV4(1,1,1,15),
+				     19315, 80, 0x0001);
+}
+
+SEC("tc/setup/ipv4_nonfirst_udp_fragment")
+int testsetup_ipv4_nonfirst_udp_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_nonfirst_udp_fragment")
+int testcheck_ipv4_nonfirst_udp_fragment(struct __sk_buff *skb)
+{
+	return check_ipv4_udp_state(skb, TCX_NEXT,
+		IPV4(192,168,0,15), IPV4(1,1,1,15), 19315, 80, false);
+}
+
+SEC("tc/pktgen/ipv4_nonfirst_udp_fragment_lan_ingress")
+int testpktgen_ipv4_nonfirst_udp_fragment_lan_ingress(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment(skb, IPV4(192,168,0,20), IPV4(1,1,1,20),
+				     19320, 80, 0x0001);
+}
+
+SEC("tc/setup/ipv4_nonfirst_udp_fragment_lan_ingress")
+int testsetup_ipv4_nonfirst_udp_fragment_lan_ingress(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 3);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_nonfirst_udp_fragment_lan_ingress")
+int testcheck_ipv4_nonfirst_udp_fragment_lan_ingress(struct __sk_buff *skb)
+{
+	return check_ipv4_udp_state(skb, TCX_NEXT,
+		IPV4(192,168,0,20), IPV4(1,1,1,20), 19320, 80, false);
+}
+
+SEC("tc/pktgen/ipv4_nonfirst_fragment_bad_ihl")
+int testpktgen_ipv4_nonfirst_fragment_bad_ihl(struct __sk_buff *skb)
+{
+	return set_ipv4_nonfirst_fragment_ihl(skb, 4);
+}
+
+SEC("tc/setup/ipv4_nonfirst_fragment_bad_ihl")
+int testsetup_ipv4_nonfirst_fragment_bad_ihl(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_nonfirst_fragment_bad_ihl")
+int testcheck_ipv4_nonfirst_fragment_bad_ihl(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_nonfirst_fragment_misaligned")
+int testpktgen_ipv4_nonfirst_fragment_misaligned(struct __sk_buff *skb)
+{
+	return set_ipv4_misaligned_nonfirst_fragment(skb);
+}
+
+SEC("tc/setup/ipv4_nonfirst_fragment_misaligned")
+int testsetup_ipv4_nonfirst_fragment_misaligned(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_nonfirst_fragment_misaligned")
+int testcheck_ipv4_nonfirst_fragment_misaligned(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_nonfirst_udp_fragment_reply")
+int testpktgen_ipv4_nonfirst_udp_fragment_reply(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment(skb, IPV4(192,168,0,32), IPV4(1,1,1,32),
+				     19332, 80, 0x0001);
+}
+
+SEC("tc/setup/ipv4_nonfirst_udp_fragment_reply")
+int testsetup_ipv4_nonfirst_udp_fragment_reply(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 1);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_nonfirst_udp_fragment_reply")
+int testcheck_ipv4_nonfirst_udp_fragment_reply(struct __sk_buff *skb)
+{
+	return check_ipv4_udp_state(skb, TCX_NEXT,
+		IPV4(192,168,0,32), IPV4(1,1,1,32), 19332, 80, false);
+}
+
+SEC("tc/pktgen/ipv4_first_udp_fragment_routing")
+int testpktgen_ipv4_first_udp_fragment_routing(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment(skb, IPV4(192,168,0,1), IPV4(1,1,1,1),
+				     19234, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_udp_fragment_routing")
+int testsetup_ipv4_first_udp_fragment_routing(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_udp_fragment_routing")
+int testcheck_ipv4_first_udp_fragment_routing(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_state(skb, TCX_DROP,
+		IPV4(192,168,0,1), IPV4(1,1,1,1), 19234, 80, false);
+}
+
+SEC("tc/pktgen/ipv4_first_udp_fragment_direct")
+int testpktgen_ipv4_first_udp_fragment_direct(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment(skb, IPV4(192,168,0,16), IPV4(1,1,1,16),
+				     19316, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_udp_fragment_direct")
+int testsetup_ipv4_first_udp_fragment_direct(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_udp_fragment_direct")
+int testcheck_ipv4_first_udp_fragment_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_outbound_state(skb, TCX_NEXT,
+		IPV4(192,168,0,16), IPV4(1,1,1,16), 19316, 80);
+}
+
+SEC("tc/pktgen/ipv4_first_udp_fragment_marked_ingress_state")
+int testpktgen_ipv4_first_udp_fragment_marked_ingress_state(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment(skb, IPV4(192,168,0,36), IPV4(1,1,1,36),
+				     19336, 80, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_udp_fragment_marked_ingress_state")
+int testsetup_ipv4_first_udp_fragment_marked_ingress_state(struct __sk_buff *skb)
+{
+	set_ipv4_udp_ingress_state(IPV4(192,168,0,36), IPV4(1,1,1,36),
+				   19336, 80);
+	skb->mark = 42;
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_udp_fragment_marked_ingress_state")
+int testcheck_ipv4_first_udp_fragment_marked_ingress_state(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv4_first_udp_fragment_lan_egress")
+int testpktgen_ipv4_first_udp_fragment_lan_egress(struct __sk_buff *skb)
+{
+	return set_ipv4_udp_fragment(skb, IPV4(192,168,0,2), IPV4(1,1,1,2),
+				     19235, 81, 0x2000);
+}
+
+SEC("tc/setup/ipv4_first_udp_fragment_lan_egress")
+int testsetup_ipv4_first_udp_fragment_lan_egress(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 1);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_first_udp_fragment_lan_egress")
+int testcheck_ipv4_first_udp_fragment_lan_egress(struct __sk_buff *skb)
+{
+	return check_ipv4_udp_state(skb, TCX_NEXT,
+		IPV4(192,168,0,2), IPV4(1,1,1,2), 19235, 81, true);
+}
+
+SEC("tc/pktgen/ipv6_first_udp_fragment_routing")
+int testpktgen_ipv6_first_udp_fragment_routing(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fragment(skb, 1, 2, 19236, 82, 0x0001);
+}
+
+SEC("tc/setup/ipv6_first_udp_fragment_routing")
+int testsetup_ipv6_first_udp_fragment_routing(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_first_udp_fragment_routing")
+int testcheck_ipv6_first_udp_fragment_routing(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv6_udp_state(skb, TCX_DROP, 1, 2, 19236, 82, false);
+}
+
+SEC("tc/pktgen/ipv6_first_udp_fragment_direct")
+int testpktgen_ipv6_first_udp_fragment_direct(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fragment(skb, 17, 18, 19317, 80, 0x0001);
+}
+
+SEC("tc/setup/ipv6_first_udp_fragment_direct")
+int testsetup_ipv6_first_udp_fragment_direct(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_first_udp_fragment_direct")
+int testcheck_ipv6_first_udp_fragment_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv6_udp_outbound_state(skb, TCX_NEXT, 17, 18, 19317, 80);
+}
+
+SEC("tc/pktgen/ipv6_first_tcp_fragment_direct")
+int testpktgen_ipv6_first_tcp_fragment_direct(struct __sk_buff *skb)
+{
+	return set_ipv6_tcp_fragment(skb, 37, 38, 19337, 80);
+}
+
+SEC("tc/setup/ipv6_first_tcp_fragment_direct")
+int testsetup_ipv6_first_tcp_fragment_direct(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_first_tcp_fragment_direct")
+int testcheck_ipv6_first_tcp_fragment_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/ipv6_first_udp_fragment_wan_ingress")
+int testpktgen_ipv6_first_udp_fragment_wan_ingress(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fragment(skb, 3, 4, 19237, 83, 0x0001);
+}
+
+SEC("tc/setup/ipv6_first_udp_fragment_wan_ingress")
+int testsetup_ipv6_first_udp_fragment_wan_ingress(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 2);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_first_udp_fragment_wan_ingress")
+int testcheck_ipv6_first_udp_fragment_wan_ingress(struct __sk_buff *skb)
+{
+	return check_ipv6_udp_state(skb, TCX_NEXT, 3, 4, 19237, 83, true);
+}
+
+SEC("tc/pktgen/ipv6_nonfirst_udp_fragment")
+int testpktgen_ipv6_nonfirst_udp_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fragment(skb, 5, 6, 19238, 84, 0x0008);
+}
+
+SEC("tc/setup/ipv6_nonfirst_udp_fragment")
+int testsetup_ipv6_nonfirst_udp_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_nonfirst_udp_fragment")
+int testcheck_ipv6_nonfirst_udp_fragment(struct __sk_buff *skb)
+{
+	return check_ipv6_udp_state(skb, TCX_NEXT, 5, 6, 19238, 84, false);
+}
+
+SEC("tc/pktgen/ipv6_ah_udp_fragment")
+int testpktgen_ipv6_ah_udp_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_ah_udp_fragment(skb, 9, 10, 19240, 86);
+}
+
+SEC("tc/setup/ipv6_ah_udp_fragment")
+int testsetup_ipv6_ah_udp_fragment(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_ah_udp_fragment")
+int testcheck_ipv6_ah_udp_fragment(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv6_short_ah_fragment")
+int testpktgen_ipv6_short_ah_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_short_ah_fragment(skb);
+}
+
+SEC("tc/setup/ipv6_short_ah_fragment")
+int testsetup_ipv6_short_ah_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_short_ah_fragment")
+int testcheck_ipv6_short_ah_fragment(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv6_ah_udp_unfragmented")
+int testpktgen_ipv6_ah_udp_unfragmented(struct __sk_buff *skb)
+{
+	return set_ipv6_ah_udp(skb, 22, 23, 19322, 80);
+}
+
+SEC("tc/setup/ipv6_ah_udp_unfragmented")
+int testsetup_ipv6_ah_udp_unfragmented(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_ah_udp_unfragmented")
+int testcheck_ipv6_ah_udp_unfragmented(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv6_udp_state(skb, TCX_NEXT, 22, 23, 19322, 80, false);
+}
+
+SEC("tc/pktgen/ipv6_excessive_extensions")
+int testpktgen_ipv6_excessive_extensions(struct __sk_buff *skb)
+{
+	return set_ipv6_extensions(skb, IPV6_MAX_EXTENSIONS + 1);
+}
+
+SEC("tc/setup/ipv6_excessive_extensions")
+int testsetup_ipv6_excessive_extensions(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_excessive_extensions")
+int testcheck_ipv6_excessive_extensions(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv6_max_extensions")
+int testpktgen_ipv6_max_extensions(struct __sk_buff *skb)
+{
+	return set_ipv6_extensions(skb, IPV6_MAX_EXTENSIONS);
+}
+
+SEC("tc/setup/ipv6_max_extensions")
+int testsetup_ipv6_max_extensions(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_max_extensions")
+int testcheck_ipv6_max_extensions(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TC_ACT_REDIRECT);
+}
+
+SEC("tc/pktgen/ipv6_repeated_atomic_fragments")
+int testpktgen_ipv6_repeated_atomic_fragments(struct __sk_buff *skb)
+{
+	return set_ipv6_repeated_atomic_fragments(skb);
+}
+
+SEC("tc/setup/ipv6_repeated_atomic_fragments")
+int testsetup_ipv6_repeated_atomic_fragments(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_repeated_atomic_fragments")
+int testcheck_ipv6_repeated_atomic_fragments(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv6_truncated_fragment")
+int testpktgen_ipv6_truncated_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_truncated_fragment(skb);
+}
+
+SEC("tc/setup/ipv6_truncated_fragment")
+int testsetup_ipv6_truncated_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_truncated_fragment")
+int testcheck_ipv6_truncated_fragment(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv6_misaligned_first_fragment")
+int testpktgen_ipv6_misaligned_first_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_misaligned_first_fragment(skb);
+}
+
+SEC("tc/setup/ipv6_misaligned_first_fragment")
+int testsetup_ipv6_misaligned_first_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_misaligned_first_fragment")
+int testcheck_ipv6_misaligned_first_fragment(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/ipv6_invalid_version_nonfirst_fragment")
+int testpktgen_ipv6_invalid_version_nonfirst_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_invalid_version_nonfirst_fragment(skb);
+}
+
+SEC("tc/setup/ipv6_invalid_version_nonfirst_fragment")
+int testsetup_ipv6_invalid_version_nonfirst_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_invalid_version_nonfirst_fragment")
+int testcheck_ipv6_invalid_version_nonfirst_fragment(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_DROP);
+}
+
+SEC("tc/pktgen/utp_extension_outside_packet")
+int testpktgen_utp_extension_outside_packet(struct __sk_buff *skb)
+{
+	return set_utp_extension_packet(skb, 160, 0);
+}
+
+SEC("tc/setup/utp_extension_outside_packet")
+int testsetup_utp_extension_outside_packet(struct __sk_buff *skb)
+{
+	return is_utp(skb, IPPROTO_UDP, ETH_HLEN + IP4_HLEN + UDP_HLEN,
+		ETH_HLEN + IP4_HLEN + UDP_HLEN + 160);
+}
+
+SEC("tc/check/utp_extension_outside_packet")
+int testcheck_utp_extension_outside_packet(struct __sk_buff *skb)
+{
+	return check_setup_result(skb, false);
+}
+
+SEC("tc/pktgen/utp_extension_overrun")
+int testpktgen_utp_extension_overrun(struct __sk_buff *skb)
+{
+	return set_utp_extension_packet(skb, 162, 10);
+}
+
+SEC("tc/setup/utp_extension_overrun")
+int testsetup_utp_extension_overrun(struct __sk_buff *skb)
+{
+	return is_utp(skb, IPPROTO_UDP, ETH_HLEN + IP4_HLEN + UDP_HLEN,
+		ETH_HLEN + IP4_HLEN + UDP_HLEN + 162);
+}
+
+SEC("tc/check/utp_extension_overrun")
+int testcheck_utp_extension_overrun(struct __sk_buff *skb)
+{
+	return check_setup_result(skb, false);
+}
+
+SEC("tc/pktgen/utp_extension_valid")
+int testpktgen_utp_extension_valid(struct __sk_buff *skb)
+{
+	return set_utp_extension_packet(skb, 162, 0);
+}
+
+SEC("tc/setup/utp_extension_valid")
+int testsetup_utp_extension_valid(struct __sk_buff *skb)
+{
+	return is_utp(skb, IPPROTO_UDP, ETH_HLEN + IP4_HLEN + UDP_HLEN,
+		ETH_HLEN + IP4_HLEN + UDP_HLEN + 162);
+}
+
+SEC("tc/check/utp_extension_valid")
+int testcheck_utp_extension_valid(struct __sk_buff *skb)
+{
+	return check_setup_result(skb, true);
+}
+
+SEC("tc/pktgen/ipv6_atomic_udp_fragment")
+int testpktgen_ipv6_atomic_udp_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_udp_fragment(skb, 7, 8, 19239, 85, 0x0000);
+}
+
+SEC("tc/setup/ipv6_atomic_udp_fragment")
+int testsetup_ipv6_atomic_udp_fragment(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_atomic_udp_fragment")
+int testcheck_ipv6_atomic_udp_fragment(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TC_ACT_REDIRECT);
+}
+
+SEC("tc/pktgen/ipv4_nonfirst_icmp_fragment")
+int testpktgen_ipv4_nonfirst_icmp_fragment(struct __sk_buff *skb)
+{
+	return set_ipv4_nonfirst_fragment(skb, IPV4(192,168,0,1),
+					  IPV4(1,1,1,1), IPPROTO_ICMP);
+}
+
+SEC("tc/setup/ipv4_nonfirst_icmp_fragment")
+int testsetup_ipv4_nonfirst_icmp_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv4_nonfirst_icmp_fragment")
+int testcheck_ipv4_nonfirst_icmp_fragment(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
+}
+
+SEC("tc/pktgen/ipv6_nonfirst_icmp_fragment")
+int testpktgen_ipv6_nonfirst_icmp_fragment(struct __sk_buff *skb)
+{
+	return set_ipv6_nonfirst_fragment(skb, 1, 2, IPPROTO_ICMPV6);
+}
+
+SEC("tc/setup/ipv6_nonfirst_icmp_fragment")
+int testsetup_ipv6_nonfirst_icmp_fragment(struct __sk_buff *skb)
+{
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/ipv6_nonfirst_icmp_fragment")
+int testcheck_ipv6_nonfirst_icmp_fragment(struct __sk_buff *skb)
+{
+	return check_status_code(skb, TCX_NEXT);
 }
 
 SEC("tc/pktgen/dport_match")
