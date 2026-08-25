@@ -128,18 +128,26 @@ const (
 )
 
 type NodeStatus struct {
-	ID                      string              `json:"id"`
-	Name                    string              `json:"name"`
-	Subtag                  string              `json:"subtag"`
-	Protocol                string              `json:"protocol"`
-	Address                 string              `json:"address"`
-	Hops                    []dialer.Hop        `json:"hops,omitempty"`
-	Session                 *SessionStatus      `json:"session,omitempty"`
-	Health                  *NodeHealthStatus   `json:"health,omitempty"`
-	Networks                []NodeNetworkStatus `json:"networks"`
-	LastConnectionFailureAt *time.Time          `json:"last_connection_failure_at,omitempty"`
-	ActiveConns             int64               `json:"active_conns"`
-	TotalConns              int64               `json:"total_conns"`
+	ID                      string                `json:"id"`
+	Name                    string                `json:"name"`
+	Subtag                  string                `json:"subtag"`
+	Protocol                string                `json:"protocol"`
+	Address                 string                `json:"address"`
+	Hops                    []dialer.Hop          `json:"hops,omitempty"`
+	Annotation              *NodeAnnotationStatus `json:"annotation,omitempty"`
+	CheckAsync              bool                  `json:"check_async,omitempty"`
+	Session                 *SessionStatus        `json:"session,omitempty"`
+	Health                  *NodeHealthStatus     `json:"health,omitempty"`
+	Networks                []NodeNetworkStatus   `json:"networks"`
+	LastConnectionFailureAt *time.Time            `json:"last_connection_failure_at,omitempty"`
+	ActiveConns             int64                 `json:"active_conns"`
+	TotalConns              int64                 `json:"total_conns"`
+}
+
+type NodeAnnotationStatus struct {
+	AddLatency          string `json:"add_latency,omitempty"`
+	Priority            *int   `json:"priority,omitempty"`
+	PriorityConditional bool   `json:"priority_conditional,omitempty"`
 }
 
 type NodeHealthStatus struct {
@@ -320,13 +328,33 @@ func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) Network
 func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts, uniqueID bool) NodeStatus {
 	runtime := d.RuntimeStatus(g)
 	ns := NodeStatus{
-		ID:       d.StatsID(),
-		Name:     d.Name,
-		Subtag:   d.Property.SubscriptionTag,
-		Protocol: d.Property.Protocol,
-		Address:  d.Property.Address,
-		Hops:     d.Property.Hops,
-		Networks: make([]NodeNetworkStatus, 4),
+		ID:         d.StatsID(),
+		Name:       d.Name,
+		Subtag:     d.Property.SubscriptionTag,
+		Protocol:   d.Property.Protocol,
+		Address:    d.Property.Address,
+		Hops:       d.Property.Hops,
+		CheckAsync: d.InitialCheckMode() == dialer.InitialCheckAsync,
+		Networks:   make([]NodeNetworkStatus, 4),
+	}
+	if annotation, ok := g.DialerAnnotation(d); ok {
+		hasPriority := annotation.Priority != 0 || len(annotation.PriorityTerms) != 0 || len(annotation.ConditionalPriority) != 0
+		conditional := len(annotation.ConditionalPriority) != 0
+		for _, term := range annotation.PriorityTerms {
+			conditional = conditional || len(term.Conditional) != 0
+		}
+		if annotation.AddLatency != 0 || hasPriority {
+			ns.Annotation = &NodeAnnotationStatus{
+				PriorityConditional: conditional,
+			}
+			if annotation.AddLatency != 0 {
+				ns.Annotation.AddLatency = annotation.AddLatency.String()
+			}
+			if hasPriority {
+				priority := annotation.Priority
+				ns.Annotation.Priority = &priority
+			}
+		}
 	}
 	if runtime.HasSession {
 		session := runtime.Session

@@ -501,13 +501,20 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 			{ID: "exit-id", Name: "exit", Subtag: "b", Protocol: "ss", Address: "exit.example:443"},
 		},
 	}
-	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, property, dialer.InitialCheckBlocking)
+	node := dialer.NewDialerRuntimeWithStatsScope(netproxy.NewRuntime(statusTestDialer{}), option, property, dialer.InitialCheckAsync, "")
 	group := outbound.NewDialerGroup(
 		option,
 		"direct node target",
 		outbound.GroupKindSelector,
 		[]*dialer.Dialer{node},
-		[]*dialer.Annotation{{}},
+		[]*dialer.Annotation{{
+			AddLatency: 30 * time.Millisecond,
+			Priority:   2,
+			PriorityTerms: []*dialer.PriorityTerm{{
+				Default:     2,
+				Conditional: []*dialer.Priority{{Pri: 4, Low: 100 * time.Millisecond}},
+			}},
+		}},
 		dialer.DialerSelectionPolicy{},
 		func(bool, *common.NetworkType) error { return nil },
 	).SetTargetMetadata(outbound.TargetKindNode)
@@ -522,5 +529,9 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 	}
 	if got := status.Nodes[0].Hops; len(got) != 2 || got[0].Name != "entry" || got[1].Name != "exit" {
 		t.Fatalf("structured hops = %+v", got)
+	}
+	annotation := status.Nodes[0].Annotation
+	if annotation == nil || annotation.AddLatency != "30ms" || annotation.Priority == nil || *annotation.Priority != 2 || !annotation.PriorityConditional || !status.Nodes[0].CheckAsync {
+		t.Fatalf("node annotation = %+v", annotation)
 	}
 }

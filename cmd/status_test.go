@@ -178,9 +178,16 @@ func TestCompactNodeStatusRow(t *testing.T) {
 	colorsEnabled = false
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
+	priority := 2
 	row := compactNodeStatusRow(control.NodeStatus{
-		Name:     "node-a",
-		Protocol: "shadowsocks(smux)",
+		Name:       "node-a",
+		Protocol:   "shadowsocks(smux)",
+		CheckAsync: true,
+		Annotation: &control.NodeAnnotationStatus{
+			AddLatency:          "30ms",
+			Priority:            &priority,
+			PriorityConditional: true,
+		},
 		Session:  &control.SessionStatus{State: control.SessionConnected},
 		Networks: []control.NodeNetworkStatus{{Network: "tcp4", SupportState: control.NetworkSupportConfirmed}, {Network: "tcp6", SupportState: control.NetworkSupportConfirmed}, {Network: "udp4", SupportState: control.NetworkSupportConfirmed}, {Network: "udp6", SupportState: control.NetworkSupportConfirmed}},
 		Health: &control.NodeHealthStatus{
@@ -199,7 +206,7 @@ func TestCompactNodeStatusRow(t *testing.T) {
 		{Network: "udp4", Selected: &control.SelectedNodeStatus{Index: 0}},
 		{Network: "udp6", Selected: &control.SelectedNodeStatus{Index: 0}},
 	})
-	want := []string{"node-a", "shadowsocks(smux)", "healthy", "all", "all", "42/45/50", "99.8/99.5%", "2/9000"}
+	want := []string{"node-a [p=2*,+30ms,async]", "shadowsocks(smux)", "healthy", "all", "all", "42/45/50", "99.8/99.5%", "2/9000"}
 	if len(row) != len(want) {
 		t.Fatalf("compactNodeStatusRow() has %d cells, want %d", len(row), len(want))
 	}
@@ -207,6 +214,12 @@ func TestCompactNodeStatusRow(t *testing.T) {
 		if got := row[i].(string); got != expected {
 			t.Errorf("compactNodeStatusRow()[%d] = %q, want %q", i, got, expected)
 		}
+	}
+}
+
+func TestAnnotatedNodeLabelShowsNodeCheckAsyncWithoutPathAnnotation(t *testing.T) {
+	if got := annotatedNodeLabel(control.NodeStatus{Name: "node-a", CheckAsync: true}, 0); got != "node-a [async]" {
+		t.Fatalf("annotated node label = %q, want %q", got, "node-a [async]")
 	}
 }
 
@@ -221,6 +234,20 @@ func TestCompactNodeStatePrioritizesSessionFailure(t *testing.T) {
 	}
 	if got := compactNodeState(status); got != "disconnected" {
 		t.Fatalf("compact state = %q, want disconnected", got)
+	}
+}
+
+func TestCompactNodeStateColorsConnectingUnhealthyRed(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = true
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	status := control.NodeStatus{
+		Session: &control.SessionStatus{State: control.SessionConnecting},
+		Health:  &control.NodeHealthStatus{State: control.NodeHealthUnhealthy},
+	}
+	if got := compactNodeState(status); !strings.Contains(got, "\x1b[31m") {
+		t.Fatalf("compact state = %q, want red connecting state", got)
 	}
 }
 
@@ -251,6 +278,7 @@ func TestNodeStatusRowHighlightsAvg10Failure(t *testing.T) {
 		ansi string
 	}{
 		{cell: 0, ansi: "\x1b[36m"},
+		{cell: 4, ansi: "\x1b[32m"},
 		{cell: 7, ansi: "\x1b[91;1m"},
 	}
 	for _, tt := range tests {
@@ -387,6 +415,26 @@ func TestColorHealth(t *testing.T) {
 	for _, tt := range tests {
 		if got := colorHealth(tt.health); !strings.Contains(got, tt.ansi) {
 			t.Errorf("colorHealth(%q) = %q, want ANSI prefix %q", tt.health, got, tt.ansi)
+		}
+	}
+}
+
+func TestColorNodeHealth(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = true
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	tests := []struct {
+		health control.NodeHealthState
+		ansi   string
+	}{
+		{health: control.NodeHealthHealthy, ansi: "\x1b[32m"},
+		{health: control.NodeHealthUnknown, ansi: "\x1b[33m"},
+		{health: control.NodeHealthUnhealthy, ansi: "\x1b[31m"},
+	}
+	for _, tt := range tests {
+		if got := colorNodeHealth(tt.health); !strings.Contains(got, tt.ansi) {
+			t.Errorf("colorNodeHealth(%q) = %q, want ANSI prefix %q", tt.health, got, tt.ansi)
 		}
 	}
 }

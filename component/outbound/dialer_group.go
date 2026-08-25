@@ -145,6 +145,15 @@ func (g *DialerGroup) DisplayPolicy() string {
 	return ""
 }
 
+// DialerAnnotation returns the immutable selection annotation for a dialer.
+func (g *DialerGroup) DialerAnnotation(d *dialer.Dialer) (dialer.Annotation, bool) {
+	annotation, ok := g.dialerToAnnotation[d]
+	if !ok || annotation == nil {
+		return dialer.Annotation{}, false
+	}
+	return *annotation, true
+}
+
 func (g *DialerGroup) ChecksConnectivity() bool {
 	return g.Kind == GroupKindSelector
 }

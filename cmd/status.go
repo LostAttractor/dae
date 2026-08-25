@@ -191,6 +191,21 @@ func colorHealth(health control.HealthStatus) string {
 	}
 }
 
+func colorNodeHealth(health control.NodeHealthState) string {
+	switch health {
+	case "":
+		return "-"
+	case control.NodeHealthHealthy:
+		return colorize(string(health), text.FgGreen)
+	case control.NodeHealthUnknown:
+		return colorize(string(health), text.FgYellow)
+	case control.NodeHealthUnhealthy:
+		return colorize(string(health), text.FgRed)
+	default:
+		panic(fmt.Sprintf("invalid node health status %q", health))
+	}
+}
+
 func colorSelected(s string, selected bool) string {
 	if !selected {
 		return s
@@ -379,6 +394,37 @@ func nodeLabel(status control.NodeStatus, index int) string {
 	return fmt.Sprintf("#%d", index)
 }
 
+func annotatedNodeLabel(status control.NodeStatus, index int) string {
+	label := nodeLabel(status, index)
+	if status.Annotation == nil && !status.CheckAsync {
+		return label
+	}
+	parts := make([]string, 0, 3)
+	if status.Annotation != nil {
+		if status.Annotation.Priority != nil {
+			priority := fmt.Sprintf("p=%d", *status.Annotation.Priority)
+			if status.Annotation.PriorityConditional {
+				priority += "*"
+			}
+			parts = append(parts, priority)
+		}
+		if status.Annotation.AddLatency != "" {
+			latency := status.Annotation.AddLatency
+			if !strings.HasPrefix(latency, "-") {
+				latency = "+" + latency
+			}
+			parts = append(parts, latency)
+		}
+	}
+	if status.CheckAsync {
+		parts = append(parts, "async")
+	}
+	if len(parts) == 0 {
+		return label
+	}
+	return label + " [" + strings.Join(parts, ",") + "]"
+}
+
 func networkStatusRow(status control.NetworkStatus, nodes []control.NodeStatus) table.Row {
 	selected := "-"
 	if status.Selected != nil {
@@ -407,7 +453,7 @@ func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control
 	failure := "-"
 	lastCheck := "-"
 	if status.Health != nil {
-		healthState = string(status.Health.State)
+		healthState = colorNodeHealth(status.Health.State)
 		upRatio = colorRatio(status.Health.UpRatio, formatAvailability(status.Health.UpRatio, status.Health.ChecksFailed, status.Health.ChecksTotal))
 		upRatio24h = colorRatio(status.Health.UpRatio24h, formatAvailability(status.Health.UpRatio24h, status.Health.ChecksFailed24h, status.Health.ChecksTotal24h))
 		healthySince = formatAgoWithChecks(status.Health.HealthySince, status.Health.ChecksSinceHealthy)
@@ -415,7 +461,7 @@ func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control
 		lastCheck = formatAgo(status.Health.LastCheckAt)
 	}
 	return table.Row{
-		colorSelected(nodeLabel(status, index), selected),
+		colorSelected(annotatedNodeLabel(status, index), selected),
 		emptyDash(status.Subtag),
 		emptyDash(status.Protocol),
 		session,
@@ -447,6 +493,9 @@ func nodeLatency(status control.NodeStatus) string {
 
 func compactNodeState(status control.NodeStatus) string {
 	if status.Session != nil && status.Session.State != control.SessionConnected {
+		if status.Health != nil && status.Health.State == control.NodeHealthUnhealthy {
+			return colorize(string(status.Session.State), text.FgRed)
+		}
 		switch status.Session.State {
 		case control.SessionConnecting:
 			return colorize(string(status.Session.State), text.FgYellow)
@@ -455,14 +504,7 @@ func compactNodeState(status control.NodeStatus) string {
 		}
 	}
 	if status.Health != nil {
-		switch status.Health.State {
-		case control.NodeHealthHealthy:
-			return colorize(string(status.Health.State), text.FgGreen)
-		case control.NodeHealthUnknown:
-			return colorize(string(status.Health.State), text.FgYellow)
-		default:
-			return colorize(string(status.Health.State), text.FgRed)
-		}
+		return colorNodeHealth(status.Health.State)
 	}
 	if status.Session != nil {
 		return colorize(string(status.Session.State), text.FgGreen)
@@ -481,7 +523,7 @@ func compactUpRatios(status control.NodeStatus) string {
 func compactNodeStatusRow(status control.NodeStatus, index int, groupNetworks []control.NetworkStatus) table.Row {
 	selectedNetworks, selected := selectedNetworks(index, groupNetworks)
 	return table.Row{
-		colorSelected(nodeLabel(status, index), selected),
+		colorSelected(annotatedNodeLabel(status, index), selected),
 		emptyDash(status.Protocol),
 		compactNodeState(status),
 		networkSupport(status.Networks),
