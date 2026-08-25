@@ -22,7 +22,7 @@ type Global struct {
 	TproxyPort            uint16                 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect     bool                   `mapstructure:"tproxy_port_protect" default:"true"`
 	SoMarkFromDae         uint32                 `mapstructure:"so_mark_from_dae"`
-	SoMarkFromDaeSet      bool                   `mapstructure:"_"`
+	SoMarkFromDaeSet      bool                   `mapstructure:"_" outline:"-"`
 	LogLevel              string                 `mapstructure:"log_level" default:"info"`
 	UdpCheckDns           []string               `mapstructure:"udp_check_dns" default:"dns.google:53,8.8.8.8,2001:4860:4860::8888"`
 	CheckInterval         time.Duration          `mapstructure:"check_interval" default:"3m"`
@@ -64,12 +64,18 @@ type Utls struct {
 
 type FunctionOrString interface{}
 
+// QuotedString preserves a routing target's explicit quoting so names using
+// the legacy must_ prefix can be resolved literally.
+type QuotedString string
+
 // FunctionOrStringToFunction preserves the original conversion API. New code
 // should use ParseFunctionOrString when the input may be untrusted.
 func FunctionOrStringToFunction(fs FunctionOrString) *config_parser.Function {
 	switch fs := fs.(type) {
 	case string:
 		return &config_parser.Function{Name: fs}
+	case QuotedString:
+		return &config_parser.Function{Name: string(fs), Quoted: true}
 	case *config_parser.Function:
 		return fs
 	case []*config_parser.Function:
@@ -86,6 +92,8 @@ func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error)
 	switch fs := fs.(type) {
 	case string:
 		return &config_parser.Function{Name: fs}, nil
+	case QuotedString:
+		return &config_parser.Function{Name: string(fs), Quoted: true}, nil
 	case *config_parser.Function:
 		if fs == nil {
 			return nil, fmt.Errorf("function must not be nil")
@@ -110,8 +118,12 @@ type FunctionListOrString interface{}
 // New code should use ParseFunctionListOrString for checked conversion.
 func FunctionListOrStringToFunctionList(fs FunctionListOrString) []*config_parser.Function {
 	switch fs := fs.(type) {
+	case nil:
+		return nil
 	case string:
 		return []*config_parser.Function{{Name: fs}}
+	case QuotedString:
+		return []*config_parser.Function{{Name: string(fs), Quoted: true}}
 	case *config_parser.Function:
 		return []*config_parser.Function{fs}
 	case []*config_parser.Function:
@@ -125,6 +137,8 @@ func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Functi
 	switch fs := fs.(type) {
 	case string:
 		return []*config_parser.Function{{Name: fs}}, nil
+	case QuotedString:
+		return []*config_parser.Function{{Name: string(fs), Quoted: true}}, nil
 	case *config_parser.Function:
 		if fs == nil {
 			return nil, fmt.Errorf("function must not be nil")
@@ -147,11 +161,12 @@ func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Functi
 
 type Group struct {
 	Name string `mapstructure:"_"`
+	// Present records explicitly configured fields whose zero values would
+	// otherwise be indistinguishable from omission.
+	Present map[string]bool `mapstructure:"_" json:"-" outline:"-"`
 
-	Filter           [][]*config_parser.Function `mapstructure:"filter" repeatable:""`
-	FilterAnnotation [][]*config_parser.Param    `mapstructure:"_"`
-	Policy           FunctionListOrString        `mapstructure:"policy" required:""`
-	NextHop          string                      `mapstructure:"next_hop"`
+	Paths  []*config_parser.ProxyPath `mapstructure:"path"`
+	Policy FunctionListOrString       `mapstructure:"policy"`
 
 	UdpCheckDns      []string      `mapstructure:"udp_check_dns"`
 	CheckInterval    time.Duration `mapstructure:"check_interval"`

@@ -181,7 +181,7 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	return NewDialer(netproxy.NewRuntime(transport), &GlobalOption{}, &Property{Property: D.Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
-	}}, true)
+	}}, InitialCheckBlocking)
 }
 
 func TestScopedDialersSerializeSharedTransportConnect(t *testing.T) {
@@ -198,6 +198,12 @@ func TestScopedDialersSerializeSharedTransportConnect(t *testing.T) {
 	})
 	if base.TransportID() != clone.TransportID() {
 		t.Fatal("scoped dialers do not share their transport runtime")
+	}
+	if base.StatsKey() == clone.StatsKey() || base.StatsID() == clone.StatsID() {
+		t.Fatal("scoped dialers share a stats identity")
+	}
+	if clone.InitialCheckMode() != base.InitialCheckMode() {
+		t.Fatal("scoped dialer changed the initial check mode")
 	}
 
 	baseResult := make(chan error, 1)

@@ -67,7 +67,7 @@ type outlineExporter struct {
 func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritSource bool) (outlines []*OutlineElem) {
 	for i := 0; i < t.NumField(); i++ {
 		section := t.Field(i)
-		if section.Name == "SoMarkFromDaeSet" {
+		if section.Tag.Get("outline") == "-" {
 			continue
 		}
 		// Parse desc.

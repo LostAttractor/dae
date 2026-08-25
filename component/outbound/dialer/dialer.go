@@ -38,6 +38,16 @@ type groupState struct {
 	timeoutPenalty time.Duration
 }
 
+// InitialCheckMode controls whether a dialer is checked and whether startup
+// waits for its first connectivity result.
+type InitialCheckMode uint8
+
+const (
+	InitialCheckDisabled InitialCheckMode = iota
+	InitialCheckBlocking
+	InitialCheckAsync
+)
+
 type Dialer struct {
 	*GlobalOption
 	netproxy.Dialer
@@ -46,7 +56,7 @@ type Dialer struct {
 	statsID  string
 	runtime  *transportRuntime
 
-	checkEnabled bool
+	initialCheck InitialCheckMode
 	alive        bool
 	healthSeq    uint64
 	lastLatency  time.Duration
@@ -63,7 +73,6 @@ type Dialer struct {
 	cancel  context.CancelFunc
 
 	checkActivated bool
-	checkAsync     bool
 	checkWG        sync.WaitGroup
 	closeOnce      sync.Once
 }
@@ -130,6 +139,15 @@ type Property struct {
 	// StatsIdentity distinguishes independently constructed entries whose
 	// parsed canonical links are equal, such as aliases and duplicates.
 	StatsIdentity string
+	Hops          []Hop
+}
+
+type Hop struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Subtag   string `json:"subtag"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
 }
 
 func NewGlobalOption(global *config.Global) *GlobalOption {
@@ -152,25 +170,32 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 	}
 }
 
-func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, checkEnabled bool) *Dialer {
-	return newDialer(newTransportRuntime(runtime), option, property, checkEnabled, "")
+func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode) *Dialer {
+	return newDialer(newTransportRuntime(runtime), option, property, initialCheck, "")
 }
 
-func newDialer(runtime *transportRuntime, option *GlobalOption, property *Property, checkEnabled bool, statsScope string) *Dialer {
+func NewDialerRuntimeWithStatsScope(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
+	return newDialer(newTransportRuntime(runtime), option, property, initialCheck, statsScope)
+}
+
+func newDialer(runtime *transportRuntime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
+	if initialCheck > InitialCheckAsync {
+		panic(fmt.Sprintf("invalid initial check mode %d", initialCheck))
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption: option,
 		Dialer:       runtime.owned.Dialer(),
 		Property:     property,
 		runtime:      runtime,
-		checkEnabled: checkEnabled,
-		alive:        !checkEnabled,
+		initialCheck: initialCheck,
+		alive:        initialCheck == InitialCheckDisabled,
 		groups:       make(map[DialerGroup]*groupState),
 		checkCh:      make(chan struct{}, 1),
 		ctx:          ctx,
 		cancel:       cancel,
 	}
-	if !checkEnabled {
+	if initialCheck == InitialCheckDisabled {
 		for i := range d.support {
 			d.support[i] = NetworkSupportConfirmed
 			d.modeAlive[i] = true
@@ -180,7 +205,7 @@ func newDialer(runtime *transportRuntime, option *GlobalOption, property *Proper
 	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
-	if !checkEnabled {
+	if initialCheck == InitialCheckDisabled {
 		stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, true, false)
 	}
 	runtime.register(d)
@@ -220,7 +245,7 @@ func (d *Dialer) StatsKey() string { return d.statsKey }
 func (d *Dialer) StatsID() string { return d.statsID }
 
 func (d *Dialer) ChecksConnectivity() bool {
-	return d.checkEnabled
+	return d.initialCheck != InitialCheckDisabled
 }
 
 // LatencyStats returns the latency samples of this dialer in the given
@@ -283,27 +308,12 @@ func (d *Dialer) RuntimeStatus(g DialerGroup) RuntimeSnapshot {
 	return snapshot
 }
 
-// SetCheckAsync marks the dialer's initial connectivity check to run in
-// background without blocking startup. The dialer stays unavailable until
-// the first successful check.
-func (d *Dialer) SetCheckAsync(checkAsync bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.checkAsync = checkAsync
-}
-
-// CheckAsync reports whether the dialer's connectivity check was marked to
-// run asynchronously (via the "check_async" filter annotation).
-func (d *Dialer) CheckAsync() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.checkAsync
-}
+func (d *Dialer) InitialCheckMode() InitialCheckMode { return d.initialCheck }
 
 // CloneForStatsScope gives group-specific health state a distinct identity
 // while sharing the data-plane transport and Session lifecycle.
 func (d *Dialer) CloneForStatsScope(scope string) *Dialer {
-	return newDialer(d.runtime, d.GlobalOption, d.Property, d.checkEnabled, scope)
+	return newDialer(d.runtime, d.GlobalOption, d.Property, d.initialCheck, scope)
 }
 
 // Close cancels the connectivity check and waits for its goroutine to exit.

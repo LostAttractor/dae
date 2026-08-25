@@ -185,6 +185,7 @@ subscription {
 # Nodes defined here will be merged as a part of the global node pool.
 node {
     # Add your node links here.
+    # Each entry must contain exactly one share link. Build proxy chains with path expressions below.
     # Support socks5, http, https, ss, ssr, vmess, vless, trojan, tuic, juicity, hysteria2, etc.
     # Full support list: https://github.com/daeuniverse/dae/blob/main/docs/en/proxy-protocols.md
     'socks5://localhost:1080'
@@ -193,7 +194,6 @@ node {
     #tcp_multiplexed_ss: 'ss://LINK' [multiplex: smux-udp-passthrough]
     node1: 'vmess://LINK'
     node2: 'vless://LINK'
-    chains: 'tuic://LINK -> vmess://LINK'
     hysteria2: 'hysteria2://password@server-ip:port/?sni=domain'
 }
 
@@ -283,6 +283,12 @@ group {
         policy: min_moving_avg
     }
 
+    entry_path {
+        # A group without policy is a reusable path. When routing references it directly,
+        # it must expand to exactly one complete path.
+        filter: name(node1)
+    }
+
     group2 {
         # Filter nodes from the global node pool defined by the subscription and node section above.
         #filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
@@ -294,14 +300,14 @@ group {
 
         # Filter nodes and give a fixed latency offset to archive latency-based failover.
         # In this example, there is bigger possibility to choose US node even if original latency of US node is higher.
-        filter: name(HK_node)
-        filter: name(US_node) [add_latency: -500ms]
+        group(entry_path) -> filter: name(HK_node)
+        group(entry_path) -> filter: name(US_node) [add_latency: -500ms]
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
 
-        # Chain every node in this group with the given node as the next hop (dial node -> next_hop).
-        #next_hop: node1
+        # group(entry_path) expands every path declared by the policyless group.
+        # Physical order: client -> entry_path -> selected group2 node -> destination.
     }
 
     steam {
@@ -324,6 +330,9 @@ group {
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
     ### Preset rules.
+
+    # Routing may also reference a uniquely named node directly. Quote names containing spaces or non-ASCII text.
+    #domain(full: special.example) -> 'Hong Kong 01'(skip_while_noalive)
 
     # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to
     # WAN.

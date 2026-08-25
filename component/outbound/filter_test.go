@@ -25,12 +25,6 @@ import (
 	"github.com/daeuniverse/outbound/transport/smux"
 )
 
-type testNodeDescriptor func(netproxy.Dialer) (netproxy.Dialer, error)
-
-func (f testNodeDescriptor) Dialer(_ *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
-	return f(parent)
-}
-
 type closeableTestDialer struct{ closed atomic.Bool }
 
 func (*closeableTestDialer) Alive() bool    { return true }
@@ -53,11 +47,6 @@ func TestNewDialerSetFromLinksParsesSIP002UserinfoForms(t *testing.T) {
 		User:   url.UserPassword("2022-blake3-aes-256-gcm", "RCF/0OOYmo6crue3LwlEyD8izLAbuUuyPic/vasJH/o="),
 		Host:   "127.0.0.1:443",
 	}
-	secondShadowsocks2022 := url.URL{
-		Scheme: "ss",
-		User:   url.UserPassword("2022-blake3-aes-128-gcm", "c2Vjb25kLXBhc3N3b3Jk"),
-		Host:   "127.0.0.2:8443",
-	}
 	tests := []struct {
 		name        string
 		link        string
@@ -69,12 +58,11 @@ func TestNewDialerSetFromLinksParsesSIP002UserinfoForms(t *testing.T) {
 		{name: "legacy Base64URL", link: "ss://" + legacyUserinfo + "@127.0.0.1:443", credentials: "aes-256-gcm:legacy-password", address: "127.0.0.1:443", dialers: 1},
 		{name: "AEAD 2022 percent-escaped", link: shadowsocks2022.String(), credentials: "2022-blake3-aes-256-gcm:RCF/0OOYmo6crue3LwlEyD8izLAbuUuyPic/vasJH/o=", address: "127.0.0.1:443", dialers: 1},
 		{name: "named AEAD 2022", link: "display-name:" + shadowsocks2022.String(), credentials: "2022-blake3-aes-256-gcm:RCF/0OOYmo6crue3LwlEyD8izLAbuUuyPic/vasJH/o=", address: "127.0.0.1:443", displayName: "display-name", dialers: 1},
-		{name: "chained AEAD 2022", link: shadowsocks2022.String() + " -> " + secondShadowsocks2022.String(), credentials: "2022-blake3-aes-128-gcm:c2Vjb25kLXBhc3N3b3Jk", address: "127.0.0.2:8443", dialers: 2},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{{Link: tt.link, SubscriptionTag: "test"}})
+			set, err := NewDialerSet([]NodeDescriptor{{Link: tt.link, SubscriptionTag: "test"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,50 +97,19 @@ func TestNewDialerSetFromLinksParsesSIP002UserinfoForms(t *testing.T) {
 	}
 }
 
-func TestDuplicateAndAliasNodesHaveDistinctStatsIdentity(t *testing.T) {
-	userinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:password"))
-	link := "ss://" + userinfo + "@127.0.0.1:443"
-	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{
-		{Link: "alias-a:" + link, SubscriptionTag: "test", SourceIndex: 0},
-		{Link: "alias-b:" + link, SubscriptionTag: "test", SourceIndex: 1},
-		{Link: "alias-b:" + link, SubscriptionTag: "test", SourceIndex: 2},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = set.Close() })
-
-	dialers, _, err := set.FilterAndAnnotate(nil, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(dialers) != 3 {
-		t.Fatalf("dialers = %d, want 3", len(dialers))
-	}
-	keys := make(map[string]struct{}, len(dialers))
-	ids := make(map[string]struct{}, len(dialers))
-	for _, d := range dialers {
-		keys[d.StatsKey()] = struct{}{}
-		ids[d.StatsID()] = struct{}{}
-	}
-	if len(keys) != len(dialers) || len(ids) != len(dialers) {
-		t.Fatalf("stats identities were merged: keys=%d ids=%d dialers=%d", len(keys), len(ids), len(dialers))
-	}
-}
-
 func TestNodeStatsIdentityIsStableAcrossReordering(t *testing.T) {
 	nodes := []NodeDescriptor{
 		{Name: "alias-a", Link: testShadowsocksLink, Options: config.NodeOptions{Multiplex: config.MultiplexModeOff}},
 		{Name: "alias-b", Link: testShadowsocksLink, Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux}},
 	}
 	identities := func(nodes []NodeDescriptor) map[string]string {
-		set, err := NewDialerSet(&dialer.GlobalOption{}, nil, nodes)
+		set, err := NewDialerSet(nodes)
 		if err != nil {
 			t.Fatal(err)
 		}
 		got := make(map[string]string, len(set.nodeInfos))
 		for _, node := range set.nodeInfos {
-			got[node.Property.Name] = node.Property.StatsIdentity
+			got[node.Property.Name] = NodePath(node).Identity()
 		}
 		return got
 	}
@@ -200,31 +157,13 @@ func TestNodeValidatorHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestNodeDialerClosesPartiallyConstructedTransport(t *testing.T) {
-	transport := new(closeableTestDialer)
-	buildErr := errors.New("construction failed")
-	node := &NodeInfo{
-		Property: &dialer.Property{},
-		Dialers: []D.Dialer{
-			testNodeDescriptor(func(netproxy.Dialer) (netproxy.Dialer, error) { return transport, nil }),
-			testNodeDescriptor(func(netproxy.Dialer) (netproxy.Dialer, error) { return nil, buildErr }),
-		},
-	}
-	if _, err := node.createDialerIfNeeded(&dialer.GlobalOption{}, nil); !errors.Is(err, buildErr) {
-		t.Fatalf("createDialerIfNeeded error = %v, want %v", err, buildErr)
-	}
-	if !transport.closed.Load() {
-		t.Fatal("partially constructed transport was not closed")
-	}
-}
-
 func TestCloseValidatedDialerRetiresTransport(t *testing.T) {
 	transport := new(closeableTestDialer)
 	created := dialer.NewDialer(
 		netproxy.NewRuntime(transport),
 		&dialer.GlobalOption{},
 		&dialer.Property{},
-		true,
+		dialer.InitialCheckBlocking,
 	)
 	if err := closeValidatedDialer(created); err != nil {
 		t.Fatal(err)
@@ -298,28 +237,53 @@ type recordingBuilder struct {
 	order *[]string
 }
 
+type closeTrackingDialer struct {
+	netproxy.Dialer
+	closed *atomic.Int32
+}
+
+func (d *closeTrackingDialer) Close() error {
+	d.closed.Add(1)
+	return nil
+}
+
+type closeTrackingBuilder struct {
+	closed *atomic.Int32
+}
+
+func (b *closeTrackingBuilder) Dialer(_ *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
+	return &closeTrackingDialer{Dialer: parent, closed: b.closed}, nil
+}
+
+type failingBuilder struct{}
+
+func (*failingBuilder) Dialer(_ *D.ExtraOption, _ netproxy.Dialer) (netproxy.Dialer, error) {
+	return nil, errors.New("build failed")
+}
+
 func (b *recordingBuilder) Dialer(_ *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
 	*b.order = append(*b.order, b.name)
 	return parent, nil
 }
 
-func TestCreateNextHopDialerBuildsNextHopBeforeSource(t *testing.T) {
+func TestBuildPathUsesPhysicalHopOrder(t *testing.T) {
 	var order []string
-	source := &NodeInfo{
-		Link:     "source://node",
-		Property: &dialer.Property{Property: D.Property{Name: "source", Link: "source://node"}},
-		Dialers:  []D.Dialer{&recordingBuilder{name: "source", order: &order}},
+	entry := &NodeInfo{
+		Link:     "entry://node",
+		Property: &dialer.Property{Property: D.Property{Name: "entry", Link: "entry://node"}},
+		Dialers:  []D.Dialer{&recordingBuilder{name: "entry", order: &order}},
 	}
-	nextHop := &NodeInfo{
-		Link:     "next://hop",
-		Property: &dialer.Property{Property: D.Property{Name: "next", Link: "next://hop"}},
-		Dialers:  []D.Dialer{&recordingBuilder{name: "next", order: &order}},
+	exit := &NodeInfo{
+		Link:     "exit://node",
+		Property: &dialer.Property{Property: D.Property{Name: "exit", Link: "exit://node"}},
+		Dialers:  []D.Dialer{&recordingBuilder{name: "exit", order: &order}},
 	}
-	set := &DialerSet{
-		option:       &dialer.GlobalOption{},
-		nodeInfosMap: make(map[dialer.Property]*NodeInfo),
-	}
-	d, err := set.createNextHopDialer(source, nextHop)
+	set := new(DialerSet)
+	option := new(dialer.GlobalOption)
+	d, err := set.BuildPath(&PathSpec{
+		Nodes:      []*NodeInfo{entry, exit},
+		Annotation: &dialer.Annotation{},
+	}, option, t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,75 +291,171 @@ func TestCreateNextHopDialerBuildsNextHopBeforeSource(t *testing.T) {
 		_ = d.Close()
 		d.RetireTransport()
 	})
-	if len(order) != 2 || order[0] != "next" || order[1] != "source" {
-		t.Fatalf("builder order = %v, want [next source]", order)
+	if len(order) != 2 || order[0] != "entry" || order[1] != "exit" {
+		t.Fatalf("builder order = %v, want [entry exit]", order)
+	}
+	if d.Name != "entry -> exit" {
+		t.Fatalf("path name = %q, want %q", d.Name, "entry -> exit")
 	}
 }
 
-func TestFilterAndAnnotateBuildsOnlyComposedNextHop(t *testing.T) {
-	var order []string
-	source := &NodeInfo{
-		Link:     "source://node",
-		Property: &dialer.Property{Property: D.Property{Name: "source", Link: "source://node"}},
-		Dialers:  []D.Dialer{&recordingBuilder{name: "source", order: &order}},
+func TestBuildPathIdentityIncludesRuntimeOptions(t *testing.T) {
+	node := &NodeInfo{
+		Link:     "test://node",
+		Property: &dialer.Property{Property: D.Property{Name: "node", Link: "test://node"}},
 	}
-	nextHop := &NodeInfo{
-		Link:     "next://hop",
-		Property: &dialer.Property{Property: D.Property{Name: "next", Link: "next://hop"}},
-		Dialers:  []D.Dialer{&recordingBuilder{name: "next", order: &order}},
-	}
-	set := &DialerSet{
-		option:       &dialer.GlobalOption{},
-		nodeInfos:    []*NodeInfo{source, nextHop},
-		nodeInfosMap: map[dialer.Property]*NodeInfo{*source.Property: source, *nextHop.Property: nextHop},
-	}
-	t.Cleanup(func() { _ = set.Close() })
-
-	filters := [][]*config_parser.Function{{{
-		Name:   FilterInput_Name,
-		Params: []*config_parser.Param{{Val: "source"}},
-	}}}
-	dialers, _, err := set.FilterAndAnnotate(filters, [][]*config_parser.Param{nil}, "next")
+	set := &DialerSet{}
+	firstOption := &dialer.GlobalOption{}
+	secondOption := &dialer.GlobalOption{}
+	secondOption.AllowInsecure = true
+	first, err := set.BuildPath(NodePath(node), firstOption, t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dialers) != 1 {
-		t.Fatalf("created %d dialers, want 1", len(dialers))
+	second, err := set.BuildPath(NodePath(node), secondOption, t.Name())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if source.CreatedDialer != nil {
-		t.Fatal("created unused standalone source runtime")
+	t.Cleanup(func() {
+		_ = first.Close()
+		first.RetireTransport()
+		_ = second.Close()
+		second.RetireTransport()
+	})
+	if first.StatsKey() == second.StatsKey() {
+		t.Fatalf("runtime option change retained stats identity %q", first.StatsKey())
 	}
-	if len(order) != 2 || order[0] != "next" || order[1] != "source" {
-		t.Fatalf("builder order = %v, want [next source]", order)
+}
+
+func TestBuildPathCreatesOwnerScopedRuntime(t *testing.T) {
+	node := &NodeInfo{
+		Link:     "test://node",
+		Property: &dialer.Property{Property: D.Property{Name: "node", Link: "test://node"}},
+	}
+	set := new(DialerSet)
+	option := new(dialer.GlobalOption)
+	first, err := set.BuildPath(NodePath(node), option, "first-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := set.BuildPath(NodePath(node), option, "second-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = first.Close()
+		first.RetireTransport()
+		_ = second.Close()
+		second.RetireTransport()
+	})
+	if first.TransportID() == second.TransportID() {
+		t.Fatal("different owners shared one runtime")
+	}
+	if first.StatsKey() == second.StatsKey() {
+		t.Fatal("different owners shared one stats identity")
+	}
+}
+
+func TestBuildPathClosesPartialRuntimeOnFailure(t *testing.T) {
+	var closed atomic.Int32
+	node := &NodeInfo{
+		Link:     "test://node",
+		Property: &dialer.Property{Property: D.Property{Name: "node", Link: "test://node"}},
+		Dialers: []D.Dialer{
+			&closeTrackingBuilder{closed: &closed},
+			new(failingBuilder),
+		},
+	}
+	set := &DialerSet{}
+	if _, err := set.BuildPath(NodePath(node), &dialer.GlobalOption{}, t.Name()); err == nil {
+		t.Fatal("BuildPath succeeded with a failing builder")
+	}
+	if got := closed.Load(); got != 1 {
+		t.Fatalf("partial runtime close count = %d, want 1", got)
+	}
+}
+
+func TestNewDialerSetLegacyChainErrorPolicy(t *testing.T) {
+	for _, chain := range []string{"first://node -> second://node", "first://node->second://node"} {
+		if _, err := NewDialerSet([]NodeDescriptor{{Link: chain, Required: true}}); err == nil || !strings.Contains(err.Error(), "legacy share-link proxy chains") {
+			t.Fatalf("local chain %q error = %v", chain, err)
+		}
+	}
+	chain := "first://node -> second://node"
+	set, err := NewDialerSet([]NodeDescriptor{{Link: chain}})
+	if err != nil {
+		t.Fatalf("subscription chain returned fatal error: %v", err)
+	}
+	if len(set.nodeInfos) != 0 {
+		t.Fatalf("subscription chain produced %d nodes", len(set.nodeInfos))
+	}
+}
+
+func TestNewDialerSetRejectsReservedNodeNames(t *testing.T) {
+	if _, err := NewDialerSet([]NodeDescriptor{{
+		Name: "direct", Link: testShadowsocksLink, Required: true,
+	}}); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("local reserved-name error = %v", err)
+	}
+
+	set, err := NewDialerSet([]NodeDescriptor{{Link: testShadowsocksLink + "#block"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.nodeInfos) != 0 {
+		t.Fatalf("reserved subscription node was retained: %d nodes", len(set.nodeInfos))
+	}
+}
+
+func TestPathBuildErrorRetainsNodeRequirement(t *testing.T) {
+	node := &NodeInfo{
+		Property: &dialer.Property{Property: D.Property{Name: "optional"}},
+		Dialers:  []D.Dialer{new(failingBuilder)},
+	}
+	_, err := new(DialerSet).BuildPath(NodePath(node), &dialer.GlobalOption{}, t.Name())
+	var buildErr *PathBuildError
+	if !errors.As(err, &buildErr) || buildErr.Node != node || buildErr.Node.Required {
+		t.Fatalf("path build error = %#v, want optional node", err)
 	}
 }
 
 const testShadowsocksLink = "ss://YWVzLTEyOC1nY206cGFzcw@proxy.example.com:443"
 
-func nodeFilter(name string, params ...*config_parser.Param) []*config_parser.Function {
+func descriptorFilter(name string, params ...*config_parser.Param) []*config_parser.Function {
 	return []*config_parser.Function{{Name: name, Params: params}}
 }
+
+func nodeOptionBool(value bool) *bool { return &value }
 
 func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
 	nodes := []NodeDescriptor{{
 		Link:            testShadowsocksLink + "#HK-legacy",
 		SubscriptionTag: "my_sub",
-		Defaults:        config.NodeOptions{Multiplex: config.MultiplexModeOff},
+		Defaults: config.NodeOptions{
+			Multiplex:  config.MultiplexModeOff,
+			CheckAsync: nodeOptionBool(true),
+		},
 		Rules: []config.NodeOptionRule{
 			{
 				Filter: []*config_parser.Function{
 					{Name: FilterInput_Protocol, Params: []*config_parser.Param{{Val: "shadowsocks"}}},
 					{Name: FilterInput_Name, Params: []*config_parser.Param{{Key: "regex", Val: "^HK"}}},
 				},
-				Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux},
+				Options: config.NodeOptions{
+					Multiplex:  config.MultiplexModeSmux,
+					CheckAsync: nodeOptionBool(false),
+				},
 			},
 			{
-				Filter:  nodeFilter(FilterInput_Name, &config_parser.Param{Val: "HK-legacy"}),
-				Options: config.NodeOptions{Multiplex: config.MultiplexModeOff},
+				Filter: descriptorFilter(FilterInput_Name, &config_parser.Param{Val: "HK-legacy"}),
+				Options: config.NodeOptions{
+					Multiplex:  config.MultiplexModeOff,
+					CheckAsync: nodeOptionBool(true),
+				},
 			},
 		},
 	}}
-	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, nodes)
+	set, err := NewDialerSet(nodes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,16 +469,25 @@ func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
 	if !strings.Contains(node.Property.Link, "multiplex=off") {
 		t.Fatalf("node identity does not include effective options: %q", node.Property.Link)
 	}
+	if !node.CheckAsync || strings.Contains(node.Property.Link, "check_async") {
+		t.Fatalf("effective check_async or identity = %+v, %q", node.CheckAsync, node.Property.Link)
+	}
 }
 
 func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
-	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{{
+	set, err := NewDialerSet([]NodeDescriptor{{
 		Link: testShadowsocksLink + "#HK",
 		Rules: []config.NodeOptionRule{{
-			Filter:  nodeFilter(FilterInput_Name, &config_parser.Param{Val: "HK"}),
-			Options: config.NodeOptions{Multiplex: config.MultiplexModeOff},
+			Filter: descriptorFilter(FilterInput_Name, &config_parser.Param{Val: "HK"}),
+			Options: config.NodeOptions{
+				Multiplex:  config.MultiplexModeOff,
+				CheckAsync: nodeOptionBool(true),
+			},
 		}},
-		Options: config.NodeOptions{Multiplex: config.MultiplexModeSmuxUDPPassthrough},
+		Options: config.NodeOptions{
+			Multiplex:  config.MultiplexModeSmuxUDPPassthrough,
+			CheckAsync: nodeOptionBool(false),
+		},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -437,41 +506,173 @@ func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
 	if !smuxConfig.PassThroughUDP {
 		t.Fatal("smux UDP passthrough is disabled")
 	}
-}
-
-func TestMultiplexIsInsertedAfterChainEndpoint(t *testing.T) {
-	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{{
-		Link:    testShadowsocksLink + " -> socks5://localhost:1080",
-		Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux},
-	}})
+	if node.CheckAsync {
+		t.Fatal("inline check_async=false did not override the subscription rule")
+	}
+	d, err := set.BuildPath(NodePath(node), new(dialer.GlobalOption), t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	builders := set.nodeInfos[0].Dialers
-	if len(builders) != 3 {
-		t.Fatalf("dialer layers = %d, want 3", len(builders))
+	t.Cleanup(func() {
+		_ = d.Close()
+		d.RetireTransport()
+	})
+	if got, want := d.Protocol, "shadowsocks(smux/udp-pass)"; got != want {
+		t.Fatalf("path protocol = %q, want %q", got, want)
 	}
-	smuxConfig, ok := builders[1].(*smux.SmuxConfig)
-	if !ok {
-		t.Fatalf("second dialer layer = %T, want endpoint smux", builders[1])
+	if d.InitialCheckMode() == dialer.InitialCheckAsync {
+		t.Fatal("overridden check_async was applied to the built path")
 	}
-	if smuxConfig.PassThroughUDP {
-		t.Fatal("plain smux unexpectedly enables UDP passthrough")
+}
+
+func TestBuildPathEnablesCheckAsyncWhenAnyHopRequestsIt(t *testing.T) {
+	set, err := NewDialerSet([]NodeDescriptor{
+		{Name: "entry", Link: testShadowsocksLink + "#entry", Options: config.NodeOptions{CheckAsync: nodeOptionBool(true)}},
+		{Name: "exit", Link: testShadowsocksLink + "#exit", Options: config.NodeOptions{CheckAsync: nodeOptionBool(false)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := set.BuildPath(&PathSpec{Nodes: set.nodeInfos, Annotation: &dialer.Annotation{}}, new(dialer.GlobalOption), t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = d.Close()
+		d.RetireTransport()
+	})
+	if d.InitialCheckMode() != dialer.InitialCheckAsync {
+		t.Fatal("a later check_async=false hop disabled an asynchronous path")
+	}
+}
+
+func TestCheckAsyncDoesNotChangeNodeIdentity(t *testing.T) {
+	set, err := NewDialerSet([]NodeDescriptor{
+		{Name: "same", Link: testShadowsocksLink, Options: config.NodeOptions{CheckAsync: nodeOptionBool(true)}},
+		{Name: "same", Link: testShadowsocksLink, Options: config.NodeOptions{CheckAsync: nodeOptionBool(false)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, second := NodePath(set.nodeInfos[0]).Identity(), NodePath(set.nodeInfos[1]).Identity(); first != second {
+		t.Fatalf("check_async changed node identity: %q != %q", first, second)
 	}
 }
 
 func TestNodeIdentityIncludesEffectiveOptions(t *testing.T) {
-	set, err := NewDialerSet(&dialer.GlobalOption{}, nil, []NodeDescriptor{
+	set, err := NewDialerSet([]NodeDescriptor{
 		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{Multiplex: config.MultiplexModeOff}},
 		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{Multiplex: config.MultiplexModeSmux}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.nodeInfosMap) != 2 {
-		t.Fatalf("node identity collapsed distinct options: map contains %d nodes", len(set.nodeInfosMap))
+	if len(set.nodeInfos) != 2 {
+		t.Fatalf("node identity collapsed distinct options: set contains %d nodes", len(set.nodeInfos))
 	}
 	if set.nodeInfos[0].Property.Link == set.nodeInfos[1].Property.Link {
 		t.Fatalf("effective links are equal: %q", set.nodeInfos[0].Property.Link)
+	}
+	option := &dialer.GlobalOption{}
+	first, err := set.BuildPath(NodePath(set.nodeInfos[0]), option, t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := set.BuildPath(NodePath(set.nodeInfos[1]), option, t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = first.Close()
+		first.RetireTransport()
+		_ = second.Close()
+		second.RetireTransport()
+	})
+	if first.StatsKey() == second.StatsKey() {
+		t.Fatalf("effective options share stats identity %q", first.StatsKey())
+	}
+}
+
+func TestNodeIdentityIncludesConfiguredName(t *testing.T) {
+	set, err := NewDialerSet([]NodeDescriptor{
+		{Name: "alias-a", Link: testShadowsocksLink + "#same-link"},
+		{Name: "alias-b", Link: testShadowsocksLink + "#same-link"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	option := &dialer.GlobalOption{}
+	first, err := set.BuildPath(NodePath(set.nodeInfos[0]), option, t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := set.BuildPath(NodePath(set.nodeInfos[1]), option, t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = first.Close()
+		first.RetireTransport()
+		_ = second.Close()
+		second.RetireTransport()
+	})
+	if first.StatsKey() == second.StatsKey() {
+		t.Fatalf("node aliases share stats identity %q", first.StatsKey())
+	}
+	if first.Hops[0].ID == second.Hops[0].ID {
+		t.Fatalf("node aliases share hop identity %q", first.Hops[0].ID)
+	}
+}
+
+func TestGroupFilterSupportsDescriptorFields(t *testing.T) {
+	set, err := NewDialerSet([]NodeDescriptor{{Link: testShadowsocksLink + "#HK"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := set.Filter([]*config_parser.Function{
+		{Name: FilterInput_Protocol, Params: []*config_parser.Param{{Val: "shadowsocks"}}},
+		{Name: FilterInput_Link, Params: []*config_parser.Param{{Key: "keyword", Val: "proxy.example.com"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("filtered nodes = %d, want 1", len(filtered))
+	}
+}
+
+func TestGroupFilterRejectsNodeReferenceFunction(t *testing.T) {
+	set := new(DialerSet)
+	_, err := set.Filter([]*config_parser.Function{{
+		Name: "node", Params: []*config_parser.Param{{Val: "HK"}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), `unsupported filter input type: "node"`) {
+		t.Fatalf("node property filter error = %v", err)
+	}
+}
+
+func TestDescriptorRuleRejectsInvalidRegexp(t *testing.T) {
+	_, err := NewDialerSet([]NodeDescriptor{{
+		Link: testShadowsocksLink,
+		Rules: []config.NodeOptionRule{{
+			Filter:  descriptorFilter(FilterInput_Name, &config_parser.Param{Key: "regex", Val: "["}),
+			Options: config.NodeOptions{Multiplex: config.MultiplexModeOff},
+		}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "bad regexp") {
+		t.Fatalf("invalid descriptor regexp error = %v", err)
+	}
+}
+
+func TestDescriptorRuleRejectsUnsupportedFilterKey(t *testing.T) {
+	_, err := NewDialerSet([]NodeDescriptor{{
+		Link: testShadowsocksLink,
+		Rules: []config.NodeOptionRule{{
+			Filter:  descriptorFilter(FilterInput_Name, &config_parser.Param{Key: "unknown", Val: "HK"}),
+			Options: config.NodeOptions{Multiplex: config.MultiplexModeOff},
+		}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), `unsupported filter key "unknown"`) {
+		t.Fatalf("unsupported descriptor filter key error = %v", err)
 	}
 }

@@ -8,10 +8,10 @@ package config
 type Desc map[string]string
 
 var SectionSummaryDesc = Desc{
-	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
-	"node":         "Nodes defined here will be merged as a part of the global node pool.",
+	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex and check_async.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
+	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex and check_async.",
 	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md.",
-	"group":        "Node group. Groups defined here can be used as outbounds in section \"routing\".",
+	"group":        "Proxy path groups. Declare ordered stages with ->. Groups with a policy select complete paths; policyless groups can be referenced as reusable path stages.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 Notice: domain traffic split will fail if DNS traffic is not taken over by dae.
 Built-in outbound: direct, must_direct, block.
@@ -72,19 +72,20 @@ Available functions: qname, qtype, ip, upstream`,
 }
 
 var GroupDesc = Desc{
-	"filter": `Filter nodes from the global node pool defined by the "subscription" and "node" sections.
+	"path": `Each statement declares one candidate proxy path. Join stages from client to destination with ->. A stage can be "filter: expression", "node(name)", or "group(name)". Filter stages expand all matching nodes; node references require one uniquely named node; group references expand a policyless group. Multiple stages form a Cartesian product. Stage priority and add_latency annotations are accumulated across the complete path.`,
+	"filter": `Filter nodes from the global node pool defined by the "subscription" and "node" sections. A standalone filter declares a one-stage path. Use "filter: name(name)" for property matching; the strict "node(name)" reference stage instead requires one uniquely named node.
 Available functions: name, subtag, link, protocol. Not operator is supported.
 Available keys in name, link and protocol functions: keyword, regex. No key indicates full match.
 Available keys in subtag function: regex. No key indicates full match.`,
-	"policy": `Dialer selection policy. For each new connection, select a node as dialer from group by this policy.
+	"policy": `Optional dialer selection policy. It selects one complete expanded proxy path for each new connection.
+	If omitted, the group can be referenced by group(name) as a reusable path stage. It may also be used as a routing target when it expands to exactly one path.
 Available values: random, fixed, min, min_avg10, min_moving_avg.
-random: Select randomly.
-fixed: Select the fixed node. Connectivity check will be disabled.
-min: Select node by the latency of last check.
-min_avg10: Select node by the average of latencies of last 10 checks.
-min_moving_avg: Select node by the moving average of latencies of checks, which means more recent latencies have higher weight.
+random: Select a complete path randomly.
+fixed: Select the complete path at the stable expanded index.
+min: Select a path by the latency of its last check.
+min_avg10: Select a path by the average of its last 10 check latencies.
+min_moving_avg: Select a path by its moving average of check latencies, which gives recent checks more weight.
 `,
-	"next_hop":           "Specify a node name as the next hop dialer. All dialers in this group will use the specified node as their next dialer instead of direct connection.",
 	"udp_check_dns":      "Override global config.",
 	"check_interval":     "Override global config when non-zero.",
 	"check_interval_max": "Override global config when non-zero.",

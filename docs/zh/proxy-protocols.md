@@ -2,6 +2,8 @@
 
 > **Note**: dae 目前支持以下代理协议
 
+每个 `node` 条目只能包含一个分享链接。旧的节点级 `linkA -> linkB` 语法不再接受；代理路径请使用[路由配置](configuration/routing.md)中的 group path expression 组合。
+
 - [x] HTTP(S), naiveproxy
   ```
   https://[[user:]pass@]hostname:port/
@@ -88,9 +90,9 @@
 
   [AnyTLS URI Schema](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md)
 
-- [x] Proxy chain (flexible protocol)
+- [x] Group 级代理路径
 
-  [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)
+  使用 group path expression 组合不同协议；不再支持分享链接链 URI。
 
 有其他需求的，一种方式是通过外接其他代理程序来扩展协议支持。下面给出外接 naiveproxy 的例子。
 

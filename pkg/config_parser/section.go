@@ -6,65 +6,42 @@
 package config_parser
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
 
-type ItemType int
+type Item struct {
+	Value any
+}
 
-const (
-	ItemType_RoutingRule ItemType = iota
-	ItemType_Param
-	ItemType_Section
-)
+func newItem(value any) *Item {
+	return &Item{Value: value}
+}
 
-func (t ItemType) String() string {
-	switch t {
-	case ItemType_RoutingRule:
+func indent(value string) string { return "\t" + strings.ReplaceAll(value, "\n", "\n\t") }
+
+func (i *Item) TypeName() string {
+	switch i.Value.(type) {
+	case *RoutingRule:
 		return "RoutingRule"
-	case ItemType_Param:
+	case *ProxyPath:
+		return "ProxyPath"
+	case *Param:
 		return "Param"
-	case ItemType_Section:
+	case *Section:
 		return "Section"
 	default:
 		return "<Unknown>"
 	}
 }
 
-func NewRoutingRuleItem(rule *RoutingRule) *Item {
-	return &Item{
-		Type:  ItemType_RoutingRule,
-		Value: rule,
-	}
-}
-
-func NewParamItem(param *Param) *Item {
-	return &Item{
-		Type:  ItemType_Param,
-		Value: param,
-	}
-}
-
-func NewSectionItem(section *Section) *Item {
-	return &Item{
-		Type:  ItemType_Param,
-		Value: section,
-	}
-}
-
-type Item struct {
-	Type  ItemType
-	Value interface{}
-}
-
 func (i *Item) String(compact bool, quoteVal bool) string {
-	var builder strings.Builder
-	builder.WriteString("type: " + i.Type.String() + "\n")
 	var content string
 	switch val := i.Value.(type) {
 	case *RoutingRule:
 		content = val.String(false, compact, quoteVal)
+	case *ProxyPath:
+		content = val.String(compact, quoteVal)
 	case *Param:
 		content = val.String(false, quoteVal)
 	case *Section:
@@ -72,12 +49,7 @@ func (i *Item) String(compact bool, quoteVal bool) string {
 	default:
 		return "<Unknown>\n"
 	}
-	lines := strings.Split(content, "\n")
-	for i := range lines {
-		lines[i] = "\t" + lines[i]
-	}
-	builder.WriteString(strings.Join(lines, "\n"))
-	return builder.String()
+	return "type: " + i.TypeName() + "\n" + indent(content)
 }
 
 type Section struct {
@@ -86,18 +58,11 @@ type Section struct {
 }
 
 func (s *Section) String(compact bool, quoteVal bool) string {
-	var builder strings.Builder
-	builder.WriteString("section: " + s.Name + "\n")
-	var strItemList []string
+	items := make([]string, 0, len(s.Items))
 	for _, item := range s.Items {
-		lines := strings.Split(item.String(compact, quoteVal), "\n")
-		for i := range lines {
-			lines[i] = "\t" + lines[i]
-		}
-		strItemList = append(strItemList, strings.Join(lines, "\n"))
+		items = append(items, indent(item.String(compact, quoteVal)))
 	}
-	builder.WriteString(strings.Join(strItemList, "\n"))
-	return builder.String()
+	return "section: " + s.Name + "\n" + strings.Join(items, "\n")
 }
 
 type Param struct {
@@ -107,40 +72,90 @@ type Param struct {
 	// Either Val or AndFunctions is empty.
 	Val          string
 	AndFunctions []*Function
+	// Quoted is retained for declaration literals whose lexical form affects
+	// routing target resolution.
+	Quoted bool
 
 	// Annotation is optional
 	Annotation []*Param
 }
 
 func (p *Param) String(compact bool, quoteVal bool) string {
-	// FIXME: annotation
 	var quote func(string) string
 	if quoteVal {
-		quote = strconv.Quote
+		quote = quoteLiteral
 	} else {
 		quote = func(s string) string { return s }
 	}
-	if p.Key == "" {
-		return quote(p.Val)
-	}
+	var value string
 	if p.AndFunctions != nil {
-		a := paramAndFunctions{
-			Key:          p.Key,
-			AndFunctions: p.AndFunctions,
+		functions := make([]string, 0, len(p.AndFunctions))
+		for _, function := range p.AndFunctions {
+			functions = append(functions, function.String(compact, quoteVal, false))
 		}
-		return a.String(compact, quoteVal)
-	}
-	if compact {
-		return p.Key + ":" + quote(p.Val)
+		separator := " && "
+		if compact {
+			separator = "&&"
+		}
+		value = strings.Join(functions, separator)
 	} else {
-		return p.Key + ": " + quote(p.Val)
+		value = quote(p.Val)
 	}
+	if p.Key != "" {
+		separator := ": "
+		if compact {
+			separator = ":"
+		}
+		value = p.Key + separator + value
+	}
+	if len(p.Annotation) != 0 {
+		annotations := make([]string, 0, len(p.Annotation))
+		for _, annotation := range p.Annotation {
+			annotations = append(annotations, annotation.String(compact, quoteVal))
+		}
+		separator := ", "
+		if compact {
+			separator = ","
+		}
+		value += " [" + strings.Join(annotations, separator) + "]"
+	}
+	return value
+}
+
+func quoteLiteral(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value) + 2)
+	builder.WriteByte('"')
+	for i := 0; i < len(value); i++ {
+		if value[i] == '"' || value[i] == '\\' {
+			builder.WriteByte('\\')
+		}
+		builder.WriteByte(value[i])
+	}
+	builder.WriteByte('"')
+	return builder.String()
 }
 
 type Function struct {
 	Name   string
 	Not    bool
 	Params []*Param
+	// Quoted distinguishes literal target names from legacy name shorthands.
+	Quoted bool
+}
+
+func isBareLiteral(s string) bool {
+	const head = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_/\\^*.+0123456789-"
+	const rest = head + "=@$!#%"
+	return s != "" && strings.ContainsRune(head, rune(s[0])) &&
+		strings.IndexFunc(s[1:], func(r rune) bool { return !strings.ContainsRune(rest, r) }) == -1
+}
+
+func formatFunctionName(name string, quoted bool) string {
+	if quoted || !isBareLiteral(name) {
+		return quoteLiteral(name)
+	}
+	return name
 }
 
 func (f *Function) String(compact bool, quoteVal bool, omitEmpty bool) string {
@@ -148,43 +163,19 @@ func (f *Function) String(compact bool, quoteVal bool, omitEmpty bool) string {
 	if f.Not {
 		builder.WriteString("!")
 	}
-	builder.WriteString(f.Name)
+	builder.WriteString(formatFunctionName(f.Name, f.Quoted))
 	if !(omitEmpty && len(f.Params) == 0) {
 		builder.WriteString("(")
 		var strParamList []string
 		for _, p := range f.Params {
 			strParamList = append(strParamList, p.String(compact, quoteVal))
 		}
+		separator := ", "
 		if compact {
-			builder.WriteString(strings.Join(strParamList, ","))
-		} else {
-			builder.WriteString(strings.Join(strParamList, ", "))
+			separator = ","
 		}
+		builder.WriteString(strings.Join(strParamList, separator))
 		builder.WriteString(")")
-	}
-	return builder.String()
-}
-
-type paramAndFunctions struct {
-	Key          string
-	AndFunctions []*Function
-}
-
-func (p *paramAndFunctions) String(compact bool, quoteVal bool) string {
-	var builder strings.Builder
-	if compact {
-		builder.WriteString(p.Key + ":")
-	} else {
-		builder.WriteString(p.Key + ": ")
-	}
-	var strFunctionList []string
-	for _, f := range p.AndFunctions {
-		strFunctionList = append(strFunctionList, f.String(compact, quoteVal, false))
-	}
-	if compact {
-		builder.WriteString(strings.Join(strFunctionList, "&&"))
-	} else {
-		builder.WriteString(strings.Join(strFunctionList, " && "))
 	}
 	return builder.String()
 }
@@ -194,43 +185,38 @@ type RoutingRule struct {
 	Outbound     Function
 }
 
-func (r *RoutingRule) String(replaceParamWithN bool, compact bool, quoteVal bool) string {
-	var builder strings.Builder
-	var n int
-	for i, f := range r.AndFunctions {
-		if i != 0 {
-			if compact {
-				builder.WriteString("&&")
-			} else {
-				builder.WriteString(" && ")
-			}
-		}
-		var paramBuilder strings.Builder
-		n = len(f.Params)
-		if replaceParamWithN {
-			paramBuilder.WriteString("[n = " + strconv.Itoa(n) + "]")
-		} else {
-			for j, param := range f.Params {
-				if j != 0 {
-					if compact {
-						paramBuilder.WriteString(",")
-					} else {
-						paramBuilder.WriteString(", ")
-					}
-				}
-				paramBuilder.WriteString(param.String(compact, quoteVal))
-			}
-		}
-		symNot := ""
-		if f.Not {
-			symNot = "!"
-		}
-		builder.WriteString(fmt.Sprintf("%v%v(%v)", symNot, f.Name, paramBuilder.String()))
+type ProxyPath struct {
+	Stages []*Param
+}
+
+func (p *ProxyPath) String(compact bool, quoteVal bool) string {
+	stages := make([]string, 0, len(p.Stages))
+	for _, stage := range p.Stages {
+		stages = append(stages, stage.String(compact, quoteVal))
 	}
+	separator := " -> "
 	if compact {
-		builder.WriteString("->" + r.Outbound.String(compact, quoteVal, true))
-	} else {
-		builder.WriteString(" -> " + r.Outbound.String(compact, quoteVal, true))
+		separator = "->"
 	}
-	return builder.String()
+	return strings.Join(stages, separator)
+}
+
+func (r *RoutingRule) String(replaceParamWithN bool, compact bool, quoteVal bool) string {
+	functions := make([]string, 0, len(r.AndFunctions))
+	for _, function := range r.AndFunctions {
+		if replaceParamWithN {
+			name := formatFunctionName(function.Name, function.Quoted)
+			if function.Not {
+				name = "!" + name
+			}
+			functions = append(functions, name+"([n = "+strconv.Itoa(len(function.Params))+"])")
+		} else {
+			functions = append(functions, function.String(compact, quoteVal, false))
+		}
+	}
+	and, arrow := " && ", " -> "
+	if compact {
+		and, arrow = "&&", "->"
+	}
+	return strings.Join(functions, and) + arrow + r.Outbound.String(compact, quoteVal, true)
 }

@@ -24,12 +24,21 @@ const (
 type NodeOptions struct {
 	// Empty means that this layer does not override a lower-precedence value.
 	Multiplex MultiplexMode `mapstructure:"multiplex"`
+	// Nil means that this layer does not override a lower-precedence value.
+	CheckAsync *bool `mapstructure:"check_async"`
 }
 
 func (o *NodeOptions) Overlay(override NodeOptions) {
 	if override.Multiplex != "" {
 		o.Multiplex = override.Multiplex
 	}
+	if override.CheckAsync != nil {
+		o.CheckAsync = override.CheckAsync
+	}
+}
+
+func (o NodeOptions) IsZero() bool {
+	return o.Multiplex == "" && o.CheckAsync == nil
 }
 
 type NodeOptionRule struct {
@@ -43,7 +52,7 @@ type SubscriptionOption struct {
 }
 
 func (o SubscriptionOption) IsZero() bool {
-	return o.Defaults.Multiplex == "" && len(o.Rules) == 0
+	return o.Defaults.IsZero() && len(o.Rules) == 0
 }
 
 type Subscription struct {
@@ -70,15 +79,27 @@ func (o *NodeOptions) parse(params ...*config_parser.Param) error {
 		if param.AndFunctions != nil {
 			return fmt.Errorf("node option %q must be a literal", param.Key)
 		}
-		if param.Key != "multiplex" {
-			return fmt.Errorf("unknown node option %q", param.Key)
-		}
-		mode := MultiplexMode(strings.ToLower(strings.TrimSpace(param.Val)))
-		switch mode {
-		case MultiplexModeSmux, MultiplexModeSmuxUDPPassthrough, MultiplexModeOff:
-			o.Multiplex = mode
+		switch param.Key {
+		case "multiplex":
+			mode := MultiplexMode(strings.ToLower(strings.TrimSpace(param.Val)))
+			switch mode {
+			case MultiplexModeSmux, MultiplexModeSmuxUDPPassthrough, MultiplexModeOff:
+				o.Multiplex = mode
+			default:
+				return fmt.Errorf("unsupported multiplex mode %q; expected smux, smux-udp-passthrough or off", param.Val)
+			}
+		case "check_async":
+			var checkAsync bool
+			switch strings.TrimSpace(param.Val) {
+			case "true":
+				checkAsync = true
+			case "false":
+			default:
+				return fmt.Errorf("unsupported check_async value %q; expected true or false", param.Val)
+			}
+			o.CheckAsync = &checkAsync
 		default:
-			return fmt.Errorf("unsupported multiplex mode %q; expected smux, smux-udp-passthrough or off", param.Val)
+			return fmt.Errorf("unknown node option %q", param.Key)
 		}
 	}
 	return nil
@@ -86,7 +107,9 @@ func (o *NodeOptions) parse(params ...*config_parser.Param) error {
 
 func validateNodeOptionFilter(filters []*config_parser.Function) error {
 	for _, filter := range filters {
-		if filter.Name != "name" && filter.Name != "protocol" && filter.Name != "link" {
+		switch filter.Name {
+		case "name", "protocol", "link":
+		default:
 			return fmt.Errorf("unsupported node option filter %q", filter.Name)
 		}
 		for _, param := range filter.Params {
@@ -142,7 +165,7 @@ func parseSubscriptionOption(section *config_parser.Section) (option Subscriptio
 			if err := options.parse(param.Annotation...); err != nil {
 				return SubscriptionOption{}, fmt.Errorf("option filter: %w", err)
 			}
-			if options.Multiplex == "" {
+			if options.IsZero() {
 				return SubscriptionOption{}, fmt.Errorf("option filter must set at least one node option")
 			}
 			option.Rules = append(option.Rules, NodeOptionRule{

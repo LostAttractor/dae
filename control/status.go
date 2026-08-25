@@ -56,6 +56,7 @@ type TableUsageBreakdown struct {
 
 type GroupStatus struct {
 	Name         string                   `json:"name"`
+	TargetKind   string                   `json:"target_kind"`
 	Policy       string                   `json:"policy"`
 	Health       HealthStatus             `json:"health"`
 	Connectivity *GroupConnectivityStatus `json:"connectivity,omitempty"`
@@ -132,6 +133,7 @@ type NodeStatus struct {
 	Subtag                  string              `json:"subtag"`
 	Protocol                string              `json:"protocol"`
 	Address                 string              `json:"address"`
+	Hops                    []dialer.Hop        `json:"hops,omitempty"`
 	Session                 *SessionStatus      `json:"session,omitempty"`
 	Health                  *NodeHealthStatus   `json:"health,omitempty"`
 	Networks                []NodeNetworkStatus `json:"networks"`
@@ -323,6 +325,7 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts, uni
 		Subtag:   d.Property.SubscriptionTag,
 		Protocol: d.Property.Protocol,
 		Address:  d.Property.Address,
+		Hops:     d.Property.Hops,
 		Networks: make([]NodeNetworkStatus, 4),
 	}
 	if runtime.HasSession {
@@ -340,7 +343,7 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts, uni
 		}
 	}
 	avail := runtime.Availability
-	if g.Kind != outbound.GroupKindAlwaysAlive && d.ChecksConnectivity() {
+	if g.ChecksConnectivity() && d.ChecksConnectivity() {
 		ns.Health = &NodeHealthStatus{
 			State:              NodeHealthUnknown,
 			UpRatio:            avail.UpRatio,
@@ -452,12 +455,13 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			continue
 		}
 		gs := GroupStatus{
-			Name:     g.Name,
-			Policy:   string(g.GetSelectionPolicy()),
-			Networks: make([]NetworkStatus, 4),
+			Name:       g.Name,
+			TargetKind: g.TargetKind.String(),
+			Policy:     g.DisplayPolicy(),
+			Networks:   make([]NetworkStatus, 4),
 		}
 		availability := stats.GetGroup(g.Name)
-		if g.Kind != outbound.GroupKindAlwaysAlive {
+		if g.ChecksConnectivity() {
 			gs.Connectivity = &GroupConnectivityStatus{
 				Available:      g.Available(),
 				UpRatio:        availability.UpRatio,

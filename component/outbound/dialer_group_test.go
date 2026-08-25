@@ -31,6 +31,17 @@ var testNetworkType = &common.NetworkType{
 	IpVersion: consts.IpVersionStr_4,
 }
 
+func TestSaturatingDurationAdd(t *testing.T) {
+	maxDuration := time.Duration(1<<63 - 1)
+	minDuration := time.Duration(-1 << 63)
+	if got := saturatingDurationAdd(maxDuration, time.Nanosecond); got != maxDuration {
+		t.Fatalf("positive overflow = %v, want %v", got, maxDuration)
+	}
+	if got := saturatingDurationAdd(minDuration, -time.Nanosecond); got != minDuration {
+		t.Fatalf("negative overflow = %v, want %v", got, minDuration)
+	}
+}
+
 type fakeDialer struct{}
 
 func (fakeDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -114,10 +125,10 @@ func newTestOption() *dialer.GlobalOption {
 }
 
 func newTestDialer(option *dialer.GlobalOption, name string) *dialer.Dialer {
-	return dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), option, &dialer.Property{Property: D.Property{
+	return dialer.NewDialerRuntimeWithStatsScope(netproxy.NewRuntime(fakeDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: name,
 		Link: "test://" + name,
-	}}, true)
+	}}, dialer.InitialCheckBlocking, "")
 }
 
 // simulateCheck simulates a connectivity check round of the dialer: it marks
@@ -134,7 +145,7 @@ func simulateCheck(d *dialer.Dialer, ok bool, latency time.Duration) {
 }
 
 func newTestGroup(option *dialer.GlobalOption, dialers []*dialer.Dialer, annotations []*dialer.Annotation, policy dialer.DialerSelectionPolicy) *DialerGroup {
-	return NewDialerGroup(option, "test-group", GroupKindNormal, dialers, annotations, policy,
+	return NewDialerGroup(option, "test-group", GroupKindSelector, dialers, annotations, policy,
 		func(bool, *common.NetworkType) error { return nil })
 }
 
@@ -249,7 +260,7 @@ func TestDialerGroupNodeHealthAppliesToAllModes(t *testing.T) {
 			option := newTestOption()
 			d := newTestDialer(option, fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()))
 			var networkAvailable [4]bool
-			g := NewDialerGroup(option, "test-group", GroupKindNormal, []*dialer.Dialer{d}, emptyAnnotations(1), policy,
+			g := NewDialerGroup(option, "test-group", GroupKindSelector, []*dialer.Dialer{d}, emptyAnnotations(1), policy,
 				func(available bool, networkType *common.NetworkType) error {
 					networkAvailable[common.NetworkTypeToIndex(networkType)] = available
 					return nil
@@ -316,7 +327,7 @@ func TestDialerGroupAvailabilityIsPerNetwork(t *testing.T) {
 			option := newTestOption()
 			d := newTestDialer(option, t.Name())
 			var changes [4]bool
-			g := NewDialerGroup(option, "test-group", GroupKindNormal,
+			g := NewDialerGroup(option, "test-group", GroupKindSelector,
 				[]*dialer.Dialer{d}, emptyAnnotations(1), policy,
 				func(available bool, networkType *common.NetworkType) error {
 					changes[common.NetworkTypeToIndex(networkType)] = available
@@ -367,7 +378,7 @@ func TestDialerGroupRetriesFailedAvailabilityPublication(t *testing.T) {
 	d := newTestDialer(option, t.Name())
 	d.SetSupported(testNetworkType, true)
 	var attempts atomic.Int32
-	g := NewDialerGroup(option, t.Name(), GroupKindNormal,
+	g := NewDialerGroup(option, t.Name(), GroupKindSelector,
 		[]*dialer.Dialer{d}, emptyAnnotations(1),
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed},
 		func(_ bool, networkType *common.NetworkType) error {
@@ -415,37 +426,69 @@ func TestDialerGroupCloseRejectsSelection(t *testing.T) {
 	}
 }
 
-func TestAlwaysAliveGroupStartsAvailable(t *testing.T) {
-	g := NewDialerGroup(newTestOption(), t.Name(), GroupKindAlwaysAlive, nil, nil,
-		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed}, nil)
-	t.Cleanup(func() { _ = g.Close() })
+func TestSingleAlwaysAliveGroupStartsAvailableWithoutTransition(t *testing.T) {
+	option := newTestOption()
+	d := dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), option, &dialer.Property{Property: D.Property{
+		Name: t.Name(),
+		Link: "test://" + t.Name(),
+	}}, dialer.InitialCheckDisabled)
+	logger := log.StandardLogger()
+	previousOutput := logger.Out
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	t.Cleanup(func() { logger.SetOutput(previousOutput) })
+
+	g := NewDialerGroup(option, t.Name(), GroupKindSingleAlwaysAlive,
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+	t.Cleanup(func() {
+		_ = g.Close()
+		d.RetireTransport()
+	})
 	if !g.Available() {
-		t.Fatal("always-alive group started unavailable")
+		t.Fatal("always-alive singleton started unavailable")
+	}
+	if selected, err := g.Select(testNetworkType); err != nil || selected != d {
+		t.Fatalf("Select = %v, %v", selected, err)
+	}
+	if strings.Contains(output.String(), "NOT ALIVE --> ALIVE") {
+		t.Fatalf("construction logged a health transition:\n%s", output.String())
 	}
 }
 
-func TestAlwaysAliveGroupSeedsCachedSelectors(t *testing.T) {
-	policies := []dialer.DialerSelectionPolicy{
-		{Policy: consts.DialerSelectionPolicy_Random},
-		{Policy: consts.DialerSelectionPolicy_MinLastLatency},
-	}
-	for _, policy := range policies {
-		t.Run(string(policy.Policy), func(t *testing.T) {
-			option := newTestOption()
-			d := dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), option, &dialer.Property{Property: D.Property{
-				Name: t.Name(),
-				Link: "test://" + t.Name(),
-			}}, false)
-			g := NewDialerGroup(option, t.Name(), GroupKindAlwaysAlive,
-				[]*dialer.Dialer{d}, emptyAnnotations(1), policy, nil)
-			t.Cleanup(func() {
-				_ = g.Close()
-				d.RetireTransport()
-			})
-			if selected, err := g.Select(testNetworkType); err != nil || selected != d {
-				t.Fatalf("Select = %v, %v", selected, err)
-			}
+func TestSingleCheckedGroupTracksDialerAvailability(t *testing.T) {
+	option := newTestOption()
+	d := newTestDialer(option, t.Name())
+	var networkAvailable [4]bool
+	g := NewDialerGroup(option, t.Name(), GroupKindSelector,
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{},
+		func(available bool, networkType *common.NetworkType) error {
+			networkAvailable[common.NetworkTypeToIndex(networkType)] = available
+			return nil
 		})
+	t.Cleanup(func() { _ = g.Close() })
+	if err := g.InitializeConnectivity(); err != nil {
+		t.Fatal(err)
+	}
+	for i, available := range networkAvailable {
+		if available {
+			t.Fatalf("checked singleton network %d initialized available", i)
+		}
+	}
+
+	simulateCheck(d, true, time.Millisecond)
+	if !networkAvailable[common.NetworkTypeToIndex(testNetworkType)] || !g.Available() {
+		t.Fatal("checked singleton did not publish recovery")
+	}
+	if selected, err := g.Select(testNetworkType); err != nil || selected != d {
+		t.Fatalf("Select = %v, %v", selected, err)
+	}
+
+	simulateCheck(d, false, 0)
+	if networkAvailable[common.NetworkTypeToIndex(testNetworkType)] || g.Available() {
+		t.Fatal("checked singleton remained available after failure")
+	}
+	if _, err := g.Select(testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
+		t.Fatalf("Select error = %v, want ErrNoAliveDialer", err)
 	}
 }
 
@@ -531,27 +574,13 @@ func TestDialerWithoutHealthCheckHasConfirmedSupport(t *testing.T) {
 	d := dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), newTestOption(), &dialer.Property{Property: D.Property{
 		Name: "always-supported",
 		Link: "test://always-supported",
-	}}, false)
+	}}, dialer.InitialCheckDisabled)
 	defer d.Close()
 	for i := 0; i < 4; i++ {
 		networkType := common.IndexToNetworkType(i)
 		if !d.ConfirmedSupport(networkType) {
 			t.Fatalf("network %v is not confirmed", networkType)
 		}
-	}
-}
-
-func TestDialerGroup_Select_Fixed_NegativeIndex(t *testing.T) {
-	option := newTestOption()
-	d := newTestDialer(option, "node0")
-	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
-		dialer.DialerSelectionPolicy{
-			Policy:     consts.DialerSelectionPolicy_Fixed,
-			FixedIndex: -1,
-		})
-	simulateCheck(d, true, 100*time.Millisecond)
-	if _, err := g.Select(testNetworkType); !errors.Is(err, ErrNoAliveDialer) {
-		t.Fatalf("expected ErrNoAliveDialer, got %v", err)
 	}
 }
 
@@ -755,7 +784,7 @@ func TestDialerGroupInitialUnavailableIsSilent(t *testing.T) {
 func TestDialerGroupInitializeConnectivity(t *testing.T) {
 	option := newTestOption()
 	seen := 0
-	g := NewDialerGroup(option, "empty", GroupKindNormal, nil, nil,
+	g := NewDialerGroup(option, "empty", GroupKindSelector, nil, nil,
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Random},
 		func(available bool, _ *common.NetworkType) error {
 			if available {
@@ -784,7 +813,7 @@ func TestDialerGroupSelectInvalidatesDisconnectedTransport(t *testing.T) {
 			d := dialer.NewDialer(netproxy.NewRuntime(transport), option, &dialer.Property{Property: D.Property{
 				Name: "node0",
 				Link: "test://node0",
-			}}, true)
+			}}, dialer.InitialCheckBlocking)
 			g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
 				dialer.DialerSelectionPolicy{Policy: policy})
 			t.Cleanup(func() { _ = g.Close() })
@@ -821,12 +850,12 @@ func TestDialerGroupSessionDisconnectPublishesState(t *testing.T) {
 			d := dialer.NewDialer(netproxy.NewRuntime(transport), option, &dialer.Property{Property: D.Property{
 				Name: "node0",
 				Link: "test://node0",
-			}}, true)
+			}}, dialer.InitialCheckBlocking)
 			changes := make(chan struct {
 				available bool
 				network   int
 			}, 16)
-			g := NewDialerGroup(option, "test-group", GroupKindNormal,
+			g := NewDialerGroup(option, "test-group", GroupKindSelector,
 				[]*dialer.Dialer{d}, emptyAnnotations(1),
 				dialer.DialerSelectionPolicy{Policy: policy},
 				func(available bool, networkType *common.NetworkType) error {
@@ -928,24 +957,24 @@ func TestDialerGroup_Select_AnnotationPriority(t *testing.T) {
 	}
 }
 
-func TestDialerGroup_CheckAsyncAnnotation(t *testing.T) {
+func TestRandomSelectorUsesConditionalPriorityTerms(t *testing.T) {
 	option := newTestOption()
 	dialers := []*dialer.Dialer{
 		newTestDialer(option, "node0"),
 		newTestDialer(option, "node1"),
 	}
 	annotations := emptyAnnotations(len(dialers))
-	annotations[1].CheckAsync = true
-	g := newTestGroup(option, dialers, annotations,
-		dialer.DialerSelectionPolicy{
-			Policy: consts.DialerSelectionPolicy_MinLastLatency,
-		})
-	defer g.Close()
-	if dialers[0].CheckAsync() {
-		t.Errorf("node0 should not be marked check_async")
+	annotations[0].PriorityTerms = []*dialer.PriorityTerm{{Default: 10, Conditional: []*dialer.Priority{{Pri: 1, Low: 200 * time.Millisecond, High: time.Second}}}}
+	annotations[1].PriorityTerms = []*dialer.PriorityTerm{{Default: 2}}
+	g := newTestGroup(option, dialers, annotations, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Random})
+	simulateCheck(dialers[0], true, 300*time.Millisecond)
+	simulateCheck(dialers[1], true, 100*time.Millisecond)
+	selected, err := g.Select(testNetworkType)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !dialers[1].CheckAsync() {
-		t.Errorf("node1 should be marked check_async")
+	if selected != dialers[1] {
+		t.Fatalf("selected = %v, want node1", selected.Name)
 	}
 }
 
@@ -1011,21 +1040,6 @@ func TestFixedSelectorConcurrentNotifications(t *testing.T) {
 	}
 }
 
-func TestScopedDialerSharesTransportWithDistinctIdentity(t *testing.T) {
-	option := newTestOption()
-	base := newTestDialer(option, t.Name())
-	clone := base.CloneForStatsScope("override-group")
-	defer base.Close()
-	defer clone.Close()
-
-	if base.Dialer != clone.Dialer {
-		t.Fatal("group-specific checker did not share its underlying transport")
-	}
-	if base.StatsKey() == clone.StatsKey() || base.StatsID() == clone.StatsID() {
-		t.Fatalf("group-specific checker clone must have a distinct stats identity")
-	}
-}
-
 func TestDialerCloseRejectsLaterUpdates(t *testing.T) {
 	option := newTestOption()
 	d := newTestDialer(option, t.Name())
@@ -1047,10 +1061,9 @@ func TestDialerCloseRejectsLaterUpdates(t *testing.T) {
 func TestDialerCloseWaitsForAndCancelsHealthCheck(t *testing.T) {
 	option := newTestOption()
 	blocking := &blockingCheckDialer{started: make(chan struct{})}
-	d := dialer.NewDialer(netproxy.NewRuntime(blocking), option, &dialer.Property{Property: D.Property{
+	d := dialer.NewDialerRuntimeWithStatsScope(netproxy.NewRuntime(blocking), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(), Link: "test://" + t.Name(),
-	}}, true)
-	d.SetCheckAsync(true)
+	}}, dialer.InitialCheckAsync, "")
 	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency})
 	defer blocking.closeServers()
@@ -1077,40 +1090,5 @@ func TestDialerCloseWaitsForAndCancelsHealthCheck(t *testing.T) {
 	}
 	if err := g.Close(); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestNextHopDialerIdentityIncludesEffectivePath(t *testing.T) {
-	option := newTestOption()
-	s := &DialerSet{
-		option:       option,
-		nodeInfosMap: make(map[dialer.Property]*NodeInfo),
-	}
-	source := &NodeInfo{
-		Link: "source-link",
-		Property: &dialer.Property{Property: D.Property{
-			Name: "source", Protocol: "source-proto", Address: "source-address", Link: "source-link",
-		}},
-	}
-	nextHop := &NodeInfo{
-		Link: "next-hop-link",
-		Property: &dialer.Property{
-			Property: D.Property{
-				Name: "next-hop", Protocol: "next-proto", Address: "next-address", Link: "next-hop-link",
-			},
-			SubscriptionTag: "next-sub",
-		},
-	}
-
-	d, err := s.createNextHopDialer(source, nextHop)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	if want := "source-link->next-hop-link"; d.Property.Link != want {
-		t.Fatalf("effective property link = %q, want %q", d.Property.Link, want)
-	}
-	if want := dialer.ComposeStatsIdentity("next-hop", "source-link", dialer.ComposeStatsIdentity("next-sub", "next-hop-link")); d.Property.StatsIdentity != want {
-		t.Fatalf("effective stats identity = %q, want %q", d.Property.StatsIdentity, want)
 	}
 }

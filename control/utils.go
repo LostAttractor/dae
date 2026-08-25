@@ -155,14 +155,15 @@ func (c *ControlPlane) directDialerForMark(outboundIndex consts.OutboundIndex, m
 func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *common.NetworkType, routingResult *bpfRoutingResult) {
 	if log.IsLevelEnabled(log.InfoLevel) {
 		fields := log.Fields{
-			"network": networkType.String(),
-			"sniffed": domain,
-			"ip":      RefineAddrPortToShow(dst),
-			"pid":     routingResult.Pid,
-			"ifindex": routingResult.Ifindex,
-			"dscp":    routingResult.Dscp,
-			"pname":   ProcessName2String(routingResult.Pname[:]),
-			"mac":     Mac2String(routingResult.Mac[:]),
+			"network":     networkType.String(),
+			"sniffed":     domain,
+			"ip":          RefineAddrPortToShow(dst),
+			"pid":         routingResult.Pid,
+			"ifindex":     routingResult.Ifindex,
+			"dscp":        routingResult.Dscp,
+			"pname":       ProcessName2String(routingResult.Pname[:]),
+			"mac":         Mac2String(routingResult.Mac[:]),
+			"target_kind": dialOption.Outbound.TargetKind.String(),
 		}
 		if consts.OutboundIndex(routingResult.Outbound) == consts.OutboundControlPlaneRouting {
 			fields["controlPlaneRoute"] = "true"
@@ -173,12 +174,12 @@ func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, net
 		}
 		if dialOption.FallbackDialer {
 			fields["originalOutbound"] = dialOption.Outbound.Name
-			fields["originalPolicy"] = dialOption.Outbound.GetSelectionPolicy()
+			fields["originalPolicy"] = dialOption.Outbound.DisplayPolicy()
 			fields["fallbackDialer"] = dialOption.Dialer.Name
 			log.WithFields(fields).Infof("[%v] %v <-(fallback)-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
 		} else {
 			fields["outbound"] = dialOption.Outbound.Name
-			fields["policy"] = dialOption.Outbound.GetSelectionPolicy()
+			fields["policy"] = dialOption.Outbound.DisplayPolicy()
 			fields["dialer"] = dialOption.Dialer.Name
 			log.WithFields(fields).Infof("[%v] %v <-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
 		}

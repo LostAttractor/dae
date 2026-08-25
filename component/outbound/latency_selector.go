@@ -47,7 +47,7 @@ func (s *LatencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *
 }
 
 func (s *LatencyBasedSelector) getSortingLatency(d *dialer.Dialer) time.Duration {
-	return s.dialerToLatency[d] + s.dialerGroup.dialerToAnnotation[d].AddLatency
+	return saturatingDurationAdd(s.dialerToLatency[d], s.dialerGroup.dialerToAnnotation[d].AddLatency)
 }
 
 func (s *LatencyBasedSelector) getSortedAliveDialers(networkType *common.NetworkType) (aliveDialers []*dialer.Dialer) {

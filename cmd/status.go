@@ -404,8 +404,16 @@ func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control
 }
 
 func printGroupStatus(group control.GroupStatus) {
+	policy := group.Policy
+	if policy == "" {
+		policy = "single path"
+	}
+	targetKind := group.TargetKind
+	if targetKind == "" {
+		targetKind = "group"
+	}
 	if group.Connectivity == nil {
-		fmt.Printf("\nGroup '%s' [policy: %s] (no connectivity checks)\n", group.Name, group.Policy)
+		fmt.Printf("\nGroup '%s' [kind: %s, policy: %s] (no connectivity checks)\n", group.Name, targetKind, policy)
 		rows := make([]table.Row, 0, len(group.Networks))
 		for _, status := range group.Networks {
 			rows = append(rows, table.Row{
@@ -418,9 +426,10 @@ func printGroupStatus(group control.GroupStatus) {
 	}
 
 	fmt.Printf(
-		"\nGroup '%s' [policy: %s, available: %s, up: %s, available since: %s, failure: %s]\n",
+		"\nGroup '%s' [kind: %s, policy: %s, available: %s, up: %s, available since: %s, failure: %s]\n",
 		group.Name,
-		group.Policy,
+		targetKind,
+		policy,
 		colorAlive(group.Connectivity.Available),
 		colorRatio(group.Connectivity.UpRatio, formatRatio(group.Connectivity.UpRatio)),
 		formatAgo(group.Connectivity.AvailableSince),
@@ -434,13 +443,13 @@ func printGroupStatus(group control.GroupStatus) {
 		"NETWORK", "SUPPORT", "SELECTED", "CONNS(A/T)",
 	}, rows)
 
-	fmt.Printf("\nNodes of group '%s':\n", group.Name)
+	fmt.Printf("\nPaths of target '%s':\n", group.Name)
 	rows = make([]table.Row, 0, len(group.Nodes))
 	for i, status := range group.Nodes {
 		rows = append(rows, nodeStatusRow(status, i, group.Networks))
 	}
 	printTable(table.Row{
-		"NODE", "SUB", "PROTO", "SESSION", "HEALTH", "SUPPORT", "SELECTED",
+		"PATH", "SUB", "PROTO", "SESSION", "HEALTH", "SUPPORT", "SELECTED",
 		"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "24H UP% (FAIL/CHK)", "HEALTHY-SINCE",
 		"FAILURE (START/DURATION)", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)",
 	}, rows)

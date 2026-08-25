@@ -7,19 +7,9 @@ package config_parser
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
-
-	log "github.com/sirupsen/logrus"
-)
-
-type ErrorType string
-
-const (
-	ErrorType_Unsupported ErrorType = "is not supported"
-	ErrorType_NotSet      ErrorType = "is not set"
 )
 
 type ConsoleErrorListener struct {
@@ -35,24 +25,12 @@ func (d *ConsoleErrorListener) SyntaxError(recognizer antlr.Recognizer, offendin
 	if d.ErrorBuilder.Len() > 0 {
 		return
 	}
-	backtrack := column
-	if backtrack > 30 {
-		backtrack = 30
-	}
+	backtrack := min(column, 30)
 	starting := fmt.Sprintf("line %v:%v ", line, column)
 	offset := len(starting) + backtrack
-	var (
-		simplyWrite bool
-		token       antlr.Token
-	)
-	if offendingSymbol == nil {
-		simplyWrite = true
-	} else {
-		token = offendingSymbol.(antlr.Token)
-		simplyWrite = token.GetTokenType() == -1
-	}
-	if simplyWrite {
-		d.ErrorBuilder.WriteString(fmt.Sprintf("%v%v", starting, msg))
+	token, ok := offendingSymbol.(antlr.Token)
+	if !ok || token.GetTokenType() == -1 {
+		d.ErrorBuilder.WriteString(starting + msg)
 		return
 	}
 
@@ -74,22 +52,4 @@ func (d *ConsoleErrorListener) ReportAttemptingFullContext(recognizer antlr.Pars
 }
 
 func (d *ConsoleErrorListener) ReportContextSensitivity(recognizer antlr.Parser, dfa *antlr.DFA, startIndex, stopIndex, prediction int, configs antlr.ATNConfigSet) {
-}
-
-func BaseContext(ctx interface{}) (baseCtx *antlr.BaseParserRuleContext) {
-	val := reflect.ValueOf(ctx)
-	for val.Kind() == reflect.Pointer && val.Type() != reflect.TypeOf(&antlr.BaseParserRuleContext{}) {
-		val = val.Elem()
-	}
-	if val.Type() == reflect.TypeOf(&antlr.BaseParserRuleContext{}) {
-		baseCtx = val.Interface().(*antlr.BaseParserRuleContext)
-	} else {
-		baseCtxVal := val.FieldByName("BaseParserRuleContext")
-		if !baseCtxVal.IsValid() {
-			log.Debugf("%T", ctx)
-			panic("has no field BaseParserRuleContext")
-		}
-		baseCtx = baseCtxVal.Interface().(*antlr.BaseParserRuleContext)
-	}
-	return baseCtx
 }

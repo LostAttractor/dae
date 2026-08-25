@@ -2,6 +2,8 @@
 
 > **Note**: dae currently supports the following proxy protocols
 
+Each `node` entry must contain one share link. The former node-level `linkA -> linkB` syntax is no longer accepted; compose proxy paths with group path expressions as documented in [Routing](configuration/routing.md).
+
 - [x] HTTP(S), naiveproxy
   ```
   https://[[user:]pass@]hostname:port/
@@ -88,9 +90,9 @@
 
   [AnyTLS URI Schema](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md)
 
-- [x] Proxy chain (flexible protocol)
+- [x] Group proxy paths
 
-  [Proxy chain URI Schema](https://github.com/daeuniverse/dae/discussions/236)
+  Compose protocols with group path expressions; share-link chain URIs are not supported.
 
 For other requirements, one way to expand protocol support is by using external proxy programs. Below is an example of using the external naiveproxy.
 

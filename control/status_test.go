@@ -279,17 +279,33 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		FixedIndex: 0,
 	}
 	callback := func(bool, *common.NetworkType) error { return nil }
-	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindAlwaysAlive, nil, nil, policy, callback)
-	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible, nil, nil, policy, callback)
+	directDialer := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
+		Name: "direct",
+		Link: "direct://",
+	}}, dialer.InitialCheckDisabled)
+	blockDialer := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
+		Name: "block",
+		Link: "block://",
+	}}, dialer.InitialCheckDisabled)
+	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
+		[]*dialer.Dialer{directDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
+		[]*dialer.Dialer{blockDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+	t.Cleanup(func() {
+		_ = direct.Close()
+		_ = block.Close()
+		directDialer.RetireTransport()
+		blockDialer.RetireTransport()
+	})
 
 	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}}, true)
+	}}, dialer.InitialCheckBlocking)
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
-		outbound.GroupKindNormal,
+		outbound.GroupKindSelector,
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		policy,
@@ -312,6 +328,9 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		PrometheusRegistry: registry,
 	}
 	snapshot := plane.StatusSnapshot("test")
+	if directStatus := snapshot.Groups[0]; directStatus.Connectivity != nil || directStatus.Policy != "" {
+		t.Fatalf("direct status = %+v, want singleton without connectivity or policy", directStatus)
+	}
 	if snapshot.Health != HealthHealthy || snapshot.Groups[1].Health != HealthHealthy {
 		t.Fatalf("health = %q/%q, want healthy", snapshot.Health, snapshot.Groups[1].Health)
 	}
@@ -353,11 +372,11 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}}, true)
+	}}, dialer.InitialCheckBlocking)
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
-		outbound.GroupKindNormal,
+		outbound.GroupKindSelector,
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		policy,
@@ -394,11 +413,11 @@ func TestNetworkStatusRejectsStaleSelection(t *testing.T) {
 	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}}, true)
+	}}, dialer.InitialCheckBlocking)
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
-		outbound.GroupKindNormal,
+		outbound.GroupKindSelector,
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
@@ -430,11 +449,11 @@ func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
 	node := dialer.NewDialer(netproxy.NewRuntime(transport), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}}, true)
+	}}, dialer.InitialCheckBlocking)
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
-		outbound.GroupKindNormal,
+		outbound.GroupKindSelector,
 		[]*dialer.Dialer{node},
 		[]*dialer.Annotation{{}},
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed},
@@ -468,5 +487,40 @@ func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
 	}
 	if status.Networks[0].SupportState != "confirmed" {
 		t.Fatalf("disconnect changed support: %+v", status.Networks)
+	}
+}
+
+func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	common.InitPrometheus(registry)
+	option := &dialer.GlobalOption{}
+	property := &dialer.Property{
+		Property: D.Property{Name: "entry -> exit", Protocol: "socks -> ss", Address: "entry -> exit", Link: "path"},
+		Hops: []dialer.Hop{
+			{ID: "entry-id", Name: "entry", Subtag: "a", Protocol: "socks", Address: "entry.example:1080"},
+			{ID: "exit-id", Name: "exit", Subtag: "b", Protocol: "ss", Address: "exit.example:443"},
+		},
+	}
+	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, property, dialer.InitialCheckBlocking)
+	group := outbound.NewDialerGroup(
+		option,
+		"direct node target",
+		outbound.GroupKindSelector,
+		[]*dialer.Dialer{node},
+		[]*dialer.Annotation{{}},
+		dialer.DialerSelectionPolicy{},
+		func(bool, *common.NetworkType) error { return nil },
+	).SetTargetMetadata(outbound.TargetKindNode)
+	t.Cleanup(func() {
+		_ = group.Close()
+		node.RetireTransport()
+	})
+	plane := &ControlPlane{outbounds: []*outbound.DialerGroup{group}, PrometheusRegistry: registry}
+	status := plane.StatusSnapshot("test").Groups[0]
+	if status.TargetKind != "node" || status.Policy != "" {
+		t.Fatalf("target metadata = kind %q, policy %q", status.TargetKind, status.Policy)
+	}
+	if got := status.Nodes[0].Hops; len(got) != 2 || got[0].Name != "entry" || got[1].Name != "exit" {
+		t.Fatalf("structured hops = %+v", got)
 	}
 }

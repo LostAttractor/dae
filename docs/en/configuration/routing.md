@@ -1,5 +1,77 @@
 # Routing
 
+## Outbound Targets and Proxy Paths
+
+Routing targets may be built-in outbounds, groups, or uniquely named nodes. Quote a target name when it contains spaces or non-ASCII characters; parameters follow the quoted name directly:
+
+```shell
+domain(full: special.example) -> 'Hong Kong 01'(skip_while_noalive)
+fallback: 'Hong Kong 01'(mark: 0x800)
+```
+
+Each statement in a group declares one candidate proxy path. Join stages with `->` in physical order from the client towards the destination. A stage can filter the global node pool inline or strictly reference one node or a reusable group:
+
+```text
+path  := stage ("->" stage)*
+stage := "filter:" filter-expression annotation?
+       | node(name) annotation?
+       | group(name) annotation?
+```
+
+A group with `policy` is a selector over all of its expanded complete paths. A group without `policy` is a reusable template for `group(name)`; it can also be a routing target when it expands to exactly one path.
+
+```shell
+group {
+    relay {
+        filter: name(relay-node)
+    }
+
+    proxy_jp {
+        # A direct, one-stage candidate.
+        filter: name(lightsail) [priority: 1]
+
+        # Inline filters form a proxy chain.
+        filter: name(lightsail) -> filter: subtag(flowercloud) && name(keyword: '日本')
+
+        # A policyless group can be reused as a stage.
+        group(relay) -> filter: subtag(exit) [add_latency: 20ms]
+        policy: min_moving_avg
+    }
+}
+```
+
+Every path statement is independent, so the direct `lightsail` candidate and the chained candidates coexist. Each filter stage expands to all matching nodes. Multiple stages form a Cartesian product; a referenced group contributes all paths declared by that group.
+
+`filter: name(name)` is a node-property filter and may match multiple definitions. A standalone `node(name)` stage is a strict typed reference and rejects missing or duplicate node names. `group(name)` strictly references a group without `policy`; selector groups cannot be nested as path stages. Typed references remain unambiguous when a node and group have the same name.
+
+Expansion is statement-major and then terminal-major within each Cartesian path. For `entry-1`, `entry-2` followed by `exit-1`, `exit-2`, the order is `entry-1 -> exit-1`, `entry-2 -> exit-1`, `entry-1 -> exit-2`, then `entry-2 -> exit-2`. `fixed(n)` indexes this stable complete-path order. Separately declared identical physical paths remain separate candidates.
+
+`priority` and `add_latency` annotations add across path stages. `check_async` is a node option rather than a path annotation; configure it on local nodes or through subscription node-option rules. A complete path starts its initial connectivity check asynchronously when any hop enables the option.
+
+```shell
+node {
+    slow_node: 'socks5://proxy.example:1080' [check_async: true]
+}
+
+subscription {
+    provider {
+        link: 'https://example.com/subscription'
+        option {
+            check_async: true
+            filter: name(fast_node) [check_async: false]
+        }
+    }
+}
+```
+
+Subscription defaults are applied first, followed by every matching option rule in declaration order. This allows a later rule to explicitly override `true` with `false`.
+
+The former `[via: ...]` annotation is rejected. Node entries still contain exactly one share link; compose links only with group path expressions.
+
+The legacy `must_name` shorthand is still available. Quote a real node or group name that begins with `must_` (for example, `'must_edge'`) to reference it literally.
+
+To bound health-check and runtime growth, a path may contain at most 16 hops, one routed target may expand to at most 4096 paths, and one configuration may materialize at most 16384 paths.
+
 ## Fragmented TCP/UDP
 
 dae supports fragmented TCP and UDP only on an unmarked direct, unmarked pass-through, or trusted control-plane path. Pass-through applies to an established inbound UDP flow or an outbound whose connectivity state is not available. dae never interprets non-initial fragment payload as a transport header. The initial fragment is dropped when routing selects a proxy, `block`, or `direct(mark: ...)`, so the packet cannot be reassembled through a different path. Avoid IP fragmentation when traffic must use a proxy; adjust the application or tunnel MTU instead.
@@ -118,7 +190,7 @@ domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 # - This rule-level annotation takes precedence over global "no_connectivity_try_sniff":
 #   an unavailable target is skipped immediately. The global setting still applies to rules
 #   without this annotation.
-# - It only works with user-defined groups. Using it with "direct" or "block" is a
+# - It only works with user-defined groups and direct node targets. Using it with "direct" or "block" is a
 #   configuration error because built-in outbounds do not participate in connectivity checks.
 # - It cannot be used on the fallback rule.
 # - It can be combined with other parameters, e.g. -> my_group(must, skip_while_noalive).

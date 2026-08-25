@@ -22,13 +22,6 @@ func parseAnnotation(t *testing.T, params ...*config_parser.Param) *Annotation {
 	return anno
 }
 
-func TestNewAnnotation_Empty(t *testing.T) {
-	anno := parseAnnotation(t)
-	if anno.AddLatency != 0 || anno.Priority != 0 || anno.CheckAsync || len(anno.ConditionalPriority) != 0 {
-		t.Errorf("empty annotation should be zero value: %+v", anno)
-	}
-}
-
 func TestNewAnnotation_AddLatency(t *testing.T) {
 	anno := parseAnnotation(t, &config_parser.Param{Key: "add_latency", Val: "-500ms"})
 	if anno.AddLatency != -500*time.Millisecond {
@@ -39,6 +32,31 @@ func TestNewAnnotation_AddLatency(t *testing.T) {
 func TestNewAnnotation_AddLatency_Invalid(t *testing.T) {
 	if _, err := NewAnnotation([]*config_parser.Param{{Key: "add_latency", Val: "not-a-duration"}}); err == nil {
 		t.Errorf("invalid add_latency should return an error")
+	}
+}
+
+func TestNewAnnotationRejectsDuplicateKeys(t *testing.T) {
+	if _, err := NewAnnotation([]*config_parser.Param{
+		{Key: AnnotationKey_Priority, Val: "1"},
+		{Key: AnnotationKey_Priority, Val: "2"},
+	}); err == nil {
+		t.Fatal("duplicate annotation key was accepted")
+	}
+}
+
+func TestMergeAnnotationsRejectsOverflow(t *testing.T) {
+	if _, err := MergeAnnotations(
+		&Annotation{AddLatency: time.Duration(math.MaxInt64)},
+		&Annotation{AddLatency: time.Nanosecond},
+	); err == nil {
+		t.Fatal("duration overflow was accepted")
+	}
+	maxInt := int(^uint(0) >> 1)
+	if _, err := MergeAnnotations(
+		&Annotation{PriorityTerms: []*PriorityTerm{{Default: maxInt}}},
+		&Annotation{PriorityTerms: []*PriorityTerm{{Default: 1}}},
+	); err == nil {
+		t.Fatal("conditional priority overflow was accepted")
 	}
 }
 
@@ -82,23 +100,6 @@ func TestNewAnnotation_Priority_Invalid(t *testing.T) {
 	}
 	if _, err := NewAnnotation([]*config_parser.Param{{Key: "priority", Val: "1; 2(abc, 200ms)"}}); err == nil {
 		t.Errorf("invalid conditional priority low should return an error")
-	}
-}
-
-func TestNewAnnotation_CheckAsync(t *testing.T) {
-	anno := parseAnnotation(t, &config_parser.Param{Key: "check_async", Val: "true"})
-	if !anno.CheckAsync {
-		t.Errorf("CheckAsync should be true")
-	}
-	anno = parseAnnotation(t, &config_parser.Param{Key: "check_async", Val: "false"})
-	if anno.CheckAsync {
-		t.Errorf("CheckAsync should be false")
-	}
-}
-
-func TestNewAnnotation_CheckAsync_Invalid(t *testing.T) {
-	if _, err := NewAnnotation([]*config_parser.Param{{Key: "check_async", Val: "maybe"}}); err == nil {
-		t.Errorf("invalid check_async should return an error")
 	}
 }
 

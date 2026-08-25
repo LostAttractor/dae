@@ -138,22 +138,24 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 		goto unsupported
 	}
 
-	panic("code should not reach here")
-
 unsupported:
 	return fmt.Errorf("unsupported section type %v", from.Type())
 }
 
-func formatNodeOptions(options NodeOptions) string {
-	if options.Multiplex == "" {
-		return ""
+func formatNodeOptions(options NodeOptions) []string {
+	values := make([]string, 0, 2)
+	if options.Multiplex != "" {
+		values = append(values, "multiplex:"+strconv.Quote(string(options.Multiplex)))
 	}
-	return "multiplex:" + strconv.Quote(string(options.Multiplex))
+	if options.CheckAsync != nil {
+		values = append(values, "check_async:"+strconv.FormatBool(*options.CheckAsync))
+	}
+	return values
 }
 
 func formatAnnotation(options NodeOptions) string {
-	if options := formatNodeOptions(options); options != "" {
-		return " [" + options + "]"
+	if options := formatNodeOptions(options); len(options) != 0 {
+		return " [" + strings.Join(options, ",") + "]"
 	}
 	return ""
 }
@@ -185,8 +187,8 @@ func (m *Marshaller) marshalSubscriptions(subscriptions []Subscription, depth in
 		m.writeLine(depth, subscription.Name+" {")
 		m.writeLine(depth+1, "link:"+strconv.Quote(subscription.Link))
 		m.writeLine(depth+1, "option {")
-		if options := formatNodeOptions(subscription.Option.Defaults); options != "" {
-			m.writeLine(depth+2, options)
+		for _, option := range formatNodeOptions(subscription.Option.Defaults) {
+			m.writeLine(depth+2, option)
 		}
 		for _, rule := range subscription.Option.Rules {
 			functions := make([]string, 0, len(rule.Filter))
@@ -202,6 +204,9 @@ func (m *Marshaller) marshalSubscriptions(subscriptions []Subscription, depth in
 }
 
 func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err error) {
+	if from.Kind() == reflect.Interface && from.IsNil() {
+		return nil
+	}
 	if m.IgnoreZero && from.IsZero() {
 		// Do not marshal zero value.
 		return nil
@@ -229,6 +234,10 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 				vals = append(vals, v.String(true, true, false))
 			}
 			m.writeLine(depth, key+":"+strings.Join(vals, "&&"))
+		case *config_parser.ProxyPath:
+			for i := 0; i < from.Len(); i++ {
+				m.writeLine(depth, from.Index(i).Interface().(*config_parser.ProxyPath).String(true, true))
+			}
 		case KeyableString:
 			m.writeLine(depth, key+" {")
 			if err = m.marshalStringList(from, depth+1, true); err != nil {
@@ -240,14 +249,28 @@ func (m *Marshaller) marshalLeaf(key string, from reflect.Value, depth int) (err
 		}
 	default:
 		switch val := from.Interface().(type) {
-		case fmt.Stringer, string,
+		case string:
+			if key == "fallback" {
+				m.writeLine(depth, key+":"+(&config_parser.Function{Name: val}).String(true, true, true))
+			} else {
+				m.writeLine(depth, key+":"+strconv.Quote(val))
+			}
+		case fmt.Stringer,
 			uint8, uint16, uint32, uint64,
 			int, int8, int16, int32, int64,
 			float32, float64,
 			bool:
 			m.writeLine(depth, key+":"+strconv.Quote(fmt.Sprintf("%v", val)))
+		case QuotedString:
+			m.writeLine(depth, key+":"+strconv.Quote(string(val)))
 		case *config_parser.Function:
 			m.writeLine(depth, key+":"+val.String(true, true, false))
+		case []*config_parser.Function:
+			var vals []string
+			for _, function := range val {
+				vals = append(vals, function.String(true, true, false))
+			}
+			m.writeLine(depth, key+":"+strings.Join(vals, "&&"))
 		default:
 			// Named string types (e.g., consts.RerouteMode).
 			if from.Kind() == reflect.String {
@@ -274,12 +297,15 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		if !ok {
 			return fmt.Errorf("tag mapstructure is required")
 		}
+		if present := from.FieldByName("Present"); key != "_" && field.IsZero() && present.IsValid() && present.Type() == reflect.TypeOf(map[string]bool{}) && !present.MapIndex(reflect.ValueOf(key)).IsValid() {
+			continue
+		}
 		// Reserved field.
 		if key == "_" {
 			switch structField.Name {
 			case "Name":
-			case "FilterAnnotation":
-				// Marshaled together with the Filter field.
+			case "Present":
+				// Parser metadata used to preserve explicit zero-valued fields.
 			case "SoMarkFromDaeSet":
 				// Parser metadata; SoMarkFromDae itself is marshaled below.
 			case "Rules":
@@ -307,14 +333,6 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		}
 
 		// Normal field.
-		// Fields with a sibling "<Name>Annotation" field (e.g., Filter) are
-		// marshaled together with their annotations.
-		if annotationField := from.FieldByName(structField.Name + "Annotation"); annotationField.IsValid() {
-			if err = m.marshalLeafWithAnnotation(key, field, annotationField, depth); err != nil {
-				return err
-			}
-			continue
-		}
 		if structField.Name == "SoMarkFromDae" && field.IsZero() {
 			if configured := from.FieldByName("SoMarkFromDaeSet"); configured.IsValid() && !configured.Bool() {
 				continue
@@ -323,39 +341,6 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		if err = m.marshalLeaf(key, field, depth); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func (m *Marshaller) marshalLeafWithAnnotation(key string, from reflect.Value, annotation reflect.Value, depth int) (err error) {
-	if m.IgnoreZero && from.IsZero() {
-		return nil
-	}
-	functionLists, ok := from.Interface().([][]*config_parser.Function)
-	if !ok {
-		return fmt.Errorf("annotatable leaf should be [][]*config_parser.Function: %v", from.Type())
-	}
-	annotationLists, ok := annotation.Interface().([][]*config_parser.Param)
-	if !ok {
-		return fmt.Errorf("annotation leaf should be [][]*config_parser.Param: %v", annotation.Type())
-	}
-	if len(functionLists) != len(annotationLists) {
-		return fmt.Errorf("unmatched annotations length: %v function lists and %v annotation lists", len(functionLists), len(annotationLists))
-	}
-	for i, functions := range functionLists {
-		var vals []string
-		for _, f := range functions {
-			vals = append(vals, f.String(true, true, false))
-		}
-		line := key + ":" + strings.Join(vals, "&&")
-		if annotation := annotationLists[i]; len(annotation) > 0 {
-			var params []string
-			for _, p := range annotation {
-				params = append(params, p.String(true, true))
-			}
-			line += " [" + strings.Join(params, ", ") + "]"
-		}
-		m.writeLine(depth, line)
 	}
 	return nil
 }

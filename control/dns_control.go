@@ -631,17 +631,18 @@ Dial:
 		if ResponseIndex.IsReserved() {
 			if log.IsLevelEnabled(log.InfoLevel) {
 				fields := log.Fields{
-					"network":  dialArgument.networkType.String(),
-					"outbound": dialArgument.Outbound.Name,
-					"policy":   dialArgument.Outbound.GetSelectionPolicy(),
-					"dialer":   dialArgument.Dialer.Name,
-					"qname":    queryInfo.qname,
-					"qtype":    queryInfo.qtype,
-					"pid":      req.routingResult.Pid,
-					"ifindex":  req.routingResult.Ifindex,
-					"dscp":     req.routingResult.Dscp,
-					"pname":    ProcessName2String(req.routingResult.Pname[:]),
-					"mac":      Mac2String(req.routingResult.Mac[:]),
+					"network":     dialArgument.networkType.String(),
+					"outbound":    dialArgument.Outbound.Name,
+					"target_kind": dialArgument.Outbound.TargetKind.String(),
+					"policy":      dialArgument.Outbound.DisplayPolicy(),
+					"dialer":      dialArgument.Dialer.Name,
+					"qname":       queryInfo.qname,
+					"qtype":       queryInfo.qtype,
+					"pid":         req.routingResult.Pid,
+					"ifindex":     req.routingResult.Ifindex,
+					"dscp":        req.routingResult.Dscp,
+					"pname":       ProcessName2String(req.routingResult.Pname[:]),
+					"mac":         Mac2String(req.routingResult.Mac[:]),
 				}
 				switch ResponseIndex {
 				case consts.DnsResponseOutboundIndex_Accept:

@@ -119,6 +119,45 @@ func splitWanInterfaces(ifnames []string) (manual []string, auto bool) {
 	return manual, auto
 }
 
+func collectRoutingTargetNames(routingConfig *config.Routing) []string {
+	if routingConfig == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(routingConfig.Rules)+1)
+	targets := make([]string, 0, len(routingConfig.Rules)+1)
+	appendTarget := func(name string) {
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		targets = append(targets, name)
+	}
+	for _, rule := range routingConfig.Rules {
+		appendTarget(rule.Outbound.Name)
+	}
+	if routingConfig.Fallback != nil {
+		appendTarget(config.FunctionOrStringToFunction(routingConfig.Fallback).Name)
+	}
+	return targets
+}
+
+func isReservedRoutingTarget(name string) bool {
+	switch name {
+	case consts.OutboundDirect.String(), consts.OutboundBlock.String(),
+		consts.OutboundMustRules.String(), consts.OutboundControlPlaneRouting.String():
+		return true
+	default:
+		return false
+	}
+}
+
+func candidateStatsScope(target string, path *outbound.PathSpec, occurrences map[string]int) string {
+	identity := path.Identity()
+	index := occurrences[identity]
+	occurrences[identity] = index + 1
+	return strconv.Itoa(len(target)) + ":" + target + ":" + strconv.Itoa(index)
+}
+
 // TODO: 统一 Outbound 中的DNS解析器
 // TODO: Hy2 的 mark 支持
 // TODO: Connectivity Check Failed 仅将状态变更作为 Warning、
@@ -282,29 +321,18 @@ func NewControlPlane(
 	}
 
 	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(netproxy.NewRuntime(_direct), option, &dialer.Property{Property: *directProperty}, false)
+	direct := dialer.NewDialer(netproxy.NewRuntime(_direct), option, &dialer.Property{Property: *directProperty}, dialer.InitialCheckDisabled)
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(netproxy.NewRuntime(_block), option, &dialer.Property{Property: *blockProperty}, false)
+	block := dialer.NewDialer(netproxy.NewRuntime(_block), option, &dialer.Property{Property: *blockProperty}, dialer.InitialCheckDisabled)
 	outbounds := []*outbound.DialerGroup{
-		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindAlwaysAlive,
+		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindSingleAlwaysAlive,
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
-			dialer.DialerSelectionPolicy{
-				Policy:     consts.DialerSelectionPolicy_Fixed,
-				FixedIndex: 0,
-			}, nil),
+			dialer.DialerSelectionPolicy{}, nil).SetTargetMetadata(outbound.TargetKindBuiltin),
 		outbound.NewDialerGroup(option, consts.OutboundBlock.String(), outbound.GroupKindInvisible,
 			[]*dialer.Dialer{block}, []*dialer.Annotation{{}},
-			dialer.DialerSelectionPolicy{
-				Policy:     consts.DialerSelectionPolicy_Fixed,
-				FixedIndex: 0,
-			}, nil),
+			dialer.DialerSelectionPolicy{}, nil).SetTargetMetadata(outbound.TargetKindBuiltin),
 	}
-	// Filter out groups.
-	dialerSet, err := outbound.NewDialerSet(option, prometheusRegistry, nodes)
-	if err != nil {
-		_ = closeDialerGroups(outbounds)
-		return nil, oops.Wrapf(err, "failed to apply node options")
-	}
+	var dialerSet *outbound.DialerSet
 	var plane *ControlPlane
 	var cancel context.CancelFunc
 	defer func() {
@@ -317,48 +345,119 @@ func NewControlPlane(
 					_ = plane.deferFuncs[i]()
 				}
 			}
-			_ = dialerSet.Close()
 		}
 	}()
-	for _, group := range groups {
-		policy, err := dialer.NewDialerSelectionPolicyFromGroupParam(&group)
-		if err != nil {
-			return nil, oops.Errorf("failed to create group %v: %w", group.Name, err)
+	// Compile groups and all routing target references before assigning outbound
+	// IDs. Policyless groups remain compile-time templates unless routing uses
+	// them as an exact-one target.
+	dialerSet, err = outbound.NewDialerSet(nodes)
+	if err != nil {
+		return nil, oops.Wrapf(err, "build node descriptors")
+	}
+	routingTargets := collectRoutingTargetNames(routingA)
+	groupCompiler, err := outbound.NewGroupCompiler(dialerSet, groups, routingTargets)
+	if err != nil {
+		return nil, oops.Wrapf(err, "compile proxy groups")
+	}
+	materialized := map[string]struct{}{
+		consts.OutboundDirect.String(): {},
+		consts.OutboundBlock.String():  {},
+	}
+	materializedPathCount := 0
+	materializeTarget := func(target *outbound.ResolvedTarget) error {
+		var name string
+		var paths []*outbound.PathSpec
+		if node := target.Node; node != nil {
+			name = node.Property.Name
+			paths = []*outbound.PathSpec{outbound.NodePath(node)}
 		}
-		dialers, annos, err := dialerSet.FilterAndAnnotate(group.Filter, group.FilterAnnotation, group.NextHop)
-		if err != nil {
-			return nil, oops.Errorf(`failed to create group "%v": %w`, group.Name, err)
+		finalOption := option
+		selectionPolicy := dialer.DialerSelectionPolicy{}
+		if group := target.Group; group != nil {
+			name = group.Name
+			var compileErr error
+			paths, compileErr = groupCompiler.ExpandRoutable(group)
+			if compileErr != nil {
+				return oops.Errorf("failed to expand group %v: %w", name, compileErr)
+			}
+			if groupOption := parseGroupOverrideOption(*group, *global); groupOption != nil {
+				finalOption = groupOption
+				log.Infof(`Group "%v"'s check option has been overridden.`, name)
+			}
+			if group.Policy != nil {
+				policy, policyErr := dialer.NewDialerSelectionPolicyFromGroupParam(group)
+				if policyErr != nil {
+					return oops.Errorf("failed to create group %v: %w", name, policyErr)
+				}
+				selectionPolicy = *policy
+			}
 		}
-		log.Infof(`Group "%v" node list:`, group.Name)
+		if len(outbounds) >= int(consts.OutboundUserDefinedMax)+1 {
+			return oops.Errorf("too many outbounds: cannot materialize target %q", name)
+		}
+		if len(paths) > outbound.MaxMaterializedPaths-materializedPathCount {
+			return oops.Errorf("materializing target %q would exceed the global proxy path limit %d", name, outbound.MaxMaterializedPaths)
+		}
+
+		dialers := make([]*dialer.Dialer, 0, len(paths))
+		annotations := make([]*dialer.Annotation, 0, len(paths))
+		pathOccurrences := make(map[string]int, len(paths))
+		for _, path := range paths {
+			d, buildErr := dialerSet.BuildPath(path, finalOption, candidateStatsScope(name, path, pathOccurrences))
+			if buildErr != nil {
+				var pathBuildErr *outbound.PathBuildError
+				if errors.As(buildErr, &pathBuildErr) && !pathBuildErr.Node.Required {
+					log.Warnf("failed to build subscription node %q for target %q: %v", pathBuildErr.Node.Property.Name, name, pathBuildErr.Err)
+					continue
+				}
+				for _, d := range dialers {
+					_ = d.Close()
+					d.RetireTransport()
+				}
+				return oops.Errorf("failed to build target %v path: %w", name, buildErr)
+			}
+			dialers = append(dialers, d)
+			annotations = append(annotations, path.Annotation)
+		}
+
+		log.Infof(`Target "%v" path list:`, name)
 		for _, d := range dialers {
 			log.Infoln("\t" + d.Name)
 		}
 		if len(dialers) == 0 {
 			log.Infoln("\t<Empty>")
 		}
-		groupOption, err := ParseGroupOverrideOption(group, *global)
-		finalOption := option
-		if err == nil && groupOption != nil {
-			newDialers := make([]*dialer.Dialer, 0)
-			for _, d := range dialers {
-				newDialer := d.CloneForStatsScope(group.Name)
-				newDialer.GlobalOption = groupOption
-				newDialers = append(newDialers, newDialer)
-			}
-			log.Infof(`Group "%v"'s check option has been override.`, group.Name)
-			dialers = newDialers
-			finalOption = groupOption
-		}
 		id := uint8(len(outbounds))
-		dialerGroup := outbound.NewDialerGroup(finalOption, group.Name, outbound.GroupKindNormal, dialers, annos, *policy,
-			core.outboundAliveChangeCallback(id, group.Name, global.NoConnectivityTrySniff, noConnectivityOutbound))
-		outbounds = append(outbounds, dialerGroup)
+		outbounds = append(outbounds, outbound.NewDialerGroup(finalOption, name, outbound.GroupKindSelector, dialers, annotations, selectionPolicy,
+			core.outboundAliveChangeCallback(id, name, global.NoConnectivityTrySniff, noConnectivityOutbound)).
+			SetTargetMetadata(target.Kind))
+		materializedPathCount += len(dialers)
+		materialized[name] = struct{}{}
+		return nil
+	}
+
+	for _, group := range groupCompiler.SelectorGroups() {
+		if err := materializeTarget(&outbound.ResolvedTarget{Kind: outbound.TargetKindGroup, Group: group}); err != nil {
+			return nil, err
+		}
+	}
+	for _, targetName := range routingTargets {
+		if isReservedRoutingTarget(targetName) {
+			continue
+		}
+		resolved, resolveErr := groupCompiler.ResolveRoutingTarget(targetName)
+		if resolveErr != nil {
+			return nil, oops.Errorf("resolve routing target %q: %w", targetName, resolveErr)
+		}
+		if _, ok := materialized[targetName]; ok {
+			continue
+		}
+		if err := materializeTarget(resolved); err != nil {
+			return nil, err
+		}
 	}
 
 	// Generate outboundName2Id from outbounds.
-	if len(outbounds) > int(consts.OutboundUserDefinedMax) {
-		return nil, oops.Errorf("too many outbounds")
-	}
 	outboundName2Id := make(map[string]uint8)
 	for i, o := range outbounds {
 		if _, exist := outboundName2Id[o.Name]; exist {
@@ -546,7 +645,7 @@ func (c *ControlPlane) Activate() error {
 	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
 	wg := new(sync.WaitGroup)
 	for _, g := range c.outbounds {
-		if g.Kind == outbound.GroupKindNormal {
+		if g.ChecksConnectivity() {
 			if err := g.InitializeConnectivity(); err != nil {
 				return oops.Errorf("initialize outbound %q availability: %w", g.Name, err)
 			}
@@ -742,7 +841,7 @@ func (c *ControlPlane) requestConnectivityRechecks() {
 	}
 	seen := make(map[*dialer.Dialer]struct{})
 	for _, group := range c.outbounds {
-		if group.Kind != outbound.GroupKindNormal {
+		if !group.ChecksConnectivity() {
 			continue
 		}
 		for _, d := range group.Dialers {
@@ -762,7 +861,7 @@ func (c *ControlPlane) reconcileStats() {
 	nodesByKey := make(map[string]stats.NodeIdentity)
 	groups := make([]string, 0, len(c.outbounds))
 	for _, group := range c.outbounds {
-		if group.Kind == outbound.GroupKindNormal {
+		if group.ChecksConnectivity() {
 			groups = append(groups, group.Name)
 		}
 		for _, d := range group.Dialers {
@@ -795,7 +894,7 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 	return m, nil
 }
 
-func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer.GlobalOption, error) {
+func parseGroupOverrideOption(group config.Group, global config.Global) *dialer.GlobalOption {
 	result := global
 	changed := false
 	if group.UdpCheckDns != nil {
@@ -810,15 +909,14 @@ func ParseGroupOverrideOption(group config.Group, global config.Global) (*dialer
 		result.CheckIntervalMax = group.CheckIntervalMax
 		changed = true
 	}
-	if group.CheckTolerance != 0 {
+	if group.CheckTolerance != 0 || group.Present["check_tolerance"] {
 		result.CheckTolerance = group.CheckTolerance
 		changed = true
 	}
 	if changed {
-		option := dialer.NewGlobalOption(&result)
-		return option, nil
+		return dialer.NewGlobalOption(&result)
 	}
-	return nil, nil
+	return nil
 }
 
 // EjectBpf releases this plane's cleanup ownership of the shared BPF state and

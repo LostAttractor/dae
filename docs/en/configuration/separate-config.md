@@ -93,8 +93,12 @@ group {
         policy: min_moving_avg
     }
 
+    local_entry {
+        filter: name(node1)
+    }
+
     local_group {
-        filter: name(node1, node2)
+        group(local_entry) -> node(node2)
         policy: fixed(0)
     }
 }

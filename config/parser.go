@@ -28,7 +28,7 @@ func StringListParser(to reflect.Value, section *config_parser.Section) error {
 		case *config_parser.Param:
 			to.Set(reflect.Append(to, reflect.ValueOf(itemVal.String(true, false)).Convert(to.Type().Elem())))
 		default:
-			return fmt.Errorf("section %v does not support type %v: %v", section.Name, item.Type.String(), item.String(false, false))
+			return fmt.Errorf("section %v does not support type %v: %v", section.Name, item.TypeName(), item.String(false, false))
 		}
 	}
 	return nil
@@ -46,7 +46,6 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 	// keyToField is for further parsing use.
 	type Field struct {
 		Val        reflect.Value
-		Annotation reflect.Value
 		Index      int
 		Set        bool
 		Repeatable bool
@@ -65,13 +64,8 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			// omit
 			continue
 		}
-		annotationSF, annotatable := tot.FieldByName(structField.Name + "Annotation")
-		var annotation reflect.Value
-		if annotatable && annotationSF.Tag.Get("mapstructure") == "_" {
-			annotation = to.FieldByName(annotationSF.Name)
-		}
 		_, repeatable := structField.Tag.Lookup("repeatable")
-		keyToField[key] = &Field{Val: field, Annotation: annotation, Index: i, Repeatable: repeatable}
+		keyToField[key] = &Field{Val: field, Index: i, Repeatable: repeatable}
 
 		// Fill in default value before parsing section.
 		defaultValue, ok := structField.Tag.Lookup("default")
@@ -105,30 +99,18 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			if !ok {
 				return fmt.Errorf("unexpected key: %v", itemVal.Key)
 			}
+			if len(itemVal.Annotation) > 0 {
+				return fmt.Errorf("field %q does not support annotations", itemVal.Key)
+			}
 			if itemVal.AndFunctions != nil {
 				// AndFunctions.
 				// If field is interface{} or types equal, we can assign.
 				if field.Val.Kind() == reflect.Interface ||
 					field.Val.Type() == reflect.TypeOf(itemVal.AndFunctions) {
 					field.Val.Set(reflect.ValueOf(itemVal.AndFunctions))
-
-					if field.Annotation.IsValid() {
-						if field.Annotation.Type() != reflect.TypeOf(itemVal.Annotation) {
-							return fmt.Errorf("[CODE BUG]: unmatched annotation type")
-						}
-						field.Annotation.Set(reflect.ValueOf(itemVal.Annotation))
-					}
 				} else if field.Repeatable && field.Val.Type() == reflect.SliceOf(reflect.TypeOf(itemVal.AndFunctions)) {
 					// If field is slice and repeatable, and slice element types match, we can append.
 					field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal.AndFunctions)))
-
-					if field.Annotation.IsValid() {
-						if field.Annotation.Type() != reflect.SliceOf(reflect.TypeOf(itemVal.Annotation)) {
-							return fmt.Errorf("[CODE BUG]: unmatched annotation type")
-						}
-						// We also append if `itemVal.Annotation == nil` because we want the same annotation length with the field's.
-						field.Annotation.Set(reflect.Append(field.Annotation, reflect.ValueOf(itemVal.Annotation)))
-					}
 				} else {
 					return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 				}
@@ -137,7 +119,11 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 				switch field.Val.Kind() {
 				case reflect.Interface:
 					// Field is interface{}, we can assign.
-					field.Val.Set(reflect.ValueOf(itemVal.Val))
+					if itemVal.Key == "fallback" && itemVal.Quoted {
+						field.Val.Set(reflect.ValueOf(QuotedString(itemVal.Val)))
+					} else {
+						field.Val.Set(reflect.ValueOf(itemVal.Val))
+					}
 				case reflect.Slice:
 					// Field is not interface{}, we can decode.
 					values := strings.Split(itemVal.Val, ",")
@@ -160,6 +146,12 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 				}
 			}
 			field.Set = true
+			if present := to.FieldByName("Present"); present.IsValid() && present.CanSet() && present.Type() == reflect.TypeOf(map[string]bool{}) {
+				if present.IsNil() {
+					present.Set(reflect.MakeMap(present.Type()))
+				}
+				present.SetMapIndex(reflect.ValueOf(itemVal.Key), reflect.ValueOf(true))
+			}
 		case *config_parser.Section:
 			// Named section config item.
 			field, ok := keyToField[itemVal.Name]
@@ -181,9 +173,16 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			}
 			field := to.FieldByName("Rules")
 			field.Set(reflect.Append(field, reflect.ValueOf(itemVal)))
+		case *config_parser.ProxyPath:
+			field, ok := keyToField["path"]
+			if !ok || field.Val.Type() != reflect.TypeOf([]*config_parser.ProxyPath{}) {
+				return fmt.Errorf("cannot use proxy path in this context: %v", itemVal.String(true, false))
+			}
+			field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal)))
+			field.Set = true
 		default:
 			if _, ignore := ignoreTypeSet[reflect.TypeOf(itemVal)]; !ignore {
-				return fmt.Errorf("unexpected type %v: %v", item.Type.String(), item.String(false, false))
+				return fmt.Errorf("unexpected type %v: %v", item.TypeName(), item.String(false, false))
 			}
 		}
 	}
@@ -252,7 +251,7 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 					}
 					to.Set(reflect.Append(to, elem))
 				default:
-					return fmt.Errorf("unmatched type: %v -> %v", item.Type.String(), elemType)
+					return fmt.Errorf("unmatched type: %v -> %v", item.TypeName(), elemType)
 				}
 			}
 			return nil
@@ -265,8 +264,6 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 	default:
 		goto unsupported
 	}
-
-	panic("code should not reach here")
 
 unsupported:
 	return fmt.Errorf("unsupported section type %v", to.Type())

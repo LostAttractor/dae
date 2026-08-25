@@ -23,13 +23,15 @@ subscription {
 		link: 'https://example.com/subscription'
 		option {
 			multiplex: off
-			filter: protocol(shadowsocks) && name(regex: '^HK-\d+$') [multiplex: smux]
+			check_async: true
+			filter: protocol(shadowsocks) && name(regex: '^HK-\d+$') [multiplex: smux, check_async: false]
 			filter: name(HK-legacy, HK-2, HK-3, HK-4, HK-5, HK-6) [multiplex: off]
 		}
 	}
 }
+
 node {
-	hk: 'ss://example' [multiplex: smux-udp-passthrough]
+	hk: 'ss://example' [multiplex: smux-udp-passthrough, check_async: true]
 	'socks5://localhost:1080'
 }
 routing { fallback: direct }
@@ -48,13 +50,20 @@ routing { fallback: direct }
 	if subscription.Option.Defaults.Multiplex != MultiplexModeOff {
 		t.Fatalf("default multiplex = %q, want off", subscription.Option.Defaults.Multiplex)
 	}
+	if subscription.Option.Defaults.CheckAsync == nil || !*subscription.Option.Defaults.CheckAsync {
+		t.Fatalf("default check_async = %v, want true", subscription.Option.Defaults.CheckAsync)
+	}
 	if len(subscription.Option.Rules) != 2 {
 		t.Fatalf("option rules = %d, want 2", len(subscription.Option.Rules))
 	}
 	if got := subscription.Option.Rules[0].Options.Multiplex; got != MultiplexModeSmux {
 		t.Fatalf("first rule multiplex = %q, want smux", got)
 	}
-	if len(conf.Node) != 2 || conf.Node[0].Name != "hk" || conf.Node[0].Options.Multiplex != MultiplexModeSmuxUDPPassthrough {
+	if got := subscription.Option.Rules[0].Options.CheckAsync; got == nil || *got {
+		t.Fatalf("first rule check_async = %v, want false", got)
+	}
+	if len(conf.Node) != 2 || conf.Node[0].Name != "hk" || conf.Node[0].Options.Multiplex != MultiplexModeSmuxUDPPassthrough ||
+		conf.Node[0].Options.CheckAsync == nil || !*conf.Node[0].Options.CheckAsync {
 		t.Fatalf("unexpected nodes: %+v", conf.Node)
 	}
 
@@ -72,6 +81,22 @@ routing { fallback: direct }
 	}
 	if !reflect.DeepEqual(conf, roundTrip) {
 		t.Fatalf("config changed after round trip\nfirst:  %+v\nsecond: %+v", conf, roundTrip)
+	}
+}
+
+func TestNestedGroupNameDoesNotEnableProxyPathContext(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+subscription {
+	group {
+		link: 'https://example.com/subscription'
+		option { filter: name(HK) [multiplex: smux] }
+	}
+}
+routing { fallback: direct }
+`)
+	if len(conf.Subscription) != 1 || conf.Subscription[0].Name != "group" || len(conf.Subscription[0].Option.Rules) != 1 {
+		t.Fatalf("subscription = %#v", conf.Subscription)
 	}
 }
 
@@ -93,6 +118,35 @@ routing { fallback: direct }
 			config: `
 global {}
 node { test: 'ss://example' [multiplex: true] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "invalid check_async",
+			config: `
+global {}
+node { test: 'ss://example' [check_async: maybe] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "numeric check_async alias",
+			config: `
+global {}
+node { test: 'ss://example' [check_async: 1] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "node reference used as option filter",
+			config: `
+global {}
+subscription {
+	test {
+		link: 'https://example.com/subscription'
+		option { filter: node(test) [multiplex: smux] }
+	}
+}
 routing { fallback: direct }
 `,
 		},
@@ -323,6 +377,19 @@ routing { fallback: direct }
 	if _, err = New(sections); err == nil {
 		t.Error("check_interval_max above half the time.Duration range should be rejected")
 	}
+	for _, field := range []string{"check_interval", "check_interval_max"} {
+		sections, err = config_parser.Parse(`
+global {}
+group { target { policy: random ` + field + `: 0s } }
+routing { fallback: target }
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = New(sections); err == nil {
+			t.Errorf("group %s: explicit 0s should be rejected", field)
+		}
+	}
 }
 
 func TestNewRejectsInvalidControlModes(t *testing.T) {
@@ -357,6 +424,75 @@ unknown_section {}
 	}
 }
 
+func TestNew_RejectsAnnotationOnUnsupportedField(t *testing.T) {
+	sections, err := config_parser.Parse(`
+global {}
+group { target { policy: random [priority: 1] } }
+routing { fallback: target }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = New(sections); err == nil {
+		t.Fatal("annotation on policy was silently accepted")
+	}
+}
+
+func TestNew_TracksExplicitGroupRuntimeFields(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+group { target { policy: random check_tolerance: 0s } }
+routing { fallback: target }
+`)
+	if !conf.Group[0].Present["check_tolerance"] {
+		t.Fatal("explicit zero-valued group field was not tracked")
+	}
+}
+
+func TestNew_ParsesProxyPathExpressions(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+group {
+	entry {
+		filter: name(relay)
+	}
+	target {
+		filter: name(relay) [priority: 1]
+		filter: name(relay) -> filter: subtag(flowercloud) && name(keyword: '日本')
+		node(relay) -> group(entry)
+		policy: min_moving_avg
+	}
+}
+routing { fallback: target }
+`)
+	paths := conf.Group[1].Paths
+	if len(paths) != 3 {
+		t.Fatalf("paths = %#v", paths)
+	}
+	if len(paths[0].Stages) != 1 || paths[0].Stages[0].Key != "filter" || paths[0].Stages[0].Annotation[0].Key != "priority" {
+		t.Fatalf("direct path = %#v", paths[0])
+	}
+	if len(paths[1].Stages) != 2 || len(paths[1].Stages[1].AndFunctions) != 2 {
+		t.Fatalf("inline chain = %#v", paths[1])
+	}
+	if len(paths[2].Stages) != 2 || paths[2].Stages[0].AndFunctions[0].Name != "node" ||
+		paths[2].Stages[1].AndFunctions[0].Name != "group" {
+		t.Fatalf("typed chain = %#v", paths[2])
+	}
+}
+
+func TestNew_DecodesQuotedPathReferenceName(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+group { target { node("Node \"A\" \\ path") policy: random } }
+routing { fallback: target }
+`)
+	stage := conf.Group[0].Paths[0].Stages[0]
+	if stage.AndFunctions[0].Name != "node" || stage.AndFunctions[0].Params[0].Val != `Node "A" \ path` {
+		t.Fatalf("stage = %#v", stage)
+	}
+}
+
 func TestNew_PatchMustOutbound(t *testing.T) {
 	conf := parseConfig(t, `
 global {}
@@ -364,6 +500,7 @@ routing {
 	dip(geoip:cn) -> must_direct
 	fallback: must_my_group
 }
+
 `)
 	rule := conf.Routing.Rules[0]
 	if rule.Outbound.Name != "direct" {
@@ -381,6 +518,27 @@ routing {
 	}
 	if len(fallback.Params) != 1 || fallback.Params[0].Val != "must" {
 		t.Fatalf("must param expected in fallback: got %+v", fallback.Params)
+	}
+}
+
+func TestNew_QuotedMustPrefixIsLiteralTargetName(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+routing {
+	dip(geoip:cn) -> 'must_edge'
+	domain(full: example.com) -> 'must_callable'(mark: 0x800)
+	fallback: 'must_fallback'
+}
+`)
+	if outbound := conf.Routing.Rules[0].Outbound; outbound.Name != "must_edge" || !outbound.Quoted || len(outbound.Params) != 0 {
+		t.Fatalf("quoted must target was rewritten: %+v", outbound)
+	}
+	if outbound := conf.Routing.Rules[1].Outbound; outbound.Name != "must_callable" || !outbound.Quoted || len(outbound.Params) != 1 {
+		t.Fatalf("quoted callable must target was rewritten: %+v", outbound)
+	}
+	fallback := FunctionOrStringToFunction(conf.Routing.Fallback)
+	if fallback.Name != "must_fallback" || !fallback.Quoted || len(fallback.Params) != 0 {
+		t.Fatalf("quoted must fallback was rewritten: %+v", fallback)
 	}
 }
 

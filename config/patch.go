@@ -49,10 +49,10 @@ func validateCheckIntervals(params *Config) error {
 		return fmt.Errorf("check_interval_max is too large")
 	}
 	for _, group := range params.Group {
-		if group.CheckInterval < 0 {
+		if group.CheckInterval < 0 || group.Present["check_interval"] && group.CheckInterval == 0 {
 			return fmt.Errorf("group %q: check_interval must be positive", group.Name)
 		}
-		if group.CheckIntervalMax != 0 && group.CheckIntervalMax < time.Second {
+		if (group.Present["check_interval_max"] || group.CheckIntervalMax != 0) && group.CheckIntervalMax < time.Second {
 			return fmt.Errorf("group %q: check_interval_max must be at least 1s", group.Name)
 		}
 		if group.CheckIntervalMax > time.Duration(math.MaxInt64/2) {
@@ -91,7 +91,7 @@ func validateFallbacks(params *Config) error {
 
 func patchMustOutbound(params *Config) error {
 	for i := range params.Routing.Rules {
-		if strings.HasPrefix(params.Routing.Rules[i].Outbound.Name, "must_") {
+		if !params.Routing.Rules[i].Outbound.Quoted && strings.HasPrefix(params.Routing.Rules[i].Outbound.Name, "must_") {
 			if params.Routing.Rules[i].Outbound.Name == "must_rules" {
 				// Reserve must_rules.
 				continue
@@ -106,7 +106,7 @@ func patchMustOutbound(params *Config) error {
 	if err != nil {
 		return fmt.Errorf("invalid routing fallback: %w", err)
 	}
-	if strings.HasPrefix(f.Name, "must_") {
+	if !f.Quoted && strings.HasPrefix(f.Name, "must_") {
 		f.Name = strings.TrimPrefix(f.Name, "must_")
 		f.Params = append(f.Params, &config_parser.Param{
 			Val: "must",

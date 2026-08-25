@@ -726,12 +726,12 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 
 	/// Build descriptors for locally configured nodes.
 	nodeDescriptors := make([]outbound.NodeDescriptor, 0, len(conf.Node))
-	for i, node := range conf.Node {
+	for _, node := range conf.Node {
 		nodeDescriptors = append(nodeDescriptors, outbound.NodeDescriptor{
-			Name:        node.Name,
-			Link:        node.Link,
-			Options:     node.Options,
-			SourceIndex: i,
+			Name:     node.Name,
+			Link:     node.Link,
+			Options:  node.Options,
+			Required: true,
 		})
 	}
 
@@ -792,13 +792,12 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 			continue
 		}
 		if len(nodes) > 0 {
-			for i, link := range nodes {
+			for _, link := range nodes {
 				nodeDescriptors = append(nodeDescriptors, outbound.NodeDescriptor{
 					Link:            link,
 					SubscriptionTag: tag,
 					Defaults:        sub.Option.Defaults,
 					Rules:           sub.Option.Rules,
-					SourceIndex:     i,
 				})
 			}
 		}

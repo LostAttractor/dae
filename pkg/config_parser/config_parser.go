@@ -7,6 +7,7 @@ package config_parser
 
 import (
 	"fmt"
+
 	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 )
@@ -23,12 +24,13 @@ func Parse(in string) (sections []*Section, err error) {
 	parser.AddErrorListener(errorListener)
 	parser.BuildParseTrees = true
 	tree := parser.Start()
-
-	walker := NewWalker(parser)
-	antlr.ParseTreeWalkerDefault.Walk(walker, tree)
 	if errorListener.ErrorBuilder.Len() != 0 {
 		return nil, fmt.Errorf("%v", errorListener.ErrorBuilder.String())
 	}
 
-	return walker.Sections, nil
+	sections = (&decoder{parser: parser}).decode(tree)
+	if errorListener.ErrorBuilder.Len() != 0 {
+		return nil, fmt.Errorf("%v", errorListener.ErrorBuilder.String())
+	}
+	return sections, nil
 }

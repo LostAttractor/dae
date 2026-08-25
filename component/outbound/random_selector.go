@@ -46,7 +46,7 @@ func (s *RandomSelector) getSortedHighestPriorityAliveDialers(networkType *commo
 	preferred := preferredAliveDialers(s.dialerGroup.Dialers, networkType)
 	highestPriority := s.getHighestPriority(preferred)
 	for _, d := range preferred {
-		if s.dialerGroup.dialerToAnnotation[d].Priority == highestPriority {
+		if s.getPriority(d) == highestPriority {
 			aliveDialers = append(aliveDialers, d)
 		}
 	}
@@ -56,12 +56,20 @@ func (s *RandomSelector) getSortedHighestPriorityAliveDialers(networkType *commo
 func (s *RandomSelector) getHighestPriority(dialers []*dialer.Dialer) (highestPriority int) {
 	highestPriority = math.MinInt
 	for _, d := range dialers {
-		priority := s.dialerGroup.dialerToAnnotation[d].Priority
+		priority := s.getPriority(d)
 		if priority > highestPriority {
 			highestPriority = priority
 		}
 	}
 	return
+}
+
+func (s *RandomSelector) getPriority(d *dialer.Dialer) int {
+	latency := s.dialerGroup.dialerToAnnotation[d].AddLatency
+	if stats, ok := d.LatencyStats(s.dialerGroup); ok {
+		latency = saturatingDurationAdd(latency, stats.Last)
+	}
+	return s.dialerGroup.GetPriority(d, latency)
 }
 
 func (s *RandomSelector) NotifyStatusChange(dialer *dialer.Dialer) {

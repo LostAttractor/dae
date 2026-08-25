@@ -237,12 +237,12 @@ func (d *Dialer) createCheckOptions() []*checkOption {
 
 func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 	d.mu.Lock()
-	if len(d.groups) == 0 || !d.checkEnabled || d.checkActivated || d.ctx.Err() != nil {
+	if len(d.groups) == 0 || d.initialCheck == InitialCheckDisabled || d.checkActivated || d.ctx.Err() != nil {
 		d.mu.Unlock()
 		return
 	}
 	d.checkActivated = true
-	checkAsync := d.checkAsync
+	checkAsync := d.initialCheck == InitialCheckAsync
 	d.checkWG.Add(1)
 	d.mu.Unlock()
 
@@ -805,7 +805,7 @@ func (d *Dialer) UnregisterDialerGroup(g DialerGroup) {
 }
 
 func (d *Dialer) NotifyStatusChange() {
-	if !d.checkEnabled {
+	if d.initialCheck == InitialCheckDisabled {
 		return
 	}
 	// Inform DialerGroups to update state.
@@ -834,7 +834,7 @@ func (d *Dialer) ReportUnavailable() {
 }
 
 func (d *Dialer) handleSessionState(event netproxy.StateEvent, requestCheck bool) {
-	if !d.checkEnabled || d.ctx.Err() != nil {
+	if d.initialCheck == InitialCheckDisabled || d.ctx.Err() != nil {
 		return
 	}
 	if event.State == netproxy.SessionConnected {

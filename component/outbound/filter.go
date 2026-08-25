@@ -11,10 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -23,7 +23,6 @@ import (
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/smux"
 	"github.com/dlclark/regexp2"
-	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -37,26 +36,7 @@ const (
 const (
 	FilterKey_Name_Regex   = "regex"
 	FilterKey_Name_Keyword = "keyword"
-
-	FilterInput_SubscriptionTag_Regex = "regex"
 )
-
-// NodeInfo stores the original node information for lazy creation
-type NodeInfo struct {
-	Link          string
-	Property      *dialer.Property
-	Dialers       []D.Dialer
-	CreatedDialer *dialer.Dialer
-	sourceIndex   int
-}
-
-func nodeLogID(node *NodeInfo) string {
-	tag := node.Property.SubscriptionTag
-	if tag == "" {
-		tag = "local"
-	}
-	return fmt.Sprintf("node %d from %q", node.sourceIndex+1, tag)
-}
 
 type NodeDescriptor struct {
 	Name            string
@@ -65,53 +45,25 @@ type NodeDescriptor struct {
 	Defaults        config.NodeOptions
 	Rules           []config.NodeOptionRule
 	Options         config.NodeOptions
-	SourceIndex     int
+	Required        bool
 }
 
-func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (created *dialer.Dialer, err error) {
-	if n.CreatedDialer == nil {
-		runtime, err := D.BuildRuntime(d, &option.ExtraOption, n.Dialers...)
-		if err != nil {
-			return nil, err
-		}
-		n.CreatedDialer = dialer.NewDialer(runtime, option, n.Property, true)
-	}
-	return n.CreatedDialer, nil
+// NodeInfo is one original node. It never represents an expanded chain.
+type NodeInfo struct {
+	Link       string
+	Property   *dialer.Property
+	Dialers    []D.Dialer
+	CheckAsync bool
+	Required   bool
+}
+
+type PathSpec struct {
+	Nodes      []*NodeInfo // Physical order: first proxy to final proxy.
+	Annotation *dialer.Annotation
 }
 
 type DialerSet struct {
-	option             *dialer.GlobalOption
-	prometheusRegistry prometheus.Registerer
-	nodeInfos          []*NodeInfo
-	nodeInfosMap       map[dialer.Property]*NodeInfo
-	nodeToTagMap       map[*dialer.Dialer]string
-}
-
-func (s *DialerSet) Close() error {
-	nodes := make(map[*NodeInfo]struct{}, len(s.nodeInfos)+len(s.nodeInfosMap))
-	for _, node := range s.nodeInfos {
-		nodes[node] = struct{}{}
-	}
-	for _, node := range s.nodeInfosMap {
-		nodes[node] = struct{}{}
-	}
-	dialers := make(map[*dialer.Dialer]struct{})
-	transports := make(map[any]*dialer.Dialer)
-	for node := range nodes {
-		if node.CreatedDialer == nil {
-			continue
-		}
-		dialers[node.CreatedDialer] = struct{}{}
-		transports[node.CreatedDialer.TransportID()] = node.CreatedDialer
-	}
-	var err error
-	for d := range dialers {
-		err = errors.Join(err, d.Close())
-	}
-	for _, d := range transports {
-		d.RetireTransport()
-	}
-	return err
+	nodeInfos []*NodeInfo
 }
 
 func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dialer, error) {
@@ -131,70 +83,62 @@ func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dial
 	}
 }
 
-func NewDialerSet(option *dialer.GlobalOption, prometheusRegistry prometheus.Registerer, nodes []NodeDescriptor) (*DialerSet, error) {
-	s := &DialerSet{
-		option:             option,
-		prometheusRegistry: prometheusRegistry,
-		nodeInfos:          make([]*NodeInfo, 0),
-		nodeInfosMap:       make(map[dialer.Property]*NodeInfo),
-		nodeToTagMap:       make(map[*dialer.Dialer]string),
+func nodeIdentity(link string, options config.NodeOptions) string {
+	if options.Multiplex != "" {
+		return link + "\x1emultiplex=" + string(options.Multiplex)
 	}
-	occurrences := make(map[string]map[string]int)
+	return link
+}
+
+func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
+	set := new(DialerSet)
 	for _, node := range nodes {
 		builders, property, err := parseNodeLink(node.Link)
 		if err != nil {
-			tag := node.SubscriptionTag
-			if tag == "" {
-				tag = "local"
+			if node.Required {
+				return nil, fmt.Errorf("failed to parse local node %q: %w", node.Link, err)
 			}
-			log.Warnf("failed to parse node %d from %q (%T)", node.SourceIndex+1, tag, err)
+			log.Warnf("failed to parse subscription node %v: %v", node.Link, err)
 			continue
 		}
 		if node.Name != "" {
 			property.Name = node.Name
 		}
+		if isReservedTargetName(property.Name) {
+			if node.Required {
+				return nil, fmt.Errorf("local node name %q is reserved", property.Name)
+			}
+			log.Warnf("ignoring subscription node with reserved name %q", property.Name)
+			continue
+		}
 		nodeInfo := &NodeInfo{
-			Link: node.Link,
+			Link:     node.Link,
+			Required: node.Required,
 			Property: &dialer.Property{
 				Property:        *property,
 				SubscriptionTag: node.SubscriptionTag,
 			},
-			sourceIndex: node.SourceIndex,
 		}
 		effectiveOptions := node.Defaults
 		for _, rule := range node.Rules {
-			hit, err := s.filterHit(nodeInfo, rule.Filter)
-			if err != nil {
+			if err := validateFilters(rule.Filter); err != nil {
 				return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
 			}
-			if hit {
+			if filterHit(nodeInfo, rule.Filter) {
 				effectiveOptions.Overlay(rule.Options)
 			}
 		}
 		effectiveOptions.Overlay(node.Options)
+		nodeInfo.CheckAsync = effectiveOptions.CheckAsync != nil && *effectiveOptions.CheckAsync
 		builders, err = applyNodeOptions(builders, effectiveOptions)
 		if err != nil {
 			return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
 		}
-		nodeInfo.Property.Link = property.Link
-		identityLink := node.Link
-		if effectiveOptions.Multiplex != "" {
-			optionIdentity := "\x1emultiplex=" + string(effectiveOptions.Multiplex)
-			nodeInfo.Property.Link += optionIdentity
-			identityLink += optionIdentity
-		}
-		identity := dialer.ComposeStatsIdentity(node.Name, identityLink)
-		if occurrences[node.SubscriptionTag] == nil {
-			occurrences[node.SubscriptionTag] = make(map[string]int)
-		}
-		occurrence := occurrences[node.SubscriptionTag][identity]
-		occurrences[node.SubscriptionTag][identity]++
-		nodeInfo.Property.StatsIdentity = dialer.ComposeStatsIdentity("source", identity, strconv.Itoa(occurrence))
+		nodeInfo.Property.Link = nodeIdentity(property.Link, effectiveOptions)
 		nodeInfo.Dialers = builders
-		s.nodeInfos = append(s.nodeInfos, nodeInfo)
-		s.nodeInfosMap[*nodeInfo.Property] = nodeInfo
+		set.nodeInfos = append(set.nodeInfos, nodeInfo)
 	}
-	return s, nil
+	return set, nil
 }
 
 func normalizeShadowsocksLink(link string) string {
@@ -294,16 +238,16 @@ func validateNodeDialer(option *dialer.GlobalOption, link string) (err error) {
 			err = errors.New("node dialer construction panicked")
 		}
 	}()
-	dialers, property, err := parseNodeLink(link)
+	builders, property, err := parseNodeLink(link)
 	if err != nil {
 		return errors.New("node parser rejected link")
 	}
 	node := &NodeInfo{
 		Link:     link,
 		Property: &dialer.Property{Property: *property},
-		Dialers:  dialers,
+		Dialers:  builders,
 	}
-	created, err := node.createDialerIfNeeded(option, direct.Direct)
+	created, err := new(DialerSet).BuildPath(NodePath(node), option, "validation")
 	if err != nil {
 		return errors.New("node dialer construction failed")
 	}
@@ -315,157 +259,201 @@ func closeValidatedDialer(created *dialer.Dialer) error {
 	return created.Close()
 }
 
-func (s *DialerSet) filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) (hit bool, err error) {
-	// Example
-	// filter: name(regex:'^.*hk.*$', keyword:'sg') && name(keyword:'disney')
-	// filter: !name(regex: 'HK|TW|SG') && name(keyword: disney)
-	// filter: subtag(my_sub, regex:^my_, regex:my_)
+func (s *DialerSet) NodesNamed(name string) []*NodeInfo {
+	var nodes []*NodeInfo
+	for _, node := range s.nodeInfos {
+		if node.Property.Name == name {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
+}
 
-	// And
+func validateFilters(filters []*config_parser.Function) error {
+	for _, filter := range filters {
+		switch filter.Name {
+		case FilterInput_Name, FilterInput_SubscriptionTag, FilterInput_Link, FilterInput_Protocol:
+		default:
+			return fmt.Errorf("unsupported filter input type: %q", filter.Name)
+		}
+		for _, param := range filter.Params {
+			switch param.Key {
+			case "":
+			case FilterKey_Name_Keyword:
+				if filter.Name == FilterInput_SubscriptionTag {
+					return fmt.Errorf(`unsupported filter key %q in "filter: %v()"`, param.Key, filter.Name)
+				}
+			case FilterKey_Name_Regex:
+				if _, err := regexp2.Compile(param.Val, 0); err != nil {
+					return fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
+				}
+			default:
+				return fmt.Errorf(`unsupported filter key %q in "filter: %v()"`, param.Key, filter.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) bool {
 	for _, filter := range filters {
 		var value string
-		keywordSupported := true
 		switch filter.Name {
 		case FilterInput_Name:
 			value = nodeInfo.Property.Name
 		case FilterInput_SubscriptionTag:
-			value, keywordSupported = nodeInfo.Property.SubscriptionTag, false
+			value = nodeInfo.Property.SubscriptionTag
 		case FilterInput_Link:
 			value = nodeInfo.Link
 		case FilterInput_Protocol:
 			value = nodeInfo.Property.Protocol
-		default:
-			return false, fmt.Errorf(`unsupported filter input type: "%v"`, filter.Name)
 		}
-
-		var subFilterHit bool
+		hit := false
 		for _, param := range filter.Params {
 			switch param.Key {
 			case FilterKey_Name_Regex:
-				regex, err := regexp2.Compile(param.Val, 0)
-				if err != nil {
-					return false, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
-				}
-				subFilterHit, _ = regex.MatchString(value)
+				regex, _ := regexp2.Compile(param.Val, 0)
+				hit, _ = regex.MatchString(value)
 			case FilterKey_Name_Keyword:
-				if !keywordSupported {
-					return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
-				}
-				subFilterHit = strings.Contains(value, param.Val)
-			case "":
-				subFilterHit = value == param.Val
+				hit = strings.Contains(value, param.Val)
 			default:
-				return false, fmt.Errorf(`unsupported filter key "%v" in "filter: %v()"`, param.Key, filter.Name)
+				hit = value == param.Val
 			}
-			if subFilterHit {
+			if hit {
 				break
 			}
 		}
-		if subFilterHit == filter.Not {
-			return false, nil
+		if hit == filter.Not {
+			return false
 		}
 	}
-	return true, nil
+	return true
 }
 
-func (s *DialerSet) createNextHopDialer(nodeInfo, nextHopInfo *NodeInfo) (*dialer.Dialer, error) {
-	property := *nodeInfo.Property
-	property.Name = fmt.Sprintf("%s->%s", nodeInfo.Property.Name, nextHopInfo.Property.Name)
-	property.Protocol = fmt.Sprintf("%s->%s", nodeInfo.Property.Protocol, nextHopInfo.Property.Protocol)
-	property.Address = fmt.Sprintf("%s->%s", nodeInfo.Property.Address, nextHopInfo.Property.Address)
-	effectiveLink := fmt.Sprintf("%s->%s", nodeInfo.Link, nextHopInfo.Link)
-	property.Link = fmt.Sprintf("%s->%s", nodeInfo.Property.Link, nextHopInfo.Property.Link)
-	sourceIdentity := nodeInfo.Property.StatsIdentity
-	if sourceIdentity == "" {
-		sourceIdentity = nodeInfo.Property.Link
+func (s *DialerSet) Filter(filters []*config_parser.Function) ([]*NodeInfo, error) {
+	if err := validateFilters(filters); err != nil {
+		return nil, err
 	}
-	nextHopIdentity := nextHopInfo.Property.StatsIdentity
-	if nextHopIdentity == "" {
-		nextHopIdentity = nextHopInfo.Property.Link
-	}
-	if nextHopInfo.Property.SubscriptionTag != "" {
-		nextHopIdentity = dialer.ComposeStatsIdentity(nextHopInfo.Property.SubscriptionTag, nextHopIdentity)
-	}
-	property.StatsIdentity = dialer.ComposeStatsIdentity("next-hop", sourceIdentity, nextHopIdentity)
-
-	nextHopNodeInfo, ok := s.nodeInfosMap[property]
-	if !ok {
-		dialers := make([]D.Dialer, 0, len(nodeInfo.Dialers)+len(nextHopInfo.Dialers))
-		dialers = append(dialers, nextHopInfo.Dialers...)
-		dialers = append(dialers, nodeInfo.Dialers...)
-		nextHopNodeInfo = &NodeInfo{
-			Property: &property,
-			Dialers:  dialers,
-			Link:     effectiveLink,
+	filtered := make([]*NodeInfo, 0, len(s.nodeInfos))
+	for _, node := range s.nodeInfos {
+		if filterHit(node, filters) {
+			filtered = append(filtered, node)
 		}
-		s.nodeInfosMap[property] = nextHopNodeInfo
 	}
-	return nextHopNodeInfo.createDialerIfNeeded(s.option, direct.Direct)
+	return filtered, nil
 }
 
-func (s *DialerSet) FilterAndAnnotate(filters [][]*config_parser.Function, annotations [][]*config_parser.Param, nextHop string) (dialers []*dialer.Dialer, filterAnnotations []*dialer.Annotation, err error) {
-	if len(filters) != len(annotations) {
-		return nil, nil, fmt.Errorf("[CODE BUG]: unmatched annotations length: %v filters and %v annotations", len(filters), len(annotations))
+func nodeKey(node *NodeInfo) string {
+	var builder strings.Builder
+	for _, value := range []string{node.Property.SubscriptionTag, node.Property.Name, node.Property.Link} {
+		fmt.Fprintf(&builder, "%d:%s", len(value), value)
 	}
+	return builder.String()
+}
 
-	// Find NextHop dialer if specified
-	nextHopInfo, err := s.findNextHop(nextHop)
+func runtimePathKey(nodes []*NodeInfo, option *dialer.GlobalOption) string {
+	var builder strings.Builder
+	builder.WriteString(pathIdentity(nodes))
+	builder.WriteString("|runtime-options|")
+	values := []string{
+		fmt.Sprintf("%t", option.AllowInsecure),
+		option.TlsImplementation,
+		option.UtlsImitate,
+		option.BandwidthMaxTx,
+		option.BandwidthMaxRx,
+		fmt.Sprintf("%t", option.TlsFragment),
+		option.TlsFragmentLength,
+		option.TlsFragmentInterval,
+		option.UDPHopInterval.String(),
+	}
+	for _, value := range values {
+		fmt.Fprintf(&builder, "%d:%s", len(value), value)
+	}
+	return builder.String()
+}
+
+func pathIdentity(nodes []*NodeInfo) string {
+	var builder strings.Builder
+	for _, node := range nodes {
+		builder.WriteString(nodeKey(node))
+	}
+	return builder.String()
+}
+
+func (p *PathSpec) Identity() string { return pathIdentity(p.Nodes) }
+
+type PathBuildError struct {
+	Node *NodeInfo
+	Err  error
+}
+
+func (e *PathBuildError) Error() string {
+	return fmt.Sprintf("build node %q: %v", e.Node.Property.Name, e.Err)
+}
+
+func (e *PathBuildError) Unwrap() error { return e.Err }
+
+type pathNodeBuilder struct {
+	node    *NodeInfo
+	builder D.Dialer
+}
+
+func (b pathNodeBuilder) Dialer(option *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
+	d, err := b.builder.Dialer(option, parent)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to find next_hop '%s': %w", nextHop, err)
+		return d, &PathBuildError{Node: b.node, Err: err}
 	}
-
-	for _, nodeInfo := range s.nodeInfos {
-		annotation := &dialer.Annotation{}
-		if len(filters) > 0 {
-			annotation = nil
-			for i, filter := range filters {
-				hit, err := s.filterHit(nodeInfo, filter)
-				if err != nil {
-					return nil, nil, err
-				}
-				if !hit {
-					continue
-				}
-				annotation, err = dialer.NewAnnotation(annotations[i])
-				if err != nil {
-					return nil, nil, fmt.Errorf("apply filter annotation: %w", err)
-				}
-				break
-			}
-			if annotation == nil {
-				continue
-			}
-		}
-
-		var d *dialer.Dialer
-		if nextHopInfo == nil {
-			d, err = nodeInfo.createDialerIfNeeded(s.option, direct.Direct)
-			if err != nil {
-				log.Infof("failed to create dialer for %s: %v", nodeLogID(nodeInfo), err)
-				continue
-			}
-		} else {
-			d, err = s.createNextHopDialer(nodeInfo, nextHopInfo)
-			if err != nil {
-				log.Infof("failed to create dialer for %s via %s: %v", nodeLogID(nodeInfo), nodeLogID(nextHopInfo), err)
-				continue
-			}
-		}
-		dialers = append(dialers, d)
-		filterAnnotations = append(filterAnnotations, annotation)
-	}
-	return dialers, filterAnnotations, nil
+	return d, nil
 }
 
-func (s *DialerSet) findNextHop(nextHop string) (*NodeInfo, error) {
-	if nextHop == "" {
-		return nil, nil
+func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, statsScope string) (*dialer.Dialer, error) {
+	if len(spec.Nodes) == 0 {
+		return nil, errors.New("cannot build an empty proxy path")
 	}
-	// Search for the next hop node by name
-	for _, nodeInfo := range s.nodeInfos {
-		if nodeInfo.Property.Name == nextHop {
-			return nodeInfo, nil
+	builders := make([]D.Dialer, 0)
+	for _, node := range spec.Nodes {
+		for _, builder := range node.Dialers {
+			builders = append(builders, pathNodeBuilder{node: node, builder: builder})
 		}
 	}
-	return nil, fmt.Errorf("next_hop node '%s' not found", nextHop)
+	runtime, err := D.BuildRuntime(direct.Direct, &option.ExtraOption, builders...)
+	if err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(spec.Nodes))
+	protocols := make([]string, 0, len(spec.Nodes))
+	addresses := make([]string, 0, len(spec.Nodes))
+	hops := make([]dialer.Hop, 0, len(spec.Nodes))
+	for _, node := range spec.Nodes {
+		names = append(names, node.Property.Name)
+		protocols = append(protocols, node.Property.Protocol)
+		addresses = append(addresses, node.Property.Address)
+		hops = append(hops, dialer.Hop{
+			ID:       stats.NodeID(nodeKey(node)),
+			Name:     node.Property.Name,
+			Subtag:   node.Property.SubscriptionTag,
+			Protocol: node.Property.Protocol,
+			Address:  node.Property.Address,
+		})
+	}
+	terminal := spec.Nodes[len(spec.Nodes)-1]
+	property := &dialer.Property{
+		Property: D.Property{
+			Name:     strings.Join(names, " -> "),
+			Protocol: strings.Join(protocols, " -> "),
+			Address:  strings.Join(addresses, " -> "),
+			Link:     runtimePathKey(spec.Nodes, option),
+		},
+		SubscriptionTag: terminal.Property.SubscriptionTag,
+		Hops:            hops,
+	}
+	initialCheck := dialer.InitialCheckBlocking
+	for _, node := range spec.Nodes {
+		if node.CheckAsync {
+			initialCheck = dialer.InitialCheckAsync
+			break
+		}
+	}
+	return dialer.NewDialerRuntimeWithStatsScope(runtime, option, property, initialCheck, statsScope), nil
 }

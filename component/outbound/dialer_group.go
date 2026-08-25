@@ -23,26 +23,22 @@ import (
 var ErrNoDialer = fmt.Errorf("no dialer")
 var ErrNoAliveDialer = fmt.Errorf("no alive dialer")
 
-// GroupKind describes the availability semantics of a group and how it is
-// presented in status output.
+// GroupKind describes how an outbound target selects and checks its dialers.
 type GroupKind int
 
 const (
-	// GroupKindNormal is a regular group whose dialers are subject to
-	// connectivity checks.
-	GroupKindNormal GroupKind = iota
-	// GroupKindAlwaysAlive groups dialers that need no connectivity checks
-	// (e.g. the built-in direct group); only its connection counts are
-	// meaningful.
-	GroupKindAlwaysAlive
-	// GroupKindInvisible groups dialers that never carry real traffic (e.g.
-	// the built-in block group); it is hidden from status output.
+	// GroupKindSelector applies a policy to checked paths. An empty policy means fixed(0).
+	GroupKindSelector GroupKind = iota
+	// GroupKindSingleAlwaysAlive is a singleton that needs no connectivity check.
+	GroupKindSingleAlwaysAlive
+	// GroupKindInvisible is a hidden singleton such as the built-in block target.
 	GroupKindInvisible
 )
 
 type DialerGroup struct {
 	Name            string
 	Kind            GroupKind
+	TargetKind      TargetKind
 	Dialers         []*dialer.Dialer
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        Selector
@@ -71,10 +67,28 @@ func NewDialerGroup(
 	if len(dialers) != len(dialersAnnotations) {
 		panic(fmt.Sprintf("unmatched annotations length: %v dialers and %v annotations", len(dialers), len(dialersAnnotations)))
 	}
+	if kind != GroupKindSelector && len(dialers) != 1 {
+		panic(fmt.Sprintf("group kind %d requires exactly one dialer, got %d", kind, len(dialers)))
+	}
+	switch kind {
+	case GroupKindSelector:
+		for _, d := range dialers {
+			if !d.ChecksConnectivity() {
+				panic(fmt.Sprintf("selector group %q requires checked dialers", name))
+			}
+		}
+	case GroupKindSingleAlwaysAlive, GroupKindInvisible:
+		if dialers[0].ChecksConnectivity() {
+			panic(fmt.Sprintf("unchecked singleton %q cannot use a checked dialer", name))
+		}
+	default:
+		panic(fmt.Sprintf("unsupported group kind %d", kind))
+	}
 
 	g := &DialerGroup{
 		Name:               name,
 		Kind:               kind,
+		TargetKind:         TargetKindGroup,
 		Dialers:            dialers,
 		selectionPolicy:    selectionPolicy,
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
@@ -83,29 +97,31 @@ func NewDialerGroup(
 
 	for i, d := range dialers {
 		g.dialerToAnnotation[d] = dialersAnnotations[i]
-		if dialersAnnotations[i].CheckAsync {
-			d.SetCheckAsync(true)
+	}
+
+	if kind == GroupKindSelector {
+		switch selectionPolicy.Policy {
+		case "":
+			g.selector = NewFixedSelector(g)
+		case consts.DialerSelectionPolicy_MinAverage10Latencies,
+			consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+			consts.DialerSelectionPolicy_MinLastLatency:
+			g.selector = NewLatencyBasedSelector(g, option.CheckTolerance)
+		case consts.DialerSelectionPolicy_Fixed:
+			g.selector = NewFixedSelector(g)
+		case consts.DialerSelectionPolicy_Random:
+			g.selector = NewRandomSelector(g)
+		default:
+			panic(fmt.Sprintf("unsupported selection policy %q", selectionPolicy.Policy))
 		}
 	}
 
-	switch selectionPolicy.Policy {
-	case consts.DialerSelectionPolicy_MinAverage10Latencies,
-		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
-		consts.DialerSelectionPolicy_MinLastLatency:
-		g.selector = NewLatencyBasedSelector(g, option.CheckTolerance)
-	case consts.DialerSelectionPolicy_Fixed:
-		g.selector = NewFixedSelector(g)
-	case consts.DialerSelectionPolicy_Random:
-		g.selector = NewRandomSelector(g)
-	}
-
-	for _, d := range dialers {
-		d.RegisterDialerGroup(g, selectionPolicy.EmaAlpha, selectionPolicy.TimeoutPenalty)
-	}
-	if kind == GroupKindAlwaysAlive {
+	if g.ChecksConnectivity() {
 		for _, d := range dialers {
-			g.selector.NotifyStatusChange(d)
+			d.RegisterDialerGroup(g, selectionPolicy.EmaAlpha, selectionPolicy.TimeoutPenalty)
 		}
+	}
+	if kind == GroupKindSingleAlwaysAlive || kind == GroupKindInvisible {
 		g.available.Store(true)
 		g.availabilitySet = true
 		for i := range g.networkAvailable {
@@ -115,6 +131,22 @@ func NewDialerGroup(
 	}
 
 	return g
+}
+
+func (g *DialerGroup) SetTargetMetadata(kind TargetKind) *DialerGroup {
+	g.TargetKind = kind
+	return g
+}
+
+func (g *DialerGroup) DisplayPolicy() string {
+	if g.TargetKind == TargetKindGroup {
+		return string(g.selectionPolicy.Policy)
+	}
+	return ""
+}
+
+func (g *DialerGroup) ChecksConnectivity() bool {
+	return g.Kind == GroupKindSelector
 }
 
 // Close stops the connectivity checks of all dialers in the group. It is
@@ -138,6 +170,9 @@ func (g *DialerGroup) InitializeConnectivity() error {
 	defer g.notifyMu.Unlock()
 	if g.closed.Load() {
 		return net.ErrClosed
+	}
+	if !g.ChecksConnectivity() {
+		return nil
 	}
 	var err error
 	for i := range g.networkAvailable {
@@ -196,12 +231,7 @@ func (g *DialerGroup) networkUsable(networkType *common.NetworkType) bool {
 // If a "ConditionalPriority" is present, it is applied;
 // Otherwise the default fixed Priority is returned.
 func (g *DialerGroup) GetPriority(d *dialer.Dialer, latency time.Duration) int {
-	for _, p := range g.dialerToAnnotation[d].ConditionalPriority {
-		if latency >= p.Low && latency <= p.High {
-			return p.Pri
-		}
-	}
-	return g.dialerToAnnotation[d].Priority
+	return g.dialerToAnnotation[d].PriorityAt(latency)
 }
 
 func (g *DialerGroup) GetSelectionPolicy() consts.DialerSelectionPolicy {
@@ -213,6 +243,13 @@ func (g *DialerGroup) GetSelectionPolicy() consts.DialerSelectionPolicy {
 // or when no dialer is alive.
 func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
 	if g.closed.Load() {
+		return nil
+	}
+	if g.Kind != GroupKindSelector {
+		d := g.Dialers[0]
+		if isDialerAlive(d, networkType) {
+			return d
+		}
 		return nil
 	}
 	return g.selector.SelectedDialer(networkType)
@@ -236,6 +273,13 @@ func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, e
 	if len(g.Dialers) == 0 {
 		return nil, ErrNoDialer
 	}
+	if g.Kind != GroupKindSelector {
+		d := g.Dialers[0]
+		if !isDialerAlive(d, networkType) {
+			return nil, ErrNoAliveDialer
+		}
+		return d, nil
+	}
 	for {
 		if g.closed.Load() {
 			return nil, net.ErrClosed
@@ -257,7 +301,11 @@ func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, e
 func (g *DialerGroup) PrintLatency() {
 	for i := 0; i < 4; i++ {
 		networkType := common.IndexToNetworkType(i)
-		g.selector.PrintLatencies(networkType, log.Infoln)
+		if g.Kind == GroupKindSelector {
+			g.selector.PrintLatencies(networkType, log.Infoln)
+		} else {
+			printDialerLatency(g, g.Dialers[0], networkType, log.Infoln)
+		}
 	}
 	// Initial checks update selectors incrementally. Enable detailed tables
 	// only after this complete startup snapshot has been printed.
@@ -268,6 +316,9 @@ func (g *DialerGroup) NotifyStatusChange(dialer *dialer.Dialer) {
 	g.notifyMu.Lock()
 	defer g.notifyMu.Unlock()
 	if g.closed.Load() {
+		return
+	}
+	if g.Kind != GroupKindSelector {
 		return
 	}
 	g.selector.NotifyStatusChange(dialer)
