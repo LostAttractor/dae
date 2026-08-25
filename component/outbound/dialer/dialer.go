@@ -41,8 +41,10 @@ type Dialer struct {
 	needAliveState bool
 	alive          bool
 	lastLatency    time.Duration
-	// support is monotonic protocol capability, independent of aggregate health.
+	// support is monotonic protocol capability. modeAlive records the latest
+	// health verdict for each confirmed mode independently of aggregate health.
 	support       [4]NetworkSupportState
+	modeAlive     [4]bool
 	Latencies10   map[DialerGroup]*LatenciesN
 	MovingAverage map[DialerGroup]time.Duration
 
@@ -72,7 +74,7 @@ type LatencyStats struct {
 // Unknown becomes Confirmed only after a successful mode probe, or Unsupported
 // only after an explicit UnsupportedTunnelTypeError. Timeouts, local network
 // failures, and ordinary remote failures never imply Unsupported. Confirmed
-// and Unsupported are terminal; runtime health is tracked once in Dialer.alive.
+// and Unsupported are terminal; runtime health is tracked separately.
 type NetworkSupportState uint8
 
 const (
@@ -162,6 +164,7 @@ func newDialer(dialer netproxy.Dialer, option *GlobalOption, property *Property,
 	if !needAliveState {
 		for i := range d.support {
 			d.support[i] = NetworkSupportConfirmed
+			d.modeAlive[i] = true
 		}
 	}
 	d.setStatsScope(statsScope)
