@@ -84,28 +84,40 @@ func TestNodeStatusRow(t *testing.T) {
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
 	row := nodeStatusRow(control.NodeStatus{
-		Name:               "node-a",
-		Protocol:           "vless",
-		DialerKind:         "stateful",
-		SessionState:       "connected",
-		HealthState:        "healthy",
-		SupportState:       [4]string{"confirmed", "confirmed", "confirmed", "confirmed"},
-		Selected:           [4]bool{true, false, false, false},
-		HasLatency:         true,
-		LastLatencyMs:      42,
-		Avg10LatencyMs:     45,
-		MovingAvgLatencyMs: 50,
-		UpRatio:            0.998,
-		ChecksTotal:        1000,
-		ChecksFailed:       2,
-		UpRatio24h:         0.995,
-		ChecksTotal24h:     100,
-		ChecksFailed24h:    1,
-		ActiveConns:        2,
-		TotalConns:         9000,
+		ID:       "node-a-id",
+		Name:     "node-a",
+		Protocol: "vless",
+		Session:  &control.SessionStatus{State: control.SessionConnected},
+		Networks: []control.NodeNetworkStatus{
+			{Network: "tcp4", SupportState: "confirmed"},
+			{Network: "tcp6", SupportState: "confirmed"},
+			{Network: "udp4", SupportState: "confirmed"},
+			{Network: "udp6", SupportState: "confirmed"},
+		},
+		Health: &control.NodeHealthStatus{
+			State: control.NodeHealthHealthy,
+			Latency: &control.LatencyStatus{
+				LastMs:          42,
+				Average10Ms:     45,
+				MovingAverageMs: 50,
+			},
+			UpRatio:         0.998,
+			ChecksTotal:     1000,
+			ChecksFailed:    2,
+			UpRatio24h:      0.995,
+			ChecksTotal24h:  100,
+			ChecksFailed24h: 1,
+		},
+		ActiveConns: 2,
+		TotalConns:  9000,
+	}, 0, []control.NetworkStatus{
+		{Network: "tcp4", Selected: &control.SelectedNodeStatus{Index: 0}},
+		{Network: "tcp6"},
+		{Network: "udp4"},
+		{Network: "udp6"},
 	})
 	want := []string{
-		"node-a", "-", "vless", "stateful", "connected", "healthy", "tcp4,tcp6,udp4,udp6", "tcp4",
+		"node-a", "-", "vless", "connected", "healthy", "tcp4,tcp6,udp4,udp6", "tcp4",
 		"42/45/50", "99.8% (2/1000)", "99.5% (1/100)", "-", "-", "-", "-", "2/9000",
 	}
 	if len(row) != len(want) {
@@ -124,10 +136,15 @@ func TestNodeStatusRowOnlyShowsConfirmedSupport(t *testing.T) {
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
 	row := nodeStatusRow(control.NodeStatus{
-		Name:         "tor",
-		SupportState: [4]string{"confirmed", "confirmed", "unknown", "unsupported"},
-	})
-	if got := row[6].(string); got != "tcp4,tcp6" {
+		Name: "tor",
+		Networks: []control.NodeNetworkStatus{
+			{Network: "tcp4", SupportState: "confirmed"},
+			{Network: "tcp6", SupportState: "confirmed"},
+			{Network: "udp4", SupportState: "unknown"},
+			{Network: "udp6", SupportState: "unsupported"},
+		},
+	}, 0, nil)
+	if got := row[5].(string); got != "tcp4,tcp6" {
 		t.Fatalf("support = %q, want only confirmed modes", got)
 	}
 }
@@ -139,30 +156,34 @@ func TestNodeStatusRowHighlightsAvg10Failure(t *testing.T) {
 
 	failedAt := time.Now()
 	row := nodeStatusRow(control.NodeStatus{
-		Name:                 "node-a",
-		HealthState:          "healthy",
-		Selected:             [4]bool{true, false, false, false},
-		HasLatency:           true,
-		LastLatencyMs:        42,
-		Avg10LatencyMs:       60045,
-		MovingAvgLatencyMs:   60045,
-		Avg10HasFailure:      true,
-		LastFailureStartedAt: &failedAt,
-		LastFailureDuration:  2 * time.Minute,
+		ID:   "node-a-id",
+		Name: "node-a",
+		Health: &control.NodeHealthStatus{
+			State: control.NodeHealthHealthy,
+			Latency: &control.LatencyStatus{
+				LastMs:          42,
+				Average10Ms:     60045,
+				MovingAverageMs: 60045,
+				Average10Failed: true,
+			},
+			Failure: &control.FailureStatus{StartedAt: failedAt, DurationMs: (2 * time.Minute).Milliseconds()},
+		},
+	}, 0, []control.NetworkStatus{
+		{Network: "tcp4", Selected: &control.SelectedNodeStatus{Index: 0}},
 	})
 	tests := []struct {
 		cell int
 		ansi string
 	}{
 		{cell: 0, ansi: "\x1b[36m"},
-		{cell: 8, ansi: "\x1b[91;1m"},
+		{cell: 7, ansi: "\x1b[91;1m"},
 	}
 	for _, tt := range tests {
 		if got := row[tt.cell].(string); !strings.Contains(got, tt.ansi) {
 			t.Errorf("nodeStatusRow()[%d] = %q, want ANSI prefix %q", tt.cell, got, tt.ansi)
 		}
 	}
-	if got := row[12].(string); strings.Contains(got, "\x1b[") {
+	if got := row[11].(string); strings.Contains(got, "\x1b[") {
 		t.Errorf("completed failure episode should not inherit avg10 coloring: %q", got)
 	}
 }
@@ -174,11 +195,12 @@ func TestNodeStatusRowFormatsFailureEpisode(t *testing.T) {
 
 	startedAt := time.Now().Add(-10 * time.Minute)
 	row := nodeStatusRow(control.NodeStatus{
-		Name:                 "node-a",
-		LastFailureStartedAt: &startedAt,
-		LastFailureDuration:  2 * time.Minute,
-	})
-	failure := row[12].(string)
+		Name: "node-a",
+		Health: &control.NodeHealthStatus{
+			Failure: &control.FailureStatus{StartedAt: startedAt, DurationMs: (2 * time.Minute).Milliseconds()},
+		},
+	}, 0, nil)
+	failure := row[11].(string)
 	if !strings.Contains(failure, " / 2m0s") {
 		t.Fatalf("failure episode = %q, want start and duration", failure)
 	}
@@ -187,10 +209,10 @@ func TestNodeStatusRowFormatsFailureEpisode(t *testing.T) {
 	}
 
 	row = nodeStatusRow(control.NodeStatus{
-		Name:                 "node-a",
-		LastFailureStartedAt: &startedAt,
-	})
-	if got := row[12].(string); !strings.HasSuffix(got, " / 0s") {
+		Name:   "node-a",
+		Health: &control.NodeHealthStatus{Failure: &control.FailureStatus{StartedAt: startedAt}},
+	}, 0, nil)
+	if got := row[11].(string); !strings.HasSuffix(got, " / 0s") {
 		t.Fatalf("zero-duration failure episode = %q, want 0s", got)
 	}
 }
@@ -205,12 +227,26 @@ func TestNetworkStatusRowUnsupported(t *testing.T) {
 		SupportState: "unsupported",
 		ActiveConns:  2,
 		TotalConns:   10,
-	})
+	}, nil)
 	want := []string{"tcp6", "unsupported", "-", "2/10"}
 	for i, expected := range want {
 		if got := row[i].(string); got != expected {
 			t.Errorf("networkStatusRow()[%d] = %q, want %q", i, got, expected)
 		}
+	}
+}
+
+func TestNetworkStatusRowLabelsUnnamedSelection(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	row := networkStatusRow(control.NetworkStatus{
+		Network:  "tcp4",
+		Selected: &control.SelectedNodeStatus{Index: 0},
+	}, []control.NodeStatus{{Address: "proxy.example:443"}})
+	if got := row[2].(string); got != "proxy.example:443" {
+		t.Fatalf("selected unnamed node = %q, want address", got)
 	}
 }
 
@@ -280,8 +316,41 @@ func TestColorHealth(t *testing.T) {
 	}
 }
 
-func TestColorHealthDefaultsToUnknown(t *testing.T) {
-	if got := colorHealth(""); got != "unknown" {
-		t.Fatalf("colorHealth(\"\") = %q, want %q", got, "unknown")
+func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
+	valid := `{
+		"version":"test",
+		"health":"healthy",
+		"started_at":"2026-08-25T00:00:00Z",
+		"active_conns":0,
+		"total_conns":0,
+		"networks":[
+			{"network":"tcp4","active_conns":0,"total_conns":0},
+			{"network":"tcp6","active_conns":0,"total_conns":0},
+			{"network":"udp4","active_conns":0,"total_conns":0},
+			{"network":"udp6","active_conns":0,"total_conns":0}
+		],
+		"tables":[],
+		"groups":[]
+	}`
+	if _, err := decodeStatus(strings.NewReader(valid)); err != nil {
+		t.Fatalf("decode current status: %v", err)
+	}
+
+	tests := map[string]string{
+		"unknown field":  strings.Replace(valid, `"groups":[]`, `"extra":true,"groups":[]`, 1),
+		"missing health": strings.Replace(valid, `"health":"healthy",`, "", 1),
+		"invalid selection": strings.Replace(valid, `"groups":[]`, `"groups":[{
+			"name":"group","policy":"fixed","health":"healthy",
+			"networks":[{"network":"tcp4","support_state":"confirmed","selected":{"index":0},"active_conns":0,"total_conns":0}],
+			"nodes":[]
+		}]`, 1),
+		"trailing value": valid + `{}`,
+	}
+	for name, payload := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeStatus(strings.NewReader(payload)); err == nil {
+				t.Fatal("decodeStatus unexpectedly accepted invalid status")
+			}
+		})
 	}
 }
