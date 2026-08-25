@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -58,9 +59,34 @@ func fetchStatus() (*control.StatusSnapshot, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("daemon returned %v (daemon may be reloading)", resp.Status)
 	}
+	return decodeStatus(resp.Body)
+}
+
+func decodeStatus(r io.Reader) (*control.StatusSnapshot, error) {
 	var snapshot control.StatusSnapshot
-	if err = json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&snapshot); err != nil {
 		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("status response contains multiple JSON values")
+		}
+		return nil, err
+	}
+	switch snapshot.Health {
+	case control.HealthHealthy, control.HealthWarning, control.HealthDegraded:
+	default:
+		return nil, fmt.Errorf("status response has invalid health %q", snapshot.Health)
+	}
+	for i, group := range snapshot.Groups {
+		for j, network := range group.Networks {
+			if network.Selected != nil && (network.Selected.Index < 0 || network.Selected.Index >= len(group.Nodes)) {
+				return nil, fmt.Errorf("groups[%d].networks[%d] selects node index %d outside nodes", i, j, network.Selected.Index)
+			}
+		}
 	}
 	return &snapshot, nil
 }
@@ -159,10 +185,7 @@ func colorHealth(health control.HealthStatus) string {
 	case control.HealthDegraded:
 		return colorize(string(health), text.FgRed)
 	default:
-		if health == "" {
-			return "unknown"
-		}
-		return string(health)
+		panic(fmt.Sprintf("invalid health status %q", health))
 	}
 }
 
@@ -206,13 +229,11 @@ func colorUsage(ratio float64, s string) string {
 	}
 }
 
-var networkNames = [4]string{"tcp4", "tcp6", "udp4", "udp6"}
-
-func networkFlags(flags [4]bool) string {
+func networkSupport(networks []control.NodeNetworkStatus) string {
 	var parts []string
-	for i, flag := range flags {
-		if flag {
-			parts = append(parts, networkNames[i])
+	for _, network := range networks {
+		if network.SupportState == control.NetworkSupportConfirmed {
+			parts = append(parts, network.Network)
 		}
 	}
 	if len(parts) == 0 {
@@ -221,17 +242,17 @@ func networkFlags(flags [4]bool) string {
 	return strings.Join(parts, ",")
 }
 
-func networkSupport(states [4]string) string {
+func selectedNetworks(nodeIndex int, networks []control.NetworkStatus) (string, bool) {
 	var parts []string
-	for i, state := range states {
-		if state == "confirmed" {
-			parts = append(parts, networkNames[i])
+	for _, network := range networks {
+		if network.Selected != nil && network.Selected.Index == nodeIndex {
+			parts = append(parts, network.Network)
 		}
 	}
 	if len(parts) == 0 {
-		return "-"
+		return "-", false
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(parts, ","), true
 }
 
 func emptyDash(s string) string {
@@ -249,15 +270,16 @@ func formatAgoWithChecks(t *time.Time, checks int64) string {
 	return fmt.Sprintf("%s (+%d chk)", s, checks)
 }
 
-func formatFailure(startedAt *time.Time, duration time.Duration) string {
-	if startedAt == nil {
+func formatFailure(failure *control.FailureStatus) string {
+	if failure == nil {
 		return "-"
 	}
+	duration := time.Duration(failure.DurationMs) * time.Millisecond
 	durationText := "0s"
 	if duration > 0 {
 		durationText = formatUptime(duration)
 	}
-	return fmt.Sprintf("%s / %s", formatAgo(startedAt), durationText)
+	return fmt.Sprintf("%s / %s", formatAgo(&failure.StartedAt), durationText)
 }
 
 func formatConnCounts(active, total int64) string {
@@ -307,54 +329,82 @@ func tableUsageRow(usage control.TableUsage) table.Row {
 	}
 }
 
-func networkStatusRow(status control.NetworkStatus) table.Row {
+func nodeLabel(status control.NodeStatus, index int) string {
+	if status.Name != "" {
+		return status.Name
+	}
+	if status.Address != "" {
+		return status.Address
+	}
+	return fmt.Sprintf("#%d", index)
+}
+
+func networkStatusRow(status control.NetworkStatus, nodes []control.NodeStatus) table.Row {
+	selected := "-"
+	if status.Selected != nil {
+		selected = nodeLabel(nodes[status.Selected.Index], status.Selected.Index)
+	}
 	return table.Row{
 		status.Network,
-		status.SupportState,
-		colorSelected(emptyDash(status.Selected), status.Selected != ""),
+		string(status.SupportState),
+		colorSelected(selected, status.Selected != nil),
 		formatConnCounts(status.ActiveConns, status.TotalConns),
 	}
 }
 
-func nodeStatusRow(status control.NodeStatus) table.Row {
-	selected := status.Selected != [4]bool{}
-	selectedNetworks := networkFlags(status.Selected)
+func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control.NetworkStatus) table.Row {
+	selectedNetworks, selected := selectedNetworks(index, groupNetworks)
+	session := "-"
+	if status.Session != nil {
+		session = string(status.Session.State)
+	}
 
+	healthState := "-"
 	latency := "-"
-	if status.HasLatency && status.HealthState == "healthy" {
-		latency = fmt.Sprintf("%.0f/%.0f/%.0f", status.LastLatencyMs, status.Avg10LatencyMs, status.MovingAvgLatencyMs)
-		if status.Avg10HasFailure {
+	upRatio := "-"
+	upRatio24h := "-"
+	healthySince := "-"
+	failure := "-"
+	lastCheck := "-"
+	if status.Health != nil {
+		healthState = string(status.Health.State)
+		upRatio = colorRatio(status.Health.UpRatio, formatAvailability(status.Health.UpRatio, status.Health.ChecksFailed, status.Health.ChecksTotal))
+		upRatio24h = colorRatio(status.Health.UpRatio24h, formatAvailability(status.Health.UpRatio24h, status.Health.ChecksFailed24h, status.Health.ChecksTotal24h))
+		healthySince = formatAgoWithChecks(status.Health.HealthySince, status.Health.ChecksSinceHealthy)
+		failure = formatFailure(status.Health.Failure)
+		lastCheck = formatAgo(status.Health.LastCheckAt)
+	}
+	if status.Health != nil && status.Health.Latency != nil && status.Health.State == control.NodeHealthHealthy {
+		latencyStatus := status.Health.Latency
+		latency = fmt.Sprintf("%.0f/%.0f/%.0f", latencyStatus.LastMs, latencyStatus.Average10Ms, latencyStatus.MovingAverageMs)
+		if latencyStatus.Average10Failed {
 			latency = colorize(latency, text.FgHiRed, text.Bold)
 		} else {
-			latency = colorLatency(status.MovingAvgLatencyMs, latency)
+			latency = colorLatency(latencyStatus.MovingAverageMs, latency)
 		}
 	}
 
-	upRatio := formatAvailability(status.UpRatio, status.ChecksFailed, status.ChecksTotal)
-	upRatio24h := formatAvailability(status.UpRatio24h, status.ChecksFailed24h, status.ChecksTotal24h)
-
 	return table.Row{
-		colorSelected(status.Name, selected),
+		colorSelected(nodeLabel(status, index), selected),
 		emptyDash(status.Subtag),
 		emptyDash(status.Protocol),
-		emptyDash(status.DialerKind),
-		emptyDash(status.SessionState),
-		emptyDash(status.HealthState),
-		networkSupport(status.SupportState),
+		session,
+		healthState,
+		networkSupport(status.Networks),
 		colorSelected(selectedNetworks, selected),
 		latency,
-		colorRatio(status.UpRatio, upRatio),
-		colorRatio(status.UpRatio24h, upRatio24h),
-		formatAgoWithChecks(status.AliveSince, status.ChecksSinceAlive),
-		formatFailure(status.LastFailureStartedAt, status.LastFailureDuration),
-		formatAgo(status.LastCheckAt),
-		formatAgo(status.LastConnFailAt),
+		upRatio,
+		upRatio24h,
+		healthySince,
+		failure,
+		lastCheck,
+		formatAgo(status.LastConnectionFailureAt),
 		formatConnCounts(status.ActiveConns, status.TotalConns),
 	}
 }
 
 func printGroupStatus(group control.GroupStatus) {
-	if group.NoCheck {
+	if group.Connectivity == nil {
 		fmt.Printf("\nGroup '%s' [policy: %s] (no connectivity checks)\n", group.Name, group.Policy)
 		rows := make([]table.Row, 0, len(group.Networks))
 		for _, status := range group.Networks {
@@ -371,14 +421,14 @@ func printGroupStatus(group control.GroupStatus) {
 		"\nGroup '%s' [policy: %s, available: %s, up: %s, available since: %s, failure: %s]\n",
 		group.Name,
 		group.Policy,
-		colorAlive(group.Available),
-		colorRatio(group.UpRatio, formatRatio(group.UpRatio)),
-		formatAgo(group.AvailableSince),
-		formatFailure(group.LastFailureStartedAt, group.LastFailureDuration),
+		colorAlive(group.Connectivity.Available),
+		colorRatio(group.Connectivity.UpRatio, formatRatio(group.Connectivity.UpRatio)),
+		formatAgo(group.Connectivity.AvailableSince),
+		formatFailure(group.Connectivity.Failure),
 	)
 	rows := make([]table.Row, 0, len(group.Networks))
 	for _, status := range group.Networks {
-		rows = append(rows, networkStatusRow(status))
+		rows = append(rows, networkStatusRow(status, group.Nodes))
 	}
 	printTable(table.Row{
 		"NETWORK", "SUPPORT", "SELECTED", "CONNS(A/T)",
@@ -386,12 +436,12 @@ func printGroupStatus(group control.GroupStatus) {
 
 	fmt.Printf("\nNodes of group '%s':\n", group.Name)
 	rows = make([]table.Row, 0, len(group.Nodes))
-	for _, status := range group.Nodes {
-		rows = append(rows, nodeStatusRow(status))
+	for i, status := range group.Nodes {
+		rows = append(rows, nodeStatusRow(status, i, group.Networks))
 	}
 	printTable(table.Row{
-		"NODE", "SUB", "PROTO", "KIND", "SESSION", "HEALTH", "SUPPORT", "SELECTED",
-		"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "24H UP% (FAIL/CHK)", "ALIVE-SINCE",
+		"NODE", "SUB", "PROTO", "SESSION", "HEALTH", "SUPPORT", "SELECTED",
+		"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "24H UP% (FAIL/CHK)", "HEALTHY-SINCE",
 		"FAILURE (START/DURATION)", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)",
 	}, rows)
 }
@@ -434,9 +484,9 @@ func printStatus(s *control.StatusSnapshot) {
 	}
 	fmt.Println()
 	fmt.Printf("Status:      %s\n", statusSummary(s))
-	perNet := make([]string, len(s.ActiveByNet))
-	for i, n := range s.ActiveByNet {
-		perNet[i] = fmt.Sprintf("%s %d", networkNames[i], n)
+	perNet := make([]string, len(s.Networks))
+	for i, network := range s.Networks {
+		perNet[i] = fmt.Sprintf("%s %d", network.Network, network.ActiveConns)
 	}
 	fmt.Printf("Connections: %d active (%s), %d total\n", s.ActiveConns, strings.Join(perNet, ", "), s.TotalConns)
 

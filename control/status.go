@@ -23,15 +23,21 @@ const (
 )
 
 type StatusSnapshot struct {
-	Version      string        `json:"version"`
-	Health       HealthStatus  `json:"health"` // aggregate connectivity of visible groups
-	StartedAt    time.Time     `json:"started_at"`
-	LastReloadAt *time.Time    `json:"last_reload_at,omitempty"`
-	ActiveConns  int64         `json:"active_conns"`
-	TotalConns   int64         `json:"total_conns"`
-	ActiveByNet  [4]int64      `json:"active_by_net"` // tcp4, tcp6, udp4, udp6
-	Tables       []TableUsage  `json:"tables"`
-	Groups       []GroupStatus `json:"groups"`
+	Version      string                    `json:"version"`
+	Health       HealthStatus              `json:"health"` // aggregate connectivity of visible groups
+	StartedAt    time.Time                 `json:"started_at"`
+	LastReloadAt *time.Time                `json:"last_reload_at,omitempty"`
+	ActiveConns  int64                     `json:"active_conns"`
+	TotalConns   int64                     `json:"total_conns"`
+	Networks     []NetworkConnectionStatus `json:"networks"`
+	Tables       []TableUsage              `json:"tables"`
+	Groups       []GroupStatus             `json:"groups"`
+}
+
+type NetworkConnectionStatus struct {
+	Network     string `json:"network"`
+	ActiveConns int64  `json:"active_conns"`
+	TotalConns  int64  `json:"total_conns"`
 }
 
 // TableUsage is the fill level of one capacity-limited DNS/domain table.
@@ -49,61 +55,104 @@ type TableUsageBreakdown struct {
 }
 
 type GroupStatus struct {
-	Name                 string           `json:"name"`
-	Policy               string           `json:"policy"`
-	Health               HealthStatus     `json:"health"`
-	NoCheck              bool             `json:"no_check"` // groups not subject to connectivity checks (direct)
-	Available            bool             `json:"available"`
-	UpRatio              float64          `json:"up_ratio"`
-	AvailableSince       *time.Time       `json:"available_since,omitempty"`
-	LastFailureStartedAt *time.Time       `json:"last_failure_started_at,omitempty"`
-	LastFailureDuration  time.Duration    `json:"last_failure_duration"`
-	Networks             [4]NetworkStatus `json:"networks"` // tcp4, tcp6, udp4, udp6
-	Nodes                []NodeStatus     `json:"nodes"`
+	Name         string                   `json:"name"`
+	Policy       string                   `json:"policy"`
+	Health       HealthStatus             `json:"health"`
+	Connectivity *GroupConnectivityStatus `json:"connectivity,omitempty"`
+	Networks     []NetworkStatus          `json:"networks"`
+	Nodes        []NodeStatus             `json:"nodes"`
+}
+
+type GroupConnectivityStatus struct {
+	Available      bool           `json:"available"`
+	UpRatio        float64        `json:"up_ratio"`
+	AvailableSince *time.Time     `json:"available_since,omitempty"`
+	Failure        *FailureStatus `json:"failure,omitempty"`
 }
 
 type NetworkStatus struct {
-	Network      string `json:"network"`
-	SupportState string `json:"support_state"`
-	Selected     string `json:"selected"` // dialer name, empty if none
-	ActiveConns  int64  `json:"active_conns"`
-	TotalConns   int64  `json:"total_conns"`
+	Network      string               `json:"network"`
+	SupportState NetworkSupportStatus `json:"support_state"`
+	Selected     *SelectedNodeStatus  `json:"selected,omitempty"`
+	ActiveConns  int64                `json:"active_conns"`
+	TotalConns   int64                `json:"total_conns"`
 }
 
+type SelectedNodeStatus struct {
+	Index int `json:"index"`
+}
+
+type SessionStatus struct {
+	State SessionState `json:"state"`
+	Seq   uint64       `json:"seq"`
+	Error string       `json:"error,omitempty"`
+}
+
+type LatencyStatus struct {
+	LastMs          float64 `json:"last_ms"`
+	Average10Ms     float64 `json:"average_10_ms"`
+	MovingAverageMs float64 `json:"moving_average_ms"`
+	Average10Failed bool    `json:"average_10_failed"`
+}
+
+type NodeNetworkStatus struct {
+	Network      string               `json:"network"`
+	SupportState NetworkSupportStatus `json:"support_state"`
+}
+
+type FailureStatus struct {
+	StartedAt  time.Time `json:"started_at"`
+	DurationMs int64     `json:"duration_ms"`
+}
+
+type NodeHealthState string
+
+type SessionState string
+
+type NetworkSupportStatus string
+
+const (
+	NodeHealthUnknown   NodeHealthState = "unknown"
+	NodeHealthHealthy   NodeHealthState = "healthy"
+	NodeHealthUnhealthy NodeHealthState = "unhealthy"
+
+	SessionDisconnected SessionState = "disconnected"
+	SessionConnecting   SessionState = "connecting"
+	SessionConnected    SessionState = "connected"
+	SessionClosed       SessionState = "closed"
+
+	NetworkSupportUnknown     NetworkSupportStatus = "unknown"
+	NetworkSupportConfirmed   NetworkSupportStatus = "confirmed"
+	NetworkSupportUnsupported NetworkSupportStatus = "unsupported"
+)
+
 type NodeStatus struct {
-	ID                   string        `json:"id"`
-	Name                 string        `json:"name"`
-	Subtag               string        `json:"subtag"`
-	Protocol             string        `json:"protocol"`
-	Address              string        `json:"address"`
-	DialerKind           string        `json:"dialer_kind"`
-	SessionState         string        `json:"session_state"`
-	SessionSeq           uint64        `json:"session_seq"`
-	SessionError         string        `json:"session_error,omitempty"`
-	HealthState          string        `json:"health_state"`
-	SupportState         [4]string     `json:"support_state"`
-	Selected             [4]bool       `json:"selected"`
-	HasLatency           bool          `json:"has_latency"`
-	LastLatencyMs        float64       `json:"last_latency_ms"`
-	Avg10LatencyMs       float64       `json:"avg10_latency_ms"`
-	MovingAvgLatencyMs   float64       `json:"moving_avg_latency_ms"`
-	Avg10HasFailure      bool          `json:"avg10_has_failure"`
-	UpRatio              float64       `json:"up_ratio"`
-	UpRatio24h           float64       `json:"up_ratio_24h"`
-	UpDuration           time.Duration `json:"up_duration"`
-	AliveSince           *time.Time    `json:"alive_since,omitempty"`
-	LastFailureStartedAt *time.Time    `json:"last_failure_started_at,omitempty"`
-	LastFailureDuration  time.Duration `json:"last_failure_duration"`
-	LastCheckAt          *time.Time    `json:"last_check_at,omitempty"`
-	LastConnFailAt       *time.Time    `json:"last_conn_fail_at,omitempty"`
-	ChecksTotal          int64         `json:"checks_total"`
-	ChecksFailed         int64         `json:"checks_failed"`
-	ChecksTotal24h       int64         `json:"checks_total_24h"`
-	ChecksFailed24h      int64         `json:"checks_failed_24h"`
-	ChecksSinceAlive     int64         `json:"checks_since_alive"`
-	ChecksSinceFail      int64         `json:"checks_since_fail"`
-	ActiveConns          int64         `json:"active_conns"`
-	TotalConns           int64         `json:"total_conns"`
+	ID                      string              `json:"id"`
+	Name                    string              `json:"name"`
+	Subtag                  string              `json:"subtag"`
+	Protocol                string              `json:"protocol"`
+	Address                 string              `json:"address"`
+	Session                 *SessionStatus      `json:"session,omitempty"`
+	Health                  *NodeHealthStatus   `json:"health,omitempty"`
+	Networks                []NodeNetworkStatus `json:"networks"`
+	LastConnectionFailureAt *time.Time          `json:"last_connection_failure_at,omitempty"`
+	ActiveConns             int64               `json:"active_conns"`
+	TotalConns              int64               `json:"total_conns"`
+}
+
+type NodeHealthStatus struct {
+	State              NodeHealthState `json:"state"`
+	Latency            *LatencyStatus  `json:"latency,omitempty"`
+	UpRatio            float64         `json:"up_ratio"`
+	UpRatio24h         float64         `json:"up_ratio_24h"`
+	HealthySince       *time.Time      `json:"healthy_since,omitempty"`
+	Failure            *FailureStatus  `json:"failure,omitempty"`
+	LastCheckAt        *time.Time      `json:"last_check_at,omitempty"`
+	ChecksTotal        int64           `json:"checks_total"`
+	ChecksFailed       int64           `json:"checks_failed"`
+	ChecksTotal24h     int64           `json:"checks_total_24h"`
+	ChecksFailed24h    int64           `json:"checks_failed_24h"`
+	ChecksSinceHealthy int64           `json:"checks_since_healthy"`
 }
 
 type connValues struct{ active, total int64 }
@@ -122,6 +171,13 @@ type groupNetworkKey struct {
 }
 
 type groupNodeKey struct {
+	group  string
+	id     string
+	subtag string
+	name   string
+}
+
+type groupNodeIDKey struct {
 	group string
 	id    string
 }
@@ -134,16 +190,18 @@ type connCounts struct {
 	byNetwork      [4]connValues
 	byGroupNetwork map[groupNetworkKey]connValues
 	byGroupNode    map[groupNodeKey]connValues
+	byGroupNodeID  map[groupNodeIDKey]connValues
 }
 
 func newConnCounts() connCounts {
 	return connCounts{
 		byGroupNetwork: make(map[groupNetworkKey]connValues),
 		byGroupNode:    make(map[groupNodeKey]connValues),
+		byGroupNodeID:  make(map[groupNodeIDKey]connValues),
 	}
 }
 
-func (c *connCounts) add(group, id string, network int, active bool, value int64) {
+func (c *connCounts) add(group, id, subtag, name string, network int, active bool, value int64) {
 	c.all.add(active, value)
 	c.byNetwork[network].add(active, value)
 
@@ -152,10 +210,15 @@ func (c *connCounts) add(group, id string, network int, active bool, value int64
 	v.add(active, value)
 	c.byGroupNetwork[groupNetwork] = v
 
-	groupNode := groupNodeKey{group: group, id: id}
+	groupNode := groupNodeKey{group: group, id: id, subtag: subtag, name: name}
 	v = c.byGroupNode[groupNode]
 	v.add(active, value)
 	c.byGroupNode[groupNode] = v
+
+	groupNodeID := groupNodeIDKey{group: group, id: id}
+	v = c.byGroupNodeID[groupNodeID]
+	v.add(active, value)
+	c.byGroupNodeID[groupNodeID] = v
 }
 
 func (c *ControlPlane) collectConnCounts() connCounts {
@@ -172,13 +235,17 @@ func (c *ControlPlane) collectConnCounts() connCounts {
 			continue
 		}
 		for _, metric := range family.GetMetric() {
-			group, id, network := "", "", -1
+			group, id, subtag, name, network := "", "", "", "", -1
 			for _, label := range metric.GetLabel() {
 				switch label.GetName() {
 				case "id":
 					id = label.GetValue()
 				case "outbound":
 					group = label.GetValue()
+				case "subtag":
+					subtag = label.GetValue()
+				case "dialer":
+					name = label.GetValue()
 				case "network":
 					for i := 0; i < 4; i++ {
 						if common.IndexToNetworkType(i).String() == label.GetValue() {
@@ -203,7 +270,7 @@ func (c *ControlPlane) collectConnCounts() connCounts {
 				}
 				value = int64(metric.GetCounter().GetValue())
 			}
-			counts.add(group, id, network, active, value)
+			counts.add(group, id, subtag, name, network, active, value)
 		}
 	}
 	return counts
@@ -220,15 +287,27 @@ func millis(d time.Duration) float64 {
 	return float64(d) / float64(time.Millisecond)
 }
 
+func failureStatus(startedAt time.Time, duration time.Duration) *FailureStatus {
+	if startedAt.IsZero() {
+		return nil
+	}
+	return &FailureStatus{StartedAt: startedAt, DurationMs: duration.Milliseconds()}
+}
+
 func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) NetworkStatus {
 	networkType := common.IndexToNetworkType(index)
 	ns := NetworkStatus{
 		Network: networkType.String(),
 	}
 	if selected := g.SelectedDialer(networkType); selected != nil {
-		_, support := selected.SelectionState(networkType)
-		if support == dialer.NetworkSupportConfirmed {
-			ns.Selected = selected.Name
+		alive, support := selected.SelectionState(networkType)
+		if alive && support == dialer.NetworkSupportConfirmed {
+			for i, candidate := range g.Dialers {
+				if candidate == selected {
+					ns.Selected = &SelectedNodeStatus{Index: i}
+					break
+				}
+			}
 		}
 	}
 	values := conns.byGroupNetwork[groupNetworkKey{group: g.Name, network: index}]
@@ -236,73 +315,79 @@ func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) Network
 	return ns
 }
 
-func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts) NodeStatus {
+func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts, uniqueID bool) NodeStatus {
 	runtime := d.RuntimeStatus(g)
 	ns := NodeStatus{
-		ID:           d.StatsID(),
-		Name:         d.Name,
-		Subtag:       d.Property.SubscriptionTag,
-		Protocol:     d.Property.Protocol,
-		Address:      d.Property.Address,
-		DialerKind:   "stateless",
-		SessionState: "n/a",
-		HealthState:  "n/a",
+		ID:       d.StatsID(),
+		Name:     d.Name,
+		Subtag:   d.Property.SubscriptionTag,
+		Protocol: d.Property.Protocol,
+		Address:  d.Property.Address,
+		Networks: make([]NodeNetworkStatus, 4),
 	}
 	if runtime.HasSession {
 		session := runtime.Session
-		ns.DialerKind = "stateful"
-		ns.SessionState = session.State.String()
-		ns.SessionSeq = session.Seq
+		ns.Session = &SessionStatus{State: SessionState(session.State.String()), Seq: session.Seq}
 		if session.Cause != nil {
-			ns.SessionError = session.Cause.Error()
+			ns.Session.Error = session.Cause.Error()
 		}
 	}
 	for i := 0; i < 4; i++ {
-		ns.SupportState[i] = runtime.SupportState[i].String()
 		networkType := common.IndexToNetworkType(i)
-		ns.Selected[i] = runtime.SupportState[i] == dialer.NetworkSupportConfirmed && g.SelectedDialer(networkType) == d
-	}
-	if runtime.HasLatency {
-		ns.HasLatency = true
-		ns.LastLatencyMs = millis(runtime.Latency.Last)
-		ns.Avg10LatencyMs = millis(runtime.Latency.Avg10)
-		ns.MovingAvgLatencyMs = millis(runtime.Latency.MovingAvg)
-		ns.Avg10HasFailure = runtime.Latency.Avg10HasFailure
+		ns.Networks[i] = NodeNetworkStatus{
+			Network:      networkType.String(),
+			SupportState: NetworkSupportStatus(runtime.SupportState[i].String()),
+		}
 	}
 	avail := runtime.Availability
-	if d.ChecksConnectivity() {
-		ns.HealthState = "unknown"
+	if g.Kind != outbound.GroupKindAlwaysAlive && d.ChecksConnectivity() {
+		ns.Health = &NodeHealthStatus{
+			State:              NodeHealthUnknown,
+			UpRatio:            avail.UpRatio,
+			UpRatio24h:         avail.Recent24h.UpRatio,
+			HealthySince:       timePtr(avail.AliveSince),
+			Failure:            failureStatus(avail.LastFailureStartedAt, avail.LastFailureDuration),
+			LastCheckAt:        timePtr(avail.LastCheckAt),
+			ChecksTotal:        avail.ChecksTotal,
+			ChecksFailed:       avail.ChecksFailed,
+			ChecksTotal24h:     avail.Recent24h.ChecksTotal,
+			ChecksFailed24h:    avail.Recent24h.ChecksFailed,
+			ChecksSinceHealthy: avail.ChecksSinceAlive,
+		}
 		if avail.Seen {
-			ns.HealthState = "unhealthy"
+			ns.Health.State = NodeHealthUnhealthy
 			if runtime.Healthy {
-				ns.HealthState = "healthy"
+				ns.Health.State = NodeHealthHealthy
+			}
+		}
+		if runtime.HasLatency {
+			ns.Health.Latency = &LatencyStatus{
+				LastMs:          millis(runtime.Latency.Last),
+				Average10Ms:     millis(runtime.Latency.Avg10),
+				MovingAverageMs: millis(runtime.Latency.MovingAvg),
+				Average10Failed: runtime.Latency.Avg10HasFailure,
 			}
 		}
 	}
-	ns.UpRatio = avail.UpRatio
-	ns.UpDuration = avail.UpDuration
-	ns.AliveSince = timePtr(avail.AliveSince)
-	ns.LastFailureStartedAt = timePtr(avail.LastFailureStartedAt)
-	ns.LastFailureDuration = avail.LastFailureDuration
-	ns.LastCheckAt = timePtr(avail.LastCheckAt)
-	ns.LastConnFailAt = timePtr(avail.LastConnFailAt)
-	ns.ChecksTotal = avail.ChecksTotal
-	ns.ChecksFailed = avail.ChecksFailed
-	ns.UpRatio24h = avail.Recent24h.UpRatio
-	ns.ChecksTotal24h = avail.Recent24h.ChecksTotal
-	ns.ChecksFailed24h = avail.Recent24h.ChecksFailed
-	ns.ChecksSinceAlive = avail.ChecksSinceAlive
-	ns.ChecksSinceFail = avail.ChecksSinceFail
-	values := conns.byGroupNode[groupNodeKey{group: g.Name, id: ns.ID}]
+	ns.LastConnectionFailureAt = timePtr(avail.LastConnFailAt)
+	values := conns.byGroupNodeID[groupNodeIDKey{group: g.Name, id: ns.ID}]
+	if !uniqueID {
+		values = conns.byGroupNode[groupNodeKey{
+			group:  g.Name,
+			id:     ns.ID,
+			subtag: ns.Subtag,
+			name:   ns.Name,
+		}]
+	}
 	ns.ActiveConns, ns.TotalConns = values.active, values.total
 	return ns
 }
 
 func groupHealth(group GroupStatus, critical bool) HealthStatus {
-	if group.NoCheck {
+	if group.Connectivity == nil {
 		return HealthHealthy
 	}
-	if group.Available {
+	if group.Connectivity.Available {
 		return HealthHealthy
 	}
 	if critical {
@@ -331,7 +416,13 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 	}
 	snapshot.ActiveConns, snapshot.TotalConns = conns.all.active, conns.all.total
 	for i := 0; i < 4; i++ {
-		snapshot.ActiveByNet[i] = conns.byNetwork[i].active
+		networkType := common.IndexToNetworkType(i)
+		values := conns.byNetwork[i]
+		snapshot.Networks = append(snapshot.Networks, NetworkConnectionStatus{
+			Network:     networkType.String(),
+			ActiveConns: values.active,
+			TotalConns:  values.total,
+		})
 	}
 	if c.dnsController != nil {
 		snapshot.Tables = append(snapshot.Tables, TableUsage{
@@ -361,29 +452,36 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			continue
 		}
 		gs := GroupStatus{
-			Name:    g.Name,
-			Policy:  string(g.GetSelectionPolicy()),
-			NoCheck: g.Kind == outbound.GroupKindAlwaysAlive,
+			Name:     g.Name,
+			Policy:   string(g.GetSelectionPolicy()),
+			Networks: make([]NetworkStatus, 4),
 		}
 		availability := stats.GetGroup(g.Name)
-		gs.Available = g.Available()
-		gs.UpRatio = availability.UpRatio
-		gs.AvailableSince = timePtr(availability.AliveSince)
-		gs.LastFailureStartedAt = timePtr(availability.LastFailureStartedAt)
-		gs.LastFailureDuration = availability.LastFailureDuration
+		if g.Kind != outbound.GroupKindAlwaysAlive {
+			gs.Connectivity = &GroupConnectivityStatus{
+				Available:      g.Available(),
+				UpRatio:        availability.UpRatio,
+				AvailableSince: timePtr(availability.AliveSince),
+				Failure:        failureStatus(availability.LastFailureStartedAt, availability.LastFailureDuration),
+			}
+		}
+		idCounts := make(map[string]int, len(g.Dialers))
 		for _, d := range g.Dialers {
-			gs.Nodes = append(gs.Nodes, nodeStatus(g, d, conns))
+			idCounts[d.StatsID()]++
+		}
+		for _, d := range g.Dialers {
+			gs.Nodes = append(gs.Nodes, nodeStatus(g, d, conns, idCounts[d.StatsID()] == 1))
 		}
 		for i := 0; i < 4; i++ {
 			gs.Networks[i] = networkStatus(g, i, conns)
-			gs.Networks[i].SupportState = dialer.NetworkSupportUnsupported.String()
+			gs.Networks[i].SupportState = NetworkSupportUnsupported
 			for _, node := range gs.Nodes {
-				switch node.SupportState[i] {
-				case dialer.NetworkSupportConfirmed.String():
-					gs.Networks[i].SupportState = dialer.NetworkSupportConfirmed.String()
-				case dialer.NetworkSupportUnknown.String():
-					if gs.Networks[i].SupportState != dialer.NetworkSupportConfirmed.String() {
-						gs.Networks[i].SupportState = dialer.NetworkSupportUnknown.String()
+				switch node.Networks[i].SupportState {
+				case NetworkSupportConfirmed:
+					gs.Networks[i].SupportState = NetworkSupportConfirmed
+				case NetworkSupportUnknown:
+					if gs.Networks[i].SupportState != NetworkSupportConfirmed {
+						gs.Networks[i].SupportState = NetworkSupportUnknown
 					}
 				}
 			}

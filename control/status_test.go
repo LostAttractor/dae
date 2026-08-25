@@ -7,7 +7,6 @@ package control
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -156,10 +155,10 @@ func TestCollectConnCountsKeepsSameNamedNodesSeparate(t *testing.T) {
 	common.TotalConnections.With(labelsB).Add(7)
 
 	counts := (&ControlPlane{PrometheusRegistry: registry}).collectConnCounts()
-	if got := counts.byGroupNode[groupNodeKey{group: group, id: "node-a-id"}]; got != (connValues{active: 2, total: 3}) {
+	if got := counts.byGroupNode[groupNodeKey{group: group, id: "node-a-id", subtag: "sub", name: "same-name"}]; got != (connValues{active: 2, total: 3}) {
 		t.Fatalf("node A counts = %+v", got)
 	}
-	if got := counts.byGroupNode[groupNodeKey{group: group, id: "node-b-id"}]; got != (connValues{active: 5, total: 7}) {
+	if got := counts.byGroupNode[groupNodeKey{group: group, id: "node-b-id", subtag: "sub", name: "same-name"}]; got != (connValues{active: 5, total: 7}) {
 		t.Fatalf("node B counts = %+v", got)
 	}
 	if got := counts.byGroupNetwork[groupNetworkKey{group: group, network: 0}]; got != (connValues{active: 7, total: 10}) {
@@ -167,80 +166,18 @@ func TestCollectConnCountsKeepsSameNamedNodesSeparate(t *testing.T) {
 	}
 }
 
-func TestFailureEpisodeJSONFields(t *testing.T) {
-	startedAt := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	payload := struct {
-		Group GroupStatus `json:"group"`
-		Node  NodeStatus  `json:"node"`
-	}{
-		Group: GroupStatus{
-			LastFailureStartedAt: &startedAt,
-			LastFailureDuration:  17 * time.Minute,
-		},
-		Node: NodeStatus{
-			LastFailureStartedAt: &startedAt,
-			LastFailureDuration:  17 * time.Minute,
-		},
+func TestConnCountsKeepsAliasesSeparate(t *testing.T) {
+	counts := newConnCounts()
+	counts.add("group", "shared-id", "sub", "alias-a", 0, true, 2)
+	counts.add("group", "shared-id", "sub", "alias-b", 0, true, 5)
+	if got := counts.byGroupNode[groupNodeKey{group: "group", id: "shared-id", subtag: "sub", name: "alias-a"}]; got.active != 2 {
+		t.Fatalf("alias A active connections = %d, want 2", got.active)
 	}
-
-	b, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
+	if got := counts.byGroupNode[groupNodeKey{group: "group", id: "shared-id", subtag: "sub", name: "alias-b"}]; got.active != 5 {
+		t.Fatalf("alias B active connections = %d, want 5", got.active)
 	}
-	var got struct {
-		Group map[string]json.RawMessage `json:"group"`
-		Node  map[string]json.RawMessage `json:"node"`
-	}
-	if err = json.Unmarshal(b, &got); err != nil {
-		t.Fatal(err)
-	}
-	for name, fields := range map[string]map[string]json.RawMessage{"group": got.Group, "node": got.Node} {
-		if _, ok := fields["last_failure_started_at"]; !ok {
-			t.Errorf("%s status omitted last_failure_started_at: %s", name, b)
-		}
-		var duration time.Duration
-		if err = json.Unmarshal(fields["last_failure_duration"], &duration); err != nil {
-			t.Errorf("decode %s failure duration: %v", name, err)
-		} else if duration != 17*time.Minute {
-			t.Errorf("%s failure duration = %v, want 17m", name, duration)
-		}
-		if _, ok := fields["last_fail_at"]; ok {
-			t.Errorf("%s status still exposes last_fail_at", name)
-		}
-	}
-}
-
-func TestStatusJSONUsesCurrentAvailabilitySchema(t *testing.T) {
-	availableSince := time.Now()
-	b, err := json.Marshal(GroupStatus{
-		AvailableSince: &availableSince,
-		Networks:       [4]NetworkStatus{{Network: "tcp4", SupportState: "confirmed"}},
-		Nodes:          []NodeStatus{{Name: "node", HealthState: "healthy"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got struct {
-		AvailableSince json.RawMessage              `json:"available_since"`
-		AliveSince     json.RawMessage              `json:"alive_since"`
-		Networks       []map[string]json.RawMessage `json:"networks"`
-		Nodes          []map[string]json.RawMessage `json:"nodes"`
-	}
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.AvailableSince == nil || got.AliveSince != nil {
-		t.Fatalf("availability timestamps use stale schema: %s", b)
-	}
-	for kind, fields := range map[string]map[string]json.RawMessage{
-		"network": got.Networks[0],
-		"node":    got.Nodes[0],
-	} {
-		for _, field := range []string{"alive", "supported"} {
-			if _, ok := fields[field]; ok {
-				t.Errorf("%s status exposes stale %q field: %s", kind, field, b)
-			}
-		}
+	if got := counts.byGroupNodeID[groupNodeIDKey{group: "group", id: "shared-id"}]; got.active != 7 {
+		t.Fatalf("stable ID active connections = %d, want 7", got.active)
 	}
 }
 
@@ -253,22 +190,23 @@ func TestGroupHealth(t *testing.T) {
 	}{
 		{
 			name:     "available group",
-			group:    GroupStatus{Available: true},
+			group:    GroupStatus{Connectivity: &GroupConnectivityStatus{Available: true}},
 			critical: true,
 			want:     HealthHealthy,
 		},
 		{
 			name:     "critical group is unavailable",
+			group:    GroupStatus{Connectivity: &GroupConnectivityStatus{}},
 			critical: true,
 			want:     HealthDegraded,
 		},
 		{
-			name: "non-critical group is unavailable",
-			want: HealthWarning,
+			name:  "non-critical group is unavailable",
+			group: GroupStatus{Connectivity: &GroupConnectivityStatus{}},
+			want:  HealthWarning,
 		},
 		{
 			name:     "no-check group",
-			group:    GroupStatus{NoCheck: true},
 			critical: true,
 			want:     HealthHealthy,
 		},
@@ -377,16 +315,16 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	if snapshot.Health != HealthHealthy || snapshot.Groups[1].Health != HealthHealthy {
 		t.Fatalf("health = %q/%q, want healthy", snapshot.Health, snapshot.Groups[1].Health)
 	}
-	if !snapshot.Groups[1].Available || snapshot.Groups[1].Networks[0].SupportState != "confirmed" {
+	if snapshot.Groups[1].Connectivity == nil || !snapshot.Groups[1].Connectivity.Available || snapshot.Groups[1].Networks[0].SupportState != "confirmed" {
 		t.Fatalf("group/tcp4 status = %+v/%+v, want available and supported", snapshot.Groups[1], snapshot.Groups[1].Networks[0])
 	}
 	if snapshot.Groups[1].Networks[1].SupportState != "unsupported" {
 		t.Fatalf("tcp6 status = %+v, want unsupported", snapshot.Groups[1].Networks[1])
 	}
-	if got := snapshot.Groups[1].Nodes[0].SupportState[0]; got != "confirmed" {
+	if got := snapshot.Groups[1].Nodes[0].Networks[0].SupportState; got != "confirmed" {
 		t.Fatalf("tcp4 support state = %q, want confirmed", got)
 	}
-	if got := snapshot.Groups[1].Nodes[0].SupportState[1]; got != "unsupported" {
+	if got := snapshot.Groups[1].Nodes[0].Networks[1].SupportState; got != "unsupported" {
 		t.Fatalf("tcp6 support state = %q, want unsupported", got)
 	}
 
@@ -439,17 +377,47 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 	if status.SupportState != "unknown" {
 		t.Fatalf("udp4 status = %+v, want unknown and not advertised as supported", status)
 	}
-	if status.Selected != "" {
-		t.Fatalf("unknown capability exposed tentative selection %q", status.Selected)
+	if status.Selected != nil {
+		t.Fatalf("unknown capability exposed tentative selection %+v", status.Selected)
 	}
-	if snapshot.Groups[0].Nodes[0].SupportState[2] != "unknown" {
+	if snapshot.Groups[0].Nodes[0].Networks[2].SupportState != "unknown" {
 		t.Fatal("unknown node capability was advertised as supported")
 	}
-	if snapshot.Groups[0].Nodes[0].Selected[2] {
-		t.Fatal("unknown node capability exposed tentative selection")
+	if snapshot.Groups[0].Connectivity == nil || snapshot.Groups[0].Connectivity.Available {
+		t.Fatal("unknown network capability made the group available")
 	}
-	if !snapshot.Groups[0].Available {
-		t.Fatal("global node health did not make the group available")
+}
+
+func TestNetworkStatusRejectsStaleSelection(t *testing.T) {
+	option := &dialer.GlobalOption{}
+	networkType := common.IndexToNetworkType(0)
+	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
+		Name: t.Name(),
+		Link: "test://" + t.Name(),
+	}}, true)
+	group := outbound.NewDialerGroup(
+		option,
+		t.Name(),
+		outbound.GroupKindNormal,
+		[]*dialer.Dialer{node},
+		[]*dialer.Annotation{{}},
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
+		func(bool, *common.NetworkType) error { return nil },
+	)
+	t.Cleanup(func() {
+		_ = group.Close()
+		node.RetireTransport()
+	})
+	node.SetSupported(networkType, true)
+	node.Update(true, time.Millisecond, networkType, nil)
+	node.NotifyStatusChange()
+	if status := networkStatus(group, 0, newConnCounts()); status.Selected == nil {
+		t.Fatal("live selection was not reported")
+	}
+
+	node.Update(false, 0, networkType, errors.New("stale selection"))
+	if status := networkStatus(group, 0, newConnCounts()); status.Selected != nil {
+		t.Fatalf("unavailable stale selection was reported: %+v", status.Selected)
 	}
 }
 
@@ -481,12 +449,12 @@ func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
 	node.Update(true, time.Millisecond, tcp4, nil)
 	node.NotifyStatusChange()
 
-	status := nodeStatus(group, node, newConnCounts())
-	if status.DialerKind != "stateful" || status.SessionState != "connected" || status.HealthState != "healthy" {
+	status := nodeStatus(group, node, newConnCounts(), true)
+	if status.Session == nil || status.Session.State != SessionConnected || status.Health == nil || status.Health.State != NodeHealthHealthy {
 		t.Fatalf("connected node status = %+v", status)
 	}
-	if status.SupportState[0] != "confirmed" {
-		t.Fatalf("connected node support = %+v", status.SupportState)
+	if status.Networks[0].SupportState != "confirmed" {
+		t.Fatalf("connected node support = %+v", status.Networks)
 	}
 
 	session.state.Transition(netproxy.SessionDisconnected, errors.New("transport lost"))
@@ -494,11 +462,11 @@ func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
 	for node.RuntimeStatus(group).Healthy && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	status = nodeStatus(group, node, newConnCounts())
-	if status.SessionState != "disconnected" || status.SessionError != "transport lost" || status.HealthState != "unhealthy" {
+	status = nodeStatus(group, node, newConnCounts(), true)
+	if status.Session == nil || status.Session.State != SessionDisconnected || status.Session.Error != "transport lost" || status.Health == nil || status.Health.State != NodeHealthUnhealthy {
 		t.Fatalf("disconnected node status = %+v", status)
 	}
-	if status.SupportState[0] != "confirmed" {
-		t.Fatalf("disconnect changed support: %+v", status.SupportState)
+	if status.Networks[0].SupportState != "confirmed" {
+		t.Fatalf("disconnect changed support: %+v", status.Networks)
 	}
 }
