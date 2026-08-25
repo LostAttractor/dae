@@ -24,6 +24,8 @@ import (
 	"golang.org/x/term"
 )
 
+var statusVerbose bool
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show the status of the running dae daemon.",
@@ -239,6 +241,44 @@ func networkSupport(networks []control.NodeNetworkStatus) string {
 	if len(parts) == 0 {
 		return "-"
 	}
+	return compactNetworks(parts)
+}
+
+func compactNetworks(networks []string) string {
+	set := make(map[string]bool, len(networks))
+	for _, network := range networks {
+		set[network] = true
+	}
+	if len(set) == 0 {
+		return "-"
+	}
+	if len(set) == 4 && set["tcp4"] && set["tcp6"] && set["udp4"] && set["udp6"] {
+		return "all"
+	}
+	parts := make([]string, 0, len(set))
+	consume := func(label, first, second string) {
+		if set[first] && set[second] {
+			parts = append(parts, label)
+			delete(set, first)
+			delete(set, second)
+		}
+	}
+	consume("all tcp", "tcp4", "tcp6")
+	consume("all udp", "udp4", "udp6")
+	consume("all ipv4", "tcp4", "udp4")
+	consume("all ipv6", "tcp6", "udp6")
+	for _, network := range []string{"tcp4", "tcp6", "udp4", "udp6"} {
+		if set[network] {
+			parts = append(parts, network)
+			delete(set, network)
+		}
+	}
+	for _, network := range networks {
+		if set[network] {
+			parts = append(parts, network)
+			delete(set, network)
+		}
+	}
 	return strings.Join(parts, ",")
 }
 
@@ -252,7 +292,7 @@ func selectedNetworks(nodeIndex int, networks []control.NetworkStatus) (string, 
 	if len(parts) == 0 {
 		return "-", false
 	}
-	return strings.Join(parts, ","), true
+	return compactNetworks(parts), true
 }
 
 func emptyDash(s string) string {
@@ -360,7 +400,7 @@ func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control
 	}
 
 	healthState := "-"
-	latency := "-"
+	latency := nodeLatency(status)
 	upRatio := "-"
 	upRatio24h := "-"
 	healthySince := "-"
@@ -374,16 +414,6 @@ func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control
 		failure = formatFailure(status.Health.Failure)
 		lastCheck = formatAgo(status.Health.LastCheckAt)
 	}
-	if status.Health != nil && status.Health.Latency != nil && status.Health.State == control.NodeHealthHealthy {
-		latencyStatus := status.Health.Latency
-		latency = fmt.Sprintf("%.0f/%.0f/%.0f", latencyStatus.LastMs, latencyStatus.Average10Ms, latencyStatus.MovingAverageMs)
-		if latencyStatus.Average10Failed {
-			latency = colorize(latency, text.FgHiRed, text.Bold)
-		} else {
-			latency = colorLatency(latencyStatus.MovingAverageMs, latency)
-		}
-	}
-
 	return table.Row{
 		colorSelected(nodeLabel(status, index), selected),
 		emptyDash(status.Subtag),
@@ -399,6 +429,65 @@ func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control
 		failure,
 		lastCheck,
 		formatAgo(status.LastConnectionFailureAt),
+		formatConnCounts(status.ActiveConns, status.TotalConns),
+	}
+}
+
+func nodeLatency(status control.NodeStatus) string {
+	if status.Health == nil || status.Health.Latency == nil || status.Health.State != control.NodeHealthHealthy {
+		return "-"
+	}
+	latency := status.Health.Latency
+	formatted := fmt.Sprintf("%.0f/%.0f/%.0f", latency.LastMs, latency.Average10Ms, latency.MovingAverageMs)
+	if latency.Average10Failed {
+		return colorize(formatted, text.FgHiRed, text.Bold)
+	}
+	return colorLatency(latency.MovingAverageMs, formatted)
+}
+
+func compactNodeState(status control.NodeStatus) string {
+	if status.Session != nil && status.Session.State != control.SessionConnected {
+		switch status.Session.State {
+		case control.SessionConnecting:
+			return colorize(string(status.Session.State), text.FgYellow)
+		default:
+			return colorize(string(status.Session.State), text.FgRed)
+		}
+	}
+	if status.Health != nil {
+		switch status.Health.State {
+		case control.NodeHealthHealthy:
+			return colorize(string(status.Health.State), text.FgGreen)
+		case control.NodeHealthUnknown:
+			return colorize(string(status.Health.State), text.FgYellow)
+		default:
+			return colorize(string(status.Health.State), text.FgRed)
+		}
+	}
+	if status.Session != nil {
+		return colorize(string(status.Session.State), text.FgGreen)
+	}
+	return "-"
+}
+
+func compactUpRatios(status control.NodeStatus) string {
+	if status.Health == nil || status.Health.State == control.NodeHealthUnknown {
+		return "-"
+	}
+	formatted := fmt.Sprintf("%.1f/%.1f%%", status.Health.UpRatio*100, status.Health.UpRatio24h*100)
+	return colorRatio(min(status.Health.UpRatio, status.Health.UpRatio24h), formatted)
+}
+
+func compactNodeStatusRow(status control.NodeStatus, index int, groupNetworks []control.NetworkStatus) table.Row {
+	selectedNetworks, selected := selectedNetworks(index, groupNetworks)
+	return table.Row{
+		colorSelected(nodeLabel(status, index), selected),
+		emptyDash(status.Protocol),
+		compactNodeState(status),
+		networkSupport(status.Networks),
+		colorSelected(selectedNetworks, selected),
+		nodeLatency(status),
+		compactUpRatios(status),
 		formatConnCounts(status.ActiveConns, status.TotalConns),
 	}
 }
@@ -446,7 +535,17 @@ func printGroupStatus(group control.GroupStatus) {
 	fmt.Printf("\nPaths of target '%s':\n", group.Name)
 	rows = make([]table.Row, 0, len(group.Nodes))
 	for i, status := range group.Nodes {
-		rows = append(rows, nodeStatusRow(status, i, group.Networks))
+		if statusVerbose {
+			rows = append(rows, nodeStatusRow(status, i, group.Networks))
+		} else {
+			rows = append(rows, compactNodeStatusRow(status, i, group.Networks))
+		}
+	}
+	if !statusVerbose {
+		printTable(table.Row{
+			"PATH", "PROTO", "STATE", "NETS", "SELECT", "LAT L/A/M(ms)", "UP/24H", "CONNS",
+		}, rows)
+		return
 	}
 	printTable(table.Row{
 		"PATH", "SUB", "PROTO", "SESSION", "HEALTH", "SUPPORT", "SELECTED",
@@ -514,5 +613,6 @@ func printStatus(s *control.StatusSnapshot) {
 }
 
 func init() {
+	statusCmd.Flags().BoolVar(&statusVerbose, "verbose", false, "show detailed path health history")
 	rootCmd.AddCommand(statusCmd)
 }

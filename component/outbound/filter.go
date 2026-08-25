@@ -90,6 +90,21 @@ func nodeIdentity(link string, options config.NodeOptions) string {
 	return link
 }
 
+func nodeDisplayProtocol(node *NodeInfo) string {
+	for _, builder := range node.Dialers {
+		mux, ok := builder.(*smux.SmuxConfig)
+		if !ok {
+			continue
+		}
+		mode := "smux"
+		if mux.PassThroughUDP {
+			mode = "smux/udp-pass"
+		}
+		return node.Property.Protocol + "(" + mode + ")"
+	}
+	return node.Property.Protocol
+}
+
 func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 	set := new(DialerSet)
 	for _, node := range nodes {
@@ -426,14 +441,15 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 	addresses := make([]string, 0, len(spec.Nodes))
 	hops := make([]dialer.Hop, 0, len(spec.Nodes))
 	for _, node := range spec.Nodes {
+		protocol := nodeDisplayProtocol(node)
 		names = append(names, node.Property.Name)
-		protocols = append(protocols, node.Property.Protocol)
+		protocols = append(protocols, protocol)
 		addresses = append(addresses, node.Property.Address)
 		hops = append(hops, dialer.Hop{
 			ID:       stats.NodeID(nodeKey(node)),
 			Name:     node.Property.Name,
 			Subtag:   node.Property.SubscriptionTag,
-			Protocol: node.Property.Protocol,
+			Protocol: protocol,
 			Address:  node.Property.Address,
 		})
 	}

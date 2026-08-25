@@ -591,6 +591,9 @@ func TestNodeIdentityIncludesEffectiveOptions(t *testing.T) {
 	if first.StatsKey() == second.StatsKey() {
 		t.Fatalf("effective options share stats identity %q", first.StatsKey())
 	}
+	if got, want := second.Protocol, "shadowsocks(smux)"; got != want {
+		t.Fatalf("multiplexed path protocol = %q, want %q", got, want)
+	}
 }
 
 func TestNodeIdentityIncludesConfiguredName(t *testing.T) {

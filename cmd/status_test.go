@@ -117,7 +117,7 @@ func TestNodeStatusRow(t *testing.T) {
 		{Network: "udp6"},
 	})
 	want := []string{
-		"node-a", "-", "vless", "connected", "healthy", "tcp4,tcp6,udp4,udp6", "tcp4",
+		"node-a", "-", "vless", "connected", "healthy", "all", "tcp4",
 		"42/45/50", "99.8% (2/1000)", "99.5% (1/100)", "-", "-", "-", "-", "2/9000",
 	}
 	if len(row) != len(want) {
@@ -144,8 +144,83 @@ func TestNodeStatusRowOnlyShowsConfirmedSupport(t *testing.T) {
 			{Network: "udp6", SupportState: "unsupported"},
 		},
 	}, 0, nil)
-	if got := row[5].(string); got != "tcp4,tcp6" {
+	if got := row[5].(string); got != "all tcp" {
 		t.Fatalf("support = %q, want only confirmed modes", got)
+	}
+}
+
+func TestCompactNetworks(t *testing.T) {
+	tests := []struct {
+		name     string
+		networks []string
+		want     string
+	}{
+		{name: "none", want: "-"},
+		{name: "all", networks: []string{"tcp4", "tcp6", "udp4", "udp6"}, want: "all"},
+		{name: "tcp", networks: []string{"tcp4", "tcp6"}, want: "all tcp"},
+		{name: "udp", networks: []string{"udp4", "udp6"}, want: "all udp"},
+		{name: "ipv4", networks: []string{"tcp4", "udp4"}, want: "all ipv4"},
+		{name: "ipv6", networks: []string{"tcp6", "udp6"}, want: "all ipv6"},
+		{name: "pair and remainder", networks: []string{"tcp4", "tcp6", "udp4"}, want: "all tcp,udp4"},
+		{name: "mixed", networks: []string{"tcp4", "udp6"}, want: "tcp4,udp6"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := compactNetworks(tt.networks); got != tt.want {
+				t.Fatalf("compactNetworks() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompactNodeStatusRow(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	row := compactNodeStatusRow(control.NodeStatus{
+		Name:     "node-a",
+		Protocol: "shadowsocks(smux)",
+		Session:  &control.SessionStatus{State: control.SessionConnected},
+		Networks: []control.NodeNetworkStatus{{Network: "tcp4", SupportState: control.NetworkSupportConfirmed}, {Network: "tcp6", SupportState: control.NetworkSupportConfirmed}, {Network: "udp4", SupportState: control.NetworkSupportConfirmed}, {Network: "udp6", SupportState: control.NetworkSupportConfirmed}},
+		Health: &control.NodeHealthStatus{
+			State:          control.NodeHealthHealthy,
+			Latency:        &control.LatencyStatus{LastMs: 42, Average10Ms: 45, MovingAverageMs: 50},
+			UpRatio:        0.998,
+			UpRatio24h:     0.995,
+			ChecksTotal:    1000,
+			ChecksTotal24h: 100,
+		},
+		ActiveConns: 2,
+		TotalConns:  9000,
+	}, 0, []control.NetworkStatus{
+		{Network: "tcp4", Selected: &control.SelectedNodeStatus{Index: 0}},
+		{Network: "tcp6", Selected: &control.SelectedNodeStatus{Index: 0}},
+		{Network: "udp4", Selected: &control.SelectedNodeStatus{Index: 0}},
+		{Network: "udp6", Selected: &control.SelectedNodeStatus{Index: 0}},
+	})
+	want := []string{"node-a", "shadowsocks(smux)", "healthy", "all", "all", "42/45/50", "99.8/99.5%", "2/9000"}
+	if len(row) != len(want) {
+		t.Fatalf("compactNodeStatusRow() has %d cells, want %d", len(row), len(want))
+	}
+	for i, expected := range want {
+		if got := row[i].(string); got != expected {
+			t.Errorf("compactNodeStatusRow()[%d] = %q, want %q", i, got, expected)
+		}
+	}
+}
+
+func TestCompactNodeStatePrioritizesSessionFailure(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	status := control.NodeStatus{
+		Session: &control.SessionStatus{State: control.SessionDisconnected},
+		Health:  &control.NodeHealthStatus{State: control.NodeHealthHealthy},
+	}
+	if got := compactNodeState(status); got != "disconnected" {
+		t.Fatalf("compact state = %q, want disconnected", got)
 	}
 }
 
