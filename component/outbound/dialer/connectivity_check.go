@@ -49,13 +49,13 @@ func (d *Dialer) Alive() bool {
 	return d.Dialer.Alive() && d.alive
 }
 
-// SelectionState returns coherent aggregate health and capability for one mode.
+// SelectionState returns coherent aggregate health, mode health, and capability.
 func (d *Dialer) SelectionState(typ *common.NetworkType) (alive bool, support NetworkSupportState) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	index := common.NetworkTypeToIndex(typ)
 	support = d.support[index]
-	return d.Dialer.Alive() && d.alive, support
+	return d.Dialer.Alive() && d.alive && d.modeAlive[index], support
 }
 
 func (d *Dialer) ConfirmedSupport(typ *common.NetworkType) bool {
@@ -83,8 +83,21 @@ func (d *Dialer) SetSupported(typ *common.NetworkType, ok bool) {
 	state := NetworkSupportUnsupported
 	if ok {
 		state = NetworkSupportConfirmed
+		d.modeAlive[index] = true
 	}
 	d.support[index] = state
+}
+
+func (d *Dialer) setModeAlive(networkType *common.NetworkType, alive bool) bool {
+	if networkType == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	index := common.NetworkTypeToIndex(networkType)
+	changed := d.modeAlive[index] != alive
+	d.modeAlive[index] = alive
+	return changed
 }
 
 type checkDNSOption struct {
@@ -278,6 +291,7 @@ type healthCheckResult struct {
 	ok          bool
 	latency     time.Duration
 	err         error
+	modeFailed  bool
 }
 
 type connectivityCheckLoop struct {
@@ -294,6 +308,9 @@ type connectivityCheckLoop struct {
 	capabilityTimer    *time.Timer
 	capabilityInterval time.Duration
 
+	recoveryTimer  *time.Timer
+	recoveryActive bool
+
 	disconnectNotified bool
 }
 
@@ -303,6 +320,8 @@ func newConnectivityCheckLoop(d *Dialer, primary *checkOption, options []*checkO
 		healthInterval = time.Duration(fastrand.Int63n(int64(healthInterval)))
 	}
 	capabilityTimer := time.NewTimer(time.Hour)
+	recoveryTimer := time.NewTimer(time.Hour)
+	recoveryTimer.Stop()
 	d.mu.RLock()
 	lastLatency := d.lastLatency
 	d.mu.RUnlock()
@@ -315,6 +334,7 @@ func newConnectivityCheckLoop(d *Dialer, primary *checkOption, options []*checkO
 		lastLatency:        lastLatency,
 		capabilityTimer:    capabilityTimer,
 		capabilityInterval: capabilityCheckInitialInterval,
+		recoveryTimer:      recoveryTimer,
 	}
 	loop.scheduleCapabilityCheck()
 	return loop
@@ -330,6 +350,21 @@ func (c *connectivityCheckLoop) scheduleCapabilityCheck() {
 		return
 	}
 	c.capabilityTimer.Reset(jitterCheckInterval(c.capabilityInterval))
+}
+
+func (c *connectivityCheckLoop) scheduleModeRecovery() {
+	if !c.d.hasPendingModeRecovery(c.options) {
+		if c.recoveryActive {
+			c.recoveryTimer.Stop()
+			c.recoveryActive = false
+		}
+		return
+	}
+	if c.recoveryActive {
+		return
+	}
+	c.recoveryTimer.Reset(jitterCheckInterval(capabilityCheckInitialInterval))
+	c.recoveryActive = true
 }
 
 func (c *connectivityCheckLoop) discoverCapabilities() (ok, attempted bool) {
@@ -383,25 +418,36 @@ func (c *connectivityCheckLoop) checkHealth() healthCheckResult {
 		return result
 	}
 	if c.primary != nil {
-		result = c.checkHealthOption(c.primary)
+		checked := c.checkHealthOption(c.primary)
+		checked.modeFailed = result.modeFailed
+		result = checked
 	}
 	if result.ok || c.d.ctx.Err() != nil {
 		return result
 	}
+	result.modeFailed = c.d.setModeAlive(result.networkType, false) || result.modeFailed
 
 	c.d.mu.RLock()
 	support := c.d.support
 	c.d.mu.RUnlock()
+	var attempted [4]bool
+	if c.primary != nil {
+		attempted[common.NetworkTypeToIndex(c.primary.networkType)] = true
+	}
 	for _, candidate := range c.options {
-		if candidate == c.primary || support[common.NetworkTypeToIndex(candidate.networkType)] != NetworkSupportConfirmed {
+		index := common.NetworkTypeToIndex(candidate.networkType)
+		if attempted[index] || support[index] != NetworkSupportConfirmed {
 			continue
 		}
+		attempted[index] = true
 		candidateResult := c.checkHealthOption(candidate)
+		candidateResult.modeFailed = result.modeFailed
 		result = candidateResult
 		if candidateResult.ok {
 			c.primary = candidate
 			return candidateResult
 		}
+		result.modeFailed = c.d.setModeAlive(candidateResult.networkType, false) || result.modeFailed
 	}
 	return result
 }
@@ -460,6 +506,9 @@ func (c *connectivityCheckLoop) publishHealth(result healthCheckResult) {
 	c.d.NotifyStatusChange()
 	c.disconnectNotified = !result.ok
 	c.healthTimer.Reset(c.healthInterval)
+	if result.modeFailed {
+		c.scheduleModeRecovery()
+	}
 }
 
 func (c *connectivityCheckLoop) run() {
@@ -476,6 +525,17 @@ func (c *connectivityCheckLoop) run() {
 				c.capabilityInterval = min(c.capabilityInterval*2, capabilityCheckMaxInterval)
 			}
 			c.scheduleCapabilityCheck()
+			continue
+		case <-c.recoveryTimer.C:
+			c.recoveryActive = false
+			if !c.d.Dialer.Alive() {
+				c.scheduleModeRecovery()
+				continue
+			}
+			if c.d.recoverModeHealth(c.options) && c.d.Alive() {
+				c.d.NotifyStatusChange()
+			}
+			c.scheduleModeRecovery()
 			continue
 		case <-c.d.checkCh:
 			c.staggerNext = true
@@ -543,8 +603,8 @@ type capabilityCheckResult struct {
 type capabilityCheckMode uint8
 
 const (
-	// Both phases classify only previously unknown capability. Runtime checks
-	// leave aggregate health unchanged and never reconnect a dead transport.
+	// Both phases classify only unknown capability. Runtime checks leave
+	// aggregate health unchanged and never reconnect a dead transport.
 	capabilityCheckInitial capabilityCheckMode = iota
 	capabilityCheckRuntime
 )
@@ -560,6 +620,19 @@ func pendingCapabilityOptions(checkOpts []*checkOption, support [4]NetworkSuppor
 		}
 	}
 	return unknown
+}
+
+func pendingModeRecoveryOptions(checkOpts []*checkOption, support [4]NetworkSupportState, modeAlive [4]bool) []*checkOption {
+	pending := make([]*checkOption, 0, len(checkOpts))
+	var seen [4]bool
+	for _, opt := range checkOpts {
+		i := common.NetworkTypeToIndex(opt.networkType)
+		if support[i] == NetworkSupportConfirmed && !modeAlive[i] && !seen[i] {
+			pending = append(pending, opt)
+			seen[i] = true
+		}
+	}
+	return pending
 }
 
 func (d *Dialer) probeCapabilities(checkOpts []*checkOption) []capabilityCheckResult {
@@ -593,6 +666,12 @@ func (d *Dialer) hasPendingCapabilityCheck(checkOpts []*checkOption) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return len(pendingCapabilityOptions(checkOpts, d.support)) > 0
+}
+
+func (d *Dialer) hasPendingModeRecovery(checkOpts []*checkOption) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return len(pendingModeRecoveryOptions(checkOpts, d.support, d.modeAlive)) > 0
 }
 
 func (d *Dialer) checkCapabilities(checkOpts []*checkOption, mode capabilityCheckMode) (best *checkOption, changed bool) {
@@ -636,6 +715,10 @@ func (d *Dialer) checkCapabilities(checkOpts []*checkOption, mode capabilityChec
 				d.support[i] = NetworkSupportConfirmed
 				changed = true
 			}
+			if !d.modeAlive[i] {
+				d.modeAlive[i] = true
+				changed = true
+			}
 		case d.support[i] == NetworkSupportUnknown && errors.Is(result.err, netproxy.UnsupportedTunnelTypeError):
 			// Unsupported is a terminal capability verdict and requires this
 			// explicit typed error; reachability failures are not evidence.
@@ -665,6 +748,32 @@ func (d *Dialer) checkCapabilities(checkOpts []*checkOption, mode capabilityChec
 		d.Update(best != nil, latency, networkType, firstErr)
 	}
 	return best, changed
+}
+
+func (d *Dialer) recoverModeHealth(checkOpts []*checkOption) bool {
+	d.mu.RLock()
+	support := d.support
+	modeAlive := d.modeAlive
+	d.mu.RUnlock()
+	pending := pendingModeRecoveryOptions(checkOpts, support, modeAlive)
+	if len(pending) == 0 {
+		return false
+	}
+	results := d.probeCapabilities(pending)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.ctx.Err() != nil {
+		return false
+	}
+	changed := false
+	for _, result := range results {
+		i := common.NetworkTypeToIndex(result.option.networkType)
+		if result.ok && d.support[i] == NetworkSupportConfirmed && !d.modeAlive[i] {
+			d.modeAlive[i] = true
+			changed = true
+		}
+	}
+	return changed
 }
 
 func (d *Dialer) RegisterDialerGroup(g DialerGroup) {
@@ -715,6 +824,9 @@ func (d *Dialer) updateHealth(ok bool, latency time.Duration, networkType *commo
 	defer d.mu.Unlock()
 	if d.ctx.Err() != nil {
 		return
+	}
+	if networkType != nil {
+		d.modeAlive[common.NetworkTypeToIndex(networkType)] = ok
 	}
 	for g := range d.registeredDialerGroups {
 		groupLatency := latency

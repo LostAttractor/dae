@@ -555,7 +555,7 @@ func TestConnectivityRecheckUsesConfirmedAlternative(t *testing.T) {
 	if got := primaryChecks.Load(); got != 2 {
 		t.Fatalf("local connectivity event retried remote mode %d times, want only the two health probes", got)
 	}
-	if alive, support := d.SelectionState(primaryType); !alive || support != NetworkSupportConfirmed {
+	if alive, support := d.SelectionState(primaryType); alive || support != NetworkSupportConfirmed {
 		t.Fatalf("primary state = alive %v, support %v", alive, support)
 	}
 	if alive, support := d.SelectionState(alternativeType); !alive || support != NetworkSupportConfirmed {
@@ -566,6 +566,31 @@ func TestConnectivityRecheckUsesConfirmedAlternative(t *testing.T) {
 	}
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeCapabilityCheckRecoversFailedConfirmedMode(t *testing.T) {
+	d := newTestDialer(t, connectedTestDialer{})
+	t.Cleanup(func() { _ = d.Close() })
+	networkType := common.IndexToNetworkType(0)
+	d.SetSupported(networkType, true)
+	d.Update(true, time.Millisecond, networkType, nil)
+	d.setModeAlive(networkType, false)
+
+	checkOpt := &checkOption{
+		networkType: networkType,
+		probe: func(context.Context, *common.NetworkType) (bool, error) {
+			return true, nil
+		},
+	}
+	if !d.hasPendingModeRecovery([]*checkOption{checkOpt}) {
+		t.Fatal("failed confirmed mode did not schedule recovery")
+	}
+	if changed := d.recoverModeHealth([]*checkOption{checkOpt}); !changed {
+		t.Fatal("mode recovery reported no state change")
+	}
+	if alive, support := d.SelectionState(networkType); !alive || support != NetworkSupportConfirmed {
+		t.Fatalf("recovered state = alive %v, support %v", alive, support)
 	}
 }
 
@@ -628,6 +653,37 @@ func TestHealthCheckDoesNotHedgeFastSuccess(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("health probes = %d, want 1", got)
+	}
+}
+
+func TestHealthCheckTriesDuplicateNetworkOnce(t *testing.T) {
+	d := newTestDialer(t, connectedTestDialer{})
+	t.Cleanup(func() { _ = d.Close() })
+	primaryType := common.IndexToNetworkType(0)
+	alternativeType := common.IndexToNetworkType(1)
+	d.SetSupported(primaryType, true)
+	d.SetSupported(alternativeType, true)
+	var primaryChecks atomic.Int32
+	primary := &checkOption{
+		networkType: primaryType,
+		probe: func(context.Context, *common.NetworkType) (bool, error) {
+			primaryChecks.Add(1)
+			return false, errors.New("primary failed")
+		},
+	}
+	duplicate := &checkOption{networkType: primaryType, probe: primary.probe}
+	alternative := &checkOption{
+		networkType: alternativeType,
+		probe: func(context.Context, *common.NetworkType) (bool, error) {
+			return true, nil
+		},
+	}
+	loop := &connectivityCheckLoop{d: d, primary: primary, options: []*checkOption{primary, duplicate, alternative}}
+	if result := loop.checkHealth(); !result.ok || result.networkType != alternativeType {
+		t.Fatalf("health result = %+v, want successful alternative", result)
+	}
+	if got := primaryChecks.Load(); got != 2 {
+		t.Fatalf("primary probes = %d, want one hedged check (2 probes)", got)
 	}
 }
 
