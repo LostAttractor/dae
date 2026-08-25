@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	httpMethodSet map[string]struct{}
+	httpMethodSet       map[string]struct{}
+	benchmarkStringSink string
 )
 
 func init() {
@@ -32,7 +33,7 @@ func BenchmarkStringSet(b *testing.B) {
 		fastrand.Read(test[:])
 		_, ok := httpMethodSet[string(test[:])]
 		if !ok {
-			fmt.Sprintf("%v", string(test[:]))
+			benchmarkStringSink = fmt.Sprintf("%v", string(test[:]))
 		}
 	}
 }
@@ -42,7 +43,7 @@ func BenchmarkStringSwitch(b *testing.B) {
 		var test [5]byte
 		fastrand.Read(test[:])
 		if !common.IsValidHttpMethod(string(test[:])) {
-			fmt.Sprintf("%v", string(test[:]))
+			benchmarkStringSink = fmt.Sprintf("%v", string(test[:]))
 		}
 	}
 }
