@@ -194,7 +194,7 @@ func TestScopedDialersSerializeSharedTransportConnect(t *testing.T) {
 	t.Cleanup(func() {
 		_ = base.Close()
 		_ = clone.Close()
-		_ = base.CloseTransport()
+		base.RetireTransport()
 	})
 	if base.TransportID() != clone.TransportID() {
 		t.Fatal("scoped dialers do not share their transport runtime")
@@ -247,7 +247,7 @@ func TestConnectWakesOtherScopedDialers(t *testing.T) {
 	t.Cleanup(func() {
 		_ = base.Close()
 		_ = clone.Close()
-		_ = base.CloseTransport()
+		base.RetireTransport()
 	})
 
 	if err := base.runtime.connect(base.ctx, base); err != nil {
@@ -429,7 +429,7 @@ func TestStaleHealthProbeCannotRecoverNewSession(t *testing.T) {
 	d := newTestDialer(t, transport)
 	t.Cleanup(func() {
 		_ = d.Close()
-		_ = d.CloseTransport()
+		d.RetireTransport()
 	})
 	networkType := common.IndexToNetworkType(0)
 	d.SetSupported(networkType, true)
@@ -471,7 +471,7 @@ func TestRapidSessionRecoveryStillRequiresNewHealthProbe(t *testing.T) {
 	d := newTestDialer(t, transport)
 	t.Cleanup(func() {
 		_ = d.Close()
-		_ = d.CloseTransport()
+		d.RetireTransport()
 	})
 	networkType := common.IndexToNetworkType(0)
 	d.SetSupported(networkType, true)
@@ -497,7 +497,7 @@ func TestStaleCapabilityProbeCannotUpdateNewSession(t *testing.T) {
 	d := newTestDialer(t, transport)
 	t.Cleanup(func() {
 		_ = d.Close()
-		_ = d.CloseTransport()
+		d.RetireTransport()
 	})
 	networkType := common.IndexToNetworkType(0)
 	started := make(chan struct{})

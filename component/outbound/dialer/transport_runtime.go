@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/daeuniverse/outbound/netproxy"
+	log "github.com/sirupsen/logrus"
 )
 
 type transportRuntime struct {
@@ -24,8 +25,7 @@ type transportRuntime struct {
 	connecting bool
 	connectSem chan struct{}
 
-	closeOnce sync.Once
-	closeErr  error
+	retireOnce sync.Once
 }
 
 func newTransportRuntime(owned *netproxy.Runtime) *transportRuntime {
@@ -38,9 +38,9 @@ func newTransportRuntime(owned *netproxy.Runtime) *transportRuntime {
 		state:      netproxy.StateEvent{State: netproxy.SessionConnected},
 		connectSem: make(chan struct{}, 1),
 	}
-	if owned.Session != nil {
-		r.session = owned.Session
-		r.state = owned.Session.Snapshot()
+	if session, ok := owned.Session(); ok {
+		r.session = session
+		r.state = session.Snapshot()
 		r.wg.Add(1)
 		go r.watchSession()
 	}
@@ -198,14 +198,19 @@ func (r *transportRuntime) accepting() bool {
 	return r.ctx.Err() == nil
 }
 
-func (r *transportRuntime) close() error {
-	r.closeOnce.Do(func() {
-		r.closeErr = r.owned.Close()
+func (r *transportRuntime) retire() {
+	r.retireOnce.Do(func() {
+		owned := r.owned
+		owned.Retire()
+		go func() {
+			if err := owned.Wait(context.Background()); err != nil {
+				log.Warnf("Failed to release outbound runtime: %v", err)
+			}
+		}()
 		r.cancel()
 		r.wg.Wait()
 		r.mu.Lock()
 		clear(r.views)
 		r.mu.Unlock()
 	})
-	return r.closeErr
 }

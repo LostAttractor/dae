@@ -160,7 +160,7 @@ func newDialer(runtime *transportRuntime, option *GlobalOption, property *Proper
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dialer{
 		GlobalOption: option,
-		Dialer:       runtime.owned.Dialer,
+		Dialer:       runtime.owned.Dialer(),
 		Property:     property,
 		runtime:      runtime,
 		checkEnabled: checkEnabled,
@@ -319,6 +319,6 @@ func (d *Dialer) Close() error {
 	return nil
 }
 
-func (d *Dialer) CloseTransport() error { return d.runtime.close() }
+func (d *Dialer) RetireTransport() { d.runtime.retire() }
 
 func (d *Dialer) TransportID() any { return d.runtime }

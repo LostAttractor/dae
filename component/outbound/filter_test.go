@@ -289,7 +289,7 @@ func TestCreateNextHopDialerBuildsNextHopBeforeSource(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = d.Close()
-		_ = d.CloseTransport()
+		d.RetireTransport()
 	})
 	if len(order) != 2 || order[0] != "next" || order[1] != "source" {
 		t.Fatalf("builder order = %v, want [next source]", order)
