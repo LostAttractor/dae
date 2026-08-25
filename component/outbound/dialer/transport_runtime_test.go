@@ -71,24 +71,25 @@ func (d *runtimeResourceDialer) Close() error {
 func TestTransportRuntimeDefersCloseForActiveConnection(t *testing.T) {
 	resource := new(runtimeResourceDialer)
 	runtime := newTransportRuntime(netproxy.NewRuntime(resource))
-	conn, err := runtime.owned.Dialer.DialContext(context.Background(), "tcp", "example.com:443")
+	conn, err := runtime.owned.Dialer().DialContext(context.Background(), "tcp", "example.com:443")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resource.peer.Close()
-	if err := runtime.close(); err != nil {
-		t.Fatal(err)
-	}
+	runtime.retire()
 	if runtime.connected() {
 		t.Fatal("closed runtime remained connected")
 	}
 	if got := resource.closes.Load(); got != 0 {
 		t.Fatalf("resource closed with active connection: %d", got)
 	}
-	if _, err := runtime.owned.Dialer.DialContext(context.Background(), "tcp", "example.com:443"); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("dial after runtime Close error = %v, want net.ErrClosed", err)
+	if _, err := runtime.owned.Dialer().DialContext(context.Background(), "tcp", "example.com:443"); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("dial after runtime retire error = %v, want net.ErrClosed", err)
 	}
 	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.owned.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := resource.closes.Load(); got != 1 {
@@ -99,7 +100,7 @@ func TestTransportRuntimeDefersCloseForActiveConnection(t *testing.T) {
 func TestStatelessRuntimeUsesDataPlaneFacade(t *testing.T) {
 	transport := new(concreteConnDialer)
 	runtime := newTransportRuntime(netproxy.NewRuntime(transport))
-	conn, err := runtime.owned.Dialer.DialContext(context.Background(), "tcp", "example.com:443")
+	conn, err := runtime.owned.Dialer().DialContext(context.Background(), "tcp", "example.com:443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,13 +108,14 @@ func TestStatelessRuntimeUsesDataPlaneFacade(t *testing.T) {
 	if _, ok := conn.(*concreteConn); ok {
 		t.Fatalf("stateless connection exposed concrete type %T", conn)
 	}
-	if err := runtime.close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runtime.owned.Dialer.DialContext(context.Background(), "tcp", "example.com:443"); !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("dial after runtime Close error = %v, want net.ErrClosed", err)
+	runtime.retire()
+	if _, err := runtime.owned.Dialer().DialContext(context.Background(), "tcp", "example.com:443"); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("dial after runtime retire error = %v, want net.ErrClosed", err)
 	}
 	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.owned.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -121,7 +123,7 @@ func TestStatelessRuntimeUsesDataPlaneFacade(t *testing.T) {
 func TestTrackedConnectionPreservesCloseWrite(t *testing.T) {
 	transport := new(closeWriteDialer)
 	runtime := newTransportRuntime(netproxy.NewRuntime(transport))
-	conn, err := runtime.owned.Dialer.DialContext(context.Background(), "tcp", "example.com:443")
+	conn, err := runtime.owned.Dialer().DialContext(context.Background(), "tcp", "example.com:443")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +141,8 @@ func TestTrackedConnectionPreservesCloseWrite(t *testing.T) {
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.close(); err != nil {
+	runtime.retire()
+	if err := runtime.owned.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -156,7 +159,8 @@ func TestNormalSessionCloseRemainsTerminal(t *testing.T) {
 	if state := runtime.stateSnapshot().State; state != netproxy.SessionClosed {
 		t.Fatalf("state after closed stream = %s, want closed", state)
 	}
-	if err := runtime.close(); err != nil {
+	runtime.retire()
+	if err := runtime.owned.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

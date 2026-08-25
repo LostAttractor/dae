@@ -1337,9 +1337,7 @@ func closeDialerGroups(groups []*outbound.DialerGroup) (err error) {
 		}
 	}
 	for _, d := range transports {
-		if e := d.CloseTransport(); e != nil {
-			err = errors.Join(err, e)
-		}
+		d.RetireTransport()
 	}
 	return err
 }

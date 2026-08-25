@@ -58,14 +58,9 @@ func nodeLogID(node *NodeInfo) string {
 
 func (n *NodeInfo) createDialerIfNeeded(option *dialer.GlobalOption, d netproxy.Dialer) (created *dialer.Dialer, err error) {
 	if n.CreatedDialer == nil {
-		runtime := netproxy.NewRuntime(d)
-		for _, builder := range n.Dialers {
-			nextRuntime, err := D.BuildRuntime(builder, &option.ExtraOption, runtime)
-			if err != nil {
-				_ = runtime.Close()
-				return nil, err
-			}
-			runtime = nextRuntime
+		runtime, err := D.BuildRuntime(d, &option.ExtraOption, n.Dialers...)
+		if err != nil {
+			return nil, err
 		}
 		n.CreatedDialer = dialer.NewDialer(runtime, option, n.Property, true)
 	}
@@ -102,7 +97,7 @@ func (s *DialerSet) Close() error {
 		err = errors.Join(err, d.Close())
 	}
 	for _, d := range transports {
-		err = errors.Join(err, d.CloseTransport())
+		d.RetireTransport()
 	}
 	return err
 }

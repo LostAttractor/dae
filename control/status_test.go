@@ -474,7 +474,7 @@ func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
 	)
 	t.Cleanup(func() {
 		_ = group.Close()
-		_ = node.CloseTransport()
+		node.RetireTransport()
 	})
 	tcp4 := common.IndexToNetworkType(0)
 	node.SetSupported(tcp4, true)

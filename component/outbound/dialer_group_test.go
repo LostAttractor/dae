@@ -401,7 +401,7 @@ func TestDialerGroupCloseRejectsSelection(t *testing.T) {
 	d.SetSupported(testNetworkType, true)
 	g := newTestGroup(option, []*dialer.Dialer{d}, emptyAnnotations(1),
 		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed})
-	t.Cleanup(func() { _ = d.CloseTransport() })
+	t.Cleanup(d.RetireTransport)
 	d.Update(true, time.Millisecond, testNetworkType, nil)
 	d.NotifyStatusChange()
 	if _, err := g.Select(testNetworkType); err != nil {
@@ -440,7 +440,7 @@ func TestAlwaysAliveGroupSeedsCachedSelectors(t *testing.T) {
 				[]*dialer.Dialer{d}, emptyAnnotations(1), policy, nil)
 			t.Cleanup(func() {
 				_ = g.Close()
-				_ = d.CloseTransport()
+				d.RetireTransport()
 			})
 			if selected, err := g.Select(testNetworkType); err != nil || selected != d {
 				t.Fatalf("Select = %v, %v", selected, err)
@@ -838,7 +838,7 @@ func TestDialerGroupSessionDisconnectPublishesState(t *testing.T) {
 				})
 			t.Cleanup(func() {
 				_ = g.Close()
-				_ = d.CloseTransport()
+				d.RetireTransport()
 			})
 			simulateCheck(d, true, time.Millisecond)
 			for {
