@@ -520,6 +520,56 @@ func compactUpRatios(status control.NodeStatus) string {
 	return colorRatio(min(status.Health.UpRatio, status.Health.UpRatio24h), formatted)
 }
 
+func recentFailureEpisode(health *control.NodeHealthStatus, now time.Time) bool {
+	if health == nil || health.Failure == nil || health.Failure.StartedAt.After(now) {
+		return false
+	}
+	if health.UpRatio24h < 1 {
+		return true
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	duration := time.Duration(max(health.Failure.DurationMs, 0)) * time.Millisecond
+	if duration == 0 {
+		return !health.Failure.StartedAt.Before(cutoff)
+	}
+	return health.Failure.StartedAt.Add(duration).After(cutoff)
+}
+
+func recentNodeFailure(health *control.NodeHealthStatus, now time.Time) bool {
+	return health != nil && (health.ChecksFailed24h > 0 || recentFailureEpisode(health, now))
+}
+
+func compactFailure(health *control.NodeHealthStatus, now time.Time) string {
+	if !recentNodeFailure(health, now) {
+		return "-"
+	}
+	if !recentFailureEpisode(health, now) {
+		return colorize(fmt.Sprintf("%dchk", health.ChecksFailed24h), text.FgYellow)
+	}
+	age := now.Sub(health.Failure.StartedAt)
+	duration := time.Duration(max(health.Failure.DurationMs, 0)) * time.Millisecond
+	formatDuration := func(d time.Duration) string {
+		if d <= 0 {
+			return "0s"
+		}
+		return formatUptime(d)
+	}
+	formatted := formatDuration(age) + "/" + formatDuration(duration)
+	if health.State == control.NodeHealthUnhealthy {
+		return colorize(formatted, text.FgRed)
+	}
+	return colorize(formatted, text.FgYellow)
+}
+
+func hasRecentNodeFailure(nodes []control.NodeStatus, now time.Time) bool {
+	for _, node := range nodes {
+		if recentNodeFailure(node.Health, now) {
+			return true
+		}
+	}
+	return false
+}
+
 func compactNodeStatusRow(status control.NodeStatus, index int, groupNetworks []control.NetworkStatus) table.Row {
 	selectedNetworks, selected := selectedNetworks(index, groupNetworks)
 	return table.Row{
@@ -575,18 +625,28 @@ func printGroupStatus(group control.GroupStatus) {
 	}, rows)
 
 	fmt.Printf("\nPaths of target '%s':\n", group.Name)
+	now := time.Now()
+	showFailure := !statusVerbose && hasRecentNodeFailure(group.Nodes, now)
 	rows = make([]table.Row, 0, len(group.Nodes))
 	for i, status := range group.Nodes {
 		if statusVerbose {
 			rows = append(rows, nodeStatusRow(status, i, group.Networks))
 		} else {
-			rows = append(rows, compactNodeStatusRow(status, i, group.Networks))
+			row := compactNodeStatusRow(status, i, group.Networks)
+			if showFailure {
+				row = append(row, compactFailure(status.Health, now))
+			}
+			rows = append(rows, row)
 		}
 	}
 	if !statusVerbose {
-		printTable(table.Row{
+		header := table.Row{
 			"PATH", "PROTO", "STATE", "NETS", "SELECT", "LAT L/A/M(ms)", "UP/24H", "CONNS",
-		}, rows)
+		}
+		if showFailure {
+			header = append(header, "FAIL A/D")
+		}
+		printTable(header, rows)
 		return
 	}
 	printTable(table.Row{

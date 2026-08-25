@@ -251,6 +251,79 @@ func TestCompactNodeStateColorsConnectingUnhealthyRed(t *testing.T) {
 	}
 }
 
+func TestCompactFailure(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	now := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		health *control.NodeHealthStatus
+		want   string
+	}{
+		{name: "none", health: &control.NodeHealthStatus{UpRatio24h: 1}, want: "-"},
+		{
+			name: "recent episode",
+			health: &control.NodeHealthStatus{
+				State:      control.NodeHealthHealthy,
+				UpRatio24h: 0.99,
+				Failure: &control.FailureStatus{
+					StartedAt:  now.Add(-10 * time.Minute),
+					DurationMs: (2 * time.Minute).Milliseconds(),
+				},
+			},
+			want: "10m0s/2m0s",
+		},
+		{
+			name: "zero duration",
+			health: &control.NodeHealthStatus{
+				UpRatio24h: 1,
+				Failure:    &control.FailureStatus{StartedAt: now.Add(-8 * time.Minute)},
+			},
+			want: "8m0s/0s",
+		},
+		{
+			name: "failed checks without episode",
+			health: &control.NodeHealthStatus{
+				UpRatio24h:      1,
+				ChecksFailed24h: 2,
+			},
+			want: "2chk",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := compactFailure(tt.health, now); got != tt.want {
+				t.Fatalf("compactFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecentFailureEpisodeOverlap(t *testing.T) {
+	now := time.Date(2026, time.August, 26, 12, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-24 * time.Hour)
+	tests := []struct {
+		name    string
+		failure *control.FailureStatus
+		want    bool
+	}{
+		{name: "point at cutoff", failure: &control.FailureStatus{StartedAt: cutoff}, want: true},
+		{name: "point before cutoff", failure: &control.FailureStatus{StartedAt: cutoff.Add(-time.Nanosecond)}},
+		{name: "episode overlaps cutoff", failure: &control.FailureStatus{StartedAt: cutoff.Add(-time.Hour), DurationMs: (2 * time.Hour).Milliseconds()}, want: true},
+		{name: "episode ends at cutoff", failure: &control.FailureStatus{StartedAt: cutoff.Add(-time.Hour), DurationMs: time.Hour.Milliseconds()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			health := &control.NodeHealthStatus{UpRatio24h: 1, Failure: tt.failure}
+			if got := recentFailureEpisode(health, now); got != tt.want {
+				t.Fatalf("recentFailureEpisode() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNodeStatusRowHighlightsAvg10Failure(t *testing.T) {
 	previousColorsEnabled := colorsEnabled
 	colorsEnabled = true
