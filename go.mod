@@ -101,11 +101,12 @@ require (
 	golang.org/x/text v0.31.0 // indirect
 )
 
+replace github.com/daeuniverse/dae-config-dist/go/dae_config => github.com/lostattractor/dae-config-dist/go/dae_config v0.0.0-20260825062431-1fb033ee1a42
+
 // replace github.com/daeuniverse/outbound => ../outbound
 
-replace github.com/daeuniverse/outbound => github.com/lostattractor/outbound v0.0.0-20260820034221-f27b3e86527d
+replace github.com/daeuniverse/outbound => github.com/lostattractor/outbound v0.0.0-20260825091207-6b82037e6ba9
 
 // replace github.com/daeuniverse/quic-go => ../quic-go
 
 //replace github.com/cilium/ebpf => /home/mzz/goProjects/ebpf
-//replace github.com/daeuniverse/dae-config-dist/go/dae_config => /home/mzz/antlrProjects/dae-config/build/go/dae_config
