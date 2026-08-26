@@ -48,6 +48,7 @@ type DnsControllerOption struct {
 	IpVersionPrefer   int
 	FixedDomainTtl    map[string]int
 	SoMarkFromDae     uint32
+	InterfaceName     func(uint32) string
 }
 
 type DnsController struct {
@@ -57,6 +58,7 @@ type DnsController struct {
 	matchBitmap       func(fqdn string) []uint32
 	registry          *DomainRegistry
 	bestDialerChooser func(req *udpRequest, upstream *dns.Upstream) (*dialArgument, error)
+	interfaceName     func(uint32) string
 
 	fixedDomainTtl    map[string]int
 	dnsCache          *commonDnsCache
@@ -112,6 +114,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		matchBitmap:       option.MatchBitmap,
 		registry:          option.DomainRegistry,
 		bestDialerChooser: option.BestDialerChooser,
+		interfaceName:     option.InterfaceName,
 
 		fixedDomainTtl:          option.FixedDomainTtl,
 		dnsForwarderCache:       make(map[dnsForwarderKey]DnsForwarder),
@@ -630,25 +633,32 @@ Dial:
 		}
 		if ResponseIndex.IsReserved() {
 			if log.IsLevelEnabled(log.InfoLevel) {
-				fields := log.Fields{
-					"network":     dialArgument.networkType.String(),
-					"outbound":    dialArgument.Outbound.Name,
-					"target_kind": dialArgument.Outbound.TargetKind.String(),
-					"policy":      dialArgument.Outbound.DisplayPolicy(),
-					"dialer":      dialArgument.Dialer.Name,
-					"qname":       queryInfo.qname,
-					"qtype":       queryInfo.qtype,
-					"pid":         req.routingResult.Pid,
-					"ifindex":     req.routingResult.Ifindex,
-					"dscp":        req.routingResult.Dscp,
-					"pname":       ProcessName2String(req.routingResult.Pname[:]),
-					"mac":         Mac2String(req.routingResult.Mac[:]),
+				interfaceName := ""
+				if c.interfaceName != nil {
+					interfaceName = c.interfaceName(req.routingResult.Ifindex)
+				}
+				fields := routeLogFields(
+					req.routingResult,
+					interfaceName,
+					dialArgument.networkType.String(),
+					RefineSourceToShow(req.src, req.dst.Addr()),
+					RefineAddrPortToShow(dialArgument.Target),
+				)
+				fields["application"] = "dns"
+				fields["outbound"] = dialArgument.Outbound.Name
+				fields["target_kind"] = dialArgument.Outbound.TargetKind.String()
+				fields["dialer"] = dialArgument.Dialer.Name
+				fields["qname"] = queryInfo.qname
+				fields["qtype"] = queryInfo.qtype
+				if policy := dialArgument.Outbound.DisplayPolicy(); policy != "" {
+					fields["policy"] = policy
 				}
 				switch ResponseIndex {
 				case consts.DnsResponseOutboundIndex_Accept:
-					log.WithFields(fields).Infof("[DNS] %v <-> %v", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.Target))
+					log.WithFields(fields).Info(routeLogMessage)
 				case consts.DnsResponseOutboundIndex_Reject:
-					log.WithFields(fields).Infof("[DNS] %v <-> %v Reject with empty answer", RefineSourceToShow(req.src, req.dst.Addr()), RefineAddrPortToShow(dialArgument.Target))
+					fields["action"] = "reject"
+					log.WithFields(fields).Info(routeLogMessage)
 				}
 			}
 			switch ResponseIndex {

@@ -16,7 +16,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"strings"
 	"structs"
 	"syscall"
 
@@ -48,6 +47,8 @@ type DialOption struct {
 	FallbackIpVersion bool
 	FallbackDialer    bool
 }
+
+const routeLogMessage = "route"
 
 func (o *DialOption) dialerForConnection() netproxy.Dialer {
 	if o.connectionDialer != nil {
@@ -152,37 +153,81 @@ func (c *ControlPlane) directDialerForMark(outboundIndex consts.OutboundIndex, m
 	return actual.(netproxy.Dialer)
 }
 
-func LogDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *common.NetworkType, routingResult *bpfRoutingResult) {
+func routingLogFields(routingResult *bpfRoutingResult, interfaceName string) log.Fields {
+	fields := make(log.Fields)
+	if routingResult.Pid != 0 {
+		fields["pid"] = routingResult.Pid
+	}
+	if pname := ProcessName2String(routingResult.Pname[:]); pname != "" {
+		fields["pname"] = pname
+	}
+	if interfaceName != "" {
+		fields["interface"] = interfaceName
+	}
+	if routingResult.Dscp != 0 {
+		fields["dscp"] = routingResult.Dscp
+	}
+	if routingResult.Mac != [6]uint8{} {
+		fields["mac"] = Mac2String(routingResult.Mac[:])
+	}
+	return fields
+}
+
+func routeLogFields(routingResult *bpfRoutingResult, interfaceName, network, source, destination string) log.Fields {
+	fields := routingLogFields(routingResult, interfaceName)
+	fields["action"] = "forward"
+	fields["network"] = network
+	fields["source"] = source
+	fields["destination"] = destination
+	return fields
+}
+
+func (c *ControlPlane) interfaceName(ifindex uint32) string {
+	if ifindex == 0 || c == nil || c.core == nil || c.core.ifmgr == nil {
+		return ""
+	}
+	return c.core.ifmgr.NameByIndex(int(ifindex))
+}
+
+func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *common.NetworkType, routingResult *bpfRoutingResult) {
 	if log.IsLevelEnabled(log.InfoLevel) {
-		fields := log.Fields{
-			"network":     networkType.String(),
-			"sniffed":     domain,
-			"ip":          RefineAddrPortToShow(dst),
-			"pid":         routingResult.Pid,
-			"ifindex":     routingResult.Ifindex,
-			"dscp":        routingResult.Dscp,
-			"pname":       ProcessName2String(routingResult.Pname[:]),
-			"mac":         Mac2String(routingResult.Mac[:]),
-			"target_kind": dialOption.Outbound.TargetKind.String(),
+		destinationIP := RefineAddrPortToShow(dst)
+		fields := routeLogFields(
+			routingResult,
+			c.interfaceName(routingResult.Ifindex),
+			networkType.String(),
+			RefineSourceToShow(src, dst.Addr()),
+			dialOption.DialTarget,
+		)
+		fields["target_kind"] = dialOption.Outbound.TargetKind.String()
+		if dialOption.DialTarget != destinationIP {
+			fields["destination_ip"] = destinationIP
 		}
+		if domain != "" {
+			fields["sniffed"] = domain
+		}
+		fields["dialer"] = dialOption.Dialer.Name
 		if consts.OutboundIndex(routingResult.Outbound) == consts.OutboundControlPlaneRouting {
-			fields["controlPlaneRoute"] = "true"
+			fields["control_plane_route"] = true
 		}
-		networkTypeStr := strings.ToUpper(networkType.String())
-		if dialOption.FallbackIpVersion {
-			networkTypeStr = networkTypeStr + " (fallback)"
+		if dialOption.Outbound.Name == consts.OutboundBlock.String() {
+			fields["action"] = "block"
+		}
+		if dialOption.FallbackIpVersion || dialOption.FallbackDialer {
+			fields["fallback"] = true
 		}
 		if dialOption.FallbackDialer {
-			fields["originalOutbound"] = dialOption.Outbound.Name
-			fields["originalPolicy"] = dialOption.Outbound.DisplayPolicy()
-			fields["fallbackDialer"] = dialOption.Dialer.Name
-			log.WithFields(fields).Infof("[%v] %v <-(fallback)-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
+			fields["original_outbound"] = dialOption.Outbound.Name
+			if policy := dialOption.Outbound.DisplayPolicy(); policy != "" {
+				fields["original_policy"] = policy
+			}
 		} else {
 			fields["outbound"] = dialOption.Outbound.Name
-			fields["policy"] = dialOption.Outbound.DisplayPolicy()
-			fields["dialer"] = dialOption.Dialer.Name
-			log.WithFields(fields).Infof("[%v] %v <-> %v", networkTypeStr, RefineSourceToShow(src, dst.Addr()), dialOption.DialTarget)
+			if policy := dialOption.Outbound.DisplayPolicy(); policy != "" {
+				fields["policy"] = policy
+			}
 		}
+		log.WithFields(fields).Info(routeLogMessage)
 	}
 }
 

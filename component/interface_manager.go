@@ -339,6 +339,19 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 	<-done
 }
 
+func (m *InterfaceManager) NameByIndex(index int) string {
+	if m == nil || index == 0 {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	link := m.links[index]
+	if link == nil || link.Attrs() == nil {
+		return ""
+	}
+	return link.Attrs().Name
+}
+
 func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) error {
 	var initial func(netlink.Link) error
 	if initCallback != nil {

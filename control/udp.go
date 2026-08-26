@@ -235,7 +235,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 
 		// Dial
 		// Only print routing for new connection to avoid the log exploded (Quic and BT).
-		LogDial(src, dst, domain, dialOption, networkType, routingResult)
+		c.logDial(src, dst, domain, dialOption, networkType, routingResult)
 		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		defer cancel()
 		udpConn, err := dialOption.dialerForConnection().ListenPacket(dialCtx, dialOption.DialTarget)

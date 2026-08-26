@@ -103,6 +103,9 @@ func TestInterfaceManagerDispatchesRename(t *testing.T) {
 		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
 		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "old0"}},
 	})
+	if got := m.NameByIndex(2); got != "old0" {
+		t.Fatalf("interface name = %q, want old0", got)
+	}
 	events = nil
 	m.handleLinkUpdate(netlink.LinkUpdate{
 		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
@@ -110,6 +113,16 @@ func TestInterfaceManagerDispatchesRename(t *testing.T) {
 	})
 	if len(events) != 3 || events[0] != "old-del" || events[1] != "new-add" || events[2] != "reconcile" {
 		t.Fatalf("rename events = %v, want [old-del new-add reconcile]", events)
+	}
+	if got := m.NameByIndex(2); got != "new0" {
+		t.Fatalf("renamed interface = %q, want new0", got)
+	}
+	m.handleLinkUpdate(netlink.LinkUpdate{
+		Header: unix.NlMsghdr{Type: unix.RTM_DELLINK},
+		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "new0"}},
+	})
+	if got := m.NameByIndex(2); got != "" {
+		t.Fatalf("deleted interface name = %q, want empty", got)
 	}
 }
 

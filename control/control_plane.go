@@ -565,6 +565,7 @@ func NewControlPlane(
 		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
 		FixedDomainTtl:    fixedDomainTtl,
 		SoMarkFromDae:     global.SoMarkFromDae,
+		InterfaceName:     plane.interfaceName,
 	}); err != nil {
 		return nil, err
 	}
