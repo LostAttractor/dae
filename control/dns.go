@@ -512,15 +512,15 @@ func (d *DoH) getHttpRoundTripper() *http.Transport {
 	return &httpTransport
 }
 
-func (d *DoH) getHttp3RoundTripper() *http3.RoundTripper {
-	roundTripper := &http3.RoundTripper{
+func (d *DoH) getHttp3RoundTripper() *http3.Transport {
+	roundTripper := &http3.Transport{
 		TLSClientConfig: &tls.Config{
 			ServerName:         d.Upstream.Hostname,
 			NextProtos:         []string{"h3"},
 			InsecureSkipVerify: false,
 		},
 		QUICConfig: &quic.Config{},
-		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
+		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 			ctx, cancel := d.state.deriveContext(ctx)
 			defer cancel()
 			udpAddr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
@@ -587,7 +587,7 @@ type DoQ struct {
 	dialArgument dialArgument
 	state        *dnsForwarderState
 	mu           sync.Mutex
-	conn         quic.Connection
+	conn         *quic.Conn
 	packetConn   net.PacketConn
 	dial         *doqDialState
 }
@@ -595,7 +595,7 @@ type DoQ struct {
 type doqDialState struct {
 	done       chan struct{}
 	cancel     context.CancelFunc
-	conn       quic.Connection
+	conn       *quic.Conn
 	packetConn net.PacketConn
 	err        error
 }
@@ -603,7 +603,7 @@ type doqDialState struct {
 // getConn lazily dials the shared QUIC connection. One shared dial runs outside
 // mu so Close can cancel it without allowing concurrent requests to accumulate
 // blocked dials or packet sockets.
-func (d *DoQ) getConn(requestCtx context.Context) (quic.Connection, error) {
+func (d *DoQ) getConn(requestCtx context.Context) (*quic.Conn, error) {
 	if d.state.isClosed() {
 		return nil, net.ErrClosed
 	}
@@ -636,7 +636,7 @@ func (d *DoQ) getConn(requestCtx context.Context) (quic.Connection, error) {
 	return d.waitForDial(requestCtx, dial)
 }
 
-func (d *DoQ) waitForDial(requestCtx context.Context, dial *doqDialState) (quic.Connection, error) {
+func (d *DoQ) waitForDial(requestCtx context.Context, dial *doqDialState) (*quic.Conn, error) {
 	ctx, cancelState := d.state.deriveContext(requestCtx)
 	defer cancelState()
 	select {
@@ -661,7 +661,7 @@ func (d *DoQ) runDial(dial *doqDialState) {
 	conn, packetConn, err := d.createConnection(ctx, dial)
 	cancel()
 
-	var closeConn quic.Connection
+	var closeConn *quic.Conn
 	var closePacket net.PacketConn
 	d.mu.Lock()
 	if dial.packetConn == packetConn {
@@ -687,7 +687,7 @@ func (d *DoQ) runDial(dial *doqDialState) {
 		_ = closePacket.Close()
 	}
 	if err == nil {
-		go func(connection quic.Connection, packet net.PacketConn) {
+		go func(connection *quic.Conn, packet net.PacketConn) {
 			<-connection.Context().Done()
 			d.mu.Lock()
 			if d.conn == connection {
@@ -772,7 +772,7 @@ func (d *DoQ) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
 	return nil
 }
 
-func (d *DoQ) detachConnection(conn quic.Connection, code quic.ApplicationErrorCode, reason string) {
+func (d *DoQ) detachConnection(conn *quic.Conn, code quic.ApplicationErrorCode, reason string) {
 	d.mu.Lock()
 	if d.conn != conn {
 		d.mu.Unlock()
@@ -835,7 +835,7 @@ func (d *DoQ) Close() error {
 	return err
 }
 
-func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (quic.EarlyConnection, net.PacketConn, error) {
+func (d *DoQ) createConnection(ctx context.Context, dial *doqDialState) (*quic.Conn, net.PacketConn, error) {
 	packetConn, err := d.dialArgument.dialerForConnection().ListenPacket(ctx, d.dialArgument.Target.String())
 	if err != nil {
 		return nil, nil, err
