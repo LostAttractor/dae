@@ -206,6 +206,19 @@ func colorNodeHealth(health control.NodeHealthState) string {
 	}
 }
 
+func colorNetworkSupport(support control.NetworkSupportStatus) string {
+	switch support {
+	case "":
+		return "-"
+	case control.NetworkSupportConfirmed:
+		return colorize(string(support), text.FgGreen)
+	case control.NetworkSupportUnknown, control.NetworkSupportUnsupported:
+		return colorize(string(support), text.FgRed)
+	default:
+		panic(fmt.Sprintf("invalid network support status %q", support))
+	}
+}
+
 func colorSelected(s string, selected bool) string {
 	if !selected {
 		return s
@@ -432,7 +445,7 @@ func networkStatusRow(status control.NetworkStatus, nodes []control.NodeStatus) 
 	}
 	return table.Row{
 		status.Network,
-		string(status.SupportState),
+		colorNetworkSupport(status.SupportState),
 		colorSelected(selected, status.Selected != nil),
 		formatConnCounts(status.ActiveConns, status.TotalConns),
 	}

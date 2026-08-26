@@ -412,6 +412,27 @@ func TestNetworkStatusRowUnsupported(t *testing.T) {
 	}
 }
 
+func TestNetworkStatusRowColorsSupport(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = true
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	tests := []struct {
+		support control.NetworkSupportStatus
+		ansi    string
+	}{
+		{support: control.NetworkSupportConfirmed, ansi: "\x1b[32m"},
+		{support: control.NetworkSupportUnknown, ansi: "\x1b[31m"},
+		{support: control.NetworkSupportUnsupported, ansi: "\x1b[31m"},
+	}
+	for _, tt := range tests {
+		row := networkStatusRow(control.NetworkStatus{SupportState: tt.support}, nil)
+		if got := row[1].(string); !strings.Contains(got, tt.ansi) {
+			t.Errorf("support %q = %q, want ANSI prefix %q", tt.support, got, tt.ansi)
+		}
+	}
+}
+
 func TestNetworkStatusRowLabelsUnnamedSelection(t *testing.T) {
 	previousColorsEnabled := colorsEnabled
 	colorsEnabled = false
