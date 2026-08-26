@@ -113,7 +113,7 @@ dns {
             # Built-in outbounds in 'request': asis, reject.
             # You can also use user-defined upstreams.
 
-            # Available functions: qname, qtype.
+            # Available functions: qname, qtype, dip, sip, interface.
 
             # DNS request name (omit suffix dot '.').
             qname(geosite:category-ads-all) -> reject
@@ -125,6 +125,8 @@ dns {
             qtype(cname) -> googledns
             # disable ECH to avoid affecting traffic split
             qtype(https) -> reject
+            # Match the interface that received the DNS request.
+            interface(br-lan) -> asis
             # If no match, fallback to this upstream.
             fallback: asis
         }

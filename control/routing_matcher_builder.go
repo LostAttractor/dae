@@ -55,8 +55,7 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 	rulesBuilder.RegisterFunctionParser(consts.Function_L4Proto, routing.L4ProtoParserFactory(b.addL4Proto))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Mac, routing.MacParserFactory(b.addSourceMac))
 	rulesBuilder.RegisterFunctionParser(consts.Function_ProcessName, routing.ProcessNameParserFactory(b.addProcessName))
-	rulesBuilder.RegisterFunctionParser(consts.Function_IfIndex, routing.UintParserFactory(b.addIfIndex))
-	rulesBuilder.RegisterFunctionParser(consts.Function_IfName, routing.EmptyKeyPlainParserFactory(b.addIfName))
+	rulesBuilder.RegisterFunctionParser(consts.Function_Interface, routing.EmptyKeyPlainParserFactory(b.addInterface))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
 	if err = rulesBuilder.Apply(rules); err != nil {
@@ -317,30 +316,13 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 	})
 }
 
-func (b *RoutingMatcherBuilder) addIfIndex(f *config_parser.Function, values []uint32, outbound *routing.Outbound) (err error) {
-	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value uint32, outboundId uint8) error {
-		set := bpfMatchSet{
-			Value:            [16]byte{},
-			Type:             uint8(consts.MatchType_IfIndex),
-			Not:              f.Not,
-			Outbound:         outboundId,
-			Mark:             outbound.Mark,
-			Must:             outbound.Must,
-			SkipWhileNoalive: outbound.SkipWhileNoalive,
-		}
-		binary.LittleEndian.PutUint32(set.Value[:], uint32(value))
-		b.rules = append(b.rules, set)
-		return nil
-	})
-}
-
 func (b *RoutingMatcherBuilder) storeIfindex(index int, ifindex uint32) {
 	b.rulesMu.Lock()
 	defer b.rulesMu.Unlock()
 	binary.LittleEndian.PutUint32(b.rules[index].Value[:], ifindex)
 }
 
-func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {
+func (b *RoutingMatcherBuilder) addInterface(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {
 	return outbound.ForEachLogicalOr(values, b.outboundToId, func(value string, outboundId uint8) error {
 		set := bpfMatchSet{
 			Value:            [16]byte{},
@@ -361,7 +343,7 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 		// free; once BuildKernspace has uploaded the rule table, the init
 		// callback patches the resolved ifindex into both the kernel rule and
 		// the rule table shared with the userspace matcher.
-		ifname := value
+		interfaceName := value
 		b.kernspaceBuilders = append(b.kernspaceBuilders, func() error {
 			updateIndex := func(ifindex uint32) error {
 				binary.LittleEndian.PutUint32(set.Value[:], ifindex)
@@ -386,8 +368,8 @@ func (b *RoutingMatcherBuilder) addIfName(f *config_parser.Function, values []st
 					log.Errorf("Update failed: %v", err)
 				}
 			}
-			if err := b.ifmgr.RegisterSync(ifname, initlinkCallback, newlinkCallback, dellinkCallback); err != nil {
-				return fmt.Errorf("register interface %q: %w", ifname, err)
+			if err := b.ifmgr.RegisterSync(interfaceName, initlinkCallback, newlinkCallback, dellinkCallback); err != nil {
+				return fmt.Errorf("register interface %q: %w", interfaceName, err)
 			}
 			return nil
 		})

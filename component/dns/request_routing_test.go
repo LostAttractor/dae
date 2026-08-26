@@ -6,11 +6,13 @@
 package dns
 
 import (
+	"net"
 	"net/netip"
 	"sync"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -97,6 +99,55 @@ func TestRequestMatcherIPv6ZeroLengthPrefix(t *testing.T) {
 				t.Errorf("IPv6 address selected upstream %v, want 1", got)
 			}
 		})
+	}
+}
+
+func TestRequestMatcherResolvesInterfaceName(t *testing.T) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interfaces) == 0 {
+		t.Fatal("no network interface available")
+	}
+	iface := interfaces[0]
+
+	ifmgr, err := component.NewInterfaceManager()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ifmgr.Close() })
+	builder, err := NewRequestMatcherBuilder(
+		[]*config_parser.RoutingRule{{
+			AndFunctions: []*config_parser.Function{{
+				Name:   consts.Function_Interface,
+				Params: []*config_parser.Param{{Val: iface.Name}},
+			}},
+			Outbound: config_parser.Function{Name: "matched"},
+		}},
+		map[string]uint8{"matched": 1},
+		consts.DnsRequestOutboundIndex_AsIs.String(),
+		ifmgr,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matcher, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := matcher.Match(
+		"",
+		0,
+		uint32(iface.Index),
+		netip.MustParseAddr("192.0.2.1"),
+		netip.MustParseAddr("192.0.2.2"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstream != 1 {
+		t.Fatalf("interface %q selected upstream %v, want 1", iface.Name, upstream)
 	}
 }
 

@@ -31,9 +31,9 @@ type Dns struct {
 type NewOption struct {
 	LocationFinder        *assets.LocationFinder
 	UpstreamReadyCallback func(dnsUpstream *Upstream)
-	// InterfaceManager resolves ifname in request routing rules to ifindex and
+	// InterfaceManager resolves interface names in request routing rules to ifindex and
 	// keeps it in sync with the interface lifecycle. It may be nil, in which
-	// case ifname rules never match.
+	// case interface rules never match.
 	InterfaceManager *component.InterfaceManager
 }
 

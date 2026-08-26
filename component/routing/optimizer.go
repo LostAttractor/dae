@@ -52,8 +52,6 @@ func (o *AliasOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config
 				function.Name = consts.Function_DestPort
 			case "ip":
 				function.Name = consts.Function_DestIp
-			case "interface":
-				function.Name = consts.Function_IfName
 			}
 			for _, param := range function.Params {
 				switch function.Name {

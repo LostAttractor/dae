@@ -15,7 +15,7 @@ var SectionSummaryDesc = Desc{
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 Notice: domain traffic split will fail if DNS traffic is not taken over by dae.
 Built-in outbound: direct, must_direct, block.
-Available functions: domain, sip, dip, sport, dport, ipversion, l4proto, pname, mac.
+Available functions: domain, sip, dip, sport, dport, ipversion, l4proto, pname, mac, dscp, interface.
 Available keys in domain function: suffix, keyword, regex, full. No key indicates suffix.
 domain: Match domain.
 sip: Match source IP. CIDR format is also supported.
@@ -25,7 +25,9 @@ dport: Match dest port. Range like 8000-9000 is also supported.
 ipversion: Match IP version. Available values: 4, 6.
 l4proto: Match level 4 protocol. Available values: tcp, udp.
 pname: Match process name. It only works on WAN mode and for localhost programs.
-mac: Match source MAC address. It works on LAN mode.`,
+mac: Match source MAC address. It works on LAN mode.
+dscp: Match the DSCP value.
+interface: Match the interface that received the traffic.`,
 }
 
 var SectionDescription = map[string]Desc{
@@ -65,7 +67,7 @@ var DnsDesc = Desc{
 	"upstream":         "Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.\nIf host is a domain and has both IPv4 and IPv6 record, dae will automatically choose IPv4 or IPv6 to use according to group policy (such as min latency policy).\nPlease make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.\nIf dial_mode is \"ip\", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.",
 	"request": `DNS requests will follow this routing.
 Built-in outbound: asis.
-Available functions: qname, qtype, dip, sip, ifindex, ifname`,
+Available functions: qname, qtype, dip, sip, interface`,
 	"response": `DNS responses will follow this routing.
 Built-in outbound: accept, reject.
 Available functions: qname, qtype, ip, upstream`,

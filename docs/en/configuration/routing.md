@@ -133,6 +133,9 @@ pname(curl) -> direct
 ### DSCP rule (match DSCP; is useful for BT bypass). See https://github.com/daeuniverse/dae/discussions/295
 dscp(0x4) -> direct
 
+### Ingress interface rule
+interface(br-lan) -> direct
+
 ### Multiple domains rule
 domain(keyword: google, suffix: www.twitter.com, suffix: v2raya.org) -> my_group
 ### Multiple IP rule

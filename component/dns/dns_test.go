@@ -52,29 +52,38 @@ func TestGetUpstreamValidatesIndex(t *testing.T) {
 	}
 }
 
-func TestNewAppliesInterfaceAliasToRequestRouting(t *testing.T) {
-	rule := &config_parser.RoutingRule{
-		AndFunctions: []*config_parser.Function{{
-			Name:   "interface",
-			Params: []*config_parser.Param{{Val: "eth0"}},
-		}},
-		Outbound: config_parser.Function{Name: consts.DnsRequestOutboundIndex_AsIs.String()},
-	}
-	conf := &config.Dns{Routing: config.DnsRouting{
-		Request: config.DnsRequestRouting{
-			Rules:    []*config_parser.RoutingRule{rule},
-			Fallback: config.FunctionOrString(consts.DnsRequestOutboundIndex_AsIs.String()),
-		},
-		Response: config.DnsResponseRouting{
-			Fallback: config.FunctionOrString(consts.DnsResponseOutboundIndex_Accept.String()),
-		},
-	}}
+func TestNewSupportsOnlyCanonicalInterfaceRequestRule(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		wantErr bool
+	}{
+		{name: consts.Function_Interface},
+		{name: "ifindex", wantErr: true},
+		{name: "ifname", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rule := &config_parser.RoutingRule{
+				AndFunctions: []*config_parser.Function{{
+					Name:   test.name,
+					Params: []*config_parser.Param{{Val: "eth0"}},
+				}},
+				Outbound: config_parser.Function{Name: consts.DnsRequestOutboundIndex_AsIs.String()},
+			}
+			conf := &config.Dns{Routing: config.DnsRouting{
+				Request: config.DnsRequestRouting{
+					Rules:    []*config_parser.RoutingRule{rule},
+					Fallback: config.FunctionOrString(consts.DnsRequestOutboundIndex_AsIs.String()),
+				},
+				Response: config.DnsResponseRouting{
+					Fallback: config.FunctionOrString(consts.DnsResponseOutboundIndex_Accept.String()),
+				},
+			}}
 
-	if _, err := New(conf, &NewOption{}); err != nil {
-		t.Fatal(err)
-	}
-	if got := conf.Routing.Request.Rules[0].AndFunctions[0].Name; got != consts.Function_IfName {
-		t.Fatalf("request function = %q, want %q", got, consts.Function_IfName)
+			_, err := New(conf, &NewOption{})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("New() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
 	}
 }
 

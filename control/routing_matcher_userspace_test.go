@@ -10,16 +10,17 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func buildIfnameRoutingMatcher(t *testing.T) (*RoutingMatcher, *RoutingMatcherBuilder) {
+func buildInterfaceRoutingMatcher(t *testing.T) (*RoutingMatcher, *RoutingMatcherBuilder) {
 	t.Helper()
 
 	builder, err := NewRoutingMatcherBuilder(
 		[]*config_parser.RoutingRule{{
 			AndFunctions: []*config_parser.Function{{
-				Name:   consts.Function_IfName,
+				Name:   consts.Function_Interface,
 				Params: []*config_parser.Param{{Val: "test0"}},
 			}},
 			Outbound: config_parser.Function{Name: "matched"},
@@ -65,24 +66,24 @@ func matchIfindex(t *testing.T, matcher *RoutingMatcher, ifindex uint32) consts.
 	return outbound
 }
 
-func TestRoutingMatcherDynamicIfname(t *testing.T) {
-	matcher, builder := buildIfnameRoutingMatcher(t)
+func TestRoutingMatcherDynamicInterface(t *testing.T) {
+	matcher, builder := buildInterfaceRoutingMatcher(t)
 
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundDirect {
-		t.Fatalf("unresolved ifname selected outbound %v, want %v", got, consts.OutboundDirect)
+		t.Fatalf("unresolved interface selected outbound %v, want %v", got, consts.OutboundDirect)
 	}
 	builder.storeIfindex(0, 7)
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundUserDefinedMin {
-		t.Fatalf("resolved ifname selected outbound %v, want %v", got, consts.OutboundUserDefinedMin)
+		t.Fatalf("resolved interface selected outbound %v, want %v", got, consts.OutboundUserDefinedMin)
 	}
 	builder.storeIfindex(0, 0)
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundDirect {
-		t.Fatalf("deleted ifname selected outbound %v, want %v", got, consts.OutboundDirect)
+		t.Fatalf("deleted interface selected outbound %v, want %v", got, consts.OutboundDirect)
 	}
 }
 
-func TestRoutingMatcherConcurrentIfnameUpdate(t *testing.T) {
-	matcher, builder := buildIfnameRoutingMatcher(t)
+func TestRoutingMatcherConcurrentInterfaceUpdate(t *testing.T) {
+	matcher, builder := buildInterfaceRoutingMatcher(t)
 
 	const iterations = 10_000
 	start := make(chan struct{})
@@ -126,6 +127,26 @@ func TestRoutingMatcherConcurrentIfnameUpdate(t *testing.T) {
 	}()
 	close(start)
 	wg.Wait()
+}
+
+func TestRoutingMatcherRejectsRemovedInterfaceFunctions(t *testing.T) {
+	for _, name := range []string{"ifindex", "ifname"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewRoutingMatcherBuilder(
+				[]*config_parser.RoutingRule{{
+					AndFunctions: []*config_parser.Function{{Name: name, Params: []*config_parser.Param{{Val: "1"}}}},
+					Outbound:     config_parser.Function{Name: "matched"},
+				}},
+				map[string]uint8{"matched": uint8(consts.OutboundUserDefinedMin)},
+				nil,
+				config.FunctionOrString("direct"),
+				nil,
+			)
+			if err == nil {
+				t.Fatalf("removed function %q was accepted", name)
+			}
+		})
+	}
 }
 
 func newSkipWhileNoaliveMatcher(usable *bool, gotArgs *struct {

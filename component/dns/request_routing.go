@@ -21,9 +21,9 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-type ifnameReg struct {
-	ruleIndex int
-	ifname    string
+type interfaceReg struct {
+	ruleIndex     int
+	interfaceName string
 }
 
 type RequestMatcherBuilder struct {
@@ -31,7 +31,7 @@ type RequestMatcherBuilder struct {
 	simulatedDomainSet []routing.DomainSet
 	rules              []requestMatchSet
 	ipSet              []*trie.Trie
-	ifnameRegs         []ifnameReg
+	interfaceRegs      []interfaceReg
 	ifmgr              *component.InterfaceManager
 }
 
@@ -47,8 +47,7 @@ func NewRequestMatcherBuilder(
 	rulesBuilder.RegisterFunctionParser(consts.Function_QType, TypeParserFactory(b.addQType))
 	rulesBuilder.RegisterFunctionParser(consts.Function_DestIp, routing.IpParserFactory(b.addDestIp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_SourceIp, routing.IpParserFactory(b.addSip))
-	rulesBuilder.RegisterFunctionParser(consts.Function_IfIndex, routing.UintParserFactory(b.addIfindex))
-	rulesBuilder.RegisterFunctionParser(consts.Function_IfName, routing.EmptyKeyPlainParserFactory(b.addIfname))
+	rulesBuilder.RegisterFunctionParser(consts.Function_Interface, routing.EmptyKeyPlainParserFactory(b.addInterface))
 	if err = rulesBuilder.Apply(rules); err != nil {
 		return nil, err
 	}
@@ -145,23 +144,11 @@ func (b *RequestMatcherBuilder) addSip(f *config_parser.Function, cidrs []netip.
 	return b.addIpSet(f, cidrs, upstream, consts.MatchType_SourceIpSet)
 }
 
-func (b *RequestMatcherBuilder) addIfindex(f *config_parser.Function, values []uint32, upstream *routing.Outbound) (err error) {
-	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value uint32, upstreamId consts.DnsRequestOutboundIndex) error {
-		b.rules = append(b.rules, requestMatchSet{
-			Type:     consts.MatchType_IfIndex,
-			Ifindex:  value,
-			Not:      f.Not,
-			Upstream: uint8(upstreamId),
-		})
-		return nil
-	})
-}
-
-func (b *RequestMatcherBuilder) addIfname(f *config_parser.Function, values []string, upstream *routing.Outbound) (err error) {
+func (b *RequestMatcherBuilder) addInterface(f *config_parser.Function, values []string, upstream *routing.Outbound) (err error) {
 	return upstream.ForEachLogicalOr(values, b.upstreamToId, func(value string, upstreamId consts.DnsRequestOutboundIndex) error {
-		b.ifnameRegs = append(b.ifnameRegs, ifnameReg{
-			ruleIndex: len(b.rules),
-			ifname:    value,
+		b.interfaceRegs = append(b.interfaceRegs, interfaceReg{
+			ruleIndex:     len(b.rules),
+			interfaceName: value,
 		})
 		b.rules = append(b.rules, requestMatchSet{
 			Type:     consts.MatchType_IfIndex,
@@ -218,7 +205,7 @@ func (b *RequestMatcherBuilder) Build() (matcher *RequestMatcher, err error) {
 	m.matches = b.rules
 
 	if b.ifmgr != nil {
-		for _, reg := range b.ifnameRegs {
+		for _, reg := range b.interfaceRegs {
 			matchSet := &m.matches[reg.ruleIndex]
 			initIndex := func(link netlink.Link) error {
 				matchSet.storeIfindex(uint32(link.Attrs().Index))
@@ -226,8 +213,8 @@ func (b *RequestMatcherBuilder) Build() (matcher *RequestMatcher, err error) {
 			}
 			updateIndex := func(link netlink.Link) { matchSet.storeIfindex(uint32(link.Attrs().Index)) }
 			resetIndex := func(netlink.Link) { matchSet.storeIfindex(0) }
-			if err := b.ifmgr.RegisterSync(reg.ifname, initIndex, updateIndex, resetIndex); err != nil {
-				return nil, fmt.Errorf("initialize request interface %q: %w", reg.ifname, err)
+			if err := b.ifmgr.RegisterSync(reg.interfaceName, initIndex, updateIndex, resetIndex); err != nil {
+				return nil, fmt.Errorf("initialize request interface %q: %w", reg.interfaceName, err)
 			}
 		}
 	}
