@@ -1,6 +1,6 @@
 /*
-*  SPDX-License-Identifier: AGPL-3.0-only
-*  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
 package dialer
@@ -14,6 +14,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/config"
@@ -28,10 +29,11 @@ var (
 )
 
 type DialerGroup interface {
-	NotifyStatusChange(*Dialer)
+	DialerChanged(*Dialer)
 }
 
 type groupState struct {
+	group          DialerGroup
 	latencies      *LatenciesN
 	movingAverage  time.Duration
 	emaAlpha       float64
@@ -48,37 +50,45 @@ const (
 	InitialCheckAsync
 )
 
+type networkState uint8
+
+const (
+	networkUnknown networkState = iota
+	networkUsable
+	networkUnavailable
+	networkUnsupported
+)
+
 type Dialer struct {
 	*GlobalOption
 	netproxy.Dialer
 	*Property
 	statsKey string
 	statsID  string
-	runtime  *transportRuntime
+	runtime  *netproxy.Runtime
+	session  netproxy.Session
 
-	initialCheck InitialCheckMode
-	alive        bool
-	healthSeq    uint64
-	lastLatency  time.Duration
-	// support is monotonic protocol capability. modeAlive records the latest
-	// health verdict for each confirmed mode independently of aggregate health.
-	support   [4]NetworkSupportState
-	modeAlive [4]bool
+	initialCheck      InitialCheckMode
+	healthy           bool
+	healthSeq         uint64
+	failureReportedAt time.Time
+	networks          [4]networkState
+	group             *groupState
 
-	mu     sync.RWMutex
-	groups map[DialerGroup]*groupState
+	mu sync.RWMutex
 
 	checkCh chan struct{}
+	readyCh chan struct{}
 	ctx     context.Context
 	cancel  context.CancelFunc
 
 	checkActivated bool
+	checkRequested bool
 	checkWG        sync.WaitGroup
 	closeOnce      sync.Once
 }
 
-// LatencyStats is a coherent view of the latency samples of a dialer in one
-// dialer group.
+// LatencyStats is a coherent view of the latency samples of a dialer.
 type LatencyStats struct {
 	Last            time.Duration
 	Avg10           time.Duration
@@ -86,17 +96,21 @@ type LatencyStats struct {
 	Avg10HasFailure bool
 }
 
-// NetworkSupportState describes protocol/remote capability, not node health.
-// Unknown becomes Confirmed only after a successful mode probe, or Unsupported
-// only after an explicit UnsupportedTunnelTypeError. Timeouts, local network
-// failures, and ordinary remote failures never imply Unsupported. Confirmed
-// and Unsupported are terminal; runtime health is tracked separately.
+type SelectionSnapshot struct {
+	Usable     bool
+	Support    NetworkSupportState
+	HasLatency bool
+	Latency    LatencyStats
+}
+
+// NetworkSupportState describes protocol/remote capability, not current
+// reachability. Confirmed modes can be either usable or temporarily down.
 type NetworkSupportState uint8
 
 const (
-	NetworkSupportUnknown     NetworkSupportState = iota
-	NetworkSupportConfirmed                       // The mode has completed a successful probe.
-	NetworkSupportUnsupported                     // The protocol or remote explicitly rejected this mode.
+	NetworkSupportUnknown NetworkSupportState = iota
+	NetworkSupportConfirmed
+	NetworkSupportUnsupported
 )
 
 func (s NetworkSupportState) String() string {
@@ -112,22 +126,33 @@ func (s NetworkSupportState) String() string {
 	}
 }
 
-// RuntimeSnapshot is a coherent view of the mutable status fields of a
-// dialer. Callers should prefer this over reading the fields one by one.
-// Availability is sampled from the stats registry outside the dialer lock and
-// is not coherent with the other fields.
-type RuntimeSnapshot struct {
-	Healthy      bool
-	SupportState [4]NetworkSupportState
-	Session      netproxy.StateEvent
-	HasSession   bool
-	HasLatency   bool
-	Latency      LatencyStats
-	Availability stats.Availability
+func supportState(state networkState) NetworkSupportState {
+	switch state {
+	case networkUsable, networkUnavailable:
+		return NetworkSupportConfirmed
+	case networkUnsupported:
+		return NetworkSupportUnsupported
+	default:
+		return NetworkSupportUnknown
+	}
 }
+
+// RuntimeSnapshot is a coherent view of a dialer's current connectivity state.
+// Process-lifetime availability statistics are sampled after releasing its lock.
+type RuntimeSnapshot struct {
+	Healthy           bool
+	ConfirmingFailure bool
+	SupportState      [4]NetworkSupportState
+	Session           netproxy.StateEvent
+	HasSession        bool
+	HasLatency        bool
+	Latency           LatencyStats
+	Availability      stats.Availability
+}
+
 type GlobalOption struct {
 	D.ExtraOption
-	CheckDnsOptionRaw CheckDnsOptionRaw // Lazy parse
+	CheckDnsOptionRaw CheckDnsOptionRaw
 	CheckInterval     time.Duration
 	CheckIntervalMax  time.Duration
 	CheckTolerance    time.Duration
@@ -171,34 +196,35 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 }
 
 func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode) *Dialer {
-	return newDialer(newTransportRuntime(runtime), option, property, initialCheck, "")
+	return newDialer(runtime, option, property, initialCheck, "")
 }
 
 func NewDialerRuntimeWithStatsScope(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
-	return newDialer(newTransportRuntime(runtime), option, property, initialCheck, statsScope)
+	return newDialer(runtime, option, property, initialCheck, statsScope)
 }
 
-func newDialer(runtime *transportRuntime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
+func newDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
 	if initialCheck > InitialCheckAsync {
 		panic(fmt.Sprintf("invalid initial check mode %d", initialCheck))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	session, _ := runtime.Session()
 	d := &Dialer{
 		GlobalOption: option,
-		Dialer:       runtime.owned.Dialer(),
+		Dialer:       runtime.Dialer(),
 		Property:     property,
 		runtime:      runtime,
+		session:      session,
 		initialCheck: initialCheck,
-		alive:        initialCheck == InitialCheckDisabled,
-		groups:       make(map[DialerGroup]*groupState),
+		healthy:      initialCheck == InitialCheckDisabled,
 		checkCh:      make(chan struct{}, 1),
+		readyCh:      make(chan struct{}),
 		ctx:          ctx,
 		cancel:       cancel,
 	}
 	if initialCheck == InitialCheckDisabled {
-		for i := range d.support {
-			d.support[i] = NetworkSupportConfirmed
-			d.modeAlive[i] = true
+		for i := range d.networks {
+			d.networks[i] = networkUsable
 		}
 	}
 	d.setStatsScope(statsScope)
@@ -208,7 +234,6 @@ func newDialer(runtime *transportRuntime, option *GlobalOption, property *Proper
 	if initialCheck == InitialCheckDisabled {
 		stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, true, false)
 	}
-	runtime.register(d)
 	return d
 }
 
@@ -238,8 +263,6 @@ func (d *Dialer) setStatsScope(scope string) {
 	d.statsID = stats.NodeID(d.statsKey)
 }
 
-// StatsKey returns the process-lifetime identity of the node backing this
-// dialer. It is stable across control-plane reloads.
 func (d *Dialer) StatsKey() string { return d.statsKey }
 
 func (d *Dialer) StatsID() string { return d.statsID }
@@ -248,33 +271,75 @@ func (d *Dialer) ChecksConnectivity() bool {
 	return d.initialCheck != InitialCheckDisabled
 }
 
-// LatencyStats returns the latency samples of this dialer in the given
-// group. ok is false if no check sample has been recorded yet.
-func (d *Dialer) LatencyStats(g DialerGroup) (lat LatencyStats, ok bool) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.latencyStatsLocked(g)
+func (d *Dialer) sessionSnapshot() (netproxy.StateEvent, bool) {
+	if d.session == nil {
+		return netproxy.StateEvent{State: netproxy.SessionConnected}, false
+	}
+	return d.session.Snapshot(), true
 }
 
-func (d *Dialer) latencyStatsLocked(g DialerGroup) (lat LatencyStats, ok bool) {
-	state, ok := d.groups[g]
+func (d *Dialer) healthyLocked(session netproxy.StateEvent, hasSession bool) bool {
+	return d.ctx.Err() == nil && d.healthy && (!hasSession || session.State == netproxy.SessionConnected && d.healthSeq == session.Seq)
+}
+
+func (d *Dialer) Healthy() bool {
+	d.mu.RLock()
+	session, hasSession := d.sessionSnapshot()
+	healthy := d.healthyLocked(session, hasSession)
+	d.mu.RUnlock()
+	return healthy
+}
+
+func (d *Dialer) Usable(networkType *common.NetworkType) bool {
+	return d.SelectionSnapshot(networkType).Usable
+}
+
+func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSnapshot {
+	d.mu.RLock()
+	session, hasSession := d.sessionSnapshot()
+	state := d.networks[common.NetworkTypeToIndex(networkType)]
+	snapshot := SelectionSnapshot{
+		Usable:  d.healthyLocked(session, hasSession) && state == networkUsable,
+		Support: supportState(state),
+	}
+	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
+	d.mu.RUnlock()
+	return snapshot
+}
+
+func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, timeoutPenalty time.Duration) {
+	d.mu.Lock()
+	d.group = &groupState{
+		group:          group,
+		latencies:      NewLatenciesN(10),
+		emaAlpha:       emaAlpha,
+		timeoutPenalty: timeoutPenalty,
+	}
+	d.mu.Unlock()
+}
+
+func (d *Dialer) LatencyStats() (lat LatencyStats, ok bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.latencyStatsLocked()
+}
+
+func (d *Dialer) latencyStatsLocked() (lat LatencyStats, ok bool) {
+	if d.group == nil {
+		return LatencyStats{}, false
+	}
+	lat.Last, ok = d.group.latencies.LastLatency()
 	if !ok {
 		return LatencyStats{}, false
 	}
-	lat.Last, ok = state.latencies.LastLatency()
-	if !ok {
-		return LatencyStats{}, false
-	}
-	lat.Avg10, _ = state.latencies.AvgLatency()
-	lat.MovingAvg = state.movingAverage
-	lat.Avg10HasFailure = state.latencies.HasFailure()
+	lat.Avg10, _ = d.group.latencies.AvgLatency()
+	lat.MovingAvg = d.group.movingAverage
+	lat.Avg10HasFailure = d.group.latencies.HasFailure()
 	return lat, true
 }
 
-// SelectionLatency returns the latency of this dialer in the group according
-// to the given selection policy. ok is false when no sample qualifies.
-func (d *Dialer) SelectionLatency(g DialerGroup, policy consts.DialerSelectionPolicy) (time.Duration, bool) {
-	lat, ok := d.LatencyStats(g)
+func (d *Dialer) SelectionLatency(policy consts.DialerSelectionPolicy) (time.Duration, bool) {
+	lat, ok := d.LatencyStats()
 	if !ok {
 		return 0, false
 	}
@@ -289,46 +354,41 @@ func (d *Dialer) SelectionLatency(g DialerGroup, policy consts.DialerSelectionPo
 	return 0, false
 }
 
-// RuntimeStatus returns a snapshot whose state and latency-map selection
-// cannot be interleaved with a connectivity update.
-func (d *Dialer) RuntimeStatus(g DialerGroup) RuntimeSnapshot {
+func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	d.mu.RLock()
-	session, hasSession := d.runtime.sessionSnapshot()
-	connected := d.runtime.accepting() && (!hasSession || session.State == netproxy.SessionConnected)
-	health := d.ctx.Err() == nil && connected && (!hasSession || d.healthSeq == session.Seq) && d.alive
+	session, hasSession := d.sessionSnapshot()
 	snapshot := RuntimeSnapshot{
-		Healthy:      health,
-		SupportState: d.support,
-		Session:      session,
-		HasSession:   hasSession,
+		Healthy:           d.healthyLocked(session, hasSession),
+		ConfirmingFailure: !d.failureReportedAt.IsZero(),
+		Session:           session,
+		HasSession:        hasSession,
 	}
-	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked(g)
+	for i, state := range d.networks {
+		snapshot.SupportState[i] = supportState(state)
+	}
+	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
 	d.mu.RUnlock()
+	snapshot.ConfirmingFailure = snapshot.Healthy && snapshot.ConfirmingFailure
 	snapshot.Availability = stats.GetNode(d.StatsKey())
 	return snapshot
 }
 
 func (d *Dialer) InitialCheckMode() InitialCheckMode { return d.initialCheck }
 
-// CloneForStatsScope gives group-specific health state a distinct identity
-// while sharing the data-plane transport and Session lifecycle.
-func (d *Dialer) CloneForStatsScope(scope string) *Dialer {
-	return newDialer(d.runtime, d.GlobalOption, d.Property, d.initialCheck, scope)
-}
-
-// Close cancels the connectivity check and waits for its goroutine to exit.
-// The dialer must not be reused afterwards.
+// Close stops health checking and retires the owned outbound runtime. Runtime
+// leases keep established connections alive until their callers close them.
 func (d *Dialer) Close() error {
 	d.closeOnce.Do(func() {
 		d.mu.Lock()
 		d.cancel()
 		d.mu.Unlock()
 		d.checkWG.Wait()
-		d.runtime.unregister(d)
+		d.runtime.Retire()
+		go func() {
+			if err := d.runtime.Wait(context.Background()); err != nil {
+				log.Warnf("Failed to release outbound runtime: %v", err)
+			}
+		}()
 	})
 	return nil
 }
-
-func (d *Dialer) RetireTransport() { d.runtime.retire() }
-
-func (d *Dialer) TransportID() any { return d.runtime }

@@ -524,6 +524,7 @@ func TestColorNodeHealth(t *testing.T) {
 	}{
 		{health: control.NodeHealthHealthy, ansi: "\x1b[32m"},
 		{health: control.NodeHealthUnknown, ansi: "\x1b[33m"},
+		{health: control.NodeHealthConfirming, ansi: "\x1b[33m"},
 		{health: control.NodeHealthUnhealthy, ansi: "\x1b[31m"},
 	}
 	for _, tt := range tests {

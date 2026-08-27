@@ -34,9 +34,13 @@ type recentAvailability struct {
 	failureTimes []time.Time
 }
 
-func (r *recentAvailability) record(now time.Time, alive, checked bool) {
+func (r *recentAvailability) record(now time.Time, alive, checked bool, transitionAt ...time.Time) {
+	at := now
+	if len(transitionAt) != 0 {
+		at = transitionAt[0]
+	}
 	if len(r.transitions) == 0 || r.transitions[len(r.transitions)-1].alive != alive {
-		r.transitions = append(r.transitions, availabilityTransition{at: now, alive: alive})
+		r.transitions = append(r.transitions, availabilityTransition{at: at, alive: alive})
 	}
 	if checked {
 		r.checkTimes = append(r.checkTimes, now)

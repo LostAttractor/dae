@@ -3,12 +3,11 @@ package outbound
 import (
 	"fmt"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	log "github.com/sirupsen/logrus"
 )
 
 func saturatingDurationAdd(a, b time.Duration) time.Duration {
@@ -24,48 +23,69 @@ func saturatingDurationAdd(a, b time.Duration) time.Duration {
 type Selector interface {
 	Select(networkType *common.NetworkType) *dialer.Dialer
 	SelectedDialer(networkType *common.NetworkType) *dialer.Dialer
-	NotifyStatusChange(dialer *dialer.Dialer)
+	Refresh(dialer *dialer.Dialer)
 	PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{}))
 }
 
-func logDialerAliveTransition(g *DialerGroup, d *dialer.Dialer, previous, current bool) bool {
-	if previous == current {
-		return current
-	}
-	fields := log.Fields{"dialer": d.Name, "group": g.Name}
-	if current {
-		log.WithFields(fields).Warn("[NOT ALIVE --> ALIVE]")
-	} else {
-		log.WithFields(fields).Info("[ALIVE --> NOT ALIVE]")
-	}
-	return current
+type selectorCandidate struct {
+	dialer         *dialer.Dialer
+	latency        time.Duration
+	sortingLatency time.Duration
+	priority       int
 }
 
-func isDialerAlive(d *dialer.Dialer, networkType *common.NetworkType) bool {
-	alive, support := d.SelectionState(networkType)
-	return alive && support == dialer.NetworkSupportConfirmed
+func candidateLatency(policy consts.DialerSelectionPolicy, snapshot dialer.SelectionSnapshot) time.Duration {
+	if !snapshot.HasLatency {
+		return 0
+	}
+	switch policy {
+	case consts.DialerSelectionPolicy_MinAverage10Latencies:
+		return snapshot.Latency.Avg10
+	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
+		return snapshot.Latency.MovingAvg
+	default:
+		return snapshot.Latency.Last
+	}
 }
 
-func preferredAliveDialers(dialers []*dialer.Dialer, networkType *common.NetworkType) []*dialer.Dialer {
-	confirmed := make([]*dialer.Dialer, 0, len(dialers))
-	for _, d := range dialers {
-		if isDialerAlive(d, networkType) {
-			confirmed = append(confirmed, d)
+func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkType) (selectorCandidate, bool) {
+	snapshot := d.SelectionSnapshot(networkType)
+	if !snapshot.Usable {
+		return selectorCandidate{}, false
+	}
+	latency := candidateLatency(g.selectionPolicy.Policy, snapshot)
+	sortingLatency := saturatingDurationAdd(latency, g.dialerToAnnotation[d].AddLatency)
+	return selectorCandidate{
+		dialer:         d,
+		latency:        latency,
+		sortingLatency: sortingLatency,
+		priority:       g.GetPriority(d, sortingLatency),
+	}, true
+}
+
+func (g *DialerGroup) candidates(networkType *common.NetworkType) []selectorCandidate {
+	candidates := make([]selectorCandidate, 0, len(g.Dialers))
+	for _, d := range g.Dialers {
+		if candidate, ok := g.candidate(d, networkType); ok {
+			candidates = append(candidates, candidate)
 		}
 	}
-	return confirmed
+	return candidates
+}
+
+func printLatencyHeader(g *DialerGroup, networkType *common.NetworkType, logfn func(args ...interface{})) {
+	if networkType != nil {
+		logfn(fmt.Sprintf("Group '%v' [%v]:", g.Name, networkType.String()))
+	} else {
+		logfn(fmt.Sprintf("Group '%v':", g.Name))
+	}
 }
 
 func printDialerLatency(g *DialerGroup, d *dialer.Dialer, networkType *common.NetworkType, logfn func(args ...interface{})) {
-	var builder strings.Builder
-	if networkType != nil {
-		builder.WriteString(fmt.Sprintf("Group '%v' [%v]:\n", g.Name, networkType.String()))
-	} else {
-		builder.WriteString(fmt.Sprintf("Group '%v':\n", g.Name))
-	}
-	if !isDialerAlive(d, networkType) {
-		builder.WriteString("\t<Not Alive>\n")
-		logfn(strings.TrimSuffix(builder.String(), "\n"))
+	printLatencyHeader(g, networkType, logfn)
+	snapshot := d.SelectionSnapshot(networkType)
+	if !snapshot.Usable {
+		logfn("  <Not Alive>")
 		return
 	}
 	tag := ""
@@ -75,10 +95,9 @@ func printDialerLatency(g *DialerGroup, d *dialer.Dialer, networkType *common.Ne
 	latency := "Always Alive"
 	if d.ChecksConnectivity() {
 		latency = common.ShowDuration(0)
-		if stats, ok := d.LatencyStats(g); ok {
-			latency = common.ShowDuration(stats.Last)
+		if snapshot.HasLatency {
+			latency = common.ShowDuration(snapshot.Latency.Last)
 		}
 	}
-	builder.WriteString(fmt.Sprintf("%4d.%v %v: %v\n", 1, tag, d.Name, latency))
-	logfn(strings.TrimSuffix(builder.String(), "\n"))
+	logfn(fmt.Sprintf("%4d.%v %v: %v", 1, tag, d.Name, latency))
 }

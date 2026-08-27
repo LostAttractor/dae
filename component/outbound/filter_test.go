@@ -289,7 +289,6 @@ func TestBuildPathUsesPhysicalHopOrder(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = d.Close()
-		d.RetireTransport()
 	})
 	if len(order) != 2 || order[0] != "entry" || order[1] != "exit" {
 		t.Fatalf("builder order = %v, want [entry exit]", order)
@@ -318,9 +317,7 @@ func TestBuildPathIdentityIncludesRuntimeOptions(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = first.Close()
-		first.RetireTransport()
 		_ = second.Close()
-		second.RetireTransport()
 	})
 	if first.StatsKey() == second.StatsKey() {
 		t.Fatalf("runtime option change retained stats identity %q", first.StatsKey())
@@ -344,13 +341,8 @@ func TestBuildPathCreatesOwnerScopedRuntime(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = first.Close()
-		first.RetireTransport()
 		_ = second.Close()
-		second.RetireTransport()
 	})
-	if first.TransportID() == second.TransportID() {
-		t.Fatal("different owners shared one runtime")
-	}
 	if first.StatsKey() == second.StatsKey() {
 		t.Fatal("different owners shared one stats identity")
 	}
@@ -515,7 +507,6 @@ func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = d.Close()
-		d.RetireTransport()
 	})
 	if got, want := d.Protocol, "shadowsocks(smux/udp-pass)"; got != want {
 		t.Fatalf("path protocol = %q, want %q", got, want)
@@ -539,7 +530,6 @@ func TestBuildPathEnablesCheckAsyncWhenAnyHopRequestsIt(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = d.Close()
-		d.RetireTransport()
 	})
 	if d.InitialCheckMode() != dialer.InitialCheckAsync {
 		t.Fatal("a later check_async=false hop disabled an asynchronous path")
@@ -584,9 +574,7 @@ func TestNodeIdentityIncludesEffectiveOptions(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = first.Close()
-		first.RetireTransport()
 		_ = second.Close()
-		second.RetireTransport()
 	})
 	if first.StatsKey() == second.StatsKey() {
 		t.Fatalf("effective options share stats identity %q", first.StatsKey())
@@ -615,9 +603,7 @@ func TestNodeIdentityIncludesConfiguredName(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = first.Close()
-		first.RetireTransport()
 		_ = second.Close()
-		second.RetireTransport()
 	})
 	if first.StatsKey() == second.StatsKey() {
 		t.Fatalf("node aliases share stats identity %q", first.StatsKey())

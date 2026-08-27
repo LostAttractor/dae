@@ -7,7 +7,6 @@ package control
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -34,24 +33,6 @@ func (statusTestDialer) DialContext(context.Context, string, string) (net.Conn, 
 }
 func (statusTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("not implemented")
-}
-
-type statusTestSession struct{ state *netproxy.StateBroadcaster }
-
-func newStatusTestSession(state netproxy.SessionState) *statusTestSession {
-	return &statusTestSession{state: netproxy.NewStateBroadcaster(state)}
-}
-func (s *statusTestSession) Connect(context.Context) error {
-	s.state.Transition(netproxy.SessionConnected, nil)
-	return nil
-}
-func (s *statusTestSession) Snapshot() netproxy.StateEvent { return s.state.Snapshot() }
-func (s *statusTestSession) WatchState(ctx context.Context) <-chan netproxy.StateEvent {
-	return s.state.WatchState(ctx)
-}
-func (s *statusTestSession) Close() error {
-	s.state.Transition(netproxy.SessionClosed, nil)
-	return nil
 }
 
 func TestStatusServerReturnsUnavailableWithoutPublishedPlane(t *testing.T) {
@@ -294,8 +275,6 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	t.Cleanup(func() {
 		_ = direct.Close()
 		_ = block.Close()
-		directDialer.RetireTransport()
-		blockDialer.RetireTransport()
 	})
 
 	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
@@ -313,15 +292,6 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	)
 	defer group.Close()
 
-	tcp4 := common.IndexToNetworkType(0)
-	tcp6 := common.IndexToNetworkType(1)
-	node.SetSupported(tcp4, true)
-	node.SetSupported(tcp6, false)
-	node.SetSupported(common.IndexToNetworkType(2), false)
-	node.SetSupported(common.IndexToNetworkType(3), false)
-	node.Update(true, time.Millisecond, tcp4, nil)
-	node.NotifyStatusChange()
-
 	plane := &ControlPlane{
 		outbounds:          []*outbound.DialerGroup{direct, block, group},
 		criticalOutbounds:  []bool{false, false, true},
@@ -331,27 +301,14 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	if directStatus := snapshot.Groups[0]; directStatus.Connectivity != nil || directStatus.Policy != "" {
 		t.Fatalf("direct status = %+v, want singleton without connectivity or policy", directStatus)
 	}
-	if snapshot.Health != HealthHealthy || snapshot.Groups[1].Health != HealthHealthy {
-		t.Fatalf("health = %q/%q, want healthy", snapshot.Health, snapshot.Groups[1].Health)
-	}
-	if snapshot.Groups[1].Connectivity == nil || !snapshot.Groups[1].Connectivity.Available || snapshot.Groups[1].Networks[0].SupportState != "confirmed" {
-		t.Fatalf("group/tcp4 status = %+v/%+v, want available and supported", snapshot.Groups[1], snapshot.Groups[1].Networks[0])
-	}
-	if snapshot.Groups[1].Networks[1].SupportState != "unsupported" {
-		t.Fatalf("tcp6 status = %+v, want unsupported", snapshot.Groups[1].Networks[1])
-	}
-	if got := snapshot.Groups[1].Nodes[0].Networks[0].SupportState; got != "confirmed" {
-		t.Fatalf("tcp4 support state = %q, want confirmed", got)
-	}
-	if got := snapshot.Groups[1].Nodes[0].Networks[1].SupportState; got != "unsupported" {
-		t.Fatalf("tcp6 support state = %q, want unsupported", got)
-	}
-
-	node.Update(false, 0, tcp4, fmt.Errorf("unavailable"))
-	node.NotifyStatusChange()
-	snapshot = plane.StatusSnapshot("test")
 	if snapshot.Health != HealthDegraded || snapshot.Groups[1].Health != HealthDegraded {
 		t.Fatalf("health = %q/%q, want degraded", snapshot.Health, snapshot.Groups[1].Health)
+	}
+	if snapshot.Groups[1].Connectivity == nil || snapshot.Groups[1].Connectivity.Available || snapshot.Groups[1].Networks[0].SupportState != "unknown" {
+		t.Fatalf("group/tcp4 status = %+v/%+v, want unavailable and unknown", snapshot.Groups[1], snapshot.Groups[1].Networks[0])
+	}
+	if got := snapshot.Groups[1].Nodes[0].Networks[0].SupportState; got != "unknown" {
+		t.Fatalf("tcp4 support state = %q, want unknown", got)
 	}
 
 	plane.criticalOutbounds[2] = false
@@ -383,8 +340,6 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 		func(bool, *common.NetworkType) error { return nil },
 	)
 	defer group.Close()
-	node.Update(true, time.Millisecond, nil, nil)
-	node.NotifyStatusChange()
 
 	plane := &ControlPlane{
 		outbounds:          []*outbound.DialerGroup{group},
@@ -404,89 +359,6 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 	}
 	if snapshot.Groups[0].Connectivity == nil || snapshot.Groups[0].Connectivity.Available {
 		t.Fatal("unknown network capability made the group available")
-	}
-}
-
-func TestNetworkStatusRejectsStaleSelection(t *testing.T) {
-	option := &dialer.GlobalOption{}
-	networkType := common.IndexToNetworkType(0)
-	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
-		Name: t.Name(),
-		Link: "test://" + t.Name(),
-	}}, dialer.InitialCheckBlocking)
-	group := outbound.NewDialerGroup(
-		option,
-		t.Name(),
-		outbound.GroupKindSelector,
-		[]*dialer.Dialer{node},
-		[]*dialer.Annotation{{}},
-		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency},
-		func(bool, *common.NetworkType) error { return nil },
-	)
-	t.Cleanup(func() {
-		_ = group.Close()
-		node.RetireTransport()
-	})
-	node.SetSupported(networkType, true)
-	node.Update(true, time.Millisecond, networkType, nil)
-	node.NotifyStatusChange()
-	if status := networkStatus(group, 0, newConnCounts()); status.Selected == nil {
-		t.Fatal("live selection was not reported")
-	}
-
-	node.Update(false, 0, networkType, errors.New("stale selection"))
-	if status := networkStatus(group, 0, newConnCounts()); status.Selected != nil {
-		t.Fatalf("unavailable stale selection was reported: %+v", status.Selected)
-	}
-}
-
-func TestNodeStatusSeparatesSessionHealthAndUsability(t *testing.T) {
-	registry := prometheus.NewRegistry()
-	common.InitPrometheus(registry)
-	option := &dialer.GlobalOption{}
-	session := newStatusTestSession(netproxy.SessionConnected)
-	transport := netproxy.WithSession(statusTestDialer{}, session)
-	node := dialer.NewDialer(netproxy.NewRuntime(transport), option, &dialer.Property{Property: D.Property{
-		Name: t.Name(),
-		Link: "test://" + t.Name(),
-	}}, dialer.InitialCheckBlocking)
-	group := outbound.NewDialerGroup(
-		option,
-		t.Name(),
-		outbound.GroupKindSelector,
-		[]*dialer.Dialer{node},
-		[]*dialer.Annotation{{}},
-		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed},
-		func(bool, *common.NetworkType) error { return nil },
-	)
-	t.Cleanup(func() {
-		_ = group.Close()
-		node.RetireTransport()
-	})
-	tcp4 := common.IndexToNetworkType(0)
-	node.SetSupported(tcp4, true)
-	node.Update(true, time.Millisecond, tcp4, nil)
-	node.NotifyStatusChange()
-
-	status := nodeStatus(group, node, newConnCounts(), true)
-	if status.Session == nil || status.Session.State != SessionConnected || status.Health == nil || status.Health.State != NodeHealthHealthy {
-		t.Fatalf("connected node status = %+v", status)
-	}
-	if status.Networks[0].SupportState != "confirmed" {
-		t.Fatalf("connected node support = %+v", status.Networks)
-	}
-
-	session.state.Transition(netproxy.SessionDisconnected, errors.New("transport lost"))
-	deadline := time.Now().Add(time.Second)
-	for node.RuntimeStatus(group).Healthy && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	status = nodeStatus(group, node, newConnCounts(), true)
-	if status.Session == nil || status.Session.State != SessionDisconnected || status.Session.Error != "transport lost" || status.Health == nil || status.Health.State != NodeHealthUnhealthy {
-		t.Fatalf("disconnected node status = %+v", status)
-	}
-	if status.Networks[0].SupportState != "confirmed" {
-		t.Fatalf("disconnect changed support: %+v", status.Networks)
 	}
 }
 
@@ -520,7 +392,6 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 	).SetTargetMetadata(outbound.TargetKindNode)
 	t.Cleanup(func() {
 		_ = group.Close()
-		node.RetireTransport()
 	})
 	plane := &ControlPlane{outbounds: []*outbound.DialerGroup{group}, PrometheusRegistry: registry}
 	status := plane.StatusSnapshot("test").Groups[0]

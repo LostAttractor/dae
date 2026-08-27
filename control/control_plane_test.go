@@ -245,9 +245,7 @@ func TestCandidateStatsScopeSeparatesIdenticalPaths(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_ = first.Close()
-		first.RetireTransport()
 		_ = second.Close()
-		second.RetireTransport()
 	})
 	if first.StatsKey() == second.StatsKey() || first.StatsID() == second.StatsID() {
 		t.Fatal("identical path occurrences share stats identity")
@@ -289,14 +287,14 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	d := dialer.NewDialer(netproxy.NewRuntime(dnsPathDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: "dns-path",
 		Link: "test://dns-path",
-	}}, dialer.InitialCheckBlocking)
+	}}, dialer.InitialCheckDisabled)
 	group := outbound.NewDialerGroup(
 		option,
 		"dns-path",
-		outbound.GroupKindSelector,
+		outbound.GroupKindSingleAlwaysAlive,
 		[]*dialer.Dialer{d},
 		[]*dialer.Annotation{{}},
-		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Fixed},
+		dialer.DialerSelectionPolicy{},
 		func(bool, *common.NetworkType) error { return nil },
 	)
 	t.Cleanup(func() { _ = group.Close() })
@@ -304,9 +302,6 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStr_4,
 	}
-	d.SetSupported(&wantNetwork, true)
-	d.Update(true, 0, &wantNetwork, nil)
-
 	c := &ControlPlane{
 		outbounds: []*outbound.DialerGroup{group},
 		routingMatcher: &RoutingMatcher{

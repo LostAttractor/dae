@@ -148,15 +148,19 @@ func (c *nodeChecks) record(alive, transition bool, now time.Time) {
 	c.sinceFailure.Inc()
 }
 
-func (a *availability) record(alive, checked bool, now time.Time) {
+func (a *availability) record(alive, checked bool, now time.Time, failureStartedAt ...time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	prevAlive := gaugeBool(a.alive)
 	firstObservation := a.firstSeen.IsZero()
+	transitionAt := now
+	if !alive && len(failureStartedAt) != 0 && !failureStartedAt[0].IsZero() {
+		transitionAt = failureStartedAt[0]
+	}
 	if firstObservation {
-		a.firstSeen = now
+		a.firstSeen = transitionAt
 	} else if prevAlive {
-		a.totalUp += now.Sub(a.lastAcc)
+		a.totalUp += transitionAt.Sub(a.lastAcc)
 	}
 	a.lastAcc = now
 	if alive != prevAlive {
@@ -169,15 +173,15 @@ func (a *availability) record(alive, checked bool, now time.Time) {
 		}
 	}
 	if !alive && (firstObservation || prevAlive) {
-		a.failureStartedAt = now
+		a.failureStartedAt = transitionAt
 		a.completedFailureDuration = 0
-		setGaugeTime(a.failureStart, now)
+		setGaugeTime(a.failureStart, transitionAt)
 	}
 	isCheck := checked && a.checks != nil
 	if isCheck {
 		a.checks.record(alive, alive != prevAlive, now)
 	}
-	a.recent.record(now, alive, isCheck)
+	a.recent.record(now, alive, isCheck, transitionAt)
 }
 
 func (a *availability) recordConnFail(now time.Time) {
@@ -271,10 +275,10 @@ func nodeAvailability(key, subtag, name string) *availability {
 
 // RecordNode records the state of a node. checked should be true when the
 // state comes from a connectivity check (as opposed to registration).
-func RecordNode(key, subtag, name string, alive, checked bool) {
+func RecordNode(key, subtag, name string, alive, checked bool, failureStartedAt ...time.Time) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	nodeAvailability(key, subtag, name).record(alive, checked, time.Now())
+	nodeAvailability(key, subtag, name).record(alive, checked, time.Now(), failureStartedAt...)
 }
 
 // RecordNodeConnFail records that traffic through the node failed outside of

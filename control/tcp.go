@@ -43,7 +43,7 @@ type tcpRelay struct {
 	directSplice *directTCPSplice
 	dialer       interface {
 		ChecksConnectivity() bool
-		ReportUnavailable()
+		ReportDataPlaneFailure()
 	}
 	labels       prometheus.Labels
 	outboundName string
@@ -216,7 +216,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		} else if !netErr.Timeout() {
 			if dialOption.Dialer.ChecksConnectivity() {
 				common.ErrorCount.With(labels).Inc()
-				dialOption.Dialer.ReportUnavailable()
+				dialOption.Dialer.ReportDataPlaneFailure()
 				return nil, err
 			}
 		}
@@ -287,7 +287,7 @@ func (r *tcpRelay) run() (err error) {
 			return err
 		} else if !netErr.Timeout() && r.dialer.ChecksConnectivity() {
 			common.ErrorCount.With(labels).Inc()
-			r.dialer.ReportUnavailable()
+			r.dialer.ReportDataPlaneFailure()
 			return err
 		}
 	}

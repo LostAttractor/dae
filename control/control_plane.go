@@ -412,7 +412,6 @@ func NewControlPlane(
 				}
 				for _, d := range dialers {
 					_ = d.Close()
-					d.RetireTransport()
 				}
 				return oops.Errorf("failed to build target %v path: %w", name, buildErr)
 			}
@@ -654,9 +653,6 @@ func (c *ControlPlane) Activate() error {
 	}
 	for _, g := range c.outbounds {
 		for _, d := range g.Dialers {
-			// Initialize the map entry before asynchronous checks allow traffic
-			// to start with an absent connectivity state.
-			d.NotifyStatusChange()
 			d.ActivateCheck(wg)
 		}
 	}
@@ -840,20 +836,12 @@ func (c *ControlPlane) requestConnectivityRechecks() {
 	if c.ctx.Err() != nil {
 		return
 	}
-	seen := make(map[*dialer.Dialer]struct{})
 	for _, group := range c.outbounds {
 		if !group.ChecksConnectivity() {
 			continue
 		}
 		for _, d := range group.Dialers {
-			if !d.ChecksConnectivity() {
-				continue
-			}
-			if _, ok := seen[d]; ok {
-				continue
-			}
-			seen[d] = struct{}{}
-			d.NotifyConnectivityRecheck()
+			d.RequestConnectivityCheck()
 		}
 	}
 }
@@ -1426,11 +1414,7 @@ func (c *ControlPlane) closeOutbounds() (err error) {
 }
 
 func closeDialerGroups(groups []*outbound.DialerGroup) (err error) {
-	transports := make(map[any]*dialer.Dialer)
 	for _, g := range groups {
-		for _, d := range g.Dialers {
-			transports[d.TransportID()] = d
-		}
 		if e := g.Close(); e != nil {
 			if err != nil {
 				err = oops.Errorf("%w; %v", err, e)
@@ -1438,9 +1422,6 @@ func closeDialerGroups(groups []*outbound.DialerGroup) (err error) {
 				err = e
 			}
 		}
-	}
-	for _, d := range transports {
-		d.RetireTransport()
 	}
 	return err
 }

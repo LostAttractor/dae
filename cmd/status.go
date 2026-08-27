@@ -197,7 +197,7 @@ func colorNodeHealth(health control.NodeHealthState) string {
 		return "-"
 	case control.NodeHealthHealthy:
 		return colorize(string(health), text.FgGreen)
-	case control.NodeHealthUnknown:
+	case control.NodeHealthUnknown, control.NodeHealthConfirming:
 		return colorize(string(health), text.FgYellow)
 	case control.NodeHealthUnhealthy:
 		return colorize(string(health), text.FgRed)

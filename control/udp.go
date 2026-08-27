@@ -179,15 +179,15 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	// Get udp endpoint.
 	ue, ok := udpEndpoints.Get(src)
 	isNew := false
+	networkType := &common.NetworkType{
+		L4Proto:   consts.L4ProtoStr_UDP,
+		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
+	}
 	// If the udp endpoint has been not alive, remove it from pool and retry
 	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
 	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
-	if ok && !ue.dialer.Alive() {
+	if ok && !ue.dialer.Usable(networkType) {
 		if log.IsLevelEnabled(log.DebugLevel) {
-			networkType := &common.NetworkType{
-				L4Proto:   consts.L4ProtoStr_UDP,
-				IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
-			}
 			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
 				"network": networkType.String(),
@@ -198,10 +198,6 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		ok = false
 	}
 	if !ok {
-		networkType := &common.NetworkType{
-			L4Proto:   consts.L4ProtoStr_UDP,
-			IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
-		}
 		// Use an empty AddrPort for dst
 		routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
 		if err != nil {
@@ -260,7 +256,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			} else if !netErr.Timeout() {
 				if dialOption.Dialer.ChecksConnectivity() {
 					common.ErrorCount.With(labels).Inc()
-					dialOption.Dialer.ReportUnavailable()
+					dialOption.Dialer.ReportDataPlaneFailure()
 					return err
 				}
 			}
@@ -305,7 +301,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		} else if !netErr.Timeout() {
 			if ue.dialer.ChecksConnectivity() {
 				common.ErrorCount.With(ue.labels).Inc()
-				ue.dialer.ReportUnavailable()
+				ue.dialer.ReportDataPlaneFailure()
 				return err
 			}
 		}
@@ -331,7 +327,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			}
 			if endpoint.dialer.ChecksConnectivity() {
 				common.ErrorCount.With(endpoint.labels).Inc()
-				endpoint.dialer.ReportUnavailable()
+				endpoint.dialer.ReportDataPlaneFailure()
 			}
 		}
 		if log.IsLevelEnabled(log.DebugLevel) {

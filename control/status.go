@@ -113,9 +113,10 @@ type SessionState string
 type NetworkSupportStatus string
 
 const (
-	NodeHealthUnknown   NodeHealthState = "unknown"
-	NodeHealthHealthy   NodeHealthState = "healthy"
-	NodeHealthUnhealthy NodeHealthState = "unhealthy"
+	NodeHealthUnknown    NodeHealthState = "unknown"
+	NodeHealthHealthy    NodeHealthState = "healthy"
+	NodeHealthConfirming NodeHealthState = "confirming"
+	NodeHealthUnhealthy  NodeHealthState = "unhealthy"
 
 	SessionDisconnected SessionState = "disconnected"
 	SessionConnecting   SessionState = "connecting"
@@ -310,13 +311,10 @@ func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) Network
 		Network: networkType.String(),
 	}
 	if selected := g.SelectedDialer(networkType); selected != nil {
-		alive, support := selected.SelectionState(networkType)
-		if alive && support == dialer.NetworkSupportConfirmed {
-			for i, candidate := range g.Dialers {
-				if candidate == selected {
-					ns.Selected = &SelectedNodeStatus{Index: i}
-					break
-				}
+		for i, candidate := range g.Dialers {
+			if candidate == selected {
+				ns.Selected = &SelectedNodeStatus{Index: i}
+				break
 			}
 		}
 	}
@@ -326,7 +324,7 @@ func networkStatus(g *outbound.DialerGroup, index int, conns connCounts) Network
 }
 
 func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts, uniqueID bool) NodeStatus {
-	runtime := d.RuntimeStatus(g)
+	runtime := d.RuntimeStatus()
 	ns := NodeStatus{
 		ID:         d.StatsID(),
 		Name:       d.Name,
@@ -390,6 +388,9 @@ func nodeStatus(g *outbound.DialerGroup, d *dialer.Dialer, conns connCounts, uni
 			if runtime.Healthy {
 				ns.Health.State = NodeHealthHealthy
 			}
+		}
+		if runtime.ConfirmingFailure {
+			ns.Health.State = NodeHealthConfirming
 		}
 		if runtime.HasLatency {
 			ns.Health.Latency = &LatencyStatus{

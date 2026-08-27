@@ -958,7 +958,7 @@ func (c *DnsController) reportDNSDialFailure(err error, argument *dialArgument) 
 		"network":  argument.networkType.String(),
 	}
 	common.ErrorCount.With(labels).Inc()
-	argument.Dialer.ReportUnavailable()
+	argument.Dialer.ReportDataPlaneFailure()
 }
 
 func (c *DnsController) dialSendWithFallback(

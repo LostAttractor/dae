@@ -270,7 +270,6 @@ func validateNodeDialer(option *dialer.GlobalOption, link string) (err error) {
 }
 
 func closeValidatedDialer(created *dialer.Dialer) error {
-	defer created.RetireTransport()
 	return created.Close()
 }
 
