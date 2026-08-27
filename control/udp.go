@@ -110,7 +110,7 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 	return n, err
 }
 
-func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, skipSniffing bool, domain string) (err error) {
+func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, skipSniffing bool, domain string, isQuic bool) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -130,6 +130,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if _sniffer == sniffer {
 			sniffer.AppendData(data)
 			domain, err = sniffer.SniffUdp()
+			isQuic = sniffer.IsQuic()
 			if err != nil && !sniffing.IsSniffingError(err) {
 				sniffer.Mu.Unlock()
 				return oops.
@@ -155,7 +156,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			}
 			sniffer.Mu.Unlock()
 			for _, d := range toRehandle {
-				if replayErr := c.handlePkt(ctx, d, src, dst, true, domain); replayErr != nil {
+				if replayErr := c.handlePkt(ctx, d, src, dst, true, domain, isQuic); replayErr != nil {
 					log.Warnf("%+v", oops.Wrapf(replayErr, "rehandlePkt"))
 				}
 			}
@@ -231,7 +232,11 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 
 		// Dial
 		// Only print routing for new connection to avoid the log exploded (Quic and BT).
-		c.logDial(src, dst, domain, dialOption, networkType, routingResult)
+		network := networkType.String()
+		if isQuic {
+			network = "quic" + string(networkType.IpVersion)
+		}
+		c.logDial(src, dst, domain, dialOption, network, routingResult)
 		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		defer cancel()
 		udpConn, err := dialOption.dialerForConnection().ListenPacket(dialCtx, dialOption.DialTarget)

@@ -84,6 +84,13 @@ func TestSniffQuicV2Initial(t *testing.T) {
 	if string(got) != "abc" {
 		t.Fatalf("CRYPTO data = %q, want %q", got, "abc")
 	}
+
+	sniffer := NewPacketSniffer(packet, time.Second)
+	t.Cleanup(func() { _ = sniffer.Close() })
+	_, _ = sniffer.SniffUdp()
+	if !sniffer.IsQuic() {
+		t.Fatal("valid QUIC Initial was not marked as QUIC")
+	}
 }
 
 func TestQuicReassemble(t *testing.T) {

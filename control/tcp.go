@@ -186,7 +186,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	}
 
 	// Dial
-	c.logDial(src, dst, domain, dialOption, networkType, routingResult)
+	c.logDial(src, dst, domain, dialOption, networkType.String(), routingResult)
 	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
 	defer cancel()
 	start := time.Now()

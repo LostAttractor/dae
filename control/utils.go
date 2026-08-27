@@ -189,13 +189,13 @@ func (c *ControlPlane) interfaceName(ifindex uint32) string {
 	return c.core.ifmgr.NameByIndex(int(ifindex))
 }
 
-func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, networkType *common.NetworkType, routingResult *bpfRoutingResult) {
+func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, network string, routingResult *bpfRoutingResult) {
 	if log.IsLevelEnabled(log.InfoLevel) {
 		destinationIP := RefineAddrPortToShow(dst)
 		fields := routeLogFields(
 			routingResult,
 			c.interfaceName(routingResult.Ifindex),
-			networkType.String(),
+			network,
 			RefineSourceToShow(src, dst.Addr()),
 			dialOption.DialTarget,
 		)

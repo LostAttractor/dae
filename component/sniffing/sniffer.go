@@ -274,6 +274,10 @@ func (s *Sniffer) NeedMore() bool {
 	return s.needMore
 }
 
+func (s *Sniffer) IsQuic() bool {
+	return s.quicNextRead != 0
+}
+
 func (s *Sniffer) Read(p []byte) (n int, err error) {
 	<-s.dataReady
 
