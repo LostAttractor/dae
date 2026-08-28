@@ -129,8 +129,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
 		if _sniffer == sniffer {
 			sniffer.AppendData(data)
-			domain, err = sniffer.SniffUdp()
-			isQuic = sniffer.IsQuic()
+			domain, isQuic, err = sniffer.SniffUdp()
 			if err != nil && !sniffing.IsSniffingError(err) {
 				sniffer.Mu.Unlock()
 				return oops.

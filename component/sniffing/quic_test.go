@@ -10,7 +10,6 @@ import (
 	"crypto/cipher"
 	"encoding/hex"
 	"testing"
-	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	log "github.com/sirupsen/logrus"
@@ -85,10 +84,10 @@ func TestSniffQuicV2Initial(t *testing.T) {
 		t.Fatalf("CRYPTO data = %q, want %q", got, "abc")
 	}
 
-	sniffer := NewPacketSniffer(packet, time.Second)
+	sniffer := NewPacketSniffer(packet)
 	t.Cleanup(func() { _ = sniffer.Close() })
-	_, _ = sniffer.SniffUdp()
-	if !sniffer.IsQuic() {
+	_, isQuic, _ := sniffer.SniffUdp()
+	if !isQuic {
 		t.Fatal("valid QUIC Initial was not marked as QUIC")
 	}
 }
@@ -97,7 +96,8 @@ func TestQuicReassemble(t *testing.T) {
 	oldLevel := log.GetLevel()
 	t.Cleanup(func() { log.SetLevel(oldLevel) })
 	log.SetLevel(log.DebugLevel)
-	sniffer := NewPacketSniffer(QuicStream2_1, 300*time.Millisecond)
+	sniffer := NewPacketSniffer(QuicStream2_1)
+	t.Cleanup(func() { _ = sniffer.Close() })
 	d, err := sniffer.SniffQuic()
 	if err != nil {
 		if sniffer.NeedMore() {
@@ -120,7 +120,8 @@ func TestQuic(t *testing.T) {
 	oldLevel := log.GetLevel()
 	t.Cleanup(func() { log.SetLevel(oldLevel) })
 	log.SetLevel(log.DebugLevel)
-	sniffer := NewPacketSniffer(QuicStream3, 300*time.Millisecond)
+	sniffer := NewPacketSniffer(QuicStream3)
+	t.Cleanup(func() { _ = sniffer.Close() })
 	d, err := sniffer.SniffQuic()
 	if err != nil {
 		dumpCryptos(t, sniffer.quicCryptos)

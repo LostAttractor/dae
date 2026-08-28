@@ -3,11 +3,10 @@ package sniffing
 import (
 	"errors"
 	"testing"
-	"time"
 )
 
 func TestPacketSnifferStopsAtPacketLimit(t *testing.T) {
-	s := NewPacketSniffer(nil, time.Second)
+	s := NewPacketSniffer(nil)
 	t.Cleanup(func() { _ = s.Close() })
 	for range packetSniffingMaxPackets {
 		s.AppendData([]byte{0})
@@ -16,7 +15,7 @@ func TestPacketSnifferStopsAtPacketLimit(t *testing.T) {
 		t.Fatal("packet limit reached before the configured maximum")
 	}
 	s.AppendData([]byte{0})
-	if _, err := s.SniffUdp(); !errors.Is(err, ErrNotApplicable) {
+	if _, _, err := s.SniffUdp(); !errors.Is(err, ErrNotApplicable) {
 		t.Fatalf("SniffUdp error = %v, want ErrNotApplicable", err)
 	}
 	if s.NeedMore() {
@@ -28,7 +27,7 @@ func TestPacketSnifferStopsAtPacketLimit(t *testing.T) {
 }
 
 func TestPacketSnifferStopsAtByteLimit(t *testing.T) {
-	s := NewPacketSniffer(nil, time.Second)
+	s := NewPacketSniffer(nil)
 	t.Cleanup(func() { _ = s.Close() })
 	s.AppendData(make([]byte, packetSniffingMaxBufferedBytes))
 	if s.packetLimit {

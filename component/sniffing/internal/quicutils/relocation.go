@@ -8,6 +8,7 @@ package quicutils
 import (
 	"fmt"
 	"io/fs"
+	"sync"
 )
 
 var (
@@ -43,6 +44,24 @@ type CryptoReassembler struct {
 	limitExceeded  bool
 }
 
+var cryptoReassemblerPool sync.Pool
+
+func acquireCryptoReassembler() *CryptoReassembler {
+	if reassembly := cryptoReassemblerPool.Get(); reassembly != nil {
+		return reassembly.(*CryptoReassembler)
+	}
+	return &CryptoReassembler{}
+}
+
+// ReleaseCryptoReassembler clears reassembly and transfers it to the pool.
+func ReleaseCryptoReassembler(reassembly *CryptoReassembler) {
+	if reassembly == nil {
+		return
+	}
+	*reassembly = CryptoReassembler{}
+	cryptoReassemblerPool.Put(reassembly)
+}
+
 func ReassembleCryptos(retained *CryptoReassembler, newPayload []byte) (*CryptoReassembler, error) {
 	hasData, err := processCryptoFrames(nil, newPayload)
 	if err != nil {
@@ -52,7 +71,7 @@ func ReassembleCryptos(retained *CryptoReassembler, newPayload []byte) (*CryptoR
 		return retained, nil
 	}
 	if retained == nil {
-		retained = &CryptoReassembler{}
+		retained = acquireCryptoReassembler()
 	}
 	// The first pass validates the complete payload so an error cannot leave
 	// retained state partially modified.
@@ -83,6 +102,31 @@ func processCryptoFrames(retained *CryptoReassembler, payload []byte) (hasData b
 
 func (r *CryptoReassembler) retain(offset int, data []byte) {
 	end := offset + len(data)
+	retainedEnd := int(r.dataSize)
+	if offset >= retainedEnd {
+		// Ordered, non-overlapping CRYPTO data can update storage and coverage in bulk.
+		copy(r.data[offset:end], data)
+		if offset < end {
+			firstByte := offset >> 3
+			lastByte := (end - 1) >> 3
+			if firstByte == lastByte {
+				width := end - offset
+				r.covered[firstByte] |= byte(((1 << width) - 1) << (offset & 7))
+			} else {
+				r.covered[firstByte] |= byte(0xff << (offset & 7))
+				for i := firstByte + 1; i < lastByte; i++ {
+					r.covered[i] = 0xff
+				}
+				lastWidth := ((end - 1) & 7) + 1
+				r.covered[lastByte] |= byte((1 << lastWidth) - 1)
+			}
+		}
+		r.dataSize = uint16(end)
+		if int(r.contiguousSize) == offset {
+			r.contiguousSize = uint16(end)
+		}
+		return
+	}
 	if end > int(r.dataSize) {
 		r.dataSize = uint16(end)
 	}

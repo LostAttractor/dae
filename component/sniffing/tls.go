@@ -80,7 +80,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	boundary += int(sessionIdLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary || search.Len() < boundary {
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -89,8 +89,8 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	cipherSuiteLength := int(binary.BigEndian.Uint16(b))
-	boundary += int(cipherSuiteLength) + 1 // +1 because the next field has 1B length
-	if search.Len() < boundary || search.Len() < boundary {
+	boundary += cipherSuiteLength + 1 // +1 because the next field has 1B length
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -99,7 +99,7 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	boundary += int(compressMethodsLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary || search.Len() < boundary {
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 
@@ -108,8 +108,8 @@ func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
 		return "", err
 	}
 	extensionsLength := int(binary.BigEndian.Uint16(b))
-	boundary += extensionsLength + 0 // +0 because our search ends
-	if search.Len() < boundary || search.Len() < boundary {
+	boundary += extensionsLength
+	if search.Len() < boundary {
 		return "", ErrNotApplicable
 	}
 	// Search SNI

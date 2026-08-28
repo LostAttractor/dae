@@ -88,7 +88,7 @@ begin:
 		}
 
 		created := &PacketSniffer{
-			Sniffer:       sniffing.NewPacketSniffer(nil, createOption.Ttl),
+			Sniffer:       sniffing.NewPacketSniffer(nil),
 			Mu:            sync.Mutex{},
 			deadlineTimer: nil,
 		}

@@ -27,18 +27,18 @@ const (
 
 type Sniffer struct {
 	// Stream
-	stream    bool
-	r         io.Reader
-	dataReady chan struct{}
-	dataError error
-	pending   <-chan streamReadResult
-
-	// Common
-	sniffed string
-	buf     *bytes.Buffer
-	readMu  sync.Mutex
+	stream  bool
+	r       io.Reader
 	ctx     context.Context
 	cancel  func()
+	pending <-chan streamReadResult
+
+	// Common
+	sniffed   string
+	buf       *bytes.Buffer
+	dataReady chan struct{}
+	dataError error
+	readMu    sync.Mutex
 
 	// Packet
 	data         [][]byte
@@ -70,18 +70,13 @@ func NewStreamSniffer(r io.Reader, timeout time.Duration) *Sniffer {
 	}
 }
 
-func NewPacketSniffer(data []byte, timeout time.Duration) *Sniffer {
+func NewPacketSniffer(data []byte) *Sniffer {
 	buffer := pool.GetBytesBuffer()
 	buffer.Write(data)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	s := &Sniffer{
-		stream:    false,
-		r:         nil,
 		buf:       buffer,
 		data:      [][]byte{buffer.Bytes()},
 		dataReady: make(chan struct{}),
-		ctx:       ctx,
-		cancel:    cancel,
 	}
 	if len(data) != 0 {
 		s.packetBytes = len(data)
@@ -221,15 +216,10 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	}
 }
 
-func (s *Sniffer) SniffUdp() (d string, err error) {
+func (s *Sniffer) SniffUdp() (d string, isQuic bool, err error) {
 	if s.sniffed != "" {
-		return s.sniffed, nil
+		return s.sniffed, s.quicNextRead != 0, nil
 	}
-	defer func() {
-		if err == nil {
-			s.sniffed = d
-		}
-	}()
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 
@@ -240,16 +230,14 @@ func (s *Sniffer) SniffUdp() (d string, err error) {
 		close(s.dataReady)
 	}
 
-	if s.buf.Len() == 0 {
-		return "", ErrNotApplicable
+	if s.buf.Len() == 0 || s.packetLimit {
+		return "", s.quicNextRead != 0, ErrNotApplicable
 	}
-	if s.packetLimit {
-		return "", ErrNotApplicable
+	d, err = sniffGroup(s.sniffQuicLocked)
+	if err == nil {
+		s.sniffed = d
 	}
-
-	return sniffGroup(
-		s.SniffQuic,
-	)
+	return d, s.quicNextRead != 0, err
 }
 
 func (s *Sniffer) AppendData(data []byte) {
@@ -272,10 +260,6 @@ func (s *Sniffer) Data() [][]byte {
 
 func (s *Sniffer) NeedMore() bool {
 	return s.needMore
-}
-
-func (s *Sniffer) IsQuic() bool {
-	return s.quicNextRead != 0
 }
 
 func (s *Sniffer) Read(p []byte) (n int, err error) {
@@ -310,7 +294,9 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 }
 
 func (s *Sniffer) Close() error {
-	s.cancel()
+	if s.cancel != nil {
+		s.cancel()
+	}
 	conn, isConn := s.r.(net.Conn)
 	if isConn {
 		_ = conn.SetReadDeadline(time.Now())
@@ -320,6 +306,9 @@ func (s *Sniffer) Close() error {
 	if isConn {
 		_ = conn.SetReadDeadline(time.Time{})
 	}
+	// Packet replay only aliases buf; the QUIC reassembly is private to the sniffer.
+	quicutils.ReleaseCryptoReassembler(s.quicCryptos)
+	s.quicCryptos = nil
 	if s.pending == nil && s.buf != nil && s.buf.Len() == 0 {
 		pool.PutBytesBuffer(s.buf)
 		s.buf = nil

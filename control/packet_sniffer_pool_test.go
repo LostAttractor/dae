@@ -138,7 +138,7 @@ func TestPacketSniffer_Normal(t *testing.T) {
 			RAddr: netip.MustParseAddrPort("2.2.2.2:2222"),
 		}, nil)
 		sniffer.AppendData(data)
-		domain, err := sniffer.SniffUdp()
+		domain, _, err := sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			t.Fatal(err)
 		}
@@ -163,7 +163,7 @@ func TestPacketSniffer_Mismatched(t *testing.T) {
 			RAddr: dst,
 		}, nil)
 		sniffer.AppendData(data)
-		domain, err := sniffer.SniffUdp()
+		domain, _, err := sniffer.SniffUdp()
 		if err != nil && !sniffing.IsSniffingError(err) {
 			t.Fatal(err)
 		}

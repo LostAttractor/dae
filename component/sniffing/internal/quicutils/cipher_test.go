@@ -89,7 +89,7 @@ func TestKeys_PayloadDecrypt_(t *testing.T) {
 	}
 	header = data[:len(header)-4+len(packetNumber)]
 	payload := data[len(header):]
-	plaintext, err := keys.PayloadDecrypt(payload, packetNumber, header)
+	plaintext, err := keys.PayloadDecrypt(nil, payload, packetNumber, header)
 	if err != nil {
 		t.Fatal("PayloadDecryptFromPool:", err)
 	}
@@ -102,7 +102,7 @@ func TestKeysPayloadDecryptRejectsInvalidTag(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer keys.Close()
-	if plaintext, err := keys.PayloadDecrypt(make([]byte, 16), []byte{1}, []byte("header")); err == nil || plaintext != nil {
+	if plaintext, err := keys.PayloadDecrypt(nil, make([]byte, 16), []byte{1}, []byte("header")); err == nil || plaintext != nil {
 		t.Fatalf("PayloadDecrypt = %x, %v; want authentication error", plaintext, err)
 	}
 }
