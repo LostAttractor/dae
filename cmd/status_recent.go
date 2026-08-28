@@ -117,6 +117,9 @@ func recentUpRatio(connectivity *control.GroupConnectivityStatus) string {
 }
 
 func recentGroupRow(group control.GroupStatus) table.Row {
+	if group.Connectivity == nil {
+		return table.Row{group.Name, fmt.Sprintf("%d active", group.ActiveConns)}
+	}
 	return table.Row{
 		group.Name,
 		recentCurrentState(group.Connectivity),

@@ -49,8 +49,11 @@ func TestRecentGroupRowWithoutConnectivity(t *testing.T) {
 	colorsEnabled = false
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
-	row := recentGroupRow(control.GroupStatus{Name: "direct"})
-	want := []string{"direct", "N/A", "[..........] / 1H", "- / 24H", "0 active"}
+	row := recentGroupRow(control.GroupStatus{Name: "direct", ActiveConns: 3})
+	want := []string{"direct", "3 active"}
+	if len(row) != len(want) {
+		t.Fatalf("recentGroupRow() has %d cells, want %d", len(row), len(want))
+	}
 	for i, expected := range want {
 		if got := fmt.Sprint(row[i]); got != expected {
 			t.Errorf("recentGroupRow()[%d] = %q, want %q", i, got, expected)
