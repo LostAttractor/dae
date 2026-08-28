@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -43,16 +44,18 @@ type DialerGroup struct {
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        Selector
 
-	dialerToAnnotation  map[*dialer.Dialer]*dialer.Annotation
-	notifyMu            sync.Mutex
-	networkAvailable    [4]bool
-	networkStateSet     [4]bool
-	availabilitySet     bool
-	availableCallback   func(available bool, networkType *common.NetworkType) error
-	available           atomic.Bool
-	closed              atomic.Bool
-	closeOnce           sync.Once
-	latencyTableLogging atomic.Bool
+	dialerToAnnotation   map[*dialer.Dialer]*dialer.Annotation
+	notifyMu             sync.Mutex
+	networkAvailable     [4]bool
+	networkStateSet      [4]bool
+	availabilitySet      bool
+	connectivityState    stats.GroupState
+	connectivityStateSet bool
+	availableCallback    func(available bool, networkType *common.NetworkType) error
+	available            atomic.Bool
+	closed               atomic.Bool
+	closeOnce            sync.Once
+	latencyTableLogging  atomic.Bool
 }
 
 func NewDialerGroup(
@@ -182,12 +185,44 @@ func (g *DialerGroup) InitializeConnectivity() error {
 	}
 	var err error
 	for i := range g.networkAvailable {
-		err = errors.Join(err, g.publishNetworkAvailable(common.IndexToNetworkType(i), false))
+		networkType := common.IndexToNetworkType(i)
+		if g.availableCallback != nil {
+			if callbackErr := g.availableCallback(false, networkType); callbackErr != nil {
+				err = errors.Join(err, callbackErr)
+				continue
+			}
+		}
+		g.networkAvailable[i] = false
+		g.networkStateSet[i] = true
+	}
+	if err == nil {
+		state := stats.GroupStateChecking
+		if len(g.connectivityDialers()) == 0 {
+			state = stats.GroupStateUnavailable
+			g.publishAvailable(false)
+		}
+		g.recordConnectivityStateLocked(state)
 	}
 	return err
 }
 
 func (g *DialerGroup) Available() bool { return g.available.Load() }
+
+func (g *DialerGroup) Connectivity() (stats.GroupState, stats.GroupAvailability) {
+	g.notifyMu.Lock()
+	defer g.notifyMu.Unlock()
+	state := g.connectivityState
+	if !g.connectivityStateSet {
+		state = g.calculateConnectivityState()
+	}
+	return state, stats.GetGroup(g.Name)
+}
+
+func (g *DialerGroup) recordConnectivityStateLocked(state stats.GroupState) {
+	g.connectivityState = state
+	g.connectivityStateSet = true
+	stats.RecordGroupState(g.Name, state)
+}
 
 func (g *DialerGroup) publishAvailable(available bool) {
 	if g.availabilitySet && g.available.Load() == available {
@@ -236,6 +271,51 @@ func (g *DialerGroup) networkUsable(networkType *common.NetworkType) bool {
 		}
 	}
 	return false
+}
+
+func (g *DialerGroup) connectivityDialers() []*dialer.Dialer {
+	if g.selectionPolicy.Policy == "" || g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Fixed {
+		index := g.selectionPolicy.FixedIndex
+		if index < 0 || index >= len(g.Dialers) {
+			return nil
+		}
+		return g.Dialers[index : index+1]
+	}
+	return g.Dialers
+}
+
+func dialerUsableOnAnyNetwork(d *dialer.Dialer) bool {
+	for i := 0; i < 4; i++ {
+		if d.Usable(common.IndexToNetworkType(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *DialerGroup) calculateConnectivityState() stats.GroupState {
+	pending := false
+	stable := false
+	for _, d := range g.connectivityDialers() {
+		runtime := d.RuntimeStatus()
+		usable := dialerUsableOnAnyNetwork(d)
+		if usable && !runtime.ConfirmingFailure {
+			stable = true
+		}
+		if usable && runtime.ConfirmingFailure {
+			pending = true
+		}
+		if !runtime.Availability.Seen {
+			pending = pending || !runtime.HasSession || runtime.Session.State == netproxy.SessionConnecting || runtime.Session.State == netproxy.SessionConnected
+		}
+	}
+	if stable && g.available.Load() {
+		return stats.GroupStateAvailable
+	}
+	if pending {
+		return stats.GroupStateChecking
+	}
+	return stats.GroupStateUnavailable
 }
 
 // Returns the priority given an observed latency.
@@ -325,7 +405,11 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer) {
 		networkType := common.IndexToNetworkType(i)
 		err = errors.Join(err, g.publishNetworkAvailable(networkType, g.networkUsable(networkType)))
 	}
+	if err == nil && !g.availabilitySet {
+		g.publishAvailable(false)
+	}
 	if err != nil {
 		log.WithField("group", g.Name).Warnf("Failed to publish group availability: %v", err)
 	}
+	g.recordConnectivityStateLocked(g.calculateConnectivityState())
 }

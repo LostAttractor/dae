@@ -18,6 +18,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -48,6 +49,15 @@ func newUncheckedDialer(t *testing.T, name string) *dialer.Dialer {
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
 	}}, dialer.InitialCheckDisabled)
+}
+
+func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
+	t.Helper()
+	id := selectorDialerSequence.Add(1)
+	return dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
+		Name: name,
+		Link: fmt.Sprintf("test://%s/%d", name, id),
+	}}, dialer.InitialCheckBlocking)
 }
 
 func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []*dialer.Annotation, policy dialer.DialerSelectionPolicy, callback func(bool, *common.NetworkType) error) *DialerGroup {
@@ -193,6 +203,9 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 	if !g.Available() {
 		t.Fatal("group was not available")
 	}
+	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateAvailable {
+		t.Fatalf("group state = %q, want available", state)
+	}
 	_ = d.Close()
 	g.DialerChanged(d)
 	for i, available := range changes {
@@ -202,6 +215,54 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 	}
 	if g.Available() {
 		t.Fatal("group remained available")
+	}
+	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateUnavailable {
+		t.Fatalf("group state = %q, want unavailable", state)
+	}
+}
+
+func TestDialerGroupStartsChecking(t *testing.T) {
+	d := newCheckedDialer(t, t.Name())
+	g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector,
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+	t.Cleanup(func() { _ = g.Close() })
+	if err := g.InitializeConnectivity(); err != nil {
+		t.Fatal(err)
+	}
+	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateChecking {
+		t.Fatalf("initial group state = %q, want checking", state)
+	}
+	if availability := stats.GetGroup(g.Name); availability.Seen {
+		t.Fatalf("initial checking was recorded as an availability observation: %+v", availability)
+	}
+}
+
+func TestDialerGroupReloadDoesNotRecordUnavailable(t *testing.T) {
+	name := t.Name()
+	stats.RecordGroup(name, true)
+	d := newCheckedDialer(t, name)
+	g := NewDialerGroup(&dialer.GlobalOption{}, name, GroupKindSelector,
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+	t.Cleanup(func() { _ = g.Close() })
+	if err := g.InitializeConnectivity(); err != nil {
+		t.Fatal(err)
+	}
+	availability := stats.GetGroup(name)
+	if !availability.Alive || !availability.LastFailureStartedAt.IsZero() {
+		t.Fatalf("reload initialization changed retained availability: %+v", availability)
+	}
+}
+
+func TestEmptyDialerGroupStartsUnavailable(t *testing.T) {
+	g := &DialerGroup{Name: t.Name(), Kind: GroupKindSelector}
+	if err := g.InitializeConnectivity(); err != nil {
+		t.Fatal(err)
+	}
+	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateUnavailable {
+		t.Fatalf("empty group state = %q, want unavailable", state)
+	}
+	if availability := stats.GetGroup(g.Name); !availability.Seen || availability.Alive {
+		t.Fatalf("empty group availability = %+v, want observed unavailable", availability)
 	}
 }
 

@@ -62,6 +62,14 @@ type Availability struct {
 	Recent24h AvailabilityWindow // statistics observed during the trailing 24 hours
 }
 
+// GroupAvailability adds current and recent aggregate connectivity states to
+// the time-weighted availability statistics of an outbound group.
+type GroupAvailability struct {
+	Availability
+	State  GroupState
+	Recent GroupStateWindow
+}
+
 type gauge interface {
 	Set(float64)
 	Inc()
@@ -304,41 +312,70 @@ func GetNode(key string) Availability {
 	return v.(*availability).snapshot()
 }
 
-var groups sync.Map // group name -> *availability
+type groupStats struct {
+	mu           sync.Mutex
+	availability *availability
+	states       recentGroupStates
+}
 
-func newGroupAvailability(name string) *availability {
+var groups sync.Map // group name -> *groupStats
+
+func newGroupStats(name string) *groupStats {
 	labels := prometheus.Labels{"outbound": name}
-	return &availability{
-		labels:       labels,
-		alive:        common.GroupAvailable.With(labels),
-		aliveSince:   common.GroupAvailableSince.With(labels),
-		failureStart: common.GroupLastFailureStart.With(labels),
+	return &groupStats{
+		availability: &availability{
+			labels:       labels,
+			alive:        common.GroupAvailable.With(labels),
+			aliveSince:   common.GroupAvailableSince.With(labels),
+			failureStart: common.GroupLastFailureStart.With(labels),
+		},
 	}
 }
 
-func groupAvailability(name string) *availability {
+func groupStatistics(name string) *groupStats {
 	if v, ok := groups.Load(name); ok {
-		return v.(*availability)
+		return v.(*groupStats)
 	}
-	a := newGroupAvailability(name)
-	v, _ := groups.LoadOrStore(name, a)
-	return v.(*availability)
+	g := newGroupStats(name)
+	v, _ := groups.LoadOrStore(name, g)
+	return v.(*groupStats)
 }
 
 func RecordGroup(name string, available bool) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	groupAvailability(name).record(available, false, time.Now())
+	groupStatistics(name).availability.record(available, false, time.Now())
 }
 
-func GetGroup(name string) Availability {
+func RecordGroupState(name string, state GroupState) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	g := groupStatistics(name)
+	g.mu.Lock()
+	g.states.record(time.Now(), state)
+	g.mu.Unlock()
+}
+
+func GetGroup(name string) GroupAvailability {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	v, ok := groups.Load(name)
 	if !ok {
-		return Availability{}
+		return GroupAvailability{
+			State:  GroupStateUnknown,
+			Recent: emptyGroupStateWindow(),
+		}
 	}
-	return v.(*availability).snapshot()
+	g := v.(*groupStats)
+	now := time.Now()
+	g.mu.Lock()
+	state, recent := g.states.snapshot(now)
+	g.mu.Unlock()
+	return GroupAvailability{
+		Availability: g.availability.snapshotAt(now),
+		State:        state,
+		Recent:       recent,
+	}
 }
 
 // NodeIdentity describes an availability identity retained by the currently
@@ -373,10 +410,10 @@ func deleteNodeMetrics(labels prometheus.Labels) {
 	common.NodeChecksSinceFailure.Delete(labels)
 }
 
-func deleteGroupMetrics(group *availability) {
-	common.GroupAvailable.Delete(group.labels)
-	common.GroupAvailableSince.Delete(group.labels)
-	common.GroupLastFailureStart.Delete(group.labels)
+func deleteGroupMetrics(group *groupStats) {
+	common.GroupAvailable.Delete(group.availability.labels)
+	common.GroupAvailableSince.Delete(group.availability.labels)
+	common.GroupLastFailureStart.Delete(group.availability.labels)
 }
 
 // Reconcile removes availability state and prometheus series that do not
@@ -412,7 +449,7 @@ func Reconcile(activeNodes []NodeIdentity, activeGroups []string) {
 	}
 	groups.Range(func(key, value any) bool {
 		if _, keep := groupNames[key.(string)]; !keep {
-			deleteGroupMetrics(value.(*availability))
+			deleteGroupMetrics(value.(*groupStats))
 			groups.Delete(key)
 		}
 		return true

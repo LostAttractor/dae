@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -171,19 +172,25 @@ func TestGroupHealth(t *testing.T) {
 	}{
 		{
 			name:     "available group",
-			group:    GroupStatus{Connectivity: &GroupConnectivityStatus{Available: true}},
+			group:    GroupStatus{Connectivity: &GroupConnectivityStatus{State: GroupConnectivityAvailable}},
 			critical: true,
 			want:     HealthHealthy,
 		},
 		{
+			name:     "checking group",
+			group:    GroupStatus{Connectivity: &GroupConnectivityStatus{State: GroupConnectivityChecking}},
+			critical: true,
+			want:     HealthWarning,
+		},
+		{
 			name:     "critical group is unavailable",
-			group:    GroupStatus{Connectivity: &GroupConnectivityStatus{}},
+			group:    GroupStatus{Connectivity: &GroupConnectivityStatus{State: GroupConnectivityUnavailable}},
 			critical: true,
 			want:     HealthDegraded,
 		},
 		{
 			name:  "non-critical group is unavailable",
-			group: GroupStatus{Connectivity: &GroupConnectivityStatus{}},
+			group: GroupStatus{Connectivity: &GroupConnectivityStatus{State: GroupConnectivityUnavailable}},
 			want:  HealthWarning,
 		},
 		{
@@ -301,11 +308,18 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	if directStatus := snapshot.Groups[0]; directStatus.Connectivity != nil || directStatus.Policy != "" {
 		t.Fatalf("direct status = %+v, want singleton without connectivity or policy", directStatus)
 	}
-	if snapshot.Health != HealthDegraded || snapshot.Groups[1].Health != HealthDegraded {
-		t.Fatalf("health = %q/%q, want degraded", snapshot.Health, snapshot.Groups[1].Health)
+	if snapshot.Health != HealthWarning || snapshot.Groups[1].Health != HealthWarning {
+		t.Fatalf("health = %q/%q, want warning while group state is unknown", snapshot.Health, snapshot.Groups[1].Health)
 	}
-	if snapshot.Groups[1].Connectivity == nil || snapshot.Groups[1].Connectivity.Available || snapshot.Groups[1].Networks[0].SupportState != "unknown" {
-		t.Fatalf("group/tcp4 status = %+v/%+v, want unavailable and unknown", snapshot.Groups[1], snapshot.Groups[1].Networks[0])
+	if snapshot.Groups[1].Connectivity == nil || snapshot.Groups[1].Networks[0].SupportState != "unknown" {
+		t.Fatalf("group/tcp4 status = %+v/%+v, want checking and unknown", snapshot.Groups[1], snapshot.Groups[1].Networks[0])
+	}
+	connectivity := snapshot.Groups[1].Connectivity
+	if connectivity.State != GroupConnectivityChecking || connectivity.Recent.WindowSeconds != 3600 || len(connectivity.Recent.Buckets) != 10 {
+		t.Fatalf("recent group connectivity = %+v, want checking state and ten one-hour buckets", connectivity)
+	}
+	if connectivity.UpRatio != nil || connectivity.UpRatio24h != nil {
+		t.Fatalf("unobserved group has availability ratios: %+v", connectivity)
 	}
 	if got := snapshot.Groups[1].Nodes[0].Networks[0].SupportState; got != "unknown" {
 		t.Fatalf("tcp4 support state = %q, want unknown", got)
@@ -315,6 +329,41 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	snapshot = plane.StatusSnapshot("test")
 	if snapshot.Health != HealthWarning || snapshot.Groups[1].Health != HealthWarning {
 		t.Fatalf("health = %q/%q, want warning", snapshot.Health, snapshot.Groups[1].Health)
+	}
+
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Groups []map[string]any `json:"groups"`
+	}
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	checkedGroup := document.Groups[1]
+	if _, ok := checkedGroup["active_conns"]; !ok {
+		t.Fatal("group status omits active_conns")
+	}
+	if _, ok := checkedGroup["total_conns"]; ok {
+		t.Fatal("group status contains removed total_conns")
+	}
+	connectivityDocument := checkedGroup["connectivity"].(map[string]any)
+	for _, field := range []string{"available", "observed"} {
+		if _, ok := connectivityDocument[field]; ok {
+			t.Fatalf("connectivity contains removed field %q", field)
+		}
+	}
+	for _, field := range []string{"state", "recent"} {
+		if _, ok := connectivityDocument[field]; !ok {
+			t.Fatalf("connectivity omits required field %q", field)
+		}
+	}
+	for _, field := range []string{"up_ratio", "up_ratio_24h"} {
+		value, ok := connectivityDocument[field]
+		if !ok || value != nil {
+			t.Fatalf("unobserved connectivity field %q = %#v, want explicit null", field, value)
+		}
 	}
 }
 
@@ -357,7 +406,7 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 	if snapshot.Groups[0].Nodes[0].Networks[2].SupportState != "unknown" {
 		t.Fatal("unknown node capability was advertised as supported")
 	}
-	if snapshot.Groups[0].Connectivity == nil || snapshot.Groups[0].Connectivity.Available {
+	if snapshot.Groups[0].Connectivity == nil || snapshot.Groups[0].Connectivity.State == GroupConnectivityAvailable {
 		t.Fatal("unknown network capability made the group available")
 	}
 }

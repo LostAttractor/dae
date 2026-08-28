@@ -224,6 +224,21 @@ func TestSessionLossInvalidatesHealthImmediately(t *testing.T) {
 	}
 }
 
+func TestInitialSessionTransitionsDoNotNotifyGroup(t *testing.T) {
+	transport := newTestSessionTransport(netproxy.SessionDisconnected)
+	d := newTestDialer(t, transport)
+	group := d.group.group.(*testGroup)
+
+	d.applySessionState(transport.Snapshot())
+	transport.state.Transition(netproxy.SessionConnecting, nil)
+	d.applySessionState(transport.Snapshot())
+	transport.state.Transition(netproxy.SessionConnected, nil)
+	d.applySessionState(transport.Snapshot())
+	if got := group.changes.Load(); got != 0 {
+		t.Fatalf("group changes = %d, want no notification before the first check result", got)
+	}
+}
+
 func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	option := &checkOption{
@@ -234,14 +249,22 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 		kind:   checkInitial,
 		probes: []probeResult{{option: option, ok: true, latency: time.Millisecond}},
 	})
+	group := d.group.group.(*testGroup)
+	changesBeforeReport := group.changes.Load()
 	d.ReportDataPlaneFailure()
 	firstReport := d.failureReportedAt
 	if firstReport.IsZero() || !d.RuntimeStatus().ConfirmingFailure {
 		t.Fatal("data-plane failure did not enter confirmation")
 	}
+	if got := group.changes.Load(); got != changesBeforeReport+1 {
+		t.Fatalf("group changes after first report = %d, want %d", got, changesBeforeReport+1)
+	}
 	d.ReportDataPlaneFailure()
 	if !d.failureReportedAt.Equal(firstReport) {
 		t.Fatal("repeated report replaced the first failure time")
+	}
+	if got := group.changes.Load(); got != changesBeforeReport+1 {
+		t.Fatalf("repeated report notified group: changes = %d, want %d", got, changesBeforeReport+1)
 	}
 	d.applyCheck(checkResult{
 		kind:   checkHealth,

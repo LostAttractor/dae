@@ -168,6 +168,28 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	}
 }
 
+func TestRecordGroupStateSnapshot(t *testing.T) {
+	name := t.Name()
+	RecordGroupState(name, GroupStateChecking)
+	RecordGroupState(name, GroupStateChecking)
+
+	group := groupStatistics(name)
+	group.mu.Lock()
+	transitions := len(group.states.transitions)
+	group.mu.Unlock()
+	if transitions != 1 {
+		t.Fatalf("transition count = %d, want 1", transitions)
+	}
+
+	snapshot := GetGroup(name)
+	if snapshot.State != GroupStateChecking {
+		t.Fatalf("state = %q, want checking", snapshot.State)
+	}
+	if len(snapshot.Recent.States) != GroupStateBucketCount || snapshot.Recent.States[len(snapshot.Recent.States)-1] != GroupStateChecking {
+		t.Fatalf("recent states = %q, want current checking bucket", snapshot.Recent.States)
+	}
+}
+
 func TestRecordNode_FailureEpisodes(t *testing.T) {
 	key, subtag, name := t.Name()+"\x1fnode", "sub", "node-episode"
 	a := nodeAvailability(key, subtag, name)

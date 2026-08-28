@@ -24,7 +24,10 @@ import (
 	"golang.org/x/term"
 )
 
-var statusVerbose bool
+var (
+	statusVerbose bool
+	statusRecent  bool
+)
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
@@ -36,7 +39,11 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to get status: %w", err)
 		}
-		printStatus(snapshot)
+		if statusRecent {
+			printRecentStatus(snapshot)
+		} else {
+			printStatus(snapshot)
+		}
 		return nil
 	},
 }
@@ -84,6 +91,28 @@ func decodeStatus(r io.Reader) (*control.StatusSnapshot, error) {
 		return nil, fmt.Errorf("status response has invalid health %q", snapshot.Health)
 	}
 	for i, group := range snapshot.Groups {
+		if group.Connectivity != nil {
+			switch group.Connectivity.State {
+			case control.GroupConnectivityUnknown, control.GroupConnectivityAvailable,
+				control.GroupConnectivityChecking, control.GroupConnectivityUnavailable:
+			default:
+				return nil, fmt.Errorf("groups[%d] has invalid connectivity state %q", i, group.Connectivity.State)
+			}
+			for j, state := range group.Connectivity.Recent.Buckets {
+				switch state {
+				case control.GroupConnectivityUnknown, control.GroupConnectivityAvailable,
+					control.GroupConnectivityChecking, control.GroupConnectivityUnavailable:
+				default:
+					return nil, fmt.Errorf("groups[%d].connectivity.recent.buckets[%d] has invalid state %q", i, j, state)
+				}
+			}
+			if group.Connectivity.Recent.WindowSeconds <= 0 {
+				return nil, fmt.Errorf("groups[%d] has invalid recent window %d", i, group.Connectivity.Recent.WindowSeconds)
+			}
+			if len(group.Connectivity.Recent.Buckets) != recentBucketCount {
+				return nil, fmt.Errorf("groups[%d] has %d recent buckets, want %d", i, len(group.Connectivity.Recent.Buckets), recentBucketCount)
+			}
+		}
 		for j, network := range group.Networks {
 			if network.Selected != nil && (network.Selected.Index < 0 || network.Selected.Index >= len(group.Nodes)) {
 				return nil, fmt.Errorf("groups[%d].networks[%d] selects node index %d outside nodes", i, j, network.Selected.Index)
@@ -169,13 +198,6 @@ func colorize(s string, colors ...text.Color) string {
 		return s
 	}
 	return text.Escape(s, text.Colors(colors).EscapeSeq())
-}
-
-func colorAlive(alive bool) string {
-	if alive {
-		return colorize("yes", text.FgGreen)
-	}
-	return colorize("no", text.FgRed)
 }
 
 func colorHealth(health control.HealthStatus) string {
@@ -618,16 +640,21 @@ func printGroupStatus(group control.GroupStatus) {
 		printTable(table.Row{"NETWORK", "CONNS(A/T)"}, rows)
 		return
 	}
+	upRatio := "-"
+	if group.Connectivity.UpRatio != nil {
+		ratio := *group.Connectivity.UpRatio
+		upRatio = colorRatio(ratio, formatRatio(ratio))
+	}
 
 	fmt.Printf(
-		"\nGroup '%s' [kind: %s, policy: %s, available: %s, up: %s, available since: %s, failure: %s]\n",
+		"\nGroup '%s' [kind: %s, policy: %s, state: %s, up: %s, up since: %s, failure: %s]\n",
 		group.Name,
 		targetKind,
 		policy,
-		colorAlive(group.Connectivity.Available),
-		colorRatio(group.Connectivity.UpRatio, formatRatio(group.Connectivity.UpRatio)),
-		formatAgo(group.Connectivity.AvailableSince),
-		formatFailure(group.Connectivity.Failure),
+		recentCurrentState(group.Connectivity),
+		upRatio,
+		formatAgo(group.Connectivity.UpSince),
+		formatFailure(group.Connectivity.LastFailure),
 	)
 	rows := make([]table.Row, 0, len(group.Networks))
 	for _, status := range group.Networks {
@@ -729,5 +756,7 @@ func printStatus(s *control.StatusSnapshot) {
 
 func init() {
 	statusCmd.Flags().BoolVar(&statusVerbose, "verbose", false, "show detailed path health history")
+	statusCmd.Flags().BoolVar(&statusRecent, "recent", false, "show recent group connectivity")
+	statusCmd.MarkFlagsMutuallyExclusive("verbose", "recent")
 	rootCmd.AddCommand(statusCmd)
 }

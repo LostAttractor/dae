@@ -225,12 +225,18 @@ func (d *Dialer) ReportDataPlaneFailure() {
 		d.mu.Unlock()
 		return
 	}
+	startedConfirmation := false
 	if d.initialCheck != InitialCheckDisabled && d.healthy && d.failureReportedAt.IsZero() {
 		d.failureReportedAt = time.Now()
+		startedConfirmation = true
 	}
 	d.checkRequested = true
+	group := d.group
 	stats.RecordNodeConnFail(d.StatsKey())
 	d.mu.Unlock()
+	if startedConfirmation && group != nil {
+		group.group.DialerChanged(d)
+	}
 	d.signalConnectivityCheck()
 }
 

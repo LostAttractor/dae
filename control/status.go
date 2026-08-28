@@ -58,17 +58,25 @@ type GroupStatus struct {
 	Name         string                   `json:"name"`
 	TargetKind   string                   `json:"target_kind"`
 	Policy       string                   `json:"policy"`
-	Health       HealthStatus             `json:"health"`
-	Connectivity *GroupConnectivityStatus `json:"connectivity,omitempty"`
+	Health       HealthStatus             `json:"health"`                 // operational impact after applying group criticality
+	Connectivity *GroupConnectivityStatus `json:"connectivity,omitempty"` // nil when the group has no connectivity checks
 	Networks     []NetworkStatus          `json:"networks"`
 	Nodes        []NodeStatus             `json:"nodes"`
+	ActiveConns  int64                    `json:"active_conns"`
 }
 
 type GroupConnectivityStatus struct {
-	Available      bool           `json:"available"`
-	UpRatio        float64        `json:"up_ratio"`
-	AvailableSince *time.Time     `json:"available_since,omitempty"`
-	Failure        *FailureStatus `json:"failure,omitempty"`
+	State       GroupConnectivityState `json:"state"`
+	UpRatio     *float64               `json:"up_ratio"`     // process-lifetime ratio; nil before the first observation
+	UpRatio24h  *float64               `json:"up_ratio_24h"` // trailing 24-hour ratio; nil before the first observation
+	Recent      GroupRecentStatus      `json:"recent"`
+	UpSince     *time.Time             `json:"up_since,omitempty"`
+	LastFailure *FailureStatus         `json:"last_failure,omitempty"`
+}
+
+type GroupRecentStatus struct {
+	WindowSeconds int64                    `json:"window_seconds"`
+	Buckets       []GroupConnectivityState `json:"buckets"`
 }
 
 type NetworkStatus struct {
@@ -112,11 +120,18 @@ type SessionState string
 
 type NetworkSupportStatus string
 
+type GroupConnectivityState string
+
 const (
 	NodeHealthUnknown    NodeHealthState = "unknown"
 	NodeHealthHealthy    NodeHealthState = "healthy"
 	NodeHealthConfirming NodeHealthState = "confirming"
 	NodeHealthUnhealthy  NodeHealthState = "unhealthy"
+
+	GroupConnectivityUnknown     GroupConnectivityState = "unknown"
+	GroupConnectivityAvailable   GroupConnectivityState = "available"
+	GroupConnectivityChecking    GroupConnectivityState = "checking"
+	GroupConnectivityUnavailable GroupConnectivityState = "unavailable"
 
 	SessionDisconnected SessionState = "disconnected"
 	SessionConnecting   SessionState = "connecting"
@@ -419,8 +434,11 @@ func groupHealth(group GroupStatus, critical bool) HealthStatus {
 	if group.Connectivity == nil {
 		return HealthHealthy
 	}
-	if group.Connectivity.Available {
+	switch group.Connectivity.State {
+	case GroupConnectivityAvailable:
 		return HealthHealthy
+	case GroupConnectivityUnknown, GroupConnectivityChecking:
+		return HealthWarning
 	}
 	if critical {
 		return HealthDegraded
@@ -489,13 +507,26 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 			Policy:     g.DisplayPolicy(),
 			Networks:   make([]NetworkStatus, 4),
 		}
-		availability := stats.GetGroup(g.Name)
 		if g.ChecksConnectivity() {
+			state, availability := g.Connectivity()
+			recentStates := make([]GroupConnectivityState, len(availability.Recent.States))
+			for i, state := range availability.Recent.States {
+				recentStates[i] = GroupConnectivityState(state)
+			}
 			gs.Connectivity = &GroupConnectivityStatus{
-				Available:      g.Available(),
-				UpRatio:        availability.UpRatio,
-				AvailableSince: timePtr(availability.AliveSince),
-				Failure:        failureStatus(availability.LastFailureStartedAt, availability.LastFailureDuration),
+				State: GroupConnectivityState(state),
+				Recent: GroupRecentStatus{
+					WindowSeconds: int64(availability.Recent.Duration / time.Second),
+					Buckets:       recentStates,
+				},
+				UpSince:     timePtr(availability.AliveSince),
+				LastFailure: failureStatus(availability.LastFailureStartedAt, availability.LastFailureDuration),
+			}
+			if availability.Seen {
+				upRatio := availability.UpRatio
+				upRatio24h := availability.Recent24h.UpRatio
+				gs.Connectivity.UpRatio = &upRatio
+				gs.Connectivity.UpRatio24h = &upRatio24h
 			}
 		}
 		idCounts := make(map[string]int, len(g.Dialers))
@@ -507,6 +538,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 		}
 		for i := 0; i < 4; i++ {
 			gs.Networks[i] = networkStatus(g, i, conns)
+			gs.ActiveConns += gs.Networks[i].ActiveConns
 			gs.Networks[i].SupportState = NetworkSupportUnsupported
 			for _, node := range gs.Nodes {
 				switch node.Networks[i].SupportState {

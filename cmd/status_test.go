@@ -553,6 +553,19 @@ func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
 	if _, err := decodeStatus(strings.NewReader(valid)); err != nil {
 		t.Fatalf("decode current status: %v", err)
 	}
+	checkedGroup := strings.Replace(valid, `"groups":[]`, `"groups":[{
+		"name":"proxy","target_kind":"group","policy":"fixed","health":"healthy",
+		"connectivity":{"state":"available","up_ratio":1,"up_ratio_24h":1,
+			"recent":{"window_seconds":3600,"buckets":["available","available","available","available","available","available","available","available","available","available"]}},
+		"networks":[],"nodes":[],"active_conns":0
+	}]`, 1)
+	if _, err := decodeStatus(strings.NewReader(checkedGroup)); err != nil {
+		t.Fatalf("decode checked group: %v", err)
+	}
+	oldGroup := strings.Replace(checkedGroup, `"state":"available",`, `"available":true,`, 1)
+	if _, err := decodeStatus(strings.NewReader(oldGroup)); err == nil {
+		t.Fatal("decoder accepted removed connectivity.available field")
+	}
 
 	tests := map[string]string{
 		"unknown field":  strings.Replace(valid, `"groups":[]`, `"extra":true,"groups":[]`, 1),
