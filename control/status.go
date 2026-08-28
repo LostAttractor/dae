@@ -75,8 +75,8 @@ type GroupConnectivityStatus struct {
 }
 
 type GroupRecentStatus struct {
-	WindowSeconds int64                    `json:"window_seconds"`
-	Buckets       []GroupConnectivityState `json:"buckets"`
+	WindowSeconds int64              `json:"window_seconds"`
+	Buckets       []GroupBucketState `json:"buckets"`
 }
 
 type NetworkStatus struct {
@@ -122,16 +122,21 @@ type NetworkSupportStatus string
 
 type GroupConnectivityState string
 
+type GroupBucketState string
+
 const (
 	NodeHealthUnknown    NodeHealthState = "unknown"
 	NodeHealthHealthy    NodeHealthState = "healthy"
 	NodeHealthConfirming NodeHealthState = "confirming"
 	NodeHealthUnhealthy  NodeHealthState = "unhealthy"
 
-	GroupConnectivityUnknown     GroupConnectivityState = "unknown"
 	GroupConnectivityAvailable   GroupConnectivityState = "available"
 	GroupConnectivityChecking    GroupConnectivityState = "checking"
 	GroupConnectivityUnavailable GroupConnectivityState = "unavailable"
+
+	GroupBucketUnknown     GroupBucketState = "unknown"
+	GroupBucketAvailable   GroupBucketState = "available"
+	GroupBucketUnavailable GroupBucketState = "unavailable"
 
 	SessionDisconnected SessionState = "disconnected"
 	SessionConnecting   SessionState = "connecting"
@@ -437,7 +442,7 @@ func groupHealth(group GroupStatus, critical bool) HealthStatus {
 	switch group.Connectivity.State {
 	case GroupConnectivityAvailable:
 		return HealthHealthy
-	case GroupConnectivityUnknown, GroupConnectivityChecking:
+	case GroupConnectivityChecking:
 		return HealthWarning
 	}
 	if critical {
@@ -509,9 +514,9 @@ func (c *ControlPlane) StatusSnapshot(version string) *StatusSnapshot {
 		}
 		if g.ChecksConnectivity() {
 			state, availability := g.Connectivity()
-			recentStates := make([]GroupConnectivityState, len(availability.Recent.States))
+			recentStates := make([]GroupBucketState, len(availability.Recent.States))
 			for i, state := range availability.Recent.States {
-				recentStates[i] = GroupConnectivityState(state)
+				recentStates[i] = GroupBucketState(state)
 			}
 			gs.Connectivity = &GroupConnectivityStatus{
 				State: GroupConnectivityState(state),

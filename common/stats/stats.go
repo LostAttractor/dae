@@ -66,7 +66,6 @@ type Availability struct {
 // the time-weighted availability statistics of an outbound group.
 type GroupAvailability struct {
 	Availability
-	State  GroupState
 	Recent GroupStateWindow
 }
 
@@ -344,15 +343,11 @@ func groupStatistics(name string) *groupStats {
 func RecordGroup(name string, available bool) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	groupStatistics(name).availability.record(available, false, time.Now())
-}
-
-func RecordGroupState(name string, state GroupState) {
-	registryMu.RLock()
-	defer registryMu.RUnlock()
 	g := groupStatistics(name)
+	now := time.Now()
+	g.availability.record(available, false, now)
 	g.mu.Lock()
-	g.states.record(time.Now(), state)
+	g.states.record(now, available)
 	g.mu.Unlock()
 }
 
@@ -362,18 +357,16 @@ func GetGroup(name string) GroupAvailability {
 	v, ok := groups.Load(name)
 	if !ok {
 		return GroupAvailability{
-			State:  GroupStateUnknown,
 			Recent: emptyGroupStateWindow(),
 		}
 	}
 	g := v.(*groupStats)
 	now := time.Now()
 	g.mu.Lock()
-	state, recent := g.states.snapshot(now)
+	recent := g.states.snapshot(now)
 	g.mu.Unlock()
 	return GroupAvailability{
 		Availability: g.availability.snapshotAt(now),
-		State:        state,
 		Recent:       recent,
 	}
 }

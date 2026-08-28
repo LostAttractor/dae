@@ -28,15 +28,15 @@ func TestRecentGroupRow(t *testing.T) {
 			UpRatio24h: &ratio,
 			Recent: control.GroupRecentStatus{
 				WindowSeconds: 3600,
-				Buckets: []control.GroupConnectivityState{
-					control.GroupConnectivityAvailable,
-					control.GroupConnectivityChecking,
-					control.GroupConnectivityUnavailable,
+				Buckets: []control.GroupBucketState{
+					control.GroupBucketAvailable,
+					control.GroupBucketUnknown,
+					control.GroupBucketUnavailable,
 				},
 			},
 		},
 	})
-	want := []string{"proxy", "UP", "[+?x.......] / 1H", "99.92% / 24H", "31 active"}
+	want := []string{"proxy", "UP", "[+.x.......] / 1H", "99.92% / 24H", "31 active"}
 	for i, expected := range want {
 		if got := fmt.Sprint(row[i]); got != expected {
 			t.Errorf("recentGroupRow()[%d] = %q, want %q", i, got, expected)
@@ -69,10 +69,10 @@ func TestRecentGroupRowColors(t *testing.T) {
 	row := recentGroupRow(control.GroupStatus{
 		Connectivity: &control.GroupConnectivityStatus{
 			State: control.GroupConnectivityChecking,
-			Recent: control.GroupRecentStatus{Buckets: []control.GroupConnectivityState{
-				control.GroupConnectivityAvailable,
-				control.GroupConnectivityChecking,
-				control.GroupConnectivityUnavailable,
+			Recent: control.GroupRecentStatus{Buckets: []control.GroupBucketState{
+				control.GroupBucketAvailable,
+				control.GroupBucketUnknown,
+				control.GroupBucketUnavailable,
 			}},
 		},
 	})
@@ -80,10 +80,13 @@ func TestRecentGroupRowColors(t *testing.T) {
 		t.Fatalf("checking state = %q, want yellow", got)
 	}
 	timeline := row[2].(string)
-	for _, ansi := range []string{"\x1b[32m", "\x1b[33m", "\x1b[31m"} {
+	for _, ansi := range []string{"\x1b[32m", "\x1b[31m"} {
 		if !strings.Contains(timeline, ansi) {
 			t.Errorf("timeline = %q, want ANSI prefix %q", timeline, ansi)
 		}
+	}
+	if strings.Contains(timeline, "\x1b[33m") {
+		t.Fatalf("timeline = %q, checking must not be rendered yellow", timeline)
 	}
 }
 

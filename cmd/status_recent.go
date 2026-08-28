@@ -43,32 +43,28 @@ func recentCurrentState(connectivity *control.GroupConnectivityStatus) string {
 		return colorize("UP", text.FgGreen)
 	case control.GroupConnectivityUnavailable:
 		return colorize("DOWN", text.FgRed)
-	case control.GroupConnectivityUnknown, control.GroupConnectivityChecking:
+	case control.GroupConnectivityChecking:
 		return colorize("CHECKING", text.FgYellow)
 	default:
 		return string(connectivity.State)
 	}
 }
 
-func recentStatePoint(state control.GroupConnectivityState) string {
+func recentStatePoint(state control.GroupBucketState) string {
 	if !colorsEnabled {
 		switch state {
-		case control.GroupConnectivityAvailable:
+		case control.GroupBucketAvailable:
 			return "+"
-		case control.GroupConnectivityChecking:
-			return "?"
-		case control.GroupConnectivityUnavailable:
+		case control.GroupBucketUnavailable:
 			return "x"
 		default:
 			return "."
 		}
 	}
 	switch state {
-	case control.GroupConnectivityAvailable:
+	case control.GroupBucketAvailable:
 		return colorize("●", text.FgGreen)
-	case control.GroupConnectivityChecking:
-		return colorize("●", text.FgYellow)
-	case control.GroupConnectivityUnavailable:
+	case control.GroupBucketUnavailable:
 		return colorize("●", text.FgRed)
 	default:
 		return colorize("○", text.FgHiBlack)
@@ -91,7 +87,7 @@ func recentWindowLabel(seconds int64) string {
 }
 
 func recentTimeline(connectivity *control.GroupConnectivityStatus) string {
-	states := make([]control.GroupConnectivityState, recentBucketCount)
+	states := make([]control.GroupBucketState, recentBucketCount)
 	windowSeconds := recentWindowSeconds
 	if connectivity != nil {
 		copy(states, connectivity.Recent.Buckets)

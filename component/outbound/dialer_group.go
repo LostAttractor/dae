@@ -198,8 +198,8 @@ func (g *DialerGroup) InitializeConnectivity() error {
 	if err == nil {
 		state := stats.GroupStateChecking
 		if len(g.connectivityDialers()) == 0 {
-			state = stats.GroupStateUnavailable
 			g.publishAvailable(false)
+			state = stats.GroupStateUnavailable
 		}
 		g.recordConnectivityStateLocked(state)
 	}
@@ -221,7 +221,6 @@ func (g *DialerGroup) Connectivity() (stats.GroupState, stats.GroupAvailability)
 func (g *DialerGroup) recordConnectivityStateLocked(state stats.GroupState) {
 	g.connectivityState = state
 	g.connectivityStateSet = true
-	stats.RecordGroupState(g.Name, state)
 }
 
 func (g *DialerGroup) publishAvailable(available bool) {

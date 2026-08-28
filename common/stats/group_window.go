@@ -16,20 +16,27 @@ const (
 type GroupState string
 
 const (
-	GroupStateUnknown     GroupState = "unknown"
 	GroupStateAvailable   GroupState = "available"
 	GroupStateChecking    GroupState = "checking"
 	GroupStateUnavailable GroupState = "unavailable"
 )
 
+type GroupHistoryState string
+
+const (
+	GroupHistoryUnknown     GroupHistoryState = "unknown"
+	GroupHistoryAvailable   GroupHistoryState = "available"
+	GroupHistoryUnavailable GroupHistoryState = "unavailable"
+)
+
 type GroupStateWindow struct {
 	Duration time.Duration
-	States   []GroupState
+	States   []GroupHistoryState
 }
 
 type groupStateTransition struct {
 	at    time.Time
-	state GroupState
+	state GroupHistoryState
 }
 
 // recentGroupStates retains state changes rather than periodic samples. A
@@ -42,32 +49,36 @@ type recentGroupStates struct {
 func emptyGroupStateWindow() GroupStateWindow {
 	window := GroupStateWindow{
 		Duration: GroupStateWindowDuration,
-		States:   make([]GroupState, GroupStateBucketCount),
+		States:   make([]GroupHistoryState, GroupStateBucketCount),
 	}
 	for i := range window.States {
-		window.States[i] = GroupStateUnknown
+		window.States[i] = GroupHistoryUnknown
 	}
 	return window
 }
 
-func (r *recentGroupStates) record(now time.Time, state GroupState) {
+func (r *recentGroupStates) record(now time.Time, available bool) {
+	state := GroupHistoryUnavailable
+	if available {
+		state = GroupHistoryAvailable
+	}
 	if len(r.transitions) == 0 || r.transitions[len(r.transitions)-1].state != state {
 		r.transitions = append(r.transitions, groupStateTransition{at: now, state: state})
 	}
 	r.prune(now.Add(-GroupStateWindowDuration))
 }
 
-func (r *recentGroupStates) snapshot(now time.Time) (GroupState, GroupStateWindow) {
+func (r *recentGroupStates) snapshot(now time.Time) GroupStateWindow {
 	r.prune(now.Add(-GroupStateWindowDuration))
 	window := emptyGroupStateWindow()
 	if len(r.transitions) == 0 {
-		return GroupStateUnknown, window
+		return window
 	}
 
 	windowStart := now.Add(-GroupStateWindowDuration)
 	bucketDuration := GroupStateWindowDuration / GroupStateBucketCount
 	transitionIndex := 0
-	current := GroupStateUnknown
+	current := GroupHistoryUnknown
 	for transitionIndex < len(r.transitions) && !r.transitions[transitionIndex].at.After(windowStart) {
 		current = r.transitions[transitionIndex].state
 		transitionIndex++
@@ -90,9 +101,6 @@ func (r *recentGroupStates) snapshot(now time.Time) (GroupState, GroupStateWindo
 			if !inside {
 				break
 			}
-			if current == GroupStateUnknown && transition.at.After(bucketStart) {
-				worst = worseGroupState(worst, GroupStateChecking)
-			}
 			current = transition.state
 			worst = worseGroupState(worst, current)
 			transitionIndex++
@@ -100,19 +108,16 @@ func (r *recentGroupStates) snapshot(now time.Time) (GroupState, GroupStateWindo
 		window.States[bucketIndex] = worst
 	}
 
-	current = r.transitions[len(r.transitions)-1].state
-	return current, window
+	return window
 }
 
-func worseGroupState(current, next GroupState) GroupState {
-	severity := func(state GroupState) int {
+func worseGroupState(current, next GroupHistoryState) GroupHistoryState {
+	severity := func(state GroupHistoryState) int {
 		switch state {
-		case GroupStateAvailable:
+		case GroupHistoryAvailable:
 			return 1
-		case GroupStateChecking:
+		case GroupHistoryUnavailable:
 			return 2
-		case GroupStateUnavailable:
-			return 3
 		default:
 			return 0
 		}

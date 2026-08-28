@@ -203,7 +203,7 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 	if !g.Available() {
 		t.Fatal("group was not available")
 	}
-	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateAvailable {
+	if state, _ := g.Connectivity(); state != stats.GroupStateAvailable {
 		t.Fatalf("group state = %q, want available", state)
 	}
 	_ = d.Close()
@@ -216,7 +216,7 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 	if g.Available() {
 		t.Fatal("group remained available")
 	}
-	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
 		t.Fatalf("group state = %q, want unavailable", state)
 	}
 }
@@ -229,8 +229,14 @@ func TestDialerGroupStartsChecking(t *testing.T) {
 	if err := g.InitializeConnectivity(); err != nil {
 		t.Fatal(err)
 	}
-	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateChecking {
+	state, history := g.Connectivity()
+	if state != stats.GroupStateChecking {
 		t.Fatalf("initial group state = %q, want checking", state)
+	}
+	for i, state := range history.Recent.States {
+		if state != stats.GroupHistoryUnknown {
+			t.Fatalf("initial history bucket %d = %q, want unknown", i, state)
+		}
 	}
 	if availability := stats.GetGroup(g.Name); availability.Seen {
 		t.Fatalf("initial checking was recorded as an availability observation: %+v", availability)
@@ -258,7 +264,7 @@ func TestEmptyDialerGroupStartsUnavailable(t *testing.T) {
 	if err := g.InitializeConnectivity(); err != nil {
 		t.Fatal(err)
 	}
-	if state := stats.GetGroup(g.Name).State; state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
 		t.Fatalf("empty group state = %q, want unavailable", state)
 	}
 	if availability := stats.GetGroup(g.Name); !availability.Seen || availability.Alive {

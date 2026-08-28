@@ -148,6 +148,9 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	if !avail.Seen || !avail.Alive {
 		t.Errorf("group should be seen and available: %+v", avail)
 	}
+	if got := avail.Recent.States[len(avail.Recent.States)-1]; got != GroupHistoryAvailable {
+		t.Errorf("latest group history = %q, want available", got)
+	}
 	if avail.AliveSince.IsZero() || avail.UpDuration <= 0 {
 		t.Errorf("alive group should have AliveSince/UpDuration: %+v", avail)
 	}
@@ -159,34 +162,15 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	if avail.Alive || avail.LastFailureStartedAt.IsZero() {
 		t.Errorf("group should have an active failure episode: %+v", avail)
 	}
+	if got := avail.Recent.States[len(avail.Recent.States)-1]; got != GroupHistoryUnavailable {
+		t.Errorf("latest group history = %q, want unavailable", got)
+	}
 	labels := prometheus.Labels{"outbound": name}
 	if v := gaugeValue(common.GroupAvailable.With(labels)); v != 0 {
 		t.Errorf("dae_group_available should be 0, got %v", v)
 	}
 	if v := gaugeValue(common.GroupLastFailureStart.With(labels)); v == 0 {
 		t.Error("dae_group_last_failure_start_timestamp_seconds should be set")
-	}
-}
-
-func TestRecordGroupStateSnapshot(t *testing.T) {
-	name := t.Name()
-	RecordGroupState(name, GroupStateChecking)
-	RecordGroupState(name, GroupStateChecking)
-
-	group := groupStatistics(name)
-	group.mu.Lock()
-	transitions := len(group.states.transitions)
-	group.mu.Unlock()
-	if transitions != 1 {
-		t.Fatalf("transition count = %d, want 1", transitions)
-	}
-
-	snapshot := GetGroup(name)
-	if snapshot.State != GroupStateChecking {
-		t.Fatalf("state = %q, want checking", snapshot.State)
-	}
-	if len(snapshot.Recent.States) != GroupStateBucketCount || snapshot.Recent.States[len(snapshot.Recent.States)-1] != GroupStateChecking {
-		t.Fatalf("recent states = %q, want current checking bucket", snapshot.Recent.States)
 	}
 }
 

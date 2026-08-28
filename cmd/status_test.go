@@ -568,8 +568,9 @@ func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
 	}
 
 	tests := map[string]string{
-		"unknown field":  strings.Replace(valid, `"groups":[]`, `"extra":true,"groups":[]`, 1),
-		"missing health": strings.Replace(valid, `"health":"healthy",`, "", 1),
+		"unknown field":           strings.Replace(valid, `"groups":[]`, `"extra":true,"groups":[]`, 1),
+		"missing health":          strings.Replace(valid, `"health":"healthy",`, "", 1),
+		"checking history bucket": strings.Replace(checkedGroup, `"buckets":["available"`, `"buckets":["checking"`, 1),
 		"invalid selection": strings.Replace(valid, `"groups":[]`, `"groups":[{
 			"name":"group","policy":"fixed","health":"healthy",
 			"networks":[{"network":"tcp4","support_state":"confirmed","selected":{"index":0},"active_conns":0,"total_conns":0}],

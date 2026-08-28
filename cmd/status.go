@@ -93,15 +93,13 @@ func decodeStatus(r io.Reader) (*control.StatusSnapshot, error) {
 	for i, group := range snapshot.Groups {
 		if group.Connectivity != nil {
 			switch group.Connectivity.State {
-			case control.GroupConnectivityUnknown, control.GroupConnectivityAvailable,
-				control.GroupConnectivityChecking, control.GroupConnectivityUnavailable:
+			case control.GroupConnectivityAvailable, control.GroupConnectivityChecking, control.GroupConnectivityUnavailable:
 			default:
 				return nil, fmt.Errorf("groups[%d] has invalid connectivity state %q", i, group.Connectivity.State)
 			}
 			for j, state := range group.Connectivity.Recent.Buckets {
 				switch state {
-				case control.GroupConnectivityUnknown, control.GroupConnectivityAvailable,
-					control.GroupConnectivityChecking, control.GroupConnectivityUnavailable:
+				case control.GroupBucketUnknown, control.GroupBucketAvailable, control.GroupBucketUnavailable:
 				default:
 					return nil, fmt.Errorf("groups[%d].connectivity.recent.buckets[%d] has invalid state %q", i, j, state)
 				}
