@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
@@ -67,8 +68,14 @@ type DialerSet struct {
 }
 
 func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dialer, error) {
+	if options.MultiplexMaxConnections != nil && (*options.MultiplexMaxConnections < 1 || *options.MultiplexMaxConnections > smux.MaxConnectionsLimit) {
+		return nil, fmt.Errorf("multiplex_max_connections must be between 1 and %d", smux.MaxConnectionsLimit)
+	}
 	switch options.Multiplex {
 	case "", config.MultiplexModeOff:
+		if options.MultiplexMaxConnections != nil {
+			return nil, fmt.Errorf("multiplex_max_connections requires multiplex: smux or smux-udp-passthrough")
+		}
 		return builders, nil
 	case config.MultiplexModeSmux, config.MultiplexModeSmuxUDPPassthrough:
 		if len(builders) == 0 {
@@ -76,6 +83,7 @@ func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dial
 		}
 		configured := []D.Dialer{builders[0], &smux.SmuxConfig{
 			PassThroughUDP: options.Multiplex == config.MultiplexModeSmuxUDPPassthrough,
+			MaxConnections: multiplexMaxConnections(options),
 		}}
 		return append(configured, builders[1:]...), nil
 	default:
@@ -83,9 +91,20 @@ func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dial
 	}
 }
 
+func multiplexMaxConnections(options config.NodeOptions) int {
+	if options.MultiplexMaxConnections == nil {
+		return smux.DefaultMaxConnections
+	}
+	return int(*options.MultiplexMaxConnections)
+}
+
 func nodeIdentity(link string, options config.NodeOptions) string {
 	if options.Multiplex != "" {
-		return link + "\x1emultiplex=" + string(options.Multiplex)
+		identity := link + "\x1emultiplex=" + string(options.Multiplex)
+		if options.Multiplex != config.MultiplexModeOff {
+			identity += "\x1emultiplex_max_connections=" + strconv.Itoa(multiplexMaxConnections(options))
+		}
+		return identity
 	}
 	return link
 }

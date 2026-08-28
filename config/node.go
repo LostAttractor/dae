@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -19,11 +20,14 @@ const (
 	MultiplexModeSmux               MultiplexMode = "smux"
 	MultiplexModeSmuxUDPPassthrough MultiplexMode = "smux-udp-passthrough"
 	MultiplexModeOff                MultiplexMode = "off"
+	maxMultiplexConnections                       = 16
 )
 
 type NodeOptions struct {
 	// Empty means that this layer does not override a lower-precedence value.
 	Multiplex MultiplexMode `mapstructure:"multiplex"`
+	// Nil means that this layer does not override a lower-precedence value.
+	MultiplexMaxConnections *uint16 `mapstructure:"multiplex_max_connections"`
 	// Nil means that this layer does not override a lower-precedence value.
 	CheckAsync *bool `mapstructure:"check_async"`
 }
@@ -31,6 +35,12 @@ type NodeOptions struct {
 func (o *NodeOptions) Overlay(override NodeOptions) {
 	if override.Multiplex != "" {
 		o.Multiplex = override.Multiplex
+		if override.Multiplex == MultiplexModeOff {
+			o.MultiplexMaxConnections = nil
+		}
+	}
+	if override.MultiplexMaxConnections != nil {
+		o.MultiplexMaxConnections = override.MultiplexMaxConnections
 	}
 	if override.CheckAsync != nil {
 		o.CheckAsync = override.CheckAsync
@@ -38,7 +48,17 @@ func (o *NodeOptions) Overlay(override NodeOptions) {
 }
 
 func (o NodeOptions) IsZero() bool {
-	return o.Multiplex == "" && o.CheckAsync == nil
+	return o.Multiplex == "" && o.MultiplexMaxConnections == nil && o.CheckAsync == nil
+}
+
+func (o NodeOptions) validate(requireMultiplex bool) error {
+	if o.MultiplexMaxConnections == nil {
+		return nil
+	}
+	if o.Multiplex == MultiplexModeOff || requireMultiplex && o.Multiplex == "" {
+		return fmt.Errorf("multiplex_max_connections requires multiplex: smux or smux-udp-passthrough")
+	}
+	return nil
 }
 
 type NodeOptionRule struct {
@@ -88,6 +108,13 @@ func (o *NodeOptions) parse(params ...*config_parser.Param) error {
 			default:
 				return fmt.Errorf("unsupported multiplex mode %q; expected smux, smux-udp-passthrough or off", param.Val)
 			}
+		case "multiplex_max_connections":
+			value, err := strconv.ParseUint(strings.TrimSpace(param.Val), 10, 16)
+			if err != nil || value == 0 || value > maxMultiplexConnections {
+				return fmt.Errorf("unsupported multiplex_max_connections value %q; expected an integer between 1 and %d", param.Val, maxMultiplexConnections)
+			}
+			connections := uint16(value)
+			o.MultiplexMaxConnections = &connections
 		case "check_async":
 			var checkAsync bool
 			switch strings.TrimSpace(param.Val) {
@@ -102,7 +129,7 @@ func (o *NodeOptions) parse(params ...*config_parser.Param) error {
 			return fmt.Errorf("unknown node option %q", param.Key)
 		}
 	}
-	return nil
+	return o.validate(false)
 }
 
 func validateNodeOptionFilter(filters []*config_parser.Function) error {
@@ -141,6 +168,9 @@ func parseNodeList(nodes *[]Node, section *config_parser.Section) error {
 		}
 		var options NodeOptions
 		if err := options.parse(param.Annotation...); err != nil {
+			return fmt.Errorf("node %q: %w", param.Key, err)
+		}
+		if err := options.validate(true); err != nil {
 			return fmt.Errorf("node %q: %w", param.Key, err)
 		}
 		*nodes = append(*nodes, Node{Name: param.Key, Link: param.Val, Options: options})

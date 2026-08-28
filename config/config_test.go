@@ -31,7 +31,7 @@ subscription {
 }
 
 node {
-	hk: 'ss://example' [multiplex: smux-udp-passthrough, check_async: true]
+	hk: 'ss://example' [multiplex: smux-udp-passthrough, multiplex_max_connections: 10, check_async: true]
 	'socks5://localhost:1080'
 }
 routing { fallback: direct }
@@ -63,6 +63,7 @@ routing { fallback: direct }
 		t.Fatalf("first rule check_async = %v, want false", got)
 	}
 	if len(conf.Node) != 2 || conf.Node[0].Name != "hk" || conf.Node[0].Options.Multiplex != MultiplexModeSmuxUDPPassthrough ||
+		conf.Node[0].Options.MultiplexMaxConnections == nil || *conf.Node[0].Options.MultiplexMaxConnections != 10 ||
 		conf.Node[0].Options.CheckAsync == nil || !*conf.Node[0].Options.CheckAsync {
 		t.Fatalf("unexpected nodes: %+v", conf.Node)
 	}
@@ -126,6 +127,51 @@ routing { fallback: direct }
 			config: `
 global {}
 node { test: 'ss://example' [check_async: maybe] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "zero multiplex connections",
+			config: `
+global {}
+node { test: 'ss://example' [multiplex: smux, multiplex_max_connections: 0] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "too many multiplex connections",
+			config: `
+global {}
+node { test: 'ss://example' [multiplex: smux, multiplex_max_connections: 17] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "multiplex connections without smux",
+			config: `
+global {}
+node { test: 'ss://example' [multiplex_max_connections: 4] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "multiplex off with connection limit",
+			config: `
+global {}
+node { test: 'ss://example' [multiplex: off, multiplex_max_connections: 4] }
+routing { fallback: direct }
+`,
+		},
+		{
+			name: "subscription rule disables multiplex with connection limit",
+			config: `
+global {}
+subscription {
+	test {
+		link: 'https://example.com/subscription'
+		option { filter: name(test) [multiplex: off, multiplex_max_connections: 4] }
+	}
+}
 routing { fallback: direct }
 `,
 		},
@@ -199,6 +245,18 @@ routing { fallback: direct }
 				t.Fatal("invalid node options were accepted")
 			}
 		})
+	}
+}
+
+func TestMultiplexOffClearsInheritedConnectionLimit(t *testing.T) {
+	connections := uint16(10)
+	options := NodeOptions{
+		Multiplex:               MultiplexModeSmux,
+		MultiplexMaxConnections: &connections,
+	}
+	options.Overlay(NodeOptions{Multiplex: MultiplexModeOff})
+	if options.Multiplex != MultiplexModeOff || options.MultiplexMaxConnections != nil {
+		t.Fatalf("overlaid options = %+v, want multiplex off without a connection limit", options)
 	}
 }
 

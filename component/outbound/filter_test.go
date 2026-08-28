@@ -419,6 +419,8 @@ func descriptorFilter(name string, params ...*config_parser.Param) []*config_par
 
 func nodeOptionBool(value bool) *bool { return &value }
 
+func nodeOptionUint16(value uint16) *uint16 { return &value }
+
 func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
 	nodes := []NodeDescriptor{{
 		Link:            testShadowsocksLink + "#HK-legacy",
@@ -497,6 +499,9 @@ func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
 	}
 	if !smuxConfig.PassThroughUDP {
 		t.Fatal("smux UDP passthrough is disabled")
+	}
+	if smuxConfig.MaxConnections != smux.DefaultMaxConnections {
+		t.Fatalf("smux max connections = %d, want default %d", smuxConfig.MaxConnections, smux.DefaultMaxConnections)
 	}
 	if node.CheckAsync {
 		t.Fatal("inline check_async=false did not override the subscription rule")
@@ -581,6 +586,60 @@ func TestNodeIdentityIncludesEffectiveOptions(t *testing.T) {
 	}
 	if got, want := second.Protocol, "shadowsocks(smux)"; got != want {
 		t.Fatalf("multiplexed path protocol = %q, want %q", got, want)
+	}
+}
+
+func TestNodeIdentityIncludesMultiplexConnections(t *testing.T) {
+	set, err := NewDialerSet([]NodeDescriptor{
+		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{
+			Multiplex:               config.MultiplexModeSmux,
+			MultiplexMaxConnections: nodeOptionUint16(4),
+		}},
+		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{
+			Multiplex:               config.MultiplexModeSmux,
+			MultiplexMaxConnections: nodeOptionUint16(10),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.nodeInfos[0].Property.Link == set.nodeInfos[1].Property.Link {
+		t.Fatal("different smux connection limits share a node identity")
+	}
+	config, ok := set.nodeInfos[1].Dialers[1].(*smux.SmuxConfig)
+	if !ok {
+		t.Fatalf("second dialer layer = %T, want *smux.SmuxConfig", set.nodeInfos[1].Dialers[1])
+	}
+	if config.MaxConnections != 10 {
+		t.Fatalf("smux max connections = %d, want 10", config.MaxConnections)
+	}
+}
+
+func TestMultiplexConnectionsRequireSmux(t *testing.T) {
+	_, err := NewDialerSet([]NodeDescriptor{{
+		Link: testShadowsocksLink,
+		Options: config.NodeOptions{
+			Multiplex:               config.MultiplexModeOff,
+			MultiplexMaxConnections: nodeOptionUint16(4),
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "multiplex_max_connections requires") {
+		t.Fatalf("NewDialerSet error = %v, want multiplex_max_connections validation", err)
+	}
+}
+
+func TestMultiplexConnectionsRejectInvalidProgrammaticValues(t *testing.T) {
+	for _, connections := range []uint16{0, smux.MaxConnectionsLimit + 1} {
+		_, err := NewDialerSet([]NodeDescriptor{{
+			Link: testShadowsocksLink,
+			Options: config.NodeOptions{
+				Multiplex:               config.MultiplexModeSmux,
+				MultiplexMaxConnections: nodeOptionUint16(connections),
+			},
+		}})
+		if err == nil || !strings.Contains(err.Error(), "multiplex_max_connections must be between") {
+			t.Fatalf("connections %d: NewDialerSet error = %v, want range validation", connections, err)
+		}
 	}
 }
 

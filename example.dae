@@ -164,6 +164,7 @@ subscription {
         option {
             # Apply an option to every node from this subscription.
             #multiplex: smux
+            #multiplex_max_connections: 10
             # Use smux for TCP while keeping UDP on the underlying protocol.
             #multiplex: smux-udp-passthrough
 
@@ -190,7 +191,7 @@ node {
     # Full support list: https://github.com/daeuniverse/dae/blob/main/docs/en/proxy-protocols.md
     'socks5://localhost:1080'
     mylink: 'ss://LINK'
-    #multiplexed_ss: 'ss://LINK' [multiplex: smux]
+    #multiplexed_ss: 'ss://LINK' [multiplex: smux, multiplex_max_connections: 10]
     #tcp_multiplexed_ss: 'ss://LINK' [multiplex: smux-udp-passthrough]
     node1: 'vmess://LINK'
     node2: 'vless://LINK'

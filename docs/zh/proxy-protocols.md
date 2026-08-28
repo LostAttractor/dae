@@ -46,7 +46,7 @@
 
   ```shell
   node {
-    hk: 'ss://LINK' [multiplex: smux]
+    hk: 'ss://LINK' [multiplex: smux, multiplex_max_connections: 10]
   }
   ```
 
@@ -64,7 +64,7 @@
   }
   ```
 
-  `multiplex: smux` 为 TCP 和 UDP 启用兼容 sing-box 的 smux；`multiplex: smux-udp-passthrough` 仅复用 TCP，UDP 继续使用底层代理协议；`multiplex: off` 显式禁用复用。URL 中的非标准 `?multiplex=1` 不再生效。
+  `multiplex: smux` 为 TCP 和 UDP 启用兼容 sing-box 的 smux；`multiplex: smux-udp-passthrough` 仅复用 TCP，UDP 继续使用底层代理协议；`multiplex: off` 显式禁用复用。启用 smux 后，每个节点默认按需建立最多 4 个 session（即 4 条独立的外层 TCP）；可通过 `multiplex_max_connections` 设置为 1 到 16。多 session 可以让多个并发连接分散到不同的 TCP 拥塞窗口，但不会提高单个内层 TCP 连接的吞吐量。URL 中的非标准 `?multiplex=1` 不再生效。
 
 - [x] ShadowsocksR
 

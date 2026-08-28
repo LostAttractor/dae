@@ -143,9 +143,12 @@ unsupported:
 }
 
 func formatNodeOptions(options NodeOptions) []string {
-	values := make([]string, 0, 2)
+	values := make([]string, 0, 3)
 	if options.Multiplex != "" {
 		values = append(values, "multiplex:"+strconv.Quote(string(options.Multiplex)))
+	}
+	if options.MultiplexMaxConnections != nil {
+		values = append(values, "multiplex_max_connections:"+strconv.FormatUint(uint64(*options.MultiplexMaxConnections), 10))
 	}
 	if options.CheckAsync != nil {
 		values = append(values, "check_async:"+strconv.FormatBool(*options.CheckAsync))
