@@ -32,14 +32,14 @@ GO_VERSION ?= $(shell go env GOVERSION 2>/dev/null)
 # Do NOT remove the line below. This line is for CI.
 #export GOMODCACHE=$(PWD)/go-mod
 
-# Get version from .git.
+# Get version from Git, including linked worktrees where .git is a file.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
 count=$(shell git rev-list --count HEAD)
 commit=$(shell git rev-parse --short HEAD)
-ifeq ($(wildcard .git/.),)
-	VERSION ?= unstable-0.nogit
-else
+ifeq ($(shell git rev-parse --is-inside-work-tree 2>/dev/null),true)
 	VERSION ?= unstable-$(date).r$(count).$(commit)
+else
+	VERSION ?= unstable-0.nogit
 endif
 
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
