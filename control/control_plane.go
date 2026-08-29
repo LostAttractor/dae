@@ -22,9 +22,7 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
-	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
@@ -197,10 +195,6 @@ func NewControlPlane(
 		return nil, oops.Errorf("your kernel version %v does not satisfy the minimum requirement; expect >=%v",
 			kernelVersion.String(), consts.MinimumKernelVersion.String())
 	}
-	if err := features.HaveProgramHelper(ebpf.SchedCLS, asm.FnLoop); err != nil {
-		return nil, oops.Errorf("%w: bpf_loop is unavailable but required by routing", err)
-	}
-
 	/// Allow the current process to lock memory for eBPF resources.
 	if err = rlimit.RemoveMemlock(); err != nil {
 		return nil, oops.Errorf("rlimit.RemoveMemlock:%v", err)
