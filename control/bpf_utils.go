@@ -227,7 +227,10 @@ retryLoadBpf:
 				return fmt.Errorf("loading objects: bad format: %w", err)
 			}
 			mapName, _, _ := strings.Cut(after, ":")
-			_ = os.Remove(filepath.Join(pinPath, mapName))
+			pin := filepath.Join(pinPath, mapName)
+			if removeErr := os.Remove(pin); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return fmt.Errorf("remove incompatible pinned map %s: %w", mapName, removeErr)
+			}
 			log.Infof("Incompatible new map format with existing map %v detected; removed the old one.", mapName)
 			goto retryLoadBpf
 		}
