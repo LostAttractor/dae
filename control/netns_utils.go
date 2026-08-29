@@ -322,10 +322,6 @@ func (ns *DaeNetns) setupSysctl() (err error) {
 	}
 	defer netns.Set(ns.hostNs)
 
-	// *_early_demux is not mandatory, but it's recommended to enable it for better performance
-	sysctl.Keyf("net.ipv4.tcp_early_demux").Set("1", false)
-	sysctl.Keyf("net.ipv4.ip_early_demux").Set("1", false)
-
 	// Reverse-path filtering in daens can reject locally generated proxied IPv4
 	// traffic before the TProxy socket receives it. Linux uses the stricter of
 	// conf/all and conf/<interface>, so both values must be disabled here.
