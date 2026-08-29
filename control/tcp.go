@@ -16,6 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -257,18 +258,20 @@ func (r *tcpRelay) run() (err error) {
 	common.ActiveConnections.With(labels).Inc()
 	defer common.ActiveConnections.With(labels).Dec()
 	common.TotalConnections.With(labels).Inc()
+	traffic := openTrafficConnection(labels)
+	defer traffic.Close()
 
 	// Relay
 	handled := false
 	if r.directSplice != nil {
-		err = r.lConn.WriteBufferedTo(r.rConn)
+		err = r.lConn.WriteBufferedTo(&trafficWriter{Writer: r.rConn, add: traffic.RecordUpload})
 		if err == nil {
 			handled, err = r.directSplice.runtime.Relay(
-				r.directSplice.accepted, r.directSplice.remote)
+				r.directSplice.accepted, r.directSplice.remote, traffic)
 		}
 	}
 	if !handled && err == nil {
-		err = RelayTCP(r.lConn, r.rConn)
+		err = RelayTCP(r.lConn, r.rConn, traffic)
 	}
 	if err != nil {
 		netErr, ok := IsNetError(err)
@@ -309,13 +312,30 @@ func (c *ConnWithReadTimeout) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
-func relayDirection(dst, src net.Conn) (err error) {
+type trafficWriter struct {
+	io.Writer
+	add func(uint64)
+}
+
+func (w *trafficWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if n > 0 {
+		w.add(uint64(n))
+	}
+	return n, err
+}
+
+func relayDirection(dst, src net.Conn, add func(uint64)) (err error) {
 	// As `io.Copy` uses a 32KB buffer, we create a buffer of the same size.
 	// See https://cs.opensource.google/go/go/+/refs/tags/go1.21.5:src/io/io.go;l=419
 	bufPtr := pool.GetBuffer(1024 * 32) // 32KB
 	defer pool.PutBuffer(bufPtr)
 
-	_, err = io.CopyBuffer(dst, &ConnWithReadTimeout{Conn: src}, bufPtr)
+	_, err = io.CopyBuffer(
+		&trafficWriter{Writer: dst, add: add},
+		&ConnWithReadTimeout{Conn: src},
+		bufPtr,
+	)
 	return
 }
 
@@ -323,7 +343,7 @@ func relayDirection(dst, src net.Conn) (err error) {
 // Error2 is the error from rConn to lConn
 // TODO: 引入 ctx, 在 dialer 不可用时取消 relay
 // 进一步的, 给 lConn 发送 rst
-func RelayTCP(lConn, rConn net.Conn) error {
+func RelayTCP(lConn, rConn net.Conn, traffic *stats.TrafficConnection) error {
 	errCh := make(chan struct {
 		err       error
 		direction bool
@@ -331,7 +351,7 @@ func RelayTCP(lConn, rConn net.Conn) error {
 
 	// Start relay goroutine from rConn to lConn
 	go func(dst, src net.Conn) {
-		err := relayDirection(dst, src)
+		err := relayDirection(dst, src, traffic.RecordDownload)
 		errCh <- struct {
 			err       error
 			direction bool
@@ -346,7 +366,7 @@ func RelayTCP(lConn, rConn net.Conn) error {
 	}(lConn, rConn)
 	// Start relay goroutine from lConn to rConn
 	func(dst, src net.Conn) {
-		err := relayDirection(dst, src)
+		err := relayDirection(dst, src, traffic.RecordUpload)
 		errCh <- struct {
 			err       error
 			direction bool

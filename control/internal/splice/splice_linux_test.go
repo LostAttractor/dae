@@ -16,6 +16,10 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"golang.org/x/sys/unix"
 )
 
@@ -115,17 +119,30 @@ func expectEOF(t *testing.T, conn *net.TCPConn, direction string) {
 	}
 }
 
-func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn) <-chan error {
+func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn, traffic *stats.TrafficConnection) <-chan error {
 	t.Helper()
 	result := make(chan error, 1)
 	go func() {
-		handled, err := runtime.Relay(accepted, remote)
+		handled, err := runtime.Relay(accepted, remote, traffic)
 		if !handled && err == nil {
 			err = errors.New("direct splice relay was not handled")
 		}
 		result <- err
 	}()
 	return result
+}
+
+func trafficCounterValue(t *testing.T, identity stats.TrafficIdentity, direction string) uint64 {
+	t.Helper()
+	var metric dto.Metric
+	err := common.TrafficBytes.With(prometheus.Labels{
+		"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
+		"dialer": identity.Dialer, "network": identity.Network, "direction": direction,
+	}).Write(&metric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return uint64(metric.GetCounter().GetValue())
 }
 
 func waitRelay(t *testing.T, result <-chan error) {
@@ -190,7 +207,19 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 	defer server.Close()
 	cookieA := testSocketCookie(t, accepted)
 	cookieR := testSocketCookie(t, remote)
-	result := runSplice(t, runtime, accepted, remote)
+	identity := stats.TrafficIdentity{
+		NodeID: t.Name(), Outbound: t.Name(), Subtag: "sub", Dialer: "direct", Network: "tcp4",
+	}
+	for _, direction := range []string{stats.TrafficDirectionUpload, stats.TrafficDirectionDownload} {
+		labels := prometheus.Labels{
+			"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
+			"dialer": identity.Dialer, "network": identity.Network, "direction": direction,
+		}
+		common.TrafficBytes.Delete(labels)
+		t.Cleanup(func() { common.TrafficBytes.Delete(labels) })
+	}
+	traffic := stats.DefaultTrafficTracker.Open(identity)
+	result := runSplice(t, runtime, accepted, remote, traffic)
 	waitRedirectArmed(t, runtime, cookieA, cookieR)
 
 	upload := []byte("upload")
@@ -234,6 +263,13 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 	}
 	expectEOF(t, server, "upload")
 	waitRelay(t, result)
+	traffic.Close()
+	if got, want := trafficCounterValue(t, identity, stats.TrafficDirectionUpload), uint64(len(upload)+len(afterFIN)); got != want {
+		t.Fatalf("accounted upload = %d, want %d", got, want)
+	}
+	if got, want := trafficCounterValue(t, identity, stats.TrafficDirectionDownload), uint64(len(download)); got != want {
+		t.Fatalf("accounted download = %d, want %d", got, want)
+	}
 }
 
 func TestSpliceInitialHalfCloseDoesNotArmIntegration(t *testing.T) {
@@ -294,7 +330,7 @@ func TestSpliceClientFirstLargeHalfCloseIntegration(t *testing.T) {
 	defer accepted.Close()
 	defer remote.Close()
 	defer server.Close()
-	result := runSplice(t, runtime, accepted, remote)
+	result := runSplice(t, runtime, accepted, remote, nil)
 	cookieA := testSocketCookie(t, accepted)
 	cookieR := testSocketCookie(t, remote)
 	waitRedirectArmed(t, runtime, cookieA, cookieR)
@@ -334,7 +370,7 @@ func TestSpliceServerFirstLargeIntegration(t *testing.T) {
 	writeResult := make(chan error, 1)
 	go func() { writeResult <- writeFull(server, payload) }()
 	time.Sleep(10 * time.Millisecond)
-	result := runSplice(t, runtime, accepted, remote)
+	result := runSplice(t, runtime, accepted, remote, nil)
 	readExactly(t, client, payload)
 	if err := <-writeResult; err != nil {
 		t.Fatal(err)
@@ -391,7 +427,7 @@ func TestSpliceMPTCPFallbackPreservesAcceptedDataIntegration(t *testing.T) {
 	if err := writeFull(client, payload); err != nil {
 		t.Fatal(err)
 	}
-	handled, err := runtime.Relay(accepted, remote)
+	handled, err := runtime.Relay(accepted, remote, nil)
 	if err != nil || handled {
 		t.Fatalf("MPTCP relay = handled:%v err:%v, want userspace fallback", handled, err)
 	}
@@ -408,7 +444,7 @@ func TestSpliceRedirectTargetFaultFallsBackIntegration(t *testing.T) {
 	defer server.Close()
 	cookieA := testSocketCookie(t, accepted)
 	cookieR := testSocketCookie(t, remote)
-	result := runSplice(t, runtime, accepted, remote)
+	result := runSplice(t, runtime, accepted, remote, nil)
 	waitRedirectArmed(t, runtime, cookieA, cookieR)
 
 	endpoint, err := runtime.endpoint(cookieA)

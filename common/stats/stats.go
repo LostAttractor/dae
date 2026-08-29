@@ -3,12 +3,11 @@
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
-// Package stats keeps process-lifetime availability statistics of nodes and
-// outbound groups. Single-value state (current aliveness and event timestamps)
-// lives in the prometheus gauges declared in package common, which survive
-// control-plane reloads. Uptime and duration accounting plus rolling-window
-// history live here because the prometheus client registry retains current
-// samples, not a queryable time series.
+// Package stats keeps process-lifetime availability and active-connection
+// traffic statistics. Single-value availability state lives in the prometheus
+// gauges declared in package common, while rolling windows and connection-level
+// traffic sampling live here because the prometheus client registry retains
+// current samples, not a queryable time series.
 package stats
 
 import (

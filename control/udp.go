@@ -266,10 +266,11 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			}
 			return nil
 		}
+		soMark := c.soMarkFromDae
 		ue = newUdpEndpoint(&UdpEndpointOptions{
 			PacketConn: udpConn,
 			Handler: func(data []byte, from netip.AddrPort) (err error) {
-				return sendPktWithMark(data, from, src, c.soMarkFromDae)
+				return sendPktWithMark(data, from, src, soMark)
 			},
 			NatTimeout: DefaultNatTimeoutUDP,
 			Dialer:     dialOption.Dialer,
@@ -282,7 +283,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	// Try to write data
 	writeCtx, cancelWrite := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancelWrite()
-	_, err = writePacket(writeCtx, ue.conn, data, net.UDPAddrFromAddrPort(dst))
+	n, err := writePacket(writeCtx, ue.conn, data, net.UDPAddrFromAddrPort(dst))
 	if err != nil {
 		if isNew {
 			closeInBackground(ue)
@@ -310,6 +311,12 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			}
 		}
 		return nil
+	}
+	if isNew {
+		ue.traffic = openTrafficConnection(ue.labels)
+	}
+	if n > 0 {
+		ue.traffic.RecordUpload(uint64(n))
 	}
 	if !isNew {
 		return nil

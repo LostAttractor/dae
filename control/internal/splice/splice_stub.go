@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common/stats"
 )
 
 type Runtime struct{}
@@ -25,7 +26,7 @@ func New(_ *ebpf.CollectionOptions, _ time.Duration) (*Runtime, error) {
 	return nil, nil
 }
 
-func (r *Runtime) Relay(_, _ TCPConn) (bool, error) {
+func (r *Runtime) Relay(_, _ TCPConn, _ *stats.TrafficConnection) (bool, error) {
 	return false, nil
 }
 

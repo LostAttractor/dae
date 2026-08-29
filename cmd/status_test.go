@@ -110,6 +110,10 @@ func TestNodeStatusRow(t *testing.T) {
 		},
 		ActiveConns: 2,
 		TotalConns:  9000,
+		Traffic: control.TrafficStatus{
+			WindowSeconds: 1, UploadBytesPerSecond: 23449, DownloadBytesPerSecond: 15667,
+			UploadBytes: 3 * 1024 * 1024 * 1024, DownloadBytes: 5 * 1024 * 1024,
+		},
 	}, 0, []control.NetworkStatus{
 		{Network: "tcp4", Selected: &control.SelectedNodeStatus{Index: 0}},
 		{Network: "tcp6"},
@@ -119,6 +123,7 @@ func TestNodeStatusRow(t *testing.T) {
 	want := []string{
 		"node-a", "-", "vless", "connected", "healthy", "all", "tcp4",
 		"42/45/50", "99.8% (2/1000)", "99.5% (1/100)", "-", "-", "-", "-", "2/9000",
+		"22.9K/15.3K", "3.00G/5.00M",
 	}
 	if len(row) != len(want) {
 		t.Fatalf("nodeStatusRow() has %d cells, want %d", len(row), len(want))
@@ -206,7 +211,7 @@ func TestCompactNodeStatusRow(t *testing.T) {
 		{Network: "udp4", Selected: &control.SelectedNodeStatus{Index: 0}},
 		{Network: "udp6", Selected: &control.SelectedNodeStatus{Index: 0}},
 	})
-	want := []string{"node-a [p=2*,+30ms,async]", "shadowsocks(smux)", "healthy", "all", "all", "42/45/50", "99.8/99.5%", "2/9000"}
+	want := []string{"node-a [p=2*,+30ms,async]", "shadowsocks(smux)", "healthy", "all", "all", "42/45/50", "99.8/99.5%", "2/9000", "-", "-"}
 	if len(row) != len(want) {
 		t.Fatalf("compactNodeStatusRow() has %d cells, want %d", len(row), len(want))
 	}
@@ -534,6 +539,31 @@ func TestColorNodeHealth(t *testing.T) {
 	}
 }
 
+func TestFormatBytes(t *testing.T) {
+	tests := map[uint64]string{
+		0:                 "0",
+		999:               "999B",
+		1536:              "1.50K",
+		15 * 1024:         "15.0K",
+		150 * 1024:        "150K",
+		2 * 1024 * 1024:   "2.00M",
+		12 * 1024 * 1024:  "12.0M",
+		200 * 1024 * 1024: "200M",
+	}
+	for value, want := range tests {
+		if got := formatBytes(value); got != want {
+			t.Errorf("formatBytes(%d) = %q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestFormatTrafficSummaryIncludesIdleRate(t *testing.T) {
+	traffic := control.TrafficStatus{UploadBytes: 3 * 1024, DownloadBytes: 5 * 1024}
+	if got, want := formatTrafficSummary(traffic), "rate - U/D, total 3.00K/5.00K U/D"; got != want {
+		t.Fatalf("traffic summary = %q, want %q", got, want)
+	}
+}
+
 func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
 	valid := `{
 		"version":"test",
@@ -541,6 +571,7 @@ func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
 		"started_at":"2026-08-25T00:00:00Z",
 		"active_conns":0,
 		"total_conns":0,
+		"traffic":{"window_seconds":1,"upload_bytes_per_second":0,"download_bytes_per_second":0,"upload_bytes":0,"download_bytes":0},
 		"networks":[
 			{"network":"tcp4","active_conns":0,"total_conns":0},
 			{"network":"tcp6","active_conns":0,"total_conns":0},
@@ -557,7 +588,13 @@ func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
 		"name":"proxy","target_kind":"group","policy":"fixed","health":"healthy",
 		"connectivity":{"state":"available","up_ratio":1,"up_ratio_24h":1,
 			"recent":{"window_seconds":3600,"buckets":["available","available","available","available","available","available","available","available","available","available"]}},
-		"networks":[],"nodes":[],"active_conns":0
+		"networks":[
+			{"network":"tcp4","support_state":"confirmed","active_conns":0,"total_conns":0},
+			{"network":"tcp6","support_state":"confirmed","active_conns":0,"total_conns":0},
+			{"network":"udp4","support_state":"confirmed","active_conns":0,"total_conns":0},
+			{"network":"udp6","support_state":"confirmed","active_conns":0,"total_conns":0}
+		],"nodes":[],"active_conns":0,
+		"traffic":{"window_seconds":1,"upload_bytes_per_second":0,"download_bytes_per_second":0,"upload_bytes":0,"download_bytes":0}
 	}]`, 1)
 	if _, err := decodeStatus(strings.NewReader(checkedGroup)); err != nil {
 		t.Fatalf("decode checked group: %v", err)
@@ -570,11 +607,23 @@ func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
 	tests := map[string]string{
 		"unknown field":           strings.Replace(valid, `"groups":[]`, `"extra":true,"groups":[]`, 1),
 		"missing health":          strings.Replace(valid, `"health":"healthy",`, "", 1),
+		"missing traffic":         strings.Replace(valid, `"traffic":{"window_seconds":1,"upload_bytes_per_second":0,"download_bytes_per_second":0,"upload_bytes":0,"download_bytes":0},`, "", 1),
+		"missing rate upload":     strings.Replace(valid, `"upload_bytes_per_second":0,`, "", 1),
+		"missing rate download":   strings.Replace(valid, `,"download_bytes_per_second":0`, "", 1),
+		"missing total upload":    strings.Replace(valid, `,"upload_bytes":0`, "", 1),
+		"missing total download":  strings.Replace(valid, `,"download_bytes":0`, "", 1),
 		"checking history bucket": strings.Replace(checkedGroup, `"buckets":["available"`, `"buckets":["checking"`, 1),
+		"invalid network support": strings.Replace(checkedGroup, `"support_state":"confirmed"`, `"support_state":"invalid"`, 1),
 		"invalid selection": strings.Replace(valid, `"groups":[]`, `"groups":[{
-			"name":"group","policy":"fixed","health":"healthy",
-			"networks":[{"network":"tcp4","support_state":"confirmed","selected":{"index":0},"active_conns":0,"total_conns":0}],
-			"nodes":[]
+			"name":"group","target_kind":"group","policy":"fixed","health":"healthy",
+			"networks":[
+				{"network":"tcp4","support_state":"confirmed","selected":{"index":0},"active_conns":0,"total_conns":0},
+				{"network":"tcp6","support_state":"confirmed","active_conns":0,"total_conns":0},
+				{"network":"udp4","support_state":"confirmed","active_conns":0,"total_conns":0},
+				{"network":"udp6","support_state":"confirmed","active_conns":0,"total_conns":0}
+			],
+			"nodes":[],"active_conns":0,
+			"traffic":{"window_seconds":1,"upload_bytes_per_second":0,"download_bytes_per_second":0,"upload_bytes":0,"download_bytes":0}
 		}]`, 1),
 		"trailing value": valid + `{}`,
 	}
@@ -582,6 +631,39 @@ func TestDecodeStatusRejectsNonCurrentSchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := decodeStatus(strings.NewReader(payload)); err == nil {
 				t.Fatal("decodeStatus unexpectedly accepted invalid status")
+			}
+		})
+	}
+}
+
+func TestValidateNodeStatusRejectsInvalidEnums(t *testing.T) {
+	validNetworks := []control.NodeNetworkStatus{
+		{Network: "tcp4", SupportState: control.NetworkSupportConfirmed},
+		{Network: "tcp6", SupportState: control.NetworkSupportConfirmed},
+		{Network: "udp4", SupportState: control.NetworkSupportConfirmed},
+		{Network: "udp6", SupportState: control.NetworkSupportConfirmed},
+	}
+	tests := map[string]control.NodeStatus{
+		"health": {
+			Health:   &control.NodeHealthStatus{State: "invalid"},
+			Networks: validNetworks,
+		},
+		"session": {
+			Session:  &control.SessionStatus{State: "invalid"},
+			Networks: validNetworks,
+		},
+		"network support": {
+			Networks: append([]control.NodeNetworkStatus(nil), validNetworks...),
+		},
+	}
+	invalidNetwork := tests["network support"]
+	invalidNetwork.Networks[0].SupportState = "invalid"
+	tests["network support"] = invalidNetwork
+
+	for name, status := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := validateNodeStatus("node", &status); err == nil {
+				t.Fatal("validateNodeStatus unexpectedly accepted invalid status")
 			}
 		})
 	}

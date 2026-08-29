@@ -16,6 +16,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/daeuniverse/dae/common/stats"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 )
@@ -160,10 +161,17 @@ func (r *Runtime) registerSocket(conn TCPConn) (uint64, error) {
 	return cookie, controlErr
 }
 
-func writeFull(conn net.Conn, p []byte) error {
+func writeFull(writer io.Writer, p []byte) error {
+	return writeFullAndRecord(writer, p, nil)
+}
+
+func writeFullAndRecord(writer io.Writer, p []byte, recordBytes func(uint64)) error {
 	for len(p) > 0 {
-		n, err := conn.Write(p)
+		n, err := writer.Write(p)
 		if n > 0 {
+			if recordBytes != nil {
+				recordBytes(uint64(n))
+			}
 			p = p[n:]
 		}
 		if err != nil {
@@ -176,7 +184,7 @@ func writeFull(conn net.Conn, p []byte) error {
 	return nil
 }
 
-func drainTCP(src, dst net.Conn) (eof, empty bool, err error) {
+func drainTCP(src, dst net.Conn, recordBytes func(uint64)) (eof, empty bool, err error) {
 	buf := make([]byte, 32*1024)
 	defer src.SetReadDeadline(time.Time{})
 	defer dst.SetWriteDeadline(time.Time{})
@@ -190,7 +198,7 @@ func drainTCP(src, dst net.Conn) (eof, empty bool, err error) {
 			if err := dst.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				return false, false, err
 			}
-			if err := writeFull(dst, buf[:read]); err != nil {
+			if err := writeFullAndRecord(dst, buf[:read], recordBytes); err != nil {
 				return false, false, err
 			}
 			drained += read
@@ -228,6 +236,7 @@ type spliceDirectEdge struct {
 	userspacePending bool
 	paused           bool
 	closed           bool
+	recordBytes      func(uint64)
 }
 
 type spliceEdgeSnapshot struct {
@@ -280,7 +289,7 @@ func (r *Runtime) pumpAndArm(edges [2]*spliceDirectEdge) error {
 			return err
 		}
 		expected[i] = stats.SkbPass
-		eof, drained, err := drainTCP(edge.src, edge.dst)
+		eof, drained, err := drainTCP(edge.src, edge.dst, edge.recordBytes)
 		if err != nil {
 			return err
 		}
@@ -312,7 +321,7 @@ func (r *Runtime) pumpAndArm(edges [2]*spliceDirectEdge) error {
 }
 
 func (r *Runtime) handlePassEdge(edge *spliceDirectEdge, source bpf_spliceSpliceStats) error {
-	eof, empty, err := drainTCP(edge.src, edge.dst)
+	eof, empty, err := drainTCP(edge.src, edge.dst, edge.recordBytes)
 	if err != nil {
 		return fmt.Errorf("drain splice edge %d -> %d: %w", edge.srcCookie, edge.dstCookie, err)
 	}
@@ -431,7 +440,7 @@ func (r *Runtime) relayUserspace(edges [2]*spliceDirectEdge) error {
 						results <- writeErr
 						return
 					}
-					if writeErr := writeFull(edge.dst, buf[:n]); writeErr != nil {
+					if writeErr := writeFullAndRecord(edge.dst, buf[:n], edge.recordBytes); writeErr != nil {
 						_ = edge.dst.Close()
 						results <- writeErr
 						return
@@ -611,7 +620,7 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 	}
 }
 
-func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn) (handled bool, err error) {
+func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.TrafficConnection) (handled bool, err error) {
 	if !r.beginSession() {
 		return false, nil
 	}
@@ -629,15 +638,47 @@ func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn) (handled bool, err err
 		r.cleanupMetadata(cookieA)
 		return false, nil
 	}
-	defer r.cleanupMetadata(cookieA, cookieR)
+	if traffic != nil {
+		traffic.AttachExternalCounters(func() (stats.TrafficCounters, error) {
+			upload, err := r.stats(cookieA)
+			if err != nil {
+				return stats.TrafficCounters{}, err
+			}
+			download, err := r.stats(cookieR)
+			if err != nil {
+				return stats.TrafficCounters{}, err
+			}
+			return stats.TrafficCounters{
+				UploadBytes:   upload.SkbRedirected,
+				DownloadBytes: download.SkbRedirected,
+			}, nil
+		})
+	}
+	defer func() {
+		// Read the final BPF counters before deleting their map entries.
+		if traffic != nil {
+			traffic.DetachExternalCounters()
+		}
+		r.cleanupMetadata(cookieA, cookieR)
+	}()
 	edges := [2]*spliceDirectEdge{
 		{
 			src: acceptedConn, dst: remoteConn,
 			srcCookie: cookieA, dstCookie: cookieR,
+			recordBytes: func(bytes uint64) {
+				if traffic != nil {
+					traffic.RecordUpload(bytes)
+				}
+			},
 		},
 		{
 			src: remoteConn, dst: acceptedConn,
 			srcCookie: cookieR, dstCookie: cookieA,
+			recordBytes: func(bytes uint64) {
+				if traffic != nil {
+					traffic.RecordDownload(bytes)
+				}
+			},
 		},
 	}
 	if err := r.pumpAndArm(edges); err != nil {

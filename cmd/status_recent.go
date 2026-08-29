@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +18,6 @@ import (
 
 const (
 	recentWindowSeconds = int64(time.Hour / time.Second)
-	recentBucketCount   = 10
 )
 
 func colorRecentHealth(health control.HealthStatus) string {
@@ -31,22 +31,6 @@ func colorRecentHealth(health control.HealthStatus) string {
 		return colorize(label, text.FgRed)
 	default:
 		return label
-	}
-}
-
-func recentCurrentState(connectivity *control.GroupConnectivityStatus) string {
-	if connectivity == nil {
-		return colorize("N/A", text.FgHiBlack)
-	}
-	switch connectivity.State {
-	case control.GroupConnectivityAvailable:
-		return colorize("UP", text.FgGreen)
-	case control.GroupConnectivityUnavailable:
-		return colorize("DOWN", text.FgRed)
-	case control.GroupConnectivityChecking:
-		return colorize("CHECKING", text.FgYellow)
-	default:
-		return string(connectivity.State)
 	}
 }
 
@@ -87,7 +71,7 @@ func recentWindowLabel(seconds int64) string {
 }
 
 func recentTimeline(connectivity *control.GroupConnectivityStatus) string {
-	states := make([]control.GroupBucketState, recentBucketCount)
+	states := make([]control.GroupBucketState, control.GroupRecentBucketCount)
 	windowSeconds := recentWindowSeconds
 	if connectivity != nil {
 		copy(states, connectivity.Recent.Buckets)
@@ -112,16 +96,33 @@ func recentUpRatio(connectivity *control.GroupConnectivityStatus) string {
 	return colorRatio(ratio, formatted)
 }
 
-func recentGroupRow(group control.GroupStatus) table.Row {
+func recentActiveWidth(groups []control.GroupStatus) int {
+	width := 1
+	for _, group := range groups {
+		if digits := len(strconv.FormatInt(group.ActiveConns, 10)); digits > width {
+			width = digits
+		}
+	}
+	return width
+}
+
+func recentGroupRow(group control.GroupStatus, activeWidth int) table.Row {
+	activity := fmt.Sprintf("%*d active", activeWidth, group.ActiveConns)
+	rate := formatTrafficRateCell(group.Traffic)
+	total := formatTrafficTotalCell(group.Traffic)
 	if group.Connectivity == nil {
-		return table.Row{group.Name, fmt.Sprintf("%d active", group.ActiveConns)}
+		return table.Row{group.Name, "", "", "", activity, rate, "U/D rate", total, "U/D total"}
 	}
 	return table.Row{
 		group.Name,
-		recentCurrentState(group.Connectivity),
+		formatGroupConnectivityState(group.Connectivity),
 		recentTimeline(group.Connectivity),
 		recentUpRatio(group.Connectivity),
-		fmt.Sprintf("%d active", group.ActiveConns),
+		activity,
+		rate,
+		"U/D rate",
+		total,
+		"U/D total",
 	}
 }
 
@@ -132,33 +133,32 @@ func truncateRecentGroupName(value string, maxWidth int) string {
 	return text.Trim(value, maxWidth-1) + "…"
 }
 
+func renderRecentGroups(groups []control.GroupStatus) string {
+	writer := newStatusTable()
+	writer.SetColumnConfigs([]table.ColumnConfig{
+		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateRecentGroupName},
+		{Number: 4, Align: text.AlignRight},
+	})
+	activeWidth := recentActiveWidth(groups)
+	for _, group := range groups {
+		writer.AppendRow(recentGroupRow(group, activeWidth))
+	}
+	return writer.Render()
+}
+
 func printRecentStatus(snapshot *control.StatusSnapshot) {
+	traffic := formatTrafficSummary(snapshot.Traffic)
+	if traffic != "" {
+		traffic = " · " + traffic
+	}
 	fmt.Printf(
-		"dae %s · %s · up %s · %d active\n\n",
+		"dae %s · %s · up %s · %d active%s\n\n",
 		snapshot.Version,
 		colorRecentHealth(snapshot.Health),
 		formatUptime(time.Since(snapshot.StartedAt)),
 		snapshot.ActiveConns,
+		traffic,
 	)
 
-	writer := table.NewWriter()
-	style := table.StyleDefault
-	style.Options.DrawBorder = false
-	style.Options.SeparateColumns = false
-	style.Box.PaddingLeft = ""
-	style.Box.PaddingRight = "  "
-	writer.SetStyle(style)
-	writer.SetColumnConfigs([]table.ColumnConfig{
-		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateRecentGroupName},
-		{Number: 4, Align: text.AlignRight},
-		{Number: 5, Align: text.AlignRight},
-	})
-	rows := make([]table.Row, 0, len(snapshot.Groups))
-	for _, group := range snapshot.Groups {
-		rows = append(rows, recentGroupRow(group))
-	}
-	writer.AppendRows(rows)
-	for _, line := range strings.Split(writer.Render(), "\n") {
-		fmt.Println(strings.TrimRight(line, " "))
-	}
+	printRenderedTable(renderRecentGroups(snapshot.Groups))
 }

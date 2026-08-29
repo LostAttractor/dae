@@ -14,6 +14,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 type testPacketConn struct {
@@ -170,6 +175,61 @@ func TestUdpEndpointPoolCloseAllDoesNotWaitForBlockingClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("closeAll did not start connection cleanup")
 	}
+}
+
+func TestUdpEndpointPoolRemoveFlushesTrafficBeforeBlockingClose(t *testing.T) {
+	identity := stats.TrafficIdentity{
+		NodeID: t.Name(), Outbound: t.Name(), Subtag: "sub", Dialer: "node", Network: "udp4",
+	}
+	labels := prometheus.Labels{
+		"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
+		"dialer": identity.Dialer, "network": identity.Network,
+	}
+	for _, direction := range []string{stats.TrafficDirectionUpload, stats.TrafficDirectionDownload} {
+		metricLabels := prometheus.Labels{}
+		for key, value := range labels {
+			metricLabels[key] = value
+		}
+		metricLabels["direction"] = direction
+		common.TrafficBytes.Delete(metricLabels)
+		t.Cleanup(func() { common.TrafficBytes.Delete(metricLabels) })
+	}
+
+	var endpointPool UdpEndpointPool
+	conn := newDeadlineInterruptPacketConn()
+	t.Cleanup(func() {
+		select {
+		case <-conn.releaseClose:
+		default:
+			close(conn.releaseClose)
+		}
+	})
+	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: time.Hour})
+	endpoint.traffic = stats.DefaultTrafficTracker.Open(identity)
+	endpoint.traffic.RecordUpload(77)
+	key := testUdpKey(12005)
+	endpointPool.add(key, endpoint)
+	removed := make(chan struct{})
+	go func() {
+		endpointPool.remove(key, endpoint)
+		close(removed)
+	}()
+
+	select {
+	case <-conn.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint removal did not start connection close")
+	}
+	var metric dto.Metric
+	labels["direction"] = stats.TrafficDirectionUpload
+	if err := common.TrafficBytes.With(labels).Write(&metric); err != nil {
+		t.Fatal(err)
+	}
+	if got := metric.GetCounter().GetValue(); got != 77 {
+		t.Fatalf("traffic bytes before connection close = %v, want 77", got)
+	}
+	close(conn.releaseClose)
+	<-removed
 }
 
 func TestUdpEndpointPoolRemovalChecksIdentity(t *testing.T) {

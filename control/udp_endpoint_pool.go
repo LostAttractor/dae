@@ -14,6 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -41,8 +42,9 @@ type UdpEndpoint struct {
 	NatTimeout    time.Duration
 	closed        atomic.Bool
 
-	dialer *dialer.Dialer
-	labels prometheus.Labels
+	dialer  *dialer.Dialer
+	labels  prometheus.Labels
+	traffic *stats.TrafficConnection
 }
 
 func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort) error {
@@ -71,6 +73,9 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPor
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
 			break
 		}
+		if n > 0 {
+			ue.traffic.RecordDownload(uint64(n))
+		}
 	}
 	return nil
 }
@@ -86,7 +91,9 @@ func (ue *UdpEndpoint) retire() {
 }
 
 func (ue *UdpEndpoint) retireLocked() {
-	ue.closed.Store(true)
+	if ue.closed.Swap(true) {
+		return
+	}
 	ue.timerDeadline = time.Time{}
 	if ue.deadlineTimer != nil {
 		ue.deadlineTimer.Stop()
@@ -98,7 +105,14 @@ func (ue *UdpEndpoint) retireLocked() {
 // must be removed from its pool before Close is called.
 func (ue *UdpEndpoint) Close() error {
 	ue.retire()
+	ue.closeTrafficAccounting()
 	return ue.conn.Close()
+}
+
+func (ue *UdpEndpoint) closeTrafficAccounting() {
+	if ue.traffic != nil {
+		ue.traffic.Close()
+	}
 }
 
 // UdpEndpointPool is a full-cone udp conn pool
@@ -125,6 +139,7 @@ func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {
 		endpoint.retire()
 	}
 	p.UdpEndpointKeyLocker.Unlock(key, l)
+	endpoint.closeTrafficAccounting()
 	if removed {
 		_ = endpoint.conn.Close()
 	}
@@ -143,6 +158,7 @@ func (p *UdpEndpointPool) removeLocked(key netip.AddrPort, endpoint *UdpEndpoint
 func (p *UdpEndpointPool) removeInBackgroundLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
 	if p.removeLocked(key, endpoint) {
 		endpoint.retire()
+		endpoint.closeTrafficAccounting()
 		closeInBackground(endpoint.conn)
 	}
 }
@@ -154,6 +170,7 @@ func (p *UdpEndpointPool) closeAll() {
 		endpoint := value.(*UdpEndpoint)
 		if p.pool.CompareAndDelete(key, endpoint) {
 			endpoint.retire()
+			endpoint.closeTrafficAccounting()
 			closeInBackground(endpoint.conn)
 		}
 		return true
@@ -203,6 +220,7 @@ func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
 	if replaced && previous != endpoint {
 		oldEndpoint := previous.(*UdpEndpoint)
 		oldEndpoint.retire()
+		oldEndpoint.closeTrafficAccounting()
 		closeInBackground(oldEndpoint.conn)
 	}
 }
@@ -276,6 +294,7 @@ func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, no
 	endpoint.mu.Unlock()
 	p.UdpEndpointKeyLocker.Unlock(key, l)
 	if removed {
+		endpoint.closeTrafficAccounting()
 		_ = endpoint.conn.Close()
 	}
 }

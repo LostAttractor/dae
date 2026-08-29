@@ -20,6 +20,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	D "github.com/daeuniverse/outbound/dialer"
@@ -126,40 +127,109 @@ func TestCollectConnCountsKeepsSameNamedNodesSeparate(t *testing.T) {
 	labelsB := prometheus.Labels{
 		"id": "node-b-id", "outbound": group, "subtag": "sub", "dialer": "same-name", "network": network,
 	}
+	invalidNetworkLabels := prometheus.Labels{
+		"id": "ignored-id", "outbound": group, "subtag": "sub", "dialer": "ignored", "network": "quic4",
+	}
 	defer common.ActiveConnections.Delete(labelsA)
 	defer common.ActiveConnections.Delete(labelsB)
 	defer common.TotalConnections.Delete(labelsA)
 	defer common.TotalConnections.Delete(labelsB)
+	defer common.ActiveConnections.Delete(invalidNetworkLabels)
 
 	common.ActiveConnections.With(labelsA).Set(2)
 	common.ActiveConnections.With(labelsB).Set(5)
 	common.TotalConnections.With(labelsA).Add(3)
 	common.TotalConnections.With(labelsB).Add(7)
+	common.ActiveConnections.With(invalidNetworkLabels).Set(11)
 
-	counts := (&ControlPlane{PrometheusRegistry: registry}).collectConnCounts()
-	if got := counts.byGroupNode[groupNodeKey{group: group, id: "node-a-id", subtag: "sub", name: "same-name"}]; got != (connValues{active: 2, total: 3}) {
+	counts := (&ControlPlane{PrometheusRegistry: registry}).collectConnectionCounts()
+	if got := counts.byNodePath[makeNodePathKey(group, "node-a-id", "sub", "same-name")]; got != (connectionTotals{active: 2, total: 3}) {
 		t.Fatalf("node A counts = %+v", got)
 	}
-	if got := counts.byGroupNode[groupNodeKey{group: group, id: "node-b-id", subtag: "sub", name: "same-name"}]; got != (connValues{active: 5, total: 7}) {
+	if got := counts.byNodePath[makeNodePathKey(group, "node-b-id", "sub", "same-name")]; got != (connectionTotals{active: 5, total: 7}) {
 		t.Fatalf("node B counts = %+v", got)
 	}
-	if got := counts.byGroupNetwork[groupNetworkKey{group: group, network: 0}]; got != (connValues{active: 7, total: 10}) {
+	if got := counts.byGroupNetwork[groupNetworkKey{groupName: group, networkIndex: 0}]; got != (connectionTotals{active: 7, total: 10}) {
 		t.Fatalf("group/network counts = %+v", got)
+	}
+	if got := counts.total; got != (connectionTotals{active: 7, total: 10}) {
+		t.Fatalf("total counts include invalid network: %+v", got)
 	}
 }
 
 func TestConnCountsKeepsAliasesSeparate(t *testing.T) {
-	counts := newConnCounts()
-	counts.add("group", "shared-id", "sub", "alias-a", 0, true, 2)
-	counts.add("group", "shared-id", "sub", "alias-b", 0, true, 5)
-	if got := counts.byGroupNode[groupNodeKey{group: "group", id: "shared-id", subtag: "sub", name: "alias-a"}]; got.active != 2 {
+	counts := newConnectionCountIndex()
+	counts.add(statusMetricLabels{groupName: "group", nodeID: "shared-id", subtag: "sub", dialerName: "alias-a"}, true, 2)
+	counts.add(statusMetricLabels{groupName: "group", nodeID: "shared-id", subtag: "sub", dialerName: "alias-b"}, true, 5)
+	if got := counts.byNodePath[makeNodePathKey("group", "shared-id", "sub", "alias-a")]; got.active != 2 {
 		t.Fatalf("alias A active connections = %d, want 2", got.active)
 	}
-	if got := counts.byGroupNode[groupNodeKey{group: "group", id: "shared-id", subtag: "sub", name: "alias-b"}]; got.active != 5 {
+	if got := counts.byNodePath[makeNodePathKey("group", "shared-id", "sub", "alias-b")]; got.active != 5 {
 		t.Fatalf("alias B active connections = %d, want 5", got.active)
 	}
-	if got := counts.byGroupNodeID[groupNodeIDKey{group: "group", id: "shared-id"}]; got.active != 7 {
+	if got := counts.byNodeID[makeNodeIDKey("group", "shared-id")]; got.active != 7 {
 		t.Fatalf("stable ID active connections = %d, want 7", got.active)
+	}
+}
+
+func TestTrafficRatesAggregateConnectionsByNodeGroupAndTotal(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	common.InitPrometheus(registry)
+	rates := aggregateTrafficRates([]stats.TrafficSnapshot{
+		{
+			Identity: stats.TrafficIdentity{NodeID: "shared-id", Outbound: "group", Subtag: "sub", Dialer: "alias-a", Network: "tcp4"},
+			Rate:     stats.TrafficRate{UploadBytesPerSecond: 100, DownloadBytesPerSecond: 200},
+		},
+		{
+			Identity: stats.TrafficIdentity{NodeID: "shared-id", Outbound: "group", Subtag: "sub", Dialer: "alias-b", Network: "udp4"},
+			Rate:     stats.TrafficRate{UploadBytesPerSecond: 300, DownloadBytesPerSecond: 400},
+		},
+		{
+			Identity: stats.TrafficIdentity{NodeID: "other-id", Outbound: "other", Dialer: "node", Network: "tcp6"},
+			Rate:     stats.TrafficRate{UploadBytesPerSecond: 500, DownloadBytesPerSecond: 600},
+		},
+	})
+	if got := rates.global.rate; got != (stats.TrafficRate{UploadBytesPerSecond: 900, DownloadBytesPerSecond: 1200}) {
+		t.Fatalf("total traffic rate = %+v", got)
+	}
+	if got := rates.byGroup["group"].rate; got != (stats.TrafficRate{UploadBytesPerSecond: 400, DownloadBytesPerSecond: 600}) {
+		t.Fatalf("group traffic rate = %+v", got)
+	}
+	if got := rates.byNodePath[makeNodePathKey("group", "shared-id", "sub", "alias-a")].rate; got != (stats.TrafficRate{UploadBytesPerSecond: 100, DownloadBytesPerSecond: 200}) {
+		t.Fatalf("alias traffic rate = %+v", got)
+	}
+	if got := rates.byNodeID[makeNodeIDKey("group", "shared-id")].rate; got != (stats.TrafficRate{UploadBytesPerSecond: 400, DownloadBytesPerSecond: 600}) {
+		t.Fatalf("stable node ID traffic rate = %+v", got)
+	}
+
+	record := func(id, group, subtag, dialerName, network, direction string, bytes uint64) {
+		labels := prometheus.Labels{
+			"id": id, "outbound": group, "subtag": subtag, "dialer": dialerName,
+			"network": network, "direction": direction,
+		}
+		common.TrafficBytes.Delete(labels)
+		t.Cleanup(func() { common.TrafficBytes.Delete(labels) })
+		common.TrafficBytes.With(labels).Add(float64(bytes))
+	}
+	record("shared-id", "group", "sub", "alias-a", "tcp4", stats.TrafficDirectionUpload, 1000)
+	record("shared-id", "group", "sub", "alias-a", "tcp4", stats.TrafficDirectionDownload, 2000)
+	record("shared-id", "group", "sub", "alias-b", "udp4", stats.TrafficDirectionUpload, 3000)
+	record("shared-id", "group", "sub", "alias-b", "udp4", stats.TrafficDirectionDownload, 4000)
+	record("other-id", "other", "", "node", "tcp6", stats.TrafficDirectionUpload, 5000)
+	record("other-id", "other", "", "node", "tcp6", stats.TrafficDirectionDownload, 6000)
+	(&ControlPlane{PrometheusRegistry: registry}).collectTrafficCounters(&rates)
+
+	if got := rates.global.counters; got != (stats.TrafficCounters{UploadBytes: 9000, DownloadBytes: 12000}) {
+		t.Fatalf("total traffic counters = %+v", got)
+	}
+	if got := rates.byGroup["group"].counters; got != (stats.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000}) {
+		t.Fatalf("group traffic counters = %+v", got)
+	}
+	if got := rates.byNodePath[makeNodePathKey("group", "shared-id", "sub", "alias-a")].counters; got != (stats.TrafficCounters{UploadBytes: 1000, DownloadBytes: 2000}) {
+		t.Fatalf("alias traffic counters = %+v", got)
+	}
+	if got := rates.byNodeID[makeNodeIDKey("group", "shared-id")].counters; got != (stats.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000}) {
+		t.Fatalf("stable node ID traffic counters = %+v", got)
 	}
 }
 
@@ -320,6 +390,9 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	}
 	if connectivity.UpRatio != nil || connectivity.UpRatio24h != nil {
 		t.Fatalf("unobserved group has availability ratios: %+v", connectivity)
+	}
+	if snapshot.Traffic.WindowSeconds != 1 || snapshot.Groups[1].Traffic.WindowSeconds != 1 || snapshot.Groups[1].Nodes[0].Traffic.WindowSeconds != 1 {
+		t.Fatalf("traffic rate windows = total:%+v group:%+v node:%+v", snapshot.Traffic, snapshot.Groups[1].Traffic, snapshot.Groups[1].Nodes[0].Traffic)
 	}
 	if got := snapshot.Groups[1].Nodes[0].Networks[0].SupportState; got != "unknown" {
 		t.Fatalf("tcp4 support state = %q, want unknown", got)

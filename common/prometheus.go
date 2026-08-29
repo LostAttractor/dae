@@ -24,7 +24,7 @@ var (
 	ActiveConnections *prometheus.GaugeVec
 	DialLatency       *prometheus.HistogramVec
 	ErrorCount        *prometheus.CounterVec
-	// TrafficBytes       *prometheus.CounterVec
+	TrafficBytes      *prometheus.CounterVec
 	// VmRssKb            prometheus.Gauge
 
 	TotalConnections *prometheus.CounterVec
@@ -130,6 +130,13 @@ func newMetrics() {
 		},
 		labels,
 	)
+	TrafficBytes = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dae_traffic_bytes_total",
+			Help: "Payload bytes transferred by established traffic connections.",
+		},
+		append(labels, "direction"),
+	)
 	nodeLabels := []string{"id", "subtag", "dialer"}
 	NodeAlive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -217,12 +224,6 @@ func newMetrics() {
 			Name: "dae_last_reload_timestamp_seconds",
 		},
 	)
-	// TrafficBytes = prometheus.NewCounterVec(
-	// 	prometheus.CounterOpts{
-	// 		Name: "dae_traffic_bytes",
-	// 	},
-	// 	[]string{"outbound", "subtag", "network", "dst"}, //, "direction", "src"},
-	// )
 	// VmRssKb = prometheus.NewGauge(
 	// 	prometheus.GaugeOpts{
 	// 		Name: "dae_vm_rss_kb",
@@ -251,6 +252,7 @@ func InitPrometheus(registry *prometheus.Registry) {
 		DialLatency,
 		ErrorCount,
 		TotalConnections,
+		TrafficBytes,
 		NodeAlive,
 		NodeAliveSince,
 		NodeLastFailureStart,
@@ -265,7 +267,6 @@ func InitPrometheus(registry *prometheus.Registry) {
 		GroupLastFailureStart,
 		StartTime,
 		LastReloadTime,
-		// registry.MustRegister(TrafficBytes)
 		// registry.MustRegister(VmRssKb)
 	} {
 		registry.MustRegister(c)

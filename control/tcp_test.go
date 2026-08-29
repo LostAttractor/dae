@@ -7,8 +7,10 @@ package control
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,5 +160,40 @@ func TestRuntimeConnectionRetainsDirectSpliceCapability(t *testing.T) {
 	runtime.Retire()
 	if err := runtime.Wait(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRelayDirectionCountsForwardedBytes(t *testing.T) {
+	source, sourcePeer := net.Pipe()
+	destination, destinationPeer := net.Pipe()
+	t.Cleanup(func() {
+		_ = source.Close()
+		_ = sourcePeer.Close()
+		_ = destination.Close()
+		_ = destinationPeer.Close()
+	})
+	payload := []byte("traffic accounting payload")
+	var counted atomic.Uint64
+	relayDone := make(chan error, 1)
+	go func() {
+		defer destination.Close()
+		relayDone <- relayDirection(destination, source, func(bytes uint64) { counted.Add(bytes) })
+	}()
+	go func() {
+		_, _ = sourcePeer.Write(payload)
+		_ = sourcePeer.Close()
+	}()
+	got, err := io.ReadAll(destinationPeer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-relayDone; err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("relayed payload = %q, want %q", got, payload)
+	}
+	if got := counted.Load(); got != uint64(len(payload)) {
+		t.Fatalf("counted bytes = %d, want %d", got, len(payload))
 	}
 }

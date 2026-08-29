@@ -23,6 +23,10 @@ func TestRecentGroupRow(t *testing.T) {
 	row := recentGroupRow(control.GroupStatus{
 		Name:        "proxy",
 		ActiveConns: 31,
+		Traffic: control.TrafficStatus{
+			WindowSeconds: 1, UploadBytesPerSecond: 1536, DownloadBytesPerSecond: 2 * 1024 * 1024,
+			UploadBytes: 3 * 1024 * 1024 * 1024, DownloadBytes: 5 * 1024 * 1024,
+		},
 		Connectivity: &control.GroupConnectivityStatus{
 			State:      control.GroupConnectivityAvailable,
 			UpRatio24h: &ratio,
@@ -35,8 +39,11 @@ func TestRecentGroupRow(t *testing.T) {
 				},
 			},
 		},
-	})
-	want := []string{"proxy", "UP", "[+.x.......] / 1H", "99.92% / 24H", "31 active"}
+	}, 2)
+	want := []string{
+		"proxy", "UP", "[+.x.......] / 1H", "99.92% / 24H", "31 active",
+		"1.50K/2.00M", "U/D rate", "3.00G/5.00M", "U/D total",
+	}
 	for i, expected := range want {
 		if got := fmt.Sprint(row[i]); got != expected {
 			t.Errorf("recentGroupRow()[%d] = %q, want %q", i, got, expected)
@@ -49,8 +56,8 @@ func TestRecentGroupRowWithoutConnectivity(t *testing.T) {
 	colorsEnabled = false
 	defer func() { colorsEnabled = previousColorsEnabled }()
 
-	row := recentGroupRow(control.GroupStatus{Name: "direct", ActiveConns: 3})
-	want := []string{"direct", "3 active"}
+	row := recentGroupRow(control.GroupStatus{Name: "direct", ActiveConns: 3}, 1)
+	want := []string{"direct", "", "", "", "3 active", "-", "U/D rate", "-", "U/D total"}
 	if len(row) != len(want) {
 		t.Fatalf("recentGroupRow() has %d cells, want %d", len(row), len(want))
 	}
@@ -75,7 +82,7 @@ func TestRecentGroupRowColors(t *testing.T) {
 				control.GroupBucketUnavailable,
 			}},
 		},
-	})
+	}, 1)
 	if got := row[1].(string); !strings.Contains(got, "\x1b[33m") {
 		t.Fatalf("checking state = %q, want yellow", got)
 	}
@@ -93,5 +100,102 @@ func TestRecentGroupRowColors(t *testing.T) {
 func TestTruncateRecentGroupNameUsesDisplayWidth(t *testing.T) {
 	if got := truncateRecentGroupName("香港节点-very-long-name", 12); text.StringWidth(got) > 12 || !strings.HasSuffix(got, "…") {
 		t.Fatalf("truncated group name = %q (width %d), want ellipsis within 12 columns", got, text.StringWidth(got))
+	}
+}
+
+func TestRecentTableAlignsActiveLabel(t *testing.T) {
+	previousColorsEnabled := colorsEnabled
+	colorsEnabled = false
+	defer func() { colorsEnabled = previousColorsEnabled }()
+
+	connectivity := &control.GroupConnectivityStatus{
+		State: control.GroupConnectivityAvailable,
+		Recent: control.GroupRecentStatus{
+			WindowSeconds: recentWindowSeconds,
+			Buckets:       make([]control.GroupBucketState, control.GroupRecentBucketCount),
+		},
+	}
+	groups := []control.GroupStatus{
+		{Name: "direct"},
+		{
+			Name: "proxy", ActiveConns: 278, Connectivity: connectivity,
+			Traffic: control.TrafficStatus{
+				WindowSeconds: 1, UploadBytesPerSecond: 105 * 1024, DownloadBytesPerSecond: 9340,
+				UploadBytes: 12 * 1024 * 1024 * 1024, DownloadBytes: 640 * 1024 * 1024,
+			},
+		},
+	}
+	rendered := renderRecentGroups(groups)
+	lines := strings.Split(rendered, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("rendered recent table = %q", rendered)
+	}
+	wantColumn := -1
+	wantRateLabelColumn := -1
+	wantRateValueColumn := -1
+	wantTotalLabelColumn := -1
+	wantTotalValueColumn := -1
+	for i, line := range lines {
+		index := strings.Index(line, "active")
+		if index < 0 {
+			t.Fatalf("recent row omits active label: %q", line)
+		}
+		column := text.StringWidth(line[:index])
+		if strings.Contains(line, "0  active") || strings.Contains(line, "278  active") {
+			t.Fatalf("active label has more than one separator: %q", line)
+		}
+		if wantColumn < 0 {
+			wantColumn = column
+		} else if column != wantColumn {
+			t.Fatalf("active columns differ: %q", rendered)
+		}
+		rateLabelIndex := strings.Index(line, "U/D rate")
+		if rateLabelIndex < 0 {
+			t.Fatalf("recent row omits rate label: %q", line)
+		}
+		rateLabelColumn := text.StringWidth(line[:rateLabelIndex])
+		if wantRateLabelColumn < 0 {
+			wantRateLabelColumn = rateLabelColumn
+		} else if rateLabelColumn != wantRateLabelColumn {
+			t.Fatalf("rate label columns differ: %q", rendered)
+		}
+		rateValue := "-"
+		if i == 1 {
+			rateValue = "105K"
+		}
+		rateValueIndex := strings.Index(line, rateValue)
+		if rateValueIndex < 0 {
+			t.Fatalf("recent row omits rate value: %q", line)
+		}
+		rateValueColumn := text.StringWidth(line[:rateValueIndex])
+		if wantRateValueColumn < 0 {
+			wantRateValueColumn = rateValueColumn
+		} else if rateValueColumn != wantRateValueColumn {
+			t.Fatalf("rate values are not left-aligned: %q", rendered)
+		}
+
+		totalLabelIndex := strings.Index(line, "U/D total")
+		if totalLabelIndex < 0 {
+			t.Fatalf("recent row omits total label: %q", line)
+		}
+		totalLabelColumn := text.StringWidth(line[:totalLabelIndex])
+		if wantTotalLabelColumn < 0 {
+			wantTotalLabelColumn = totalLabelColumn
+		} else if totalLabelColumn != wantTotalLabelColumn {
+			t.Fatalf("total label columns differ: %q", rendered)
+		}
+		totalValueIndex := strings.LastIndex(line[:totalLabelIndex], "-")
+		if i == 1 {
+			totalValueIndex = strings.Index(line, "12.0G")
+		}
+		if totalValueIndex < 0 {
+			t.Fatalf("recent row omits total value: %q", line)
+		}
+		totalValueColumn := text.StringWidth(line[:totalValueIndex])
+		if wantTotalValueColumn < 0 {
+			wantTotalValueColumn = totalValueColumn
+		} else if totalValueColumn != wantTotalValueColumn {
+			t.Fatalf("total values are not left-aligned: %q", rendered)
+		}
 	}
 }
