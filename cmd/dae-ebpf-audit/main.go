@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 )
 
 const daeParamSize = 24
@@ -91,6 +92,10 @@ func run(objectPath string, outputDir string, hold bool) error {
 		if m.InnerMap != nil {
 			m.InnerMap.Pinning = ebpf.PinNone
 		}
+	}
+	// Model architectures that reject unaligned BPF loads even when auditing on x86.
+	for _, prog := range spec.Programs {
+		prog.Flags |= unix.BPF_F_STRICT_ALIGNMENT
 	}
 	if err := writeSpecSummaries(spec, specDir); err != nil {
 		return err

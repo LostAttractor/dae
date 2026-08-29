@@ -414,8 +414,8 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 
 static __always_inline bool equal16(const __be32 x[4], const __be32 y[4])
 {
-	return ((__be64 *)x)[0] == ((__be64 *)y)[0] &&
-	       ((__be64 *)x)[1] == ((__be64 *)y)[1];
+	return x[0] == y[0] && x[1] == y[1] &&
+	       x[2] == y[2] && x[3] == y[3];
 }
 
 static __always_inline bool is_extension_header(__u8 nexthdr)
@@ -894,11 +894,15 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset,
 }
 
 struct route_params {
-	__u32 flag[8];
 	const void *l4hdr;
 	const __be32 *saddr;
 	const __be32 *daddr;
-	__be32 mac[4];
+	const __u8 *mac;
+	const __be32 *pname;
+	__u32 ifindex;
+	__u8 l4proto_type;
+	__u8 ipversion_type;
+	__u8 dscp;
 	bool isdns : 1;
 };
 
@@ -921,16 +925,14 @@ struct route_ctx {
 	volatile bool need_control_plane_routing : 1;
 };
 
-static int route_loop_cb(__u32 index, void *data)
+static int route_step(__u32 index, struct route_ctx *ctx)
 {
-#define _l4proto_type ctx->params->flag[0]
-#define _ipversion_type ctx->params->flag[1]
-#define _pname (&ctx->params->flag[2])
-#define _is_wan ctx->params->flag[2]
-#define _dscp ctx->params->flag[6]
-#define _ifindex ctx->params->flag[7]
+#define _l4proto_type ctx->params->l4proto_type
+#define _ipversion_type ctx->params->ipversion_type
+#define _pname ctx->params->pname
+#define _dscp ctx->params->dscp
+#define _ifindex ctx->params->ifindex
 
-	struct route_ctx *ctx = data;
 	struct match_set *match_set;
 	struct lpm_key *lpm_key;
 	struct map_lpm_type *lpm;
@@ -1059,7 +1061,7 @@ lookup_lpm:
 			"CHECK: pname, match_set->type: %u, not: %d, outbound: %u",
 			match_set->type, match_set->not, match_set->outbound);
 #endif
-		if (_is_wan && equal16(match_set->pname, _pname))
+		if (_pname && equal16(match_set->pname, _pname))
 			ctx->goodsubrule = true;
 		break;
 	case MatchType_IfIndex:
@@ -1209,22 +1211,20 @@ before_next_loop:
 #undef _l4proto_type
 #undef _ipversion_type
 #undef _pname
-#undef _is_wan
 #undef _dscp
 #undef _ifindex
-#undef _l7proto_type
 }
 
 static __always_inline __s64 route(const struct route_params *params)
 {
-	int ret;
+	int index;
 	struct route_ctx ctx = {};
 
 	ctx.params = params;
 	ctx.result = -ENOEXEC;
 
 	// Variables for further use.
-	if (params->flag[0] == L4ProtoType_TCP) {
+	if (params->l4proto_type == L4ProtoType_TCP) {
 		ctx.h_dport = bpf_ntohs(((struct tcphdr *)params->l4hdr)->dest);
 		ctx.h_sport =
 			bpf_ntohs(((struct tcphdr *)params->l4hdr)->source);
@@ -1245,11 +1245,13 @@ static __always_inline __s64 route(const struct route_params *params)
 			 IPV6_BYTE_LENGTH);
 	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
 			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx.lpm_key_mac.data, params->mac, IPV6_BYTE_LENGTH);
+	__builtin_memcpy((__u8 *)ctx.lpm_key_mac.data + IPV6_BYTE_LENGTH - ETH_ALEN,
+			 params->mac, ETH_ALEN);
 
-	ret = bpf_loop(MAX_MATCH_SET_LEN, route_loop_cb, &ctx, 0);
-	if (unlikely(ret < 0))
-		return ret;
+	bpf_for(index, 0, MAX_MATCH_SET_LEN) {
+		if (route_step(index, &ctx))
+			break;
+	}
 	if (ctx.result >= 0)
 		return ctx.result;
 	bpf_printk(
@@ -1410,30 +1412,24 @@ static int __noinline do_tproxy_first_fragment(
 		}
 	}
 
-	struct route_params params = {};
+	struct route_params params;
 
 	params.l4hdr = &l4h;
 	if (l4proto == IPPROTO_TCP) {
-		params.flag[0] = L4ProtoType_TCP;
+		params.l4proto_type = L4ProtoType_TCP;
 	} else {
-		params.flag[0] = L4ProtoType_UDP;
+		params.l4proto_type = L4ProtoType_UDP;
 		if (is_utp(skb, l4proto, payload_offset, packet_end))
-			params.flag[0] |= (1 << 2);
+			params.l4proto_type |= (1 << 2);
 	}
 	if (skb->protocol == bpf_htons(ETH_P_IP))
-		params.flag[1] = IpVersionType_4;
+		params.ipversion_type = IpVersionType_4;
 	else
-		params.flag[1] = IpVersionType_6;
-	if (pid_pname)
-		__builtin_memcpy(&params.flag[2], pid_pname->pname, TASK_COMM_LEN);
-	params.flag[6] = tuples.dscp;
-	params.flag[7] = skb->ifindex;
-	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) |
-					(ethh.h_source[1]));
-	params.mac[3] = bpf_htonl((ethh.h_source[2] << 24) |
-					(ethh.h_source[3] << 16) |
-					(ethh.h_source[4] << 8) |
-					(ethh.h_source[5]));
+		params.ipversion_type = IpVersionType_6;
+	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
+	params.dscp = tuples.dscp;
+	params.ifindex = skb->ifindex;
+	params.mac = ethh.h_source;
 	params.saddr = tuples.five.sip.u6_addr32;
 	params.daddr = tuples.five.dip.u6_addr32;
 	params.isdns = tuples.five.dport == bpf_htons(53) &&
@@ -1574,34 +1570,24 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 
 	// New Connection.
 	// Fill route_params.
-	struct route_params params = { 0 };
+	struct route_params params;
 
 	params.l4hdr = &l4h;
 	if (l4proto == IPPROTO_TCP) {
-		params.flag[0] = L4ProtoType_TCP;
+		params.l4proto_type = L4ProtoType_TCP;
 	} else {
-		params.flag[0] = L4ProtoType_UDP;
+		params.l4proto_type = L4ProtoType_UDP;
 		if (is_utp(skb, l4proto, offset, packet_end))
-			params.flag[0] |= (1 << 2);
+			params.l4proto_type |= (1 << 2);
 	}
 	if (protocol == bpf_htons(ETH_P_IP))
-		params.flag[1] = IpVersionType_4;
+		params.ipversion_type = IpVersionType_4;
 	else
-		params.flag[1] = IpVersionType_6;
-	if (pid_pname) {
-		// 2, 3, 4, 5
-		__builtin_memcpy(&params.flag[2],
-				 pid_pname->pname,
-				 TASK_COMM_LEN);
-	}
-	params.flag[6] = tuples.dscp;
-	params.flag[7] = ifindex;
-	params.mac[2] = bpf_htonl((ethh.h_source[0] << 8) |
-					(ethh.h_source[1]));
-	params.mac[3] = bpf_htonl((ethh.h_source[2] << 24) |
-					(ethh.h_source[3] << 16) |
-					(ethh.h_source[4] << 8) |
-					(ethh.h_source[5]));
+		params.ipversion_type = IpVersionType_6;
+	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
+	params.dscp = tuples.dscp;
+	params.ifindex = ifindex;
+	params.mac = ethh.h_source;
 	params.saddr = tuples.five.sip.u6_addr32;
 	params.daddr = tuples.five.dip.u6_addr32;
 	params.isdns = isdns;
