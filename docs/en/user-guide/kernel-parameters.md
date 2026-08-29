@@ -2,6 +2,7 @@
 
 > **Note**
 > Parameters will be automatically configured if `global.auto_config_kernel_parameter` is `true`.
+> dae does not save or restore previous host values when it exits or when automatic configuration is disabled by a reload. To restore host-owned values, keep them in the system sysctl configuration and reapply it after either event, for example with `sudo sysctl --system`.
 
 Parameters on dae's internal `dae0`/`dae0peer` interfaces are always managed by dae, independently of `global.auto_config_kernel_parameter`. This includes loose, mark-aware reverse-path validation and local-source acceptance needed for raw UDP DNS replies when a transparent DNS response socket cannot bind its source address.
 
