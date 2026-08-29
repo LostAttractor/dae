@@ -207,8 +207,9 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 	defer server.Close()
 	cookieA := testSocketCookie(t, accepted)
 	cookieR := testSocketCookie(t, remote)
+	statsPathID := t.TempDir()
 	identity := stats.TrafficIdentity{
-		NodeID: t.Name(), Outbound: t.Name(), Subtag: "sub", Dialer: "direct", Network: "tcp4",
+		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "direct", Network: "tcp4",
 	}
 	for _, direction := range []string{stats.TrafficDirectionUpload, stats.TrafficDirectionDownload} {
 		labels := prometheus.Labels{

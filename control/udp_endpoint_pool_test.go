@@ -178,8 +178,9 @@ func TestUdpEndpointPoolCloseAllDoesNotWaitForBlockingClose(t *testing.T) {
 }
 
 func TestUdpEndpointPoolRemoveFlushesTrafficBeforeBlockingClose(t *testing.T) {
+	statsPathID := t.TempDir()
 	identity := stats.TrafficIdentity{
-		NodeID: t.Name(), Outbound: t.Name(), Subtag: "sub", Dialer: "node", Network: "udp4",
+		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "node", Network: "udp4",
 	}
 	labels := prometheus.Labels{
 		"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
