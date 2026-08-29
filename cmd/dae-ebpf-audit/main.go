@@ -131,13 +131,14 @@ func run(objectPath string, outputDir string, hold bool) error {
 	}
 
 	var coll *ebpf.Collection
+	cache := btf.NewCache()
 	completedScenarios := make([]string, 0, len(scenarios))
 	for i, scenario := range scenarios {
 		scenarioVerifierDir := filepath.Join(verifierDir, scenario.name)
 		if err := os.MkdirAll(scenarioVerifierDir, 0o755); err != nil {
 			return fmt.Errorf("create verifier directory for %s: %w", scenario.name, err)
 		}
-		loaded, err := loadCollection(spec, scenario, outputDir, scenarioVerifierDir)
+		loaded, err := loadCollection(spec, scenario, outputDir, scenarioVerifierDir, cache)
 		if err != nil {
 			return err
 		}
@@ -180,7 +181,7 @@ func validateDaeParam(variable *ebpf.VariableSpec) error {
 	if variable.Size() != daeParamSize || unsafe.Sizeof(daeParam{}) != daeParamSize {
 		return fmt.Errorf("PARAM ABI size mismatch: object=%d loader=%d expected=%d", variable.Size(), unsafe.Sizeof(daeParam{}), daeParamSize)
 	}
-	variableType := variable.Type()
+	variableType := variable.Type
 	if variableType == nil {
 		return fmt.Errorf("PARAM BTF type information is missing")
 	}
@@ -275,12 +276,17 @@ func validateDaeParamType(typ btf.Type) error {
 	return nil
 }
 
-func loadCollection(spec *ebpf.CollectionSpec, scenario auditScenario, outputDir string, verifierDir string) (*ebpf.Collection, error) {
+func loadCollection(spec *ebpf.CollectionSpec, scenario auditScenario, outputDir string, verifierDir string, cache *btf.Cache) (*ebpf.Collection, error) {
 	scenarioSpec := spec.Copy()
-	if err := scenarioSpec.RewriteConstants(map[string]interface{}{"PARAM": scenario.param}); err != nil {
-		return nil, fmt.Errorf("rewrite PARAM for %s scenario: %w", scenario.name, err)
+	param, ok := scenarioSpec.Variables["PARAM"]
+	if !ok {
+		return nil, fmt.Errorf("missing PARAM for %s scenario", scenario.name)
+	}
+	if err := param.Set(scenario.param); err != nil {
+		return nil, fmt.Errorf("set PARAM for %s scenario: %w", scenario.name, err)
 	}
 	coll, err := ebpf.NewCollectionWithOptions(scenarioSpec, ebpf.CollectionOptions{
+		Cache: cache,
 		Programs: ebpf.ProgramOptions{
 			LogLevel:     ebpf.LogLevelInstruction,
 			LogSizeStart: 1 << 20,
@@ -329,7 +335,7 @@ func writeSpecSummaries(spec *ebpf.CollectionSpec, specDir string) error {
 		if variable == nil {
 			continue
 		}
-		variables = append(variables, fmt.Sprintf("%s\tconstant=%t\tsize=%d\toffset=%d\tmap=%s", name, variable.Constant(), variable.Size(), variable.Offset(), variable.MapName()))
+		variables = append(variables, fmt.Sprintf("%s\tconstant=%t\tsize=%d\toffset=%d\tmap=%s", name, variable.Constant(), variable.Size(), variable.Offset, variable.SectionName))
 	}
 	sort.Strings(variables)
 	if err := os.WriteFile(filepath.Join(specDir, "variables.tsv"), []byte(strings.Join(variables, "\n")+"\n"), 0o644); err != nil {

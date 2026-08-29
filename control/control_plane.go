@@ -23,6 +23,7 @@ import (
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
@@ -236,6 +237,7 @@ func NewControlPlane(
 		// ProgramOptions.LogLevel = ebpf.LogLevelInstruction | ebpf.LogLevelStats
 	}
 	collectionOpts := &ebpf.CollectionOptions{
+		Cache: btf.NewCache(),
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},

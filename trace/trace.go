@@ -354,8 +354,10 @@ func supportsKprobeMulti(kernelVersion internal.Version) bool {
 }
 
 func rewriteAndLoadBpf(ipVersion int, l4ProtoNo uint16, port int, reasons dropReasonConfig, useKprobeMulti bool) (*traceObjects, bool, error) {
+	cache := btf.NewCache()
+
 	return loadTraceObjectsWithFallback(useKprobeMulti, func(loadMulti bool) (*traceObjects, error) {
-		return loadTraceCollection(ipVersion, l4ProtoNo, port, reasons, loadMulti)
+		return loadTraceCollection(ipVersion, l4ProtoNo, port, reasons, loadMulti, cache)
 	})
 }
 
@@ -386,7 +388,7 @@ func isUnsupportedKprobeMultiLoad(err error) bool {
 		errors.Is(err, syscall.EOPNOTSUPP)
 }
 
-func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons dropReasonConfig, useKprobeMulti bool) (_ *traceObjects, err error) {
+func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons dropReasonConfig, useKprobeMulti bool, cache *btf.Cache) (_ *traceObjects, err error) {
 	spec, err := loadBpf()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load BPF: %w", err)
@@ -410,6 +412,7 @@ func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons drop
 		}
 	}
 	var opts ebpf.CollectionOptions
+	opts.Cache = cache
 	opts.Programs.LogLevel = ebpf.LogLevelInstruction
 	collection, err := ebpf.NewCollectionWithOptions(spec, opts)
 	if err != nil {

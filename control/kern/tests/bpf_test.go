@@ -68,11 +68,13 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = spec.RewriteConstants(map[string]interface{}{
-		"PARAM": testDaeParam{
-			ControlPlanePid: uint32(os.Getpid()),
-			SoMarkFromDae:   0x100,
-		},
+	param, ok := spec.Variables["PARAM"]
+	if !ok {
+		return nil, errors.New("missing PARAM constant")
+	}
+	if err = param.Set(testDaeParam{
+		ControlPlanePid: uint32(os.Getpid()),
+		SoMarkFromDae:   0x100,
 	}); err != nil {
 		return nil, err
 	}

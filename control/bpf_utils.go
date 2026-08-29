@@ -18,7 +18,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/control/internal/splice"
@@ -172,8 +171,17 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 	if err != nil {
 		return err
 	}
-	if err := spec.RewriteConstants(constants); err != nil {
-		return err
+	for name, value := range constants {
+		variable, ok := spec.Variables[name]
+		if !ok {
+			return fmt.Errorf("missing constant %s", name)
+		}
+		if !variable.Constant() {
+			return fmt.Errorf("variable %s is not a constant", name)
+		}
+		if err := variable.Set(value); err != nil {
+			return fmt.Errorf("set constant %s: %w", name, err)
+		}
 	}
 	return spec.LoadAndAssign(obj, opts)
 }
@@ -184,9 +192,6 @@ func fullLoadBpfObjects(
 	soMarkFromDae uint32,
 	opts *ebpf.CollectionOptions,
 ) (err error) {
-	// The daemon reuses loaded BPF objects across reloads, so kernel and module
-	// BTF are no longer needed after this initial CO-RE relocation pass.
-	defer btf.FlushKernelSpec()
 retryLoadBpf:
 	hasBpfGetCurrentTask := uint8(0)
 	if err := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask); err == nil {
