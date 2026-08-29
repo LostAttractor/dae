@@ -607,26 +607,43 @@ func (c *controlPlaneCore) setupExitHandler() (err error) {
 
 // bindWan registers manual ownership. TC changes are serialized by the WAN
 // reconciler instead of running in interface callbacks.
-func (c *controlPlaneCore) bindWan(pattern string, prepare func(string)) error {
-	set := func(link netlink.Link) {
+func (c *controlPlaneCore) bindWan(pattern string, prepare func(string) error) error {
+	validLink := func(link netlink.Link) bool {
 		if link.Attrs().Name == hostLinkName {
-			return
+			return false
 		}
 		if link.Attrs().Index == consts.LoopbackIfIndex {
 			log.Errorf("cannot bind WAN to loopback interface")
-			return
+			return false
 		}
-		if prepare != nil {
-			prepare(link.Attrs().Name)
-		}
-		c.setManualWan(link, pattern, true)
+		return true
 	}
 	return c.ifmgr.RegisterWithPatternSync(pattern, func(link netlink.Link) error {
-		set(link)
+		if !validLink(link) {
+			return nil
+		}
+		if prepare != nil {
+			if err := prepare(link.Attrs().Name); err != nil {
+				if linkSnapshotDisappeared(link, err, netlink.LinkByName) {
+					log.Debugf("Skip disappeared WAN interface %s", link.Attrs().Name)
+					return nil
+				}
+				return oops.Errorf("prepare WAN interface %s: %w", link.Attrs().Name, err)
+			}
+		}
+		c.setManualWan(link, pattern, true)
 		return nil
 	}, func(link netlink.Link) {
 		log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
-		set(link)
+		if !validLink(link) {
+			return
+		}
+		c.setManualWan(link, pattern, true)
+		if prepare != nil {
+			if err := prepare(link.Attrs().Name); err != nil {
+				log.Errorf("prepare WAN interface %s: %v", link.Attrs().Name, err)
+			}
+		}
 	}, func(link netlink.Link) {
 		c.removeWanLink(link, pattern)
 		log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
@@ -689,7 +706,15 @@ func autoWanTargets(snapshot component.HostNetworkSnapshot) map[int]string {
 // reconcileWan attaches every required interface before dropping obsolete
 // automatic ownership, avoiding an interception gap during route replacement.
 // A nil snapshot retries existing state without changing automatic ownership.
-func (c *controlPlaneCore) reconcileWan(snapshot *component.HostNetworkSnapshot) (retry bool) {
+func (c *controlPlaneCore) reconcileWan(snapshot *component.HostNetworkSnapshot, prepare func(string) error) bool {
+	return c.reconcileWanWith(snapshot, prepare, netlink.LinkByIndex)
+}
+
+func (c *controlPlaneCore) reconcileWanWith(
+	snapshot *component.HostNetworkSnapshot,
+	prepare func(string) error,
+	linkByIndex func(int) (netlink.Link, error),
+) (retry bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed.Err() != nil {
@@ -717,7 +742,7 @@ func (c *controlPlaneCore) reconcileWan(snapshot *component.HostNetworkSnapshot)
 		if !required {
 			continue
 		}
-		link, err := netlink.LinkByIndex(index)
+		link, err := linkByIndex(index)
 		if err != nil {
 			log.Debugf("WAN link %d is no longer present: %v", index, err)
 			retry = true
@@ -734,6 +759,16 @@ func (c *controlPlaneCore) reconcileWan(snapshot *component.HostNetworkSnapshot)
 		}
 		// TC filters are attached by ifindex and remain valid across a rename.
 		binding.ifname = link.Attrs().Name
+		if prepare != nil {
+			if err := prepare(binding.ifname); err != nil {
+				log.Errorf("prepare WAN interface %s: %v", binding.ifname, err)
+				retry = true
+				if wantedAutomatically {
+					autoReady = false
+				}
+				continue
+			}
+		}
 		if !c.wanAttached(index) {
 			if err := c.attachWanLocked(link, binding); err != nil {
 				log.Errorf("bind WAN %v: %v", binding.ifname, err)

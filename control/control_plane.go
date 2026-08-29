@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -700,16 +701,31 @@ func (c *ControlPlane) Activate() error {
 	return nil
 }
 
-func (c *ControlPlane) prepareWanInterface(ifname string) {
+func (c *ControlPlane) prepareWanInterface(ifname string) error {
 	if len(c.lanInterface) == 0 || !c.autoConfigKernelParameter {
-		return
+		return nil
 	}
 	// IPv6 forwarding suppresses accept_ra=1. Routers that also consume an
 	// upstream RA need mode 2 instead.
 	acceptRa := sysctl.Keyf("net.ipv6.conf.%v.accept_ra", ifname)
-	if val, _ := acceptRa.Get(); val == "1" {
-		_ = acceptRa.Set("2", false)
+	return prepareWanAcceptRA(ifname, acceptRa.Get, func(value string) error {
+		return acceptRa.Set(value, false)
+	})
+}
+
+func prepareWanAcceptRA(ifname string, get func() (string, error), set func(string) error) error {
+	name := fmt.Sprintf("net.ipv6.conf.%s.accept_ra", ifname)
+	value, err := get()
+	if err != nil {
+		return fmt.Errorf("read %s: %w", name, err)
 	}
+	if value != "1" {
+		return nil
+	}
+	if err := set("2"); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	return nil
 }
 
 func (c *ControlPlane) reconcileWan() bool {
@@ -720,13 +736,10 @@ func (c *ControlPlane) reconcileWan() bool {
 	if c.autoWan {
 		current := c.core.netmon.Snapshot()
 		if current.Revision() != 0 {
-			for _, intf := range current.Interfaces {
-				c.prepareWanInterface(intf.Name)
-			}
 			snapshot = &current
 		}
 	}
-	return c.core.reconcileWan(snapshot)
+	return c.core.reconcileWan(snapshot, c.prepareWanInterface)
 }
 
 func reconcileLanLinks(links []netlink.Link, patterns []string, bind func(netlink.Link) error) (retry bool) {

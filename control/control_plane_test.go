@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,127 @@ func TestAutoWanTargetsUseOneOwnerPerInterface(t *testing.T) {
 	want := map[int]string{2: "eth0", 3: "eth1", 4: "ppp0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("auto WAN targets = %v, want %v", got, want)
+	}
+}
+
+func TestPrepareWanAcceptRA(t *testing.T) {
+	for _, current := range []string{"0", "2"} {
+		t.Run("leave value "+current, func(t *testing.T) {
+			writes := 0
+			err := prepareWanAcceptRA("eth0", func() (string, error) { return current, nil }, func(string) error {
+				writes++
+				return nil
+			})
+			if err != nil || writes != 0 {
+				t.Fatalf("prepare accept_ra=%s = %v, writes=%d; want nil, 0", current, err, writes)
+			}
+		})
+	}
+
+	t.Run("change one to two", func(t *testing.T) {
+		var value string
+		err := prepareWanAcceptRA("eth0", func() (string, error) { return "1", nil }, func(got string) error {
+			value = got
+			return nil
+		})
+		if err != nil || value != "2" {
+			t.Fatalf("prepare accept_ra=1 = %v, value=%q; want nil, 2", err, value)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		readError bool
+	}{
+		{name: "read error", readError: true},
+		{name: "write error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sentinel := errors.New("permission denied")
+			err := prepareWanAcceptRA("eth0", func() (string, error) {
+				if tc.readError {
+					return "", sentinel
+				}
+				return "1", nil
+			}, func(string) error { return sentinel })
+			if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "net.ipv6.conf.eth0.accept_ra") {
+				t.Fatalf("prepare error = %v; want wrapped error with exact sysctl name", err)
+			}
+		})
+	}
+}
+
+func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
+	closed, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	core := &controlPlaneCore{closed: closed, wanBindings: make(map[int]*wanBinding)}
+	snapshot := component.HostNetworkSnapshot{Interfaces: []component.DefaultRouteInterface{
+		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
+		{Index: 2, Name: "eth0", IPv4Default: true},
+		{Index: 3, Name: "lan0"},
+		{Index: 4, Name: "docker0"},
+		{Index: 5, Name: "tailscale0"},
+	}}
+	var prepared []string
+	retry := core.reconcileWanWith(&snapshot, func(ifname string) error {
+		prepared = append(prepared, ifname)
+		return errors.New("temporary failure")
+	}, func(index int) (netlink.Link, error) {
+		if index != 2 {
+			return nil, fmt.Errorf("unexpected link lookup: %d", index)
+		}
+		return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "eth0"}}, nil
+	})
+	if !retry {
+		t.Fatal("WAN preparation failure did not request retry")
+	}
+	if want := []string{"eth0"}; !reflect.DeepEqual(prepared, want) {
+		t.Fatalf("prepared WAN interfaces = %v, want %v", prepared, want)
+	}
+	if core.wanBindings[2].automatic {
+		t.Fatal("failed automatic WAN preparation committed automatic ownership")
+	}
+}
+
+func TestReconcileWanRetriesManualPreparation(t *testing.T) {
+	closed, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const index = 2
+	core := &controlPlaneCore{
+		closed: closed,
+		wanBindings: map[int]*wanBinding{index: {
+			ifname:         "eth0",
+			manualPatterns: map[string]struct{}{"eth0": {}},
+		}},
+	}
+	attempts := 0
+	retry := core.reconcileWanWith(nil, func(ifname string) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("temporary failure")
+		}
+		return nil
+	}, func(int) (netlink.Link, error) {
+		return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}}, nil
+	})
+	if !retry || attempts != 1 {
+		t.Fatalf("first reconciliation = retry %v, attempts %d; want true, 1", retry, attempts)
+	}
+	// Avoid a real TCX attachment after preparation succeeds.
+	core.hostTCXLinks = []hostTCXLink{
+		{linkIndex: index, role: hostTCXWanIngress},
+		{linkIndex: index, role: hostTCXWanEgress},
+	}
+	if core.reconcileWanWith(nil, func(string) error {
+		attempts++
+		return nil
+	}, func(int) (netlink.Link, error) {
+		return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}}, nil
+	}) {
+		t.Fatal("successful manual WAN preparation requested retry")
+	}
+	if attempts != 2 {
+		t.Fatalf("manual WAN preparation attempts = %d, want 2", attempts)
 	}
 }
 
