@@ -449,9 +449,8 @@ struct ipv6_ext_ctx {
 	enum fragment_state fragment_state;
 };
 
-static int ipv6_ext_skip_loop_cb(__u32 index, void *data)
+static int ipv6_ext_step(struct ipv6_ext_ctx *ctx)
 {
-	struct ipv6_ext_ctx *ctx = data;
 	__u8 current_nexthdr = *ctx->nexthdr;
 
 	if (*ctx->nexthdr == IPPROTO_NONE)
@@ -671,9 +670,10 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			.fragment_state = FRAGMENT_NONE,
 		};
 
-		ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb, &ext_ctx, 0);
-		if (ret < 0)
-			return ret;
+		bpf_repeat(IPV6_MAX_EXTENSIONS) {
+			if (ipv6_ext_step(&ext_ctx))
+				break;
+		}
 		*fragment_state = ext_ctx.fragment_state;
 		if (ext_ctx.result)
 			return ext_ctx.result;
@@ -821,11 +821,10 @@ static int __noinline classify_fragment(const struct __sk_buff *skb,
 			.seen_fragment = false,
 			.fragment_state = FRAGMENT_NONE,
 		};
-		int ret = bpf_loop(IPV6_MAX_EXTENSIONS, ipv6_ext_skip_loop_cb,
-				   &ext_ctx, 0);
-
-		if (ret < 0)
-			return FRAGMENT_DISPATCH_DROP;
+		bpf_repeat(IPV6_MAX_EXTENSIONS) {
+			if (ipv6_ext_step(&ext_ctx))
+				break;
+		}
 		if (ext_ctx.result < 0 && ext_ctx.seen_fragment)
 			return FRAGMENT_DISPATCH_DROP;
 		if (ext_ctx.fragment_state == FRAGMENT_NONFIRST)
@@ -1942,14 +1941,13 @@ struct get_real_comm_ctx {
 	u8 l;
 };
 
-static int __noinline get_real_comm_loop_cb(__u32 index, void *data)
+static int __noinline get_real_comm_step(__u32 index,
+					 struct get_real_comm_ctx *ctx)
 {
 	/*
 	* For string like: /usr/lib/sddm/sddm-helper --socket /tmp/sddm-auth1
 	* We extract "sddm-helper" from it.
 	*/
-	struct get_real_comm_ctx *ctx = (struct get_real_comm_ctx *)data;
-
 	if (index >= MAX_ARG_LEN) // always false, just to make verifier happy
 		return 1;
 	if (unlikely(ctx->arg_buf[index] == '/'))
@@ -1996,9 +1994,12 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 	}
 
 	// Find range of command name.
-	ret = bpf_loop(MAX_ARG_LEN, get_real_comm_loop_cb, &ctx, 0);
-	if (unlikely(ret < 0))
-		return ret;
+	int index;
+
+	bpf_for(index, 0, MAX_ARG_LEN) {
+		if (get_real_comm_step(index, &ctx))
+			break;
+	}
 
 	u8 offset = ctx.l;
 
