@@ -446,8 +446,7 @@ func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter boo
 			return nil
 		}
 		if err := bind(link); err != nil {
-			var notFound netlink.LinkNotFoundError
-			if errors.As(err, &notFound) {
+			if linkSnapshotDisappeared(link, err, netlink.LinkByName) {
 				log.Debugf("Skip disappeared LAN interface %s", link.Attrs().Name)
 				return nil
 			}
@@ -478,10 +477,49 @@ func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter boo
 	return c.ifmgr.RegisterWithPatternSync(pattern, initlinkCallback, newlinkCallback, dellinkCallback)
 }
 
+func linkSnapshotDisappeared(link netlink.Link, cause error, linkByName func(string) (netlink.Link, error)) bool {
+	var joined interface{ Unwrap() []error }
+	if errors.As(cause, &joined) && !onlyLinkDisappearanceErrors(cause) {
+		return false
+	}
+	var notFound netlink.LinkNotFoundError
+	if errors.As(cause, &notFound) {
+		return true
+	}
+	if !errors.Is(cause, unix.ENOENT) {
+		return false
+	}
+	current, err := linkByName(link.Attrs().Name)
+	if errors.As(err, &notFound) || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENODEV) {
+		return true
+	}
+	return err == nil && current != nil && current.Attrs() != nil &&
+		current.Attrs().Index != link.Attrs().Index
+}
+
+func onlyLinkDisappearanceErrors(err error) bool {
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		for _, child := range joined.Unwrap() {
+			if !onlyLinkDisappearanceErrors(child) {
+				return false
+			}
+		}
+		return true
+	}
+	var notFound netlink.LinkNotFoundError
+	return errors.As(err, &notFound) || errors.Is(err, unix.ENOENT) ||
+		errors.Is(err, unix.ENODEV)
+}
+
 func (c *controlPlaneCore) prepareAndBindLanLink(link netlink.Link, autoConfigKernelParameter bool) error {
 	if autoConfigKernelParameter {
-		SetSendRedirects(link.Attrs().Name, "0")
-		SetForwarding(link.Attrs().Name, "1")
+		if err := SetSendRedirects(link.Attrs().Name, "0"); err != nil {
+			return err
+		}
+		if err := SetForwarding(link.Attrs().Name, "1"); err != nil {
+			return err
+		}
 	}
 	return c.bindLanLink(link)
 }

@@ -660,8 +660,12 @@ func (c *ControlPlane) Activate() error {
 	}
 	if len(c.lanInterface) > 0 {
 		if c.autoConfigKernelParameter {
-			_ = SetIpv4forward("1")
-			_ = setForwarding("all", consts.IpVersionStr_6, "1")
+			if err := SetIpv4forward("1"); err != nil {
+				return oops.Errorf("configure host forwarding: %w", err)
+			}
+			if err := setForwarding("all", consts.IpVersionStr_6, "1"); err != nil {
+				return oops.Errorf("configure host forwarding: %w", err)
+			}
 		}
 		for _, ifname := range c.lanInterface {
 			if err := core.bindLan(ifname, c.autoConfigKernelParameter); err != nil {
