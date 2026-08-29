@@ -210,11 +210,8 @@ func NewControlPlane(
 		return nil, oops.Errorf("failed to setup dae netns: %w", err)
 	}
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
-	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
-		if os.IsNotExist(err) {
-			log.Warnln("Perhaps you are in a container environment (such as lxc). If so, please use higher virtualization (kvm/qemu).")
-		}
-		return nil, err
+	if err = os.MkdirAll(pinPath, 0755); err != nil {
+		return nil, oops.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
 	}
 
 	/// Load pre-compiled programs and maps into the kernel.
@@ -222,20 +219,16 @@ func NewControlPlane(
 		log.Infof("Loading eBPF programs and maps into the kernel...")
 		log.Infof("The loading process takes about 120MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
 	}
-	//var bpf bpfObjects
-	var ProgramOptions = ebpf.ProgramOptions{
-		KernelTypes: nil,
-	}
+	var programOptions ebpf.ProgramOptions
 	if log.IsLevelEnabled(log.PanicLevel) {
-		ProgramOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
-		// ProgramOptions.LogLevel = ebpf.LogLevelInstruction | ebpf.LogLevelStats
+		programOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
 	}
 	collectionOpts := &ebpf.CollectionOptions{
 		Cache: btf.NewCache(),
 		Maps: ebpf.MapOptions{
 			PinPath: pinPath,
 		},
-		Programs: ProgramOptions,
+		Programs: programOptions,
 	}
 	var bpf *bpfState
 	if reusedBpf != nil {
