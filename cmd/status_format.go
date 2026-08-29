@@ -11,10 +11,65 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"golang.org/x/term"
 )
+
+type healthStatus string
+
+const (
+	healthHealthy  healthStatus = "healthy"
+	healthWarning  healthStatus = "warning"
+	healthDegraded healthStatus = "degraded"
+
+	nodeHealthUnknown    = "unknown"
+	nodeHealthHealthy    = "healthy"
+	nodeHealthConfirming = "confirming"
+	nodeHealthUnhealthy  = "unhealthy"
+)
+
+func groupHealth(group control.GroupStatus) healthStatus {
+	if !group.ChecksConnectivity || group.Connectivity == stats.GroupStateAvailable {
+		return healthHealthy
+	}
+	if group.Connectivity == stats.GroupStateChecking || !group.Critical {
+		return healthWarning
+	}
+	return healthDegraded
+}
+
+func statusHealth(groups []control.GroupStatus) healthStatus {
+	health := healthHealthy
+	for _, group := range groups {
+		switch groupHealth(group) {
+		case healthDegraded:
+			return healthDegraded
+		case healthWarning:
+			health = healthWarning
+		}
+	}
+	return health
+}
+
+func nodeHealth(status control.NodeStatus) string {
+	if !status.ChecksConnectivity {
+		return nodeHealthUnknown
+	}
+	if status.ConfirmingFailure {
+		return nodeHealthConfirming
+	}
+	if !status.Availability.Seen {
+		return nodeHealthUnknown
+	}
+	if status.Healthy {
+		return nodeHealthHealthy
+	}
+	return nodeHealthUnhealthy
+}
 
 func formatUptime(duration time.Duration) string {
 	if duration <= 0 {
@@ -40,11 +95,11 @@ func formatUptime(duration time.Duration) string {
 	}
 }
 
-func formatAgo(timestamp *time.Time) string {
-	if timestamp == nil {
+func formatAgo(timestamp time.Time) string {
+	if timestamp.IsZero() {
 		return "-"
 	}
-	duration := time.Since(*timestamp)
+	duration := time.Since(timestamp)
 	if duration < time.Second {
 		return "just now"
 	}
@@ -94,44 +149,44 @@ func colorize(value string, colors ...text.Color) string {
 	return text.Escape(value, text.Colors(colors).EscapeSeq())
 }
 
-func colorHealth(health control.HealthStatus) string {
+func colorHealth(health healthStatus) string {
 	switch health {
-	case control.HealthHealthy:
+	case healthHealthy:
 		return colorize(string(health), text.FgGreen)
-	case control.HealthWarning:
+	case healthWarning:
 		return colorize(string(health), text.FgYellow)
-	case control.HealthDegraded:
+	case healthDegraded:
 		return colorize(string(health), text.FgRed)
 	default:
-		panic(fmt.Sprintf("invalid health status %q", health))
+		return emptyDash(string(health))
 	}
 }
 
-func colorNodeHealth(health control.NodeHealthState) string {
+func colorNodeHealth(health string) string {
 	switch health {
 	case "":
 		return "-"
-	case control.NodeHealthHealthy:
-		return colorize(string(health), text.FgGreen)
-	case control.NodeHealthUnknown, control.NodeHealthConfirming:
-		return colorize(string(health), text.FgYellow)
-	case control.NodeHealthUnhealthy:
-		return colorize(string(health), text.FgRed)
+	case nodeHealthHealthy:
+		return colorize(health, text.FgGreen)
+	case nodeHealthUnknown, nodeHealthConfirming:
+		return colorize(health, text.FgYellow)
+	case nodeHealthUnhealthy:
+		return colorize(health, text.FgRed)
 	default:
-		panic(fmt.Sprintf("invalid node health status %q", health))
+		return health
 	}
 }
 
-func colorNetworkSupport(support control.NetworkSupportStatus) string {
+func colorNetworkSupport(support dialer.NetworkSupportState) string {
 	switch support {
 	case "":
 		return "-"
-	case control.NetworkSupportConfirmed:
+	case dialer.NetworkSupportConfirmed:
 		return colorize(string(support), text.FgGreen)
-	case control.NetworkSupportUnknown, control.NetworkSupportUnsupported:
+	case dialer.NetworkSupportUnknown, dialer.NetworkSupportUnsupported:
 		return colorize(string(support), text.FgRed)
 	default:
-		panic(fmt.Sprintf("invalid network support status %q", support))
+		return string(support)
 	}
 }
 
@@ -175,82 +230,67 @@ func colorUsage(ratio float64, value string) string {
 	}
 }
 
-func formatGroupConnectivityState(connectivity *control.GroupConnectivityStatus) string {
-	if connectivity == nil {
+func formatGroupConnectivityState(group control.GroupStatus) string {
+	if !group.ChecksConnectivity {
 		return colorize("N/A", text.FgHiBlack)
 	}
-	switch connectivity.State {
-	case control.GroupConnectivityAvailable:
+	switch group.Connectivity {
+	case stats.GroupStateAvailable:
 		return colorize("UP", text.FgGreen)
-	case control.GroupConnectivityUnavailable:
+	case stats.GroupStateUnavailable:
 		return colorize("DOWN", text.FgRed)
-	case control.GroupConnectivityChecking:
+	case stats.GroupStateChecking:
 		return colorize("CHECKING", text.FgYellow)
 	default:
-		return string(connectivity.State)
+		return string(group.Connectivity)
 	}
 }
 
-func networkSupport(networks []control.NodeNetworkStatus) string {
-	var supported []string
-	for _, network := range networks {
-		if network.SupportState == control.NetworkSupportConfirmed {
-			supported = append(supported, network.Network)
+func networkMask(support control.NetworkValues[dialer.NetworkSupportState]) uint8 {
+	var mask uint8
+	for index, state := range support {
+		if state == dialer.NetworkSupportConfirmed {
+			mask |= 1 << index
 		}
 	}
-	return compactNetworks(supported)
+	return mask
 }
 
-func compactNetworks(networks []string) string {
-	remaining := make(map[string]bool, len(networks))
-	for _, network := range networks {
-		remaining[network] = true
-	}
-	if len(remaining) == 0 {
+func compactNetworks(mask uint8) string {
+	switch mask {
+	case 0:
 		return "-"
-	}
-	if len(remaining) == 4 && remaining["tcp4"] && remaining["tcp6"] && remaining["udp4"] && remaining["udp6"] {
+	case 0b1111:
 		return "all"
+	case 0b0011:
+		return "all tcp"
+	case 0b1100:
+		return "all udp"
+	case 0b0101:
+		return "all ipv4"
+	case 0b1010:
+		return "all ipv6"
 	}
-
-	parts := make([]string, 0, len(remaining))
-	consumePair := func(label, first, second string) {
-		if remaining[first] && remaining[second] {
-			parts = append(parts, label)
-			delete(remaining, first)
-			delete(remaining, second)
-		}
-	}
-	consumePair("all tcp", "tcp4", "tcp6")
-	consumePair("all udp", "udp4", "udp6")
-	consumePair("all ipv4", "tcp4", "udp4")
-	consumePair("all ipv6", "tcp6", "udp6")
-	for _, network := range []string{"tcp4", "tcp6", "udp4", "udp6"} {
-		if remaining[network] {
-			parts = append(parts, network)
-			delete(remaining, network)
-		}
-	}
-	for _, network := range networks {
-		if remaining[network] {
-			parts = append(parts, network)
-			delete(remaining, network)
+	parts := make([]string, 0, common.NetworkTypeCount)
+	for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
+		if mask&(1<<index) != 0 {
+			parts = append(parts, index.String())
 		}
 	}
 	return strings.Join(parts, ",")
 }
 
-func selectedNetworks(nodeIndex int, networks []control.NetworkStatus) (string, bool) {
-	var selected []string
-	for _, network := range networks {
-		if network.Selected != nil && network.Selected.Index == nodeIndex {
-			selected = append(selected, network.Network)
-		}
-	}
-	if len(selected) == 0 {
+func selectedNetworks(nodeID string, selected control.NetworkValues[string]) (string, bool) {
+	if nodeID == "" {
 		return "-", false
 	}
-	return compactNetworks(selected), true
+	var mask uint8
+	for index, selectedID := range selected {
+		if selectedID == nodeID {
+			mask |= 1 << index
+		}
+	}
+	return compactNetworks(mask), mask != 0
 }
 
 func emptyDash(value string) string {
@@ -260,28 +300,27 @@ func emptyDash(value string) string {
 	return value
 }
 
-func formatAgoWithChecks(timestamp *time.Time, checks int64) string {
+func formatAgoWithChecks(timestamp time.Time, checks int64) string {
 	formatted := formatAgo(timestamp)
-	if timestamp == nil || checks <= 0 {
+	if timestamp.IsZero() || checks <= 0 {
 		return formatted
 	}
 	return fmt.Sprintf("%s (+%d chk)", formatted, checks)
 }
 
-func formatFailure(failure *control.FailureStatus) string {
-	if failure == nil {
+func formatFailure(startedAt time.Time, duration time.Duration) string {
+	if startedAt.IsZero() {
 		return "-"
 	}
-	duration := time.Duration(failure.DurationMs) * time.Millisecond
 	durationText := "0s"
 	if duration > 0 {
 		durationText = formatUptime(duration)
 	}
-	return fmt.Sprintf("%s / %s", formatAgo(&failure.StartedAt), durationText)
+	return fmt.Sprintf("%s / %s", formatAgo(startedAt), durationText)
 }
 
-func formatConnCounts(active, total int64) string {
-	return fmt.Sprintf("%d/%d", active, total)
+func formatConnCounts(value stats.PathStats) string {
+	return fmt.Sprintf("%d/%d", value.ActiveConnections, value.TotalConnections)
 }
 
 func formatBytes(bytes uint64) string {
@@ -310,53 +349,45 @@ func formatBytes(bytes uint64) string {
 	return fmt.Sprintf(format, value, unit)
 }
 
-func hasTrafficRate(traffic control.TrafficStatus) bool {
-	return traffic.UploadBytesPerSecond != 0 || traffic.DownloadBytesPerSecond != 0
+func hasTrafficRate(value stats.PathStats) bool {
+	return value.UploadBytesPerSecond != 0 || value.DownloadBytesPerSecond != 0
 }
 
-func formatTrafficRateCell(traffic control.TrafficStatus) string {
-	if !hasTrafficRate(traffic) {
+func formatTrafficRateCell(value stats.PathStats) string {
+	if !hasTrafficRate(value) {
 		return "-"
 	}
-	return fmt.Sprintf(
-		"%s/%s",
-		formatBytes(traffic.UploadBytesPerSecond),
-		formatBytes(traffic.DownloadBytesPerSecond),
-	)
+	return fmt.Sprintf("%s/%s", formatBytes(value.UploadBytesPerSecond), formatBytes(value.DownloadBytesPerSecond))
 }
 
-func formatTrafficRate(traffic control.TrafficStatus) string {
-	return formatTrafficRateCell(traffic) + " U/D"
+func formatTrafficRate(value stats.PathStats) string {
+	return formatTrafficRateCell(value) + " U/D"
 }
 
-func hasTrafficTotal(traffic control.TrafficStatus) bool {
-	return traffic.UploadBytes != 0 || traffic.DownloadBytes != 0
+func hasTrafficTotal(value stats.PathStats) bool {
+	return value.UploadBytes != 0 || value.DownloadBytes != 0
 }
 
-func formatTrafficTotalCell(traffic control.TrafficStatus) string {
-	if !hasTrafficTotal(traffic) {
+func formatTrafficTotalCell(value stats.PathStats) string {
+	if !hasTrafficTotal(value) {
 		return "-"
 	}
-	return fmt.Sprintf(
-		"%s/%s",
-		formatBytes(traffic.UploadBytes),
-		formatBytes(traffic.DownloadBytes),
-	)
+	return fmt.Sprintf("%s/%s", formatBytes(value.UploadBytes), formatBytes(value.DownloadBytes))
 }
 
-func formatTrafficTotal(traffic control.TrafficStatus) string {
-	return formatTrafficTotalCell(traffic) + " U/D"
+func formatTrafficTotal(value stats.PathStats) string {
+	return formatTrafficTotalCell(value) + " U/D"
 }
 
-func formatTrafficSummary(traffic control.TrafficStatus) string {
-	if !hasTrafficRate(traffic) && !hasTrafficTotal(traffic) {
+func formatTrafficSummary(value stats.PathStats) string {
+	if !hasTrafficRate(value) && !hasTrafficTotal(value) {
 		return ""
 	}
-	return "rate " + formatTrafficRate(traffic) + ", total " + formatTrafficTotal(traffic)
+	return "rate " + formatTrafficRate(value) + ", total " + formatTrafficTotal(value)
 }
 
-func formatTrafficSummarySuffix(traffic control.TrafficStatus) string {
-	summary := formatTrafficSummary(traffic)
+func formatTrafficSummarySuffix(value stats.PathStats) string {
+	summary := formatTrafficSummary(value)
 	if summary == "" {
 		return ""
 	}

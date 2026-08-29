@@ -76,7 +76,7 @@ func TestOutboundRecoveryCallbackFiresOnGlobalRecovery(t *testing.T) {
 	core.setOutboundRecoveryCallback(func() { recoveries.Add(1) })
 	first := uint8(consts.OutboundUserDefinedMin)
 	second := first + 1
-	network := 0
+	network := common.NetworkTCP4
 
 	if callback := core.recordOutboundConnectivity(first, network, true); callback != nil {
 		callback()
@@ -121,8 +121,8 @@ func TestOutboundRecoveryIsPerNetwork(t *testing.T) {
 func TestOutboundUsableUsesRequestedNetwork(t *testing.T) {
 	core := new(controlPlaneCore)
 	outbound := uint8(consts.OutboundUserDefinedMin)
-	tcp4 := common.NetworkTypeToIndex(common.IndexToNetworkType(0))
-	udp6 := common.NetworkTypeToIndex(common.IndexToNetworkType(3))
+	tcp4 := common.NetworkTCP4
+	udp6 := common.NetworkUDP6
 	core.outboundConnectivityMap[outbound][tcp4].Store(true)
 	core.outboundConnectivityMap[outbound][udp6].Store(false)
 

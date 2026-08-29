@@ -18,10 +18,12 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"golang.org/x/sys/unix"
 )
+
+func writeFull(writer io.Writer, p []byte) error {
+	return writeFullAndRecord(writer, p, nil)
+}
 
 func loadTestSpliceRuntime(t *testing.T) *Runtime {
 	t.Helper()
@@ -119,7 +121,7 @@ func expectEOF(t *testing.T, conn *net.TCPConn, direction string) {
 	}
 }
 
-func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn, traffic *stats.TrafficConnection) <-chan error {
+func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn, traffic *stats.Connection) <-chan error {
 	t.Helper()
 	result := make(chan error, 1)
 	go func() {
@@ -132,17 +134,20 @@ func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn, tr
 	return result
 }
 
-func trafficCounterValue(t *testing.T, identity stats.TrafficIdentity, direction string) uint64 {
+func trafficCounterValue(t *testing.T, path stats.Path, direction string) uint64 {
 	t.Helper()
-	var metric dto.Metric
-	err := common.TrafficBytes.With(prometheus.Labels{
-		"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
-		"dialer": identity.Dialer, "network": identity.Network, "direction": direction,
-	}).Write(&metric)
+	snapshot, err := stats.DefaultStore.Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return uint64(metric.GetCounter().GetValue())
+	pathStats, ok := snapshot[path]
+	if !ok {
+		t.Fatalf("traffic path is absent: %+v", path)
+	}
+	if direction == "upload" {
+		return pathStats.UploadBytes
+	}
+	return pathStats.DownloadBytes
 }
 
 func waitRelay(t *testing.T, result <-chan error) {
@@ -208,18 +213,10 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 	cookieA := testSocketCookie(t, accepted)
 	cookieR := testSocketCookie(t, remote)
 	statsPathID := t.TempDir()
-	identity := stats.TrafficIdentity{
-		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "direct", Network: "tcp4",
+	path := stats.Path{
+		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "direct", Network: common.NetworkTCP4,
 	}
-	for _, direction := range []string{stats.TrafficDirectionUpload, stats.TrafficDirectionDownload} {
-		labels := prometheus.Labels{
-			"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
-			"dialer": identity.Dialer, "network": identity.Network, "direction": direction,
-		}
-		common.TrafficBytes.Delete(labels)
-		t.Cleanup(func() { common.TrafficBytes.Delete(labels) })
-	}
-	traffic := stats.DefaultTrafficTracker.Open(identity)
+	traffic := stats.DefaultStore.OpenConnection(path)
 	result := runSplice(t, runtime, accepted, remote, traffic)
 	waitRedirectArmed(t, runtime, cookieA, cookieR)
 
@@ -264,11 +261,10 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 	}
 	expectEOF(t, server, "upload")
 	waitRelay(t, result)
-	traffic.Close()
-	if got, want := trafficCounterValue(t, identity, stats.TrafficDirectionUpload), uint64(len(upload)+len(afterFIN)); got != want {
+	if got, want := trafficCounterValue(t, path, "upload"), uint64(len(upload)+len(afterFIN)); got != want {
 		t.Fatalf("accounted upload = %d, want %d", got, want)
 	}
-	if got, want := trafficCounterValue(t, identity, stats.TrafficDirectionDownload), uint64(len(download)); got != want {
+	if got, want := trafficCounterValue(t, path, "download"), uint64(len(download)); got != want {
 		t.Fatalf("accounted download = %d, want %d", got, want)
 	}
 }

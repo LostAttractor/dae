@@ -72,7 +72,7 @@ type Dialer struct {
 	healthy           bool
 	healthSeq         uint64
 	failureReportedAt time.Time
-	networks          [4]networkState
+	networks          [common.NetworkTypeCount]networkState
 	group             *groupState
 
 	mu sync.RWMutex
@@ -90,10 +90,10 @@ type Dialer struct {
 
 // LatencyStats is a coherent view of the latency samples of a dialer.
 type LatencyStats struct {
-	Last            time.Duration
-	Avg10           time.Duration
-	MovingAvg       time.Duration
-	Avg10HasFailure bool
+	Last            time.Duration `json:"last"`
+	Avg10           time.Duration `json:"average_10"`
+	MovingAvg       time.Duration `json:"moving_average"`
+	Avg10HasFailure bool          `json:"average_10_failed"`
 }
 
 type SelectionSnapshot struct {
@@ -105,26 +105,13 @@ type SelectionSnapshot struct {
 
 // NetworkSupportState describes protocol/remote capability, not current
 // reachability. Confirmed modes can be either usable or temporarily down.
-type NetworkSupportState uint8
+type NetworkSupportState string
 
 const (
-	NetworkSupportUnknown NetworkSupportState = iota
-	NetworkSupportConfirmed
-	NetworkSupportUnsupported
+	NetworkSupportUnknown     NetworkSupportState = "unknown"
+	NetworkSupportConfirmed   NetworkSupportState = "confirmed"
+	NetworkSupportUnsupported NetworkSupportState = "unsupported"
 )
-
-func (s NetworkSupportState) String() string {
-	switch s {
-	case NetworkSupportUnknown:
-		return "unknown"
-	case NetworkSupportConfirmed:
-		return "confirmed"
-	case NetworkSupportUnsupported:
-		return "unsupported"
-	default:
-		return "invalid"
-	}
-}
 
 func supportState(state networkState) NetworkSupportState {
 	switch state {
@@ -142,7 +129,7 @@ func supportState(state networkState) NetworkSupportState {
 type RuntimeSnapshot struct {
 	Healthy           bool
 	ConfirmingFailure bool
-	SupportState      [4]NetworkSupportState
+	SupportState      [common.NetworkTypeCount]NetworkSupportState
 	Session           netproxy.StateEvent
 	HasSession        bool
 	HasLatency        bool
@@ -161,10 +148,7 @@ type GlobalOption struct {
 type Property struct {
 	D.Property
 	SubscriptionTag string
-	// StatsIdentity distinguishes independently constructed entries whose
-	// parsed canonical links are equal, such as aliases and duplicates.
-	StatsIdentity string
-	Hops          []Hop
+	Hops            []Hop
 }
 
 type Hop struct {
@@ -195,15 +179,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 	}
 }
 
-func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode) *Dialer {
-	return newDialer(runtime, option, property, initialCheck, "")
-}
-
-func NewDialerRuntimeWithStatsScope(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
-	return newDialer(runtime, option, property, initialCheck, statsScope)
-}
-
-func newDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
+func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
 	if initialCheck > InitialCheckAsync {
 		panic(fmt.Sprintf("invalid initial check mode %d", initialCheck))
 	}
@@ -227,17 +203,15 @@ func newDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 			d.networks[i] = networkUsable
 		}
 	}
-	d.setStatsScope(statsScope)
+	d.statsKey = makeStatsKey(property, statsScope)
+	d.statsID = stats.NodeID(d.statsKey)
 	log.WithField("dialer", d.Name).
 		WithField("p", unsafe.Pointer(d)).
 		Traceln("NewDialer")
-	if initialCheck == InitialCheckDisabled {
-		stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, true, false)
-	}
 	return d
 }
 
-func ComposeStatsIdentity(parts ...string) string {
+func composeStatsIdentity(parts ...string) string {
 	var builder strings.Builder
 	for _, part := range parts {
 		builder.WriteString(strconv.Itoa(len(part)))
@@ -248,24 +222,26 @@ func ComposeStatsIdentity(parts ...string) string {
 }
 
 func makeStatsKey(property *Property, scope string) string {
-	id := property.StatsIdentity
-	if id == "" {
-		id = property.Link
-	}
+	id := property.Link
 	if id == "" {
 		id = property.Protocol + "://" + property.Address
 	}
-	return ComposeStatsIdentity(property.SubscriptionTag, id, scope)
-}
-
-func (d *Dialer) setStatsScope(scope string) {
-	d.statsKey = makeStatsKey(d.Property, scope)
-	d.statsID = stats.NodeID(d.statsKey)
+	return composeStatsIdentity(property.SubscriptionTag, id, scope)
 }
 
 func (d *Dialer) StatsKey() string { return d.statsKey }
 
 func (d *Dialer) StatsID() string { return d.statsID }
+
+func (d *Dialer) StatsPath(outbound string, networkType *common.NetworkType) stats.Path {
+	return stats.Path{
+		NodeID:   d.StatsID(),
+		Outbound: outbound,
+		Subtag:   d.Property.SubscriptionTag,
+		Dialer:   d.Name,
+		Network:  networkType.Index(),
+	}
+}
 
 func (d *Dialer) ChecksConnectivity() bool {
 	return d.initialCheck != InitialCheckDisabled
@@ -297,7 +273,7 @@ func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSnapshot {
 	d.mu.RLock()
 	session, hasSession := d.sessionSnapshot()
-	state := d.networks[common.NetworkTypeToIndex(networkType)]
+	state := d.networks[networkType.Index()]
 	snapshot := SelectionSnapshot{
 		Usable:  d.healthyLocked(session, hasSession) && state == networkUsable,
 		Support: supportState(state),
@@ -369,7 +345,7 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
 	d.mu.RUnlock()
 	snapshot.ConfirmingFailure = snapshot.Healthy && snapshot.ConfirmingFailure
-	snapshot.Availability = stats.GetNode(d.StatsKey())
+	snapshot.Availability = stats.DefaultStore.GetNode(d.StatsKey())
 	return snapshot
 }
 

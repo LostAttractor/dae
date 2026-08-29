@@ -1,6 +1,6 @@
 /*
-*  SPDX-License-Identifier: AGPL-3.0-only
-*  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
 package cmd
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -55,14 +57,7 @@ func tableUsageRow(usage control.TableUsage) table.Row {
 		breakdown = fmt.Sprintf("%d/%d", usage.Breakdown.Live, usage.Breakdown.Retained)
 		limitGC = fmt.Sprintf("%d", usage.Breakdown.LimitGC)
 	}
-	return table.Row{
-		usage.Name,
-		used,
-		usage.Limit,
-		colorUsage(ratio, formatRatio(ratio)),
-		breakdown,
-		limitGC,
-	}
+	return table.Row{usage.Name, used, usage.Limit, colorUsage(ratio, formatRatio(ratio)), breakdown, limitGC}
 }
 
 func nodeLabel(status control.NodeStatus, index int) string {
@@ -106,16 +101,35 @@ func annotatedNodeLabel(status control.NodeStatus, index int) string {
 	return label + " [" + strings.Join(parts, ",") + "]"
 }
 
-func networkStatusRow(status control.NetworkStatus, nodes []control.NodeStatus) table.Row {
+func groupNetworkSupport(nodes []control.NodeStatus, network common.NetworkIndex) dialer.NetworkSupportState {
+	support := dialer.NetworkSupportUnsupported
+	for _, node := range nodes {
+		switch node.Support[network] {
+		case dialer.NetworkSupportConfirmed:
+			return dialer.NetworkSupportConfirmed
+		case dialer.NetworkSupportUnknown:
+			support = dialer.NetworkSupportUnknown
+		}
+	}
+	return support
+}
+
+func networkStatusRow(group control.GroupStatus, network common.NetworkIndex) table.Row {
 	selected := "-"
-	if status.Selected != nil {
-		selected = nodeLabel(nodes[status.Selected.Index], status.Selected.Index)
+	validSelection := false
+	selectedID := group.SelectedNodeIDs[network]
+	for index, node := range group.Nodes {
+		if selectedID != "" && node.ID == selectedID {
+			selected = nodeLabel(node, index)
+			validSelection = true
+			break
+		}
 	}
 	return table.Row{
-		status.Network,
-		colorNetworkSupport(status.SupportState),
-		colorSelected(selected, status.Selected != nil),
-		formatConnCounts(status.ActiveConns, status.TotalConns),
+		network.String(),
+		colorNetworkSupport(groupNetworkSupport(group.Nodes, network)),
+		colorSelected(selected, validSelection),
+		formatConnCounts(group.Networks[network]),
 	}
 }
 
@@ -139,122 +153,123 @@ func verboseNodeHealth(status control.NodeStatus) verboseNodeHealthCells {
 		failure:      "-",
 		lastCheck:    "-",
 	}
-	if status.Health != nil {
-		cells.state = colorNodeHealth(status.Health.State)
-		cells.upRatio = colorRatio(status.Health.UpRatio, formatAvailability(status.Health.UpRatio, status.Health.ChecksFailed, status.Health.ChecksTotal))
-		cells.upRatio24h = colorRatio(status.Health.UpRatio24h, formatAvailability(status.Health.UpRatio24h, status.Health.ChecksFailed24h, status.Health.ChecksTotal24h))
-		cells.healthySince = formatAgoWithChecks(status.Health.HealthySince, status.Health.ChecksSinceHealthy)
-		cells.failure = formatFailure(status.Health.Failure)
-		cells.lastCheck = formatAgo(status.Health.LastCheckAt)
+	if status.ChecksConnectivity {
+		availability := status.Availability
+		cells.state = colorNodeHealth(nodeHealth(status))
+		cells.upRatio = colorRatio(availability.UpRatio, formatAvailability(availability.UpRatio, availability.ChecksFailed, availability.ChecksTotal))
+		cells.upRatio24h = colorRatio(availability.Recent24h.UpRatio, formatAvailability(availability.Recent24h.UpRatio, availability.Recent24h.ChecksFailed, availability.Recent24h.ChecksTotal))
+		cells.healthySince = formatAgoWithChecks(availability.AliveSince, availability.ChecksSinceAlive)
+		cells.failure = formatFailure(availability.LastFailureStartedAt, availability.LastFailureDuration)
+		cells.lastCheck = formatAgo(availability.LastCheckAt)
 	}
 	return cells
 }
 
-func nodeStatusRow(status control.NodeStatus, index int, groupNetworks []control.NetworkStatus) table.Row {
-	selectedNetworks, selected := selectedNetworks(index, groupNetworks)
-	session := "-"
-	if status.Session != nil {
-		session = string(status.Session.State)
-	}
+func nodeStatusRow(status control.NodeStatus, index int, selected control.NetworkValues[string]) table.Row {
+	selectedNames, isSelected := selectedNetworks(status.ID, selected)
 	health := verboseNodeHealth(status)
 	return table.Row{
-		colorSelected(annotatedNodeLabel(status, index), selected),
+		colorSelected(annotatedNodeLabel(status, index), isSelected),
 		emptyDash(status.Subtag),
 		emptyDash(status.Protocol),
-		session,
+		emptyDash(status.Session),
 		health.state,
-		networkSupport(status.Networks),
-		colorSelected(selectedNetworks, selected),
+		compactNetworks(networkMask(status.Support)),
+		colorSelected(selectedNames, isSelected),
 		health.latency,
 		health.upRatio,
 		health.upRatio24h,
 		health.healthySince,
 		health.failure,
 		health.lastCheck,
-		formatAgo(status.LastConnectionFailureAt),
-		formatConnCounts(status.ActiveConns, status.TotalConns),
-		formatTrafficRateCell(status.Traffic),
-		formatTrafficTotalCell(status.Traffic),
+		formatAgo(status.Availability.LastConnFailAt),
+		formatConnCounts(status.Stats),
+		formatTrafficRateCell(status.Stats),
+		formatTrafficTotalCell(status.Stats),
 	}
 }
 
 func nodeLatency(status control.NodeStatus) string {
-	if status.Health == nil || status.Health.Latency == nil || status.Health.State != control.NodeHealthHealthy {
+	if status.Latency == nil || nodeHealth(status) != nodeHealthHealthy {
 		return "-"
 	}
-	latency := status.Health.Latency
-	formatted := fmt.Sprintf("%.0f/%.0f/%.0f", latency.LastMs, latency.Average10Ms, latency.MovingAverageMs)
-	if latency.Average10Failed {
+	latency := status.Latency
+	last := latency.Last.Seconds() * 1000
+	average := latency.Avg10.Seconds() * 1000
+	moving := latency.MovingAvg.Seconds() * 1000
+	formatted := fmt.Sprintf("%.0f/%.0f/%.0f", last, average, moving)
+	if latency.Avg10HasFailure {
 		return colorize(formatted, text.FgHiRed, text.Bold)
 	}
-	return colorLatency(latency.MovingAverageMs, formatted)
+	return colorLatency(moving, formatted)
 }
 
 func compactNodeState(status control.NodeStatus) string {
-	if status.Session != nil && status.Session.State != control.SessionConnected {
-		if status.Health != nil && status.Health.State == control.NodeHealthUnhealthy {
-			return colorize(string(status.Session.State), text.FgRed)
+	health := nodeHealth(status)
+	if status.Session != "" && status.Session != "connected" {
+		if health == nodeHealthUnhealthy {
+			return colorize(status.Session, text.FgRed)
 		}
-		switch status.Session.State {
-		case control.SessionConnecting:
-			return colorize(string(status.Session.State), text.FgYellow)
-		default:
-			return colorize(string(status.Session.State), text.FgRed)
+		if status.Session == "connecting" {
+			return colorize(status.Session, text.FgYellow)
 		}
+		return colorize(status.Session, text.FgRed)
 	}
-	if status.Health != nil {
-		return colorNodeHealth(status.Health.State)
+	if status.ChecksConnectivity {
+		return colorNodeHealth(health)
 	}
-	if status.Session != nil {
-		return colorize(string(status.Session.State), text.FgGreen)
+	if status.Session != "" {
+		return colorize(status.Session, text.FgGreen)
 	}
 	return "-"
 }
 
 func compactUpRatios(status control.NodeStatus) string {
-	if status.Health == nil || status.Health.State == control.NodeHealthUnknown {
+	if nodeHealth(status) == nodeHealthUnknown {
 		return "-"
 	}
-	formatted := fmt.Sprintf("%.1f/%.1f%%", status.Health.UpRatio*100, status.Health.UpRatio24h*100)
-	return colorRatio(min(status.Health.UpRatio, status.Health.UpRatio24h), formatted)
+	availability := status.Availability
+	formatted := fmt.Sprintf("%.1f/%.1f%%", availability.UpRatio*100, availability.Recent24h.UpRatio*100)
+	return colorRatio(min(availability.UpRatio, availability.Recent24h.UpRatio), formatted)
 }
 
-func recentFailureEpisode(health *control.NodeHealthStatus, now time.Time) bool {
-	if health == nil || health.Failure == nil || health.Failure.StartedAt.After(now) {
+func recentFailureEpisode(status control.NodeStatus, now time.Time) bool {
+	availability := status.Availability
+	startedAt := availability.LastFailureStartedAt
+	if !status.ChecksConnectivity || startedAt.IsZero() || startedAt.After(now) {
 		return false
 	}
-	if health.UpRatio24h < 1 {
+	if availability.Recent24h.UpRatio < 1 {
 		return true
 	}
 	cutoff := now.Add(-24 * time.Hour)
-	duration := time.Duration(max(health.Failure.DurationMs, 0)) * time.Millisecond
+	duration := max(availability.LastFailureDuration, 0)
 	if duration == 0 {
-		return !health.Failure.StartedAt.Before(cutoff)
+		return !startedAt.Before(cutoff)
 	}
-	return health.Failure.StartedAt.Add(duration).After(cutoff)
+	return startedAt.Add(duration).After(cutoff)
 }
 
-func recentNodeFailure(health *control.NodeHealthStatus, now time.Time) bool {
-	return health != nil && (health.ChecksFailed24h > 0 || recentFailureEpisode(health, now))
+func recentNodeFailure(status control.NodeStatus, now time.Time) bool {
+	return status.ChecksConnectivity && (status.Availability.Recent24h.ChecksFailed > 0 || recentFailureEpisode(status, now))
 }
 
-func compactFailure(health *control.NodeHealthStatus, now time.Time) string {
-	if !recentNodeFailure(health, now) {
+func compactFailure(status control.NodeStatus, now time.Time) string {
+	if !recentNodeFailure(status, now) {
 		return "-"
 	}
-	if !recentFailureEpisode(health, now) {
-		return colorize(fmt.Sprintf("%dchk", health.ChecksFailed24h), text.FgYellow)
+	availability := status.Availability
+	if !recentFailureEpisode(status, now) {
+		return colorize(fmt.Sprintf("%dchk", availability.Recent24h.ChecksFailed), text.FgYellow)
 	}
-	age := now.Sub(health.Failure.StartedAt)
-	duration := time.Duration(max(health.Failure.DurationMs, 0)) * time.Millisecond
-	formatDuration := func(d time.Duration) string {
-		if d <= 0 {
+	formatDuration := func(duration time.Duration) string {
+		if duration <= 0 {
 			return "0s"
 		}
-		return formatUptime(d)
+		return formatUptime(duration)
 	}
-	formatted := formatDuration(age) + "/" + formatDuration(duration)
-	if health.State == control.NodeHealthUnhealthy {
+	formatted := formatDuration(now.Sub(availability.LastFailureStartedAt)) + "/" + formatDuration(availability.LastFailureDuration)
+	if nodeHealth(status) == nodeHealthUnhealthy {
 		return colorize(formatted, text.FgRed)
 	}
 	return colorize(formatted, text.FgYellow)
@@ -262,26 +277,26 @@ func compactFailure(health *control.NodeHealthStatus, now time.Time) string {
 
 func hasRecentNodeFailure(nodes []control.NodeStatus, now time.Time) bool {
 	for _, node := range nodes {
-		if recentNodeFailure(node.Health, now) {
+		if recentNodeFailure(node, now) {
 			return true
 		}
 	}
 	return false
 }
 
-func compactNodeStatusRow(status control.NodeStatus, index int, groupNetworks []control.NetworkStatus) table.Row {
-	selectedNetworks, selected := selectedNetworks(index, groupNetworks)
+func compactNodeStatusRow(status control.NodeStatus, index int, selected control.NetworkValues[string]) table.Row {
+	selectedNames, isSelected := selectedNetworks(status.ID, selected)
 	return table.Row{
-		colorSelected(annotatedNodeLabel(status, index), selected),
+		colorSelected(annotatedNodeLabel(status, index), isSelected),
 		emptyDash(status.Protocol),
 		compactNodeState(status),
-		networkSupport(status.Networks),
-		colorSelected(selectedNetworks, selected),
+		compactNetworks(networkMask(status.Support)),
+		colorSelected(selectedNames, isSelected),
 		nodeLatency(status),
 		compactUpRatios(status),
-		formatConnCounts(status.ActiveConns, status.TotalConns),
-		formatTrafficRateCell(status.Traffic),
-		formatTrafficTotalCell(status.Traffic),
+		formatConnCounts(status.Stats),
+		formatTrafficRateCell(status.Stats),
+		formatTrafficTotalCell(status.Stats),
 	}
 }
 
@@ -290,28 +305,21 @@ func groupDisplayMetadata(group control.GroupStatus) (targetKind, policy string)
 	if policy == "" {
 		policy = "single path"
 	}
-	targetKind = group.TargetKind
-	if targetKind == "" {
-		targetKind = "group"
-	}
-	return targetKind, policy
+	return group.TargetKind, policy
 }
 
-func uncheckedNetworkRows(networks []control.NetworkStatus) []table.Row {
-	rows := make([]table.Row, 0, len(networks))
-	for _, status := range networks {
-		rows = append(rows, table.Row{
-			status.Network,
-			formatConnCounts(status.ActiveConns, status.TotalConns),
-		})
+func uncheckedNetworkRows(group control.GroupStatus) []table.Row {
+	rows := make([]table.Row, common.NetworkTypeCount)
+	for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
+		rows[index] = table.Row{index.String(), formatConnCounts(group.Networks[index])}
 	}
 	return rows
 }
 
 func checkedNetworkRows(group control.GroupStatus) []table.Row {
-	rows := make([]table.Row, 0, len(group.Networks))
-	for _, status := range group.Networks {
-		rows = append(rows, networkStatusRow(status, group.Nodes))
+	rows := make([]table.Row, common.NetworkTypeCount)
+	for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
+		rows[index] = networkStatusRow(group, index)
 	}
 	return rows
 }
@@ -320,7 +328,7 @@ func nodeTable(group control.GroupStatus, verbose bool, now time.Time) (table.Ro
 	rows := make([]table.Row, 0, len(group.Nodes))
 	if verbose {
 		for index, status := range group.Nodes {
-			rows = append(rows, nodeStatusRow(status, index, group.Networks))
+			rows = append(rows, nodeStatusRow(status, index, group.SelectedNodeIDs))
 		}
 		return table.Row{
 			"PATH", "SUB", "PROTO", "SESSION", "HEALTH", "SUPPORT", "SELECTED",
@@ -331,15 +339,13 @@ func nodeTable(group control.GroupStatus, verbose bool, now time.Time) (table.Ro
 
 	showFailure := hasRecentNodeFailure(group.Nodes, now)
 	for index, status := range group.Nodes {
-		row := compactNodeStatusRow(status, index, group.Networks)
+		row := compactNodeStatusRow(status, index, group.SelectedNodeIDs)
 		if showFailure {
-			row = append(row, compactFailure(status.Health, now))
+			row = append(row, compactFailure(status, now))
 		}
 		rows = append(rows, row)
 	}
-	header := table.Row{
-		"PATH", "PROTO", "STATE", "NETS", "SELECT", "LAT L/A/M(ms)", "UP/24H", "CONNS", "RATE U/D", "TOTAL U/D",
-	}
+	header := table.Row{"PATH", "PROTO", "STATE", "NETS", "SELECT", "LAT L/A/M(ms)", "UP/24H", "CONNS", "RATE U/D", "TOTAL U/D"}
 	if showFailure {
 		header = append(header, "FAIL A/D")
 	}
@@ -348,47 +354,44 @@ func nodeTable(group control.GroupStatus, verbose bool, now time.Time) (table.Ro
 
 func printGroupStatus(group control.GroupStatus) {
 	targetKind, policy := groupDisplayMetadata(group)
-	if group.Connectivity == nil {
+	if !group.ChecksConnectivity {
 		fmt.Printf(
 			"\nGroup '%s' [kind: %s, policy: %s%s] (no connectivity checks)\n",
-			group.Name, targetKind, policy, formatTrafficSummarySuffix(group.Traffic),
+			group.Name, targetKind, policy, formatTrafficSummarySuffix(group.Stats),
 		)
-		printTable(table.Row{"NETWORK", "CONNS(A/T)"}, uncheckedNetworkRows(group.Networks))
+		printTable(table.Row{"NETWORK", "CONNS(A/T)"}, uncheckedNetworkRows(group))
 		return
 	}
-	upRatio := "-"
-	if group.Connectivity.UpRatio != nil {
-		ratio := *group.Connectivity.UpRatio
-		upRatio = colorRatio(ratio, formatRatio(ratio))
-	}
 
+	upRatio := "-"
+	if group.Availability.Seen {
+		upRatio = colorRatio(group.Availability.UpRatio, formatRatio(group.Availability.UpRatio))
+	}
 	fmt.Printf(
 		"\nGroup '%s' [kind: %s, policy: %s, state: %s, up: %s, up since: %s, failure: %s%s]\n",
 		group.Name,
 		targetKind,
 		policy,
-		formatGroupConnectivityState(group.Connectivity),
+		formatGroupConnectivityState(group),
 		upRatio,
-		formatAgo(group.Connectivity.UpSince),
-		formatFailure(group.Connectivity.LastFailure),
-		formatTrafficSummarySuffix(group.Traffic),
+		formatAgo(group.Availability.AliveSince),
+		formatFailure(group.Availability.LastFailureStartedAt, group.Availability.LastFailureDuration),
+		formatTrafficSummarySuffix(group.Stats),
 	)
-	printTable(table.Row{
-		"NETWORK", "SUPPORT", "SELECTED", "CONNS(A/T)",
-	}, checkedNetworkRows(group))
+	printTable(table.Row{"NETWORK", "SUPPORT", "SELECTED", "CONNS(A/T)"}, checkedNetworkRows(group))
 
 	fmt.Printf("\nPaths of target '%s':\n", group.Name)
 	header, rows := nodeTable(group, statusVerbose, time.Now())
 	printTable(header, rows)
 }
 
-func statusSummary(s *control.StatusSnapshot) string {
+func statusSummary(snapshot *control.StatusSnapshot) string {
 	var degradedGroups, warningGroups []string
-	for _, group := range s.Groups {
-		switch group.Health {
-		case control.HealthDegraded:
+	for _, group := range snapshot.Groups {
+		switch groupHealth(group) {
+		case healthDegraded:
 			degradedGroups = append(degradedGroups, group.Name)
-		case control.HealthWarning:
+		case healthWarning:
 			warningGroups = append(warningGroups, group.Name)
 		}
 	}
@@ -401,45 +404,50 @@ func statusSummary(s *control.StatusSnapshot) string {
 		details = append(details, "warning groups: "+strings.Join(warningGroups, ", "))
 	}
 
-	summary := colorHealth(s.Health)
+	summary := colorHealth(statusHealth(snapshot.Groups))
 	if len(details) > 0 {
 		summary += " (" + strings.Join(details, "; ") + ")"
 	}
 	return summary
 }
 
-func printStatus(s *control.StatusSnapshot) {
+func printStatus(snapshot *control.StatusSnapshot) {
 	fmt.Printf(
 		"Daemon:      %s up %s (since %s)",
-		s.Version,
-		formatUptime(time.Since(s.StartedAt)),
-		s.StartedAt.Local().Format("2006-01-02 15:04:05"),
+		snapshot.Version,
+		formatUptime(time.Since(snapshot.StartedAt)),
+		snapshot.StartedAt.Local().Format("2006-01-02 15:04:05"),
 	)
-	if s.LastReloadAt != nil {
-		fmt.Printf(", last reload %s", formatAgo(s.LastReloadAt))
+	if !snapshot.LastReloadAt.IsZero() {
+		fmt.Printf(", last reload %s", formatAgo(snapshot.LastReloadAt))
 	}
 	fmt.Println()
-	fmt.Printf("Status:      %s\n", statusSummary(s))
-	perNet := make([]string, len(s.Networks))
-	for i, network := range s.Networks {
-		perNet[i] = fmt.Sprintf("%s %d", network.Network, network.ActiveConns)
+	fmt.Printf("Status:      %s\n", statusSummary(snapshot))
+	perNet := make([]string, common.NetworkTypeCount)
+	for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
+		perNet[index] = fmt.Sprintf("%s %d", index.String(), snapshot.Networks[index].ActiveConnections)
 	}
-	fmt.Printf("Connections: %d active (%s), %d total", s.ActiveConns, strings.Join(perNet, ", "), s.TotalConns)
-	if traffic := formatTrafficSummary(s.Traffic); traffic != "" {
+	fmt.Printf(
+		"Connections: %d active (%s), %d total",
+		snapshot.Stats.ActiveConnections,
+		strings.Join(perNet, ", "),
+		snapshot.Stats.TotalConnections,
+	)
+	if traffic := formatTrafficSummary(snapshot.Stats); traffic != "" {
 		fmt.Printf("; %s", traffic)
 	}
 	fmt.Println()
 
-	if len(s.Tables) > 0 {
+	if len(snapshot.Tables) > 0 {
 		fmt.Println("\nTables:")
-		rows := make([]table.Row, 0, len(s.Tables))
-		for _, usage := range s.Tables {
+		rows := make([]table.Row, 0, len(snapshot.Tables))
+		for _, usage := range snapshot.Tables {
 			rows = append(rows, tableUsageRow(usage))
 		}
 		printTable(table.Row{"TABLE", "USED", "LIMIT", "USAGE", "LIVE/RETAINED", "LIMIT-GC"}, rows)
 	}
 
-	for _, group := range s.Groups {
+	for _, group := range snapshot.Groups {
 		printGroupStatus(group)
 	}
 }

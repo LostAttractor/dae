@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -70,20 +69,17 @@ var (
 		"http://www.gstatic.com/generate_204",
 		"http://www.qualcomm.cn/generate_204",
 	}
-	std                = log.New()
-	pprofServer        *http.Server
-	prometheusServer   *http.Server
-	pprofListener      net.Listener
-	prometheusListener net.Listener
-	pprofPort          uint16
-	// prometheusPort is the port prometheusServer listens on; 0 means disabled.
-	prometheusPort  uint16
+	std             = log.New()
+	pprofServer     *http.Server
+	metricsServer   *http.Server
+	pprofListener   net.Listener
+	metricsListener net.Listener
+	pprofPort       uint16
+	// metricsPort is the port metricsServer listens on; 0 means disabled.
+	metricsPort     uint16
+	metricsRegistry = prometheus.NewRegistry()
 	observabilityMu sync.Mutex
-	// prometheusHandler holds the handler bound to the current control plane's
-	// registry, so it can be swapped on reload without restarting the server.
-	prometheusHandler atomic.Value // http.Handler
-	statusServer      *control.StatusServer
-	controlPlane      *control.ControlPlane
+	statusServer    *control.StatusServer
 )
 
 type reloadControlPlaneRetirer interface {
@@ -100,6 +96,7 @@ func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections b
 }
 
 func init() {
+	metricsRegistry.MustRegister(stats.DefaultStore)
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
 	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to std and stderr.")
 	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
@@ -238,7 +235,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 		std.Fatalln(err)
 	}
 
-	startPrometheusServer(conf.Global.MetricsPort, c.PrometheusRegistry)
+	startMetricsServer(conf.Global.MetricsPort)
 
 	if statusServer == nil {
 		if statusServer, err = control.StartStatusServer(StatusSocketPath, Version); err != nil {
@@ -323,8 +320,8 @@ loop:
 				}
 				sdnotify.Ready()
 				if pendingReload {
-					reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort, c.PrometheusRegistry)
-					stats.RecordReload()
+					reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
+					stats.DefaultStore.RecordReload()
 					if statusServer != nil {
 						statusServer.SetControlPlane(c)
 					}
@@ -475,7 +472,7 @@ loop:
 
 func exit(c *control.ControlPlane) {
 	startPprofServer(0)
-	startPrometheusServer(0, nil)
+	startMetricsServer(0)
 	if statusServer != nil {
 		statusServer.Close()
 	}
@@ -533,31 +530,31 @@ func clearPprofServer(server *http.Server) {
 	}
 }
 
-func clearPrometheusServer(server *http.Server) {
+func clearMetricsServer(server *http.Server) {
 	observabilityMu.Lock()
 	defer observabilityMu.Unlock()
-	if prometheusServer == server {
-		prometheusServer = nil
-		prometheusListener = nil
-		prometheusPort = 0
+	if metricsServer == server {
+		metricsServer = nil
+		metricsListener = nil
+		metricsPort = 0
 	}
 }
 
-func reconfigureObservabilityServers(pprofTarget, metricsTarget uint16, registry *prometheus.Registry) {
+func reconfigureObservabilityServers(pprofTarget, metricsTarget uint16) {
 	observabilityMu.Lock()
 	currentPprof := pprofPort
-	currentMetrics := prometheusPort
+	currentMetrics := metricsPort
 	observabilityMu.Unlock()
 
 	// Release a port first when the other service needs to take it over.
 	if pprofTarget != 0 && pprofTarget == currentMetrics && metricsTarget != currentMetrics {
-		startPrometheusServer(0, nil)
+		startMetricsServer(0)
 	}
 	if metricsTarget != 0 && metricsTarget == currentPprof && pprofTarget != currentPprof {
 		startPprofServer(0)
 	}
 	startPprofServer(pprofTarget)
-	startPrometheusServer(metricsTarget, registry)
+	startMetricsServer(metricsTarget)
 }
 
 func startPprofServer(port uint16) {
@@ -602,23 +599,21 @@ func startPprofServer(port uint16) {
 	stopHTTPServer("pprof", old, oldListener)
 }
 
-// startPrometheusServer rebinds the metrics handler to the given registry,
-// restarting the HTTP server only when the listen port changed.
-func startPrometheusServer(port uint16, prometheusRegistry *prometheus.Registry) {
+// startMetricsServer restarts the metrics server only when its process-level
+// listener changes. The registry is stable across control-plane reloads.
+func startMetricsServer(port uint16) {
 	observabilityMu.Lock()
-	if prometheusServer != nil && prometheusPort == port && port != 0 {
-		// Port unchanged: keep the listener, just swap the registry.
-		prometheusHandler.Store(promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{}))
+	if metricsServer != nil && metricsPort == port && port != 0 {
 		observabilityMu.Unlock()
 		return
 	}
 
 	if port == 0 {
-		old := prometheusServer
-		oldListener := prometheusListener
-		prometheusServer = nil
-		prometheusListener = nil
-		prometheusPort = 0
+		old := metricsServer
+		oldListener := metricsListener
+		metricsServer = nil
+		metricsListener = nil
+		metricsPort = 0
 		observabilityMu.Unlock()
 		stopHTTPServer("metrics", old, oldListener)
 		return
@@ -626,8 +621,8 @@ func startPrometheusServer(port uint16, prometheusRegistry *prometheus.Registry)
 
 	server := &http.Server{
 		Addr: fmt.Sprintf("localhost:%d", port),
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			prometheusHandler.Load().(http.Handler).ServeHTTP(w, r)
+		Handler: promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{
+			ErrorHandling: promhttp.ContinueOnError,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
@@ -638,13 +633,12 @@ func startPrometheusServer(port uint16, prometheusRegistry *prometheus.Registry)
 		std.Warnf("Failed to start metrics server: %v", err)
 		return
 	}
-	prometheusHandler.Store(promhttp.HandlerFor(prometheusRegistry, promhttp.HandlerOpts{}))
-	old := prometheusServer
-	oldListener := prometheusListener
-	prometheusServer = server
-	prometheusListener = listener
-	prometheusPort = port
-	go serveHTTP("metrics", server, listener, clearPrometheusServer)
+	old := metricsServer
+	oldListener := metricsListener
+	metricsServer = server
+	metricsListener = listener
+	metricsPort = port
+	go serveHTTP("metrics", server, listener, clearMetricsServer)
 	observabilityMu.Unlock()
 	stopHTTPServer("metrics", old, oldListener)
 }

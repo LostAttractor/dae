@@ -6,230 +6,255 @@
 package stats
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"math"
+	"math/bits"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
-const TrafficRateWindow = time.Second
+const trafficRateWindow = time.Second
 
 const (
-	TrafficDirectionUpload   = "upload"
-	TrafficDirectionDownload = "download"
+	trafficDirectionUpload   = "upload"
+	trafficDirectionDownload = "download"
 )
 
-// TrafficIdentity is the attribution attached to one logical connection.
-type TrafficIdentity struct {
+// Path identifies the outbound path used by one logical connection.
+type Path struct {
 	NodeID   string
 	Outbound string
 	Subtag   string
 	Dialer   string
-	Network  string
+	Network  common.NetworkIndex
 }
 
 // TrafficCounters contains cumulative payload bytes for both directions.
 type TrafficCounters struct {
-	UploadBytes   uint64
-	DownloadBytes uint64
-}
-
-func (c *TrafficCounters) Add(other TrafficCounters) {
-	c.UploadBytes += other.UploadBytes
-	c.DownloadBytes += other.DownloadBytes
+	UploadBytes   uint64 `json:"upload_bytes"`
+	DownloadBytes uint64 `json:"download_bytes"`
 }
 
 type TrafficRate struct {
-	UploadBytesPerSecond   uint64
-	DownloadBytesPerSecond uint64
+	UploadBytesPerSecond   uint64 `json:"upload_bytes_per_second"`
+	DownloadBytesPerSecond uint64 `json:"download_bytes_per_second"`
 }
 
-func (r *TrafficRate) Add(other TrafficRate) {
-	r.UploadBytesPerSecond += other.UploadBytesPerSecond
-	r.DownloadBytesPerSecond += other.DownloadBytesPerSecond
+// PathStats is the process-lifetime state of one outbound path plus its latest
+// traffic-rate sample.
+type PathStats struct {
+	ActiveConnections int64 `json:"active_connections"`
+	TotalConnections  int64 `json:"total_connections"`
+	TrafficCounters
+	TrafficRate
 }
 
-// TrafficSnapshot is the latest sampled rate of one active connection.
-type TrafficSnapshot struct {
-	Identity TrafficIdentity
-	Rate     TrafficRate
-}
-
-// TrafficCounterSource supplies cumulative bytes transferred outside
-// userspace, such as bytes redirected by the direct TCP sockmap path.
-type TrafficCounterSource func() (TrafficCounters, error)
-
-type trafficMetrics struct {
-	upload   prometheus.Counter
-	download prometheus.Counter
-}
-
-// TrafficConnection accounts for one logical TCP, smux, or UDP connection.
-// Active forwarding paths only touch the atomic counters. Sampling and normal
-// Prometheus publication happen outside those paths; a record racing with Close
-// performs one final synchronous flush so successful bytes are not lost.
-type TrafficConnection struct {
-	tracker  *TrafficTracker
-	identity TrafficIdentity
-
-	uploadBytes   atomic.Uint64
-	downloadBytes atomic.Uint64
-	closed        atomic.Bool
-
-	stateMu              sync.Mutex
-	lastSample           TrafficCounters
-	lastPublished        TrafficCounters
-	externalSource       TrafficCounterSource
-	lastExternalCounters TrafficCounters
-	metrics              trafficMetrics
-}
-
-type sampledConnection struct {
-	connection *TrafficConnection
-	snapshot   TrafficSnapshot
-}
-
-// The sampled values are immutable after publication. Snapshot filters their
-// connection pointers against live close state so closed connections disappear
-// immediately rather than at the next sample.
-type publishedTrafficSnapshot struct {
-	connections []sampledConnection
-}
-
-type TrafficTracker struct {
-	activeMu          sync.RWMutex
-	activeConnections map[*TrafficConnection]struct{}
-
-	samplingMu      sync.Mutex
-	windowStartedAt time.Time
-	latest          atomic.Pointer[publishedTrafficSnapshot]
-}
-
-var DefaultTrafficTracker = newTrafficTracker()
-
-func init() {
-	go DefaultTrafficTracker.run()
-}
-
-func newTrafficTracker() *TrafficTracker {
-	return newTrafficTrackerAt(time.Now())
-}
-
-func newTrafficTrackerAt(windowStartedAt time.Time) *TrafficTracker {
-	return &TrafficTracker{
-		activeConnections: make(map[*TrafficConnection]struct{}),
-		windowStartedAt:   windowStartedAt,
+func (s *PathStats) UnmarshalJSON(data []byte) error {
+	var fields struct {
+		ActiveConnections      *int64  `json:"active_connections"`
+		TotalConnections       *int64  `json:"total_connections"`
+		UploadBytes            *uint64 `json:"upload_bytes"`
+		DownloadBytes          *uint64 `json:"download_bytes"`
+		UploadBytesPerSecond   *uint64 `json:"upload_bytes_per_second"`
+		DownloadBytesPerSecond *uint64 `json:"download_bytes_per_second"`
 	}
-}
-
-func (t *TrafficTracker) run() {
-	ticker := time.NewTicker(TrafficRateWindow)
-	defer ticker.Stop()
-	for range ticker.C {
-		t.sampleAt(time.Now())
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
 	}
-}
-
-func trafficMetric(identity TrafficIdentity, direction string) prometheus.Counter {
-	return common.TrafficBytes.WithLabelValues(
-		identity.NodeID,
-		identity.Outbound,
-		identity.Subtag,
-		identity.Dialer,
-		identity.Network,
-		direction,
-	)
-}
-
-func (t *TrafficTracker) Open(identity TrafficIdentity) *TrafficConnection {
-	connection := &TrafficConnection{
-		tracker:  t,
-		identity: identity,
-		metrics: trafficMetrics{
-			upload:   trafficMetric(identity, TrafficDirectionUpload),
-			download: trafficMetric(identity, TrafficDirectionDownload),
+	switch {
+	case fields.ActiveConnections == nil:
+		return errors.New("path stats is missing active_connections")
+	case fields.TotalConnections == nil:
+		return errors.New("path stats is missing total_connections")
+	case fields.UploadBytes == nil:
+		return errors.New("path stats is missing upload_bytes")
+	case fields.DownloadBytes == nil:
+		return errors.New("path stats is missing download_bytes")
+	case fields.UploadBytesPerSecond == nil:
+		return errors.New("path stats is missing upload_bytes_per_second")
+	case fields.DownloadBytesPerSecond == nil:
+		return errors.New("path stats is missing download_bytes_per_second")
+	}
+	*s = PathStats{
+		ActiveConnections: *fields.ActiveConnections,
+		TotalConnections:  *fields.TotalConnections,
+		TrafficCounters: TrafficCounters{
+			UploadBytes:   *fields.UploadBytes,
+			DownloadBytes: *fields.DownloadBytes,
+		},
+		TrafficRate: TrafficRate{
+			UploadBytesPerSecond:   *fields.UploadBytesPerSecond,
+			DownloadBytesPerSecond: *fields.DownloadBytesPerSecond,
 		},
 	}
-	t.activeMu.Lock()
-	t.activeConnections[connection] = struct{}{}
-	t.activeMu.Unlock()
-	return connection
+	return nil
 }
 
-func (c *TrafficConnection) RecordUpload(bytes uint64) {
-	c.uploadBytes.Add(bytes)
-	c.flushLateRecord()
+func (s *PathStats) Add(other PathStats) {
+	s.ActiveConnections += other.ActiveConnections
+	s.TotalConnections += other.TotalConnections
+	s.UploadBytes += other.UploadBytes
+	s.DownloadBytes += other.DownloadBytes
+	s.UploadBytesPerSecond += other.UploadBytesPerSecond
+	s.DownloadBytesPerSecond += other.DownloadBytesPerSecond
 }
 
-func (c *TrafficConnection) RecordDownload(bytes uint64) {
-	c.downloadBytes.Add(bytes)
-	c.flushLateRecord()
+type pathCounters struct {
+	active   atomic.Int64
+	total    atomic.Int64
+	upload   atomic.Uint64
+	download atomic.Uint64
 }
 
-// A forwarding operation that raced with Close may report its successful
-// write just after the final flush. Publish that late delta synchronously.
-func (c *TrafficConnection) flushLateRecord() {
-	if !c.closed.Load() {
-		return
+// Connection accounts for one logical TCP, smux, or UDP connection. Payload
+// records update exact process-lifetime path totals immediately; the sampler is
+// responsible only for rates and external counter refreshes.
+type Connection struct {
+	store *Store
+	stats *pathCounters
+
+	stateMu              sync.Mutex
+	closed               bool
+	externalSource       func() (TrafficCounters, error)
+	lastExternalCounters TrafficCounters
+}
+
+// Store owns process-lifetime runtime statistics. Its zero value is not usable.
+type Store struct {
+	startedAt time.Time
+
+	pathsMu sync.RWMutex
+	paths   map[Path]*pathCounters
+
+	externalMu          sync.RWMutex
+	externalConnections map[*Connection]struct{}
+	externalReadErrors  atomic.Uint64
+
+	samplingMu      sync.RWMutex
+	windowStartedAt time.Time
+	lastSample      map[Path]TrafficCounters
+	rates           map[Path]TrafficRate
+
+	availabilityMu sync.Mutex
+	nodes          map[string]*nodeStats
+	groups         map[string]*groupStats
+	lastReload     atomic.Int64
+	metrics        storeMetrics
+}
+
+var DefaultStore = newStoreAt(time.Now())
+
+func init() { go DefaultStore.run() }
+
+func newStoreAt(windowStartedAt time.Time) *Store {
+	return &Store{
+		startedAt:           windowStartedAt,
+		paths:               make(map[Path]*pathCounters),
+		externalConnections: make(map[*Connection]struct{}),
+		windowStartedAt:     windowStartedAt,
+		lastSample:          make(map[Path]TrafficCounters),
+		rates:               make(map[Path]TrafficRate),
+		nodes:               make(map[string]*nodeStats),
+		groups:              make(map[string]*groupStats),
+		metrics:             newStoreMetrics(),
+	}
+}
+
+func (s *Store) run() {
+	ticker := time.NewTicker(trafficRateWindow)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.sampleAt(time.Now())
+	}
+}
+
+func (s *Store) pathCounters(path Path) *pathCounters {
+	s.pathsMu.RLock()
+	counters := s.paths[path]
+	s.pathsMu.RUnlock()
+	if counters != nil {
+		return counters
+	}
+
+	s.pathsMu.Lock()
+	defer s.pathsMu.Unlock()
+	if counters = s.paths[path]; counters == nil {
+		counters = new(pathCounters)
+		s.paths[path] = counters
+	}
+	return counters
+}
+
+func (s *Store) OpenConnection(path Path) *Connection {
+	counters := s.pathCounters(path)
+	counters.total.Add(1)
+	counters.active.Add(1)
+	return &Connection{store: s, stats: counters}
+}
+
+func (c *Connection) RecordUpload(bytes uint64) {
+	c.stats.upload.Add(bytes)
+}
+
+func (c *Connection) RecordDownload(bytes uint64) {
+	c.stats.download.Add(bytes)
+}
+
+func (c *Connection) AttachExternalCounters(source func() (TrafficCounters, error)) error {
+	if source == nil {
+		return errors.New("external counter source is nil")
 	}
 	c.stateMu.Lock()
-	c.publishMetricsLocked(c.totalsLocked())
-	c.stateMu.Unlock()
-}
-
-func (c *TrafficConnection) AttachExternalCounters(source TrafficCounterSource) {
-	c.stateMu.Lock()
-	if !c.closed.Load() {
-		c.externalSource = source
+	defer c.stateMu.Unlock()
+	if c.closed {
+		return errors.New("connection is closed")
 	}
-	c.stateMu.Unlock()
+	if c.externalSource != nil {
+		return errors.New("external counter source is already attached")
+	}
+	c.externalSource = source
+	c.store.externalMu.Lock()
+	c.store.externalConnections[c] = struct{}{}
+	c.store.externalMu.Unlock()
+	return nil
 }
 
-func (c *TrafficConnection) readExternalCountersLocked() {
+func (c *Connection) refreshExternalCountersLocked() error {
 	if c.externalSource == nil {
-		return
+		return nil
 	}
-	if counters, err := c.externalSource(); err == nil {
-		c.lastExternalCounters = counters
+	counters, err := c.externalSource()
+	if err != nil {
+		return err
 	}
-}
-
-func (c *TrafficConnection) totalsLocked() TrafficCounters {
-	c.readExternalCountersLocked()
-	totals := TrafficCounters{
-		UploadBytes:   c.uploadBytes.Load(),
-		DownloadBytes: c.downloadBytes.Load(),
+	if counters.UploadBytes < c.lastExternalCounters.UploadBytes ||
+		counters.DownloadBytes < c.lastExternalCounters.DownloadBytes {
+		return errors.New("external counters moved backwards")
 	}
-	totals.Add(c.lastExternalCounters)
-	return totals
-}
-
-// DetachExternalCounters folds the source's final cumulative values into the
-// userspace counters before the underlying source is removed.
-func (c *TrafficConnection) DetachExternalCounters() {
-	c.stateMu.Lock()
-	c.detachExternalCountersLocked()
-	c.stateMu.Unlock()
-}
-
-func (c *TrafficConnection) detachExternalCountersLocked() {
-	if c.externalSource == nil {
-		return
-	}
-	c.readExternalCountersLocked()
-	c.uploadBytes.Add(c.lastExternalCounters.UploadBytes)
-	c.downloadBytes.Add(c.lastExternalCounters.DownloadBytes)
-	c.externalSource = nil
-	c.lastExternalCounters = TrafficCounters{}
+	c.stats.upload.Add(counters.UploadBytes - c.lastExternalCounters.UploadBytes)
+	c.stats.download.Add(counters.DownloadBytes - c.lastExternalCounters.DownloadBytes)
+	c.lastExternalCounters = counters
+	return nil
 }
 
 func bytesPerSecond(bytes uint64, elapsed time.Duration) uint64 {
 	if bytes == 0 || elapsed <= 0 {
 		return 0
 	}
-	return uint64(float64(bytes) / elapsed.Seconds())
+	high, low := bits.Mul64(bytes, uint64(time.Second))
+	divisor := uint64(elapsed)
+	if high >= divisor {
+		return math.MaxUint64
+	}
+	rate, _ := bits.Div64(high, low, divisor)
+	return rate
 }
 
 func calculateRate(current, previous TrafficCounters, elapsed time.Duration) TrafficRate {
@@ -239,100 +264,98 @@ func calculateRate(current, previous TrafficCounters, elapsed time.Duration) Tra
 	}
 }
 
-func (c *TrafficConnection) publishMetricsLocked(current TrafficCounters) {
-	if current.UploadBytes > c.lastPublished.UploadBytes {
-		c.metrics.upload.Add(float64(current.UploadBytes - c.lastPublished.UploadBytes))
-	}
-	if current.DownloadBytes > c.lastPublished.DownloadBytes {
-		c.metrics.download.Add(float64(current.DownloadBytes - c.lastPublished.DownloadBytes))
-	}
-	c.lastPublished = current
-}
-
-func (c *TrafficConnection) sample(elapsed time.Duration) TrafficSnapshot {
-	c.stateMu.Lock()
-	defer c.stateMu.Unlock()
-
-	current := c.totalsLocked()
-	c.publishMetricsLocked(current)
-	snapshot := TrafficSnapshot{
-		Identity: c.identity,
-		Rate:     calculateRate(current, c.lastSample, elapsed),
-	}
-	c.lastSample = current
-	return snapshot
-}
-
-func (t *TrafficTracker) activeSnapshot() []*TrafficConnection {
-	t.activeMu.RLock()
-	defer t.activeMu.RUnlock()
-
-	connections := make([]*TrafficConnection, 0, len(t.activeConnections))
-	for connection := range t.activeConnections {
+func (s *Store) refreshExternalCounters() error {
+	s.externalMu.RLock()
+	connections := make([]*Connection, 0, len(s.externalConnections))
+	for connection := range s.externalConnections {
 		connections = append(connections, connection)
 	}
-	return connections
+	s.externalMu.RUnlock()
+
+	var err error
+	for _, connection := range connections {
+		connection.stateMu.Lock()
+		refreshErr := connection.refreshExternalCountersLocked()
+		connection.stateMu.Unlock()
+		if refreshErr != nil {
+			s.externalReadErrors.Add(1)
+			err = errors.Join(err, refreshErr)
+		}
+	}
+	return err
 }
 
-func (t *TrafficTracker) sampleAt(now time.Time) {
-	t.samplingMu.Lock()
-	defer t.samplingMu.Unlock()
-
-	elapsed := now.Sub(t.windowStartedAt)
+func (s *Store) sampleAt(now time.Time) {
+	s.samplingMu.Lock()
+	defer s.samplingMu.Unlock()
+	elapsed := now.Sub(s.windowStartedAt)
 	if elapsed <= 0 {
 		return
 	}
-	t.windowStartedAt = now
+	s.windowStartedAt = now
 
-	active := t.activeSnapshot()
-	published := &publishedTrafficSnapshot{
-		connections: make([]sampledConnection, 0, len(active)),
+	_ = s.refreshExternalCounters()
+
+	rates := make(map[Path]TrafficRate)
+	s.pathsMu.RLock()
+	for path, counters := range s.paths {
+		current := TrafficCounters{
+			UploadBytes:   counters.upload.Load(),
+			DownloadBytes: counters.download.Load(),
+		}
+		rates[path] = calculateRate(current, s.lastSample[path], elapsed)
+		s.lastSample[path] = current
 	}
-	for _, connection := range active {
-		published.connections = append(published.connections, sampledConnection{
-			connection: connection,
-			snapshot:   connection.sample(elapsed),
-		})
-	}
-	t.latest.Store(published)
+	s.pathsMu.RUnlock()
+	s.rates = rates
 }
 
-func (t *TrafficTracker) remove(connection *TrafficConnection) {
-	t.activeMu.Lock()
-	delete(t.activeConnections, connection)
-	t.activeMu.Unlock()
-}
-
-func (t *TrafficTracker) FlushCounters() {
-	for _, connection := range t.activeSnapshot() {
-		connection.stateMu.Lock()
-		connection.publishMetricsLocked(connection.totalsLocked())
-		connection.stateMu.Unlock()
-	}
-}
-
-func (c *TrafficConnection) Close() {
-	if !c.closed.CompareAndSwap(false, true) {
-		return
-	}
+func (c *Connection) Close() error {
 	c.stateMu.Lock()
-	c.detachExternalCountersLocked()
-	c.publishMetricsLocked(c.totalsLocked())
-	c.stateMu.Unlock()
-	c.tracker.remove(c)
-}
-
-func (t *TrafficTracker) Snapshot() []TrafficSnapshot {
-	published := t.latest.Load()
-	if published == nil {
+	if c.closed {
+		c.stateMu.Unlock()
 		return nil
 	}
+	c.closed = true
+	var err error
+	if c.externalSource != nil {
+		err = c.refreshExternalCountersLocked()
+		if err != nil {
+			c.store.externalReadErrors.Add(1)
+		}
+		c.externalSource = nil
+		c.store.externalMu.Lock()
+		delete(c.store.externalConnections, c)
+		c.store.externalMu.Unlock()
+	}
+	c.stateMu.Unlock()
+	c.stats.active.Add(-1)
+	return err
+}
 
-	active := make([]TrafficSnapshot, 0, len(published.connections))
-	for _, sampled := range published.connections {
-		if !sampled.connection.closed.Load() {
-			active = append(active, sampled.snapshot)
+// Snapshot refreshes active external sources, then returns exact path totals
+// and the latest sampled rates.
+func (s *Store) Snapshot() (map[Path]PathStats, error) {
+	if err := s.refreshExternalCounters(); err != nil {
+		return nil, err
+	}
+
+	snapshot := make(map[Path]PathStats)
+	// Match sampleAt's lock order while pairing totals with one sampled rate set.
+	s.samplingMu.RLock()
+	s.pathsMu.RLock()
+	for path, counters := range s.paths {
+		snapshot[path] = PathStats{
+			ActiveConnections: counters.active.Load(),
+			TotalConnections:  counters.total.Load(),
+			TrafficCounters: TrafficCounters{
+				UploadBytes:   counters.upload.Load(),
+				DownloadBytes: counters.download.Load(),
+			},
+			TrafficRate: s.rates[path],
 		}
 	}
-	return active
+	s.pathsMu.RUnlock()
+	s.samplingMu.RUnlock()
+	return snapshot, nil
 }

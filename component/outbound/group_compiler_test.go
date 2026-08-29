@@ -215,7 +215,7 @@ func TestGroupCompilerEmptyGroupSelectsAllNodes(t *testing.T) {
 	}
 }
 
-func TestGroupCompilerPolicylessRoutingTargetMustBeSingleton(t *testing.T) {
+func TestGroupCompilerPolicylessRoutingTargetRejectsMultiplePaths(t *testing.T) {
 	set := &DialerSet{nodeInfos: []*NodeInfo{testNode("one", "single"), testNode("two", "many"), testNode("three", "many")}}
 	groups := []config.Group{
 		{Name: "single", Paths: []*config_parser.ProxyPath{proxyPath(subtagStage("single"))}},
@@ -233,8 +233,8 @@ func TestGroupCompilerPolicylessRoutingTargetMustBeSingleton(t *testing.T) {
 	if _, err = compiler.ExpandRoutable(&groups[1]); err == nil || !strings.Contains(err.Error(), "expands to 2 paths") {
 		t.Fatalf("multi-path error = %v", err)
 	}
-	if _, err = compiler.ExpandRoutable(&groups[2]); err == nil || !strings.Contains(err.Error(), "expands to 0 paths") {
-		t.Fatalf("empty-path error = %v", err)
+	if paths, err = compiler.ExpandRoutable(&groups[2]); err != nil || len(paths) != 0 {
+		t.Fatalf("empty paths = %d, err = %v", len(paths), err)
 	}
 }
 

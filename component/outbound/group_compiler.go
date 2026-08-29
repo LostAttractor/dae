@@ -345,7 +345,7 @@ func (c *GroupCompiler) ExpandRoutable(group *config.Group) ([]*PathSpec, error)
 	if err != nil {
 		return nil, err
 	}
-	if definition.config.Policy == nil && len(paths) != 1 {
+	if definition.config.Policy == nil && len(paths) > 1 {
 		return nil, fmt.Errorf("group %q has no policy and expands to %d paths; exactly one is required for a routing target", group.Name, len(paths))
 	}
 	return paths, nil

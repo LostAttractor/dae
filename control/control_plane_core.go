@@ -59,7 +59,7 @@ type controlPlaneCore struct {
 	// outboundConnectivityMap stores actual outbound usability per network. It
 	// mirrors the eBPF map for userspace skip_while_noalive evaluation. A zero
 	// value also represents state that has not been reported yet.
-	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][4]atomic.Bool
+	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][common.NetworkTypeCount]atomic.Bool
 	outboundCallbackMu      sync.Mutex
 	outboundRecovery        func()
 }

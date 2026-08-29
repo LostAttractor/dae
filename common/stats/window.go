@@ -13,9 +13,9 @@ const recentAvailabilityDuration = 24 * time.Hour
 // window. UpRatio is time-weighted, while check counters count discrete health
 // checks in the same window.
 type AvailabilityWindow struct {
-	UpRatio      float64
-	ChecksTotal  int64
-	ChecksFailed int64
+	UpRatio      float64 `json:"up_ratio"`
+	ChecksTotal  int64   `json:"checks_total"`
+	ChecksFailed int64   `json:"checks_failed"`
 }
 
 type availabilityTransition struct {
@@ -27,20 +27,16 @@ type availabilityTransition struct {
 // With the default 30-second check interval, this is about 2,880 timestamps
 // per node; transitions are only appended when aliveness changes.
 //
-// Its owner, availability, serializes all access with availability.mu.
+// Store.availabilityMu serializes all access.
 type recentAvailability struct {
 	transitions  []availabilityTransition
 	checkTimes   []time.Time
 	failureTimes []time.Time
 }
 
-func (r *recentAvailability) record(now time.Time, alive, checked bool, transitionAt ...time.Time) {
-	at := now
-	if len(transitionAt) != 0 {
-		at = transitionAt[0]
-	}
+func (r *recentAvailability) record(now, transitionAt time.Time, alive, checked bool) {
 	if len(r.transitions) == 0 || r.transitions[len(r.transitions)-1].alive != alive {
-		r.transitions = append(r.transitions, availabilityTransition{at: at, alive: alive})
+		r.transitions = append(r.transitions, availabilityTransition{at: transitionAt, alive: alive})
 	}
 	if checked {
 		r.checkTimes = append(r.checkTimes, now)

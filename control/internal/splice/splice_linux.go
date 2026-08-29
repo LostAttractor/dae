@@ -161,10 +161,6 @@ func (r *Runtime) registerSocket(conn TCPConn) (uint64, error) {
 	return cookie, controlErr
 }
 
-func writeFull(writer io.Writer, p []byte) error {
-	return writeFullAndRecord(writer, p, nil)
-}
-
 func writeFullAndRecord(writer io.Writer, p []byte, recordBytes func(uint64)) error {
 	for len(p) > 0 {
 		n, err := writer.Write(p)
@@ -620,7 +616,7 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 	}
 }
 
-func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.TrafficConnection) (handled bool, err error) {
+func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Connection) (handled bool, err error) {
 	if !r.beginSession() {
 		return false, nil
 	}
@@ -638,8 +634,15 @@ func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Traffic
 		r.cleanupMetadata(cookieA)
 		return false, nil
 	}
+	defer func() {
+		// Read the final BPF counters before deleting their map entries.
+		if traffic != nil {
+			err = errors.Join(err, traffic.Close())
+		}
+		r.cleanupMetadata(cookieA, cookieR)
+	}()
 	if traffic != nil {
-		traffic.AttachExternalCounters(func() (stats.TrafficCounters, error) {
+		if err := traffic.AttachExternalCounters(func() (stats.TrafficCounters, error) {
 			upload, err := r.stats(cookieA)
 			if err != nil {
 				return stats.TrafficCounters{}, err
@@ -652,15 +655,10 @@ func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Traffic
 				UploadBytes:   upload.SkbRedirected,
 				DownloadBytes: download.SkbRedirected,
 			}, nil
-		})
-	}
-	defer func() {
-		// Read the final BPF counters before deleting their map entries.
-		if traffic != nil {
-			traffic.DetachExternalCounters()
+		}); err != nil {
+			return true, err
 		}
-		r.cleanupMetadata(cookieA, cookieR)
-	}()
+	}
 	edges := [2]*spliceDirectEdge{
 		{
 			src: acceptedConn, dst: remoteConn,

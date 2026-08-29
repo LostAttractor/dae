@@ -42,7 +42,6 @@ import (
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/sys/unix"
 
 	dnsmessage "github.com/miekg/dns"
@@ -104,8 +103,6 @@ type ControlPlane struct {
 	// closedDone is set after Close completes successfully. InheritDomainRegistry
 	// checks it before rewriting the shared kernel domain map.
 	closedDone atomic.Bool
-
-	PrometheusRegistry *prometheus.Registry
 }
 
 func splitWanInterfaces(ifnames []string) (manual []string, auto bool) {
@@ -288,9 +285,6 @@ func NewControlPlane(
 		}
 	}()
 
-	prometheusRegistry := prometheus.NewRegistry()
-	common.InitPrometheus(prometheusRegistry)
-
 	/// DialerGroups (outbounds).
 	if global.AllowInsecure {
 		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
@@ -321,9 +315,9 @@ func NewControlPlane(
 	}
 
 	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(netproxy.NewRuntime(_direct), option, &dialer.Property{Property: *directProperty}, dialer.InitialCheckDisabled)
+	direct := dialer.NewDialer(netproxy.NewRuntime(_direct), option, &dialer.Property{Property: *directProperty}, dialer.InitialCheckDisabled, "")
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(netproxy.NewRuntime(_block), option, &dialer.Property{Property: *blockProperty}, dialer.InitialCheckDisabled)
+	block := dialer.NewDialer(netproxy.NewRuntime(_block), option, &dialer.Property{Property: *blockProperty}, dialer.InitialCheckDisabled, "")
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindSingleAlwaysAlive,
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -424,7 +418,7 @@ func NewControlPlane(
 			log.Infoln("\t" + d.Name)
 		}
 		if len(dialers) == 0 {
-			log.Infoln("\t<Empty>")
+			return oops.Errorf("target %q has no usable paths", name)
 		}
 		id := uint8(len(outbounds))
 		outbounds = append(outbounds, outbound.NewDialerGroup(finalOption, name, outbound.GroupKindSelector, dialers, annotations, selectionPolicy,
@@ -531,7 +525,6 @@ func NewControlPlane(
 		soMarkFromDae:             global.SoMarkFromDae,
 		fallbackResolver:          global.FallbackResolver,
 		mptcp:                     global.Mptcp,
-		PrometheusRegistry:        prometheusRegistry,
 	}
 	// Stop connectivity checks after DNS forwarders have been retired. A
 	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
@@ -607,7 +600,6 @@ func (c *ControlPlane) Activate() error {
 	// The caller has already retired the previous plane on reload, so it is
 	// now safe to discard stale identities and reload-scoped gauge series.
 	c.reconcileStats()
-	common.ResetReloadMetrics()
 
 	// On reload without an adopted registry, evict domain routing entries
 	// inherited from the previous plane so that they cannot leak into the
@@ -847,26 +839,21 @@ func (c *ControlPlane) requestConnectivityRechecks() {
 }
 
 func (c *ControlPlane) reconcileStats() {
-	nodesByKey := make(map[string]stats.NodeIdentity)
-	groups := make([]string, 0, len(c.outbounds))
+	nodes := make(map[string]stats.NodeIdentity)
+	groups := make(map[string]struct{}, len(c.outbounds))
 	for _, group := range c.outbounds {
 		if group.ChecksConnectivity() {
-			groups = append(groups, group.Name)
+			groups[group.Name] = struct{}{}
 		}
 		for _, d := range group.Dialers {
 			key := d.StatsKey()
-			nodesByKey[key] = stats.NodeIdentity{
-				Key:    key,
+			nodes[key] = stats.NodeIdentity{
 				Subtag: d.Property.SubscriptionTag,
 				Name:   d.Name,
 			}
 		}
 	}
-	nodes := make([]stats.NodeIdentity, 0, len(nodesByKey))
-	for _, node := range nodesByKey {
-		nodes = append(nodes, node)
-	}
-	stats.Reconcile(nodes, groups)
+	stats.DefaultStore.Reconcile(nodes, groups)
 }
 
 func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {

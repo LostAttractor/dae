@@ -148,7 +148,17 @@ func (d *Dialer) createCheckOptions() []*checkOption {
 
 func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 	d.mu.Lock()
-	if d.group == nil || d.initialCheck == InitialCheckDisabled || d.checkActivated || d.ctx.Err() != nil {
+	if d.checkActivated || d.ctx.Err() != nil {
+		d.mu.Unlock()
+		return
+	}
+	if d.initialCheck == InitialCheckDisabled {
+		d.checkActivated = true
+		d.mu.Unlock()
+		stats.DefaultStore.RecordNodeState(d.StatsKey(), true, time.Time{})
+		return
+	}
+	if d.group == nil {
 		d.mu.Unlock()
 		return
 	}
@@ -232,7 +242,7 @@ func (d *Dialer) ReportDataPlaneFailure() {
 	}
 	d.checkRequested = true
 	group := d.group
-	stats.RecordNodeConnFail(d.StatsKey())
+	stats.DefaultStore.RecordNodeConnFail(d.StatsKey())
 	d.mu.Unlock()
 	if startedConfirmation && group != nil {
 		group.group.DialerChanged(d)
@@ -265,7 +275,7 @@ type probeResult struct {
 
 type checkResult struct {
 	kind       checkKind
-	primary    int
+	primary    common.NetworkIndex
 	seq        uint64
 	connectErr error
 	probes     []probeResult
@@ -276,7 +286,7 @@ type appliedCheck struct {
 	success          bool
 	initialDone      bool
 	pendingDiscovery bool
-	primary          int
+	primary          common.NetworkIndex
 	requested        bool
 }
 
@@ -289,7 +299,7 @@ type connectivityChecker struct {
 	runningKind checkKind
 	cancel      context.CancelFunc
 	observedSeq uint64
-	primary     int
+	primary     common.NetworkIndex
 	initialDone bool
 	readyOnce   sync.Once
 
@@ -318,7 +328,7 @@ func newConnectivityChecker(d *Dialer, options []*checkOption) *connectivityChec
 		d:               d,
 		options:         options,
 		results:         make(chan checkResult, 1),
-		primary:         -1,
+		primary:         common.NetworkInvalid,
 		initialInterval: initialCheckInterval,
 		healthInterval:  healthInterval,
 		healthTimer:     healthTimer,
@@ -559,7 +569,7 @@ func (c *connectivityChecker) run() {
 	}
 }
 
-func (c *connectivityChecker) perform(ctx context.Context, kind checkKind, primary int) checkResult {
+func (c *connectivityChecker) perform(ctx context.Context, kind checkKind, primary common.NetworkIndex) checkResult {
 	result := checkResult{kind: kind, primary: primary}
 	if kind == checkDiscovery {
 		session, hasSession := c.d.sessionSnapshot()
@@ -616,17 +626,17 @@ func (c *connectivityChecker) connect(ctx context.Context) (uint64, error) {
 	return snapshot.Seq, nil
 }
 
-func (d *Dialer) networkStates() [4]networkState {
+func (d *Dialer) networkStates() [common.NetworkTypeCount]networkState {
 	d.mu.RLock()
 	states := d.networks
 	d.mu.RUnlock()
 	return states
 }
 
-func (c *connectivityChecker) optionsFor(states [4]networkState, wanted ...networkState) []*checkOption {
+func (c *connectivityChecker) optionsFor(states [common.NetworkTypeCount]networkState, wanted ...networkState) []*checkOption {
 	options := make([]*checkOption, 0, len(c.options))
 	for _, option := range c.options {
-		state := states[common.NetworkTypeToIndex(option.networkType)]
+		state := states[option.networkType.Index()]
 		for _, candidate := range wanted {
 			if state == candidate {
 				options = append(options, option)
@@ -637,12 +647,12 @@ func (c *connectivityChecker) optionsFor(states [4]networkState, wanted ...netwo
 	return options
 }
 
-func preferredOption(options []*checkOption, primary int) (*checkOption, []*checkOption) {
+func preferredOption(options []*checkOption, primary common.NetworkIndex) (*checkOption, []*checkOption) {
 	if len(options) == 0 {
 		return nil, nil
 	}
 	for i, option := range options {
-		if common.NetworkTypeToIndex(option.networkType) == primary {
+		if option.networkType.Index() == primary {
 			return option, append(append(make([]*checkOption, 0, len(options)-1), options[:i]...), options[i+1:]...)
 		}
 	}
@@ -719,7 +729,7 @@ func (d *Dialer) applyCheck(result checkResult) appliedCheck {
 	var successResult *probeResult
 	for i := range result.probes {
 		probe := &result.probes[i]
-		index := common.NetworkTypeToIndex(probe.option.networkType)
+		index := probe.option.networkType.Index()
 		previous := d.networks[index]
 		switch result.kind {
 		case checkInitial, checkDiscovery:
@@ -798,7 +808,7 @@ func (d *Dialer) applyCheck(result checkResult) appliedCheck {
 	d.mu.Unlock()
 
 	d.logHealthResult(previousHealthy, success, latency, networkType, result)
-	stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, success, true, failureReportedAt)
+	stats.DefaultStore.RecordNodeCheck(d.StatsKey(), success, failureReportedAt)
 	if group != nil {
 		group.group.DialerChanged(d)
 	}
@@ -858,7 +868,7 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 	group := d.group
 	d.mu.Unlock()
 	if wasHealthy {
-		stats.RecordNode(d.StatsKey(), d.Property.SubscriptionTag, d.Name, false, false, failureReportedAt)
+		stats.DefaultStore.RecordNodeState(d.StatsKey(), false, failureReportedAt)
 		if group != nil {
 			group.group.DialerChanged(d)
 		}

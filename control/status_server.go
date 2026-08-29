@@ -118,11 +118,15 @@ func (s *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "control plane is reloading", http.StatusServiceUnavailable)
 		return
 	}
-	snapshot := c.StatusSnapshot(s.version)
+	snapshot, err := c.statusSnapshot(s.version)
 	s.mu.RUnlock()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(snapshot); err != nil {
+	if err = json.NewEncoder(w).Encode(snapshot); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

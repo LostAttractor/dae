@@ -287,7 +287,7 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	d := dialer.NewDialer(netproxy.NewRuntime(dnsPathDialer{}), option, &dialer.Property{Property: D.Property{
 		Name: "dns-path",
 		Link: "test://dns-path",
-	}}, dialer.InitialCheckDisabled)
+	}}, dialer.InitialCheckDisabled, "")
 	group := outbound.NewDialerGroup(
 		option,
 		"dns-path",

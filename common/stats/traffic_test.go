@@ -6,7 +6,7 @@
 package stats
 
 import (
-	"sync/atomic"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,180 +14,258 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-func trafficTestIdentity(name string) TrafficIdentity {
-	return TrafficIdentity{
+func trafficTestPath(name string) Path {
+	return Path{
 		NodeID:   name,
 		Outbound: name,
 		Subtag:   "sub",
 		Dialer:   "node",
-		Network:  "tcp4",
+		Network:  common.NetworkTCP4,
 	}
 }
 
-func deleteTrafficTestMetrics(identity TrafficIdentity) {
-	for _, direction := range []string{TrafficDirectionUpload, TrafficDirectionDownload} {
-		common.TrafficBytes.Delete(prometheus.Labels{
-			"id":        identity.NodeID,
-			"outbound":  identity.Outbound,
-			"subtag":    identity.Subtag,
-			"dialer":    identity.Dialer,
-			"network":   identity.Network,
-			"direction": direction,
-		})
+func pathStats(t *testing.T, store *Store, path Path) PathStats {
+	t.Helper()
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
 	}
+	stats, ok := snapshot[path]
+	if !ok {
+		t.Fatalf("path %v is absent from snapshot", path)
+	}
+	return stats
 }
 
-func TestTrafficTrackerSamplesConnectionAndPublishesCounters(t *testing.T) {
-	identity := trafficTestIdentity(t.Name())
-	deleteTrafficTestMetrics(identity)
-	t.Cleanup(func() { deleteTrafficTestMetrics(identity) })
+func TestStoreSamplesConnectionAndKeepsExactTotals(t *testing.T) {
+	path := trafficTestPath(t.Name())
 	windowStart := time.Now()
-	tracker := newTrafficTrackerAt(windowStart)
-	connection := tracker.Open(identity)
+	store := newStoreAt(windowStart)
+	connection := store.OpenConnection(path)
 	connection.RecordUpload(1200)
 	connection.RecordDownload(3400)
-	firstSampleAt := windowStart.Add(time.Second)
-	tracker.sampleAt(firstSampleAt)
+	store.sampleAt(windowStart.Add(time.Second))
 
-	snapshot := tracker.Snapshot()
-	if len(snapshot) != 1 || snapshot[0].Identity != identity {
-		t.Fatalf("traffic snapshot = %+v", snapshot)
+	got := pathStats(t, store, path)
+	want := PathStats{
+		ActiveConnections: 1,
+		TotalConnections:  1,
+		TrafficCounters:   TrafficCounters{UploadBytes: 1200, DownloadBytes: 3400},
+		TrafficRate:       TrafficRate{UploadBytesPerSecond: 1200, DownloadBytesPerSecond: 3400},
 	}
-	if got := snapshot[0].Rate; got != (TrafficRate{UploadBytesPerSecond: 1200, DownloadBytesPerSecond: 3400}) {
-		t.Fatalf("traffic rate = %+v", got)
-	}
-	upload := common.TrafficBytes.With(prometheus.Labels{
-		"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
-		"dialer": identity.Dialer, "network": identity.Network, "direction": TrafficDirectionUpload,
-	})
-	if got := metricValue(upload); got != 1200 {
-		t.Fatalf("prometheus upload bytes = %v, want 1200", got)
+	if got != want {
+		t.Fatalf("path stats = %+v, want %+v", got, want)
 	}
 
-	tracker.sampleAt(firstSampleAt.Add(time.Second))
-	if got := tracker.Snapshot()[0].Rate; got != (TrafficRate{}) {
+	store.sampleAt(windowStart.Add(2 * time.Second))
+	if got := pathStats(t, store, path).TrafficRate; got != (TrafficRate{}) {
 		t.Fatalf("idle traffic rate = %+v, want zero", got)
 	}
 	connection.Close()
-	if got := tracker.Snapshot(); len(got) != 0 {
-		t.Fatalf("closed connection remains in snapshot: %+v", got)
+	got = pathStats(t, store, path)
+	if got.ActiveConnections != 0 || got.TotalConnections != 1 {
+		t.Fatalf("closed connection counts = %+v", got)
 	}
 }
 
-func TestTrafficConnectionExternalSourceStaysContinuousAfterDetach(t *testing.T) {
-	identity := trafficTestIdentity(t.Name())
-	deleteTrafficTestMetrics(identity)
-	t.Cleanup(func() { deleteTrafficTestMetrics(identity) })
+func TestStoreUsesOneWindowForNewConnections(t *testing.T) {
+	path := trafficTestPath(t.Name())
 	windowStart := time.Now()
-	tracker := newTrafficTrackerAt(windowStart)
-	connection := tracker.Open(identity)
-	defer connection.Close()
-	firstSampleAt := windowStart.Add(time.Second)
-
-	var upload, download atomic.Uint64
-	connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{
-			UploadBytes:   upload.Load(),
-			DownloadBytes: download.Load(),
-		}, nil
-	})
-	upload.Store(1000)
-	download.Store(2000)
-	tracker.sampleAt(firstSampleAt)
-	if got := tracker.Snapshot()[0].Rate; got != (TrafficRate{UploadBytesPerSecond: 1000, DownloadBytesPerSecond: 2000}) {
-		t.Fatalf("external traffic rate = %+v", got)
-	}
-
-	connection.DetachExternalCounters()
-	connection.RecordUpload(500)
-	connection.RecordDownload(250)
-	upload.Store(9000)
-	download.Store(9000)
-	tracker.sampleAt(firstSampleAt.Add(time.Second))
-	if got := tracker.Snapshot()[0].Rate; got != (TrafficRate{UploadBytesPerSecond: 500, DownloadBytesPerSecond: 250}) {
-		t.Fatalf("post-detach traffic rate = %+v", got)
-	}
-}
-
-func TestTrafficTrackerUsesOneWindowForNewConnections(t *testing.T) {
-	identity := trafficTestIdentity(t.Name())
-	deleteTrafficTestMetrics(identity)
-	t.Cleanup(func() { deleteTrafficTestMetrics(identity) })
-	windowStart := time.Now()
-	tracker := newTrafficTrackerAt(windowStart)
-	connection := tracker.Open(identity)
+	store := newStoreAt(windowStart)
+	connection := store.OpenConnection(path)
 	defer connection.Close()
 	connection.RecordUpload(1000)
 
-	tracker.sampleAt(windowStart.Add(time.Second))
-	if got := tracker.Snapshot()[0].Rate.UploadBytesPerSecond; got != 1000 {
+	store.sampleAt(windowStart.Add(time.Second))
+	if got := pathStats(t, store, path).UploadBytesPerSecond; got != 1000 {
 		t.Fatalf("first-window upload rate = %d, want 1000", got)
 	}
 }
 
-func TestTrafficConnectionCloseFlushesShortConnection(t *testing.T) {
-	identity := trafficTestIdentity(t.Name())
-	deleteTrafficTestMetrics(identity)
-	t.Cleanup(func() { deleteTrafficTestMetrics(identity) })
-	tracker := newTrafficTracker()
-	connection := tracker.Open(identity)
+func TestConnectionCloseKeepsShortConnectionTotals(t *testing.T) {
+	path := trafficTestPath(t.Name())
+	windowStart := time.Now()
+	store := newStoreAt(windowStart)
+	connection := store.OpenConnection(path)
 	connection.RecordUpload(77)
 	connection.RecordDownload(88)
-	connection.Close()
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	store.sampleAt(windowStart.Add(time.Second))
 
-	for direction, want := range map[string]float64{
-		TrafficDirectionUpload: 77, TrafficDirectionDownload: 88,
-	} {
-		counter := common.TrafficBytes.With(prometheus.Labels{
-			"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
-			"dialer": identity.Dialer, "network": identity.Network, "direction": direction,
-		})
-		if got := metricValue(counter); got != want {
-			t.Fatalf("prometheus %s bytes = %v, want %v", direction, got, want)
-		}
+	got := pathStats(t, store, path)
+	if got.ActiveConnections != 0 || got.TotalConnections != 1 ||
+		got.TrafficCounters != (TrafficCounters{UploadBytes: 77, DownloadBytes: 88}) ||
+		got.TrafficRate != (TrafficRate{UploadBytesPerSecond: 77, DownloadBytesPerSecond: 88}) {
+		t.Fatalf("short connection stats = %+v", got)
 	}
 }
 
-func TestTrafficTrackerFlushesActiveConnectionCounters(t *testing.T) {
-	identity := trafficTestIdentity(t.Name())
-	deleteTrafficTestMetrics(identity)
-	t.Cleanup(func() { deleteTrafficTestMetrics(identity) })
-	tracker := newTrafficTracker()
-	connection := tracker.Open(identity)
+func TestSnapshotRefreshesActiveExternalCounters(t *testing.T) {
+	path := trafficTestPath(t.Name())
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(path)
 	defer connection.Close()
 	connection.RecordUpload(77)
 	connection.RecordDownload(88)
-	connection.AttachExternalCounters(func() (TrafficCounters, error) {
+	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
 		return TrafficCounters{UploadBytes: 23, DownloadBytes: 12}, nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
-	tracker.FlushCounters()
-	for direction, want := range map[string]float64{
-		TrafficDirectionUpload: 100, TrafficDirectionDownload: 100,
-	} {
-		counter := common.TrafficBytes.With(prometheus.Labels{
-			"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
-			"dialer": identity.Dialer, "network": identity.Network, "direction": direction,
-		})
-		if got := metricValue(counter); got != want {
-			t.Fatalf("prometheus %s bytes = %v, want %v", direction, got, want)
-		}
+	got := pathStats(t, store, path)
+	if got.TrafficCounters != (TrafficCounters{UploadBytes: 100, DownloadBytes: 100}) {
+		t.Fatalf("active connection totals = %+v", got.TrafficCounters)
 	}
 }
 
-func TestTrafficConnectionFlushesRecordRacingWithClose(t *testing.T) {
-	identity := trafficTestIdentity(t.Name())
-	deleteTrafficTestMetrics(identity)
-	t.Cleanup(func() { deleteTrafficTestMetrics(identity) })
-	connection := newTrafficTracker().Open(identity)
+func TestConnectionRecordsAfterClose(t *testing.T) {
+	path := trafficTestPath(t.Name())
+	windowStart := time.Now()
+	store := newStoreAt(windowStart)
+	connection := store.OpenConnection(path)
 	connection.Close()
 	connection.RecordUpload(77)
+	store.sampleAt(windowStart.Add(time.Second))
 
-	counter := common.TrafficBytes.With(prometheus.Labels{
-		"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
-		"dialer": identity.Dialer, "network": identity.Network, "direction": TrafficDirectionUpload,
-	})
-	if got := metricValue(counter); got != 77 {
-		t.Fatalf("prometheus upload bytes = %v, want 77", got)
+	got := pathStats(t, store, path)
+	if got.UploadBytes != 77 || got.UploadBytesPerSecond != 77 {
+		t.Fatalf("late upload stats = %+v", got)
 	}
+}
+
+func TestConnectionRejectsInvalidExternalSources(t *testing.T) {
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(trafficTestPath(t.Name()))
+	if err := connection.AttachExternalCounters(nil); err == nil {
+		t.Fatal("nil external source was accepted")
+	}
+	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
+		return TrafficCounters{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
+		return TrafficCounters{}, nil
+	}); err == nil {
+		t.Fatal("second external source was accepted")
+	}
+	connection.Close()
+	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
+		return TrafficCounters{}, nil
+	}); err == nil {
+		t.Fatal("closed connection accepted an external source")
+	}
+	if len(store.externalConnections) != 0 {
+		t.Fatalf("closed connection remains registered: %d", len(store.externalConnections))
+	}
+}
+
+func TestExternalCounterRollbackIsReported(t *testing.T) {
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(trafficTestPath(t.Name()))
+	counters := TrafficCounters{UploadBytes: 10, DownloadBytes: 20}
+	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
+		return counters, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	counters.UploadBytes = 9
+	if err := connection.Close(); err == nil {
+		t.Fatal("external counter rollback was not reported")
+	}
+	if got := pathStats(t, store, trafficTestPath(t.Name())).TrafficCounters; got != (TrafficCounters{UploadBytes: 10, DownloadBytes: 20}) {
+		t.Fatalf("rollback changed totals: %+v", got)
+	}
+}
+
+func TestStoreKeepsTotalsAbovePrometheusPrecision(t *testing.T) {
+	path := trafficTestPath(t.Name())
+	windowStart := time.Now()
+	store := newStoreAt(windowStart)
+	connection := store.OpenConnection(path)
+	want := uint64(1<<53 + 1)
+	connection.RecordUpload(want)
+	connection.Close()
+	store.sampleAt(windowStart.Add(time.Second))
+
+	got := pathStats(t, store, path)
+	if got.UploadBytes != want || got.UploadBytesPerSecond != want {
+		t.Fatalf("exact upload stats = %+v, want %d", got, want)
+	}
+}
+
+func TestSnapshotReportsExternalReadFailure(t *testing.T) {
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(trafficTestPath(t.Name()))
+	wantErr := errors.New("counter source failed")
+	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
+		return TrafficCounters{}, wantErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := store.Snapshot()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("snapshot error = %v, want %v", err, wantErr)
+	}
+	if snapshot != nil {
+		t.Fatalf("failed snapshot returned partial data: %+v", snapshot)
+	}
+	_ = connection.Close()
+}
+
+func TestConnectionCloseReportsFinalReadFailure(t *testing.T) {
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(trafficTestPath(t.Name()))
+	wantErr := errors.New("counter source failed")
+	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
+		return TrafficCounters{}, wantErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := connection.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("close error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestStoreCollectsConnectionMetrics(t *testing.T) {
+	path := trafficTestPath(t.Name())
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(path)
+	connection.RecordUpload(42)
+	connection.Close()
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(store)
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "dae_traffic_bytes_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			direction := ""
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "direction" {
+					direction = label.GetValue()
+				}
+			}
+			if direction == trafficDirectionUpload && metric.GetCounter().GetValue() == 42 {
+				return
+			}
+		}
+	}
+	t.Fatal("upload traffic metric was not gathered")
 }

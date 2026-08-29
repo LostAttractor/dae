@@ -17,8 +17,6 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 )
 
 type testPacketConn struct {
@@ -177,24 +175,12 @@ func TestUdpEndpointPoolCloseAllDoesNotWaitForBlockingClose(t *testing.T) {
 	}
 }
 
-func TestUdpEndpointPoolRemoveFlushesTrafficBeforeBlockingClose(t *testing.T) {
+func TestUdpEndpointPoolRemoveAccountsTrafficBeforeBlockingClose(t *testing.T) {
 	statsPathID := t.TempDir()
-	identity := stats.TrafficIdentity{
-		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "node", Network: "udp4",
+	path := stats.Path{
+		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "node", Network: common.NetworkUDP4,
 	}
-	labels := prometheus.Labels{
-		"id": identity.NodeID, "outbound": identity.Outbound, "subtag": identity.Subtag,
-		"dialer": identity.Dialer, "network": identity.Network,
-	}
-	for _, direction := range []string{stats.TrafficDirectionUpload, stats.TrafficDirectionDownload} {
-		metricLabels := prometheus.Labels{}
-		for key, value := range labels {
-			metricLabels[key] = value
-		}
-		metricLabels["direction"] = direction
-		common.TrafficBytes.Delete(metricLabels)
-		t.Cleanup(func() { common.TrafficBytes.Delete(metricLabels) })
-	}
+	store := stats.DefaultStore
 
 	var endpointPool UdpEndpointPool
 	conn := newDeadlineInterruptPacketConn()
@@ -206,7 +192,7 @@ func TestUdpEndpointPoolRemoveFlushesTrafficBeforeBlockingClose(t *testing.T) {
 		}
 	})
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: time.Hour})
-	endpoint.traffic = stats.DefaultTrafficTracker.Open(identity)
+	endpoint.traffic = store.OpenConnection(path)
 	endpoint.traffic.RecordUpload(77)
 	key := testUdpKey(12005)
 	endpointPool.add(key, endpoint)
@@ -221,12 +207,11 @@ func TestUdpEndpointPoolRemoveFlushesTrafficBeforeBlockingClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("endpoint removal did not start connection close")
 	}
-	var metric dto.Metric
-	labels["direction"] = stats.TrafficDirectionUpload
-	if err := common.TrafficBytes.With(labels).Write(&metric); err != nil {
+	snapshot, err := store.Snapshot()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := metric.GetCounter().GetValue(); got != 77 {
+	if got := snapshot[path].UploadBytes; got != 77 {
 		t.Fatalf("traffic bytes before connection close = %v, want 77", got)
 	}
 	close(conn.releaseClose)

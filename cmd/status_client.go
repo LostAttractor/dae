@@ -17,13 +17,12 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/control"
 	"github.com/spf13/cobra"
 )
-
-const trafficRateWindowSeconds = 1
-
-var statusNetworkNames = [...]string{"tcp4", "tcp6", "udp4", "udp6"}
 
 var (
 	statusVerbose bool
@@ -79,7 +78,11 @@ func decodeStatus(reader io.Reader) (*control.StatusSnapshot, error) {
 	if err := decoder.Decode(&snapshot); err != nil {
 		return nil, err
 	}
-	if err := requireJSONEOF(decoder); err != nil {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("status response contains multiple JSON values")
+		}
 		return nil, err
 	}
 	if err := validateStatus(&snapshot); err != nil {
@@ -88,161 +91,98 @@ func decodeStatus(reader io.Reader) (*control.StatusSnapshot, error) {
 	return &snapshot, nil
 }
 
-func requireJSONEOF(decoder *json.Decoder) error {
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("status response contains multiple JSON values")
-		}
-		return err
-	}
-	return nil
-}
-
 func validateStatus(snapshot *control.StatusSnapshot) error {
-	switch snapshot.Health {
-	case control.HealthHealthy, control.HealthWarning, control.HealthDegraded:
-	default:
-		return fmt.Errorf("status response has invalid health %q", snapshot.Health)
+	if snapshot.Schema != control.StatusSchemaVersion {
+		return fmt.Errorf("unsupported status schema %d", snapshot.Schema)
 	}
-	if err := validateTrafficRate("traffic", snapshot.Traffic); err != nil {
-		return err
+	if snapshot.Version == "" || snapshot.StartedAt.IsZero() {
+		return fmt.Errorf("status response is missing process metadata")
 	}
 	if err := validateNetworkCount("networks", len(snapshot.Networks)); err != nil {
 		return err
 	}
-	for index, network := range snapshot.Networks {
-		if err := validateNetworkName("networks", index, network.Network); err != nil {
-			return err
-		}
+	if len(snapshot.Groups) == 0 {
+		return fmt.Errorf("status response is missing groups")
 	}
 	for groupIndex := range snapshot.Groups {
-		if err := validateGroupStatus(groupIndex, &snapshot.Groups[groupIndex]); err != nil {
-			return err
+		group := &snapshot.Groups[groupIndex]
+		path := fmt.Sprintf("groups[%d]", groupIndex)
+		if group.Name == "" {
+			return fmt.Errorf("%s has no name", path)
 		}
-	}
-	return nil
-}
-
-func validateGroupStatus(index int, group *control.GroupStatus) error {
-	path := fmt.Sprintf("groups[%d]", index)
-	switch group.Health {
-	case control.HealthHealthy, control.HealthWarning, control.HealthDegraded:
-	default:
-		return fmt.Errorf("%s has invalid health %q", path, group.Health)
-	}
-	if err := validateTrafficRate(path+".traffic", group.Traffic); err != nil {
-		return err
-	}
-	if err := validateGroupConnectivity(path, group.Connectivity); err != nil {
-		return err
-	}
-	if err := validateNetworkCount(path+".networks", len(group.Networks)); err != nil {
-		return err
-	}
-	for networkIndex, network := range group.Networks {
-		if err := validateNetworkName(path+".networks", networkIndex, network.Network); err != nil {
-			return err
-		}
-		if err := validateNetworkSupport(path+".networks", networkIndex, network.SupportState); err != nil {
-			return err
-		}
-		if network.Selected != nil && (network.Selected.Index < 0 || network.Selected.Index >= len(group.Nodes)) {
-			return fmt.Errorf("%s.networks[%d] selects node index %d outside nodes", path, networkIndex, network.Selected.Index)
-		}
-	}
-	for nodeIndex, node := range group.Nodes {
-		nodePath := fmt.Sprintf("%s.nodes[%d]", path, nodeIndex)
-		if err := validateTrafficRate(nodePath+".traffic", node.Traffic); err != nil {
-			return err
-		}
-		if err := validateNodeStatus(nodePath, &node); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateNodeStatus(path string, node *control.NodeStatus) error {
-	if node.Session != nil {
-		switch node.Session.State {
-		case control.SessionDisconnected, control.SessionConnecting, control.SessionConnected, control.SessionClosed:
+		switch group.TargetKind {
+		case "group", "node", "builtin":
 		default:
-			return fmt.Errorf("%s has invalid session state %q", path, node.Session.State)
+			return fmt.Errorf("%s has invalid target kind %q", path, group.TargetKind)
 		}
-	}
-	if node.Health != nil {
-		switch node.Health.State {
-		case control.NodeHealthUnknown, control.NodeHealthHealthy, control.NodeHealthConfirming, control.NodeHealthUnhealthy:
-		default:
-			return fmt.Errorf("%s has invalid health state %q", path, node.Health.State)
-		}
-	}
-	if err := validateNetworkCount(path+".networks", len(node.Networks)); err != nil {
-		return err
-	}
-	for index, network := range node.Networks {
-		if err := validateNetworkName(path+".networks", index, network.Network); err != nil {
+		if err := validateNetworkCount(path+".networks", len(group.Networks)); err != nil {
 			return err
 		}
-		if err := validateNetworkSupport(path+".networks", index, network.SupportState); err != nil {
+		if err := validateNetworkCount(path+".selected_node_ids", len(group.SelectedNodeIDs)); err != nil {
 			return err
+		}
+		if group.ChecksConnectivity {
+			switch group.Connectivity {
+			case stats.GroupStateAvailable, stats.GroupStateChecking, stats.GroupStateUnavailable:
+			default:
+				return fmt.Errorf("%s has invalid connectivity %q", path, group.Connectivity)
+			}
+			if len(group.Availability.Recent.States) != stats.GroupStateBucketCount {
+				return fmt.Errorf("%s availability has %d recent states, want %d", path, len(group.Availability.Recent.States), stats.GroupStateBucketCount)
+			}
+			for _, state := range group.Availability.Recent.States {
+				switch state {
+				case stats.GroupHistoryUnknown, stats.GroupHistoryAvailable, stats.GroupHistoryUnavailable:
+				default:
+					return fmt.Errorf("%s has invalid recent state %q", path, state)
+				}
+			}
+		} else if group.Connectivity != "" {
+			return fmt.Errorf("%s has connectivity state without checks", path)
+		}
+
+		nodeIDs := make(map[string]struct{}, len(group.Nodes))
+		for nodeIndex := range group.Nodes {
+			node := &group.Nodes[nodeIndex]
+			nodePath := fmt.Sprintf("%s.nodes[%d]", path, nodeIndex)
+			if node.ID == "" {
+				return fmt.Errorf("%s has no id", nodePath)
+			}
+			if _, exists := nodeIDs[node.ID]; exists {
+				return fmt.Errorf("%s repeats node id %q", path, node.ID)
+			}
+			nodeIDs[node.ID] = struct{}{}
+			if err := validateNetworkCount(nodePath+".support", len(node.Support)); err != nil {
+				return err
+			}
+			for _, support := range node.Support {
+				switch support {
+				case dialer.NetworkSupportUnknown, dialer.NetworkSupportConfirmed, dialer.NetworkSupportUnsupported:
+				default:
+					return fmt.Errorf("%s has invalid network support %q", nodePath, support)
+				}
+			}
+			switch node.Session {
+			case "", "disconnected", "connecting", "connected", "closed":
+			default:
+				return fmt.Errorf("%s has invalid session state %q", nodePath, node.Session)
+			}
+		}
+		for network, selectedID := range group.SelectedNodeIDs {
+			if selectedID == "" {
+				continue
+			}
+			if _, exists := nodeIDs[selectedID]; !exists {
+				return fmt.Errorf("%s selects unknown node %q for %s", path, selectedID, common.NetworkIndex(network))
+			}
 		}
 	}
 	return nil
 }
 
 func validateNetworkCount(path string, count int) error {
-	if count != len(statusNetworkNames) {
-		return fmt.Errorf("%s has %d entries, want %d", path, count, len(statusNetworkNames))
-	}
-	return nil
-}
-
-func validateNetworkName(path string, index int, network string) error {
-	if network != statusNetworkNames[index] {
-		return fmt.Errorf("%s[%d] has network %q, want %q", path, index, network, statusNetworkNames[index])
-	}
-	return nil
-}
-
-func validateNetworkSupport(path string, index int, support control.NetworkSupportStatus) error {
-	switch support {
-	case control.NetworkSupportUnknown, control.NetworkSupportConfirmed, control.NetworkSupportUnsupported:
-		return nil
-	default:
-		return fmt.Errorf("%s[%d] has invalid support state %q", path, index, support)
-	}
-}
-
-func validateGroupConnectivity(path string, connectivity *control.GroupConnectivityStatus) error {
-	if connectivity == nil {
-		return nil
-	}
-	switch connectivity.State {
-	case control.GroupConnectivityAvailable, control.GroupConnectivityChecking, control.GroupConnectivityUnavailable:
-	default:
-		return fmt.Errorf("%s has invalid connectivity state %q", path, connectivity.State)
-	}
-	for index, state := range connectivity.Recent.Buckets {
-		switch state {
-		case control.GroupBucketUnknown, control.GroupBucketAvailable, control.GroupBucketUnavailable:
-		default:
-			return fmt.Errorf("%s.connectivity.recent.buckets[%d] has invalid state %q", path, index, state)
-		}
-	}
-	if connectivity.Recent.WindowSeconds <= 0 {
-		return fmt.Errorf("%s has invalid recent window %d", path, connectivity.Recent.WindowSeconds)
-	}
-	if len(connectivity.Recent.Buckets) != control.GroupRecentBucketCount {
-		return fmt.Errorf("%s has %d recent buckets, want %d", path, len(connectivity.Recent.Buckets), control.GroupRecentBucketCount)
-	}
-	return nil
-}
-
-func validateTrafficRate(path string, traffic control.TrafficStatus) error {
-	if traffic.WindowSeconds != trafficRateWindowSeconds {
-		return fmt.Errorf("%s has invalid window %d, want %d", path, traffic.WindowSeconds, trafficRateWindowSeconds)
+	if count != common.NetworkTypeCount {
+		return fmt.Errorf("%s contains %d entries, want %d", path, count, common.NetworkTypeCount)
 	}
 	return nil
 }

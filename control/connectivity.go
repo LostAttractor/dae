@@ -76,7 +76,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 			return nil
 		}
 
-		network := common.NetworkTypeToIndex(networkType)
+		network := networkType.Index()
 		previous := c.outboundConnectivityMap[outbound][network].Load()
 		value := encodeOutboundConnectivity(available, noConnectivityTrySniff, noConnectivityOutbound)
 		if err := updateKernel(value); err != nil {
@@ -96,7 +96,7 @@ func (c *controlPlaneCore) setOutboundRecoveryCallback(callback func()) {
 	c.outboundRecovery = callback
 }
 
-func (c *controlPlaneCore) recordOutboundConnectivity(outbound uint8, network int, available bool) func() {
+func (c *controlPlaneCore) recordOutboundConnectivity(outbound uint8, network common.NetworkIndex, available bool) func() {
 	if outbound > uint8(consts.OutboundUserDefinedMax) {
 		return nil
 	}
@@ -108,7 +108,7 @@ func (c *controlPlaneCore) recordOutboundConnectivity(outbound uint8, network in
 	return nil
 }
 
-func (c *controlPlaneCore) anyOutboundAvailable(network int) bool {
+func (c *controlPlaneCore) anyOutboundAvailable(network common.NetworkIndex) bool {
 	for outbound := uint8(consts.OutboundUserDefinedMin); outbound <= uint8(consts.OutboundUserDefinedMax); outbound++ {
 		if c.outboundConnectivityMap[outbound][network].Load() {
 			return true
@@ -140,5 +140,5 @@ func (c *controlPlaneCore) outboundUsable(outbound uint8, l4proto consts.L4Proto
 	default:
 		return true
 	}
-	return c.outboundConnectivityMap[outbound][common.NetworkTypeToIndex(&networkType)].Load()
+	return c.outboundConnectivityMap[outbound][networkType.Index()].Load()
 }

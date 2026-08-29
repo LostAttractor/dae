@@ -26,7 +26,7 @@ func New(_ *ebpf.CollectionOptions, _ time.Duration) (*Runtime, error) {
 	return nil, nil
 }
 
-func (r *Runtime) Relay(_, _ TCPConn, _ *stats.TrafficConnection) (bool, error) {
+func (r *Runtime) Relay(_, _ TCPConn, _ *stats.Connection) (bool, error) {
 	return false, nil
 }
 

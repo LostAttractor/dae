@@ -489,5 +489,5 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 			break
 		}
 	}
-	return dialer.NewDialerRuntimeWithStatsScope(runtime, option, property, initialCheck, statsScope), nil
+	return dialer.NewDialer(runtime, option, property, initialCheck, statsScope), nil
 }

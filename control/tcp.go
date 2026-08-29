@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -21,7 +22,6 @@ import (
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -46,7 +46,7 @@ type tcpRelay struct {
 		ChecksConnectivity() bool
 		ReportDataPlaneFailure()
 	}
-	labels       prometheus.Labels
+	statsPath    stats.Path
 	outboundName string
 	dialerName   string
 	src          netip.AddrPort
@@ -178,13 +178,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		return nil, err
 	}
 
-	labels := prometheus.Labels{
-		"id":       dialOption.Dialer.StatsID(),
-		"outbound": dialOption.Outbound.Name,
-		"subtag":   dialOption.Dialer.Property.SubscriptionTag,
-		"dialer":   dialOption.Dialer.Name,
-		"network":  networkType.String(),
-	}
+	statsPath := dialOption.Dialer.StatsPath(dialOption.Outbound.Name, networkType)
 
 	// Dial
 	c.logDial(src, dst, domain, dialOption, networkType.String(), routingResult)
@@ -216,7 +210,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 			return nil, err
 		} else if !netErr.Timeout() {
 			if dialOption.Dialer.ChecksConnectivity() {
-				common.ErrorCount.With(labels).Inc()
+				stats.DefaultStore.RecordError(statsPath)
 				dialOption.Dialer.ReportDataPlaneFailure()
 				return nil, err
 			}
@@ -228,13 +222,12 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		return nil, err
 	}
 
-	elapsed := time.Since(start).Seconds()
-	common.DialLatency.With(labels).Observe(elapsed)
+	stats.DefaultStore.RecordDial(statsPath, time.Since(start))
 	relay = &tcpRelay{
 		lConn:        sniffer,
 		rConn:        rConn,
 		dialer:       dialOption.Dialer,
-		labels:       labels,
+		statsPath:    statsPath,
 		outboundName: dialOption.Outbound.Name,
 		dialerName:   dialOption.Dialer.Name,
 		src:          src,
@@ -254,12 +247,8 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 func (r *tcpRelay) run() (err error) {
 	defer r.rConn.Close()
 	defer r.lConn.Close()
-	labels := r.labels
-	common.ActiveConnections.With(labels).Inc()
-	defer common.ActiveConnections.With(labels).Dec()
-	common.TotalConnections.With(labels).Inc()
-	traffic := openTrafficConnection(labels)
-	defer traffic.Close()
+	traffic := stats.DefaultStore.OpenConnection(r.statsPath)
+	defer func() { err = errors.Join(err, traffic.Close()) }()
 
 	// Relay
 	handled := false
@@ -289,7 +278,7 @@ func (r *tcpRelay) run() (err error) {
 		if !ok {
 			return err
 		} else if !netErr.Timeout() && r.dialer.ChecksConnectivity() {
-			common.ErrorCount.With(labels).Inc()
+			stats.DefaultStore.RecordError(r.statsPath)
 			r.dialer.ReportDataPlaneFailure()
 			return err
 		}
@@ -343,7 +332,7 @@ func relayDirection(dst, src net.Conn, add func(uint64)) (err error) {
 // Error2 is the error from rConn to lConn
 // TODO: 引入 ctx, 在 dialer 不可用时取消 relay
 // 进一步的, 给 lConn 发送 rst
-func RelayTCP(lConn, rConn net.Conn, traffic *stats.TrafficConnection) error {
+func RelayTCP(lConn, rConn net.Conn, traffic *stats.Connection) error {
 	errCh := make(chan struct {
 		err       error
 		direction bool

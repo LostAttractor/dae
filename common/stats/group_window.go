@@ -30,8 +30,7 @@ const (
 )
 
 type GroupStateWindow struct {
-	Duration time.Duration
-	States   []GroupHistoryState
+	States []GroupHistoryState `json:"states"`
 }
 
 type groupStateTransition struct {
@@ -48,8 +47,7 @@ type recentGroupStates struct {
 
 func emptyGroupStateWindow() GroupStateWindow {
 	window := GroupStateWindow{
-		Duration: GroupStateWindowDuration,
-		States:   make([]GroupHistoryState, GroupStateBucketCount),
+		States: make([]GroupHistoryState, GroupStateBucketCount),
 	}
 	for i := range window.States {
 		window.States[i] = GroupHistoryUnknown
@@ -112,20 +110,13 @@ func (r *recentGroupStates) snapshot(now time.Time) GroupStateWindow {
 }
 
 func worseGroupState(current, next GroupHistoryState) GroupHistoryState {
-	severity := func(state GroupHistoryState) int {
-		switch state {
-		case GroupHistoryAvailable:
-			return 1
-		case GroupHistoryUnavailable:
-			return 2
-		default:
-			return 0
-		}
+	if current == GroupHistoryUnavailable || next == GroupHistoryUnavailable {
+		return GroupHistoryUnavailable
 	}
-	if severity(next) > severity(current) {
-		return next
+	if current == GroupHistoryAvailable || next == GroupHistoryAvailable {
+		return GroupHistoryAvailable
 	}
-	return current
+	return GroupHistoryUnknown
 }
 
 func (r *recentGroupStates) prune(cutoff time.Time) {

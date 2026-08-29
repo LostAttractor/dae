@@ -16,8 +16,8 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -221,13 +221,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
 		dialOption.DialTarget = dst.String()
 
-		labels := prometheus.Labels{
-			"id":       dialOption.Dialer.StatsID(),
-			"outbound": dialOption.Outbound.Name,
-			"subtag":   dialOption.Dialer.Property.SubscriptionTag,
-			"dialer":   dialOption.Dialer.Name,
-			"network":  networkType.String(),
-		}
+		statsPath := dialOption.Dialer.StatsPath(dialOption.Outbound.Name, networkType)
 
 		// Dial
 		// Only print routing for new connection to avoid the log exploded (Quic and BT).
@@ -259,7 +253,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 				return err
 			} else if !netErr.Timeout() {
 				if dialOption.Dialer.ChecksConnectivity() {
-					common.ErrorCount.With(labels).Inc()
+					stats.DefaultStore.RecordError(statsPath)
 					dialOption.Dialer.ReportDataPlaneFailure()
 					return err
 				}
@@ -274,7 +268,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			},
 			NatTimeout: DefaultNatTimeoutUDP,
 			Dialer:     dialOption.Dialer,
-			labels:     labels,
+			Path:       statsPath,
 		})
 		isNew = true
 	}
@@ -305,7 +299,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			return err
 		} else if !netErr.Timeout() {
 			if ue.dialer.ChecksConnectivity() {
-				common.ErrorCount.With(ue.labels).Inc()
+				stats.DefaultStore.RecordError(ue.statsPath)
 				ue.dialer.ReportDataPlaneFailure()
 				return err
 			}
@@ -313,7 +307,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		return nil
 	}
 	if isNew {
-		ue.traffic = openTrafficConnection(ue.labels)
+		ue.traffic = stats.DefaultStore.OpenConnection(ue.statsPath)
 	}
 	if n > 0 {
 		ue.traffic.RecordUpload(uint64(n))
@@ -337,7 +331,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 				return
 			}
 			if endpoint.dialer.ChecksConnectivity() {
-				common.ErrorCount.With(endpoint.labels).Inc()
+				stats.DefaultStore.RecordError(endpoint.statsPath)
 				endpoint.dialer.ReportDataPlaneFailure()
 			}
 		}

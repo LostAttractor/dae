@@ -164,6 +164,7 @@ func TestCloseValidatedDialerRetiresTransport(t *testing.T) {
 		&dialer.GlobalOption{},
 		&dialer.Property{},
 		dialer.InitialCheckBlocking,
+		"",
 	)
 	if err := closeValidatedDialer(created); err != nil {
 		t.Fatal(err)

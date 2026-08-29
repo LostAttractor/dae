@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,40 +81,71 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	}, &Property{Property: D.Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
-	}}, InitialCheckBlocking)
+	}}, InitialCheckBlocking, "")
 	d.RegisterDialerGroup(new(testGroup), 0.5, time.Minute)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
-func checkOptions(probes [4]func(context.Context, *common.NetworkType) (bool, error)) []*checkOption {
-	options := make([]*checkOption, 4)
+func checkOptions(probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)) []*checkOption {
+	options := make([]*checkOption, common.NetworkTypeCount)
 	for i := range options {
-		options[i] = &checkOption{networkType: common.IndexToNetworkType(i), probe: probes[i]}
+		options[i] = &checkOption{networkType: common.NetworkIndex(i).NetworkType(), probe: probes[i]}
 	}
 	return options
 }
 
 func TestStatsKeyEncodingSeparatesIdentityAndScope(t *testing.T) {
-	left := makeStatsKey(&Property{SubscriptionTag: "sub", StatsIdentity: "a\x1fb"}, "c")
-	right := makeStatsKey(&Property{SubscriptionTag: "sub", StatsIdentity: "a"}, "b\x1fc")
+	left := makeStatsKey(&Property{SubscriptionTag: "sub", Property: D.Property{Link: "a\x1fb"}}, "c")
+	right := makeStatsKey(&Property{SubscriptionTag: "sub", Property: D.Property{Link: "a"}}, "b\x1fc")
 	if left == right {
 		t.Fatalf("structured stats keys collided: %q", left)
 	}
-	explicitChain := ComposeStatsIdentity("source", "a->b", "0")
-	nextHopChain := ComposeStatsIdentity(
+	explicitChain := composeStatsIdentity("source", "a->b", "0")
+	nextHopChain := composeStatsIdentity(
 		"next-hop",
-		ComposeStatsIdentity("source", "a", "0"),
-		ComposeStatsIdentity("source", "b", "0"),
+		composeStatsIdentity("source", "a", "0"),
+		composeStatsIdentity("source", "b", "0"),
 	)
 	if explicitChain == nextHopChain {
 		t.Fatalf("explicit and next-hop chains collided: %q", explicitChain)
 	}
 }
 
+func TestStatsPathUsesDialerIdentity(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	path := d.StatsPath("group", common.NetworkUDP6.NetworkType())
+	if path.NodeID != d.StatsID() || path.Outbound != "group" ||
+		path.Subtag != d.Property.SubscriptionTag || path.Dialer != d.Name ||
+		path.Network != common.NetworkUDP6 {
+		t.Fatalf("stats path = %+v", path)
+	}
+}
+
+func TestUncheckedDialerRecordsAvailabilityOnlyWhenActivated(t *testing.T) {
+	id := testDialerSequence.Add(1)
+	d := NewDialer(netproxy.NewRuntime(testTransport{}), &GlobalOption{}, &Property{Property: D.Property{
+		Name: t.Name(),
+		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
+	}}, InitialCheckDisabled, "")
+	t.Cleanup(func() { _ = d.Close() })
+	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
+		d.StatsKey(): {Subtag: d.Property.SubscriptionTag, Name: d.Name},
+	}, nil)
+	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
+	if availability := stats.DefaultStore.GetNode(d.StatsKey()); availability.Seen {
+		t.Fatalf("candidate dialer published availability: %+v", availability)
+	}
+
+	d.ActivateCheck(new(sync.WaitGroup))
+	if availability := stats.DefaultStore.GetNode(d.StatsKey()); !availability.Seen || !availability.Alive {
+		t.Fatalf("activated unchecked dialer availability = %+v", availability)
+	}
+}
+
 func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
-	probes := [4]func(context.Context, *common.NetworkType) (bool, error){
+	probes := [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error){
 		func(context.Context, *common.NetworkType) (bool, error) { return true, nil },
 		func(context.Context, *common.NetworkType) (bool, error) { return false, context.DeadlineExceeded },
 		func(context.Context, *common.NetworkType) (bool, error) {
@@ -129,7 +161,7 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	if !applied.accepted || !applied.success || !applied.initialDone || applied.primary != 0 {
 		t.Fatalf("initial result = %+v", applied)
 	}
-	want := [4]NetworkSupportState{
+	want := [common.NetworkTypeCount]NetworkSupportState{
 		NetworkSupportConfirmed,
 		NetworkSupportUnknown,
 		NetworkSupportUnsupported,
@@ -148,7 +180,7 @@ func TestHealthCheckConfirmsFailureAndUsesAlternative(t *testing.T) {
 	d.networks[1] = networkUsable
 	d.mu.Unlock()
 	var primaryCalls, alternativeCalls atomic.Int32
-	probes := [4]func(context.Context, *common.NetworkType) (bool, error){
+	probes := [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error){
 		func(context.Context, *common.NetworkType) (bool, error) {
 			primaryCalls.Add(1)
 			return false, errors.New("primary failed")
@@ -170,10 +202,10 @@ func TestHealthCheckConfirmsFailureAndUsesAlternative(t *testing.T) {
 	if got := alternativeCalls.Load(); got != 1 {
 		t.Fatalf("alternative probes = %d, want 1", got)
 	}
-	if d.SelectionSnapshot(common.IndexToNetworkType(0)).Usable {
+	if d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Usable {
 		t.Fatal("failed primary mode remained usable")
 	}
-	if !d.SelectionSnapshot(common.IndexToNetworkType(1)).Usable {
+	if !d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Usable {
 		t.Fatal("successful alternative mode was not usable")
 	}
 }
@@ -183,7 +215,7 @@ func TestStaleCheckCannotUpdateNewSession(t *testing.T) {
 	d := newTestDialer(t, transport)
 	old := transport.Snapshot()
 	option := &checkOption{
-		networkType: common.IndexToNetworkType(0),
+		networkType: common.NetworkTCP4.NetworkType(),
 		probe:       func(context.Context, *common.NetworkType) (bool, error) { return true, nil },
 	}
 	result := checkResult{
@@ -219,7 +251,7 @@ func TestSessionLossInvalidatesHealthImmediately(t *testing.T) {
 	if !d.applySessionState(transport.Snapshot()) {
 		t.Fatal("session transition was not applied")
 	}
-	if d.Healthy() || d.Usable(common.IndexToNetworkType(0)) {
+	if d.Healthy() || d.Usable(common.NetworkTCP4.NetworkType()) {
 		t.Fatal("session loss left the dialer usable")
 	}
 }
@@ -241,8 +273,12 @@ func TestInitialSessionTransitionsDoNotNotifyGroup(t *testing.T) {
 
 func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
+	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
+		d.StatsKey(): {Subtag: d.Property.SubscriptionTag, Name: d.Name},
+	}, nil)
+	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 	option := &checkOption{
-		networkType: common.IndexToNetworkType(0),
+		networkType: common.NetworkTCP4.NetworkType(),
 		probe:       func(context.Context, *common.NetworkType) (bool, error) { return true, nil },
 	}
 	d.applyCheck(checkResult{
@@ -274,7 +310,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	if status.Healthy || status.ConfirmingFailure {
 		t.Fatalf("confirmed failure status = %+v", status)
 	}
-	if got := stats.GetNode(d.StatsKey()).LastFailureStartedAt; got.Unix() != firstReport.Unix() {
+	if got := stats.DefaultStore.GetNode(d.StatsKey()).LastFailureStartedAt; got.Unix() != firstReport.Unix() {
 		t.Fatalf("failure started at %v, want %v", got, firstReport)
 	}
 }

@@ -7,18 +7,22 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
 )
 
 func observabilityState() (pprof *http.Server, pprofListenPort uint16, metrics *http.Server, metricsListenPort uint16) {
 	observabilityMu.Lock()
 	defer observabilityMu.Unlock()
-	return pprofServer, pprofPort, prometheusServer, prometheusPort
+	return pprofServer, pprofPort, metricsServer, metricsPort
 }
 
 func freeLocalPort(t *testing.T) uint16 {
@@ -63,10 +67,10 @@ func TestPprofServerKeepsListenerWhenPortIsUnchanged(t *testing.T) {
 }
 
 func TestMetricsPortChangeBindFailureKeepsOldServer(t *testing.T) {
-	startPrometheusServer(0, nil)
-	t.Cleanup(func() { startPrometheusServer(0, nil) })
+	startMetricsServer(0)
+	t.Cleanup(func() { startMetricsServer(0) })
 	oldPort := freeLocalPort(t)
-	startPrometheusServer(oldPort, prometheus.NewRegistry())
+	startMetricsServer(oldPort)
 	_, _, oldServer, _ := observabilityState()
 	if oldServer == nil {
 		t.Fatal("metrics server did not start")
@@ -78,10 +82,44 @@ func TestMetricsPortChangeBindFailureKeepsOldServer(t *testing.T) {
 	}
 	defer occupied.Close()
 	occupiedPort := uint16(occupied.Addr().(*net.TCPAddr).Port)
-	startPrometheusServer(occupiedPort, prometheus.NewRegistry())
+	startMetricsServer(occupiedPort)
 	_, _, current, currentPort := observabilityState()
 	if current != oldServer || currentPort != oldPort {
 		t.Fatal("failed port change replaced the working metrics server")
+	}
+}
+
+func TestMetricsServerContinuesAfterExternalCounterFailure(t *testing.T) {
+	startMetricsServer(0)
+	t.Cleanup(func() { startMetricsServer(0) })
+	connection := stats.DefaultStore.OpenConnection(stats.Path{
+		NodeID:   t.Name(),
+		Outbound: t.Name(),
+		Network:  common.NetworkTCP4,
+	})
+	if err := connection.AttachExternalCounters(func() (stats.TrafficCounters, error) {
+		return stats.TrafficCounters{}, errors.New("counter source failed")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	port := freeLocalPort(t)
+	startMetricsServer(port)
+	response, err := http.Get("http://localhost:" + fmt.Sprint(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %s, body = %s", response.Status, body)
+	}
+	if !strings.Contains(string(body), "dae_external_counter_read_errors_total") {
+		t.Fatalf("metrics response omitted external counter errors: %s", body)
 	}
 }
 
@@ -109,22 +147,22 @@ func TestPprofUnexpectedExitAllowsSamePortRestart(t *testing.T) {
 }
 
 func TestMetricsUnexpectedExitAllowsSamePortRestart(t *testing.T) {
-	startPrometheusServer(0, nil)
-	t.Cleanup(func() { startPrometheusServer(0, nil) })
+	startMetricsServer(0)
+	t.Cleanup(func() { startMetricsServer(0) })
 	port := freeLocalPort(t)
 	server := new(http.Server)
 	observabilityMu.Lock()
-	prometheusServer = server
-	prometheusPort = port
+	metricsServer = server
+	metricsPort = port
 	observabilityMu.Unlock()
 
-	serveHTTP("metrics", server, closedLocalListener(t), clearPrometheusServer)
+	serveHTTP("metrics", server, closedLocalListener(t), clearMetricsServer)
 	_, _, current, currentPort := observabilityState()
 	if current != nil || currentPort != 0 {
 		t.Fatal("unexpected exit did not clear the metrics server")
 	}
 
-	startPrometheusServer(port, prometheus.NewRegistry())
+	startMetricsServer(port)
 	_, _, current, currentPort = observabilityState()
 	if current == nil || current == server || currentPort != port {
 		t.Fatal("metrics server did not restart on the same port")
@@ -133,10 +171,10 @@ func TestMetricsUnexpectedExitAllowsSamePortRestart(t *testing.T) {
 
 func TestObservabilityServersCanSwapPorts(t *testing.T) {
 	startPprofServer(0)
-	startPrometheusServer(0, nil)
+	startMetricsServer(0)
 	t.Cleanup(func() {
 		startPprofServer(0)
-		startPrometheusServer(0, nil)
+		startMetricsServer(0)
 	})
 	pprofInitial := freeLocalPort(t)
 	metricsInitial := freeLocalPort(t)
@@ -144,9 +182,9 @@ func TestObservabilityServersCanSwapPorts(t *testing.T) {
 		metricsInitial = freeLocalPort(t)
 	}
 	startPprofServer(pprofInitial)
-	startPrometheusServer(metricsInitial, prometheus.NewRegistry())
+	startMetricsServer(metricsInitial)
 
-	reconfigureObservabilityServers(metricsInitial, pprofInitial, prometheus.NewRegistry())
+	reconfigureObservabilityServers(metricsInitial, pprofInitial)
 	pprof, pprofPort, metrics, metricsPort := observabilityState()
 	if pprof == nil || metrics == nil || pprofPort != metricsInitial || metricsPort != pprofInitial {
 		t.Fatalf("swapped observability state = pprof %v:%d, metrics %v:%d", pprof, pprofPort, metrics, metricsPort)

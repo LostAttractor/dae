@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -16,7 +16,7 @@ type LatencyBasedSelector struct {
 	dialerGroup *DialerGroup
 	tolerance   time.Duration
 
-	selected [4]*dialer.Dialer
+	selected [common.NetworkTypeCount]*dialer.Dialer
 	mu       sync.RWMutex
 }
 
@@ -44,8 +44,8 @@ func findCandidate(candidates []selectorCandidate, d *dialer.Dialer) (selectorCa
 	return selectorCandidate{}, false
 }
 
-func (s *LatencyBasedSelector) refreshNetwork(index int, changed *dialer.Dialer) ([]selectorCandidate, bool) {
-	networkType := common.IndexToNetworkType(index)
+func (s *LatencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed *dialer.Dialer) ([]selectorCandidate, bool) {
+	networkType := index.NetworkType()
 	candidates := s.sortedCandidates(networkType)
 	oldDialer := s.selected[index]
 	var best *dialer.Dialer
@@ -80,14 +80,14 @@ func (s *LatencyBasedSelector) refreshNetwork(index int, changed *dialer.Dialer)
 func (s *LatencyBasedSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	index := common.NetworkTypeToIndex(networkType)
+	index := networkType.Index()
 	s.refreshNetwork(index, nil)
 	return s.selected[index]
 }
 
 func (s *LatencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
 	s.mu.RLock()
-	d := s.selected[common.NetworkTypeToIndex(networkType)]
+	d := s.selected[networkType.Index()]
 	s.mu.RUnlock()
 	if d == nil || !d.Usable(networkType) {
 		return nil
@@ -99,10 +99,10 @@ func (s *LatencyBasedSelector) Refresh(changed *dialer.Dialer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var printOnce sync.Once
-	for i := 0; i < 4; i++ {
+	for i := common.NetworkIndex(0); i < common.NetworkTypeCount; i++ {
 		candidates, selectionChanged := s.refreshNetwork(i, changed)
 		if selectionChanged && s.dialerGroup.latencyTableLogging.Load() {
-			networkType := common.IndexToNetworkType(i)
+			networkType := i.NetworkType()
 			printOnce.Do(func() { s.printCandidates(candidates, networkType, log.Warnln) })
 		}
 	}
@@ -160,26 +160,15 @@ func (s *LatencyBasedSelector) recordMetrics(candidates []selectorCandidate, d *
 	if snapshot.Support != dialer.NetworkSupportConfirmed || !snapshot.HasLatency {
 		return
 	}
-	labels := prometheus.Labels{
-		"id":       d.StatsID(),
-		"outbound": s.dialerGroup.Name,
-		"subtag":   d.Property.SubscriptionTag,
-		"dialer":   d.Name,
-		"network":  networkType.String(),
-	}
-	common.CheckLatency.With(labels).Set(float64(snapshot.Latency.Last.Milliseconds()))
-	if snapshot.Latency.MovingAvg > 0 {
-		common.CheckMovingLatency.With(labels).Set(float64(snapshot.Latency.MovingAvg.Milliseconds()))
-	}
 	selectionLatency := candidateLatency(s.dialerGroup.selectionPolicy.Policy, snapshot)
 	selectionLatency = saturatingDurationAdd(selectionLatency, s.dialerGroup.dialerToAnnotation[d].AddLatency)
-	if selectionLatency > 0 {
-		common.CheckSelectLatency.With(labels).Set(float64(selectionLatency.Milliseconds()))
-	}
+	stats.DefaultStore.RecordCheckMetrics(
+		d.StatsPath(s.dialerGroup.Name, networkType),
+		snapshot.Latency.Last,
+		snapshot.Latency.MovingAvg,
+		selectionLatency,
+	)
 	for i, candidate := range candidates {
-		labels["id"] = candidate.dialer.StatsID()
-		labels["subtag"] = candidate.dialer.Property.SubscriptionTag
-		labels["dialer"] = candidate.dialer.Name
-		common.DialerSelectIndex.With(labels).Set(float64(i))
+		stats.DefaultStore.RecordSelectionIndex(candidate.dialer.StatsPath(s.dialerGroup.Name, networkType), i)
 	}
 }

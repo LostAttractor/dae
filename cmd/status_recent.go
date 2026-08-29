@@ -11,87 +11,76 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
 
-const (
-	recentWindowSeconds = int64(time.Hour / time.Second)
-)
-
-func colorRecentHealth(health control.HealthStatus) string {
+func colorRecentHealth(health healthStatus) string {
 	label := strings.ToUpper(string(health))
 	switch health {
-	case control.HealthHealthy:
+	case healthHealthy:
 		return colorize(label, text.FgGreen)
-	case control.HealthWarning:
+	case healthWarning:
 		return colorize(label, text.FgYellow)
-	case control.HealthDegraded:
+	case healthDegraded:
 		return colorize(label, text.FgRed)
 	default:
 		return label
 	}
 }
 
-func recentStatePoint(state control.GroupBucketState) string {
+func recentStatePoint(state stats.GroupHistoryState) string {
 	if !colorsEnabled {
 		switch state {
-		case control.GroupBucketAvailable:
+		case stats.GroupHistoryAvailable:
 			return "+"
-		case control.GroupBucketUnavailable:
+		case stats.GroupHistoryUnavailable:
 			return "x"
 		default:
 			return "."
 		}
 	}
 	switch state {
-	case control.GroupBucketAvailable:
+	case stats.GroupHistoryAvailable:
 		return colorize("●", text.FgGreen)
-	case control.GroupBucketUnavailable:
+	case stats.GroupHistoryUnavailable:
 		return colorize("●", text.FgRed)
 	default:
 		return colorize("○", text.FgHiBlack)
 	}
 }
 
-func recentWindowLabel(seconds int64) string {
-	if seconds <= 0 {
-		seconds = recentWindowSeconds
-	}
-	duration := time.Duration(seconds) * time.Second
+func recentWindowLabel(duration time.Duration) string {
 	switch {
 	case duration%time.Hour == 0:
 		return fmt.Sprintf("%dH", duration/time.Hour)
 	case duration%time.Minute == 0:
 		return fmt.Sprintf("%dM", duration/time.Minute)
 	default:
-		return fmt.Sprintf("%dS", seconds)
+		return fmt.Sprintf("%dS", duration/time.Second)
 	}
 }
 
-func recentTimeline(connectivity *control.GroupConnectivityStatus) string {
-	states := make([]control.GroupBucketState, control.GroupRecentBucketCount)
-	windowSeconds := recentWindowSeconds
-	if connectivity != nil {
-		copy(states, connectivity.Recent.Buckets)
-		windowSeconds = connectivity.Recent.WindowSeconds
-	}
+func recentTimeline(group control.GroupStatus) string {
+	states := make([]stats.GroupHistoryState, stats.GroupStateBucketCount)
+	copy(states, group.Availability.Recent.States)
 	var timeline strings.Builder
 	timeline.WriteByte('[')
 	for _, state := range states {
 		timeline.WriteString(recentStatePoint(state))
 	}
 	timeline.WriteString("] / ")
-	timeline.WriteString(recentWindowLabel(windowSeconds))
+	timeline.WriteString(recentWindowLabel(stats.GroupStateWindowDuration))
 	return timeline.String()
 }
 
-func recentUpRatio(connectivity *control.GroupConnectivityStatus) string {
-	if connectivity == nil || connectivity.UpRatio24h == nil {
+func recentUpRatio(group control.GroupStatus) string {
+	if !group.Availability.Seen {
 		return "- / 24H"
 	}
-	ratio := *connectivity.UpRatio24h
+	ratio := group.Availability.Recent24h.UpRatio
 	formatted := fmt.Sprintf("%.2f%% / 24H", ratio*100)
 	return colorRatio(ratio, formatted)
 }
@@ -99,7 +88,7 @@ func recentUpRatio(connectivity *control.GroupConnectivityStatus) string {
 func recentActiveWidth(groups []control.GroupStatus) int {
 	width := 1
 	for _, group := range groups {
-		if digits := len(strconv.FormatInt(group.ActiveConns, 10)); digits > width {
+		if digits := len(strconv.FormatInt(group.Stats.ActiveConnections, 10)); digits > width {
 			width = digits
 		}
 	}
@@ -107,17 +96,17 @@ func recentActiveWidth(groups []control.GroupStatus) int {
 }
 
 func recentGroupRow(group control.GroupStatus, activeWidth int) table.Row {
-	activity := fmt.Sprintf("%*d active", activeWidth, group.ActiveConns)
-	rate := formatTrafficRateCell(group.Traffic)
-	total := formatTrafficTotalCell(group.Traffic)
-	if group.Connectivity == nil {
+	activity := fmt.Sprintf("%*d active", activeWidth, group.Stats.ActiveConnections)
+	rate := formatTrafficRateCell(group.Stats)
+	total := formatTrafficTotalCell(group.Stats)
+	if !group.ChecksConnectivity {
 		return table.Row{group.Name, "", "", "", activity, rate, "U/D rate", total, "U/D total"}
 	}
 	return table.Row{
 		group.Name,
-		formatGroupConnectivityState(group.Connectivity),
-		recentTimeline(group.Connectivity),
-		recentUpRatio(group.Connectivity),
+		formatGroupConnectivityState(group),
+		recentTimeline(group),
+		recentUpRatio(group),
 		activity,
 		rate,
 		"U/D rate",
@@ -147,16 +136,16 @@ func renderRecentGroups(groups []control.GroupStatus) string {
 }
 
 func printRecentStatus(snapshot *control.StatusSnapshot) {
-	traffic := formatTrafficSummary(snapshot.Traffic)
+	traffic := formatTrafficSummary(snapshot.Stats)
 	if traffic != "" {
 		traffic = " · " + traffic
 	}
 	fmt.Printf(
 		"dae %s · %s · up %s · %d active%s\n\n",
 		snapshot.Version,
-		colorRecentHealth(snapshot.Health),
+		colorRecentHealth(statusHealth(snapshot.Groups)),
 		formatUptime(time.Since(snapshot.StartedAt)),
-		snapshot.ActiveConns,
+		snapshot.Stats.ActiveConnections,
 		traffic,
 	)
 

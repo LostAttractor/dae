@@ -18,9 +18,9 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -950,14 +950,7 @@ func (c *DnsController) reportDNSDialFailure(err error, argument *dialArgument) 
 	if !ok || netErr.Timeout() || !argument.Dialer.ChecksConnectivity() {
 		return
 	}
-	labels := prometheus.Labels{
-		"id":       argument.Dialer.StatsID(),
-		"outbound": argument.Outbound.Name,
-		"subtag":   argument.Dialer.Property.SubscriptionTag,
-		"dialer":   argument.Dialer.Name,
-		"network":  argument.networkType.String(),
-	}
-	common.ErrorCount.With(labels).Inc()
+	stats.DefaultStore.RecordError(argument.Dialer.StatsPath(argument.Outbound.Name, &argument.networkType))
 	argument.Dialer.ReportDataPlaneFailure()
 }
 

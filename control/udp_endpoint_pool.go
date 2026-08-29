@@ -17,7 +17,6 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/samber/oops"
 )
 
@@ -42,15 +41,12 @@ type UdpEndpoint struct {
 	NatTimeout    time.Duration
 	closed        atomic.Bool
 
-	dialer  *dialer.Dialer
-	labels  prometheus.Labels
-	traffic *stats.TrafficConnection
+	dialer    *dialer.Dialer
+	statsPath stats.Path
+	traffic   *stats.Connection
 }
 
 func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort) error {
-	common.ActiveConnections.With(ue.labels).Inc()
-	defer common.ActiveConnections.With(ue.labels).Dec()
-	common.TotalConnections.With(ue.labels).Inc()
 	buf := pool.GetBuffer(consts.EthernetMtu)
 	defer pool.PutBuffer(buf)
 	for {
@@ -61,8 +57,8 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPor
 			}
 			return oops.With(
 				"dialer", ue.dialer.Name,
-				"outbound", ue.labels["outbound"],
-				"network", ue.labels["network"],
+				"outbound", ue.statsPath.Outbound,
+				"network", ue.statsPath.Network.String(),
 				"src", src.String(),
 				"dst", dst.String(),
 			).Wrapf(err, "failed to ReadFrom")
@@ -127,7 +123,7 @@ type UdpEndpointOptions struct {
 	NatTimeout time.Duration
 
 	Dialer *dialer.Dialer
-	labels prometheus.Labels
+	Path   stats.Path
 }
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
@@ -197,7 +193,7 @@ func newUdpEndpoint(createOption *UdpEndpointOptions) *UdpEndpoint {
 		handler:    createOption.Handler,
 		NatTimeout: createOption.NatTimeout,
 		dialer:     createOption.Dialer,
-		labels:     createOption.labels,
+		statsPath:  createOption.Path,
 	}
 }
 

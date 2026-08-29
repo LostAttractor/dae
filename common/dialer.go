@@ -34,55 +34,70 @@ type NetworkType struct {
 	IpVersion consts.IpVersionStr
 }
 
+type NetworkIndex int
+
+const NetworkInvalid NetworkIndex = -1
+
+const (
+	NetworkTCP4 NetworkIndex = iota
+	NetworkTCP6
+	NetworkUDP4
+	NetworkUDP6
+)
+
+const NetworkTypeCount = 4
+
 func (t *NetworkType) String() string {
 	return string(t.L4Proto) + string(t.IpVersion)
 }
 
-// networkTypeToIndex 将网络类型映射到集合索引
-// collections:
-// 0: TCP4 DNS
-// 1: TCP6 DNS
-// 2: UDP4 DNS
-// 3: UDP6 DNS
-func NetworkTypeToIndex(typ *NetworkType) int {
+// Index returns the canonical array and metrics index for this network type.
+func (typ *NetworkType) Index() NetworkIndex {
 	switch typ.L4Proto {
 	case consts.L4ProtoStr_TCP:
 		switch typ.IpVersion {
 		case consts.IpVersionStr_4:
-			return 0
+			return NetworkTCP4
 		case consts.IpVersionStr_6:
-			return 1
+			return NetworkTCP6
 		}
 	case consts.L4ProtoStr_UDP:
-		// UDP share the DNS check result.
 		switch typ.IpVersion {
 		case consts.IpVersionStr_4:
-			return 2
+			return NetworkUDP4
 		case consts.IpVersionStr_6:
-			return 3
+			return NetworkUDP6
 		}
 	}
 	panic("invalid network type")
 }
 
-func IndexToNetworkType(index int) *NetworkType {
+func (index NetworkIndex) Valid() bool {
+	return index >= NetworkTCP4 && index <= NetworkUDP6
+}
+
+func (index NetworkIndex) String() string {
+	return index.NetworkType().String()
+}
+
+func (index NetworkIndex) NetworkType() *NetworkType {
 	switch index {
-	case 0:
+	case NetworkTCP4:
 		return &NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
 			IpVersion: consts.IpVersionStr_4,
 		}
-	case 1:
+	case NetworkTCP6:
 		return &NetworkType{
 			L4Proto:   consts.L4ProtoStr_TCP,
 			IpVersion: consts.IpVersionStr_6,
 		}
-	case 2:
+	case NetworkUDP4:
 		return &NetworkType{
 			L4Proto:   consts.L4ProtoStr_UDP,
 			IpVersion: consts.IpVersionStr_4,
 		}
-	case 3:
+	case NetworkUDP6:
 		return &NetworkType{
 			L4Proto:   consts.L4ProtoStr_UDP,
 			IpVersion: consts.IpVersionStr_6,

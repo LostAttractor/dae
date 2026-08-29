@@ -48,7 +48,7 @@ func newUncheckedDialer(t *testing.T, name string) *dialer.Dialer {
 	return dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
-	}}, dialer.InitialCheckDisabled)
+	}}, dialer.InitialCheckDisabled, "")
 }
 
 func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
@@ -57,7 +57,7 @@ func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
 	return dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
-	}}, dialer.InitialCheckBlocking)
+	}}, dialer.InitialCheckBlocking, "")
 }
 
 func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []*dialer.Annotation, policy dialer.DialerSelectionPolicy, callback func(bool, *common.NetworkType) error) *DialerGroup {
@@ -188,10 +188,10 @@ func TestLatencySelectorFallsBackWhenSelectedDialerCloses(t *testing.T) {
 
 func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 	d := newUncheckedDialer(t, "node")
-	var changes [4]bool
+	var changes [common.NetworkTypeCount]bool
 	g := newSelectorTestGroup(t, []*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{},
 		func(available bool, networkType *common.NetworkType) error {
-			changes[common.NetworkTypeToIndex(networkType)] = available
+			changes[networkType.Index()] = available
 			return nil
 		})
 	g.DialerChanged(d)
@@ -222,6 +222,8 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 }
 
 func TestDialerGroupStartsChecking(t *testing.T) {
+	stats.DefaultStore.Reconcile(nil, map[string]struct{}{t.Name(): {}})
+	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 	d := newCheckedDialer(t, t.Name())
 	g := NewDialerGroup(&dialer.GlobalOption{}, t.Name(), GroupKindSelector,
 		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
@@ -238,14 +240,16 @@ func TestDialerGroupStartsChecking(t *testing.T) {
 			t.Fatalf("initial history bucket %d = %q, want unknown", i, state)
 		}
 	}
-	if availability := stats.GetGroup(g.Name); availability.Seen {
+	if availability := stats.DefaultStore.GetGroup(g.Name); availability.Seen {
 		t.Fatalf("initial checking was recorded as an availability observation: %+v", availability)
 	}
 }
 
 func TestDialerGroupReloadDoesNotRecordUnavailable(t *testing.T) {
 	name := t.Name()
-	stats.RecordGroup(name, true)
+	stats.DefaultStore.Reconcile(nil, map[string]struct{}{name: {}})
+	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
+	stats.DefaultStore.RecordGroup(name, true)
 	d := newCheckedDialer(t, name)
 	g := NewDialerGroup(&dialer.GlobalOption{}, name, GroupKindSelector,
 		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
@@ -253,7 +257,7 @@ func TestDialerGroupReloadDoesNotRecordUnavailable(t *testing.T) {
 	if err := g.InitializeConnectivity(); err != nil {
 		t.Fatal(err)
 	}
-	availability := stats.GetGroup(name)
+	availability := stats.DefaultStore.GetGroup(name)
 	if !availability.Alive || !availability.LastFailureStartedAt.IsZero() {
 		t.Fatalf("reload initialization changed retained availability: %+v", availability)
 	}
@@ -261,13 +265,15 @@ func TestDialerGroupReloadDoesNotRecordUnavailable(t *testing.T) {
 
 func TestEmptyDialerGroupStartsUnavailable(t *testing.T) {
 	g := &DialerGroup{Name: t.Name(), Kind: GroupKindSelector}
+	stats.DefaultStore.Reconcile(nil, map[string]struct{}{g.Name: {}})
+	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 	if err := g.InitializeConnectivity(); err != nil {
 		t.Fatal(err)
 	}
 	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
 		t.Fatalf("empty group state = %q, want unavailable", state)
 	}
-	if availability := stats.GetGroup(g.Name); !availability.Seen || availability.Alive {
+	if availability := stats.DefaultStore.GetGroup(g.Name); !availability.Seen || availability.Alive {
 		t.Fatalf("empty group availability = %+v, want observed unavailable", availability)
 	}
 }
