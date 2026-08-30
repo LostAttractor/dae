@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/control"
+	log "github.com/sirupsen/logrus"
 )
 
 func withoutStatusColors(t *testing.T) {
@@ -81,6 +83,42 @@ func TestTableUsageRow(t *testing.T) {
 	for index, expected := range want {
 		if got := fmt.Sprint(row[index]); got != expected {
 			t.Errorf("tableUsageRow()[%d] = %q, want %q", index, got, expected)
+		}
+	}
+}
+
+func TestStartupNodeLogKeepsAllPathsWithoutTerminalFormatting(t *testing.T) {
+	withoutStatusColors(t)
+	colorsEnabled = true
+	ready := testNodeStatus(time.Now())
+	pending, failed := ready, ready
+	pending.Name, pending.ID = strings.Repeat("香港节点", 40), "pending"
+	pending.Availability.Seen = false
+	failed.Name, failed.ID, failed.Healthy = "failed-path", "failed", false
+	groups := []control.GroupStatus{
+		{Name: "proxy", Nodes: []control.NodeStatus{pending, ready, failed},
+			SelectedNodeIDs: control.NetworkValues[string]{ready.ID, ready.ID}},
+		{Name: "direct", Nodes: []control.NodeStatus{{Name: "direct-path"}}},
+	}
+	var output bytes.Buffer
+	logger := log.StandardLogger()
+	previousOutput, previousLevel := logger.Out, logger.GetLevel()
+	logger.SetOutput(&output)
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { logger.SetOutput(previousOutput); logger.SetLevel(previousLevel) })
+	logStartupNodeStatus(groups)
+	got := output.String()
+	for _, want := range []string{pending.Name, ready.Name, failed.Name, "direct-path", "unknown", "unhealthy", "10/20/30", "all tcp", "p=2*", "+30ms"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("startup log is missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b") {
+		t.Fatalf("startup log contains ANSI escapes:\n%s", got)
+	}
+	for line := range strings.SplitSeq(got, "\n") {
+		if (strings.Contains(line, pending.Name) || strings.Contains(line, failed.Name)) && strings.Contains(line, "10/20/30") {
+			t.Errorf("startup log displays stale latency for an unchecked or failed path: %s", line)
 		}
 	}
 }

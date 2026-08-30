@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,7 +67,7 @@ type testGroup struct {
 	changes atomic.Int32
 }
 
-func (g *testGroup) DialerChanged(*Dialer) { g.changes.Add(1) }
+func (g *testGroup) DialerChanged(_ *Dialer) { g.changes.Add(1) }
 
 var testDialerSequence atomic.Uint64
 
@@ -93,6 +92,45 @@ func checkOptions(probes [common.NetworkTypeCount]func(context.Context, *common.
 		options[i] = &checkOption{networkType: common.NetworkIndex(i).NetworkType(), probe: probes[i]}
 	}
 	return options
+}
+
+func TestConnectivityCheckerWaitsForStartGate(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	probed := make(chan struct{}, 1)
+	checker := newConnectivityChecker(d, []*checkOption{{
+		networkType: common.NetworkTCP4.NetworkType(),
+		probe: func(context.Context, *common.NetworkType) (bool, error) {
+			select {
+			case probed <- struct{}{}:
+			default:
+			}
+			return true, nil
+		},
+	}})
+	start := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		checker.run(start)
+		close(done)
+	}()
+
+	select {
+	case <-probed:
+		t.Fatal("connectivity probe started before the shared gate opened")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(start)
+	select {
+	case <-probed:
+	case <-time.After(time.Second):
+		t.Fatal("connectivity probe did not start after the shared gate opened")
+	}
+	_ = d.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("connectivity checker did not stop after dialer close")
+	}
 }
 
 func TestStatsKeyEncodingSeparatesIdentityAndScope(t *testing.T) {
@@ -137,7 +175,9 @@ func TestUncheckedDialerRecordsAvailabilityOnlyWhenActivated(t *testing.T) {
 		t.Fatalf("candidate dialer published availability: %+v", availability)
 	}
 
-	d.ActivateCheck(new(sync.WaitGroup))
+	start := make(chan struct{})
+	close(start)
+	d.ActivateCheck(start)
 	if availability := stats.DefaultStore.GetNode(d.StatsKey()); !availability.Seen || !availability.Alive {
 		t.Fatalf("activated unchecked dialer availability = %+v", availability)
 	}
@@ -157,9 +197,12 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	}
 	checker := newConnectivityChecker(d, checkOptions(probes))
 	result := checker.perform(context.Background(), checkInitial, -1)
-	applied := d.applyCheck(result)
-	if !applied.accepted || !applied.success || !applied.initialDone || applied.primary != 0 {
+	applied, accepted := d.applyCheck(result)
+	if !accepted || !applied.success || applied.primary != 0 {
 		t.Fatalf("initial result = %+v", applied)
+	}
+	if !d.ConnectivitySnapshot().InitialCheckDone {
+		t.Fatal("completed initial result was not retained by the dialer")
 	}
 	want := [common.NetworkTypeCount]NetworkSupportState{
 		NetworkSupportConfirmed,
@@ -169,6 +212,42 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	}
 	if got := d.RuntimeStatus().SupportState; got != want {
 		t.Fatalf("support = %v, want %v", got, want)
+	}
+}
+
+func TestPendingInitialCheckIsNotReportedComplete(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	option := &checkOption{networkType: common.NetworkTCP4.NetworkType()}
+	applied, accepted := d.applyCheck(checkResult{
+		kind: checkInitial,
+		probes: []probeResult{{
+			option: option,
+			err:    context.DeadlineExceeded,
+		}},
+	})
+	if !accepted {
+		t.Fatalf("pending initial result = %+v", applied)
+	}
+	if d.ConnectivitySnapshot().InitialCheckDone {
+		t.Fatal("pending initial result was marked complete")
+	}
+}
+
+func TestUnsupportedInitialCheckIsComplete(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)
+	for i := range probes {
+		probes[i] = func(context.Context, *common.NetworkType) (bool, error) {
+			return false, netproxy.UnsupportedTunnelTypeError
+		}
+	}
+	result := newConnectivityChecker(d, checkOptions(probes)).perform(context.Background(), checkInitial, -1)
+	applied, accepted := d.applyCheck(result)
+	if !accepted || applied.success {
+		t.Fatalf("unsupported initial result = %+v", applied)
+	}
+	if !d.ConnectivitySnapshot().InitialCheckDone {
+		t.Fatal("unsupported initial result was not marked complete")
 	}
 }
 
@@ -192,7 +271,7 @@ func TestHealthCheckConfirmsFailureAndUsesAlternative(t *testing.T) {
 	}
 	checker := newConnectivityChecker(d, checkOptions(probes))
 	result := checker.perform(context.Background(), checkHealth, 0)
-	applied := d.applyCheck(result)
+	applied, _ := d.applyCheck(result)
 	if !applied.success || applied.primary != 1 {
 		t.Fatalf("health result = %+v", applied)
 	}
@@ -227,8 +306,8 @@ func TestStaleCheckCannotUpdateNewSession(t *testing.T) {
 	transport.state.Transition(netproxy.SessionDisconnected, errors.New("lost"))
 	d.applySessionState(transport.Snapshot())
 	transport.state.Transition(netproxy.SessionConnected, nil)
-	if applied := d.applyCheck(result); applied.accepted {
-		t.Fatalf("stale result was accepted: %+v", applied)
+	if _, accepted := d.applyCheck(result); accepted {
+		t.Fatal("stale result was accepted")
 	}
 	if d.Healthy() {
 		t.Fatal("stale result recovered the new session")
@@ -259,7 +338,7 @@ func TestSessionLossInvalidatesHealthImmediately(t *testing.T) {
 func TestInitialSessionTransitionsDoNotNotifyGroup(t *testing.T) {
 	transport := newTestSessionTransport(netproxy.SessionDisconnected)
 	d := newTestDialer(t, transport)
-	group := d.group.group.(*testGroup)
+	group := d.group.observer.(*testGroup)
 
 	d.applySessionState(transport.Snapshot())
 	transport.state.Transition(netproxy.SessionConnecting, nil)
@@ -285,7 +364,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 		kind:   checkInitial,
 		probes: []probeResult{{option: option, ok: true, latency: time.Millisecond}},
 	})
-	group := d.group.group.(*testGroup)
+	group := d.group.observer.(*testGroup)
 	changesBeforeReport := group.changes.Load()
 	d.ReportDataPlaneFailure()
 	firstReport := d.failureReportedAt

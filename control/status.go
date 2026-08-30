@@ -144,14 +144,25 @@ func (c *ControlPlane) statusSnapshot(version string) (*StatusSnapshot, error) {
 		Stats:        paths.total,
 		Networks:     networkValues(paths.networks),
 		Tables:       c.tableStatuses(),
-		Groups:       make([]GroupStatus, 0, len(c.outbounds)),
+		Groups:       c.groupStatuses(paths),
 	}
+	return snapshot, nil
+}
+
+// GroupsStatus reads the current paths and their last observed connectivity.
+// It does not select nodes or wait for connectivity checks.
+func (c *ControlPlane) GroupsStatus() []GroupStatus {
+	return c.groupStatuses(pathStatsIndex{})
+}
+
+func (c *ControlPlane) groupStatuses(paths pathStatsIndex) []GroupStatus {
+	groups := make([]GroupStatus, 0, len(c.outbounds))
 	for index, group := range c.outbounds {
 		if group.Kind == outbound.GroupKindInvisible {
 			continue
 		}
 		critical := index < len(c.criticalOutbounds) && c.criticalOutbounds[index]
-		snapshot.Groups = append(snapshot.Groups, newGroupStatus(paths, group, critical))
+		groups = append(groups, newGroupStatus(paths, group, critical))
 	}
-	return snapshot, nil
+	return groups
 }

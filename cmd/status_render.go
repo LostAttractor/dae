@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
+	log "github.com/sirupsen/logrus"
 )
 
 // newStatusTable uses one ANSI- and CJK-aware layout for all status output.
@@ -42,6 +43,17 @@ func printTable(header table.Row, rows []table.Row) {
 	writer.AppendHeader(header)
 	writer.AppendRows(rows)
 	printRenderedTable(writer.Render())
+}
+
+func renderLogTable(header table.Row, rows []table.Row) string {
+	writer := newStatusTable()
+	writer.AppendHeader(header)
+	writer.AppendRows(rows)
+	lines := strings.Split(text.StripEscape(writer.Render()), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func tableUsageRow(usage control.TableUsage) table.Row {
@@ -350,6 +362,23 @@ func nodeTable(group control.GroupStatus, verbose bool, now time.Time) (table.Ro
 		header = append(header, "FAIL A/D")
 	}
 	return header, rows
+}
+
+func logStartupNodeStatus(groups []control.GroupStatus) {
+	if !log.IsLevelEnabled(log.InfoLevel) {
+		return
+	}
+	for _, group := range groups {
+		policy := group.Policy
+		if policy == "" {
+			policy = "single path"
+		}
+		log.Infof("Paths of target %q [kind: %s, policy: %s]", group.Name, group.TargetKind, policy)
+		header, rows := nodeTable(group, false, time.Now())
+		for line := range strings.SplitSeq(renderLogTable(header, rows), "\n") {
+			log.Info(line)
+		}
+	}
 }
 
 func printGroupStatus(group control.GroupStatus) {

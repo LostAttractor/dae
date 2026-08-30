@@ -46,7 +46,7 @@ Every path statement is independent, so the direct `lightsail` candidate and the
 
 Expansion is statement-major and then terminal-major within each Cartesian path. For `entry-1`, `entry-2` followed by `exit-1`, `exit-2`, the order is `entry-1 -> exit-1`, `entry-2 -> exit-1`, `entry-1 -> exit-2`, then `entry-2 -> exit-2`. `fixed(n)` indexes this stable complete-path order. Separately declared identical physical paths remain separate candidates.
 
-`priority` and `add_latency` annotations add across path stages. `check_async` is a node option rather than a path annotation; configure it on local nodes or through subscription node-option rules. A complete path starts its initial connectivity check asynchronously when any hop enables the option.
+`priority` and `add_latency` annotations add across path stages. dae starts the initial connectivity checks of all paths together; each group participating in the startup wait stops blocking once it has a usable path, while unfinished checks continue in the background. Latency selection ignores `check_tolerance` until startup completes, allowing a later initial result to replace the provisional candidate. A group without a usable path keeps checking after the global 60-second startup timeout. `check_async` is a node option rather than a path annotation; configure it on local nodes or through subscription node-option rules. A complete path starts its initial connectivity check asynchronously when any hop enables the option. A group whose relevant paths are all asynchronous does not participate in the startup wait.
 
 ```shell
 node {

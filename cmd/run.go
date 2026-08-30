@@ -828,6 +828,7 @@ func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []s
 	}
 	// Call GC to release memory.
 	runtime.GC()
+	logStartupNodeStatus(c.GroupsStatus())
 
 	return c, nil
 }

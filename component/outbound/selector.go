@@ -20,11 +20,26 @@ func saturatingDurationAdd(a, b time.Duration) time.Duration {
 	return a + b
 }
 
-type Selector interface {
+type selector interface {
 	Select(networkType *common.NetworkType) *dialer.Dialer
 	SelectedDialer(networkType *common.NetworkType) *dialer.Dialer
 	Refresh(dialer *dialer.Dialer)
-	PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{}))
+	EnableTolerance()
+}
+
+func newSelector(group *DialerGroup, tolerance time.Duration) selector {
+	switch group.selectionPolicy.Policy {
+	case "", consts.DialerSelectionPolicy_Fixed:
+		return &fixedSelector{dialerGroup: group}
+	case consts.DialerSelectionPolicy_MinAverage10Latencies,
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+		consts.DialerSelectionPolicy_MinLastLatency:
+		return &latencyBasedSelector{dialerGroup: group, tolerance: tolerance}
+	case consts.DialerSelectionPolicy_Random:
+		return &randomSelector{dialerGroup: group}
+	default:
+		panic(fmt.Sprintf("unsupported selection policy %q", group.selectionPolicy.Policy))
+	}
 }
 
 type selectorCandidate struct {
@@ -59,7 +74,7 @@ func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkTyp
 		dialer:         d,
 		latency:        latency,
 		sortingLatency: sortingLatency,
-		priority:       g.GetPriority(d, sortingLatency),
+		priority:       g.dialerToAnnotation[d].PriorityAt(sortingLatency),
 	}, true
 }
 
@@ -71,33 +86,4 @@ func (g *DialerGroup) candidates(networkType *common.NetworkType) []selectorCand
 		}
 	}
 	return candidates
-}
-
-func printLatencyHeader(g *DialerGroup, networkType *common.NetworkType, logfn func(args ...interface{})) {
-	if networkType != nil {
-		logfn(fmt.Sprintf("Group '%v' [%v]:", g.Name, networkType.String()))
-	} else {
-		logfn(fmt.Sprintf("Group '%v':", g.Name))
-	}
-}
-
-func printDialerLatency(g *DialerGroup, d *dialer.Dialer, networkType *common.NetworkType, logfn func(args ...interface{})) {
-	printLatencyHeader(g, networkType, logfn)
-	snapshot := d.SelectionSnapshot(networkType)
-	if !snapshot.Usable {
-		logfn("  <Not Alive>")
-		return
-	}
-	tag := ""
-	if d.SubscriptionTag != "" {
-		tag = fmt.Sprintf(" [%v]", d.SubscriptionTag)
-	}
-	latency := "Always Alive"
-	if d.ChecksConnectivity() {
-		latency = common.ShowDuration(0)
-		if snapshot.HasLatency {
-			latency = common.ShowDuration(snapshot.Latency.Last)
-		}
-	}
-	logfn(fmt.Sprintf("%4d.%v %v: %v", 1, tag, d.Name, latency))
 }

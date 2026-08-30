@@ -15,7 +15,6 @@ import (
 	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
@@ -29,19 +28,32 @@ var (
 )
 
 type DialerGroup interface {
-	DialerChanged(*Dialer)
+	DialerChanged(d *Dialer)
 }
 
-type groupState struct {
-	group          DialerGroup
+type groupBinding struct {
+	observer       DialerGroup
 	latencies      *LatenciesN
 	movingAverage  time.Duration
 	emaAlpha       float64
 	timeoutPenalty time.Duration
 }
 
-// InitialCheckMode controls whether a dialer is checked and whether startup
-// waits for its first connectivity result.
+func (g *groupBinding) recordLatency(latency time.Duration, success bool) {
+	sample := latency
+	if !success {
+		sample = g.timeoutPenalty
+	}
+	if g.movingAverage == 0 {
+		g.movingAverage = sample
+	} else {
+		g.movingAverage = time.Duration(float64(g.movingAverage)*(1-g.emaAlpha) + float64(sample)*g.emaAlpha)
+	}
+	g.latencies.AppendSample(sample, !success)
+}
+
+// InitialCheckMode controls whether a dialer is checked and whether its group
+// may wait for a usable candidate during startup.
 type InitialCheckMode uint8
 
 const (
@@ -69,16 +81,16 @@ type Dialer struct {
 	session  netproxy.Session
 
 	initialCheck      InitialCheckMode
+	initialCheckDone  bool
 	healthy           bool
 	healthSeq         uint64
 	failureReportedAt time.Time
 	networks          [common.NetworkTypeCount]networkState
-	group             *groupState
+	group             *groupBinding
 
 	mu sync.RWMutex
 
 	checkCh chan struct{}
-	readyCh chan struct{}
 	ctx     context.Context
 	cancel  context.CancelFunc
 
@@ -101,6 +113,14 @@ type SelectionSnapshot struct {
 	Support    NetworkSupportState
 	HasLatency bool
 	Latency    LatencyStats
+}
+
+// ConnectivitySnapshot is the state needed to aggregate a dialer into its
+// group. It deliberately excludes process-lifetime statistics.
+type ConnectivitySnapshot struct {
+	Usable            [common.NetworkTypeCount]bool
+	InitialCheckDone  bool
+	ConfirmingFailure bool
 }
 
 // NetworkSupportState describes protocol/remote capability, not current
@@ -186,17 +206,17 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	ctx, cancel := context.WithCancel(context.Background())
 	session, _ := runtime.Session()
 	d := &Dialer{
-		GlobalOption: option,
-		Dialer:       runtime.Dialer(),
-		Property:     property,
-		runtime:      runtime,
-		session:      session,
-		initialCheck: initialCheck,
-		healthy:      initialCheck == InitialCheckDisabled,
-		checkCh:      make(chan struct{}, 1),
-		readyCh:      make(chan struct{}),
-		ctx:          ctx,
-		cancel:       cancel,
+		GlobalOption:     option,
+		Dialer:           runtime.Dialer(),
+		Property:         property,
+		runtime:          runtime,
+		session:          session,
+		initialCheck:     initialCheck,
+		initialCheckDone: initialCheck == InitialCheckDisabled,
+		healthy:          initialCheck == InitialCheckDisabled,
+		checkCh:          make(chan struct{}, 1),
+		ctx:              ctx,
+		cancel:           cancel,
 	}
 	if initialCheck == InitialCheckDisabled {
 		for i := range d.networks {
@@ -283,10 +303,38 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 	return snapshot
 }
 
+func (d *Dialer) ConnectivitySnapshot() ConnectivitySnapshot {
+	d.mu.RLock()
+	session, hasSession := d.sessionSnapshot()
+	healthy := d.healthyLocked(session, hasSession)
+	snapshot := ConnectivitySnapshot{
+		InitialCheckDone:  d.initialCheckDone,
+		ConfirmingFailure: healthy && !d.failureReportedAt.IsZero(),
+	}
+	for i, state := range d.networks {
+		snapshot.Usable[i] = healthy && state == networkUsable
+	}
+	d.mu.RUnlock()
+	return snapshot
+}
+
+func (d *Dialer) initialCheckCompleted() bool {
+	d.mu.RLock()
+	done := d.initialCheckDone
+	d.mu.RUnlock()
+	return done
+}
+
+func (d *Dialer) notifyGroup(group *groupBinding) {
+	if group != nil {
+		group.observer.DialerChanged(d)
+	}
+}
+
 func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, timeoutPenalty time.Duration) {
 	d.mu.Lock()
-	d.group = &groupState{
-		group:          group,
+	d.group = &groupBinding{
+		observer:       group,
 		latencies:      NewLatenciesN(10),
 		emaAlpha:       emaAlpha,
 		timeoutPenalty: timeoutPenalty,
@@ -294,7 +342,7 @@ func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, timeou
 	d.mu.Unlock()
 }
 
-func (d *Dialer) LatencyStats() (lat LatencyStats, ok bool) {
+func (d *Dialer) latencyStats() (lat LatencyStats, ok bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.latencyStatsLocked()
@@ -312,22 +360,6 @@ func (d *Dialer) latencyStatsLocked() (lat LatencyStats, ok bool) {
 	lat.MovingAvg = d.group.movingAverage
 	lat.Avg10HasFailure = d.group.latencies.HasFailure()
 	return lat, true
-}
-
-func (d *Dialer) SelectionLatency(policy consts.DialerSelectionPolicy) (time.Duration, bool) {
-	lat, ok := d.LatencyStats()
-	if !ok {
-		return 0, false
-	}
-	switch policy {
-	case consts.DialerSelectionPolicy_MinLastLatency:
-		return lat.Last, true
-	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		return lat.Avg10, true
-	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		return lat.MovingAvg, lat.MovingAvg > 0
-	}
-	return 0, false
 }
 
 func (d *Dialer) RuntimeStatus() RuntimeSnapshot {

@@ -32,9 +32,6 @@ const (
 	initialCheckInterval        = 180 * time.Second
 	initialCheckMaxInterval     = time.Hour
 	discoveryCheckInterval      = 15 * time.Minute
-	// initialCheckTimeout is the maximum time startup waits for a dialer's
-	// initial result. The checker keeps retrying in the background afterwards.
-	initialCheckTimeout = 60 * time.Second
 )
 
 type checkDNSOption struct {
@@ -146,7 +143,7 @@ func (d *Dialer) createCheckOptions() []*checkOption {
 	return options
 }
 
-func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
+func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 	d.mu.Lock()
 	if d.checkActivated || d.ctx.Err() != nil {
 		d.mu.Unlock()
@@ -163,31 +160,13 @@ func (d *Dialer) ActivateCheck(wg *sync.WaitGroup) {
 		return
 	}
 	d.checkActivated = true
-	blocking := d.initialCheck == InitialCheckBlocking
 	d.checkWG.Add(1)
 	d.mu.Unlock()
 
 	checker := newConnectivityChecker(d, d.createCheckOptions())
 	go func() {
 		defer d.checkWG.Done()
-		checker.run()
-	}()
-	if !blocking {
-		return
-	}
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		select {
-		case <-d.readyCh:
-		case <-time.After(initialCheckTimeout):
-			log.WithField("node", d.Name).Warnf(
-				"Initial check not finished in %v; startup continues and checking remains active",
-				initialCheckTimeout,
-			)
-		case <-d.ctx.Done():
-		}
+		checker.run(start)
 	}()
 }
 
@@ -244,8 +223,8 @@ func (d *Dialer) ReportDataPlaneFailure() {
 	group := d.group
 	stats.DefaultStore.RecordNodeConnFail(d.StatsKey())
 	d.mu.Unlock()
-	if startedConfirmation && group != nil {
-		group.group.DialerChanged(d)
+	if startedConfirmation {
+		d.notifyGroup(group)
 	}
 	d.signalConnectivityCheck()
 }
@@ -282,9 +261,7 @@ type checkResult struct {
 }
 
 type appliedCheck struct {
-	accepted         bool
 	success          bool
-	initialDone      bool
 	pendingDiscovery bool
 	primary          common.NetworkIndex
 	requested        bool
@@ -300,8 +277,6 @@ type connectivityChecker struct {
 	cancel      context.CancelFunc
 	observedSeq uint64
 	primary     common.NetworkIndex
-	initialDone bool
-	readyOnce   sync.Once
 
 	initialInterval time.Duration
 	healthInterval  time.Duration
@@ -334,10 +309,6 @@ func newConnectivityChecker(d *Dialer, options []*checkOption) *connectivityChec
 		healthTimer:     healthTimer,
 		discoveryTimer:  discoveryTimer,
 	}
-}
-
-func (c *connectivityChecker) closeReady() {
-	c.readyOnce.Do(func() { close(c.d.readyCh) })
 }
 
 func (c *connectivityChecker) start(kind checkKind) {
@@ -386,7 +357,7 @@ func (c *connectivityChecker) scheduleDiscovery(pending bool) {
 }
 
 func (c *connectivityChecker) nextHealthKind() (checkKind, bool) {
-	if !c.initialDone {
+	if !c.d.initialCheckCompleted() {
 		return checkInitial, true
 	}
 	return checkHealth, c.primary >= 0
@@ -444,7 +415,13 @@ func (c *connectivityChecker) drainSessionEvents(sessionEvents <-chan netproxy.S
 	return sessionEvents
 }
 
-func (c *connectivityChecker) run() {
+func (c *connectivityChecker) run(start <-chan struct{}) {
+	select {
+	case <-c.d.ctx.Done():
+		return
+	case <-start:
+	}
+
 	var sessionEvents <-chan netproxy.StateEvent
 	if c.d.session != nil {
 		sessionEvents = c.d.session.WatchState(c.d.ctx)
@@ -473,7 +450,6 @@ func (c *connectivityChecker) run() {
 			if !c.d.connectivityCheckRequested() {
 				continue
 			}
-			c.resetForRequest()
 			if c.running {
 				if c.runningKind == checkDiscovery {
 					c.healthDue = true
@@ -493,7 +469,7 @@ func (c *connectivityChecker) run() {
 			c.discoveryScheduled = false
 			if c.running {
 				c.discoveryDue = true
-			} else if c.initialDone && c.d.Healthy() {
+			} else if c.d.initialCheckCompleted() && c.d.Healthy() {
 				c.start(checkDiscovery)
 			}
 
@@ -501,70 +477,92 @@ func (c *connectivityChecker) run() {
 			if c.d.session != nil {
 				sessionEvents = c.drainSessionEvents(sessionEvents, result.seq)
 			}
-			c.running = false
-			c.cancel()
-			c.cancel = nil
-			if c.d.ctx.Err() != nil {
+			if !c.finish(result) {
 				return
 			}
-			applied := c.d.applyCheck(result)
-			if !applied.accepted {
-				c.healthDue = true
-			} else {
-				if applied.requested {
-					c.resetForRequest()
-				}
-				c.primary = applied.primary
-				switch result.kind {
-				case checkInitial:
-					if applied.initialDone {
-						c.initialDone = true
-						c.closeReady()
-						if applied.success {
-							delay := c.healthInterval
-							c.healthInterval = c.d.CheckInterval
-							c.backingOff = false
-							if c.staggerNext {
-								delay = jitterCheckInterval(c.healthInterval)
-								c.staggerNext = false
-							}
-							c.scheduleHealth(delay)
-						}
-					} else {
-						c.scheduleHealth(c.initialInterval)
-						c.initialInterval = min(c.initialInterval*2, initialCheckMaxInterval)
-					}
-				case checkHealth:
-					if applied.success {
-						c.healthInterval = c.d.CheckInterval
-						c.backingOff = false
-					} else if c.backingOff {
-						c.healthInterval = min(c.healthInterval*2, c.d.CheckIntervalMax)
-					} else {
-						c.healthInterval = checkBackoffInitialInterval
-						c.backingOff = true
-					}
-					delay := c.healthInterval
-					if applied.success && c.staggerNext {
-						delay = jitterCheckInterval(delay)
-						c.staggerNext = false
-					}
-					c.scheduleHealth(delay)
-				}
-				c.scheduleDiscovery(applied.pendingDiscovery)
-			}
+		}
+	}
+}
 
-			if c.healthDue {
-				c.healthDue = false
-				c.requestHealth()
-				continue
-			}
-			if c.discoveryDue {
-				c.discoveryDue = false
-				if c.initialDone && c.d.Healthy() {
-					c.start(checkDiscovery)
-				}
-			}
+func (c *connectivityChecker) finish(result checkResult) bool {
+	c.running = false
+	c.cancel()
+	c.cancel = nil
+	if c.d.ctx.Err() != nil {
+		return false
+	}
+
+	applied, ok := c.d.applyCheck(result)
+	if ok {
+		c.updateSchedule(result.kind, applied)
+	} else {
+		c.healthDue = true
+	}
+	c.startDeferredCheck()
+	return true
+}
+
+func (c *connectivityChecker) updateSchedule(kind checkKind, applied appliedCheck) {
+	if applied.requested {
+		c.resetForRequest()
+	}
+	c.primary = applied.primary
+	switch kind {
+	case checkInitial:
+		c.updateInitialSchedule(applied.success)
+	case checkHealth:
+		c.updateHealthSchedule(applied.success)
+	}
+	c.scheduleDiscovery(applied.pendingDiscovery)
+}
+
+func (c *connectivityChecker) updateInitialSchedule(success bool) {
+	if !c.d.initialCheckCompleted() {
+		c.scheduleHealth(c.initialInterval)
+		c.initialInterval = min(c.initialInterval*2, initialCheckMaxInterval)
+		return
+	}
+	if !success {
+		return
+	}
+	delay := c.healthInterval
+	c.healthInterval = c.d.CheckInterval
+	c.backingOff = false
+	if c.staggerNext {
+		delay = jitterCheckInterval(c.healthInterval)
+		c.staggerNext = false
+	}
+	c.scheduleHealth(delay)
+}
+
+func (c *connectivityChecker) updateHealthSchedule(success bool) {
+	if success {
+		c.healthInterval = c.d.CheckInterval
+		c.backingOff = false
+	} else if c.backingOff {
+		c.healthInterval = min(c.healthInterval*2, c.d.CheckIntervalMax)
+	} else {
+		c.healthInterval = checkBackoffInitialInterval
+		c.backingOff = true
+	}
+	delay := c.healthInterval
+	if success && c.staggerNext {
+		delay = jitterCheckInterval(delay)
+		c.staggerNext = false
+	}
+	c.scheduleHealth(delay)
+}
+
+func (c *connectivityChecker) startDeferredCheck() {
+	if c.healthDue {
+		c.healthDue = false
+		c.requestHealth()
+		return
+	}
+	if c.discoveryDue {
+		c.discoveryDue = false
+		if c.d.initialCheckCompleted() && c.d.Healthy() {
+			c.start(checkDiscovery)
 		}
 	}
 }
@@ -633,6 +631,14 @@ func (d *Dialer) networkStates() [common.NetworkTypeCount]networkState {
 	return states
 }
 
+func summarizeNetworkStates(states [common.NetworkTypeCount]networkState) (unknown, pendingDiscovery bool) {
+	for _, state := range states {
+		unknown = unknown || state == networkUnknown
+		pendingDiscovery = pendingDiscovery || state == networkUnknown || state == networkUnavailable
+	}
+	return unknown, pendingDiscovery
+}
+
 func (c *connectivityChecker) optionsFor(states [common.NetworkTypeCount]networkState, wanted ...networkState) []*checkOption {
 	options := make([]*checkOption, 0, len(c.options))
 	for _, option := range c.options {
@@ -653,7 +659,10 @@ func preferredOption(options []*checkOption, primary common.NetworkIndex) (*chec
 	}
 	for i, option := range options {
 		if option.networkType.Index() == primary {
-			return option, append(append(make([]*checkOption, 0, len(options)-1), options[:i]...), options[i+1:]...)
+			rest := make([]*checkOption, 0, len(options)-1)
+			rest = append(rest, options[:i]...)
+			rest = append(rest, options[i+1:]...)
+			return option, rest
 		}
 	}
 	return options[0], options[1:]
@@ -685,48 +694,8 @@ func (c *connectivityChecker) probeOption(ctx context.Context, option *checkOpti
 	return first
 }
 
-func (d *Dialer) applyCheck(result checkResult) appliedCheck {
-	d.mu.Lock()
-	if d.ctx.Err() != nil {
-		d.mu.Unlock()
-		return appliedCheck{}
-	}
-	session, hasSession := d.sessionSnapshot()
-	if hasSession && session.Seq != result.seq {
-		d.mu.Unlock()
-		return appliedCheck{}
-	}
-	if result.connectErr != nil {
-		requested := d.checkRequested
-		if result.kind != checkDiscovery {
-			d.checkRequested = false
-		}
-		previousHealthy := d.healthy
-		pendingDiscovery := false
-		for _, state := range d.networks {
-			pendingDiscovery = pendingDiscovery || state == networkUnknown || state == networkUnavailable
-		}
-		group := d.group
-		d.mu.Unlock()
-		d.logHealthResult(previousHealthy, false, 0, nil, result)
-		if group != nil {
-			group.group.DialerChanged(d)
-		}
-		return appliedCheck{
-			accepted:         true,
-			pendingDiscovery: pendingDiscovery,
-			primary:          result.primary,
-			requested:        requested,
-		}
-	}
-	if hasSession && session.State != netproxy.SessionConnected {
-		d.mu.Unlock()
-		return appliedCheck{}
-	}
-
-	changed := false
-	primary := result.primary
-	var successResult *probeResult
+func (d *Dialer) applyProbeResultsLocked(result checkResult) (changed bool, success *probeResult, primary common.NetworkIndex) {
+	primary = result.primary
 	for i := range result.probes {
 		probe := &result.probes[i]
 		index := probe.option.networkType.Index()
@@ -746,36 +715,67 @@ func (d *Dialer) applyCheck(result checkResult) appliedCheck {
 			}
 		}
 		changed = changed || previous != d.networks[index]
-		if successResult == nil && probe.ok {
-			successResult = probe
+		if success == nil && probe.ok {
+			success = probe
 			if result.kind != checkDiscovery {
 				primary = index
 			}
 		}
 	}
+	return changed, success, primary
+}
 
-	pendingDiscovery := false
-	unknown := false
-	for _, state := range d.networks {
-		unknown = unknown || state == networkUnknown
-		pendingDiscovery = pendingDiscovery || state == networkUnknown || state == networkUnavailable
+func (d *Dialer) applyCheck(result checkResult) (appliedCheck, bool) {
+	d.mu.Lock()
+	if d.ctx.Err() != nil {
+		d.mu.Unlock()
+		return appliedCheck{}, false
 	}
-	success := successResult != nil && result.connectErr == nil
-	initialDone := result.kind != checkInitial || success || !unknown
+	session, hasSession := d.sessionSnapshot()
+	if hasSession && session.Seq != result.seq {
+		d.mu.Unlock()
+		return appliedCheck{}, false
+	}
+	if result.connectErr != nil {
+		requested := false
+		if result.kind != checkDiscovery {
+			requested = d.checkRequested
+			d.checkRequested = false
+		}
+		previousHealthy := d.healthy
+		_, pendingDiscovery := summarizeNetworkStates(d.networks)
+		group := d.group
+		d.mu.Unlock()
+		d.logHealthResult(previousHealthy, false, 0, nil, result)
+		d.notifyGroup(group)
+		return appliedCheck{
+			pendingDiscovery: pendingDiscovery,
+			primary:          result.primary,
+			requested:        requested,
+		}, true
+	}
+	if hasSession && session.State != netproxy.SessionConnected {
+		d.mu.Unlock()
+		return appliedCheck{}, false
+	}
+
+	changed, successResult, primary := d.applyProbeResultsLocked(result)
+	unknown, pendingDiscovery := summarizeNetworkStates(d.networks)
+	success := successResult != nil
+	if result.kind == checkInitial && (success || !unknown) {
+		d.initialCheckDone = true
+	}
 	group := d.group
 
 	if result.kind == checkDiscovery {
 		d.mu.Unlock()
-		if changed && group != nil {
-			group.group.DialerChanged(d)
+		if changed {
+			d.notifyGroup(group)
 		}
 		return appliedCheck{
-			accepted:         true,
-			success:          d.Healthy(),
-			initialDone:      initialDone,
 			pendingDiscovery: pendingDiscovery,
 			primary:          primary,
-		}
+		}, true
 	}
 
 	requested := d.checkRequested
@@ -794,32 +794,19 @@ func (d *Dialer) applyCheck(result checkResult) appliedCheck {
 		networkType = result.probes[0].option.networkType
 	}
 	if group != nil {
-		sample := latency
-		if !success {
-			sample = group.timeoutPenalty
-		}
-		if group.movingAverage == 0 {
-			group.movingAverage = sample
-		} else {
-			group.movingAverage = time.Duration(float64(group.movingAverage)*(1-group.emaAlpha) + float64(sample)*group.emaAlpha)
-		}
-		group.latencies.AppendSample(sample, !success)
+		group.recordLatency(latency, success)
 	}
 	d.mu.Unlock()
 
 	d.logHealthResult(previousHealthy, success, latency, networkType, result)
 	stats.DefaultStore.RecordNodeCheck(d.StatsKey(), success, failureReportedAt)
-	if group != nil {
-		group.group.DialerChanged(d)
-	}
+	d.notifyGroup(group)
 	return appliedCheck{
-		accepted:         true,
 		success:          success,
-		initialDone:      initialDone,
 		pendingDiscovery: pendingDiscovery,
 		primary:          primary,
 		requested:        requested,
-	}
+	}, true
 }
 
 func (d *Dialer) logHealthResult(previousHealthy, success bool, latency time.Duration, networkType *common.NetworkType, result checkResult) {
@@ -829,7 +816,7 @@ func (d *Dialer) logHealthResult(previousHealthy, success bool, latency time.Dur
 	}
 	if success {
 		fields["last"] = latency.Truncate(time.Millisecond).String()
-		if stats, ok := d.LatencyStats(); ok {
+		if stats, ok := d.latencyStats(); ok {
 			fields["avg_10"] = stats.Avg10.Truncate(time.Millisecond).String()
 			fields["mov_avg"] = stats.MovingAvg.Truncate(time.Millisecond).String()
 		}
@@ -869,9 +856,7 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 	d.mu.Unlock()
 	if wasHealthy {
 		stats.DefaultStore.RecordNodeState(d.StatsKey(), false, failureReportedAt)
-		if group != nil {
-			group.group.DialerChanged(d)
-		}
+		d.notifyGroup(group)
 	}
 	return true
 }
