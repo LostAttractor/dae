@@ -8,8 +8,11 @@
 package tests
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"net/netip"
 	"os"
 	"reflect"
 	"strings"
@@ -57,11 +60,12 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 	return ret, opts.DataOut, ctxOut, err
 }
 
-func collectPrograms(t *testing.T) (progset []programSet, err error) {
+func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
+	t.Helper()
 	obj := &bpftestObjects{}
 	pinPath := "/sys/fs/bpf/dae"
-	if err = os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
-		return
+	if err := os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
+		return nil, err
 	}
 
 	spec, err := loadBpftest()
@@ -72,13 +76,15 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 	if !ok {
 		return nil, errors.New("missing PARAM constant")
 	}
-	if err = param.Set(testDaeParam{
+	if err := param.Set(testDaeParam{
 		ControlPlanePid: uint32(os.Getpid()),
 		SoMarkFromDae:   0x100,
 	}); err != nil {
 		return nil, err
 	}
-	if err = spec.LoadAndAssign(obj,
+	// Kernel tests must not reuse or replace the daemon's persistent routing state.
+	spec.Maps["routing_tuples_map"].Pinning = ebpf.PinNone
+	if err := spec.LoadAndAssign(obj,
 		&ebpf.CollectionOptions{
 			Maps: ebpf.MapOptions{
 				PinPath: pinPath,
@@ -93,15 +99,21 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 		if errors.As(err, &ve) {
 			verifierLog = fmt.Sprintf("Verifier error: %+v\n", ve)
 		}
-
-		t.Fatalf("Failed to load objects: %s\n%+v", verifierLog, err)
-
-		return nil, err
+		return nil, fmt.Errorf("failed to load objects: %s%w", verifierLog, err)
 	}
 
-	if err = obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
-		t.Fatalf("Failed to update LpmArrayMap: %s", err)
-		return
+	if err := obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
+		obj.Close()
+		return nil, fmt.Errorf("update LpmArrayMap: %w", err)
+	}
+	t.Cleanup(func() { obj.Close() })
+	return obj, nil
+}
+
+func collectPrograms(t *testing.T) (progset []programSet, err error) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		return nil, err
 	}
 
 	v := reflect.ValueOf(obj.bpftestPrograms)
@@ -119,6 +131,140 @@ func collectPrograms(t *testing.T) (progset []programSet, err error) {
 		}
 	}
 	return
+}
+
+func benchmarkUDPRoutingCache(b *testing.B, obj *bpftestObjects, rules int, hit bool) {
+	b.Helper()
+	const (
+		matchTypePort     = 3
+		matchTypeFallback = 11
+		outbound          = 2
+	)
+
+	miss := bpftestMatchSet{Type: matchTypePort, Outbound: outbound}
+	binary.NativeEndian.PutUint16(miss.Value[0:2], 1)
+	binary.NativeEndian.PutUint16(miss.Value[2:4], 1)
+	for i := 0; i < rules-1; i++ {
+		if err := obj.RoutingMap.Update(uint32(i), &miss, ebpf.UpdateAny); err != nil {
+			b.Fatal(err)
+		}
+	}
+	fallback := bpftestMatchSet{Type: matchTypeFallback, Outbound: outbound}
+	if err := obj.RoutingMap.Update(uint32(rules-1), &fallback, ebpf.UpdateAny); err != nil {
+		b.Fatal(err)
+	}
+	connectivityKey := bpftestOutboundConnectivityQuery{
+		Outbound: outbound, L4proto: unix.IPPROTO_UDP, Ipversion: 4,
+	}
+	connectivityAlive := uint32(0)
+	if err := obj.OutboundConnectivityMap.Update(&connectivityKey, &connectivityAlive, ebpf.UpdateAny); err != nil {
+		b.Fatal(err)
+	}
+
+	data := make([]byte, 4096-256-320)
+	ctx := make([]byte, 256)
+	status, packet, packetCtx, err := runBpfProgram(obj.TestpktgenUdpRouteCacheMiss, data, ctx)
+	if err != nil || status != 0 {
+		b.Fatalf("generate benchmark packet: status %d, error %v", status, err)
+	}
+	handoffKey := bpftestTuplesKey{
+		Sport: nativeUint16(20001), Dport: nativeUint16(443),
+		L4proto: unix.IPPROTO_UDP,
+	}
+	handoffKey.Sip.U6Addr8 = netip.MustParseAddr("192.168.1.1").As16()
+	handoffKey.Dip.U6Addr8 = netip.MustParseAddr("1.1.1.1").As16()
+	if err := clearUDPRoutingCache(obj.UdpRoutingCacheMap); err != nil {
+		b.Fatal(err)
+	}
+	_ = obj.RoutingTuplesMap.Delete(&handoffKey)
+	status, _, _, err = runBpfProgram(obj.TproxyWanEgressL2, packet, packetCtx)
+	if err != nil || status != 7 {
+		b.Fatalf("prime benchmark cache: status %d, error %v", status, err)
+	}
+	var cacheKey bpftestUdpRoutingCacheKey
+	var cacheValue bpftestUdpRoutingCacheValue
+	iter := obj.UdpRoutingCacheMap.Iterate()
+	if !iter.Next(&cacheKey, &cacheValue) {
+		b.Fatalf("prime benchmark cache: %v", iter.Err())
+	}
+	if hit {
+		cacheValue.CachedUntil = math.MaxUint64
+		if err := obj.UdpRoutingCacheMap.Update(&cacheKey, &cacheValue, ebpf.UpdateAny); err != nil {
+			b.Fatal(err)
+		}
+	} else {
+		if err := obj.UdpRoutingCacheMap.Delete(&cacheKey); err != nil {
+			b.Fatal(err)
+		}
+		_ = obj.RoutingTuplesMap.Delete(&handoffKey)
+	}
+	dataOut := make([]byte, len(packet)+256+2)
+	ctxOut := make([]byte, len(packetCtx))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if !hit {
+			b.StopTimer()
+			if err := obj.UdpRoutingCacheMap.Delete(&cacheKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				b.Fatal(err)
+			}
+			if err := obj.RoutingTuplesMap.Delete(&handoffKey); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				b.Fatal(err)
+			}
+			b.StartTimer()
+		}
+		opts := &ebpf.RunOptions{
+			Data:       packet,
+			DataOut:    dataOut,
+			Context:    packetCtx,
+			ContextOut: ctxOut,
+			Repeat:     1,
+		}
+		status, err := obj.TproxyWanEgressL2.Run(opts)
+		if err != nil || status != 7 {
+			b.Fatalf("run benchmark packet: status %d, error %v", status, err)
+		}
+	}
+}
+
+func clearUDPRoutingCache(m *ebpf.Map) error {
+	var key bpftestUdpRoutingCacheKey
+	var value bpftestUdpRoutingCacheValue
+	var keys []bpftestUdpRoutingCacheKey
+	iter := m.Iterate()
+	for iter.Next(&key, &value) {
+		keys = append(keys, key)
+	}
+	if err := iter.Err(); err != nil {
+		return err
+	}
+	for i := range keys {
+		if err := m.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func nativeUint16(value uint16) uint16 {
+	var encoded [2]byte
+	binary.BigEndian.PutUint16(encoded[:], value)
+	return nl.NativeEndian().Uint16(encoded[:])
+}
+
+func BenchmarkUDPRoutingCache(b *testing.B) {
+	obj, err := loadTestObjects(b)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, rules := range []int{16, 128, 512, 1024} {
+		b.Run(fmt.Sprintf("miss/rules=%d", rules), func(b *testing.B) {
+			benchmarkUDPRoutingCache(b, obj, rules, false)
+		})
+		b.Run(fmt.Sprintf("hit/rules=%d", rules), func(b *testing.B) {
+			benchmarkUDPRoutingCache(b, obj, rules, true)
+		})
+	}
 }
 
 func consumeBpfDebugLog(t *testing.T) {

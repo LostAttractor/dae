@@ -559,6 +559,7 @@ func NewControlPlane(
 
 // Activate commits the in-memory control plane to the kernel:
 //   - writes routing rules to BPF maps,
+//   - clears reload-inherited UDP route cache entries while preserving TCP state,
 //   - drops stale domain routing entries inherited from the previous plane
 //     (when reloading without an adopted domain registry),
 //   - binds eBPF programs to LAN/WAN interfaces and the dae netns,
@@ -584,6 +585,14 @@ func (c *ControlPlane) Activate() error {
 
 	if err := builder.BuildKernspace(); err != nil {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+	}
+	if core.isReload {
+		if err := deleteUDPRoutingTuples(core.bpf.RoutingTuplesMap); err != nil {
+			return oops.Errorf("clear inherited UDP routing handoff: %w", err)
+		}
+		if err := deleteUDPRoutingCache(core.bpf.UdpRoutingCacheMap); err != nil {
+			return oops.Errorf("clear inherited UDP routing cache: %w", err)
+		}
 	}
 
 	// This is the first point at which the candidate plane is committed.
@@ -1214,9 +1223,9 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			/// Handle DNS
 			// To keep consistency with kernel program, we only sniff DNS request sent to 53.
 			if dst.Port() == 53 {
-				routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
+				routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
 				if err != nil {
-					log.Warningf("%+v", oops.Wrapf(err, "No AddrPort presented"))
+					log.Warningf("%+v", oops.Wrapf(err, "RetrieveRoutingResult"))
 					continue
 				}
 				if routingResult.Must == 0 {

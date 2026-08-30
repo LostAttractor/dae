@@ -22,6 +22,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 type _bpfTuples struct {
@@ -41,6 +42,50 @@ type _bpfLpmKey struct {
 type _bpfPortRange struct {
 	PortStart uint16
 	PortEnd   uint16
+}
+
+func deleteUDPRoutingTuples(m *ebpf.Map) error {
+	var (
+		key   bpfTuplesKey
+		value bpfRoutingResult
+		keys  []bpfTuplesKey
+	)
+	iter := m.Iterate()
+	for iter.Next(&key, &value) {
+		if key.L4proto == unix.IPPROTO_UDP {
+			keys = append(keys, key)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterate routing tuples: %w", err)
+	}
+	for i := range keys {
+		if err := m.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("delete UDP routing tuple: %w", err)
+		}
+	}
+	return nil
+}
+
+func deleteUDPRoutingCache(m *ebpf.Map) error {
+	var (
+		key   bpfUdpRoutingCacheKey
+		value bpfUdpRoutingCacheValue
+		keys  []bpfUdpRoutingCacheKey
+	)
+	iter := m.Iterate()
+	for iter.Next(&key, &value) {
+		keys = append(keys, key)
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("iterate UDP routing cache: %w", err)
+	}
+	for i := range keys {
+		if err := m.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("delete UDP routing cache entry: %w", err)
+		}
+	}
+	return nil
 }
 
 // bpfState keeps reload-persistent process metadata with the shared BPF

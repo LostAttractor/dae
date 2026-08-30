@@ -59,6 +59,7 @@
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 4)
 #define MAX_DST_MAPPING_NUM_UDP (65536 * 2)
+#define MAX_UDP_ROUTING_CACHE_NUM 65536
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
@@ -76,9 +77,12 @@
 #define OUTBOUND_LOGICAL_AND 0xFF
 #define OUTBOUND_LOGICAL_MASK 0xFE
 
+#define ROUTE_RESULT_SKIPPED_NOALIVE 0x20000000000ULL
+
 #define TPROXY_MARK 0x8000000
 
 #define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
+#define UDP_ROUTING_CACHE_TTL_NS (100ULL * 1000 * 1000)
 
 #define NDP_REDIRECT 137
 
@@ -160,6 +164,9 @@ struct routing_result {
 	__u8 dscp;
 };
 
+_Static_assert(sizeof(struct routing_result) == 40,
+	       "routing_result pinned-map ABI changed unexpectedly");
+
 struct tuples_key {
 	union ip6 sip;
 	union ip6 dip;
@@ -172,6 +179,35 @@ struct tuples {
 	struct tuples_key five;
 	__u8 dscp;
 };
+
+struct udp_routing_cache_key {
+	struct tuples_key tuples;
+	__u32 ifindex;
+	__u8 mac[ETH_ALEN];
+	__u8 dscp;
+	__u8 l4proto_type;
+	__u8 ipversion_type;
+	__u8 has_pname;
+	__u8 pname[TASK_COMM_LEN];
+};
+
+struct udp_routing_cache_value {
+	struct routing_result result;
+	__u64 cached_until;
+};
+
+struct udp_routing_cache_scratch {
+	struct udp_routing_cache_key key;
+	struct udp_routing_cache_value value;
+};
+
+_Static_assert(sizeof(struct udp_routing_cache_key) == 72,
+	       "udp_routing_cache_key layout changed unexpectedly");
+_Static_assert(sizeof(struct udp_routing_cache_value) == 48,
+	       "udp_routing_cache_value layout changed unexpectedly");
+_Static_assert(__builtin_offsetof(struct udp_routing_cache_value,
+				  cached_until) == 40,
+	       "udp_routing_cache_value cached_until offset changed");
 
 struct l4_hdr {
 	union {
@@ -208,7 +244,20 @@ struct {
 	/// NOTICE: It MUST be pinned.
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_tuples_map SEC(".maps");
-// 18.87 MB
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, struct udp_routing_cache_key);
+	__type(value, struct udp_routing_cache_value);
+	__uint(max_entries, MAX_UDP_ROUTING_CACHE_NUM);
+} udp_routing_cache_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct udp_routing_cache_scratch);
+	__uint(max_entries, 1);
+} udp_routing_cache_scratch_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -918,6 +967,7 @@ struct route_ctx {
 	volatile bool uncertain_subrule : 1;
 	volatile bool badrule : 1;
 	volatile bool must : 1;
+	volatile bool skipped_noalive : 1;
 	// A completed subrule of the current rule is still ambiguous. The rule
 	// tail bumps traffic to the control plane only if every later AND
 	// subrule also matches.
@@ -1155,6 +1205,7 @@ before_next_loop:
 					// partial-domain-match flag must not leak
 					// into the next rule.
 					ctx->need_control_plane_routing = false;
+					ctx->skipped_noalive = true;
 					return 0;
 				}
 			}
@@ -1251,11 +1302,31 @@ static __always_inline __s64 route(const struct route_params *params)
 		if (route_step(index, &ctx))
 			break;
 	}
-	if (ctx.result >= 0)
+	if (ctx.result >= 0) {
+		if (ctx.skipped_noalive)
+			ctx.result |= ROUTE_RESULT_SKIPPED_NOALIVE;
 		return ctx.result;
+	}
 	bpf_printk(
 		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
 	return -EPERM;
+}
+
+static __always_inline void fill_udp_routing_cache_key(
+	struct udp_routing_cache_key *key, const struct tuples *tuples,
+	const struct route_params *params)
+{
+	__builtin_memset(key, 0, sizeof(*key));
+	key->tuples = tuples->five;
+	key->ifindex = params->ifindex;
+	key->dscp = params->dscp;
+	key->l4proto_type = params->l4proto_type;
+	key->ipversion_type = params->ipversion_type;
+	__builtin_memcpy(key->mac, params->mac, sizeof(key->mac));
+	if (params->pname) {
+		key->has_pname = true;
+		__builtin_memcpy(key->pname, params->pname, sizeof(key->pname));
+	}
 }
 
 static __always_inline int prep_redirect_to_control_plane(
@@ -1528,13 +1599,6 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 
 	struct tuples_key routing_tuples_key = tuples.five;
 
-	if (l4proto == IPPROTO_UDP) {
-		// UDP routing is socket-scoped. Datagrams from one source socket must
-		// share a route so userspace endpoint reuse and replies stay symmetric.
-		__builtin_memset(&routing_tuples_key.dip, 0, sizeof(routing_tuples_key.dip));
-		routing_tuples_key.dport = 0;
-	}
-
 	if (l4proto == IPPROTO_TCP && !(l4h.tcph.syn && !l4h.tcph.ack)) {
 		// Established TCP Connection.
 		struct routing_result *routing_result =
@@ -1567,8 +1631,6 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 		}
 	}
 
-	// New Connection.
-	// Fill route_params.
 	struct route_params params;
 
 	params.l4hdr = &l4h;
@@ -1591,24 +1653,66 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 	params.daddr = tuples.five.dip.u6_addr32;
 	params.isdns = isdns;
 
-	// Route.
-	__s64 s64_ret = route(&params);
+	struct routing_result routing_result = {};
+	struct udp_routing_cache_scratch *udp_cache_scratch = NULL;
+	bool udp_cache_hit = false;
+	bool udp_cacheable = true;
 
-	if (s64_ret < 0) {
-		bpf_printk("shot routing: %d", s64_ret);
-		return TCX_DROP;
+	if (l4proto == IPPROTO_UDP) {
+		udp_cache_scratch = bpf_map_lookup_elem(
+			&udp_routing_cache_scratch_map, &zero_key);
+		if (!udp_cache_scratch)
+			return TCX_DROP;
+		fill_udp_routing_cache_key(&udp_cache_scratch->key, &tuples,
+					   &params);
+		struct udp_routing_cache_value *cached =
+			bpf_map_lookup_elem(&udp_routing_cache_map,
+					    &udp_cache_scratch->key);
+
+		if (cached && cached->cached_until > bpf_ktime_get_ns() &&
+		    cached->result.outbound != OUTBOUND_DIRECT &&
+		    cached->result.outbound != OUTBOUND_BLOCK) {
+			__builtin_memcpy(&routing_result, &cached->result,
+					 sizeof(routing_result));
+			if (isdns || routing_result.outbound >= OUTBOUND_MUST_RULES) {
+				udp_cache_hit = true;
+			} else {
+				struct outbound_connectivity_query q = {
+					.outbound = routing_result.outbound,
+					.ipversion = protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
+					.l4proto = IPPROTO_UDP,
+				};
+				__u32 *state = bpf_map_lookup_elem(
+					&outbound_connectivity_map, &q);
+
+				udp_cache_hit = state &&
+					*state == OUTBOUND_CONNECTIVITY_ALIVE;
+			}
+			if (!udp_cache_hit)
+				bpf_map_delete_elem(&udp_routing_cache_map,
+						    &udp_cache_scratch->key);
+		} else if (cached) {
+			bpf_map_delete_elem(&udp_routing_cache_map,
+					    &udp_cache_scratch->key);
+		}
 	}
 
-	// Fill routing result.
-	struct routing_result routing_result = { 0 };
+	if (!udp_cache_hit) {
+		__s64 route_ret = route(&params);
 
-	routing_result.outbound = s64_ret;
-	routing_result.mark = s64_ret >> 8;
-	routing_result.must = (s64_ret >> 40) & 1;
-	routing_result.dscp = tuples.dscp;
-	routing_result.ifindex = ifindex;
-	__builtin_memcpy(routing_result.mac, ethh.h_source,
-			 sizeof(routing_result.mac));
+		if (route_ret < 0) {
+			bpf_printk("shot routing: %d", route_ret);
+			return TCX_DROP;
+		}
+		udp_cacheable = !(route_ret & ROUTE_RESULT_SKIPPED_NOALIVE);
+
+		routing_result.outbound = route_ret;
+		routing_result.mark = route_ret >> 8;
+		routing_result.must = (route_ret >> 40) & 1;
+		routing_result.dscp = tuples.dscp;
+		routing_result.ifindex = ifindex;
+		__builtin_memcpy(routing_result.mac, ethh.h_source,
+				 sizeof(routing_result.mac));
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 	if (is_wan) {
@@ -1634,29 +1738,33 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 	}
 #endif
 
-	// Direct / Block.
-	switch (routing_result.outbound) {
-	case OUTBOUND_DIRECT:
+		// Direct / Block.
+		switch (routing_result.outbound) {
+		case OUTBOUND_DIRECT:
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("GO OUTBOUND_DIRECT");
+			bpf_printk("GO OUTBOUND_DIRECT");
 #endif
-		// Plain direct routes must not occupy this shared map, but marked
-		// TCP routes need an entry for subsequent packets.
-		if (l4proto == IPPROTO_TCP && routing_result.mark &&
-		    bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
-					&routing_result, BPF_ANY)) {
-			bpf_printk("shot save direct routing result: %d", s64_ret);
-			return TCX_DROP;
+			// Plain direct routes must not occupy this shared map, but marked
+			// TCP routes need an entry for subsequent packets.
+			if (l4proto == IPPROTO_TCP && routing_result.mark &&
+			    bpf_map_update_elem(&routing_tuples_map,
+						&routing_tuples_key,
+						&routing_result, BPF_ANY)) {
+				bpf_printk("shot save direct routing result: %d",
+					   route_ret);
+				return TCX_DROP;
+			}
+			goto direct;
+		case OUTBOUND_BLOCK:
+#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
+			bpf_printk("SHOT OUTBOUND_BLOCK");
+#endif
+			goto block;
 		}
-		goto direct;
-	case OUTBOUND_BLOCK:
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("SHOT OUTBOUND_BLOCK");
-#endif
-		goto block;
 	}
 
-	if (!isdns && routing_result.outbound < OUTBOUND_MUST_RULES) {
+	if (!udp_cache_hit && !isdns &&
+	    routing_result.outbound < OUTBOUND_MUST_RULES) {
 		// Check outbound connectivity in specific ipversion and l4proto.
 		struct outbound_connectivity_query q = {
 			.outbound = routing_result.outbound,
@@ -1687,10 +1795,24 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 		}
 	}
 
-	// Only proxy traffic should be saved.
+	if (l4proto == IPPROTO_UDP) {
+		if (!udp_cache_hit && udp_cacheable) {
+			__builtin_memcpy(&udp_cache_scratch->value.result,
+					 &routing_result, sizeof(routing_result));
+			udp_cache_scratch->value.cached_until =
+				bpf_ktime_get_ns() + UDP_ROUTING_CACHE_TTL_NS;
+			if (bpf_map_update_elem(&udp_routing_cache_map,
+						&udp_cache_scratch->key,
+						&udp_cache_scratch->value,
+						BPF_ANY))
+				bpf_printk("failed to save UDP routing cache: outbound %u",
+					   routing_result.outbound);
+		}
+	}
 	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
 				&routing_result, BPF_ANY)) {
-		bpf_printk("shot save routing result: %d", s64_ret);
+		bpf_printk("shot save routing result: outbound %u",
+			   routing_result.outbound);
 		return TCX_DROP;
 	}
 

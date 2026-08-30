@@ -127,6 +127,20 @@ set_ipv4_udp_fragment(struct __sk_buff *skb,
 }
 
 static __always_inline int
+set_ipv4_udp(struct __sk_buff *skb, __u32 saddr, __u32 daddr,
+	     __u16 sport, __u16 dport)
+{
+	int ret = set_ipv4_udp_fragment(skb, saddr, daddr, sport, dport, 0);
+	__be16 udp_len = bpf_htons(UDP_HLEN + 8);
+
+	if (ret)
+		return ret;
+	return bpf_skb_store_bytes(skb,
+		ETH_HLEN + IP4_HLEN + offsetof(struct udphdr, len),
+		&udp_len, sizeof(udp_len), 0);
+}
+
+static __always_inline int
 set_ipv4_short_first_fragment(struct __sk_buff *skb,
 			      __u32 saddr, __u32 daddr, __u8 protocol)
 {
@@ -917,6 +931,143 @@ check_no_ipv4_tcp_routing_result(struct __sk_buff *skb,
 	if (bpf_map_lookup_elem(&routing_tuples_map, &key))
 		return TC_ACT_SHOT;
 	return check_status_code(skb, expected_status_code);
+}
+
+static __always_inline void
+make_ipv4_udp_routing_key(struct tuples_key *key,
+			  __u32 saddr, __u32 daddr,
+			  __u16 sport, __u16 dport)
+{
+	__builtin_memset(key, 0, sizeof(*key));
+	key->sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key->sip.u6_addr32[3] = bpf_htonl(saddr);
+	key->dip.u6_addr32[2] = bpf_htonl(0xffff);
+	key->dip.u6_addr32[3] = bpf_htonl(daddr);
+	key->sport = bpf_htons(sport);
+	key->dport = bpf_htons(dport);
+	key->l4proto = IPPROTO_UDP;
+}
+
+static __always_inline void
+make_ipv4_udp_cache_key(struct udp_routing_cache_key *key,
+			__u32 saddr, __u32 daddr,
+			__u16 sport, __u16 dport, __u32 ifindex)
+{
+	__builtin_memset(key, 0, sizeof(*key));
+	key->tuples.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key->tuples.sip.u6_addr32[3] = bpf_htonl(saddr);
+	key->tuples.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	key->tuples.dip.u6_addr32[3] = bpf_htonl(daddr);
+	key->tuples.sport = bpf_htons(sport);
+	key->tuples.dport = bpf_htons(dport);
+	key->tuples.l4proto = IPPROTO_UDP;
+	key->ifindex = ifindex;
+	key->l4proto_type = L4ProtoType_UDP;
+	key->ipversion_type = IpVersionType_4;
+}
+
+static __always_inline void
+set_ipv4_udp_routing_cache(struct __sk_buff *skb,
+			   __u32 saddr, __u32 daddr,
+			   __u16 sport, __u16 dport, __u8 outbound,
+			   __u64 cached_until)
+{
+	struct udp_routing_cache_key key;
+	struct udp_routing_cache_value value = {
+		.result.outbound = outbound,
+		.cached_until = cached_until,
+	};
+
+	make_ipv4_udp_cache_key(&key, saddr, daddr, sport, dport,
+				skb->ifindex);
+	bpf_map_update_elem(&udp_routing_cache_map, &key, &value, BPF_ANY);
+}
+
+static __always_inline void
+set_ipv4_udp_routing_handoff(__u32 saddr, __u32 daddr,
+			     __u16 sport, __u16 dport, __u8 outbound)
+{
+	struct tuples_key key;
+	struct routing_result result = { .outbound = outbound };
+
+	make_ipv4_udp_routing_key(&key, saddr, daddr, sport, dport);
+	bpf_map_update_elem(&routing_tuples_map, &key, &result, BPF_ANY);
+}
+
+static __always_inline void
+delete_ipv4_udp_routing_handoff(__u32 saddr, __u32 daddr,
+				__u16 sport, __u16 dport)
+{
+	struct tuples_key key;
+
+	make_ipv4_udp_routing_key(&key, saddr, daddr, sport, dport);
+	bpf_map_delete_elem(&routing_tuples_map, &key);
+}
+
+static __always_inline void
+delete_ipv4_udp_routing_cache(struct __sk_buff *skb,
+			      __u32 saddr, __u32 daddr,
+			      __u16 sport, __u16 dport)
+{
+	struct udp_routing_cache_key key;
+
+	make_ipv4_udp_cache_key(&key, saddr, daddr, sport, dport,
+				skb->ifindex);
+	bpf_map_delete_elem(&udp_routing_cache_map, &key);
+}
+
+static __always_inline int
+check_ipv4_udp_routing_state(struct __sk_buff *skb,
+			     __u32 expected_status_code,
+			     __u32 saddr, __u32 daddr,
+			     __u16 sport, __u16 dport,
+			     bool expected_handoff, bool expected_cache,
+			     __u8 expected_outbound)
+{
+	struct tuples_key handoff_key;
+	struct udp_routing_cache_key cache_key;
+	struct routing_result *result;
+	struct udp_routing_cache_value *cached;
+	int ret = check_status_code(skb, expected_status_code);
+
+	make_ipv4_udp_routing_key(&handoff_key, saddr, daddr, sport, dport);
+	result = bpf_map_lookup_elem(&routing_tuples_map, &handoff_key);
+	if (!!result != expected_handoff) {
+		bpf_printk("UDP routing handoff presence mismatch");
+		ret = TC_ACT_SHOT;
+	} else if (result && result->outbound != expected_outbound) {
+		bpf_printk("UDP routing handoff mismatch: outbound %u",
+			   result->outbound);
+		ret = TC_ACT_SHOT;
+	}
+
+	make_ipv4_udp_cache_key(&cache_key, saddr, daddr, sport, dport,
+				skb->ifindex);
+	cached = bpf_map_lookup_elem(&udp_routing_cache_map, &cache_key);
+	if (!!cached != expected_cache) {
+		bpf_printk("UDP routing cache presence mismatch");
+		ret = TC_ACT_SHOT;
+	} else if (cached && (cached->result.outbound != expected_outbound ||
+			      !cached->cached_until)) {
+		bpf_printk("UDP routing cache mismatch: outbound %u, expiry %llu",
+			   cached->result.outbound, cached->cached_until);
+		ret = TC_ACT_SHOT;
+	}
+	bpf_map_delete_elem(&routing_tuples_map, &handoff_key);
+	bpf_map_delete_elem(&udp_routing_cache_map, &cache_key);
+	return ret;
+}
+
+static __always_inline int
+check_ipv4_udp_routing_cache(struct __sk_buff *skb,
+			     __u32 expected_status_code,
+			     __u32 saddr, __u32 daddr,
+			     __u16 sport, __u16 dport,
+			     bool expected, __u8 expected_outbound)
+{
+	return check_ipv4_udp_routing_state(
+		skb, expected_status_code, saddr, daddr, sport, dport,
+		expected, expected, expected_outbound);
 }
 
 static __always_inline void

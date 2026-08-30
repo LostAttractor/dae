@@ -2422,3 +2422,345 @@ int testcheck_domain_partial_skips_noalive(struct __sk_buff *skb)
 		skb, TCX_NEXT,
 		IPV4(192,168,0,1), IPV4(4,4,4,8), 19233, 80);
 }
+
+SEC("tc/pktgen/udp_route_cache_miss")
+int testpktgen_udp_route_cache_miss(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,1), IPV4(1,1,1,1),
+			    20001, 443);
+}
+
+SEC("tc/setup/udp_route_cache_miss")
+int testsetup_udp_route_cache_miss(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 30, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_miss")
+int testcheck_udp_route_cache_miss(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,1), IPV4(1,1,1,1),
+		20001, 443,
+		true, OUTBOUND_USER_DEFINED_MIN + 30);
+}
+
+SEC("tc/pktgen/udp_route_cache_hit")
+int testpktgen_udp_route_cache_hit(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,2), IPV4(1,1,1,2),
+			    20002, 443);
+}
+
+SEC("tc/setup/udp_route_cache_hit")
+int testsetup_udp_route_cache_hit(struct __sk_buff *skb)
+{
+	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 31;
+
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,2), IPV4(1,1,1,2),
+		20002, 443, cached_outbound,
+		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	set_outbound_connectivity(cached_outbound);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 32, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_hit")
+int testcheck_udp_route_cache_hit(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,2), IPV4(1,1,1,2),
+		20002, 443,
+		true, OUTBOUND_USER_DEFINED_MIN + 31);
+}
+
+SEC("tc/pktgen/udp_route_cache_target_change")
+int testpktgen_udp_route_cache_target_change(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,9), IPV4(1,1,1,9),
+			    20009, 80);
+}
+
+SEC("tc/setup/udp_route_cache_target_change")
+int testsetup_udp_route_cache_target_change(struct __sk_buff *skb)
+{
+	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 41;
+
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,9), IPV4(1,1,1,8),
+		20009, 443, cached_outbound,
+		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	set_ipv4_udp_routing_handoff(
+		IPV4(192,168,1,9), IPV4(1,1,1,8), 20009, 443,
+		cached_outbound);
+	set_outbound_connectivity(cached_outbound);
+	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_target_change")
+int testcheck_udp_route_cache_target_change(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	int ret = check_ipv4_udp_routing_cache(
+		skb, TCX_DROP, IPV4(192,168,1,9), IPV4(1,1,1,9),
+		20009, 80, false, OUTBOUND_BLOCK);
+	delete_ipv4_udp_routing_cache(skb,
+		IPV4(192,168,1,9), IPV4(1,1,1,8), 20009, 443);
+	delete_ipv4_udp_routing_handoff(
+		IPV4(192,168,1,9), IPV4(1,1,1,8), 20009, 443);
+	return ret;
+}
+
+SEC("tc/pktgen/udp_route_cache_skip_noalive")
+int testpktgen_udp_route_cache_skip_noalive(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,10), IPV4(1,1,1,10),
+			    20010, 443);
+}
+
+SEC("tc/setup/udp_route_cache_skip_noalive")
+int testsetup_udp_route_cache_skip_noalive(struct __sk_buff *skb)
+{
+	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 42;
+	const __u8 fallback_outbound = OUTBOUND_USER_DEFINED_MIN + 43;
+	struct match_set cached_rule = {
+		.type = MatchType_Fallback,
+		.outbound = cached_outbound,
+		.skip_while_noalive = true,
+	};
+
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,10), IPV4(1,1,1,10),
+		20010, 443, cached_outbound,
+		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	bpf_map_update_elem(&routing_map, &zero_key, &cached_rule, BPF_ANY);
+	set_outbound_connectivity_state(
+		cached_outbound, OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT);
+	set_routing_fallback(fallback_outbound, false, &one_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_skip_noalive")
+int testcheck_udp_route_cache_skip_noalive(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	clear_routing_entry(&one_key);
+	return check_ipv4_udp_routing_state(
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,10), IPV4(1,1,1,10),
+		20010, 443, true, false, OUTBOUND_USER_DEFINED_MIN + 43);
+}
+
+SEC("tc/pktgen/udp_route_cache_dns_change")
+int testpktgen_udp_route_cache_dns_change(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,11), IPV4(1,1,1,11),
+			    20011, 53);
+}
+
+SEC("tc/setup/udp_route_cache_dns_change")
+int testsetup_udp_route_cache_dns_change(struct __sk_buff *skb)
+{
+	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 44;
+
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,11), IPV4(1,1,1,11),
+		20011, 443, cached_outbound,
+		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	set_ipv4_udp_routing_handoff(
+		IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 443,
+		cached_outbound);
+	set_outbound_connectivity(cached_outbound);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 45, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_dns_change")
+int testcheck_udp_route_cache_dns_change(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	int ret = check_ipv4_udp_routing_cache(
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,11), IPV4(1,1,1,11),
+		20011, 53, true, OUTBOUND_CONTROL_PLANE_ROUTING);
+	delete_ipv4_udp_routing_cache(skb,
+		IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 443);
+	delete_ipv4_udp_routing_handoff(
+		IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 443);
+	return ret;
+}
+
+SEC("tc/pktgen/udp_route_cache_expired")
+int testpktgen_udp_route_cache_expired(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,3), IPV4(1,1,1,3),
+			    20003, 443);
+}
+
+SEC("tc/setup/udp_route_cache_expired")
+int testsetup_udp_route_cache_expired(struct __sk_buff *skb)
+{
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,3), IPV4(1,1,1,3),
+		20003, 443, OUTBOUND_USER_DEFINED_MIN + 33, 1);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN + 33);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 34, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_expired")
+int testcheck_udp_route_cache_expired(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,3), IPV4(1,1,1,3),
+		20003, 443,
+		true, OUTBOUND_USER_DEFINED_MIN + 34);
+}
+
+SEC("tc/pktgen/udp_route_cache_connectivity_direct")
+int testpktgen_udp_route_cache_connectivity_direct(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,4), IPV4(1,1,1,4),
+			    20004, 443);
+}
+
+SEC("tc/setup/udp_route_cache_connectivity_direct")
+int testsetup_udp_route_cache_connectivity_direct(struct __sk_buff *skb)
+{
+	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 35;
+
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,4), IPV4(1,1,1,4),
+		20004, 443, cached_outbound,
+		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	set_routing_fallback(cached_outbound, false, &zero_key);
+	set_outbound_connectivity_state(
+		cached_outbound, OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_connectivity_direct")
+int testcheck_udp_route_cache_connectivity_direct(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TCX_NEXT, IPV4(192,168,1,4), IPV4(1,1,1,4),
+		20004, 443, false, OUTBOUND_USER_DEFINED_MIN + 35);
+}
+
+SEC("tc/pktgen/udp_route_cache_connectivity_block")
+int testpktgen_udp_route_cache_connectivity_block(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,5), IPV4(1,1,1,5),
+			    20005, 443);
+}
+
+SEC("tc/setup/udp_route_cache_connectivity_block")
+int testsetup_udp_route_cache_connectivity_block(struct __sk_buff *skb)
+{
+	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 37;
+
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,5), IPV4(1,1,1,5),
+		20005, 443, cached_outbound,
+		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	set_routing_fallback(cached_outbound, false, &zero_key);
+	set_outbound_connectivity_state(
+		cached_outbound, OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_connectivity_block")
+int testcheck_udp_route_cache_connectivity_block(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TCX_DROP, IPV4(192,168,1,5), IPV4(1,1,1,5),
+		20005, 443, false, OUTBOUND_USER_DEFINED_MIN + 37);
+}
+
+SEC("tc/pktgen/udp_route_cache_connectivity_try_sniff")
+int testpktgen_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,6), IPV4(1,1,1,6),
+			    20006, 443);
+}
+
+SEC("tc/setup/udp_route_cache_connectivity_try_sniff")
+int testsetup_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
+{
+	const __u8 cached_outbound = OUTBOUND_USER_DEFINED_MIN + 39;
+
+	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,6), IPV4(1,1,1,6),
+		20006, 443, cached_outbound,
+		bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	set_routing_fallback(cached_outbound, false, &zero_key);
+	set_outbound_connectivity_dead_try_sniff(cached_outbound);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_connectivity_try_sniff")
+int testcheck_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,6), IPV4(1,1,1,6),
+		20006, 443,
+		true, OUTBOUND_USER_DEFINED_MIN + 39);
+}
+
+SEC("tc/pktgen/udp_route_cache_direct_not_stored")
+int testpktgen_udp_route_cache_direct_not_stored(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,7), IPV4(1,1,1,7),
+			    20007, 443);
+}
+
+SEC("tc/setup/udp_route_cache_direct_not_stored")
+int testsetup_udp_route_cache_direct_not_stored(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_direct_not_stored")
+int testcheck_udp_route_cache_direct_not_stored(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TCX_NEXT, IPV4(192,168,1,7), IPV4(1,1,1,7),
+		20007, 443,
+		false, OUTBOUND_DIRECT);
+}
+
+SEC("tc/pktgen/udp_route_cache_block_not_stored")
+int testpktgen_udp_route_cache_block_not_stored(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,1,8), IPV4(1,1,1,8),
+			    20008, 443);
+}
+
+SEC("tc/setup/udp_route_cache_block_not_stored")
+int testsetup_udp_route_cache_block_not_stored(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_route_cache_block_not_stored")
+int testcheck_udp_route_cache_block_not_stored(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(
+		skb, TCX_DROP, IPV4(192,168,1,8), IPV4(1,1,1,8),
+		20008, 443,
+		false, OUTBOUND_BLOCK);
+}

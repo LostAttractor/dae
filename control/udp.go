@@ -198,10 +198,9 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		ok = false
 	}
 	if !ok {
-		// Use an empty AddrPort for dst
-		routingResult, err := c.core.RetrieveRoutingResult(src, netip.AddrPort{}, unix.IPPROTO_UDP)
+		routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
 		if err != nil {
-			return oops.Wrapf(err, "No AddrPort presented")
+			return oops.Wrapf(err, "RetrieveRoutingResult")
 		}
 		// Route
 		dialOption, err := c.RouteDialOption(ctx, &RouteParam{
