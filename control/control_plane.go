@@ -187,11 +187,6 @@ func NewControlPlane(
 	if err != nil {
 		return nil, err
 	}
-	// TODO: Some users reported that enabling GSO on the client wgrpcould affect the performance of watching YouTube, so we disabled it by default.
-	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_GSO"); !ok {
-		os.Setenv("QUIC_GO_DISABLE_GSO", "1")
-	}
-
 	kernelVersion, e := internal.KernelVersion()
 	if e != nil {
 		return nil, oops.Errorf("failed to get kernel version: %w", e)
