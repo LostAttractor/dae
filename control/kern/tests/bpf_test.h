@@ -547,6 +547,40 @@ set_ipv6_ah_udp(struct __sk_buff *skb, __u32 saddr, __u32 daddr,
 }
 
 static __always_inline int
+set_ipv6_udp(struct __sk_buff *skb, __u32 saddr, __u32 daddr,
+	     __u16 sport, __u16 dport)
+{
+	const __u16 payload_len = UDP_HLEN + 8;
+	struct ethhdr eth = { .h_proto = bpf_htons(ETH_P_IPV6) };
+	struct ipv6hdr ip = {
+		.version = 6,
+		.payload_len = bpf_htons(payload_len),
+		.nexthdr = IPPROTO_UDP,
+	};
+	union ip6 src = {}, dst = {};
+	struct udphdr udp = {
+		.source = bpf_htons(sport),
+		.dest = bpf_htons(dport),
+		.len = bpf_htons(payload_len),
+	};
+
+	bpf_skb_change_tail(skb, ETH_HLEN + IP6_HLEN + payload_len, 0);
+	src.u6_addr32[0] = bpf_htonl(0x20010db8);
+	src.u6_addr32[3] = bpf_htonl(saddr);
+	dst.u6_addr32[0] = bpf_htonl(0x20010db8);
+	dst.u6_addr32[3] = bpf_htonl(daddr);
+	__builtin_memcpy(&ip.saddr, &src, sizeof(src));
+	__builtin_memcpy(&ip.daddr, &dst, sizeof(dst));
+
+	if (bpf_skb_store_bytes(skb, 0, &eth, sizeof(eth), 0) ||
+	    bpf_skb_store_bytes(skb, ETH_HLEN, &ip, sizeof(ip), 0) ||
+	    bpf_skb_store_bytes(skb, ETH_HLEN + IP6_HLEN, &udp,
+				sizeof(udp), 0))
+		return TC_ACT_SHOT;
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 set_ipv6_extensions(struct __sk_buff *skb, __u32 extension_count)
 {
 	const __u32 payload_len = extension_count * IPV6_OPT_HLEN + UDP_HLEN;

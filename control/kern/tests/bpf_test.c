@@ -22,6 +22,48 @@ struct {
 	},
 };
 
+SEC("tc/benchmark/parser")
+int test_parser_benchmark(struct __sk_buff *skb)
+{
+	int dispatch = classify_fragment(skb, ETH_HLEN);
+	struct ethhdr ethh;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
+	__u8 ihl;
+	__u8 l4proto;
+	__u32 offset = 0;
+	__u32 packet_end;
+	enum fragment_state fragment_state;
+
+	if (dispatch == FRAGMENT_DISPATCH_PASS)
+		return 0;
+	if (dispatch == FRAGMENT_DISPATCH_DROP)
+		return -1;
+	return parse_transport(skb, ETH_HLEN, &ethh, &l3h, &l4h, &ihl,
+			       &l4proto, &offset, &packet_end, &fragment_state);
+}
+
+SEC("tc/pktgen/parser_ipv6_udp")
+int testpktgen_parser_ipv6_udp(struct __sk_buff *skb)
+{
+	return set_ipv6_udp(skb, 50, 51, 20500, 443);
+}
+
+SEC("tc/setup/parser_ipv6_udp")
+int testsetup_parser_ipv6_udp(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/parser_ipv6_udp")
+int testcheck_parser_ipv6_udp(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_status_code(skb, TCX_NEXT);
+}
+
 static __always_inline int check_setup_result(struct __sk_buff *skb,
 					       __u32 expected)
 {

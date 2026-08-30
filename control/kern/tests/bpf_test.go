@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink/nl"
@@ -263,6 +264,48 @@ func BenchmarkUDPRoutingCache(b *testing.B) {
 		})
 		b.Run(fmt.Sprintf("hit/rules=%d", rules), func(b *testing.B) {
 			benchmarkUDPRoutingCache(b, obj, rules, true)
+		})
+	}
+}
+
+func BenchmarkPacketParser(b *testing.B) {
+	obj, err := loadTestObjects(b)
+	if err != nil {
+		b.Fatal(err)
+	}
+	const (
+		repeat = 10000
+	)
+
+	for _, tc := range []struct {
+		name     string
+		pktgen   *ebpf.Program
+		expected uint32
+	}{
+		{name: "ipv4-udp", pktgen: obj.TestpktgenUdpRouteCacheMiss},
+		{name: "ipv6-udp", pktgen: obj.TestpktgenParserIpv6Udp},
+		{name: "ipv6-ah", pktgen: obj.TestpktgenIpv6AhUdpUnfragmented, expected: 1},
+		{name: "ipv6-max-extensions", pktgen: obj.TestpktgenIpv6MaxExtensions},
+		{name: "ipv6-first-fragment", pktgen: obj.TestpktgenIpv6FirstUdpFragmentRouting},
+		{name: "ipv6-nonfirst-fragment", pktgen: obj.TestpktgenIpv6NonfirstUdpFragment},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			data := make([]byte, 4096-256-320)
+			ctx := make([]byte, 256)
+			status, packet, _, err := runBpfProgram(tc.pktgen, data, ctx)
+			if err != nil || status != 0 {
+				b.Fatalf("generate packet: status %d, error %v", status, err)
+			}
+			var runtimeTotal time.Duration
+			b.ResetTimer()
+			for range b.N {
+				status, runtimePerRun, err := obj.TestParserBenchmark.Benchmark(packet, repeat, b.ResetTimer)
+				if err != nil || status != tc.expected {
+					b.Fatalf("benchmark packet: status %d, error %v", status, err)
+				}
+				runtimeTotal += runtimePerRun
+			}
+			b.ReportMetric(float64(runtimeTotal.Nanoseconds())/float64(max(b.N, 1)), "bpf-ns/op")
 		})
 	}
 }
