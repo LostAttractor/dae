@@ -7,6 +7,7 @@ package stats
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -268,4 +269,125 @@ func TestStoreCollectsConnectionMetrics(t *testing.T) {
 		}
 	}
 	t.Fatal("upload traffic metric was not gathered")
+}
+
+func TestConnectionRecordTrafficDoesNotAllocate(t *testing.T) {
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(trafficTestPath(t.Name()))
+	defer connection.Close()
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		connection.RecordUpload(1)
+		connection.RecordDownload(1)
+	})
+	if allocs != 0 {
+		t.Fatalf("steady-state traffic recording allocations = %v, want 0", allocs)
+	}
+}
+
+func BenchmarkTrafficRecord(b *testing.B) {
+	store := newStoreAt(time.Now())
+	connection := store.OpenConnection(trafficTestPath(b.Name()))
+	defer connection.Close()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		connection.RecordUpload(1)
+		connection.RecordDownload(1)
+	}
+}
+
+func BenchmarkTrafficConnectionLifecycle(b *testing.B) {
+	store := newStoreAt(time.Now())
+	path := trafficTestPath(b.Name())
+	connection := store.OpenConnection(path)
+	_ = connection.Close()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		connection := store.OpenConnection(path)
+		connection.RecordUpload(1)
+		connection.RecordDownload(1)
+		if err := connection.Close(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func benchmarkTrafficStore(pathCount int) (*Store, time.Time) {
+	windowStart := time.Now()
+	store := newStoreAt(windowStart)
+	for i := 0; i < pathCount; i++ {
+		connection := store.OpenConnection(trafficTestPath(fmt.Sprintf("path-%d", i)))
+		connection.RecordUpload(uint64(i + 1))
+		connection.RecordDownload(uint64(i + 1))
+		_ = connection.Close()
+	}
+	return store, windowStart
+}
+
+func BenchmarkTrafficSample(b *testing.B) {
+	for _, pathCount := range []int{1, 64, 256} {
+		b.Run(fmt.Sprintf("paths=%d", pathCount), func(b *testing.B) {
+			store, now := benchmarkTrafficStore(pathCount)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				now = now.Add(time.Second)
+				store.sampleAt(now)
+			}
+		})
+	}
+}
+
+var benchmarkTrafficSnapshot map[Path]PathStats
+
+func BenchmarkTrafficSnapshot(b *testing.B) {
+	for _, pathCount := range []int{1, 64, 256} {
+		b.Run(fmt.Sprintf("paths=%d", pathCount), func(b *testing.B) {
+			store, _ := benchmarkTrafficStore(pathCount)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var err error
+				benchmarkTrafficSnapshot, err = store.Snapshot()
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkTrafficExternalCounters(b *testing.B) {
+	for _, connectionCount := range []int{1, 64, 256} {
+		b.Run(fmt.Sprintf("connections=%d", connectionCount), func(b *testing.B) {
+			store := newStoreAt(time.Now())
+			connections := make([]*Connection, 0, connectionCount)
+			source := func() (TrafficCounters, error) {
+				return TrafficCounters{UploadBytes: 1, DownloadBytes: 1}, nil
+			}
+			for i := 0; i < connectionCount; i++ {
+				connection := store.OpenConnection(trafficTestPath(fmt.Sprintf("path-%d", i)))
+				if err := connection.AttachExternalCounters(source); err != nil {
+					b.Fatal(err)
+				}
+				connections = append(connections, connection)
+			}
+			b.Cleanup(func() {
+				for _, connection := range connections {
+					_ = connection.Close()
+				}
+			})
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := store.refreshExternalCounters(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
