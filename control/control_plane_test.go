@@ -321,6 +321,43 @@ func TestGroupOverrideOptionCheckIntervals(t *testing.T) {
 	}
 }
 
+func TestWaitForStartupConnectivityReleasesAtDeadline(t *testing.T) {
+	waiters := []startupConnectivityWaiter{
+		{name: "first", ready: make(chan struct{})},
+		{name: "second", ready: make(chan struct{})},
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = waitForStartupConnectivity(waiters, 10*time.Millisecond, nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("startup connectivity deadline did not release pending groups")
+	}
+}
+
+func TestWaitForStartupConnectivityCanBeStopped(t *testing.T) {
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- waitForStartupConnectivity([]startupConnectivityWaiter{{
+			name:  "pending",
+			ready: make(chan struct{}),
+		}}, time.Hour, stop)
+	}()
+	close(stop)
+	select {
+	case err := <-done:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("stopped startup wait = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stopping startup connectivity did not interrupt the wait")
+	}
+}
+
 func TestGroupOverrideOptionExplicitZeroTolerance(t *testing.T) {
 	option := parseGroupOverrideOption(config.Group{
 		Present:        map[string]bool{"check_tolerance": true},

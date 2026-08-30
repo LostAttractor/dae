@@ -44,7 +44,7 @@ var GlobalDesc = Desc{
 	"udp_check_dns":       "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
 	"check_interval":      "Interval of connectivity checks while the node is alive.",
 	"check_interval_max":  "Maximum connectivity check interval after a previously available node fails a check. Initial connectivity checks use an independent interval.",
-	"check_tolerance":     "Group will switch node only when new_latency <= old_latency - tolerance.",
+	"check_tolerance":     "Ignored during startup; afterward, group switches node only when new_latency <= old_latency - tolerance.",
 	"lan_interface":       "The LAN interface to bind. Use it if you want to proxy LAN.",
 	"wan_interface":       "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to follow host default routes.",
 	"allow_insecure":      "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",

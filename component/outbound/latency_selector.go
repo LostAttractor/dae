@@ -1,7 +1,6 @@
 package outbound
 
 import (
-	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -12,19 +11,16 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type LatencyBasedSelector struct {
-	dialerGroup *DialerGroup
-	tolerance   time.Duration
+type latencyBasedSelector struct {
+	dialerGroup     *DialerGroup
+	tolerance       time.Duration
+	toleranceActive bool
 
 	selected [common.NetworkTypeCount]*dialer.Dialer
 	mu       sync.RWMutex
 }
 
-func NewLatencyBasedSelector(dialerGroup *DialerGroup, tolerance time.Duration) Selector {
-	return &LatencyBasedSelector{dialerGroup: dialerGroup, tolerance: tolerance}
-}
-
-func (s *LatencyBasedSelector) sortedCandidates(networkType *common.NetworkType) []selectorCandidate {
+func (s *latencyBasedSelector) sortedCandidates(networkType *common.NetworkType) []selectorCandidate {
 	candidates := s.dialerGroup.candidates(networkType)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].priority != candidates[j].priority {
@@ -44,7 +40,7 @@ func findCandidate(candidates []selectorCandidate, d *dialer.Dialer) (selectorCa
 	return selectorCandidate{}, false
 }
 
-func (s *LatencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed *dialer.Dialer) ([]selectorCandidate, bool) {
+func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed *dialer.Dialer) {
 	networkType := index.NetworkType()
 	candidates := s.sortedCandidates(networkType)
 	oldDialer := s.selected[index]
@@ -60,8 +56,12 @@ func (s *LatencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 			newDialer = best
 		default:
 			bestCandidate := candidates[0]
+			tolerance := time.Duration(0)
+			if s.toleranceActive {
+				tolerance = s.tolerance
+			}
 			if bestCandidate.priority > oldCandidate.priority ||
-				bestCandidate.priority == oldCandidate.priority && bestCandidate.sortingLatency < oldCandidate.sortingLatency-s.tolerance {
+				bestCandidate.priority == oldCandidate.priority && bestCandidate.sortingLatency < oldCandidate.sortingLatency-tolerance {
 				newDialer = best
 			}
 		}
@@ -74,10 +74,9 @@ func (s *LatencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 	if changed != nil {
 		s.recordMetrics(candidates, changed, networkType)
 	}
-	return candidates, selectionChanged
 }
 
-func (s *LatencyBasedSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
+func (s *latencyBasedSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	index := networkType.Index()
@@ -85,7 +84,7 @@ func (s *LatencyBasedSelector) Select(networkType *common.NetworkType) *dialer.D
 	return s.selected[index]
 }
 
-func (s *LatencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
+func (s *latencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
 	s.mu.RLock()
 	d := s.selected[networkType.Index()]
 	s.mu.RUnlock()
@@ -95,40 +94,21 @@ func (s *LatencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *
 	return d
 }
 
-func (s *LatencyBasedSelector) Refresh(changed *dialer.Dialer) {
+func (s *latencyBasedSelector) Refresh(changed *dialer.Dialer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var printOnce sync.Once
 	for i := common.NetworkIndex(0); i < common.NetworkTypeCount; i++ {
-		candidates, selectionChanged := s.refreshNetwork(i, changed)
-		if selectionChanged && s.dialerGroup.latencyTableLogging.Load() {
-			networkType := i.NetworkType()
-			printOnce.Do(func() { s.printCandidates(candidates, networkType, log.Warnln) })
-		}
+		s.refreshNetwork(i, changed)
 	}
 }
 
-func (s *LatencyBasedSelector) PrintLatencies(networkType *common.NetworkType, logfn func(args ...interface{})) {
-	s.printCandidates(s.sortedCandidates(networkType), networkType, logfn)
+func (s *latencyBasedSelector) EnableTolerance() {
+	s.mu.Lock()
+	s.toleranceActive = true
+	s.mu.Unlock()
 }
 
-func (s *LatencyBasedSelector) printCandidates(candidates []selectorCandidate, networkType *common.NetworkType, logfn func(args ...interface{})) {
-	printLatencyHeader(s.dialerGroup, networkType, logfn)
-	if len(candidates) == 0 {
-		logfn("  <Empty>")
-		return
-	}
-	for i, candidate := range candidates {
-		tag := ""
-		if candidate.dialer.SubscriptionTag != "" {
-			tag = fmt.Sprintf(" [%v]", candidate.dialer.SubscriptionTag)
-		}
-		latency := common.LatencyString(candidate.latency, s.dialerGroup.dialerToAnnotation[candidate.dialer].AddLatency)
-		logfn(fmt.Sprintf("%4d.%v %v: %v (priority: %d)", i+1, tag, candidate.dialer.Name, latency, candidate.priority))
-	}
-}
-
-func (s *LatencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer, networkType *common.NetworkType) {
+func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer, networkType *common.NetworkType) {
 	oldName := "<nil>"
 	newName := "<nil>"
 	if oldDialer != nil {
@@ -155,7 +135,7 @@ func (s *LatencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 	}
 }
 
-func (s *LatencyBasedSelector) recordMetrics(candidates []selectorCandidate, d *dialer.Dialer, networkType *common.NetworkType) {
+func (s *latencyBasedSelector) recordMetrics(candidates []selectorCandidate, d *dialer.Dialer, networkType *common.NetworkType) {
 	snapshot := d.SelectionSnapshot(networkType)
 	if snapshot.Support != dialer.NetworkSupportConfirmed || !snapshot.HasLatency {
 		return

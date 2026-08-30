@@ -50,6 +50,8 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+const initialConnectivityTimeout = 60 * time.Second
+
 type ControlPlane struct {
 	core       *controlPlaneCore
 	deferFuncs []func() error
@@ -71,6 +73,8 @@ type ControlPlane struct {
 	cancel          context.CancelFunc
 	tcpSetupCtx     context.Context
 	cancelTCPSetups context.CancelFunc
+	activationStop  chan struct{}
+	activationOnce  sync.Once
 
 	ingressMu      sync.Mutex
 	ingress        *controlPlaneIngress
@@ -503,6 +507,7 @@ func NewControlPlane(
 		cancel:                    cancel,
 		tcpSetupCtx:               tcpSetupCtx,
 		cancelTCPSetups:           cancelTCPSetups,
+		activationStop:            make(chan struct{}),
 		realDomainSet:             bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:              common.Deduplicate(global.LanInterface),
 		wanInterface:              wanInterface,
@@ -631,32 +636,27 @@ func (c *ControlPlane) Activate() error {
 		}
 	})
 
-	// Run initial connectivity checks. We wait for completion so that
-	// OutboundConnectivityMap reflects a sensible state before traffic starts.
+	// Register every initial connectivity check before releasing their shared
+	// start gate. Startup then waits for each blocking group to become available,
+	// while slower candidates continue in the background.
 	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
-	wg := new(sync.WaitGroup)
+	checkStart := make(chan struct{})
+	waiters := make([]startupConnectivityWaiter, 0, len(c.outbounds))
 	for _, g := range c.outbounds {
-		if g.ChecksConnectivity() {
-			if err := g.InitializeConnectivity(); err != nil {
-				return oops.Errorf("initialize outbound %q availability: %w", g.Name, err)
-			}
+		ready, err := g.StartConnectivityChecks(checkStart)
+		if err != nil {
+			return oops.Errorf("start outbound %q connectivity checks: %w", g.Name, err)
+		}
+		if ready != nil {
+			waiters = append(waiters, startupConnectivityWaiter{name: g.Name, ready: ready})
 		}
 	}
-	for _, g := range c.outbounds {
-		for _, d := range g.Dialers {
-			d.ActivateCheck(wg)
-		}
+	close(checkStart)
+	if err := waitForStartupConnectivity(waiters, initialConnectivityTimeout, c.activationStop); err != nil {
+		return err
 	}
-	wg.Wait()
-	log.Infof("Initialization is completed. Start to Proxying...")
-	for i, g := range c.outbounds {
-		if consts.OutboundIndex(i).IsReserved() {
-			continue
-		}
-		g.PrintLatency()
-	}
-
-	/// Bind to links. Binding should be advance of dialerGroups to avoid un-routable old connection.
+	// Bind interfaces only after connectivity initialization, so existing
+	// connections cannot observe partially published outbound state.
 	if err := core.setupExitHandler(); err != nil {
 		return oops.Errorf("failed to setup exit handler: %w", err)
 	}
@@ -706,8 +706,55 @@ func (c *ControlPlane) Activate() error {
 			c.requestHostReconcile()
 		}
 	}
+	// Startup uses best-so-far selection; enable hysteresis only after all
+	// interface bindings are ready to serve traffic.
+	for _, g := range c.outbounds {
+		g.EnableSelectionTolerance()
+	}
 	SetAnyfromSoMark(c.soMarkFromDae)
+	log.Infof("Initialization is completed. Start to Proxying...")
 	return nil
+}
+
+type startupConnectivityWaiter struct {
+	name  string
+	ready <-chan struct{}
+}
+
+func waitForStartupConnectivity(waiters []startupConnectivityWaiter, timeout time.Duration, stop <-chan struct{}) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for i, waiter := range waiters {
+		select {
+		case <-waiter.ready:
+			continue
+		case <-stop:
+			return net.ErrClosed
+		case <-timer.C:
+		}
+		select {
+		case <-stop:
+			return net.ErrClosed
+		default:
+		}
+		for _, pending := range waiters[i:] {
+			select {
+			case <-pending.ready:
+			default:
+				log.WithField("group", pending.name).Warnf(
+					"No usable candidate after %v; startup continues and checking remains active",
+					timeout,
+				)
+			}
+		}
+		return nil
+	}
+	select {
+	case <-stop:
+		return net.ErrClosed
+	default:
+		return nil
+	}
 }
 
 func (c *ControlPlane) prepareWanInterface(ifname string) error {
@@ -1461,6 +1508,9 @@ func (c *ControlPlane) retireTraffic() error {
 }
 
 func (c *ControlPlane) Close() (err error) {
+	if c.activationStop != nil {
+		c.activationOnce.Do(func() { close(c.activationStop) })
+	}
 	c.core.lifecycleMu.Lock()
 	defer c.core.lifecycleMu.Unlock()
 	err = c.retireTraffic()
