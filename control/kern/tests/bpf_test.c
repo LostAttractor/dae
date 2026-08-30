@@ -25,22 +25,20 @@ struct {
 SEC("tc/benchmark/parser")
 int test_parser_benchmark(struct __sk_buff *skb)
 {
-	int dispatch = classify_fragment(skb, ETH_HLEN);
 	struct ethhdr ethh;
 	struct l3_hdr l3h;
 	struct l4_hdr l4h;
-	__u8 ihl;
 	__u8 l4proto;
 	__u32 offset = 0;
 	__u32 packet_end;
 	enum fragment_state fragment_state;
+	int ret;
 
-	if (dispatch == FRAGMENT_DISPATCH_PASS)
+	ret = parse_transport(skb, ETH_HLEN, &ethh, &l3h, &l4h,
+			      &l4proto, &offset, &packet_end, &fragment_state);
+	if (fragment_state == FRAGMENT_NONFIRST)
 		return 0;
-	if (dispatch == FRAGMENT_DISPATCH_DROP)
-		return -1;
-	return parse_transport(skb, ETH_HLEN, &ethh, &l3h, &l4h, &ihl,
-			       &l4proto, &offset, &packet_end, &fragment_state);
+	return ret;
 }
 
 SEC("tc/pktgen/parser_ipv6_udp")

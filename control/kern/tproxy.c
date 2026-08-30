@@ -597,7 +597,7 @@ static int ipv6_ext_step(struct ipv6_ext_ctx *ctx)
 static __always_inline int
 parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		struct ethhdr *ethh, struct l3_hdr *l3h,
-		struct l4_hdr *l4h, __u8 *ihl, __u8 *l4proto,
+		struct l4_hdr *l4h, __u8 *l4proto,
 		__u32 *offset, __u32 *packet_end,
 		enum fragment_state *fragment_state)
 {
@@ -617,7 +617,6 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		ethh->h_proto = skb->protocol;
 	}
 
-	*ihl = 0;
 	*l4proto = 0;
 	__builtin_memset(l3h, 0, sizeof(struct l3_hdr));
 	__builtin_memset(l4h, 0, sizeof(struct l4_hdr));
@@ -686,7 +685,6 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		default:
 			return 1;
 		}
-		*ihl = l3h->iph.ihl;
 		return 0;
 	} else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
 		__u32 l3_offset = *offset;
@@ -704,7 +702,6 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		*packet_end = ip_packet_end;
 
 		*offset += sizeof(struct ipv6hdr);
-		*ihl = sizeof(struct ipv6hdr) / 4;
 		__u8 nexthdr = l3h->ipv6h.nexthdr;
 
 		// Skip all extension headers.
@@ -784,104 +781,6 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 	}
 	// bpf_printk("unknown link proto: %u", bpf_ntohl(ethh->h_proto));
 	return 1;
-}
-
-enum fragment_dispatch {
-	FRAGMENT_DISPATCH_NORMAL,
-	FRAGMENT_DISPATCH_FIRST,
-	FRAGMENT_DISPATCH_PASS,
-	FRAGMENT_DISPATCH_DROP,
-};
-
-static int __noinline classify_fragment(const struct __sk_buff *skb,
-					__u32 link_h_len)
-{
-	__be16 h_proto;
-	__u32 offset = 0;
-
-	if (link_h_len == ETH_HLEN) {
-		if (bpf_skb_load_bytes(skb, offsetof(struct ethhdr, h_proto),
-				       &h_proto, sizeof(h_proto)))
-			return FRAGMENT_DISPATCH_NORMAL;
-		offset = sizeof(struct ethhdr);
-	} else {
-		h_proto = skb->protocol;
-	}
-
-	if (h_proto == bpf_htons(ETH_P_IP)) {
-		__be16 be_frag_off;
-
-		if (bpf_skb_load_bytes(skb, offset + offsetof(struct iphdr, frag_off),
-				       &be_frag_off, sizeof(be_frag_off)))
-			return FRAGMENT_DISPATCH_NORMAL;
-		__u16 frag_off = bpf_ntohs(be_frag_off);
-
-		/* DF alone is not fragmentation and stays on the normal fast path. */
-		if (!(frag_off & 0xbfff))
-			return FRAGMENT_DISPATCH_NORMAL;
-
-		struct iphdr iph;
-
-		if (bpf_skb_load_bytes(skb, offset, &iph, sizeof(iph)))
-			return FRAGMENT_DISPATCH_DROP;
-		__u32 header_len = iph.ihl * 4;
-		__u32 packet_len = bpf_ntohs(iph.tot_len);
-
-		if (iph.version != 4 || iph.ihl < 5 || packet_len < header_len ||
-		    offset + packet_len > skb->len || (frag_off & 0x8000) ||
-		    ((frag_off & 0x4000) && (frag_off & 0x3fff)))
-			return FRAGMENT_DISPATCH_DROP;
-		if ((frag_off & 0x2000) && ((packet_len - header_len) & 7))
-			return FRAGMENT_DISPATCH_DROP;
-
-		if (frag_off & 0x1fff)
-			return FRAGMENT_DISPATCH_PASS;
-		return FRAGMENT_DISPATCH_FIRST;
-	}
-	if (h_proto == bpf_htons(ETH_P_IPV6)) {
-		__u8 first_nexthdr;
-
-		if (bpf_skb_load_bytes(skb,
-				       offset + offsetof(struct ipv6hdr, nexthdr),
-				       &first_nexthdr, sizeof(first_nexthdr)))
-			return FRAGMENT_DISPATCH_NORMAL;
-		if (!is_extension_header(first_nexthdr))
-			return FRAGMENT_DISPATCH_NORMAL;
-
-		struct ipv6hdr ipv6h;
-
-		if (bpf_skb_load_bytes(skb, offset, &ipv6h, sizeof(ipv6h)))
-			return FRAGMENT_DISPATCH_NORMAL;
-		__u32 packet_end = offset + sizeof(ipv6h) +
-			bpf_ntohs(ipv6h.payload_len);
-		if (ipv6h.version != 6 || packet_end > skb->len)
-			return ipv6h.nexthdr == IPPROTO_FRAGMENT ?
-				FRAGMENT_DISPATCH_DROP : FRAGMENT_DISPATCH_NORMAL;
-
-		offset += sizeof(ipv6h);
-		__u8 nexthdr = ipv6h.nexthdr;
-		struct ipv6_ext_ctx ext_ctx = {
-			.skb = skb,
-			.offset = &offset,
-			.packet_end = packet_end,
-			.nexthdr = &nexthdr,
-			.result = 0,
-			.seen_ah = false,
-			.seen_fragment = false,
-			.fragment_state = FRAGMENT_NONE,
-		};
-		bpf_repeat(IPV6_MAX_EXTENSIONS) {
-			if (ipv6_ext_step(&ext_ctx))
-				break;
-		}
-		if (ext_ctx.result < 0 && ext_ctx.seen_fragment)
-			return FRAGMENT_DISPATCH_DROP;
-		if (ext_ctx.fragment_state == FRAGMENT_NONFIRST)
-			return FRAGMENT_DISPATCH_PASS;
-		if (ext_ctx.fragment_state == FRAGMENT_FIRST)
-			return FRAGMENT_DISPATCH_FIRST;
-	}
-	return FRAGMENT_DISPATCH_NORMAL;
 }
 
 // Only work for first packet of a new connection.
@@ -1443,30 +1342,18 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return (*pid_pname)->pid == PARAM.control_plane_pid;
 }
 
-static int __noinline do_tproxy_first_fragment(
-	struct __sk_buff *skb, bool is_wan, __u32 link_h_len)
+static __always_inline int do_tproxy_first_fragment(
+	struct __sk_buff *skb, bool is_wan, struct ethhdr *ethh,
+	struct l3_hdr *l3h, struct l4_hdr *l4h, __u8 l4proto,
+	__u32 payload_offset, __u32 packet_end, int parse_ret)
 {
-	struct ethhdr ethh;
-	struct l3_hdr l3h;
-	struct l4_hdr l4h;
-	__u8 ihl;
-	__u8 l4proto;
-	__u32 payload_offset = 0;
-	__u32 packet_end;
-	enum fragment_state fragment_state;
-	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
-				  &l4proto, &payload_offset, &packet_end,
-				  &fragment_state);
-
-	if (fragment_state != FRAGMENT_FIRST)
-		return TCX_DROP;
 	if (l4proto != IPPROTO_TCP && l4proto != IPPROTO_UDP)
 		return l4proto && !is_extension_header(l4proto) ? TCX_NEXT : TCX_DROP;
-	if (ret)
+	if (parse_ret)
 		return TCX_DROP;
 	struct tuples tuples;
 
-	get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
+	get_tuples(skb, &tuples, l3h, l4h, l4proto);
 	struct pid_pname *pid_pname = NULL;
 
 	if (is_wan && pid_is_control_plane(skb, &pid_pname))
@@ -1484,7 +1371,7 @@ static int __noinline do_tproxy_first_fragment(
 
 	struct route_params params;
 
-	params.l4hdr = &l4h;
+	params.l4hdr = l4h;
 	if (l4proto == IPPROTO_TCP) {
 		params.l4proto_type = L4ProtoType_TCP;
 	} else {
@@ -1499,7 +1386,7 @@ static int __noinline do_tproxy_first_fragment(
 	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
 	params.dscp = tuples.dscp;
 	params.ifindex = skb->ifindex;
-	params.mac = ethh.h_source;
+	params.mac = ethh->h_source;
 	params.saddr = tuples.five.sip.u6_addr32;
 	params.daddr = tuples.five.dip.u6_addr32;
 	params.isdns = tuples.five.dport == bpf_htons(53) &&
@@ -1554,26 +1441,12 @@ direct:
 }
 
 // Routing and redirect the packet back.
-static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
-					     u32 link_h_len)
+static __always_inline int do_tproxy_unfragmented(
+	struct __sk_buff *skb, bool is_wan, u32 link_h_len,
+	struct ethhdr *ethh, struct l3_hdr *l3h, struct l4_hdr *l4h,
+	__u8 l4proto, __u32 offset, __u32 packet_end, int parse_ret)
 {
-	// Parse transport.
-	struct ethhdr ethh;
-	struct l3_hdr l3h;
-	struct l4_hdr l4h;
-	__u8 ihl;
-	__u8 l4proto;
-	__u32 offset = 0;
-	__u32 packet_end;
-	enum fragment_state fragment_state;
-
-	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h, &ihl,
-				  &l4proto, &offset, &packet_end, &fragment_state);
-	if (fragment_state != FRAGMENT_NONE)
-		return TCX_DROP;
-	if (ret < 0)
-		return TCX_DROP;
-	if (ret)
+	if (parse_ret)
 		return TCX_NEXT;
 	if (l4proto == IPPROTO_ICMPV6)
 		return TCX_NEXT;
@@ -1581,7 +1454,7 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 	// Prepare five tuples.
 	struct tuples tuples;
 
-	get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
+	get_tuples(skb, &tuples, l3h, l4h, l4proto);
 
 	// Backup for feature use.
 	// 由于向helper function传递了skb, 一旦verifier无法推断出skb是否被修改, 则可能在访问skb时出现问题
@@ -1599,7 +1472,7 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 
 	struct tuples_key routing_tuples_key = tuples.five;
 
-	if (l4proto == IPPROTO_TCP && !(l4h.tcph.syn && !l4h.tcph.ack)) {
+	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
 		// Established TCP Connection.
 		struct routing_result *routing_result =
 			bpf_map_lookup_elem(&routing_tuples_map,
@@ -1633,7 +1506,7 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 
 	struct route_params params;
 
-	params.l4hdr = &l4h;
+	params.l4hdr = l4h;
 	if (l4proto == IPPROTO_TCP) {
 		params.l4proto_type = L4ProtoType_TCP;
 	} else {
@@ -1648,7 +1521,7 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
 	params.dscp = tuples.dscp;
 	params.ifindex = ifindex;
-	params.mac = ethh.h_source;
+	params.mac = ethh->h_source;
 	params.saddr = tuples.five.sip.u6_addr32;
 	params.daddr = tuples.five.dip.u6_addr32;
 	params.isdns = isdns;
@@ -1711,7 +1584,7 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 		routing_result.must = (route_ret >> 40) & 1;
 		routing_result.dscp = tuples.dscp;
 		routing_result.ifindex = ifindex;
-		__builtin_memcpy(routing_result.mac, ethh.h_source,
+		__builtin_memcpy(routing_result.mac, ethh->h_source,
 				 sizeof(routing_result.mac));
 
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
@@ -1819,7 +1692,7 @@ static int __noinline do_tproxy_unfragmented(struct __sk_buff *skb, bool is_wan,
 control_plane:
 	// Assign to control plane.
 	if (prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples,
-					   &ethh))
+					   ethh))
 		return TCX_DROP;
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
@@ -1839,16 +1712,26 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
 	if (exited && *exited)
 		return TCX_NEXT;
 
-	switch (classify_fragment(skb, link_h_len)) {
-	case FRAGMENT_DISPATCH_FIRST:
-		return do_tproxy_first_fragment(skb, is_wan, link_h_len);
-	case FRAGMENT_DISPATCH_PASS:
-		return TCX_NEXT;
-	case FRAGMENT_DISPATCH_DROP:
+	struct ethhdr ethh;
+	struct l3_hdr l3h;
+	struct l4_hdr l4h;
+	__u8 l4proto;
+	__u32 offset = 0;
+	__u32 packet_end;
+	enum fragment_state fragment_state;
+	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h,
+				  &l4proto, &offset, &packet_end,
+				  &fragment_state);
+
+	if (ret < 0)
 		return TCX_DROP;
-	default:
-		return do_tproxy_unfragmented(skb, is_wan, link_h_len);
-	}
+	if (fragment_state == FRAGMENT_NONFIRST)
+		return TCX_NEXT;
+	if (fragment_state == FRAGMENT_FIRST)
+		return do_tproxy_first_fragment(skb, is_wan, &ethh, &l3h,
+			&l4h, l4proto, offset, packet_end, ret);
+	return do_tproxy_unfragmented(skb, is_wan, link_h_len, &ethh, &l3h,
+		&l4h, l4proto, offset, packet_end, ret);
 }
 
 static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
@@ -1857,14 +1740,13 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 	struct ethhdr ethh;
 	struct l3_hdr l3h;
 	struct l4_hdr l4h;
-	__u8 ihl;
 	__u8 l4proto;
 	__u32 offset = 0;
 	__u32 packet_end;
 	enum fragment_state fragment_state;
 
 	int ret = parse_transport(skb, link_h_len, &ethh, &l3h, &l4h,
-				  &ihl, &l4proto, &offset, &packet_end,
+				  &l4proto, &offset, &packet_end,
 				  &fragment_state);
 	if (ret < 0) {
 		bpf_printk("parse_transport: %d", ret);
