@@ -366,10 +366,11 @@ struct {
 	__type(key, __be32[4]);
 	__type(value, struct domain_routing);
 	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
 	/// NOTICE: No persistence.
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } domain_routing_map SEC(".maps");
-// 21.63 MB
+// Previously about 21.63 MB was preallocated; memory now grows with occupancy.
 
 struct ip_port_proto {
 	__u32 ip[4];

@@ -41,6 +41,29 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 	}
 }
 
+func TestDomainRoutingMapSpec(t *testing.T) {
+	spec, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := spec.Maps["domain_routing_map"]
+	if m == nil {
+		t.Fatal("domain_routing_map is missing")
+	}
+	if m.Type != ebpf.Hash {
+		t.Fatalf("domain_routing_map type = %v, want hash", m.Type)
+	}
+	if m.Flags != unix.BPF_F_NO_PREALLOC {
+		t.Fatalf("domain_routing_map flags = %#x, want BPF_F_NO_PREALLOC", m.Flags)
+	}
+	if m.MaxEntries != 65536 {
+		t.Fatalf("domain_routing_map max entries = %d, want 65536", m.MaxEntries)
+	}
+	if m.KeySize != 16 || m.ValueSize != uint32(unsafe.Sizeof(bpfDomainRouting{})) {
+		t.Fatalf("domain_routing_map layout = key %d, value %d; want 16, %d", m.KeySize, m.ValueSize, unsafe.Sizeof(bpfDomainRouting{}))
+	}
+}
+
 func TestDeleteUDPRoutingTuplesPreservesTCP(t *testing.T) {
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
 		Name:       "routing_tuple_test",
