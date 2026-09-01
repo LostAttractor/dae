@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -73,8 +74,13 @@ var testDialerSequence atomic.Uint64
 
 func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	t.Helper()
+	layer := netproxy.Layer{Data: transport}
+	if session, ok := transport.(*testSessionTransport); ok {
+		layer.Sessions = []netproxy.Session{session}
+		layer.Resources = []io.Closer{session}
+	}
 	id := testDialerSequence.Add(1)
-	d := NewDialer(netproxy.NewRuntime(transport), &GlobalOption{
+	d := NewDialer(netproxy.NewRuntime(layer), &GlobalOption{
 		CheckInterval:    time.Hour,
 		CheckIntervalMax: time.Hour,
 	}, &Property{Property: D.Property{
@@ -162,7 +168,7 @@ func TestStatsPathUsesDialerIdentity(t *testing.T) {
 
 func TestUncheckedDialerRecordsAvailabilityOnlyWhenActivated(t *testing.T) {
 	id := testDialerSequence.Add(1)
-	d := NewDialer(netproxy.NewRuntime(testTransport{}), &GlobalOption{}, &Property{Property: D.Property{
+	d := NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: testTransport{}}), &GlobalOption{}, &Property{Property: D.Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
 	}}, InitialCheckDisabled, "")

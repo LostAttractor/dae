@@ -146,7 +146,7 @@ func TestRuntimeConnectionRetainsDirectSpliceCapability(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Close() })
 
-	runtime := netproxy.NewRuntime(tcpTestDialer{conn: remote})
+	runtime := netproxy.NewRuntime(netproxy.Layer{Data: tcpTestDialer{conn: remote}})
 	conn, err := runtime.Dialer().DialContext(context.Background(), "tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)

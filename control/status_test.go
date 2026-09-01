@@ -235,11 +235,11 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		FixedIndex: 0,
 	}
 	callback := func(bool, *common.NetworkType) error { return nil }
-	directDialer := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
+	directDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
 		Name: "direct",
 		Link: "direct://",
 	}}, dialer.InitialCheckDisabled, "")
-	blockDialer := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
+	blockDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
 		Name: "block",
 		Link: "block://",
 	}}, dialer.InitialCheckDisabled, "")
@@ -252,7 +252,7 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		_ = block.Close()
 	})
 
-	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
+	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
 	}}, dialer.InitialCheckBlocking, "")
@@ -302,7 +302,7 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 0,
 	}
-	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, &dialer.Property{Property: D.Property{
+	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
 	}}, dialer.InitialCheckBlocking, "")
@@ -343,7 +343,7 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 			{ID: "exit-id", Name: "exit", Subtag: "b", Protocol: "ss", Address: "exit.example:443"},
 		},
 	}
-	node := dialer.NewDialer(netproxy.NewRuntime(statusTestDialer{}), option, property, dialer.InitialCheckAsync, "")
+	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, property, dialer.InitialCheckAsync, "")
 	group := outbound.NewDialerGroup(
 		option,
 		"direct node target",

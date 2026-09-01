@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -28,8 +29,14 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	outboundDirect "github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/vishvananda/netlink"
 )
+
+func TestMain(m *testing.M) {
+	outboundDirect.Direct = outboundDirect.NewDirectDialer(outboundDirect.Option{})
+	os.Exit(m.Run())
+}
 
 func TestSplitWanInterfacesPreservesAutoIntent(t *testing.T) {
 	manual, auto := splitWanInterfaces([]string{"eth0", "auto", "eth0", "ppp.*", "auto"})
@@ -443,7 +450,7 @@ func (dnsPathDialer) ListenPacket(context.Context, string) (net.PacketConn, erro
 
 func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	option := &dialer.GlobalOption{}
-	d := dialer.NewDialer(netproxy.NewRuntime(dnsPathDialer{}), option, &dialer.Property{Property: D.Property{
+	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{Property: D.Property{
 		Name: "dns-path",
 		Link: "test://dns-path",
 	}}, dialer.InitialCheckDisabled, "")

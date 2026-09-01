@@ -53,7 +53,7 @@ type NodeDescriptor struct {
 type NodeInfo struct {
 	Link       string
 	Property   *dialer.Property
-	Dialers    []D.Dialer
+	Dialers    []D.Builder
 	CheckAsync bool
 	Required   bool
 }
@@ -67,7 +67,7 @@ type DialerSet struct {
 	nodeInfos []*NodeInfo
 }
 
-func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dialer, error) {
+func applyNodeOptions(builders []D.Builder, options config.NodeOptions) ([]D.Builder, error) {
 	if options.MultiplexMaxConnections != nil && (*options.MultiplexMaxConnections < 1 || *options.MultiplexMaxConnections > smux.MaxConnectionsLimit) {
 		return nil, fmt.Errorf("multiplex_max_connections must be between 1 and %d", smux.MaxConnectionsLimit)
 	}
@@ -81,7 +81,7 @@ func applyNodeOptions(builders []D.Dialer, options config.NodeOptions) ([]D.Dial
 		if len(builders) == 0 {
 			return nil, fmt.Errorf("cannot apply node options to an empty dialer chain")
 		}
-		configured := []D.Dialer{builders[0], &smux.SmuxConfig{
+		configured := []D.Builder{builders[0], &smux.SmuxConfig{
 			PassThroughUDP: options.Multiplex == config.MultiplexModeSmuxUDPPassthrough,
 			MaxConnections: multiplexMaxConnections(options),
 		}}
@@ -212,7 +212,7 @@ func normalizeShadowsocksLinkComponent(link string) string {
 	return u.String()
 }
 
-func parseNodeLink(link string) ([]D.Dialer, *D.Property, error) {
+func parseNodeLink(link string) ([]D.Builder, *D.Property, error) {
 	return D.NewFromLink(normalizeShadowsocksLink(link))
 }
 
@@ -428,28 +428,28 @@ func (e *PathBuildError) Unwrap() error { return e.Err }
 
 type pathNodeBuilder struct {
 	node    *NodeInfo
-	builder D.Dialer
+	builder D.Builder
 }
 
-func (b pathNodeBuilder) Dialer(option *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
-	d, err := b.builder.Dialer(option, parent)
+func (b pathNodeBuilder) Build(option *D.ExtraOption, upstream D.Upstream) (netproxy.Layer, error) {
+	layer, err := b.builder.Build(option, upstream)
 	if err != nil {
-		return d, &PathBuildError{Node: b.node, Err: err}
+		return netproxy.Layer{}, &PathBuildError{Node: b.node, Err: err}
 	}
-	return d, nil
+	return layer, nil
 }
 
 func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, statsScope string) (*dialer.Dialer, error) {
 	if len(spec.Nodes) == 0 {
 		return nil, errors.New("cannot build an empty proxy path")
 	}
-	builders := make([]D.Dialer, 0)
+	builders := make([]D.Builder, 0)
 	for _, node := range spec.Nodes {
 		for _, builder := range node.Dialers {
 			builders = append(builders, pathNodeBuilder{node: node, builder: builder})
 		}
 	}
-	runtime, err := D.BuildRuntime(direct.Direct, &option.ExtraOption, builders...)
+	runtime, err := D.BuildRuntime(netproxy.Layer{Data: direct.Direct}, &option.ExtraOption, builders...)
 	if err != nil {
 		return nil, err
 	}

@@ -45,7 +45,7 @@ var selectorDialerSequence atomic.Uint64
 func newUncheckedDialer(t *testing.T, name string) *dialer.Dialer {
 	t.Helper()
 	id := selectorDialerSequence.Add(1)
-	return dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
+	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
 	}}, dialer.InitialCheckDisabled, "")
@@ -58,7 +58,7 @@ func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
 func newDialerWithInitialCheck(t *testing.T, name string, initialCheck dialer.InitialCheckMode) *dialer.Dialer {
 	t.Helper()
 	id := selectorDialerSequence.Add(1)
-	return dialer.NewDialer(netproxy.NewRuntime(fakeDialer{}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
+	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
 	}}, initialCheck, "")

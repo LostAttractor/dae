@@ -304,9 +304,9 @@ func NewControlPlane(
 	}
 
 	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(netproxy.NewRuntime(_direct), option, &dialer.Property{Property: *directProperty}, dialer.InitialCheckDisabled, "")
+	direct := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _direct}), option, &dialer.Property{Property: *directProperty}, dialer.InitialCheckDisabled, "")
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(netproxy.NewRuntime(_block), option, &dialer.Property{Property: *blockProperty}, dialer.InitialCheckDisabled, "")
+	block := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _block}), option, &dialer.Property{Property: *blockProperty}, dialer.InitialCheckDisabled, "")
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindSingleAlwaysAlive,
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
