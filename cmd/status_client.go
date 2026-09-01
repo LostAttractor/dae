@@ -7,7 +7,7 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
 	"net"
@@ -73,16 +73,7 @@ func fetchStatus() (*control.StatusSnapshot, error) {
 
 func decodeStatus(reader io.Reader) (*control.StatusSnapshot, error) {
 	var snapshot control.StatusSnapshot
-	decoder := json.NewDecoder(reader)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&snapshot); err != nil {
-		return nil, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return nil, fmt.Errorf("status response contains multiple JSON values")
-		}
+	if err := jsonv2.UnmarshalRead(reader, &snapshot, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return nil, err
 	}
 	if err := validateStatus(&snapshot); err != nil {

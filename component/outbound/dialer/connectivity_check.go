@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -643,11 +644,8 @@ func (c *connectivityChecker) optionsFor(states [common.NetworkTypeCount]network
 	options := make([]*checkOption, 0, len(c.options))
 	for _, option := range c.options {
 		state := states[option.networkType.Index()]
-		for _, candidate := range wanted {
-			if state == candidate {
-				options = append(options, option)
-				break
-			}
+		if slices.Contains(wanted, state) {
+			options = append(options, option)
 		}
 	}
 	return options
@@ -672,11 +670,9 @@ func (c *connectivityChecker) probeMany(ctx context.Context, options []*checkOpt
 	results := make([]probeResult, len(options))
 	var wg sync.WaitGroup
 	for i, option := range options {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			results[i] = c.probeOption(ctx, option, attempts)
-		}()
+		})
 	}
 	wg.Wait()
 	return results

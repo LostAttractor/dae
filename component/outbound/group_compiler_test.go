@@ -17,7 +17,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	D "github.com/daeuniverse/outbound/dialer"
 )
 
 func testNode(name, subtag string) *NodeInfo {
@@ -25,7 +24,10 @@ func testNode(name, subtag string) *NodeInfo {
 	return &NodeInfo{
 		Link: link,
 		Property: &dialer.Property{
-			Property:        D.Property{Name: name, Protocol: "test", Address: name, Link: link},
+			Name:            name,
+			Protocol:        "test",
+			Address:         name,
+			Link:            link,
 			SubscriptionTag: subtag,
 		},
 	}

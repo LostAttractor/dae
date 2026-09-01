@@ -22,7 +22,6 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -127,18 +126,18 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	snapshot := map[stats.Path]stats.PathStats{
 		{NodeID: "shared-id", Outbound: "group", Subtag: "sub", Dialer: "alias-a", Network: common.NetworkTCP4}: {
 			ActiveConnections: 2, TotalConnections: 3,
-			TrafficCounters: stats.TrafficCounters{UploadBytes: 1000, DownloadBytes: 2000},
-			TrafficRate:     stats.TrafficRate{UploadBytesPerSecond: 100, DownloadBytesPerSecond: 200},
+			UploadBytes: 1000, DownloadBytes: 2000,
+			UploadBytesPerSecond: 100, DownloadBytesPerSecond: 200,
 		},
 		{NodeID: "alias-b-id", Outbound: "group", Subtag: "sub", Dialer: "alias-b", Network: common.NetworkUDP4}: {
 			ActiveConnections: 5, TotalConnections: 7,
-			TrafficCounters: stats.TrafficCounters{UploadBytes: 3000, DownloadBytes: 4000},
-			TrafficRate:     stats.TrafficRate{UploadBytesPerSecond: 300, DownloadBytesPerSecond: 400},
+			UploadBytes: 3000, DownloadBytes: 4000,
+			UploadBytesPerSecond: 300, DownloadBytesPerSecond: 400,
 		},
 		{NodeID: "shared-id", Outbound: "other", Dialer: "node", Network: common.NetworkTCP6}: {
 			ActiveConnections: 1, TotalConnections: 2,
-			TrafficCounters: stats.TrafficCounters{UploadBytes: 5000, DownloadBytes: 6000},
-			TrafficRate:     stats.TrafficRate{UploadBytesPerSecond: 500, DownloadBytesPerSecond: 600},
+			UploadBytes: 5000, DownloadBytes: 6000,
+			UploadBytesPerSecond: 500, DownloadBytesPerSecond: 600,
 		},
 		{NodeID: "ignored-id", Outbound: "group", Dialer: "ignored", Network: common.NetworkIndex(-1)}: {
 			ActiveConnections: 11, TotalConnections: 11,
@@ -148,15 +147,15 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 
 	if got := index.total; got != (stats.PathStats{
 		ActiveConnections: 8, TotalConnections: 12,
-		TrafficCounters: stats.TrafficCounters{UploadBytes: 9000, DownloadBytes: 12000},
-		TrafficRate:     stats.TrafficRate{UploadBytesPerSecond: 900, DownloadBytesPerSecond: 1200},
+		UploadBytes: 9000, DownloadBytes: 12000,
+		UploadBytesPerSecond: 900, DownloadBytesPerSecond: 1200,
 	}) {
 		t.Fatalf("global path stats = %+v", got)
 	}
 	if got := index.groups["group"].total; got != (stats.PathStats{
 		ActiveConnections: 7, TotalConnections: 10,
-		TrafficCounters: stats.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000},
-		TrafficRate:     stats.TrafficRate{UploadBytesPerSecond: 400, DownloadBytesPerSecond: 600},
+		UploadBytes: 4000, DownloadBytes: 6000,
+		UploadBytesPerSecond: 400, DownloadBytesPerSecond: 600,
 	}) {
 		t.Fatalf("group path stats = %+v", got)
 	}
@@ -235,14 +234,14 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		FixedIndex: 0,
 	}
 	callback := func(bool, *common.NetworkType) error { return nil }
-	directDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
+	directDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: "direct",
 		Link: "direct://",
-	}}, dialer.InitialCheckDisabled, "")
-	blockDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
+	}, dialer.InitialCheckDisabled, "")
+	blockDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: "block",
 		Link: "block://",
-	}}, dialer.InitialCheckDisabled, "")
+	}, dialer.InitialCheckDisabled, "")
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
 		[]*dialer.Dialer{directDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
@@ -252,10 +251,10 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		_ = block.Close()
 	})
 
-	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
+	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}}, dialer.InitialCheckBlocking, "")
+	}, dialer.InitialCheckBlocking, "")
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
@@ -302,10 +301,10 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 		Policy:     consts.DialerSelectionPolicy_Fixed,
 		FixedIndex: 0,
 	}
-	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{Property: D.Property{
+	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}}, dialer.InitialCheckBlocking, "")
+	}, dialer.InitialCheckBlocking, "")
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
@@ -337,7 +336,7 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 	option := &dialer.GlobalOption{}
 	property := &dialer.Property{
-		Property: D.Property{Name: "entry -> exit", Protocol: "socks -> ss", Address: "entry -> exit", Link: "path"},
+		Name: "entry -> exit", Protocol: "socks -> ss", Address: "entry -> exit", Link: "path",
 		Hops: []dialer.Hop{
 			{ID: "entry-id", Name: "entry", Subtag: "a", Protocol: "socks", Address: "entry.example:1080"},
 			{ID: "exit-id", Name: "exit", Subtag: "b", Protocol: "ss", Address: "exit.example:443"},

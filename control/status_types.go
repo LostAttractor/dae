@@ -6,8 +6,8 @@
 package control
 
 import (
-	"bytes"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"time"
 
@@ -15,7 +15,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
 
-const StatusSchemaVersion = 1
+const StatusSchemaVersion = 2
 
 type NetworkValues[T any] []T
 
@@ -31,9 +31,8 @@ type StatusSnapshot struct {
 }
 
 func decodeStatusObject(data []byte, value any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(value)
+	return jsonv2.Unmarshal(data, value,
+		jsonv1.FormatDurationAsNano(true), jsonv2.RejectUnknownMembers(true))
 }
 
 func (s *StatusSnapshot) UnmarshalJSON(data []byte) error {

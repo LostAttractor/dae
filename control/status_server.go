@@ -6,7 +6,8 @@
 package control
 
 import (
-	"encoding/json"
+	jsonv1 "encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"net"
@@ -126,7 +127,7 @@ func (s *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err = json.NewEncoder(w).Encode(snapshot); err != nil {
+	if err = jsonv2.MarshalWrite(w, snapshot, jsonv1.FormatDurationAsNano(true)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

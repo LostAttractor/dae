@@ -388,8 +388,8 @@ func NewControlPlane(
 		for _, path := range paths {
 			d, buildErr := dialerSet.BuildPath(path, finalOption, candidateStatsScope(name, path, pathOccurrences))
 			if buildErr != nil {
-				var pathBuildErr *outbound.PathBuildError
-				if errors.As(buildErr, &pathBuildErr) && !pathBuildErr.Node.Required {
+				pathBuildErr, isPathBuildErr := errors.AsType[*outbound.PathBuildError](buildErr)
+				if isPathBuildErr && !pathBuildErr.Node.Required {
 					log.Warnf("failed to build subscription node %q for target %q: %v", pathBuildErr.Node.Property.Name, name, pathBuildErr.Err)
 					continue
 				}

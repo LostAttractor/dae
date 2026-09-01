@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
@@ -45,10 +44,10 @@ var selectorDialerSequence atomic.Uint64
 func newUncheckedDialer(t *testing.T, name string) *dialer.Dialer {
 	t.Helper()
 	id := selectorDialerSequence.Add(1)
-	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
+	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
-	}}, dialer.InitialCheckDisabled, "")
+	}, dialer.InitialCheckDisabled, "")
 }
 
 func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
@@ -58,10 +57,10 @@ func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
 func newDialerWithInitialCheck(t *testing.T, name string, initialCheck dialer.InitialCheckMode) *dialer.Dialer {
 	t.Helper()
 	id := selectorDialerSequence.Add(1)
-	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{Property: D.Property{
+	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
-	}}, initialCheck, "")
+	}, initialCheck, "")
 }
 
 func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []*dialer.Annotation, policy dialer.DialerSelectionPolicy, callback func(bool, *common.NetworkType) error) *DialerGroup {

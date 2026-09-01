@@ -181,21 +181,19 @@ type Hop struct {
 
 func NewGlobalOption(global *config.Global) *GlobalOption {
 	return &GlobalOption{
-		ExtraOption: D.ExtraOption{
-			AllowInsecure:       global.AllowInsecure,
-			TlsImplementation:   global.TlsImplementation,
-			UtlsImitate:         global.UtlsImitate,
-			BandwidthMaxTx:      global.BandwidthMaxTx,
-			BandwidthMaxRx:      global.BandwidthMaxRx,
-			TlsFragment:         global.TlsFragment,
-			TlsFragmentLength:   global.TlsFragmentLength,
-			TlsFragmentInterval: global.TlsFragmentInterval,
-			UDPHopInterval:      global.UDPHopInterval,
-		},
-		CheckDnsOptionRaw: CheckDnsOptionRaw{Raw: global.UdpCheckDns},
-		CheckInterval:     global.CheckInterval,
-		CheckIntervalMax:  global.CheckIntervalMax,
-		CheckTolerance:    global.CheckTolerance,
+		AllowInsecure:       global.AllowInsecure,
+		TlsImplementation:   global.TlsImplementation,
+		UtlsImitate:         global.UtlsImitate,
+		BandwidthMaxTx:      global.BandwidthMaxTx,
+		BandwidthMaxRx:      global.BandwidthMaxRx,
+		TlsFragment:         global.TlsFragment,
+		TlsFragmentLength:   global.TlsFragmentLength,
+		TlsFragmentInterval: global.TlsFragmentInterval,
+		UDPHopInterval:      global.UDPHopInterval,
+		CheckDnsOptionRaw:   CheckDnsOptionRaw{Raw: global.UdpCheckDns},
+		CheckInterval:       global.CheckInterval,
+		CheckIntervalMax:    global.CheckIntervalMax,
+		CheckTolerance:      global.CheckTolerance,
 	}
 }
 

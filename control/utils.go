@@ -57,10 +57,7 @@ func (o *DialOption) dialerForConnection() netproxy.Dialer {
 	return o.Dialer
 }
 
-func IsNetError(err error) (netErr net.Error, ok bool) {
-	ok = errors.As(err, &netErr)
-	return
-}
+func IsNetError(err error) (net.Error, bool) { return errors.AsType[net.Error](err) }
 
 // closeInBackground starts cleanup without making control-plane shutdown wait
 // for transports whose Close may block. It does not guarantee cleanup completion.

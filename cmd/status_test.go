@@ -7,7 +7,8 @@ package cmd
 
 import (
 	"bytes"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"strings"
 	"testing"
@@ -65,10 +66,12 @@ func testNodeStatus(now time.Time) control.NodeStatus {
 			dialer.NetworkSupportUnknown,
 		},
 		Stats: stats.PathStats{
-			ActiveConnections: 2,
-			TotalConnections:  3,
-			TrafficCounters:   stats.TrafficCounters{UploadBytes: 1024, DownloadBytes: 2048},
-			TrafficRate:       stats.TrafficRate{UploadBytesPerSecond: 100, DownloadBytesPerSecond: 200},
+			ActiveConnections:      2,
+			TotalConnections:       3,
+			UploadBytes:            1024,
+			DownloadBytes:          2048,
+			UploadBytesPerSecond:   100,
+			DownloadBytesPerSecond: 200,
 		},
 	}
 }
@@ -250,7 +253,7 @@ func TestNetworkCompaction(t *testing.T) {
 }
 
 func TestTrafficFormatting(t *testing.T) {
-	value := stats.PathStats{TrafficCounters: stats.TrafficCounters{UploadBytes: 3 * 1024, DownloadBytes: 5 * 1024}}
+	value := stats.PathStats{UploadBytes: 3 * 1024, DownloadBytes: 5 * 1024}
 	if got, want := formatTrafficSummary(value), "rate - U/D, total 3.00K/5.00K U/D"; got != want {
 		t.Fatalf("formatTrafficSummary() = %q, want %q", got, want)
 	}
@@ -275,14 +278,31 @@ func validWireStatus() control.StatusSnapshot {
 	}
 }
 
-func TestDecodeStatusRejectsTrailingJSON(t *testing.T) {
-	payload, err := json.Marshal(validWireStatus())
+func TestDecodeStatusRejectsUnknownAndTrailingJSON(t *testing.T) {
+	want := validWireStatus()
+	want.Groups[0].Nodes[0].Latency = &dialer.LatencyStats{Last: time.Second}
+	payload, err := json.Marshal(want, jsonv1.FormatDurationAsNano(true))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(string(payload), `"last":1000000000`) {
+		t.Fatalf("duration is not encoded in nanoseconds: %s", payload)
+	}
 	snapshot, err := decodeStatus(strings.NewReader(string(payload)))
-	if err != nil || snapshot.Version != "test" {
+	if err != nil || snapshot.Version != "test" || snapshot.Groups[0].Nodes[0].Latency.Last != time.Second {
 		t.Fatalf("decodeStatus() = %+v, %v", snapshot, err)
+	}
+	unknownPayload := append([]byte(`{"unknown":true,`), payload[1:]...)
+	if _, err := decodeStatus(strings.NewReader(string(unknownPayload))); err == nil {
+		t.Fatal("decodeStatus accepted an unknown field")
+	}
+	duplicatePayload := append([]byte(`{"schema":99,`), payload[1:]...)
+	if _, err := decodeStatus(strings.NewReader(string(duplicatePayload))); err == nil {
+		t.Fatal("decodeStatus accepted a duplicate field")
+	}
+	caseAliasPayload := strings.Replace(string(payload), `"schema":`, `"Schema":`, 1)
+	if _, err := decodeStatus(strings.NewReader(caseAliasPayload)); err == nil {
+		t.Fatal("decodeStatus accepted a case-insensitive field alias")
 	}
 	if _, err := decodeStatus(strings.NewReader(`{} {}`)); err == nil {
 		t.Fatal("decodeStatus accepted multiple JSON values")
@@ -349,7 +369,7 @@ func TestDecodeStatusRejectsMissingRequiredFields(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			payload, err := json.Marshal(validWireStatus())
+			payload, err := json.Marshal(validWireStatus(), jsonv1.FormatDurationAsNano(true))
 			if err != nil {
 				t.Fatal(err)
 			}

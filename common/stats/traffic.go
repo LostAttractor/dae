@@ -6,8 +6,7 @@
 package stats
 
 import (
-	"bytes"
-	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"math"
 	"math/bits"
@@ -63,9 +62,7 @@ func (s *PathStats) UnmarshalJSON(data []byte) error {
 		UploadBytesPerSecond   *uint64 `json:"upload_bytes_per_second"`
 		DownloadBytesPerSecond *uint64 `json:"download_bytes_per_second"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&fields); err != nil {
+	if err := jsonv2.Unmarshal(data, &fields, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return err
 	}
 	switch {
@@ -83,16 +80,12 @@ func (s *PathStats) UnmarshalJSON(data []byte) error {
 		return errors.New("path stats is missing download_bytes_per_second")
 	}
 	*s = PathStats{
-		ActiveConnections: *fields.ActiveConnections,
-		TotalConnections:  *fields.TotalConnections,
-		TrafficCounters: TrafficCounters{
-			UploadBytes:   *fields.UploadBytes,
-			DownloadBytes: *fields.DownloadBytes,
-		},
-		TrafficRate: TrafficRate{
-			UploadBytesPerSecond:   *fields.UploadBytesPerSecond,
-			DownloadBytesPerSecond: *fields.DownloadBytesPerSecond,
-		},
+		ActiveConnections:      *fields.ActiveConnections,
+		TotalConnections:       *fields.TotalConnections,
+		UploadBytes:            *fields.UploadBytes,
+		DownloadBytes:          *fields.DownloadBytes,
+		UploadBytesPerSecond:   *fields.UploadBytesPerSecond,
+		DownloadBytesPerSecond: *fields.DownloadBytesPerSecond,
 	}
 	return nil
 }
@@ -348,11 +341,9 @@ func (s *Store) Snapshot() (map[Path]PathStats, error) {
 		snapshot[path] = PathStats{
 			ActiveConnections: counters.active.Load(),
 			TotalConnections:  counters.total.Load(),
-			TrafficCounters: TrafficCounters{
-				UploadBytes:   counters.upload.Load(),
-				DownloadBytes: counters.download.Load(),
-			},
-			TrafficRate: s.rates[path],
+			UploadBytes:       counters.upload.Load(),
+			DownloadBytes:     counters.download.Load(),
+			TrafficRate:       s.rates[path],
 		}
 	}
 	s.pathsMu.RUnlock()
