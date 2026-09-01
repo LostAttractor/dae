@@ -9,8 +9,10 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,8 +24,14 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	outboundDirect "github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/smux"
 )
+
+func TestMain(m *testing.M) {
+	outboundDirect.Direct = outboundDirect.NewDirectDialer(outboundDirect.Option{})
+	os.Exit(m.Run())
+}
 
 type closeableTestDialer struct{ closed atomic.Bool }
 
@@ -160,7 +168,7 @@ func TestNodeValidatorHonorsCancellation(t *testing.T) {
 func TestCloseValidatedDialerRetiresTransport(t *testing.T) {
 	transport := new(closeableTestDialer)
 	created := dialer.NewDialer(
-		netproxy.NewRuntime(transport),
+		netproxy.NewRuntime(netproxy.Layer{Data: transport, Resources: []io.Closer{transport}}),
 		&dialer.GlobalOption{},
 		&dialer.Property{},
 		dialer.InitialCheckBlocking,
@@ -252,19 +260,20 @@ type closeTrackingBuilder struct {
 	closed *atomic.Int32
 }
 
-func (b *closeTrackingBuilder) Dialer(_ *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
-	return &closeTrackingDialer{Dialer: parent, closed: b.closed}, nil
+func (b *closeTrackingBuilder) Build(_ *D.ExtraOption, upstream D.Upstream) (netproxy.Layer, error) {
+	d := &closeTrackingDialer{Dialer: upstream, closed: b.closed}
+	return netproxy.Layer{Data: d, Resources: []io.Closer{d}}, nil
 }
 
 type failingBuilder struct{}
 
-func (*failingBuilder) Dialer(_ *D.ExtraOption, _ netproxy.Dialer) (netproxy.Dialer, error) {
-	return nil, errors.New("build failed")
+func (*failingBuilder) Build(_ *D.ExtraOption, _ D.Upstream) (netproxy.Layer, error) {
+	return netproxy.Layer{}, errors.New("build failed")
 }
 
-func (b *recordingBuilder) Dialer(_ *D.ExtraOption, parent netproxy.Dialer) (netproxy.Dialer, error) {
+func (b *recordingBuilder) Build(_ *D.ExtraOption, upstream D.Upstream) (netproxy.Layer, error) {
 	*b.order = append(*b.order, b.name)
-	return parent, nil
+	return netproxy.Layer{Data: upstream}, nil
 }
 
 func TestBuildPathUsesPhysicalHopOrder(t *testing.T) {
@@ -272,12 +281,12 @@ func TestBuildPathUsesPhysicalHopOrder(t *testing.T) {
 	entry := &NodeInfo{
 		Link:     "entry://node",
 		Property: &dialer.Property{Property: D.Property{Name: "entry", Link: "entry://node"}},
-		Dialers:  []D.Dialer{&recordingBuilder{name: "entry", order: &order}},
+		Dialers:  []D.Builder{&recordingBuilder{name: "entry", order: &order}},
 	}
 	exit := &NodeInfo{
 		Link:     "exit://node",
 		Property: &dialer.Property{Property: D.Property{Name: "exit", Link: "exit://node"}},
-		Dialers:  []D.Dialer{&recordingBuilder{name: "exit", order: &order}},
+		Dialers:  []D.Builder{&recordingBuilder{name: "exit", order: &order}},
 	}
 	set := new(DialerSet)
 	option := new(dialer.GlobalOption)
@@ -354,7 +363,7 @@ func TestBuildPathClosesPartialRuntimeOnFailure(t *testing.T) {
 	node := &NodeInfo{
 		Link:     "test://node",
 		Property: &dialer.Property{Property: D.Property{Name: "node", Link: "test://node"}},
-		Dialers: []D.Dialer{
+		Dialers: []D.Builder{
 			&closeTrackingBuilder{closed: &closed},
 			new(failingBuilder),
 		},
@@ -403,7 +412,7 @@ func TestNewDialerSetRejectsReservedNodeNames(t *testing.T) {
 func TestPathBuildErrorRetainsNodeRequirement(t *testing.T) {
 	node := &NodeInfo{
 		Property: &dialer.Property{Property: D.Property{Name: "optional"}},
-		Dialers:  []D.Dialer{new(failingBuilder)},
+		Dialers:  []D.Builder{new(failingBuilder)},
 	}
 	_, err := new(DialerSet).BuildPath(NodePath(node), &dialer.GlobalOption{}, t.Name())
 	var buildErr *PathBuildError
