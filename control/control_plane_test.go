@@ -27,7 +27,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	outboundDirect "github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/vishvananda/netlink"
@@ -420,10 +419,10 @@ func TestCandidateStatsScopeSeparatesIdenticalPaths(t *testing.T) {
 
 func TestCandidateStatsScopeIgnoresUnrelatedPaths(t *testing.T) {
 	first := &outbound.PathSpec{Nodes: []*outbound.NodeInfo{{
-		Property: &dialer.Property{Property: D.Property{Name: "first", Link: "first"}},
+		Property: &dialer.Property{Name: "first", Link: "first"},
 	}}}
 	second := &outbound.PathSpec{Nodes: []*outbound.NodeInfo{{
-		Property: &dialer.Property{Property: D.Property{Name: "second", Link: "second"}},
+		Property: &dialer.Property{Name: "second", Link: "second"},
 	}}}
 
 	withoutInsertion := make(map[string]int)
@@ -432,7 +431,7 @@ func TestCandidateStatsScopeIgnoresUnrelatedPaths(t *testing.T) {
 
 	withInsertion := make(map[string]int)
 	_ = candidateStatsScope("target", &outbound.PathSpec{Nodes: []*outbound.NodeInfo{{
-		Property: &dialer.Property{Property: D.Property{Name: "inserted", Link: "inserted"}},
+		Property: &dialer.Property{Name: "inserted", Link: "inserted"},
 	}}}, withInsertion)
 	if got := candidateStatsScope("target", second, withInsertion); got != want {
 		t.Fatalf("scope after unrelated insertion = %q, want %q", got, want)
@@ -450,10 +449,10 @@ func (dnsPathDialer) ListenPacket(context.Context, string) (net.PacketConn, erro
 
 func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	option := &dialer.GlobalOption{}
-	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{Property: D.Property{
+	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{
 		Name: "dns-path",
 		Link: "test://dns-path",
-	}}, dialer.InitialCheckDisabled, "")
+	}, dialer.InitialCheckDisabled, "")
 	group := outbound.NewDialerGroup(
 		option,
 		"dns-path",

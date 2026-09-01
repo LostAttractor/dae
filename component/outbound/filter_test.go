@@ -35,8 +35,6 @@ func TestMain(m *testing.M) {
 
 type closeableTestDialer struct{ closed atomic.Bool }
 
-func (*closeableTestDialer) Alive() bool    { return true }
-func (*closeableTestDialer) Connect() error { return nil }
 func (*closeableTestDialer) DialContext(context.Context, string, string) (net.Conn, error) {
 	return nil, errors.New("not implemented")
 }
@@ -280,12 +278,12 @@ func TestBuildPathUsesPhysicalHopOrder(t *testing.T) {
 	var order []string
 	entry := &NodeInfo{
 		Link:     "entry://node",
-		Property: &dialer.Property{Property: D.Property{Name: "entry", Link: "entry://node"}},
+		Property: &dialer.Property{Name: "entry", Link: "entry://node"},
 		Dialers:  []D.Builder{&recordingBuilder{name: "entry", order: &order}},
 	}
 	exit := &NodeInfo{
 		Link:     "exit://node",
-		Property: &dialer.Property{Property: D.Property{Name: "exit", Link: "exit://node"}},
+		Property: &dialer.Property{Name: "exit", Link: "exit://node"},
 		Dialers:  []D.Builder{&recordingBuilder{name: "exit", order: &order}},
 	}
 	set := new(DialerSet)
@@ -311,12 +309,11 @@ func TestBuildPathUsesPhysicalHopOrder(t *testing.T) {
 func TestBuildPathIdentityIncludesRuntimeOptions(t *testing.T) {
 	node := &NodeInfo{
 		Link:     "test://node",
-		Property: &dialer.Property{Property: D.Property{Name: "node", Link: "test://node"}},
+		Property: &dialer.Property{Name: "node", Link: "test://node"},
 	}
 	set := &DialerSet{}
 	firstOption := &dialer.GlobalOption{}
-	secondOption := &dialer.GlobalOption{}
-	secondOption.AllowInsecure = true
+	secondOption := &dialer.GlobalOption{AllowInsecure: true}
 	first, err := set.BuildPath(NodePath(node), firstOption, t.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +334,7 @@ func TestBuildPathIdentityIncludesRuntimeOptions(t *testing.T) {
 func TestBuildPathCreatesOwnerScopedRuntime(t *testing.T) {
 	node := &NodeInfo{
 		Link:     "test://node",
-		Property: &dialer.Property{Property: D.Property{Name: "node", Link: "test://node"}},
+		Property: &dialer.Property{Name: "node", Link: "test://node"},
 	}
 	set := new(DialerSet)
 	option := new(dialer.GlobalOption)
@@ -362,7 +359,7 @@ func TestBuildPathClosesPartialRuntimeOnFailure(t *testing.T) {
 	var closed atomic.Int32
 	node := &NodeInfo{
 		Link:     "test://node",
-		Property: &dialer.Property{Property: D.Property{Name: "node", Link: "test://node"}},
+		Property: &dialer.Property{Name: "node", Link: "test://node"},
 		Dialers: []D.Builder{
 			&closeTrackingBuilder{closed: &closed},
 			new(failingBuilder),
@@ -411,7 +408,7 @@ func TestNewDialerSetRejectsReservedNodeNames(t *testing.T) {
 
 func TestPathBuildErrorRetainsNodeRequirement(t *testing.T) {
 	node := &NodeInfo{
-		Property: &dialer.Property{Property: D.Property{Name: "optional"}},
+		Property: &dialer.Property{Name: "optional"},
 		Dialers:  []D.Builder{new(failingBuilder)},
 	}
 	_, err := new(DialerSet).BuildPath(NodePath(node), &dialer.GlobalOption{}, t.Name())

@@ -473,12 +473,10 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 	}
 	terminal := spec.Nodes[len(spec.Nodes)-1]
 	property := &dialer.Property{
-		Property: D.Property{
-			Name:     strings.Join(names, " -> "),
-			Protocol: strings.Join(protocols, " -> "),
-			Address:  strings.Join(addresses, " -> "),
-			Link:     runtimePathKey(spec.Nodes, option),
-		},
+		Name:            strings.Join(names, " -> "),
+		Protocol:        strings.Join(protocols, " -> "),
+		Address:         strings.Join(addresses, " -> "),
+		Link:            runtimePathKey(spec.Nodes, option),
 		SubscriptionTag: terminal.Property.SubscriptionTag,
 		Hops:            hops,
 	}

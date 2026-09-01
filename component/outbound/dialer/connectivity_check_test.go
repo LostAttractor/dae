@@ -17,7 +17,6 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
-	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -83,10 +82,10 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	d := NewDialer(netproxy.NewRuntime(layer), &GlobalOption{
 		CheckInterval:    time.Hour,
 		CheckIntervalMax: time.Hour,
-	}, &Property{Property: D.Property{
+	}, &Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
-	}}, InitialCheckBlocking, "")
+	}, InitialCheckBlocking, "")
 	d.RegisterDialerGroup(new(testGroup), 0.5, time.Minute)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
@@ -140,8 +139,8 @@ func TestConnectivityCheckerWaitsForStartGate(t *testing.T) {
 }
 
 func TestStatsKeyEncodingSeparatesIdentityAndScope(t *testing.T) {
-	left := makeStatsKey(&Property{SubscriptionTag: "sub", Property: D.Property{Link: "a\x1fb"}}, "c")
-	right := makeStatsKey(&Property{SubscriptionTag: "sub", Property: D.Property{Link: "a"}}, "b\x1fc")
+	left := makeStatsKey(&Property{SubscriptionTag: "sub", Link: "a\x1fb"}, "c")
+	right := makeStatsKey(&Property{SubscriptionTag: "sub", Link: "a"}, "b\x1fc")
 	if left == right {
 		t.Fatalf("structured stats keys collided: %q", left)
 	}
@@ -168,10 +167,10 @@ func TestStatsPathUsesDialerIdentity(t *testing.T) {
 
 func TestUncheckedDialerRecordsAvailabilityOnlyWhenActivated(t *testing.T) {
 	id := testDialerSequence.Add(1)
-	d := NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: testTransport{}}), &GlobalOption{}, &Property{Property: D.Property{
+	d := NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: testTransport{}}), &GlobalOption{}, &Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
-	}}, InitialCheckDisabled, "")
+	}, InitialCheckDisabled, "")
 	t.Cleanup(func() { _ = d.Close() })
 	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
 		d.StatsKey(): {Subtag: d.Property.SubscriptionTag, Name: d.Name},
