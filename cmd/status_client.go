@@ -42,7 +42,7 @@ var statusCmd = &cobra.Command{
 		if statusRecent {
 			printRecentStatus(snapshot)
 		} else {
-			printStatus(snapshot)
+			printStatus(snapshot, statusVerbose)
 		}
 		return nil
 	},
@@ -73,7 +73,7 @@ func fetchStatus() (*control.StatusSnapshot, error) {
 
 func decodeStatus(reader io.Reader) (*control.StatusSnapshot, error) {
 	var snapshot control.StatusSnapshot
-	if err := jsonv2.UnmarshalRead(reader, &snapshot, jsonv2.RejectUnknownMembers(true)); err != nil {
+	if err := jsonv2.UnmarshalRead(reader, &snapshot); err != nil {
 		return nil, err
 	}
 	if err := validateStatus(&snapshot); err != nil {
@@ -89,9 +89,6 @@ func validateStatus(snapshot *control.StatusSnapshot) error {
 	if snapshot.Version == "" || snapshot.StartedAt.IsZero() {
 		return fmt.Errorf("status response is missing process metadata")
 	}
-	if err := validateNetworkCount("networks", len(snapshot.Networks)); err != nil {
-		return err
-	}
 	if len(snapshot.Groups) == 0 {
 		return fmt.Errorf("status response is missing groups")
 	}
@@ -105,12 +102,6 @@ func validateStatus(snapshot *control.StatusSnapshot) error {
 		case "group", "node", "builtin":
 		default:
 			return fmt.Errorf("%s has invalid target kind %q", path, group.TargetKind)
-		}
-		if err := validateNetworkCount(path+".networks", len(group.Networks)); err != nil {
-			return err
-		}
-		if err := validateNetworkCount(path+".selected_node_ids", len(group.SelectedNodeIDs)); err != nil {
-			return err
 		}
 		if group.ChecksConnectivity {
 			switch group.Connectivity {
@@ -132,20 +123,17 @@ func validateStatus(snapshot *control.StatusSnapshot) error {
 			return fmt.Errorf("%s has connectivity state without checks", path)
 		}
 
-		nodeIDs := make(map[string]struct{}, len(group.Nodes))
+		nodesByID := make(map[string]*control.NodeStatus, len(group.Nodes))
 		for nodeIndex := range group.Nodes {
 			node := &group.Nodes[nodeIndex]
 			nodePath := fmt.Sprintf("%s.nodes[%d]", path, nodeIndex)
 			if node.ID == "" {
 				return fmt.Errorf("%s has no id", nodePath)
 			}
-			if _, exists := nodeIDs[node.ID]; exists {
+			if _, exists := nodesByID[node.ID]; exists {
 				return fmt.Errorf("%s repeats node id %q", path, node.ID)
 			}
-			nodeIDs[node.ID] = struct{}{}
-			if err := validateNetworkCount(nodePath+".support", len(node.Support)); err != nil {
-				return err
-			}
+			nodesByID[node.ID] = node
 			for _, support := range node.Support {
 				switch support {
 				case dialer.NetworkSupportUnknown, dialer.NetworkSupportConfirmed, dialer.NetworkSupportUnsupported:
@@ -163,23 +151,20 @@ func validateStatus(snapshot *control.StatusSnapshot) error {
 			if selectedID == "" {
 				continue
 			}
-			if _, exists := nodeIDs[selectedID]; !exists {
+			node, exists := nodesByID[selectedID]
+			if !exists {
 				return fmt.Errorf("%s selects unknown node %q for %s", path, selectedID, common.NetworkIndex(network))
+			}
+			if !node.Healthy || node.Support[network] != dialer.NetworkSupportConfirmed {
+				return fmt.Errorf("%s selects unusable node %q for %s", path, selectedID, common.NetworkIndex(network))
 			}
 		}
 	}
 	return nil
 }
 
-func validateNetworkCount(path string, count int) error {
-	if count != common.NetworkTypeCount {
-		return fmt.Errorf("%s contains %d entries, want %d", path, count, common.NetworkTypeCount)
-	}
-	return nil
-}
-
 func init() {
-	statusCmd.Flags().BoolVar(&statusVerbose, "verbose", false, "show detailed path health history")
+	statusCmd.Flags().BoolVar(&statusVerbose, "verbose", false, "show detailed network and path health")
 	statusCmd.Flags().BoolVar(&statusRecent, "recent", false, "show recent group connectivity")
 	statusCmd.MarkFlagsMutuallyExclusive("verbose", "recent")
 	rootCmd.AddCommand(statusCmd)

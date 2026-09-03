@@ -333,15 +333,15 @@ func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Di
 	return selected
 }
 
-// SelectFallbackIpVersion selects a dialer from group according to selectionPolicy. If 'strictIpVersion' is false and no alive dialer, it will fallback to another ipversion.
-func (g *DialerGroup) SelectFallbackIpVersion(networkType *common.NetworkType, strictIpVersion bool) (dialer *dialer.Dialer, fallback bool, err error) {
-	dialer, err = g.Select(networkType)
+// SelectFallbackIpVersion selects a dialer and optionally tries the other IP family.
+func (g *DialerGroup) SelectFallbackIpVersion(networkType common.NetworkType, strictIpVersion bool) (*dialer.Dialer, common.NetworkType, bool, error) {
+	selected, err := g.Select(&networkType)
 	if !strictIpVersion && errors.Is(err, ErrNoAliveDialer) {
 		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
-		dialer, err = g.Select(networkType)
-		fallback = true
+		selected, err = g.Select(&networkType)
+		return selected, networkType, true, err
 	}
-	return
+	return selected, networkType, false, err
 }
 
 func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, error) {

@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -27,11 +28,7 @@ import (
 
 func mustStatusSnapshot(t *testing.T, plane *ControlPlane) *StatusSnapshot {
 	t.Helper()
-	snapshot, err := plane.statusSnapshot("test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return snapshot
+	return plane.statusSnapshot("test")
 }
 
 type statusTestDialer struct{}
@@ -125,19 +122,25 @@ func TestStartStatusServerPreservesNonSocketPath(t *testing.T) {
 func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	snapshot := map[stats.Path]stats.PathStats{
 		{NodeID: "shared-id", Outbound: "group", Subtag: "sub", Dialer: "alias-a", Network: common.NetworkTCP4}: {
-			ActiveConnections: 2, TotalConnections: 3,
-			UploadBytes: 1000, DownloadBytes: 2000,
-			UploadBytesPerSecond: 100, DownloadBytesPerSecond: 200,
+			ActiveConnections: 2, TotalConnections: 3, FallbackConnections: 1,
+			TrafficCounters: stats.TrafficCounters{UploadBytes: 1000, DownloadBytes: 2000},
+			History: stats.TrafficHistory{
+				UploadBytesPerSecond: []uint64{10, 100}, DownloadBytesPerSecond: []uint64{20, 200},
+			},
 		},
 		{NodeID: "alias-b-id", Outbound: "group", Subtag: "sub", Dialer: "alias-b", Network: common.NetworkUDP4}: {
 			ActiveConnections: 5, TotalConnections: 7,
-			UploadBytes: 3000, DownloadBytes: 4000,
-			UploadBytesPerSecond: 300, DownloadBytesPerSecond: 400,
+			TrafficCounters: stats.TrafficCounters{UploadBytes: 3000, DownloadBytes: 4000},
+			History: stats.TrafficHistory{
+				UploadBytesPerSecond: []uint64{30, 300}, DownloadBytesPerSecond: []uint64{40, 400},
+			},
 		},
 		{NodeID: "shared-id", Outbound: "other", Dialer: "node", Network: common.NetworkTCP6}: {
-			ActiveConnections: 1, TotalConnections: 2,
-			UploadBytes: 5000, DownloadBytes: 6000,
-			UploadBytesPerSecond: 500, DownloadBytesPerSecond: 600,
+			ActiveConnections: 1, TotalConnections: 2, FallbackConnections: 2,
+			TrafficCounters: stats.TrafficCounters{UploadBytes: 5000, DownloadBytes: 6000},
+			History: stats.TrafficHistory{
+				UploadBytesPerSecond: []uint64{50, 500}, DownloadBytesPerSecond: []uint64{60, 600},
+			},
 		},
 		{NodeID: "ignored-id", Outbound: "group", Dialer: "ignored", Network: common.NetworkIndex(-1)}: {
 			ActiveConnections: 11, TotalConnections: 11,
@@ -145,17 +148,21 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	}
 	index := indexPathStats(snapshot)
 
-	if got := index.total; got != (stats.PathStats{
-		ActiveConnections: 8, TotalConnections: 12,
-		UploadBytes: 9000, DownloadBytes: 12000,
-		UploadBytesPerSecond: 900, DownloadBytesPerSecond: 1200,
+	if got := index.total; !reflect.DeepEqual(got, stats.PathStats{
+		ActiveConnections: 8, TotalConnections: 12, FallbackConnections: 3,
+		TrafficCounters: stats.TrafficCounters{UploadBytes: 9000, DownloadBytes: 12000},
+		History: stats.TrafficHistory{
+			UploadBytesPerSecond: []uint64{90, 900}, DownloadBytesPerSecond: []uint64{120, 1200},
+		},
 	}) {
 		t.Fatalf("global path stats = %+v", got)
 	}
-	if got := index.groups["group"].total; got != (stats.PathStats{
-		ActiveConnections: 7, TotalConnections: 10,
-		UploadBytes: 4000, DownloadBytes: 6000,
-		UploadBytesPerSecond: 400, DownloadBytesPerSecond: 600,
+	if got := index.groups["group"].total; !reflect.DeepEqual(got, stats.PathStats{
+		ActiveConnections: 7, TotalConnections: 10, FallbackConnections: 1,
+		TrafficCounters: stats.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000},
+		History: stats.TrafficHistory{
+			UploadBytesPerSecond: []uint64{40, 400}, DownloadBytesPerSecond: []uint64{60, 600},
+		},
 	}) {
 		t.Fatalf("group path stats = %+v", got)
 	}
@@ -167,26 +174,6 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	}
 	if got := index.nodes[groupNodeKey{group: "other", nodeID: "shared-id"}]; got.ActiveConnections != 1 || got.UploadBytes != 5000 {
 		t.Fatalf("same node ID in other group stats = %+v", got)
-	}
-}
-
-func TestStatusSnapshotReportsExternalCounterFailure(t *testing.T) {
-	connection := stats.DefaultStore.OpenConnection(stats.Path{
-		NodeID:   t.Name(),
-		Outbound: t.Name(),
-		Network:  common.NetworkTCP4,
-	})
-	if err := connection.AttachExternalCounters(func() (stats.TrafficCounters, error) {
-		return stats.TrafficCounters{}, fmt.Errorf("counter source failed")
-	}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = connection.Close()
-	})
-
-	if _, err := new(ControlPlane).statusSnapshot("test"); err == nil {
-		t.Fatal("status snapshot accepted a failed external counter read")
 	}
 }
 

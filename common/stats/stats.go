@@ -264,5 +264,5 @@ func (s *Store) Reconcile(activeNodes map[string]NodeIdentity, activeGroups map[
 	}
 	s.groups = groups
 	s.availabilityMu.Unlock()
-	s.resetCurrentMetrics()
+	s.metrics.resetCurrent()
 }

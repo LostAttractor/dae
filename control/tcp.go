@@ -46,12 +46,11 @@ type tcpRelay struct {
 		ChecksConnectivity() bool
 		ReportDataPlaneFailure()
 	}
-	statsPath    stats.Path
-	outboundName string
-	dialerName   string
-	src          netip.AddrPort
-	dst          netip.AddrPort
-	domain       string
+	statsPath stats.Path
+	fallback  bool
+	src       netip.AddrPort
+	dst       netip.AddrPort
+	domain    string
 }
 
 type tcpConnectionTracker struct {
@@ -163,7 +162,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	dst = common.ConvergeAddrPort(dst)
 
 	// Route
-	networkType := &common.NetworkType{
+	networkType := common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
@@ -178,10 +177,10 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		return nil, err
 	}
 
-	statsPath := dialOption.Dialer.StatsPath(dialOption.Outbound.Name, networkType)
+	statsPath, noConnectivityFallback := dialOption.trafficAttribution()
 
 	// Dial
-	c.logDial(src, dst, domain, dialOption, networkType.String(), routingResult)
+	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
 	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
 	defer cancel()
 	start := time.Now()
@@ -224,15 +223,14 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 
 	stats.DefaultStore.RecordDial(statsPath, time.Since(start))
 	relay = &tcpRelay{
-		lConn:        sniffer,
-		rConn:        rConn,
-		dialer:       dialOption.Dialer,
-		statsPath:    statsPath,
-		outboundName: dialOption.Outbound.Name,
-		dialerName:   dialOption.Dialer.Name,
-		src:          src,
-		dst:          dst,
-		domain:       domain,
+		lConn:     sniffer,
+		rConn:     rConn,
+		dialer:    dialOption.Dialer,
+		statsPath: statsPath,
+		fallback:  noConnectivityFallback,
+		src:       src,
+		dst:       dst,
+		domain:    domain,
 	}
 	if dialOption.Direct && c.core.bpf.splice != nil {
 		if rawRConn, ok := rConn.(splice.TCPConn); ok {
@@ -247,7 +245,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 func (r *tcpRelay) run() (err error) {
 	defer r.rConn.Close()
 	defer r.lConn.Close()
-	traffic := stats.DefaultStore.OpenConnection(r.statsPath)
+	traffic := stats.DefaultStore.OpenConnection(r.statsPath, r.fallback)
 	defer func() { err = errors.Join(err, traffic.Close()) }()
 
 	// Relay
@@ -269,8 +267,8 @@ func (r *tcpRelay) run() (err error) {
 			With("Is NetError", ok).
 			With("Is Temporary", ok && netErr.Temporary()).
 			With("Is Timeout", ok && netErr.Timeout()).
-			With("Outbound", r.outboundName).
-			With("Dialer", r.dialerName).
+			With("Outbound", r.statsPath.Outbound).
+			With("Dialer", r.statsPath.Dialer).
 			With("src", r.src.String()).
 			With("dst", r.dst.String()).
 			With("domain", r.domain).

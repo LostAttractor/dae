@@ -11,13 +11,14 @@ import (
 	"errors"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
 
 const StatusSchemaVersion = 2
 
-type NetworkValues[T any] []T
+type NetworkValues[T any] [common.NetworkTypeCount]T
 
 type StatusSnapshot struct {
 	Schema       int                            `json:"schema"`

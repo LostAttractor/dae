@@ -179,14 +179,15 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	// Get udp endpoint.
 	ue, ok := udpEndpoints.Get(src)
 	isNew := false
-	networkType := &common.NetworkType{
+	noConnectivityFallback := false
+	networkType := common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
 	// If the udp endpoint has been not alive, remove it from pool and retry
 	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
 	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
-	if ok && !ue.dialer.Usable(networkType) {
+	if ok && !ue.dialer.Usable(&networkType) {
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
@@ -220,13 +221,14 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
 		dialOption.DialTarget = dst.String()
 
-		statsPath := dialOption.Dialer.StatsPath(dialOption.Outbound.Name, networkType)
+		statsPath, fallback := dialOption.trafficAttribution()
+		noConnectivityFallback = fallback
 
 		// Dial
 		// Only print routing for new connection to avoid the log exploded (Quic and BT).
-		network := networkType.String()
+		network := dialOption.NetworkType.String()
 		if isQuic {
-			network = "quic" + string(networkType.IpVersion)
+			network = "quic" + string(dialOption.NetworkType.IpVersion)
 		}
 		c.logDial(src, dst, domain, dialOption, network, routingResult)
 		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
@@ -306,7 +308,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		return nil
 	}
 	if isNew {
-		ue.traffic = stats.DefaultStore.OpenConnection(ue.statsPath)
+		ue.traffic = stats.DefaultStore.OpenConnection(ue.statsPath, noConnectivityFallback)
 	}
 	if n > 0 {
 		ue.traffic.RecordUpload(uint64(n))

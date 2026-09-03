@@ -96,7 +96,7 @@ func TestMetricsServerContinuesAfterExternalCounterFailure(t *testing.T) {
 		NodeID:   t.Name(),
 		Outbound: t.Name(),
 		Network:  common.NetworkTCP4,
-	})
+	}, false)
 	if err := connection.AttachExternalCounters(func() (stats.TrafficCounters, error) {
 		return stats.TrafficCounters{}, errors.New("counter source failed")
 	}); err != nil {
