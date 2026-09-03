@@ -76,7 +76,12 @@ func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []
 	for i, d := range dialers {
 		g.dialerToAnnotation[d] = annotations[i]
 	}
-	g.selector = newSelector(g, 0)
+	switch policy.Policy {
+	case consts.DialerSelectionPolicy_MinAverage10Latencies,
+		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+		consts.DialerSelectionPolicy_MinLastLatency:
+		g.selector = &latencyBasedSelector{dialerGroup: g}
+	}
 	g.startupReady = startupBarrier(g.policyDialers())
 	t.Cleanup(func() { _ = g.Close() })
 	return g
@@ -194,23 +199,59 @@ func TestLatencySelectorIgnoresToleranceUntilEnabled(t *testing.T) {
 	g := newSelectorTestGroup(t, dialers, annotations, dialer.DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_MinLastLatency,
 	}, nil)
-	selector := g.selector.(*latencyBasedSelector)
+	selector := g.selector
 	selector.tolerance = 20 * time.Millisecond
 
 	if selected, err := g.Select(testNetworkType); err != nil || selected != dialers[0] {
 		t.Fatalf("initial Select = %v, %v; want first", selected, err)
 	}
 	annotations[1].AddLatency = 90 * time.Millisecond
-	selector.Refresh(dialers[1])
+	selector.Refresh(dialers[1], dialer.SelectionForceNone)
 	if selected := g.SelectedDialer(testNetworkType); selected != dialers[1] {
 		t.Fatalf("startup selection = %v, want second", selected)
+	}
+	if selected := g.SelectedDialer(common.NetworkTCP6.NetworkType()); selected != dialers[1] {
+		t.Fatalf("startup tcp6 selection = %v, want second", selected)
 	}
 
 	g.EnableSelectionTolerance()
 	annotations[0].AddLatency = 80 * time.Millisecond
-	selector.Refresh(dialers[0])
+	selector.Refresh(dialers[0], dialer.SelectionForceNone)
 	if selected := g.SelectedDialer(testNetworkType); selected != dialers[1] {
 		t.Fatalf("steady-state selection = %v, want second", selected)
+	}
+	selector.Refresh(dialers[0], dialer.SelectionForceFor(testNetworkType.Index()))
+	if selected := g.SelectedDialer(testNetworkType); selected != dialers[0] {
+		t.Fatalf("forced selection = %v, want first", selected)
+	}
+	if selected := g.SelectedDialer(common.NetworkTCP6.NetworkType()); selected != dialers[1] {
+		t.Fatalf("unforced tcp6 selection = %v, want second", selected)
+	}
+}
+
+func TestLatencySelectorToleranceDoesNotOverflow(t *testing.T) {
+	dialers := []*dialer.Dialer{
+		newUncheckedDialer(t, "first"),
+		newUncheckedDialer(t, "second"),
+	}
+	minimum := time.Duration(-1 << 63)
+	annotations := emptyAnnotations(2)
+	annotations[0].AddLatency = minimum + 10
+	annotations[1].AddLatency = minimum + 20
+	g := newSelectorTestGroup(t, dialers, annotations, dialer.DialerSelectionPolicy{
+		Policy: consts.DialerSelectionPolicy_MinLastLatency,
+	}, nil)
+	selector := g.selector
+	selector.tolerance = 20
+
+	if selected, err := g.Select(testNetworkType); err != nil || selected != dialers[0] {
+		t.Fatalf("initial Select = %v, %v; want first", selected, err)
+	}
+	g.EnableSelectionTolerance()
+	annotations[1].AddLatency = minimum
+	selector.Refresh(dialers[1], dialer.SelectionForceNone)
+	if selected := g.SelectedDialer(testNetworkType); selected != dialers[0] {
+		t.Fatalf("overflowing tolerance switched to %v", selected)
 	}
 }
 
@@ -222,7 +263,7 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 			changes[networkType.Index()] = available
 			return nil
 		})
-	g.DialerChanged(d)
+	g.DialerChanged(d, dialer.SelectionForceNone)
 	for i, available := range changes {
 		if !available {
 			t.Fatalf("network %d was not published available", i)
@@ -232,7 +273,7 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 		t.Fatalf("group state = %q, want available", state)
 	}
 	_ = d.Close()
-	g.DialerChanged(d)
+	g.DialerChanged(d, dialer.SelectionForceNone)
 	for i, available := range changes {
 		if available {
 			t.Fatalf("network %d remained available", i)
@@ -311,7 +352,7 @@ func TestDialerGroupStartupReadyWaitsForNetworkPublication(t *testing.T) {
 
 	notified := make(chan struct{})
 	go func() {
-		g.DialerChanged(available)
+		g.DialerChanged(available, dialer.SelectionForceNone)
 		close(notified)
 	}()
 	<-publicationBlocked
@@ -349,7 +390,7 @@ func TestDialerGroupCloseDrainsNotifications(t *testing.T) {
 
 	notified := make(chan struct{})
 	go func() {
-		g.DialerChanged(d)
+		g.DialerChanged(d, dialer.SelectionForceNone)
 		close(notified)
 	}()
 	<-publicationBlocked
@@ -388,7 +429,7 @@ func TestDialerGroupInitialReadyOnFirstAvailableCandidate(t *testing.T) {
 	default:
 	}
 
-	g.DialerChanged(available)
+	g.DialerChanged(available, dialer.SelectionForceNone)
 	select {
 	case <-g.startupReady:
 	case <-time.After(time.Second):
@@ -396,6 +437,73 @@ func TestDialerGroupInitialReadyOnFirstAvailableCandidate(t *testing.T) {
 	}
 	if state, _ := g.Connectivity(); state != stats.GroupStateAvailable {
 		t.Fatalf("group state = %q, want available", state)
+	}
+}
+
+func TestDialerGroupInitialReadyWhenBlockingChecksCompleteUnavailable(t *testing.T) {
+	option := &dialer.GlobalOption{
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
+		CheckInterval:     time.Hour,
+		CheckIntervalMax:  time.Hour,
+	}
+	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), option, &dialer.Property{
+		Name: t.Name(),
+		Link: fmt.Sprintf("test://%s/%d", t.Name(), selectorDialerSequence.Add(1)),
+	}, dialer.InitialCheckBlocking, "")
+	g := NewDialerGroup(option, t.Name(), GroupKindSelector,
+		[]*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+	t.Cleanup(func() { _ = g.Close() })
+	start := make(chan struct{})
+	ready, err := g.StartConnectivityChecks(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(start)
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("completed unavailable check did not release the startup barrier")
+	}
+	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+		t.Fatalf("group state = %q, want unavailable", state)
+	}
+}
+
+func TestDialerGroupIgnoresPendingAsyncCheckAfterBlockingChecksComplete(t *testing.T) {
+	option := &dialer.GlobalOption{
+		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
+		CheckInterval:     time.Hour,
+		CheckIntervalMax:  time.Hour,
+	}
+	newDialer := func(name string, mode dialer.InitialCheckMode) *dialer.Dialer {
+		return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), option, &dialer.Property{
+			Name: name,
+			Link: fmt.Sprintf("test://%s/%d", name, selectorDialerSequence.Add(1)),
+		}, mode, "")
+	}
+	async := newDialer("async", dialer.InitialCheckAsync)
+	blocking := newDialer("blocking", dialer.InitialCheckBlocking)
+	g := NewDialerGroup(option, t.Name(), GroupKindSelector,
+		[]*dialer.Dialer{async, blocking}, emptyAnnotations(2),
+		dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}, nil)
+	t.Cleanup(func() { _ = g.Close() })
+	if err := g.initializeConnectivity(); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	close(start)
+	blocking.ActivateCheck(start)
+
+	select {
+	case <-g.startupReady:
+	case <-time.After(time.Second):
+		t.Fatal("completed blocking check did not release startup while async check was pending")
+	}
+	if async.ConnectivitySnapshot().InitialCheckDone {
+		t.Fatal("async check unexpectedly completed")
+	}
+	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+		t.Fatalf("group state = %q, want unavailable", state)
 	}
 }
 
@@ -422,7 +530,7 @@ func TestDialerGroupInitialReadyWaitsWhileCandidatesArePending(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g.DialerChanged(dialers[0])
+	g.DialerChanged(dialers[0], dialer.SelectionForceNone)
 	select {
 	case <-g.startupReady:
 		t.Fatal("group became ready while another candidate was still pending")
@@ -432,7 +540,7 @@ func TestDialerGroupInitialReadyWaitsWhileCandidatesArePending(t *testing.T) {
 		t.Fatalf("partially checked group state = %q, want checking", state)
 	}
 
-	g.DialerChanged(dialers[1])
+	g.DialerChanged(dialers[1], dialer.SelectionForceNone)
 	select {
 	case <-g.startupReady:
 		t.Fatal("pending candidates released the group startup barrier")
@@ -457,7 +565,7 @@ func TestDialerGroupInitialWaitFollowsSelectionPolicy(t *testing.T) {
 		if err := g.initializeConnectivity(); err != nil {
 			t.Fatal(err)
 		}
-		g.DialerChanged(g.Dialers[1])
+		g.DialerChanged(g.Dialers[1], dialer.SelectionForceNone)
 		select {
 		case <-g.startupReady:
 			t.Fatal("unavailable blocking candidate released the group startup barrier")
@@ -516,7 +624,7 @@ func TestDialerGroupReloadStaysCheckingUntilCurrentCheckCompletes(t *testing.T) 
 		t.Fatalf("reload initialization changed retained availability: %+v", availability)
 	}
 
-	g.DialerChanged(dialers[0])
+	g.DialerChanged(dialers[0], dialer.SelectionForceNone)
 	availability = stats.DefaultStore.GetGroup(name)
 	if !availability.Alive || !availability.LastFailureStartedAt.IsZero() {
 		t.Fatalf("non-fixed result changed retained availability: %+v", availability)
@@ -525,7 +633,7 @@ func TestDialerGroupReloadStaysCheckingUntilCurrentCheckCompletes(t *testing.T) 
 		t.Fatalf("group state after non-fixed result = %q, want checking", state)
 	}
 
-	g.DialerChanged(dialers[1])
+	g.DialerChanged(dialers[1], dialer.SelectionForceNone)
 	availability = stats.DefaultStore.GetGroup(name)
 	if !availability.Alive || !availability.LastFailureStartedAt.IsZero() {
 		t.Fatalf("pending fixed result changed retained availability: %+v", availability)

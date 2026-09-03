@@ -40,7 +40,7 @@ func findCandidate(candidates []selectorCandidate, d *dialer.Dialer) (selectorCa
 	return selectorCandidate{}, false
 }
 
-func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed *dialer.Dialer) {
+func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed *dialer.Dialer, force bool) {
 	networkType := index.NetworkType()
 	candidates := s.sortedCandidates(networkType)
 	oldDialer := s.selected[index]
@@ -52,22 +52,22 @@ func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 	if oldDialer != best {
 		oldCandidate, oldUsable := findCandidate(candidates, oldDialer)
 		switch {
-		case !oldUsable, best == nil:
+		case !oldUsable:
 			newDialer = best
 		default:
 			bestCandidate := candidates[0]
 			tolerance := time.Duration(0)
-			if s.toleranceActive {
+			if s.toleranceActive && !force {
 				tolerance = s.tolerance
 			}
 			if bestCandidate.priority > oldCandidate.priority ||
-				bestCandidate.priority == oldCandidate.priority && bestCandidate.sortingLatency < oldCandidate.sortingLatency-tolerance {
+				bestCandidate.priority == oldCandidate.priority &&
+					saturatingDurationAdd(bestCandidate.sortingLatency, tolerance) < oldCandidate.sortingLatency {
 				newDialer = best
 			}
 		}
 	}
-	selectionChanged := newDialer != oldDialer
-	if selectionChanged {
+	if newDialer != oldDialer {
 		s.selected[index] = newDialer
 		s.logSelection(oldDialer, newDialer, networkType)
 	}
@@ -80,7 +80,7 @@ func (s *latencyBasedSelector) Select(networkType *common.NetworkType) *dialer.D
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	index := networkType.Index()
-	s.refreshNetwork(index, nil)
+	s.refreshNetwork(index, nil, false)
 	return s.selected[index]
 }
 
@@ -88,17 +88,14 @@ func (s *latencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *
 	s.mu.RLock()
 	d := s.selected[networkType.Index()]
 	s.mu.RUnlock()
-	if d == nil || !d.Usable(networkType) {
-		return nil
-	}
 	return d
 }
 
-func (s *latencyBasedSelector) Refresh(changed *dialer.Dialer) {
+func (s *latencyBasedSelector) Refresh(changed *dialer.Dialer, force dialer.SelectionForceMask) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := common.NetworkIndex(0); i < common.NetworkTypeCount; i++ {
-		s.refreshNetwork(i, changed)
+		s.refreshNetwork(i, changed, force.Contains(i))
 	}
 }
 
@@ -129,7 +126,7 @@ func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 		}
 	}
 	if oldDialer == nil {
-		log.WithFields(fields).Warn("Group selects dialer")
+		log.WithFields(fields).Info("Group selects dialer")
 	} else {
 		log.WithFields(fields).Info("Group re-selects dialer")
 	}
