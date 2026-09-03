@@ -46,7 +46,11 @@ group {
 
 展开顺序首先按 path 声明顺序，然后在每条笛卡尔路径内采用 terminal-major。`entry-1`、`entry-2` 后接 `exit-1`、`exit-2` 时，顺序为 `entry-1 -> exit-1`、`entry-2 -> exit-1`、`entry-1 -> exit-2`、`entry-2 -> exit-2`。`fixed(n)` 按这个稳定的完整路径列表索引。分别声明的相同物理路径仍是不同候选。
 
-不同路径 stage 的 `priority` 和 `add_latency` 会累加。dae 会同时开始所有路径的首次连通性检查；每个参与启动等待的 group 一旦出现可用路径，就不再阻塞启动，其余检查继续在后台运行。启动完成前，延迟策略会忽略 `check_tolerance`，因此后返回的首次检查结果仍可替换临时候选。始终没有可用路径的 group 会在全局 60 秒启动超时后留在后台继续检查。`check_async` 是节点选项，不再是路径 annotation；应在本地节点或订阅节点 option rule 上配置。完整路径中任一 hop 启用该选项时，其首次连通性检查会异步执行。当一个 group 的相关路径全部启用 `check_async` 时，该 group 完全不参与启动等待。
+不同路径 stage 的 `priority` 和 `add_latency` 会累加。dae 会同时开始所有路径的首次连通性检查。group 一旦出现可用路径，或所有 blocking 路径都完成首次检查（即使全部不可用），就不再阻塞启动。只有检查一直无法结束时才使用全局 60 秒兜底超时。结果不确定的连通模式会在后台继续探测。
+
+连通模式一旦确认，dae 会保留该能力。节点使用一个已支持模式执行常规健康检查，其健康状态由所有已支持模式共享。
+
+启动完成前，延迟策略会忽略 `check_tolerance`；每个新确认的模式也会额外忽略一次，使后续新连接能够修正选择。已有连接仍保留原 outbound。`check_async` 是节点选项，不再是路径 annotation；应在本地节点或订阅节点 option rule 上配置。完整路径中任一 hop 启用该选项时，其首次连通性检查会异步执行。当一个 group 的相关路径全部启用 `check_async` 时，该 group 完全不参与启动等待。
 
 ```shell
 node {

@@ -60,10 +60,10 @@ global {
 
     # Check interval while the node is alive. Failed check rounds retry from 1s with exponential backoff.
     check_interval: 3m
-    # Maximum interval after an available node fails a check. Initial checks use an independent interval.
+    # Maximum interval for failed health checks and connectivity-mode support retries.
     check_interval_max: 1h
 
-    # Group will switch node only when new_latency <= old_latency - tolerance.
+    # Outside first support confirmation for a mode, a new node must improve latency by more than this value.
     check_tolerance: 50ms
 
 
