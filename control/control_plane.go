@@ -161,8 +161,7 @@ func candidateStatsScope(target string, path *outbound.PathSpec, occurrences map
 
 // TODO: 统一 Outbound 中的DNS解析器
 // TODO: Hy2 的 mark 支持
-// TODO: Connectivity Check Failed 仅将状态变更作为 Warning、
-// HandlePkt HandleConn 分割 Route 和 Dial
+// TODO: HandlePkt HandleConn 分割 Route 和 Dial
 //
 // NewControlPlane validates the configuration and builds a control plane in
 // memory. It loads external resources (e.g. geoip) and verifies they are
@@ -632,8 +631,8 @@ func (c *ControlPlane) Activate() error {
 	})
 
 	// Register every initial connectivity check before releasing their shared
-	// start gate. Startup then waits for each blocking group to become available,
-	// while slower candidates continue in the background.
+	// start gate. Startup waits until each blocking group is usable or all of its
+	// blocking mode sweeps have completed, while support retries continue later.
 	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
 	checkStart := make(chan struct{})
 	waiters := make([]startupConnectivityWaiter, 0, len(c.outbounds))

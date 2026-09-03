@@ -28,7 +28,27 @@ var (
 )
 
 type DialerGroup interface {
-	DialerChanged(d *Dialer)
+	DialerChanged(d *Dialer, forceSelection SelectionForceMask)
+}
+
+// SelectionForceMask identifies networks whose selector refresh ignores tolerance.
+type SelectionForceMask uint8
+
+const (
+	SelectionForceNone SelectionForceMask = 0
+)
+
+// SelectionForceFor returns a mask containing one valid network.
+func SelectionForceFor(index common.NetworkIndex) SelectionForceMask {
+	if !index.Valid() {
+		return SelectionForceNone
+	}
+	return 1 << index
+}
+
+// Contains reports whether tolerance should be ignored for a network.
+func (m SelectionForceMask) Contains(index common.NetworkIndex) bool {
+	return m&SelectionForceFor(index) != 0
 }
 
 type groupBinding struct {
@@ -64,10 +84,12 @@ const (
 
 type networkState uint8
 
+// networkState records irreversible mode capability. Reachability is shared
+// by all supported modes through Dialer.healthy.
 const (
-	networkUnknown networkState = iota
-	networkUsable
-	networkUnavailable
+	networkUntested networkState = iota
+	networkUnknown
+	networkSupported
 	networkUnsupported
 )
 
@@ -81,11 +103,11 @@ type Dialer struct {
 	session  netproxy.Session
 
 	initialCheck      InitialCheckMode
-	initialCheckDone  bool
 	healthy           bool
 	healthSeq         uint64
 	failureReportedAt time.Time
 	networks          [common.NetworkTypeCount]networkState
+	pendingForce      SelectionForceMask
 	group             *groupBinding
 
 	mu sync.RWMutex
@@ -124,7 +146,7 @@ type ConnectivitySnapshot struct {
 }
 
 // NetworkSupportState describes protocol/remote capability, not current
-// reachability. Confirmed modes can be either usable or temporarily down.
+// reachability. Confirmed modes share the dialer's canonical health result.
 type NetworkSupportState string
 
 const (
@@ -135,7 +157,7 @@ const (
 
 func supportState(state networkState) NetworkSupportState {
 	switch state {
-	case networkUsable, networkUnavailable:
+	case networkSupported:
 		return NetworkSupportConfirmed
 	case networkUnsupported:
 		return NetworkSupportUnsupported
@@ -204,21 +226,20 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	ctx, cancel := context.WithCancel(context.Background())
 	session, _ := runtime.Session()
 	d := &Dialer{
-		GlobalOption:     option,
-		Dialer:           runtime.Dialer(),
-		Property:         property,
-		runtime:          runtime,
-		session:          session,
-		initialCheck:     initialCheck,
-		initialCheckDone: initialCheck == InitialCheckDisabled,
-		healthy:          initialCheck == InitialCheckDisabled,
-		checkCh:          make(chan struct{}, 1),
-		ctx:              ctx,
-		cancel:           cancel,
+		GlobalOption: option,
+		Dialer:       runtime.Dialer(),
+		Property:     property,
+		runtime:      runtime,
+		session:      session,
+		initialCheck: initialCheck,
+		healthy:      initialCheck == InitialCheckDisabled,
+		checkCh:      make(chan struct{}, 1),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 	if initialCheck == InitialCheckDisabled {
 		for i := range d.networks {
-			d.networks[i] = networkUsable
+			d.networks[i] = networkSupported
 		}
 	}
 	d.statsKey = makeStatsKey(property, statsScope)
@@ -276,14 +297,6 @@ func (d *Dialer) healthyLocked(session netproxy.StateEvent, hasSession bool) boo
 	return d.ctx.Err() == nil && d.healthy && (!hasSession || session.State == netproxy.SessionConnected && d.healthSeq == session.Seq)
 }
 
-func (d *Dialer) Healthy() bool {
-	d.mu.RLock()
-	session, hasSession := d.sessionSnapshot()
-	healthy := d.healthyLocked(session, hasSession)
-	d.mu.RUnlock()
-	return healthy
-}
-
 func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 	return d.SelectionSnapshot(networkType).Usable
 }
@@ -293,7 +306,7 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 	session, hasSession := d.sessionSnapshot()
 	state := d.networks[networkType.Index()]
 	snapshot := SelectionSnapshot{
-		Usable:  d.healthyLocked(session, hasSession) && state == networkUsable,
+		Usable:  d.healthyLocked(session, hasSession) && state == networkSupported,
 		Support: supportState(state),
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
@@ -306,11 +319,11 @@ func (d *Dialer) ConnectivitySnapshot() ConnectivitySnapshot {
 	session, hasSession := d.sessionSnapshot()
 	healthy := d.healthyLocked(session, hasSession)
 	snapshot := ConnectivitySnapshot{
-		InitialCheckDone:  d.initialCheckDone,
+		InitialCheckDone:  d.initialCheckCompletedLocked(),
 		ConfirmingFailure: healthy && !d.failureReportedAt.IsZero(),
 	}
 	for i, state := range d.networks {
-		snapshot.Usable[i] = healthy && state == networkUsable
+		snapshot.Usable[i] = healthy && state == networkSupported
 	}
 	d.mu.RUnlock()
 	return snapshot
@@ -318,14 +331,23 @@ func (d *Dialer) ConnectivitySnapshot() ConnectivitySnapshot {
 
 func (d *Dialer) initialCheckCompleted() bool {
 	d.mu.RLock()
-	done := d.initialCheckDone
+	done := d.initialCheckCompletedLocked()
 	d.mu.RUnlock()
 	return done
 }
 
-func (d *Dialer) notifyGroup(group *groupBinding) {
+func (d *Dialer) initialCheckCompletedLocked() bool {
+	for _, state := range d.networks {
+		if state == networkUntested {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *Dialer) notifyGroup(group *groupBinding, forceSelection SelectionForceMask) {
 	if group != nil {
-		group.observer.DialerChanged(d)
+		group.observer.DialerChanged(d, forceSelection)
 	}
 }
 

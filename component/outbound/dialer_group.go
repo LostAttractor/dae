@@ -40,7 +40,7 @@ type DialerGroup struct {
 	TargetKind      TargetKind
 	Dialers         []*dialer.Dialer
 	selectionPolicy dialer.DialerSelectionPolicy
-	selector        selector
+	selector        *latencyBasedSelector
 
 	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
 	notifyMu           sync.Mutex
@@ -98,7 +98,15 @@ func NewDialerGroup(
 	}
 
 	if kind == GroupKindSelector {
-		g.selector = newSelector(g, option.CheckTolerance)
+		switch selectionPolicy.Policy {
+		case "", consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Random:
+		case consts.DialerSelectionPolicy_MinAverage10Latencies,
+			consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+			consts.DialerSelectionPolicy_MinLastLatency:
+			g.selector = &latencyBasedSelector{dialerGroup: g, tolerance: option.CheckTolerance}
+		default:
+			panic(fmt.Sprintf("unsupported selection policy %q", selectionPolicy.Policy))
+		}
 		g.startupReady = startupBarrier(g.policyDialers())
 	}
 
@@ -151,17 +159,23 @@ func startupBarrier(dialers []*dialer.Dialer) chan struct{} {
 	return nil
 }
 
-func (g *DialerGroup) markStartupReady() {
-	if g.startupReady != nil {
-		g.startupReadyOnce.Do(func() { close(g.startupReady) })
+func (g *DialerGroup) releaseStartupReady(available bool) {
+	if g.startupReady == nil {
+		return
 	}
+	g.startupReadyOnce.Do(func() {
+		if !available {
+			log.WithField("group", g.Name).Info("Blocking connectivity checks completed without a usable candidate; startup continues")
+		}
+		close(g.startupReady)
+	})
 }
 
 // Close retires all dialers owned by the group.
 func (g *DialerGroup) Close() error {
 	g.closeOnce.Do(func() {
 		g.closed.Store(true)
-		g.markStartupReady()
+		g.releaseStartupReady(true)
 		// Drain notifications that passed the closed check before shutdown.
 		g.notifyMu.Lock()
 		g.notifyMu.Unlock()
@@ -264,14 +278,6 @@ func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, a
 	return nil
 }
 
-func (g *DialerGroup) publishGroupAvailability(previous bool, connectivity groupConnectivity, publishErr error) {
-	available := g.anyNetworkAvailable()
-	if !g.availabilityKnown && !available && (publishErr != nil || connectivity.pending) {
-		return
-	}
-	g.recordAvailability(previous, available)
-}
-
 func (g *DialerGroup) policyDialers() []*dialer.Dialer {
 	if g.selectionPolicy.Policy == "" || g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Fixed {
 		index := g.selectionPolicy.FixedIndex
@@ -283,10 +289,19 @@ func (g *DialerGroup) policyDialers() []*dialer.Dialer {
 	return g.Dialers
 }
 
+func (g *DialerGroup) fixedDialer() *dialer.Dialer {
+	index := g.selectionPolicy.FixedIndex
+	if index < 0 || index >= len(g.Dialers) {
+		return nil
+	}
+	return g.Dialers[index]
+}
+
 type groupConnectivity struct {
-	networks [common.NetworkTypeCount]bool
-	stable   bool
-	pending  bool
+	networks     [common.NetworkTypeCount]bool
+	stable       bool
+	pending      bool
+	blockingDone bool
 }
 
 func (c groupConnectivity) state(published bool) stats.GroupState {
@@ -300,7 +315,8 @@ func (c groupConnectivity) state(published bool) stats.GroupState {
 }
 
 func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
-	var aggregate groupConnectivity
+	hasBlocking := g.startupReady != nil
+	aggregate := groupConnectivity{blockingDone: hasBlocking}
 	for _, d := range g.policyDialers() {
 		snapshot := d.ConnectivitySnapshot()
 		usable := false
@@ -309,7 +325,13 @@ func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
 			usable = usable || available
 		}
 		aggregate.stable = aggregate.stable || (usable && !snapshot.ConfirmingFailure)
-		aggregate.pending = aggregate.pending || !snapshot.InitialCheckDone || (usable && snapshot.ConfirmingFailure)
+		if !snapshot.InitialCheckDone && (!hasBlocking || d.InitialCheckMode() == dialer.InitialCheckBlocking) {
+			aggregate.pending = true
+		}
+		if d.InitialCheckMode() == dialer.InitialCheckBlocking && !snapshot.InitialCheckDone {
+			aggregate.blockingDone = false
+		}
+		aggregate.pending = aggregate.pending || (usable && snapshot.ConfirmingFailure)
 	}
 	return aggregate
 }
@@ -325,7 +347,14 @@ func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Di
 	if g.Kind != GroupKindSelector {
 		selected = g.Dialers[0]
 	} else {
-		selected = g.selector.SelectedDialer(networkType)
+		switch g.selectionPolicy.Policy {
+		case "", consts.DialerSelectionPolicy_Fixed:
+			selected = g.fixedDialer()
+		case consts.DialerSelectionPolicy_Random:
+			return nil
+		default:
+			selected = g.selector.SelectedDialer(networkType)
+		}
 	}
 	if selected == nil || !selected.Usable(networkType) {
 		return nil
@@ -358,14 +387,22 @@ func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, e
 		}
 		return d, nil
 	}
-	selected := g.selector.Select(networkType)
-	if selected == nil {
+	var selected *dialer.Dialer
+	switch g.selectionPolicy.Policy {
+	case "", consts.DialerSelectionPolicy_Fixed:
+		selected = g.fixedDialer()
+	case consts.DialerSelectionPolicy_Random:
+		selected = g.selectRandom(networkType)
+	default:
+		selected = g.selector.Select(networkType)
+	}
+	if selected == nil || !selected.Usable(networkType) {
 		return nil, ErrNoAliveDialer
 	}
 	return selected, nil
 }
 
-func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer) {
+func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer.SelectionForceMask) {
 	g.notifyMu.Lock()
 	defer g.notifyMu.Unlock()
 	if g.closed.Load() {
@@ -374,7 +411,9 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer) {
 	if g.Kind != GroupKindSelector {
 		return
 	}
-	g.selector.Refresh(dialer)
+	if g.selector != nil {
+		g.selector.Refresh(dialer, forceSelection)
+	}
 	connectivity := g.aggregateConnectivity()
 	previouslyAvailable := g.anyNetworkAvailable()
 	var err error
@@ -382,11 +421,14 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer) {
 		networkType := common.NetworkIndex(i).NetworkType()
 		err = errors.Join(err, g.publishNetworkAvailable(networkType, connectivity.networks[i]))
 	}
-	g.publishGroupAvailability(previouslyAvailable, connectivity, err)
+	available := g.anyNetworkAvailable()
+	if g.availabilityKnown || available || (err == nil && !connectivity.pending) {
+		g.recordAvailability(previouslyAvailable, available)
+	}
 	if err != nil {
 		log.WithField("group", g.Name).Warnf("Failed to publish group availability: %v", err)
 	}
-	if g.anyNetworkAvailable() {
-		g.markStartupReady()
+	if available || connectivity.blockingDone {
+		g.releaseStartupReady(available)
 	}
 }

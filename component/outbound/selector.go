@@ -1,7 +1,6 @@
 package outbound
 
 import (
-	"fmt"
 	"math"
 	"time"
 
@@ -18,28 +17,6 @@ func saturatingDurationAdd(a, b time.Duration) time.Duration {
 		return time.Duration(math.MinInt64)
 	}
 	return a + b
-}
-
-type selector interface {
-	Select(networkType *common.NetworkType) *dialer.Dialer
-	SelectedDialer(networkType *common.NetworkType) *dialer.Dialer
-	Refresh(dialer *dialer.Dialer)
-	EnableTolerance()
-}
-
-func newSelector(group *DialerGroup, tolerance time.Duration) selector {
-	switch group.selectionPolicy.Policy {
-	case "", consts.DialerSelectionPolicy_Fixed:
-		return &fixedSelector{dialerGroup: group}
-	case consts.DialerSelectionPolicy_MinAverage10Latencies,
-		consts.DialerSelectionPolicy_MinMovingAverageLatencies,
-		consts.DialerSelectionPolicy_MinLastLatency:
-		return &latencyBasedSelector{dialerGroup: group, tolerance: tolerance}
-	case consts.DialerSelectionPolicy_Random:
-		return &randomSelector{dialerGroup: group}
-	default:
-		panic(fmt.Sprintf("unsupported selection policy %q", group.selectionPolicy.Policy))
-	}
 }
 
 type selectorCandidate struct {

@@ -8,12 +8,8 @@ import (
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 )
 
-type randomSelector struct {
-	dialerGroup *DialerGroup
-}
-
-func (s *randomSelector) preferredCandidates(networkType *common.NetworkType) []selectorCandidate {
-	candidates := s.dialerGroup.candidates(networkType)
+func (g *DialerGroup) preferredRandomCandidates(networkType *common.NetworkType) []selectorCandidate {
+	candidates := g.candidates(networkType)
 	highestPriority := math.MinInt
 	for _, candidate := range candidates {
 		highestPriority = max(highestPriority, candidate.priority)
@@ -27,16 +23,10 @@ func (s *randomSelector) preferredCandidates(networkType *common.NetworkType) []
 	return preferred
 }
 
-func (s *randomSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
-	candidates := s.preferredCandidates(networkType)
+func (g *DialerGroup) selectRandom(networkType *common.NetworkType) *dialer.Dialer {
+	candidates := g.preferredRandomCandidates(networkType)
 	if len(candidates) == 0 {
 		return nil
 	}
 	return candidates[fastrand.Intn(len(candidates))].dialer
 }
-
-func (s *randomSelector) SelectedDialer(*common.NetworkType) *dialer.Dialer { return nil }
-
-func (s *randomSelector) Refresh(*dialer.Dialer) {}
-
-func (s *randomSelector) EnableTolerance() {}
