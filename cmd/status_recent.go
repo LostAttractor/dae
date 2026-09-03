@@ -64,11 +64,9 @@ func recentWindowLabel(duration time.Duration) string {
 }
 
 func recentTimeline(group control.GroupStatus) string {
-	states := make([]stats.GroupHistoryState, stats.GroupStateBucketCount)
-	copy(states, group.Availability.Recent.States)
 	var timeline strings.Builder
 	timeline.WriteByte('[')
-	for _, state := range states {
+	for _, state := range group.Availability.Recent.States {
 		timeline.WriteString(recentStatePoint(state))
 	}
 	timeline.WriteString("] / ")
@@ -97,10 +95,12 @@ func recentActiveWidth(groups []control.GroupStatus) int {
 
 func recentGroupRow(group control.GroupStatus, activeWidth int) table.Row {
 	activity := fmt.Sprintf("%*d active", activeWidth, group.Stats.ActiveConnections)
-	rate := formatTrafficRateCell(group.Stats)
-	total := formatTrafficTotalCell(group.Stats)
+	if group.Stats.FallbackConnections > 0 {
+		activity += fmt.Sprintf(" · %d fallback total", group.Stats.FallbackConnections)
+	}
+	traffic := formatTrafficSparklineCell(group.Stats)
 	if !group.ChecksConnectivity {
-		return table.Row{group.Name, "", "", "", activity, rate, "U/D rate", total, "U/D total"}
+		return table.Row{group.Name, "", "", "", activity, traffic}
 	}
 	return table.Row{
 		group.Name,
@@ -108,46 +108,40 @@ func recentGroupRow(group control.GroupStatus, activeWidth int) table.Row {
 		recentTimeline(group),
 		recentUpRatio(group),
 		activity,
-		rate,
-		"U/D rate",
-		total,
-		"U/D total",
+		traffic,
 	}
-}
-
-func truncateRecentGroupName(value string, maxWidth int) string {
-	if text.StringWidth(value) <= maxWidth {
-		return value
-	}
-	return text.Trim(value, maxWidth-1) + "…"
 }
 
 func renderRecentGroups(groups []control.GroupStatus) string {
-	writer := newStatusTable()
-	writer.SetColumnConfigs([]table.ColumnConfig{
-		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateRecentGroupName},
+	configs := []table.ColumnConfig{
+		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateStatusCell},
 		{Number: 4, Align: text.AlignRight},
-	})
-	activeWidth := recentActiveWidth(groups)
-	for _, group := range groups {
-		writer.AppendRow(recentGroupRow(group, activeWidth))
 	}
-	return writer.Render()
+	activeWidth := recentActiveWidth(groups)
+	rows := make([]table.Row, 0, len(groups))
+	for _, group := range groups {
+		rows = append(rows, recentGroupRow(group, activeWidth))
+	}
+	return renderStatusTable(nil, rows, configs)
 }
 
 func printRecentStatus(snapshot *control.StatusSnapshot) {
-	traffic := formatTrafficSummary(snapshot.Stats)
-	if traffic != "" {
-		traffic = " · " + traffic
+	fallback := ""
+	if snapshot.Stats.FallbackConnections > 0 {
+		fallback = fmt.Sprintf(" · %d fallback total", snapshot.Stats.FallbackConnections)
 	}
 	fmt.Printf(
-		"dae %s · %s · up %s · %d active%s\n\n",
+		"dae %s · %s · up %s · %d active%s\n",
 		snapshot.Version,
 		colorRecentHealth(statusHealth(snapshot.Groups)),
 		formatUptime(time.Since(snapshot.StartedAt)),
 		snapshot.Stats.ActiveConnections,
-		traffic,
+		fallback,
 	)
+	if traffic := formatTrafficSummary(snapshot.Stats); traffic != "" {
+		fmt.Printf("Traffic: %s\n", traffic)
+	}
+	fmt.Println()
 
-	printRenderedTable(renderRecentGroups(snapshot.Groups))
+	fmt.Println(renderRecentGroups(snapshot.Groups))
 }

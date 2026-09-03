@@ -83,6 +83,12 @@ var (
 		pathLabels,
 		nil,
 	)
+	fallbackConnectionsDesc = prometheus.NewDesc(
+		"dae_fallback_connections_total",
+		"Cumulative number of established connections using no-connectivity fallback.",
+		pathLabels,
+		nil,
+	)
 	trafficBytesDesc = prometheus.NewDesc(
 		"dae_traffic_bytes_total",
 		"Payload bytes transferred by established traffic connections.",
@@ -92,12 +98,6 @@ var (
 	externalCounterErrorsDesc = prometheus.NewDesc(
 		"dae_external_counter_read_errors_total",
 		"Cumulative failures reading externally maintained traffic counters.",
-		nil,
-		nil,
-	)
-	externalCounterCollectionErrorDesc = prometheus.NewDesc(
-		"dae_external_counter_collection_error",
-		"Error refreshing externally maintained traffic counters.",
 		nil,
 		nil,
 	)
@@ -149,9 +149,9 @@ func (s *Store) Describe(ch chan<- *prometheus.Desc) {
 	for _, descriptor := range []*prometheus.Desc{
 		activeConnectionsDesc,
 		totalConnectionsDesc,
+		fallbackConnectionsDesc,
 		trafficBytesDesc,
 		externalCounterErrorsDesc,
-		externalCounterCollectionErrorDesc,
 		nodeAliveDesc,
 		nodeTimestampDesc,
 		nodeChecksDesc,
@@ -192,10 +192,6 @@ func (s *Store) RecordError(path Path) {
 	s.metrics.errors.WithLabelValues(pathLabelValues(path)...).Inc()
 }
 
-func (s *Store) resetCurrentMetrics() {
-	s.metrics.resetCurrent()
-}
-
 func boolValue(value bool) float64 {
 	if value {
 		return 1
@@ -211,15 +207,12 @@ func unixSeconds(value time.Time) float64 {
 }
 
 func (s *Store) collectConnections(ch chan<- prometheus.Metric) {
-	snapshot, err := s.Snapshot()
-	if err != nil {
-		ch <- prometheus.NewInvalidMetric(externalCounterCollectionErrorDesc, err)
-		return
-	}
+	snapshot := s.Snapshot()
 	for path, stats := range snapshot {
 		labels := pathLabelValues(path)
 		ch <- prometheus.MustNewConstMetric(activeConnectionsDesc, prometheus.GaugeValue, float64(stats.ActiveConnections), labels...)
 		ch <- prometheus.MustNewConstMetric(totalConnectionsDesc, prometheus.CounterValue, float64(stats.TotalConnections), labels...)
+		ch <- prometheus.MustNewConstMetric(fallbackConnectionsDesc, prometheus.CounterValue, float64(stats.FallbackConnections), labels...)
 		ch <- prometheus.MustNewConstMetric(trafficBytesDesc, prometheus.CounterValue, float64(stats.UploadBytes),
 			path.NodeID, path.Outbound, path.Subtag, path.Dialer, path.Network.String(), trafficDirectionUpload)
 		ch <- prometheus.MustNewConstMetric(trafficBytesDesc, prometheus.CounterValue, float64(stats.DownloadBytes),

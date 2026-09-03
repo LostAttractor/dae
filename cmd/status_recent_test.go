@@ -16,11 +16,10 @@ import (
 )
 
 func recentTestGroup() control.GroupStatus {
-	states := []stats.GroupHistoryState{
-		stats.GroupHistoryAvailable,
-		stats.GroupHistoryUnknown,
-		stats.GroupHistoryUnavailable,
-	}
+	states := make([]stats.GroupHistoryState, stats.GroupStateBucketCount)
+	states[0] = stats.GroupHistoryAvailable
+	states[1] = stats.GroupHistoryUnknown
+	states[2] = stats.GroupHistoryUnavailable
 	return control.GroupStatus{
 		Name:               "proxy",
 		ChecksConnectivity: true,
@@ -30,9 +29,12 @@ func recentTestGroup() control.GroupStatus {
 			Recent:       stats.GroupStateWindow{States: states},
 		},
 		Stats: stats.PathStats{
-			ActiveConnections: 31,
-			TrafficCounters:   stats.TrafficCounters{UploadBytes: 3000, DownloadBytes: 4000},
-			TrafficRate:       stats.TrafficRate{UploadBytesPerSecond: 100, DownloadBytesPerSecond: 200},
+			ActiveConnections:   31,
+			FallbackConnections: 2,
+			TrafficCounters:     stats.TrafficCounters{UploadBytes: 3000, DownloadBytes: 4000},
+			History: stats.TrafficHistory{
+				UploadBytesPerSecond: []uint64{100}, DownloadBytesPerSecond: []uint64{200},
+			},
 		},
 	}
 }
@@ -41,8 +43,11 @@ func TestRecentGroupRow(t *testing.T) {
 	withoutStatusColors(t)
 	row := recentGroupRow(recentTestGroup(), 2)
 	want := []string{
-		"proxy", "UP", "[+.x.......] / 1H", "99.92% / 24H", "31 active",
-		"100B/200B", "U/D rate", "2.93K/3.91K", "U/D total",
+		"proxy", "UP", "[+.x.......] / 1H", "99.92% / 24H", "31 active · 2 fallback total",
+		"↑...........▅ ↓...........█",
+	}
+	if len(row) != len(want) {
+		t.Fatalf("recentGroupRow() has %d columns, want %d: %+v", len(row), len(want), row)
 	}
 	for index, expected := range want {
 		if got := fmt.Sprint(row[index]); got != expected {
@@ -60,14 +65,6 @@ func TestRecentUncheckedGroupRow(t *testing.T) {
 	}
 	if got := fmt.Sprint(row[4]); got != "3 active" {
 		t.Fatalf("activity = %q", got)
-	}
-}
-
-func TestRecentTimelinePadsUnknownBuckets(t *testing.T) {
-	withoutStatusColors(t)
-	group := recentTestGroup()
-	if got := recentTimeline(group); got != "[+.x.......] / 1H" {
-		t.Fatalf("recentTimeline() = %q", got)
 	}
 }
 
@@ -95,7 +92,20 @@ func TestRenderRecentGroupsTruncatesWideNames(t *testing.T) {
 	if !strings.Contains(rendered, "…") {
 		t.Fatalf("long group name was not truncated:\n%s", rendered)
 	}
-	if text.StringWidth(rendered) == 0 {
-		t.Fatal("rendered table is empty")
+}
+
+func TestRenderRecentGroupsFitsTerminal(t *testing.T) {
+	withoutStatusColors(t)
+	withStatusTerminalWidth(t, 80)
+	rendered := renderRecentGroups([]control.GroupStatus{recentTestGroup()})
+	if strings.Contains(rendered, "\n") {
+		t.Fatalf("recent group wrapped:\n%s", rendered)
+	}
+	if width := text.StringWidthWithoutEscSequences(rendered); width > 80 {
+		t.Fatalf("rendered line width = %d, want <= 80: %q", width, rendered)
+	}
+	fullTraffic := "↑...........▅ ↓...........█"
+	if !strings.Contains(rendered, "↑") || strings.Contains(rendered, fullTraffic) {
+		t.Fatalf("traffic column was not partially clipped:\n%s", rendered)
 	}
 }

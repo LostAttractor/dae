@@ -17,6 +17,8 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/control"
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 )
 
 func withoutStatusColors(t *testing.T) {
@@ -24,6 +26,13 @@ func withoutStatusColors(t *testing.T) {
 	previous := colorsEnabled
 	colorsEnabled = false
 	t.Cleanup(func() { colorsEnabled = previous })
+}
+
+func withStatusTerminalWidth(t *testing.T, width int) {
+	t.Helper()
+	previous := getStatusTerminalWidth
+	getStatusTerminalWidth = func() int { return width }
+	t.Cleanup(func() { getStatusTerminalWidth = previous })
 }
 
 func testNodeStatus(now time.Time) control.NodeStatus {
@@ -64,12 +73,13 @@ func testNodeStatus(now time.Time) control.NodeStatus {
 			dialer.NetworkSupportUnknown,
 		},
 		Stats: stats.PathStats{
-			ActiveConnections:      2,
-			TotalConnections:       3,
-			UploadBytes:            1024,
-			DownloadBytes:          2048,
-			UploadBytesPerSecond:   100,
-			DownloadBytesPerSecond: 200,
+			ActiveConnections:   2,
+			TotalConnections:    3,
+			FallbackConnections: 1,
+			TrafficCounters:     stats.TrafficCounters{UploadBytes: 1024, DownloadBytes: 2048},
+			History: stats.TrafficHistory{
+				UploadBytesPerSecond: []uint64{100, 100}, DownloadBytesPerSecond: []uint64{200, 200},
+			},
 		},
 	}
 }
@@ -88,6 +98,37 @@ func TestTableUsageRow(t *testing.T) {
 	}
 }
 
+func TestStatusTableClipsRowsToFitTerminal(t *testing.T) {
+	withoutStatusColors(t)
+	withStatusTerminalWidth(t, 16)
+	header := table.Row{"FIRST", "SECOND", "XYZ"}
+	rows := []table.Row{{"a", "bb", "cc"}}
+	rendered := renderStatusTable(header, rows, nil)
+	lines := strings.Split(rendered, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("adaptive table wrapped into %d lines:\n%s", len(lines), rendered)
+	}
+	if firstLine := lines[0]; firstLine != "FIRST  SECOND  X" {
+		t.Fatalf("adaptive table did not use the full terminal width: %q", firstLine)
+	}
+	for line := range strings.SplitSeq(rendered, "\n") {
+		line = strings.TrimRight(line, " ")
+		if width := text.StringWidth(line); width > 16 {
+			t.Fatalf("rendered line width = %d, want <= 16: %q", width, line)
+		}
+	}
+	getStatusTerminalWidth = func() int { return 5 }
+	rendered = renderStatusTable(table.Row{"LONG HEADER"}, nil, nil)
+	if rendered != "LONG" {
+		t.Fatalf("single wide column was not clipped to the terminal: %q", rendered)
+	}
+
+	colorsEnabled = true
+	if got := truncateStatusCell(colorize("网络节点", text.FgGreen), 5); text.StringWidthWithoutEscSequences(got) != 5 || text.StripEscape(got) != "网络…" {
+		t.Fatalf("ANSI/CJK truncation = %q", got)
+	}
+}
+
 func TestNodeRowsUseRawState(t *testing.T) {
 	withoutStatusColors(t)
 	now := time.Now()
@@ -99,12 +140,11 @@ func TestNodeRowsUseRawState(t *testing.T) {
 		0:  "node-a [p=2*,+30ms,async]",
 		3:  "connected",
 		4:  "healthy",
-		5:  "all tcp",
-		6:  "all tcp",
-		7:  "10/20/30",
-		14: "2/3",
-		15: "100B/200B",
-		16: "1.00K/2.00K",
+		5:  "all tcp(*)",
+		6:  "10/20/30",
+		13: "2/3 (fb 1)",
+		14: "↑..........▅▅ 800/800bps ↓..........██ 1.60/1.60Kbps",
+		15: "↑1.00K ↓2.00K",
 	}
 	for index, expected := range checks {
 		if got := fmt.Sprint(verbose[index]); got != expected {
@@ -112,11 +152,11 @@ func TestNodeRowsUseRawState(t *testing.T) {
 		}
 	}
 
-	compact := compactNodeStatusRow(node, 0, selected)
+	compact := compactNodeStatusRow(node, 0, selected, false, now)
 	if got := fmt.Sprint(compact[2]); got != "healthy" {
 		t.Fatalf("compact state = %q, want healthy", got)
 	}
-	if got := fmt.Sprint(compact[6]); got != "99.0/98.0%" {
+	if got := fmt.Sprint(compact[5]); got != "99.0/98.0%" {
 		t.Fatalf("compact ratios = %q", got)
 	}
 }
@@ -140,14 +180,12 @@ func TestNetworkStatusRowDerivesSupportAndSelection(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())
 	group := control.GroupStatus{
-		Nodes:           []control.NodeStatus{node},
-		Networks:        make(control.NetworkValues[stats.PathStats], common.NetworkTypeCount),
-		SelectedNodeIDs: make(control.NetworkValues[string], common.NetworkTypeCount),
+		Nodes: []control.NodeStatus{node},
 	}
 	group.SelectedNodeIDs[common.NetworkTCP4] = node.ID
 	group.Networks[common.NetworkTCP4] = stats.PathStats{ActiveConnections: 2, TotalConnections: 5}
 	row := networkStatusRow(group, common.NetworkTCP4)
-	want := []string{"tcp4", "confirmed", "node-a", "2/5"}
+	want := []string{"tcp4", "node-a", "2/5"}
 	for index, expected := range want {
 		if got := fmt.Sprint(row[index]); got != expected {
 			t.Errorf("networkStatusRow()[%d] = %q, want %q", index, got, expected)
@@ -155,7 +193,44 @@ func TestNetworkStatusRowDerivesSupportAndSelection(t *testing.T) {
 	}
 }
 
+func TestNetworkStatusRowExplainsMissingSelection(t *testing.T) {
+	withoutStatusColors(t)
+	node := testNodeStatus(time.Now())
+	group := control.GroupStatus{
+		Policy: "random",
+		Nodes:  []control.NodeStatus{node},
+	}
+	if got := fmt.Sprint(networkStatusRow(group, common.NetworkTCP4)[1]); got != "available" {
+		t.Fatalf("usable route = %q, want available", got)
+	}
+	group.Policy = "fixed"
+	nonCandidate := testNodeStatus(time.Now())
+	nonCandidate.ID = "non-candidate"
+	group.Nodes = append(group.Nodes, nonCandidate)
+	group.Nodes[0].Healthy = false
+	if got := fmt.Sprint(networkStatusRow(group, common.NetworkTCP4)[1]); got != "down" {
+		t.Fatalf("fixed route with usable non-candidate = %q, want down", got)
+	}
+	group.Policy = "random"
+	group.Nodes[1].Healthy = false
+	if got := fmt.Sprint(networkStatusRow(group, common.NetworkTCP4)[1]); got != "down" {
+		t.Fatalf("unusable dynamic route = %q, want down", got)
+	}
+	if got := len(checkedNetworkRows(group, false)); got != 2 {
+		t.Fatalf("compact network rows = %d, want two confirmed networks", got)
+	}
+	if got := len(checkedNetworkRows(group, true)); got != common.NetworkTypeCount {
+		t.Fatalf("verbose network rows = %d, want %d", got, common.NetworkTypeCount)
+	}
+}
+
 func TestHealthDerivedFromRawGroups(t *testing.T) {
+	available := testNodeStatus(time.Now())
+	available.Support[common.NetworkTCP6] = dialer.NetworkSupportUnsupported
+	down := testNodeStatus(time.Now())
+	down.ID = "down"
+	down.Healthy = false
+	down.Support[common.NetworkTCP4] = dialer.NetworkSupportUnsupported
 	tests := []struct {
 		group control.GroupStatus
 		want  healthStatus
@@ -165,6 +240,7 @@ func TestHealthDerivedFromRawGroups(t *testing.T) {
 		{group: control.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateChecking}, want: healthWarning},
 		{group: control.GroupStatus{ChecksConnectivity: true, Connectivity: stats.GroupStateUnavailable}, want: healthWarning},
 		{group: control.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateUnavailable}, want: healthDegraded},
+		{group: control.GroupStatus{ChecksConnectivity: true, Connectivity: stats.GroupStateAvailable, Nodes: []control.NodeStatus{available, down}, SelectedNodeIDs: control.NetworkValues[string]{available.ID}}, want: healthWarning},
 	}
 	for _, test := range tests {
 		if got := groupHealth(test.group); got != test.want {
@@ -202,6 +278,26 @@ func TestRecentFailureUsesRawAvailability(t *testing.T) {
 	}
 }
 
+func TestCompactFailureFollowsAvailability(t *testing.T) {
+	withoutStatusColors(t)
+	now := time.Now()
+	node := testNodeStatus(now)
+	group := control.GroupStatus{
+		Nodes:           []control.NodeStatus{node},
+		SelectedNodeIDs: control.NetworkValues[string]{node.ID, node.ID, "", ""},
+	}
+	header, rows := nodeTable(group, false, now)
+	if got := fmt.Sprint(header[6]); got != "FAIL A/D" {
+		t.Fatalf("column after UP/24H = %q, want FAIL A/D", got)
+	}
+	if len(rows) != 1 || len(rows[0]) != len(header) {
+		t.Fatalf("compact table dimensions = header %d, rows %+v", len(header), rows)
+	}
+	if got := fmt.Sprint(rows[0][6]); got == "-" {
+		t.Fatalf("failure cell = %q, want recent failure", got)
+	}
+}
+
 func TestNetworkCompaction(t *testing.T) {
 	tests := map[uint8]string{
 		0: "-", 0b1111: "all", 0b0011: "all tcp", 0b1100: "all udp",
@@ -215,9 +311,72 @@ func TestNetworkCompaction(t *testing.T) {
 }
 
 func TestTrafficFormatting(t *testing.T) {
-	value := stats.PathStats{UploadBytes: 3 * 1024, DownloadBytes: 5 * 1024}
-	if got, want := formatTrafficSummary(value), "rate - U/D, total 3.00K/5.00K U/D"; got != want {
+	value := stats.PathStats{TrafficCounters: stats.TrafficCounters{UploadBytes: 3 * 1024, DownloadBytes: 5 * 1024}}
+	if got, want := formatTrafficSummary(value), "total ↑3.00K ↓5.00K"; got != want {
 		t.Fatalf("formatTrafficSummary() = %q, want %q", got, want)
+	}
+	if got, want := formatBitRatePair(1_250_000, 12_500_000), "10.0/100Mbps"; got != want {
+		t.Fatalf("rate threshold pair = %q, want %q", got, want)
+	}
+	if got, want := formatBitRatePair(100, 110), "800/880bps"; got != want {
+		t.Fatalf("same-unit rate pair = %q, want %q", got, want)
+	}
+	if got, want := formatBitRatePair(100, 1_250_000), "800bps/10.0Mbps"; got != want {
+		t.Fatalf("mixed-unit rate pair = %q, want %q", got, want)
+	}
+	maximum := ^uint64(0)
+	if got := trafficAverage([]uint64{maximum, maximum}); got != maximum {
+		t.Fatalf("overflow-safe average = %d, want %d", got, maximum)
+	}
+}
+
+func TestTrafficAndNetworkColorsCoverTheirCells(t *testing.T) {
+	previous := colorsEnabled
+	colorsEnabled = true
+	t.Cleanup(func() { colorsEnabled = previous })
+
+	traffic := trafficSparkline([]uint64{0, 1, 1_250_000, 12_500_000}, 12_500_000)
+	if !strings.Contains(traffic, "\x1b[90m▁") || !strings.Contains(traffic, "\x1b[32m▂") ||
+		!strings.Contains(traffic, "\x1b[33m▂") || !strings.Contains(traffic, "\x1b[31m█") {
+		t.Fatalf("traffic speed levels are not colored independently: %q", traffic)
+	}
+
+	node := testNodeStatus(time.Now())
+	networks, selected := nodeNetworks(node, control.NetworkValues[string]{node.ID, node.ID, "", ""})
+	if !selected || !strings.HasPrefix(networks, "\x1b[") || text.StripEscape(networks) != "all tcp(*)" {
+		t.Fatalf("NETWORKS cell is not fully colored: %q", networks)
+	}
+}
+
+func TestNodeNetworksMergesSupportAndSelection(t *testing.T) {
+	withoutStatusColors(t)
+	node := testNodeStatus(time.Now())
+	for _, test := range []struct {
+		support  control.NetworkValues[dialer.NetworkSupportState]
+		selected control.NetworkValues[string]
+		want     string
+	}{
+		{
+			support: control.NetworkValues[dialer.NetworkSupportState]{
+				dialer.NetworkSupportConfirmed, dialer.NetworkSupportConfirmed,
+				dialer.NetworkSupportConfirmed, dialer.NetworkSupportConfirmed,
+			},
+			selected: control.NetworkValues[string]{"node-id", "node-id", "node-id", "node-id"},
+			want:     "all(*)",
+		},
+		{selected: control.NetworkValues[string]{"node-id", "node-id", "", ""}, want: "all tcp(*)"},
+		{selected: control.NetworkValues[string]{"node-id", "", "", ""}, want: "all tcp(tcp4*)"},
+		{selected: control.NetworkValues[string]{"", "node-id", "", ""}, want: "all tcp(tcp6*)"},
+		{selected: control.NetworkValues[string]{}, want: "all tcp"},
+	} {
+		if test.support == (control.NetworkValues[dialer.NetworkSupportState]{}) {
+			node.Support = testNodeStatus(time.Now()).Support
+		} else {
+			node.Support = test.support
+		}
+		if got, _ := nodeNetworks(node, test.selected); got != test.want {
+			t.Errorf("nodeNetworks() = %q, want %q", got, test.want)
+		}
 	}
 }
 
@@ -226,12 +385,9 @@ func validWireStatus() control.StatusSnapshot {
 		Schema:    control.StatusSchemaVersion,
 		Version:   "test",
 		StartedAt: time.Now(),
-		Networks:  make(control.NetworkValues[stats.PathStats], common.NetworkTypeCount),
 		Groups: []control.GroupStatus{{
-			Name:            "direct",
-			TargetKind:      "builtin",
-			Networks:        make(control.NetworkValues[stats.PathStats], common.NetworkTypeCount),
-			SelectedNodeIDs: make(control.NetworkValues[string], common.NetworkTypeCount),
+			Name:       "direct",
+			TargetKind: "builtin",
 			Nodes: []control.NodeStatus{{
 				ID:      "direct",
 				Support: control.NetworkValues[dialer.NetworkSupportState]{"unknown", "unknown", "unknown", "unknown"},
@@ -285,16 +441,17 @@ func TestValidateStatusRejectsInvalidNodeReferences(t *testing.T) {
 	}
 
 	snapshot = validWireStatus()
-	snapshot.Groups[0].Nodes[0].Support = snapshot.Groups[0].Nodes[0].Support[:3]
+	node := &snapshot.Groups[0].Nodes[0]
+	node.Support[common.NetworkTCP4] = dialer.NetworkSupportConfirmed
+	snapshot.Groups[0].SelectedNodeIDs[common.NetworkTCP4] = node.ID
 	if err := validateStatus(&snapshot); err == nil {
-		t.Fatal("validateStatus accepted a short support list")
+		t.Fatal("validateStatus accepted an unusable selected node")
 	}
 }
 
 func TestDecodeStatusRejectsInvalidSchema(t *testing.T) {
 	for _, payload := range []string{
 		`{"schema":1,"version":"test","started_at":"2026-01-01T00:00:00Z","networks":[],"groups":[]}`,
-		`{"schema":1,"version":"test","started_at":"2026-01-01T00:00:00Z","networks":[{},{},{},{}],"groups":[],"typo":true}`,
 		`{"version":"test"}`,
 	} {
 		if _, err := decodeStatus(strings.NewReader(payload)); err == nil {

@@ -21,6 +21,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -32,7 +33,7 @@ import (
 
 type RouteParam struct {
 	routingResult *bpfRoutingResult
-	networkType   *common.NetworkType
+	networkType   common.NetworkType
 	Domain        string
 	Src           netip.AddrPort
 	Dest          netip.AddrPort
@@ -43,9 +44,10 @@ type DialOption struct {
 	Dialer            *dialer.Dialer
 	connectionDialer  netproxy.Dialer
 	Outbound          *outbound.DialerGroup
+	OriginalOutbound  *outbound.DialerGroup
+	NetworkType       common.NetworkType
 	Direct            bool
 	FallbackIpVersion bool
-	FallbackDialer    bool
 }
 
 const routeLogMessage = "route"
@@ -55,6 +57,10 @@ func (o *DialOption) dialerForConnection() netproxy.Dialer {
 		return o.connectionDialer
 	}
 	return o.Dialer
+}
+
+func (o *DialOption) trafficAttribution() (stats.Path, bool) {
+	return o.Dialer.StatsPath(o.Outbound.Name, &o.NetworkType), o.OriginalOutbound != nil
 }
 
 func IsNetError(err error) (net.Error, bool) { return errors.AsType[net.Error](err) }
@@ -67,8 +73,7 @@ func closeInBackground(closer io.Closer) {
 	}
 }
 
-func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dialOption *DialOption, err error) {
-	// TODO: Why not directly transfer routingResult
+func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*DialOption, error) {
 	outboundIndex := consts.OutboundIndex(p.routingResult.Outbound)
 	mark := p.routingResult.Mark
 
@@ -76,61 +81,62 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (dial
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case c.rerouteMode == consts.RerouteMode_WhileNeed && shouldReroute,
-		c.rerouteMode == consts.RerouteMode_Force:
+	if c.rerouteMode == consts.RerouteMode_Force ||
+		(c.rerouteMode == consts.RerouteMode_WhileNeed && shouldReroute) {
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
-	switch outboundIndex {
-	case consts.OutboundDirect:
-	case consts.OutboundControlPlaneRouting:
+	if outboundIndex == consts.OutboundControlPlaneRouting {
 		domain := p.Domain
 		if !verified {
 			domain = ""
 		}
-		if outboundIndex, mark, _, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult); err != nil {
-			oops.Wrap(err)
-			return
+		outboundIndex, mark, _, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult)
+		if err != nil {
+			return nil, oops.Wrap(err)
 		}
 		if log.IsLevelEnabled(log.TraceLevel) {
-			log.Tracef("outbound: %v => <Control Plane Routing>",
-				outboundIndex.String(),
-			)
+			log.Tracef("outbound: %v => <Control Plane Routing>", outboundIndex.String())
 		}
-	default:
 	}
 	p.routingResult.Mark = mark
-	// TODO: Set-up ip to domain mapping and show domain if possible.
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
-			err = oops.Errorf("traffic was dropped due to no-load configuration")
-			return
+			return nil, oops.Errorf("traffic was dropped due to no-load configuration")
 		}
-		err = oops.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
-		return
+		return nil, oops.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
-	outbound := c.outbounds[outboundIndex]
+	selectedOutbound := c.outbounds[outboundIndex]
 	dialTarget, dialIp := c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain, verified && c.dialTargetOverride)
-	dialer, fallback, err := outbound.SelectFallbackIpVersion(p.networkType, dialIp)
-	fallbackDialer := false
+	dialer, selectedNetwork, fallback, err := selectedOutbound.SelectFallbackIpVersion(
+		p.networkType,
+		dialIp || p.networkType.L4Proto == consts.L4ProtoStr_UDP,
+	)
 	selectedOutboundIndex := outboundIndex
+	var originalOutbound *outbound.DialerGroup
 	if err != nil {
-		dialer, err = c.outbounds[c.noConnectivityOutbound].Select(p.networkType)
-		if err != nil {
-			panic(fmt.Sprintf("fail to get fallback dialer %v(%v): %v", c.outbounds[c.noConnectivityOutbound], c.noConnectivityOutbound, err))
+		if !errors.Is(err, outbound.ErrNoAliveDialer) {
+			return nil, err
 		}
-		fallbackDialer = true
+		originalOutbound = selectedOutbound
 		selectedOutboundIndex = c.noConnectivityOutbound
+		selectedOutbound = c.outbounds[selectedOutboundIndex]
+		selectedNetwork = p.networkType
+		fallback = false
+		dialer, err = selectedOutbound.Select(&selectedNetwork)
+		if err != nil {
+			return nil, fmt.Errorf("select fallback outbound %q: %w", selectedOutbound.Name, err)
+		}
 	}
 	return &DialOption{
 		DialTarget:        dialTarget,
 		Dialer:            dialer,
 		connectionDialer:  c.directDialerForMark(selectedOutboundIndex, mark),
-		Outbound:          outbound,
+		Outbound:          selectedOutbound,
+		OriginalOutbound:  originalOutbound,
+		NetworkType:       selectedNetwork,
 		Direct:            selectedOutboundIndex == consts.OutboundDirect,
 		FallbackIpVersion: fallback,
-		FallbackDialer:    fallbackDialer,
 	}, nil
 }
 
@@ -210,16 +216,16 @@ func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOptio
 		if dialOption.Outbound.Name == consts.OutboundBlock.String() {
 			fields["action"] = "block"
 		}
-		if dialOption.FallbackIpVersion || dialOption.FallbackDialer {
+		if dialOption.FallbackIpVersion || dialOption.OriginalOutbound != nil {
 			fields["fallback"] = true
 		}
-		if dialOption.FallbackDialer {
-			fields["original_outbound"] = dialOption.Outbound.Name
-			if policy := dialOption.Outbound.DisplayPolicy(); policy != "" {
+		fields["outbound"] = dialOption.Outbound.Name
+		if dialOption.OriginalOutbound != nil {
+			fields["original_outbound"] = dialOption.OriginalOutbound.Name
+			if policy := dialOption.OriginalOutbound.DisplayPolicy(); policy != "" {
 				fields["original_policy"] = policy
 			}
 		} else {
-			fields["outbound"] = dialOption.Outbound.Name
 			if policy := dialOption.Outbound.DisplayPolicy(); policy != "" {
 				fields["policy"] = policy
 			}

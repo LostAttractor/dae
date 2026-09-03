@@ -136,10 +136,7 @@ func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn, tr
 
 func trafficCounterValue(t *testing.T, path stats.Path, direction string) uint64 {
 	t.Helper()
-	snapshot, err := stats.DefaultStore.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapshot := stats.DefaultStore.Snapshot()
 	pathStats, ok := snapshot[path]
 	if !ok {
 		t.Fatalf("traffic path is absent: %+v", path)
@@ -216,7 +213,7 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 	path := stats.Path{
 		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "direct", Network: common.NetworkTCP4,
 	}
-	traffic := stats.DefaultStore.OpenConnection(path)
+	traffic := stats.DefaultStore.OpenConnection(path, false)
 	result := runSplice(t, runtime, accepted, remote, traffic)
 	waitRedirectArmed(t, runtime, cookieA, cookieR)
 

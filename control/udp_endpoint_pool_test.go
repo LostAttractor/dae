@@ -192,7 +192,7 @@ func TestUdpEndpointPoolRemoveAccountsTrafficBeforeBlockingClose(t *testing.T) {
 		}
 	})
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: time.Hour})
-	endpoint.traffic = store.OpenConnection(path)
+	endpoint.traffic = store.OpenConnection(path, true)
 	endpoint.traffic.RecordUpload(77)
 	key := testUdpKey(12005)
 	endpointPool.add(key, endpoint)
@@ -207,12 +207,12 @@ func TestUdpEndpointPoolRemoveAccountsTrafficBeforeBlockingClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("endpoint removal did not start connection close")
 	}
-	snapshot, err := store.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapshot := store.Snapshot()
 	if got := snapshot[path].UploadBytes; got != 77 {
 		t.Fatalf("traffic bytes before connection close = %v, want 77", got)
+	}
+	if got := snapshot[path].FallbackConnections; got != 1 {
+		t.Fatalf("fallback connections = %v, want 1", got)
 	}
 	close(conn.releaseClose)
 	<-removed

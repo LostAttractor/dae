@@ -6,17 +6,11 @@
 package control
 
 import (
-	"fmt"
-
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
-
-func networkValues[T any](values [common.NetworkTypeCount]T) NetworkValues[T] {
-	return values[:]
-}
 
 func (c *ControlPlane) tableStatuses() []TableUsage {
 	var tables []TableUsage
@@ -90,7 +84,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		Healthy:            runtime.Healthy,
 		ConfirmingFailure:  runtime.ConfirmingFailure,
 		Availability:       runtime.Availability,
-		Support:            networkValues(runtime.SupportState),
+		Support:            NetworkValues[dialer.NetworkSupportState](runtime.SupportState),
 		Stats:              paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}],
 	}
 	if runtime.HasSession {
@@ -112,8 +106,7 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 		Critical:           critical,
 		ChecksConnectivity: group.ChecksConnectivity(),
 		Stats:              pathStats.total,
-		Networks:           networkValues(pathStats.networks),
-		SelectedNodeIDs:    make(NetworkValues[string], common.NetworkTypeCount),
+		Networks:           NetworkValues[stats.PathStats](pathStats.networks),
 		Nodes:              make([]NodeStatus, 0, len(group.Dialers)),
 	}
 	if status.ChecksConnectivity {
@@ -130,19 +123,15 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 	return status
 }
 
-func (c *ControlPlane) statusSnapshot(version string) (*StatusSnapshot, error) {
-	pathSnapshot, err := stats.DefaultStore.Snapshot()
-	if err != nil {
-		return nil, fmt.Errorf("refresh traffic counters: %w", err)
-	}
-	paths := indexPathStats(pathSnapshot)
+func (c *ControlPlane) statusSnapshot(version string) *StatusSnapshot {
+	paths := indexPathStats(stats.DefaultStore.SnapshotWithHistory())
 	snapshot := &StatusSnapshot{
 		Schema:       StatusSchemaVersion,
 		Version:      version,
 		StartedAt:    stats.DefaultStore.StartedAt(),
 		LastReloadAt: stats.DefaultStore.LastReload(),
 		Stats:        paths.total,
-		Networks:     networkValues(paths.networks),
+		Networks:     NetworkValues[stats.PathStats](paths.networks),
 		Tables:       c.tableStatuses(),
 		Groups:       make([]GroupStatus, 0, len(c.outbounds)),
 	}
@@ -153,5 +142,5 @@ func (c *ControlPlane) statusSnapshot(version string) (*StatusSnapshot, error) {
 		critical := index < len(c.criticalOutbounds) && c.criticalOutbounds[index]
 		snapshot.Groups = append(snapshot.Groups, newGroupStatus(paths, group, critical))
 	}
-	return snapshot, nil
+	return snapshot
 }

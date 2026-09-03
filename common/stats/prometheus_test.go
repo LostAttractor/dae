@@ -94,20 +94,22 @@ func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 	}
 }
 
-func TestStoreCollectorReportsExternalReadFailure(t *testing.T) {
+func TestStoreCollectorSurvivesExternalReadFailure(t *testing.T) {
 	store := newStoreAt(time.Now())
-	connection := store.OpenConnection(trafficTestPath(t.Name()))
-	wantErr := errors.New("counter source failed")
+	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
 	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{}, wantErr
+		return TrafficCounters{}, errors.New("counter source failed")
 	}); err != nil {
 		t.Fatal(err)
 	}
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(store)
 
-	if _, err := registry.Gather(); err == nil {
-		t.Fatal("collector accepted a failed external counter read")
+	if _, err := registry.Gather(); err != nil {
+		t.Fatalf("collector failed after an external counter error: %v", err)
+	}
+	if got := store.externalReadErrors.Load(); got == 0 {
+		t.Fatal("external counter error was not recorded")
 	}
 	_ = connection.Close()
 }

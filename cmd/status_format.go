@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"fmt"
+	"math/bits"
 	"os"
 	"strings"
 	"time"
@@ -33,7 +34,15 @@ const (
 )
 
 func groupHealth(group control.GroupStatus) healthStatus {
-	if !group.ChecksConnectivity || group.Connectivity == stats.GroupStateAvailable {
+	if !group.ChecksConnectivity {
+		return healthHealthy
+	}
+	if group.Connectivity == stats.GroupStateAvailable {
+		for network := common.NetworkIndex(0); network < common.NetworkTypeCount; network++ {
+			if groupNetworkSupport(group.Nodes, network) == dialer.NetworkSupportConfirmed && !groupNetworkRoutable(group, network) {
+				return healthWarning
+			}
+		}
 		return healthHealthy
 	}
 	if group.Connectivity == stats.GroupStateChecking || !group.Critical {
@@ -133,6 +142,14 @@ func shouldEnableColors() bool {
 
 var colorsEnabled = shouldEnableColors()
 
+var getStatusTerminalWidth = func() int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 0
+	}
+	return width
+}
+
 const (
 	healthyUpRatio  = 0.99
 	degradedUpRatio = 0.9
@@ -183,8 +200,10 @@ func colorNetworkSupport(support dialer.NetworkSupportState) string {
 		return "-"
 	case dialer.NetworkSupportConfirmed:
 		return colorize(string(support), text.FgGreen)
-	case dialer.NetworkSupportUnknown, dialer.NetworkSupportUnsupported:
-		return colorize(string(support), text.FgRed)
+	case dialer.NetworkSupportUnknown:
+		return colorize(string(support), text.FgYellow)
+	case dialer.NetworkSupportUnsupported:
+		return colorize(string(support), text.FgHiBlack)
 	default:
 		return string(support)
 	}
@@ -194,7 +213,7 @@ func colorSelected(value string, selected bool) string {
 	if !selected {
 		return value
 	}
-	return colorize(value, text.FgCyan)
+	return colorize(value, text.FgCyan, text.Bold)
 }
 
 func colorRatio(ratio float64, value string) string {
@@ -246,16 +265,6 @@ func formatGroupConnectivityState(group control.GroupStatus) string {
 	}
 }
 
-func networkMask(support control.NetworkValues[dialer.NetworkSupportState]) uint8 {
-	var mask uint8
-	for index, state := range support {
-		if state == dialer.NetworkSupportConfirmed {
-			mask |= 1 << index
-		}
-	}
-	return mask
-}
-
 func compactNetworks(mask uint8) string {
 	switch mask {
 	case 0:
@@ -280,17 +289,31 @@ func compactNetworks(mask uint8) string {
 	return strings.Join(parts, ",")
 }
 
-func selectedNetworks(nodeID string, selected control.NetworkValues[string]) (string, bool) {
-	if nodeID == "" {
-		return "-", false
-	}
-	var mask uint8
-	for index, selectedID := range selected {
-		if selectedID == nodeID {
-			mask |= 1 << index
+func nodeNetworks(status control.NodeStatus, selected control.NetworkValues[string]) (string, bool) {
+	var support, selection uint8
+	for network, state := range status.Support {
+		if state == dialer.NetworkSupportConfirmed {
+			support |= 1 << network
+		}
+		if status.ID != "" && selected[network] == status.ID {
+			selection |= 1 << network
 		}
 	}
-	return compactNetworks(mask), mask != 0
+	base := compactNetworks(support)
+	if selection == 0 {
+		return base, false
+	}
+	selectionText := "*"
+	if selection != support {
+		parts := make([]string, 0, common.NetworkTypeCount)
+		for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
+			if selection&(1<<index) != 0 {
+				parts = append(parts, index.String()+"*")
+			}
+		}
+		selectionText = strings.Join(parts, ",")
+	}
+	return colorSelected(base+"("+selectionText+")", true), true
 }
 
 func emptyDash(value string) string {
@@ -320,7 +343,11 @@ func formatFailure(startedAt time.Time, duration time.Duration) string {
 }
 
 func formatConnCounts(value stats.PathStats) string {
-	return fmt.Sprintf("%d/%d", value.ActiveConnections, value.TotalConnections)
+	formatted := fmt.Sprintf("%d/%d", value.ActiveConnections, value.TotalConnections)
+	if value.FallbackConnections > 0 {
+		formatted += fmt.Sprintf(" (fb %d)", value.FallbackConnections)
+	}
+	return formatted
 }
 
 func formatBytes(bytes uint64) string {
@@ -349,47 +376,136 @@ func formatBytes(bytes uint64) string {
 	return fmt.Sprintf(format, value, unit)
 }
 
-func hasTrafficRate(value stats.PathStats) bool {
-	return value.UploadBytesPerSecond != 0 || value.DownloadBytesPerSecond != 0
+func formatBitRateParts(bytesPerSecond uint64) (string, string) {
+	if bytesPerSecond == 0 {
+		return "0", "bps"
+	}
+	value := float64(bytesPerSecond) * 8
+	unit := "bps"
+	for _, nextUnit := range []string{"Kbps", "Mbps", "Gbps", "Tbps", "Pbps", "Ebps"} {
+		if value < 1000 {
+			break
+		}
+		value /= 1000
+		unit = nextUnit
+	}
+	format := "%.2f"
+	if value >= 100 {
+		format = "%.0f"
+	} else if value >= 10 {
+		format = "%.1f"
+	}
+	return fmt.Sprintf(format, value), unit
 }
 
-func formatTrafficRateCell(value stats.PathStats) string {
-	if !hasTrafficRate(value) {
+func formatBitRatePair(average, maximum uint64) string {
+	averageValue, averageUnit := formatBitRateParts(average)
+	maximumValue, maximumUnit := formatBitRateParts(maximum)
+	if averageUnit == maximumUnit {
+		return averageValue + "/" + maximumValue + averageUnit
+	}
+	return averageValue + averageUnit + "/" + maximumValue + maximumUnit
+}
+
+func trafficMaximum(values []uint64) uint64 {
+	var maximum uint64
+	for _, value := range values {
+		maximum = max(maximum, value)
+	}
+	return maximum
+}
+
+func trafficAverage(values []uint64) uint64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var high, low uint64
+	for _, value := range values {
+		var carry uint64
+		low, carry = bits.Add64(low, value, 0)
+		high += carry
+	}
+	average, _ := bits.Div64(high, low, uint64(len(values)))
+	return average
+}
+
+var trafficSparklineGlyphs = []rune("▁▂▃▄▅▆▇█")
+
+func trafficSpeedColor(bytesPerSecond uint64) text.Color {
+	switch {
+	case bytesPerSecond >= 100_000_000/8:
+		return text.FgRed
+	case bytesPerSecond >= 10_000_000/8:
+		return text.FgYellow
+	case bytesPerSecond > 0:
+		return text.FgGreen
+	default:
+		return text.FgHiBlack
+	}
+}
+
+func trafficSparkline(values []uint64, scale uint64) string {
+	var line strings.Builder
+	if padding := max(stats.TrafficHistorySampleCount-len(values), 0); padding > 0 {
+		line.WriteString(colorize(strings.Repeat(".", padding), text.FgHiBlack))
+	}
+	for _, value := range values {
+		level := 0
+		if value > 0 && scale > 0 {
+			level = 1 + int(float64(value)*6/float64(scale))
+			level = min(level, 7)
+		}
+		line.WriteString(colorize(string(trafficSparklineGlyphs[level]), trafficSpeedColor(value)))
+	}
+	return line.String()
+}
+
+func hasTrafficHistory(value stats.PathStats) bool {
+	return len(value.History.UploadBytesPerSecond) > 0
+}
+
+func formatTrafficSparklineCell(value stats.PathStats) string {
+	upload := value.History.UploadBytesPerSecond
+	download := value.History.DownloadBytesPerSecond
+	if !hasTrafficHistory(value) {
 		return "-"
 	}
-	return fmt.Sprintf("%s/%s", formatBytes(value.UploadBytesPerSecond), formatBytes(value.DownloadBytesPerSecond))
+	scale := max(trafficMaximum(upload), trafficMaximum(download))
+	return "↑" + trafficSparkline(upload, scale) + " ↓" + trafficSparkline(download, scale)
 }
 
-func formatTrafficRate(value stats.PathStats) string {
-	return formatTrafficRateCell(value) + " U/D"
-}
-
-func hasTrafficTotal(value stats.PathStats) bool {
-	return value.UploadBytes != 0 || value.DownloadBytes != 0
+func formatTrafficCell(value stats.PathStats) string {
+	upload := value.History.UploadBytesPerSecond
+	download := value.History.DownloadBytesPerSecond
+	if !hasTrafficHistory(value) {
+		return "-"
+	}
+	uploadMax := trafficMaximum(upload)
+	downloadMax := trafficMaximum(download)
+	scale := max(uploadMax, downloadMax)
+	return fmt.Sprintf(
+		"↑%s %s ↓%s %s",
+		trafficSparkline(upload, scale),
+		formatBitRatePair(trafficAverage(upload), uploadMax),
+		trafficSparkline(download, scale),
+		formatBitRatePair(trafficAverage(download), downloadMax),
+	)
 }
 
 func formatTrafficTotalCell(value stats.PathStats) string {
-	if !hasTrafficTotal(value) {
+	if value.UploadBytes == 0 && value.DownloadBytes == 0 {
 		return "-"
 	}
-	return fmt.Sprintf("%s/%s", formatBytes(value.UploadBytes), formatBytes(value.DownloadBytes))
-}
-
-func formatTrafficTotal(value stats.PathStats) string {
-	return formatTrafficTotalCell(value) + " U/D"
+	return fmt.Sprintf("↑%s ↓%s", formatBytes(value.UploadBytes), formatBytes(value.DownloadBytes))
 }
 
 func formatTrafficSummary(value stats.PathStats) string {
-	if !hasTrafficRate(value) && !hasTrafficTotal(value) {
-		return ""
+	var parts []string
+	if traffic := formatTrafficCell(value); traffic != "-" {
+		parts = append(parts, "1m "+traffic)
 	}
-	return "rate " + formatTrafficRate(value) + ", total " + formatTrafficTotal(value)
-}
-
-func formatTrafficSummarySuffix(value stats.PathStats) string {
-	summary := formatTrafficSummary(value)
-	if summary == "" {
-		return ""
+	if total := formatTrafficTotalCell(value); total != "-" {
+		parts = append(parts, "total "+total)
 	}
-	return ", " + summary
+	return strings.Join(parts, " · ")
 }

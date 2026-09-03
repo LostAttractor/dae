@@ -438,6 +438,55 @@ func TestCandidateStatsScopeIgnoresUnrelatedPaths(t *testing.T) {
 	}
 }
 
+func TestRouteDialOptionUsesActualFallbackOutbound(t *testing.T) {
+	option := &dialer.GlobalOption{}
+	newDialer := func(name string, mode dialer.InitialCheckMode) *dialer.Dialer {
+		return dialer.NewDialer(
+			netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}),
+			option,
+			&dialer.Property{Name: name, Link: "test://" + name},
+			mode,
+			name,
+		)
+	}
+	callback := func(bool, *common.NetworkType) error { return nil }
+	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
+		[]*dialer.Dialer{newDialer("direct", dialer.InitialCheckDisabled)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
+		[]*dialer.Dialer{newDialer("block", dialer.InitialCheckDisabled)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+	original := outbound.NewDialerGroup(option, "original", outbound.GroupKindSelector,
+		[]*dialer.Dialer{newDialer("original", dialer.InitialCheckBlocking)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+	t.Cleanup(func() {
+		_ = direct.Close()
+		_ = block.Close()
+		_ = original.Close()
+	})
+
+	c := &ControlPlane{
+		outbounds:              []*outbound.DialerGroup{direct, block, original},
+		noConnectivityOutbound: consts.OutboundDirect,
+	}
+	networkType := common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
+	got, err := c.RouteDialOption(context.Background(), &RouteParam{
+		routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundUserDefinedMin)},
+		networkType:   networkType,
+		Dest:          netip.MustParseAddrPort("192.0.2.1:443"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outbound != direct || got.OriginalOutbound != original || !got.Direct {
+		t.Fatalf("fallback option = %+v", got)
+	}
+	if got.NetworkType != networkType || got.FallbackIpVersion {
+		t.Fatalf("fallback network = %+v, original = %+v", got.NetworkType, networkType)
+	}
+	path, fallback := got.trafficAttribution()
+	if !fallback || path.Outbound != direct.Name || path.Network != networkType.Index() {
+		t.Fatalf("fallback traffic attribution = %+v, fallback=%v", path, fallback)
+	}
+}
+
 type dnsPathDialer struct{}
 
 func (dnsPathDialer) DialContext(context.Context, string, string) (net.Conn, error) {
