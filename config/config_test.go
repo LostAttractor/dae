@@ -450,6 +450,26 @@ routing { fallback: target }
 	}
 }
 
+func TestNewRejectsInvalidCheckDNS(t *testing.T) {
+	for _, value := range []string{
+		`"missing-port"`,
+		`":53"`,
+		`"dns.test:0"`,
+		`"dns.test:53", "not-an-ip"`,
+	} {
+		sections, err := config_parser.Parse(`
+global { udp_check_dns: ` + value + ` }
+routing { fallback: direct }
+`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = New(sections); err == nil {
+			t.Errorf("udp_check_dns %s should be rejected", value)
+		}
+	}
+}
+
 func TestNewRejectsInvalidControlModes(t *testing.T) {
 	for field, value := range map[string]string{
 		"reroute_mode":      "always",

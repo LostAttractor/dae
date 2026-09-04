@@ -8,6 +8,9 @@ package config
 import (
 	"fmt"
 	"math"
+	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +25,7 @@ var patches = []patch{
 	validateSoMarkFromDae,
 	validateControlModes,
 	validateCheckIntervals,
+	validateCheckDNS,
 	patchEmptyDns,
 	validateFallbacks,
 	patchMustOutbound,
@@ -57,6 +61,44 @@ func validateCheckIntervals(params *Config) error {
 		}
 		if group.CheckIntervalMax > time.Duration(math.MaxInt64/2) {
 			return fmt.Errorf("group %q: check_interval_max is too large", group.Name)
+		}
+	}
+	return nil
+}
+
+func validateCheckDNS(params *Config) error {
+	if err := validateCheckDNSEndpoint(params.Global.UdpCheckDns); err != nil {
+		return fmt.Errorf("udp_check_dns: %w", err)
+	}
+	for _, group := range params.Group {
+		if group.UdpCheckDns == nil {
+			continue
+		}
+		if err := validateCheckDNSEndpoint(group.UdpCheckDns); err != nil {
+			return fmt.Errorf("group %q: udp_check_dns: %w", group.Name, err)
+		}
+	}
+	return nil
+}
+
+func validateCheckDNSEndpoint(raw []string) error {
+	if len(raw) == 0 {
+		return fmt.Errorf("must not be empty")
+	}
+	host, port, err := net.SplitHostPort(raw[0])
+	if err != nil {
+		return fmt.Errorf("invalid address %q: %w", raw[0], err)
+	}
+	if host == "" {
+		return fmt.Errorf("host must not be empty")
+	}
+	parsedPort, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || parsedPort == 0 {
+		return fmt.Errorf("invalid port %q", port)
+	}
+	for _, value := range raw[1:] {
+		if _, err := netip.ParseAddr(value); err != nil {
+			return fmt.Errorf("invalid IP address %q", value)
 		}
 	}
 	return nil

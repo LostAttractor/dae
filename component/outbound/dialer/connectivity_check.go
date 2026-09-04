@@ -28,17 +28,21 @@ import (
 )
 
 const (
-	checkBackoffInitialInterval = time.Second
-	supportRetryInitialInterval = 2 * time.Second
-	supportRetryMultiplier      = 4
+	checkBackoffInitialInterval  = time.Second
+	supportRetryInitialInterval  = time.Second
+	supportRetryMultiplier       = 4
+	maxConcurrentCheckOperations = 128
 )
+
+// Startup sweeps can otherwise create four network operations per dialer at once.
+var connectivityCheckSlots = make(chan struct{}, maxConcurrentCheckOperations)
 
 type checkDNSOption struct {
 	DnsPort uint16
 	*netutils.Ip46
 }
 
-func parseCheckDNSOption(dnsHostPort []string) (*checkDNSOption, error) {
+func parseCheckDNSOption(ctx context.Context, dnsHostPort []string) (*checkDNSOption, error) {
 	if len(dnsHostPort) == 0 {
 		return nil, oops.Errorf("parseCheckDNSOption: bad format: empty")
 	}
@@ -47,9 +51,15 @@ func parseCheckDNSOption(dnsHostPort []string) (*checkDNSOption, error) {
 	if err != nil {
 		return nil, oops.Wrapf(err, "parseCheckDNSOption: failed to split host and port")
 	}
+	if host == "" {
+		return nil, oops.Errorf("parseCheckDNSOption: empty host")
+	}
 	port, err := strconv.ParseUint(rawPort, 10, 16)
 	if err != nil {
 		return nil, oops.Errorf("bad port: %v", err)
+	}
+	if port == 0 {
+		return nil, oops.Errorf("bad port: 0")
 	}
 	var ip46 *netutils.Ip46
 	if len(dnsHostPort) > 1 {
@@ -69,7 +79,7 @@ func parseCheckDNSOption(dnsHostPort []string) (*checkDNSOption, error) {
 			}
 		}
 	} else {
-		ip46, err = netutils.ParseOrResolveIp46(host)
+		ip46, err = netutils.ParseOrResolveIp46Context(ctx, host)
 		if err != nil {
 			return nil, oops.Wrapf(err, "parseCheckDNSOption: failed to resolve ip for %v", host)
 		}
@@ -86,11 +96,11 @@ type CheckDnsOptionRaw struct {
 	Raw []string
 }
 
-func (c *CheckDnsOptionRaw) Option() (*checkDNSOption, error) {
+func (c *CheckDnsOptionRaw) Option(ctx context.Context) (*checkDNSOption, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.opt == nil {
-		opt, err := parseCheckDNSOption(c.Raw)
+		opt, err := parseCheckDNSOption(ctx, c.Raw)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse udp_check_dns: %w", err)
 		}
@@ -100,7 +110,7 @@ func (c *CheckDnsOptionRaw) Option() (*checkDNSOption, error) {
 }
 
 func (d *Dialer) checkDNSConnectivity(ctx context.Context, networkType *common.NetworkType) (bool, error) {
-	opt, err := d.CheckDnsOptionRaw.Option()
+	opt, err := d.CheckDnsOptionRaw.Option(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -151,14 +161,14 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 }
 
 // RequestConnectivityCheck asks the checker to run as soon as practical.
-// Requests are coalesced with an in-flight round.
+// Requests that arrive during a check are coalesced into one follow-up round.
 func (d *Dialer) RequestConnectivityCheck() {
 	d.mu.Lock()
-	if d.ctx.Err() != nil {
+	if d.ctx.Err() != nil || d.initialCheck == InitialCheckDisabled {
 		d.mu.Unlock()
 		return
 	}
-	d.checkRequested = true
+	d.pendingCheck |= checkRequestEnvironment
 	d.mu.Unlock()
 	d.signalConnectivityCheck()
 }
@@ -173,17 +183,21 @@ func (d *Dialer) signalConnectivityCheck() {
 
 func (d *Dialer) connectivityCheckRequested() bool {
 	d.mu.RLock()
-	requested := d.checkRequested
+	requested := d.pendingCheck != 0
 	d.mu.RUnlock()
 	return requested
 }
 
-func (d *Dialer) beginConnectivityCheck() bool {
+func (d *Dialer) beginConnectivityCheck(kind checkKind) checkAttempt {
 	d.mu.Lock()
-	requested := d.checkRequested
-	d.checkRequested = false
+	attempt := checkAttempt{
+		kind:       kind,
+		generation: d.failureGeneration,
+		reasons:    d.pendingCheck,
+	}
+	d.pendingCheck = 0
 	d.mu.Unlock()
-	return requested
+	return attempt
 }
 
 // ReportDataPlaneFailure asks a probe to confirm a failure observed outside
@@ -195,18 +209,21 @@ func (d *Dialer) ReportDataPlaneFailure() {
 		return
 	}
 	startedConfirmation := false
-	if d.initialCheck != InitialCheckDisabled && d.healthy && d.failureReportedAt.IsZero() {
+	session, hasSession := d.sessionSnapshot()
+	if d.initialCheck != InitialCheckDisabled && d.health == healthHealthy && d.healthyLocked(session, hasSession) {
+		d.health = healthConfirming
 		d.failureReportedAt = time.Now()
+		d.failureGeneration++
+		d.pendingCheck |= checkRequestDataPlane
 		startedConfirmation = true
 	}
-	d.checkRequested = true
 	group := d.group
 	stats.DefaultStore.RecordNodeConnFail(d.StatsKey())
 	d.mu.Unlock()
 	if startedConfirmation {
 		d.notifyGroup(group, SelectionForceNone)
+		d.signalConnectivityCheck()
 	}
-	d.signalConnectivityCheck()
 }
 
 func jitterCheckInterval(interval time.Duration) time.Duration {
@@ -235,14 +252,20 @@ type probeResult struct {
 
 type checkResult struct {
 	kind       checkKind
+	generation uint64
 	seq        uint64
 	connectErr error
 	probes     []probeResult
 }
 
+type checkAttempt struct {
+	kind       checkKind
+	generation uint64
+	reasons    checkRequestReason
+}
+
 type appliedCheck struct {
 	success       bool
-	requested     bool
 	healthApplied bool
 }
 
@@ -289,6 +312,12 @@ func newConnectivityChecker(d *Dialer, probe func(context.Context, *common.Netwo
 }
 
 func (c *connectivityChecker) start(kind checkKind) {
+	attempt := c.d.beginConnectivityCheck(kind)
+	if attempt.reasons != 0 {
+		kind = c.requestedCheckKind()
+		attempt.kind = kind
+		c.resetForRequest(attempt.reasons)
+	}
 	if kind != checkSupport {
 		c.healthTimer.Stop()
 	}
@@ -297,14 +326,9 @@ func (c *connectivityChecker) start(kind checkKind) {
 		c.supportScheduled = false
 	}
 	ctx, cancel := context.WithCancel(c.d.ctx)
-	if kind != checkSupport {
-		if c.d.beginConnectivityCheck() {
-			c.resetForRequest()
-		}
-	}
 	c.runningKind = kind
 	c.cancel = cancel
-	go func() { c.results <- c.perform(ctx, kind) }()
+	go func() { c.results <- c.performAttempt(ctx, attempt) }()
 }
 
 func (c *connectivityChecker) scheduleSupport() {
@@ -315,42 +339,49 @@ func (c *connectivityChecker) scheduleSupport() {
 	}
 	if !c.supportScheduled {
 		c.supportTimer.Reset(jitterRetryInterval(c.retryInterval, c.d.CheckIntervalMax))
+		c.retryInterval = nextRetryInterval(c.retryInterval, c.d.CheckIntervalMax)
 		c.supportScheduled = true
 	}
 }
 
-func (c *connectivityChecker) requestHealth() {
+func (c *connectivityChecker) requestedCheckKind() checkKind {
 	if !c.d.initialCheckCompleted() {
-		c.start(checkInitial)
-		return
+		return checkInitial
 	}
 	if firstSupportedNetwork(c.d.networkStates()).Valid() {
-		c.start(checkHealth)
-		return
+		return checkHealth
 	}
-	if c.d.beginConnectivityCheck() {
-		c.resetForRequest()
-	}
-	c.scheduleSupport()
+	return checkSupport
 }
 
-func (c *connectivityChecker) resetForRequest() {
-	retryInterval := initialRetryInterval(c.d.CheckIntervalMax)
-	c.retryInterval = retryInterval
+func (c *connectivityChecker) requestHealth() {
+	c.start(c.requestedCheckKind())
+}
+
+func (c *connectivityChecker) resetForRequest(reasons checkRequestReason) {
+	if reasons&checkRequestEnvironment != 0 {
+		c.retryInterval = initialRetryInterval(c.d.CheckIntervalMax)
+		c.supportTimer.Stop()
+		c.supportScheduled = false
+		c.supportDue = false
+	}
+	if reasons&(checkRequestEnvironment|checkRequestDataPlane) != 0 {
+		c.resetHealthRetry()
+	}
+}
+
+func (c *connectivityChecker) resetHealthRetry() {
 	c.healthInterval = c.d.CheckInterval
 	c.backingOff = false
 	c.staggerNext = true
-	c.supportTimer.Stop()
-	c.supportScheduled = false
+	c.healthTimer.Stop()
+	c.healthDue = false
 }
 
 func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 	c.observedSeq = max(c.observedSeq, event.Seq)
 	advanced := c.d.applySessionState(event)
 	needsRecovery := event.State == netproxy.SessionConnected && !c.d.healthyAt(event.Seq)
-	if needsRecovery {
-		c.d.RequestConnectivityCheck()
-	}
 	if c.cancel != nil {
 		if c.runningKind == checkSupport && (advanced || needsRecovery) {
 			c.healthDue = true
@@ -358,13 +389,16 @@ func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 		return
 	}
 	if event.State == netproxy.SessionClosed {
+		c.healthTimer.Stop()
 		return
 	}
 	if event.State == netproxy.SessionConnected {
 		if needsRecovery {
+			c.resetHealthRetry()
 			c.requestHealth()
 		}
 	} else if advanced {
+		c.resetHealthRetry()
 		c.requestHealth()
 	}
 }
@@ -420,9 +454,6 @@ func (c *connectivityChecker) run(start <-chan struct{}) {
 				continue
 			}
 			if c.cancel != nil {
-				if c.runningKind == checkSupport {
-					c.healthDue = true
-				}
 				continue
 			}
 			c.requestHealth()
@@ -471,16 +502,12 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 }
 
 func (c *connectivityChecker) updateSchedule(kind checkKind, applied appliedCheck) {
-	if applied.requested {
-		c.resetForRequest()
-	}
 	switch kind {
 	case checkInitial:
 		c.updateInitialSchedule(applied.success)
 	case checkHealth:
 		c.updateHealthSchedule(applied.success)
 	case checkSupport:
-		c.retryInterval = nextRetryInterval(c.retryInterval, c.d.CheckIntervalMax)
 		if applied.healthApplied {
 			c.healthDue = false
 			c.updateHealthSchedule(true)
@@ -520,7 +547,9 @@ func (c *connectivityChecker) updateHealthSchedule(success bool) {
 		c.backingOff = true
 	}
 	delay := c.healthInterval
-	if success && c.staggerNext {
+	if !success {
+		delay = jitterRetryInterval(delay, c.d.CheckIntervalMax)
+	} else if c.staggerNext {
 		delay = jitterCheckInterval(delay)
 		c.staggerNext = false
 	}
@@ -528,6 +557,10 @@ func (c *connectivityChecker) updateHealthSchedule(success bool) {
 }
 
 func (c *connectivityChecker) startDeferredCheck() {
+	if c.d.connectivityCheckRequested() {
+		c.requestHealth()
+		return
+	}
 	if c.healthDue {
 		c.healthDue = false
 		c.requestHealth()
@@ -559,15 +592,31 @@ func initialRetryInterval(maximum time.Duration) time.Duration {
 }
 
 func jitterRetryInterval(interval, maximum time.Duration) time.Duration {
-	delay := jitterCheckInterval(interval)
-	if maximum > 0 {
-		return min(delay, maximum)
+	low, high := retryJitterRange(interval, maximum)
+	if low == high {
+		return low
 	}
-	return delay
+	return low + time.Duration(fastrand.Int63n(int64(high-low+1)))
 }
 
-func (c *connectivityChecker) perform(ctx context.Context, kind checkKind) checkResult {
-	result := checkResult{kind: kind}
+func retryJitterRange(interval, maximum time.Duration) (low, high time.Duration) {
+	spread := interval / 5
+	if spread <= 0 {
+		return interval, interval
+	}
+	low = interval - spread
+	high = interval + spread
+	if maximum > 0 {
+		high = min(high, maximum)
+	}
+	return low, high
+}
+
+func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkAttempt) checkResult {
+	result := checkResult{
+		kind:       attempt.kind,
+		generation: attempt.generation,
+	}
 	seq, err := c.connect(ctx)
 	result.seq = seq
 	if err != nil {
@@ -576,7 +625,7 @@ func (c *connectivityChecker) perform(ctx context.Context, kind checkKind) check
 	}
 
 	states := c.d.networkStates()
-	switch kind {
+	switch attempt.kind {
 	case checkInitial:
 		result.probes = c.probeMany(ctx, states, networkUntested, 1)
 	case checkSupport:
@@ -598,6 +647,10 @@ func (c *connectivityChecker) connect(ctx context.Context) (uint64, error) {
 	}
 	snapshot := c.d.session.Snapshot()
 	if snapshot.State != netproxy.SessionConnected {
+		if err := acquireConnectivityCheckSlot(ctx); err != nil {
+			return snapshot.Seq, err
+		}
+		defer releaseConnectivityCheckSlot()
 		if err := c.d.session.Connect(ctx); err != nil {
 			return c.d.session.Snapshot().Seq, err
 		}
@@ -719,7 +772,7 @@ func firstSupportConfirmed(transition probeTransition) bool {
 }
 
 func (d *Dialer) takePendingForceLocked() SelectionForceMask {
-	if !d.healthy {
+	if !d.health.usable() {
 		return SelectionForceNone
 	}
 	force := d.pendingForce
@@ -730,6 +783,10 @@ func (d *Dialer) takePendingForceLocked() SelectionForceMask {
 func (d *Dialer) applyCheck(result checkResult) (appliedCheck, bool) {
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
+		d.mu.Unlock()
+		return appliedCheck{}, false
+	}
+	if d.pendingCheck&checkRequestEnvironment != 0 {
 		d.mu.Unlock()
 		return appliedCheck{}, false
 	}
@@ -758,19 +815,38 @@ func (d *Dialer) applyCheck(result checkResult) (appliedCheck, bool) {
 }
 
 func (d *Dialer) applyConnectErrorLocked(result checkResult, session netproxy.StateEvent, hasSession bool) appliedCheck {
-	requested := false
-	if result.kind != checkSupport {
-		requested = d.checkRequested
-		d.checkRequested = false
-	}
+	failureReportedAt := d.failureReportedAt
 	previousHealthy := d.healthyLocked(session, hasSession)
+	if result.kind != checkSupport {
+		d.health = healthUnhealthy
+		d.healthSeq = result.seq
+		d.failureReportedAt = time.Time{}
+		d.pendingCheck &^= checkRequestDataPlane
+	}
 	group := d.group
 	d.mu.Unlock()
 	if result.kind != checkSupport {
 		d.logCheckOutcome(previousHealthy, false, nil, nil, result)
+		stats.DefaultStore.RecordNodeCheck(d.StatsKey(), false, failureReportedAt)
 		d.notifyGroup(group, SelectionForceNone)
 	}
-	return appliedCheck{requested: requested}
+	return appliedCheck{}
+}
+
+func (d *Dialer) applyHealthResultLocked(result checkResult, success bool) time.Time {
+	failureReportedAt := d.failureReportedAt
+	d.healthSeq = result.seq
+	if !success {
+		d.health = healthUnhealthy
+		d.failureReportedAt = time.Time{}
+		d.pendingCheck &^= checkRequestDataPlane
+		return failureReportedAt
+	}
+	if d.health != healthConfirming || result.generation >= d.failureGeneration {
+		d.health = healthHealthy
+		d.failureReportedAt = time.Time{}
+	}
+	return failureReportedAt
 }
 
 func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
@@ -783,31 +859,26 @@ func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 		}
 	}
 
-	previousHealthy := d.healthy
-	failureReportedAt := d.failureReportedAt
+	previousPhase := d.health
+	previousHealthy := previousPhase.usable()
 	canonicalIndex := firstSupportedNetwork(d.networks)
 	canonicalResult := resultProbe(result, canonicalIndex)
 	if !initial && !discovered.Contains(canonicalIndex) {
 		canonicalResult = nil
 	}
 	healthApplied := initial || canonicalResult != nil
+	failureReportedAt := d.failureReportedAt
 	if healthApplied {
-		d.healthy = canonicalResult != nil && canonicalResult.err == nil
-		d.healthSeq = result.seq
-		d.failureReportedAt = time.Time{}
+		failureReportedAt = d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
 		if d.group != nil && canonicalResult != nil {
 			d.group.recordLatency(canonicalResult.latency, true)
 		}
 	}
-	requested := false
-	if healthApplied {
-		requested = d.checkRequested
-		d.checkRequested = false
-	}
 
 	d.pendingForce |= discovered
 	forceSelection := d.takePendingForceLocked()
-	currentHealthy := d.healthy
+	currentHealthy := d.health.usable()
+	phaseChanged := previousPhase != d.health
 	group := d.group
 	d.mu.Unlock()
 
@@ -815,40 +886,34 @@ func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 	if healthApplied {
 		stats.DefaultStore.RecordNodeCheck(d.StatsKey(), currentHealthy, failureReportedAt)
 	}
-	if initial || previousHealthy != currentHealthy || forceSelection != SelectionForceNone {
+	if initial || phaseChanged || forceSelection != SelectionForceNone {
 		d.notifyGroup(group, forceSelection)
 	}
 	return appliedCheck{
 		success:       currentHealthy,
-		requested:     requested,
 		healthApplied: healthApplied,
 	}
 }
 
 func (d *Dialer) applyHealthCheckLocked(result checkResult) appliedCheck {
-	requested := d.checkRequested
-	d.checkRequested = false
-	previousHealthy := d.healthy
-	failureReportedAt := d.failureReportedAt
+	previousHealthy := d.health.usable()
 	var canonicalResult *probeResult
 	if len(result.probes) > 0 {
 		canonicalResult = &result.probes[0]
 	}
-	d.healthy = canonicalResult != nil && canonicalResult.err == nil
-	d.healthSeq = result.seq
-	d.failureReportedAt = time.Time{}
+	failureReportedAt := d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
 	if d.group != nil && canonicalResult != nil {
 		d.group.recordLatency(canonicalResult.latency, canonicalResult.err == nil)
 	}
 	forceSelection := d.takePendingForceLocked()
 	group := d.group
-	currentHealthy := d.healthy
+	currentHealthy := d.health.usable()
 	d.mu.Unlock()
 
 	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, nil, result)
 	stats.DefaultStore.RecordNodeCheck(d.StatsKey(), currentHealthy, failureReportedAt)
 	d.notifyGroup(group, forceSelection)
-	return appliedCheck{success: currentHealthy, requested: requested}
+	return appliedCheck{success: currentHealthy}
 }
 
 func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, transitions []probeTransition, result checkResult) {
@@ -934,11 +999,12 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 		d.mu.Unlock()
 		return false
 	}
-	wasHealthy := d.healthy
+	wasHealthy := d.health.usable()
 	failureReportedAt := d.failureReportedAt
-	d.healthy = false
+	d.health = healthUnhealthy
 	d.healthSeq = event.Seq
 	d.failureReportedAt = time.Time{}
+	d.pendingCheck &^= checkRequestDataPlane
 	group := d.group
 	d.mu.Unlock()
 	if wasHealthy {
@@ -955,12 +1021,16 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 
 func (d *Dialer) healthyAt(seq uint64) bool {
 	d.mu.RLock()
-	healthy := d.healthy && d.healthSeq == seq
+	healthy := d.health.usable() && d.healthSeq == seq
 	d.mu.RUnlock()
 	return healthy
 }
 
 func (c *connectivityChecker) runProbe(ctx context.Context, network common.NetworkIndex) probeResult {
+	if err := acquireConnectivityCheckSlot(ctx); err != nil {
+		return probeResult{network: network, err: err}
+	}
+	defer releaseConnectivityCheckSlot()
 	start := time.Now()
 	ok, err := c.probe(ctx, network.NetworkType())
 	if ok {
@@ -972,6 +1042,19 @@ func (c *connectivityChecker) runProbe(ctx context.Context, network common.Netwo
 		err = oops.Errorf("network is unreachable")
 	}
 	return probeResult{network: network, err: err}
+}
+
+func acquireConnectivityCheckSlot(ctx context.Context) error {
+	select {
+	case connectivityCheckSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func releaseConnectivityCheckSlot() {
+	<-connectivityCheckSlots
 }
 
 func (d *Dialer) dnsCheck(ctx context.Context, dns netip.AddrPort, network string) (bool, error) {

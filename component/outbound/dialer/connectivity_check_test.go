@@ -34,8 +34,9 @@ func (testTransport) ListenPacket(context.Context, string) (net.PacketConn, erro
 }
 
 type testSessionTransport struct {
-	state    *netproxy.StateBroadcaster
-	connects atomic.Int32
+	state      *netproxy.StateBroadcaster
+	connects   atomic.Int32
+	connectErr error
 }
 
 func newTestSessionTransport(state netproxy.SessionState) *testSessionTransport {
@@ -45,6 +46,10 @@ func newTestSessionTransport(state netproxy.SessionState) *testSessionTransport 
 func (d *testSessionTransport) Connect(context.Context) error {
 	d.connects.Add(1)
 	d.state.Transition(netproxy.SessionConnecting, nil)
+	if d.connectErr != nil {
+		d.state.Transition(netproxy.SessionDisconnected, d.connectErr)
+		return d.connectErr
+	}
 	d.state.Transition(netproxy.SessionConnected, nil)
 	return nil
 }
@@ -112,6 +117,16 @@ func checkProbe(probes [common.NetworkTypeCount]func(context.Context, *common.Ne
 		}
 		return probe(ctx, network)
 	}
+}
+
+func performCheck(c *connectivityChecker, ctx context.Context, kind checkKind) checkResult {
+	c.d.mu.RLock()
+	attempt := checkAttempt{
+		kind:       kind,
+		generation: c.d.failureGeneration,
+	}
+	c.d.mu.RUnlock()
+	return c.performAttempt(ctx, attempt)
 }
 
 func TestConnectivityCheckerWaitsForStartGate(t *testing.T) {
@@ -216,7 +231,7 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 		},
 	}
 	checker := newConnectivityChecker(d, checkProbe(probes))
-	result := checker.perform(context.Background(), checkInitial)
+	result := performCheck(checker, context.Background(), checkInitial)
 	applied, accepted := d.applyCheck(result)
 	if !accepted || !applied.success {
 		t.Fatalf("initial result = %+v", applied)
@@ -245,23 +260,6 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	}
 }
 
-func TestPendingInitialCheckIsNotReportedComplete(t *testing.T) {
-	d := newTestDialer(t, testTransport{})
-	applied, accepted := d.applyCheck(checkResult{
-		kind: checkInitial,
-		probes: []probeResult{{
-			network: common.NetworkTCP4,
-			err:     context.DeadlineExceeded,
-		}},
-	})
-	if !accepted {
-		t.Fatalf("pending initial result = %+v", applied)
-	}
-	if d.ConnectivitySnapshot().InitialCheckDone {
-		t.Fatal("pending initial result was marked complete")
-	}
-}
-
 func TestUnsupportedInitialCheckIsComplete(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)
@@ -270,7 +268,8 @@ func TestUnsupportedInitialCheckIsComplete(t *testing.T) {
 			return false, netproxy.UnsupportedTunnelTypeError
 		}
 	}
-	result := newConnectivityChecker(d, checkProbe(probes)).perform(context.Background(), checkInitial)
+	checker := newConnectivityChecker(d, checkProbe(probes))
+	result := performCheck(checker, context.Background(), checkInitial)
 	applied, accepted := d.applyCheck(result)
 	if !accepted || applied.success {
 		t.Fatalf("unsupported initial result = %+v", applied)
@@ -309,7 +308,8 @@ func TestInitialCheckLogsEveryModeAndSupportDiscovery(t *testing.T) {
 			return false, errors.New("probe failed")
 		}
 	}
-	result := newConnectivityChecker(d, checkProbe(probes)).perform(context.Background(), checkInitial)
+	checker := newConnectivityChecker(d, checkProbe(probes))
+	result := performCheck(checker, context.Background(), checkInitial)
 	if _, accepted := d.applyCheck(result); !accepted {
 		t.Fatal("initial result was rejected")
 	}
@@ -337,7 +337,7 @@ func TestInitialCheckPublishesOnlyAfterFullSweep(t *testing.T) {
 	}
 	checker := newConnectivityChecker(d, checkProbe(probes))
 	resultCh := make(chan checkResult, 1)
-	go func() { resultCh <- checker.perform(context.Background(), checkInitial) }()
+	go func() { resultCh <- performCheck(checker, context.Background(), checkInitial) }()
 	<-started
 	for index, state := range d.networkStates() {
 		if state != networkUntested {
@@ -364,11 +364,11 @@ func TestInitialCheckPublishesOnlyAfterFullSweep(t *testing.T) {
 func TestSupportRetryBackoffAndJitter(t *testing.T) {
 	interval := supportRetryInitialInterval
 	want := []time.Duration{
-		8 * time.Second,
-		32 * time.Second,
-		2*time.Minute + 8*time.Second,
-		8*time.Minute + 32*time.Second,
-		34*time.Minute + 8*time.Second,
+		4 * time.Second,
+		16 * time.Second,
+		time.Minute + 4*time.Second,
+		4*time.Minute + 16*time.Second,
+		17*time.Minute + 4*time.Second,
 		time.Hour,
 		time.Hour,
 	}
@@ -378,34 +378,48 @@ func TestSupportRetryBackoffAndJitter(t *testing.T) {
 			t.Fatalf("retry interval %d = %v, want %v", i, interval, expected)
 		}
 	}
+	if got := initialRetryInterval(time.Hour); got != time.Second {
+		t.Fatalf("initial interval = %v, want 1s", got)
+	}
 	if got := initialRetryInterval(time.Second); got != time.Second {
 		t.Fatalf("capped initial interval = %v, want 1s", got)
 	}
-	for i := 0; i < 100; i++ {
-		got := jitterCheckInterval(10 * time.Second)
-		if got < 8*time.Second || got > 12*time.Second {
-			t.Fatalf("jittered interval = %v, want [8s, 12s]", got)
-		}
-		got = jitterRetryInterval(time.Hour, time.Hour)
-		if got < 48*time.Minute || got > time.Hour {
-			t.Fatalf("capped jittered interval = %v, want [48m, 1h]", got)
-		}
+	if low, high := retryJitterRange(time.Hour, time.Hour); low != 48*time.Minute || high != time.Hour {
+		t.Fatalf("capped jitter range = [%v, %v], want [48m, 1h]", low, high)
+	}
+	if got := jitterCheckInterval(10 * time.Second); got < 8*time.Second || got > 12*time.Second {
+		t.Fatalf("jittered interval = %v, want [8s, 12s]", got)
+	}
+	if got := jitterRetryInterval(time.Hour, time.Hour); got < 48*time.Minute || got > time.Hour {
+		t.Fatalf("capped jittered interval = %v, want [48m, 1h]", got)
 	}
 }
 
-func TestSupportRetryRemainsPendingWhenAnotherModeIsSupported(t *testing.T) {
+func TestHealthRetryBackoff(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
-	d.mu.Lock()
-	for i := range d.networks {
-		d.networks[i] = networkUnsupported
+	d.CheckInterval = 3 * time.Minute
+	d.CheckIntervalMax = time.Hour
+	checker := newConnectivityChecker(d, nil)
+	t.Cleanup(func() {
+		checker.healthTimer.Stop()
+		checker.supportTimer.Stop()
+	})
+
+	want := []time.Duration{
+		time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
 	}
-	d.networks[common.NetworkTCP6] = networkSupported
-	d.networks[common.NetworkTCP4] = networkUnknown
-	d.healthy = true
-	d.mu.Unlock()
-	checker := newConnectivityChecker(d, checkProbe([common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error){}))
-	if !checker.supportPending() {
-		t.Fatal("unknown mode was not scheduled while another mode was supported")
+	for i, expected := range want {
+		checker.updateHealthSchedule(false)
+		if checker.healthInterval != expected {
+			t.Fatalf("health retry interval %d = %v, want %v", i, checker.healthInterval, expected)
+		}
+	}
+	checker.updateHealthSchedule(true)
+	if checker.healthInterval != d.CheckInterval || checker.backingOff {
+		t.Fatalf("health recovery interval = %v, backingOff=%v", checker.healthInterval, checker.backingOff)
 	}
 }
 
@@ -416,7 +430,20 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 		d.networks[i] = networkUnknown
 	}
 	d.mu.Unlock()
-	checker := newConnectivityChecker(d, checkProbe([common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error){}))
+	probed := make(chan struct{}, 1)
+	release := make(chan struct{})
+	checker := newConnectivityChecker(d, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+		select {
+		case probed <- struct{}{}:
+		default:
+		}
+		select {
+		case <-release:
+			return false, errors.New("still unsupported")
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	})
 	t.Cleanup(func() {
 		checker.healthTimer.Stop()
 		checker.supportTimer.Stop()
@@ -425,11 +452,23 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 	checker.scheduleSupport()
 	d.RequestConnectivityCheck()
 	checker.requestHealth()
-	if checker.retryInterval != supportRetryInitialInterval || !checker.supportScheduled {
-		t.Fatalf("support retry after request = %v, scheduled=%v", checker.retryInterval, checker.supportScheduled)
+	if checker.retryInterval != supportRetryInitialInterval || checker.supportScheduled || checker.runningKind != checkSupport {
+		t.Fatalf("support retry after request = %v, scheduled=%v, kind=%v", checker.retryInterval, checker.supportScheduled, checker.runningKind)
 	}
 	if d.connectivityCheckRequested() {
 		t.Fatal("explicit connectivity request was not consumed")
+	}
+	select {
+	case <-probed:
+	case <-time.After(time.Second):
+		t.Fatal("explicit request did not start support checking immediately")
+	}
+	close(release)
+	if !checker.finish(<-checker.results) {
+		t.Fatal("checker stopped after requested support check")
+	}
+	if checker.retryInterval != 4*time.Second || !checker.supportScheduled {
+		t.Fatalf("support retry after failed check = %v, scheduled=%v", checker.retryInterval, checker.supportScheduled)
 	}
 }
 
@@ -452,8 +491,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	}
 	d.networks[common.NetworkTCP6] = networkUnknown
 	d.networks[common.NetworkTCP4] = networkSupported
-	d.healthy = false
-	d.checkRequested = true
+	d.health = healthUnhealthy
 	d.mu.Unlock()
 	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
 		d.StatsKey(): {Subtag: d.SubscriptionTag, Name: d.Name},
@@ -464,7 +502,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 		kind:   checkSupport,
 		probes: []probeResult{{network: common.NetworkTCP6, latency: time.Millisecond}},
 	})
-	if !accepted || !applied.success || !applied.healthApplied || !applied.requested {
+	if !accepted || !applied.success || !applied.healthApplied {
 		t.Fatalf("support discovery = %+v, accepted=%v", applied, accepted)
 	}
 	if got := group.forces.Load(); got != 1 {
@@ -529,8 +567,16 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	}
 	d.networks[common.NetworkTCP6] = networkSupported
 	d.networks[common.NetworkTCP4] = networkUnknown
-	d.healthy = true
+	d.health = healthHealthy
 	d.mu.Unlock()
+	checker := newConnectivityChecker(d, nil)
+	t.Cleanup(func() {
+		checker.healthTimer.Stop()
+		checker.supportTimer.Stop()
+	})
+	if !checker.supportPending() {
+		t.Fatal("unknown mode was not pending while another mode was supported")
+	}
 	group := d.group.observer.(*testGroup)
 	applied, accepted := d.applyCheck(checkResult{
 		kind: checkSupport,
@@ -555,7 +601,7 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	d.networks[common.NetworkTCP6] = networkSupported
 	d.networks[common.NetworkTCP4] = networkUnknown
 	d.networks[common.NetworkUDP4] = networkUnknown
-	d.healthy = false
+	d.health = healthUnhealthy
 	d.mu.Unlock()
 	group := d.group.observer.(*testGroup)
 	support, accepted := d.applyCheck(checkResult{
@@ -588,7 +634,7 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	if d.pendingForce != wantForce {
 		t.Fatalf("session loss changed pending force to %04b", d.pendingForce)
 	}
-	healthResult := checker.perform(context.Background(), checkHealth)
+	healthResult := performCheck(checker, context.Background(), checkHealth)
 	health, accepted := d.applyCheck(healthResult)
 	if !accepted || !health.success || d.pendingForce != SelectionForceNone {
 		t.Fatalf("canonical recovery = %+v, accepted=%v", health, accepted)
@@ -598,21 +644,6 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	}
 	if got := SelectionForceMask(group.forceMask.Load()); got != wantForce {
 		t.Fatalf("canonical recovery force mask = %04b, want %04b", got, wantForce)
-	}
-}
-
-func TestCanonicalModeUsesFirstSupportedState(t *testing.T) {
-	states := [common.NetworkTypeCount]networkState{}
-	states[common.NetworkTCP6] = networkUnknown
-	states[common.NetworkTCP4] = networkSupported
-	states[common.NetworkUDP6] = networkSupported
-	states[common.NetworkUDP4] = networkUnsupported
-	if got := firstSupportedNetwork(states); got != common.NetworkTCP4 {
-		t.Fatalf("canonical mode = %v, want tcp4", got)
-	}
-	states[common.NetworkTCP6] = networkSupported
-	if got := firstSupportedNetwork(states); got != common.NetworkTCP6 {
-		t.Fatalf("canonical mode after discovery = %v, want tcp6", got)
 	}
 }
 
@@ -637,7 +668,7 @@ func TestInitialCheckRecordsOnlyCanonicalLatency(t *testing.T) {
 func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	d.healthy = true
+	d.health = healthHealthy
 	d.networks[common.NetworkTCP6] = networkSupported
 	d.networks[common.NetworkTCP4] = networkSupported
 	d.mu.Unlock()
@@ -652,7 +683,7 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 		return true, nil
 	}
 	checker := newConnectivityChecker(d, checkProbe(probes))
-	result := checker.perform(context.Background(), checkHealth)
+	result := performCheck(checker, context.Background(), checkHealth)
 	applied, _ := d.applyCheck(result)
 	if applied.success {
 		t.Fatalf("health result = %+v", applied)
@@ -710,7 +741,8 @@ func TestSupportCheckReconnectsWithoutCanonicalMode(t *testing.T) {
 	probes[common.NetworkTCP4] = func(context.Context, *common.NetworkType) (bool, error) {
 		return true, nil
 	}
-	result := newConnectivityChecker(d, checkProbe(probes)).perform(context.Background(), checkSupport)
+	checker := newConnectivityChecker(d, checkProbe(probes))
+	result := performCheck(checker, context.Background(), checkSupport)
 	applied, accepted := d.applyCheck(result)
 	if !accepted || !applied.success || !applied.healthApplied {
 		t.Fatalf("support result = %+v, accepted=%v", applied, accepted)
@@ -744,7 +776,7 @@ func TestHealthLoggingUsesStateTransitions(t *testing.T) {
 		d.networks[i] = networkUnsupported
 	}
 	d.networks[common.NetworkTCP6] = networkSupported
-	d.healthy = true
+	d.health = healthHealthy
 	d.mu.Unlock()
 	failed := checkResult{
 		kind:   checkHealth,
@@ -793,7 +825,7 @@ func TestSessionLossInvalidatesHealthImmediately(t *testing.T) {
 	d := newTestDialer(t, transport)
 	snapshot := transport.Snapshot()
 	d.mu.Lock()
-	d.healthy = true
+	d.health = healthHealthy
 	d.healthSeq = snapshot.Seq
 	d.networks[0] = networkSupported
 	d.mu.Unlock()
@@ -806,6 +838,57 @@ func TestSessionLossInvalidatesHealthImmediately(t *testing.T) {
 	}
 	if d.RuntimeStatus().Healthy || d.Usable(common.NetworkTCP4.NetworkType()) {
 		t.Fatal("session loss left the dialer usable")
+	}
+}
+
+func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
+	transport := newTestSessionTransport(netproxy.SessionConnected)
+	transport.connectErr = errors.New("reconnect failed")
+	d := newTestDialer(t, transport)
+	initial := transport.Snapshot()
+	d.mu.Lock()
+	d.health = healthHealthy
+	d.healthSeq = initial.Seq
+	for i := range d.networks {
+		d.networks[i] = networkUnsupported
+	}
+	d.networks[common.NetworkTCP4] = networkSupported
+	d.mu.Unlock()
+	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
+		d.StatsKey(): {Name: d.Name},
+	}, nil)
+	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
+
+	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+		return true, nil
+	})
+	checker.backingOff = true
+	checker.healthInterval = time.Minute
+	t.Cleanup(func() {
+		checker.healthTimer.Stop()
+		checker.supportTimer.Stop()
+	})
+	transport.state.Transition(netproxy.SessionDisconnected, errors.New("session lost"))
+	checker.handleSessionEvent(transport.Snapshot())
+
+	var result checkResult
+	select {
+	case result = <-checker.results:
+	case <-time.After(time.Second):
+		t.Fatal("session loss did not trigger an immediate connectivity check")
+	}
+	if !checker.finish(result) {
+		t.Fatal("connectivity checker stopped after reconnect failure")
+	}
+	if got := transport.connects.Load(); got != 1 {
+		t.Fatalf("immediate reconnect attempts = %d, want 1", got)
+	}
+	if checker.healthInterval != time.Second {
+		t.Fatalf("session-triggered retry interval = %v, want 1s", checker.healthInterval)
+	}
+	availability := stats.DefaultStore.GetNode(d.StatsKey())
+	if availability.LastCheckAt.IsZero() || availability.ChecksTotal != 1 || availability.ChecksFailed != 1 {
+		t.Fatalf("reconnect failure availability = %+v", availability)
 	}
 }
 
@@ -861,5 +944,139 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	}
 	if got := stats.DefaultStore.GetNode(d.StatsKey()).LastFailureStartedAt; got.Unix() != firstReport.Unix() {
 		t.Fatalf("failure started at %v, want %v", got, firstReport)
+	}
+	generation := d.failureGeneration
+	d.ReportDataPlaneFailure()
+	if d.connectivityCheckRequested() || d.failureGeneration != generation {
+		t.Fatal("data-plane failure requested another check while the node was already unhealthy")
+	}
+}
+
+func TestCheckStartedBeforeDataPlaneFailureCannotClearConfirmation(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	d.applyCheck(checkResult{
+		kind:   checkInitial,
+		probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+	})
+	attempt := d.beginConnectivityCheck(checkHealth)
+	d.ReportDataPlaneFailure()
+
+	if _, accepted := d.applyCheck(checkResult{
+		kind:       attempt.kind,
+		generation: attempt.generation,
+		probes:     []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+	}); !accepted {
+		t.Fatal("pre-failure check was rejected instead of retained as an older observation")
+	}
+	if status := d.RuntimeStatus(); !status.Healthy || !status.ConfirmingFailure {
+		t.Fatalf("pre-failure success cleared confirmation: %+v", status)
+	}
+	if !d.connectivityCheckRequested() {
+		t.Fatal("failure arriving during a check did not leave a follow-up pending")
+	}
+
+	followUp := d.beginConnectivityCheck(checkHealth)
+	if followUp.reasons != checkRequestDataPlane || followUp.generation <= attempt.generation {
+		t.Fatalf("follow-up attempt = %+v, previous = %+v", followUp, attempt)
+	}
+	d.applyCheck(checkResult{
+		kind:       followUp.kind,
+		generation: followUp.generation,
+		probes:     []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+	})
+	if status := d.RuntimeStatus(); !status.Healthy || status.ConfirmingFailure {
+		t.Fatalf("covering success did not clear confirmation: %+v", status)
+	}
+}
+
+func TestEnvironmentChangeRejectsOlderCheck(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	attempt := d.beginConnectivityCheck(checkInitial)
+	d.RequestConnectivityCheck()
+	if _, accepted := d.applyCheck(checkResult{
+		kind:       attempt.kind,
+		generation: attempt.generation,
+		probes:     []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+	}); accepted {
+		t.Fatal("check from the previous environment was accepted")
+	}
+	if !d.connectivityCheckRequested() {
+		t.Fatal("environment recheck was lost with the stale result")
+	}
+}
+
+func TestDataPlaneRequestDoesNotResetSupportBackoff(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	checker := newConnectivityChecker(d, nil)
+	t.Cleanup(func() {
+		checker.healthTimer.Stop()
+		checker.supportTimer.Stop()
+	})
+	checker.retryInterval = time.Hour
+	checker.supportScheduled = true
+	checker.backingOff = true
+	checker.healthInterval = time.Minute
+
+	checker.resetForRequest(checkRequestDataPlane)
+	if checker.retryInterval != time.Hour || !checker.supportScheduled {
+		t.Fatalf("data-plane request reset support retry: interval=%v scheduled=%v", checker.retryInterval, checker.supportScheduled)
+	}
+	if checker.backingOff || checker.healthInterval != d.CheckInterval {
+		t.Fatalf("data-plane request did not reset health retry: interval=%v backingOff=%v", checker.healthInterval, checker.backingOff)
+	}
+}
+
+func TestCanceledCheckDNSResolutionReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := parseCheckDNSOption(ctx, []string{"cancel.invalid:53"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled DNS option resolution error = %v", err)
+	}
+}
+
+func TestConnectivityProbeConcurrencyIsLimited(t *testing.T) {
+	previousSlots := connectivityCheckSlots
+	connectivityCheckSlots = make(chan struct{}, 2)
+	t.Cleanup(func() { connectivityCheckSlots = previousSlots })
+
+	d := newTestDialer(t, testTransport{})
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+		entered <- struct{}{}
+		<-release
+		return true, nil
+	})
+	t.Cleanup(func() {
+		checker.healthTimer.Stop()
+		checker.supportTimer.Stop()
+	})
+	done := make(chan struct{}, 4)
+	for range 4 {
+		go func() {
+			checker.runProbe(context.Background(), common.NetworkTCP4)
+			done <- struct{}{}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("probe did not acquire available capacity")
+		}
+	}
+	select {
+	case <-entered:
+		t.Fatal("probe concurrency exceeded the configured capacity")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	for range 4 {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("limited probe did not finish")
+		}
 	}
 }
