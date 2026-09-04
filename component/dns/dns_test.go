@@ -79,7 +79,7 @@ func TestNewSupportsOnlyCanonicalInterfaceRequestRule(t *testing.T) {
 				},
 			}}
 
-			_, err := New(conf, &NewOption{})
+			_, err := New(conf, conf.Routing.Request.Rules, conf.Routing.Response.Rules, &NewOption{})
 			if (err != nil) != test.wantErr {
 				t.Fatalf("New() error = %v, wantErr %t", err, test.wantErr)
 			}

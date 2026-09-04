@@ -11,9 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,10 +21,7 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/btf"
-	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
@@ -34,11 +29,7 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
-	"github.com/daeuniverse/dae/control/internal/splice"
-	"github.com/daeuniverse/dae/pkg/config_parser"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
@@ -163,102 +154,31 @@ func candidateStatsScope(target string, path *outbound.PathSpec, occurrences map
 // TODO: Hy2 的 mark 支持
 // TODO: HandlePkt HandleConn 分割 Route 和 Dial
 //
-// NewControlPlane validates the configuration and builds a control plane in
-// memory. It loads external resources (e.g. geoip) and verifies they are
-// usable, but it does NOT modify shared BPF maps and does NOT bind to any
-// network interfaces. Call Activate to commit the configuration to the kernel.
-// This split lets reload abort cleanly when the new config or its referenced
-// resources are invalid, leaving the previously running control plane intact.
+// NewControlPlane consumes prepared kernel and rule resources and builds the
+// userspace control plane. It does not modify shared BPF maps or bind programs
+// to traffic interfaces. Call Activate to commit it to the kernel.
 func NewControlPlane(
-	_bpf interface{},
+	preparation *ControlPlanePreparation,
 	nodes []outbound.NodeDescriptor,
 	groups []config.Group,
 	routingA *config.Routing,
 	global *config.Global,
 	dnsConfig *config.Dns,
-	externGeoDataDirs []string,
 ) (c *ControlPlane, err error) {
 	global.SoMarkFromDae = common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
 	if err = common.ValidateSoMarkFromDae(global.SoMarkFromDae); err != nil {
 		return nil, err
 	}
-	reusedBpf, err := validateReusableBpfState(_bpf, global.SoMarkFromDae)
+	bpf, preparedRules, isReload, err := preparation.take()
 	if err != nil {
 		return nil, err
 	}
-	kernelVersion, e := internal.KernelVersion()
-	if e != nil {
-		return nil, oops.Errorf("failed to get kernel version: %w", e)
-	}
-	if kernelVersion.Less(consts.MinimumKernelVersion) {
-		return nil, oops.Errorf("your kernel version %v does not satisfy the minimum requirement; expect >=%v",
-			kernelVersion.String(), consts.MinimumKernelVersion.String())
-	}
-	/// Allow the current process to lock memory for eBPF resources.
-	if err = rlimit.RemoveMemlock(); err != nil {
-		return nil, oops.Errorf("rlimit.RemoveMemlock:%v", err)
-	}
-
-	/// Init DaeNetns.
-	InitDaeNetns()
-	if err = InitSysctlManager(); err != nil {
-		return nil, err
-	}
-
-	if err = GetDaeNetns().Setup(); err != nil {
-		return nil, oops.Errorf("failed to setup dae netns: %w", err)
-	}
-	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
-	if err = os.MkdirAll(pinPath, 0755); err != nil {
-		return nil, oops.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
-	}
-
-	/// Load pre-compiled programs and maps into the kernel.
-	if reusedBpf == nil {
-		log.Infof("Loading eBPF programs and maps into the kernel...")
-		log.Infof("The loading process takes about 120MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
-	}
-	var programOptions ebpf.ProgramOptions
-	if log.IsLevelEnabled(log.PanicLevel) {
-		programOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
-	}
-	collectionOpts := &ebpf.CollectionOptions{
-		Cache: btf.NewCache(),
-		Maps: ebpf.MapOptions{
-			PinPath: pinPath,
-		},
-		Programs: programOptions,
-	}
-	var bpf *bpfState
-	if reusedBpf != nil {
-		bpf = reusedBpf
-	} else {
-		bpf = &bpfState{bpfObjects: new(bpfObjects), soMarkFromDae: global.SoMarkFromDae}
-		if err = fullLoadBpfObjects(bpf.bpfObjects, pinPath, global.SoMarkFromDae, collectionOpts); err != nil {
-			err = oops.Wrapf(err, "load eBPF objects")
-			if log.IsLevelEnabled(log.PanicLevel) {
-				log.Panicf("%+v", err)
-			}
-			return nil, err
-		}
-		spliceRuntime, spliceErr := splice.New(
-			collectionOpts,
-			DefaultNatTimeoutTCPEstablished,
-		)
-		if spliceErr != nil {
-			log.Warnf("TCP splice is unavailable; falling back to userspace relay: %v", spliceErr)
-		} else if spliceRuntime != nil {
-			bpf.splice = spliceRuntime
-			log.Infof("Loaded optional TCP splice programs")
-		}
-	}
-	log.Infof("Loaded eBPF programs and maps")
 	core, err := newControlPlaneCore(
 		bpf,
-		reusedBpf != nil,
+		isReload,
 	)
 	if err != nil {
-		if reusedBpf == nil {
+		if !isReload {
 			if closeErr := bpf.Close(); closeErr != nil {
 				err = errors.Join(err, oops.Wrapf(closeErr, "close eBPF objects"))
 			}
@@ -337,6 +257,7 @@ func NewControlPlane(
 		return nil, oops.Wrapf(err, "build node descriptors")
 	}
 	routingTargets := collectRoutingTargetNames(routingA)
+	routingA.Rules = nil
 	groupCompiler, err := outbound.NewGroupCompiler(dialerSet, groups, routingTargets)
 	if err != nil {
 		return nil, oops.Wrapf(err, "compile proxy groups")
@@ -444,28 +365,16 @@ func NewControlPlane(
 	}
 
 	/// Routing.
-	// Apply rules optimizers.
-	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
-	var rules []*config_parser.RoutingRule
-	if rules, err = routing.ApplyRulesOptimizers(routingA.Rules,
-		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{LocationFinder: locationFinder},
-		&routing.MergeAndSortRulesOptimizer{},
-		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
-		return nil, oops.Errorf("ApplyRulesOptimizers error:\n%w", err)
-	}
-	routingA.Rules = nil // Release.
 	if log.IsLevelEnabled(log.DebugLevel) {
 		var debugBuilder strings.Builder
-		for _, rule := range rules {
+		for _, rule := range preparedRules.routing {
 			debugBuilder.WriteString(rule.String(true, false, false) + "\n")
 		}
 		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
 	}
 	// Parse rules and build. BuildUserspace is in-memory only and is safe to
 	// run during the validation phase; BuildKernspace is deferred to Activate.
-	builder, err := NewRoutingMatcherBuilder(rules, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
+	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
 	if err != nil {
 		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
@@ -517,14 +426,15 @@ func NewControlPlane(
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
 
 	/// DNS upstream.
-	dnsUpstream, err := dns.New(dnsConfig, &dns.NewOption{
-		LocationFinder:        locationFinder,
+	dnsUpstream, err := dns.New(dnsConfig, preparedRules.dnsRequest, preparedRules.dnsResponse, &dns.NewOption{
 		UpstreamReadyCallback: plane.cacheDnsUpstream,
 		InterfaceManager:      core.ifmgr,
 	})
 	if err != nil {
 		return nil, err
 	}
+	dnsConfig.Routing.Request.Rules = nil
+	dnsConfig.Routing.Response.Rules = nil
 	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
 		return nil, err
 	}
@@ -564,6 +474,7 @@ func NewControlPlane(
 // failure is terminal: the BPF state may be partially committed, so the caller
 // must close the plane and exit rather than retrying or restoring the old plane.
 func (c *ControlPlane) Activate() error {
+	started := time.Now()
 	core := c.core
 	core.lifecycleMu.Lock()
 	defer core.lifecycleMu.Unlock()
@@ -578,6 +489,43 @@ func (c *ControlPlane) Activate() error {
 	builder := c.routingMatcherBuilder
 	c.routingMatcherBuilder = nil
 
+	// The caller has already retired the previous plane on reload. Register
+	// stats before checks start so their first results are not discarded.
+	c.reconcileStats()
+	connectivityStarted := time.Now()
+	waiters, err := c.startConnectivityChecks()
+	if err != nil {
+		return err
+	}
+	if err := c.commitKernelState(builder); err != nil {
+		return err
+	}
+	remainingConnectivityWait := max(initialConnectivityTimeout-time.Since(connectivityStarted), 0)
+	if err := waitForStartupConnectivity(waiters, remainingConnectivityWait, c.activationStop); err != nil {
+		return err
+	}
+	log.WithField("duration", time.Since(connectivityStarted)).Info("Initial connectivity startup phase finished")
+	// Bind every interface only after connectivity initialization, so traffic
+	// cannot observe partially published outbound state.
+	if err := core.setupExitHandler(); err != nil {
+		return oops.Errorf("failed to setup exit handler: %w", err)
+	}
+	if err := core.bindDaens(); err != nil {
+		return oops.Errorf("bindDaens: %w", err)
+	}
+	if err := c.bindHostInterfaces(); err != nil {
+		return err
+	}
+	for _, g := range c.outbounds {
+		g.EnableSelectionTolerance()
+	}
+	SetAnyfromSoMark(c.soMarkFromDae)
+	log.WithField("duration", time.Since(started)).Info("Initialization is completed. Start to Proxying...")
+	return nil
+}
+
+func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
+	core := c.core
 	if err := builder.BuildKernspace(); err != nil {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
@@ -589,16 +537,6 @@ func (c *ControlPlane) Activate() error {
 			return oops.Errorf("clear inherited UDP routing cache: %w", err)
 		}
 	}
-
-	// This is the first point at which the candidate plane is committed.
-	// The caller has already retired the previous plane on reload, so it is
-	// now safe to discard stale identities and reload-scoped gauge series.
-	c.reconcileStats()
-
-	// On reload without an adopted registry, evict domain routing entries
-	// inherited from the previous plane so that they cannot leak into the
-	// new rule set. An adopted registry is already in sync with the map and
-	// must not be wiped.
 	if core.isReload && !core.domainRegistry.Adopted() {
 		log.Warnln("Reload without an adopted domain registry: wiping the inherited kernel domain map; domain routing restarts from scratch")
 		var key [4]uint32
@@ -613,7 +551,11 @@ func (c *ControlPlane) Activate() error {
 			return oops.Errorf("failed to iterate inherited domain routing map: %w", err)
 		}
 	}
+	return nil
+}
 
+func (c *ControlPlane) startConnectivityChecks() ([]startupConnectivityWaiter, error) {
+	core := c.core
 	core.netmon.Register(func(previous, current component.HostNetworkSnapshot) {
 		if c.ctx.Err() != nil {
 			return
@@ -625,34 +567,24 @@ func (c *ControlPlane) Activate() error {
 			c.requestHostReconcile()
 		}
 	})
-
-	// Register every initial connectivity check before releasing their shared
-	// start gate. Startup waits until each blocking group is usable or all of its
-	// blocking mode sweeps have completed, while support retries continue later.
 	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
 	checkStart := make(chan struct{})
 	waiters := make([]startupConnectivityWaiter, 0, len(c.outbounds))
-	for _, g := range c.outbounds {
-		ready, err := g.StartConnectivityChecks(checkStart)
+	for _, group := range c.outbounds {
+		ready, err := group.StartConnectivityChecks(checkStart)
 		if err != nil {
-			return oops.Errorf("start outbound %q connectivity checks: %w", g.Name, err)
+			return nil, oops.Errorf("start outbound %q connectivity checks: %w", group.Name, err)
 		}
 		if ready != nil {
-			waiters = append(waiters, startupConnectivityWaiter{name: g.Name, ready: ready})
+			waiters = append(waiters, startupConnectivityWaiter{name: group.Name, ready: ready})
 		}
 	}
 	close(checkStart)
-	if err := waitForStartupConnectivity(waiters, initialConnectivityTimeout, c.activationStop); err != nil {
-		return err
-	}
-	// Bind interfaces only after connectivity initialization, so existing
-	// connections cannot observe partially published outbound state.
-	if err := core.setupExitHandler(); err != nil {
-		return oops.Errorf("failed to setup exit handler: %w", err)
-	}
-	if err := core.bindDaens(); err != nil {
-		return oops.Errorf("bindDaens: %w", err)
-	}
+	return waiters, nil
+}
+
+func (c *ControlPlane) bindHostInterfaces() error {
+	core := c.core
 	core.ifmgr.SetResetCallback(core.resetHostTCXLinks)
 	hostEnabled := len(c.lanInterface) > 0 || len(c.wanInterface) > 0 || c.autoWan
 	if hostEnabled {
@@ -696,13 +628,6 @@ func (c *ControlPlane) Activate() error {
 			c.requestHostReconcile()
 		}
 	}
-	// Startup uses best-so-far selection; enable hysteresis only after all
-	// interface bindings are ready to serve traffic.
-	for _, g := range c.outbounds {
-		g.EnableSelectionTolerance()
-	}
-	SetAnyfromSoMark(c.soMarkFromDae)
-	log.Infof("Initialization is completed. Start to Proxying...")
 	return nil
 }
 
@@ -731,9 +656,8 @@ func waitForStartupConnectivity(waiters []startupConnectivityWaiter, timeout tim
 			select {
 			case <-pending.ready:
 			default:
-				log.WithField("group", pending.name).Warnf(
-					"No usable candidate after %v; startup continues and checking remains active",
-					timeout,
+				log.WithField("group", pending.name).Warn(
+					"No usable candidate before the startup connectivity deadline; startup continues and checking remains active",
 				)
 			}
 		}

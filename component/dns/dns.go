@@ -12,11 +12,10 @@ import (
 	"net/url"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component"
-	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -29,7 +28,6 @@ type Dns struct {
 }
 
 type NewOption struct {
-	LocationFinder        *assets.LocationFinder
 	UpstreamReadyCallback func(dnsUpstream *Upstream)
 	// InterfaceManager resolves interface names in request routing rules to ifindex and
 	// keeps it in sync with the interface lifecycle. It may be nil, in which
@@ -37,7 +35,8 @@ type NewOption struct {
 	InterfaceManager *component.InterfaceManager
 }
 
-func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
+// New builds DNS routing from rules prepared by the control-plane startup phase.
+func New(dns *config.Dns, requestRules, responseRules []*config_parser.RoutingRule, opt *NewOption) (s *Dns, err error) {
 	s = &Dns{}
 	// Parse upstream.
 	upstreamName2Id := map[string]uint8{}
@@ -63,24 +62,8 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		upstreamName2Id[tag] = uint8(len(s.upstream))
 		s.upstream = append(s.upstream, r)
 	}
-	// Optimize routings.
-	if dns.Routing.Request.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Request.Rules,
-		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{LocationFinder: opt.LocationFinder},
-		&routing.MergeAndSortRulesOptimizer{},
-		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
-		return nil, err
-	}
-	if dns.Routing.Response.Rules, err = routing.ApplyRulesOptimizers(dns.Routing.Response.Rules,
-		&routing.DatReaderOptimizer{LocationFinder: opt.LocationFinder},
-		&routing.MergeAndSortRulesOptimizer{},
-		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
-		return nil, err
-	}
 	// Parse request routing.
-	reqMatcherBuilder, err := NewRequestMatcherBuilder(dns.Routing.Request.Rules, upstreamName2Id, dns.Routing.Request.Fallback, opt.InterfaceManager)
+	reqMatcherBuilder, err := NewRequestMatcherBuilder(requestRules, upstreamName2Id, dns.Routing.Request.Fallback, opt.InterfaceManager)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
@@ -89,7 +72,7 @@ func New(dns *config.Dns, opt *NewOption) (s *Dns, err error) {
 		return nil, fmt.Errorf("failed to build DNS request routing: %w", err)
 	}
 	// Parse response routing.
-	respMatcherBuilder, err := NewResponseMatcherBuilder(dns.Routing.Response.Rules, upstreamName2Id, dns.Routing.Response.Fallback)
+	respMatcherBuilder, err := NewResponseMatcherBuilder(responseRules, upstreamName2Id, dns.Routing.Response.Fallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build DNS response routing: %w", err)
 	}

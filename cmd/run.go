@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -22,7 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/samber/oops"
@@ -35,8 +33,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/common/subscription"
-	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/logger"
@@ -51,24 +47,10 @@ const (
 	SignalProgressFilePath = "/var/run/dae.progress"
 	StatusSocketPath       = "/var/run/dae.sock"
 
-	// Time bounds applied to the reload path only. A reload must not hang for
-	// a long time when the network is down, because the old control plane
-	// keeps serving traffic while the new one is being built. Startup, in
-	// contrast, may wait for the network without a bound, since the network
-	// may not be online yet when dae first starts.
-	reloadNetworkWaitTimeout        = 15 * time.Second
-	reloadSubscriptionTimeout       = 10 * time.Second
-	reloadSubscriptionPhaseTimeout  = 30 * time.Second
-	startupSubscriptionPhaseTimeout = 2 * time.Minute
-	observabilityShutdownTimeout    = 3 * time.Second
+	observabilityShutdownTimeout = 3 * time.Second
 )
 
 var (
-	CheckNetworkLinks = []string{
-		"http://edge.microsoft.com/captiveportal/generate_204",
-		"http://www.gstatic.com/generate_204",
-		"http://www.qualcomm.cn/generate_204",
-	}
 	std             = log.New()
 	pprofServer     *http.Server
 	metricsServer   *http.Server
@@ -104,9 +86,6 @@ func init() {
 	runCmd.PersistentFlags().BoolVar(&disableTimestamp, "disable-timestamp", false, "Disable timestamp.")
 	runCmd.PersistentFlags().BoolVar(&disablePidFile, "disable-pidfile", false, "Not generate /var/run/dae.pid.")
 	runCmd.PersistentFlags().BoolVar(&disableAuthSudo, "disable-sudo", false, "Disable sudo prompt ,may cause startup failure due to insufficient permissions")
-	rand.Shuffle(len(CheckNetworkLinks), func(i, j int) {
-		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
-	})
 }
 
 var (
@@ -226,8 +205,20 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	startPprofServer(conf.Global.PprofPort)
 
 	// New ControlPlane.
-	c, err := newControlPlane(nil, conf, externGeoDataDirs)
+	startupStarted := time.Now()
+	startupCtx, stopStartupSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	c, err := newControlPlane(startupCtx, nil, conf, externGeoDataDirs)
+	startupErr := startupCtx.Err()
+	stopStartupSignals()
+	if err == nil && startupErr != nil {
+		err = errors.Join(startupErr, cleanupStartup(c))
+		c = nil
+	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Info("Startup canceled")
+			return
+		}
 		std.Fatalln(err)
 	}
 	if err = c.Activate(); err != nil {
@@ -284,6 +275,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 		statusServer.SetControlPlane(startupPlane)
 	}
 	sdnotify.Ready()
+	log.WithField("duration", time.Since(startupStarted)).Info("Startup completed")
 	if !disablePidFile {
 		_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 	}
@@ -403,7 +395,7 @@ loop:
 				std.Warnln("[Reload] Build new control plane")
 				writeReloadProgress("Building new control plane...")
 				obj := c.EjectBpf()
-				newC, err := newControlPlane(obj, newConf, externGeoDataDirs)
+				newC, err := newControlPlane(context.Background(), obj, newConf, externGeoDataDirs)
 				if err != nil {
 					// Restore BPF ownership on the old plane and keep it running.
 					c.InjectBpf()
@@ -641,211 +633,6 @@ func startMetricsServer(port uint16) {
 	go serveHTTP("metrics", server, listener, clearMetricsServer)
 	observabilityMu.Unlock()
 	stopHTTPServer("metrics", old, oldListener)
-}
-
-// reloadDeadline returns the deadline after which a reload step must give up
-// waiting. At startup (isReload == false) it returns the zero time, i.e. no
-// bound.
-func reloadDeadline(isReload bool, timeout time.Duration) time.Time {
-	if !isReload {
-		return time.Time{}
-	}
-	return time.Now().Add(timeout)
-}
-
-// waitForNetworkOnline blocks until the network is reachable. Startup waits
-// indefinitely because the network may not be online yet when dae first
-// starts. During a reload the wait is bounded by reloadNetworkWaitTimeout:
-// the old control plane keeps serving traffic, so a reload must not hang on
-// a dead network.
-func waitForNetworkOnline(isReload bool) {
-	epo := 5 * time.Second
-	client := http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return direct.Direct.DialContext(ctx, "tcp", addr)
-			},
-		},
-		Timeout: epo,
-	}
-	deadline := reloadDeadline(isReload, reloadNetworkWaitTimeout)
-	if isReload {
-		writeReloadProgress("Checking network...")
-	}
-	log.Infoln("Waiting for network...")
-	for i := 0; ; i++ {
-		if isReload && time.Now().After(deadline) {
-			log.Warnf("Network is still not online after %v; continuing without network check", reloadNetworkWaitTimeout)
-			return
-		}
-		resp, err := client.Get(CheckNetworkLinks[i%len(CheckNetworkLinks)])
-		if err != nil {
-			log.Debugf("%+v", oops.Wrapf(err, "CheckNetwork"))
-			var neterr net.Error
-			if errors.As(err, &neterr) && neterr.Timeout() {
-				// Do not sleep.
-				continue
-			}
-			time.Sleep(epo)
-			continue
-		}
-		resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-			log.Infoln("Network online.")
-			return
-		}
-		log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
-		time.Sleep(epo)
-	}
-}
-
-func newControlPlane(bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
-	// Deep copy to prevent modification.
-	conf = deepcopy.Copy(conf).(*config.Config)
-	var autoSelected bool
-	conf.Global.SoMarkFromDae, autoSelected = common.ResolveSoMarkFromDae(conf.Global.SoMarkFromDae, conf.Global.SoMarkFromDaeSet)
-	if err = common.ValidateSoMarkFromDae(conf.Global.SoMarkFromDae); err != nil {
-		return nil, err
-	}
-	if autoSelected {
-		log.Warn("so_mark_from_dae is unset; using reserved internal socket mark 0x100 for policy routing")
-	}
-
-	// A non-nil bpf means this is a reload (or suspend/resume): the ejected
-	// bpf object of the previous control plane is reused. During a reload the
-	// old control plane keeps serving traffic, so the network check and the
-	// subscription fetches below must be bounded and must not block for too
-	// long.
-	isReload := bpf != nil
-
-	/// Build descriptors for locally configured nodes.
-	nodeDescriptors := make([]outbound.NodeDescriptor, 0, len(conf.Node))
-	for _, node := range conf.Node {
-		nodeDescriptors = append(nodeDescriptors, outbound.NodeDescriptor{
-			Name:     node.Name,
-			Link:     node.Link,
-			Options:  node.Options,
-			Required: true,
-		})
-	}
-
-	/// Init Direct Dialers.
-	direct.InitDirectDialers(conf.Global.FallbackResolver, conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
-
-	// Resolve subscriptions to nodes.
-	resolvingfailed := false
-	if !conf.Global.DisableWaitingNetwork {
-		waitForNetworkOnline(isReload)
-	}
-	if len(conf.Subscription) > 0 {
-		if isReload {
-			writeReloadProgress("Fetching subscriptions...")
-		}
-		log.Infoln("Fetching subscriptions...")
-	}
-	client := http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return direct.Direct.DialContext(ctx, "tcp", addr)
-			},
-		},
-		Timeout: 30 * time.Second,
-	}
-	// Bound the time a reload may spend on unreachable subscription servers:
-	// the old control plane keeps serving traffic, and subscriptions can be
-	// fetched again on the next reload. Startup keeps the full timeout since
-	// the network may not be online yet.
-	if isReload {
-		client.Timeout = reloadSubscriptionTimeout
-	}
-	subscriptionDir := os.Getenv("DAE_LOCATION_SUBSCRIPTION")
-	if subscriptionDir == "" {
-		subscriptionDir = filepath.Dir(cfgFile)
-	}
-	activeSubscriptionTags, err := persistentSubscriptionTags(conf.Subscription)
-	if err != nil {
-		return nil, err
-	}
-	subscriptionPhaseTimeout := startupSubscriptionPhaseTimeout
-	if isReload {
-		subscriptionPhaseTimeout = reloadSubscriptionPhaseTimeout
-	}
-	subCtx, cancelSubscriptions := context.WithTimeout(context.Background(), subscriptionPhaseTimeout)
-	defer cancelSubscriptions()
-	validateNode := outbound.NewNodeValidator(subCtx, &conf.Global)
-	for _, sub := range conf.Subscription {
-		if err := subCtx.Err(); err != nil {
-			log.Warnf("Subscription resolution exceeded %v; skipping the remaining subscriptions", subscriptionPhaseTimeout)
-			break
-		}
-		subscriptionLink := sub.String()
-		tag, nodes, err := subscription.ResolveSubscriptionContext(subCtx, &client, subscriptionDir, subscriptionLink, validateNode)
-		if err != nil {
-			log.Warnf("failed to resolve subscription %q: %v", subscription.RedactURL(subscriptionLink), err)
-			resolvingfailed = true
-			continue
-		}
-		if len(nodes) > 0 {
-			for _, link := range nodes {
-				nodeDescriptors = append(nodeDescriptors, outbound.NodeDescriptor{
-					Link:            link,
-					SubscriptionTag: tag,
-					Defaults:        sub.Option.Defaults,
-					Rules:           sub.Option.Rules,
-				})
-			}
-		}
-	}
-
-	// Delete caches that no configured persistent subscription can use.
-	if err := subscription.PrunePersistedSubscriptions(subscriptionDir, activeSubscriptionTags); err != nil {
-		return nil, err
-	}
-
-	if len(nodeDescriptors) == 0 {
-		if resolvingfailed {
-			log.Warnln("No node found because all subscription resolving failed.")
-		} else {
-			log.Warnln("No node found.")
-		}
-	}
-
-	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
-		log.Warnln("No interface to bind.")
-	}
-
-	c, err = control.NewControlPlane(
-		bpf,
-		nodeDescriptors,
-		conf.Group,
-		&conf.Routing,
-		&conf.Global,
-		&conf.Dns,
-		externGeoDataDirs,
-	)
-	if err != nil {
-		return nil, err
-	}
-	// Call GC to release memory.
-	runtime.GC()
-	logStartupNodeStatus(c.GroupsStatus())
-
-	return c, nil
-}
-
-func persistentSubscriptionTags(subscriptions []config.Subscription) (map[string]struct{}, error) {
-	tags := make(map[string]struct{}, len(subscriptions))
-	for _, sub := range subscriptions {
-		tag, ok := subscription.PersistentTag(sub.String())
-		if !ok {
-			continue
-		}
-		if _, exists := tags[tag]; exists {
-			return nil, fmt.Errorf("duplicate persistent subscription tag %q", tag)
-		}
-		tags[tag] = struct{}{}
-	}
-	return tags, nil
 }
 
 func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
