@@ -121,39 +121,53 @@ type HostNetworkMonitor struct {
 func NewHostNetworkMonitor() *HostNetworkMonitor {
 	subscriptionEnd := make(chan struct{})
 
-	subscribeError := func(kind string) func(error) {
-		return func(err error) { log.Debugf("%s subscription: %v", kind, err) }
-	}
 	subscriptions := &hostNetworkSubscriptions{
 		link: func(done <-chan struct{}) (<-chan netlink.LinkUpdate, error) {
 			ch := make(chan netlink.LinkUpdate, 16)
 			// reconcile performs the authoritative dump after subscriptions start.
 			// ListExisting would broadcast its dump request to other link subscribers.
 			err := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
-				ErrorCallback: subscribeError("link"),
+				ErrorCallback: hostNetworkEventError(done, "link"),
 			})
 			return ch, err
 		},
 		addr: func(done <-chan struct{}) (<-chan netlink.AddrUpdate, error) {
 			ch := make(chan netlink.AddrUpdate, 16)
 			err := netlink.AddrSubscribeWithOptions(ch, done, netlink.AddrSubscribeOptions{
-				ErrorCallback: subscribeError("address"),
+				ErrorCallback: hostNetworkEventError(done, "address"),
 			})
 			return ch, err
 		},
 		route: func(done <-chan struct{}) (<-chan netlink.RouteUpdate, error) {
 			ch := make(chan netlink.RouteUpdate, 16)
 			err := netlink.RouteSubscribeWithOptions(ch, done, netlink.RouteSubscribeOptions{
-				ErrorCallback: subscribeError("route"),
+				ErrorCallback: hostNetworkEventError(done, "route"),
 			})
 			return ch, err
 		},
 		rule: func(done <-chan struct{}) (<-chan struct{}, error) {
-			return subscribeRuleUpdates(done, subscribeError("rule"))
+			return subscribeRuleUpdates(done, hostNetworkEventError(done, "rule"))
 		},
 	}
 	return newHostNetworkMonitor(currentHostNetworkSnapshot, nil, nil, nil, nil, subscriptionEnd, subscriptions,
 		hostNetworkDebounceInterval, hostNetworkResyncInterval)
+}
+
+// Closing netlink sockets can report EAGAIN instead of a closed-socket error.
+// Suppress callbacks only after shutdown, never active receive errors: losing
+// an event stream still needs channel-closure recovery and state reconciliation.
+func hostNetworkEventError(done <-chan struct{}, kind string) func(error) {
+	return func(err error) {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		log.WithFields(log.Fields{
+			"event":         "netlink_receive_error",
+			"netlink_event": kind,
+		}).WithError(err).Debug("Host network monitor kernel event stream error")
+	}
 }
 
 func subscribeRuleUpdates(done <-chan struct{}, errorCallback func(error)) (<-chan struct{}, error) {
@@ -241,7 +255,7 @@ func (m *HostNetworkMonitor) Snapshot() HostNetworkSnapshot {
 func (m *HostNetworkMonitor) reconcile() bool {
 	next, err := m.snapshotFn()
 	if err != nil {
-		log.Debugf("Failed to reconcile host network state: %v", err)
+		log.WithField("event", "netlink_resync_error").WithError(err).Debug("Host network monitor could not resynchronize kernel state; retrying")
 		return false
 	}
 	next.Interfaces = slices.Clone(next.Interfaces)
@@ -314,6 +328,16 @@ func (m *HostNetworkMonitor) run(
 		}
 		debounceCh = debounceTimer.C
 	}
+	subscriptionClosed := func(kind string) {
+		if m.closed.Err() != nil || m.subscriptions == nil {
+			return
+		}
+		log.WithFields(log.Fields{
+			"event":          "netlink_subscription_closed",
+			"netlink_event":  kind,
+			"retry_interval": hostNetworkRetryInterval,
+		}).Debug("Host network monitor kernel event stream closed; resubscribing and refreshing network state")
+	}
 	restoreSubscriptions := func() {
 		if m.subscriptions == nil {
 			return
@@ -321,7 +345,7 @@ func (m *HostNetworkMonitor) run(
 		if linkCh == nil && m.subscriptions.link != nil {
 			var err error
 			if linkCh, err = m.subscriptions.link(m.subscriptionEnd); err != nil {
-				log.Debugf("link subscription: %v", err)
+				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "link"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
 				linkCh = nil
 			} else {
 				markDirty()
@@ -330,7 +354,7 @@ func (m *HostNetworkMonitor) run(
 		if addrCh == nil && m.subscriptions.addr != nil {
 			var err error
 			if addrCh, err = m.subscriptions.addr(m.subscriptionEnd); err != nil {
-				log.Debugf("address subscription: %v", err)
+				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "address"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
 				addrCh = nil
 			} else {
 				markDirty()
@@ -339,7 +363,7 @@ func (m *HostNetworkMonitor) run(
 		if routeCh == nil && m.subscriptions.route != nil {
 			var err error
 			if routeCh, err = m.subscriptions.route(m.subscriptionEnd); err != nil {
-				log.Debugf("route subscription: %v", err)
+				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "route"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
 				routeCh = nil
 			} else {
 				markDirty()
@@ -348,7 +372,7 @@ func (m *HostNetworkMonitor) run(
 		if ruleCh == nil && m.subscriptions.rule != nil {
 			var err error
 			if ruleCh, err = m.subscriptions.rule(m.subscriptionEnd); err != nil {
-				log.Debugf("rule subscription: %v", err)
+				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "rule"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
 				ruleCh = nil
 			} else {
 				markDirty()
@@ -400,29 +424,25 @@ func (m *HostNetworkMonitor) run(
 		case _, ok := <-linkCh:
 			if !ok {
 				linkCh = nil
-				markDirty()
-				continue
+				subscriptionClosed("link")
 			}
 			markDirty()
 		case _, ok := <-addrCh:
 			if !ok {
 				addrCh = nil
-				markDirty()
-				continue
+				subscriptionClosed("address")
 			}
 			markDirty()
 		case _, ok := <-routeCh:
 			if !ok {
 				routeCh = nil
-				markDirty()
-				continue
+				subscriptionClosed("route")
 			}
 			markDirty()
 		case _, ok := <-ruleCh:
 			if !ok {
 				ruleCh = nil
-				markDirty()
-				continue
+				subscriptionClosed("rule")
 			}
 			markDirty()
 		case <-debounceCh:

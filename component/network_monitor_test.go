@@ -7,12 +7,15 @@ package component
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -410,5 +413,45 @@ func TestHostNetworkMonitorResubscribesAfterChannelClosure(t *testing.T) {
 		case <-deadline:
 			t.Fatal("restored subscription did not publish an update")
 		}
+	}
+}
+
+func TestHostNetworkEventErrorsOnlySuppressShutdown(t *testing.T) {
+	logger := log.StandardLogger()
+	previousHooks := logger.ReplaceHooks(make(log.LevelHooks))
+	previousLevel := logger.GetLevel()
+	hook := logtest.NewGlobal()
+	logger.SetLevel(log.DebugLevel)
+	t.Cleanup(func() {
+		logger.ReplaceHooks(previousHooks)
+		logger.SetLevel(previousLevel)
+	})
+
+	for _, kind := range []string{"link", "address", "route", "rule"} {
+		t.Run(kind, func(t *testing.T) {
+			hook.Reset()
+			done := make(chan struct{})
+			report := hostNetworkEventError(done, kind)
+			// The library formats receive errors with %v, so errors.Is cannot
+			// reliably identify them. Active errors must remain visible anyway.
+			for _, err := range []error{unix.EAGAIN, unix.ENOBUFS} {
+				report(fmt.Errorf("Receive failed: %v", err))
+			}
+			entries := hook.AllEntries()
+			if len(entries) != 2 {
+				t.Fatalf("active receive errors logged = %d, want 2", len(entries))
+			}
+			for _, entry := range entries {
+				if entry.Data["event"] != "netlink_receive_error" || entry.Data["netlink_event"] != kind || entry.Data["error"] == nil || entry.Message != "Host network monitor kernel event stream error" {
+					t.Fatalf("network-monitor context missing: %+v", entry)
+				}
+			}
+			close(done)
+			report(fmt.Errorf("Receive failed: %v", unix.EAGAIN))
+			report(net.ErrClosed)
+			if got := len(hook.AllEntries()); got != len(entries) {
+				t.Fatalf("shutdown produced %d extra receive logs", got-len(entries))
+			}
+		})
 	}
 }
