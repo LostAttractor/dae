@@ -1,0 +1,183 @@
+// Host capabilities are captured and removed from the global namespace.
+(function (host, input) {
+  "use strict";
+  delete globalThis.__daeHost;
+  delete globalThis.__daeInput;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  function toBase64(bytes) {
+    const parts = [];
+    for (let i = 0; i < bytes.length; i += 3) {
+      const a = bytes[i], b = bytes[i + 1], c = bytes[i + 2];
+      parts.push(alphabet[a >> 2] + alphabet[((a & 3) << 4) | ((b || 0) >> 4)] +
+        (i + 1 < bytes.length ? alphabet[((b & 15) << 2) | ((c || 0) >> 6)] : "=") +
+        (i + 2 < bytes.length ? alphabet[c & 63] : "="));
+    }
+    return parts.join("");
+  }
+  function fromBase64(text) {
+    text = String(text).replace(/[\t\n\f\r ]/g, "");
+    if (text.length % 4 === 0) text = text.replace(/={1,2}$/, "");
+    if (text.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(text)) throw new TypeError("Invalid base64");
+    const out = new Uint8Array(Math.floor(text.length * 6 / 8));
+    let bits = 0, value = 0, cursor = 0;
+    for (const char of text) {
+      value = (value << 6) | alphabet.indexOf(char);
+      bits += 6;
+      if (bits >= 8) { bits -= 8; out[cursor++] = (value >> bits) & 255; }
+    }
+    return out;
+  }
+  function bytes(value) {
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    throw new TypeError("Expected an ArrayBuffer or typed array");
+  }
+  globalThis.atob = text => {
+    const data = fromBase64(text), chunks = [];
+    for (let i = 0; i < data.length; i += 4096) chunks.push(String.fromCharCode(...data.subarray(i, i + 4096)));
+    return chunks.join("");
+  };
+  globalThis.btoa = text => {
+    text = String(text);
+    const data = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) {
+      const n = text.charCodeAt(i);
+      if (n > 255) throw new TypeError("btoa only accepts Latin-1 data");
+      data[i] = n;
+    }
+    return toBase64(data);
+  };
+  globalThis.TextEncoder = class TextEncoder {
+    get encoding() { return "utf-8"; }
+    encode(text = "") { return fromBase64(host("encode", String(text))); }
+    encodeInto(text, dest) {
+      if (!(dest instanceof Uint8Array)) throw new TypeError("Expected Uint8Array");
+      let read = 0, written = 0;
+      for (const char of String(text)) {
+        const encoded = this.encode(char);
+        if (written + encoded.length > dest.length) break;
+        dest.set(encoded, written); written += encoded.length; read += char.length;
+      }
+      return { read, written };
+    }
+  };
+  globalThis.TextDecoder = class TextDecoder {
+    constructor(label = "utf-8", options = {}) {
+      if (!["utf-8", "utf8", "unicode-1-1-utf-8"].includes(String(label).trim().toLowerCase()))
+        throw new RangeError("Only UTF-8 decoding is supported");
+      this.encoding = "utf-8"; this.fatal = !!options.fatal; this.ignoreBOM = !!options.ignoreBOM;
+    }
+    decode(data = new Uint8Array(), options = {}) {
+      if (options.stream) throw new TypeError("Streaming TextDecoder is not supported");
+      return host("decode", toBase64(bytes(data)), this.fatal ? "fatal" : "", this.ignoreBOM ? "keep-bom" : "");
+    }
+  };
+  function message(value) {
+    if (!value) return undefined;
+    value.headers = headerObject(value.headers);
+    if (value.h2_trailers != null) value.h2_trailers = headerObject(value.h2_trailers);
+    if (Object.prototype.hasOwnProperty.call(value, "bodyBase64")) {
+      const raw = fromBase64(value.bodyBase64);
+      value.body = input.binary ? raw : new TextDecoder().decode(raw);
+      delete value.bodyBase64;
+    }
+    return value;
+  }
+  if (input.request) globalThis.$request = message(input.request);
+  if (input.response) globalThis.$response = message(input.response);
+  if (input.argument) globalThis.$argument = input.argument;
+  globalThis.$script = { name: input.name, type: input.type, startTime: Date.now(), binaryBodyMode: input.binary };
+  globalThis.$environment = { "surge-version": "5.0", "surge-build": "0", "dae-runtime": "quickjs" };
+  globalThis.$persistentStore = {
+    read: key => host("read", String(key)),
+    write: (value, key) => host("write", String(key), value == null ? "" : String(value), value == null ? "delete" : "")
+  };
+  function log(level, ...args) {
+    host("log", level, args.map(v => typeof v === "string" ? v : JSON.stringify(v)).join(" "));
+  }
+  globalThis.console = {
+    log: (...args) => log("info", ...args),
+    info: (...args) => log("info", ...args),
+    warn: (...args) => log("warn", ...args),
+    error: (...args) => log("error", ...args),
+    debug: (...args) => log("debug", ...args)
+  };
+  globalThis.$notification = { post: (title, subtitle, body) => log("info", title, subtitle, body) };
+  globalThis.$utils = { ungzip: data => fromBase64(host("ungzip", toBase64(bytes(data)))) };
+  function headerObject(value) {
+    const keyFor = (object, key) => typeof key === "string"
+      ? Object.keys(object).find(name => name.toLowerCase() === key.toLowerCase()) ?? key : key;
+    return new Proxy(value ?? {}, {
+      get: (object, key) => Reflect.get(object, keyFor(object, key)),
+      has: (object, key) => Reflect.has(object, keyFor(object, key)),
+      set: (object, key, data) => Reflect.set(object, keyFor(object, key), data),
+      deleteProperty: (object, key) => Reflect.deleteProperty(object, keyFor(object, key)),
+      getOwnPropertyDescriptor: (object, key) => Reflect.getOwnPropertyDescriptor(object, keyFor(object, key))
+    });
+  }
+  function headers(value) {
+    if (value == null) return undefined;
+    const out = {};
+    for (const [key, val] of Object.entries(value)) out[key] = Array.isArray(val) ? val.join(", ") : String(val);
+    return out;
+  }
+  function normalize(value) {
+    if (value == null) return {};
+    if (typeof value !== "object") throw new TypeError("$done expects an object");
+    const out = {};
+    if (value.url != null) out.url = String(value.url);
+    if (value.headers != null) out.headers = headers(value.headers);
+    if (value.h2_trailers != null) out.h2_trailers = headers(value.h2_trailers);
+    if (value.status != null) out.status = value.status;
+    if (value.abort != null) out.abort = !!value.abort;
+    if (value.response != null) out.response = normalize(value.response);
+    if (Object.prototype.hasOwnProperty.call(value, "body") && value.body != null) {
+      if (typeof value.body === "string") out.body = value.body;
+      else out.bodyBase64 = toBase64(bytes(value.body));
+    }
+    return out;
+  }
+  let completed = false;
+  globalThis.$done = value => {
+    if (completed) return;
+    host("done", JSON.stringify(normalize(value)));
+    completed = true;
+  };
+  let sequence = 0;
+  const callbacks = new Map();
+  globalThis.__daeDispatch = (id, json) => {
+    const callback = callbacks.get(id);
+    if (!callback || completed) return;
+    callbacks.delete(id);
+    callback(JSON.parse(json));
+  };
+  globalThis.setTimeout = (fn, ms = 0, ...args) => {
+    if (typeof fn !== "function") throw new TypeError("setTimeout expects a function");
+    const id = ++sequence;
+    callbacks.set(id, () => fn(...args));
+    host("timer", String(id), String(Math.max(0, Math.floor(Number(ms) || 0))));
+    return id;
+  };
+  globalThis.clearTimeout = id => { callbacks.delete(id); host("clear-timer", String(id)); };
+  globalThis.$httpClient = {};
+  for (const method of ["get", "post", "put", "delete", "head", "options", "patch"]) {
+    $httpClient[method] = (options, callback) => {
+      if (typeof callback !== "function") throw new TypeError("$httpClient expects a callback");
+      options = typeof options === "string" ? { url: options } : options;
+      const payload = normalize(options);
+      payload.method = method.toUpperCase(); payload.timeout = options.timeout;
+      const id = ++sequence;
+      callbacks.set(id, event => {
+        let body = event.bodyBase64 == null ? null : fromBase64(event.bodyBase64);
+        if (body !== null && !options["binary-mode"]) body = new TextDecoder().decode(body);
+        if (event.response) {
+          event.response.headers = headerObject(event.response.headers);
+          if (event.response.h2_trailers != null) event.response.h2_trailers = headerObject(event.response.h2_trailers);
+        }
+        callback(event.error || null, event.response || null, body);
+      });
+      try { host("http", String(id), JSON.stringify(payload)); }
+      catch (error) { callbacks.delete(id); throw error; }
+    };
+  }
+})(globalThis.__daeHost, globalThis.__daeInput);

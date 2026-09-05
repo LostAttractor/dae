@@ -4,6 +4,9 @@
 [submodule "trace/kern/headers"]
 	path = trace/kern/headers
 	url = https://github.com/daeuniverse/dae_bpf_headers
+[submodule "third_party/quickjs-go"]
+	path = third_party/quickjs-go
+	url = https://github.com/LostAttractor/quickjs-go.git
 [submodule "third_party/quic-go"]
 	path = third_party/quic-go
 	url = https://github.com/LostAttractor/quic-go.git

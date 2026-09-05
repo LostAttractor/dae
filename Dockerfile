@@ -1,13 +1,14 @@
-FROM golang:1.27.0-bookworm AS builder
-RUN apt-get update && apt-get install -y llvm-15 clang-15 git make
-ENV CLANG=clang-15
+FROM golang:1.27.0-alpine AS builder
+RUN apk add --no-cache clang llvm git make build-base musl-dev linux-headers
+ENV CLANG=clang CGO_ENABLED=1
 WORKDIR /build/
 ADD go.mod go.sum ./
 # Initialize submodules in the build context before running docker build.
 COPY third_party ./third_party
 RUN go mod download
 ADD . .
-RUN make OUTPUT=dae GOFLAGS="-buildvcs=false" CC=clang CGO_ENABLED=0
+RUN make OUTPUT=dae GOFLAGS="-buildvcs=false" CC=cc STATIC=y \
+    && scripts/check-static.sh dae
 
 FROM alpine
 RUN mkdir -p /usr/local/share/dae/

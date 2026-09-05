@@ -45,12 +45,20 @@ jobs:
           go.sum
         go-version: '>=1.27.0'
 
+    - name: Install native musl toolchain
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y musl-tools clang-15 llvm-15 binutils
+
     - name: Generate and build
       run: |
-        make GOFLAGS="-buildvcs=false"
+        make GOFLAGS="-buildvcs=false" CC=musl-gcc STATIC=y CLANG=clang-15 STRIP=llvm-strip-15
         tags=$(cat .build_tags)
-        CGO_ENABLED=0 go test -c -tags="$tags" ./control -o control.test
-        CGO_ENABLED=0 go test -c -tags="$tags,dae_splice_tests" ./control/internal/splice -o splice.test
+        CGO_ENABLED=1 CC=musl-gcc go test -c -tags="netgo,osusergo,$tags" \
+          -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" ./control -o control.test
+        CGO_ENABLED=1 CC=musl-gcc go test -c -tags="netgo,osusergo,$tags,dae_splice_tests" \
+          -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" ./control/internal/splice -o splice.test
+        scripts/check-static.sh dae control.test splice.test
 
     - name: Store executable
       uses: actions/upload-artifact@v6

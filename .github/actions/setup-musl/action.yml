@@ -1,0 +1,16 @@
+name: Set up release musl cross-compiler
+description: Install a checksum-pinned Zig compiler and configure the target CC
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        zig=$(scripts/setup-zig.sh "$RUNNER_TEMP/dae-zig")
+        echo "DAE_ZIG=$zig" >> "$GITHUB_ENV"
+        echo "CC=$GITHUB_WORKSPACE/scripts/zig-cc.sh" >> "$GITHUB_ENV"
+        echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
+        echo "STATIC=y" >> "$GITHUB_ENV"
+        if [[ "$GOARCH" == arm && "${GOARM%%,*}" == 5 ]]; then
+          sudo apt-get install -y gcc-arm-linux-gnueabi
+          echo "DAE_ARM_LIBGCC=$(arm-linux-gnueabi-gcc -print-libgcc-file-name)" >> "$GITHUB_ENV"
+        fi

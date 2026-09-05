@@ -31,8 +31,8 @@ jobs:
       - name: Checkout codebase
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
           submodules: recursive
+          fetch-depth: 0
       - name: Prepare
         id: prep
         env:

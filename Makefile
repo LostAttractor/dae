@@ -15,6 +15,9 @@ OUTPUT ?= dae
 MAX_MATCH_SET_LEN ?= 1024
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
 NOSTRIP ?= n
+STATIC ?= n
+CGO_ENABLED ?= 1
+export CGO_ENABLED
 STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
 BUILD_TAGS_FILE := .build_tags
 ifeq ($(strip $(NOSTRIP)),y)
@@ -44,9 +47,18 @@ else
 	VERSION ?= unstable-0.nogit
 endif
 
-BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)" $(BUILD_ARGS)
+ifeq ($(STATIC),y)
+STATIC_LDFLAGS := -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'
+endif
+BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
 
-.PHONY: check-go-arch check-go-version clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules test
+.PHONY: check-go-arch check-go-version check-cgo clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules test
+
+check-cgo:
+	@if [ "$(CGO_ENABLED)" != "1" ]; then \
+		echo "ERROR: dae requires CGO_ENABLED=1 for its native QuickJS runtime." >&2; \
+		exit 1; \
+	fi
 
 check-go-arch:
 	@if [ -n "$(filter $(GOARCH),$(BIG_ENDIAN_GOARCHES))" ]; then \
@@ -92,12 +104,9 @@ check-go-version:
 
 ## Begin Dae Build
 dae: export GOOS=linux
-ifndef CGO_ENABLED
-dae: export CGO_ENABLED=0
-endif
-dae: check-go-arch check-go-version ebpf
+dae: check-cgo check-go-arch check-go-version ebpf
 	@echo $(CFLAGS)
-	go build -tags=$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
+	go build -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
 
 ## Begin Git Submodules
@@ -136,19 +145,19 @@ ebpf: check-go-version submodule clean-ebpf
 	unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
-    go generate ./control/control.go && \
+    CGO_ENABLED=0 go generate ./control/control.go && \
 	tags='' && \
 	case "$(GOARCH)" in \
 		amd64|arm64|riscv64|loong64|ppc64|ppc64le) \
-			go generate ./trace/trace.go && tags=trace ;; \
+			CGO_ENABLED=0 go generate ./trace/trace.go && tags=trace ;; \
 		*) echo "trace disabled on $(GOARCH): BPF probe argument ABI is unsupported" ;; \
 	esac && \
-	go generate ./control/internal/splice/generate.go && \
+		CGO_ENABLED=0 go generate ./control/internal/splice/generate.go && \
 	if [ -n "$$tags" ]; then tags="$$tags,dae_splice"; else tags=dae_splice; fi && \
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
-test: ebpf
-	go test -tags=$(shell cat $(BUILD_TAGS_FILE)) ./...
+test: check-cgo ebpf
+	go test -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
