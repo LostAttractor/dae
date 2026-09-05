@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -35,6 +36,73 @@ import (
 func TestMain(m *testing.M) {
 	outboundDirect.Direct = outboundDirect.NewDirectDialer(outboundDirect.Option{})
 	os.Exit(m.Run())
+}
+
+func TestNewControlPlaneCheckAsyncDefaults(t *testing.T) {
+	sections, err := config_parser.Parse(`
+global {}
+node {
+	implicit: 'socks5://127.0.0.1:1080'
+	ordinary: 'socks5://127.0.0.1:1081'
+	foo: 'socks5://127.0.0.1:1082'
+	bar: 'socks5://127.0.0.1:1083'
+}
+group {
+	unused { policy: random }
+	foo { check_async: false }
+	bar { check_async: true }
+}
+routing {
+	dport(80) -> implicit(skip_while_noalive)
+	dport(81) -> foo(skip_while_noalive)
+	dport(82) -> ordinary
+	fallback: bar
+}
+dns { routing { request { fallback: asis } response { fallback: accept } } }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := config.New(sections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := make([]outbound.NodeDescriptor, 0, len(conf.Node))
+	for _, node := range conf.Node {
+		nodes = append(nodes, outbound.NodeDescriptor{Name: node.Name, Link: node.Link, Required: true})
+	}
+	// Reload preparation borrows the map; construction only reads its capacity.
+	preparation := &ControlPlanePreparation{
+		bpf:      &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{DomainRoutingMap: &ebpf.Map{}}}},
+		rules:    preparedRules{routing: conf.Routing.Rules},
+		isReload: true,
+	}
+	plane, err := NewControlPlane(preparation, nodes, conf.Group, &conf.Routing, &conf.Global, &conf.Dns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plane.Close()
+	want := map[string]struct {
+		async bool
+		kind  outbound.TargetKind
+	}{
+		"direct":   {false, outbound.TargetKindBuiltin},
+		"block":    {false, outbound.TargetKindBuiltin},
+		"implicit": {true, outbound.TargetKindNode},
+		"ordinary": {false, outbound.TargetKindNode},
+		"unused":   {true, outbound.TargetKindGroup},
+		"foo":      {false, outbound.TargetKindGroup},
+		"bar":      {true, outbound.TargetKindGroup},
+	}
+	if len(plane.outbounds) != len(want) {
+		t.Fatalf("outbound count = %d, want %d", len(plane.outbounds), len(want))
+	}
+	for _, group := range plane.outbounds {
+		expected, ok := want[group.Name]
+		if !ok || group.CheckAsync != expected.async || group.TargetKind != expected.kind {
+			t.Errorf("target %q: check_async=%v, kind=%v; want %+v", group.Name, group.CheckAsync, group.TargetKind, expected)
+		}
+	}
 }
 
 func TestSplitWanInterfacesPreservesAutoIntent(t *testing.T) {
@@ -440,22 +508,22 @@ func TestCandidateStatsScopeIgnoresUnrelatedPaths(t *testing.T) {
 
 func TestRouteDialOptionUsesActualFallbackOutbound(t *testing.T) {
 	option := &dialer.GlobalOption{}
-	newDialer := func(name string, mode dialer.InitialCheckMode) *dialer.Dialer {
+	newDialer := func(name string, checksConnectivity bool) *dialer.Dialer {
 		return dialer.NewDialer(
 			netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}),
 			option,
 			&dialer.Property{Name: name, Link: "test://" + name},
-			mode,
+			checksConnectivity,
 			name,
 		)
 	}
 	callback := func(bool, *common.NetworkType) error { return nil }
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
-		[]*dialer.Dialer{newDialer("direct", dialer.InitialCheckDisabled)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{newDialer("direct", false)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
-		[]*dialer.Dialer{newDialer("block", dialer.InitialCheckDisabled)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{newDialer("block", false)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
 	original := outbound.NewDialerGroup(option, "original", outbound.GroupKindSelector,
-		[]*dialer.Dialer{newDialer("original", dialer.InitialCheckBlocking)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{newDialer("original", true)}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
 	t.Cleanup(func() {
 		_ = direct.Close()
 		_ = block.Close()
@@ -501,7 +569,7 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{
 		Name: "dns-path",
 		Link: "test://dns-path",
-	}, dialer.InitialCheckDisabled, "")
+	}, false, "")
 	group := outbound.NewDialerGroup(
 		option,
 		"dns-path",

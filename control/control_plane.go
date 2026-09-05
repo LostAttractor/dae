@@ -223,9 +223,9 @@ func NewControlPlane(
 	}
 
 	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _direct}), option, &dialer.Property{Property: *directProperty}, dialer.InitialCheckDisabled, "")
+	direct := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _direct}), option, &dialer.Property{Property: *directProperty}, false, "")
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
-	block := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _block}), option, &dialer.Property{Property: *blockProperty}, dialer.InitialCheckDisabled, "")
+	block := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _block}), option, &dialer.Property{Property: *blockProperty}, false, "")
 	outbounds := []*outbound.DialerGroup{
 		outbound.NewDialerGroup(option, consts.OutboundDirect.String(), outbound.GroupKindSingleAlwaysAlive,
 			[]*dialer.Dialer{direct}, []*dialer.Annotation{{}},
@@ -379,6 +379,14 @@ func NewControlPlane(
 		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
 	criticalOutbounds := builder.criticalOutbounds(len(outbounds))
+	for i, group := range outbounds {
+		group.CheckAsync = group.ChecksConnectivity() && !criticalOutbounds[i]
+	}
+	for _, group := range groups {
+		if id, ok := outboundName2Id[group.Name]; ok && (group.CheckAsync || group.Present["check_async"]) {
+			outbounds[id].CheckAsync = group.CheckAsync
+		}
+	}
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, oops.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)

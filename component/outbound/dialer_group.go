@@ -35,10 +35,13 @@ const (
 )
 
 type DialerGroup struct {
-	Name            string
-	Kind            GroupKind
-	TargetKind      TargetKind
-	Dialers         []*dialer.Dialer
+	Name       string
+	Kind       GroupKind
+	TargetKind TargetKind
+	Dialers    []*dialer.Dialer
+	// CheckAsync skips the startup barrier for every dialer in this group.
+	// Set it before starting connectivity checks.
+	CheckAsync      bool
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        *latencyBasedSelector
 
@@ -107,7 +110,6 @@ func NewDialerGroup(
 		default:
 			panic(fmt.Sprintf("unsupported selection policy %q", selectionPolicy.Policy))
 		}
-		g.startupReady = startupBarrier(g.policyDialers())
 	}
 
 	if g.ChecksConnectivity() {
@@ -150,15 +152,6 @@ func (g *DialerGroup) ChecksConnectivity() bool {
 	return g.Kind == GroupKindSelector
 }
 
-func startupBarrier(dialers []*dialer.Dialer) chan struct{} {
-	for _, d := range dialers {
-		if d.InitialCheckMode() == dialer.InitialCheckBlocking {
-			return make(chan struct{})
-		}
-	}
-	return nil
-}
-
 func (g *DialerGroup) releaseStartupReady(available bool) {
 	if g.startupReady == nil {
 		return
@@ -175,9 +168,9 @@ func (g *DialerGroup) releaseStartupReady(available bool) {
 func (g *DialerGroup) Close() error {
 	g.closeOnce.Do(func() {
 		g.closed.Store(true)
-		g.releaseStartupReady(true)
 		// Drain notifications that passed the closed check before shutdown.
 		g.notifyMu.Lock()
+		g.releaseStartupReady(true)
 		g.notifyMu.Unlock()
 		for _, d := range g.Dialers {
 			_ = d.Close()
@@ -194,6 +187,9 @@ func (g *DialerGroup) initializeConnectivity() error {
 	}
 	if !g.ChecksConnectivity() {
 		return nil
+	}
+	if !g.CheckAsync && len(g.policyDialers()) != 0 && g.startupReady == nil {
+		g.startupReady = make(chan struct{})
 	}
 	var err error
 	for i := range g.networkAvailable {
@@ -298,10 +294,10 @@ func (g *DialerGroup) fixedDialer() *dialer.Dialer {
 }
 
 type groupConnectivity struct {
-	networks     [common.NetworkTypeCount]bool
-	stable       bool
-	pending      bool
-	blockingDone bool
+	networks    [common.NetworkTypeCount]bool
+	stable      bool
+	pending     bool
+	initialDone bool
 }
 
 func (c groupConnectivity) state(published bool) stats.GroupState {
@@ -315,8 +311,7 @@ func (c groupConnectivity) state(published bool) stats.GroupState {
 }
 
 func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
-	hasBlocking := g.startupReady != nil
-	aggregate := groupConnectivity{blockingDone: hasBlocking}
+	aggregate := groupConnectivity{initialDone: true}
 	for _, d := range g.policyDialers() {
 		snapshot := d.ConnectivitySnapshot()
 		usable := false
@@ -325,11 +320,9 @@ func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
 			usable = usable || available
 		}
 		aggregate.stable = aggregate.stable || (usable && !snapshot.ConfirmingFailure)
-		if !snapshot.InitialCheckDone && (!hasBlocking || d.InitialCheckMode() == dialer.InitialCheckBlocking) {
+		if !snapshot.InitialCheckDone {
 			aggregate.pending = true
-		}
-		if d.InitialCheckMode() == dialer.InitialCheckBlocking && !snapshot.InitialCheckDone {
-			aggregate.blockingDone = false
+			aggregate.initialDone = false
 		}
 		aggregate.pending = aggregate.pending || (usable && snapshot.ConfirmingFailure)
 	}
@@ -428,7 +421,7 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 	if err != nil {
 		log.WithField("group", g.Name).Warnf("Failed to publish group availability: %v", err)
 	}
-	if available || connectivity.blockingDone {
+	if available || connectivity.initialDone {
 		g.releaseStartupReady(available)
 	}
 }

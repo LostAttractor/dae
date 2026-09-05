@@ -274,7 +274,8 @@ dns {
 # Node group (outbound).
 group {
     my_group {
-        # No filter. Use all nodes.
+        # With no paths or filters, use the unique node matching this group's name.
+        # If no node has that name, use all nodes. Multiple same-name nodes are ambiguous.
 
         # Randomly select a node from the group for every connection.
         #policy: random
@@ -330,6 +331,9 @@ group {
         #check_interval_max: 1h
         # Override check_tolerance in global
         #check_tolerance: 50ms
+        # Skip startup waiting for this entire group. Defaults to true if all routing uses
+        # have skip_while_noalive (also if unused); a fallback reference defaults to false.
+        #check_async: true
     }
 }
 

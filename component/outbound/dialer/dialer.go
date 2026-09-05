@@ -72,16 +72,6 @@ func (g *groupBinding) recordLatency(latency time.Duration, success bool) {
 	g.latencies.AppendSample(sample, !success)
 }
 
-// InitialCheckMode controls whether a dialer is checked and whether its group
-// may wait for a usable candidate during startup.
-type InitialCheckMode uint8
-
-const (
-	InitialCheckDisabled InitialCheckMode = iota
-	InitialCheckBlocking
-	InitialCheckAsync
-)
-
 type networkState uint8
 
 // networkState records irreversible mode capability. Reachability is shared
@@ -121,15 +111,15 @@ type Dialer struct {
 	runtime  *netproxy.Runtime
 	session  netproxy.Session
 
-	initialCheck      InitialCheckMode
-	health            healthPhase
-	healthSeq         uint64
-	failureReportedAt time.Time
-	failureGeneration uint64
-	pendingCheck      checkRequestReason
-	networks          [common.NetworkTypeCount]networkState
-	pendingForce      SelectionForceMask
-	group             *groupBinding
+	checksConnectivity bool
+	health             healthPhase
+	healthSeq          uint64
+	failureReportedAt  time.Time
+	failureGeneration  uint64
+	pendingCheck       checkRequestReason
+	networks           [common.NetworkTypeCount]networkState
+	pendingForce       SelectionForceMask
+	group              *groupBinding
 
 	mu sync.RWMutex
 
@@ -190,6 +180,7 @@ func supportState(state networkState) NetworkSupportState {
 // Process-lifetime availability statistics are sampled after releasing its lock.
 type RuntimeSnapshot struct {
 	Healthy           bool
+	InitialCheckDone  bool
 	ConfirmingFailure bool
 	SupportState      [common.NetworkTypeCount]NetworkSupportState
 	Session           netproxy.StateEvent
@@ -239,24 +230,21 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 	}
 }
 
-func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, initialCheck InitialCheckMode, statsScope string) *Dialer {
-	if initialCheck > InitialCheckAsync {
-		panic(fmt.Sprintf("invalid initial check mode %d", initialCheck))
-	}
+func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, checksConnectivity bool, statsScope string) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
 	session, _ := runtime.Session()
 	d := &Dialer{
-		GlobalOption: option,
-		Dialer:       runtime.Dialer(),
-		Property:     property,
-		runtime:      runtime,
-		session:      session,
-		initialCheck: initialCheck,
-		checkCh:      make(chan struct{}, 1),
-		ctx:          ctx,
-		cancel:       cancel,
+		GlobalOption:       option,
+		Dialer:             runtime.Dialer(),
+		Property:           property,
+		runtime:            runtime,
+		session:            session,
+		checksConnectivity: checksConnectivity,
+		checkCh:            make(chan struct{}, 1),
+		ctx:                ctx,
+		cancel:             cancel,
 	}
-	if initialCheck == InitialCheckDisabled {
+	if !checksConnectivity {
 		d.health = healthHealthy
 		for i := range d.networks {
 			d.networks[i] = networkSupported
@@ -303,7 +291,7 @@ func (d *Dialer) StatsPath(outbound string, networkType *common.NetworkType) sta
 }
 
 func (d *Dialer) ChecksConnectivity() bool {
-	return d.initialCheck != InitialCheckDisabled
+	return d.checksConnectivity
 }
 
 func (d *Dialer) sessionSnapshot() (netproxy.StateEvent, bool) {
@@ -408,6 +396,7 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	healthy := d.healthyLocked(session, hasSession)
 	snapshot := RuntimeSnapshot{
 		Healthy:           healthy,
+		InitialCheckDone:  d.initialCheckCompletedLocked(),
 		ConfirmingFailure: healthy && d.health == healthConfirming,
 		Session:           session,
 		HasSession:        hasSession,
@@ -420,8 +409,6 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	snapshot.Availability = stats.DefaultStore.GetNode(d.StatsKey())
 	return snapshot
 }
-
-func (d *Dialer) InitialCheckMode() InitialCheckMode { return d.initialCheck }
 
 // Close stops health checking and retires the owned outbound runtime. Runtime
 // leases keep established connections alive until their callers close them.

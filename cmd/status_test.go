@@ -46,7 +46,6 @@ func testNodeStatus(now time.Time) control.NodeStatus {
 		Protocol:           "ss",
 		Annotation:         &control.NodeAnnotationStatus{AddLatency: "30ms", Priority: &priority, PriorityConditional: true},
 		ChecksConnectivity: true,
-		CheckAsync:         true,
 		Session:            "connected",
 		Healthy:            true,
 		Availability: stats.Availability{
@@ -131,19 +130,23 @@ func TestStatusTableClipsRowsToFitTerminal(t *testing.T) {
 	}
 }
 
-func TestStartupNodeLogKeepsAllPathsWithoutTerminalFormatting(t *testing.T) {
+func TestStartupNodeLogOnlyIncludesCompletedChecks(t *testing.T) {
 	withoutStatusColors(t)
 	colorsEnabled = true
 	withStatusTerminalWidth(t, 16)
 	ready := testNodeStatus(time.Now())
-	pending, failed := ready, ready
-	pending.Name, pending.ID = strings.Repeat("香港节点", 40), "pending"
+	ready.Name = strings.Repeat("香港节点", 40)
+	ready.InitialCheckDone = true
+	pending, retained, failed := ready, ready, ready
+	pending.Name, pending.ID, pending.InitialCheckDone = "pending-path", "pending", false
 	pending.Availability.Seen = false
+	retained.Name, retained.ID, retained.InitialCheckDone = "retained-path", "retained", false
 	failed.Name, failed.ID, failed.Healthy = "failed-path", "failed", false
 	groups := []control.GroupStatus{
-		{Name: "proxy", Nodes: []control.NodeStatus{pending, ready, failed},
+		{Name: "proxy", CheckAsync: true, Nodes: []control.NodeStatus{pending, retained, ready, failed},
 			SelectedNodeIDs: control.NetworkValues[string]{ready.ID, ready.ID}},
-		{Name: "direct", Nodes: []control.NodeStatus{{Name: "direct-path"}}},
+		{Name: "direct", Nodes: []control.NodeStatus{{Name: "direct-path", InitialCheckDone: true, Availability: ready.Availability}}},
+		{Name: "pending-only", Nodes: []control.NodeStatus{pending}},
 	}
 	var output bytes.Buffer
 	logger := log.StandardLogger()
@@ -153,17 +156,19 @@ func TestStartupNodeLogKeepsAllPathsWithoutTerminalFormatting(t *testing.T) {
 	t.Cleanup(func() { logger.SetOutput(previousOutput); logger.SetLevel(previousLevel) })
 	logStartupNodeStatus(groups)
 	got := output.String()
-	for _, want := range []string{pending.Name, ready.Name, failed.Name, "direct-path", "unknown", "unhealthy", "10/20/30", "all tcp(*)", "p=2*", "+30ms"} {
+	for _, want := range []string{ready.Name, failed.Name, "unhealthy", "10/20/30", "all tcp(*)", "p=2*", "+30ms", "check: async"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("startup log is missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "\x1b") {
-		t.Fatalf("startup log contains ANSI escapes:\n%s", got)
+	for _, unwanted := range []string{pending.Name, retained.Name, "direct", "pending-only", "unknown", "UP/24H", "FAIL A/D", "CONNS", "TRAFFIC", "TOTAL", "\x1b"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("startup log contains %q:\n%s", unwanted, got)
+		}
 	}
 	for line := range strings.SplitSeq(got, "\n") {
-		if (strings.Contains(line, pending.Name) || strings.Contains(line, failed.Name)) && strings.Contains(line, "10/20/30") {
-			t.Errorf("startup log displays stale latency for an unchecked or failed path: %s", line)
+		if strings.Contains(line, failed.Name) && strings.Contains(line, "10/20/30") {
+			t.Errorf("startup log displays stale latency for a failed path: %s", line)
 		}
 	}
 }
@@ -176,7 +181,7 @@ func TestNodeRowsUseRawState(t *testing.T) {
 
 	verbose := nodeStatusRow(node, 0, selected)
 	checks := map[int]string{
-		0:  "node-a [p=2*,+30ms,async]",
+		0:  "node-a [p=2*,+30ms]",
 		3:  "connected",
 		4:  "healthy",
 		5:  "all tcp(*)",
@@ -437,6 +442,7 @@ func validWireStatus() control.StatusSnapshot {
 
 func TestDecodeStatusRejectsUnknownAndTrailingJSON(t *testing.T) {
 	want := validWireStatus()
+	want.Groups[0].CheckAsync = true
 	want.Groups[0].Nodes[0].Latency = &dialer.LatencyStats{Last: time.Second}
 	payload, err := json.Marshal(want, jsonv1.FormatDurationAsNano(true))
 	if err != nil {
@@ -446,7 +452,7 @@ func TestDecodeStatusRejectsUnknownAndTrailingJSON(t *testing.T) {
 		t.Fatalf("duration is not encoded in nanoseconds: %s", payload)
 	}
 	snapshot, err := decodeStatus(strings.NewReader(string(payload)))
-	if err != nil || snapshot.Version != "test" || snapshot.Groups[0].Nodes[0].Latency.Last != time.Second {
+	if err != nil || snapshot.Version != "test" || !snapshot.Groups[0].CheckAsync || snapshot.Groups[0].Nodes[0].Latency.Last != time.Second {
 		t.Fatalf("decodeStatus() = %+v, %v", snapshot, err)
 	}
 	unknownPayload := append([]byte(`{"unknown":true,`), payload[1:]...)

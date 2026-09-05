@@ -230,6 +230,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 		_ = c.Close()
 		std.Fatalln(err)
 	}
+	logStartupNodeStatus(c.GroupsStatus())
 
 	startMetricsServer(conf.Global.MetricsPort)
 
@@ -448,6 +449,7 @@ loop:
 					_ = newC.Close()
 					std.Panicf("%+v", oops.Wrapf(err, "[Reload] Failed to activate new control plane"))
 				}
+				logStartupNodeStatus(newC.GroupsStatus())
 
 				// Swap in the new plane.
 				c = newC

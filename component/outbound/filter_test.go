@@ -169,7 +169,7 @@ func TestCloseValidatedDialerRetiresTransport(t *testing.T) {
 		netproxy.NewRuntime(netproxy.Layer{Data: transport, Resources: []io.Closer{transport}}),
 		&dialer.GlobalOption{},
 		&dialer.Property{},
-		dialer.InitialCheckBlocking,
+		true,
 		"",
 	)
 	if err := closeValidatedDialer(created); err != nil {
@@ -424,8 +424,6 @@ func descriptorFilter(name string, params ...*config_parser.Param) []*config_par
 	return []*config_parser.Function{{Name: name, Params: params}}
 }
 
-func nodeOptionBool(value bool) *bool { return &value }
-
 func nodeOptionUint16(value uint16) *uint16 { return &value }
 
 func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
@@ -433,8 +431,7 @@ func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
 		Link:            testShadowsocksLink + "#HK-legacy",
 		SubscriptionTag: "my_sub",
 		Defaults: config.NodeOptions{
-			Multiplex:  config.MultiplexModeOff,
-			CheckAsync: nodeOptionBool(true),
+			Multiplex: config.MultiplexModeOff,
 		},
 		Rules: []config.NodeOptionRule{
 			{
@@ -443,15 +440,13 @@ func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
 					{Name: FilterInput_Name, Params: []*config_parser.Param{{Key: "regex", Val: "^HK"}}},
 				},
 				Options: config.NodeOptions{
-					Multiplex:  config.MultiplexModeSmux,
-					CheckAsync: nodeOptionBool(false),
+					Multiplex: config.MultiplexModeSmux,
 				},
 			},
 			{
 				Filter: descriptorFilter(FilterInput_Name, &config_parser.Param{Val: "HK-legacy"}),
 				Options: config.NodeOptions{
-					Multiplex:  config.MultiplexModeOff,
-					CheckAsync: nodeOptionBool(true),
+					Multiplex: config.MultiplexModeOff,
 				},
 			},
 		},
@@ -470,9 +465,6 @@ func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
 	if !strings.Contains(node.Property.Link, "multiplex=off") {
 		t.Fatalf("node identity does not include effective options: %q", node.Property.Link)
 	}
-	if !node.CheckAsync || strings.Contains(node.Property.Link, "check_async") {
-		t.Fatalf("effective check_async or identity = %+v, %q", node.CheckAsync, node.Property.Link)
-	}
 }
 
 func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
@@ -481,13 +473,11 @@ func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
 		Rules: []config.NodeOptionRule{{
 			Filter: descriptorFilter(FilterInput_Name, &config_parser.Param{Val: "HK"}),
 			Options: config.NodeOptions{
-				Multiplex:  config.MultiplexModeOff,
-				CheckAsync: nodeOptionBool(true),
+				Multiplex: config.MultiplexModeOff,
 			},
 		}},
 		Options: config.NodeOptions{
-			Multiplex:  config.MultiplexModeSmuxUDPPassthrough,
-			CheckAsync: nodeOptionBool(false),
+			Multiplex: config.MultiplexModeSmuxUDPPassthrough,
 		},
 	}})
 	if err != nil {
@@ -510,9 +500,6 @@ func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
 	if smuxConfig.MaxConnections != smux.DefaultMaxConnections {
 		t.Fatalf("smux max connections = %d, want default %d", smuxConfig.MaxConnections, smux.DefaultMaxConnections)
 	}
-	if node.CheckAsync {
-		t.Fatal("inline check_async=false did not override the subscription rule")
-	}
 	d, err := set.BuildPath(NodePath(node), new(dialer.GlobalOption), t.Name())
 	if err != nil {
 		t.Fatal(err)
@@ -522,42 +509,6 @@ func TestInlineNodeOptionsOverrideSubscriptionRules(t *testing.T) {
 	})
 	if got, want := d.Protocol, "shadowsocks(smux/udp-pass)"; got != want {
 		t.Fatalf("path protocol = %q, want %q", got, want)
-	}
-	if d.InitialCheckMode() == dialer.InitialCheckAsync {
-		t.Fatal("overridden check_async was applied to the built path")
-	}
-}
-
-func TestBuildPathEnablesCheckAsyncWhenAnyHopRequestsIt(t *testing.T) {
-	set, err := NewDialerSet([]NodeDescriptor{
-		{Name: "entry", Link: testShadowsocksLink + "#entry", Options: config.NodeOptions{CheckAsync: nodeOptionBool(true)}},
-		{Name: "exit", Link: testShadowsocksLink + "#exit", Options: config.NodeOptions{CheckAsync: nodeOptionBool(false)}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := set.BuildPath(&PathSpec{Nodes: set.nodeInfos, Annotation: &dialer.Annotation{}}, new(dialer.GlobalOption), t.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = d.Close()
-	})
-	if d.InitialCheckMode() != dialer.InitialCheckAsync {
-		t.Fatal("a later check_async=false hop disabled an asynchronous path")
-	}
-}
-
-func TestCheckAsyncDoesNotChangeNodeIdentity(t *testing.T) {
-	set, err := NewDialerSet([]NodeDescriptor{
-		{Name: "same", Link: testShadowsocksLink, Options: config.NodeOptions{CheckAsync: nodeOptionBool(true)}},
-		{Name: "same", Link: testShadowsocksLink, Options: config.NodeOptions{CheckAsync: nodeOptionBool(false)}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first, second := NodePath(set.nodeInfos[0]).Identity(), NodePath(set.nodeInfos[1]).Identity(); first != second {
-		t.Fatalf("check_async changed node identity: %q != %q", first, second)
 	}
 }
 

@@ -42,33 +42,27 @@ group {
 
 每条 path 语句彼此独立，因此直连 `lightsail` 和链式候选会同时存在。每个 filter stage 展开为所有匹配节点；多个 stage 做笛卡尔积；被引用的 group 会贡献其中声明的全部路径。
 
-`filter: name(name)` 是节点属性过滤，可以匹配多个定义。独立的 `node(name)` stage 是严格类型引用，节点不存在或重名时会报错。`group(name)` 严格引用一个无 `policy` group；selector group 不能嵌套为 path stage。即使 node 和 group 同名，类型化引用也没有歧义。
+`filter: name(name)` 是节点属性过滤，可以匹配多个定义。独立的 `node(name)` stage 始终引用原始节点，节点不存在或重名时会报错。`group(name)` 严格引用一个无 `policy` group；selector group 不能嵌套为 path stage。
+
+group 未声明路径或 filter 时，默认选择唯一的同名节点；没有同名节点时，选择全部节点作为独立的单跳候选路径；多个同名节点会报歧义。显式声明路径或 filter 会覆盖此默认规则。
+
+group 与节点同名时，只有 group 展开为一条经过该唯一节点的单跳路径，路由才会优先选择 group；其他同名情况会报歧义。因此，可以保留路由目标名称并配置 group 属性：
+
+```shell
+node { foo: 'socks5://proxy.example:1080' }
+group { foo { check_async: true } }
+routing { fallback: foo }
+```
 
 展开顺序首先按 path 声明顺序，然后在每条笛卡尔路径内采用 terminal-major。`entry-1`、`entry-2` 后接 `exit-1`、`exit-2` 时，顺序为 `entry-1 -> exit-1`、`entry-2 -> exit-1`、`entry-1 -> exit-2`、`entry-2 -> exit-2`。`fixed(n)` 按这个稳定的完整路径列表索引。分别声明的相同物理路径仍是不同候选。
 
-不同路径 stage 的 `priority` 和 `add_latency` 会累加。dae 会同时开始所有路径的首次连通性检查。group 一旦出现可用路径，或所有 blocking 路径都完成首次检查（即使全部不可用），就不再阻塞启动。只有检查一直无法结束时才使用全局 60 秒兜底超时。结果不确定的连通模式会在后台继续探测。
+不同路径 stage 的 `priority` 和 `add_latency` 会累加。dae 会同时开始所有路径的首次连通性检查。同步检查的 group 一旦出现可供策略选择的路径，或所有策略相关的候选路径都完成首次检查（即使全部不可用），就不再阻塞启动。`fixed(n)` 只等待索引为 `n` 的路径。只有检查一直无法结束时才使用全局 60 秒兜底超时。结果不确定的连通模式会在后台继续探测。
 
 连通模式一旦确认，dae 会保留该能力。节点使用一个已支持模式执行常规健康检查，其健康状态由所有已支持模式共享。
 
-启动完成前，延迟策略会忽略 `check_tolerance`；每个新确认的模式也会额外忽略一次，使后续新连接能够修正选择。已有连接仍保留原 outbound。`check_async` 是节点选项，不再是路径 annotation；应在本地节点或订阅节点 option rule 上配置。完整路径中任一 hop 启用该选项时，其首次连通性检查会异步执行。当一个 group 的相关路径全部启用 `check_async` 时，该 group 完全不参与启动等待。
+启动完成前，延迟策略会忽略 `check_tolerance`；每个新确认的模式也会额外忽略一次，使后续新连接能够修正选择。已有连接仍保留原 outbound。
 
-```shell
-node {
-    slow_node: 'socks5://proxy.example:1080' [check_async: true]
-}
-
-subscription {
-    provider {
-        link: 'https://example.com/subscription'
-        option {
-            check_async: true
-            filter: name(fast_node) [check_async: false]
-        }
-    }
-}
-```
-
-订阅默认值最先应用，随后按声明顺序应用所有匹配的 option rule，因此后面的 rule 可以用显式 `false` 覆盖 `true`。
+`check_async: true` 使整个 group 的首次检查都不阻塞启动。所有路由引用都配置 `skip_while_noalive` 时默认开启，没有路由引用时也默认开启；存在任何未配置该参数的引用（包括 `fallback`）时默认关闭。显式 `true` 或 `false` 覆盖默认值。直接作为路由目标的节点使用相同默认规则。`group(name)` 不继承此设置，仅作为模板的 group 不能配置它。
 
 旧的 `[via: ...]` annotation 会被拒绝。每个 node 仍只能包含一个分享链接；代理链统一使用 group path expression 组合。
 

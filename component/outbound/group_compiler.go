@@ -98,9 +98,18 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 	for _, definition := range compiler.ordered {
 		paths := definition.config.Paths
 		if len(paths) == 0 {
-			// An empty group retains the traditional meaning of selecting all nodes.
+			// A pathless group wraps its namesake node when one exists.
+			// Otherwise it retains the default of selecting all nodes.
+			nodes := compiler.set.NodesNamed(definition.config.Name)
+			switch len(nodes) {
+			case 0:
+				nodes = compiler.set.nodeInfos
+			case 1:
+			default:
+				return nil, fmt.Errorf("group %q: implicit node reference is ambiguous (%d matching definitions)", definition.config.Name, len(nodes))
+			}
 			definition.paths = append(definition.paths, []*compiledStage{{
-				nodes:      compiler.set.nodeInfos,
+				nodes:      nodes,
 				annotation: &dialer.Annotation{},
 			}})
 			continue
@@ -129,7 +138,7 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 		if group.CheckTolerance != 0 || group.Present["check_tolerance"] {
 			return nil, fmt.Errorf("group %q: check_tolerance requires a selection policy", group.Name)
 		}
-		hasRuntimeOption := group.UdpCheckDns != nil || group.CheckInterval != 0 || group.CheckIntervalMax != 0 ||
+		hasRuntimeOption := group.CheckAsync || group.Present["check_async"] || group.UdpCheckDns != nil || group.CheckInterval != 0 || group.CheckIntervalMax != 0 ||
 			group.Present["udp_check_dns"] || group.Present["check_interval"] || group.Present["check_interval_max"]
 		_, routed := routedNames[group.Name]
 		if !routed && hasRuntimeOption {
@@ -198,6 +207,17 @@ func (c *GroupCompiler) ResolveRoutingTarget(name string) (*ResolvedTarget, erro
 	candidates := len(nodes)
 	if group != nil {
 		candidates++
+	}
+	if group != nil && len(nodes) == 1 {
+		paths, err := c.expand(group)
+		if err != nil {
+			return nil, err
+		}
+		// A group wrapping its unique namesake node supplies group options
+		// without requiring existing routing references to change names.
+		if len(paths) == 1 && len(paths[0].Nodes) == 1 && paths[0].Nodes[0] == nodes[0] {
+			candidates = 1
+		}
 	}
 	switch {
 	case candidates == 0:

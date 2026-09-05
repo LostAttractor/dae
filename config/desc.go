@@ -8,8 +8,8 @@ package config
 type Desc map[string]string
 
 var SectionSummaryDesc = Desc{
-	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex and check_async.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
-	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex and check_async.",
+	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
+	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
 	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md.",
 	"group":        "Proxy path groups. Declare ordered stages with ->. Groups with a policy select complete paths; policyless groups can be referenced as reusable path stages.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
@@ -92,4 +92,5 @@ min_moving_avg: Select a path by its moving average of check latencies, which gi
 	"check_interval":     "Override global config when non-zero.",
 	"check_interval_max": "Override global config when non-zero.",
 	"check_tolerance":    "Override global config.",
+	"check_async":        "Skip startup waiting for this group. Defaults to true when all routing uses specify skip_while_noalive (including unused groups); fallback defaults to false. Explicit values override this default. Not inherited through group(name).",
 }

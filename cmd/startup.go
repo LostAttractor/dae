@@ -190,7 +190,6 @@ func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGe
 	}
 	runtime.GC()
 	log.WithField("duration", time.Since(assemblyStarted)).Info("Assembled control plane")
-	logStartupNodeStatus(c.GroupsStatus())
 	return c, nil
 }
 

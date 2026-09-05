@@ -204,7 +204,7 @@ func TestGroupCompilerKeepsIndependentPathDeclarations(t *testing.T) {
 	}
 }
 
-func TestGroupCompilerEmptyGroupSelectsAllNodes(t *testing.T) {
+func TestGroupCompilerEmptyGroupWithoutMatchingNameSelectsAllNodes(t *testing.T) {
 	set := &DialerSet{nodeInfos: []*NodeInfo{testNode("one", "all"), testNode("two", "all")}}
 	group := config.Group{Name: "all", Policy: randomPolicy()}
 	compiler, err := NewGroupCompiler(set, []config.Group{group}, []string{"all"})
@@ -214,6 +214,36 @@ func TestGroupCompilerEmptyGroupSelectsAllNodes(t *testing.T) {
 	want := []string{"one", "two"}
 	if got := expandedNames(t, compiler, compiler.SelectorGroups()[0]); !reflect.DeepEqual(got, want) {
 		t.Fatalf("paths = %v, want %v", got, want)
+	}
+}
+
+func TestGroupCompilerEmptyMatchingTemplateSelectsOnlyNamedNode(t *testing.T) {
+	set := &DialerSet{nodeInfos: []*NodeInfo{
+		testNode("other", "nodes"),
+		testNode("relay", "nodes"),
+		testNode("exit", "nodes"),
+	}}
+	groups := []config.Group{
+		{Name: "relay"},
+		{
+			Name:   "outer",
+			Paths:  []*config_parser.ProxyPath{proxyPath(referenceStage("group", "relay"), referenceStage("node", "exit"))},
+			Policy: randomPolicy(),
+		},
+	}
+	compiler, err := NewGroupCompiler(set, groups, []string{"outer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := expandedNames(t, compiler, compiler.SelectorGroups()[0]), []string{"relay -> exit"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("paths = %v, want %v", got, want)
+	}
+}
+
+func TestGroupCompilerEmptyGroupRejectsAmbiguousMatchingNode(t *testing.T) {
+	set := &DialerSet{nodeInfos: []*NodeInfo{testNode("target", "first"), testNode("target", "second")}}
+	if _, err := NewGroupCompiler(set, []config.Group{{Name: "target"}}, nil); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("implicit node error = %v, want ambiguous", err)
 	}
 }
 
@@ -252,18 +282,6 @@ func TestGroupCompilerReferenceValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("group and node collision", func(t *testing.T) {
-		set := &DialerSet{nodeInfos: []*NodeInfo{testNode("target", "nodes")}}
-		groups := []config.Group{{Name: "target", Paths: []*config_parser.ProxyPath{proxyPath(subtagStage("nodes"))}, Policy: randomPolicy()}}
-		compiler, err := NewGroupCompiler(set, groups, []string{"target"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = compiler.ResolveRoutingTarget("target"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
-			t.Fatalf("collision error = %v", err)
-		}
-	})
-
 	t.Run("ambiguous typed node", func(t *testing.T) {
 		set := &DialerSet{nodeInfos: []*NodeInfo{testNode("relay", "a"), testNode("relay", "b")}}
 		group := config.Group{Name: "outer", Paths: []*config_parser.ProxyPath{proxyPath(referenceStage("node", "relay"))}, Policy: randomPolicy()}
@@ -293,6 +311,89 @@ func TestGroupCompilerReferenceValidation(t *testing.T) {
 			t.Fatalf("dead-branch reference error = %v", err)
 		}
 	})
+}
+
+func TestGroupCompilerPrefersMatchingSingletonGroup(t *testing.T) {
+	set := &DialerSet{nodeInfos: []*NodeInfo{testNode("other", "nodes"), testNode("target", "nodes")}}
+	for _, tc := range []struct {
+		name  string
+		paths []*config_parser.ProxyPath
+	}{
+		{"implicit node", nil},
+		{"typed node", []*config_parser.ProxyPath{proxyPath(referenceStage("node", "target"))}},
+		{"filter", []*config_parser.ProxyPath{proxyPath(nameStage("target"))}},
+		{"template", []*config_parser.ProxyPath{proxyPath(referenceStage("group", "template"))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			groups := []config.Group{
+				{Name: "template", Paths: []*config_parser.ProxyPath{proxyPath(referenceStage("node", "target"))}},
+				{Name: "target", Paths: tc.paths},
+			}
+			compiler, err := NewGroupCompiler(set, groups, []string{"target"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, err := compiler.ResolveRoutingTarget("target")
+			if err != nil || target.Kind != TargetKindGroup {
+				t.Fatalf("target = %+v, err = %v; want group", target, err)
+			}
+			if got, want := expandedNames(t, compiler, target.Group), []string{"target"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("paths = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestGroupCompilerRejectsNonmatchingGroupNodeCollision(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		nodes []*NodeInfo
+		paths []*config_parser.ProxyPath
+	}{
+		{
+			name:  "different node",
+			paths: []*config_parser.ProxyPath{proxyPath(referenceStage("node", "other"))},
+		},
+		{
+			name:  "multiple candidates",
+			paths: []*config_parser.ProxyPath{proxyPath(subtagStage("nodes"))},
+		},
+		{
+			name:  "multiple hops",
+			paths: []*config_parser.ProxyPath{proxyPath(referenceStage("node", "target"), referenceStage("node", "other"))},
+		},
+		{
+			name: "duplicate paths",
+			paths: []*config_parser.ProxyPath{
+				proxyPath(referenceStage("node", "target")),
+				proxyPath(referenceStage("node", "target")),
+			},
+		},
+		{
+			name:  "duplicate node names",
+			nodes: []*NodeInfo{testNode("target", "first"), testNode("target", "second")},
+			paths: []*config_parser.ProxyPath{proxyPath(subtagStage("first"))},
+		},
+		{
+			name:  "empty expansion",
+			paths: []*config_parser.ProxyPath{proxyPath(subtagStage("missing"))},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			nodes := tc.nodes
+			if nodes == nil {
+				nodes = []*NodeInfo{testNode("target", "nodes"), testNode("other", "nodes")}
+			}
+			groups := []config.Group{{Name: "target", Paths: tc.paths, Policy: randomPolicy()}}
+			compiler, err := NewGroupCompiler(&DialerSet{nodeInfos: nodes}, groups, []string{"target"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = compiler.ResolveRoutingTarget("target"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+				t.Fatalf("collision error = %v, want ambiguous", err)
+			}
+		})
+	}
 }
 
 func TestGroupCompilerRejectsPathCycles(t *testing.T) {
@@ -344,13 +445,14 @@ func TestGroupCompilerMergesAnnotationsAcrossTemplates(t *testing.T) {
 
 func TestGroupCompilerRejectsLogicalRuntimeOptions(t *testing.T) {
 	set := &DialerSet{nodeInfos: []*NodeInfo{testNode("node", "all")}}
-	group := config.Group{
-		Name:  "logical",
-		Paths: []*config_parser.ProxyPath{proxyPath(subtagStage("all"))},
-	}
-	group.CheckInterval = time.Second
-	if _, err := NewGroupCompiler(set, []config.Group{group}, nil); err == nil || !strings.Contains(err.Error(), "connectivity-check options") {
-		t.Fatalf("logical runtime option error = %v", err)
+	for _, group := range []config.Group{
+		{Name: "logical", CheckInterval: time.Second},
+		{Name: "logical", CheckAsync: true},
+		{Name: "logical", Present: map[string]bool{"check_async": true}},
+	} {
+		if _, err := NewGroupCompiler(set, []config.Group{group}, nil); err == nil || !strings.Contains(err.Error(), "connectivity-check options") {
+			t.Fatalf("logical runtime option error = %v", err)
+		}
 	}
 }
 

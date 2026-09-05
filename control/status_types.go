@@ -73,6 +73,7 @@ type GroupStatus struct {
 	Policy             string                         `json:"policy"`
 	Critical           bool                           `json:"critical"`
 	ChecksConnectivity bool                           `json:"checks_connectivity"`
+	CheckAsync         bool                           `json:"check_async,omitempty"`
 	Connectivity       stats.GroupState               `json:"connectivity,omitempty"`
 	Availability       stats.GroupAvailability        `json:"availability"`
 	Stats              stats.PathStats                `json:"stats"`
@@ -116,7 +117,7 @@ type NodeStatus struct {
 	Address            string                                    `json:"address"`
 	Annotation         *NodeAnnotationStatus                     `json:"annotation,omitempty"`
 	ChecksConnectivity bool                                      `json:"checks_connectivity"`
-	CheckAsync         bool                                      `json:"check_async,omitempty"`
+	InitialCheckDone   bool                                      `json:"-"` // Current runtime only, for startup logs.
 	Session            string                                    `json:"session,omitempty"`
 	Healthy            bool                                      `json:"healthy"`
 	ConfirmingFailure  bool                                      `json:"confirming_failure"`

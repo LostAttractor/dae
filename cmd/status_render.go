@@ -86,28 +86,23 @@ func nodeLabel(status control.NodeStatus, index int) string {
 
 func annotatedNodeLabel(status control.NodeStatus, index int) string {
 	label := nodeLabel(status, index)
-	if status.Annotation == nil && !status.CheckAsync {
+	if status.Annotation == nil {
 		return label
 	}
-	parts := make([]string, 0, 3)
-	if status.Annotation != nil {
-		if status.Annotation.Priority != nil {
-			priority := fmt.Sprintf("p=%d", *status.Annotation.Priority)
-			if status.Annotation.PriorityConditional {
-				priority += "*"
-			}
-			parts = append(parts, priority)
+	parts := make([]string, 0, 2)
+	if status.Annotation.Priority != nil {
+		priority := fmt.Sprintf("p=%d", *status.Annotation.Priority)
+		if status.Annotation.PriorityConditional {
+			priority += "*"
 		}
-		if status.Annotation.AddLatency != "" {
-			latency := status.Annotation.AddLatency
-			if !strings.HasPrefix(latency, "-") {
-				latency = "+" + latency
-			}
-			parts = append(parts, latency)
-		}
+		parts = append(parts, priority)
 	}
-	if status.CheckAsync {
-		parts = append(parts, "async")
+	if status.Annotation.AddLatency != "" {
+		latency := status.Annotation.AddLatency
+		if !strings.HasPrefix(latency, "-") {
+			latency = "+" + latency
+		}
+		parts = append(parts, latency)
 	}
 	if len(parts) == 0 {
 		return label
@@ -383,17 +378,39 @@ func nodeTable(group control.GroupStatus, verbose bool, now time.Time) (table.Ro
 	return header, rows
 }
 
+func groupStatusMetadata(group control.GroupStatus) string {
+	policy := group.Policy
+	if policy == "" {
+		policy = "single path"
+	}
+	metadata := fmt.Sprintf("kind: %s, policy: %s", group.TargetKind, policy)
+	if group.CheckAsync {
+		metadata += ", check: async"
+	}
+	return metadata
+}
+
 func logStartupNodeStatus(groups []control.GroupStatus) {
 	if !log.IsLevelEnabled(log.InfoLevel) {
 		return
 	}
 	for _, group := range groups {
-		policy := group.Policy
-		if policy == "" {
-			policy = "single path"
+		var rows []table.Row
+		for index, node := range group.Nodes {
+			if !node.ChecksConnectivity || !node.InitialCheckDone || !node.Availability.Seen {
+				continue
+			}
+			networks, _ := nodeNetworks(node, group.SelectedNodeIDs)
+			rows = append(rows, table.Row{
+				annotatedNodeLabel(node, index), emptyDash(node.Protocol),
+				compactNodeState(node), networks, nodeLatency(node),
+			})
 		}
-		log.Infof("Paths of target %q [kind: %s, policy: %s]", group.Name, group.TargetKind, policy)
-		header, rows := nodeTable(group, false, time.Now())
+		if len(rows) == 0 {
+			continue
+		}
+		log.Infof("Paths of target %q [%s]", group.Name, groupStatusMetadata(group))
+		header := table.Row{"PATH", "PROTO", "STATE", "NETWORKS", "LAT L/A/M(ms)"}
 		for line := range strings.SplitSeq(renderLogTable(header, rows), "\n") {
 			log.Info(line)
 		}
@@ -401,11 +418,7 @@ func logStartupNodeStatus(groups []control.GroupStatus) {
 }
 
 func printGroupStatus(group control.GroupStatus, verbose bool) {
-	policy := group.Policy
-	if policy == "" {
-		policy = "single path"
-	}
-	fmt.Printf("\nGroup '%s' [kind: %s, policy: %s]\n", group.Name, group.TargetKind, policy)
+	fmt.Printf("\nGroup '%s' [%s]\n", group.Name, groupStatusMetadata(group))
 	status := "no connectivity checks"
 	if group.ChecksConnectivity {
 		upRatio := "-"

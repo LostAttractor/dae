@@ -42,33 +42,27 @@ group {
 
 Every path statement is independent, so the direct `lightsail` candidate and the chained candidates coexist. Each filter stage expands to all matching nodes. Multiple stages form a Cartesian product; a referenced group contributes all paths declared by that group.
 
-`filter: name(name)` is a node-property filter and may match multiple definitions. A standalone `node(name)` stage is a strict typed reference and rejects missing or duplicate node names. `group(name)` strictly references a group without `policy`; selector groups cannot be nested as path stages. Typed references remain unambiguous when a node and group have the same name.
+`filter: name(name)` is a node-property filter and may match multiple definitions. A standalone `node(name)` stage always references the original node and rejects missing or duplicate node names. `group(name)` strictly references a group without `policy`; selector groups cannot be nested as path stages.
+
+Without path or filter statements, a group selects the unique same-name node, or all nodes as single-hop candidates if none has that name; duplicate same-name nodes are ambiguous. Explicit statements override this default.
+
+When a group and a node share a name, routing selects the group only if it expands to one single-hop path through that unique node; other collisions are ambiguous. This allows group settings without changing the routing target:
+
+```shell
+node { foo: 'socks5://proxy.example:1080' }
+group { foo { check_async: true } }
+routing { fallback: foo }
+```
 
 Expansion is statement-major and then terminal-major within each Cartesian path. For `entry-1`, `entry-2` followed by `exit-1`, `exit-2`, the order is `entry-1 -> exit-1`, `entry-2 -> exit-1`, `entry-1 -> exit-2`, then `entry-2 -> exit-2`. `fixed(n)` indexes this stable complete-path order. Separately declared identical physical paths remain separate candidates.
 
-`priority` and `add_latency` annotations add across path stages. dae starts the initial connectivity checks of all paths together. A group stops blocking startup when it has a usable path or all of its blocking paths have completed their initial checks, even if none are available. The global 60-second deadline remains a fallback for checks that do not finish. Inconclusive connectivity modes continue support checks in the background.
+`priority` and `add_latency` annotations add across path stages. dae starts the initial connectivity checks of all paths together. A group with synchronous checks stops blocking startup when its policy has a usable candidate or all candidate paths relevant to that policy have completed their initial checks, even if none are available. `fixed(n)` only waits for the path at index `n`. The global 60-second deadline remains a fallback for checks that do not finish. Inconclusive connectivity modes continue support checks in the background.
 
 Once a connectivity mode is confirmed, dae retains that capability. A node uses one supported mode for regular health checks, and all of its supported modes share the resulting health state.
 
-Latency selection ignores `check_tolerance` until startup completes and once for each newly confirmed mode, so late support can correct selection for new connections. Existing connections remain on their original outbound. `check_async` is a node option rather than a path annotation; configure it on local nodes or through subscription node-option rules. A complete path starts its initial connectivity check asynchronously when any hop enables the option. A group whose relevant paths are all asynchronous does not participate in the startup wait.
+Latency selection ignores `check_tolerance` until startup completes and once for each newly confirmed mode, so late support can correct selection for new connections. Existing connections remain on their original outbound.
 
-```shell
-node {
-    slow_node: 'socks5://proxy.example:1080' [check_async: true]
-}
-
-subscription {
-    provider {
-        link: 'https://example.com/subscription'
-        option {
-            check_async: true
-            filter: name(fast_node) [check_async: false]
-        }
-    }
-}
-```
-
-Subscription defaults are applied first, followed by every matching option rule in declaration order. This allows a later rule to explicitly override `true` with `false`.
+`check_async: true` makes initial checks for the entire group run without blocking startup. It defaults to `true` when every routing reference uses `skip_while_noalive`, including unused groups; any reference without it, including `fallback`, makes the default `false`. Explicit `true` or `false` overrides this default. Directly routed nodes use the same default. `group(name)` does not inherit this setting, and groups used only as templates cannot configure it.
 
 The former `[via: ...]` annotation is rejected. Node entries still contain exactly one share link; compose links only with group path expressions.
 

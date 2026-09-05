@@ -103,7 +103,7 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	}, &Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
-	}, InitialCheckBlocking, "")
+	}, true, "")
 	d.RegisterDialerGroup(new(testGroup), 0.5, time.Minute)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
@@ -200,7 +200,7 @@ func TestUncheckedDialerRecordsAvailabilityOnlyWhenActivated(t *testing.T) {
 	d := NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: testTransport{}}), &GlobalOption{}, &Property{
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
-	}, InitialCheckDisabled, "")
+	}, false, "")
 	t.Cleanup(func() { _ = d.Close() })
 	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
 		d.StatsKey(): {Subtag: d.Property.SubscriptionTag, Name: d.Name},
@@ -220,6 +220,9 @@ func TestUncheckedDialerRecordsAvailabilityOnlyWhenActivated(t *testing.T) {
 
 func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
+	if d.RuntimeStatus().InitialCheckDone {
+		t.Fatal("new dialer reports a completed initial check")
+	}
 	probes := [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error){
 		func(context.Context, *common.NetworkType) (bool, error) { return true, nil },
 		func(context.Context, *common.NetworkType) (bool, error) { return false, context.DeadlineExceeded },
@@ -236,9 +239,6 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	if !accepted || !applied.success {
 		t.Fatalf("initial result = %+v", applied)
 	}
-	if !d.ConnectivitySnapshot().InitialCheckDone {
-		t.Fatal("completed initial result was not retained by the dialer")
-	}
 	want := [common.NetworkTypeCount]NetworkSupportState{
 		NetworkSupportConfirmed,
 		NetworkSupportUnknown,
@@ -246,6 +246,9 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 		NetworkSupportUnknown,
 	}
 	status := d.RuntimeStatus()
+	if !status.InitialCheckDone {
+		t.Fatal("completed initial result was not retained by the dialer")
+	}
 	if got := status.SupportState; got != want {
 		t.Fatalf("support = %v, want %v", got, want)
 	}

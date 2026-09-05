@@ -23,15 +23,14 @@ subscription {
 		link: 'https://example.com/subscription'
 		option {
 			multiplex: off
-			check_async: true
-			filter: protocol(shadowsocks) && name(regex: '^HK-\d+$') [multiplex: smux, check_async: false]
+			filter: protocol(shadowsocks) && name(regex: '^HK-\d+$') [multiplex: smux]
 			filter: name(HK-legacy, HK-2, HK-3, HK-4, HK-5, HK-6) [multiplex: off]
 		}
 	}
 }
 
 node {
-	hk: 'ss://example' [multiplex: smux-udp-passthrough, multiplex_max_connections: 10, check_async: true]
+	hk: 'ss://example' [multiplex: smux-udp-passthrough, multiplex_max_connections: 10]
 	'socks5://localhost:1080'
 }
 routing { fallback: direct }
@@ -50,21 +49,14 @@ routing { fallback: direct }
 	if subscription.Option.Defaults.Multiplex != MultiplexModeOff {
 		t.Fatalf("default multiplex = %q, want off", subscription.Option.Defaults.Multiplex)
 	}
-	if subscription.Option.Defaults.CheckAsync == nil || !*subscription.Option.Defaults.CheckAsync {
-		t.Fatalf("default check_async = %v, want true", subscription.Option.Defaults.CheckAsync)
-	}
 	if len(subscription.Option.Rules) != 2 {
 		t.Fatalf("option rules = %d, want 2", len(subscription.Option.Rules))
 	}
 	if got := subscription.Option.Rules[0].Options.Multiplex; got != MultiplexModeSmux {
 		t.Fatalf("first rule multiplex = %q, want smux", got)
 	}
-	if got := subscription.Option.Rules[0].Options.CheckAsync; got == nil || *got {
-		t.Fatalf("first rule check_async = %v, want false", got)
-	}
 	if len(conf.Node) != 2 || conf.Node[0].Name != "hk" || conf.Node[0].Options.Multiplex != MultiplexModeSmuxUDPPassthrough ||
-		conf.Node[0].Options.MultiplexMaxConnections == nil || *conf.Node[0].Options.MultiplexMaxConnections != 10 ||
-		conf.Node[0].Options.CheckAsync == nil || !*conf.Node[0].Options.CheckAsync {
+		conf.Node[0].Options.MultiplexMaxConnections == nil || *conf.Node[0].Options.MultiplexMaxConnections != 10 {
 		t.Fatalf("unexpected nodes: %+v", conf.Node)
 	}
 
@@ -123,10 +115,10 @@ routing { fallback: direct }
 `,
 		},
 		{
-			name: "invalid check_async",
+			name: "removed node check_async",
 			config: `
 global {}
-node { test: 'ss://example' [check_async: maybe] }
+node { test: 'ss://example' [check_async: true] }
 routing { fallback: direct }
 `,
 		},
@@ -172,14 +164,6 @@ subscription {
 		option { filter: name(test) [multiplex: off, multiplex_max_connections: 4] }
 	}
 }
-routing { fallback: direct }
-`,
-		},
-		{
-			name: "numeric check_async alias",
-			config: `
-global {}
-node { test: 'ss://example' [check_async: 1] }
 routing { fallback: direct }
 `,
 		},
@@ -524,6 +508,37 @@ routing { fallback: target }
 `)
 	if !conf.Group[0].Present["check_tolerance"] {
 		t.Fatal("explicit zero-valued group field was not tracked")
+	}
+}
+
+func TestGroupCheckAsyncRoundTrip(t *testing.T) {
+	for _, value := range []string{"", "true", "false"} {
+		name := value
+		if name == "" {
+			name = "omitted"
+		}
+		t.Run(name, func(t *testing.T) {
+			setting := ""
+			if value != "" {
+				setting = "check_async: " + value
+			}
+			conf := parseConfig(t, `
+global {}
+group { target { policy: random `+setting+` } }
+routing { fallback: target }
+`)
+			if conf.Group[0].CheckAsync != (value == "true") || conf.Group[0].Present["check_async"] != (value != "") {
+				t.Fatalf("unexpected check_async value or presence: %+v", conf.Group[0])
+			}
+			marshaled, err := conf.Marshal(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			roundTrip := parseConfig(t, string(marshaled))
+			if !reflect.DeepEqual(conf.Group, roundTrip.Group) {
+				t.Fatalf("group changed after round trip\nfirst:  %+v\nsecond: %+v", conf.Group, roundTrip.Group)
+			}
+		})
 	}
 }
 

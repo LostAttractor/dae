@@ -51,11 +51,10 @@ type NodeDescriptor struct {
 
 // NodeInfo is one original node. It never represents an expanded chain.
 type NodeInfo struct {
-	Link       string
-	Property   *dialer.Property
-	Dialers    []D.Builder
-	CheckAsync bool
-	Required   bool
+	Link     string
+	Property *dialer.Property
+	Dialers  []D.Builder
+	Required bool
 }
 
 type PathSpec struct {
@@ -163,7 +162,6 @@ func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 			}
 		}
 		effectiveOptions.Overlay(node.Options)
-		nodeInfo.CheckAsync = effectiveOptions.CheckAsync != nil && *effectiveOptions.CheckAsync
 		builders, err = applyNodeOptions(builders, effectiveOptions)
 		if err != nil {
 			return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
@@ -480,12 +478,5 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		SubscriptionTag: terminal.Property.SubscriptionTag,
 		Hops:            hops,
 	}
-	initialCheck := dialer.InitialCheckBlocking
-	for _, node := range spec.Nodes {
-		if node.CheckAsync {
-			initialCheck = dialer.InitialCheckAsync
-			break
-		}
-	}
-	return dialer.NewDialer(runtime, option, property, initialCheck, statsScope), nil
+	return dialer.NewDialer(runtime, option, property, true, statsScope), nil
 }

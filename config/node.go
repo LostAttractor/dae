@@ -28,8 +28,6 @@ type NodeOptions struct {
 	Multiplex MultiplexMode `mapstructure:"multiplex"`
 	// Nil means that this layer does not override a lower-precedence value.
 	MultiplexMaxConnections *uint16 `mapstructure:"multiplex_max_connections"`
-	// Nil means that this layer does not override a lower-precedence value.
-	CheckAsync *bool `mapstructure:"check_async"`
 }
 
 func (o *NodeOptions) Overlay(override NodeOptions) {
@@ -42,13 +40,10 @@ func (o *NodeOptions) Overlay(override NodeOptions) {
 	if override.MultiplexMaxConnections != nil {
 		o.MultiplexMaxConnections = override.MultiplexMaxConnections
 	}
-	if override.CheckAsync != nil {
-		o.CheckAsync = override.CheckAsync
-	}
 }
 
 func (o NodeOptions) IsZero() bool {
-	return o.Multiplex == "" && o.MultiplexMaxConnections == nil && o.CheckAsync == nil
+	return o.Multiplex == "" && o.MultiplexMaxConnections == nil
 }
 
 func (o NodeOptions) validate(requireMultiplex bool) error {
@@ -115,16 +110,6 @@ func (o *NodeOptions) parse(params ...*config_parser.Param) error {
 			}
 			connections := uint16(value)
 			o.MultiplexMaxConnections = &connections
-		case "check_async":
-			var checkAsync bool
-			switch strings.TrimSpace(param.Val) {
-			case "true":
-				checkAsync = true
-			case "false":
-			default:
-				return fmt.Errorf("unsupported check_async value %q; expected true or false", param.Val)
-			}
-			o.CheckAsync = &checkAsync
 		default:
 			return fmt.Errorf("unknown node option %q", param.Key)
 		}

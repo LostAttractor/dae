@@ -139,7 +139,7 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 		d.mu.Unlock()
 		return
 	}
-	if d.initialCheck == InitialCheckDisabled {
+	if !d.checksConnectivity {
 		d.checkActivated = true
 		d.mu.Unlock()
 		stats.DefaultStore.RecordNodeState(d.StatsKey(), true, time.Time{})
@@ -164,7 +164,7 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 // Requests that arrive during a check are coalesced into one follow-up round.
 func (d *Dialer) RequestConnectivityCheck() {
 	d.mu.Lock()
-	if d.ctx.Err() != nil || d.initialCheck == InitialCheckDisabled {
+	if d.ctx.Err() != nil || !d.checksConnectivity {
 		d.mu.Unlock()
 		return
 	}
@@ -210,7 +210,7 @@ func (d *Dialer) ReportDataPlaneFailure() {
 	}
 	startedConfirmation := false
 	session, hasSession := d.sessionSnapshot()
-	if d.initialCheck != InitialCheckDisabled && d.health == healthHealthy && d.healthyLocked(session, hasSession) {
+	if d.checksConnectivity && d.health == healthHealthy && d.healthyLocked(session, hasSession) {
 		d.health = healthConfirming
 		d.failureReportedAt = time.Now()
 		d.failureGeneration++

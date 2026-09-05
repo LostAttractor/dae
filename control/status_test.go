@@ -224,11 +224,11 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	directDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: "direct",
 		Link: "direct://",
-	}, dialer.InitialCheckDisabled, "")
+	}, false, "")
 	blockDialer := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: "block",
 		Link: "block://",
-	}, dialer.InitialCheckDisabled, "")
+	}, false, "")
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
 		[]*dialer.Dialer{directDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
@@ -241,7 +241,7 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}, dialer.InitialCheckBlocking, "")
+	}, true, "")
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
@@ -291,7 +291,7 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, &dialer.Property{
 		Name: t.Name(),
 		Link: "test://" + t.Name(),
-	}, dialer.InitialCheckBlocking, "")
+	}, true, "")
 	group := outbound.NewDialerGroup(
 		option,
 		t.Name(),
@@ -329,7 +329,7 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 			{ID: "exit-id", Name: "exit", Subtag: "b", Protocol: "ss", Address: "exit.example:443"},
 		},
 	}
-	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, property, dialer.InitialCheckAsync, "")
+	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, property, true, "")
 	group := outbound.NewDialerGroup(
 		option,
 		"direct node target",
@@ -346,16 +346,17 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 		dialer.DialerSelectionPolicy{},
 		func(bool, *common.NetworkType) error { return nil },
 	).SetTargetMetadata(outbound.TargetKindNode)
+	group.CheckAsync = true
 	t.Cleanup(func() {
 		_ = group.Close()
 	})
 	plane := &ControlPlane{outbounds: []*outbound.DialerGroup{group}}
 	status := mustStatusSnapshot(t, plane).Groups[0]
-	if status.TargetKind != "node" || status.Policy != "" {
-		t.Fatalf("target metadata = kind %q, policy %q", status.TargetKind, status.Policy)
+	if status.TargetKind != "node" || status.Policy != "" || !status.CheckAsync {
+		t.Fatalf("target metadata = kind %q, policy %q, check_async %v", status.TargetKind, status.Policy, status.CheckAsync)
 	}
 	annotation := status.Nodes[0].Annotation
-	if annotation == nil || annotation.AddLatency != "30ms" || annotation.Priority == nil || *annotation.Priority != 2 || !annotation.PriorityConditional || !status.Nodes[0].CheckAsync {
+	if annotation == nil || annotation.AddLatency != "30ms" || annotation.Priority == nil || *annotation.Priority != 2 || !annotation.PriorityConditional {
 		t.Fatalf("node annotation = %+v", annotation)
 	}
 }

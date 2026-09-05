@@ -172,6 +172,7 @@ type Group struct {
 	CheckInterval    time.Duration `mapstructure:"check_interval"`
 	CheckIntervalMax time.Duration `mapstructure:"check_interval_max"`
 	CheckTolerance   time.Duration `mapstructure:"check_tolerance"`
+	CheckAsync       bool          `mapstructure:"check_async"`
 }
 
 type DnsRequestRouting struct {
