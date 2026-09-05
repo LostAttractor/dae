@@ -12,23 +12,34 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func fixedPolicy(index string) config.Group {
-	return config.Group{Policy: []*config_parser.Function{{
-		Name: "fixed",
-		Params: []*config_parser.Param{{
-			Val: index,
-		}},
-	}}}
-}
-
-func TestFixedPolicyRejectsNegativeIndex(t *testing.T) {
-	group := fixedPolicy("-1")
-	if _, err := NewDialerSelectionPolicyFromGroupParam(&group); err == nil {
-		t.Fatal("fixed(-1) unexpectedly succeeded")
+func TestIndexedSelectionPolicy(t *testing.T) {
+	for _, input := range []config.FunctionListOrString{"selector", &config_parser.Function{Name: "selector"}} {
+		policy, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: input})
+		if err != nil || policy.Policy != "selector" || policy.FixedIndex != 0 {
+			t.Fatalf("selector without index = %+v, %v", policy, err)
+		}
 	}
-	group = fixedPolicy("0")
-	policy, err := NewDialerSelectionPolicyFromGroupParam(&group)
-	if err != nil || policy.FixedIndex != 0 {
-		t.Fatalf("fixed(0) = %+v, %v", policy, err)
+	if _, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: "fixed"}); err == nil {
+		t.Fatal("fixed without an index was accepted")
+	}
+	for _, name := range []string{"fixed", "selector"} {
+		for _, test := range []struct {
+			index string
+			want  int
+		}{{"0", 0}, {"2", 2}, {"-1", -1}} {
+			t.Run(name+"("+test.index+")", func(t *testing.T) {
+				group := config.Group{Policy: &config_parser.Function{
+					Name: name, Params: []*config_parser.Param{{Val: test.index}},
+				}}
+				policy, err := NewDialerSelectionPolicyFromGroupParam(&group)
+				if test.want < 0 {
+					if err == nil {
+						t.Fatal("invalid index was accepted")
+					}
+				} else if err != nil || string(policy.Policy) != name || policy.FixedIndex != test.want {
+					t.Fatalf("policy = %+v, %v; want %s(%d)", policy, err, name, test.want)
+				}
+			})
+		}
 	}
 }

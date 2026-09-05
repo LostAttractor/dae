@@ -17,6 +17,7 @@ type DialerSelectionPolicy string
 const (
 	DialerSelectionPolicy_Random                    DialerSelectionPolicy = "random"
 	DialerSelectionPolicy_Fixed                     DialerSelectionPolicy = "fixed"
+	DialerSelectionPolicy_Selector                  DialerSelectionPolicy = "selector"
 	DialerSelectionPolicy_MinAverage10Latencies     DialerSelectionPolicy = "min_avg10"
 	DialerSelectionPolicy_MinMovingAverageLatencies DialerSelectionPolicy = "min_moving_avg"
 	DialerSelectionPolicy_MinLastLatency            DialerSelectionPolicy = "min"

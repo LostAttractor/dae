@@ -109,6 +109,7 @@ type Dialer struct {
 	*Property
 	statsKey string
 	statsID  string
+	stats    dialerStats
 	runtime  *netproxy.Runtime
 	session  netproxy.Session
 

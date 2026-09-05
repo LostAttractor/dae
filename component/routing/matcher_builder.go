@@ -77,6 +77,9 @@ func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 			if !ok {
 				return fmt.Errorf("unknown function: %v", f.Name)
 			}
+			if f.Name == consts.Function_Client && len(f.Params) != 1 {
+				return fmt.Errorf("client requires exactly one set name")
+			}
 			paramValueGroups, keyOrder := groupParamValuesByKey(f.Params)
 			for jMatchSet, key := range keyOrder {
 				paramValueGroup := paramValueGroups[key]

@@ -88,8 +88,10 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 	var newRules []*config_parser.RoutingRule
 	mergingRule := rules[0]
 	for i := 1; i < len(rules); i++ {
+		// client() names one dynamic set; keep separate references intact.
 		if len(mergingRule.AndFunctions) == 1 &&
 			len(rules[i].AndFunctions) == 1 &&
+			mergingRule.AndFunctions[0].Name != consts.Function_Client &&
 			mergingRule.AndFunctions[0].Name == rules[i].AndFunctions[0].Name &&
 			mergingRule.AndFunctions[0].Not == rules[i].AndFunctions[0].Not &&
 			rules[i].Outbound.String(true, false, true) == mergingRule.Outbound.String(true, false, true) {

@@ -81,7 +81,10 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 			TimeoutPenalty: penalty,
 			EmaAlpha:       alpha,
 		}, nil
-	case consts.DialerSelectionPolicy_Fixed:
+	case consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Selector:
+		if fName == consts.DialerSelectionPolicy_Selector && len(f.Params) == 0 {
+			return &DialerSelectionPolicy{Policy: fName}, nil
+		}
 		if len(f.Params) != 1 || f.Params[0].Key != "" {
 			return nil, fmt.Errorf(`invalid "%v" param format`, fName)
 		}
