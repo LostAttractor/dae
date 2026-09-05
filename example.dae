@@ -3,7 +3,9 @@
 #     config.d/*.dae
 #     /etc/dae/config.d/*.dae
 # }
-# Relative paths are resolved from the entry configuration directory. Absolute paths are used as-is.
+# Relative include paths are resolved from the entry configuration directory. Absolute paths are used as-is.
+# DAE_LOCATION_CACHE sets the writable subscription cache directory (default: /var/lib/dae).
+# The configuration directory may remain read-only. See docs/zh/configuration/cache-directory.md for migration.
 
 global {
     ##### Software options.
@@ -175,9 +177,12 @@ subscription {
     }
     another_sub: 'https://example.com/another_sub'
     'https://example.com/no_tag_link'
-    'file://relative/path/to/mysub.sub' # Put subscription content in /etc/dae/relative/path/to/mysub.sub
+    'file:relative/path/to/mysub.sub' # Resolved from the entry configuration directory, independent of DAE_LOCATION_CACHE.
+    # local_sub: 'file:///var/lib/dae/nodes.sub' # Absolute local file; use file:/// with three slashes.
 
-    # Subscriptions with '-file' will be saved to 'config_dir/persist.d/your_sub_tag.sub'.
+    # Ordinary HTTP(S) sources do not fall back to cache. Sources with '-file' require a tag
+    # and will be saved to 'DAE_LOCATION_CACHE/persist.d/your_sub_tag.sub'
+    # (default: /var/lib/dae/persist.d/your_sub_tag.sub).
     # This file will serve as a fallback when fetching the subscription via a link fails.
     # It will be updated automatically once the fetch is successful.
     persist_sub: 'https-file://www.example.com/persist_sub/link'

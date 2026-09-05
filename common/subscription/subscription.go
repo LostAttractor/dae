@@ -26,6 +26,7 @@ import (
 	"syscall"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/config"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -59,59 +60,24 @@ func fetchRemoteSubscription(client *http.Client, subscription string) ([]byte, 
 }
 
 func fetchRemoteSubscriptionContext(ctx context.Context, client *http.Client, subscription string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, subscription, nil)
+	source, err := resource.Parse(subscription, "")
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, redactURLFromError(err)
+	if !source.Remote() {
+		return nil, fmt.Errorf("remote subscription requires an HTTP or HTTPS URL")
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("subscription request returned HTTP status %d", resp.StatusCode)
-	}
-	if resp.ContentLength > maxRemoteSubscriptionSize {
-		return nil, fmt.Errorf("subscription response is too large: %d bytes exceeds %d", resp.ContentLength, maxRemoteSubscriptionSize)
-	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteSubscriptionSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(b)) > maxRemoteSubscriptionSize {
-		return nil, fmt.Errorf("subscription response exceeds %d bytes", maxRemoteSubscriptionSize)
-	}
-	return b, nil
+	result, err := resource.Read(ctx, client, source, resource.ReadOptions{
+		MaxBytes:  maxRemoteSubscriptionSize,
+		UserAgent: fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version),
+	})
+	return result.Data, err
 }
 
-// RedactURL identifies a subscription without exposing credentials, path
-// tokens, query parameters, or fragments.
+// RedactURL hides credentials, query parameters, fragments and remote path
+// tokens. Local file paths remain visible so filesystem failures are actionable.
 func RedactURL(subscription string) string {
-	tag, raw := common.GetTagFromLinkLikePlaintext(subscription)
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" {
-		if tag != "" {
-			return tag + ":<invalid>"
-		}
-		return "<invalid>"
-	}
-	redacted := u.Scheme + "://" + u.Host
-	if tag != "" {
-		return tag + ":" + redacted
-	}
-	return redacted
-}
-
-func redactURLFromError(err error) error {
-	var urlErr *url.Error
-	if !errors.As(err, &urlErr) {
-		return err
-	}
-	redacted := *urlErr
-	redacted.URL = RedactURL(urlErr.URL)
-	return &redacted
+	return resource.RedactURL(subscription)
 }
 
 func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
@@ -264,22 +230,49 @@ func decodeSIP008(b []byte) (sip008, error) {
 }
 
 func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
-	if u.Host == "" {
-		return nil, fmt.Errorf("not support absolute path")
-	}
-	/// Relative location.
-	// Make sure path is secure.
-	path := filepath.Join(configDir, u.Host, u.Path)
-	if err = common.EnsureFileInSubDir(path, configDir); err != nil {
+	source, err := resource.Parse(u.String(), configDir)
+	if err != nil {
 		return nil, err
 	}
-	/// Read and resolve.
-	f, err := openSubscriptionFile(configDir, path)
+	if source.Remote() {
+		return nil, fmt.Errorf("local subscription requires a file URL")
+	}
+	path := source.Location
+	var f *os.File
+	if !source.Relative {
+		// An explicit absolute path may name a rotating secret symlink, such
+		// as /run/secrets. Validate the opened target below, rather than
+		// rejecting links or resolving them once before opening the file.
+		f, err = openAbsoluteSubscriptionFile(path)
+	} else {
+		// file:relative/path resolves within the configuration directory.
+		if configDir == "" {
+			return nil, fmt.Errorf("local subscription requires a configuration directory")
+		}
+		configDir, err = filepath.Abs(configDir)
+		if err != nil {
+			return nil, err
+		}
+		if err = common.EnsureFileInSubDir(path, configDir); err != nil {
+			return nil, err
+		}
+		f, err = openSubscriptionFile(configDir, path)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	return readSubscriptionFile(f, path)
+}
+
+func openAbsoluteSubscriptionFile(path string) (*os.File, error) {
+	// O_NONBLOCK prevents a named pipe from hanging before the regular-file
+	// check. Fstat and reads use the same descriptor even if a secret rotates.
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open subscription file", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
 }
 
 func openSubscriptionFile(configDir, path string) (*os.File, error) {
@@ -294,7 +287,7 @@ func openSubscriptionFile(configDir, path string) (*os.File, error) {
 
 	dirFd, err := unix.Open(configDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "open subscription directory", Path: configDir, Err: err}
 	}
 	for i, part := range parts {
 		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
@@ -304,16 +297,32 @@ func openSubscriptionFile(configDir, path string) (*os.File, error) {
 			flags |= unix.O_NONBLOCK
 		}
 		fd, openErr := unix.Openat(dirFd, part, flags, 0)
-		_ = unix.Close(dirFd)
 		if openErr != nil {
-			return nil, openErr
+			componentPath := filepath.Join(configDir, filepath.Join(parts[:i+1]...))
+			pathErr := subscriptionFileOpenError(dirFd, part, componentPath, openErr)
+			_ = unix.Close(dirFd)
+			return nil, pathErr
 		}
+		_ = unix.Close(dirFd)
 		if i == len(parts)-1 {
 			return os.NewFile(uintptr(fd), path), nil
 		}
 		dirFd = fd
 	}
 	return nil, fmt.Errorf("invalid subscription path %q", path)
+}
+
+func subscriptionFileOpenError(dirFd int, name, path string, err error) error {
+	// Linux reports ENOTDIR, rather than ELOOP, when O_NOFOLLOW and
+	// O_DIRECTORY reject an intermediate symlink. Inspect only for diagnostics;
+	// the failed open is never retried with weaker flags.
+	if errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+		var stat unix.Stat_t
+		if unix.Fstatat(dirFd, name, &stat, unix.AT_SYMLINK_NOFOLLOW) == nil && stat.Mode&unix.S_IFMT == unix.S_IFLNK {
+			err = fmt.Errorf("symbolic links are not allowed: %w", err)
+		}
+	}
+	return &os.PathError{Op: "open subscription path", Path: path, Err: err}
 }
 
 func readSubscriptionFile(f *os.File, path string) (b []byte, err error) {
@@ -659,12 +668,12 @@ func validPersistenceTag(tag string) bool {
 // PersistentTag returns the cache tag for a configured persistent remote
 // subscription. It does not retain tags from ordinary HTTP or local sources.
 func PersistentTag(subscription string) (string, bool) {
-	tag, raw := common.GetTagFromLinkLikePlaintext(subscription)
+	tag, raw := resource.Split(subscription)
 	if !validPersistenceTag(tag) {
 		return "", false
 	}
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http-file" && u.Scheme != "https-file") {
+	source, err := resource.Parse(raw, "")
+	if err != nil || !source.Remote() || !source.Persistent {
 		return "", false
 	}
 	return tag, true
@@ -682,21 +691,20 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 		return "", nil, err
 	}
 
-	/// Get tag.
-	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
+	tag, subscription = resource.Split(subscription)
 
-	/// Parse url.
-	u, err := url.Parse(subscription)
+	source, err := resource.Parse(subscription, subscriptionDir)
 	if err != nil {
-		return tag, nil, fmt.Errorf("failed to parse subscription %q: %w", RedactURL(subscription), err)
+		return tag, nil, fmt.Errorf("failed to parse subscription %q: %w", RedactURL(subscription), resource.RedactError(err))
 	}
 	log.Debugf("ResolveSubscription: %s", RedactURL(subscription))
 	var b []byte
 
-	persistToFile := false
-
-	switch u.Scheme {
-	case "file":
+	if !source.Remote() {
+		u, parseErr := url.Parse(subscription)
+		if parseErr != nil {
+			return tag, nil, resource.RedactError(parseErr)
+		}
 		b, err = ResolveFile(u, subscriptionDir)
 		if err != nil {
 			return "", nil, err
@@ -706,17 +714,17 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 			return "", nil, fmt.Errorf("direct subscription file is unusable: %w", err)
 		}
 		return tag, nodes, nil
-	case "http-file", "https-file":
+	}
+	persistToFile := source.Persistent
+	if persistToFile {
 		if len(tag) == 0 {
 			return "", nil, fmt.Errorf("tag is required for http-file/https-file subscription")
 		}
 		if !validPersistenceTag(tag) {
 			return "", nil, fmt.Errorf("invalid persistence tag %q: must be a safe basename without path separators", tag)
 		}
-		persistToFile = true
-		subscription = strings.Replace(subscription, "-file", "", 1)
 	}
-	b, err = fetchRemoteSubscriptionContext(ctx, client, subscription)
+	b, err = fetchRemoteSubscriptionContext(ctx, client, source.Location)
 	if err == nil {
 		nodes, err = resolveSubscriptionContent(ctx, b, validateNode)
 		if err == nil {

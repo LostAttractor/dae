@@ -22,6 +22,7 @@ import (
 	"time"
 
 	componentoutbound "github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/config"
 )
 
 func TestResolveSubscriptionAsSIP008EncodesUserinfo(t *testing.T) {
@@ -185,10 +186,6 @@ func TestRedactURL(t *testing.T) {
 	if got, want := RedactURL(raw), "office:https://example.com:8443"; got != want {
 		t.Fatalf("RedactURL() = %q, want %q", got, want)
 	}
-	err := redactURLFromError(&url.Error{Op: "Get", URL: strings.TrimPrefix(raw, "office:"), Err: errors.New("failed")})
-	if text := err.Error(); strings.Contains(text, "password") || strings.Contains(text, "secret") || strings.Contains(text, "/private") {
-		t.Fatalf("redacted URL error leaked credentials: %q", text)
-	}
 }
 
 func TestResolveSubscriptionRedactsTransportErrorURL(t *testing.T) {
@@ -251,8 +248,8 @@ func TestFetchRemoteSubscription(t *testing.T) {
 				if req.Method != http.MethodGet {
 					t.Fatalf("method = %q, want GET", req.Method)
 				}
-				if got := req.Header.Get("User-Agent"); got == "" {
-					t.Fatal("User-Agent is empty")
+				if got, want := req.Header.Get("User-Agent"), "dae/"+config.Version+" (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)"; got != want {
+					t.Fatalf("User-Agent = %q, want %q", got, want)
 				}
 				return &http.Response{
 					StatusCode:    tt.statusCode,
@@ -458,7 +455,7 @@ func TestResolveSubscriptionFiltersEverySource(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, nodes, err := ResolveSubscription(http.DefaultClient, dir, "file://nodes.sub", componentoutbound.ValidateNodeLink)
+		_, nodes, err := ResolveSubscription(http.DefaultClient, dir, "file:nodes.sub", componentoutbound.ValidateNodeLink)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -506,7 +503,7 @@ func TestResolveSubscriptionFiltersEverySource(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, "invalid.sub"), invalid, 0600); err != nil {
 					t.Fatal(err)
 				}
-				return http.DefaultClient, "file://invalid.sub"
+				return http.DefaultClient, "file:invalid.sub"
 			},
 			wantErr: "direct subscription file is unusable",
 		},
@@ -678,7 +675,10 @@ func TestPersistentTagUsesConfiguredPersistenceMode(t *testing.T) {
 		{name: "persistent HTTP", link: "keep:http-file://example.com/sub", tag: "keep", ok: true},
 		{name: "persistent HTTPS", link: "keep:https-file://example.com/sub", tag: "keep", ok: true},
 		{name: "ordinary HTTP", link: "keep:http://example.com/sub"},
-		{name: "local file", link: "keep:file://nodes.sub"},
+		{name: "local file", link: "keep:file:nodes.sub"},
+		{name: "untagged local file", link: "file:nodes.sub"},
+		{name: "persistent without tag", link: "http-file://example.com/sub"},
+		{name: "persistent without host", link: "keep:https-file:///sub"},
 		{name: "unsafe tag", link: "../keep:http-file://example.com/sub"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -699,7 +699,7 @@ func TestResolveFileRejectsFinalSymlink(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(dir, "nodes.sub")); err != nil {
 		t.Fatal(err)
 	}
-	u, err := url.Parse("file://nodes.sub")
+	u, err := url.Parse("file:nodes.sub")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +717,7 @@ func TestResolveFileRejectsIntermediateSymlink(t *testing.T) {
 	if err := os.Symlink(targetDir, filepath.Join(dir, "links")); err != nil {
 		t.Fatal(err)
 	}
-	u, err := url.Parse("file://links/nodes.sub")
+	u, err := url.Parse("file:links/nodes.sub")
 	if err != nil {
 		t.Fatal(err)
 	}

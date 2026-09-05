@@ -1,5 +1,7 @@
 # 吃鹅直通手册
 
+订阅缓存目录由 `DAE_LOCATION_CACHE` 指定，默认 `/var/lib/dae`；NixOS 设置见[持久化目录](configuration/cache-directory.md)。
+
 ## Linux 内核要求
 
 ### 内核版本

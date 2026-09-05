@@ -12,12 +12,12 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"runtime"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/config"
@@ -30,8 +30,9 @@ import (
 )
 
 const (
-	// Reload keeps serving through the old control plane, so preparation must
-	// not wait indefinitely for external network resources.
+	// Network checks must be bounded on initial startup too: a disconnected
+	// host can still start with configured nodes and persisted subscriptions.
+	startupNetworkWaitTimeout       = 15 * time.Second
 	reloadNetworkWaitTimeout        = 15 * time.Second
 	reloadSubscriptionTimeout       = 10 * time.Second
 	reloadSubscriptionPhaseTimeout  = 30 * time.Second
@@ -60,16 +61,20 @@ type subscriptionResolution struct {
 type subscriptionResolver func(context.Context, *http.Client, string, string, func(string) error) (string, []string, error)
 
 func waitForNetworkOnline(ctx context.Context, isReload bool) error {
+	timeout := startupNetworkWaitTimeout
+	if isReload {
+		timeout = reloadNetworkWaitTimeout
+		writeReloadProgress("Checking network...")
+	}
+	return waitForNetworkOnlineWithTimeout(ctx, timeout)
+}
+
+func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration) error {
 	const retryInterval = 5 * time.Second
 	if len(CheckNetworkLinks) == 0 {
 		return errors.New("network check has no endpoints")
 	}
-	waitCtx := ctx
-	cancel := func() {}
-	if isReload {
-		waitCtx, cancel = context.WithTimeout(ctx, reloadNetworkWaitTimeout)
-		writeReloadProgress("Checking network...")
-	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -89,8 +94,8 @@ func waitForNetworkOnline(ctx context.Context, isReload bool) error {
 	log.Infoln("Waiting for network...")
 	for i := 0; ; i++ {
 		if contextErr := waitCtx.Err(); contextErr != nil {
-			if isReload && errors.Is(contextErr, context.DeadlineExceeded) && ctx.Err() == nil {
-				log.Warnf("Network is still not online after %v; continuing without network check", reloadNetworkWaitTimeout)
+			if errors.Is(contextErr, context.DeadlineExceeded) && ctx.Err() == nil {
+				log.Warnf("Network is still not online after %v; continuing with configured nodes and subscription resolution", timeout)
 				return nil
 			}
 			return contextErr
@@ -206,7 +211,7 @@ func resolveNodeDescriptors(
 	conf *config.Config,
 	activeTags map[string]struct{},
 	isReload bool,
-	defaultSubscriptionDir string,
+	configDir string,
 	resolve subscriptionResolver,
 ) ([]outbound.NodeDescriptor, error) {
 	started := time.Now()
@@ -225,10 +230,7 @@ func resolveNodeDescriptors(
 		return nil, err
 	}
 
-	subscriptionDir := os.Getenv("DAE_LOCATION_SUBSCRIPTION")
-	if subscriptionDir == "" {
-		subscriptionDir = defaultSubscriptionDir
-	}
+	subscriptionDir := cacheDirectory()
 	if len(conf.Subscription) > 0 {
 		if isReload {
 			writeReloadProgress("Fetching subscriptions...")
@@ -259,7 +261,8 @@ func resolveNodeDescriptors(
 		}
 		resolveGroup.Go(func() error {
 			link := sub.String()
-			results[i].tag, results[i].nodes, results[i].err = resolve(subCtx, &client, subscriptionDir, link, validateNode)
+			dir := subscriptionSourceDirectory(link, configDir)
+			results[i].tag, results[i].nodes, results[i].err = resolve(subCtx, &client, dir, link, validateNode)
 			return nil
 		})
 	}
@@ -307,6 +310,17 @@ func resolveNodeDescriptors(
 		"nodes":    len(descriptors),
 	}).Info("Prepared nodes")
 	return descriptors, nil
+}
+
+// Local subscription sources are configuration inputs; only downloaded
+// subscription state belongs in the unified cache directory.
+func subscriptionSourceDirectory(link, configDir string) string {
+	_, raw := resource.Split(link)
+	source, err := resource.Parse(raw, configDir)
+	if err == nil && !source.Remote() {
+		return configDir
+	}
+	return cacheDirectory()
 }
 
 func persistentSubscriptionTags(subscriptions []config.Subscription) (map[string]struct{}, error) {
