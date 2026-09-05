@@ -14,9 +14,10 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/surgemodule"
 )
 
-const StatusSchemaVersion = 2
+const StatusSchemaVersion = 3
 
 type NetworkValues[T any] [common.NetworkTypeCount]T
 
@@ -29,6 +30,7 @@ type StatusSnapshot struct {
 	Networks     NetworkValues[stats.PathStats] `json:"networks"`
 	Tables       []TableUsage                   `json:"tables"`
 	Groups       []GroupStatus                  `json:"groups"`
+	Surge        surgemodule.Status             `json:"surge"`
 }
 
 func decodeStatusObject(data []byte, value any) error {
@@ -41,7 +43,8 @@ func (s *StatusSnapshot) UnmarshalJSON(data []byte) error {
 	*s = StatusSnapshot{}
 	fields := struct {
 		*plain
-		Stats *stats.PathStats `json:"stats"`
+		Stats *stats.PathStats    `json:"stats"`
+		Surge *surgemodule.Status `json:"surge"`
 	}{plain: (*plain)(s)}
 	if err := decodeStatusObject(data, &fields); err != nil {
 		return err
@@ -49,7 +52,11 @@ func (s *StatusSnapshot) UnmarshalJSON(data []byte) error {
 	if fields.Stats == nil {
 		return errors.New("status response is missing stats")
 	}
+	if fields.Surge == nil {
+		return errors.New("status response is missing surge")
+	}
 	s.Stats = *fields.Stats
+	s.Surge = *fields.Surge
 	return nil
 }
 

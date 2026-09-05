@@ -408,6 +408,18 @@ func (g *DomainRegistry) Verify(qi queryInfo, ip netip.Addr) (result DomainVerif
 	return result
 }
 
+// kernelRoutingBitmaps snapshots the DNS-derived bitmaps currently installed
+// for an IP. The routing intersection contains only rules shared by every
+// registered name; the bump union identifies ambiguous shared-IP rules.
+func (g *DomainRegistry) kernelRoutingBitmaps(ip netip.Addr) (bump, routing []uint32) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if state := g.byIP[ip.Unmap()]; state != nil {
+		return append([]uint32(nil), state.bump...), append([]uint32(nil), state.routing...)
+	}
+	return nil, nil
+}
+
 // Sweep reaps expired kernel contributions (registrations survive in
 // userspace below the limit) and enforces the userspace history limit.
 func (g *DomainRegistry) Sweep(now time.Time) {

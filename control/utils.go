@@ -76,13 +76,36 @@ func closeInBackground(closer io.Closer) {
 func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*DialOption, error) {
 	outboundIndex := consts.OutboundIndex(p.routingResult.Outbound)
 	mark := p.routingResult.Mark
+	captured, kernelTerminal := false, false
+	if outboundIndex == consts.OutboundControlPlaneRouting {
+		bump, bitmap, err := c.capturedRoutingBitmaps(p.Dest.Addr(), p.networkType.L4Proto.ToL4ProtoType())
+		if err != nil {
+			return nil, err
+		}
+		if bitmap != nil {
+			captured = true
+			var must bool
+			outboundIndex, mark, must, err = c.Route(p.Src, p.Dest, "", p.networkType.L4Proto.ToL4ProtoType(), p.routingResult, bitmap, bump)
+			if err != nil {
+				return nil, err
+			}
+			if must {
+				p.routingResult.Must = 1
+			} else {
+				p.routingResult.Must = 0
+			}
+			// These decisions would have terminated inside the kernel before
+			// this feature; client SNI must not change their route or target.
+			kernelTerminal = outboundIndex == consts.OutboundDirect || outboundIndex == consts.OutboundBlock
+		}
+	}
 
 	verified, shouldReroute, err := c.verifySniff(ctx, p.Dest, p.Domain)
 	if err != nil {
 		return nil, err
 	}
-	if c.rerouteMode == consts.RerouteMode_Force ||
-		(c.rerouteMode == consts.RerouteMode_WhileNeed && shouldReroute) {
+	if !kernelTerminal && (c.rerouteMode == consts.RerouteMode_Force ||
+		(c.rerouteMode == consts.RerouteMode_WhileNeed && shouldReroute)) {
 		outboundIndex = consts.OutboundControlPlaneRouting
 	}
 
@@ -90,6 +113,9 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 		domain := p.Domain
 		if !verified {
 			domain = ""
+			if captured {
+				return nil, fmt.Errorf("cannot preserve ambiguous DNS routing for %s without a trusted hostname", p.Dest.Addr())
+			}
 		}
 		outboundIndex, mark, _, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult)
 		if err != nil {
@@ -100,6 +126,12 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 		}
 	}
 	p.routingResult.Mark = mark
+	return c.selectDialOption(p, outboundIndex, mark, verified && c.dialTargetOverride && !kernelTerminal)
+}
+
+// selectDialOption applies the configured node policy and no-connectivity
+// fallback after routing has selected an outbound.
+func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.OutboundIndex, mark uint32, override bool) (*DialOption, error) {
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
 			return nil, oops.Errorf("traffic was dropped due to no-load configuration")
@@ -107,10 +139,18 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 		return nil, oops.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	selectedOutbound := c.outbounds[outboundIndex]
-	dialTarget, dialIp := c.ChooseDialTarget(outboundIndex, p.Dest, p.Domain, verified && c.dialTargetOverride)
+	// UDP relays use IPs; replacing them with sniffed QUIC hostnames breaks
+	// full-cone reply addressing. Explicit destination IP rewrites remain applicable.
+	override = override && p.networkType.L4Proto != consts.L4ProtoStr_UDP
+	dialTarget := c.dialTarget(outboundIndex, p.Dest, p.Domain, override)
+	target, ipErr := netip.ParseAddrPort(dialTarget)
+	networkType := p.networkType
+	if ipErr == nil {
+		networkType.IpVersion = consts.IpVersionStrFromAddr(target.Addr())
+	}
 	dialer, selectedNetwork, fallback, err := selectedOutbound.SelectFallbackIpVersion(
-		p.networkType,
-		dialIp || p.networkType.L4Proto == consts.L4ProtoStr_UDP,
+		networkType,
+		ipErr == nil,
 	)
 	selectedOutboundIndex := outboundIndex
 	var originalOutbound *outbound.DialerGroup
@@ -121,7 +161,11 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 		originalOutbound = selectedOutbound
 		selectedOutboundIndex = c.noConnectivityOutbound
 		selectedOutbound = c.outbounds[selectedOutboundIndex]
+		dialTarget = c.dialTarget(selectedOutboundIndex, p.Dest, p.Domain, override)
 		selectedNetwork = p.networkType
+		if target, err := netip.ParseAddrPort(dialTarget); err == nil {
+			selectedNetwork.IpVersion = consts.IpVersionStrFromAddr(target.Addr())
+		}
 		fallback = false
 		dialer, err = selectedOutbound.Select(&selectedNetwork)
 		if err != nil {
@@ -234,7 +278,7 @@ func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOptio
 	}
 }
 
-func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult, trustedDomainBitmap ...[]uint32) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	ipVersion := consts.IpVersionFromAddr(dst.Addr())
 	bSrc := src.Addr().As16()
 	bDst := dst.Addr().As16()
@@ -250,6 +294,7 @@ func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto con
 		routingResult.Ifindex,
 		routingResult.Dscp,
 		append([]uint8{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, routingResult.Mac[:]...),
+		trustedDomainBitmap...,
 	)
 }
 

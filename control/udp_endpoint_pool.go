@@ -31,6 +31,13 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 	return netip.MustParseAddrPort(addr.String())
 }
 
+// Destination rewrites need one association per original destination so that two
+// destinations mapped to the same server cannot receive each other's replies.
+// An empty Destination retains ordinary full-cone behavior.
+type udpEndpointKey struct {
+	Source, Destination netip.AddrPort
+}
+
 type UdpEndpoint struct {
 	conn net.PacketConn
 	// mu protects the timer deadline and timer pointer.
@@ -46,7 +53,7 @@ type UdpEndpoint struct {
 	traffic   *stats.Connection
 }
 
-func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort) error {
+func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key udpEndpointKey, dst netip.AddrPort) error {
 	buf := pool.GetBuffer(consts.EthernetMtu)
 	defer pool.PutBuffer(buf)
 	for {
@@ -59,11 +66,11 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPor
 				"dialer", ue.dialer.Name,
 				"outbound", ue.statsPath.Outbound,
 				"network", ue.statsPath.Network.String(),
-				"src", src.String(),
+				"src", key.Source.String(),
 				"dst", dst.String(),
 			).Wrapf(err, "failed to ReadFrom")
 		}
-		if !endpointPool.refreshTimer(src, ue, time.Now()) {
+		if !endpointPool.refreshTimer(key, ue, time.Now()) {
 			break
 		}
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
@@ -114,7 +121,7 @@ func (ue *UdpEndpoint) closeTrafficAccounting() {
 // UdpEndpointPool is a full-cone udp conn pool
 type UdpEndpointPool struct {
 	pool                 sync.Map
-	UdpEndpointKeyLocker common.KeyLocker[netip.AddrPort]
+	UdpEndpointKeyLocker common.KeyLocker[udpEndpointKey]
 }
 
 type UdpEndpointOptions struct {
@@ -128,7 +135,7 @@ type UdpEndpointOptions struct {
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
 
-func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) remove(key udpEndpointKey, endpoint *UdpEndpoint) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	removed := p.removeLocked(key, endpoint)
 	if removed {
@@ -141,17 +148,17 @@ func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {
 	}
 }
 
-func (p *UdpEndpointPool) removeInBackground(key netip.AddrPort, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) removeInBackground(key udpEndpointKey, endpoint *UdpEndpoint) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	p.removeInBackgroundLocked(key, endpoint)
 	p.UdpEndpointKeyLocker.Unlock(key, l)
 }
 
-func (p *UdpEndpointPool) removeLocked(key netip.AddrPort, endpoint *UdpEndpoint) bool {
+func (p *UdpEndpointPool) removeLocked(key udpEndpointKey, endpoint *UdpEndpoint) bool {
 	return p.pool.CompareAndDelete(key, endpoint)
 }
 
-func (p *UdpEndpointPool) removeInBackgroundLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) removeInBackgroundLocked(key udpEndpointKey, endpoint *UdpEndpoint) {
 	if p.removeLocked(key, endpoint) {
 		endpoint.retire()
 		endpoint.closeTrafficAccounting()
@@ -175,7 +182,7 @@ func (p *UdpEndpointPool) closeAll() {
 
 // Get refreshes the current endpoint. Packet-processing callers hold the key
 // lock across Get and their packet use to serialize against timer expiry.
-func (p *UdpEndpointPool) Get(key netip.AddrPort) (udpEndpoint *UdpEndpoint, ok bool) {
+func (p *UdpEndpointPool) Get(key udpEndpointKey) (udpEndpoint *UdpEndpoint, ok bool) {
 	_ue, ok := p.pool.Load(key)
 	if !ok {
 		return nil, ok
@@ -197,13 +204,13 @@ func newUdpEndpoint(createOption *UdpEndpointOptions) *UdpEndpoint {
 	}
 }
 
-func (p *UdpEndpointPool) add(key netip.AddrPort, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) add(key udpEndpointKey, endpoint *UdpEndpoint) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	defer p.UdpEndpointKeyLocker.Unlock(key, l)
 	p.addLocked(key, endpoint)
 }
 
-func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) addLocked(key udpEndpointKey, endpoint *UdpEndpoint) {
 	endpoint.mu.Lock()
 	if endpoint.closed.Load() {
 		endpoint.mu.Unlock()
@@ -221,7 +228,7 @@ func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
 	}
 }
 
-func (p *UdpEndpointPool) refreshTimerLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
+func (p *UdpEndpointPool) refreshTimerLocked(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) bool {
 	current, ok := p.pool.Load(key)
 	if !ok || current != endpoint || endpoint.IsClosed() {
 		return false
@@ -231,7 +238,7 @@ func (p *UdpEndpointPool) refreshTimerLocked(key netip.AddrPort, endpoint *UdpEn
 
 // refreshTimer is also used after a successful inbound read, where taking the
 // key lock would let an already-pending expiry win only due to lock scheduling.
-func (p *UdpEndpointPool) refreshTimer(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
+func (p *UdpEndpointPool) refreshTimer(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) bool {
 	endpoint.mu.Lock()
 	defer endpoint.mu.Unlock()
 	if endpoint.closed.Load() {
@@ -241,7 +248,7 @@ func (p *UdpEndpointPool) refreshTimer(key netip.AddrPort, endpoint *UdpEndpoint
 	return true
 }
 
-func (p *UdpEndpointPool) refreshTimerStateLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) {
+func (p *UdpEndpointPool) refreshTimerStateLocked(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) {
 	deadline := now.Add(endpoint.NatTimeout)
 	delay := time.Until(deadline)
 	endpoint.timerDeadline = deadline
@@ -254,11 +261,11 @@ func (p *UdpEndpointPool) refreshTimerStateLocked(key netip.AddrPort, endpoint *
 	endpoint.deadlineTimer.Reset(delay)
 }
 
-func (p *UdpEndpointPool) expire(key netip.AddrPort, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) expire(key udpEndpointKey, endpoint *UdpEndpoint) {
 	p.expireAt(key, endpoint, time.Time{})
 }
 
-func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) {
+func (p *UdpEndpointPool) expireAt(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	current, ok := p.pool.Load(key)
 	if !ok || current != endpoint {

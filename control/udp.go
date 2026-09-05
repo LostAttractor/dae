@@ -170,19 +170,26 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
 
-	l, _ := udpEndpoints.UdpEndpointKeyLocker.Lock(src)
-	defer udpEndpoints.UdpEndpointKeyLocker.Unlock(src, l)
+	key := udpEndpointKey{Source: src}
+	if c.destinationRewrites.Lookup(dst.Addr()) != nil {
+		key.Destination = dst
+	}
+	l, _ := udpEndpoints.UdpEndpointKeyLocker.Lock(key)
+	defer udpEndpoints.UdpEndpointKeyLocker.Unlock(key, l)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	// Get udp endpoint.
-	ue, ok := udpEndpoints.Get(src)
+	ue, ok := udpEndpoints.Get(key)
 	isNew := false
 	noConnectivityFallback := false
 	networkType := common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
+	}
+	if ok && key.Destination.IsValid() {
+		networkType.IpVersion = ue.statsPath.Network.NetworkType().IpVersion
 	}
 	// If the udp endpoint has been not alive, remove it from pool and retry
 	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
@@ -195,7 +202,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 				"dialer":  ue.dialer.Name,
 			}).Debugln("Old udp endpoint was not alive and removed.")
 		}
-		udpEndpoints.removeInBackgroundLocked(src, ue)
+		udpEndpoints.removeInBackgroundLocked(key, ue)
 		ok = false
 	}
 	if !ok {
@@ -214,12 +221,6 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if err != nil {
 			return err
 		}
-
-		// Do not overwrite target.
-		// This fixes a problem that quic connection to google servers.
-		// Reproduce:
-		// docker run --rm --name curl-http3 ymuski/curl-http3 curl --http3 -o /dev/null -v -L https://i.ytimg.com
-		dialOption.DialTarget = dst.String()
 
 		statsPath, fallback := dialOption.trafficAttribution()
 		noConnectivityFallback = fallback
@@ -261,6 +262,12 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			}
 			return nil
 		}
+		if key.Destination.IsValid() {
+			target := netip.MustParseAddrPort(dialOption.DialTarget)
+			if target != dst {
+				udpConn = &destinationPacketConn{PacketConn: udpConn, original: dst, target: target}
+			}
+		}
 		soMark := c.soMarkFromDae
 		ue = newUdpEndpoint(&UdpEndpointOptions{
 			PacketConn: udpConn,
@@ -283,7 +290,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if isNew {
 			closeInBackground(ue)
 		} else {
-			udpEndpoints.removeInBackgroundLocked(src, ue)
+			udpEndpoints.removeInBackgroundLocked(key, ue)
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -319,10 +326,10 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 
 	// The first write is the setup-to-endpoint handoff. Only publish the
 	// endpoint after the write completed before cancellation.
-	udpEndpoints.addLocked(src, ue)
+	udpEndpoints.addLocked(key, ue)
 	go func(endpointPool *UdpEndpointPool, endpoint *UdpEndpoint) {
-		runErr := endpoint.run(endpointPool, src, dst)
-		endpointPool.remove(src, endpoint)
+		runErr := endpoint.run(endpointPool, key, dst)
+		endpointPool.remove(key, endpoint)
 		if runErr == nil {
 			return
 		}
