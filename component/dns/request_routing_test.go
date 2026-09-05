@@ -165,6 +165,11 @@ func TestRequestMatcherConcurrentIfindexUpdate(t *testing.T) {
 		},
 	}
 
+	upstream, err := matcher.Match("", 0, 0, netip.IPv4Unspecified(), netip.IPv4Unspecified())
+	if err != nil || upstream != consts.DnsRequestOutboundIndex_AsIs {
+		t.Fatalf("daemon DNS matched an unresolved interface: upstream %v, error %v", upstream, err)
+	}
+
 	const iterations = 10_000
 	start := make(chan struct{})
 	var wg sync.WaitGroup

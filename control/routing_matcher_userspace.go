@@ -104,7 +104,7 @@ func (m *RoutingMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_IfIndex:
-			if ifindex == binary.LittleEndian.Uint32(match.Value[:]) {
+			if ifindex != 0 && ifindex == binary.LittleEndian.Uint32(match.Value[:]) {
 				goodSubrule = true
 			}
 		case consts.MatchType_Dscp:

@@ -292,7 +292,7 @@ func (m *RequestMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_IfIndex:
-			if ifindex == match.loadIfindex() {
+			if ifindex != 0 && ifindex == match.loadIfindex() {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:

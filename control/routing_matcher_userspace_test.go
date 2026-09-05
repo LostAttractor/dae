@@ -69,6 +69,10 @@ func matchIfindex(t *testing.T, matcher *RoutingMatcher, ifindex uint32) consts.
 func TestRoutingMatcherDynamicInterface(t *testing.T) {
 	matcher, builder := buildInterfaceRoutingMatcher(t)
 
+	if got := matchIfindex(t, matcher, 0); got != consts.OutboundDirect {
+		t.Fatalf("daemon download matched an unresolved interface: outbound %v", got)
+	}
+
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundDirect {
 		t.Fatalf("unresolved interface selected outbound %v, want %v", got, consts.OutboundDirect)
 	}
