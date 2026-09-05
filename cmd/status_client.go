@@ -8,13 +8,13 @@ package cmd
 import (
 	"context"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"github.com/daeuniverse/dae/component/api"
 	"io"
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/cmd/internal"
@@ -67,7 +67,7 @@ func fetchStatusContext(ctx context.Context) (*api.StatusSnapshot, error) {
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("is dae running? (%v)", err)
 		}
 		return nil, err
@@ -92,7 +92,7 @@ func decodeStatus(reader io.Reader) (*api.StatusSnapshot, error) {
 
 func validateStatus(snapshot *api.StatusSnapshot) error {
 	if snapshot.Schema != api.StatusSchemaVersion {
-		return fmt.Errorf("unsupported status schema %d", snapshot.Schema)
+		return fmt.Errorf("unsupported status schema %d (CLI expects %d); update daemon and CLI together", snapshot.Schema, api.StatusSchemaVersion)
 	}
 	if snapshot.Version == "" || snapshot.StartedAt.IsZero() {
 		return fmt.Errorf("status response is missing process metadata")
@@ -149,10 +149,17 @@ func validateStatus(snapshot *api.StatusSnapshot) error {
 					return fmt.Errorf("%s has invalid network support %q", nodePath, support)
 				}
 			}
-			switch node.Session {
-			case "", "disconnected", "connecting", "connected", "closed":
-			default:
-				return fmt.Errorf("%s has invalid session state %q", nodePath, node.Session)
+			if node.SessionDetail != nil {
+				switch node.SessionDetail.State {
+				case "disconnected", "connecting", "connected", "closed":
+				default:
+					return fmt.Errorf("%s has invalid session state %q", nodePath, node.SessionDetail.State)
+				}
+			}
+			recovery := node.Recovery
+			if recovery.RetryTimeKnown != !recovery.RetryAt.IsZero() ||
+				recovery.RetryTimeKnown && recovery.Phase != dialer.RecoveryBackoff {
+				return fmt.Errorf("%s has inconsistent recovery retry time", nodePath)
 			}
 		}
 		for network, selectedID := range group.SelectedNodeIDs {

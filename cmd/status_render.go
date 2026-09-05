@@ -187,14 +187,14 @@ func verboseNodeHealth(status api.NodeStatus) verboseNodeHealthCells {
 	return cells
 }
 
-func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[string]) table.Row {
+func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[string], now time.Time) table.Row {
 	networks, isSelected := nodeNetworks(status, selected)
 	health := verboseNodeHealth(status)
 	return table.Row{
 		colorSelected(annotatedNodeLabel(status, index), isSelected),
 		emptyDash(status.Subtag),
 		emptyDash(status.Protocol),
-		emptyDash(status.Session),
+		emptyDash(nodeSessionState(status)),
 		health.state,
 		networks,
 		health.latency,
@@ -207,6 +207,8 @@ func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[
 		formatConnCounts(status.Stats),
 		trafficCell(status.Stats),
 		trafficTotalCell(status.Stats),
+		formatRecovery(status.Recovery, now),
+		formatRecoveryFailure(status.Failure),
 	}
 }
 
@@ -225,22 +227,25 @@ func nodeLatency(status api.NodeStatus) any {
 	return formatted.Decorate(func(value string) string { return colorLatency(moving, value) })
 }
 
-func compactNodeState(status api.NodeStatus) string {
+func compactNodeState(status api.NodeStatus, now time.Time) string {
+	recovery := status.Recovery
+	if recovery.Phase != "" && recovery.Phase != dialer.RecoveryReady &&
+		(!status.Healthy || recovery.Phase == dialer.RecoveryBlocked || recovery.Action == "replenish") {
+		return formatRecovery(recovery, now)
+	}
 	health := nodeHealth(status)
-	if status.Session != "" && status.Session != "connected" {
-		if health == nodeHealthUnhealthy {
-			return colorize(status.Session, text.FgRed)
+	session := nodeSessionState(status)
+	if session != "" && session != "connected" {
+		if session == "connecting" && health != nodeHealthUnhealthy {
+			return colorize(session, text.FgYellow)
 		}
-		if status.Session == "connecting" {
-			return colorize(status.Session, text.FgYellow)
-		}
-		return colorize(status.Session, text.FgRed)
+		return colorize(session, text.FgRed)
 	}
 	if status.ChecksConnectivity {
 		return colorNodeHealth(health)
 	}
-	if status.Session != "" {
-		return colorize(status.Session, text.FgGreen)
+	if session != "" {
+		return colorize(session, text.FgGreen)
 	}
 	return "-"
 }
@@ -306,7 +311,7 @@ func compactNodeStatusRow(status api.NodeStatus, index int, selected api.Network
 	row := table.Row{
 		colorSelected(annotatedNodeLabel(status, index), isSelected),
 		emptyDash(status.Protocol),
-		compactNodeState(status),
+		compactNodeState(status, now),
 		networks,
 		nodeLatency(status),
 		compactUpRatios(status),
@@ -345,12 +350,13 @@ func nodeTable(group api.GroupStatus, verbose bool, now time.Time) (table.Row, [
 	rows := make([]table.Row, 0, len(group.Nodes))
 	if verbose {
 		for index, status := range group.Nodes {
-			rows = append(rows, nodeStatusRow(status, index, group.SelectedNodeIDs))
+			rows = append(rows, nodeStatusRow(status, index, group.SelectedNodeIDs, now))
 		}
 		return table.Row{
 			"PATH", "SUB", "PROTO", "SESSION", "HEALTH", "NETWORKS",
 			"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "24H UP% (FAIL/CHK)", "FAILURE (START/DURATION)",
 			"HEALTHY-SINCE", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)", "TRAFFIC 1M ↑/↓ AVG/MAX", "TOTAL ↑/↓",
+			"RECOVERY", "CAUSE",
 		}, rows
 	}
 
@@ -382,6 +388,7 @@ func logStartupNodeStatus(groups []api.GroupStatus) {
 	if !log.IsLevelEnabled(log.InfoLevel) {
 		return
 	}
+	now := time.Now()
 	for _, group := range groups {
 		var rows []table.Row
 		for index, node := range group.Nodes {
@@ -391,7 +398,7 @@ func logStartupNodeStatus(groups []api.GroupStatus) {
 			networks, _ := nodeNetworks(node, group.SelectedNodeIDs)
 			rows = append(rows, table.Row{
 				annotatedNodeLabel(node, index), emptyDash(node.Protocol),
-				compactNodeState(node), networks, nodeLatency(node),
+				compactNodeState(node, now), networks, nodeLatency(node),
 			})
 		}
 		if len(rows) == 0 {
@@ -509,4 +516,11 @@ func printStatus(snapshot *api.StatusSnapshot, verbose bool) {
 	for _, group := range snapshot.Groups {
 		printGroupStatus(group, verbose)
 	}
+}
+
+func nodeSessionState(status api.NodeStatus) string {
+	if status.SessionDetail == nil {
+		return ""
+	}
+	return status.SessionDetail.State
 }
