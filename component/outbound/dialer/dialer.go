@@ -8,6 +8,7 @@ package dialer
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,6 +131,10 @@ type Dialer struct {
 	checkActivated bool
 	checkWG        sync.WaitGroup
 	closeOnce      sync.Once
+	// Protected by mu. Retains keep an existing intercepted client connection
+	// able to open further upstream requests after its control plane closes.
+	retains       int
+	checksStopped bool
 }
 
 // LatencyStats is a coherent view of the latency samples of a dialer.
@@ -410,20 +415,54 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	return snapshot
 }
 
-// Close stops health checking and retires the owned outbound runtime. Runtime
-// leases keep established connections alive until their callers close them.
+// Retain keeps the outbound runtime accepting new operations for one existing
+// caller's lifetime. The caller must release it when that lifetime ends. Close
+// stops health checks immediately, but waits for all retains before retiring
+// the runtime. New retains are rejected once Close starts. Release is idempotent.
+func (d *Dialer) Retain() (release func(), err error) {
+	d.mu.Lock()
+	if d.ctx.Err() != nil {
+		d.mu.Unlock()
+		return nil, net.ErrClosed
+	}
+	d.retains++
+	d.mu.Unlock()
+	return sync.OnceFunc(func() {
+		d.mu.Lock()
+		d.retains--
+		retire := d.checksStopped && d.retains == 0
+		d.mu.Unlock()
+		if retire {
+			d.retireRuntime()
+		}
+	}), nil
+}
+
+// Close stops health checking and prevents new retains. The outbound runtime
+// retires immediately unless retained callers still need to open connections.
+// Its own leases keep established upstream connections alive while they drain.
 func (d *Dialer) Close() error {
 	d.closeOnce.Do(func() {
 		d.mu.Lock()
 		d.cancel()
 		d.mu.Unlock()
 		d.checkWG.Wait()
-		d.runtime.Retire()
-		go func() {
-			if err := d.runtime.Wait(context.Background()); err != nil {
-				log.Warnf("Failed to release outbound runtime: %v", err)
-			}
-		}()
+		d.mu.Lock()
+		d.checksStopped = true
+		retire := d.retains == 0
+		d.mu.Unlock()
+		if retire {
+			d.retireRuntime()
+		}
 	})
 	return nil
+}
+
+func (d *Dialer) retireRuntime() {
+	d.runtime.Retire()
+	go func() {
+		if err := d.runtime.Wait(context.Background()); err != nil {
+			log.Warnf("Failed to release outbound runtime: %v", err)
+		}
+	}()
 }
