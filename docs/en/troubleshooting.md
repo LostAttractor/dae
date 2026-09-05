@@ -89,4 +89,13 @@ If you use `clang-13` to compile dae, you may encounter this problem.
 There are ways to resolve it:
 
 1. Method 1: Use `clang-15` or higher versions to compile dae. Or just download dae from [releases](https://github.com/daeuniverse/dae/releases).
-2. Method 2: Add CFLAGS `-D__UNROLL_ROUTE_LOOP` while compiling. However, it will increse memory occupation (or swap space) at the eBPF loading stage (about 180MB). For example, compile dae to ARM64 using `make CGO_ENABLED=0 GOARCH=arm64 CFLAGS="-D__UNROLL_ROUTE_LOOP"`.
+2. Method 2: Add CFLAGS `-D__UNROLL_ROUTE_LOOP` while compiling. However, it will increse memory occupation (or swap space) at the eBPF loading stage (about 180MB). For example, compile dae to ARM64 using `GOARCH=arm64 make STATIC=y CC="$PWD/scripts/zig-cc.sh" CFLAGS="-D__UNROLL_ROUTE_LOOP"` (after setting up the cross-compiler as described in the [build guide](user-guide/build-by-yourself.md)).
+
+
+## Native QuickJS build or executable does not start
+
+- `CGO_ENABLED=0` is unsupported. Use `make`, or enable cgo explicitly for direct Go commands.
+- Missing `stdlib.h`, unsupported machine instructions, or incompatible object files during cross-compilation usually indicate that `CC` or its sysroot targets the build host instead of `GOARCH`. eBPF's `CLANG` is a separate host tool.
+- An existing executable that reports `No such file or directory` may reference an unavailable ELF interpreter. Check `readelf -lW ./dae` and `readelf -dW ./dae`. A Nix-built dynamic executable can depend on `/nix/store`; a glibc executable cannot be assumed to run on Alpine.
+
+For a portable executable, follow the [static musl build instructions](user-guide/build-by-yourself.md#portable-static-musl-build) and run `scripts/check-static.sh dae`. No separate QuickJS shared library is required.
