@@ -4,8 +4,9 @@
 #     /etc/dae/config.d/*.dae
 # }
 # Relative include paths are resolved from the entry configuration directory. Absolute paths are used as-is.
-# DAE_LOCATION_CACHE sets the writable subscription cache directory (default: /var/lib/dae).
-# The configuration directory may remain read-only. See docs/zh/configuration/cache-directory.md for migration.
+# DAE_LOCATION_CACHE sets the writable state directory (default: /var/lib/dae) for CA files,
+# explicit remote caches, relative Surge file: module sources and certificate/store paths.
+# The configuration directory may remain read-only. See docs/zh/configuration/cache-directory.md.
 
 global {
     ##### Software options.
@@ -23,6 +24,11 @@ global {
     # Set non-zero value to enable the Prometheus metrics endpoint.
     metrics_port: 0
 
+    # Device settings, selectors and certificate downloads. Zero disables the HTTP page/API.
+    api_port: 0
+    # Required for selector changes. Device settings need no token.
+    #api_token: 'replace-with-a-private-token'
+
     # SO_MARK applied to traffic and hostname lookups sent by dae to prevent them from being captured again. Zero uses
     # the reserved internal mark 0x100. Set a non-zero value only when policy-routing rules require it, ensure no unrelated
     # fwmark rule matches the value, and restart
@@ -30,7 +36,8 @@ global {
     # Go's resolver, so hostname sources provided only by libc NSS modules are not supported.
     so_mark_from_dae: 0
 
-    # Log level: error, warn, info, debug, trace.
+    # Log level: error, warn, info, debug, trace. Surge events and console.log/info use info;
+    # console.debug/warn/error use their corresponding levels.
     log_level: info
 
     # Disable waiting for network before pulling subscriptions.
@@ -283,6 +290,9 @@ group {
         # Select the first node from the group for every connection.
         #policy: fixed(0)
 
+        # Select the first node by default; allow changes through the page/API.
+        #policy: selector
+
         # Select the node with min last latency from the group for every connection.
         #policy: min
 
@@ -337,6 +347,11 @@ group {
     }
 }
 
+# Optional descriptions shown for client sets referenced by routing rules.
+client {
+    #proxy_devices: 'Use the proxy for this device'
+}
+
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
     ### Preset rules.
@@ -358,6 +373,9 @@ routing {
     dip(geoip:private) -> direct
 
     ### Write your rules below.
+
+    # Devices join or leave this MAC set through the page/API. See docs/en/configuration/api.md.
+    #client(proxy_devices) -> my_group
 
     # Disable h3 because it usually consumes too much cpu/mem resources.
     l4proto(udp) && dport(443) -> block

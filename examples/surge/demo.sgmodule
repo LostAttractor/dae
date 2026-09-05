@@ -1,0 +1,16 @@
+#!name=dae QuickJS demo
+#!desc=Add a request header and a JSON response field for httpbin.org.
+#!arguments=标记:dae-quickjs
+
+[URL Rewrite]
+^https?://httpbin\.org/dae-redirect$ https://httpbin.org/get 302
+
+[Header Rewrite]
+http-request ^https?://httpbin\.org/(get|anything)(\?.*)?$ header-add X-Dae-Module demo
+
+[Script]
+demo.request = type=http-request,pattern=^https?://httpbin\.org/(get|anything)(\?.*)?$,script-path=request.js,argument="{"marker":"{{{标记}}}"}"
+demo.response = type=http-response,pattern=^https?://httpbin\.org/(get|anything)(\?.*)?$,requires-body=true,max-size=1048576,script-path=response.js,argument="{"marker":"{{{标记}}}"}"
+
+[MITM]
+hostname = %APPEND% httpbin.org

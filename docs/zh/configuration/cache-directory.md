@@ -2,15 +2,29 @@
 
 `DAE_LOCATION_CACHE` 指定可写状态目录，未设置或为空时使用 `/var/lib/dae`。建议使用绝对路径；相对路径以进程工作目录为基准。
 
-`http-file://`、`https-file://` 订阅的持久化副本保存在 `persist.d/名称.sub`。dae 按需创建写入目录，不会为缓存自动创建 `/etc/dae`。
+| 内容 | 默认位置 |
+| --- | --- |
+| CA 命令默认文件 | `/var/lib/dae/mitm-ca.pem`、`mitm-ca.key` |
+| [页面/API](api.md) 的设备集合、selector 选择与 MITM 开关 | `/var/lib/dae/runtime-state.json` |
+| Surge `file:相对路径` 模块、相对 `ca_cert`、`ca_key`、`store` | 相对于 `/var/lib/dae` |
+| 显式启用的模块及依赖缓存 | `/var/lib/dae/surge-cache/` |
+| `http-file://`、`https-file://` 订阅持久化副本 | `/var/lib/dae/persist.d/` |
 
-主配置仍由 `-c` 指定，`include` 和订阅 `file:nodes.sub` 相对主配置目录。绝对路径统一使用三个斜线，如 `file:///run/secrets/dae/nodes.sub`，不受缓存目录设置影响；不接受 `file://相对路径`。
+目录包含 CA 私钥和脚本存储，不能整体当作临时缓存清空。dae 按需创建写入目录，不会为缓存自动创建 `/etc/dae`；CA 只由显式 [generate 命令](mitm-certificate.md)生成。已有文件可继续用绝对路径引用，无需重新生成 CA。
+
+主配置仍由 `-c` 指定，`include` 和订阅 `file:nodes.sub` 相对主配置目录。模块 `file:modules/demo.sgmodule` 则相对 `DAE_LOCATION_CACHE`。绝对路径统一使用三个斜线，如 `file:///run/secrets/dae/nodes.sub`，不受这些目录设置影响；不接受 `file://相对路径`。
 
 绝对订阅路径可跟随符号链接并在启动/重载时重新读取；相对订阅路径限制在配置目录内且拒绝符号链接。文件须为常规文件，权限不允许其他用户访问或组用户写入，例如 `0600`、`0640`、`0400`。本地订阅日志显示路径。`http-file://`、`https-file://` 订阅仍须指定名称，用于 `persist.d/名称.sub`；普通 HTTP(S) 订阅不回退缓存。
 
+模块内相对脚本、Map Local 文件保持 `script-path=request.js` 等 Surge 写法，以模块目录或最终 HTTP(S) URL 为基准；本地模块也可用 `file:` 指定依赖。CLI 显式 `--cert`、`--key`、`export --output` 相对工作目录。`surge.store` 未填写时只保存在内存。
+
+模块及依赖在启动/重载时刷新。`http-file://`、`https-file://` 模块在全部读取成功后原子保存完整模块及依赖快照，刷新失败时整体回退。普通 HTTP(S) 模块不缓存模块本身；它们与本地模块都只允许显式 `http-file://`、`https-file://` 依赖回退。模块缓存按规范化来源 URL/路径和显式参数的哈希保存，不按别名，匿名模块也可缓存。不同参数组合使用独立缓存，离线时不能借用其他组合的快照。
+
+读取失败时，若未启用回退或没有可用缓存，则新配置加载失败；缓存写入失败只警告，不丢弃已下载内容。缓存无自动过期时间，模块列表共用两分钟刷新预算。完整缓存不验证 JavaScript 执行，错误脚本可能保存且不会因运行失败自动回退。
+
 ## NixOS 与 systemd
 
-主配置可用绝对路径放在只读 Nix store，状态单独保存：
+主配置和模块可用绝对路径放在只读 Nix store，状态单独保存：
 
 ```nix
 systemd.services.dae = {
@@ -22,4 +36,4 @@ systemd.services.dae = {
 };
 ```
 
-systemd 会准备 `/var/lib/dae`。改变服务环境后需重启。
+systemd 会准备 `/var/lib/dae`。自定义目录时，终端命令也需指定相同环境变量，例如 `sudo env DAE_LOCATION_CACHE=/srv/dae dae mitm ca info`；服务环境不会自动传入终端，改变服务环境后需重启。参见 [NixOS dae 模块](https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/networking/dae.nix)、[systemd 目录设置](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectory=)和[完整 Surge 配置](surge-module.md#配置与运行)。
