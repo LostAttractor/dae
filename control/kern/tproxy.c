@@ -1698,6 +1698,10 @@ control_plane:
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
+	// A new SYN can reuse a formerly proxied or marked tuple, including
+	// when an unavailable selector falls back to plain direct.
+	if (l4proto == IPPROTO_TCP && !routing_result.mark)
+		bpf_map_delete_elem(&routing_tuples_map, &routing_tuples_key);
 	skb->mark = routing_result.mark;
 	return TCX_NEXT;
 
