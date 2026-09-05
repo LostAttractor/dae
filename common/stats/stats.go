@@ -173,6 +173,9 @@ func (s *Store) recordNode(key string, alive, checked bool, failureStartedAt tim
 	s.availabilityMu.Lock()
 	defer s.availabilityMu.Unlock()
 	if state := s.nodes[key]; state != nil {
+		if state.alive && !alive {
+			s.metrics.nodeUnavailable.WithLabelValues(NodeID(key), state.Subtag, state.Name).Inc()
+		}
 		state.record(alive, checked, time.Now(), failureStartedAt)
 	}
 }

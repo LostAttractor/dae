@@ -12,14 +12,22 @@ import (
 )
 
 type storeMetrics struct {
-	checkLatency  *prometheus.GaugeVec
-	selectionRank *prometheus.GaugeVec
-	dialDuration  *prometheus.HistogramVec
-	errors        *prometheus.CounterVec
+	checkLatency     *prometheus.GaugeVec
+	selectionRank    *prometheus.GaugeVec
+	dialDuration     *prometheus.HistogramVec
+	errors           *prometheus.CounterVec
+	relayFailures    *prometheus.CounterVec
+	resourceFailures *prometheus.CounterVec
+	reconnects       *prometheus.CounterVec
+	nodeUnavailable  *prometheus.CounterVec
 }
 
 func newStoreMetrics() storeMetrics {
 	return storeMetrics{
+		relayFailures:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dae_relay_failures_total", Help: "Independent relay failure causes by bounded classification."}, []string{"id", "subtag", "dialer", "scope", "layer", "reason"}),
+		resourceFailures: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dae_resource_failures_total", Help: "Authoritative shared resource failure episodes."}, nodeLabels),
+		reconnects:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dae_reconnect_attempts_total", Help: "Background session connection requests by recovery executor."}, []string{"id", "subtag", "dialer", "executor"}),
+		nodeUnavailable:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dae_node_unavailable_total", Help: "Transitions from available to unavailable."}, nodeLabels),
 		checkLatency: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "dae_check_latency_seconds",
 			Help: "Connectivity-check latency in seconds by sample type.",
@@ -46,6 +54,7 @@ func (m *storeMetrics) describe(ch chan<- *prometheus.Desc) {
 		m.selectionRank,
 		m.dialDuration,
 		m.errors,
+		m.relayFailures, m.resourceFailures, m.reconnects, m.nodeUnavailable,
 	} {
 		collector.Describe(ch)
 	}
@@ -56,6 +65,52 @@ func (m *storeMetrics) collect(ch chan<- prometheus.Metric) {
 	m.selectionRank.Collect(ch)
 	m.dialDuration.Collect(ch)
 	m.errors.Collect(ch)
+	m.relayFailures.Collect(ch)
+	m.resourceFailures.Collect(ch)
+	m.reconnects.Collect(ch)
+	m.nodeUnavailable.Collect(ch)
+}
+
+func (s *Store) nodeMetricLabels(key string) []string {
+	s.availabilityMu.Lock()
+	defer s.availabilityMu.Unlock()
+	if node := s.nodes[key]; node != nil {
+		return []string{NodeID(key), node.Subtag, node.Name}
+	}
+	return nil
+}
+
+func boundedFailureLabel(value string, allowed ...string) string {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value
+		}
+	}
+	return "unknown"
+}
+
+func (s *Store) RecordRelayFailure(key, scope, layer, reason string) {
+	labels := s.nodeMetricLabels(key)
+	if labels == nil {
+		return
+	}
+	scope = boundedFailureLabel(scope, "operation", "stream", "shared_resource")
+	layer = boundedFailureLabel(layer, "tcp", "udp", "tls", "quic", "h2", "h3", "grpc", "proxy", "smux", "anytls")
+	reason = boundedFailureLabel(reason, "reset", "rejected", "capacity", "protocol", "deadline", "auth", "closed", "canceled")
+	s.metrics.relayFailures.WithLabelValues(append(labels, scope, layer, reason)...).Inc()
+}
+
+func (s *Store) RecordResourceFailure(key string) {
+	if labels := s.nodeMetricLabels(key); labels != nil {
+		s.metrics.resourceFailures.WithLabelValues(labels...).Inc()
+	}
+}
+
+func (s *Store) RecordReconnectAttempt(key, executor string) {
+	if labels := s.nodeMetricLabels(key); labels != nil {
+		executor = boundedFailureLabel(executor, "daemon", "library_managed")
+		s.metrics.reconnects.WithLabelValues(append(labels, executor)...).Inc()
+	}
 }
 
 func (m *storeMetrics) resetCurrent() {

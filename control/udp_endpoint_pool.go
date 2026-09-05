@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/samber/oops"
 )
@@ -62,6 +63,7 @@ type UdpEndpoint struct {
 	NatTimeout    time.Duration
 	closed        atomic.Bool
 
+	origin    netproxy.FailureOrigin
 	dialer    *dialer.Dialer
 	statsPath stats.Path
 	traffic   *stats.Connection
@@ -73,12 +75,13 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key udpEndpointKey, ds
 	for {
 		n, from, err := ue.conn.ReadFrom(buf)
 		if err != nil {
-			if ue.IsClosed() || ue.mitm && errors.Is(err, net.ErrClosed) {
+			if ue.IsClosed() && nativeSocket(ue.conn) && plainClosedError(err) || ue.mitm && errors.Is(err, net.ErrClosed) {
 				break
 			}
 			if ue.mitm {
 				return oops.Wrapf(err, "HTTP/3 association ReadFrom")
 			}
+			err = netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpRead, Origin: ue.origin})
 			return oops.With(
 				"dialer", ue.dialer.Name,
 				"outbound", ue.statsPath.Outbound,
@@ -91,7 +94,7 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key udpEndpointKey, ds
 			break
 		}
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
-			break
+			return netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: netproxy.OriginCaller})
 		}
 		if n > 0 && ue.traffic != nil {
 			ue.traffic.RecordDownload(uint64(n))

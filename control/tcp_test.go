@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
 )
@@ -177,7 +179,7 @@ func TestRelayDirectionCountsForwardedBytes(t *testing.T) {
 	relayDone := make(chan error, 1)
 	go func() {
 		defer destination.Close()
-		relayDone <- relayDirection(destination, source, func(bytes uint64) { counted.Add(bytes) })
+		relayDone <- relayEndpointDirection(&relayEndpoint{conn: destination}, &relayEndpoint{conn: source}, func(bytes uint64) { counted.Add(bytes) })
 	}()
 	go func() {
 		_, _ = sourcePeer.Write(payload)
@@ -195,5 +197,308 @@ func TestRelayDirectionCountsForwardedBytes(t *testing.T) {
 	}
 	if got := counted.Load(); got != uint64(len(payload)) {
 		t.Fatalf("counted bytes = %d, want %d", got, len(payload))
+	}
+}
+
+func startTCPRelayTest(t *testing.T, left, right net.Conn, drainTimeout time.Duration) <-chan error {
+	t.Helper()
+	t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
+	traffic := stats.DefaultStore.OpenConnection(stats.Path{Dialer: t.Name()}, false)
+	done := make(chan error, 1)
+	go func() {
+		err := relayTCP(left, right, traffic, drainTimeout, "")
+		_ = traffic.Close()
+		done <- err
+	}()
+	return done
+}
+
+func waitTCPRelayTest(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("relay did not finish")
+		return nil
+	}
+}
+
+func TestRelayTCPHalfClose(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		name := "upload"
+		if reverse {
+			name = "download"
+		}
+		t.Run(name, func(t *testing.T) {
+			left, client := relayTestTCPPair(t)
+			right, server := relayTestTCPPair(t)
+			done := startTCPRelayTest(t, left, right, time.Second)
+			if reverse {
+				client, server = server, client
+			}
+			if _, err := client.Write([]byte("request")); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := io.ReadAll(server)
+			if err != nil || string(got) != "request" {
+				t.Fatalf("request = %q, err = %v", got, err)
+			}
+			// The response starts only after the request EOF reaches the peer.
+			if _, err := server.Write([]byte("response after EOF")); err != nil {
+				t.Fatal(err)
+			}
+			if err := server.CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			got, err = io.ReadAll(client)
+			if err != nil || string(got) != "response after EOF" {
+				t.Fatalf("response = %q, err = %v", got, err)
+			}
+			if err := waitTCPRelayTest(t, done); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type relayCloseWriteConn struct {
+	net.Conn
+	closeWrite func() error
+}
+
+func (c relayCloseWriteConn) CloseWrite() error { return c.closeWrite() }
+
+func TestRelayTCPCloseWriteFailure(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		name := "upload"
+		if reverse {
+			name = "download"
+		}
+		t.Run(name, func(t *testing.T) {
+			left, client := relayTestTCPPair(t)
+			right, server := relayTestTCPPair(t)
+			want := errors.New("half-close failed")
+			wrap := func(conn net.Conn) net.Conn {
+				return relayCloseWriteConn{Conn: conn, closeWrite: func() error {
+					return &net.OpError{Op: "write", Net: "tcp", Err: want}
+				}}
+			}
+			var l, r net.Conn = left, wrap(right)
+			if reverse {
+				l, r = wrap(left), right
+				client, server = server, client
+			}
+			done := startTCPRelayTest(t, l, r, time.Second)
+			if err := client.CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			if err := waitTCPRelayTest(t, done); !errors.Is(err, want) {
+				t.Fatalf("relay error = %v, want %v", err, want)
+			}
+			// Failure must unblock the reverse copy and close both endpoints.
+			for _, peer := range []*net.TCPConn{client, server} {
+				if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+					t.Fatalf("peer read = %v, want EOF", err)
+				}
+			}
+		})
+	}
+}
+
+type relayReadConn struct {
+	*closeTrackingConn
+	read func([]byte) (int, error)
+}
+
+func (c relayReadConn) Read(p []byte) (int, error) { return c.read(p) }
+
+func TestRelayTCPErrorAfterEOF(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		name := "upload"
+		if reverse {
+			name = "download"
+		}
+		t.Run(name, func(t *testing.T) {
+			want := errors.New("reverse copy failed")
+			halfClosed := make(chan struct{})
+			fail := make(chan struct{})
+			eof := relayCloseWriteConn{
+				Conn:       relayReadConn{newCloseTrackingConn(), func([]byte) (int, error) { return 0, io.EOF }},
+				closeWrite: func() error { return nil },
+			}
+			base := newCloseTrackingConn()
+			failed := relayCloseWriteConn{
+				Conn: relayReadConn{base, func([]byte) (int, error) {
+					select {
+					case <-fail:
+						return 0, want
+					case <-base.closed:
+						return 0, net.ErrClosed
+					}
+				}},
+				closeWrite: func() error { close(halfClosed); return nil },
+			}
+			var l, r net.Conn = eof, failed
+			if reverse {
+				l, r = r, l
+			}
+			t.Cleanup(func() { _ = l.Close(); _ = r.Close() })
+			done := startTCPRelayTest(t, l, r, time.Second)
+			select {
+			case <-halfClosed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("EOF was not propagated")
+			}
+			close(fail)
+			if err := waitTCPRelayTest(t, done); !errors.Is(err, want) {
+				t.Fatalf("relay error = %v, want %v", err, want)
+			}
+		})
+	}
+}
+
+func TestRelayTCPDrainTimeout(t *testing.T) {
+	for _, blockedWrite := range []bool{false, true} {
+		name := "active reads"
+		if blockedWrite {
+			name = "blocked write"
+		}
+		t.Run(name, func(t *testing.T) {
+			left, client := net.Pipe()
+			right, server := net.Pipe()
+			t.Cleanup(func() {
+				_ = left.Close()
+				_ = right.Close()
+				_ = client.Close()
+				_ = server.Close()
+			})
+			// This source has reached EOF but its write side remains usable.
+			l := &relayEOFConn{Conn: left}
+			done := startTCPRelayTest(t, l, right, 100*time.Millisecond)
+			writesDone := make(chan struct{})
+			go func() {
+				defer close(writesDone)
+				for {
+					if _, err := server.Write([]byte("data")); err != nil {
+						return
+					}
+				}
+			}()
+			if !blockedWrite {
+				go func() { _, _ = io.Copy(io.Discard, client) }()
+			}
+			err := waitTCPRelayTest(t, done)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("relay error = %v, want drain timeout", err)
+			}
+			select {
+			case <-writesDone:
+			case <-time.After(time.Second):
+				t.Fatal("drain timeout did not unblock peer writer")
+			}
+		})
+	}
+}
+
+type relayEOFConn struct{ net.Conn }
+
+func (c *relayEOFConn) Read([]byte) (int, error) { return 0, io.EOF }
+
+func TestRelayTCPReturnsBothDirectionErrors(t *testing.T) {
+	leftErr := errors.New("upload copy failed")
+	rightErr := errors.New("download copy failed")
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	makeConn := func(want error) net.Conn {
+		base := newCloseTrackingConn()
+		t.Cleanup(func() { _ = base.Close() })
+		return relayReadConn{base, func([]byte) (int, error) {
+			started <- struct{}{}
+			select {
+			case <-release:
+				return 0, want
+			case <-base.closed:
+				// Both reads have already failed when release is closed,
+				// regardless of which result the relay processes first.
+				select {
+				case <-release:
+					return 0, want
+				default:
+					return 0, net.ErrClosed
+				}
+			}
+		}}
+	}
+	done := startTCPRelayTest(t, makeConn(leftErr), makeConn(rightErr), time.Second)
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("both relay reads did not start")
+		}
+	}
+	close(release)
+	err := waitTCPRelayTest(t, done)
+	if !errors.Is(err, leftErr) || !errors.Is(err, rightErr) {
+		t.Fatalf("relay error = %v, want both %v and %v", err, leftErr, rightErr)
+	}
+}
+
+func TestRelayTCPDrainGracePreservesReverseTraffic(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		name := "upload"
+		if reverse {
+			name = "download"
+		}
+		t.Run(name, func(t *testing.T) {
+			left, client := net.Pipe()
+			right, server := net.Pipe()
+			t.Cleanup(func() {
+				_ = left.Close()
+				_ = right.Close()
+				_ = client.Close()
+				_ = server.Close()
+			})
+			if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if err := server.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			var l, r net.Conn = &relayEOFConn{Conn: left}, right
+			if reverse {
+				l, r = r, l
+			}
+			done := startTCPRelayTest(t, l, r, time.Second)
+			select {
+			case err := <-done:
+				t.Fatalf("relay ended within drain grace period: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			const response = "response within drain grace period"
+			writeDone := make(chan error, 1)
+			go func() {
+				_, err := io.WriteString(server, response)
+				_ = server.Close()
+				writeDone <- err
+			}()
+			got := make([]byte, len(response))
+			if _, err := io.ReadFull(client, got); err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != response {
+				t.Fatalf("response = %q, want %q", got, response)
+			}
+			if err := <-writeDone; err != nil {
+				t.Fatal(err)
+			}
+			if err := waitTCPRelayTest(t, done); err != nil {
+				t.Fatalf("relay within drain grace period: %v", err)
+			}
+		})
 	}
 }
