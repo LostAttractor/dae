@@ -74,6 +74,10 @@ func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *api
 func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dialer.Dialer) api.NodeStatus {
 	runtime := node.RuntimeStatus()
 	status := api.NodeStatus{
+		Revision:           runtime.Revision,
+		ObservedSessionSeq: runtime.ObservedSessionSeq,
+		Recovery:           runtime.Recovery,
+		Failure:            runtime.Failure,
 		ID:                 node.StatsID(),
 		Name:               node.Name,
 		Subtag:             node.Property.SubscriptionTag,
@@ -89,7 +93,13 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		Stats:              paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}],
 	}
 	if runtime.HasSession {
-		status.Session = runtime.Session.State.String()
+		status.SessionDetail = &api.SessionStatus{
+			State: runtime.Session.State.String(),
+			Seq:   runtime.Session.Seq, ReadinessVersion: runtime.Session.ReadinessVersion,
+			Resource: runtime.Session.Resource, EpisodeID: runtime.Session.EpisodeID,
+			Accepting: runtime.Session.Accepting, UsableCapacity: runtime.Session.UsableCapacity,
+			RecoveryRequired: runtime.Session.RecoveryRequired,
+		}
 	}
 	if runtime.HasLatency {
 		latency := runtime.Latency

@@ -15,9 +15,10 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
-const StatusSchemaVersion = 5
+const StatusSchemaVersion = 6
 
 type NetworkValues[T any] [common.NetworkTypeCount]T
 
@@ -112,6 +113,11 @@ func (s *GroupStatus) UnmarshalJSON(data []byte) error {
 }
 
 type NodeStatus struct {
+	Revision           uint64                                    `json:"revision"`
+	ObservedSessionSeq uint64                                    `json:"observed_session_seq"`
+	SessionDetail      *SessionStatus                            `json:"session_detail,omitempty"`
+	Recovery           dialer.RecoverySnapshot                   `json:"recovery"`
+	Failure            *dialer.FailureSnapshot                   `json:"failure,omitempty"`
 	ID                 string                                    `json:"id"`
 	Name               string                                    `json:"name"`
 	Subtag             string                                    `json:"subtag"`
@@ -120,13 +126,23 @@ type NodeStatus struct {
 	Annotation         *NodeAnnotationStatus                     `json:"annotation,omitempty"`
 	ChecksConnectivity bool                                      `json:"checks_connectivity"`
 	InitialCheckDone   bool                                      `json:"-"` // Current runtime only, for startup logs.
-	Session            string                                    `json:"session,omitempty"`
 	Healthy            bool                                      `json:"healthy"`
 	ConfirmingFailure  bool                                      `json:"confirming_failure"`
 	Availability       stats.Availability                        `json:"availability"`
 	Latency            *dialer.LatencyStats                      `json:"latency,omitempty"`
 	Support            NetworkValues[dialer.NetworkSupportState] `json:"support"`
 	Stats              stats.PathStats                           `json:"stats"`
+}
+
+type SessionStatus struct {
+	State            string               `json:"state"`
+	Seq              uint64               `json:"seq"`
+	ReadinessVersion uint64               `json:"readiness_version"`
+	Resource         netproxy.ResourceRef `json:"resource"`
+	EpisodeID        uint64               `json:"episode_id"`
+	Accepting        bool                 `json:"accepting"`
+	UsableCapacity   int                  `json:"usable_capacity"`
+	RecoveryRequired bool                 `json:"recovery_required"`
 }
 
 func (s *NodeStatus) UnmarshalJSON(data []byte) error {

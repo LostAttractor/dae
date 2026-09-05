@@ -46,7 +46,7 @@ func testNodeStatus(now time.Time) api.NodeStatus {
 		Protocol:           "ss",
 		Annotation:         &api.NodeAnnotationStatus{AddLatency: "30ms", Priority: &priority, PriorityConditional: true},
 		ChecksConnectivity: true,
-		Session:            "connected",
+		SessionDetail:      &api.SessionStatus{State: "connected"},
 		Healthy:            true,
 		Availability: stats.Availability{
 			Seen:                 true,
@@ -179,7 +179,7 @@ func TestNodeRowsUseRawState(t *testing.T) {
 	node := testNodeStatus(now)
 	selected := api.NetworkValues[string]{"node-id", "node-id", "", ""}
 
-	verbose := nodeStatusRow(node, 0, selected)
+	verbose := nodeStatusRow(node, 0, selected, now)
 	checks := map[int]string{
 		0:  "node-a [p=2*,+30ms]",
 		3:  "connected",
@@ -209,13 +209,13 @@ func TestNodeStatePrefersSessionFailure(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())
 	node.Healthy = false
-	node.Session = "disconnected"
-	if got := compactNodeState(node); got != "disconnected" {
+	node.SessionDetail.State = "disconnected"
+	if got := compactNodeState(node, time.Now()); got != "disconnected" {
 		t.Fatalf("state = %q, want disconnected", got)
 	}
-	node.Session = "connecting"
+	node.SessionDetail.State = "connecting"
 	node.Healthy = true
-	if got := compactNodeState(node); got != "connecting" {
+	if got := compactNodeState(node, time.Now()); got != "connecting" {
 		t.Fatalf("state = %q, want connecting", got)
 	}
 }
