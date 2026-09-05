@@ -1,0 +1,23 @@
+name: Validate release static binary and QuickJS
+description: Check ELF dependencies and execute native QuickJS on the target ABI
+inputs:
+  executable:
+    description: Path to the built dae executable
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        DAE_SMOKE_EXECUTABLE: ${{ inputs.executable }}
+      run: |
+        scripts/check-static.sh "$DAE_SMOKE_EXECUTABLE"
+        timeout 60s scripts/run-target.sh "$DAE_SMOKE_EXECUTABLE" --version
+        test_binary="$RUNNER_TEMP/surgemodule.test"
+        go test -c -tags=netgo,osusergo \
+          -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" \
+          -o "$test_binary" ./component/surgemodule
+        scripts/check-static.sh "$test_binary"
+        timeout 180s scripts/run-target.sh "$test_binary" \
+          -test.run '^(TestRuntimeRewrite|TestRuntimeBinaryAndText|TestRuntimeResultPresenceAndSyntheticResponse|TestRuntimePromisesAndTimers|TestRuntimeCGOAtomics64)$' \
+          -test.timeout 2m

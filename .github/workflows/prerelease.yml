@@ -50,19 +50,20 @@ jobs:
           # END Linux RISCV64 rva20u64 rva22u64 rva23u64
       fail-fast: false
 
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       GOARM: ${{ matrix.goarm }}
       GOAMD64: ${{ matrix.goamd64 }}
       GORISCV64: ${{ matrix.goriscv64 }}
-      CGO_ENABLED: 0
+      CGO_ENABLED: 1
 
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v5
         with:
+          submodules: recursive
           fetch-depth: 0
           ref: ${{ inputs.tag }}
 
@@ -94,11 +95,13 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15
+          sudo apt-get install -y clang-15 llvm-15 binutils qemu-user
+
+      - name: Set up musl cross-compiler
+        uses: ./.github/actions/setup-musl
 
       - name: Get project dependencies
         run: |
-          git submodule update --init --recursive
           GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
           find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
           sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
@@ -114,7 +117,6 @@ jobs:
 
       - name: Build dae
         run: |
-          export CGO_ENABLED=0
           export GOFLAGS="-trimpath -modcacherw"
           export OUTPUT=pkgdir/usr/bin/dae
           export VERSION=${{ env.VERSION }}
@@ -132,9 +134,10 @@ jobs:
           install -D pkgdir/usr/share/dae/geo{ip,site}.dat install/{dae.service,empty.dae} example.dae -t ./zip/
           install -D pkgdir/usr/bin/dae ./zip/dae-$ASSET_NAME
 
-      - name: Smoking test
-        if: matrix.goarch == 'amd64' && matrix.goamd64 == 'v1'
-        run: ./pkgdir/usr/bin/dae --version
+      - name: Validate static binary and QuickJS on target
+        uses: ./.github/actions/smoke-musl
+        with:
+          executable: ./pkgdir/usr/bin/dae
 
       - name: Create binary archive
         run: |
