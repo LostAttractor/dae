@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -44,11 +45,13 @@ type DialerGroup struct {
 	CheckAsync      bool
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        *latencyBasedSelector
+	selectionIndex  atomic.Int64
 
 	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
 	notifyMu           sync.Mutex
 	networkAvailable   [common.NetworkTypeCount]bool
 	availabilityKnown  bool
+	statsDeferred      bool
 	startupReady       chan struct{}
 	startupReadyOnce   sync.Once
 	publishNetwork     func(available bool, networkType *common.NetworkType) error
@@ -95,6 +98,7 @@ func NewDialerGroup(
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
 		publishNetwork:     publishNetwork,
 	}
+	g.selectionIndex.Store(int64(selectionPolicy.FixedIndex))
 
 	for i, d := range dialers {
 		g.dialerToAnnotation[d] = dialersAnnotations[i]
@@ -102,7 +106,7 @@ func NewDialerGroup(
 
 	if kind == GroupKindSelector {
 		switch selectionPolicy.Policy {
-		case "", consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Random:
+		case "", consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Selector, consts.DialerSelectionPolicy_Random:
 		case consts.DialerSelectionPolicy_MinAverage10Latencies,
 			consts.DialerSelectionPolicy_MinMovingAverageLatencies,
 			consts.DialerSelectionPolicy_MinLastLatency:
@@ -137,6 +141,63 @@ func (g *DialerGroup) DisplayPolicy() string {
 		return string(g.selectionPolicy.Policy)
 	}
 	return ""
+}
+
+func (g *DialerGroup) IsSelector() bool {
+	return g.Kind == GroupKindSelector && g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Selector
+}
+
+func (g *DialerGroup) DefaultSelection() string {
+	index := g.selectionPolicy.FixedIndex
+	if !g.IsSelector() || index < 0 || index >= len(g.Dialers) {
+		return ""
+	}
+	return g.Dialers[index].StatsID()
+}
+
+// Selection returns the requested path, including when it is unavailable.
+func (g *DialerGroup) Selection() string {
+	if !g.IsSelector() {
+		return ""
+	}
+	if selected := g.fixedDialer(); selected != nil {
+		return selected.StatsID()
+	}
+	return ""
+}
+
+// SetSelection changes the path for new connections. An empty ID restores the
+// configured default. Kernel connectivity is published before success returns.
+func (g *DialerGroup) SetSelection(id string) error {
+	g.notifyMu.Lock()
+	defer g.notifyMu.Unlock()
+	if g.closed.Load() {
+		return net.ErrClosed
+	}
+	if !g.IsSelector() {
+		return fmt.Errorf("group %q does not use selector policy", g.Name)
+	}
+	index := g.selectionPolicy.FixedIndex
+	if index < 0 || index >= len(g.Dialers) {
+		return fmt.Errorf("group %q: selector default index %d is out of range for %d paths", g.Name, index, len(g.Dialers))
+	}
+	if id != "" {
+		index = slices.IndexFunc(g.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id })
+		if index == -1 {
+			return fmt.Errorf("group %q has no path %q", g.Name, id)
+		}
+	}
+	previous := g.selectionIndex.Load()
+	if previous == int64(index) {
+		return nil
+	}
+	g.selectionIndex.Store(int64(index))
+	if err := g.updateConnectivity(); err != nil {
+		g.selectionIndex.Store(previous)
+		return errors.Join(fmt.Errorf("publish selector %q connectivity: %w", g.Name, err), g.updateConnectivity())
+	}
+	g.Dialers[index].RequestConnectivityCheck()
+	return nil
 }
 
 // DialerAnnotation returns the immutable selection annotation for a dialer.
@@ -222,6 +283,32 @@ func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan str
 	return g.startupReady, nil
 }
 
+// DeferStats isolates a candidate group before its connectivity checks start.
+func (g *DialerGroup) DeferStats() {
+	g.notifyMu.Lock()
+	defer g.notifyMu.Unlock()
+	g.statsDeferred = true
+	for _, d := range g.Dialers {
+		d.DeferStats()
+	}
+}
+
+// PublishStats follows process-store reconciliation after the old plane retires.
+func (g *DialerGroup) PublishStats() {
+	g.notifyMu.Lock()
+	defer g.notifyMu.Unlock()
+	if !g.statsDeferred {
+		return
+	}
+	for _, d := range g.Dialers {
+		d.PublishStats()
+	}
+	if g.availabilityKnown {
+		stats.DefaultStore.RecordGroup(g.Name, g.anyNetworkAvailable())
+	}
+	g.statsDeferred = false
+}
+
 func (g *DialerGroup) Connectivity() (stats.GroupState, stats.GroupAvailability) {
 	g.notifyMu.Lock()
 	defer g.notifyMu.Unlock()
@@ -257,7 +344,9 @@ func (g *DialerGroup) recordAvailability(previous, available bool) {
 		}
 	}
 	g.availabilityKnown = true
-	stats.DefaultStore.RecordGroup(g.Name, available)
+	if !g.statsDeferred {
+		stats.DefaultStore.RecordGroup(g.Name, available)
+	}
 }
 
 func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, available bool) error {
@@ -275,8 +364,8 @@ func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, a
 }
 
 func (g *DialerGroup) policyDialers() []*dialer.Dialer {
-	if g.selectionPolicy.Policy == "" || g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Fixed {
-		index := g.selectionPolicy.FixedIndex
+	if g.selectionPolicy.Policy == "" || g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Fixed || g.IsSelector() {
+		index := int(g.selectionIndex.Load())
 		if index < 0 || index >= len(g.Dialers) {
 			return nil
 		}
@@ -286,7 +375,7 @@ func (g *DialerGroup) policyDialers() []*dialer.Dialer {
 }
 
 func (g *DialerGroup) fixedDialer() *dialer.Dialer {
-	index := g.selectionPolicy.FixedIndex
+	index := int(g.selectionIndex.Load())
 	if index < 0 || index >= len(g.Dialers) {
 		return nil
 	}
@@ -341,7 +430,7 @@ func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Di
 		selected = g.Dialers[0]
 	} else {
 		switch g.selectionPolicy.Policy {
-		case "", consts.DialerSelectionPolicy_Fixed:
+		case "", consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Selector:
 			selected = g.fixedDialer()
 		case consts.DialerSelectionPolicy_Random:
 			return nil
@@ -382,7 +471,7 @@ func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, e
 	}
 	var selected *dialer.Dialer
 	switch g.selectionPolicy.Policy {
-	case "", consts.DialerSelectionPolicy_Fixed:
+	case "", consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Selector:
 		selected = g.fixedDialer()
 	case consts.DialerSelectionPolicy_Random:
 		selected = g.selectRandom(networkType)
@@ -407,6 +496,14 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 	if g.selector != nil {
 		g.selector.Refresh(dialer, forceSelection)
 	}
+	if err := g.updateConnectivity(); err != nil {
+		log.WithField("group", g.Name).Warnf("Failed to publish group availability: %v", err)
+	}
+}
+
+// updateConnectivity runs with notifyMu held for both checker notifications
+// and manual selection changes.
+func (g *DialerGroup) updateConnectivity() error {
 	connectivity := g.aggregateConnectivity()
 	previouslyAvailable := g.anyNetworkAvailable()
 	var err error
@@ -414,14 +511,15 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 		networkType := common.NetworkIndex(i).NetworkType()
 		err = errors.Join(err, g.publishNetworkAvailable(networkType, connectivity.networks[i]))
 	}
-	available := g.anyNetworkAvailable()
-	if g.availabilityKnown || available || (err == nil && !connectivity.pending) {
-		g.recordAvailability(previouslyAvailable, available)
-	}
 	if err != nil {
-		log.WithField("group", g.Name).Warnf("Failed to publish group availability: %v", err)
+		return err
+	}
+	available := g.anyNetworkAvailable()
+	if g.availabilityKnown || available || !connectivity.pending {
+		g.recordAvailability(previouslyAvailable, available)
 	}
 	if available || connectivity.initialDone {
 		g.releaseStartupReady(available)
 	}
+	return nil
 }

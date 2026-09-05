@@ -19,7 +19,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
@@ -142,7 +141,7 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 	if !d.checksConnectivity {
 		d.checkActivated = true
 		d.mu.Unlock()
-		stats.DefaultStore.RecordNodeState(d.StatsKey(), true, time.Time{})
+		d.recordAvailability(true, false, time.Time{})
 		return
 	}
 	if d.group == nil {
@@ -218,7 +217,7 @@ func (d *Dialer) ReportDataPlaneFailure() {
 		startedConfirmation = true
 	}
 	group := d.group
-	stats.DefaultStore.RecordNodeConnFail(d.StatsKey())
+	d.recordConnectionFailure()
 	d.mu.Unlock()
 	if startedConfirmation {
 		d.notifyGroup(group, SelectionForceNone)
@@ -827,7 +826,7 @@ func (d *Dialer) applyConnectErrorLocked(result checkResult, session netproxy.St
 	d.mu.Unlock()
 	if result.kind != checkSupport {
 		d.logCheckOutcome(previousHealthy, false, nil, nil, result)
-		stats.DefaultStore.RecordNodeCheck(d.StatsKey(), false, failureReportedAt)
+		d.recordAvailability(false, true, failureReportedAt)
 		d.notifyGroup(group, SelectionForceNone)
 	}
 	return appliedCheck{}
@@ -884,7 +883,7 @@ func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 
 	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, transitions, result)
 	if healthApplied {
-		stats.DefaultStore.RecordNodeCheck(d.StatsKey(), currentHealthy, failureReportedAt)
+		d.recordAvailability(currentHealthy, true, failureReportedAt)
 	}
 	if initial || phaseChanged || forceSelection != SelectionForceNone {
 		d.notifyGroup(group, forceSelection)
@@ -911,7 +910,7 @@ func (d *Dialer) applyHealthCheckLocked(result checkResult) appliedCheck {
 	d.mu.Unlock()
 
 	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, nil, result)
-	stats.DefaultStore.RecordNodeCheck(d.StatsKey(), currentHealthy, failureReportedAt)
+	d.recordAvailability(currentHealthy, true, failureReportedAt)
 	d.notifyGroup(group, forceSelection)
 	return appliedCheck{success: currentHealthy}
 }
@@ -1018,7 +1017,7 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 			entry = entry.WithError(event.Cause)
 		}
 		entry.Warn("Connectivity Check Failed")
-		stats.DefaultStore.RecordNodeState(d.StatsKey(), false, failureReportedAt)
+		d.recordAvailability(false, false, failureReportedAt)
 		d.notifyGroup(group, SelectionForceNone)
 	}
 	return true

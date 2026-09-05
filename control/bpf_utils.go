@@ -137,7 +137,7 @@ func ParsePortRange(b []byte) (portStart, portEnd uint16) {
 	return portStart, portEnd
 }
 
-func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map, err error) {
+func (o *bpfObjects) newLpmMap(prefixes []netip.Prefix) (m *ebpf.Map, err error) {
 	m, err = ebpf.NewMap(&ebpf.MapSpec{
 		Type:       ebpf.LPMTrie,
 		Flags:      o.UnusedLpmType.Flags(),
@@ -148,8 +148,13 @@ func (o *bpfObjects) newLpmMap(keys []_bpfLpmKey, values []uint32) (m *ebpf.Map,
 	if err != nil {
 		return nil, err
 	}
-	if len(keys) == 0 {
+	if len(prefixes) == 0 {
 		return m, nil
+	}
+	keys := make([]_bpfLpmKey, len(prefixes))
+	values := make([]uint32, len(prefixes))
+	for i, prefix := range prefixes {
+		keys[i], values[i] = cidrToBpfLpmKey(prefix), 1
 	}
 	if _, err = m.BatchUpdate(keys, values, &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),

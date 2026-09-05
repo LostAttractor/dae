@@ -69,6 +69,7 @@ func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation, len(dialers)),
 		publishNetwork:     callback,
 	}
+	g.selectionIndex.Store(int64(policy.FixedIndex))
 	for i, d := range dialers {
 		g.dialerToAnnotation[d] = annotations[i]
 	}
@@ -657,6 +658,39 @@ func TestEmptyDialerGroupStartsUnavailable(t *testing.T) {
 	}
 	if g.startupReady != nil {
 		t.Fatal("empty group participated in the startup barrier")
+	}
+}
+
+func TestCandidateGroupStatsWaitForPublication(t *testing.T) {
+	for _, retained := range []bool{false, true} {
+		name := "new group"
+		if retained {
+			name = "retained group"
+		}
+		t.Run(name, func(t *testing.T) {
+			g := &DialerGroup{Name: t.Name(), Kind: GroupKindSelector}
+			groups := map[string]struct{}{g.Name: {}}
+			stats.DefaultStore.Reconcile(nil, nil)
+			t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
+			if retained {
+				stats.DefaultStore.Reconcile(nil, groups)
+				stats.DefaultStore.RecordGroup(g.Name, true)
+			}
+			g.DeferStats()
+			if _, err := g.StartConnectivityChecks(nil); err != nil {
+				t.Fatal(err)
+			}
+			before := stats.DefaultStore.GetGroup(g.Name)
+			if before.Seen != retained || before.Alive != retained {
+				t.Fatalf("candidate changed committed group statistics: %+v", before)
+			}
+			stats.DefaultStore.Reconcile(nil, groups)
+			g.PublishStats()
+			g.PublishStats()
+			if got := stats.DefaultStore.GetGroup(g.Name); !got.Seen || got.Alive {
+				t.Fatalf("candidate's completed unavailable state was lost: %+v", got)
+			}
+		})
 	}
 }
 

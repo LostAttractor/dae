@@ -21,6 +21,7 @@ const (
 	Function_L4Proto     = "l4proto"
 	Function_IpVersion   = "ipversion"
 	Function_Mac         = "mac"
+	Function_Client      = "client"
 	Function_ProcessName = "pname"
 	Function_Dscp        = "dscp"
 	Function_Interface   = "interface"

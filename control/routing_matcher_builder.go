@@ -8,9 +8,13 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/pkg/trie"
@@ -33,6 +37,7 @@ type RoutingMatcherBuilder struct {
 	rules              []bpfMatchSet
 	rulesMu            sync.RWMutex
 	simulatedLpmTries  [][]netip.Prefix
+	clientSetSlots     map[string]int
 	simulatedDomainSet []routing.DomainSet
 	fallback           *routing.Outbound
 
@@ -45,7 +50,7 @@ type RoutingMatcherBuilder struct {
 }
 
 func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *component.InterfaceManager) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf}
+	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int)}
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_DestIp, routing.IpParserFactory(b.addIp))
@@ -54,6 +59,7 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 	rulesBuilder.RegisterFunctionParser(consts.Function_SourcePort, routing.PortRangeParserFactory(b.addSourcePort))
 	rulesBuilder.RegisterFunctionParser(consts.Function_L4Proto, routing.L4ProtoParserFactory(b.addL4Proto))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Mac, routing.MacParserFactory(b.addSourceMac))
+	rulesBuilder.RegisterFunctionParser(consts.Function_Client, routing.EmptyKeyPlainParserFactory(b.addClient))
 	rulesBuilder.RegisterFunctionParser(consts.Function_ProcessName, routing.ProcessNameParserFactory(b.addProcessName))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Interface, routing.EmptyKeyPlainParserFactory(b.addInterface))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
@@ -160,7 +166,7 @@ func (b *RoutingMatcherBuilder) addDomain(f *config_parser.Function, key string,
 	return nil
 }
 
-func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs [][6]byte, outbound *routing.Outbound) (err error) {
+func sourceMacPrefixes(macAddrs [][6]byte) []netip.Prefix {
 	var addr16 [16]byte
 	values := make([]netip.Prefix, 0, len(macAddrs))
 	for _, mac := range macAddrs {
@@ -168,8 +174,33 @@ func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs
 		prefix := netip.PrefixFrom(netip.AddrFrom16(addr16), 128)
 		values = append(values, prefix)
 	}
+	return values
+}
+
+func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs [][6]byte, outbound *routing.Outbound) error {
 	lpmTrieIndex := len(b.simulatedLpmTries)
-	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+	b.simulatedLpmTries = append(b.simulatedLpmTries, sourceMacPrefixes(macAddrs))
+	return b.addMacMatch(f, lpmTrieIndex, outbound)
+}
+
+func (b *RoutingMatcherBuilder) addClient(f *config_parser.Function, names []string, outbound *routing.Outbound) error {
+	name := names[0]
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("client set name must not be empty")
+	}
+	if len(name) > 128 || strings.ContainsRune(name, '/') || strings.ContainsFunc(name, unicode.IsControl) {
+		return fmt.Errorf("client set names must be at most 128 bytes and cannot contain '/' or control characters")
+	}
+	slot, exists := b.clientSetSlots[name]
+	if !exists {
+		slot = len(b.simulatedLpmTries)
+		b.clientSetSlots[name] = slot
+		b.simulatedLpmTries = append(b.simulatedLpmTries, nil)
+	}
+	return b.addMacMatch(f, slot, outbound)
+}
+
+func (b *RoutingMatcherBuilder) addMacMatch(f *config_parser.Function, lpmTrieIndex int, outbound *routing.Outbound) error {
 	outboundId, err := b.outboundToId(outbound.Name)
 	if err != nil {
 		return err
@@ -185,6 +216,50 @@ func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs
 	}
 	binary.LittleEndian.PutUint32(set.Value[:], uint32(lpmTrieIndex))
 	b.rules = append(b.rules, set)
+	return nil
+}
+
+// ClientSets lists the named client sets referenced by routing rules.
+func (b *RoutingMatcherBuilder) ClientSets() []string {
+	return slices.Sorted(maps.Keys(b.clientSetSlots))
+}
+
+// SetClientMembers replaces one set in both routing matchers. During preparation,
+// active must be false: BuildKernspace publishes the prepared members on activation.
+// An active update swaps the inner LPM map before publishing its userspace trie;
+// failed updates leave the previous members intact.
+func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name string, members [][6]byte, active bool) error {
+	slot, exists := b.clientSetSlots[name]
+	if !exists {
+		return fmt.Errorf("unknown client set %q", name)
+	}
+	prefixes := sourceMacPrefixes(members)
+	var next *trie.Trie
+	if len(prefixes) != 0 {
+		var err error
+		next, err = trie.NewTrieFromPrefixes(prefixes)
+		if err != nil {
+			return fmt.Errorf("build client set %q: %w", name, err)
+		}
+	}
+	var kernelMap *ebpf.Map
+	if active {
+		var err error
+		kernelMap, err = b.bpf.newLpmMap(prefixes)
+		if err != nil {
+			return fmt.Errorf("build kernel client set %q: %w", name, err)
+		}
+		defer kernelMap.Close()
+	}
+	b.rulesMu.Lock()
+	defer b.rulesMu.Unlock()
+	if active {
+		if err := b.bpf.LpmArrayMap.Update(uint32(slot), kernelMap, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("update kernel client set %q: %w", name, err)
+		}
+	}
+	b.simulatedLpmTries[slot] = prefixes
+	matcher.lpmMatcher[slot] = next
 	return nil
 }
 
@@ -427,13 +502,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 
 	// Populate the active slots.
 	for i, cidrs := range b.simulatedLpmTries {
-		var keys []_bpfLpmKey
-		var values []uint32
-		for _, cidr := range cidrs {
-			keys = append(keys, cidrToBpfLpmKey(cidr))
-			values = append(values, 1)
-		}
-		m, err := b.bpf.newLpmMap(keys, values)
+		m, err := b.bpf.newLpmMap(cidrs)
 		if err != nil {
 			return fmt.Errorf("newLpmMap: %w", err)
 		}
@@ -488,6 +557,10 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	// Build Ip matcher.
 	var lpmMatcher []*trie.Trie
 	for _, prefixes := range b.simulatedLpmTries {
+		if len(prefixes) == 0 {
+			lpmMatcher = append(lpmMatcher, nil)
+			continue
+		}
 		t, err := trie.NewTrieFromPrefixes(prefixes)
 		if err != nil {
 			return nil, err
