@@ -41,6 +41,17 @@ func sortFields(keys []string) {
 	})
 }
 
+// NewTextFormatter keeps command diagnostics and daemon logs in the same format.
+func NewTextFormatter(disableTimestamp bool) *log.TextFormatter {
+	return &log.TextFormatter{
+		DisableTimestamp: disableTimestamp,
+		DisableQuote:     true,
+		FullTimestamp:    true,
+		TimestampFormat:  "2006-01-02 15:04:05",
+		SortingFunc:      sortFields,
+	}
+}
+
 func SetLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Logger) {
 	level, err := log.ParseLevel(logLevel)
 	if err != nil {
@@ -48,13 +59,7 @@ func SetLogger(logLevel string, disableTimestamp bool, logFileOpt *lumberjack.Lo
 	}
 
 	log.SetLevel(level)
-	log.SetFormatter(&log.TextFormatter{
-		DisableTimestamp: disableTimestamp,
-		DisableQuote:     true,
-		FullTimestamp:    true,
-		TimestampFormat:  "2006-01-02 15:04:05",
-		SortingFunc:      sortFields,
-	})
+	log.SetFormatter(NewTextFormatter(disableTimestamp))
 	if logFileOpt != nil {
 		log.SetOutput(logFileOpt)
 	}

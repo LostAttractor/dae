@@ -935,22 +935,27 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 		}
 	}
 
+	var supported, unsupported []string
 	for _, transition := range transitions {
 		if firstSupportConfirmed(transition) {
-			log.WithFields(log.Fields{
-				"cause":   checkKindName[result.kind],
-				"network": transition.probe.network.String(),
-				"node":    d.Name,
-			}).Info("Connectivity mode supported")
-			continue
+			supported = append(supported, transition.probe.network.String())
+		} else if result.kind == checkSupport && transition.previous != transition.current && transition.current == networkUnsupported {
+			unsupported = append(unsupported, transition.probe.network.String())
 		}
-		if result.kind == checkSupport && transition.previous != transition.current {
-			log.WithFields(log.Fields{
-				"network": transition.probe.network.String(),
-				"node":    d.Name,
-				"state":   supportState(transition.current),
-			}).Debug("Connectivity support state changed")
-		}
+	}
+	if len(supported) > 0 {
+		log.WithFields(log.Fields{
+			"cause":    checkKindName[result.kind],
+			"networks": supported,
+			"node":     d.Name,
+		}).Info("Connectivity modes supported")
+	}
+	if len(unsupported) > 0 {
+		log.WithFields(log.Fields{
+			"cause":    checkKindName[result.kind],
+			"networks": unsupported,
+			"node":     d.Name,
+		}).Debug("Connectivity modes unsupported")
 	}
 
 	if result.kind == checkSupport && !previousHealthy && success {

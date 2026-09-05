@@ -302,7 +302,7 @@ func TestInitialCheckLogsEveryModeAndSupportDiscovery(t *testing.T) {
 	for i := range probes {
 		index := common.NetworkIndex(i)
 		probes[i] = func(context.Context, *common.NetworkType) (bool, error) {
-			if index == common.NetworkTCP6 {
+			if index == common.NetworkTCP6 || index == common.NetworkTCP4 {
 				return true, nil
 			}
 			return false, errors.New("probe failed")
@@ -317,8 +317,64 @@ func TestInitialCheckLogsEveryModeAndSupportDiscovery(t *testing.T) {
 	if got := strings.Count(logs, `"msg":"Connectivity initial check`); got != common.NetworkTypeCount {
 		t.Fatalf("initial result logs = %d, want %d\n%s", got, common.NetworkTypeCount, logs)
 	}
-	if got := strings.Count(logs, `"msg":"Connectivity mode supported"`); got != 1 {
+	if got := strings.Count(logs, `"msg":"Connectivity modes supported"`); got != 1 {
 		t.Fatalf("support discovery logs = %d, want 1\n%s", got, logs)
+	}
+	if !strings.Contains(logs, `"networks":["tcp6","tcp4"]`) {
+		t.Fatalf("initial supported modes were not combined into one network list:\n%s", logs)
+	}
+}
+
+func TestSupportRetryLogsTransitionsTogether(t *testing.T) {
+	logger := log.StandardLogger()
+	previousOutput := logger.Out
+	previousLevel := logger.Level
+	previousFormatter := logger.Formatter
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	logger.SetLevel(log.DebugLevel)
+	logger.SetFormatter(new(log.JSONFormatter))
+	t.Cleanup(func() {
+		logger.SetOutput(previousOutput)
+		logger.SetLevel(previousLevel)
+		logger.SetFormatter(previousFormatter)
+	})
+
+	d := newTestDialer(t, testTransport{})
+	d.mu.Lock()
+	for i := range d.networks {
+		d.networks[i] = networkUnknown
+	}
+	d.health = healthUnhealthy
+	d.mu.Unlock()
+	result := checkResult{
+		kind: checkSupport,
+		probes: []probeResult{
+			{network: common.NetworkTCP6},
+			{network: common.NetworkTCP4},
+			{network: common.NetworkUDP6, err: netproxy.UnsupportedTunnelTypeError},
+			{network: common.NetworkUDP4, err: netproxy.UnsupportedTunnelTypeError},
+		},
+	}
+	if _, accepted := d.applyCheck(result); !accepted {
+		t.Fatal("support result was rejected")
+	}
+	logs := output.String()
+	for _, want := range []string{
+		`"msg":"Connectivity modes supported","networks":["tcp6","tcp4"]`,
+		`"msg":"Connectivity modes unsupported","networks":["udp6","udp4"]`,
+		`"msg":"Connectivity recovered"`,
+	} {
+		if got := strings.Count(logs, want); got != 1 {
+			t.Fatalf("log %s count = %d, want 1\n%s", want, got, logs)
+		}
+	}
+	output.Reset()
+	if _, accepted := d.applyCheck(result); !accepted {
+		t.Fatal("unchanged support result was rejected")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("unchanged support results were logged again:\n%s", output.String())
 	}
 }
 
@@ -511,7 +567,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	if got := SelectionForceMask(group.forceMask.Load()); got != SelectionForceFor(common.NetworkTCP6) {
 		t.Fatalf("support discovery force mask = %04b, want tcp6", got)
 	}
-	if got := strings.Count(output.String(), `"msg":"Connectivity mode supported"`); got != 1 {
+	if got := strings.Count(output.String(), `"msg":"Connectivity modes supported"`); got != 1 {
 		t.Fatalf("support discovery logs = %d, want 1\n%s", got, output.String())
 	}
 	if latency, ok := d.latencyStats(); !ok || latency.Last != time.Millisecond {
@@ -541,7 +597,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	if got := group.forces.Load(); got != 1 {
 		t.Fatalf("unchanged support forced refresh: %d", got)
 	}
-	if got := strings.Count(output.String(), `"msg":"Connectivity mode supported"`); got != 1 {
+	if got := strings.Count(output.String(), `"msg":"Connectivity modes supported"`); got != 1 {
 		t.Fatalf("support discovery was logged more than once: %d", got)
 	}
 	if state := d.networkStates()[common.NetworkTCP6]; state != networkSupported {

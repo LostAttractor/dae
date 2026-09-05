@@ -51,6 +51,7 @@ const (
 )
 
 var (
+	// Keep lifecycle diagnostics on stderr when daemon logs go to --logfile.
 	std             = log.New()
 	pprofServer     *http.Server
 	metricsServer   *http.Server
@@ -78,6 +79,8 @@ func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections b
 }
 
 func init() {
+	std.SetFormatter(logger.NewTextFormatter(false))
+	log.SetFormatter(logger.NewTextFormatter(false))
 	metricsRegistry.MustRegister(stats.DefaultStore)
 	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
 	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to std and stderr.")
@@ -101,6 +104,8 @@ var (
 		Use:   "run",
 		Short: "To run dae in the foreground.",
 		Run: func(cmd *cobra.Command, args []string) {
+			std.SetFormatter(logger.NewTextFormatter(disableTimestamp))
+			log.SetFormatter(logger.NewTextFormatter(disableTimestamp))
 			if cfgFile == "" {
 				std.Fatalln("Argument \"--config\" or \"-c\" is required but not provided.")
 			}
