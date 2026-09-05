@@ -3,6 +3,8 @@ RUN apt-get update && apt-get install -y llvm-15 clang-15 git make
 ENV CLANG=clang-15
 WORKDIR /build/
 ADD go.mod go.sum ./
+# Initialize submodules in the build context before running docker build.
+COPY third_party ./third_party
 RUN go mod download
 ADD . .
 RUN make OUTPUT=dae GOFLAGS="-buildvcs=false" CC=clang CGO_ENABLED=0

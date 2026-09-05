@@ -121,7 +121,7 @@ clean-ebpf:
 		rm -f trace/bpf_*bpf*.o
 	@rm -f control/kern/tests/bpftest_*bpf*.go && \
 		rm -f control/kern/tests/bpftest_*bpf*.o
-fmt: check-go-version
+fmt: check-go-version submodule
 	go fmt ./...
 
 # $BPF_CLANG is used in go:generate invocations.
@@ -130,6 +130,7 @@ ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET := $(GOARCH)
+# Go must resolve local dependency modules before running generators.
 ebpf: check-go-version submodule clean-ebpf
 	@unset GOOS && \
 	unset GOARCH && \

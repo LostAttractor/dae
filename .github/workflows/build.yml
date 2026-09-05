@@ -19,6 +19,7 @@ on:
       - "**/*.go"
       - "**/*.c"
       - "**/*.h"
+      - "third_party/**"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"

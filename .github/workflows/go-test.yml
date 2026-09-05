@@ -9,6 +9,7 @@ on:
       - "control/kern/headers"
       - "trace/kern/headers"
       - ".gitmodules"
+      - "third_party/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
@@ -23,6 +24,7 @@ on:
       - "control/kern/headers"
       - "trace/kern/headers"
       - ".gitmodules"
+      - "third_party/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
@@ -37,6 +39,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Set up Go
         uses: actions/setup-go@v6

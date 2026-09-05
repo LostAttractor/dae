@@ -13,10 +13,14 @@ make
 
 ### Compilation
 
+Go dependencies are pinned as Git submodules under `third_party/`: `outbound`,
+`quic-go`, and `dae-config-dist`. `go.mod` resolves these local copies; the config
+module lives at `third_party/dae-config-dist/go/dae_config`.
+
 ```shell
 git clone https://github.com/daeuniverse/dae.git
 cd dae
-git submodule update --init
+git submodule update --init --recursive
 ## Minimal dependency build
 make GOFLAGS="-buildvcs=false" \
   CC=clang
