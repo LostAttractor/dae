@@ -19,6 +19,8 @@ var (
 )
 
 type Global struct {
+	APIPort               uint16                 `mapstructure:"api_port" default:"0"`
+	APIToken              string                 `mapstructure:"api_token"`
 	TproxyPort            uint16                 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect     bool                   `mapstructure:"tproxy_port_protect" default:"true"`
 	SoMarkFromDae         uint32                 `mapstructure:"so_mark_from_dae"`
@@ -201,12 +203,14 @@ type Routing struct {
 }
 
 type Config struct {
-	Global       Global         `mapstructure:"global" required:"" desc:"GlobalDesc"`
-	Subscription []Subscription `mapstructure:"subscription"`
-	Node         []Node         `mapstructure:"node"`
-	Group        []Group        `mapstructure:"group" desc:"GroupDesc"`
-	Routing      Routing        `mapstructure:"routing" required:""`
-	Dns          Dns            `mapstructure:"dns" desc:"DnsDesc"`
+	Global       Global            `mapstructure:"global" required:"" desc:"GlobalDesc"`
+	Surge        Surge             `mapstructure:"surge" desc:"SurgeDesc"`
+	Subscription []Subscription    `mapstructure:"subscription"`
+	Node         []Node            `mapstructure:"node"`
+	Group        []Group           `mapstructure:"group" desc:"GroupDesc"`
+	Client       map[string]string `mapstructure:"client"`
+	Routing      Routing           `mapstructure:"routing" required:""`
+	Dns          Dns               `mapstructure:"dns" desc:"DnsDesc"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {
@@ -275,6 +279,9 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	}
 
 	// Apply config patches.
+	if err = conf.Surge.Validate(); err != nil {
+		return nil, err
+	}
 	for _, patch := range patches {
 		if err = patch(conf); err != nil {
 			return nil, err

@@ -860,7 +860,7 @@ func (c *DnsController) commitAcceptedResponse(msg *dnsmessage.Msg, pending *pen
 // registerAddressNoExpiry keeps a DNS-upstream address registered for the
 // lifetime of the control plane.
 func (c *DnsController) registerAddressNoExpiry(queryInfo queryInfo, ip netip.Addr) {
-	if !ip.IsValid() || ip.IsUnspecified() {
+	if c.registry == nil || !ip.IsValid() || ip.IsUnspecified() {
 		return
 	}
 	c.lifecycleMu.Lock()
@@ -890,6 +890,9 @@ func (c *DnsController) registerResponsePlan(plan *responsePlan, evaluatedAt tim
 // registerResponsePlanOpen requires lifecycleMu to be held and the controller
 // to be open.
 func (c *DnsController) registerResponsePlanOpen(plan *responsePlan, evaluatedAt time.Time) {
+	if c.registry == nil {
+		return
+	}
 	for _, view := range plan.views {
 		if len(view.addresses) == 0 {
 			continue

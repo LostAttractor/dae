@@ -62,6 +62,10 @@ type controlPlaneCore struct {
 	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][common.NetworkTypeCount]atomic.Bool
 	outboundCallbackMu      sync.Mutex
 	outboundRecovery        func()
+	// Candidate checks update userspace immediately, but shared BPF state is
+	// published only after the old control plane has retired.
+	outboundConnectivityPublished bool
+	pendingOutboundConnectivity   map[bpfOutboundConnectivityQuery]uint32
 }
 
 type hostTCXRole uint8
@@ -108,12 +112,13 @@ func newControlPlaneCore(
 		// A reload candidate starts without BPF cleanup ownership. The caller
 		// released it from the old core before construction and assigns it to
 		// this core via InjectBpf only after the old core is retired.
-		bpfOwned:    !isReload,
-		ifmgr:       ifmgr,
-		netmon:      netmon,
-		closed:      closed,
-		close:       toClose,
-		wanBindings: make(map[int]*wanBinding),
+		bpfOwned:                    !isReload,
+		ifmgr:                       ifmgr,
+		netmon:                      netmon,
+		closed:                      closed,
+		close:                       toClose,
+		wanBindings:                 make(map[int]*wanBinding),
+		pendingOutboundConnectivity: make(map[bpfOutboundConnectivityQuery]uint32),
 	}
 	// The kernel-side capacity is read back from the map itself so it can
 	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.

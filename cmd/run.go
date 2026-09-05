@@ -31,8 +31,10 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/logger"
@@ -209,10 +211,21 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	_ = os.Remove(AbortFile)
 	startPprofServer(conf.Global.PprofPort)
 
+	runtimeSettingsPath := filepath.Join(cacheDirectory(), "runtime-state.json")
+	runtimeSettings, err := settings.Open(runtimeSettingsPath)
+	if err != nil {
+		std.Fatalf("runtime settings: %v", err)
+	}
+	settingsWatcher, err := filewatch.New(runtimeSettingsPath, 100*time.Millisecond)
+	if err != nil {
+		std.Fatalf("watch runtime settings: %v", err)
+	}
+	defer settingsWatcher.Close()
+
 	// New ControlPlane.
 	startupStarted := time.Now()
 	startupCtx, stopStartupSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	c, err := newControlPlane(startupCtx, nil, conf, externGeoDataDirs)
+	c, err := newControlPlane(startupCtx, nil, conf, externGeoDataDirs, runtimeSettings)
 	startupErr := startupCtx.Err()
 	stopStartupSignals()
 	if err == nil && startupErr != nil {
@@ -226,7 +239,13 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 		}
 		std.Fatalln(err)
 	}
+	api, err := prepareAPIServer(nil, conf.Global.APIPort)
+	if err != nil {
+		_ = c.Close()
+		std.Fatalln(err)
+	}
 	if err = c.Activate(); err != nil {
+		api.Close()
 		_ = c.Close()
 		std.Fatalln(err)
 	}
@@ -266,7 +285,10 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	// Close the CURRENT plane on exit: c is re-assigned on every reload, and
 	// a deferred exit(c) would capture the startup plane, closing the retired
 	// plane a second time while the final, bpf-owning plane is never closed.
-	defer func() { exit(c) }()
+	defer func() {
+		api.Close()
+		exit(c)
+	}()
 	select {
 	case ready := <-readyChan:
 		if !ready {
@@ -279,6 +301,10 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	}
 	if statusServer != nil {
 		statusServer.SetControlPlane(startupPlane)
+	}
+	api.setHandler(startupPlane.APIHandler())
+	if api != nil {
+		std.Infof("Configuration page and API listening on port %d", api.port)
 	}
 	sdnotify.Ready()
 	log.WithField("duration", time.Since(startupStarted)).Info("Startup completed")
@@ -293,6 +319,15 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 loop:
 	for {
 		select {
+		case err := <-settingsWatcher.Errors:
+			std.WithError(err).Warn("Runtime settings watcher error")
+		case <-settingsWatcher.Changes:
+			changed, err := c.ReloadRuntimeSettings()
+			if err != nil {
+				std.WithError(err).Warn("Could not reload runtime-state.json; keeping previous settings")
+			} else if changed {
+				std.Info("Reloaded runtime-state.json")
+			}
 		case sig := <-sigs:
 			switch sig {
 			case nil:
@@ -316,15 +351,19 @@ loop:
 					writeReloadState(consts.ReloadError, serveErr.Error())
 					break loop
 				}
-				sdnotify.Ready()
 				if pendingReload {
 					reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
 					stats.DefaultStore.RecordReload()
 					if statusServer != nil {
 						statusServer.SetControlPlane(c)
 					}
+					api.setHandler(c.APIHandler())
+					if api != nil {
+						std.Infof("Configuration page and API listening on port %d", api.port)
+					}
 					pendingReload = false
 				}
+				sdnotify.Ready()
 				writeReloadState(consts.ReloadDone, "OK")
 				std.Warnln("[Reload] Finished")
 			case syscall.SIGUSR2:
@@ -401,11 +440,18 @@ loop:
 				std.Warnln("[Reload] Build new control plane")
 				writeReloadProgress("Building new control plane...")
 				obj := c.EjectBpf()
-				newC, err := newControlPlane(context.Background(), obj, newConf, externGeoDataDirs)
+				newC, err := newControlPlane(context.Background(), obj, newConf, externGeoDataDirs, runtimeSettings)
 				if err != nil {
 					// Restore BPF ownership on the old plane and keep it running.
 					c.InjectBpf()
 					reloadFailed("Failed to build new control plane", err)
+					continue
+				}
+				nextAPI, err := prepareAPIServer(api, newConf.Global.APIPort)
+				if err != nil {
+					_ = newC.Close()
+					c.InjectBpf()
+					reloadFailed("Failed to bind HTTP API port", err)
 					continue
 				}
 
@@ -422,6 +468,11 @@ loop:
 				if statusServer != nil {
 					statusServer.SetControlPlane(nil)
 				}
+				api.setHandler(nil)
+				if api != nextAPI {
+					api.Close()
+				}
+				api = nextAPI
 				if closeErr := retireControlPlaneForReload(c, abortConnections); closeErr != nil {
 					// The old filters may still interpret shared maps with the old
 					// rule layout. Do not install new rules or adopt bitmaps into

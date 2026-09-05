@@ -128,6 +128,7 @@ func (c *ControlPlane) statusSnapshot(version string) *StatusSnapshot {
 	paths := indexPathStats(stats.DefaultStore.SnapshotWithHistory())
 	snapshot := &StatusSnapshot{
 		Schema:       StatusSchemaVersion,
+		Surge:        c.SurgeStatus(),
 		Version:      version,
 		StartedAt:    stats.DefaultStore.StartedAt(),
 		LastReloadAt: stats.DefaultStore.LastReload(),

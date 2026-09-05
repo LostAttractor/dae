@@ -20,6 +20,8 @@ import (
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/settings"
+	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/outbound/protocol/direct"
@@ -127,7 +129,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store) (c *control.ControlPlane, err error) {
 	defer func() {
 		if err == nil || bpf != nil {
 			return
@@ -178,8 +180,18 @@ func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGe
 		return nil, err
 	}
 
+	var surgeLoader func(*http.Client) (*surgemodule.Engine, error)
+	if conf.Surge.Enabled {
+		surgeLoader = func(client *http.Client) (*surgemodule.Engine, error) {
+			if bpf != nil {
+				writeReloadProgress("Loading Surge modules using routing rules...")
+			}
+			return loadSurge(ctx, conf.Surge, client)
+		}
+	}
 	assemblyStarted := time.Now()
-	c, err = control.NewControlPlane(preparation, nodeDescriptors, conf.Group, &conf.Routing, &conf.Global, &conf.Dns)
+	c, err = control.NewControlPlane(ctx, preparation, nodeDescriptors, conf,
+		runtimeSettings, surgeLoader)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +202,7 @@ func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGe
 	}
 	runtime.GC()
 	log.WithField("duration", time.Since(assemblyStarted)).Info("Assembled control plane")
+	logStartupSurgeStatus(c.SurgeStatus())
 	return c, nil
 }
 

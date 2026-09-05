@@ -7,6 +7,7 @@ package control
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
@@ -55,8 +56,9 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 				state = "AVAILABLE"
 			}
 			log.WithFields(log.Fields{
-				"outboundId": outbound,
-			}).Debugf("Outbound <%v> %v -> %v, notify the kernel program.", outboundName, networkType.String(), state)
+				"outboundId":       outbound,
+				"kernel_published": c.outboundConnectivityPublished,
+			}).Debugf("Outbound <%v> %v -> %v", outboundName, networkType.String(), state)
 		}
 
 		key := bpfOutboundConnectivityQuery{
@@ -64,24 +66,27 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 			L4proto:   networkType.L4Proto.ToL4Proto(),
 			Ipversion: networkType.IpVersion.ToIpVersion(),
 		}
-		updateKernel := func(value uint32) error {
-			if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
-				log.WithFields(log.Fields{
-					"network":  networkType.String(),
-					"outbound": outboundName,
-					"value":    value,
-				}).Warnf("Failed to notify the kernel program: %v", err)
-				return err
-			}
-			return nil
-		}
-
 		network := networkType.Index()
-		previous := c.outboundConnectivityMap[outbound][network].Load()
 		value := encodeOutboundConnectivity(available, noConnectivityTrySniff, noConnectivityOutbound)
-		if err := updateKernel(value); err != nil {
-			rollbackValue := encodeOutboundConnectivity(previous, noConnectivityTrySniff, noConnectivityOutbound)
-			return errors.Join(err, updateKernel(rollbackValue))
+		if !c.outboundConnectivityPublished {
+			c.pendingOutboundConnectivity[key] = value
+		} else {
+			updateKernel := func(value uint32) error {
+				if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
+					log.WithFields(log.Fields{
+						"network":  networkType.String(),
+						"outbound": outboundName,
+						"value":    value,
+					}).Warnf("Failed to notify the kernel program: %v", err)
+					return err
+				}
+				return nil
+			}
+			if err := updateKernel(value); err != nil {
+				previous := c.outboundConnectivityMap[outbound][network].Load()
+				rollbackValue := encodeOutboundConnectivity(previous, noConnectivityTrySniff, noConnectivityOutbound)
+				return errors.Join(err, updateKernel(rollbackValue))
+			}
 		}
 
 		recovered := c.recordOutboundConnectivity(outbound, network, available)
@@ -90,6 +95,27 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 		}
 		return nil
 	}
+}
+
+// publishOutboundConnectivity runs during activation, after committing routing
+// rules and before attaching interfaces. Later checks publish directly to BPF.
+func (c *controlPlaneCore) publishOutboundConnectivity() error {
+	c.outboundCallbackMu.Lock()
+	defer c.outboundCallbackMu.Unlock()
+	if c.closed.Err() != nil {
+		return c.closed.Err()
+	}
+	if c.outboundConnectivityPublished {
+		return nil
+	}
+	for key, value := range c.pendingOutboundConnectivity {
+		if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("publish outbound %d connectivity (protocol %d, IPv%d): %w", key.Outbound, key.L4proto, key.Ipversion, err)
+		}
+	}
+	c.pendingOutboundConnectivity = nil
+	c.outboundConnectivityPublished = true
+	return nil
 }
 
 func (c *controlPlaneCore) setOutboundRecoveryCallback(callback func()) {

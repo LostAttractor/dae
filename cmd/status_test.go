@@ -507,6 +507,9 @@ func TestDecodeStatusRejectsInvalidSchema(t *testing.T) {
 
 func TestDecodeStatusRejectsMissingRequiredFields(t *testing.T) {
 	tests := map[string]func(map[string]any){
+		"surge status": func(status map[string]any) {
+			delete(status, "surge")
+		},
 		"process stats": func(status map[string]any) {
 			delete(status, "stats")
 		},

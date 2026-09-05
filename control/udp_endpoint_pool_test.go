@@ -157,7 +157,7 @@ func TestUdpEndpointPoolCloseAllDoesNotWaitForBlockingClose(t *testing.T) {
 	endpointPool := new(UdpEndpointPool)
 	conn := newDeadlineInterruptPacketConn()
 	t.Cleanup(func() { close(conn.releaseClose) })
-	key := testUdpKey(12001)
+	key := udpEndpointKey{Source: testUdpKey(12001)}
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: time.Hour})
 	endpointPool.add(key, endpoint)
 
@@ -194,7 +194,7 @@ func TestUdpEndpointPoolRemoveAccountsTrafficBeforeBlockingClose(t *testing.T) {
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: time.Hour})
 	endpoint.traffic = store.OpenConnection(path, true)
 	endpoint.traffic.RecordUpload(77)
-	key := testUdpKey(12005)
+	key := udpEndpointKey{Source: testUdpKey(12005)}
 	endpointPool.add(key, endpoint)
 	removed := make(chan struct{})
 	go func() {
@@ -220,7 +220,7 @@ func TestUdpEndpointPoolRemoveAccountsTrafficBeforeBlockingClose(t *testing.T) {
 
 func TestUdpEndpointPoolRemovalChecksIdentity(t *testing.T) {
 	var pool UdpEndpointPool
-	key := netip.MustParseAddrPort("192.0.2.1:1234")
+	key := udpEndpointKey{Source: netip.MustParseAddrPort("192.0.2.1:1234")}
 	oldConn := newTestPacketConn(false)
 	oldEndpoint := newUdpEndpoint(&UdpEndpointOptions{
 		PacketConn: oldConn,
@@ -257,7 +257,7 @@ func endpointTimerDeadline(endpoint *UdpEndpoint) time.Time {
 
 func TestUdpEndpointPoolRefreshInvalidatesPendingExpiry(t *testing.T) {
 	var pool UdpEndpointPool
-	key := testUdpKey(12002)
+	key := udpEndpointKey{Source: testUdpKey(12002)}
 	conn := newTestPacketConn(false)
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{
 		PacketConn: conn,
@@ -305,7 +305,7 @@ func TestUdpEndpointPoolRefreshInvalidatesPendingExpiry(t *testing.T) {
 
 func TestUdpEndpointPoolExpiryHonorsAbsoluteDeadline(t *testing.T) {
 	var pool UdpEndpointPool
-	key := testUdpKey(12003)
+	key := udpEndpointKey{Source: testUdpKey(12003)}
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{
 		PacketConn: newTestPacketConn(false),
 		NatTimeout: time.Hour,
@@ -328,7 +328,7 @@ func TestUdpEndpointPoolExpiryHonorsAbsoluteDeadline(t *testing.T) {
 
 func TestUdpEndpointPoolTimerExpiresEndpoint(t *testing.T) {
 	var pool UdpEndpointPool
-	key := testUdpKey(12004)
+	key := udpEndpointKey{Source: testUdpKey(12004)}
 	conn := newTestPacketConn(false)
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{
 		PacketConn: conn,

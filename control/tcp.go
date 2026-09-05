@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
@@ -46,11 +47,14 @@ type tcpRelay struct {
 		ChecksConnectivity() bool
 		ReportDataPlaneFailure()
 	}
-	statsPath stats.Path
-	fallback  bool
-	src       netip.AddrPort
-	dst       netip.AddrPort
-	domain    string
+	statsPath    stats.Path
+	fallback     bool
+	src          netip.AddrPort
+	dst          netip.AddrPort
+	domain       string
+	surge        *surgemodule.Engine
+	surgeDial    surgemodule.DialContext
+	surgeRelease func()
 }
 
 type tcpConnectionTracker struct {
@@ -137,6 +141,9 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		} else if !stopClose() {
 			_ = sniffer.Close()
 			closeInBackground(relay.rConn)
+			if relay.surgeRelease != nil {
+				relay.surgeRelease()
+			}
 			relay = nil
 			err = setupCtx.Err()
 		}
@@ -178,6 +185,19 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	}
 
 	statsPath, noConnectivityFallback := dialOption.trafficAttribution()
+	if c.shouldMITMClient(domain, src, dst, routingResult, dialOption) {
+		release, err := dialOption.Dialer.Retain()
+		if err != nil {
+			return nil, oops.Wrapf(err, "retain MITM outbound")
+		}
+		c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
+		return &tcpRelay{
+			lConn: sniffer, dialer: dialOption.Dialer, statsPath: statsPath,
+			fallback: noConnectivityFallback, src: src, dst: dst, domain: domain,
+			surge: c.surge, surgeDial: c.surgeDialContext(dialOption, domain, dst, statsPath),
+			surgeRelease: release,
+		}, nil
+	}
 
 	// Dial
 	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
@@ -243,10 +263,18 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 }
 
 func (r *tcpRelay) run() (err error) {
-	defer r.rConn.Close()
+	if r.surgeRelease != nil {
+		defer r.surgeRelease()
+	}
+	if r.rConn != nil {
+		defer r.rConn.Close()
+	}
 	defer r.lConn.Close()
 	traffic := stats.DefaultStore.OpenConnection(r.statsPath, r.fallback)
 	defer func() { err = errors.Join(err, traffic.Close()) }()
+	if r.surge != nil {
+		return r.surge.ServeConn(&surgeCountedConn{Conn: r.lConn, upload: traffic.RecordUpload, download: traffic.RecordDownload}, r.domain, r.dst.Port(), r.surgeDial)
+	}
 
 	// Relay
 	handled := false

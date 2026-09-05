@@ -12,10 +12,11 @@ var SectionSummaryDesc = Desc{
 	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
 	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md.",
 	"group":        "Proxy path groups. Declare ordered stages with ->. Groups with a policy select complete paths; policyless groups can be referenced as reusable path stages.",
+	"client":       "Optional descriptions for dynamic client sets: name: 'description'. The device page shows only sets referenced by client(name) routing rules. Descriptions follow configuration reloads; membership is stored separately.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 Notice: domain traffic split will fail if DNS traffic is not taken over by dae.
 Built-in outbound: direct, must_direct, block.
-Available functions: domain, sip, dip, sport, dport, ipversion, l4proto, pname, mac, dscp, interface.
+Available functions: domain, sip, dip, sport, dport, ipversion, l4proto, pname, mac, client, dscp, interface.
 Available keys in domain function: suffix, keyword, regex, full. No key indicates suffix.
 domain: Match domain.
 sip: Match source IP. CIDR format is also supported.
@@ -26,17 +27,34 @@ ipversion: Match IP version. Available values: 4, 6.
 l4proto: Match level 4 protocol. Available values: tcp, udp.
 pname: Match process name. It only works on WAN mode and for localhost programs.
 mac: Match source MAC address. It works on LAN mode.
+client: Match a dynamic MAC set whose members join or leave through the device API.
 dscp: Match the DSCP value.
 interface: Match the interface that received the traffic.`,
 }
 
 var SectionDescription = map[string]Desc{
+	"SurgeDesc":  SurgeDesc,
 	"GlobalDesc": GlobalDesc,
 	"DnsDesc":    DnsDesc,
 	"GroupDesc":  GroupDesc,
 }
 
+var SurgeDesc = Desc{
+	"enabled":                "Enable Surge modules, including routing and destination rewrites. HTTPS interception requires clients to trust the configured CA.",
+	"module":                 "Ordered module sources in module { name: 'source' }, with optional unique names. Arguments require a named block: module { youtube { link: 'source' arguments { '屏蔽上传按钮=false' '字幕翻译语言=zh-CN' } } }. Each argument is one quoted name=value string, split at the first '='; names are trimmed and values stay literal, including empty values. Use file:relative or file:///absolute for local modules, http:// or https:// for remote modules, and http-file:// or https-file:// for explicit persistent cache fallback. Ordinary HTTP(S) sources do not fall back to cache. Reload with dae reload.",
+	"client_source_address":  "Ordered 'all', IPv4/IPv6 addresses, CIDRs or 6-byte MAC addresses for module HTTP/MITM processing. First match wins; '-' excludes. Omitted or unmatched clients bypass; use 'all' to enable every client. Comma-separated quoted values and repeated fields are accepted. Persistent per-device API settings override this list, including explicit off. This does not detect CA trust or change routing policies.",
+	"ca_cert":                "PEM CA certificate path, relative to DAE_LOCATION_CACHE, default /var/lib/dae. Generate with dae mitm ca generate.",
+	"ca_key":                 "PEM CA private key path, relative to DAE_LOCATION_CACHE, default /var/lib/dae. Keep it readable only by the daemon owner.",
+	"store":                  "Optional JSON file for the scripts' persistent store, relative to DAE_LOCATION_CACHE, default /var/lib/dae. Empty uses memory only.",
+	"script_timeout":         "Maximum time per script, including HTTP callbacks. Module timeout may lower this limit.",
+	"memory_limit":           "QuickJS memory limit per script in bytes (16 MiB to 1 GiB).",
+	"max_body_size":          "Maximum buffered/decompressed body in bytes. Overrides unlimited module max-size=-1.",
+	"max_concurrent_scripts": "Maximum simultaneous QuickJS invocations; bounds aggregate script memory.",
+}
+
 var GlobalDesc = Desc{
+	"api_port":            "HTTP port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",
+	"api_token":           "Administrator bearer token required to change selector groups. Empty disables selector writes; current-device controls require a directly connected LAN client, but no token.",
 	"tproxy_port":         "Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.",
 	"tproxy_port_protect": "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
 	"so_mark_from_dae":    "SO_MARK applied to traffic and hostname lookups sent by dae for policy routing. Zero or unset uses the reserved internal mark 0x100. A non-zero value overrides that mark and requires a restart to change. Ensure local fwmark rules do not accidentally match the selected value. Values containing the reserved tproxy bit 0x08000000 are rejected. The mark alone is never trusted as control-plane identity. Marked lookups use Go's resolver; hostname sources provided only by libc NSS modules are not supported.",
@@ -81,9 +99,10 @@ Available keys in name, link and protocol functions: keyword, regex. No key indi
 Available keys in subtag function: regex. No key indicates full match.`,
 	"policy": `Optional dialer selection policy. It selects one complete expanded proxy path for each new connection.
 	If omitted, the group can be referenced by group(name) as a reusable path stage. It may also be used as a routing target when it expands to exactly one path.
-Available values: random, fixed, min, min_avg10, min_moving_avg.
+Available values: random, fixed, selector, min, min_avg10, min_moving_avg.
 random: Select a complete path randomly.
 fixed: Select the complete path at the stable expanded index.
+selector: Select a path through the global API. Defaults to the first path; selector(n) sets another zero-based default index.
 min: Select a path by the latency of its last check.
 min_avg10: Select a path by the average of its last 10 check latencies.
 min_moving_avg: Select a path by its moving average of check latencies, which gives recent checks more weight.

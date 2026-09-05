@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"path"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
@@ -29,6 +31,9 @@ import (
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/component/settings"
+	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -55,8 +60,16 @@ type ControlPlane struct {
 	udpTaskPool            *udpTaskPool[netip.AddrPort]
 	udpEndpoints           *UdpEndpointPool
 
-	dnsController *DnsController
+	dnsController      *DnsController
+	surge              *surgemodule.Engine
+	mitmClients        clientmatch.Matcher
+	settings           *settings.Store
+	settingsMu         sync.Mutex
+	apiToken           string
+	apiActive          bool
+	clientDescriptions map[string]string
 
+	destinationRewrites   routing.DestinationRewrites
 	routingMatcher        *RoutingMatcher
 	routingMatcherBuilder *RoutingMatcherBuilder
 
@@ -64,8 +77,6 @@ type ControlPlane struct {
 	cancel          context.CancelFunc
 	tcpSetupCtx     context.Context
 	cancelTCPSetups context.CancelFunc
-	activationStop  chan struct{}
-	activationOnce  sync.Once
 
 	ingressMu      sync.Mutex
 	ingress        *controlPlaneIngress
@@ -157,14 +168,27 @@ func candidateStatsScope(target string, path *outbound.PathSpec, occurrences map
 // NewControlPlane consumes prepared kernel and rule resources and builds the
 // userspace control plane. It does not modify shared BPF maps or bind programs
 // to traffic interfaces. Call Activate to commit it to the kernel.
+// loadSurge runs after initial connectivity checks, using the configured DNS
+// and routing policies. Module rules are compiled after downloads finish.
 func NewControlPlane(
+	startupCtx context.Context,
 	preparation *ControlPlanePreparation,
 	nodes []outbound.NodeDescriptor,
-	groups []config.Group,
-	routingA *config.Routing,
-	global *config.Global,
-	dnsConfig *config.Dns,
+	conf *config.Config,
+	runtimeSettings *settings.Store,
+	loadSurge func(*http.Client) (*surgemodule.Engine, error),
 ) (c *ControlPlane, err error) {
+	groups, routingA, global, dnsConfig := conf.Group, &conf.Routing, &conf.Global, &conf.Dns
+	var mitmClients clientmatch.Matcher
+	if conf.Surge.Enabled {
+		mitmClients, err = clientmatch.Parse(conf.Surge.ClientSourceAddress)
+		if err != nil {
+			return nil, fmt.Errorf("surge client_source_address: %w", err)
+		}
+	}
+	if runtimeSettings == nil {
+		return nil, fmt.Errorf("runtime settings are required")
+	}
 	global.SoMarkFromDae = common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
 	if err = common.ValidateSoMarkFromDae(global.SoMarkFromDae); err != nil {
 		return nil, err
@@ -364,14 +388,15 @@ func NewControlPlane(
 		outboundName2Id[o.Name] = uint8(i)
 	}
 
-	/// Routing.
-	if log.IsLevelEnabled(log.DebugLevel) {
-		var debugBuilder strings.Builder
-		for _, rule := range preparedRules.routing {
-			debugBuilder.WriteString(rule.String(true, false, false) + "\n")
+	if global.APIPort != 0 && loadSurge == nil {
+		addresses, err := net.InterfaceAddrs()
+		if err != nil {
+			return nil, fmt.Errorf("read host addresses for API routing: %w", err)
 		}
-		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
+		preparedRules.bypassAPI(global.APIPort, addresses)
 	}
+
+	/// Routing.
 	// Parse rules and build. BuildUserspace is in-memory only and is safe to
 	// run during the validation phase; BuildKernspace is deferred to Activate.
 	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
@@ -401,6 +426,10 @@ func NewControlPlane(
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	plane = &ControlPlane{
 		core:                      core,
+		settings:                  runtimeSettings,
+		mitmClients:               mitmClients,
+		apiToken:                  global.APIToken,
+		clientDescriptions:        conf.Client,
 		outbounds:                 outbounds,
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
@@ -414,7 +443,6 @@ func NewControlPlane(
 		cancel:                    cancel,
 		tcpSetupCtx:               tcpSetupCtx,
 		cancelTCPSetups:           cancelTCPSetups,
-		activationStop:            make(chan struct{}),
 		realDomainSet:             bloom.NewWithEstimates(2048, 0.001),
 		lanInterface:              common.Deduplicate(global.LanInterface),
 		wanInterface:              wanInterface,
@@ -433,41 +461,113 @@ func NewControlPlane(
 	// the remainder of control-plane shutdown indefinitely.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
 
-	/// DNS upstream.
-	dnsUpstream, err := dns.New(dnsConfig, preparedRules.dnsRequest, preparedRules.dnsResponse, &dns.NewOption{
-		UpstreamReadyCallback: plane.cacheDnsUpstream,
-		InterfaceManager:      core.ifmgr,
-	})
+	for _, group := range outbounds {
+		group.DeferStats()
+	}
+	if err := plane.restoreRuntimeSettings(false); err != nil {
+		return nil, err
+	}
+	connectivityStarted := time.Now()
+	waiters, err := plane.startConnectivityChecks()
 	if err != nil {
+		return nil, err
+	}
+	remaining := max(initialConnectivityTimeout-time.Since(connectivityStarted), 0)
+	if err := waitForStartupConnectivity(waiters, remaining, startupCtx.Done()); err != nil {
+		return nil, err
+	}
+	log.WithField("duration", time.Since(connectivityStarted)).Info("Initial connectivity startup phase finished")
+
+	if loadSurge != nil {
+		// The temporary resolver uses normal DNS routing but never registers
+		// addresses in the shared kernel map. Its cache belongs to the base
+		// rules, and is discarded before module rules change the match bitmaps.
+		if plane.dnsController, err = plane.newDNSController(dnsConfig, preparedRules, nil); err != nil {
+			return nil, err
+		}
+		surge, loadErr := func() (*surgemodule.Engine, error) {
+			defer plane.dnsController.Close()
+			client, closeDownloads := newSurgeDownloadClient(plane)
+			defer closeDownloads()
+			return loadSurge(client)
+		}()
+		if loadErr != nil {
+			return nil, oops.Wrapf(loadErr, "load Surge modules")
+		}
+		plane.surge = surge
+		plane.destinationRewrites = surge.DestinationRewrites()
+		if plane.sniffingTimeout <= 0 {
+			plane.sniffingTimeout = time.Second
+		}
+		preparedRules.enableSurgeRouting(surge)
+		preparedRules.enableDestinationRewrites(plane.destinationRewrites)
+		if global.APIPort != 0 {
+			addresses, err := net.InterfaceAddrs()
+			if err != nil {
+				return nil, oops.Wrapf(err, "read host addresses for API routing")
+			}
+			preparedRules.bypassAPI(global.APIPort, addresses)
+		}
+		builder, err = NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
+		if err != nil {
+			return nil, err
+		}
+		if plane.routingMatcher, err = builder.BuildUserspace(); err != nil {
+			return nil, err
+		}
+		plane.routingMatcher.outboundUsable = core.outboundUsable
+		plane.routingMatcherBuilder = builder
+		if err := plane.restoreClientSets(); err != nil {
+			return nil, err
+		}
+		plane.criticalOutbounds = builder.criticalOutbounds(len(outbounds))
+	}
+	if log.IsLevelEnabled(log.DebugLevel) {
+		var debugBuilder strings.Builder
+		for _, rule := range preparedRules.routing {
+			debugBuilder.WriteString(rule.String(true, false, false) + "\n")
+		}
+		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
+	}
+	if err := startupCtx.Err(); err != nil {
+		return nil, err
+	}
+	if plane.dnsController, err = plane.newDNSController(dnsConfig, preparedRules, core.domainRegistry); err != nil {
 		return nil, err
 	}
 	dnsConfig.Routing.Request.Rules = nil
 	dnsConfig.Routing.Response.Rules = nil
-	if err = dnsUpstream.CheckUpstreamsFormat(); err != nil {
-		return nil, err
-	}
-	/// Dns controller.
-	fixedDomainTtl, err := ParseFixedDomainTtl(dnsConfig.FixedDomainTtl)
+	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
+
+	return plane, nil
+}
+
+// A nil registry creates a resolver for preparation only: DNS policy and cache
+// still work, but accepted answers cannot modify the shared kernel domain map.
+func (c *ControlPlane) newDNSController(conf *config.Dns, rules preparedRules, registry *DomainRegistry) (controller *DnsController, err error) {
+	upstreams, err := dns.New(conf, rules.dnsRequest, rules.dnsResponse, &dns.NewOption{
+		UpstreamReadyCallback: func(upstream *dns.Upstream) { controller.cacheUpstream(upstream) },
+		InterfaceManager:      c.core.ifmgr,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if plane.dnsController, err = NewDnsController(dnsUpstream, &DnsControllerOption{
-		MatchBitmap: func(fqdn string) []uint32 {
-			return plane.routingMatcher.domainMatcher.MatchDomainBitmap(fqdn)
-		},
-		DomainRegistry:    core.domainRegistry,
-		BestDialerChooser: plane.chooseBestDnsDialer,
-		IpVersionPrefer:   dnsConfig.IpVersionPrefer,
-		FixedDomainTtl:    fixedDomainTtl,
-		SoMarkFromDae:     global.SoMarkFromDae,
-		InterfaceName:     plane.interfaceName,
-	}); err != nil {
+	if err := upstreams.CheckUpstreamsFormat(); err != nil {
 		return nil, err
 	}
-	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
-	// TODO: 在 DNS Config 不变的情况下，保留 DNSCache
-
-	return plane, nil
+	fixedDomainTTL, err := ParseFixedDomainTtl(conf.FixedDomainTtl)
+	if err != nil {
+		return nil, err
+	}
+	return NewDnsController(upstreams, &DnsControllerOption{
+		MatchBitmap:       c.routingMatcher.domainMatcher.MatchDomainBitmap,
+		DomainRegistry:    registry,
+		BestDialerChooser: c.chooseBestDnsDialer,
+		IpVersionPrefer:   conf.IpVersionPrefer,
+		FixedDomainTtl:    fixedDomainTTL,
+		SoMarkFromDae:     c.soMarkFromDae,
+		InterfaceName:     c.interfaceName,
+	})
 }
 
 // Activate commits the in-memory control plane to the kernel:
@@ -476,7 +576,7 @@ func NewControlPlane(
 //   - drops stale domain routing entries inherited from the previous plane
 //     (when reloading without an adopted domain registry),
 //   - binds eBPF programs to LAN/WAN interfaces and the dae netns,
-//   - runs the initial connectivity check for outbound dialers.
+//   - publishes the prepared outbound connectivity state.
 //
 // It must be called exactly once after NewControlPlane succeeds. An activation
 // failure is terminal: the BPF state may be partially committed, so the caller
@@ -495,24 +595,22 @@ func (c *ControlPlane) Activate() error {
 		}
 	}
 	builder := c.routingMatcherBuilder
-	c.routingMatcherBuilder = nil
-
-	// The caller has already retired the previous plane on reload. Register
-	// stats before checks start so their first results are not discarded.
-	c.reconcileStats()
-	connectivityStarted := time.Now()
-	waiters, err := c.startConnectivityChecks()
-	if err != nil {
+	if err := c.restoreRuntimeSettings(true); err != nil {
 		return err
+	}
+
+	// The caller has already retired the previous plane on reload. Only now
+	// may the candidate publish its routing and connectivity state.
+	c.reconcileStats()
+	for _, group := range c.outbounds {
+		group.PublishStats()
 	}
 	if err := c.commitKernelState(builder); err != nil {
 		return err
 	}
-	remainingConnectivityWait := max(initialConnectivityTimeout-time.Since(connectivityStarted), 0)
-	if err := waitForStartupConnectivity(waiters, remainingConnectivityWait, c.activationStop); err != nil {
+	if err := core.publishOutboundConnectivity(); err != nil {
 		return err
 	}
-	log.WithField("duration", time.Since(connectivityStarted)).Info("Initial connectivity startup phase finished")
 	// Bind every interface only after connectivity initialization, so traffic
 	// cannot observe partially published outbound state.
 	if err := core.setupExitHandler(); err != nil {
@@ -527,6 +625,7 @@ func (c *ControlPlane) Activate() error {
 	for _, g := range c.outbounds {
 		g.EnableSelectionTolerance()
 	}
+	c.apiActive = true
 	SetAnyfromSoMark(c.soMarkFromDae)
 	log.WithField("duration", time.Since(started)).Info("Initialization is completed. Start to Proxying...")
 	return nil
@@ -915,19 +1014,19 @@ func (c *ControlPlane) InheritDomainRegistry(old *ControlPlane) {
 	)
 }
 
-func (c *ControlPlane) cacheDnsUpstream(dnsUpstream *dns.Upstream) {
+func (c *DnsController) cacheUpstream(dnsUpstream *dns.Upstream) {
 	// Register resolved upstream addresses without expiry so hostname-based
 	// domain routing remains valid for the upstream's lifetime.
 	fqdn := dnsmessage.CanonicalName(dnsUpstream.Hostname)
 
 	if dnsUpstream.Ip4.IsValid() {
-		c.dnsController.registerAddressNoExpiry(
+		c.registerAddressNoExpiry(
 			queryInfo{qname: fqdn, qtype: dnsmessage.TypeA}, dnsUpstream.Ip4,
 		)
 	}
 
 	if dnsUpstream.Ip6.IsValid() {
-		c.dnsController.registerAddressNoExpiry(
+		c.registerAddressNoExpiry(
 			queryInfo{qname: fqdn, qtype: dnsmessage.TypeAAAA}, dnsUpstream.Ip6,
 		)
 	}
@@ -990,33 +1089,6 @@ func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, doma
 				}
 			}
 		}
-	}
-	return
-}
-
-func (c *ControlPlane) ChooseDialTarget(outbound consts.OutboundIndex, dst netip.AddrPort, domain string, override bool) (dialTarget string, dialIp bool) {
-	if override {
-		if strings.HasPrefix(domain, "[") && strings.HasSuffix(domain, "]") {
-			// Sniffed domain may be like `[2606:4700:20::681a:d1f]`. We should remove the brackets.
-			domain = domain[1 : len(domain)-1]
-		}
-		if _, err := netip.ParseAddr(domain); err == nil {
-			// domain is IPv4 or IPv6 (has colon)
-			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
-			dialIp = true
-		} else if _, _, err := net.SplitHostPort(domain); err == nil {
-			// domain is already domain:port
-			dialTarget = domain
-		} else {
-			dialTarget = net.JoinHostPort(domain, strconv.Itoa(int(dst.Port())))
-		}
-		log.WithFields(log.Fields{
-			"from": dst.String(),
-			"to":   dialTarget,
-		}).Debugln("Rewrite dial target to domain")
-	} else {
-		dialTarget = dst.String()
-		dialIp = true
 	}
 	return
 }
@@ -1430,9 +1502,6 @@ func (c *ControlPlane) retireTraffic() error {
 }
 
 func (c *ControlPlane) Close() (err error) {
-	if c.activationStop != nil {
-		c.activationOnce.Do(func() { close(c.activationStop) })
-	}
 	c.core.lifecycleMu.Lock()
 	defer c.core.lifecycleMu.Unlock()
 	err = c.retireTraffic()

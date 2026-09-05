@@ -99,6 +99,9 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			if !ok {
 				return fmt.Errorf("unexpected key: %v", itemVal.Key)
 			}
+			if field.Val.Type() == reflect.TypeOf([]ModuleSource{}) {
+				return fmt.Errorf("field %q requires a section; use module { name: 'source' }", itemVal.Key)
+			}
 			if len(itemVal.Annotation) > 0 {
 				return fmt.Errorf("field %q does not support annotations", itemVal.Key)
 			}
@@ -210,6 +213,23 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 		return parseNodeList(target, section)
 	case *[]Subscription:
 		return parseSubscriptionList(target, section)
+	case *[]ModuleSource:
+		return parseModuleSources(target, section)
+	case *map[string]string:
+		for _, item := range section.Items {
+			param, ok := item.Value.(*config_parser.Param)
+			if !ok || param.Key == "" || param.AndFunctions != nil || len(param.Annotation) != 0 {
+				return fmt.Errorf("section %s requires name: 'text' entries", section.Name)
+			}
+			if _, exists := (*target)[param.Key]; exists {
+				return fmt.Errorf("duplicate %s name %q", section.Name, param.Key)
+			}
+			if *target == nil {
+				*target = make(map[string]string)
+			}
+			(*target)[param.Key] = param.Val
+		}
+		return nil
 	}
 	to = to.Elem()
 	switch to.Kind() {

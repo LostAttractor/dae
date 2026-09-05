@@ -4,6 +4,8 @@ package control
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"golang.org/x/sys/unix"
 )
@@ -194,13 +197,39 @@ func TestClientMembershipSwapsKernelMap(t *testing.T) {
 			t.Fatalf("kernel membership %v = %d, %v", enabled, value, err)
 		}
 	}
-	// A failed outer-map replacement must not change the userspace decision.
-	if err := b.SetClientMembers(m, "gaming", [][6]byte{mac}, true); err != nil {
+	// File reload uses the same live kernel update, and a failed replacement
+	// must preserve both the userspace decision and the accepted settings.
+	path := filepath.Join(t.TempDir(), "runtime-state.json")
+	store, err := settings.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane := &ControlPlane{settings: store, routingMatcherBuilder: b, routingMatcher: m, apiActive: true}
+	if err := os.WriteFile(path, []byte(`{"selectors":{},"clients":{"gaming":["02:01:02:03:04:05"]},"mitm":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := plane.ReloadRuntimeSettings(); !changed || err != nil {
+		t.Fatal(changed, err)
+	}
+	var inner *ebpf.Map
+	if err := outer.Lookup(uint32(0), &inner); err != nil {
+		t.Fatal(err)
+	}
+	var value uint32
+	err = inner.Lookup(key, &value)
+	inner.Close()
+	if err != nil || value != 1 {
+		t.Fatalf("reloaded kernel membership = %d, %v", value, err)
+	}
+	if err := os.WriteFile(path, []byte(`{"selectors":{},"clients":{},"mitm":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	outer.Close()
-	if err := b.SetClientMembers(m, "gaming", nil, true); err == nil {
-		t.Fatal("updating a closed outer map succeeded")
+	if changed, err := plane.ReloadRuntimeSettings(); changed || err == nil {
+		t.Fatal("reload through a closed outer map succeeded", changed, err)
+	}
+	if !slices.Equal(store.Members("gaming"), [][6]byte{mac}) {
+		t.Fatal("failed kernel reload changed accepted settings")
 	}
 	requireClientRoute(t, m, mac, 443, consts.OutboundUserDefinedMin)
 }
