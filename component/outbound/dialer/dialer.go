@@ -116,6 +116,12 @@ type Dialer struct {
 	checksConnectivity bool
 	health             healthPhase
 	healthSeq          uint64
+	observedSessionSeq uint64
+	statusRevision     uint64
+	recovery           RecoverySnapshot
+	lastFailure        *FailureSnapshot
+	resourceFailures   map[uint64]resourceFailureProgress
+	activeProbes       int
 	failureReportedAt  time.Time
 	failureGeneration  uint64
 	pendingCheck       checkRequestReason
@@ -185,15 +191,19 @@ func supportState(state networkState) NetworkSupportState {
 // RuntimeSnapshot is a coherent view of a dialer's current connectivity state.
 // Process-lifetime availability statistics are sampled after releasing its lock.
 type RuntimeSnapshot struct {
-	Healthy           bool
-	InitialCheckDone  bool
-	ConfirmingFailure bool
-	SupportState      [common.NetworkTypeCount]NetworkSupportState
-	Session           netproxy.StateEvent
-	HasSession        bool
-	HasLatency        bool
-	Latency           LatencyStats
-	Availability      stats.Availability
+	Revision           uint64
+	ObservedSessionSeq uint64
+	Recovery           RecoverySnapshot
+	Failure            *FailureSnapshot
+	Healthy            bool
+	InitialCheckDone   bool
+	ConfirmingFailure  bool
+	SupportState       [common.NetworkTypeCount]NetworkSupportState
+	Session            netproxy.StateEvent
+	HasSession         bool
+	HasLatency         bool
+	Latency            LatencyStats
+	Availability       stats.Availability
 }
 
 type GlobalOption struct {
@@ -247,13 +257,30 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 		session:            session,
 		checksConnectivity: checksConnectivity,
 		checkCh:            make(chan struct{}, 1),
+		statusRevision:     1,
+		recovery:           RecoverySnapshot{Phase: RecoveryQueued, Verification: "pending"},
 		ctx:                ctx,
 		cancel:             cancel,
 	}
 	if !checksConnectivity {
+		d.recovery.Verification = "disabled"
+		if session == nil {
+			d.recovery.Phase = RecoveryReady
+		}
 		d.health = healthHealthy
 		for i := range d.networks {
 			d.networks[i] = networkSupported
+		}
+	}
+	if session != nil {
+		snapshot := session.Snapshot()
+		d.recovery.Executor = snapshot.RecoveryExecutor
+		if !checksConnectivity {
+			if snapshot.Accepting {
+				d.healthSeq = snapshot.ReadinessVersion
+			} else {
+				d.health = healthUnhealthy
+			}
 		}
 	}
 	d.statsKey = makeStatsKey(property, statsScope)
@@ -300,15 +327,15 @@ func (d *Dialer) ChecksConnectivity() bool {
 	return d.checksConnectivity
 }
 
-func (d *Dialer) sessionSnapshot() (netproxy.StateEvent, bool) {
+func (d *Dialer) sessionSnapshot() netproxy.StateEvent {
 	if d.session == nil {
-		return netproxy.StateEvent{State: netproxy.SessionConnected}, false
+		return netproxy.StateEvent{}
 	}
-	return d.session.Snapshot(), true
+	return d.session.Snapshot()
 }
 
-func (d *Dialer) healthyLocked(session netproxy.StateEvent, hasSession bool) bool {
-	return d.ctx.Err() == nil && d.health.usable() && (!hasSession || session.State == netproxy.SessionConnected && d.healthSeq == session.Seq)
+func (d *Dialer) healthyLocked(session netproxy.StateEvent) bool {
+	return d.ctx.Err() == nil && d.health.usable() && (d.session == nil || session.Accepting && d.healthSeq == session.ReadinessVersion)
 }
 
 func (d *Dialer) Usable(networkType *common.NetworkType) bool {
@@ -317,10 +344,10 @@ func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 
 func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSnapshot {
 	d.mu.RLock()
-	session, hasSession := d.sessionSnapshot()
+	session := d.sessionSnapshot()
 	state := d.networks[networkType.Index()]
 	snapshot := SelectionSnapshot{
-		Usable:  d.healthyLocked(session, hasSession) && state == networkSupported,
+		Usable:  d.healthyLocked(session) && state == networkSupported,
 		Support: supportState(state),
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
@@ -330,8 +357,8 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 
 func (d *Dialer) ConnectivitySnapshot() ConnectivitySnapshot {
 	d.mu.RLock()
-	session, hasSession := d.sessionSnapshot()
-	healthy := d.healthyLocked(session, hasSession)
+	session := d.sessionSnapshot()
+	healthy := d.healthyLocked(session)
 	snapshot := ConnectivitySnapshot{
 		InitialCheckDone:  d.initialCheckCompletedLocked(),
 		ConfirmingFailure: healthy && d.health == healthConfirming,
@@ -398,14 +425,21 @@ func (d *Dialer) latencyStatsLocked() (lat LatencyStats, ok bool) {
 
 func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	d.mu.RLock()
-	session, hasSession := d.sessionSnapshot()
-	healthy := d.healthyLocked(session, hasSession)
+	session := d.sessionSnapshot()
+	healthy := d.healthyLocked(session)
 	snapshot := RuntimeSnapshot{
-		Healthy:           healthy,
-		InitialCheckDone:  d.initialCheckCompletedLocked(),
-		ConfirmingFailure: healthy && d.health == healthConfirming,
-		Session:           session,
-		HasSession:        hasSession,
+		Revision:           d.statusRevision,
+		ObservedSessionSeq: d.observedSessionSeq,
+		Recovery:           d.recovery,
+		Failure:            d.lastFailure,
+		Healthy:            healthy,
+		InitialCheckDone:   d.initialCheckCompletedLocked(),
+		ConfirmingFailure:  healthy && d.health == healthConfirming,
+		Session:            session,
+		HasSession:         d.session != nil,
+	}
+	if d.session != nil {
+		snapshot.Recovery = ownerRecovery(session, snapshot.Recovery)
 	}
 	for i, state := range d.networks {
 		snapshot.SupportState[i] = supportState(state)
@@ -446,6 +480,10 @@ func (d *Dialer) Close() error {
 	d.closeOnce.Do(func() {
 		d.mu.Lock()
 		d.cancel()
+		d.recovery.Phase = RecoveryStopped
+		d.recovery.RetryAt = time.Time{}
+		d.recovery.RetryTimeKnown = false
+		d.statusRevision++
 		d.mu.Unlock()
 		d.checkWG.Wait()
 		d.mu.Lock()

@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/sniffing"
+	"github.com/daeuniverse/outbound/netproxy"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
@@ -304,31 +305,15 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			defer cancel()
 			udpConn, err = dialOption.dialerForConnection().ListenPacket(dialCtx, dialOption.DialTarget)
 			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return ctxErr
+				meta := netproxy.Failure{Phase: netproxy.OpDial}
+				if dialOption.Direct {
+					meta.Origin = netproxy.OriginTarget
 				}
-				netErr, ok := IsNetError(err)
-				err = oops.
-					In("ListenPacket").
-					With("Is NetError", ok).
-					With("Is Temporary", ok && netErr.Temporary()).
-					With("Is Timeout", ok && netErr.Timeout()).
-					With("Outbound", dialOption.Outbound.Name).
-					With("Dialer", dialOption.Dialer.Name).
-					With("src", src.String()).
-					With("dst", dst.String()).
-					With("domain", domain).
-					Wrapf(err, "failed to ListenPacket")
-				if !ok {
-					return err
-				} else if !netErr.Timeout() {
-					if dialOption.Dialer.ChecksConnectivity() {
-						stats.DefaultStore.RecordError(statsPath)
-						dialOption.Dialer.ReportDataPlaneFailure()
-						return err
-					}
+				err = netproxy.WrapFailure(err, meta)
+				if !recordDataPlaneError(dialOption.Dialer, statsPath, err) {
+					return nil
 				}
-				return nil
+				return oops.Wrapf(err, "failed to ListenPacket")
 			}
 		}
 		if key.Destination.IsValid() {
@@ -367,6 +352,9 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			ue.destination = param.effectiveDestination()
 		}
 		ue.domain = domain
+		if dialOption.Direct {
+			ue.origin = netproxy.OriginTarget
+		}
 		isNew = true
 	}
 
@@ -390,24 +378,15 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			}
 			return err
 		}
-		netErr, ok := IsNetError(err)
-		err = oops.
-			In("UdpEndpoint l -> r relay").
-			With("Is NetError", ok).
-			With("Is Temporary", ok && netErr.Temporary()).
-			With("Is Timeout", ok && netErr.Timeout()).
-			With("Dialer", ue.dialer.Name).
-			Wrapf(err, "failed to write UDP packet")
-		if !ok {
-			return err
-		} else if !netErr.Timeout() {
-			if ue.dialer.ChecksConnectivity() {
-				stats.DefaultStore.RecordError(ue.statsPath)
-				ue.dialer.ReportDataPlaneFailure()
-				return err
+		err = netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: ue.origin})
+		if !recordDataPlaneError(ue.dialer, ue.statsPath, err) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
 			}
+			return nil
 		}
-		return nil
+		return oops.In("UdpEndpoint l -> r relay").With("Dialer", ue.dialer.Name).
+			Wrapf(err, "failed to write UDP packet")
 	}
 	if isNew && !ue.mitm {
 		ue.traffic = stats.DefaultStore.OpenConnection(ue.statsPath, noConnectivityFallback)
@@ -428,21 +407,13 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if runErr == nil {
 			return
 		}
-		netErr, ok := IsNetError(runErr)
-		if ok {
-			if netErr.Timeout() {
-				return
-			}
-			if !endpoint.mitm && endpoint.dialer.ChecksConnectivity() {
-				stats.DefaultStore.RecordError(endpoint.statsPath)
-				endpoint.dialer.ReportDataPlaneFailure()
-			}
+		if !recordDataPlaneError(endpoint.dialer, endpoint.statsPath, runErr) {
+			return
 		}
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.Warnf("%+v", runErr)
 		} else {
-			oopsErr, _ := oops.AsOops(runErr)
-			log.WithFields(log.Fields(oopsErr.Context())).Warnf("%v", runErr)
+			log.Warnf("%v", runErr)
 		}
 	}(udpEndpoints, ue)
 

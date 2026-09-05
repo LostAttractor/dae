@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
 func BenchmarkRelayIdleMemory(b *testing.B) {
@@ -94,7 +96,11 @@ func BenchmarkRelayDirectionTCP(b *testing.B) {
 	}()
 	go func() {
 		defer destination.CloseWrite()
-		relayDone <- relayDirection(destination, source, func(n uint64) { counted += n })
+		relayDone <- relayEndpointDirection(
+			&relayEndpoint{conn: destination, origin: netproxy.OriginTarget},
+			&relayEndpoint{conn: source, origin: netproxy.OriginCaller},
+			func(n uint64) { counted += n },
+		)
 	}()
 	for range b.N {
 		if _, err := io.ReadFull(destinationPeer, got); err != nil {

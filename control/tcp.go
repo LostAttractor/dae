@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -39,21 +39,19 @@ type directTCPSplice struct {
 }
 
 type tcpRelay struct {
-	lConn        sniffing.ConnSnifferInterface
-	rConn        net.Conn
-	directSplice *directTCPSplice
-	dialer       interface {
-		ChecksConnectivity() bool
-		ReportDataPlaneFailure()
-	}
-	statsPath   stats.Path
-	fallback    bool
-	src         netip.AddrPort
-	dst         netip.AddrPort
-	domain      string
-	mitmHost    *mitm.Host
-	mitmPlanner mitm.UpstreamPlanner
-	mitmRelease func()
+	lConn          sniffing.ConnSnifferInterface
+	rConn          net.Conn
+	directSplice   *directTCPSplice
+	dialer         *dialer.Dialer
+	outboundOrigin netproxy.FailureOrigin
+	statsPath      stats.Path
+	fallback       bool
+	src            netip.AddrPort
+	dst            netip.AddrPort
+	domain         string
+	mitmHost       *mitm.Host
+	mitmPlanner    mitm.UpstreamPlanner
+	mitmRelease    func()
 }
 
 type tcpConnectionTracker struct {
@@ -199,35 +197,24 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	start := time.Now()
 	rConn, err := dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
 	if err != nil {
-		if ctxErr := setupCtx.Err(); ctxErr != nil {
-			return nil, ctxErr
+		meta := netproxy.Failure{Phase: netproxy.OpDial}
+		if dialOption.Direct {
+			meta.Origin = netproxy.OriginTarget
 		}
-		// TODO: UDP 是不是也有Direct Outbound出问题的情况?
-		// TODO: Control Plane Routing?
-		// TODO: 哪些错误说明节点不工作或GFW在工作?
-		// TCP: Connection Reset / Connection Refused
-		netErr, ok := IsNetError(err)
-		err = oops.
-			In("DialContext").
-			With("Is NetError", ok).
-			With("Is Temporary", ok && netErr.Temporary()).
-			With("Is Timeout", ok && netErr.Timeout()).
+		err = netproxy.WrapFailure(err, meta)
+		if !recordDataPlaneError(dialOption.Dialer, statsPath, err) {
+			if ctxErr := setupCtx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, nil
+		}
+		return nil, oops.In("DialContext").
 			With("Outbound", dialOption.Outbound.Name).
 			With("Dialer", dialOption.Dialer.Name).
 			With("src", src.String()).
 			With("dst", dst.String()).
 			With("domain", domain).
 			Wrapf(err, "failed to DialContext")
-		if !ok {
-			return nil, err
-		} else if !netErr.Timeout() {
-			if dialOption.Dialer.ChecksConnectivity() {
-				stats.DefaultStore.RecordError(statsPath)
-				dialOption.Dialer.ReportDataPlaneFailure()
-				return nil, err
-			}
-		}
-		return nil, nil
 	}
 	if err := setupCtx.Err(); err != nil {
 		closeInBackground(rConn)
@@ -244,6 +231,9 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		src:       src,
 		dst:       dst,
 		domain:    domain,
+	}
+	if dialOption.Direct {
+		relay.outboundOrigin = netproxy.OriginTarget
 	}
 	if dialOption.Direct && c.core.bpf.splice != nil {
 		if rawRConn, ok := rConn.(splice.TCPConn); ok {
@@ -272,52 +262,30 @@ func (r *tcpRelay) run() (err error) {
 	// Relay
 	handled := false
 	if r.directSplice != nil {
-		err = r.lConn.WriteBufferedTo(&trafficWriter{Writer: r.rConn, add: traffic.RecordUpload})
+		accepted := &relayEndpoint{conn: r.directSplice.accepted, origin: netproxy.OriginCaller}
+		remote := &relayEndpoint{conn: r.directSplice.remote, origin: netproxy.OriginTarget}
+		err = r.lConn.WriteBufferedTo(&trafficWriter{Writer: remote, add: traffic.RecordUpload})
 		if err == nil {
 			handled, err = r.directSplice.runtime.Relay(
-				r.directSplice.accepted, r.directSplice.remote, traffic)
+				&spliceEndpoint{TCPConn: r.directSplice.accepted, endpoint: accepted},
+				&spliceEndpoint{TCPConn: r.directSplice.remote, endpoint: remote}, traffic)
 		}
 	}
 	if !handled && err == nil {
-		err = RelayTCP(r.lConn, r.rConn, traffic)
+		err = relayTCP(r.lConn, r.rConn, traffic, 10*time.Second, r.outboundOrigin)
+	} else {
+		err = withoutCleanupErrors(err)
 	}
-	if err != nil {
-		netErr, ok := IsNetError(err)
-		err = oops.
-			In("RelayTCP").
-			With("Is NetError", ok).
-			With("Is Temporary", ok && netErr.Temporary()).
-			With("Is Timeout", ok && netErr.Timeout()).
+	if recordDataPlaneError(r.dialer, r.statsPath, err) {
+		return oops.In("RelayTCP").
 			With("Outbound", r.statsPath.Outbound).
 			With("Dialer", r.statsPath.Dialer).
 			With("src", r.src.String()).
 			With("dst", r.dst.String()).
 			With("domain", r.domain).
-			Wrapf(err, "Failed to RelayTCP")
-		if !ok {
-			return err
-		} else if !netErr.Timeout() && r.dialer.ChecksConnectivity() {
-			stats.DefaultStore.RecordError(r.statsPath)
-			r.dialer.ReportDataPlaneFailure()
-			return err
-		}
+			Wrapf(err, "failed to relay TCP")
 	}
-	// case strings.HasSuffix(err.Error(), "write: broken pipe"),
-	// 	strings.HasSuffix(err.Error(), "i/o timeout"),
-	// 	strings.HasPrefix(err.Error(), "EOF"),
-	// 	strings.HasSuffix(err.Error(), "connection reset by peer"),
-	// 	strings.HasSuffix(err.Error(), "canceled by local with error code 0"),
-	// 	strings.HasSuffix(err.Error(), "canceled by remote with error code 0"):
 	return nil
-}
-
-type ConnWithReadTimeout struct {
-	net.Conn
-}
-
-func (c *ConnWithReadTimeout) Read(p []byte) (int, error) {
-	c.Conn.SetReadDeadline(time.Now().Add(DefaultNatTimeoutTCPEstablished))
-	return c.Conn.Read(p)
 }
 
 type trafficWriter struct {
@@ -333,78 +301,82 @@ func (w *trafficWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func relayDirection(dst, src net.Conn, add func(uint64)) error {
-	return copyRelay(
-		&trafficWriter{Writer: dst, add: add},
-		&ConnWithReadTimeout{Conn: src},
-	)
+func relayEndpointDirection(dst, src *relayEndpoint, add func(uint64)) error {
+	return copyRelay(&trafficWriter{Writer: dst, add: add}, src)
 }
 
-// Error1 is the error from lConn to rConn
-// Error2 is the error from rConn to lConn
-// TODO: 引入 ctx, 在 dialer 不可用时取消 relay
-// 进一步的, 给 lConn 发送 rst
-func RelayTCP(lConn, rConn net.Conn, traffic *stats.Connection) error {
-	errCh := make(chan struct {
-		err       error
-		direction bool
-	}, 2)
-
-	// Start relay goroutine from rConn to lConn
-	go func(dst, src net.Conn) {
-		err := relayDirection(dst, src, traffic.RecordDownload)
-		errCh <- struct {
-			err       error
-			direction bool
-		}{err: err, direction: false}
-		if err != nil {
-			dst.Close()
-		} else if writeCloser, ok := dst.(netproxy.CloseWriter); ok {
-			writeCloser.CloseWrite()
-		} else {
-			dst.SetReadDeadline(time.Now().Add(10 * time.Second))
+func relayTCP(lConn, rConn net.Conn, traffic *stats.Connection, drainTimeout time.Duration, origin netproxy.FailureOrigin) error {
+	type result struct {
+		err        error
+		needsDrain bool
+	}
+	results := make(chan result, 2)
+	left := &relayEndpoint{conn: lConn, origin: netproxy.OriginCaller}
+	right := &relayEndpoint{conn: rConn, origin: origin}
+	lease := netproxy.DependencyOf(rConn)
+	invalidated := lease.Done()
+	copyDirection := func(dst, src *relayEndpoint, add func(uint64)) {
+		outcome := result{err: relayEndpointDirection(dst, src, add)}
+		// copyRelay consumes read EOF. Propagate FIN only while the owner
+		// still allows it; resource cleanup can itself surface as EOF.
+		if outcome.err == nil && lease.AbortCause() == nil {
+			outcome.needsDrain, outcome.err = dst.halfClose()
 		}
-	}(lConn, rConn)
-	// Start relay goroutine from lConn to rConn
-	func(dst, src net.Conn) {
-		err := relayDirection(dst, src, traffic.RecordUpload)
-		errCh <- struct {
-			err       error
-			direction bool
-		}{err: err, direction: true}
-		if err != nil {
-			dst.Close()
-		} else if writeCloser, ok := dst.(netproxy.CloseWriter); ok {
-			writeCloser.CloseWrite()
-		} else {
-			dst.SetReadDeadline(time.Now().Add(10 * time.Second))
+		// Keep CloseWrite in the worker: an owner abort must be able to
+		// interrupt it if sending FIN blocks.
+		results <- outcome
+	}
+	go copyDirection(left, right, traffic.RecordDownload)
+	go copyDirection(right, left, traffic.RecordUpload)
+
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
 		}
-	}(rConn, lConn)
-	err := <-errCh
-	<-errCh
-
-	if err.err != nil {
-		// We ignore lConn errors or temporary network errors
-		// TODO: Why get EOF as an error?
-		if err.direction { // l -> r
-			switch {
-			case err.err == io.EOF,
-				strings.HasSuffix(err.err.Error(), "canceled by remote with error code 0"), // rConn closed
-				strings.Contains(err.err.Error(), "read:"):                                 // lConn Read
-				err.err = nil
-			default:
-				err.err = oops.In("lConn -> rConn Relay").Wrap(err.err)
+	}()
+	aborted := false
+	var relayErr error
+	abort := func() {
+		if aborted {
+			return
+		}
+		aborted = true
+		timeout = nil
+		invalidated = nil
+		// Check the owner signal even if a copy result won the select race.
+		if cause := lease.AbortCause(); cause != nil {
+			relayErr = errors.Join(relayErr, cause)
+			setTCPResetOnClose(lConn)
+		}
+		// Unblock both reads and writes, including a reverse copy blocked
+		// writing to the endpoint whose read side has already ended.
+		_ = left.close()
+		_ = right.close()
+	}
+	for remaining := 2; remaining > 0; {
+		select {
+		case <-invalidated:
+			invalidated = nil
+			if lease.AbortCause() != nil {
+				abort()
 			}
-
-		} else { // r -> l
-			switch {
-			case strings.Contains(err.err.Error(), "write:"): // lConn Write
-				err.err = nil
-			default:
-				err.err = oops.In("rConn -> lConn Relay").Wrap(err.err)
+		case outcome := <-results:
+			remaining--
+			relayErr = errors.Join(relayErr, outcome.err)
+			if outcome.err != nil || lease.AbortCause() != nil {
+				abort()
+			} else if outcome.needsDrain && remaining == 1 && !aborted {
+				// A connection without CloseWrite cannot propagate EOF. Give
+				// the reverse copy a fixed grace period after the first EOF.
+				timer = time.NewTimer(drainTimeout)
+				timeout = timer.C
 			}
+		case <-timeout:
+			relayErr = errors.Join(relayErr, netproxy.WrapFailure(context.DeadlineExceeded, netproxy.Failure{Scope: netproxy.ScopeOperation, Reason: netproxy.ReasonDeadline}))
+			abort()
 		}
 	}
-
-	return err.err
+	return withoutCleanupErrors(relayErr)
 }

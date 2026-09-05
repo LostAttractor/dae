@@ -160,5 +160,6 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		Outbound:         bestOutbound,
 		Target:           bestTarget,
 		Mark:             dialMark,
+		Direct:           bestOutboundIndex == consts.OutboundDirect,
 	}, nil
 }

@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -252,6 +251,7 @@ type dialArgument struct {
 	Outbound         *outbound.DialerGroup
 	Target           netip.AddrPort
 	Mark             uint32
+	Direct           bool
 }
 
 func (a *dialArgument) dialerForConnection() netproxy.Dialer {
@@ -964,16 +964,16 @@ func closeDnsForwarder(forwarder DnsForwarder) error {
 }
 
 func (c *DnsController) reportDNSDialFailure(err error, argument *dialArgument) {
-	if err == nil || argument == nil || argument.Dialer == nil || argument.Outbound == nil ||
-		c.closed.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+	if err == nil || argument == nil || argument.Dialer == nil || argument.Outbound == nil || c.closed.Err() != nil {
 		return
 	}
-	netErr, ok := IsNetError(err)
-	if !ok || netErr.Timeout() || !argument.Dialer.ChecksConnectivity() {
-		return
+	metadata := netproxy.Failure{Phase: netproxy.OpDial}
+	if argument.Direct {
+		metadata.Origin = netproxy.OriginTarget
 	}
-	stats.DefaultStore.RecordError(argument.Dialer.StatsPath(argument.Outbound.Name, &argument.networkType))
-	argument.Dialer.ReportDataPlaneFailure()
+	err = netproxy.WrapFailure(err, metadata)
+	recordDataPlaneError(argument.Dialer,
+		argument.Dialer.StatsPath(argument.Outbound.Name, &argument.networkType), err)
 }
 
 func (c *DnsController) dialSendWithFallback(

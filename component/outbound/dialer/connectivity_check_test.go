@@ -92,7 +92,10 @@ var testDialerSequence atomic.Uint64
 func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 	t.Helper()
 	layer := netproxy.Layer{Data: transport}
-	if session, ok := transport.(*testSessionTransport); ok {
+	if session, ok := transport.(interface {
+		netproxy.Session
+		io.Closer
+	}); ok {
 		layer.Sessions = []netproxy.Session{session}
 		layer.Resources = []io.Closer{session}
 	}
@@ -510,7 +513,7 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 	checker.retryInterval = time.Hour
 	checker.scheduleSupport()
 	d.RequestConnectivityCheck()
-	checker.requestHealth()
+	checker.start(checker.requestedCheckKind())
 	if checker.retryInterval != supportRetryInitialInterval || checker.supportScheduled || checker.runningKind != checkSupport {
 		t.Fatalf("support retry after request = %v, scheduled=%v, kind=%v", checker.retryInterval, checker.supportScheduled, checker.runningKind)
 	}
@@ -978,7 +981,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	})
 	group := d.group.observer.(*testGroup)
 	changesBeforeReport := group.changes.Load()
-	d.ReportDataPlaneFailure()
+	d.ReportDataPlaneError(errors.New("upstream relay failed"))
 	firstReport := d.failureReportedAt
 	if firstReport.IsZero() || !d.RuntimeStatus().ConfirmingFailure {
 		t.Fatal("data-plane failure did not enter confirmation")
@@ -986,7 +989,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	if got := group.changes.Load(); got != changesBeforeReport+1 {
 		t.Fatalf("group changes after first report = %d, want %d", got, changesBeforeReport+1)
 	}
-	d.ReportDataPlaneFailure()
+	d.ReportDataPlaneError(errors.New("upstream relay failed"))
 	if !d.failureReportedAt.Equal(firstReport) {
 		t.Fatal("repeated report replaced the first failure time")
 	}
@@ -1005,7 +1008,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 		t.Fatalf("failure started at %v, want %v", got, firstReport)
 	}
 	generation := d.failureGeneration
-	d.ReportDataPlaneFailure()
+	d.ReportDataPlaneError(errors.New("upstream relay failed"))
 	if d.connectivityCheckRequested() || d.failureGeneration != generation {
 		t.Fatal("data-plane failure requested another check while the node was already unhealthy")
 	}
@@ -1018,7 +1021,7 @@ func TestCheckStartedBeforeDataPlaneFailureCannotClearConfirmation(t *testing.T)
 		probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
 	})
 	attempt := d.beginConnectivityCheck(checkHealth)
-	d.ReportDataPlaneFailure()
+	d.ReportDataPlaneError(errors.New("upstream relay failed"))
 
 	if _, accepted := d.applyCheck(checkResult{
 		kind:       attempt.kind,

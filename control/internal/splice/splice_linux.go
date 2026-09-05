@@ -18,6 +18,7 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common/stats"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/daeuniverse/outbound/netproxy"
 	"golang.org/x/sys/unix"
 )
 
@@ -171,13 +172,36 @@ func writeFullAndRecord(writer io.Writer, p []byte, recordBytes func(uint64)) er
 			p = p[n:]
 		}
 		if err != nil {
-			return err
+			return connectionFailure(writer, netproxy.OpWrite, err)
 		}
 		if n == 0 {
-			return io.ErrShortWrite
+			return connectionFailure(writer, netproxy.OpWrite, io.ErrShortWrite)
 		}
 	}
 	return nil
+}
+
+func connectionFailure(conn any, phase netproxy.Operation, err error) error {
+	if wrapper, ok := conn.(interface {
+		WrapFailure(error, netproxy.Operation) error
+	}); ok {
+		return wrapper.WrapFailure(err, phase)
+	}
+	return netproxy.WrapFailure(err, netproxy.Failure{Phase: phase})
+}
+
+// Errors from maps, epoll, and accounting are local runtime failures. Socket
+// operations already carry endpoint provenance and must retain it.
+func runtimeFailure(err error) error {
+	var causes []error
+	for _, failure := range netproxy.Failures(err) {
+		if failure.Origin == "" || failure.Origin == netproxy.OriginUnknown {
+			failure.Origin = netproxy.OriginLocalProtocol
+			failure.Scope = netproxy.ScopeOperation
+		}
+		causes = append(causes, &failure)
+	}
+	return errors.Join(causes...)
 }
 
 func drainTCP(src, dst net.Conn, recordBytes func(uint64)) (eof, empty bool, err error) {
@@ -202,7 +226,7 @@ func drainTCP(src, dst net.Conn, recordBytes func(uint64)) (eof, empty bool, err
 		if readErr == nil {
 			continue
 		}
-		if errors.Is(readErr, io.EOF) {
+		if readErr == io.EOF {
 			return true, true, nil
 		}
 		var netErr net.Error
@@ -292,7 +316,9 @@ func (r *Runtime) pumpAndArm(edges [2]*spliceDirectEdge) error {
 		empty = empty && drained
 		if eof {
 			edge.closed = true
-			_ = edge.dst.CloseWrite()
+			if err := edge.dst.CloseWrite(); err != nil {
+				return err
+			}
 		}
 	}
 	for _, edge := range edges {
@@ -445,7 +471,7 @@ func (r *Runtime) relayUserspace(edges [2]*spliceDirectEdge) error {
 				if err == nil {
 					continue
 				}
-				if errors.Is(err, io.EOF) {
+				if err == io.EOF {
 					err = edge.dst.CloseWrite()
 					if err != nil {
 						_ = edge.dst.Close()
@@ -458,13 +484,24 @@ func (r *Runtime) relayUserspace(edges [2]*spliceDirectEdge) error {
 			}
 		}()
 	}
-	var first error
+	var combined error
 	for range active {
-		if err := <-results; first == nil {
-			first = err
+		err := <-results
+		if err != nil {
+			// Interrupt the opposite direction even when it is blocked writing
+			// to this direction's source rather than reading its destination.
+			for _, edge := range edges {
+				_ = edge.src.Close()
+				_ = edge.dst.Close()
+			}
+		}
+		for _, failure := range netproxy.Failures(err) {
+			if failure.Origin != netproxy.OriginLocalCleanup {
+				combined = errors.Join(combined, &failure)
+			}
 		}
 	}
-	return first
+	return combined
 }
 
 func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
@@ -516,7 +553,7 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 			if event.Events&unix.EPOLLERR != 0 {
 				soErr, getsockoptErr := tcpSocketError(edge.src)
 				if getsockoptErr != nil {
-					return fmt.Errorf("splice socket error: %w", getsockoptErr)
+					return connectionFailure(edge.src, netproxy.OpRead, fmt.Errorf("splice socket error: %w", getsockoptErr))
 				}
 				if soErr != 0 {
 					if soErr == int(unix.EPIPE) || soErr == int(unix.ECONNRESET) {
@@ -524,7 +561,7 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 							return err
 						}
 					} else {
-						return fmt.Errorf("splice socket error: %w", unix.Errno(soErr))
+						return connectionFailure(edge.src, netproxy.OpRead, fmt.Errorf("splice socket error: %w", unix.Errno(soErr)))
 					}
 				}
 			}
@@ -621,6 +658,7 @@ func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Connect
 		return false, nil
 	}
 	defer r.endSession()
+	defer func() { err = runtimeFailure(err) }()
 	if !spliceSocketEligible(acceptedConn) || !spliceSocketEligible(remoteConn) {
 		return false, nil
 	}
