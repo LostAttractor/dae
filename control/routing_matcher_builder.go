@@ -36,6 +36,7 @@ type RoutingMatcherBuilder struct {
 	rulesMu            sync.RWMutex
 	simulatedLpmTries  [][]netip.Prefix
 	clientSetSlots     map[string]int
+	captureIndex       int
 	simulatedDomainSet []routing.DomainSet
 	fallback           *routing.Outbound
 
@@ -47,8 +48,8 @@ type RoutingMatcherBuilder struct {
 	kernspaceBuilders []func() error
 }
 
-func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *component.InterfaceManager) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int)}
+func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *component.InterfaceManager, capture *routingCapture) (b *RoutingMatcherBuilder, err error) {
+	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int), captureIndex: -1}
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_DestIp, routing.IpParserFactory(b.addIp))
@@ -62,6 +63,13 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 	rulesBuilder.RegisterFunctionParser(consts.Function_Interface, routing.EmptyKeyPlainParserFactory(b.addInterface))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
+	if capture != nil {
+		if err = rulesBuilder.Apply(rules[:capture.before]); err != nil {
+			return nil, err
+		}
+		b.addCapture(capture)
+		rules = rules[capture.before:]
+	}
 	if err = rulesBuilder.Apply(rules); err != nil {
 		return nil, err
 	}
@@ -566,6 +574,7 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 
 	return &RoutingMatcher{
 		lpmMatcher:    lpmMatcher,
+		captureIndex:  b.captureIndex,
 		domainMatcher: domainMatcher,
 		matches:       b.rules,
 		rulesMu:       &b.rulesMu,

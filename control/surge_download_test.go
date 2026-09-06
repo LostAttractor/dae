@@ -61,7 +61,7 @@ func surgeDownloadTestPlane(t *testing.T, rules string, groups ...*outbound.Dial
 	for i, group := range groups {
 		ids[group.Name] = uint8(i)
 	}
-	builder, err := NewRoutingMatcherBuilder(configuration.Routing.Rules, ids, nil, "direct", nil)
+	builder, err := NewRoutingMatcherBuilder(configuration.Routing.Rules, ids, nil, "direct", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

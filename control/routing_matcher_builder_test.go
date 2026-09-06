@@ -94,7 +94,7 @@ func TestRoutingMatcherBuilderRejectsSkipWhileNoaliveOnBuiltins(t *testing.T) {
 				},
 			}}
 
-			_, err := NewRoutingMatcherBuilder(rules, outboundName2ID, nil, consts.OutboundDirect.String(), nil)
+			_, err := NewRoutingMatcherBuilder(rules, outboundName2ID, nil, consts.OutboundDirect.String(), nil, nil)
 			if err == nil {
 				t.Fatal("expected configuration error")
 			}
@@ -143,7 +143,7 @@ func TestRoutingMatcherBuilderCriticalOutbounds(t *testing.T) {
 		},
 		nil,
 		"fallback",
-		nil,
+		nil, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

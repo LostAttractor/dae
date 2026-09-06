@@ -31,6 +31,7 @@ import (
 
 type preparedRules struct {
 	routing     []*config_parser.RoutingRule
+	capture     *routingCapture
 	dnsRequest  []*config_parser.RoutingRule
 	dnsResponse []*config_parser.RoutingRule
 }

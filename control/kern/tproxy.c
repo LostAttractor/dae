@@ -295,6 +295,7 @@ enum __attribute__((packed)) MatchType {
 	MatchType_IfIndex,
 	MatchType_Dscp,
 	MatchType_Fallback,
+	MatchType_Capture,
 };
 
 enum L4ProtoType {
@@ -327,6 +328,10 @@ struct match_set {
 		__u8 __value[16]; // Placeholder for bpf2go.
 
 		__u32 index;
+		struct {
+			__u32 ip_index;
+			bool domains;
+		} capture;
 		struct port_range port_range;
 		enum L4ProtoType l4proto_type;
 		enum IpVersionType ip_version;
@@ -911,6 +916,28 @@ static int route_step(__u32 index, struct route_ctx *ctx)
 		goto before_next_loop;
 	}
 	switch (match_set->type) {
+	case MatchType_Capture:
+		/* One slot captures Host IPs and TCP MITM domains. */
+		if (match_set->capture.ip_index != (__u32)-1) {
+			lpm = bpf_map_lookup_elem(&lpm_array_map,
+						  &match_set->capture.ip_index);
+			if (unlikely(!lpm)) {
+				ctx->result = -EFAULT;
+				return 1;
+			}
+			if (bpf_map_lookup_elem(lpm, &ctx->lpm_key_daddr)) {
+				ctx->goodsubrule = true;
+				break;
+			}
+		}
+		if (match_set->capture.domains && (_l4proto_type & L4ProtoType_TCP)) {
+			domain = bpf_map_lookup_elem(&domain_routing_map,
+						     ctx->params->daddr);
+			if (domain && ((domain->routing[index / 32] |
+					domain->bump[index / 32]) >> (index % 32)) & 1)
+				ctx->goodsubrule = true;
+		}
+		break;
 	case MatchType_Mac:
 		lpm_key = &ctx->lpm_key_mac;
 		goto lookup_lpm;

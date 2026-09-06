@@ -51,26 +51,23 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 			}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{original}}}
 			preparation.rules.enableSurgeRouting(engine)
-			if len(preparation.rules.routing) != 2 || preparation.rules.routing[1] != original {
+			if len(preparation.rules.routing) != 1 || preparation.rules.routing[0] != original {
 				t.Fatal("module capture replaced the explicit direct route")
 			}
-			userspace, _ := surgeRoutingMatcher(t, preparation.rules.routing)
-			capture, builder := surgeRoutingMatcher(t, preparation.rules.routing)
-			if len(builder.rules) < 2 ||
-				builder.rules[0].Type != uint8(consts.MatchType_L4Proto) ||
-				builder.rules[0].Value[0] != uint8(consts.L4ProtoType_TCP) ||
-				builder.rules[0].Outbound != uint8(consts.OutboundLogicalAnd) ||
-				builder.rules[1].Type != uint8(consts.MatchType_DomainSet) ||
-				builder.rules[1].Outbound != uint8(consts.OutboundControlPlaneRouting) {
-				t.Fatal("module capture no longer compiles to TCP AND capture-domain bit")
+			userspace, _ := surgeRoutingMatcher(t, preparation.rules)
+			capture, builder := surgeRoutingMatcher(t, preparation.rules)
+			if len(builder.rules) != 3 ||
+				builder.rules[0].Type != uint8(consts.MatchType_Capture) ||
+				builder.rules[0].Outbound != uint8(consts.OutboundControlPlaneRouting) {
+				t.Fatal("module capture must use one kernel match set")
 			}
 			// Keep the kernel's match conditions, replacing only its terminal
 			// action so the userspace evaluator exposes capture without BPF maps.
-			builder.rules[1].Outbound = uint8(consts.OutboundUserDefinedMin)
+			builder.rules[0].Outbound = uint8(consts.OutboundUserDefinedMin)
 			for _, host := range hosts {
 				t.Run(host.host, func(t *testing.T) {
 					bitmap := capture.domainMatcher.MatchDomainBitmap(host.host)
-					if got := len(bitmap) != 0 && bitmap[0]&(1<<1) != 0; got != host.candidate {
+					if got := len(bitmap) != 0 && bitmap[0]&1 != 0; got != host.candidate {
 						t.Errorf("kernel capture bit = %v, want %v", got, host.candidate)
 					}
 					if got := engine.Match(host.host, 443); got != host.mitm {

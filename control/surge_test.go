@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -65,7 +66,7 @@ func TestSurgeKernelRoutingReconstruction(t *testing.T) {
 			// Only one of the IP's hostnames belongs to the module: uncertainty
 			// in the injected capture rule itself must be skipped in simulation.
 			preparation.rules.enableSurgeRouting(surgeRoutingEngine(t, "one.example"))
-			matcher, _ := surgeRoutingMatcher(t, preparation.rules.routing)
+			matcher, _ := surgeRoutingMatcher(t, preparation.rules)
 			matcher.outboundUsable = func(uint8, consts.L4ProtoType, consts.IpVersionType) bool { return !test.unavailable }
 			first := matcher.domainMatcher.MatchDomainBitmap("one.example")
 			second := matcher.domainMatcher.MatchDomainBitmap("two.example")
@@ -86,12 +87,12 @@ func TestSurgeKernelRoutingReconstruction(t *testing.T) {
 	}
 }
 
-func surgeRoutingMatcher(t *testing.T, rules []*config_parser.RoutingRule) (*RoutingMatcher, *RoutingMatcherBuilder) {
+func surgeRoutingMatcher(t *testing.T, rules preparedRules) (*RoutingMatcher, *RoutingMatcherBuilder) {
 	t.Helper()
-	builder, err := NewRoutingMatcherBuilder(rules, map[string]uint8{
+	builder, err := NewRoutingMatcherBuilder(rules.routing, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock),
 		"proxy": uint8(consts.OutboundUserDefinedMin),
-	}, nil, "direct", nil)
+	}, nil, "direct", nil, rules.capture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +131,10 @@ func TestSurgeCapturePreservesUserspaceRoute(t *testing.T) {
 			original := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "service.example"}}}}, Outbound: test.outbound}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{original}}}
 			preparation.rules.enableSurgeRouting(engine)
-			if len(preparation.rules.routing) != 2 || preparation.rules.routing[1] != original || preparation.rules.routing[0].Outbound.Name != consts.OutboundControlPlaneRouting.String() {
+			if len(preparation.rules.routing) != 1 || preparation.rules.routing[0] != original || preparation.rules.capture == nil {
 				t.Fatalf("overlay replaced original routing: %+v", preparation.rules.routing)
 			}
-			matcher, _ := surgeRoutingMatcher(t, preparation.rules.routing)
+			matcher, _ := surgeRoutingMatcher(t, preparation.rules)
 			got, mark, must := surgeMatchRoute(t, matcher, "service.example", consts.L4ProtoType_TCP)
 			if got != test.want || mark != test.mark || must != test.must {
 				t.Fatalf("route=(%v,%d,%v), want (%v,%d,%v)", got, mark, must, test.want, test.mark, test.must)
@@ -146,7 +147,7 @@ func TestSurgeCaptureSelectsOnlyTCPModuleHostnames(t *testing.T) {
 	engine := surgeRoutingEngine(t, "-excluded.example", "*.example", "node?.test:8443", "UPPER.EXAMPLE.")
 	preparation := &ControlPlanePreparation{}
 	preparation.rules.enableSurgeRouting(engine)
-	matcher, builder := surgeRoutingMatcher(t, preparation.rules.routing)
+	matcher, builder := surgeRoutingMatcher(t, preparation.rules)
 	// Change only the marker action to observe whether the preceding conditions
 	// select capture, without loading BPF maps or altering userspace skip logic.
 	for i := range builder.rules {
@@ -191,7 +192,7 @@ func TestSurgeAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 		prepared.bypassAPI(port, addresses)
 		builder, err := NewRoutingMatcherBuilder(prepared.routing, map[string]uint8{
 			"direct": uint8(consts.OutboundDirect), "proxy": uint8(consts.OutboundUserDefinedMin),
-		}, nil, "proxy", nil)
+		}, nil, "proxy", nil, prepared.capture)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -249,8 +250,9 @@ func TestSurgeCaptureReconstructionAfterAPIRoute(t *testing.T) {
 		Outbound:     config_parser.Function{Name: "block"},
 	}}}
 	prepared.enableSurgeRouting(engine)
+	prepared.enableDestinationRewrites(routing.DestinationRewrites{{From: netip.MustParseAddr("192.0.2.2")}})
 	prepared.bypassAPI(8081, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-	matcher, _ := surgeRoutingMatcher(t, prepared.routing)
+	matcher, _ := surgeRoutingMatcher(t, prepared)
 	registry, _ := newTestRegistry(10, 10, time.Minute)
 	defer registry.Close()
 	ip := netip.MustParseAddr("192.0.2.1")
@@ -278,7 +280,7 @@ func TestSurgeCaptureRetainsDNSRouteWithoutTrustedSNI(t *testing.T) {
 		Outbound:     config_parser.Function{Name: "block"},
 	}}}}
 	preparation.rules.enableSurgeRouting(engine)
-	matcher, _ := surgeRoutingMatcher(t, preparation.rules.routing)
+	matcher, _ := surgeRoutingMatcher(t, preparation.rules)
 	registry, _ := newTestRegistry(10, 10, time.Minute)
 	defer registry.Close()
 	destination := netip.MustParseAddrPort("192.0.2.1:443")
@@ -309,14 +311,14 @@ func TestSurgeCaptureRetainsDNSRouteWithoutTrustedSNI(t *testing.T) {
 	}
 	// A different SNI accepted by sniff_verify_mode=none must not replace a
 	// definite kernel direct/block decision, even under reroute_mode=force.
-	originalRule := matcher.matches[2]
+	originalRule := matcher.matches[matcher.captureIndex+1]
 	c.sniffVerifyMode = consts.SniffVerifyMode_None
 	c.rerouteMode = consts.RerouteMode_Force
 	c.dialTargetOverride = true
 	for _, target := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
-		matcher.matches[2].Outbound = uint8(target)
-		matcher.matches[2].Mark = 37
-		matcher.matches[2].Must = true
+		matcher.matches[matcher.captureIndex+1].Outbound = uint8(target)
+		matcher.matches[matcher.captureIndex+1].Mark = 37
+		matcher.matches[matcher.captureIndex+1].Must = true
 		param := &RouteParam{
 			routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)},
 			networkType:   common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
@@ -332,8 +334,8 @@ func TestSurgeCaptureRetainsDNSRouteWithoutTrustedSNI(t *testing.T) {
 	}
 	// A user proxy still follows the configured reroute policy, as it already
 	// entered userspace before Surge support.
-	matcher.matches[2] = originalRule
-	matcher.matches[2].Outbound = uint8(consts.OutboundUserDefinedMin)
+	matcher.matches[matcher.captureIndex+1] = originalRule
+	matcher.matches[matcher.captureIndex+1].Outbound = uint8(consts.OutboundUserDefinedMin)
 	for _, test := range []struct {
 		mode consts.RerouteMode
 		want string
@@ -351,7 +353,7 @@ func TestSurgeCaptureRetainsDNSRouteWithoutTrustedSNI(t *testing.T) {
 			t.Fatalf("proxy reroute %v selected %q, want %q", test.mode, result.Outbound.Name, test.want)
 		}
 	}
-	matcher.matches[2] = originalRule
+	matcher.matches[matcher.captureIndex+1] = originalRule
 	c.sniffVerifyMode = consts.SniffVerifyMode_Strict
 	c.rerouteMode = consts.RerouteMode_None
 	c.dialTargetOverride = false

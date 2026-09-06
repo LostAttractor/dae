@@ -34,6 +34,7 @@ const (
 	MatchType_IfIndex
 	MatchType_Dscp
 	MatchType_Fallback
+	MatchType_Capture
 	MatchType_MustRules
 
 	MatchType_Upstream
