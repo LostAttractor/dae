@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -165,48 +164,13 @@ func TestRuntimeConnectionRetainsDirectSpliceCapability(t *testing.T) {
 	}
 }
 
-func TestRelayDirectionCountsForwardedBytes(t *testing.T) {
-	source, sourcePeer := net.Pipe()
-	destination, destinationPeer := net.Pipe()
-	t.Cleanup(func() {
-		_ = source.Close()
-		_ = sourcePeer.Close()
-		_ = destination.Close()
-		_ = destinationPeer.Close()
-	})
-	payload := []byte("traffic accounting payload")
-	var counted atomic.Uint64
-	relayDone := make(chan error, 1)
-	go func() {
-		defer destination.Close()
-		relayDone <- relayEndpointDirection(&relayEndpoint{conn: destination}, &relayEndpoint{conn: source}, func(bytes uint64) { counted.Add(bytes) })
-	}()
-	go func() {
-		_, _ = sourcePeer.Write(payload)
-		_ = sourcePeer.Close()
-	}()
-	got, err := io.ReadAll(destinationPeer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := <-relayDone; err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(payload) {
-		t.Fatalf("relayed payload = %q, want %q", got, payload)
-	}
-	if got := counted.Load(); got != uint64(len(payload)) {
-		t.Fatalf("counted bytes = %d, want %d", got, len(payload))
-	}
-}
-
 func startTCPRelayTest(t *testing.T, left, right net.Conn, drainTimeout time.Duration) <-chan error {
 	t.Helper()
 	t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
 	traffic := stats.DefaultStore.OpenConnection(stats.Path{Dialer: t.Name()}, false)
 	done := make(chan error, 1)
 	go func() {
-		err := relayTCP(left, right, traffic, drainTimeout, "")
+		err := relayTCP(left, right, traffic, drainTimeout, "", nil, nil)
 		_ = traffic.Close()
 		done <- err
 	}()
@@ -233,6 +197,7 @@ func TestRelayTCPHalfClose(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			left, client := relayTestTCPPair(t)
 			right, server := relayTestTCPPair(t)
+			before := stats.DefaultStore.Snapshot()[stats.Path{Dialer: t.Name()}]
 			done := startTCPRelayTest(t, left, right, time.Second)
 			if reverse {
 				client, server = server, client
@@ -260,6 +225,14 @@ func TestRelayTCPHalfClose(t *testing.T) {
 			}
 			if err := waitTCPRelayTest(t, done); err != nil {
 				t.Fatal(err)
+			}
+			gotStats := stats.DefaultStore.Snapshot()[stats.Path{Dialer: t.Name()}]
+			upload, download := uint64(len("request")), uint64(len("response after EOF"))
+			if reverse {
+				upload, download = download, upload
+			}
+			if gotStats.UploadBytes-before.UploadBytes != upload || gotStats.DownloadBytes-before.DownloadBytes != download {
+				t.Fatalf("relay byte counts: %+v", gotStats)
 			}
 		})
 	}

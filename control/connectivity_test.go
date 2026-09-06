@@ -207,7 +207,7 @@ func TestOutboundConnectivityPublication(t *testing.T) {
 	defer m.Close()
 	core := &controlPlaneCore{
 		closed: context.Background(),
-		bpf: &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
+		bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 			OutboundConnectivityMap: m,
 		}}},
 		pendingOutboundConnectivity: make(map[bpfOutboundConnectivityQuery]uint32),

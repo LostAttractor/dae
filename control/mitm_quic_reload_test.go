@@ -65,7 +65,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			}
 			coreCtx, coreCancel := context.WithCancel(context.Background())
 			plane.core = &controlPlaneCore{closed: coreCtx, close: coreCancel, ifmgr: ifmgr,
-				bpf: &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
+				bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 					ListenSocketMap: maps["listen_socket_map"], RoutingTuplesMap: maps["routing_tuples_map"],
 				}}},
 			}
@@ -135,21 +135,22 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			}
 			option := &DialOption{Dialer: d, DialTarget: upstreamPackets.LocalAddr().String(), Outbound: &outbound.DialerGroup{Name: "direct"}, NetworkType: *common.NetworkUDP4.NetworkType()}
 			param := &RouteParam{Src: src, Dest: dst, Domain: "video.example", routingResult: &bpfRoutingResult{}}
-			bridge := plane.newMITMQUIC(param, plane.mitmUpstreamPlanner("udp", param.Domain, src, dst, *param.routingResult, option), retained)
-			key := udpEndpointKey{Source: src, Destination: dst, Interface: 7}
+			bridge := plane.newMITMQUIC(param, plane.mitmUpstreamPlanner("udp", param.Domain, src, dst, *param.routingResult, option), retained, nil)
+			key := src
 			endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute, Handler: func(data []byte, _ netip.AddrPort) error {
 				_, err := packets.WriteTo(data, clientPackets.LocalAddr())
 				return err
 			}})
 			endpoint.mitm = true
+			endpoint.firstDst, endpoint.firstIfindex = dst, 7
 			endpoint.traffic = stats.DefaultStore.OpenConnection(d.StatsPath("direct", common.NetworkUDP4.NetworkType()), false)
 			plane.udpEndpoints.add(key, endpoint)
 			endpointDone := make(chan error, 1)
-			go func() { endpointDone <- endpoint.run(plane.udpEndpoints, key, dst) }()
+			go func() { endpointDone <- endpoint.run(plane.udpEndpoints, key, dst, bridge) }()
 			t.Cleanup(func() { _ = endpoint.Close(); <-endpointDone })
 			routeKey := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_UDP}
 			routeKey.Sip.U6Addr8, routeKey.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
-			if err := maps["routing_tuples_map"].Update(routeKey, bpfRoutingResult{Ifindex: key.Interface, CaptureFlags: captureHTTP}, ebpf.UpdateAny); err != nil {
+			if err := maps["routing_tuples_map"].Update(routeKey, bpfRoutingResult{Ifindex: 7, CaptureFlags: captureHTTP}, ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 			ready, served := make(chan bool, 1), make(chan error, 1)

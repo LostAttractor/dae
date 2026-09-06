@@ -176,7 +176,7 @@ func attachClientKernelMaps(t *testing.T, b *RoutingMatcherBuilder) *ebpf.Map {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = outer.Close() })
-	b.bpf = &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UnusedLpmType: template, LpmArrayMap: outer}}}
+	b.bpf = &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UnusedLpmType: template, LpmArrayMap: outer}}}
 	return outer
 }
 

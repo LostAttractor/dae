@@ -1,58 +1,46 @@
-# Relay 错误与恢复
+# Relay 生命周期与恢复
 
-路由只选择就绪节点。失败 relay 结束，后台恢复供后续请求使用，不等待或重放业务数据。
+## 所有权与错误
 
-## 职责与传播
+- outbound 的 Session 管理共享连接；owner 通过 `Lease.Abort(cause)` 禁止新分配并终止依赖它的 relay，通过 `StateEvent` 通知 DAE 更新状态和安排恢复。
+- `Runtime` 拥有整条协议链。`Dialer()` 提供数据操作，`Session()` 返回可选控制器；`Retire()` 停止新操作，等待已保留的连接释放资源。
+- `Failure` 描述协议、范围、来源和操作，用于日志、统计与确认探测。错误标签本身不授权关闭整个节点；只有 owner 的 Abort 才执行关联连接终止。
 
-- **协议 owner / Session** 管理实际共享资源、分配能力及连接恢复。资源故障时先关闭分配入口，再通知依赖者并清理资源。
-- **Lease** 记录建立连接时的实际依赖。`Abort(cause)` 发出强制终止指令，`Invalidate(cause)` 仅使依赖失效。两者通过 `Done` 通知；终止原因与动作只确定一次。
-- **Runtime** 拥有整条协议链，透传连接的 lease。`Retire` 停止新操作，已有连接结束后再释放链。
-- **DAE** 根据 Session 状态选择节点，调度 `Session.Connect` 和健康检查；relay 负责传输、半关及执行中止指令。
+正常 EOF 优先 `CloseWrite`，保留反向传输；不支持半关时最多排空 10 秒。Abort 立即使用户态 TCP 对客户端 RST，UDP 释放 endpoint。`Invalidate` 仅停止新分配，不能掩盖后来收到的设备或组策略 Abort。
 
-```text
-outbound 协议 Read/Write/observer
-  ├─ 确认共享资源失效 → owner 禁止新流、Lease.Abort(cause)
-  │                     ├─ 实际依赖子树 → Runtime 返回连接的 DependencyLease
-  │                     │                → relay 收到信号 → RST 客户端 lConn
-  │                     └─ 发布 StateEvent → DAE WatchState → 恢复调度与节点状态
-  └─ 返回 Failure → DAE relay 收集双向错误及方向/操作
-                    → recordDataPlaneError → Dialer.ReportDataPlaneError
-                    → 记录失败；未知上游错误触发确认探测
-```
+仅过滤有来源证据的本地主动清理错误。目标失败、单流 reset 和操作超时不自动判定共享连接死亡；QUIC 连接终止等事实由协议 owner 处理。
 
-`Failure` 保存协议层、影响范围、来源、操作及原始错误；`Failures` 遍历全部并列原因，避免 timeout 掩盖其他错误。错误用于诊断，强制终止由 owner 的 `Abort` 信号授权。
+## UDP 与连接策略
 
-## 行为边界
+UDP 以 `sip/sport` 固定首包路由和节点。改变目的地址或节点可用性不会重选已有 endpoint。双向空闲 60 秒、不可恢复错误或主动关闭结束生命周期；后续报文可以用同一源端口重新开始，不重放失败数据。DNS 劫持独立按请求处理，已有普通 UDP 会话发往 53 端口仍沿用原决策。
 
-| 观察 | 处理 |
+内核保存直连及初始化决策，用户态 endpoint 单独持有源端口绑定。不同原始目的地址的 IP 重写使用独立套接字，共用节点、空闲计时和终止信号。MITM 和重写会话通过 Retain 保留所选 dialer，允许 reload 后继续使用它。
+
+HTTP/3 仅接管首目标经完整 ClientHello 确认的 `h3`。纯检查保留原路由；请求改写按最终 HTTP 目标选择上游，连接池按节点、mark、目标和策略代次隔离。请求路由模式不接受同源 UDP 向其他目的地址迁移。实际上游的资源、组策略或设备路由 Abort 会关闭客户端；单次 HTTP 请求错误不扩大为节点故障。重载排空期间只向已有 HTTP/3 目标交付报文，不创建新会话。
+
+`no_connectivity_behavior: direct` 建立并固定 direct fallback，保留原组归属；`block` 丢弃且不建立转发会话。以下策略均默认 `keep`，可配置为 `close`：
+
+| 配置 | 关闭范围 |
 |---|---|
-| 正常读 EOF | 优先 CloseWrite，继续反向传输；不支持则使用排空宽限 |
-| Write EOF、其他读写错误、半关错误 | 结束当前 relay，保留错误；CloseWrite 返回 ErrUnsupported 时按不支持半关处理 |
-| 客户端 reset、目标失败、QUIC/H2 流 reset | 影响当前连接或流，不据此宣告代理共享连接死亡 |
-| owner 发出 Abort | 只终止实际依赖子树；relay 在关闭客户端 lConn 前设置 SetLinger(0)，无需等上游读写返回 |
-| H2 GOAWAY | 停止新分配，保留允许继续的旧流，补充连接 |
-| 操作 timeout、容量不足 | 不直接判定共享连接死亡；QUIC connection timeout 已是连接终止事实 |
-| 有证据的认证/证书错误 | 阻断常规快速重试并显示配置原因 |
+| group `reselect_behavior` | 选择从 A 变为 B 时，该组对应网络类型的旧连接，包括 fallback；手动 selector 同样生效，`random` 不支持 close |
+| global `route_change_behavior` | 设备加入/退出被路由引用的 client set 时，该 MAC 的全部旧转发连接；fallback 恢复时，仅原组对应网络类型的 fallback 连接 |
 
-不支持半关时，反向传输有固定 10 秒排空宽限。正常 EOF 与普通依赖失效不授权主动 RST。gRPC 的逻辑就绪状态也不能证明某条物理连接已失效；Meek 尚无固定依赖 lease。
+设备策略覆盖 TCP/UDP、IPv4/IPv6、直连、代理及 MITM，API 自身除外。通过 MAC 代次识别旧连接，无需逐条重算路由。API 与运行时设置文件均在提交成功后推进代次；重复操作、未引用的集合和失败回滚不触发关闭。
 
-仅过滤有来源证据的本地主动清理错误。QUIC 致命错误也可能匹配 `net.ErrClosed`，不能因此将其忽略。
+用户态 TCP 立即 RST；内核直连 TCP 下次发送时交给透明监听入口拒绝旧流，失效首片丢弃。UDP 等旧 endpoint 释放绑定后建立新生命周期，过期代次的初始化报文丢弃。正常 reload 交接设备和同名组的连接归属；未完成初始化的 UDP 会话结束。
 
-## 恢复与状态
+## 恢复调度
 
-- `ResourceRef` 区分资源代次，旧 handle 不能修改替代资源。`ReadinessVersion` 区分分配能力，旧探测不能更新新版本；`Seq` 只是通知序号。
-- DAE 按发布者和 episode 记录事故。重复错误不重计数、不刷新退避；容量补充失败不撤销仍可用连接的健康证明。
-- status 的恢复动作是 connect、verify 或 replenish，阶段来自实际调度，`retry_at` 与含 jitter 的真实定时器一致。gRPC 的物理连接恢复由库管理，不再添加外部重连循环。
+路由只选择就绪节点。失败 relay 结束，后台恢复只供后续请求使用。`connectivity_check.go` 的单个调度循环串行执行健康检查、容量补充和能力探测，发布执行状态和 `retry_at`；探测与状态处理分别位于 `connectivity_probe.go`、`connectivity_state.go`。
+
+共享资源故障按实际依赖子树终止，容量补充保留健康兄弟连接。混合链由第一个未就绪依赖决定恢复执行者；库自行恢复时 DAE 不重复重连。认证/证书错误阻断快速重试，等待环境变化或显式重查。
 
 ## 验证
 
-在 dae 模块中执行，复用实际 submodule 依赖：
-
 ```sh
-nix-shell --run 'make'
-nix-shell --run 'go test ./... -count=1'
-nix-shell --run 'go test -race github.com/daeuniverse/outbound/... -count=1'
-nix-shell --run 'go test -race -tags dae_splice ./component/outbound/... ./common/stats ./control ./control/internal/splice ./cmd -count=1'
+nix-shell --run 'make && go test ./...'
+nix-shell --run 'go test -race -tags dae_splice ./component/outbound/... ./control ./cmd'
+nix-shell --run 'go test -race github.com/daeuniverse/outbound/...'
 ```
 
-测试覆盖真实 TCP 的半关/RST、QUIC 双流隔离、依赖失效、旧代次、恢复时序和容量补充。`make` 编译 eBPF；用户态测试不替代特权 eBPF 集成测试。客户端约束见 [客户端协议](client-protocols.md)。
+用户态测试不能替代特权 eBPF 测试。协议约束见 [客户端协议](client-protocols.md)。

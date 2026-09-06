@@ -272,7 +272,7 @@ SEC("tc/check/ipv4_first_fragment_noalive_direct")
 int testcheck_ipv4_first_fragment_noalive_direct(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
-	return check_status_code(skb, TCX_NEXT);
+	return check_status_code(skb, TCX_DROP);
 }
 
 SEC("tc/pktgen/ipv4_first_fragment_noalive_block")
@@ -329,7 +329,7 @@ SEC("tc/check/ipv4_first_fragment_missing_connectivity")
 int testcheck_ipv4_first_fragment_missing_connectivity(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
-	return check_status_code(skb, TCX_NEXT);
+	return check_status_code(skb, TCX_DROP);
 }
 
 SEC("tc/pktgen/ipv4_first_fragment_marked_missing_connectivity")
@@ -2555,8 +2555,8 @@ int testcheck_udp_route_cache_target_change(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
 	int ret = check_ipv4_udp_routing_cache(
-		skb, TCX_DROP, IPV4(192,168,1,9), IPV4(1,1,1,9),
-		20009, 80, false, OUTBOUND_BLOCK);
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,9), IPV4(1,1,1,9),
+		20009, 80, true, OUTBOUND_USER_DEFINED_MIN + 41);
 	delete_ipv4_udp_routing_cache(skb,
 		IPV4(192,168,1,9), IPV4(1,1,1,8), 20009, 443);
 	delete_ipv4_udp_routing_handoff(
@@ -2600,7 +2600,7 @@ int testcheck_udp_route_cache_skip_noalive(struct __sk_buff *skb)
 	clear_routing_entry(&one_key);
 	return check_ipv4_udp_routing_state(
 		skb, TC_ACT_REDIRECT, IPV4(192,168,1,10), IPV4(1,1,1,10),
-		20010, 443, true, false, OUTBOUND_USER_DEFINED_MIN + 43);
+		20010, 443, true, true, OUTBOUND_USER_DEFINED_MIN + 42);
 }
 
 SEC("tc/pktgen/udp_route_cache_dns_change")
@@ -2633,7 +2633,7 @@ int testcheck_udp_route_cache_dns_change(struct __sk_buff *skb)
 	clear_routing_entry(&zero_key);
 	int ret = check_ipv4_udp_routing_cache(
 		skb, TC_ACT_REDIRECT, IPV4(192,168,1,11), IPV4(1,1,1,11),
-		20011, 53, true, OUTBOUND_CONTROL_PLANE_ROUTING);
+		20011, 53, true, OUTBOUND_USER_DEFINED_MIN + 44);
 	delete_ipv4_udp_routing_cache(skb,
 		IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 443);
 	delete_ipv4_udp_routing_handoff(
@@ -2696,8 +2696,8 @@ int testcheck_udp_route_cache_connectivity_direct(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
 	return check_ipv4_udp_routing_cache(
-		skb, TCX_NEXT, IPV4(192,168,1,4), IPV4(1,1,1,4),
-		20004, 443, false, OUTBOUND_USER_DEFINED_MIN + 35);
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,4), IPV4(1,1,1,4),
+		20004, 443, true, OUTBOUND_USER_DEFINED_MIN + 35);
 }
 
 SEC("tc/pktgen/udp_route_cache_connectivity_block")
@@ -2727,8 +2727,8 @@ int testcheck_udp_route_cache_connectivity_block(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
 	return check_ipv4_udp_routing_cache(
-		skb, TCX_DROP, IPV4(192,168,1,5), IPV4(1,1,1,5),
-		20005, 443, false, OUTBOUND_USER_DEFINED_MIN + 37);
+		skb, TC_ACT_REDIRECT, IPV4(192,168,1,5), IPV4(1,1,1,5),
+		20005, 443, true, OUTBOUND_USER_DEFINED_MIN + 37);
 }
 
 SEC("tc/pktgen/udp_route_cache_connectivity_try_sniff")
@@ -2762,29 +2762,28 @@ int testcheck_udp_route_cache_connectivity_try_sniff(struct __sk_buff *skb)
 		true, OUTBOUND_USER_DEFINED_MIN + 39);
 }
 
-SEC("tc/pktgen/udp_route_cache_direct_not_stored")
-int testpktgen_udp_route_cache_direct_not_stored(struct __sk_buff *skb)
+SEC("tc/pktgen/udp_route_cache_direct_stored")
+int testpktgen_udp_route_cache_direct_stored(struct __sk_buff *skb)
 {
 	return set_ipv4_udp(skb, IPV4(192,168,1,7), IPV4(1,1,1,7),
 			    20007, 443);
 }
 
-SEC("tc/setup/udp_route_cache_direct_not_stored")
-int testsetup_udp_route_cache_direct_not_stored(struct __sk_buff *skb)
+SEC("tc/setup/udp_route_cache_direct_stored")
+int testsetup_udp_route_cache_direct_stored(struct __sk_buff *skb)
 {
 	set_routing_fallback(OUTBOUND_DIRECT, false, &zero_key);
 	bpf_tail_call(skb, &entry_call_map, 0);
 	return TC_ACT_OK;
 }
 
-SEC("tc/check/udp_route_cache_direct_not_stored")
-int testcheck_udp_route_cache_direct_not_stored(struct __sk_buff *skb)
+SEC("tc/check/udp_route_cache_direct_stored")
+int testcheck_udp_route_cache_direct_stored(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
-	return check_ipv4_udp_routing_cache(
+	return check_ipv4_udp_routing_state(
 		skb, TCX_NEXT, IPV4(192,168,1,7), IPV4(1,1,1,7),
-		20007, 443,
-		false, OUTBOUND_DIRECT);
+		20007, 443, false, true, OUTBOUND_DIRECT);
 }
 
 SEC("tc/pktgen/udp_route_cache_block_not_stored")
@@ -2810,4 +2809,60 @@ int testcheck_udp_route_cache_block_not_stored(struct __sk_buff *skb)
 		skb, TCX_DROP, IPV4(192,168,1,8), IPV4(1,1,1,8),
 		20008, 443,
 		false, OUTBOUND_BLOCK);
+}
+
+SEC("tc/pktgen/udp_bound_source_skips_routing")
+int testpktgen_udp_bound_source_skips_routing(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,2,1), IPV4(9,9,9,9), 21001, 443);
+}
+
+SEC("tc/setup/udp_bound_source_skips_routing")
+int testsetup_udp_bound_source_skips_routing(struct __sk_buff *skb)
+{
+	struct udp_routing_cache_key key;
+	__u64 bound = 0;
+
+	make_ipv4_udp_cache_key(&key, IPV4(192,168,2,1), 0, 21001, 0, 0);
+	bpf_map_update_elem(&udp_bindings_map, &key, &bound, BPF_ANY);
+	set_routing_fallback(OUTBOUND_BLOCK, false, &zero_key);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_bound_source_skips_routing")
+int testcheck_udp_bound_source_skips_routing(struct __sk_buff *skb)
+{
+	struct udp_routing_cache_key key;
+
+	make_ipv4_udp_cache_key(&key, IPV4(192,168,2,1), 0, 21001, 0, 0);
+	bpf_map_delete_elem(&udp_bindings_map, &key);
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_state(skb, TC_ACT_REDIRECT,
+		IPV4(192,168,2,1), IPV4(9,9,9,9), 21001, 443, false, false, 0);
+}
+
+SEC("tc/pktgen/udp_noalive_direct_is_managed")
+int testpktgen_udp_noalive_direct_is_managed(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,2,2), IPV4(9,9,9,9), 21002, 443);
+}
+
+SEC("tc/setup/udp_noalive_direct_is_managed")
+int testsetup_udp_noalive_direct_is_managed(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN + 50, false, &zero_key);
+	set_outbound_connectivity_state(OUTBOUND_USER_DEFINED_MIN + 50,
+		OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/udp_noalive_direct_is_managed")
+int testcheck_udp_noalive_direct_is_managed(struct __sk_buff *skb)
+{
+	clear_routing_entry(&zero_key);
+	return check_ipv4_udp_routing_cache(skb, TC_ACT_REDIRECT,
+		IPV4(192,168,2,2), IPV4(9,9,9,9), 21002, 443, true,
+		OUTBOUND_USER_DEFINED_MIN + 50);
 }

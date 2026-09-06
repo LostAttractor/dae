@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound"
@@ -156,6 +157,14 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
+	plane.closeOnRouteChange, plane.deviceRoutes = true, newTestDeviceRoutes(t)
+	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
+	lease, err := plane.deviceRoutes.acquire(&bpfRoutingResult{Mac: mac})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane.outbounds[0].SetConnectionPolicy(true, true)
+	_, _, _, groupLease, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 	handler := plane.apiHandler(testClientMAC)
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
@@ -169,7 +178,9 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
+	if lease.AbortCause() != nil || groupLease.AbortCause() != nil {
+		t.Fatal("failed save aborted existing connections")
+	}
 	requireClientRoute(t, plane.routingMatcher, mac, 443, consts.OutboundDirect)
 	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != "" || len(store.Members("gaming")) != 0 {
 		t.Fatal("failed persistence changed effective state")

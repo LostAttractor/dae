@@ -84,7 +84,7 @@
 #define TPROXY_MARK 0x8000000
 
 #define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
-#define UDP_ROUTING_CACHE_TTL_NS (100ULL * 1000 * 1000)
+#define UDP_ROUTING_CACHE_TTL_NS (60ULL * 1000 * 1000 * 1000)
 
 #define NDP_REDIRECT 137
 
@@ -164,12 +164,13 @@ struct routing_result {
 	__u32 pid;
 	__u32 ifindex;
 	__u8 dscp;
-	/* Consume previously zeroed padding bytes; preserve pinned-map ABI. */
 	__u8 capture_flags;
 	__u8 protocol;
+	__u8 no_sniff;
+	__u64 route_epoch;
 };
 
-_Static_assert(sizeof(struct routing_result) == 40,
+_Static_assert(sizeof(struct routing_result) == 48,
 	       "routing_result pinned-map ABI changed unexpectedly");
 _Static_assert(__builtin_offsetof(struct routing_result, capture_flags) == 37,
 	       "capture flags must occupy the previously zeroed padding");
@@ -187,56 +188,77 @@ struct tuples {
 	__u8 dscp;
 };
 
-struct destination_udp_key {
-	struct tuples_key tuples;
-	__u32 ifindex;
-};
-
-struct destination_udp_value {
-	struct routing_result result;
-	__u64 owner;
-};
-
-/* Userspace owns these entries for the lifetime of an isolated association.
- * Unlike the routing cache, live ownership must not be LRU-evicted or flushed
- * on configuration reload. Map exhaustion fails new associations explicitly.
- */
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, struct destination_udp_key);
-	__type(value, struct destination_udp_value);
-	__uint(max_entries, MAX_DST_MAPPING_NUM);
-	__uint(pinning, LIBBPF_PIN_BY_NAME);
-} destination_udp_map SEC(".maps");
-
+/* The destination is deliberately absent: one source owns one decision. */
 struct udp_routing_cache_key {
-	struct tuples_key tuples;
-	__u32 ifindex;
-	__u8 mac[ETH_ALEN];
-	__u8 dscp;
-	__u8 l4proto_type;
-	__u8 ipversion_type;
-	__u8 has_pname;
-	__u8 pname[TASK_COMM_LEN];
+	union ip6 sip;
+	__u16 sport;
+	__u16 padding;
 };
 
 struct udp_routing_cache_value {
 	struct routing_result result;
 	__u64 cached_until;
+	struct bpf_timer timer;
+	struct bpf_spin_lock lock;
+	__u32 closing;
 };
 
-struct udp_routing_cache_scratch {
-	struct udp_routing_cache_key key;
-	struct udp_routing_cache_value value;
+/* Zeroed timer/lock bytes for insertion, without a timer in a per-CPU map. */
+struct udp_routing_scratch {
+	struct routing_result result;
+	__u64 cached_until;
+	__u64 zero[3];
 };
 
-_Static_assert(sizeof(struct udp_routing_cache_key) == 72,
-	       "udp_routing_cache_key layout changed unexpectedly");
-_Static_assert(sizeof(struct udp_routing_cache_value) == 48,
-	       "udp_routing_cache_value layout changed unexpectedly");
-_Static_assert(__builtin_offsetof(struct udp_routing_cache_value,
-				  cached_until) == 40,
-	       "udp_routing_cache_value cached_until offset changed");
+_Static_assert(sizeof(struct udp_routing_scratch) == sizeof(struct udp_routing_cache_value),
+	       "UDP insertion layout mismatch");
+
+/* Keep ingress temporaries off the limited BPF stack. */
+struct ingress_scratch {
+	struct tuples tuples;
+	struct routing_result result;
+};
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct ingress_scratch);
+	__uint(max_entries, 1);
+} ingress_scratch_map SEC(".maps");
+
+struct device_route_state {
+	__u64 epoch;
+	__u32 updating;
+	__u32 padding;
+};
+
+struct device_route_table {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(key_size, ETH_ALEN);
+	__type(value, struct device_route_state);
+	__uint(max_entries, 65536);
+} unused_device_routes SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+	__uint(key_size, sizeof(__u32));
+	__uint(max_entries, 1);
+	__array(values, struct device_route_table);
+} device_routes_map SEC(".maps");
+
+/* The management API is a local service, outside device forwarding policy. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct ip_port);
+	__type(value, __u8);
+	__uint(max_entries, 1024);
+} route_exempt_map SEC(".maps");
+
+static __always_inline struct device_route_state *device_route(const __u8 *mac)
+{
+	void *table = bpf_map_lookup_elem(&device_routes_map, &zero_key);
+
+	return table ? bpf_map_lookup_elem(table, mac) : NULL;
+}
 
 struct l4_hdr {
 	union {
@@ -289,19 +311,30 @@ struct {
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_tuples_map SEC(".maps");
 
+/* Kernel owns direct and pending decisions. Timers reclaim idle entries;
+ * LRU eviction must never silently change the route of an active source. */
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, struct udp_routing_cache_key);
 	__type(value, struct udp_routing_cache_value);
 	__uint(max_entries, MAX_UDP_ROUTING_CACHE_NUM);
 } udp_routing_cache_map SEC(".maps");
 
+/* Userspace owns established/pending relay lifetimes. These entries survive
+ * kernel decision expiry and are removed only with their endpoint. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct udp_routing_cache_key);
+	__type(value, __u64);
+	__uint(max_entries, MAX_UDP_ROUTING_CACHE_NUM);
+} udp_bindings_map SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, __u32);
-	__type(value, struct udp_routing_cache_scratch);
+	__type(value, struct udp_routing_scratch);
 	__uint(max_entries, 1);
-} udp_routing_cache_scratch_map SEC(".maps");
+} udp_routing_scratch_map SEC(".maps");
 
 // Array of LPM tries:
 struct lpm_key {
@@ -1270,7 +1303,7 @@ next_rule:
 #undef _ifindex
 }
 
-static __always_inline __s64 route(const struct route_params *params)
+static __noinline __s64 route(const struct route_params *params)
 {
 	int index;
 	struct route_ctx ctx = {};
@@ -1319,20 +1352,103 @@ static __always_inline __s64 route(const struct route_params *params)
 }
 
 static __always_inline void fill_udp_routing_cache_key(
-	struct udp_routing_cache_key *key, const struct tuples *tuples,
-	const struct route_params *params)
+	struct udp_routing_cache_key *key, const struct tuples *tuples)
 {
 	__builtin_memset(key, 0, sizeof(*key));
-	key->tuples = tuples->five;
-	key->ifindex = params->ifindex;
-	key->dscp = params->dscp;
-	key->l4proto_type = params->l4proto_type;
-	key->ipversion_type = params->ipversion_type;
-	__builtin_memcpy(key->mac, params->mac, sizeof(key->mac));
-	if (params->pname) {
-		key->has_pname = true;
-		__builtin_memcpy(key->pname, params->pname, sizeof(key->pname));
+	key->sip = tuples->five.sip;
+	key->sport = tuples->five.sport;
+}
+
+static int expire_udp_route(void *map, struct udp_routing_cache_key *key,
+			    struct udp_routing_cache_value *value)
+{
+	__u64 now = bpf_ktime_get_ns();
+	__u64 remaining = 0;
+
+	bpf_spin_lock(&value->lock);
+	if (value->closing) {
+		bpf_spin_unlock(&value->lock);
+		return 0;
 	}
+	if (value->cached_until > now)
+		remaining = value->cached_until - now;
+	else
+		value->closing = 1;
+	bpf_spin_unlock(&value->lock);
+	if (remaining)
+		bpf_timer_start(&value->timer, remaining, 0);
+	else
+		bpf_map_delete_elem(&udp_routing_cache_map, key);
+	return 0;
+}
+
+/* 1 = hit, 0 = new lifetime, -1 = another packet/timer is ending it. */
+static __noinline int read_udp_route(struct udp_routing_cache_key *key,
+					 struct routing_result *result)
+{
+	struct udp_routing_cache_value *value =
+		bpf_map_lookup_elem(&udp_routing_cache_map, key);
+	__u64 now = bpf_ktime_get_ns();
+	bool expired;
+
+	if (!value)
+		return 0;
+	struct device_route_state *device = device_route(value->result.mac);
+
+	if (device && device->updating)
+		return -1;
+	bool stale = device && device->epoch != value->result.route_epoch;
+
+	bpf_spin_lock(&value->lock);
+	if (value->closing) {
+		bpf_spin_unlock(&value->lock);
+		return -1;
+	}
+	expired = stale || value->cached_until <= now;
+	if (expired) {
+		value->closing = 1;
+	} else {
+		value->cached_until = now + UDP_ROUTING_CACHE_TTL_NS;
+		*result = value->result;
+	}
+	bpf_spin_unlock(&value->lock);
+	if (expired) {
+		bpf_map_delete_elem(&udp_routing_cache_map, key);
+		return 0;
+	}
+	return 1;
+}
+
+static __noinline int save_udp_route(struct udp_routing_cache_key *key,
+				    struct routing_result *result)
+{
+	struct udp_routing_scratch *value =
+		bpf_map_lookup_elem(&udp_routing_scratch_map, &zero_key);
+
+	if (!value)
+		return -1;
+	__builtin_memset(value, 0, sizeof(*value));
+	value->result = *result;
+	value->cached_until = bpf_ktime_get_ns() + UDP_ROUTING_CACHE_TTL_NS;
+	int ret = bpf_map_update_elem(&udp_routing_cache_map, key, value, BPF_NOEXIST);
+
+	if (ret && ret != -EEXIST)
+		return -1;
+	if (!ret) {
+		struct udp_routing_cache_value *stored =
+			bpf_map_lookup_elem(&udp_routing_cache_map, key);
+
+		if (!stored)
+			return -1;
+		if (bpf_timer_init(&stored->timer, &udp_routing_cache_map, CLOCK_MONOTONIC) ||
+		    bpf_timer_set_callback(&stored->timer, expire_udp_route) ||
+		    bpf_timer_start(&stored->timer, UDP_ROUTING_CACHE_TTL_NS, 0)) {
+			bpf_map_delete_elem(&udp_routing_cache_map, key);
+			return -1;
+		}
+	}
+	/* Concurrent first packets must all adopt the winning decision. */
+	return read_udp_route(key, result) == 1 ? 0 : -1;
 }
 
 static __always_inline int prep_redirect_to_control_plane(
@@ -1458,22 +1574,56 @@ static __always_inline int do_tproxy_first_fragment(
 		return l4proto && !is_extension_header(l4proto) ? TCX_NEXT : TCX_DROP;
 	if (parse_ret)
 		return TCX_DROP;
-	struct tuples tuples;
+	struct ingress_scratch *scratch = bpf_map_lookup_elem(&ingress_scratch_map, &zero_key);
 
-	get_tuples(skb, &tuples, l3h, l4h, l4proto);
+	if (!scratch)
+		return TCX_DROP;
+	struct tuples *tuples = &scratch->tuples;
+
+	get_tuples(skb, tuples, l3h, l4h, l4proto);
 	struct pid_pname *pid_pname = NULL;
 
 	if (is_wan && pid_is_control_plane(skb, &pid_pname))
 		return TCX_NEXT;
+	struct device_route_state *device = device_route(ethh->h_source);
+	__u64 route_epoch = device ? device->epoch : 0;
+
+	if (device && device->updating)
+		return TCX_DROP;
 	if (l4proto == IPPROTO_UDP) {
 		struct udp_conn_state *conn_state =
-			bpf_map_lookup_elem(&udp_conn_state_map, &tuples.five);
+			bpf_map_lookup_elem(&udp_conn_state_map, &tuples->five);
 
 		if (conn_state && conn_state->is_wan_ingress_direction) {
 			if (skb->mark)
 				return TCX_DROP;
 			goto direct;
 		}
+	}
+
+	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
+		struct routing_result *saved = bpf_map_lookup_elem(&routing_tuples_map, &tuples->five);
+
+		/* An invalid first fragment must not complete the old TCP segment. */
+		if (route_epoch && (!saved || saved->route_epoch != route_epoch))
+			return TCX_DROP;
+		if (saved && (saved->outbound != OUTBOUND_DIRECT || saved->mark || saved->capture_flags))
+			return TCX_DROP;
+		goto direct;
+	}
+	struct udp_routing_cache_key udp_key = {};
+	if (l4proto == IPPROTO_UDP) {
+		struct routing_result *saved = &scratch->result;
+
+		fill_udp_routing_cache_key(&udp_key, tuples);
+		if (bpf_map_lookup_elem(&udp_bindings_map, &udp_key))
+			return TCX_DROP;
+		int hit = read_udp_route(&udp_key, saved);
+
+		if (hit < 0 || (hit && (saved->outbound != OUTBOUND_DIRECT || saved->mark || saved->capture_flags)))
+			return TCX_DROP;
+		if (hit)
+			goto direct;
 	}
 
 	struct route_params params;
@@ -1491,12 +1641,12 @@ static __always_inline int do_tproxy_first_fragment(
 	else
 		params.ipversion_type = IpVersionType_6;
 	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
-	params.dscp = tuples.dscp;
+	params.dscp = tuples->dscp;
 	params.ifindex = skb->ifindex;
 	params.mac = ethh->h_source;
-	params.saddr = tuples.five.sip.u6_addr32;
-	params.daddr = tuples.five.dip.u6_addr32;
-	params.isdns = tuples.five.dport == bpf_htons(53) &&
+	params.saddr = tuples->five.sip.u6_addr32;
+	params.daddr = tuples->five.dip.u6_addr32;
+	params.isdns = tuples->five.dport == bpf_htons(53) &&
 			 l4proto == IPPROTO_UDP;
 
 	__s64 route_result = route(&params);
@@ -1509,39 +1659,34 @@ static __always_inline int do_tproxy_first_fragment(
 	if (outbound == OUTBOUND_DIRECT) {
 		if (mark || skb->mark)
 			return TCX_DROP;
+		struct routing_result *result = &scratch->result;
+
+		__builtin_memset(result, 0, sizeof(*result));
+		result->outbound = OUTBOUND_DIRECT;
+		result->route_epoch = route_epoch;
+
+		__builtin_memcpy(result->mac, ethh->h_source, sizeof(result->mac));
+		if (l4proto == IPPROTO_UDP) {
+			if (save_udp_route(&udp_key, result) || result->outbound != OUTBOUND_DIRECT)
+				return TCX_DROP;
+		} else if (route_epoch && bpf_map_update_elem(&routing_tuples_map, &tuples->five, result, BPF_ANY)) {
+			return TCX_DROP;
+		}
 		goto direct;
 	}
 	if (outbound == OUTBOUND_BLOCK)
 		return TCX_DROP;
 
-	if (!params.isdns && outbound < OUTBOUND_MUST_RULES) {
-		struct outbound_connectivity_query q = {
-			.outbound = outbound,
-			.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
-			.l4proto = l4proto,
-		};
-		__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-
-		if (!state) {
-			if (skb->mark)
-				return TCX_DROP;
-			goto direct;
-		}
-		if (*state == OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT) {
-			if (mark || skb->mark)
-				return TCX_DROP;
-			goto direct;
-		}
-		if (*state == OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK)
-			return TCX_DROP;
-	}
 
 	/* Proxying only the first fragment would split the datagram across paths. */
 	return TCX_DROP;
 
 direct:
+	device = device_route(ethh->h_source);
+	if (device && (device->updating || device->epoch != route_epoch))
+		return TCX_DROP;
 	if (l4proto == IPPROTO_UDP &&
-	    !refresh_udp_conn_state_timer(&tuples.five, false))
+	    !refresh_udp_conn_state_timer(&tuples->five, false))
 		return TCX_DROP;
 	skb->mark = 0;
 	return TCX_NEXT;
@@ -1571,9 +1716,13 @@ static __always_inline int do_tproxy_unfragmented(
 		return TCX_NEXT;
 
 	// Prepare five tuples.
-	struct tuples tuples;
+	struct ingress_scratch *scratch = bpf_map_lookup_elem(&ingress_scratch_map, &zero_key);
 
-	get_tuples(skb, &tuples, l3h, l4h, l4proto);
+	if (!scratch)
+		return TCX_DROP;
+	struct tuples *tuples = &scratch->tuples;
+
+	get_tuples(skb, tuples, l3h, l4h, l4proto);
 
 	// Backup for feature use.
 	// 由于向helper function传递了skb, 一旦verifier无法推断出skb是否被修改, 则可能在访问skb时出现问题
@@ -1585,8 +1734,8 @@ static __always_inline int do_tproxy_unfragmented(
 	 * on the L3 route device, ARP device, or bridge/bond topology.
 	 */
 	if (!is_wan && link_h_len == ETH_HLEN && l4proto == IPPROTO_TCP &&
-	    api_port && tuples.five.dport == api_port)
-		observe_api_client(&tuples.five, ethh);
+	    api_port && tuples->five.dport == api_port)
+		observe_api_client(&tuples->five, ethh);
 
 	struct pid_pname *pid_pname = NULL;
 
@@ -1595,15 +1744,33 @@ static __always_inline int do_tproxy_unfragmented(
 		return TCX_NEXT;
 	}
 
-	bool isdns = tuples.five.dport == bpf_htons(53) && l4proto == IPPROTO_UDP;
+	bool isdns = tuples->five.dport == bpf_htons(53) && l4proto == IPPROTO_UDP;
 
-	struct tuples_key routing_tuples_key = tuples.five;
+	struct device_route_state *device = device_route(ethh->h_source);
+	struct ip_port destination = { .ip = tuples->five.dip, .port = tuples->five.dport };
+
+	if (l4proto == IPPROTO_TCP && bpf_map_lookup_elem(&route_exempt_map, &destination))
+		device = NULL;
+	if (device && device->updating)
+		return TCX_DROP;
+	__u64 route_epoch = device ? device->epoch : 0;
+
+	struct tuples_key routing_tuples_key = tuples->five;
 
 	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
 		// Established TCP Connection.
 		struct routing_result *routing_result =
 			bpf_map_lookup_elem(&routing_tuples_map,
 					    &routing_tuples_key);
+
+		if (route_epoch && (!routing_result || routing_result->route_epoch != route_epoch)) {
+			/* Never re-route established TCP. The transparent listener rejects
+			 * an ACK without a connection with RST; existing relays also receive
+			 * the userspace Abort. Do not answer an incoming RST. */
+			if (l4h->tcph.rst)
+				return TCX_DROP;
+			goto control_plane;
+		}
 
 		if (routing_result) {
 			if (routing_result->outbound == OUTBOUND_DIRECT &&
@@ -1622,7 +1789,7 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (l4proto == IPPROTO_UDP) {
 		struct udp_conn_state *conn_state =
-			refresh_udp_conn_state_timer(&tuples.five, false);
+			refresh_udp_conn_state_timer(&tuples->five, false);
 		if (!conn_state)
 			return TCX_DROP;
 		if (conn_state->is_wan_ingress_direction) {
@@ -1632,216 +1799,104 @@ static __always_inline int do_tproxy_unfragmented(
 		}
 	}
 
+	struct routing_result *routing_result = &scratch->result;
+
+	__builtin_memset(routing_result, 0, sizeof(*routing_result));
+	struct udp_routing_cache_key udp_key = {};
+
+	if (l4proto == IPPROTO_UDP) {
+		fill_udp_routing_cache_key(&udp_key, tuples);
+		__u64 *binding = bpf_map_lookup_elem(&udp_bindings_map, &udp_key);
+
+		if (binding) {
+			/* Its endpoint releases the old source before a new lifetime starts. */
+			if (*binding != route_epoch)
+				return TCX_DROP;
+			goto control_plane;
+		}
+		int hit = read_udp_route(&udp_key, routing_result);
+
+		if (hit < 0)
+			return TCX_DROP;
+		if (hit) {
+			/* A later DNS destination is part of this source's relay. */
+			if (isdns)
+				routing_result->must = 1;
+			goto selected;
+		}
+	}
+
 	struct route_params params;
 
 	params.l4hdr = l4h;
-	if (l4proto == IPPROTO_TCP) {
-		params.l4proto_type = L4ProtoType_TCP;
-	} else {
-		params.l4proto_type = L4ProtoType_UDP;
-		if (is_utp(skb, l4proto, offset, packet_end))
-			params.l4proto_type |= (1 << 2);
-	}
-	if (protocol == bpf_htons(ETH_P_IP))
-		params.ipversion_type = IpVersionType_4;
-	else
-		params.ipversion_type = IpVersionType_6;
+	params.l4proto_type = l4proto == IPPROTO_TCP ? L4ProtoType_TCP : L4ProtoType_UDP;
+	if (l4proto == IPPROTO_UDP && is_utp(skb, l4proto, offset, packet_end))
+		params.l4proto_type |= (1 << 2);
+	params.ipversion_type = protocol == bpf_htons(ETH_P_IP) ? IpVersionType_4 : IpVersionType_6;
 	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
-	params.dscp = tuples.dscp;
+	params.dscp = tuples->dscp;
 	params.ifindex = ifindex;
 	params.mac = ethh->h_source;
-	params.saddr = tuples.five.sip.u6_addr32;
-	params.daddr = tuples.five.dip.u6_addr32;
+	params.saddr = tuples->five.sip.u6_addr32;
+	params.daddr = tuples->five.dip.u6_addr32;
 	params.isdns = isdns;
 
-	struct routing_result routing_result = {};
-	struct udp_routing_cache_scratch *udp_cache_scratch = NULL;
-	bool udp_cache_hit = false;
-	bool udp_cacheable = true;
+	__s64 route_ret = route(&params);
 
-	if (l4proto == IPPROTO_UDP) {
-		struct destination_udp_key key = {
-			.tuples = tuples.five,
-			.ifindex = ifindex,
-		};
-		struct destination_udp_value *owned =
-			bpf_map_lookup_elem(&destination_udp_map, &key);
-		if (owned) {
-			__builtin_memcpy(&routing_result, &owned->result,
-					 sizeof(routing_result));
-			goto save_routing_result;
-		}
-	}
+	if (route_ret < 0)
+		return TCX_DROP;
+	routing_result->route_epoch = route_epoch;
+	routing_result->outbound = route_ret;
+	routing_result->mark = route_ret >> 8;
+	routing_result->must = (route_ret >> 40) & 1;
+	routing_result->capture_flags = route_ret >> ROUTE_RESULT_CAPTURE_SHIFT;
+	routing_result->protocol = params.l4proto_type;
+	routing_result->dscp = tuples->dscp;
+	routing_result->ifindex = ifindex;
+	__builtin_memcpy(routing_result->mac, ethh->h_source, sizeof(routing_result->mac));
 
-	if (l4proto == IPPROTO_UDP) {
-		udp_cache_scratch = bpf_map_lookup_elem(
-			&udp_routing_cache_scratch_map, &zero_key);
-		if (!udp_cache_scratch)
-			return TCX_DROP;
-		fill_udp_routing_cache_key(&udp_cache_scratch->key, &tuples,
-					   &params);
-		struct udp_routing_cache_value *cached =
-			bpf_map_lookup_elem(&udp_routing_cache_map,
-					    &udp_cache_scratch->key);
-
-		if (cached && cached->cached_until > bpf_ktime_get_ns() &&
-		    (cached->result.outbound != OUTBOUND_DIRECT ||
-		     cached->result.capture_flags) &&
-		    cached->result.outbound != OUTBOUND_BLOCK) {
-			__builtin_memcpy(&routing_result, &cached->result,
-					 sizeof(routing_result));
-			if (isdns || routing_result.capture_flags ||
-			    routing_result.outbound >= OUTBOUND_MUST_RULES) {
-				udp_cache_hit = true;
-			} else {
-				struct outbound_connectivity_query q = {
-					.outbound = routing_result.outbound,
-					.ipversion = protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
-					.l4proto = IPPROTO_UDP,
-				};
-				__u32 *state = bpf_map_lookup_elem(
-					&outbound_connectivity_map, &q);
-
-				udp_cache_hit = state &&
-					*state == OUTBOUND_CONNECTIVITY_ALIVE;
-			}
-			if (!udp_cache_hit)
-				bpf_map_delete_elem(&udp_routing_cache_map,
-						    &udp_cache_scratch->key);
-		} else if (cached) {
-			bpf_map_delete_elem(&udp_routing_cache_map,
-					    &udp_cache_scratch->key);
-		}
-	}
-
-	if (!udp_cache_hit) {
-		__s64 route_ret = route(&params);
-
-		if (route_ret < 0) {
-			bpf_printk("shot routing: %d", route_ret);
-			return TCX_DROP;
-		}
-		udp_cacheable = !(route_ret & ROUTE_RESULT_SKIPPED_NOALIVE);
-
-		routing_result.outbound = route_ret;
-		routing_result.mark = route_ret >> 8;
-		routing_result.must = (route_ret >> 40) & 1;
-		routing_result.capture_flags = route_ret >> ROUTE_RESULT_CAPTURE_SHIFT;
-
-		routing_result.protocol = params.l4proto_type;
-		routing_result.dscp = tuples.dscp;
-		routing_result.ifindex = ifindex;
-		__builtin_memcpy(routing_result.mac, ethh->h_source,
-				 sizeof(routing_result.mac));
-
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-	if (is_wan) {
-		if (l4proto == IPPROTO_TCP) {
-			bpf_printk("tcp(wan): outbound: %u, target: %pI6:%u",
-				   routing_result.outbound, tuples.five.dip.u6_addr32,
-				bpf_ntohs(tuples.five.dport));
-		} else {
-			bpf_printk("udp(wan): outbound: %u, target: %pI6:%u",
-				   routing_result.outbound, tuples.five.dip.u6_addr32,
-				bpf_ntohs(tuples.five.dport));
-		}
-	} else {
-		if (l4proto == IPPROTO_TCP) {
-			bpf_printk("tcp(lan): outbound: %u, target: %pI6:%u",
-				   routing_result.outbound, tuples.five.dip.u6_addr32,
-				bpf_ntohs(tuples.five.dport));
-		} else {
-			bpf_printk("udp(lan): outbound: %u, target: %pI6:%u",
-				   routing_result.outbound, tuples.five.dip.u6_addr32,
-				bpf_ntohs(tuples.five.dport));
-		}
-	}
-#endif
-
-		// Direct / Block.
-		switch (routing_result.outbound) {
-		case OUTBOUND_DIRECT:
-			if (routing_result.capture_flags)
-				break;
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-			bpf_printk("GO OUTBOUND_DIRECT");
-#endif
-			// Plain direct routes must not occupy this shared map, but marked
-			// TCP routes need an entry for subsequent packets.
-			if (l4proto == IPPROTO_TCP && routing_result.mark &&
-			    bpf_map_update_elem(&routing_tuples_map,
-						&routing_tuples_key,
-						&routing_result, BPF_ANY)) {
-				bpf_printk("shot save direct routing result: %d",
-					   route_ret);
-				return TCX_DROP;
-			}
-			goto direct;
-		case OUTBOUND_BLOCK:
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-			bpf_printk("SHOT OUTBOUND_BLOCK");
-#endif
-			goto block;
-		}
-	}
-
-	if (!udp_cache_hit && !isdns && !routing_result.capture_flags &&
-	    routing_result.outbound < OUTBOUND_MUST_RULES) {
-		// Check outbound connectivity in specific ipversion and l4proto.
+	if (routing_result->outbound == OUTBOUND_BLOCK)
+		return TCX_DROP;
+	if (!isdns && !routing_result->capture_flags && routing_result->outbound != OUTBOUND_DIRECT &&
+	    routing_result->outbound < OUTBOUND_MUST_RULES) {
 		struct outbound_connectivity_query q = {
-			.outbound = routing_result.outbound,
-			.ipversion = skb->protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
+			.outbound = routing_result->outbound,
+			.ipversion = protocol == bpf_htons(ETH_P_IP) ? 4 : 6,
 			.l4proto = l4proto,
 		};
-#if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
-		bpf_printk("outbound_connectivity_query: outbound: %u, ipversion: %u, l4proto: %u",
-			   q.outbound, q.ipversion, q.l4proto);
-#endif
+		__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
 
-		__u32 *state = bpf_map_lookup_elem(
-			&outbound_connectivity_map, &q);
-
-		if (!state) {
-			// Outbound is not ready. skip
-			return TCX_NEXT;
-		}
-
-		switch (*state) {
-		case OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT:
-			goto direct;
-		case OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK:
-			goto block;
-		case OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF:
-			// Preserve try-sniff for rules without skip_while_noalive.
-			break;
-		}
+		if (!state || *state == OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK)
+			return TCX_DROP;
+		/* Direct fallback stays attributable to its original group and
+		 * controllable by its recovery policy, including for TCP. */
+		if (*state == OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT)
+			routing_result->no_sniff = 1;
 	}
-
-	if (l4proto == IPPROTO_UDP) {
-		if (!udp_cache_hit && udp_cacheable) {
-			__builtin_memcpy(&udp_cache_scratch->value.result,
-					 &routing_result, sizeof(routing_result));
-			udp_cache_scratch->value.cached_until =
-				bpf_ktime_get_ns() + UDP_ROUTING_CACHE_TTL_NS;
-			if (bpf_map_update_elem(&udp_routing_cache_map,
-						&udp_cache_scratch->key,
-						&udp_cache_scratch->value,
-						BPF_ANY))
-				bpf_printk("failed to save UDP routing cache: outbound %u",
-					   routing_result.outbound);
-		}
-	}
-save_routing_result:
-	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
-				&routing_result, BPF_ANY)) {
-		bpf_printk("shot save routing result: outbound %u",
-			   routing_result.outbound);
+	if (l4proto == IPPROTO_UDP && (!isdns || routing_result->must || routing_result->capture_flags) &&
+	    save_udp_route(&udp_key, routing_result))
 		return TCX_DROP;
+
+selected:
+	/* A membership commit may have raced route evaluation. */
+	device = device_route(ethh->h_source);
+	if (device && (device->updating || device->epoch != route_epoch) &&
+	    !(l4proto == IPPROTO_TCP && bpf_map_lookup_elem(&route_exempt_map, &destination)))
+		return TCX_DROP;
+	if (routing_result->outbound == OUTBOUND_DIRECT && !routing_result->capture_flags) {
+		if (l4proto == IPPROTO_TCP && (routing_result->mark || route_epoch) &&
+		    bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
+				routing_result, BPF_ANY))
+			return TCX_DROP;
+		goto direct;
 	}
+	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
+				routing_result, BPF_ANY))
+		return TCX_DROP;
 
 control_plane:
 	// Assign to control plane.
-	if (prep_redirect_to_control_plane(skb, is_wan, link_h_len, &tuples,
+	if (prep_redirect_to_control_plane(skb, is_wan, link_h_len, tuples,
 					   ethh))
 		return TCX_DROP;
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
@@ -1849,13 +1904,11 @@ control_plane:
 direct:
 	// A new SYN can reuse a formerly proxied or marked tuple, including
 	// when an unavailable selector falls back to plain direct.
-	if (l4proto == IPPROTO_TCP && !routing_result.mark)
+	if (l4proto == IPPROTO_TCP && !routing_result->mark && !route_epoch)
 		bpf_map_delete_elem(&routing_tuples_map, &routing_tuples_key);
-	skb->mark = routing_result.mark;
+	skb->mark = routing_result->mark;
 	return TCX_NEXT;
 
-block:
-	return TCX_DROP;
 }
 
 static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
@@ -1879,6 +1932,12 @@ static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
 
 	if (ret < 0)
 		return TCX_DROP;
+	if (fragment_state != FRAGMENT_NONE) {
+		struct device_route_state *device = device_route(ethh.h_source);
+
+		if (device && device->updating)
+			return TCX_DROP;
+	}
 	if (fragment_state == FRAGMENT_NONFIRST)
 		return TCX_NEXT;
 	if (fragment_state == FRAGMENT_FIRST)
@@ -1925,6 +1984,15 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 
 		get_tuples(skb, &tuples, &l3h, &l4h, l4proto);
 		copy_reversed_tuples(&tuples.five, &reversed_tuples_key);
+		struct udp_routing_cache_key source = {
+			.sip = tuples.five.dip,
+			.sport = tuples.five.dport,
+		};
+		struct routing_result ignored;
+
+		/* Replies also keep a kernel-direct source lifetime alive. */
+		read_udp_route(&source, &ignored);
+
 
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
 			return TCX_DROP;

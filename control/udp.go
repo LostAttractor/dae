@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -32,11 +31,11 @@ var (
 )
 
 const (
-	DnsNatTimeout = 17 * time.Second // RFC 5452
-	MaxRetry      = 2
-	// Leave worker capacity for established associations while new routes or
-	// proxy handshakes are slow. Admission never waits inside a packet worker.
+	// Reserve workers for established associations; setup admission never waits.
 	maxConcurrentUDPSetups = udpTaskMaxWorkers / 4
+	udpSniffingTimeout     = 3 * time.Second
+	DnsNatTimeout          = 17 * time.Second // RFC 5452
+	MaxRetry               = 2
 )
 
 func shouldTryRawUDPFallback(err error, from, to netip.AddrPort) bool {
@@ -102,13 +101,18 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 	if deadline, ok := ctx.Deadline(); ok {
 		deadlineSet = conn.SetWriteDeadline(deadline) == nil
 	}
+	interrupted := make(chan struct{})
 	stopInterrupt := context.AfterFunc(ctx, func() {
 		_ = conn.SetWriteDeadline(time.Now())
-		closeInBackground(conn)
+		if !deadlineSet || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			closeInBackground(conn)
+		}
+		close(interrupted)
 	})
 	n, err = conn.WriteTo(data, dst)
 	if !stopInterrupt() {
-		return n, ctx.Err()
+		<-interrupted
+		err = ctx.Err()
 	}
 	if deadlineSet {
 		_ = conn.SetWriteDeadline(time.Time{})
@@ -118,7 +122,7 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 
 // enqueueUDPPacket borrows data only until emit returns. Queued packets retain
 // an absolute deadline, but allocate their context/timer only when dispatched.
-func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort) {
+func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, routingResult *bpfRoutingResult) {
 	deadline := time.Now().Add(consts.DefaultDialTimeout)
 	c.udpTaskPool.emit(src, data, func(owned []byte) udpTask {
 		return func() {
@@ -127,7 +131,7 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort) {
 			}
 			ctx, cancel := context.WithDeadline(c.ctx, deadline)
 			defer cancel()
-			if err := c.handlePkt(ctx, owned, src, dst, nil); err != nil && ctx.Err() == nil {
+			if err := c.handlePkt(ctx, owned, src, dst, routingResult); err != nil && ctx.Err() == nil {
 				if log.IsLevelEnabled(log.DebugLevel) {
 					log.Warnf("%+v", oops.Wrapf(err, "handlePkt"))
 				} else {
@@ -138,284 +142,293 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort) {
 	})
 }
 
-type packetSniff struct {
-	domain      string
-	quic, http3 bool
-}
-
-func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, sniffed *packetSniff) (err error) {
+// handlePkt serializes the complete source lifetime, including sniffing and
+// setup. An endpoint's first routing result never changes while it is in the pool.
+func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (err error) {
+	p := c.udpEndpoints
+	lock, _ := p.UdpEndpointKeyLocker.Lock(src)
+	defer p.UdpEndpointKeyLocker.Unlock(src, lock)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	udpEndpoints := c.udpEndpoints
-
-	/// Sniff
-	if sniffed == nil {
-		sniffed = new(packetSniff)
-		// Sniff Quic, ...
-		key := PacketSnifferKey{
-			LAddr: src,
-			RAddr: dst,
-		}
-		_sniffer, _ := DefaultPacketSnifferSessionMgr.GetOrCreate(key, nil)
-		_sniffer.Mu.Lock()
-		// Re-get sniffer from pool to confirm the transaction is not done.
-		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
-		if _sniffer == sniffer {
-			sniffer.AppendData(data)
-			sniffed.domain, sniffed.quic, err = sniffer.SniffUdp()
-			sniffed.http3 = sniffer.IsHTTP3()
-			if err != nil && !sniffing.IsSniffingError(err) {
-				sniffer.Mu.Unlock()
-				return oops.
-					With("from", src).
-					With("to", dst).
-					Wrapf(err, "sniffUDP non sniffing error")
-			}
-			if sniffer.NeedMore() {
-				sniffer.Mu.Unlock()
-				return nil
-			}
-			if err != nil && log.IsLevelEnabled(log.TraceLevel) {
-				log.Tracef("%+v", oops.
-					With("from", src).
-					With("to", dst).
-					Wrapf(err, "sniffUDP"))
-			}
-			// Replay earlier datagrams with the completed sniff result before the
-			// triggering packet so routing is correct without reordering the flow.
-			toRehandle := sniffer.Data()[1 : len(sniffer.Data())-1] // Skip the first empty and the last (self).
-			if removeErr := DefaultPacketSnifferSessionMgr.removeLocked(key, sniffer); removeErr != nil {
-				log.Warnf("remove packet sniffer: %v", removeErr)
-			}
-			sniffer.Mu.Unlock()
-			for _, d := range toRehandle {
-				if replayErr := c.handlePkt(ctx, d, src, dst, sniffed); replayErr != nil {
-					log.Warnf("%+v", oops.Wrapf(replayErr, "rehandlePkt"))
-				}
-			}
-		} else {
-			_sniffer.Mu.Unlock()
-			// sniffer may be nil.
-		}
-	}
-
-	domain, isQuic := sniffed.domain, sniffed.quic
-
-	/// Dial and send.
-	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
-	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
-	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
-
-	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
-	if err != nil {
-		return oops.Wrapf(err, "RetrieveRoutingResult")
-	}
-	mitmHost := domain
-	if mitmHost == "" {
-		mitmHost = dst.Addr().String()
-	}
-	key := c.mitmUDPEndpointKey(src, dst, routingResult, sniffed)
-	l, _ := udpEndpoints.UdpEndpointKeyLocker.Lock(key)
-	defer udpEndpoints.UdpEndpointKeyLocker.Unlock(key, l)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// Get udp endpoint.
-	ue, ok := udpEndpoints.Get(key)
-	var previousDestination netip.AddrPort
-	networkType := common.NetworkType{
-		L4Proto:   consts.L4ProtoStr_UDP,
-		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
-	}
-	if ok && key.Destination.IsValid() {
-		previousDestination = ue.destination
-		domain = ue.domain
-		networkType.IpVersion = ue.statsPath.Network.NetworkType().IpVersion
-	}
-	isNew := false
-	noConnectivityFallback := false
-	// If the udp endpoint has been not alive, remove it from pool and retry
-	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
-	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
-	if ok && !ue.mitm && !ue.dialer.Usable(&networkType) {
-		if log.IsLevelEnabled(log.DebugLevel) {
-			log.WithFields(log.Fields{
-				"src":     RefineSourceToShow(src, dst.Addr()),
-				"network": networkType.String(),
-				"dialer":  ue.dialer.Name,
-			}).Debugln("Old udp endpoint was not alive and removed.")
-		}
-		udpEndpoints.removeInBackgroundLocked(key, ue)
-		ok = false
-	}
-	if !ok {
+	ue, exists := p.Get(src)
+	if !exists || ue.conn == nil {
 		if c.udpSetups.Add(1) > maxConcurrentUDPSetups {
 			c.udpSetups.Add(-1)
-			c.udpSetupDrops.report("association_setup_limit")
+			c.udpSetupDrops.report("setup capacity")
 			return nil
 		}
 		defer c.udpSetups.Add(-1)
-		// Route
-		param := &RouteParam{
-			destination:   previousDestination,
-			routingResult: routingResult,
-			networkType:   networkType,
-			Domain:        domain,
-			Src:           src,
-			Dest:          dst,
+	}
+	if !exists {
+		// A queued packet may outlive the endpoint whose kernel binding sent
+		// it here. Drop it; the next ingress packet will carry a fresh route.
+		if routingResult == nil {
+			return nil
 		}
-		var dialOption *DialOption
-		var planner mitm.UpstreamPlanner
-		var release func()
-		if sniffed.http3 {
-			param.Domain = mitmHost
-			dialOption, planner, release, err = c.prepareHTTPRoute(ctx, mitmHost, param)
-		} else {
-			dialOption, err = c.RouteDialOption(ctx, param)
-		}
+		routeLease, err := c.deviceRoutes.acquire(routingResult)
 		if err != nil {
 			return err
 		}
-
-		intercept := planner != nil
-		var statsPath stats.Path
-		var udpConn net.PacketConn
-		if intercept {
-			udpConn = c.newMITMQUIC(param, planner, release)
-		} else {
-			statsPath, noConnectivityFallback = dialOption.trafficAttribution()
-			if dst.Port() == 53 && routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination != 0 && dialOption.Outbound.Name != "block" && !param.destination.IsValid() {
-				var message dnsmessage.Msg
-				if err := message.Unpack(data); err == nil {
-					c.dnsController.Handle(&message, &udpRequest{src: src, dst: dst, routingResult: routingResult})
-					return nil
-				}
-			}
-
-			// Dial
-			// Only print routing for new connection to avoid the log exploded (Quic and BT).
-			network := dialOption.NetworkType.String()
-			if isQuic {
-				network = "quic" + string(dialOption.NetworkType.IpVersion)
-			}
-			c.logDial(src, dst, domain, dialOption, network, routingResult)
-			dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-			defer cancel()
-			udpConn, err = dialOption.dialerForConnection().ListenPacket(dialCtx, dialOption.DialTarget)
-			if err != nil {
-				meta := netproxy.Failure{Phase: netproxy.OpDial}
-				if dialOption.Direct {
-					meta.Origin = netproxy.OriginTarget
-				}
-				err = netproxy.WrapFailure(err, meta)
-				if !recordDataPlaneError(dialOption.Dialer, statsPath, err) {
-					return nil
-				}
-				return oops.Wrapf(err, "failed to ListenPacket")
-			}
-		}
-		if key.Destination.IsValid() {
-			if !intercept {
-				if target := param.effectiveDestination(); target != dst {
-					udpConn = &destinationPacketConn{PacketConn: udpConn, original: dst, target: target}
-				}
-			}
-			if routingResult.CaptureFlags&(captureDestination|captureHTTP) != 0 || intercept {
-				ownedResult := *routingResult
-				if intercept {
-					// Retain this proven association, including an explicit bump
-					// without a DNS mapping. This adds no capture rule for new flows.
-					ownedResult.CaptureFlags |= captureHTTP
-				}
-				owned, err := c.ownDestinationUDP(udpConn, key, &ownedResult)
-				if err != nil {
-					_ = udpConn.Close()
-					return oops.Wrapf(err, "retain UDP destination ownership")
-				}
-				udpConn = owned
-			}
-		}
-		soMark := c.soMarkFromDae
-		ue = newUdpEndpoint(&UdpEndpointOptions{
-			PacketConn: udpConn,
-			Handler: func(data []byte, from netip.AddrPort) (err error) {
-				return sendPktWithMark(data, from, src, soMark)
-			},
-			NatTimeout: DefaultNatTimeoutUDP,
-			Path:       statsPath,
-		})
-		ue.mitm = intercept
-		if !intercept {
-			ue.dialer = dialOption.Dialer
-			ue.destination = param.effectiveDestination()
-		}
-		ue.domain = domain
-		if dialOption.Direct {
-			ue.origin = netproxy.OriginTarget
-		}
-		isNew = true
-	}
-
-	// TODO: What is realSrc/Dst?
-	// Try to write data
-	writeCtx, cancelWrite := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-	defer cancelWrite()
-	n, err := writePacket(writeCtx, ue.conn, data, net.UDPAddrFromAddrPort(dst))
-	if err != nil {
-		if isNew {
-			closeInBackground(ue)
-		} else {
-			udpEndpoints.removeInBackgroundLocked(key, ue)
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		if ue.mitm {
-			if errors.Is(err, net.ErrClosed) {
+		if dst.Port() == 53 && routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination == 0 {
+			var message dnsmessage.Msg
+			if message.Unpack(data) == nil {
+				c.dnsController.Handle(&message, &udpRequest{src: src, dst: dst, routingResult: routingResult})
 				return nil
 			}
+		}
+		unbind, err := c.bindUDPSource(src, routingResult)
+		if err != nil {
 			return err
 		}
-		err = netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: ue.origin})
-		if !recordDataPlaneError(ue.dialer, ue.statsPath, err) {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
+		mark := c.soMarkFromDae
+		ue = &UdpEndpoint{
+			routeLease:    routeLease,
+			routingResult: routingResult,
+			firstDst:      dst,
+			firstIfindex:  routingResult.Ifindex,
+			sniffer:       sniffing.NewPacketSniffer(nil),
+			NatTimeout:    udpSniffingTimeout,
+			unbind:        unbind,
+			handler: func(data []byte, from netip.AddrPort) error {
+				return sendPktWithMark(data, from, src, mark)
+			},
+		}
+		p.addLocked(src, ue)
+		ue.stopWatching = append(ue.stopWatching, watchAbort(nil, nil, routeLease, func() {
+			p.removeInBackground(src, ue)
+		}))
+	}
+	if cause := ue.routeLease.AbortCause(); cause != nil {
+		p.removeInBackgroundLocked(src, ue)
+		return cause
+	}
+	if ue.conn != nil {
+		return c.writeUDP(ctx, ue, src, dst, data)
+	}
+
+	ctx, cancelRoute := context.WithCancel(ctx)
+	defer cancelRoute()
+	stopRoute := watchAbort(nil, nil, ue.routeLease, cancelRoute)
+	defer stopRoute()
+
+	// Only the first destination participates in sniffing. A different
+	// destination completes initialization with the information already known.
+	var domain string
+	var isQuic bool
+	if dst == ue.firstDst {
+		ue.sniffer.AppendData(data)
+		if ue.routingResult.NoSniff == 0 {
+			domain, isQuic, err = ue.sniffer.SniffUdp()
+		}
+		if err != nil && !sniffing.IsSniffingError(err) {
+			p.removeInBackgroundLocked(src, ue)
+			return err
+		}
+		if ue.sniffer.NeedMore() {
 			return nil
 		}
-		return oops.In("UdpEndpoint l -> r relay").With("Dialer", ue.dialer.Name).
-			Wrapf(err, "failed to write UDP packet")
-	}
-	if isNew && !ue.mitm {
-		ue.traffic = stats.DefaultStore.OpenConnection(ue.statsPath, noConnectivityFallback)
-	}
-	if n > 0 && ue.traffic != nil {
-		ue.traffic.RecordUpload(uint64(n))
-	}
-	if !isNew {
-		return nil
 	}
 
-	// The first write is the setup-to-endpoint handoff. Only publish the
-	// endpoint after the write completed before cancellation.
-	udpEndpoints.addLocked(key, ue)
-	go func(endpointPool *UdpEndpointPool, endpoint *UdpEndpoint) {
-		runErr := endpoint.run(endpointPool, key, dst)
-		endpointPool.remove(key, endpoint)
-		if runErr == nil {
-			return
+	network := common.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStrFromAddr(ue.firstDst.Addr())}
+	param := &RouteParam{
+		routingResult: ue.routingResult, networkType: network,
+		Domain: domain, Src: src, Dest: ue.firstDst,
+	}
+	var option *DialOption
+	var planner mitm.UpstreamPlanner
+	var release func()
+	if ue.sniffer.IsHTTP3() {
+		if param.Domain == "" {
+			param.Domain = ue.firstDst.Addr().String()
 		}
-		if !recordDataPlaneError(endpoint.dialer, endpoint.statsPath, runErr) {
-			return
+		option, planner, release, err = c.prepareHTTPRoute(ctx, param.Domain, param)
+	} else {
+		option, err = c.RouteDialOption(ctx, param)
+	}
+	if err != nil {
+		p.removeInBackgroundLocked(src, ue)
+		return err
+	}
+	var conn net.PacketConn
+	ue.mitm = planner != nil
+	if ue.mitm {
+		if option != nil {
+			ue.dialer = option.Dialer
+			ue.statsPath, ue.fallback = option.trafficAttribution()
+			ue.policyLease = option.PolicyLease
+			if option.Direct {
+				ue.origin = netproxy.OriginTarget
+			}
 		}
-		if log.IsLevelEnabled(log.DebugLevel) {
-			log.Warnf("%+v", runErr)
-		} else {
-			log.Warnf("%v", runErr)
+		conn = c.newMITMQUIC(param, planner, release, ue.routeLease)
+	} else {
+		// A block fallback has no association to preserve. A later packet can
+		// try again after the group recovers.
+		if option.Outbound.Name == consts.OutboundBlock.String() {
+			p.removeInBackgroundLocked(src, ue)
+			return nil
 		}
-	}(udpEndpoints, ue)
+		if ue.firstDst.Port() == 53 && ue.routingResult.Must == 0 && !param.destination.IsValid() {
+			var message dnsmessage.Msg
+			if message.Unpack(data) == nil {
+				c.dnsController.Handle(&message, &udpRequest{src: src, dst: ue.firstDst, routingResult: ue.routingResult})
+				p.removeInBackgroundLocked(src, ue)
+				return nil
+			}
+		}
+		path, fallback := option.trafficAttribution()
+		ue.policyLease = option.PolicyLease
+		ue.traffic = stats.DefaultStore.OpenConnection(path, fallback)
+		ue.dialer, ue.statsPath = option.Dialer, path
+		if option.Direct {
+			ue.origin = netproxy.OriginTarget
+		}
+		label := network.String()
+		if isQuic {
+			label = "quic" + string(network.IpVersion)
+		}
+		c.logDial(src, ue.firstDst, domain, option, label, ue.routingResult)
+
+		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+		stopSetup := watchAbort(nil, option.PolicyLease, nil, cancel)
+		var dialErr error
+		conn, dialErr = option.dialerForConnection().ListenPacket(dialCtx, option.DialTarget)
+		setupErr := dialCtx.Err()
+		stopSetup()
+		cancel()
+		if cause := connectionAbortCause(option.PolicyLease, ue.routeLease); cause != nil {
+			closeInBackground(conn)
+			p.removeInBackgroundLocked(src, ue)
+			return cause
+		}
+		if dialErr != nil {
+			p.removeInBackgroundLocked(src, ue)
+			err = netproxy.WrapFailure(dialErr, netproxy.Failure{Phase: netproxy.OpDial, Origin: ue.origin})
+			if !recordDataPlaneError(ue.dialer, path, err) {
+				return nil
+			}
+			return oops.With("dialer", ue.dialer.Name).With("src", src).Wrapf(err, "failed to ListenPacket")
+		}
+		if setupErr != nil {
+			closeInBackground(conn)
+			p.removeInBackgroundLocked(src, ue)
+			return setupErr
+		}
+	}
+	var socketKey netip.AddrPort
+	if option != nil && (ue.mitm || c.routingMatcher != nil && len(c.routingMatcher.destination.predicates) != 0) {
+		ue.releaseDialer, err = option.Dialer.Retain()
+		if err != nil {
+			closeInBackground(conn)
+			p.removeInBackgroundLocked(src, ue)
+			return err
+		}
+		ue.packetDialer = option.dialerForConnection()
+		if c.routingMatcher != nil {
+			ue.destinationMatcher = c.routingMatcher.snapshotDestinations()
+		}
+		ue.destinationParam = *param
+		target := param.effectiveDestination()
+		ue.destinations = map[netip.AddrPort]netip.AddrPort{ue.firstDst: target}
+		ue.sockets = make(map[netip.AddrPort]net.PacketConn)
+		if ue.mitm {
+			socketKey = ue.firstDst
+		} else if target != ue.firstDst {
+			socketKey = ue.firstDst
+			conn = &destinationPacketConn{PacketConn: conn, original: ue.firstDst, target: target}
+		}
+	}
+
+	ue.conn = conn
+	ue.lease = netproxy.DependencyOf(conn)
+	ue.NatTimeout = DefaultNatTimeoutUDP
+	p.refreshTimerLocked(src, ue, time.Now())
+	ue.routingResult = nil
+	ue.startSocket(p, src, ue.firstDst, socketKey, conn)
+
+	// Send the buffered first destination in arrival order, followed by the
+	// packet that completed initialization (if it uses another destination).
+	sniffer := ue.sniffer
+	ue.sniffer = nil
+	defer sniffer.Close()
+	for _, packet := range sniffer.Data()[1:] {
+		if err := c.writeUDP(ctx, ue, src, ue.firstDst, packet); err != nil || ue.IsClosed() {
+			return err
+		}
+	}
+	if dst != ue.firstDst {
+		if err := c.writeUDP(ctx, ue, src, dst, data); err != nil || ue.IsClosed() {
+			return err
+		}
+	}
 
 	return nil
+}
+
+func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
+	// Request-routing HTTP/3 has no connection-wide outbound. Its source
+	// lifetime is scoped to the admitted destination; it cannot migrate.
+	if ue.mitm && ue.packetDialer == nil && dst != ue.firstDst {
+		return nil
+	}
+	if cause := connectionAbortCause(ue.lease, ue.policyLease, ue.routeLease); cause != nil {
+		c.udpEndpoints.removeInBackgroundLocked(src, ue)
+		return cause
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+	defer cancel()
+	conn, err := ue.socket(writeCtx, c.udpEndpoints, src, dst)
+	var n int
+	if err == nil {
+		n, err = writePacket(writeCtx, conn, data, net.UDPAddrFromAddrPort(dst))
+	}
+	if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
+		ue.traffic.RecordUpload(uint64(n))
+	}
+	if err == nil {
+		return nil
+	}
+	if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
+		err = cause
+	} else if ue.mitm && conn == ue.conn && plainClosedError(err) {
+		c.udpEndpoints.removeInBackgroundLocked(src, ue)
+		return nil
+	} else {
+		err = netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: ue.origin})
+	}
+	if !temporaryUDPError(err) || connectionAbortCause(ue.lease, ue.policyLease, ue.routeLease) != nil {
+		c.udpEndpoints.removeInBackgroundLocked(src, ue)
+	}
+	if ue.mitm && conn == ue.conn || !recordDataPlaneError(ue.dialer, ue.statsPath, err) {
+		return nil
+	}
+	return oops.With("dialer", ue.dialer.Name).With("src", src).With("dst", dst).Wrapf(err, "failed to write UDP packet")
+}
+
+// Datagram/target errors do not invalidate an association shared by other
+// destinations. A shared-resource failure is always handled by its owner.
+func temporaryUDPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	for _, failure := range netproxy.Failures(err) {
+		if failure.Scope == netproxy.ScopeSharedResource || failure.Scope == netproxy.ScopeStream {
+			return false
+		}
+		if timeout, ok := IsNetError(failure.Cause); ok && timeout.Timeout() {
+			continue
+		}
+		if failure.Layer != netproxy.LayerUnknown && failure.Layer != "" && failure.Layer != netproxy.LayerUDP {
+			return false
+		}
+		if errors.Is(failure.Cause, unix.EMSGSIZE) || errors.Is(failure.Cause, unix.ENOBUFS) {
+			continue
+		}
+		if failure.Origin != netproxy.OriginTarget || !(errors.Is(failure.Cause, unix.ECONNREFUSED) ||
+			errors.Is(failure.Cause, unix.ENETUNREACH) || errors.Is(failure.Cause, unix.EHOSTUNREACH)) {
+			return false
+		}
+	}
+	return true
 }

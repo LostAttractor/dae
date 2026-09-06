@@ -11,7 +11,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"net/netip"
 	"os"
 	"reflect"
@@ -78,7 +77,6 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 	}
 	// Kernel tests must not reuse or replace the daemon's persistent routing state.
 	spec.Maps["routing_tuples_map"].Pinning = ebpf.PinNone
-	spec.Maps["destination_udp_map"].Pinning = ebpf.PinNone
 	if err := spec.LoadAndAssign(obj,
 		&ebpf.CollectionOptions{
 			Maps: ebpf.MapOptions{
@@ -100,6 +98,10 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 	if err := obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
 		obj.Close()
 		return nil, fmt.Errorf("update LpmArrayMap: %w", err)
+	}
+	if err := obj.DeviceRoutesMap.Update(uint32(0), obj.UnusedDeviceRoutes, ebpf.UpdateAny); err != nil {
+		obj.Close()
+		return nil, err
 	}
 	t.Cleanup(func() { obj.Close() })
 	return obj, nil
@@ -170,12 +172,7 @@ func benchmarkUDPRoutingCache(b *testing.B, obj *bpftestObjects, rules int, hit 
 	if !iter.Next(&cacheKey, &cacheValue) {
 		b.Fatalf("prime benchmark cache: %v", iter.Err())
 	}
-	if hit {
-		cacheValue.CachedUntil = math.MaxUint64
-		if err := obj.UdpRoutingCacheMap.Update(&cacheKey, &cacheValue, ebpf.UpdateAny); err != nil {
-			b.Fatal(err)
-		}
-	} else {
+	if !hit {
 		if err := obj.UdpRoutingCacheMap.Delete(&cacheKey); err != nil {
 			b.Fatal(err)
 		}

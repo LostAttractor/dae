@@ -96,7 +96,10 @@ func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, option
 	var key strings.Builder
 	fmt.Fprintf(&key, "%q/%q", scheme, target.String())
 	for _, option := range options {
-		fmt.Fprintf(&key, "/%q/%p/%d/%q/%s/%t", option.Outbound.Name, option.Dialer, option.Mark, option.DialTarget, option.NetworkType.String(), option.OriginalOutbound != nil)
+		if cause := option.PolicyLease.AbortCause(); cause != nil {
+			return mitm.UpstreamPlan{}, cause
+		}
+		fmt.Fprintf(&key, "/%q/%p/%d/%q/%s/%t/%p", option.Outbound.Name, option.Dialer, option.Mark, option.DialTarget, option.NetworkType.String(), option.OriginalOutbound != nil, option.PolicyLease)
 	}
 	c, source := p.plane, p.source
 	plan := mitm.UpstreamPlan{Key: key.String(), Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {

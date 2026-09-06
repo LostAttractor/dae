@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
 const (
@@ -27,6 +28,7 @@ type mitmPacketPair struct {
 	mu     sync.Mutex
 	closed bool
 	memory *membuffer.Budget
+	lease  *netproxy.Lease
 }
 
 type mitmPacketConn struct {
@@ -47,12 +49,15 @@ type mitmPacketConn struct {
 // their source. A full receive queue drops incoming datagrams, so a slow QUIC
 // connection cannot block the transparent packet worker.
 func newMITMPacketPair(client, destination netip.AddrPort) (ingress, server net.PacketConn) {
-	pair := &mitmPacketPair{memory: udpPacketMemory}
+	pair := &mitmPacketPair{memory: udpPacketMemory, lease: netproxy.NewLease(netproxy.NewResourceRef())}
 	a := &mitmPacketConn{pair: pair, local: client, readChanged: make(chan struct{})}
 	b := &mitmPacketConn{pair: pair, local: destination, readChanged: make(chan struct{})}
 	a.peer, b.peer = b, a
 	return a, b
 }
+
+// Both bridge ends share the source lifetime's failure signal.
+func (c *mitmPacketConn) DependencyLease() *netproxy.Lease { return c.pair.lease }
 
 func (c *mitmPacketConn) ReadFrom(buf []byte) (int, net.Addr, error) {
 	for {
@@ -142,6 +147,7 @@ func (c *mitmPacketConn) Close() error {
 	defer c.pair.mu.Unlock()
 	if !c.pair.closed {
 		c.pair.closed = true
+		c.pair.lease.Invalidate(net.ErrClosed)
 		close(c.readChanged)
 		close(c.peer.readChanged)
 		for i := range c.packets {

@@ -357,7 +357,12 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 				if err != nil || string(body) != "upstream response" || (response.Header.Get("X-Dae-Mitm") == "selected") != test.selected {
 					t.Fatalf("wrong plugin treatment: body=%q headers=%v err=%v", body, response.Header, err)
 				}
-				_ = client.Close()
+				// Drain close_notify before closing the raw socket: unread TLS
+				// records make an ordinary TCP Close send an unintended RST.
+				if _, err := io.Copy(io.Discard, client); err != nil {
+					t.Fatal(err)
+				}
+				_ = clientSocket.(*net.TCPConn).CloseWrite()
 				if err := wait(); err != nil {
 					t.Fatal(err)
 				}

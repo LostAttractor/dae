@@ -58,15 +58,9 @@ func TestDestinationUDPOwnershipSurvivesRuleRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Extract the unchanged original tuple. ifindex comes from skb context.
-	key := bpftestDestinationUdpKey{Ifindex: binary.NativeEndian.Uint32(ctx[40:44])}
-	key.Tuples.Sip.U6Addr8 = netip.AddrFrom4([4]byte(packet[26:30])).As16()
-	key.Tuples.Dip.U6Addr8 = netip.AddrFrom4([4]byte(packet[30:34])).As16()
-	key.Tuples.Sport = binary.NativeEndian.Uint16(packet[34:36])
-	key.Tuples.Dport = binary.NativeEndian.Uint16(packet[36:38])
-	key.Tuples.L4proto = 17
-	value := bpftestDestinationUdpValue{Result: bpftestRoutingResult{CaptureFlags: 2, Protocol: 2, Ifindex: key.Ifindex}, Owner: 1}
-	if err := obj.DestinationUdpMap.Update(key, value, ebpf.UpdateAny); err != nil {
+	key := bpftestUdpRoutingCacheKey{Sport: binary.NativeEndian.Uint16(packet[34:36])}
+	key.Sip.U6Addr8 = netip.AddrFrom4([4]byte(packet[26:30])).As16()
+	if err := obj.UdpBindingsMap.Update(key, uint64(0), ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
 	if err := obj.RoutingMap.Update(uint32(0), bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: 0}, ebpf.UpdateAny); err != nil {
@@ -76,7 +70,7 @@ func TestDestinationUDPOwnershipSurvivesRuleRemoval(t *testing.T) {
 	if err != nil || status != 7 {
 		t.Fatalf("lost owned association: %d %v", status, err)
 	}
-	if err := obj.DestinationUdpMap.Delete(key); err != nil {
+	if err := obj.UdpBindingsMap.Delete(key); err != nil {
 		t.Fatal(err)
 	}
 	status, _, _, err = runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)

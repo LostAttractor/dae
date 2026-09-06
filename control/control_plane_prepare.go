@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -29,7 +30,7 @@ import (
 // consumes them. A reload preparation borrows its BPF state and never closes
 // it, allowing the caller to restore ownership to the running plane on error.
 type ControlPlanePreparation struct {
-	bpf      *bpfState
+	bpf      *BPFState
 	rules    preparedRules
 	isReload bool
 }
@@ -39,7 +40,7 @@ type ControlPlanePreparation struct {
 // interfaces, so it is safe while the previous control plane serves a reload.
 func PrepareControlPlane(
 	ctx context.Context,
-	reusableBpf any,
+	reusableBpf *BPFState,
 	routingConfig *config.Routing,
 	global *config.Global,
 	dnsConfig *config.Dns,
@@ -86,13 +87,12 @@ func PrepareControlPlane(
 	return preparation, nil
 }
 
-func prepareBPF(ctx context.Context, reusable any, soMarkFromDae uint32) (_ *bpfState, err error) {
+func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) (_ *BPFState, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	reusedBpf, err := validateReusableBpfState(reusable, soMarkFromDae)
-	if err != nil {
-		return nil, err
+	if reusedBpf != nil && reusedBpf.soMarkFromDae != soMarkFromDae {
+		return nil, fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot change on reload; restart dae to apply it", reusedBpf.soMarkFromDae, soMarkFromDae)
 	}
 	kernelVersion, err := internal.KernelVersion()
 	if err != nil {
@@ -137,7 +137,7 @@ func prepareBPF(ctx context.Context, reusable any, soMarkFromDae uint32) (_ *bpf
 		Maps:     ebpf.MapOptions{PinPath: pinPath},
 		Programs: programOptions,
 	}
-	bpf := &bpfState{bpfObjects: new(bpfObjects), soMarkFromDae: soMarkFromDae}
+	bpf := &BPFState{bpfObjects: new(bpfObjects), soMarkFromDae: soMarkFromDae}
 	if err = fullLoadBpfObjects(bpf.bpfObjects, pinPath, soMarkFromDae, collectionOpts); err != nil {
 		err = oops.Wrapf(err, "load eBPF objects")
 		if log.IsLevelEnabled(log.PanicLevel) {
@@ -145,6 +145,10 @@ func prepareBPF(ctx context.Context, reusable any, soMarkFromDae uint32) (_ *bpf
 		}
 		return nil, err
 	}
+	if err := bpf.DeviceRoutesMap.Update(uint32(0), bpf.UnusedDeviceRoutes, ebpf.UpdateAny); err != nil {
+		return nil, errors.Join(err, bpf.Close())
+	}
+	bpf.deviceRoutes = &deviceRoutes{outer: bpf.DeviceRoutesMap}
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, errors.Join(contextErr, bpf.Close())
 	}
@@ -162,7 +166,7 @@ func prepareBPF(ctx context.Context, reusable any, soMarkFromDae uint32) (_ *bpf
 	return bpf, nil
 }
 
-func (p *ControlPlanePreparation) take() (*bpfState, preparedRules, bool, error) {
+func (p *ControlPlanePreparation) take() (*BPFState, preparedRules, bool, error) {
 	if p == nil {
 		return nil, preparedRules{}, false, errors.New("control plane preparation is nil")
 	}

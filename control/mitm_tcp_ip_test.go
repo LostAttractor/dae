@@ -69,7 +69,7 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 				}, authority)
 			plane.soMarkFromDae = 37 // Keep marked direct on the fixture dialer.
 			plane.sniffingTimeout = time.Second
-			plane.core.bpf = &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{RoutingTuplesMap: tuples}}}
+			plane.core.bpf = &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{RoutingTuplesMap: tuples}}}
 			if test.excluded {
 				plane.mitmClients = clientmatch.Matcher{}
 			}

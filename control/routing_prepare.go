@@ -19,6 +19,7 @@ import (
 )
 
 type preparedRules struct {
+	apiBypass    []bpfIpPort
 	destinations routing.DestinationRewrites
 	geoDirs      []string
 	routing      []*config_parser.RoutingRule

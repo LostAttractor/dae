@@ -30,8 +30,17 @@ func prepareRecoveryDialer(d *Dialer) {
 func testRecoveryChecker(t *testing.T, d *Dialer) *connectivityChecker {
 	t.Helper()
 	c := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
-	t.Cleanup(func() { c.healthTimer.Stop(); c.supportTimer.Stop(); c.capacityTimer.Stop() })
+	t.Cleanup(func() { c.stopRetries() })
 	return c
+}
+
+// Model the run loop: apply the completed operation, then choose the next work.
+func finishCheck(c *connectivityChecker, result checkResult) bool {
+	if !c.finish(result) {
+		return false
+	}
+	c.dispatch()
+	return true
 }
 
 func waitRecoveryPhase(t *testing.T, d *Dialer, phase RecoveryPhase) RecoverySnapshot {
@@ -100,6 +109,7 @@ func TestFatalTimeoutOwnerStateIsNotMaskedOrRetriedByOldRelays(t *testing.T) {
 	}
 	c := testRecoveryChecker(t, d)
 	c.updateHealthSchedule(false)
+	c.dispatch()
 	want := d.RuntimeStatus().Recovery
 	for i := 0; i < 50; i++ {
 		d.ReportDataPlaneError(errors.Join(context.DeadlineExceeded, failure))
@@ -119,13 +129,16 @@ func TestFatalTimeoutOwnerStateIsNotMaskedOrRetriedByOldRelays(t *testing.T) {
 func TestRecoveryDeadlineMatchesTimer(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	c := testRecoveryChecker(t, d)
-	c.scheduleHealthRetry(20 * time.Millisecond)
+	c.healthInterval = 10 * time.Millisecond
+	c.backingOff = true
+	c.updateHealthSchedule(false)
+	c.dispatch()
 	snapshot := d.RuntimeStatus().Recovery
 	if snapshot.Phase != RecoveryBackoff || !snapshot.RetryTimeKnown {
 		t.Fatalf("recovery = %+v", snapshot)
 	}
 	select {
-	case fired := <-c.healthTimer.C:
+	case fired := <-c.timer.C:
 		if delta := fired.Sub(snapshot.RetryAt); delta < -time.Millisecond || delta > time.Millisecond {
 			t.Fatalf("displayed deadline differs from timer by %s", delta)
 		}
@@ -169,7 +182,7 @@ func TestLibraryRecoveryDoesNotAddDaemonRetryLoop(t *testing.T) {
 	c := testRecoveryChecker(t, d)
 	c.start(checkHealth)
 	result := <-c.results
-	if !c.finish(result) {
+	if !finishCheck(c, result) {
 		t.Fatal("checker stopped")
 	}
 	state := d.RuntimeStatus().Recovery
@@ -178,15 +191,34 @@ func TestLibraryRecoveryDoesNotAddDaemonRetryLoop(t *testing.T) {
 	}
 	for i := 0; i < 10; i++ {
 		c.handleSessionEvent(transport.Snapshot())
+
+		c.dispatch()
 		d.ReportDataPlaneError(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Scope: netproxy.ScopeSharedResource}))
 	}
 	if transport.connects.Load() != 1 || c.cancel != nil || d.connectivityCheckRequested() {
 		t.Fatal("daemon added another library reconnect")
 	}
 	select {
-	case <-c.healthTimer.C:
+	case <-c.timer.C:
 		t.Fatal("daemon scheduled a library retry")
 	default:
+	}
+	// The library dependency is ready; the next blocked layer belongs to DAE.
+	// The chain as a whole remains unavailable until that layer reconnects.
+	event := transport.Snapshot()
+	event.RecoveryExecutor = netproxy.RecoveryDaemon
+	event.ReadinessVersion++
+	transport.state.Publish(event)
+	transport.connectErr = nil
+	c.handleSessionEvent(transport.Snapshot())
+	c.dispatch()
+	if c.cancel == nil {
+		t.Fatal("library recovery suppressed the next layer's reconnect")
+	}
+	result = <-c.results
+	c.handleSessionEvent(transport.Snapshot())
+	if !finishCheck(c, result) || !d.RuntimeStatus().Healthy || transport.connects.Load() != 2 {
+		t.Fatal("chain did not recover after library dependency became ready")
 	}
 }
 
@@ -196,23 +228,25 @@ func TestPermanentConnectFailureBlocksUntilEnvironmentRequest(t *testing.T) {
 	d := newTestDialer(t, transport)
 	c := testRecoveryChecker(t, d)
 	c.start(checkInitial)
-	if !c.finish(<-c.results) {
+	if !finishCheck(c, <-c.results) {
 		t.Fatal("checker stopped")
 	}
 	if state := d.RuntimeStatus().Recovery; state.Phase != RecoveryBlocked || state.BlockedBy != "auth" || state.RetryTimeKnown {
 		t.Fatalf("blocked recovery = %+v", state)
 	}
 	c.handleSessionEvent(transport.Snapshot())
+
+	c.dispatch()
 	if transport.connects.Load() != 1 {
 		t.Fatal("blocked session retried without a trigger")
 	}
 	transport.connectErr = nil
 	d.RequestConnectivityCheck()
 	c.start(c.requestedCheckKind())
-	if !c.finish(<-c.results) {
+	if !finishCheck(c, <-c.results) {
 		t.Fatal("checker stopped after environment request")
 	}
-	if c.blocked || !d.RuntimeStatus().Healthy {
+	if c.blockedBy != "" || !d.RuntimeStatus().Healthy {
 		t.Fatal("environment request did not recover")
 	}
 }
@@ -247,7 +281,8 @@ func TestOwnerCleanupAndDependencyPhasesOverrideConnectionRequest(t *testing.T) 
 	transport := newTestSessionTransport(netproxy.SessionDisconnected)
 	d := newTestDialer(t, transport)
 	c := testRecoveryChecker(t, d)
-	c.scheduleHealthRetry(time.Minute)
+	c.healthAt = time.Now().Add(time.Minute)
+	c.dispatch()
 	for _, phase := range []RecoveryPhase{RecoveryCleanup, RecoveryWaitingDependency} {
 		event := transport.Snapshot()
 		event.RecoveryPhase = string(phase)
@@ -346,9 +381,11 @@ func TestInterleavedResourceEpisodesPreserveCurrentFailureAndBackoff(t *testing.
 					Resource: netproxy.ResourceRef{OwnerID: publisher, ResourceID: episode, Generation: 1}})
 				transport.state.Publish(event)
 				c.handleSessionEvent(transport.Snapshot())
+
+				c.dispatch()
 			}
 			publish(100, 7, "resource A reset")
-			if c.cancel == nil || c.runningKind != checkCapacity || !c.finish(<-c.results) {
+			if c.cancel == nil || c.runningKind != checkCapacity || !finishCheck(c, <-c.results) {
 				t.Fatal("first pool failure did not start replenishment")
 			}
 			deadline := d.RuntimeStatus().Recovery.RetryAt
@@ -386,6 +423,8 @@ func TestInterleavedResourceEpisodesPreserveCurrentFailureAndBackoff(t *testing.
 			event.Cause, event.RecoveryRequired = nil, false
 			transport.state.Publish(event)
 			c.handleSessionEvent(transport.Snapshot())
+
+			c.dispatch()
 			if d.RuntimeStatus().Failure != nil {
 				t.Fatal("resolved pool retained its failure")
 			}
@@ -395,6 +434,8 @@ func TestInterleavedResourceEpisodesPreserveCurrentFailureAndBackoff(t *testing.
 			event.Cause = netproxy.WrapFailure(errors.New("old resolved reset"), netproxy.Failure{Scope: netproxy.ScopeSharedResource})
 			transport.state.Publish(event)
 			c.handleSessionEvent(transport.Snapshot())
+
+			c.dispatch()
 			if got := d.RuntimeStatus(); got.Failure != nil || failures() != 2 || !got.Healthy || c.cancel != nil {
 				t.Fatalf("resolved episode was resurrected: %+v, failures=%v", got, failures())
 			}

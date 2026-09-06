@@ -502,6 +502,7 @@ loop:
 				// sniff verification survive the reload; Activate then skips
 				// wiping the kernel domain maps.
 				newC.InheritDomainRegistry(c)
+				newC.InheritConnections(c)
 				if err = newC.Activate(); err != nil {
 					sdnotify.Stopping()
 					_ = newC.Close()

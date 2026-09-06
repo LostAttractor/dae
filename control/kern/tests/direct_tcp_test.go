@@ -72,9 +72,13 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 			if status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, ack, ctx); err != nil || status != want {
 				t.Fatalf("existing ACK: status %d, error %v; want %d", status, err, want)
 			}
+			want = uint32(next)
+			if test.unavailable {
+				want = redirect
+			}
 			for _, packet := range [][]byte{syn, ack} {
 				status, _, ctxOut, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)
-				if err != nil || status != next {
+				if err != nil || status != want {
 					t.Fatalf("new direct flow: status %d, error %v", status, err)
 				}
 				// __sk_buff.mark is its third uint32 field.
@@ -84,7 +88,11 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 			}
 			var result bpftestRoutingResult
 			err := obj.RoutingTuplesMap.Lookup(key, &result)
-			if test.mark == 0 {
+			if test.unavailable {
+				if err != nil || result.Outbound != proxy || result.NoSniff != 1 {
+					t.Fatalf("fallback lost group ownership: %+v, %v", result, err)
+				}
+			} else if test.mark == 0 {
 				if !errors.Is(err, ebpf.ErrKeyNotExist) {
 					t.Fatalf("plain direct retained previous routing tuple: %+v, %v", result, err)
 				}

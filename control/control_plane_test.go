@@ -75,7 +75,7 @@ dns { routing { request { fallback: asis } response { fallback: accept } } }
 	}
 	// Reload preparation borrows the map; construction only reads its capacity.
 	preparation := &ControlPlanePreparation{
-		bpf:      &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{DomainRoutingMap: &ebpf.Map{}}}},
+		bpf:      &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{DomainRoutingMap: &ebpf.Map{}}}},
 		rules:    preparedRules{routing: conf.Routing.Rules},
 		isReload: true,
 	}
@@ -121,13 +121,10 @@ func TestSplitWanInterfacesPreservesAutoIntent(t *testing.T) {
 	}
 }
 
-func TestValidateReusableBpfStateRejectsChangedSoMark(t *testing.T) {
-	state := &bpfState{soMarkFromDae: 0x100}
-	if _, err := validateReusableBpfState(state, 0x101); err == nil {
+func TestPrepareBPFRejectsChangedSoMark(t *testing.T) {
+	state := &BPFState{soMarkFromDae: 0x100}
+	if _, err := prepareBPF(context.Background(), state, 0x101); err == nil {
 		t.Fatal("changed so_mark_from_dae was accepted")
-	}
-	if got, err := validateReusableBpfState(state, state.soMarkFromDae); err != nil || got != state {
-		t.Fatalf("matching reusable BPF state = %p, %v; want %p", got, err, state)
 	}
 }
 
@@ -745,13 +742,13 @@ func TestControlPlaneNormalRetirePreservesEstablishedUDPEndpoint(t *testing.T) {
 		PacketConn: conn,
 		NatTimeout: time.Hour,
 	})
-	udpEndpoints.add(udpEndpointKey{Source: key}, endpoint)
-	t.Cleanup(func() { udpEndpoints.remove(udpEndpointKey{Source: key}, endpoint) })
+	udpEndpoints.add(key, endpoint)
+	t.Cleanup(func() { udpEndpoints.remove(key, endpoint) })
 
 	if err := plane.retireTraffic(); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := udpEndpoints.Get(udpEndpointKey{Source: key})
+	got, ok := udpEndpoints.Get(key)
 	if !ok || got != endpoint {
 		t.Fatal("normal retirement removed the established UDP endpoint")
 	}
@@ -772,7 +769,7 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 		PacketConn: oldConn,
 		NatTimeout: time.Hour,
 	})
-	udpEndpoints.add(udpEndpointKey{Source: key}, oldEndpoint)
+	udpEndpoints.add(key, oldEndpoint)
 
 	taskStarted := make(chan struct{})
 	releaseTask := make(chan struct{})
@@ -788,7 +785,7 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 			return
 		}
 		conn := newTestPacketConn(false)
-		udpEndpoints.add(udpEndpointKey{Source: key}, newUdpEndpoint(&UdpEndpointOptions{
+		udpEndpoints.add(key, newUdpEndpoint(&UdpEndpointOptions{
 			PacketConn: conn,
 			NatTimeout: time.Hour,
 		}))
@@ -827,7 +824,7 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("abort did not close endpoint published by an accepted UDP task")
 	}
-	if _, ok := udpEndpoints.Get(udpEndpointKey{Source: key}); ok {
+	if _, ok := udpEndpoints.Get(key); ok {
 		t.Fatal("abort left an established UDP endpoint in the global pool")
 	}
 }

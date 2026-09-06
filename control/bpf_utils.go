@@ -67,7 +67,7 @@ func deleteUDPRoutingTuples(m *ebpf.Map) error {
 	return nil
 }
 
-func deleteUDPRoutingCache(m *ebpf.Map) error {
+func deleteUDPRoutingCache(m *ebpf.Map, preserveDirect bool) error {
 	var (
 		key   bpfUdpRoutingCacheKey
 		value bpfUdpRoutingCacheValue
@@ -75,7 +75,9 @@ func deleteUDPRoutingCache(m *ebpf.Map) error {
 	)
 	iter := m.Iterate()
 	for iter.Next(&key, &value) {
-		keys = append(keys, key)
+		if !preserveDirect || value.Result.Outbound != 0 {
+			keys = append(keys, key)
+		}
 	}
 	if err := iter.Err(); err != nil {
 		return fmt.Errorf("iterate UDP routing cache: %w", err)
@@ -88,11 +90,12 @@ func deleteUDPRoutingCache(m *ebpf.Map) error {
 	return nil
 }
 
-// bpfState keeps reload-persistent process metadata with the shared BPF
+// BPFState keeps reload-persistent process metadata with the shared BPF
 // objects. During reload, cleanup ownership is released by the old core and
 // acquired later by the successor while this state remains alive.
-type bpfState struct {
+type BPFState struct {
 	*bpfObjects
+	deviceRoutes  *deviceRoutes
 	splice        *splice.Runtime
 	soMarkFromDae uint32
 
@@ -103,21 +106,7 @@ type bpfState struct {
 	activeLpmTrieCount uint32
 }
 
-func validateReusableBpfState(value interface{}, soMarkFromDae uint32) (*bpfState, error) {
-	if value == nil {
-		return nil, nil
-	}
-	state, ok := value.(*bpfState)
-	if !ok || state == nil {
-		return nil, fmt.Errorf("unexpected bpf type: %T", value)
-	}
-	if state.soMarkFromDae != soMarkFromDae {
-		return nil, fmt.Errorf("reused BPF objects were loaded with so_mark_from_dae %#x, requested %#x; restart dae to apply it", state.soMarkFromDae, soMarkFromDae)
-	}
-	return state, nil
-}
-
-func (b *bpfState) Close() error {
+func (b *BPFState) Close() error {
 	var spliceErr error
 	if b.splice != nil {
 		spliceErr = b.splice.Close()

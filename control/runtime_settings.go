@@ -18,38 +18,57 @@ import (
 func (c *ControlPlane) ReloadRuntimeSettings() (bool, error) {
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
-	return c.settings.Reload(func(current, next settings.Snapshot) (err error) {
-		var rollback []func() error
-		defer func() {
-			if err != nil {
-				for _, undo := range slices.Backward(rollback) {
-					err = errors.Join(err, undo())
+	return c.settings.Reload(func(current, next settings.Snapshot) error {
+		changed := make(map[[6]byte]bool)
+		sets := c.routingMatcherBuilder.ClientSets()
+		for _, name := range sets {
+			before, after := current.Members(name), next.Members(name)
+			for _, mac := range before {
+				if !slices.Contains(after, mac) {
+					changed[mac] = true
 				}
 			}
-		}()
-		for _, group := range c.outbounds {
-			if !group.IsSelector() {
-				continue
+			for _, mac := range after {
+				if !slices.Contains(before, mac) {
+					changed[mac] = true
+				}
 			}
-			previous := group.Selection()
-			if err := group.SetSelection(next.Selectors[group.Name]); err != nil {
-				return fmt.Errorf("reload selector %q: %w", group.Name, err)
-			}
-			rollback = append(rollback, func() error { return group.SetSelection(previous) })
 		}
-		for _, name := range c.clientSets() {
-			previous, members := current.Members(name), next.Members(name)
-			if slices.Equal(previous, members) {
-				continue
+		return c.changeDeviceRoutes(changed, func(commit func() error) error {
+			apply := func() (err error) {
+				var rollback []func() error
+				defer func() {
+					if err != nil {
+						for _, undo := range slices.Backward(rollback) {
+							err = errors.Join(err, undo())
+						}
+					}
+				}()
+				for _, name := range c.clientSets() {
+					previous, members := current.Members(name), next.Members(name)
+					if slices.Equal(previous, members) {
+						continue
+					}
+					if err := c.setClientMembers(name, previous, members); err != nil {
+						return err
+					}
+					rollback = append(rollback, func() error {
+						return c.setClientMembers(name, members, previous)
+					})
+				}
+				return commit()
 			}
-			if err := c.setClientMembers(name, previous, members); err != nil {
-				return err
+			// Each group holds its selection until later changes have committed;
+			// errors unwind all tentative choices without issuing close signals.
+			for _, group := range slices.Backward(c.outbounds) {
+				if !group.IsSelector() {
+					continue
+				}
+				rest := apply
+				apply = func() error { return group.ChangeSelection(next.Selectors[group.Name], rest) }
 			}
-			rollback = append(rollback, func() error {
-				return c.setClientMembers(name, members, previous)
-			})
-		}
-		return nil
+			return apply()
+		})
 	})
 }
 

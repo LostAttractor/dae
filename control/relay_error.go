@@ -18,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
+	"golang.org/x/sys/unix"
 )
 
 // relayEndpoint records the side on which an operation failed. Protocol and
@@ -48,13 +49,16 @@ func (e *relayEndpoint) Write(p []byte) (int, error) {
 }
 
 func (e *relayEndpoint) halfClose() (needsDrain bool, err error) {
-	writer, ok := e.conn.(netproxy.CloseWriter)
-	if !ok {
-		return true, nil
-	}
-	err = writer.CloseWrite()
+	err = netproxy.CloseWrite(e.conn)
 	if err == errors.ErrUnsupported {
 		return true, nil
+	}
+	// shutdown can race the peer's complete close after EOF. There is no
+	// remaining write half in that case; an independent read/reset still reports.
+	if op, ok := err.(*net.OpError); ok {
+		if syscall, ok := op.Err.(*os.SyscallError); ok && syscall.Syscall == "shutdown" && syscall.Err == unix.ENOTCONN {
+			return false, nil
+		}
 	}
 	return false, e.failure(err, netproxy.OpCloseWrite)
 }

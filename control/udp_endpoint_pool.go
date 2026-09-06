@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	"github.com/samber/oops"
@@ -33,28 +34,9 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 	return netip.MustParseAddrPort(addr.String())
 }
 
-// Destination rewrites need one association per original destination so that two
-// destinations mapped to the same server cannot receive each other's replies.
-// An empty Destination retains ordinary full-cone behavior.
-type udpEndpointKey struct {
-	Source, Destination netip.AddrPort
-	Interface           uint32
-}
-
-func udpRoutingKey(source, destination netip.AddrPort, result *bpfRoutingResult) udpEndpointKey {
-	key := udpEndpointKey{Source: source}
-	if result.CaptureFlags&captureDestination != 0 {
-		key.Destination = destination
-		key.Interface = result.Ifindex
-	}
-	return key
-}
-
 type UdpEndpoint struct {
-	destination netip.AddrPort
-	domain      string
-	mitm        bool // The association belongs to HTTP; policy is selected per request.
-	conn        net.PacketConn
+	conn net.PacketConn
+	mitm bool // The first destination is served by the HTTP/3 packet bridge.
 	// mu protects the timer deadline and timer pointer.
 	mu            sync.Mutex
 	deadlineTimer *time.Timer
@@ -63,40 +45,69 @@ type UdpEndpoint struct {
 	NatTimeout    time.Duration
 	closed        atomic.Bool
 
-	origin    netproxy.FailureOrigin
-	dialer    *dialer.Dialer
-	statsPath stats.Path
-	traffic   *stats.Connection
+	origin             netproxy.FailureOrigin
+	dialer             *dialer.Dialer
+	statsPath          stats.Path
+	fallback           bool
+	traffic            *stats.Connection
+	lease              *netproxy.Lease
+	routeLease         *netproxy.Lease
+	policyLease        *netproxy.Lease
+	stopWatching       []func()
+	releaseDialer      func()
+	packetDialer       netproxy.Dialer
+	destinationMatcher *RoutingMatcher
+	destinationParam   RouteParam
+	destinations       map[netip.AddrPort]netip.AddrPort
+	// Source lock protects socket selection; mu also protects cleanup snapshots.
+	sockets map[netip.AddrPort]net.PacketConn
+	unbind  func()
+
+	// Only initialization uses these fields, under the source key lock.
+	routingResult *bpfRoutingResult
+	firstDst      netip.AddrPort
+	firstIfindex  uint32
+	sniffer       *sniffing.Sniffer
 }
 
-func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key udpEndpointKey, dst netip.AddrPort) error {
+func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort, conn net.PacketConn) error {
 	buf := pool.GetBuffer(consts.EthernetMtu)
 	defer pool.PutBuffer(buf)
 	for {
-		n, from, err := ue.conn.ReadFrom(buf)
+		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
-			if ue.IsClosed() && nativeSocket(ue.conn) && plainClosedError(err) || ue.mitm && errors.Is(err, net.ErrClosed) {
+			if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
+				return cause
+			}
+			if (ue.IsClosed() || ue.mitm && conn == ue.conn) && plainClosedError(err) {
 				break
 			}
-			if ue.mitm {
-				return oops.Wrapf(err, "HTTP/3 association ReadFrom")
-			}
 			err = netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpRead, Origin: ue.origin})
+			if temporaryUDPError(err) {
+				_ = conn.SetReadDeadline(time.Time{})
+				continue
+			}
+			if ue.mitm && conn == ue.conn {
+				return err
+			}
 			return oops.With(
 				"dialer", ue.dialer.Name,
 				"outbound", ue.statsPath.Outbound,
 				"network", ue.statsPath.Network.String(),
-				"src", key.Source.String(),
+				"src", src.String(),
 				"dst", dst.String(),
 			).Wrapf(err, "failed to ReadFrom")
 		}
-		if !endpointPool.refreshTimer(key, ue, time.Now()) {
+		if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
+			return cause
+		}
+		if !endpointPool.refreshTimer(src, ue, time.Now()) {
 			break
 		}
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
 			return netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: netproxy.OriginCaller})
 		}
-		if n > 0 && ue.traffic != nil {
+		if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
 			ue.traffic.RecordDownload(uint64(n))
 		}
 	}
@@ -117,6 +128,22 @@ func (ue *UdpEndpoint) retireLocked() {
 	if ue.closed.Swap(true) {
 		return
 	}
+	if ue.unbind != nil {
+		ue.unbind()
+		ue.unbind = nil
+	}
+	for _, stop := range ue.stopWatching {
+		stop()
+	}
+	ue.stopWatching = nil
+	if ue.releaseDialer != nil {
+		ue.releaseDialer()
+		ue.releaseDialer = nil
+	}
+	if ue.sniffer != nil {
+		_ = ue.sniffer.Close()
+		ue.sniffer = nil
+	}
 	ue.timerDeadline = time.Time{}
 	if ue.deadlineTimer != nil {
 		ue.deadlineTimer.Stop()
@@ -129,7 +156,33 @@ func (ue *UdpEndpoint) retireLocked() {
 func (ue *UdpEndpoint) Close() error {
 	ue.retire()
 	ue.closeTrafficAccounting()
-	return ue.conn.Close()
+	var err error
+	for _, conn := range ue.packetConnections() {
+		err = errors.Join(err, conn.Close())
+	}
+	return err
+}
+
+func (ue *UdpEndpoint) packetConnections() []net.PacketConn {
+	ue.mu.Lock()
+	defer ue.mu.Unlock()
+	if ue.sockets == nil {
+		if ue.conn == nil {
+			return nil
+		}
+		return []net.PacketConn{ue.conn}
+	}
+	connections := make([]net.PacketConn, 0, len(ue.sockets))
+	for _, conn := range ue.sockets {
+		connections = append(connections, conn)
+	}
+	return connections
+}
+
+func (ue *UdpEndpoint) interrupt() {
+	for _, conn := range ue.packetConnections() {
+		closeInBackground(conn)
+	}
 }
 
 func (ue *UdpEndpoint) closeTrafficAccounting() {
@@ -141,7 +194,7 @@ func (ue *UdpEndpoint) closeTrafficAccounting() {
 // UdpEndpointPool is a full-cone udp conn pool
 type UdpEndpointPool struct {
 	pool                 sync.Map
-	UdpEndpointKeyLocker common.KeyLocker[udpEndpointKey]
+	UdpEndpointKeyLocker common.KeyLocker[netip.AddrPort]
 }
 
 type UdpEndpointOptions struct {
@@ -155,37 +208,23 @@ type UdpEndpointOptions struct {
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
 
-// deliverMITM keeps only an existing, exact QUIC association reachable while
-// the owning plane drains. Never fall back to a full-cone endpoint or dial here.
-func (p *UdpEndpointPool) deliverMITM(key udpEndpointKey, data []byte) {
-	l, _ := p.UdpEndpointKeyLocker.Lock(key)
-	defer p.UdpEndpointKeyLocker.Unlock(key, l)
-	endpoint, ok := p.Get(key)
-	if !ok || !endpoint.mitm {
+// deliverMITM admits only the established first-destination bridge during
+// retirement. Other sockets keep the source's route, but cannot accept new work.
+func (p *UdpEndpointPool) deliverMITM(src, dst netip.AddrPort, ifindex uint32, data []byte) {
+	lock, _ := p.UdpEndpointKeyLocker.Lock(src)
+	defer p.UdpEndpointKeyLocker.Unlock(src, lock)
+	ue, ok := p.Get(src)
+	if !ok || !ue.mitm || ue.firstDst != dst || ue.firstIfindex != ifindex {
 		return
 	}
-	// MITM's in-memory packet bridge is nonblocking and wakes its reader on
-	// closure. A concurrently closing association needs no retry or redial.
-	n, _ := endpoint.conn.WriteTo(data, net.UDPAddrFromAddrPort(key.Destination))
-	if n > 0 && endpoint.traffic != nil {
-		endpoint.traffic.RecordUpload(uint64(n))
+	if connectionAbortCause(ue.lease, ue.policyLease, ue.routeLease) != nil {
+		p.removeInBackgroundLocked(src, ue)
+		return
 	}
+	_, _ = ue.conn.WriteTo(data, net.UDPAddrFromAddrPort(dst))
 }
 
-// A proven HTTP/3 or destination rewrite association takes precedence over the
-// source's ordinary full-cone endpoint, including later packets without SNI.
-func (p *UdpEndpointPool) keyForPacket(source, destination netip.AddrPort, ifindex uint32, scoped bool) udpEndpointKey {
-	key := udpEndpointKey{Source: source, Destination: destination, Interface: ifindex}
-	if !scoped {
-		_, scoped = p.pool.Load(key)
-	}
-	if scoped {
-		return key
-	}
-	return udpEndpointKey{Source: source}
-}
-
-func (p *UdpEndpointPool) remove(key udpEndpointKey, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	removed := p.removeLocked(key, endpoint)
 	if removed {
@@ -194,25 +233,25 @@ func (p *UdpEndpointPool) remove(key udpEndpointKey, endpoint *UdpEndpoint) {
 	p.UdpEndpointKeyLocker.Unlock(key, l)
 	endpoint.closeTrafficAccounting()
 	if removed {
-		_ = endpoint.conn.Close()
+		_ = endpoint.Close()
 	}
 }
 
-func (p *UdpEndpointPool) removeInBackground(key udpEndpointKey, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) removeInBackground(key netip.AddrPort, endpoint *UdpEndpoint) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	p.removeInBackgroundLocked(key, endpoint)
 	p.UdpEndpointKeyLocker.Unlock(key, l)
 }
 
-func (p *UdpEndpointPool) removeLocked(key udpEndpointKey, endpoint *UdpEndpoint) bool {
+func (p *UdpEndpointPool) removeLocked(key netip.AddrPort, endpoint *UdpEndpoint) bool {
 	return p.pool.CompareAndDelete(key, endpoint)
 }
 
-func (p *UdpEndpointPool) removeInBackgroundLocked(key udpEndpointKey, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) removeInBackgroundLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
 	if p.removeLocked(key, endpoint) {
 		endpoint.retire()
 		endpoint.closeTrafficAccounting()
-		closeInBackground(endpoint.conn)
+		endpoint.interrupt()
 	}
 }
 
@@ -220,19 +259,27 @@ func (p *UdpEndpointPool) removeInBackgroundLocked(key udpEndpointKey, endpoint 
 // stale Range observation from closing a replacement published for the key.
 func (p *UdpEndpointPool) closeAll() {
 	p.pool.Range(func(key, value any) bool {
-		endpoint := value.(*UdpEndpoint)
-		if p.pool.CompareAndDelete(key, endpoint) {
-			endpoint.retire()
-			endpoint.closeTrafficAccounting()
-			closeInBackground(endpoint.conn)
+		p.removeInBackground(key.(netip.AddrPort), value.(*UdpEndpoint))
+		return true
+	})
+}
+
+// Pending sniffers have no connection to preserve across routing-table reloads.
+func (p *UdpEndpointPool) removePending() {
+	p.pool.Range(func(key, value any) bool {
+		src, ue := key.(netip.AddrPort), value.(*UdpEndpoint)
+		lock, _ := p.UdpEndpointKeyLocker.Lock(src)
+		if ue.conn == nil {
+			p.removeInBackgroundLocked(src, ue)
 		}
+		p.UdpEndpointKeyLocker.Unlock(src, lock)
 		return true
 	})
 }
 
 // Get refreshes the current endpoint. Packet-processing callers hold the key
 // lock across Get and their packet use to serialize against timer expiry.
-func (p *UdpEndpointPool) Get(key udpEndpointKey) (udpEndpoint *UdpEndpoint, ok bool) {
+func (p *UdpEndpointPool) Get(key netip.AddrPort) (udpEndpoint *UdpEndpoint, ok bool) {
 	_ue, ok := p.pool.Load(key)
 	if !ok {
 		return nil, ok
@@ -254,13 +301,13 @@ func newUdpEndpoint(createOption *UdpEndpointOptions) *UdpEndpoint {
 	}
 }
 
-func (p *UdpEndpointPool) add(key udpEndpointKey, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) add(key netip.AddrPort, endpoint *UdpEndpoint) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	defer p.UdpEndpointKeyLocker.Unlock(key, l)
 	p.addLocked(key, endpoint)
 }
 
-func (p *UdpEndpointPool) addLocked(key udpEndpointKey, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
 	endpoint.mu.Lock()
 	if endpoint.closed.Load() {
 		endpoint.mu.Unlock()
@@ -274,11 +321,11 @@ func (p *UdpEndpointPool) addLocked(key udpEndpointKey, endpoint *UdpEndpoint) {
 		oldEndpoint := previous.(*UdpEndpoint)
 		oldEndpoint.retire()
 		oldEndpoint.closeTrafficAccounting()
-		closeInBackground(oldEndpoint.conn)
+		oldEndpoint.interrupt()
 	}
 }
 
-func (p *UdpEndpointPool) refreshTimerLocked(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) bool {
+func (p *UdpEndpointPool) refreshTimerLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
 	current, ok := p.pool.Load(key)
 	if !ok || current != endpoint || endpoint.IsClosed() {
 		return false
@@ -288,7 +335,7 @@ func (p *UdpEndpointPool) refreshTimerLocked(key udpEndpointKey, endpoint *UdpEn
 
 // refreshTimer is also used after a successful inbound read, where taking the
 // key lock would let an already-pending expiry win only due to lock scheduling.
-func (p *UdpEndpointPool) refreshTimer(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) bool {
+func (p *UdpEndpointPool) refreshTimer(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
 	endpoint.mu.Lock()
 	defer endpoint.mu.Unlock()
 	if endpoint.closed.Load() {
@@ -298,7 +345,7 @@ func (p *UdpEndpointPool) refreshTimer(key udpEndpointKey, endpoint *UdpEndpoint
 	return true
 }
 
-func (p *UdpEndpointPool) refreshTimerStateLocked(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) {
+func (p *UdpEndpointPool) refreshTimerStateLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) {
 	deadline := now.Add(endpoint.NatTimeout)
 	delay := time.Until(deadline)
 	endpoint.timerDeadline = deadline
@@ -311,11 +358,11 @@ func (p *UdpEndpointPool) refreshTimerStateLocked(key udpEndpointKey, endpoint *
 	endpoint.deadlineTimer.Reset(delay)
 }
 
-func (p *UdpEndpointPool) expire(key udpEndpointKey, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) expire(key netip.AddrPort, endpoint *UdpEndpoint) {
 	p.expireAt(key, endpoint, time.Time{})
 }
 
-func (p *UdpEndpointPool) expireAt(key udpEndpointKey, endpoint *UdpEndpoint, now time.Time) {
+func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
 	current, ok := p.pool.Load(key)
 	if !ok || current != endpoint {
@@ -348,6 +395,6 @@ func (p *UdpEndpointPool) expireAt(key udpEndpointKey, endpoint *UdpEndpoint, no
 	p.UdpEndpointKeyLocker.Unlock(key, l)
 	if removed {
 		endpoint.closeTrafficAccounting()
-		_ = endpoint.conn.Close()
+		_ = endpoint.Close()
 	}
 }

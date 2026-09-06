@@ -79,6 +79,9 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 	}
 	for i := range groups {
 		group := &groups[i]
+		if err := config.ValidateConnectionBehavior("reselect_behavior", group.ReselectBehavior); err != nil {
+			return nil, fmt.Errorf("group %q: %w", group.Name, err)
+		}
 		if isReservedTargetName(group.Name) {
 			return nil, fmt.Errorf("group name %q is reserved", group.Name)
 		}
@@ -89,8 +92,10 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 		compiler.ordered = append(compiler.ordered, definition)
 		compiler.byName[group.Name] = definition
 		if group.Policy != nil {
-			if _, err := dialer.NewDialerSelectionPolicyFromGroupParam(group); err != nil {
+			if policy, err := dialer.NewDialerSelectionPolicyFromGroupParam(group); err != nil {
 				return nil, fmt.Errorf("group %q: %w", group.Name, err)
+			} else if policy.Policy == consts.DialerSelectionPolicy_Random && group.ReselectBehavior == "close" {
+				return nil, fmt.Errorf("group %q: reselect_behavior close requires a policy with a stable selected node", group.Name)
 			}
 		}
 	}

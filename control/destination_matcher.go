@@ -6,8 +6,10 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -15,6 +17,18 @@ const (
 	captureDestination uint8 = 2
 	captureHTTPRequest uint8 = 4
 )
+
+// UDP lifetimes retain their predicate program across reloads and client-set
+// updates, without retaining the old plane through the outbound callback.
+func (m *RoutingMatcher) snapshotDestinations() *RoutingMatcher {
+	m.rulesMu.RLock()
+	defer m.rulesMu.RUnlock()
+	frozen := *m
+	frozen.lpmMatcher = slices.Clone(m.lpmMatcher)
+	frozen.rulesMu = new(sync.RWMutex)
+	frozen.outboundUsable = nil
+	return &frozen
+}
 
 func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error) {
 	if m == nil || len(m.destination.predicates) == 0 {

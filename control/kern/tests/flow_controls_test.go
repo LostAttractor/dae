@@ -118,6 +118,19 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 						if err != nil || result.Must != must || result.CaptureFlags != capture {
 							t.Fatalf("lost controls: %+v, %v", result, err)
 						}
+						if network.proto == 17 && program == obj.LanIngressL2 {
+							source := bpftestUdpRoutingCacheKey{Sport: key.Sport}
+							source.Sip = key.Sip
+							var cached bpftestUdpRoutingCacheValue
+							err := obj.UdpRoutingCacheMap.Lookup(source, &cached)
+							if test.port == 53 && !test.must && !test.capture {
+								if !errors.Is(err, ebpf.ErrKeyNotExist) {
+									t.Fatalf("intercepted DNS retained a UDP route: %+v, %v", cached, err)
+								}
+							} else if err != nil || cached.Result != result {
+								t.Fatalf("first UDP route was not pinned: %+v, %v", cached, err)
+							}
+						}
 						if (test.bump || test.capture) && result.Outbound != uint8(consts.OutboundControlPlaneRouting) {
 							t.Fatalf("capture/bump did not defer routing: %+v", result)
 						}

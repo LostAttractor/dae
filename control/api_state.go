@@ -73,12 +73,8 @@ func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error
 	// Keep the live choice and its saved override together, including rollback.
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
-	previous := group.Selection()
-	if err := group.SetSelection(id); err != nil {
+	if err := group.ChangeSelection(id, func() error { return c.settings.SetSelection(group.Name, id) }); err != nil {
 		return api.SelectorState{}, err
-	}
-	if err := c.settings.SetSelection(group.Name, id); err != nil {
-		return api.SelectorState{}, errors.Join(err, group.SetSelection(previous))
 	}
 	log.WithFields(log.Fields{"event": "selector_update", "group": group.Name, "node_id": group.Selection(), "source_ip": source, "overridden": id != ""}).Info("API settings changed")
 	return c.selectorState(group), nil
@@ -106,11 +102,24 @@ func (c *ControlPlane) UpdateClientSet(name string, ip netip.Addr, mac [6]byte, 
 		} else {
 			next = slices.Delete(next, index, index+1)
 		}
-		if err := c.setClientMembers(name, previous, next); err != nil {
-			return api.DeviceState{}, err
+		changed := make(map[[6]byte]bool)
+		if slices.Contains(c.routingMatcherBuilder.ClientSets(), name) {
+			changed[mac] = true
 		}
-		if err := c.settings.SetMembers(name, next); err != nil {
-			return api.DeviceState{}, errors.Join(err, c.setClientMembers(name, next, previous))
+		err := c.changeDeviceRoutes(changed, func(commit func() error) error {
+			if err := c.setClientMembers(name, previous, next); err != nil {
+				return err
+			}
+			if err := c.settings.SetMembers(name, next); err != nil {
+				return errors.Join(err, c.setClientMembers(name, next, previous))
+			}
+			if err := commit(); err != nil {
+				return errors.Join(err, c.settings.SetMembers(name, previous), c.setClientMembers(name, next, previous))
+			}
+			return nil
+		})
+		if err != nil {
+			return api.DeviceState{}, err
 		}
 		log.WithFields(log.Fields{"event": "client_set_update", "set": name, "mac": net.HardwareAddr(mac[:]).String(), "source_ip": ip.String(), "joined": joined}).Info("API settings changed")
 	}

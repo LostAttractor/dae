@@ -58,19 +58,20 @@ var MITMDesc = Desc{
 }
 
 var GlobalDesc = Desc{
-	"api_port":            "HTTP port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",
-	"api_token":           "Administrator bearer token required to change selector groups. Empty disables selector writes; current-device controls require a directly connected LAN client, but no token.",
-	"tproxy_port":         "Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.",
-	"tproxy_port_protect": "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
-	"so_mark_from_dae":    "SO_MARK applied to traffic and hostname lookups sent by dae for policy routing. Zero or unset uses the reserved internal mark 0x100. A non-zero value overrides that mark and requires a restart to change. Ensure local fwmark rules do not accidentally match the selected value. Values containing the reserved tproxy bit 0x08000000 are rejected. The mark alone is never trusted as control-plane identity. Marked lookups use Go's resolver; hostname sources provided only by libc NSS modules are not supported.",
-	"log_level":           "Log level: error, warn, info, debug, trace.",
-	"udp_check_dns":       "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
-	"check_interval":      "Interval of connectivity checks while the node is alive.",
-	"check_interval_max":  "Maximum interval for failed health checks and background connectivity-mode support retries.",
-	"check_tolerance":     "Ignored during startup and once for each newly confirmed connectivity mode; otherwise a new node must improve latency by more than this value.",
-	"lan_interface":       "The LAN interface to bind. Use it if you want to proxy LAN.",
-	"wan_interface":       "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to follow host default routes.",
-	"allow_insecure":      "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
+	"api_port":              "HTTP port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",
+	"api_token":             "Administrator bearer token required to change selector groups. Empty disables selector writes; current-device controls require a directly connected LAN client, but no token.",
+	"tproxy_port":           "Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.",
+	"tproxy_port_protect":   "Set it true to protect tproxy port from unsolicited traffic. Set it false to allow users to use self-managed iptables tproxy rules.",
+	"so_mark_from_dae":      "SO_MARK applied to traffic and hostname lookups sent by dae for policy routing. Zero or unset uses the reserved internal mark 0x100. A non-zero value overrides that mark and requires a restart to change. Ensure local fwmark rules do not accidentally match the selected value. Values containing the reserved tproxy bit 0x08000000 are rejected. The mark alone is never trusted as control-plane identity. Marked lookups use Go's resolver; hostname sources provided only by libc NSS modules are not supported.",
+	"log_level":             "Log level: error, warn, info, debug, trace.",
+	"udp_check_dns":         "This DNS will be used to check UDP connectivity of nodes. And if dns_upstream below contains tcp, it also be used to check TCP DNS connectivity of nodes.\nThis DNS should have both IPv4 and IPv6 if you have double stack in local.",
+	"check_interval":        "Interval of connectivity checks while the node is alive.",
+	"check_interval_max":    "Maximum interval for failed health checks and background connectivity-mode support retries.",
+	"check_tolerance":       "Ignored during startup and once for each newly confirmed connectivity mode; otherwise a new node must improve latency by more than this value.",
+	"lan_interface":         "The LAN interface to bind. Use it if you want to proxy LAN.",
+	"wan_interface":         "The WAN interface to bind. Use it if you want to proxy localhost. Use \"auto\" to follow host default routes.",
+	"allow_insecure":        "Allow insecure TLS certificates. It is not recommended to turn it on unless you have to.",
+	"route_change_behavior": "Keep (default) or close old connections when a device joins/leaves a routing-referenced client set, or when a group recovers from direct fallback. Membership changes affect that device across TCP/UDP and IPv4/IPv6; recovery affects only that group/network's fallback connections.",
 	"dial_mode": `Optional values of dial_mode are:
 1. "ip". Dial proxy using the IP from DNS directly. This allows your ipv4, ipv6 to choose the optimal path respectively, and makes the IP version requested by the application meet expectations. For example, if you use curl -4 ip.sb, you will request IPv4 via proxy and get a IPv4 echo. And curl -6 ip.sb will request IPv6. This may solve some weird full-cone problem if your are be your node support that.Sniffing will be disabled in this mode.
 2. "domain". Dial proxy using the domain from sniffing. This will relieve DNS pollution problem to a great extent if have impure DNS environment. Generally, this mode brings faster proxy response time because proxy will re-resolve the domain in remote, thus get better IP result to connect. This policy does not impact routing. That is to say, domain rewrite will be after traffic split of routing and dae will not re-route it.
@@ -97,7 +98,8 @@ Available functions: qname, qtype, ip, upstream`,
 }
 
 var GroupDesc = Desc{
-	"path": `Each statement declares one candidate proxy path. Join stages from client to destination with ->. A stage can be "filter: expression", "node(name)", or "group(name)". Filter stages expand all matching nodes; node references require one uniquely named node; group references expand a policyless group. Multiple stages form a Cartesian product. Stage priority and add_latency annotations are accumulated across the complete path.`,
+	"reselect_behavior": "How to handle existing connections when the selected node changes: keep (default) or close. Applies to the changed TCP/UDP and IPv4/IPv6 combination, including retained fallback connections belonging to this group. Not supported with policy: random. Not inherited through group(name).",
+	"path":              `Each statement declares one candidate proxy path. Join stages from client to destination with ->. A stage can be "filter: expression", "node(name)", or "group(name)". Filter stages expand all matching nodes; node references require one uniquely named node; group references expand a policyless group. Multiple stages form a Cartesian product. Stage priority and add_latency annotations are accumulated across the complete path.`,
 	"filter": `Filter nodes from the global node pool defined by the "subscription" and "node" sections. A standalone filter declares a one-stage path. Use "filter: name(name)" for property matching; the strict "node(name)" reference stage instead requires one uniquely named node.
 Available functions: name, subtag, link, protocol. Not operator is supported.
 Available keys in name, link and protocol functions: keyword, regex. No key indicates full match.
