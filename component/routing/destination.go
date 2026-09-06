@@ -3,6 +3,7 @@
 package routing
 
 import (
+	"github.com/daeuniverse/dae/pkg/config_parser"
 	"math/rand/v2"
 	"net/netip"
 )
@@ -11,9 +12,10 @@ import (
 // Proxy enables the rewrite for proxy outbounds as well as direct traffic.
 // Callers supply normalized IPs and at least one target.
 type DestinationRewrite struct {
-	From  netip.Addr
-	To    []netip.Addr
-	Proxy bool
+	Filter []*config_parser.Function
+	From   netip.Addr
+	To     []netip.Addr
+	Proxy  bool
 }
 
 // DestinationRewrites is ordered: the first matching rule wins, including

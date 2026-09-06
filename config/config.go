@@ -205,11 +205,13 @@ type Routing struct {
 type Config struct {
 	Global       Global         `mapstructure:"global" required:"" desc:"GlobalDesc"`
 	Surge        Surge          `mapstructure:"surge" desc:"SurgeDesc"`
+	MITM         MITM           `mapstructure:"mitm" desc:"MITMDesc"`
 	Subscription []Subscription `mapstructure:"subscription"`
 	Node         []Node         `mapstructure:"node"`
 	Group        []Group        `mapstructure:"group" desc:"GroupDesc"`
 	Client       []Client       `mapstructure:"client" desc:"ClientDesc"`
 	Routing      Routing        `mapstructure:"routing" required:""`
+	Rules        Rules          `mapstructure:"rules"`
 	Dns          Dns            `mapstructure:"dns" desc:"DnsDesc"`
 }
 
@@ -236,6 +238,7 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	}
 
 	conf = &Config{}
+
 	// Use specified parser to parse corresponding section.
 	_val := reflect.ValueOf(conf)
 	val := _val.Elem()
@@ -286,6 +289,10 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	if err = conf.Surge.Validate(); err != nil {
 		return nil, err
 	}
+	if _, err = conf.Rules.Destinations(); err != nil {
+		return nil, err
+	}
+
 	for _, patch := range patches {
 		if err = patch(conf); err != nil {
 			return nil, err

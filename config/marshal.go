@@ -26,6 +26,7 @@ func (c *Config) Marshal(indentSpace int) (b []byte, err error) {
 	v := reflect.ValueOf(*c)
 	t := v.Type()
 	for i := 0; i < v.NumField(); i++ {
+
 		k, ok := t.Field(i).Tag.Lookup("mapstructure")
 		if !ok {
 			return nil, fmt.Errorf("section %v misses tag mapstructure", t.Field(i).Name)
@@ -73,6 +74,9 @@ func (m *Marshaller) marshalStringList(from reflect.Value, depth int, keyable bo
 func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) (err error) {
 	m.writeLine(depth, name+" {")
 	defer m.writeLine(depth, "}")
+	if from.Type() == reflect.TypeOf(MITM{}) {
+		return m.marshalMITM(from.Interface().(MITM), depth+1)
+	}
 	if from.Type() == reflect.TypeOf([]Node{}) {
 		return m.marshalNodes(from.Interface().([]Node), depth+1)
 	}
