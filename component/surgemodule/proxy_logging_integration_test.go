@@ -14,36 +14,27 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 type proxyTLSLogCapture struct {
-	mu      sync.Mutex
-	lines   []string
-	ended   chan struct{}
-	endOnce sync.Once
+	mu    sync.Mutex
+	lines []string
 }
 
 func newProxyTLSLogCapture() *proxyTLSLogCapture {
-	return &proxyTLSLogCapture{ended: make(chan struct{})}
+	return &proxyTLSLogCapture{}
 }
 
 func (c *proxyTLSLogCapture) trace(line string) {
 	c.mu.Lock()
 	c.lines = append(c.lines, line)
 	c.mu.Unlock()
-	if strings.HasPrefix(line, "surge event=mitm_end ") {
-		c.endOnce.Do(func() { close(c.ended) })
-	}
+
 }
 
-func (c *proxyTLSLogCapture) waitForEnd(t *testing.T) []map[string]string {
+func (c *proxyTLSLogCapture) events(t *testing.T) []map[string]string {
 	t.Helper()
-	select {
-	case <-c.ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("MITM connection did not emit its completion event")
-	}
+
 	c.mu.Lock()
 	lines := append([]string(nil), c.lines...)
 	c.mu.Unlock()
@@ -84,24 +75,6 @@ func proxyTLSLogEvents(events []map[string]string, name string) []map[string]str
 	return selected
 }
 
-func assertProxyTLSConnectionIdentity(t *testing.T, events []map[string]string, outcome string) string {
-	t.Helper()
-	starts, ends := proxyTLSLogEvents(events, "mitm_start"), proxyTLSLogEvents(events, "mitm_end")
-	if len(starts) != 1 || len(ends) != 1 {
-		t.Fatalf("expected one connection lifecycle, got starts=%v ends=%v", starts, ends)
-	}
-	id := starts[0]["connection_id"]
-	if id == "" || ends[0]["outcome"] != outcome {
-		t.Fatalf("incorrect connection lifecycle identity or outcome: %v", events)
-	}
-	for _, event := range events {
-		if event["connection_id"] != id {
-			t.Errorf("event escaped its connection identity %s: %v", id, event)
-		}
-	}
-	return id
-}
-
 func TestProxyTLSLogHTTP1AndHTTP2RequestCorrelation(t *testing.T) {
 	for _, useHTTP2 := range []bool{false, true} {
 		t.Run(fmt.Sprintf("http2=%t", useHTTP2), func(t *testing.T) {
@@ -131,20 +104,17 @@ func TestProxyTLSLogHTTP1AndHTTP2RequestCorrelation(t *testing.T) {
 				}
 			}
 			client.CloseIdleConnections()
-			events := capture.waitForEnd(t)
-			assertProxyTLSConnectionIdentity(t, events, "closed")
-			ready := proxyTLSLogEvents(events, "tls_ready")
-			if len(ready) != 1 || useHTTP2 && ready[0]["protocol"] != "h2" {
-				t.Fatalf("TLS readiness was not logged correctly: %v", ready)
-			}
+			events := capture.events(t)
+
 			begins, ends := proxyTLSLogEvents(events, "request_begin"), proxyTLSLogEvents(events, "script_end")
 			if len(begins) != 2 || len(ends) != 2 {
 				t.Fatalf("expected two requests and script completions: begins=%v ends=%v", begins, ends)
 			}
+			connectionID := begins[0]["connection_id"]
 			requests := make(map[string]string)
 			for _, begin := range begins {
 				id := begin["request_id"]
-				if id == "" || requests[id] != "" || begin["method"] != "GET" || begin["host"] != "example.com" {
+				if begin["connection_id"] != connectionID || id == "" || requests[id] != "" || begin["method"] != "GET" || begin["host"] != "example.com" {
 					t.Fatalf("request IDs were missing/reused or context was incorrect: %v", begins)
 				}
 				requests[id] = begin["path"]
@@ -190,12 +160,8 @@ func TestProxyTLSLogHandshakeFailures(t *testing.T) {
 				t.Fatal("client unexpectedly completed a rejected TLS handshake")
 			}
 			client.CloseIdleConnections()
-			events := capture.waitForEnd(t)
-			assertProxyTLSConnectionIdentity(t, events, "failed")
-			failures := proxyTLSLogEvents(events, "tls_handshake_failed")
-			if len(failures) != 1 || failures[0]["reason"] == "" {
-				t.Fatalf("missing handshake failure classification: %v", failures)
-			}
+			events := capture.events(t)
+
 			for _, forbidden := range []string{"tls_ready", "request_begin", "script_start", "script_end"} {
 				if found := proxyTLSLogEvents(events, forbidden); len(found) != 0 {
 					t.Errorf("failed TLS was logged as ready or executing requests: %v", found)

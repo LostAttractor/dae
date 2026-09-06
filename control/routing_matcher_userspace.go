@@ -8,7 +8,6 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 	"net"
 	"net/netip"
 	"sync"
@@ -19,12 +18,12 @@ import (
 )
 
 type RoutingMatcher struct {
+	destinations  []destinationPredicate
 	lpmMatcher    []*trie.Trie
 	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
-	matches      []bpfMatchSet
-	rulesMu      *sync.RWMutex
-	captureIndex int // -1 when there is no injected capture rule.
+	matches []bpfMatchSet
+	rulesMu *sync.RWMutex
 
 	// outboundUsable reports whether an outbound group can serve the given
 	// network type; it backs skip_while_noalive rule evaluation. It may be
@@ -34,8 +33,8 @@ type RoutingMatcher struct {
 
 // Match is modified from kern/tproxy.c; please keep sync. An optional routing
 // bitmap replaces hostname matching. Supplying a second (bump) bitmap models
-// the kernel's uncertain domain matches while skipping Surge's injected
-// capture rule, so the original routing decision can be reconstructed.
+// the kernel's uncertain domain matches. Capture actions do not change
+// userspace routing decisions.
 func (m *RoutingMatcher) Match(
 	sourceAddr []byte,
 	destAddr []byte,
@@ -50,45 +49,70 @@ func (m *RoutingMatcher) Match(
 	mac []byte,
 	trustedDomainBitmap ...[]uint32,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
-	if len(sourceAddr) != net.IPv6len || len(destAddr) != net.IPv6len || len(mac) != net.IPv6len {
+	m.rulesMu.RLock()
+	defer m.rulesMu.RUnlock()
+	return m.matchRange(0, len(m.matches), routingInput{
+		sourceAddr:          sourceAddr,
+		destAddr:            destAddr,
+		sourcePort:          sourcePort,
+		destPort:            destPort,
+		ipVersion:           ipVersion,
+		l4proto:             l4proto,
+		domain:              domain,
+		processName:         processName,
+		ifindex:             ifindex,
+		tos:                 tos,
+		mac:                 mac,
+		trustedDomainBitmap: trustedDomainBitmap,
+	})
+}
+
+type routingInput struct {
+	sourceAddr, destAddr, mac []byte
+	sourcePort, destPort      uint16
+	ipVersion                 consts.IpVersionType
+	l4proto                   consts.L4ProtoType
+	domain                    string
+	processName               [16]uint8
+	ifindex                   uint32
+	tos                       uint8
+	trustedDomainBitmap       [][]uint32
+}
+
+// Caller holds rulesMu. Absolute indices keep all predicates on the same
+// domain bitmap and dynamic client/interface tables.
+func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+	if len(p.sourceAddr) != net.IPv6len || len(p.destAddr) != net.IPv6len || len(p.mac) != net.IPv6len {
 		return 0, 0, false, fmt.Errorf("bad address length")
 	}
 
 	bin128s := make([]string, consts.MatchType_Mac+1)
-	bin128s[consts.MatchType_IpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(destAddr)), 128))
-	bin128s[consts.MatchType_SourceIpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(sourceAddr)), 128))
-	bin128s[consts.MatchType_Mac] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(mac)), 128))
+	bin128s[consts.MatchType_IpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(p.destAddr)), 128))
+	bin128s[consts.MatchType_SourceIpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(p.sourceAddr)), 128))
+	bin128s[consts.MatchType_Mac] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(p.mac)), 128))
 
 	var domainMatchBitmap []uint32
 	var domainBumpBitmap []uint32
-	simulateKernel := len(trustedDomainBitmap) > 1
+	simulateKernel := len(p.trustedDomainBitmap) > 1
 	if simulateKernel {
-		domainBumpBitmap = trustedDomainBitmap[1]
+		domainBumpBitmap = p.trustedDomainBitmap[1]
 	}
-	if len(trustedDomainBitmap) > 0 && trustedDomainBitmap[0] != nil {
-		domainMatchBitmap = trustedDomainBitmap[0]
-	} else if domain != "" {
-		domainMatchBitmap = m.domainMatcher.MatchDomainBitmap(domain)
+	if len(p.trustedDomainBitmap) > 0 && p.trustedDomainBitmap[0] != nil {
+		domainMatchBitmap = p.trustedDomainBitmap[0]
+	} else if p.domain != "" {
+		domainMatchBitmap = m.domainMatcher.MatchDomainBitmap(p.domain)
 	}
-	m.rulesMu.RLock()
-	defer m.rulesMu.RUnlock()
 
 	goodSubrule := false
 	uncertainSubrule := false
 	needControlPlaneRouting := false
 	badRule := false
-	for i, match := range m.matches {
+	for i := start; i < end; i++ {
+		match := m.matches[i]
 		if badRule || goodSubrule {
 			goto beforeNextLoop
 		}
 		switch consts.MatchType(match.Type) {
-		case consts.MatchType_Capture:
-			index := binary.LittleEndian.Uint32(match.Value[:])
-			goodSubrule = index != math.MaxUint32 && m.lpmMatcher[index].HasPrefix(bin128s[consts.MatchType_IpSet])
-			if match.Value[4] != 0 && l4proto&consts.L4ProtoType_TCP != 0 {
-				goodSubrule = goodSubrule || len(domainMatchBitmap) > i/32 && domainMatchBitmap[i/32]&(1<<uint(i%32)) != 0 ||
-					len(domainBumpBitmap) > i/32 && domainBumpBitmap[i/32]&(1<<uint(i%32)) != 0
-			}
 		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
 			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
 			m := m.lpmMatcher[lpmIndex]
@@ -103,36 +127,36 @@ func (m *RoutingMatcher) Match(
 			}
 		case consts.MatchType_Port:
 			portStart, portEnd := ParsePortRange(match.Value[:])
-			if destPort >= portStart &&
-				destPort <= portEnd {
+			if p.destPort >= portStart &&
+				p.destPort <= portEnd {
 				goodSubrule = true
 			}
 		case consts.MatchType_SourcePort:
 			portStart, portEnd := ParsePortRange(match.Value[:])
-			if sourcePort >= portStart &&
-				sourcePort <= portEnd {
+			if p.sourcePort >= portStart &&
+				p.sourcePort <= portEnd {
 				goodSubrule = true
 			}
 		case consts.MatchType_IpVersion:
 			// LittleEndian
-			if ipVersion&consts.IpVersionType(match.Value[0]) > 0 {
+			if p.ipVersion&consts.IpVersionType(match.Value[0]) > 0 {
 				goodSubrule = true
 			}
 		case consts.MatchType_L4Proto:
 			// LittleEndian
-			if l4proto&consts.L4ProtoType(match.Value[0]) > 0 {
+			if p.l4proto&consts.L4ProtoType(match.Value[0]) > 0 {
 				goodSubrule = true
 			}
 		case consts.MatchType_ProcessName:
-			if processName[0] != 0 && match.Value == processName {
+			if p.processName[0] != 0 && match.Value == p.processName {
 				goodSubrule = true
 			}
 		case consts.MatchType_IfIndex:
-			if ifindex != 0 && ifindex == binary.LittleEndian.Uint32(match.Value[:]) {
+			if p.ifindex != 0 && p.ifindex == binary.LittleEndian.Uint32(match.Value[:]) {
 				goodSubrule = true
 			}
 		case consts.MatchType_Dscp:
-			if tos == match.Value[0] {
+			if p.tos == match.Value[0] {
 				goodSubrule = true
 			}
 		case consts.MatchType_Fallback:
@@ -164,7 +188,11 @@ func (m *RoutingMatcher) Match(
 			// Tail of a rule (line).
 			// Decide whether to hit.
 			if !badRule {
-				if outbound == consts.OutboundControlPlaneRouting && (!simulateKernel || i == m.captureIndex) {
+				if match.CaptureFlags != 0 {
+					needControlPlaneRouting = false
+					continue
+				}
+				if outbound == consts.OutboundControlPlaneRouting && !simulateKernel {
 					needControlPlaneRouting = false
 					continue
 				}
@@ -172,7 +200,7 @@ func (m *RoutingMatcher) Match(
 					outbound >= consts.OutboundUserDefinedMin &&
 					outbound < consts.OutboundMustRules &&
 					m.outboundUsable != nil &&
-					!m.outboundUsable(uint8(outbound), l4proto, ipVersion) {
+					!m.outboundUsable(uint8(outbound), p.l4proto, p.ipVersion) {
 					// The rule is conditional on the connectivity of the
 					// target outbound group. Treat an unavailable group as
 					// not hit and continue with the next rule.

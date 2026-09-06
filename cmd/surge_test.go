@@ -12,12 +12,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitmca"
+	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 )
 
@@ -66,18 +67,17 @@ test = type=http-request,pattern=^https://target\.test/script,script-path=../scr
 		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
 	}
 	conf := config.Surge{
-		Enabled: true, Modules: []config.ModuleSource{{Name: "cached", Link: "https-file://127.0.0.1:1/entry"}},
-		CACert: "ca.pem", CAKey: "ca.key",
+		Modules:       []config.ModuleSource{{Name: "cached", Link: "https-file://127.0.0.1:1/entry"}},
 		ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 	}
 	for _, cached := range []bool{false, true} {
 		offline.Store(cached)
-		engine, err := loadSurge(context.Background(), conf, client)
+		engine, err := loadSurge(context.Background(), conf, client, "test")
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler, closeTransport := engine.Handler("https", "target.test", 443, func(context.Context, string, string) (net.Conn, error) {
+		handler, closeTransport := loadedSurgeTestHost(t, engine).Handler("https", "target.test", 443, func(context.Context, string, string) (net.Conn, error) {
 			return nil, errors.New("downloaded resources should produce local responses")
 		})
 		for _, test := range []struct {
@@ -100,7 +100,7 @@ test = type=http-request,pattern=^https://target\.test/script,script-path=../scr
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := loadSurge(ctx, conf, client); !errors.Is(err, context.Canceled) {
+	if _, err := loadSurge(ctx, conf, client, "test"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled startup used cache: %v", err)
 	}
 }
@@ -163,16 +163,16 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 				}
 			}
 			conf := config.Surge{
-				Enabled: true, Modules: []config.ModuleSource{{Link: "file:modules/example.sgmodule"}},
-				CACert: "ca/root.pem", CAKey: "ca/root.key", Store: "state/persistent.json",
+				Modules:       []config.ModuleSource{{Link: "file:modules/example.sgmodule"}},
+				Store:         "state/persistent.json",
 				ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
 				MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 			}
 			if test.absolute {
 				conf.Modules = []config.ModuleSource{{Link: "file://" + modulePath}}
-				conf.CACert, conf.CAKey, conf.Store = certPath, keyPath, storePath
+				conf.Store = storePath
 			}
-			engine, err := loadSurge(context.Background(), conf, http.DefaultClient)
+			engine, err := loadSurge(context.Background(), conf, http.DefaultClient, "test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -180,7 +180,7 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 				t.Fatal("module MITM hostname was not loaded")
 			}
 			upstreamCalled := false
-			handler, closeTransport := engine.Handler("https", "example.test", 443, func(context.Context, string, string) (net.Conn, error) {
+			handler, closeTransport := loadedSurgeTestHost(t, engine).Handler("https", "example.test", 443, func(context.Context, string, string) (net.Conn, error) {
 				upstreamCalled = true
 				return nil, errors.New("script should return a synthetic response")
 			})
@@ -214,38 +214,12 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 	}
 }
 
-func TestLoadSurgeMissingCADoesNotCreateDirectories(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "absent", "cache")
-	t.Setenv("DAE_LOCATION_CACHE", dir)
-	conf := config.Surge{
-		Enabled: true, Modules: []config.ModuleSource{{Link: "file:modules/example.sgmodule"}},
-		CACert: "mitm-ca.pem", CAKey: "mitm-ca.key", Store: "surge-store.json",
-		ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
-		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
+func loadedSurgeTestHost(t *testing.T, engine *surgemodule.Engine) *mitm.Host {
+	t.Helper()
+	host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := loadSurge(context.Background(), conf, http.DefaultClient); err == nil {
-		t.Fatal("loading an absent CA unexpectedly succeeded")
-	}
-	if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
-		t.Fatalf("reading missing configuration created directories: %v", err)
-	}
-}
-
-func TestLoadSurgeRejectsClientSelectorBeforeLoadingResources(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "absent", "cache")
-	t.Setenv("DAE_LOCATION_CACHE", dir)
-	conf := config.Surge{
-		Enabled: true, Modules: []config.ModuleSource{{Link: "file:modules/example.sgmodule"}},
-		ClientSourceAddress: []string{"192.0.2.1/999"},
-		CACert:              "mitm-ca.pem", CAKey: "mitm-ca.key", Store: "surge-store.json",
-		ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
-		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
-	}
-	_, err := loadSurge(context.Background(), conf, http.DefaultClient)
-	if err == nil || !strings.Contains(err.Error(), "client_source_address") {
-		t.Fatalf("invalid client selector did not fail before CA/module loading: %v", err)
-	}
-	if _, err := os.Stat(filepath.Dir(dir)); !os.IsNotExist(err) {
-		t.Fatalf("invalid client selector created cache directories: %v", err)
-	}
+	t.Cleanup(func() { _ = host.Close() })
+	return host
 }

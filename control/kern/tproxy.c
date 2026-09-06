@@ -78,6 +78,9 @@
 #define OUTBOUND_LOGICAL_MASK 0xFE
 
 #define ROUTE_RESULT_SKIPPED_NOALIVE 0x20000000000ULL
+#define ROUTE_RESULT_CAPTURE_SHIFT 42
+#define CAPTURE_HTTP 1
+#define CAPTURE_DESTINATION 2
 
 #define TPROXY_MARK 0x8000000
 
@@ -162,10 +165,15 @@ struct routing_result {
 	__u32 pid;
 	__u32 ifindex;
 	__u8 dscp;
+	/* Consume two previously zeroed padding bytes; preserve pinned-map ABI. */
+	__u8 capture_flags;
+	__u8 protocol;
 };
 
 _Static_assert(sizeof(struct routing_result) == 40,
 	       "routing_result pinned-map ABI changed unexpectedly");
+_Static_assert(__builtin_offsetof(struct routing_result, capture_flags) == 37,
+	       "capture flags must occupy the previously zeroed padding");
 
 struct tuples_key {
 	union ip6 sip;
@@ -295,7 +303,6 @@ enum __attribute__((packed)) MatchType {
 	MatchType_IfIndex,
 	MatchType_Dscp,
 	MatchType_Fallback,
-	MatchType_Capture,
 };
 
 enum L4ProtoType {
@@ -328,10 +335,6 @@ struct match_set {
 		__u8 __value[16]; // Placeholder for bpf2go.
 
 		__u32 index;
-		struct {
-			__u32 ip_index;
-			bool domains;
-		} capture;
 		struct port_range port_range;
 		enum L4ProtoType l4proto_type;
 		enum IpVersionType ip_version;
@@ -346,6 +349,7 @@ struct match_set {
 	// If set, the rule is skipped (treated as not hit) when the target
 	// outbound group is unavailable.
 	bool skip_while_noalive;
+	__u8 capture_flags;
 	__u32 mark;
 };
 
@@ -877,6 +881,7 @@ struct route_ctx {
 	// tail bumps traffic to the control plane only if every later AND
 	// subrule also matches.
 	volatile bool need_control_plane_routing : 1;
+	__u8 capture_flags;
 };
 
 static int route_step(__u32 index, struct route_ctx *ctx)
@@ -916,28 +921,6 @@ static int route_step(__u32 index, struct route_ctx *ctx)
 		goto before_next_loop;
 	}
 	switch (match_set->type) {
-	case MatchType_Capture:
-		/* One slot captures Host IPs and TCP MITM domains. */
-		if (match_set->capture.ip_index != (__u32)-1) {
-			lpm = bpf_map_lookup_elem(&lpm_array_map,
-						  &match_set->capture.ip_index);
-			if (unlikely(!lpm)) {
-				ctx->result = -EFAULT;
-				return 1;
-			}
-			if (bpf_map_lookup_elem(lpm, &ctx->lpm_key_daddr)) {
-				ctx->goodsubrule = true;
-				break;
-			}
-		}
-		if (match_set->capture.domains && (_l4proto_type & L4ProtoType_TCP)) {
-			domain = bpf_map_lookup_elem(&domain_routing_map,
-						     ctx->params->daddr);
-			if (domain && ((domain->routing[index / 32] |
-					domain->bump[index / 32]) >> (index % 32)) & 1)
-				ctx->goodsubrule = true;
-		}
-		break;
 	case MatchType_Mac:
 		lpm_key = &ctx->lpm_key_mac;
 		goto lookup_lpm;
@@ -1101,6 +1084,12 @@ before_next_loop:
 		// Tail of a rule (line).
 		// Decide whether to hit.
 		if (!ctx->badrule) {
+			/* Capturing never replaces the ordinary outbound/mark/must. */
+			if (match_set->capture_flags) {
+				ctx->capture_flags |= match_set->capture_flags;
+				ctx->need_control_plane_routing = false;
+				return 0;
+			}
 #ifdef __DEBUG_ROUTING
 			bpf_printk(
 				"MATCHED: match_set->type: %u, match_set->not: %d",
@@ -1157,7 +1146,8 @@ before_next_loop:
 			} else {
 				bool must = ctx->must || match_set->must;
 
-				if (!must && ctx->params->isdns) {
+				if (!must && ctx->params->isdns &&
+				    !(ctx->capture_flags & CAPTURE_DESTINATION)) {
 					ctx->result =
 						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 						((__s64)match_set->mark << 8) |
@@ -1230,6 +1220,7 @@ static __always_inline __s64 route(const struct route_params *params)
 			break;
 	}
 	if (ctx.result >= 0) {
+		ctx.result |= (__s64)ctx.capture_flags << ROUTE_RESULT_CAPTURE_SHIFT;
 		if (ctx.skipped_noalive)
 			ctx.result |= ROUTE_RESULT_SKIPPED_NOALIVE;
 		return ctx.result;
@@ -1422,7 +1413,7 @@ static __always_inline int do_tproxy_first_fragment(
 
 	__s64 route_result = route(&params);
 
-	if (route_result < 0)
+	if (route_result < 0 || (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
 		return TCX_DROP;
 	__u8 outbound = route_result;
 	__u32 mark = route_result >> 8;
@@ -1507,7 +1498,8 @@ static __always_inline int do_tproxy_unfragmented(
 					    &routing_tuples_key);
 
 		if (routing_result) {
-			if (routing_result->outbound == OUTBOUND_DIRECT) {
+			if (routing_result->outbound == OUTBOUND_DIRECT &&
+			    !routing_result->capture_flags) {
 				// Restore the policy-routing mark for the rest of a
 				// direct(mark:N) TCP flow.
 				skb->mark = routing_result->mark;
@@ -1559,6 +1551,7 @@ static __always_inline int do_tproxy_unfragmented(
 	bool udp_cache_hit = false;
 	bool udp_cacheable = true;
 
+
 	if (l4proto == IPPROTO_UDP) {
 		udp_cache_scratch = bpf_map_lookup_elem(
 			&udp_routing_cache_scratch_map, &zero_key);
@@ -1571,11 +1564,13 @@ static __always_inline int do_tproxy_unfragmented(
 					    &udp_cache_scratch->key);
 
 		if (cached && cached->cached_until > bpf_ktime_get_ns() &&
-		    cached->result.outbound != OUTBOUND_DIRECT &&
+		    (cached->result.outbound != OUTBOUND_DIRECT ||
+		     cached->result.capture_flags) &&
 		    cached->result.outbound != OUTBOUND_BLOCK) {
 			__builtin_memcpy(&routing_result, &cached->result,
 					 sizeof(routing_result));
-			if (isdns || routing_result.outbound >= OUTBOUND_MUST_RULES) {
+			if (isdns || routing_result.capture_flags ||
+			    routing_result.outbound >= OUTBOUND_MUST_RULES) {
 				udp_cache_hit = true;
 			} else {
 				struct outbound_connectivity_query q = {
@@ -1610,6 +1605,8 @@ static __always_inline int do_tproxy_unfragmented(
 		routing_result.outbound = route_ret;
 		routing_result.mark = route_ret >> 8;
 		routing_result.must = (route_ret >> 40) & 1;
+		routing_result.capture_flags = route_ret >> ROUTE_RESULT_CAPTURE_SHIFT;
+		routing_result.protocol = params.l4proto_type;
 		routing_result.dscp = tuples.dscp;
 		routing_result.ifindex = ifindex;
 		__builtin_memcpy(routing_result.mac, ethh->h_source,
@@ -1642,6 +1639,8 @@ static __always_inline int do_tproxy_unfragmented(
 		// Direct / Block.
 		switch (routing_result.outbound) {
 		case OUTBOUND_DIRECT:
+			if (routing_result.capture_flags)
+				break;
 #if defined(__DEBUG_ROUTING) || defined(__PRINT_ROUTING_RESULT)
 			bpf_printk("GO OUTBOUND_DIRECT");
 #endif
@@ -1664,7 +1663,7 @@ static __always_inline int do_tproxy_unfragmented(
 		}
 	}
 
-	if (!udp_cache_hit && !isdns &&
+	if (!udp_cache_hit && !isdns && !routing_result.capture_flags &&
 	    routing_result.outbound < OUTBOUND_MUST_RULES) {
 		// Check outbound connectivity in specific ipversion and l4proto.
 		struct outbound_connectivity_query q = {

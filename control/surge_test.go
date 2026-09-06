@@ -13,10 +13,8 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -27,8 +25,8 @@ import (
 func surgeRoutingEngine(t *testing.T, hostnames ...string) *surgemodule.Engine {
 	t.Helper()
 	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Modules:   []*surgemodule.Module{{Hostnames: hostnames}},
-		Authority: &mitmca.Authority{}, Runtime: &surgemodule.Runtime{},
+		Modules:     []*surgemodule.Module{{Hostnames: hostnames}},
+		Runtime:     &surgemodule.Runtime{},
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {
@@ -65,7 +63,7 @@ func TestSurgeKernelRoutingReconstruction(t *testing.T) {
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: configuration.Routing.Rules}}
 			// Only one of the IP's hostnames belongs to the module: uncertainty
 			// in the injected capture rule itself must be skipped in simulation.
-			preparation.rules.enableSurgeRouting(surgeRoutingEngine(t, "one.example"))
+			preparation.rules.enableMITMPlan(surgeRoutingEngine(t, "one.example").Plan())
 			matcher, _ := surgeRoutingMatcher(t, preparation.rules)
 			matcher.outboundUsable = func(uint8, consts.L4ProtoType, consts.IpVersionType) bool { return !test.unavailable }
 			first := matcher.domainMatcher.MatchDomainBitmap("one.example")
@@ -92,7 +90,7 @@ func surgeRoutingMatcher(t *testing.T, rules preparedRules) (*RoutingMatcher, *R
 	builder, err := NewRoutingMatcherBuilder(rules.routing, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock),
 		"proxy": uint8(consts.OutboundUserDefinedMin),
-	}, nil, "direct", nil, rules.capture)
+	}, nil, "direct", nil, rules.capture, rules.destinations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +128,7 @@ func TestSurgeCapturePreservesUserspaceRoute(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			original := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "service.example"}}}}, Outbound: test.outbound}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{original}}}
-			preparation.rules.enableSurgeRouting(engine)
+			preparation.rules.enableMITMPlan(engine.Plan())
 			if len(preparation.rules.routing) != 1 || preparation.rules.routing[0] != original || preparation.rules.capture == nil {
 				t.Fatalf("overlay replaced original routing: %+v", preparation.rules.routing)
 			}
@@ -143,16 +141,17 @@ func TestSurgeCapturePreservesUserspaceRoute(t *testing.T) {
 	}
 }
 
-func TestSurgeCaptureSelectsOnlyTCPModuleHostnames(t *testing.T) {
+func TestMITMCaptureSniffsTCPWithoutDNS(t *testing.T) {
 	engine := surgeRoutingEngine(t, "-excluded.example", "*.example", "node?.test:8443", "UPPER.EXAMPLE.")
 	preparation := &ControlPlanePreparation{}
-	preparation.rules.enableSurgeRouting(engine)
+	preparation.rules.enableMITMPlan(engine.Plan())
 	matcher, builder := surgeRoutingMatcher(t, preparation.rules)
 	// Change only the marker action to observe whether the preceding conditions
 	// select capture, without loading BPF maps or altering userspace skip logic.
 	for i := range builder.rules {
-		if builder.rules[i].Outbound == uint8(consts.OutboundControlPlaneRouting) {
+		if builder.rules[i].CaptureFlags != 0 {
 			builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
+			builder.rules[i].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
 		}
 	}
 	for _, test := range []struct {
@@ -162,9 +161,9 @@ func TestSurgeCaptureSelectsOnlyTCPModuleHostnames(t *testing.T) {
 	}{
 		{"service.example", consts.L4ProtoType_TCP, true},
 		{"service.example", consts.L4ProtoType_UDP, false},
-		{"outside.test", consts.L4ProtoType_TCP, false},
+		{"outside.test", consts.L4ProtoType_TCP, true},
 		{"node1.test", consts.L4ProtoType_TCP, true},
-		{"node12.test", consts.L4ProtoType_TCP, false},
+		{"node12.test", consts.L4ProtoType_TCP, true},
 		{"upper.example", consts.L4ProtoType_TCP, true},
 		{"excluded.example", consts.L4ProtoType_TCP, true},
 	} {
@@ -188,19 +187,20 @@ func TestSurgeAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 	}
 	for _, port := range []uint16{8081, 0} {
 		prepared := preparedRules{}
-		prepared.enableSurgeRouting(surgeRoutingEngine(t, "service.example"))
+		prepared.enableMITMPlan(surgeRoutingEngine(t, "service.example").Plan())
 		prepared.bypassAPI(port, addresses)
 		builder, err := NewRoutingMatcherBuilder(prepared.routing, map[string]uint8{
 			"direct": uint8(consts.OutboundDirect), "proxy": uint8(consts.OutboundUserDefinedMin),
-		}, nil, "proxy", nil, prepared.capture)
+		}, nil, "proxy", nil, prepared.capture, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		// Treat the capture action as proxy to observe the kernel's first
 		// matching route; the local portal must win even for a captured IP.
 		for i := range builder.rules {
-			if builder.rules[i].Outbound == uint8(consts.OutboundControlPlaneRouting) {
+			if builder.rules[i].CaptureFlags != 0 {
 				builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
+				builder.rules[i].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
 			}
 		}
 		matcher, err := builder.BuildUserspace()
@@ -243,156 +243,29 @@ func TestSurgeAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 	}
 }
 
-func TestSurgeCaptureReconstructionAfterAPIRoute(t *testing.T) {
-	engine := surgeRoutingEngine(t, "one.example")
-	prepared := preparedRules{routing: []*config_parser.RoutingRule{{
-		AndFunctions: []*config_parser.Function{{Name: "dport", Params: []*config_parser.Param{{Val: "443"}}}},
-		Outbound:     config_parser.Function{Name: "block"},
-	}}}
-	prepared.enableSurgeRouting(engine)
-	prepared.enableDestinationRewrites(routing.DestinationRewrites{{From: netip.MustParseAddr("192.0.2.2")}})
-	prepared.bypassAPI(8081, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-	matcher, _ := surgeRoutingMatcher(t, prepared)
-	registry, _ := newTestRegistry(10, 10, time.Minute)
-	defer registry.Close()
-	ip := netip.MustParseAddr("192.0.2.1")
-	// Only one of the shared IP's names matches the capture rule. Kernel
-	// reconstruction must skip that uncertain marker and retain the block.
-	for _, host := range []string{"one.example", "two.example"} {
-		registry.UpsertNoExpiry(queryInfo{qname: host + ".", qtype: common.AddrToDnsType(ip)}, ip, matcher.domainMatcher.MatchDomainBitmap(host), time.Now())
-	}
-	c := &ControlPlane{surge: engine, core: &controlPlaneCore{domainRegistry: registry}, routingMatcher: matcher}
-	bump, routing, err := c.capturedRoutingBitmaps(ip, consts.L4ProtoType_TCP)
-	if err != nil || len(bump) == 0 || len(routing) == 0 {
-		t.Fatalf("capture bitmaps after API prefix: bump=%v routing=%v err=%v", bump, routing, err)
-	}
-	address, zero := ip.As16(), make([]byte, 16)
-	got, _, _, err := matcher.Match(zero, address[:], 12345, 443, consts.IpVersion_4, consts.L4ProtoType_TCP, "", [16]uint8{}, 0, 0, zero, routing, bump)
-	if err != nil || got != consts.OutboundBlock {
-		t.Fatalf("reconstructed route=%v err=%v, want block", got, err)
-	}
-}
-
-func TestSurgeCaptureRetainsDNSRouteWithoutTrustedSNI(t *testing.T) {
-	engine := surgeRoutingEngine(t, "blocked.example")
-	preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{{
-		AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "blocked.example"}}}},
-		Outbound:     config_parser.Function{Name: "block"},
-	}}}}
-	preparation.rules.enableSurgeRouting(engine)
-	matcher, _ := surgeRoutingMatcher(t, preparation.rules)
-	registry, _ := newTestRegistry(10, 10, time.Minute)
-	defer registry.Close()
-	destination := netip.MustParseAddrPort("192.0.2.1:443")
-	registry.UpsertNoExpiry(queryInfo{qname: "blocked.example.", qtype: common.AddrToDnsType(destination.Addr())}, destination.Addr(), matcher.domainMatcher.MatchDomainBitmap("blocked.example"), time.Now())
-	option := &dialer.GlobalOption{}
-	var groups []*outbound.DialerGroup
-	for _, name := range []string{"direct", "block", "proxy"} {
-		d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{Name: name, Link: "test://" + name}, false, name)
-		group := outbound.NewDialerGroup(option, name, outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, func(bool, *common.NetworkType) error { return nil })
-		groups = append(groups, group)
-		defer group.Close()
-	}
-	c := &ControlPlane{core: &controlPlaneCore{domainRegistry: registry}, outbounds: groups, routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_Strict, surge: engine}
-	for _, host := range []string{"blocked.example", "", "unverified.example"} {
-		t.Run(host, func(t *testing.T) {
-			result, err := c.RouteDialOption(context.Background(), &RouteParam{
-				routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)},
-				networkType:   common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
-				Domain:        host, Src: netip.MustParseAddrPort("192.0.2.2:12345"), Dest: destination,
-			})
+// Kernel terminal decisions carry capture separately; SNI does not replace them.
+func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
+	unused := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	groups := []*outbound.DialerGroup{surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), surgeDownloadTestGroup(t, "proxy", unused)}
+	matcher, _ := surgeRoutingMatcher(t, preparedRules{})
+	plane := &ControlPlane{outbounds: groups, routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_None, rerouteMode: consts.RerouteMode_Force, dialTargetOverride: true}
+	plane.markedDirectDialers.Store(uint32(37), unused)
+	for _, out := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
+		for _, host := range []string{"", "different.example"} {
+			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), Domain: host, networkType: *common.NetworkTCP4.NetworkType(), routingResult: &bpfRoutingResult{Outbound: uint8(out), Mark: 37, Must: 1, CaptureFlags: captureHTTP}}
+			got, err := plane.RouteDialOption(context.Background(), p)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Outbound.Name != "block" {
-				t.Fatalf("capture changed DNS-derived block route to %q when SNI=%q", result.Outbound.Name, host)
+			if got.Outbound != groups[out] || got.DialTarget != p.Dest.String() || p.routingResult.Mark != 37 || p.routingResult.Must != 1 {
+				t.Fatalf("capture changed route: %+v, %+v", got, p.routingResult)
 			}
-		})
-	}
-	// A different SNI accepted by sniff_verify_mode=none must not replace a
-	// definite kernel direct/block decision, even under reroute_mode=force.
-	originalRule := matcher.matches[matcher.captureIndex+1]
-	c.sniffVerifyMode = consts.SniffVerifyMode_None
-	c.rerouteMode = consts.RerouteMode_Force
-	c.dialTargetOverride = true
-	for _, target := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
-		matcher.matches[matcher.captureIndex+1].Outbound = uint8(target)
-		matcher.matches[matcher.captureIndex+1].Mark = 37
-		matcher.matches[matcher.captureIndex+1].Must = true
-		param := &RouteParam{
-			routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)},
-			networkType:   common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
-			Domain:        "different.test", Src: netip.MustParseAddrPort("192.0.2.2:12345"), Dest: destination,
-		}
-		result, err := c.RouteDialOption(context.Background(), param)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Outbound != groups[target] || result.DialTarget != destination.String() || param.routingResult.Mark != 37 || param.routingResult.Must != 1 {
-			t.Fatalf("different trusted SNI changed original %s route/target: %+v, routing=%+v", target, result, param.routingResult)
 		}
 	}
-	// A user proxy still follows the configured reroute policy, as it already
-	// entered userspace before Surge support.
-	matcher.matches[matcher.captureIndex+1] = originalRule
-	matcher.matches[matcher.captureIndex+1].Outbound = uint8(consts.OutboundUserDefinedMin)
-	for _, test := range []struct {
-		mode consts.RerouteMode
-		want string
-	}{{consts.RerouteMode_None, "proxy"}, {consts.RerouteMode_Force, "direct"}} {
-		c.rerouteMode = test.mode
-		result, err := c.RouteDialOption(context.Background(), &RouteParam{
-			routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)},
-			networkType:   common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
-			Domain:        "different.test", Src: netip.MustParseAddrPort("192.0.2.2:12345"), Dest: destination,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result.Outbound.Name != test.want {
-			t.Fatalf("proxy reroute %v selected %q, want %q", test.mode, result.Outbound.Name, test.want)
-		}
-	}
-	matcher.matches[matcher.captureIndex+1] = originalRule
-	c.sniffVerifyMode = consts.SniffVerifyMode_Strict
-	c.rerouteMode = consts.RerouteMode_None
-	c.dialTargetOverride = false
-	// Existing control-plane behavior stays unchanged when modules are disabled.
-	c.surge = nil
-	if _, bitmap, err := c.capturedRoutingBitmaps(destination.Addr(), consts.L4ProtoType_TCP); err != nil || bitmap != nil {
-		t.Fatalf("disabled module routing changed: bitmap=%v, err=%v", bitmap, err)
-	}
-	c.surge = engine
-	// A shared IP with contradictory domain rules cannot be reconstructed from
-	// the intersection alone: skipping the block would create a policy bypass.
-	registry.UpsertNoExpiry(queryInfo{qname: "allowed.example.", qtype: common.AddrToDnsType(destination.Addr())}, destination.Addr(), matcher.domainMatcher.MatchDomainBitmap("allowed.example"), time.Now())
-	for _, host := range []string{"", "blocked.example", "allowed.example"} {
-		result, err := c.RouteDialOption(context.Background(), &RouteParam{
-			routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)},
-			networkType:   common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
-			Domain:        host, Src: netip.MustParseAddrPort("192.0.2.2:12345"), Dest: destination,
-		})
-		if host == "" {
-			if err == nil {
-				t.Fatal("ambiguous shared-IP routing did not fail closed without SNI")
-			}
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := "direct"
-		if host == "blocked.example" {
-			want = "block"
-		}
-		if result.Outbound.Name != want {
-			t.Fatalf("ambiguous IP with trusted %s selected %s, want %s", host, result.Outbound.Name, want)
-		}
-	}
-	// The record may expire or be evicted after kernel capture and before SNI
-	// inspection. Missing DNS state must not silently become fallback direct.
-	if _, _, err := c.capturedRoutingBitmaps(netip.MustParseAddr("192.0.2.99"), consts.L4ProtoType_TCP); err == nil {
-		t.Fatal("missing DNS routing state did not fail closed")
+	plane.sniffVerifyMode = consts.SniffVerifyMode_Strict
+	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), networkType: *common.NetworkTCP4.NetworkType(), routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureHTTP}}
+	if _, err := plane.RouteDialOption(context.Background(), p); err == nil {
+		t.Fatal("ambiguous kernel route accepted without a trusted domain")
 	}
 }
 
@@ -432,7 +305,7 @@ func TestSurgeDialReportsConnectivityFailures(t *testing.T) {
 			t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 			option := &DialOption{Dialer: d, DialTarget: "198.51.100.1:443"}
 			path := d.StatsPath("proxy", common.NetworkTCP4.NetworkType())
-			conn, err := (&ControlPlane{}).surgeDialContext(option, "api.example", netip.MustParseAddrPort(option.DialTarget), path)(ctx, "tcp", "api.example:443")
+			conn, err := (&ControlPlane{}).mitmDialContext(option, "api.example", netip.MustParseAddrPort(option.DialTarget), path)(ctx, "tcp", "api.example:443")
 			if conn != nil {
 				_ = conn.Close()
 			}

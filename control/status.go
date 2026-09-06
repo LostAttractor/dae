@@ -137,6 +137,9 @@ func (c *ControlPlane) statusSnapshot(version string) *StatusSnapshot {
 		Tables:       c.tableStatuses(),
 		Groups:       c.groupStatuses(paths),
 	}
+	if c.mitmHost != nil {
+		snapshot.MITMPlugins = c.mitmHost.Status()
+	}
 	return snapshot
 }
 

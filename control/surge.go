@@ -4,7 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,21 +12,35 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/surgemodule"
 	log "github.com/sirupsen/logrus"
 )
 
 func (c *ControlPlane) SurgeStatus() surgemodule.Status {
-	if c.surge == nil {
-		return surgemodule.Status{}
+	if c.mitmHost != nil {
+		var status surgemodule.Status
+		for _, instance := range c.mitmHost.Instances() {
+			if engine, ok := instance.Plugin.(*surgemodule.Engine); ok {
+				s := engine.Status()
+				status.Enabled = true
+				for _, module := range s.Modules {
+					module.Instance = instance.ID
+					status.Modules = append(status.Modules, module)
+				}
+			}
+		}
+		return status
 	}
-	return c.surge.Status()
+	return surgemodule.Status{}
 }
 
 // Client selection only gates MITM after routing has selected the outbound.
 // A denied client continues through the ordinary dial and buffered TCP relay.
 func (c *ControlPlane) shouldMITMClient(domain string, src, dst netip.AddrPort, result *bpfRoutingResult, option *DialOption) bool {
-	if c.surge == nil || option.Outbound.Name == consts.OutboundBlock.String() || !c.surge.Match(domain, dst.Port()) {
+	matched := c.mitmHost != nil && c.mitmHost.Match(domain, dst.Port())
+	if option.Outbound.Name == consts.OutboundBlock.String() || !matched {
 		return false
 	}
 	src = common.ConvergeAddrPort(src)
@@ -39,9 +53,26 @@ func (c *ControlPlane) shouldMITMClient(domain string, src, dst netip.AddrPort, 
 		log.WithFields(log.Fields{
 			"event": "mitm_bypass", "host": domain, "port": dst.Port(),
 			"source": src.String(), "mac": mac, "reason": "client_not_allowed",
-		}).Info("surge")
+		}).Info("mitm")
 	}
 	return enabled
+}
+
+func (c *ControlPlane) mitmAuthority() *mitmca.Authority {
+	if c.mitmHost != nil {
+		return c.mitmHost.Authority()
+	}
+	return nil
+}
+
+func (p *preparedRules) enableMITMPlan(plan mitm.Plan) {
+	p.routing = slices.Concat(plan.EarlyRoutes, p.routing, plan.Routes)
+	if len(plan.Scopes) != 0 {
+		if p.capture == nil {
+			p.capture = &routingCapture{}
+		}
+		p.capture.tcp = true
+	}
 }
 
 // mitmSelection is shared by the traffic gate and the device API. An explicit
@@ -53,41 +84,7 @@ func (c *ControlPlane) mitmSelection(ip netip.Addr, mac [6]byte) (enabled bool, 
 	return c.mitmClients.Match(ip, mac), nil
 }
 
-// enableSurgeRouting captures allowlisted domains even when their ordinary
-// route is direct (normally kept entirely in eBPF). The userspace matcher skips
-// control_plane_routing markers and still selects the original configured route.
-func (p *preparedRules) enableSurgeRouting(engine *surgemodule.Engine) {
-	if engine == nil {
-		return
-	}
-	p.enableSurgeModuleRules(engine)
-	var patterns []string
-	seen := make(map[string]bool)
-	for _, host := range engine.Hostnames() {
-		if name, _, err := net.SplitHostPort(host); err == nil {
-			host = name
-		} else if strings.Count(host, ":") == 1 {
-			host, _, _ = strings.Cut(host, ":")
-		}
-		host = strings.TrimSuffix(strings.ToLower(host), ".")
-		pattern := regexp.QuoteMeta(host)
-		pattern = strings.ReplaceAll(strings.ReplaceAll(pattern, `\*`, ".*"), `\?`, ".")
-		pattern = "^" + pattern + "$"
-		if !seen[pattern] {
-			patterns = append(patterns, pattern)
-			seen[pattern] = true
-		}
-	}
-	if len(patterns) == 0 {
-		return
-	}
-	if p.capture == nil {
-		p.capture = &routingCapture{}
-	}
-	p.capture.domains = patterns
-}
-
-func (c *ControlPlane) surgeDialContext(option *DialOption, host string, destination netip.AddrPort, path stats.Path) surgemodule.DialContext {
+func (c *ControlPlane) mitmDialContext(option *DialOption, host string, destination netip.AddrPort, path stats.Path) mitm.DialContext {
 	selected := option.dialerForConnection()
 	target := option.DialTarget
 	return func(parent context.Context, network, address string) (net.Conn, error) {
@@ -97,10 +94,6 @@ func (c *ControlPlane) surgeDialContext(option *DialOption, host string, destina
 		requestedHost, port, err := net.SplitHostPort(address)
 		if err == nil && strings.EqualFold(strings.TrimSuffix(requestedHost, "."), strings.TrimSuffix(host, ".")) && port == strconv.Itoa(int(destination.Port())) {
 			address = target
-		} else if dst, err := netip.ParseAddrPort(address); err == nil {
-			if rewritten, ok := c.destinationRewrites.Rewrite(dst, !option.Direct); ok {
-				address = rewritten.String()
-			}
 		}
 		ctx, cancel := context.WithTimeout(parent, consts.DefaultDialTimeout)
 		defer cancel()
@@ -120,17 +113,17 @@ func (c *ControlPlane) surgeDialContext(option *DialOption, host string, destina
 	}
 }
 
-type surgeCountedConn struct {
+type mitmCountedConn struct {
 	net.Conn
 	upload, download func(uint64)
 }
 
-func (c *surgeCountedConn) Read(p []byte) (int, error) {
+func (c *mitmCountedConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	c.upload(uint64(n))
 	return n, err
 }
-func (c *surgeCountedConn) Write(p []byte) (int, error) {
+func (c *mitmCountedConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	c.download(uint64(n))
 	return n, err

@@ -29,11 +29,10 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/settings"
-	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -61,7 +60,7 @@ type ControlPlane struct {
 	udpEndpoints           *UdpEndpointPool
 
 	dnsController *DnsController
-	surge         *surgemodule.Engine
+	mitmHost      *mitm.Host
 	mitmClients   clientmatch.Matcher
 	settings      *settings.Store
 	settingsMu    sync.Mutex
@@ -69,7 +68,6 @@ type ControlPlane struct {
 	kernelActive  bool
 	clients       map[string]config.Client
 
-	destinationRewrites   routing.DestinationRewrites
 	routingMatcher        *RoutingMatcher
 	routingMatcherBuilder *RoutingMatcherBuilder
 
@@ -168,7 +166,7 @@ func candidateStatsScope(target string, path *outbound.PathSpec, occurrences map
 // NewControlPlane consumes prepared kernel and rule resources and builds the
 // userspace control plane. It does not modify shared BPF maps or bind programs
 // to traffic interfaces. Call Activate to commit it to the kernel.
-// loadSurge runs after initial connectivity checks, using the configured DNS
+// loadMITM runs after initial connectivity checks, using the configured DNS
 // and routing policies. Module rules are compiled after downloads finish.
 func NewControlPlane(
 	startupCtx context.Context,
@@ -176,14 +174,15 @@ func NewControlPlane(
 	nodes []outbound.NodeDescriptor,
 	conf *config.Config,
 	runtimeSettings *settings.Store,
-	loadSurge func(*http.Client) (*surgemodule.Engine, error),
+	loadMITM func(*http.Client, *http.Client) (*mitm.Host, error),
 ) (c *ControlPlane, err error) {
 	groups, routingA, global, dnsConfig := conf.Group, &conf.Routing, &conf.Global, &conf.Dns
 	var mitmClients clientmatch.Matcher
-	if conf.Surge.Enabled {
-		mitmClients, err = clientmatch.Parse(conf.Surge.ClientSourceAddress)
+	if conf.MITM.Enabled {
+		clients := conf.MITM.ClientSourceAddress
+		mitmClients, err = clientmatch.Parse(clients)
 		if err != nil {
-			return nil, fmt.Errorf("surge client_source_address: %w", err)
+			return nil, fmt.Errorf("mitm client_source_address: %w", err)
 		}
 	}
 	if runtimeSettings == nil {
@@ -267,6 +266,9 @@ func NewControlPlane(
 				_ = closeDialerGroups(outbounds)
 			} else {
 				cancel()
+				if plane.mitmHost != nil {
+					_ = plane.mitmHost.Close()
+				}
 				for i := len(plane.deferFuncs) - 1; i >= 0; i-- {
 					_ = plane.deferFuncs[i]()
 				}
@@ -388,7 +390,7 @@ func NewControlPlane(
 		outboundName2Id[o.Name] = uint8(i)
 	}
 
-	if global.APIPort != 0 && loadSurge == nil {
+	if global.APIPort != 0 && loadMITM == nil {
 		addresses, err := net.InterfaceAddrs()
 		if err != nil {
 			return nil, fmt.Errorf("read host addresses for API routing: %w", err)
@@ -399,7 +401,7 @@ func NewControlPlane(
 	/// Routing.
 	// Parse rules and build. BuildUserspace is in-memory only and is safe to
 	// run during the validation phase; BuildKernspace is deferred to Activate.
-	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture)
+	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture, preparedRules.destinations)
 	if err != nil {
 		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
@@ -460,10 +462,24 @@ func NewControlPlane(
 		fallbackResolver:          global.FallbackResolver,
 		mptcp:                     global.Mptcp,
 	}
+	for _, predicate := range builder.destinations {
+		if predicate.domain && plane.sniffingTimeout <= 0 {
+			plane.sniffingTimeout = time.Second
+			break
+		}
+	}
 	// Stop connectivity checks after DNS forwarders have been retired. A
 	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
 	// the remainder of control-plane shutdown indefinitely.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
+	// Close plugin transports (registered below) before their resolver. The
+	// closure follows the final controller after preparation replaces it.
+	plane.deferFuncs = append(plane.deferFuncs, func() error {
+		if plane.dnsController != nil {
+			return plane.dnsController.Close()
+		}
+		return nil
+	})
 
 	for _, group := range outbounds {
 		group.DeferStats()
@@ -482,29 +498,41 @@ func NewControlPlane(
 	}
 	log.WithField("duration", time.Since(connectivityStarted)).Info("Initial connectivity startup phase finished")
 
-	if loadSurge != nil {
+	if loadMITM != nil {
 		// The temporary resolver uses normal DNS routing but never registers
 		// addresses in the shared kernel map. Its cache belongs to the base
 		// rules, and is discarded before module rules change the match bitmaps.
 		if plane.dnsController, err = plane.newDNSController(dnsConfig, preparedRules, nil); err != nil {
 			return nil, err
 		}
-		surge, loadErr := func() (*surgemodule.Engine, error) {
+		host, loadErr := func() (*mitm.Host, error) {
 			defer plane.dnsController.Close()
-			client, closeDownloads := newSurgeDownloadClient(plane)
+			client, closeDownloads := newMITMClient(plane, 30*time.Second)
 			defer closeDownloads()
-			return loadSurge(client)
+			background, closeBackground := newMITMClient(plane, 0)
+			plane.deferFuncs = append(plane.deferFuncs, func() error { closeBackground(); return nil })
+			return loadMITM(client, background)
 		}()
 		if loadErr != nil {
-			return nil, oops.Wrapf(loadErr, "load Surge modules")
+			return nil, oops.Wrapf(loadErr, "prepare MITM plugins")
 		}
-		plane.surge = surge
-		plane.destinationRewrites = surge.DestinationRewrites()
-		if plane.sniffingTimeout <= 0 {
+		plane.mitmHost = host
+		plan := host.Plan()
+		pluginDestinations, err := prepareDestinationRules(startupCtx, plan.Destinations, preparedRules.geoDirs)
+		if err != nil {
+			return nil, err
+		}
+		preparedRules.destinations = append(preparedRules.destinations, pluginDestinations...)
+		needsSniff := len(plan.Scopes) != 0
+		for _, rule := range pluginDestinations {
+			for _, f := range rule.Filter {
+				needsSniff = needsSniff || f.Name == "domain"
+			}
+		}
+		if needsSniff && plane.sniffingTimeout <= 0 {
 			plane.sniffingTimeout = time.Second
 		}
-		preparedRules.enableSurgeRouting(surge)
-		preparedRules.enableDestinationRewrites(plane.destinationRewrites)
+		preparedRules.enableMITMPlan(plan)
 		if global.APIPort != 0 {
 			addresses, err := net.InterfaceAddrs()
 			if err != nil {
@@ -512,7 +540,7 @@ func NewControlPlane(
 			}
 			preparedRules.bypassAPI(global.APIPort, addresses)
 		}
-		builder, err = NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture)
+		builder, err = NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture, preparedRules.destinations)
 		if err != nil {
 			return nil, err
 		}
@@ -541,7 +569,6 @@ func NewControlPlane(
 	}
 	dnsConfig.Routing.Request.Rules = nil
 	dnsConfig.Routing.Response.Rules = nil
-	plane.deferFuncs = append(plane.deferFuncs, plane.dnsController.Close)
 
 	return plane, nil
 }
@@ -633,6 +660,11 @@ func (c *ControlPlane) Activate() error {
 		g.EnableSelectionTolerance()
 	}
 	c.kernelActive = true
+	if c.mitmHost != nil {
+		if err := c.mitmHost.Start(c.ctx); err != nil {
+			return err
+		}
+	}
 	SetAnyfromSoMark(c.soMarkFromDae)
 	log.WithField("duration", time.Since(started)).Info("Initialization is completed. Start to Proxying...")
 	return nil
@@ -1276,7 +1308,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 					log.Warningf("%+v", oops.Wrapf(err, "RetrieveRoutingResult"))
 					continue
 				}
-				if routingResult.Must == 0 {
+				if routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination == 0 {
 					var dnsMessage dnsmessage.Msg
 					if err := dnsMessage.Unpack(buf[:n]); err == nil {
 						c.dnsController.Handle(&dnsMessage, &udpRequest{
@@ -1514,6 +1546,9 @@ func (c *ControlPlane) Close() (err error) {
 	err = c.retireTraffic()
 	if c.hostReconcileDone != nil {
 		<-c.hostReconcileDone
+	}
+	if c.mitmHost != nil {
+		err = errors.Join(err, c.mitmHost.Close())
 	}
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {

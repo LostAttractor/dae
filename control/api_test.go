@@ -302,7 +302,7 @@ func TestSelectorAPIUsesEscapedGroupName(t *testing.T) {
 }
 
 func TestHostOnlyAPIDisablesCertificateAndMITM(t *testing.T) {
-	plane := &ControlPlane{surge: &surgemodule.Engine{}, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+	plane := &ControlPlane{mitmHost: controlTestHost(t, &surgemodule.Engine{}, nil), routingMatcherBuilder: &RoutingMatcherBuilder{}}
 	handler := plane.apiHandler(testClientMAC)
 	if w := apiTestRequest(handler, "GET", "/ca.cer", "", ""); w.Code != 404 {
 		t.Fatalf("certificate without CA: %d", w.Code)

@@ -25,8 +25,8 @@ func (c *ControlPlane) apiHandler(resolve func(netip.Addr) ([6]byte, error)) htt
 	for _, path := range []string{"/{$}", "/style.css", "/app.js"} {
 		mux.Handle("GET "+path, page)
 	}
-	if c.surge != nil && c.surge.Authority() != nil {
-		certificates := c.surge.Authority().Handler()
+	if c.mitmAuthority() != nil {
+		certificates := c.mitmAuthority().Handler()
 		for _, path := range []string{"/api/certificate", "/ca.pem", "/ca.cer", "/ca.mobileconfig"} {
 			mux.Handle("GET "+path, certificates)
 		}

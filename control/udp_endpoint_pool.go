@@ -36,6 +36,7 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 // An empty Destination retains ordinary full-cone behavior.
 type udpEndpointKey struct {
 	Source, Destination netip.AddrPort
+	Interface           uint32
 }
 
 type UdpEndpoint struct {

@@ -11,8 +11,8 @@ import (
 
 func TestStatusServerSurgeFollowsPublishedPlane(t *testing.T) {
 	server := &StatusServer{version: "test"}
-	first := &ControlPlane{surge: surgeRoutingEngine(t, "one.example")}
-	second := &ControlPlane{surge: surgeRoutingEngine(t, "two.example", "three.example")}
+	first := &ControlPlane{mitmHost: controlTestHost(t, surgeRoutingEngine(t, "one.example"), nil)}
+	second := &ControlPlane{mitmHost: controlTestHost(t, surgeRoutingEngine(t, "two.example", "three.example"), nil)}
 	for _, test := range []struct {
 		plane   *ControlPlane
 		enabled bool

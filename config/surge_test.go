@@ -9,140 +9,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func TestSurgeConfigDefaultsAndRoundTrip(t *testing.T) {
-	conf := parseConfig(t, `global {}
-surge {
-  enabled: true
-  module {
-    example: 'file:modules/example.sgmodule'
-    'https://example.com/remote.sgmodule'
-  }
-  ca_cert: 'mitm-ca.pem'
-  ca_key: 'mitm-ca.key'
-  store: 'surge-store.json'
-}
-routing { fallback: direct }
-`)
-	if !conf.Surge.Enabled || conf.Global.APIPort != 0 || len(conf.Surge.Modules) != 2 || conf.Surge.ScriptTimeout != 5*time.Second || conf.Surge.MemoryLimit != 128<<20 || conf.Surge.MaxBodySize != 32<<20 || conf.Surge.MaxConcurrentScripts != 16 {
-		t.Fatalf("unexpected Surge config defaults: %+v", conf.Surge)
-	}
-	if conf.Surge.ClientSourceAddress != nil {
-		t.Fatalf("omitted client_source_address should remain unspecified: %v", conf.Surge.ClientSourceAddress)
-	}
-	marshaled, err := conf.Marshal(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roundTrip := parseConfig(t, string(marshaled))
-	if !reflect.DeepEqual(conf, roundTrip) {
-		t.Fatalf("Surge configuration changed after round trip:\nfirst: %+v\nsecond: %+v", conf.Surge, roundTrip.Surge)
-	}
-}
-
-func TestSurgeConfigRemainsDisabledWhenAbsent(t *testing.T) {
-	conf := parseConfig(t, "global {}\nrouting { fallback: direct }")
-	if conf.Surge.Enabled {
-		t.Fatal("Surge was enabled without a configuration section")
-	}
-	marshaled, err := conf.Marshal(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roundTrip := parseConfig(t, string(marshaled))
-	if !reflect.DeepEqual(conf.Surge, roundTrip.Surge) {
-		t.Fatalf("absent Surge settings changed after round trip: %+v -> %+v", conf.Surge, roundTrip.Surge)
-	}
-}
-
-func TestSurgeConfigRejectsUnsafeLimitsAndIncompleteCA(t *testing.T) {
-	for _, invalid := range []string{
-		"enabled: true",
-		"enabled: true\nmodule { 'file:module.sgmodule' }\nca_cert: 'ca.pem'",
-		"enabled: true\nmodule { 'file:module.sgmodule' }\nca_key: 'ca.key'",
-	} {
-		t.Run(invalid, func(t *testing.T) {
-			sections, err := config_parser.Parse("global {}\nsurge {\n" + invalid + "\n}\nrouting { fallback: direct }")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := New(sections); err == nil {
-				t.Fatal("accepted incomplete enabled Surge configuration")
-			}
-		})
-	}
-	for _, limit := range []string{
-		"script_timeout: 0s", "script_timeout: 61s",
-		"memory_limit: 1", "memory_limit: 1073741825",
-		"max_body_size: 0", "max_body_size: 268435457",
-		"max_concurrent_scripts: 0", "max_concurrent_scripts: 257",
-	} {
-		t.Run(limit, func(t *testing.T) {
-			sections, err := config_parser.Parse("global {}\nsurge {\nenabled: true\nmodule { 'file:module.sgmodule' }\nca_cert: 'ca.pem'\nca_key: 'ca.key'\n" + limit + "\n}\nrouting { fallback: direct }")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := New(sections); err == nil {
-				t.Fatal("accepted invalid Surge resource limit")
-			}
-		})
-	}
-}
-
-func TestSurgeConfigClientSourceAddressListsAndRoundTrip(t *testing.T) {
-	conf := parseConfig(t, `global { api_port: 9080 }
-surge {
-  enabled: true
-  module { 'file:module.sgmodule' }
-  ca_cert: 'ca.pem'
-  ca_key: 'ca.key'
-  client_source_address: '-192.168.1.50,192.168.1.0/24'
-  client_source_address: '-02:00:00:00:00:10,2001:db8::/64'
-  client_source_address: '02:00:00:00:00:20'
-  client_source_address: 'all'
-}
-routing { fallback: direct }
-`)
-	if conf.Global.APIPort != 9080 {
-		t.Fatalf("api_port = %d, want 9080", conf.Global.APIPort)
-	}
-	want := []string{"-192.168.1.50", "192.168.1.0/24", "-02:00:00:00:00:10", "2001:db8::/64", "02:00:00:00:00:20", "all"}
-	if !reflect.DeepEqual(conf.Surge.ClientSourceAddress, want) {
-		t.Fatalf("comma-separated and repeated entries lost order: %v", conf.Surge.ClientSourceAddress)
-	}
-	marshaled, err := conf.Marshal(2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roundTrip := parseConfig(t, string(marshaled))
-	if !reflect.DeepEqual(conf, roundTrip) {
-		t.Fatalf("source address configuration changed after round trip: %v -> %v", conf.Surge.ClientSourceAddress, roundTrip.Surge.ClientSourceAddress)
-	}
-
-}
-
-func TestSurgeConfigRejectsInvalidClientSourceAddress(t *testing.T) {
-	for _, source := range []string{
-		"", "192.168.1.5,", "example.com",
-	} {
-		t.Run(source, func(t *testing.T) {
-			sections, err := config_parser.Parse("global {}\nsurge {\nenabled: true\nmodule { 'file:module.sgmodule' }\nca_cert: 'ca.pem'\nca_key: 'ca.key'\nclient_source_address: '" + source + "'\n}\nrouting { fallback: direct }")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := New(sections); err == nil || !strings.Contains(err.Error(), "surge.client_source_address") {
-				t.Fatalf("invalid source %q must identify the setting: %v", source, err)
-			}
-		})
-	}
-}
-
-func TestSurgeConfigDisabledSourceAddressIsNotValidated(t *testing.T) {
-	conf := parseConfig(t, "global {}\nsurge { enabled: false\nclient_source_address: 'example.com' }\nrouting { fallback: direct }")
-	if conf.Surge.Enabled || !reflect.DeepEqual(conf.Surge.ClientSourceAddress, []string{"example.com"}) {
-		t.Fatalf("disabled Surge configuration was changed: %+v", conf.Surge)
-	}
-}
-
 func TestSurgeModuleSourcesRejectInvalidDeclarations(t *testing.T) {
 	for _, test := range []struct {
 		name, body, errorText string
@@ -278,11 +144,11 @@ module { test: 'https://example.com/second.sgmodule' }`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			sections, err := config_parser.Parse("global {}\nsurge {\n" + test.body + "\n}\nrouting { fallback: direct }")
+			sections, err := config_parser.Parse("surge {\n" + test.body + "\n}")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := New(sections); err == nil || !strings.Contains(err.Error(), test.errorText) {
+			if _, err := DecodeSurgePlugin(sections[0]); err == nil || !strings.Contains(err.Error(), test.errorText) {
 				t.Fatalf("parse error = %v, want %q", err, test.errorText)
 			}
 		})
@@ -291,7 +157,8 @@ module { test: 'https://example.com/second.sgmodule' }`,
 
 func TestSurgeModuleSourcesAndArgumentsRoundTrip(t *testing.T) {
 	conf := parseConfig(t, `global {}
-surge {
+mitm {
+ surge {
   module {
     youtube {
       arguments {
@@ -312,6 +179,7 @@ two'
     'file:///var/lib/dae/anonymous'
   }
   module { 'http://example.com/another.sgmodule' }
+ }
 }
 routing { fallback: direct }
 `)
@@ -335,16 +203,16 @@ routing { fallback: direct }
 		{Link: "file:///var/lib/dae/anonymous"},
 		{Link: "http://example.com/another.sgmodule"},
 	}
-	if !reflect.DeepEqual(conf.Surge.Modules, want) {
-		t.Fatalf("module sources = %#v, want %#v", conf.Surge.Modules, want)
+	if !reflect.DeepEqual(decodedSurge(t, conf).Modules, want) {
+		t.Fatalf("module sources = %#v, want %#v", decodedSurge(t, conf).Modules, want)
 	}
 	marshaled, err := conf.Marshal(2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	roundTrip := parseConfig(t, string(marshaled))
-	if !reflect.DeepEqual(conf, roundTrip) {
-		t.Fatalf("module configuration changed after round trip:\nfirst: %#v\nsecond: %#v\nconfig:\n%s", conf.Surge.Modules, roundTrip.Surge.Modules, marshaled)
+	if !reflect.DeepEqual(decodedSurge(t, conf), decodedSurge(t, roundTrip)) {
+		t.Fatalf("module configuration changed after round trip:\nfirst: %#v\nsecond: %#v\nconfig:\n%s", decodedSurge(t, conf).Modules, decodedSurge(t, roundTrip).Modules, marshaled)
 	}
 }
 
@@ -381,5 +249,30 @@ func TestMarshalModuleArgumentsRejectInvalidSources(t *testing.T) {
 				t.Fatalf("marshal error = %v, want %q", err, test.errorText)
 			}
 		})
+	}
+}
+
+func decodedSurge(t *testing.T, conf *Config) Surge {
+	t.Helper()
+	s, err := DecodeSurgePlugin(conf.MITM.Plugins[0].Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+func TestSurgePluginDefaultsAndLimits(t *testing.T) {
+	c := parseConfig(t, `global {} mitm { surge { module { 'file:module.sgmodule' } } } routing {fallback: direct}`)
+	s := decodedSurge(t, c)
+	if s.ScriptTimeout != 5*time.Second || s.MaxBodySize != 32<<20 || s.MemoryLimit != 128<<20 || s.MaxConcurrentScripts != 16 {
+		t.Fatalf("defaults: %+v", s)
+	}
+	for _, limit := range []string{"script_timeout: 0s", "script_timeout: 61s", "memory_limit: 1", "memory_limit: 1073741825", "max_body_size: 0", "max_body_size: 268435457", "max_concurrent_scripts: 0", "max_concurrent_scripts: 257", "ca_cert: 'x'", "client_source_address: all"} {
+		sections, err := config_parser.Parse("surge { module { 'file:module.sgmodule' }\n" + limit + "\n}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := DecodeSurgePlugin(sections[0]); err == nil {
+			t.Errorf("accepted invalid plugin setting: %s", limit)
+		}
 	}
 }

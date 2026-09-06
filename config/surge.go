@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -22,11 +21,7 @@ type ModuleSource struct {
 
 // Surge configures modules for HTTP processing, routing and IP rewrites. Sizes are bytes.
 type Surge struct {
-	Enabled              bool           `mapstructure:"enabled" default:"false"`
 	Modules              []ModuleSource `mapstructure:"module"`
-	ClientSourceAddress  []string       `mapstructure:"client_source_address"`
-	CACert               string         `mapstructure:"ca_cert"`
-	CAKey                string         `mapstructure:"ca_key"`
 	Store                string         `mapstructure:"store"`
 	ScriptTimeout        time.Duration  `mapstructure:"script_timeout" default:"5s"`
 	MemoryLimit          int64          `mapstructure:"memory_limit" default:"134217728"`
@@ -133,17 +128,8 @@ func parseModuleArguments(section *config_parser.Section) (map[string]string, er
 }
 
 func (s Surge) Validate() error {
-	if !s.Enabled {
-		return nil
-	}
-	if _, err := clientmatch.Parse(s.ClientSourceAddress); err != nil {
-		return fmt.Errorf("surge.client_source_address: %w", err)
-	}
 	if len(s.Modules) == 0 {
 		return fmt.Errorf("surge: at least one module is required when enabled")
-	}
-	if (s.CACert == "") != (s.CAKey == "") {
-		return fmt.Errorf("surge: ca_cert and ca_key must be configured together")
 	}
 	if s.ScriptTimeout <= 0 || s.ScriptTimeout > time.Minute {
 		return fmt.Errorf("surge: script_timeout must be between 0 and 1 minute")

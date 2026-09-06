@@ -69,7 +69,7 @@ func moduleScopeExchange(t *testing.T, engine *Engine, host string, port uint16)
 		_, _ = io.WriteString(w, `{"value":1}`)
 	}))
 	defer upstream.Close()
-	handler, closeTransport := engine.Handler("http", host, port, func(ctx context.Context, network, _ string) (net.Conn, error) {
+	handler, closeTransport := proxyTestHost(t, engine).Handler("http", host, port, func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
 	})
 	defer closeTransport()
@@ -298,7 +298,7 @@ func TestProxyModuleScopeSharesRuntimeAndCapacity(t *testing.T) {
 	engine := moduleScopeEngine(t, module)
 	var handlers []http.Handler
 	for _, host := range []string{"a.test", "b.test"} {
-		handler, closeTransport := engine.Handler("http", host, 80, func(context.Context, string, string) (net.Conn, error) {
+		handler, closeTransport := proxyTestHost(t, engine).Handler("http", host, 80, func(context.Context, string, string) (net.Conn, error) {
 			t.Error("synthetic script contacted upstream")
 			return nil, context.Canceled
 		})

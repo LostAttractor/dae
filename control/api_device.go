@@ -52,9 +52,9 @@ func (c *ControlPlane) deviceState(ip netip.Addr, mac [6]byte) deviceState {
 			Name: name, Description: c.clients[name].Description, Joined: joined,
 		})
 	}
-	if c.surge != nil && c.surge.Authority() != nil {
+	if c.mitmAuthority() != nil {
 		enabled, override := c.mitmSelection(ip, mac)
-		state.MITM = &mitmState{Enabled: enabled, Override: override, CAFingerprint: c.surge.Authority().Fingerprint()}
+		state.MITM = &mitmState{Enabled: enabled, Override: override, CAFingerprint: c.mitmAuthority().Fingerprint()}
 	}
 	return state
 }
@@ -98,7 +98,7 @@ func (c *ControlPlane) serveClientSet(w http.ResponseWriter, r *http.Request, re
 }
 
 func (c *ControlPlane) serveMITM(w http.ResponseWriter, r *http.Request, resolve func(netip.Addr) ([6]byte, error)) {
-	if c.surge == nil || c.surge.Authority() == nil {
+	if c.mitmAuthority() == nil {
 		apiError(w, 404, "HTTPS modules are disabled")
 		return
 	}
@@ -107,7 +107,7 @@ func (c *ControlPlane) serveMITM(w http.ResponseWriter, r *http.Request, resolve
 		apiError(w, 403, "MITM changes require X-Dae-MITM containing the CA SHA-256 fingerprint")
 		return
 	}
-	if fingerprint != c.surge.Authority().Fingerprint() {
+	if fingerprint != c.mitmAuthority().Fingerprint() {
 		apiError(w, 409, "the CA certificate changed; reload the page and verify the certificate")
 		return
 	}

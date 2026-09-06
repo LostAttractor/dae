@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync/atomic"
+
 	"time"
 )
 
 type connectionIDKey struct{}
 
-var nextConnectionID atomic.Uint64
+type requestIDKey struct{}
 
 func (e *Engine) tracing() bool {
 	return e.options.Trace != nil && (e.options.TraceEnabled == nil || e.options.TraceEnabled())

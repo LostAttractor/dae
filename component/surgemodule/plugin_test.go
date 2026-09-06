@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitmca"
@@ -52,5 +54,84 @@ response=type=http-response,pattern=.,requires-body=1,script-path=response.js
 	}
 	if w.Code != 200 || string(body) != "originBA" {
 		t.Fatalf("code=%d body=%q", w.Code, body)
+	}
+}
+
+func TestHostOnlyPlanAndUnsupportedDNS(t *testing.T) {
+	for _, value := range []string{"server:system", "script:dns.js", "alias.example"} {
+		_, err := Parse("[Host]\napi.example.com = "+value+"\n*.example.com = 198.51.100.2\n", nil)
+		if err == nil || !strings.Contains(err.Error(), "module line 2") {
+			t.Fatalf("missing Host diagnostic: %v", err)
+		}
+	}
+	module, err := Parse("[Host]\napi.example.com = 198.51.100.1\n*.example.com = 198.51.100.2\n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{options: EngineOptions{Modules: []*Module{module}}}
+	host, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "hosts", Plugin: engine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	if p := host.Plan(); len(p.Scopes) != 0 || len(p.Destinations) != 2 {
+		t.Fatalf("Host-only plan: %+v", p)
+	}
+}
+
+func TestSurgeHostTLSAndDrain(t *testing.T) {
+	for _, http2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("http2=%v", http2), func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			_, trust, dial := integrationUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(entered)
+				<-release
+				fmt.Fprint(w, "upstream")
+			}))
+			e, roots := integrationEngine(t, map[string]string{"http-response": `$done({body:$response.body+"-plugin"});`}, trust)
+			h, err := mitm.New(e.hostOptions, mitm.Instance{ID: "surge", Type: "surge", Plugin: e.Engine})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Close()
+			client := integrationClient(t, e, roots, dial, http2, h)
+			result := make(chan error, 1)
+			go func() {
+				r, err := client.Get("https://example.com/")
+				if err == nil {
+					defer r.Body.Close()
+					body, readErr := io.ReadAll(r.Body)
+					err = readErr
+					if err == nil && (string(body) != "upstream-plugin" || http2 && r.ProtoMajor != 2) {
+						err = fmt.Errorf("response %s %q", r.Proto, body)
+					}
+				}
+				result <- err
+			}()
+			select {
+			case <-entered:
+			case err := <-result:
+				close(release)
+				t.Fatalf("request failed: %v", err)
+			case <-time.After(5 * time.Second):
+				close(release)
+				t.Fatal("request stalled")
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- h.Close() }()
+			select {
+			case err := <-closed:
+				close(release)
+				t.Fatalf("host closed before active request drained: %v", err)
+			case <-time.After(30 * time.Millisecond):
+			}
+			close(release)
+			if err := <-result; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-closed; err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

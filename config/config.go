@@ -204,7 +204,6 @@ type Routing struct {
 
 type Config struct {
 	Global       Global         `mapstructure:"global" required:"" desc:"GlobalDesc"`
-	Surge        Surge          `mapstructure:"surge" desc:"SurgeDesc"`
 	MITM         MITM           `mapstructure:"mitm" desc:"MITMDesc"`
 	Subscription []Subscription `mapstructure:"subscription"`
 	Node         []Node         `mapstructure:"node"`
@@ -286,9 +285,6 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	}
 
 	// Apply config patches.
-	if err = conf.Surge.Validate(); err != nil {
-		return nil, err
-	}
 	if _, err = conf.Rules.Destinations(); err != nil {
 		return nil, err
 	}

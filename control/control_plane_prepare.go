@@ -24,16 +24,19 @@ import (
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	"github.com/mohae/deepcopy"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
 type preparedRules struct {
-	routing     []*config_parser.RoutingRule
-	capture     *routingCapture
-	dnsRequest  []*config_parser.RoutingRule
-	dnsResponse []*config_parser.RoutingRule
+	destinations routing.DestinationRewrites
+	geoDirs      []string
+	routing      []*config_parser.RoutingRule
+	capture      *routingCapture
+	dnsRequest   []*config_parser.RoutingRule
+	dnsResponse  []*config_parser.RoutingRule
 }
 
 // ControlPlanePreparation owns startup resources until NewControlPlane
@@ -55,6 +58,7 @@ func PrepareControlPlane(
 	global *config.Global,
 	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
+	destinations config.Rules,
 ) (_ *ControlPlanePreparation, err error) {
 	soMarkFromDae := common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
 	if err := common.ValidateSoMarkFromDae(soMarkFromDae); err != nil {
@@ -75,6 +79,12 @@ func PrepareControlPlane(
 		phaseStarted := time.Now()
 		rules, err := prepareRoutingRules(groupCtx, routingConfig, dnsConfig, externGeoDataDirs)
 		if err == nil {
+			rules.destinations, err = destinations.Destinations()
+			if err == nil {
+				rules.destinations, err = prepareDestinationRules(groupCtx, rules.destinations, externGeoDataDirs)
+			}
+		}
+		if err == nil {
 			preparation.rules = rules
 			log.WithField("duration", time.Since(phaseStarted)).Info("Prepared routing rules")
 		}
@@ -91,6 +101,34 @@ func PrepareControlPlane(
 		return nil, err
 	}
 	return preparation, nil
+}
+
+func prepareDestinationRules(ctx context.Context, rules routing.DestinationRewrites, dirs []string) (routing.DestinationRewrites, error) {
+	reader := routing.NewDatReaderOptimizer(ctx, assets.NewLocationFinder(dirs))
+	result := make(routing.DestinationRewrites, 0, len(rules))
+	for i, rule := range rules {
+		if len(rule.To) == 0 {
+			return nil, fmt.Errorf("destination rule %d: missing target", i+1)
+		}
+		for _, ip := range rule.To {
+			if !ip.IsValid() || ip.Zone() != "" {
+				return nil, fmt.Errorf("destination rule %d: invalid target IP", i+1)
+			}
+		}
+		filter := deepcopy.Copy(rule.Filter).([]*config_parser.Function)
+		if len(filter) == 0 {
+			return nil, fmt.Errorf("destination rule %d: missing predicate", i+1)
+		}
+		// Only predicate normalization applies here; rules with equal actions
+		// must retain their original order, without merging equal actions.
+		normalized, err := routing.ApplyRulesOptimizers([]*config_parser.RoutingRule{{AndFunctions: filter, Outbound: config_parser.Function{Name: "direct"}}}, &routing.AliasOptimizer{}, reader, &routing.DeduplicateParamsOptimizer{})
+		if err != nil {
+			return nil, fmt.Errorf("destination rule %d: %w", i+1, err)
+		}
+		rule.Filter = normalized[0].AndFunctions
+		result = append(result, rule)
+	}
+	return result, nil
 }
 
 func prepareBPF(ctx context.Context, reusable any, soMarkFromDae uint32) (_ *bpfState, err error) {
@@ -171,6 +209,7 @@ func prepareBPF(ctx context.Context, reusable any, soMarkFromDae uint32) (_ *bpf
 
 func prepareRoutingRules(ctx context.Context, routingConfig *config.Routing, dnsConfig *config.Dns, externGeoDataDirs []string) (preparedRules, error) {
 	var prepared preparedRules
+	prepared.geoDirs = append([]string(nil), externGeoDataDirs...)
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	datReader := routing.NewDatReaderOptimizer(ctx, locationFinder)
 	if err := ctx.Err(); err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -170,9 +171,14 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	// 		Maybe we should set up a mapping for UDP: Dialer + Target Domain => Remote Resolved IP.
 	//		However, games may not use QUIC for communication, thus we cannot use domain to dial, which is fine.
 
+	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
+	if err != nil {
+		return oops.Wrapf(err, "RetrieveRoutingResult")
+	}
 	key := udpEndpointKey{Source: src}
-	if c.destinationRewrites.Lookup(dst.Addr()) != nil {
+	if routingResult.CaptureFlags&captureDestination != 0 {
 		key.Destination = dst
+		key.Interface = routingResult.Ifindex
 	}
 	l, _ := udpEndpoints.UdpEndpointKeyLocker.Lock(key)
 	defer udpEndpoints.UdpEndpointKeyLocker.Unlock(key, l)
@@ -206,23 +212,27 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		ok = false
 	}
 	if !ok {
-		routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
-		if err != nil {
-			return oops.Wrapf(err, "RetrieveRoutingResult")
-		}
 		// Route
-		dialOption, err := c.RouteDialOption(ctx, &RouteParam{
+		param := &RouteParam{
 			routingResult: routingResult,
 			networkType:   networkType,
 			Domain:        domain,
 			Src:           src,
 			Dest:          dst,
-		})
+		}
+		dialOption, err := c.RouteDialOption(ctx, param)
 		if err != nil {
 			return err
 		}
 
 		statsPath, fallback := dialOption.trafficAttribution()
+		if dst.Port() == 53 && routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination != 0 && dialOption.Outbound.Name != "block" && !param.destination.applies(dialOption.Direct) {
+			var message dnsmessage.Msg
+			if err := message.Unpack(data); err == nil {
+				c.dnsController.Handle(&message, &udpRequest{src: src, dst: dst, routingResult: routingResult})
+				return nil
+			}
+		}
 		noConnectivityFallback = fallback
 
 		// Dial
@@ -263,8 +273,8 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			return nil
 		}
 		if key.Destination.IsValid() {
-			target := netip.MustParseAddrPort(dialOption.DialTarget)
-			if target != dst {
+			target, parseErr := netip.ParseAddrPort(dialOption.DialTarget)
+			if parseErr == nil && target != dst {
 				udpConn = &destinationPacketConn{PacketConn: udpConn, original: dst, target: target}
 			}
 		}

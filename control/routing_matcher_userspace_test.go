@@ -31,7 +31,7 @@ func buildInterfaceRoutingMatcher(t *testing.T) (*RoutingMatcher, *RoutingMatche
 		},
 		nil,
 		"fallback",
-		nil, nil,
+		nil, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("NewRoutingMatcherBuilder: %v", err)
@@ -144,7 +144,7 @@ func TestRoutingMatcherRejectsRemovedInterfaceFunctions(t *testing.T) {
 				map[string]uint8{"matched": uint8(consts.OutboundUserDefinedMin)},
 				nil,
 				config.FunctionOrString("direct"),
-				nil, nil,
+				nil, nil, nil,
 			)
 			if err == nil {
 				t.Fatalf("removed function %q was accepted", name)

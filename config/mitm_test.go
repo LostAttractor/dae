@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -53,7 +54,9 @@ routing { fallback: direct }`)
 	if len(a) != 2 || !reflect.DeepEqual(a[0].To, z[0].To) || a[0].To[0].String() != "2001:db8::20" {
 		t.Fatal("DNAT target changed")
 	}
-
+	if strings.Contains(string(b), "\nsurge {") {
+		t.Fatal("legacy surge emitted alongside mitm")
+	}
 }
 
 func TestMITMConfigRejectsInvalid(t *testing.T) {
@@ -64,6 +67,7 @@ func TestMITMConfigRejectsInvalid(t *testing.T) {
 		`mitm { ../escape {} }`,
 		`mitm { x { enabled: perhaps } }`,
 		`mitm { x { type: surge type: surge } }`,
+		`mitm {} surge {}`,
 		`rules { dip(192.0.2.1) -> direct }`,
 		`rules { dip(192.0.2.1) -> dnat() }`,
 		`rules { dip(192.0.2.1) -> dnat(192.0.2.2, 192.0.2.3) }`,

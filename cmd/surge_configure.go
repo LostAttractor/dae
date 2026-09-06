@@ -30,7 +30,7 @@ func newSurgeCommand() *cobra.Command {
 		Use: "configure <source>", Short: "Choose module arguments and print a configuration fragment.",
 		Long: `Read a Surge module URL or file: source and prompt for its declared arguments.
 Only the module text is downloaded; scripts are not downloaded or executed.
-Prompts go to stderr. Place the generated module section inside surge in your config.
+Prompts go to stderr. Place the generated module section inside mitm.surge in your config.
 Remote sources also accept http-file:// and https-file://; relative file: paths
 use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.`,
 		Args: cobra.ExactArgs(1), SilenceUsage: true,
@@ -64,7 +64,7 @@ use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.
 			if err := marshaller.MarshalSection("module", reflect.ValueOf([]config.ModuleSource{module}), 0); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.ErrOrStderr(), "Place this module section inside surge in your configuration:")
+			fmt.Fprintln(cmd.ErrOrStderr(), "Place this module section inside mitm.surge (or another Surge plugin instance) in your configuration:")
 			_, err = cmd.OutOrStdout().Write(marshaller.Bytes())
 			return err
 		},
