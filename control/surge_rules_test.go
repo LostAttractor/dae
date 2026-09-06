@@ -46,7 +46,7 @@ func moduleRuleMatcher(t *testing.T, engine *surgemodule.Engine, userRules []*co
 	preparation.rules.enableSurgeRouting(engine)
 	builder, err := NewRoutingMatcherBuilder(preparation.rules.routing, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock), "proxy": uint8(consts.OutboundUserDefinedMin),
-	}, nil, "proxy", nil)
+	}, nil, "proxy", nil, preparation.rules.capture)
 	if err != nil {
 		t.Fatal(err)
 	}

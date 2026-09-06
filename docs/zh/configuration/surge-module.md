@@ -102,6 +102,8 @@ hostname = %APPEND% -private.example.com, *.example.com
 
 纯 IP 模块无需 CA 或客户端 MITM 开关。映射按模块及条目顺序首个命中，保留原路由和端口；多个目标按连接随机选择，UDP 固定会话目标并还原回包来源。直连流量也会导入用户态，block 仍然生效。
 
+所有模块的 MITM 域名与 Host IP 共用一个 eBPF 捕获匹配项；用户态仍按原目标匹配路由，再执行目标重写。
+
 默认仅重写直连；模块中设置 `[General] use-local-host-item-for-proxy = true` 后，该模块的映射也用于代理出站。此选项不影响其他模块或代理服务器自身地址。暂不支持 Host 域名、通配符或 DNS 设置，也不自动测速、重试或递归重写。
 
 ### 限制客户端来源

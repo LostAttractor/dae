@@ -13,7 +13,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/surgemodule"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -62,7 +61,7 @@ func (p *preparedRules) enableSurgeRouting(engine *surgemodule.Engine) {
 		return
 	}
 	p.enableSurgeModuleRules(engine)
-	var patterns []*config_parser.Param
+	var patterns []string
 	seen := make(map[string]bool)
 	for _, host := range engine.Hostnames() {
 		if name, _, err := net.SplitHostPort(host); err == nil {
@@ -75,21 +74,17 @@ func (p *preparedRules) enableSurgeRouting(engine *surgemodule.Engine) {
 		pattern = strings.ReplaceAll(strings.ReplaceAll(pattern, `\*`, ".*"), `\?`, ".")
 		pattern = "^" + pattern + "$"
 		if !seen[pattern] {
-			patterns = append(patterns, &config_parser.Param{Key: "regex", Val: pattern})
+			patterns = append(patterns, pattern)
 			seen[pattern] = true
 		}
 	}
 	if len(patterns) == 0 {
 		return
 	}
-	rule := &config_parser.RoutingRule{
-		AndFunctions: []*config_parser.Function{
-			{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}}},
-			{Name: "domain", Params: patterns},
-		},
-		Outbound: config_parser.Function{Name: consts.OutboundControlPlaneRouting.String()},
+	if p.capture == nil {
+		p.capture = &routingCapture{}
 	}
-	p.routing = append([]*config_parser.RoutingRule{rule}, p.routing...)
+	p.capture.domains = patterns
 }
 
 func (c *ControlPlane) surgeDialContext(option *DialOption, host string, destination netip.AddrPort, path stats.Path) surgemodule.DialContext {

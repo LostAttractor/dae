@@ -399,7 +399,7 @@ func NewControlPlane(
 	/// Routing.
 	// Parse rules and build. BuildUserspace is in-memory only and is safe to
 	// run during the validation phase; BuildKernspace is deferred to Activate.
-	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
+	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture)
 	if err != nil {
 		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
@@ -512,7 +512,7 @@ func NewControlPlane(
 			}
 			preparedRules.bypassAPI(global.APIPort, addresses)
 		}
-		builder, err = NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr)
+		builder, err = NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture)
 		if err != nil {
 			return nil, err
 		}

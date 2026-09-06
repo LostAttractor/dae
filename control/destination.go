@@ -6,32 +6,30 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 // Rewritten destinations must reach userspace even when routed direct. The
 // capture action is skipped when reconstructing the original route.
 func (p *preparedRules) enableDestinationRewrites(rules routing.DestinationRewrites) {
-	var ips []*config_parser.Param
+	var ips []netip.Addr
 	for _, rule := range rules {
-		ips = append(ips, &config_parser.Param{Val: rule.From.String()})
+		ips = append(ips, rule.From)
 	}
 	if len(ips) == 0 {
 		return
 	}
-	p.routing = append([]*config_parser.RoutingRule{{
-		AndFunctions: []*config_parser.Function{
-			{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}, {Val: "udp"}}},
-			{Name: "dip", Params: ips},
-		},
-		Outbound: config_parser.Function{Name: consts.OutboundControlPlaneRouting.String()},
-	}}, p.routing...)
+	if p.capture == nil {
+		p.capture = &routingCapture{}
+	}
+	slices.SortFunc(ips, netip.Addr.Compare)
+	p.capture.ips = slices.Compact(ips)
 }
 
 // Preserve the original kernel route when an IP rewrite or MITM hostname
@@ -51,9 +49,7 @@ func (c *ControlPlane) capturedRoutingBitmaps(ip netip.Addr, proto consts.L4Prot
 	if c.surge == nil || proto != consts.L4ProtoType_TCP || c.core == nil || c.core.domainRegistry == nil || c.routingMatcher == nil {
 		return nil, nil, nil
 	}
-	c.routingMatcher.rulesMu.RLock()
-	captureIndex := c.routingMatcher.captureRuleIndex(consts.MatchType_DomainSet)
-	c.routingMatcher.rulesMu.RUnlock()
+	captureIndex := c.routingMatcher.captureIndex
 	if captureIndex < 0 {
 		return nil, nil, nil
 	}

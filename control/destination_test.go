@@ -38,11 +38,14 @@ func TestDestinationRewritePreservesRouting(t *testing.T) {
 		t.Run(test.route+"/"+test.target+"/"+string(test.proto), func(t *testing.T) {
 			rules := routing.DestinationRewrites{{From: dst.Addr(), To: []netip.Addr{netip.MustParseAddr(test.target)}, Proxy: true}}
 			prepared := preparedRules{routing: []*config_parser.RoutingRule{{
+				AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "unregistered.example"}}}},
+				Outbound:     config_parser.Function{Name: "block"},
+			}, {
 				AndFunctions: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}},
 				Outbound:     config_parser.Function{Name: test.route, Params: []*config_parser.Param{{Val: "must"}, {Key: "mark", Val: "37"}}},
 			}}}
 			prepared.enableDestinationRewrites(rules)
-			matcher, _ := surgeRoutingMatcher(t, prepared.routing)
+			matcher, _ := surgeRoutingMatcher(t, prepared)
 			plane := &ControlPlane{destinationRewrites: rules, routingMatcher: matcher, outbounds: groups}
 			plane.markedDirectDialers.Store(uint32(37), unused)
 			param := &RouteParam{
@@ -97,7 +100,7 @@ func TestDestinationCaptureMatchesOnlyConfiguredIPs(t *testing.T) {
 	prepared.enableDestinationRewrites(routing.DestinationRewrites{
 		{From: netip.MustParseAddr("91.108.56.100")}, {From: netip.MustParseAddr("2001:db8::100")},
 	})
-	matcher, builder := surgeRoutingMatcher(t, prepared.routing)
+	matcher, builder := surgeRoutingMatcher(t, prepared)
 	// Expose the capture predicate's decision without userspace's marker skip.
 	for i := range builder.rules {
 		if builder.rules[i].Outbound == uint8(consts.OutboundControlPlaneRouting) {
