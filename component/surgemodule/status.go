@@ -12,6 +12,7 @@ type Status struct {
 }
 
 type ModuleStatus struct {
+	Instance       string   `json:"instance,omitempty"`
 	Name           string   `json:"name"`
 	Source         string   `json:"source"`
 	State          string   `json:"state"`
