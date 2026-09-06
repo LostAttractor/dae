@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 	quic "github.com/daeuniverse/quic-go"
@@ -171,7 +172,7 @@ func relayTestRuntime(t *testing.T, conns ...net.Conn) (*netproxy.Runtime, *netp
 			t.Errorf("Runtime.Wait: %v", err)
 		}
 	})
-	controller, _ := runtime.Session()
+	controller := runtime.Session()
 	if err := controller.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +228,7 @@ func TestRelayTCPSessionAbortResetsDependentClients(t *testing.T) {
 	healthyRuntime, _ := relayTestRuntime(t, healthyRight)
 	healthyClient, healthyDone := relayTestStartRuntime(t, healthyRuntime)
 	cause := errors.New("owner detected an unusable transport")
-	if !handle.Invalidate(cause) {
+	if !handle.Abort(cause) {
 		t.Fatal("owner rejected current resource failure")
 	}
 	for i, client := range clients {
@@ -284,7 +285,7 @@ func TestRelayTCPReturnedFatalErrorDoesNotAuthorizeReset(t *testing.T) {
 }
 
 func TestRelayTCPGracefulLifecycleKeepsActiveConnection(t *testing.T) {
-	for _, action := range []string{"invalidate", "local cleanup", "retire"} {
+	for _, action := range []string{"invalidate", "retire"} {
 		t.Run(action, func(t *testing.T) {
 			right, server := relayTestTCPPair(t)
 			runtime, handle := relayTestRuntime(t, right)
@@ -292,8 +293,6 @@ func TestRelayTCPGracefulLifecycleKeepsActiveConnection(t *testing.T) {
 			switch action {
 			case "invalidate":
 				handle.Lease().Invalidate(errors.New("stop allocating on draining transport"))
-			case "local cleanup":
-				handle.Invalidate(relayTestCleanupError())
 			case "retire":
 				runtime.Retire()
 			}
@@ -310,5 +309,53 @@ func TestRelayTCPGracefulLifecycleKeepsActiveConnection(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestRelayTCPPolicyResetsClientWithoutAbortingNode(t *testing.T) {
+	for _, device := range []bool{false, true} {
+		t.Run(map[bool]string{false: "group", true: "device"}[device], func(t *testing.T) {
+
+			left, client := relayTestTCPPair(t)
+			right := relayTestNewConn()
+			policy := netproxy.NewLease(netproxy.NewResourceRef())
+			var group, route *netproxy.Lease
+			if device {
+				route = policy
+			} else {
+				group = policy
+			}
+			node := netproxy.NewLease(netproxy.NewResourceRef())
+			upstream := &relayTestLeasedConn{Conn: right, lease: node}
+			finished := make(chan error, 1)
+			traffic := stats.DefaultStore.OpenConnection(stats.Path{Dialer: t.Name()}, false)
+			defer traffic.Close()
+			go func() { finished <- relayTCP(left, upstream, traffic, time.Second, "", group, route) }()
+			policy.Abort(netproxy.WrapFailure(errors.New("group reselected node"), netproxy.Failure{Origin: netproxy.OriginLocalCleanup}))
+			_, err := client.Read(make([]byte, 1))
+			if !errors.Is(err, syscall.ECONNRESET) {
+				t.Fatalf("client error = %v, want RST", err)
+			}
+			_ = waitTCPRelayTest(t, finished)
+			if !node.Valid() {
+				t.Fatal("connection policy invalidated the node resource")
+			}
+
+		})
+	}
+}
+
+func TestGroupPolicyCanAbortAfterResourceStartsDraining(t *testing.T) {
+	resource := netproxy.NewLease(netproxy.NewResourceRef())
+	policy := netproxy.NewLease(netproxy.NewResourceRef())
+	ended := make(chan struct{})
+	stop := watchAbort(resource, policy, nil, func() { close(ended) })
+	defer stop()
+	resource.Invalidate(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Origin: netproxy.OriginLocalCleanup}))
+	policy.Abort(errors.New("group changed"))
+	select {
+	case <-ended:
+	case <-time.After(time.Second):
+		t.Fatal("resource draining masked policy termination")
 	}
 }

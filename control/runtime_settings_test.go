@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/settings"
 )
@@ -96,6 +97,13 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
+	plane.closeOnRouteChange, plane.deviceRoutes = true, newTestDeviceRoutes(t)
+	deviceLease, err := plane.deviceRoutes.acquire(&bpfRoutingResult{Mac: [6]byte{2, 0, 0, 0, 0, 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane.outbounds[0].SetConnectionPolicy(true, true)
+	_, _, _, groupLease, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 	other := newAPITestPlane(t, store).outbounds[0]
 	other.Name = "other"
 	plane.outbounds = append(plane.outbounds, other)
@@ -105,6 +113,9 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 	}
 	if changed, err := plane.ReloadRuntimeSettings(); changed || err == nil {
 		t.Fatal(changed, err)
+	}
+	if deviceLease.AbortCause() != nil || groupLease.AbortCause() != nil {
+		t.Fatal("rolled-back reload aborted existing connections")
 	}
 	for _, group := range plane.outbounds {
 		if group.Selection() != group.DefaultSelection() || store.Selection(group.Name) != "" {

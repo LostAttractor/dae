@@ -130,7 +130,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, setups map[string]plugin.Setup) (c *control.ControlPlane, err error) {
+func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, setups map[string]plugin.Setup) (c *control.ControlPlane, err error) {
 	defer func() {
 		if err == nil || bpf != nil {
 			return

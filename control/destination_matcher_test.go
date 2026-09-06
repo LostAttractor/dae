@@ -84,6 +84,7 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 	m, b := destinationTestMatcher(t, `!domain(full: excluded.example) && client(kids) && dport(443) -> dnat(198.51.100.9)`)
 	mac := [6]byte{2, 0, 0, 0, 0, 1}
 	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), Domain: "allowed.example", routingResult: &bpfRoutingResult{Mac: mac}, networkType: *common.NetworkTCP4.NetworkType()}
+	var frozen *RoutingMatcher
 	for _, joined := range []bool{false, true, false} {
 		var members [][6]byte
 		if joined {
@@ -96,6 +97,12 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 		if err != nil || decision.IsValid() != joined {
 			t.Fatalf("joined=%v decision=%+v err=%v", joined, decision, err)
 		}
+		if joined {
+			frozen = m.snapshotDestinations()
+		}
+	}
+	if decision, err := frozen.matchDestination(p); err != nil || !decision.IsValid() {
+		t.Fatalf("membership update changed the existing UDP lifetime: %+v, %v", decision, err)
 	}
 	if err := b.SetClientMembers(m, "kids", [][6]byte{mac}, false); err != nil {
 		t.Fatal(err)

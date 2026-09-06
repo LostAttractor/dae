@@ -102,7 +102,7 @@ dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(pa
 	if err != nil || option != nil || planner == nil || release != nil {
 		t.Fatalf("old route ran before HTTP: %+v, %v", option, err)
 	}
-	bridge := plane.newMITMQUIC(param, planner, release)
+	bridge := plane.newMITMQUIC(param, planner, release, nil)
 	defer bridge.Close()
 	wire := &quic.Transport{Conn: bridge}
 	defer wire.Close()

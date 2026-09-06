@@ -53,7 +53,11 @@ func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 		oldCandidate, oldUsable := findCandidate(candidates, oldDialer)
 		switch {
 		case !oldUsable:
-			newDialer = best
+			// Retain the last choice while unavailable. If a different node
+			// later recovers, that is still a reselection of this group.
+			if best != nil {
+				newDialer = best
+			}
 		default:
 			bestCandidate := candidates[0]
 			tolerance := time.Duration(0)
@@ -68,6 +72,9 @@ func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 		}
 	}
 	if newDialer != oldDialer {
+		if oldDialer != nil && newDialer != nil {
+			s.dialerGroup.closeConnectionGeneration(networkType, true)
+		}
 		s.selected[index] = newDialer
 		s.logSelection(oldDialer, newDialer, networkType)
 	}

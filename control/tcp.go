@@ -7,18 +7,13 @@ package control
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net"
-	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -31,28 +26,6 @@ const (
 	// Value from OpenWRT default sysctl config
 	DefaultNatTimeoutTCPEstablished = 7440 * time.Second
 )
-
-type directTCPSplice struct {
-	runtime  *splice.Runtime
-	accepted splice.TCPConn
-	remote   splice.TCPConn
-}
-
-type tcpRelay struct {
-	lConn          sniffing.ConnSnifferInterface
-	rConn          net.Conn
-	directSplice   *directTCPSplice
-	dialer         *dialer.Dialer
-	outboundOrigin netproxy.FailureOrigin
-	statsPath      stats.Path
-	fallback       bool
-	src            netip.AddrPort
-	dst            netip.AddrPort
-	domain         string
-	mitmHost       *mitm.Host
-	mitmPlanner    mitm.UpstreamPlanner
-	mitmRelease    func()
-}
 
 type tcpConnectionTracker struct {
 	// mu serializes setup Add calls with the stopped transition before Wait.
@@ -129,6 +102,31 @@ func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, tr
 }
 
 func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn) (relay *tcpRelay, err error) {
+	// Get tuples and outbound.
+	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
+	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
+	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
+	if err != nil {
+		_ = lConn.Close()
+		return nil, oops.Wrapf(err, "failed to retrieve target info %v", dst.String())
+	}
+	src = common.ConvergeAddrPort(src)
+	dst = common.ConvergeAddrPort(dst)
+
+	routeLease, err := c.deviceRoutes.acquire(routingResult)
+	if err != nil {
+		setTCPResetOnClose(lConn)
+		_ = lConn.Close()
+		return nil, err
+	}
+	setupCtx, cancelSetup := context.WithCancel(setupCtx)
+	defer cancelSetup()
+	stopRoute := watchAbort(nil, nil, routeLease, func() {
+		setTCPResetOnClose(lConn)
+		cancelSetup()
+		_ = lConn.Close()
+	})
+	defer stopRoute()
 	// Sniff target domain.
 	sniffer := sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
 	stopClose := context.AfterFunc(setupCtx, func() { _ = lConn.Close() })
@@ -156,15 +154,6 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		return nil, oops.Wrapf(err, "Sniff Failed")
 	}
 
-	// Get tuples and outbound.
-	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
-	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
-	if err != nil {
-		return nil, oops.Wrapf(err, "failed to retrieve target info %v", dst.String())
-	}
-	src = common.ConvergeAddrPort(src)
-	dst = common.ConvergeAddrPort(dst)
 	host := domain
 	if host == "" && sniffer.IsTLS() {
 		host = dst.Addr().String()
@@ -183,19 +172,34 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		return nil, err
 	}
 	if mitmPlanner != nil {
+		var policyLease *netproxy.Lease
+		if dialOption != nil {
+			policyLease = dialOption.PolicyLease
+		}
 		return &tcpRelay{
 			lConn: sniffer, src: src, dst: dst, domain: host,
-			mitmHost: c.mitmHost, mitmPlanner: mitmPlanner, mitmRelease: release,
+			mitmHost: c.mitmHost, mitmPlanner: mitmPlanner, mitmRelease: release, routeLease: routeLease, policyLease: policyLease,
 		}, nil
 	}
 	statsPath, noConnectivityFallback := dialOption.trafficAttribution()
+	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
+	defer cancel()
+	stopPolicy := watchAbort(nil, dialOption.PolicyLease, nil, func() {
+		cancel()
+		setTCPResetOnClose(lConn)
+		_ = lConn.Close()
+	})
+	defer stopPolicy()
 
 	// Dial
 	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
-	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
-	defer cancel()
 	start := time.Now()
 	rConn, err := dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
+	if cause := connectionAbortCause(dialOption.PolicyLease, routeLease); cause != nil {
+		setTCPResetOnClose(lConn)
+		closeInBackground(rConn)
+		return nil, cause
+	}
 	if err != nil {
 		meta := netproxy.Failure{Phase: netproxy.OpDial}
 		if dialOption.Direct {
@@ -223,160 +227,24 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 
 	stats.DefaultStore.RecordDial(statsPath, time.Since(start))
 	relay = &tcpRelay{
-		lConn:     sniffer,
-		rConn:     rConn,
-		dialer:    dialOption.Dialer,
-		statsPath: statsPath,
-		fallback:  noConnectivityFallback,
-		src:       src,
-		dst:       dst,
-		domain:    domain,
+		lConn:       sniffer,
+		rConn:       rConn,
+		dialer:      dialOption.Dialer,
+		statsPath:   statsPath,
+		fallback:    noConnectivityFallback,
+		policyLease: dialOption.PolicyLease,
+		routeLease:  routeLease,
+		src:         src,
+		dst:         dst,
+		domain:      domain,
 	}
 	if dialOption.Direct {
 		relay.outboundOrigin = netproxy.OriginTarget
 	}
-	if dialOption.Direct && c.core.bpf.splice != nil {
-		if rawRConn, ok := rConn.(splice.TCPConn); ok {
-			relay.directSplice = &directTCPSplice{
-				c.core.bpf.splice, lConn.(*net.TCPConn), rawRConn,
-			}
+	if dialOption.Direct && dialOption.PolicyLease == nil && routeLease == nil && c.core.bpf.splice != nil {
+		if _, ok := rConn.(splice.TCPConn); ok {
+			relay.directSplice = c.core.bpf.splice
 		}
 	}
 	return relay, nil
-}
-
-func (r *tcpRelay) run() (err error) {
-	if r.mitmRelease != nil {
-		defer r.mitmRelease()
-	}
-	if r.rConn != nil {
-		defer r.rConn.Close()
-	}
-	defer r.lConn.Close()
-	if r.mitmHost != nil {
-		return r.mitmHost.ServeConn(r.lConn, r.domain, r.dst.Port(), r.mitmPlanner)
-	}
-	traffic := stats.DefaultStore.OpenConnection(r.statsPath, r.fallback)
-	defer func() { err = errors.Join(err, traffic.Close()) }()
-
-	// Relay
-	handled := false
-	if r.directSplice != nil {
-		accepted := &relayEndpoint{conn: r.directSplice.accepted, origin: netproxy.OriginCaller}
-		remote := &relayEndpoint{conn: r.directSplice.remote, origin: netproxy.OriginTarget}
-		err = r.lConn.WriteBufferedTo(&trafficWriter{Writer: remote, add: traffic.RecordUpload})
-		if err == nil {
-			handled, err = r.directSplice.runtime.Relay(
-				&spliceEndpoint{TCPConn: r.directSplice.accepted, endpoint: accepted},
-				&spliceEndpoint{TCPConn: r.directSplice.remote, endpoint: remote}, traffic)
-		}
-	}
-	if !handled && err == nil {
-		err = relayTCP(r.lConn, r.rConn, traffic, 10*time.Second, r.outboundOrigin)
-	} else {
-		err = withoutCleanupErrors(err)
-	}
-	if recordDataPlaneError(r.dialer, r.statsPath, err) {
-		return oops.In("RelayTCP").
-			With("Outbound", r.statsPath.Outbound).
-			With("Dialer", r.statsPath.Dialer).
-			With("src", r.src.String()).
-			With("dst", r.dst.String()).
-			With("domain", r.domain).
-			Wrapf(err, "failed to relay TCP")
-	}
-	return nil
-}
-
-type trafficWriter struct {
-	io.Writer
-	add func(uint64)
-}
-
-func (w *trafficWriter) Write(p []byte) (int, error) {
-	n, err := w.Writer.Write(p)
-	if n > 0 {
-		w.add(uint64(n))
-	}
-	return n, err
-}
-
-func relayEndpointDirection(dst, src *relayEndpoint, add func(uint64)) error {
-	return copyRelay(&trafficWriter{Writer: dst, add: add}, src)
-}
-
-func relayTCP(lConn, rConn net.Conn, traffic *stats.Connection, drainTimeout time.Duration, origin netproxy.FailureOrigin) error {
-	type result struct {
-		err        error
-		needsDrain bool
-	}
-	results := make(chan result, 2)
-	left := &relayEndpoint{conn: lConn, origin: netproxy.OriginCaller}
-	right := &relayEndpoint{conn: rConn, origin: origin}
-	lease := netproxy.DependencyOf(rConn)
-	invalidated := lease.Done()
-	copyDirection := func(dst, src *relayEndpoint, add func(uint64)) {
-		outcome := result{err: relayEndpointDirection(dst, src, add)}
-		// copyRelay consumes read EOF. Propagate FIN only while the owner
-		// still allows it; resource cleanup can itself surface as EOF.
-		if outcome.err == nil && lease.AbortCause() == nil {
-			outcome.needsDrain, outcome.err = dst.halfClose()
-		}
-		// Keep CloseWrite in the worker: an owner abort must be able to
-		// interrupt it if sending FIN blocks.
-		results <- outcome
-	}
-	go copyDirection(left, right, traffic.RecordDownload)
-	go copyDirection(right, left, traffic.RecordUpload)
-
-	var timer *time.Timer
-	var timeout <-chan time.Time
-	defer func() {
-		if timer != nil {
-			timer.Stop()
-		}
-	}()
-	aborted := false
-	var relayErr error
-	abort := func() {
-		if aborted {
-			return
-		}
-		aborted = true
-		timeout = nil
-		invalidated = nil
-		// Check the owner signal even if a copy result won the select race.
-		if cause := lease.AbortCause(); cause != nil {
-			relayErr = errors.Join(relayErr, cause)
-			setTCPResetOnClose(lConn)
-		}
-		// Unblock both reads and writes, including a reverse copy blocked
-		// writing to the endpoint whose read side has already ended.
-		_ = left.close()
-		_ = right.close()
-	}
-	for remaining := 2; remaining > 0; {
-		select {
-		case <-invalidated:
-			invalidated = nil
-			if lease.AbortCause() != nil {
-				abort()
-			}
-		case outcome := <-results:
-			remaining--
-			relayErr = errors.Join(relayErr, outcome.err)
-			if outcome.err != nil || lease.AbortCause() != nil {
-				abort()
-			} else if outcome.needsDrain && remaining == 1 && !aborted {
-				// A connection without CloseWrite cannot propagate EOF. Give
-				// the reverse copy a fixed grace period after the first EOF.
-				timer = time.NewTimer(drainTimeout)
-				timeout = timer.C
-			}
-		case <-timeout:
-			relayErr = errors.Join(relayErr, netproxy.WrapFailure(context.DeadlineExceeded, netproxy.Failure{Scope: netproxy.ScopeOperation, Reason: netproxy.ReasonDeadline}))
-			abort()
-		}
-	}
-	return withoutCleanupErrors(relayErr)
 }

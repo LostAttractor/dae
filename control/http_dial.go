@@ -5,13 +5,15 @@ package control
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
@@ -45,85 +47,161 @@ func (c *ControlPlane) dialHTTPUpstream(parent context.Context, option *DialOpti
 	}
 	ctx, cancel := context.WithTimeout(parent, consts.DefaultDialTimeout)
 	defer cancel()
-	path, fallback := option.trafficAttribution()
+	stop := watchAbort(nil, option.PolicyLease, nil, cancel)
+	defer stop()
+	if cause := option.PolicyLease.AbortCause(); cause != nil {
+		return nil, cause
+	}
+	path, _ := option.trafficAttribution()
 	started := time.Now()
 	conn, err := option.dialerForConnection().DialContext(ctx, "tcp", option.DialTarget)
+	if cause := option.PolicyLease.AbortCause(); cause != nil {
+		closeInBackground(conn)
+		return nil, cause
+	}
 	if err != nil {
-		stats.DefaultStore.RecordError(path)
-		if parent.Err() == nil && option.Dialer.ChecksConnectivity() {
-			if netErr, ok := IsNetError(err); ok && !netErr.Timeout() {
-				option.Dialer.ReportDataPlaneFailure()
-			}
-		}
+		return nil, recordHTTPDialFailure(parent, option, err)
+	}
+	if err := ctx.Err(); err != nil {
+		closeInBackground(conn)
 		return nil, err
 	}
 	stats.DefaultStore.RecordDial(path, time.Since(started))
-	traffic := stats.DefaultStore.OpenConnection(path, fallback)
-	return &mitmUpstreamConn{Conn: conn, traffic: traffic}, nil
+	return &mitmUpstreamConn{Conn: conn, httpUpstream: newHTTPUpstream(option, conn)}, nil
 }
 
 type mitmUpstreamConn struct {
 	net.Conn
-	traffic   *stats.Connection
-	closeOnce sync.Once
+	*httpUpstream
 }
 
 func (c *mitmUpstreamConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	c.traffic.RecordDownload(uint64(n))
-	return n, err
+	if err == io.EOF {
+		return n, err
+	}
+	return n, c.failure(err, netproxy.OpRead)
 }
 
 func (c *mitmUpstreamConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
 	c.traffic.RecordUpload(uint64(n))
-	return n, err
+	return n, c.failure(err, netproxy.OpWrite)
 }
 
 func (c *mitmUpstreamConn) Close() error {
-	err := c.Conn.Close()
-	c.closeOnce.Do(func() { _ = c.traffic.Close() })
-	return err
+	c.retire()
+	return c.Conn.Close()
 }
 
 func (c *ControlPlane) dialHTTPPacketUpstream(parent context.Context, option *DialOption) (net.PacketConn, net.Addr, error) {
 	ctx, cancel := context.WithTimeout(parent, consts.DefaultDialTimeout)
 	defer cancel()
-	path, fallback := option.trafficAttribution()
+	stop := watchAbort(nil, option.PolicyLease, nil, cancel)
+	defer stop()
+	if cause := option.PolicyLease.AbortCause(); cause != nil {
+		return nil, nil, cause
+	}
+	path, _ := option.trafficAttribution()
 	started := time.Now()
 	conn, err := option.dialerForConnection().ListenPacket(ctx, option.DialTarget)
+	if cause := option.PolicyLease.AbortCause(); cause != nil {
+		closeInBackground(conn)
+		return nil, nil, cause
+	}
 	if err != nil {
-		stats.DefaultStore.RecordError(path)
-		return nil, nil, err
+		return nil, nil, recordHTTPDialFailure(parent, option, err)
 	}
 	if err := ctx.Err(); err != nil {
 		closeInBackground(conn)
 		return nil, nil, err
 	}
 	stats.DefaultStore.RecordDial(path, time.Since(started))
-	return &mitmUpstreamPacketConn{PacketConn: conn, traffic: stats.DefaultStore.OpenConnection(path, fallback)}, netproxy.NewAddr("udp", option.DialTarget), nil
+	return &mitmUpstreamPacketConn{PacketConn: conn, httpUpstream: newHTTPUpstream(option, conn)}, netproxy.NewAddr("udp", option.DialTarget), nil
 }
 
 type mitmUpstreamPacketConn struct {
 	net.PacketConn
-	traffic   *stats.Connection
-	closeOnce sync.Once
+	*httpUpstream
 }
 
 func (c *mitmUpstreamPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
 	n, from, err := c.PacketConn.ReadFrom(data)
 	c.traffic.RecordDownload(uint64(n))
-	return n, from, err
+	return n, from, c.failure(err, netproxy.OpRead)
 }
 
 func (c *mitmUpstreamPacketConn) WriteTo(data []byte, to net.Addr) (int, error) {
 	n, err := c.PacketConn.WriteTo(data, to)
 	c.traffic.RecordUpload(uint64(n))
-	return n, err
+	return n, c.failure(err, netproxy.OpWrite)
 }
 
 func (c *mitmUpstreamPacketConn) Close() error {
-	err := c.PacketConn.Close()
-	c.closeOnce.Do(func() { _ = c.traffic.Close() })
+	c.retire()
+	return c.PacketConn.Close()
+}
+
+// Both HTTP transports account at the selected upstream and expose its actual
+// resource and group-policy lifetime to the accepted TCP/QUIC connection.
+type httpUpstream struct {
+	traffic *stats.Connection
+	dialer  *dialer.Dialer
+	path    stats.Path
+	origin  netproxy.FailureOrigin
+	lease   *netproxy.Lease
+	stop    func()
+	closed  atomic.Bool
+}
+
+func newHTTPUpstream(option *DialOption, conn io.Closer) *httpUpstream {
+	path, fallback := option.trafficAttribution()
+	u := &httpUpstream{traffic: stats.DefaultStore.OpenConnection(path, fallback), dialer: option.Dialer, path: path,
+		lease: netproxy.NewLease(netproxy.NewResourceRef())}
+	if option.Direct {
+		u.origin = netproxy.OriginTarget
+	}
+	resource := netproxy.DependencyOf(conn)
+	u.stop = watchAbort(resource, option.PolicyLease, nil, func() {
+		u.lease.Abort(connectionAbortCause(resource, option.PolicyLease))
+		_ = u.traffic.Close()
+		closeInBackground(conn)
+	})
+	return u
+}
+
+func (u *httpUpstream) DependencyLease() *netproxy.Lease { return u.lease }
+func (u *httpUpstream) retire() {
+	if u.closed.Swap(true) {
+		return
+	}
+	u.stop()
+	u.lease.Invalidate(net.ErrClosed)
+	_ = u.traffic.Close()
+}
+func (u *httpUpstream) failure(err error, phase netproxy.Operation) error {
+	if err == nil || u.closed.Load() && plainClosedError(err) {
+		return err
+	}
+	if cause := u.lease.AbortCause(); cause != nil {
+		err = cause
+	} else {
+		err = netproxy.WrapFailure(err, netproxy.Failure{Phase: phase, Origin: u.origin})
+	}
+	recordDataPlaneError(u.dialer, u.path, err)
+	return err
+}
+
+func recordHTTPDialFailure(parent context.Context, option *DialOption, err error) error {
+	meta := netproxy.Failure{Phase: netproxy.OpDial}
+	if option.Direct {
+		meta.Origin = netproxy.OriginTarget
+	}
+	err = netproxy.WrapFailure(err, meta)
+	if parent.Err() == nil {
+		path, _ := option.trafficAttribution()
+		recordDataPlaneError(option.Dialer, path, err)
+	}
 	return err
 }

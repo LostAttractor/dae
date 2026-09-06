@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"strconv"
 
+	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
@@ -42,6 +44,9 @@ func (p *preparedRules) bypassAPI(port uint16, addresses []net.Addr) {
 		if (!ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast() && !ip.IsLoopback()) || seen[ip] {
 			continue
 		}
+		key := bpfIpPort{Port: common.Htons(port)}
+		key.Ip.U6Addr8 = ip.As16()
+		p.apiBypass = append(p.apiBypass, key)
 		hosts = append(hosts, &config_parser.Param{Val: ip.String()})
 		seen[ip] = true
 	}
@@ -61,4 +66,27 @@ func (p *preparedRules) bypassAPI(port uint16, addresses []net.Addr) {
 		p.capture = &routingCapture{}
 	}
 	p.capture.before++
+}
+
+// The API changes membership itself, so its local TCP connection must survive
+// that change. Refresh the same exact address/port exclusions on activation.
+func (c *ControlPlane) updateRouteExemptions() error {
+	m := c.core.bpf.RouteExemptMap
+	var key bpfIpPort
+	var value uint8
+	it := m.Iterate()
+	for it.Next(&key, &value) {
+		if err := m.Delete(&key); err != nil {
+			return err
+		}
+	}
+	if err := it.Err(); err != nil {
+		return err
+	}
+	for _, key := range c.apiBypass {
+		if err := m.Update(&key, uint8(1), ebpf.UpdateAny); err != nil {
+			return err
+		}
+	}
+	return nil
 }

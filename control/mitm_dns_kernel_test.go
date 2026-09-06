@@ -49,7 +49,7 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 		t.Fatal(err)
 	}
 	defer collection.Close()
-	state := &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
+	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 		RoutingMap: collection.Maps["routing_map"], LpmArrayMap: collection.Maps["lpm_array_map"],
 		UnusedLpmType: collection.Maps["unused_lpm_type"], DomainRoutingMap: collection.Maps["domain_routing_map"],
 	}}}

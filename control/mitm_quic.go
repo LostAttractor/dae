@@ -5,21 +5,29 @@ package control
 import (
 	"errors"
 	"net"
-	"net/netip"
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 
 // The endpoint owns the intercepted association, while each final HTTP request
 // owns its upstream policy and accounting. Auxiliary requests use TCP rules.
-func (c *ControlPlane) newMITMQUIC(p *RouteParam, packetPlan mitm.UpstreamPlanner, release func()) net.PacketConn {
+func (c *ControlPlane) newMITMQUIC(p *RouteParam, packetPlan mitm.UpstreamPlanner, release func(), routeLease *netproxy.Lease) net.PacketConn {
 	ingress, server := newMITMPacketPair(p.Src, p.Dest)
+	lease := netproxy.DependencyOf(ingress)
+	stop := watchAbort(lease, nil, routeLease, func() {
+		lease.Abort(connectionAbortCause(lease, routeLease))
+		_ = server.Close()
+	})
+	packetPlan = mitmPlannerWithLease(packetPlan, lease)
 	host := c.mitmHost
 	plan := c.mitmUpstreamPlanner("tcp", p.Domain, p.Src, p.Dest, *p.routingResult, nil)
+	plan = mitmPlannerWithLease(plan, lease)
 	flow := plugin.Flow{Host: p.Domain, Port: p.Dest.Port(), Source: p.Src, Destination: p.Dest}
 	go func() {
+		defer stop()
 		if release != nil {
 			defer release()
 		}
@@ -31,14 +39,4 @@ func (c *ControlPlane) newMITMQUIC(p *RouteParam, packetPlan mitm.UpstreamPlanne
 		}
 	}()
 	return ingress
-}
-
-func (c *ControlPlane) mitmUDPEndpointKey(source, destination netip.AddrPort, result *bpfRoutingResult, sniffed *packetSniff) udpEndpointKey {
-	host := sniffed.domain
-	if host == "" {
-		host = destination.Addr().String()
-	}
-	scoped := result.CaptureFlags&(captureDestination|captureHTTP) != 0 ||
-		sniffed.http3 && c.mitmHost != nil && c.mitmHost.Match(host, destination.Port()) != mitm.HTTPBypass
-	return c.udpEndpoints.keyForPacket(source, destination, result.Ifindex, scoped)
 }

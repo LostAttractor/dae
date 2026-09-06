@@ -33,7 +33,7 @@ func TestRoutingMatcherBuilderForEachStaleLpmSlot(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			builder := &RoutingMatcherBuilder{
-				bpf:               &bpfState{activeLpmTrieCount: tt.previousCount},
+				bpf:               &BPFState{activeLpmTrieCount: tt.previousCount},
 				simulatedLpmTries: make([][]netip.Prefix, tt.currentCount),
 				kernelLpmLen:      tt.currentCount,
 			}
@@ -52,7 +52,7 @@ func TestRoutingMatcherBuilderForEachStaleLpmSlot(t *testing.T) {
 
 	t.Run("callback failure stops iteration", func(t *testing.T) {
 		builder := &RoutingMatcherBuilder{
-			bpf:               &bpfState{activeLpmTrieCount: 5},
+			bpf:               &BPFState{activeLpmTrieCount: 5},
 			simulatedLpmTries: make([][]netip.Prefix, 2),
 			kernelLpmLen:      2,
 		}

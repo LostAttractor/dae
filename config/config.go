@@ -57,6 +57,7 @@ type Global struct {
 	NoConnectivityTrySniff bool   `mapstructure:"no_connectivity_try_sniff" default:"true"`
 	// TODO: skip?
 	NoConnectivityBehavior string        `mapstructure:"no_connectivity_behavior" default:"block"`
+	RouteChangeBehavior    string        `mapstructure:"route_change_behavior" default:"keep"`
 	UDPHopInterval         time.Duration `mapstructure:"udphop_interval" default:"30s"`
 }
 
@@ -175,6 +176,16 @@ type Group struct {
 	CheckIntervalMax time.Duration `mapstructure:"check_interval_max"`
 	CheckTolerance   time.Duration `mapstructure:"check_tolerance"`
 	CheckAsync       bool          `mapstructure:"check_async"`
+	ReselectBehavior string        `mapstructure:"reselect_behavior"`
+}
+
+func ValidateConnectionBehavior(name, value string) error {
+	switch value {
+	case "", "keep", "close":
+		return nil
+	default:
+		return fmt.Errorf("%s must be keep or close, got %q", name, value)
+	}
 }
 
 type DnsRequestRouting struct {

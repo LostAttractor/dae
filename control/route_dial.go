@@ -27,6 +27,7 @@ type DialOption struct {
 	NetworkType       common.NetworkType
 	Direct            bool
 	FallbackIpVersion bool
+	PolicyLease       *netproxy.Lease
 }
 
 func (o *DialOption) dialerForConnection() netproxy.Dialer {
@@ -59,7 +60,7 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 	if ipErr == nil {
 		networkType.IpVersion = consts.IpVersionStrFromAddr(target.Addr())
 	}
-	dialer, selectedNetwork, fallback, err := selectedOutbound.SelectFallbackIpVersion(
+	dialer, selectedNetwork, fallback, policyLease, err := selectedOutbound.SelectConnection(
 		networkType,
 		ipErr == nil,
 	)
@@ -89,6 +90,7 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 		NetworkType:       selectedNetwork,
 		Direct:            selectedOutboundIndex == consts.OutboundDirect,
 		FallbackIpVersion: fallback,
+		PolicyLease:       policyLease,
 	}, nil
 }
 

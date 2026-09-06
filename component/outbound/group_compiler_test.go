@@ -565,3 +565,14 @@ func TestGroupCompilerExpansionLimits(t *testing.T) {
 		}
 	})
 }
+
+func TestGroupCompilerRejectsInvalidReselectBehavior(t *testing.T) {
+	for _, group := range []config.Group{
+		{Name: "bad", Policy: "min", ReselectBehavior: "migrate"},
+		{Name: "bad", Policy: "random", ReselectBehavior: "close"},
+	} {
+		if _, err := NewGroupCompiler(&DialerSet{}, []config.Group{group}, nil); err == nil {
+			t.Fatalf("accepted invalid reselect configuration: %+v", group)
+		}
+	}
+}

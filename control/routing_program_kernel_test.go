@@ -41,7 +41,7 @@ func TestRoutingProgramsKernelIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer collection.Close()
-	state := &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
+	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 		RoutingMap: collection.Maps["routing_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
 	}}}
 	for _, laterMust := range []bool{false, true} {

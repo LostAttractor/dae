@@ -7,7 +7,7 @@ package control
 
 import (
 	"errors"
-	"fmt"
+	"github.com/daeuniverse/dae/component/outbound"
 	"net"
 	"time"
 
@@ -84,10 +84,8 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 	if err := c.publishAPIObservation(); err != nil {
 		return err
 	}
-	if !core.isReload {
-		if err := clearDestinationUDP(core.bpf.DestinationUdpMap); err != nil {
-			return fmt.Errorf("clear stale UDP destination ownership: %w", err)
-		}
+	if err := c.updateRouteExemptions(); err != nil {
+		return err
 	}
 	if err := builder.BuildKernspace(); err != nil {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
@@ -96,7 +94,7 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 		if err := deleteUDPRoutingTuples(core.bpf.RoutingTuplesMap); err != nil {
 			return oops.Errorf("clear inherited UDP routing handoff: %w", err)
 		}
-		if err := deleteUDPRoutingCache(core.bpf.UdpRoutingCacheMap); err != nil {
+		if err := deleteUDPRoutingCache(core.bpf.UdpRoutingCacheMap, true); err != nil {
 			return oops.Errorf("clear inherited UDP routing cache: %w", err)
 		}
 	}
@@ -119,7 +117,7 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 
 // EjectBpf releases this plane's cleanup ownership of the shared BPF state and
 // returns it for a reload candidate. The state remains unowned until InjectBpf.
-func (c *ControlPlane) EjectBpf() *bpfState {
+func (c *ControlPlane) EjectBpf() *BPFState {
 	return c.core.EjectBpf()
 }
 
@@ -194,6 +192,9 @@ func (c *ControlPlane) retireTraffic() error {
 	if c.tcpConnections != nil {
 		c.tcpConnections.waitForSetups()
 	}
+	if c.udpEndpoints != nil {
+		c.udpEndpoints.removePending()
+	}
 	if c.abortConnections.Load() && c.udpEndpoints != nil {
 		// StopAndAbortConnections performs an initial sweep. Repeat after the
 		// task drain to catch an endpoint published by an already-accepted task.
@@ -240,4 +241,16 @@ func (c *ControlPlane) Close() (err error) {
 		c.closedDone.Store(true)
 	}
 	return err
+}
+
+func (c *ControlPlane) InheritConnections(old *ControlPlane) {
+	previous := make(map[string]*outbound.DialerGroup, len(old.outbounds))
+	for _, group := range old.outbounds {
+		previous[group.Name] = group
+	}
+	for _, group := range c.outbounds {
+		if predecessor := previous[group.Name]; predecessor != nil {
+			group.InheritConnections(predecessor)
+		}
+	}
 }

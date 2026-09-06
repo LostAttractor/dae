@@ -111,7 +111,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	must(collection.Maps["routing_map"].Update(uint32(0), &bpfMatchSet{Type: uint8(consts.MatchType_Fallback)}, ebpf.UpdateAny))
 	plane := &ControlPlane{
 		apiPort: 9080, lanInterface: []string{"lan", "bond-port"},
-		core: &controlPlaneCore{bpf: &bpfState{bpfObjects: &bpfObjects{
+		core: &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{
 			bpfMaps:      bpfMaps{ApiClientMap: collection.Maps["api_client_map"]},
 			bpfVariables: bpfVariables{ApiPort: collection.Variables["api_port"]},
 		}}},

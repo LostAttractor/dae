@@ -160,6 +160,11 @@ global {
     # environment, if the node does not support IPv6, "direct" may allow programs attempting to use an IPv6
     # connection to actually dial to the target using IPv4.
     #no_connectivity_behavior: block
+
+    # keep (default) or close old connections after a device joins/leaves a client set
+    # used by routing, or after a group recovers from direct fallback. Membership changes
+    # affect the whole device; recovery affects only that group/network's fallback flows.
+    #route_change_behavior: keep
 }
 
 # Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool.
@@ -300,6 +305,10 @@ group {
 
         # Select the node with min moving average of latencies from the group for every connection.
         policy: min_moving_avg
+
+        # Keep or close this group's old connections when its selected node changes.
+        # Applies to the changed TCP/UDP and IPv4/IPv6 combination; unsupported with random.
+        #reselect_behavior: keep
     }
 
     entry_path {

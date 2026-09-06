@@ -36,7 +36,7 @@ type controlPlaneCore struct {
 	cleanupMu    sync.Mutex
 	deferFuncs   []func() error
 	hostTCXLinks []hostTCXLink
-	bpf          *bpfState
+	bpf          *BPFState
 	wanBindings  map[int]*wanBinding
 
 	isReload bool
@@ -96,7 +96,7 @@ type wanBinding struct {
 }
 
 func newControlPlaneCore(
-	bpf *bpfState,
+	bpf *BPFState,
 	isReload bool,
 ) (*controlPlaneCore, error) {
 	closed, toClose := context.WithCancel(context.Background())
@@ -861,7 +861,7 @@ func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
 
 // EjectBpf releases this core's cleanup ownership so Close will not destroy the
 // BPF objects. They remain unowned until a core later calls InjectBpf.
-func (c *controlPlaneCore) EjectBpf() *bpfState {
+func (c *controlPlaneCore) EjectBpf() *BPFState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.bpfOwned = false

@@ -248,7 +248,7 @@ func NewGlobalOption(global *config.Global) *GlobalOption {
 
 func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Property, checksConnectivity bool, statsScope string) *Dialer {
 	ctx, cancel := context.WithCancel(context.Background())
-	session, _ := runtime.Session()
+	session := runtime.Session()
 	d := &Dialer{
 		GlobalOption:       option,
 		Dialer:             runtime.Dialer(),

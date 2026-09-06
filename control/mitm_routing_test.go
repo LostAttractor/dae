@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -245,6 +246,12 @@ func TestMITMAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 			if got != want || mark != 0 || must {
 				t.Errorf("api_port=%d route(%s:%d,%v)=(%v,%d,%v), want (%v,0,false)", port, test.destination, test.port, test.proto, got, mark, must, want)
 			}
+			exempt := test.proto == consts.L4ProtoType_TCP && slices.ContainsFunc(prepared.apiBypass, func(key bpfIpPort) bool {
+				return key.Ip.U6Addr8 == destination && key.Port == common.Htons(test.port)
+			})
+			if exempt != (want == consts.OutboundDirect) {
+				t.Errorf("API routing and device exemption disagree for %s:%d/%v", test.destination, test.port, test.proto)
+			}
 		}
 	}
 }
@@ -286,9 +293,11 @@ func TestMITMDialReportsConnectivityFailures(t *testing.T) {
 		{name: "connection refused", err: refused, wantReport: true},
 		{name: "wrapped connection reset", err: fmt.Errorf("proxy: %w", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNRESET}), wantReport: true},
 		{name: "timeout", err: &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}},
-		{name: "non-network error", err: errors.New("invalid proxy response")},
+		{name: "unknown protocol error", err: errors.New("invalid proxy response"), wantReport: true},
 		{name: "canceled request", err: refused, canceled: true},
-		{name: "unchecked node", err: refused, unchecked: true},
+		{name: "direct target refusal", err: refused, unchecked: true},
+		{name: "stream reset", err: netproxy.WrapFailure(refused, netproxy.Failure{Scope: netproxy.ScopeStream})},
+		{name: "shared resource failure", err: netproxy.WrapFailure(refused, netproxy.Failure{Scope: netproxy.ScopeSharedResource})},
 		{name: "successful dial"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -309,7 +318,7 @@ func TestMITMDialReportsConnectivityFailures(t *testing.T) {
 			stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{d.StatsKey(): {Name: d.Name}}, nil)
 			stats.DefaultStore.RecordNodeState(d.StatsKey(), false, time.Time{})
 			t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
-			option := &DialOption{Dialer: d, DialTarget: "198.51.100.1:443", Outbound: &outbound.DialerGroup{Name: "proxy"}, NetworkType: *common.NetworkTCP4.NetworkType()}
+			option := &DialOption{Dialer: d, DialTarget: "198.51.100.1:443", Outbound: &outbound.DialerGroup{Name: "proxy"}, NetworkType: *common.NetworkTCP4.NetworkType(), Direct: test.unchecked}
 			conn, err := (&ControlPlane{}).dialHTTPUpstream(ctx, option)
 			if conn != nil {
 				_ = conn.Close()
@@ -317,7 +326,7 @@ func TestMITMDialReportsConnectivityFailures(t *testing.T) {
 			if !errors.Is(err, test.err) {
 				t.Fatalf("dial error = %v, want %v", err, test.err)
 			}
-			// ReportDataPlaneFailure records this observation even before a node
+			// Unknown upstream failures request confirmation even before a node
 			// becomes healthy; no background probe is needed to observe the call.
 			reported := !stats.DefaultStore.GetNode(d.StatsKey()).LastConnFailAt.IsZero()
 			if reported != test.wantReport {

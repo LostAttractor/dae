@@ -11,6 +11,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/routing"
@@ -155,6 +156,12 @@ func TestDestinationCaptureMatchesOnlyConfiguredIPs(t *testing.T) {
 	}
 }
 
+type destinationTestDialer struct{ netproxy.Dialer }
+
+func (destinationTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+	return net.ListenPacket("udp4", "127.0.0.1:0")
+}
+
 func TestDestinationUDPReplyIsolation(t *testing.T) {
 	server, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
@@ -165,37 +172,73 @@ func TestDestinationUDPReplyIsolation(t *testing.T) {
 	var pool UdpEndpointPool
 	t.Cleanup(pool.closeAll)
 	source := netip.MustParseAddrPort("192.0.2.1:12345")
-	destinations := []string{"91.108.56.100:443", "91.108.56.101:443"}
+	target := addrPortOf(server.LocalAddr())
+	destinations := []netip.AddrPort{
+		netip.AddrPortFrom(netip.MustParseAddr("91.108.56.100"), target.Port()),
+		netip.AddrPortFrom(netip.MustParseAddr("91.108.56.101"), target.Port()),
+	}
+	type reply struct {
+		data string
+		from netip.AddrPort
+	}
+	replies := make(chan reply, 2)
+	policy := netproxy.NewLease(netproxy.NewResourceRef())
+	endpoint := &UdpEndpoint{
+		NatTimeout: time.Hour, packetDialer: destinationTestDialer{},
+		routeLease: policy, sockets: make(map[netip.AddrPort]net.PacketConn),
+		traffic: stats.DefaultStore.OpenConnection(stats.Path{Outbound: t.Name()}, false),
+		handler: func(data []byte, from netip.AddrPort) error { replies <- reply{string(data), from}; return nil },
+	}
+	matcher, _ := destinationTestMatcher(t, "dip(91.108.56.100, 91.108.56.101) -> dnat("+target.Addr().String()+")")
+	endpoint.destinationMatcher = matcher.snapshotDestinations()
+	endpoint.destinationParam = RouteParam{Src: source, routingResult: &bpfRoutingResult{}, networkType: *common.NetworkUDP4.NetworkType()}
+	endpoint.destinations = make(map[netip.AddrPort]netip.AddrPort)
+
+	pool.add(source, endpoint)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	buf := make([]byte, 128)
+	var previousPeer string
 	for _, original := range destinations {
-		socket, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		lock, _ := pool.UdpEndpointKeyLocker.Lock(source)
+		conn, err := endpoint.socket(ctx, &pool, source, original)
+		if err == nil {
+			_, err = writePacket(ctx, conn, []byte(original.String()), net.UDPAddrFromAddrPort(original))
+		}
+		pool.UdpEndpointKeyLocker.Unlock(source, lock)
 		if err != nil {
 			t.Fatal(err)
 		}
-		conn := &destinationPacketConn{PacketConn: socket, original: netip.MustParseAddrPort(original), target: addrPortOf(server.LocalAddr())}
-		t.Cleanup(func() { conn.Close() })
-		conn.SetDeadline(time.Now().Add(5 * time.Second))
-		pool.add(udpEndpointKey{Source: source, Destination: conn.original}, newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: time.Hour}))
-	}
-	buf := make([]byte, 128)
-	for _, original := range destinations {
-		key := udpEndpointKey{Source: source, Destination: netip.MustParseAddrPort(original)}
-		endpoint, ok := pool.Get(key)
-		if !ok {
-			t.Fatal("another destination replaced this UDP association")
-		}
-		if _, err := endpoint.conn.WriteTo([]byte(original), net.UDPAddrFromAddrPort(key.Destination)); err != nil {
-			t.Fatal(err)
-		}
 		n, from, err := server.ReadFrom(buf)
-		if err != nil || string(buf[:n]) != original {
+		if err != nil || string(buf[:n]) != original.String() {
 			t.Fatalf("wrong rewritten request: %q, %v", buf[:n], err)
 		}
+		if from.String() == previousPeer {
+			t.Fatal("rewrites to the same server shared a socket")
+		}
+		previousPeer = from.String()
 		if _, err := server.WriteTo(buf[:n], from); err != nil {
 			t.Fatal(err)
 		}
-		n, from, err = endpoint.conn.ReadFrom(buf)
-		if err != nil || from.String() != original || string(buf[:n]) != original {
-			t.Fatalf("reply lost original source: %v, %q, %v", from, buf[:n], err)
+		select {
+		case got := <-replies:
+			if got.from != original || got.data != original.String() {
+				t.Fatalf("reply lost original source: %+v", got)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if current, ok := pool.Get(source); !ok || current != endpoint {
+		t.Fatal("destination rewrite replaced the source lifetime")
+	}
+	policy.Abort(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Origin: netproxy.OriginLocalCleanup}))
+	deadline := time.After(5 * time.Second)
+	for !endpoint.IsClosed() {
+		select {
+		case <-deadline:
+			t.Fatal("policy did not release the source lifetime")
+		case <-time.After(time.Millisecond):
 		}
 	}
 }

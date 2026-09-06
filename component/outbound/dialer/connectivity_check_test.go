@@ -463,8 +463,7 @@ func TestHealthRetryBackoff(t *testing.T) {
 	d.CheckIntervalMax = time.Hour
 	checker := newConnectivityChecker(d, nil)
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
 
 	want := []time.Duration{
@@ -507,15 +506,14 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
 	checker.retryInterval = time.Hour
 	checker.scheduleSupport()
 	d.RequestConnectivityCheck()
 	checker.start(checker.requestedCheckKind())
-	if checker.retryInterval != supportRetryInitialInterval || checker.supportScheduled || checker.runningKind != checkSupport {
-		t.Fatalf("support retry after request = %v, scheduled=%v, kind=%v", checker.retryInterval, checker.supportScheduled, checker.runningKind)
+	if checker.retryInterval != supportRetryInitialInterval || !checker.supportAt.IsZero() || checker.runningKind != checkSupport {
+		t.Fatalf("support retry after request = %v, scheduled=%v, kind=%v", checker.retryInterval, !checker.supportAt.IsZero(), checker.runningKind)
 	}
 	if d.connectivityCheckRequested() {
 		t.Fatal("explicit connectivity request was not consumed")
@@ -526,11 +524,11 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 		t.Fatal("explicit request did not start support checking immediately")
 	}
 	close(release)
-	if !checker.finish(<-checker.results) {
+	if !finishCheck(checker, <-checker.results) {
 		t.Fatal("checker stopped after requested support check")
 	}
-	if checker.retryInterval != 4*time.Second || !checker.supportScheduled {
-		t.Fatalf("support retry after failed check = %v, scheduled=%v", checker.retryInterval, checker.supportScheduled)
+	if checker.retryInterval != 4*time.Second || checker.supportAt.IsZero() {
+		t.Fatalf("support retry after failed check = %v, scheduled=%v", checker.retryInterval, !checker.supportAt.IsZero())
 	}
 }
 
@@ -585,12 +583,11 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	}
 	checker := newConnectivityChecker(d, nil)
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
-	checker.healthDue = true
+	checker.healthAt = time.Now()
 	checker.updateSchedule(checkSupport, applied)
-	if checker.healthDue {
+	if !checker.healthAt.IsZero() && !checker.healthAt.After(time.Now()) {
 		t.Fatal("canonical support result left a duplicate health check pending")
 	}
 
@@ -633,8 +630,7 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	d.mu.Unlock()
 	checker := newConnectivityChecker(d, nil)
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
 	if !checker.supportPending() {
 		t.Fatal("unknown mode was not pending while another mode was supported")
@@ -682,8 +678,7 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	}
 	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
 	checker.updateSchedule(checkSupport, support)
 	if failed, accepted := d.applyCheck(checkResult{
@@ -927,11 +922,12 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	checker.backingOff = true
 	checker.healthInterval = time.Minute
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
 	transport.state.Transition(netproxy.SessionDisconnected, errors.New("session lost"))
 	checker.handleSessionEvent(transport.Snapshot())
+
+	checker.dispatch()
 
 	var result checkResult
 	select {
@@ -939,7 +935,7 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("session loss did not trigger an immediate connectivity check")
 	}
-	if !checker.finish(result) {
+	if !finishCheck(checker, result) {
 		t.Fatal("connectivity checker stopped after reconnect failure")
 	}
 	if got := transport.connects.Load(); got != 1 {
@@ -1071,17 +1067,16 @@ func TestDataPlaneRequestDoesNotResetSupportBackoff(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	checker := newConnectivityChecker(d, nil)
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
 	checker.retryInterval = time.Hour
-	checker.supportScheduled = true
+	checker.supportAt = time.Now().Add(time.Hour)
 	checker.backingOff = true
 	checker.healthInterval = time.Minute
 
 	checker.resetForRequest(checkRequestDataPlane)
-	if checker.retryInterval != time.Hour || !checker.supportScheduled {
-		t.Fatalf("data-plane request reset support retry: interval=%v scheduled=%v", checker.retryInterval, checker.supportScheduled)
+	if checker.retryInterval != time.Hour || checker.supportAt.IsZero() {
+		t.Fatalf("data-plane request reset support retry: interval=%v scheduled=%v", checker.retryInterval, !checker.supportAt.IsZero())
 	}
 	if checker.backingOff || checker.healthInterval != d.CheckInterval {
 		t.Fatalf("data-plane request did not reset health retry: interval=%v backingOff=%v", checker.healthInterval, checker.backingOff)
@@ -1111,8 +1106,7 @@ func TestConnectivityProbeConcurrencyIsLimited(t *testing.T) {
 		return true, nil
 	})
 	t.Cleanup(func() {
-		checker.healthTimer.Stop()
-		checker.supportTimer.Stop()
+		checker.stopRetries()
 	})
 	done := make(chan struct{}, 4)
 	for range 4 {

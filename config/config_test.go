@@ -627,3 +627,24 @@ routing { fallback: direct }
 		t.Errorf("dns response fallback should default to %v", consts.DnsResponseOutboundIndex_Accept)
 	}
 }
+
+func TestConnectionBehaviorConfigurationRoundTrip(t *testing.T) {
+	conf := parseConfig(t, `
+	global { no_connectivity_behavior: direct route_change_behavior: close }
+	group { proxy { policy: min reselect_behavior: close } }
+	routing { fallback: proxy }
+	`)
+	if conf.Global.RouteChangeBehavior != "close" || conf.Group[0].ReselectBehavior != "close" {
+		t.Fatalf("connection policies = %+v / %+v", conf.Global, conf.Group[0])
+	}
+	encoded, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parseConfig(t, string(encoded)); !reflect.DeepEqual(conf, got) {
+		t.Fatalf("connection policies changed during round trip")
+	}
+	if err := ValidateConnectionBehavior("route_change_behavior", "direct"); err == nil {
+		t.Fatal("accepted an invalid recovery action")
+	}
+}

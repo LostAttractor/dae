@@ -46,6 +46,7 @@ type DialerGroup struct {
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        *latencyBasedSelector
 	selectionIndex  atomic.Int64
+	connections     connectionPolicy
 
 	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
 	notifyMu           sync.Mutex
@@ -169,6 +170,13 @@ func (g *DialerGroup) Selection() string {
 // SetSelection changes the path for new connections. An empty ID restores the
 // configured default. Kernel connectivity is published before success returns.
 func (g *DialerGroup) SetSelection(id string) error {
+	return g.ChangeSelection(id, func() error { return nil })
+}
+
+// ChangeSelection publishes a choice, then commits its settings. On failure it
+// restores the old choice without terminating existing connection generations.
+// commit must not call this group; notifications and selections wait for it.
+func (g *DialerGroup) ChangeSelection(id string, commit func() error) error {
 	g.notifyMu.Lock()
 	defer g.notifyMu.Unlock()
 	if g.closed.Load() {
@@ -189,12 +197,20 @@ func (g *DialerGroup) SetSelection(id string) error {
 	}
 	previous := g.selectionIndex.Load()
 	if previous == int64(index) {
-		return nil
+		return commit()
 	}
 	g.selectionIndex.Store(int64(index))
-	if err := g.updateConnectivity(); err != nil {
+	err := g.updateConnectivity()
+	if err == nil {
+		err = commit()
+	}
+	if err != nil {
 		g.selectionIndex.Store(previous)
-		return errors.Join(fmt.Errorf("publish selector %q connectivity: %w", g.Name, err), g.updateConnectivity())
+		return errors.Join(fmt.Errorf("change selector %q: %w", g.Name, err), g.updateConnectivity())
+	}
+	g.closeRecoveredConnections()
+	for i := range common.NetworkTypeCount {
+		g.closeConnectionGeneration(common.NetworkIndex(i).NetworkType(), true)
 	}
 	g.Dialers[index].RequestConnectivityCheck()
 	return nil
@@ -498,6 +514,16 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 	}
 	if err := g.updateConnectivity(); err != nil {
 		log.WithField("group", g.Name).Warnf("Failed to publish group availability: %v", err)
+		return
+	}
+	g.closeRecoveredConnections()
+}
+
+func (g *DialerGroup) closeRecoveredConnections() {
+	for i, available := range g.networkAvailable {
+		if available {
+			g.closeConnectionGeneration(common.NetworkIndex(i).NetworkType(), false)
+		}
 	}
 }
 

@@ -125,6 +125,8 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 		outbounds = append(outbounds, outbound.NewDialerGroup(finalOption, name, outbound.GroupKindSelector, dialers, annotations, selectionPolicy,
 			core.outboundAliveChangeCallback(id, name, global.NoConnectivityTrySniff, noConnectivityOutbound)).
 			SetTargetMetadata(target.Kind))
+		closeOnReselect := target.Group != nil && target.Group.ReselectBehavior == "close"
+		outbounds[len(outbounds)-1].SetConnectionPolicy(closeOnReselect, global.RouteChangeBehavior == "close")
 		materializedPathCount += len(dialers)
 		materialized[name] = struct{}{}
 		return nil

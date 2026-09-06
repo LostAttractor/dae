@@ -17,27 +17,15 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := spec.Maps["routing_tuples_map"]
-	if m == nil {
-		t.Fatal("routing_tuples_map is missing")
-	}
-	if m.ValueSize != 40 {
-		t.Fatalf("routing_tuples_map value size = %d, want 40", m.ValueSize)
-	}
 	var result bpfRoutingResult
-	if size := unsafe.Sizeof(result); size != 40 || unsafe.Offsetof(result.Protocol) != 38 {
-		t.Fatalf("routing result layout size = %d, want 40", size)
+	if size := unsafe.Sizeof(result); size != 48 || spec.Maps["routing_tuples_map"].ValueSize != uint32(size) ||
+		unsafe.Offsetof(result.Protocol) != 38 || unsafe.Offsetof(result.NoSniff) != 39 || unsafe.Offsetof(result.RouteEpoch) != 40 {
+		t.Fatalf("routing result layout: size=%d protocol=%d no_sniff=%d route_epoch=%d", size, unsafe.Offsetof(result.Protocol), unsafe.Offsetof(result.NoSniff), unsafe.Offsetof(result.RouteEpoch))
 	}
 	cache := spec.Maps["udp_routing_cache_map"]
-	if cache == nil {
-		t.Fatal("udp_routing_cache_map is missing")
-	}
-	if cache.KeySize != 72 || cache.ValueSize != 48 {
-		t.Fatalf("UDP routing cache layout = key %d, value %d; want 72, 48", cache.KeySize, cache.ValueSize)
-	}
-	var cacheValue bpfUdpRoutingCacheValue
-	if size, offset := unsafe.Sizeof(cacheValue), unsafe.Offsetof(cacheValue.CachedUntil); size != 48 || offset != 40 {
-		t.Fatalf("UDP routing cache value layout = size %d, cached_until offset %d; want 48, 40", size, offset)
+	var value bpfUdpRoutingCacheValue
+	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 48 {
+		t.Fatalf("UDP cache layout: key=%d value=%d cached_until=%d", cache.KeySize, cache.ValueSize, unsafe.Offsetof(value.CachedUntil))
 	}
 }
 
@@ -128,12 +116,27 @@ func TestDeleteUDPRoutingCache(t *testing.T) {
 
 	value := bpfUdpRoutingCacheValue{CachedUntil: 1}
 	for i := uint16(1); i <= 2; i++ {
-		key := bpfUdpRoutingCacheKey{Tuples: bpfTuplesKey{Sport: i, L4proto: unix.IPPROTO_UDP}}
+		key := bpfUdpRoutingCacheKey{Sport: i}
 		if err := m.Update(&key, &value, ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := deleteUDPRoutingCache(m); err != nil {
+	proxyKey := bpfUdpRoutingCacheKey{Sport: 3}
+	value.Result.Outbound = 2
+	if err := m.Update(&proxyKey, &value, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteUDPRoutingCache(m, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Lookup(&proxyKey, &value); !errors.Is(err, ebpf.ErrKeyNotExist) {
+		t.Fatalf("pending route survived reload: %v", err)
+	}
+	directKey := bpfUdpRoutingCacheKey{Sport: 1}
+	if err := m.Lookup(&directKey, &value); err != nil {
+		t.Fatalf("reload removed a direct lifetime: %v", err)
+	}
+	if err := deleteUDPRoutingCache(m, false); err != nil {
 		t.Fatal(err)
 	}
 	var key bpfUdpRoutingCacheKey

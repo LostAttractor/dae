@@ -31,7 +31,7 @@ import (
 type RoutingMatcherBuilder struct {
 	outboundName2Id    map[string]uint8
 	ifmgr              *network.InterfaceManager
-	bpf                *bpfState
+	bpf                *BPFState
 	rules              []bpfMatchSet
 	rulesMu            sync.RWMutex
 	simulatedLpmTries  [][]netip.Prefix
@@ -52,7 +52,7 @@ type RoutingMatcherBuilder struct {
 	kernspaceBuilders []func() error
 }
 
-func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *network.InterfaceManager, capture *routingCapture, destinations routing.DestinationRewrites) (b *RoutingMatcherBuilder, err error) {
+func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *BPFState, fallback config.FunctionOrString, ifmgr *network.InterfaceManager, capture *routingCapture, destinations routing.DestinationRewrites) (b *RoutingMatcherBuilder, err error) {
 	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int), domainSetIDs: make(map[string]uint32), staticLpmIDs: make(map[string]int)}
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))

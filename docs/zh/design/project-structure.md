@@ -32,6 +32,6 @@ MITM 是可选组件，业务插件的实现、测试和文档在独立仓库维
 
 未命中功能范围的 direct 流量继续在内核直通，缺少 DNS 映射不触发宽泛捕获。
 
-内核以 `control_plane_routing` 表示未决路由，无独立的 `route_pending` 字段；删除重复状态后完整结果仍为 40 字节。编译后的目的地址谓词只保留指令范围和目标 IP，不持有源配置 AST。`RouteParam.destination` 使用有效地址表示已选定目标，UDP association 连初次未命中时的原地址也固定保存，节点替换时按当前策略选路与校验嗅探域名。`destination_udp.go` 集中处理地址还原与 ownership。
+内核以 `control_plane_routing` 表示未决路由，无独立的 `route_pending` 字段；本分支的 `no_sniff` 位于偏移 39，`route_epoch` 位于偏移 40，完整结果为 48 字节。编译后的目的地址谓词只保留指令范围和目标 IP，不持有源配置 AST。`RouteParam.destination` 使用有效地址表示已选定目标，UDP 源生命周期固定首次选定的节点、路由及目的地址规则；规则或节点更新不改变已有生命周期，故障结束后同一源端口可按当前规则重新建立。`destination_udp.go` 处理应答地址还原，`udp_binding.go` 管理源绑定。
 
-回归测试覆盖 Host 在 direct/proxy 上的一致改写、原始入口 API 直通和重写目标不能重新进入 API 直通。`TestDestinationUDPReplacementKernelIntegration` 通过实际 UDP 处理入口与私有 BPF maps 同时替换规则和节点，验证已改写与初次未命中两种会话的目标固定、mark 使用新策略。捕获回归直接检查 SSH、无关 HTTPS 和缺少 DNS 映射的内核判决。
+回归测试覆盖 Host 在 direct/proxy 上的一致改写、原始入口 API 直通和重写目标不能重新进入 API 直通。`TestDestinationUDPReplacementKernelIntegration` 通过实际 UDP 处理入口与私有 BPF maps 同时替换规则和节点，验证已改写与初次未命中两种生命周期在故障前固定目标和 mark，结束后才采用新规则及节点。捕获回归直接检查 SSH、无关 HTTPS 和缺少 DNS 映射的内核判决。

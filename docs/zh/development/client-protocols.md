@@ -21,6 +21,6 @@ outbound 仅提供客户端，使用 `net.Conn`、`net.PacketConn`、`DialContex
 | Trojan | 额外 SS 层仅加密，不插入 SOCKS 目标头；查询键使用 `allowInsecure`、`sni`、`serviceName` |
 | gRPC / Meek | gRPC 显式配置 TLS，未配置则为明文 H2；物理连接恢复由库管理；Meek 每次响应上限 1 MiB，POST 失败不重发 |
 
-未实现的加密、传输组合及 Hysteria2 obfs 参数明确报错。`seed-cfb` 已移除。
+未实现的加密、传输组合及 Hysteria2 obfs 参数明确报错。
 
 回归使用本地加密对端及真实 TLS、HTTP/2、gRPC、QUIC 连接；Vision 的 REALITY 包装测试不代表 REALITY 服务端鉴权互通。验证命令见 [错误与恢复](relay-error-recovery.md#验证)。

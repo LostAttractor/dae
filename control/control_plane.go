@@ -42,15 +42,18 @@ type ControlPlane struct {
 	udpSetupDrops          udpPacketDrops
 	udpEndpoints           *UdpEndpointPool
 
-	dnsController *DnsController
-	mitmHost      *mitm.Host
-	mitmClients   clientmatch.Matcher
-	settings      *settings.Store
-	settingsMu    sync.Mutex
-	apiToken      string
-	apiPort       uint16
-	kernelActive  bool
-	clients       map[string]config.Client
+	dnsController      *DnsController
+	mitmHost           *mitm.Host
+	mitmClients        clientmatch.Matcher
+	settings           *settings.Store
+	settingsMu         sync.Mutex
+	apiToken           string
+	apiPort            uint16
+	kernelActive       bool
+	clients            map[string]config.Client
+	deviceRoutes       *deviceRoutes
+	closeOnRouteChange bool
+	apiBypass          []bpfIpPort
 
 	routingMatcher        *RoutingMatcher
 	routingMatcherBuilder *RoutingMatcherBuilder
@@ -165,6 +168,9 @@ func NewControlPlane(
 	}
 
 	/// Init DialerGroups.
+	if err := config.ValidateConnectionBehavior("route_change_behavior", global.RouteChangeBehavior); err != nil {
+		return nil, err
+	}
 	var noConnectivityOutbound consts.OutboundIndex
 	if global.NoConnectivityBehavior == "direct" {
 		noConnectivityOutbound = consts.OutboundDirect
@@ -238,6 +244,8 @@ func NewControlPlane(
 		core:                      core,
 		settings:                  runtimeSettings,
 		mitmClients:               mitmClients,
+		deviceRoutes:              core.bpf.deviceRoutes,
+		closeOnRouteChange:        global.RouteChangeBehavior == "close",
 		apiToken:                  global.APIToken,
 		apiPort:                   global.APIPort,
 		clients:                   clients,
@@ -324,5 +332,6 @@ func NewControlPlane(
 	dnsConfig.Routing.Request.Rules = nil
 	dnsConfig.Routing.Response.Rules = nil
 
+	plane.apiBypass = preparedRules.apiBypass
 	return plane, nil
 }

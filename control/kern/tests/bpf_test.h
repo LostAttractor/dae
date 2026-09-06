@@ -988,16 +988,9 @@ make_ipv4_udp_cache_key(struct udp_routing_cache_key *key,
 			__u16 sport, __u16 dport, __u32 ifindex)
 {
 	__builtin_memset(key, 0, sizeof(*key));
-	key->tuples.sip.u6_addr32[2] = bpf_htonl(0xffff);
-	key->tuples.sip.u6_addr32[3] = bpf_htonl(saddr);
-	key->tuples.dip.u6_addr32[2] = bpf_htonl(0xffff);
-	key->tuples.dip.u6_addr32[3] = bpf_htonl(daddr);
-	key->tuples.sport = bpf_htons(sport);
-	key->tuples.dport = bpf_htons(dport);
-	key->tuples.l4proto = IPPROTO_UDP;
-	key->ifindex = ifindex;
-	key->l4proto_type = L4ProtoType_UDP;
-	key->ipversion_type = IpVersionType_4;
+	key->sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key->sip.u6_addr32[3] = bpf_htonl(saddr);
+	key->sport = bpf_htons(sport);
 }
 
 static __always_inline void

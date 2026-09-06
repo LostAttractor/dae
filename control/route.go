@@ -43,7 +43,11 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 		decision.apply(p.routingResult)
 		return c.selectDialOption(p, decision.outbound, decision.mark, false)
 	}
-	verified, shouldReroute, err := c.verifySniff(ctx, p.Dest, p.Domain)
+	var verified, shouldReroute bool
+	var err error
+	if p.routingResult.NoSniff == 0 {
+		verified, shouldReroute, err = c.verifySniff(ctx, p.Dest, p.Domain)
+	}
 	if err != nil {
 		return nil, err
 	}

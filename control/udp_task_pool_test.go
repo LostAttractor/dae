@@ -339,7 +339,7 @@ func BenchmarkUdpTaskPoolRejectedPacket(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		plane.enqueueUDPPacket(data, source, source)
+		plane.enqueueUDPPacket(data, source, source, nil)
 	}
 }
 
@@ -357,7 +357,7 @@ func TestUDPQueuedCancellationReleasesBuffer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	plane := &ControlPlane{ctx: ctx, udpTaskPool: p}
-	plane.enqueueUDPPacket([]byte("canceled"), source, source)
+	plane.enqueueUDPPacket([]byte("canceled"), source, source, nil)
 	require.NotZero(t, p.memory.Status().Used)
 	cancel()
 	release()

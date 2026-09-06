@@ -19,7 +19,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
-	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -212,33 +211,23 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				// during retirement. Existing QUIC sessions still need client
 				// ACKs and stream data to complete graceful shutdown.
 				if result, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP); err == nil {
-					c.udpEndpoints.deliverMITM(udpEndpointKey{Source: src, Destination: dst, Interface: result.Ifindex}, buf[:n])
+					c.udpEndpoints.deliverMITM(src, dst, result.Ifindex, buf[:n])
 				}
 				continue
 			}
 
-			/// Handle DNS
-			// To keep consistency with kernel program, we only sniff DNS request sent to 53.
-			if dst.Port() == 53 {
-				routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
+			// Snapshot the first packet before another packet replaces the handoff.
+			// Existing sources already own their route.
+			var routingResult *bpfRoutingResult
+			if _, exists := c.udpEndpoints.pool.Load(src); !exists {
+				routingResult, err = c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
 				if err != nil {
-					log.Warningf("%+v", oops.Wrapf(err, "RetrieveRoutingResult"))
+					log.Warnf("UDP routing handoff: %v", err)
 					continue
-				}
-				if routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination == 0 {
-					var dnsMessage dnsmessage.Msg
-					if err := dnsMessage.Unpack(buf[:n]); err == nil {
-						c.dnsController.Handle(&dnsMessage, &udpRequest{
-							src:           src,
-							dst:           dst,
-							routingResult: routingResult,
-						})
-						continue
-					}
 				}
 			}
 
-			c.enqueueUDPPacket(buf[:n], src, dst)
+			c.enqueueUDPPacket(buf[:n], src, dst, routingResult)
 		}
 	}()
 	sentReady = true
