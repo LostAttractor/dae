@@ -70,45 +70,60 @@ func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 			return err
 		}
 
-		// rule is like: domain(domain:baidu.com) && port(443) -> proxy
-		for iFunc, f := range rule.AndFunctions {
-			// f is like: domain(domain:baidu.com)
-			functionParser, ok := b.parsers[f.Name]
-			if !ok {
-				return fmt.Errorf("unknown function: %v", f.Name)
-			}
-			if f.Name == consts.Function_Client && len(f.Params) != 1 {
-				return fmt.Errorf("client requires exactly one set name")
-			}
-			paramValueGroups, keyOrder := groupParamValuesByKey(f.Params)
-			for jMatchSet, key := range keyOrder {
-				paramValueGroup := paramValueGroups[key]
-				// Preprocess the outbound.
-				overrideOutbound := &Outbound{
-					Name:             consts.OutboundLogicalOr.String(),
-					Mark:             outbound.Mark,
-					Must:             outbound.Must,
-					SkipWhileNoalive: outbound.SkipWhileNoalive,
-				}
-				if jMatchSet == len(keyOrder)-1 {
-					overrideOutbound.Name = consts.OutboundLogicalAnd.String()
-					if iFunc == len(rule.AndFunctions)-1 {
-						overrideOutbound.Name = outbound.Name
-					}
-				}
+		if err := b.ApplyPredicate(rule.AndFunctions, outbound); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-				{
-					// Debug
-					symNot := ""
-					if f.Not {
-						symNot = "!"
-					}
-					log.Tracef("\t%v%v(%v) -> %v", symNot, f.Name, key, overrideOutbound.Name)
+// ApplyPredicate shares predicate parsing and logical edges with non-routing
+// programs. The caller owns the terminal action; no target name is parsed here.
+func (b *RulesBuilder) ApplyPredicate(functions []*config_parser.Function, outbound *Outbound) error {
+	if len(functions) == 0 {
+		return fmt.Errorf("empty predicate")
+	}
+	// rule is like: domain(domain:baidu.com) && port(443) -> proxy
+	for iFunc, f := range functions {
+		if f == nil || len(f.Params) == 0 {
+			return fmt.Errorf("predicate functions require arguments")
+		}
+		// f is like: domain(domain:baidu.com)
+		functionParser, ok := b.parsers[f.Name]
+		if !ok {
+			return fmt.Errorf("unknown function: %v", f.Name)
+		}
+		if f.Name == consts.Function_Client && len(f.Params) != 1 {
+			return fmt.Errorf("client requires exactly one set name")
+		}
+		paramValueGroups, keyOrder := groupParamValuesByKey(f.Params)
+		for jMatchSet, key := range keyOrder {
+			paramValueGroup := paramValueGroups[key]
+			// Preprocess the outbound.
+			overrideOutbound := &Outbound{
+				Name:             consts.OutboundLogicalOr.String(),
+				Mark:             outbound.Mark,
+				Must:             outbound.Must,
+				SkipWhileNoalive: outbound.SkipWhileNoalive,
+			}
+			if jMatchSet == len(keyOrder)-1 {
+				overrideOutbound.Name = consts.OutboundLogicalAnd.String()
+				if iFunc == len(functions)-1 {
+					overrideOutbound.Name = outbound.Name
 				}
+			}
 
-				if err = functionParser(f, key, paramValueGroup, overrideOutbound); err != nil {
-					return fmt.Errorf("failed to parse '%v': %w", f.String(false, false, false), err)
+			{
+				// Debug
+				symNot := ""
+				if f.Not {
+					symNot = "!"
 				}
+				log.Tracef("\t%v%v(%v) -> %v", symNot, f.Name, key, overrideOutbound.Name)
+			}
+
+			if err := functionParser(f, key, paramValueGroup, overrideOutbound); err != nil {
+				return fmt.Errorf("failed to parse '%v': %w", f.String(false, false, false), err)
 			}
 		}
 	}
