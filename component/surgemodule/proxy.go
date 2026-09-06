@@ -218,7 +218,8 @@ func (e *Engine) Handler(scheme, host string, port uint16, dial DialContext) (ht
 	if e.options.UpstreamTLSConfig != nil {
 		transport.TLSClientConfig = e.options.UpstreamTLSConfig.Clone()
 	}
-	client := &http.Client{Transport: transport, Timeout: e.options.ScriptTimeout}
+	// Script HTTP requests inherit their invocation's context deadline.
+	client := &http.Client{Transport: transport}
 	proxy := &httputil.ReverseProxy{
 		Director: func(r *http.Request) {
 			// Suppress ReverseProxy's implicit X-Forwarded-For append while
@@ -267,8 +268,7 @@ func (e *Engine) Handler(scheme, host string, port uint16, dial DialContext) (ht
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, strconv.FormatUint(nextRequestID.Add(1), 10)))
 		e.traceRequest(r, "request_begin", "protocol", r.Proto)
 		controller := http.NewResponseController(w)
-		_ = controller.SetReadDeadline(time.Now().Add(e.options.ScriptTimeout))
-		response, err := e.processRequest(r, client)
+		response, err := e.processRequest(r, client, controller)
 		_ = controller.SetReadDeadline(time.Time{})
 		if err != nil {
 			e.traceRequest(r, "request_failed", "reason", traceErrorReason(err))

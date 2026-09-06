@@ -56,8 +56,8 @@ b = type=http-request,pattern=.,script-path=b.js,argument="{\"x\":1,\"y\":2}"
 	if m.Scripts[0].Argument != "a,b=c,zh" || m.Scripts[1].Argument != `{"x":1,"y":2}` {
 		t.Fatalf("unexpected quoted arguments: %+v", m.Scripts)
 	}
-	if m.Scripts[0].MaxSize != DefaultScriptMaxSize || m.Scripts[0].Timeout != DefaultScriptTimeout {
-		t.Fatal("missing default body/time limits")
+	if m.Scripts[0].MaxSize != DefaultScriptMaxSize || m.Scripts[0].Timeout != 0 {
+		t.Fatal("expected default body limit and inherited timeout")
 	}
 }
 

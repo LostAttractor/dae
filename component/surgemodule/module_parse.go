@@ -140,7 +140,7 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Script{Name: strings.TrimSpace(name), Type: params["type"], Path: params["script-path"], Pattern: params["pattern"], Argument: params["argument"], Timeout: DefaultScriptTimeout, MaxSize: DefaultScriptMaxSize}
+	s := &Script{Name: strings.TrimSpace(name), Type: params["type"], Path: params["script-path"], Pattern: params["pattern"], Argument: params["argument"], MaxSize: DefaultScriptMaxSize}
 	if s.Type != "http-request" && s.Type != "http-response" {
 		*warnings = append(*warnings, fmt.Sprintf("script %q: unsupported type %q; script is ignored", s.Name, s.Type))
 		return nil, nil

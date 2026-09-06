@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/andybalholm/brotli"
 	"golang.org/x/net/http/httpguts"
@@ -44,19 +45,22 @@ func (e *Engine) matchScript(kind, rawURL string) *Script {
 	return nil
 }
 
-func (e *Engine) runScript(ctx context.Context, s *Script, req, resp *Message, client *http.Client) (*Result, error) {
-	timeout := e.options.ScriptTimeout
-	if s.Timeout > 0 && s.Timeout < timeout {
-		timeout = s.Timeout
+func (e *Engine) scriptTimeout(s *Script) time.Duration {
+	if s.Timeout > 0 {
+		return s.Timeout
 	}
+	return e.options.ScriptTimeout
+}
+
+func (e *Engine) runScript(ctx context.Context, s *Script, req, resp *Message, client *http.Client) (*Result, error) {
 	return e.options.Runtime.Run(ctx, s.Source, Invocation{
 		Request: req, Response: resp, ScriptName: s.Name, ScriptType: s.Type,
 		Argument: s.Argument, BinaryBodyMode: s.BinaryBodyMode,
-		Timeout: timeout, HTTPClient: client,
+		Timeout: e.scriptTimeout(s), HTTPClient: client,
 	})
 }
 
-func (e *Engine) processRequest(r *http.Request, client *http.Client) (response *http.Response, err error) {
+func (e *Engine) processRequest(r *http.Request, client *http.Client, controller *http.ResponseController) (response *http.Response, err error) {
 	r.Header.Set("Host", r.Host)
 	if err := e.rewriteHeaders("http-request", r, r.Header); err != nil {
 		return nil, err
@@ -78,8 +82,12 @@ func (e *Engine) processRequest(r *http.Request, client *http.Client) (response 
 	}
 	execution := e.traceScript(r, s)
 	defer func() { execution.finish(err) }()
-	ctx, cancel := context.WithTimeout(r.Context(), e.options.ScriptTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), e.scriptTimeout(s))
 	defer cancel()
+	// Closing a server request body cannot interrupt an in-progress read.
+	// Handler clears this deadline before forwarding the remaining body.
+	deadline, _ := ctx.Deadline()
+	_ = controller.SetReadDeadline(deadline)
 	release, err := e.acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -156,7 +164,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	}
 	execution := e.traceScript(r.Request, s)
 	defer func() { execution.finish(err) }()
-	ctx, cancel := context.WithTimeout(r.Request.Context(), e.options.ScriptTimeout)
+	ctx, cancel := context.WithTimeout(r.Request.Context(), e.scriptTimeout(s))
 	defer cancel()
 	release, err := e.acquire(ctx)
 	if err != nil {
