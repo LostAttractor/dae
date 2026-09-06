@@ -21,7 +21,7 @@ func TestStorePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	mac := [6]byte{2, 1, 2, 3, 4, 5}
-	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", ""), s.SetMembership("gaming", mac, false)} {
+	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", ""), s.SetMembers("gaming", nil)} {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +33,7 @@ func TestStorePersistence(t *testing.T) {
 	disabled := false
 	for _, err := range []error{
 		s.SetMITM(mac, &disabled), s.SetSelection("proxy", "node-id"),
-		s.SetMembership("gaming", mac, true), s.SetMembership("streaming", mac, true),
+		s.SetMembers("gaming", [][6]byte{mac}), s.SetMembers("streaming", [][6]byte{mac}),
 	} {
 		if err != nil {
 			t.Fatal(err)
@@ -61,7 +61,7 @@ func TestStorePersistence(t *testing.T) {
 			t.Errorf("%s permissions = %o, want %o", path, info.Mode().Perm(), want)
 		}
 	}
-	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", ""), s.SetMembership("gaming", mac, false)} {
+	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", ""), s.SetMembers("gaming", nil)} {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,7 @@ func TestStoreSaveFailurePreservesState(t *testing.T) {
 	}
 	mac := [6]byte{2, 1, 2, 3, 4, 5}
 	enabled, disabled := true, false
-	for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection("proxy", "original"), s.SetMembership("gaming", mac, true)} {
+	for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection("proxy", "original"), s.SetMembers("gaming", [][6]byte{mac})} {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +110,7 @@ func TestStoreSaveFailurePreservesState(t *testing.T) {
 	for _, change := range []func() error{
 		func() error { return s.SetMITM(mac, &disabled) },
 		func() error { return s.SetSelection("proxy", "replacement") },
-		func() error { return s.SetMembership("gaming", mac, false) },
+		func() error { return s.SetMembers("gaming", nil) },
 	} {
 		if err := change(); err == nil {
 			t.Fatal("saving over a directory succeeded")
@@ -169,13 +169,14 @@ func TestStoreRejectsInvalidUpdates(t *testing.T) {
 		if err := s.SetMITM(mac, &enabled); err == nil {
 			t.Errorf("accepted invalid MITM MAC %x", mac)
 		}
-		if err := s.SetMembership("gaming", mac, true); err == nil {
+		if err := s.SetMembers("gaming", [][6]byte{mac}); err == nil {
 			t.Errorf("accepted invalid member MAC %x", mac)
 		}
 	}
 	for _, err := range []error{
-		s.SetSelection("", ""), s.SetMembership("", [6]byte{2}, false),
+		s.SetSelection("", ""), s.SetMembers("", nil),
 		s.SetSelection("oversize", strings.Repeat("x", maxFileSize)),
+		s.SetMembers("duplicate", [][6]byte{{2}, {2}}),
 	} {
 		if err == nil {
 			t.Fatal("accepted invalid settings")
@@ -214,13 +215,13 @@ func TestStoreDeviceLimits(t *testing.T) {
 	if err := s.SetMITM(existing, &disabled); err != nil {
 		t.Fatalf("cannot update at capacity: %v", err)
 	}
-	if err := s.SetMembership("gaming", existing, true); err != nil {
+	if err := s.SetMembers("gaming", s.Members("gaming")); err != nil {
 		t.Fatalf("cannot repeat membership at capacity: %v", err)
 	}
 	if err := s.SetMITM(extra, &disabled); err == nil {
 		t.Fatal("accepted an MITM device beyond capacity")
 	}
-	if err := s.SetMembership("gaming", extra, true); err == nil {
+	if err := s.SetMembers("gaming", append(s.Members("gaming"), extra)); err == nil {
 		t.Fatal("accepted a set member beyond capacity")
 	}
 	if _, exists := s.MITM(extra); exists || slices.Contains(s.Members("gaming"), extra) {
@@ -250,7 +251,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		workers.Go(func() {
 			mac := [6]byte{2, 0, 0, 0, 0, byte(i)}
 			enabled := i%2 == 1
-			for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection(fmt.Sprintf("group-%d", i), fmt.Sprintf("node-%d", i)), s.SetMembership("shared", mac, true)} {
+			for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection(fmt.Sprintf("group-%d", i), fmt.Sprintf("node-%d", i)), s.SetMembers(fmt.Sprintf("set-%d", i), [][6]byte{mac})} {
 				if err != nil {
 					t.Error(err)
 					return
@@ -258,7 +259,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 			}
 			s.MITM(mac)
 			s.Selection("group-0")
-			s.Members("shared")
+			s.Members("set-0")
 		})
 	}
 	workers.Wait()
@@ -266,16 +267,12 @@ func TestStoreConcurrentAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	members := s.Members("shared")
-	if len(members) != 8 {
-		t.Fatalf("concurrent membership updates lost devices: %v", members)
-	}
 	for i := range 8 {
 		mac := [6]byte{2, 0, 0, 0, 0, byte(i)}
 		if enabled, exists := s.MITM(mac); enabled != (i%2 == 1) || !exists {
 			t.Errorf("concurrent writer %d lost its MITM preference", i)
 		}
-		if s.Selection(fmt.Sprintf("group-%d", i)) != fmt.Sprintf("node-%d", i) || !slices.Contains(members, mac) {
+		if s.Selection(fmt.Sprintf("group-%d", i)) != fmt.Sprintf("node-%d", i) || !slices.Equal(s.Members(fmt.Sprintf("set-%d", i)), [][6]byte{mac}) {
 			t.Errorf("concurrent writer %d lost its selector or membership", i)
 		}
 	}

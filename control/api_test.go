@@ -20,6 +20,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/component/surgemodule"
+	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -178,10 +179,10 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 	}
 	active := newAPITestPlane(t, store)
 	candidate := newAPITestPlane(t, store)
-	active.clientDescriptions = map[string]string{"gaming": "Game traffic"}
-	candidate.clientDescriptions = map[string]string{
-		"gaming": "游戏 UDP 使用 <proxy>",
-		"unused": "Not referenced by routing",
+	active.clients = map[string]config.Client{"gaming": {Description: "Game traffic"}}
+	candidate.clients = map[string]config.Client{
+		"gaming": {Description: "游戏 UDP 使用 <proxy>"},
+		"unused": {Description: "Not referenced by routing"},
 	}
 	if err := candidate.restoreRuntimeSettings(false); err != nil {
 		t.Fatal(err)
@@ -213,7 +214,7 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 		want := []clientSetState{
-			{Name: "gaming", Description: plane.clientDescriptions["gaming"], Joined: true},
+			{Name: "gaming", Description: plane.clients["gaming"].Description, Joined: true},
 			{Name: "streaming"},
 		}
 		if !slices.Equal(state.Sets, want) {

@@ -60,14 +60,14 @@ type ControlPlane struct {
 	udpTaskPool            *udpTaskPool[netip.AddrPort]
 	udpEndpoints           *UdpEndpointPool
 
-	dnsController      *DnsController
-	surge              *surgemodule.Engine
-	mitmClients        clientmatch.Matcher
-	settings           *settings.Store
-	settingsMu         sync.Mutex
-	apiToken           string
-	apiActive          bool
-	clientDescriptions map[string]string
+	dnsController *DnsController
+	surge         *surgemodule.Engine
+	mitmClients   clientmatch.Matcher
+	settings      *settings.Store
+	settingsMu    sync.Mutex
+	apiToken      string
+	kernelActive  bool
+	clients       map[string]config.Client
 
 	destinationRewrites   routing.DestinationRewrites
 	routingMatcher        *RoutingMatcher
@@ -422,6 +422,10 @@ func NewControlPlane(
 
 	wanInterface, autoWan := splitWanInterfaces(global.WanInterface)
 
+	clients := make(map[string]config.Client, len(conf.Client))
+	for _, client := range conf.Client {
+		clients[client.Name] = client
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	plane = &ControlPlane{
@@ -429,7 +433,7 @@ func NewControlPlane(
 		settings:                  runtimeSettings,
 		mitmClients:               mitmClients,
 		apiToken:                  global.APIToken,
-		clientDescriptions:        conf.Client,
+		clients:                   clients,
 		outbounds:                 outbounds,
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
@@ -608,6 +612,9 @@ func (c *ControlPlane) Activate() error {
 	if err := c.commitKernelState(builder); err != nil {
 		return err
 	}
+	if err := c.syncClientExports(); err != nil {
+		return err
+	}
 	if err := core.publishOutboundConnectivity(); err != nil {
 		return err
 	}
@@ -625,7 +632,7 @@ func (c *ControlPlane) Activate() error {
 	for _, g := range c.outbounds {
 		g.EnableSelectionTolerance()
 	}
-	c.apiActive = true
+	c.kernelActive = true
 	SetAnyfromSoMark(c.soMarkFromDae)
 	log.WithField("duration", time.Since(started)).Info("Initialization is completed. Start to Proxying...")
 	return nil

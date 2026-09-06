@@ -8,9 +8,7 @@ package config
 import (
 	"bytes"
 	"fmt"
-	"maps"
 	"reflect"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,12 +81,6 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 	}
 	if from.Type() == reflect.TypeOf([]ModuleSource{}) {
 		return m.marshalModuleSources(from.Interface().([]ModuleSource), depth+1)
-	}
-	if values, ok := from.Interface().(map[string]string); ok {
-		for _, name := range slices.Sorted(maps.Keys(values)) {
-			m.writeLine(depth+1, (&config_parser.Param{Key: name, Val: values[name]}).String(true, true))
-		}
-		return nil
 	}
 
 	switch from.Kind() {

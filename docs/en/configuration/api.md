@@ -13,7 +13,9 @@ group {
   }
 }
 client {
-  work: 'Use the selected node to access work services'
+  work {
+    description: 'Use the selected node to access work services'
+  }
 }
 routing {
   client(work) && domain(suffix: example.com) -> manual
@@ -29,7 +31,7 @@ routing {
 - **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. Only direct ARP/NDP neighbors on `global.lan_interface` qualify. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; node lists and certificate downloads remain available.
 - **HTTPS Modules**: Device settings override `surge.client_source_address`, including explicit disabling. Install and trust the CA before enabling; the page cannot detect trust.
 
-The `client` block supplies plain-text descriptions below set names; empty descriptions are hidden. Only routing-referenced sets appear, and duplicate definitions are rejected. Descriptions update with `dae reload` without changing membership.
+The `client` block supplies plain-text descriptions below set names; empty descriptions are hidden. Sets referenced by routing or configured for kernel export appear, and duplicate definitions are rejected. Descriptions update with `dae reload` without changing membership.
 
 **Use Configuration** clears selector or MITM overrides. Settings persist in `$DAE_LOCATION_CACHE/runtime-state.json` (default `/var/lib/dae/runtime-state.json`, mode `0600`) across reloads, restarts, and API disabling. The main configuration is untouched. Existing connections and UDP sessions keep their paths.
 
@@ -44,6 +46,28 @@ Manual file edits trigger reloads through filesystem events, including atomic re
 ```
 
 Keep all three objects; remove entries to clear overrides or memberships. Use node IDs from `/api/selectors` and lowercase colon-separated MACs. Avoid concurrent file edits and API writes.
+
+## Exporting MAC Sets
+
+Configure `ipset`, `nftset`, or both. Exported sets appear on the device page without a routing reference:
+
+```text
+client {
+  work {
+    description: 'Join the work device set'
+    ipset: dae_work
+    nftset: 'inet/filter/dae_work'
+  }
+}
+```
+
+`ipset` creates `hash:mac`. `nftset` takes `family/table/set` and creates `ether_addr`; families are `inet`, `ip`, `ip6`, `bridge`, `netdev`, and `arp`. Members are MACs, not resolved IPs or map values. Kernel support and `CAP_NET_ADMIN` are required; command-line tools are not.
+
+Startup, configuration reloads, and membership changes synchronize the sets, attempting rollback on failure. Each backend updates atomically; the backends and dae routing do not share one transaction.
+
+Use dedicated sets, never shared between clients. dae creates missing tables/sets and replaces all members without changing firewall rules. Existing sets must be plain MAC sets: ipset extensions and nft constant/interval/timeout/dynamic flags are unsupported; nft element counters reset on replacement. Shutdown or removing configuration retains the sets. Run `dae reload` after a firewall rebuild.
+
+Inspect with `ipset list dae_work` or `nft list set inet filter dae_work`. Match with iptables `-m set --match-set dae_work src`, or `ether saddr @dae_work` within the same nft table.
 
 ## API
 

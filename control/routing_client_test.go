@@ -158,7 +158,8 @@ func TestClientMembershipConcurrentMatching(t *testing.T) {
 	workers.Wait()
 }
 
-func TestClientMembershipSwapsKernelMap(t *testing.T) {
+func attachClientKernelMaps(t *testing.T, b *RoutingMatcherBuilder) *ebpf.Map {
+	t.Helper()
 	innerSpec := &ebpf.MapSpec{Type: ebpf.LPMTrie, KeySize: uint32(unsafe.Sizeof(_bpfLpmKey{})), ValueSize: 4,
 		MaxEntries: 8, Flags: unix.BPF_F_NO_PREALLOC}
 	template, err := ebpf.NewMap(innerSpec)
@@ -168,14 +169,20 @@ func TestClientMembershipSwapsKernelMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer template.Close()
-	outer, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: innerSpec})
+	t.Cleanup(func() { _ = template.Close() })
+	outer, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4,
+		MaxEntries: uint32(len(b.clientSetSlots)), InnerMap: innerSpec})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer outer.Close()
-	b, m := buildClientMatcher(t, clientRule("gaming", false, "proxy"))
+	t.Cleanup(func() { _ = outer.Close() })
 	b.bpf = &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UnusedLpmType: template, LpmArrayMap: outer}}}
+	return outer
+}
+
+func TestClientMembershipSwapsKernelMap(t *testing.T) {
+	b, m := buildClientMatcher(t, clientRule("gaming", false, "proxy"))
+	outer := attachClientKernelMaps(t, b)
 	mac := [6]byte{2, 1, 2, 3, 4, 5}
 	key := cidrToBpfLpmKey(sourceMacPrefixes([][6]byte{mac})[0])
 	for _, enabled := range []bool{false, true, false} {
@@ -204,7 +211,7 @@ func TestClientMembershipSwapsKernelMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := &ControlPlane{settings: store, routingMatcherBuilder: b, routingMatcher: m, apiActive: true}
+	plane := &ControlPlane{settings: store, routingMatcherBuilder: b, routingMatcher: m, kernelActive: true}
 	if err := os.WriteFile(path, []byte(`{"selectors":{},"clients":{"gaming":["02:01:02:03:04:05"]},"mitm":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}

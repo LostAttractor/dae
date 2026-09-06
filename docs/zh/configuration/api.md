@@ -13,7 +13,9 @@ group {
   }
 }
 client {
-  work: '加入后通过所选节点访问工作服务'
+  work {
+    description: '加入后通过所选节点访问工作服务'
+  }
 }
 routing {
   client(work) && domain(suffix: example.com) -> manual
@@ -29,7 +31,7 @@ routing {
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。仅限 `global.lan_interface` 上的直连 ARP/NDP 邻居；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，节点列表和证书下载仍可用。
 - **HTTPS Modules**：设备开关覆盖 `surge.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)，页面不会探测信任状态。
 
-`client` 块提供名称下方的纯文本简介，留空则隐藏；只展示路由引用的集合，重复定义报错。简介随 `dae reload` 更新，不影响成员。
+`client` 块提供名称下方的纯文本简介，留空则隐藏；展示路由引用或配置了内核导出的集合，重复定义报错。简介随 `dae reload` 更新，不影响成员。
 
 **Use Configuration** 清除 selector 或 MITM 覆盖。设置保存在 `$DAE_LOCATION_CACHE/runtime-state.json`（默认 `/var/lib/dae/runtime-state.json`，权限 `0600`），重载、重启或关闭 API 后保留，不改写主配置。已有连接和 UDP 会话保持原路径。
 
@@ -44,6 +46,28 @@ routing {
 ```
 
 保留三个对象，删除对象内条目可清除覆盖或成员。`selectors` 使用 `/api/selectors` 返回的节点 ID，MAC 使用小写冒号格式。避免同时编辑文件和操作 API。
+
+## 导出 MAC 集合
+
+`ipset`、`nftset` 可单独或同时配置；导出集合无需路由引用，也会显示在设备页面：
+
+```text
+client {
+  work {
+    description: '加入工作设备集合'
+    ipset: dae_work
+    nftset: 'inet/filter/dae_work'
+  }
+}
+```
+
+`ipset` 创建 `hash:mac`；`nftset` 使用 `family/table/set`，创建 `ether_addr` set，支持 `inet`、`ip`、`ip6`、`bridge`、`netdev`、`arp`。同步 MAC，不解析 IP 或生成带值 map。需要对应内核支持和 `CAP_NET_ADMIN`，无需命令行工具。
+
+启动、配置重载和成员变更时同步，失败尝试回滚。每个后端独立原子更新，多个后端与 dae 路由之间不构成统一事务。
+
+集合须专供 dae 使用，不能由多个 client 共享。dae 创建缺失的表/集合并替换全部成员，不修改防火墙规则。已有集合须为普通 MAC 集合；不支持 ipset 扩展或 nft constant/interval/timeout/dynamic 标志，nft 元素计数器随成员重建。停止 dae 或移除配置后保留集合；防火墙重建后执行 `dae reload` 重新同步。
+
+检查：`ipset list dae_work`、`nft list set inet filter dae_work`。匹配：iptables 的 `-m set --match-set dae_work src`，或同一 nft 表内的 `ether saddr @dae_work`。
 
 ## API
 
