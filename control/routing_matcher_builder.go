@@ -230,17 +230,12 @@ func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name s
 		return nil
 	}
 	prefixes := sourceMacPrefixes(members)
-	var next *trie.Trie
-	if len(prefixes) != 0 {
-		var err error
-		next, err = trie.NewTrieFromPrefixes(prefixes)
-		if err != nil {
-			return fmt.Errorf("build client set %q: %w", name, err)
-		}
+	next, err := trie.NewTrieFromPrefixes(prefixes)
+	if err != nil {
+		return fmt.Errorf("build client set %q: %w", name, err)
 	}
 	var kernelMap *ebpf.Map
 	if active {
-		var err error
 		kernelMap, err = b.bpf.newLpmMap(prefixes)
 		if err != nil {
 			return fmt.Errorf("build kernel client set %q: %w", name, err)
@@ -553,10 +548,6 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	// Build Ip matcher.
 	var lpmMatcher []*trie.Trie
 	for _, prefixes := range b.simulatedLpmTries {
-		if len(prefixes) == 0 {
-			lpmMatcher = append(lpmMatcher, nil)
-			continue
-		}
 		t, err := trie.NewTrieFromPrefixes(prefixes)
 		if err != nil {
 			return nil, err

@@ -87,6 +87,8 @@ func (v *ValidChars) IsValidChar(c byte) bool {
 // at i-th bit indicates the i-th node is a leaf:
 //
 //	leaves: 0001001111
+//
+// A nil *Trie represents an empty set.
 type Trie struct {
 	leaves, labelBitmap []uint64
 	ranks, selects      []int32
@@ -133,15 +135,14 @@ func NewTrieFromPrefixes(cidrs []netip.Prefix) (*Trie, error) {
 	for _, prefix := range cidrs {
 		keys = append(keys, Prefix2bin128(prefix))
 	}
-	t, err := NewTrie(keys, ValidCidrChars)
-	if err != nil {
-		return nil, err
-	}
-	return t, nil
+	return NewTrie(keys, ValidCidrChars)
 }
 
-// NewTrie creates a new *Trie struct, from a slice of sorted strings.
+// NewTrie builds a set of strings. Empty input returns a nil trie.
 func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
 	// Check chars.
 	keys = common.Deduplicate(keys)
 	sort.Strings(keys)
@@ -220,7 +221,9 @@ func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
 
 // HasPrefix query for a word and return whether a prefix of the word is in the Trie.
 func (ss *Trie) HasPrefix(word string) bool {
-
+	if ss == nil {
+		return false
+	}
 	nodeId, bmIdx := 0, 0
 
 	for i := 0; i < len(word); i++ {
