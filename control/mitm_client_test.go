@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/clientmatch"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
@@ -39,8 +40,8 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	makePlane := func(selectors []string) *ControlPlane {
 		t.Helper()
 		engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-			Modules:   []*surgemodule.Module{{Name: "test", Hostnames: []string{"example.test"}}},
-			Authority: authority, Runtime: &surgemodule.Runtime{},
+			Modules:     []*surgemodule.Module{{Name: "test", Hostnames: []string{"example.test"}}},
+			Runtime:     &surgemodule.Runtime{},
 			MaxBodySize: 1024, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 		})
 		if err != nil {
@@ -50,7 +51,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return &ControlPlane{surge: engine, settings: store, mitmClients: clients, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+		return &ControlPlane{mitmHost: controlTestHost(t, engine, authority), settings: store, mitmClients: clients, routingMatcherBuilder: &RoutingMatcherBuilder{}}
 	}
 	plane := makePlane(nil)
 	ip := netip.MustParseAddr("192.0.2.10")
@@ -151,13 +152,13 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Authority: a, Runtime: &surgemodule.Runtime{},
+		Runtime:     &surgemodule.Runtime{},
 		MaxBodySize: 1024, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := &ControlPlane{surge: engine, settings: store, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+	plane := &ControlPlane{mitmHost: controlTestHost(t, engine, a), settings: store, routingMatcherBuilder: &RoutingMatcherBuilder{}}
 	for _, test := range []struct {
 		name, method, body, origin, site, contentType, marker, query, host string
 		status                                                             int
@@ -252,4 +253,17 @@ func TestMITMOriginHandlesDefaultPortAndIPv6(t *testing.T) {
 			t.Errorf("host=%s origin=%s allowed=%v", test.host, test.origin, allowed)
 		}
 	}
+}
+
+func controlTestHost(t *testing.T, engine *surgemodule.Engine, authority *mitmca.Authority) *mitm.Host {
+	t.Helper()
+	if authority == nil && len(engine.Plan().Scopes) > 0 {
+		authority = &mitmca.Authority{}
+	}
+	host, err := mitm.New(mitm.Options{Authority: authority}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	return host
 }

@@ -21,10 +21,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitmca"
 )
 
-func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls.Config) (*Engine, *x509.CertPool) {
+func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls.Config) (*integrationFixture, *x509.CertPool) {
 	t.Helper()
 	dir := t.TempDir()
 	certPath, keyPath := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
@@ -59,18 +60,33 @@ func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls
 		module.Scripts[i].Source = scripts[module.Scripts[i].Type]
 	}
 	engine, err := NewEngine(EngineOptions{
-		Modules: []*Module{module}, Authority: authority, Runtime: runtime,
+		Modules: []*Module{module}, Runtime: runtime,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 4, ScriptTimeout: 2 * time.Second,
-		UpstreamTLSConfig: upstreamTLS,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return engine, pool
+	return &integrationFixture{Engine: engine, hostOptions: mitm.Options{Authority: authority, UpstreamTLSConfig: upstreamTLS}}, pool
 }
 
-func integrationClient(t *testing.T, engine *Engine, roots *x509.CertPool, dial DialContext, http2 bool) *http.Client {
+type integrationFixture struct {
+	*Engine
+	hostOptions mitm.Options
+}
+
+func integrationClient(t *testing.T, engine *integrationFixture, roots *x509.CertPool, dial mitm.DialContext, http2 bool, hosts ...*mitm.Host) *http.Client {
 	t.Helper()
+	var host *mitm.Host
+	if len(hosts) != 0 {
+		host = hosts[0]
+	} else {
+		var err error
+		host, err = mitm.New(engine.hostOptions, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine.Engine})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = host.Close() })
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +106,7 @@ func integrationClient(t *testing.T, engine *Engine, roots *x509.CertPool, dial 
 			go func() {
 				defer handlers.Done()
 				defer connections.Delete(conn)
-				_ = engine.ServeConn(conn, "example.com", 443, dial)
+				_ = host.ServeConn(conn, "example.com", 443, mitm.DialContext(dial))
 			}()
 		}
 	}()
@@ -123,7 +139,7 @@ func integrationClient(t *testing.T, engine *Engine, roots *x509.CertPool, dial 
 	return &http.Client{Transport: transport, Timeout: 5 * time.Second}
 }
 
-func integrationUpstream(t *testing.T, handler http.Handler) (*httptest.Server, *tls.Config, DialContext) {
+func integrationUpstream(t *testing.T, handler http.Handler) (*httptest.Server, *tls.Config, mitm.DialContext) {
 	t.Helper()
 	upstream := httptest.NewUnstartedServer(handler)
 	upstream.EnableHTTP2 = true

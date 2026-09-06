@@ -10,16 +10,13 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/resource"
-	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	log "github.com/sirupsen/logrus"
 )
 
-func loadSurge(ctx context.Context, conf config.Surge, client *http.Client) (engine *surgemodule.Engine, err error) {
-	if !conf.Enabled {
-		return nil, nil
-	}
+func loadSurge(ctx context.Context, conf config.Surge, client *http.Client, instanceID string) (engine *surgemodule.Engine, err error) {
+	logger := log.WithField("mitm_instance", instanceID)
 	status := surgemodule.Status{Enabled: true, Modules: make([]surgemodule.ModuleStatus, len(conf.Modules))}
 	for i, source := range conf.Modules {
 		name := source.Name
@@ -30,7 +27,7 @@ func loadSurge(ctx context.Context, conf config.Surge, client *http.Client) (eng
 	}
 	defer func() {
 		if err != nil {
-			log.Info("Surge module initialization failed; resource load status follows")
+			logger.Info("Surge module initialization failed; resource load status follows")
 			logStartupSurgeStatus(status)
 		}
 	}()
@@ -43,7 +40,7 @@ func loadSurge(ctx context.Context, conf config.Surge, client *http.Client) (eng
 	if client == nil {
 		return nil, fmt.Errorf("surge: routed download client is required")
 	}
-	log.Info("Loading Surge modules using routing rules after initial connectivity checks")
+	logger.Info("Loading Surge modules using routing rules after initial connectivity checks")
 	baseDir := cacheDirectory()
 	resolve := func(path string) string {
 		if path == "" || filepath.IsAbs(path) {
@@ -51,22 +48,15 @@ func loadSurge(ctx context.Context, conf config.Surge, client *http.Client) (eng
 		}
 		return filepath.Join(baseDir, path)
 	}
-	var authority *mitmca.Authority
-	if conf.CACert != "" {
-		authority, err = mitmca.Load(resolve(conf.CACert), resolve(conf.CAKey))
-		if err != nil {
-			return nil, fmt.Errorf("surge CA: %w", err)
-		}
-		log.WithFields(log.Fields{"event": "mitm_ca", "sha256": authority.Fingerprint()}).Info("surge")
-	}
 	// Bound remote refreshes across the module list, while allowing remaining
 	// modules to use their complete snapshots after the network budget expires.
 	refreshDeadline := time.Now().Add(2 * time.Minute)
+	moduleCache := filepath.Join(baseDir, "mitm", instanceID, "surge-cache")
 	modules := make([]*surgemodule.Module, 0, len(conf.Modules))
 	for i, source := range conf.Modules {
 		module, err := surgemodule.Load(ctx, source.Link, client, surgemodule.LoadOptions{
 			BaseDir:         baseDir,
-			CacheDir:        filepath.Join(baseDir, "surge-cache"),
+			CacheDir:        moduleCache,
 			Arguments:       source.Arguments,
 			RefreshDeadline: refreshDeadline,
 		})
@@ -79,10 +69,10 @@ func loadSurge(ctx context.Context, conf config.Surge, client *http.Client) (eng
 			module.Name = source.Name
 		}
 		for _, warning := range module.Warnings {
-			log.Warnf("Surge module %s: %s", module.Name, warning)
+			logger.Warnf("Surge module %s: %s", module.Name, warning)
 		}
 		for _, ignored := range module.Ignored {
-			log.Tracef("Surge module %s: %s", module.Name, ignored)
+			logger.Tracef("Surge module %s: %s", module.Name, ignored)
 		}
 		status.Modules[i] = module.Status()
 		modules = append(modules, module)
@@ -93,13 +83,13 @@ func loadSurge(ctx context.Context, conf config.Surge, client *http.Client) (eng
 		Log: func(level, message string) {
 			switch level {
 			case "debug":
-				log.Debug(message)
+				logger.Debug(message)
 			case "info":
-				log.Info(message)
+				logger.Info(message)
 			case "warn":
-				log.Warn(message)
+				logger.Warn(message)
 			case "error":
-				log.Error(message)
+				logger.Error(message)
 			}
 		},
 	})
@@ -107,10 +97,10 @@ func loadSurge(ctx context.Context, conf config.Surge, client *http.Client) (eng
 		return nil, err
 	}
 	return surgemodule.NewEngine(surgemodule.EngineOptions{
-		Modules: modules, Authority: authority, Runtime: runtime,
+		Modules: modules, Runtime: runtime,
 		MaxBodySize: conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,
-		ScriptTimeout: conf.ScriptTimeout, Log: func(s string) { log.Warn(s) },
-		Trace:        func(s string) { log.Info(s) },
+		ScriptTimeout: conf.ScriptTimeout, Log: func(s string) { logger.Warn(s) },
+		Trace:        func(s string) { logger.Info(s) },
 		TraceEnabled: func() bool { return log.IsLevelEnabled(log.InfoLevel) },
 	})
 }

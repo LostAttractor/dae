@@ -36,10 +36,13 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 // An empty Destination retains ordinary full-cone behavior.
 type udpEndpointKey struct {
 	Source, Destination netip.AddrPort
+	Interface           uint32
 }
 
 type UdpEndpoint struct {
-	conn net.PacketConn
+	destination destinationDecision
+	domain      string
+	conn        net.PacketConn
 	// mu protects the timer deadline and timer pointer.
 	mu            sync.Mutex
 	deadlineTimer *time.Timer

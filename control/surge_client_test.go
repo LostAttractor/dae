@@ -23,6 +23,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -36,7 +37,7 @@ import (
 
 var surgeTestClients = []string{"-02:00:00:00:00:02", "02:00:00:00:00:01", "10.0.0.0/24"}
 
-func surgeClientTestEngine(t *testing.T, authority *mitmca.Authority, upstreamTLS *tls.Config, trace func(string)) *surgemodule.Engine {
+func surgeClientTestEngine(t *testing.T, authority *mitmca.Authority, upstreamTLS *tls.Config, trace func(string)) *mitm.Host {
 	t.Helper()
 	module, err := surgemodule.Parse("[MITM]\nhostname = example.com\n[Header Rewrite]\nhttp-response ^https://example\\.com/ header-add X-Dae-Mitm selected\n", nil)
 	if err != nil {
@@ -46,14 +47,19 @@ func surgeClientTestEngine(t *testing.T, authority *mitmca.Authority, upstreamTL
 		t.Fatalf("test module did not parse: %+v", module)
 	}
 	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Modules: []*surgemodule.Module{module}, Authority: authority, Runtime: &surgemodule.Runtime{},
-		UpstreamTLSConfig: upstreamTLS, Trace: trace,
+		Modules: []*surgemodule.Module{module}, Runtime: &surgemodule.Runtime{},
+		Trace:       trace,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return engine
+	host, err := mitm.New(mitm.Options{Authority: authority, UpstreamTLSConfig: upstreamTLS}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	return host
 }
 
 type surgeClientTrace struct {
@@ -122,7 +128,7 @@ func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plane := &ControlPlane{surge: surgeClientTestEngine(t, &mitmca.Authority{}, nil, nil), settings: store, mitmClients: clients}
+			plane := &ControlPlane{mitmHost: surgeClientTestEngine(t, &mitmca.Authority{}, nil, nil), settings: store, mitmClients: clients}
 			option := &DialOption{Outbound: &outbound.DialerGroup{Name: test.outbound}, DialTarget: "198.51.100.1:443"}
 			result := &bpfRoutingResult{Mac: test.mac, Mark: 37, Must: 1}
 			beforeOption, beforeResult := *option, *result
@@ -139,7 +145,7 @@ func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 				t.Fatalf("bypass log = %+v, want present=%v", entry, test.bypass)
 			}
 			if test.bypass {
-				if entry.Message != "surge" || entry.Level != log.InfoLevel {
+				if entry.Message != "mitm" || entry.Level != log.InfoLevel {
 					t.Fatalf("bypass log = %+v", entry)
 				}
 				mac := "unknown"
@@ -189,7 +195,7 @@ func (d *surgeClientDialer) calls() int {
 	return len(d.targets)
 }
 
-func surgeClientTestPlane(t *testing.T, engine *surgemodule.Engine, upstream string) (*ControlPlane, []*surgeClientDialer) {
+func surgeClientTestPlane(t *testing.T, engine *mitm.Host, upstream string) (*ControlPlane, []*surgeClientDialer) {
 	t.Helper()
 	registry, _ := newTestRegistry(10, 10, time.Minute)
 	t.Cleanup(func() { _ = registry.Close() })
@@ -201,7 +207,7 @@ func surgeClientTestPlane(t *testing.T, engine *surgemodule.Engine, upstream str
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: registry}, surge: engine, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
+	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: registry}, mitmHost: engine, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
 	var transports []*surgeClientDialer
 	global := &dialer.GlobalOption{}
 	for _, name := range []string{"direct", "block", "proxy"} {
@@ -309,11 +315,11 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 					path, fallback := option.trafficAttribution()
 					relay := &tcpRelay{lConn: sniffer, dialer: option.Dialer, statsPath: path, fallback: fallback, src: src, dst: dst, domain: domain}
 					if selected {
-						relay.surgeRelease, err = option.Dialer.Retain()
+						relay.mitmRelease, err = option.Dialer.Retain()
 						if err != nil {
 							return err
 						}
-						relay.surge, relay.surgeDial = engine, plane.surgeDialContext(option, domain, dst, path)
+						relay.mitmHost, relay.mitmDial = engine, plane.mitmDialContext(option, domain, dst, path)
 					} else {
 						relay.rConn, err = option.dialerForConnection().DialContext(context.Background(), "tcp", option.DialTarget)
 						if err != nil {
@@ -408,13 +414,13 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 				}
 			}
 			logs := trace.text()
-			if strings.Contains(logs, "event=mitm_start") != test.selected {
+			if strings.Contains(logs, "event=request_begin") != test.selected {
 				t.Errorf("unexpected MITM start log: %s", logs)
 			}
 			wantBypass := !test.selected && test.outbound != consts.OutboundBlock
 			bypassed := false
 			for _, entry := range hook.AllEntries() {
-				if entry.Message == "surge" && entry.Data["event"] == "mitm_bypass" {
+				if entry.Message == "mitm" && entry.Data["event"] == "mitm_bypass" {
 					bypassed = true
 				}
 			}

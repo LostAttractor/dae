@@ -36,7 +36,7 @@ type RoutingMatcherBuilder struct {
 	rulesMu            sync.RWMutex
 	simulatedLpmTries  [][]netip.Prefix
 	clientSetSlots     map[string]int
-	captureIndex       int
+	destinations       []destinationPredicate
 	simulatedDomainSet []routing.DomainSet
 	fallback           *routing.Outbound
 
@@ -48,8 +48,8 @@ type RoutingMatcherBuilder struct {
 	kernspaceBuilders []func() error
 }
 
-func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *component.InterfaceManager, capture *routingCapture) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int), captureIndex: -1}
+func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *component.InterfaceManager, capture *routingCapture, destinations routing.DestinationRewrites) (b *RoutingMatcherBuilder, err error) {
+	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int)}
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_DestIp, routing.IpParserFactory(b.addIp))
@@ -67,8 +67,25 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 		if err = rulesBuilder.Apply(rules[:capture.before]); err != nil {
 			return nil, err
 		}
-		b.addCapture(capture)
+		if capture.tcp {
+			b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_L4Proto), Value: [16]byte{byte(consts.L4ProtoType_TCP)}, Outbound: uint8(consts.OutboundDirect), CaptureFlags: captureHTTP})
+		}
 		rules = rules[capture.before:]
+	}
+	for _, rule := range destinations {
+		var candidate []*config_parser.Function
+		for _, f := range rule.Filter {
+			if f.Name != "domain" {
+				candidate = append(candidate, f)
+			}
+		}
+		if len(candidate) == 0 {
+			candidate = []*config_parser.Function{{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}, {Val: "udp"}}}}
+		}
+		if err = rulesBuilder.ApplyPredicate(candidate, &routing.Outbound{Name: "direct"}); err != nil {
+			return nil, fmt.Errorf("destination capture: %w", err)
+		}
+		b.rules[len(b.rules)-1].CaptureFlags = captureDestination
 	}
 	if err = rulesBuilder.Apply(rules); err != nil {
 		return nil, err
@@ -76,6 +93,20 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 
 	if err = b.addFallback(fallback); err != nil {
 		return nil, err
+	}
+	for _, rule := range destinations {
+		entry := destinationPredicate{start: len(b.rules), rule: rule}
+		for _, f := range rule.Filter {
+			entry.domain = entry.domain || f.Name == "domain"
+		}
+		if err = rulesBuilder.ApplyPredicate(rule.Filter, &routing.Outbound{Name: "direct"}); err != nil {
+			return nil, fmt.Errorf("destination predicate: %w", err)
+		}
+		if err = b.addFallback("block"); err != nil {
+			return nil, err
+		}
+		entry.end = len(b.rules)
+		b.destinations = append(b.destinations, entry)
 	}
 
 	// The kernel routing_map is a fixed-size ARRAY and both the eBPF program
@@ -573,8 +604,8 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	}
 
 	return &RoutingMatcher{
+		destinations:  b.destinations,
 		lpmMatcher:    lpmMatcher,
-		captureIndex:  b.captureIndex,
 		domainMatcher: domainMatcher,
 		matches:       b.rules,
 		rulesMu:       &b.rulesMu,

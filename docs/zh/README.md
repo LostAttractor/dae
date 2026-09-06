@@ -2,6 +2,8 @@
 
 运行时设备集合与手动节点选择见[页面/API](configuration/api.md)。可选 HTTP/HTTPS 功能见 [Surge Module](configuration/surge-module.md)、[支持与缺口](configuration/surge-module-support.md)及 [CA/iOS 安装](configuration/mitm-certificate.md)。证书与缓存目录由 `DAE_LOCATION_CACHE` 指定，默认 `/var/lib/dae`；NixOS 设置见[持久化目录](configuration/cache-directory.md)。
 
+具名 Go 插件配置见 [MITM 插件](configuration/mitm-plugins.md)；不修改 DNS 的拨号覆盖见 [rules / DNAT](configuration/destination-rules.md)。
+
 ## Linux 内核要求
 
 ### 内核版本

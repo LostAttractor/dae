@@ -36,7 +36,7 @@ func TestDestinationRewritePreservesRouting(t *testing.T) {
 		{"proxy", "2001:db8::147", consts.L4ProtoStr_UDP},
 	} {
 		t.Run(test.route+"/"+test.target+"/"+string(test.proto), func(t *testing.T) {
-			rules := routing.DestinationRewrites{{From: dst.Addr(), To: []netip.Addr{netip.MustParseAddr(test.target)}, Proxy: true}}
+			rules := routing.DestinationRewrites{{Filter: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}}, To: []netip.Addr{netip.MustParseAddr(test.target)}, Proxy: true}}
 			prepared := preparedRules{routing: []*config_parser.RoutingRule{{
 				AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "unregistered.example"}}}},
 				Outbound:     config_parser.Function{Name: "block"},
@@ -44,14 +44,14 @@ func TestDestinationRewritePreservesRouting(t *testing.T) {
 				AndFunctions: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}},
 				Outbound:     config_parser.Function{Name: test.route, Params: []*config_parser.Param{{Val: "must"}, {Key: "mark", Val: "37"}}},
 			}}}
-			prepared.enableDestinationRewrites(rules)
+			prepared.destinations = rules
 			matcher, _ := surgeRoutingMatcher(t, prepared)
-			plane := &ControlPlane{destinationRewrites: rules, routingMatcher: matcher, outbounds: groups}
+			plane := &ControlPlane{routingMatcher: matcher, outbounds: groups}
 			plane.markedDirectDialers.Store(uint32(37), unused)
 			param := &RouteParam{
 				Src: src, Dest: dst,
 				networkType:   common.NetworkType{L4Proto: test.proto, IpVersion: consts.IpVersionStr_4},
-				routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)},
+				routingResult: &bpfRoutingResult{Outbound: map[string]uint8{"direct": 0, "block": 1, "proxy": 2}[test.route], Mark: 37, Must: 1, CaptureFlags: captureDestination},
 			}
 			option, err := plane.RouteDialOption(context.Background(), param)
 			if err != nil {
@@ -75,13 +75,13 @@ func TestDestinationRewriteUsesFallbackPolicy(t *testing.T) {
 	group := outbound.NewDialerGroup(global, "proxy", outbound.GroupKindSelector, []*dialer.Dialer{unavailable}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
 	t.Cleanup(func() { group.Close() })
 	dst := netip.MustParseAddrPort("192.0.2.1:443")
-	plane := &ControlPlane{
-		destinationRewrites: routing.DestinationRewrites{{From: dst.Addr(), To: []netip.Addr{netip.MustParseAddr("2001:db8::1")}}},
-		outbounds:           []*outbound.DialerGroup{surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), group},
-	}
+	matcher, _ := destinationTestMatcher(t, "dip(192.0.2.1) -> dnat('2001:db8::1')")
+	matcher.destinations[0].rule.Proxy = false
+	plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), group}}
+
 	for _, fallback := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
 		plane.noConnectivityOutbound = fallback
-		option, err := plane.selectDialOption(&RouteParam{Dest: dst, networkType: *common.NetworkTCP4.NetworkType()}, consts.OutboundUserDefinedMin, 0, false)
+		option, err := plane.selectDialOption(&RouteParam{Src: netip.MustParseAddrPort("192.0.2.5:12345"), Dest: dst, routingResult: &bpfRoutingResult{}, networkType: *common.NetworkTCP4.NetworkType()}, consts.OutboundUserDefinedMin, 0, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,15 +96,12 @@ func TestDestinationRewriteUsesFallbackPolicy(t *testing.T) {
 }
 
 func TestDestinationCaptureMatchesOnlyConfiguredIPs(t *testing.T) {
-	prepared := preparedRules{}
-	prepared.enableDestinationRewrites(routing.DestinationRewrites{
-		{From: netip.MustParseAddr("91.108.56.100")}, {From: netip.MustParseAddr("2001:db8::100")},
-	})
-	matcher, builder := surgeRoutingMatcher(t, prepared)
+	matcher, builder := destinationTestMatcher(t, "dip(91.108.56.100, '2001:db8::100') -> dnat(198.51.100.1)")
 	// Expose the capture predicate's decision without userspace's marker skip.
 	for i := range builder.rules {
-		if builder.rules[i].Outbound == uint8(consts.OutboundControlPlaneRouting) {
+		if builder.rules[i].CaptureFlags != 0 {
 			builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
+			builder.rules[i].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
 		}
 	}
 	for _, address := range []string{"91.108.56.100", "91.108.56.101", "2001:db8::100", "2001:db8::101"} {

@@ -19,9 +19,9 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/subscription"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
-	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/outbound/protocol/direct"
@@ -165,7 +165,7 @@ func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGe
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		var prepareErr error
-		preparation, prepareErr = control.PrepareControlPlane(groupCtx, bpf, &conf.Routing, &conf.Global, &conf.Dns, externGeoDataDirs)
+		preparation, prepareErr = control.PrepareControlPlane(groupCtx, bpf, &conf.Routing, &conf.Global, &conf.Dns, externGeoDataDirs, conf.Rules)
 		return prepareErr
 	})
 	group.Go(func() error {
@@ -180,18 +180,18 @@ func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGe
 		return nil, err
 	}
 
-	var surgeLoader func(*http.Client) (*surgemodule.Engine, error)
-	if conf.Surge.Enabled {
-		surgeLoader = func(client *http.Client) (*surgemodule.Engine, error) {
+	var mitmLoader func(*http.Client, *http.Client) (*mitm.Host, error)
+	if conf.MITM.Enabled {
+		mitmLoader = func(client, background *http.Client) (*mitm.Host, error) {
 			if bpf != nil {
-				writeReloadProgress("Loading Surge modules using routing rules...")
+				writeReloadProgress("Preparing MITM plugins using routing rules...")
 			}
-			return loadSurge(ctx, conf.Surge, client)
+			return loadMITM(ctx, conf, client, background)
 		}
 	}
 	assemblyStarted := time.Now()
 	c, err = control.NewControlPlane(ctx, preparation, nodeDescriptors, conf,
-		runtimeSettings, surgeLoader)
+		runtimeSettings, mitmLoader)
 	if err != nil {
 		return nil, err
 	}

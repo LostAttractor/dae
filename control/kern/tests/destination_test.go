@@ -1,0 +1,89 @@
+//go:build linux && dae_bpf_tests
+
+package tests
+
+import (
+	"encoding/binary"
+	"net/netip"
+	"testing"
+
+	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/common/consts"
+)
+
+func TestDestinationCapturePreservesRoute(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, packet, ctx, err := runBpfProgram(obj.TestpktgenMacMatch, make([]byte, 4096-256-320), make([]byte, 256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := bpftestTuplesKey{Sport: nativeUint16(19233), Dport: nativeUint16(79), L4proto: 6}
+	key.Sip.U6Addr8 = netip.MustParseAddr("192.168.0.1").As16()
+	key.Dip.U6Addr8 = netip.MustParseAddr("1.1.1.1").As16()
+	for _, outbound := range []uint8{0, 1, 2} {
+		capture := bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: 0, CaptureFlags: 2}
+		route := bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: outbound, Mark: 37, Must: true}
+		if err := obj.RoutingMap.Update(uint32(0), capture, ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+		if err := obj.RoutingMap.Update(uint32(1), route, ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+		status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)
+		want := uint32(7)
+		if outbound == 1 {
+			want = 2
+		}
+		if err != nil || status != want {
+			t.Fatalf("outbound=%d status=%d err=%v", outbound, status, err)
+		}
+		if outbound != 1 {
+			var result bpftestRoutingResult
+			if err := obj.RoutingTuplesMap.Lookup(key, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Outbound != outbound || result.Mark != 37 || result.Must != 1 || result.CaptureFlags != 2 {
+				t.Fatalf("lost route: %+v", result)
+			}
+		}
+	}
+}
+
+func TestDestinationUDPOwnershipSurvivesRuleRemoval(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, packet, ctx, err := runBpfProgram(obj.TestpktgenUdpRouteCacheMiss, make([]byte, 4096-256-320), make([]byte, 256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Extract the unchanged original tuple. ifindex comes from skb context.
+	key := bpftestDestinationUdpKey{Ifindex: binary.NativeEndian.Uint32(ctx[40:44])}
+	key.Tuples.Sip.U6Addr8 = netip.AddrFrom4([4]byte(packet[26:30])).As16()
+	key.Tuples.Dip.U6Addr8 = netip.AddrFrom4([4]byte(packet[30:34])).As16()
+	key.Tuples.Sport = binary.NativeEndian.Uint16(packet[34:36])
+	key.Tuples.Dport = binary.NativeEndian.Uint16(packet[36:38])
+	key.Tuples.L4proto = 17
+	value := bpftestDestinationUdpValue{Result: bpftestRoutingResult{CaptureFlags: 2, Protocol: 2, Ifindex: key.Ifindex}, Owner: 1}
+	if err := obj.DestinationUdpMap.Update(key, value, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	if err := obj.RoutingMap.Update(uint32(0), bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: 0}, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)
+	if err != nil || status != 7 {
+		t.Fatalf("lost owned association: %d %v", status, err)
+	}
+	if err := obj.DestinationUdpMap.Delete(key); err != nil {
+		t.Fatal(err)
+	}
+	status, _, _, err = runBpfProgram(obj.TproxyWanEgressL2, packet, ctx)
+	if err != nil || status != ^uint32(0) {
+		t.Fatalf("released association did not return to normal routing: %d %v", status, err)
+	}
+}

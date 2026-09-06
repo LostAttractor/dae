@@ -11,22 +11,25 @@ global {
   api_port: 9080
 }
 
-surge {
+mitm {
   enabled: true
-
-  module {
-    demo: 'file:modules/demo.sgmodule'
-    # 名称可省略，声明顺序决定匹配优先级：
-    # 'https-file://example.com/module.sgmodule'
-  }
-
   # 替换为已信任 CA 的客户端 MAC；全部启用填写 'all'。
   client_source_address: '02:00:00:00:00:50'
   ca_cert: 'mitm-ca.pem'
   ca_key: 'mitm-ca.key'
-  store: 'surge-store.json'
+
+  surge {
+    module {
+      demo: 'file:modules/demo.sgmodule'
+      # 名称可省略，声明顺序决定匹配优先级：
+      # 'https-file://example.com/module.sgmodule'
+    }
+    store: 'surge-store.json'
+  }
 }
 ```
+
+旧顶层 `surge {}` 不再接受，请使用 `mitm` 下的实例配置。多个插件实例的配置见 [MITM 插件](mitm-plugins.md)。
 
 模块使用 `名称: '来源'` 或匿名 `'来源'`，参数配置见下节。名称不可重复；显示名优先使用配置名称，其次 `#!name`、文件名。
 
@@ -39,7 +42,7 @@ surge {
 
 `ca_cert`、`ca_key`、`store` 的相对路径也使用 `DAE_LOCATION_CACHE`。模块内相对脚本及 Map Local 文件相对模块目录或重定向后的最终 URL；远程模块不能读本地文件，HTTPS 下载不能降级 HTTP。本地及普通远程模块只允许显式 `-file` 依赖使用缓存。缓存按来源和显式参数区分，与名称无关；写入和目录规则见[缓存目录](cache-directory.md)。
 
-启动或重载时，先等待节点的初始连通性检查阶段结束，再按 dae DNS/路由规则下载模块，加载完成后接管流量。初始检查最多等待 60 秒；超时按现有断网策略继续。模块列表共用两分钟刷新预算，模块自身规则在加载后才生效。没有可用来源或缓存时加载失败，重载保留旧实例。已有连接继续使用原配置；不按 `script-update-interval` 定时刷新。
+启动或重载时，先等待节点的初始连通性检查阶段结束，再按 dae DNS/路由规则下载模块，加载完成后接管流量。初始检查最多等待 60 秒；超时按现有断网策略继续。模块列表共用两分钟刷新预算，模块自身规则在加载后才生效。没有可用来源或缓存时加载失败，重载保留旧实例。重载会停止旧实例的新请求并在 5 秒预算内排空 HTTP 请求；普通 TCP/UDP 连接按各自生命周期处理；不按 `script-update-interval` 定时刷新。
 
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -62,7 +65,7 @@ dae surge configure 'file:modules/youtube.sgmodule' \
 
 命令显示模块说明和参数，直接回车继承默认值，显式输入固定该值，`""` 表示空字符串；无默认值必须填写。仅显式值写入配置，全部继承时生成简写。`--name` 默认 `module`。
 
-提示写入 stderr，stdout 输出的 `module` 段放入现有 `surge` 段。例如：
+提示写入 stderr，stdout 输出的 `module` 段放入 `mitm` 中对应的 Surge 实例。例如：
 
 ```text
 module {
@@ -93,18 +96,18 @@ hostname = %APPEND% -private.example.com, *.example.com
 
 ### IP 目标重写
 
-`[Host]` 支持 IP → 单个或多个 IPv4/IPv6，适用于 TCP/UDP。例如：
+`[Host]` 支持 IP、域名或通配符 → 单个或多个 IPv4/IPv6，适用于 TCP/UDP。例如：
 
 ```ini
 [Host]
 192.0.2.1 = 198.51.100.1,198.51.100.2
 ```
 
-纯 IP 模块无需 CA 或客户端 MITM 开关。映射按模块及条目顺序首个命中，保留原路由和端口；多个目标按连接随机选择，UDP 固定会话目标并还原回包来源。直连流量也会导入用户态，block 仍然生效。
+仅含 Host 的模块无需 CA 或客户端 MITM 开关。映射按模块及条目顺序首个命中，保留原路由和端口；多个目标按连接随机选择，UDP 固定会话目标并还原回包来源。直连流量也会导入用户态，block 仍然生效。
 
-所有模块的 MITM 域名与 Host IP 共用一个 eBPF 捕获匹配项；用户态仍按原目标匹配路由，再执行目标重写。
+Host 转换成与原生 [rules / DNAT](destination-rules.md) 共用的目的地址规则。内核保守捕获候选连接，用户态按原始连接信息决定最终目标；原生 rules 排在插件贡献之前。域名来自本连接的 SNI、HTTP Host 或可嗅探的 QUIC，不修改或依赖 DNS 应答映射。
 
-默认仅重写直连；模块中设置 `[General] use-local-host-item-for-proxy = true` 后，该模块的映射也用于代理出站。此选项不影响其他模块或代理服务器自身地址。暂不支持 Host 域名、通配符或 DNS 设置，也不自动测速、重试或递归重写。
+默认仅重写直连；模块中设置 `[General] use-local-host-item-for-proxy = true` 后，该模块的映射也用于代理出站。此选项不影响其他模块或代理服务器自身地址。不支持 Host 别名、指定 DNS、DNS script 或 ruleset 引用，加载时报错并报告行号。不会自动测速、重试或递归重写。
 
 ### 限制客户端来源
 
@@ -120,7 +123,7 @@ client_source_address: '-02:00:00:00:00:10,all'
 
 ## 转发与协议
 
-匹配主机的 TCP 会进入用户态，即使原路由是 direct。优先级为：模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。HTTP 改写和脚本 `$httpClient` 请求沿用选定出站。
+为在不经过 dae DNS 的情况下获取主机名，启用 HTTP scope 后会保守捕获 TCP，再按连接主机名和客户端开关决定是否解密。优先级为：模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。HTTP 改写和脚本 `$httpClient` 请求沿用选定出站。
 
 支持 HTTP/1.1、TLS HTTP/2；不解密或自动阻断 HTTP/3/QUIC。需要回退 TCP 时，在已有 `routing` 段前部加入对应规则，例如：
 

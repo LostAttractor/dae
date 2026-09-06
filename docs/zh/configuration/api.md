@@ -29,7 +29,7 @@ routing {
 
 - **Selectors**：`selector` 等价于 `selector(0)`；`selector(n)` 指定默认路径索引。选择影响使用该组的所有设备，需要 `api_token`。选择按节点 ID 保存，重排不变，配置中节点消失时恢复默认。
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。仅限 `global.lan_interface` 上的直连 ARP/NDP 邻居；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，节点列表和证书下载仍可用。
-- **HTTPS Modules**：设备开关覆盖 `surge.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)，页面不会探测信任状态。
+- **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)，页面不会探测信任状态。
 
 `client` 块提供名称下方的纯文本简介，留空则隐藏；展示路由引用或配置了内核导出的集合，重复定义报错。简介随 `dae reload` 更新，不影响成员。
 
@@ -88,3 +88,5 @@ client {
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
 
 MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
+
+状态 schema 为 4，`mitm_plugins` 列出活动插件实例的 ID、类型、生命周期状态和规则数量；Surge 模块条目包含 `instance`，用于区分同类型多实例。状态 CLI 与 daemon 应使用同一版本。

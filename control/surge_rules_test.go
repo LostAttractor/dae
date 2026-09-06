@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
@@ -31,7 +30,7 @@ hostname = grpc.biliapi.net, api.cloudflare.com
 		t.Fatal(err)
 	}
 	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Modules: []*surgemodule.Module{module}, Authority: &mitmca.Authority{}, Runtime: &surgemodule.Runtime{},
+		Modules: []*surgemodule.Module{module}, Runtime: &surgemodule.Runtime{},
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {
@@ -43,10 +42,10 @@ hostname = grpc.biliapi.net, api.cloudflare.com
 func moduleRuleMatcher(t *testing.T, engine *surgemodule.Engine, userRules []*config_parser.RoutingRule) *RoutingMatcher {
 	t.Helper()
 	preparation := &ControlPlanePreparation{rules: preparedRules{routing: userRules}}
-	preparation.rules.enableSurgeRouting(engine)
+	preparation.rules.enableMITMPlan(engine.Plan())
 	builder, err := NewRoutingMatcherBuilder(preparation.rules.routing, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock), "proxy": uint8(consts.OutboundUserDefinedMin),
-	}, nil, "proxy", nil, preparation.rules.capture)
+	}, nil, "proxy", nil, preparation.rules.capture, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/mitmca"
 	"io"
 	"net"
 	"net/http"
@@ -50,7 +52,7 @@ second = type=http-request,pattern=^http://example.com/,requires-body=1,script-p
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
-	handler, close := engine.Handler("http", "example.com", 80, func(ctx context.Context, _, _ string) (net.Conn, error) {
+	handler, close := proxyTestHost(t, engine).Handler("http", "example.com", 80, func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimPrefix(upstream.URL, "http://"))
 	})
 	defer close()
@@ -66,7 +68,7 @@ func TestSurgeProxySyntheticDoesNotDialAndChecksAuthority(t *testing.T) {
 	engine := testProxyEngine(t, `[Script]
 mock = type=http-request,pattern=.,script-path=a.js
 `, `$done({response:{status:201,headers:{"Content-Type":"application/json"},body:'{"ok":true}'}});`)
-	handler, close := engine.Handler("https", "example.com", 443, func(context.Context, string, string) (net.Conn, error) {
+	handler, close := proxyTestHost(t, engine).Handler("https", "example.com", 443, func(context.Context, string, string) (net.Conn, error) {
 		t.Error("synthetic response dialed upstream")
 		return nil, nil
 	})
@@ -141,7 +143,7 @@ func TestSurgeProxyAbort(t *testing.T) {
 	engine := testProxyEngine(t, `[Script]
 abort = type=http-request,pattern=.,script-path=a.js
 `, `$done({abort:true});`)
-	handler, close := engine.Handler("https", "example.com", 443, nil)
+	handler, close := proxyTestHost(t, engine).Handler("https", "example.com", 443, nil)
 	defer close()
 	defer func() {
 		if got := recover(); got != http.ErrAbortHandler {
@@ -185,3 +187,13 @@ type unreadBody struct{ read bool }
 
 func (b *unreadBody) Read([]byte) (int, error) { b.read = true; return 0, io.EOF }
 func (b *unreadBody) Close() error             { return nil }
+
+func proxyTestHost(t *testing.T, engine *Engine) *mitm.Host {
+	t.Helper()
+	host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	return host
+}

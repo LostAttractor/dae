@@ -26,7 +26,7 @@ routing { client('游戏 加速') && l4proto(udp) -> proxy
  client(gaming) -> proxy
  fallback: direct }
 `)
-	if conf.Global.APIPort != 9080 || conf.Global.APIToken != "test-token" || conf.Surge.Enabled {
+	if conf.Global.APIPort != 9080 || conf.Global.APIToken != "test-token" || conf.MITM.Enabled {
 		t.Fatal("API configuration depends on Surge")
 	}
 	if len(conf.Client) != 2 || conf.Client[0].Description != `游戏加速：加入后使用 "代理"，路径 C:\games` {

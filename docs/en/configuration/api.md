@@ -29,7 +29,7 @@ routing {
 
 - **Selectors**: `selector` means `selector(0)`; `selector(n)` sets the default path index. Changes affect everyone using the group and require `api_token`. Choices use node IDs, survive reordering, and reset when the configured node disappears.
 - **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. Only direct ARP/NDP neighbors on `global.lan_interface` qualify. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; node lists and certificate downloads remain available.
-- **HTTPS Modules**: Device settings override `surge.client_source_address`, including explicit disabling. Install and trust the CA before enabling; the page cannot detect trust.
+- **HTTPS Modules**: Device settings override `mitm.client_source_address`, including explicit disabling. Install and trust the CA before enabling; the page cannot detect trust.
 
 The `client` block supplies plain-text descriptions below set names; empty descriptions are hidden. Sets referenced by routing or configured for kernel export appear, and duplicate definitions are rejected. Descriptions update with `dae reload` without changing membership.
 

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitmca"
 	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
@@ -75,14 +76,14 @@ use-local-host-item-for-proxy = true
 		t.Fatal(err)
 	}
 	conf := config.Surge{
-		Enabled: true, Modules: []config.ModuleSource{{Link: "file://" + path}},
+		Modules:       []config.ModuleSource{{Link: "file://" + path}},
 		ScriptTimeout: time.Second, MemoryLimit: 16 << 20, MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 	}
-	engine, err := loadSurge(t.Context(), conf, http.DefaultClient)
+	engine, err := loadSurge(t.Context(), conf, http.DefaultClient, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if engine.Authority() != nil || engine.Status().Modules[0].HostMappings != 1 || !engine.DestinationRewrites()[0].Proxy || !strings.Contains(renderSurgeStatus(engine.Status(), true), "IP MAPS") {
+	if engine.Status().Modules[0].HostMappings != 1 || !engine.DestinationRewrites()[0].Proxy || !strings.Contains(renderSurgeStatus(engine.Status(), true), "IP MAPS") {
 		t.Fatalf("Host-only module failed to load or display mappings: %+v", engine.Status())
 	}
 	mitmPath := filepath.Join(dir, "mitm.sgmodule")
@@ -90,7 +91,11 @@ use-local-host-item-for-proxy = true
 		t.Fatal(err)
 	}
 	conf.Modules[0].Link = "file://" + mitmPath
-	if _, err := loadSurge(t.Context(), conf, http.DefaultClient); err == nil || !strings.Contains(err.Error(), "ca_cert") {
+	engine, err = loadSurge(t.Context(), conf, http.DefaultClient, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "surge", Plugin: engine}); err == nil || !strings.Contains(err.Error(), "ca_cert") {
 		t.Fatalf("MITM must still require a CA: %v", err)
 	}
 }
@@ -114,7 +119,6 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 		}
 	}
 	conf := config.Surge{
-		Enabled: true, CACert: "ca.pem", CAKey: "ca.key",
 		Modules:       []config.ModuleSource{{Name: "ready", Link: "file:module.sgmodule"}},
 		ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
@@ -128,7 +132,7 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 	for _, level := range []log.Level{log.InfoLevel, log.TraceLevel} {
 		output.Reset()
 		logger.SetLevel(level)
-		engine, err := loadSurge(context.Background(), conf, http.DefaultClient)
+		engine, err := loadSurge(context.Background(), conf, http.DefaultClient, "test")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +154,7 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 		config.ModuleSource{Name: "broken", Link: "file:missing.sgmodule"},
 		config.ModuleSource{Name: "later", Link: "file:module.sgmodule"},
 	)
-	if _, err := loadSurge(context.Background(), conf, http.DefaultClient); err == nil {
+	if _, err := loadSurge(context.Background(), conf, http.DefaultClient, "test"); err == nil {
 		t.Fatal("missing module did not fail loading")
 	}
 	for _, want := range []string{"Surge modules:", "ready", "loaded", "broken", "failed", "later", "not loaded", "missing.sgmodule"} {

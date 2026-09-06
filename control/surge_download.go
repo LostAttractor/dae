@@ -18,15 +18,15 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/surgemodule"
+	"github.com/daeuniverse/dae/component/mitm"
 	dnsmessage "github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 )
 
-func newSurgeDownloadClient(c *ControlPlane) (*http.Client, func()) {
+func newMITMClient(c *ControlPlane, timeout time.Duration) (*http.Client, func()) {
 	lifetime, cancel := context.WithCancel(context.Background())
 	var dials sync.RWMutex
-	dial := surgeDownloadDialContext(c)
+	dial := mitmClientDialContext(c)
 	client := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -44,9 +44,9 @@ func newSurgeDownloadClient(c *ControlPlane) (*http.Client, func()) {
 				return dial(ctx, network, address)
 			},
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 20 * time.Second,
+			ResponseHeaderTimeout: timeout,
 		},
-		Timeout: 30 * time.Second,
+		Timeout: timeout,
 	}
 	return client, func() {
 		cancel()
@@ -60,7 +60,7 @@ func newSurgeDownloadClient(c *ControlPlane) (*http.Client, func()) {
 
 // Downloads originate in the daemon, before any client socket exists. Match
 // its process name and an unspecified source, never a fabricated LAN device.
-func surgeDownloadDialContext(c *ControlPlane) surgemodule.DialContext {
+func mitmClientDialContext(c *ControlPlane) mitm.DialContext {
 	processName, err := os.ReadFile("/proc/self/comm")
 	if err != nil {
 		processName = []byte(filepath.Base(os.Args[0]))
@@ -72,7 +72,7 @@ func surgeDownloadDialContext(c *ControlPlane) surgemodule.DialContext {
 			return nil, err
 		}
 		if network != "tcp" && network != "tcp4" && network != "tcp6" {
-			return nil, fmt.Errorf("surge download: unsupported network %q", network)
+			return nil, fmt.Errorf("mitm client: unsupported network %q", network)
 		}
 		host, portText, err := net.SplitHostPort(address)
 		if err != nil {
@@ -80,7 +80,7 @@ func surgeDownloadDialContext(c *ControlPlane) surgemodule.DialContext {
 		}
 		port, err := strconv.ParseUint(portText, 10, 16)
 		if err != nil || port == 0 {
-			return nil, fmt.Errorf("surge download: invalid destination port %q", portText)
+			return nil, fmt.Errorf("mitm client: invalid destination port %q", portText)
 		}
 		literal, _ := netip.ParseAddr(host)
 		literal = literal.Unmap()
@@ -101,7 +101,7 @@ func surgeDownloadDialContext(c *ControlPlane) surgemodule.DialContext {
 		for _, qtype := range queryTypes {
 			addresses := []netip.Addr{literal}
 			if qtype != 0 {
-				addresses, err = c.resolveSurgeDownload(ctx, domain, qtype, process)
+				addresses, err = c.resolveMITMClient(ctx, domain, qtype, process)
 				if err != nil {
 					failures = append(failures, err)
 					continue
@@ -123,7 +123,7 @@ func surgeDownloadDialContext(c *ControlPlane) surgemodule.DialContext {
 						IpVersion: consts.IpVersionFromAddr(ip).ToIpVersionStr(),
 					},
 					Domain: domain,
-					Src:    surgeDownloadSource(ip),
+					Src:    mitmClientSource(ip),
 					Dest:   netip.AddrPortFrom(ip, uint16(port)),
 				}
 				outboundIndex, mark, _, err := c.Route(param.Src, param.Dest, domain, consts.L4ProtoType_TCP, &routingResult)
@@ -147,28 +147,28 @@ func surgeDownloadDialContext(c *ControlPlane) surgemodule.DialContext {
 					entry = entry.WithField("policy", policy)
 				}
 				if option.Outbound.Name == consts.OutboundBlock.String() {
-					entry.WithField("action", "block").Info("surge")
-					return nil, fmt.Errorf("surge download %s blocked by routing", address)
+					entry.WithField("action", "block").Info("mitm")
+					return nil, fmt.Errorf("mitm client %s blocked by routing", address)
 				}
 				attemptCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 				conn, err := option.dialerForConnection().DialContext(attemptCtx, "tcp", option.DialTarget)
 				cancel()
 				if err == nil {
-					entry.Info("surge")
+					entry.Info("mitm")
 					return conn, nil
 				}
-				entry.WithError(err).Debug("surge")
+				entry.WithError(err).Debug("mitm")
 				failures = append(failures, fmt.Errorf("outbound %q dialer %q: %w", option.Outbound.Name, option.Dialer.Name, err))
 			}
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("surge download %s: %w", address, errors.Join(failures...))
+		return nil, fmt.Errorf("mitm client %s: %w", address, errors.Join(failures...))
 	}
 }
 
-func surgeDownloadSource(destination netip.Addr) netip.AddrPort {
+func mitmClientSource(destination netip.Addr) netip.AddrPort {
 	if destination.Is4() {
 		return netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
 	}
@@ -177,7 +177,7 @@ func surgeDownloadSource(destination netip.Addr) netip.AddrPort {
 
 // Resolve through dae's DNS request/response rules; asis uses fallback_resolver
 // because these daemon requests have no intercepted DNS destination.
-func (c *ControlPlane) resolveSurgeDownload(parent context.Context, host string, qtype uint16, process bpfRoutingResult) ([]netip.Addr, error) {
+func (c *ControlPlane) resolveMITMClient(parent context.Context, host string, qtype uint16, process bpfRoutingResult) ([]netip.Addr, error) {
 	dns := c.dnsController
 	if dns == nil || !dns.admitDNSRequest() {
 		return nil, net.ErrClosed
@@ -189,11 +189,11 @@ func (c *ControlPlane) resolveSurgeDownload(parent context.Context, host string,
 	defer stop()
 	target, err := netip.ParseAddrPort(c.fallbackResolver)
 	if err != nil {
-		return nil, fmt.Errorf("surge DNS fallback_resolver: %w", err)
+		return nil, fmt.Errorf("mitm DNS fallback_resolver: %w", err)
 	}
 	message := new(dnsmessage.Msg)
 	message.SetQuestion(dnsmessage.Fqdn(host), qtype)
-	request := &udpRequest{src: surgeDownloadSource(target.Addr()), dst: target, routingResult: &process}
+	request := &udpRequest{src: mitmClientSource(target.Addr()), dst: target, routingResult: &process}
 	query := dns.prepareQueryInfo(message)
 	if err := dns.handleDNSRequest(ctx, message, request, query); err != nil {
 		return nil, fmt.Errorf("resolve %s %s: %w", host, dnsmessage.TypeToString[qtype], err)

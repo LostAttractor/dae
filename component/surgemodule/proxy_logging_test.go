@@ -120,7 +120,7 @@ func serveProxyTraceRequest(t *testing.T, engine *Engine) (*httptest.ResponseRec
 		_, _ = io.WriteString(w, `{"private":"response-body-private-value","value":1}`)
 	}))
 	defer upstream.Close()
-	handler, closeTransport := engine.Handler("http", "example.test", 80, func(ctx context.Context, network, _ string) (net.Conn, error) {
+	handler, closeTransport := proxyTestHost(t, engine).Handler("http", "example.test", 80, func(ctx context.Context, network, _ string) (net.Conn, error) {
 		dialCount.Add(1)
 		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
 	})

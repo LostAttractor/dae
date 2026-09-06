@@ -43,7 +43,8 @@ func (p *preparedRules) bypassAPI(port uint16, addresses []net.Addr) {
 		Outbound: config_parser.Function{Name: consts.OutboundDirect.String()},
 	}
 	p.routing = append([]*config_parser.RoutingRule{rule}, p.routing...)
-	if p.capture != nil {
-		p.capture.before++
+	if p.capture == nil {
+		p.capture = &routingCapture{}
 	}
+	p.capture.before++
 }

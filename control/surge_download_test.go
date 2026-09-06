@@ -61,7 +61,7 @@ func surgeDownloadTestPlane(t *testing.T, rules string, groups ...*outbound.Dial
 	for i, group := range groups {
 		ids[group.Name] = uint8(i)
 	}
-	builder, err := NewRoutingMatcherBuilder(configuration.Routing.Rules, ids, nil, "direct", nil, nil)
+	builder, err := NewRoutingMatcherBuilder(configuration.Routing.Rules, ids, nil, "direct", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func attachSurgeDownloadTestDNS(t *testing.T, c *ControlPlane, request, response
 	if err != nil {
 		t.Fatal(err)
 	}
-	argument, err := c.chooseBestDnsDialer(&udpRequest{src: surgeDownloadSource(upstream.Ip4), routingResult: &bpfRoutingResult{}}, upstream)
+	argument, err := c.chooseBestDnsDialer(&udpRequest{src: mitmClientSource(upstream.Ip4), routingResult: &bpfRoutingResult{}}, upstream)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestSurgeDownloadRoutesResolvedDestination(t *testing.T) {
 					testARecord("edge.example.", "198.51.100.4"),
 				}
 			})
-			conn, err := surgeDownloadDialContext(c)(context.Background(), "tcp", "raw.example:443")
+			conn, err := mitmClientDialContext(c)(context.Background(), "tcp", "raw.example:443")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -170,7 +170,7 @@ func TestSurgeDownloadHonorsDNSRejection(t *testing.T) {
 				message.Response = true
 				message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
 			})
-			_, err := surgeDownloadDialContext(c)(context.Background(), "tcp4", "raw.example:443")
+			_, err := mitmClientDialContext(c)(context.Background(), "tcp4", "raw.example:443")
 			if err == nil || !strings.Contains(err.Error(), "no A addresses") {
 				t.Fatalf("DNS rejection = %v", err)
 			}
@@ -218,7 +218,7 @@ func TestSurgeDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 				_, err := c.outbounds[index].Select(&common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: version.ToIpVersionStr()})
 				return err == nil
 			}
-			conn, err := surgeDownloadDialContext(c)(context.Background(), "tcp", "198.51.100.4:443")
+			conn, err := mitmClientDialContext(c)(context.Background(), "tcp", "198.51.100.4:443")
 			if test.wantDirect {
 				if err != nil || directCalls != 1 {
 					t.Fatalf("direct calls = %d, error = %v", directCalls, err)
@@ -246,7 +246,7 @@ func TestSurgeDownloadRoutesRedirectDestination(t *testing.T) {
 		return nil, net.ErrClosed
 	})
 	c := surgeDownloadTestPlane(t, "dip(203.0.113.8) -> block", direct, block)
-	client, closeDownloads := newSurgeDownloadClient(c)
+	client, closeDownloads := newMITMClient(c, 30*time.Second)
 	defer closeDownloads()
 	_, err := client.Get(server.URL)
 	if err == nil || !strings.Contains(err.Error(), "blocked by routing") || calls != 1 {
@@ -263,7 +263,7 @@ func TestSurgeDownloadStopsOnCancellation(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	client, closeDownloads := newSurgeDownloadClient(surgeDownloadTestPlane(t, "", direct))
+	client, closeDownloads := newMITMClient(surgeDownloadTestPlane(t, "", direct), 30*time.Second)
 	defer closeDownloads()
 	transport := client.Transport.(*http.Transport)
 	dial := transport.DialContext
@@ -326,7 +326,7 @@ func TestSurgeDownloadPreservesDirectRouteMark(t *testing.T) {
 		}
 		return nil, io.EOF
 	}))
-	_, err := surgeDownloadDialContext(c)(context.Background(), "tcp6", netip.MustParseAddrPort("[2001:db8::1]:443").String())
+	_, err := mitmClientDialContext(c)(context.Background(), "tcp6", netip.MustParseAddrPort("[2001:db8::1]:443").String())
 	if !marked || !errors.Is(err, io.EOF) {
 		t.Fatalf("marked = %v, error = %v", marked, err)
 	}
@@ -341,7 +341,7 @@ func TestSurgeDownloadDoesNotChangeOutboundAfterDialFailure(t *testing.T) {
 		})
 	}
 	c := surgeDownloadTestPlane(t, "dport(443) -> proxy", group("direct"), group("block"), group("proxy"), group("unrelated"))
-	_, err := surgeDownloadDialContext(c)(context.Background(), "tcp", "198.51.100.4:443")
+	_, err := mitmClientDialContext(c)(context.Background(), "tcp", "198.51.100.4:443")
 	if !errors.Is(err, io.EOF) || !reflect.DeepEqual(calls, []string{"proxy"}) {
 		t.Fatalf("dial error=%v, attempted outbounds=%v", err, calls)
 	}
@@ -400,7 +400,7 @@ func TestSurgeDownloadUsesCheckedSelectorPolicy(t *testing.T) {
 	}
 	c := surgeDownloadTestPlane(t, "dport(443) -> proxy",
 		surgeDownloadTestGroup(t, "direct", unexpected), surgeDownloadTestGroup(t, "block", unexpected), selector)
-	_, err = surgeDownloadDialContext(c)(context.Background(), "tcp4", "198.51.100.4:443")
+	_, err = mitmClientDialContext(c)(context.Background(), "tcp4", "198.51.100.4:443")
 	if !errors.Is(err, io.EOF) || selected != "selected" {
 		t.Fatalf("selected dialer = %q, error = %v", selected, err)
 	}
@@ -420,7 +420,7 @@ func TestSurgeDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
 		message.Response = true
 		message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
 	})
-	addresses, err := c.resolveSurgeDownload(context.Background(), "raw.example", dnsmessage.TypeA, bpfRoutingResult{})
+	addresses, err := c.resolveMITMClient(context.Background(), "raw.example", dnsmessage.TypeA, bpfRoutingResult{})
 	if err != nil || !reflect.DeepEqual(addresses, []netip.Addr{netip.MustParseAddr("198.51.100.4")}) || queries != 1 {
 		t.Fatalf("bootstrap DNS addresses = %v, queries = %d, error = %v", addresses, queries, err)
 	}
@@ -467,7 +467,7 @@ func TestSurgeDownloadCleanupJoinsDialsBeforeReplacingPlane(t *testing.T) {
 		return nil, ctx.Err()
 	})
 	c := surgeDownloadTestPlane(t, "", direct)
-	client, closeDownloads := newSurgeDownloadClient(c)
+	client, closeDownloads := newMITMClient(c, 30*time.Second)
 	defer closeDownloads()
 	defer unblock()
 	dial := client.Transport.(*http.Transport).DialContext

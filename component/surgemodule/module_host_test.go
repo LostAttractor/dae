@@ -30,7 +30,7 @@ func TestHostMappingSyntax(t *testing.T) {
 		}
 	}
 	module, err := Parse("[Host]\nexample.com = 192.0.2.1\n[General]\nipv6=true", nil)
-	if err != nil || len(module.Hosts) != 0 || len(module.Warnings) != 2 {
+	if err != nil || len(module.Hosts) != 1 || len(module.Warnings) != 1 {
 		t.Fatalf("unsupported entries: %+v, %v", module, err)
 	}
 }

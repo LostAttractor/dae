@@ -13,11 +13,12 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/surgemodule"
 )
 
-const StatusSchemaVersion = 3
+const StatusSchemaVersion = 4
 
 type NetworkValues[T any] [common.NetworkTypeCount]T
 
@@ -31,6 +32,7 @@ type StatusSnapshot struct {
 	Tables       []TableUsage                   `json:"tables"`
 	Groups       []GroupStatus                  `json:"groups"`
 	Surge        surgemodule.Status             `json:"surge"`
+	MITMPlugins  []mitm.InstanceStatus          `json:"mitm_plugins,omitempty"`
 }
 
 func decodeStatusObject(data []byte, value any) error {
