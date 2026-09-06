@@ -37,16 +37,16 @@ func (c *ControlPlane) ReloadRuntimeSettings() (bool, error) {
 			}
 			rollback = append(rollback, func() error { return group.SetSelection(previous) })
 		}
-		for _, name := range c.routingMatcherBuilder.ClientSets() {
+		for _, name := range c.clientSets() {
 			previous, members := current.Members(name), next.Members(name)
 			if slices.Equal(previous, members) {
 				continue
 			}
-			if err := c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, members, c.apiActive); err != nil {
+			if err := c.setClientMembers(name, previous, members); err != nil {
 				return err
 			}
 			rollback = append(rollback, func() error {
-				return c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, previous, c.apiActive)
+				return c.setClientMembers(name, members, previous)
 			})
 		}
 		return nil

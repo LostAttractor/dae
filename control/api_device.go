@@ -46,10 +46,10 @@ func (c *ControlPlane) serveDevice(w http.ResponseWriter, r *http.Request, resol
 
 func (c *ControlPlane) deviceState(ip netip.Addr, mac [6]byte) deviceState {
 	state := deviceState{SourceIP: ip.String(), MAC: net.HardwareAddr(mac[:]).String(), Sets: make([]clientSetState, 0)}
-	for _, name := range c.routingMatcherBuilder.ClientSets() {
+	for _, name := range c.clientSets() {
 		joined := slices.Contains(c.settings.Members(name), mac)
 		state.Sets = append(state.Sets, clientSetState{
-			Name: name, Description: c.clientDescriptions[name], Joined: joined,
+			Name: name, Description: c.clients[name].Description, Joined: joined,
 		})
 	}
 	if c.surge != nil && c.surge.Authority() != nil {
@@ -64,7 +64,7 @@ func (c *ControlPlane) serveClientSet(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	name := r.PathValue("name")
-	if !slices.Contains(c.routingMatcherBuilder.ClientSets(), name) {
+	if !slices.Contains(c.clientSets(), name) {
 		apiError(w, 404, "client set not found")
 		return
 	}
@@ -76,25 +76,24 @@ func (c *ControlPlane) serveClientSet(w http.ResponseWriter, r *http.Request, re
 	defer c.settingsMu.Unlock()
 	joined := r.Method == http.MethodPut
 	previous := c.settings.Members(name)
-	if slices.Contains(previous, mac) == joined {
-		writeAPI(w, c.deviceState(ip, mac))
-		return
+	index := slices.Index(previous, mac)
+	if (index >= 0) != joined {
+		next := slices.Clone(previous)
+		if joined {
+			next = append(next, mac)
+		} else {
+			next = slices.Delete(next, index, index+1)
+		}
+		if err := c.setClientMembers(name, previous, next); err != nil {
+			apiSaveError(w, err)
+			return
+		}
+		if err := c.settings.SetMembers(name, next); err != nil {
+			apiSaveError(w, errors.Join(err, c.setClientMembers(name, next, previous)))
+			return
+		}
+		log.WithFields(log.Fields{"event": "client_set_update", "set": name, "mac": net.HardwareAddr(mac[:]).String(), "source_ip": ip.String(), "joined": joined}).Info("API settings changed")
 	}
-	next := slices.Clone(previous)
-	if joined {
-		next = append(next, mac)
-	} else {
-		next = slices.DeleteFunc(next, func(m [6]byte) bool { return m == mac })
-	}
-	if err := c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, next, c.apiActive); err != nil {
-		apiSaveError(w, err)
-		return
-	}
-	if err := c.settings.SetMembership(name, mac, joined); err != nil {
-		apiSaveError(w, errors.Join(err, c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, previous, c.apiActive)))
-		return
-	}
-	log.WithFields(log.Fields{"event": "client_set_update", "set": name, "mac": net.HardwareAddr(mac[:]).String(), "source_ip": ip.String(), "joined": joined}).Info("API settings changed")
 	writeAPI(w, c.deviceState(ip, mac))
 }
 

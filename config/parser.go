@@ -215,21 +215,6 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 		return parseSubscriptionList(target, section)
 	case *[]ModuleSource:
 		return parseModuleSources(target, section)
-	case *map[string]string:
-		for _, item := range section.Items {
-			param, ok := item.Value.(*config_parser.Param)
-			if !ok || param.Key == "" || param.AndFunctions != nil || len(param.Annotation) != 0 {
-				return fmt.Errorf("section %s requires name: 'text' entries", section.Name)
-			}
-			if _, exists := (*target)[param.Key]; exists {
-				return fmt.Errorf("duplicate %s name %q", section.Name, param.Key)
-			}
-			if *target == nil {
-				*target = make(map[string]string)
-			}
-			(*target)[param.Key] = param.Val
-		}
-		return nil
 	}
 	to = to.Elem()
 	switch to.Kind() {

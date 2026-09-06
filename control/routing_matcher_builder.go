@@ -12,9 +12,7 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
-	"unicode"
 
 	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/pkg/trie"
@@ -185,12 +183,10 @@ func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs
 
 func (b *RoutingMatcherBuilder) addClient(f *config_parser.Function, names []string, outbound *routing.Outbound) error {
 	name := names[0]
-	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("client set name must not be empty")
+	if err := config.ValidateClientName(name); err != nil {
+		return err
 	}
-	if len(name) > 128 || strings.ContainsRune(name, '/') || strings.ContainsFunc(name, unicode.IsControl) {
-		return fmt.Errorf("client set names must be at most 128 bytes and cannot contain '/' or control characters")
-	}
+
 	slot, exists := b.clientSetSlots[name]
 	if !exists {
 		slot = len(b.simulatedLpmTries)
@@ -224,14 +220,14 @@ func (b *RoutingMatcherBuilder) ClientSets() []string {
 	return slices.Sorted(maps.Keys(b.clientSetSlots))
 }
 
-// SetClientMembers replaces one set in both routing matchers. During preparation,
-// active must be false: BuildKernspace publishes the prepared members on activation.
-// An active update swaps the inner LPM map before publishing its userspace trie;
-// failed updates leave the previous members intact.
+// SetClientMembers updates both matchers for a routing-referenced set; other
+// sets need no routing update. During preparation, active must be false and
+// BuildKernspace publishes the prepared members on activation. Active updates
+// replace the kernel map before publishing the userspace trie.
 func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name string, members [][6]byte, active bool) error {
 	slot, exists := b.clientSetSlots[name]
 	if !exists {
-		return fmt.Errorf("unknown client set %q", name)
+		return nil
 	}
 	prefixes := sourceMacPrefixes(members)
 	var next *trie.Trie

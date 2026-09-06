@@ -201,33 +201,34 @@ func (s Snapshot) Members(name string) [][6]byte {
 	return members
 }
 
-func (s *Store) SetMembership(name string, mac [6]byte, joined bool) error {
+// SetMembers saves a complete set. Callers serialize read-modify-write operations.
+func (s *Store) SetMembers(name string, macs [][6]byte) error {
 	if name == "" {
 		return fmt.Errorf("client set name must not be empty")
 	}
-	if !validMAC(mac) {
-		return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
+	if len(macs) > maxClients {
+		return fmt.Errorf("client set %q exceeds %d devices", name, maxClients)
+	}
+	members := make([]string, len(macs))
+	for i, mac := range macs {
+		if !validMAC(mac) {
+			return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
+		}
+		members[i] = macString(mac)
+	}
+	slices.Sort(members)
+	for i := 1; i < len(members); i++ {
+		if members[i] == members[i-1] {
+			return fmt.Errorf("duplicate client MAC %q", members[i])
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	text := macString(mac)
-	members := s.state.Clients[name]
-	index := slices.Index(members, text)
-	if (index >= 0) == joined {
+	if slices.Equal(s.state.Clients[name], members) {
 		return nil
-	}
-	if joined && len(members) >= maxClients {
-		return fmt.Errorf("client set %q exceeds %d devices", name, maxClients)
 	}
 	next := s.state
 	next.Clients = maps.Clone(next.Clients)
-	members = slices.Clone(members)
-	if joined {
-		members = append(members, text)
-		slices.Sort(members)
-	} else {
-		members = slices.Delete(members, index, index+1)
-	}
 	if len(members) == 0 {
 		delete(next.Clients, name)
 	} else {

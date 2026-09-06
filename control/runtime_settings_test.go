@@ -127,7 +127,6 @@ func TestRuntimeSettingsReloadSerializesAPIWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler(testClientMAC)
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		for range 20 {
@@ -136,21 +135,25 @@ func TestRuntimeSettingsReloadSerializesAPIWrites(t *testing.T) {
 			}
 		}
 	})
-	workers.Go(func() {
-		for range 10 {
-			for _, method := range []string{"PUT", "DELETE"} {
+	for i := range 8 {
+		workers.Go(func() {
+			mac := [6]byte{2, 0, 0, 0, 0, byte(i)}
+			handler := plane.apiHandler(func(netip.Addr) ([6]byte, error) { return mac, nil })
+			for _, method := range []string{"PUT", "DELETE", "PUT", "PUT"} {
 				if w := apiTestRequest(handler, method, "/api/device/sets/gaming", "", ""); w.Code != 200 {
 					t.Error(w.Code, w.Body.String())
 				}
 			}
-		}
-	})
+		})
+	}
 	workers.Wait()
 	if _, err := plane.ReloadRuntimeSettings(); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.Members("gaming")) != 0 {
-		t.Fatal("file reload lost the final API write")
+	if len(store.Members("gaming")) != 8 {
+		t.Fatal("concurrent updates lost a device membership")
 	}
-	requireClientRoute(t, plane.routingMatcher, [6]byte{2, 0, 0, 0, 0, 10}, 443, consts.OutboundDirect)
+	for i := range 8 {
+		requireClientRoute(t, plane.routingMatcher, [6]byte{2, 0, 0, 0, 0, byte(i)}, 443, consts.OutboundUserDefinedMin)
+	}
 }

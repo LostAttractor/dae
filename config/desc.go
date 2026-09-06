@@ -12,7 +12,7 @@ var SectionSummaryDesc = Desc{
 	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
 	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md.",
 	"group":        "Proxy path groups. Declare ordered stages with ->. Groups with a policy select complete paths; policyless groups can be referenced as reusable path stages.",
-	"client":       "Optional descriptions for dynamic client sets: name: 'description'. The device page shows only sets referenced by client(name) routing rules. Descriptions follow configuration reloads; membership is stored separately.",
+	"client":       "Dynamic MAC sets: name { description: 'text' ipset: kernel_name nftset: 'family/table/set' }. All fields are optional. The device page shows sets referenced by client(name) routing rules or configured for kernel export. Configuration reloads update descriptions and exports; membership is stored separately.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 Notice: domain traffic split will fail if DNS traffic is not taken over by dae.
 Built-in outbound: direct, must_direct, block.
@@ -37,6 +37,13 @@ var SectionDescription = map[string]Desc{
 	"GlobalDesc": GlobalDesc,
 	"DnsDesc":    DnsDesc,
 	"GroupDesc":  GroupDesc,
+	"ClientDesc": ClientDesc,
+}
+
+var ClientDesc = Desc{
+	"description": "Plain text shown below the set name on the device page.",
+	"ipset":       "Export members to a dedicated hash:mac ipset. Missing sets are created; existing members are replaced. Requires kernel support and CAP_NET_ADMIN.",
+	"nftset":      "Export members to a dedicated ether_addr nftables set, specified as family/table/set. Missing tables and sets are created; existing members are replaced. Requires kernel support and CAP_NET_ADMIN.",
 }
 
 var SurgeDesc = Desc{

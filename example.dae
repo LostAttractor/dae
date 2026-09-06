@@ -347,9 +347,13 @@ group {
     }
 }
 
-# Optional descriptions shown for client sets referenced by routing rules.
+# Optional descriptions and netfilter exports for dynamic client MAC sets.
 client {
-    #proxy_devices: 'Use the proxy for this device'
+    #work {
+    #    description: 'Join the work device set'
+    #    ipset: dae_work
+    #    nftset: 'inet/filter/dae_work'
+    #}
 }
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
