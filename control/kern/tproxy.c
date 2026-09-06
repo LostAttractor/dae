@@ -188,6 +188,28 @@ struct tuples {
 	__u8 dscp;
 };
 
+struct destination_udp_key {
+	struct tuples_key tuples;
+	__u32 ifindex;
+};
+
+struct destination_udp_value {
+	struct routing_result result;
+	__u64 owner;
+};
+
+/* Userspace owns these entries for the lifetime of an isolated association.
+ * Unlike the routing cache, live ownership must not be LRU-evicted or flushed
+ * on configuration reload. Map exhaustion fails new associations explicitly.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct destination_udp_key);
+	__type(value, struct destination_udp_value);
+	__uint(max_entries, MAX_DST_MAPPING_NUM);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} destination_udp_map SEC(".maps");
+
 struct udp_routing_cache_key {
 	struct tuples_key tuples;
 	__u32 ifindex;
@@ -1551,6 +1573,19 @@ static __always_inline int do_tproxy_unfragmented(
 	bool udp_cache_hit = false;
 	bool udp_cacheable = true;
 
+	if (l4proto == IPPROTO_UDP) {
+		struct destination_udp_key key = {
+			.tuples = tuples.five,
+			.ifindex = ifindex,
+		};
+		struct destination_udp_value *owned =
+			bpf_map_lookup_elem(&destination_udp_map, &key);
+		if (owned) {
+			__builtin_memcpy(&routing_result, &owned->result,
+					 sizeof(routing_result));
+			goto save_routing_result;
+		}
+	}
 
 	if (l4proto == IPPROTO_UDP) {
 		udp_cache_scratch = bpf_map_lookup_elem(
@@ -1709,6 +1744,7 @@ static __always_inline int do_tproxy_unfragmented(
 					   routing_result.outbound);
 		}
 	}
+save_routing_result:
 	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
 				&routing_result, BPF_ANY)) {
 		bpf_printk("shot save routing result: outbound %u",

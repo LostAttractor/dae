@@ -40,7 +40,9 @@ type udpEndpointKey struct {
 }
 
 type UdpEndpoint struct {
-	conn net.PacketConn
+	destination destinationDecision
+	domain      string
+	conn        net.PacketConn
 	// mu protects the timer deadline and timer pointer.
 	mu            sync.Mutex
 	deadlineTimer *time.Timer

@@ -120,6 +120,29 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 	}
 }
 
+func TestDestinationAssociationFreezesEffectiveTarget(t *testing.T) {
+	original := netip.MustParseAddrPort("192.0.2.1:443")
+	target := netip.MustParseAddrPort("198.51.100.1:443")
+	for _, test := range []struct {
+		decision destinationDecision
+		direct   bool
+		want     netip.AddrPort
+	}{
+		{destinationDecision{}, true, original},
+		{destinationDecision{matched: true, target: target}, false, original},
+		{destinationDecision{matched: true, target: target}, true, target},
+		{destinationDecision{matched: true, target: target, proxy: true}, false, target},
+	} {
+		d := freezeDestination(test.decision, test.direct, original)
+		for _, out := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundUserDefinedMin} {
+			p := RouteParam{Dest: original, destination: d}
+			if got := p.dialTarget(out, false); got != test.want.String() {
+				t.Fatalf("node replacement changed destination: %s want %s", got, test.want)
+			}
+		}
+	}
+}
+
 func TestDestinationFirstMatchAndTargetSelection(t *testing.T) {
 	m, _ := destinationTestMatcher(t, "dip(192.0.2.1) -> dnat(198.51.100.1)\ndip(192.0.2.1) -> dnat(203.0.113.1)\ndip(198.51.100.1) -> dnat(203.0.113.2)")
 	targets := []netip.Addr{netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("2001:db8::1")}

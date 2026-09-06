@@ -36,6 +36,16 @@ func (d destinationDecision) applies(direct bool) bool {
 	return d.matched && (direct || d.proxy)
 }
 
+// An association freezes the effective destination, including a direct-only
+// mapping that did not apply to the original proxy selection.
+func freezeDestination(d destinationDecision, direct bool, original netip.AddrPort) destinationDecision {
+	if !d.applies(direct) {
+		return destinationDecision{matched: true, proxy: true, target: original}
+	}
+	d.proxy = true
+	return d
+}
+
 func (m *RoutingMatcher) matchDestination(p *RouteParam) (destinationDecision, error) {
 	if m == nil || len(m.destinations) == 0 {
 		return destinationDecision{}, nil

@@ -188,6 +188,12 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 
 	// Get udp endpoint.
 	ue, ok := udpEndpoints.Get(key)
+	var previousDestination destinationDecision
+	previousDecisionReady := ok && key.Destination.IsValid()
+	if ok && key.Destination.IsValid() {
+		previousDestination = ue.destination
+		domain = ue.domain
+	}
 	isNew := false
 	noConnectivityFallback := false
 	networkType := common.NetworkType{
@@ -214,13 +220,36 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	if !ok {
 		// Route
 		param := &RouteParam{
-			routingResult: routingResult,
-			networkType:   networkType,
-			Domain:        domain,
-			Src:           src,
-			Dest:          dst,
+			destination:      previousDestination,
+			destinationReady: previousDecisionReady,
+			routingResult:    routingResult,
+			networkType:      networkType,
+			Domain:           domain,
+			Src:              src,
+			Dest:             dst,
 		}
-		dialOption, err := c.RouteDialOption(ctx, param)
+		var dialOption *DialOption
+		if previousDecisionReady {
+			// Outbound indices belong to a particular configuration. On node
+			// replacement, resolve the original flow against this plane while
+			// retaining the association's already chosen physical target.
+			proto := consts.L4ProtoType(routingResult.Protocol)
+			if proto == 0 {
+				proto = consts.L4ProtoType_UDP
+			}
+			index, mark, must, routeErr := c.Route(src, dst, domain, proto, routingResult)
+			err = routeErr
+			if err == nil {
+				routingResult.Outbound, routingResult.Mark = uint8(index), mark
+				routingResult.Must = 0
+				if must {
+					routingResult.Must = 1
+				}
+				dialOption, err = c.selectDialOption(param, index, mark, false)
+			}
+		} else {
+			dialOption, err = c.RouteDialOption(ctx, param)
+		}
 		if err != nil {
 			return err
 		}
@@ -277,6 +306,14 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			if parseErr == nil && target != dst {
 				udpConn = &destinationPacketConn{PacketConn: udpConn, original: dst, target: target}
 			}
+			if routingResult.CaptureFlags&captureDestination != 0 {
+				owned, err := c.ownDestinationUDP(udpConn, key, routingResult)
+				if err != nil {
+					_ = udpConn.Close()
+					return oops.Wrapf(err, "retain UDP destination ownership")
+				}
+				udpConn = owned
+			}
 		}
 		soMark := c.soMarkFromDae
 		ue = newUdpEndpoint(&UdpEndpointOptions{
@@ -288,6 +325,8 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			Dialer:     dialOption.Dialer,
 			Path:       statsPath,
 		})
+		ue.destination = freezeDestination(param.destination, dialOption.Direct, dst)
+		ue.domain = domain
 		isNew = true
 	}
 

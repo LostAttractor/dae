@@ -672,6 +672,11 @@ func (c *ControlPlane) Activate() error {
 
 func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 	core := c.core
+	if !core.isReload {
+		if err := clearDestinationUDP(core.bpf.DestinationUdpMap); err != nil {
+			return fmt.Errorf("clear stale UDP destination ownership: %w", err)
+		}
+	}
 	if err := builder.BuildKernspace(); err != nil {
 		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}

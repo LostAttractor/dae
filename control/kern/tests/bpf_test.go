@@ -85,6 +85,7 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 	}
 	// Kernel tests must not reuse or replace the daemon's persistent routing state.
 	spec.Maps["routing_tuples_map"].Pinning = ebpf.PinNone
+	spec.Maps["destination_udp_map"].Pinning = ebpf.PinNone
 	if err := spec.LoadAndAssign(obj,
 		&ebpf.CollectionOptions{
 			Maps: ebpf.MapOptions{
