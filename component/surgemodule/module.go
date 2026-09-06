@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/dlclark/regexp2"
 )
@@ -129,69 +130,14 @@ func matchPattern(pattern *regexp2.Regexp, value string) bool {
 // matchConnection applies this module's allowlist without borrowing another
 // module's hosts or exclusions. Plain HTTP uses the same host scope as TLS.
 func (m *Module) matchConnection(host string, port uint16) bool {
-	if m == nil || host == "" {
-		return false
-	}
-	if port == 80 {
-		return m.MatchHostname(host)
-	}
-	return m.MatchHostname(net.JoinHostPort(host, strconv.Itoa(int(port))))
+	return (mitm.Scope{Hostnames: m.Hostnames}).Match(host, port)
 }
 
-// MatchHostname follows Surge's ordered hostname list: the first match wins,
-// including a '-' exclusion. A host without a port is treated as sniffed SNI;
-// bare hostname entries then match independently of the connection port.
+// MatchHostname accepts a sniffed hostname or an explicit host:port pair.
 func (m *Module) MatchHostname(host string) bool {
-	host, port := splitHostnamePort(host)
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	for _, pattern := range m.Hostnames {
-		exclude := strings.HasPrefix(pattern, "-")
-		pattern = strings.TrimPrefix(pattern, "-")
-		pattern, wantedPort := splitHostnamePort(pattern)
-		if wantedPort == "" {
-			wantedPort = "443"
-		}
-		if port != "" && wantedPort != "0" && wantedPort != port {
-			continue
-		}
-		if wildcardHostname(strings.TrimSuffix(strings.ToLower(pattern), "."), host) {
-			return !exclude
-		}
-	}
-	return false
-}
-
-func splitHostnamePort(host string) (string, string) {
 	if name, port, err := net.SplitHostPort(host); err == nil {
-		return name, port
+		n, err := strconv.ParseUint(port, 10, 16)
+		return err == nil && m.matchConnection(name, uint16(n))
 	}
-	return strings.Trim(host, "[]"), ""
-}
-
-// Wildcard matching without regex compilation on the connection path.
-func wildcardHostname(pattern, host string) bool {
-	p, h, star, backtrack := 0, 0, -1, 0
-	for h < len(host) {
-		if p < len(pattern) && (pattern[p] == '?' || pattern[p] == host[h]) {
-			p++
-			h++
-			continue
-		}
-		if p < len(pattern) && pattern[p] == '*' {
-			star = p
-			p++
-			backtrack = h
-			continue
-		}
-		if star < 0 {
-			return false
-		}
-		backtrack++
-		h = backtrack
-		p = star + 1
-	}
-	for p < len(pattern) && pattern[p] == '*' {
-		p++
-	}
-	return p == len(pattern)
+	return m.matchConnection(host, 80)
 }
