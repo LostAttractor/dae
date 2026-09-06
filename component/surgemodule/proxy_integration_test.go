@@ -145,6 +145,76 @@ func integrationUpstream(t *testing.T, handler http.Handler) (*httptest.Server, 
 	return upstream, trust, dial
 }
 
+func TestProxyIntegrationScriptTimeoutOverridesDefault(t *testing.T) {
+	for _, useHTTP2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("http2=%t", useHTTP2), func(t *testing.T) {
+			_, trust, dial := integrationUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/script" {
+					time.Sleep(200 * time.Millisecond)
+					_, _ = io.WriteString(w, "-script")
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				if string(body) != "request-script" {
+					t.Errorf("request script failed: body=%q", body)
+				}
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				time.Sleep(200 * time.Millisecond)
+				_, _ = io.WriteString(w, "upstream")
+			}))
+			const source = `
+const message = $script.type === "http-request" ? $request : $response;
+$httpClient.get("https://example.com/script", (error, response, body) => {
+  if (error) throw Error(error);
+  $done({body: message.body + body});
+});`
+			engine, roots := integrationEngine(t, map[string]string{"http-request": source, "http-response": source}, trust)
+			engine.options.ScriptTimeout = 50 * time.Millisecond
+			engine.options.Runtime.opts.Timeout = 50 * time.Millisecond
+			for i := range engine.options.Modules[0].Scripts {
+				engine.options.Modules[0].Scripts[i].Timeout = 3 * time.Second
+			}
+			started := make(chan struct{})
+			engine.options.Trace = func(event string) {
+				if strings.Contains(event, "event=request_begin ") {
+					close(started)
+				}
+			}
+			client := integrationClient(t, engine, roots, dial, useHTTP2)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			go func() {
+				select {
+				case <-started:
+				case <-ctx.Done():
+					return
+				}
+				// Delay the upload until the handler has installed its read deadline.
+				time.Sleep(200 * time.Millisecond)
+				_, _ = io.WriteString(writer, "request")
+				_ = writer.Close()
+			}()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.com/", reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil || response.StatusCode != http.StatusOK || string(body) != "upstream-script" {
+				t.Fatalf("response script failed: status=%d body=%q err=%v", response.StatusCode, body, err)
+			}
+		})
+	}
+}
+
 func TestProxyIntegrationHTTP1AndHTTP2TLSRewrite(t *testing.T) {
 	for _, useHTTP2 := range []bool{false, true} {
 		t.Run(fmt.Sprintf("http2=%t", useHTTP2), func(t *testing.T) {

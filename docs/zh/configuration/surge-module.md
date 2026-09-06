@@ -43,7 +43,7 @@ surge {
 
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
-| `script_timeout` | `5s` | 单阶段预算，含等待名额和正文准备；模块可进一步缩短 |
+| `script_timeout` | `5s` | 默认单阶段预算，含等待名额、正文准备和脚本内 HTTP 请求；脚本显式配置的 `timeout`（秒）优先，可延长或缩短 |
 | `memory_limit` | `134217728` | 单次 QuickJS 堆上限，字节 |
 | `max_body_size` | `33554432` | 正文缓冲上限，字节；脚本可进一步缩小 |
 | `max_concurrent_scripts` | `16` | 同时执行脚本或 jq 正文处理的名额 |

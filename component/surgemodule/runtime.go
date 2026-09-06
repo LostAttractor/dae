@@ -31,7 +31,7 @@ type Runtime struct {
 
 func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 	if opts.Timeout <= 0 {
-		opts.Timeout = 5 * time.Second
+		opts.Timeout = DefaultScriptTimeout
 	}
 	if opts.MemoryLimit <= 0 {
 		opts.MemoryLimit = 128 << 20
@@ -54,7 +54,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 // loaders are installed: scripts receive only the explicit Surge host bridge.
 func (r *Runtime) Run(parent context.Context, source string, in Invocation) (result *Result, err error) {
 	timeout := r.opts.Timeout
-	if in.Timeout > 0 && in.Timeout < timeout {
+	if in.Timeout > 0 {
 		timeout = in.Timeout
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)

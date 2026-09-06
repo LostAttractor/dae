@@ -111,7 +111,7 @@ func TestSurgeProxyRejectsOversizedDecompressedBody(t *testing.T) {
 bounded = type=http-request,pattern=.,requires-body=1,max-size=16,script-path=a.js
 `, `$done({});`)
 	req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader(strings.Repeat("x", 17)))
-	if _, err := engine.processRequest(req, http.DefaultClient); err != errBodyTooLarge {
+	if _, err := engine.processRequest(req, http.DefaultClient, http.NewResponseController(httptest.NewRecorder())); err != errBodyTooLarge {
 		t.Fatalf("error=%v", err)
 	}
 	var compressed bytes.Buffer
@@ -152,20 +152,32 @@ abort = type=http-request,pattern=.,script-path=a.js
 }
 
 func TestSurgeProxyLimitsBufferingConcurrency(t *testing.T) {
-	engine := testProxyEngine(t, `[Script]
-bounded = type=http-request,pattern=.,requires-body=1,script-path=a.js
-`, `$done({});`)
-	engine.slots = make(chan struct{}, 1)
-	engine.slots <- struct{}{}
-	engine.options.ScriptTimeout = 10 * time.Millisecond
-	body := &unreadBody{}
-	req := httptest.NewRequest("POST", "https://example.com/", nil)
-	req.Body = body
-	if _, err := engine.processRequest(req, http.DefaultClient); err != context.DeadlineExceeded {
-		t.Fatalf("error=%v", err)
-	}
-	if body.read {
-		t.Error("body buffered before acquiring script capacity")
+	for _, test := range []struct {
+		name, option string
+		global       time.Duration
+	}{
+		{"inherit", "", 10 * time.Millisecond},
+		{"override", ",timeout=0.01", time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine := testProxyEngine(t, "[Script]\nbounded = type=http-request,pattern=.,requires-body=1,script-path=a.js"+test.option, `$done({});`)
+			engine.slots = make(chan struct{}, 1)
+			engine.slots <- struct{}{}
+			engine.options.ScriptTimeout = test.global
+			body := &unreadBody{}
+			req := httptest.NewRequest("POST", "https://example.com/", nil)
+			req.Body = body
+			start := time.Now()
+			if _, err := engine.processRequest(req, http.DefaultClient, http.NewResponseController(httptest.NewRecorder())); err != context.DeadlineExceeded {
+				t.Fatalf("error=%v", err)
+			}
+			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+				t.Fatalf("waiting for script capacity exceeded its budget: %v", elapsed)
+			}
+			if body.read {
+				t.Error("body buffered before acquiring script capacity")
+			}
+		})
 	}
 }
 

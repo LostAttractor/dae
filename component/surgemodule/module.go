@@ -44,7 +44,7 @@ type Script struct {
 	Name, Type, Pattern, Path, Source, Argument string
 	RequiresBody, BinaryBodyMode                bool
 	MaxSize                                     int64
-	Timeout                                     time.Duration
+	Timeout                                     time.Duration // Zero inherits the engine's default.
 	pattern                                     *regexp2.Regexp
 }
 
