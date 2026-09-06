@@ -12,7 +12,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | 脚本数据 | `$request`、`$response`、`$done`；数字 status、字符串或 Uint8Array body、修改/合成响应/abort；保留目标脚本使用的 h2_trailers |
 | 运行时 | console、Promise、async/await、定时器、`$persistentStore`、`$httpClient` 七种方法、`$utils.ungzip`；通知写入日志；UTF-8 编解码、Base64、有限 URL/DOM API |
 | MITM | HTTP/1.1、TLS HTTP/2、gzip/deflate/br；主机通配、排除、端口；模块独立作用域；CA 管理、设备 MAC/IP 筛选和网页开关 |
-| 目标重写 | `[Host]` 字面 IP → 单个或多个 IPv4/IPv6；保留端口，按连接随机选址；`use-local-host-item-for-proxy` 控制代理出站是否应用 |
+| 目标重写 | `[Host]` 字面 IP、域名或通配符 → 单个或多个 IPv4/IPv6；保留端口，按连接随机选址；`use-local-host-item-for-proxy` 控制代理出站是否应用 |
 | 路由 | DOMAIN/SUFFIX/KEYWORD、基础 WILDCARD、AND/OR/NOT；DIRECT、REJECT、pre-matching、extended-matching 的 dae 映射 |
 
 ## 缺失与行为差异
@@ -55,7 +55,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | 路由类型 | 无 HTTP/IP/进程/端口/来源/规则集/SCRIPT 等模块规则；两字段 FINAL,DIRECT 加载失败。WILDCARD 无字符类，逻辑规则叶子限域名类型 |
 | 拒绝与选项 | REJECT 映射 dae block；无 DNS No Record、TCP RST、自适应拒绝或 REJECT-TINYGIF。extended-matching 使用 DNS/可信 SNI/Host，不逐请求重新匹配；未知选项整条跳过 |
 | 优先级 | pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。脚本请求与 HTTP 改写沿用已选出站，不按新 URL 重跑路由 |
-| Host 范围 | 仅字面 IP 映射；无域名/通配符、别名、指定 DNS、script 或 ruleset 引用，不修改 DNS 应答。用法见[目标重写](surge-module.md#ip-目标重写) |
+| Host 范围 | 支持字面 IP、域名和通配符到 IP 的拨号覆盖；无别名、指定 DNS、DNS script 或 ruleset 引用，不修改 DNS 应答。不支持的 Host 项使模块加载失败，错误包含行号。用法见[目标重写](surge-module.md#ip-目标重写) |
 | 诊断 | 有执行事件和分级 console 日志，无 Surge 抓包查看器、notes 或证书固定诊断页面 |
 
 ## 资源与验证

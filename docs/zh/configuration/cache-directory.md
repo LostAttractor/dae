@@ -7,7 +7,7 @@
 | CA 命令默认文件 | `/var/lib/dae/mitm-ca.pem`、`mitm-ca.key` |
 | [页面/API](api.md) 的设备集合、selector 选择与 MITM 开关 | `/var/lib/dae/runtime-state.json` |
 | Surge `file:相对路径` 模块、相对 `ca_cert`、`ca_key`、`store` | 相对于 `/var/lib/dae` |
-| 显式启用的模块及依赖缓存 | `/var/lib/dae/surge-cache/` |
+| 显式启用的模块及依赖缓存 | `/var/lib/dae/mitm/<实例 ID>/surge-cache/` |
 | `http-file://`、`https-file://` 订阅持久化副本 | `/var/lib/dae/persist.d/` |
 
 目录包含 CA 私钥和脚本存储，不能整体当作临时缓存清空。dae 按需创建写入目录，不会为缓存自动创建 `/etc/dae`；CA 只由显式 [generate 命令](mitm-certificate.md)生成。已有文件可继续用绝对路径引用，无需重新生成 CA。
@@ -16,7 +16,7 @@
 
 绝对订阅路径可跟随符号链接并在启动/重载时重新读取；相对订阅路径限制在配置目录内且拒绝符号链接。文件须为常规文件，权限不允许其他用户访问或组用户写入，例如 `0600`、`0640`、`0400`。本地订阅日志显示路径。`http-file://`、`https-file://` 订阅仍须指定名称，用于 `persist.d/名称.sub`；普通 HTTP(S) 订阅不回退缓存。
 
-模块内相对脚本、Map Local 文件保持 `script-path=request.js` 等 Surge 写法，以模块目录或最终 HTTP(S) URL 为基准；本地模块也可用 `file:` 指定依赖。CLI 显式 `--cert`、`--key`、`export --output` 相对工作目录。`surge.store` 未填写时只保存在内存。
+模块内相对脚本、Map Local 文件保持 `script-path=request.js` 等 Surge 写法，以模块目录或最终 HTTP(S) URL 为基准；本地模块也可用 `file:` 指定依赖。CLI 显式 `--cert`、`--key`、`export --output` 相对工作目录。`mitm.<实例 ID>.store` 未填写时只保存在内存。
 
 模块及依赖在启动/重载时刷新。`http-file://`、`https-file://` 模块在全部读取成功后原子保存完整模块及依赖快照，刷新失败时整体回退。普通 HTTP(S) 模块不缓存模块本身；它们与本地模块都只允许显式 `http-file://`、`https-file://` 依赖回退。模块缓存按规范化来源 URL/路径和显式参数的哈希保存，不按别名，匿名模块也可缓存。不同参数组合使用独立缓存，离线时不能借用其他组合的快照。
 
