@@ -8,6 +8,8 @@ package config
 type Desc map[string]string
 
 var SectionSummaryDesc = Desc{
+	"mitm":         "Shared HTTP/TLS host with ordered, statically registered Go plugin instances. Surge compatibility is configured as a child instance.",
+	"rules":        "Ordered destination rules: filter() -> dnat(ip). Reuses routing predicates, preserves the original port and route, and does not modify DNS responses.",
 	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
 	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
 	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md.",
@@ -33,6 +35,7 @@ interface: Match the interface that received the traffic.`,
 }
 
 var SectionDescription = map[string]Desc{
+	"MITMDesc":   MITMDesc,
 	"SurgeDesc":  SurgeDesc,
 	"GlobalDesc": GlobalDesc,
 	"DnsDesc":    DnsDesc,
@@ -44,6 +47,14 @@ var ClientDesc = Desc{
 	"description": "Plain text shown below the set name on the device page.",
 	"ipset":       "Export members to a dedicated hash:mac ipset. Missing sets are created; existing members are replaced. Requires kernel support and CAP_NET_ADMIN.",
 	"nftset":      "Export members to a dedicated ether_addr nftables set, specified as family/table/set. Missing tables and sets are created; existing members are replaced. Requires kernel support and CAP_NET_ADMIN.",
+}
+
+var MITMDesc = Desc{
+	"enabled":               "Enable the MITM plugin host, including plugin routing contributions and background tasks.",
+	"ca_cert":               "Shared PEM CA certificate path; required by HTTPS plugins. Destination-only plugins need no CA.",
+	"ca_key":                "Shared PEM CA private key path.",
+	"client_source_address": "HTTP/MITM client selection; per-device settings take precedence. Does not gate destination rules.",
+	"_":                     "Ordered named plugin instances. The section name is the instance ID; type defaults to that name. Each plugin decodes its own settings.",
 }
 
 var SurgeDesc = Desc{
