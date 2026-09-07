@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/daeuniverse/dae/component"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/pkg/trie"
 	log "github.com/sirupsen/logrus"
 
@@ -30,7 +30,7 @@ import (
 
 type RoutingMatcherBuilder struct {
 	outboundName2Id    map[string]uint8
-	ifmgr              *component.InterfaceManager
+	ifmgr              *network.InterfaceManager
 	bpf                *bpfState
 	rules              []bpfMatchSet
 	rulesMu            sync.RWMutex
@@ -48,7 +48,7 @@ type RoutingMatcherBuilder struct {
 	kernspaceBuilders []func() error
 }
 
-func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *component.InterfaceManager, capture *routingCapture, destinations routing.DestinationRewrites) (b *RoutingMatcherBuilder, err error) {
+func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *network.InterfaceManager, capture *routingCapture, destinations routing.DestinationRewrites) (b *RoutingMatcherBuilder, err error) {
 	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int)}
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))

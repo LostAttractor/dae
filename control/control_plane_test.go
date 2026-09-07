@@ -23,8 +23,8 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/component/dns"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
@@ -132,7 +132,7 @@ func TestValidateReusableBpfStateRejectsChangedSoMark(t *testing.T) {
 }
 
 func TestAutoWanTargetsUseOneOwnerPerInterface(t *testing.T) {
-	got := autoWanTargets(component.HostNetworkSnapshot{Interfaces: []component.DefaultRouteInterface{
+	got := autoWanTargets(network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
 		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
 		{Index: 2, Name: "eth0", IPv4Default: true},
 		{Index: 3, Name: "eth1", IPv6Default: true},
@@ -195,7 +195,7 @@ func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
 	closed, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	core := &controlPlaneCore{closed: closed, wanBindings: make(map[int]*wanBinding)}
-	snapshot := component.HostNetworkSnapshot{Interfaces: []component.DefaultRouteInterface{
+	snapshot := network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
 		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
 		{Index: 2, Name: "eth0", IPv4Default: true},
 		{Index: 3, Name: "lan0"},

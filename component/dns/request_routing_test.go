@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -112,7 +112,7 @@ func TestRequestMatcherResolvesInterfaceName(t *testing.T) {
 	}
 	iface := interfaces[0]
 
-	ifmgr, err := component.NewInterfaceManager()
+	ifmgr, err := network.NewInterfaceManager()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,9 +27,9 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
@@ -37,12 +37,11 @@ import (
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
-	"golang.org/x/sys/unix"
-
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 const initialConnectivityTimeout = 60 * time.Second
@@ -707,7 +706,7 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 
 func (c *ControlPlane) startConnectivityChecks() ([]startupConnectivityWaiter, error) {
 	core := c.core
-	core.netmon.Register(func(previous, current component.HostNetworkSnapshot) {
+	core.netmon.Register(func(previous, current network.HostNetworkSnapshot) {
 		if c.ctx.Err() != nil {
 			return
 		}
@@ -853,7 +852,7 @@ func (c *ControlPlane) reconcileWan() bool {
 	if c.ctx.Err() != nil {
 		return false
 	}
-	var snapshot *component.HostNetworkSnapshot
+	var snapshot *network.HostNetworkSnapshot
 	if c.autoWan {
 		current := c.core.netmon.Snapshot()
 		if current.Revision() != 0 {
