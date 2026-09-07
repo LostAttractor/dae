@@ -18,7 +18,7 @@ import (
 	ciliumLink "github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -53,8 +53,8 @@ type controlPlaneCore struct {
 
 	closed context.Context
 	close  context.CancelFunc
-	ifmgr  *component.InterfaceManager
-	netmon *component.HostNetworkMonitor
+	ifmgr  *network.InterfaceManager
+	netmon *network.HostNetworkMonitor
 
 	// outboundConnectivityMap stores actual outbound usability per network. It
 	// mirrors the eBPF map for userspace skip_while_noalive evaluation. A zero
@@ -100,12 +100,12 @@ func newControlPlaneCore(
 	isReload bool,
 ) (*controlPlaneCore, error) {
 	closed, toClose := context.WithCancel(context.Background())
-	ifmgr, err := component.NewInterfaceManager()
+	ifmgr, err := network.NewInterfaceManager()
 	if err != nil {
 		toClose()
 		return nil, oops.Wrapf(err, "initialize interface manager")
 	}
-	netmon := component.NewHostNetworkMonitor()
+	netmon := network.NewHostNetworkMonitor()
 	core := &controlPlaneCore{
 		bpf:      bpf,
 		isReload: isReload,
@@ -698,7 +698,7 @@ func (c *controlPlaneCore) setManualWan(link netlink.Link, pattern string, prese
 	binding.manualPatterns[pattern] = struct{}{}
 }
 
-func autoWanTargets(snapshot component.HostNetworkSnapshot) map[int]string {
+func autoWanTargets(snapshot network.HostNetworkSnapshot) map[int]string {
 	desired := make(map[int]string, len(snapshot.Interfaces))
 	for _, intf := range snapshot.Interfaces {
 		if intf.Index != consts.LoopbackIfIndex && (intf.IPv4Default || intf.IPv6Default) {
@@ -711,12 +711,12 @@ func autoWanTargets(snapshot component.HostNetworkSnapshot) map[int]string {
 // reconcileWan attaches every required interface before dropping obsolete
 // automatic ownership, avoiding an interception gap during route replacement.
 // A nil snapshot retries existing state without changing automatic ownership.
-func (c *controlPlaneCore) reconcileWan(snapshot *component.HostNetworkSnapshot, prepare func(string) error) bool {
+func (c *controlPlaneCore) reconcileWan(snapshot *network.HostNetworkSnapshot, prepare func(string) error) bool {
 	return c.reconcileWanWith(snapshot, prepare, netlink.LinkByIndex)
 }
 
 func (c *controlPlaneCore) reconcileWanWith(
-	snapshot *component.HostNetworkSnapshot,
+	snapshot *network.HostNetworkSnapshot,
 	prepare func(string) error,
 	linkByIndex func(int) (netlink.Link, error),
 ) (retry bool) {

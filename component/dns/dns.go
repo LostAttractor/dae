@@ -13,7 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	dnsmessage "github.com/miekg/dns"
@@ -32,7 +32,7 @@ type NewOption struct {
 	// InterfaceManager resolves interface names in request routing rules to ifindex and
 	// keeps it in sync with the interface lifecycle. It may be nil, in which
 	// case interface rules never match.
-	InterfaceManager *component.InterfaceManager
+	InterfaceManager *network.InterfaceManager
 }
 
 // New builds DNS routing from rules prepared by the control-plane startup phase.

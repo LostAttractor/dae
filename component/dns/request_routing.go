@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/routing/domain_matcher"
 	"github.com/daeuniverse/dae/config"
@@ -32,14 +32,14 @@ type RequestMatcherBuilder struct {
 	rules              []requestMatchSet
 	ipSet              []*trie.Trie
 	interfaceRegs      []interfaceReg
-	ifmgr              *component.InterfaceManager
+	ifmgr              *network.InterfaceManager
 }
 
 func NewRequestMatcherBuilder(
 	rules []*config_parser.RoutingRule,
 	upstreamName2Id map[string]uint8,
 	fallback config.FunctionOrString,
-	ifmgr *component.InterfaceManager,
+	ifmgr *network.InterfaceManager,
 ) (b *RequestMatcherBuilder, err error) {
 	b = &RequestMatcherBuilder{upstreamName2Id: upstreamName2Id, ifmgr: ifmgr}
 	rulesBuilder := routing.NewRulesBuilder()
