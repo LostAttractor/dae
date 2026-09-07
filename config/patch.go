@@ -28,7 +28,7 @@ var patches = []patch{
 	validateCheckDNS,
 	patchEmptyDns,
 	validateFallbacks,
-	patchMustOutbound,
+	validateRoutingActions,
 }
 
 func validateSoMarkFromDae(params *Config) error {
@@ -131,29 +131,33 @@ func validateFallbacks(params *Config) error {
 	return nil
 }
 
-func patchMustOutbound(params *Config) error {
-	for i := range params.Routing.Rules {
-		if !params.Routing.Rules[i].Outbound.Quoted && strings.HasPrefix(params.Routing.Rules[i].Outbound.Name, "must_") {
-			if params.Routing.Rules[i].Outbound.Name == "must_rules" {
-				// Reserve must_rules.
-				continue
-			}
-			params.Routing.Rules[i].Outbound.Name = strings.TrimPrefix(params.Routing.Rules[i].Outbound.Name, "must_")
-			params.Routing.Rules[i].Outbound.Params = append(params.Routing.Rules[i].Outbound.Params, &config_parser.Param{
-				Val: "must",
-			})
+func validateRoutingActions(params *Config) error {
+	for i, rule := range params.Routing.Rules {
+		if err := validateRoutingAction(&rule.Outbound); err != nil {
+			return fmt.Errorf("routing rule %d: %w", i+1, err)
 		}
 	}
 	f, err := ParseFunctionOrString(params.Routing.Fallback)
 	if err != nil {
 		return fmt.Errorf("invalid routing fallback: %w", err)
 	}
-	if !f.Quoted && strings.HasPrefix(f.Name, "must_") {
-		f.Name = strings.TrimPrefix(f.Name, "must_")
-		f.Params = append(f.Params, &config_parser.Param{
-			Val: "must",
-		})
-		params.Routing.Fallback = f
+	if err := validateRoutingAction(f); err != nil {
+		return fmt.Errorf("routing fallback: %w", err)
+	}
+	return nil
+}
+
+func validateRoutingAction(f *config_parser.Function) error {
+	if !f.Quoted && (f.Name == "must" || strings.HasPrefix(f.Name, "must_")) {
+		return fmt.Errorf("must control moved to rules { <filter> -> must }; select the outbound separately in routing")
+	}
+	if f.Name == consts.OutboundControlPlaneRouting.String() {
+		return fmt.Errorf("control-plane routing moved to rules { <filter> -> bump }; select the outbound separately in routing")
+	}
+	for _, p := range f.Params {
+		if p != nil && p.Key == "" && p.Val == "must" {
+			return fmt.Errorf("the must outbound parameter moved to rules { <filter> -> must }; remove must from the routing outbound")
+		}
 	}
 	return nil
 }

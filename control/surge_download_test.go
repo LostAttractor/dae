@@ -99,7 +99,7 @@ func attachSurgeDownloadTestDNS(t *testing.T, c *ControlPlane, request, response
 	if err != nil {
 		t.Fatal(err)
 	}
-	argument, err := c.chooseBestDnsDialer(&udpRequest{src: mitmClientSource(upstream.Ip4), routingResult: &bpfRoutingResult{}}, upstream)
+	argument, err := c.chooseBestDnsDialer(&udpRequest{src: httpClientSource(upstream.Ip4), routingResult: &bpfRoutingResult{}}, upstream)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestSurgeDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
 		message.Response = true
 		message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
 	})
-	addresses, err := c.resolveMITMClient(context.Background(), "raw.example", dnsmessage.TypeA, bpfRoutingResult{})
+	addresses, err := c.resolveHTTPAddresses(context.Background(), "raw.example", dnsmessage.TypeA, netip.AddrPort{}, bpfRoutingResult{})
 	if err != nil || !reflect.DeepEqual(addresses, []netip.Addr{netip.MustParseAddr("198.51.100.4")}) || queries != 1 {
 		t.Fatalf("bootstrap DNS addresses = %v, queries = %d, error = %v", addresses, queries, err)
 	}

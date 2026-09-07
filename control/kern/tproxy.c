@@ -74,14 +74,12 @@
 #define OUTBOUND_BLOCK 1
 #define OUTBOUND_MUST_RULES 0xFC
 #define OUTBOUND_CONTROL_PLANE_ROUTING 0xFD
-#define OUTBOUND_LOGICAL_OR 0xFE
-#define OUTBOUND_LOGICAL_AND 0xFF
-#define OUTBOUND_LOGICAL_MASK 0xFE
 
 #define ROUTE_RESULT_SKIPPED_NOALIVE 0x20000000000ULL
 #define ROUTE_RESULT_CAPTURE_SHIFT 42
 #define CAPTURE_HTTP 1
 #define CAPTURE_DESTINATION 2
+#define CAPTURE_HTTP_REQUEST 4
 
 #define TPROXY_MARK 0x8000000
 
@@ -166,7 +164,7 @@ struct routing_result {
 	__u32 pid;
 	__u32 ifindex;
 	__u8 dscp;
-	/* Consume two previously zeroed padding bytes; preserve pinned-map ABI. */
+	/* Consume previously zeroed padding bytes; preserve pinned-map ABI. */
 	__u8 capture_flags;
 	__u8 protocol;
 };
@@ -368,6 +366,21 @@ struct port_range {
  *
  * A match_set can be: IP set geosite:cn, suffix google.com, tcp proto
  */
+/* Instruction actions are separate from ordinary routing outbound IDs.
+ * Keep in sync with common/consts.MatchAction. */
+enum __attribute__((packed)) MatchAction {
+	MatchAction_Route,
+	MatchAction_Or,
+	MatchAction_And,
+	MatchAction_Must,
+	MatchAction_Bump,
+	MatchAction_Capture,
+	MatchAction_FlowEnd,
+	/* Userspace-only boolean terminals; never uploaded to routing_map. */
+	MatchAction_Match,
+	MatchAction_Miss,
+};
+
 struct match_set {
 	union {
 		__u8 __value[16]; // Placeholder for bpf2go.
@@ -388,6 +401,7 @@ struct match_set {
 	// outbound group is unavailable.
 	bool skip_while_noalive;
 	__u8 capture_flags;
+	enum MatchAction action;
 	__u32 mark;
 };
 
@@ -398,6 +412,10 @@ struct {
 	__uint(max_entries, MAX_MATCH_SET_LEN);
 	// __uint(pinning, LIBBPF_PIN_BY_NAME);
 } routing_map SEC(".maps");
+
+_Static_assert(sizeof(struct match_set) == 28, "match_set ABI size");
+_Static_assert(__builtin_offsetof(struct match_set, action) == 22,
+	       "match_set action ABI offset");
 
 struct domain_routing {
 	__u32 bump[MAX_MATCH_SET_LEN / 32];
@@ -920,6 +938,8 @@ struct route_ctx {
 	// subrule also matches.
 	volatile bool need_control_plane_routing : 1;
 	__u8 capture_flags;
+	bool flow_bump;
+	bool pending_must;
 };
 
 static int route_step(__u32 index, struct route_ctx *ctx)
@@ -1041,12 +1061,20 @@ lookup_lpm:
 		domain = bpf_map_lookup_elem(&domain_routing_map,
 					     ctx->params->daddr);
 
+		/* Domain IDs are shared across programs and independent of the
+		 * instruction offset (including duplicate DNAT predicates). */
+		__u32 domain_id = match_set->index;
+
+		if (domain_id >= MAX_MATCH_SET_LEN) {
+			ctx->result = -EINVAL;
+			return 1;
+		}
 		if (domain &&
-		    (domain->routing[index / 32] >> (index % 32)) & 1) {
+		    (domain->routing[domain_id / 32] >> (domain_id % 32)) & 1) {
 			// All domains mapped by the current IP address are matched.
 			ctx->goodsubrule = true;
 		} else if (domain &&
-			   (domain->bump[index / 32] >> (index % 32)) & 1) {
+			   (domain->bump[domain_id / 32] >> (domain_id % 32)) & 1) {
 			// The current IP has mapped domains that match this rule, but not
 			// all of them do.
 			ctx->uncertain_subrule = true;
@@ -1095,7 +1123,7 @@ before_next_loop:
 	bpf_printk("good_subrule: %d, uncertain_subrule: %d, bad_rule: %d",
 		   ctx->goodsubrule, ctx->uncertain_subrule, ctx->badrule);
 #endif
-	if (match_set->outbound != OUTBOUND_LOGICAL_OR) {
+	if (match_set->action != MatchAction_Or) {
 		// This match_set reaches the end of subrule.
 		// We are now at end of rule, or next match_set belongs to another
 		// subrule.
@@ -1117,16 +1145,42 @@ before_next_loop:
 #ifdef __DEBUG_ROUTING
 	bpf_printk("_bad_rule: %d", ctx->badrule);
 #endif
-	if ((match_set->outbound & OUTBOUND_LOGICAL_MASK) !=
-	    OUTBOUND_LOGICAL_MASK) {
+	if (match_set->action != MatchAction_Or &&
+	    match_set->action != MatchAction_And) {
 		// Tail of a rule (line).
 		// Decide whether to hit.
 		if (!ctx->badrule) {
-			/* Capturing never replaces the ordinary outbound/mark/must. */
-			if (match_set->capture_flags) {
+			/* Flow actions accumulate through the whole control phase.
+			 * A partial must cannot hide later definite controls/captures. */
+			switch (match_set->action) {
+			case MatchAction_Must:
+				if (ctx->need_control_plane_routing)
+					ctx->pending_must = true;
+				else
+					ctx->must = true;
+				goto next_rule;
+			case MatchAction_Bump:
+				ctx->flow_bump = true;
+				goto next_rule;
+			case MatchAction_Capture:
 				ctx->capture_flags |= match_set->capture_flags;
-				ctx->need_control_plane_routing = false;
-				return 0;
+				if (ctx->capture_flags & (CAPTURE_DESTINATION | CAPTURE_HTTP_REQUEST)) {
+					ctx->result = OUTBOUND_CONTROL_PLANE_ROUTING;
+					return 1;
+				}
+				goto next_rule;
+			case MatchAction_FlowEnd:
+				if (ctx->flow_bump || (ctx->pending_must && !ctx->must)) {
+					ctx->result = (__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
+						((__s64)ctx->must << 40);
+					return 1;
+				}
+				goto next_rule;
+			case MatchAction_Route:
+				break;
+			default:
+				ctx->result = -EINVAL;
+				return 1;
 			}
 #ifdef __DEBUG_ROUTING
 			bpf_printk(
@@ -1134,8 +1188,7 @@ before_next_loop:
 				match_set->type, match_set->not );
 #endif
 
-			// DNS requests should routed by control plane if outbound is not
-			// must_direct.
+			// Ordinary routing runs after all flow controls are resolved.
 
 			if (match_set->skip_while_noalive &&
 			    match_set->outbound > OUTBOUND_BLOCK &&
@@ -1166,8 +1219,8 @@ before_next_loop:
 
 			if (ctx->need_control_plane_routing) {
 				// Exact-domain routing must run before this uncertain rule's
-				// tail can commit must_rules, terminal must, or mark. Only
-				// definite must_rules from earlier rules survive.
+				// tail can commit its terminal must or mark. Definite
+				// controls accumulated by FlowProgram survive.
 				ctx->result =
 					(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
 					((__s64)ctx->must << 40);
@@ -1179,34 +1232,31 @@ before_next_loop:
 				return 1;
 			}
 
-			if (unlikely(match_set->outbound == OUTBOUND_MUST_RULES)) {
-				ctx->must = true;
-			} else {
-				bool must = ctx->must || match_set->must;
+			bool must = ctx->must || match_set->must;
 
-				if (!must && ctx->params->isdns &&
-				    !(ctx->capture_flags & CAPTURE_DESTINATION)) {
-					ctx->result =
-						(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
-						((__s64)match_set->mark << 8) |
-						((__s64)must << 40);
+			if (!must && ctx->params->isdns &&
+			    !(ctx->capture_flags & CAPTURE_DESTINATION)) {
+				ctx->result =
+					(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
+					((__s64)match_set->mark << 8) |
+					((__s64)must << 40);
 #ifdef __DEBUG_ROUTING
-					bpf_printk(
-						"OUTBOUND_CONTROL_PLANE_ROUTING: %ld",
-						ctx->result);
-#endif
-					return 1;
-				}
-				ctx->result = (__s64)match_set->outbound |
-					      ((__s64)match_set->mark << 8) |
-					      ((__s64)must << 40);
-#ifdef __DEBUG_ROUTING
-				bpf_printk("outbound %u: %ld",
-					   match_set->outbound, ctx->result);
+				bpf_printk(
+					"OUTBOUND_CONTROL_PLANE_ROUTING: %ld",
+					ctx->result);
 #endif
 				return 1;
 			}
+			ctx->result = (__s64)match_set->outbound |
+				      ((__s64)match_set->mark << 8) |
+				      ((__s64)must << 40);
+#ifdef __DEBUG_ROUTING
+			bpf_printk("outbound %u: %ld",
+				   match_set->outbound, ctx->result);
+#endif
+			return 1;
 		}
+next_rule:
 		ctx->badrule = false;
 		// The rule ended without committing: drop the partial-domain-match
 		// flag so it cannot leak into the next rule.
@@ -1677,6 +1727,7 @@ static __always_inline int do_tproxy_unfragmented(
 		routing_result.mark = route_ret >> 8;
 		routing_result.must = (route_ret >> 40) & 1;
 		routing_result.capture_flags = route_ret >> ROUTE_RESULT_CAPTURE_SHIFT;
+
 		routing_result.protocol = params.l4proto_type;
 		routing_result.dscp = tuples.dscp;
 		routing_result.ifindex = ifindex;

@@ -53,7 +53,7 @@ type tcpRelay struct {
 	dst         netip.AddrPort
 	domain      string
 	mitmHost    *mitm.Host
-	mitmDial    mitm.DialContext
+	mitmPlanner mitm.UpstreamPlanner
 	mitmRelease func()
 }
 
@@ -115,7 +115,8 @@ func (t *tcpConnectionTracker) finishSetup() {
 func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, tracker *tcpConnectionTracker) {
 	defer tracker.removeConnection(lConn)
 	relay, err := c.prepareTCPRelay(ctx, lConn)
-	// Established relays must not retain the retired control plane across reloads.
+	// Raw TCP relays retain only their dialer. MITM may route rewritten targets
+	// until Host.Close drains its requests, before DNS and outbounds are closed.
 	c = nil
 	tracker.finishSetup()
 	if relay != nil {
@@ -173,31 +174,20 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
-	dialOption, err := c.RouteDialOption(setupCtx, &RouteParam{
-		routingResult: routingResult,
-		networkType:   networkType,
-		Domain:        domain,
-		Src:           src,
-		Dest:          dst,
+	dialOption, mitmPlanner, release, err := c.prepareHTTPRoute(setupCtx, &RouteParam{
+		routingResult: routingResult, networkType: networkType,
+		Domain: domain, Src: src, Dest: dst,
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	statsPath, noConnectivityFallback := dialOption.trafficAttribution()
-	if c.shouldMITMClient(domain, src, dst, routingResult, dialOption) {
-		release, err := dialOption.Dialer.Retain()
-		if err != nil {
-			return nil, oops.Wrapf(err, "retain MITM outbound")
-		}
-		c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
+	if mitmPlanner != nil {
 		return &tcpRelay{
-			lConn: sniffer, dialer: dialOption.Dialer, statsPath: statsPath,
-			fallback: noConnectivityFallback, src: src, dst: dst, domain: domain,
-			mitmHost: c.mitmHost, mitmDial: c.mitmDialContext(dialOption, domain, dst, statsPath),
-			mitmRelease: release,
+			lConn: sniffer, src: src, dst: dst, domain: domain,
+			mitmHost: c.mitmHost, mitmPlanner: mitmPlanner, mitmRelease: release,
 		}, nil
 	}
+	statsPath, noConnectivityFallback := dialOption.trafficAttribution()
 
 	// Dial
 	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
@@ -270,11 +260,11 @@ func (r *tcpRelay) run() (err error) {
 		defer r.rConn.Close()
 	}
 	defer r.lConn.Close()
+	if r.mitmHost != nil {
+		return r.mitmHost.ServeConn(r.lConn, r.domain, r.dst.Port(), r.mitmPlanner)
+	}
 	traffic := stats.DefaultStore.OpenConnection(r.statsPath, r.fallback)
 	defer func() { err = errors.Join(err, traffic.Close()) }()
-	if r.mitmHost != nil {
-		return r.mitmHost.ServeConn(&mitmCountedConn{Conn: r.lConn, upload: traffic.RecordUpload, download: traffic.RecordDownload}, r.domain, r.dst.Port(), r.mitmDial)
-	}
 
 	// Relay
 	handled := false

@@ -110,12 +110,18 @@ Although dae and other proxy programs support the HTTPS protocol, using them doe
 
 2. In the section of dae's configuration related to nodes, add the following line: `http://127.0.0.1:1090`, and remember to use this node in the group you are using.
 
-3. If you have bound the WAN interface, meaning you have filled in the `global.wan_interface` field, make sure to add the following line near the top in the routing section to prevent traffic from flowing back to dae after passing through naiveproxy, causing a loop:
+3. If you have bound the WAN interface, meaning you have filled in the `global.wan_interface` field, add the following control in `rules` and put the `direct` rule near the top of `routing` to prevent traffic from flowing back to dae after passing through naiveproxy, causing a loop:
 
    ```shell
-   pname(naiveproxy) -> must_direct
+   rules {
+       pname(naiveproxy) -> must
+   }
+   routing {
+       pname(naiveproxy) -> direct
+       # Other routes and fallback ...
+   }
    ```
 
-   Here, `pname` refers to the process name. You can determine the process name of naiveproxy by examining the command used to start it, running the `ps -ef` command at runtime, or observing the dae logs. The meaning of `must_direct` is to allow all traffic, including DNS queries, to pass through directly without redirecting to dae.
+   Here, `pname` refers to the process name. You can determine the process name of naiveproxy by examining the command used to start it, running the `ps -ef` command at runtime, or observing the dae logs. `must` skips automatic DNS interception, while the early `direct` rule selects direct forwarding. Avoid explicit `bump`, MITM or DNAT capture for this process to keep its traffic in the kernel.
 
    Users who only bind the LAN interface do not need to perform this step.

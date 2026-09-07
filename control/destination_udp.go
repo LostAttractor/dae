@@ -5,6 +5,7 @@ package control
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 
@@ -78,6 +79,29 @@ func clearDestinationUDP(m *ebpf.Map) error {
 		}
 		if err := m.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return err
+		}
+	}
+}
+
+// Each rewritten UDP association owns a socket and a fixed destination. This
+// keeps replies unambiguous even if multiple original IPs map to the same peer.
+type destinationPacketConn struct {
+	net.PacketConn
+	original, target netip.AddrPort
+}
+
+func (c *destinationPacketConn) WriteTo(data []byte, _ net.Addr) (int, error) {
+	return c.PacketConn.WriteTo(data, net.UDPAddrFromAddrPort(c.target))
+}
+
+func (c *destinationPacketConn) ReadFrom(data []byte) (int, net.Addr, error) {
+	for {
+		n, from, err := c.PacketConn.ReadFrom(data)
+		if err != nil {
+			return n, from, err
+		}
+		if common.ConvergeAddrPort(addrPortOf(from)) == c.target {
+			return n, net.UDPAddrFromAddrPort(c.original), nil
 		}
 	}
 }

@@ -25,7 +25,7 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 		t.Fatalf("routing_tuples_map value size = %d, want 40", m.ValueSize)
 	}
 	var result bpfRoutingResult
-	if size := unsafe.Sizeof(result); size != 40 {
+	if size := unsafe.Sizeof(result); size != 40 || unsafe.Offsetof(result.Protocol) != 38 {
 		t.Fatalf("routing result layout size = %d, want 40", size)
 	}
 	cache := spec.Maps["udp_routing_cache_map"]
@@ -141,4 +141,24 @@ func TestDeleteUDPRoutingCache(t *testing.T) {
 	if m.Iterate().Next(&key, &got) {
 		t.Fatalf("UDP routing cache still contains key %+v", key)
 	}
+}
+
+func newRoutingLayoutTestMap(t *testing.T, name string, maxEntries uint32) *ebpf.Map {
+	t.Helper()
+	spec, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := spec.Maps[name]
+	ms.Pinning = ebpf.PinNone
+	ms.MaxEntries = maxEntries
+	m, err := ebpf.NewMap(ms)
+	if errors.Is(err, unix.EPERM) {
+		t.Skip("creating an eBPF map requires privileges")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.Close() })
+	return m
 }

@@ -94,10 +94,10 @@ func surgeClientLogHook(t *testing.T) *logtest.Hook {
 
 func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 	for _, test := range []struct {
-		name, source, host, outbound string
-		mac                          [6]byte
-		port                         uint16
-		want, bypass                 bool
+		name, source, host string
+		mac                [6]byte
+		port               uint16
+		want, bypass       bool
 	}{
 		{name: "allowed MAC outside IP range", source: "192.0.2.1:12345", mac: [6]byte{2, 0, 0, 0, 0, 1}, want: true},
 		{name: "excluded MAC before allowed IP", source: "10.0.0.3:12345", mac: [6]byte{2, 0, 0, 0, 0, 2}, bypass: true},
@@ -106,8 +106,6 @@ func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 		{name: "mapped IPv4 source", source: "[::ffff:10.0.0.3]:12345", want: true},
 		{name: "other hostname", source: "10.0.0.3:12345", host: "outside.example"},
 		{name: "other port", source: "10.0.0.3:12345", port: 8443},
-		{name: "block short circuits allowed client", source: "10.0.0.3:12345", outbound: "block"},
-		{name: "block short circuits denied client", source: "192.0.2.1:12345", outbound: "block"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.host == "" {
@@ -115,9 +113,6 @@ func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 			}
 			if test.port == 0 {
 				test.port = 443
-			}
-			if test.outbound == "" {
-				test.outbound = "direct"
 			}
 			hook := surgeClientLogHook(t)
 			store, err := settings.Open(filepath.Join(t.TempDir(), "runtime-state.json"))
@@ -129,15 +124,14 @@ func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			plane := &ControlPlane{mitmHost: surgeClientTestEngine(t, &mitmca.Authority{}, nil, nil), settings: store, mitmClients: clients}
-			option := &DialOption{Outbound: &outbound.DialerGroup{Name: test.outbound}, DialTarget: "198.51.100.1:443"}
 			result := &bpfRoutingResult{Mac: test.mac, Mark: 37, Must: 1}
-			beforeOption, beforeResult := *option, *result
+			beforeResult := *result
 			source := netip.MustParseAddrPort(test.source)
 			destination := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.1"), test.port)
-			if got := plane.shouldMITMClient(test.host, source, destination, result, option); got != test.want {
+			if got := plane.mitmMode(test.host, source, destination, result) != mitm.HTTPBypass; got != test.want {
 				t.Fatalf("client gate = %v, want %v", got, test.want)
 			}
-			if *option != beforeOption || *result != beforeResult {
+			if *result != beforeResult {
 				t.Fatal("client gate changed the selected route or ingress metadata")
 			}
 			entry := hook.LastEntry()
@@ -300,26 +294,22 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 					src := netip.MustParseAddrPort(test.source)
 					dst := netip.MustParseAddrPort("198.51.100.1:443")
 					result := &bpfRoutingResult{Outbound: uint8(test.outbound), Mark: 37, Mac: test.mac}
-					option, err := plane.RouteDialOption(context.Background(), &RouteParam{
+					option, planner, release, err := plane.prepareHTTPRoute(context.Background(), &RouteParam{
 						routingResult: result, Domain: domain, Src: src, Dest: dst,
 						networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},
 					})
 					if err != nil {
 						return err
 					}
-					before := *option
-					selected := plane.shouldMITMClient(domain, src, dst, result, option)
-					if selected != test.selected || *option != before || result.Mark != 37 || option.Outbound != plane.outbounds[test.outbound] || option.DialTarget != dst.String() {
+					selected := planner != nil
+					if selected != test.selected || result.Mark != 37 || option.Outbound != plane.outbounds[test.outbound] || option.DialTarget != dst.String() {
 						return fmt.Errorf("gate changed route: selected=%v option=%+v mark=%d", selected, option, result.Mark)
 					}
 					path, fallback := option.trafficAttribution()
 					relay := &tcpRelay{lConn: sniffer, dialer: option.Dialer, statsPath: path, fallback: fallback, src: src, dst: dst, domain: domain}
 					if selected {
-						relay.mitmRelease, err = option.Dialer.Retain()
-						if err != nil {
-							return err
-						}
-						relay.mitmHost, relay.mitmDial = engine, plane.mitmDialContext(option, domain, dst, path)
+						relay.mitmRelease = release
+						relay.mitmHost, relay.mitmPlanner = engine, planner
 					} else {
 						relay.rConn, err = option.dialerForConnection().DialContext(context.Background(), "tcp", option.DialTarget)
 						if err != nil {

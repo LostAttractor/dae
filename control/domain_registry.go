@@ -70,7 +70,7 @@ type domainRegistration struct {
 	queryInfo
 	ip netip.Addr
 	// Registrations of the same query share this immutable bitmap.
-	bitmap        []uint32  // match bitmap of the domain, length MaxMatchSetLen/32
+	bitmap        []uint32  // domain-predicate IDs, length MaxMatchSetLen/32
 	finiteExpiry  time.Time // longest finite observation; retained under no-expiry
 	noExpiry      bool      // plane-local no-expiry observation
 	userLive      bool

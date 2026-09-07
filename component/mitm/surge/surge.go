@@ -75,7 +75,11 @@ func (e *Engine) Plan() plugin.Plan {
 	for _, module := range e.options.Modules {
 		if len(module.Hostnames) > 0 {
 			scope, _ := moduleScope(module.Hostnames) // validated by NewEngine
-			plan.Scopes = append(plan.Scopes, scope)
+			// Scripts may issue requests or replace URLs; rewrites and Map Local
+			// may finish the request without any upstream connection at all.
+			plan.Scopes = append(plan.Scopes, plugin.HTTPScope{
+				Scope: scope, PreserveRoute: len(module.Scripts) == 0 && len(module.URLRewrites) == 0 && len(module.MapLocals) == 0,
+			})
 		}
 		plan.Destinations = append(plan.Destinations, module.Hosts...)
 		for _, rule := range module.Rules {

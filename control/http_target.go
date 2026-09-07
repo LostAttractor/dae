@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package control
+
+import (
+	"context"
+	"fmt"
+	"iter"
+	"net"
+	"net/http"
+	"net/netip"
+	"strconv"
+	"strings"
+
+	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/consts"
+	dnsmessage "github.com/miekg/dns"
+)
+
+type httpTarget struct {
+	host string
+	port uint16
+}
+
+func (t httpTarget) String() string { return net.JoinHostPort(t.host, strconv.Itoa(int(t.port))) }
+
+func parseHTTPTarget(address string) (httpTarget, error) {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil {
+		return httpTarget{}, err
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 || host == "" {
+		return httpTarget{}, fmt.Errorf("invalid HTTP target %q", address)
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.Unmap().String()
+	}
+	return httpTarget{host: host, port: uint16(port)}, nil
+}
+
+func requestHTTPTarget(request *http.Request) (httpTarget, error) {
+	if request.URL == nil || (request.URL.Scheme != "http" && request.URL.Scheme != "https") {
+		return httpTarget{}, fmt.Errorf("unsupported HTTP target")
+	}
+	port := request.URL.Port()
+	if port == "" {
+		port = "80"
+		if request.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return parseHTTPTarget(net.JoinHostPort(request.URL.Hostname(), port))
+}
+
+// One candidate stream serves intercepted requests and daemon downloads.
+// Requests collect the plan before pool lookup; downloads consume it lazily
+// and stop after a successful dial. A block always terminates the stream.
+func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, target httpTarget, source netip.AddrPort, identity bpfRoutingResult) iter.Seq2[*DialOption, error] {
+	return func(yield func(*DialOption, error) bool) {
+		if network != "tcp" && network != "tcp4" && network != "tcp6" && network != "udp" {
+			yield(nil, fmt.Errorf("unsupported HTTP network %q", network))
+			return
+		}
+		literal, _ := netip.ParseAddr(target.host)
+		domain := target.host
+		queryTypes := []uint16{dnsmessage.TypeA, dnsmessage.TypeAAAA}
+		if c.dnsController != nil && c.dnsController.qtypePrefer == dnsmessage.TypeAAAA {
+			queryTypes[0], queryTypes[1] = queryTypes[1], queryTypes[0]
+		}
+		switch {
+		case literal.IsValid():
+			domain, queryTypes = "", []uint16{0}
+		case network == "tcp4":
+			queryTypes = []uint16{dnsmessage.TypeA}
+		case network == "tcp6":
+			queryTypes = []uint16{dnsmessage.TypeAAAA}
+		}
+		for _, qtype := range queryTypes {
+			if err := ctx.Err(); err != nil {
+				yield(nil, err)
+				return
+			}
+			addresses := []netip.Addr{literal}
+			if qtype != 0 {
+				var err error
+				addresses, err = c.resolveHTTPAddresses(ctx, domain, qtype, source, identity)
+				if err != nil {
+					if !yield(nil, err) {
+						return
+					}
+					continue
+				}
+			}
+			for _, ip := range addresses {
+				if err := ctx.Err(); err != nil {
+					yield(nil, err)
+					return
+				}
+				ip = ip.Unmap()
+				if (network == "tcp4" && !ip.Is4()) || (network == "tcp6" && !ip.Is6()) {
+					if !yield(nil, fmt.Errorf("address %s does not match %s", ip, network)) {
+						return
+					}
+					continue
+				}
+				option, err := c.selectHTTPAddress(network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
+				if !yield(option, err) || (err == nil && option.Outbound.Name == consts.OutboundBlock.String()) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func (c *ControlPlane) selectHTTPAddress(network string, source netip.AddrPort, identity bpfRoutingResult, domain string, address netip.AddrPort) (*DialOption, error) {
+	result := identity
+	if !source.IsValid() {
+		source = httpClientSource(address.Addr())
+	}
+	proto := consts.L4ProtoStr_TCP
+	if network == "udp" {
+		proto = consts.L4ProtoStr_UDP
+	}
+	param := &RouteParam{Src: source, Dest: address, Domain: domain, explicitTarget: true, routingResult: &result, networkType: common.NetworkType{L4Proto: proto, IpVersion: consts.IpVersionStrFromAddr(address.Addr())}}
+	var err error
+	param.destination, err = c.routingMatcher.matchDestination(param)
+	if err != nil {
+		return nil, err
+	}
+	return c.routeDestination(param, domain)
+}
+
+func httpClientSource(destination netip.Addr) netip.AddrPort {
+	if destination.Is4() {
+		return netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
+	}
+	return netip.AddrPortFrom(netip.IPv6Unspecified(), 0)
+}
+
+// Resolve through dae's DNS request/response rules; asis uses fallback_resolver
+// because these daemon requests have no intercepted DNS destination.
+func (c *ControlPlane) resolveHTTPAddresses(parent context.Context, host string, qtype uint16, source netip.AddrPort, process bpfRoutingResult) ([]netip.Addr, error) {
+	dns := c.dnsController
+	if dns == nil || !dns.admitDNSRequest() {
+		return nil, net.ErrClosed
+	}
+	defer dns.activeRequests.Done()
+	ctx, cancel := context.WithTimeout(parent, consts.DefaultDNSTimeout)
+	defer cancel()
+	stop := context.AfterFunc(dns.closed, cancel)
+	defer stop()
+	target, err := netip.ParseAddrPort(c.fallbackResolver)
+	if err != nil {
+		return nil, fmt.Errorf("mitm DNS fallback_resolver: %w", err)
+	}
+	message := new(dnsmessage.Msg)
+	message.SetQuestion(dnsmessage.Fqdn(host), qtype)
+	if !source.IsValid() {
+		source = httpClientSource(target.Addr())
+	}
+	request := &udpRequest{src: source, dst: target, routingResult: &process}
+	query := dns.prepareQueryInfo(message)
+	if err := dns.handleDNSRequest(ctx, message, request, query); err != nil {
+		return nil, fmt.Errorf("resolve %s %s: %w", host, dnsmessage.TypeToString[qtype], err)
+	}
+	plan := dns.planDNSResponse(query, message.Answer)
+	if message.Response && message.Rcode == dnsmessage.RcodeSuccess && plan != nil && len(plan.views) > 0 && len(plan.views[0].addresses) > 0 {
+		return plan.views[0].addresses, nil
+	}
+	return nil, fmt.Errorf("resolve %s: no %s addresses (rcode %s)", host, dnsmessage.TypeToString[qtype], dnsmessage.RcodeToString[message.Rcode])
+}

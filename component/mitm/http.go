@@ -26,17 +26,17 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 // Handler has a connection-local transport pool: different original flows,
 // destinations, outbound policies and TLS identities cannot share its sockets.
-func (h *Host) Handler(scheme, host string, port uint16, dial DialContext) (http.Handler, func()) {
-	return h.HandlerForFlow(scheme, plugin.Flow{Host: host, Port: port}, dial)
+func (h *Host) Handler(scheme, host string, port uint16, plan UpstreamPlanner) (http.Handler, func()) {
+	return h.HandlerForFlow(scheme, plugin.Flow{Host: host, Port: port}, plan)
 }
 
-func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, dial DialContext) (http.Handler, func()) {
-	transport := h.httpTransport(dial)
-	return h.handlerForFlow(scheme, flow, transport, &http.Client{Transport: transport}), transport.CloseIdleConnections
+func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, plan UpstreamPlanner) (http.Handler, func()) {
+	transport := h.plannedTransport(plan, false)
+	return h.handlerForFlow(scheme, flow, transport, &http.Client{Transport: transport}), transport.close
 }
 
 // The intercepted protocol and auxiliary plugin requests can use different
-// transports, but both are bound by control to the same selected outbound.
+// transports. Both plan the final request before looking up a connection.
 func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.RoundTripper, client *http.Client) http.Handler {
 	host, port := flow.Host, flow.Port
 	chain := h.chain(flow, func(e *plugin.Exchange) (*http.Response, error) { return transport.RoundTrip(e.Request) })

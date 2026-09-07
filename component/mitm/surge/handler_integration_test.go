@@ -106,7 +106,7 @@ func integrationClient(t *testing.T, engine *integrationFixture, roots *x509.Cer
 			go func() {
 				defer handlers.Done()
 				defer connections.Delete(conn)
-				_ = host.ServeConn(conn, "example.com", 443, mitm.DialContext(dial))
+				_ = host.ServeConn(conn, "example.com", 443, testUpstream(mitm.DialContext(dial)))
 			}()
 		}
 	}()

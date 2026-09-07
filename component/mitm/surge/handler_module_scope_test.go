@@ -4,6 +4,7 @@ package surge
 
 import (
 	"context"
+	"github.com/daeuniverse/dae/component/mitm"
 	"io"
 	"net"
 	"net/http"
@@ -69,9 +70,9 @@ func moduleScopeExchange(t *testing.T, engine *Engine, host string, port uint16)
 		_, _ = io.WriteString(w, `{"value":1}`)
 	}))
 	defer upstream.Close()
-	handler, closeTransport := proxyTestHost(t, engine).Handler("http", host, port, func(ctx context.Context, network, _ string) (net.Conn, error) {
+	handler, closeTransport := proxyTestHost(t, engine).Handler("http", host, port, testUpstream(func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
-	})
+	}))
 	defer closeTransport()
 	authority := host
 	if port != 80 {
@@ -140,7 +141,7 @@ func TestProxyModuleScopeBroadRules(t *testing.T) {
 					candidate := moduleScopeModule(t, "candidate", scope.hosts, rule.rules, map[string]string{"rule": rule.source})
 					anchor := moduleScopeModule(t, "anchor", "a.test:0", "", nil)
 					engine := moduleScopeEngine(t, candidate, anchor)
-					if !proxyTestHost(t, engine).Match("a.test", 80) {
+					if proxyTestHost(t, engine).Match("a.test", 80) == mitm.HTTPBypass {
 						t.Fatal("anchor module did not select the connection")
 					}
 					response, observed := moduleScopeExchange(t, engine, "a.test", 80)
@@ -210,7 +211,7 @@ http-response-jq . '.`+name+` = true'
 		{"ordinary.test", "a", "b"},
 	} {
 		t.Run(test.host, func(t *testing.T) {
-			if !proxyTestHost(t, engine).Match(test.host, 80) {
+			if proxyTestHost(t, engine).Match(test.host, 80) == mitm.HTTPBypass {
 				t.Fatal("one module's exclusion suppressed another module's allowlist")
 			}
 			response, observed := moduleScopeExchange(t, engine, test.host, 80)
@@ -298,10 +299,10 @@ func TestProxyModuleScopeSharesRuntimeAndCapacity(t *testing.T) {
 	engine := moduleScopeEngine(t, module)
 	var handlers []http.Handler
 	for _, host := range []string{"a.test", "b.test"} {
-		handler, closeTransport := proxyTestHost(t, engine).Handler("http", host, 80, func(context.Context, string, string) (net.Conn, error) {
+		handler, closeTransport := proxyTestHost(t, engine).Handler("http", host, 80, testUpstream(func(context.Context, string, string) (net.Conn, error) {
 			t.Error("synthetic script contacted upstream")
 			return nil, context.Canceled
-		})
+		}))
 		t.Cleanup(closeTransport)
 		handlers = append(handlers, handler)
 	}

@@ -42,9 +42,9 @@ response=type=http-response,pattern=.,requires-body=1,script-path=response.js
 		t.Fatal(err)
 	}
 	defer h.Close()
-	handler, closeTransport := h.Handler("http", "api.example.com", 80, func(ctx context.Context, network, _ string) (net.Conn, error) {
+	handler, closeTransport := h.Handler("http", "api.example.com", 80, testUpstream(func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
-	})
+	}))
 	defer closeTransport()
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "http://api.example.com/", nil))

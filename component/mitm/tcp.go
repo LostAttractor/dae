@@ -20,7 +20,7 @@ import (
 	"golang.org/x/net/http2"
 )
 
-func (h *Host) ServeConn(conn net.Conn, host string, port uint16, dial DialContext) error {
+func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamPlanner) error {
 	original := conn
 	if err := h.track(original); err != nil {
 		_ = conn.Close()
@@ -60,7 +60,7 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, dial DialConte
 		s := tlsConn.ConnectionState()
 		state = &s
 	}
-	handler, closeTransport := h.HandlerForFlow(scheme, flow, dial)
+	handler, closeTransport := h.HandlerForFlow(scheme, flow, plan)
 	defer closeTransport()
 	base := &http.Server{
 		Handler:           handler,

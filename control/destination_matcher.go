@@ -8,94 +8,42 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/routing"
 )
 
 const (
 	captureHTTP        uint8 = 1
 	captureDestination uint8 = 2
+	captureHTTPRequest uint8 = 4
 )
 
-// Each predicate has ordinary logical edges and boolean true/false terminals.
-// Its action lives here, not in the kernel outbound ID namespace.
-type destinationPredicate struct {
-	start, end int
-	domain     bool
-	rule       routing.DestinationRewrite
-}
-
-type destinationDecision struct {
-	matched bool
-	target  netip.AddrPort
-	proxy   bool
-}
-
-func (d destinationDecision) applies(direct bool) bool {
-	return d.matched && (direct || d.proxy)
-}
-
-// An association freezes the effective destination, including a direct-only
-// mapping that did not apply to the original proxy selection.
-func freezeDestination(d destinationDecision, direct bool, original netip.AddrPort) destinationDecision {
-	if !d.applies(direct) {
-		return destinationDecision{matched: true, proxy: true, target: original}
-	}
-	d.proxy = true
-	return d
-}
-
-func (m *RoutingMatcher) matchDestination(p *RouteParam) (destinationDecision, error) {
-	if m == nil || len(m.destinations) == 0 {
-		return destinationDecision{}, nil
+func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error) {
+	if m == nil || len(m.destination.predicates) == 0 {
+		return netip.AddrPort{}, nil
 	}
 	m.rulesMu.RLock()
 	defer m.rulesMu.RUnlock()
-	source, destination := p.Src.Addr().As16(), p.Dest.Addr().As16()
-	var mac [16]byte
-	copy(mac[10:], p.routingResult.Mac[:])
-	proto := p.networkType.L4Proto.ToL4ProtoType()
-	if p.routingResult.Protocol != 0 {
-		proto = consts.L4ProtoType(p.routingResult.Protocol)
-	}
-	input := routingInput{
-		sourceAddr:  source[:],
-		destAddr:    destination[:],
-		sourcePort:  p.Src.Port(),
-		destPort:    p.Dest.Port(),
-		ipVersion:   p.networkType.IpVersion.ToIpVersionType(),
-		l4proto:     proto,
-		domain:      p.Domain,
-		processName: p.routingResult.Pname,
-		ifindex:     p.routingResult.Ifindex,
-		tos:         p.routingResult.Dscp,
-		mac:         mac[:],
-	}
-	for _, entry := range m.destinations {
+	input := p.routingInput(p.Domain, p.Dest)
+	for _, entry := range m.destination.predicates {
 		// In an AND-only predicate, an unknown domain (including !domain)
 		// can never prove the rule true once bounded sniffing has completed.
 		if entry.domain && p.Domain == "" {
 			continue
 		}
-		result, _, _, err := m.matchRange(entry.start, entry.end, input)
+		result, err := m.evaluateRange(entry.start, entry.end, input)
 		if err != nil {
-			return destinationDecision{}, err
+			return netip.AddrPort{}, err
 		}
-		if result != consts.OutboundDirect {
+		if !result.matched {
 			continue
 		}
-		decision := destinationDecision{matched: true, proxy: entry.rule.Proxy, target: p.Dest}
-		decision.target = netip.AddrPortFrom(entry.rule.To[rand.IntN(len(entry.rule.To))], p.Dest.Port())
-		return decision, nil
+		return netip.AddrPortFrom(entry.targets[rand.IntN(len(entry.targets))], p.Dest.Port()), nil
 	}
-	return destinationDecision{}, nil
+	return netip.AddrPort{}, nil
 }
 
-func (p *RouteParam) dialTarget(outbound consts.OutboundIndex, override bool) string {
-	d := p.destination
-	if outbound != consts.OutboundBlock && d.matched && (outbound == consts.OutboundDirect || d.proxy) {
-		return d.target.String()
+func (p *RouteParam) dialTarget(override bool) string {
+	if p.destination.IsValid() {
+		return p.destination.String()
 	}
 	if !override {
 		return p.Dest.String()
@@ -104,4 +52,13 @@ func (p *RouteParam) dialTarget(outbound consts.OutboundIndex, override bool) st
 		return p.Domain
 	}
 	return net.JoinHostPort(strings.Trim(p.Domain, "[]"), strconv.Itoa(int(p.Dest.Port())))
+}
+
+// Dest is the immutable ingress tuple used for destination matching and replies.
+// Every later routing predicate observes this effective destination instead.
+func (p *RouteParam) effectiveDestination() netip.AddrPort {
+	if p.destination.IsValid() {
+		return p.destination
+	}
+	return p.Dest
 }

@@ -40,7 +40,7 @@ type udpEndpointKey struct {
 }
 
 type UdpEndpoint struct {
-	destination destinationDecision
+	destination netip.AddrPort
 	domain      string
 	conn        net.PacketConn
 	// mu protects the timer deadline and timer pointer.
@@ -303,4 +303,13 @@ func (p *UdpEndpointPool) expireAt(key udpEndpointKey, endpoint *UdpEndpoint, no
 		endpoint.closeTrafficAccounting()
 		_ = endpoint.conn.Close()
 	}
+}
+
+func udpRoutingKey(source, destination netip.AddrPort, result *bpfRoutingResult) udpEndpointKey {
+	key := udpEndpointKey{Source: source}
+	if result.CaptureFlags&captureDestination != 0 {
+		key.Destination = destination
+		key.Interface = result.Ifindex
+	}
+	return key
 }

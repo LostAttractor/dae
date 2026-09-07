@@ -42,6 +42,23 @@ const (
 
 type OutboundIndex uint8
 
+// MatchAction is the instruction action, independent of routing outbound IDs.
+// Keep in sync with enum MatchAction in control/kern/tproxy.c.
+type MatchAction uint8
+
+const (
+	MatchActionRoute MatchAction = iota
+	MatchActionOr
+	MatchActionAnd
+	MatchActionMust
+	MatchActionBump
+	MatchActionCapture
+	MatchActionFlowEnd
+	// Boolean terminals used only by DestinationProgram's exact predicates.
+	MatchActionMatch
+	MatchActionMiss
+)
+
 const (
 	OutboundDirect OutboundIndex = iota
 	OutboundBlock

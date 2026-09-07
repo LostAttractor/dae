@@ -66,13 +66,10 @@ dip(198.51.100.22) -> dnat(198.51.100.23)`)
 			t.Fatal(err)
 		}
 		p.destination = decision
-		if decision.target.String() != test.want {
+		if decision.String() != test.want {
 			t.Errorf("%+v => %+v", test, decision)
 		}
-		if got := p.dialTarget(consts.OutboundBlock, false); got != p.Dest.String() {
-			t.Fatal("DNAT bypassed block")
-		}
-		if got := p.dialTarget(consts.OutboundDirect, true); got != test.want {
+		if got := p.dialTarget(true); got != test.want {
 			t.Fatal("domain dial override replaced DNAT")
 		}
 		src, dst := p.Src.Addr().As16(), p.Dest.Addr().As16()
@@ -96,7 +93,7 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 			t.Fatal(err)
 		}
 		decision, err := m.matchDestination(p)
-		if err != nil || decision.matched != joined {
+		if err != nil || decision.IsValid() != joined {
 			t.Fatalf("joined=%v decision=%+v err=%v", joined, decision, err)
 		}
 	}
@@ -108,6 +105,7 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 	for i := range b.rules {
 		if b.rules[i].CaptureFlags&captureDestination != 0 {
 			b.rules[i].CaptureFlags = 0
+			b.rules[i].Action = uint8(consts.MatchActionRoute)
 			b.rules[i].Outbound = 2
 		}
 	}
@@ -120,46 +118,22 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 	}
 }
 
-func TestDestinationAssociationFreezesEffectiveTarget(t *testing.T) {
-	original := netip.MustParseAddrPort("192.0.2.1:443")
-	target := netip.MustParseAddrPort("198.51.100.1:443")
-	for _, test := range []struct {
-		decision destinationDecision
-		direct   bool
-		want     netip.AddrPort
-	}{
-		{destinationDecision{}, true, original},
-		{destinationDecision{matched: true, target: target}, false, original},
-		{destinationDecision{matched: true, target: target}, true, target},
-		{destinationDecision{matched: true, target: target, proxy: true}, false, target},
-	} {
-		d := freezeDestination(test.decision, test.direct, original)
-		for _, out := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundUserDefinedMin} {
-			p := RouteParam{Dest: original, destination: d}
-			if got := p.dialTarget(out, false); got != test.want.String() {
-				t.Fatalf("node replacement changed destination: %s want %s", got, test.want)
-			}
-		}
-	}
-}
-
 func TestDestinationFirstMatchAndTargetSelection(t *testing.T) {
 	m, _ := destinationTestMatcher(t, "dip(192.0.2.1) -> dnat(198.51.100.1)\ndip(192.0.2.1) -> dnat(203.0.113.1)\ndip(198.51.100.1) -> dnat(203.0.113.2)")
 	targets := []netip.Addr{netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("2001:db8::1")}
-	m.destinations[0].rule.To = targets
-	m.destinations[0].rule.Proxy = false
+	m.destination.predicates[0].targets = targets
 	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.8:12345"), Dest: netip.MustParseAddrPort("[::ffff:192.0.2.1]:8443"), routingResult: &bpfRoutingResult{}, networkType: *common.NetworkTCP4.NetworkType()}
 	d, err := m.matchDestination(p)
-	if err != nil || !d.matched || d.target.Port() != 8443 || !slices.Contains(targets, d.target.Addr()) {
+	if err != nil || !d.IsValid() || d.Port() != 8443 || !slices.Contains(targets, d.Addr()) {
 		t.Fatalf("bad selected target: %+v %v", d, err)
 	}
 	p.destination = d
-	if got := p.dialTarget(consts.OutboundUserDefinedMin, false); got != p.Dest.String() {
-		t.Fatalf("direct-only rule fell through on proxy: %s", got)
+	if p.effectiveDestination() != d {
+		t.Fatal("routing must use the rewritten target")
 	}
-	m.destinations[0].rule.To = targets[:1]
+	m.destination.predicates[0].targets = targets[:1]
 	d, err = m.matchDestination(p)
-	if err != nil || d.target.Addr() != targets[0] {
+	if err != nil || d.Addr() != targets[0] {
 		t.Fatalf("recursive rewrite: %+v %v", d, err)
 	}
 }

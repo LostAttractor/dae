@@ -67,7 +67,7 @@ type Utls struct {
 type FunctionOrString interface{}
 
 // QuotedString preserves a routing target's explicit quoting so names using
-// the legacy must_ prefix can be resolved literally.
+// reserved must spellings can be resolved literally.
 type QuotedString string
 
 // FunctionOrStringToFunction preserves the original conversion API. New code
@@ -285,7 +285,7 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	}
 
 	// Apply config patches.
-	if _, err = conf.Rules.Destinations(); err != nil {
+	if _, err = conf.Rules.Plan(); err != nil {
 		return nil, err
 	}
 

@@ -62,10 +62,10 @@ func TestCaptureRouting(t *testing.T) {
 				t.Run(test.name, func(t *testing.T) {
 					var rules []bpftestMatchSet
 					if test.ips {
-						rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_IpSet), CaptureFlags: 2})
+						rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_IpSet), CaptureFlags: 2, Action: uint8(consts.MatchActionCapture)})
 					}
 					if test.tcp {
-						rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_L4Proto), Value: [16]byte{byte(consts.L4ProtoType_TCP)}, CaptureFlags: 1})
+						rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_L4Proto), Value: [16]byte{byte(consts.L4ProtoType_TCP)}, CaptureFlags: 1, Action: uint8(consts.MatchActionCapture)})
 					}
 					rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundDirect)})
 					for i, rule := range rules {

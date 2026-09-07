@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"syscall"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -37,22 +39,22 @@ func surgeRoutingEngine(t *testing.T, hostnames ...string) *surge.Engine {
 
 func TestSurgeKernelRoutingReconstruction(t *testing.T) {
 	for _, test := range []struct {
-		name, rules       string
-		want              consts.OutboundIndex
-		must, unavailable bool
+		name, rules, controls string
+		want                  consts.OutboundIndex
+		must, unavailable     bool
 	}{
-		{"uncertain domain", "domain(full: one.example) -> block", consts.OutboundControlPlaneRouting, false, false},
-		{"uncertain negation", "!domain(full: one.example) -> block", consts.OutboundControlPlaneRouting, false, false},
-		{"later AND misses", "domain(full: one.example) && dport(80) -> block", consts.OutboundDirect, false, false},
-		{"earlier block wins", "dport(443) -> block\ndomain(full: one.example) -> proxy", consts.OutboundBlock, false, false},
-		{"definite OR overrides uncertainty", "domain(full: one.example, suffix: example) -> proxy", consts.OutboundUserDefinedMin, false, false},
-		{"negated definite OR", "!domain(full: one.example, suffix: example) -> block", consts.OutboundDirect, false, false},
-		{"unavailable rule drops uncertainty", "domain(full: one.example) -> proxy(skip_while_noalive)\ndport(443) -> block", consts.OutboundBlock, false, true},
-		{"uncertain must does not commit", "domain(full: one.example) -> must_rules", consts.OutboundControlPlaneRouting, false, false},
-		{"earlier definite must survives", "dport(443) -> must_rules\ndomain(full: one.example) -> block(mark:37,must)", consts.OutboundControlPlaneRouting, true, false},
+		{"uncertain domain", "domain(full: one.example) -> block", "", consts.OutboundControlPlaneRouting, false, false},
+		{"uncertain negation", "!domain(full: one.example) -> block", "", consts.OutboundControlPlaneRouting, false, false},
+		{"later AND misses", "domain(full: one.example) && dport(80) -> block", "", consts.OutboundDirect, false, false},
+		{"earlier block wins", "dport(443) -> block\ndomain(full: one.example) -> proxy", "", consts.OutboundBlock, false, false},
+		{"definite OR overrides uncertainty", "domain(full: one.example, suffix: example) -> proxy", "", consts.OutboundUserDefinedMin, false, false},
+		{"negated definite OR", "!domain(full: one.example, suffix: example) -> block", "", consts.OutboundDirect, false, false},
+		{"unavailable rule drops uncertainty", "domain(full: one.example) -> proxy(skip_while_noalive)\ndport(443) -> block", "", consts.OutboundBlock, false, true},
+		{"uncertain must does not commit", "", "domain(full: one.example) -> must", consts.OutboundControlPlaneRouting, false, false},
+		{"earlier definite must survives", "domain(full: one.example) -> block(mark:37)", "dport(443) -> must", consts.OutboundControlPlaneRouting, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			sections, err := config_parser.Parse("global {}\nrouting {\n" + test.rules + "\nfallback: direct\n}")
+			sections, err := config_parser.Parse("global {}\nrouting {\n" + test.rules + "\nfallback: direct\n}\nrules {\n" + test.controls + "\n}")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -61,6 +63,9 @@ func TestSurgeKernelRoutingReconstruction(t *testing.T) {
 				t.Fatal(err)
 			}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: configuration.Routing.Rules}}
+			if err := preparation.rules.enableFlowRules(context.Background(), configuration.Rules, nil); err != nil {
+				t.Fatal(err)
+			}
 			// Only one of the IP's hostnames belongs to the module: uncertainty
 			// in the injected capture rule itself must be skipped in simulation.
 			preparation.rules.enableMITMPlan(surgeRoutingEngine(t, "one.example").Plan())
@@ -141,41 +146,50 @@ func TestSurgeCapturePreservesUserspaceRoute(t *testing.T) {
 	}
 }
 
-func TestMITMCaptureSniffsTCPWithoutDNS(t *testing.T) {
+func TestMITMCaptureRetainsHostnameAndPortConstraints(t *testing.T) {
 	engine := surgeRoutingEngine(t, "-excluded.example", "*.example", "node?.test:8443", "UPPER.EXAMPLE.")
 	preparation := &ControlPlanePreparation{}
 	preparation.rules.enableMITMPlan(engine.Plan())
 	matcher, builder := surgeRoutingMatcher(t, preparation.rules)
 	// Change only the marker action to observe whether the preceding conditions
 	// select capture, without loading BPF maps or altering userspace skip logic.
-	for i := range builder.rules {
-		if builder.rules[i].CaptureFlags != 0 {
-			builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
-			builder.rules[i].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
-		}
-	}
+	exposeCapturePredicates(t, builder)
 	for _, test := range []struct {
 		host    string
 		proto   consts.L4ProtoType
+		port    uint16
 		capture bool
 	}{
-		{"service.example", consts.L4ProtoType_TCP, true},
-		{"service.example", consts.L4ProtoType_UDP, false},
-		{"outside.test", consts.L4ProtoType_TCP, true},
-		{"node1.test", consts.L4ProtoType_TCP, true},
-		{"node12.test", consts.L4ProtoType_TCP, true},
-		{"upper.example", consts.L4ProtoType_TCP, true},
-		{"excluded.example", consts.L4ProtoType_TCP, true},
+		{"service.example", consts.L4ProtoType_TCP, 443, true},
+		{"service.example", consts.L4ProtoType_UDP, 443, false},
+		{"service.example", consts.L4ProtoType_UDP, 8443, false},
+		{"outside.test", consts.L4ProtoType_UDP, 443, false},
+		{"node1.test", consts.L4ProtoType_UDP, 8443, false},
+		{"", consts.L4ProtoType_UDP, 443, false},
+		{"outside.test", consts.L4ProtoType_TCP, 443, false},
+		{"node1.test", consts.L4ProtoType_TCP, 443, false},
+		{"node1.test", consts.L4ProtoType_TCP, 8443, true},
+		{"node1.test", consts.L4ProtoType_TCP, 80, true},
+		{"service.example", consts.L4ProtoType_TCP, 8443, false},
+		{"node12.test", consts.L4ProtoType_TCP, 8443, false},
+		{"upper.example", consts.L4ProtoType_TCP, 443, true},
+		{"excluded.example", consts.L4ProtoType_TCP, 443, true},
+		{"service.example", consts.L4ProtoType_TCP, 22, false},
+		{"", consts.L4ProtoType_TCP, 443, false},
 	} {
-		got, _, _ := surgeMatchRoute(t, matcher, test.host, test.proto)
+		address := make([]byte, 16)
+		got, _, _, err := matcher.Match(address, address, 12345, test.port, consts.IpVersion_4, test.proto, test.host, [16]uint8{}, 0, 0, address)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if (got == consts.OutboundUserDefinedMin) != test.capture {
-			t.Errorf("capture(%q,%v)=%v", test.host, test.proto, got)
+			t.Errorf("capture(%q:%d,%v)=%v", test.host, test.port, test.proto, got)
 		}
 	}
-	if controlTestHost(t, engine, nil).Match("excluded.example", 443) {
+	if controlTestHost(t, engine, nil).Match("excluded.example", 443) != mitm.HTTPBypass {
 		t.Fatal("capturing an excluded hostname must not enable its MITM")
 	}
-	if !controlTestHost(t, engine, nil).Match("node1.test", 8443) || controlTestHost(t, engine, nil).Match("node1.test", 443) {
+	if controlTestHost(t, engine, nil).Match("node1.test", 8443) == mitm.HTTPBypass || controlTestHost(t, engine, nil).Match("node1.test", 443) != mitm.HTTPBypass {
 		t.Fatal("MITM lost hostname port constraint")
 	}
 }
@@ -201,6 +215,7 @@ func TestSurgeAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 			if builder.rules[i].CaptureFlags != 0 {
 				builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
 				builder.rules[i].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
+				builder.rules[i].Action = uint8(consts.MatchActionRoute)
 			}
 		}
 		matcher, err := builder.BuildUserspace()
@@ -303,9 +318,8 @@ func TestSurgeDialReportsConnectivityFailures(t *testing.T) {
 			stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{d.StatsKey(): {Name: d.Name}}, nil)
 			stats.DefaultStore.RecordNodeState(d.StatsKey(), false, time.Time{})
 			t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
-			option := &DialOption{Dialer: d, DialTarget: "198.51.100.1:443"}
-			path := d.StatsPath("proxy", common.NetworkTCP4.NetworkType())
-			conn, err := (&ControlPlane{}).mitmDialContext(option, "api.example", netip.MustParseAddrPort(option.DialTarget), path)(ctx, "tcp", "api.example:443")
+			option := &DialOption{Dialer: d, DialTarget: "198.51.100.1:443", Outbound: &outbound.DialerGroup{Name: "proxy"}, NetworkType: *common.NetworkTCP4.NetworkType()}
+			conn, err := (&ControlPlane{}).dialHTTPUpstream(ctx, option)
 			if conn != nil {
 				_ = conn.Close()
 			}
@@ -318,6 +332,60 @@ func TestSurgeDialReportsConnectivityFailures(t *testing.T) {
 			if reported != test.wantReport {
 				t.Fatalf("connectivity failure reported = %v, want %v", reported, test.wantReport)
 			}
+		})
+	}
+}
+
+func TestMITMDialPreservesTargetForEquivalentAuthorities(t *testing.T) {
+	const target = "[2001:db8::99]:443"
+	for _, test := range []struct {
+		host, requested, want string
+	}{
+		{"api.example", "API.EXAMPLE.:00443", target},
+		{"2001:db8::1", "[2001:0db8:0:0:0:0:0:1]:443", target},
+		{"192.0.2.1", "[::ffff:192.0.2.1]:443", target},
+		{"api.example", "other.example:443", "other.example:443"},
+		{"2001:db8::1", "[2001:db8::2]:443", "[2001:db8::2]:443"},
+		{"api.example", "api.example:8443", "api.example:8443"},
+	} {
+		t.Run(test.requested, func(t *testing.T) {
+			transport := surgeDownloadTestDialer(func(_ context.Context, network, address string) (net.Conn, error) {
+				if network != "tcp" || address != test.want {
+					t.Fatalf("dial target=%s/%s, want tcp/%s", network, address, test.want)
+				}
+				return newCloseTrackingConn(), nil
+			})
+			d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: transport}), &dialer.GlobalOption{}, &dialer.Property{Name: t.Name()}, false, "")
+			defer d.Close()
+			original, err := parseHTTPTarget(net.JoinHostPort(test.host, "443"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requested, err := parseHTTPTarget(test.requested)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (original == requested) != (test.want == target) {
+				t.Fatal("equivalent authority classification changed")
+			}
+			if original != requested {
+				return
+			} // New authorities are covered by request-routing tests.
+			option := &DialOption{Dialer: d, DialTarget: target, Outbound: &outbound.DialerGroup{Name: "proxy"}, NetworkType: *common.NetworkTCP6.NetworkType()}
+			planner := (&ControlPlane{}).mitmUpstreamPlanner("tcp", test.host, netip.AddrPort{}, netip.MustParseAddrPort("[2001:db8::1]:443"), bpfRoutingResult{}, option)
+			request, err := http.NewRequestWithContext(t.Context(), "GET", "https://"+test.requested+"/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := planner(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn, err := plan.Dial(t.Context(), "tcp", test.requested)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.Close()
 		})
 	}
 }

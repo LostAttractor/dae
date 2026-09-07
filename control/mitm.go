@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package control
 
 import (
@@ -5,13 +7,9 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
@@ -25,12 +23,15 @@ func (c *ControlPlane) MITMStatus() []plugin.InstanceStatus {
 	return c.mitmHost.Status()
 }
 
-// Client selection only gates MITM after routing has selected the outbound.
-// A denied client continues through the ordinary dial and buffered TCP relay.
-func (c *ControlPlane) shouldMITMClient(domain string, src, dst netip.AddrPort, result *bpfRoutingResult, option *DialOption) bool {
-	matched := c.mitmHost != nil && c.mitmHost.Match(domain, dst.Port())
-	if option.Outbound.Name == consts.OutboundBlock.String() || !matched {
-		return false
+// Pure inspection can use an existing route. Request transformations are
+// admitted separately, before any terminal route for the old target.
+func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *bpfRoutingResult) mitm.HTTPMode {
+	if c.mitmHost == nil {
+		return mitm.HTTPBypass
+	}
+	mode := c.mitmHost.Match(domain, dst.Port())
+	if mode == mitm.HTTPBypass {
+		return mode
 	}
 	src = common.ConvergeAddrPort(src)
 	enabled, _ := c.mitmSelection(src.Addr(), result.Mac)
@@ -44,7 +45,10 @@ func (c *ControlPlane) shouldMITMClient(domain string, src, dst netip.AddrPort, 
 			"source": src.String(), "mac": mac, "reason": "client_not_allowed",
 		}).Info("mitm")
 	}
-	return enabled
+	if !enabled {
+		return mitm.HTTPBypass
+	}
+	return mode
 }
 
 func (c *ControlPlane) mitmAuthority() *mitmca.Authority {
@@ -60,7 +64,13 @@ func (p *preparedRules) enableMITMPlan(plan plugin.Plan) {
 		if p.capture == nil {
 			p.capture = &routingCapture{}
 		}
-		p.capture.tcp = true
+		for _, scope := range plan.Scopes {
+			if scope.PreserveRoute {
+				p.capture.http = append(p.capture.http, scope.Scope)
+			} else {
+				p.capture.requestRouting = append(p.capture.requestRouting, scope.Scope)
+			}
+		}
 	}
 }
 
@@ -73,47 +83,28 @@ func (c *ControlPlane) mitmSelection(ip netip.Addr, mac [6]byte) (enabled bool, 
 	return c.mitmClients.Match(ip, mac), nil
 }
 
-func (c *ControlPlane) mitmDialContext(option *DialOption, host string, destination netip.AddrPort, path stats.Path) mitm.DialContext {
-	selected := option.dialerForConnection()
-	target := option.DialTarget
-	return func(parent context.Context, network, address string) (net.Conn, error) {
-		// Preserve dial_target_override and IP family for the original host.
-		// A URL rewritten by a script uses the same selected outbound, but its
-		// new authority is resolved by that outbound rather than the old IP.
-		requestedHost, port, err := net.SplitHostPort(address)
-		if err == nil && strings.EqualFold(strings.TrimSuffix(requestedHost, "."), strings.TrimSuffix(host, ".")) && port == strconv.Itoa(int(destination.Port())) {
-			address = target
-		}
-		ctx, cancel := context.WithTimeout(parent, consts.DefaultDialTimeout)
-		defer cancel()
-		started := time.Now()
-		conn, err := selected.DialContext(ctx, "tcp", address)
-		if err != nil {
-			stats.DefaultStore.RecordError(path)
-			if parent.Err() == nil && option.Dialer.ChecksConnectivity() {
-				if netErr, ok := IsNetError(err); ok && !netErr.Timeout() {
-					option.Dialer.ReportDataPlaneFailure()
-				}
-			}
-			return nil, err
-		}
-		stats.DefaultStore.RecordDial(path, time.Since(started))
-		return conn, nil
+// Request-transforming scopes are admitted before choosing any upstream route
+// or dialer. A candidate miss/client exclusion follows ordinary connection
+// routing, including destination rules; pure inspection retains its route.
+func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, p *RouteParam) (*DialOption, mitm.UpstreamPlanner, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
 	}
-}
-
-type mitmCountedConn struct {
-	net.Conn
-	upload, download func(uint64)
-}
-
-func (c *mitmCountedConn) Read(p []byte) (int, error) {
-	n, err := c.Conn.Read(p)
-	c.upload(uint64(n))
-	return n, err
-}
-func (c *mitmCountedConn) Write(p []byte) (int, error) {
-	n, err := c.Conn.Write(p)
-	c.download(uint64(n))
-	return n, err
+	mode := c.mitmMode(p.Domain, p.Src, p.Dest, p.routingResult)
+	if mode == mitm.HTTPRequest {
+		return nil, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), p.Domain, p.Src, p.Dest, *p.routingResult, nil), nil, nil
+	}
+	option, err := c.RouteDialOption(ctx, p)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if mode != mitm.HTTPInspect || option.Outbound.Name == consts.OutboundBlock.String() {
+		return option, nil, nil, nil
+	}
+	release, err := option.Dialer.Retain()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	c.logDial(p.Src, p.Dest, p.Domain, option, option.NetworkType.String(), p.routingResult)
+	return option, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), p.Domain, p.Src, p.Dest, *p.routingResult, option), release, nil
 }

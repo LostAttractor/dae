@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/component/mitm"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -76,9 +77,9 @@ test = type=http-request,pattern=^https://target\.test/script,script-path=../scr
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler, closeTransport := proxyTestHost(t, engine).Handler("https", "target.test", 443, func(context.Context, string, string) (net.Conn, error) {
+		handler, closeTransport := proxyTestHost(t, engine).Handler("https", "target.test", 443, testUpstream(func(context.Context, string, string) (net.Conn, error) {
 			return nil, errors.New("downloaded resources should produce local responses")
-		})
+		}))
 		for _, test := range []struct {
 			path, body string
 			status     int
@@ -175,14 +176,14 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !proxyTestHost(t, engine).Match("example.test", 443) {
+			if proxyTestHost(t, engine).Match("example.test", 443) == mitm.HTTPBypass {
 				t.Fatal("module MITM hostname was not loaded")
 			}
 			upstreamCalled := false
-			handler, closeTransport := proxyTestHost(t, engine).Handler("https", "example.test", 443, func(context.Context, string, string) (net.Conn, error) {
+			handler, closeTransport := proxyTestHost(t, engine).Handler("https", "example.test", 443, testUpstream(func(context.Context, string, string) (net.Conn, error) {
 				upstreamCalled = true
 				return nil, errors.New("script should return a synthetic response")
-			})
+			}))
 			defer closeTransport()
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://example.test/persist", nil))

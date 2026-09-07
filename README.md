@@ -35,13 +35,13 @@ Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` ri
 
 Source builds require cgo and a target C compiler; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
 
-The [configuration example](./example.dae) includes `mitm` plugin instances and `rules` / DNAT. The default build includes Surge; add external Go plugins to [mitm_plugins.cfg](./mitm_plugins.cfg) and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-mitm-plugins).
+The [configuration example](./example.dae) includes `mitm` plugin instances and `rules` flow controls / DNAT. The default build includes Surge; add external Go plugins to [mitm_plugins.cfg](./mitm_plugins.cfg) and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-mitm-plugins).
 
 `DAE_LOCATION_CACHE` selects the [writable state directory](./docs/zh/configuration/cache-directory.md) for certificates, subscription caches and Surge resources (default `/var/lib/dae`).
 
 ## Notes
 
-1. If you setup dae and also a shadowsocks server (or any UDP servers) on the same machine in public network, such as a VPS, don't forget to add `l4proto(udp) && sport(your server ports) -> must_direct` rule for your UDP server port. Because states of UDP are hard to maintain, all outgoing UDP packets will potentially be proxied (depends on your routing), including traffic to your client. This behaviour is not what we want to see. `must_direct` makes all traffic from this port including DNS traffic direct.
+1. If dae shares a public host (such as a VPS) with a Shadowsocks or other UDP server, add `l4proto(udp) && sport(your_server_ports) -> must` to `rules {}` and the same filter with `-> direct` near the top of `routing {}`. UDP replies to clients could otherwise be proxied or mistaken for DNS queries. `must` skips automatic DNS interception; `direct` selects direct forwarding. Avoid explicit bump, MITM or DNAT capture for these replies to keep them in the kernel.
 1. If users in mainland China find that the first screen time is very long when they visit some domestic websites for the first time, please check whether you use foreign DNS to handle some domestic domain in DNS routing. Sometimes this is hard to spot. For example, `ocsp.digicert.cn` is included in `geosite:geolocation-!cn` unexpectedly, which will cause some tls handshakes to take a long time. Be careful to use such domain sets in DNS routing.
 
 ## How it works

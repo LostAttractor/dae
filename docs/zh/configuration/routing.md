@@ -68,7 +68,7 @@ routing { fallback: foo }
 
 旧的 `[via: ...]` annotation 会被拒绝。每个 node 仍只能包含一个分享链接；代理链统一使用 group path expression 组合。
 
-旧的 `must_name` 简写仍然可用。如果真实节点或 group 名称以 `must_` 开头，请使用引号（例如 `'must_edge'`）按字面名称引用。
+如果真实节点或 group 名称为 `must` 或以 `must_` 开头，请使用引号（例如 `'must_edge'`）按字面名称引用。流量控制配置在 `rules {}` 中。
 
 为限制连通性检查和 runtime 的资源增长，每条路径最多包含 16 跳；单个路由目标最多展开 4096 条路径；一份配置最多物化 16384 条路径。
 
@@ -83,13 +83,8 @@ dae 仅在无 mark 的直连、无 mark 的直通或可信控制平面路径上�
 ## 例子
 
 ```shell
-### 内置出站: block, direct, must_rules
-
-# must_rules 表示不将DNS流量重定向至dae并继续匹配。
-# 对于单条规则，"direct"和"must_direct"的区别在于"direct"会劫持并处理DNS请求（用于流量分割使用），而"must_direct"不会。
-# 当存在 DNS 请求的回环时，"must_direct"很有用。
-# "must_direct" 也可以写作 "direct(must)"。
-# 同样，"must_groupname"也支持不劫持、处理 DNS 流量，相当于"groupname(must)"。
+### 内置出站: block, direct
+# 流量控制 must 和 bump 配置在独立的 rules {} 中。
 
 ### fallback 出站
 # 如果没有规则匹配，流量将通过fallback出站.
@@ -189,20 +184,35 @@ domain(geosite:disney) -> direct(mark: 0x800)
 # fallback）。
 # 当你希望特定流量走特定出口、但这并非必需时很有用：出口故障时流量会透明地降级到
 # 通用规则。
-# 它可以像 "must" 一样作为裸参数书写，也可以显式给出值：
+# 它可以作为裸参数书写，也可以显式给出值：
 domain(geosite:category-games) -> game_proxy(skip_while_noalive)
 domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 # 注意：
 # - 该规则级注解优先于全局 "no_connectivity_try_sniff"：目标不可用时立即跳过规则；未带该注解的规则仍遵循全局配置。
 # - 只允许用于用户自定义 group 和直接节点目标。"direct" 和 "block" 不参与连通性检查，对它们使用该注解会导致配置错误。
 # - 不能用于 fallback 规则。
-# - 可以与其他参数组合，例如 -> my_group(must, skip_while_noalive)。
+# - 可以与其他参数组合，例如 -> my_group(mark: 0x1000, skip_while_noalive)。
 
-### Must规则
-# 使用下面给出的规则，DNS请求将被强制重定向到dae，除了来自mosdns的请求。
-# 与must_direct/must_my_group不同，来自mosdns的流量将继续匹配其他规则。
-pname(mosdns) -> must_rules
-ip(geoip:cn) -> direct
-domain(geosite:cn) -> direct
-fallback: my_group
 ```
+
+DNAT/Host 候选命中后，内核在执行 flow/routing 前交接用户态。目标规则按输入目标选定新 IP，后续 flow/routing 使用重写后的目的地址和地址族，保留来源、接口与进程身份；候选未精确命中则继续使用原目标。纯 MITM 检查保留已确定的路由。需要请求路由的范围（Surge 的脚本、URL Rewrite、Map Local）同样提前交接：客户端准入后先执行 HTTP 处理，再按最终目标执行目标规则、flow 和 routing，原目标 block 不抢先终止请求。每个请求在连接池查找前确定路由，池按实际目标、节点、出站和 mark 隔离。详见 [DNAT 行为](destination-rules.md#dnat-行为)与 [MITM 插件](mitm-plugins.md)。
+
+## `rules {}` 中的流量控制
+
+`must` 跳过自动 DNS 接管，继续由普通路由选择出站。`bump` 要求用户态重新路由，出站和 mark 仍由 `routing {}` 决定。它们独立于 MITM，可同时命中，不依赖书写顺序。`must` 不会取消显式的 `bump`、MITM 或 DNAT 捕获。目的地址确定后，整个控制段执行完才应用其交接决定；域名歧义不会遮蔽后续确定性 must 或捕获动作。
+
+```text
+rules {
+    pname(mosdns) -> must
+    domain(full: api.example.com) && l4proto(tcp) -> bump
+}
+routing {
+    ip(geoip:cn) -> direct
+    domain(geosite:cn) -> direct
+    fallback: my_group
+}
+```
+
+正向域名规则需要已有 DNS 映射才能选中原本的内核直连；未命中的 direct 流量保持 eBPF 直通，不为取得主机名增加全流量捕获。共享 IP 歧义和取反条件沿用原有域名匹配语义。
+
+旧的 `routing` 动作 `must_rules`、`must_direct`、`must_<outbound>`、`direct(must)` 等出站参数以及 `bump`（包括 fallback 中的写法）会报迁移错误。将控制条件移入 `rules {}`，出站选择保留在 `routing {}`。新 `must` 在全部普通路由之前判断；迁移原来夹在路由规则中的 `must_rules` 时，应收窄条件，排除此前被更早路由规则拦截的流量。原先只在 fallback 生效的控制同样需要显式写出适用条件。DNAT 与控制动作的组合见 [rules 配置](destination-rules.md)。

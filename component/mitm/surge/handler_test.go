@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +19,15 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 )
+
+func testUpstream(dial mitm.DialContext) mitm.UpstreamPlanner {
+	return func(*http.Request) (mitm.UpstreamPlan, error) {
+		if dial == nil {
+			return mitm.UpstreamPlan{}, errors.New("unexpected upstream request")
+		}
+		return mitm.UpstreamPlan{Key: "test", Dial: dial}, nil
+	}
+}
 
 func testProxyEngine(t *testing.T, module, source string) *Engine {
 	t.Helper()
@@ -54,9 +64,9 @@ second = type=http-request,pattern=^http://example.com/,requires-body=1,script-p
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
-	handler, close := proxyTestHost(t, engine).Handler("http", "example.com", 80, func(ctx context.Context, _, _ string) (net.Conn, error) {
+	handler, close := proxyTestHost(t, engine).Handler("http", "example.com", 80, testUpstream(func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimPrefix(upstream.URL, "http://"))
-	})
+	}))
 	defer close()
 	req := httptest.NewRequest("POST", "http://example.com/test", strings.NewReader("hello"))
 	w := httptest.NewRecorder()
@@ -70,10 +80,10 @@ func TestSurgeProxySyntheticDoesNotDialAndChecksAuthority(t *testing.T) {
 	engine := testProxyEngine(t, `[Script]
 mock = type=http-request,pattern=.,script-path=a.js
 `, `$done({response:{status:201,headers:{"Content-Type":"application/json"},body:'{"ok":true}'}});`)
-	handler, close := proxyTestHost(t, engine).Handler("https", "example.com", 443, func(context.Context, string, string) (net.Conn, error) {
+	handler, close := proxyTestHost(t, engine).Handler("https", "example.com", 443, testUpstream(func(context.Context, string, string) (net.Conn, error) {
 		t.Error("synthetic response dialed upstream")
 		return nil, nil
-	})
+	}))
 	defer close()
 	for _, test := range []struct {
 		host   string
@@ -180,7 +190,7 @@ func TestSurgeProxyAbort(t *testing.T) {
 	engine := testProxyEngine(t, `[Script]
 abort = type=http-request,pattern=.,script-path=a.js
 `, `$done({abort:true});`)
-	handler, close := proxyTestHost(t, engine).Handler("https", "example.com", 443, nil)
+	handler, close := proxyTestHost(t, engine).Handler("https", "example.com", 443, testUpstream(nil))
 	defer close()
 	defer func() {
 		if got := recover(); got != http.ErrAbortHandler {

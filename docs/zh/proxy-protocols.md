@@ -110,12 +110,18 @@
 
 2. 在 dae 配置的 node 一节中，新增一行：`http://127.0.0.1:1090`，并记得在所使用的组中使用该节点。
 
-3. 如果你绑定了 WAN 接口，即在 `global.wan_interface` 填写了内容，确保在 routing 一节的靠上位置增加一行，以避免流量从 dae 流向 naiveproxy 之后再次流向 dae，造成回环：
+3. 如果你绑定了 WAN 接口，即在 `global.wan_interface` 填写了内容，增加以下 rules 控制项，并将 direct 规则放在 routing 一节的靠上位置，以避免流量从 dae 流向 naiveproxy 之后再次流向 dae，造成回环：
 
    ```shell
-   pname(naiveproxy) -> must_direct
+   rules {
+       pname(naiveproxy) -> must
+   }
+   routing {
+       pname(naiveproxy) -> direct
+       # 其余路由和 fallback ...
+   }
    ```
 
-   这里的 pname 的含义是进程名。你可通过启动时的命令，或运行时通过 `ps -ef` 命令或者观察 dae 的日志来确定 naiveproxy 的进程名。must_direct 的含义是所有流量，包括 dns 查询都放行直连，不重定向至 dae。
+   这里的 pname 的含义是进程名。你可通过启动时的命令，或运行时通过 `ps -ef` 命令或者观察 dae 的日志来确定 naiveproxy 的进程名。`must` 跳过自动 DNS 接管，靠前的 `direct` 规则选择直连。应避免让该进程命中显式 bump、MITM 或 DNAT 捕获，以保留内核直通。
 
    只绑定 LAN 接口的用户不需要做这一步。

@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/surge"
-	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
 )
 
@@ -101,8 +100,8 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 		return *state.MITM
 	}
 	selected := func(plane *ControlPlane, sourceMAC [6]byte) bool {
-		return plane.shouldMITMClient("example.test", netip.AddrPortFrom(ip, 44300), netip.MustParseAddrPort("198.51.100.1:443"),
-			&bpfRoutingResult{Mac: sourceMAC}, &DialOption{Outbound: &outbound.DialerGroup{Name: "direct"}})
+		return plane.mitmMode("example.test", netip.AddrPortFrom(ip, 44300), netip.MustParseAddrPort("198.51.100.1:443"),
+			&bpfRoutingResult{Mac: sourceMAC}) != mitm.HTTPBypass
 	}
 	// The production resolver must reject every device endpoint when no LAN is
 	// configured, even if the caller knows the CA fingerprint.

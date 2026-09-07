@@ -7,13 +7,15 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
 type surgeScopeHostCase struct {
-	host string
-	mitm bool
+	host    string
+	mitm    bool
+	capture bool // A positive wildcard may also cover an excluded hostname.
 }
 
 func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeScopeHostCase) {
@@ -54,29 +56,25 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 			}
 			userspace, _ := surgeRoutingMatcher(t, preparation.rules)
 			capture, builder := surgeRoutingMatcher(t, preparation.rules)
-			if len(builder.rules) != 3 ||
-				builder.rules[0].Type != uint8(consts.MatchType_L4Proto) ||
-				builder.rules[0].CaptureFlags != captureHTTP {
-				t.Fatal("module capture must use one kernel match set")
-			}
 			// Keep the kernel's match conditions, replacing only its terminal
 			// action so the userspace evaluator exposes capture without BPF maps.
-			builder.rules[0].Outbound = uint8(consts.OutboundUserDefinedMin)
-			builder.rules[0].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
+			exposeCapturePredicates(t, builder)
 			for _, host := range hosts {
 				t.Run(host.host, func(t *testing.T) {
 
-					if got := controlTestHost(t, engine, nil).Match(host.host, 443); got != host.mitm {
+					if got := controlTestHost(t, engine, nil).Match(host.host, 443) != mitm.HTTPBypass; got != host.mitm {
 						t.Errorf("MITM match = %v, want %v", got, host.mitm)
 					}
-					for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
+					for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP} {
 						got, mark, must := surgeMatchRoute(t, userspace, host.host, proto)
 						if got != consts.OutboundDirect || mark != 37 || must {
 							t.Errorf("userspace route(%v) = (%v,%d,%v), want (direct,37,false)", proto, got, mark, must)
 						}
 						got, mark, must = surgeMatchRoute(t, capture, host.host, proto)
 						wantOutbound, wantMark := consts.OutboundDirect, uint32(37)
-						if proto == consts.L4ProtoType_TCP {
+						// HTTP/3 uses the same per-module scope as TCP HTTP.
+						// Candidate capture still does not override exclusions.
+						if host.mitm || host.capture {
 							wantOutbound, wantMark = consts.OutboundUserDefinedMin, 0
 						}
 						if got != wantOutbound || mark != wantMark || must {
@@ -111,7 +109,7 @@ func TestSurgeModuleScopeExclusionDoesNotEraseAnotherModule(t *testing.T) {
 		{host: "public.example.com", mitm: true},
 		// Capture is an overapproximation; exclusions are enforced by each
 		// module at MITM selection, not by the shared kernel capture rule.
-		{host: "blocked.example.com", mitm: false},
+		{host: "blocked.example.com", mitm: false, capture: true},
 		{host: "outside.test"},
 	})
 }

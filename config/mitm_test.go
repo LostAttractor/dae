@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -23,7 +24,9 @@ mitm {
  surge { module { 'file:personal.sgmodule' } }
 }
 rules {
+ pname(mosdns) -> must
  domain(full: api.example.com) && dport(443) -> dnat('2001:db8::20')
+ domain(full: api.example.com) -> bump
  dip(192.0.2.1) -> dnat(198.51.100.2)
 }
 routing { fallback: direct }`)
@@ -54,6 +57,13 @@ routing { fallback: direct }`)
 	if len(a) != 2 || !reflect.DeepEqual(a[0].To, z[0].To) || a[0].To[0].String() != "2001:db8::20" {
 		t.Fatal("DNAT target changed")
 	}
+	plan, err := round.Rules.Plan()
+	if err != nil || len(plan.Controls) != 2 || plan.Controls[0].Action != consts.MatchActionMust || plan.Controls[1].Action != consts.MatchActionBump {
+		t.Fatalf("flow controls changed: %+v, %v", plan, err)
+	}
+	if round.Rules.Rules[0].Outbound.Name != "must" || strings.Contains(string(b), "must_rules") {
+		t.Fatal("internal action name leaked into configuration")
+	}
 	if strings.Contains(string(b), "\nsurge {") {
 		t.Fatal("legacy surge emitted alongside mitm")
 	}
@@ -69,6 +79,11 @@ func TestMITMConfigRejectsInvalid(t *testing.T) {
 		`mitm { x { type: surge type: surge } }`,
 		`mitm {} surge {}`,
 		`rules { dip(192.0.2.1) -> direct }`,
+		`rules { dip(192.0.2.1) -> must_rules }`,
+		`rules { dip(192.0.2.1) -> must(mark: 37) }`,
+		`rules { dip(192.0.2.1) -> bump(must) }`,
+		`rules { dip(192.0.2.1) -> 'must' }`,
+		`rules { dip(192.0.2.1) -> !bump }`,
 		`rules { dip(192.0.2.1) -> dnat() }`,
 		`rules { dip(192.0.2.1) -> dnat(192.0.2.2, 192.0.2.3) }`,
 		`rules { dip(192.0.2.1) -> dnat(example.com) }`,
