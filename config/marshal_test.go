@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestMarshal(t *testing.T) {
@@ -57,8 +58,16 @@ func TestMarshal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(conf1, conf2) {
-		t.Fatal("not equal")
+	// Plugin settings retain raw ASTs, including lexical quoting. Marshal
+	// canonically quotes literals, so compare their canonical AST spelling while
+	// still comparing all decoded configuration fields and plugin values.
+	if diff := cmp.Diff(conf1, conf2, cmp.Comparer(func(a, b *config_parser.Section) bool {
+		if a == nil || b == nil {
+			return a == b
+		}
+		return a.String(true, true) == b.String(true, true)
+	})); diff != "" {
+		t.Fatalf("config changed after marshal (-before +after):\n%s", diff)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/component/api"
 	"net"
 	"net/http"
 	"os"
@@ -35,6 +34,8 @@ import (
 	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/api"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -85,13 +86,7 @@ func init() {
 	std.SetFormatter(logger.NewTextFormatter(false))
 	log.SetFormatter(logger.NewTextFormatter(false))
 	metricsRegistry.MustRegister(stats.DefaultStore)
-	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
-	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to std and stderr.")
-	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
-	runCmd.PersistentFlags().IntVar(&logFileMaxBackups, "logfile-maxbackups", 3, "The maximum number of old log files to retain.")
-	runCmd.PersistentFlags().BoolVar(&disableTimestamp, "disable-timestamp", false, "Disable timestamp.")
-	runCmd.PersistentFlags().BoolVar(&disablePidFile, "disable-pidfile", false, "Not generate /var/run/dae.pid.")
-	runCmd.PersistentFlags().BoolVar(&disableAuthSudo, "disable-sudo", false, "Disable sudo prompt ,may cause startup failure due to insufficient permissions")
+
 }
 
 var (
@@ -102,8 +97,10 @@ var (
 	disableTimestamp  bool
 	disablePidFile    bool
 	disableAuthSudo   bool
+)
 
-	runCmd = &cobra.Command{
+func newRunCommand(setups map[string]plugin.Setup) *cobra.Command {
+	runCmd := &cobra.Command{
 		Use:   "run",
 		Short: "To run dae in the foreground.",
 		Run: func(cmd *cobra.Command, args []string) {
@@ -146,10 +143,18 @@ var (
 			logger.SetLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			std.Infof("Include config files: [%v]", strings.Join(includes, ", "))
-			Run(conf, []string{filepath.Dir(cfgFile)})
+			Run(conf, []string{filepath.Dir(cfgFile)}, setups)
 		},
 	}
-)
+	runCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Config file of dae.(required)")
+	runCmd.PersistentFlags().StringVar(&logFile, "logfile", "", "Log file to write. Empty means writing to std and stderr.")
+	runCmd.PersistentFlags().IntVar(&logFileMaxSize, "logfile-maxsize", 30, "Unit: MB. The maximum size in megabytes of the log file before it gets rotated.")
+	runCmd.PersistentFlags().IntVar(&logFileMaxBackups, "logfile-maxbackups", 3, "The maximum number of old log files to retain.")
+	runCmd.PersistentFlags().BoolVar(&disableTimestamp, "disable-timestamp", false, "Disable timestamp.")
+	runCmd.PersistentFlags().BoolVar(&disablePidFile, "disable-pidfile", false, "Not generate /var/run/dae.pid.")
+	runCmd.PersistentFlags().BoolVar(&disableAuthSudo, "disable-sudo", false, "Disable sudo prompt ,may cause startup failure due to insufficient permissions")
+	return runCmd
+}
 
 func configureDaemonResolver(global *config.Global) error {
 	mark := common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
@@ -207,7 +212,8 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 // Run starts dae after command startup has configured process-wide name
 // resolution. Embedders calling Run directly must install a marked default
 // resolver before starting concurrent work.
-func Run(conf *config.Config, externGeoDataDirs []string) {
+// Run starts the daemon with the binary's complete set of MITM plugin types.
+func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plugin.Setup) {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 	startPprofServer(conf.Global.PprofPort)
@@ -226,7 +232,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	// New ControlPlane.
 	startupStarted := time.Now()
 	startupCtx, stopStartupSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	c, err := newControlPlane(startupCtx, nil, conf, externGeoDataDirs, runtimeSettings)
+	c, err := newControlPlane(startupCtx, nil, conf, externGeoDataDirs, runtimeSettings, setups)
 	startupErr := startupCtx.Err()
 	stopStartupSignals()
 	if err == nil && startupErr != nil {
@@ -441,7 +447,7 @@ loop:
 				std.Warnln("[Reload] Build new control plane")
 				writeReloadProgress("Building new control plane...")
 				obj := c.EjectBpf()
-				newC, err := newControlPlane(context.Background(), obj, newConf, externGeoDataDirs, runtimeSettings)
+				newC, err := newControlPlane(context.Background(), obj, newConf, externGeoDataDirs, runtimeSettings, setups)
 				if err != nil {
 					// Restore BPF ownership on the old plane and keep it running.
 					c.InjectBpf()
@@ -704,8 +710,4 @@ func readConfig(cfgFile string) (conf *config.Config, includes []string, err err
 		return nil, nil, err
 	}
 	return conf, includes, nil
-}
-
-func init() {
-	rootCmd.AddCommand(runCmd)
 }

@@ -49,6 +49,10 @@ var statusCmd = &cobra.Command{
 }
 
 func fetchStatus() (*api.StatusSnapshot, error) {
+	return fetchStatusContext(context.Background())
+}
+
+func fetchStatusContext(ctx context.Context) (*api.StatusSnapshot, error) {
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -57,7 +61,11 @@ func fetchStatus() (*api.StatusSnapshot, error) {
 		},
 		Timeout: 10 * time.Second,
 	}
-	response, err := client.Get("http://unix/status")
+	request, err := http.NewRequestWithContext(ctx, "GET", "http://unix/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") {
 			return nil, fmt.Errorf("is dae running? (%v)", err)

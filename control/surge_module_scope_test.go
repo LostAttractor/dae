@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/surgemodule"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -26,16 +26,16 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 		{name: "second then first", indices: [2]int{1, 0}},
 	} {
 		t.Run(order.name, func(t *testing.T) {
-			var modules []*surgemodule.Module
+			var modules []*surge.Module
 			for _, index := range order.indices {
-				module, err := surgemodule.Parse(sources[index], nil)
+				module, err := surge.Parse(sources[index], nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				modules = append(modules, module)
 			}
-			engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-				Modules: modules, Runtime: &surgemodule.Runtime{},
+			engine, err := surge.NewEngine(surge.EngineOptions{
+				Modules: modules, Runtime: &surge.Runtime{},
 				MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 			})
 			if err != nil {
@@ -66,7 +66,7 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 			for _, host := range hosts {
 				t.Run(host.host, func(t *testing.T) {
 
-					if got := engine.Match(host.host, 443); got != host.mitm {
+					if got := controlTestHost(t, engine, nil).Match(host.host, 443); got != host.mitm {
 						t.Errorf("MITM match = %v, want %v", got, host.mitm)
 					}
 					for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {

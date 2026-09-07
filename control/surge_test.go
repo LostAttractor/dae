@@ -13,20 +13,20 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
 // Routing tests only inspect the engine's allowlist; no CA operations or JS run.
-func surgeRoutingEngine(t *testing.T, hostnames ...string) *surgemodule.Engine {
+func surgeRoutingEngine(t *testing.T, hostnames ...string) *surge.Engine {
 	t.Helper()
-	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Modules:     []*surgemodule.Module{{Hostnames: hostnames}},
-		Runtime:     &surgemodule.Runtime{},
+	engine, err := surge.NewEngine(surge.EngineOptions{
+		Modules:     []*surge.Module{{Hostnames: hostnames}},
+		Runtime:     &surge.Runtime{},
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {
@@ -172,10 +172,10 @@ func TestMITMCaptureSniffsTCPWithoutDNS(t *testing.T) {
 			t.Errorf("capture(%q,%v)=%v", test.host, test.proto, got)
 		}
 	}
-	if engine.Match("excluded.example", 443) {
+	if controlTestHost(t, engine, nil).Match("excluded.example", 443) {
 		t.Fatal("capturing an excluded hostname must not enable its MITM")
 	}
-	if !engine.Match("node1.test", 8443) || engine.Match("node1.test", 443) {
+	if !controlTestHost(t, engine, nil).Match("node1.test", 8443) || controlTestHost(t, engine, nil).Match("node1.test", 443) {
 		t.Fatal("MITM lost hostname port constraint")
 	}
 }

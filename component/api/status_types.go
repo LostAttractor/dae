@@ -13,12 +13,11 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/component/surgemodule"
 )
 
-const StatusSchemaVersion = 4
+const StatusSchemaVersion = 5
 
 type NetworkValues[T any] [common.NetworkTypeCount]T
 
@@ -31,8 +30,7 @@ type StatusSnapshot struct {
 	Networks     NetworkValues[stats.PathStats] `json:"networks"`
 	Tables       []TableUsage                   `json:"tables"`
 	Groups       []GroupStatus                  `json:"groups"`
-	Surge        surgemodule.Status             `json:"surge"`
-	MITMPlugins  []mitm.InstanceStatus          `json:"mitm_plugins,omitempty"`
+	MITMPlugins  []plugin.InstanceStatus        `json:"mitm_plugins,omitempty"`
 }
 
 func decodeStatusObject(data []byte, value any) error {
@@ -45,8 +43,7 @@ func (s *StatusSnapshot) UnmarshalJSON(data []byte) error {
 	*s = StatusSnapshot{}
 	fields := struct {
 		*plain
-		Stats *stats.PathStats    `json:"stats"`
-		Surge *surgemodule.Status `json:"surge"`
+		Stats *stats.PathStats `json:"stats"`
 	}{plain: (*plain)(s)}
 	if err := decodeStatusObject(data, &fields); err != nil {
 		return err
@@ -54,11 +51,7 @@ func (s *StatusSnapshot) UnmarshalJSON(data []byte) error {
 	if fields.Stats == nil {
 		return errors.New("status response is missing stats")
 	}
-	if fields.Surge == nil {
-		return errors.New("status response is missing surge")
-	}
 	s.Stats = *fields.Stats
-	s.Surge = *fields.Surge
 	return nil
 }
 

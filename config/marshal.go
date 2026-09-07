@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"fmt"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -82,9 +81,6 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 	}
 	if from.Type() == reflect.TypeOf([]Subscription{}) {
 		return m.marshalSubscriptions(from.Interface().([]Subscription), depth+1)
-	}
-	if from.Type() == reflect.TypeOf([]ModuleSource{}) {
-		return m.marshalModuleSources(from.Interface().([]ModuleSource), depth+1)
 	}
 
 	switch from.Kind() {
@@ -204,40 +200,6 @@ func (m *Marshaller) marshalSubscriptions(subscriptions []Subscription, depth in
 				functions = append(functions, function.String(true, true, false))
 			}
 			m.writeLine(depth+2, "filter:"+strings.Join(functions, "&&")+formatAnnotation(rule.Options))
-		}
-		m.writeLine(depth+1, "}")
-		m.writeLine(depth, "}")
-	}
-	return nil
-}
-
-func (m *Marshaller) marshalModuleSources(sources []ModuleSource, depth int) error {
-	for _, source := range sources {
-		if len(source.Arguments) == 0 {
-			param := &config_parser.Param{Key: source.Name, Val: source.Link}
-			m.writeLine(depth, param.String(true, true))
-			continue
-		}
-		if source.Name == "" {
-			return fmt.Errorf("module arguments require a module name")
-		}
-		m.writeLine(depth, source.Name+" {")
-		m.writeLine(depth+1, (&config_parser.Param{Key: "link", Val: source.Link}).String(true, true))
-		m.writeLine(depth+1, "arguments {")
-		names := make([]string, 0, len(source.Arguments))
-		for name := range source.Arguments {
-			if strings.TrimSpace(name) == "" || strings.Contains(name, "=") {
-				return fmt.Errorf("module %q: argument name %q must be non-empty and cannot contain '='", source.Name, name)
-			}
-			if name != strings.TrimSpace(name) {
-				return fmt.Errorf("module %q: argument name %q cannot have leading or trailing whitespace", source.Name, name)
-			}
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			param := &config_parser.Param{Val: name + "=" + source.Arguments[name]}
-			m.writeLine(depth+2, param.String(true, true))
 		}
 		m.writeLine(depth+1, "}")
 		m.writeLine(depth, "}")

@@ -10,13 +10,13 @@ import (
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"fmt"
-	"github.com/daeuniverse/dae/component/api"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -507,9 +507,6 @@ func TestDecodeStatusRejectsInvalidSchema(t *testing.T) {
 
 func TestDecodeStatusRejectsMissingRequiredFields(t *testing.T) {
 	tests := map[string]func(map[string]any){
-		"surge status": func(status map[string]any) {
-			delete(status, "surge")
-		},
 		"process stats": func(status map[string]any) {
 			delete(status, "stats")
 		},

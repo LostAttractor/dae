@@ -48,7 +48,7 @@ The static check rejects an ELF interpreter or shared-library dependencies. A ve
 
 ## Cross-compilation
 
-The release workflows use checksum-pinned [Zig 0.15.2](https://ziglang.org/download/0.15.2/) as the C compiler and musl sysroot. The installation helper currently runs on Linux x86_64; on other hosts install the same Zig version and set `DAE_ZIG` to its executable.
+The release workflows use checksum-pinned [Zig 0.15.2](https://ziglang.org/download/0.15.2) as the C compiler and musl sysroot. The installation helper currently runs on Linux x86_64; on other hosts install the same Zig version and set `DAE_ZIG` to its executable.
 
 ```sh
 export DAE_ZIG=$(scripts/setup-zig.sh /tmp/dae-zig)
@@ -59,7 +59,7 @@ GOARCH=arm GOARM=7 make STATIC=y CC="$PWD/scripts/zig-cc.sh"
 GOARCH=mipsle GOMIPS=hardfloat make STATIC=y CC="$PWD/scripts/zig-cc.sh"
 ```
 
-The wrapper covers amd64, 386, arm64, ARM 5/6/7, mipsle, mips64le, riscv64, loong64 and ppc64le. Set the correct ARM/MIPS floating-point ABI for the target CPU; big-endian targets are unsupported.
+The wrapper covers `amd64`, `386`, `arm64`, ARM 5/6/7, `mipsle`, `mips64le`, `riscv64`, `loong64` and `ppc64le`. Set the correct ARM/MIPS floating-point ABI for the target CPU; big-endian targets are unsupported.
 
 ARMv5 also needs `gcc-arm-linux-gnueabi` (Debian/Ubuntu), or a target `libgcc.a` supplied through `DAE_ARM_LIBGCC`, for static atomic support. The wrapper retains musl as libc. Keep `-w` when linking MIPS test executables with LLD to avoid incompatible Go/C DWARF sections.
 
@@ -71,8 +71,49 @@ The Makefile supplies these settings. When invoking Go yourself, set them explic
 
 ```sh
 export CGO_ENABLED=1
-go test -tags=netgo,osusergo ./component/surgemodule
+go test -tags=netgo,osusergo ./component/mitm/surge
 ```
+
+## External MITM plugins
+
+Add one `type:Go/import/path` line per plugin to
+[`mitm_plugins.cfg`](../../../mitm_plugins.cfg), then run `make` in dae.
+Each package exports `Plugin` (`plugin.Definition` with `Setup` and optional `Commands`); the output binary is `./dae`. For example:
+
+```text
+surge:github.com/daeuniverse/dae/component/mitm/surge
+bilijump:example.com/dae-mitm-bilijump
+demo:example.com/dae-mitm-demo
+```
+
+Blank lines and `#` comments are allowed. Types must be unique CLI names (`[a-z][a-z0-9_-]*`); `ca`, `status` and `help` are reserved. An empty file
+selects no types. Runtime instances and order belong to `mitm {}`.
+
+For published plugins, use `go get <module>@<version>` to pin compatible
+dependencies. For local examples beside dae, prepare a Go workspace from the dae
+directory (use `go work use` instead of `init` if one already exists):
+
+```sh
+nix-shell
+go work init . ../dae-mitm-bilijump ../dae-mitm-demo
+go work edit "-replace=github.com/daeuniverse/dae@v0.0.0=$PWD"
+make
+```
+
+The examples' `example.com` module paths and dae `v0.0.0` dependency are local
+placeholders; replace them with published paths and versions for distribution.
+Keep `go.work` local. Test each example using its small test-only Makefile:
+
+```sh
+GOWORK="$PWD/go.work" make -C ../dae-mitm-demo test
+GOWORK="$PWD/go.work" make -C ../dae-mitm-bilijump test TEST_ARGS=-race
+```
+
+`make` and `make test` regenerate `cmd/mitm_plugins_generated.go` automatically.
+`make plugins` only refreshes that table; run it before direct `go build` after
+editing the cfg. The generated file is kept in source control for direct builds.
+See [instance configuration](../../zh/configuration/mitm-plugins.md) and the
+[plugin API](../../../component/mitm/plugin/README.md).
 
 ## Run
 

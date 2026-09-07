@@ -4,11 +4,13 @@ package control
 
 import (
 	jsonv2 "encoding/json/v2"
-	"github.com/daeuniverse/dae/component/api"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+
+	"github.com/daeuniverse/dae/component/api"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 )
 
 func TestStatusServerSurgeFollowsPublishedPlane(t *testing.T) {
@@ -49,11 +51,17 @@ func TestStatusServerSurgeFollowsPublishedPlane(t *testing.T) {
 		if err := jsonv2.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
 			t.Fatal(err)
 		}
-		if snapshot.Surge.Enabled != test.enabled {
-			t.Fatalf("Surge enabled = %v, want %v", snapshot.Surge.Enabled, test.enabled)
+		var status surge.Status
+		if len(snapshot.MITMPlugins) > 0 {
+			if err := jsonv2.Unmarshal(snapshot.MITMPlugins[0].Details, &status); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if test.enabled && (len(snapshot.Surge.Modules) != 1 || snapshot.Surge.Modules[0].Hostnames != test.hosts) {
-			t.Fatalf("status retained another plane's modules: %+v", snapshot.Surge)
+		if status.Enabled != test.enabled {
+			t.Fatalf("Surge enabled = %v, want %v", status.Enabled, test.enabled)
+		}
+		if test.enabled && (len(status.Modules) != 1 || status.Modules[0].Hostnames != test.hosts) {
+			t.Fatalf("status retained another plane's modules: %+v", status)
 		}
 	}
 }

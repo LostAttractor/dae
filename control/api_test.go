@@ -17,10 +17,10 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/api"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
-	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/outbound/netproxy"
 )
@@ -305,7 +305,7 @@ func TestSelectorAPIUsesEscapedGroupName(t *testing.T) {
 }
 
 func TestHostOnlyAPIDisablesCertificateAndMITM(t *testing.T) {
-	plane := &ControlPlane{mitmHost: controlTestHost(t, &surgemodule.Engine{}, nil), routingMatcherBuilder: &RoutingMatcherBuilder{}}
+	plane := &ControlPlane{mitmHost: controlTestHost(t, &surge.Engine{}, nil), routingMatcherBuilder: &RoutingMatcherBuilder{}}
 	handler := plane.apiHandler(testClientMAC)
 	if w := apiTestRequest(handler, "GET", "/ca.cer", "", ""); w.Code != 404 {
 		t.Fatalf("certificate without CA: %d", w.Code)

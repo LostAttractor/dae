@@ -6,7 +6,6 @@ import (
 	"context"
 	json "encoding/json/v2"
 	"errors"
-	"github.com/daeuniverse/dae/component/api"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,11 +16,12 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/clientmatch"
+	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitmca"
+	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
-	"github.com/daeuniverse/dae/component/surgemodule"
 )
 
 func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
@@ -40,9 +40,9 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	makePlane := func(selectors []string) *ControlPlane {
 		t.Helper()
-		engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-			Modules:     []*surgemodule.Module{{Name: "test", Hostnames: []string{"example.test"}}},
-			Runtime:     &surgemodule.Runtime{},
+		engine, err := surge.NewEngine(surge.EngineOptions{
+			Modules:     []*surge.Module{{Name: "test", Hostnames: []string{"example.test"}}},
+			Runtime:     &surge.Runtime{},
 			MaxBodySize: 1024, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 		})
 		if err != nil {
@@ -152,8 +152,8 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Runtime:     &surgemodule.Runtime{},
+	engine, err := surge.NewEngine(surge.EngineOptions{
+		Runtime:     &surge.Runtime{},
 		MaxBodySize: 1024, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {
@@ -232,7 +232,7 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	}
 }
 
-func controlTestHost(t *testing.T, engine *surgemodule.Engine, authority *mitmca.Authority) *mitm.Host {
+func controlTestHost(t *testing.T, engine *surge.Engine, authority *mitmca.Authority) *mitm.Host {
 	t.Helper()
 	if authority == nil && len(engine.Plan().Scopes) > 0 {
 		authority = &mitmca.Authority{}

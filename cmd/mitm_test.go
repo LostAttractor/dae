@@ -9,11 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitmca"
+	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 )
 
 func runMITMCommand(args ...string) (string, error) {
-	command := newMITMCommand()
+	command := newMITMCommand(nil, plugin.CommandServices{})
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetErr(&output)

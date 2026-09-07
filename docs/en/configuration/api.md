@@ -23,7 +23,7 @@ routing {
 }
 ```
 
-`global.api_port` defaults to `0`, disabling the listener. A nonzero port serves the HTTP page and API on all router addresses, independently of Surge. Use the actual LAN IP, such as `http://192.168.1.1:9080/`. Domain names, reverse proxies, and cross-origin browser requests are unsupported. Reload after changing the port or router addresses.
+`global.api_port` defaults to `0`, disabling the listener. A nonzero port serves the HTTP page and API on all router addresses, independently of MITM plugins. Use the actual LAN IP, such as `http://192.168.1.1:9080/`. Domain names, reverse proxies, and cross-origin browser requests are unsupported. Reload after changing the port or router addresses.
 
 ## Usage and Persistence
 
@@ -88,3 +88,7 @@ Selector writes return `403` with an explanation when `global.api_token` is not 
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Download the public certificate without MAC identification |
 
 A `null` MITM `override` inherits the configuration. Fetch the corresponding status after changes. A changed CA causes MITM writes to return `409`; refresh the page, verify the fingerprint, and install and trust the current certificate.
+
+The daemon status schema is 5, served at `/status` over the Unix socket `/var/run/dae.sock` for `dae status`, `dae mitm status` and plugin commands. It does not require `global.api_port`. `mitm_plugins` contains instance IDs, types, host lifecycle states and rule counts. Optional `details` is defined by each plugin; Surge supplies `enabled` and `modules`. Use matching CLI and daemon versions.
+
+`dae mitm status --json` prints complete plugin reports. `dae mitm <type> status --instance <ID>` selects one instance. Task details may intentionally include video identifiers and titles, but never cookies or API keys.

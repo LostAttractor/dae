@@ -3,7 +3,6 @@ package mitm
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,16 +11,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitmca"
+	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 )
 
 type testPlugin struct {
-	plan Plan
-	wrap func(Flow, Handler) Handler
+	plan plugin.Plan
+	wrap func(plugin.Flow, plugin.Handler) plugin.Handler
 }
 
-func (p *testPlugin) Plan() Plan                           { return p.plan }
-func (p *testPlugin) Wrap(flow Flow, next Handler) Handler { return p.wrap(flow, next) }
+func testScope(hosts ...string) plugin.Scope {
+	var scope plugin.Scope
+	for _, host := range hosts {
+		scope = append(scope, plugin.HostRule{Host: strings.TrimPrefix(host, "-"), Ports: []uint16{80, 443}, Exclude: strings.HasPrefix(host, "-")})
+	}
+	return scope
+}
+
+func (p *testPlugin) Plan() plugin.Plan { return p.plan }
+func (p *testPlugin) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
+	return p.wrap(flow, next)
+}
 func response(body string) *http.Response {
 	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
 }
@@ -44,12 +54,12 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 		if name == "excluded" {
 			scope = []string{"-api.example.com", "*"}
 		}
-		p := &testPlugin{plan: Plan{Scopes: []Scope{{Hostnames: scope}}}, wrap: func(flow Flow, next Handler) Handler {
+		p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope(scope...)}}, wrap: func(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 			wraps++
 			if flow.Host != "api.example.com" {
 				t.Errorf("mutated connection identity: %+v", flow)
 			}
-			return func(e *Exchange) (*http.Response, error) {
+			return func(e *plugin.Exchange) (*http.Response, error) {
 				calls = append(calls, name+" request")
 				e.Request.URL.Host = "changed.example.com"
 				r, err := next(e)
@@ -60,10 +70,13 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 		instances = append(instances, Instance{ID: name, Type: "test", Plugin: p})
 	}
 	h := testHost(t, Options{Authority: &mitmca.Authority{}}, instances...)
-	chain := h.chain(Flow{Host: "api.example.com", Port: 443}, func(*Exchange) (*http.Response, error) { calls = append(calls, "upstream"); return response("ok"), nil })
+	chain := h.chain(plugin.Flow{Host: "api.example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
+		calls = append(calls, "upstream")
+		return response("ok"), nil
+	})
 	for range 2 {
 		calls = nil
-		r, err := chain(&Exchange{Request: httptest.NewRequest("GET", "https://api.example.com/", nil)})
+		r, err := chain(&plugin.Exchange{Request: httptest.NewRequest("GET", "https://api.example.com/", nil)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,15 +92,15 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 }
 
 func TestPluginLocalResponse(t *testing.T) {
-	p := &testPlugin{plan: Plan{Scopes: []Scope{{Hostnames: []string{"*"}}}}, wrap: func(Flow, Handler) Handler {
-		return func(*Exchange) (*http.Response, error) { return response("local"), nil }
+	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("*")}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+		return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
 	}}
 	h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "local", Plugin: p})
-	chain := h.chain(Flow{Host: "example.com", Port: 443}, func(*Exchange) (*http.Response, error) {
+	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
 		t.Error("local response reached upstream")
 		return nil, errors.New("unexpected upstream")
 	})
-	r, err := chain(&Exchange{})
+	r, err := chain(&plugin.Exchange{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,9 +167,9 @@ func TestPluginLifecycle(t *testing.T) {
 
 func TestLoadRollsBackPreparedPlugins(t *testing.T) {
 	p := &workerPlugin{started: make(chan struct{}), stopped: make(chan struct{})}
-	name := fmt.Sprintf("rollback_test_%d", serial.Add(1))
-	Register(name, func(context.Context, Spec, Services) (Plugin, error) { return p, nil })
-	_, err := Load(context.Background(), []Spec{{ID: "first", Type: name}, {ID: "second", Type: "not_registered"}}, Options{}, Services{})
+	name := "rollback_test"
+	setups := map[string]plugin.Setup{name: func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) { return p, nil }}
+	_, err := Load(context.Background(), setups, []plugin.Spec{{ID: "first", Type: name}, {ID: "second", Type: "not_registered"}}, Options{}, plugin.Services{})
 	if err == nil || !p.closed {
 		t.Fatalf("failed preparation leaked resources: err=%v closed=%v", err, p.closed)
 	}
@@ -168,7 +181,7 @@ func TestLoadRollsBackPreparedPlugins(t *testing.T) {
 }
 
 func TestHostRequiresCAForHTTPScopes(t *testing.T) {
-	_, err := New(Options{}, Instance{ID: "tls", Plugin: &testPlugin{plan: Plan{Scopes: []Scope{{Hostnames: []string{"*"}}}}}})
+	_, err := New(Options{}, Instance{ID: "tls", Plugin: &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("*")}}}})
 	if err == nil {
 		t.Fatal("accepted HTTPS scope without a CA")
 	}
@@ -176,44 +189,18 @@ func TestHostRequiresCAForHTTPScopes(t *testing.T) {
 	testHost(t, Options{}, Instance{ID: "no_http", Plugin: &testPlugin{}})
 }
 
-type trackedBody struct {
-	io.Reader
-	closed bool
-}
-
-func (b *trackedBody) Close() error { b.closed = true; return nil }
-func TestPluginHTTPErrorClosesBodyAndGuardsAuthority(t *testing.T) {
-	body := &trackedBody{Reader: strings.NewReader("secret")}
-	p := &testPlugin{plan: Plan{Scopes: []Scope{{Hostnames: []string{"example.com"}}}}, wrap: func(Flow, Handler) Handler {
-		return func(*Exchange) (*http.Response, error) {
-			r := response("")
-			r.Body = body
-			return r, errors.New("failure")
-		}
+func TestRequestAuthority(t *testing.T) {
+	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("example.com")}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+		return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
 	}}
 	h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "test", Plugin: p})
 	handler, closeTransport := h.Handler("http", "example.com", 80, nil)
 	defer closeTransport()
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest("GET", "http://wrong.example/", nil))
-	if w.Code != 421 {
-		t.Fatal(w.Code)
-	}
-	w = httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest("GET", "http://example.com/", nil))
-	if w.Code != 502 || !body.closed {
-		t.Fatalf("code=%d closed=%v", w.Code, body.closed)
-	}
-}
-
-func TestScopePorts(t *testing.T) {
-	for _, s := range []struct {
-		pattern string
-		port    uint16
-		want    bool
-	}{{"example.com", 443, true}, {"example.com", 80, true}, {"example.com:8443", 80, true}, {"example.com", 8443, false}, {"example.com:0", 8443, true}, {"example.com:443junk", 443, false}, {"*.example.com", 443, false}} {
-		if got := (Scope{Hostnames: []string{s.pattern}}).Match("example.com", s.port); got != s.want {
-			t.Errorf("%+v: %v", s, got)
+	for host, want := range map[string]int{"wrong.example": 421, "example.com": 200} {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("GET", "http://"+host+"/", nil))
+		if w.Code != want {
+			t.Fatalf("%s: status %d, want %d", host, w.Code, want)
 		}
 	}
 }

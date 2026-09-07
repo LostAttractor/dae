@@ -7,10 +7,16 @@ package cmd
 
 import (
 	"fmt"
+	"net/http"
 	"runtime"
 	"strings"
+	"time"
 
+	"github.com/daeuniverse/dae/common/json"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/config"
+	jsoniter "github.com/json-iterator/go"
+	"github.com/json-iterator/go/extra"
 	"github.com/spf13/cobra"
 )
 
@@ -32,6 +38,9 @@ var (
 )
 
 func init() {
+	jsoniter.RegisterTypeDecoder("bool", &json.FuzzyBoolDecoder{})
+	extra.RegisterFuzzyDecoders()
+	http.DefaultClient.Timeout = 30 * time.Second
 	config.Version = Version
 	rootCmd.Version = strings.Join([]string{
 		Version,
@@ -41,7 +50,16 @@ func init() {
 	}, "\n")
 }
 
-// Execute executes the root command.
+// Execute runs the process CLI. Plugin selection is captured by its run command
+// and carried through startup and reload, without a global plugin registry.
 func Execute() error {
+	definitions := compiledMITMPlugins()
+	setups := make(map[string]plugin.Setup, len(definitions))
+	for name, definition := range definitions {
+		setups[name] = definition.Setup
+	}
+	rootCmd.AddCommand(newRunCommand(setups), newMITMCommand(definitions, plugin.CommandServices{
+		BaseDir: cacheDirectory(), Status: fetchMITMStatus,
+	}))
 	return rootCmd.Execute()
 }

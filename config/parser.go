@@ -99,9 +99,6 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			if !ok {
 				return fmt.Errorf("unexpected key: %v", itemVal.Key)
 			}
-			if field.Val.Type() == reflect.TypeOf([]ModuleSource{}) {
-				return fmt.Errorf("field %q requires a section; use module { name: 'source' }", itemVal.Key)
-			}
 			if len(itemVal.Annotation) > 0 {
 				return fmt.Errorf("field %q does not support annotations", itemVal.Key)
 			}
@@ -215,8 +212,6 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 		return parseNodeList(target, section)
 	case *[]Subscription:
 		return parseSubscriptionList(target, section)
-	case *[]ModuleSource:
-		return parseModuleSources(target, section)
 	}
 	to = to.Elem()
 	switch to.Kind() {
