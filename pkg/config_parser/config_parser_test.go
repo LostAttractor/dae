@@ -324,3 +324,24 @@ func TestQuotedRoutingMatcherRoundTrip(t *testing.T) {
 		t.Fatalf("parse marshaled routing rule: %v", err)
 	}
 }
+
+func TestLiteralKeysAreScopedToRoutingInterfaces(t *testing.T) {
+	for _, input := range []string{
+		`global { "log_level": info }`,
+		`node { "node name": 'socks5://127.0.0.1:1080' }`,
+		`dns { interface { "foo,bar": main } }`,
+		`routing { policy { interface { "foo,bar": main } } }`,
+	} {
+		if _, err := Parse(input); err == nil {
+			t.Fatalf("accepted literal key outside interface binding: %s", input)
+		}
+	}
+	sections, err := Parse(`routing { interface { "foo,bar": main } }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := sections[0].Items[0].Value.(*Section).Items[0].Value.(*Param)
+	if binding.Key != "foo,bar" || binding.Val != "main" {
+		t.Fatalf("decoded binding = %+v", binding)
+	}
+}

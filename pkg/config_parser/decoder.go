@@ -123,7 +123,11 @@ func (d *decoder) reportError(ctx antlr.ParserRuleContext, message string) {
 
 func (d *decoder) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 	declaration := ctx.(*dae_config.DeclarationContext)
-	param := &Param{Key: declaration.ID().GetText()}
+	key := declaration.GetKey()
+	param := &Param{Key: key.GetText()}
+	if declaration.QUOTE_STRING() != nil {
+		param.Key = getValueFromQuoteLiteral(key.GetText())
+	}
 	if functions := declaration.AllFunctionPrototype(); len(functions) != 0 {
 		andFunctions := d.parseFunctions(functions)
 		if andFunctions == nil {
@@ -262,6 +266,8 @@ type statementKind uint8
 const (
 	configStatement statementKind = iota
 	proxyPathStatement
+	routingStatement
+	interfaceBindingStatement
 )
 
 func (d *decoder) parseStatements(ctx *dae_config.ExpressionContext, kind, childKind statementKind) (items []*Item) {
@@ -282,6 +288,12 @@ func (d *decoder) parseStatements(ctx *dae_config.ExpressionContext, kind, child
 				items = append(items, newItem(rule))
 			}
 		case dae_config.IDeclarationContext:
+			// Literal keys are device names in routing.interface. Other
+			// configuration fields and declarations retain identifier keys.
+			if kind != interfaceBindingStatement && elem.(*dae_config.DeclarationContext).ID() == nil {
+				d.reportError(elem, "literal declaration keys outside routing.interface")
+				return items
+			}
 			param := d.parseDeclaration(elem)
 			if param == nil {
 				return items
@@ -326,8 +338,13 @@ func (d *decoder) parseExpression(exp dae_config.IExpressionContext, kind statem
 	expression := exp.(*dae_config.ExpressionContext)
 	name := expression.ID().GetText()
 	childKind := configStatement
-	if topLevel && name == "group" {
+	switch {
+	case topLevel && name == "group":
 		childKind = proxyPathStatement
+	case topLevel && name == "routing":
+		childKind = routingStatement
+	case kind == routingStatement && name == "interface":
+		kind = interfaceBindingStatement
 	}
 	return &Section{
 		Name:  name,
