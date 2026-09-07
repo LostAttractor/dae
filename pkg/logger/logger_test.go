@@ -2,6 +2,7 @@ package logger
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,22 @@ func TestSetLoggerRendersStableNonTTYFormat(t *testing.T) {
 	want := "time=2026-08-14 01:02:03 level=info msg=route network=udp4 application=dns action=forward source=10.0.0.2:1234 destination=10.0.0.1:53 component=test\n"
 	if string(rendered) != want {
 		t.Fatalf("rendered log = %q, want %q", rendered, want)
+	}
+	entry.Data["mitm_instance"] = "personal"
+	for _, disableTimestamp := range []bool{false, true} {
+		SetLogger("info", disableTimestamp, nil)
+		rendered, err = standard.Formatter.Format(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		timestamp := "time=2026-08-14 01:02:03 "
+		wantInstance := "mitm_instance=personal " + strings.TrimPrefix(want, timestamp)
+		if !disableTimestamp {
+			wantInstance = timestamp + wantInstance
+		}
+		if string(rendered) != wantInstance {
+			t.Fatalf("instance context must precede severity and message: %q, want %q", rendered, wantInstance)
+		}
 	}
 }
 

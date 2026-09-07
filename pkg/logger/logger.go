@@ -14,17 +14,18 @@ import (
 
 var fieldPriority = map[string]int{
 	"time":           0,
-	"level":          1,
-	"msg":            2,
-	"network":        3,
-	"application":    4,
-	"action":         5,
-	"source":         6,
-	"destination":    7,
-	"destination_ip": 8,
-	"interface":      9,
-	"qname":          10,
-	"qtype":          11,
+	"mitm_instance":  1,
+	"level":          2,
+	"msg":            3,
+	"network":        4,
+	"application":    5,
+	"action":         6,
+	"source":         7,
+	"destination":    8,
+	"destination_ip": 9,
+	"interface":      10,
+	"qname":          11,
+	"qtype":          12,
 }
 
 func sortFields(keys []string) {
