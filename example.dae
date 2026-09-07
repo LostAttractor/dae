@@ -5,7 +5,7 @@
 # }
 # Relative include paths are resolved from the entry configuration directory. Absolute paths are used as-is.
 # DAE_LOCATION_CACHE sets the writable state directory (default: /var/lib/dae) for CA files,
-# explicit remote caches, relative Surge file: module sources and certificate/store paths.
+# explicit remote caches, relative Surge file: module sources and MITM certificate/plugin store paths.
 # The configuration directory may remain read-only. See docs/zh/configuration/cache-directory.md.
 
 global {
@@ -228,8 +228,9 @@ dns {
         # If the protocol is h3/http3/https, it supports setting a custom path, that is, the format can be "protocol://host:port/custom path".
         # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
         # IPv4 or IPv6 to use according to group policy (such as min latency policy).
-        # Please make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.
-        # If dial_mode is "ip", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.
+        # DNS-backed domain routing uses answers forwarded by dae. TLS SNI/HTTP Host sniffing can also
+        # supply domains, subject to reroute_mode and sniff_verify_mode. The strict verification mode
+        # requires DNS records learned by dae; rules/DNAT and MITM capture do not require DNS interception.
 
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
@@ -354,6 +355,55 @@ client {
     #    ipset: dae_work
     #    nftset: 'inet/filter/dae_work'
     #}
+}
+
+# Optional HTTP/HTTPS processing. Disabled until CA, client selection and modules are ready.
+# Copy examples/surge/{demo.sgmodule,request.js,response.js} to $DAE_LOCATION_CACHE/modules/.
+# Generate a CA with "dae mitm ca generate" and install/trust it on the selected clients before enabling.
+# See docs/zh/configuration/mitm-plugins.md and docs/zh/configuration/surge-module.md.
+mitm {
+    enabled: false
+    ca_cert: 'mitm-ca.pem'
+    ca_key: 'mitm-ca.key'
+    # Replace with a client MAC, IP or CIDR. Omitted/unmatched clients bypass HTTP processing.
+    # The page/API can override this selection per device; use 'all' to explicitly select all clients.
+    client_source_address: '02:00:00:00:00:50'
+
+    # A section name is the instance ID and defaults to its plugin type.
+    # mitm_plugins.cfg selects surge by default; add external Go plugins there and run make.
+    surge {
+        module {
+            demo: 'file:modules/demo.sgmodule'
+            # Remote modules only fall back to cache with explicit http-file:// or https-file://.
+            #remote: 'https-file://example.com/module.sgmodule'
+        }
+        # Empty store means instance-local memory. Explicitly sharing a path shares persistent data.
+        store: 'mitm/surge/store.json'
+        script_timeout: 5s
+        memory_limit: 134217728
+        max_body_size: 33554432
+        max_concurrent_scripts: 16
+    }
+
+    # Multiple instances can use the same type. Declaration order determines processing order.
+    #work {
+    #    type: surge
+    #    enabled: false
+    #    module { work: 'file:modules/work.sgmodule' }
+    #    store: 'mitm/work/store.json'
+    #}
+}
+
+# Destination IP overrides, independent of MITM and DNS interception.
+# Filters use the routing syntax; the first matching rule wins and keeps the original port.
+# routing still selects the outbound from original connection information; block takes precedence.
+# Host/SNI are preserved. A missing sniffed domain cannot match a domain filter, including negation.
+# Native rules apply to direct and proxy outbounds, before Surge [Host] contributions.
+# See docs/zh/configuration/destination-rules.md.
+rules {
+    #domain(full: api.example.com) && dport(443) -> dnat(198.51.100.20)
+    #sip(192.168.10.0/24) && dip(192.0.2.0/24) -> dnat(198.51.100.30)
+    #ipversion(6) && domain(suffix: example.net) -> dnat('2001:db8::20')
 }
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.

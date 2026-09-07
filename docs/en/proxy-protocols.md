@@ -5,9 +5,11 @@
 Each `node` entry must contain one share link. The former node-level `linkA -> linkB` syntax is no longer accepted; compose proxy paths with group path expressions as documented in [Routing](configuration/routing.md).
 
 - [x] HTTP(S), naiveproxy
+
   ```
   https://[[user:]pass@]hostname:port/
   ```
+
 - [x] Socks
   - [x] Socks4
   - [x] Socks4a
@@ -64,7 +66,7 @@ Each `node` entry must contain one share link. The former node-level `linkA -> l
   }
   ```
 
-  `multiplex: smux` enables sing-box-compatible smux for both TCP and UDP. `multiplex: smux-udp-passthrough` multiplexes TCP while keeping UDP on the underlying proxy protocol, and `multiplex: off` explicitly disables multiplexing. With smux enabled, each node creates up to 4 sessions (independent outer TCP connections) on demand by default; `multiplex_max_connections` can set the limit from 1 to 16. Multiple sessions distribute concurrent connections across separate TCP congestion windows, but do not increase the throughput of one inner TCP connection. The non-standard `?multiplex=1` URL parameter no longer has any effect.
+  `multiplex: smux` enables sing-box-compatible smux for both TCP and UDP. `multiplex: smux-udp-passthrough` multiplexes TCP while keeping UDP on the underlying proxy protocol, and `multiplex: off` explicitly disables multiplexing. With smux enabled, each node creates up to 4 sessions (independent outer TCP connections) on demand by default; `multiplex_max_connections` can set the limit from 1 to 16. Multiple sessions distribute concurrent connections across separate TCP congestion Windows, but do not increase the throughput of one inner TCP connection. The non-standard `?multiplex=1` URL parameter no longer has any effect.
 
 - [x] ShadowsocksR
 
@@ -72,7 +74,7 @@ Each `node` entry must contain one share link. The former node-level `linkA -> l
   - [x] Trojan-gfw
   - [x] Trojan-go
 
-  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url/)
+  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url)
 
 - [x] Tuic (v5)
 

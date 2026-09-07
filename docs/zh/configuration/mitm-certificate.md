@@ -1,4 +1,4 @@
-# HTTPS 模块证书
+# MITM 证书
 
 dae 使用本地 CA 为匹配主机签发服务器证书，客户端必须安装并信任该 CA。启动、重载和证书过期都不会自动生成或更换 CA。
 
@@ -18,11 +18,11 @@ sudo dae mitm ca generate --cert /var/lib/dae/home.pem \
   --key /var/lib/dae/home.key --name 'Home dae CA' --valid-days 3650
 ```
 
-在[模块配置](surge-module.md#配置与运行)中填写同一组 `ca_cert`、`ca_key`。启用时检查 CA 有效期、密钥匹配和私钥权限，并在启动日志中打印 CA 的 SHA-256 指纹。已有设备信任的 CA 应继续使用原文件，可显式指定其绝对路径；更改目录不需要重新生成证书。
+在 [MITM 宿主配置](mitm-plugins.md)中填写同一组 `mitm.ca_cert`、`mitm.ca_key`。启用时检查 CA 有效期、密钥匹配和私钥权限，并在启动日志中打印 CA 的 SHA-256 指纹。已有设备信任的 CA 应继续使用原文件，可显式指定其绝对路径；更改目录不需要重新生成证书。
 
 ## 为 iPhone / iPad 提供下载
 
-在已有 `global` 段中设置 `api_port: 9080` 并重载，然后从 Safari 打开 `http://192.168.1.1:9080/`，替换为路由器实际局域网 IP。启用 Surge 并配置 CA 后，页面的 **HTTPS Modules** 区域提供当前 CA 与设备开关。
+在已有 `global` 段中设置 `api_port: 9080` 并重载，然后从 Safari 打开 `http://192.168.1.1:9080/`，替换为路由器实际局域网 IP。启用 `mitm` 并配置 CA 后，页面的 **HTTPS Modules** 区域提供当前 CA 与设备开关。
 
 1. 将页面指纹与 dae 启动日志或 `dae mitm ca info` 的 SHA-256 指纹核对。
 2. 下载 `ca.mobileconfig`。

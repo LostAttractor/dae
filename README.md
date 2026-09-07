@@ -26,6 +26,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support advanced DNS resolution process.
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
 - [x] Support various trending proxy protocols, seen in [proxy-protocols.md](./docs/en/proxy-protocols.md).
+- [x] Filter-based [destination IP overrides](./docs/zh/configuration/destination-rules.md) without modifying DNS responses.
 - [x] Opt-in [Surge Module HTTP/HTTPS scripts](./docs/zh/configuration/surge-module.md) with native QuickJS-NG, [CA management](./docs/zh/configuration/mitm-certificate.md), and a documented [compatibility subset](./docs/zh/configuration/surge-module-support.md).
 
 ## Getting Started
@@ -33,6 +34,8 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` right away!
 
 Source builds require cgo and a target C compiler; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
+
+The [configuration example](./example.dae) includes `mitm` plugin instances and `rules` / DNAT. The default build includes Surge; add external Go plugins to [mitm_plugins.cfg](./mitm_plugins.cfg) and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-mitm-plugins).
 
 `DAE_LOCATION_CACHE` selects the [writable state directory](./docs/zh/configuration/cache-directory.md) for certificates, subscription caches and Surge resources (default `/var/lib/dae`).
 

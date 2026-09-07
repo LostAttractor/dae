@@ -5,9 +5,11 @@
 每个 `node` 条目只能包含一个分享链接。旧的节点级 `linkA -> linkB` 语法不再接受；代理路径请使用[路由配置](configuration/routing.md)中的 group path expression 组合。
 
 - [x] HTTP(S), naiveproxy
+
   ```
   https://[[user:]pass@]hostname:port/
   ```
+
 - [x] Socks
   - [x] Socks4
   - [x] Socks4a
@@ -72,7 +74,7 @@
   - [x] Trojan-gfw
   - [x] Trojan-go
 
-  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url/)
+  [trojan/trojan-go URI Schema](https://p4gefau1t.github.io/trojan-go/developer/url)
 
 - [x] Tuic (v5)
 

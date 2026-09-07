@@ -7,7 +7,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | 范围 | 能力 |
 | --- | --- |
 | 来源与参数 | file、HTTP(S)、显式 `http(s)-file` 缓存；相对依赖；名称和描述；`#!arguments` 默认值、中文名称、空值、文本替换及交互生成配置。回车继承默认值，显式填写才生成覆盖 |
-| HTTP 脚本 | http-request/http-response；pattern、argument、timeout、requires-body、binary-body-mode、max-size。每方向仅执行首个匹配脚本 |
+| HTTP 脚本 | `http-request` / `http-response`；pattern、argument、timeout、requires-body、binary-body-mode、max-size。每方向仅执行首个匹配脚本 |
 | 重写 | Header add/del/replace/replace-regex；URL header/302/307/reject；Map Local file/text/base64/tiny-gif、自定义头和状态；response-jq Body Rewrite |
 | 脚本数据 | `$request`、`$response`、`$done`；数字 status、字符串或 Uint8Array body、修改/合成响应/abort；保留目标脚本使用的 h2_trailers |
 | 运行时 | console、Promise、async/await、定时器、`$persistentStore`、`$httpClient` 七种方法、`$utils.ungzip`；通知写入日志；UTF-8 编解码、Base64、有限 URL/DOM API |
@@ -51,7 +51,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | 范围 | 当前边界 |
 | --- | --- |
 | MITM 选项 | 仅解析 hostname；skip-server-cert-verify 等忽略，无 hostname-disabled、p12/Keystore。特殊主机占位符报错；非 443 TLS 端口须显式填写 |
-| 信任与协议 | 不探测客户端信任或在握手失败后透传；无 HTTP/3 解密、自动 QUIC 阻断、h2c、跨主机 HTTP/2 复用。CONNECT 返回 405，WebSocket 只处理 HTTP1 握手；无 force-http-engine-hosts/always-raw-tcp-hosts |
+| 信任与协议 | 不探测客户端信任或在握手失败后透传；无 HTTP/3 解密、自动 QUIC 阻断、h2c、跨主机 HTTP/2 复用。CONNECT 返回 405，WebSocket 只处理 HTTP1 握手；无 `force-http-engine-hosts` / `always-raw-tcp-hosts` |
 | 路由类型 | 无 HTTP/IP/进程/端口/来源/规则集/SCRIPT 等模块规则；两字段 FINAL,DIRECT 加载失败。WILDCARD 无字符类，逻辑规则叶子限域名类型 |
 | 拒绝与选项 | REJECT 映射 dae block；无 DNS No Record、TCP RST、自适应拒绝或 REJECT-TINYGIF。extended-matching 使用 DNS/可信 SNI/Host，不逐请求重新匹配；未知选项整条跳过 |
 | 优先级 | pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。脚本请求与 HTTP 改写沿用已选出站，不按新 URL 重跑路由 |

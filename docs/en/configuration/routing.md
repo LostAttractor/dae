@@ -1,5 +1,7 @@
 # Routing
 
+`routing` selects an outbound. To override the dialed IP using the same filter syntax, use the separate [`rules` / DNAT](../../zh/configuration/destination-rules.md) section (Chinese guide); `dnat` is not a routing outbound.
+
 ## Outbound Targets and Proxy Paths
 
 Routing targets may be built-in outbounds, groups, or uniquely named nodes. Quote a target name when it contains spaces or non-ASCII characters; parameters follow the quoted name directly:
