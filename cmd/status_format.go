@@ -7,6 +7,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/component/api"
 	"math/bits"
 	"os"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"golang.org/x/term"
 )
@@ -33,7 +33,7 @@ const (
 	nodeHealthUnhealthy  = "unhealthy"
 )
 
-func groupHealth(group control.GroupStatus) healthStatus {
+func groupHealth(group api.GroupStatus) healthStatus {
 	if !group.ChecksConnectivity {
 		return healthHealthy
 	}
@@ -51,7 +51,7 @@ func groupHealth(group control.GroupStatus) healthStatus {
 	return healthDegraded
 }
 
-func statusHealth(groups []control.GroupStatus) healthStatus {
+func statusHealth(groups []api.GroupStatus) healthStatus {
 	health := healthHealthy
 	for _, group := range groups {
 		switch groupHealth(group) {
@@ -64,7 +64,7 @@ func statusHealth(groups []control.GroupStatus) healthStatus {
 	return health
 }
 
-func nodeHealth(status control.NodeStatus) string {
+func nodeHealth(status api.NodeStatus) string {
 	if !status.ChecksConnectivity {
 		return nodeHealthUnknown
 	}
@@ -249,7 +249,7 @@ func colorUsage(ratio float64, value string) string {
 	}
 }
 
-func formatGroupConnectivityState(group control.GroupStatus) string {
+func formatGroupConnectivityState(group api.GroupStatus) string {
 	if !group.ChecksConnectivity {
 		return colorize("N/A", text.FgHiBlack)
 	}
@@ -289,7 +289,7 @@ func compactNetworks(mask uint8) string {
 	return strings.Join(parts, ",")
 }
 
-func nodeNetworks(status control.NodeStatus, selected control.NetworkValues[string]) (string, bool) {
+func nodeNetworks(status api.NodeStatus, selected api.NetworkValues[string]) (string, bool) {
 	var support, selection uint8
 	for network, state := range status.Support {
 		if state == dialer.NetworkSupportConfirmed {

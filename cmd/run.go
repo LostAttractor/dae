@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/daeuniverse/dae/component/api"
 	"net"
 	"net/http"
 	"os"
@@ -64,7 +65,7 @@ var (
 	metricsPort     uint16
 	metricsRegistry = prometheus.NewRegistry()
 	observabilityMu sync.Mutex
-	statusServer    *control.StatusServer
+	statusServer    *api.StatusServer
 )
 
 type reloadControlPlaneRetirer interface {
@@ -239,13 +240,13 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 		}
 		std.Fatalln(err)
 	}
-	api, err := prepareAPIServer(nil, conf.Global.APIPort)
+	managementAPI, err := prepareAPIServer(nil, conf.Global.APIPort)
 	if err != nil {
 		_ = c.Close()
 		std.Fatalln(err)
 	}
 	if err = c.Activate(); err != nil {
-		api.Close()
+		managementAPI.Close()
 		_ = c.Close()
 		std.Fatalln(err)
 	}
@@ -254,7 +255,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	startMetricsServer(conf.Global.MetricsPort)
 
 	if statusServer == nil {
-		if statusServer, err = control.StartStatusServer(StatusSocketPath, Version); err != nil {
+		if statusServer, err = api.StartStatusServer(StatusSocketPath, Version); err != nil {
 			std.Warnf("Failed to start status server: %v", err)
 		}
 	}
@@ -286,7 +287,7 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 	// a deferred exit(c) would capture the startup plane, closing the retired
 	// plane a second time while the final, bpf-owning plane is never closed.
 	defer func() {
-		api.Close()
+		managementAPI.Close()
 		exit(c)
 	}()
 	select {
@@ -300,11 +301,11 @@ func Run(conf *config.Config, externGeoDataDirs []string) {
 		return
 	}
 	if statusServer != nil {
-		statusServer.SetControlPlane(startupPlane)
+		statusServer.Publish(startupPlane.StatusSnapshot)
 	}
-	api.setHandler(startupPlane.APIHandler())
-	if api != nil {
-		std.Infof("Configuration page and API listening on port %d", api.port)
+	managementAPI.setHandler(startupPlane.APIHandler())
+	if managementAPI != nil {
+		std.Infof("Configuration page and API listening on port %d", managementAPI.port)
 	}
 	sdnotify.Ready()
 	log.WithField("duration", time.Since(startupStarted)).Info("Startup completed")
@@ -355,11 +356,11 @@ loop:
 					reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
 					stats.DefaultStore.RecordReload()
 					if statusServer != nil {
-						statusServer.SetControlPlane(c)
+						statusServer.Publish(c.StatusSnapshot)
 					}
-					api.setHandler(c.APIHandler())
-					if api != nil {
-						std.Infof("Configuration page and API listening on port %d", api.port)
+					managementAPI.setHandler(c.APIHandler())
+					if managementAPI != nil {
+						std.Infof("Configuration page and API listening on port %d", managementAPI.port)
 					}
 					pendingReload = false
 				}
@@ -447,7 +448,7 @@ loop:
 					reloadFailed("Failed to build new control plane", err)
 					continue
 				}
-				nextAPI, err := prepareAPIServer(api, newConf.Global.APIPort)
+				nextAPI, err := prepareAPIServer(managementAPI, newConf.Global.APIPort)
 				if err != nil {
 					_ = newC.Close()
 					c.InjectBpf()
@@ -466,13 +467,13 @@ loop:
 				std.Warnln("[Reload] Stop old control plane")
 				writeReloadProgress("Switching to the new control plane...")
 				if statusServer != nil {
-					statusServer.SetControlPlane(nil)
+					statusServer.Publish(nil)
 				}
-				api.setHandler(nil)
-				if api != nextAPI {
-					api.Close()
+				managementAPI.setHandler(nil)
+				if managementAPI != nextAPI {
+					managementAPI.Close()
 				}
-				api = nextAPI
+				managementAPI = nextAPI
 				if closeErr := retireControlPlaneForReload(c, abortConnections); closeErr != nil {
 					// The old filters may still interpret shared maps with the old
 					// rule layout. Do not install new rules or adopt bitmaps into

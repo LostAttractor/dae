@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package control
+package api
 
 import (
 	json "encoding/json/v2"

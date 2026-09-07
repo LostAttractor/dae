@@ -7,13 +7,13 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/component/api"
 	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	log "github.com/sirupsen/logrus"
@@ -58,7 +58,7 @@ func renderLogTable(header table.Row, rows []table.Row) string {
 	return text.StripEscape(renderStatusTable(header, rows, nil, 0))
 }
 
-func tableUsageRow(usage control.TableUsage) table.Row {
+func tableUsageRow(usage api.TableUsage) table.Row {
 	ratio := 0.0
 	if usage.Limit > 0 {
 		ratio = float64(usage.Used) / float64(usage.Limit)
@@ -74,7 +74,7 @@ func tableUsageRow(usage control.TableUsage) table.Row {
 	return table.Row{usage.Name, used, usage.Limit, colorUsage(ratio, formatRatio(ratio)), breakdown, limitGC}
 }
 
-func nodeLabel(status control.NodeStatus, index int) string {
+func nodeLabel(status api.NodeStatus, index int) string {
 	if status.Name != "" {
 		return status.Name
 	}
@@ -84,7 +84,7 @@ func nodeLabel(status control.NodeStatus, index int) string {
 	return fmt.Sprintf("#%d", index)
 }
 
-func annotatedNodeLabel(status control.NodeStatus, index int) string {
+func annotatedNodeLabel(status api.NodeStatus, index int) string {
 	label := nodeLabel(status, index)
 	if status.Annotation == nil {
 		return label
@@ -110,7 +110,7 @@ func annotatedNodeLabel(status control.NodeStatus, index int) string {
 	return label + " [" + strings.Join(parts, ",") + "]"
 }
 
-func groupNetworkSupport(nodes []control.NodeStatus, network common.NetworkIndex) dialer.NetworkSupportState {
+func groupNetworkSupport(nodes []api.NodeStatus, network common.NetworkIndex) dialer.NetworkSupportState {
 	support := dialer.NetworkSupportUnsupported
 	for _, node := range nodes {
 		switch node.Support[network] {
@@ -123,7 +123,7 @@ func groupNetworkSupport(nodes []control.NodeStatus, network common.NetworkIndex
 	return support
 }
 
-func groupNetworkRoutable(group control.GroupStatus, network common.NetworkIndex) bool {
+func groupNetworkRoutable(group api.GroupStatus, network common.NetworkIndex) bool {
 	if group.SelectedNodeIDs[network] != "" {
 		return true
 	}
@@ -139,7 +139,7 @@ func groupNetworkRoutable(group control.GroupStatus, network common.NetworkIndex
 	return false
 }
 
-func networkStatusRow(group control.GroupStatus, network common.NetworkIndex) table.Row {
+func networkStatusRow(group api.GroupStatus, network common.NetworkIndex) table.Row {
 	support := groupNetworkSupport(group.Nodes, network)
 	route := colorNetworkSupport(support)
 	selectedID := group.SelectedNodeIDs[network]
@@ -173,7 +173,7 @@ type verboseNodeHealthCells struct {
 	lastCheck    string
 }
 
-func verboseNodeHealth(status control.NodeStatus) verboseNodeHealthCells {
+func verboseNodeHealth(status api.NodeStatus) verboseNodeHealthCells {
 	cells := verboseNodeHealthCells{
 		state:        "-",
 		latency:      nodeLatency(status),
@@ -195,7 +195,7 @@ func verboseNodeHealth(status control.NodeStatus) verboseNodeHealthCells {
 	return cells
 }
 
-func nodeStatusRow(status control.NodeStatus, index int, selected control.NetworkValues[string]) table.Row {
+func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[string]) table.Row {
 	networks, isSelected := nodeNetworks(status, selected)
 	health := verboseNodeHealth(status)
 	return table.Row{
@@ -218,7 +218,7 @@ func nodeStatusRow(status control.NodeStatus, index int, selected control.Networ
 	}
 }
 
-func nodeLatency(status control.NodeStatus) string {
+func nodeLatency(status api.NodeStatus) string {
 	if status.Latency == nil || nodeHealth(status) != nodeHealthHealthy {
 		return "-"
 	}
@@ -233,7 +233,7 @@ func nodeLatency(status control.NodeStatus) string {
 	return colorLatency(moving, formatted)
 }
 
-func compactNodeState(status control.NodeStatus) string {
+func compactNodeState(status api.NodeStatus) string {
 	health := nodeHealth(status)
 	if status.Session != "" && status.Session != "connected" {
 		if health == nodeHealthUnhealthy {
@@ -253,7 +253,7 @@ func compactNodeState(status control.NodeStatus) string {
 	return "-"
 }
 
-func compactUpRatios(status control.NodeStatus) string {
+func compactUpRatios(status api.NodeStatus) string {
 	if nodeHealth(status) == nodeHealthUnknown {
 		return "-"
 	}
@@ -262,7 +262,7 @@ func compactUpRatios(status control.NodeStatus) string {
 	return colorRatio(min(availability.UpRatio, availability.Recent24h.UpRatio), formatted)
 }
 
-func recentFailureEpisode(status control.NodeStatus, now time.Time) bool {
+func recentFailureEpisode(status api.NodeStatus, now time.Time) bool {
 	availability := status.Availability
 	startedAt := availability.LastFailureStartedAt
 	if !status.ChecksConnectivity || startedAt.IsZero() || startedAt.After(now) {
@@ -279,11 +279,11 @@ func recentFailureEpisode(status control.NodeStatus, now time.Time) bool {
 	return startedAt.Add(duration).After(cutoff)
 }
 
-func recentNodeFailure(status control.NodeStatus, now time.Time) bool {
+func recentNodeFailure(status api.NodeStatus, now time.Time) bool {
 	return status.ChecksConnectivity && (status.Availability.Recent24h.ChecksFailed > 0 || recentFailureEpisode(status, now))
 }
 
-func compactFailure(status control.NodeStatus, now time.Time) string {
+func compactFailure(status api.NodeStatus, now time.Time) string {
 	if !recentNodeFailure(status, now) {
 		return "-"
 	}
@@ -304,7 +304,7 @@ func compactFailure(status control.NodeStatus, now time.Time) string {
 	return colorize(formatted, text.FgYellow)
 }
 
-func hasRecentNodeFailure(nodes []control.NodeStatus, now time.Time) bool {
+func hasRecentNodeFailure(nodes []api.NodeStatus, now time.Time) bool {
 	for _, node := range nodes {
 		if recentNodeFailure(node, now) {
 			return true
@@ -313,7 +313,7 @@ func hasRecentNodeFailure(nodes []control.NodeStatus, now time.Time) bool {
 	return false
 }
 
-func compactNodeStatusRow(status control.NodeStatus, index int, selected control.NetworkValues[string], showFailure bool, now time.Time) table.Row {
+func compactNodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[string], showFailure bool, now time.Time) table.Row {
 	networks, isSelected := nodeNetworks(status, selected)
 	row := table.Row{
 		colorSelected(annotatedNodeLabel(status, index), isSelected),
@@ -333,7 +333,7 @@ func compactNodeStatusRow(status control.NodeStatus, index int, selected control
 	)
 }
 
-func uncheckedNetworkRows(group control.GroupStatus) []table.Row {
+func uncheckedNetworkRows(group api.GroupStatus) []table.Row {
 	rows := make([]table.Row, common.NetworkTypeCount)
 	for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
 		rows[index] = table.Row{index.String(), formatConnCounts(group.Networks[index])}
@@ -341,7 +341,7 @@ func uncheckedNetworkRows(group control.GroupStatus) []table.Row {
 	return rows
 }
 
-func checkedNetworkRows(group control.GroupStatus, verbose bool) []table.Row {
+func checkedNetworkRows(group api.GroupStatus, verbose bool) []table.Row {
 	rows := make([]table.Row, 0, common.NetworkTypeCount)
 	for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
 		support := groupNetworkSupport(group.Nodes, index)
@@ -353,7 +353,7 @@ func checkedNetworkRows(group control.GroupStatus, verbose bool) []table.Row {
 	return rows
 }
 
-func nodeTable(group control.GroupStatus, verbose bool, now time.Time) (table.Row, []table.Row) {
+func nodeTable(group api.GroupStatus, verbose bool, now time.Time) (table.Row, []table.Row) {
 	rows := make([]table.Row, 0, len(group.Nodes))
 	if verbose {
 		for index, status := range group.Nodes {
@@ -378,7 +378,7 @@ func nodeTable(group control.GroupStatus, verbose bool, now time.Time) (table.Ro
 	return header, rows
 }
 
-func groupStatusMetadata(group control.GroupStatus) string {
+func groupStatusMetadata(group api.GroupStatus) string {
 	policy := group.Policy
 	if policy == "" {
 		policy = "single path"
@@ -390,7 +390,7 @@ func groupStatusMetadata(group control.GroupStatus) string {
 	return metadata
 }
 
-func logStartupNodeStatus(groups []control.GroupStatus) {
+func logStartupNodeStatus(groups []api.GroupStatus) {
 	if !log.IsLevelEnabled(log.InfoLevel) {
 		return
 	}
@@ -417,7 +417,7 @@ func logStartupNodeStatus(groups []control.GroupStatus) {
 	}
 }
 
-func printGroupStatus(group control.GroupStatus, verbose bool) {
+func printGroupStatus(group api.GroupStatus, verbose bool) {
 	fmt.Printf("\nGroup '%s' [%s]\n", group.Name, groupStatusMetadata(group))
 	status := "no connectivity checks"
 	if group.ChecksConnectivity {
@@ -453,7 +453,7 @@ func printGroupStatus(group control.GroupStatus, verbose bool) {
 	printTable(header, rows)
 }
 
-func statusSummary(snapshot *control.StatusSnapshot) string {
+func statusSummary(snapshot *api.StatusSnapshot) string {
 	var degradedGroups, warningGroups []string
 	for _, group := range snapshot.Groups {
 		switch groupHealth(group) {
@@ -479,7 +479,7 @@ func statusSummary(snapshot *control.StatusSnapshot) string {
 	return summary
 }
 
-func printStatus(snapshot *control.StatusSnapshot, verbose bool) {
+func printStatus(snapshot *api.StatusSnapshot, verbose bool) {
 	fmt.Printf(
 		"Daemon:      %s up %s (since %s)",
 		snapshot.Version,
