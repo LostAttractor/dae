@@ -1,5 +1,7 @@
 # 路由
 
+`routing` 选择出站；按相同过滤语法覆盖拨号 IP 时，使用独立的 [`rules` / DNAT](destination-rules.md) 段，不能将 `dnat` 写作 routing 的出站。
+
 ## 出站目标与代理路径
 
 路由目标可以是内置出站、group 或唯一命名的节点。名称包含空格或非 ASCII 字符时需要加引号，参数直接写在引号名称之后：

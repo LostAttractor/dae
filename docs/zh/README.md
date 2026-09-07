@@ -1,8 +1,13 @@
 # 吃鹅直通手册
 
-运行时设备集合与手动节点选择见[页面/API](configuration/api.md)。可选 HTTP/HTTPS 功能见 [Surge Module](configuration/surge-module.md)、[支持与缺口](configuration/surge-module-support.md)及 [CA/iOS 安装](configuration/mitm-certificate.md)。证书与缓存目录由 `DAE_LOCATION_CACHE` 指定，默认 `/var/lib/dae`；NixOS 设置见[持久化目录](configuration/cache-directory.md)。
+从[完整配置示例](../../example.dae)开始，按需配置以下功能：
 
-具名 Go 插件配置见 [MITM 插件](configuration/mitm-plugins.md)；不修改 DNS 的拨号覆盖见 [rules / DNAT](configuration/destination-rules.md)。
+- [页面/API](configuration/api.md)：设备集合、手动节点选择和 MITM 开关。
+- [MITM 插件配置](configuration/mitm-plugins.md)：宿主与具名实例；内置 [Surge Module](configuration/surge-module.md) 的[支持范围](configuration/surge-module-support.md)。
+- [CA 与客户端安装](configuration/mitm-certificate.md)、[缓存和持久化目录](configuration/cache-directory.md)。
+- [rules / DNAT](configuration/destination-rules.md)：通过连接过滤条件覆盖拨号 IP，无需修改 DNS 应答。
+
+开发者可参阅[当前项目结构](design/project-structure.md)和[外部插件契约](../../component/mitm/plugin/README.md)。
 
 ## Linux 内核要求
 
@@ -78,8 +83,8 @@ begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end |
 ```
 
 > **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
-
-> `Arch Linux ARM` 用户可以使用支持 dae 的 [linux-aarch64-7ji](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
+>
+> `Arch Linux ARM` 用户可以使用支持 dae 的 [`linux-aarch64-7ji`](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
 
 ## 安装
 
@@ -119,7 +124,7 @@ yay -S dae-git
 sudo pacman -S dae-avx2-bin
 ```
 
-##### 最新 Git 版 
+##### 最新 Git 版
 
 ```shell
 sudo pacman -S dae-git
@@ -274,6 +279,7 @@ dns {
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。
 
 ## PPPoE
+
 如果希望代理 pppoe 接口, 请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口, 对于 wan 接口是 pppoe 的情况, 使用 auto 即可。
 
 ## 热重载和暂停
