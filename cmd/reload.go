@@ -20,7 +20,6 @@ import (
 
 const (
 	reloadCommandTimeout = 3 * time.Minute
-	reloadLegacyGrace    = 3 * time.Second
 	reloadPollInterval   = 200 * time.Millisecond
 )
 
@@ -41,47 +40,34 @@ func readSignalProgressFile(path string) (code byte, content string, err error) 
 type reloadWaitOptions struct {
 	progressPath string
 	timeout      time.Duration
-	legacyGrace  time.Duration
 	pollInterval time.Duration
 	processAlive func() error
 	onProgress   func(string)
 }
 
-func waitForReload(opts reloadWaitOptions) (string, bool, error) {
-	if opts.timeout <= 0 || opts.pollInterval <= 0 || opts.legacyGrace <= 0 {
-		return "", false, fmt.Errorf("invalid reload wait timing")
-	}
+func waitForReload(opts reloadWaitOptions) (string, error) {
 	deadline := time.NewTimer(opts.timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(opts.pollInterval)
 	defer ticker.Stop()
-	legacyAt := time.Now().Add(opts.legacyGrace)
-	protocolObserved := false
 	lastContent := ""
 
 	for {
 		code, content, err := readSignalProgressFile(opts.progressPath)
 		if err != nil {
-			return "", false, fmt.Errorf("failed to read reload progress: %w", err)
+			return "", fmt.Errorf("failed to read reload progress: %w", err)
 		}
 
 		if opts.processAlive != nil {
 			if err := opts.processAlive(); err != nil && !errors.Is(err, syscall.EPERM) {
-				return "", false, fmt.Errorf("dae stopped while reloading: %w", err)
+				return "", fmt.Errorf("dae stopped while reloading: %w", err)
 			}
 		}
 
 		switch code {
 		case consts.ReloadSend:
-			if protocolObserved {
-				return "", false, fmt.Errorf("reload progress unexpectedly returned to the sent state")
-			}
-			if !time.Now().Before(legacyAt) {
-				// Older daemons do not implement the progress protocol.
-				return "OK", true, nil
-			}
+			// Wait for the daemon to acknowledge the signal.
 		case consts.ReloadProcessing:
-			protocolObserved = true
 			if content != "" && content != lastContent {
 				lastContent = content
 				if opts.onProgress != nil {
@@ -92,22 +78,22 @@ func waitForReload(opts reloadWaitOptions) (string, bool, error) {
 			if content == "" {
 				content = "OK"
 			}
-			return content, false, nil
+			return content, nil
 		case consts.ReloadError:
 			if content == "" {
 				content = "daemon reported that reload failed"
 			}
-			return "", false, errors.New(content)
+			return "", errors.New(content)
 		default:
-			return "", false, fmt.Errorf("unexpected reload progress code %q", code)
+			return "", fmt.Errorf("unexpected reload progress code %q", code)
 		}
 
 		select {
 		case <-deadline.C:
 			if lastContent != "" {
-				return "", false, fmt.Errorf("reload timed out after %v (last step: %s)", opts.timeout, lastContent)
+				return "", fmt.Errorf("reload timed out after %v (last step: %s)", opts.timeout, lastContent)
 			}
-			return "", false, fmt.Errorf("reload timed out after %v", opts.timeout)
+			return "", fmt.Errorf("reload timed out after %v", opts.timeout)
 		case <-ticker.C:
 		}
 	}
@@ -170,10 +156,9 @@ var (
 				return fmt.Errorf("failed to signal dae: %w", err)
 			}
 
-			result, legacy, err := waitForReload(reloadWaitOptions{
+			result, err := waitForReload(reloadWaitOptions{
 				progressPath: SignalProgressFilePath,
 				timeout:      reloadCommandTimeout,
-				legacyGrace:  reloadLegacyGrace,
 				pollInterval: reloadPollInterval,
 				processAlive: func() error { return syscall.Kill(pid, 0) },
 				onProgress: func(content string) {
@@ -182,15 +167,6 @@ var (
 			})
 			if err != nil {
 				return err
-			}
-			if legacy {
-				// Leave a terminal state behind; otherwise the next invocation
-				// would mistake the old daemon's unchanged ReloadSend marker for
-				// an operation still in progress.
-				data := append([]byte{consts.ReloadDone}, []byte("\n"+result)...)
-				if err = writeFileAtomic(SignalProgressFilePath, data, 0600); err != nil {
-					return fmt.Errorf("failed to finalize legacy reload progress: %w", err)
-				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), result)
 			return nil
