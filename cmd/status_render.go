@@ -7,13 +7,14 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/daeuniverse/dae/component/api"
 	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/clitable"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	log "github.com/sirupsen/logrus"
@@ -27,16 +28,7 @@ func truncateStatusCell(value string, maxWidth int) string {
 }
 
 func renderStatusTable(header table.Row, rows []table.Row, configs []table.ColumnConfig, maxWidth int) string {
-	writer := table.NewWriter()
-	style := table.StyleDefault
-	style.Options.DrawBorder = false
-	style.Options.SeparateHeader = false
-	style.Options.SeparateColumns = false
-	style.Box.PaddingLeft = ""
-	style.Box.PaddingRight = "  "
-	style.Format.Header = text.FormatDefault
-	writer.SetStyle(style)
-	writer.SuppressTrailingSpaces()
+	writer := clitable.New()
 	if maxWidth > 0 {
 		writer.Style().Size.WidthMax = maxWidth
 		writer.Style().Box.UnfinishedRow = ""
@@ -45,7 +37,7 @@ func renderStatusTable(header table.Row, rows []table.Row, configs []table.Colum
 	if len(header) > 0 {
 		writer.AppendHeader(header)
 	}
-	writer.AppendRows(rows)
+	writer.AppendRows(clitable.AlignRows(rows))
 	return writer.Render()
 }
 
@@ -64,11 +56,11 @@ func tableUsageRow(usage api.TableUsage) table.Row {
 		ratio = float64(usage.Used) / float64(usage.Limit)
 	}
 	used := fmt.Sprintf("%d", usage.Used)
-	breakdown := "-"
+	var breakdown any = "-"
 	limitGC := "-"
 	if usage.Breakdown != nil {
 		used += " (LAZY)"
-		breakdown = fmt.Sprintf("%d/%d", usage.Breakdown.Live, usage.Breakdown.Retained)
+		breakdown = clitable.Parts(fmt.Sprint(usage.Breakdown.Live), "/", fmt.Sprint(usage.Breakdown.Retained))
 		limitGC = fmt.Sprintf("%d", usage.Breakdown.LimitGC)
 	}
 	return table.Row{usage.Name, used, usage.Limit, colorUsage(ratio, formatRatio(ratio)), breakdown, limitGC}
@@ -165,11 +157,11 @@ func networkStatusRow(group api.GroupStatus, network common.NetworkIndex) table.
 
 type verboseNodeHealthCells struct {
 	state        string
-	latency      string
-	upRatio      string
-	upRatio24h   string
+	latency      any
+	upRatio      any
+	upRatio24h   any
 	healthySince string
-	failure      string
+	failure      any
 	lastCheck    string
 }
 
@@ -186,10 +178,10 @@ func verboseNodeHealth(status api.NodeStatus) verboseNodeHealthCells {
 	if status.ChecksConnectivity {
 		availability := status.Availability
 		cells.state = colorNodeHealth(nodeHealth(status))
-		cells.upRatio = colorRatio(availability.UpRatio, formatAvailability(availability.UpRatio, availability.ChecksFailed, availability.ChecksTotal))
-		cells.upRatio24h = colorRatio(availability.Recent24h.UpRatio, formatAvailability(availability.Recent24h.UpRatio, availability.Recent24h.ChecksFailed, availability.Recent24h.ChecksTotal))
+		cells.upRatio = availabilityCell(availability.UpRatio, availability.ChecksFailed, availability.ChecksTotal).Decorate(func(value string) string { return colorRatio(availability.UpRatio, value) })
+		cells.upRatio24h = availabilityCell(availability.Recent24h.UpRatio, availability.Recent24h.ChecksFailed, availability.Recent24h.ChecksTotal).Decorate(func(value string) string { return colorRatio(availability.Recent24h.UpRatio, value) })
 		cells.healthySince = formatAgoWithChecks(availability.AliveSince, availability.ChecksSinceAlive)
-		cells.failure = formatFailure(availability.LastFailureStartedAt, availability.LastFailureDuration)
+		cells.failure = failureCell(availability.LastFailureStartedAt, availability.LastFailureDuration)
 		cells.lastCheck = formatAgo(availability.LastCheckAt)
 	}
 	return cells
@@ -213,12 +205,12 @@ func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[
 		health.lastCheck,
 		formatAgo(status.Availability.LastConnFailAt),
 		formatConnCounts(status.Stats),
-		formatTrafficCell(status.Stats),
-		formatTrafficTotalCell(status.Stats),
+		trafficCell(status.Stats),
+		trafficTotalCell(status.Stats),
 	}
 }
 
-func nodeLatency(status api.NodeStatus) string {
+func nodeLatency(status api.NodeStatus) any {
 	if status.Latency == nil || nodeHealth(status) != nodeHealthHealthy {
 		return "-"
 	}
@@ -226,11 +218,11 @@ func nodeLatency(status api.NodeStatus) string {
 	last := latency.Last.Seconds() * 1000
 	average := latency.Avg10.Seconds() * 1000
 	moving := latency.MovingAvg.Seconds() * 1000
-	formatted := fmt.Sprintf("%.0f/%.0f/%.0f", last, average, moving)
+	formatted := clitable.Parts(fmt.Sprintf("%.0f", last), "/", fmt.Sprintf("%.0f", average), "/", fmt.Sprintf("%.0f", moving))
 	if latency.Avg10HasFailure {
-		return colorize(formatted, text.FgHiRed, text.Bold)
+		return formatted.Decorate(func(value string) string { return colorize(value, text.FgHiRed, text.Bold) })
 	}
-	return colorLatency(moving, formatted)
+	return formatted.Decorate(func(value string) string { return colorLatency(moving, value) })
 }
 
 func compactNodeState(status api.NodeStatus) string {
@@ -253,13 +245,15 @@ func compactNodeState(status api.NodeStatus) string {
 	return "-"
 }
 
-func compactUpRatios(status api.NodeStatus) string {
+func compactUpRatios(status api.NodeStatus) any {
 	if nodeHealth(status) == nodeHealthUnknown {
 		return "-"
 	}
 	availability := status.Availability
-	formatted := fmt.Sprintf("%.1f/%.1f%%", availability.UpRatio*100, availability.Recent24h.UpRatio*100)
-	return colorRatio(min(availability.UpRatio, availability.Recent24h.UpRatio), formatted)
+	formatted := clitable.Parts(fmt.Sprintf("%.1f", availability.UpRatio*100), "/", fmt.Sprintf("%.1f%%", availability.Recent24h.UpRatio*100))
+	return formatted.Decorate(func(value string) string {
+		return colorRatio(min(availability.UpRatio, availability.Recent24h.UpRatio), value)
+	})
 }
 
 func recentFailureEpisode(status api.NodeStatus, now time.Time) bool {
@@ -283,7 +277,7 @@ func recentNodeFailure(status api.NodeStatus, now time.Time) bool {
 	return status.ChecksConnectivity && (status.Availability.Recent24h.ChecksFailed > 0 || recentFailureEpisode(status, now))
 }
 
-func compactFailure(status api.NodeStatus, now time.Time) string {
+func compactFailure(status api.NodeStatus, now time.Time) any {
 	if !recentNodeFailure(status, now) {
 		return "-"
 	}
@@ -291,17 +285,11 @@ func compactFailure(status api.NodeStatus, now time.Time) string {
 	if !recentFailureEpisode(status, now) {
 		return colorize(fmt.Sprintf("%dchk", availability.Recent24h.ChecksFailed), text.FgYellow)
 	}
-	formatDuration := func(duration time.Duration) string {
-		if duration <= 0 {
-			return "0s"
-		}
-		return formatUptime(duration)
-	}
-	formatted := formatDuration(now.Sub(availability.LastFailureStartedAt)) + "/" + formatDuration(availability.LastFailureDuration)
+	formatted := clitable.Parts(failureDuration(now.Sub(availability.LastFailureStartedAt)), "/", failureDuration(availability.LastFailureDuration))
 	if nodeHealth(status) == nodeHealthUnhealthy {
-		return colorize(formatted, text.FgRed)
+		return formatted.Decorate(func(value string) string { return colorize(value, text.FgRed) })
 	}
-	return colorize(formatted, text.FgYellow)
+	return formatted.Decorate(func(value string) string { return colorize(value, text.FgYellow) })
 }
 
 func hasRecentNodeFailure(nodes []api.NodeStatus, now time.Time) bool {
@@ -328,8 +316,8 @@ func compactNodeStatusRow(status api.NodeStatus, index int, selected api.Network
 	}
 	return append(row,
 		formatConnCounts(status.Stats),
-		formatTrafficCell(status.Stats),
-		formatTrafficTotalCell(status.Stats),
+		trafficCell(status.Stats),
+		trafficTotalCell(status.Stats),
 	)
 }
 

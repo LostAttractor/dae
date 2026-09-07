@@ -119,13 +119,6 @@ func formatRatio(ratio float64) string {
 	return fmt.Sprintf("%.1f%%", ratio*100)
 }
 
-func formatAvailability(ratio float64, failed, total int64) string {
-	if total == 0 {
-		return formatRatio(ratio)
-	}
-	return fmt.Sprintf("%s (%d/%d)", formatRatio(ratio), failed, total)
-}
-
 func shouldEnableColors() bool {
 	forceColor := os.Getenv("FORCE_COLOR")
 	if forceColor != "" && forceColor != "0" && forceColor != "false" {
@@ -332,22 +325,7 @@ func formatAgoWithChecks(timestamp time.Time, checks int64) string {
 }
 
 func formatFailure(startedAt time.Time, duration time.Duration) string {
-	if startedAt.IsZero() {
-		return "-"
-	}
-	durationText := "0s"
-	if duration > 0 {
-		durationText = formatUptime(duration)
-	}
-	return fmt.Sprintf("%s / %s", formatAgo(startedAt), durationText)
-}
-
-func formatConnCounts(value stats.PathStats) string {
-	formatted := fmt.Sprintf("%d/%d", value.ActiveConnections, value.TotalConnections)
-	if value.FallbackConnections > 0 {
-		formatted += fmt.Sprintf(" (fb %d)", value.FallbackConnections)
-	}
-	return formatted
+	return failureCell(startedAt, duration).String()
 }
 
 func formatBytes(bytes uint64) string {
@@ -355,7 +333,7 @@ func formatBytes(bytes uint64) string {
 		return "0"
 	}
 	if bytes < 1024 {
-		return fmt.Sprintf("%dB", bytes)
+		return fmt.Sprint(bytes) + "B"
 	}
 
 	value := float64(bytes) / 1024
@@ -367,13 +345,13 @@ func formatBytes(bytes uint64) string {
 		value /= 1024
 		unit = nextUnit
 	}
-	format := "%.2f%s"
+	format := "%.2f"
 	if value >= 100 {
-		format = "%.0f%s"
+		format = "%.0f"
 	} else if value >= 10 {
-		format = "%.1f%s"
+		format = "%.1f"
 	}
-	return fmt.Sprintf(format, value, unit)
+	return fmt.Sprintf(format, value) + unit
 }
 
 func formatBitRateParts(bytesPerSecond uint64) (string, string) {
@@ -399,12 +377,8 @@ func formatBitRateParts(bytesPerSecond uint64) (string, string) {
 }
 
 func formatBitRatePair(average, maximum uint64) string {
-	averageValue, averageUnit := formatBitRateParts(average)
-	maximumValue, maximumUnit := formatBitRateParts(maximum)
-	if averageUnit == maximumUnit {
-		return averageValue + "/" + maximumValue + averageUnit
-	}
-	return averageValue + averageUnit + "/" + maximumValue + maximumUnit
+	a, b := bitRatePairParts(average, maximum)
+	return a + "/" + b
 }
 
 func trafficMaximum(values []uint64) uint64 {
@@ -475,28 +449,11 @@ func formatTrafficSparklineCell(value stats.PathStats) string {
 }
 
 func formatTrafficCell(value stats.PathStats) string {
-	upload := value.History.UploadBytesPerSecond
-	download := value.History.DownloadBytesPerSecond
-	if !hasTrafficHistory(value) {
-		return "-"
-	}
-	uploadMax := trafficMaximum(upload)
-	downloadMax := trafficMaximum(download)
-	scale := max(uploadMax, downloadMax)
-	return fmt.Sprintf(
-		"↑%s %s ↓%s %s",
-		trafficSparkline(upload, scale),
-		formatBitRatePair(trafficAverage(upload), uploadMax),
-		trafficSparkline(download, scale),
-		formatBitRatePair(trafficAverage(download), downloadMax),
-	)
+	return trafficCell(value).String()
 }
 
 func formatTrafficTotalCell(value stats.PathStats) string {
-	if value.UploadBytes == 0 && value.DownloadBytes == 0 {
-		return "-"
-	}
-	return fmt.Sprintf("↑%s ↓%s", formatBytes(value.UploadBytes), formatBytes(value.DownloadBytes))
+	return trafficTotalCell(value).String()
 }
 
 func formatTrafficSummary(value stats.PathStats) string {
