@@ -33,11 +33,13 @@ The Go SDK owns its transport and does not depend on application changes to `htt
 
 ```sh
 make web
-# Or export from an existing standalone client:
-./dae-client web --output ./build/web
+# Or build directly within the frontend directory:
+make -C web
 ```
 
-The bundle contains `index.html`, `style.css`, `app.js` and `api.js`; no Node.js build step is needed. The default embedded page uses native form controls for client sets, selectors, HTTPS settings and certificate downloads. More complex presentation and interaction can live in an external frontend. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
+`web/` owns the frontend source and build entry point. `make web` writes to `build/web/` (configurable with `WEB_OUTPUT`); `make -C web` writes to `web/dist/`. Both need only Make and standard file utilities, without Go or Node.js. `dae-client` contains only terminal commands and does not include Web assets.
+
+The bundle contains `index.html`, `style.css`, `app.js` and `api.js`. The default embedded page uses native form controls for client sets, selectors, HTTPS settings and certificate downloads. More complex presentation and interaction can live in an external frontend. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
 
 ```sh
 DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
@@ -45,7 +47,9 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 Assets are read on each request. Replace the complete bundle directory when updating; missing files return `404`. The entire directory and its subdirectories are public; put only frontend assets there. New JS, CSS and nested assets require no daemon routing changes. The API handler takes precedence for `/api/` and certificate download paths.
 
-The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these files on the API origin, preserving browser origin checks and the caller's direct LAN identity. Exporting the bundle does not enable `file://`, arbitrary cross-origin hosting or ordinary reverse proxies for device self-service. Forwarding headers cannot impersonate a device.
+The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these files on the API origin, preserving browser origin checks and the caller's direct LAN identity. Building the bundle separately does not enable `file://`, arbitrary cross-origin hosting or ordinary reverse proxies for device self-service. Forwarding headers cannot impersonate a device.
+
+`make` and `make test` run `make web-assets` to build the frontend and replace `internal/webui/assets/` with its output before compiling Go. Generated bundles are ignored by Git; only `web/src/` is edited. When invoking `go build` or tests of `internal/webui` or `cmd` directly, first run `make web-assets` alongside the usual daemon build prerequisites. Client-only builds and tests do not need this step.
 
 `dae mitm status` and plugin commands also use the SDK, with `DAE_API_ENDPOINT` and `DAE_API_TOKEN` selecting a remote API.
 
@@ -53,18 +57,21 @@ The port is bound once: `internal/apiserver` creates one TCP listener and `http.
 
 ## Architecture
 
-| Package | Responsibility |
+| Directory | Responsibility |
 | --- | --- |
 | `api` | Plain public wire models and network order; standard library only |
 | `api/client` | Concurrent reusable HTTP/Unix client, authentication, JSON and typed errors |
 | `client/status` | Snapshot rendering to `io.Writer`, without runtime access |
 | `client/cli` | Shared API-only command implementations |
-| `client/webui` | Static assets and browser request layer |
+| `web` | Frontend source, browser requests and independent build |
+| `internal/webui` | Embedding and static serving of frontend build output |
 | `cmd/dae-client` | Independently buildable entry point |
 | `component/api` | HTTP routing, authorization and validation over public wire models |
 | `control` | Runtime projection, LAN identity, settings application and persistence |
 
 Runtime and client code use `api` types directly. `internal/apiserver` manages both listeners and request draining without depending on the control plane or frontend. `control` does not import UI packages; the daemon command layer composes the Web routes. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
+
+The frontend boundary consists of its public build output and the HTTP API contract. `web/` builds without reading its parent directory, so it can later move into a separate repository or submodule while the embedding and routing code stays in dae.
 
 `make client-test` runs tests with CGO disabled, checks OpenAPI against the Go wire types and rejects transitive imports of daemon implementation packages. CI runs it before installing clang or generating eBPF. TUI navigation, sorting, polling and presentation belong in client packages; only new runtime data or operations require daemon changes.
 

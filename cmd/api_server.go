@@ -9,8 +9,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/daeuniverse/dae/client/webui"
 	"github.com/daeuniverse/dae/internal/apiserver"
+	"github.com/daeuniverse/dae/internal/webui"
 )
 
 // Reserve a changed TCP port before retiring the active plane.

@@ -120,7 +120,7 @@ func TestAPIPortServesWebAndReservesAPIRoutes(t *testing.T) {
 			})))
 			client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
 			defer client.CloseIdleConnections()
-			for _, path := range []string{"/", "/api/status", "/api/selectors", "/ca.pem", "/chunks/new.js", "/webui.go"} {
+			for _, path := range []string{"/", "/api/status", "/api/selectors", "/ca.pem", "/chunks/new.js", "/webui.go", "/Makefile", "/README.md", "/src/app.js"} {
 				r, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d%s", server.Addr().(*net.TCPAddr).Port, path))
 				if err != nil {
 					t.Fatal(err)
@@ -138,7 +138,7 @@ func TestAPIPortServesWebAndReservesAPIRoutes(t *testing.T) {
 					if external && string(body) != "independent UI" {
 						t.Fatal("external UI not served")
 					}
-					if !external && !strings.Contains(string(body), "app.js") {
+					if !external && !strings.Contains(r.Header.Get("Content-Type"), "text/html") {
 						t.Fatal("embedded UI not served")
 					}
 				case "/api/status", "/api/selectors", "/ca.pem":
@@ -153,9 +153,9 @@ func TestAPIPortServesWebAndReservesAPIRoutes(t *testing.T) {
 					if r.StatusCode != want {
 						t.Fatal("new UI assets require daemon changes")
 					}
-				case "/webui.go":
+				case "/webui.go", "/Makefile", "/README.md", "/src/app.js":
 					if r.StatusCode != 404 {
-						t.Fatal("Go source exposed as a Web asset")
+						t.Fatalf("development file exposed as a Web asset: %s", path)
 					}
 				}
 			}

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package webui contains the browser application and its static file handler.
+// Package webui serves built Web assets embedded in dae or supplied externally.
 package webui
 
 import (
@@ -8,10 +8,11 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
 )
 
-//go:embed assets
+// Build assets with make web-assets from the repository root.
+//
+//go:embed all:assets
 var embedded embed.FS
 
 var assets, _ = fs.Sub(embedded, "assets")
@@ -34,23 +35,5 @@ func Handler(directory string) http.Handler {
 			return
 		}
 		handler.ServeHTTP(w, r)
-	})
-}
-
-// Export writes the complete bundle, including assets added by future UI builds.
-func Export(directory string) error {
-	return fs.WalkDir(assets, ".", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(directory, filepath.FromSlash(path))
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		data, err := fs.ReadFile(assets, path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0644)
 	})
 }
