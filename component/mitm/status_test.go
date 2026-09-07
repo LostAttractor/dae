@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
@@ -51,6 +52,9 @@ func TestLoadIndependentSetupTablesAndReports(t *testing.T) {
 			status := host.Status()
 			if len(status) != 1 || status[0].State != state || string(status[0].Details) != `{"label":"`+label+`"}` {
 				t.Fatalf("incorrect instance status: %+v", status)
+			}
+			if memory := status[0].BufferMemory; memory == nil || *memory != api.BufferMemoryStatus(plugin.BodyMemory.Status()) {
+				t.Fatalf("lost process buffer budget: %+v", memory)
 			}
 			wire, err := json.Marshal(status)
 			if err != nil || strings.Contains(string(wire), "private-credential") {

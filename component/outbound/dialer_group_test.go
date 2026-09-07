@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
@@ -265,7 +266,7 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 			t.Fatalf("network %d was not published available", i)
 		}
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateAvailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateAvailable {
 		t.Fatalf("group state = %q, want available", state)
 	}
 	_ = d.Close()
@@ -275,7 +276,7 @@ func TestGroupAvailabilityReadsCurrentDialerState(t *testing.T) {
 			t.Fatalf("network %d remained available", i)
 		}
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateUnavailable {
 		t.Fatalf("group state = %q, want unavailable", state)
 	}
 }
@@ -295,11 +296,11 @@ func TestDialerGroupStartsChecking(t *testing.T) {
 		t.Fatal("connectivity startup returned a different barrier")
 	}
 	state, history := g.Connectivity()
-	if state != stats.GroupStateChecking {
+	if state != api.GroupStateChecking {
 		t.Fatalf("initial group state = %q, want checking", state)
 	}
 	for i, state := range history.Recent.States {
-		if state != stats.GroupHistoryUnknown {
+		if state != api.GroupHistoryUnknown {
 			t.Fatalf("initial history bucket %d = %q, want unknown", i, state)
 		}
 	}
@@ -351,7 +352,7 @@ func TestDialerGroupStartupReadyWaitsForNetworkPublication(t *testing.T) {
 	default:
 		t.Fatal("startup barrier remained closed after network publication")
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateAvailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateAvailable {
 		t.Fatalf("group state = %q, want available", state)
 	}
 }
@@ -423,7 +424,7 @@ func TestDialerGroupInitialReadyWhenBlockingChecksCompleteUnavailable(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("completed unavailable check did not release the startup barrier")
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateUnavailable {
 		t.Fatalf("group state = %q, want unavailable", state)
 	}
 }
@@ -469,7 +470,7 @@ func TestDialerGroupWaitsForAllUnavailableCandidates(t *testing.T) {
 		t.Fatal("one unavailable candidate released startup while another check was pending")
 	default:
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateChecking {
+	if state, _ := g.Connectivity(); state != api.GroupStateChecking {
 		t.Fatalf("partially checked group state = %q, want checking", state)
 	}
 	second.ActivateCheck(start)
@@ -478,7 +479,7 @@ func TestDialerGroupWaitsForAllUnavailableCandidates(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("completed unavailable checks did not release startup")
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateUnavailable {
 		t.Fatalf("group state = %q, want unavailable", state)
 	}
 }
@@ -512,7 +513,7 @@ func TestDialerGroupInitialReadyWaitsWhileCandidatesArePending(t *testing.T) {
 		t.Fatal("group became ready while another candidate was still pending")
 	default:
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateChecking {
+	if state, _ := g.Connectivity(); state != api.GroupStateChecking {
 		t.Fatalf("partially checked group state = %q, want checking", state)
 	}
 
@@ -522,7 +523,7 @@ func TestDialerGroupInitialReadyWaitsWhileCandidatesArePending(t *testing.T) {
 		t.Fatal("pending candidates released the group startup barrier")
 	default:
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateChecking {
+	if state, _ := g.Connectivity(); state != api.GroupStateChecking {
 		t.Fatalf("group state = %q, want checking", state)
 	}
 }
@@ -551,7 +552,7 @@ func TestDialerGroupCheckAsyncAppliesToAllCandidates(t *testing.T) {
 	if ready != nil {
 		t.Fatal("asynchronous group participated in the startup barrier")
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateChecking {
+	if state, _ := g.Connectivity(); state != api.GroupStateChecking {
 		t.Fatalf("async group state before checks = %q, want checking", state)
 	}
 	close(start)
@@ -559,7 +560,7 @@ func TestDialerGroupCheckAsyncAppliesToAllCandidates(t *testing.T) {
 		waitForInitialCheck(t, d)
 	}
 	g.DialerChanged(dialers[1], dialer.SelectionForceNone)
-	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateUnavailable {
 		t.Fatalf("async group state after failed checks = %q, want unavailable", state)
 	}
 }
@@ -596,7 +597,7 @@ func TestDialerGroupFixedWaitsOnlyForSelectedCandidate(t *testing.T) {
 	if dialers[0].ConnectivitySnapshot().InitialCheckDone {
 		t.Fatal("non-selected candidate unexpectedly completed its initial check")
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateUnavailable {
 		t.Fatalf("group state = %q, want unavailable", state)
 	}
 }
@@ -629,7 +630,7 @@ func TestDialerGroupReloadStaysCheckingUntilCurrentCheckCompletes(t *testing.T) 
 	if !availability.Alive || !availability.LastFailureStartedAt.IsZero() {
 		t.Fatalf("non-fixed result changed retained availability: %+v", availability)
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateChecking {
+	if state, _ := g.Connectivity(); state != api.GroupStateChecking {
 		t.Fatalf("group state after non-fixed result = %q, want checking", state)
 	}
 
@@ -638,7 +639,7 @@ func TestDialerGroupReloadStaysCheckingUntilCurrentCheckCompletes(t *testing.T) 
 	if !availability.Alive || !availability.LastFailureStartedAt.IsZero() {
 		t.Fatalf("pending fixed result changed retained availability: %+v", availability)
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateChecking {
+	if state, _ := g.Connectivity(); state != api.GroupStateChecking {
 		t.Fatalf("group state after pending fixed result = %q, want checking", state)
 	}
 }
@@ -650,7 +651,7 @@ func TestEmptyDialerGroupStartsUnavailable(t *testing.T) {
 	if err := g.initializeConnectivity(); err != nil {
 		t.Fatal(err)
 	}
-	if state, _ := g.Connectivity(); state != stats.GroupStateUnavailable {
+	if state, _ := g.Connectivity(); state != api.GroupStateUnavailable {
 		t.Fatalf("empty group state = %q, want unavailable", state)
 	}
 	if availability := stats.DefaultStore.GetGroup(g.Name); !availability.Seen || availability.Alive {

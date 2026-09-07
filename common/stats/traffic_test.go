@@ -6,14 +6,13 @@
 package stats
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -28,7 +27,7 @@ func trafficTestPath(name string) Path {
 	}
 }
 
-func pathStats(t *testing.T, store *Store, path Path) PathStats {
+func pathStats(t *testing.T, store *Store, path Path) api.PathStats {
 	t.Helper()
 	snapshot := store.Snapshot()
 	stats, ok := snapshot[path]
@@ -38,7 +37,7 @@ func pathStats(t *testing.T, store *Store, path Path) PathStats {
 	return stats
 }
 
-func pathStatsWithHistory(t *testing.T, store *Store, path Path) PathStats {
+func pathStatsWithHistory(t *testing.T, store *Store, path Path) api.PathStats {
 	t.Helper()
 	snapshot := store.SnapshotWithHistory()
 	stats, ok := snapshot[path]
@@ -55,26 +54,26 @@ func TestStoreSamplesConnectionAndKeepsExactTotals(t *testing.T) {
 	connection := store.OpenConnection(path, false)
 	connection.RecordUpload(6000)
 	connection.RecordDownload(17000)
-	store.sampleAt(windowStart.Add(TrafficHistoryInterval))
+	store.sampleAt(windowStart.Add(api.TrafficHistoryInterval))
 
 	got := pathStats(t, store, path)
-	want := PathStats{
+	want := api.PathStats{
 		ActiveConnections: 1,
 		TotalConnections:  1,
-		TrafficCounters:   TrafficCounters{UploadBytes: 6000, DownloadBytes: 17000},
+		TrafficCounters:   api.TrafficCounters{UploadBytes: 6000, DownloadBytes: 17000},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("path stats = %+v, want %+v", got, want)
 	}
 	history := pathStatsWithHistory(t, store, path).History
-	if !reflect.DeepEqual(history, TrafficHistory{
+	if !reflect.DeepEqual(history, api.TrafficHistory{
 		UploadBytesPerSecond:   []uint64{1200},
 		DownloadBytesPerSecond: []uint64{3400},
 	}) {
 		t.Fatalf("traffic history = %+v", history)
 	}
 
-	store.sampleAt(windowStart.Add(2 * TrafficHistoryInterval))
+	store.sampleAt(windowStart.Add(2 * api.TrafficHistoryInterval))
 	history = pathStatsWithHistory(t, store, path).History
 	if !reflect.DeepEqual(history.UploadBytesPerSecond, []uint64{1200, 0}) ||
 		!reflect.DeepEqual(history.DownloadBytesPerSecond, []uint64{3400, 0}) {
@@ -94,12 +93,12 @@ func TestStoreHistoryKeepsLastMinute(t *testing.T) {
 	connection := store.OpenConnection(path, false)
 	defer connection.Close()
 
-	for sample := 1; sample <= TrafficHistorySampleCount+2; sample++ {
-		connection.RecordUpload(uint64(sample) * uint64(TrafficHistoryInterval/time.Second))
-		store.sampleAt(windowStart.Add(time.Duration(sample) * TrafficHistoryInterval))
+	for sample := 1; sample <= api.TrafficHistorySampleCount+2; sample++ {
+		connection.RecordUpload(uint64(sample) * uint64(api.TrafficHistoryInterval/time.Second))
+		store.sampleAt(windowStart.Add(time.Duration(sample) * api.TrafficHistoryInterval))
 	}
 	history := pathStatsWithHistory(t, store, path).History.UploadBytesPerSecond
-	want := make([]uint64, TrafficHistorySampleCount)
+	want := make([]uint64, api.TrafficHistorySampleCount)
 	for i := range want {
 		want[i] = uint64(i + 3)
 	}
@@ -108,59 +107,6 @@ func TestStoreHistoryKeepsLastMinute(t *testing.T) {
 	}
 	if history := pathStats(t, store, path).History; history.UploadBytesPerSecond != nil || history.DownloadBytesPerSecond != nil {
 		t.Fatalf("plain snapshot includes history: %+v", history)
-	}
-}
-
-func TestTrafficHistoryAdd(t *testing.T) {
-	var history TrafficHistory
-	history.add(TrafficHistory{
-		UploadBytesPerSecond:   []uint64{1, 2},
-		DownloadBytesPerSecond: []uint64{3, 4},
-	})
-	history.add(TrafficHistory{
-		UploadBytesPerSecond: []uint64{10, math.MaxUint64}, DownloadBytesPerSecond: []uint64{30, math.MaxUint64},
-	})
-	want := TrafficHistory{
-		UploadBytesPerSecond: []uint64{11, math.MaxUint64}, DownloadBytesPerSecond: []uint64{33, math.MaxUint64},
-	}
-	if !reflect.DeepEqual(history, want) {
-		t.Fatalf("aggregated history = %+v, want %+v", history, want)
-	}
-}
-
-func TestPathStatsJSONRequiresHistoryAndFallback(t *testing.T) {
-	payload, err := json.Marshal(PathStats{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded PathStats
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(decoded.History, TrafficHistory{UploadBytesPerSecond: []uint64{}, DownloadBytesPerSecond: []uint64{}}) {
-		t.Fatalf("decoded zero history = %+v", decoded.History)
-	}
-	for _, payload := range []string{
-		`{"active_connections":0,"total_connections":0,"upload_bytes":0,"download_bytes":0,"history":{"upload_bytes_per_second":[],"download_bytes_per_second":[]}}`,
-		`{"active_connections":0,"total_connections":0,"fallback_connections":0,"upload_bytes":0,"download_bytes":0}`,
-		`{"active_connections":0,"total_connections":0,"fallback_connections":0,"upload_bytes":0,"download_bytes":0,"history":{"upload_bytes_per_second":[1],"download_bytes_per_second":[]}}`,
-		`{"active_connections":0,"total_connections":0,"fallback_connections":0,"upload_bytes":0,"download_bytes":0,"history":{"upload_bytes_per_second":[],"download_bytes_per_second":[],"typo":true}}`,
-	} {
-		if err := json.Unmarshal([]byte(payload), &decoded); err == nil {
-			t.Fatalf("accepted invalid path stats: %s", payload)
-		}
-	}
-	tooMany := make([]uint64, TrafficHistorySampleCount+1)
-	payload, err = json.Marshal(map[string]any{
-		"active_connections": 0, "total_connections": 0, "fallback_connections": 0,
-		"upload_bytes": 0, "download_bytes": 0,
-		"history": map[string]any{"upload_bytes_per_second": tooMany, "download_bytes_per_second": tooMany},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(payload, &decoded); err == nil {
-		t.Fatal("accepted too many traffic history samples")
 	}
 }
 
@@ -214,16 +160,16 @@ func TestExternalRefreshFailureOnlySkipsAffectedPath(t *testing.T) {
 	defer healthy.Close()
 
 	readFails := true
-	if err := failed.AttachExternalCounters(func() (TrafficCounters, error) {
+	if err := failed.AttachExternalCounters(func() (api.TrafficCounters, error) {
 		if readFails {
-			return TrafficCounters{}, errors.New("read failed")
+			return api.TrafficCounters{}, errors.New("read failed")
 		}
-		return TrafficCounters{UploadBytes: 100}, nil
+		return api.TrafficCounters{UploadBytes: 100}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	healthy.RecordUpload(5000)
-	store.sampleAt(windowStart.Add(TrafficHistoryInterval))
+	store.sampleAt(windowStart.Add(api.TrafficHistoryInterval))
 	if store.completedSamples != 1 {
 		t.Fatalf("history count after failed refresh = %d, want 1", store.completedSamples)
 	}
@@ -233,7 +179,7 @@ func TestExternalRefreshFailureOnlySkipsAffectedPath(t *testing.T) {
 
 	readFails = false
 	healthy.RecordUpload(5000)
-	store.sampleAt(windowStart.Add(2 * TrafficHistoryInterval))
+	store.sampleAt(windowStart.Add(2 * api.TrafficHistoryInterval))
 	if got := pathStatsWithHistory(t, store, failedPath).History.UploadBytesPerSecond; !reflect.DeepEqual(got, []uint64{0, 0}) {
 		t.Fatalf("failed path history = %v, want recovery window omitted", got)
 	}
@@ -255,11 +201,11 @@ func TestConnectionCloseKeepsShortConnectionTotals(t *testing.T) {
 	if err := connection.Close(); err != nil {
 		t.Fatalf("second close: %v", err)
 	}
-	store.sampleAt(windowStart.Add(TrafficHistoryInterval))
+	store.sampleAt(windowStart.Add(api.TrafficHistoryInterval))
 
 	got := pathStats(t, store, path)
 	if got.ActiveConnections != 0 || got.TotalConnections != 1 ||
-		got.TrafficCounters != (TrafficCounters{UploadBytes: 77, DownloadBytes: 88}) {
+		got.TrafficCounters != (api.TrafficCounters{UploadBytes: 77, DownloadBytes: 88}) {
 		t.Fatalf("short connection stats = %+v", got)
 	}
 	history := pathStatsWithHistory(t, store, path).History
@@ -276,14 +222,14 @@ func TestSnapshotRefreshesActiveExternalCounters(t *testing.T) {
 	defer connection.Close()
 	connection.RecordUpload(77)
 	connection.RecordDownload(88)
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{UploadBytes: 23, DownloadBytes: 12}, nil
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{UploadBytes: 23, DownloadBytes: 12}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	got := pathStats(t, store, path)
-	if got.TrafficCounters != (TrafficCounters{UploadBytes: 100, DownloadBytes: 100}) {
+	if got.TrafficCounters != (api.TrafficCounters{UploadBytes: 100, DownloadBytes: 100}) {
 		t.Fatalf("active connection totals = %+v", got.TrafficCounters)
 	}
 }
@@ -295,7 +241,7 @@ func TestConnectionRecordsAfterClose(t *testing.T) {
 	connection := store.OpenConnection(path, false)
 	connection.Close()
 	connection.RecordUpload(77)
-	store.sampleAt(windowStart.Add(TrafficHistoryInterval))
+	store.sampleAt(windowStart.Add(api.TrafficHistoryInterval))
 
 	got := pathStats(t, store, path)
 	if got.UploadBytes != 77 {
@@ -312,19 +258,19 @@ func TestConnectionRejectsInvalidExternalSources(t *testing.T) {
 	if err := connection.AttachExternalCounters(nil); err == nil {
 		t.Fatal("nil external source was accepted")
 	}
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{}, nil
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{}, nil
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{}, nil
 	}); err == nil {
 		t.Fatal("second external source was accepted")
 	}
 	connection.Close()
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{}, nil
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{}, nil
 	}); err == nil {
 		t.Fatal("closed connection accepted an external source")
 	}
@@ -336,8 +282,8 @@ func TestConnectionRejectsInvalidExternalSources(t *testing.T) {
 func TestExternalCounterRollbackIsReported(t *testing.T) {
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
-	counters := TrafficCounters{UploadBytes: 10, DownloadBytes: 20}
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
+	counters := api.TrafficCounters{UploadBytes: 10, DownloadBytes: 20}
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
 		return counters, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -347,7 +293,7 @@ func TestExternalCounterRollbackIsReported(t *testing.T) {
 	if err := connection.Close(); err == nil {
 		t.Fatal("external counter rollback was not reported")
 	}
-	if got := pathStats(t, store, trafficTestPath(t.Name())).TrafficCounters; got != (TrafficCounters{UploadBytes: 10, DownloadBytes: 20}) {
+	if got := pathStats(t, store, trafficTestPath(t.Name())).TrafficCounters; got != (api.TrafficCounters{UploadBytes: 10, DownloadBytes: 20}) {
 		t.Fatalf("rollback changed totals: %+v", got)
 	}
 }
@@ -360,7 +306,7 @@ func TestStoreKeepsTotalsAbovePrometheusPrecision(t *testing.T) {
 	want := uint64(1<<53 + 1)
 	connection.RecordUpload(want)
 	connection.Close()
-	store.sampleAt(windowStart.Add(TrafficHistoryInterval))
+	store.sampleAt(windowStart.Add(api.TrafficHistoryInterval))
 
 	got := pathStats(t, store, path)
 	if got.UploadBytes != want {
@@ -373,8 +319,8 @@ func TestSnapshotSurvivesExternalReadFailure(t *testing.T) {
 	path := trafficTestPath(t.Name())
 	connection := store.OpenConnection(path, false)
 	wantErr := errors.New("counter source failed")
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{}, wantErr
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{}, wantErr
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -393,8 +339,8 @@ func TestConnectionCloseReportsFinalReadFailure(t *testing.T) {
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
 	wantErr := errors.New("counter source failed")
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{}, wantErr
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{}, wantErr
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -507,14 +453,14 @@ func BenchmarkTrafficSample(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				now = now.Add(TrafficHistoryInterval)
+				now = now.Add(api.TrafficHistoryInterval)
 				store.sampleAt(now)
 			}
 		})
 	}
 }
 
-var benchmarkTrafficSnapshot map[Path]PathStats
+var benchmarkTrafficSnapshot map[Path]api.PathStats
 
 func BenchmarkTrafficSnapshot(b *testing.B) {
 	for _, pathCount := range []int{1, 64, 256} {
@@ -534,8 +480,8 @@ func BenchmarkTrafficExternalCounters(b *testing.B) {
 		b.Run(fmt.Sprintf("connections=%d", connectionCount), func(b *testing.B) {
 			store := newStoreAt(time.Now())
 			connections := make([]*Connection, 0, connectionCount)
-			source := func() (TrafficCounters, error) {
-				return TrafficCounters{UploadBytes: 1, DownloadBytes: 1}, nil
+			source := func() (api.TrafficCounters, error) {
+				return api.TrafficCounters{UploadBytes: 1, DownloadBytes: 1}, nil
 			}
 			for i := 0; i < connectionCount; i++ {
 				connection := store.OpenConnection(trafficTestPath(fmt.Sprintf("path-%d", i)), false)

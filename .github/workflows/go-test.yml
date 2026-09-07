@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "**/*.go"
+      - "client/**"
+      - "docs/api/openapi.json"
       - "**/*.c"
       - "**/*.h"
       - "control/kern/headers"
@@ -19,6 +21,8 @@ on:
       - next
     paths:
       - "**/*.go"
+      - "client/**"
+      - "docs/api/openapi.json"
       - "**/*.c"
       - "**/*.h"
       - "control/kern/headers"
@@ -49,6 +53,9 @@ jobs:
             go.mod
             go.sum
           go-version: '>=1.27.0'
+
+      - name: Test standalone API clients
+        run: make client-test
 
       - name: Install dependencies
         run: |

@@ -14,8 +14,11 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/client/status"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/subscription"
@@ -204,6 +207,19 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	log.WithField("duration", time.Since(assemblyStarted)).Debug("Assembled control plane")
 	logStartupMITMStatus(c.MITMStatus())
 	return c, nil
+}
+
+func logStartupNodeStatus(groups []api.GroupStatus) {
+	if !log.IsLevelEnabled(log.DebugLevel) {
+		return
+	}
+	output := status.RenderStartupNodes(groups)
+	if output == "" {
+		return
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		log.Debug(line)
+	}
 }
 
 func cleanupStartup(c *control.ControlPlane) error {

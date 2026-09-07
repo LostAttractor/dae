@@ -8,6 +8,7 @@ package stats
 import (
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -279,11 +280,11 @@ func (s *Store) collectAvailability(ch chan<- prometheus.Metric) {
 	type nodeSnapshot struct {
 		key string
 		NodeIdentity
-		Availability
+		api.Availability
 	}
 	type groupSnapshot struct {
 		name string
-		Availability
+		api.Availability
 	}
 
 	s.availabilityMu.Lock()

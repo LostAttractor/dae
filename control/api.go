@@ -9,20 +9,22 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	contract "github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/api"
 	"golang.org/x/sys/unix"
 )
 
-func (c *ControlPlane) APIHandler() http.Handler {
-	return c.apiHandler(c.resolveAPIClient)
+func (c *ControlPlane) APIHandler(version string) http.Handler {
+	return c.apiHandler(version, c.resolveAPIClient)
 }
 
-func (c *ControlPlane) apiHandler(resolve api.ClientResolver) http.Handler {
+func (c *ControlPlane) apiHandler(version string, resolve api.ClientResolver) http.Handler {
 	options := api.Options{Selectors: c, Devices: c, ResolveClient: resolve, Token: c.apiToken}
+	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
 	if authority := c.mitmAuthority(); authority != nil {
-		options.Certificates = &api.Certificates{Fingerprint: authority.Fingerprint(), Handler: authority.Handler()}
+		options.Certificates = &api.Certificates{Identity: authority.Identity(), Fingerprint: authority.Fingerprint(), Handler: authority.Handler()}
 	}
 	return api.NewHandler(options)
 }

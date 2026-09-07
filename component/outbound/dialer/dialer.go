@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/config"
@@ -143,19 +144,11 @@ type Dialer struct {
 	checksStopped bool
 }
 
-// LatencyStats is a coherent view of the latency samples of a dialer.
-type LatencyStats struct {
-	Last            time.Duration `json:"last"`
-	Avg10           time.Duration `json:"average_10"`
-	MovingAvg       time.Duration `json:"moving_average"`
-	Avg10HasFailure bool          `json:"average_10_failed"`
-}
-
 type SelectionSnapshot struct {
 	Usable     bool
-	Support    NetworkSupportState
+	Support    api.NetworkSupportState
 	HasLatency bool
-	Latency    LatencyStats
+	Latency    api.LatencyStats
 }
 
 // ConnectivitySnapshot is the state needed to aggregate a dialer into its
@@ -166,24 +159,14 @@ type ConnectivitySnapshot struct {
 	ConfirmingFailure bool
 }
 
-// NetworkSupportState describes protocol/remote capability, not current
-// reachability. Confirmed modes share the dialer's canonical health result.
-type NetworkSupportState string
-
-const (
-	NetworkSupportUnknown     NetworkSupportState = "unknown"
-	NetworkSupportConfirmed   NetworkSupportState = "confirmed"
-	NetworkSupportUnsupported NetworkSupportState = "unsupported"
-)
-
-func supportState(state networkState) NetworkSupportState {
+func supportState(state networkState) api.NetworkSupportState {
 	switch state {
 	case networkSupported:
-		return NetworkSupportConfirmed
+		return api.NetworkSupportConfirmed
 	case networkUnsupported:
-		return NetworkSupportUnsupported
+		return api.NetworkSupportUnsupported
 	default:
-		return NetworkSupportUnknown
+		return api.NetworkSupportUnknown
 	}
 }
 
@@ -197,12 +180,12 @@ type RuntimeSnapshot struct {
 	Healthy            bool
 	InitialCheckDone   bool
 	ConfirmingFailure  bool
-	SupportState       [common.NetworkTypeCount]NetworkSupportState
+	SupportState       [common.NetworkTypeCount]api.NetworkSupportState
 	Session            netproxy.StateEvent
 	HasSession         bool
 	HasLatency         bool
-	Latency            LatencyStats
-	Availability       stats.Availability
+	Latency            api.LatencyStats
+	Availability       api.Availability
 }
 
 type GlobalOption struct {
@@ -397,19 +380,19 @@ func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, timeou
 	d.mu.Unlock()
 }
 
-func (d *Dialer) latencyStats() (lat LatencyStats, ok bool) {
+func (d *Dialer) latencyStats() (lat api.LatencyStats, ok bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.latencyStatsLocked()
 }
 
-func (d *Dialer) latencyStatsLocked() (lat LatencyStats, ok bool) {
+func (d *Dialer) latencyStatsLocked() (lat api.LatencyStats, ok bool) {
 	if d.group == nil {
-		return LatencyStats{}, false
+		return api.LatencyStats{}, false
 	}
 	lat.Last, ok = d.group.latencies.LastLatency()
 	if !ok {
-		return LatencyStats{}, false
+		return api.LatencyStats{}, false
 	}
 	lat.Avg10, _ = d.group.latencies.AvgLatency()
 	lat.MovingAvg = d.group.movingAverage

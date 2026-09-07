@@ -8,21 +8,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
-	"github.com/daeuniverse/dae/cmd/internal"
+	apiclient "github.com/daeuniverse/dae/api/client"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/clitable"
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 func fetchMITMStatus(ctx context.Context) ([]plugin.InstanceStatus, error) {
-	if err := internal.AutoSu(); err != nil {
+	client, err := apiclient.New(apiclient.Options{Endpoint: os.Getenv("DAE_API_ENDPOINT"), Token: os.Getenv("DAE_API_TOKEN")})
+	if err != nil {
 		return nil, err
 	}
-	snapshot, err := fetchStatusContext(ctx)
+	defer client.Close()
+	snapshot, err := client.Status(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +114,10 @@ func newMITMStatusCommand(services plugin.CommandServices, definitions map[strin
 			for _, status := range statuses {
 				rows = append(rows, table.Row{status.ID, status.Type, status.State, status.Scopes, status.DestinationRules})
 			}
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), renderLogTable(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"}, rows)); err != nil {
+			writer := clitable.New()
+			writer.AppendHeader(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"})
+			writer.AppendRows(rows)
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), text.StripEscape(writer.Render())); err != nil {
 				return err
 			}
 			if verbose {

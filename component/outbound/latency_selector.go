@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -120,7 +121,7 @@ func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 
 func (s *latencyBasedSelector) recordMetrics(candidates []selectorCandidate, d *dialer.Dialer, networkType *common.NetworkType) {
 	snapshot := d.SelectionSnapshot(networkType)
-	if snapshot.Support != dialer.NetworkSupportConfirmed || !snapshot.HasLatency {
+	if snapshot.Support != api.NetworkSupportConfirmed || !snapshot.HasLatency {
 		return
 	}
 	selectionLatency := candidateLatency(s.dialerGroup.selectionPolicy.Policy, snapshot)

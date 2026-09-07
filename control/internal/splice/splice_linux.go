@@ -16,6 +16,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/stats"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -680,16 +681,16 @@ func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Connect
 		r.cleanupMetadata(cookieA, cookieR)
 	}()
 	if traffic != nil {
-		if err := traffic.AttachExternalCounters(func() (stats.TrafficCounters, error) {
+		if err := traffic.AttachExternalCounters(func() (api.TrafficCounters, error) {
 			upload, err := r.stats(cookieA)
 			if err != nil {
-				return stats.TrafficCounters{}, err
+				return api.TrafficCounters{}, err
 			}
 			download, err := r.stats(cookieR)
 			if err != nil {
-				return stats.TrafficCounters{}, err
+				return api.TrafficCounters{}, err
 			}
-			return stats.TrafficCounters{
+			return api.TrafficCounters{
 				UploadBytes:   upload.SkbRedirected,
 				DownloadBytes: download.SkbRedirected,
 			}, nil

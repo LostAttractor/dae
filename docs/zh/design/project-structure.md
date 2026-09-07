@@ -8,7 +8,10 @@
 | `component/routing`、`outbound` | 路由规则、目的地址计划、出站选择 |
 | `component/network`、`sniffing` | 接口管理与协议嗅探 |
 | `component/mitm` | HTTP/TLS、插件生命周期；`plugin` 是公开 API，`surge` 实现 sgmodule，`ca` 管理证书 |
-| `component/api` | 管理 API 和页面，通过接口调用控制面 |
+| `api`、`api/client` | 公开数据契约与独立 HTTP/Unix 客户端 |
+| `client/cli`、`client/status`、`client/webui` | 终端命令、状态展示与静态前端 |
+| `component/api` | HTTP 路由、鉴权和请求校验，通过接口调用控制面 |
+| `internal/apiserver` | TCP/Unix 监听与重载时的请求等待 |
 | `component/dns`、`settings`、`clientset` | DNS、设置持久化、客户端集合 |
 | `pkg`、`common`、`trace`、`third_party` | 基础代码、追踪工具和固定版本依赖 |
 

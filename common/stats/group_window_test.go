@@ -9,6 +9,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/api"
 )
 
 func TestRecentGroupStatesBucketsWorstState(t *testing.T) {
@@ -21,17 +23,17 @@ func TestRecentGroupStatesBucketsWorstState(t *testing.T) {
 	recent.record(now.Add(-19*time.Minute), true)
 
 	window := recent.snapshot(now)
-	want := []GroupHistoryState{
-		GroupHistoryAvailable,
-		GroupHistoryUnavailable,
-		GroupHistoryAvailable,
-		GroupHistoryAvailable,
-		GroupHistoryAvailable,
-		GroupHistoryAvailable,
-		GroupHistoryUnavailable,
-		GroupHistoryAvailable,
-		GroupHistoryAvailable,
-		GroupHistoryAvailable,
+	want := []api.GroupHistoryState{
+		api.GroupHistoryAvailable,
+		api.GroupHistoryUnavailable,
+		api.GroupHistoryAvailable,
+		api.GroupHistoryAvailable,
+		api.GroupHistoryAvailable,
+		api.GroupHistoryAvailable,
+		api.GroupHistoryUnavailable,
+		api.GroupHistoryAvailable,
+		api.GroupHistoryAvailable,
+		api.GroupHistoryAvailable,
 	}
 	if !slices.Equal(window.States, want) {
 		t.Fatalf("bucket states = %q, want %q", window.States, want)
@@ -45,7 +47,7 @@ func TestRecentGroupStatesUsesNewerBucketAtBoundary(t *testing.T) {
 	recent.record(now.Add(-54*time.Minute), false)
 
 	window := recent.snapshot(now)
-	if window.States[0] != GroupHistoryAvailable || window.States[1] != GroupHistoryUnavailable {
+	if window.States[0] != api.GroupHistoryAvailable || window.States[1] != api.GroupHistoryUnavailable {
 		t.Fatalf("boundary buckets = %q/%q, want available/unavailable", window.States[0], window.States[1])
 	}
 }
@@ -57,7 +59,7 @@ func TestRecentGroupStatesRecoveryAtBoundaryDoesNotPolluteNewBucket(t *testing.T
 	recent.record(now.Add(-54*time.Minute), true)
 
 	window := recent.snapshot(now)
-	if window.States[0] != GroupHistoryUnavailable || window.States[1] != GroupHistoryAvailable {
+	if window.States[0] != api.GroupHistoryUnavailable || window.States[1] != api.GroupHistoryAvailable {
 		t.Fatalf("boundary buckets = %q/%q, want unavailable/available", window.States[0], window.States[1])
 	}
 }
@@ -68,11 +70,11 @@ func TestRecentGroupStatesUsesFirstObservedStateForPartialBucket(t *testing.T) {
 	recent.record(now.Add(-57*time.Minute), true)
 
 	window := recent.snapshot(now)
-	if window.States[0] != GroupHistoryAvailable {
+	if window.States[0] != api.GroupHistoryAvailable {
 		t.Fatalf("partially observed bucket = %q, want available", window.States[0])
 	}
 	for i, state := range window.States[1:] {
-		if state != GroupHistoryAvailable {
+		if state != api.GroupHistoryAvailable {
 			t.Fatalf("bucket %d = %q, want available", i+1, state)
 		}
 	}

@@ -5,18 +5,13 @@
 
 package stats
 
-import "time"
+import (
+	"time"
+
+	"github.com/daeuniverse/dae/api"
+)
 
 const recentAvailabilityDuration = 24 * time.Hour
-
-// AvailabilityWindow summarizes availability over a bounded observation
-// window. UpRatio is time-weighted, while check counters count discrete health
-// checks in the same window.
-type AvailabilityWindow struct {
-	UpRatio      float64 `json:"up_ratio"`
-	ChecksTotal  int64   `json:"checks_total"`
-	ChecksFailed int64   `json:"checks_failed"`
-}
 
 type availabilityTransition struct {
 	at    time.Time
@@ -47,14 +42,14 @@ func (r *recentAvailability) record(now, transitionAt time.Time, alive, checked 
 	r.prune(now.Add(-recentAvailabilityDuration))
 }
 
-func (r *recentAvailability) snapshot(firstSeen, now time.Time) AvailabilityWindow {
+func (r *recentAvailability) snapshot(firstSeen, now time.Time) api.AvailabilityWindow {
 	if firstSeen.IsZero() {
-		return AvailabilityWindow{}
+		return api.AvailabilityWindow{}
 	}
 
 	cutoff := now.Add(-recentAvailabilityDuration)
 	r.prune(cutoff)
-	window := AvailabilityWindow{
+	window := api.AvailabilityWindow{
 		ChecksTotal:  int64(len(r.checkTimes)),
 		ChecksFailed: int64(len(r.failureTimes)),
 	}

@@ -5,37 +5,15 @@
 
 package stats
 
-import "time"
+import (
+	"time"
 
-const (
-	GroupStateWindowDuration = time.Hour
-	GroupStateBucketCount    = 10
+	"github.com/daeuniverse/dae/api"
 )
-
-// GroupState describes the aggregate connectivity of a checked outbound group.
-type GroupState string
-
-const (
-	GroupStateAvailable   GroupState = "available"
-	GroupStateChecking    GroupState = "checking"
-	GroupStateUnavailable GroupState = "unavailable"
-)
-
-type GroupHistoryState string
-
-const (
-	GroupHistoryUnknown     GroupHistoryState = "unknown"
-	GroupHistoryAvailable   GroupHistoryState = "available"
-	GroupHistoryUnavailable GroupHistoryState = "unavailable"
-)
-
-type GroupStateWindow struct {
-	States []GroupHistoryState `json:"states"`
-}
 
 type groupStateTransition struct {
 	at    time.Time
-	state GroupHistoryState
+	state api.GroupHistoryState
 }
 
 // recentGroupStates retains state changes rather than periodic samples. A
@@ -45,38 +23,38 @@ type recentGroupStates struct {
 	transitions []groupStateTransition
 }
 
-func emptyGroupStateWindow() GroupStateWindow {
-	window := GroupStateWindow{
-		States: make([]GroupHistoryState, GroupStateBucketCount),
+func emptyGroupStateWindow() api.GroupStateWindow {
+	window := api.GroupStateWindow{
+		States: make([]api.GroupHistoryState, api.GroupStateBucketCount),
 	}
 	for i := range window.States {
-		window.States[i] = GroupHistoryUnknown
+		window.States[i] = api.GroupHistoryUnknown
 	}
 	return window
 }
 
 func (r *recentGroupStates) record(now time.Time, available bool) {
-	state := GroupHistoryUnavailable
+	state := api.GroupHistoryUnavailable
 	if available {
-		state = GroupHistoryAvailable
+		state = api.GroupHistoryAvailable
 	}
 	if len(r.transitions) == 0 || r.transitions[len(r.transitions)-1].state != state {
 		r.transitions = append(r.transitions, groupStateTransition{at: now, state: state})
 	}
-	r.prune(now.Add(-GroupStateWindowDuration))
+	r.prune(now.Add(-api.GroupStateWindowDuration))
 }
 
-func (r *recentGroupStates) snapshot(now time.Time) GroupStateWindow {
-	r.prune(now.Add(-GroupStateWindowDuration))
+func (r *recentGroupStates) snapshot(now time.Time) api.GroupStateWindow {
+	r.prune(now.Add(-api.GroupStateWindowDuration))
 	window := emptyGroupStateWindow()
 	if len(r.transitions) == 0 {
 		return window
 	}
 
-	windowStart := now.Add(-GroupStateWindowDuration)
-	bucketDuration := GroupStateWindowDuration / GroupStateBucketCount
+	windowStart := now.Add(-api.GroupStateWindowDuration)
+	bucketDuration := api.GroupStateWindowDuration / api.GroupStateBucketCount
 	transitionIndex := 0
-	current := GroupHistoryUnknown
+	current := api.GroupHistoryUnknown
 	for transitionIndex < len(r.transitions) && !r.transitions[transitionIndex].at.After(windowStart) {
 		current = r.transitions[transitionIndex].state
 		transitionIndex++
@@ -109,14 +87,14 @@ func (r *recentGroupStates) snapshot(now time.Time) GroupStateWindow {
 	return window
 }
 
-func worseGroupState(current, next GroupHistoryState) GroupHistoryState {
-	if current == GroupHistoryUnavailable || next == GroupHistoryUnavailable {
-		return GroupHistoryUnavailable
+func worseGroupState(current, next api.GroupHistoryState) api.GroupHistoryState {
+	if current == api.GroupHistoryUnavailable || next == api.GroupHistoryUnavailable {
+		return api.GroupHistoryUnavailable
 	}
-	if current == GroupHistoryAvailable || next == GroupHistoryAvailable {
-		return GroupHistoryAvailable
+	if current == api.GroupHistoryAvailable || next == api.GroupHistoryAvailable {
+		return api.GroupHistoryAvailable
 	}
-	return GroupHistoryUnknown
+	return api.GroupHistoryUnknown
 }
 
 func (r *recentGroupStates) prune(cutoff time.Time) {

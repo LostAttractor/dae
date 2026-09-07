@@ -6,10 +6,11 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/daeuniverse/dae/component/api/internal/webui"
+	contract "github.com/daeuniverse/dae/api"
 )
 
 type Certificates struct {
+	Identity    contract.Certificate
 	Fingerprint string
 	Handler     http.Handler
 }
@@ -20,6 +21,7 @@ type ClientResolver func(source, destination netip.AddrPort) ([6]byte, error)
 // Options captures one plane's configuration. Publish a new handler when
 // configuration changes; stores continue to provide live runtime state.
 type Options struct {
+	Status        func() *contract.StatusSnapshot
 	Selectors     SelectorStore
 	Devices       DeviceStore
 	ResolveClient ClientResolver
@@ -34,13 +36,19 @@ type server struct{ options Options }
 func NewHandler(options Options) http.Handler {
 	s := &server{options: options}
 	mux := http.NewServeMux()
-	page := webui.Handler()
-	for _, path := range []string{"/{$}", "/style.css", "/app.js"} {
-		mux.Handle("GET "+path, page)
-	}
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		if s.requireAdmin(w, r) && apiBody(w, r, nil) {
+			writeAPI(w, options.Status())
+		}
+	})
 	if options.Certificates != nil {
 		certificates := options.Certificates.Handler
-		for _, path := range []string{"/api/certificate", "/ca.pem", "/ca.cer", "/ca.mobileconfig"} {
+		mux.HandleFunc("GET /api/certificate", func(w http.ResponseWriter, r *http.Request) {
+			if apiBody(w, r, nil) {
+				writeAPI(w, options.Certificates.Identity)
+			}
+		})
+		for _, path := range []string{"/ca.pem", "/ca.cer", "/ca.mobileconfig"} {
 			mux.Handle("GET "+path, certificates)
 		}
 	}
@@ -58,7 +66,7 @@ func NewHandler(options Options) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if !localIPHost(r) || !sameOrigin(r) {
+			if (!localAPISocket(r) && !localIPHost(r)) || !sameOrigin(r) {
 				apiError(w, 403, "open the API directly using the router IP address and port; cross-origin access is not allowed")
 				return
 			}

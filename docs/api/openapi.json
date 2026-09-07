@@ -1,0 +1,1589 @@
+{
+  "components": {
+    "responses": {
+      "Error": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "properties": {
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "type": "object"
+            }
+          },
+          "text/plain": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "400 invalid request; 401 wrong/missing configured token; 403 forbidden or admin token not configured; 404 absent resource; 405 unsupported method; 409 CA changed; 413 body over 1 KiB; 415 wrong media type; 500 persistence failure; 503 starting/reloading. Route/method errors and missing certificates may be plain text."
+      }
+    },
+    "schemas": {
+      "Availability": {
+        "properties": {
+          "alive": {
+            "type": "boolean"
+          },
+          "alive_since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "checks_failed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "checks_since_alive": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "checks_total": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_check_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_connection_failure_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_failure_duration": {
+            "description": "Duration in nanoseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_failure_started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recent_24h": {
+            "$ref": "#/components/schemas/AvailabilityWindow"
+          },
+          "seen": {
+            "type": "boolean"
+          },
+          "up_ratio": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "seen",
+          "alive",
+          "alive_since",
+          "last_failure_started_at",
+          "last_failure_duration",
+          "last_check_at",
+          "last_connection_failure_at",
+          "up_ratio",
+          "checks_total",
+          "checks_failed",
+          "checks_since_alive",
+          "recent_24h"
+        ],
+        "type": "object"
+      },
+      "AvailabilityWindow": {
+        "properties": {
+          "checks_failed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "checks_total": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "up_ratio": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "up_ratio",
+          "checks_total",
+          "checks_failed"
+        ],
+        "type": "object"
+      },
+      "Certificate": {
+        "properties": {
+          "fingerprint": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "fingerprint"
+        ],
+        "type": "object"
+      },
+      "ClientSetState": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "joined": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "joined"
+        ],
+        "type": "object"
+      },
+      "DeviceState": {
+        "properties": {
+          "mac": {
+            "type": "string"
+          },
+          "mitm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MITMState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sets": {
+            "items": {
+              "$ref": "#/components/schemas/ClientSetState"
+            },
+            "type": "array"
+          },
+          "source_ip": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ip",
+          "mac",
+          "sets"
+        ],
+        "type": "object"
+      },
+      "GroupAvailability": {
+        "properties": {
+          "alive": {
+            "type": "boolean"
+          },
+          "alive_since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "checks_failed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "checks_since_alive": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "checks_total": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_check_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_connection_failure_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_failure_duration": {
+            "description": "Duration in nanoseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_failure_started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recent": {
+            "$ref": "#/components/schemas/GroupStateWindow"
+          },
+          "recent_24h": {
+            "$ref": "#/components/schemas/AvailabilityWindow"
+          },
+          "seen": {
+            "type": "boolean"
+          },
+          "up_ratio": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "seen",
+          "alive",
+          "alive_since",
+          "last_failure_started_at",
+          "last_failure_duration",
+          "last_check_at",
+          "last_connection_failure_at",
+          "up_ratio",
+          "checks_total",
+          "checks_failed",
+          "checks_since_alive",
+          "recent_24h",
+          "recent"
+        ],
+        "type": "object"
+      },
+      "GroupStateWindow": {
+        "properties": {
+          "states": {
+            "description": "For checked groups, 10 oldest-first buckets spanning the last hour (6 minutes each); the worst state in each bucket. Unchecked groups have no history.",
+            "items": {
+              "enum": [
+                "unknown",
+                "available",
+                "unavailable"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "states"
+        ],
+        "type": "object"
+      },
+      "GroupStatus": {
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/GroupAvailability"
+          },
+          "check_async": {
+            "type": "boolean"
+          },
+          "checks_connectivity": {
+            "type": "boolean"
+          },
+          "connectivity": {
+            "enum": [
+              "available",
+              "checking",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "critical": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "networks": {
+            "description": "Network order: tcp4, tcp6, udp4, udp6.",
+            "items": {
+              "$ref": "#/components/schemas/PathStats"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeStatus"
+            },
+            "type": "array"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "selected_node_ids": {
+            "description": "Network order: tcp4, tcp6, udp4, udp6.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": "array"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PathStats"
+          },
+          "target_kind": {
+            "enum": [
+              "group",
+              "node",
+              "builtin"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "target_kind",
+          "policy",
+          "critical",
+          "checks_connectivity",
+          "availability",
+          "stats",
+          "networks",
+          "selected_node_ids",
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "LatencyStats": {
+        "properties": {
+          "average_10": {
+            "description": "Duration in nanoseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "average_10_failed": {
+            "type": "boolean"
+          },
+          "last": {
+            "description": "Duration in nanoseconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "moving_average": {
+            "description": "Duration in nanoseconds.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "last",
+          "average_10",
+          "moving_average",
+          "average_10_failed"
+        ],
+        "type": "object"
+      },
+      "BufferMemoryStatus": {
+        "description": "Process-wide MITM body buffer budget. Byte counters measure reserved buffer storage; denied counts rejected reservations.",
+        "properties": {
+          "limit": {
+            "description": "Configured byte limit. Lowering it does not revoke existing reservations, so used may temporarily exceed limit.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "used": {
+            "description": "Currently reserved bytes.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "peak": {
+            "description": "Peak reserved bytes over the process lifetime.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "denied": {
+            "description": "Rejected reservation count over the process lifetime (unsigned 64-bit integer).",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limit",
+          "used",
+          "peak",
+          "denied"
+        ],
+        "type": "object"
+      },
+      "MITMInstanceStatus": {
+        "properties": {
+          "buffer_memory": {
+            "$ref": "#/components/schemas/BufferMemoryStatus",
+            "description": "Optional process-wide budget snapshot, repeated on each instance. Do not sum it across instances."
+          },
+          "destination_rules": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "scopes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "details": {
+            "description": "Plugin-defined JSON report. Surge uses the SurgeStatus schema; reports must not contain credentials."
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "state",
+          "scopes",
+          "destination_rules"
+        ],
+        "type": "object"
+      },
+      "MITMState": {
+        "properties": {
+          "ca_fingerprint": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "override",
+          "ca_fingerprint"
+        ],
+        "type": "object"
+      },
+      "ModuleStatus": {
+        "properties": {
+          "body_rewrites": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "header_rewrites": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "host_mappings": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "hostnames": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "map_locals": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rules": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "scripts": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "url_rewrites": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "source",
+          "state",
+          "scripts",
+          "hostnames",
+          "host_mappings",
+          "url_rewrites",
+          "header_rewrites",
+          "body_rewrites",
+          "map_locals",
+          "rules",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "NodeAnnotationStatus": {
+        "properties": {
+          "add_latency": {
+            "type": "string"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority_conditional": {
+            "type": "boolean"
+          }
+        },
+        "required": null,
+        "type": "object"
+      },
+      "NodeStatus": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "annotation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NodeAnnotationStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "availability": {
+            "$ref": "#/components/schemas/Availability"
+          },
+          "checks_connectivity": {
+            "type": "boolean"
+          },
+          "confirming_failure": {
+            "type": "boolean"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "latency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LatencyStats"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PathStats"
+          },
+          "subtag": {
+            "type": "string"
+          },
+          "support": {
+            "description": "Network order: tcp4, tcp6, udp4, udp6.",
+            "items": {
+              "enum": [
+                "unknown",
+                "confirmed",
+                "unsupported"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": "array"
+          },
+          "revision": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "observed_session_seq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "session_detail": {
+            "$ref": "#/components/schemas/SessionStatus"
+          },
+          "recovery": {
+            "$ref": "#/components/schemas/RecoverySnapshot"
+          },
+          "failure": {
+            "$ref": "#/components/schemas/FailureSnapshot"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "subtag",
+          "protocol",
+          "address",
+          "checks_connectivity",
+          "healthy",
+          "confirming_failure",
+          "availability",
+          "support",
+          "stats",
+          "revision",
+          "observed_session_seq",
+          "recovery"
+        ],
+        "type": "object"
+      },
+      "PathStats": {
+        "properties": {
+          "active_connections": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "download_bytes": {
+            "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fallback_connections": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "history": {
+            "$ref": "#/components/schemas/TrafficHistory"
+          },
+          "total_connections": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "upload_bytes": {
+            "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active_connections",
+          "total_connections",
+          "fallback_connections",
+          "upload_bytes",
+          "download_bytes",
+          "history"
+        ],
+        "type": "object"
+      },
+      "SelectNodeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "node_id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id"
+        ],
+        "type": "object"
+      },
+      "SelectorNode": {
+        "properties": {
+          "checking": {
+            "type": "boolean"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "healthy",
+          "checking"
+        ],
+        "type": "object"
+      },
+      "SelectorState": {
+        "properties": {
+          "default_node_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/SelectorNode"
+            },
+            "type": "array"
+          },
+          "overridden": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "default_node_id",
+          "node_id",
+          "overridden",
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "SelectorsResponse": {
+        "properties": {
+          "admin_enabled": {
+            "type": "boolean"
+          },
+          "selectors": {
+            "items": {
+              "$ref": "#/components/schemas/SelectorState"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "selectors",
+          "admin_enabled"
+        ],
+        "type": "object"
+      },
+      "SetMITMRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "StatusSnapshot": {
+        "properties": {
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/GroupStatus"
+            },
+            "type": "array"
+          },
+          "last_reload_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "mitm_plugins": {
+            "items": {
+              "$ref": "#/components/schemas/MITMInstanceStatus"
+            },
+            "type": "array"
+          },
+          "networks": {
+            "description": "Network order: tcp4, tcp6, udp4, udp6.",
+            "items": {
+              "$ref": "#/components/schemas/PathStats"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": "array"
+          },
+          "schema": {
+            "const": 7,
+            "format": "int64",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/PathStats"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/TableUsage"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema",
+          "version",
+          "started_at",
+          "last_reload_at",
+          "stats",
+          "networks",
+          "tables",
+          "groups"
+        ],
+        "type": "object"
+      },
+      "SurgeStatus": {
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/ModuleStatus"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "modules"
+        ],
+        "type": "object"
+      },
+      "TableUsage": {
+        "properties": {
+          "breakdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableUsageBreakdown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "used": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "used",
+          "limit"
+        ],
+        "type": "object"
+      },
+      "TableUsageBreakdown": {
+        "properties": {
+          "limit_gc": {
+            "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "live": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "retained": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "live",
+          "retained",
+          "limit_gc"
+        ],
+        "type": "object"
+      },
+      "TrafficHistory": {
+        "properties": {
+          "download_bytes_per_second": {
+            "description": "Oldest first; completed 5-second averages in bytes/second. Both directions have equal length, 0–12 samples.",
+            "items": {
+              "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxItems": 12,
+            "type": "array"
+          },
+          "upload_bytes_per_second": {
+            "description": "Oldest first; completed 5-second averages in bytes/second. Both directions have equal length, 0–12 samples.",
+            "items": {
+              "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxItems": 12,
+            "type": "array"
+          }
+        },
+        "required": [
+          "upload_bytes_per_second",
+          "download_bytes_per_second"
+        ],
+        "type": "object"
+      },
+      "ResourceRef": {
+        "properties": {
+          "owner_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "resource_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "generation": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "owner_id",
+          "resource_id",
+          "generation"
+        ],
+        "type": "object",
+        "description": "Unsigned resource identifiers; generations are comparable only within the same owner and resource."
+      },
+      "RecoverySnapshot": {
+        "properties": {
+          "executor": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "cleanup",
+              "waiting_dependency",
+              "queued",
+              "backoff",
+              "connecting",
+              "verifying",
+              "ready",
+              "blocked",
+              "stopped"
+            ]
+          },
+          "verification": {
+            "type": "string"
+          },
+          "attempt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "retry_at": {
+            "format": "date-time",
+            "type": "string",
+            "description": "Actual timer deadline, present only during backoff. Omitted when no retry timer is owned."
+          },
+          "blocked_by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phase",
+          "verification",
+          "attempt"
+        ],
+        "type": "object"
+      },
+      "FailureSnapshot": {
+        "properties": {
+          "episode_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRef"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "layer": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "episode_id",
+          "resource",
+          "scope",
+          "layer",
+          "phase",
+          "origin",
+          "reason",
+          "occurred_at",
+          "message"
+        ],
+        "type": "object",
+        "description": "Classified failure metadata; message is display text and must not be used as a metric label."
+      },
+      "SessionStatus": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "disconnected",
+              "connecting",
+              "connected",
+              "closed"
+            ]
+          },
+          "seq": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "readiness_version": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceRef"
+          },
+          "episode_id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "accepting": {
+            "type": "boolean"
+          },
+          "usable_capacity": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "state",
+          "seq",
+          "readiness_version",
+          "resource",
+          "episode_id",
+          "accepting",
+          "usable_capacity",
+          "recovery_required"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Status schema 7. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "title": "dae runtime API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/certificate": {
+      "get": {
+        "operationId": "getCertificate",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Certificate"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Read public CA identity"
+      }
+    },
+    "/api/device": {
+      "get": {
+        "operationId": "getDevice",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceState"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Read the direct LAN caller's device state (TCP only)"
+      }
+    },
+    "/api/device/mitm": {
+      "delete": {
+        "operationId": "resetMITM",
+        "parameters": [
+          {
+            "description": "Current CA SHA-256 fingerprint.",
+            "in": "header",
+            "name": "X-Dae-MITM",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceState"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Restore this device's HTTPS configuration (TCP only)"
+      },
+      "put": {
+        "operationId": "setMITM",
+        "parameters": [
+          {
+            "description": "Current CA SHA-256 fingerprint.",
+            "in": "header",
+            "name": "X-Dae-MITM",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetMITMRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceState"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Set this device's HTTPS module override (TCP only)"
+      }
+    },
+    "/api/device/sets/{name}": {
+      "delete": {
+        "operationId": "leaveSet",
+        "parameters": [
+          {
+            "description": "URL-encoded name, including any slash.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceState"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Leave a client set (TCP only)"
+      },
+      "put": {
+        "operationId": "joinSet",
+        "parameters": [
+          {
+            "description": "URL-encoded name, including any slash.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceState"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "Join a client set (TCP only)"
+      }
+    },
+    "/api/selectors": {
+      "get": {
+        "operationId": "getSelectors",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelectorsResponse"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "summary": "List manual selectors"
+      }
+    },
+    "/api/selectors/{group}": {
+      "delete": {
+        "description": "On TCP requires global.api_token and its Bearer token. A filesystem-authorized Unix socket connection is already administrative.",
+        "operationId": "resetSelector",
+        "parameters": [
+          {
+            "description": "URL-encoded name, including any slash.",
+            "in": "path",
+            "name": "group",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelectorState"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Restore configured selection"
+      },
+      "put": {
+        "description": "On TCP requires global.api_token and its Bearer token. A filesystem-authorized Unix socket connection is already administrative.",
+        "operationId": "selectNode",
+        "parameters": [
+          {
+            "description": "URL-encoded name, including any slash.",
+            "in": "path",
+            "name": "group",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelectorState"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Override a selector"
+      }
+    },
+    "/api/status": {
+      "get": {
+        "description": "On TCP requires global.api_token and its Bearer token. A filesystem-authorized Unix socket connection is already administrative.",
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusSnapshot"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read the runtime snapshot"
+      }
+    },
+    "/ca.cer": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/pkix-cert": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Certificate download"
+          },
+          "404": {
+            "description": "Certificate unavailable"
+          }
+        },
+        "summary": "Download public CA material; 404 when unavailable"
+      }
+    },
+    "/ca.mobileconfig": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-apple-aspen-config": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Certificate download"
+          },
+          "404": {
+            "description": "Certificate unavailable"
+          }
+        },
+        "summary": "Download public CA material; 404 when unavailable"
+      }
+    },
+    "/ca.pem": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-pem-file": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Certificate download"
+          },
+          "404": {
+            "description": "Certificate unavailable"
+          }
+        },
+        "summary": "Download public CA material; 404 when unavailable"
+      }
+    }
+  },
+  "servers": [
+    {
+      "description": "Replace with the router's actual literal IP and api_port",
+      "url": "http://192.168.1.1:9080"
+    }
+  ]
+}

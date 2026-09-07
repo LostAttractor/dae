@@ -8,13 +8,14 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"encoding/xml"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/daeuniverse/dae/api"
 )
 
 // CertificatePEM exports only the public certificate.
@@ -75,7 +76,12 @@ func profileUUID(cert *x509.Certificate, label string) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
-// Handler serves only the public certificate downloads and metadata.
+// Identity exposes only the public CA name and fingerprint.
+func (a *Authority) Identity() api.Certificate {
+	return api.Certificate{Name: a.certificate.Subject.CommonName, Fingerprint: a.Fingerprint()}
+}
+
+// Handler serves only the public certificate downloads.
 func (a *Authority) Handler() http.Handler {
 	cert := a.certificate
 	type resource struct {
@@ -92,13 +98,6 @@ func (a *Authority) Handler() http.Handler {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if r.URL.Path == "/api/certificate" {
-			w.Header().Set("Content-Type", "application/json")
-			if r.Method != http.MethodHead {
-				_ = json.NewEncoder(w).Encode(map[string]string{"name": cert.Subject.CommonName, "fingerprint": a.Fingerprint()})
-			}
 			return
 		}
 		resource, ok := resources[r.URL.Path]
