@@ -81,8 +81,8 @@ global {
     # Use the sniffed domain to override the dial target (destination) when it is available and verified.
     # This will relieve DNS pollution problem to a great extent if you have impure DNS environment. Generally,
     # it brings faster proxy response time because the proxy will re-resolve the domain in remote, thus get
-    # better IP result to connect. Set it false to always dial using the original destination IP; sniffing
-    # will be disabled if reroute_mode is also "none".
+    # better IP result to connect. Set it false to dial using the destination IP. Explicit DNAT/Host IP
+    # rewrites take precedence over this option. Sniffing will be disabled if reroute_mode is also "none".
     dial_target_override: true
 
     # Whether to re-route traffic using the sniffed domain. Optional values:
@@ -230,7 +230,8 @@ dns {
         # IPv4 or IPv6 to use according to group policy (such as min latency policy).
         # DNS-backed domain routing uses answers forwarded by dae. TLS SNI/HTTP Host sniffing can also
         # supply domains, subject to reroute_mode and sniff_verify_mode. The strict verification mode
-        # requires DNS records learned by dae; rules/DNAT and MITM capture do not require DNS interception.
+        # requires DNS records learned by dae. Domain-based MITM and Host/DNAT capture also use these
+        # mappings; missing mappings never trigger an implicit all-traffic capture fallback.
 
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
@@ -259,24 +260,24 @@ dns {
             fallback: googledns
         }
     }
-#    routing {
-#        # According to the request of dns query, decide to use which DNS upstream.
-#        # Match rules from top to bottom.
-#        request {
-#            # fallback is also called default.
-#            fallback: alidns
-#        }
-#        # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
-#        # Match rules from top to bottom.
-#        response {
-#            # Trusted upstream. Always accept its result.
-#            upstream(googledns) -> accept
-#            # Possibly polluted, re-lookup using googledns.
-#            ip(geoip:private) && !qname(geosite:cn) -> googledns
-#            # fallback is also called default.
-#            fallback: accept
-#        }
-#    }
+    #routing {
+    #    # According to the request of dns query, decide to use which DNS upstream.
+    #    # Match rules from top to bottom.
+    #    request {
+    #        # fallback is also called default.
+    #        fallback: alidns
+    #    }
+    #    # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
+    #    # Match rules from top to bottom.
+    #    response {
+    #        # Trusted upstream. Always accept its result.
+    #        upstream(googledns) -> accept
+    #        # Possibly polluted, re-lookup using googledns.
+    #        ip(geoip:private) && !qname(geosite:cn) -> googledns
+    #        # fallback is also called default.
+    #        fallback: accept
+    #    }
+    #}
 }
 
 # Node group (outbound).
@@ -360,6 +361,10 @@ client {
 # Optional HTTP/HTTPS processing. Disabled until CA, client selection and modules are ready.
 # Copy examples/surge/{demo.sgmodule,request.js,response.js} to $DAE_LOCATION_CACHE/modules/.
 # Generate a CA with "dae mitm ca generate" and install/trust it on the selected clients before enabling.
+# Capture retains each scope's hostname/IP and port constraints; unrelated direct stays in eBPF.
+# Domain capture needs DNS mappings. Literal IP scopes do not; final HTTP matching still uses Host/SNI.
+# Request-transforming modules run before final upstream routing, including block.
+# Pure inspection retains the kernel route. Excluded clients follow ordinary routing.
 # See docs/zh/configuration/mitm-plugins.md and docs/zh/configuration/surge-module.md.
 mitm {
     enabled: false
@@ -394,13 +399,24 @@ mitm {
     #}
 }
 
-# Destination IP overrides, independent of MITM and DNS interception.
-# Filters use the routing syntax; the first matching rule wins and keeps the original port.
-# routing still selects the outbound from original connection information; block takes precedence.
-# Host/SNI are preserved. A missing sniffed domain cannot match a domain filter, including negation.
-# Native rules apply to direct and proxy outbounds, before Surge [Host] contributions.
+# Flow controls and destination IP overrides, independent of MITM.
+# Filters use the routing syntax. must, bump and DNAT can apply to the same connection.
+# Destination matching runs before flow controls, followed by outbound routing.
+# Flow controls accumulate; a bump does not hide later must/capture effects.
+# Destination candidates hand off before flow controls; routing uses the rewritten IP.
+# Source, interface, process and Host/SNI identity remain available after rewriting.
+# Domain conditions use existing DNS mappings in the kernel; no implicit all-traffic capture.
 # See docs/zh/configuration/destination-rules.md.
 rules {
+    # Skip automatic DNS interception; routing still selects direct/proxy/block.
+    #pname(mosdns) -> must
+
+    # Require userspace routing for matching traffic.
+    #domain(full: api.example.com) && l4proto(tcp) -> bump
+
+    # First matching DNAT wins, keeping the original port and Host/SNI.
+    # Native DNAT applies before routing to direct/proxy/block, before Surge [Host].
+    # In userspace, DNAT domain filters (including negation) need a sniffed hostname.
     #domain(full: api.example.com) && dport(443) -> dnat(198.51.100.20)
     #sip(192.168.10.0/24) && dip(192.0.2.0/24) -> dnat(198.51.100.30)
     #ipversion(6) && domain(suffix: example.net) -> dnat('2001:db8::20')

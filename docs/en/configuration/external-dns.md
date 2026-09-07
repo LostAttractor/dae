@@ -20,10 +20,16 @@ You should configure dae as follows:
 
 1. Complete `wan_interface` in "global" section to proxy requests of AdguardHome.
 
-2. Insert following rule as the first line of "routing" section to avoid loops.
+2. Add a `must` control in `rules` and put the corresponding `direct` rule before other rules in `routing` to avoid loops.
 
-   ```python
-   pname(AdGuardHome) && l4proto(udp) && dport(53) -> must_direct
+   ```text
+   rules {
+       pname(AdGuardHome) && l4proto(udp) && dport(53) -> must
+   }
+   routing {
+       pname(AdGuardHome) && l4proto(udp) && dport(53) -> direct
+       # Other routes and fallback ...
+   }
    ```
 
    And make sure domain `dns.google` will be proxied in routing rules.
@@ -66,12 +72,17 @@ You should configure dae as follows:
 
 1. Fill in `lan_interface` in "global" section to proxy requests of AdguardHome.
 
-2. Insert following rule as the first line of "routing" section to avoid loops.
+2. Add a `must` control in `rules` and put the corresponding `direct` rule before other rules in `routing` to avoid loops.
 
-   ```python
-   sip(192.168.30.3) && l4proto(udp) && dport(53) -> must_direct
-   # Or use MAC address if in the same link:
-   # mac(8c:16:45:36:1c:5a) && l4proto(udp) && dport(53) -> must_direct
+   ```text
+   rules {
+       sip(192.168.30.3) && l4proto(udp) && dport(53) -> must
+   }
+   routing {
+       sip(192.168.30.3) && l4proto(udp) && dport(53) -> direct
+       # Other routes and fallback ...
+   }
+   # On the same link, replace sip(...) in both rules with mac(8c:16:45:36:1c:5a).
    ```
 
    And make sure domain `dns.google` will be proxied in routing rules.

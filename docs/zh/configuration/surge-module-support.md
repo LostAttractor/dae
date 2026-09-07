@@ -12,7 +12,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | 脚本数据 | `$request`、`$response`、`$done`；数字 status、字符串或 Uint8Array body、修改/合成响应/abort；保留目标脚本使用的 h2_trailers |
 | 运行时 | console、Promise、async/await、定时器、`$persistentStore`、`$httpClient` 七种方法、`$utils.ungzip`；通知写入日志；UTF-8 编解码、Base64、有限 URL/DOM API |
 | MITM | HTTP/1.1、TLS HTTP/2、gzip/deflate/br；主机通配、排除、端口；模块独立作用域；CA 管理、设备 MAC/IP 筛选和网页开关 |
-| 目标重写 | `[Host]` 字面 IP、域名或通配符 → 单个或多个 IPv4/IPv6；保留端口，按连接随机选址；`use-local-host-item-for-proxy` 控制代理出站是否应用 |
+| 目标重写 | `[Host]` 字面 IP、域名或通配符 → 单个或多个 IPv4/IPv6；保留端口，按连接随机选址；始终对 direct 和 proxy 生效 |
 | 路由 | DOMAIN/SUFFIX/KEYWORD、基础 WILDCARD、AND/OR/NOT；DIRECT、REJECT、pre-matching、extended-matching 的 dae 映射 |
 
 ## 缺失与行为差异
@@ -21,6 +21,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 
 | 范围 | 当前边界 |
 | --- | --- |
+| Host 代理行为 | 含 Host 映射但未设置 `use-local-host-item-for-proxy = true` 时提示与 Surge 的行为差异；该参数仅用于兼容性诊断，不改变 dae 的目标重写行为 |
 | 条件与其他段 | 无 system/requirement 筛选、`#!include`、行条件执行；General 除 `use-local-host-item-for-proxy` 外、WireGuard、Ruleset 等忽略。行首条件被跳过，Rule 行尾条件被去掉后规则仍可能执行 |
 | 注释 | 支持 # / ; 整行，参数替换后也可禁用整行；仅 Rule 专门处理 // 和行尾注释 |
 | 模块作用域 | hostname 在每个模块内独立合并；无 hostname 的模块执行路由与 IP 目标重写，无需 CA。增删、排序、改参需重载，没有模块管理 UI/API |
@@ -35,13 +36,13 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 
 | 范围 | 当前边界 |
 | --- | --- |
-| 正文失败 | 请求脚本超限 413；响应正文在读取或解压后超限则跳过脚本，回放完整原响应。脚本生成的替换正文超限仍拒绝；响应未 requires-body 时返回 body 被忽略。jq 超限可回放原正文，读取失败除外 |
+| 正文失败 | 请求脚本超限 413、响应脚本超限 502；响应未 requires-body 时返回 body 被忽略。Surge 在这些场景的跳过/中止行为不同。jq 超限可回放原正文，读取失败除外 |
 | 请求正文 | chunked / Expect: 100-continue 仍可替换 body；空正文的暴露不完全等同 Surge |
 | 异常与 `$done` | 普通 JS 异常/超时保留进入脚本阶段的内容，不回滚之前重写；正文读取或非法结果可失败。重复 `$done` 忽略，无待办任务且未调用时立即报错 |
 | headers | 字符串值对象，重复值合并；不保留完整重复字段和顺序，Set-Cookie 不能保证往返保留 |
 | 元数据 | `$script` 缺 sessionID，startTime 使用毫秒；`$environment` 固定版本，不提供真实系统/语言/机型信息；空 argument 不注入 `$argument` |
 | 存储与工具 | 存储省略键共用 undefined，不按脚本路径选键；非字符串值用 String 转换。通知不产生系统通知；ungzip 失败抛异常 |
-| HTTP 客户端 | 沿用当前出站，未设 timeout 时继承脚本预算；不自动 JSON 编码对象 body。无 policy/policy-descriptor/insecure/auto-redirect/auto-cookie/full-header-mode，使用正常 TLS 校验和 Go 跳转行为，无 CookieJar |
+| HTTP 客户端 | 原主机和端口沿用当前路由；新主机或端口经 dae DNS、目的地址规则和 routing 重新选择出站，保留客户端身份。未设 timeout 时继承脚本预算；不自动 JSON 编码对象 body。无 policy/policy-descriptor/insecure/auto-redirect/auto-cookie/full-header-mode，使用正常 TLS 校验和 Go 跳转行为，无 CookieJar |
 | Web API | 编解码仅 UTF-8、无 streaming；URL/DOM 为有限实现，不执行页面脚本或加载资源；无 fetch/crypto/Headers/Request/Response |
 | 系统接口 | 无 geoip/ipasn/ipaso、`$network`、`$httpAPI`、`$surge`、面板/Shortcuts 启动契约；不提供 Node.js、QuickJS std/os 或任意文件访问 |
 | 共享内存 | 固定大小 SharedArrayBuffer 受堆限制；无可增长共享缓冲，Atomics.wait 不能阻塞线程 |
@@ -53,8 +54,8 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | MITM 选项 | 仅解析 hostname；skip-server-cert-verify 等忽略，无 hostname-disabled、p12/Keystore。特殊主机占位符报错；非 443 TLS 端口须显式填写 |
 | 信任与协议 | 不探测客户端信任或在握手失败后透传；无 HTTP/3 解密、自动 QUIC 阻断、h2c、跨主机 HTTP/2 复用。CONNECT 返回 405，WebSocket 只处理 HTTP1 握手；无 `force-http-engine-hosts` / `always-raw-tcp-hosts` |
 | 路由类型 | 无 HTTP/IP/进程/端口/来源/规则集/SCRIPT 等模块规则；两字段 FINAL,DIRECT 加载失败。WILDCARD 无字符类，逻辑规则叶子限域名类型 |
-| 拒绝与选项 | REJECT 映射 dae block；无 DNS No Record、TCP RST、自适应拒绝或 REJECT-TINYGIF。extended-matching 使用 DNS/可信 SNI/Host，不逐请求重新匹配；未知选项整条跳过 |
-| 优先级 | pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。脚本请求与 HTTP 改写沿用已选出站，不按新 URL 重跑路由 |
+| 拒绝与选项 | REJECT 映射 dae block；无 DNS No Record、TCP RST、自适应拒绝或 REJECT-TINYGIF。extended-matching 使用当前目标的 DNS/可信域名上下文，不匹配 URL 路径；未知选项整条跳过 |
+| 优先级 | 目的地址规则 → flow → pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。脚本、URL Rewrite、Map Local 范围先执行 HTTP 处理，再按最终目标运行该流程；原目标 block 不抢先终止已准入请求。纯检查保留有效原路由。302/307 返回客户端自行请求 |
 | Host 范围 | 支持字面 IP、域名和通配符到 IP 的拨号覆盖；无别名、指定 DNS、DNS script 或 ruleset 引用，不修改 DNS 应答。不支持的 Host 项使模块加载失败，错误包含行号。用法见[目标重写](surge-module.md#ip-目标重写) |
 | 诊断 | 有执行事件和分级 console 日志，无 Surge 抓包查看器、notes 或证书固定诊断页面 |
 

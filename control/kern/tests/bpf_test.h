@@ -1160,6 +1160,15 @@ set_routing_fallback(__u8 outbound, bool must, const void *key)
 	set_outbound_connectivity(outbound);
 }
 
+static __always_inline void set_flow_end(const void *key)
+{
+	struct match_set end = {
+		.type = MatchType_Fallback,
+		.action = MatchAction_FlowEnd,
+	};
+	bpf_map_update_elem(&routing_map, key, &end, BPF_ANY);
+}
+
 static __always_inline void clear_routing_entry(const void *key)
 {
 	struct match_set empty = {};

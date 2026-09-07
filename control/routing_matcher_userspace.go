@@ -18,7 +18,9 @@ import (
 )
 
 type RoutingMatcher struct {
-	destinations  []destinationPredicate
+	destination   DestinationProgram
+	flow          FlowProgram
+	routing       RoutingProgram
 	lpmMatcher    []*trie.Trie
 	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
@@ -49,9 +51,7 @@ func (m *RoutingMatcher) Match(
 	mac []byte,
 	trustedDomainBitmap ...[]uint32,
 ) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
-	m.rulesMu.RLock()
-	defer m.rulesMu.RUnlock()
-	return m.matchRange(0, len(m.matches), routingInput{
+	return m.match(routingInput{
 		sourceAddr:          sourceAddr,
 		destAddr:            destAddr,
 		sourcePort:          sourcePort,
@@ -67,23 +67,35 @@ func (m *RoutingMatcher) Match(
 	})
 }
 
-type routingInput struct {
-	sourceAddr, destAddr, mac []byte
-	sourcePort, destPort      uint16
-	ipVersion                 consts.IpVersionType
-	l4proto                   consts.L4ProtoType
-	domain                    string
-	processName               [16]uint8
-	ifindex                   uint32
-	tos                       uint8
-	trustedDomainBitmap       [][]uint32
+// Match the selected stage using the shared flow input.
+func (m *RoutingMatcher) match(p routingInput) (consts.OutboundIndex, uint32, bool, error) {
+	m.rulesMu.RLock()
+	defer m.rulesMu.RUnlock()
+	end := m.routing.end
+	if end == 0 {
+		end = len(m.matches)
+	}
+	start := 0
+	if p.afterTarget {
+		start = m.flow.start
+	}
+	result, err := m.evaluateRange(start, end, p)
+	return result.outbound, result.mark, result.must, err
 }
 
-// Caller holds rulesMu. Absolute indices keep all predicates on the same
-// domain bitmap and dynamic client/interface tables.
-func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+type routingEvaluation struct {
+	outbound     consts.OutboundIndex
+	mark         uint32
+	must         bool
+	captureFlags uint8
+	matched      bool // DestinationProgram predicate result.
+}
+
+// Caller holds rulesMu. Domain and LPM IDs are independent of instruction
+// ranges, so kernel and userspace-only routing predicates share their resources.
+func (m *RoutingMatcher) evaluateRange(start, end int, p routingInput) (routingEvaluation, error) {
 	if len(p.sourceAddr) != net.IPv6len || len(p.destAddr) != net.IPv6len || len(p.mac) != net.IPv6len {
-		return 0, 0, false, fmt.Errorf("bad address length")
+		return routingEvaluation{}, fmt.Errorf("bad address length")
 	}
 
 	bin128s := make([]string, consts.MatchType_Mac+1)
@@ -93,8 +105,9 @@ func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundInd
 
 	var domainMatchBitmap []uint32
 	var domainBumpBitmap []uint32
-	simulateKernel := len(p.trustedDomainBitmap) > 1
-	if simulateKernel {
+	hasBump := len(p.trustedDomainBitmap) > 1
+	simulateKernel := hasBump && !p.afterTarget
+	if hasBump {
 		domainBumpBitmap = p.trustedDomainBitmap[1]
 	}
 	if len(p.trustedDomainBitmap) > 0 && p.trustedDomainBitmap[0] != nil {
@@ -103,6 +116,8 @@ func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundInd
 		domainMatchBitmap = m.domainMatcher.MatchDomainBitmap(p.domain)
 	}
 
+	var must, pendingMust, flowBump bool
+	var captureFlags uint8
 	goodSubrule := false
 	uncertainSubrule := false
 	needControlPlaneRouting := false
@@ -114,15 +129,16 @@ func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundInd
 		}
 		switch consts.MatchType(match.Type) {
 		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
-			lpmIndex := uint32(binary.LittleEndian.Uint16(match.Value[:]))
+			lpmIndex := binary.LittleEndian.Uint32(match.Value[:])
 			m := m.lpmMatcher[lpmIndex]
 			if m.HasPrefix(bin128s[match.Type]) {
 				goodSubrule = true
 			}
 		case consts.MatchType_DomainSet:
-			if len(domainMatchBitmap) > i/32 && (domainMatchBitmap[i/32]>>(i%32))&1 > 0 {
+			id := binary.LittleEndian.Uint32(match.Value[:])
+			if int(id/32) < len(domainMatchBitmap) && (domainMatchBitmap[id/32]>>(id%32))&1 > 0 {
 				goodSubrule = true
-			} else if len(domainBumpBitmap) > i/32 && (domainBumpBitmap[i/32]>>(i%32))&1 > 0 {
+			} else if int(id/32) < len(domainBumpBitmap) && (domainBumpBitmap[id/32]>>(id%32))&1 > 0 {
 				uncertainSubrule = true
 			}
 		case consts.MatchType_Port:
@@ -162,11 +178,12 @@ func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundInd
 		case consts.MatchType_Fallback:
 			goodSubrule = true
 		default:
-			return 0, 0, false, fmt.Errorf("unknown match type: %v", match.Type)
+			return routingEvaluation{}, fmt.Errorf("unknown match type: %v", match.Type)
 		}
 	beforeNextLoop:
 		outbound := consts.OutboundIndex(match.Outbound)
-		if outbound != consts.OutboundLogicalOr {
+		action := consts.MatchAction(match.Action)
+		if action != consts.MatchActionOr {
 			// This match_set reaches the end of subrule.
 			// We are now at end of rule, or next match_set belongs to another
 			// subrule.
@@ -183,18 +200,39 @@ func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundInd
 			uncertainSubrule = false
 		}
 
-		if outbound&consts.OutboundLogicalMask !=
-			consts.OutboundLogicalMask {
+		if action != consts.MatchActionOr && action != consts.MatchActionAnd {
 			// Tail of a rule (line).
 			// Decide whether to hit.
 			if !badRule {
-				if match.CaptureFlags != 0 {
-					needControlPlaneRouting = false
-					continue
-				}
-				if outbound == consts.OutboundControlPlaneRouting && !simulateKernel {
-					needControlPlaneRouting = false
-					continue
+				switch action {
+				case consts.MatchActionMust:
+					if needControlPlaneRouting {
+						pendingMust = true
+					} else {
+						must = true
+					}
+					goto nextRule
+				case consts.MatchActionBump:
+					flowBump = true
+					goto nextRule
+				case consts.MatchActionCapture:
+					captureFlags |= match.CaptureFlags
+					if simulateKernel && captureFlags&(captureDestination|captureHTTPRequest) != 0 {
+						return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureFlags}, nil
+					}
+					goto nextRule
+				case consts.MatchActionFlowEnd:
+					if (simulateKernel && flowBump) || pendingMust && !must {
+						return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must, captureFlags: captureFlags}, nil
+					}
+					goto nextRule
+				case consts.MatchActionMatch:
+					return routingEvaluation{matched: true}, nil
+				case consts.MatchActionMiss:
+					return routingEvaluation{}, nil
+				case consts.MatchActionRoute:
+				default:
+					return routingEvaluation{}, fmt.Errorf("unknown match action: %d", action)
 				}
 				if match.SkipWhileNoalive &&
 					outbound >= consts.OutboundUserDefinedMin &&
@@ -208,20 +246,14 @@ func (m *RoutingMatcher) matchRange(start, end int, p routingInput) (outboundInd
 					continue
 				}
 				if needControlPlaneRouting {
-					return consts.OutboundControlPlaneRouting, 0, must, nil
+					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must, captureFlags: captureFlags}, nil
 				}
-				if outbound == consts.OutboundMustRules {
-					must = true
-					continue
-				}
-				if must {
-					match.Must = true
-				}
-				return outbound, match.Mark, match.Must, nil
+				return routingEvaluation{outbound: outbound, mark: match.Mark, must: must || match.Must, captureFlags: captureFlags}, nil
 			}
+		nextRule:
 			badRule = false
 			needControlPlaneRouting = false
 		}
 	}
-	return 0, 0, false, fmt.Errorf("no match set hit")
+	return routingEvaluation{}, fmt.Errorf("no match set hit")
 }

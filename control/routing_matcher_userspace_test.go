@@ -76,11 +76,15 @@ func TestRoutingMatcherDynamicInterface(t *testing.T) {
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundDirect {
 		t.Fatalf("unresolved interface selected outbound %v, want %v", got, consts.OutboundDirect)
 	}
-	builder.storeIfindex(0, 7)
+	if err := builder.updateIfindex(0, 7, false); err != nil {
+		t.Fatal(err)
+	}
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundUserDefinedMin {
 		t.Fatalf("resolved interface selected outbound %v, want %v", got, consts.OutboundUserDefinedMin)
 	}
-	builder.storeIfindex(0, 0)
+	if err := builder.updateIfindex(0, 0, false); err != nil {
+		t.Fatal(err)
+	}
 	if got := matchIfindex(t, matcher, 7); got != consts.OutboundDirect {
 		t.Fatalf("deleted interface selected outbound %v, want %v", got, consts.OutboundDirect)
 	}
@@ -97,7 +101,10 @@ func TestRoutingMatcherConcurrentInterfaceUpdate(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for i := 0; i < iterations; i++ {
-			builder.storeIfindex(0, uint32(i%2+7))
+			if err := builder.updateIfindex(0, uint32(i%2+7), false); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	}()
 	go func() {

@@ -68,7 +68,7 @@ Latency selection ignores `check_tolerance` until startup completes and once for
 
 The former `[via: ...]` annotation is rejected. Node entries still contain exactly one share link; compose links only with group path expressions.
 
-The legacy `must_name` shorthand is still available. Quote a real node or group name that begins with `must_` (for example, `'must_edge'`) to reference it literally.
+Quote a real node or group name that is `must` or begins with `must_` (for example, `'must_edge'`) to reference it literally. Flow controls belong in `rules {}`.
 
 To bound health-check and runtime growth, a path may contain at most 16 hops, one routed target may expand to at most 4096 paths, and one configuration may materialize at most 16384 paths.
 
@@ -83,13 +83,8 @@ dae supports fragmented TCP and UDP only on an unmarked direct, unmarked pass-th
 ## Examples
 
 ```shell
-### Built-in outbounds: block, direct, must_rules
-
-# must_rules means no redirecting DNS traffic to dae and continue to matching.
-# For single rule, the difference between "direct" and "must_direct" is that "direct" will hijack and process DNS request
-# (for traffic split use), but "must_direct" will not. "must_direct" is useful when there are traffic loops of DNS requests.
-# "must_direct" can also be written as "direct(must)".
-# Similarly, "must_groupname" is also supported to NOT hijack and process DNS traffic, which equals to "groupname(must)".
+### Built-in outbounds: block, direct
+# Flow controls must and bump are configured in rules {}, outside routing {}.
 
 ### fallback outbound
 # If no rule matches, traffic will go through the outbound defined by fallback.
@@ -190,7 +185,7 @@ domain(geosite:disney) -> direct(mark: 0x800)
 # and routing falls through to the following rules (and finally the fallback).
 # This is useful when you prefer a specific egress for specific traffic, but do not
 # require it: on failure the traffic transparently degrades to the general rules.
-# It can be written as a bare parameter (like "must") or with an explicit value:
+# It can be written as a bare parameter or with an explicit value:
 domain(geosite:category-games) -> game_proxy(skip_while_noalive)
 domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 # Notes:
@@ -200,13 +195,28 @@ domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 # - It only works with user-defined groups and direct node targets. Using it with "direct" or "block" is a
 #   configuration error because built-in outbounds do not participate in connectivity checks.
 # - It cannot be used on the fallback rule.
-# - It can be combined with other parameters, e.g. -> my_group(must, skip_while_noalive).
+# - It can be combined with other parameters, e.g. -> my_group(mark: 0x1000, skip_while_noalive).
 
-### Must rules
-# For following rules, DNS requests will be forcibly redirected to dae except from mosdns.
-# Different from must_direct/must_my_group, traffic from mosdns will continue to match other rules.
-pname(mosdns) -> must_rules
-ip(geoip:cn) -> direct
-domain(geosite:cn) -> direct
-fallback: my_group
 ```
+
+DNAT/Host candidates hand off before flow controls or routing commit the old destination. Destination rules select an effective IP; subsequent flow/routing uses that IP and address family while retaining client identity and Host/SNI. Pure MITM inspection retains a valid kernel route. Request-routing scopes (Surge scripts, URL Rewrite and Map Local) also hand off early: admitted clients run HTTP processing before destination rules, flow controls and final routing. An old-target block cannot prevent an admitted request from rewriting its target; a final-target block still rejects it. Excluded clients follow ordinary connection routing. Every deferred request is planned before pool lookup; pools distinguish effective addresses, nodes, outbounds, marks and TLS authority. Local responses require no upstream connection.
+
+## Flow controls in `rules {}`
+
+`must` skips automatic DNS interception and continues to ordinary outbound selection. `bump` requires userspace routing; `routing {}` still chooses the outbound and mark. These controls are independent of MITM and may both match a connection, regardless of their order. A `must` match does not cancel explicit `bump`, MITM or DNAT capture. After destination selection, the entire flow-control phase runs before applying its handoff: an ambiguous domain match cannot hide a later definite `must` or capture action.
+
+```text
+rules {
+    pname(mosdns) -> must
+    domain(full: api.example.com) && l4proto(tcp) -> bump
+}
+routing {
+    ip(geoip:cn) -> direct
+    domain(geosite:cn) -> direct
+    fallback: my_group
+}
+```
+
+Positive domain filters require an existing DNS mapping to select kernel-direct connections. Unmatched direct traffic stays in eBPF; no broad capture is added to obtain a hostname. Shared-IP ambiguity and negation retain the existing domain matching semantics.
+
+Legacy `routing` actions `must_rules`, `must_direct`, `must_<outbound>`, outbound parameters such as `direct(must)`, and `bump` now produce a migration error, including in `fallback`. Move the control predicate into `rules {}`, and keep the outbound selection in `routing {}`. Unlike an interleaved `must_rules`, the new `must` is evaluated before all ordinary routing rules; narrow its filter if earlier routing rules used to exclude traffic. A fallback-wide control likewise needs an explicit filter with the intended scope.

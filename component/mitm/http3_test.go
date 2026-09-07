@@ -83,17 +83,17 @@ func http3TestClient(t *testing.T, host *Host, roots *x509.CertPool, name string
 	served := make(chan error, 1)
 	go func() {
 		served <- host.ServePacketConn(intercepted, flow,
-			func(context.Context, string, string) (net.Conn, error) {
+			testUpstream(func(context.Context, string, string) (net.Conn, error) {
 				tcpDials.Add(1)
 				return nil, errors.New("unexpected TCP dial")
-			},
-			func(_ context.Context, address string) (net.PacketConn, net.Addr, error) {
+			}),
+			testPacketUpstream(func(_ context.Context, address string) (net.PacketConn, net.Addr, error) {
 				if address != net.JoinHostPort(name, "443") {
 					return nil, nil, fmt.Errorf("unexpected upstream address: %s", address)
 				}
 				conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 				return conn, upstream, err
-			})
+			}))
 	}()
 	transport := &http3.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: roots},
@@ -123,7 +123,7 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 		_, _ = w.Write([]byte("upstream"))
 		w.Header().Set("Grpc-Status", "0")
 	}))
-	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("example.com")}}, wrap: func(flow plugin.Flow, next plugin.Handler) plugin.Handler {
+	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 		if !flow.Source.IsValid() || !flow.Destination.IsValid() {
 			t.Errorf("missing original flow addresses: %+v", flow)
 		}
@@ -228,7 +228,7 @@ func TestHTTP3MITMTLSIdentity(t *testing.T) {
 	for _, name := range []string{"example.com", "127.0.0.1"} {
 		t.Run(name, func(t *testing.T) {
 			authority, roots := http3TestAuthority(t)
-			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope(name)}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope(name)}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 				return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
 			}}
 			host := testHost(t, Options{Authority: authority}, Instance{Plugin: p})
@@ -395,7 +395,7 @@ func TestHTTP3UpstreamPreservesPacketDialerSemantics(t *testing.T) {
 func TestHTTP3MITMMultipleConnectionsOnOneAssociation(t *testing.T) {
 	authority, roots := http3TestAuthority(t)
 	var wraps atomic.Int32
-	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("example.com")}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 		local := wraps.Add(1)
 		return func(e *plugin.Exchange) (*http.Response, error) {
 			connection, _ := plugin.IDs(e.Request.Context())
@@ -411,9 +411,9 @@ func TestHTTP3MITMMultipleConnectionsOnOneAssociation(t *testing.T) {
 	}
 	served := make(chan error, 1)
 	go func() {
-		served <- host.ServePacketConn(intercepted, flow, nil, func(context.Context, string) (net.PacketConn, net.Addr, error) {
+		served <- host.ServePacketConn(intercepted, flow, testUpstream(nil), testPacketUpstream(func(context.Context, string) (net.PacketConn, net.Addr, error) {
 			return nil, nil, errors.New("unexpected upstream")
-		})
+		}))
 	}()
 	// One UDP socket multiplexes distinct QUIC connections and their CIDs.
 	wire := &quic.Transport{Conn: clientPackets}

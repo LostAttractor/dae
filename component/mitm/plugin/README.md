@@ -26,10 +26,39 @@ scope := plugin.Scope{
     {Host: "private.example.com", Ports: []uint16{443}, Exclude: true},
     {Host: "*.example.com", Ports: []uint16{80, 443}},
 }
+plan := plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: scope}}}
 ```
 
 Host globs support `*` and `?`, ignore case and contain no port or exclusion
 prefix. Empty `Ports` matches every nonzero port. Plugins validate their own input.
+
+The host compiles positive scope hosts and their associated ports into TCP/UDP
+capture predicates. Domains use the same DNS-derived IP maps as ordinary
+`domain()` routing; literal IPs use destination-IP predicates. Missing DNS
+evidence must not cause an implicit all-TCP/UDP or ports-only capture fallback:
+unrelated `direct` traffic must remain entirely in eBPF. Connections already
+forwarded to userspace by another rule can still match their actual SNI/Host.
+Shared IPs and positive globs can produce extra candidates; ordered exclusions
+and client selection are enforced against the actual connection in userspace.
+Host/DNAT plans likewise retain their complete filters during kernel capture.
+`DestinationProgram` runs first, capturing candidates in the kernel and selecting
+the exact target in userspace. `FlowProgram` then accumulates must, bump and HTTP
+capture effects, followed by outbound and mark selection in `RoutingProgram`.
+Destination predicates match the original connection. A kernel destination
+candidate hands off before flow controls or routing can commit the old target.
+Userspace selects the target first; FlowProgram and RoutingProgram then match
+the rewritten destination and original source/interface/process/policy identity.
+IP rewrites preserve Host/SNI. Exact destination predicates stay in userspace
+and share domain/LPM resources with their kernel capture predicates.
+
+Each `Plan.Scopes` entry combines its ordered `Scope` with `PreserveRoute`.
+The default processes HTTP before choosing a final route, covering scripts,
+URL changes and local responses. Set `PreserveRoute: true` only when the plugin
+preserves the target and always forwards upstream. This keeps pure inspection
+on its valid kernel decision. Effects cannot expand their associated scope, and
+request processing takes precedence when several matching scopes overlap.
+Request candidates hand off before old-target block, mark or must decisions.
+Client exclusions still follow ordinary connection routing.
 
 `Wrap(flow, next)` builds middleware separately for each HTTP/1, HTTP/2 or
 HTTP/3 connection, in configuration order: requests A → B →
@@ -42,16 +71,28 @@ including local responses produced by downstream plugins.
 
 HTTP/3 uses the same plugin contract and CA. `ServePacketConn` requires the
 original source and destination addresses and serves a fixed UDP association; `DialPacketContext` opens its upstream packet sockets through the
-selected outbound. HTTP/3 requests stay on HTTP/3 upstream, while
-`Exchange.Client` uses HTTP/1 or HTTP/2 through that same selected outbound.
+planned outbound. HTTP/3 requests stay on HTTP/3 upstream, while
+`Exchange.Client` uses HTTP/1 or HTTP/2 with a separate TCP route plan.
 Only QUIC ClientHellos advertising `h3` enter this path; other UDP is relayed.
 The host disables 0-RTT, preserves per-connection middleware and supports multiple
 QUIC connection IDs for the same source, destination and hostname. Cross-tuple
 migration and cross-host connection reuse are not supported.
 
-`Exchange.Client` uses the selected outbound. `SetReadDeadline`, when non-nil,
-bounds request-body reads and is reset by the host when calling `next`, before
-another plugin or the upstream transport reads the body.
+`Exchange.Client` and upstream forwarding share request routing. Deferred scopes
+route the final target after middleware and before pool lookup; local responses
+do not choose an upstream. The original authority uses the intercepted IP; other
+authorities resolve through dae DNS. Destination rules determine the effective
+IP while preserving client identity. Pure inspection reuses its valid route for
+the original authority. Pools are isolated per client connection and keyed by
+the full dial plan: addresses, nodes, outbounds, marks and transport/TLS authority.
+TCP dial failures can try the next address before writing HTTP data; streaming
+requests are never replayed. Traffic belongs to actual upstream connections.
+Host HTTP entry points require an `UpstreamPlanner`; there is no separate
+dial-only execution path. Daemon downloads use the same candidate iterator,
+consuming addresses lazily until one connects. HTTP/3 pools use the final UDP
+route; retiring a pool waits for its active responses before closing QUIC.
+`SetReadDeadline`, when non-nil,
+bounds request-body reads and is reset by the host before forwarding.
 [Body helpers](body.go) provide bounded snapshots and replacement with correct
 framing and trailers; plugins handle decompression and protocol-specific semantics.
 

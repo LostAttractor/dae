@@ -38,9 +38,17 @@ type Handler func(*Exchange) (*http.Response, error)
 
 // Plan is immutable after setup; the host takes ownership without copying it.
 type Plan struct {
-	Scopes              []Scope
+	Scopes              []HTTPScope
 	Destinations        routing.DestinationRewrites
 	EarlyRoutes, Routes []*config_parser.RoutingRule
+}
+
+// HTTPScope couples an interception scope with its routing effect. Requests
+// are processed before routing unless the plugin declares that it preserves
+// the target and cannot answer locally. Effects cannot expand the scope.
+type HTTPScope struct {
+	Scope
+	PreserveRoute bool
 }
 
 type Plugin interface {

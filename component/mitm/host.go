@@ -110,15 +110,29 @@ func (h *Host) Authority() *mitmca.Authority { return h.options.Authority }
 
 // Plan returns the read-only construction result.
 func (h *Host) Plan() plugin.Plan { return h.plan }
-func (h *Host) Match(host string, port uint16) bool {
-	for _, i := range h.instances {
-		for _, s := range i.plan.Scopes {
-			if s.Match(host, port) {
-				return true
-			}
+
+type HTTPMode uint8
+
+const (
+	HTTPBypass HTTPMode = iota
+	HTTPInspect
+	HTTPRequest
+)
+
+// Match classifies once. A request-transforming scope takes precedence when
+// several plugins match the same connection; exclusions remain scope-local.
+func (h *Host) Match(host string, port uint16) HTTPMode {
+	mode := HTTPBypass
+	for _, scope := range h.plan.Scopes {
+		if !scope.Match(host, port) {
+			continue
 		}
+		if !scope.PreserveRoute {
+			return HTTPRequest
+		}
+		mode = HTTPInspect
 	}
-	return false
+	return mode
 }
 func (h *Host) Start(parent context.Context) error {
 	h.mu.Lock()

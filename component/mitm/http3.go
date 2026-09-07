@@ -29,8 +29,8 @@ type DialPacketContext func(context.Context, string) (net.PacketConn, net.Addr, 
 // from flow.Source to flow.Destination; cross-association migration is not supported.
 // The caller expires idle
 // associations by closing conn. Intercepted requests use HTTP/3 upstream;
-// auxiliary plugin HTTP requests use dial, with no implicit UDP-to-TCP fallback.
-func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, dial DialContext, dialPacket DialPacketContext) error {
+// auxiliary plugin HTTP requests use their TCP planner, with no implicit UDP-to-TCP fallback.
+func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan UpstreamPlanner, packetPlan UpstreamPlanner) error {
 	if err := h.track(conn); err != nil {
 		_ = conn.Close()
 		return err
@@ -39,8 +39,8 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, dial DialC
 	if h.options.Authority == nil {
 		return errors.New("mitm: HTTP/3 requires a CA")
 	}
-	if dialPacket == nil {
-		return errors.New("mitm: HTTP/3 requires a packet dialer")
+	if packetPlan == nil || plan == nil {
+		return errors.New("mitm: HTTP/3 requires TCP and packet planners")
 	}
 	if !flow.Source.IsValid() || !flow.Destination.IsValid() {
 		return errors.New("mitm: HTTP/3 requires the original source and destination")
@@ -78,15 +78,15 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, dial DialC
 		MaxHeaderBytes: 1 << 20,
 		IdleTimeout:    90 * time.Second,
 		ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
-			upstream := h.http3Transport(dialPacket)
-			auxiliary := h.httpTransport(dial)
+			upstream := h.plannedTransport(packetPlan, true)
+			auxiliary := h.plannedTransport(plan, false)
 			handler := h.handlerForFlow("https", flow, upstream, &http.Client{Transport: auxiliary})
 			connections.Add(1)
 			go func() {
 				defer connections.Done()
 				<-conn.Context().Done()
-				_ = upstream.Close()
-				auxiliary.CloseIdleConnections()
+				upstream.close()
+				auxiliary.close()
 			}()
 			ctx = plugin.WithIDs(ctx, strconv.FormatUint(serial.Add(1), 10), "")
 			return context.WithValue(ctx, http3HandlerKey{}, handler)

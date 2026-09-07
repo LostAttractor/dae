@@ -36,9 +36,13 @@ type RoutingMatcherBuilder struct {
 	rulesMu            sync.RWMutex
 	simulatedLpmTries  [][]netip.Prefix
 	clientSetSlots     map[string]int
-	destinations       []destinationPredicate
+	destination        DestinationProgram
+	flow               FlowProgram
+	routing            RoutingProgram
+	kernelLpmLen       int
+	domainSetIDs       map[string]uint32
+	staticLpmIDs       map[string]int
 	simulatedDomainSet []routing.DomainSet
-	fallback           *routing.Outbound
 
 	// kernspaceBuilders collect side effects that must run against the
 	// shared eBPF state (e.g. registering interface watchers that update
@@ -49,7 +53,7 @@ type RoutingMatcherBuilder struct {
 }
 
 func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2Id map[string]uint8, bpf *bpfState, fallback config.FunctionOrString, ifmgr *network.InterfaceManager, capture *routingCapture, destinations routing.DestinationRewrites) (b *RoutingMatcherBuilder, err error) {
-	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int)}
+	b = &RoutingMatcherBuilder{outboundName2Id: outboundName2Id, ifmgr: ifmgr, bpf: bpf, clientSetSlots: make(map[string]int), domainSetIDs: make(map[string]uint32), staticLpmIDs: make(map[string]int)}
 	rulesBuilder := routing.NewRulesBuilder()
 	rulesBuilder.RegisterFunctionParser(consts.Function_Domain, routing.PlainParserFactory(b.addDomain))
 	rulesBuilder.RegisterFunctionParser(consts.Function_DestIp, routing.IpParserFactory(b.addIp))
@@ -64,29 +68,59 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 	rulesBuilder.RegisterFunctionParser(consts.Function_Dscp, routing.UintParserFactory(b.addDscp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_IpVersion, routing.IpVersionParserFactory(b.addIpVersion))
 	if capture != nil {
+		if capture.before < 0 || capture.before > len(rules) {
+			return nil, fmt.Errorf("invalid API bypass range")
+		}
 		if err = rulesBuilder.Apply(rules[:capture.before]); err != nil {
 			return nil, err
 		}
-		if capture.tcp {
-			b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_L4Proto), Value: [16]byte{byte(consts.L4ProtoType_TCP)}, Outbound: uint8(consts.OutboundDirect), CaptureFlags: captureHTTP})
-		}
 		rules = rules[capture.before:]
 	}
+	applyEffect := func(filter []*config_parser.Function, action consts.MatchAction, flags uint8) error {
+		if err := rulesBuilder.ApplyPredicate(filter, &routing.Outbound{Name: "direct"}); err != nil {
+			return err
+		}
+		tail := &b.rules[len(b.rules)-1]
+		tail.Action, tail.CaptureFlags = uint8(action), flags
+		return nil
+	}
+	b.destination.start = len(b.rules)
 	for _, rule := range destinations {
-		var candidate []*config_parser.Function
-		for _, f := range rule.Filter {
-			if f.Name != "domain" {
-				candidate = append(candidate, f)
-			}
-		}
-		if len(candidate) == 0 {
-			candidate = []*config_parser.Function{{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}, {Val: "udp"}}}}
-		}
-		if err = rulesBuilder.ApplyPredicate(candidate, &routing.Outbound{Name: "direct"}); err != nil {
+		// Capture retains the complete predicate, including DNS-backed domains.
+		if err = applyEffect(rule.Filter, consts.MatchActionCapture, captureDestination); err != nil {
 			return nil, fmt.Errorf("destination capture: %w", err)
 		}
-		b.rules[len(b.rules)-1].CaptureFlags = captureDestination
 	}
+	if capture != nil {
+		for _, predicate := range mitmCapturePredicates(capture.requestRouting) {
+			if err = applyEffect(predicate, consts.MatchActionCapture, captureHTTP|captureHTTPRequest); err != nil {
+				return nil, fmt.Errorf("HTTP request capture: %w", err)
+			}
+		}
+	}
+	b.destination.end = len(b.rules)
+	b.flow.start = b.destination.end
+	if capture != nil {
+		for _, rule := range capture.controls {
+			if rule.Action != consts.MatchActionMust && rule.Action != consts.MatchActionBump {
+				return nil, fmt.Errorf("invalid flow action %d", rule.Action)
+			}
+			if err = applyEffect(rule.Filter, rule.Action, 0); err != nil {
+				return nil, fmt.Errorf("flow control: %w", err)
+			}
+		}
+		for _, predicate := range mitmCapturePredicates(capture.http) {
+			if err = applyEffect(predicate, consts.MatchActionCapture, captureHTTP); err != nil {
+				return nil, fmt.Errorf("HTTP capture: %w", err)
+			}
+		}
+	}
+	if len(b.rules) != b.flow.start {
+		b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionFlowEnd)})
+	}
+	b.flow.end = len(b.rules)
+	b.routing.start = b.flow.end
+
 	if err = rulesBuilder.Apply(rules); err != nil {
 		return nil, err
 	}
@@ -94,26 +128,40 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 	if err = b.addFallback(fallback); err != nil {
 		return nil, err
 	}
+	b.routing.end = len(b.rules)
+	b.kernelLpmLen = len(b.simulatedLpmTries)
 	for _, rule := range destinations {
-		entry := destinationPredicate{start: len(b.rules), rule: rule}
+		entry := destinationPredicate{start: len(b.rules), targets: rule.To}
 		for _, f := range rule.Filter {
 			entry.domain = entry.domain || f.Name == "domain"
 		}
 		if err = rulesBuilder.ApplyPredicate(rule.Filter, &routing.Outbound{Name: "direct"}); err != nil {
 			return nil, fmt.Errorf("destination predicate: %w", err)
 		}
-		if err = b.addFallback("block"); err != nil {
-			return nil, err
-		}
+		b.rules[len(b.rules)-1].Action = uint8(consts.MatchActionMatch)
+		b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionMiss)})
 		entry.end = len(b.rules)
-		b.destinations = append(b.destinations, entry)
+		b.destination.predicates = append(b.destination.predicates, entry)
 	}
 
-	// The kernel routing_map is a fixed-size ARRAY and both the eBPF program
-	// and the userspace matcher index match sets by position; overflowing it
-	// must be a configuration error, not a runtime panic.
-	if len(b.rules) > consts.MaxMatchSetLen {
-		return nil, fmt.Errorf("too many routing match sets: %v > %v (MaxMatchSetLen); please reduce routing rules (e.g. merge domains into a routing.dls file)", len(b.rules), consts.MaxMatchSetLen)
+	// Only the kernel program consumes routing-map capacity. Destination
+	// predicates share domain/LPM IDs but do not occupy kernel instruction slots.
+	if b.routing.end > consts.MaxMatchSetLen {
+		return nil, fmt.Errorf("too many kernel routing match sets: %d > %d (MaxMatchSetLen)", b.routing.end, consts.MaxMatchSetLen)
+	}
+	if len(b.rules)-b.routing.end > consts.MaxMatchSetLen*2 {
+		return nil, fmt.Errorf("too many destination match sets: %d > %d", len(b.rules)-b.routing.end, consts.MaxMatchSetLen*2)
+	}
+	// The shared predicate compiler also serves DNS. Translate its logical
+	// edges once into instruction actions; the eBPF ABI never overloads an
+	// outbound ID with a control or logical action.
+	for i := range b.rules {
+		switch consts.OutboundIndex(b.rules[i].Outbound) {
+		case consts.OutboundLogicalOr:
+			b.rules[i].Action, b.rules[i].Outbound = uint8(consts.MatchActionOr), 0
+		case consts.OutboundLogicalAnd:
+			b.rules[i].Action, b.rules[i].Outbound = uint8(consts.MatchActionAnd), 0
+		}
 	}
 
 	// Validate skip_while_noalive usage. The flag is carried by every match
@@ -124,7 +172,7 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 			continue
 		}
 		outbound := consts.OutboundIndex(r.Outbound)
-		if outbound&consts.OutboundLogicalMask == consts.OutboundLogicalMask {
+		if r.Action != uint8(consts.MatchActionRoute) {
 			// Intermediate match set of a subrule.
 			continue
 		}
@@ -143,7 +191,10 @@ func NewRoutingMatcherBuilder(rules []*config_parser.RoutingRule, outboundName2I
 // when the group is unavailable. Skip-only and unreferenced groups are not.
 func (b *RoutingMatcherBuilder) criticalOutbounds(outboundCount int) []bool {
 	critical := make([]bool, outboundCount)
-	for _, rule := range b.rules {
+	for _, rule := range b.rules[b.routing.start:b.routing.end] {
+		if rule.Action != uint8(consts.MatchActionRoute) {
+			continue
+		}
 		outboundID := int(rule.Outbound)
 		if outboundID < int(consts.OutboundUserDefinedMin) || outboundID >= outboundCount || rule.SkipWhileNoalive {
 			continue
@@ -160,10 +211,6 @@ func (b *RoutingMatcherBuilder) outboundToId(outbound string) (uint8, error) {
 		outboundId = uint8(consts.OutboundLogicalOr)
 	case consts.OutboundLogicalAnd.String():
 		outboundId = uint8(consts.OutboundLogicalAnd)
-	case consts.OutboundMustRules.String():
-		outboundId = uint8(consts.OutboundMustRules)
-	case consts.OutboundControlPlaneRouting.String():
-		outboundId = uint8(consts.OutboundControlPlaneRouting)
 	default:
 		var ok bool
 		outboundId, ok = b.outboundName2Id[outbound]
@@ -183,17 +230,30 @@ func (b *RoutingMatcherBuilder) addDomain(f *config_parser.Function, key string,
 	default:
 		return fmt.Errorf("addDomain: unsupported key: %v", key)
 	}
-	b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
-		Key:       consts.RoutingDomainKey(key),
-		RuleIndex: len(b.rules),
-		Domains:   values,
-	})
+	values = slices.Clone(values)
+	slices.Sort(values)
+	values = slices.Compact(values)
+	signature := fmt.Sprintf("%q:%q", key, values)
+	id, exists := b.domainSetIDs[signature]
+	if !exists {
+		id = uint32(len(b.simulatedDomainSet))
+		if id >= uint32(consts.MaxMatchSetLen) {
+			return fmt.Errorf("too many distinct domain predicates: limit %d", consts.MaxMatchSetLen)
+		}
+		b.domainSetIDs[signature] = id
+		b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
+			Key: consts.RoutingDomainKey(key), RuleIndex: int(id), Domains: values,
+		})
+	}
+	var value [16]byte
+	binary.LittleEndian.PutUint32(value[:], id)
 	outboundId, err := b.outboundToId(outbound.Name)
 	if err != nil {
 		return err
 	}
 	b.rules = append(b.rules, bpfMatchSet{
 		Type:             uint8(consts.MatchType_DomainSet),
+		Value:            value,
 		Not:              f.Not,
 		Outbound:         outboundId,
 		Mark:             outbound.Mark,
@@ -214,9 +274,27 @@ func sourceMacPrefixes(macAddrs [][6]byte) []netip.Prefix {
 	return values
 }
 
+// Static sets can be shared between source/destination/MAC predicates; dynamic
+// client sets have dedicated slots so membership updates cannot alter constants.
+func (b *RoutingMatcherBuilder) internLPM(values []netip.Prefix) int {
+	values = slices.Clone(values)
+	for i := range values {
+		values[i] = values[i].Masked()
+	}
+	slices.SortFunc(values, func(a, z netip.Prefix) int { return a.Compare(z) })
+	values = slices.Compact(values)
+	key := fmt.Sprint(values)
+	if id, ok := b.staticLpmIDs[key]; ok {
+		return id
+	}
+	id := len(b.simulatedLpmTries)
+	b.staticLpmIDs[key] = id
+	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+	return id
+}
+
 func (b *RoutingMatcherBuilder) addSourceMac(f *config_parser.Function, macAddrs [][6]byte, outbound *routing.Outbound) error {
-	lpmTrieIndex := len(b.simulatedLpmTries)
-	b.simulatedLpmTries = append(b.simulatedLpmTries, sourceMacPrefixes(macAddrs))
+	lpmTrieIndex := b.internLPM(sourceMacPrefixes(macAddrs))
 	return b.addMacMatch(f, lpmTrieIndex, outbound)
 }
 
@@ -274,7 +352,7 @@ func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name s
 		return fmt.Errorf("build client set %q: %w", name, err)
 	}
 	var kernelMap *ebpf.Map
-	if active {
+	if active && slot < b.kernelLpmLen {
 		kernelMap, err = b.bpf.newLpmMap(prefixes)
 		if err != nil {
 			return fmt.Errorf("build kernel client set %q: %w", name, err)
@@ -283,7 +361,7 @@ func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name s
 	}
 	b.rulesMu.Lock()
 	defer b.rulesMu.Unlock()
-	if active {
+	if active && slot < b.kernelLpmLen {
 		if err := b.bpf.LpmArrayMap.Update(uint32(slot), kernelMap, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update kernel client set %q: %w", name, err)
 		}
@@ -294,8 +372,7 @@ func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name s
 }
 
 func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
-	lpmTrieIndex := len(b.simulatedLpmTries)
-	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+	lpmTrieIndex := b.internLPM(values)
 	outboundId, err := b.outboundToId(outbound.Name)
 	if err != nil {
 		return err
@@ -333,8 +410,7 @@ func (b *RoutingMatcherBuilder) addPort(f *config_parser.Function, values [][2]u
 }
 
 func (b *RoutingMatcherBuilder) addSourceIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
-	lpmTrieIndex := len(b.simulatedLpmTries)
-	b.simulatedLpmTries = append(b.simulatedLpmTries, values)
+	lpmTrieIndex := b.internLPM(values)
 	outboundId, err := b.outboundToId(outbound.Name)
 	if err != nil {
 		return err
@@ -421,10 +497,18 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 	})
 }
 
-func (b *RoutingMatcherBuilder) storeIfindex(index int, ifindex uint32) {
+func (b *RoutingMatcherBuilder) updateIfindex(index int, ifindex uint32, active bool) error {
 	b.rulesMu.Lock()
 	defer b.rulesMu.Unlock()
-	binary.LittleEndian.PutUint32(b.rules[index].Value[:], ifindex)
+	current := b.rules[index]
+	binary.LittleEndian.PutUint32(current.Value[:], ifindex)
+	if active && index < b.routing.end {
+		if err := b.bpf.RoutingMap.Update(uint32(index), current, ebpf.UpdateAny); err != nil {
+			return err
+		}
+	}
+	b.rules[index] = current
+	return nil
 }
 
 func (b *RoutingMatcherBuilder) addInterface(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {
@@ -451,12 +535,7 @@ func (b *RoutingMatcherBuilder) addInterface(f *config_parser.Function, values [
 		interfaceName := value
 		b.kernspaceBuilders = append(b.kernspaceBuilders, func() error {
 			updateIndex := func(ifindex uint32) error {
-				binary.LittleEndian.PutUint32(set.Value[:], ifindex)
-				if err := b.bpf.RoutingMap.Update(uint32(index), set, ebpf.UpdateAny); err != nil {
-					return err
-				}
-				b.storeIfindex(index, ifindex)
-				return nil
+				return b.updateIfindex(index, ifindex, true)
 			}
 			initlinkCallback := func(link netlink.Link) error {
 				return updateIndex(uint32(link.Attrs().Index))
@@ -531,7 +610,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	}
 
 	// Populate the active slots.
-	for i, cidrs := range b.simulatedLpmTries {
+	for i, cidrs := range b.simulatedLpmTries[:b.kernelLpmLen] {
 		m, err := b.bpf.newLpmMap(cidrs)
 		if err != nil {
 			return fmt.Errorf("newLpmMap: %w", err)
@@ -544,17 +623,17 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	}
 	// Write routings.
 	// Fallback rule MUST be the last.
-	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Fallback) {
+	if b.routing.end == 0 || b.rules[b.routing.end-1].Type != uint8(consts.MatchType_Fallback) {
 		return fmt.Errorf("fallback rule MUST be the last")
 	}
-	routingsLen := uint32(len(b.rules))
+	routingsLen := uint32(b.routing.end)
 	routingsKeys := common.ARangeU32(routingsLen)
-	if _, err = b.bpf.RoutingMap.BatchUpdate(routingsKeys, b.rules, &ebpf.BatchOptions{
+	if _, err = b.bpf.RoutingMap.BatchUpdate(routingsKeys, b.rules[:b.routing.end], &ebpf.BatchOptions{
 		ElemFlags: uint64(ebpf.UpdateAny),
 	}); err != nil {
 		return fmt.Errorf("batch update routing map: %w", err)
 	}
-	log.Infof("Routing match set len: %v/%v", len(b.rules), consts.MaxMatchSetLen)
+	log.Infof("Kernel match sets: %d/%d (bypass=%d, destination=%d, flow=%d, routing=%d); userspace destination match sets: %d", b.routing.end, consts.MaxMatchSetLen, b.destination.start, b.destination.end-b.destination.start, b.flow.end-b.flow.start, b.routing.end-b.routing.start, len(b.rules)-b.routing.end)
 
 	// Run side-effects (e.g. interface watchers) once the routing table is
 	// in place so that any callback writes patch the entries we just uploaded.
@@ -564,13 +643,13 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 		}
 	}
 	b.kernspaceBuilders = nil
-	b.bpf.activeLpmTrieCount = uint32(len(b.simulatedLpmTries))
+	b.bpf.activeLpmTrieCount = uint32(b.kernelLpmLen)
 
 	return nil
 }
 
 func (b *RoutingMatcherBuilder) forEachStaleLpmSlot(fn func(uint32) error) error {
-	for i := uint32(len(b.simulatedLpmTries)); i < b.bpf.activeLpmTrieCount; i++ {
+	for i := uint32(b.kernelLpmLen); i < b.bpf.activeLpmTrieCount; i++ {
 		if err := fn(i); err != nil {
 			return fmt.Errorf("process stale LPM slot at index %d: %w", i, err)
 		}
@@ -599,12 +678,14 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 
 	// Write routings.
 	// Fallback rule MUST be the last.
-	if b.rules[len(b.rules)-1].Type != uint8(consts.MatchType_Fallback) {
+	if b.routing.end == 0 || b.rules[b.routing.end-1].Type != uint8(consts.MatchType_Fallback) {
 		return nil, fmt.Errorf("fallback rule MUST be the last")
 	}
 
 	return &RoutingMatcher{
-		destinations:  b.destinations,
+		destination:   b.destination,
+		flow:          b.flow,
+		routing:       b.routing,
 		lpmMatcher:    lpmMatcher,
 		domainMatcher: domainMatcher,
 		matches:       b.rules,

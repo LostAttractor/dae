@@ -3,6 +3,7 @@
 package surge
 
 import (
+	"github.com/daeuniverse/dae/component/mitm"
 	"reflect"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func assertScopeModules(t *testing.T, engine *Engine, host string, port uint16, 
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("connection %s:%d modules=%v, want %v", host, port, names, want)
 	}
-	if got := proxyTestHost(t, engine).Match(host, port); got != (len(want) != 0) {
+	if got := proxyTestHost(t, engine).Match(host, port) != mitm.HTTPBypass; got != (len(want) != 0) {
 		t.Errorf("connection %s:%d Match=%t, want %t", host, port, got, len(want) != 0)
 	}
 }

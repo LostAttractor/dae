@@ -1706,6 +1706,7 @@ int testsetup_dscp_match(struct __sk_buff *skb)
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
 	/* fallback: must_direct */
 	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
@@ -1770,7 +1771,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms1 = {
 		.type = MatchType_IpSet,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
@@ -1785,14 +1786,14 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	struct match_set ms2 = {
 		.l4proto_type = L4ProtoType_TCP,
 		.type = MatchType_L4Proto,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
 
 	struct match_set ms3 = {
 		.port_range = {1, 1023},
 		.type = MatchType_Port,
-		.outbound = OUTBOUND_LOGICAL_OR,
+		.action = MatchAction_Or,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
 
@@ -1832,7 +1833,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms1 = {
 		.type = MatchType_IpSet,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
@@ -1847,14 +1848,14 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	struct match_set ms2 = {
 		.l4proto_type = L4ProtoType_TCP,
 		.type = MatchType_L4Proto,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
 
 	struct match_set ms3 = {
 		.port_range = {1, 1023},
 		.type = MatchType_Port,
-		.outbound = OUTBOUND_LOGICAL_OR,
+		.action = MatchAction_Or,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
 
@@ -1894,7 +1895,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	/* dip(1.1.0.0/16) && l4proto(tcp) && dport(1-1023, 8443) -> proxy */
 	struct match_set ms1 = {
 		.type = MatchType_IpSet,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
@@ -1909,14 +1910,14 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	struct match_set ms2 = {
 		.l4proto_type = L4ProtoType_TCP,
 		.type = MatchType_L4Proto,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
 
 	struct match_set ms3 = {
 		.port_range = {1, 1023},
 		.type = MatchType_Port,
-		.outbound = OUTBOUND_LOGICAL_OR,
+		.action = MatchAction_Or,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
 
@@ -1995,6 +1996,7 @@ int testsetup_not_mismtach(struct __sk_buff *skb)
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
 	/* fallback: must_direct */
 	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
@@ -2171,7 +2173,7 @@ int testsetup_domain_not_partial_and_port_match(struct __sk_buff *skb)
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
 		.not = true,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 
@@ -2212,7 +2214,7 @@ int testsetup_domain_not_partial_and_port_mismatch(struct __sk_buff *skb)
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
 		.not = true,
-		.outbound = OUTBOUND_LOGICAL_AND,
+		.action = MatchAction_And,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 
@@ -2252,12 +2254,13 @@ int testsetup_domain_partial_resolved_by_or(struct __sk_buff *skb)
 	 * subrule, so no control-plane lookup is needed. */
 	struct match_set partial = {
 		.type = MatchType_DomainSet,
-		.outbound = OUTBOUND_LOGICAL_OR,
+		.action = MatchAction_Or,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &partial, BPF_ANY);
 
 	struct match_set definite = {
 		.type = MatchType_DomainSet,
+		.index = 1,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
 	bpf_map_update_elem(&routing_map, &one_key, &definite, BPF_ANY);
@@ -2291,11 +2294,12 @@ int testsetup_domain_partial_must_rules(struct __sk_buff *skb)
 	 * to decide whether this domain actually matches the line. */
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
-		.outbound = OUTBOUND_MUST_RULES,
+		.action = MatchAction_Must,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 
-	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &one_key);
+	set_flow_end(&one_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &two_key);
 	set_domain_routing(IPV4(4,4,4,4), 1 << 0, 0);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
@@ -2358,19 +2362,21 @@ int testsetup_domain_partial_keeps_prior_must(struct __sk_buff *skb)
 	struct match_set must_port = {
 		.port_range = {80, 80},
 		.type = MatchType_Port,
-		.outbound = OUTBOUND_MUST_RULES,
+		.action = MatchAction_Must,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &must_port, BPF_ANY);
 
+	set_flow_end(&one_key);
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
+		.index = 1,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 		.must = true,
 	};
-	bpf_map_update_elem(&routing_map, &one_key, &domain, BPF_ANY);
+	bpf_map_update_elem(&routing_map, &two_key, &domain, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
 
-	set_routing_fallback(OUTBOUND_DIRECT, true, &two_key);
+	set_routing_fallback(OUTBOUND_DIRECT, true, &three_key);
 	set_domain_routing(IPV4(4,4,4,6), 1 << 1, 0);
 
 	bpf_tail_call(skb, &entry_call_map, 0);
@@ -2408,6 +2414,7 @@ int testsetup_domain_bitmap_second_word(struct __sk_buff *skb)
 	__u32 domain_key = 32;
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
+		.index = 32,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
 	bpf_map_update_elem(&routing_map, &domain_key, &domain, BPF_ANY);

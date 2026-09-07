@@ -28,6 +28,19 @@ func testScope(hosts ...string) plugin.Scope {
 	return scope
 }
 
+func testUpstream(dial DialContext) UpstreamPlanner {
+	return func(*http.Request) (UpstreamPlan, error) {
+		if dial == nil {
+			return UpstreamPlan{}, errors.New("unexpected upstream request")
+		}
+		return UpstreamPlan{Key: "test", Dial: dial}, nil
+	}
+}
+
+func testPacketUpstream(dial DialPacketContext) UpstreamPlanner {
+	return func(*http.Request) (UpstreamPlan, error) { return UpstreamPlan{Key: "test", DialPacket: dial}, nil }
+}
+
 func (p *testPlugin) Plan() plugin.Plan { return p.plan }
 func (p *testPlugin) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 	return p.wrap(flow, next)
@@ -54,7 +67,7 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 		if name == "excluded" {
 			scope = []string{"-api.example.com", "*"}
 		}
-		p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope(scope...)}}, wrap: func(flow plugin.Flow, next plugin.Handler) plugin.Handler {
+		p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope(scope...)}}}, wrap: func(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 			wraps++
 			if flow.Host != "api.example.com" {
 				t.Errorf("mutated connection identity: %+v", flow)
@@ -92,7 +105,7 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 }
 
 func TestPluginLocalResponse(t *testing.T) {
-	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("*")}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("*")}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 		return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
 	}}
 	h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "local", Plugin: p})
@@ -113,7 +126,7 @@ func TestPluginLocalResponse(t *testing.T) {
 
 func TestPluginHandoffResetsReadDeadlineAndBindsResponse(t *testing.T) {
 	var deadline time.Time
-	outer := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("example.com")}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
+	outer := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
 		return func(e *plugin.Exchange) (*http.Response, error) {
 			_ = e.SetReadDeadline(time.Now().Add(time.Second))
 			r, err := next(e)
@@ -216,7 +229,7 @@ func TestLoadRollsBackPreparedPlugins(t *testing.T) {
 }
 
 func TestHostRequiresCAForHTTPScopes(t *testing.T) {
-	_, err := New(Options{}, Instance{ID: "tls", Plugin: &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("*")}}}})
+	_, err := New(Options{}, Instance{ID: "tls", Plugin: &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("*")}}}}})
 	if err == nil {
 		t.Fatal("accepted HTTPS scope without a CA")
 	}
@@ -240,7 +253,7 @@ func TestRequestAuthority(t *testing.T) {
 		{"2001:db8::1", "[2001:db8::2]", 421},
 	} {
 		t.Run(test.host+"/"+test.authority, func(t *testing.T) {
-			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope(test.host)}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope(test.host)}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 				return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
 			}}
 			h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "test", Plugin: p})

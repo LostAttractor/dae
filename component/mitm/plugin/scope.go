@@ -38,8 +38,12 @@ func (s Scope) Match(host string, port uint16) bool {
 
 func scopeHost(host string) string {
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if ip, err := netip.ParseAddr(host); err == nil {
-		return ip.Unmap().String()
+	// Only IPv6 (including mapped IPv4) needs address normalization. Avoid
+	// constructing a ParseAddr error for every ordinary hostname comparison.
+	if strings.Contains(host, ":") {
+		if ip, err := netip.ParseAddr(host); err == nil {
+			return ip.Unmap().String()
+		}
 	}
 	return host
 }

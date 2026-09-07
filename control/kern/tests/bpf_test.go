@@ -26,13 +26,6 @@ import (
 
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../headers -I.
 
-type programSet struct {
-	id     string
-	pktgen *ebpf.Program
-	setup  *ebpf.Program
-	check  *ebpf.Program
-}
-
 type testDaeParam struct {
 	ControlPlanePid      uint32
 	Dae0Ifindex          uint32
@@ -112,27 +105,15 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 	return obj, nil
 }
 
-func collectPrograms(t *testing.T) (progset []programSet, err error) {
-	obj, err := loadTestObjects(t)
-	if err != nil {
-		return nil, err
-	}
-
-	v := reflect.ValueOf(obj.bpftestPrograms)
-	typeOfV := v.Type()
-	for i := 0; i < v.NumField(); i++ {
-		progname := typeOfV.Field(i).Name
-		if strings.HasPrefix(progname, "Testsetup") {
-			progid := strings.TrimPrefix(progname, "Testsetup")
-			progset = append(progset, programSet{
-				id:     progid,
-				pktgen: v.FieldByName("Testpktgen" + progid).Interface().(*ebpf.Program),
-				setup:  v.FieldByName("Testsetup" + progid).Interface().(*ebpf.Program),
-				check:  v.FieldByName("Testcheck" + progid).Interface().(*ebpf.Program),
-			})
+func collectProgramIDs() (ids []string) {
+	programs := reflect.TypeOf(bpftestPrograms{})
+	for i := 0; i < programs.NumField(); i++ {
+		name := programs.Field(i).Name
+		if strings.HasPrefix(name, "Testsetup") {
+			ids = append(ids, strings.TrimPrefix(name, "Testsetup"))
 		}
 	}
-	return
+	return ids
 }
 
 func benchmarkUDPRoutingCache(b *testing.B, obj *bpftestObjects, rules int, hit bool) {
@@ -354,46 +335,54 @@ func readBpfDebugLog(t *testing.T) string {
 }
 
 func Test(t *testing.T) {
-	progsets, err := collectPrograms(t)
-	if err != nil {
-		t.Fatalf("error while collecting programs: %s", err)
-	}
+	for _, id := range collectProgramIDs() {
+		t.Run(id, func(t *testing.T) {
+			// Fixtures must not inherit routing, connectivity or connection
+			// state. These subtests run sequentially, so t.Run completes all
+			// object and pin cleanup before the next fixture loads.
+			obj, err := loadTestObjects(t)
+			if err != nil {
+				t.Fatalf("error while loading fixture objects: %s", err)
+			}
+			programs := reflect.ValueOf(obj.bpftestPrograms)
+			pktgen := programs.FieldByName("Testpktgen" + id).Interface().(*ebpf.Program)
+			setup := programs.FieldByName("Testsetup" + id).Interface().(*ebpf.Program)
+			check := programs.FieldByName("Testcheck" + id).Interface().(*ebpf.Program)
 
-	for _, progset := range progsets {
-		t.Logf("Running test: %s\n", progset.id)
-		// create ctx with the max allowed size(4k - head room - tailroom)
-		data := make([]byte, 4096-256-320)
+			// create ctx with the max allowed size(4k - head room - tailroom)
+			data := make([]byte, 4096-256-320)
 
-		// sizeof(struct __sk_buff) < 256, let's make it 256
-		ctx := make([]byte, 256)
+			// sizeof(struct __sk_buff) < 256, let's make it 256
+			ctx := make([]byte, 256)
 
-		statusCode, data, ctx, err := runBpfProgram(progset.pktgen, data, ctx)
-		if err != nil {
-			t.Fatalf("error while running pktgen prog: %s", err)
-		}
-		if statusCode != 0 {
-			printBpfDebugLog(t)
-			t.Fatalf("error while running pktgen program: unexpected status code: %d", statusCode)
-		}
-		statusCode, data, ctx, err = runBpfProgram(progset.setup, data, ctx)
-		if err != nil {
-			printBpfDebugLog(t)
-			t.Fatalf("error while running setup prog: %s", err)
-		}
+			statusCode, data, ctx, err := runBpfProgram(pktgen, data, ctx)
+			if err != nil {
+				t.Fatalf("error while running pktgen prog: %s", err)
+			}
+			if statusCode != 0 {
+				printBpfDebugLog(t)
+				t.Fatalf("error while running pktgen program: unexpected status code: %d", statusCode)
+			}
+			statusCode, data, ctx, err = runBpfProgram(setup, data, ctx)
+			if err != nil {
+				printBpfDebugLog(t)
+				t.Fatalf("error while running setup prog: %s", err)
+			}
 
-		status := make([]byte, 4)
-		nl.NativeEndian().PutUint32(status, statusCode)
-		data = append(status, data...)
+			status := make([]byte, 4)
+			nl.NativeEndian().PutUint32(status, statusCode)
+			data = append(status, data...)
 
-		statusCode, data, ctx, err = runBpfProgram(progset.check, data, ctx)
-		if err != nil {
-			t.Fatalf("error while running check program: %+v", err)
-		}
-		if statusCode != 0 {
-			printBpfDebugLog(t)
-			t.Fatalf("error while running check program: unexpected status code: %d", statusCode)
-		}
+			statusCode, data, ctx, err = runBpfProgram(check, data, ctx)
+			if err != nil {
+				t.Fatalf("error while running check program: %+v", err)
+			}
+			if statusCode != 0 {
+				printBpfDebugLog(t)
+				t.Fatalf("error while running check program: unexpected status code: %d", statusCode)
+			}
 
-		consumeBpfDebugLog(t)
+			consumeBpfDebugLog(t)
+		})
 	}
 }

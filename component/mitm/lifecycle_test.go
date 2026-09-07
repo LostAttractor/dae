@@ -48,9 +48,9 @@ func tcpDrainClient(t *testing.T, h *Host, roots *x509.CertPool, protocol string
 			if protocol == "http" {
 				port = 80
 			}
-			err = h.ServeConn(conn, "example.com", port, func(context.Context, string, string) (net.Conn, error) {
+			err = h.ServeConn(conn, "example.com", port, testUpstream(func(context.Context, string, string) (net.Conn, error) {
 				return nil, errors.New("unexpected upstream")
-			})
+			}))
 		}
 		served <- err
 	}()
@@ -71,7 +71,7 @@ func TestMITMDrain(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/complete=%t", protocol, complete), func(t *testing.T) {
 				authority, roots := http3TestAuthority(t)
 				started, release, canceled := make(chan struct{}), make(chan struct{}), make(chan struct{})
-				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("example.com")}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 					return func(e *plugin.Exchange) (*http.Response, error) {
 						close(started)
 						select {
@@ -165,9 +165,9 @@ func TestMITMCloseBeforeHandshake(t *testing.T) {
 				flow := plugin.Flow{Host: "example.com", Port: 443,
 					Source: netip.MustParseAddrPort(client.LocalAddr().String()), Destination: netip.MustParseAddrPort(server.LocalAddr().String())}
 				go func() {
-					served <- host.ServePacketConn(server, flow, nil, func(context.Context, string) (net.PacketConn, net.Addr, error) {
+					served <- host.ServePacketConn(server, flow, testUpstream(nil), testPacketUpstream(func(context.Context, string) (net.PacketConn, net.Addr, error) {
 						return nil, nil, errors.New("unexpected upstream")
-					})
+					}))
 				}()
 			}
 			waitHostState(t, host, func(h *Host) bool { return len(h.connections) == 1 })

@@ -36,7 +36,7 @@ use-local-host-item-for-proxy = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if engine.Status().Modules[0].HostMappings != 1 || !engine.Plan().Destinations[0].Proxy {
+	if engine.Status().Modules[0].HostMappings != 1 || len(engine.Plan().Destinations) != 1 || len(engine.Status().Modules[0].Warnings) != 0 {
 		t.Fatalf("Host-only module failed to load or display mappings: %+v", engine.Status())
 	}
 	mitmPath := filepath.Join(dir, "mitm.sgmodule")
@@ -50,6 +50,32 @@ use-local-host-item-for-proxy = true
 	}
 	if _, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "surge", Plugin: engine}); err == nil || !strings.Contains(err.Error(), "ca_cert") {
 		t.Fatalf("MITM must still require a CA: %v", err)
+	}
+}
+
+func TestLoadHostCompatibilityWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.sgmodule")
+	if err := os.WriteFile(path, []byte("[Host]\nexample.com = 192.0.2.1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	logger := log.New()
+	logger.SetOutput(&output)
+	conf := Config{
+		Modules:       []ModuleSource{{Name: "host-compatibility", Link: "file://" + path}},
+		ScriptTimeout: time.Second, MemoryLimit: 16 << 20, MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
+	}
+	engine, err := prepare(t.Context(), conf, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(logger)}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := engine.Status().Modules[0]
+	if status.HostMappings != 1 || len(engine.Plan().Destinations) != 1 || len(status.Warnings) != 1 {
+		t.Fatalf("compatibility warning must not prevent loading: %+v", status)
+	}
+	if !strings.Contains(output.String(), "level=warning") || !strings.Contains(output.String(), "host-compatibility") || !strings.Contains(output.String(), status.Warnings[0]) {
+		t.Fatalf("module compatibility warning missing from startup log: %s", output.String())
 	}
 }
 

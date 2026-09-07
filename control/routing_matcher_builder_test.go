@@ -35,6 +35,7 @@ func TestRoutingMatcherBuilderForEachStaleLpmSlot(t *testing.T) {
 			builder := &RoutingMatcherBuilder{
 				bpf:               &bpfState{activeLpmTrieCount: tt.previousCount},
 				simulatedLpmTries: make([][]netip.Prefix, tt.currentCount),
+				kernelLpmLen:      tt.currentCount,
 			}
 			var iterations []uint32
 			if err := builder.forEachStaleLpmSlot(func(i uint32) error {
@@ -53,6 +54,7 @@ func TestRoutingMatcherBuilderForEachStaleLpmSlot(t *testing.T) {
 		builder := &RoutingMatcherBuilder{
 			bpf:               &bpfState{activeLpmTrieCount: 5},
 			simulatedLpmTries: make([][]netip.Prefix, 2),
+			kernelLpmLen:      2,
 		}
 		callbackErr := errors.New("callback failed")
 		var iterations []uint32

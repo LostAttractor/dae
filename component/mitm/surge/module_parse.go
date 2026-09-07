@@ -125,8 +125,8 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 			return nil, fmt.Errorf("module line %d: %w", lineNumber, err)
 		}
 	}
-	for i := range m.Hosts {
-		m.Hosts[i].Proxy = useHostsForProxy
+	if len(m.Hosts) > 0 && !useHostsForProxy {
+		m.Warnings = append(m.Warnings, "[Host] mappings apply to both direct and proxy in dae; use-local-host-item-for-proxy is not true, so behavior differs from Surge")
 	}
 	return m, nil
 }

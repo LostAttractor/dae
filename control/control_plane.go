@@ -463,7 +463,7 @@ func NewControlPlane(
 		fallbackResolver:          global.FallbackResolver,
 		mptcp:                     global.Mptcp,
 	}
-	for _, predicate := range builder.destinations {
+	for _, predicate := range builder.destination.predicates {
 		if predicate.domain && plane.sniffingTimeout <= 0 {
 			plane.sniffingTimeout = time.Second
 			break

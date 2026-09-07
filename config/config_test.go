@@ -586,34 +586,6 @@ routing { fallback: target }
 	}
 }
 
-func TestNew_PatchMustOutbound(t *testing.T) {
-	conf := parseConfig(t, `
-global {}
-routing {
-	dip(geoip:cn) -> must_direct
-	fallback: must_my_group
-}
-
-`)
-	rule := conf.Routing.Rules[0]
-	if rule.Outbound.Name != "direct" {
-		t.Fatalf("must_ prefix should be trimmed: got %v", rule.Outbound.Name)
-	}
-	if len(rule.Outbound.Params) != 1 || rule.Outbound.Params[0].Val != "must" {
-		t.Fatalf("must param expected: got %+v", rule.Outbound.Params)
-	}
-	fallback, err := ParseFunctionOrString(conf.Routing.Fallback)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fallback.Name != "my_group" {
-		t.Fatalf("must_ prefix should be trimmed from fallback: got %v", fallback.Name)
-	}
-	if len(fallback.Params) != 1 || fallback.Params[0].Val != "must" {
-		t.Fatalf("must param expected in fallback: got %+v", fallback.Params)
-	}
-}
-
 func TestNew_QuotedMustPrefixIsLiteralTargetName(t *testing.T) {
 	conf := parseConfig(t, `
 global {}

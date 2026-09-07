@@ -103,11 +103,11 @@ hostname = %APPEND% -private.example.com, *.example.com
 192.0.2.1 = 198.51.100.1,198.51.100.2
 ```
 
-仅含 Host 的模块无需 CA 或客户端 MITM 开关。映射按模块及条目顺序首个命中，保留原路由和端口；多个目标按连接随机选择，UDP 固定会话目标并还原回包来源。直连流量也会导入用户态，block 仍然生效。
+仅含 Host 的模块无需 CA 或客户端 MITM 开关。映射按模块及条目顺序首个命中，保留原端口；后续路由使用重写后的目标。多个目标按连接随机选择，UDP 固定会话目标并还原回包来源。只有命中完整捕获条件的流量会进入用户态，新目标的 block 仍然生效。
 
-Host 转换成与原生 [rules / DNAT](destination-rules.md) 共用的目的地址规则。内核保守捕获候选连接，用户态按原始连接信息决定最终目标；原生 rules 排在插件贡献之前。域名来自本连接的 SNI、HTTP Host 或可嗅探的 QUIC，不修改或依赖 DNS 应答映射。
+Host 转换成与原生 [rules / DNAT](destination-rules.md) 共用的目的地址规则。内核保留完整过滤条件筛选候选连接，域名条件使用已有 DNS 域名—IP 映射，字面 IP 条件无需 DNS；用户态再按本连接的 SNI、HTTP Host 或可嗅探的 QUIC 判断实际目标。原生 rules 排在插件贡献之前，不修改 DNS 请求或应答。
 
-默认仅重写直连；模块中设置 `[General] use-local-host-item-for-proxy = true` 后，该模块的映射也用于代理出站。此选项不影响其他模块或代理服务器自身地址。不支持 Host 别名、指定 DNS、DNS script 或 ruleset 引用，加载时报错并报告行号。不会自动测速、重试或递归重写。
+Host 映射始终对 direct 和 proxy 生效，优先于 `dial_target_override`，不因出站选择撤销映射。模块包含 Host 映射且未设置 `[General] use-local-host-item-for-proxy = true`（未填写或为 false）时，加载日志和模块状态会提示与 Surge 的行为差异；设置 true 只消除此提示。映射不影响代理服务器自身地址。不支持 Host 别名、指定 DNS、DNS script 或 ruleset 引用，加载时报错并报告行号。不会自动测速、重试或递归重写。
 
 ### 限制客户端来源
 
@@ -123,7 +123,9 @@ client_source_address: '-02:00:00:00:00:10,all'
 
 ## 转发与协议
 
-为在不经过 dae DNS 的情况下获取主机名，启用 HTTP scope 后会保守捕获 TCP，再按连接主机名和客户端开关决定是否解密。优先级为：模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。HTTP 改写和脚本 `$httpClient` 请求沿用选定出站。
+启用 HTTP scope 后，仅按模块的正向 hostname 和对应端口捕获 TCP 候选连接，再按实际主机名、排除项和客户端开关决定是否解密。无关 direct 流量保留 eBPF 内核直通。含脚本、URL Rewrite 或 Map Local 的模块先执行 HTTP 处理，随后按最终目标执行目的地址规则 → flow → 模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。原目标的 block 不会抢先阻止这些已准入的请求；新目标命中 block 则拒绝。未准入客户端仍按普通连接路由处理。
+
+HTTP 转发和脚本 `$httpClient` 共用请求路由：原主机及端口使用截获 IP，其他目标经 dae DNS 解析，再执行目标规则和路由，保留客户端来源、接口及策略。请求型模块即使只改路径，也在 HTTP 处理后确定路由；纯检查模块保留原路由。路由在连接池查找前执行，出站、节点、mark 或实际目标变化会隔离连接池。302/307 返回客户端请求新目标，reject 和 Map Local 可直接生成响应，无需上游拨号。
 
 支持 HTTP/1.1、TLS HTTP/2；不解密或自动阻断 HTTP/3/QUIC。需要回退 TCP 时，在已有 `routing` 段前部加入对应规则，例如：
 
@@ -131,7 +133,7 @@ client_source_address: '-02:00:00:00:00:10,all'
 domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 ```
 
-HTTP/MITM 捕获不要求客户端 DNS 经过 dae。普通出站路由仍受域名验证策略影响；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 不允许跨原主机复用；WebSocket 只处理握手。
+内核的域名捕获依赖已有 DNS 域名—IP 映射；缺少映射时不会通过捕获全部 TCP 或全部 HTTPS 来兜底，原本的 direct 流量继续在内核转发。已因其他规则进入用户态的连接仍可使用 SNI/Host。共享 IP 可能带入额外候选，最终匹配和普通出站路由仍受各自的 scope、域名验证策略约束；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 不允许跨原主机复用；WebSocket 只处理握手。
 
 ## 执行与调试日志
 
@@ -159,7 +161,7 @@ journalctl -u dae -f -o cat
 
 | 日志事件 | 含义 |
 | --- | --- |
-| `download_dial` | 下载使用的出站、节点、目标 |
+| `upstream_dial` | HTTP 转发、脚本请求或后台下载实际使用的出站、节点、mark 与目标；来自客户端时包含 source |
 | `mitm_bypass` | 主机匹配但客户端未启用 MITM |
 | `request_begin` → `script_match` → `script_start` → `script_end` | 请求、命中、执行及结果 |
 | `*_rewrite_match` / `map_local_match` | 静态规则命中 |
