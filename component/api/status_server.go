@@ -3,7 +3,7 @@
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
-package control
+package api
 
 import (
 	jsonv1 "encoding/json"
@@ -22,16 +22,15 @@ import (
 
 const statusSocketProbeTimeout = 250 * time.Millisecond
 
-// StatusServer serves the runtime status of the current control plane over a
-// unix socket. The listener outlives control-plane reloads; SetControlPlane
-// swaps the plane the /status handler reads from.
+// StatusServer serves snapshots over a Unix socket. Its listener outlives
+// reloads; Publish replaces the snapshot source and drains previous readers.
 type StatusServer struct {
 	socketPath string
 	version    string
 	listener   net.Listener
 	server     *http.Server
 	mu         sync.RWMutex
-	current    *ControlPlane
+	current    func(string) *StatusSnapshot
 }
 
 func StartStatusServer(socketPath string, version string) (*StatusServer, error) {
@@ -49,7 +48,7 @@ func StartStatusServer(socketPath string, version string) (*StatusServer, error)
 		listener:   listener,
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/status", s.ServeHTTP)
 	s.server = &http.Server{Handler: mux}
 	go s.server.Serve(listener)
 	return s, nil
@@ -103,13 +102,14 @@ func listenStatusSocket(socketPath string) (net.Listener, error) {
 	return net.Listen("unix", socketPath)
 }
 
-func (s *StatusServer) SetControlPlane(c *ControlPlane) {
+// Publish(nil) stops reads and waits for all active snapshots before returning.
+func (s *StatusServer) Publish(snapshot func(string) *StatusSnapshot) {
 	s.mu.Lock()
-	s.current = c
+	s.current = snapshot
 	s.mu.Unlock()
 }
 
-func (s *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *StatusServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Hold the read lock through snapshot construction. Setting the plane to
 	// nil therefore also drains in-flight readers before the old plane closes.
 	s.mu.RLock()
@@ -119,7 +119,7 @@ func (s *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "control plane is reloading", http.StatusServiceUnavailable)
 		return
 	}
-	snapshot := c.statusSnapshot(s.version)
+	snapshot := c(s.version)
 	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -130,7 +130,7 @@ func (s *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *StatusServer) Close() {
 	// Drain snapshot readers before the owning control plane is closed.
-	s.SetControlPlane(nil)
+	s.Publish(nil)
 	if s.server != nil {
 		s.server.Close()
 	}

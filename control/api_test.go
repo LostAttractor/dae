@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
@@ -136,6 +137,8 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutSurge(t *testing.T) {
 		t.Fatal("selector reset failed")
 	}
 	plane.apiToken = ""
+	// Configuration changes publish a new handler, as on daemon reload.
+	handler = plane.apiHandler(testClientMAC)
 	if w := apiTestRequest(handler, "PUT", "/api/selectors/proxy", body, "test-secret"); w.Code != 403 {
 		t.Fatal("selector mutation enabled without configured token")
 	}
@@ -209,11 +212,11 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 	requireClientRoute(t, candidate.routingMatcher, mac, 443, consts.OutboundUserDefinedMin)
 	for _, plane := range []*ControlPlane{active, candidate} {
 		w := apiTestRequest(plane.apiHandler(testClientMAC), "GET", "/api/device", "", "")
-		var state deviceState
+		var state api.DeviceState
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &state) != nil {
 			t.Fatal(w.Code, w.Body.String())
 		}
-		want := []clientSetState{
+		want := []api.ClientSetState{
 			{Name: "gaming", Description: plane.clients["gaming"].Description, Joined: true},
 			{Name: "streaming"},
 		}
@@ -256,8 +259,8 @@ func TestDeviceAPIReportsIdentityFailureWithoutHidingSelectors(t *testing.T) {
 	}
 	w := apiTestRequest(handler, "GET", "/api/selectors", "", "")
 	var state struct {
-		Selectors    []selectorState `json:"selectors"`
-		AdminEnabled bool            `json:"admin_enabled"`
+		Selectors    []api.SelectorState `json:"selectors"`
+		AdminEnabled bool                `json:"admin_enabled"`
 	}
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &state) != nil || len(state.Selectors) != 1 || !state.AdminEnabled {
 		t.Fatal(w.Code, w.Body.String())

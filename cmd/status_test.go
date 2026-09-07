@@ -10,6 +10,7 @@ import (
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"fmt"
+	"github.com/daeuniverse/dae/component/api"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	log "github.com/sirupsen/logrus"
@@ -37,14 +37,14 @@ func withStatusTerminalWidth(t *testing.T, width int) {
 	t.Cleanup(func() { getStatusTerminalWidth = previous })
 }
 
-func testNodeStatus(now time.Time) control.NodeStatus {
+func testNodeStatus(now time.Time) api.NodeStatus {
 	priority := 2
-	return control.NodeStatus{
+	return api.NodeStatus{
 		ID:                 "node-id",
 		Name:               "node-a",
 		Subtag:             "sub",
 		Protocol:           "ss",
-		Annotation:         &control.NodeAnnotationStatus{AddLatency: "30ms", Priority: &priority, PriorityConditional: true},
+		Annotation:         &api.NodeAnnotationStatus{AddLatency: "30ms", Priority: &priority, PriorityConditional: true},
 		ChecksConnectivity: true,
 		Session:            "connected",
 		Healthy:            true,
@@ -67,7 +67,7 @@ func testNodeStatus(now time.Time) control.NodeStatus {
 		Latency: &dialer.LatencyStats{
 			Last: 10 * time.Millisecond, Avg10: 20 * time.Millisecond, MovingAvg: 30 * time.Millisecond,
 		},
-		Support: control.NetworkValues[dialer.NetworkSupportState]{
+		Support: api.NetworkValues[dialer.NetworkSupportState]{
 			dialer.NetworkSupportConfirmed,
 			dialer.NetworkSupportConfirmed,
 			dialer.NetworkSupportUnsupported,
@@ -87,9 +87,9 @@ func testNodeStatus(now time.Time) control.NodeStatus {
 
 func TestTableUsageRow(t *testing.T) {
 	withoutStatusColors(t)
-	row := tableUsageRow(control.TableUsage{
+	row := tableUsageRow(api.TableUsage{
 		Name: "domain-history", Used: 32768, Limit: 60000,
-		Breakdown: &control.TableUsageBreakdown{Live: 5536, Retained: 27232, LimitGC: 123},
+		Breakdown: &api.TableUsageBreakdown{Live: 5536, Retained: 27232, LimitGC: 123},
 	})
 	want := []string{"domain-history", "32768 (LAZY)", "60000", "54.6%", "5536/27232", "123"}
 	for index, expected := range want {
@@ -142,11 +142,11 @@ func TestStartupNodeLogOnlyIncludesCompletedChecks(t *testing.T) {
 	pending.Availability.Seen = false
 	retained.Name, retained.ID, retained.InitialCheckDone = "retained-path", "retained", false
 	failed.Name, failed.ID, failed.Healthy = "failed-path", "failed", false
-	groups := []control.GroupStatus{
-		{Name: "proxy", CheckAsync: true, Nodes: []control.NodeStatus{pending, retained, ready, failed},
-			SelectedNodeIDs: control.NetworkValues[string]{ready.ID, ready.ID}},
-		{Name: "direct", Nodes: []control.NodeStatus{{Name: "direct-path", InitialCheckDone: true, Availability: ready.Availability}}},
-		{Name: "pending-only", Nodes: []control.NodeStatus{pending}},
+	groups := []api.GroupStatus{
+		{Name: "proxy", CheckAsync: true, Nodes: []api.NodeStatus{pending, retained, ready, failed},
+			SelectedNodeIDs: api.NetworkValues[string]{ready.ID, ready.ID}},
+		{Name: "direct", Nodes: []api.NodeStatus{{Name: "direct-path", InitialCheckDone: true, Availability: ready.Availability}}},
+		{Name: "pending-only", Nodes: []api.NodeStatus{pending}},
 	}
 	var output bytes.Buffer
 	logger := log.StandardLogger()
@@ -177,7 +177,7 @@ func TestNodeRowsUseRawState(t *testing.T) {
 	withoutStatusColors(t)
 	now := time.Now()
 	node := testNodeStatus(now)
-	selected := control.NetworkValues[string]{"node-id", "node-id", "", ""}
+	selected := api.NetworkValues[string]{"node-id", "node-id", "", ""}
 
 	verbose := nodeStatusRow(node, 0, selected)
 	checks := map[int]string{
@@ -223,8 +223,8 @@ func TestNodeStatePrefersSessionFailure(t *testing.T) {
 func TestNetworkStatusRowDerivesSupportAndSelection(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())
-	group := control.GroupStatus{
-		Nodes: []control.NodeStatus{node},
+	group := api.GroupStatus{
+		Nodes: []api.NodeStatus{node},
 	}
 	group.SelectedNodeIDs[common.NetworkTCP4] = node.ID
 	group.Networks[common.NetworkTCP4] = stats.PathStats{ActiveConnections: 2, TotalConnections: 5}
@@ -240,9 +240,9 @@ func TestNetworkStatusRowDerivesSupportAndSelection(t *testing.T) {
 func TestNetworkStatusRowExplainsMissingSelection(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())
-	group := control.GroupStatus{
+	group := api.GroupStatus{
 		Policy: "random",
-		Nodes:  []control.NodeStatus{node},
+		Nodes:  []api.NodeStatus{node},
 	}
 	if got := fmt.Sprint(networkStatusRow(group, common.NetworkTCP4)[1]); got != "available" {
 		t.Fatalf("usable route = %q, want available", got)
@@ -276,29 +276,29 @@ func TestHealthDerivedFromRawGroups(t *testing.T) {
 	down.Healthy = false
 	down.Support[common.NetworkTCP4] = dialer.NetworkSupportUnsupported
 	tests := []struct {
-		group control.GroupStatus
+		group api.GroupStatus
 		want  healthStatus
 	}{
-		{group: control.GroupStatus{}, want: healthHealthy},
-		{group: control.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateAvailable}, want: healthHealthy},
-		{group: control.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateChecking}, want: healthWarning},
-		{group: control.GroupStatus{ChecksConnectivity: true, Connectivity: stats.GroupStateUnavailable}, want: healthWarning},
-		{group: control.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateUnavailable}, want: healthDegraded},
-		{group: control.GroupStatus{ChecksConnectivity: true, Connectivity: stats.GroupStateAvailable, Nodes: []control.NodeStatus{available, down}, SelectedNodeIDs: control.NetworkValues[string]{available.ID}}, want: healthWarning},
+		{group: api.GroupStatus{}, want: healthHealthy},
+		{group: api.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateAvailable}, want: healthHealthy},
+		{group: api.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateChecking}, want: healthWarning},
+		{group: api.GroupStatus{ChecksConnectivity: true, Connectivity: stats.GroupStateUnavailable}, want: healthWarning},
+		{group: api.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateUnavailable}, want: healthDegraded},
+		{group: api.GroupStatus{ChecksConnectivity: true, Connectivity: stats.GroupStateAvailable, Nodes: []api.NodeStatus{available, down}, SelectedNodeIDs: api.NetworkValues[string]{available.ID}}, want: healthWarning},
 	}
 	for _, test := range tests {
 		if got := groupHealth(test.group); got != test.want {
 			t.Errorf("groupHealth(%+v) = %q, want %q", test.group, got, test.want)
 		}
 	}
-	if got := statusHealth([]control.GroupStatus{tests[2].group, tests[4].group}); got != healthDegraded {
+	if got := statusHealth([]api.GroupStatus{tests[2].group, tests[4].group}); got != healthDegraded {
 		t.Fatalf("status health = %q, want degraded", got)
 	}
 }
 
 func TestStatusSummaryListsAffectedGroups(t *testing.T) {
 	withoutStatusColors(t)
-	snapshot := &control.StatusSnapshot{Groups: []control.GroupStatus{
+	snapshot := &api.StatusSnapshot{Groups: []api.GroupStatus{
 		{Name: "optional", ChecksConnectivity: true, Connectivity: stats.GroupStateUnavailable},
 		{Name: "proxy", ChecksConnectivity: true, Critical: true, Connectivity: stats.GroupStateUnavailable},
 	}}
@@ -326,9 +326,9 @@ func TestCompactFailureFollowsAvailability(t *testing.T) {
 	withoutStatusColors(t)
 	now := time.Now()
 	node := testNodeStatus(now)
-	group := control.GroupStatus{
-		Nodes:           []control.NodeStatus{node},
-		SelectedNodeIDs: control.NetworkValues[string]{node.ID, node.ID, "", ""},
+	group := api.GroupStatus{
+		Nodes:           []api.NodeStatus{node},
+		SelectedNodeIDs: api.NetworkValues[string]{node.ID, node.ID, "", ""},
 	}
 	header, rows := nodeTable(group, false, now)
 	if got := fmt.Sprint(header[6]); got != "FAIL A/D" {
@@ -386,7 +386,7 @@ func TestTrafficAndNetworkColorsCoverTheirCells(t *testing.T) {
 	}
 
 	node := testNodeStatus(time.Now())
-	networks, selected := nodeNetworks(node, control.NetworkValues[string]{node.ID, node.ID, "", ""})
+	networks, selected := nodeNetworks(node, api.NetworkValues[string]{node.ID, node.ID, "", ""})
 	if !selected || !strings.HasPrefix(networks, "\x1b[") || text.StripEscape(networks) != "all tcp(*)" {
 		t.Fatalf("NETWORKS cell is not fully colored: %q", networks)
 	}
@@ -396,24 +396,24 @@ func TestNodeNetworksMergesSupportAndSelection(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())
 	for _, test := range []struct {
-		support  control.NetworkValues[dialer.NetworkSupportState]
-		selected control.NetworkValues[string]
+		support  api.NetworkValues[dialer.NetworkSupportState]
+		selected api.NetworkValues[string]
 		want     string
 	}{
 		{
-			support: control.NetworkValues[dialer.NetworkSupportState]{
+			support: api.NetworkValues[dialer.NetworkSupportState]{
 				dialer.NetworkSupportConfirmed, dialer.NetworkSupportConfirmed,
 				dialer.NetworkSupportConfirmed, dialer.NetworkSupportConfirmed,
 			},
-			selected: control.NetworkValues[string]{"node-id", "node-id", "node-id", "node-id"},
+			selected: api.NetworkValues[string]{"node-id", "node-id", "node-id", "node-id"},
 			want:     "all(*)",
 		},
-		{selected: control.NetworkValues[string]{"node-id", "node-id", "", ""}, want: "all tcp(*)"},
-		{selected: control.NetworkValues[string]{"node-id", "", "", ""}, want: "all tcp(tcp4*)"},
-		{selected: control.NetworkValues[string]{"", "node-id", "", ""}, want: "all tcp(tcp6*)"},
-		{selected: control.NetworkValues[string]{}, want: "all tcp"},
+		{selected: api.NetworkValues[string]{"node-id", "node-id", "", ""}, want: "all tcp(*)"},
+		{selected: api.NetworkValues[string]{"node-id", "", "", ""}, want: "all tcp(tcp4*)"},
+		{selected: api.NetworkValues[string]{"", "node-id", "", ""}, want: "all tcp(tcp6*)"},
+		{selected: api.NetworkValues[string]{}, want: "all tcp"},
 	} {
-		if test.support == (control.NetworkValues[dialer.NetworkSupportState]{}) {
+		if test.support == (api.NetworkValues[dialer.NetworkSupportState]{}) {
 			node.Support = testNodeStatus(time.Now()).Support
 		} else {
 			node.Support = test.support
@@ -424,17 +424,17 @@ func TestNodeNetworksMergesSupportAndSelection(t *testing.T) {
 	}
 }
 
-func validWireStatus() control.StatusSnapshot {
-	return control.StatusSnapshot{
-		Schema:    control.StatusSchemaVersion,
+func validWireStatus() api.StatusSnapshot {
+	return api.StatusSnapshot{
+		Schema:    api.StatusSchemaVersion,
 		Version:   "test",
 		StartedAt: time.Now(),
-		Groups: []control.GroupStatus{{
+		Groups: []api.GroupStatus{{
 			Name:       "direct",
 			TargetKind: "builtin",
-			Nodes: []control.NodeStatus{{
+			Nodes: []api.NodeStatus{{
 				ID:      "direct",
-				Support: control.NetworkValues[dialer.NetworkSupportState]{"unknown", "unknown", "unknown", "unknown"},
+				Support: api.NetworkValues[dialer.NetworkSupportState]{"unknown", "unknown", "unknown", "unknown"},
 			}},
 		}},
 	}

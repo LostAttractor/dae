@@ -9,11 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -21,14 +17,15 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-func mustStatusSnapshot(t *testing.T, plane *ControlPlane) *StatusSnapshot {
+func mustStatusSnapshot(t *testing.T, plane *ControlPlane) *api.StatusSnapshot {
 	t.Helper()
-	return plane.statusSnapshot("test")
+	return plane.StatusSnapshot("test")
 }
 
 type statusTestDialer struct{}
@@ -38,85 +35,6 @@ func (statusTestDialer) DialContext(context.Context, string, string) (net.Conn, 
 }
 func (statusTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, fmt.Errorf("not implemented")
-}
-
-func TestStatusServerReturnsUnavailableWithoutPublishedPlane(t *testing.T) {
-	server := &StatusServer{version: "test"}
-	response := httptest.NewRecorder()
-	server.handleStatus(response, httptest.NewRequest(http.MethodGet, "/status", nil))
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want %d", response.Code, http.StatusServiceUnavailable)
-	}
-}
-
-func TestStartStatusServerPreservesLiveSocket(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "status.sock")
-	server, err := StartStatusServer(socketPath, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-
-	second, err := StartStatusServer(socketPath, "test")
-	if second != nil {
-		defer second.Close()
-	}
-	if err == nil {
-		t.Fatal("starting a second status server unexpectedly succeeded")
-	}
-
-	conn, err := net.DialTimeout("unix", socketPath, time.Second)
-	if err != nil {
-		t.Fatalf("original status socket became unreachable: %v", err)
-	}
-	_ = conn.Close()
-}
-
-func TestStartStatusServerReplacesStaleSocket(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "status.sock")
-	stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	stale.SetUnlinkOnClose(false)
-	if err = stale.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	server, err := StartStatusServer(socketPath, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-
-	conn, err := net.DialTimeout("unix", socketPath, time.Second)
-	if err != nil {
-		t.Fatalf("replacement status socket is unreachable: %v", err)
-	}
-	_ = conn.Close()
-}
-
-func TestStartStatusServerPreservesNonSocketPath(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "status.sock")
-	want := []byte("do not remove")
-	if err := os.WriteFile(socketPath, want, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	server, err := StartStatusServer(socketPath, "test")
-	if server != nil {
-		defer server.Close()
-	}
-	if err == nil {
-		t.Fatal("starting on a non-socket path unexpectedly succeeded")
-	}
-	got, readErr := os.ReadFile(socketPath)
-	if readErr != nil {
-		t.Fatalf("occupied path was removed: %v", readErr)
-	}
-	if string(got) != string(want) {
-		t.Fatalf("occupied path contents = %q, want %q", got, want)
-	}
 }
 
 func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {

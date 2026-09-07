@@ -8,14 +8,15 @@ package control
 import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
 
-func (c *ControlPlane) tableStatuses() []TableUsage {
-	var tables []TableUsage
+func (c *ControlPlane) tableStatuses() []api.TableUsage {
+	var tables []api.TableUsage
 	if c.dnsController != nil {
-		tables = append(tables, TableUsage{
+		tables = append(tables, api.TableUsage{
 			Name:  "dns-cache",
 			Used:  c.dnsController.dnsCache.Len(),
 			Limit: c.dnsController.dnsCache.MaxSize(),
@@ -27,12 +28,12 @@ func (c *ControlPlane) tableStatuses() []TableUsage {
 
 	usage := c.core.domainRegistry.Usage()
 	return append(tables,
-		TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
-		TableUsage{
+		api.TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax},
+		api.TableUsage{
 			Name:  "domain-history",
 			Used:  usage.UserUsed,
 			Limit: usage.UserMax,
-			Breakdown: &TableUsageBreakdown{
+			Breakdown: &api.TableUsageBreakdown{
 				Live:     usage.UserLive,
 				Retained: usage.UserRetained,
 				LimitGC:  usage.LimitGC,
@@ -41,7 +42,7 @@ func (c *ControlPlane) tableStatuses() []TableUsage {
 	)
 }
 
-func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *NodeAnnotationStatus {
+func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *api.NodeAnnotationStatus {
 	annotation, ok := group.DialerAnnotation(node)
 	if !ok {
 		return nil
@@ -54,7 +55,7 @@ func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *Nod
 		return nil
 	}
 
-	status := &NodeAnnotationStatus{
+	status := &api.NodeAnnotationStatus{
 		PriorityConditional: len(annotation.ConditionalPriority) > 0,
 	}
 	for _, term := range annotation.PriorityTerms {
@@ -70,9 +71,9 @@ func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *Nod
 	return status
 }
 
-func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dialer.Dialer) NodeStatus {
+func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dialer.Dialer) api.NodeStatus {
 	runtime := node.RuntimeStatus()
-	status := NodeStatus{
+	status := api.NodeStatus{
 		ID:                 node.StatsID(),
 		Name:               node.Name,
 		Subtag:             node.Property.SubscriptionTag,
@@ -84,7 +85,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		Healthy:            runtime.Healthy,
 		ConfirmingFailure:  runtime.ConfirmingFailure,
 		Availability:       runtime.Availability,
-		Support:            NetworkValues[dialer.NetworkSupportState](runtime.SupportState),
+		Support:            api.NetworkValues[dialer.NetworkSupportState](runtime.SupportState),
 		Stats:              paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}],
 	}
 	if runtime.HasSession {
@@ -97,9 +98,9 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 	return status
 }
 
-func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical bool) GroupStatus {
+func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical bool) api.GroupStatus {
 	pathStats := paths.groups[group.Name]
-	status := GroupStatus{
+	status := api.GroupStatus{
 		Name:               group.Name,
 		TargetKind:         group.TargetKind.String(),
 		Policy:             group.DisplayPolicy(),
@@ -107,8 +108,8 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 		ChecksConnectivity: group.ChecksConnectivity(),
 		CheckAsync:         group.CheckAsync,
 		Stats:              pathStats.total,
-		Networks:           NetworkValues[stats.PathStats](pathStats.networks),
-		Nodes:              make([]NodeStatus, 0, len(group.Dialers)),
+		Networks:           api.NetworkValues[stats.PathStats](pathStats.networks),
+		Nodes:              make([]api.NodeStatus, 0, len(group.Dialers)),
 	}
 	if status.ChecksConnectivity {
 		status.Connectivity, status.Availability = group.Connectivity()
@@ -124,16 +125,16 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 	return status
 }
 
-func (c *ControlPlane) statusSnapshot(version string) *StatusSnapshot {
+func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 	paths := indexPathStats(stats.DefaultStore.SnapshotWithHistory())
-	snapshot := &StatusSnapshot{
-		Schema:       StatusSchemaVersion,
+	snapshot := &api.StatusSnapshot{
+		Schema:       api.StatusSchemaVersion,
 		Surge:        c.SurgeStatus(),
 		Version:      version,
 		StartedAt:    stats.DefaultStore.StartedAt(),
 		LastReloadAt: stats.DefaultStore.LastReload(),
 		Stats:        paths.total,
-		Networks:     NetworkValues[stats.PathStats](paths.networks),
+		Networks:     api.NetworkValues[stats.PathStats](paths.networks),
 		Tables:       c.tableStatuses(),
 		Groups:       c.groupStatuses(paths),
 	}
@@ -145,12 +146,12 @@ func (c *ControlPlane) statusSnapshot(version string) *StatusSnapshot {
 
 // GroupsStatus reads the current paths and their last observed connectivity.
 // It does not select nodes or wait for connectivity checks.
-func (c *ControlPlane) GroupsStatus() []GroupStatus {
+func (c *ControlPlane) GroupsStatus() []api.GroupStatus {
 	return c.groupStatuses(indexPathStats(stats.DefaultStore.SnapshotWithHistory()))
 }
 
-func (c *ControlPlane) groupStatuses(paths pathStatsIndex) []GroupStatus {
-	groups := make([]GroupStatus, 0, len(c.outbounds))
+func (c *ControlPlane) groupStatuses(paths pathStatsIndex) []api.GroupStatus {
+	groups := make([]api.GroupStatus, 0, len(c.outbounds))
 	for index, group := range c.outbounds {
 		if group.Kind == outbound.GroupKindInvisible {
 			continue

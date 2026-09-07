@@ -3,7 +3,7 @@
  * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
-package control
+package api
 
 import (
 	jsonv1 "encoding/json"

@@ -7,20 +7,20 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/component/api"
 	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
 
-func recentTestGroup() control.GroupStatus {
+func recentTestGroup() api.GroupStatus {
 	states := make([]stats.GroupHistoryState, stats.GroupStateBucketCount)
 	states[0] = stats.GroupHistoryAvailable
 	states[1] = stats.GroupHistoryUnknown
 	states[2] = stats.GroupHistoryUnavailable
-	return control.GroupStatus{
+	return api.GroupStatus{
 		Name:               "proxy",
 		ChecksConnectivity: true,
 		Connectivity:       stats.GroupStateAvailable,
@@ -58,7 +58,7 @@ func TestRecentGroupRow(t *testing.T) {
 
 func TestRecentUncheckedGroupRow(t *testing.T) {
 	withoutStatusColors(t)
-	group := control.GroupStatus{Name: "direct", Stats: stats.PathStats{ActiveConnections: 3}}
+	group := api.GroupStatus{Name: "direct", Stats: stats.PathStats{ActiveConnections: 3}}
 	row := recentGroupRow(group, 1)
 	if got := fmt.Sprint(row[1]); got != "" {
 		t.Fatalf("unchecked state = %q, want blank", got)
@@ -86,7 +86,7 @@ func TestRecentGroupColor(t *testing.T) {
 
 func TestRenderRecentGroupsTruncatesWideNames(t *testing.T) {
 	withoutStatusColors(t)
-	groups := []control.GroupStatus{recentTestGroup()}
+	groups := []api.GroupStatus{recentTestGroup()}
 	groups[0].Name = "a very long outbound group name"
 	rendered := renderRecentGroups(groups)
 	if !strings.Contains(rendered, "…") {
@@ -97,7 +97,7 @@ func TestRenderRecentGroupsTruncatesWideNames(t *testing.T) {
 func TestRenderRecentGroupsFitsTerminal(t *testing.T) {
 	withoutStatusColors(t)
 	withStatusTerminalWidth(t, 80)
-	rendered := renderRecentGroups([]control.GroupStatus{recentTestGroup()})
+	rendered := renderRecentGroups([]api.GroupStatus{recentTestGroup()})
 	if strings.Contains(rendered, "\n") {
 		t.Fatalf("recent group wrapped:\n%s", rendered)
 	}

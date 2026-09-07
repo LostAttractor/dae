@@ -9,6 +9,7 @@ import (
 	"context"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"github.com/daeuniverse/dae/component/api"
 	"io"
 	"net"
 	"net/http"
@@ -20,7 +21,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/dae/control"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +48,7 @@ var statusCmd = &cobra.Command{
 	},
 }
 
-func fetchStatus() (*control.StatusSnapshot, error) {
+func fetchStatus() (*api.StatusSnapshot, error) {
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -71,8 +71,8 @@ func fetchStatus() (*control.StatusSnapshot, error) {
 	return decodeStatus(response.Body)
 }
 
-func decodeStatus(reader io.Reader) (*control.StatusSnapshot, error) {
-	var snapshot control.StatusSnapshot
+func decodeStatus(reader io.Reader) (*api.StatusSnapshot, error) {
+	var snapshot api.StatusSnapshot
 	if err := jsonv2.UnmarshalRead(reader, &snapshot); err != nil {
 		return nil, err
 	}
@@ -82,8 +82,8 @@ func decodeStatus(reader io.Reader) (*control.StatusSnapshot, error) {
 	return &snapshot, nil
 }
 
-func validateStatus(snapshot *control.StatusSnapshot) error {
-	if snapshot.Schema != control.StatusSchemaVersion {
+func validateStatus(snapshot *api.StatusSnapshot) error {
+	if snapshot.Schema != api.StatusSchemaVersion {
 		return fmt.Errorf("unsupported status schema %d", snapshot.Schema)
 	}
 	if snapshot.Version == "" || snapshot.StartedAt.IsZero() {
@@ -123,7 +123,7 @@ func validateStatus(snapshot *control.StatusSnapshot) error {
 			return fmt.Errorf("%s has connectivity state without checks", path)
 		}
 
-		nodesByID := make(map[string]*control.NodeStatus, len(group.Nodes))
+		nodesByID := make(map[string]*api.NodeStatus, len(group.Nodes))
 		for nodeIndex := range group.Nodes {
 			node := &group.Nodes[nodeIndex]
 			nodePath := fmt.Sprintf("%s.nodes[%d]", path, nodeIndex)

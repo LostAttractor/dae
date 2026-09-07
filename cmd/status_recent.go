@@ -7,12 +7,12 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/component/api"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/control"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
@@ -63,7 +63,7 @@ func recentWindowLabel(duration time.Duration) string {
 	}
 }
 
-func recentTimeline(group control.GroupStatus) string {
+func recentTimeline(group api.GroupStatus) string {
 	var timeline strings.Builder
 	timeline.WriteByte('[')
 	for _, state := range group.Availability.Recent.States {
@@ -74,7 +74,7 @@ func recentTimeline(group control.GroupStatus) string {
 	return timeline.String()
 }
 
-func recentUpRatio(group control.GroupStatus) string {
+func recentUpRatio(group api.GroupStatus) string {
 	if !group.Availability.Seen {
 		return "- / 24H"
 	}
@@ -83,7 +83,7 @@ func recentUpRatio(group control.GroupStatus) string {
 	return colorRatio(ratio, formatted)
 }
 
-func recentActiveWidth(groups []control.GroupStatus) int {
+func recentActiveWidth(groups []api.GroupStatus) int {
 	width := 1
 	for _, group := range groups {
 		if digits := len(strconv.FormatInt(group.Stats.ActiveConnections, 10)); digits > width {
@@ -93,7 +93,7 @@ func recentActiveWidth(groups []control.GroupStatus) int {
 	return width
 }
 
-func recentGroupRow(group control.GroupStatus, activeWidth int) table.Row {
+func recentGroupRow(group api.GroupStatus, activeWidth int) table.Row {
 	activity := fmt.Sprintf("%*d active", activeWidth, group.Stats.ActiveConnections)
 	if group.Stats.FallbackConnections > 0 {
 		activity += fmt.Sprintf(" · %d fallback total", group.Stats.FallbackConnections)
@@ -112,7 +112,7 @@ func recentGroupRow(group control.GroupStatus, activeWidth int) table.Row {
 	}
 }
 
-func renderRecentGroups(groups []control.GroupStatus) string {
+func renderRecentGroups(groups []api.GroupStatus) string {
 	configs := []table.ColumnConfig{
 		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateStatusCell},
 		{Number: 4, Align: text.AlignRight},
@@ -125,7 +125,7 @@ func renderRecentGroups(groups []control.GroupStatus) string {
 	return renderStatusTable(nil, rows, configs, getStatusTerminalWidth())
 }
 
-func printRecentStatus(snapshot *control.StatusSnapshot) {
+func printRecentStatus(snapshot *api.StatusSnapshot) {
 	fallback := ""
 	if snapshot.Stats.FallbackConnections > 0 {
 		fallback = fmt.Sprintf(" · %d fallback total", snapshot.Stats.FallbackConnections)
