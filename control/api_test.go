@@ -51,7 +51,9 @@ func apiTestRequest(handler http.Handler, method, path, body, token string) *htt
 	handler.ServeHTTP(w, r)
 	return w
 }
-func testClientMAC(netip.Addr) ([6]byte, error) { return [6]byte{2, 0, 0, 0, 0, 10}, nil }
+func testClientMAC(netip.AddrPort, netip.AddrPort) ([6]byte, error) {
+	return [6]byte{2, 0, 0, 0, 0, 10}, nil
+}
 
 func TestGlobalAPISelectorAndDeviceRulesWithoutSurge(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
@@ -112,7 +114,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutSurge(t *testing.T) {
 	if group.Selection() != selected {
 		t.Fatal("manual selection lost unavailable path")
 	}
-	mac, _ := testClientMAC(netip.Addr{})
+	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
 	requireClientRoute(t, plane.routingMatcher, mac, 443, consts.OutboundUserDefinedMin)
 	requireClientRoute(t, plane.routingMatcher, [6]byte{2, 0, 0, 0, 0, 11}, 443, consts.OutboundDirect)
 	reopened, err := settings.Open(path)
@@ -168,7 +170,7 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	mac, _ := testClientMAC(netip.Addr{})
+	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
 	requireClientRoute(t, plane.routingMatcher, mac, 443, consts.OutboundDirect)
 	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != "" || len(store.Members("gaming")) != 0 {
 		t.Fatal("failed persistence changed effective state")
@@ -208,7 +210,7 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 	if candidate.outbounds[0].Selection() != selected {
 		t.Fatal("reload lost a choice made while loading")
 	}
-	mac, _ := testClientMAC(netip.Addr{})
+	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
 	requireClientRoute(t, candidate.routingMatcher, mac, 443, consts.OutboundUserDefinedMin)
 	for _, plane := range []*ControlPlane{active, candidate} {
 		w := apiTestRequest(plane.apiHandler(testClientMAC), "GET", "/api/device", "", "")
@@ -247,7 +249,7 @@ func TestDeviceAPIReportsIdentityFailureWithoutHidingSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler(func(netip.Addr) ([6]byte, error) { return [6]byte{}, net.ErrClosed })
+	handler := plane.apiHandler(func(netip.AddrPort, netip.AddrPort) ([6]byte, error) { return [6]byte{}, net.ErrClosed })
 	for _, path := range []string{"/api/device", "/api/device/sets/gaming"} {
 		method := "GET"
 		if path != "/api/device" {

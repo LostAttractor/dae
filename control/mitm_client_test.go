@@ -59,7 +59,8 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
 	other := [6]byte{2, 0, 0, 0, 0, 11}
 	var resolveError error
-	resolve := func(source netip.Addr) ([6]byte, error) {
+	resolve := func(peer, _ netip.AddrPort) ([6]byte, error) {
+		source := peer.Addr()
 		if source != ip {
 			t.Fatalf("unexpected source: %s", source)
 		}
@@ -191,7 +192,8 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			called := false
-			handler := plane.apiHandler(func(ip netip.Addr) ([6]byte, error) {
+			handler := plane.apiHandler(func(peer, _ netip.AddrPort) ([6]byte, error) {
+				ip := peer.Addr()
 				called = true
 				if ip != netip.MustParseAddr("192.0.2.10") {
 					t.Fatalf("untrusted peer identity: %s", ip)

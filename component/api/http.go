@@ -14,12 +14,15 @@ type Certificates struct {
 	Handler     http.Handler
 }
 
+// ClientResolver receives the actual TCP endpoints, including IPv6 zones.
+type ClientResolver func(source, destination netip.AddrPort) ([6]byte, error)
+
 // Options captures one plane's configuration. Publish a new handler when
 // configuration changes; stores continue to provide live runtime state.
 type Options struct {
 	Selectors     SelectorStore
 	Devices       DeviceStore
-	ResolveClient func(netip.Addr) ([6]byte, error)
+	ResolveClient ClientResolver
 	Certificates  *Certificates
 	Token         string
 }
@@ -30,7 +33,6 @@ type server struct{ options Options }
 // closing that plane and publishing its replacement.
 func NewHandler(options Options) http.Handler {
 	s := &server{options: options}
-	resolve := options.ResolveClient
 	mux := http.NewServeMux()
 	page := webui.Handler()
 	for _, path := range []string{"/{$}", "/style.css", "/app.js"} {
@@ -45,10 +47,10 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /api/selectors", s.serveSelectors)
 	mux.HandleFunc("PUT /api/selectors/{group}", s.serveSelector)
 	mux.HandleFunc("DELETE /api/selectors/{group}", s.serveSelector)
-	mux.HandleFunc("GET /api/device", func(w http.ResponseWriter, r *http.Request) { s.serveDevice(w, r, resolve) })
+	mux.HandleFunc("GET /api/device", s.serveDevice)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
-		mux.HandleFunc(method+" /api/device/sets/{name}", func(w http.ResponseWriter, r *http.Request) { s.serveClientSet(w, r, resolve) })
-		mux.HandleFunc(method+" /api/device/mitm", func(w http.ResponseWriter, r *http.Request) { s.serveMITM(w, r, resolve) })
+		mux.HandleFunc(method+" /api/device/sets/{name}", s.serveClientSet)
+		mux.HandleFunc(method+" /api/device/mitm", s.serveMITM)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

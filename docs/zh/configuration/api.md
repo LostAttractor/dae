@@ -28,8 +28,10 @@ routing {
 ## 使用与持久化
 
 - **Selectors**：`selector` 等价于 `selector(0)`；`selector(n)` 指定默认路径索引。选择影响使用该组的所有设备，需要 `api_token`。选择按节点 ID 保存，重排不变，配置中节点消失时恢复默认。
-- **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。仅限 `global.lan_interface` 上的直连 ARP/NDP 邻居；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，节点列表和证书下载仍可用。
+- **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，节点列表和证书下载仍可用。
 - **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)，页面不会探测信任状态。
+
+设备识别使用 eBPF 在 LAN 入口记录的 TCP 连接信息，不要求路由或邻居表中的接口名匹配 `lan_interface`。例如 `enp1s0f0np0 → lan（VLAN）→ br-lan` 可保留 `lan_interface: lan`；bond 或其他分层以太网接口使用相同的识别流程。每个请求更新入口 MAC 和时间戳，配置重载时清除记录。无入口记录、记录超过 30 秒、回程路由非直连，或入口 MAC 与该路由接口上的 ARP/NDP 邻居不一致时拒绝设备操作；其他接口上的同名 IP 不影响识别。
 
 `client` 块提供名称下方的纯文本简介，留空则隐藏；展示路由引用或配置了内核导出的集合，重复定义报错。简介随 `dae reload` 更新，不影响成员。
 

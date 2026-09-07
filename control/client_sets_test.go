@@ -35,7 +35,7 @@ func TestClientExportAPIAndReload(t *testing.T) {
 	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: "dae_api_test"}
 	conn := &nftables.Conn{}
 	t.Cleanup(func() { conn.DelTable(table); _ = conn.Flush() })
-	mac, _ := testClientMAC(netip.Addr{})
+	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
 	if err := store.SetMembers("external", [][6]byte{mac}); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 		conn.DelTable(table)
 		_ = conn.Flush()
 	})
-	mac, _ := testClientMAC(netip.Addr{})
+	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
 	previous := [6]byte{2, 0, 0, 0, 0, 1}
 	if err := store.SetMembers("gaming", [][6]byte{previous}); err != nil {
 		t.Fatal(err)
