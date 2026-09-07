@@ -3,6 +3,7 @@
 package api
 
 import (
+	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"io"
 	"mime"
@@ -120,10 +121,17 @@ func apiDevice(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (
 
 func writeAPI(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.MarshalWrite(w, value)
+	_ = json.MarshalWrite(w, value, jsonv1.FormatDurationAsNano(true))
 }
 
 func apiSaveError(w http.ResponseWriter, err error) {
 	log.WithError(err).Error("Could not apply and save API settings")
 	apiError(w, 500, "could not apply and save settings; check the daemon log")
+}
+
+// The filesystem-protected Unix listener is the local administration boundary.
+// Request headers cannot opt a TCP connection into this privilege.
+func localAPISocket(r *http.Request) bool {
+	local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	return ok && local.Network() == "unix"
 }

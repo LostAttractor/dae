@@ -3,27 +3,38 @@
 package control
 
 import (
+	"context"
+	jsonv1 "encoding/json"
 	jsonv2 "encoding/json/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/daeuniverse/dae/component/api"
+	"github.com/daeuniverse/dae/api"
+	mitmca "github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/internal/apiserver"
 )
 
-func TestStatusServerPluginsFollowPublishedPlane(t *testing.T) {
-	server, err := api.StartStatusServer(filepath.Join(t.TempDir(), "status.sock"), "test")
+func TestAPIPluginsFollowPublishedPlane(t *testing.T) {
+	server := &apiserver.Server{}
+	dir := t.TempDir()
+	cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
+	if err := mitmca.Generate(cert, key, "status API", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := mitmca.Load(cert, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
 	firstPlugin := mitmRoutingPlugin("one.example")
 	firstPlugin.details = map[string]string{"generation": "first"}
-	first := &ControlPlane{mitmHost: controlTestHost(t, firstPlugin, nil)}
+	first := &ControlPlane{mitmHost: controlTestHost(t, firstPlugin, authority)}
 	secondPlugin := mitmRoutingPlugin("two.example", "three.example")
 	secondPlugin.details = map[string]string{"generation": "second"}
-	second := &ControlPlane{mitmHost: controlTestHost(t, secondPlugin, nil)}
+	second := &ControlPlane{mitmHost: controlTestHost(t, secondPlugin, authority)}
 	for _, test := range []struct {
 		plane      *ControlPlane
 		enabled    bool
@@ -35,12 +46,14 @@ func TestStatusServerPluginsFollowPublishedPlane(t *testing.T) {
 		{&ControlPlane{}, false, ""},
 	} {
 		if test.plane == nil {
-			server.Publish(nil)
+			server.SetHandler(nil)
 		} else {
-			server.Publish(test.plane.StatusSnapshot)
+			server.SetHandler(test.plane.APIHandler("test"))
 		}
 		response := httptest.NewRecorder()
-		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/status", nil))
+		request := httptest.NewRequest(http.MethodGet, "http://unix/api/status", nil)
+		request = request.WithContext(context.WithValue(request.Context(), http.LocalAddrContextKey, &net.UnixAddr{Name: "dae.sock", Net: "unix"}))
+		server.ServeHTTP(response, request)
 		if test.plane == nil {
 			if response.Code != http.StatusServiceUnavailable {
 				t.Fatalf("unpublished plane returned %d", response.Code)
@@ -51,7 +64,7 @@ func TestStatusServerPluginsFollowPublishedPlane(t *testing.T) {
 			t.Fatalf("status: %d %s", response.Code, response.Body)
 		}
 		var snapshot api.StatusSnapshot
-		if err := jsonv2.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+		if err := jsonv2.Unmarshal(response.Body.Bytes(), &snapshot, jsonv1.FormatDurationAsNano(true)); err != nil {
 			t.Fatal(err)
 		}
 		if (len(snapshot.MITMPlugins) > 0) != test.enabled {

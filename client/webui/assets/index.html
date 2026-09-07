@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dae</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <h1>dae</h1>
+  <noscript>Enable JavaScript to change settings.</noscript>
+  <fieldset id="controls">
+    <button id="refresh" type="button">Refresh</button>
+    <p id="message" role="status"></p>
+
+    <h2>This Device</h2>
+    <p id="identity"></p>
+    <div id="sets"></div>
+
+    <h2>Selectors</h2>
+    <p>Changes apply to all devices using the selector.</p>
+    <label id="token-field" hidden>API token
+      <input id="token" type="password" autocomplete="off" spellcheck="false">
+    </label>
+    <p id="admin-disabled" hidden>Selector changes are disabled on this router.</p>
+    <div id="selectors"></div>
+
+    <h2>HTTPS Modules</h2>
+    <div id="mitm"></div>
+    <div id="certificate"></div>
+    <p>Verify the CA fingerprint on the router, then install and trust the certificate before enabling.</p>
+    <p><a href="/ca.mobileconfig">iOS profile</a> · <a href="/ca.cer">DER</a> · <a href="/ca.pem">PEM</a></p>
+  </fieldset>
+  <p>Changes apply to new connections.</p>
+
+  <template id="set-template">
+    <p><strong></strong> <button type="button"></button><br><small></small></p>
+  </template>
+  <template id="selector-template">
+    <fieldset>
+      <legend></legend>
+      <select aria-label="Node"></select>
+      <button class="apply" type="button">Apply</button>
+      <button class="reset" type="button">Use Configuration</button>
+    </fieldset>
+  </template>
+  <template id="mitm-template">
+    <p><span></span> <button class="toggle" type="button"></button> <button class="reset" type="button">Use Configuration</button></p>
+  </template>
+</body>
+</html>

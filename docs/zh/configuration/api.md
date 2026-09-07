@@ -1,5 +1,7 @@
 # 页面与运行时 API
 
+独立构建、连接参数、TUI 开发与完整字段说明见 [API 与独立客户端开发](api-client.md)，机器可读定义见 [OpenAPI 文档](../../api/openapi.json)。
+
 ```text
 global {
   lan_interface: br-lan
@@ -73,17 +75,18 @@ client {
 
 ## API
 
-所有修改请求带 `X-Dae-API: 1`；JSON 正文需 `Content-Type: application/json`，无 JSON 的请求使用空正文。selector 修改需要 `Authorization: Bearer <api_token>`；MITM 修改需要 `X-Dae-MITM: <当前 CA 的 SHA-256 指纹>`。名称须 URL 编码；命令行可省略 `Origin`。
+PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: application/json`，无 JSON 的请求使用空正文。selector 修改需要 `Authorization: Bearer <api_token>`；MITM 修改需要 `X-Dae-MITM: <当前 CA 的 SHA-256 指纹>`。名称须 URL 编码；命令行可省略 `Origin`。
 
 未配置 `global.api_token` 时，selector 修改返回 `403` 并说明未配置；已配置但请求令牌缺失或错误时返回 `401`。设备自助设置不需要该令牌。
 
 | 方法与路径 | 行为 |
 | --- | --- |
+| `GET /api/status` | 运行时完整状态；TCP 需要管理 token，本地 Unix socket 使用文件系统权限 |
 | `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
 | `PUT` / `DELETE /api/device/sets/{name}` | 加入 / 退出集合 |
 | `PUT /api/device/mitm` | `{"enabled":true}` 开启，`false` 关闭 |
 | `DELETE /api/device/mitm` | 恢复配置 |
-| `GET /api/selectors` | 各组的默认/当前节点 ID、覆盖状态、候选节点健康与延迟；`admin_enabled` 表示已配置令牌 |
+| `GET /api/selectors` | 各组的默认/当前节点 ID、覆盖状态、候选节点健康与延迟；`admin_enabled` 表示该传输上的管理功能已启用 |
 | `PUT /api/selectors/{name}` | `{"node_id":"状态返回的 ID"}` 选择节点 |
 | `DELETE /api/selectors/{name}` | 恢复配置 |
 | `GET /api/certificate` | CA 名称与 SHA-256 指纹；不可用时 `404` |
@@ -91,6 +94,6 @@ client {
 
 MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
 
-daemon 的状态 schema 为 5，通过 Unix socket `/var/run/dae.sock` 的 `/status` 提供，供 `dae status`、`dae mitm status` 和插件命令使用，无需开启 `global.api_port`。`mitm_plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。CLI 与 daemon 应使用同一版本。
+daemon 的状态 schema 为 7，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae mitm status` 和插件命令使用，无需开启 `global.api_port`。`mitm_plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。CLI 与 daemon 应使用同一版本。
 
 `dae mitm status --json` 输出完整 `mitm_plugins`；`dae mitm <类型> status --instance <ID>` 查询单个实例。插件的任务详情可能包含视频 BV/CID、标题等上下文，但不得包含 Cookie 或 API 密钥。

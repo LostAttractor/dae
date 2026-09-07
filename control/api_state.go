@@ -8,7 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/daeuniverse/dae/component/api"
+	"github.com/daeuniverse/dae/api"
+	managementapi "github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	log "github.com/sirupsen/logrus"
@@ -65,10 +66,10 @@ func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error
 		}
 	}
 	if group == nil {
-		return api.SelectorState{}, api.ErrSelectorNotFound
+		return api.SelectorState{}, managementapi.ErrSelectorNotFound
 	}
 	if id != "" && !slices.ContainsFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id }) {
-		return api.SelectorState{}, api.ErrSelectorNode
+		return api.SelectorState{}, managementapi.ErrSelectorNode
 	}
 	// Keep the live choice and its saved override together, including rollback.
 	c.settingsMu.Lock()

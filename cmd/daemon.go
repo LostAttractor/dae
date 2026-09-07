@@ -18,11 +18,11 @@ import (
 	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
+	"github.com/daeuniverse/dae/internal/apiserver"
 	"github.com/daeuniverse/dae/pkg/logger"
 	"github.com/okzk/sdnotify"
 	log "github.com/sirupsen/logrus"
@@ -32,8 +32,6 @@ const (
 	PidFilePath      = "/var/run/dae.pid"
 	StatusSocketPath = "/var/run/dae.sock"
 )
-
-var statusServer *api.StatusServer
 
 type reloadControlPlaneRetirer interface {
 	StopAndAbortConnections() error
@@ -90,7 +88,13 @@ func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plug
 	if err != nil {
 		return errors.Join(err, cleanupStartup(c))
 	}
+	localAPI, err := apiserver.Listen("unix", StatusSocketPath)
+	if err != nil {
+		managementAPI.Close()
+		return errors.Join(fmt.Errorf("local API: %w", err), cleanupStartup(c))
+	}
 	if err = c.Activate(); err != nil {
+		localAPI.Close()
 		managementAPI.Close()
 		return errors.Join(err, cleanupStartup(c))
 	}
@@ -98,11 +102,6 @@ func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plug
 
 	startMetricsServer(conf.Global.MetricsPort)
 
-	if statusServer == nil {
-		if statusServer, err = api.StartStatusServer(StatusSocketPath, Version); err != nil {
-			log.Warnf("Failed to start status server: %v", err)
-		}
-	}
 	// Serve tproxy TCP/UDP server util signals.
 	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
@@ -132,6 +131,7 @@ func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plug
 	// a deferred exit(c) would capture the startup plane, closing the retired
 	// plane a second time while the final, bpf-owning plane is never closed.
 	defer func() {
+		localAPI.Close()
 		managementAPI.Close()
 		exit(c)
 	}()
@@ -143,12 +143,11 @@ func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plug
 	case startupErr := <-errCh:
 		return startupErr
 	}
-	if statusServer != nil {
-		statusServer.Publish(startupPlane.StatusSnapshot)
-	}
-	managementAPI.setHandler(startupPlane.APIHandler())
+	handler := startupPlane.APIHandler(Version)
+	localAPI.SetHandler(handler)
+	managementAPI.SetHandler(daemonAPIHandler(handler))
 	if managementAPI != nil {
-		log.Infof("Configuration page and API listening on port %d", managementAPI.port)
+		log.Infof("Configuration page and API listening on port %d", conf.Global.APIPort)
 	}
 	sdnotify.Ready()
 	log.WithFields(log.Fields{
@@ -202,12 +201,11 @@ loop:
 				if pendingReload {
 					reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
 					stats.DefaultStore.RecordReload()
-					if statusServer != nil {
-						statusServer.Publish(c.StatusSnapshot)
-					}
-					managementAPI.setHandler(c.APIHandler())
+					handler := c.APIHandler(Version)
+					localAPI.SetHandler(handler)
+					managementAPI.SetHandler(daemonAPIHandler(handler))
 					if managementAPI != nil {
-						log.Infof("Configuration page and API listening on port %d", managementAPI.port)
+						log.Infof("Configuration page and API listening on port %d", conf.Global.APIPort)
 					}
 					pendingReload = false
 				}
@@ -310,10 +308,8 @@ loop:
 				// writing connectivity state into the shared maps.
 				log.Debug("Retiring previous control plane")
 				writeReloadProgress("Switching to the new control plane...")
-				if statusServer != nil {
-					statusServer.Publish(nil)
-				}
-				managementAPI.setHandler(nil)
+				localAPI.SetHandler(nil)
+				managementAPI.SetHandler(nil)
 				if managementAPI != nextAPI {
 					managementAPI.Close()
 				}
@@ -369,9 +365,6 @@ func exit(c *control.ControlPlane) {
 	log.Info("Shutting down")
 	startPprofServer(0)
 	startMetricsServer(0)
-	if statusServer != nil {
-		statusServer.Close()
-	}
 	if err := os.Remove(PidFilePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.WithError(err).Warn("Could not remove PID file")
 	}

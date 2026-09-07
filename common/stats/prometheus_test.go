@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -97,8 +98,8 @@ func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 func TestStoreCollectorSurvivesExternalReadFailure(t *testing.T) {
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
-	if err := connection.AttachExternalCounters(func() (TrafficCounters, error) {
-		return TrafficCounters{}, errors.New("counter source failed")
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{}, errors.New("counter source failed")
 	}); err != nil {
 		t.Fatal(err)
 	}

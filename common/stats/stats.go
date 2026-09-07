@@ -11,6 +11,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
+
+	"github.com/daeuniverse/dae/api"
 )
 
 func (s *Store) RecordReload() {
@@ -29,31 +31,6 @@ func (s *Store) LastReload() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(seconds, 0)
-}
-
-// Availability is a point-in-time view of the uptime of a node or group.
-type Availability struct {
-	Seen                 bool          `json:"seen"`
-	Alive                bool          `json:"alive"`
-	AliveSince           time.Time     `json:"alive_since"`
-	LastFailureStartedAt time.Time     `json:"last_failure_started_at"`
-	LastFailureDuration  time.Duration `json:"last_failure_duration"`
-	LastCheckAt          time.Time     `json:"last_check_at"`
-	LastConnFailAt       time.Time     `json:"last_connection_failure_at"`
-	UpRatio              float64       `json:"up_ratio"`
-
-	ChecksTotal      int64 `json:"checks_total"`
-	ChecksFailed     int64 `json:"checks_failed"`
-	ChecksSinceAlive int64 `json:"checks_since_alive"`
-
-	Recent24h AvailabilityWindow `json:"recent_24h"`
-}
-
-// GroupAvailability adds current and recent aggregate connectivity states to
-// the time-weighted availability statistics of an outbound group.
-type GroupAvailability struct {
-	Availability
-	Recent GroupStateWindow `json:"recent"`
 }
 
 // NodeIdentity describes an availability identity retained by the currently
@@ -130,11 +107,11 @@ func (a *availability) record(alive, checked bool, now, failureStartedAt time.Ti
 	a.recent.record(now, transitionAt, alive, checked)
 }
 
-func (a *availability) snapshot(now time.Time) Availability {
+func (a *availability) snapshot(now time.Time) api.Availability {
 	if a.firstSeen.IsZero() {
-		return Availability{}
+		return api.Availability{}
 	}
-	snapshot := Availability{
+	snapshot := api.Availability{
 		Seen:                 true,
 		Alive:                a.alive,
 		LastFailureStartedAt: a.failureStartedAt,
@@ -200,12 +177,12 @@ func (s *Store) RecordNodeConnFail(key string) {
 	state.lastConnFail = time.Now()
 }
 
-func (s *Store) GetNode(key string) Availability {
+func (s *Store) GetNode(key string) api.Availability {
 	s.availabilityMu.Lock()
 	defer s.availabilityMu.Unlock()
 	state := s.nodes[key]
 	if state == nil {
-		return Availability{}
+		return api.Availability{}
 	}
 	return state.snapshot(time.Now())
 }
@@ -227,16 +204,16 @@ func (s *Store) RecordGroup(name string, available bool) {
 	group.states.record(now, available)
 }
 
-func (s *Store) GetGroup(name string) GroupAvailability {
+func (s *Store) GetGroup(name string) api.GroupAvailability {
 	s.availabilityMu.Lock()
 	defer s.availabilityMu.Unlock()
 	group := s.groups[name]
 	if group == nil {
-		return GroupAvailability{Recent: emptyGroupStateWindow()}
+		return api.GroupAvailability{Recent: emptyGroupStateWindow()}
 	}
 	now := time.Now()
 	recent := group.states.snapshot(now)
-	return GroupAvailability{
+	return api.GroupAvailability{
 		Availability: group.snapshot(now),
 		Recent:       recent,
 	}

@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/clientmatch"
-	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/settings"
@@ -57,7 +57,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 		}
 		return mac, resolveError
 	}
-	handler := plane.apiHandler(resolve)
+	handler := plane.apiHandler("test", resolve)
 	endpoint := "http://192.0.2.1:8081/api/device/mitm"
 	request := func(method, path, body string, code int) api.MITMState {
 		t.Helper()
@@ -97,11 +97,11 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	// The production resolver must reject every device endpoint when no LAN is
 	// configured, even if the caller knows the CA fingerprint.
-	handler = plane.APIHandler()
+	handler = plane.APIHandler("test")
 	request("GET", endpoint, "", 403)
 	request("PUT", endpoint, `{"enabled":true}`, 403)
 	request("DELETE", endpoint, "", 403)
-	handler = plane.apiHandler(resolve)
+	handler = plane.apiHandler("test", resolve)
 	if state := request("GET", endpoint, "", 200); state.Enabled || state.Override != nil {
 		t.Fatalf("default state: %+v", state)
 	}
@@ -114,7 +114,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	// A new plane shares live settings while changing configured defaults.
 	reloaded := makePlane([]string{"all"})
-	handler = reloaded.apiHandler(resolve)
+	handler = reloaded.apiHandler("test", resolve)
 	state = request("PUT", endpoint, `{"enabled":false}`, 200)
 	if state.Enabled || state.Override == nil || *state.Override || selected(reloaded, mac) || !selected(reloaded, other) || selected(plane, mac) {
 		t.Fatalf("device disable did not override all across reload: %+v", state)
@@ -177,7 +177,7 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			called := false
-			handler := plane.apiHandler(func(peer, _ netip.AddrPort) ([6]byte, error) {
+			handler := plane.apiHandler("test", func(peer, _ netip.AddrPort) ([6]byte, error) {
 				ip := peer.Addr()
 				called = true
 				if ip != netip.MustParseAddr("192.0.2.10") {

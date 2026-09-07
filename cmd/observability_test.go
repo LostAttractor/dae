@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 )
@@ -97,8 +98,8 @@ func TestMetricsServerContinuesAfterExternalCounterFailure(t *testing.T) {
 		Outbound: t.Name(),
 		Network:  common.NetworkTCP4,
 	}, false)
-	if err := connection.AttachExternalCounters(func() (stats.TrafficCounters, error) {
-		return stats.TrafficCounters{}, errors.New("counter source failed")
+	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
+		return api.TrafficCounters{}, errors.New("counter source failed")
 	}); err != nil {
 		t.Fatal(err)
 	}

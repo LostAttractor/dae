@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -38,25 +38,25 @@ func (statusTestDialer) ListenPacket(context.Context, string) (net.PacketConn, e
 }
 
 func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
-	snapshot := map[stats.Path]stats.PathStats{
+	snapshot := map[stats.Path]api.PathStats{
 		{NodeID: "shared-id", Outbound: "group", Subtag: "sub", Dialer: "alias-a", Network: common.NetworkTCP4}: {
 			ActiveConnections: 2, TotalConnections: 3, FallbackConnections: 1,
-			TrafficCounters: stats.TrafficCounters{UploadBytes: 1000, DownloadBytes: 2000},
-			History: stats.TrafficHistory{
+			TrafficCounters: api.TrafficCounters{UploadBytes: 1000, DownloadBytes: 2000},
+			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{10, 100}, DownloadBytesPerSecond: []uint64{20, 200},
 			},
 		},
 		{NodeID: "alias-b-id", Outbound: "group", Subtag: "sub", Dialer: "alias-b", Network: common.NetworkUDP4}: {
 			ActiveConnections: 5, TotalConnections: 7,
-			TrafficCounters: stats.TrafficCounters{UploadBytes: 3000, DownloadBytes: 4000},
-			History: stats.TrafficHistory{
+			TrafficCounters: api.TrafficCounters{UploadBytes: 3000, DownloadBytes: 4000},
+			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{30, 300}, DownloadBytesPerSecond: []uint64{40, 400},
 			},
 		},
 		{NodeID: "shared-id", Outbound: "other", Dialer: "node", Network: common.NetworkTCP6}: {
 			ActiveConnections: 1, TotalConnections: 2, FallbackConnections: 2,
-			TrafficCounters: stats.TrafficCounters{UploadBytes: 5000, DownloadBytes: 6000},
-			History: stats.TrafficHistory{
+			TrafficCounters: api.TrafficCounters{UploadBytes: 5000, DownloadBytes: 6000},
+			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{50, 500}, DownloadBytesPerSecond: []uint64{60, 600},
 			},
 		},
@@ -66,19 +66,19 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	}
 	index := indexPathStats(snapshot)
 
-	if got := index.total; !reflect.DeepEqual(got, stats.PathStats{
+	if got := index.total; !reflect.DeepEqual(got, api.PathStats{
 		ActiveConnections: 8, TotalConnections: 12, FallbackConnections: 3,
-		TrafficCounters: stats.TrafficCounters{UploadBytes: 9000, DownloadBytes: 12000},
-		History: stats.TrafficHistory{
+		TrafficCounters: api.TrafficCounters{UploadBytes: 9000, DownloadBytes: 12000},
+		History: api.TrafficHistory{
 			UploadBytesPerSecond: []uint64{90, 900}, DownloadBytesPerSecond: []uint64{120, 1200},
 		},
 	}) {
 		t.Fatalf("global path stats = %+v", got)
 	}
-	if got := index.groups["group"].total; !reflect.DeepEqual(got, stats.PathStats{
+	if got := index.groups["group"].total; !reflect.DeepEqual(got, api.PathStats{
 		ActiveConnections: 7, TotalConnections: 10, FallbackConnections: 1,
-		TrafficCounters: stats.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000},
-		History: stats.TrafficHistory{
+		TrafficCounters: api.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000},
+		History: api.TrafficHistory{
 			UploadBytesPerSecond: []uint64{40, 400}, DownloadBytesPerSecond: []uint64{60, 600},
 		},
 	}) {
@@ -179,17 +179,17 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 	if directStatus := snapshot.Groups[0]; directStatus.ChecksConnectivity || directStatus.Policy != "" {
 		t.Fatalf("direct status = %+v, want singleton without connectivity or policy", directStatus)
 	}
-	if groupStatus := snapshot.Groups[1]; !groupStatus.Critical || !groupStatus.ChecksConnectivity || groupStatus.Connectivity != stats.GroupStateChecking {
+	if groupStatus := snapshot.Groups[1]; !groupStatus.Critical || !groupStatus.ChecksConnectivity || groupStatus.Connectivity != api.GroupStateChecking {
 		t.Fatalf("checked group status = %+v, want critical and checking", groupStatus)
 	}
 	availability := snapshot.Groups[1].Availability
-	if len(availability.Recent.States) != stats.GroupStateBucketCount {
+	if len(availability.Recent.States) != api.GroupStateBucketCount {
 		t.Fatalf("recent group availability = %+v, want ten buckets", availability)
 	}
 	if availability.Seen {
 		t.Fatalf("unobserved group has availability: %+v", availability)
 	}
-	if got := snapshot.Groups[1].Nodes[0].Support[0]; got != dialer.NetworkSupportUnknown {
+	if got := snapshot.Groups[1].Nodes[0].Support[0]; got != api.NetworkSupportUnknown {
 		t.Fatalf("tcp4 support state = %q, want unknown", got)
 	}
 
@@ -227,13 +227,13 @@ func TestStatusSnapshotDoesNotSelectUnknownNetwork(t *testing.T) {
 	}
 	snapshot := mustStatusSnapshot(t, plane)
 	status := snapshot.Groups[0]
-	if status.Nodes[0].Support[common.NetworkUDP4] != dialer.NetworkSupportUnknown {
+	if status.Nodes[0].Support[common.NetworkUDP4] != api.NetworkSupportUnknown {
 		t.Fatalf("udp4 status = %+v, want unknown and not advertised as supported", status.Nodes[0].Support)
 	}
 	if status.SelectedNodeIDs[common.NetworkUDP4] != "" {
 		t.Fatalf("unknown capability exposed tentative selection %q", status.SelectedNodeIDs[common.NetworkUDP4])
 	}
-	if status.Connectivity == stats.GroupStateAvailable {
+	if status.Connectivity == api.GroupStateAvailable {
 		t.Fatal("unknown network capability made the group available")
 	}
 }

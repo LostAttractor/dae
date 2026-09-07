@@ -1,5 +1,8 @@
 # Management Page and Runtime API
 
+See [API and independent clients](api-client.md) for standalone builds, TUI integration and wire semantics, and the [OpenAPI document](../../api/openapi.json) for machine-readable definitions.
+
+
 ```text
 global {
   lan_interface: br-lan
@@ -73,17 +76,18 @@ Inspect with `ipset list dae_work` or `nft list set inet filter dae_work`. Match
 
 ## API
 
-Every write requires `X-Dae-API: 1`. JSON bodies require `Content-Type: application/json`; other requests use empty bodies. Selector writes require `Authorization: Bearer <api_token>`; MITM writes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. URL-encode names in paths. Command-line clients may omit `Origin`.
+PUT and DELETE requests require `X-Dae-API: 1`. JSON bodies require `Content-Type: application/json`; other requests use empty bodies. Selector writes require `Authorization: Bearer <api_token>`; MITM writes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. URL-encode names in paths. Command-line clients may omit `Origin`.
 
 Selector writes return `403` with an explanation when `global.api_token` is not configured, or `401` when the request token is missing or incorrect. Device self-service does not require this token.
 
 | Method and path | Behavior |
 | --- | --- |
+| `GET /api/status` | Full runtime snapshot; requires the TCP admin token or filesystem-authorized Unix access |
 | `GET /api/device` | Caller IP, MAC, sets (`name`, `description`, `joined`), and MITM state (`enabled`, `override`, `ca_fingerprint`); `403` for an unknown MAC |
 | `PUT` / `DELETE /api/device/sets/{name}` | Join / leave a set |
 | `PUT /api/device/mitm` | Enable with `{"enabled":true}`, or disable with `false` |
 | `DELETE /api/device/mitm` | Restore configuration |
-| `GET /api/selectors` | Default/current node IDs, overrides, candidate health and latency; `admin_enabled` indicates a configured token |
+| `GET /api/selectors` | Default/current node IDs, overrides, candidate health and latency; `admin_enabled` indicates administration is enabled for this transport |
 | `PUT /api/selectors/{name}` | Select with `{"node_id":"ID from status"}` |
 | `DELETE /api/selectors/{name}` | Restore configuration |
 | `GET /api/certificate` | CA name and SHA-256 fingerprint; `404` when unavailable |
@@ -91,6 +95,6 @@ Selector writes return `403` with an explanation when `global.api_token` is not 
 
 A `null` MITM `override` inherits the configuration. Fetch the corresponding status after changes. A changed CA causes MITM writes to return `409`; refresh the page, verify the fingerprint, and install and trust the current certificate.
 
-The daemon status schema is 5, served at `/status` over the Unix socket `/var/run/dae.sock` for `dae status`, `dae mitm status` and plugin commands. It does not require `global.api_port`. `mitm_plugins` contains instance IDs, types, host lifecycle states and rule counts. Optional `details` is defined by each plugin; Surge supplies `enabled` and `modules`. Use matching CLI and daemon versions.
+The daemon status schema is 7, served at `/api/status` over the Unix socket `/var/run/dae.sock` for `dae status`, `dae mitm status` and plugin commands. It does not require `global.api_port`. `mitm_plugins` contains instance IDs, types, host lifecycle states and rule counts. Optional `details` is defined by each plugin; Surge supplies `enabled` and `modules`. Use matching CLI and daemon versions.
 
 `dae mitm status --json` prints complete plugin reports. `dae mitm <type> status --instance <ID>` selects one instance. Task details may intentionally include video identifiers and titles, but never cookies or API keys.

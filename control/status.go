@@ -6,9 +6,9 @@
 package control
 
 import (
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
@@ -76,8 +76,11 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 	status := api.NodeStatus{
 		Revision:           runtime.Revision,
 		ObservedSessionSeq: runtime.ObservedSessionSeq,
-		Recovery:           runtime.Recovery,
-		Failure:            runtime.Failure,
+		Recovery: api.RecoverySnapshot{
+			Executor: string(runtime.Recovery.Executor), Action: runtime.Recovery.Action,
+			Phase: api.RecoveryPhase(runtime.Recovery.Phase), Verification: runtime.Recovery.Verification,
+			Attempt: runtime.Recovery.Attempt, RetryAt: runtime.Recovery.RetryAt, BlockedBy: runtime.Recovery.BlockedBy,
+		},
 		ID:                 node.StatsID(),
 		Name:               node.Name,
 		Subtag:             node.Property.SubscriptionTag,
@@ -89,14 +92,22 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		Healthy:            runtime.Healthy,
 		ConfirmingFailure:  runtime.ConfirmingFailure,
 		Availability:       runtime.Availability,
-		Support:            api.NetworkValues[dialer.NetworkSupportState](runtime.SupportState),
+		Support:            api.NetworkValues[api.NetworkSupportState](runtime.SupportState),
 		Stats:              paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}],
+	}
+	if failure := runtime.Failure; failure != nil {
+		status.Failure = &api.FailureSnapshot{
+			EpisodeID: failure.EpisodeID, Resource: api.ResourceRef(failure.Resource),
+			Scope: string(failure.Scope), Layer: string(failure.Layer), Phase: string(failure.Phase),
+			Origin: string(failure.Origin), Reason: string(failure.Reason), Code: failure.Code,
+			OccurredAt: failure.OccurredAt, Message: failure.Message,
+		}
 	}
 	if runtime.HasSession {
 		status.SessionDetail = &api.SessionStatus{
 			State: runtime.Session.State.String(),
 			Seq:   runtime.Session.Seq, ReadinessVersion: runtime.Session.ReadinessVersion,
-			Resource: runtime.Session.Resource, EpisodeID: runtime.Session.EpisodeID,
+			Resource: api.ResourceRef(runtime.Session.Resource), EpisodeID: runtime.Session.EpisodeID,
 			Accepting: runtime.Session.Accepting, UsableCapacity: runtime.Session.UsableCapacity,
 			RecoveryRequired: runtime.Session.RecoveryRequired,
 		}
@@ -118,7 +129,7 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 		ChecksConnectivity: group.ChecksConnectivity(),
 		CheckAsync:         group.CheckAsync,
 		Stats:              pathStats.total,
-		Networks:           api.NetworkValues[stats.PathStats](pathStats.networks),
+		Networks:           api.NetworkValues[api.PathStats](pathStats.networks),
 		Nodes:              make([]api.NodeStatus, 0, len(group.Dialers)),
 	}
 	if status.ChecksConnectivity {
@@ -145,7 +156,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 		StartedAt:    stats.DefaultStore.StartedAt(),
 		LastReloadAt: stats.DefaultStore.LastReload(),
 		Stats:        paths.total,
-		Networks:     api.NetworkValues[stats.PathStats](paths.networks),
+		Networks:     api.NetworkValues[api.PathStats](paths.networks),
 		Tables:       c.tableStatuses(),
 		Groups:       c.groupStatuses(paths),
 	}

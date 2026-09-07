@@ -193,3 +193,19 @@ ebpf-audit: check-go-version
 	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh
 
 ## End Ebpf
+
+# API consumers build without native runtime dependencies or eBPF generation.
+CLIENT_OUTPUT ?= dae-client
+WEB_OUTPUT ?= build/web
+.PHONY: client web client-test
+client: check-go-version
+	CGO_ENABLED=0 go build -trimpath -o $(CLIENT_OUTPUT) ./cmd/dae-client
+
+web: client
+	"$(abspath $(CLIENT_OUTPUT))" web --output "$(WEB_OUTPUT)"
+
+client-test: check-go-version
+	CGO_ENABLED=0 go test ./api/... ./client/... ./cmd/dae-client
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/... ./cmd/dae-client) && \
+		printf '%s\n' "$$dependencies" | \
+		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/(api|client)\// && $$0 != "github.com/daeuniverse/dae/api" && $$0 != "github.com/daeuniverse/dae/cmd/dae-client" && $$0 != "github.com/daeuniverse/dae/pkg/clitable" { print "Forbidden client dependency: " $$0; bad=1 } END { exit bad }'

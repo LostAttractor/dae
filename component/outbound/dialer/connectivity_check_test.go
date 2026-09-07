@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -242,11 +243,11 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	if !accepted || !applied.success {
 		t.Fatalf("initial result = %+v", applied)
 	}
-	want := [common.NetworkTypeCount]NetworkSupportState{
-		NetworkSupportConfirmed,
-		NetworkSupportUnknown,
-		NetworkSupportUnsupported,
-		NetworkSupportUnknown,
+	want := [common.NetworkTypeCount]api.NetworkSupportState{
+		api.NetworkSupportConfirmed,
+		api.NetworkSupportUnknown,
+		api.NetworkSupportUnsupported,
+		api.NetworkSupportUnknown,
 	}
 	status := d.RuntimeStatus()
 	if !status.InitialCheckDone {
@@ -761,7 +762,7 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 		t.Fatal("supported alternative did not follow canonical health failure")
 	}
 	status := d.RuntimeStatus()
-	if status.SupportState[common.NetworkTCP6] != NetworkSupportConfirmed || status.SupportState[common.NetworkTCP4] != NetworkSupportConfirmed {
+	if status.SupportState[common.NetworkTCP6] != api.NetworkSupportConfirmed || status.SupportState[common.NetworkTCP4] != api.NetworkSupportConfirmed {
 		t.Fatalf("health failure changed confirmed support: %v", status.SupportState)
 	}
 	if got := firstSupportedNetwork(d.networkStates()); got != common.NetworkTCP6 {

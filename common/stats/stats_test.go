@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -217,7 +218,7 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	if !avail.Seen || !avail.Alive {
 		t.Errorf("group should be seen and available: %+v", avail)
 	}
-	if got := avail.Recent.States[len(avail.Recent.States)-1]; got != GroupHistoryAvailable {
+	if got := avail.Recent.States[len(avail.Recent.States)-1]; got != api.GroupHistoryAvailable {
 		t.Errorf("latest group history = %q, want available", got)
 	}
 	if avail.AliveSince.IsZero() {
@@ -234,7 +235,7 @@ func TestRecordGroup_Snapshot(t *testing.T) {
 	if avail.Alive || avail.LastFailureStartedAt.IsZero() {
 		t.Errorf("group should have an active failure episode: %+v", avail)
 	}
-	if got := avail.Recent.States[len(avail.Recent.States)-1]; got != GroupHistoryUnavailable {
+	if got := avail.Recent.States[len(avail.Recent.States)-1]; got != api.GroupHistoryUnavailable {
 		t.Errorf("latest group history = %q, want unavailable", got)
 	}
 	if v, ok := collectedMetricValue(t, store, "dae_group_available", map[string]string{"outbound": name}); !ok || v != 0 {

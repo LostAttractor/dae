@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
@@ -253,7 +254,7 @@ func (g *DialerGroup) PublishStats() {
 	g.statsDeferred = false
 }
 
-func (g *DialerGroup) Connectivity() (stats.GroupState, stats.GroupAvailability) {
+func (g *DialerGroup) Connectivity() (api.GroupState, api.GroupAvailability) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.aggregateConnectivity().state(g.anyNetworkAvailable()), stats.DefaultStore.GetGroup(g.Name)
@@ -306,14 +307,14 @@ type groupConnectivity struct {
 	initialDone bool
 }
 
-func (c groupConnectivity) state(published bool) stats.GroupState {
+func (c groupConnectivity) state(published bool) api.GroupState {
 	if c.stable && published {
-		return stats.GroupStateAvailable
+		return api.GroupStateAvailable
 	}
 	if c.pending {
-		return stats.GroupStateChecking
+		return api.GroupStateChecking
 	}
-	return stats.GroupStateUnavailable
+	return api.GroupStateUnavailable
 }
 
 func (g *DialerGroup) aggregateConnectivity() groupConnectivity {

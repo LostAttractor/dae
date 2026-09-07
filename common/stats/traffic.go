@@ -6,21 +6,15 @@
 package stats
 
 import (
-	jsonv2 "encoding/json/v2"
 	"errors"
-	"fmt"
 	"math"
 	"math/bits"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-)
-
-const (
-	TrafficHistoryInterval    = 5 * time.Second
-	TrafficHistorySampleCount = 12
 )
 
 const (
@@ -37,133 +31,9 @@ type Path struct {
 	Network  common.NetworkIndex
 }
 
-// TrafficCounters contains cumulative payload bytes for both directions.
-type TrafficCounters struct {
-	UploadBytes   uint64 `json:"upload_bytes"`
-	DownloadBytes uint64 `json:"download_bytes"`
-}
-
 type trafficRate struct {
 	UploadBytesPerSecond   uint64
 	DownloadBytesPerSecond uint64
-}
-
-type TrafficHistory struct {
-	UploadBytesPerSecond   []uint64 `json:"upload_bytes_per_second"`
-	DownloadBytesPerSecond []uint64 `json:"download_bytes_per_second"`
-}
-
-func (h TrafficHistory) MarshalJSON() ([]byte, error) {
-	if h.UploadBytesPerSecond == nil {
-		h.UploadBytesPerSecond = []uint64{}
-	}
-	if h.DownloadBytesPerSecond == nil {
-		h.DownloadBytesPerSecond = []uint64{}
-	}
-	type plain TrafficHistory
-	return jsonv2.Marshal(plain(h))
-}
-
-func (h *TrafficHistory) UnmarshalJSON(data []byte) error {
-	var fields struct {
-		UploadBytesPerSecond   *[]uint64 `json:"upload_bytes_per_second"`
-		DownloadBytesPerSecond *[]uint64 `json:"download_bytes_per_second"`
-	}
-	if err := jsonv2.Unmarshal(data, &fields, jsonv2.RejectUnknownMembers(true)); err != nil {
-		return err
-	}
-	if fields.UploadBytesPerSecond == nil {
-		return errors.New("traffic history is missing upload_bytes_per_second")
-	}
-	if fields.DownloadBytesPerSecond == nil {
-		return errors.New("traffic history is missing download_bytes_per_second")
-	}
-	if len(*fields.UploadBytesPerSecond) != len(*fields.DownloadBytesPerSecond) {
-		return errors.New("traffic history directions have different sample counts")
-	}
-	if len(*fields.UploadBytesPerSecond) > TrafficHistorySampleCount {
-		return fmt.Errorf("traffic history has %d samples, want at most %d", len(*fields.UploadBytesPerSecond), TrafficHistorySampleCount)
-	}
-	h.UploadBytesPerSecond = *fields.UploadBytesPerSecond
-	h.DownloadBytesPerSecond = *fields.DownloadBytesPerSecond
-	return nil
-}
-
-func addHistorySamples(current, other []uint64) []uint64 {
-	if len(current) == 0 {
-		return append([]uint64(nil), other...)
-	}
-	for i, value := range other {
-		sum, carry := bits.Add64(current[i], value, 0)
-		if carry != 0 {
-			sum = math.MaxUint64
-		}
-		current[i] = sum
-	}
-	return current
-}
-
-func (h *TrafficHistory) add(other TrafficHistory) {
-	h.UploadBytesPerSecond = addHistorySamples(h.UploadBytesPerSecond, other.UploadBytesPerSecond)
-	h.DownloadBytesPerSecond = addHistorySamples(h.DownloadBytesPerSecond, other.DownloadBytesPerSecond)
-}
-
-// PathStats is the process-lifetime state and recent traffic history of one
-// outbound path.
-type PathStats struct {
-	ActiveConnections   int64 `json:"active_connections"`
-	TotalConnections    int64 `json:"total_connections"`
-	FallbackConnections int64 `json:"fallback_connections"`
-	TrafficCounters
-	History TrafficHistory `json:"history"`
-}
-
-func (s *PathStats) UnmarshalJSON(data []byte) error {
-	var fields struct {
-		ActiveConnections   *int64          `json:"active_connections"`
-		TotalConnections    *int64          `json:"total_connections"`
-		FallbackConnections *int64          `json:"fallback_connections"`
-		UploadBytes         *uint64         `json:"upload_bytes"`
-		DownloadBytes       *uint64         `json:"download_bytes"`
-		History             *TrafficHistory `json:"history"`
-	}
-	if err := jsonv2.Unmarshal(data, &fields, jsonv2.RejectUnknownMembers(true)); err != nil {
-		return err
-	}
-	switch {
-	case fields.ActiveConnections == nil:
-		return errors.New("path stats is missing active_connections")
-	case fields.TotalConnections == nil:
-		return errors.New("path stats is missing total_connections")
-	case fields.FallbackConnections == nil:
-		return errors.New("path stats is missing fallback_connections")
-	case fields.UploadBytes == nil:
-		return errors.New("path stats is missing upload_bytes")
-	case fields.DownloadBytes == nil:
-		return errors.New("path stats is missing download_bytes")
-	case fields.History == nil:
-		return errors.New("path stats is missing history")
-	}
-	*s = PathStats{
-		ActiveConnections:   *fields.ActiveConnections,
-		TotalConnections:    *fields.TotalConnections,
-		FallbackConnections: *fields.FallbackConnections,
-		TrafficCounters: TrafficCounters{
-			UploadBytes:   *fields.UploadBytes,
-			DownloadBytes: *fields.DownloadBytes,
-		},
-		History: *fields.History,
-	}
-	return nil
-}
-
-func (s *PathStats) Add(other PathStats) {
-	s.ActiveConnections += other.ActiveConnections
-	s.TotalConnections += other.TotalConnections
-	s.FallbackConnections += other.FallbackConnections
-	s.UploadBytes += other.UploadBytes
-	s.DownloadBytes += other.DownloadBytes
-	s.History.add(other.History)
 }
 
 type pathCounters struct {
@@ -173,7 +43,7 @@ type pathCounters struct {
 	upload      atomic.Uint64
 	download    atomic.Uint64
 	rateInvalid atomic.Bool
-	lastSample  TrafficCounters
+	lastSample  api.TrafficCounters
 }
 
 // Connection accounts for one logical TCP, smux, or UDP connection. Payload
@@ -185,8 +55,8 @@ type Connection struct {
 
 	stateMu              sync.Mutex
 	closed               bool
-	externalSource       func() (TrafficCounters, error)
-	lastExternalCounters TrafficCounters
+	externalSource       func() (api.TrafficCounters, error)
+	lastExternalCounters api.TrafficCounters
 	externalInvalid      bool
 }
 
@@ -203,7 +73,7 @@ type Store struct {
 
 	samplingMu       sync.RWMutex
 	windowStartedAt  time.Time
-	history          [TrafficHistorySampleCount]map[Path]trafficRate
+	history          [api.TrafficHistorySampleCount]map[Path]trafficRate
 	completedSamples uint64
 
 	availabilityMu sync.Mutex
@@ -230,7 +100,7 @@ func newStoreAt(windowStartedAt time.Time) *Store {
 }
 
 func (s *Store) run() {
-	ticker := time.NewTicker(TrafficHistoryInterval)
+	ticker := time.NewTicker(api.TrafficHistoryInterval)
 	defer ticker.Stop()
 	for range ticker.C {
 		s.sampleAt(time.Now())
@@ -272,7 +142,7 @@ func (c *Connection) RecordDownload(bytes uint64) {
 	c.stats.download.Add(bytes)
 }
 
-func (c *Connection) AttachExternalCounters(source func() (TrafficCounters, error)) error {
+func (c *Connection) AttachExternalCounters(source func() (api.TrafficCounters, error)) error {
 	if source == nil {
 		return errors.New("external counter source is nil")
 	}
@@ -361,7 +231,7 @@ func (s *Store) sampleAt(now time.Time) {
 	var historySample map[Path]trafficRate
 	s.pathsMu.RLock()
 	for path, counters := range s.paths {
-		current := TrafficCounters{
+		current := api.TrafficCounters{
 			UploadBytes:   counters.upload.Load(),
 			DownloadBytes: counters.download.Load(),
 		}
@@ -382,7 +252,7 @@ func (s *Store) sampleAt(now time.Time) {
 		counters.lastSample = current
 	}
 	s.pathsMu.RUnlock()
-	s.history[s.completedSamples%TrafficHistorySampleCount] = historySample
+	s.history[s.completedSamples%api.TrafficHistorySampleCount] = historySample
 	s.completedSamples++
 }
 
@@ -409,25 +279,25 @@ func (c *Connection) Close() error {
 	return err
 }
 
-func (s *Store) pathHistoryLocked(path Path) TrafficHistory {
-	count := int(min(s.completedSamples, TrafficHistorySampleCount))
-	history := TrafficHistory{
+func (s *Store) pathHistoryLocked(path Path) api.TrafficHistory {
+	count := int(min(s.completedSamples, api.TrafficHistorySampleCount))
+	history := api.TrafficHistory{
 		UploadBytesPerSecond:   make([]uint64, count),
 		DownloadBytesPerSecond: make([]uint64, count),
 	}
-	start := int((s.completedSamples - uint64(count)) % TrafficHistorySampleCount)
+	start := int((s.completedSamples - uint64(count)) % api.TrafficHistorySampleCount)
 	for i := 0; i < count; i++ {
-		rate := s.history[(start+i)%TrafficHistorySampleCount][path]
+		rate := s.history[(start+i)%api.TrafficHistorySampleCount][path]
 		history.UploadBytesPerSecond[i] = rate.UploadBytesPerSecond
 		history.DownloadBytesPerSecond[i] = rate.DownloadBytesPerSecond
 	}
 	return history
 }
 
-func (s *Store) snapshot(includeHistory bool) map[Path]PathStats {
+func (s *Store) snapshot(includeHistory bool) map[Path]api.PathStats {
 	s.samplingMu.RLock()
 	s.refreshExternalCounters()
-	snapshot := make(map[Path]PathStats)
+	snapshot := make(map[Path]api.PathStats)
 	s.pathsMu.RLock()
 	for path, counters := range s.paths {
 		// OpenConnection increments total, fallback, then active. Reading in the
@@ -435,11 +305,11 @@ func (s *Store) snapshot(includeHistory bool) map[Path]PathStats {
 		active := counters.active.Load()
 		fallback := counters.fallback.Load()
 		total := counters.total.Load()
-		pathStats := PathStats{
+		pathStats := api.PathStats{
 			ActiveConnections:   active,
 			TotalConnections:    total,
 			FallbackConnections: fallback,
-			TrafficCounters: TrafficCounters{
+			TrafficCounters: api.TrafficCounters{
 				UploadBytes:   counters.upload.Load(),
 				DownloadBytes: counters.download.Load(),
 			},
@@ -455,11 +325,11 @@ func (s *Store) snapshot(includeHistory bool) map[Path]PathStats {
 }
 
 // Snapshot refreshes active external sources and returns the latest known totals.
-func (s *Store) Snapshot() map[Path]PathStats {
+func (s *Store) Snapshot() map[Path]api.PathStats {
 	return s.snapshot(false)
 }
 
 // SnapshotWithHistory adds the latest completed five-second samples.
-func (s *Store) SnapshotWithHistory() map[Path]PathStats {
+func (s *Store) SnapshotWithHistory() map[Path]api.PathStats {
 	return s.snapshot(true)
 }

@@ -8,11 +8,16 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	contract "github.com/daeuniverse/dae/api"
 )
 
 func (s *server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if localAPISocket(r) {
+		return true
+	}
 	if s.options.Token == "" {
-		apiError(w, 403, "global.api_token is not configured; selector changes are disabled")
+		apiError(w, 403, "global.api_token is not configured; administration is disabled")
 		return false
 	}
 	actual, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -29,10 +34,7 @@ func (s *server) serveSelectors(w http.ResponseWriter, r *http.Request) {
 	if !apiBody(w, r, nil) {
 		return
 	}
-	writeAPI(w, struct {
-		Selectors    []SelectorState `json:"selectors"`
-		AdminEnabled bool            `json:"admin_enabled"`
-	}{s.options.Selectors.Selectors(), s.options.Token != ""})
+	writeAPI(w, contract.SelectorsResponse{Selectors: s.options.Selectors.Selectors(), AdminEnabled: localAPISocket(r) || s.options.Token != ""})
 }
 
 func (s *server) serveSelector(w http.ResponseWriter, r *http.Request) {
@@ -41,9 +43,7 @@ func (s *server) serveSelector(w http.ResponseWriter, r *http.Request) {
 	}
 	id := ""
 	if r.Method == http.MethodPut {
-		var request struct {
-			NodeID string `json:"node_id"`
-		}
+		var request contract.SelectNodeRequest
 		if !apiBody(w, r, &request) {
 			return
 		}

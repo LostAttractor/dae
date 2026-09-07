@@ -1,0 +1,7 @@
+:root { color-scheme: light dark; font: 16px/1.5 system-ui, sans-serif; }
+body { max-width: 42rem; margin: 1rem auto; padding: 0 1rem; overflow-wrap: anywhere; }
+fieldset { min-width: 0; margin: 1rem 0; }
+#controls { border: 0; padding: 0; }
+h1, h2 { font-size: 1.25rem; }
+button, input, select { font: inherit; max-width: 100%; margin: .25rem 0; }
+#message { white-space: pre-line; }
