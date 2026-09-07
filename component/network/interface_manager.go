@@ -366,25 +366,27 @@ func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func
 			return nil
 		}
 	}
-	return m.register(pattern, false, initial, newCallback, delCallback, false)
+	_, err := m.register(pattern, false, initial, newCallback, delCallback, false)
+	return err
 }
 
 // RegisterWithPatternSync waits for every initial callback and returns its
 // first error. It must not be called from an interface callback.
 func (m *InterfaceManager) RegisterWithPatternSync(pattern string, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link)) error {
-	return m.register(pattern, false, initCallback, newCallback, delCallback, true)
+	_, err := m.register(pattern, false, initCallback, newCallback, delCallback, true)
+	return err
 }
 
-func (m *InterfaceManager) register(name string, exact bool, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link), synchronous bool) error {
+func (m *InterfaceManager) register(name string, exact bool, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link), synchronous bool) (*atomic.Bool, error) {
 	if !exact {
 		if _, err := path.Match(name, ""); err != nil {
-			return fmt.Errorf("invalid interface pattern %q: %w", name, err)
+			return nil, fmt.Errorf("invalid interface pattern %q: %w", name, err)
 		}
 	}
 	m.mu.Lock()
 	if m.isStopped() {
 		m.mu.Unlock()
-		return net.ErrClosed
+		return nil, net.ErrClosed
 	}
 	registration := &atomic.Bool{}
 	registration.Store(true)
@@ -407,7 +409,7 @@ func (m *InterfaceManager) register(name string, exact bool, initCallback func(n
 			m.callbacks = append(m.callbacks, registered)
 		}
 		m.mu.Unlock()
-		return fmt.Errorf("list interfaces for %q: %w", name, err)
+		return nil, fmt.Errorf("list interfaces for %q: %w", name, err)
 	}
 	sortLinks(links)
 	initialLinks := make([]netlink.Link, 0, len(links))
@@ -445,13 +447,13 @@ func (m *InterfaceManager) register(name string, exact bool, initCallback func(n
 		m.enqueueDelivery(delivery, done)
 	}
 	if !synchronous {
-		return nil
+		return registration, nil
 	}
 	if err := <-done; err != nil {
 		m.disableRegistration(registration)
-		return err
+		return nil, err
 	}
-	return nil
+	return registration, nil
 }
 
 func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) {
@@ -462,7 +464,7 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 			return nil
 		}
 	}
-	if err := m.register(ifname, true, initial, newCallback, delCallback, false); err != nil && !errors.Is(err, net.ErrClosed) {
+	if _, err := m.register(ifname, true, initial, newCallback, delCallback, false); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.WithField("interface", ifname).WithError(err).
 			Warn("Initial interface lookup failed; waiting for a later interface update")
 	}
@@ -470,7 +472,33 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 
 // RegisterSync is the exact-name variant of RegisterWithPatternSync.
 func (m *InterfaceManager) RegisterSync(ifname string, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link)) error {
-	return m.register(ifname, true, initCallback, newCallback, delCallback, true)
+	_, err := m.register(ifname, true, initCallback, newCallback, delCallback, true)
+	return err
+}
+
+// RegisterSyncCancelable registers exact-name callbacks and returns an
+// idempotent function that disables and removes the registration, then waits
+// for callbacks already dispatched before the cancellation. The cancel
+// function must not be called from an interface callback.
+func (m *InterfaceManager) RegisterSyncCancelable(ifname string, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link)) (func(), error) {
+	registration, err := m.register(ifname, true, initCallback, newCallback, delCallback, true)
+	if err != nil {
+		return nil, err
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.disableRegistration(registration)
+			done := make(chan error, 1)
+			if !m.enqueueDelivery([]func() error{func() error { return nil }}, done) {
+				// Shutdown rejects new barriers while already dispatched callbacks
+				// are still draining. Join the dispatcher before releasing map ownership.
+				<-m.deliveryDone
+				return
+			}
+			<-done
+		})
+	}, nil
 }
 
 func (m *InterfaceManager) disableRegistration(registration *atomic.Bool) {
