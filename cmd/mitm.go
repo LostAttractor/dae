@@ -10,17 +10,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitmca"
+	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/spf13/cobra"
 )
 
-func init() {
-	rootCmd.AddCommand(newMITMCommand())
-}
-
-func newMITMCommand() *cobra.Command {
+func newMITMCommand(definitions map[string]plugin.Definition, services plugin.CommandServices) *cobra.Command {
 	var certPath, keyPath string
-	mitm := &cobra.Command{Use: "mitm", Short: "Manage HTTPS module interception."}
+	mitm := &cobra.Command{Use: "mitm", Short: "Manage MITM certificates, plugins and status."}
 	ca := &cobra.Command{Use: "ca", Short: "Generate, inspect and export the local MITM CA."}
 	caDir := cacheDirectory()
 	ca.PersistentFlags().StringVar(&certPath, "cert", filepath.Join(caDir, "mitm-ca.pem"), "CA certificate path (PEM or DER); default directory: DAE_LOCATION_CACHE or /var/lib/dae")
@@ -99,6 +96,7 @@ func newMITMCommand() *cobra.Command {
 	export.Flags().StringVar(&format, "format", "pem", "export format: pem, der, mobileconfig")
 	export.Flags().StringVarP(&output, "output", "o", "-", "new output file, or - for stdout")
 	ca.AddCommand(export)
+	addMITMCommands(mitm, definitions, services)
 	return mitm
 }
 

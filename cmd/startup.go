@@ -20,6 +20,7 @@ import (
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
@@ -129,7 +130,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store) (c *control.ControlPlane, err error) {
+func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, setups map[string]plugin.Setup) (c *control.ControlPlane, err error) {
 	defer func() {
 		if err == nil || bpf != nil {
 			return
@@ -186,7 +187,7 @@ func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGe
 			if bpf != nil {
 				writeReloadProgress("Preparing MITM plugins using routing rules...")
 			}
-			return loadMITM(ctx, conf, client, background)
+			return loadMITM(ctx, conf, client, background, setups)
 		}
 	}
 	assemblyStarted := time.Now()
@@ -202,7 +203,7 @@ func newControlPlane(ctx context.Context, bpf any, conf *config.Config, externGe
 	}
 	runtime.GC()
 	log.WithField("duration", time.Since(assemblyStarted)).Info("Assembled control plane")
-	logStartupSurgeStatus(c.SurgeStatus())
+	logStartupMITMStatus(c.MITMStatus())
 	return c, nil
 }
 

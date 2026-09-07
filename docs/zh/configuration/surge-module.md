@@ -1,6 +1,6 @@
 # Surge Module
 
-dae 使用 [buke/quickjs-go](https://github.com/buke/quickjs-go) 的 cgo 绑定运行 QuickJS-NG，在透明转发中处理 Surge HTTP 模块，并支持部分路由与 IP 目标重写。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[静态 musl 构建](../../en/user-guide/build-by-yourself.md#portable-static-musl-build)。
+内置 `surge` 插件使用 [buke/quickjs-go](https://github.com/buke/quickjs-go) 的 cgo 绑定运行 QuickJS-NG，在透明转发中处理 Surge HTTP 模块，并支持部分路由与 IP 目标重写。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[静态 musl 构建](../../en/user-guide/build-by-yourself.md#portable-static-musl-build)。
 
 ## 配置与运行
 
@@ -59,7 +59,7 @@ mitm {
 模块用 `#!arguments=名称:默认值,...` 声明参数，在正文中写 `{{{名称}}}`。中文名称可用、大小写敏感；参数按原文替换，不自动 JSON 编码。未知或重复参数、未提供的必填项、值中的换行/NUL 会报错。
 
 ```sh
-dae surge configure 'file:modules/youtube.sgmodule' \
+dae mitm surge configure 'file:modules/youtube.sgmodule' \
   --name youtube > youtube-module.dae
 ```
 
@@ -131,7 +131,7 @@ client_source_address: '-02:00:00:00:00:10,all'
 domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 ```
 
-客户端 DNS 应经过 dae；DNS 注册缺失、共享 IP 歧义或 ECH 可能影响捕获。证书固定应用可能拒绝 CA。HTTP/2 不允许跨原主机复用；WebSocket 只处理握手。
+HTTP/MITM 捕获不要求客户端 DNS 经过 dae。普通出站路由仍受域名验证策略影响；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 不允许跨原主机复用；WebSocket 只处理握手。
 
 ## 执行与调试日志
 
@@ -140,7 +140,7 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 运行中查询当前模块：
 
 ```sh
-./dae surge status
+./dae mitm surge status
 ```
 
 查询复用 daemon 的状态服务，无需开启 `global.api_port`。`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败的启动日志还会标出 `failed` 和 `not loaded`；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。
@@ -157,16 +157,15 @@ journalctl -u dae -f -o cat
 
 已知不支持的脚本参数 `script-update-interval`、`debug`、`enable`、`full-header-mode` 忽略，仅在 `trace` 记录。`enable=false` 不禁用脚本；模块启停通过 dae 配置和重载完成。未知参数与影响行为的警告仍为 `warning`，支持参数的非法值仍会导致加载失败。
 
-| `surge event=` | 含义 |
+| 日志事件 | 含义 |
 | --- | --- |
 | `download_dial` | 下载使用的出站、节点、目标 |
-| `mitm_bypass` / `mitm_start` | 客户端未启用 / 开始处理 |
-| `tls_ready` / `tls_handshake_failed` | TLS 成功 / 失败 |
+| `mitm_bypass` | 主机匹配但客户端未启用 MITM |
 | `request_begin` → `script_match` → `script_start` → `script_end` | 请求、命中、执行及结果 |
 | `*_rewrite_match` / `map_local_match` | 静态规则命中 |
-| `request_failed` / `upstream_failed` / `mitm_end` | 请求失败 / 上游失败 / 连接结束 |
+| `request_failed` | Surge 请求处理失败 |
 
-按 `connection_id` 和 `request_id` 关联日志。`script_end` 含脚本、阶段、耗时与 outcome；加载成功不代表脚本已执行，执行 success 也不保证应用效果。无 `mitm_start` 时依次检查来源开关、hostname、DNS、TCP/QUIC 和网卡绑定。自动事件不记录查询参数、认证头和正文，脚本自行打印的内容不受此限制。
+Surge 请求与脚本事件以 `surge event=` 输出，使用 `connection_id` 和 `request_id` 关联。`script_end` 含脚本、阶段、耗时与 outcome；加载成功不代表脚本已执行，执行 success 也不保证应用效果。没有 `request_begin` 时依次检查来源开关、hostname、TCP/QUIC、TLS 信任、域名验证策略和网卡绑定。自动事件不记录查询参数、认证头和正文，脚本自行打印的内容不受此限制。
 
 ## 示例
 

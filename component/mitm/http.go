@@ -20,28 +20,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"golang.org/x/net/http2"
 )
 
-var ErrAbort = errors.New("mitm: abort HTTP stream")
-
-type HTTPError struct {
-	Status int
-	Err    error
-}
-
-func (e *HTTPError) Error() string { return e.Err.Error() }
-func (e *HTTPError) Unwrap() error { return e.Err }
-
-type idsKey struct{}
-type ids struct{ connection, request string }
-
 var serial atomic.Uint64
-
-func IDs(ctx context.Context) (string, string) {
-	v, _ := ctx.Value(idsKey{}).(ids)
-	return v.connection, v.request
-}
 
 func (h *Host) ServeConn(conn net.Conn, host string, port uint16, dial DialContext) error {
 	defer conn.Close()
@@ -56,10 +39,10 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, dial DialConte
 	h.mu.Unlock()
 	defer h.serving.Done()
 	defer func() { h.mu.Lock(); delete(h.connections, original); h.mu.Unlock() }()
-	flow := Flow{Host: host, Port: port}
+	flow := plugin.Flow{Host: host, Port: port}
 	flow.Source, _ = netip.ParseAddrPort(conn.RemoteAddr().String())
 	flow.Destination, _ = netip.ParseAddrPort(conn.LocalAddr().String())
-	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), idsKey{}, ids{connection: strconv.FormatUint(serial.Add(1), 10)}))
+	ctx, cancel := context.WithCancel(plugin.WithIDs(context.Background(), strconv.FormatUint(serial.Add(1), 10), ""))
 	defer cancel()
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	reader := bufio.NewReader(conn)
@@ -142,10 +125,10 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 // Handler has a connection-local transport pool: different original flows,
 // destinations, outbound policies and TLS identities cannot share its sockets.
 func (h *Host) Handler(scheme, host string, port uint16, dial DialContext) (http.Handler, func()) {
-	return h.HandlerForFlow(scheme, Flow{Host: host, Port: port}, dial)
+	return h.HandlerForFlow(scheme, plugin.Flow{Host: host, Port: port}, dial)
 }
 
-func (h *Host) HandlerForFlow(scheme string, flow Flow, dial DialContext) (http.Handler, func()) {
+func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, dial DialContext) (http.Handler, func()) {
 	host, port := flow.Host, flow.Port
 	transport := &http.Transport{
 		DialContext:            dial,
@@ -161,7 +144,7 @@ func (h *Host) HandlerForFlow(scheme string, flow Flow, dial DialContext) (http.
 		transport.TLSClientConfig = h.options.UpstreamTLSConfig.Clone()
 	}
 	client := &http.Client{Transport: transport}
-	chain := h.chain(flow, func(e *Exchange) (*http.Response, error) { return transport.RoundTrip(e.Request) })
+	chain := h.chain(flow, func(e *plugin.Exchange) (*http.Response, error) { return transport.RoundTrip(e.Request) })
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		if h.closed {
@@ -186,29 +169,17 @@ func (h *Host) HandlerForFlow(scheme string, flow Flow, dial DialContext) (http.
 		}
 		r.URL.Scheme, r.URL.Host = scheme, r.Host
 		r.RequestURI = ""
-		connection, _ := IDs(r.Context())
-		r = r.WithContext(context.WithValue(r.Context(), idsKey{}, ids{connection: connection, request: strconv.FormatUint(serial.Add(1), 10)}))
+		connection, _ := plugin.IDs(r.Context())
+		r = r.WithContext(plugin.WithIDs(r.Context(), connection, strconv.FormatUint(serial.Add(1), 10)))
 		controller := http.NewResponseController(w)
 		defer controller.SetReadDeadline(time.Time{})
 		proxy := &httputil.ReverseProxy{
 			Director: func(req *http.Request) { req.RemoteAddr = "" },
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				response, err := chain(&Exchange{Request: req, Client: client, Controller: controller})
+				response, err := chain(&plugin.Exchange{Request: req, Client: client, SetReadDeadline: controller.SetReadDeadline})
 				_ = controller.SetReadDeadline(time.Time{})
 				if err != nil {
-					if response != nil && response.Body != nil {
-						_ = response.Body.Close()
-					}
 					return nil, err
-				}
-				if response == nil {
-					return nil, errors.New("mitm: plugin returned a nil response")
-				}
-				if response.Body == nil {
-					response.Body = http.NoBody
-				}
-				if response.Header == nil {
-					response.Header = make(http.Header)
 				}
 				response.Request = req
 				return response, nil
@@ -222,11 +193,11 @@ func (h *Host) HandlerForFlow(scheme string, flow Flow, dial DialContext) (http.
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-				if errors.Is(err, ErrAbort) {
+				if errors.Is(err, plugin.ErrAbort) {
 					panic(http.ErrAbortHandler)
 				}
 				status := http.StatusBadGateway
-				var failure *HTTPError
+				var failure *plugin.HTTPError
 				if errors.As(err, &failure) {
 					status = failure.Status
 				}

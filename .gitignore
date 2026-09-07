@@ -12,6 +12,8 @@ go-mod/
 node_modules/
 *.log
 .build_tags
+/go.work
+/go.work.sum
 .checkpatch-camelcase.git.
 venv
 /build/ebpf-audit/

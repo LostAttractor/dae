@@ -39,7 +39,7 @@ jobs:
       - name: Check native script memory management
         env:
           CGO_ENABLED: 1
-        run: go test -asan -tags=netgo,osusergo ./component/surgemodule/...
+        run: go test -asan -tags=netgo,osusergo ./component/mitm/surge/...
       - name: Build static daemon and script tests
         env:
           CGO_ENABLED: 1
@@ -48,10 +48,10 @@ jobs:
           make STATIC=y CLANG=clang-15 STRIP=llvm-strip-15
           go test -c -tags=netgo,osusergo \
             -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" \
-            -o surgemodule.test ./component/surgemodule
+            -o surgemodule.test ./component/mitm/surge
           go test -c -tags=netgo,osusergo \
             -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" \
-            -o quickjs.test ./component/surgemodule/internal/quickjs
+            -o quickjs.test ./component/mitm/surge/internal/quickjs
           scripts/check-static.sh dae surgemodule.test quickjs.test
       - name: Run on Alpine without host libraries
         run: |

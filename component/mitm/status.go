@@ -1,17 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package mitm
 
-// InstanceStatus intentionally excludes plugin configuration and credentials.
-type InstanceStatus struct {
-	ID               string `json:"id"`
-	Type             string `json:"type"`
-	State            string `json:"state"`
-	Scopes           int    `json:"scopes"`
-	DestinationRules int    `json:"destination_rules"`
-}
+import (
+	"encoding/json"
 
-func (h *Host) Status() []InstanceStatus {
+	"github.com/daeuniverse/dae/component/mitm/plugin"
+)
+
+func (h *Host) Status() []plugin.InstanceStatus {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	state := "prepared"
 	if h.cancel != nil {
 		state = "active"
@@ -19,9 +17,15 @@ func (h *Host) Status() []InstanceStatus {
 	if h.closed {
 		state = "draining"
 	}
-	result := make([]InstanceStatus, 0, len(h.instances))
+	result := make([]plugin.InstanceStatus, 0, len(h.instances))
 	for _, p := range h.instances {
-		result = append(result, InstanceStatus{ID: p.ID, Type: p.Type, State: state, Scopes: len(p.plan.Scopes), DestinationRules: len(p.plan.Destinations)})
+		result = append(result, plugin.InstanceStatus{ID: p.ID, Type: p.Type, State: state, Scopes: len(p.plan.Scopes), DestinationRules: len(p.plan.Destinations)})
+	}
+	h.mu.Unlock()
+	for i, p := range h.instances {
+		if reporter, ok := p.Plugin.(plugin.Reporter); ok {
+			result[i].Details, _ = json.Marshal(reporter.Report())
+		}
 	}
 	return result
 }

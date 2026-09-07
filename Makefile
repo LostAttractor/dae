@@ -12,6 +12,7 @@ LLVM_OBJDUMP ?= llvm-objdump
 CFLAGS := -O2 -Wall -Werror $(CFLAGS)
 TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
+TEST_ARGS ?=
 MAX_MATCH_SET_LEN ?= 1024
 CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
 NOSTRIP ?= n
@@ -52,7 +53,7 @@ STATIC_LDFLAGS := -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097
 endif
 BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
 
-.PHONY: check-go-arch check-go-version check-cgo clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt submodule submodules test
+.PHONY: check-go-arch check-go-version check-cgo clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt plugins submodule submodules test
 
 check-cgo:
 	@if [ "$(CGO_ENABLED)" != "1" ]; then \
@@ -104,10 +105,15 @@ check-go-version:
 
 ## Begin Dae Build
 dae: export GOOS=linux
-dae: check-cgo check-go-arch check-go-version ebpf
+dae: check-cgo check-go-arch check-go-version plugins ebpf
 	@echo $(CFLAGS)
 	go build -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
+
+# Refresh even after removing a plugin; run the generator on the build host.
+plugins: check-go-version submodule
+	@unset GOOS GOARCH GOARM GOARM64 GOAMD64 GO386 GOMIPS GOMIPS64 GOPPC64 GORISCV64; \
+	GOWORK=off CGO_ENABLED=0 go run ./cmd/dae-plugin-gen
 
 ## Begin Git Submodules
 SUBMODULE_PATHS := $(shell sed -n 's/^[[:space:]]*path[[:space:]]*=[[:space:]]*//p' .gitmodules)
@@ -139,25 +145,26 @@ ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET := $(GOARCH)
-# Go must resolve local dependency modules before running generators.
+# bpf2go uses -mod=mod, so generate BPF from dae's pinned module outside any
+# plugin workspace. The final Go build still uses the caller's workspace.
 ebpf: check-go-version submodule clean-ebpf
 	@unset GOOS && \
 	unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
-    CGO_ENABLED=0 go generate ./control/control.go && \
+    GOWORK=off CGO_ENABLED=0 go generate ./control/control.go && \
 	tags='' && \
 	case "$(GOARCH)" in \
 		amd64|arm64|riscv64|loong64|ppc64|ppc64le) \
-			CGO_ENABLED=0 go generate ./trace/trace.go && tags=trace ;; \
+			GOWORK=off CGO_ENABLED=0 go generate ./trace/trace.go && tags=trace ;; \
 		*) echo "trace disabled on $(GOARCH): BPF probe argument ABI is unsupported" ;; \
 	esac && \
-		CGO_ENABLED=0 go generate ./control/internal/splice/generate.go && \
+		GOWORK=off CGO_ENABLED=0 go generate ./control/internal/splice/generate.go && \
 	if [ -n "$$tags" ]; then tags="$$tags,dae_splice"; else tags=dae_splice; fi && \
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
-test: check-cgo ebpf
-	go test -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
+test: check-cgo plugins ebpf
+	go test $(TEST_ARGS) -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
@@ -178,7 +185,7 @@ ebpf-test: check-go-version submodule clean-ebpf
     unset GOARCH && \
     unset GOARM && \
     echo $(STRIP_FLAG) && \
-    go generate ./control/kern/tests/bpf_test.go && \
+    GOWORK=off go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
     go test -v -tags dae_bpf_tests ./control/kern/tests/...
 

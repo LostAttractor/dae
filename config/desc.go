@@ -36,7 +36,6 @@ interface: Match the interface that received the traffic.`,
 
 var SectionDescription = map[string]Desc{
 	"MITMDesc":   MITMDesc,
-	"SurgeDesc":  SurgeDesc,
 	"GlobalDesc": GlobalDesc,
 	"DnsDesc":    DnsDesc,
 	"GroupDesc":  GroupDesc,
@@ -55,19 +54,6 @@ var MITMDesc = Desc{
 	"ca_key":                "Shared PEM CA private key path.",
 	"client_source_address": "HTTP/MITM client selection; per-device settings take precedence. Does not gate destination rules.",
 	"_":                     "Ordered named plugin instances. The section name is the instance ID; type defaults to that name. Each plugin decodes its own settings.",
-}
-
-var SurgeDesc = Desc{
-	"enabled":                "Enable Surge modules, including routing and destination rewrites. HTTPS interception requires clients to trust the configured CA.",
-	"module":                 "Ordered module sources in module { name: 'source' }, with optional unique names. Arguments require a named block: module { youtube { link: 'source' arguments { '屏蔽上传按钮=false' '字幕翻译语言=zh-CN' } } }. Each argument is one quoted name=value string, split at the first '='; names are trimmed and values stay literal, including empty values. Use file:relative or file:///absolute for local modules, http:// or https:// for remote modules, and http-file:// or https-file:// for explicit persistent cache fallback. Ordinary HTTP(S) sources do not fall back to cache. Reload with dae reload.",
-	"client_source_address":  "Ordered 'all', IPv4/IPv6 addresses, CIDRs or 6-byte MAC addresses for module HTTP/MITM processing. First match wins; '-' excludes. Omitted or unmatched clients bypass; use 'all' to enable every client. Comma-separated quoted values and repeated fields are accepted. Persistent per-device API settings override this list, including explicit off. This does not detect CA trust or change routing policies.",
-	"ca_cert":                "PEM CA certificate path, relative to DAE_LOCATION_CACHE, default /var/lib/dae. Generate with dae mitm ca generate.",
-	"ca_key":                 "PEM CA private key path, relative to DAE_LOCATION_CACHE, default /var/lib/dae. Keep it readable only by the daemon owner.",
-	"store":                  "Optional JSON file for the scripts' persistent store, relative to DAE_LOCATION_CACHE, default /var/lib/dae. Empty uses memory only.",
-	"script_timeout":         "Maximum time per script, including HTTP callbacks. Module timeout may lower this limit.",
-	"memory_limit":           "QuickJS memory limit per script in bytes (16 MiB to 1 GiB).",
-	"max_body_size":          "Maximum buffered/decompressed body in bytes. Overrides unlimited module max-size=-1.",
-	"max_concurrent_scripts": "Maximum simultaneous QuickJS invocations; bounds aggregate script memory.",
 }
 
 var GlobalDesc = Desc{

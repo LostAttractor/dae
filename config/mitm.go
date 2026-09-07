@@ -101,15 +101,6 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 	return nil
 }
 
-// DecodeSurgePlugin keeps the module format's settings out of the host schema.
-func DecodeSurgePlugin(section *config_parser.Section) (Surge, error) {
-	var conf Surge
-	if err := SectionParser(reflect.ValueOf(&conf), section); err != nil {
-		return conf, err
-	}
-	return conf, conf.Validate()
-}
-
 func (m *Marshaller) marshalMITM(conf MITM, depth int) error {
 	m.writeLine(depth, "enabled:"+strconv.FormatBool(conf.Enabled))
 	for _, value := range conf.ClientSourceAddress {

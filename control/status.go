@@ -125,11 +125,12 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 	return status
 }
 
+// StatusSnapshot aggregates this plane's current runtime state. The caller must
+// keep the plane alive until snapshot construction returns.
 func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 	paths := indexPathStats(stats.DefaultStore.SnapshotWithHistory())
 	snapshot := &api.StatusSnapshot{
 		Schema:       api.StatusSchemaVersion,
-		Surge:        c.SurgeStatus(),
 		Version:      version,
 		StartedAt:    stats.DefaultStore.StartedAt(),
 		LastReloadAt: stats.DefaultStore.LastReload(),
@@ -138,9 +139,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 		Tables:       c.tableStatuses(),
 		Groups:       c.groupStatuses(paths),
 	}
-	if c.mitmHost != nil {
-		snapshot.MITMPlugins = c.mitmHost.Status()
-	}
+	snapshot.MITMPlugins = c.MITMStatus()
 	return snapshot
 }
 

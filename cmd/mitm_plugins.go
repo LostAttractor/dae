@@ -9,22 +9,13 @@ import (
 	"path/filepath"
 
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitmca"
+	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/config"
 	log "github.com/sirupsen/logrus"
 )
 
-func init() {
-	mitm.Register("surge", func(ctx context.Context, spec mitm.Spec, services mitm.Services) (mitm.Plugin, error) {
-		conf, err := config.DecodeSurgePlugin(spec.Config)
-		if err != nil {
-			return nil, err
-		}
-		return loadSurge(ctx, conf, services.HTTPClient, spec.ID)
-	})
-}
-
-func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client) (host *mitm.Host, err error) {
+func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, setups map[string]plugin.Setup) (host *mitm.Host, err error) {
 	m := conf.MITM
 	if !m.Enabled {
 		return nil, nil
@@ -49,14 +40,14 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 
 	options := mitm.Options{Authority: authority, HTTPClient: background, Log: func(message string) { log.Warn(message) }}
 
-	services := mitm.Services{HTTPClient: client, Log: func(message string) { log.Warn(message) }}
-	var specs []mitm.Spec
+	services := plugin.Services{BaseDir: base, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}
+	var specs []plugin.Spec
 	for _, p := range m.Plugins {
 		if !p.Enabled {
 			continue
 		}
 
-		specs = append(specs, mitm.Spec{ID: p.Name, Type: p.Type, Config: p.Config})
+		specs = append(specs, plugin.Spec{ID: p.Name, Type: p.Type, Config: p.Config})
 	}
-	return mitm.Load(ctx, specs, options, services)
+	return mitm.Load(ctx, setups, specs, options, services)
 }

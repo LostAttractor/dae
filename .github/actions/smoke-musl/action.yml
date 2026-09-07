@@ -16,7 +16,7 @@ runs:
         test_binary="$RUNNER_TEMP/surgemodule.test"
         go test -c -tags=netgo,osusergo \
           -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" \
-          -o "$test_binary" ./component/surgemodule
+          -o "$test_binary" ./component/mitm/surge
         scripts/check-static.sh "$test_binary"
         timeout 180s scripts/run-target.sh "$test_binary" \
           -test.run '^(TestRuntimeRewrite|TestRuntimeBinaryAndText|TestRuntimeResultPresenceAndSyntheticResponse|TestRuntimePromisesAndTimers|TestRuntimeCGOAtomics64)$' \

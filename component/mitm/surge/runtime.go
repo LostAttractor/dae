@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package surge
+
+import (
+	"context"
+	_ "embed"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"runtime"
+	"time"
+
+	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
+)
+
+//go:embed runtime_bootstrap.js
+var runtimeBootstrap string
+
+//go:embed runtime_web.js
+var runtimeWebBootstrap string
+
+// Runtime shares only its persistent key/value store. Every Run creates a fresh
+// QuickJS VM, so globals and callbacks never leak between concurrent requests.
+type Runtime struct {
+	opts RuntimeOptions
+	data *runtimeStore
+}
+
+func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
+	if opts.Timeout <= 0 {
+		opts.Timeout = DefaultScriptTimeout
+	}
+	if opts.MemoryLimit <= 0 {
+		opts.MemoryLimit = 128 << 20
+	}
+	if opts.MemoryLimit < 1<<20 {
+		return nil, errors.New("script memory limit must be at least 1 MiB")
+	}
+	if uint64(opts.MemoryLimit) > uint64(^uintptr(0)) {
+		return nil, errors.New("script memory limit exceeds the address space on this architecture")
+	}
+	data, err := openRuntimeStore(opts.StorePath)
+	if err != nil {
+		return nil, err
+	}
+	return &Runtime{opts: opts, data: data}, nil
+}
+
+// Run executes source with a wall-clock budget shared by synchronous code,
+// promise jobs, timers, and HTTP requests. No QuickJS std/os helpers or module
+// loaders are installed: scripts receive only the explicit Surge host bridge.
+func (r *Runtime) Run(parent context.Context, source string, in Invocation) (result *Result, err error) {
+	timeout := r.opts.Timeout
+	if in.Timeout > 0 {
+		timeout = in.Timeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// QuickJS tracks the native C stack. Keep creation, execution, callbacks,
+	// and destruction on the same OS thread; other goroutines only send events
+	// or set the engine's atomic interrupt flag.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	vm, err := quickjs.NewVM(uint64(r.opts.MemoryLimit), 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	defer vm.Close()
+	// The deadline covers the entire invocation, including all later
+	// promise jobs and callbacks. It does not need rearming between phases.
+	deadline, _ := ctx.Deadline()
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, context.DeadlineExceeded
+	}
+	if err := vm.SetEvalTimeout(remaining); err != nil {
+		return nil, err
+	}
+	// Interrupt only sets a Go atomic, so cancellation can safely race Close.
+	// Stop the callback on return; no watcher goroutine or native-state join is needed.
+	stopInterrupt := context.AfterFunc(ctx, vm.Interrupt)
+	defer func() {
+		stopInterrupt()
+		if ctx.Err() != nil {
+			result, err = nil, ctx.Err()
+		}
+	}()
+	client := in.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	execution := &scriptExecution{
+		runtime: r, ctx: ctx, client: client, timeout: timeout,
+		dom:    newRuntimeDOM(ctx, min(r.opts.MemoryLimit/4, 8<<20)),
+		events: make(chan runtimeEvent, 32),
+	}
+	if err := vm.SetHostFunc(execution.hostCall); err != nil {
+		return nil, err
+	}
+	input, err := json.Marshal(map[string]any{
+		"request": runtimeMessage(in.Request), "response": runtimeMessage(in.Response),
+		"name": in.ScriptName, "type": in.ScriptType, "argument": in.Argument,
+		"binary": in.BinaryBodyMode,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := vm.Eval("globalThis.__daeInput=" + string(input) + ";\n" + runtimeWebBootstrap + "\n" + runtimeBootstrap); err != nil {
+		return nil, fmt.Errorf("initialize Surge script: %w", err)
+	}
+	if err := vm.Eval(source); err != nil {
+		return nil, fmt.Errorf("execute Surge script %q: %w", in.ScriptName, err)
+	}
+	return execution.waitResult(vm)
+}
+
+func runtimeMessage(m *Message) any {
+	if m == nil {
+		return nil
+	}
+	v := map[string]any{"url": m.URL, "method": m.Method, "id": m.ID, "headers": m.Headers, "status": m.Status}
+	if m.Body != nil {
+		v["bodyBase64"] = base64.StdEncoding.EncodeToString(m.Body)
+	}
+	if m.Trailers != nil {
+		v["h2_trailers"] = m.Trailers
+	}
+	return v
+}
+
+func decodeScriptResult(data []byte) (*Result, error) {
+	var raw struct {
+		URL      *string           `json:"url"`
+		Headers  map[string]string `json:"headers"`
+		Trailers map[string]string `json:"h2_trailers"`
+		Body     *string           `json:"body"`
+		Binary   *string           `json:"bodyBase64"`
+		Status   *int              `json:"status"`
+		Response json.RawMessage   `json:"response"`
+		Abort    bool              `json:"abort"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("invalid $done result: %w", err)
+	}
+	r := &Result{URL: raw.URL, Headers: raw.Headers, Trailers: raw.Trailers, Abort: raw.Abort}
+	if raw.Body != nil {
+		body := []byte(*raw.Body)
+		r.Body = &body
+	}
+	if raw.Binary != nil {
+		body, err := base64.StdEncoding.DecodeString(*raw.Binary)
+		if err != nil {
+			return nil, fmt.Errorf("invalid $done binary body: %w", err)
+		}
+		r.Body = &body
+	}
+	if raw.Status != nil {
+		r.Status = *raw.Status
+		if r.Status < 100 || r.Status > 599 {
+			return nil, errors.New("$done status must be between 100 and 599")
+		}
+	}
+	if len(raw.Response) > 0 && string(raw.Response) != "null" {
+		var err error
+		r.Response, err = decodeScriptResult(raw.Response)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
+}

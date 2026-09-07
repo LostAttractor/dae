@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/surgemodule"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func moduleRuleEngine(t *testing.T) *surgemodule.Engine {
+func moduleRuleEngine(t *testing.T) *surge.Engine {
 	t.Helper()
-	module, err := surgemodule.Parse(`[Rule]
+	module, err := surge.Parse(`[Rule]
 DOMAIN,api.cloudflare.com,DIRECT
 DOMAIN,api.biliapi.com,REJECT,pre-matching,extended-matching
 DOMAIN,app.biliapi.com,REJECT,pre-matching,extended-matching
@@ -29,8 +29,8 @@ hostname = grpc.biliapi.net, api.cloudflare.com
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Modules: []*surgemodule.Module{module}, Runtime: &surgemodule.Runtime{},
+	engine, err := surge.NewEngine(surge.EngineOptions{
+		Modules: []*surge.Module{module}, Runtime: &surge.Runtime{},
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {
@@ -39,7 +39,7 @@ hostname = grpc.biliapi.net, api.cloudflare.com
 	return engine
 }
 
-func moduleRuleMatcher(t *testing.T, engine *surgemodule.Engine, userRules []*config_parser.RoutingRule) *RoutingMatcher {
+func moduleRuleMatcher(t *testing.T, engine *surge.Engine, userRules []*config_parser.RoutingRule) *RoutingMatcher {
 	t.Helper()
 	preparation := &ControlPlanePreparation{rules: preparedRules{routing: userRules}}
 	preparation.rules.enableMITMPlan(engine.Plan())

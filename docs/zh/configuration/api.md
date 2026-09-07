@@ -23,7 +23,7 @@ routing {
 }
 ```
 
-`global.api_port` 默认 `0`，不监听；非零时在所有路由器地址提供 HTTP 页面与 API，独立于 Surge。用实际局域网 IP 访问，例如 `http://192.168.1.1:9080/`。不支持域名、反向代理或跨源浏览器请求；改变端口或路由器地址后需重载。
+`global.api_port` 默认 `0`，不监听；非零时在所有路由器地址提供 HTTP 页面与 API，独立于 MITM 插件。用实际局域网 IP 访问，例如 `http://192.168.1.1:9080/`。不支持域名、反向代理或跨源浏览器请求；改变端口或路由器地址后需重载。
 
 ## 使用与持久化
 
@@ -89,4 +89,6 @@ client {
 
 MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
 
-状态 schema 为 4，`mitm_plugins` 列出活动插件实例的 ID、类型、生命周期状态和规则数量；Surge 模块条目包含 `instance`，用于区分同类型多实例。状态 CLI 与 daemon 应使用同一版本。
+daemon 的状态 schema 为 5，通过 Unix socket `/var/run/dae.sock` 的 `/status` 提供，供 `dae status`、`dae mitm status` 和插件命令使用，无需开启 `global.api_port`。`mitm_plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。CLI 与 daemon 应使用同一版本。
+
+`dae mitm status --json` 输出完整 `mitm_plugins`；`dae mitm <类型> status --instance <ID>` 查询单个实例。插件的任务详情可能包含视频 BV/CID、标题等上下文，但不得包含 Cookie 或 API 密钥。

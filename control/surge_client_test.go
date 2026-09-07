@@ -24,12 +24,12 @@ import (
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitmca"
+	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/dae/component/surgemodule"
 	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -39,15 +39,15 @@ var surgeTestClients = []string{"-02:00:00:00:00:02", "02:00:00:00:00:01", "10.0
 
 func surgeClientTestEngine(t *testing.T, authority *mitmca.Authority, upstreamTLS *tls.Config, trace func(string)) *mitm.Host {
 	t.Helper()
-	module, err := surgemodule.Parse("[MITM]\nhostname = example.com\n[Header Rewrite]\nhttp-response ^https://example\\.com/ header-add X-Dae-Mitm selected\n", nil)
+	module, err := surge.Parse("[MITM]\nhostname = example.com\n[Header Rewrite]\nhttp-response ^https://example\\.com/ header-add X-Dae-Mitm selected\n", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(module.HeaderRewrites) != 1 || len(module.Warnings) != 0 {
 		t.Fatalf("test module did not parse: %+v", module)
 	}
-	engine, err := surgemodule.NewEngine(surgemodule.EngineOptions{
-		Modules: []*surgemodule.Module{module}, Runtime: &surgemodule.Runtime{},
+	engine, err := surge.NewEngine(surge.EngineOptions{
+		Modules: []*surge.Module{module}, Runtime: &surge.Runtime{},
 		Trace:       trace,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})

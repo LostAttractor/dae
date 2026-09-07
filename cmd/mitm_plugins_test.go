@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/daeuniverse/dae/component/mitmca"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
@@ -35,27 +37,23 @@ func TestLoadMITMInstances(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "host.sgmodule"), []byte("[Host]\napi.example.com = 198.51.100.1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, body := range []string{
-		`mitm { enabled: true
+	body := `mitm { enabled: true
  first { type: surge module { 'file:host.sgmodule' } }
  disabled { type: unavailable enabled: false token: 'private' }
  second { type: surge module { 'file:host.sgmodule' } }
-}`,
-	} {
-		h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := 2
-		if h.Authority() != nil || len(h.Instances()) != want || len(h.Plan().Destinations) != want {
-			t.Fatalf("unexpected host plan: %+v", h.Plan())
-		}
-		if want == 2 && (h.Instances()[0].ID != "first" || h.Instances()[1].ID != "second") {
-			t.Fatal("instance order changed")
-		}
-		if err := h.Close(); err != nil {
-			t.Fatal(err)
-		}
+}`
+	h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Setup{"surge": surge.Setup})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Authority() != nil || len(h.Status()) != 2 || len(h.Plan().Destinations) != 2 {
+		t.Fatalf("unexpected host plan: %+v", h.Plan())
+	}
+	if h.Status()[0].ID != "first" || h.Status()[1].ID != "second" {
+		t.Fatal("instance order changed")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -69,7 +67,7 @@ func TestLoadMITMRejectsUnknownSettings(t *testing.T) {
 		`mitm { enabled: true unknown { api_key: 'secret' } }`,
 		`mitm { enabled: true surge { invalid: 'secret' module { 'file:host.sgmodule' } } }`,
 	} {
-		h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient)
+		h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Setup{"surge": surge.Setup})
 		if err == nil {
 			h.Close()
 			t.Fatal("accepted invalid instance")
@@ -99,7 +97,7 @@ func TestMITMInstancesCanExplicitlyShareStore(t *testing.T) {
  first {type:surge store:'shared.json' module {'file:first.sgmodule'}}
  second {type:surge store:'shared.json' module {'file:second.sgmodule'}}
  }`)
-	host, err := loadMITM(context.Background(), conf, http.DefaultClient, http.DefaultClient)
+	host, err := loadMITM(context.Background(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Setup{"surge": surge.Setup})
 	if err != nil {
 		t.Fatal(err)
 	}
