@@ -30,12 +30,12 @@ func localIPHost(r *http.Request) bool {
 		}
 		host = netip.AddrPortFrom(ip, 80)
 	}
-	local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr)
 	if !ok {
 		return false
 	}
-	address, err := netip.ParseAddrPort(local.String())
-	return err == nil && address.Port() == host.Port() &&
+	address := local.AddrPort()
+	return address.Port() == host.Port() &&
 		address.Addr().Unmap().WithZone("") == host.Addr().Unmap().WithZone("")
 }
 
@@ -98,14 +98,19 @@ func apiBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-func apiDevice(w http.ResponseWriter, r *http.Request, resolve func(netip.Addr) ([6]byte, error)) (netip.Addr, [6]byte, bool) {
+func apiDevice(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (netip.Addr, [6]byte, bool) {
 	peer, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		apiError(w, 400, "cannot read the connection source address")
 		return netip.Addr{}, [6]byte{}, false
 	}
 	ip := peer.Addr().Unmap()
-	mac, err := resolve(ip)
+	local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr)
+	if !ok {
+		apiError(w, 400, "cannot read the connection destination address")
+		return ip, [6]byte{}, false
+	}
+	mac, err := resolve(netip.AddrPortFrom(ip, peer.Port()), local.AddrPort())
 	if err != nil {
 		apiError(w, 403, "cannot identify this device: "+err.Error())
 		return ip, mac, false

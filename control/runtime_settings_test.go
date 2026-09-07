@@ -138,7 +138,7 @@ func TestRuntimeSettingsReloadSerializesAPIWrites(t *testing.T) {
 	for i := range 8 {
 		workers.Go(func() {
 			mac := [6]byte{2, 0, 0, 0, 0, byte(i)}
-			handler := plane.apiHandler(func(netip.Addr) ([6]byte, error) { return mac, nil })
+			handler := plane.apiHandler(func(netip.AddrPort, netip.AddrPort) ([6]byte, error) { return mac, nil })
 			for _, method := range []string{"PUT", "DELETE", "PUT", "PUT"} {
 				if w := apiTestRequest(handler, method, "/api/device/sets/gaming", "", ""); w.Code != 200 {
 					t.Error(w.Code, w.Body.String())

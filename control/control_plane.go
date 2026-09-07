@@ -64,6 +64,7 @@ type ControlPlane struct {
 	settings      *settings.Store
 	settingsMu    sync.Mutex
 	apiToken      string
+	apiPort       uint16
 	kernelActive  bool
 	clients       map[string]config.Client
 
@@ -434,6 +435,7 @@ func NewControlPlane(
 		settings:                  runtimeSettings,
 		mitmClients:               mitmClients,
 		apiToken:                  global.APIToken,
+		apiPort:                   global.APIPort,
 		clients:                   clients,
 		outbounds:                 outbounds,
 		criticalOutbounds:         criticalOutbounds,
@@ -671,6 +673,9 @@ func (c *ControlPlane) Activate() error {
 
 func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 	core := c.core
+	if err := c.publishAPIObservation(); err != nil {
+		return err
+	}
 	if !core.isReload {
 		if err := clearDestinationUDP(core.bpf.DestinationUdpMap); err != nil {
 			return fmt.Errorf("clear stale UDP destination ownership: %w", err)

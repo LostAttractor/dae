@@ -61,6 +61,7 @@
 #define MAX_DST_MAPPING_NUM_UDP (65536 * 2)
 #define MAX_UDP_ROUTING_CACHE_NUM 65536
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
+#define MAX_API_CLIENT_NUM 1024
 #define MAX_DOMAIN_ROUTING_NUM 65536
 #define MAX_ARG_LEN 128
 
@@ -265,6 +266,21 @@ struct dae_param {
 };
 
 volatile const struct dae_param PARAM = {};
+
+/* Updated only when publishing a control plane; zero disables observation. */
+volatile __be16 api_port;
+
+struct api_client {
+	__u64 observed_at;
+	__u8 mac[6];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, struct tuples_key);
+	__type(value, struct api_client);
+	__uint(max_entries, MAX_API_CLIENT_NUM);
+} api_client_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -1481,6 +1497,18 @@ direct:
 	return TCX_NEXT;
 }
 
+static __always_inline void observe_api_client(
+	const struct tuples_key *key, const struct ethhdr *ethh)
+{
+	struct api_client client = {
+		.observed_at = bpf_ktime_get_ns(),
+	};
+
+	__builtin_memcpy(client.mac, ethh->h_source, sizeof(client.mac));
+	/* Userspace verifies this packet's MAC against its scoped L3 neighbor. */
+	bpf_map_update_elem(&api_client_map, key, &client, BPF_ANY);
+}
+
 // Routing and redirect the packet back.
 static __always_inline int do_tproxy_unfragmented(
 	struct __sk_buff *skb, bool is_wan, u32 link_h_len,
@@ -1501,6 +1529,14 @@ static __always_inline int do_tproxy_unfragmented(
 	// 由于向helper function传递了skb, 一旦verifier无法推断出skb是否被修改, 则可能在访问skb时出现问题
 	u16 protocol = skb->protocol;
 	u32 ifindex = skb->ifindex;
+
+	/* Observe the actual LAN ingress before direct TCP's established-flow
+	 * shortcut. This keeps HTTP keep-alive requests fresh without depending
+	 * on the L3 route device, ARP device, or bridge/bond topology.
+	 */
+	if (!is_wan && link_h_len == ETH_HLEN && l4proto == IPPROTO_TCP &&
+	    api_port && tuples.five.dport == api_port)
+		observe_api_client(&tuples.five, ethh);
 
 	struct pid_pname *pid_pname = NULL;
 

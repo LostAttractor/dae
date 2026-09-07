@@ -2,23 +2,20 @@
 
 package api
 
-import (
-	"net/http"
-	"net/netip"
-)
+import "net/http"
 
-func (s *server) serveDevice(w http.ResponseWriter, r *http.Request, resolve func(netip.Addr) ([6]byte, error)) {
+func (s *server) serveDevice(w http.ResponseWriter, r *http.Request) {
 	if !apiBody(w, r, nil) {
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, resolve)
+	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
 	if !ok {
 		return
 	}
 	writeAPI(w, s.options.Devices.DeviceState(ip, mac))
 }
 
-func (s *server) serveClientSet(w http.ResponseWriter, r *http.Request, resolve func(netip.Addr) ([6]byte, error)) {
+func (s *server) serveClientSet(w http.ResponseWriter, r *http.Request) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -27,7 +24,7 @@ func (s *server) serveClientSet(w http.ResponseWriter, r *http.Request, resolve 
 		apiError(w, 404, "client set not found")
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, resolve)
+	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
 	if !ok {
 		return
 	}
@@ -39,7 +36,7 @@ func (s *server) serveClientSet(w http.ResponseWriter, r *http.Request, resolve 
 	writeAPI(w, state)
 }
 
-func (s *server) serveMITM(w http.ResponseWriter, r *http.Request, resolve func(netip.Addr) ([6]byte, error)) {
+func (s *server) serveMITM(w http.ResponseWriter, r *http.Request) {
 	if s.options.Certificates == nil {
 		apiError(w, 404, "HTTPS modules are disabled")
 		return
@@ -69,7 +66,7 @@ func (s *server) serveMITM(w http.ResponseWriter, r *http.Request, resolve func(
 	} else if !apiBody(w, r, nil) {
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, resolve)
+	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
 	if !ok {
 		return
 	}
