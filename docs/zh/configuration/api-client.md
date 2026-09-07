@@ -35,11 +35,13 @@ Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改�
 
 ```sh
 make web
-# 或使用已构建的客户端
-./dae-client web --output ./build/web
+# 或直接在前端目录构建
+make -C web
 ```
 
-输出仅包含 `index.html`、`style.css`、`app.js`、`api.js`，无需 Node.js 构建工具。内嵌页面使用原生表单，提供设备集合、节点选择、HTTPS 开关和证书下载；复杂展示和交互可通过外部前端扩展。要独立更新页面，将产物部署到目录，并给 dae 进程设置环境变量：
+`web/` 包含前端源码与自己的构建入口。`make web` 输出到 `build/web/`（可通过 `WEB_OUTPUT` 修改）；`make -C web` 输出到 `web/dist/`。两者只需要 Make 和常规文件工具，不需要 Go 或 Node.js。`dae-client` 只包含终端命令，不再携带 Web 资源。
+
+产物包含 `index.html`、`style.css`、`app.js`、`api.js`。内嵌页面使用原生表单，提供设备集合、节点选择、HTTPS 开关和证书下载；复杂展示和交互可通过外部前端扩展。要独立更新页面，将产物部署到目录，并给 dae 进程设置环境变量：
 
 ```sh
 DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
@@ -47,7 +49,9 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 也可在服务管理器中设置 `DAE_WEB_ROOT`。该目录替代内嵌静态资源；资源按请求读取，替换完整目录即可更新前端，无需重新编译 dae。目录中的文件及子目录均为公开静态资源，只应存放前端产物；缺失资源返回 `404`。新增 JS、CSS 或嵌套资源无需修改 dae 路由。`/api/` 与证书下载路径由 API handler 优先处理。
 
-页面仍通过 `http://路由器IP:<api_port>/` 访问，由 dae 的 API 端口提供，浏览器直接连接路由器，因此现有的同源校验与设备 MAC 识别继续有效。独立导出不意味着可通过 `file://`、任意跨源静态站点或普通反向代理访问设备接口。`X-Forwarded-For` 等头不会改变设备身份。
+页面仍通过 `http://路由器IP:<api_port>/` 访问，由 dae 的 API 端口提供，浏览器直接连接路由器，因此现有的同源校验与设备 MAC 识别继续有效。独立构建不意味着可通过 `file://`、任意跨源静态站点或普通反向代理访问设备接口。`X-Forwarded-For` 等头不会改变设备身份。
+
+`make` 和 `make test` 会通过 `make web-assets` 构建前端，并以产物替换 `internal/webui/assets/`，随后编译 Go。构建产物由 Git 忽略，只编辑 `web/src/`。直接执行 `go build` 或 `internal/webui`、`cmd` 的测试时，除了守护进程原有的构建前置步骤，还需先运行 `make web-assets`。仅构建或测试独立客户端时无需此步骤。
 
 `dae mitm status` 和插件命令也通过 SDK 查询状态，可用 `DAE_API_ENDPOINT` 与 `DAE_API_TOKEN` 指定远端 API。
 
@@ -63,18 +67,23 @@ client/cli、client/status、未来 TUI
                   │                                    │
                   └────────── api 数据契约 ◄────────────┘
 
-client/webui ─── 同源 HTTP API ─── component/api
+web/src ─── 同源 HTTP API ─── component/api
+
+web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（挂载到 api_port）
 ```
 
 - `api`：普通 Go 数据结构与网络数组顺序，只依赖 Go 标准库；不包含运行时聚合或展示逻辑。
 - `api/client`：可并发复用的 Go 客户端，封装传输、鉴权、JSON 和错误，不导入 `control`、`common`、`config` 或 `component`。
 - `client/status`：只渲染 API 快照，不访问运行时；可向任意 `io.Writer` 输出。
 - `client/cli`：两种程序共用的命令实现；`cmd/dae-client` 是独立入口。
-- `client/webui`：静态页面与浏览器请求层；`cmd` 仅负责将静态资源与 API 挂载到现有端口，`control` 不导入 Web 或终端展示代码。
+- `web`：前端源码、浏览器请求层与独立构建入口，不读取父目录中的代码或文件。
+- `internal/webui`：只嵌入和托管前端构建产物；`cmd` 负责将静态资源与 API 挂载到现有端口，`control` 不导入 Web 或终端展示代码。
 - `component/api`：HTTP 路由、鉴权与请求校验，使用公开数据契约。
 - `control`：读取运行状态、校验 LAN 身份、应用设置并持久化；Unix 与 TCP 使用同一套 API handler。重载先等待旧 handler 的请求结束，再释放旧控制平面。
 
 运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理两种监听器与重载时的请求等待，不依赖控制平面或前端。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
+
+前端与 dae 的边界是公开构建产物和 HTTP API 契约。以后可将整个 `web/` 迁移为独立仓库或 submodule，嵌入、静态托管与端口分发代码继续留在 dae。
 
 `make client-test` 在关闭 CGO 的环境运行客户端测试，检查 OpenAPI 是否与契约一致，并检查传递依赖，阻止客户端引入守护进程实现。CI 在安装 clang 和构建 eBPF 之前执行此目标。
 

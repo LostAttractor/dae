@@ -21,3 +21,4 @@ venv
 /dae-client
 /build/web/
 /dae-web/
+/internal/webui/assets/

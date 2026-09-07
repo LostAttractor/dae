@@ -105,7 +105,7 @@ check-go-version:
 
 ## Begin Dae Build
 dae: export GOOS=linux
-dae: check-cgo check-go-arch check-go-version plugins ebpf
+dae: check-cgo check-go-arch check-go-version plugins ebpf web-assets
 	@echo $(CFLAGS)
 	go build -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
@@ -136,7 +136,7 @@ clean-ebpf:
 		rm -f trace/bpf_*bpf*.o
 	@rm -f control/kern/tests/bpftest_*bpf*.go && \
 		rm -f control/kern/tests/bpftest_*bpf*.o
-fmt: check-go-version submodule
+fmt: check-go-version submodule web-assets
 	go fmt ./...
 
 # $BPF_CLANG is used in go:generate invocations.
@@ -144,7 +144,7 @@ ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf: export BPF_CFLAGS := $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
-ebpf: export BPF_TRACE_TARGET := $(GOARCH)
+ebpf: export BPF_TRACE_TARGET = $(GOARCH)
 # bpf2go uses -mod=mod, so generate BPF from dae's pinned module outside any
 # plugin workspace. The final Go build still uses the caller's workspace.
 ebpf: check-go-version submodule clean-ebpf
@@ -163,7 +163,7 @@ ebpf: check-go-version submodule clean-ebpf
 	if [ -n "$$tags" ]; then tags="$$tags,dae_splice"; else tags=dae_splice; fi && \
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
-test: check-cgo plugins ebpf
+test: check-cgo plugins ebpf web-assets
 	go test $(TEST_ARGS) -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
@@ -174,7 +174,7 @@ ebpf-test: export BPF_CLANG := $(CLANG)
 ebpf-test: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf-test: export BPF_CFLAGS := $(CFLAGS)
 ebpf-test: export BPF_TARGET := $(TARGET)
-ebpf-test: export BPF_TRACE_TARGET := $(GOARCH)
+ebpf-test: export BPF_TRACE_TARGET = $(GOARCH)
 ebpf-test: check-go-version submodule clean-ebpf
 	@goos=$$(go env GOOS); \
 	if [ "$$goos" != "linux" ]; then \
@@ -197,12 +197,18 @@ ebpf-audit: check-go-version
 # API consumers build without native runtime dependencies or eBPF generation.
 CLIENT_OUTPUT ?= dae-client
 WEB_OUTPUT ?= build/web
-.PHONY: client web client-test
+.PHONY: client web web-assets client-test
 client: check-go-version
 	CGO_ENABLED=0 go build -trimpath -o $(CLIENT_OUTPUT) ./cmd/dae-client
 
-web: client
-	"$(abspath $(CLIENT_OUTPUT))" web --output "$(WEB_OUTPUT)"
+web:
+	$(MAKE) -C web DIST="$(abspath $(WEB_OUTPUT))"
+
+# Only frontend build output crosses into the daemon's Go package.
+web-assets: web
+	rm -rf internal/webui/assets
+	mkdir -p internal/webui/assets
+	cp -R "$(WEB_OUTPUT)/." internal/webui/assets/
 
 client-test: check-go-version
 	CGO_ENABLED=0 go test ./api/... ./client/... ./cmd/dae-client
