@@ -7,6 +7,7 @@ package network
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -320,6 +321,33 @@ func TestInterfaceManagerSyncInitErrorDisablesRegistration(t *testing.T) {
 	}
 }
 
+func TestInterfaceManagerCancelableRegistration(t *testing.T) {
+	m := &InterfaceManager{
+		links:     make(map[int]netlink.Link),
+		listLinks: func() ([]netlink.Link, error) { return nil, nil },
+	}
+	called := false
+	cancel, err := m.RegisterSyncCancelable("test0", nil, func(netlink.Link) { called = true }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.callbacks) != 1 {
+		t.Fatalf("callbacks = %d, want 1", len(m.callbacks))
+	}
+	cancel()
+	cancel()
+	if len(m.callbacks) != 0 {
+		t.Fatalf("callbacks after cancel = %d, want 0", len(m.callbacks))
+	}
+	m.handleLinkUpdate(netlink.LinkUpdate{
+		Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK},
+		Link:   &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "test0"}},
+	})
+	if called {
+		t.Fatal("cancelled registration received an update")
+	}
+}
+
 func TestInterfaceManagerExactRegistrationTreatsNameLiterally(t *testing.T) {
 	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "test[0]"}}
 	m := &InterfaceManager{
@@ -335,5 +363,52 @@ func TestInterfaceManagerExactRegistrationTreatsNameLiterally(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("literal interface name did not match")
+	}
+}
+
+func TestInterfaceManagerCancelJoinsDispatchedCallbackDuringShutdown(t *testing.T) {
+	for _, stopping := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stopping=%v", stopping), func(t *testing.T) {
+			m := &InterfaceManager{links: make(map[int]netlink.Link), listLinks: func() ([]netlink.Link, error) { return nil, nil }, deliveryDone: make(chan struct{})}
+			m.deliveryCond = sync.NewCond(&m.deliveryMu)
+			go m.dispatchCallbacks()
+			defer m.stopCallbackDispatcher()
+			started, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			defer releaseOnce.Do(func() { close(release) })
+			var writes atomic.Int32
+			cancel, err := m.RegisterSyncCancelable("test0", nil, func(netlink.Link) { close(started); <-release; writes.Add(1) }, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivered := make(chan struct{})
+			go func() {
+				m.handleLinkUpdate(netlink.LinkUpdate{Header: unix.NlMsghdr{Type: unix.RTM_NEWLINK}, Link: &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "test0"}}})
+				close(delivered)
+			}()
+			<-started
+			if stopping {
+				m.deliveryMu.Lock()
+				m.deliveryStopping = true
+				m.deliveryMu.Unlock()
+			}
+			cancelled := make(chan struct{})
+			go func() { cancel(); close(cancelled) }()
+			select {
+			case <-cancelled:
+				t.Fatal("cancel returned while callback could still write old routing state")
+			case <-time.After(20 * time.Millisecond):
+			}
+			releaseOnce.Do(func() { close(release) })
+			select {
+			case <-cancelled:
+			case <-time.After(time.Second):
+				t.Fatal("cancel did not join callback")
+			}
+			<-delivered
+			if writes.Load() != 1 {
+				t.Fatal("callback was not drained")
+			}
+		})
 	}
 }
