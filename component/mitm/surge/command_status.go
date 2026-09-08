@@ -78,15 +78,11 @@ func renderSurgeStatus(status Status, showWarnings bool) string {
 }
 
 func logModuleStatus(status Status, logger *log.Entry, instanceID string) {
-	if !logger.Logger.IsLevelEnabled(log.InfoLevel) {
-		return
-	}
-	for i := range status.Modules {
-		status.Modules[i].Instance = instanceID
-	}
-	// Module warnings were already emitted while loading.
-	for _, line := range strings.Split(renderSurgeStatus(status, false), "\n") {
-		logger.Info(line)
+	for _, module := range status.Modules {
+		logger.WithFields(log.Fields{
+			"mitm_instance": instanceID, "module": module.Name,
+			"state": module.State, "scripts": module.Scripts,
+		}).Info("Surge module loaded")
 	}
 }
 

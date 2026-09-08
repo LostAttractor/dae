@@ -34,7 +34,7 @@ func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *
 	}
 	src = common.ConvergeAddrPort(src)
 	enabled, _ := c.mitmSelection(src.Addr(), result.Mac)
-	if !enabled && log.IsLevelEnabled(log.InfoLevel) {
+	if !enabled && log.IsLevelEnabled(log.DebugLevel) {
 		mac := "unknown"
 		if result.Mac != [6]byte{} {
 			mac = net.HardwareAddr(result.Mac[:]).String()
@@ -42,7 +42,7 @@ func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *
 		log.WithFields(log.Fields{
 			"event": "mitm_bypass", "host": domain, "port": dst.Port(),
 			"source": src.String(), "mac": mac, "reason": "client_not_allowed",
-		}).Info("mitm")
+		}).Debug("MITM bypassed for client")
 	}
 	if !enabled {
 		return mitm.HTTPBypass

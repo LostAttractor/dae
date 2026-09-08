@@ -5,7 +5,9 @@ package mitm
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
@@ -15,7 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	logrus "github.com/sirupsen/logrus"
 )
 
 var serial atomic.Uint64
@@ -100,13 +104,19 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				if errors.Is(err, plugin.ErrAbort) {
 					panic(http.ErrAbortHandler)
 				}
+				if r.Context().Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+					connection, request := plugin.IDs(r.Context())
+					h.options.Logger.WithFields(logrus.Fields{
+						"connection_id": connection, "request_id": request, "host": host, "method": r.Method,
+					}).WithError(resource.RedactError(err)).Trace("MITM request failed")
+				}
 				status := http.StatusBadGateway
 				var failure *plugin.HTTPError
 				if errors.As(err, &failure) {
 					status = failure.Status
 				}
 				http.Error(w, "MITM upstream processing failed", status)
-			}, ErrorLog: log.New(logWriter{h}, "", 0),
+			}, ErrorLog: log.New(logWriter{h.options.Logger, logrus.TraceLevel}, "", 0),
 		}
 		proxy.ServeHTTP(w, r)
 	})
@@ -135,11 +145,19 @@ func sameAuthority(authority, host string, port uint16, scheme string) bool {
 	return strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, "."))
 }
 
-type logWriter struct{ host *Host }
+type logWriter struct {
+	logger *logrus.Entry
+	level  logrus.Level
+}
 
 func (w logWriter) Write(p []byte) (int, error) {
-	if w.host.options.Log != nil {
-		w.host.options.Log(string(p))
+	message := strings.TrimSpace(string(p))
+	level := w.level
+	// net/http also sends recovered handler panics through ErrorLog. Keep
+	// those visible while ordinary client and stream errors stay diagnostic.
+	if strings.HasPrefix(message, "http: panic serving ") || strings.HasPrefix(message, "http2: panic serving ") {
+		level = logrus.ErrorLevel
 	}
+	w.logger.Log(level, resource.RedactText(message))
 	return len(p), nil
 }

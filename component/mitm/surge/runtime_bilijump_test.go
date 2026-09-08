@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -99,7 +100,7 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 	run := func(t *testing.T, name string, in Invocation) *Result {
 		t.Helper()
 		var logs []string
-		r := testRuntime(t, RuntimeOptions{Log: func(_ string, s string) { logs = append(logs, s) }})
+		r := testRuntime(t, RuntimeOptions{Logger: testSurgeLogger(func(e *log.Entry) { logs = append(logs, e.Message) })})
 		out, err := r.Run(context.Background(), load(name), in)
 		if err != nil {
 			t.Fatalf("%s: %v; logs %v", name, err, logs)

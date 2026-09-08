@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	logrus "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 )
 
@@ -69,7 +70,7 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
-		ErrorLog:          log.New(logWriter{h}, "", 0),
+		ErrorLog:          log.New(logWriter{h.options.Logger, logrus.DebugLevel}, "", 0),
 	}
 	h2 := &http2.Server{MaxConcurrentStreams: 64, IdleTimeout: 90 * time.Second, MaxReadFrameSize: 1 << 20}
 	if err := http2.ConfigureServer(base, h2); err != nil {

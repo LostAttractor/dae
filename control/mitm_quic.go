@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -35,7 +36,7 @@ func (c *ControlPlane) newMITMQUIC(p *RouteParam, packetPlan mitm.UpstreamPlanne
 		err := host.ServePacketConn(server, flow, plan, packetPlan)
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			log.WithFields(log.Fields{"event": "http3_connection_failed", "host": flow.Host,
-				"source": flow.Source, "destination": flow.Destination}).WithError(err).Warn("mitm")
+				"source": flow.Source, "destination": flow.Destination}).WithError(resource.RedactError(err)).Debug("MITM HTTP/3 connection failed")
 		}
 	}()
 	return ingress

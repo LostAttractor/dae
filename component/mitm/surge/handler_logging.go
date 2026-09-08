@@ -6,62 +6,47 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	log "github.com/sirupsen/logrus"
 )
 
 func (e *Engine) tracing() bool {
-	return e.options.Trace != nil && (e.options.TraceEnabled == nil || e.options.TraceEnabled())
+	return e.options.Logger != nil && e.options.Logger.Logger.IsLevelEnabled(log.TraceLevel)
 }
 
-// trace emits daemon-owned diagnostics. Values are quoted and bounded; URLs
-// contribute only hostname and path, never query, credentials, or fragment.
-// Script console output and existing warning messages are separate channels.
-func (e *Engine) trace(ctx context.Context, event string, fields ...any) {
-	if !e.tracing() {
-		return
-	}
-	var line strings.Builder
-	line.WriteString("surge event=")
-	line.WriteString(event)
-	write := func(key string, value any) {
-		text := fmt.Sprint(value)
-		if len(text) > 512 {
-			text = text[:512] + "..."
-		}
-		fmt.Fprintf(&line, " %s=%q", key, text)
-	}
-	connection, request := plugin.IDs(ctx)
-	if connection != "" {
-		write("connection_id", connection)
-	}
-	if request != "" {
-		write("request_id", request)
-	}
-	for i := 0; i+1 < len(fields); i += 2 {
-		write(fields[i].(string), fields[i+1])
-	}
-	e.options.Trace(line.String())
-}
-
+// Automatic traces include identity and hostname, never request URLs or bodies.
 func (e *Engine) traceRequest(r *http.Request, event string, fields ...any) {
 	if !e.tracing() {
 		return
 	}
-	base := []any{"method", r.Method}
+	connection, request := plugin.IDs(r.Context())
+	data := log.Fields{"event": event, "method": r.Method, "connection_id": connection, "request_id": request}
 	if r.URL != nil {
-		base = append(base, "host", r.URL.Hostname(), "path", r.URL.EscapedPath())
+		data["host"] = r.URL.Hostname()
 	}
-	e.trace(r.Context(), event, append(base, fields...)...)
+	for i := 0; i < len(fields); i += 2 {
+		value := fmt.Sprint(fields[i+1])
+		if len(value) > 512 {
+			value = value[:512] + "..."
+		}
+		data[fields[i].(string)] = value
+	}
+	e.options.Logger.WithFields(data).Trace("Surge request")
 }
 
-func (e *Engine) logRequest(r *http.Request, message string) {
+func (e *Engine) logRequest(r *http.Request, message string, err error) {
+	if e.options.Logger == nil || r.Context().Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, errScriptAbort) {
+		return
+	}
 	connectionID, requestID := plugin.IDs(r.Context())
-	e.log(fmt.Sprintf("%s request_id=%q connection_id=%q", message, requestID, connectionID))
+	e.options.Logger.WithFields(log.Fields{"request_id": requestID, "connection_id": connectionID}).WithError(resource.RedactError(err)).Warn(message)
 }
 
 // Errors may contain script-controlled body/URL values. Only stable categories
@@ -78,7 +63,7 @@ func traceErrorReason(err error) string {
 		return "body_limit"
 	case errors.Is(err, ErrMissingDone):
 		return "missing_done"
-	case errors.Is(err, errScriptAbort):
+	case errors.Is(err, errScriptAbort), errors.Is(err, plugin.ErrAbort):
 		return "aborted"
 	default:
 		return "error"
@@ -97,9 +82,7 @@ type scriptExecutionLog struct {
 
 func (e *Engine) traceScript(r *http.Request, s *Script) *scriptExecutionLog {
 	entry := &scriptExecutionLog{engine: e, request: r, script: s, outcome: "unchanged", started: time.Now()}
-	if e.tracing() {
-		e.traceRequest(r, "script_match", "script", s.Name, "phase", s.Type)
-	}
+	e.traceRequest(r, "script_match", "script", s.Name, "phase", s.Type)
 	return entry
 }
 

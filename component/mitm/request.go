@@ -3,11 +3,12 @@
 package mitm
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	log "github.com/sirupsen/logrus"
 )
 
 // Retry ownership ends when the transport returns headers. Upload cursors can
@@ -16,14 +17,16 @@ func (h *Host) roundTrip(transport http.RoundTripper, r *http.Request) (*http.Re
 	release := prepareRequestReplay(r, plugin.BodyMemory)
 	defer release()
 	response, err := transport.RoundTrip(r)
-	if err != nil && r.Context().Err() == nil && h.options.Log != nil {
+	if err != nil && r.Context().Err() == nil {
 		connection, request := plugin.IDs(r.Context())
 		message := resource.RedactError(err).Error()
 		if len(message) > 1024 {
 			message = message[:1024] + "..."
 		}
-		h.options.Log(fmt.Sprintf("mitm event=upstream_error connection_id=%q request_id=%q method=%q host=%q error=%q",
-			connection, request, r.Method, r.URL.Hostname(), message))
+		h.options.Logger.WithFields(log.Fields{
+			"event": "upstream_error", "connection_id": connection, "request_id": request,
+			"method": r.Method, "host": r.URL.Hostname(),
+		}).WithError(errors.New(message)).Debug("MITM upstream request failed")
 	}
 	return response, err
 }

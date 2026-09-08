@@ -18,6 +18,7 @@ import (
 	"weak"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	log "github.com/sirupsen/logrus"
 )
 
 type runtimeHarness struct {
@@ -49,9 +50,9 @@ func testRuntime(t *testing.T, opts RuntimeOptions) *runtimeHarness {
 
 func TestRuntimeConsoleLevels(t *testing.T) {
 	var logs []string
-	r := testRuntime(t, RuntimeOptions{Log: func(level, message string) {
-		logs = append(logs, level+": "+message)
-	}})
+	r := testRuntime(t, RuntimeOptions{Logger: testSurgeLogger(func(e *log.Entry) {
+		logs = append(logs, e.Level.String()+": "+e.Message)
+	})})
 	_, err := r.Run(context.Background(), `
       console.log("message", {value: 1});
       console.info("info");
@@ -64,9 +65,15 @@ func TestRuntimeConsoleLevels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "info: message {\"value\":1}\ninfo: info\nwarn: warning\nerror: error\ndebug: debug\ninfo: title subtitle body"
+	want := "info: message {\"value\":1}\ninfo: info\nwarning: warning\nerror: error\ndebug: debug\ninfo: title subtitle body"
 	if got := strings.Join(logs, "\n"); got != want {
 		t.Fatalf("console output:\n%s\nwant:\n%s", got, want)
+	}
+	execution := &scriptExecution{runtime: r.Runtime, ctx: context.Background()}
+	for _, level := range []string{"fatal", "panic", "invalid"} {
+		if _, err := execution.hostCall([]string{"log", level, "must not terminate daemon"}); err == nil {
+			t.Fatalf("script bridge accepted log level %q", level)
+		}
 	}
 }
 
@@ -253,7 +260,7 @@ func TestRuntimeMaaseaCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs []string
-	r := testRuntime(t, RuntimeOptions{Log: func(_ string, s string) { logs = append(logs, s) }})
+	r := testRuntime(t, RuntimeOptions{Logger: testSurgeLogger(func(e *log.Entry) { logs = append(logs, e.Message) })})
 	request := &Message{
 		URL: "https://youtubei.googleapis.com/youtubei/v1/log_event", Method: "POST", Body: []byte{},
 		Headers: map[string]string{"User-Agent": "com.google.ios.youtube/20.0", "Content-Encoding": "gzip", "X-Youtube-Hot-Hash-Data": "stale"},

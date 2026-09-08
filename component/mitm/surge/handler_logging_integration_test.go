@@ -9,60 +9,26 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 )
 
-type proxyTLSLogCapture struct {
-	mu    sync.Mutex
-	lines []string
-}
-
-func newProxyTLSLogCapture() *proxyTLSLogCapture {
-	return &proxyTLSLogCapture{}
-}
-
-func (c *proxyTLSLogCapture) trace(line string) {
-	c.mu.Lock()
-	c.lines = append(c.lines, line)
-	c.mu.Unlock()
-
-}
-
-func (c *proxyTLSLogCapture) events(t *testing.T) []map[string]string {
+func tlsTraceEvents(t *testing.T, c *proxyTraceCapture) []map[string]string {
 	t.Helper()
-
 	c.mu.Lock()
-	lines := append([]string(nil), c.lines...)
-	c.mu.Unlock()
-	events := make([]map[string]string, 0, len(lines))
-	for _, line := range lines {
-		fields := make(map[string]string)
-		for _, match := range proxyTraceField.FindAllStringSubmatch(line, -1) {
-			value := match[2]
-			if strings.HasPrefix(value, `"`) {
-				var err error
-				value, err = strconv.Unquote(value)
-				if err != nil {
-					t.Fatalf("invalid quoted TLS trace field: %s", line)
-				}
-			}
-			fields[match[1]] = value
-		}
+	defer c.mu.Unlock()
+	for _, fields := range c.trace {
 		if fields["event"] == "" || fields["connection_id"] == "" {
-			t.Errorf("TLS trace lacks event or connection identity: %s", line)
+			t.Errorf("TLS trace lacks event or connection identity: %v", fields)
 		}
 		for _, private := range []string{"tls-query-private", "tls-fragment-private", "synthetic-body-private"} {
-			if strings.Contains(line, private) {
-				t.Errorf("TLS trace leaked request or response contents: %s", line)
+			if strings.Contains(fmt.Sprint(fields), private) {
+				t.Errorf("TLS trace leaked request or response contents: %v", fields)
 			}
 		}
-		events = append(events, fields)
 	}
-	return events
+	return append([]map[string]string(nil), c.trace...)
 }
 
 func proxyTLSLogEvents(events []map[string]string, name string) []map[string]string {
@@ -81,8 +47,8 @@ func TestProxyTLSLogHTTP1AndHTTP2RequestCorrelation(t *testing.T) {
 			engine, roots := integrationEngine(t, map[string]string{
 				"http-request": `$done({response:{status:200,body:"synthetic-body-private"}})`,
 			}, nil)
-			capture := newProxyTLSLogCapture()
-			engine.options.Trace = capture.trace
+			capture := new(proxyTraceCapture)
+			engine.options.Logger = capture.logger()
 			var dials atomic.Int32
 			client := integrationClient(t, engine, roots, func(context.Context, string, string) (net.Conn, error) {
 				dials.Add(1)
@@ -104,24 +70,23 @@ func TestProxyTLSLogHTTP1AndHTTP2RequestCorrelation(t *testing.T) {
 				}
 			}
 			client.CloseIdleConnections()
-			events := capture.events(t)
+			events := tlsTraceEvents(t, capture)
 
 			begins, ends := proxyTLSLogEvents(events, "request_begin"), proxyTLSLogEvents(events, "script_end")
 			if len(begins) != 2 || len(ends) != 2 {
 				t.Fatalf("expected two requests and script completions: begins=%v ends=%v", begins, ends)
 			}
 			connectionID := begins[0]["connection_id"]
-			requests := make(map[string]string)
+			requests := make(map[string]bool)
 			for _, begin := range begins {
 				id := begin["request_id"]
-				if begin["connection_id"] != connectionID || id == "" || requests[id] != "" || begin["method"] != "GET" || begin["host"] != "example.com" {
+				if begin["connection_id"] != connectionID || id == "" || requests[id] || begin["method"] != "GET" || begin["host"] != "example.com" {
 					t.Fatalf("request IDs were missing/reused or context was incorrect: %v", begins)
 				}
-				requests[id] = begin["path"]
+				requests[id] = true
 			}
 			for _, end := range ends {
-				path := requests[end["request_id"]]
-				if path == "" || end["path"] != path || end["outcome"] != "synthetic" || end["phase"] != "http-request" || end["script"] != "http-request" {
+				if !requests[end["request_id"]] || end["connection_id"] != connectionID || end["outcome"] != "synthetic" || end["phase"] != "http-request" || end["script"] != "http-request" {
 					t.Errorf("script completion does not correlate with its request: %v", end)
 				}
 				delete(requests, end["request_id"])
@@ -148,8 +113,8 @@ func TestProxyTLSLogHandshakeFailures(t *testing.T) {
 			if !test.trustCA {
 				roots = x509.NewCertPool()
 			}
-			capture := newProxyTLSLogCapture()
-			engine.options.Trace = capture.trace
+			capture := new(proxyTraceCapture)
+			engine.options.Logger = capture.logger()
 			var dials atomic.Int32
 			client := integrationClient(t, engine, roots, func(context.Context, string, string) (net.Conn, error) {
 				dials.Add(1)
@@ -160,7 +125,7 @@ func TestProxyTLSLogHandshakeFailures(t *testing.T) {
 				t.Fatal("client unexpectedly completed a rejected TLS handshake")
 			}
 			client.CloseIdleConnections()
-			events := capture.events(t)
+			events := tlsTraceEvents(t, capture)
 
 			for _, forbidden := range []string{"tls_ready", "request_begin", "script_start", "script_end"} {
 				if found := proxyTLSLogEvents(events, forbidden); len(found) != 0 {

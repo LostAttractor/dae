@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,9 +126,14 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 		if !strings.Contains(output.String(), "unknown-option") {
 			t.Fatalf("unknown option warning disappeared: %s", output.String())
 		}
+		output.Reset()
+		engine.traceRequest(httptest.NewRequest(http.MethodGet, "http://example.test/", nil), "request_begin")
+		if got := strings.Contains(output.String(), "request_begin"); got != (level == log.TraceLevel) {
+			t.Fatalf("automatic request events at %s: %s", level, output.String())
+		}
 	}
 	output.Reset()
-	logger.SetLevel(log.InfoLevel)
+	logger.SetLevel(log.DebugLevel)
 	conf.Modules = append(conf.Modules,
 		ModuleSource{Name: "broken", Link: "file:missing.sgmodule"},
 		ModuleSource{Name: "later", Link: "file:module.sgmodule"},
@@ -135,7 +141,7 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 	if _, err := prepare(context.Background(), conf, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test"); err == nil {
 		t.Fatal("missing module did not fail loading")
 	}
-	for _, want := range []string{"Surge module load status", "ready", "loaded", "broken", "failed", "later", "not loaded", "missing.sgmodule"} {
+	for _, want := range []string{"Surge module load status", "ready", "loaded", "broken", "failed", "later", "not loaded"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("failure summary missing %q:\n%s", want, output.String())
 		}

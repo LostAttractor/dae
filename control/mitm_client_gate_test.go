@@ -64,7 +64,7 @@ func mitmClientLogHook(t *testing.T) *logtest.Hook {
 	logger := log.StandardLogger()
 	hooks, level := logger.ReplaceHooks(make(log.LevelHooks)), logger.GetLevel()
 	hook := logtest.NewGlobal()
-	logger.SetLevel(log.InfoLevel)
+	logger.SetLevel(log.DebugLevel)
 	t.Cleanup(func() {
 		logger.ReplaceHooks(hooks)
 		logger.SetLevel(level)
@@ -119,7 +119,7 @@ func TestMITMClientGateUsesRoutingMetadata(t *testing.T) {
 				t.Fatalf("bypass log = %+v, want present=%v", entry, test.bypass)
 			}
 			if test.bypass {
-				if entry.Message != "mitm" || entry.Level != log.InfoLevel {
+				if entry.Message != "MITM bypassed for client" || entry.Level != log.DebugLevel {
 					t.Fatalf("bypass log = %+v", entry)
 				}
 				mac := "unknown"
@@ -394,7 +394,7 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 			wantBypass := !test.selected && test.outbound != consts.OutboundBlock
 			bypassed := false
 			for _, entry := range hook.AllEntries() {
-				if entry.Message == "mitm" && entry.Data["event"] == "mitm_bypass" {
+				if entry.Message == "MITM bypassed for client" && entry.Data["event"] == "mitm_bypass" {
 					bypassed = true
 				}
 			}

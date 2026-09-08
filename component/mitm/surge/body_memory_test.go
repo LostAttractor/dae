@@ -14,6 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	log "github.com/sirupsen/logrus"
 )
 
 func TestBodyMemoryPressureForwardsOriginalRequestAndResponse(t *testing.T) {
@@ -25,7 +26,9 @@ func TestBodyMemoryPressureForwardsOriginalRequestAndResponse(t *testing.T) {
 				budget := membuffer.NewBudget(limit)
 				e.options.BodyMemory = budget
 				var logs []string
-				e.options.Log = func(s string) { logs = append(logs, s) }
+				e.options.Logger = testSurgeLogger(func(entry *log.Entry) {
+					logs = append(logs, fmt.Sprint(entry.Data["error"]))
+				})
 				req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader("original"))
 				exchange := &plugin.Exchange{Request: req, Client: http.DefaultClient}
 				defer func() { _ = req.Body.Close() }()

@@ -5,7 +5,6 @@ package mitm
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -83,9 +82,7 @@ func (h *Host) Close() error {
 	case h.closeErr = <-finished:
 	case <-ctx.Done():
 		forced = true
-		if h.options.Log != nil {
-			h.options.Log(fmt.Sprintf("mitm: drain timeout after %s; forcing active connections to close", h.options.DrainTimeout))
-		}
+		h.options.Logger.WithField("drain_timeout", h.options.DrainTimeout).Debug("MITM drain deadline reached; forcing active connections to close")
 	}
 	h.forceCancel()
 	h.mu.Lock()

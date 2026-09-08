@@ -41,7 +41,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 	limit := e.options.MaxBodySize
 	if r.ContentLength > limit {
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "body_limit")
-		e.logRequest(r.Request, "surge Body Rewrite skipped: "+membuffer.ErrTooLarge.Error())
+		e.logRequest(r.Request, "Surge Body Rewrite skipped; increase max_body_size to process this response", membuffer.ErrTooLarge)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(r.Request.Context(), e.options.ScriptTimeout)
@@ -49,7 +49,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 	release, err := e.acquire(ctx)
 	if err != nil {
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", traceErrorReason(err))
-		e.logRequest(r.Request, "surge Body Rewrite skipped while waiting for execution slot: "+err.Error())
+		e.logRequest(r.Request, "Surge Body Rewrite skipped while waiting for execution slot", err)
 		return nil
 	}
 	defer release()
@@ -69,13 +69,13 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 	}
 	if err != nil {
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", traceErrorReason(err))
-		e.logRequest(r.Request, "surge Body Rewrite skipped: "+err.Error())
+		e.logRequest(r.Request, "Surge Body Rewrite skipped; forwarding original response", err)
 		return nil
 	}
 	body, err := decodeBodyView(raw, r.Header.Get("Content-Encoding"), limit, e.options.BodyMemory)
 	if err != nil {
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "decode_failed")
-		e.logRequest(r.Request, "surge Body Rewrite skipped; forwarding original response: "+err.Error())
+		e.logRequest(r.Request, "Surge Body Rewrite skipped; forwarding original response", err)
 		return nil
 	}
 	decoded := body
@@ -96,7 +96,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 			if tracing {
 				e.traceRequest(r.Request, "body_rewrite_end", "module", match.module, "rule", match.index, "outcome", "failed", "reason", traceErrorReason(err), "elapsed_ms", time.Since(started).Milliseconds())
 			}
-			e.logRequest(r.Request, fmt.Sprintf("surge Body Rewrite http-response-jq %s failed; keeping previous body: %v", match.rule.Pattern, err))
+			e.logRequest(r.Request, fmt.Sprintf("Surge Body Rewrite module=%q rule=%d failed; keeping previous body", match.module, match.index), err)
 			if ctx.Err() != nil {
 				break
 			}

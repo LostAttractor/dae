@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -33,9 +34,11 @@ func logHTTPDial(source netip.AddrPort, domain string, option *DialOption, err e
 		entry = entry.WithField("policy", policy)
 	}
 	if err != nil {
-		entry.WithError(err).Debug("mitm")
+		entry.WithError(resource.RedactError(err)).Debug("MITM upstream dial failed")
+	} else if !source.IsValid() {
+		entry.Debug("MITM client connected")
 	} else {
-		entry.Info("mitm")
+		entry.Info("MITM upstream connected")
 	}
 }
 
