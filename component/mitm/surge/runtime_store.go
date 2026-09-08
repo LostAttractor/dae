@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"weak"
 )
 
 type runtimeStore struct {
@@ -21,11 +22,12 @@ type runtimeStore struct {
 
 // Reloaded control planes can overlap while established requests finish. Share
 // the store by absolute path so the old and new plane cannot lose each other's
-// writes. Stores are bounded and kept for the lifetime of the process.
+// writes. Only live runtimes retain a store: retired instances must not keep
+// every store path and its contents alive for the lifetime of the process.
 var runtimeStores = struct {
 	sync.Mutex
-	byPath map[string]*runtimeStore
-}{byPath: make(map[string]*runtimeStore)}
+	byPath map[string]weak.Pointer[runtimeStore]
+}{byPath: make(map[string]weak.Pointer[runtimeStore])}
 
 const maxStoreSize = 4 << 20
 
@@ -45,9 +47,10 @@ func openRuntimeStore(path string) (*runtimeStore, error) {
 	}
 	runtimeStores.Lock()
 	defer runtimeStores.Unlock()
-	if existing := runtimeStores.byPath[path]; existing != nil {
+	if existing := runtimeStores.byPath[path].Value(); existing != nil {
 		return existing, nil
 	}
+	maps.DeleteFunc(runtimeStores.byPath, func(_ string, store weak.Pointer[runtimeStore]) bool { return store.Value() == nil })
 	store.path = path
 	f, err := os.Open(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -69,7 +72,7 @@ func openRuntimeStore(path string) (*runtimeStore, error) {
 			store.values = make(map[string]string)
 		}
 	}
-	runtimeStores.byPath[path] = store
+	runtimeStores.byPath[path] = weak.Make(store)
 	return store, nil
 }
 
