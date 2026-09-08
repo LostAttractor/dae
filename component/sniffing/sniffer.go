@@ -48,6 +48,15 @@ type Sniffer struct {
 	packetLimit  bool
 	quicNextRead int
 	quicCryptos  *quicutils.CryptoReassembler
+	quicHTTP3    bool
+}
+
+// IsHTTP3 reports whether a complete QUIC ClientHello advertised the h3 ALPN.
+// QUIC alone is not enough to identify HTTP: other applications share UDP ports.
+func (s *Sniffer) IsHTTP3() bool {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	return s.quicHTTP3
 }
 
 type streamReadResult struct {

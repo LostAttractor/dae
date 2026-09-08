@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -66,7 +65,7 @@ func TestFindSniExtensionRejectsMalformedLists(t *testing.T) {
 		{name: "truncated name header", data: []byte{0, 0, 0, 4, 0, 2, 1, 0}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := findSniExtension(quicutils.BuiltinBytesLocator(test.data)); !errors.Is(err, ErrNotApplicable) {
+			if _, err := findSniExtension(test.data); !errors.Is(err, ErrNotApplicable) {
 				t.Fatalf("findSniExtension error = %v, want ErrNotApplicable", err)
 			}
 		})
