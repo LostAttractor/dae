@@ -18,7 +18,7 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-const StatusSchemaVersion = 6
+const StatusSchemaVersion = 7
 
 type NetworkValues[T any] [common.NetworkTypeCount]T
 

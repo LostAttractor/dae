@@ -713,7 +713,7 @@ func TestDialerGroupInitialUnavailableIsSilent(t *testing.T) {
 
 	g := &DialerGroup{Name: t.Name(), startupReady: make(chan struct{})}
 	g.recordAvailability(false, false)
-	if strings.Contains(output.String(), "Group is unavailable") {
+	if strings.Contains(output.String(), "Group has no usable node") {
 		t.Fatalf("initial unavailable state was logged:\n%s", output.String())
 	}
 	g.recordAvailability(false, true)

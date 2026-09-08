@@ -34,7 +34,6 @@ func ownerRecovery(snapshot netproxy.StateEvent, recovery RecoverySnapshot) Reco
 		recovery.Action = "connect"
 		recovery.BlockedBy = snapshot.BlockedBy
 		recovery.RetryAt = time.Time{}
-		recovery.RetryTimeKnown = false
 	}
 	return recovery
 }
@@ -42,14 +41,13 @@ func ownerRecovery(snapshot netproxy.StateEvent, recovery RecoverySnapshot) Reco
 // RecoverySnapshot describes the actual background worker, never a queue for
 // application dials. RetryAt is populated only by the owner of the timer.
 type RecoverySnapshot struct {
-	Executor       netproxy.RecoveryExecutor `json:"executor,omitempty"`
-	Action         string                    `json:"action,omitempty"`
-	Phase          RecoveryPhase             `json:"phase"`
-	Verification   string                    `json:"verification"`
-	Attempt        uint64                    `json:"attempt"`
-	RetryAt        time.Time                 `json:"retry_at,omitzero"`
-	RetryTimeKnown bool                      `json:"retry_time_known"`
-	BlockedBy      string                    `json:"blocked_by,omitempty"`
+	Executor     netproxy.RecoveryExecutor `json:"executor,omitempty"`
+	Action       string                    `json:"action,omitempty"`
+	Phase        RecoveryPhase             `json:"phase"`
+	Verification string                    `json:"verification"`
+	Attempt      uint64                    `json:"attempt"`
+	RetryAt      time.Time                 `json:"retry_at,omitzero"`
+	BlockedBy    string                    `json:"blocked_by,omitempty"`
 }
 
 // FailureSnapshot contains stable metadata, without serializing concrete Go
@@ -164,9 +162,10 @@ func (d *Dialer) ReportDataPlaneError(err error) {
 		if failure.Origin == netproxy.OriginCaller || failure.Origin == netproxy.OriginTarget {
 			continue
 		}
-		// Shared failures come from the Session watch; stream and operation
-		// failures concern one relay. Only unknown upstream failures need a probe.
-		if failure.Scope == netproxy.ScopeUnknown && !failureTimeout(failure) && confirmation == nil {
+		// Proxy authentication is not retryable with the same credentials, even
+		// when reported on one stream. Confirm it through the checker, which
+		// owns retry policy; shared resource failures arrive via Session watch.
+		if (failure.Scope == netproxy.ScopeUnknown || failure.Reason == netproxy.ReasonAuth) && !failureTimeout(failure) && confirmation == nil {
 			confirmation = &failure
 		}
 	}
@@ -188,7 +187,6 @@ func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedB
 	next := d.recovery
 	next.Phase = phase
 	next.RetryAt = retryAt
-	next.RetryTimeKnown = !retryAt.IsZero()
 	next.BlockedBy = blockedBy
 	switch phase {
 	case RecoveryQueued, RecoveryBackoff:
@@ -225,9 +223,10 @@ func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedB
 	d.recovery = next
 	d.statusRevision++
 	revision := d.statusRevision
+	diagnostic := d.lastFailure
 	d.mu.Unlock()
 	fields := log.Fields{"node": d.Name, "phase": next.Phase, "executor": next.Executor, "attempt": next.Attempt, "revision": revision}
-	if next.RetryTimeKnown {
+	if !next.RetryAt.IsZero() {
 		fields["retry_at"] = retryAt
 		fields["retry_in"] = max(time.Until(retryAt), 0).Round(time.Millisecond)
 	}
@@ -235,7 +234,12 @@ func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedB
 		fields["blocked_by"] = blockedBy
 	}
 	if phase == RecoveryBlocked {
-		log.WithFields(fields).Warn("Outbound recovery paused; check configuration")
+		if diagnostic != nil {
+			fields["error"] = diagnostic.Message
+			fields["layer"] = diagnostic.Layer
+		}
+		fields["action"] = next.Action
+		log.WithFields(fields).Warn("Outbound recovery paused; check configuration and request a connectivity check")
 	} else {
 		log.WithFields(fields).Debug("Outbound recovery state changed")
 	}
@@ -252,7 +256,6 @@ func (d *Dialer) startConnection(event netproxy.StateEvent, action string) {
 	d.recovery.Phase = RecoveryConnecting
 	d.recovery.Action = action
 	d.recovery.RetryAt = time.Time{}
-	d.recovery.RetryTimeKnown = false
 	d.recovery.BlockedBy = ""
 	d.statusRevision++
 	executor := d.recovery.Executor
@@ -266,7 +269,6 @@ func (d *Dialer) probeQueued() {
 		d.recovery.Phase = RecoveryQueued
 		d.recovery.Action = "verify"
 		d.recovery.RetryAt = time.Time{}
-		d.recovery.RetryTimeKnown = false
 		d.recovery.BlockedBy = "connectivity_slot"
 		d.statusRevision++
 	}
@@ -294,7 +296,7 @@ func (d *Dialer) probeFinished() {
 
 func recoveryBlockedReason(err error) string {
 	for _, failure := range netproxy.Failures(err) {
-		if failure.Origin == netproxy.OriginTarget || failure.Scope == netproxy.ScopeStream {
+		if failure.Origin == netproxy.OriginTarget || failure.Origin == netproxy.OriginLocalCleanup {
 			continue
 		}
 		if failure.Reason == netproxy.ReasonAuth {

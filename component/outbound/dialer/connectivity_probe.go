@@ -7,6 +7,7 @@ package dialer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -20,7 +21,6 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/netproxy"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -36,22 +36,22 @@ type checkDNSOption struct {
 
 func parseCheckDNSOption(ctx context.Context, dnsHostPort []string) (*checkDNSOption, error) {
 	if len(dnsHostPort) == 0 {
-		return nil, oops.Errorf("parseCheckDNSOption: bad format: empty")
+		return nil, fmt.Errorf("parseCheckDNSOption: bad format: empty")
 	}
 
 	host, rawPort, err := net.SplitHostPort(dnsHostPort[0])
 	if err != nil {
-		return nil, oops.Wrapf(err, "parseCheckDNSOption: failed to split host and port")
+		return nil, fmt.Errorf("parseCheckDNSOption: failed to split host and port: %w", err)
 	}
 	if host == "" {
-		return nil, oops.Errorf("parseCheckDNSOption: empty host")
+		return nil, fmt.Errorf("parseCheckDNSOption: empty host")
 	}
 	port, err := strconv.ParseUint(rawPort, 10, 16)
 	if err != nil {
-		return nil, oops.Errorf("bad port: %v", err)
+		return nil, fmt.Errorf("bad port: %v", err)
 	}
 	if port == 0 {
-		return nil, oops.Errorf("bad port: 0")
+		return nil, fmt.Errorf("bad port: 0")
 	}
 	var ip46 *netutils.Ip46
 	if len(dnsHostPort) > 1 {
@@ -59,7 +59,7 @@ func parseCheckDNSOption(ctx context.Context, dnsHostPort []string) (*checkDNSOp
 		for _, raw := range dnsHostPort[1:] {
 			addr, err := netip.ParseAddr(raw)
 			if err != nil {
-				return nil, oops.Wrapf(err, "parseCheckDNSOption: invalid IP address")
+				return nil, fmt.Errorf("parseCheckDNSOption: invalid IP address: %w", err)
 			}
 			if addr.Is4() || addr.Is4In6() {
 				ip46.Ip4 = addr
@@ -73,10 +73,10 @@ func parseCheckDNSOption(ctx context.Context, dnsHostPort []string) (*checkDNSOp
 	} else {
 		ip46, err = netutils.ParseOrResolveIp46Context(ctx, host)
 		if err != nil {
-			return nil, oops.Wrapf(err, "parseCheckDNSOption: failed to resolve ip for %v", host)
+			return nil, fmt.Errorf("parseCheckDNSOption: failed to resolve ip for %v: %w", host, err)
 		}
 		if !ip46.IsValid() {
-			return nil, oops.Errorf("ResolveIp46: no valid ip for %v", host)
+			return nil, fmt.Errorf("ResolveIp46: no valid ip for %v", host)
 		}
 	}
 	return &checkDNSOption{DnsPort: uint16(port), Ip46: ip46}, nil
@@ -116,10 +116,10 @@ func (d *Dialer) checkDNSConnectivity(ctx context.Context, networkType *common.N
 	}
 	if !ip.IsValid() {
 		log.WithFields(log.Fields{
-			"link":    d.CheckDnsOptionRaw.Raw,
-			"node":    d.Name,
-			"network": networkType.String(),
-		}).Debugln("Skip connectivity check due to no DNS record")
+			"resolver": d.CheckDnsOptionRaw.Raw[0],
+			"node":     d.Name,
+			"network":  networkType.String(),
+		}).Trace("Skipping connectivity check: resolver has no address for this IP family")
 		return false, nil
 	}
 	return d.dnsCheck(ctx, netip.AddrPortFrom(ip, opt.DnsPort), string(networkType.L4Proto))
@@ -138,6 +138,18 @@ type checkResult struct {
 	readiness  uint64
 	connectErr error
 	probes     []probeResult
+}
+
+// Failures can arise while establishing a session or while opening a probe
+// through a stateless protocol (for example an HTTP CONNECT 407).
+func (r checkResult) failure() error {
+	causes := []error{r.connectErr}
+	for _, probe := range r.probes {
+		if probe.err != nil && !errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) {
+			causes = append(causes, probe.err)
+		}
+	}
+	return errors.Join(causes...)
 }
 
 func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkAttempt) checkResult {
@@ -223,7 +235,7 @@ func (c *connectivityChecker) probeMany(ctx context.Context, states [common.Netw
 
 func (c *connectivityChecker) probeNetwork(ctx context.Context, network common.NetworkIndex, attempts int) probeResult {
 	first := c.runProbe(ctx, network)
-	if first.err == nil || attempts == 1 || ctx.Err() != nil {
+	if first.err == nil || attempts == 1 || ctx.Err() != nil || recoveryBlockedReason(first.err) != "" {
 		return first
 	}
 	retry := c.runProbe(ctx, network)
@@ -247,9 +259,9 @@ func (c *connectivityChecker) runProbe(ctx context.Context, network common.Netwo
 		return probeResult{network: network, latency: time.Since(start)}
 	}
 	if err == nil {
-		err = oops.Errorf("check func not working")
+		err = fmt.Errorf("check func not working")
 	} else if strings.HasSuffix(err.Error(), "network is unreachable") {
-		err = oops.Errorf("network is unreachable")
+		err = fmt.Errorf("network is unreachable")
 	}
 	return probeResult{network: network, err: err}
 }
@@ -275,7 +287,7 @@ func (d *Dialer) dnsCheck(ctx context.Context, dns netip.AddrPort, network strin
 		return false, err
 	}
 	if len(addrs) == 0 {
-		return false, oops.Errorf("bad DNS response: no record")
+		return false, fmt.Errorf("bad DNS response: no record")
 	}
 	return true, nil
 }

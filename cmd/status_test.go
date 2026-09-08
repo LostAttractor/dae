@@ -153,10 +153,15 @@ func TestStartupNodeLogOnlyIncludesCompletedChecks(t *testing.T) {
 	previousOutput, previousLevel := logger.Out, logger.GetLevel()
 	logger.SetOutput(&output)
 	logger.SetLevel(log.InfoLevel)
+	logStartupNodeStatus(groups)
+	if output.Len() != 0 {
+		t.Fatalf("default logs contain the full node table: %s", output.String())
+	}
+	logger.SetLevel(log.DebugLevel)
 	t.Cleanup(func() { logger.SetOutput(previousOutput); logger.SetLevel(previousLevel) })
 	logStartupNodeStatus(groups)
 	got := output.String()
-	for _, want := range []string{ready.Name, failed.Name, "unhealthy", "10/20/30", "all tcp(*)", "p=2*", "+30ms", "check: async"} {
+	for _, want := range []string{ready.Name, failed.Name, "fail", "10/20/30", "all tcp(*)", "p=2*", "+30ms", "check: async"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("startup log is missing %q:\n%s", want, got)
 		}
@@ -205,18 +210,27 @@ func TestNodeRowsUseRawState(t *testing.T) {
 	}
 }
 
-func TestNodeStatePrefersSessionFailure(t *testing.T) {
+func TestNodeStateUsesHealthWhenChecksEnabled(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())
 	node.Healthy = false
 	node.SessionDetail.State = "disconnected"
+	if got := compactNodeState(node, time.Now()); got != "fail" {
+		t.Fatalf("state = %q, want fail", got)
+	}
+	node.ChecksConnectivity = false
 	if got := compactNodeState(node, time.Now()); got != "disconnected" {
-		t.Fatalf("state = %q, want disconnected", got)
+		t.Fatalf("unchecked state = %q, want disconnected", got)
 	}
 	node.SessionDetail.State = "connecting"
 	node.Healthy = true
 	if got := compactNodeState(node, time.Now()); got != "connecting" {
 		t.Fatalf("state = %q, want connecting", got)
+	}
+	node.SessionDetail.State = "connected"
+	node.Recovery = dialer.RecoverySnapshot{Phase: dialer.RecoveryConnecting, Action: "replenish", Attempt: 1}
+	if got := compactNodeState(node, time.Now()); got != "connected (replenishing capacity #1)" {
+		t.Fatalf("unchecked capacity state = %q", got)
 	}
 }
 

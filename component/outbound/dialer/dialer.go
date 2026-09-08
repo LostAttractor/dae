@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
@@ -285,9 +284,6 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	}
 	d.statsKey = makeStatsKey(property, statsScope)
 	d.statsID = stats.NodeID(d.statsKey)
-	log.WithField("dialer", d.Name).
-		WithField("p", unsafe.Pointer(d)).
-		Traceln("NewDialer")
 	return d
 }
 
@@ -482,7 +478,6 @@ func (d *Dialer) Close() error {
 		d.cancel()
 		d.recovery.Phase = RecoveryStopped
 		d.recovery.RetryAt = time.Time{}
-		d.recovery.RetryTimeKnown = false
 		d.statusRevision++
 		d.mu.Unlock()
 		d.checkWG.Wait()
@@ -501,7 +496,7 @@ func (d *Dialer) retireRuntime() {
 	d.runtime.Retire()
 	go func() {
 		if err := d.runtime.Wait(context.Background()); err != nil {
-			log.Warnf("Failed to release outbound runtime: %v", err)
+			log.WithField("node", d.Name).WithError(err).Debug("Outbound cleanup completed with an error")
 		}
 	}()
 }
