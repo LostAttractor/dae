@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package apiserver owns HTTP listeners and drains requests across daemon reloads.
-// It has no dependency on the control plane or any frontend.
+// Package apiserver serves the daemon API over TCP and Unix sockets. It owns
+// routing, request validation, and draining across reloads. Runtime operations
+// are supplied through stores; this package does not import control or clients.
 package apiserver
 
 import (

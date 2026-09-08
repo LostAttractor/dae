@@ -57,7 +57,7 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 `dae mitm status`、`dae mitm <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_TOKEN` 选择连接，`--instance` 按实例过滤。独立客户端提供 `mitm status` 和 `mitm surge status`，不加载运行时插件；前者可查看任意插件报告。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
 
-端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`cmd/api_server.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 component/api 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
+端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`cmd/api_server.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
 
 ## 代码边界
 
@@ -65,11 +65,11 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 client/cli、client/status、未来 TUI
                   │
                   ▼
-             api/client ─── HTTP / Unix socket ─── component/api
+             api/client ─── HTTP / Unix socket ─── internal/apiserver
                   │                                    │
                   └────────── api 数据契约 ◄────────────┘
 
-web/src ─── 同源 HTTP API ─── component/api
+web/src ─── 同源 HTTP API ─── internal/apiserver
 
 web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（挂载到 api_port）
 ```
@@ -80,10 +80,10 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 - `client/cli`：两种程序与插件共用的连接参数、实例筛选和状态命令实现；`cmd/dae-client` 是独立入口。
 - `web`：前端源码、浏览器请求层与独立构建入口，不读取父目录中的代码或文件。
 - `internal/webui`：只嵌入和托管前端构建产物；`cmd` 负责将静态资源与 API 挂载到现有端口，`control` 不导入 Web 或终端展示代码。
-- `component/api`：HTTP 路由、鉴权与请求校验，使用公开数据契约。
+- `internal/apiserver`：TCP/Unix 监听、HTTP 路由、鉴权、请求校验与重载等待；使用公开契约，通过存储接口访问运行时。
 - `control`：读取运行状态、校验 LAN 身份、应用设置并持久化；Unix 与 TCP 使用同一套 API handler。重载先等待旧 handler 的请求结束，再释放旧控制平面。
 
-运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理两种监听器与重载时的请求等待，不依赖控制平面或前端。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
+运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 注册路由，`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
 
 前端与 dae 的边界是公开构建产物和 HTTP API 契约。以后可将整个 `web/` 迁移为独立仓库或 submodule，嵌入、静态托管与端口分发代码继续留在 dae。
 

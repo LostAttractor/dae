@@ -12,7 +12,7 @@ import (
 	contract "github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/component/api"
+	"github.com/daeuniverse/dae/internal/apiserver"
 	"golang.org/x/sys/unix"
 )
 
@@ -20,13 +20,13 @@ func (c *ControlPlane) APIHandler(version string) http.Handler {
 	return c.apiHandler(version, c.resolveAPIClient)
 }
 
-func (c *ControlPlane) apiHandler(version string, resolve api.ClientResolver) http.Handler {
-	options := api.Options{Selectors: c, Devices: c, ResolveClient: resolve, Token: c.apiToken}
+func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver) http.Handler {
+	options := apiserver.Options{Selectors: c, Devices: c, ResolveClient: resolve, Token: c.apiToken}
 	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
 	if authority := c.mitmAuthority(); authority != nil {
-		options.Certificates = &api.Certificates{Identity: authority.Identity(), Fingerprint: authority.Fingerprint(), Handler: authority.Handler()}
+		options.Certificates = &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()}
 	}
-	return api.NewHandler(options)
+	return apiserver.NewHandler(options)
 }
 
 // Each request refreshes the entry at the LAN hook, including keep-alive data.

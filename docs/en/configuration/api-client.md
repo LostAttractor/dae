@@ -55,7 +55,7 @@ The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these 
 
 `dae mitm status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_TOKEN`; filter reports with `--instance`. The standalone client provides `mitm status` for any plugin report and `mitm surge status` for Surge tables without loading runtime plugins. Report commands emit the filtered instance array with `--json`; `status --json` emits the complete daemon snapshot.
 
-The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `cmd/api_server.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the component/api handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
+The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `cmd/api_server.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the internal/apiserver handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
 
 ## Architecture
 
@@ -68,10 +68,10 @@ The port is bound once: `internal/apiserver` creates one TCP listener and `http.
 | `web` | Frontend source, browser requests and independent build |
 | `internal/webui` | Embedding and static serving of frontend build output |
 | `cmd/dae-client` | Independently buildable entry point |
-| `component/api` | HTTP routing, authorization and validation over public wire models |
+| `internal/apiserver` | TCP/Unix listeners, reload draining, HTTP routing, authorization and validation; runtime access through stores |
 | `control` | Runtime projection, LAN identity, settings application and persistence |
 
-Runtime and client code use `api` types directly. `internal/apiserver` manages both listeners and request draining without depending on the control plane or frontend. `control` does not import UI packages; the daemon command layer composes the Web routes. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
+Runtime and client code use `api` types directly. `internal/apiserver` owns the server-side protocol and transport without importing the control plane, clients or frontend. `handler.go` registers API routes; `request.go`, `device.go` and `selectors.go` validate and handle operations; `server.go` and `unix.go` own listener lifecycle. The control plane supplies the stores defined in `state.go`. `control` does not import UI packages; the daemon command layer composes the Web routes. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
 
 The frontend boundary consists of its public build output and the HTTP API contract. `web/` builds without reading its parent directory, so it can later move into a separate repository or submodule while the embedding and routing code stays in dae.
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-package api
+package apiserver
 
 import (
 	"net/http"
@@ -10,9 +10,8 @@ import (
 )
 
 type Certificates struct {
-	Identity    contract.Certificate
-	Fingerprint string
-	Handler     http.Handler
+	Identity contract.Certificate
+	Handler  http.Handler
 }
 
 // ClientResolver receives the actual TCP endpoints, including IPv6 zones.
@@ -29,12 +28,12 @@ type Options struct {
 	Token         string
 }
 
-type server struct{ options Options }
+type handler struct{ options Options }
 
 // NewHandler serves one plane's management API. The owner drains requests before
 // closing that plane and publishing its replacement.
 func NewHandler(options Options) http.Handler {
-	s := &server{options: options}
+	s := &handler{options: options}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		if s.requireAdmin(w, r) && apiBody(w, r, nil) {

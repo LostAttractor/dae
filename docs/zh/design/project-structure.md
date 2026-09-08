@@ -11,8 +11,7 @@
 | `api`、`api/client` | 公开数据契约与独立 HTTP/Unix 客户端 |
 | `client/cli`、`client/status` | 终端命令与 API 状态展示 |
 | `web`、`internal/webui` | 独立前端源码与构建、产物嵌入及静态托管 |
-| `component/api` | HTTP 路由、鉴权和请求校验，通过接口调用控制面 |
-| `internal/apiserver` | TCP/Unix 监听与重载时的请求等待 |
+| `internal/apiserver` | TCP/Unix 监听、HTTP 路由、鉴权、请求校验与重载等待；通过存储接口调用控制面 |
 | `component/dns`、`settings`、`clientset` | DNS、设置持久化、客户端集合 |
 | `pkg`、`common`、`trace`、`third_party` | 基础代码、追踪工具和固定版本依赖 |
 
