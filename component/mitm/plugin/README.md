@@ -35,10 +35,13 @@ prefix. Empty `Ports` matches every nonzero port. Plugins validate their own inp
 upstream, responses B → A. Call `next` synchronously. Success returns a valid
 response with non-nil Header and Body, transferring body ownership; failure closes
 owned bodies and returns `nil, err`. Compiled plugins must honor this contract.
+The host associates the response returned by `next` with `Exchange.Request`,
+including local responses produced by downstream plugins.
 `HTTPError` requires an underlying error and a valid HTTP error status.
 
 `Exchange.Client` uses the selected outbound. `SetReadDeadline`, when non-nil,
-bounds request-body reads and is reset by the host before forwarding.
+bounds request-body reads and is reset by the host when calling `next`, before
+another plugin or the upstream transport reads the body.
 [Body helpers](body.go) provide bounded snapshots and replacement with correct
 framing and trailers; plugins handle decompression and protocol-specific semantics.
 

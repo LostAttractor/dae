@@ -212,7 +212,21 @@ func (h *Host) chain(flow plugin.Flow, terminal plugin.Handler) plugin.Handler {
 		if !matches {
 			continue
 		}
-		terminal = instance.Plugin.Wrap(flow, terminal)
+		next := terminal
+		terminal = instance.Plugin.Wrap(flow, func(e *plugin.Exchange) (*http.Response, error) {
+			// A plugin's read budget ends when it hands the request downstream,
+			// before another plugin buffers it or the transport streams it.
+			if e.SetReadDeadline != nil {
+				_ = e.SetReadDeadline(time.Time{})
+			}
+			response, err := next(e)
+			if response != nil {
+				// Local responses need the same request association as RoundTrip
+				// responses before an outer plugin can inspect or rewrite them.
+				response.Request = e.Request
+			}
+			return response, err
+		})
 	}
 	return terminal
 }
