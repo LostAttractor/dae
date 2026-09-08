@@ -18,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/geodata"
 	"github.com/mohae/deepcopy"
 	"github.com/oschwald/maxminddb-golang/v2"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -91,6 +90,7 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 		// client() names one dynamic set; keep separate references intact.
 		if len(mergingRule.AndFunctions) == 1 &&
 			len(rules[i].AndFunctions) == 1 &&
+			!mergingRule.AndFunctions[0].Not && // !A OR !B is not !(A OR B).
 			mergingRule.AndFunctions[0].Name != consts.Function_Client &&
 			mergingRule.AndFunctions[0].Name == rules[i].AndFunctions[0].Name &&
 			mergingRule.AndFunctions[0].Not == rules[i].AndFunctions[0].Not &&
@@ -195,9 +195,7 @@ func (o *DatReaderOptimizer) loadGeoSite(filename string, code string) (params [
 	}
 	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		return nil, oops.
-			With("filename", filename).
-			Wrapf(err, "Failed to read geosite")
+		return nil, fmt.Errorf("read geosite %q: %w", filename, err)
 	}
 	log.Debugf("Read geosite \"%v:%v\" from %v", filename, code, filePath)
 	code, attr, _ := strings.Cut(code, "@")
@@ -262,9 +260,7 @@ func (o *DatReaderOptimizer) loadGeoIp(filename string, code string) (params []*
 	}
 	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		return nil, oops.
-			With("filename", filename).
-			Wrapf(err, "Failed to read geoip")
+		return nil, fmt.Errorf("read geoip %q: %w", filename, err)
 	}
 	log.Debugf("Read geoip \"%v:%v\" from %v", filename, code, filePath)
 	geoIp, err := geodata.UnmarshalGeoIp(filePath, code)
@@ -300,9 +296,7 @@ func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value strin
 
 	filePath, err := o.LocationFinder.GetLocationAsset(filename)
 	if err != nil {
-		return nil, oops.
-			With("filename", filename).
-			Wrapf(err, "Failed to read mmdb")
+		return nil, fmt.Errorf("read mmdb %q: %w", filename, err)
 	}
 	log.Debugf("Read mmdb \"%v:%v=%v\" from %v", filename, field, value, filePath)
 

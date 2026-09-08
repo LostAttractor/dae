@@ -25,76 +25,90 @@ var (
 	errCodeNotFound                 = errors.New("code not found")
 )
 
+// Read only the selected entry, while bounding every length by its enclosing
+// message and the actual file. Unsupported protobuf layouts use the full decoder.
 func emitBytes(f io.ReadSeeker, code string) ([]byte, error) {
-	count := 1
-	isInner := false
-	tempContainer := make([]byte, 0, 5)
-
-	var result []byte
-	var advancedN uint64 = 1
-	var geoDataVarintLength, codeVarintLength, varintLenByteLen uint64 = 0, 0, 0
-
-Loop:
-	for {
-		container := make([]byte, advancedN)
-		bytesRead, err := f.Read(container)
-		if err == io.EOF {
-			return nil, errCodeNotFound
-		}
-		if err != nil {
-			return nil, errFailedToReadBytes
-		}
-		if bytesRead != len(container) {
+	position, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return nil, errFailedToReadBytes
+	}
+	fileEnd, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, errFailedToReadBytes
+	}
+	if _, err := f.Seek(position, io.SeekStart); err != nil {
+		return nil, errFailedToReadBytes
+	}
+	for position < fileEnd {
+		var tag [1]byte
+		if _, err := io.ReadFull(f, tag[:]); err != nil {
 			return nil, errFailedToReadExpectedLenBytes
 		}
-
-		switch count {
-		case 1, 3: // data type ((field_number << 3) | wire_type)
-			if container[0] != 10 { // byte `0A` equals to `10` in decimal
-				return nil, errInvalidGeodataFile
+		position++
+		if tag[0] != 10 {
+			return nil, errInvalidGeodataFile
+		}
+		entryLength, n, err := readGeodataLength(f)
+		if err != nil {
+			return nil, err
+		}
+		position += int64(n)
+		if entryLength == 0 || position > fileEnd || entryLength > uint64(fileEnd-position) || entryLength > uint64(^uint(0)>>1) {
+			return nil, errInvalidGeodataFile
+		}
+		entryStart, entryEnd := position, position+int64(entryLength)
+		if _, err := io.ReadFull(f, tag[:]); err != nil {
+			return nil, errFailedToReadExpectedLenBytes
+		}
+		position++
+		if tag[0] != 10 {
+			return nil, errInvalidGeodataFile
+		}
+		codeLength, n, err := readGeodataLength(io.LimitReader(f, entryEnd-position))
+		if err != nil {
+			return nil, err
+		}
+		position += int64(n)
+		if codeLength > uint64(entryEnd-position) {
+			return nil, errInvalidGeodataFile
+		}
+		country := make([]byte, int(codeLength))
+		if _, err := io.ReadFull(f, country); err != nil {
+			return nil, errFailedToReadExpectedLenBytes
+		}
+		if strings.EqualFold(string(country), code) {
+			if _, err := f.Seek(entryStart, io.SeekStart); err != nil {
+				return nil, errFailedToReadBytes
 			}
-			advancedN = 1
-			count++
-		case 2, 4: // data length
-			tempContainer = append(tempContainer, container...)
-			if container[0] > 127 { // max one-byte-length byte `7F`(0FFF FFFF) equals to `127` in decimal
-				advancedN = 1
-				goto Loop
+			entry := make([]byte, int(entryLength))
+			if _, err := io.ReadFull(f, entry); err != nil {
+				return nil, errFailedToReadExpectedLenBytes
 			}
-			lenVarint, n := protowire.ConsumeVarint(tempContainer)
-			if n < 0 {
-				return nil, errInvalidGeodataVarintLength
-			}
-			tempContainer = nil
-			if !isInner {
-				isInner = true
-				geoDataVarintLength = lenVarint
-				advancedN = 1
-			} else {
-				isInner = false
-				codeVarintLength = lenVarint
-				varintLenByteLen = uint64(n)
-				advancedN = codeVarintLength
-			}
-			count++
-		case 5: // data value
-			if strings.EqualFold(string(container), code) {
-				count++
-				offset := -(1 + int64(varintLenByteLen) + int64(codeVarintLength))
-				f.Seek(offset, 1)               // back to the start of GeoIP or GeoSite varint
-				advancedN = geoDataVarintLength // the number of bytes to be read in next round
-			} else {
-				count = 1
-				offset := int64(geoDataVarintLength) - int64(codeVarintLength) - int64(varintLenByteLen) - 1
-				f.Seek(offset, 1) // skip the unmatched GeoIP or GeoSite varint
-				advancedN = 1     // the next round will be the start of another GeoIPList or GeoSiteList
-			}
-		case 6: // matched GeoIP or GeoSite varint
-			result = container
-			break Loop
+			return entry, nil
+		}
+		position = entryEnd
+		if _, err := f.Seek(position, io.SeekStart); err != nil {
+			return nil, errFailedToReadBytes
 		}
 	}
-	return result, nil
+	return nil, errCodeNotFound
+}
+
+func readGeodataLength(r io.Reader) (uint64, int, error) {
+	var encoded [10]byte
+	for i := range encoded {
+		if _, err := io.ReadFull(r, encoded[i:i+1]); err != nil {
+			return 0, 0, errFailedToReadExpectedLenBytes
+		}
+		if encoded[i] < 128 {
+			length, n := protowire.ConsumeVarint(encoded[:i+1])
+			if n < 0 {
+				return 0, 0, errInvalidGeodataVarintLength
+			}
+			return length, n, nil
+		}
+	}
+	return 0, 0, errInvalidGeodataVarintLength
 }
 
 func Decode(filename, code string) ([]byte, error) {

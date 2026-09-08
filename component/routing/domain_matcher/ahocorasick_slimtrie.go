@@ -44,13 +44,18 @@ func (n *AhocorasickSlimtrie) AddSet(bitIndex int, patterns []string, typ consts
 	if n.err != nil {
 		return
 	}
+	invalidCount := 0
+	firstInvalid := ""
 nextPattern:
 	for _, d := range patterns {
 		switch typ {
 		case consts.RoutingDomainKey_Full:
 			for _, r := range []byte(d) {
 				if !ValidDomainChars.IsValidChar(r) {
-					log.Warnf("DomainMatcher: skip bad full domain: %v: unexpected char: %v", d, string(r))
+					invalidCount++
+					if firstInvalid == "" {
+						firstInvalid = d
+					}
 					continue nextPattern
 				}
 			}
@@ -58,7 +63,10 @@ nextPattern:
 		case consts.RoutingDomainKey_Suffix:
 			for _, r := range []byte(d) {
 				if !ValidDomainChars.IsValidChar(r) {
-					log.Warnf("DomainMatcher: skip bad suffix domain: %v: unexpected char: %v", d, string(r))
+					invalidCount++
+					if firstInvalid == "" {
+						firstInvalid = d
+					}
 					continue nextPattern
 				}
 			}
@@ -87,6 +95,9 @@ nextPattern:
 			n.err = fmt.Errorf("unknown RoutingDomainKey: %v", typ)
 			return
 		}
+	}
+	if invalidCount != 0 {
+		log.WithFields(log.Fields{"rule_index": bitIndex, "type": typ, "skipped": invalidCount, "first_invalid": firstInvalid}).Warn("Skipped invalid domain patterns")
 	}
 }
 func (n *AhocorasickSlimtrie) MatchDomainBitmap(domain string) (bitmap []uint32) {

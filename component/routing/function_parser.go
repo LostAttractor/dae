@@ -118,7 +118,7 @@ func ProcessNameParserFactory(callback func(f *config_parser.Function, procNames
 		var procNames [][consts.TaskCommLen]byte
 		for _, v := range paramValueGroup {
 			if len([]byte(v)) > consts.TaskCommLen {
-				log.Infof(`pname routing: trim "%v" to "%v" because it is too long.`, v, string([]byte(v)[:consts.TaskCommLen]))
+				log.WithFields(log.Fields{"configured": v, "effective": string([]byte(v)[:consts.TaskCommLen]), "limit_bytes": consts.TaskCommLen}).Warn("Process name exceeds kernel limit; routing uses truncated name")
 			}
 			procNames = append(procNames, toProcessName(v))
 		}
