@@ -66,7 +66,7 @@ type DialerSet struct {
 	nodeInfos []*NodeInfo
 }
 
-func applyNodeOptions(builders []D.Builder, options config.NodeOptions) ([]D.Builder, error) {
+func applyNodeOptions(builder D.Builder, options config.NodeOptions) ([]D.Builder, error) {
 	if options.MultiplexMaxConnections != nil && (*options.MultiplexMaxConnections < 1 || *options.MultiplexMaxConnections > smux.MaxConnectionsLimit) {
 		return nil, fmt.Errorf("multiplex_max_connections must be between 1 and %d", smux.MaxConnectionsLimit)
 	}
@@ -75,16 +75,13 @@ func applyNodeOptions(builders []D.Builder, options config.NodeOptions) ([]D.Bui
 		if options.MultiplexMaxConnections != nil {
 			return nil, fmt.Errorf("multiplex_max_connections requires multiplex: smux or smux-udp-passthrough")
 		}
-		return builders, nil
+		return []D.Builder{builder}, nil
 	case config.MultiplexModeSmux, config.MultiplexModeSmuxUDPPassthrough:
-		if len(builders) == 0 {
-			return nil, fmt.Errorf("cannot apply node options to an empty dialer chain")
-		}
-		configured := []D.Builder{builders[0], &smux.SmuxConfig{
+		configured := []D.Builder{builder, &smux.SmuxConfig{
 			PassThroughUDP: options.Multiplex == config.MultiplexModeSmuxUDPPassthrough,
 			MaxConnections: multiplexMaxConnections(options),
 		}}
-		return append(configured, builders[1:]...), nil
+		return configured, nil
 	default:
 		return nil, fmt.Errorf("unsupported multiplex mode %q", options.Multiplex)
 	}
@@ -125,13 +122,13 @@ func nodeDisplayProtocol(node *NodeInfo) string {
 
 func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 	set := new(DialerSet)
-	for _, node := range nodes {
-		builders, property, err := parseNodeLink(node.Link)
+	for index, node := range nodes {
+		builder, property, err := parseNodeLink(node.Link)
 		if err != nil {
 			if node.Required {
-				return nil, fmt.Errorf("failed to parse local node %q: %w", node.Link, err)
+				return nil, fmt.Errorf("parse local node %d (%q): %w", index+1, node.Name, err)
 			}
-			log.Warnf("failed to parse subscription node %v: %v", node.Link, err)
+			log.WithFields(log.Fields{"subscription": node.SubscriptionTag, "node": node.Name, "index": index + 1}).WithError(err).Warn("Skipping invalid subscription node")
 			continue
 		}
 		if node.Name != "" {
@@ -141,7 +138,7 @@ func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 			if node.Required {
 				return nil, fmt.Errorf("local node name %q is reserved", property.Name)
 			}
-			log.Warnf("ignoring subscription node with reserved name %q", property.Name)
+			log.WithFields(log.Fields{"subscription": node.SubscriptionTag, "node": property.Name}).Warn("Skipping subscription node with reserved name")
 			continue
 		}
 		nodeInfo := &NodeInfo{
@@ -162,7 +159,7 @@ func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 			}
 		}
 		effectiveOptions.Overlay(node.Options)
-		builders, err = applyNodeOptions(builders, effectiveOptions)
+		builders, err := applyNodeOptions(builder, effectiveOptions)
 		if err != nil {
 			return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
 		}
@@ -210,7 +207,7 @@ func normalizeShadowsocksLinkComponent(link string) string {
 	return u.String()
 }
 
-func parseNodeLink(link string) ([]D.Builder, *D.Property, error) {
+func parseNodeLink(link string) (D.Builder, *D.Property, error) {
 	return D.NewFromLink(normalizeShadowsocksLink(link))
 }
 
@@ -270,23 +267,19 @@ func validateNodeDialer(option *dialer.GlobalOption, link string) (err error) {
 			err = errors.New("node dialer construction panicked")
 		}
 	}()
-	builders, property, err := parseNodeLink(link)
+	builder, property, err := parseNodeLink(link)
 	if err != nil {
 		return errors.New("node parser rejected link")
 	}
 	node := &NodeInfo{
 		Link:     link,
 		Property: &dialer.Property{Property: *property},
-		Dialers:  builders,
+		Dialers:  []D.Builder{builder},
 	}
 	created, err := new(DialerSet).BuildPath(NodePath(node), option, "validation")
 	if err != nil {
 		return errors.New("node dialer construction failed")
 	}
-	return closeValidatedDialer(created)
-}
-
-func closeValidatedDialer(created *dialer.Dialer) error {
 	return created.Close()
 }
 
