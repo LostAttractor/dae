@@ -34,4 +34,6 @@ mitm {
 
 重载会取消旧插件的后台任务并排空已开始的 HTTP 请求，默认预算 5 秒，超时后取消请求并关闭连接。后台识别、等待预算、缓存等行为由具体插件定义；宿主没有通用的任务队列，也不能事后补写已返回的响应。
 
-`dae mitm status` 汇总所有已启用实例，`--json` 输出完整插件报告，`--instance ID` 只查询一个实例。`dae mitm surge status` 查看 Surge 模块状态；外部插件可注册自己的命令，例如 `dae mitm bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`；旧的顶层 `dae surge` 命令已移除。状态字段见[页面/API](api.md)。添加单个或多个插件见[构建说明](../../en/user-guide/build-by-yourself.md#external-mitm-plugins)，编写插件见[插件 API](../../../component/mitm/plugin/README.md)。
+`dae mitm status` 汇总所有已启用实例，`--verbose`（`-v`）进一步聚合各插件的完整 status 输出，包括 Surge 模块表和 Bilijump 任务、模型、云缓存及错误详情。整次命令只查询 daemon 一次，`--instance ID` 可筛选实例。没有自定义 status 的插件展示完整 JSON 报告；某插件的状态渲染失败时保留原始报告并继续显示其他插件，命令最终返回错误。`--json` 直接输出完整插件报告，与 `-v` 同用时仍只输出 JSON。
+
+`dae mitm surge status` 查看 Surge 模块状态；外部插件可注册自己的命令，例如 `dae mitm bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`；旧的顶层 `dae surge` 命令已移除。状态字段见[页面/API](api.md)。添加单个或多个插件见[构建说明](../../en/user-guide/build-by-yourself.md#external-mitm-plugins)，编写插件见[插件 API](../../../component/mitm/plugin/README.md)。

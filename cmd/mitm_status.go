@@ -3,8 +3,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -46,7 +48,9 @@ func selectMITMStatus(fetch func(context.Context) ([]plugin.InstanceStatus, erro
 
 func addMITMCommands(command *cobra.Command, definitions map[string]plugin.Definition, services plugin.CommandServices) {
 	var instance string
-	aggregate := newMITMStatusCommand(selectMITMStatus(services.Status, "", &instance))
+	local := services
+	local.Status = selectMITMStatus(services.Status, "", &instance)
+	aggregate := newMITMStatusCommand(local, definitions)
 	aggregate.Flags().StringVar(&instance, "instance", "", "Show only this instance")
 	command.AddCommand(aggregate)
 	names := make([]string, 0, len(definitions))
@@ -55,33 +59,34 @@ func addMITMCommands(command *cobra.Command, definitions map[string]plugin.Defin
 	}
 	slices.Sort(names)
 	for _, name := range names {
-		group := &cobra.Command{Use: name, Short: "Manage " + name + " MITM plugins."}
-		var id string
-		group.PersistentFlags().StringVar(&id, "instance", "", "Query only this plugin instance")
-		local := services
-		local.Status = selectMITMStatus(services.Status, name, &id)
-		if factory := definitions[name].Commands; factory != nil {
-			group.AddCommand(factory(local)...)
-		}
-		hasStatus := false
-		for _, child := range group.Commands() {
-			if child.Name() == "status" {
-				hasStatus = true
-			}
-		}
-		if !hasStatus {
-			group.AddCommand(newMITMStatusCommand(local.Status))
-		}
+		group, _ := newMITMPluginCommand(name, definitions[name], services)
 		command.AddCommand(group)
 	}
 }
 
-func newMITMStatusCommand(fetch func(context.Context) ([]plugin.InstanceStatus, error)) *cobra.Command {
-	var asJSON bool
+func newMITMPluginCommand(name string, definition plugin.Definition, services plugin.CommandServices) (*cobra.Command, bool) {
+	group := &cobra.Command{Use: name, Short: "Manage " + name + " MITM plugins."}
+	var id string
+	group.PersistentFlags().StringVar(&id, "instance", "", "Query only this plugin instance")
+	services.Status = selectMITMStatus(services.Status, name, &id)
+	if definition.Commands != nil {
+		group.AddCommand(definition.Commands(services)...)
+	}
+	for _, child := range group.Commands() {
+		if child.Name() == "status" {
+			return group, child.Runnable()
+		}
+	}
+	group.AddCommand(newMITMStatusCommand(services, nil))
+	return group, false
+}
+
+func newMITMStatusCommand(services plugin.CommandServices, definitions map[string]plugin.Definition) *cobra.Command {
+	var asJSON, verbose bool
 	command := &cobra.Command{
 		Use: "status", Short: "Show MITM instances and their plugin reports.", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			statuses, err := fetch(cmd.Context())
+			statuses, err := services.Status(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -98,7 +103,12 @@ func newMITMStatusCommand(fetch func(context.Context) ([]plugin.InstanceStatus, 
 			for _, status := range statuses {
 				rows = append(rows, table.Row{status.ID, status.Type, status.State, status.Scopes, status.DestinationRules})
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), renderLogTable(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"}, rows))
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), renderLogTable(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"}, rows)); err != nil {
+				return err
+			}
+			if verbose {
+				return renderMITMReports(cmd, definitions, services, statuses)
+			}
 			for _, status := range statuses {
 				if len(status.Details) != 0 {
 					fmt.Fprintf(cmd.OutOrStdout(), "\n%s: %s\n", status.ID, mitmReportSummary(status.Details))
@@ -108,11 +118,71 @@ func newMITMStatusCommand(fetch func(context.Context) ([]plugin.InstanceStatus, 
 		},
 	}
 	command.Flags().BoolVar(&asJSON, "json", false, "Print full reports as JSON")
+	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "Include each plugin's full status output")
 	return command
 }
 
-// Keep the overview compact; full nested reports are available with --json or
-// the plugin's own status command.
+// Use fresh commands and one daemon snapshot, preserving each plugin's command
+// lifecycle without sharing flags or invoking runtime Setup.
+func renderMITMReports(cmd *cobra.Command, definitions map[string]plugin.Definition, services plugin.CommandServices, statuses []plugin.InstanceStatus) error {
+	byType := make(map[string][]plugin.InstanceStatus)
+	for _, status := range statuses {
+		byType[status.Type] = append(byType[status.Type], status)
+	}
+	names := make([]string, 0, len(byType))
+	for name := range byType {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	var failures error
+	for _, name := range names {
+		if err := cmd.Context().Err(); err != nil {
+			return errors.Join(failures, err)
+		}
+		instances := byType[name]
+		local := services
+		local.Status = func(ctx context.Context) ([]plugin.InstanceStatus, error) {
+			return instances, ctx.Err()
+		}
+		group, custom := newMITMPluginCommand(name, definitions[name], local)
+		var output bytes.Buffer
+		var err error
+		if custom {
+			group.SilenceErrors, group.SilenceUsage = true, true
+			group.SetIn(cmd.InOrStdin())
+			group.SetOut(&output)
+			group.SetErr(&output)
+			args := []string{"status"}
+			if instance, _ := cmd.Flags().GetString("instance"); instance != "" {
+				args = append(args, "--instance", instance)
+			}
+			group.SetArgs(args)
+			err = group.ExecuteContext(cmd.Context())
+			if err != nil {
+				failures = errors.Join(failures, fmt.Errorf("%s status: %w", name, err))
+			}
+		}
+		if !custom || err != nil || output.Len() == 0 {
+			// Keep unknown reports and reports rejected by an older renderer
+			// visible, and continue displaying the other plugin types.
+			if output.Len() > 0 {
+				fmt.Fprintln(&output)
+			}
+			fmt.Fprintf(&output, "%s: full report\n", name)
+			encoder := json.NewEncoder(&output)
+			encoder.SetIndent("", "  ")
+			if err := encoder.Encode(instances); err != nil {
+				failures = errors.Join(failures, fmt.Errorf("%s report: %w", name, err))
+			}
+		}
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", strings.TrimRight(output.String(), "\n")); err != nil {
+			return errors.Join(failures, err)
+		}
+	}
+	return failures
+}
+
+// Keep the overview compact; --verbose and --json include full plugin reports.
 func mitmReportSummary(raw json.RawMessage) string {
 	var fields map[string]any
 	if json.Unmarshal(raw, &fields) != nil {
