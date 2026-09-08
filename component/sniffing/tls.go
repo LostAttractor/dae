@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
+	"golang.org/x/crypto/cryptobyte"
 )
 
 const (
@@ -45,139 +46,65 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 	if len(search) < length {
 		return "", ErrNeedMore
 	}
-	return extractSniFromTls(quicutils.BuiltinBytesLocator(search[:length]))
-}
-
-func extractSniFromTls(search quicutils.Locator) (sni string, err error) {
-	boundary := 39
-	if search.Len() < boundary {
-		return "", ErrNotApplicable
-	}
-	// Transport Layer Security (TLS) Extensions: Extension Definitions
-	// https://www.rfc-editor.org/rfc/rfc6066#page-5
-	b, err := search.Range(0, 6)
-	if err != nil {
-		return "", err
-	}
-	if b[0] != HandShakeType_Hello {
-		return "", ErrNotApplicable
-	}
-
-	// Three bytes length.
-	length2 := (int(b[1]) << 16) + (int(b[2]) << 8) + int(b[3])
-	if search.Len() > length2+4 {
-		return "", ErrNotApplicable
-	}
-
-	if !bytes.Equal(b[4:], Version_Tls1_2) {
-		return "", ErrNotApplicable
-	}
-
-	// Skip 32 bytes random.
-
-	sessionIdLength, err := search.At(boundary - 1)
-	if err != nil {
-		return "", err
-	}
-	boundary += int(sessionIdLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary {
-		return "", ErrNotApplicable
-	}
-
-	b, err = search.Range(boundary-2, boundary)
-	if err != nil {
-		return "", err
-	}
-	cipherSuiteLength := int(binary.BigEndian.Uint16(b))
-	boundary += cipherSuiteLength + 1 // +1 because the next field has 1B length
-	if search.Len() < boundary {
-		return "", ErrNotApplicable
-	}
-
-	compressMethodsLength, err := search.At(boundary - 1)
-	if err != nil {
-		return "", err
-	}
-	boundary += int(compressMethodsLength) + 2 // +2 because the next field has 2B length
-	if search.Len() < boundary {
-		return "", ErrNotApplicable
-	}
-
-	b, err = search.Range(boundary-2, boundary)
-	if err != nil {
-		return "", err
-	}
-	extensionsLength := int(binary.BigEndian.Uint16(b))
-	boundary += extensionsLength
-	if search.Len() < boundary {
-		return "", ErrNotApplicable
-	}
-	// Search SNI
-	extensions, err := search.Slice(boundary-extensionsLength, boundary)
+	extensions, err := clientHelloExtensions(search[:length])
 	if err != nil {
 		return "", err
 	}
 	return findSniExtension(extensions)
 }
 
-func findSniExtension(search quicutils.Locator) (d string, err error) {
-	i := 0
-	var b []byte
-	for {
-		if i+4 >= search.Len() {
-			return "", ErrNotFound
-		}
-		b, err = search.Range(i, i+4)
-		if err != nil {
-			return "", err
-		}
-		typ := binary.BigEndian.Uint16(b)
-		extLength := int(binary.BigEndian.Uint16(b[2:]))
+// clientHelloExtensions accepts one complete, contiguous ClientHello.
+func clientHelloExtensions(hello []byte) ([]byte, error) {
+	input := cryptobyte.String(hello)
+	var kind uint8
+	var version uint16
+	var body, ignored, extensions cryptobyte.String
+	if !input.ReadUint8(&kind) || kind != HandShakeType_Hello ||
+		!input.ReadUint24LengthPrefixed(&body) || !input.Empty() ||
+		!body.ReadUint16(&version) || version != 0x0303 ||
+		!body.Skip(32) || // random
+		!body.ReadUint8LengthPrefixed(&ignored) || // session ID
+		!body.ReadUint16LengthPrefixed(&ignored) || // cipher suites
+		!body.ReadUint8LengthPrefixed(&ignored) || // compression methods
+		!body.ReadUint16LengthPrefixed(&extensions) || !body.Empty() {
+		return nil, ErrNotApplicable
+	}
+	return extensions, nil
+}
 
-		iNextField := i + 4 + extLength
-		if iNextField > search.Len() {
+func findTLSExtension(extensions []byte, want uint16) (cryptobyte.String, error) {
+	input := cryptobyte.String(extensions)
+	for !input.Empty() {
+		var kind uint16
+		var data cryptobyte.String
+		if !input.ReadUint16(&kind) || !input.ReadUint16LengthPrefixed(&data) {
+			return nil, ErrNotApplicable
+		}
+		if kind == want {
+			return data, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func findSniExtension(extensions []byte) (string, error) {
+	data, err := findTLSExtension(extensions, TlsExtension_ServerName)
+	if err != nil {
+		return "", err
+	}
+	var names cryptobyte.String
+	if !data.ReadUint16LengthPrefixed(&names) || !data.Empty() || names.Empty() {
+		return "", ErrNotApplicable
+	}
+	for !names.Empty() {
+		var kind uint8
+		var name cryptobyte.String
+		if !names.ReadUint8(&kind) || !names.ReadUint16LengthPrefixed(&name) || name.Empty() {
 			return "", ErrNotApplicable
 		}
-		if typ == TlsExtension_ServerName {
-			if extLength < 2 {
-				return "", ErrNotApplicable
-			}
-			b, err = search.Range(i+4, i+6)
-			if err != nil {
-				return "", err
-			}
-			serverNameListLen := int(binary.BigEndian.Uint16(b))
-			if serverNameListLen == 0 || serverNameListLen != extLength-2 {
-				return "", ErrNotApplicable
-			}
-			// Search HostName type SNI.
-			for j := i + 6; j < iNextField; {
-				if j+3 > iNextField {
-					return "", ErrNotApplicable
-				}
-				b, err = search.Range(j, j+3)
-				if err != nil {
-					return "", err
-				}
-				indicatorLen := int(binary.BigEndian.Uint16(b[1:]))
-				nextName := j + 3 + indicatorLen
-				if indicatorLen == 0 || nextName > iNextField {
-					return "", ErrNotApplicable
-				}
-				if b[0] != TlsExtension_ServerNameType_HostName {
-					j = nextName
-					continue
-				}
-				b, err = search.Range(j+3, nextName)
-				if err != nil {
-					return "", err
-				}
-				// An SNI value may not include a trailing dot.
-				// https://tools.ietf.org/html/rfc6066#section-3
-				// But we accept it here.
-				return strings.TrimSuffix(string(b), "."), nil
-			}
+		if kind == TlsExtension_ServerNameType_HostName {
+			return strings.TrimSuffix(string(name), "."), nil
 		}
-		i = iNextField
 	}
+	return "", ErrNotFound
 }

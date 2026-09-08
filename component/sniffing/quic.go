@@ -12,6 +12,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
 	"github.com/daeuniverse/outbound/pool"
+	"golang.org/x/crypto/cryptobyte"
 )
 
 const (
@@ -60,14 +61,45 @@ func (s *Sniffer) sniffQuicLocked() (d string, err error) {
 	}
 
 	s.quicNextRead = s.buf.Len()
-	sni, err := extractSniFromTls(s.quicCryptos)
+	// Resolve holes once, before parsing SNI or ALPN from contiguous bytes.
+	hello, err := s.quicCryptos.Bytes()
+	var extensions []byte
+	if err == nil {
+		extensions, err = clientHelloExtensions(hello)
+	}
+	completeHello := err == nil
+	var sni string
+	if err == nil {
+		s.quicHTTP3 = hasHTTP3ALPN(extensions)
+		sni, err = findSniExtension(extensions)
+	}
 	if err != nil {
-		if !s.quicCryptos.WindowComplete() {
+		if !completeHello && !s.quicCryptos.WindowComplete() {
 			s.needMore = true
 		}
 		return "", ErrNotFound
 	}
 	return sni, nil
+}
+
+func hasHTTP3ALPN(extensions []byte) bool {
+	data, err := findTLSExtension(extensions, 16) // ALPN
+	if err != nil {
+		return false
+	}
+	var protocols cryptobyte.String
+	if !data.ReadUint16LengthPrefixed(&protocols) || !data.Empty() || protocols.Empty() {
+		return false
+	}
+	found := false
+	for !protocols.Empty() {
+		var protocol cryptobyte.String
+		if !protocols.ReadUint8LengthPrefixed(&protocol) || protocol.Empty() {
+			return false
+		}
+		found = found || string(protocol) == "h3"
+	}
+	return found
 }
 
 // parseQuicInitialHeader parses the unprotected portion of a QUIC Initial.
