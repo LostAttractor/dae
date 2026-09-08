@@ -131,9 +131,6 @@ func (d *producerDetacher) start() error {
 			if closeErr := d.owner.Close(); closeErr != nil {
 				d.ownerErr = fmt.Errorf("close trace BPF objects: %w", closeErr)
 			}
-			if cleanupErr := errors.Join(d.linksErr, d.ownerErr); cleanupErr != nil {
-				log.Errorf("failed to clean up trace probes: %+v", cleanupErr)
-			}
 			close(d.done)
 		}()
 	})
@@ -343,7 +340,7 @@ func attachBpfToTargets(objs *traceObjects, targets []probeTarget, useKfreeReaso
 			},
 		)
 		if groupErr != nil {
-			log.Warnf("failed to attach some or all skb argument group %d probes: %+v", position, groupErr)
+			log.WithFields(log.Fields{"argument_position": position, "attached": groupAttached, "targets": len(symbols)}).WithError(groupErr).Debug("Some trace probes could not be attached")
 		}
 		for _, attachedLink := range groupLinks {
 			links = append(links, attachedLink.(link.Link))

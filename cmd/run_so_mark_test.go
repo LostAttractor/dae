@@ -8,6 +8,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/outbound/protocol/direct"
 )
 
@@ -23,11 +24,15 @@ func TestConfigureDaemonResolverValidation(t *testing.T) {
 func TestNewControlPlaneHonorsCanceledContext(t *testing.T) {
 	previousDirect := direct.Direct
 	t.Cleanup(func() { direct.Direct = previousDirect })
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := newControlPlane(ctx, nil, &config.Config{}, nil, nil, nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("newControlPlane error = %v, want context cancellation", err)
+	for name, bpf := range map[string]*control.BPFState{"startup": nil, "reload": {}} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := newControlPlane(ctx, bpf, &config.Config{}, nil, nil, nil)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("newControlPlane error = %v, want context cancellation", err)
+			}
+		})
 	}
 }
 

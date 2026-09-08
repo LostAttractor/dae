@@ -13,9 +13,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func AutoSu() {
+func AutoSu() error {
 	if os.Geteuid() == 0 {
-		return
+		return nil
 	}
 	path, arg := trySudo()
 	if path == "" {
@@ -26,9 +26,9 @@ func AutoSu() {
 	}
 
 	if path == "" {
-		return
+		return nil
 	}
-	log.Infof("use [ %s ] to elevate privileges to run [ %s ]", path, os.Args[0])
+	log.WithField("helper", path).Info("Requesting elevated privileges")
 	p, err := os.StartProcess(path, append(arg, os.Args...), &os.ProcAttr{
 		Files: []*os.File{
 			os.Stdin,
@@ -37,13 +37,14 @@ func AutoSu() {
 		},
 	})
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("start privilege helper %s: %w", path, err)
 	}
 	stat, err := p.Wait()
 	if err != nil {
-		os.Exit(1)
+		return fmt.Errorf("wait for privilege helper %s: %w", path, err)
 	}
 	os.Exit(stat.ExitCode())
+	return nil
 }
 
 func trySudo() (path string, arg []string) {

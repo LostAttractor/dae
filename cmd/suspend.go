@@ -34,7 +34,9 @@ var (
 			if err != nil {
 				return err
 			}
-			internal.AutoSu()
+			if err := internal.AutoSu(); err != nil {
+				return err
+			}
 
 			abortMarkerCreated := false
 			cleanupAbortMarker := func() {

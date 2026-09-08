@@ -12,7 +12,7 @@ LimitNOFILE=1048576
 ExecStartPre=/usr/bin/dae validate -c /etc/dae/config.dae
 ExecStart=/usr/bin/dae run --disable-timestamp -c /etc/dae/config.dae
 ExecReload=/usr/bin/dae reload $MAINPID
-Restart=on-abnormal
+Restart=on-failure
 TimeoutStartSec=120
 
 [Install]

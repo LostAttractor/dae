@@ -23,6 +23,8 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func TestTraceBPFSpec(t *testing.T) {
@@ -585,6 +587,7 @@ func (c *fakeTraceControl) Update(key, value any, flags ebpf.MapUpdateFlags) err
 
 type fakeTraceRuntime struct {
 	active atomic.Uint64
+	state  bpfRuntimeState
 }
 
 func (r *fakeTraceRuntime) Lookup(_ any, valueOut any) error {
@@ -592,6 +595,7 @@ func (r *fakeTraceRuntime) Lookup(_ any, valueOut any) error {
 	if !ok {
 		return fmt.Errorf("unexpected runtime output %T", valueOut)
 	}
+	*state = r.state
 	state.ActiveProducers = r.active.Load()
 	return nil
 }
@@ -764,6 +768,48 @@ func TestIncompleteCoverageIsWrittenToTraceOutput(t *testing.T) {
 	case <-detacher.done:
 	case <-time.After(time.Second):
 		t.Fatal("detacher did not release BPF objects")
+	}
+}
+
+func TestTraceLossIsSummarizedOnce(t *testing.T) {
+	logger := log.StandardLogger()
+	previousOutput, previousLevel := logger.Out, logger.GetLevel()
+	hooks := logger.ReplaceHooks(make(log.LevelHooks))
+	hook := logtest.NewLocal(logger)
+	logger.SetOutput(io.Discard)
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() {
+		logger.ReplaceHooks(hooks)
+		logger.SetOutput(previousOutput)
+		logger.SetLevel(previousLevel)
+	})
+	control := &fakeTraceControl{}
+	runtime := &fakeTraceRuntime{state: bpfRuntimeState{RingLost: 2, AdmissionFailures: 3, GenerationFailures: 4}}
+	detacher := newProducerDetacher(nil, control, &fakeTraceOwner{})
+	reader := &stopAwareEventReader{control: control, runtime: runtime, flushed: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var output bytes.Buffer
+	if err := readTraceEvents(ctx, runtime, reader, &output, nil, false, probeCoverage{}, detacher); err != nil {
+		t.Fatal(err)
+	}
+	detacher.releaseObjects()
+	if err := detacher.waitDone(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	entries := hook.AllEntries()
+	if len(entries) != 1 || entries[0].Level != log.WarnLevel {
+		t.Fatalf("expected one loss warning: %v", entries)
+	}
+	for field, want := range map[string]uint64{"ring_events_lost": 2, "admission_failures": 3, "generation_failures": 4} {
+		if entries[0].Data[field] != want {
+			t.Errorf("%s=%v, want %d", field, entries[0].Data[field], want)
+		}
+	}
+	for _, want := range []string{"2 event(s) lost", "3 trace admission(s) failed", "4 trace generation allocation(s) failed"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("trace artifact lost detail %q: %s", want, output.String())
+		}
 	}
 }
 

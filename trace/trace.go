@@ -324,7 +324,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 		var omitted int
 		targets, omitted = limitLegacyProbeTargets(targets)
 		if omitted != 0 {
-			log.Warnf("kernel lacks multi-kprobe support; limiting trace to %d probes (%d omitted) for bounded shutdown", len(targets), omitted)
+			log.WithFields(log.Fields{"targets": len(targets), "omitted": omitted}).Debug("Multi-kprobe unavailable; limiting trace coverage for bounded shutdown")
 		}
 	}
 	links, attachedTargets, err := attachBpfToTargets(objs, targets, useKfreeReason, useKprobeMulti)
@@ -333,7 +333,7 @@ func StartTrace(ctx context.Context, ipVersion int, l4ProtoNo uint16, port int, 
 	}
 	coverage := probeCoverage{discovered: discoveredTargets, attached: attachedTargets}
 	if coverage.incomplete() {
-		log.Warnf("trace probe coverage incomplete: attached=%d discovered=%d omitted=%d", coverage.attached, coverage.discovered, coverage.omitted())
+		log.WithFields(log.Fields{"attached": coverage.attached, "discovered": coverage.discovered, "omitted": coverage.omitted()}).Warn("Trace probe coverage is incomplete")
 	}
 	detacher := newProducerDetacher(links, objs.control, objs)
 	detacherOwnsObjects = true
@@ -788,19 +788,16 @@ func readTraceEvents(ctx context.Context, runtime traceRuntime, eventsReader tra
 			if _, err := fmt.Fprintf(writer, "# trace incomplete: %d event(s) lost in the BPF ring buffer\n", runtimeState.RingLost); err != nil {
 				return err
 			}
-			log.Warnf("trace incomplete: %d event(s) lost in the BPF ring buffer", runtimeState.RingLost)
 		}
 		if runtimeState.AdmissionFailures != 0 {
 			if _, err := fmt.Fprintf(writer, "# trace incomplete: %d trace admission(s) failed\n", runtimeState.AdmissionFailures); err != nil {
 				return err
 			}
-			log.Warnf("trace incomplete: %d trace admission(s) failed", runtimeState.AdmissionFailures)
 		}
 		if runtimeState.GenerationFailures != 0 {
 			if _, err := fmt.Fprintf(writer, "# trace incomplete: %d trace generation allocation(s) failed\n", runtimeState.GenerationFailures); err != nil {
 				return err
 			}
-			log.Warnf("trace incomplete: %d trace generation allocation(s) failed", runtimeState.GenerationFailures)
 		}
 		if runtimeState.AdmissionRaces != 0 {
 			if _, err := fmt.Fprintf(writer, "# trace: recovered %d concurrent admission race(s)\n", runtimeState.AdmissionRaces); err != nil {
@@ -816,6 +813,14 @@ func readTraceEvents(ctx context.Context, runtime traceRuntime, eventsReader tra
 			if _, err := fmt.Fprintf(writer, "# trace incomplete: %d malformed ring event(s) could not be decoded\n", decodeLoss); err != nil {
 				return err
 			}
+		}
+		if runtimeState.RingLost != 0 || runtimeState.AdmissionFailures != 0 || runtimeState.GenerationFailures != 0 || decodeLoss != 0 {
+			log.WithFields(log.Fields{
+				"ring_events_lost":    runtimeState.RingLost,
+				"admission_failures":  runtimeState.AdmissionFailures,
+				"generation_failures": runtimeState.GenerationFailures,
+				"malformed_events":    decodeLoss,
+			}).Warn("Trace is incomplete; events were lost")
 		}
 		if shutdownErr != nil {
 			if _, err := fmt.Fprintf(writer, "# trace incomplete: shutdown did not quiesce cleanly: %v\n", shutdownErr); err != nil {

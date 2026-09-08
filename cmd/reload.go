@@ -15,6 +15,8 @@ import (
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/config"
+	"github.com/mohae/deepcopy"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +24,18 @@ const (
 	reloadCommandTimeout = 3 * time.Minute
 	reloadPollInterval   = 200 * time.Millisecond
 )
+
+// Suspend uses the accepted configuration, even if the file on disk is invalid.
+func loadReloadConfig(path string, current *config.Config, suspend bool) (*config.Config, []string, error) {
+	if !suspend {
+		return readConfig(path)
+	}
+	next := deepcopy.Copy(current).(*config.Config)
+	next.Global.WanInterface = nil
+	next.Global.LanInterface = nil
+	next.Global.LogLevel = "warning"
+	return next, nil, nil
+}
 
 func readSignalProgressFile(path string) (code byte, content string, err error) {
 	b, err := os.ReadFile(path)
@@ -118,7 +132,9 @@ var (
 			if err != nil {
 				return err
 			}
-			internal.AutoSu()
+			if err := internal.AutoSu(); err != nil {
+				return err
+			}
 			// Read the first line of SignalProgressFilePath.
 			code, _, err := readSignalProgressFile(SignalProgressFilePath)
 			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {

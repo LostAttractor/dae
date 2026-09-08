@@ -7,7 +7,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -16,17 +15,14 @@ var (
 	validateCmd = &cobra.Command{
 		Use:   "validate",
 		Short: "To validate dae config.",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
 			if cfgFile == "" {
-				fmt.Println("Argument \"--config\" or \"-c\" is required but not provided.")
-				os.Exit(1)
+				return fmt.Errorf("argument --config or -c is required")
 			}
 			// Read config from --config cfgFile.
 			_, _, err := readConfig(cfgFile)
-			if err != nil {
-				fmt.Println(err)
-				os.Exit(1)
-			}
+			return err
 		},
 	}
 )

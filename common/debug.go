@@ -20,10 +20,11 @@ func ReportMemory(tag string) {
 	}
 	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(os.Getpid()), "status"))
 	if err != nil {
-		panic(err)
+		log.WithError(err).Debug("Could not read process memory usage")
+		return
 	}
 	str := strings.TrimSpace(string(b))
 	_, after, _ := strings.Cut(str, "VmHWM:")
 	usage, _, _ := strings.Cut(after, "\n")
-	log.Debugln(tag+": memory usage:", strings.TrimSpace(usage))
+	log.WithFields(log.Fields{"phase": tag, "peak_rss": strings.TrimSpace(usage)}).Debug("Process memory usage")
 }

@@ -10,13 +10,12 @@
 package cmd
 
 import (
-	"context"
+	"fmt"
 	"os/signal"
 	"syscall"
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/trace"
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -32,14 +31,9 @@ func init() {
 	traceCmd := &cobra.Command{
 		Use:   "trace",
 		Short: "To trace traffic",
-		PreRun: func(cmd *cobra.Command, args []string) {
-			trace.ReadKallsyms()
-		},
-		Run: func(cmd *cobra.Command, args []string) {
-			internal.AutoSu()
-
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if IPv4 && IPv6 {
-				log.Fatalln("IPv4 and IPv6 cannot be set at the same time")
+				return fmt.Errorf("IPv4 and IPv6 cannot be set at the same time")
 			}
 			if !IPv4 && !IPv6 {
 				IPv4 = true
@@ -56,14 +50,19 @@ func init() {
 			case "udp":
 				L4ProtoNo = syscall.IPPROTO_UDP
 			default:
-				log.Fatalf("Unknown L4 protocol: %s\n", L4Proto)
+				return fmt.Errorf("unknown L4 protocol %q; use tcp or udp", L4Proto)
+			}
+			if err := internal.AutoSu(); err != nil {
+				return err
+			}
+			cmd.SilenceUsage = true
+			if err := trace.ReadKallsyms(); err != nil {
+				return err
 			}
 
-			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
-			if err := trace.StartTrace(ctx, IPVersion, L4ProtoNo, Port, DropOnly, OutputFile); err != nil {
-				log.Fatalln(err)
-			}
+			return trace.StartTrace(ctx, IPVersion, L4ProtoNo, Port, DropOnly, OutputFile)
 		},
 	}
 

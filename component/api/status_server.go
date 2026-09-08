@@ -16,8 +16,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/samber/oops"
 )
 
 const statusSocketProbeTimeout = 250 * time.Millisecond
@@ -36,11 +34,11 @@ type StatusServer struct {
 func StartStatusServer(socketPath string, version string) (*StatusServer, error) {
 	listener, err := listenStatusSocket(socketPath)
 	if err != nil {
-		return nil, oops.Wrapf(err, "failed to listen on status socket")
+		return nil, fmt.Errorf("failed to listen on status socket: %w", err)
 	}
 	if err = os.Chmod(socketPath, 0600); err != nil {
 		listener.Close()
-		return nil, oops.Wrapf(err, "failed to chmod status socket")
+		return nil, fmt.Errorf("failed to chmod status socket: %w", err)
 	}
 	s := &StatusServer{
 		socketPath: socketPath,
