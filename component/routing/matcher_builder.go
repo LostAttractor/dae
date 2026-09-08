@@ -64,7 +64,7 @@ func (b *RulesBuilder) RegisterFunctionParser(funcName string, parser FunctionPa
 
 func (b *RulesBuilder) Apply(rules []*config_parser.RoutingRule) (err error) {
 	for _, rule := range rules {
-		log.Debugln("[rule]", rule.String(true, false, false))
+		log.WithField("rule", rule.String(true, false, false)).Trace("Compiling routing rule")
 		outbound, err := ParseOutbound(&rule.Outbound)
 		if err != nil {
 			return err

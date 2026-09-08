@@ -541,15 +541,15 @@ func (b *RoutingMatcherBuilder) addInterface(f *config_parser.Function, values [
 				return updateIndex(uint32(link.Attrs().Index))
 			}
 			newlinkCallback := func(link netlink.Link) {
-				log.Warnf("New link creation of '%v' is detected. Re-fetching ifindex for it.", link.Attrs().Name)
+				log.WithField("interface", link.Attrs().Name).Debug("Updating routing rule for new interface")
 				if err := updateIndex(uint32(link.Attrs().Index)); err != nil {
-					log.Errorf("Update failed: %v", err)
+					log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not update interface routing rule")
 				}
 			}
 			dellinkCallback := func(link netlink.Link) {
-				log.Warnf("Link deletion of '%v' is detected. Re-fetching ifindex once it is re-created.", link.Attrs().Name)
+				log.WithField("interface", link.Attrs().Name).Debug("Clearing routing rule for removed interface")
 				if err := updateIndex(0); err != nil {
-					log.Errorf("Update failed: %v", err)
+					log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not update interface routing rule")
 				}
 			}
 			if err := b.ifmgr.RegisterSync(interfaceName, initlinkCallback, newlinkCallback, dellinkCallback); err != nil {
@@ -633,7 +633,7 @@ func (b *RoutingMatcherBuilder) BuildKernspace() (err error) {
 	}); err != nil {
 		return fmt.Errorf("batch update routing map: %w", err)
 	}
-	log.Infof("Kernel match sets: %d/%d (bypass=%d, destination=%d, flow=%d, routing=%d); userspace destination match sets: %d", b.routing.end, consts.MaxMatchSetLen, b.destination.start, b.destination.end-b.destination.start, b.flow.end-b.flow.start, b.routing.end-b.routing.start, len(b.rules)-b.routing.end)
+	log.Debugf("Kernel match sets: %d/%d (bypass=%d, destination=%d, flow=%d, routing=%d); userspace destination match sets: %d", b.routing.end, consts.MaxMatchSetLen, b.destination.start, b.destination.end-b.destination.start, b.flow.end-b.flow.start, b.routing.end-b.routing.start, len(b.rules)-b.routing.end)
 
 	// Run side-effects (e.g. interface watchers) once the routing table is
 	// in place so that any callback writes patch the entries we just uploaded.

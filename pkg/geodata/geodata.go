@@ -31,7 +31,7 @@ func UnmarshalGeoIp(filepath, code string) (*GeoIP, error) {
 
 	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
 		errInvalidGeodataFile, errInvalidGeodataVarintLength:
-		log.Warnln("failed to decode geoip file: ", filepath, ", fallback to the original ReadFile method")
+		log.WithError(err).WithField("file", filepath).Debug("Reading geodata with the full protobuf decoder")
 		geoipBytes, err = os.ReadFile(filepath)
 		if err != nil {
 			return nil, err
@@ -68,7 +68,7 @@ func UnmarshalGeoSite(filepath, code string) (*GeoSite, error) {
 
 	case errFailedToReadBytes, errFailedToReadExpectedLenBytes,
 		errInvalidGeodataFile, errInvalidGeodataVarintLength:
-		log.Warnln("failed to decode geoip file: ", filepath, ", fallback to the original ReadFile method")
+		log.WithError(err).WithField("file", filepath).Debug("Reading geodata with the full protobuf decoder")
 		geositeBytes, err = os.ReadFile(filepath)
 		if err != nil {
 			return nil, err
