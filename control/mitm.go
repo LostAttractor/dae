@@ -86,13 +86,15 @@ func (c *ControlPlane) mitmSelection(ip netip.Addr, mac [6]byte) (enabled bool, 
 // Request-transforming scopes are admitted before choosing any upstream route
 // or dialer. A candidate miss/client exclusion follows ordinary connection
 // routing, including destination rules; pure inspection retains its route.
-func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, p *RouteParam) (*DialOption, mitm.UpstreamPlanner, func(), error) {
+// host is the HTTP authority candidate. It may be the destination IP for TLS
+// without SNI; p.Domain keeps the original sniffed name for ordinary routing.
+func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, host string, p *RouteParam) (*DialOption, mitm.UpstreamPlanner, func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, nil, err
 	}
-	mode := c.mitmMode(p.Domain, p.Src, p.Dest, p.routingResult)
+	mode := c.mitmMode(host, p.Src, p.Dest, p.routingResult)
 	if mode == mitm.HTTPRequest {
-		return nil, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), p.Domain, p.Src, p.Dest, *p.routingResult, nil), nil, nil
+		return nil, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), host, p.Src, p.Dest, *p.routingResult, nil), nil, nil
 	}
 	option, err := c.RouteDialOption(ctx, p)
 	if err != nil {
@@ -106,5 +108,5 @@ func (c *ControlPlane) prepareHTTPRoute(ctx context.Context, p *RouteParam) (*Di
 		return nil, nil, nil, err
 	}
 	c.logDial(p.Src, p.Dest, p.Domain, option, option.NetworkType.String(), p.routingResult)
-	return option, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), p.Domain, p.Src, p.Dest, *p.routingResult, option), release, nil
+	return option, c.mitmUpstreamPlanner(string(p.networkType.L4Proto), host, p.Src, p.Dest, *p.routingResult, option), release, nil
 }

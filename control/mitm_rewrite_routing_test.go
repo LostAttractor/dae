@@ -108,7 +108,7 @@ domain(full: original.example) -> block`)
 				param := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: netip.MustParseAddrPort(option.DialTarget), Domain: "original.example", routingResult: &pending, networkType: *common.NetworkTCP4.NetworkType()}
 				var selected *DialOption
 				var release func()
-				selected, planner, release, err = plane.prepareHTTPRoute(context.Background(), param)
+				selected, planner, release, err = plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 				if err != nil || selected != nil || planner == nil || release != nil {
 					t.Fatalf("request capture committed old target routing: option=%+v planner=%v release=%v err=%v", selected, planner != nil, release != nil, err)
 				}

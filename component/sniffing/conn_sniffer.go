@@ -18,6 +18,7 @@ import (
 type ConnSnifferInterface interface {
 	net.Conn
 	SniffTcp() (string, error)
+	IsTLS() bool
 	WriteBufferedTo(io.Writer) error
 }
 

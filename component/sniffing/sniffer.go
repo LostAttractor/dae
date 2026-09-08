@@ -32,6 +32,7 @@ type Sniffer struct {
 	ctx     context.Context
 	cancel  func()
 	pending <-chan streamReadResult
+	tcpTLS  bool
 
 	// Common
 	sniffed   string
@@ -49,6 +50,15 @@ type Sniffer struct {
 	quicNextRead int
 	quicCryptos  *quicutils.CryptoReassembler
 	quicHTTP3    bool
+}
+
+// IsTLS reports whether TCP sniffing parsed a complete TLS ClientHello with
+// either a valid SNI or no server name. Incomplete or malformed hellos do not
+// establish a TLS identity for IP-scoped interception.
+func (s *Sniffer) IsTLS() bool {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	return s.tcpTLS
 }
 
 // IsHTTP3 reports whether a complete QUIC ClientHello advertised the h3 ALPN.
@@ -213,7 +223,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 
 		d, err = sniffGroup(
 			// Most sniffable traffic is TLS, thus we sniff it first.
-			s.SniffTls,
+			s.sniffTlsLocked,
 			s.SniffHttp,
 		)
 		if errors.Is(err, ErrNeedMore) {

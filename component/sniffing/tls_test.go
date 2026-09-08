@@ -7,14 +7,83 @@ package sniffing
 
 import (
 	"bytes"
+	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"testing"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
+
+func testTCPClientHello(t *testing.T, host string, version uint16) []byte {
+	t.Helper()
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		_ = tls.Client(client, &tls.Config{ServerName: host, MinVersion: version, MaxVersion: version}).HandshakeContext(t.Context())
+	}()
+	_ = server.SetReadDeadline(time.Now().Add(time.Second))
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(server, header); err != nil {
+		t.Fatal(err)
+	}
+	record := make([]byte, 5+int(binary.BigEndian.Uint16(header[3:])))
+	copy(record, header)
+	if _, err := io.ReadFull(server, record[5:]); err != nil {
+		t.Fatal(err)
+	}
+	_ = server.Close()
+	<-finished
+	return record
+}
+
+func TestTCPTLSIdentity(t *testing.T) {
+	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		for _, host := range []string{"192.0.2.1", "2001:db8::1", "example.com"} {
+			t.Run(tls.VersionName(version)+"/"+host, func(t *testing.T) {
+				s := NewStreamSniffer(bytes.NewReader(testTCPClientHello(t, host, version)), time.Second)
+				defer s.Close()
+				domain, err := s.SniffTcp()
+				if !s.IsTLS() {
+					t.Fatal("complete TLS ClientHello was not identified")
+				}
+				if host == "example.com" {
+					if domain != host || err != nil {
+						t.Fatalf("SNI=%q, error=%v", domain, err)
+					}
+				} else if domain != "" || !errors.Is(err, ErrNotFound) {
+					t.Fatalf("literal IP should omit SNI: domain=%q, error=%v", domain, err)
+				}
+			})
+		}
+	}
+	hello := testTCPClientHello(t, "192.0.2.1", tls.VersionTLS13)
+	extensions, err := clientHelloExtensions(hello[5:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformed := bytes.Clone(hello)
+	// Keep the outer lengths complete, but corrupt an extension's length.
+	binary.BigEndian.PutUint16(malformed[len(hello)-len(extensions)+2:], 0xffff)
+	for _, data := range [][]byte{
+		hello[:3], hello[:len(hello)-1], malformed,
+		[]byte("SSH-2.0-test\r\n"), []byte("GET / HTTP/1.0\r\n\r\n"),
+	} {
+		s := NewStreamSniffer(bytes.NewReader(data), time.Second)
+		_, _ = s.SniffTcp()
+		if s.IsTLS() {
+			t.Errorf("non-TLS, incomplete or malformed input identified as TLS: %x", data[:3])
+		}
+		_ = s.Close()
+	}
+}
 
 var tlsStreamGoogle, _ = hex.DecodeString("1603010200010001fc0303d90fdf25b0c7a11c3eb968604a065157a149407c139c22ed32f5c6f486ed2c04206c51c32da7f83c3c19766be60d45d264e898c77504e34915c44caa69513c2221003e130213031301c02cc030009fcca9cca8ccaac02bc02f009ec024c028006bc023c0270067c00ac0140039c009c0130033009d009c003d003c0035002f00ff0100017500000013001100000e7777772e676f6f676c652e636f6d000b000403000102000a00160014001d0017001e00190018010001010102010301040010000e000c02683208687474702f312e31001600000017000000310000000d002a0028040305030603080708080809080a080b080408050806040105010601030303010302040205020602002b0009080304030303020301002d00020101003300260024001d00207fe08226bdc4fb1715e477506b6afe8f3abe2d20daa1f8c78c5483f1a90a9b19001500af00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
 var tlsStreamWindowsOdinGame, _ = hex.DecodeString("16030300b8010000b403036484b04b0f87a95364166094aa611bb989a6886b4ca4f23480cfd31a1c683e8400002ac02cc02bc030c02f009f009ec024c023c028c027c00ac009c014c013009d009c003d003c0035002f000a010000610000001700150000126f64696e2e67616d652e6461756d2e6e6574000500050100000000000a00080006001d00170018000b00020100000d001a00180804080508060401050102010403050302030202060106030023000000170000ff01000100")

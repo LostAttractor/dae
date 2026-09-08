@@ -98,7 +98,7 @@ dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(pa
 	first, second := new(mitmQUICDialer), new(mitmQUICDialer)
 	plane.markedDirectDialers.Store(uint32(91), first)
 	plane.markedDirectDialers.Store(uint32(92), second)
-	option, planner, release, err := plane.prepareHTTPRoute(t.Context(), param)
+	option, planner, release, err := plane.prepareHTTPRoute(t.Context(), param.Domain, param)
 	if err != nil || option != nil || planner == nil || release != nil {
 		t.Fatalf("old route ran before HTTP: %+v, %v", option, err)
 	}
