@@ -522,3 +522,42 @@ func TestDoQCoalescesBlockedConnectionDials(t *testing.T) {
 		}
 	}
 }
+
+func TestDoTCPWaitingForSharedDialHonorsCancellation(t *testing.T) {
+	transport := &concurrentTLSTestDialer{entered: make(chan struct{}, 2), release: make(chan struct{})}
+	forwarder := &tcpDNSForwarder{
+		state:        newDNSForwarderState(context.Background()),
+		dialArgument: dialArgument{connectionDialer: transport},
+	}
+	defer forwarder.Close()
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- forwarder.ForwardDNS(context.Background(), testQuery("first.example.", dnsmessage.TypeA, 1))
+	}()
+	<-transport.entered
+	defer close(transport.release)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- forwarder.ForwardDNS(ctx, testQuery("second.example.", dnsmessage.TypeA, 2)) }()
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("waiting query returned %v, want its deadline", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("query deadline is blocked by another query's TCP dial")
+	}
+	select {
+	case <-transport.entered:
+		t.Fatal("waiting query started a duplicate physical dial")
+	default:
+	}
+	if err := forwarder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-firstDone; !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closing forwarder did not cancel its dial: %v", err)
+	}
+}

@@ -16,7 +16,6 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -103,17 +102,11 @@ func newDnsManagerWithIdlePolicy(
 	go func() {
 		defer close(m.runDone)
 		if err := m.run(); err != nil {
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				// Idle reaping is routine, not an error.
-				log.WithError(err).Debug("DNS manager closed a silent connection")
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+				log.WithField("upstream", conn.RemoteAddr()).WithError(err).Trace("DNS upstream connection closed")
 				return
 			}
-			if errors.Is(err, net.ErrClosed) {
-				log.WithError(err).Debug("DNS manager connection closed")
-				return
-			}
-			log.WithError(err).Error("DNS manager recv loop exited")
+			log.WithField("upstream", conn.RemoteAddr()).WithError(err).Debug("DNS upstream connection failed")
 		}
 	}()
 	return m
@@ -224,7 +217,7 @@ func (m *DnsManager) reserveQuery(pending *dnsPendingQuery, startId uint16) (uin
 		m.pending[wireId] = pending
 		return wireId, nil
 	}
-	return 0, oops.Errorf("DNSManager: no free DNS transaction ID")
+	return 0, fmt.Errorf("DNSManager: no free DNS transaction ID")
 }
 
 func (m *DnsManager) endQuery(wireId uint16) {
@@ -284,12 +277,12 @@ func (m *DnsManager) read() (data []byte, err error) {
 	lenBuf := pool.GetBuffer(2)
 	defer pool.PutBuffer(lenBuf)
 	if _, err = io.ReadFull(m.conn, lenBuf); err != nil {
-		return nil, oops.Wrapf(err, "failed to read DNS resp payload length")
+		return nil, fmt.Errorf("failed to read DNS resp payload length: %w", err)
 	}
 	data = pool.GetBuffer(int(binary.BigEndian.Uint16(lenBuf)))
 	if _, err = io.ReadFull(m.conn, data); err != nil {
 		pool.PutBuffer(data)
-		return nil, oops.Wrapf(err, "failed to read DNS resp payload")
+		return nil, fmt.Errorf("failed to read DNS resp payload: %w", err)
 	}
 	return data, nil
 }
@@ -303,7 +296,7 @@ func (m *DnsManager) feed(msg *dnsmessage.Msg) {
 		return
 	}
 	if err := netutils.ValidateDnsResponseAllowEmptyQuestion(pending.query, msg, pending.query.Id); err != nil {
-		log.Debugf("DNSManager: drop invalid response: %v", err)
+		log.WithField("upstream", m.conn.RemoteAddr()).WithError(err).Trace("Dropped mismatched DNS response")
 		return
 	}
 	m.recordResponse()
@@ -378,7 +371,10 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 		panic("DNSManager: no question in dns message")
 	}
 	if log.IsLevelEnabled(log.TraceLevel) {
-		log.Tracef("DNSManager: Resolve %v %v", msg.Question[0].Name, msg.Question[0].Qtype)
+		log.WithFields(log.Fields{
+			"upstream": m.conn.RemoteAddr(), "qname": msg.Question[0].Name,
+			"qtype": dnsmessage.Type(msg.Question[0].Qtype).String(),
+		}).Trace("Sending DNS query")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -405,7 +401,7 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 
 	data, err := wireQuery.Pack()
 	if err != nil {
-		return oops.Wrapf(err, "pack DNS packet")
+		return fmt.Errorf("pack DNS packet: %w", err)
 	}
 	if err := netutils.CheckDnsMessageSize(len(data)); err != nil {
 		return err
@@ -453,7 +449,7 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 		if writeErr != nil {
 			if !errors.Is(writeErr, context.Canceled) && !errors.Is(writeErr, context.DeadlineExceeded) &&
 				!errors.Is(writeErr, errDnsManagerUnavailable) && !errors.Is(writeErr, errDnsExchangeInterrupted) {
-				writeErr = oops.Wrapf(writeErr, "failed to write DNS req")
+				writeErr = fmt.Errorf("failed to write DNS req: %w", writeErr)
 				m.terminalErr.CompareAndSwap(nil, &dnsManagerTerminalError{err: writeErr})
 				m.startClose()
 			}
@@ -466,6 +462,15 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 		case <-m.ctx.Done():
 			if err := parentCtx.Err(); err != nil {
 				return err
+			}
+			// A peer may close immediately after its final complete response.
+			// feed queues that response before the receive loop observes EOF.
+			select {
+			case recvMsg := <-pending.ch:
+				*msg = *recvMsg
+				msg.Id = originalId
+				return nil
+			default:
 			}
 			if !writeStarted.Load() || (writeFinished.Load() && writeBytes.Load() == 0) {
 				return m.unavailableError()
@@ -485,7 +490,7 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 				return m.interruptedError()
 			}
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
+				return fmt.Errorf("dns query timeout: %w", context.DeadlineExceeded)
 			}
 			return ctx.Err()
 		case result := <-writeCh:
@@ -499,7 +504,7 @@ func (m *DnsManager) ResolveContext(ctx context.Context, msg *dnsmessage.Msg) er
 			if ctx.Err() != nil {
 				m.startClose()
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					return oops.Wrapf(context.DeadlineExceeded, "dns query timeout")
+					return fmt.Errorf("dns query timeout: %w", context.DeadlineExceeded)
 				}
 				return ctx.Err()
 			}

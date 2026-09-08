@@ -16,7 +16,6 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/samber/oops"
 )
 
 var (
@@ -95,10 +94,10 @@ func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err erro
 
 	ip46, err := netutils.ParseOrResolveIp46Context(ctx, hostname)
 	if err != nil {
-		return nil, oops.Wrapf(err, "failed to resolve dns_upstream %v", upstream.String())
+		return nil, fmt.Errorf("failed to resolve dns_upstream %v: %w", upstream.String(), err)
 	}
 	if !ip46.IsValid() {
-		return nil, oops.Errorf("dns_upstream %v has no record", upstream.String())
+		return nil, fmt.Errorf("dns_upstream %v has no record", upstream.String())
 	}
 
 	return &Upstream{

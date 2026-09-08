@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -128,7 +129,7 @@ func TestResolveDoQCommitsAfterFin(t *testing.T) {
 	}
 }
 
-func TestResolveDoQMissingFinLeavesQueryUntouched(t *testing.T) {
+func TestResolveDoQFinTimeoutLeavesQueryUntouched(t *testing.T) {
 	query := testQuery("example.com.", dnsmessage.TypeA, 42)
 	stream := &doqTestStream{
 		response:    bytes.NewReader(framedDoqResponse(t, query)),
@@ -136,8 +137,9 @@ func TestResolveDoQMissingFinLeavesQueryUntouched(t *testing.T) {
 	}
 	err := resolveDoQ(stream, query)
 	var protocolErr *doqProtocolErrorCause
-	if !errors.As(err, &protocolErr) {
-		t.Fatalf("missing FIN error = %v, want protocol error", err)
+	var timeout net.Error
+	if errors.As(err, &protocolErr) || !errors.As(err, &timeout) || !timeout.Timeout() {
+		t.Fatalf("waiting for FIN should time out without failing the shared connection: %v", err)
 	}
 	if query.Response || query.Id != 42 || len(query.Answer) != 0 {
 		t.Fatalf("failed DoQ exchange mutated query: %+v", query)

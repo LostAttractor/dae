@@ -27,7 +27,6 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
 )
 
 var (
@@ -159,7 +158,7 @@ func ResolveHttp(ctx context.Context, client *http.Client, endpoint *url.URL, ms
 	query.Id = 0
 	data, err := query.Pack()
 	if err != nil {
-		return oops.Wrapf(err, "pack DNS packet")
+		return fmt.Errorf("pack DNS packet: %w", err)
 	}
 	if err := CheckDnsMessageSize(len(data)); err != nil {
 		return err
@@ -229,7 +228,7 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
 	query := msg.Copy()
 	data, err := msg.Pack()
 	if err != nil {
-		return oops.Wrapf(err, "pack DNS packet")
+		return fmt.Errorf("pack DNS packet: %w", err)
 	}
 	if err := CheckDnsMessageSize(len(data)); err != nil {
 		return err
@@ -241,22 +240,22 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
 	buf.Write(data)
 	n, err := stream.Write(buf.Bytes())
 	if err != nil {
-		return oops.Wrapf(err, "failed to write DNS req")
+		return fmt.Errorf("failed to write DNS req: %w", err)
 	}
 	if n != buf.Len() {
-		return oops.Wrapf(io.ErrShortWrite, "failed to write DNS req")
+		return fmt.Errorf("failed to write DNS req: %w", io.ErrShortWrite)
 	}
 
 	lenBuf := pool.GetBuffer(2)
 	defer pool.PutBuffer(lenBuf)
 	// Read two byte length.
 	if _, err = io.ReadFull(stream, lenBuf); err != nil {
-		return oops.Wrapf(err, "failed to read DNS resp payload length")
+		return fmt.Errorf("failed to read DNS resp payload length: %w", err)
 	}
 	respBuf := pool.GetBuffer(int(binary.BigEndian.Uint16(lenBuf)))
 	defer pool.PutBuffer(respBuf)
 	if _, err = io.ReadFull(stream, respBuf); err != nil {
-		return oops.Wrapf(err, "failed to read DNS resp payload")
+		return fmt.Errorf("failed to read DNS resp payload: %w", err)
 	}
 	var response dnsmessage.Msg
 	if err = UnpackDnsMessage(respBuf, &response); err != nil {
@@ -281,7 +280,7 @@ func resolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg, retryIn
 	query := msg.Copy()
 	data, err := msg.Pack()
 	if err != nil {
-		return oops.Wrapf(err, "pack DNS packet")
+		return fmt.Errorf("pack DNS packet: %w", err)
 	}
 	if err := CheckDnsMessageSize(len(data)); err != nil {
 		return err
