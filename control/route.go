@@ -11,7 +11,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
 )
 
 type RouteParam struct {
@@ -64,7 +63,7 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 		}
 		decision.outbound, decision.mark, decision.must, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult)
 		if err != nil {
-			return nil, oops.Wrap(err)
+			return nil, err
 		}
 	}
 	decision.apply(p.routingResult)

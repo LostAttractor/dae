@@ -35,7 +35,7 @@ func (e *relayEndpoint) Read(p []byte) (int, error) {
 	}
 	n, err := e.conn.Read(p)
 	if err == io.EOF {
-		return n, err // CopyBuffer recognizes the exact sentinel as normal EOF.
+		return n, err // The copy loop recognizes the exact sentinel as normal EOF.
 	}
 	return n, e.failure(err, netproxy.OpRead)
 }
@@ -148,7 +148,8 @@ func withoutCleanupErrors(err error) error {
 
 // recordDataPlaneError always lets the dialer inspect every cause, even when a
 // timeout or caller error occurs beside a shared-resource failure. The return
-// value controls path-level warning logs, not the resource recovery decision.
+// value identifies failures worth recording in path statistics and debug logs;
+// resource recovery and its user-visible status are owned by the dialer.
 func recordDataPlaneError(reporter *dialer.Dialer, path stats.Path, err error) bool {
 	if err == nil {
 		return false
@@ -156,7 +157,7 @@ func recordDataPlaneError(reporter *dialer.Dialer, path stats.Path, err error) b
 	if reporter != nil {
 		reporter.ReportDataPlaneError(err)
 	}
-	warn := false
+	record := false
 	for _, failure := range netproxy.Failures(err) {
 		if failure.Origin == netproxy.OriginLocalCleanup || failure.Origin == netproxy.OriginCaller {
 			continue
@@ -164,12 +165,12 @@ func recordDataPlaneError(reporter *dialer.Dialer, path stats.Path, err error) b
 		if failure.Scope == netproxy.ScopeOperation && (failure.Reason == netproxy.ReasonDeadline || failure.Reason == netproxy.ReasonCanceled) {
 			continue
 		}
-		warn = true
+		record = true
 	}
-	if warn {
+	if record {
 		stats.DefaultStore.RecordError(path)
 	}
-	return warn
+	return record
 }
 
 // spliceEndpoint preserves the raw TCP capabilities used by the direct path

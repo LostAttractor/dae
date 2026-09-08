@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
@@ -191,6 +193,14 @@ func TestInterfaceManagerReportsSubscriptionFailure(t *testing.T) {
 }
 
 func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
+	logger := log.StandardLogger()
+	hooks, level := logger.ReplaceHooks(make(log.LevelHooks)), logger.GetLevel()
+	hook := logtest.NewGlobal()
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() {
+		logger.ReplaceHooks(hooks)
+		logger.SetLevel(level)
+	})
 	oldLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "old0"}}
 	newLink := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "new0"}}
 	events := make(chan string, 4)
@@ -245,6 +255,10 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 	}
 	if err := m.Close(); err != nil {
 		t.Fatal(err)
+	}
+	entries := hook.AllEntries()
+	if len(entries) != 2 || entries[0].Level != log.WarnLevel || entries[1].Level != log.InfoLevel {
+		t.Fatalf("monitor should report one interruption and one recovery: %+v", entries)
 	}
 }
 

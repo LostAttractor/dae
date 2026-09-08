@@ -17,8 +17,31 @@ import (
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 	"golang.org/x/sys/unix"
 )
+
+func TestRuleSubscriptionReleasesSocketOnReceiveFailure(t *testing.T) {
+	socket, err := nl.Subscribe(unix.NETLINK_ROUTE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(socket.Close)
+	if err := socket.SetReceiveTimeout(&unix.Timeval{Usec: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	defer close(done)
+	updates := make(chan struct{}, 1)
+	var receiveErr error
+	receiveRuleUpdates(socket, done, updates, func(err error) { receiveErr = err })
+	if !errors.Is(receiveErr, unix.EAGAIN) {
+		t.Fatalf("receive error = %v, want timeout", receiveErr)
+	}
+	if _, err := unix.FcntlInt(uintptr(socket.GetFd()), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("subscription left its socket open until monitor shutdown: %v", err)
+	}
+}
 
 func testLookupRule(table int) netlink.Rule {
 	rule := netlink.NewRule()
@@ -239,9 +262,17 @@ func TestHostNetworkMonitorSnapshotDoesNotWaitForInitialization(t *testing.T) {
 }
 
 func TestHostNetworkMonitorRetriesInitialFailure(t *testing.T) {
+	logger := log.StandardLogger()
+	hooks, level := logger.ReplaceHooks(make(log.LevelHooks)), logger.GetLevel()
+	hook := logtest.NewGlobal()
+	logger.SetLevel(log.DebugLevel)
+	t.Cleanup(func() {
+		logger.ReplaceHooks(hooks)
+		logger.SetLevel(level)
+	})
 	var attempts atomic.Int32
 	m := newHostNetworkMonitor(func() (HostNetworkSnapshot, error) {
-		if attempts.Add(1) == 1 {
+		if attempts.Add(1) <= 2 {
 			return HostNetworkSnapshot{}, errors.New("temporary dump failure")
 		}
 		return HostNetworkSnapshot{}, nil
@@ -251,12 +282,24 @@ func TestHostNetworkMonitorRetriesInitialFailure(t *testing.T) {
 	if got := m.Snapshot(); got.Revision() != 0 {
 		t.Fatalf("snapshot revision after failed initialization = %d", got.Revision())
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for m.Snapshot().Revision() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := m.Snapshot(); attempts.Load() < 2 || got.Revision() == 0 {
+	if got := m.Snapshot(); attempts.Load() < 3 || got.Revision() == 0 {
 		t.Fatalf("attempts = %d, revision = %d", attempts.Load(), got.Revision())
+	}
+	// Publication precedes the recovery log. Let that operation complete
+	// before Close suppresses logs from the shutting-down monitor.
+	for len(hook.AllEntries()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries := hook.AllEntries()
+	if len(entries) != 3 || entries[0].Level != log.WarnLevel || entries[1].Level != log.DebugLevel || entries[2].Level != log.InfoLevel {
+		t.Fatalf("snapshot retries should report failure once and recovery once: %+v", entries)
 	}
 }
 

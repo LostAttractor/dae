@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"strings"
@@ -20,7 +21,6 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -33,9 +33,12 @@ var (
 const (
 	// Reserve workers for established associations; setup admission never waits.
 	maxConcurrentUDPSetups = udpTaskMaxWorkers / 4
-	udpSniffingTimeout     = 3 * time.Second
-	DnsNatTimeout          = 17 * time.Second // RFC 5452
-	MaxRetry               = 2
+	// Tunnels and large-MTU interfaces can deliver reassembled datagrams
+	// larger than an Ethernet frame. Never forward a truncated payload.
+	udpReceiveBufferSize = 65535
+	udpSniffingTimeout   = 3 * time.Second
+	DnsNatTimeout        = 17 * time.Second // RFC 5452
+	MaxRetry             = 2
 )
 
 func shouldTryRawUDPFallback(err error, from, to netip.AddrPort) bool {
@@ -66,13 +69,13 @@ func tryRawUDPFallback(data []byte, from, to netip.AddrPort, mark uint32, reason
 		err = sendUDPv6RawInDaeNetns(data, from, to, mark)
 	}
 	if err == nil {
-		log.WithFields(log.Fields{"from": from, "to": to, "reason": reason}).Debug("sendPkt: used raw UDP fallback")
+		log.WithFields(log.Fields{"source": from, "destination": to, "operation": reason}).Trace("Sent DNS response through raw UDP fallback")
 		return true
 	}
 	log.WithFields(log.Fields{
-		"from": from, "to": to, "reason": reason,
-		"trigger": trigger, "fallback": err,
-	}).Error("sendPkt: raw UDP fallback failed")
+		"source": from, "destination": to, "operation": reason,
+		"socket_error": trigger,
+	}).WithError(err).Debug("Raw UDP fallback failed")
 	return false
 }
 
@@ -132,11 +135,7 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, ro
 			ctx, cancel := context.WithDeadline(c.ctx, deadline)
 			defer cancel()
 			if err := c.handlePkt(ctx, owned, src, dst, routingResult); err != nil && ctx.Err() == nil {
-				if log.IsLevelEnabled(log.DebugLevel) {
-					log.Warnf("%+v", oops.Wrapf(err, "handlePkt"))
-				} else {
-					log.Warnf("%v", oops.Wrapf(err, "handlePkt"))
-				}
+				log.WithError(err).WithFields(log.Fields{"source": src, "destination": dst}).Debug("UDP packet handling failed")
 			}
 		}
 	})
@@ -308,7 +307,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			if !recordDataPlaneError(ue.dialer, path, err) {
 				return nil
 			}
-			return oops.With("dialer", ue.dialer.Name).With("src", src).Wrapf(err, "failed to ListenPacket")
+			return fmt.Errorf("open UDP association via outbound %q node %q: %w", path.Outbound, ue.dialer.Name, err)
 		}
 		if setupErr != nil {
 			closeInBackground(conn)
@@ -403,7 +402,7 @@ func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst n
 	if ue.mitm && conn == ue.conn || !recordDataPlaneError(ue.dialer, ue.statsPath, err) {
 		return nil
 	}
-	return oops.With("dialer", ue.dialer.Name).With("src", src).With("dst", dst).Wrapf(err, "failed to write UDP packet")
+	return fmt.Errorf("send UDP packet via outbound %q node %q: %w", ue.statsPath.Outbound, ue.dialer.Name, err)
 }
 
 // Datagram/target errors do not invalidate an association shared by other

@@ -29,7 +29,8 @@ func (c *ControlPlane) bindUDPSource(src netip.AddrPort, result *bpfRoutingResul
 	return func() {
 		for _, m := range []*ebpf.Map{decisions, bindings} {
 			if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-				log.WithField("src", src).Warnf("release UDP binding: %v", err)
+				log.WithFields(log.Fields{"source": src, "map": m.String()}).WithError(err).
+					Warn("Failed to release UDP binding; stale source routing may remain")
 			}
 		}
 	}, nil

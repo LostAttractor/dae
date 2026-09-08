@@ -92,7 +92,7 @@ func (m *InterfaceManager) subscribe(subscribe linkSubscribeFunc) (chan netlink.
 				return
 			default:
 			}
-			log.Warn("LinkSubscribe: ", err)
+			log.WithError(err).Debug("Interface event stream error")
 		},
 	})
 	return ch, err
@@ -187,6 +187,11 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, subscribe linkS
 		}
 	}
 	rebuild := func() bool {
+		if m.isStopped() {
+			return false
+		}
+		log.WithField("retry_interval", interfaceSubscribeRetryInterval).
+			Warn("Interface monitoring interrupted; interface changes may be delayed while reconnecting")
 		timer := time.NewTimer(interfaceSubscribeRetryInterval)
 		defer timer.Stop()
 		for {
@@ -204,7 +209,7 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, subscribe linkS
 				if ch == nil {
 					next, err := m.subscribe(subscribe)
 					if err != nil {
-						log.Warn("LinkSubscribe: ", err)
+						log.WithError(err).Debug("Failed to restore interface event subscription; retrying")
 						timer.Reset(interfaceSubscribeRetryInterval)
 						continue
 					}
@@ -212,11 +217,12 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, subscribe linkS
 				}
 				links, err := listLinks()
 				if err != nil {
-					log.Warn("LinkList after resubscribe: ", err)
+					log.WithError(err).Debug("Failed to refresh interfaces after resubscribing; retrying")
 					timer.Reset(interfaceSubscribeRetryInterval)
 					continue
 				}
 				m.replaceLinks(links)
+				log.Info("Interface monitoring restored")
 				return true
 			}
 		}
@@ -457,7 +463,8 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 		}
 	}
 	if err := m.register(ifname, true, initial, newCallback, delCallback, false); err != nil && !errors.Is(err, net.ErrClosed) {
-		log.Errorf("register interface %q: %v", ifname, err)
+		log.WithField("interface", ifname).WithError(err).
+			Warn("Initial interface lookup failed; waiting for a later interface update")
 	}
 }
 

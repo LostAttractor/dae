@@ -7,11 +7,11 @@ package control
 
 import (
 	"errors"
-	"github.com/daeuniverse/dae/component/outbound"
+	"fmt"
 	"net"
 	"time"
 
-	"github.com/samber/oops"
+	"github.com/daeuniverse/dae/component/outbound"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -57,10 +57,10 @@ func (c *ControlPlane) Activate() error {
 	// Bind every interface only after connectivity initialization, so traffic
 	// cannot observe partially published outbound state.
 	if err := core.setupExitHandler(); err != nil {
-		return oops.Errorf("failed to setup exit handler: %w", err)
+		return fmt.Errorf("failed to setup exit handler: %w", err)
 	}
 	if err := core.bindDaens(); err != nil {
-		return oops.Errorf("bindDaens: %w", err)
+		return fmt.Errorf("bindDaens: %w", err)
 	}
 	if err := c.bindHostInterfaces(); err != nil {
 		return err
@@ -75,7 +75,7 @@ func (c *ControlPlane) Activate() error {
 		}
 	}
 	SetAnyfromSoMark(c.soMarkFromDae)
-	log.WithField("duration", time.Since(started)).Info("Initialization is completed. Start to Proxying...")
+	log.WithField("duration", time.Since(started)).Debug("Control plane activated")
 	return nil
 }
 
@@ -88,14 +88,14 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 		return err
 	}
 	if err := builder.BuildKernspace(); err != nil {
-		return oops.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+		return fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 	if core.isReload {
 		if err := deleteUDPRoutingTuples(core.bpf.RoutingTuplesMap); err != nil {
-			return oops.Errorf("clear inherited UDP routing handoff: %w", err)
+			return fmt.Errorf("clear inherited UDP routing handoff: %w", err)
 		}
 		if err := deleteUDPRoutingCache(core.bpf.UdpRoutingCacheMap, true); err != nil {
-			return oops.Errorf("clear inherited UDP routing cache: %w", err)
+			return fmt.Errorf("clear inherited UDP routing cache: %w", err)
 		}
 	}
 	if core.isReload && !core.domainRegistry.Adopted() {
@@ -105,11 +105,11 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 		iter := core.bpf.DomainRoutingMap.Iterate()
 		for iter.Next(&key, &val) {
 			if err := core.bpf.DomainRoutingMap.Delete(&key); err != nil {
-				return oops.Errorf("failed to wipe inherited domain routing entry %v: %w", key, err)
+				return fmt.Errorf("failed to wipe inherited domain routing entry %v: %w", key, err)
 			}
 		}
 		if err := iter.Err(); err != nil {
-			return oops.Errorf("failed to iterate inherited domain routing map: %w", err)
+			return fmt.Errorf("failed to iterate inherited domain routing map: %w", err)
 		}
 	}
 	return nil
@@ -222,21 +222,9 @@ func (c *ControlPlane) Close() (err error) {
 	}
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
-		if e := c.deferFuncs[i](); e != nil {
-			if err != nil {
-				err = oops.Errorf("%w; %v", err, e)
-			} else {
-				err = e
-			}
-		}
+		err = errors.Join(err, c.deferFuncs[i]())
 	}
-	if coreErr := c.core.closeLocked(); coreErr != nil {
-		if err != nil {
-			err = oops.Errorf("%w; %v", err, coreErr)
-		} else {
-			err = coreErr
-		}
-	}
+	err = errors.Join(err, c.core.closeLocked())
 	if err == nil {
 		c.closedDone.Store(true)
 	}

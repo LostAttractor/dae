@@ -6,6 +6,7 @@
 package control
 
 import (
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -17,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -56,7 +56,7 @@ func ParseFixedDomainTtl(ks []config.KeyableString) (map[string]int, error) {
 		key = dnsmessage.CanonicalName(strings.TrimSpace(key))
 		ttl, err := strconv.ParseUint(strings.TrimSpace(value), 0, 31)
 		if err != nil {
-			return nil, oops.Errorf("failed to parse ttl: %v", err)
+			return nil, fmt.Errorf("failed to parse ttl: %v", err)
 		}
 		m[key] = int(ttl)
 	}
@@ -110,7 +110,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 			case consts.IpVersionStr_6:
 				dAddr = dnsUpstream.Ip6
 			default:
-				return nil, oops.Errorf("unexpected ipversion: %v", ver)
+				return nil, fmt.Errorf("unexpected ipversion: %v", ver)
 			}
 			target := netip.AddrPortFrom(dAddr, dnsUpstream.Port)
 			outboundIndex, mark, _, err := c.Route(req.src, target, dnsUpstream.Hostname, proto.ToL4ProtoType(), req.routingResult)
@@ -118,7 +118,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 				return nil, err
 			}
 			if int(outboundIndex) >= len(c.outbounds) {
-				return nil, oops.Errorf("bad outbound index: %v", outboundIndex)
+				return nil, fmt.Errorf("bad outbound index: %v", outboundIndex)
 			}
 			dialerGroup := c.outbounds[outboundIndex]
 			// DNS always dial IP.
@@ -140,7 +140,7 @@ func (c *ControlPlane) chooseBestDnsDialer(
 		}
 	}
 	if bestDialer == nil {
-		return nil, oops.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
+		return nil, fmt.Errorf("no proper dialer for DNS upstream: %v", dnsUpstream.String())
 	}
 	if log.IsLevelEnabled(log.TraceLevel) {
 		log.WithFields(log.Fields{

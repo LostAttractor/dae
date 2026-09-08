@@ -4,12 +4,12 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/config"
-	"github.com/samber/oops"
 )
 
 // prepareMITM loads plugins through the base routing policy, then rebuilds the
@@ -74,7 +74,7 @@ func (c *ControlPlane) loadMITMHost(conf *config.Dns, rules preparedRules, load 
 	c.deferFuncs = append(c.deferFuncs, func() error { closeBackground(); return nil })
 	host, err := load(client, background)
 	if err != nil {
-		return nil, oops.Wrapf(err, "prepare MITM plugins")
+		return nil, fmt.Errorf("prepare MITM plugins: %w", err)
 	}
 	return host, nil
 }

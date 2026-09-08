@@ -6,6 +6,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -18,6 +19,54 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 )
+
+func TestUdpEndpointPreservesLargeDatagrams(t *testing.T) {
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	received := make(chan []byte, 1)
+	ue := &UdpEndpoint{conn: conn, traffic: stats.DefaultStore.OpenConnection(stats.Path{}, false), NatTimeout: time.Minute, handler: func(data []byte, _ netip.AddrPort) error {
+		received <- bytes.Clone(data)
+		return nil
+	}}
+	p := new(UdpEndpointPool)
+	src, dst := addrPortOf(conn.LocalAddr()), addrPortOf(sender.LocalAddr())
+	p.add(src, ue)
+	finished := make(chan error, 1)
+	go func() { finished <- ue.run(p, src, dst, conn) }()
+	defer func() {
+		p.remove(src, ue)
+		select {
+		case err := <-finished:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(time.Second):
+			t.Error("endpoint did not stop")
+		}
+	}()
+	for _, size := range []int{0, 1501, 8192, 65507} {
+		payload := bytes.Repeat([]byte{0xa5}, size)
+		if _, err := sender.WriteTo(payload, conn.LocalAddr()); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case got := <-received:
+			if !bytes.Equal(got, payload) {
+				t.Fatalf("received %d bytes, want the complete %d-byte datagram", len(got), size)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("did not receive %d-byte datagram", size)
+		}
+	}
+}
 
 type testPacketConn struct {
 	blockWrite   bool

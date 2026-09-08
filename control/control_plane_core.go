@@ -8,6 +8,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"sync"
@@ -19,7 +20,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -103,7 +103,7 @@ func newControlPlaneCore(
 	ifmgr, err := network.NewInterfaceManager()
 	if err != nil {
 		toClose()
-		return nil, oops.Wrapf(err, "initialize interface manager")
+		return nil, fmt.Errorf("initialize interface manager: %w", err)
 	}
 	netmon := network.NewHostNetworkMonitor()
 	core := &controlPlaneCore{
@@ -194,7 +194,7 @@ func (c *controlPlaneCore) resetHostTCXLinks() {
 	c.cleanupMu.Unlock()
 	for i := len(links) - 1; i >= 0; i-- {
 		if err := links[i].close(); err != nil {
-			log.Errorf("close stale %s TCX link on interface %d: %v", links[i].role, links[i].linkIndex, err)
+			log.WithError(err).WithFields(log.Fields{"interface_index": links[i].linkIndex, "role": links[i].role}).Error("Could not close stale TCX link")
 		}
 	}
 }
@@ -243,23 +243,11 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 		if c.netmon != nil {
 			c.closeErr = c.netmon.Close()
 		}
-		if err := c.ifmgr.Close(); err != nil {
-			if c.closeErr != nil {
-				c.closeErr = oops.Errorf("%w; %v", c.closeErr, err)
-			} else {
-				c.closeErr = err
-			}
-		}
+		c.closeErr = errors.Join(c.closeErr, c.ifmgr.Close())
 		// Interface callbacks can register TCX link ownership. Waiting for the
 		// monitor first freezes dynamic registration before cleanup is drained.
 		for _, cleanup := range c.takeCleanups() {
-			if e := cleanup(); e != nil {
-				if c.closeErr != nil {
-					c.closeErr = oops.Errorf("%w; %v", c.closeErr, e)
-				} else {
-					c.closeErr = e
-				}
-			}
+			c.closeErr = errors.Join(c.closeErr, cleanup())
 		}
 	})
 	return c.closeErr
@@ -272,7 +260,7 @@ func linkHdrLen(link netlink.Link) uint32 {
 	case "ether":
 		return consts.LinkHdrLen_Ethernet
 	default:
-		log.Warnf("Maybe unsupported link type %v, using default link header length", link.Attrs().EncapType)
+		log.WithFields(log.Fields{"interface": link.Attrs().Name, "link_type": link.Attrs().EncapType}).Warn("Unknown link type; assuming Ethernet headers")
 		return consts.LinkHdrLen_Ethernet
 	}
 }
@@ -320,7 +308,7 @@ func (c *controlPlaneCore) attachHostTCXProgram(linkIndex int, spec hostTCXProgr
 	case hostTCXWanEgress:
 		companionRole, before = hostTCXLanEgress, false
 	default:
-		return false, oops.Errorf("invalid host TCX role %d", spec.role)
+		return false, fmt.Errorf("invalid host TCX role %d", spec.role)
 	}
 
 	// Keep programs that were attached before dae ahead of its pair.
@@ -339,7 +327,7 @@ func (c *controlPlaneCore) attachHostTCXProgram(linkIndex int, spec hostTCXProgr
 		Anchor:    anchor,
 	})
 	if err != nil {
-		return false, oops.Errorf("attach %s TCX program: %w", spec.role, err)
+		return false, fmt.Errorf("attach %s TCX program: %w", spec.role, err)
 	}
 	if !c.ownHostTCXLink(hostTCXLink{
 		linkIndex: linkIndex,
@@ -387,7 +375,7 @@ func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter boo
 				log.Debugf("Skip disappeared LAN interface %s", link.Attrs().Name)
 				return nil
 			}
-			return oops.Errorf("bind LAN interface %s: %w", link.Attrs().Name, err)
+			return fmt.Errorf("bind LAN interface %s: %w", link.Attrs().Name, err)
 		}
 		return nil
 	}
@@ -395,9 +383,9 @@ func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter boo
 		if link.Attrs().Name == hostLinkName {
 			return
 		}
-		log.Warnf("New link creation of '%v' is detected. Bind LAN program to it.", link.Attrs().Name)
+		log.WithField("interface", link.Attrs().Name).Debug("LAN interface appeared")
 		if err := initlinkCallback(link); err != nil {
-			log.Errorf("bind LAN interface %s: %v", link.Attrs().Name, err)
+			log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not attach LAN programs")
 		}
 	}
 	dellinkCallback := func(link netlink.Link) {
@@ -406,10 +394,10 @@ func (c *controlPlaneCore) bindLan(pattern string, autoConfigKernelParameter boo
 		}
 		c.mu.Lock()
 		if err := c.closeHostTCXLinks(link.Attrs().Index, hostTCXLanIngress, hostTCXLanEgress); err != nil {
-			log.Errorf("close TCX links on deleted LAN interface %s: %v", link.Attrs().Name, err)
+			log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not close TCX links on removed LAN interface")
 		}
 		c.mu.Unlock()
-		log.Warnf("Link deletion of '%v' is detected. Bind LAN program to it once it is re-created.", link.Attrs().Name)
+		log.WithField("interface", link.Attrs().Name).Info("LAN interface removed; waiting for it to reappear")
 	}
 	return c.ifmgr.RegisterWithPatternSync(pattern, initlinkCallback, newlinkCallback, dellinkCallback)
 }
@@ -470,7 +458,6 @@ func (c *controlPlaneCore) bindLanLink(linkSnapshot netlink.Link) error {
 	default:
 	}
 	ifname := linkSnapshot.Attrs().Name
-	log.Infof("Bind to LAN: %v", ifname)
 
 	link, err := netlink.LinkByName(ifname)
 	if err != nil {
@@ -490,10 +477,14 @@ func (c *controlPlaneCore) bindLanLink(linkSnapshot netlink.Link) error {
 		ingressProgram = c.bpf.bpfPrograms.LanIngressL3
 		egressProgram = c.bpf.bpfPrograms.LanEgressL3
 	}
-	return c.migrateHostTCXPrograms(link,
+	if err := c.migrateHostTCXPrograms(link,
 		hostTCXProgram{role: hostTCXLanIngress, program: ingressProgram},
 		hostTCXProgram{role: hostTCXLanEgress, program: egressProgram},
-	)
+	); err != nil {
+		return err
+	}
+	log.WithField("interface", ifname).Info("Attached LAN programs")
+	return nil
 }
 
 func (c *controlPlaneCore) setupSkPidMonitor() error {
@@ -521,11 +512,9 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 			Program: prog.Prog,
 		})
 		if err != nil {
-			return oops.Wrapf(err, "AttachCgroup: %v", prog.Prog.String())
+			return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
 		}
-		c.addCleanup(func() error {
-			return oops.Wrapf(attached.Close(), "inet6Bind.Close()")
-		})
+		c.addCleanup(attached.Close)
 	}
 	return nil
 }
@@ -536,7 +525,7 @@ func (c *controlPlaneCore) setupExitHandler() (err error) {
 	}
 	link, err := ciliumLink.Tracepoint("sched", "sched_process_exit", c.bpf.HandleExit, nil)
 	if err != nil {
-		return oops.Errorf("Tracepoint: %w", err)
+		return fmt.Errorf("Tracepoint: %w", err)
 	}
 	exitHandlerClose = link.Close
 	return nil
@@ -565,25 +554,25 @@ func (c *controlPlaneCore) bindWan(pattern string, prepare func(string) error) e
 					log.Debugf("Skip disappeared WAN interface %s", link.Attrs().Name)
 					return nil
 				}
-				return oops.Errorf("prepare WAN interface %s: %w", link.Attrs().Name, err)
+				return fmt.Errorf("prepare WAN interface %s: %w", link.Attrs().Name, err)
 			}
 		}
 		c.setManualWan(link, pattern, true)
 		return nil
 	}, func(link netlink.Link) {
-		log.Warnf("New link creation of '%v' is detected. Bind WAN program to it.", link.Attrs().Name)
+		log.WithField("interface", link.Attrs().Name).Debug("WAN interface appeared")
 		if !validLink(link) {
 			return
 		}
 		c.setManualWan(link, pattern, true)
 		if prepare != nil {
 			if err := prepare(link.Attrs().Name); err != nil {
-				log.Errorf("prepare WAN interface %s: %v", link.Attrs().Name, err)
+				log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not prepare WAN interface")
 			}
 		}
 	}, func(link netlink.Link) {
 		c.removeWanLink(link, pattern)
-		log.Warnf("Link deletion of '%v' is detected. Bind WAN program to it once it is re-created.", link.Attrs().Name)
+		log.WithField("interface", link.Attrs().Name).Info("WAN interface removed; waiting for it to reappear")
 	})
 }
 
@@ -598,7 +587,7 @@ func (c *controlPlaneCore) invalidateWanLink(link netlink.Link) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.closeHostTCXLinks(link.Attrs().Index, hostTCXWanIngress, hostTCXWanEgress); err != nil {
-		log.Errorf("close TCX links on deleted WAN interface %s: %v", link.Attrs().Name, err)
+		log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not close TCX links on removed WAN interface")
 	}
 }
 
@@ -698,7 +687,7 @@ func (c *controlPlaneCore) reconcileWanWith(
 		binding.ifname = link.Attrs().Name
 		if prepare != nil {
 			if err := prepare(binding.ifname); err != nil {
-				log.Errorf("prepare WAN interface %s: %v", binding.ifname, err)
+				log.WithError(err).WithField("interface", binding.ifname).Error("Could not prepare WAN interface")
 				retry = true
 				if wantedAutomatically {
 					autoReady = false
@@ -708,7 +697,7 @@ func (c *controlPlaneCore) reconcileWanWith(
 		}
 		if !c.wanAttached(index) {
 			if err := c.attachWanLocked(link, binding); err != nil {
-				log.Errorf("bind WAN %v: %v", binding.ifname, err)
+				log.WithError(err).WithField("interface", binding.ifname).Error("Could not attach WAN programs")
 				retry = true
 				if wantedAutomatically {
 					autoReady = false
@@ -728,7 +717,7 @@ func (c *controlPlaneCore) reconcileWanWith(
 			continue
 		}
 		if err := c.detachWanLocked(index, binding); err != nil {
-			log.Errorf("unbind obsolete WAN %d: %v", index, err)
+			log.WithError(err).WithField("interface_index", index).Error("Could not detach obsolete WAN programs")
 			retry = true
 			continue
 		}
@@ -744,15 +733,17 @@ func (c *controlPlaneCore) wanAttached(linkIndex int) bool {
 }
 
 func (c *controlPlaneCore) detachWanLocked(linkIndex int, binding *wanBinding) error {
-	log.Infof("Unbind from WAN: %v", binding.ifname)
-	return c.closeHostTCXLinks(linkIndex, hostTCXWanIngress, hostTCXWanEgress)
+	if err := c.closeHostTCXLinks(linkIndex, hostTCXWanIngress, hostTCXWanEgress); err != nil {
+		return err
+	}
+	log.WithField("interface", binding.ifname).Info("Detached WAN programs")
+	return nil
 }
 
 func (c *controlPlaneCore) attachWanLocked(link netlink.Link, binding *wanBinding) error {
 	ifname := link.Attrs().Name
-	log.Infof("Bind to WAN: %v", ifname)
 	if link.Attrs().Index == consts.LoopbackIfIndex {
-		return oops.Errorf("cannot bind to loopback interface")
+		return fmt.Errorf("cannot bind to loopback interface")
 	}
 
 	var ingressProgram, egressProgram *ebpf.Program
@@ -763,10 +754,14 @@ func (c *controlPlaneCore) attachWanLocked(link netlink.Link, binding *wanBindin
 		ingressProgram = c.bpf.bpfPrograms.TproxyWanIngressL3
 		egressProgram = c.bpf.bpfPrograms.TproxyWanEgressL3
 	}
-	return c.migrateHostTCXPrograms(link,
+	if err := c.migrateHostTCXPrograms(link,
 		hostTCXProgram{role: hostTCXWanEgress, program: egressProgram},
 		hostTCXProgram{role: hostTCXWanIngress, program: ingressProgram},
-	)
+	); err != nil {
+		return err
+	}
+	log.WithField("interface", ifname).Info("Attached WAN programs")
+	return nil
 }
 
 func (c *controlPlaneCore) bindDaens() (err error) {
@@ -782,7 +777,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 
 	skLookupLink, err := ciliumLink.AttachNetNs(int(daens.daeNs), c.bpf.bpfPrograms.TproxySkLookup)
 	if err != nil {
-		return oops.Errorf("attach SK_LOOKUP program to dae netns: %w", err)
+		return fmt.Errorf("attach SK_LOOKUP program to dae netns: %w", err)
 	}
 	links = append(links, skLookupLink)
 
@@ -792,7 +787,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		Attach:    ebpf.AttachNetkitPrimary,
 	})
 	if err != nil {
-		return oops.Errorf("attach primary Netkit program: %w", err)
+		return fmt.Errorf("attach primary Netkit program: %w", err)
 	}
 	links = append(links, primaryLink)
 
@@ -802,7 +797,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 		Attach:    ebpf.AttachNetkitPeer,
 	})
 	if err != nil {
-		return oops.Errorf("attach peer Netkit program: %w", err)
+		return fmt.Errorf("attach peer Netkit program: %w", err)
 	}
 	links = append(links, peerLink)
 	return nil
@@ -845,7 +840,7 @@ func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uin
 // ours); neither is recoverable at runtime, and silently degrading domain
 // routing would be far harder to diagnose.
 func panicDomainMapWrite(op string, ip netip.Addr, err error) {
-	panic(oops.Wrapf(err, op+"(%v): kernel domain map write failed (logic bug, or the bpf maps were tampered with externally)", ip))
+	panic(fmt.Errorf(op+"(%v): kernel domain map write failed (logic bug, or the bpf maps were tampered with externally): %w", ip, err))
 }
 
 // deleteDomainBitmaps removes ip from the kernel domain map. It is bound

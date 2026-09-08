@@ -13,7 +13,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
@@ -39,10 +38,10 @@ func (c *ControlPlane) bindHostInterfaces() error {
 	if len(c.lanInterface) > 0 {
 		if c.autoConfigKernelParameter {
 			if err := SetIpv4forward("1"); err != nil {
-				return oops.Errorf("configure host forwarding: %w", err)
+				return fmt.Errorf("configure host forwarding: %w", err)
 			}
 			if err := setForwarding("all", consts.IpVersionStr_6, "1"); err != nil {
-				return oops.Errorf("configure host forwarding: %w", err)
+				return fmt.Errorf("configure host forwarding: %w", err)
 			}
 		}
 		for _, ifname := range c.lanInterface {
@@ -55,10 +54,10 @@ func (c *ControlPlane) bindHostInterfaces() error {
 	retryHost := false
 	if wanEnabled {
 		if err := core.ifmgr.RegisterWithPatternSync("*", nil, nil, core.invalidateWanLink); err != nil {
-			return oops.Errorf("register WAN link deletion handler: %w", err)
+			return fmt.Errorf("register WAN link deletion handler: %w", err)
 		}
 		if err := core.setupSkPidMonitor(); err != nil {
-			return oops.Wrapf(err, "setup WAN socket identity monitor")
+			return fmt.Errorf("setup WAN socket identity monitor: %w", err)
 		}
 		for _, ifname := range c.wanInterface {
 			if err := core.bindWan(ifname, c.prepareWanInterface); err != nil {
@@ -129,7 +128,7 @@ func reconcileLanLinks(links []netlink.Link, patterns []string, bind func(netlin
 				continue
 			}
 			if err := bind(link); err != nil {
-				log.Errorf("bind LAN interface %s: %v", link.Attrs().Name, err)
+				log.WithError(err).WithField("interface", link.Attrs().Name).Error("Could not attach LAN programs")
 				retry = true
 			}
 			break
@@ -144,7 +143,7 @@ func (c *ControlPlane) reconcileLan() bool {
 	}
 	links, err := netlink.LinkList()
 	if err != nil {
-		log.Errorf("list LAN interfaces: %v", err)
+		log.WithError(err).Error("Could not discover LAN interfaces")
 		return true
 	}
 	return reconcileLanLinks(links, c.lanInterface, func(link netlink.Link) error {
@@ -170,9 +169,7 @@ func (c *ControlPlane) requestHostReconcile() {
 func (c *ControlPlane) runHostReconciler() {
 	defer close(c.hostReconcileDone)
 	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		<-timer.C
-	}
+	timer.Stop()
 	defer timer.Stop()
 	var retryCh <-chan time.Time
 	reconcile := func() {
@@ -183,15 +180,8 @@ func (c *ControlPlane) runHostReconciler() {
 			}
 			return
 		}
-		if retryCh != nil {
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			retryCh = nil
-		}
+		timer.Stop()
+		retryCh = nil
 	}
 	for {
 		select {

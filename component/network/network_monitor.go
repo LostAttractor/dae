@@ -176,36 +176,48 @@ func subscribeRuleUpdates(done <-chan struct{}, errorCallback func(error)) (<-ch
 		return nil, err
 	}
 	updates := make(chan struct{}, 16)
+	go receiveRuleUpdates(socket, done, updates, errorCallback)
+	return updates, nil
+}
+
+func receiveRuleUpdates(socket *nl.NetlinkSocket, done <-chan struct{}, updates chan<- struct{}, errorCallback func(error)) {
+	defer close(updates)
+	defer socket.Close()
+	finished := make(chan struct{})
+	defer close(finished)
 	if done != nil {
 		go func() {
-			<-done
-			socket.Close()
+			select {
+			case <-done:
+				socket.Close()
+			case <-finished:
+			}
 		}()
 	}
-	go func() {
-		defer close(updates)
-		for {
-			messages, from, err := socket.Receive()
-			if err != nil {
-				if errorCallback != nil {
-					errorCallback(fmt.Errorf("receive failed: %w", err))
-				}
-				return
+	for {
+		messages, from, err := socket.Receive()
+		if err != nil {
+			if errorCallback != nil {
+				errorCallback(fmt.Errorf("receive failed: %w", err))
 			}
-			if from.Pid != nl.PidKernel {
-				if errorCallback != nil {
-					errorCallback(fmt.Errorf("wrong sender portid %d, expected %d", from.Pid, nl.PidKernel))
-				}
-				continue
+			return
+		}
+		if from.Pid != nl.PidKernel {
+			if errorCallback != nil {
+				errorCallback(fmt.Errorf("wrong sender portid %d, expected %d", from.Pid, nl.PidKernel))
 			}
-			for _, message := range messages {
-				if message.Header.Type == unix.RTM_NEWRULE || message.Header.Type == unix.RTM_DELRULE {
-					updates <- struct{}{}
+			continue
+		}
+		for _, message := range messages {
+			if message.Header.Type == unix.RTM_NEWRULE || message.Header.Type == unix.RTM_DELRULE {
+				select {
+				case updates <- struct{}{}:
+				case <-done:
+					return
 				}
 			}
 		}
-	}()
-	return updates, nil
+	}
 }
 
 func newHostNetworkMonitor(
@@ -252,18 +264,17 @@ func (m *HostNetworkMonitor) Snapshot() HostNetworkSnapshot {
 	return snapshot
 }
 
-func (m *HostNetworkMonitor) reconcile() bool {
+func (m *HostNetworkMonitor) reconcile() error {
 	next, err := m.snapshotFn()
 	if err != nil {
-		log.WithField("event", "netlink_resync_error").WithError(err).Debug("Host network monitor could not resynchronize kernel state; retrying")
-		return false
+		return err
 	}
 	next.Interfaces = slices.Clone(next.Interfaces)
 	m.mu.Lock()
 	previous := m.snapshot
 	if previous.revision != 0 && next.Equal(previous) {
 		m.mu.Unlock()
-		return true
+		return nil
 	}
 	next.revision = previous.revision + 1
 	m.snapshot = next
@@ -272,7 +283,7 @@ func (m *HostNetworkMonitor) reconcile() bool {
 	for _, callback := range callbacks {
 		callback(previous, next)
 	}
-	return true
+	return nil
 }
 
 func (m *HostNetworkMonitor) run(
@@ -338,84 +349,100 @@ func (m *HostNetworkMonitor) run(
 			"retry_interval": hostNetworkRetryInterval,
 		}).Debug("Host network monitor kernel event stream closed; resubscribing and refreshing network state")
 	}
+	subscriptionFailed := make(map[string]bool)
+	subscriptionResult := func(kind string, err error) {
+		if m.closed.Err() != nil {
+			return
+		}
+		entry := log.WithField("netlink_event", kind)
+		if err == nil {
+			if subscriptionFailed[kind] {
+				delete(subscriptionFailed, kind)
+				entry.Info("Host network event subscription restored")
+			}
+			return
+		}
+		level := log.WarnLevel
+		if subscriptionFailed[kind] {
+			level = log.DebugLevel
+		}
+		subscriptionFailed[kind] = true
+		entry.WithError(err).WithField("retry_interval", hostNetworkRetryInterval).
+			Log(level, "Host network event subscription failed; network changes may be delayed while retrying")
+	}
 	restoreSubscriptions := func() {
 		if m.subscriptions == nil {
 			return
 		}
 		if linkCh == nil && m.subscriptions.link != nil {
-			var err error
-			if linkCh, err = m.subscriptions.link(m.subscriptionEnd); err != nil {
-				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "link"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
+			next, err := m.subscriptions.link(m.subscriptionEnd)
+			linkCh = next
+			subscriptionResult("link", err)
+			if err != nil {
 				linkCh = nil
 			} else {
 				markDirty()
 			}
 		}
 		if addrCh == nil && m.subscriptions.addr != nil {
-			var err error
-			if addrCh, err = m.subscriptions.addr(m.subscriptionEnd); err != nil {
-				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "address"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
+			next, err := m.subscriptions.addr(m.subscriptionEnd)
+			addrCh = next
+			subscriptionResult("address", err)
+			if err != nil {
 				addrCh = nil
 			} else {
 				markDirty()
 			}
 		}
 		if routeCh == nil && m.subscriptions.route != nil {
-			var err error
-			if routeCh, err = m.subscriptions.route(m.subscriptionEnd); err != nil {
-				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "route"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
+			next, err := m.subscriptions.route(m.subscriptionEnd)
+			routeCh = next
+			subscriptionResult("route", err)
+			if err != nil {
 				routeCh = nil
 			} else {
 				markDirty()
 			}
 		}
 		if ruleCh == nil && m.subscriptions.rule != nil {
-			var err error
-			if ruleCh, err = m.subscriptions.rule(m.subscriptionEnd); err != nil {
-				log.WithFields(log.Fields{"event": "netlink_subscribe_error", "netlink_event": "rule"}).WithError(err).Debug("Host network monitor cannot subscribe to kernel events; retrying")
+			next, err := m.subscriptions.rule(m.subscriptionEnd)
+			ruleCh = next
+			subscriptionResult("rule", err)
+			if err != nil {
 				ruleCh = nil
 			} else {
 				markDirty()
 			}
 		}
 	}
-	var retryTimer *time.Timer
-	var retryCh <-chan time.Time
-	scheduleRetry := func() {
-		if retryCh != nil {
-			return
-		}
-		if retryTimer == nil {
-			retryTimer = time.NewTimer(hostNetworkRetryInterval)
-		} else {
-			retryTimer.Reset(hostNetworkRetryInterval)
-		}
-		retryCh = retryTimer.C
-	}
-	stopRetry := func() {
-		if retryCh == nil {
-			return
-		}
-		if !retryTimer.Stop() {
-			select {
-			case <-retryTimer.C:
-			default:
-			}
-		}
-		retryCh = nil
-	}
 	defer func() {
 		if debounceTimer != nil {
 			debounceTimer.Stop()
 		}
-		if retryTimer != nil {
-			retryTimer.Stop()
-		}
 	}()
-	restoreSubscriptions()
-	if !m.reconcile() {
-		scheduleRetry()
+	snapshotFailed := false
+	reconcile := func() {
+		err := m.reconcile()
+		if m.closed.Err() != nil {
+			return
+		}
+		if err != nil {
+			level := log.WarnLevel
+			if snapshotFailed {
+				level = log.DebugLevel
+			}
+			snapshotFailed = true
+			log.WithError(err).WithField("retry_interval", hostNetworkRetryInterval).
+				Log(level, "Failed to refresh host network state; using the previous snapshot while retrying")
+			return
+		}
+		if snapshotFailed {
+			snapshotFailed = false
+			log.Info("Host network state refreshed after an earlier failure")
+		}
 	}
+	restoreSubscriptions()
+	reconcile()
 
 	for {
 		select {
@@ -447,24 +474,14 @@ func (m *HostNetworkMonitor) run(
 			markDirty()
 		case <-debounceCh:
 			debounceCh = nil
-			if m.reconcile() {
-				stopRetry()
-			} else {
-				scheduleRetry()
-			}
-		case <-retryCh:
-			retryCh = nil
-			if !m.reconcile() {
-				scheduleRetry()
-			}
+			reconcile()
 		case <-periodic.C:
-			if m.reconcile() {
-				stopRetry()
-			} else {
-				scheduleRetry()
-			}
+			reconcile()
 		case <-subscriptionRetry.C:
 			restoreSubscriptions()
+			if snapshotFailed {
+				reconcile()
+			}
 		}
 	}
 }

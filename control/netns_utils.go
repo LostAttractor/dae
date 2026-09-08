@@ -6,6 +6,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -34,7 +35,8 @@ var (
 
 type DaeNetns struct {
 	setupDone atomic.Bool
-	mu        sync.Mutex
+	mu        sync.RWMutex
+	closed    bool
 
 	dae0, dae0peer netlink.Link
 	hostNs, daeNs  netns.NsHandle
@@ -42,7 +44,7 @@ type DaeNetns struct {
 
 func InitDaeNetns() {
 	once.Do(func() {
-		daeNetns = &DaeNetns{}
+		daeNetns = &DaeNetns{hostNs: netns.None(), daeNs: netns.None()}
 	})
 }
 
@@ -65,25 +67,57 @@ func (ns *DaeNetns) Setup() (err error) {
 
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
+	if ns.closed {
+		return net.ErrClosed
+	}
 	if ns.setupDone.Load() {
 		return
 	}
 	if err = ns.setup(); err != nil {
-		return
+		return errors.Join(err, ns.closeHandles())
 	}
 	ns.setupDone.Store(true)
+	log.WithField("link_type", "netkit").Info("Dae network namespace ready")
 	return nil
 }
 
 func (ns *DaeNetns) Close() (err error) {
-	DeleteNamedNetns(NsName)
-	DeleteLink(hostLinkName)
-	return
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.closed {
+		return nil
+	}
+	ns.closed = true
+	ready := ns.setupDone.Swap(false)
+	if ns.dae0 != nil {
+		DeleteNamedNetns(NsName)
+		DeleteLink(hostLinkName)
+	}
+	if ready {
+		return ns.closeHandles()
+	}
+	return nil
+}
+
+func (ns *DaeNetns) closeHandles() error {
+	var err error
+	for _, handle := range []*netns.NsHandle{&ns.daeNs, &ns.hostNs} {
+		if handle.IsOpen() {
+			err = errors.Join(err, handle.Close())
+		}
+	}
+	return err
 }
 
 func (ns *DaeNetns) With[T any](f func() (T, error)) (value T, err error) {
 	if err = ns.Setup(); err != nil {
 		return value, fmt.Errorf("failed to setup dae netns: %w", err)
+	}
+	// Close waits until callbacks have restored their original namespace.
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+	if ns.closed {
+		return value, net.ErrClosed
 	}
 
 	runtime.LockOSThread()
@@ -107,7 +141,8 @@ func (ns *DaeNetns) With[T any](f func() (T, error)) (value T, err error) {
 }
 
 func (ns *DaeNetns) setup() (err error) {
-	log.Trace("setting up dae netns")
+	log.Debug("Setting up dae network namespace")
+	ns.hostNs, ns.daeNs = netns.None(), netns.None()
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -168,7 +203,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		if err = netlink.RouteAdd(&route); err != nil {
 			if len(route.Dst.IP) == net.IPv6len {
 				// ipv6
-				log.Warnln("IpRouteAdd: Bad IPv6 support. Perhaps your machine disabled IPv6.")
+				log.WithError(err).Warn("IPv6 interception route unavailable; check kernel IPv6 support")
 				continue
 			}
 			return fmt.Errorf("IpRouteAdd: %w", err)
@@ -205,7 +240,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 		if err = netlink.RuleAdd(&rule); err != nil {
 			if rule.Family == unix.AF_INET6 {
 				// ipv6
-				log.Warnln("IpRuleAdd: Bad IPv6 support. Perhaps your machine disabled IPv6 (need CONFIG_IPV6_MULTIPLE_TABLES).")
+				log.WithError(err).Warn("IPv6 interception rule unavailable; check kernel IPv6 policy routing support (CONFIG_IPV6_MULTIPLE_TABLES)")
 				continue
 			}
 			return fmt.Errorf("IpRuleAdd: %w", err)
@@ -255,7 +290,6 @@ func (ns *DaeNetns) setupLinkPair() (err error) {
 	if err = netlink.LinkSetUp(ns.dae0); err != nil {
 		return fmt.Errorf("failed to set link dae0 up: %w", err)
 	}
-	log.Info("Using netkit for the dae network namespace")
 	return nil
 }
 

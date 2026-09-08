@@ -15,7 +15,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -54,7 +53,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 		if c.closed.Err() != nil {
 			return c.closed.Err()
 		}
-		if log.IsLevelEnabled(log.DebugLevel) {
+		if log.IsLevelEnabled(log.TraceLevel) {
 			state := "UNAVAILABLE"
 			if available {
 				state = "AVAILABLE"
@@ -77,12 +76,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 		} else {
 			updateKernel := func(value uint32) error {
 				if err := c.bpf.OutboundConnectivityMap.Update(key, value, ebpf.UpdateAny); err != nil {
-					log.WithFields(log.Fields{
-						"network":  networkType.String(),
-						"outbound": outboundName,
-						"value":    value,
-					}).Warnf("Failed to notify the kernel program: %v", err)
-					return err
+					return fmt.Errorf("publish %s connectivity for %s (value %d): %w", networkType, outboundName, value, err)
 				}
 				return nil
 			}
@@ -194,7 +188,7 @@ func (c *ControlPlane) startConnectivityChecks() ([]startupConnectivityWaiter, e
 	for _, group := range c.outbounds {
 		ready, err := group.StartConnectivityChecks(checkStart)
 		if err != nil {
-			return nil, oops.Errorf("start outbound %q connectivity checks: %w", group.Name, err)
+			return nil, fmt.Errorf("start outbound %q connectivity checks: %w", group.Name, err)
 		}
 		if ready != nil {
 			waiters = append(waiters, startupConnectivityWaiter{name: group.Name, ready: ready})
