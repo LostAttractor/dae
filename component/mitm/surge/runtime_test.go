@@ -10,10 +10,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"weak"
 )
 
 func testRuntime(t *testing.T, opts RuntimeOptions) *Runtime {
@@ -263,5 +265,33 @@ func TestRuntimePersistentStoreConcurrentReload(t *testing.T) {
 	st, err := os.Stat(path)
 	if err != nil || st.Mode().Perm() != 0600 {
 		t.Fatalf("store permissions: %v %v", st, err)
+	}
+}
+
+func TestRuntimeRetiredStoreIsReleased(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "store.json")
+	previous := func() weak.Pointer[runtimeStore] {
+		r := testRuntime(t, RuntimeOptions{StorePath: path})
+		if !r.data.write("value", "initial", false) {
+			t.Fatal("could not write store")
+		}
+		return weak.Make(r.data)
+	}()
+	for range 10 {
+		goruntime.GC()
+		if previous.Value() == nil {
+			break
+		}
+	}
+	if previous.Value() != nil {
+		t.Fatal("retired runtime's store is retained by the global cache")
+	}
+	// With no live runtime sharing the path, a fresh instance reloads the file.
+	if err := os.WriteFile(path, []byte(`{"value":"updated"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	next := testRuntime(t, RuntimeOptions{StorePath: path})
+	if got := next.data.read("value"); got != "updated" {
+		t.Fatalf("fresh runtime read stale data: %v", got)
 	}
 }
