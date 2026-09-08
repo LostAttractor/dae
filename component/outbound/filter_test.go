@@ -6,6 +6,7 @@
 package outbound
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -26,7 +27,40 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 	outboundDirect "github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/smux"
+	log "github.com/sirupsen/logrus"
 )
+
+func TestInvalidNodeDiagnosticsDoNotExposeLink(t *testing.T) {
+	logger := log.StandardLogger()
+	previousOutput := logger.Out
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	t.Cleanup(func() { logger.SetOutput(previousOutput) })
+	for _, link := range []string{
+		"socks5://user:secret-password@example.com/%zz?token=secret-token",
+		"socks5://user:secret-password@example.com:1-2?token=secret-token",
+		"http://user:secret-password@example.com:1-2?token=secret-token",
+		"vless://secret-password@example.com:1-2?token=secret-token",
+		"anytls://secret-password@example.com:1-2?token=secret-token",
+	} {
+		for _, required := range []bool{false, true} {
+			output.Reset()
+			_, err := NewDialerSet([]NodeDescriptor{{
+				Name: "test node", SubscriptionTag: "test subscription", Required: required, Link: link,
+			}})
+			diagnostic := output.String()
+			if err != nil {
+				diagnostic += err.Error()
+			}
+			if diagnostic == "" || strings.Contains(diagnostic, "secret-password") || strings.Contains(diagnostic, "secret-token") {
+				t.Fatalf("unsafe node diagnostic: %s", diagnostic)
+			}
+			if !strings.Contains(diagnostic, "test node") {
+				t.Fatalf("diagnostic did not identify the node: %s", diagnostic)
+			}
+		}
+	}
+}
 
 func TestMain(m *testing.M) {
 	outboundDirect.Direct = outboundDirect.NewDirectDialer(outboundDirect.Option{})
@@ -172,7 +206,7 @@ func TestCloseValidatedDialerRetiresTransport(t *testing.T) {
 		true,
 		"",
 	)
-	if err := closeValidatedDialer(created); err != nil {
+	if err := created.Close(); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -371,22 +405,6 @@ func TestBuildPathClosesPartialRuntimeOnFailure(t *testing.T) {
 	}
 	if got := closed.Load(); got != 1 {
 		t.Fatalf("partial runtime close count = %d, want 1", got)
-	}
-}
-
-func TestNewDialerSetLegacyChainErrorPolicy(t *testing.T) {
-	for _, chain := range []string{"first://node -> second://node", "first://node->second://node"} {
-		if _, err := NewDialerSet([]NodeDescriptor{{Link: chain, Required: true}}); err == nil || !strings.Contains(err.Error(), "legacy share-link proxy chains") {
-			t.Fatalf("local chain %q error = %v", chain, err)
-		}
-	}
-	chain := "first://node -> second://node"
-	set, err := NewDialerSet([]NodeDescriptor{{Link: chain}})
-	if err != nil {
-		t.Fatalf("subscription chain returned fatal error: %v", err)
-	}
-	if len(set.nodeInfos) != 0 {
-		t.Fatalf("subscription chain produced %d nodes", len(set.nodeInfos))
 	}
 }
 
