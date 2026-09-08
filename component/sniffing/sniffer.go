@@ -21,6 +21,7 @@ import (
 )
 
 const (
+	streamSniffingMaxBytes         = 64 * 1024
 	packetSniffingMaxBufferedBytes = 64 * 1024
 	packetSniffingMaxPackets       = 32
 )
@@ -204,7 +205,7 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 	defer s.readMu.Unlock()
 	var oerr error
 	defer func() {
-		if err != nil {
+		if err != nil && oerr != nil {
 			err = fmt.Errorf("%w: %w", oerr, err)
 		}
 	}()
@@ -227,6 +228,9 @@ func (s *Sniffer) SniffTcp() (d string, err error) {
 			s.SniffHttp,
 		)
 		if errors.Is(err, ErrNeedMore) {
+			if !s.stream || s.buf.Len() >= streamSniffingMaxBytes {
+				return "", ErrNotFound
+			}
 			oerr = err
 			s.dataReady = make(chan struct{})
 			continue
