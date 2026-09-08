@@ -26,7 +26,7 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 	}
 	cache := spec.Maps["udp_routing_cache_map"]
 	var value bpfUdpRoutingCacheValue
-	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 56 {
+	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 32 || unsafe.Sizeof(value) != 64 || unsafe.Sizeof(value.Result) != 32 {
 		t.Fatalf("UDP cache layout: key=%d value=%d cached_until=%d", cache.KeySize, cache.ValueSize, unsafe.Offsetof(value.CachedUntil))
 	}
 }
