@@ -42,6 +42,10 @@ func (h *Host) untrack(conn io.Closer) {
 	h.serving.Done()
 }
 
+// Close drains active work, forcing cancellation when the grace period expires.
+// Budget exhaustion is normal retirement; only resource cleanup errors are
+// returned. In either case, all host work finishes before plugin resources close
+// and the caller can retire routing, DNS and outbound state.
 func (h *Host) Close() error {
 	h.mu.Lock()
 	if h.closed {
@@ -74,10 +78,14 @@ func (h *Host) Close() error {
 		}
 		finished <- errors.Join(errs...)
 	}()
+	forced := false
 	select {
 	case h.closeErr = <-finished:
 	case <-ctx.Done():
-		h.closeErr = fmt.Errorf("mitm: drain deadline exceeded: %w", ctx.Err())
+		forced = true
+		if h.options.Log != nil {
+			h.options.Log(fmt.Sprintf("mitm: drain timeout after %s; forcing active connections to close", h.options.DrainTimeout))
+		}
 	}
 	h.forceCancel()
 	h.mu.Lock()
@@ -88,6 +96,11 @@ func (h *Host) Close() error {
 	h.mu.Unlock()
 	for _, conn := range remaining {
 		_ = conn.Close()
+	}
+	if forced {
+		// Cancellation and socket closure unblock streams, uploads, WebSockets
+		// and upstream dials. Join their cleanup before retiring shared state.
+		h.closeErr = <-finished
 	}
 	close(h.closeDone)
 	return h.closeErr
