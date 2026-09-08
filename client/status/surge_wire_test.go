@@ -1,34 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package surge
+package status
 
 import (
 	jsonv1 "encoding/json"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/api"
 )
 
 func TestSurgeStatusWireAndTable(t *testing.T) {
-	for _, status := range []Status{
+	for _, status := range []api.SurgeStatus{
 		{},
 		{Enabled: true},
-		{Enabled: true, Modules: []ModuleStatus{
+		{Enabled: true, Modules: []api.ModuleStatus{
 			{Name: "online", State: "loaded", Scripts: 2, Hostnames: 3},
 			{Name: "offline", State: "cached", Error: "download failed", Warnings: []string{"refresh failed", "using cached module"}},
 			{Name: "partial", State: "cached dependencies", Scripts: 1},
 		}},
 	} {
-		details, err := jsonv1.Marshal(status)
+		details, err := json.Marshal(status)
 		if err != nil {
 			t.Fatal(err)
 		}
-		decoded, err := surgeStatus([]plugin.InstanceStatus{{ID: "test", Type: "surge", Details: details}})
+		decoded, err := Surge([]api.MITMInstanceStatus{{ID: "test", Type: "surge", Details: details}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		output := renderSurgeStatus(decoded, true)
+		output := RenderSurge(decoded, true)
 		if strings.Contains(output, "\x1b") {
 			t.Fatalf("table contains terminal escapes: %q", output)
 		}
@@ -58,7 +59,7 @@ func TestSurgeStatusWireAndTable(t *testing.T) {
 					t.Fatalf("missing %q in status:\n%s", want, output)
 				}
 			}
-			startup := renderSurgeStatus(decoded, false)
+			startup := RenderSurge(decoded, false)
 			if strings.Contains(startup, "Warnings:") || strings.Contains(startup, "refresh failed") || !strings.Contains(startup, "\n\nErrors:\ntest/offline: download failed") {
 				t.Fatalf("startup must retain errors without repeating warnings:\n%s", startup)
 			}
@@ -69,7 +70,7 @@ func TestSurgeStatusWireAndTable(t *testing.T) {
 
 func TestSurgeStatusSelectsAndLabelsInstances(t *testing.T) {
 	detail := jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"loaded","warnings":["unsupported rule"]}]}`)
-	status, err := surgeStatus([]plugin.InstanceStatus{
+	status, err := Surge([]api.MITMInstanceStatus{
 		{ID: "native", Type: "example", Details: jsonv1.RawMessage(`{"pending":1}`)},
 		{ID: "personal", Type: "surge", Details: detail},
 		{ID: "work", Type: "surge", Details: detail},
@@ -77,14 +78,14 @@ func TestSurgeStatusSelectsAndLabelsInstances(t *testing.T) {
 	if err != nil || len(status.Modules) != 2 || status.Modules[0].Instance != "personal" || status.Modules[1].Instance != "work" {
 		t.Fatalf("mixed or mislabelled plugin reports: %+v, %v", status, err)
 	}
-	output := renderSurgeStatus(status, true)
+	output := RenderSurge(status, true)
 	for _, name := range []string{"INSTANCE", "personal", "work", "\n\nWarnings:\npersonal/shared: unsupported rule\nwork/shared: unsupported rule"} {
 		if !strings.Contains(output, name) {
 			t.Fatalf("missing %q in table: %s", name, output)
 		}
 	}
 	for _, detail := range []jsonv1.RawMessage{nil, jsonv1.RawMessage(`null`), jsonv1.RawMessage(`{"enabled":"bad"}`)} {
-		if _, err := surgeStatus([]plugin.InstanceStatus{{ID: "broken", Type: "surge", Details: detail}}); err == nil {
+		if _, err := Surge([]api.MITMInstanceStatus{{ID: "broken", Type: "surge", Details: detail}}); err == nil {
 			t.Fatal("invalid plugin report was silently accepted")
 		}
 	}

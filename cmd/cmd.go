@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/client/cli"
 	"github.com/daeuniverse/dae/common/json"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/config"
@@ -58,8 +59,9 @@ func Execute() error {
 	for name, definition := range definitions {
 		setups[name] = definition.Setup
 	}
-	rootCmd.AddCommand(newRunCommand(setups), newMITMCommand(definitions, plugin.CommandServices{
-		BaseDir: cacheDirectory(), Status: fetchMITMStatus,
-	}))
+	var connection cli.Connection
+	mitm := newMITMCommand(definitions, plugin.CommandServices{BaseDir: cacheDirectory(), Status: connection.MITM})
+	connection.Bind(mitm.PersistentFlags())
+	rootCmd.AddCommand(newRunCommand(setups), mitm)
 	return rootCmd.Execute()
 }

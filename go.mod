@@ -28,6 +28,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.25.10
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
 	github.com/v2rayA/ahocorasick-domain v0.0.0-20231231085011-99ceb8ef3208
 	github.com/vishvananda/netlink v1.3.1
@@ -74,7 +75,6 @@ require (
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/refraction-networking/utls v1.8.1 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/xtaci/smux v1.5.44 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	gitlab.com/yawning/chacha20.git v0.0.0-20230427033715-7877545b1b37 // indirect

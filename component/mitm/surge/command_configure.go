@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/client/cli"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/spf13/cobra"
@@ -62,7 +63,7 @@ use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.
 		},
 	}
 	configure.Flags().StringVar(&name, "name", "module", "Module name in the generated configuration")
-	return []*cobra.Command{newSurgeStatusCommand(services), configure}
+	return []*cobra.Command{cli.NewSurgeStatusCommand(services.Status), configure}
 }
 
 func promptModuleArguments(input io.Reader, output io.Writer, metadata Metadata) (map[string]string, error) {

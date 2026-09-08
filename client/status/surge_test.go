@@ -24,7 +24,7 @@ func TestSurgeUsesInstanceReports(t *testing.T) {
 		t.Fatalf("instance identity lost: %+v", report.Modules)
 	}
 	output := RenderSurge(report, true)
-	for _, want := range []string{"first", "second", "one", "two", "second/two: warning: offline"} {
+	for _, want := range []string{"first", "second", "one", "two", "second/two: offline"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing %q in %s", want, output)
 		}

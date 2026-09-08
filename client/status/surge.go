@@ -3,7 +3,7 @@
 package status
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"strings"
 
@@ -19,7 +19,7 @@ func RenderSurge(status api.SurgeStatus, showWarnings bool) string {
 		return "Surge modules: no modules configured"
 	}
 	rows := make([]table.Row, 0, len(status.Modules))
-	var details strings.Builder
+	var errors, warnings []string
 	for _, module := range status.Modules {
 		rows = append(rows, table.Row{
 			module.Instance, module.Name, module.State, module.Scripts, module.Hostnames, module.HostMappings,
@@ -31,17 +31,24 @@ func RenderSurge(status api.SurgeStatus, showWarnings bool) string {
 			identity = module.Instance + "/" + identity
 		}
 		if module.Error != "" {
-			fmt.Fprintf(&details, "\n%s: %s", identity, module.Error)
+			errors = append(errors, identity+": "+module.Error)
 		}
 		if showWarnings {
 			for _, warning := range module.Warnings {
-				fmt.Fprintf(&details, "\n%s: warning: %s", identity, warning)
+				warnings = append(warnings, identity+": "+warning)
 			}
 		}
 	}
-	return "Surge modules:\n" + renderLogTable(table.Row{
+	sections := []string{"Surge modules:\n" + renderLogTable(table.Row{
 		"INSTANCE", "MODULE", "STATE", "SCRIPTS", "HOSTS", "IP MAPS", "URL", "HEADER", "BODY", "LOCAL", "RULES", "WARNINGS",
-	}, rows) + details.String()
+	}, rows)}
+	if len(errors) > 0 {
+		sections = append(sections, "Errors:\n"+strings.Join(errors, "\n"))
+	}
+	if len(warnings) > 0 {
+		sections = append(sections, "Warnings:\n"+strings.Join(warnings, "\n"))
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 // Surge combines the plugin reports carried by a schema-7 status snapshot.

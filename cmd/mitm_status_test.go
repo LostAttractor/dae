@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/daeuniverse/dae/client/cli"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/spf13/cobra"
@@ -93,7 +94,7 @@ func TestMITMStatusAggregationAndErrors(t *testing.T) {
 		}
 	}
 	sentinel := errors.New("daemon unavailable")
-	command := newMITMStatusCommand(plugin.CommandServices{Status: func(context.Context) ([]plugin.InstanceStatus, error) { return nil, sentinel }}, nil)
+	command := cli.NewMITMStatusCommand(func(context.Context) ([]plugin.InstanceStatus, error) { return nil, sentinel }, nil)
 	if err := command.Execute(); !errors.Is(err, sentinel) {
 		t.Fatalf("lost status failure: %v", err)
 	}
