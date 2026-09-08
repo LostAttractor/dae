@@ -73,7 +73,12 @@ context and input/output streams.
 filtered by plugin type and `--instance`. `services.BaseDir` is the local cache
 base directory for commands such as Surge's interactive module configurator.
 A plugin can define its own `status`; otherwise the host provides generic status.
-`dae mitm status [--instance ID] [--json]` aggregates all active instances.
+`dae mitm status [--instance ID]` shows an overview. `--verbose` (`-v`) runs
+each active type's `status` command with defaults against the same daemon snapshot,
+preserving its Cobra lifecycle, context and instance selection. Status commands
+must be read-only. Types without a status renderer fall back to full JSON reports;
+a renderer failure also shows its raw reports and does not hide other types.
+`--json` prints the complete snapshot directly, including when combined with `-v`.
 These commands use the local Unix status socket and do not require `api_port`.
 See Surge's [command implementation](../surge/command_configure.go).
 
