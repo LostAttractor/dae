@@ -24,7 +24,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -141,7 +140,7 @@ func NewControlPlane(
 	if err != nil {
 		if !isReload {
 			if closeErr := bpf.Close(); closeErr != nil {
-				err = errors.Join(err, oops.Wrapf(closeErr, "close eBPF objects"))
+				err = errors.Join(err, fmt.Errorf("close eBPF objects: %w", closeErr))
 			}
 		}
 		return nil, err
@@ -149,7 +148,7 @@ func NewControlPlane(
 	defer func() {
 		if err != nil {
 			if closeErr := core.Close(); closeErr != nil {
-				err = errors.Join(err, oops.Wrapf(closeErr, "close control plane core"))
+				err = errors.Join(err, fmt.Errorf("close control plane core: %w", closeErr))
 			}
 		}
 	}()
@@ -177,7 +176,7 @@ func NewControlPlane(
 	} else if global.NoConnectivityBehavior == "block" {
 		noConnectivityOutbound = consts.OutboundBlock
 	} else {
-		return nil, oops.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
+		return nil, fmt.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
 	}
 
 	outbounds, outboundName2Id, err := core.buildOutbounds(nodes, groups, routingA, global, noConnectivityOutbound)
@@ -213,7 +212,7 @@ func NewControlPlane(
 	// run during the validation phase; BuildKernspace is deferred to Activate.
 	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture, preparedRules.destinations)
 	if err != nil {
-		return nil, oops.Errorf("NewRoutingMatcherBuilder: %w", err)
+		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
 	}
 	criticalOutbounds := builder.criticalOutbounds(len(outbounds))
 	for i, group := range outbounds {
@@ -226,7 +225,7 @@ func NewControlPlane(
 	}
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
-		return nil, oops.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
+		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
 	}
 	// Back skip_while_noalive rule evaluation with the core's in-memory
 	// mirror of outbound connectivity.
@@ -309,19 +308,19 @@ func NewControlPlane(
 	if err := waitForStartupConnectivity(waiters, remaining, startupCtx.Done()); err != nil {
 		return nil, err
 	}
-	log.WithField("duration", time.Since(connectivityStarted)).Info("Initial connectivity startup phase finished")
+	log.WithField("duration", time.Since(connectivityStarted)).Debug("Initial connectivity checks finished")
 
 	if loadMITM != nil {
 		if err := plane.prepareMITM(startupCtx, conf, &preparedRules, outboundName2Id, loadMITM); err != nil {
 			return nil, err
 		}
 	}
-	if log.IsLevelEnabled(log.DebugLevel) {
+	if log.IsLevelEnabled(log.TraceLevel) {
 		var debugBuilder strings.Builder
 		for _, rule := range preparedRules.routing {
 			debugBuilder.WriteString(rule.String(true, false, false) + "\n")
 		}
-		log.Debugf("RoutingA:\n%vfallback: %v\n", debugBuilder.String(), routingA.Fallback)
+		log.WithFields(log.Fields{"rules": debugBuilder.String(), "fallback": routingA.Fallback}).Trace("Prepared routing rules")
 	}
 	if err := startupCtx.Err(); err != nil {
 		return nil, err

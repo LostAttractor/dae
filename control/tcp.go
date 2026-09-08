@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -94,9 +94,11 @@ func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, tr
 	}
 	if err != nil && ctx.Err() == nil {
 		if log.IsLevelEnabled(log.DebugLevel) {
-			log.Warnf("%+v", oops.Wrapf(err, "handleConn"))
-		} else {
-			log.Warnf("%v", oops.Wrapf(err, "handleConn"))
+			fields := log.Fields{"source": lConn.RemoteAddr(), "destination": lConn.LocalAddr()}
+			if relay != nil {
+				fields["outbound"], fields["dialer"], fields["domain"] = relay.statsPath.Outbound, relay.statsPath.Dialer, relay.domain
+			}
+			log.WithFields(fields).WithError(err).Debug("TCP connection failed")
 		}
 	}
 }
@@ -108,7 +110,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
 	if err != nil {
 		_ = lConn.Close()
-		return nil, oops.Wrapf(err, "failed to retrieve target info %v", dst.String())
+		return nil, fmt.Errorf("failed to retrieve target info %v: %w", dst.String(), err)
 	}
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
@@ -151,7 +153,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		if _, ok := IsNetError(err); ok {
 			return nil, nil
 		}
-		return nil, oops.Wrapf(err, "Sniff Failed")
+		return nil, fmt.Errorf("sniff TCP destination: %w", err)
 	}
 
 	host := domain
@@ -212,13 +214,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 			}
 			return nil, nil
 		}
-		return nil, oops.In("DialContext").
-			With("Outbound", dialOption.Outbound.Name).
-			With("Dialer", dialOption.Dialer.Name).
-			With("src", src.String()).
-			With("dst", dst.String()).
-			With("domain", domain).
-			Wrapf(err, "failed to DialContext")
+		return nil, fmt.Errorf("connect TCP outbound %q via %q for %q: %w", dialOption.Outbound.Name, dialOption.Dialer.Name, domain, err)
 	}
 	if err := setupCtx.Err(); err != nil {
 		closeInBackground(rConn)

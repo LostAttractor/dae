@@ -114,7 +114,7 @@ func (d *deviceRoutes) change(changed map[[6]byte]bool, apply func(commit func()
 		device.epoch++
 		device.lease.Abort(errRouteChanged)
 		device.lease = nil
-		log.WithFields(log.Fields{"event": "route_change", "reason": "client_membership", "mac": net.HardwareAddr(mac[:]).String(), "epoch": device.epoch}).Info("Closing previous device connections")
+		log.WithFields(log.Fields{"event": "route_change", "reason": "client_membership", "mac": net.HardwareAddr(mac[:]).String(), "epoch": device.epoch}).Info("Closing device connections after client membership changed")
 	}
 	return nil
 }

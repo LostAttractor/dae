@@ -7,6 +7,7 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -14,13 +15,11 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/samber/oops"
 )
 
 type UdpHandler func(data []byte, from netip.AddrPort) error
@@ -71,7 +70,7 @@ type UdpEndpoint struct {
 }
 
 func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort, conn net.PacketConn) error {
-	buf := pool.GetBuffer(consts.EthernetMtu)
+	buf := pool.GetBuffer(udpReceiveBufferSize)
 	defer pool.PutBuffer(buf)
 	for {
 		n, from, err := conn.ReadFrom(buf)
@@ -87,16 +86,7 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPor
 				_ = conn.SetReadDeadline(time.Time{})
 				continue
 			}
-			if ue.mitm && conn == ue.conn {
-				return err
-			}
-			return oops.With(
-				"dialer", ue.dialer.Name,
-				"outbound", ue.statsPath.Outbound,
-				"network", ue.statsPath.Network.String(),
-				"src", src.String(),
-				"dst", dst.String(),
-			).Wrapf(err, "failed to ReadFrom")
+			return fmt.Errorf("receive UDP packet: %w", err)
 		}
 		if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
 			return cause

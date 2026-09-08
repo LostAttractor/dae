@@ -237,7 +237,7 @@ retryLoadBpf:
 		hasBpfGetCurrentTask = 1
 		log.Debugf("bpf_get_current_task is supported")
 	} else {
-		log.Warnf("Kernel does not support bpf_get_current_task helper: %v; process names may be truncated or less accurate (degraded to bpf_get_current_comm)", err)
+		log.WithError(err).Warn("Kernel lacks bpf_get_current_task; process name routing uses truncated task names")
 	}
 	constants := map[string]interface{}{
 		"PARAM": struct {
@@ -270,25 +270,19 @@ retryLoadBpf:
 			if removeErr := os.Remove(pin); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				return fmt.Errorf("remove incompatible pinned map %s: %w", mapName, removeErr)
 			}
-			log.Infof("Incompatible new map format with existing map %v detected; removed the old one.", mapName)
+			log.WithField("map", mapName).Info("Removed incompatible pinned eBPF map")
 			goto retryLoadBpf
 		}
-		// Get detailed log from ebpf.internal.(*VerifierError)
-		if log.IsLevelEnabled(log.FatalLevel) {
-			if v := reflect.Indirect(reflect.ValueOf(errors.Unwrap(errors.Unwrap(err)))); v.Kind() == reflect.Struct {
-				if _log := v.FieldByName("Log"); _log.IsValid() {
-					if strSlice, ok := _log.Interface().([]string); ok {
-						log.Fatalln(strings.Join(strSlice, "\n"))
-					}
-				}
-			}
+		var verifierErr *ebpf.VerifierError
+		if log.IsLevelEnabled(log.TraceLevel) && errors.As(err, &verifierErr) {
+			log.WithField("verifier", fmt.Sprintf("%+v", verifierErr)).Trace("eBPF verifier rejected program")
 		}
 		if strings.Contains(err.Error(), "no BTF found for kernel version") {
 			err = fmt.Errorf("%w: you should re-compile linux kernel with BTF configurations; see docs for more information", err)
 		} else if strings.Contains(err.Error(), "unknown func bpf_trace_printk") {
-			err = fmt.Errorf(`%w: please try to compile dae without bpf_printk"`, err)
+			err = fmt.Errorf("%w: compile dae without bpf_printk", err)
 		} else if strings.Contains(err.Error(), "unknown func bpf_probe_read") {
-			err = fmt.Errorf(`%w: please re-compile linux kernel with CONFIG_BPF_EVENTS=y and CONFIG_KPROBE_EVENTS=y"`, err)
+			err = fmt.Errorf("%w: compile the kernel with CONFIG_BPF_EVENTS=y and CONFIG_KPROBE_EVENTS=y", err)
 		}
 		return err
 	}

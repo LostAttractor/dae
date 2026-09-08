@@ -8,18 +8,16 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -80,29 +78,29 @@ func (c *ControlPlane) openIngress(listener *Listener) (tcpListener net.Listener
 
 	tcpFile, err := listener.tcpListener.(*net.TCPListener).File()
 	if err != nil {
-		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying TCP connection file")
+		return nil, nil, nil, fmt.Errorf("failed to retrieve copy of the underlying TCP connection file")
 	}
 	ingress.tcp.closeFuncs = append(ingress.tcp.closeFuncs, tcpFile.Close)
 	if err = c.core.bpf.ListenSocketMap.Update(uint32(0), uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return nil, nil, nil, oops.Errorf("failed to register the TCP listener: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to register the TCP listener: %w", err)
 	}
 	tcpListener, err = net.FileListener(tcpFile)
 	if err != nil {
-		return nil, nil, nil, oops.Errorf("failed to duplicate the TCP listener: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to duplicate the TCP listener: %w", err)
 	}
 	ingress.tcp.closeFuncs = append(ingress.tcp.closeFuncs, tcpListener.Close)
 
 	udpFile, err := listener.packetConn.(*net.UDPConn).File()
 	if err != nil {
-		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying UDP connection file")
+		return nil, nil, nil, fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
 	}
 	ingress.udp.closeFuncs = append(ingress.udp.closeFuncs, udpFile.Close)
 	if err = c.core.bpf.ListenSocketMap.Update(uint32(1), uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return nil, nil, nil, oops.Errorf("failed to register the UDP listener: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to register the UDP listener: %w", err)
 	}
 	udpPacketConn, err := net.FilePacketConn(udpFile)
 	if err != nil {
-		return nil, nil, nil, oops.Errorf("failed to duplicate the UDP socket: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to duplicate the UDP socket: %w", err)
 	}
 	ingress.udp.closeFuncs = append(ingress.udp.closeFuncs, udpPacketConn.Close)
 	serveUdpConn = udpPacketConn.(*net.UDPConn)
@@ -142,7 +140,7 @@ func (l *Listener) Close() error {
 		if err == nil {
 			err = err2
 		} else {
-			err = oops.Errorf("%w: %v", err, err2)
+			err = fmt.Errorf("%w: %v", err, err2)
 		}
 	}
 	return err
@@ -162,6 +160,15 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 		return err
 	}
 
+	ingressErrors := make(chan error, 2)
+	reportIngressError := func(err error) {
+		c.ingressMu.Lock()
+		retired := c.ingressRetired
+		c.ingressMu.Unlock()
+		if !retired && c.ctx.Err() == nil {
+			ingressErrors <- err
+		}
+	}
 	go func() {
 		defer ingress.loops.Done()
 		for {
@@ -172,10 +179,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			lconn, err := tcpListener.Accept()
 			if err != nil {
-				if !strings.Contains(err.Error(), "use of closed network connection") {
-					log.Errorf("%+v", oops.Wrapf(err, "Error when accept"))
-				}
-				break
+				reportIngressError(fmt.Errorf("accept TCP connection: %w", err))
+				return
 			}
 			if !c.tcpConnections.beginSetup(lconn) {
 				continue
@@ -185,7 +190,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	}()
 	go func() {
 		defer ingress.loops.Done()
-		buf := pool.GetBuffer(consts.EthernetMtu)
+		buf := pool.GetBuffer(udpReceiveBufferSize)
 		oob := pool.GetBuffer(120)
 		defer pool.PutBuffer(buf)
 		defer pool.PutBuffer(oob)
@@ -197,10 +202,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			}
 			n, oobn, _, src, err := serveUdpConn.ReadMsgUDPAddrPort(buf, oob)
 			if err != nil {
-				if !strings.Contains(err.Error(), "use of closed network connection") {
-					log.Errorf("%+v", oops.Wrapf(err, "ReadFromUDPAddrPort: %v", src.String()))
-				}
-				break
+				reportIngressError(fmt.Errorf("read UDP datagram: %w", err))
+				return
 			}
 			dst := RetrieveOriginalDest(oob[:oobn])
 
@@ -222,7 +225,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			if _, exists := c.udpEndpoints.pool.Load(src); !exists {
 				routingResult, err = c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
 				if err != nil {
-					log.Warnf("UDP routing handoff: %v", err)
+					log.WithError(err).WithFields(log.Fields{"source": src, "destination": dst}).Debug("UDP routing handoff failed")
 					continue
 				}
 			}
@@ -232,8 +235,12 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 	}()
 	sentReady = true
 	readyChan <- true
-	<-c.ctx.Done()
-	return nil
+	select {
+	case err := <-ingressErrors:
+		return errors.Join(err, c.retireTraffic())
+	case <-c.ctx.Done():
+		return nil
+	}
 }
 
 func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
@@ -246,12 +253,12 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 	listenAddr := net.JoinHostPort("", strconv.Itoa(int(port)))
 	tcpListener, err := listenConfig.Listen(context.TODO(), "tcp", listenAddr)
 	if err != nil {
-		return nil, oops.Errorf("listenTCP: %w", err)
+		return nil, fmt.Errorf("listenTCP: %w", err)
 	}
 	packetConn, err := listenConfig.ListenPacket(context.TODO(), "udp", listenAddr)
 	if err != nil {
 		_ = tcpListener.Close()
-		return nil, oops.Errorf("listenUDP: %w", err)
+		return nil, fmt.Errorf("listenUDP: %w", err)
 	}
 	listener = &Listener{
 		tcpListener: tcpListener,
@@ -265,7 +272,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 
 	// Serve
 	if err = c.Serve(readyChan, listener); err != nil {
-		return nil, oops.Errorf("failed to serve: %w", err)
+		return nil, fmt.Errorf("failed to serve: %w", err)
 	}
 
 	return listener, nil

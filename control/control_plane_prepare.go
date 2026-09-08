@@ -21,7 +21,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -58,7 +57,7 @@ func PrepareControlPlane(
 		bpf, err := prepareBPF(groupCtx, reusableBpf, soMarkFromDae)
 		if err == nil {
 			preparation.bpf = bpf
-			log.WithField("duration", time.Since(phaseStarted)).Info("Prepared eBPF resources")
+			log.WithField("duration", time.Since(phaseStarted)).Debug("Prepared eBPF resources")
 		}
 		return err
 	})
@@ -70,7 +69,7 @@ func PrepareControlPlane(
 		}
 		if err == nil {
 			preparation.rules = rules
-			log.WithField("duration", time.Since(phaseStarted)).Info("Prepared routing rules")
+			log.WithField("duration", time.Since(phaseStarted)).Debug("Prepared routing rules")
 		}
 		return err
 	})
@@ -80,7 +79,7 @@ func PrepareControlPlane(
 	}
 	if err != nil {
 		if closeErr := preparation.Close(); closeErr != nil {
-			err = errors.Join(err, oops.Wrapf(closeErr, "close control plane preparation"))
+			err = errors.Join(err, fmt.Errorf("close control plane preparation: %w", closeErr))
 		}
 		return nil, err
 	}
@@ -96,14 +95,14 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 	}
 	kernelVersion, err := internal.KernelVersion()
 	if err != nil {
-		return nil, oops.Errorf("failed to get kernel version: %w", err)
+		return nil, fmt.Errorf("failed to get kernel version: %w", err)
 	}
 	if kernelVersion.Less(consts.MinimumKernelVersion) {
-		return nil, oops.Errorf("your kernel version %v does not satisfy the minimum requirement; expect >=%v",
+		return nil, fmt.Errorf("your kernel version %v does not satisfy the minimum requirement; expect >=%v",
 			kernelVersion.String(), consts.MinimumKernelVersion.String())
 	}
 	if err = rlimit.RemoveMemlock(); err != nil {
-		return nil, oops.Errorf("rlimit.RemoveMemlock:%v", err)
+		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)
 	}
 
 	InitDaeNetns()
@@ -111,7 +110,7 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 		return nil, err
 	}
 	if err = GetDaeNetns().Setup(); err != nil {
-		return nil, oops.Errorf("failed to setup dae netns: %w", err)
+		return nil, fmt.Errorf("failed to setup dae netns: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -119,17 +118,16 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 
 	pinPath := filepath.Join(consts.BpfPinRoot, consts.AppName)
 	if err = os.MkdirAll(pinPath, 0755); err != nil {
-		return nil, oops.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
+		return nil, fmt.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
 	}
 	if reusedBpf != nil {
-		log.Infof("Loaded eBPF programs and maps")
+		log.Debug("Reusing eBPF programs and maps")
 		return reusedBpf, nil
 	}
 
-	log.Infof("Loading eBPF programs and maps into the kernel...")
-	log.Infof("The loading process takes about 120MB free memory, which will be released after loading. Insufficient memory will cause loading failure.")
+	log.Debug("Loading eBPF programs and maps")
 	var programOptions ebpf.ProgramOptions
-	if log.IsLevelEnabled(log.PanicLevel) {
+	if log.IsLevelEnabled(log.TraceLevel) {
 		programOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
 	}
 	collectionOpts := &ebpf.CollectionOptions{
@@ -139,11 +137,7 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 	}
 	bpf := &BPFState{bpfObjects: new(bpfObjects), soMarkFromDae: soMarkFromDae}
 	if err = fullLoadBpfObjects(bpf.bpfObjects, pinPath, soMarkFromDae, collectionOpts); err != nil {
-		err = oops.Wrapf(err, "load eBPF objects")
-		if log.IsLevelEnabled(log.PanicLevel) {
-			log.Panicf("%+v", err)
-		}
-		return nil, err
+		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	if err := bpf.DeviceRoutesMap.Update(uint32(0), bpf.UnusedDeviceRoutes, ebpf.UpdateAny); err != nil {
 		return nil, errors.Join(err, bpf.Close())
@@ -154,15 +148,15 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 	}
 	spliceRuntime, spliceErr := splice.New(collectionOpts, DefaultNatTimeoutTCPEstablished)
 	if spliceErr != nil {
-		log.Warnf("TCP splice is unavailable; falling back to userspace relay: %v", spliceErr)
+		log.WithError(spliceErr).Warn("TCP splice unavailable; using userspace relay")
 	} else if spliceRuntime != nil {
 		bpf.splice = spliceRuntime
-		log.Infof("Loaded optional TCP splice programs")
+		log.Debug("Loaded optional TCP splice programs")
 	}
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, errors.Join(contextErr, bpf.Close())
 	}
-	log.Infof("Loaded eBPF programs and maps")
+	log.Debug("Loaded eBPF programs and maps")
 	return bpf, nil
 }
 

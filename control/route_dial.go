@@ -14,7 +14,6 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	protocolDirect "github.com/daeuniverse/outbound/protocol/direct"
-	"github.com/samber/oops"
 )
 
 type DialOption struct {
@@ -46,9 +45,9 @@ func (o *DialOption) trafficAttribution() (stats.Path, bool) {
 func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.OutboundIndex, mark uint32, override bool) (*DialOption, error) {
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
-			return nil, oops.Errorf("traffic was dropped due to no-load configuration")
+			return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
 		}
-		return nil, oops.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
+		return nil, fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	selectedOutbound := c.outbounds[outboundIndex]
 	// UDP relays use IPs; replacing them with sniffed QUIC hostnames breaks

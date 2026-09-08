@@ -69,20 +69,24 @@ func (s *SysctlManager) startWatch() {
 				return
 			}
 			if event.Has(fsnotify.Write) {
-				log.Tracef("sysctl write event: %+v", event)
+				log.WithField("path", event.Name).Trace("Observed sysctl write")
 				s.mux.Lock()
 				expected, ok := s.expectations[event.Name]
 				s.mux.Unlock()
 				if ok {
 					raw, err := os.ReadFile(event.Name)
 					if err != nil {
-						log.Errorf("failed to read sysctl file %s: %v", event.Name, err)
+						log.WithField("path", event.Name).WithError(err).Warn("Failed to verify required sysctl value")
+						continue
 					}
 					value := strings.TrimSpace(string(raw))
 					if value != expected {
-						log.Infof("sysctl %s has unexpected value %s, expected %s", event.Name, value, expected)
 						if err := os.WriteFile(event.Name, []byte(expected), 0644); err != nil {
-							log.Errorf("failed to write sysctl file %s: %v", event.Name, err)
+							log.WithFields(log.Fields{"path": event.Name, "value": value, "required": expected}).
+								WithError(err).Error("Failed to restore required sysctl value")
+						} else {
+							log.WithFields(log.Fields{"path": event.Name, "previous": value, "value": expected}).
+								Info("Restored required sysctl value")
 						}
 					}
 				}
@@ -91,7 +95,7 @@ func (s *SysctlManager) startWatch() {
 			if !ok {
 				return
 			}
-			log.Errorf("sysctl watcher error: %v", err)
+			log.WithError(err).Warn("Sysctl monitoring failed; required values may have changed")
 		}
 	}
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/samber/oops"
 )
 
 type tcpRelay struct {
@@ -76,13 +75,7 @@ func (r *tcpRelay) run() (err error) {
 		err = withoutCleanupErrors(err)
 	}
 	if recordDataPlaneError(r.dialer, r.statsPath, err) {
-		return oops.In("RelayTCP").
-			With("Outbound", r.statsPath.Outbound).
-			With("Dialer", r.statsPath.Dialer).
-			With("src", r.src.String()).
-			With("dst", r.dst.String()).
-			With("domain", r.domain).
-			Wrapf(err, "failed to relay TCP")
+		return err
 	}
 	return nil
 }

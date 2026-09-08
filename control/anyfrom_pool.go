@@ -31,13 +31,18 @@ func normalizeAnyfromPoolTTL(ttl time.Duration) time.Duration {
 
 type Anyfrom struct {
 	*net.UDPConn
+	idleMu         sync.Mutex
 	idleEvictTimer *time.Timer
 	idleTTL        time.Duration
+	idleDeadline   time.Time
 	writeMu        sync.Mutex
 }
 
 // refreshIdleDeadline extends the pool eviction timer by the connection's idle TTL.
 func (a *Anyfrom) refreshIdleDeadline() {
+	a.idleMu.Lock()
+	defer a.idleMu.Unlock()
+	a.idleDeadline = time.Now().Add(a.idleTTL)
 	if a.idleEvictTimer != nil {
 		a.idleEvictTimer.Reset(a.idleTTL)
 	}
@@ -168,19 +173,29 @@ func (p *AnyfromPool) GetOrCreate(lAddr netip.AddrPort, ttl time.Duration) (conn
 
 	uConn := pc.(*net.UDPConn)
 	af = &Anyfrom{
-		UDPConn: uConn,
-		idleTTL: ttl,
+		UDPConn:      uConn,
+		idleTTL:      ttl,
+		idleDeadline: time.Now().Add(ttl),
 	}
-	af.idleEvictTimer = time.AfterFunc(ttl, func() {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		_af := p.pool[lAddr]
-		if _af == af {
-			delete(p.pool, lAddr)
-			af.Close()
-		}
-	})
+	af.idleEvictTimer = time.AfterFunc(ttl, func() { p.expire(lAddr, af) })
 	p.pool[lAddr] = af
 
 	return af, true, nil
+}
+
+func (p *AnyfromPool) expire(addr netip.AddrPort, conn *Anyfrom) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pool[addr] != conn {
+		return
+	}
+	conn.idleMu.Lock()
+	defer conn.idleMu.Unlock()
+	// Reset cannot cancel a callback already waiting for the pool lock.
+	if remaining := time.Until(conn.idleDeadline); remaining > 0 {
+		conn.idleEvictTimer.Reset(remaining)
+		return
+	}
+	delete(p.pool, addr)
+	_ = conn.Close()
 }

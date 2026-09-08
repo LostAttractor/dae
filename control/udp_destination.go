@@ -91,7 +91,10 @@ func (ue *UdpEndpoint) startSocket(p *UdpEndpointPool, src, dst, key netip.AddrP
 		err := ue.run(p, src, dst, conn)
 		p.remove(src, ue)
 		if !(ue.mitm && conn == ue.conn) && recordDataPlaneError(ue.dialer, ue.statsPath, err) {
-			log.Warnf("%+v", err)
+			log.WithFields(log.Fields{
+				"source": src, "destination": dst,
+				"outbound": ue.statsPath.Outbound, "dialer": ue.statsPath.Dialer,
+			}).WithError(err).Debug("UDP association failed")
 		}
 	}()
 }

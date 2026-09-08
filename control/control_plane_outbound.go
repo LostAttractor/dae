@@ -7,16 +7,17 @@ package control
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -24,7 +25,7 @@ import (
 // The caller then owns their connectivity checks, transports and cleanup.
 func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, groups []config.Group, routingConfig *config.Routing, global *config.Global, noConnectivityOutbound consts.OutboundIndex) (_ []*outbound.DialerGroup, _ map[string]uint8, err error) {
 	if global.AllowInsecure {
-		log.Warnln("AllowInsecure is enabled, but it is not recommended. Please make sure you have to turn it on.")
+		log.Warn("TLS certificate verification disabled for outbound connections")
 	}
 	option := dialer.NewGlobalOption(global)
 
@@ -50,13 +51,13 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 	// them as an exact-one target.
 	dialerSet, err := outbound.NewDialerSet(nodes)
 	if err != nil {
-		return nil, nil, oops.Wrapf(err, "build node descriptors")
+		return nil, nil, fmt.Errorf("build node descriptors: %w", err)
 	}
 	routingTargets := collectRoutingTargetNames(routingConfig)
 	routingConfig.Rules = nil
 	groupCompiler, err := outbound.NewGroupCompiler(dialerSet, groups, routingTargets)
 	if err != nil {
-		return nil, nil, oops.Wrapf(err, "compile proxy groups")
+		return nil, nil, fmt.Errorf("compile proxy groups: %w", err)
 	}
 	materialized := map[string]struct{}{
 		consts.OutboundDirect.String(): {},
@@ -77,25 +78,25 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 			var compileErr error
 			paths, compileErr = groupCompiler.ExpandRoutable(group)
 			if compileErr != nil {
-				return oops.Errorf("failed to expand group %v: %w", name, compileErr)
+				return fmt.Errorf("failed to expand group %v: %w", name, compileErr)
 			}
 			if groupOption := parseGroupOverrideOption(*group, *global); groupOption != nil {
 				finalOption = groupOption
-				log.Infof(`Group "%v"'s check option has been overridden.`, name)
+				log.WithField("group", name).Debug("Using group connectivity check settings")
 			}
 			if group.Policy != nil {
 				policy, policyErr := dialer.NewDialerSelectionPolicyFromGroupParam(group)
 				if policyErr != nil {
-					return oops.Errorf("failed to create group %v: %w", name, policyErr)
+					return fmt.Errorf("failed to create group %v: %w", name, policyErr)
 				}
 				selectionPolicy = *policy
 			}
 		}
 		if len(outbounds) >= int(consts.OutboundUserDefinedMax)+1 {
-			return oops.Errorf("too many outbounds: cannot materialize target %q", name)
+			return fmt.Errorf("too many outbounds: cannot materialize target %q", name)
 		}
 		if len(paths) > outbound.MaxMaterializedPaths-materializedPathCount {
-			return oops.Errorf("materializing target %q would exceed the global proxy path limit %d", name, outbound.MaxMaterializedPaths)
+			return fmt.Errorf("materializing target %q would exceed the global proxy path limit %d", name, outbound.MaxMaterializedPaths)
 		}
 
 		dialers := make([]*dialer.Dialer, 0, len(paths))
@@ -106,20 +107,21 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 			if buildErr != nil {
 				pathBuildErr, isPathBuildErr := errors.AsType[*outbound.PathBuildError](buildErr)
 				if isPathBuildErr && !pathBuildErr.Node.Required {
-					log.Warnf("failed to build subscription node %q for target %q: %v", pathBuildErr.Node.Property.Name, name, pathBuildErr.Err)
+					log.WithFields(log.Fields{"node": pathBuildErr.Node.Property.Name, "target": name}).
+						WithError(resource.RedactError(pathBuildErr.Err)).Warn("Could not build subscription path; skipping node")
 					continue
 				}
 				for _, d := range dialers {
 					_ = d.Close()
 				}
-				return oops.Errorf("failed to build target %v path: %w", name, buildErr)
+				return fmt.Errorf("failed to build target %v path: %w", name, buildErr)
 			}
 			dialers = append(dialers, d)
 			annotations = append(annotations, path.Annotation)
 		}
 
 		if len(dialers) == 0 {
-			return oops.Errorf("target %q has no usable paths", name)
+			return fmt.Errorf("target %q has no usable paths", name)
 		}
 		id := uint8(len(outbounds))
 		outbounds = append(outbounds, outbound.NewDialerGroup(finalOption, name, outbound.GroupKindSelector, dialers, annotations, selectionPolicy,
@@ -143,7 +145,7 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 		}
 		resolved, resolveErr := groupCompiler.ResolveRoutingTarget(targetName)
 		if resolveErr != nil {
-			return nil, nil, oops.Errorf("resolve routing target %q: %w", targetName, resolveErr)
+			return nil, nil, fmt.Errorf("resolve routing target %q: %w", targetName, resolveErr)
 		}
 		if _, ok := materialized[targetName]; ok {
 			continue
@@ -157,7 +159,7 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 	outboundName2Id := make(map[string]uint8)
 	for i, o := range outbounds {
 		if _, exist := outboundName2Id[o.Name]; exist {
-			return nil, nil, oops.Errorf("duplicated outbound name: %v", o.Name)
+			return nil, nil, fmt.Errorf("duplicated outbound name: %v", o.Name)
 		}
 		outboundName2Id[o.Name] = uint8(i)
 	}
@@ -254,13 +256,7 @@ func (c *ControlPlane) closeOutbounds() (err error) {
 
 func closeDialerGroups(groups []*outbound.DialerGroup) (err error) {
 	for _, g := range groups {
-		if e := g.Close(); e != nil {
-			if err != nil {
-				err = oops.Errorf("%w; %v", err, e)
-			} else {
-				err = e
-			}
-		}
+		err = errors.Join(err, g.Close())
 	}
 	return err
 }
