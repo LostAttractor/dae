@@ -59,7 +59,7 @@ func TestMITMCaptureKeepsUnrelatedDirectInKernel(t *testing.T) {
 			// Supply the kernel's DNS bitmaps explicitly. Even a later TLS or
 			// QUIC SNI cannot manufacture evidence at the initial packet.
 			for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
-				got, _, _, err := matcher.Match(address[:], address[:], 12345, destination.Port(), consts.IpVersionFromAddr(destination.Addr()), proto, "api.bilibili.com", [16]uint8{}, 0, 0, make([]byte, 16), routing, bump)
+				got, _, _, err := matchTestRouting(matcher, address[:], address[:], 12345, destination.Port(), consts.IpVersionFromAddr(destination.Addr()), proto, "api.bilibili.com", [16]uint8{}, 0, 0, make([]byte, 16), routing, bump)
 				if err != nil || (got != consts.OutboundDirect) != test.capture {
 					t.Fatalf("protocol=%v kernel capture = %v, err=%v, want %v", proto, got, err, test.capture)
 				}
@@ -79,7 +79,7 @@ func TestMITMEmptyAndExcludedScopesDoNotCapture(t *testing.T) {
 		prepared.enableMITMPlan(plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: scope}}})
 		_, builder := routingMatcherForTest(t, prepared)
 		for _, rule := range builder.rules {
-			if rule.CaptureFlags != 0 {
+			if ((rule.Flags >> 3) & 3) != 0 {
 				t.Fatalf("nonmatching scope caused capture: %+v", scope)
 			}
 		}
@@ -92,7 +92,7 @@ func TestDestinationDomainCaptureRetainsDNSPredicate(t *testing.T) {
 	for _, host := range []string{"", "outside.example", "service.example"} {
 		for _, port := range []uint16{22, 443} {
 			address := make([]byte, 16)
-			got, _, _, err := matcher.Match(address, address, 12345, port, consts.IpVersion_4, consts.L4ProtoType_TCP, host, [16]uint8{}, 0, 0, address)
+			got, _, _, err := matchTestRouting(matcher, address, address, 12345, port, consts.IpVersion_4, consts.L4ProtoType_TCP, host, [16]uint8{}, 0, 0, address)
 			want := host == "service.example" && port == 443
 			if err != nil || (got != consts.OutboundDirect) != want {
 				t.Fatalf("DNAT capture %q:%d = %v, %v, want %v", host, port, got, err, want)

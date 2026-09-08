@@ -67,14 +67,14 @@ func TestDomainCapturePreservesEBPFDirect(t *testing.T) {
 					binary.BigEndian.PutUint16(packet[tcpOffset+2:tcpOffset+4], port)
 					for _, mark := range []uint32{0, 37} {
 						t.Run(fmt.Sprintf("ipv6=%v/capture=%d/%s/port=%d/mark=%d", ipv6, capture, dns, port, mark), func(t *testing.T) {
-							portRule := bpftestMatchSet{Type: uint8(consts.MatchType_Port), CaptureFlags: capture, Action: uint8(consts.MatchActionCapture)}
+							portRule := bpftestMatchSet{Type: uint8(consts.MatchType_Port), Flags: (capture) << 3, Action: uint8(consts.MatchActionCapture)}
 							binary.NativeEndian.PutUint16(portRule.Value[:2], 443)
 							binary.NativeEndian.PutUint16(portRule.Value[2:4], 443)
 							rules := []bpftestMatchSet{
-								{Type: uint8(consts.MatchType_L4Proto), Value: [16]byte{byte(consts.L4ProtoType_TCP)}, Action: uint8(consts.MatchActionAnd)},
-								{Type: uint8(consts.MatchType_DomainSet), Value: [16]byte{1}, Action: uint8(consts.MatchActionAnd)},
+								{Type: uint8(consts.MatchType_L4Proto), Value: [16]byte{byte(consts.L4ProtoType_TCP)}, Action: uint8(consts.MatchActionAnd), Mark: 3},
+								{Type: uint8(consts.MatchType_DomainSet), Value: [16]byte{1}, Action: uint8(consts.MatchActionAnd), Mark: 2},
 								portRule,
-								{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundDirect), Mark: mark, Must: true},
+								{Type: uint8(consts.MatchType_Fallback), Outbound: uint8(consts.OutboundDirect), Mark: mark, Flags: 1 << 1},
 							}
 							for i, rule := range rules {
 								if err := obj.RoutingMap.Update(uint32(i), rule, ebpf.UpdateAny); err != nil {

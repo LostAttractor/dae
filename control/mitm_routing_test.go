@@ -49,7 +49,7 @@ func TestMITMKernelRoutingReconstruction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			preparation := &ControlPlanePreparation{rules: preparedRules{routing: configuration.Routing.Rules}}
+			preparation := &ControlPlanePreparation{rules: preparedRules{routing: &configuration.Routing}}
 			if err := preparation.rules.enableFlowRules(context.Background(), configuration.Rules, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -65,8 +65,15 @@ func TestMITMKernelRoutingReconstruction(t *testing.T) {
 				bump[i] = first[i] | second[i]
 				routing[i] = first[i] & second[i]
 			}
-			address := make([]byte, 16)
-			got, mark, must, err := matcher.Match(address, address, 12345, 443, consts.IpVersion_4, consts.L4ProtoType_TCP, "", [16]uint8{}, 0, 0, address, routing, bump)
+			address := netip.IPv4Unspecified()
+			got, mark, must, err := matcher.match(routingInput{
+				src:              netip.AddrPortFrom(address, 12345),
+				dst:              netip.AddrPortFrom(address, 443),
+				l4proto:          consts.L4ProtoType_TCP,
+				domainBitmap:     routing,
+				domainBumpBitmap: bump,
+				kernel:           true,
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,10 +86,10 @@ func TestMITMKernelRoutingReconstruction(t *testing.T) {
 
 func routingMatcherForTest(t *testing.T, rules preparedRules) (*RoutingMatcher, *RoutingMatcherBuilder) {
 	t.Helper()
-	builder, err := NewRoutingMatcherBuilder(rules.routing, map[string]uint8{
+	builder, err := compileTestRouting(rules, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock),
 		"proxy": uint8(consts.OutboundUserDefinedMin),
-	}, nil, "direct", nil, rules.capture, rules.destinations)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,8 +102,13 @@ func routingMatcherForTest(t *testing.T, rules preparedRules) (*RoutingMatcher, 
 
 func matchTestRoute(t *testing.T, matcher *RoutingMatcher, host string, proto consts.L4ProtoType) (consts.OutboundIndex, uint32, bool) {
 	t.Helper()
-	address := make([]byte, 16)
-	result, mark, must, err := matcher.Match(address, address, 12345, 443, consts.IpVersion_4, proto, host, [16]uint8{}, 0, 0, address)
+	address := netip.IPv4Unspecified()
+	result, mark, must, err := matcher.match(routingInput{
+		src:     netip.AddrPortFrom(address, 12345),
+		dst:     netip.AddrPortFrom(address, 443),
+		l4proto: proto,
+		domain:  host,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +131,9 @@ func TestMITMCapturePreservesUserspaceRoute(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			original := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "service.example"}}}}, Outbound: test.outbound}
-			preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{original}}}
+			preparation := &ControlPlanePreparation{rules: preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{original}, "direct")}}
 			preparation.rules.enableMITMPlan(extension.Plan())
-			if len(preparation.rules.routing) != 1 || preparation.rules.routing[0] != original || preparation.rules.capture == nil {
+			if len(preparation.rules.routing.Policies[0].Statements) != 1 || preparation.rules.routing.Policies[0].Statements[0].Rule != original || len(preparation.rules.capture.http) == 0 {
 				t.Fatalf("overlay replaced original routing: %+v", preparation.rules.routing)
 			}
 			matcher, _ := routingMatcherForTest(t, preparation.rules)
@@ -170,7 +182,7 @@ func TestMITMCaptureRetainsHostnameAndPortConstraints(t *testing.T) {
 		{"", consts.L4ProtoType_TCP, 443, false},
 	} {
 		address := make([]byte, 16)
-		got, _, _, err := matcher.Match(address, address, 12345, test.port, consts.IpVersion_4, test.proto, test.host, [16]uint8{}, 0, 0, address)
+		got, _, _, err := matchTestRouting(matcher, address, address, 12345, test.port, consts.IpVersion_4, test.proto, test.host, [16]uint8{}, 0, 0, address)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -192,21 +204,21 @@ func TestMITMAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 		&net.IPNet{IP: net.ParseIP("fd00::1"), Mask: net.CIDRMask(64, 128)},
 	}
 	for _, port := range []uint16{8081, 0} {
-		prepared := preparedRules{}
+		prepared := preparedRules{routing: testRoutingConfig(nil, "proxy")}
 		prepared.enableMITMPlan(mitmRoutingPlugin("service.example").Plan())
 		prepared.bypassAPI(port, addresses)
-		builder, err := NewRoutingMatcherBuilder(prepared.routing, map[string]uint8{
+		builder, err := compileTestRouting(prepared, map[string]uint8{
 			"direct": uint8(consts.OutboundDirect), "proxy": uint8(consts.OutboundUserDefinedMin),
-		}, nil, "proxy", nil, prepared.capture, nil)
+		}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		// Treat the capture action as proxy to observe the kernel's first
 		// matching route; the local portal must win even for a captured IP.
 		for i := range builder.rules {
-			if builder.rules[i].CaptureFlags != 0 {
+			if ((builder.rules[i].Flags >> 3) & 3) != 0 {
 				builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
-				builder.rules[i].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
+				builder.rules[i].Flags &^= 3 << 3 // Expose the capture predicate as a test terminal.
 				builder.rules[i].Action = uint8(consts.MatchActionRoute)
 			}
 		}
@@ -229,13 +241,13 @@ func TestMITMAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 			{"10.0.0.1", 8081, consts.L4ProtoType_UDP, false},
 		} {
 			ip := netip.MustParseAddr(test.destination)
-			destination := ip.As16()
-			ipVersion := consts.IpVersion_6
-			if ip.Is4() {
-				ipVersion = consts.IpVersion_4
-			}
-			zero := make([]byte, 16)
-			got, mark, must, err := matcher.Match(zero, destination[:], 12345, test.port, ipVersion, test.proto, "service.example", [16]uint8{}, 0, 0, zero)
+			zero := netip.IPv4Unspecified()
+			got, mark, must, err := matcher.match(routingInput{
+				src:     netip.AddrPortFrom(zero, 12345),
+				dst:     netip.AddrPortFrom(ip, test.port),
+				l4proto: test.proto,
+				domain:  "service.example",
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -247,7 +259,7 @@ func TestMITMAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 				t.Errorf("api_port=%d route(%s:%d,%v)=(%v,%d,%v), want (%v,0,false)", port, test.destination, test.port, test.proto, got, mark, must, want)
 			}
 			exempt := test.proto == consts.L4ProtoType_TCP && slices.ContainsFunc(prepared.apiBypass, func(key bpfIpPort) bool {
-				return key.Ip.U6Addr8 == destination && key.Port == common.Htons(test.port)
+				return key.Ip.U6Addr8 == ip.As16() && key.Port == common.Htons(test.port)
 			})
 			if exempt != (want == consts.OutboundDirect) {
 				t.Errorf("API routing and device exemption disagree for %s:%d/%v", test.destination, test.port, test.proto)

@@ -22,6 +22,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support to split traffic by process name in local host.
 - [x] Support to split traffic by MAC address in LAN.
 - [x] Support to split traffic with invert match rules.
+- [x] Support [interface routing policies and reusable rule sets](./docs/en/configuration/routing.md), composed across [separate configuration files](./docs/en/configuration/separate-config.md).
 - [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
 - [x] Support advanced DNS resolution process.
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).

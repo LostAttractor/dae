@@ -948,6 +948,34 @@ check_routing_ipv4_tcp(struct __sk_buff *skb,
 }
 
 static __always_inline int
+check_routing_ipv4_tcp_profile(struct __sk_buff *skb, __u32 expected_profile_id,
+			       __u32 saddr, __u32 daddr,
+			       __u16 sport, __u16 dport)
+{
+	int ret = check_routing_ipv4_tcp(skb, TC_ACT_REDIRECT,
+					 saddr, daddr, sport, dport);
+	if (ret != TC_ACT_OK)
+		return ret;
+
+	struct tuples_key key = {};
+	key.sip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.sip.u6_addr32[3] = bpf_htonl(saddr);
+	key.dip.u6_addr32[2] = bpf_htonl(0xffff);
+	key.dip.u6_addr32[3] = bpf_htonl(daddr);
+	key.sport = bpf_htons(sport);
+	key.dport = bpf_htons(dport);
+	key.l4proto = IPPROTO_TCP;
+
+	struct routing_result *routing_result =
+		bpf_map_lookup_elem(&routing_tuples_map, &key);
+	if (!routing_result || routing_result->profile_id != expected_profile_id) {
+		bpf_printk("routing profile mismatch\n");
+		return TC_ACT_SHOT;
+	}
+	return TC_ACT_OK;
+}
+
+static __always_inline int
 check_no_ipv4_tcp_routing_result(struct __sk_buff *skb,
 				 __u32 expected_status_code,
 				 __u32 saddr, __u32 daddr,
@@ -1147,7 +1175,7 @@ set_routing_fallback(__u8 outbound, bool must, const void *key)
 	struct match_set ms = {
 		.type = MatchType_Fallback,
 		.outbound = outbound,
-		.must = must,
+		.flags = must ? MATCH_FLAG_MUST : 0,
 	};
 	bpf_map_update_elem(&routing_map, key, &ms, BPF_ANY);
 	set_outbound_connectivity(outbound);

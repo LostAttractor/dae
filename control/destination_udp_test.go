@@ -45,6 +45,9 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 				target, filter = netip.MustParseAddrPort("198.51.100.20:53"), "dip(192.0.2.20)"
 			}
 			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, filter+" -> dnat(198.51.100.20)", "dip(192.0.2.20,198.51.100.20) -> proxy(mark:37)"))
+			matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
+			matcher.defaultProfileID = 99
+			profileID := uint32(42)
 			unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
 				t.Fatal("UDP association must use the selected packet dialer")
 				return nil, net.ErrClosed
@@ -63,7 +66,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			send := func() {
 				t.Helper()
-				result := &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7}
+				result := &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: profileID}
 				if err := plane.handlePkt(t.Context(), []byte("payload"), source, original, result); err != nil {
 					t.Fatal(err)
 				}
@@ -85,19 +88,20 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			plane.udpSetups.Store(0)
 			endpoint, ok := endpoints.Get(source)
-			if !ok || endpoint.destinations[original] != target || endpoint.destinationParam.routingResult.Mark != 37 || len(recorder.targets) != 1 || recorder.targets[0] != target.String() {
+			if !ok || endpoint.destinations[original] != target || endpoint.destinationParam.routingResult.Mark != 37 || endpoint.destinationParam.routingResult.ProfileId != 42 || len(recorder.targets) != 1 || recorder.targets[0] != target.String() {
 				t.Fatalf("initial source lost its target or policy: endpoint=%+v dials=%v", endpoint, recorder.targets)
 			}
 			// A config/node replacement only affects new lifetimes. The original
 			// target and mark survive even when the first destination rule missed.
 			newTarget := netip.MustParseAddrPort("203.0.113.20:53")
 			plane.routingMatcher, _ = routingMatcherForTest(t, prepareFlowRulesForTest(t, "dip(192.0.2.20) -> dnat(203.0.113.20)", "dip(203.0.113.20) -> proxy(mark:91)"))
+			profileID = plane.routingMatcher.defaultProfileID
 			if err := plane.outbounds[2].Close(); err != nil {
 				t.Fatal(err)
 			}
 			plane.outbounds[2] = newGroup()
 			send()
-			if current, ok := endpoints.Get(source); !ok || current != endpoint || current.destinations[original] != target || current.destinationParam.routingResult.Mark != 37 || len(recorder.targets) != 1 {
+			if current, ok := endpoints.Get(source); !ok || current != endpoint || current.destinations[original] != target || current.destinationParam.routingResult.Mark != 37 || current.destinationParam.routingResult.ProfileId != 42 || len(recorder.targets) != 1 {
 				t.Fatal("config replacement changed an existing UDP lifetime")
 			}
 			recorder.opened[0].lease.Abort(errors.New("transport failed"))
@@ -113,7 +117,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			send()
 			fresh, ok := endpoints.Get(source)
-			if !ok || fresh == endpoint || fresh.destinations[original] != newTarget || fresh.destinationParam.routingResult.Mark != 91 || len(recorder.targets) != 2 || recorder.targets[1] != newTarget.String() {
+			if !ok || fresh == endpoint || fresh.destinations[original] != newTarget || fresh.destinationParam.routingResult.Mark != 91 || fresh.destinationParam.routingResult.ProfileId != profileID || len(recorder.targets) != 2 || recorder.targets[1] != newTarget.String() {
 				t.Fatalf("new lifetime did not use current target/policy: endpoint=%+v dials=%v", fresh, recorder.targets)
 			}
 			var epoch uint64

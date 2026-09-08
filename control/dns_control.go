@@ -307,6 +307,7 @@ type dnsRerouteKey struct {
 	src     netip.AddrPort
 	pname   [16]uint8
 	ifindex uint32
+	profile uint32
 	dscp    uint8
 	mac     [6]uint8
 }
@@ -373,6 +374,7 @@ func makeDNSRerouteKey(req *udpRequest) dnsRerouteKey {
 	if req.routingResult != nil {
 		key.pname = req.routingResult.Pname
 		key.ifindex = req.routingResult.Ifindex
+		key.profile = req.routingResult.ProfileId
 		key.dscp = req.routingResult.Dscp
 		key.mac = req.routingResult.Mac
 	}

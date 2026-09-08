@@ -75,7 +75,7 @@ func TestHTTP3RequestsRouteAfterRewriteAndBeforePoolLookup(t *testing.T) {
 	defer host.Close()
 	plane.mitmHost = host
 	param.Domain, param.Dest, param.networkType = "original.example", netip.MustParseAddrPort("192.0.2.20:443"), *common.NetworkUDP4.NetworkType()
-	param.routingResult.Ifindex, param.routingResult.Dscp = 7, 46
+	param.routingResult.ProfileId, param.routingResult.Ifindex, param.routingResult.Dscp = 42, 7, 46
 	copy(param.routingResult.Pname[:], "app")
 	before := *param.routingResult
 	prepared := prepareFlowRulesForTest(t, "dip(198.51.100.9) && sip(192.0.2.10) && pname(app) -> dnat(127.0.0.1)", fmt.Sprintf(`
@@ -87,6 +87,8 @@ domain(full: original.example) -> block
 dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(packets.LocalAddr()).Port()))
 	prepared.enableMITMPlan(host.Plan())
 	matcher, builder := routingMatcherForTest(t, prepared)
+	matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
+	matcher.defaultProfileID = 99
 	plane.routingMatcher = matcher
 	plane.outbounds[2] = downloadTestGroup(t, "proxy", func(ctx context.Context, network, address string) (net.Conn, error) {
 		if network != "tcp" || address != "198.51.100.30:8080" {

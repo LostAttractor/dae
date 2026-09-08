@@ -32,7 +32,7 @@ func destinationTestMatcher(t *testing.T, text string) (*RoutingMatcher, *Routin
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := NewRoutingMatcherBuilder(nil, map[string]uint8{"direct": 0, "block": 1}, nil, "direct", nil, nil, r)
+	b, err := compileTestRouting(preparedRules{routing: testRoutingConfig(nil, "direct"), destinations: r}, map[string]uint8{"direct": 0, "block": 1}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +72,12 @@ dip(198.51.100.22) -> dnat(198.51.100.23)`)
 		if got := p.dialTarget(true); got != test.want {
 			t.Fatal("domain dial override replaced DNAT")
 		}
-		src, dst := p.Src.Addr().As16(), p.Dest.Addr().As16()
-		out, _, _, err := m.Match(src[:], dst[:], p.Src.Port(), p.Dest.Port(), consts.IpVersion_4, consts.L4ProtoType_TCP, p.Domain, [16]uint8{}, 0, 0, make([]byte, 16))
+		out, _, _, err := m.match(routingInput{
+			src:     p.Src,
+			dst:     p.Dest,
+			l4proto: consts.L4ProtoType_TCP,
+			domain:  p.Domain,
+		})
 		if err != nil || out != consts.OutboundDirect {
 			t.Fatalf("DNAT changed ordinary routing: %v %v", out, err)
 		}
@@ -110,16 +114,18 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 	// Materialize only the kernel candidate as a normal test terminal. Domain
 	// is intentionally unavailable; all remaining metadata still constrains it.
 	for i := range b.rules {
-		if b.rules[i].CaptureFlags&captureDestination != 0 {
-			b.rules[i].CaptureFlags = 0
+		if ((b.rules[i].Flags>>3)&3)&captureDestination != 0 {
+			b.rules[i].Flags &^= 3 << 3
 			b.rules[i].Action = uint8(consts.MatchActionRoute)
 			b.rules[i].Outbound = 2
 		}
 	}
-	src, dst := p.Src.Addr().As16(), p.Dest.Addr().As16()
-	var mac16 [16]byte
-	copy(mac16[10:], mac[:])
-	out, _, _, err := m.Match(src[:], dst[:], 12345, 443, consts.IpVersion_4, consts.L4ProtoType_TCP, "", [16]uint8{}, 0, 0, mac16[:])
+	out, _, _, err := m.match(routingInput{
+		src:     p.Src,
+		dst:     p.Dest,
+		l4proto: consts.L4ProtoType_TCP,
+		mac:     mac,
+	})
 	if err != nil || out != 2 {
 		t.Fatalf("kernel candidate lost possible negative-domain match: %v %v", out, err)
 	}

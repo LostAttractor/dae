@@ -18,7 +18,7 @@ func TestPrepareRoutingRulesPreparesEveryTreeWithoutMutatingConfig(t *testing.T)
 	routingRule := ruleWithFunctionAlias("ip")
 	requestRule := ruleWithFunctionAlias("ip")
 	responseRule := ruleWithFunctionAlias(consts.Function_ResponseIp)
-	routingConfig := &config.Routing{Rules: []*config_parser.RoutingRule{routingRule}}
+	routingConfig := testRoutingConfig([]*config_parser.RoutingRule{routingRule}, "direct")
 	dnsConfig := &config.Dns{Routing: config.DnsRouting{
 		Request:  config.DnsRequestRouting{Rules: []*config_parser.RoutingRule{requestRule}},
 		Response: config.DnsResponseRouting{Rules: []*config_parser.RoutingRule{responseRule}},
@@ -28,7 +28,7 @@ func TestPrepareRoutingRulesPreparesEveryTreeWithoutMutatingConfig(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := prepared.routing[0].AndFunctions[0].Name; got != consts.Function_DestIp {
+	if got := prepared.routing.Policies[0].Statements[0].Rule.AndFunctions[0].Name; got != consts.Function_DestIp {
 		t.Fatalf("prepared routing function = %q, want %q", got, consts.Function_DestIp)
 	}
 	if got := prepared.dnsRequest[0].AndFunctions[0].Name; got != consts.Function_DestIp {

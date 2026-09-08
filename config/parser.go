@@ -212,6 +212,8 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 		return parseNodeList(target, section)
 	case *[]Subscription:
 		return parseSubscriptionList(target, section)
+	case *Routing:
+		return parseRouting(target, section)
 	}
 	to = to.Elem()
 	switch to.Kind() {

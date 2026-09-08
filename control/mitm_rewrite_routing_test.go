@@ -62,18 +62,20 @@ domain(full: original.example) && dport(8080) -> block
 dip(198.51.100.4,198.51.100.40) && sip(192.0.2.10) && sport(5000) && pname(app) && dscp(46) && dport(8080,8081) -> proxy(mark:91)
 domain(full: original.example) -> block`)
 			matcher, _ := routingMatcherForTest(t, prepared)
+			matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
 			plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)}, routingMatcher: matcher, outbounds: groups, fallbackResolver: "192.0.2.53:53", sniffVerifyMode: consts.SniffVerifyMode_None}
 			attachDownloadTestDNS(t, plane, "test", "accept", func(message *dnsmessage.Msg) {
 				message.Response = true
 				message.Answer = []dnsmessage.RR{&dnsmessage.A{Hdr: dnsmessage.RR_Header{Name: message.Question[0].Name, Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60}, A: net.ParseIP("198.51.100.4")}}
 			})
+			matcher.defaultProfileID = 99
 			host := controlTestHost(t, rewriteTestPlugin(t, map[string]string{"/old": test.url}), nil)
 			selected, err := groups[0].Select(common.NetworkTCP4.NetworkType())
 			if err != nil {
 				t.Fatal(err)
 			}
 			option := &DialOption{Outbound: groups[0], Dialer: selected, Direct: true, DialTarget: "192.0.2.20:80", NetworkType: *common.NetworkTCP4.NetworkType()}
-			identity := bpfRoutingResult{Ifindex: 7, Dscp: 46, CaptureFlags: captureHTTP, Mark: 37, Must: 1}
+			identity := bpfRoutingResult{ProfileId: 42, Ifindex: 7, Dscp: 46, CaptureFlags: captureHTTP, Mark: 37, Must: 1}
 			copy(identity.Pname[:], "app")
 			planner := plane.mitmUpstreamPlanner("tcp", "original.example", netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort(option.DialTarget), identity, option)
 			if test.deferred {
@@ -109,7 +111,7 @@ domain(full: original.example) -> block`)
 			if gotOutbound != test.outbound || gotTarget != test.target || (test.status == 502 && dials != 0) {
 				t.Fatalf("upstream=%s/%s dials=%d, want=%s/%s", gotOutbound, gotTarget, dials, test.outbound, test.target)
 			}
-			if identity.Mark != 37 || identity.Must != 1 {
+			if identity.Mark != 37 || identity.Must != 1 || identity.ProfileId != 42 {
 				t.Fatal("rewritten request mutated original flow identity")
 			}
 		})

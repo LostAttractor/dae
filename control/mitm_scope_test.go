@@ -35,10 +35,10 @@ func testMITMScopeRouting(t *testing.T, scopes []plugin.HTTPScope, hosts []scope
 				AndFunctions: []*config_parser.Function{{Name: "dport", Params: []*config_parser.Param{{Val: "443"}}}},
 				Outbound:     config_parser.Function{Name: "direct", Params: []*config_parser.Param{{Key: "mark", Val: "37"}}},
 			}
-			preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{original}}}
+			preparation := &ControlPlanePreparation{rules: preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{original}, "direct")}}
 			preparation.rules.enableMITMPlan(host.Plan())
-			if len(preparation.rules.routing) != 1 || preparation.rules.routing[0] != original {
-				t.Fatal("plugin capture replaced the explicit direct route")
+			if len(preparation.rules.routing.Policies[0].Statements) != 1 || preparation.rules.routing.Policies[0].Statements[0].Rule != original {
+				t.Fatal("module capture replaced the explicit direct route")
 			}
 			userspace, _ := routingMatcherForTest(t, preparation.rules)
 			capture, builder := routingMatcherForTest(t, preparation.rules)

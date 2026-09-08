@@ -1,69 +1,55 @@
 # Separate Configuration Files
 
-Sometimes you want to break your configuration file into several files. It may be useful in the following cases:
+Use `include` to keep nodes, DNS and routing in separate files. Routing policies can compose shared `rule_set` fragments with ordered `use` statements, including nested references.
 
-1. You want to switch nodes via modify the config file using tools like `sed`.
-2. You copy other's configuration file and you want to overwrite some parts of it.
+Relative include paths are resolved from the directory containing the entry configuration file, even inside an included file. Absolute paths are used as-is, but every included file must remain below the entry configuration directory.
 
-## Example
+## Directory layout
 
-Directory Structure:
-
-```sh
-# tree /etc/dae
-/etc/dae
-├── config.d
-│  ├── dns.dae
-│  ├── node.dae
-│  └── route.dae
-└── config.dae
+```text
+/etc/dae/
+├── config.dae
+└── config.d/
+    ├── dns.dae
+    ├── node.dae
+    ├── 10-base.dae
+    ├── 20-regional.dae
+    ├── 30-policies.dae
+    └── 40-interfaces.dae
 ```
 
-Config files:
+## Configuration files
 
-Relative include paths are resolved from the directory containing the entry
-configuration file. Absolute paths are used as-is, but included files must
-still be located below the entry configuration directory.
+`config.dae`:
 
-```jsonc
+```shell
 # config.dae
-
-# load all dae files placed in ./config.d/
 include {
     config.d/*.dae
-    # /etc/dae/config.d/*.dae
 }
+
 global {
     tproxy_port: 12345
-
     log_level: warn
-
-    udp_check_dns: 'dns.google:53'
-    check_interval: 600s
-    check_tolerance: 50ms
-
-    #lan_interface: eth0
-    wan_interface: eth0
-    allow_insecure: false
-
-    dial_mode: domain
-    disable_waiting_network: false
+    lan_interface: br-lan, wg0
+    wan_interface: auto
     auto_config_kernel_parameter: true
-    sniffing_timeout: 100ms
+    dial_target_override: true
+    reroute_mode: while_needed
 }
 ```
 
-```jsonc
-# dns.dae
+`config.d/dns.dae`:
+
+```shell
+# config.d/dns.dae
 dns {
     upstream {
         alidns: 'udp://dns.alidns.com:53'
         googledns: 'tcp+udp://dns.google:53'
     }
-
     routing {
         request {
-            qname(geosite:category-ads) -> reject
             qname(geosite:category-ads-all) -> reject
             fallback: alidns
         }
@@ -76,27 +62,25 @@ dns {
 }
 ```
 
-```jsonc
-# node.dae
-node {
-    node1: 'xxx'
-    node2: 'xxx'
-}
+`config.d/node.dae`:
 
+```shell
+# config.d/node.dae
+node {
+    node1: 'socks5://127.0.0.1:1080'
+    node2: 'socks5://127.0.0.1:1081'
+}
 subscription {
     my_sub: 'https://www.example.com/subscription/link'
 }
-
 group {
     my_group {
         filter: subtag(my_sub) && !name(keyword: 'ExpireAt:')
         policy: min_moving_avg
     }
-
     local_entry {
         filter: name(node1)
     }
-
     local_group {
         group(local_entry) -> node(node2)
         policy: fixed(0)
@@ -104,27 +88,84 @@ group {
 }
 ```
 
-```jsonc
-# route.dae
+`config.d/10-base.dae`:
+
+```shell
+# config.d/10-base.dae
 routing {
-    pname(NetworkManager) -> direct
-    dip(224.0.0.0/3, 'ff00::/8') -> direct
-    dip(geoip:private) -> direct
-
-    dip(1.14.5.14) -> direct
-
-    domain(geosite:openai) -> local_group
-    dip(geoip:cn) -> direct
-    domain(geosite:cn) -> direct
-    domain(geosite:category-scholar-cn) -> direct
-    domain(geosite:geolocation-cn) -> direct
-
-
-    fallback: my_group
+    rule_set {
+        base {
+            pname(NetworkManager) -> direct
+            dip(224.0.0.0/3, 'ff00::/8') -> direct
+            dip(geoip:private) -> direct
+        }
+    }
 }
 ```
 
-Then run `dae` via:
+`config.d/20-regional.dae`:
+
+```shell
+# config.d/20-regional.dae
+routing {
+    rule_set {
+        regional {
+            use: base
+            domain(geosite:openai) -> local_group
+            dip(geoip:cn) -> direct
+            domain(geosite:cn) -> direct
+        }
+    }
+}
+```
+
+`config.d/30-policies.dae`:
+
+```shell
+# config.d/30-policies.dae
+routing {
+    policy {
+        main {
+            use: regional
+            fallback: my_group
+        }
+        lan {
+            use: regional
+            fallback: direct
+        }
+        tunnel {
+            use: base
+            fallback: my_group
+        }
+    }
+}
+```
+
+`config.d/40-interfaces.dae`:
+
+```shell
+# config.d/40-interfaces.dae
+routing {
+    default: main
+    interface {
+        br-lan: lan
+        wg0: tunnel
+    }
+}
+```
+
+## Composition and precedence
+
+- Keep a `routing { ... }` wrapper in each file. Declare each named fragment and policy once across the merged configuration; compose large policies using `use`.
+- References may precede declarations. Rules and uses determine matching order, independently of filenames. `use: a, b` references a then b; cycles are rejected.
+- Fragments cannot contain fallback. Each policy declares exactly one fallback. Here, `main` and `lan` share the rules in `regional`, with `my_group` and `direct` as their respective fallbacks.
+- `default: main` selects the default policy. Interface bindings independently select complete policies. `wg0` selects `tunnel`, which runs only `base` before falling back to `my_group`. Several interfaces and the default may select the same policy.
+- Interface names are exact and cannot be bound twice. Configure traffic capture with `global.lan_interface` / `global.wan_interface`; routing bindings alone do not attach dae to devices.
+- A single default policy may instead write rules, uses and fallback directly inside `routing`, alongside fragment and named policy declarations. In that form, omit `default: policy_name`.
+
+MITM plugins, native DNAT rules and Surge Host mappings automatically share their internal capture fragment across all policies. No repeated `control_plane_routing` rules or explicit `use` are needed. Keep `rules { ... -> dnat(ip) }` and `mitm { ... }` at the top level.
+
+See [routing](routing.md) for matching and module precedence. After replacing the sample nodes, subscription URL and interface names, start dae with:
 
 ```sh
 dae run -c /etc/dae/config.dae

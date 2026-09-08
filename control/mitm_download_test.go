@@ -61,7 +61,7 @@ func downloadTestPlane(t *testing.T, rules string, groups ...*outbound.DialerGro
 	for i, group := range groups {
 		ids[group.Name] = uint8(i)
 	}
-	builder, err := NewRoutingMatcherBuilder(configuration.Routing.Rules, ids, nil, "direct", nil, nil, nil)
+	builder, err := compileTestRouting(preparedRules{routing: &configuration.Routing}, ids, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,6 +8,9 @@
 #include "../tproxy.c"
 #include "./bpf_test.h"
 
+/* A full profile exceeds the BPF stack limit; prepare test values in .bss. */
+struct routing_profile test_profile;
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
 	__uint(key_size, sizeof(__u32));
@@ -1217,6 +1220,232 @@ int testcheck_dport_mismatch(struct __sk_buff *skb)
 				      19233, 79);
 }
 
+SEC("tc/pktgen/profile_domain_shared_id")
+int testpktgen_profile_domain_shared_id(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,9), 19233, 80);
+}
+
+SEC("tc/setup/profile_domain_shared_id")
+int testsetup_profile_domain_shared_id(struct __sk_buff *skb)
+{
+	set_routing_fallback(OUTBOUND_DIRECT, true, &zero_key);
+	struct match_set domain = {
+		.type = MatchType_DomainSet,
+		.index = 7, /* Domain ID differs from physical slot 2 and profile step 0. */
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+	};
+	bpf_map_update_elem(&routing_map, &two_key, &domain, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+	set_domain_routing(IPV4(4,4,4,9), 1 << 7, 1 << 7);
+
+	__u32 ifindex = skb->ifindex;
+	__u32 profile_id = 70001;
+	test_profile.length = 2;
+	test_profile.steps[0] = 2;
+	test_profile.steps[1] = 0;
+	bpf_map_update_elem(&routing_profile_map, &profile_id, &test_profile, BPF_ANY);
+	bpf_map_update_elem(&routing_interface_map, &ifindex, &profile_id, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/profile_domain_shared_id")
+int testcheck_profile_domain_shared_id(struct __sk_buff *skb)
+{
+	__u32 ifindex = skb->ifindex;
+	__u32 profile_id = 70001;
+	bpf_map_delete_elem(&routing_interface_map, &ifindex);
+	clear_routing_entry(&zero_key);
+	clear_routing_entry(&two_key);
+	return check_routing_ipv4_tcp_profile(
+		skb, profile_id,
+		IPV4(192,168,0,1), IPV4(4,4,4,9), 19233, 80);
+}
+
+SEC("tc/pktgen/profile_interface")
+int testpktgen_profile_interface(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/setup/profile_interface")
+int testsetup_profile_interface(struct __sk_buff *skb)
+{
+	/* The default identity profile would match this proxy rule. */
+	struct match_set proxy = {
+		.port_range = {80, 80},
+		.type = MatchType_Port,
+		.outbound = OUTBOUND_USER_DEFINED_MIN,
+	};
+	bpf_map_update_elem(&routing_map, &zero_key, &proxy, BPF_ANY);
+	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
+	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
+	set_routing_fallback(OUTBOUND_USER_DEFINED_MIN, false, &two_key);
+
+	/* Sparse stable IDs directly select a profile with one physical step. */
+	__u32 ifindex = skb->ifindex;
+	__u32 profile_id = 70001;
+	test_profile.length = 1;
+	test_profile.steps[0] = 2;
+	bpf_map_update_elem(&routing_profile_map, &profile_id, &test_profile, BPF_ANY);
+	bpf_map_update_elem(&routing_interface_map, &ifindex, &profile_id, BPF_ANY);
+
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/profile_interface")
+int testcheck_profile_interface(struct __sk_buff *skb)
+{
+	__u32 ifindex = skb->ifindex;
+	__u32 profile_id = 70001;
+	bpf_map_delete_elem(&routing_interface_map, &ifindex);
+	clear_routing_entry(&zero_key);
+	clear_routing_entry(&one_key);
+	clear_routing_entry(&two_key);
+	return check_routing_ipv4_tcp_profile(
+		skb, profile_id,
+		IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
+}
+
+SEC("tc/pktgen/profile_udp_cache_switch")
+int testpktgen_profile_udp_cache_switch(struct __sk_buff *skb)
+{
+	return set_ipv4_udp(skb, IPV4(192,168,0,2), IPV4(1,1,1,2),
+			    19234, 443);
+}
+
+SEC("tc/setup/profile_udp_cache_switch")
+int testsetup_profile_udp_cache_switch(struct __sk_buff *skb)
+{
+	const __u8 retained_outbound = OUTBOUND_USER_DEFINED_MIN + 50;
+	const __u8 selected_outbound = OUTBOUND_USER_DEFINED_MIN + 51;
+	__u32 ifindex = skb->ifindex;
+	__u32 profile_id = 70002;
+	test_profile.length = 1;
+	test_profile.steps[0] = 2;
+
+	set_ipv4_udp_routing_cache(skb,
+		IPV4(192,168,0,2), IPV4(1,1,1,2), 19234, 443,
+		retained_outbound, bpf_ktime_get_ns() + 10 * UDP_ROUTING_CACHE_TTL_NS);
+	/* The source lifetime keeps its first profile after an interface change. */
+	struct udp_routing_cache_key key;
+	make_ipv4_udp_cache_key(&key, IPV4(192,168,0,2), IPV4(1,1,1,2), 19234, 443, ifindex);
+	struct udp_routing_cache_value *value = bpf_map_lookup_elem(&udp_routing_cache_map, &key);
+	if (value)
+		value->result.profile_id = 70001;
+	set_outbound_connectivity(retained_outbound);
+	set_outbound_connectivity(selected_outbound);
+	set_routing_fallback(selected_outbound, false, &two_key);
+	bpf_map_update_elem(&routing_profile_map, &profile_id, &test_profile, BPF_ANY);
+	bpf_map_update_elem(&routing_interface_map, &ifindex, &profile_id, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/profile_udp_cache_switch")
+int testcheck_profile_udp_cache_switch(struct __sk_buff *skb)
+{
+	const __u8 retained_outbound = OUTBOUND_USER_DEFINED_MIN + 50;
+	struct tuples_key handoff_key;
+	struct udp_routing_cache_key cache_key;
+	struct routing_result *result;
+	struct udp_routing_cache_value *cached;
+	__u32 ifindex = skb->ifindex;
+	int ret = check_status_code(skb, TC_ACT_REDIRECT);
+
+	make_ipv4_udp_routing_key(&handoff_key,
+		IPV4(192,168,0,2), IPV4(1,1,1,2), 19234, 443);
+	result = bpf_map_lookup_elem(&routing_tuples_map, &handoff_key);
+	if (!result || result->outbound != retained_outbound ||
+	    result->profile_id != 70001)
+		ret = TC_ACT_SHOT;
+
+	make_ipv4_udp_cache_key(&cache_key,
+		IPV4(192,168,0,2), IPV4(1,1,1,2), 19234, 443, ifindex);
+	cached = bpf_map_lookup_elem(&udp_routing_cache_map, &cache_key);
+	/* Both cached policy and handoff retain the first source decision. */
+	if (!cached || cached->result.outbound != retained_outbound || cached->result.profile_id != 70001)
+		ret = TC_ACT_SHOT;
+
+	bpf_map_delete_elem(&routing_tuples_map, &handoff_key);
+	bpf_map_delete_elem(&udp_routing_cache_map, &cache_key);
+	bpf_map_delete_elem(&routing_interface_map, &ifindex);
+	clear_routing_entry(&two_key);
+	return ret;
+}
+
+SEC("tc/pktgen/profile_shared_capture")
+int testpktgen_profile_shared_capture(struct __sk_buff *skb)
+{
+	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(4,4,4,10), 19235, 443);
+}
+
+SEC("tc/setup/profile_shared_capture")
+int testsetup_profile_shared_capture(struct __sk_buff *skb)
+{
+	__u32 capture_index = 8;
+	__u32 fallback_index = 2;
+	struct match_set capture = {
+		.type = MatchType_L4Proto,
+		.outbound = OUTBOUND_DIRECT,
+		.l4proto_type = L4ProtoType_TCP,
+		.flags = (CAPTURE_HTTP | CAPTURE_DESTINATION) << MATCH_CAPTURE_SHIFT,
+		.action = MatchAction_Capture,
+	};
+	struct match_set fallback = {
+		.type = MatchType_Fallback,
+		.outbound = OUTBOUND_DIRECT,
+		.mark = 42,
+		.flags = MATCH_FLAG_MUST,
+	};
+	bpf_map_update_elem(&routing_map, &capture_index, &capture, BPF_ANY);
+	bpf_map_update_elem(&routing_map, &fallback_index, &fallback, BPF_ANY);
+	/* Both profiles share capture. Destination candidates retain the policy
+	 * identity but defer its terminal until the target has been rewritten. */
+	test_profile.length = 2;
+	test_profile.steps[0] = capture_index;
+	test_profile.steps[1] = fallback_index;
+	bpf_map_update_elem(&routing_profile_map, &zero_key, &test_profile, BPF_ANY);
+	__u32 profile_id = 70003;
+	bpf_map_update_elem(&routing_profile_map, &profile_id, &test_profile, BPF_ANY);
+	__u32 ifindex = skb->ifindex;
+	bpf_map_update_elem(&routing_interface_map, &ifindex, &profile_id, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_OK;
+}
+
+SEC("tc/check/profile_shared_capture")
+int testcheck_profile_shared_capture(struct __sk_buff *skb)
+{
+	int ret = check_routing_ipv4_tcp_with_result(skb, TC_ACT_REDIRECT,
+		OUTBOUND_CONTROL_PLANE_ROUTING, false,
+		IPV4(192,168,0,1), IPV4(4,4,4,10), 19235, 443);
+	struct tuples_key key = {};
+	make_ipv4_udp_routing_key(&key,
+		IPV4(192,168,0,1), IPV4(4,4,4,10), 19235, 443);
+	key.l4proto = IPPROTO_TCP;
+	struct routing_result *result = bpf_map_lookup_elem(&routing_tuples_map, &key);
+	if (!result || result->profile_id != 70003 || result->mark != 0 ||
+	    result->capture_flags != (CAPTURE_HTTP | CAPTURE_DESTINATION))
+		ret = TC_ACT_SHOT;
+	bpf_map_delete_elem(&routing_tuples_map, &key);
+	__u32 ifindex = skb->ifindex;
+	bpf_map_delete_elem(&routing_interface_map, &ifindex);
+	__u32 capture_index = 8;
+	clear_routing_entry(&capture_index);
+	clear_routing_entry(&two_key);
+	test_profile.length = MAX_MATCH_SET_LEN;
+	int i;
+	bpf_for(i, 0, MAX_MATCH_SET_LEN) {
+		test_profile.steps[i] = i;
+	}
+	bpf_map_update_elem(&routing_profile_map, &zero_key, &test_profile, BPF_ANY);
+	return ret;
+}
+
 SEC("tc/pktgen/ipset_match")
 int testpktgen_ipset_match(struct __sk_buff *skb)
 {
@@ -1701,7 +1930,6 @@ int testsetup_dscp_match(struct __sk_buff *skb)
 	/* dscp(4) -> proxy */
 	struct match_set ms = {
 		.dscp = 4,
-		.not = false,
 		.type = MatchType_Dscp,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
@@ -1736,7 +1964,6 @@ int testsetup_dscp_mismatch(struct __sk_buff *skb)
 	/* dscp(5) -> proxy */
 	struct match_set ms = {
 		.dscp = 5,
-		.not = false,
 		.type = MatchType_Dscp,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
@@ -1772,6 +1999,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 	struct match_set ms1 = {
 		.type = MatchType_IpSet,
 		.action = MatchAction_And,
+		.mark = 4,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
@@ -1787,6 +2015,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 		.l4proto_type = L4ProtoType_TCP,
 		.type = MatchType_L4Proto,
 		.action = MatchAction_And,
+		.mark = 3,
 	};
 	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
 
@@ -1794,6 +2023,7 @@ int testsetup_and_match_1(struct __sk_buff *skb)
 		.port_range = {1, 1023},
 		.type = MatchType_Port,
 		.action = MatchAction_Or,
+		.mark = 1,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
 
@@ -1834,6 +2064,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 	struct match_set ms1 = {
 		.type = MatchType_IpSet,
 		.action = MatchAction_And,
+		.mark = 4,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
@@ -1849,6 +2080,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 		.l4proto_type = L4ProtoType_TCP,
 		.type = MatchType_L4Proto,
 		.action = MatchAction_And,
+		.mark = 3,
 	};
 	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
 
@@ -1856,6 +2088,7 @@ int testsetup_and_match_2(struct __sk_buff *skb)
 		.port_range = {1, 1023},
 		.type = MatchType_Port,
 		.action = MatchAction_Or,
+		.mark = 1,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
 
@@ -1896,6 +2129,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 	struct match_set ms1 = {
 		.type = MatchType_IpSet,
 		.action = MatchAction_And,
+		.mark = 4,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms1, BPF_ANY);
 
@@ -1911,6 +2145,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 		.l4proto_type = L4ProtoType_TCP,
 		.type = MatchType_L4Proto,
 		.action = MatchAction_And,
+		.mark = 3,
 	};
 	bpf_map_update_elem(&routing_map, &one_key, &ms2, BPF_ANY);
 
@@ -1918,6 +2153,7 @@ int testsetup_and_mismatch(struct __sk_buff *skb)
 		.port_range = {1, 1023},
 		.type = MatchType_Port,
 		.action = MatchAction_Or,
+		.mark = 1,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &ms3, BPF_ANY);
 
@@ -1957,7 +2193,7 @@ int testsetup_not_match(struct __sk_buff *skb)
 	/* !dport(80) -> proxy */
 	struct match_set ms = {
 		.port_range = {80, 80},
-		.not = true,
+		.flags = MATCH_FLAG_NOT,
 		.type = MatchType_Port,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
@@ -1991,7 +2227,7 @@ int testsetup_not_mismtach(struct __sk_buff *skb)
 	/* !dport(80) -> proxy */
 	struct match_set ms1 = {
 		.port_range = {80, 80},
-		.not = true,
+		.flags = MATCH_FLAG_NOT,
 		.type = MatchType_Port,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
 	};
@@ -2028,7 +2264,7 @@ int testsetup_skip_while_noalive_alive(struct __sk_buff *skb)
 		.port_range = {80, 80},
 		.type = MatchType_Port,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
-		.skip_while_noalive = true,
+		.flags = MATCH_FLAG_SKIP_NOALIVE,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
@@ -2065,7 +2301,7 @@ int testsetup_skip_while_noalive_dead(struct __sk_buff *skb)
 		.port_range = {80, 80},
 		.type = MatchType_Port,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
-		.skip_while_noalive = true,
+		.flags = MATCH_FLAG_SKIP_NOALIVE,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
 	set_outbound_connectivity_dead_try_sniff(OUTBOUND_USER_DEFINED_MIN);
@@ -2123,43 +2359,6 @@ int testcheck_noalive_try_sniff(struct __sk_buff *skb)
 				      19233, 80);
 }
 
-SEC("tc/pktgen/skip_while_noalive_block")
-int testpktgen_skip_while_noalive_block(struct __sk_buff *skb)
-{
-	return set_ipv4_tcp(skb, IPV4(192,168,0,1), IPV4(1,1,1,1), 19233, 80);
-}
-
-SEC("tc/setup/skip_while_noalive_block")
-int testsetup_skip_while_noalive_block(struct __sk_buff *skb)
-{
-	/* This malformed rule cannot be produced by the userspace builder. Keep
-	 * built-in outbounds independent of connectivity map state defensively. */
-	struct match_set ms = {
-		.port_range = {80, 80},
-		.type = MatchType_Port,
-		.outbound = OUTBOUND_BLOCK,
-		.skip_while_noalive = true,
-	};
-	bpf_map_update_elem(&routing_map, &zero_key, &ms, BPF_ANY);
-
-	/* fallback: must_direct */
-	set_routing_fallback(OUTBOUND_DIRECT, true, &one_key);
-
-	bpf_tail_call(skb, &entry_call_map, 0);
-	return TC_ACT_OK;
-}
-
-SEC("tc/check/skip_while_noalive_block")
-int testcheck_skip_while_noalive_block(struct __sk_buff *skb)
-{
-	/* The block rule must hit even though built-ins have no connectivity map
-	 * entries in production. */
-	return check_routing_ipv4_tcp(skb,
-				      TC_ACT_SHOT,
-				      IPV4(192,168,0,1), IPV4(1,1,1,1),
-				      19233, 80);
-}
-
 SEC("tc/pktgen/domain_not_partial_and_port_match")
 int testpktgen_domain_not_partial_and_port_match(struct __sk_buff *skb)
 {
@@ -2172,8 +2371,9 @@ int testsetup_domain_not_partial_and_port_match(struct __sk_buff *skb)
 	/* !domain(...) is ambiguous for this shared IP; dport(80) still matches. */
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
-		.not = true,
+		.flags = MATCH_FLAG_NOT,
 		.action = MatchAction_And,
+		.mark = 2,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 
@@ -2213,8 +2413,9 @@ int testsetup_domain_not_partial_and_port_mismatch(struct __sk_buff *skb)
 	/* The ambiguous domain must not override a later failed AND condition. */
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
-		.not = true,
+		.flags = MATCH_FLAG_NOT,
 		.action = MatchAction_And,
+		.mark = 2,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 
@@ -2255,6 +2456,7 @@ int testsetup_domain_partial_resolved_by_or(struct __sk_buff *skb)
 	struct match_set partial = {
 		.type = MatchType_DomainSet,
 		.action = MatchAction_Or,
+		.mark = 1,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &partial, BPF_ANY);
 
@@ -2328,7 +2530,7 @@ int testsetup_domain_partial_terminal_must(struct __sk_buff *skb)
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
-		.must = true,
+		.flags = MATCH_FLAG_MUST,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
@@ -2371,7 +2573,7 @@ int testsetup_domain_partial_keeps_prior_must(struct __sk_buff *skb)
 		.type = MatchType_DomainSet,
 		.index = 1,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
-		.must = true,
+		.flags = MATCH_FLAG_MUST,
 	};
 	bpf_map_update_elem(&routing_map, &two_key, &domain, BPF_ANY);
 	set_outbound_connectivity(OUTBOUND_USER_DEFINED_MIN);
@@ -2446,7 +2648,7 @@ int testsetup_domain_partial_skips_noalive(struct __sk_buff *skb)
 	struct match_set domain = {
 		.type = MatchType_DomainSet,
 		.outbound = OUTBOUND_USER_DEFINED_MIN,
-		.skip_while_noalive = true,
+		.flags = MATCH_FLAG_SKIP_NOALIVE,
 	};
 	bpf_map_update_elem(&routing_map, &zero_key, &domain, BPF_ANY);
 	struct outbound_connectivity_query connectivity = {
@@ -2579,7 +2781,7 @@ int testsetup_udp_route_cache_skip_noalive(struct __sk_buff *skb)
 	struct match_set cached_rule = {
 		.type = MatchType_Fallback,
 		.outbound = cached_outbound,
-		.skip_while_noalive = true,
+		.flags = MATCH_FLAG_SKIP_NOALIVE,
 	};
 
 	set_ipv4_udp_routing_cache(skb, IPV4(192,168,1,10), IPV4(1,1,1,10),

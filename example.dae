@@ -4,6 +4,8 @@
 #     /etc/dae/config.d/*.dae
 # }
 # Relative include paths are resolved from the entry configuration directory. Absolute paths are used as-is.
+# Each routing fragment file needs a routing { ... } wrapper. Declare each rule_set, default and interface
+# profile once, then compose them with ordered use statements. See docs/en/configuration/separate-config.md.
 # DAE_LOCATION_CACHE sets the writable state directory (default: /var/lib/dae) for CA files,
 # explicit remote caches, relative Surge file: module sources and MITM certificate/plugin store paths.
 # The configuration directory may remain read-only. See docs/zh/configuration/cache-directory.md.
@@ -434,33 +436,64 @@ rules {
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
-    ### Preset rules.
+    # Reusable fragments contain rules and nested use statements, without a fallback.
+    # use: a, b inserts both rule sets at that position, in order.
+    rule_set {
+        base {
+            # Keep local network managers direct so WAN capture does not break connectivity checks.
+            pname(NetworkManager) -> direct
 
-    # Routing may also reference a uniquely named node directly. Quote names containing spaces or non-ASCII text.
-    #domain(full: special.example) -> 'Hong Kong 01'(skip_while_noalive)
+            # Keep broadcast, multicast and private destinations on the local network.
+            # "dip" means destination IP. Remove the private rule if your proxy should reach these addresses.
+            dip(224.0.0.0/3, 'ff00::/8') -> direct
+            dip(geoip:private) -> direct
+        }
 
-    # Network managers in localhost should be direct to avoid false negative network connectivity check when binding to
-    # WAN.
-    pname(NetworkManager) -> direct
+        regional {
+            # Disable h3 because it usually consumes too much CPU/memory.
+            l4proto(udp) && dport(443) -> block
+            dip(geoip:cn) -> direct
+            domain(geosite:cn) -> direct
+        }
+    }
 
-    # Put it in the front to prevent broadcast, multicast and other packets that should be sent to the LAN from being
-    # forwarded by the proxy.
-    # "dip" means destination IP.
-    dip(224.0.0.0/3, 'ff00::/8') -> direct
+    policy {
+        main {
+            use: base
 
-    # This line allows you to access private addresses directly instead of via your proxy. If you really want to access
-    # private addresses in your proxy host network, modify the below line.
-    dip(geoip:private) -> direct
+            ### Write your rules below. Rules are evaluated in statement order.
 
-    ### Write your rules below.
+            # A routing target may be a uniquely named node. Quote names containing spaces or non-ASCII text.
+            #domain(full: special.example) -> 'Hong Kong 01'(skip_while_noalive)
 
-    # Devices join or leave this MAC set through the page/API. See docs/en/configuration/api.md.
-    #client(proxy_devices) -> my_group
+            # Devices join or leave this MAC set through the page/API. See docs/en/configuration/api.md.
+            #client(proxy_devices) -> my_group
 
-    # Disable h3 because it usually consumes too much cpu/mem resources.
-    l4proto(udp) && dport(443) -> block
-    dip(geoip:cn) -> direct
-    domain(geosite:cn) -> direct
+            use: regional
+            fallback: my_group
+        }
 
-    fallback: my_group
+        # Optional independent policy for local traffic.
+        #lan {
+        #    use: base, regional
+        #    fallback: direct
+        #}
+    }
+
+    # Traffic without an interface binding uses this named policy.
+    default: main
+
+    # Each exact device name selects one policy. Multiple devices can share it.
+    # Configure global.lan_interface/wan_interface separately to capture traffic.
+    #interface {
+    #    br-lan: lan
+    #    eth1: lan
+    #    wg0: main
+    #}
+
+    # Every policy declares exactly one fallback, used only after its rules.
+    # For a single default policy, rules/use/fallback may be written directly under routing
+    # alongside declarations; this anonymous form cannot be combined with default: name.
+    # MITM plugins, native DNAT rules and Surge Host mappings automatically share a capture fragment
+    # before every policy. Do not duplicate control_plane_routing rules or add a use for that fragment.
 }

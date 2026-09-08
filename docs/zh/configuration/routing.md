@@ -72,6 +72,77 @@ routing { fallback: foo }
 
 为限制连通性检查和 runtime 的资源增长，每条路径最多包含 16 跳；单个路由目标最多展开 4096 条路径；一份配置最多物化 16384 条路径。
 
+## 规则片段、路由策略与接口绑定
+
+`rule_set` 定义可复用的规则片段，`policy` 定义包含 fallback 的完整路由策略，`default` 和 `interface` 选择策略：
+
+```shell
+routing {
+    rule_set {
+        local {
+            dip(geoip:private) -> direct
+        }
+        china {
+            dip(geoip:cn) -> direct
+            domain(geosite:cn) -> direct
+        }
+    }
+    policy {
+        main {
+            use: local, china
+            fallback: proxy
+        }
+        lan {
+            use: local
+            fallback: direct
+        }
+    }
+    default: main
+    interface {
+        br-lan: lan
+        eth1: lan
+        wg0: main
+    }
+}
+```
+
+- `use: local, china` 按顺序插入两个片段，等价于连续两条 `use`。`use` 可以与普通规则交错，片段还可以引用其他片段；不能引用策略，也不能循环引用。
+- 片段只包含规则和 `use`，不能包含 `fallback`。每个策略必须且只能声明一个 `fallback`。它在所有规则均未命中后执行，与该字段在策略内的书写位置无关。
+- `default: main` 为没有接口绑定的流量选择 `main`；`interface` 中每行将一个精确设备名绑定到命名策略。多个接口及默认路由可以选择同一个策略，它只编译一次。
+- 每个接口名只能绑定一次，即使重复选择同一策略也会报错。含特殊字符的接口名可以加引号，例如 `"foo,bar": lan`；不支持通配符匹配。接口重建后会自动更新 ifindex。
+- 策略彼此独立，不继承默认策略。绑定只选择路由规则，接管流量仍需配置 `global.lan_interface` / `global.wan_interface`。单条规则内仍可使用 `interface(name)` 条件。
+- 策略名和片段名属于不同的命名空间；未定义引用、重复声明或循环引用都会报错。
+
+只需要一个默认策略时，可以直接在 `routing` 中写规则、`use` 和一个 `fallback`：
+
+```shell
+routing {
+    rule_set {
+        local { dip(geoip:private) -> direct }
+    }
+    use: local
+    fallback: proxy
+}
+```
+
+这种写法是匿名默认策略，可与 `rule_set`、命名 `policy` 和 `interface` 声明共存，但不能同时设置 `default: 策略名`。匿名默认策略也必须显式声明 fallback。旧的 `default { ... }` 和在接口块内定义规则的写法不再支持。
+
+### 拆分为多个文件
+
+通过 `include` 分别维护规则片段、策略和接口绑定；每个文件保留 `routing { ... }` 外层。每个命名片段和策略只能声明一次，大型策略通过 `use` 组合更小的片段。引用可以先于声明；执行顺序由策略内的规则和 `use` 决定，与声明文件顺序无关。导出配置会保留引用和执行顺序，并将 fallback 写在策略末尾。完整示例见[拆分配置文件](separate-config.md)。
+
+配置最多包含 1024 个片段及策略、65536 条原始规则及 use 语句、256 个接口绑定，引用深度最多 64 层。共享物理规则池和每套策略的执行长度分别受 `MaxMatchSetLen` 限制（默认 1024）。未使用的片段和策略也会校验，但不占用活动策略的内核规则池，也不会注册接口监听。
+
+### MITM、DNAT 与 Host 的共享捕获片段
+
+启用 MITM 插件、原生 `rules { ... -> dnat(ip) }` 或 Surge Host 后，dae 自动生成内部捕获与流量控制片段，供所有策略共享，无需手动添加规则或 `use`。
+
+执行顺序为：API 本机访问直连 → DNAT/Host 与请求型 HTTP 捕获 → `rules` 中的 must/bump 与纯 MITM 捕获 → 模块 `pre-matching` 规则 → 用户策略规则 → 普通模块规则 → 策略 fallback。所有策略共享同一段捕获与流量控制指令，策略继续决定出站、mark 和 block。MITM 保留插件声明的域名/IP 与对应端口；DNAT/Host 保留完整过滤条件，包括域名。缺少 DNS 映射不会隐式扩大捕获范围，无关 direct 流量保持内核直通。目的地址的用户态精确匹配不占用内核指令槽位，相同域名和静态 IP 条件跨阶段共享。
+
+DNAT/Host 候选命中后，内核在执行 flow/routing 前交接用户态。目标规则按输入目标选定新 IP，后续 flow/routing 使用重写后的目的地址和地址族，保留来源、接口、进程及策略身份；候选未精确命中则继续使用原目标。纯 MITM 检查保留已确定的路由。需要请求路由的范围（Surge 的脚本、URL Rewrite、Map Local）同样提前交接：客户端准入后先执行 HTTP 处理，再按最终目标执行目标规则、flow 和 routing，原目标 block 不抢先终止请求。每个请求在连接池查找前确定路由，池按实际目标、节点、出站和 mark 隔离。详见 [DNAT 行为](destination-rules.md#dnat-行为)与 [MITM 插件](mitm-plugins.md)。
+
+命名策略具有稳定 ID，默认路由和接口引用同一策略时共享该 ID；失败的候选配置不会消耗 ID。UDP 按源 IP 和源端口维护生命周期，活动源保留首次选定的策略及路由，不因调整绑定、切换默认策略或重建接口而立即重路由。生命周期结束后，下一次报文才按当前绑定选路；DNS 重新路由的合并键包含策略 ID，避免不同策略的请求混用决策。
+
 ## 手动选择与设备集合
 
 `policy: selector` 允许手动选择节点，默认选择第一个，也可用 `selector(n)` 指定默认索引。`client(name)` 匹配设备自行加入的 MAC 集合。配置与使用见[页面/API](api.md)。
@@ -88,7 +159,7 @@ dae 仅在无 mark 的直连、无 mark 的直通或可信控制平面路径上�
 
 ### fallback 出站
 # 如果没有规则匹配，流量将通过fallback出站.
-fallback: my_group
+# fallback: my_group
 
 ### 域名规则
 domain(suffix: v2raya.org) -> my_group # 相当于 domain(v2raya.org) -> my_group 
@@ -195,11 +266,9 @@ domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 
 ```
 
-DNAT/Host 候选命中后，内核在执行 flow/routing 前交接用户态。目标规则按输入目标选定新 IP，后续 flow/routing 使用重写后的目的地址和地址族，保留来源、接口与进程身份；候选未精确命中则继续使用原目标。纯 MITM 检查保留已确定的路由。需要请求路由的范围（Surge 的脚本、URL Rewrite、Map Local）同样提前交接：客户端准入后先执行 HTTP 处理，再按最终目标执行目标规则、flow 和 routing，原目标 block 不抢先终止请求。每个请求在连接池查找前确定路由，池按实际目标、节点、出站和 mark 隔离。详见 [DNAT 行为](destination-rules.md#dnat-行为)与 [MITM 插件](mitm-plugins.md)。
-
 ## `rules {}` 中的流量控制
 
-`must` 跳过自动 DNS 接管，继续由普通路由选择出站。`bump` 要求用户态重新路由，出站和 mark 仍由 `routing {}` 决定。它们独立于 MITM，可同时命中，不依赖书写顺序。`must` 不会取消显式的 `bump`、MITM 或 DNAT 捕获。目的地址确定后，整个控制段执行完才应用其交接决定；域名歧义不会遮蔽后续确定性 must 或捕获动作。
+`must` 跳过自动 DNS 接管，继续由普通路由选择出站。`bump` 要求用户态重新路由，出站和 mark 仍由 `routing {}` 决定。它们独立于 MITM，可同时命中，不依赖书写顺序。`must` 不会取消显式的 `bump`、MITM 或 DNAT 捕获。 整个控制段执行完后才决定是否进入用户态；域名歧义不会遮蔽后续确定性 must 或捕获动作。
 
 ```text
 rules {

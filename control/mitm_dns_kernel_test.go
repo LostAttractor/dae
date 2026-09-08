@@ -50,9 +50,10 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 	}
 	defer collection.Close()
 	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		RoutingMap: collection.Maps["routing_map"], LpmArrayMap: collection.Maps["lpm_array_map"],
+		RoutingMap:        collection.Maps["routing_map"],
+		RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"],
 		UnusedLpmType: collection.Maps["unused_lpm_type"], DomainRoutingMap: collection.Maps["domain_routing_map"],
-	}}}
+	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
 	prepared := prepareFlowRulesForTest(t, "", "")
 	plan := mitmRoutingPlugin("grpc.biliapi.net", "app.bilibili.com", "api.bilibili.com", "www.bilibili.com").Plan()
 	if requestRouting {

@@ -4,6 +4,7 @@ package control
 
 import (
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"golang.org/x/sys/unix"
@@ -31,13 +31,10 @@ func clientRule(name string, not bool, outbound string, extra ...*config_parser.
 
 func buildClientMatcher(t *testing.T, rules ...*config_parser.RoutingRule) (*RoutingMatcherBuilder, *RoutingMatcher) {
 	t.Helper()
-	optimized, err := routing.ApplyRulesOptimizers(rules, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := NewRoutingMatcherBuilder(optimized, map[string]uint8{
+	b, err := compileTestRouting(preparedRules{routing: testRoutingConfig(rules,
+		"direct")}, map[string]uint8{
 		"proxy": uint8(consts.OutboundUserDefinedMin), "direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock),
-	}, nil, "direct", nil, nil, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,10 +46,13 @@ func buildClientMatcher(t *testing.T, rules ...*config_parser.RoutingRule) (*Rou
 }
 
 func matchClient(m *RoutingMatcher, mac [6]byte, port uint16) (consts.OutboundIndex, error) {
-	var address, sourceMAC [16]byte
-	copy(sourceMAC[10:], mac[:])
-	outbound, _, _, err := m.Match(address[:], address[:], 12345, port, consts.IpVersion_4,
-		consts.L4ProtoType_TCP, "", [16]byte{}, 0, 0, sourceMAC[:])
+	address := netip.IPv4Unspecified()
+	outbound, _, _, err := m.match(routingInput{
+		src:     netip.AddrPortFrom(address, 12345),
+		dst:     netip.AddrPortFrom(address, port),
+		l4proto: consts.L4ProtoType_TCP,
+		mac:     mac,
+	})
 	return outbound, err
 }
 
@@ -120,9 +120,10 @@ func TestClientSetRejectsInvalidSyntax(t *testing.T) {
 	} {
 		rule := clientRule("", false, "proxy")
 		rule.AndFunctions[0].Params = params
-		if _, err := NewRoutingMatcherBuilder([]*config_parser.RoutingRule{rule}, map[string]uint8{
+		if _, err := compileTestRouting(preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{rule},
+			"direct")}, map[string]uint8{
 			"proxy": uint8(consts.OutboundUserDefinedMin), "direct": uint8(consts.OutboundDirect),
-		}, nil, "direct", nil, nil, nil); err == nil {
+		}, nil, nil); err == nil {
 			t.Errorf("accepted invalid client parameters: %+v", params)
 		}
 	}

@@ -28,3 +28,20 @@ func TestExportOutline(t *testing.T) {
 	}
 	t.Fatal("group path outline is missing")
 }
+
+func TestExportOutlineTreatsRoutingAsOpaque(t *testing.T) {
+	outline := ExportOutline("test")
+	var routing *OutlineElem
+	for _, section := range outline.Structure {
+		if section.Mapping == "routing" {
+			routing = section
+			break
+		}
+	}
+	if routing == nil {
+		t.Fatal("routing outline is missing")
+	}
+	if routing.Type != "config.Routing" || len(routing.Structure) != 0 {
+		t.Fatalf("routing outline must be an opaque ordered policy: %+v", routing)
+	}
+}

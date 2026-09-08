@@ -38,13 +38,13 @@ func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 	} {
 		t.Run(test.route+"/"+test.target+"/"+string(test.proto), func(t *testing.T) {
 			rules := routing.DestinationRewrites{{Filter: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}}, To: []netip.Addr{netip.MustParseAddr(test.target)}}}
-			prepared := preparedRules{routing: []*config_parser.RoutingRule{{
+			prepared := preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{{
 				AndFunctions: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: test.target}}}},
 				Outbound:     config_parser.Function{Name: test.route, Params: []*config_parser.Param{{Val: "must"}, {Key: "mark", Val: "37"}}},
 			}, {
 				AndFunctions: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}},
 				Outbound:     config_parser.Function{Name: "block"},
-			}}}
+			}}, "direct")}
 			prepared.destinations = rules
 			matcher, _ := routingMatcherForTest(t, prepared)
 			plane := &ControlPlane{routingMatcher: matcher, outbounds: groups}
@@ -134,17 +134,20 @@ func TestDestinationCaptureMatchesOnlyConfiguredIPs(t *testing.T) {
 	matcher, builder := destinationTestMatcher(t, "dip(91.108.56.100, '2001:db8::100') -> dnat(198.51.100.1)")
 	// Expose the capture predicate's decision without userspace's marker skip.
 	for i := range builder.rules {
-		if builder.rules[i].CaptureFlags != 0 {
+		if ((builder.rules[i].Flags >> 3) & 3) != 0 {
 			builder.rules[i].Outbound = uint8(consts.OutboundUserDefinedMin)
-			builder.rules[i].CaptureFlags = 0 // Expose the capture predicate as a test terminal.
+			builder.rules[i].Flags &^= 3 << 3 // Expose the capture predicate as a test terminal.
 			builder.rules[i].Action = uint8(consts.MatchActionRoute)
 		}
 	}
 	for _, address := range []string{"91.108.56.100", "91.108.56.101", "2001:db8::100", "2001:db8::101"} {
 		for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
 			ip := netip.MustParseAddr(address)
-			bytes := ip.As16()
-			got, _, _, err := matcher.Match(bytes[:], bytes[:], 1234, 443, consts.IpVersionFromAddr(ip), proto, "", [16]uint8{}, 0, 0, make([]byte, 16))
+			got, _, _, err := matcher.match(routingInput{
+				src:     netip.AddrPortFrom(ip, 1234),
+				dst:     netip.AddrPortFrom(ip, 443),
+				l4proto: proto,
+			})
 			want := consts.OutboundDirect
 			if address == "91.108.56.100" || address == "2001:db8::100" {
 				want = consts.OutboundUserDefinedMin

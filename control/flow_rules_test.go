@@ -43,7 +43,7 @@ domain(full: api.example.com) -> proxy(mark: 37)
 dport(80) -> block`)
 		matcher, builder := routingMatcherForTest(t, prepared)
 		for _, rule := range builder.rules {
-			if rule.CaptureFlags != 0 {
+			if ((rule.Flags >> 3) & 3) != 0 {
 				t.Fatal("must/bump introduced implicit capture")
 			}
 		}
@@ -78,7 +78,7 @@ dport(80) -> block`)
 							wantMark = 0 // Selected during userspace rerouting.
 						}
 					}
-					got, mark, must, err := matcher.Match(src[:], dst[:], 12345, destination.Port(), consts.IpVersion_4, test.proto, test.domain, [16]uint8{}, 0, 0, make([]byte, 16), bitmaps...)
+					got, mark, must, err := matchTestRouting(matcher, src[:], dst[:], 12345, destination.Port(), consts.IpVersion_4, test.proto, test.domain, [16]uint8{}, 0, 0, make([]byte, 16), bitmaps...)
 					if err != nil || got != want || mark != wantMark || must != test.must {
 						t.Fatalf("kernel=%v: got=(%v,%d,%v) err=%v; want=(%v,%d,%v)", kernel, got, mark, must, err, want, wantMark, test.must)
 					}
@@ -96,14 +96,14 @@ dport(443) -> must`, "")
 	prepared.enableMITMPlan(mitmRoutingPlugin("api.example.com").Plan())
 	prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
 	matcher, _ := routingMatcherForTest(t, prepared)
-	// Destination candidates hand off before old-target flow controls.
+	// Destination candidates hand off before any controls for the old target.
 	for _, destination := range []string{"10.0.0.1", "198.51.100.1"} {
-		address := netip.MustParseAddr(destination).As16()
+		address := netip.MustParseAddr(destination)
 		bitmap := matcher.domainMatcher.MatchDomainBitmap("api.example.com")
-		got, err := matcher.evaluateRange(0, matcher.routing.end, routingInput{
-			sourceAddr: address[:], destAddr: address[:], mac: make([]byte, 16),
-			sourcePort: 12345, destPort: 443, ipVersion: consts.IpVersion_4, l4proto: consts.L4ProtoType_TCP,
-			trustedDomainBitmap: [][]uint32{bitmap, bitmap},
+		got, err := matcher.evaluateSpans(matcher.profiles[matcher.defaultProfileID], routingInput{
+			src: netip.AddrPortFrom(address, 12345), dst: netip.AddrPortFrom(address, 443),
+			l4proto:      consts.L4ProtoType_TCP,
+			domainBitmap: bitmap, domainBumpBitmap: bitmap,
 		})
 		want, flags := consts.OutboundControlPlaneRouting, captureDestination
 		if destination == "10.0.0.1" {

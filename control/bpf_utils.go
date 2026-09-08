@@ -95,9 +95,11 @@ func deleteUDPRoutingCache(m *ebpf.Map, preserveDirect bool) error {
 // acquired later by the successor while this state remains alive.
 type BPFState struct {
 	*bpfObjects
-	deviceRoutes  *deviceRoutes
-	splice        *splice.Runtime
-	soMarkFromDae uint32
+	deviceRoutes               *deviceRoutes
+	splice                     *splice.Runtime
+	soMarkFromDae              uint32
+	routingProfileIDs          routingProfileIDAllocator
+	routingRegistrationCancels []func()
 
 	// activeLpmTrieCount is the LPM trie count from the last BuildKernspace
 	// that committed successfully. BuildKernspace advances it only after its
@@ -107,6 +109,7 @@ type BPFState struct {
 }
 
 func (b *BPFState) Close() error {
+	b.clearRoutingRegistrations()
 	var spliceErr error
 	if b.splice != nil {
 		spliceErr = b.splice.Close()
@@ -222,16 +225,19 @@ func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, 
 			return fmt.Errorf("set constant %s: %w", name, err)
 		}
 	}
+	if opts != nil && opts.Maps.PinPath != "" {
+		if err := removeIncompatiblePinnedMaps(spec, opts.Maps.PinPath); err != nil {
+			return err
+		}
+	}
 	return spec.LoadAndAssign(obj, opts)
 }
 
 func fullLoadBpfObjects(
 	bpf *bpfObjects,
-	pinPath string,
 	soMarkFromDae uint32,
 	opts *ebpf.CollectionOptions,
 ) (err error) {
-retryLoadBpf:
 	hasBpfGetCurrentTask := uint8(0)
 	if err := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask); err == nil {
 		hasBpfGetCurrentTask = 1
@@ -258,21 +264,6 @@ retryLoadBpf:
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts, constants); err != nil {
-		if errors.Is(err, ebpf.ErrMapIncompatible) {
-			// Map property is incompatible. Remove the old map and try again.
-			prefix := "use pinned map "
-			_, after, ok := strings.Cut(err.Error(), prefix)
-			if !ok {
-				return fmt.Errorf("loading objects: bad format: %w", err)
-			}
-			mapName, _, _ := strings.Cut(after, ":")
-			pin := filepath.Join(pinPath, mapName)
-			if removeErr := os.Remove(pin); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				return fmt.Errorf("remove incompatible pinned map %s: %w", mapName, removeErr)
-			}
-			log.WithField("map", mapName).Info("Removed incompatible pinned eBPF map")
-			goto retryLoadBpf
-		}
 		var verifierErr *ebpf.VerifierError
 		if log.IsLevelEnabled(log.TraceLevel) && errors.As(err, &verifierErr) {
 			log.WithField("verifier", fmt.Sprintf("%+v", verifierErr)).Trace("eBPF verifier rejected program")
@@ -285,6 +276,44 @@ retryLoadBpf:
 			err = fmt.Errorf("%w: compile the kernel with CONFIG_BPF_EVENTS=y and CONFIG_KPROBE_EVENTS=y", err)
 		}
 		return err
+	}
+	return nil
+}
+
+func (b *BPFState) clearRoutingRegistrations() {
+	for _, cancel := range b.routingRegistrationCancels {
+		cancel()
+	}
+	b.routingRegistrationCancels = nil
+}
+
+func removeIncompatiblePinnedMaps(spec *ebpf.CollectionSpec, pinPath string) error {
+	for _, mapSpec := range spec.Maps {
+		if mapSpec.Pinning != ebpf.PinByName {
+			continue
+		}
+		path := filepath.Join(pinPath, mapSpec.Name)
+		pinned, err := ebpf.LoadPinnedMap(path, nil)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("load pinned map %q for compatibility check: %w", mapSpec.Name, err)
+		}
+		compatibleErr := mapSpec.Compatible(pinned)
+		if err := pinned.Close(); err != nil {
+			return fmt.Errorf("close pinned map %q: %w", mapSpec.Name, err)
+		}
+		if compatibleErr == nil {
+			continue
+		}
+		if !errors.Is(compatibleErr, ebpf.ErrMapIncompatible) {
+			return fmt.Errorf("check pinned map %q compatibility: %w", mapSpec.Name, compatibleErr)
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove incompatible pinned map %q: %w", mapSpec.Name, err)
+		}
+		log.WithField("map", mapSpec.Name).Info("Removed incompatible pinned eBPF map")
 	}
 	return nil
 }

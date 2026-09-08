@@ -176,3 +176,127 @@ routing {
 		t.Fatalf("round trip differs:\nfirst: %#v\nsecond: %#v", conf1, conf2)
 	}
 }
+
+func TestMarshalStructuredRoutingRoundTrip(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+routing {
+	rule_set {
+		base { dport(80) -> direct }
+		proxy { dport(443) -> "must_my group" }
+	}
+	use: base, proxy
+	fallback: "must_my group"
+	policy {
+		lan {
+			use: base
+			fallback: direct
+		}
+	}
+	interface {
+		br-lan: lan
+		eth1: lan
+	}
+}
+`)
+	b, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "use:\"base,proxy\"") {
+		t.Fatalf("marshal collapsed ordered use statements: %s", b)
+	}
+	reparsed := parseConfig(t, string(b))
+	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+		t.Fatalf("structured routing changed after round trip:\n%s", b)
+	}
+}
+
+func TestMarshalStructuredRoutingQuotedCommaInterfaceNameRoundTrip(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+routing {
+	fallback: direct
+	policy { lan { fallback: direct } }
+	interface {
+		"foo,bar": lan
+		123: lan
+		"网卡": lan
+		"wan\\": lan
+	}
+}
+`)
+	b, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reparsed := parseConfig(t, string(b))
+	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+		t.Fatalf("quoted comma interface name changed after round trip:\n%s", b)
+	}
+}
+
+func TestMarshalStructuredRoutingPreservesRawValuesAndAllParams(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+routing {
+	rule_set {
+		base {
+			domain(regex: '^foo\.example$') -> direct(mark: 1, mark: 2, mark: 3, mark: 4, mark: 5, mark: 6)
+			interface(foo\) -> direct
+			domain(keyword: "a'b\"c") -> direct
+		}
+	}
+	use: base
+	fallback: direct(mark: 1, mark: 2, mark: 3, mark: 4, mark: 5, mark: 6)
+	policy { lan { fallback: direct } }
+	interface { 'wan\backup': lan }
+}
+`)
+	b, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "...") {
+		t.Fatalf("marshal truncated routing parameters: %s", b)
+	}
+	reparsed := parseConfig(t, string(b))
+	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+		t.Fatalf("structured routing values changed after round trip:\n%s", b)
+	}
+}
+
+func TestMarshalTrailingBackslashRoundTrip(t *testing.T) {
+	conf := parseConfig(t, `
+global {}
+routing {
+	domain(keyword: 'foo \\') -> direct
+	fallback: direct
+}
+`)
+	raw, err := conf.Marshal(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reparsed := parseConfig(t, string(raw))
+	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+		t.Fatalf("trailing backslash changed: %s", raw)
+	}
+
+}
+
+func TestMarshalLegacyLiteralFallbackRoundTrip(t *testing.T) {
+	for _, fallback := range []string{`"my group"`, `"must_my group"`, `"/*group*/"`, `""`} {
+		t.Run(fallback, func(t *testing.T) {
+			conf := parseConfig(t, "global {}\nrouting { fallback: "+fallback+" }\n")
+			b, err := conf.Marshal(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reparsed := parseConfig(t, string(b))
+			if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+				t.Fatalf("legacy literal fallback changed after round trip:\n%s", b)
+			}
+		})
+	}
+}

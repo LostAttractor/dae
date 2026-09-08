@@ -5,6 +5,8 @@ package control
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"unsafe"
 
@@ -18,13 +20,13 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result bpfRoutingResult
-	if size := unsafe.Sizeof(result); size != 48 || spec.Maps["routing_tuples_map"].ValueSize != uint32(size) ||
-		unsafe.Offsetof(result.Protocol) != 38 || unsafe.Offsetof(result.NoSniff) != 39 || unsafe.Offsetof(result.RouteEpoch) != 40 {
+	if size := unsafe.Sizeof(result); size != 56 || spec.Maps["routing_tuples_map"].ValueSize != uint32(size) ||
+		unsafe.Offsetof(result.Protocol) != 42 || unsafe.Offsetof(result.NoSniff) != 43 || unsafe.Offsetof(result.RouteEpoch) != 48 {
 		t.Fatalf("routing result layout: size=%d protocol=%d no_sniff=%d route_epoch=%d", size, unsafe.Offsetof(result.Protocol), unsafe.Offsetof(result.NoSniff), unsafe.Offsetof(result.RouteEpoch))
 	}
 	cache := spec.Maps["udp_routing_cache_map"]
 	var value bpfUdpRoutingCacheValue
-	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 48 {
+	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 56 {
 		t.Fatalf("UDP cache layout: key=%d value=%d cached_until=%d", cache.KeySize, cache.ValueSize, unsafe.Offsetof(value.CachedUntil))
 	}
 }
@@ -146,22 +148,59 @@ func TestDeleteUDPRoutingCache(t *testing.T) {
 	}
 }
 
-func newRoutingLayoutTestMap(t *testing.T, name string, maxEntries uint32) *ebpf.Map {
-	t.Helper()
-	spec, err := loadBpf()
+// Exercise the actual map metadata check, using pins isolated from dae state.
+func TestRemoveIncompatiblePinnedMaps(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("pinning eBPF maps requires privileges")
+	}
+	pinPath, err := os.MkdirTemp("/sys/fs/bpf", "dae-routing-map-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms := spec.Maps[name]
-	ms.Pinning = ebpf.PinNone
-	ms.MaxEntries = maxEntries
-	m, err := ebpf.NewMap(ms)
-	if errors.Is(err, unix.EPERM) {
-		t.Skip("creating an eBPF map requires privileges")
+	t.Cleanup(func() {
+		if err := os.RemoveAll(pinPath); err != nil {
+			t.Error(err)
+		}
+	})
+	spec := &ebpf.CollectionSpec{Maps: make(map[string]*ebpf.MapSpec)}
+	for _, name := range []string{"compatible", "changed", "changed_flags", "unrelated"} {
+		mapSpec := &ebpf.MapSpec{Name: name, Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1}
+		if name == "changed_flags" {
+			mapSpec.Type = ebpf.Hash
+		}
+		m, err := ebpf.NewMap(mapSpec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { m.Close() })
+		if err := m.Pin(filepath.Join(pinPath, name)); err != nil {
+			t.Fatal(err)
+		}
+		if name == "unrelated" {
+			continue
+		}
+		mapSpec.Pinning = ebpf.PinByName
+		if name == "changed" {
+			mapSpec.ValueSize = 8
+		}
+		if name == "changed_flags" {
+			mapSpec.Flags = unix.BPF_F_NO_PREALLOC
+		}
+		spec.Maps[name] = mapSpec
 	}
-	if err != nil {
-		t.Fatal(err)
+	for range 2 { // A removed pin is absent on the next load.
+		if err := removeIncompatiblePinnedMaps(spec, pinPath); err != nil {
+			t.Fatal(err)
+		}
 	}
-	t.Cleanup(func() { m.Close() })
-	return m
+	for _, name := range []string{"compatible", "changed", "changed_flags", "unrelated"} {
+		_, err := os.Stat(filepath.Join(pinPath, name))
+		if name == "changed" || name == "changed_flags" {
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("changed map was not removed: %v", err)
+			}
+		} else if err != nil {
+			t.Fatalf("%s map was not preserved: %v", name, err)
+		}
+	}
 }

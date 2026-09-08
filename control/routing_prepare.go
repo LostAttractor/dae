@@ -8,7 +8,6 @@ package control
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
@@ -22,7 +21,10 @@ type preparedRules struct {
 	apiBypass    []bpfIpPort
 	destinations routing.DestinationRewrites
 	geoDirs      []string
-	routing      []*config_parser.RoutingRule
+	routing      *config.Routing
+	bypass       []*config_parser.RoutingRule
+	earlyRoutes  []*config_parser.RoutingRule
+	lateRoutes   []*config_parser.RoutingRule
 	capture      *routingCapture
 	dnsRequest   []*config_parser.RoutingRule
 	dnsResponse  []*config_parser.RoutingRule
@@ -92,9 +94,7 @@ func prepareRoutingRules(ctx context.Context, routingConfig *config.Routing, dns
 		return prepared, err
 	}
 	var err error
-	prepared.routing, err = routing.ApplyRulesOptimizers(routingConfig.Rules,
-		&routing.AliasOptimizer{}, datReader,
-		&routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
+	prepared.routing, err = prepareRoutingConfig(routingConfig, datReader)
 	if err != nil {
 		return prepared, fmt.Errorf("prepare routing rules: %w", err)
 	}
@@ -113,7 +113,8 @@ func prepareRoutingRules(ctx context.Context, routingConfig *config.Routing, dns
 }
 
 func (p *preparedRules) enableMITMPlan(plan plugin.Plan) {
-	p.routing = slices.Concat(plan.EarlyRoutes, p.routing, plan.Routes)
+	p.earlyRoutes = plan.EarlyRoutes
+	p.lateRoutes = plan.Routes
 	if len(plan.Scopes) != 0 {
 		if p.capture == nil {
 			p.capture = &routingCapture{}
