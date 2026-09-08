@@ -178,6 +178,11 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	hasBody := responseHasBody(r.Request.Method, r.StatusCode)
 	if s.RequiresBody && hasBody && r.Body != nil {
 		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
+		if errors.Is(err, errBodyTooLarge) {
+			execution.outcome, execution.reason = "skipped", "body_limit"
+			e.logRequest(r.Request, fmt.Sprintf("surge script %s skipped; response exceeds body limit; forwarding original response", s.Name))
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -300,10 +305,11 @@ func (e *Engine) bufferBody(ctx context.Context, body *io.ReadCloser, header htt
 	}
 	original := *body
 	stop := context.AfterFunc(ctx, func() { _ = original.Close() })
-	raw, err := readLimited(original, limit)
+	// Keep the unread tail attached on overflow so response scripts can skip
+	// buffering without truncating the upstream response. Ownership stays with
+	// the exchange until the body is forwarded or replaced.
+	raw, err := plugin.SnapshotBody(body, limit)
 	stop()
-	_ = original.Close()
-	*body = io.NopCloser(bytes.NewReader(raw))
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
