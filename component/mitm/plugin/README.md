@@ -31,13 +31,23 @@ scope := plugin.Scope{
 Host globs support `*` and `?`, ignore case and contain no port or exclusion
 prefix. Empty `Ports` matches every nonzero port. Plugins validate their own input.
 
-`Wrap(flow, next)` builds middleware in configuration order: requests A → B →
+`Wrap(flow, next)` builds middleware separately for each HTTP/1, HTTP/2 or
+HTTP/3 connection, in configuration order: requests A → B →
 upstream, responses B → A. Call `next` synchronously. Success returns a valid
 response with non-nil Header and Body, transferring body ownership; failure closes
 owned bodies and returns `nil, err`. Compiled plugins must honor this contract.
 The host associates the response returned by `next` with `Exchange.Request`,
 including local responses produced by downstream plugins.
 `HTTPError` requires an underlying error and a valid HTTP error status.
+
+HTTP/3 uses the same plugin contract and CA. `ServePacketConn` requires the
+original source and destination addresses and serves a fixed UDP association; `DialPacketContext` opens its upstream packet sockets through the
+selected outbound. HTTP/3 requests stay on HTTP/3 upstream, while
+`Exchange.Client` uses HTTP/1 or HTTP/2 through that same selected outbound.
+Only QUIC ClientHellos advertising `h3` enter this path; other UDP is relayed.
+The host disables 0-RTT, preserves per-connection middleware and supports multiple
+QUIC connection IDs for the same source, destination and hostname. Cross-tuple
+migration and cross-host connection reuse are not supported.
 
 `Exchange.Client` uses the selected outbound. `SetReadDeadline`, when non-nil,
 bounds request-body reads and is reset by the host when calling `next`, before

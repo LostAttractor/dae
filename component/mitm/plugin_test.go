@@ -225,17 +225,32 @@ func TestHostRequiresCAForHTTPScopes(t *testing.T) {
 }
 
 func TestRequestAuthority(t *testing.T) {
-	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("example.com")}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
-		return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
-	}}
-	h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "test", Plugin: p})
-	handler, closeTransport := h.Handler("http", "example.com", 80, nil)
-	defer closeTransport()
-	for host, want := range map[string]int{"wrong.example": 421, "example.com": 200} {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, httptest.NewRequest("GET", "http://"+host+"/", nil))
-		if w.Code != want {
-			t.Fatalf("%s: status %d, want %d", host, w.Code, want)
-		}
+	for _, test := range []struct {
+		host, authority string
+		want            int
+	}{
+		{"example.com", "example.com", 200},
+		{"example.com", "EXAMPLE.COM.:0080", 200},
+		{"example.com", "wrong.example", 421},
+		{"example.com", "example.com:443", 421},
+		{"127.0.0.1", "127.0.0.1", 200},
+		{"127.0.0.1", "[::ffff:127.0.0.1]", 200},
+		{"127.0.0.1", "127.0.0.2", 421},
+		{"2001:db8::1", "[2001:0db8:0:0:0:0:0:1]", 200},
+		{"2001:db8::1", "[2001:db8::2]", 421},
+	} {
+		t.Run(test.host+"/"+test.authority, func(t *testing.T) {
+			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope(test.host)}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+				return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
+			}}
+			h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "test", Plugin: p})
+			handler, closeTransport := h.Handler("http", test.host, 80, nil)
+			defer closeTransport()
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest("GET", "http://"+test.authority+"/", nil))
+			if w.Code != test.want {
+				t.Fatalf("status %d, want %d", w.Code, test.want)
+			}
+		})
 	}
 }

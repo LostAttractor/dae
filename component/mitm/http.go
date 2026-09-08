@@ -3,120 +3,22 @@
 package mitm
 
 import (
-	"bufio"
 	"context"
-	"crypto/tls"
 	"errors"
-	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/plugin"
-	"golang.org/x/net/http2"
 )
 
 var serial atomic.Uint64
-
-func (h *Host) ServeConn(conn net.Conn, host string, port uint16, dial DialContext) error {
-	defer conn.Close()
-	original := conn
-	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		return net.ErrClosed
-	}
-	h.connections[original] = nil
-	h.serving.Add(1)
-	h.mu.Unlock()
-	defer h.serving.Done()
-	defer func() { h.mu.Lock(); delete(h.connections, original); h.mu.Unlock() }()
-	flow := plugin.Flow{Host: host, Port: port}
-	flow.Source, _ = netip.ParseAddrPort(conn.RemoteAddr().String())
-	flow.Destination, _ = netip.ParseAddrPort(conn.LocalAddr().String())
-	ctx, cancel := context.WithCancel(plugin.WithIDs(context.Background(), strconv.FormatUint(serial.Add(1), 10), ""))
-	defer cancel()
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	reader := bufio.NewReader(conn)
-	first, err := reader.Peek(1)
-	if err != nil {
-		return err
-	}
-	_ = conn.SetReadDeadline(time.Time{})
-	conn = &bufferedConn{Conn: conn, reader: reader}
-	scheme := "http"
-	var state *tls.ConnectionState
-	if first[0] == 0x16 {
-		if h.options.Authority == nil {
-			return errors.New("mitm: HTTPS requires a CA")
-		}
-		scheme = "https"
-		cfg := h.options.Authority.TLSConfig()
-		getCertificate := cfg.GetCertificate
-		cfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if !strings.EqualFold(strings.TrimSuffix(hello.ServerName, "."), strings.TrimSuffix(host, ".")) {
-				return nil, errors.New("mitm: TLS SNI changed after routing")
-			}
-			return getCertificate(hello)
-		}
-		cfg.NextProtos = []string{"h2", "http/1.1"}
-		tlsConn := tls.Server(conn, cfg)
-		handshake, stop := context.WithTimeout(ctx, 10*time.Second)
-		err = tlsConn.HandshakeContext(handshake)
-		stop()
-		if err != nil {
-			return fmt.Errorf("mitm TLS: %w", err)
-		}
-		conn = tlsConn
-		s := tlsConn.ConnectionState()
-		state = &s
-	}
-	handler, closeTransport := h.HandlerForFlow(scheme, flow, dial)
-	defer closeTransport()
-	base := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 15 * time.Second,
-		ReadTimeout:       60 * time.Second,
-		IdleTimeout:       90 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
-		ErrorLog:          log.New(logWriter{h}, "", 0),
-	}
-	h2 := &http2.Server{MaxConcurrentStreams: 64, IdleTimeout: 90 * time.Second, MaxReadFrameSize: 1 << 20}
-	if err := http2.ConfigureServer(base, h2); err != nil {
-		return err
-	}
-	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		return net.ErrClosed
-	}
-	h.connections[original] = base
-	h.mu.Unlock()
-	if state != nil && state.NegotiatedProtocol == "h2" {
-		// ConfigureServer binds h2 to base. Passing BaseConfig here makes
-		// x/net's Go 1.27 adapter copy it, detaching Shutdown from this conn.
-		h2.ServeConn(conn, &http2.ServeConnOpts{Context: ctx, Handler: handler})
-		return nil
-	}
-	listener := &singleConnListener{Conn: conn, done: make(chan struct{}), finished: make(chan struct{})}
-	err = base.Serve(listener)
-	if listener.accepted {
-		<-listener.finished
-	}
-	if errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -129,21 +31,14 @@ func (h *Host) Handler(scheme, host string, port uint16, dial DialContext) (http
 }
 
 func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, dial DialContext) (http.Handler, func()) {
+	transport := h.httpTransport(dial)
+	return h.handlerForFlow(scheme, flow, transport, &http.Client{Transport: transport}), transport.CloseIdleConnections
+}
+
+// The intercepted protocol and auxiliary plugin requests can use different
+// transports, but both are bound by control to the same selected outbound.
+func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.RoundTripper, client *http.Client) http.Handler {
 	host, port := flow.Host, flow.Port
-	transport := &http.Transport{
-		DialContext:            dial,
-		ForceAttemptHTTP2:      true,
-		DisableCompression:     true,
-		TLSHandshakeTimeout:    10 * time.Second,
-		ResponseHeaderTimeout:  30 * time.Second,
-		IdleConnTimeout:        90 * time.Second,
-		MaxIdleConnsPerHost:    8,
-		MaxResponseHeaderBytes: 1 << 20,
-	}
-	if h.options.UpstreamTLSConfig != nil {
-		transport.TLSClientConfig = h.options.UpstreamTLSConfig.Clone()
-	}
-	client := &http.Client{Transport: transport}
 	chain := h.chain(flow, func(e *plugin.Exchange) (*http.Response, error) { return transport.RoundTrip(e.Request) })
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
@@ -205,7 +100,7 @@ func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, dial DialContext)
 			}, ErrorLog: log.New(logWriter{h}, "", 0),
 		}
 		proxy.ServeHTTP(w, r)
-	}), transport.CloseIdleConnections
+	})
 }
 
 func sameAuthority(authority, host string, port uint16, scheme string) bool {
@@ -220,7 +115,15 @@ func sameAuthority(authority, host string, port uint16, scheme string) bool {
 			p = "443"
 		}
 	}
-	return strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, ".")) && p == strconv.Itoa(int(port))
+	requestedPort, err := strconv.ParseUint(p, 10, 16)
+	if err != nil || requestedPort != uint64(port) {
+		return false
+	}
+	if target, err := netip.ParseAddr(host); err == nil {
+		requested, err := netip.ParseAddr(u.Hostname())
+		return err == nil && requested.Unmap() == target.Unmap()
+	}
+	return strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, "."))
 }
 
 type logWriter struct{ host *Host }
@@ -230,46 +133,4 @@ func (w logWriter) Write(p []byte) (int, error) {
 		w.host.options.Log(string(p))
 	}
 	return len(p), nil
-}
-
-type bufferedConn struct {
-	net.Conn
-	reader *bufio.Reader
-}
-
-func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
-
-type singleConnListener struct {
-	net.Conn
-	once     sync.Once
-	accepted bool
-	done     chan struct{}
-	finished chan struct{}
-}
-
-func (l *singleConnListener) Accept() (net.Conn, error) {
-	if !l.accepted {
-		l.accepted = true
-		return &acceptedConn{Conn: l.Conn, listener: l}, nil
-	}
-	<-l.done
-	return nil, net.ErrClosed
-}
-func (l *singleConnListener) Addr() net.Addr { return l.LocalAddr() }
-func (l *singleConnListener) Close() (err error) {
-	// Closing a listener stops Accept; it must not close its active request.
-	l.once.Do(func() { close(l.done) })
-	return err
-}
-
-type acceptedConn struct {
-	net.Conn
-	listener *singleConnListener
-	once     sync.Once
-	err      error
-}
-
-func (c *acceptedConn) Close() error {
-	c.once.Do(func() { c.err = c.Conn.Close(); close(c.listener.finished); _ = c.listener.Close() })
-	return c.err
 }
