@@ -239,7 +239,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		var release func()
 		if sniffed.http3 {
 			param.Domain = mitmHost
-			dialOption, planner, release, err = c.prepareHTTPRoute(ctx, param)
+			dialOption, planner, release, err = c.prepareHTTPRoute(ctx, mitmHost, param)
 		} else {
 			dialOption, err = c.RouteDialOption(ctx, param)
 		}

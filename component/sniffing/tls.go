@@ -30,6 +30,12 @@ var (
 
 // SniffTls only supports tls1.2, tls1.3
 func (s *Sniffer) SniffTls() (d string, err error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	return s.sniffTlsLocked()
+}
+
+func (s *Sniffer) sniffTlsLocked() (d string, err error) {
 	// The Transport Layer Security (TLS) Protocol Version 1.3
 	// https://www.rfc-editor.org/rfc/rfc8446#page-27
 	boundary := 5
@@ -50,7 +56,9 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 	if err != nil {
 		return "", err
 	}
-	return findSniExtension(extensions)
+	d, err = findSniExtension(extensions)
+	s.tcpTLS = err == nil || err == ErrNotFound
+	return d, err
 }
 
 // clientHelloExtensions accepts one complete, contiguous ClientHello.

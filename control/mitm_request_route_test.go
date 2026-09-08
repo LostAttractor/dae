@@ -27,6 +27,11 @@ import (
 
 func newHTTPRequestRouteTest(t *testing.T, routing, moduleText string, dial surgeDownloadTestDialer) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
 	t.Helper()
+	return newHTTPRequestRouteTestWithAuthority(t, routing, moduleText, dial, &mitmca.Authority{})
+}
+
+func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing, moduleText string, dial surgeDownloadTestDialer, authority *mitmca.Authority) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
+	t.Helper()
 	module, err := surge.Parse("[MITM]\nhostname=original.example:80\n"+moduleText, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +40,7 @@ func newHTTPRequestRouteTest(t *testing.T, routing, moduleText string, dial surg
 	if err != nil {
 		t.Fatal(err)
 	}
-	host := controlTestHost(t, engine, &mitmca.Authority{})
+	host := controlTestHost(t, engine, authority)
 	prepared := prepareFlowRulesForTest(t, "", routing)
 	prepared.enableMITMPlan(host.Plan())
 	matcher, builder := surgeRoutingMatcher(t, prepared)
@@ -66,7 +71,7 @@ func TestHTTPRequestPoolUsesCurrentRouteAndMark(t *testing.T) {
 			dials.Add(1)
 			return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
 		})
-	option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param)
+	option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 	if err != nil || option != nil || planner == nil || release != nil {
 		t.Fatalf("premature selection: %+v, %v", option, err)
 	}
@@ -122,7 +127,7 @@ func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 			if test.denied {
 				plane.mitmClients = clientmatch.Matcher{}
 			}
-			option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param)
+			option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -164,7 +169,7 @@ func TestPendingHTTPWithoutHostnameUsesDNSEvidence(t *testing.T) {
 			if ambiguous {
 				registry.UpsertNoExpiry(queryInfo{qname: "outside.example.", qtype: dnsmessage.TypeA}, param.Dest.Addr(), matcher.domainMatcher.MatchDomainBitmap("outside.example"), time.Now())
 			}
-			option, planner, _, err := plane.prepareHTTPRoute(context.Background(), param)
+			option, planner, _, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 			if planner != nil {
 				t.Fatal("hostname-less candidate entered MITM")
 			}
@@ -209,7 +214,7 @@ func TestHTTP2RequestTargetsRemainIndependent(t *testing.T) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", backend.Listener.Addr().String())
 		})
 	}
-	option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param)
+	option, planner, release, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 	if err != nil || option != nil || planner == nil || release != nil {
 		t.Fatalf("request setup: %+v, %v", option, err)
 	}

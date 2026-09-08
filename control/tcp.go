@@ -168,13 +168,17 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	}
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
+	host := domain
+	if host == "" && sniffer.IsTLS() {
+		host = dst.Addr().String()
+	}
 
 	// Route
 	networkType := common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
-	dialOption, mitmPlanner, release, err := c.prepareHTTPRoute(setupCtx, &RouteParam{
+	dialOption, mitmPlanner, release, err := c.prepareHTTPRoute(setupCtx, host, &RouteParam{
 		routingResult: routingResult, networkType: networkType,
 		Domain: domain, Src: src, Dest: dst,
 	})
@@ -183,7 +187,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	}
 	if mitmPlanner != nil {
 		return &tcpRelay{
-			lConn: sniffer, src: src, dst: dst, domain: domain,
+			lConn: sniffer, src: src, dst: dst, domain: host,
 			mitmHost: c.mitmHost, mitmPlanner: mitmPlanner, mitmRelease: release,
 		}, nil
 	}
