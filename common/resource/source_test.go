@@ -167,9 +167,14 @@ func TestResourceDiagnosticsRedactRemoteSecrets(t *testing.T) {
 		`https://example.com/path'with\"quote-secret?token-secret`,
 		"https://example.com/path with space-secret?token-secret",
 	} {
-		err := RedactError(&url.Error{Op: "Get", URL: raw, Err: context.Canceled})
-		if strings.Contains(err.Error(), "secret") {
-			t.Fatalf("quoted URL leaked through diagnostic: %v", err)
+		for _, cause := range []error{
+			&url.Error{Op: "Get", URL: raw, Err: context.Canceled},
+			errors.Join(errors.New("download failed"), fmt.Errorf("mirror: %w", &url.Error{Op: "Get", URL: raw, Err: context.Canceled})),
+		} {
+			err := RedactError(cause)
+			if strings.Contains(err.Error(), "secret") || !errors.Is(err, context.Canceled) {
+				t.Fatalf("quoted URL leaked or cancellation was lost: %v", err)
+			}
 		}
 	}
 }

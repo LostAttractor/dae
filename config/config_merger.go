@@ -278,7 +278,7 @@ func (m *Merger) dfsMerge(opener *secureFileOpener, entry string, fatherEntry st
 			}
 			patterEntries = append(patterEntries, nextEntry)
 		default:
-			return fmt.Errorf("unsupported include grammar in %v: %v", entry, include.String(false, false))
+			return fmt.Errorf("unsupported include grammar in %v: expected a configuration file path or glob pattern", entry)
 		}
 	}
 	// DFS and merge children recursively.

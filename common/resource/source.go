@@ -195,11 +195,21 @@ func RedactError(err error) error {
 	message := err.Error()
 	// url.Error quotes the full URL, which can contain spaces or escaped
 	// quotes. Redact that complete value before scanning ordinary message text.
-	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+	var redactURLs func(error)
+	redactURLs = func(cause error) {
 		if urlErr, ok := cause.(*url.Error); ok {
 			message = strings.ReplaceAll(message, strconv.Quote(urlErr.URL), strconv.Quote(RedactURL(urlErr.URL)))
 		}
+		switch wrapped := cause.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapped.Unwrap() {
+				redactURLs(child)
+			}
+		case interface{ Unwrap() error }:
+			redactURLs(wrapped.Unwrap())
+		}
 	}
+	redactURLs(err)
 	return &redactedError{
 		message: RedactText(message),
 		cause:   err,

@@ -41,7 +41,7 @@ func TestSetLoggerRendersStableNonTTYFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "time=2026-08-14 01:02:03 level=info msg=route network=udp4 application=dns action=forward source=10.0.0.2:1234 destination=10.0.0.1:53 component=test\n"
+	want := "time=\"2026-08-14 01:02:03\" level=info msg=route network=udp4 application=dns action=forward source=\"10.0.0.2:1234\" destination=\"10.0.0.1:53\" component=test\n"
 	if string(rendered) != want {
 		t.Fatalf("rendered log = %q, want %q", rendered, want)
 	}
@@ -52,7 +52,7 @@ func TestSetLoggerRendersStableNonTTYFormat(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		timestamp := "time=2026-08-14 01:02:03 "
+		timestamp := "time=\"2026-08-14 01:02:03\" "
 		wantInstance := "mitm_instance=personal " + strings.TrimPrefix(want, timestamp)
 		if !disableTimestamp {
 			wantInstance = timestamp + wantInstance
@@ -63,7 +63,7 @@ func TestSetLoggerRendersStableNonTTYFormat(t *testing.T) {
 	}
 }
 
-func TestSetLoggerPreservesSpecialCharacters(t *testing.T) {
+func TestSetLoggerEscapesSpecialCharacters(t *testing.T) {
 	standard := log.StandardLogger()
 	oldLevel := standard.Level
 	oldFormatter := standard.Formatter
@@ -87,7 +87,7 @@ func TestSetLoggerPreservesSpecialCharacters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "level=info msg=message \"value\"\tindented\nnext line detail=field \"value\"\tindented\n"
+	want := `level=info msg="message \"value\"\tindented\nnext line" detail="field \"value\"\tindented"` + "\n"
 	if string(rendered) != want {
 		t.Fatalf("rendered log = %q, want %q", rendered, want)
 	}

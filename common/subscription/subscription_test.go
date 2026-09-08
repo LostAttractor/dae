@@ -23,7 +23,58 @@ import (
 
 	componentoutbound "github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/config"
+	log "github.com/sirupsen/logrus"
 )
+
+func TestSubscriptionCacheLogsConfirmedOutcome(t *testing.T) {
+	logger := log.StandardLogger()
+	previousOutput, previousLevel, previousFormatter := logger.Out, logger.Level, logger.Formatter
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	logger.SetLevel(log.InfoLevel)
+	logger.SetFormatter(new(log.JSONFormatter))
+	t.Cleanup(func() {
+		logger.SetOutput(previousOutput)
+		logger.SetLevel(previousLevel)
+		logger.SetFormatter(previousFormatter)
+	})
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("upstream unavailable")
+	})}
+	for _, cache := range []string{"usable", "missing", "invalid"} {
+		t.Run(cache, func(t *testing.T) {
+			dir := t.TempDir()
+			if cache != "missing" {
+				data := encodedSubscription(testSSNode("cached.example"))
+				if cache == "invalid" {
+					data = []byte("invalid subscription")
+				}
+				writePersistedSubscription(t, dir, "test", data)
+			}
+			output.Reset()
+			_, nodes, err := ResolveSubscription(client, dir,
+				"test:https-file://account:password-secret@example.com/path-secret?token-secret",
+				componentoutbound.ValidateNodeLink)
+			if cache == "usable" {
+				if err != nil || len(nodes) != 1 || strings.Count(output.String(), `"level":"warning"`) != 1 {
+					t.Fatalf("usable cache result = %v, %v; logs: %s", nodes, err, output.String())
+				}
+				if !strings.Contains(output.String(), "using cached nodes") || !strings.Contains(output.String(), "upstream unavailable") {
+					t.Fatalf("cache warning lacks result or cause: %s", output.String())
+				}
+			} else if err == nil || output.Len() != 0 {
+				t.Fatalf("failed cache must return its error without warning first: %v; logs: %s", err, output.String())
+			}
+			diagnostic := output.String()
+			if err != nil {
+				diagnostic += err.Error()
+			}
+			if strings.Contains(diagnostic, "secret") || strings.Contains(diagnostic, "account") {
+				t.Fatalf("subscription diagnostic leaked credentials: %s", diagnostic)
+			}
+		})
+	}
+}
 
 func TestResolveSubscriptionAsSIP008EncodesUserinfo(t *testing.T) {
 	tests := []struct {

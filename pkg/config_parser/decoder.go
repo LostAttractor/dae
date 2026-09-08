@@ -8,16 +8,15 @@
 package config_parser
 
 import (
-	"strconv"
+	"fmt"
 	"strings"
 
 	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
-
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 )
 
 type decoder struct {
-	parser antlr.Parser
+	err error
 }
 
 func getValueFromLiteral(literal *dae_config.LiteralContext) string {
@@ -115,12 +114,11 @@ func (d *decoder) parseFunctionPrototype(ctx *dae_config.FunctionPrototypeContex
 	}
 }
 
-func (d *decoder) reportError(ctx antlr.ParserRuleContext, target ...string) {
-	tgt := strconv.Quote(ctx.GetStart().GetText())
-	if len(target) != 0 {
-		tgt = target[0]
+func (d *decoder) reportError(ctx antlr.ParserRuleContext, message string) {
+	if d.err == nil {
+		token := ctx.GetStart()
+		d.err = fmt.Errorf("line %d:%d %s", token.GetLine(), token.GetColumn(), message)
 	}
-	d.parser.NotifyErrorListeners(tgt+" is not supported.", ctx.GetStart(), nil)
 }
 
 func (d *decoder) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {

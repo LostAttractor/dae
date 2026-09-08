@@ -86,8 +86,6 @@ func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
 }
 
 func resolveSubscriptionAsBase64(b []byte) (nodes []string, err error) {
-	log.Traceln("Try to resolve as base64")
-
 	// base64 decode
 	raw, e := common.Base64StdDecode(string(b))
 	if e != nil {
@@ -119,8 +117,6 @@ func resolveSubscriptionAsBase64(b []byte) (nodes []string, err error) {
 }
 
 func ResolveSubscriptionAsSIP008(b []byte) (nodes []string, err error) {
-	log.Traceln("Try to resolve as sip008")
-
 	sip, err := decodeSIP008(b)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal json to sip008: %w", err)
@@ -371,16 +367,14 @@ func resolveSubscriptionContent(ctx context.Context, b []byte, validateNode func
 
 	var nodes []string
 	if nodes, err := ResolveSubscriptionAsSIP008(b); err == nil {
-		log.Debugln("Resolve as sip008")
+		log.WithField("format", "sip008").Trace("Parsed subscription content")
 		return validateSubscriptionNodes(ctx, nodes, validateNode)
-	} else {
-		log.Traceln(err)
 	}
 	nodes, err := resolveSubscriptionAsBase64(b)
 	if err != nil {
 		return nil, err
 	}
-	log.Debugln("Resolve as base64")
+	log.WithField("format", "base64").Trace("Parsed subscription content")
 	return validateSubscriptionNodes(ctx, nodes, validateNode)
 }
 
@@ -412,7 +406,7 @@ func validateSubscriptionNodes(ctx context.Context, nodes []string, validateNode
 		return nil, err
 	}
 	if invalidNodes > 0 {
-		log.Debugf("discarded %d unusable subscription nodes; first error: %v", invalidNodes, firstValidationErr)
+		log.WithFields(log.Fields{"discarded_nodes": invalidNodes, "usable_nodes": len(validNodes)}).WithError(firstValidationErr).Debug("Discarded unusable subscription nodes")
 	}
 	if len(validNodes) == 0 {
 		return nil, fmt.Errorf("subscription contains no usable nodes: %w", firstValidationErr)
@@ -684,6 +678,7 @@ func ResolveSubscription(client *http.Client, subscriptionDir string, subscripti
 }
 
 func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscriptionDir string, subscription string, validateNode func(string) error) (tag string, nodes []string, err error) {
+	defer func() { err = resource.RedactError(err) }()
 	if validateNode == nil {
 		return "", nil, fmt.Errorf("node validator is required")
 	}
@@ -697,7 +692,7 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 	if err != nil {
 		return tag, nil, fmt.Errorf("failed to parse subscription %q: %w", RedactURL(subscription), resource.RedactError(err))
 	}
-	log.Debugf("ResolveSubscription: %s", RedactURL(subscription))
+	log.WithFields(log.Fields{"subscription": tag, "source": RedactURL(subscription)}).Debug("Loading subscription")
 	var b []byte
 
 	if !source.Remote() {
@@ -758,7 +753,6 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 		return "", nil, ctxErr
 	}
 
-	log.Warnf("failed to use fresh subscription '%s'; trying cached copy", tag)
 	freshErr := err
 	persistDir, openErr := openPersistDir(subscriptionDir, false)
 	if openErr != nil {
@@ -773,5 +767,6 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 	if err != nil {
 		return "", nil, fmt.Errorf("fresh subscription is unusable (%v); cached fallback is unusable: %w", freshErr, err)
 	}
+	log.WithFields(log.Fields{"subscription": tag, "source": RedactURL(subscription), "nodes": len(nodes)}).WithError(resource.RedactError(freshErr)).Warn("Subscription update failed; using cached nodes")
 	return tag, nodes, nil
 }

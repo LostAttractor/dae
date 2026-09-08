@@ -25,6 +25,33 @@ func writeConfigFile(t *testing.T, path, content string) {
 	}
 }
 
+func TestMergerSyntaxErrorPreservesLocationWithoutSecrets(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "config.dae")
+	child := filepath.Join(dir, "nodes.dae")
+	writeConfigFile(t, entry, "include { nodes.dae }\n")
+	writeConfigFile(t, child, "node {\n 'trojan://password-secret@example.com:443' (\n}\n")
+	_, _, err := NewMerger(entry).Merge()
+	if err == nil || !strings.Contains(err.Error(), child) || !strings.Contains(err.Error(), "line 3:") {
+		t.Fatalf("merger error lost file or line location: %v", err)
+	}
+	if strings.Contains(err.Error(), "password-secret") || strings.Contains(err.Error(), "trojan://") {
+		t.Fatalf("merger error leaked configuration: %v", err)
+	}
+}
+
+func TestMergerInvalidIncludeDoesNotEchoConfiguration(t *testing.T) {
+	entry := filepath.Join(t.TempDir(), "config.dae")
+	writeConfigFile(t, entry, "include { nested { api_token: 'password-secret' } }\n")
+	_, _, err := NewMerger(entry).Merge()
+	if err == nil || !strings.Contains(err.Error(), entry) || !strings.Contains(err.Error(), "expected a configuration file path or glob pattern") {
+		t.Fatalf("invalid include error lost its source or guidance: %v", err)
+	}
+	if strings.Contains(err.Error(), "password-secret") || strings.Contains(err.Error(), "api_token") {
+		t.Fatalf("invalid include error exposed configuration: %v", err)
+	}
+}
+
 func TestMergerSupportsAbsoluteIncludeWithinEntryDirectory(t *testing.T) {
 	dir := t.TempDir()
 	child := filepath.Join(dir, "config.d", "global.dae")
