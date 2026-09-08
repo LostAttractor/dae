@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package api
+package apiserver
 
 import (
 	"crypto/sha256"
@@ -12,7 +12,7 @@ import (
 	contract "github.com/daeuniverse/dae/api"
 )
 
-func (s *server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+func (s *handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if localAPISocket(r) {
 		return true
 	}
@@ -30,14 +30,14 @@ func (s *server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (s *server) serveSelectors(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveSelectors(w http.ResponseWriter, r *http.Request) {
 	if !apiBody(w, r, nil) {
 		return
 	}
 	writeAPI(w, contract.SelectorsResponse{Selectors: s.options.Selectors.Selectors(), AdminEnabled: localAPISocket(r) || s.options.Token != ""})
 }
 
-func (s *server) serveSelector(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveSelector(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}

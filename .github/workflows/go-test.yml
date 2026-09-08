@@ -62,6 +62,9 @@ jobs:
       - name: Test standalone API clients
         run: make client-test
 
+      - name: Test API server without daemon dependencies
+        run: CGO_ENABLED=0 go test ./internal/apiserver
+
       - name: Install dependencies
         run: |
           sudo apt-get update -y

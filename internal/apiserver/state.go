@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-package api
+package apiserver
 
 import (
 	"errors"
-	contract "github.com/daeuniverse/dae/api"
 	"net/netip"
+
+	contract "github.com/daeuniverse/dae/api"
 )
 
 // SelectorStore owns live selections and their persistent overrides.

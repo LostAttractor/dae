@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package api
+package apiserver
 
-import "net/http"
+import (
+	"net/http"
 
-func (s *server) serveDevice(w http.ResponseWriter, r *http.Request) {
+	contract "github.com/daeuniverse/dae/api"
+)
+
+func (s *handler) serveDevice(w http.ResponseWriter, r *http.Request) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -15,7 +19,7 @@ func (s *server) serveDevice(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, s.options.Devices.DeviceState(ip, mac))
 }
 
-func (s *server) serveClientSet(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -36,7 +40,7 @@ func (s *server) serveClientSet(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, state)
 }
 
-func (s *server) serveMITM(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request) {
 	if s.options.Certificates == nil {
 		apiError(w, 404, "HTTPS modules are disabled")
 		return
@@ -46,15 +50,13 @@ func (s *server) serveMITM(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 403, "MITM changes require X-Dae-MITM containing the CA SHA-256 fingerprint")
 		return
 	}
-	if fingerprint != s.options.Certificates.Fingerprint {
+	if fingerprint != s.options.Certificates.Identity.Fingerprint {
 		apiError(w, 409, "the CA certificate changed; reload the page and verify the certificate")
 		return
 	}
 	var enabled *bool
 	if r.Method == http.MethodPut {
-		var request struct {
-			Enabled *bool `json:"enabled"`
-		}
+		var request contract.SetMITMRequest
 		if !apiBody(w, r, &request) {
 			return
 		}

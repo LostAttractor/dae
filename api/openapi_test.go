@@ -13,6 +13,7 @@ import (
 )
 
 type documentedSchema struct {
+	Const      *int                        `json:"const"`
 	Ref        string                      `json:"$ref"`
 	Type       string                      `json:"type"`
 	Format     string                      `json:"format"`
@@ -42,6 +43,10 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 	}
 	if document.OpenAPI != "3.1.0" {
 		t.Fatal("unexpected OpenAPI version")
+	}
+	version := document.Components.Schemas["StatusSnapshot"].Properties["schema"].Const
+	if version == nil || *version != StatusSchemaVersion {
+		t.Fatal("documented status schema version does not match the wire contract")
 	}
 	var check func(reflect.Type, documentedSchema)
 	check = func(typ reflect.Type, schema documentedSchema) {
