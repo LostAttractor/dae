@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +124,41 @@ bounded = type=http-request,pattern=.,requires-body=1,max-size=16,script-path=a.
 	_ = z.Close()
 	if _, err := decodeBody(compressed.Bytes(), "gzip", 16); err != errBodyTooLarge {
 		t.Fatalf("decode error=%v", err)
+	}
+}
+
+func TestSurgeProxyStreamsOversizedResponse(t *testing.T) {
+	for _, encoding := range []string{"", "gzip"} {
+		t.Run(encoding, func(t *testing.T) {
+			engine := testProxyEngine(t, `[Script]
+bounded = type=http-response,pattern=.,requires-body=1,max-size=64,script-path=a.js
+`, `$done({body:"must not replace oversized response"});`)
+			var events []string
+			engine.options.Trace = func(event string) { events = append(events, event) }
+			raw := encodeBodyRewriteTest(t, []byte(strings.Repeat("x", 1024)), encoding)
+			response := bodyRewriteResponse(raw, encoding)
+			response.ContentLength = -1
+			response.Header.Del("Content-Length")
+			response.Trailer = http.Header{"X-Final": {"keep"}}
+			headers := response.Header.Clone()
+			tracked := &bodyRewriteTrackedReader{Reader: bytes.NewReader(raw)}
+			response.Body = tracked
+			if err := engine.processResponse(response, http.DefaultClient); err != nil {
+				t.Fatal(err)
+			}
+			if tracked.closed || tracked.readBytes > 65 {
+				t.Fatalf("response was closed or read beyond buffer limit: %+v", tracked)
+			}
+			body, err := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if err != nil || !bytes.Equal(body, raw) || !tracked.closed || !reflect.DeepEqual(response.Header, headers) || response.Trailer.Get("X-Final") != "keep" || response.ContentLength != -1 {
+				t.Fatalf("fallback changed response or lost body ownership: response=%+v err=%v closed=%t", response, err, tracked.closed)
+			}
+			trace := strings.Join(events, "\n")
+			if strings.Contains(trace, "event=script_start") || !strings.Contains(trace, `outcome="skipped"`) || !strings.Contains(trace, `reason="body_limit"`) {
+				t.Fatalf("missing skip diagnostic or script executed: %s", trace)
+			}
+		})
 	}
 }
 
