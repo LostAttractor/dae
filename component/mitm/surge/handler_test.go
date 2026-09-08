@@ -149,8 +149,8 @@ func TestSurgeProxyStreamsOversizedResponse(t *testing.T) {
 			engine := testProxyEngine(t, `[Script]
 bounded = type=http-response,pattern=.,requires-body=1,max-size=64,script-path=a.js
 `, `$done({body:"must not replace oversized response"});`)
-			var events []string
-			engine.options.Trace = func(event string) { events = append(events, event) }
+			var capture proxyTraceCapture
+			engine.options.Logger = capture.logger()
 			raw := encodeBodyRewriteTest(t, []byte(strings.Repeat("x", 1024)), encoding)
 			response := bodyRewriteResponse(raw, encoding)
 			response.ContentLength = -1
@@ -170,9 +170,16 @@ bounded = type=http-response,pattern=.,requires-body=1,max-size=64,script-path=a
 			if err != nil || !bytes.Equal(body, raw) || !tracked.closed || !reflect.DeepEqual(response.Header, headers) || response.Trailer.Get("X-Final") != "keep" || response.ContentLength != -1 {
 				t.Fatalf("fallback changed response or lost body ownership: response=%+v err=%v closed=%t", response, err, tracked.closed)
 			}
-			trace := strings.Join(events, "\n")
-			if strings.Contains(trace, "event=script_start") || !strings.Contains(trace, `outcome="skipped"`) || !strings.Contains(trace, `reason="body_limit"`) {
-				t.Fatalf("missing skip diagnostic or script executed: %s", trace)
+			events := capture.trace
+			var skipped bool
+			for _, event := range events {
+				if event["event"] == "script_start" {
+					t.Fatal("oversized response executed its script")
+				}
+				skipped = skipped || event["outcome"] == "skipped" && event["reason"] == "body_limit"
+			}
+			if !skipped {
+				t.Fatalf("missing skip diagnostic: %v", events)
 			}
 		})
 	}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	log "github.com/sirupsen/logrus"
 )
 
 // scriptExecution belongs to one VM on one OS thread. HTTP goroutines only
@@ -78,8 +79,12 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		}
 		return nil, nil
 	case "log":
-		if s.runtime.opts.Log != nil {
-			s.runtime.opts.Log(arg(1), arg(2))
+		level, err := log.ParseLevel(arg(1))
+		if err != nil || level < log.ErrorLevel {
+			return nil, errors.New("invalid script log level")
+		}
+		if s.runtime.opts.Logger != nil {
+			s.runtime.opts.Logger.Log(level, arg(2))
 		}
 		return nil, nil
 	case "read":

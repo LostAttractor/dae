@@ -99,7 +99,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
 		if errors.Is(err, membuffer.ErrBudgetExhausted) {
 			execution.outcome, execution.reason = "skipped", "buffer_memory_limit"
-			e.logRequest(r, "surge script "+s.Name+" skipped; forwarding original request: "+err.Error())
+			e.logRequest(r, fmt.Sprintf("Surge script %q skipped; forwarding original request", s.Name), err)
 			return nil, nil
 		}
 		if err != nil {
@@ -112,7 +112,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	result, err := e.runScript(ctx, s, message, nil, client)
 	if err != nil {
 		execution.failed(err)
-		e.logRequest(r, fmt.Sprintf("surge script %s failed; forwarding original request: %v", s.Name, err))
+		e.logRequest(r, fmt.Sprintf("Surge script %q failed; forwarding original request", s.Name), err)
 		return nil, nil
 	}
 	defer result.Close()
@@ -182,7 +182,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
 		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
-			e.logRequest(r.Request, fmt.Sprintf("surge script %s skipped; forwarding original response: %v", s.Name, err))
+			e.logRequest(r.Request, fmt.Sprintf("Surge script %q skipped; forwarding original response", s.Name), err)
 			return nil
 		}
 		if err != nil {
@@ -199,7 +199,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	result, err := e.runScript(ctx, s, requestMessage(r.Request), message, client)
 	if err != nil {
 		execution.failed(err)
-		e.logRequest(r.Request, fmt.Sprintf("surge script %s failed; forwarding original response: %v", s.Name, err))
+		e.logRequest(r.Request, fmt.Sprintf("Surge script %q failed; forwarding original response", s.Name), err)
 		return nil
 	}
 	defer result.Close()

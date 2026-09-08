@@ -24,6 +24,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/sirupsen/logrus"
 )
 
 func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls.Config) (*integrationFixture, *x509.CertPool) {
@@ -193,11 +194,11 @@ $httpClient.get("https://example.com/script", (error, response, body) => {
 				engine.options.Modules[0].Scripts[i].Timeout = 3 * time.Second
 			}
 			started := make(chan struct{})
-			engine.options.Trace = func(event string) {
-				if strings.Contains(event, "event=request_begin ") {
+			engine.options.Logger = testSurgeLogger(func(event *logrus.Entry) {
+				if event.Data["event"] == "request_begin" {
 					close(started)
 				}
-			}
+			})
 			client := integrationClient(t, engine, roots, dial, useHTTP2)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -247,11 +248,11 @@ func TestProxyIntegrationHeaderScriptDoesNotLimitUpload(t *testing.T) {
 			engine.options.ScriptTimeout = 100 * time.Millisecond
 			engine.options.Modules[0].Scripts[0].RequiresBody = false
 			forwarding := make(chan struct{})
-			engine.options.Trace = func(event string) {
-				if strings.Contains(event, "event=request_forward ") {
+			engine.options.Logger = testSurgeLogger(func(event *logrus.Entry) {
+				if event.Data["event"] == "request_forward" {
 					close(forwarding)
 				}
-			}
+			})
 			client := integrationClient(t, engine, roots, dial, useHTTP2)
 			reader, writer := io.Pipe()
 			defer reader.Close()

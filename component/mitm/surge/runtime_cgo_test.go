@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 func TestRuntimeCGOConcurrentGlobalsAndCallbacksStayIsolated(t *testing.T) {
@@ -24,10 +26,10 @@ func TestRuntimeCGOConcurrentGlobalsAndCallbacksStayIsolated(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
-	r := testRuntime(t, RuntimeOptions{Timeout: 5 * time.Second, Log: func(_ string, s string) {
-		ready <- s
+	r := testRuntime(t, RuntimeOptions{Timeout: 5 * time.Second, Logger: testSurgeLogger(func(e *log.Entry) {
+		ready <- e.Message
 		<-release
-	}})
+	})})
 	finished := make(chan error, count)
 	for i := range count {
 		go func() {
@@ -88,11 +90,11 @@ func TestRuntimeCGORepeatedCancellationAndClose(t *testing.T) {
 	// Cancellation races both native execution and the finite $done/VM-close
 	// path, without depending on a goroutine moving between OS threads.
 	var signals sync.Map
-	r := testRuntime(t, RuntimeOptions{Timeout: 5 * time.Second, Log: func(_ string, id string) {
-		if ch, ok := signals.Load(id); ok {
+	r := testRuntime(t, RuntimeOptions{Timeout: 5 * time.Second, Logger: testSurgeLogger(func(e *log.Entry) {
+		if ch, ok := signals.Load(e.Message); ok {
 			close(ch.(chan struct{}))
 		}
-	}})
+	})})
 	client := &http.Client{Transport: runtimeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ready")), Request: req}, nil
 	})}

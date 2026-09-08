@@ -4,70 +4,76 @@ package surge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/daeuniverse/dae/component/mitm/plugin"
+	log "github.com/sirupsen/logrus"
 )
 
+type surgeLogHook func(*log.Entry)
+
+func (h surgeLogHook) Levels() []log.Level     { return log.AllLevels }
+func (h surgeLogHook) Fire(e *log.Entry) error { h(e); return nil }
+
+func testSurgeLogger(h surgeLogHook) *log.Entry {
+	logger := log.New()
+	logger.SetOutput(io.Discard)
+	logger.SetLevel(log.TraceLevel)
+	logger.AddHook(h)
+	return log.NewEntry(logger)
+}
+
 type proxyTraceCapture struct {
-	mu              sync.Mutex
-	trace, warnings []string
+	mu       sync.Mutex
+	trace    []map[string]string
+	warnings []string
 }
 
-func (c *proxyTraceCapture) addTrace(message string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.trace = append(c.trace, message)
+func (c *proxyTraceCapture) logger() *log.Entry {
+	return testSurgeLogger(func(e *log.Entry) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if e.Level == log.WarnLevel {
+			c.warnings = append(c.warnings, e.Message)
+		}
+		if e.Level == log.TraceLevel {
+			fields := make(map[string]string, len(e.Data))
+			for key, value := range e.Data {
+				fields[key] = fmt.Sprint(value)
+			}
+			c.trace = append(c.trace, fields)
+		}
+	})
 }
-
-func (c *proxyTraceCapture) addWarning(message string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.warnings = append(c.warnings, message)
-}
-
-var proxyTraceField = regexp.MustCompile(`(?:^| )([a-z_]+)=("(?:\\.|[^"\\])*"|[^\s]+)`)
 
 func (c *proxyTraceCapture) events(t *testing.T) []map[string]string {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var events []map[string]string
-	for _, line := range c.trace {
-		if !strings.HasPrefix(line, "surge event=") {
-			t.Fatalf("trace lacks its event prefix: %q", line)
-		}
+	for _, fields := range c.trace {
+		line := fmt.Sprint(fields)
 		for _, private := range []string{
 			"query-private-value", "fragment-private-value", "request-body-private-value",
 			"response-body-private-value", "header-private-value", "argument-private-value",
 			"local-body-private-value", "rewrite-body-private-value", "X-Private-Header",
-			"error-private-value",
+			"error-private-value", "path-private-value",
 		} {
 			if strings.Contains(line, private) {
 				t.Errorf("trace leaked private request/script data %q: %s", private, line)
 			}
 		}
-		fields := make(map[string]string)
-		for _, match := range proxyTraceField.FindAllStringSubmatch(line, -1) {
-			value := match[2]
-			if strings.HasPrefix(value, `"`) {
-				var err error
-				value, err = strconv.Unquote(value)
-				if err != nil {
-					t.Fatalf("invalid quoted trace field: %s", line)
-				}
-			}
-			fields[match[1]] = value
-		}
-		if fields["request_id"] == "" || fields["method"] != http.MethodPost || fields["host"] != "example.test" || fields["path"] != "/visible/path" {
+		if fields["request_id"] == "" || fields["method"] != http.MethodPost || fields["host"] != "example.test" {
 			t.Errorf("trace lacks safe request context: %s", line)
 		}
 		for _, key := range []string{"url", "headers", "body"} {
@@ -125,7 +131,7 @@ func serveProxyTraceRequest(t *testing.T, engine *Engine) (*httptest.ResponseRec
 		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
 	}))
 	defer closeTransport()
-	request := httptest.NewRequest(http.MethodPost, "http://example.test/visible/path?auth=query-private-value", strings.NewReader(`{"private":"request-body-private-value"}`))
+	request := httptest.NewRequest(http.MethodPost, "http://example.test/path-private-value?auth=query-private-value", strings.NewReader(`{"private":"request-body-private-value"}`))
 	request.URL.Fragment = "fragment-private-value"
 	request.Header.Set("X-Private-Header", "header-private-value")
 	response := httptest.NewRecorder()
@@ -155,7 +161,7 @@ func TestProxyTraceScriptOutcomesAndPrivacy(t *testing.T) {
 			module := fmt.Sprintf("[Script]\ntrace-script = type=%s,pattern=.,requires-body=true,script-path=script.js,argument=argument-private-value\n", test.phase)
 			engine := testProxyEngine(t, module+"\n[MITM]\nhostname=example.test\n", test.source)
 			capture := new(proxyTraceCapture)
-			engine.options.Trace, engine.options.Log = capture.addTrace, capture.addWarning
+			engine.options.Logger = capture.logger()
 			response, dials := serveProxyTraceRequest(t, engine)
 			if response.Code != test.status || dials != test.dials {
 				t.Fatalf("handler behavior changed: status=%d dials=%d body=%q", response.Code, dials, response.Body.String())
@@ -189,7 +195,7 @@ func TestProxyTraceScriptOutcomesAndPrivacy(t *testing.T) {
 func TestProxyTraceNoMatchingScripts(t *testing.T) {
 	engine := testProxyEngine(t, "[MITM]\nhostname=example.test\n[Script]\nunmatched = type=http-request,pattern=^https://other.example/,script-path=script.js\n", `$done()`)
 	capture := new(proxyTraceCapture)
-	engine.options.Trace, engine.options.Log = capture.addTrace, capture.addWarning
+	engine.options.Logger = capture.logger()
 	response, dials := serveProxyTraceRequest(t, engine)
 	if response.Code != http.StatusOK || dials != 1 {
 		t.Fatalf("unmatched request was not forwarded: status=%d dials=%d", response.Code, dials)
@@ -216,7 +222,7 @@ func TestProxyTraceMapLocalAndBodyRewrite(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			engine := testProxyEngine(t, test.module+"\n[MITM]\nhostname=example.test\n", "")
 			capture := new(proxyTraceCapture)
-			engine.options.Trace, engine.options.Log = capture.addTrace, capture.addWarning
+			engine.options.Logger = capture.logger()
 			response, dials := serveProxyTraceRequest(t, engine)
 			if response.Code != http.StatusOK || dials != test.dials {
 				t.Fatalf("rewrite behavior changed: status=%d dials=%d", response.Code, dials)
@@ -232,5 +238,26 @@ func TestProxyTraceMapLocalAndBodyRewrite(t *testing.T) {
 				findProxyTraceEvent(t, events, "body_rewrite_end", map[string]string{"outcome": "modified"})
 			}
 		})
+	}
+}
+
+func TestRequestCancellationAndUpstreamErrorsDoNotWarn(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		engine := testProxyEngine(t, "[MITM]\nhostname=example.test\n[Script]\ntest=type=http-request,pattern=.,script-path=script.js\n", `$done()`)
+		capture := new(proxyTraceCapture)
+		engine.options.Logger = capture.logger()
+		ctx, cancel := context.WithCancel(context.Background())
+		if canceled {
+			cancel()
+		}
+		r := httptest.NewRequest(http.MethodGet, "http://example.test/", nil).WithContext(ctx)
+		handler := engine.Wrap(plugin.Flow{Host: "example.test", Port: 80}, func(*plugin.Exchange) (*http.Response, error) {
+			return nil, errors.New("upstream unavailable")
+		})
+		_, _ = handler(&plugin.Exchange{Request: r})
+		cancel()
+		if len(capture.warnings) != 0 {
+			t.Fatalf("canceled=%t: request failure emitted script warning: %v", canceled, capture.warnings)
+		}
 	}
 }

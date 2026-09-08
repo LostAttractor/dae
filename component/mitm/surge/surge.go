@@ -10,6 +10,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	log "github.com/sirupsen/logrus"
 )
 
 type EngineOptions struct {
@@ -21,12 +22,7 @@ type EngineOptions struct {
 	MaxBodySize          int64
 	MaxConcurrentScripts int
 	ScriptTimeout        time.Duration
-	Log                  func(string)
-	// Trace receives automatic diagnostics concurrently from connections. A nil
-	// callback disables tracing. TraceEnabled optionally avoids formatting when
-	// the daemon's current log level filters out these diagnostics.
-	Trace        func(string)
-	TraceEnabled func() bool
+	Logger               *log.Entry
 }
 
 // Engine applies module rules to intercepted HTTP connections. Client selection
@@ -66,12 +62,6 @@ func (e *Engine) forConnection(host string, port uint16) *Engine {
 		}
 	}
 	return &scoped
-}
-
-func (e *Engine) log(message string) {
-	if e.options.Log != nil {
-		e.options.Log(message)
-	}
 }
 
 // Plan exports one complete compatibility engine as one host plugin. Modules
@@ -116,6 +106,9 @@ func (e *Engine) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 		r := exchange.Request
 		e.traceRequest(r, "request_begin", "protocol", r.Proto)
 		response, err = e.processRequest(exchange)
+		if err != nil {
+			e.logRequest(r, "Surge request rewrite failed", err)
+		}
 		if err == nil && response != nil {
 			e.traceRequest(r, "response_local", "status", response.StatusCode)
 			return response, nil
@@ -126,6 +119,9 @@ func (e *Engine) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 			if err == nil {
 				e.traceRequest(r, "upstream_response", "status", response.StatusCode)
 				err = e.processResponse(response, exchange.Client)
+				if err != nil {
+					e.logRequest(r, "Surge response rewrite failed", err)
+				}
 				if err != nil && response.Body != nil {
 					_ = response.Body.Close()
 					response = nil
@@ -139,7 +135,6 @@ func (e *Engine) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 		}
 		if err != nil {
 			e.traceRequest(r, "request_failed", "reason", traceErrorReason(err))
-			e.logRequest(r, "surge processing: "+err.Error())
 		}
 		return response, err
 	}

@@ -28,9 +28,8 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	}
 	defer func() {
 		if err != nil {
-			logger.Info("Surge module initialization failed; resource load status follows")
 			for _, module := range status.Modules {
-				logger.WithFields(log.Fields{"module": module.Name, "state": module.State, "error": module.Error}).Info("Surge module load status")
+				logger.WithFields(log.Fields{"module": module.Name, "state": module.State}).Debug("Surge module load status")
 			}
 		}
 	}()
@@ -40,7 +39,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	if client == nil {
 		return nil, fmt.Errorf("surge: routed download client is required")
 	}
-	logger.Info("Loading Surge modules using routing rules after initial connectivity checks")
+	logger.WithField("modules", len(conf.Modules)).Debug("Loading Surge modules")
 	baseDir := services.BaseDir
 	resolve := func(path string) string {
 		if path == "" || filepath.IsAbs(path) {
@@ -62,17 +61,16 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 		})
 		if err != nil {
 			status.Modules[i].State = "failed"
-			status.Modules[i].Error = resource.RedactText(err.Error())
 			return nil, fmt.Errorf("surge module %q (%s): %w", source.Name, resource.RedactURL(source.Link), err)
 		}
 		if source.Name != "" {
 			module.Name = source.Name
 		}
 		for _, warning := range module.Warnings {
-			logger.Warnf("Surge module %s: %s", module.Name, warning)
+			logger.WithField("module", module.Name).Warn(resource.RedactText(warning))
 		}
 		for _, ignored := range module.Ignored {
-			logger.Tracef("Surge module %s: %s", module.Name, ignored)
+			logger.WithField("module", module.Name).Trace(ignored)
 		}
 		status.Modules[i] = module.Status()
 		modules = append(modules, module)
@@ -80,18 +78,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	runtime, err := NewRuntime(RuntimeOptions{
 		MemoryLimit: conf.MemoryLimit, Timeout: conf.ScriptTimeout,
 		StorePath: resolve(conf.Store),
-		Log: func(level, message string) {
-			switch level {
-			case "debug":
-				logger.Debug(message)
-			case "info":
-				logger.Info(message)
-			case "warn":
-				logger.Warn(message)
-			case "error":
-				logger.Error(message)
-			}
-		},
+		Logger:    logger,
 	})
 	if err != nil {
 		return nil, err
@@ -99,9 +86,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	return NewEngine(EngineOptions{
 		Modules: modules, Runtime: runtime,
 		MaxBodySize: conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,
-		ScriptTimeout: conf.ScriptTimeout, Log: func(s string) { logger.Warn(s) },
-		Trace:        func(s string) { logger.Info(s) },
-		TraceEnabled: func() bool { return logger.Logger.IsLevelEnabled(log.InfoLevel) },
+		ScriptTimeout: conf.ScriptTimeout, Logger: logger,
 	})
 }
 

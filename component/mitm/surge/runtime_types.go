@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	log "github.com/sirupsen/logrus"
 )
 
 var ErrMissingDone = errors.New("script completed without calling $done")
@@ -54,7 +55,7 @@ type RuntimeOptions struct {
 	MemoryLimit int64
 	Timeout     time.Duration
 	StorePath   string
-	Log         func(level, message string)
+	Logger      *log.Entry
 }
 
 // The engine transfers body ownership to the exchange before releasing results.

@@ -38,7 +38,7 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 		log.WithField("fingerprint", authority.Fingerprint()).Info("Loaded MITM CA")
 	}
 
-	options := mitm.Options{BufferMemoryLimit: m.BufferMemoryLimit, Authority: authority, HTTPClient: background, Log: func(message string) { log.Warn(message) }}
+	options := mitm.Options{BufferMemoryLimit: m.BufferMemoryLimit, Authority: authority, HTTPClient: background, Logger: log.NewEntry(log.StandardLogger())}
 
 	services := plugin.Services{BaseDir: base, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}
 	var specs []plugin.Spec
