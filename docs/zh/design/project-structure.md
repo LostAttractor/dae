@@ -68,3 +68,64 @@ UDP 路由缓存按源 IP 和源端口标识生命周期，24 字节键不含目
 加载沿用 `Prepare → Activate`：先在内存中完成编译和校验，重载时在旧控制面停止后继承域名记录、重算新条件位图，再发布内核表和绑定接口。规则表、域名位图与 LPM 资源必须属于同一份配置。
 
 任何未命中显式捕获或用户态路由要求的 direct 流量继续保持 eBPF 直通。正向域名条件缺少 DNS 映射时不补全流量捕获；内核只选候选连接，MITM/Host 的实际主机名判断仍在用户态完成。
+
+## 内核验证与度量
+
+`control/kern/tests` 的 C 用例各自加载独立 maps，避免前一个用例的路由、域名或连通性状态掩盖错误。Go 的捕获与缓存回归直接检查内核返回值和交接状态，不能仅以最终出站名为 direct 证明内核直通。
+
+内核 fixture 构造集中在 `routing_test_helpers_test.go`，功能回归在 `routing_flow_test.go`，计时循环在 `routing_flow_benchmark_test.go`。`make ebpf-lint` 同时检查本项目的内核 C 文件和路由头文件。
+
+`BenchmarkRoutingFlow` 覆盖域名映射缺失、空位图、AND/OR 短路及普通顺序扫描。比较包处理性能时使用其 `bpf-ns/op` 指标；`ns/op` 包含批量调用开销。`BenchmarkUDPRoutingCache` 分开测冷路由与缓存命中。生成内核测试后可运行：
+
+```sh
+go test -c -tags dae_bpf_tests -o /tmp/dae-kernel.test ./control/kern/tests
+sudo /tmp/dae-kernel.test -test.run '^$' -test.bench 'Benchmark(RoutingFlow|UDPRoutingCache)' -test.benchtime 30x -test.count 3
+```
+
+使用 `scripts/routing-program-metrics.go` 测量生产 ELF 的验证指令数、程序大小和加载时间，使用 `scripts/routing-map-memory.go` 测量内核实际 map 内存。两者均创建隔离 maps，不复用 daemon pins，也不挂载网络接口；使用当前 direnv 工具链编译后以 root 运行。消融时分别移除跳转、域名查询复用或缓存压缩，保持相同规则和报文，并将加载成本、每包耗时和内存占用分开比较。
+
+用户态 `BenchmarkRoutingMatcher` 使用相同的有效指令比较执行器与输入准备开销，覆盖顺序端口、域名、混合 LPM 和 AND/OR 短路，同时报告分配次数：
+
+```sh
+go test ./control -run '^$' -bench '^BenchmarkRoutingMatcher$' -benchmem -benchtime=100ms -count=3
+```
+
+## 路由状态消融与结构简化
+
+2026-09-09，以 Host 统一前置改写后的工作树为基线，通过独立 Go overlay 每次移除一项机制：
+
+| 消融项 | 行为证据 | 结果与取舍 |
+| --- | --- | --- |
+| 不区分未知域名与显式 IP URL | `TestPendingHTTPWithoutHostnameUsesDNSEvidence` | IP URL 错用其他域名的 block，或因共享 IP 歧义失败；保留显式目标语义 |
+| 未知域名不读取 DNS 证据 | 同上，确定与歧义两种映射 | block 或未决路由变成 direct；保留 DNS 证据 |
+| 每次重新匹配目的地址规则 | `TestDestinationDecisionPrecedesUserspaceRouting` | 已选定的会话地址改变；保留固定目标，删除重复的 `matched`、`destinationReady` 状态 |
+| 新目标从 API 前缀开始求值 | 原有完整 `control` 测试通过；新增 `TestRewrittenTargetDoesNotReenterAPIBypass` 失败 | 暴露测试缺口：DNAT/HTTP 指向 API 地址时绕过 block；保留从 FlowProgram 开始的阶段边界 |
+| 不读取 `RoutePending` | 完整 `control` 测试及真实内核交接测试 | 通过；内核写入值始终等于 `outbound == control_plane_routing`，删除该字段及缓存传递链 |
+
+上述消融记录说明目标固定、DNS 证据及阶段边界的必要性；其中的历史结构统计不适用于当前 `startup` 基线。当前 UDP 源生命周期固定首次路由和 mark，规则或节点更新不改变存活会话；`TestDestinationUDPReplacementKernelIntegration` 验证故障结束前保持目标、profile 和 mark，释放后才使用新规则。`TestUDPRoutingCachePreservesSourceMetadata` 进一步检查内核缓存恢复首次身份、删除旧 profile 后继续服务、空闲过期后按新策略保持 direct 直通。
+
+## HTTP 路由消融与结构简化
+
+2026-09-09 使用独立 Go overlay 做行为消融，每次只移除一项机制，保持相同规则、请求与断言：
+
+| 消融项 | 验证 | 结果与取舍 |
+| --- | --- | --- |
+| 请求处理前提交旧目标路由 | `TestHTTPRequestAdmissionAndLocalResponses` | 旧目标 block 阻止本应返回的 302/reject；保留延迟决定 |
+| 所有上游计划使用同一池键 | `TestHTTPRequestPoolUsesCurrentRouteAndMark` | 新 mark 复用旧连接；保留逐请求规划及计划隔离 |
+| 纯 MITM 也强制重路由 | `TestMITMCaptureRetainsKernelRoute` | 无可验证域名时丢失有效内核决定；保留纯检查终结路径 |
+| 不读取重复的 origin 副本 | 完整 `control` 测试 | 通过；删除副本、未使用的原目标字段及透传参数 |
+
+移除双 scope 列表和旧拨号入口后，用同一基准比较结构调整。机器为 Ryzen 9 9950X、Go 1.27.1，`-benchtime=100ms -count=3`，下表为三次结果的中位数；这是局部构建/查询成本，不是代理吞吐量：
+
+| 256 个独立模块 scope | 重构前 | 单项 scope 属性 | 再加入域名解析快速路径 |
+| --- | --- | --- | --- |
+| Host 构建时间 | 2.25 ms | 0.871 µs | 1.05 µs |
+| Host 构建分配次数 | 65,808 | 7 | 7 |
+| 全部未命中的查询时间 | 13.9 µs | 13.3 µs | 5.53 µs |
+| 查询分配次数 | 512 | 512 | 0 |
+
+单项属性消除了双列表的二次比较；域名快速路径仅对含冒号的 IPv6 文本调用 IP 规范化，避免为普通主机名构造解析错误。HTTP 候选解析、选路和拨号各保留一套实现，下载按需消费候选，转发先收集计划。按受影响生产文件的 Go AST 统计，条件、循环、非 default 分支和 `&&`/`||` 分支点从 366 减至 343；HTTP planner 从 33 减至 15。后续可重复运行局部基准：
+
+```sh
+go test ./component/mitm -run '^$' -bench '^BenchmarkHTTPScopes$' -benchmem -benchtime=100ms -count=3
+```
