@@ -111,6 +111,41 @@ func TestPluginLocalResponse(t *testing.T) {
 	}
 }
 
+func TestPluginHandoffResetsReadDeadlineAndBindsResponse(t *testing.T) {
+	var deadline time.Time
+	outer := &testPlugin{plan: plugin.Plan{Scopes: []plugin.Scope{testScope("example.com")}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
+		return func(e *plugin.Exchange) (*http.Response, error) {
+			_ = e.SetReadDeadline(time.Now().Add(time.Second))
+			r, err := next(e)
+			if err == nil && r.Request != e.Request {
+				t.Error("downstream response has no associated exchange request")
+			}
+			return r, err
+		}
+	}}
+	inner := &testPlugin{plan: outer.plan, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
+		return func(*plugin.Exchange) (*http.Response, error) {
+			if !deadline.IsZero() {
+				t.Error("previous plugin's read deadline leaked into the next plugin")
+			}
+			return response("local"), nil
+		}
+	}}
+	h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{Plugin: outer}, Instance{Plugin: inner})
+	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
+		t.Fatal("local response reached upstream")
+		return nil, nil
+	})
+	r, err := chain(&plugin.Exchange{
+		Request:         httptest.NewRequest("GET", "https://example.com/", nil),
+		SetReadDeadline: func(value time.Time) error { deadline = value; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Body.Close()
+}
+
 type workerPlugin struct {
 	testPlugin
 	started, stopped chan struct{}

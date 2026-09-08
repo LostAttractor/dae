@@ -26,13 +26,14 @@ type Exchange struct {
 	Request *http.Request
 	Client  *http.Client
 	// SetReadDeadline bounds reads from the intercepted request body. The host
-	// resets the deadline before forwarding. Nil means unsupported (e.g. tests).
+	// resets the deadline when calling next. Nil means unsupported (e.g. tests).
 	SetReadDeadline func(time.Time) error
 }
 
 // Handler calls next synchronously. On success it returns a valid response
 // with non-nil Header and Body, transferring body ownership to its caller.
 // On error it closes any owned response body and returns nil, err.
+// The host associates next's response with Exchange.Request before returning it.
 type Handler func(*Exchange) (*http.Response, error)
 
 // Plan is immutable after setup; the host takes ownership without copying it.

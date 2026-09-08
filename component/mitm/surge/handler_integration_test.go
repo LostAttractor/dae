@@ -231,6 +231,54 @@ $httpClient.get("https://example.com/script", (error, response, body) => {
 	}
 }
 
+func TestProxyIntegrationHeaderScriptDoesNotLimitUpload(t *testing.T) {
+	for _, useHTTP2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("http2=%t", useHTTP2), func(t *testing.T) {
+			_, trust, dial := integrationUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil || r.Header.Get("X-Script") != "yes" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				_, _ = w.Write(body)
+			}))
+			engine, roots := integrationEngine(t, map[string]string{"http-request": `$done({headers:{...$request.headers,"X-Script":"yes"}});`}, trust)
+			engine.options.ScriptTimeout = 100 * time.Millisecond
+			engine.options.Modules[0].Scripts[0].RequiresBody = false
+			forwarding := make(chan struct{})
+			engine.options.Trace = func(event string) {
+				if strings.Contains(event, "event=request_forward ") {
+					close(forwarding)
+				}
+			}
+			client := integrationClient(t, engine, roots, dial, useHTTP2)
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			go func() {
+				select {
+				case <-forwarding:
+				case <-t.Context().Done():
+					return
+				}
+				// The script has finished; its deadline must not govern the upload.
+				time.Sleep(200 * time.Millisecond)
+				_, _ = io.WriteString(writer, "slow upload")
+				_ = writer.Close()
+			}()
+			response, err := client.Post("https://example.com/", "text/plain", reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil || response.StatusCode != http.StatusOK || string(body) != "slow upload" {
+				t.Fatalf("upload interrupted after header script: status=%d body=%q err=%v", response.StatusCode, body, err)
+			}
+		})
+	}
+}
+
 func TestProxyIntegrationHTTP1AndHTTP2TLSRewrite(t *testing.T) {
 	for _, useHTTP2 := range []bool{false, true} {
 		t.Run(fmt.Sprintf("http2=%t", useHTTP2), func(t *testing.T) {
