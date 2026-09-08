@@ -127,7 +127,12 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 								if !errors.Is(err, ebpf.ErrKeyNotExist) {
 									t.Fatalf("intercepted DNS retained a UDP route: %+v, %v", cached, err)
 								}
-							} else if err != nil || cached.Result != result {
+							} else if err != nil || cached.Result.Outbound != result.Outbound ||
+								cached.Result.Mark != result.Mark || cached.Result.Must != result.Must ||
+								cached.Result.CaptureFlags != result.CaptureFlags || cached.Result.ProfileId != result.ProfileId ||
+								cached.Result.Ifindex != result.Ifindex || cached.Result.Mac != result.Mac ||
+								cached.Result.Dscp != result.Dscp || cached.Result.Protocol != result.Protocol ||
+								cached.Result.NoSniff != result.NoSniff || cached.Result.RouteEpoch != result.RouteEpoch {
 								t.Fatalf("first UDP route was not pinned: %+v, %v", cached, err)
 							}
 						}

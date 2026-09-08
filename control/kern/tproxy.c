@@ -199,8 +199,27 @@ struct udp_routing_cache_key {
 	__u16 padding;
 };
 
+/* Preserve all metadata produced by ingress for the first source decision.
+ * pid/pname are not populated in routing_result by ingress; process-name
+ * predicates use the socket cookie map separately. Do not restore identity
+ * from later packets: interfaces, DSCP and policies can change mid-lifetime.
+ */
+struct routing_decision {
+	__u64 route_epoch;
+	__u32 mark;
+	__u32 ifindex;
+	__u32 profile_id;
+	__u8 mac[6];
+	__u8 outbound;
+	__u8 must;
+	__u8 capture_flags;
+	__u8 protocol;
+	__u8 no_sniff;
+	__u8 dscp;
+};
+
 struct udp_routing_cache_value {
-	struct routing_result result;
+	struct routing_decision result;
 	__u64 cached_until;
 	struct bpf_timer timer;
 	struct bpf_spin_lock lock;
@@ -209,11 +228,16 @@ struct udp_routing_cache_value {
 
 /* Zeroed timer/lock bytes for insertion, without a timer in a per-CPU map. */
 struct udp_routing_scratch {
-	struct routing_result result;
+	struct routing_decision result;
 	__u64 cached_until;
 	__u64 zero[3];
 };
 
+_Static_assert(sizeof(struct routing_decision) == 32, "UDP decision ABI size");
+_Static_assert(sizeof(struct udp_routing_cache_key) == 24, "UDP source key ABI size");
+_Static_assert(sizeof(struct udp_routing_cache_value) == 64, "UDP cache value ABI size");
+_Static_assert(__builtin_offsetof(struct udp_routing_cache_value, cached_until) == 32,
+	       "UDP cache expiry ABI offset");
 _Static_assert(sizeof(struct udp_routing_scratch) == sizeof(struct udp_routing_cache_value),
 	       "UDP insertion layout mismatch");
 
@@ -432,7 +456,6 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 		tuples->five.dport = l4h->udph.dest;
 	}
 }
-
 
 
 static __always_inline bool is_extension_header(__u8 nexthdr)
@@ -841,6 +864,39 @@ static int expire_udp_route(void *map, struct udp_routing_cache_key *key,
 	return 0;
 }
 
+static __always_inline void expand_udp_decision(struct routing_result *result,
+					       const struct routing_decision *decision)
+{
+	__builtin_memset(result, 0, sizeof(*result));
+	result->route_epoch = decision->route_epoch;
+	result->mark = decision->mark;
+	result->ifindex = decision->ifindex;
+	result->profile_id = decision->profile_id;
+	result->outbound = decision->outbound;
+	result->must = decision->must;
+	result->capture_flags = decision->capture_flags;
+	result->protocol = decision->protocol;
+	result->no_sniff = decision->no_sniff;
+	result->dscp = decision->dscp;
+	__builtin_memcpy(result->mac, decision->mac, sizeof(result->mac));
+}
+
+static __always_inline void compact_udp_decision(struct routing_decision *decision,
+					        const struct routing_result *result)
+{
+	decision->route_epoch = result->route_epoch;
+	decision->mark = result->mark;
+	decision->ifindex = result->ifindex;
+	decision->profile_id = result->profile_id;
+	decision->outbound = result->outbound;
+	decision->must = result->must;
+	decision->capture_flags = result->capture_flags;
+	decision->protocol = result->protocol;
+	decision->no_sniff = result->no_sniff;
+	decision->dscp = result->dscp;
+	__builtin_memcpy(decision->mac, result->mac, sizeof(decision->mac));
+}
+
 /* 1 = hit, 0 = new lifetime, -1 = another packet/timer is ending it. */
 static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 					 struct routing_result *result)
@@ -868,7 +924,7 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 		value->closing = 1;
 	} else {
 		value->cached_until = now + UDP_ROUTING_CACHE_TTL_NS;
-		*result = value->result;
+		expand_udp_decision(result, &value->result);
 	}
 	bpf_spin_unlock(&value->lock);
 	if (expired) {
@@ -887,7 +943,7 @@ static __noinline int save_udp_route(struct udp_routing_cache_key *key,
 	if (!value)
 		return -1;
 	__builtin_memset(value, 0, sizeof(*value));
-	value->result = *result;
+	compact_udp_decision(&value->result, result);
 	value->cached_until = bpf_ktime_get_ns() + UDP_ROUTING_CACHE_TTL_NS;
 	int ret = bpf_map_update_elem(&udp_routing_cache_map, key, value, BPF_NOEXIST);
 
