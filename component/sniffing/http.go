@@ -6,17 +6,14 @@
 package sniffing
 
 import (
-	"bufio"
 	"bytes"
 	"strings"
-	"unicode"
 
 	"github.com/daeuniverse/dae/common"
 )
 
 func (s *Sniffer) SniffHttp() (d string, err error) {
-	// First byte should be printable.
-	if s.buf.Len() == 0 || !unicode.IsPrint(rune(s.buf.Bytes()[0])) {
+	if s.buf.Len() == 0 {
 		return "", ErrNotApplicable
 	}
 
@@ -27,34 +24,35 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 	}
 	method, _, found := bytes.Cut(search, []byte(" "))
 	if !found {
-		return "", ErrNotApplicable
+		// A read may end in the method itself. Only uppercase prefixes can
+		// still become one of the supported methods on the next read.
+		for _, c := range search {
+			if c < 'A' || c > 'Z' {
+				return "", ErrNotApplicable
+			}
+		}
+		if len(search) == 12 {
+			return "", ErrNotApplicable
+		}
+		return "", ErrNeedMore
 	}
 	if !common.IsValidHttpMethod(string(method)) {
 		return "", ErrNotApplicable
 	}
 
-	// Now we assume it is an HTTP packet. We should not return NotApplicableError after here.
-
-	// Search Host.
-	scanner := bufio.NewScanner(bytes.NewReader(s.buf.Bytes()))
-	// \r\n
-	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		if atEOF && len(data) == 0 {
-			return 0, nil, nil
+	// Inspect complete lines only. A partial Host value must never become
+	// a routing decision, and an incomplete header is not a missing Host.
+	remaining := s.buf.Bytes()
+	for {
+		line, rest, complete := bytes.Cut(remaining, []byte("\r\n"))
+		if !complete {
+			return "", ErrNeedMore
 		}
-		if i := bytes.Index(data, []byte("\r\n")); i >= 0 {
-			// We have a full newline-terminated line.
-			return i + 2, data[0:i], nil
+		if len(line) == 0 {
+			return "", ErrNotFound
 		}
-		// If we're at EOF, we have a final, non-terminated line. Return it.
-		if atEOF {
-			return len(data), data, nil
-		}
-		// Request more data.
-		return 0, nil, nil
-	})
-	for scanner.Scan() && len(scanner.Bytes()) > 0 {
-		key, value, found := bytes.Cut(scanner.Bytes(), []byte{':'})
+		remaining = rest
+		key, value, found := bytes.Cut(line, []byte{':'})
 		if !found {
 			// Bad key value.
 			continue
@@ -63,5 +61,4 @@ func (s *Sniffer) SniffHttp() (d string, err error) {
 			return string(value), nil
 		}
 	}
-	return "", ErrNotFound
 }

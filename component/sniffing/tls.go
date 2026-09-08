@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
+	"github.com/daeuniverse/outbound/pool"
 	"golang.org/x/crypto/cryptobyte"
 )
 
@@ -36,29 +37,58 @@ func (s *Sniffer) SniffTls() (d string, err error) {
 }
 
 func (s *Sniffer) sniffTlsLocked() (d string, err error) {
-	// The Transport Layer Security (TLS) Protocol Version 1.3
-	// https://www.rfc-editor.org/rfc/rfc8446#page-27
-	boundary := 5
-	if s.buf.Len() < boundary {
-		return "", ErrNotApplicable
+	// TCP reads and TLS records may both split a ClientHello. Keep the raw
+	// bytes for relay; allocate a joined handshake only when records split it.
+	records := s.buf.Bytes()
+	var hello []byte
+	var joined *bytes.Buffer
+	defer func() {
+		if joined != nil {
+			pool.PutBytesBuffer(joined)
+		}
+	}()
+	for {
+		if len(records) > 0 && records[0] != ContentType_HandShake ||
+			len(records) > 1 && records[1] != 3 ||
+			len(records) > 2 && (records[2] < 1 || records[2] > 3) {
+			return "", ErrNotApplicable
+		}
+		if len(records) < 5 {
+			return "", ErrNeedMore
+		}
+		length := int(binary.BigEndian.Uint16(records[3:5]))
+		if len(records) < 5+length {
+			return "", ErrNeedMore
+		}
+		payload := records[5 : 5+length]
+		records = records[5+length:]
+		if hello == nil {
+			hello = payload
+		} else {
+			if joined == nil {
+				joined = pool.GetBytesBuffer()
+				joined.Write(hello)
+			}
+			joined.Write(payload)
+			hello = joined.Bytes()
+		}
+		if len(hello) < 4 {
+			continue
+		}
+		size := 4 + int(hello[1])<<16 + int(hello[2])<<8 + int(hello[3])
+		if hello[0] != HandShakeType_Hello || size > streamSniffingMaxBytes {
+			return "", ErrNotApplicable
+		}
+		if len(hello) >= size {
+			extensions, err := clientHelloExtensions(hello[:size])
+			if err != nil {
+				return "", err
+			}
+			d, err = findSniExtension(extensions)
+			s.tcpTLS = err == nil || err == ErrNotFound
+			return d, err
+		}
 	}
-
-	if s.buf.Bytes()[0] != ContentType_HandShake || (!bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_0) && !bytes.Equal(s.buf.Bytes()[1:3], Version_Tls1_2)) {
-		return "", ErrNotApplicable
-	}
-
-	length := int(binary.BigEndian.Uint16(s.buf.Bytes()[3:5]))
-	search := s.buf.Bytes()[5:]
-	if len(search) < length {
-		return "", ErrNeedMore
-	}
-	extensions, err := clientHelloExtensions(search[:length])
-	if err != nil {
-		return "", err
-	}
-	d, err = findSniExtension(extensions)
-	s.tcpTLS = err == nil || err == ErrNotFound
-	return d, err
 }
 
 // clientHelloExtensions accepts one complete, contiguous ClientHello.

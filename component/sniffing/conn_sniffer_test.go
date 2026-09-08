@@ -8,13 +8,75 @@ package sniffing
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestStreamSnifferHandlesSplitHeaders(t *testing.T) {
+	var records []byte
+	hello := tlsStreamGoogle[5:]
+	for _, part := range [][]byte{hello[:2], hello[2:40], hello[40:]} {
+		records = append(records, 22, 3, 3)
+		records = binary.BigEndian.AppendUint16(records, uint16(len(part)))
+		records = append(records, part...)
+	}
+	for _, test := range []struct {
+		name, host string
+		data       []byte
+	}{
+		{"HTTP", "example.com", []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\nbody")},
+		{"TLS", "www.google.com", tlsStreamGoogle},
+		{"TLS records", "www.google.com", records},
+	} {
+		for _, split := range []int{1, 2, 3, 4, 5, 16, 30} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, split), func(t *testing.T) {
+				reader := io.MultiReader(bytes.NewReader(test.data[:split]), bytes.NewReader(test.data[split:]))
+				s := NewStreamSniffer(reader, time.Second)
+				defer s.Close()
+				host, err := s.SniffTcp()
+				if err != nil || host != test.host {
+					t.Fatalf("sniffed (%q, %v), want %q", host, err, test.host)
+				}
+				got, err := io.ReadAll(s)
+				if err != nil || !bytes.Equal(got, test.data) {
+					t.Fatalf("replay returned %d bytes, error %v; want original %d bytes", len(got), err, len(test.data))
+				}
+			})
+		}
+	}
+}
+
+func TestStreamSnifferBoundsIncompleteHTTPHeaders(t *testing.T) {
+	data := append([]byte("GET / HTTP/1.1\r\nX: "), bytes.Repeat([]byte("x"), 2*streamSniffingMaxBytes)...)
+	s := NewStreamSniffer(bytes.NewReader(data), time.Second)
+	defer s.Close()
+	if _, err := s.SniffTcp(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("oversized incomplete header error = %v", err)
+	}
+	got, err := io.ReadAll(s)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("oversized header replay returned %d bytes, error %v", len(got), err)
+	}
+}
+
+func TestStreamSnifferRejectsHostTruncatedAtEOF(t *testing.T) {
+	data := []byte("GET / HTTP/1.1\r\nHost: example")
+	s := NewStreamSniffer(&dataEOFReader{data: data}, time.Second)
+	defer s.Close()
+	if host, err := s.SniffTcp(); host != "" || !errors.Is(err, io.EOF) {
+		t.Fatalf("incomplete Host became a routing result: %q, %v", host, err)
+	}
+	got, err := io.ReadAll(s)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("truncated header replay returned %q, error %v", got, err)
+	}
+}
 
 type readTrackingConn struct {
 	net.Conn
