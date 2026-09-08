@@ -145,7 +145,7 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 
 ## 执行与调试日志
 
-初始化完成、接管流量前，以 `info` 打印各组当前节点表和全部 Surge 模块状态表。节点表复用 `dae status` 的紧凑格式，保留尚未完成检查的节点；没有测量值的延迟显示 `-`，不会额外等待或测速。日志不带颜色，也不按终端宽度截断。
+初始化完成后，以 `info` 记录各模块的加载结果。详细模块状态按需查询，不在日志中重复打印表格。
 
 运行中查询当前模块：
 
@@ -153,9 +153,9 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 ./dae mitm surge status
 ```
 
-查询复用 daemon 的状态服务，无需开启 `global.api_port`。`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败的启动日志还会标出 `failed` 和 `not loaded`；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。
+查询复用 daemon 的状态服务，无需开启 `global.api_port`。`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败时报告具体原因，`debug` 可查看各模块已加载、失败或尚未加载的进度；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。
 
-`IP MAPS` 显示 IP 映射条目数。实际重写可查看现有 info 路由日志：`destination_ip` 是原目标，`destination` 是拨号目标，`outbound` 是出站。
+`IP MAPS` 显示 IP 映射条目数。实际重写可查看 `debug` 路由日志：`destination_ip` 是原目标，`destination` 是拨号目标，`outbound` 是出站。
 
 `WARNINGS` 统计模块解析、加载和缓存回退的警告，命令在表格下按模块列出完整内容。TLS 握手失败和脚本运行日志不计入此列。
 
@@ -163,7 +163,7 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 journalctl -u dae -f -o cat
 ```
 
-自动事件为 `info`。`console.log/info/debug/warn/error` 使用对应级别（log 为 info），`$notification.post` 写 info；均受 `global.log_level` 过滤。
+下载选路、客户端旁路和单请求失败为 `debug`，自动执行步骤为 `trace`。脚本失败后转发原始内容、处理上限导致跳过等行为退化为 `warn`；正常取消和脚本主动中断不告警。`console.log/info/debug/warn/error` 保留脚本选择的级别（log 为 info），`$notification.post` 写 info；均受 `global.log_level` 过滤。
 
 已知不支持的脚本参数 `script-update-interval`、`debug`、`enable`、`full-header-mode` 忽略，仅在 `trace` 记录。`enable=false` 不禁用脚本；模块启停通过 dae 配置和重载完成。未知参数与影响行为的警告仍为 `warning`，支持参数的非法值仍会导致加载失败。
 
@@ -175,7 +175,7 @@ journalctl -u dae -f -o cat
 | `*_rewrite_match` / `map_local_match` | 静态规则命中 |
 | `request_failed` | Surge 请求处理失败 |
 
-Surge 请求与脚本事件以 `surge event=` 输出，使用 `connection_id` 和 `request_id` 关联。`script_end` 含脚本、阶段、耗时与 outcome；加载成功不代表脚本已执行，执行 success 也不保证应用效果。没有 `request_begin` 时依次检查来源开关、hostname、TCP/QUIC、TLS 信任、域名验证策略和网卡绑定。自动事件不记录查询参数、认证头和正文，脚本自行打印的内容不受此限制。
+启用 `trace` 后，Surge 请求与脚本事件通过结构化 `event` 字段标识，使用 `connection_id` 和 `request_id` 关联。`script_end` 含脚本、阶段、耗时与 outcome；加载成功不代表脚本已执行，执行 success 也不保证应用效果。没有 `request_begin` 时依次检查来源开关、hostname、TCP/QUIC、TLS 信任、域名验证策略和网卡绑定。自动事件不记录 URL 路径、查询参数、认证头和正文，脚本自行打印的内容不受此限制。
 
 ## 示例与验证
 
