@@ -138,7 +138,7 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 			t.Errorf("%s: JSON type=%q want %q", typ, schema.Type, want)
 		}
 	}
-	for _, typ := range []reflect.Type{reflect.TypeFor[StatusSnapshot](), reflect.TypeFor[SelectorsResponse](), reflect.TypeFor[DeviceState](), reflect.TypeFor[Certificate](), reflect.TypeFor[SelectNodeRequest](), reflect.TypeFor[SetMITMRequest]()} {
+	for _, typ := range []reflect.Type{reflect.TypeFor[StatusSnapshot](), reflect.TypeFor[SurgeStatus](), reflect.TypeFor[SelectorsResponse](), reflect.TypeFor[DeviceState](), reflect.TypeFor[Certificate](), reflect.TypeFor[SelectNodeRequest](), reflect.TypeFor[SetMITMRequest]()} {
 		check(typ, document.Components.Schemas[typ.Name()])
 	}
 }

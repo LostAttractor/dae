@@ -54,10 +54,10 @@ func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
 	if err := cmd.Execute(); err == nil || requests != before {
 		t.Fatal("invalid flags reached the API")
 	}
-	surge := NewSurgeStatusCommand()
+	surge := NewMITMCommand()
 	var output bytes.Buffer
 	surge.SetOut(&output)
-	surge.SetArgs(nil)
+	surge.SetArgs([]string{"surge", "status"})
 	if err := surge.Execute(); err != nil || !strings.Contains(output.String(), "disabled") {
 		t.Fatal(output.String(), err)
 	}

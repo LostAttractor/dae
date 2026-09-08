@@ -10,7 +10,9 @@ With Go 1.27+ (or inside `nix-shell`):
 make client
 sudo ./dae-client status
 ./dae-client status --api http://192.168.1.1:9080 --recent
-./dae-client surge status --api http://192.168.1.1:9080
+./dae-client mitm status --api http://192.168.1.1:9080 --json
+./dae-client mitm status --api http://192.168.1.1:9080 --verbose
+./dae-client mitm surge status --api http://192.168.1.1:9080 --instance personal
 ./dae-client status --api unix:///var/run/dae.sock --json
 ```
 
@@ -21,7 +23,7 @@ sudo ./dae-client status
 | `--api` | Defaults to `DAE_API_ENDPOINT`, then `unix:///var/run/dae.sock` |
 | `--timeout` | Request timeout, default `10s` |
 | `DAE_API_TOKEN` | Bearer token for TCP administration; kept out of URL and command arguments |
-| `--json` | Emit the full snapshot; mutually exclusive with `--verbose` and `--recent` |
+| `--json` | `status`: full snapshot, mutually exclusive with `--verbose` and `--recent`; MITM report commands: filtered instance array |
 
 The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing filesystem permission for the local socket.
 
@@ -51,7 +53,7 @@ The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these 
 
 `make` and `make test` run `make web-assets` to build the frontend and replace `internal/webui/assets/` with its output before compiling Go. Generated bundles are ignored by Git; only `web/src/` is edited. When invoking `go build` or tests of `internal/webui` or `cmd` directly, first run `make web-assets` alongside the usual daemon build prerequisites. Client-only builds and tests do not need this step.
 
-`dae mitm status` and plugin commands also use the SDK, with `DAE_API_ENDPOINT` and `DAE_API_TOKEN` selecting a remote API.
+`dae mitm status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_TOKEN`; filter reports with `--instance`. The standalone client provides `mitm status` for any plugin report and `mitm surge status` for Surge tables without loading runtime plugins. Report commands emit the filtered instance array with `--json`; `status --json` emits the complete daemon snapshot.
 
 The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `cmd/api_server.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the component/api handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
 
@@ -61,8 +63,8 @@ The port is bound once: `internal/apiserver` creates one TCP listener and `http.
 | --- | --- |
 | `api` | Plain public wire models and network order; standard library only |
 | `api/client` | Concurrent reusable HTTP/Unix client, authentication, JSON and typed errors |
-| `client/status` | Snapshot rendering to `io.Writer`, without runtime access |
-| `client/cli` | Shared API-only command implementations |
+| `client/status` | Shared snapshot rendering, MITM summaries and Surge report decoding/display, without runtime access |
+| `client/cli` | Shared API connection options, instance filtering and status commands |
 | `web` | Frontend source, browser requests and independent build |
 | `internal/webui` | Embedding and static serving of frontend build output |
 | `cmd/dae-client` | Independently buildable entry point |

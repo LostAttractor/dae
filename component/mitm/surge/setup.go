@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	log "github.com/sirupsen/logrus"
@@ -18,13 +19,13 @@ var Plugin = plugin.Definition{Setup: Setup, Commands: Commands}
 func prepare(ctx context.Context, conf Config, services plugin.Services, instanceID string) (engine *Engine, err error) {
 	logger := services.Logger
 	client := services.PrepareClient
-	status := Status{Enabled: true, Modules: make([]ModuleStatus, len(conf.Modules))}
+	status := api.SurgeStatus{Enabled: true, Modules: make([]api.ModuleStatus, len(conf.Modules))}
 	for i, source := range conf.Modules {
 		name := source.Name
 		if name == "" {
 			name = resource.RedactURL(source.Link)
 		}
-		status.Modules[i] = ModuleStatus{Name: name, Source: resource.RedactURL(source.Link), State: "not loaded"}
+		status.Modules[i] = api.ModuleStatus{Name: name, Source: resource.RedactURL(source.Link), State: "not loaded"}
 	}
 	defer func() {
 		if err != nil {

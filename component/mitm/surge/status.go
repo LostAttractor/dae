@@ -2,38 +2,18 @@
 
 package surge
 
-import "slices"
+import (
+	"slices"
 
-// Status describes the modules of one initialized engine. It does not probe
-// traffic or execute scripts; a loaded module may not have matched any request.
-type Status struct {
-	Enabled bool           `json:"enabled"`
-	Modules []ModuleStatus `json:"modules"`
-}
+	"github.com/daeuniverse/dae/api"
+)
 
-type ModuleStatus struct {
-	Instance       string   `json:"instance,omitempty"`
-	Name           string   `json:"name"`
-	Source         string   `json:"source"`
-	State          string   `json:"state"`
-	Scripts        int      `json:"scripts"`
-	Hostnames      int      `json:"hostnames"`
-	HostMappings   int      `json:"host_mappings"`
-	URLRewrites    int      `json:"url_rewrites"`
-	HeaderRewrites int      `json:"header_rewrites"`
-	BodyRewrites   int      `json:"body_rewrites"`
-	MapLocals      int      `json:"map_locals"`
-	Rules          int      `json:"rules"`
-	Warnings       []string `json:"warnings"`
-	Error          string   `json:"error,omitempty"`
-}
-
-func (m *Module) Status() ModuleStatus {
+func (m *Module) Status() api.ModuleStatus {
 	state := m.cacheState
 	if state == "" {
 		state = "loaded"
 	}
-	return ModuleStatus{
+	return api.ModuleStatus{
 		Name: m.Name, Source: m.source, State: state,
 		Scripts: len(m.Scripts), Hostnames: len(m.Hostnames), HostMappings: len(m.Hosts),
 		URLRewrites: len(m.URLRewrites), HeaderRewrites: len(m.HeaderRewrites),
@@ -42,8 +22,8 @@ func (m *Module) Status() ModuleStatus {
 	}
 }
 
-func (e *Engine) Status() Status {
-	status := Status{Enabled: true, Modules: make([]ModuleStatus, 0, len(e.options.Modules))}
+func (e *Engine) Status() api.SurgeStatus {
+	status := api.SurgeStatus{Enabled: true, Modules: make([]api.ModuleStatus, 0, len(e.options.Modules))}
 	for _, module := range e.options.Modules {
 		status.Modules = append(status.Modules, module.Status())
 	}

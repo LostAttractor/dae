@@ -14,9 +14,7 @@ import (
 func main() {
 	root := &cobra.Command{Use: "dae-client", Short: "Independent clients for the dae API", SilenceErrors: true}
 	root.AddCommand(cli.NewStatusCommand())
-	surge := &cobra.Command{Use: "surge", Short: "Surge module status"}
-	surge.AddCommand(cli.NewSurgeStatusCommand())
-	root.AddCommand(surge)
+	root.AddCommand(cli.NewMITMCommand())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
