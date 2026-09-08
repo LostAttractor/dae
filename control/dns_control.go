@@ -17,16 +17,14 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/netutils"
-
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/pkg/fastrand"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -228,13 +226,13 @@ func (c *DnsController) cacheResponseView(cacheKey dnsCacheKey, observedAt time.
 	}
 	cacheKey.queryInfo = view.query
 	c.dnsCache.Replace(cacheKey, values, validUntil)
-	if log.IsLevelEnabled(log.DebugLevel) {
+	if log.IsLevelEnabled(log.TraceLevel) {
 		log.WithFields(log.Fields{
 			"qname":    view.query.qname,
-			"qtype":    view.query.qtype,
+			"qtype":    dnsmessage.Type(view.query.qtype).String(),
 			"upstream": cacheKey.upstream,
 			"answers":  len(view.answers),
-		}).Debug("Update DNS record cache")
+		}).Trace("Updated DNS cache")
 	}
 }
 
@@ -436,61 +434,49 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 	}
 	queryInfo := c.prepareQueryInfo(dnsMessage)
 	if log.IsLevelEnabled(log.TraceLevel) {
-		log.Tracef("Received UDP(DNS) %v <-> %v: %v %v",
-			RefineSourceToShow(req.src, req.dst.Addr()), req.dst.String(), queryInfo.qname, queryInfo.qtype,
-		)
+		log.WithFields(log.Fields{
+			"source": req.src, "destination": req.dst,
+			"qname": queryInfo.qname, "qtype": dnsmessage.Type(queryInfo.qtype).String(),
+		}).Trace("Received DNS query")
 	}
 
 	go func() {
 		defer c.finishDNSRequest()
 		var err error
-		// Try to make both A and AAAA lookups.
-		if (queryInfo.qtype == dnsmessage.TypeA || queryInfo.qtype == dnsmessage.TypeAAAA) && c.qtypePrefer != 0 {
-			dnsMessage2 := dnsMessage.Copy()
-			dnsMessage2.Id = uint16(fastrand.Intn(math.MaxUint16))
-			// The flipped query must carry its own queryInfo: deriving every
-			// downstream key (domain registry, dnsCache, DNS request
-			// routing) from the original qtype would file AAAA answers
-			// under the A key and break per-family verification.
-			queryInfo2 := queryInfo
-			switch queryInfo.qtype {
-			case dnsmessage.TypeA:
-				dnsMessage2.Question[0].Qtype = dnsmessage.TypeAAAA
-				queryInfo2.qtype = dnsmessage.TypeAAAA
-			case dnsmessage.TypeAAAA:
-				dnsMessage2.Question[0].Qtype = dnsmessage.TypeA
-				queryInfo2.qtype = dnsmessage.TypeA
-			}
+		// Only the non-preferred family needs a second lookup. A failed or
+		// incomplete preference probe must not discard the requested answer.
+		if (queryInfo.qtype == dnsmessage.TypeA || queryInfo.qtype == dnsmessage.TypeAAAA) &&
+			c.qtypePrefer != 0 && queryInfo.qtype != c.qtypePrefer {
+			preferred := dnsMessage.Copy()
+			preferred.Id = uint16(fastrand.Intn(math.MaxUint16))
+			preferred.Question[0].Qtype = c.qtypePrefer
+			preferredInfo := queryInfo
+			preferredInfo.qtype = c.qtypePrefer
 
-			// TODO: ignoreFixedTTL?
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- c.handleDNSRequest(c.closed, dnsMessage2, req, queryInfo2)
+				errCh <- c.handleDNSRequest(c.closed, preferred, req, preferredInfo)
 			}()
-			err = oops.Join(c.handleDNSRequest(c.closed, dnsMessage, req, queryInfo), <-errCh)
-			if err != nil {
-				goto err
-			}
-			if c.qtypePrefer != queryInfo.qtype && dnsMessage2 != nil && IncludeAnyIpInMsg(dnsMessage2) {
+			err = c.handleDNSRequest(c.closed, dnsMessage, req, queryInfo)
+			preferredErr := <-errCh
+			if err == nil && preferredErr == nil && preferred.Rcode == dnsmessage.RcodeSuccess &&
+				!preferred.Truncated && IncludeAnyIpInMsg(preferred) {
 				c.reject(dnsMessage)
 			}
 		} else {
 			err = c.handleDNSRequest(c.closed, dnsMessage, req, queryInfo)
 		}
-	err:
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) ||
 				(c.closed.Err() != nil && errors.Is(err, context.Canceled)) {
 				return
 			}
-			netErr, ok := IsNetError(err)
-			err = oops.
-				With("Is NetError", ok).
-				With("Is Temporary", ok && netErr.Temporary()).
-				With("Is Timeout", ok && netErr.Timeout()).
-				Wrapf(err, "failed to make dns request")
-			if !ok || !netErr.Temporary() {
-				log.Warningf("%+v", err)
+			if log.IsLevelEnabled(log.DebugLevel) {
+				fields := log.Fields{
+					"source": req.src, "destination": req.dst,
+					"qname": queryInfo.qname, "qtype": dnsmessage.Type(queryInfo.qtype).String(),
+				}
+				log.WithFields(fields).WithError(err).Debug("DNS query failed")
 			}
 			return
 		}
@@ -521,11 +507,13 @@ func (c *DnsController) writeDNSResponse(msg *dnsmessage.Msg, req *udpRequest, i
 	msg.Compress = true
 	data, err := msg.Pack()
 	if err != nil {
-		log.Errorf("%+v", oops.Wrapf(err, "failed to pack dns message"))
+		log.WithFields(log.Fields{"source": req.dst, "destination": req.src}).WithError(err).
+			Debug("Failed to encode DNS response")
 		return
 	}
 	if err = c.sendDNSPacket(data, req.dst, req.src); err != nil && !errors.Is(err, net.ErrClosed) {
-		log.Warningf("%+v", oops.Wrapf(err, "failed to send dns message back"))
+		log.WithFields(log.Fields{"source": req.dst, "destination": req.src}).WithError(err).
+			Debug("Failed to send DNS response")
 	}
 }
 
@@ -614,11 +602,12 @@ func (c *DnsController) resolveDNSRequest(
 	var err error
 Dial:
 	for invokingDepth := 1; invokingDepth <= consts.MaxDnsLookupDepth; invokingDepth++ {
-		if log.IsLevelEnabled(log.DebugLevel) {
+		if log.IsLevelEnabled(log.TraceLevel) {
 			log.WithFields(log.Fields{
-				"question": dnsMessage.Question,
+				"qname":    queryInfo.qname,
+				"qtype":    dnsmessage.Type(queryInfo.qtype).String(),
 				"upstream": upstream.String(),
-			}).Debugln("Request to DNS upstream")
+			}).Trace("Querying DNS upstream")
 		}
 
 		if dialArgument == nil {
@@ -636,14 +625,7 @@ Dial:
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
-			netErr, ok := IsNetError(err)
-			err = oops.
-				In("DialContext").
-				With("Is NetError", ok).
-				With("Is Temporary", ok && netErr.Temporary()).
-				With("Is Timeout", ok && netErr.Timeout()).
-				Wrapf(err, "DNS dialSend error")
-			return err
+			return fmt.Errorf("exchange DNS query with %s via outbound %q node %q: %w", upstream, dialArgument.Outbound.Name, dialArgument.Dialer.Name, err)
 		}
 
 		ResponseIndex, err := c.routing.ResponseSelect(dnsMessage, upstreamIndex)
@@ -651,7 +633,7 @@ Dial:
 			return err
 		}
 		if ResponseIndex.IsReserved() {
-			if log.IsLevelEnabled(log.InfoLevel) {
+			if log.IsLevelEnabled(log.DebugLevel) {
 				interfaceName := ""
 				if c.interfaceName != nil {
 					interfaceName = c.interfaceName(req.routingResult.Ifindex)
@@ -668,16 +650,16 @@ Dial:
 				fields["target_kind"] = dialArgument.Outbound.TargetKind.String()
 				fields["dialer"] = dialArgument.Dialer.Name
 				fields["qname"] = queryInfo.qname
-				fields["qtype"] = queryInfo.qtype
+				fields["qtype"] = dnsmessage.Type(queryInfo.qtype).String()
 				if policy := dialArgument.Outbound.DisplayPolicy(); policy != "" {
 					fields["policy"] = policy
 				}
 				switch ResponseIndex {
 				case consts.DnsResponseOutboundIndex_Accept:
-					log.WithFields(fields).Info(routeLogMessage)
+					log.WithFields(fields).Debug(routeLogMessage)
 				case consts.DnsResponseOutboundIndex_Reject:
 					fields["action"] = "reject"
-					log.WithFields(fields).Info(routeLogMessage)
+					log.WithFields(fields).Debug(routeLogMessage)
 				}
 			}
 			switch ResponseIndex {
@@ -688,11 +670,11 @@ Dial:
 			case consts.DnsResponseOutboundIndex_Accept:
 				break Dial
 			default:
-				return oops.Errorf("unknown upstream: %v", ResponseIndex.String())
+				return fmt.Errorf("unknown upstream: %v", ResponseIndex.String())
 			}
 		}
 		if invokingDepth == consts.MaxDnsLookupDepth {
-			return oops.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", consts.MaxDnsLookupDepth)
+			return fmt.Errorf("too deep DNS lookup invoking (depth: %v); there may be infinite loop in your DNS response routing", consts.MaxDnsLookupDepth)
 		}
 		nextUpstreamIndex := consts.DnsRequestOutboundIndex(ResponseIndex)
 		nextUpstream, err := c.routing.GetUpstream(ctx, nextUpstreamIndex)
@@ -701,10 +683,11 @@ Dial:
 		}
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
-				"question":      dnsMessage.Question,
+				"qname":         queryInfo.qname,
+				"qtype":         dnsmessage.Type(queryInfo.qtype).String(),
 				"last_upstream": upstream.String(),
 				"next_upstream": nextUpstream.String(),
-			}).Debugln("Change DNS upstream and resend")
+			}).Debug("DNS response rule selected another upstream")
 		}
 		pending = nil
 		upstreamIndex = nextUpstreamIndex
@@ -727,8 +710,9 @@ func (c *DnsController) shareDNSResult(ctx context.Context, flightKey dnsFlightK
 		return err
 	}
 	if flight == nil {
-		if log.IsLevelEnabled(log.DebugLevel) {
-			log.Debugf("UDP(DNS) <-> Drop excess duplicate lookup: %v %v", flightKey.query.qname, flightKey.query.qtype)
+		if log.IsLevelEnabled(log.TraceLevel) {
+			log.WithFields(log.Fields{"qname": flightKey.query.qname, "qtype": dnsmessage.Type(flightKey.query.qtype).String()}).
+				Trace("Dropped DNS query: duplicate request limit reached")
 		}
 		return nil
 	}
@@ -791,8 +775,9 @@ func (c *DnsController) waitDNSFlight(ctx context.Context, flightKey dnsFlightKe
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if log.IsLevelEnabled(log.DebugLevel) {
-			log.Debugf("UDP(DNS) <-> Drop stale duplicate lookup: %v %v", flightKey.query.qname, flightKey.query.qtype)
+		if log.IsLevelEnabled(log.TraceLevel) {
+			log.WithFields(log.Fields{"qname": flightKey.query.qname, "qtype": dnsmessage.Type(flightKey.query.qtype).String()}).
+				Trace("Dropped DNS query: shared lookup timed out")
 		}
 		return nil
 	}
@@ -1089,13 +1074,13 @@ func (c *DnsController) dialSend(
 			return nil, err
 		}
 		if fromCache {
-			if log.IsLevelEnabled(log.DebugLevel) && len(msg.Question) > 0 {
+			if log.IsLevelEnabled(log.TraceLevel) && len(msg.Question) > 0 {
 				log.WithFields(log.Fields{
 					"qname":  queryInfo.qname,
-					"qtype":  queryInfo.qtype,
+					"qtype":  dnsmessage.Type(queryInfo.qtype).String(),
 					"rcode":  msg.Rcode,
 					"answer": FormatDnsRsc(msg.Answer),
-				}).Debugf("UDP(DNS) <-> Cache")
+				}).Trace("DNS cache hit")
 			}
 			return nil, nil
 		}
@@ -1115,33 +1100,14 @@ func (c *DnsController) dialSend(
 		return nil, err
 	}
 
-	// TODO: 直接加入到上面的日志
-	if log.IsLevelEnabled(log.DebugLevel) {
+	if log.IsLevelEnabled(log.TraceLevel) {
 		log.WithFields(log.Fields{
-			"qname":  queryInfo.qname,
-			"qtype":  queryInfo.qtype,
-			"rcode":  msg.Rcode,
-			"answer": FormatDnsRsc(msg.Answer),
-		}).Debugf("UDP(DNS) <-> %v", dialArgument.Target.String())
-	}
-
-	// These responses are deliberately not cached, but the surrounding flight
-	// still fans them out to all concurrent identical requests.
-	switch {
-	case !msg.Response,
-		len(msg.Question) == 0,               // Check healthy resp.
-		msg.Rcode != dnsmessage.RcodeSuccess, // Check suc resp.
-		// A truncated response carries a partial answer; caching it would
-		// serve the incomplete RRset with the TC bit cleared (FillInto
-		// forces Truncated=false) and short-circuit the client's TCP
-		// fallback until the TTL expires. Pass it through uncached.
-		msg.Truncated:
-		log.WithFields(log.Fields{
-			"qname":  queryInfo.qname,
-			"qtype":  queryInfo.qtype,
-			"rcode":  msg.Rcode,
-			"answer": FormatDnsRsc(msg.Answer),
-		}).Tracef("Not a valid DNS response")
+			"qname":    queryInfo.qname,
+			"qtype":    dnsmessage.Type(queryInfo.qtype).String(),
+			"rcode":    msg.Rcode,
+			"answer":   FormatDnsRsc(msg.Answer),
+			"upstream": dialArgument.Target,
+		}).Trace("Received DNS response")
 	}
 
 	return &pendingDNSResponse{
@@ -1152,17 +1118,17 @@ func (c *DnsController) dialSend(
 
 func validateDNSResponseIdentity(request, response *dnsmessage.Msg) error {
 	if request == nil || response == nil || !response.Response {
-		return oops.Errorf("DNS response expected")
+		return fmt.Errorf("DNS response expected")
 	}
 	if response.Id != request.Id || response.Opcode != request.Opcode {
-		return oops.Errorf("DNS response identity mismatch")
+		return fmt.Errorf("DNS response identity mismatch")
 	}
 	if len(request.Question) != 1 || len(response.Question) != 1 {
-		return oops.Errorf("DNS response question count mismatch")
+		return fmt.Errorf("DNS response question count mismatch")
 	}
 	want, got := request.Question[0], response.Question[0]
 	if !strings.EqualFold(got.Name, want.Name) || got.Qtype != want.Qtype || got.Qclass != want.Qclass {
-		return oops.Errorf("DNS response question mismatch: got %v, want %v", got, want)
+		return fmt.Errorf("DNS response question mismatch: got %v, want %v", got, want)
 	}
 	return nil
 }

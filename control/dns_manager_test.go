@@ -880,3 +880,26 @@ func TestDnsManagerIdleRetirementCanReplaceWhileTransportCloseIsStuck(t *testing
 	releaseOnce.Do(func() { close(conn.closeRelease) })
 	<-m.done
 }
+
+func TestDnsManagerKeepsResponseBeforePeerEOF(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			req, err := readStreamFrame(server)
+			if err == nil {
+				_ = writeStreamFrame(server, answerHandler(req))
+			}
+		}()
+		manager := NewDnsManager(client)
+		msg := testQuery("example.com.", dnsmessage.TypeA, 17)
+		err := manager.Resolve(msg)
+		_ = manager.Close()
+		if err != nil {
+			t.Fatalf("complete response was lost to following EOF: %v", err)
+		}
+		if !msg.Response || msg.Id != 17 || len(msg.Answer) != 1 {
+			t.Fatalf("unexpected DNS reply: %v", msg)
+		}
+	}
+}

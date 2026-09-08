@@ -24,6 +24,7 @@ type tcpDNSForwarder struct {
 	state        *dnsForwarderState
 	mu           sync.Mutex
 	dnsManager   *DnsManager
+	dialing      chan struct{}
 	retiring     *DnsManager
 	closeErr     error
 }
@@ -33,7 +34,7 @@ func (d *tcpDNSForwarder) Close() error {
 		return nil
 	}
 	d.mu.Lock()
-	manager, retiring, priorErr := d.dnsManager, d.retiring, d.closeErr
+	manager, retiring, dialing, priorErr := d.dnsManager, d.retiring, d.dialing, d.closeErr
 	d.dnsManager = nil
 	d.retiring = nil
 	d.closeErr = nil
@@ -52,6 +53,13 @@ func (d *tcpDNSForwarder) Close() error {
 	}
 	if retiring != nil && retiring != manager {
 		err = errors.Join(err, retiring.waitClosed(ctx))
+	}
+	if dialing != nil {
+		select {
+		case <-dialing:
+		case <-ctx.Done():
+			err = errors.Join(err, ctx.Err())
+		}
 	}
 	return err
 }
@@ -78,49 +86,75 @@ func (d *tcpDNSForwarder) allowIdleClose(manager *DnsManager) bool {
 }
 
 func (d *tcpDNSForwarder) getManager(ctx context.Context) (*DnsManager, error) {
-	if d.state.isClosed() {
-		return nil, net.ErrClosed
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.state.isClosed() {
-		return nil, net.ErrClosed
-	}
-	if d.dnsManager == nil || d.dnsManager.IsClosed() {
-		if d.dnsManager != nil && !d.dnsManager.canReplace() {
+	ctx, cancelState := d.state.deriveContext(ctx)
+	defer cancelState()
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		d.mu.Lock()
+		if d.state.isClosed() {
+			d.mu.Unlock()
 			return nil, net.ErrClosed
 		}
-		if !d.clearRetiringLocked() {
+		if d.dialing != nil {
+			done := d.dialing
+			d.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if d.dnsManager != nil && !d.dnsManager.IsClosed() {
+			manager := d.dnsManager
+			d.mu.Unlock()
+			return manager, nil
+		}
+		if (d.dnsManager != nil && !d.dnsManager.canReplace()) || !d.clearRetiringLocked() {
+			d.mu.Unlock()
 			return nil, net.ErrClosed
 		}
 		previous := d.dnsManager
-		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-		defer cancel()
+		done := make(chan struct{})
+		d.dialing = done
+		d.mu.Unlock()
+
+		// One caller owns the dial; waiters can cancel without waiting for it.
+		dialCtx, cancelDial := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		conn, err := d.dialArgument.dialerForConnection().DialContext(dialCtx, "tcp", d.dialArgument.Target.String())
-		if err != nil {
-			return nil, err
-		}
+		err = dnsForwarderOperationError(ctx, d.state, dialCtx, err)
+		cancelDial()
+
+		d.mu.Lock()
 		if d.state.isClosed() {
-			closeInBackground(conn)
-			return nil, net.ErrClosed
+			err = net.ErrClosed
 		}
 		var manager *DnsManager
-		manager = newDnsManagerWithIdlePolicy(
-			conn,
-			consts.DefaultDNSTimeout,
-			2*consts.DefaultDNSTimeout,
-			func() bool { return d.allowIdleClose(manager) },
-		)
-		if previous != nil {
-			if previous.closeComplete() {
-				d.closeErr = errors.Join(d.closeErr, previous.closeErr)
-			} else {
-				d.retiring = previous
+		if err == nil {
+			manager = newDnsManagerWithIdlePolicy(
+				conn,
+				consts.DefaultDNSTimeout,
+				2*consts.DefaultDNSTimeout,
+				func() bool { return d.allowIdleClose(manager) },
+			)
+			if previous != nil {
+				if previous.closeComplete() {
+					d.closeErr = errors.Join(d.closeErr, previous.closeErr)
+				} else {
+					d.retiring = previous
+				}
 			}
+			d.dnsManager = manager
+		} else {
+			closeInBackground(conn)
 		}
-		d.dnsManager = manager
+		d.dialing = nil
+		close(done)
+		d.mu.Unlock()
+		return manager, err
 	}
-	return d.dnsManager, nil
 }
 
 func (d *tcpDNSForwarder) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {

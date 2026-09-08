@@ -183,7 +183,7 @@ func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []by
 		return fmt.Errorf("write DoQ query: %w", err)
 	}
 	if err := stream.Close(); err != nil {
-		return newDoqProtocolError(fmt.Errorf("finish DoQ query: %w", err))
+		return fmt.Errorf("finish DoQ query: %w", err)
 	}
 
 	var lenBuf [2]byte
@@ -225,11 +225,9 @@ func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []by
 			return nil
 		}
 		if err != nil {
-			var streamErr *quic.StreamError
-			if errors.As(err, &streamErr) {
-				return err
-			}
-			return newDoqProtocolError(fmt.Errorf("wait for DoQ response FIN: %w", err))
+			// A timeout or transport error cannot establish a framing violation.
+			// Preserve it without terminating unrelated queries on this connection.
+			return fmt.Errorf("wait for DoQ response FIN: %w", err)
 		}
 	}
 }
