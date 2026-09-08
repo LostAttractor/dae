@@ -27,7 +27,6 @@ import (
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/mohae/deepcopy"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -94,11 +93,11 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 		case <-waitCtx.Done():
 		}
 	}
-	log.Infoln("Waiting for network...")
+	log.Debug("Checking startup network reachability")
 	for i := 0; ; i++ {
 		if contextErr := waitCtx.Err(); contextErr != nil {
 			if errors.Is(contextErr, context.DeadlineExceeded) && ctx.Err() == nil {
-				log.Warnf("Network is still not online after %v; continuing with configured nodes and subscription resolution", timeout)
+				log.WithField("timeout", timeout).Warn("Startup network check timed out; continuing with configured nodes and subscriptions")
 				return nil
 			}
 			return contextErr
@@ -112,7 +111,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 			if waitCtx.Err() != nil {
 				continue
 			}
-			log.Debugf("%+v", oops.Wrapf(err, "CheckNetwork"))
+			log.WithError(resource.RedactError(err)).WithField("endpoint", resource.RedactURL(req.URL.String())).Debug("Startup network check failed")
 			var neterr net.Error
 			if errors.As(err, &neterr) && neterr.Timeout() {
 				continue
@@ -122,10 +121,10 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 		}
 		_ = resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-			log.Infoln("Network online.")
+			log.Debug("Startup network check passed")
 			return nil
 		}
-		log.Infof("Bad status: %v (%v)", resp.Status, resp.StatusCode)
+		log.WithFields(log.Fields{"endpoint": resource.RedactURL(req.URL.String()), "status": resp.StatusCode}).Debug("Startup network check returned an unexpected HTTP status")
 		waitRetry()
 	}
 }
@@ -144,7 +143,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 		return nil, err
 	}
 	if autoSelected {
-		log.Warn("so_mark_from_dae is unset; using reserved internal socket mark 0x100 for policy routing")
+		log.WithField("so_mark_from_dae", "0x100").Debug("Using default internal socket mark")
 	}
 	activeSubscriptionTags, err := persistentSubscriptionTags(conf.Subscription)
 	if err != nil {
@@ -159,10 +158,10 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 			return
 		}
 		if closeErr := preparation.Close(); closeErr != nil {
-			err = errors.Join(err, oops.Wrapf(closeErr, "close control plane preparation"))
+			err = errors.Join(err, fmt.Errorf("close control plane preparation: %w", closeErr))
 		}
 	}()
-	log.Info("Preparing nodes, routing rules, and eBPF resources in parallel")
+	log.Debug("Preparing nodes, routing rules, and eBPF resources")
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		var prepareErr error
@@ -202,7 +201,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 		return nil, err
 	}
 	runtime.GC()
-	log.WithField("duration", time.Since(assemblyStarted)).Info("Assembled control plane")
+	log.WithField("duration", time.Since(assemblyStarted)).Debug("Assembled control plane")
 	logStartupMITMStatus(c.MITMStatus())
 	return c, nil
 }
@@ -248,7 +247,7 @@ func resolveNodeDescriptors(
 		if isReload {
 			writeReloadProgress("Fetching subscriptions...")
 		}
-		log.Infoln("Fetching subscriptions...")
+		log.WithField("subscriptions", len(conf.Subscription)).Debug("Fetching subscriptions")
 	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -287,14 +286,12 @@ func resolveNodeDescriptors(
 		log.Warnf("Subscription resolution exceeded %v; skipping unfinished subscriptions", phaseTimeout)
 	}
 
-	resolvingFailed := false
 	for i, result := range results {
 		sub := conf.Subscription[i]
 		if result.err != nil {
-			resolvingFailed = true
 			phaseCanceled := subCtx.Err() != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded))
 			if !phaseCanceled {
-				log.Warnf("failed to resolve subscription %q: %v", subscription.RedactURL(sub.String()), result.err)
+				log.WithError(resource.RedactError(result.err)).WithField("subscription", subscription.RedactURL(sub.String())).Warn("Subscription unavailable; skipping its nodes")
 			}
 			continue
 		}
@@ -308,20 +305,13 @@ func resolveNodeDescriptors(
 	if err := subscription.PrunePersistedSubscriptions(subscriptionDir, activeTags); err != nil {
 		return nil, err
 	}
-	if len(descriptors) == 0 {
-		if resolvingFailed {
-			log.Warnln("No node found because all subscription resolving failed.")
-		} else {
-			log.Warnln("No node found.")
-		}
-	}
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
-		log.Warnln("No interface to bind.")
+		log.Debug("No interfaces configured for traffic interception")
 	}
 	log.WithFields(log.Fields{
 		"duration": time.Since(started),
 		"nodes":    len(descriptors),
-	}).Info("Prepared nodes")
+	}).Debug("Prepared nodes")
 	return descriptors, nil
 }
 
@@ -349,4 +339,16 @@ func persistentSubscriptionTags(subscriptions []config.Subscription) (map[string
 		tags[tag] = struct{}{}
 	}
 	return tags, nil
+}
+
+func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
+	merger := config.NewMerger(cfgFile)
+	sections, includes, err := merger.Merge()
+	if err != nil {
+		return nil, nil, err
+	}
+	if conf, err = config.New(sections); err != nil {
+		return nil, nil, err
+	}
+	return conf, includes, nil
 }

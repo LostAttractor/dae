@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // The listener belongs to the daemon, so reloading a control plane can reuse
@@ -43,7 +45,7 @@ func prepareAPIServer(current *apiServer, port uint16) (*apiServer, error) {
 	}
 	go func() {
 		if err := s.server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			std.WithError(err).Error("HTTP API server stopped")
+			log.WithError(err).Error("HTTP API server stopped")
 		}
 	}()
 	return s, nil

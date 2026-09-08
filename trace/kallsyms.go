@@ -10,6 +10,7 @@ package trace
 import (
 	"bufio"
 	"cmp"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -30,10 +31,10 @@ var kallsymsByName map[string]Symbol = make(map[string]Symbol)
 var kallsymsByAddr map[uint64]Symbol = make(map[uint64]Symbol)
 var kprobeSymbols = make(map[string]struct{})
 
-func ReadKallsyms() {
+func ReadKallsyms() error {
 	file, err := os.Open("/proc/kallsyms")
 	if err != nil {
-		log.Fatalf("failed to open /proc/kallsyms: %v", err)
+		return fmt.Errorf("open kernel symbols: %w", err)
 	}
 	defer func() { _ = file.Close() }()
 	scanner := bufio.NewScanner(file)
@@ -53,12 +54,13 @@ func ReadKallsyms() {
 		kallsymsByAddr[addr] = Symbol{typ, name, addr}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Fatalf("failed to read /proc/kallsyms: %v", err)
+		return fmt.Errorf("read kernel symbols: %w", err)
 	}
 	sort.Slice(kallsyms, func(i, j int) bool {
 		return kallsyms[i].Addr < kallsyms[j].Addr
 	})
 	readKprobeSymbols()
+	return nil
 }
 
 func readKprobeSymbols() {

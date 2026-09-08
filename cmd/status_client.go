@@ -34,7 +34,9 @@ var statusCmd = &cobra.Command{
 	Short: "Show the status of the running dae daemon.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.SilenceUsage = true
-		internal.AutoSu()
+		if err := internal.AutoSu(); err != nil {
+			return err
+		}
 		snapshot, err := fetchStatus()
 		if err != nil {
 			return fmt.Errorf("failed to get status: %w", err)

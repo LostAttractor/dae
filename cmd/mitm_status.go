@@ -19,7 +19,9 @@ import (
 )
 
 func fetchMITMStatus(ctx context.Context) ([]plugin.InstanceStatus, error) {
-	internal.AutoSu()
+	if err := internal.AutoSu(); err != nil {
+		return nil, err
+	}
 	snapshot, err := fetchStatusContext(ctx)
 	if err != nil {
 		return nil, err
@@ -207,6 +209,6 @@ func logStartupMITMStatus(instances []plugin.InstanceStatus) {
 	for _, instance := range instances {
 		log.WithFields(log.Fields{"mitm_instance": instance.ID, "type": instance.Type,
 			"state": instance.State, "scopes": instance.Scopes, "destination_rules": instance.DestinationRules,
-		}).Info("MITM plugin prepared")
+		}).Debug("MITM plugin prepared")
 	}
 }
