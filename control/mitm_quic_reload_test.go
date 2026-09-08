@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -37,7 +38,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 		t.Skip("root is required for isolated BPF map tests")
 	}
 	authority, roots := mitmQUICTestAuthority(t)
-	for _, scenario := range []string{"idle", "active", "reset upstream", "abort"} {
+	for _, scenario := range []string{"idle", "active", "drain timeout", "reset upstream", "abort"} {
 		t.Run(scenario, func(t *testing.T) {
 			spec, err := loadBpf()
 			if err != nil {
@@ -111,7 +112,11 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 				switch r.URL.Path {
 				case "/active":
 					close(started)
-					<-release
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return
+					}
 				case "/reset":
 					panic(http.ErrAbortHandler)
 				}
@@ -159,8 +164,14 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			}}
 			t.Cleanup(func() { _ = clientTransport.Close() })
 			client := &http.Client{Transport: clientTransport, Timeout: 3 * time.Second}
+			requestCtx, cancelRequests := context.WithCancel(t.Context())
+			defer cancelRequests()
 			request := func(path string) error {
-				resp, err := client.Get("https://" + net.JoinHostPort("video.example", strconv.Itoa(int(dst.Port()))) + path)
+				req, err := http.NewRequestWithContext(requestCtx, "GET", "https://"+net.JoinHostPort("video.example", strconv.Itoa(int(dst.Port())))+path, nil)
+				if err != nil {
+					return err
+				}
+				resp, err := client.Do(req)
 				if err != nil {
 					return err
 				}
@@ -180,7 +191,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 				}
 			}
 			responseDone := make(chan error, 1)
-			if scenario == "active" {
+			if scenario == "active" || scenario == "drain timeout" {
 				go func() { responseDone <- request("/active") }()
 				select {
 				case <-started:
@@ -213,6 +224,25 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("control plane did not close")
+			}
+			if !plane.closedDone.Load() {
+				t.Fatal("retirement did not finish successfully")
+			}
+			if scenario == "drain timeout" {
+				if _, err := bridge.WriteTo(nil, net.UDPAddrFromAddrPort(dst)); !errors.Is(err, net.ErrClosed) {
+					t.Fatalf("forced retirement left the association open: %v", err)
+				}
+				// Forced UDP closure cannot guarantee delivery of a final close
+				// packet. Cancel the remote test client after checking local cleanup.
+				cancelRequests()
+				select {
+				case err := <-responseDone:
+					if err == nil {
+						t.Fatal("unfinished request survived forced retirement")
+					}
+				case <-time.After(time.Second):
+					t.Fatal("forced retirement left the client waiting")
+				}
 			}
 			if err := <-served; err != nil {
 				t.Fatal(err)
