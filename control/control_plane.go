@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -210,9 +209,9 @@ func NewControlPlane(
 	/// Routing.
 	// Parse rules and build. BuildUserspace is in-memory only and is safe to
 	// run during the validation phase; BuildKernspace is deferred to Activate.
-	builder, err := NewRoutingMatcherBuilder(preparedRules.routing, outboundName2Id, bpf, routingA.Fallback, core.ifmgr, preparedRules.capture, preparedRules.destinations)
+	builder, err := preparedRules.compileRouting(outboundName2Id, bpf, core.ifmgr)
 	if err != nil {
-		return nil, fmt.Errorf("NewRoutingMatcherBuilder: %w", err)
+		return nil, fmt.Errorf("compile routing: %w", err)
 	}
 	criticalOutbounds := builder.criticalOutbounds(len(outbounds))
 	for i, group := range outbounds {
@@ -314,13 +313,6 @@ func NewControlPlane(
 		if err := plane.prepareMITM(startupCtx, conf, &preparedRules, outboundName2Id, loadMITM); err != nil {
 			return nil, err
 		}
-	}
-	if log.IsLevelEnabled(log.TraceLevel) {
-		var debugBuilder strings.Builder
-		for _, rule := range preparedRules.routing {
-			debugBuilder.WriteString(rule.String(true, false, false) + "\n")
-		}
-		log.WithFields(log.Fields{"rules": debugBuilder.String(), "fallback": routingA.Fallback}).Trace("Prepared routing rules")
 	}
 	if err := startupCtx.Err(); err != nil {
 		return nil, err

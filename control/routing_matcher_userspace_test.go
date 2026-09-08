@@ -6,6 +6,7 @@
 package control
 
 import (
+	"net/netip"
 	"sync"
 	"testing"
 
@@ -17,24 +18,22 @@ import (
 func buildInterfaceRoutingMatcher(t *testing.T) (*RoutingMatcher, *RoutingMatcherBuilder) {
 	t.Helper()
 
-	builder, err := NewRoutingMatcherBuilder(
-		[]*config_parser.RoutingRule{{
-			AndFunctions: []*config_parser.Function{{
-				Name:   consts.Function_Interface,
-				Params: []*config_parser.Param{{Val: "test0"}},
-			}},
-			Outbound: config_parser.Function{Name: "matched"},
+	builder, err := compileTestRouting(preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{{
+		AndFunctions: []*config_parser.Function{{
+			Name:   consts.Function_Interface,
+			Params: []*config_parser.Param{{Val: "test0"}},
 		}},
-		map[string]uint8{
-			"matched":  uint8(consts.OutboundUserDefinedMin),
-			"fallback": uint8(consts.OutboundDirect),
-		},
+		Outbound: config_parser.Function{Name: "matched"},
+	}},
+		"fallback")}, map[string]uint8{
+		"matched":  uint8(consts.OutboundUserDefinedMin),
+		"fallback": uint8(consts.OutboundDirect),
+	},
 		nil,
-		"fallback",
-		nil, nil, nil,
+		nil,
 	)
 	if err != nil {
-		t.Fatalf("NewRoutingMatcherBuilder: %v", err)
+		t.Fatalf("compile routing: %v", err)
 	}
 	matcher, err := builder.BuildUserspace()
 	if err != nil {
@@ -46,20 +45,13 @@ func buildInterfaceRoutingMatcher(t *testing.T) (*RoutingMatcher, *RoutingMatche
 func matchIfindex(t *testing.T, matcher *RoutingMatcher, ifindex uint32) consts.OutboundIndex {
 	t.Helper()
 
-	addr := make([]byte, 16)
-	outbound, _, _, err := matcher.Match(
-		addr,
-		addr,
-		0,
-		0,
-		consts.IpVersion_4,
-		consts.L4ProtoType_TCP,
-		"",
-		[16]uint8{},
-		ifindex,
-		0,
-		make([]byte, 16),
-	)
+	addr := netip.IPv4Unspecified()
+	outbound, _, _, err := matcher.match(routingInput{
+		src:     netip.AddrPortFrom(addr, 0),
+		dst:     netip.AddrPortFrom(addr, 0),
+		l4proto: consts.L4ProtoType_TCP,
+		ifindex: ifindex,
+	})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -110,22 +102,14 @@ func TestRoutingMatcherConcurrentInterfaceUpdate(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		addr := make([]byte, 16)
-		mac := make([]byte, 16)
+		addr := netip.IPv4Unspecified()
 		for i := 0; i < iterations; i++ {
-			outbound, _, _, err := matcher.Match(
-				addr,
-				addr,
-				0,
-				0,
-				consts.IpVersion_4,
-				consts.L4ProtoType_TCP,
-				"",
-				[16]uint8{},
-				7,
-				0,
-				mac,
-			)
+			outbound, _, _, err := matcher.match(routingInput{
+				src:     netip.AddrPortFrom(addr, 0),
+				dst:     netip.AddrPortFrom(addr, 0),
+				l4proto: consts.L4ProtoType_TCP,
+				ifindex: 7,
+			})
 			if err != nil {
 				t.Errorf("Match: %v", err)
 				return
@@ -143,15 +127,13 @@ func TestRoutingMatcherConcurrentInterfaceUpdate(t *testing.T) {
 func TestRoutingMatcherRejectsRemovedInterfaceFunctions(t *testing.T) {
 	for _, name := range []string{"ifindex", "ifname"} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewRoutingMatcherBuilder(
-				[]*config_parser.RoutingRule{{
-					AndFunctions: []*config_parser.Function{{Name: name, Params: []*config_parser.Param{{Val: "1"}}}},
-					Outbound:     config_parser.Function{Name: "matched"},
-				}},
-				map[string]uint8{"matched": uint8(consts.OutboundUserDefinedMin)},
+			_, err := compileTestRouting(preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{{
+				AndFunctions: []*config_parser.Function{{Name: name, Params: []*config_parser.Param{{Val: "1"}}}},
+				Outbound:     config_parser.Function{Name: "matched"},
+			}},
+				config.FunctionOrString("direct"))}, map[string]uint8{"matched": uint8(consts.OutboundUserDefinedMin)},
 				nil,
-				config.FunctionOrString("direct"),
-				nil, nil, nil,
+				nil,
 			)
 			if err == nil {
 				t.Fatalf("removed function %q was accepted", name)
@@ -166,13 +148,14 @@ func newSkipWhileNoaliveMatcher(usable *bool, gotArgs *struct {
 	ipVersion consts.IpVersionType
 }) *RoutingMatcher {
 	m := &RoutingMatcher{
-		rulesMu: new(sync.RWMutex),
+		rulesMu:  new(sync.RWMutex),
+		profiles: map[uint32][]routingSpan{0: {{End: 2}}},
 		matches: []bpfMatchSet{
 			{
-				Type:             uint8(consts.MatchType_Port),
-				Value:            _bpfPortRange{PortStart: 80, PortEnd: 80}.Encode(),
-				Outbound:         uint8(consts.OutboundUserDefinedMin),
-				SkipWhileNoalive: true,
+				Type:     uint8(consts.MatchType_Port),
+				Value:    _bpfPortRange{PortStart: 80, PortEnd: 80}.Encode(),
+				Outbound: uint8(consts.OutboundUserDefinedMin),
+				Flags:    matchFlagSkipNoalive,
 			},
 			{
 				Type:     uint8(consts.MatchType_Fallback),
@@ -198,17 +181,12 @@ func newSkipWhileNoaliveMatcher(usable *bool, gotArgs *struct {
 
 func matchDport80(t *testing.T, m *RoutingMatcher) consts.OutboundIndex {
 	t.Helper()
-	addr := make([]byte, 16)
-	outbound, _, _, err := m.Match(
-		addr, addr,
-		12345, 80,
-		consts.IpVersion_4,
-		consts.L4ProtoType_TCP,
-		"",
-		[16]uint8{},
-		0, 0,
-		make([]byte, 16),
-	)
+	addr := netip.IPv4Unspecified()
+	outbound, _, _, err := m.match(routingInput{
+		src:     netip.AddrPortFrom(addr, 12345),
+		dst:     netip.AddrPortFrom(addr, 80),
+		l4proto: consts.L4ProtoType_TCP,
+	})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -244,32 +222,5 @@ func TestRoutingMatcherSkipWhileNoalive(t *testing.T) {
 	m = newSkipWhileNoaliveMatcher(nil, nil)
 	if outbound := matchDport80(t, m); outbound != consts.OutboundUserDefinedMin {
 		t.Fatalf("expected group outbound %v, got %v", consts.OutboundUserDefinedMin, outbound)
-	}
-}
-
-func TestRoutingMatcherSkipWhileNoaliveOnDirect(t *testing.T) {
-	// The builder rejects this configuration. Keep manually constructed
-	// matchers defensive as direct/block have no connectivity state.
-	usable := false
-	m := &RoutingMatcher{
-		rulesMu: new(sync.RWMutex),
-		matches: []bpfMatchSet{
-			{
-				Type:             uint8(consts.MatchType_Port),
-				Value:            _bpfPortRange{PortStart: 80, PortEnd: 80}.Encode(),
-				Outbound:         uint8(consts.OutboundDirect),
-				SkipWhileNoalive: true,
-			},
-			{
-				Type:     uint8(consts.MatchType_Fallback),
-				Outbound: uint8(consts.OutboundUserDefinedMin),
-			},
-		},
-		outboundUsable: func(outbound uint8, _ consts.L4ProtoType, _ consts.IpVersionType) bool {
-			return usable
-		},
-	}
-	if outbound := matchDport80(t, m); outbound != consts.OutboundDirect {
-		t.Fatalf("expected direct %v, got %v", consts.OutboundDirect, outbound)
 	}
 }

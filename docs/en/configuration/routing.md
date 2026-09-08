@@ -72,6 +72,77 @@ Quote a real node or group name that is `must` or begins with `must_` (for examp
 
 To bound health-check and runtime growth, a path may contain at most 16 hops, one routed target may expand to at most 4096 paths, and one configuration may materialize at most 16384 paths.
 
+## Rule sets, routing policies and interface bindings
+
+`rule_set` declares reusable rule fragments, `policy` declares complete policies with a fallback, and `default` and `interface` select policies:
+
+```shell
+routing {
+    rule_set {
+        local {
+            dip(geoip:private) -> direct
+        }
+        china {
+            dip(geoip:cn) -> direct
+            domain(geosite:cn) -> direct
+        }
+    }
+    policy {
+        main {
+            use: local, china
+            fallback: proxy
+        }
+        lan {
+            use: local
+            fallback: direct
+        }
+    }
+    default: main
+    interface {
+        br-lan: lan
+        eth1: lan
+        wg0: main
+    }
+}
+```
+
+- `use: local, china` inserts both fragments in order, just like two consecutive `use` statements. Rules and uses may be interleaved. Fragments may reference other fragments, but cannot reference policies or form cycles.
+- Fragments contain only rules and uses, never a fallback. Each policy must declare exactly one `fallback`. It runs after all rules fail to match, regardless of where the field is written.
+- `default: main` selects `main` for traffic without an interface binding. Each `interface` entry binds an exact device name to a named policy. Multiple interfaces and the default may share one policy, which is compiled only once.
+- An interface name may appear only once, even when repeated entries select the same policy. Quote special names, for example `"foo,bar": lan`. Names are literal, not wildcard patterns. Interface recreation automatically updates the ifindex mapping.
+- Policies are independent and do not inherit the default. Bindings select routing rules; configure `global.lan_interface` / `global.wan_interface` separately to capture traffic. The `interface(name)` predicate remains available inside individual rules.
+- Policy names and fragment names have separate namespaces. Undefined references, duplicate declarations and cycles are rejected.
+
+For a single default policy, write rules, uses and one fallback directly inside `routing`:
+
+```shell
+routing {
+    rule_set {
+        local { dip(geoip:private) -> direct }
+    }
+    use: local
+    fallback: proxy
+}
+```
+
+This anonymous default policy can coexist with `rule_set`, named `policy` and `interface` declarations, but cannot be combined with `default: policy_name`. Its fallback is also required. The old `default { ... }` form and policies defined inside interface blocks are no longer supported.
+
+### Splitting policies across files
+
+Use `include` to maintain fragments, policies and bindings in separate files, each with a `routing { ... }` wrapper. Declare each named fragment and policy once; compose larger policies with `use`. References may precede declarations. Rules and uses determine execution order, independently of declaration order. Export preserves references and rule order, placing fallback last in each policy. See [separate configuration files](separate-config.md) for a complete example.
+
+A configuration supports up to 1024 fragments and policies, 65536 source rules and uses, 256 interface bindings and 64 reference levels. The shared physical rule pool and each policy's execution length are independently limited by `MaxMatchSetLen` (1024 by default). Unused definitions are validated but do not consume the active kernel rule pool or register interface listeners.
+
+### Shared MITM, DNAT and Host capture
+
+MITM plugins, native `rules { ... -> dnat(ip) }` and Surge Host mappings automatically share an internal capture and flow-control fragment across all policies. No manual rules or `use` are needed.
+
+Execution order is: local API bypass → DNAT/Host and request-routing HTTP capture → must/bump controls and pure MITM capture → module `pre-matching` rules → user policy rules → ordinary module rules → policy fallback. All policies share the same capture and control instructions, while each policy selects the outbound, mark and block behavior. MITM retains each declared domain/IP and its ports; DNAT/Host retain their complete predicates, including domains. Missing DNS mappings do not widen capture, and unrelated direct traffic stays in the kernel. Exact userspace destination matching does not consume kernel instruction slots; identical domain and static IP predicates share resources across stages.
+
+DNAT/Host candidates hand off before flow controls or routing commit the old destination. Destination rules select an effective IP; subsequent flow/routing uses that IP and address family while retaining client identity and Host/SNI. Pure MITM inspection retains a valid kernel route. Request-routing scopes (Surge scripts, URL Rewrite and Map Local) also hand off early: admitted clients run HTTP processing before destination rules, flow controls and final routing. An old-target block cannot prevent an admitted request from rewriting its target; a final-target block still rejects it. Excluded clients follow ordinary connection routing. Every deferred request is planned before pool lookup; pools distinguish effective addresses, nodes, outbounds, marks and TLS authority. Local responses require no upstream connection.
+
+Named policies have stable IDs. Default and interface bindings to the same policy share its ID; failed candidates do not consume IDs. UDP lifetimes are keyed by source IP and port. An active source retains its initial policy and route when bindings, the default policy or interfaces change. After the lifetime ends, the next packet selects a route using the current bindings. DNS rerouting coalesces requests by policy ID as well, preventing decisions from being shared across policies.
+
 ## Manual Selection and Client Sets
 
 `policy: selector` allows manual node selection, defaulting to the first node; `selector(n)` sets another default index. `client(name)` matches a MAC set that devices can join themselves. See the [page/API configuration](api.md).
@@ -88,7 +159,7 @@ dae supports fragmented TCP and UDP only on an unmarked direct, unmarked pass-th
 
 ### fallback outbound
 # If no rule matches, traffic will go through the outbound defined by fallback.
-fallback: my_group
+# fallback: my_group
 
 ### Domain rule
 domain(suffix: v2raya.org) -> my_group  # equals to domain(v2raya.org) -> my_group 
@@ -199,11 +270,9 @@ domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 
 ```
 
-DNAT/Host candidates hand off before flow controls or routing commit the old destination. Destination rules select an effective IP; subsequent flow/routing uses that IP and address family while retaining client identity and Host/SNI. Pure MITM inspection retains a valid kernel route. Request-routing scopes (Surge scripts, URL Rewrite and Map Local) also hand off early: admitted clients run HTTP processing before destination rules, flow controls and final routing. An old-target block cannot prevent an admitted request from rewriting its target; a final-target block still rejects it. Excluded clients follow ordinary connection routing. Every deferred request is planned before pool lookup; pools distinguish effective addresses, nodes, outbounds, marks and TLS authority. Local responses require no upstream connection.
-
 ## Flow controls in `rules {}`
 
-`must` skips automatic DNS interception and continues to ordinary outbound selection. `bump` requires userspace routing; `routing {}` still chooses the outbound and mark. These controls are independent of MITM and may both match a connection, regardless of their order. A `must` match does not cancel explicit `bump`, MITM or DNAT capture. After destination selection, the entire flow-control phase runs before applying its handoff: an ambiguous domain match cannot hide a later definite `must` or capture action.
+`must` skips automatic DNS interception and continues to ordinary outbound selection. `bump` requires userspace routing; `routing {}` still chooses the outbound and mark. These controls are independent of MITM and may both match a connection, regardless of their order. A `must` match does not cancel explicit `bump`, MITM or DNAT capture. The entire flow-control phase runs before handing off to userspace: an ambiguous domain match cannot hide a later definite `must` or capture action.
 
 ```text
 rules {

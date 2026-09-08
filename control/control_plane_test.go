@@ -76,7 +76,7 @@ dns { routing { request { fallback: asis } response { fallback: accept } } }
 	// Reload preparation borrows the map; construction only reads its capacity.
 	preparation := &ControlPlanePreparation{
 		bpf:      &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{DomainRoutingMap: &ebpf.Map{}}}},
-		rules:    preparedRules{routing: conf.Routing.Rules},
+		rules:    preparedRules{routing: &conf.Routing},
 		isReload: true,
 	}
 	store, err := settings.Open(filepath.Join(t.TempDir(), "runtime-state.json"))
@@ -446,17 +446,26 @@ func TestGroupOverrideOptionExplicitZeroTolerance(t *testing.T) {
 }
 
 func TestCollectRoutingTargetNamesPreservesFirstReferenceOrder(t *testing.T) {
-	routingConfig := &config.Routing{
-		Rules: []*config_parser.RoutingRule{
-			{Outbound: config_parser.Function{Name: "selector"}},
-			{Outbound: config_parser.Function{Name: "direct node"}},
-			{Outbound: config_parser.Function{Name: "selector"}},
-		},
-		Fallback: &config_parser.Function{Name: "fallback group"},
-	}
+	routingConfig := testRoutingConfig([]*config_parser.RoutingRule{
+		{Outbound: config_parser.Function{Name: "selector"}},
+		{Outbound: config_parser.Function{Name: "direct node"}},
+		{Outbound: config_parser.Function{Name: "selector"}},
+	}, &config_parser.Function{Name: "fallback group"})
 	want := []string{"selector", "direct node", "fallback group"}
 	if got := collectRoutingTargetNames(routingConfig); !reflect.DeepEqual(got, want) {
 		t.Fatalf("routing targets = %v, want %v", got, want)
+	}
+}
+
+func TestCollectRoutingTargetNamesIncludesAllDefinitions(t *testing.T) {
+	conf := parseStructuredTestConfig(t, `rule_set { shared { dport(80) -> shared_node } }
+ policy { unused { dport(90) -> unused_node
+ fallback: unused_fallback } }
+ dport(443) -> default_node
+ fallback: default_fallback`)
+	want := []string{"shared_node", "default_node", "default_fallback", "unused_node", "unused_fallback"}
+	if got := collectRoutingTargetNames(&conf.Routing); !reflect.DeepEqual(got, want) {
+		t.Fatalf("targets = %v, want %v", got, want)
 	}
 }
 
@@ -590,7 +599,8 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 	c := &ControlPlane{
 		outbounds: []*outbound.DialerGroup{group},
 		routingMatcher: &RoutingMatcher{
-			rulesMu: new(sync.RWMutex),
+			profiles: map[uint32][]routingSpan{0: {{End: 1}}},
+			rulesMu:  new(sync.RWMutex),
 			matches: []bpfMatchSet{{
 				Type:     uint8(consts.MatchType_Fallback),
 				Outbound: uint8(consts.OutboundDirect),

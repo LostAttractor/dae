@@ -74,28 +74,25 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 // Outbound selection does not change the destination decision.
 func (c *ControlPlane) routeDestination(p *RouteParam, domain string) (*DialOption, error) {
 	input := p.routingInput(domain, p.effectiveDestination())
-	input.afterTarget = true
+	input.stage = routeAfterTarget
 	// A captured connection with no trusted hostname keeps its DNS-IP evidence.
 	// Explicit IP URLs have a known logical target and do not borrow that identity.
 	if domain == "" && !p.explicitTarget && c.core != nil && c.core.domainRegistry != nil {
-		bump, routing := c.core.domainRegistry.kernelRoutingBitmaps(p.effectiveDestination().Addr())
-		input.trustedDomainBitmap = [][]uint32{routing, bump}
+		input.domainBumpBitmap, input.domainBitmap = c.core.domainRegistry.kernelRoutingBitmaps(input.dst.Addr())
 	}
 	outbound, mark, must, err := c.routingMatcher.match(input)
 	if err != nil {
 		return nil, err
 	}
 	if outbound >= consts.OutboundMustRules {
-		return nil, fmt.Errorf("cannot resolve routing for %s without a trusted hostname", p.effectiveDestination())
+		return nil, fmt.Errorf("cannot resolve routing for %s without a trusted hostname", input.dst)
 	}
 	routeDecision{outbound: outbound, mark: mark, must: must}.apply(p.routingResult)
 	return c.selectDialOption(p, outbound, mark, c.dialTargetOverride && domain != "")
 }
 
-func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult, trustedDomainBitmap ...[]uint32) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
-	input := routingResult.routingInput(src, dst, domain, l4proto)
-	input.trustedDomainBitmap = trustedDomainBitmap
-	return c.routingMatcher.match(input)
+func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+	return c.routingMatcher.match(routingResult.routingInput(src, dst, domain, l4proto))
 }
 
 // A decision contains policy only. Selecting a node and creating a marked

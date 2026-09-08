@@ -75,6 +75,9 @@ type Param struct {
 	// Quoted is retained for declaration literals whose lexical form affects
 	// routing target resolution.
 	Quoted bool
+	// ValueList preserves declaration literal boundaries. Val remains the
+	// comma-joined representation used by existing section parsers.
+	ValueList []string
 
 	// Annotation is optional
 	Annotation []*Param
@@ -83,7 +86,7 @@ type Param struct {
 func (p *Param) String(compact bool, quoteVal bool) string {
 	var quote func(string) string
 	if quoteVal {
-		quote = quoteLiteral
+		quote = QuoteLiteral
 	} else {
 		quote = func(s string) string { return s }
 	}
@@ -122,7 +125,7 @@ func (p *Param) String(compact bool, quoteVal bool) string {
 	return value
 }
 
-func quoteLiteral(value string) string {
+func QuoteLiteral(value string) string {
 	var builder strings.Builder
 	builder.Grow(len(value) + 2)
 	builder.WriteByte('"')
@@ -144,7 +147,7 @@ type Function struct {
 	Quoted bool
 }
 
-func isBareLiteral(s string) bool {
+func IsBareLiteral(s string) bool {
 	const head = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_/\\^*.+0123456789-"
 	const rest = head + "=@$!#%"
 	return s != "" && strings.ContainsRune(head, rune(s[0])) &&
@@ -152,8 +155,8 @@ func isBareLiteral(s string) bool {
 }
 
 func formatFunctionName(name string, quoted bool) string {
-	if quoted || !isBareLiteral(name) {
-		return quoteLiteral(name)
+	if quoted || !IsBareLiteral(name) {
+		return QuoteLiteral(name)
 	}
 	return name
 }

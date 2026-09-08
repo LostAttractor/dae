@@ -6,23 +6,24 @@
 package control
 
 import (
-	"encoding/binary"
 	"fmt"
-	"net"
 	"net/netip"
 	"sync"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/component/routing/domain_matcher"
 	"github.com/daeuniverse/dae/pkg/trie"
 )
 
 type RoutingMatcher struct {
-	destination   DestinationProgram
-	flow          FlowProgram
-	routing       RoutingProgram
-	lpmMatcher    []*trie.Trie
-	domainMatcher routing.DomainMatcher // All domain matchSets use one DomainMatcher.
+	defaultProfileID uint32
+	profiles         map[uint32][]routingSpan
+	destination      DestinationProgram
+	flow             FlowProgram
+	routing          RoutingProgram
+	lpmMatcher       []*trie.Trie
+	domainMatcher    routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
 	matches []bpfMatchSet
 	rulesMu *sync.RWMutex
@@ -33,53 +34,18 @@ type RoutingMatcher struct {
 	outboundUsable func(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool
 }
 
-// Match is modified from kern/tproxy.c; please keep sync. An optional routing
-// bitmap replaces hostname matching. Supplying a second (bump) bitmap models
-// the kernel's uncertain domain matches. Capture actions do not change
-// userspace routing decisions.
-func (m *RoutingMatcher) Match(
-	sourceAddr []byte,
-	destAddr []byte,
-	sourcePort uint16,
-	destPort uint16,
-	ipVersion consts.IpVersionType,
-	l4proto consts.L4ProtoType,
-	domain string,
-	processName [16]uint8,
-	ifindex uint32,
-	tos uint8,
-	mac []byte,
-	trustedDomainBitmap ...[]uint32,
-) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
-	return m.match(routingInput{
-		sourceAddr:          sourceAddr,
-		destAddr:            destAddr,
-		sourcePort:          sourcePort,
-		destPort:            destPort,
-		ipVersion:           ipVersion,
-		l4proto:             l4proto,
-		domain:              domain,
-		processName:         processName,
-		ifindex:             ifindex,
-		tos:                 tos,
-		mac:                 mac,
-		trustedDomainBitmap: trustedDomainBitmap,
-	})
-}
-
-// Match the selected stage using the shared flow input.
+// match executes the same bytecode as kern/routing.h. Captures preserve userspace routing decisions.
 func (m *RoutingMatcher) match(p routingInput) (consts.OutboundIndex, uint32, bool, error) {
 	m.rulesMu.RLock()
 	defer m.rulesMu.RUnlock()
-	end := m.routing.end
-	if end == 0 {
-		end = len(m.matches)
+	if p.profileID == 0 {
+		p.profileID = m.defaultProfileID
 	}
-	start := 0
-	if p.afterTarget {
-		start = m.flow.start
+	spans, ok := m.profiles[p.profileID]
+	if !ok {
+		return 0, 0, false, fmt.Errorf("unknown routing profile %d", p.profileID)
 	}
-	result, err := m.evaluateRange(start, end, p)
+	result, err := m.evaluateSpans(spans, p)
 	return result.outbound, result.mark, result.must, err
 }
 
@@ -91,169 +57,153 @@ type routingEvaluation struct {
 	matched      bool // DestinationProgram predicate result.
 }
 
-// Caller holds rulesMu. Domain and LPM IDs are independent of instruction
-// ranges, so kernel and userspace-only routing predicates share their resources.
-func (m *RoutingMatcher) evaluateRange(start, end int, p routingInput) (routingEvaluation, error) {
-	if len(p.sourceAddr) != net.IPv6len || len(p.destAddr) != net.IPv6len || len(p.mac) != net.IPv6len {
-		return routingEvaluation{}, fmt.Errorf("bad address length")
+func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err error) {
+	// Build domainMatcher
+	domainMatcher := domain_matcher.NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
+	for _, domains := range b.simulatedDomainSet {
+		domainMatcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
+	}
+	// Build Ip matcher.
+	var lpmMatcher []*trie.Trie
+	for _, prefixes := range b.simulatedLpmTries {
+		t, err := trie.NewTrieFromPrefixes(prefixes)
+		if err != nil {
+			return nil, err
+		}
+		lpmMatcher = append(lpmMatcher, t)
+	}
+	if err = domainMatcher.Build(); err != nil {
+		return nil, err
 	}
 
-	bin128s := make([]string, consts.MatchType_Mac+1)
-	bin128s[consts.MatchType_IpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(p.destAddr)), 128))
-	bin128s[consts.MatchType_SourceIpSet] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(p.sourceAddr)), 128))
-	bin128s[consts.MatchType_Mac] = trie.Prefix2bin128(netip.PrefixFrom(netip.AddrFrom16(*(*[16]byte)(p.mac)), 128))
-
-	var domainMatchBitmap []uint32
-	var domainBumpBitmap []uint32
-	hasBump := len(p.trustedDomainBitmap) > 1
-	simulateKernel := hasBump && !p.afterTarget
-	if hasBump {
-		domainBumpBitmap = p.trustedDomainBitmap[1]
-	}
-	if len(p.trustedDomainBitmap) > 0 && p.trustedDomainBitmap[0] != nil {
-		domainMatchBitmap = p.trustedDomainBitmap[0]
-	} else if p.domain != "" {
-		domainMatchBitmap = m.domainMatcher.MatchDomainBitmap(p.domain)
+	profiles := make(map[uint32][]routingSpan, len(b.profiles))
+	for _, profile := range b.profiles {
+		profiles[profile.ID] = append([]routingSpan(nil), profile.Spans...)
 	}
 
-	var must, pendingMust, flowBump bool
+	return &RoutingMatcher{
+		defaultProfileID: b.defaultProfileID,
+		destination:      b.destination,
+		flow:             b.flow,
+		routing:          b.routing,
+		profiles:         profiles,
+		lpmMatcher:       lpmMatcher,
+		domainMatcher:    domainMatcher,
+		matches:          b.rules,
+		rulesMu:          &b.rulesMu,
+	}, nil
+}
+
+// Caller holds rulesMu. Complete rules never cross a physical span boundary,
+// so the same relative jumps work for profiles and destination predicates.
+func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (routingEvaluation, error) {
+	if !p.src.IsValid() || !p.dst.IsValid() {
+		return routingEvaluation{}, fmt.Errorf("invalid routing address")
+	}
+	predicates := routingPredicates{input: p, ipVersion: consts.IpVersionFromAddr(p.dst.Addr())}
+	simulateKernel := (p.kernel || p.domainBumpBitmap != nil) && p.stage != routeAfterTarget
+	var subrule, must predicateResult
+	var ruleUnknown, flowBump bool
 	var captureFlags uint8
-	goodSubrule := false
-	uncertainSubrule := false
-	needControlPlaneRouting := false
-	badRule := false
-	for i := start; i < end; i++ {
-		match := m.matches[i]
-		if badRule || goodSubrule {
-			goto beforeNextLoop
+	for _, span := range spans {
+		start := span.Start
+		if p.stage == routeAfterTarget {
+			start = max(start, uint32(m.flow.start))
 		}
-		switch consts.MatchType(match.Type) {
-		case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
-			lpmIndex := binary.LittleEndian.Uint32(match.Value[:])
-			m := m.lpmMatcher[lpmIndex]
-			if m.HasPrefix(bin128s[match.Type]) {
-				goodSubrule = true
-			}
-		case consts.MatchType_DomainSet:
-			id := binary.LittleEndian.Uint32(match.Value[:])
-			if int(id/32) < len(domainMatchBitmap) && (domainMatchBitmap[id/32]>>(id%32))&1 > 0 {
-				goodSubrule = true
-			} else if int(id/32) < len(domainBumpBitmap) && (domainBumpBitmap[id/32]>>(id%32))&1 > 0 {
-				uncertainSubrule = true
-			}
-		case consts.MatchType_Port:
-			portStart, portEnd := ParsePortRange(match.Value[:])
-			if p.destPort >= portStart &&
-				p.destPort <= portEnd {
-				goodSubrule = true
-			}
-		case consts.MatchType_SourcePort:
-			portStart, portEnd := ParsePortRange(match.Value[:])
-			if p.sourcePort >= portStart &&
-				p.sourcePort <= portEnd {
-				goodSubrule = true
-			}
-		case consts.MatchType_IpVersion:
-			// LittleEndian
-			if p.ipVersion&consts.IpVersionType(match.Value[0]) > 0 {
-				goodSubrule = true
-			}
-		case consts.MatchType_L4Proto:
-			// LittleEndian
-			if p.l4proto&consts.L4ProtoType(match.Value[0]) > 0 {
-				goodSubrule = true
-			}
-		case consts.MatchType_ProcessName:
-			if p.processName[0] != 0 && match.Value == p.processName {
-				goodSubrule = true
-			}
-		case consts.MatchType_IfIndex:
-			if p.ifindex != 0 && p.ifindex == binary.LittleEndian.Uint32(match.Value[:]) {
-				goodSubrule = true
-			}
-		case consts.MatchType_Dscp:
-			if p.tos == match.Value[0] {
-				goodSubrule = true
-			}
-		case consts.MatchType_Fallback:
-			goodSubrule = true
-		default:
-			return routingEvaluation{}, fmt.Errorf("unknown match type: %v", match.Type)
-		}
-	beforeNextLoop:
-		outbound := consts.OutboundIndex(match.Outbound)
-		action := consts.MatchAction(match.Action)
-		if action != consts.MatchActionOr {
-			// This match_set reaches the end of subrule.
-			// We are now at end of rule, or next match_set belongs to another
-			// subrule.
-
-			if !goodSubrule && uncertainSubrule {
-				needControlPlaneRouting = true
-			} else if goodSubrule == match.Not {
-				// This subrule does not hit.
-				badRule = true
-			}
-
-			// Reset goodSubrule.
-			goodSubrule = false
-			uncertainSubrule = false
-		}
-
-		if action != consts.MatchActionOr && action != consts.MatchActionAnd {
-			// Tail of a rule (line).
-			// Decide whether to hit.
-			if !badRule {
-				switch action {
-				case consts.MatchActionMust:
-					if needControlPlaneRouting {
-						pendingMust = true
-					} else {
-						must = true
-					}
-					goto nextRule
-				case consts.MatchActionBump:
-					flowBump = true
-					goto nextRule
-				case consts.MatchActionCapture:
-					captureFlags |= match.CaptureFlags
-					if simulateKernel && captureFlags&(captureDestination|captureHTTPRequest) != 0 {
-						return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureFlags}, nil
-					}
-					goto nextRule
-				case consts.MatchActionFlowEnd:
-					if (simulateKernel && flowBump) || pendingMust && !must {
-						return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must, captureFlags: captureFlags}, nil
-					}
-					goto nextRule
-				case consts.MatchActionMatch:
-					return routingEvaluation{matched: true}, nil
-				case consts.MatchActionMiss:
-					return routingEvaluation{}, nil
-				case consts.MatchActionRoute:
-				default:
-					return routingEvaluation{}, fmt.Errorf("unknown match action: %d", action)
+		for i := start; i < span.End; {
+			match := &m.matches[i]
+			action := consts.MatchAction(match.Action)
+			distance := uint32(1)
+			var clause predicateResult
+			if subrule != predicateMatch {
+				result, err := predicates.match(m, match)
+				if err != nil {
+					return routingEvaluation{}, err
 				}
-				if match.SkipWhileNoalive &&
-					outbound >= consts.OutboundUserDefinedMin &&
-					outbound < consts.OutboundMustRules &&
-					m.outboundUsable != nil &&
-					!m.outboundUsable(uint8(outbound), p.l4proto, p.ipVersion) {
-					// The rule is conditional on the connectivity of the
-					// target outbound group. Treat an unavailable group as
-					// not hit and continue with the next rule.
-					needControlPlaneRouting = false
-					continue
+				subrule = max(subrule, result)
+			}
+			if action == consts.MatchActionOr {
+				if subrule == predicateMatch {
+					distance = match.Mark
 				}
-				if needControlPlaneRouting {
-					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must, captureFlags: captureFlags}, nil
+				goto advance
+			}
+			clause, subrule = subrule, predicateMiss
+			if match.Flags&matchFlagNot != 0 {
+				clause = predicateMatch - clause
+			}
+			if clause == predicateMiss {
+				if action == consts.MatchActionAnd {
+					distance = match.Mark
 				}
-				return routingEvaluation{outbound: outbound, mark: match.Mark, must: must || match.Must, captureFlags: captureFlags}, nil
+				goto nextRule
+			}
+			ruleUnknown = ruleUnknown || clause == predicateUnknown
+			if action == consts.MatchActionAnd {
+				goto advance
+			}
+			switch action {
+			case consts.MatchActionMust:
+				if !ruleUnknown {
+					must = predicateMatch
+				} else {
+					must = max(must, predicateUnknown)
+				}
+			case consts.MatchActionBump:
+				flowBump = true
+			case consts.MatchActionCapture:
+				captureFlags |= (match.Flags >> matchCaptureShift) & 7
+				if simulateKernel && captureFlags&(captureDestination|captureHTTPRequest) != 0 {
+					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureFlags}, nil
+				}
+			case consts.MatchActionFlowEnd:
+				if (simulateKernel && flowBump) || must == predicateUnknown {
+					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
+				}
+			case consts.MatchActionMatch:
+				return routingEvaluation{matched: true}, nil
+			case consts.MatchActionMiss:
+				return routingEvaluation{}, nil
+			case consts.MatchActionRoute:
+				if match.Flags&matchFlagSkipNoalive != 0 && m.outboundUsable != nil && !m.outboundUsable(match.Outbound, p.l4proto, predicates.ipVersion) {
+					goto nextRule
+				}
+				if ruleUnknown {
+					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
+				}
+				return routingEvaluation{outbound: consts.OutboundIndex(match.Outbound), mark: match.Mark, must: must == predicateMatch || match.Flags&matchFlagMust != 0, captureFlags: captureFlags}, nil
+			default:
+				return routingEvaluation{}, fmt.Errorf("unknown match action: %d", action)
 			}
 		nextRule:
-			badRule = false
-			needControlPlaneRouting = false
+			ruleUnknown = false
+		advance:
+			if distance == 0 || distance > span.End-i {
+				return routingEvaluation{}, fmt.Errorf("invalid routing jump at %d: %d", i, distance)
+			}
+			i += distance
 		}
 	}
 	return routingEvaluation{}, fmt.Errorf("no match set hit")
+}
+
+// Match evaluates the default policy for a byte-oriented packet description.
+// Control-plane routing uses routingInput to retain the kernel-selected profile.
+func (m *RoutingMatcher) Match(source, dest []byte, sport, dport uint16, _ consts.IpVersionType, proto consts.L4ProtoType, domain string, pname [16]byte, ifindex uint32, dscp uint8, mac []byte, bitmaps ...[]uint32) (consts.OutboundIndex, uint32, bool, error) {
+	if len(source) != 16 || len(dest) != 16 || len(mac) != 16 {
+		return 0, 0, false, fmt.Errorf("routing addresses must have 16 bytes")
+	}
+	p := routingInput{
+		src:     netip.AddrPortFrom(netip.AddrFrom16([16]byte(source)).Unmap(), sport),
+		dst:     netip.AddrPortFrom(netip.AddrFrom16([16]byte(dest)).Unmap(), dport),
+		l4proto: proto, domain: domain, processName: pname, ifindex: ifindex, dscp: dscp, mac: [6]byte(mac[10:]),
+	}
+	if len(bitmaps) > 0 {
+		p.domainBitmap = bitmaps[0]
+	}
+	if len(bitmaps) > 1 {
+		p.domainBumpBitmap = bitmaps[1]
+		p.kernel = true
+	}
+	return m.match(p)
 }

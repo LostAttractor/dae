@@ -54,7 +54,6 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 		return nil, nil, fmt.Errorf("build node descriptors: %w", err)
 	}
 	routingTargets := collectRoutingTargetNames(routingConfig)
-	routingConfig.Rules = nil
 	groupCompiler, err := outbound.NewGroupCompiler(dialerSet, groups, routingTargets)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compile proxy groups: %w", err)
@@ -171,8 +170,8 @@ func collectRoutingTargetNames(routingConfig *config.Routing) []string {
 	if routingConfig == nil {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(routingConfig.Rules)+1)
-	targets := make([]string, 0, len(routingConfig.Rules)+1)
+	seen := make(map[string]struct{})
+	var targets []string
 	appendTarget := func(name string) {
 		if _, ok := seen[name]; ok {
 			return
@@ -180,11 +179,19 @@ func collectRoutingTargetNames(routingConfig *config.Routing) []string {
 		seen[name] = struct{}{}
 		targets = append(targets, name)
 	}
-	for _, rule := range routingConfig.Rules {
-		appendTarget(rule.Outbound.Name)
+	appendStatements := func(statements []config.RoutingStatement) {
+		for _, statement := range statements {
+			if statement.Kind == config.RoutingStatementRule {
+				appendTarget(statement.Rule.Outbound.Name)
+			}
+		}
 	}
-	if routingConfig.Fallback != nil {
-		appendTarget(config.FunctionOrStringToFunction(routingConfig.Fallback).Name)
+	for _, set := range routingConfig.RuleSets {
+		appendStatements(set.Statements)
+	}
+	for _, policy := range routingConfig.Policies {
+		appendStatements(policy.Statements)
+		appendTarget(policy.Fallback.Name)
 	}
 	return targets
 }

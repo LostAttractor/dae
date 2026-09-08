@@ -55,6 +55,9 @@
 #define MAX_MATCH_SET_LEN \
 	(32 * 32) // Should be sync with common/consts/ebpf.go.
 #endif
+#if MAX_MATCH_SET_LEN > 65536
+#error "routing profile indices require MAX_MATCH_SET_LEN <= 65536"
+#endif
 #define MAX_LPM_SIZE 2048000
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
 #define MAX_DST_MAPPING_NUM (65536 * 4)
@@ -163,6 +166,7 @@ struct routing_result {
 	__u8 pname[TASK_COMM_LEN];
 	__u32 pid;
 	__u32 ifindex;
+	__u32 profile_id;
 	__u8 dscp;
 	__u8 capture_flags;
 	__u8 protocol;
@@ -170,10 +174,10 @@ struct routing_result {
 	__u64 route_epoch;
 };
 
-_Static_assert(sizeof(struct routing_result) == 48,
+_Static_assert(sizeof(struct routing_result) == 56,
 	       "routing_result pinned-map ABI changed unexpectedly");
-_Static_assert(__builtin_offsetof(struct routing_result, capture_flags) == 37,
-	       "capture flags must occupy the previously zeroed padding");
+_Static_assert(__builtin_offsetof(struct routing_result, capture_flags) == 41,
+	       "routing_result capture flags ABI offset");
 
 struct tuples_key {
 	union ip6 sip;
@@ -289,6 +293,7 @@ volatile const struct dae_param PARAM = {};
 
 /* Updated only when publishing a control plane; zero disables observation. */
 volatile __be16 api_port;
+volatile __u32 default_routing_profile;
 
 struct api_client {
 	__u64 observed_at;
@@ -336,139 +341,7 @@ struct {
 	__uint(max_entries, 1);
 } udp_routing_scratch_map SEC(".maps");
 
-// Array of LPM tries:
-struct lpm_key {
-	struct bpf_lpm_trie_key_hdr trie_key;
-	__be32 data[4];
-};
-
-struct map_lpm_type {
-	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
-	__uint(max_entries, MAX_LPM_SIZE);
-	__uint(key_size, sizeof(struct lpm_key));
-	__uint(value_size, sizeof(__u32));
-} unused_lpm_type SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
-	__uint(key_size, sizeof(__u32));
-	__uint(max_entries, MAX_LPM_NUM);
-	// __uint(pinning, LIBBPF_PIN_BY_NAME);
-	__array(values, struct map_lpm_type);
-} lpm_array_map SEC(".maps");
-
-enum __attribute__((packed)) MatchType {
-	/// WARNING: MUST SYNC WITH common/consts/ebpf.go.
-	MatchType_DomainSet,
-	MatchType_IpSet,
-	MatchType_SourceIpSet,
-	MatchType_Port,
-	MatchType_SourcePort,
-	MatchType_L4Proto,
-	MatchType_IpVersion,
-	MatchType_Mac,
-	MatchType_ProcessName,
-	MatchType_IfIndex,
-	MatchType_Dscp,
-	MatchType_Fallback,
-};
-
-enum L4ProtoType {
-	L4ProtoType_TCP = 1,
-	L4ProtoType_UDP,
-};
-
-enum IpVersionType {
-	IpVersionType_4 = 1,
-	IpVersionType_6,
-};
-
-struct port_range {
-	__u16 port_start;
-	__u16 port_end;
-};
-
-/*
- * Rule is like as following:
- *
- * domain(geosite:cn, suffix: google.com) && l4proto(tcp) -> my_group
- *
- * pseudocode: domain(geosite:cn || suffix:google.com) && l4proto(tcp) ->
- * my_group
- *
- * A match_set can be: IP set geosite:cn, suffix google.com, tcp proto
- */
-/* Instruction actions are separate from ordinary routing outbound IDs.
- * Keep in sync with common/consts.MatchAction. */
-enum __attribute__((packed)) MatchAction {
-	MatchAction_Route,
-	MatchAction_Or,
-	MatchAction_And,
-	MatchAction_Must,
-	MatchAction_Bump,
-	MatchAction_Capture,
-	MatchAction_FlowEnd,
-	/* Userspace-only boolean terminals; never uploaded to routing_map. */
-	MatchAction_Match,
-	MatchAction_Miss,
-};
-
-struct match_set {
-	union {
-		__u8 __value[16]; // Placeholder for bpf2go.
-
-		__u32 index;
-		struct port_range port_range;
-		enum L4ProtoType l4proto_type;
-		enum IpVersionType ip_version;
-		__u32 pname[TASK_COMM_LEN / 4];
-		__u32 ifindex;
-		__u8 dscp;
-	};
-	bool not ; // A subrule flag (this is not a match_set flag).
-	enum MatchType type;
-	__u8 outbound; // User-defined value range is [0, 252].
-	bool must;
-	// If set, the rule is skipped (treated as not hit) when the target
-	// outbound group is unavailable.
-	bool skip_while_noalive;
-	__u8 capture_flags;
-	enum MatchAction action;
-	__u32 mark;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__type(key, __u32);
-	__type(value, struct match_set);
-	__uint(max_entries, MAX_MATCH_SET_LEN);
-	// __uint(pinning, LIBBPF_PIN_BY_NAME);
-} routing_map SEC(".maps");
-
-_Static_assert(sizeof(struct match_set) == 28, "match_set ABI size");
-_Static_assert(__builtin_offsetof(struct match_set, action) == 22,
-	       "match_set action ABI offset");
-
-struct domain_routing {
-	__u32 bump[MAX_MATCH_SET_LEN / 32];
-	__u32 routing[MAX_MATCH_SET_LEN / 32];
-};
-
-// domain_routing_map is fully managed by user space (control plane). Keep both
-// bitmaps in one value so readers observe an atomic aggregate update. Use
-// BPF_MAP_TYPE_HASH (not LRU) so the kernel never silently evicts entries;
-// entries are inserted/removed only with the corresponding registry state.
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, __be32[4]);
-	__type(value, struct domain_routing);
-	__uint(max_entries, MAX_DOMAIN_ROUTING_NUM);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
-	/// NOTICE: No persistence.
-	// __uint(pinning, LIBBPF_PIN_BY_NAME);
-} domain_routing_map SEC(".maps");
-// Previously about 21.63 MB was preallocated; memory now grows with occupancy.
+#include "routing_abi.h"
 
 struct ip_port_proto {
 	__u32 ip[4];
@@ -560,11 +433,7 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 	}
 }
 
-static __always_inline bool equal16(const __be32 x[4], const __be32 y[4])
-{
-	return x[0] == y[0] && x[1] == y[1] &&
-	       x[2] == y[2] && x[3] == y[3];
-}
+
 
 static __always_inline bool is_extension_header(__u8 nexthdr)
 {
@@ -939,417 +808,7 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset,
 	return false;
 }
 
-struct route_params {
-	const void *l4hdr;
-	const __be32 *saddr;
-	const __be32 *daddr;
-	const __u8 *mac;
-	const __be32 *pname;
-	__u32 ifindex;
-	__u8 l4proto_type;
-	__u8 ipversion_type;
-	__u8 dscp;
-	bool isdns : 1;
-};
-
-struct route_ctx {
-	const struct route_params *params;
-	__u16 h_dport;
-	__u16 h_sport;
-	__s64 result; // high -> low: sign(1b) unused(23b) mark(32b) outbound(8b)
-	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
-	volatile bool goodsubrule : 1;
-	// A domain match set in the current OR subrule matched only some of the
-	// domains mapped to the destination IP. Keep evaluating the subrule: a
-	// later OR branch may still turn the result into a definite match.
-	volatile bool uncertain_subrule : 1;
-	volatile bool badrule : 1;
-	volatile bool must : 1;
-	volatile bool skipped_noalive : 1;
-	// A completed subrule of the current rule is still ambiguous. The rule
-	// tail bumps traffic to the control plane only if every later AND
-	// subrule also matches.
-	volatile bool need_control_plane_routing : 1;
-	__u8 capture_flags;
-	bool flow_bump;
-	bool pending_must;
-};
-
-static int route_step(__u32 index, struct route_ctx *ctx)
-{
-#define _l4proto_type ctx->params->l4proto_type
-#define _ipversion_type ctx->params->ipversion_type
-#define _pname ctx->params->pname
-#define _dscp ctx->params->dscp
-#define _ifindex ctx->params->ifindex
-
-	struct match_set *match_set;
-	struct lpm_key *lpm_key;
-	struct map_lpm_type *lpm;
-	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
-	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
-	// set is like: suffix:baidu.com
-	struct domain_routing *domain;
-
-	if (unlikely(index / 32 >= MAX_MATCH_SET_LEN / 32)) {
-		ctx->result = -EFAULT;
-		return 1;
-	}
-
-	__u32 k = index; // Clone to pass code checker.
-
-	match_set = bpf_map_lookup_elem(&routing_map, &k);
-	if (unlikely(!match_set)) {
-		ctx->result = -EFAULT;
-		return 1;
-	}
-	if (ctx->goodsubrule || ctx->badrule) {
-#ifdef __DEBUG_ROUTING
-		bpf_printk("key(match_set->type): %llu", match_set->type);
-		bpf_printk("Skip to judge. bad_rule: %d, good_subrule: %d",
-			   ctx->badrule, ctx->goodsubrule);
-#endif
-		goto before_next_loop;
-	}
-	switch (match_set->type) {
-	case MatchType_Mac:
-		lpm_key = &ctx->lpm_key_mac;
-		goto lookup_lpm;
-	case MatchType_IpSet:
-		lpm_key = &ctx->lpm_key_daddr;
-		goto lookup_lpm;
-	case MatchType_SourceIpSet:
-		lpm_key = &ctx->lpm_key_saddr;
-lookup_lpm:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: lpm_key_map, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-		bpf_printk("\tip: %pI6", lpm_key->data);
-#endif
-		lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
-		if (unlikely(!lpm)) {
-			ctx->result = -EFAULT;
-			return 1;
-		}
-		if (bpf_map_lookup_elem(lpm, lpm_key)) {
-			// match_set hits.
-			ctx->goodsubrule = true;
-		}
-		break;
-	case MatchType_Port:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-		bpf_printk("\tport: %u, range: [%u, %u]", ctx->h_dport,
-			   match_set->port_range.port_start,
-			   match_set->port_range.port_end);
-#endif
-		if (match_set->port_range.port_start <= ctx->h_dport &&
-		    ctx->h_dport <= match_set->port_range.port_end) {
-			ctx->goodsubrule = true;
-		}
-		break;
-	case MatchType_SourcePort:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: h_port_map, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-		bpf_printk("\tport: %u, range: [%u, %u]", ctx->h_sport,
-			   match_set->port_range.port_start,
-			   match_set->port_range.port_end);
-#endif
-		if (match_set->port_range.port_start <= ctx->h_sport &&
-		    ctx->h_sport <= match_set->port_range.port_end) {
-			ctx->goodsubrule = true;
-		}
-		break;
-	case MatchType_L4Proto:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: l4proto, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-#endif
-		if (_l4proto_type & match_set->l4proto_type)
-			ctx->goodsubrule = true;
-		break;
-	case MatchType_IpVersion:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: ipversion, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-#endif
-		if (_ipversion_type & match_set->ip_version)
-			ctx->goodsubrule = true;
-		break;
-	case MatchType_DomainSet:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: domain, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-#endif
-
-		// Get both domain bitmaps in one atomic map lookup.
-		domain = bpf_map_lookup_elem(&domain_routing_map,
-					     ctx->params->daddr);
-
-		/* Domain IDs are shared across programs and independent of the
-		 * instruction offset (including duplicate DNAT predicates). */
-		__u32 domain_id = match_set->index;
-
-		if (domain_id >= MAX_MATCH_SET_LEN) {
-			ctx->result = -EINVAL;
-			return 1;
-		}
-		if (domain &&
-		    (domain->routing[domain_id / 32] >> (domain_id % 32)) & 1) {
-			// All domains mapped by the current IP address are matched.
-			ctx->goodsubrule = true;
-		} else if (domain &&
-			   (domain->bump[domain_id / 32] >> (domain_id % 32)) & 1) {
-			// The current IP has mapped domains that match this rule, but not
-			// all of them do.
-			ctx->uncertain_subrule = true;
-		}
-		break;
-	case MatchType_ProcessName:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: pname, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-#endif
-		if (_pname && equal16(match_set->pname, _pname))
-			ctx->goodsubrule = true;
-		break;
-	case MatchType_IfIndex:
-		if (_ifindex == match_set->ifindex)
-			ctx->goodsubrule = true;
-		break;
-	case MatchType_Dscp:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: dscp, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-#endif
-		if (_dscp == match_set->dscp)
-			ctx->goodsubrule = true;
-		break;
-	case MatchType_Fallback:
-#ifdef __DEBUG_ROUTING
-		bpf_printk("CHECK: hit fallback");
-#endif
-		ctx->goodsubrule = true;
-		break;
-	default:
-#ifdef __DEBUG_ROUTING
-		bpf_printk(
-			"CHECK: <unknown>, match_set->type: %u, not: %d, outbound: %u",
-			match_set->type, match_set->not, match_set->outbound);
-#endif
-		ctx->result = -EINVAL;
-		return 1;
-	}
-
-before_next_loop:
-#ifdef __DEBUG_ROUTING
-	bpf_printk("good_subrule: %d, uncertain_subrule: %d, bad_rule: %d",
-		   ctx->goodsubrule, ctx->uncertain_subrule, ctx->badrule);
-#endif
-	if (match_set->action != MatchAction_Or) {
-		// This match_set reaches the end of subrule.
-		// We are now at end of rule, or next match_set belongs to another
-		// subrule.
-
-		if (!ctx->goodsubrule && ctx->uncertain_subrule) {
-			// Whether this subrule (including a negated one) hits depends on
-			// the exact domain. Let the remaining AND subrules decide whether
-			// userspace needs to resolve it.
-			ctx->need_control_plane_routing = true;
-		} else if (ctx->goodsubrule == match_set->not) {
-			// This subrule does not hit.
-			ctx->badrule = true;
-		}
-
-		// Reset subrule-local state.
-		ctx->goodsubrule = false;
-		ctx->uncertain_subrule = false;
-	}
-#ifdef __DEBUG_ROUTING
-	bpf_printk("_bad_rule: %d", ctx->badrule);
-#endif
-	if (match_set->action != MatchAction_Or &&
-	    match_set->action != MatchAction_And) {
-		// Tail of a rule (line).
-		// Decide whether to hit.
-		if (!ctx->badrule) {
-			/* Flow actions accumulate through the whole control phase.
-			 * A partial must cannot hide later definite controls/captures. */
-			switch (match_set->action) {
-			case MatchAction_Must:
-				if (ctx->need_control_plane_routing)
-					ctx->pending_must = true;
-				else
-					ctx->must = true;
-				goto next_rule;
-			case MatchAction_Bump:
-				ctx->flow_bump = true;
-				goto next_rule;
-			case MatchAction_Capture:
-				ctx->capture_flags |= match_set->capture_flags;
-				if (ctx->capture_flags & (CAPTURE_DESTINATION | CAPTURE_HTTP_REQUEST)) {
-					ctx->result = OUTBOUND_CONTROL_PLANE_ROUTING;
-					return 1;
-				}
-				goto next_rule;
-			case MatchAction_FlowEnd:
-				if (ctx->flow_bump || (ctx->pending_must && !ctx->must)) {
-					ctx->result = (__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
-						((__s64)ctx->must << 40);
-					return 1;
-				}
-				goto next_rule;
-			case MatchAction_Route:
-				break;
-			default:
-				ctx->result = -EINVAL;
-				return 1;
-			}
-#ifdef __DEBUG_ROUTING
-			bpf_printk(
-				"MATCHED: match_set->type: %u, match_set->not: %d",
-				match_set->type, match_set->not );
-#endif
-
-			// Ordinary routing runs after all flow controls are resolved.
-
-			if (match_set->skip_while_noalive &&
-			    match_set->outbound > OUTBOUND_BLOCK &&
-			    match_set->outbound < OUTBOUND_MUST_RULES) {
-				// The rule is conditional on the connectivity of the
-				// target outbound group. If the group cannot serve the
-				// network type of the current traffic (or its state is
-				// not ready yet), treat the rule as not hit and fall
-				// through to the next rule.
-				struct outbound_connectivity_query q = {
-					.outbound = match_set->outbound,
-					.ipversion = (_ipversion_type & IpVersionType_4) ? 4 : 6,
-					.l4proto = (_l4proto_type & L4ProtoType_TCP) ?
-						IPPROTO_TCP : IPPROTO_UDP,
-				};
-				__u32 *state = bpf_map_lookup_elem(
-					&outbound_connectivity_map, &q);
-
-				if (!state || *state != OUTBOUND_CONNECTIVITY_ALIVE) {
-					// Group is not usable. Skip this rule; the
-					// partial-domain-match flag must not leak
-					// into the next rule.
-					ctx->need_control_plane_routing = false;
-					ctx->skipped_noalive = true;
-					return 0;
-				}
-			}
-
-			if (ctx->need_control_plane_routing) {
-				// Exact-domain routing must run before this uncertain rule's
-				// tail can commit its terminal must or mark. Definite
-				// controls accumulated by FlowProgram survive.
-				ctx->result =
-					(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
-					((__s64)ctx->must << 40);
-#ifdef __DEBUG_ROUTING
-				bpf_printk(
-					"OUTBOUND_CONTROL_PLANE_ROUTING: %ld",
-					ctx->result);
-#endif
-				return 1;
-			}
-
-			bool must = ctx->must || match_set->must;
-
-			if (!must && ctx->params->isdns &&
-			    !(ctx->capture_flags & CAPTURE_DESTINATION)) {
-				ctx->result =
-					(__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
-					((__s64)match_set->mark << 8) |
-					((__s64)must << 40);
-#ifdef __DEBUG_ROUTING
-				bpf_printk(
-					"OUTBOUND_CONTROL_PLANE_ROUTING: %ld",
-					ctx->result);
-#endif
-				return 1;
-			}
-			ctx->result = (__s64)match_set->outbound |
-				      ((__s64)match_set->mark << 8) |
-				      ((__s64)must << 40);
-#ifdef __DEBUG_ROUTING
-			bpf_printk("outbound %u: %ld",
-				   match_set->outbound, ctx->result);
-#endif
-			return 1;
-		}
-next_rule:
-		ctx->badrule = false;
-		// The rule ended without committing: drop the partial-domain-match
-		// flag so it cannot leak into the next rule.
-		ctx->need_control_plane_routing = false;
-	}
-	return 0;
-#undef _l4proto_type
-#undef _ipversion_type
-#undef _pname
-#undef _dscp
-#undef _ifindex
-}
-
-static __noinline __s64 route(const struct route_params *params)
-{
-	int index;
-	struct route_ctx ctx = {};
-
-	ctx.params = params;
-	ctx.result = -ENOEXEC;
-
-	// Variables for further use.
-	if (params->l4proto_type == L4ProtoType_TCP) {
-		ctx.h_dport = bpf_ntohs(((struct tcphdr *)params->l4hdr)->dest);
-		ctx.h_sport =
-			bpf_ntohs(((struct tcphdr *)params->l4hdr)->source);
-	} else {
-		ctx.h_dport = bpf_ntohs(((struct udphdr *)params->l4hdr)->dest);
-		ctx.h_sport =
-			bpf_ntohs(((struct udphdr *)params->l4hdr)->source);
-	}
-
-	// Rule is like: domain(suffix:baidu.com, suffix:google.com) && port(443) ->
-	// proxy Subrule is like: domain(suffix:baidu.com, suffix:google.com) Match
-	// set is like: suffix:baidu.com
-
-	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
-			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
-			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy((__u8 *)ctx.lpm_key_mac.data + IPV6_BYTE_LENGTH - ETH_ALEN,
-			 params->mac, ETH_ALEN);
-
-	bpf_for(index, 0, MAX_MATCH_SET_LEN) {
-		if (route_step(index, &ctx))
-			break;
-	}
-	if (ctx.result >= 0) {
-		ctx.result |= (__s64)ctx.capture_flags << ROUTE_RESULT_CAPTURE_SHIFT;
-		if (ctx.skipped_noalive)
-			ctx.result |= ROUTE_RESULT_SKIPPED_NOALIVE;
-		return ctx.result;
-	}
-	bpf_printk(
-		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");
-	return -EPERM;
-}
+#include "routing.h"
 
 static __always_inline void fill_udp_routing_cache_key(
 	struct udp_routing_cache_key *key, const struct tuples *tuples)
@@ -1649,6 +1108,8 @@ static __always_inline int do_tproxy_first_fragment(
 	params.isdns = tuples->five.dport == bpf_htons(53) &&
 			 l4proto == IPPROTO_UDP;
 
+	if (select_routing_profile(&params))
+		return TCX_DROP;
 	__s64 route_result = route(&params);
 
 	if (route_result < 0 || (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
@@ -1664,6 +1125,7 @@ static __always_inline int do_tproxy_first_fragment(
 		__builtin_memset(result, 0, sizeof(*result));
 		result->outbound = OUTBOUND_DIRECT;
 		result->route_epoch = route_epoch;
+		result->profile_id = params.profile_id;
 
 		__builtin_memcpy(result->mac, ethh->h_source, sizeof(result->mac));
 		if (l4proto == IPPROTO_UDP) {
@@ -1841,11 +1303,14 @@ static __always_inline int do_tproxy_unfragmented(
 	params.daddr = tuples->five.dip.u6_addr32;
 	params.isdns = isdns;
 
+	if (select_routing_profile(&params))
+		return TCX_DROP;
 	__s64 route_ret = route(&params);
 
 	if (route_ret < 0)
 		return TCX_DROP;
 	routing_result->route_epoch = route_epoch;
+	routing_result->profile_id = params.profile_id;
 	routing_result->outbound = route_ret;
 	routing_result->mark = route_ret >> 8;
 	routing_result->must = (route_ret >> 40) & 1;

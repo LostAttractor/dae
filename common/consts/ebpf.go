@@ -43,7 +43,7 @@ const (
 type OutboundIndex uint8
 
 // MatchAction is the instruction action, independent of routing outbound IDs.
-// Keep in sync with enum MatchAction in control/kern/tproxy.c.
+// Keep in sync with enum MatchAction in control/kern/routing_abi.h.
 type MatchAction uint8
 
 const (

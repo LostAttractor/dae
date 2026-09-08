@@ -56,10 +56,15 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 	t.Helper()
 	obj := &bpftestObjects{}
-	pinPath := "/sys/fs/bpf/dae"
+	pinPath := fmt.Sprintf("/sys/fs/bpf/dae-tests-%d", os.Getpid())
 	if err := os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
 		return nil, err
 	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(pinPath); err != nil {
+			t.Errorf("Failed to clean BPF test pins: %v", err)
+		}
+	})
 
 	spec, err := loadBpftest()
 	if err != nil {
@@ -103,6 +108,17 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 		obj.Close()
 		return nil, err
 	}
+	defaultProfile := bpftestRoutingProfile{
+		Length: obj.RoutingMap.MaxEntries(),
+	}
+	for i := range defaultProfile.Steps {
+		defaultProfile.Steps[i] = uint16(i)
+	}
+	if err := obj.RoutingProfileMap.Update(uint32(0), defaultProfile, ebpf.UpdateAny); err != nil {
+		obj.Close()
+		return nil, fmt.Errorf("initialize default routing profile: %w", err)
+	}
+
 	t.Cleanup(func() { obj.Close() })
 	return obj, nil
 }

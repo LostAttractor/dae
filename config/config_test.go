@@ -7,6 +7,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -595,13 +596,13 @@ routing {
 	fallback: 'must_fallback'
 }
 `)
-	if outbound := conf.Routing.Rules[0].Outbound; outbound.Name != "must_edge" || !outbound.Quoted || len(outbound.Params) != 0 {
+	if outbound := conf.Routing.Policies[0].Statements[0].Rule.Outbound; outbound.Name != "must_edge" || !outbound.Quoted || len(outbound.Params) != 0 {
 		t.Fatalf("quoted must target was rewritten: %+v", outbound)
 	}
-	if outbound := conf.Routing.Rules[1].Outbound; outbound.Name != "must_callable" || !outbound.Quoted || len(outbound.Params) != 1 {
+	if outbound := conf.Routing.Policies[0].Statements[1].Rule.Outbound; outbound.Name != "must_callable" || !outbound.Quoted || len(outbound.Params) != 1 {
 		t.Fatalf("quoted callable must target was rewritten: %+v", outbound)
 	}
-	fallback := FunctionOrStringToFunction(conf.Routing.Fallback)
+	fallback := conf.Routing.Policies[0].Fallback
 	if fallback.Name != "must_fallback" || !fallback.Quoted || len(fallback.Params) != 0 {
 		t.Fatalf("quoted must fallback was rewritten: %+v", fallback)
 	}
@@ -625,6 +626,87 @@ routing { fallback: direct }
 	}
 	if responseFallback.Name != consts.DnsResponseOutboundIndex_Accept.String() {
 		t.Errorf("dns response fallback should default to %v", consts.DnsResponseOutboundIndex_Accept)
+	}
+}
+
+func TestNewRoutingPreservesUseOrder(t *testing.T) {
+	conf := parseConfig(t, `global {}
+ routing {
+  rule_set { base { dip(geoip:private) -> direct } proxy { domain(suffix:example.com) -> my_group } }
+  policy {
+   main { use: base, proxy
+    fallback: my_group }
+   lan { use: base
+    fallback: direct }
+  }
+  default: main
+  interface { br-lan: lan
+   eth1: lan }
+ }`)
+	got := conf.Routing.Policies[0].Statements
+	if len(got) != 2 || got[0].Kind != RoutingStatementUse || got[0].Use != "base" || got[1].Use != "proxy" {
+		t.Fatalf("statements lost order: %+v", got)
+	}
+	if conf.Routing.Default != "main" || len(conf.Routing.Interfaces) != 2 || conf.Routing.Interfaces[0] != (RoutingInterface{Name: "br-lan", Policy: "lan"}) || conf.Routing.Interfaces[1].Name != "eth1" {
+		t.Fatalf("bindings = %+v", conf.Routing)
+	}
+}
+
+func TestNewRoutingValidation(t *testing.T) {
+	tests := []struct{ name, body, want string }{
+		{"undefined use", "use: missing\nfallback: direct", `undefined rule_set "missing"`},
+		{"duplicate rule set", "rule_set { a {} a {} }\nfallback: direct", `duplicate routing rule_set "a"`},
+		{"cycle", "rule_set { a { use: b } b { use: a } }\nfallback: direct", "routing rule_set cycle"},
+		{"self cycle", "rule_set { default { use: default } }\nfallback: direct", "routing rule_set cycle"},
+		{"inline fallback required", "dip(geoip:private) -> direct", "requires exactly one fallback"},
+		{"policy fallback required", "policy { main {} }\ndefault: main", "requires exactly one fallback"},
+		{"unused policy fallback required", "policy { unused {} }\nfallback: direct", "requires exactly one fallback"},
+		{"fragment fallback forbidden", "rule_set { a { fallback: direct } }\nfallback: direct", "rule_set cannot contain fallback"},
+		{"duplicate fallback", "fallback: direct\nfallback: block", "duplicate policy fallback"},
+		{"duplicate policy", "policy { a { fallback: direct } a { fallback: block } }\ndefault: a", `duplicate routing policy "a"`},
+		{"duplicate default", "default: a\ndefault: a", "duplicate routing default"},
+		{"undefined default", "default: missing", `undefined policy "missing"`},
+		{"undefined binding", "fallback: direct\ninterface { eth0: missing }", `undefined policy "missing"`},
+		{"duplicate binding", "policy { a { fallback: direct } }\ndefault: a\ninterface { eth0: a\neth0: a }", "duplicate routing interface binding"},
+		{"default with inline fallback", "policy { a { fallback: direct } }\ndefault: a\nfallback: direct", "cannot be combined"},
+		{"default with inline use", "policy { a { fallback: direct } }\ndefault: a\nuse: a", "cannot be combined"},
+		{"policy use forbidden", "policy { a { fallback: direct } }\nuse: a\nfallback: direct", "undefined rule_set"},
+		{"fragment binding forbidden", "rule_set { a {} }\ndefault: a", "undefined policy"},
+		{"old default block", "default { fallback: direct }", "unexpected routing section"},
+		{"old interface block", "fallback: direct\ninterface { lan { name: eth0\nfallback: direct } }", "expects interface_name: policy_name"},
+		{"declaration annotation", "fallback: direct [priority: 1]", "does not support annotations"},
+		{"multiple policy references", "default: a,b", "requires exactly one policy"},
+		{"empty use", "use: ''\nfallback: direct", "nonempty rule_set"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sections, err := config_parser.Parse("global {}\nrouting {\n" + tt.body + "\n}")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = New(sections)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewRoutingRejectsLegacyActionsInPoliciesAndFragments(t *testing.T) {
+	for _, action := range []string{"must_rules", "must_direct", "must_proxy", "direct(must)", "bump"} {
+		for _, body := range []string{
+			"rule_set { base { dport(53) -> " + action + " } } fallback: direct",
+			"policy { main {dport(53) -> " + action + "\nfallback:direct} } default:main",
+			"policy { main {fallback:" + action + "} } default:main",
+		} {
+			sections, err := config_parser.Parse("global {}\nrouting {" + body + "}")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = New(sections); err == nil || !strings.Contains(err.Error(), "moved") {
+				t.Fatalf("accepted %s: %v", body, err)
+			}
+		}
 	}
 }
 

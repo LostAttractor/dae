@@ -42,8 +42,9 @@ func TestRoutingProgramsKernelIntegration(t *testing.T) {
 	}
 	defer collection.Close()
 	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		RoutingMap: collection.Maps["routing_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
-	}}}
+		RoutingMap:        collection.Maps["routing_map"],
+		RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
+	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
 	for _, laterMust := range []bool{false, true} {
 		controls := `domain(full: one.example) && dport(443) -> must
 domain(full: bump.example) && dport(443) -> bump

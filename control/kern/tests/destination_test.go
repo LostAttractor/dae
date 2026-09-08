@@ -24,8 +24,8 @@ func TestDestinationCaptureDefersRoute(t *testing.T) {
 	key.Sip.U6Addr8 = netip.MustParseAddr("192.168.0.1").As16()
 	key.Dip.U6Addr8 = netip.MustParseAddr("1.1.1.1").As16()
 	for _, outbound := range []uint8{0, 1, 2} {
-		capture := bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: 0, CaptureFlags: 2, Action: uint8(consts.MatchActionCapture)}
-		route := bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: outbound, Mark: 37, Must: true}
+		capture := bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: 0, Flags: (2) << 3, Action: uint8(consts.MatchActionCapture)}
+		route := bpftestMatchSet{Type: uint8(consts.MatchType_Fallback), Outbound: outbound, Mark: 37, Flags: 1 << 1}
 		if err := obj.RoutingMap.Update(uint32(0), capture, ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
 		}

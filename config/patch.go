@@ -24,11 +24,29 @@ type patch func(params *Config) error
 var patches = []patch{
 	validateSoMarkFromDae,
 	validateControlModes,
+	validateGroupNames,
 	validateCheckIntervals,
 	validateCheckDNS,
 	patchEmptyDns,
 	validateFallbacks,
 	validateRoutingActions,
+}
+
+func validateGroupNames(params *Config) error {
+	for _, group := range params.Group {
+		switch group.Name {
+		case "rules":
+			return fmt.Errorf("group name %q is reserved because it conflicts with outbound %q", group.Name, consts.OutboundMustRules.String())
+		case consts.OutboundDirect.String(),
+			consts.OutboundBlock.String(),
+			consts.OutboundMustRules.String(),
+			consts.OutboundControlPlaneRouting.String(),
+			consts.OutboundLogicalOr.String(),
+			consts.OutboundLogicalAnd.String():
+			return fmt.Errorf("group name %q is reserved for an internal outbound", group.Name)
+		}
+	}
+	return nil
 }
 
 func validateSoMarkFromDae(params *Config) error {
@@ -115,34 +133,44 @@ func patchEmptyDns(params *Config) error {
 }
 
 func validateFallbacks(params *Config) error {
-	fallbacks := []struct {
-		name  string
-		value FunctionOrString
-	}{
-		{name: "routing.fallback", value: params.Routing.Fallback},
-		{name: "dns.routing.request.fallback", value: params.Dns.Routing.Request.Fallback},
-		{name: "dns.routing.response.fallback", value: params.Dns.Routing.Response.Fallback},
-	}
-	for _, fallback := range fallbacks {
-		if _, err := ParseFunctionOrString(fallback.value); err != nil {
-			return fmt.Errorf("invalid %s: %w", fallback.name, err)
+	validate := func(name string, value FunctionOrString) error {
+		if _, err := ParseFunctionOrString(value); err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
 		}
+		return nil
 	}
-	return nil
+	if err := validate("dns.routing.request.fallback", params.Dns.Routing.Request.Fallback); err != nil {
+		return err
+	}
+	if err := validate("dns.routing.response.fallback", params.Dns.Routing.Response.Fallback); err != nil {
+		return err
+	}
+	return params.Routing.Validate()
 }
 
 func validateRoutingActions(params *Config) error {
-	for i, rule := range params.Routing.Rules {
-		if err := validateRoutingAction(&rule.Outbound); err != nil {
-			return fmt.Errorf("routing rule %d: %w", i+1, err)
+	validate := func(statements []RoutingStatement) error {
+		for _, s := range statements {
+			if s.Kind == RoutingStatementRule {
+				if err := validateRoutingAction(&s.Rule.Outbound); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, s := range params.Routing.RuleSets {
+		if err := validate(s.Statements); err != nil {
+			return fmt.Errorf("rule_set %q: %w", s.Name, err)
 		}
 	}
-	f, err := ParseFunctionOrString(params.Routing.Fallback)
-	if err != nil {
-		return fmt.Errorf("invalid routing fallback: %w", err)
-	}
-	if err := validateRoutingAction(f); err != nil {
-		return fmt.Errorf("routing fallback: %w", err)
+	for _, s := range params.Routing.Policies {
+		if err := validate(s.Statements); err != nil {
+			return fmt.Errorf("policy %q: %w", s.Name, err)
+		}
+		if err := validateRoutingAction(s.Fallback); err != nil {
+			return fmt.Errorf("policy %q fallback: %w", s.Name, err)
+		}
 	}
 	return nil
 }

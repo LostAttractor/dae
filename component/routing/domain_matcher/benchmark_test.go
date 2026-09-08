@@ -9,14 +9,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand"
-	"reflect"
 	"testing"
 
 	"github.com/daeuniverse/dae/common/assets"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/sirupsen/logrus"
 )
@@ -145,11 +143,10 @@ routing {
 	if err != nil {
 		return nil, err
 	}
-	var r config.Routing
-	if err = config.SectionParser(reflect.ValueOf(&r), sections[0]); err != nil {
-		return nil, err
+	for _, item := range sections[0].Items {
+		rules = append(rules, item.Value.(*config_parser.RoutingRule))
 	}
-	if rules, err = routing.ApplyRulesOptimizers(r.Rules,
+	if rules, err = routing.ApplyRulesOptimizers(rules,
 		&routing.AliasOptimizer{},
 		&routing.DatReaderOptimizer{LocationFinder: assets.NewLocationFinder(nil)},
 		&routing.MergeAndSortRulesOptimizer{},

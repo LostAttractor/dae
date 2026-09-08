@@ -141,6 +141,7 @@ func (d *decoder) parseDeclaration(ctx dae_config.IDeclarationContext) *Param {
 			values = append(values, getValueFromLiteral(literal.(*dae_config.LiteralContext)))
 		}
 		param.Val = strings.Join(values, ",")
+		param.ValueList = values
 		param.Quoted = len(literals) == 1 && literals[0].(*dae_config.LiteralContext).QUOTE_STRING() != nil
 	}
 	param.Annotation = d.parseOptAnnotation(declaration.OptAnnotation())

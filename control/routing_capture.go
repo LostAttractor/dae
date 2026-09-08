@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
@@ -20,7 +22,6 @@ import (
 // stay in eBPF even when plugins are enabled. Missing DNS evidence is not a
 // reason to divert all TCP or UDP to userspace.
 type routingCapture struct {
-	before         int
 	http           []plugin.Scope
 	requestRouting []plugin.Scope
 	controls       []routing.FlowRule
@@ -95,4 +96,79 @@ func mitmCapturePredicates(scopes []plugin.Scope) [][]*config_parser.Function {
 		}
 	}
 	return predicates
+}
+
+// Compile generated capture and flow controls once, before every policy body.
+func (b *RoutingMatcherBuilder) addControlPlaneFragment(p *preparedRules) (routingSpan, error) {
+	start := uint32(len(b.rules))
+	if err := b.rulesBuilder.Apply(p.bypass); err != nil {
+		return routingSpan{}, err
+	}
+	applyEffect := func(filter []*config_parser.Function, action consts.MatchAction, flags uint8) error {
+		if err := b.rulesBuilder.ApplyPredicate(filter, &routing.Outbound{Name: "direct"}); err != nil {
+			return err
+		}
+		tail := &b.rules[len(b.rules)-1]
+		tail.Action = uint8(action)
+		tail.Flags |= flags << matchCaptureShift
+		return nil
+	}
+	b.destination.start = len(b.rules)
+	for _, rule := range p.destinations {
+		// Capture retains the complete predicate, including DNS-backed domains.
+		if err := applyEffect(rule.Filter, consts.MatchActionCapture, captureDestination); err != nil {
+			return routingSpan{}, fmt.Errorf("destination capture: %w", err)
+		}
+	}
+	if p.capture != nil {
+		for _, predicate := range mitmCapturePredicates(p.capture.requestRouting) {
+			if err := applyEffect(predicate, consts.MatchActionCapture, captureHTTP|captureHTTPRequest); err != nil {
+				return routingSpan{}, fmt.Errorf("HTTP request routing capture: %w", err)
+			}
+		}
+	}
+	b.destination.end = len(b.rules)
+	b.flow.start = b.destination.end
+	if p.capture != nil {
+		for _, rule := range p.capture.controls {
+			if rule.Action != consts.MatchActionMust && rule.Action != consts.MatchActionBump {
+				return routingSpan{}, fmt.Errorf("invalid flow action %d", rule.Action)
+			}
+			if err := applyEffect(rule.Filter, rule.Action, 0); err != nil {
+				return routingSpan{}, fmt.Errorf("flow control: %w", err)
+			}
+		}
+		for _, predicate := range mitmCapturePredicates(p.capture.http) {
+			if err := applyEffect(predicate, consts.MatchActionCapture, captureHTTP); err != nil {
+				return routingSpan{}, fmt.Errorf("HTTP capture: %w", err)
+			}
+		}
+	}
+	if len(b.rules) != b.flow.start {
+		b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionFlowEnd)})
+	}
+	b.flow.end = len(b.rules)
+	b.routing.start = b.flow.end
+
+	if err := b.rulesBuilder.Apply(p.earlyRoutes); err != nil {
+		return routingSpan{}, err
+	}
+	return routingSpan{Start: start, End: uint32(len(b.rules))}, nil
+}
+
+func (b *RoutingMatcherBuilder) addDestinationPredicates(destinations routing.DestinationRewrites) error {
+	for _, rule := range destinations {
+		entry := destinationPredicate{span: routingSpan{Start: uint32(len(b.rules))}, targets: rule.To}
+		for _, f := range rule.Filter {
+			entry.domain = entry.domain || f.Name == consts.Function_Domain
+		}
+		if err := b.rulesBuilder.ApplyPredicate(rule.Filter, &routing.Outbound{Name: "direct"}); err != nil {
+			return fmt.Errorf("destination predicate: %w", err)
+		}
+		b.rules[len(b.rules)-1].Action = uint8(consts.MatchActionMatch)
+		b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionMiss)})
+		entry.span.End = uint32(len(b.rules))
+		b.destination.predicates = append(b.destination.predicates, entry)
+	}
+	return nil
 }

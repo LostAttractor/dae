@@ -51,7 +51,7 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 				t.Run(test.name, func(t *testing.T) {
 					binary.BigEndian.PutUint16(packet[36:38], test.port)
 					portRule := func(port uint16, action consts.MatchAction, flags uint8) bpftestMatchSet {
-						rule := bpftestMatchSet{Type: uint8(consts.MatchType_Port), Action: uint8(action), CaptureFlags: flags}
+						rule := bpftestMatchSet{Type: uint8(consts.MatchType_Port), Action: uint8(action), Flags: (flags) << 3}
 						binary.NativeEndian.PutUint16(rule.Value[:2], port)
 						binary.NativeEndian.PutUint16(rule.Value[2:4], port)
 						return rule

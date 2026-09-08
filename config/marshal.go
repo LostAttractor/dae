@@ -18,6 +18,9 @@ import (
 
 // Marshal assume all tokens should be legal, and does not prevent injection attacks.
 func (c *Config) Marshal(indentSpace int) (b []byte, err error) {
+	if err := validateGroupNames(c); err != nil {
+		return nil, err
+	}
 	m := Marshaller{
 		IndentSpace: indentSpace,
 	}
@@ -81,6 +84,10 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 	}
 	if from.Type() == reflect.TypeOf([]Subscription{}) {
 		return m.marshalSubscriptions(from.Interface().([]Subscription), depth+1)
+	}
+
+	if from.Type() == reflect.TypeOf(Routing{}) {
+		return m.marshalRouting(from.Interface().(Routing), depth+1)
 	}
 
 	switch from.Kind() {

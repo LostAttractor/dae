@@ -5,6 +5,7 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -26,11 +27,11 @@ func TestFlowProgramDefersUncertainMust(t *testing.T) {
 		for i := range first {
 			bump[i], trusted[i] = first[i]|second[i], first[i]&second[i]
 		}
-		address := make([]byte, 16)
-		result, err := m.evaluateRange(0, m.routing.end, routingInput{
-			sourceAddr: address, destAddr: address, mac: address, destPort: 443,
-			ipVersion: consts.IpVersion_4, l4proto: consts.L4ProtoType_TCP,
-			trustedDomainBitmap: [][]uint32{trusted, bump},
+		address := netip.IPv4Unspecified()
+		result, err := m.evaluateSpans(m.profiles[m.defaultProfileID], routingInput{
+			src: netip.AddrPortFrom(address, 12345), dst: netip.AddrPortFrom(address, 443),
+			l4proto:      consts.L4ProtoType_TCP,
+			domainBitmap: trusted, domainBumpBitmap: bump,
 		})
 		want, mark := consts.OutboundControlPlaneRouting, uint32(0)
 		if laterMust {
@@ -61,17 +62,17 @@ domain(full: one.example, full: two.example) && dip(192.0.2.0/24) -> dnat(198.51
 			t.Fatal("instruction/control action leaked into outbound ID")
 		}
 	}
-	if len(b.destination.predicates) != 2 || b.destination.predicates[0].start < b.routing.end || b.rules[b.flow.end-1].Action != uint8(consts.MatchActionFlowEnd) {
+	if len(b.destination.predicates) != 2 || int(b.destination.predicates[0].span.Start) < b.routing.end || b.rules[b.flow.end-1].Action != uint8(consts.MatchActionFlowEnd) {
 		t.Fatal("invalid flow/routing/destination boundaries")
 	}
 	if b.destination.start != 0 || b.destination.end != b.flow.start || b.flow.end != b.routing.start {
 		t.Fatal("program order must be destination -> flow -> routing")
 	}
 	for i, rule := range b.rules[:b.routing.end] {
-		if rule.CaptureFlags&captureDestination != 0 && (i < b.destination.start || i >= b.destination.end) {
+		if ((rule.Flags>>3)&3)&captureDestination != 0 && (i < b.destination.start || i >= b.destination.end) {
 			t.Fatal("destination capture must precede flow controls")
 		}
-		if rule.Action == uint8(consts.MatchActionMust) || rule.Action == uint8(consts.MatchActionBump) || rule.CaptureFlags&captureHTTP != 0 {
+		if rule.Action == uint8(consts.MatchActionMust) || rule.Action == uint8(consts.MatchActionBump) || ((rule.Flags>>3)&3)&captureHTTP != 0 {
 			if i < b.flow.start || i >= b.flow.end {
 				t.Fatal("flow control escaped its program")
 			}
@@ -97,7 +98,7 @@ func TestDestinationInterfaceUpdateStaysInUserspace(t *testing.T) {
 	_, b := destinationTestMatcher(t, "interface(lan0) -> dnat(198.51.100.20)")
 	// No BPF handles exist in this test. Updating the destination half of an
 	// interface predicate must neither access nor publish a kernel table slot.
-	i := b.destination.predicates[0].start
+	i := int(b.destination.predicates[0].span.Start)
 	if err := b.updateIfindex(i, 42, true); err != nil {
 		t.Fatal(err)
 	}

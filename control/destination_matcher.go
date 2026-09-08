@@ -45,7 +45,7 @@ func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error)
 		if entry.domain && p.Domain == "" {
 			continue
 		}
-		result, err := m.evaluateRange(entry.start, entry.end, input)
+		result, err := m.evaluateSpans([]routingSpan{entry.span}, input)
 		if err != nil {
 			return netip.AddrPort{}, err
 		}

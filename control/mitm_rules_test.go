@@ -20,8 +20,8 @@ func TestMITMPlanRoutingPrioritySurvivesReconstruction(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			plan := mitmRoutingPlugin("service.example").Plan()
-			plan.Routes = prepareFlowRulesForTest(t, "", "domain(full: service.example) -> direct").routing
-			plan.EarlyRoutes = prepareFlowRulesForTest(t, "", "domain(full: rejected.example) -> block").routing
+			plan.Routes = planRulesForTest(t, "domain(full: service.example) -> direct")
+			plan.EarlyRoutes = planRulesForTest(t, "domain(full: rejected.example) -> block")
 			prepared := prepareFlowRulesForTest(t, "", test.userRules+"\ndomain(full: rejected.example) -> direct")
 			prepared.enableMITMPlan(plan)
 			matcher, _ := routingMatcherForTest(t, prepared)

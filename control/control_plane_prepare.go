@@ -136,7 +136,7 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 		Programs: programOptions,
 	}
 	bpf := &BPFState{bpfObjects: new(bpfObjects), soMarkFromDae: soMarkFromDae}
-	if err = fullLoadBpfObjects(bpf.bpfObjects, pinPath, soMarkFromDae, collectionOpts); err != nil {
+	if err = fullLoadBpfObjects(bpf.bpfObjects, soMarkFromDae, collectionOpts); err != nil {
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	if err := bpf.DeviceRoutesMap.Update(uint32(0), bpf.UnusedDeviceRoutes, ebpf.UpdateAny); err != nil {

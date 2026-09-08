@@ -71,26 +71,6 @@ type FunctionOrString interface{}
 // reserved must spellings can be resolved literally.
 type QuotedString string
 
-// FunctionOrStringToFunction preserves the original conversion API. New code
-// should use ParseFunctionOrString when the input may be untrusted.
-func FunctionOrStringToFunction(fs FunctionOrString) *config_parser.Function {
-	switch fs := fs.(type) {
-	case string:
-		return &config_parser.Function{Name: fs}
-	case QuotedString:
-		return &config_parser.Function{Name: string(fs), Quoted: true}
-	case *config_parser.Function:
-		return fs
-	case []*config_parser.Function:
-		if len(fs) == 1 {
-			return fs[0]
-		}
-		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
-	default:
-		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
-	}
-}
-
 func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error) {
 	switch fs := fs.(type) {
 	case string:
@@ -116,25 +96,6 @@ func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error)
 }
 
 type FunctionListOrString interface{}
-
-// FunctionListOrStringToFunctionList preserves the original conversion API.
-// New code should use ParseFunctionListOrString for checked conversion.
-func FunctionListOrStringToFunctionList(fs FunctionListOrString) []*config_parser.Function {
-	switch fs := fs.(type) {
-	case nil:
-		return nil
-	case string:
-		return []*config_parser.Function{{Name: fs}}
-	case QuotedString:
-		return []*config_parser.Function{{Name: string(fs), Quoted: true}}
-	case *config_parser.Function:
-		return []*config_parser.Function{fs}
-	case []*config_parser.Function:
-		return fs
-	default:
-		panic(fmt.Sprintf("unknown type of 'fallback' in section routing: %T", fs))
-	}
-}
 
 func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Function, error) {
 	switch fs := fs.(type) {
@@ -208,9 +169,43 @@ type Dns struct {
 	Routing         DnsRouting      `mapstructure:"routing"`
 }
 
+// Routing separates reusable rule sets, complete policies, and their bindings.
+// An empty Default selects the anonymous policy written directly in routing.
+// Routing is an opaque outline leaf because its statements are ordered.
 type Routing struct {
-	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback FunctionOrString             `mapstructure:"fallback" default:"direct"`
+	Default    string             `mapstructure:"default" outline:"-"`
+	RuleSets   []RoutingRuleSet   `mapstructure:"rule_set" outline:"-"`
+	Policies   []RoutingPolicy    `mapstructure:"policy" outline:"-"`
+	Interfaces []RoutingInterface `mapstructure:"interface" outline:"-"`
+}
+
+type RoutingStatementKind uint8
+
+const (
+	RoutingStatementRule RoutingStatementKind = iota
+	RoutingStatementUse
+)
+
+type RoutingStatement struct {
+	Kind RoutingStatementKind
+	Rule *config_parser.RoutingRule
+	Use  string
+}
+
+type RoutingRuleSet struct {
+	Name       string
+	Statements []RoutingStatement
+}
+
+type RoutingPolicy struct {
+	Name       string
+	Statements []RoutingStatement
+	Fallback   *config_parser.Function
+}
+
+type RoutingInterface struct {
+	Name   string
+	Policy string
 }
 
 type Config struct {

@@ -40,7 +40,7 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	if err := rules.bypassLocalAPI(conf.Global.APIPort); err != nil {
 		return err
 	}
-	builder, err := NewRoutingMatcherBuilder(rules.routing, outboundName2Id, c.core.bpf, conf.Routing.Fallback, c.core.ifmgr, rules.capture, rules.destinations)
+	builder, err := rules.compileRouting(outboundName2Id, c.core.bpf, c.core.ifmgr)
 	if err != nil {
 		return err
 	}

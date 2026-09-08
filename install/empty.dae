@@ -1,1 +1,1 @@
-global {} routing {}
+global {} routing { fallback: direct }

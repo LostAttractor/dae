@@ -274,6 +274,8 @@ dns {
 }
 ```
 
+通过有序的 `use` 组合 `rule_set` 片段，每个 `policy` 独立声明一个 fallback。`default: 策略名` 和接口绑定可选择同一个策略。完整说明见[路由配置](configuration/routing.md)和[拆分配置文件](configuration/separate-config.md)。
+
 完整样例：[example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae)。
 
 如果你使用 PVE，可以参考 [#37](https://github.com/daeuniverse/dae/discussions/37)。

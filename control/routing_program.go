@@ -6,9 +6,9 @@ import "net/netip"
 
 // The compiled predicate keeps only its target IPs, not the source configuration.
 type destinationPredicate struct {
-	start, end int
-	domain     bool
-	targets    []netip.Addr
+	span    routingSpan
+	domain  bool
+	targets []netip.Addr
 }
 
 // DestinationProgram prepares targets before FlowProgram. Its kernel range

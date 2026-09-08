@@ -6,81 +6,11 @@
 package config
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
-
-var (
-	_ func(FunctionOrString) *config_parser.Function       = FunctionOrStringToFunction
-	_ func(FunctionListOrString) []*config_parser.Function = FunctionListOrStringToFunctionList
-)
-
-func requirePanic(t *testing.T, want string, f func()) {
-	t.Helper()
-	defer func() {
-		if got := recover(); got == nil {
-			t.Fatal("function did not panic")
-		} else if message := fmt.Sprint(got); message != want {
-			t.Fatalf("panic = %q, want %q", message, want)
-		}
-	}()
-	f()
-}
-
-func TestLegacyFunctionOrStringToFunction(t *testing.T) {
-	function := &config_parser.Function{Name: "direct"}
-	if got := FunctionOrStringToFunction("direct"); got.Name != "direct" {
-		t.Fatalf("string conversion = %#v", got)
-	}
-	if got := FunctionOrStringToFunction(function); got != function {
-		t.Fatal("function identity was not preserved")
-	}
-	if got := FunctionOrStringToFunction([]*config_parser.Function{function}); got != function {
-		t.Fatal("single list element was not returned")
-	}
-	if got := FunctionOrStringToFunction((*config_parser.Function)(nil)); got != nil {
-		t.Fatalf("typed nil function = %#v, want nil", got)
-	}
-	if got := FunctionOrStringToFunction([]*config_parser.Function{nil}); got != nil {
-		t.Fatalf("nil list element = %#v, want nil", got)
-	}
-	panicMessage := "unknown type of 'fallback' in section routing: []*config_parser.Function"
-	requirePanic(t, panicMessage, func() { FunctionOrStringToFunction([]*config_parser.Function{}) })
-	requirePanic(t, panicMessage, func() {
-		FunctionOrStringToFunction([]*config_parser.Function{function, function})
-	})
-	requirePanic(t, "unknown type of 'fallback' in section routing: int", func() {
-		FunctionOrStringToFunction(1)
-	})
-}
-
-func TestLegacyFunctionListOrStringToFunctionList(t *testing.T) {
-	function := &config_parser.Function{Name: "random"}
-	if got := FunctionListOrStringToFunctionList(function); len(got) != 1 || got[0] != function {
-		t.Fatalf("function conversion = %#v", got)
-	}
-	if got := FunctionListOrStringToFunctionList((*config_parser.Function)(nil)); len(got) != 1 || got[0] != nil {
-		t.Fatalf("typed nil function conversion = %#v", got)
-	}
-	if got := FunctionListOrStringToFunctionList(([]*config_parser.Function)(nil)); got != nil {
-		t.Fatalf("nil list conversion = %#v, want nil", got)
-	}
-	empty := []*config_parser.Function{}
-	if got := FunctionListOrStringToFunctionList(empty); got == nil || len(got) != 0 {
-		t.Fatalf("empty list conversion = %#v", got)
-	}
-	functions := []*config_parser.Function{function, nil}
-	got := FunctionListOrStringToFunctionList(functions)
-	if len(got) != len(functions) || &got[0] != &functions[0] {
-		t.Fatal("function list identity was not preserved")
-	}
-	requirePanic(t, "unknown type of 'fallback' in section routing: bool", func() {
-		FunctionListOrStringToFunctionList(true)
-	})
-}
 
 func TestParseFunctionOrString(t *testing.T) {
 	want := &config_parser.Function{Name: "direct"}
