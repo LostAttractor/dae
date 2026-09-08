@@ -6,14 +6,12 @@
 package config_parser
 
 import (
-	"fmt"
-
 	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 )
 
 func Parse(in string) (sections []*Section, err error) {
-	errorListener := NewConsoleErrorListener()
+	errorListener := &syntaxErrorListener{DefaultErrorListener: antlr.NewDefaultErrorListener()}
 	lexer := dae_config.Newdae_configLexer(antlr.NewInputStream(in))
 	lexer.RemoveErrorListeners()
 	lexer.AddErrorListener(errorListener)
@@ -24,13 +22,14 @@ func Parse(in string) (sections []*Section, err error) {
 	parser.AddErrorListener(errorListener)
 	parser.BuildParseTrees = true
 	tree := parser.Start()
-	if errorListener.ErrorBuilder.Len() != 0 {
-		return nil, fmt.Errorf("%v", errorListener.ErrorBuilder.String())
+	if errorListener.err != nil {
+		return nil, errorListener.err
 	}
 
-	sections = (&decoder{parser: parser}).decode(tree)
-	if errorListener.ErrorBuilder.Len() != 0 {
-		return nil, fmt.Errorf("%v", errorListener.ErrorBuilder.String())
+	decoder := new(decoder)
+	sections = decoder.decode(tree)
+	if decoder.err != nil {
+		return nil, decoder.err
 	}
 	return sections, nil
 }

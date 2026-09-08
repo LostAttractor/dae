@@ -46,7 +46,6 @@ func sortFields(keys []string) {
 func NewTextFormatter(disableTimestamp bool) *log.TextFormatter {
 	return &log.TextFormatter{
 		DisableTimestamp: disableTimestamp,
-		DisableQuote:     true,
 		FullTimestamp:    true,
 		TimestampFormat:  "2006-01-02 15:04:05",
 		SortingFunc:      sortFields,

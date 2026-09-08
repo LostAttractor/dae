@@ -11,6 +11,32 @@ import (
 	"testing"
 )
 
+func TestSyntaxErrorsOmitConfigurationSecrets(t *testing.T) {
+	for _, input := range []string{
+		"global { api_token: 'password-secret' ( }",
+		"node { 'trojan://password-secret@example.com:443' ( }",
+		"global { api_token: 'password-secret' ",
+		"global { api_token: 'password-secret\n}",
+		"password-secret 'unexpected-value'",
+		"group { target { name(password-secret) } }",
+	} {
+		_, err := Parse(input)
+		if err == nil {
+			t.Fatalf("malformed configuration was accepted: %q", input)
+		}
+		message := err.Error()
+		if strings.Contains(message, "password-secret") || strings.Contains(message, "unexpected-value") || strings.Contains(message, "trojan://") {
+			t.Fatalf("syntax diagnostic leaked configuration: %s", message)
+		}
+		if !strings.HasPrefix(message, "line ") || strings.Contains(message, "\n") {
+			t.Fatalf("syntax diagnostic must retain location in one line: %s", message)
+		}
+		if !strings.Contains(message, "expected") && !strings.Contains(message, "invalid token") && !strings.Contains(message, "path reference") {
+			t.Fatalf("syntax diagnostic lost its grammar guidance: %s", message)
+		}
+	}
+}
+
 func TestParse(t *testing.T) {
 	sections, err := Parse(`
 # gugu
