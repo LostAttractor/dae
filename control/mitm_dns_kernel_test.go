@@ -109,7 +109,7 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 		{"literal IPv6 wrong port", "[2001:db8::10]:8443", "", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			for _, network := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP} {
+			for _, network := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP} {
 				proto := network.ToL4ProtoType()
 				t.Run(string(network), func(t *testing.T) {
 					destination := netip.MustParseAddrPort(test.destination)

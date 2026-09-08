@@ -58,7 +58,7 @@ func TestMITMCaptureKeepsUnrelatedDirectInKernel(t *testing.T) {
 			}
 			// Supply the kernel's DNS bitmaps explicitly. Even a later TLS or
 			// QUIC SNI cannot manufacture evidence at the initial packet.
-			for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP} {
+			for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
 				got, _, _, err := matcher.Match(address[:], address[:], 12345, destination.Port(), consts.IpVersionFromAddr(destination.Addr()), proto, "api.bilibili.com", [16]uint8{}, 0, 0, make([]byte, 16), routing, bump)
 				if err != nil || (got != consts.OutboundDirect) != test.capture {
 					t.Fatalf("protocol=%v kernel capture = %v, err=%v, want %v", proto, got, err, test.capture)

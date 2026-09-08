@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/sniffing"
 	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
@@ -111,14 +112,20 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 	return n, err
 }
 
-func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, skipSniffing bool, domain string, isQuic bool) (err error) {
+type packetSniff struct {
+	domain      string
+	quic, http3 bool
+}
+
+func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, sniffed *packetSniff) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	udpEndpoints := c.udpEndpoints
 
 	/// Sniff
-	if !skipSniffing {
+	if sniffed == nil {
+		sniffed = new(packetSniff)
 		// Sniff Quic, ...
 		key := PacketSnifferKey{
 			LAddr: src,
@@ -130,7 +137,8 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		sniffer := DefaultPacketSnifferSessionMgr.Get(key)
 		if _sniffer == sniffer {
 			sniffer.AppendData(data)
-			domain, isQuic, err = sniffer.SniffUdp()
+			sniffed.domain, sniffed.quic, err = sniffer.SniffUdp()
+			sniffed.http3 = sniffer.IsHTTP3()
 			if err != nil && !sniffing.IsSniffingError(err) {
 				sniffer.Mu.Unlock()
 				return oops.
@@ -156,7 +164,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			}
 			sniffer.Mu.Unlock()
 			for _, d := range toRehandle {
-				if replayErr := c.handlePkt(ctx, d, src, dst, true, domain, isQuic); replayErr != nil {
+				if replayErr := c.handlePkt(ctx, d, src, dst, sniffed); replayErr != nil {
 					log.Warnf("%+v", oops.Wrapf(replayErr, "rehandlePkt"))
 				}
 			}
@@ -165,6 +173,8 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			// sniffer may be nil.
 		}
 	}
+
+	domain, isQuic := sniffed.domain, sniffed.quic
 
 	/// Dial and send.
 	// TODO: Rewritten domain should not use full-cone (such as VMess Packet Addr).
@@ -175,7 +185,11 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	if err != nil {
 		return oops.Wrapf(err, "RetrieveRoutingResult")
 	}
-	key := udpRoutingKey(src, dst, routingResult)
+	mitmHost := domain
+	if mitmHost == "" {
+		mitmHost = dst.Addr().String()
+	}
+	key := c.mitmUDPEndpointKey(src, dst, routingResult, sniffed)
 	l, _ := udpEndpoints.UdpEndpointKeyLocker.Lock(key)
 	defer udpEndpoints.UdpEndpointKeyLocker.Unlock(key, l)
 	if err := ctx.Err(); err != nil {
@@ -185,23 +199,21 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	// Get udp endpoint.
 	ue, ok := udpEndpoints.Get(key)
 	var previousDestination netip.AddrPort
-	if ok && key.Destination.IsValid() {
-		previousDestination = ue.destination
-		domain = ue.domain
-	}
-	isNew := false
-	noConnectivityFallback := false
 	networkType := common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_UDP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
 	}
 	if ok && key.Destination.IsValid() {
+		previousDestination = ue.destination
+		domain = ue.domain
 		networkType.IpVersion = ue.statsPath.Network.NetworkType().IpVersion
 	}
+	isNew := false
+	noConnectivityFallback := false
 	// If the udp endpoint has been not alive, remove it from pool and retry
 	// UDP 不是面向连接的, 在 tcp 中, 一个连接失败, 我们会重置中继它, 等待一个新的连接
 	// 在 UDP 中, l -> r继续中继到新的节点, 并在新的节点上进行 r -> l 中继
-	if ok && !ue.dialer.Usable(&networkType) {
+	if ok && !ue.mitm && !ue.dialer.Usable(&networkType) {
 		if log.IsLevelEnabled(log.DebugLevel) {
 			log.WithFields(log.Fields{
 				"src":     RefineSourceToShow(src, dst.Addr()),
@@ -222,64 +234,86 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			Src:           src,
 			Dest:          dst,
 		}
-		dialOption, err := c.RouteDialOption(ctx, param)
+		var dialOption *DialOption
+		var planner mitm.UpstreamPlanner
+		var release func()
+		if sniffed.http3 {
+			param.Domain = mitmHost
+			dialOption, planner, release, err = c.prepareHTTPRoute(ctx, param)
+		} else {
+			dialOption, err = c.RouteDialOption(ctx, param)
+		}
 		if err != nil {
 			return err
 		}
 
-		statsPath, fallback := dialOption.trafficAttribution()
-		if dst.Port() == 53 && routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination != 0 && dialOption.Outbound.Name != "block" && !param.destination.IsValid() {
-			var message dnsmessage.Msg
-			if err := message.Unpack(data); err == nil {
-				c.dnsController.Handle(&message, &udpRequest{src: src, dst: dst, routingResult: routingResult})
+		intercept := planner != nil
+		var statsPath stats.Path
+		var udpConn net.PacketConn
+		if intercept {
+			udpConn = c.newMITMQUIC(param, planner, release)
+		} else {
+			statsPath, noConnectivityFallback = dialOption.trafficAttribution()
+			if dst.Port() == 53 && routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination != 0 && dialOption.Outbound.Name != "block" && !param.destination.IsValid() {
+				var message dnsmessage.Msg
+				if err := message.Unpack(data); err == nil {
+					c.dnsController.Handle(&message, &udpRequest{src: src, dst: dst, routingResult: routingResult})
+					return nil
+				}
+			}
+
+			// Dial
+			// Only print routing for new connection to avoid the log exploded (Quic and BT).
+			network := dialOption.NetworkType.String()
+			if isQuic {
+				network = "quic" + string(dialOption.NetworkType.IpVersion)
+			}
+			c.logDial(src, dst, domain, dialOption, network, routingResult)
+			dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
+			defer cancel()
+			udpConn, err = dialOption.dialerForConnection().ListenPacket(dialCtx, dialOption.DialTarget)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				netErr, ok := IsNetError(err)
+				err = oops.
+					In("ListenPacket").
+					With("Is NetError", ok).
+					With("Is Temporary", ok && netErr.Temporary()).
+					With("Is Timeout", ok && netErr.Timeout()).
+					With("Outbound", dialOption.Outbound.Name).
+					With("Dialer", dialOption.Dialer.Name).
+					With("src", src.String()).
+					With("dst", dst.String()).
+					With("domain", domain).
+					Wrapf(err, "failed to ListenPacket")
+				if !ok {
+					return err
+				} else if !netErr.Timeout() {
+					if dialOption.Dialer.ChecksConnectivity() {
+						stats.DefaultStore.RecordError(statsPath)
+						dialOption.Dialer.ReportDataPlaneFailure()
+						return err
+					}
+				}
 				return nil
 			}
 		}
-		noConnectivityFallback = fallback
-
-		// Dial
-		// Only print routing for new connection to avoid the log exploded (Quic and BT).
-		network := dialOption.NetworkType.String()
-		if isQuic {
-			network = "quic" + string(dialOption.NetworkType.IpVersion)
-		}
-		c.logDial(src, dst, domain, dialOption, network, routingResult)
-		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-		defer cancel()
-		udpConn, err := dialOption.dialerForConnection().ListenPacket(dialCtx, dialOption.DialTarget)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return ctxErr
-			}
-			netErr, ok := IsNetError(err)
-			err = oops.
-				In("ListenPacket").
-				With("Is NetError", ok).
-				With("Is Temporary", ok && netErr.Temporary()).
-				With("Is Timeout", ok && netErr.Timeout()).
-				With("Outbound", dialOption.Outbound.Name).
-				With("Dialer", dialOption.Dialer.Name).
-				With("src", src.String()).
-				With("dst", dst.String()).
-				With("domain", domain).
-				Wrapf(err, "failed to ListenPacket")
-			if !ok {
-				return err
-			} else if !netErr.Timeout() {
-				if dialOption.Dialer.ChecksConnectivity() {
-					stats.DefaultStore.RecordError(statsPath)
-					dialOption.Dialer.ReportDataPlaneFailure()
-					return err
+		if key.Destination.IsValid() {
+			if !intercept {
+				if target := param.effectiveDestination(); target != dst {
+					udpConn = &destinationPacketConn{PacketConn: udpConn, original: dst, target: target}
 				}
 			}
-			return nil
-		}
-		if key.Destination.IsValid() {
-			if target := param.effectiveDestination(); target != dst {
-				udpConn = &destinationPacketConn{PacketConn: udpConn, original: dst, target: target}
-			}
-			if routingResult.CaptureFlags&captureDestination != 0 {
-				owned, err := c.ownDestinationUDP(udpConn, key, routingResult)
+			if routingResult.CaptureFlags&(captureDestination|captureHTTP) != 0 || intercept {
+				ownedResult := *routingResult
+				if intercept {
+					// Retain this proven association, including an explicit bump
+					// without a DNS mapping. This adds no capture rule for new flows.
+					ownedResult.CaptureFlags |= captureHTTP
+				}
+				owned, err := c.ownDestinationUDP(udpConn, key, &ownedResult)
 				if err != nil {
 					_ = udpConn.Close()
 					return oops.Wrapf(err, "retain UDP destination ownership")
@@ -294,10 +328,13 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 				return sendPktWithMark(data, from, src, soMark)
 			},
 			NatTimeout: DefaultNatTimeoutUDP,
-			Dialer:     dialOption.Dialer,
 			Path:       statsPath,
 		})
-		ue.destination = param.effectiveDestination()
+		ue.mitm = intercept
+		if !intercept {
+			ue.dialer = dialOption.Dialer
+			ue.destination = param.effectiveDestination()
+		}
 		ue.domain = domain
 		isNew = true
 	}
@@ -315,6 +352,12 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
+		}
+		if ue.mitm {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
 		}
 		netErr, ok := IsNetError(err)
 		err = oops.
@@ -335,10 +378,10 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		}
 		return nil
 	}
-	if isNew {
+	if isNew && !ue.mitm {
 		ue.traffic = stats.DefaultStore.OpenConnection(ue.statsPath, noConnectivityFallback)
 	}
-	if n > 0 {
+	if n > 0 && ue.traffic != nil {
 		ue.traffic.RecordUpload(uint64(n))
 	}
 	if !isNew {
@@ -359,7 +402,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			if netErr.Timeout() {
 				return
 			}
-			if endpoint.dialer.ChecksConnectivity() {
+			if !endpoint.mitm && endpoint.dialer.ChecksConnectivity() {
 				stats.DefaultStore.RecordError(endpoint.statsPath)
 				endpoint.dialer.ReportDataPlaneFailure()
 			}

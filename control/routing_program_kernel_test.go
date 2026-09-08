@@ -93,7 +93,7 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 			{"Host without proxy option or DNS", "192.0.2.1:40011", "192.0.2.20:443", nil, true, false, false},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				for _, network := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP} {
+				for _, network := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP} {
 					proto := network.ToL4ProtoType()
 					t.Run(string(network), func(t *testing.T) {
 						source, destination := netip.MustParseAddrPort(test.source), netip.MustParseAddrPort(test.destination)

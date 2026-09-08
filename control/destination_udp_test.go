@@ -66,7 +66,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			association := udpRoutingKey(source, original, &result)
 			for generation, wantMark := range []uint32{37, 91} {
-				if err := plane.handlePkt(t.Context(), []byte("payload"), source, original, true, "", false); err != nil {
+				if err := plane.handlePkt(t.Context(), []byte("payload"), source, original, &packetSniff{}); err != nil {
 					t.Fatal(err)
 				}
 				endpoint, ok := endpoints.Get(association)

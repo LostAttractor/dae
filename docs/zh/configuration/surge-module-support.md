@@ -11,7 +11,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | 重写 | Header add/del/replace/replace-regex；URL header/302/307/reject；Map Local file/text/base64/tiny-gif、自定义头和状态；response-jq Body Rewrite |
 | 脚本数据 | `$request`、`$response`、`$done`；数字 status、字符串或 Uint8Array body、修改/合成响应/abort；保留目标脚本使用的 h2_trailers |
 | 运行时 | console、Promise、async/await、定时器、`$persistentStore`、`$httpClient` 七种方法、`$utils.ungzip`；通知写入日志；UTF-8 编解码、Base64、有限 URL/DOM API |
-| MITM | HTTP/1.1、TLS HTTP/2、gzip/deflate/br；主机通配、排除、端口；模块独立作用域；CA 管理、设备 MAC/IP 筛选和网页开关 |
+| MITM | HTTP/1.1、TLS HTTP/2、HTTP/3（QUIC v1/v2）、gzip/deflate/br；主机通配、排除、端口；模块独立作用域；CA 管理、设备 MAC/IP 筛选和网页开关 |
 | 目标重写 | `[Host]` 字面 IP、域名或通配符 → 单个或多个 IPv4/IPv6；保留端口，按连接随机选址；始终对 direct 和 proxy 生效 |
 | 路由 | DOMAIN/SUFFIX/KEYWORD、基础 WILDCARD、AND/OR/NOT；DIRECT、REJECT、pre-matching、extended-matching 的 dae 映射 |
 
@@ -36,7 +36,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 
 | 范围 | 当前边界 |
 | --- | --- |
-| 正文失败 | 请求脚本超限 413、响应脚本超限 502；响应未 requires-body 时返回 body 被忽略。Surge 在这些场景的跳过/中止行为不同。jq 超限可回放原正文，读取失败除外 |
+| 正文失败 | 请求脚本超限 413；响应正文在读取或解压后超限则跳过脚本，回放完整原响应。脚本生成的替换正文超限仍拒绝；响应未 requires-body 时返回 body 被忽略。jq 超限可回放原正文，读取失败除外 |
 | 请求正文 | chunked / Expect: 100-continue 仍可替换 body；空正文的暴露不完全等同 Surge |
 | 异常与 `$done` | 普通 JS 异常/超时保留进入脚本阶段的内容，不回滚之前重写；正文读取或非法结果可失败。重复 `$done` 忽略，无待办任务且未调用时立即报错 |
 | headers | 字符串值对象，重复值合并；不保留完整重复字段和顺序，Set-Cookie 不能保证往返保留 |
@@ -52,7 +52,7 @@ dae 实现 Surge 的 HTTP 模块子集和部分路由功能。使用方法见[�
 | 范围 | 当前边界 |
 | --- | --- |
 | MITM 选项 | 仅解析 hostname；skip-server-cert-verify 等忽略，无 hostname-disabled、p12/Keystore。特殊主机占位符报错；非 443 TLS 端口须显式填写 |
-| 信任与协议 | 不探测客户端信任或在握手失败后透传；无 HTTP/3 解密、自动 QUIC 阻断、h2c、跨主机 HTTP/2 复用。CONNECT 返回 405，WebSocket 只处理 HTTP1 握手；无 `force-http-engine-hosts` / `always-raw-tcp-hosts` |
+| 信任与协议 | 不探测客户端信任或在握手失败后透传；无自动 QUIC 阻断、h2c、跨主机 HTTP/2/3 复用。HTTP/3 不支持跨地址迁移、0-RTT、跨主机/端口 Alt-Svc、WebTransport/CONNECT-UDP；上游仍使用 H3，不自动回退 TCP。CONNECT 返回 405，WebSocket 只处理 HTTP1 握手；无 `force-http-engine-hosts` / `always-raw-tcp-hosts` |
 | 路由类型 | 无 HTTP/IP/进程/端口/来源/规则集/SCRIPT 等模块规则；两字段 FINAL,DIRECT 加载失败。WILDCARD 无字符类，逻辑规则叶子限域名类型 |
 | 拒绝与选项 | REJECT 映射 dae block；无 DNS No Record、TCP RST、自适应拒绝或 REJECT-TINYGIF。extended-matching 使用当前目标的 DNS/可信域名上下文，不匹配 URL 路径；未知选项整条跳过 |
 | 优先级 | 目的地址规则 → flow → pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。脚本、URL Rewrite、Map Local 范围先执行 HTTP 处理，再按最终目标运行该流程；原目标 block 不抢先终止已准入请求。纯检查保留有效原路由。302/307 返回客户端自行请求 |

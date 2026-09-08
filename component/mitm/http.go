@@ -84,7 +84,7 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 					response.Header.Del("Content-Length")
 					response.ContentLength = -1
 				}
-				response.Header.Del("Alt-Svc")
+				h.filterAltSvc(response.Header, scheme, flow)
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
