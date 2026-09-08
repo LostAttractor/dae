@@ -6,6 +6,7 @@
 package control
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -39,9 +40,19 @@ type udpEndpointKey struct {
 	Interface           uint32
 }
 
+func udpRoutingKey(source, destination netip.AddrPort, result *bpfRoutingResult) udpEndpointKey {
+	key := udpEndpointKey{Source: source}
+	if result.CaptureFlags&captureDestination != 0 {
+		key.Destination = destination
+		key.Interface = result.Ifindex
+	}
+	return key
+}
+
 type UdpEndpoint struct {
 	destination netip.AddrPort
 	domain      string
+	mitm        bool // The association belongs to HTTP; policy is selected per request.
 	conn        net.PacketConn
 	// mu protects the timer deadline and timer pointer.
 	mu            sync.Mutex
@@ -62,8 +73,11 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key udpEndpointKey, ds
 	for {
 		n, from, err := ue.conn.ReadFrom(buf)
 		if err != nil {
-			if ue.IsClosed() {
+			if ue.IsClosed() || ue.mitm && errors.Is(err, net.ErrClosed) {
 				break
+			}
+			if ue.mitm {
+				return oops.Wrapf(err, "HTTP/3 association ReadFrom")
 			}
 			return oops.With(
 				"dialer", ue.dialer.Name,
@@ -79,7 +93,7 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, key udpEndpointKey, ds
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
 			break
 		}
-		if n > 0 {
+		if n > 0 && ue.traffic != nil {
 			ue.traffic.RecordDownload(uint64(n))
 		}
 	}
@@ -137,6 +151,36 @@ type UdpEndpointOptions struct {
 }
 
 var DefaultUdpEndpointPool = UdpEndpointPool{}
+
+// deliverMITM keeps only an existing, exact QUIC association reachable while
+// the owning plane drains. Never fall back to a full-cone endpoint or dial here.
+func (p *UdpEndpointPool) deliverMITM(key udpEndpointKey, data []byte) {
+	l, _ := p.UdpEndpointKeyLocker.Lock(key)
+	defer p.UdpEndpointKeyLocker.Unlock(key, l)
+	endpoint, ok := p.Get(key)
+	if !ok || !endpoint.mitm {
+		return
+	}
+	// MITM's in-memory packet bridge is nonblocking and wakes its reader on
+	// closure. A concurrently closing association needs no retry or redial.
+	n, _ := endpoint.conn.WriteTo(data, net.UDPAddrFromAddrPort(key.Destination))
+	if n > 0 && endpoint.traffic != nil {
+		endpoint.traffic.RecordUpload(uint64(n))
+	}
+}
+
+// A proven HTTP/3 or destination rewrite association takes precedence over the
+// source's ordinary full-cone endpoint, including later packets without SNI.
+func (p *UdpEndpointPool) keyForPacket(source, destination netip.AddrPort, ifindex uint32, scoped bool) udpEndpointKey {
+	key := udpEndpointKey{Source: source, Destination: destination, Interface: ifindex}
+	if !scoped {
+		_, scoped = p.pool.Load(key)
+	}
+	if scoped {
+		return key
+	}
+	return udpEndpointKey{Source: source}
+}
 
 func (p *UdpEndpointPool) remove(key udpEndpointKey, endpoint *UdpEndpoint) {
 	l, _ := p.UdpEndpointKeyLocker.Lock(key)
@@ -303,13 +347,4 @@ func (p *UdpEndpointPool) expireAt(key udpEndpointKey, endpoint *UdpEndpoint, no
 		endpoint.closeTrafficAccounting()
 		_ = endpoint.conn.Close()
 	}
-}
-
-func udpRoutingKey(source, destination netip.AddrPort, result *bpfRoutingResult) udpEndpointKey {
-	key := udpEndpointKey{Source: source}
-	if result.CaptureFlags&captureDestination != 0 {
-		key.Destination = destination
-		key.Interface = result.Ifindex
-	}
-	return key
 }

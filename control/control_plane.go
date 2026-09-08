@@ -79,6 +79,7 @@ type ControlPlane struct {
 	ingressMu      sync.Mutex
 	ingress        *controlPlaneIngress
 	ingressRetired bool
+	udpDraining    atomic.Bool
 
 	abortConnections atomic.Bool
 
@@ -1150,13 +1151,21 @@ type Listener struct {
 // The original Listener remains open across reloads so packets can queue for
 // the successor after these descriptors are closed.
 type controlPlaneIngress struct {
+	tcp, udp ingressSockets
+	loops    sync.WaitGroup
+}
+
+type ingressSockets struct {
 	closeOnce  sync.Once
 	closeErr   error
 	closeFuncs []func() error
-	loops      sync.WaitGroup
 }
 
 func (i *controlPlaneIngress) close() error {
+	return errors.Join(i.tcp.close(), i.udp.close())
+}
+
+func (i *ingressSockets) close() error {
 	i.closeOnce.Do(func() {
 		var errs []error
 		for j := len(i.closeFuncs) - 1; j >= 0; j-- {
@@ -1191,29 +1200,29 @@ func (c *ControlPlane) openIngress(listener *Listener) (tcpListener net.Listener
 	if err != nil {
 		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying TCP connection file")
 	}
-	ingress.closeFuncs = append(ingress.closeFuncs, tcpFile.Close)
+	ingress.tcp.closeFuncs = append(ingress.tcp.closeFuncs, tcpFile.Close)
 	if err = c.core.bpf.ListenSocketMap.Update(uint32(0), uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, oops.Errorf("failed to register the TCP listener: %w", err)
 	}
 	tcpListener, err = net.FileListener(tcpFile)
 	if err != nil {
 		return nil, nil, nil, oops.Errorf("failed to duplicate the TCP listener: %w", err)
 	}
-	ingress.closeFuncs = append(ingress.closeFuncs, tcpListener.Close)
+	ingress.tcp.closeFuncs = append(ingress.tcp.closeFuncs, tcpListener.Close)
 
 	udpFile, err := listener.packetConn.(*net.UDPConn).File()
 	if err != nil {
 		return nil, nil, nil, oops.Errorf("failed to retrieve copy of the underlying UDP connection file")
 	}
-	ingress.closeFuncs = append(ingress.closeFuncs, udpFile.Close)
+	ingress.udp.closeFuncs = append(ingress.udp.closeFuncs, udpFile.Close)
 	if err = c.core.bpf.ListenSocketMap.Update(uint32(1), uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, oops.Errorf("failed to register the UDP listener: %w", err)
 	}
 	udpPacketConn, err := net.FilePacketConn(udpFile)
 	if err != nil {
 		return nil, nil, nil, oops.Errorf("failed to duplicate the UDP socket: %w", err)
 	}
-	ingress.closeFuncs = append(ingress.closeFuncs, udpPacketConn.Close)
+	ingress.udp.closeFuncs = append(ingress.udp.closeFuncs, udpPacketConn.Close)
 	serveUdpConn = udpPacketConn.(*net.UDPConn)
 
 	// Register both loops before publishing ingress. Close may run as soon as
@@ -1224,12 +1233,20 @@ func (c *ControlPlane) openIngress(listener *Listener) (tcpListener net.Listener
 }
 
 func (c *ControlPlane) closeIngress() (*controlPlaneIngress, error) {
+	return c.retireIngress(false)
+}
+
+func (c *ControlPlane) retireIngress(keepUDP bool) (*controlPlaneIngress, error) {
 	c.ingressMu.Lock()
 	c.ingressRetired = true
+	c.udpDraining.Store(true)
 	ingress := c.ingress
 	c.ingressMu.Unlock()
 	if ingress == nil {
 		return nil, nil
+	}
+	if keepUDP {
+		return ingress, ingress.tcp.close()
 	}
 	return ingress, ingress.close()
 }
@@ -1256,9 +1273,8 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			readyChan <- false
 		}
 	}()
-	// Serve on duplicates of the shared listener sockets. Close retires these
-	// duplicates before waiting for setup, leaving queued traffic on the shared
-	// sockets for the next plane.
+	// Serve on duplicates of the shared listener sockets. Retirement stops TCP
+	// acceptance first; UDP delivery remains available for QUIC shutdown.
 	tcpListener, serveUdpConn, ingress, err := c.openIngress(listener)
 	if err != nil {
 		return err
@@ -1308,6 +1324,15 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 			src = common.ConvergeAddrPort(src)
 			dst = common.ConvergeAddrPort(dst)
+			if c.udpDraining.Load() {
+				// No DNS work, sniffing, routing decisions or new associations
+				// during retirement. Existing QUIC sessions still need client
+				// ACKs and stream data to complete graceful shutdown.
+				if result, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP); err == nil {
+					c.udpEndpoints.deliverMITM(udpEndpointKey{Source: src, Destination: dst, Interface: result.Ifindex}, buf[:n])
+				}
+				continue
+			}
 
 			/// Handle DNS
 			// To keep consistency with kernel program, we only sniff DNS request sent to 53.
@@ -1339,7 +1364,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			if !c.udpTaskPool.emit(src, func() {
 				defer cancelTask()
 				defer pool.PutBuffer(data)
-				if e := c.handlePkt(taskCtx, data, src, dst, false, "", false); e != nil && taskCtx.Err() == nil {
+				if e := c.handlePkt(taskCtx, data, src, dst, nil); e != nil && taskCtx.Err() == nil {
 					if log.IsLevelEnabled(log.DebugLevel) {
 						log.Warnf("%+v", oops.Wrapf(e, "handlePkt"))
 					} else {
@@ -1518,18 +1543,17 @@ func closeDialerGroups(groups []*outbound.DialerGroup) (err error) {
 }
 
 func (c *ControlPlane) retireTraffic() error {
-	// Closing duplicated ingress first prevents blocked Accept/Read calls from
-	// consuming traffic after retirement. TCP setup is canceled independently;
-	// accepted UDP tasks drain before the plane context is canceled. Their task
-	// contexts can expire while queued and bound context-aware setup operations.
-	ingress, ingressErr := c.closeIngress()
+	// Stop admitting new work, but keep established QUIC delivery alive until
+	// MITM has drained. The successor does not start serving until Close returns.
+	keepUDP := c.mitmHost != nil && !c.abortConnections.Load()
+	ingress, ingressErr := c.retireIngress(keepUDP)
 	if c.tcpConnections != nil {
 		c.tcpConnections.stopAccepting()
 	}
 	if c.cancelTCPSetups != nil {
 		c.cancelTCPSetups()
 	}
-	if ingress != nil {
+	if ingress != nil && !keepUDP {
 		ingress.loops.Wait()
 	}
 	if c.udpTaskPool != nil {
@@ -1543,10 +1567,17 @@ func (c *ControlPlane) retireTraffic() error {
 		// task drain to catch an endpoint published by an already-accepted task.
 		c.udpEndpoints.closeAll()
 	}
+	if c.mitmHost != nil {
+		ingressErr = errors.Join(ingressErr, c.mitmHost.Close())
+	}
+	_, closeErr := c.closeIngress()
+	if ingress != nil {
+		ingress.loops.Wait()
+	}
 	if c.cancel != nil {
 		c.cancel()
 	}
-	return ingressErr
+	return errors.Join(ingressErr, closeErr)
 }
 
 func (c *ControlPlane) Close() (err error) {
@@ -1555,9 +1586,6 @@ func (c *ControlPlane) Close() (err error) {
 	err = c.retireTraffic()
 	if c.hostReconcileDone != nil {
 		<-c.hostReconcileDone
-	}
-	if c.mitmHost != nil {
-		err = errors.Join(err, c.mitmHost.Close())
 	}
 	// Invoke defer funcs in reverse order.
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {

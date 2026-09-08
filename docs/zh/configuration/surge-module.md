@@ -129,17 +129,19 @@ client_source_address: '-02:00:00:00:00:10,all'
 
 ## 转发与协议
 
-启用 HTTP scope 后，仅按模块的正向 hostname 和对应端口捕获 TCP 候选连接，再按实际主机名、排除项和客户端开关决定是否解密。无关 direct 流量保留 eBPF 内核直通。含脚本、URL Rewrite 或 Map Local 的模块先执行 HTTP 处理，随后按最终目标执行目的地址规则 → flow → 模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。原目标的 block 不会抢先阻止这些已准入的请求；新目标命中 block 则拒绝。未准入客户端仍按普通连接路由处理。
+启用 HTTP scope 后，仅按模块的正向 hostname 和对应端口捕获 TCP/UDP 候选连接，再按实际主机名、排除项和客户端开关决定是否解密。无关 direct 流量保留 eBPF 内核直通。含脚本、URL Rewrite 或 Map Local 的模块先执行 HTTP 处理，随后按最终目标执行目的地址规则 → flow → 模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。原目标的 block 不会抢先阻止这些已准入的请求；新目标命中 block 则拒绝。未准入客户端仍按普通连接路由处理。
 
 HTTP 转发和脚本 `$httpClient` 共用请求路由：原主机及端口使用截获 IP，其他目标经 dae DNS 解析，再执行目标规则和路由，保留客户端来源、接口及策略。请求型模块即使只改路径，也在 HTTP 处理后确定路由；纯检查模块保留原路由。路由在连接池查找前执行，出站、节点、mark 或实际目标变化会隔离连接池。302/307 返回客户端请求新目标，reject 和 Map Local 可直接生成响应，无需上游拨号。
 
-支持 HTTP/1.1、TLS HTTP/2；不解密或自动阻断 HTTP/3/QUIC。需要回退 TCP 时，在已有 `routing` 段前部加入对应规则，例如：
+支持 HTTP/1.1、TLS HTTP/2 和 HTTP/3（QUIC v1/v2）。HTTP/3 自动使用现有 CA、客户端开关和 hostname 范围；只有完整 ClientHello 的 ALPN 包含 `h3` 才解密，其它 QUIC/UDP 保持转发。客户端与上游都使用 HTTP/3，支持同一源/目标/域名下多连接及重连；上游握手失败不会自动改用 TCP 重试。HTTP/3 上游按最终目标匹配 UDP 路由；命中 block 时不会建立上游连接，模块的本地响应仍可直接返回。
+
+若希望拒绝特定目标的 HTTP/3 上游，可在已有 `routing` 段前部加入对应规则（客户端是否重试 TCP 由客户端决定），例如：
 
 ```text
 domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 ```
 
-内核的域名捕获依赖已有 DNS 域名—IP 映射；缺少映射时不会通过捕获全部 TCP 或全部 HTTPS 来兜底，原本的 direct 流量继续在内核转发。已因其他规则进入用户态的连接仍可使用 SNI/Host。共享 IP 可能带入额外候选，最终匹配和普通出站路由仍受各自的 scope、域名验证策略约束；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 不允许跨原主机复用；WebSocket 只处理握手。
+内核的域名捕获依赖已有 DNS 域名—IP 映射；缺少映射时不会通过捕获全部 TCP/UDP 或仅按 HTTPS 端口捕获来兜底，原本的 direct 流量继续在内核转发。已因其他规则进入用户态的连接仍可使用 SNI/Host。共享 IP 可能带入额外候选，最终匹配和普通出站路由仍受各自的 scope、域名验证策略约束；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 和 HTTP/3 不允许跨原主机复用；HTTP/3 暂不支持跨地址迁移、0-RTT、WebTransport/CONNECT-UDP。仅保留上游同主机、同端口的 H3 Alt-Svc 广告。WebSocket 只处理 HTTP/1 握手。
 
 ## 执行与调试日志
 

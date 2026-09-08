@@ -82,7 +82,7 @@ func mitmCapturePredicates(scopes []plugin.Scope) [][]*config_parser.Function {
 				continue
 			}
 			predicate := []*config_parser.Function{
-				{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}}}, hosts,
+				{Name: "l4proto", Params: []*config_parser.Param{{Val: "tcp"}, {Val: "udp"}}}, hosts,
 			}
 			if len(group.ports) != 0 {
 				ports := &config_parser.Function{Name: "dport"}

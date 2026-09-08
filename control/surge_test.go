@@ -161,10 +161,10 @@ func TestMITMCaptureRetainsHostnameAndPortConstraints(t *testing.T) {
 		capture bool
 	}{
 		{"service.example", consts.L4ProtoType_TCP, 443, true},
-		{"service.example", consts.L4ProtoType_UDP, 443, false},
+		{"service.example", consts.L4ProtoType_UDP, 443, true},
 		{"service.example", consts.L4ProtoType_UDP, 8443, false},
 		{"outside.test", consts.L4ProtoType_UDP, 443, false},
-		{"node1.test", consts.L4ProtoType_UDP, 8443, false},
+		{"node1.test", consts.L4ProtoType_UDP, 8443, true},
 		{"", consts.L4ProtoType_UDP, 443, false},
 		{"outside.test", consts.L4ProtoType_TCP, 443, false},
 		{"node1.test", consts.L4ProtoType_TCP, 443, false},

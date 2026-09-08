@@ -65,7 +65,7 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 					if got := controlTestHost(t, engine, nil).Match(host.host, 443) != mitm.HTTPBypass; got != host.mitm {
 						t.Errorf("MITM match = %v, want %v", got, host.mitm)
 					}
-					for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP} {
+					for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
 						got, mark, must := surgeMatchRoute(t, userspace, host.host, proto)
 						if got != consts.OutboundDirect || mark != 37 || must {
 							t.Errorf("userspace route(%v) = (%v,%d,%v), want (direct,37,false)", proto, got, mark, must)

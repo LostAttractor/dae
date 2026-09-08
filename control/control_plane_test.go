@@ -647,16 +647,16 @@ func TestControlPlaneRetireClosesIngressBeforeWaitAndDrainsUDPWithLiveContext(t 
 	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
 	tcpIngressClosed := make(chan struct{})
 	udpIngressClosed := make(chan struct{})
-	plane.ingress = &controlPlaneIngress{closeFuncs: []func() error{
-		func() error {
+	plane.ingress = &controlPlaneIngress{
+		tcp: ingressSockets{closeFuncs: []func() error{func() error {
 			close(tcpIngressClosed)
 			return nil
-		},
-		func() error {
+		}}},
+		udp: ingressSockets{closeFuncs: []func() error{func() error {
 			close(udpIngressClosed)
 			return nil
-		},
-	}}
+		}}},
+	}
 
 	conn := newCloseTrackingConn()
 	if !plane.tcpConnections.beginSetup(conn) {
