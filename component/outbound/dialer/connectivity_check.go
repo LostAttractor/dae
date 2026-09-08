@@ -231,6 +231,11 @@ func (c *connectivityChecker) resetHealthRetry() {
 func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 	c.observedSeq = max(c.observedSeq, event.Seq)
 	advanced := c.d.applySessionState(event)
+	// Recovery ownership can change while the dependency remains unready.
+	if c.libraryRequested && event.RecoveryExecutor != netproxy.RecoveryLibraryManaged {
+		c.libraryRequested = false
+		advanced = true
+	}
 	needsRecovery := event.Accepting && !c.d.healthyAt(event.ReadinessVersion)
 	if event.Accepting && event.RecoveryExecutor != netproxy.RecoveryLibraryManaged {
 		if event.RecoveryRequired && !c.capacityActive {

@@ -207,7 +207,6 @@ func TestLibraryRecoveryDoesNotAddDaemonRetryLoop(t *testing.T) {
 	// The chain as a whole remains unavailable until that layer reconnects.
 	event := transport.Snapshot()
 	event.RecoveryExecutor = netproxy.RecoveryDaemon
-	event.ReadinessVersion++
 	transport.state.Publish(event)
 	transport.connectErr = nil
 	c.handleSessionEvent(transport.Snapshot())
