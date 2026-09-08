@@ -354,7 +354,11 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 		c.finishCapacity(result, ok)
 		return true
 	}
-	if reason := recoveryBlockedReason(result.connectErr); reason != "" && ok {
+	if reason := recoveryBlockedReason(result.failure()); reason != "" && ok && !applied.success {
+		c.d.mu.Lock()
+		c.d.lastFailure = failureSnapshot(primaryNodeFailure(result.failure()), c.d.failureGeneration)
+		c.d.statusRevision++
+		c.d.mu.Unlock()
 		c.blockedBy = reason
 		c.stopRetries()
 		return true
@@ -382,9 +386,6 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 // Capacity work shares the checker's operation gate and global slots, but its
 // failure never invalidates the health proof of still-serving sibling slots.
 func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
-	if c.d.session == nil {
-		return
-	}
 	snapshot := c.d.session.Snapshot()
 	if !applied || !snapshot.Accepting {
 		c.capacityAt = time.Time{}

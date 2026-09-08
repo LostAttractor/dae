@@ -12,7 +12,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -134,6 +133,10 @@ func (d *Dialer) applyCheck(result checkResult) (appliedCheck, bool) {
 		return appliedCheck{}, false
 	}
 	if result.kind == checkCapacity {
+		if result.connectErr != nil {
+			d.lastFailure = failureSnapshot(primaryNodeFailure(result.connectErr), d.failureGeneration)
+			d.statusRevision++
+		}
 		d.mu.Unlock()
 		return appliedCheck{success: result.connectErr == nil}, true
 	}
@@ -198,6 +201,9 @@ func (d *Dialer) applyHealthResultLocked(result checkResult, success bool) time.
 	d.healthSeq = result.readiness
 	d.statusRevision++
 	if !success {
+		if err := result.failure(); err != nil && d.lastFailure == nil {
+			d.lastFailure = failureSnapshot(primaryNodeFailure(err), d.failureGeneration)
+		}
 		d.health = healthUnhealthy
 		d.failureReportedAt = time.Time{}
 		d.pendingCheck &^= checkRequestDataPlane
@@ -207,7 +213,7 @@ func (d *Dialer) applyHealthResultLocked(result checkResult, success bool) time.
 		d.health = healthHealthy
 		d.failureReportedAt = time.Time{}
 		session := d.sessionSnapshot()
-		if session.Cause == nil {
+		if session.Cause == nil && !session.RecoveryRequired {
 			d.lastFailure = nil
 		}
 	}
@@ -293,7 +299,7 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 			}
 			entry := log.WithFields(fields)
 			if transition.probe.err == nil {
-				entry.WithField("latency", transition.probe.latency.Truncate(time.Millisecond).String()).Debug("Connectivity initial check succeeded")
+				entry.WithField("latency", transition.probe.latency.Truncate(time.Millisecond).String()).Trace("Connectivity initial check succeeded")
 			} else {
 				entry.WithError(transition.probe.err).Debug("Connectivity initial check failed")
 			}
@@ -313,7 +319,7 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 			"cause":    checkKindName[result.kind],
 			"networks": supported,
 			"node":     d.Name,
-		}).Info("Connectivity modes supported")
+		}).Debug("Connectivity modes supported")
 	}
 	if len(unsupported) > 0 {
 		log.WithFields(log.Fields{
@@ -342,7 +348,7 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 				fields["avg_10"] = latencyStats.Avg10.Truncate(time.Millisecond).String()
 				fields["mov_avg"] = latencyStats.MovingAvg.Truncate(time.Millisecond).String()
 			}
-			log.WithFields(fields).Debug("Connectivity Check")
+			log.WithFields(fields).Trace("Connectivity probe succeeded")
 		} else {
 			log.WithFields(fields).WithError(canonical.err).Debug("Connectivity probe failed")
 		}
@@ -354,7 +360,7 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 		if err == nil && canonical != nil {
 			err = canonical.err
 		}
-		log.WithFields(fields).Warn(oops.Wrapf(err, "Connectivity Check Failed"))
+		log.WithFields(fields).WithError(err).Warn("Node connectivity lost; checking recovery in background")
 	} else if !previousHealthy && success {
 		log.WithFields(fields).Info("Connectivity recovered")
 	}
@@ -395,10 +401,10 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 		if unchecked {
 			d.health = healthHealthy
 			d.healthSeq = event.ReadinessVersion
-			if event.Cause == nil {
+			if event.Cause == nil && !event.RecoveryRequired {
 				d.lastFailure = nil
 			}
-		} else if d.health.usable() && d.healthSeq == event.ReadinessVersion && event.Cause == nil {
+		} else if d.health.usable() && d.healthSeq == event.ReadinessVersion && event.Cause == nil && !event.RecoveryRequired {
 			d.lastFailure = nil
 		}
 		group := d.group
@@ -431,20 +437,25 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 		d.recordConnectionFailure()
 	}
 	if wasHealthy {
-		fields := log.Fields{"node": d.Name, "session_state": event.State, "session_seq": event.Seq, "readiness_version": event.ReadinessVersion, "episode_id": event.EpisodeID, "resource": event.Resource}
+		fields := log.Fields{"node": d.Name, "state": event.State}
 		if diagnostic != nil {
-			fields["resource"] = diagnostic.Resource
 			fields["scope"] = diagnostic.Scope
 			fields["layer"] = diagnostic.Layer
 			fields["reason"] = diagnostic.Reason
 			fields["operation"] = diagnostic.Phase
-			fields["code"] = diagnostic.Code
+			if diagnostic.Code != "" {
+				fields["code"] = diagnostic.Code
+			}
 		}
 		entry := log.WithFields(fields)
 		if event.Cause != nil {
 			entry = entry.WithError(event.Cause)
 		}
-		entry.Warn("Outbound session unavailable")
+		if event.Cause == nil || primaryNodeFailure(event.Cause).Origin == netproxy.OriginLocalCleanup {
+			entry.Debug("Outbound session stopped accepting connections")
+		} else {
+			entry.Warn("Outbound session unavailable")
+		}
 		d.recordAvailability(false, false, failureReportedAt)
 		d.notifyGroup(group, SelectionForceNone)
 	}

@@ -134,7 +134,7 @@ func TestRecoveryDeadlineMatchesTimer(t *testing.T) {
 	c.updateHealthSchedule(false)
 	c.dispatch()
 	snapshot := d.RuntimeStatus().Recovery
-	if snapshot.Phase != RecoveryBackoff || !snapshot.RetryTimeKnown {
+	if snapshot.Phase != RecoveryBackoff || snapshot.RetryAt.IsZero() {
 		t.Fatalf("recovery = %+v", snapshot)
 	}
 	select {
@@ -186,7 +186,7 @@ func TestLibraryRecoveryDoesNotAddDaemonRetryLoop(t *testing.T) {
 		t.Fatal("checker stopped")
 	}
 	state := d.RuntimeStatus().Recovery
-	if state.Phase != RecoveryConnecting || state.RetryTimeKnown || state.Executor != netproxy.RecoveryLibraryManaged {
+	if state.Phase != RecoveryConnecting || !state.RetryAt.IsZero() || state.Executor != netproxy.RecoveryLibraryManaged {
 		t.Fatalf("library recovery = %+v", state)
 	}
 	for i := 0; i < 10; i++ {
@@ -231,7 +231,7 @@ func TestPermanentConnectFailureBlocksUntilEnvironmentRequest(t *testing.T) {
 	if !finishCheck(c, <-c.results) {
 		t.Fatal("checker stopped")
 	}
-	if state := d.RuntimeStatus().Recovery; state.Phase != RecoveryBlocked || state.BlockedBy != "auth" || state.RetryTimeKnown {
+	if state := d.RuntimeStatus().Recovery; state.Phase != RecoveryBlocked || state.BlockedBy != "auth" || !state.RetryAt.IsZero() {
 		t.Fatalf("blocked recovery = %+v", state)
 	}
 	c.handleSessionEvent(transport.Snapshot())
@@ -290,7 +290,7 @@ func TestOwnerCleanupAndDependencyPhasesOverrideConnectionRequest(t *testing.T) 
 		transport.state.Publish(event)
 		d.applySessionState(transport.Snapshot())
 		state := d.RuntimeStatus().Recovery
-		if state.Phase != phase || state.RetryTimeKnown || !state.RetryAt.IsZero() {
+		if state.Phase != phase || !state.RetryAt.IsZero() {
 			t.Fatalf("owner phase was replaced by a guessed timer: %+v", state)
 		}
 	}
@@ -298,7 +298,7 @@ func TestOwnerCleanupAndDependencyPhasesOverrideConnectionRequest(t *testing.T) 
 	event.RecoveryPhase, event.BlockedBy = "queued", ""
 	transport.state.Publish(event)
 	d.applySessionState(transport.Snapshot())
-	if state := d.RuntimeStatus().Recovery; state.Phase != RecoveryBackoff || !state.RetryTimeKnown {
+	if state := d.RuntimeStatus().Recovery; state.Phase != RecoveryBackoff || state.RetryAt.IsZero() {
 		t.Fatalf("actual daemon timer disappeared after cleanup: %+v", state)
 	}
 }

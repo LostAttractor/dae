@@ -122,20 +122,22 @@ func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 		newName = newDialer.Name
 	}
 	fields := log.Fields{
-		"_new_dialer": newName,
-		"_old_dialer": oldName,
-		"group":       s.dialerGroup.Name,
-		"network":     networkType.String(),
+		"node":          newName,
+		"previous_node": oldName,
+		"group":         s.dialerGroup.Name,
+		"network":       networkType.String(),
+		"policy":        s.dialerGroup.selectionPolicy.Policy,
 	}
 	if newDialer != nil {
 		if candidate, ok := s.dialerGroup.candidate(newDialer, networkType); ok {
-			fields[string(s.dialerGroup.selectionPolicy.Policy)] = common.LatencyString(candidate.latency, s.dialerGroup.dialerToAnnotation[newDialer].AddLatency)
+			fields["latency"] = common.LatencyString(candidate.latency, s.dialerGroup.dialerToAnnotation[newDialer].AddLatency)
 		}
 	}
 	if oldDialer == nil {
-		log.WithFields(fields).Info("Group selects dialer")
+		delete(fields, "previous_node")
+		log.WithFields(fields).Info("Group selected node")
 	} else {
-		log.WithFields(fields).Info("Group re-selects dialer")
+		log.WithFields(fields).Info("Group changed node")
 	}
 }
 

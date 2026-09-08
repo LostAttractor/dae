@@ -235,7 +235,7 @@ func (g *DialerGroup) releaseStartupReady(available bool) {
 	}
 	g.startupReadyOnce.Do(func() {
 		if !available {
-			log.WithField("group", g.Name).Info("Blocking connectivity checks completed without a usable candidate; startup continues")
+			log.WithField("group", g.Name).Warn("Initial checks found no usable node; startup continues with no_connectivity_behavior")
 		}
 		close(g.startupReady)
 	})
@@ -354,9 +354,9 @@ func (g *DialerGroup) recordAvailability(previous, available bool) {
 	}
 	if g.availabilityKnown || available {
 		if available {
-			log.WithField("group", g.Name).Infoln("Group is available")
+			log.WithField("group", g.Name).Info("Group is available")
 		} else {
-			log.WithField("group", g.Name).Infoln("Group is unavailable")
+			log.WithField("group", g.Name).Warn("Group has no usable node; using no_connectivity_behavior")
 		}
 	}
 	g.availabilityKnown = true
@@ -513,7 +513,7 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 		g.selector.Refresh(dialer, forceSelection)
 	}
 	if err := g.updateConnectivity(); err != nil {
-		log.WithField("group", g.Name).Warnf("Failed to publish group availability: %v", err)
+		log.WithField("group", g.Name).WithError(err).Error("Failed to update group routing availability")
 		return
 	}
 	g.closeRecoveredConnections()

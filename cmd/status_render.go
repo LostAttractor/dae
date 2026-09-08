@@ -177,7 +177,7 @@ func verboseNodeHealth(status api.NodeStatus) verboseNodeHealthCells {
 	}
 	if status.ChecksConnectivity {
 		availability := status.Availability
-		cells.state = colorNodeHealth(nodeHealth(status))
+		cells.state = colorNodeState(nodeHealth(status), "")
 		cells.upRatio = availabilityCell(availability.UpRatio, availability.ChecksFailed, availability.ChecksTotal).Decorate(func(value string) string { return colorRatio(availability.UpRatio, value) })
 		cells.upRatio24h = availabilityCell(availability.Recent24h.UpRatio, availability.Recent24h.ChecksFailed, availability.Recent24h.ChecksTotal).Decorate(func(value string) string { return colorRatio(availability.Recent24h.UpRatio, value) })
 		cells.healthySince = formatAgoWithChecks(availability.AliveSince, availability.ChecksSinceAlive)
@@ -228,26 +228,17 @@ func nodeLatency(status api.NodeStatus) any {
 }
 
 func compactNodeState(status api.NodeStatus, now time.Time) string {
+	state := nodeHealth(status)
+	if !status.ChecksConnectivity {
+		state = nodeSessionState(status)
+	}
+	var detail string
 	recovery := status.Recovery
 	if recovery.Phase != "" && recovery.Phase != dialer.RecoveryReady &&
 		(!status.Healthy || recovery.Phase == dialer.RecoveryBlocked || recovery.Action == "replenish") {
-		return formatRecovery(recovery, now)
+		detail = formatRecovery(recovery, now)
 	}
-	health := nodeHealth(status)
-	session := nodeSessionState(status)
-	if session != "" && session != "connected" {
-		if session == "connecting" && health != nodeHealthUnhealthy {
-			return colorize(session, text.FgYellow)
-		}
-		return colorize(session, text.FgRed)
-	}
-	if status.ChecksConnectivity {
-		return colorNodeHealth(health)
-	}
-	if session != "" {
-		return colorize(session, text.FgGreen)
-	}
-	return "-"
+	return colorNodeState(state, detail)
 }
 
 func compactUpRatios(status api.NodeStatus) any {
@@ -385,7 +376,7 @@ func groupStatusMetadata(group api.GroupStatus) string {
 }
 
 func logStartupNodeStatus(groups []api.GroupStatus) {
-	if !log.IsLevelEnabled(log.InfoLevel) {
+	if !log.IsLevelEnabled(log.DebugLevel) {
 		return
 	}
 	now := time.Now()
@@ -404,10 +395,10 @@ func logStartupNodeStatus(groups []api.GroupStatus) {
 		if len(rows) == 0 {
 			continue
 		}
-		log.Infof("Paths of target %q [%s]", group.Name, groupStatusMetadata(group))
+		log.Debugf("Paths of target %q [%s]", group.Name, groupStatusMetadata(group))
 		header := table.Row{"PATH", "PROTO", "STATE", "NETWORKS", "LAT L/A/M(ms)"}
 		for line := range strings.SplitSeq(renderLogTable(header, rows), "\n") {
-			log.Info(line)
+			log.Debug(line)
 		}
 	}
 }

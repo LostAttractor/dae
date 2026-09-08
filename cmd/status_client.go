@@ -10,7 +10,6 @@ import (
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
-	"github.com/daeuniverse/dae/component/api"
 	"io"
 	"net"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/spf13/cobra"
 )
@@ -157,8 +157,7 @@ func validateStatus(snapshot *api.StatusSnapshot) error {
 				}
 			}
 			recovery := node.Recovery
-			if recovery.RetryTimeKnown != !recovery.RetryAt.IsZero() ||
-				recovery.RetryTimeKnown && recovery.Phase != dialer.RecoveryBackoff {
+			if !recovery.RetryAt.IsZero() && recovery.Phase != dialer.RecoveryBackoff {
 				return fmt.Errorf("%s has inconsistent recovery retry time", nodePath)
 			}
 		}

@@ -295,7 +295,7 @@ func TestInitialCheckLogsEveryModeAndSupportDiscovery(t *testing.T) {
 	previousFormatter := logger.Formatter
 	var output bytes.Buffer
 	logger.SetOutput(&output)
-	logger.SetLevel(log.DebugLevel)
+	logger.SetLevel(log.TraceLevel)
 	logger.SetFormatter(new(log.JSONFormatter))
 	t.Cleanup(func() {
 		logger.SetOutput(previousOutput)
@@ -535,12 +535,15 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	logger := log.StandardLogger()
 	previousOutput := logger.Out
+	previousLevel := logger.Level
 	previousFormatter := logger.Formatter
 	var output bytes.Buffer
 	logger.SetOutput(&output)
+	logger.SetLevel(log.DebugLevel)
 	logger.SetFormatter(new(log.JSONFormatter))
 	t.Cleanup(func() {
 		logger.SetOutput(previousOutput)
+		logger.SetLevel(previousLevel)
 		logger.SetFormatter(previousFormatter)
 	})
 
@@ -854,6 +857,44 @@ func TestHealthLoggingUsesStateTransitions(t *testing.T) {
 	}
 	if got := strings.Count(logs, `"msg":"Connectivity probe failed"`); got != 2 {
 		t.Fatalf("failed probe debug logs = %d, want 2\n%s", got, logs)
+	}
+	logger.SetLevel(log.InfoLevel)
+	output.Reset()
+	d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP6}}})
+	if output.Len() != 0 {
+		t.Fatalf("unchanged healthy state was logged at info level:\n%s", output.String())
+	}
+}
+
+func TestSessionLoggingDistinguishesFailureFromLocalCleanup(t *testing.T) {
+	logger := log.StandardLogger()
+	previousOutput, previousLevel := logger.Out, logger.Level
+	var output bytes.Buffer
+	logger.SetOutput(&output)
+	logger.SetLevel(log.InfoLevel)
+	t.Cleanup(func() { logger.SetOutput(previousOutput); logger.SetLevel(previousLevel) })
+	for _, tc := range []struct {
+		name        string
+		cause       error
+		wantWarning bool
+	}{
+		{"local cleanup", netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Origin: netproxy.OriginLocalCleanup}), false},
+		{"planned reconnect", nil, false},
+		{"carrier failure", errors.New("connection reset by peer"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := newTestSessionTransport(netproxy.SessionConnected)
+			d := newTestDialer(t, transport)
+			prepareRecoveryDialer(d)
+			transport.state.Transition(netproxy.SessionDisconnected, tc.cause)
+			output.Reset()
+			d.applySessionState(transport.Snapshot())
+			d.applySessionState(transport.Snapshot())
+			count := strings.Count(output.String(), "Outbound session unavailable")
+			if count != 0 && !tc.wantWarning || count != 1 && tc.wantWarning {
+				t.Fatalf("session warning count = %d, want warning %v: %s", count, tc.wantWarning, output.String())
+			}
+		})
 	}
 }
 

@@ -16,7 +16,7 @@ func formatRecovery(r dialer.RecoverySnapshot, now time.Time) string {
 	case dialer.RecoveryWaitingDependency:
 		return "waiting for parent connection"
 	case dialer.RecoveryBackoff:
-		if !r.RetryTimeKnown {
+		if r.RetryAt.IsZero() {
 			return "retry time unknown"
 		}
 		action := fmt.Sprintf("retry #%d", r.Attempt+1)
@@ -37,18 +37,15 @@ func formatRecovery(r dialer.RecoverySnapshot, now time.Time) string {
 		return fmt.Sprintf("connecting #%d", r.Attempt)
 	case dialer.RecoveryQueued:
 		if r.BlockedBy == "connectivity_slot" {
-			if r.Action == "connect" {
-				return "queued for connection slot"
+			if r.Action == "verify" {
+				return "queued for check slot"
 			}
-			return "queued for check slot"
+			return "queued for connection slot"
 		}
 		return "recovery queued"
 	case dialer.RecoveryVerifying:
 		return "verifying connectivity"
 	case dialer.RecoveryBlocked:
-		if r.Action == "replenish" {
-			return "capacity blocked: " + r.BlockedBy + "; existing capacity ready"
-		}
 		return "blocked: " + r.BlockedBy + "; check configuration"
 	case dialer.RecoveryReady:
 		if r.Verification == "disabled" {

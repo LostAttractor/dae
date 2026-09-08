@@ -30,7 +30,7 @@ const (
 	nodeHealthUnknown    = "unknown"
 	nodeHealthHealthy    = "healthy"
 	nodeHealthConfirming = "confirming"
-	nodeHealthUnhealthy  = "unhealthy"
+	nodeHealthUnhealthy  = "fail"
 )
 
 func groupHealth(group api.GroupStatus) healthStatus {
@@ -172,19 +172,22 @@ func colorHealth(health healthStatus) string {
 	}
 }
 
-func colorNodeHealth(health string) string {
-	switch health {
-	case "":
+func colorNodeState(state, detail string) string {
+	if state == "" {
 		return "-"
-	case nodeHealthHealthy:
-		return colorize(health, text.FgGreen)
-	case nodeHealthUnknown, nodeHealthConfirming:
-		return colorize(health, text.FgYellow)
-	case nodeHealthUnhealthy:
-		return colorize(health, text.FgRed)
-	default:
-		return health
 	}
+	value := state
+	if detail != "" {
+		value += " (" + detail + ")"
+	}
+	color := text.FgYellow
+	switch state {
+	case nodeHealthHealthy, "connected":
+		color = text.FgGreen
+	case nodeHealthUnhealthy, "disconnected", "closed":
+		color = text.FgRed
+	}
+	return colorize(value, color)
 }
 
 func colorNetworkSupport(support dialer.NetworkSupportState) string {

@@ -20,7 +20,7 @@ func TestStatusRecoveryMetadataRoundTrip(t *testing.T) {
 		SessionDetail: &SessionStatus{State: "disconnected", Seq: 8, ReadinessVersion: 3, Resource: resource, EpisodeID: 2},
 		Recovery: dialer.RecoverySnapshot{Executor: netproxy.RecoveryDaemon,
 			Phase: dialer.RecoveryBackoff, Verification: "pending", Attempt: 2,
-			RetryAt: now.Add(1700 * time.Millisecond), RetryTimeKnown: true},
+			RetryAt: now.Add(1700 * time.Millisecond)},
 		Failure: &dialer.FailureSnapshot{EpisodeID: 2, Resource: resource,
 			Scope: netproxy.ScopeSharedResource, Layer: netproxy.LayerQUIC,
 			Phase: netproxy.OpRead, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonReset,
