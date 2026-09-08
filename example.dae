@@ -36,8 +36,9 @@ global {
     # Go's resolver, so hostname sources provided only by libc NSS modules are not supported.
     so_mark_from_dae: 0
 
-    # Log level: error, warn, info, debug, trace. Surge events and console.log/info use info;
-    # console.debug/warn/error use their corresponding levels.
+    # Log level: error (feature failure), warn (degradation), info (lifecycle and availability),
+    # debug (connections and requests), trace (packets and processing steps).
+    # Surge console.log/info use info; console.debug/warn/error use their corresponding levels.
     log_level: info
 
     # Disable waiting for network before pulling subscriptions.
