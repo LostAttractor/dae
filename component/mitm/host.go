@@ -77,7 +77,7 @@ type Host struct {
 	workers      sync.WaitGroup
 	requests     sync.WaitGroup
 	serving      sync.WaitGroup
-	connections  map[net.Conn]*http.Server
+	connections  map[io.Closer]func(context.Context) error
 	forceContext context.Context
 	forceCancel  context.CancelFunc
 	closeDone    chan struct{}
@@ -90,7 +90,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 	if options.DrainTimeout <= 0 {
 		options.DrainTimeout = 5 * time.Second
 	}
-	h := &Host{options: options, instances: instances, connections: make(map[net.Conn]*http.Server), closeDone: make(chan struct{})}
+	h := &Host{options: options, instances: instances, connections: make(map[io.Closer]func(context.Context) error), closeDone: make(chan struct{})}
 	for i := range h.instances {
 		instance := &h.instances[i]
 		instance.plan = instance.Plugin.Plan()
@@ -146,58 +146,6 @@ func (h *Host) Start(parent context.Context) error {
 	}
 	return nil
 }
-func (h *Host) Close() error {
-	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		<-h.closeDone
-		return h.closeErr
-	}
-	h.closed = true
-	if h.cancel != nil {
-		h.cancel()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), h.options.DrainTimeout)
-	defer cancel()
-	var shutdowns sync.WaitGroup
-	for conn, server := range h.connections {
-		if server == nil {
-			_ = conn.Close()
-		} else {
-			shutdowns.Add(1)
-			go func() { defer shutdowns.Done(); _ = server.Shutdown(ctx) }()
-		}
-	}
-	h.mu.Unlock()
-	finished := make(chan error, 1)
-	go func() {
-		h.workers.Wait()
-		shutdowns.Wait()
-		h.serving.Wait()
-		h.requests.Wait()
-		var errs []error
-		for i := len(h.instances) - 1; i >= 0; i-- {
-			if c, ok := h.instances[i].Plugin.(io.Closer); ok {
-				errs = append(errs, c.Close())
-			}
-		}
-		finished <- errors.Join(errs...)
-	}()
-	select {
-	case h.closeErr = <-finished:
-	case <-ctx.Done():
-		h.closeErr = fmt.Errorf("mitm: drain deadline exceeded: %w", ctx.Err())
-	}
-	h.forceCancel()
-	h.mu.Lock()
-	for conn := range h.connections {
-		_ = conn.Close()
-	}
-	h.mu.Unlock()
-	close(h.closeDone)
-	return h.closeErr
-}
-
 func (h *Host) chain(flow plugin.Flow, terminal plugin.Handler) plugin.Handler {
 	instances := h.instances
 	for i := len(instances) - 1; i >= 0; i-- {

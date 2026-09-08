@@ -209,9 +209,6 @@ func Load(certPath, keyPath string) (*Authority, error) {
 	return &Authority{certificate: cert, key: pair.PrivateKey, cache: make(map[string]*list.Element)}, nil
 }
 
-// TLSConfig issues a server certificate for the ClientHello's SNI. It advertises
-// HTTP/1.1 by default; callers may enable additional protocols they support.
-// Callers must select eligible MITM connections before the TLS handshake.
 func (a *Authority) Fingerprint() string {
 	if a == nil || a.certificate == nil {
 		return ""
@@ -219,12 +216,20 @@ func (a *Authority) Fingerprint() string {
 	return Fingerprint(a.certificate)
 }
 
-func (a *Authority) TLSConfig() *tls.Config {
+// TLSConfig binds the certificate and ClientHello to the already selected MITM
+// host. IP literals normally omit SNI; domain targets must provide matching SNI.
+// It advertises HTTP/1.1; callers may enable additional supported protocols.
+func (a *Authority) TLSConfig(host string) *tls.Config {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		NextProtos: []string{"http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			return a.serverCertificate(hello.ServerName)
+			name := strings.ToLower(strings.TrimSuffix(hello.ServerName, "."))
+			if name != host && !(name == "" && net.ParseIP(host) != nil) {
+				return nil, fmt.Errorf("mitm: TLS SNI differs from intercepted destination")
+			}
+			return a.serverCertificate(host)
 		},
 	}
 }

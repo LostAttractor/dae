@@ -150,7 +150,7 @@ func TestIssuedCertificatesVerifyAndCacheExpires(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(a.certificate)
 	for _, host := range []string{"example.com", "127.0.0.1", "2001:db8::1"} {
-		cert, err := a.TLSConfig().GetCertificate(&tls.ClientHelloInfo{ServerName: host})
+		cert, err := a.TLSConfig(host).GetCertificate(&tls.ClientHelloInfo{ServerName: host})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -201,22 +201,44 @@ func TestAuthorityTLSHandshake(t *testing.T) {
 	a, _, _ := testAuthority(t)
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: a.certificate.Raw}))
-	left, right := net.Pipe()
-	defer left.Close()
-	defer right.Close()
-	_ = left.SetDeadline(time.Now().Add(5 * time.Second))
-	_ = right.SetDeadline(time.Now().Add(5 * time.Second))
-	client := tls.Client(left, &tls.Config{RootCAs: pool, ServerName: "test.example", NextProtos: []string{"http/1.1"}})
-	server := tls.Server(right, a.TLSConfig())
-	result := make(chan error, 1)
-	go func() { result <- server.Handshake() }()
-	if err := client.Handshake(); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-result; err != nil {
-		t.Fatal(err)
-	}
-	if got := client.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
-		t.Fatalf("ALPN = %q", got)
+	for _, test := range []struct {
+		host, serverName string
+		reject           bool
+	}{
+		{"test.example", "test.example", false},
+		{"TEST.EXAMPLE.", "test.example", false},
+		{"127.0.0.1", "127.0.0.1", false},
+		{"2001:db8::1", "2001:db8::1", false},
+		{"test.example", "different.example", true},
+		{"test.example", "127.0.0.1", true},
+		{"127.0.0.1", "test.example", true},
+	} {
+		t.Run(test.host+"/"+test.serverName, func(t *testing.T) {
+			left, right := net.Pipe()
+			defer left.Close()
+			defer right.Close()
+			_ = left.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = right.SetDeadline(time.Now().Add(5 * time.Second))
+			client := tls.Client(left, &tls.Config{RootCAs: pool, ServerName: test.serverName, NextProtos: []string{"http/1.1"}})
+			server := tls.Server(right, a.TLSConfig(test.host))
+			result := make(chan error, 1)
+			go func() { result <- server.Handshake() }()
+			clientErr, serverErr := client.Handshake(), <-result
+			if test.reject {
+				if clientErr == nil || serverErr == nil {
+					t.Fatalf("accepted mismatched identity: client=%v server=%v", clientErr, serverErr)
+				}
+				return
+			}
+			if clientErr != nil || serverErr != nil {
+				t.Fatalf("handshake failed: client=%v server=%v", clientErr, serverErr)
+			}
+			if got := client.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
+				t.Fatalf("ALPN = %q", got)
+			}
+			if net.ParseIP(test.host) != nil && server.ConnectionState().ServerName != "" {
+				t.Fatal("IP handshake did not exercise the absent SNI case")
+			}
+		})
 	}
 }
