@@ -16,10 +16,9 @@ import (
 // The endpoint owns the intercepted association, while each final HTTP request
 // owns its upstream policy and accounting. Auxiliary requests use TCP rules.
 func (c *ControlPlane) newMITMQUIC(p *RouteParam, packetPlan mitm.UpstreamPlanner, release func(), routeLease *netproxy.Lease) net.PacketConn {
-	ingress, server := newMITMPacketPair(p.Src, p.Dest)
+	ingress, server := newMITMPacketPair(p.Src, p.Dest, routeLease)
 	lease := netproxy.DependencyOf(ingress)
-	stop := watchAbort(lease, nil, routeLease, func() {
-		lease.Abort(connectionAbortCause(lease, routeLease))
+	stop := watchAbort(lease, nil, nil, func() {
 		_ = server.Close()
 	})
 	packetPlan = mitmPlannerWithLease(packetPlan, lease)

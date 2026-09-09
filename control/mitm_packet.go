@@ -48,8 +48,8 @@ type mitmPacketConn struct {
 // source; the server side receives client datagrams with the original client as
 // their source. A full receive queue drops incoming datagrams, so a slow QUIC
 // connection cannot block the transparent packet worker.
-func newMITMPacketPair(client, destination netip.AddrPort) (ingress, server net.PacketConn) {
-	pair := &mitmPacketPair{memory: udpPacketMemory, lease: netproxy.NewLease(netproxy.NewResourceRef())}
+func newMITMPacketPair(client, destination netip.AddrPort, route *netproxy.Lease) (ingress, server net.PacketConn) {
+	pair := &mitmPacketPair{memory: udpPacketMemory, lease: netproxy.NewLease(netproxy.NewResourceRef(), route)}
 	a := &mitmPacketConn{pair: pair, local: client, readChanged: make(chan struct{})}
 	b := &mitmPacketConn{pair: pair, local: destination, readChanged: make(chan struct{})}
 	a.peer, b.peer = b, a
@@ -147,7 +147,13 @@ func (c *mitmPacketConn) Close() error {
 	defer c.pair.mu.Unlock()
 	if !c.pair.closed {
 		c.pair.closed = true
-		c.pair.lease.Invalidate(net.ErrClosed)
+		// Endpoint cleanup can race the route owner's child propagation.
+		// Preserve its abort before recording an ordinary local close.
+		if cause := c.pair.lease.AbortCause(); cause != nil {
+			c.pair.lease.Abort(cause)
+		} else {
+			c.pair.lease.Invalidate(net.ErrClosed)
+		}
 		close(c.readChanged)
 		close(c.peer.readChanged)
 		for i := range c.packets {

@@ -28,7 +28,7 @@ func TestMITMPacketPairDatagrams(t *testing.T) {
 		t.Run(tc.client, func(t *testing.T) {
 			client := netip.MustParseAddrPort(tc.client)
 			destination := netip.MustParseAddrPort(tc.destination)
-			ingress, server := newMITMPacketPair(client, destination)
+			ingress, server := newMITMPacketPair(client, destination, nil)
 			t.Cleanup(func() { _ = ingress.Close() })
 			if ingress.LocalAddr().String() != tc.client || server.LocalAddr().String() != tc.destination {
 				t.Fatalf("incorrect local addresses: %v, %v", ingress.LocalAddr(), server.LocalAddr())
@@ -75,8 +75,8 @@ func TestUDPPacketMemorySharedByIngressAndMITM(t *testing.T) {
 	<-started
 
 	client, dest := netip.MustParseAddrPort("192.0.2.1:5000"), netip.MustParseAddrPort("198.51.100.1:443")
-	first, firstPeer := newMITMPacketPair(client, dest)
-	second, secondPeer := newMITMPacketPair(client, dest)
+	first, firstPeer := newMITMPacketPair(client, dest, nil)
+	second, secondPeer := newMITMPacketPair(client, dest, nil)
 	first.(*mitmPacketConn).pair.memory = budget
 	second.(*mitmPacketConn).pair.memory = budget
 	t.Cleanup(func() { _ = first.Close(); _ = second.Close() })
@@ -111,7 +111,7 @@ func TestUDPPacketMemorySharedByIngressAndMITM(t *testing.T) {
 }
 
 func TestMITMPacketPairBounds(t *testing.T) {
-	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"))
+	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"), nil)
 	t.Cleanup(func() { _ = ingress.Close() })
 	for _, addr := range []net.Addr{nil, &net.UDPAddr{IP: net.ParseIP("198.51.100.1"), Port: 444}, &net.UDPAddr{IP: net.ParseIP("198.51.100.2"), Port: 443}, &net.TCPAddr{IP: net.ParseIP("198.51.100.1"), Port: 443}} {
 		if n, err := ingress.WriteTo([]byte("wrong peer"), addr); n != 0 || err == nil {
@@ -146,7 +146,7 @@ func TestMITMPacketPairBounds(t *testing.T) {
 }
 
 func TestMITMPacketPairDeadlines(t *testing.T) {
-	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"))
+	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"), nil)
 	t.Cleanup(func() { _ = ingress.Close() })
 	read := func() <-chan error {
 		result := make(chan error, 1)
@@ -209,7 +209,7 @@ func TestMITMPacketPairDeadlines(t *testing.T) {
 }
 
 func TestMITMPacketPairClose(t *testing.T) {
-	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"))
+	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"), nil)
 	results := make(chan error, 4)
 	for _, conn := range []net.PacketConn{ingress, server, ingress, server} {
 		go func() {
@@ -245,7 +245,7 @@ func TestMITMPacketPairClose(t *testing.T) {
 }
 
 func TestMITMPacketPairConcurrent(t *testing.T) {
-	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"))
+	ingress, server := newMITMPacketPair(netip.MustParseAddrPort("192.0.2.1:50000"), netip.MustParseAddrPort("198.51.100.1:443"), nil)
 	t.Cleanup(func() { _ = ingress.Close() })
 	for _, direction := range []struct{ writer, reader net.PacketConn }{{ingress, server}, {server, ingress}} {
 		_ = direction.reader.SetReadDeadline(time.Now().Add(time.Second))
