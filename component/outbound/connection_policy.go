@@ -23,6 +23,7 @@ type connectionPolicy struct {
 }
 
 type connectionGeneration struct {
+	selected string // Stable path identity survives reloads and unavailable nodes.
 	regular  *netproxy.Lease
 	fallback *netproxy.Lease
 }
@@ -61,13 +62,38 @@ func (g *DialerGroup) InheritConnections(old *DialerGroup) {
 	old.connections.networks = [common.NetworkTypeCount]connectionGeneration{}
 	g.connections.mu.Unlock()
 	old.connections.mu.Unlock()
-	// Preparation may have completed the recovery before ownership transfers.
+	// Preparation may already have selected a different path. If no path is
+	// ready yet, retain the old identity until the next successful selection.
+	if len(g.Dialers) != 0 {
+		for i := range common.NetworkTypeCount {
+			_, _, _ = g.selectConnection(common.NetworkIndex(i).NetworkType())
+		}
+	}
 	g.closeRecoveredConnections()
+}
+
+func (g *DialerGroup) updateConnectionSelection(network *common.NetworkType, d *dialer.Dialer) {
+	p := &g.connections
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	generation := &p.networks[network.Index()]
+	selected := d.StatsID()
+	if generation.selected != "" && generation.selected != selected {
+		g.closeConnectionGenerationLocked(network, true)
+	}
+	generation.selected = selected
 }
 
 func (g *DialerGroup) closeConnectionGeneration(network *common.NetworkType, reselected bool) {
 	p := &g.connections
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	g.closeConnectionGenerationLocked(network, reselected)
+}
+
+// Caller holds connections.mu, closing the gates before exposing a new generation.
+func (g *DialerGroup) closeConnectionGenerationLocked(network *common.NetworkType, reselected bool) {
+	p := &g.connections
 	generation := &p.networks[network.Index()]
 	var regular, fallback *netproxy.Lease
 	reason := "fallback recovered"
@@ -85,7 +111,6 @@ func (g *DialerGroup) closeConnectionGeneration(network *common.NetworkType, res
 	cause := netproxy.WrapFailure(errors.New(reason), netproxy.Failure{Origin: netproxy.OriginLocalCleanup})
 	regular.Abort(cause)
 	fallback.Abort(cause)
-	p.mu.Unlock()
 	if regular != nil || fallback != nil {
 		log.WithFields(log.Fields{"group": g.Name, "network": network.String()}).Info(reason + "; closing existing connections")
 	}
@@ -133,5 +158,6 @@ func (g *DialerGroup) selectConnection(network *common.NetworkType) (*dialer.Dia
 	if err != nil {
 		return nil, nil, err
 	}
+	g.updateConnectionSelection(network, d)
 	return d, g.connectionLease(network, false), nil
 }

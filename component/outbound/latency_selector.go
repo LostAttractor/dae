@@ -72,11 +72,11 @@ func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 		}
 	}
 	if newDialer != oldDialer {
-		if oldDialer != nil && newDialer != nil {
-			s.dialerGroup.closeConnectionGeneration(networkType, true)
-		}
 		s.selected[index] = newDialer
 		s.logSelection(oldDialer, newDialer, networkType)
+	}
+	if newDialer != nil && newDialer.Usable(networkType) {
+		s.dialerGroup.updateConnectionSelection(networkType, newDialer)
 	}
 	if changed != nil {
 		s.recordMetrics(candidates, changed, networkType)

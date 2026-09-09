@@ -8,6 +8,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
 func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
@@ -113,6 +114,74 @@ func TestManualSelectionClosesPreviousGeneration(t *testing.T) {
 			selected, _, _, current, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 			if err != nil || selected != b || current.AbortCause() != nil {
 				t.Fatalf("new manual selection: %v, %v", selected, err)
+			}
+		})
+	}
+}
+
+func TestReloadReselectionConnectionPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		policy                    consts.DialerSelectionPolicy
+		closeOld, change, delayed bool
+	}{
+		{"changed", consts.DialerSelectionPolicy_MinLastLatency, true, true, false},
+		{"same path", consts.DialerSelectionPolicy_MinLastLatency, true, false, false},
+		{"keep", consts.DialerSelectionPolicy_MinLastLatency, false, true, false},
+		{"delayed selection", consts.DialerSelectionPolicy_MinLastLatency, true, true, true},
+		{"manual changed", consts.DialerSelectionPolicy_Selector, true, true, false},
+		{"manual same path", consts.DialerSelectionPolicy_Selector, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			makeGroup := func(selectB bool) *DialerGroup {
+				dials := make([]*dialer.Dialer, 2)
+				for i, name := range []string{"a", "b"} {
+					dials[i] = dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{Name: name, Link: "test://" + name}, false, "")
+				}
+				policy := dialer.DialerSelectionPolicy{Policy: tc.policy}
+				annotations := emptyAnnotations(2)
+				annotations[1].AddLatency = time.Second
+				if selectB {
+					annotations[0].AddLatency, annotations[1].AddLatency = time.Second, 0
+					policy.FixedIndex = 1
+				}
+				g := newSelectorTestGroup(t, dials, annotations, policy, nil)
+				g.selectionIndex.Store(int64(policy.FixedIndex))
+				g.SetConnectionPolicy(tc.closeOld, false)
+				return g
+			}
+			old := makeGroup(false)
+			_, _, _, lease, err := old.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = old.Close()
+			next := makeGroup(tc.change)
+			if next.selector != nil {
+				next.selector.Refresh(nil, dialer.SelectionForceNone)
+			}
+			if tc.delayed {
+				// No replacement exists yet; ownership must survive another
+				// reload before a different ready path appears.
+				pending := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
+				pending.SetConnectionPolicy(tc.closeOld, false)
+				pending.InheritConnections(old)
+				if lease.AbortCause() != nil {
+					t.Fatal("closed without a replacement")
+				}
+				_ = pending.Close()
+				old = pending
+			}
+			next.InheritConnections(old)
+			if (lease.AbortCause() != nil) != (tc.closeOld && tc.change) {
+				t.Fatalf("reload abort = %v", lease.AbortCause())
+			}
+			chosen, _, _, current, err := next.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			if err != nil || chosen != next.Dialers[next.selectionPolicy.FixedIndex] || !current.Valid() {
+				t.Fatalf("new selection = %v, %v", chosen, err)
+			}
+			if (lease == current) == (tc.closeOld && tc.change) {
+				t.Fatal("incorrect generation reuse")
 			}
 		})
 	}

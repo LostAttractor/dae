@@ -209,9 +209,12 @@ func (g *DialerGroup) ChangeSelection(id string, commit func() error) error {
 		return errors.Join(fmt.Errorf("change selector %q: %w", g.Name, err), g.updateConnectivity())
 	}
 	g.closeRecoveredConnections()
+	g.connections.mu.Lock()
 	for i := range common.NetworkTypeCount {
-		g.closeConnectionGeneration(common.NetworkIndex(i).NetworkType(), true)
+		g.closeConnectionGenerationLocked(common.NetworkIndex(i).NetworkType(), true)
+		g.connections.networks[i].selected = g.Dialers[index].StatsID()
 	}
+	g.connections.mu.Unlock()
 	g.Dialers[index].RequestConnectivityCheck()
 	return nil
 }
