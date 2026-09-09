@@ -20,26 +20,26 @@ func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a, b}, annotations,
 				dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}, nil)
 			g.SetConnectionPolicy(closeOld, false)
-			selected, _, _, old, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
-			if err != nil || selected != a {
-				t.Fatalf("first selection = %v, %v", selected, err)
+			old, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			if err != nil || old.Dialer != a {
+				t.Fatalf("first selection = %v, %v", old.Dialer, err)
 			}
-			_, _, _, udp, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+			udp, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_ = a.Close()
-			selected, _, _, current, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
-			if err != nil || selected != b {
-				t.Fatalf("new selection = %v, %v", selected, err)
+			current, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			if err != nil || current.Dialer != b {
+				t.Fatalf("new selection = %v, %v", current.Dialer, err)
 			}
-			if (old.AbortCause() != nil) != closeOld {
-				t.Fatalf("previous connection generation: %v", old.AbortCause())
+			if (old.Lease.AbortCause() != nil) != closeOld {
+				t.Fatalf("previous connection generation: %v", old.Lease.AbortCause())
 			}
-			if current.AbortCause() != nil || udp.AbortCause() != nil {
+			if current.Lease.AbortCause() != nil || udp.Lease.AbortCause() != nil {
 				t.Fatal("reselection terminated new or unrelated-network connections")
 			}
-			if closeOld && old == current {
+			if closeOld && old.Lease == current.Lease {
 				t.Fatal("new setup reused an aborted generation")
 			}
 		})
@@ -52,7 +52,7 @@ func TestFallbackRecoveryOnlyClosesOriginalGroupAndNetwork(t *testing.T) {
 			a := newCheckedDialer(t, "a")
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
 			g.SetConnectionPolicy(true, closeFallback)
-			_, _, _, fallback, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+			fallback, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 			if !errors.Is(err, ErrNoAliveDialer) {
 				t.Fatalf("selection = %v", err)
 			}
@@ -65,8 +65,8 @@ func TestFallbackRecoveryOnlyClosesOriginalGroupAndNetwork(t *testing.T) {
 				t.Fatal(err)
 			}
 			g.closeRecoveredConnections()
-			if (fallback.AbortCause() != nil) != closeFallback {
-				t.Fatalf("fallback termination = %v", fallback.AbortCause())
+			if (fallback.Lease.AbortCause() != nil) != closeFallback {
+				t.Fatalf("fallback termination = %v", fallback.Lease.AbortCause())
 			}
 			if regular.AbortCause() != nil || otherNetwork.AbortCause() != nil || otherGroup.AbortCause() != nil {
 				t.Fatal("fallback recovery affected unrelated connections")
@@ -98,22 +98,83 @@ func TestManualSelectionClosesPreviousGeneration(t *testing.T) {
 			a, b := newUncheckedDialer(t, "a"), newUncheckedDialer(t, "b")
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a, b}, emptyAnnotations(2), dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}, nil)
 			g.SetConnectionPolicy(closeOld, false)
-			_, _, _, old, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+			old, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := g.SetSelection(a.StatsID()); err != nil || old.AbortCause() != nil {
+			if err := g.SetSelection(a.StatsID()); err != nil || old.Lease.AbortCause() != nil {
 				t.Fatalf("unchanged selection closed connections: %v", err)
 			}
 			if err := g.SetSelection(b.StatsID()); err != nil {
 				t.Fatal(err)
 			}
-			if (old.AbortCause() != nil) != closeOld {
-				t.Fatalf("manual switch termination: %v", old.AbortCause())
+			if (old.Lease.AbortCause() != nil) != closeOld {
+				t.Fatalf("manual switch termination: %v", old.Lease.AbortCause())
 			}
-			selected, _, _, current, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
-			if err != nil || selected != b || current.AbortCause() != nil {
-				t.Fatalf("new manual selection: %v, %v", selected, err)
+			current, err := g.SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+			if err != nil || current.Dialer != b || current.Lease.AbortCause() != nil {
+				t.Fatalf("new manual selection: %v, %v", current.Dialer, err)
+			}
+		})
+	}
+}
+
+func TestSelectionWaitsForManualChangeCommit(t *testing.T) {
+	for _, commitErr := range []error{nil, errors.New("settings write failed")} {
+		name := "commit"
+		if commitErr != nil {
+			name = "rollback"
+		}
+		t.Run(name, func(t *testing.T) {
+			a, b := newUncheckedDialer(t, "a"), newUncheckedDialer(t, "b")
+			g := newSelectorTestGroup(t, []*dialer.Dialer{a, b}, emptyAnnotations(2), dialer.DialerSelectionPolicy{
+				Policy: consts.DialerSelectionPolicy_Selector,
+			}, nil)
+			g.SetConnectionPolicy(true, false)
+			old, err := g.SelectConnection(*testNetworkType, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			committing, release := make(chan struct{}), make(chan struct{})
+			changed := make(chan error, 1)
+			go func() {
+				changed <- g.ChangeSelection(b.StatsID(), func() error {
+					close(committing)
+					<-release
+					return commitErr
+				})
+			}()
+			<-committing
+			started := make(chan struct{})
+			selected := make(chan ConnectionSelection, 1)
+			go func() {
+				close(started)
+				selection, err := g.SelectConnection(*testNetworkType, true)
+				if err != nil {
+					t.Error(err)
+				}
+				selected <- selection
+			}()
+			<-started
+			select {
+			case <-selected:
+				t.Error("selection escaped before settings committed")
+			case <-time.After(20 * time.Millisecond):
+			}
+			close(release)
+			if err := <-changed; !errors.Is(err, commitErr) {
+				t.Fatalf("change = %v, want %v", err, commitErr)
+			}
+			if t.Failed() {
+				return
+			}
+			current := <-selected
+			if commitErr != nil {
+				if current.Dialer != a || current.Lease != old.Lease || old.Lease.AbortCause() != nil {
+					t.Fatal("rollback changed the existing path or connection generation")
+				}
+			} else if current.Dialer != b || current.Lease == old.Lease || old.Lease.AbortCause() == nil || current.Lease.AbortCause() != nil {
+				t.Fatal("committed switch did not select a fresh connection generation")
 			}
 		})
 	}
@@ -146,19 +207,19 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 					policy.FixedIndex = 1
 				}
 				g := newSelectorTestGroup(t, dials, annotations, policy, nil)
-				g.selectionIndex.Store(int64(policy.FixedIndex))
+				g.selectionIndex = policy.FixedIndex
 				g.SetConnectionPolicy(tc.closeOld, false)
 				return g
 			}
 			old := makeGroup(false)
-			_, _, _, lease, err := old.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			previous, err := old.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_ = old.Close()
 			next := makeGroup(tc.change)
 			if next.selector != nil {
-				next.selector.Refresh(nil, dialer.SelectionForceNone)
+				next.selector.refresh(nil, dialer.SelectionForceNone)
 			}
 			if tc.delayed {
 				// No replacement exists yet; ownership must survive another
@@ -166,21 +227,21 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 				pending := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
 				pending.SetConnectionPolicy(tc.closeOld, false)
 				pending.InheritConnections(old)
-				if lease.AbortCause() != nil {
+				if previous.Lease.AbortCause() != nil {
 					t.Fatal("closed without a replacement")
 				}
 				_ = pending.Close()
 				old = pending
 			}
 			next.InheritConnections(old)
-			if (lease.AbortCause() != nil) != (tc.closeOld && tc.change) {
-				t.Fatalf("reload abort = %v", lease.AbortCause())
+			if (previous.Lease.AbortCause() != nil) != (tc.closeOld && tc.change) {
+				t.Fatalf("reload abort = %v", previous.Lease.AbortCause())
 			}
-			chosen, _, _, current, err := next.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
-			if err != nil || chosen != next.Dialers[next.selectionPolicy.FixedIndex] || !current.Valid() {
-				t.Fatalf("new selection = %v, %v", chosen, err)
+			current, err := next.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
+			if err != nil || current.Dialer != next.Dialers[next.selectionPolicy.FixedIndex] || !current.Lease.Valid() {
+				t.Fatalf("new selection = %v, %v", current.Dialer, err)
 			}
-			if (lease == current) == (tc.closeOld && tc.change) {
+			if (previous.Lease == current.Lease) == (tc.closeOld && tc.change) {
 				t.Fatal("incorrect generation reuse")
 			}
 		})

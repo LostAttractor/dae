@@ -2,7 +2,6 @@ package outbound
 
 import (
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -17,7 +16,6 @@ type latencyBasedSelector struct {
 	toleranceActive bool
 
 	selected [common.NetworkTypeCount]*dialer.Dialer
-	mu       sync.RWMutex
 }
 
 func (s *latencyBasedSelector) sortedCandidates(networkType *common.NetworkType) []selectorCandidate {
@@ -75,41 +73,20 @@ func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 		s.selected[index] = newDialer
 		s.logSelection(oldDialer, newDialer, networkType)
 	}
-	if newDialer != nil && newDialer.Usable(networkType) {
-		s.dialerGroup.updateConnectionSelection(networkType, newDialer)
-	}
 	if changed != nil {
 		s.recordMetrics(candidates, changed, networkType)
 	}
 }
 
-func (s *latencyBasedSelector) Select(networkType *common.NetworkType) *dialer.Dialer {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	index := networkType.Index()
-	s.refreshNetwork(index, nil, false)
-	return s.selected[index]
-}
-
-func (s *latencyBasedSelector) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
-	s.mu.RLock()
-	d := s.selected[networkType.Index()]
-	s.mu.RUnlock()
-	return d
-}
-
-func (s *latencyBasedSelector) Refresh(changed *dialer.Dialer, force dialer.SelectionForceMask) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// The group's mutex protects all selection state and policy generations.
+func (s *latencyBasedSelector) refresh(changed *dialer.Dialer, force dialer.SelectionForceMask) {
 	for i := common.NetworkIndex(0); i < common.NetworkTypeCount; i++ {
 		s.refreshNetwork(i, changed, force.Contains(i))
+		network := i.NetworkType()
+		if selected := s.selected[i]; selected != nil && selected.Usable(network) {
+			s.dialerGroup.updateConnectionSelection(network, selected)
+		}
 	}
-}
-
-func (s *latencyBasedSelector) EnableTolerance() {
-	s.mu.Lock()
-	s.toleranceActive = true
-	s.mu.Unlock()
 }
 
 func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer, networkType *common.NetworkType) {

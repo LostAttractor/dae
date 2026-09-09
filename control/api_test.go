@@ -164,7 +164,7 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane.outbounds[0].SetConnectionPolicy(true, true)
-	_, _, _, groupLease, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+	groupSelection, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 	handler := plane.apiHandler(testClientMAC)
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	if lease.AbortCause() != nil || groupLease.AbortCause() != nil {
+	if lease.AbortCause() != nil || groupSelection.Lease.AbortCause() != nil {
 		t.Fatal("failed save aborted existing connections")
 	}
 	requireClientRoute(t, plane.routingMatcher, mac, 443, consts.OutboundDirect)

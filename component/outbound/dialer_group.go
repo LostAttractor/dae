@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -45,19 +44,20 @@ type DialerGroup struct {
 	CheckAsync      bool
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        *latencyBasedSelector
-	selectionIndex  atomic.Int64
+	selectionIndex  int
 	connections     connectionPolicy
 
 	dialerToAnnotation map[*dialer.Dialer]*dialer.Annotation
-	notifyMu           sync.Mutex
-	networkAvailable   [common.NetworkTypeCount]bool
-	availabilityKnown  bool
-	statsDeferred      bool
-	startupReady       chan struct{}
-	startupReadyOnce   sync.Once
-	publishNetwork     func(available bool, networkType *common.NetworkType) error
-	closed             atomic.Bool
-	closeOnce          sync.Once
+	// mu serializes selection, connection generations and availability publication.
+	mu                sync.Mutex
+	networkAvailable  [common.NetworkTypeCount]bool
+	availabilityKnown bool
+	statsDeferred     bool
+	startupReady      chan struct{}
+	startupReadyOnce  sync.Once
+	publishNetwork    func(available bool, networkType *common.NetworkType) error
+	closed            atomic.Bool
+	closeOnce         sync.Once
 }
 
 func NewDialerGroup(
@@ -99,7 +99,7 @@ func NewDialerGroup(
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
 		publishNetwork:     publishNetwork,
 	}
-	g.selectionIndex.Store(int64(selectionPolicy.FixedIndex))
+	g.selectionIndex = selectionPolicy.FixedIndex
 
 	for i, d := range dialers {
 		g.dialerToAnnotation[d] = dialersAnnotations[i]
@@ -144,81 +144,6 @@ func (g *DialerGroup) DisplayPolicy() string {
 	return ""
 }
 
-func (g *DialerGroup) IsSelector() bool {
-	return g.Kind == GroupKindSelector && g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Selector
-}
-
-func (g *DialerGroup) DefaultSelection() string {
-	index := g.selectionPolicy.FixedIndex
-	if !g.IsSelector() || index < 0 || index >= len(g.Dialers) {
-		return ""
-	}
-	return g.Dialers[index].StatsID()
-}
-
-// Selection returns the requested path, including when it is unavailable.
-func (g *DialerGroup) Selection() string {
-	if !g.IsSelector() {
-		return ""
-	}
-	if selected := g.fixedDialer(); selected != nil {
-		return selected.StatsID()
-	}
-	return ""
-}
-
-// SetSelection changes the path for new connections. An empty ID restores the
-// configured default. Kernel connectivity is published before success returns.
-func (g *DialerGroup) SetSelection(id string) error {
-	return g.ChangeSelection(id, func() error { return nil })
-}
-
-// ChangeSelection publishes a choice, then commits its settings. On failure it
-// restores the old choice without terminating existing connection generations.
-// commit must not call this group; notifications and selections wait for it.
-func (g *DialerGroup) ChangeSelection(id string, commit func() error) error {
-	g.notifyMu.Lock()
-	defer g.notifyMu.Unlock()
-	if g.closed.Load() {
-		return net.ErrClosed
-	}
-	if !g.IsSelector() {
-		return fmt.Errorf("group %q does not use selector policy", g.Name)
-	}
-	index := g.selectionPolicy.FixedIndex
-	if index < 0 || index >= len(g.Dialers) {
-		return fmt.Errorf("group %q: selector default index %d is out of range for %d paths", g.Name, index, len(g.Dialers))
-	}
-	if id != "" {
-		index = slices.IndexFunc(g.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id })
-		if index == -1 {
-			return fmt.Errorf("group %q has no path %q", g.Name, id)
-		}
-	}
-	previous := g.selectionIndex.Load()
-	if previous == int64(index) {
-		return commit()
-	}
-	g.selectionIndex.Store(int64(index))
-	err := g.updateConnectivity()
-	if err == nil {
-		err = commit()
-	}
-	if err != nil {
-		g.selectionIndex.Store(previous)
-		return errors.Join(fmt.Errorf("change selector %q: %w", g.Name, err), g.updateConnectivity())
-	}
-	g.closeRecoveredConnections()
-	g.connections.mu.Lock()
-	for i := range common.NetworkTypeCount {
-		g.closeConnectionGenerationLocked(common.NetworkIndex(i).NetworkType(), true)
-		g.connections.networks[i].selected = g.Dialers[index].StatsID()
-	}
-	g.connections.mu.Unlock()
-	g.Dialers[index].RequestConnectivityCheck()
-	return nil
-}
-
 // DialerAnnotation returns the immutable selection annotation for a dialer.
 func (g *DialerGroup) DialerAnnotation(d *dialer.Dialer) (dialer.Annotation, bool) {
 	annotation, ok := g.dialerToAnnotation[d]
@@ -249,9 +174,9 @@ func (g *DialerGroup) Close() error {
 	g.closeOnce.Do(func() {
 		g.closed.Store(true)
 		// Drain notifications that passed the closed check before shutdown.
-		g.notifyMu.Lock()
+		g.mu.Lock()
 		g.releaseStartupReady(true)
-		g.notifyMu.Unlock()
+		g.mu.Unlock()
 		for _, d := range g.Dialers {
 			_ = d.Close()
 		}
@@ -260,8 +185,8 @@ func (g *DialerGroup) Close() error {
 }
 
 func (g *DialerGroup) initializeConnectivity() error {
-	g.notifyMu.Lock()
-	defer g.notifyMu.Unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.closed.Load() {
 		return net.ErrClosed
 	}
@@ -304,8 +229,8 @@ func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan str
 
 // DeferStats isolates a candidate group before its connectivity checks start.
 func (g *DialerGroup) DeferStats() {
-	g.notifyMu.Lock()
-	defer g.notifyMu.Unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.statsDeferred = true
 	for _, d := range g.Dialers {
 		d.DeferStats()
@@ -314,8 +239,8 @@ func (g *DialerGroup) DeferStats() {
 
 // PublishStats follows process-store reconciliation after the old plane retires.
 func (g *DialerGroup) PublishStats() {
-	g.notifyMu.Lock()
-	defer g.notifyMu.Unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if !g.statsDeferred {
 		return
 	}
@@ -329,17 +254,9 @@ func (g *DialerGroup) PublishStats() {
 }
 
 func (g *DialerGroup) Connectivity() (stats.GroupState, stats.GroupAvailability) {
-	g.notifyMu.Lock()
-	defer g.notifyMu.Unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	return g.aggregateConnectivity().state(g.anyNetworkAvailable()), stats.DefaultStore.GetGroup(g.Name)
-}
-
-// EnableSelectionTolerance switches latency selection from startup best-so-far
-// behavior to the configured steady-state hysteresis.
-func (g *DialerGroup) EnableSelectionTolerance() {
-	if g.selector != nil {
-		g.selector.EnableTolerance()
-	}
 }
 
 func (g *DialerGroup) anyNetworkAvailable() bool {
@@ -382,25 +299,6 @@ func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, a
 	return nil
 }
 
-func (g *DialerGroup) policyDialers() []*dialer.Dialer {
-	if g.selectionPolicy.Policy == "" || g.selectionPolicy.Policy == consts.DialerSelectionPolicy_Fixed || g.IsSelector() {
-		index := int(g.selectionIndex.Load())
-		if index < 0 || index >= len(g.Dialers) {
-			return nil
-		}
-		return g.Dialers[index : index+1]
-	}
-	return g.Dialers
-}
-
-func (g *DialerGroup) fixedDialer() *dialer.Dialer {
-	index := int(g.selectionIndex.Load())
-	if index < 0 || index >= len(g.Dialers) {
-		return nil
-	}
-	return g.Dialers[index]
-}
-
 type groupConnectivity struct {
 	networks    [common.NetworkTypeCount]bool
 	stable      bool
@@ -437,75 +335,9 @@ func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
 	return aggregate
 }
 
-// SelectedDialer returns the dialer currently selected for the given network
-// type. It returns nil for policies without a stable selection (e.g. random)
-// or when no dialer is alive.
-func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Dialer {
-	if g.closed.Load() {
-		return nil
-	}
-	var selected *dialer.Dialer
-	if g.Kind != GroupKindSelector {
-		selected = g.Dialers[0]
-	} else {
-		switch g.selectionPolicy.Policy {
-		case "", consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Selector:
-			selected = g.fixedDialer()
-		case consts.DialerSelectionPolicy_Random:
-			return nil
-		default:
-			selected = g.selector.SelectedDialer(networkType)
-		}
-	}
-	if selected == nil || !selected.Usable(networkType) {
-		return nil
-	}
-	return selected
-}
-
-// SelectFallbackIpVersion selects a dialer and optionally tries the other IP family.
-func (g *DialerGroup) SelectFallbackIpVersion(networkType common.NetworkType, strictIpVersion bool) (*dialer.Dialer, common.NetworkType, bool, error) {
-	selected, err := g.Select(&networkType)
-	if !strictIpVersion && errors.Is(err, ErrNoAliveDialer) {
-		networkType.IpVersion = (consts.IpVersion_X - networkType.IpVersion.ToIpVersionType()).ToIpVersionStr()
-		selected, err = g.Select(&networkType)
-		return selected, networkType, true, err
-	}
-	return selected, networkType, false, err
-}
-
-func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, error) {
-	if g.closed.Load() {
-		return nil, net.ErrClosed
-	}
-	if len(g.Dialers) == 0 {
-		return nil, ErrNoDialer
-	}
-	if g.Kind != GroupKindSelector {
-		d := g.Dialers[0]
-		if !d.Usable(networkType) {
-			return nil, ErrNoAliveDialer
-		}
-		return d, nil
-	}
-	var selected *dialer.Dialer
-	switch g.selectionPolicy.Policy {
-	case "", consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Selector:
-		selected = g.fixedDialer()
-	case consts.DialerSelectionPolicy_Random:
-		selected = g.selectRandom(networkType)
-	default:
-		selected = g.selector.Select(networkType)
-	}
-	if selected == nil || !selected.Usable(networkType) {
-		return nil, ErrNoAliveDialer
-	}
-	return selected, nil
-}
-
 func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer.SelectionForceMask) {
-	g.notifyMu.Lock()
-	defer g.notifyMu.Unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.closed.Load() {
 		return
 	}
@@ -513,7 +345,7 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 		return
 	}
 	if g.selector != nil {
-		g.selector.Refresh(dialer, forceSelection)
+		g.selector.refresh(dialer, forceSelection)
 	}
 	if err := g.updateConnectivity(); err != nil {
 		log.WithField("group", g.Name).WithError(err).Error("Failed to update group routing availability")
@@ -522,15 +354,7 @@ func (g *DialerGroup) DialerChanged(dialer *dialer.Dialer, forceSelection dialer
 	g.closeRecoveredConnections()
 }
 
-func (g *DialerGroup) closeRecoveredConnections() {
-	for i, available := range g.networkAvailable {
-		if available {
-			g.closeConnectionGeneration(common.NetworkIndex(i).NetworkType(), false)
-		}
-	}
-}
-
-// updateConnectivity runs with notifyMu held for both checker notifications
+// updateConnectivity runs with mu held for both checker notifications
 // and manual selection changes.
 func (g *DialerGroup) updateConnectivity() error {
 	connectivity := g.aggregateConnectivity()
