@@ -103,7 +103,7 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane.outbounds[0].SetConnectionPolicy(true, true)
-	_, _, _, groupLease, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
+	groupSelection, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
 	other := newAPITestPlane(t, store).outbounds[0]
 	other.Name = "other"
 	plane.outbounds = append(plane.outbounds, other)
@@ -114,7 +114,7 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 	if changed, err := plane.ReloadRuntimeSettings(); changed || err == nil {
 		t.Fatal(changed, err)
 	}
-	if deviceLease.AbortCause() != nil || groupLease.AbortCause() != nil {
+	if deviceLease.AbortCause() != nil || groupSelection.Lease.AbortCause() != nil {
 		t.Fatal("rolled-back reload aborted existing connections")
 	}
 	for _, group := range plane.outbounds {

@@ -69,7 +69,7 @@ func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation, len(dialers)),
 		publishNetwork:     callback,
 	}
-	g.selectionIndex.Store(int64(policy.FixedIndex))
+	g.selectionIndex = policy.FixedIndex
 	for i, d := range dialers {
 		g.dialerToAnnotation[d] = annotations[i]
 	}
@@ -202,7 +202,7 @@ func TestLatencySelectorIgnoresToleranceUntilEnabled(t *testing.T) {
 		t.Fatalf("initial Select = %v, %v; want first", selected, err)
 	}
 	annotations[1].AddLatency = 90 * time.Millisecond
-	selector.Refresh(dialers[1], dialer.SelectionForceNone)
+	selector.refresh(dialers[1], dialer.SelectionForceNone)
 	if selected := g.SelectedDialer(testNetworkType); selected != dialers[1] {
 		t.Fatalf("startup selection = %v, want second", selected)
 	}
@@ -212,11 +212,11 @@ func TestLatencySelectorIgnoresToleranceUntilEnabled(t *testing.T) {
 
 	g.EnableSelectionTolerance()
 	annotations[0].AddLatency = 80 * time.Millisecond
-	selector.Refresh(dialers[0], dialer.SelectionForceNone)
+	selector.refresh(dialers[0], dialer.SelectionForceNone)
 	if selected := g.SelectedDialer(testNetworkType); selected != dialers[1] {
 		t.Fatalf("steady-state selection = %v, want second", selected)
 	}
-	selector.Refresh(dialers[0], dialer.SelectionForceFor(testNetworkType.Index()))
+	selector.refresh(dialers[0], dialer.SelectionForceFor(testNetworkType.Index()))
 	if selected := g.SelectedDialer(testNetworkType); selected != dialers[0] {
 		t.Fatalf("forced selection = %v, want first", selected)
 	}
@@ -245,7 +245,7 @@ func TestLatencySelectorToleranceDoesNotOverflow(t *testing.T) {
 	}
 	g.EnableSelectionTolerance()
 	annotations[1].AddLatency = minimum
-	selector.Refresh(dialers[1], dialer.SelectionForceNone)
+	selector.refresh(dialers[1], dialer.SelectionForceNone)
 	if selected := g.SelectedDialer(testNetworkType); selected != dialers[0] {
 		t.Fatalf("overflowing tolerance switched to %v", selected)
 	}

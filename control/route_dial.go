@@ -59,7 +59,7 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 	if ipErr == nil {
 		networkType.IpVersion = consts.IpVersionStrFromAddr(target.Addr())
 	}
-	dialer, selectedNetwork, fallback, policyLease, err := selectedOutbound.SelectConnection(
+	selection, err := selectedOutbound.SelectConnection(
 		networkType,
 		ipErr == nil,
 	)
@@ -72,9 +72,8 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 		originalOutbound = selectedOutbound
 		selectedOutboundIndex = c.noConnectivityOutbound
 		selectedOutbound = c.outbounds[selectedOutboundIndex]
-		selectedNetwork = networkType
-		fallback = false
-		dialer, err = selectedOutbound.Select(&selectedNetwork)
+		selection.Network = networkType
+		selection.Dialer, err = selectedOutbound.Select(&selection.Network)
 		if err != nil {
 			return nil, fmt.Errorf("select fallback outbound %q: %w", selectedOutbound.Name, err)
 		}
@@ -82,14 +81,14 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 	return &DialOption{
 		Mark:              mark,
 		DialTarget:        dialTarget,
-		Dialer:            dialer,
+		Dialer:            selection.Dialer,
 		connectionDialer:  c.directDialerForMark(selectedOutboundIndex, mark),
 		Outbound:          selectedOutbound,
 		OriginalOutbound:  originalOutbound,
-		NetworkType:       selectedNetwork,
+		NetworkType:       selection.Network,
 		Direct:            selectedOutboundIndex == consts.OutboundDirect,
-		FallbackIpVersion: fallback,
-		PolicyLease:       policyLease,
+		FallbackIpVersion: selection.Network.IpVersion != networkType.IpVersion,
+		PolicyLease:       selection.Lease,
 	}, nil
 }
 

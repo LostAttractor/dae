@@ -180,8 +180,8 @@ func TestUDPDirectFallbackRetainsOriginalGroupPolicy(t *testing.T) {
 	if !route.Direct || route.OriginalOutbound != original || route.PolicyLease == nil {
 		t.Fatalf("fallback lost group ownership: %+v", route)
 	}
-	_, _, _, originalLease, err := original.SelectConnection(network, true)
-	if !errors.Is(err, outbound.ErrNoAliveDialer) || originalLease != route.PolicyLease {
+	originalSelection, err := original.SelectConnection(network, true)
+	if !errors.Is(err, outbound.ErrNoAliveDialer) || originalSelection.Lease != route.PolicyLease {
 		t.Fatalf("fallback policy is not owned by original group")
 	}
 	c.noConnectivityOutbound = consts.OutboundBlock
