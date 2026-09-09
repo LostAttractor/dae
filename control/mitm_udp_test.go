@@ -20,7 +20,7 @@ func TestMITMUDPSourceKeepsSeparateDestinations(t *testing.T) {
 	t.Cleanup(endpoints.closeAll)
 	source := netip.MustParseAddrPort("192.0.2.1:51000")
 	destination := netip.MustParseAddrPort("198.51.100.1:443")
-	bridge, server := newMITMPacketPair(source, destination)
+	bridge, server := newMITMPacketPair(source, destination, nil)
 	selected := &udpLifecycleDialer{opened: make(chan *udpLifecyclePacket, 8)}
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute})
 	endpoint.mitm, endpoint.firstDst, endpoint.firstIfindex = true, destination, 7
@@ -59,7 +59,7 @@ func TestMITMUDPDrainOnlyDeliversExactAssociation(t *testing.T) {
 	t.Cleanup(endpoints.closeAll)
 	source := netip.MustParseAddrPort("192.0.2.1:51000")
 	destination := netip.MustParseAddrPort("198.51.100.1:443")
-	bridge, server := newMITMPacketPair(source, destination)
+	bridge, server := newMITMPacketPair(source, destination, nil)
 	target := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute})
 	target.mitm, target.firstDst, target.firstIfindex = true, destination, 7
 	target.traffic = stats.DefaultStore.OpenConnection(stats.Path{}, false)
@@ -103,7 +103,7 @@ func TestMITMUDPEndpointClose(t *testing.T) {
 		{name: "HTTP3 other read failure", mitm: true, err: readFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ingress, server := newMITMPacketPair(source, destination)
+			ingress, server := newMITMPacketPair(source, destination, nil)
 			t.Cleanup(func() { _ = ingress.Close() })
 			conn := ingress
 			if test.err == readFailure {

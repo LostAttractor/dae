@@ -203,6 +203,9 @@ func TestMITMQUICAbortEndsSourceLifetime(t *testing.T) {
 				policy.Abort(cause)
 			case "route":
 				route.Abort(cause)
+				if !errors.Is(lease.AbortCause(), cause) {
+					t.Fatal("route abort did not synchronously stop upstream admission")
+				}
 			}
 			deadline := time.Now().Add(time.Second)
 			for {
