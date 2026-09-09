@@ -182,13 +182,12 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		}
 		mark := c.soMarkFromDae
 		ue = &UdpEndpoint{
-			routeLease:    routeLease,
-			routingResult: routingResult,
-			firstDst:      dst,
-			firstIfindex:  routingResult.Ifindex,
-			sniffer:       sniffing.NewPacketSniffer(nil),
-			NatTimeout:    udpSniffingTimeout,
-			unbind:        unbind,
+			routeLease:   routeLease,
+			pending:      &udpSetup{routingResult: routingResult, sniffer: sniffing.NewPacketSniffer(nil)},
+			firstDst:     dst,
+			firstIfindex: routingResult.Ifindex,
+			NatTimeout:   udpSniffingTimeout,
+			unbind:       unbind,
 			handler: func(data []byte, from netip.AddrPort) error {
 				return sendPktWithMark(data, from, src, mark)
 			},
@@ -206,6 +205,15 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		return c.writeUDP(ctx, ue, src, dst, data)
 	}
 
+	return c.initializeUDP(ctx, ue, src, dst, data)
+}
+
+// initializeUDP runs under the source lock until the first route is installed.
+// Later packets enter writeUDP directly, without routing or sniffing again.
+func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) (err error) {
+	p := c.udpEndpoints
+	pending := ue.pending
+
 	ctx, cancelRoute := context.WithCancel(ctx)
 	defer cancelRoute()
 	stopRoute := watchAbort(nil, nil, ue.routeLease, cancelRoute)
@@ -216,28 +224,28 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	var domain string
 	var isQuic bool
 	if dst == ue.firstDst {
-		ue.sniffer.AppendData(data)
-		if ue.routingResult.NoSniff == 0 {
-			domain, isQuic, err = ue.sniffer.SniffUdp()
+		pending.sniffer.AppendData(data)
+		if pending.routingResult.NoSniff == 0 {
+			domain, isQuic, err = pending.sniffer.SniffUdp()
 		}
 		if err != nil && !sniffing.IsSniffingError(err) {
 			p.removeInBackgroundLocked(src, ue)
 			return err
 		}
-		if ue.sniffer.NeedMore() {
+		if pending.sniffer.NeedMore() {
 			return nil
 		}
 	}
 
 	network := common.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStrFromAddr(ue.firstDst.Addr())}
 	param := &RouteParam{
-		routingResult: ue.routingResult, networkType: network,
+		routingResult: pending.routingResult, networkType: network,
 		Domain: domain, Src: src, Dest: ue.firstDst,
 	}
 	var option *DialOption
 	var planner mitm.UpstreamPlanner
 	var release func()
-	if ue.sniffer.IsHTTP3() {
+	if pending.sniffer.IsHTTP3() {
 		if param.Domain == "" {
 			param.Domain = ue.firstDst.Addr().String()
 		}
@@ -268,10 +276,10 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 			p.removeInBackgroundLocked(src, ue)
 			return nil
 		}
-		if ue.firstDst.Port() == 53 && ue.routingResult.Must == 0 && !param.destination.IsValid() {
+		if ue.firstDst.Port() == 53 && pending.routingResult.Must == 0 && !param.destination.IsValid() {
 			var message dnsmessage.Msg
 			if message.Unpack(data) == nil {
-				c.dnsController.Handle(&message, &udpRequest{src: src, dst: ue.firstDst, routingResult: ue.routingResult})
+				c.dnsController.Handle(&message, &udpRequest{src: src, dst: ue.firstDst, routingResult: pending.routingResult})
 				p.removeInBackgroundLocked(src, ue)
 				return nil
 			}
@@ -287,7 +295,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if isQuic {
 			label = "quic" + string(network.IpVersion)
 		}
-		c.logDial(src, ue.firstDst, domain, option, label, ue.routingResult)
+		c.logDial(src, ue.firstDst, domain, option, label, pending.routingResult)
 
 		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		stopSetup := watchAbort(nil, option.PolicyLease, nil, cancel)
@@ -343,13 +351,12 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 	ue.lease = netproxy.DependencyOf(conn)
 	ue.NatTimeout = DefaultNatTimeoutUDP
 	p.refreshTimerLocked(src, ue, time.Now())
-	ue.routingResult = nil
 	ue.startSocket(p, src, ue.firstDst, socketKey, conn)
 
 	// Send the buffered first destination in arrival order, followed by the
 	// packet that completed initialization (if it uses another destination).
-	sniffer := ue.sniffer
-	ue.sniffer = nil
+	sniffer := pending.sniffer
+	ue.pending = nil
 	defer sniffer.Close()
 	for _, packet := range sniffer.Data()[1:] {
 		if err := c.writeUDP(ctx, ue, src, ue.firstDst, packet); err != nil || ue.IsClosed() {
@@ -414,6 +421,9 @@ func temporaryUDPError(err error) bool {
 	for _, failure := range netproxy.Failures(err) {
 		if failure.Scope == netproxy.ScopeSharedResource || failure.Scope == netproxy.ScopeStream {
 			return false
+		}
+		if failure.Scope == netproxy.ScopeOperation && failure.Reason == netproxy.ReasonCapacity {
+			continue
 		}
 		if timeout, ok := IsNetError(failure.Cause); ok && timeout.Timeout() {
 			continue
