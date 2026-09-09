@@ -117,7 +117,7 @@ type Dialer struct {
 	healthSeq          uint64
 	observedSessionSeq uint64
 	statusRevision     uint64
-	recovery           RecoverySnapshot
+	recovery           recoveryProgress
 	lastFailure        *FailureSnapshot
 	resourceFailures   map[uint64]resourceFailureProgress
 	activeProbes       int
@@ -257,12 +257,11 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 		checksConnectivity: checksConnectivity,
 		checkCh:            make(chan struct{}, 1),
 		statusRevision:     1,
-		recovery:           RecoverySnapshot{Phase: RecoveryQueued, Verification: "pending"},
+		recovery:           recoveryProgress{Phase: RecoveryQueued},
 		ctx:                ctx,
 		cancel:             cancel,
 	}
 	if !checksConnectivity {
-		d.recovery.Verification = "disabled"
 		if session == nil {
 			d.recovery.Phase = RecoveryReady
 		}
@@ -273,7 +272,6 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	}
 	if session != nil {
 		snapshot := session.Snapshot()
-		d.recovery.Executor = snapshot.RecoveryExecutor
 		if !checksConnectivity {
 			if snapshot.Accepting {
 				d.healthSeq = snapshot.ReadinessVersion
@@ -426,16 +424,13 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	snapshot := RuntimeSnapshot{
 		Revision:           d.statusRevision,
 		ObservedSessionSeq: d.observedSessionSeq,
-		Recovery:           d.recovery,
+		Recovery:           d.recoverySnapshotLocked(session, healthy),
 		Failure:            d.lastFailure,
 		Healthy:            healthy,
 		InitialCheckDone:   d.initialCheckCompletedLocked(),
 		ConfirmingFailure:  healthy && d.health == healthConfirming,
 		Session:            session,
 		HasSession:         d.session != nil,
-	}
-	if d.session != nil {
-		snapshot.Recovery = ownerRecovery(session, snapshot.Recovery)
 	}
 	for i, state := range d.networks {
 		snapshot.SupportState[i] = supportState(state)

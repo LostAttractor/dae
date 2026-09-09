@@ -24,15 +24,41 @@ const (
 	RecoveryStopped           RecoveryPhase = "stopped"
 )
 
-func ownerRecovery(snapshot netproxy.StateEvent, recovery RecoverySnapshot) RecoverySnapshot {
+// recoveryProgress contains only worker-owned facts. Session ownership and
+// verification are derived when reading status, rather than copied on events.
+type recoveryProgress struct {
+	Action    string
+	Phase     RecoveryPhase
+	Attempt   uint64
+	RetryAt   time.Time
+	BlockedBy string
+}
+
+// Caller holds d.mu. This is the single composition point for public status.
+func (d *Dialer) recoverySnapshotLocked(session netproxy.StateEvent, healthy bool) RecoverySnapshot {
+	progress := d.recovery
+	recovery := RecoverySnapshot{
+		Executor: session.RecoveryExecutor,
+		Action:   progress.Action, Phase: progress.Phase, Attempt: progress.Attempt,
+		RetryAt: progress.RetryAt, BlockedBy: progress.BlockedBy,
+		Verification: "pending",
+	}
+	if !d.checksConnectivity {
+		recovery.Verification = "disabled"
+	} else if healthy && d.health != healthConfirming && progress.Phase != RecoveryVerifying {
+		recovery.Verification = "verified"
+	}
 	if recovery.Phase == RecoveryStopped || recovery.Phase == RecoveryBlocked {
 		return recovery
 	}
-	switch RecoveryPhase(snapshot.RecoveryPhase) {
+	if recovery.Phase == RecoveryReady && d.health == healthConfirming {
+		recovery.Phase, recovery.Action, recovery.BlockedBy = RecoveryQueued, "verify", "failure_confirmation"
+	}
+	switch RecoveryPhase(session.RecoveryPhase) {
 	case RecoveryCleanup, RecoveryWaitingDependency:
-		recovery.Phase = RecoveryPhase(snapshot.RecoveryPhase)
+		recovery.Phase = RecoveryPhase(session.RecoveryPhase)
 		recovery.Action = "connect"
-		recovery.BlockedBy = snapshot.BlockedBy
+		recovery.BlockedBy = session.BlockedBy
 		recovery.RetryAt = time.Time{}
 	}
 	return recovery
@@ -198,18 +224,8 @@ func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedB
 		next.Action = "connect"
 	case RecoveryVerifying:
 		next.Action = "verify"
-		next.Verification = "pending"
 	case RecoveryReady:
 		next.Action = ""
-		if d.ChecksConnectivity() {
-			next.Verification = "verified"
-			if d.health == healthConfirming {
-				next.Phase = RecoveryQueued
-				next.Action = "verify"
-				next.Verification = "pending"
-				next.BlockedBy = "failure_confirmation"
-			}
-		}
 	case RecoveryStopped:
 		next.Action = ""
 	}
@@ -224,8 +240,10 @@ func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedB
 	d.statusRevision++
 	revision := d.statusRevision
 	diagnostic := d.lastFailure
+	session := d.sessionSnapshot()
+	nextStatus := d.recoverySnapshotLocked(session, d.healthyLocked(session))
 	d.mu.Unlock()
-	fields := log.Fields{"node": d.Name, "phase": next.Phase, "executor": next.Executor, "attempt": next.Attempt, "revision": revision}
+	fields := log.Fields{"node": d.Name, "phase": next.Phase, "executor": nextStatus.Executor, "attempt": next.Attempt, "revision": revision}
 	if !next.RetryAt.IsZero() {
 		fields["retry_at"] = retryAt
 		fields["retry_in"] = max(time.Until(retryAt), 0).Round(time.Millisecond)
@@ -251,16 +269,14 @@ func (d *Dialer) startConnection(event netproxy.StateEvent, action string) {
 		d.mu.Unlock()
 		return
 	}
-	d.recovery.Executor = event.RecoveryExecutor
 	d.recovery.Attempt++
 	d.recovery.Phase = RecoveryConnecting
 	d.recovery.Action = action
 	d.recovery.RetryAt = time.Time{}
 	d.recovery.BlockedBy = ""
 	d.statusRevision++
-	executor := d.recovery.Executor
 	d.mu.Unlock()
-	stats.DefaultStore.RecordReconnectAttempt(d.StatsKey(), string(executor))
+	stats.DefaultStore.RecordReconnectAttempt(d.StatsKey(), string(event.RecoveryExecutor))
 }
 
 func (d *Dialer) probeQueued() {
@@ -281,7 +297,6 @@ func (d *Dialer) probeStarted() {
 	if d.ctx.Err() == nil {
 		d.recovery.Phase = RecoveryVerifying
 		d.recovery.Action = "verify"
-		d.recovery.Verification = "pending"
 		d.recovery.BlockedBy = ""
 		d.statusRevision++
 	}

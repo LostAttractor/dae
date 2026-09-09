@@ -477,7 +477,6 @@ func TestUncheckedSessionStillRecoversWithoutProbing(t *testing.T) {
 	transport := newTestSessionTransport(netproxy.SessionDisconnected)
 	d := newTestDialer(t, transport)
 	d.checksConnectivity = false
-	d.recovery.Verification = "disabled"
 	for i := range d.networks {
 		d.networks[i] = networkSupported
 	}
