@@ -374,7 +374,6 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 	}
 	d.observedSessionSeq = event.Seq
 	d.statusRevision++
-	d.recovery.Executor = event.RecoveryExecutor
 	resourceFailure := false
 	if event.Cause != nil {
 		failure := primaryNodeFailure(event.Cause)
