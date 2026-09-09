@@ -23,11 +23,13 @@ const (
 func (m *RoutingMatcher) snapshotDestinations() *RoutingMatcher {
 	m.rulesMu.RLock()
 	defer m.rulesMu.RUnlock()
-	frozen := *m
-	frozen.lpmMatcher = slices.Clone(m.lpmMatcher)
-	frozen.rulesMu = new(sync.RWMutex)
-	frozen.outboundUsable = nil
-	return &frozen
+	return &RoutingMatcher{
+		destination:   m.destination,
+		matches:       m.matches,
+		lpmMatcher:    slices.Clone(m.lpmMatcher),
+		domainMatcher: m.domainMatcher,
+		rulesMu:       new(sync.RWMutex),
+	}
 }
 
 func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error) {

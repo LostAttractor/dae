@@ -36,7 +36,7 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 type UdpEndpoint struct {
 	conn net.PacketConn
 	mitm bool // The first destination is served by the HTTP/3 packet bridge.
-	// mu protects the timer deadline and timer pointer.
+	// mu protects timer state and cleanup snapshots.
 	mu            sync.Mutex
 	deadlineTimer *time.Timer
 	timerDeadline time.Time
@@ -62,10 +62,16 @@ type UdpEndpoint struct {
 	sockets map[netip.AddrPort]net.PacketConn
 	unbind  func()
 
-	// Only initialization uses these fields, under the source key lock.
+	// The source key lock serializes initialization and packet delivery.
+	pending      *udpSetup
+	firstDst     netip.AddrPort
+	firstIfindex uint32
+}
+
+// udpSetup exists only while collecting the first destination's packets.
+// An established endpoint retains its decisions, not its sniffing machinery.
+type udpSetup struct {
 	routingResult *bpfRoutingResult
-	firstDst      netip.AddrPort
-	firstIfindex  uint32
 	sniffer       *sniffing.Sniffer
 }
 
@@ -130,9 +136,9 @@ func (ue *UdpEndpoint) retireLocked() {
 		ue.releaseDialer()
 		ue.releaseDialer = nil
 	}
-	if ue.sniffer != nil {
-		_ = ue.sniffer.Close()
-		ue.sniffer = nil
+	if ue.pending != nil {
+		_ = ue.pending.sniffer.Close()
+		ue.pending = nil
 	}
 	ue.timerDeadline = time.Time{}
 	if ue.deadlineTimer != nil {

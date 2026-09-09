@@ -141,6 +141,8 @@ func TestUDPErrorsKeepOnlyRecoverableDatagrams(t *testing.T) {
 		temporary bool
 	}{
 		{"deadline", context.DeadlineExceeded, true},
+		{"target capacity", netproxy.WrapFailure(errors.New("target limit"), netproxy.Failure{Scope: netproxy.ScopeOperation, Layer: netproxy.LayerUDP, Reason: netproxy.ReasonCapacity}), true},
+		{"shared capacity", netproxy.WrapFailure(errors.New("resource limit"), netproxy.Failure{Scope: netproxy.ScopeSharedResource, Reason: netproxy.ReasonCapacity}), false},
 		{"target unreachable", netproxy.WrapFailure(&net.OpError{Net: "udp", Err: unix.EHOSTUNREACH}, netproxy.Failure{Origin: netproxy.OriginTarget}), true},
 		{"upstream unreachable", &net.OpError{Net: "udp", Err: unix.EHOSTUNREACH}, false},
 		{"oversized packet", unix.EMSGSIZE, true},
