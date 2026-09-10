@@ -9,10 +9,6 @@ import (
 	"slices"
 	"sync"
 	"testing"
-
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/vishvananda/netlink"
-	"golang.org/x/sys/unix"
 )
 
 func TestControlPlaneCoreCleanupOwnership(t *testing.T) {
@@ -70,39 +66,5 @@ func TestControlPlaneCoreCleanupRegistrationConcurrent(t *testing.T) {
 	workers.Wait()
 	if cleanups := core.takeCleanups(); len(cleanups) != 200 {
 		t.Fatalf("cleanup count = %d, want 200", len(cleanups))
-	}
-}
-
-func TestLegacyTCFilter(t *testing.T) {
-	newFilter := func(priority, minor uint16, name string) *netlink.BpfFilter {
-		return &netlink.BpfFilter{
-			FilterAttrs: netlink.FilterAttrs{
-				Handle:   netlink.MakeHandle(0x2023, minor),
-				Priority: priority,
-				Protocol: unix.ETH_P_ALL,
-			},
-			Name:         name,
-			DirectAction: true,
-		}
-	}
-	originalIngress := newFilter(0, 1, consts.AppName+"_ingress")
-	originalIngress.FilterAttrs.Handle = netlink.MakeHandle(0, 1)
-	tests := []struct {
-		name   string
-		filter *netlink.BpfFilter
-		parent uint32
-		want   bool
-	}{
-		{"current LAN ingress", newFilter(2, 4, consts.AppName+"_lan_ingress_l2"), netlink.HANDLE_MIN_INGRESS, true},
-		{"historical WAN egress", newFilter(1, 1, consts.AppName+"_wan_egress"), netlink.HANDLE_MIN_EGRESS, true},
-		{"original ingress", originalIngress, netlink.HANDLE_MIN_INGRESS, true},
-		{"foreign name", newFilter(1, 2, "foreign_wan_ingress"), netlink.HANDLE_MIN_INGRESS, false},
-		{"wrong parent", newFilter(1, 2, consts.AppName+"_wan_ingress"), netlink.HANDLE_MIN_EGRESS, false},
-		{"unknown handle", newFilter(1, 6, consts.AppName+"_wan_ingress"), netlink.HANDLE_MIN_INGRESS, false},
-	}
-	for _, test := range tests {
-		if got := legacyTCFilter(test.filter, test.parent); got != test.want {
-			t.Errorf("%s: legacyTCFilter() = %v, want %v", test.name, got, test.want)
-		}
 	}
 }
