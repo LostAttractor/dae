@@ -5,15 +5,80 @@ package mitm
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestPlannedTransportClosesUnsentBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		plan   UpstreamPlanner
+		closed bool
+	}{
+		{name: "missing planner"},
+		{name: "planner failure", plan: func(*http.Request) (UpstreamPlan, error) {
+			return UpstreamPlan{}, errors.New("no outbound available")
+		}},
+		{name: "incomplete plan", plan: func(*http.Request) (UpstreamPlan, error) {
+			return UpstreamPlan{Key: "route"}, nil
+		}},
+		{name: "closed", plan: testUpstream((&net.Dialer{}).DialContext), closed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &plannedTransport{plan: tc.plan, closed: tc.closed}
+			body := &replayCountedBody{Reader: strings.NewReader("upload")}
+			r, _ := http.NewRequest("POST", "https://example.com/", body)
+			if _, err := p.RoundTrip(r); err == nil {
+				t.Fatal("forwarded without an available upstream plan")
+			}
+			if body.reads != 0 || body.closes != 1 {
+				t.Fatalf("unsent body: read=%d closed=%d", body.reads, body.closes)
+			}
+		})
+	}
+}
+
+func TestPlannedTransportConcurrentResponseCleanup(t *testing.T) {
+	for _, evicted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("evicted=%t", evicted), func(t *testing.T) {
+			for range 100 {
+				var closes atomic.Int32
+				pool := &routePool{refs: 2, used: 1} // Cache and an active response.
+				p := &plannedTransport{
+					pools: map[string]*routePool{"active": pool},
+					owned: map[*routePool]func(){pool: func() { closes.Add(1) }},
+				}
+				if evicted {
+					delete(p.pools, "active")
+					if closePool := p.releaseLocked(pool); closePool != nil {
+						t.Fatal("eviction closed an active response")
+					}
+				}
+				// net/http permits Body.Close concurrently with Body.Read. An
+				// empty body lets both reach the pool release at the same time.
+				body := &plannedResponseBody{ReadCloser: http.NoBody, release: func() { p.release(pool) }}
+				start := make(chan struct{})
+				var done sync.WaitGroup
+				for _, finish := range []func(){p.close, p.close, func() { _, _ = body.Read(make([]byte, 1)) }, func() { _ = body.Close() }} {
+					done.Go(func() { <-start; finish() })
+				}
+				close(start)
+				done.Wait()
+				if got := closes.Load(); got != 1 {
+					t.Fatalf("pool closed %d times", got)
+				}
+			}
+		})
+	}
+}
 
 func TestHTTP3PoolEvictionPreservesActiveResponses(t *testing.T) {
 	authority, roots := http3TestAuthority(t)
