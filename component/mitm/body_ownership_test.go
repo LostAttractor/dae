@@ -16,21 +16,22 @@ import (
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
-func TestExchangeReleasesRequestAfterForwardingOrAbort(t *testing.T) {
+func TestRequestOwnershipEndsAfterUpstreamOrLocalResponse(t *testing.T) {
 	for _, outcome := range []string{"response", "local", "error", "abort", "body_error"} {
 		t.Run(outcome, func(t *testing.T) {
-			budget := membuffer.NewBudget(4096)
+			budget := membuffer.NewBudget(1 << 20)
+			payload := strings.Repeat("final", 32768)
 			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
 				return func(e *plugin.Exchange) (*http.Response, error) {
 					// Multiple request plugins can replace and inspect the same body.
-					for _, text := range []string{"first", "final"} {
+					for _, text := range []string{"first", payload} {
 						view, err := membuffer.Copy([]byte(text), budget)
 						if err != nil {
 							return nil, err
 						}
-						e.SetRequestBody(view)
+						plugin.SetRequestBody(e.Request, view)
 						view.Close()
-						snapshot, err := plugin.SnapshotBody(&e.Request.Body, 64, budget)
+						snapshot, err := plugin.SnapshotBody(&e.Request.Body, int64(len(payload)), budget)
 						snapshot.Close()
 						if err != nil {
 							return nil, err
@@ -48,7 +49,9 @@ func TestExchangeReleasesRequestAfterForwardingOrAbort(t *testing.T) {
 				}
 			}}
 			h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{Plugin: p})
+			upstreamCalls := 0
 			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				upstreamCalls++
 				_ = req.Body.Close() // A transport can close the first attempt before retrying.
 				retry, err := req.GetBody()
 				if err != nil {
@@ -56,18 +59,19 @@ func TestExchangeReleasesRequestAfterForwardingOrAbort(t *testing.T) {
 				}
 				got, err := io.ReadAll(retry)
 				_ = retry.Close()
-				if err != nil || string(got) != "final" {
+				if err != nil || string(got) != payload {
 					t.Fatalf("retry: %q %v", got, err)
 				}
 				r := response("")
 				r.Body = &ownershipResponse{check: func() {
-					if budget.Status().Used == 0 {
-						t.Error("released request ownership before response forwarding")
+					if budget.Status().Used != 0 {
+						t.Error("retained request retry storage while forwarding response")
 					}
 				}, fail: outcome == "body_error"}
 				return r, nil
 			})
 			handler := h.handlerForFlow("https", plugin.Flow{Host: "example.com", Port: 443}, transport, http.DefaultClient)
+			recorder := httptest.NewRecorder()
 			func() {
 				defer func() {
 					err := recover()
@@ -82,8 +86,22 @@ func TestExchangeReleasesRequestAfterForwardingOrAbort(t *testing.T) {
 				req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader("original"))
 				// ReverseProxy propagates body copy errors as it does inside a server.
 				req = req.WithContext(context.WithValue(req.Context(), http.ServerContextKey, &http.Server{}))
-				handler.ServeHTTP(httptest.NewRecorder(), req)
+				handler.ServeHTTP(recorder, req)
 			}()
+			wantCalls := 0
+			if outcome == "response" || outcome == "body_error" {
+				wantCalls = 1
+			}
+			if upstreamCalls != wantCalls {
+				t.Fatalf("upstream calls=%d, want %d", upstreamCalls, wantCalls)
+			}
+			wantStatus := http.StatusOK
+			if outcome == "error" {
+				wantStatus = http.StatusBadGateway
+			}
+			if outcome != "abort" && recorder.Code != wantStatus {
+				t.Fatalf("status=%d, want %d", recorder.Code, wantStatus)
+			}
 			if used := budget.Status().Used; used != 0 {
 				t.Fatalf("retained %d bytes after %s", used, outcome)
 			}

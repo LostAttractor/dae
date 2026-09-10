@@ -85,8 +85,13 @@ authorities resolve through dae DNS. Destination rules determine the effective
 IP while preserving client identity. Pure inspection reuses its valid route for
 the original authority. Pools are isolated per client connection and keyed by
 the full dial plan: addresses, nodes, outbounds, marks and transport/TLS authority.
-TCP dial failures can try the next address before writing HTTP data; streaming
-requests are never replayed. Traffic belongs to actual upstream connections.
+TCP dial failures can try the next address before writing HTTP data. Before
+upstream forwarding, the host enables transport-controlled safe retries for
+request bodies by sharing complete snapshots, or recording up to 64 KiB of
+streaming input under the shared memory budget. This does not delay forwarding;
+incomplete, oversized or budget-denied recordings cannot be replayed. Recording ownership
+ends when RoundTrip returns, even if the response is still streaming. Traffic
+belongs to actual upstream connections.
 Host HTTP entry points require an `UpstreamPlanner`; there is no separate
 dial-only execution path. Daemon downloads use the same candidate iterator,
 consuming addresses lazily until one connects. HTTP/3 pools use the final UDP
@@ -101,21 +106,26 @@ snapshots. Close the view after use; forwarding owns the replay reader. Supply
 hosts. `membuffer.ErrBudgetExhausted` never waits: a failed snapshot restores the
 consumed prefix and unread tail for forwarding.
 
-`Exchange.SetRequestBody` and `SetResponseBody` retain independent references;
-callers still close their own views. The host calls `Exchange.Close` after the
-entire response has been forwarded, releasing request retry ownership even on
-abort or cancellation. Standalone callers must close the exchange after all
-retries finish. Lifetime is explicit; garbage collection does not release budget
-reservations. Arbitrary plugin allocations and interpreter heaps are outside
-this budget.
+`SetRequestBody` and `SetResponseBody` transfer an independent body cursor;
+callers still close their own views. Replacing a request clears its old `GetBody`.
+The host prepares retry ownership from the final body immediately before
+RoundTrip and releases it when that call returns. Rewritten bodies and read-only
+snapshots use the same path, without retaining retry storage throughout a long
+response. The transport closes upload cursors separately, including uploads that
+outlive response headers. The host closes the final request body after forwarding
+or a local response. There is no Exchange-owned retry state or cleanup API.
+Lifetime is explicit; garbage collection does not release budget reservations.
+Arbitrary plugin allocations and interpreter heaps are outside this budget.
 
 [`pkg/membuffer`](../../../pkg/membuffer) owns admission, buffer growth and shared
 immutable storage. `Read`, `Copy` and `Buffer.Write` reserve capacity before
 allocation. `Read` returns consumed bytes even on failure; close that view or
-transfer it to replay storage. `View.Clone` and `View.Open` share bytes without
+transfer it to replay storage. `Snapshot` borrows an untouched reader's complete
+buffer without reading input. `View.Clone` and `View.Open` share bytes without
 copying, and each owner must be closed. Components outside MITM provide their own
 `NewBudget`; the package has no protocol dependency or global budget. The plugin
-package adds only HTTP replay, framing, trailers and exchange ownership.
+package adds HTTP snapshot restoration, body replacement, framing and trailers.
+The host owns transport retries and their lifetime.
 
 ## Lifecycle
 

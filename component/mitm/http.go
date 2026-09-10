@@ -39,7 +39,9 @@ func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, plan UpstreamPlan
 // transports. Both plan the final request before looking up a connection.
 func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.RoundTripper, client *http.Client) http.Handler {
 	host, port := flow.Host, flow.Port
-	chain := h.chain(flow, func(e *plugin.Exchange) (*http.Response, error) { return transport.RoundTrip(e.Request) })
+	chain := h.chain(flow, func(e *plugin.Exchange) (*http.Response, error) {
+		return h.roundTrip(transport, e.Request)
+	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		if h.closed {
@@ -68,10 +70,10 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		r = r.WithContext(plugin.WithIDs(r.Context(), connection, strconv.FormatUint(serial.Add(1), 10)))
 		controller := http.NewResponseController(w)
 		defer controller.SetReadDeadline(time.Time{})
-		exchange := &plugin.Exchange{Client: client, SetReadDeadline: controller.SetReadDeadline}
+		exchange := &plugin.Exchange{Request: r, Client: client, SetReadDeadline: controller.SetReadDeadline}
 		defer func() {
-			if exchange.Request != nil {
-				_ = exchange.Close()
+			if exchange.Request.Body != nil {
+				_ = exchange.Request.Body.Close()
 			}
 		}()
 		proxy := &httputil.ReverseProxy{

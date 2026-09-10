@@ -17,15 +17,7 @@ func SnapshotBody(body *io.ReadCloser, limit int64, budget *membuffer.Budget) (*
 	if *body == nil {
 		return (&membuffer.Buffer{Budget: budget, Limit: limit}).View(), nil
 	}
-	var cached *membuffer.View
-	switch b := (*body).(type) {
-	case *membuffer.Reader:
-		cached = b.Snapshot()
-	case *replayBody:
-		if b.complete {
-			cached = b.prefix.Snapshot()
-		}
-	}
+	cached := membuffer.Snapshot(*body)
 	if cached != nil {
 		if cached.Budget() == budget {
 			if int64(len(cached.Bytes())) <= limit {
@@ -74,4 +66,13 @@ type replayBody struct {
 func (b *replayBody) Close() error {
 	b.once.Do(func() { _ = b.prefix.Close(); b.err = b.source.Close() })
 	return b.err
+}
+
+// Snapshot exposes only a complete, untouched prefix. A partial snapshot still
+// depends on its source and cannot provide an independent retry cursor.
+func (b *replayBody) Snapshot() *membuffer.View {
+	if !b.complete {
+		return nil
+	}
+	return b.prefix.Snapshot()
 }

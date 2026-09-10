@@ -144,7 +144,7 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			e.SetRequestBody(view)
+			plugin.SetRequestBody(e.Request, view)
 			view.Close()
 			e.Request.Header.Set("X-Plugin", "request")
 			r, err := next(e)

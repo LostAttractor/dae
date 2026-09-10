@@ -52,6 +52,15 @@ func (v *View) Open() *Reader {
 	return &Reader{data: v.data}
 }
 
+// Snapshot borrows an untouched reader's immutable storage, if available.
+// It never reads input; nil means that the reader needs streaming or copying.
+func Snapshot(r io.Reader) *View {
+	if s, ok := r.(interface{ Snapshot() *View }); ok {
+		return s.Snapshot()
+	}
+	return nil
+}
+
 // Reader is an independent cursor that releases its reference at EOF or Close.
 // Read, Snapshot and Close may run concurrently. Each cursor advances and
 // releases its reference independently of other cursors and views.

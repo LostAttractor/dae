@@ -3,7 +3,6 @@
 package plugin
 
 import (
-	"io"
 	"net/http"
 	"strconv"
 
@@ -19,52 +18,33 @@ func SetResponseBody(r *http.Response, view *membuffer.View) {
 		_ = r.Body.Close()
 	}
 	r.Body = next
-	if r.Header == nil {
-		r.Header = make(http.Header)
-	}
-	r.ContentLength = replaceBodyMetadata(r.Header, r.Trailer, len(view.Bytes()))
+	r.Header, r.ContentLength = replaceBodyMetadata(r.Header, r.Trailer, len(view.Bytes()))
 	r.TransferEncoding = nil
 }
 
-// SetRequestBody keeps retry ownership on the exchange, independently of the
-// transport's body cursors. Close the exchange only after response forwarding ends.
-func (e *Exchange) SetRequestBody(view *membuffer.View) {
-	owned := view.Clone()
-	r := e.Request
+// SetRequestBody transfers a body cursor to the request, just like
+// SetResponseBody. The host owns retry storage only while forwarding upstream.
+func SetRequestBody(r *http.Request, view *membuffer.View) {
+	next := view.Open()
 	if r.Body != nil {
 		_ = r.Body.Close()
 	}
-	e.retryBody.Close()
-	e.retryBody = owned
-	r.Body = owned.Open()
-	r.GetBody = func() (io.ReadCloser, error) { return owned.Open(), nil }
-	if r.Header == nil {
-		r.Header = make(http.Header)
-	}
-	r.ContentLength = replaceBodyMetadata(r.Header, r.Trailer, len(view.Bytes()))
+	r.Body, r.GetBody = next, nil
+	r.Header, r.ContentLength = replaceBodyMetadata(r.Header, r.Trailer, len(view.Bytes()))
 	r.TransferEncoding = nil
 }
 
-// Close ends request ownership after all forwarding and retries. The host calls
-// it on success, abort, cancellation and failure, after the complete HTTP exchange.
-func (e *Exchange) Close() error {
-	var err error
-	if e.Request.Body != nil {
-		err = e.Request.Body.Close()
+func replaceBodyMetadata(header, trailer http.Header, size int) (http.Header, int64) {
+	if header == nil {
+		header = make(http.Header)
 	}
-	e.Request.GetBody = nil
-	e.retryBody.Close()
-	return err
-}
-
-func replaceBodyMetadata(header, trailer http.Header, size int) int64 {
 	for _, key := range []string{"Content-Encoding", "Content-Length", "Transfer-Encoding", "Trailer", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest", "ETag"} {
 		header.Del(key)
 		trailer.Del(key)
 	}
 	if len(trailer) != 0 {
-		return -1
+		return header, -1
 	}
 	header.Set("Content-Length", strconv.Itoa(size))
-	return int64(size)
+	return header, int64(size)
 }
