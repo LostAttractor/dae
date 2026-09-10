@@ -9,6 +9,8 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
+	dnsmessage "github.com/miekg/dns"
 	"github.com/samber/oops"
 )
 
@@ -112,4 +114,65 @@ func kernelRoute(result *bpfRoutingResult) (routeDecision, bool) {
 	d := routeDecision{outbound: consts.OutboundIndex(result.Outbound), mark: result.Mark, must: result.Must != 0}
 	// Reserved outbound IDs are handoff instructions, never a usable decision.
 	return d, d.outbound < consts.OutboundMustRules
+}
+
+// verified 返回 domain 是不是 dst 的域名
+// shouldReroute 返回 Kernel 是否有可能没有正确 Route
+// SniffVerifyMode_Loose 在这个域名存在时, 通过认证
+// SniffVerifyMode_Strict 在这个域名尝试过对应的 DNS 解析时, 通过认证
+func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, domain string) (verified bool, shouldReroute bool, err error) {
+	if err = ctx.Err(); err != nil {
+		return
+	}
+	if domain == "" {
+		return
+	}
+	fqdn := dnsmessage.CanonicalName(domain)
+	// Historical pairing remains valid for sniff verification after the
+	// corresponding kernel contribution expires or is capacity-evicted. Keep
+	// that trust decision separate from whether the current kernel map could
+	// route this connection accurately.
+	verification := c.core.domainRegistry.Verify(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}, dst.Addr())
+	if verification.Registered {
+		shouldReroute = !verification.KernelCovered
+		switch c.sniffVerifyMode {
+		case consts.SniffVerifyMode_None, consts.SniffVerifyMode_Loose:
+			verified = true
+		case consts.SniffVerifyMode_Strict:
+			verified = verification.Paired
+		}
+	} else {
+		// Successful sniff without DNS lookup record.
+		shouldReroute = true
+		// Check if the domain is in real-domain set (bloom filter).
+		switch c.sniffVerifyMode {
+		case consts.SniffVerifyMode_None:
+			verified = true
+		case consts.SniffVerifyMode_Strict:
+			verified = false
+		case consts.SniffVerifyMode_Loose:
+			// TODO: 产生一个真的DNS查询? 这样能被缓存
+			c.muRealDomainSet.Lock()
+			verified = c.realDomainSet.TestString(fqdn)
+			c.muRealDomainSet.Unlock()
+			if !verified {
+				// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
+				ip46, resolveErr := netutils.ResolveIp46Context(ctx, fqdn)
+				if resolveErr != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						err = ctxErr
+					}
+					return
+				}
+				if ip46.IsValid() {
+					// Add it to real-domain set.
+					c.muRealDomainSet.Lock()
+					c.realDomainSet.AddString(fqdn)
+					c.muRealDomainSet.Unlock()
+					verified = true
+				}
+			}
+		}
+	}
+	return
 }

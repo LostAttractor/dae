@@ -6,7 +6,6 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"slices"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -56,22 +55,6 @@ func (c *ControlPlane) mitmAuthority() *mitmca.Authority {
 		return c.mitmHost.Authority()
 	}
 	return nil
-}
-
-func (p *preparedRules) enableMITMPlan(plan plugin.Plan) {
-	p.routing = slices.Concat(plan.EarlyRoutes, p.routing, plan.Routes)
-	if len(plan.Scopes) != 0 {
-		if p.capture == nil {
-			p.capture = &routingCapture{}
-		}
-		for _, scope := range plan.Scopes {
-			if scope.PreserveRoute {
-				p.capture.http = append(p.capture.http, scope.Scope)
-			} else {
-				p.capture.requestRouting = append(p.capture.requestRouting, scope.Scope)
-			}
-		}
-	}
 }
 
 // mitmSelection is shared by the traffic gate and the device API. An explicit

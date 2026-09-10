@@ -3,12 +3,26 @@
 package control
 
 import (
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/pkg/config_parser"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
+
+	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+func (p *preparedRules) bypassLocalAPI(port uint16) error {
+	if port == 0 {
+		return nil
+	}
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return fmt.Errorf("read host addresses for API routing: %w", err)
+	}
+	p.bypassAPI(port, addresses)
+	return nil
+}
 
 // Preserve the original LAN peer for the daemon's HTTP API, including when the
 // configured fallback is a proxy. Only exact host addresses and this TCP port
