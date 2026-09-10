@@ -29,29 +29,47 @@ type plannedTransport struct {
 	closed bool
 	serial uint64
 	pools  map[string]*routePool
-	owned  map[*routePool]struct{}
+	owned  map[*routePool]func()
 }
 
 type routePool struct {
 	transport http.RoundTripper
-	close     func()
-	once      sync.Once
 	used      uint64
-	active    int
-	retired   bool
+	// The cache and each in-flight exchange hold one reference.
+	refs int
 }
 
 func (h *Host) plannedTransport(plan UpstreamPlanner, packet bool) *plannedTransport {
-	return &plannedTransport{host: h, packet: packet, plan: plan, pools: make(map[string]*routePool), owned: make(map[*routePool]struct{})}
+	return &plannedTransport{host: h, packet: packet, plan: plan, pools: make(map[string]*routePool), owned: make(map[*routePool]func())}
 }
 
-func (p *plannedTransport) RoundTrip(request *http.Request) (response *http.Response, err error) {
-	delegated := false
-	defer func() {
-		if !delegated && request.Body != nil {
+func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	pool, err := p.acquire(request)
+	if err != nil {
+		if request.Body != nil {
 			_ = request.Body.Close()
 		}
-	}()
+		return nil, err
+	}
+	response, err := pool.transport.RoundTrip(request)
+	if err != nil {
+		p.release(pool)
+		return response, err
+	}
+	body := &plannedResponseBody{ReadCloser: response.Body, release: func() { p.release(pool) }}
+	if writer, ok := response.Body.(io.Writer); ok {
+		// HTTP/1 upgrades retain bidirectional body access for ReverseProxy.
+		response.Body = &plannedReadWriteBody{plannedResponseBody: body, Writer: writer}
+	} else {
+		response.Body = body
+	}
+	return response, nil
+}
+
+// acquire owns planning and cache lookup. A successful acquisition transfers
+// request-body closure to the underlying transport and leases its pool until
+// the response finishes (or RoundTrip fails).
+func (p *plannedTransport) acquire(request *http.Request) (*routePool, error) {
 	if p.plan == nil {
 		return nil, fmt.Errorf("mitm: missing upstream planner")
 	}
@@ -69,7 +87,7 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (response *http.Resp
 	}
 	p.serial++
 	pool := p.pools[plan.Key]
-	var evicted *routePool
+	var closeEvicted func()
 	if pool == nil {
 		// Retired pools remain owned until their active response bodies finish.
 		// In particular, evicting an HTTP/3 pool must not abort other streams.
@@ -83,65 +101,60 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (response *http.Resp
 			}
 			entry := p.pools[oldestKey]
 			delete(p.pools, oldestKey)
-			entry.retired = true
-			if entry.active == 0 {
-				delete(p.owned, entry)
-				evicted = entry
-			}
+			closeEvicted = p.releaseLocked(entry)
 		}
-		pool = &routePool{}
+		pool = &routePool{refs: 1} // Cache reference.
+		var closePool func()
 		if p.packet {
 			transport := p.host.http3Transport(plan.DialPacket)
-			pool.transport, pool.close = transport, func() { _ = transport.Close() }
+			pool.transport, closePool = transport, func() { _ = transport.Close() }
 		} else {
 			transport := p.host.httpTransport(plan.Dial)
-			pool.transport, pool.close = transport, transport.CloseIdleConnections
+			pool.transport, closePool = transport, transport.CloseIdleConnections
 		}
 		p.pools[plan.Key] = pool
-		p.owned[pool] = struct{}{}
+		p.owned[pool] = closePool
 	}
-	pool.used, pool.active = p.serial, pool.active+1
+	pool.used, pool.refs = p.serial, pool.refs+1
 	p.mu.Unlock()
-	if evicted != nil {
-		evicted.once.Do(evicted.close)
+	if closeEvicted != nil {
+		closeEvicted()
 	}
-	delegated = true
-	response, err = pool.transport.RoundTrip(request)
-	if err != nil || response.Body == nil {
-		p.release(pool)
-	} else {
-		body := &plannedResponseBody{ReadCloser: response.Body, release: func() { p.release(pool) }}
-		if writer, ok := response.Body.(io.Writer); ok {
-			// HTTP/1 upgrades retain bidirectional body access for ReverseProxy.
-			response.Body = &plannedReadWriteBody{plannedResponseBody: body, Writer: writer}
-		} else {
-			response.Body = body
-		}
+	return pool, nil
+}
+
+// Taking the callback under mu transfers exclusive cleanup ownership. A
+// concurrent transport close can take it instead; no per-pool Once is needed.
+func (p *plannedTransport) releaseLocked(pool *routePool) func() {
+	pool.refs--
+	if pool.refs != 0 {
+		return nil
 	}
-	return response, err
+	closePool := p.owned[pool]
+	delete(p.owned, pool)
+	return closePool
 }
 
 func (p *plannedTransport) release(pool *routePool) {
 	p.mu.Lock()
-	pool.active--
-	closePool := pool.retired && pool.active == 0
-	if closePool {
-		delete(p.owned, pool)
-	}
+	closePool := p.releaseLocked(pool)
 	p.mu.Unlock()
-	if closePool {
-		pool.once.Do(pool.close)
+	if closePool != nil {
+		closePool()
 	}
 }
 
 func (p *plannedTransport) close() {
 	p.mu.Lock()
 	p.closed = true
+	for _, pool := range p.pools {
+		pool.refs-- // Drop the cache reference; active exchanges finish later.
+	}
 	pools := p.owned
 	p.pools, p.owned = nil, nil
 	p.mu.Unlock()
-	for pool := range pools {
-		pool.once.Do(pool.close)
+	for _, closePool := range pools {
+		closePool()
 	}
 }
 
