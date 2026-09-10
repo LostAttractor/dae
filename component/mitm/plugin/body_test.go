@@ -141,20 +141,11 @@ func TestReplaceBodyMetadataAndTrailers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exchange := &Exchange{Request: request}
-	exchange.SetRequestBody(view)
+	SetRequestBody(request, view)
 	view.Close()
-	defer exchange.Close()
-	for range 2 {
-		body, err := request.GetBody()
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, _ := io.ReadAll(body)
-		body.Close()
-		if !bytes.Equal(got, []byte("retry")) {
-			t.Fatal(string(got))
-		}
+	got, err := io.ReadAll(request.Body)
+	if err != nil || !bytes.Equal(got, []byte("retry")) {
+		t.Fatalf("body=%q err=%v", got, err)
 	}
 	request.Body.Close()
 }

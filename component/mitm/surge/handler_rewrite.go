@@ -145,7 +145,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		execution.outcome = "success"
 	}
 	if s.RequiresBody && result.Body != nil {
-		exchange.SetRequestBody(result.Body)
+		plugin.SetRequestBody(exchange.Request, result.Body)
 		execution.outcome = "success"
 	}
 	return nil, nil

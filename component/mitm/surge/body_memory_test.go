@@ -28,13 +28,13 @@ func TestBodyMemoryPressureForwardsOriginalRequestAndResponse(t *testing.T) {
 				e.options.Log = func(s string) { logs = append(logs, s) }
 				req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader("original"))
 				exchange := &plugin.Exchange{Request: req, Client: http.DefaultClient}
+				defer func() { _ = req.Body.Close() }()
 				var body io.ReadCloser
 				var header http.Header
 				if phase == "http-request" {
 					if _, err := e.processRequest(exchange); err != nil {
 						t.Fatal(err)
 					}
-					defer exchange.Close()
 					body, header = req.Body, req.Header
 				} else {
 					resp := bodyRewriteResponse([]byte("original"), "")
@@ -58,7 +58,6 @@ func TestBodyMemoryPressureForwardsOriginalRequestAndResponse(t *testing.T) {
 				if want == "original" && (header.Get("X-Edited") != "" || !strings.Contains(strings.Join(logs, "\n"), "memory budget exhausted")) {
 					t.Fatalf("partial rewrite or missing diagnostics: %v %v", header, logs)
 				}
-				exchange.Close()
 				if budget.Status().Used != 0 || budget.Status().Peak > limit {
 					t.Fatal(budget.Status())
 				}

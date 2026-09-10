@@ -64,29 +64,22 @@ func TestBodyMemoryPressurePreservesUnreadTail(t *testing.T) {
 	}
 }
 
-func TestBodyViewRequestRetryAndResponseLifetime(t *testing.T) {
+func TestBodyViewRequestAndResponseLifetime(t *testing.T) {
 	budget := membuffer.NewBudget(1024)
 	view, err := membuffer.Read(strings.NewReader("retry me"), 64, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req := &http.Request{}
-	exchange := &Exchange{Request: req}
-	exchange.SetRequestBody(view)
+	SetRequestBody(req, view)
 	view.Close()
-	_ = req.Body.Close() // A failed attempt closes this before GetBody.
-	retry, err := req.GetBody()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = exchange.Close()
 	if budget.Status().Used == 0 {
-		t.Fatal("retry lost its reference")
+		t.Fatal("released pending request body")
 	}
-	got, err := io.ReadAll(retry)
-	_ = retry.Close()
+	got, err := io.ReadAll(req.Body)
+	req.Body.Close()
 	if err != nil || string(got) != "retry me" || budget.Status().Used != 0 {
-		t.Fatal("retry lifetime")
+		t.Fatal("request cursor lifetime")
 	}
 
 	view, err = membuffer.Read(strings.NewReader("response"), 64, budget)

@@ -11,7 +11,6 @@ import (
 
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/daeuniverse/dae/pkg/membuffer"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -24,9 +23,8 @@ type Flow struct {
 // Exchange belongs to one synchronous invocation. Background work must copy
 // the required data instead of retaining the request, body or response writer.
 type Exchange struct {
-	retryBody *membuffer.View
-	Request   *http.Request
-	Client    *http.Client
+	Request *http.Request
+	Client  *http.Client
 	// SetReadDeadline bounds reads from the intercepted request body. The host
 	// resets the deadline when calling next. Nil means unsupported (e.g. tests).
 	SetReadDeadline func(time.Time) error
