@@ -22,7 +22,6 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pool"
 	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -334,18 +333,11 @@ func (w *trafficWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func relayDirection(dst, src net.Conn, add func(uint64)) (err error) {
-	// As `io.Copy` uses a 32KB buffer, we create a buffer of the same size.
-	// See https://cs.opensource.google/go/go/+/refs/tags/go1.21.5:src/io/io.go;l=419
-	bufPtr := pool.GetBuffer(1024 * 32) // 32KB
-	defer pool.PutBuffer(bufPtr)
-
-	_, err = io.CopyBuffer(
+func relayDirection(dst, src net.Conn, add func(uint64)) error {
+	return copyRelay(
 		&trafficWriter{Writer: dst, add: add},
 		&ConnWithReadTimeout{Conn: src},
-		bufPtr,
 	)
-	return
 }
 
 // Error1 is the error from lConn to rConn
