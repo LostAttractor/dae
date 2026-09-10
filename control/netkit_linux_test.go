@@ -18,10 +18,8 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
-	"golang.org/x/sys/unix"
 )
 
 func requireNetkitIntegration(t *testing.T) {
@@ -237,72 +235,6 @@ func TestHostTCXAttachOrderAndCleanup(t *testing.T) {
 	assertTCXOrder(t, linkIndex, ebpf.AttachTCXIngress, foreignIngress)
 	assertTCXOrder(t, linkIndex, ebpf.AttachTCXEgress, foreignEgress)
 	assertNoClsact(t, dummy)
-}
-
-func TestCleanupLegacyTCFiltersIntegration(t *testing.T) {
-	requireNetkitIntegration(t)
-
-	name := fmt.Sprintf("dtl%d", os.Getpid())
-	dummy := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name}}
-	if err := netlink.LinkAdd(dummy); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = netlink.LinkDel(dummy) })
-	qdisc := &netlink.GenericQdisc{
-		QdiscAttrs: netlink.QdiscAttrs{
-			LinkIndex: dummy.Attrs().Index,
-			Handle:    netlink.MakeHandle(0xffff, 0),
-			Parent:    netlink.HANDLE_CLSACT,
-		},
-		QdiscType: "clsact",
-	}
-	if err := netlink.QdiscAdd(qdisc); err != nil {
-		t.Fatal(err)
-	}
-
-	program := newTestProgram(t, ebpf.SchedCLS, ebpf.AttachNone, 0)
-	newFilter := func(minor uint16, name string) *netlink.BpfFilter {
-		return &netlink.BpfFilter{
-			FilterAttrs: netlink.FilterAttrs{
-				LinkIndex: dummy.Attrs().Index,
-				Parent:    netlink.HANDLE_MIN_EGRESS,
-				Handle:    netlink.MakeHandle(0x2023, minor),
-				Priority:  1,
-				Protocol:  unix.ETH_P_ALL,
-			},
-			Fd:           program.FD(),
-			Name:         name,
-			DirectAction: true,
-		}
-	}
-	legacy := newFilter(1, consts.AppName+"_wan_egress")
-	foreign := newFilter(2, "foreign_wan_egress")
-	if err := netlink.FilterAdd(legacy); err != nil {
-		t.Fatal(err)
-	}
-	if err := netlink.FilterAdd(foreign); err != nil {
-		t.Fatal(err)
-	}
-	if err := cleanupLegacyTCFiltersOnLink(dummy); err != nil {
-		t.Fatal(err)
-	}
-
-	filters, err := netlink.FilterList(dummy, netlink.HANDLE_MIN_EGRESS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var legacyFound, foreignFound bool
-	for _, filter := range filters {
-		bpfFilter, ok := filter.(*netlink.BpfFilter)
-		if !ok {
-			continue
-		}
-		legacyFound = legacyFound || bpfFilter.Name == legacy.Name
-		foreignFound = foreignFound || bpfFilter.Name == foreign.Name
-	}
-	if legacyFound || !foreignFound {
-		t.Fatalf("legacy filter found = %v, foreign filter found = %v", legacyFound, foreignFound)
-	}
 }
 
 func assertTCXOrder(t *testing.T, linkIndex int, attachType ebpf.AttachType, programs ...*ebpf.Program) {

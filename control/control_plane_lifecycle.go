@@ -34,11 +34,6 @@ func (c *ControlPlane) Activate() error {
 	if core.closed.Err() != nil {
 		return net.ErrClosed
 	}
-	if !core.isReload {
-		if err := cleanupLegacyTCFilters(); err != nil {
-			return err
-		}
-	}
 	builder := c.routingMatcherBuilder
 	if err := c.restoreRuntimeSettings(true); err != nil {
 		return err
