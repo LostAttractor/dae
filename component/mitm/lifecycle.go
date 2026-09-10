@@ -102,6 +102,7 @@ func (h *Host) Close() error {
 		// and upstream dials. Join their cleanup before retiring shared state.
 		h.closeErr = <-finished
 	}
+	h.memoryLimit.Close()
 	close(h.closeDone)
 	return h.closeErr
 }

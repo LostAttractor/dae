@@ -18,6 +18,8 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 func testUpstream(dial mitm.DialContext) mitm.UpstreamPlanner {
@@ -45,7 +47,7 @@ func testProxyEngine(t *testing.T, module, source string) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Engine{options: EngineOptions{Modules: []*Module{m}, Runtime: rt, MaxBodySize: 1 << 20, ScriptTimeout: time.Second}, slots: make(chan struct{}, 2)}
+	return &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: []*Module{m}, Runtime: rt, MaxBodySize: 1 << 20, ScriptTimeout: time.Second}, slots: make(chan struct{}, 2)}
 }
 
 func TestSurgeProxyRequestRewriteAndFirstMatch(t *testing.T) {
@@ -125,14 +127,18 @@ func TestSurgeProxyRejectsOversizedDecompressedBody(t *testing.T) {
 bounded = type=http-request,pattern=.,requires-body=1,max-size=16,script-path=a.js
 `, `$done({});`)
 	req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader(strings.Repeat("x", 17)))
-	if _, err := engine.processRequest(req, http.DefaultClient, http.NewResponseController(httptest.NewRecorder()).SetReadDeadline); err != errBodyTooLarge {
+	if _, err := engine.processRequest(&plugin.Exchange{Request: req, Client: http.DefaultClient, SetReadDeadline: http.NewResponseController(httptest.NewRecorder()).SetReadDeadline}); err != membuffer.ErrTooLarge {
 		t.Fatalf("error=%v", err)
 	}
 	var compressed bytes.Buffer
 	z := gzip.NewWriter(&compressed)
 	_, _ = z.Write([]byte(strings.Repeat("x", 100)))
 	_ = z.Close()
-	if _, err := decodeBody(compressed.Bytes(), "gzip", 16); err != errBodyTooLarge {
+	view, err := membuffer.Read(bytes.NewReader(compressed.Bytes()), 1024, plugin.BodyMemory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeBodyView(view, "gzip", 16, plugin.BodyMemory); err != membuffer.ErrTooLarge {
 		t.Fatalf("decode error=%v", err)
 	}
 }
@@ -217,7 +223,7 @@ func TestSurgeProxyLimitsBufferingConcurrency(t *testing.T) {
 			req := httptest.NewRequest("POST", "https://example.com/", nil)
 			req.Body = body
 			start := time.Now()
-			if _, err := engine.processRequest(req, http.DefaultClient, http.NewResponseController(httptest.NewRecorder()).SetReadDeadline); err != context.DeadlineExceeded {
+			if _, err := engine.processRequest(&plugin.Exchange{Request: req, Client: http.DefaultClient, SetReadDeadline: http.NewResponseController(httptest.NewRecorder()).SetReadDeadline}); err != context.DeadlineExceeded {
 				t.Fatalf("error=%v", err)
 			}
 			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {

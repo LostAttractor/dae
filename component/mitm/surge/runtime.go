@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 //go:embed runtime_bootstrap.js
@@ -52,6 +53,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 // Run executes source with a wall-clock budget shared by synchronous code,
 // promise jobs, timers, and HTTP requests. No QuickJS std/os helpers or module
 // loaders are installed: scripts receive only the explicit Surge host bridge.
+// The caller supplies a body budget and limit, and closes the returned Result.
 func (r *Runtime) Run(parent context.Context, source string, in Invocation) (result *Result, err error) {
 	timeout := r.opts.Timeout
 	if in.Timeout > 0 {
@@ -85,21 +87,32 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	// Interrupt only sets a Go atomic, so cancellation can safely race Close.
 	// Stop the callback on return; no watcher goroutine or native-state join is needed.
 	stopInterrupt := context.AfterFunc(ctx, vm.Interrupt)
-	defer func() {
-		stopInterrupt()
-		if ctx.Err() != nil {
-			result, err = nil, ctx.Err()
-		}
-	}()
+	defer stopInterrupt()
 	client := in.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
 	execution := &scriptExecution{
 		runtime: r, ctx: ctx, client: client, timeout: timeout,
+		bodyMemory: in.BodyMemory, bodyLimit: in.BodyLimit,
 		dom:    newRuntimeDOM(ctx, min(r.opts.MemoryLimit/4, 8<<20)),
-		events: make(chan runtimeEvent, 32),
+		events: make(chan runtimeEvent),
 	}
+	defer func() {
+		contextErr := ctx.Err()
+		cancel()
+		execution.httpWorkers.Wait()
+		if contextErr != nil {
+			result.Close()
+			result, err = nil, contextErr
+		}
+		if result == nil {
+			execution.result.Close()
+			if errors.Is(execution.bodyError, membuffer.ErrBudgetExhausted) {
+				err = execution.bodyError
+			}
+		}
+	}()
 	if err := vm.SetHostFunc(execution.hostCall); err != nil {
 		return nil, err
 	}
@@ -135,46 +148,4 @@ func runtimeMessage(m *Message) any {
 		v["h2_trailers"] = m.Trailers
 	}
 	return v
-}
-
-func decodeScriptResult(data []byte) (*Result, error) {
-	var raw struct {
-		URL      *string           `json:"url"`
-		Headers  map[string]string `json:"headers"`
-		Trailers map[string]string `json:"h2_trailers"`
-		Body     *string           `json:"body"`
-		Binary   *string           `json:"bodyBase64"`
-		Status   *int              `json:"status"`
-		Response json.RawMessage   `json:"response"`
-		Abort    bool              `json:"abort"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("invalid $done result: %w", err)
-	}
-	r := &Result{URL: raw.URL, Headers: raw.Headers, Trailers: raw.Trailers, Abort: raw.Abort}
-	if raw.Body != nil {
-		body := []byte(*raw.Body)
-		r.Body = &body
-	}
-	if raw.Binary != nil {
-		body, err := base64.StdEncoding.DecodeString(*raw.Binary)
-		if err != nil {
-			return nil, fmt.Errorf("invalid $done binary body: %w", err)
-		}
-		r.Body = &body
-	}
-	if raw.Status != nil {
-		r.Status = *raw.Status
-		if r.Status < 100 || r.Status > 599 {
-			return nil, errors.New("$done status must be between 100 and 599")
-		}
-	}
-	if len(raw.Response) > 0 && string(raw.Response) != "null" {
-		var err error
-		r.Response, err = decodeScriptResult(raw.Response)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return r, nil
 }

@@ -16,15 +16,35 @@ import (
 	"testing"
 	"time"
 	"weak"
+
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
-func testRuntime(t *testing.T, opts RuntimeOptions) *Runtime {
+type runtimeHarness struct {
+	*Runtime
+	t      *testing.T
+	budget *membuffer.Budget
+}
+
+func (r *runtimeHarness) Run(ctx context.Context, source string, in Invocation) (*Result, error) {
+	in.BodyMemory, in.BodyLimit = r.budget, 32<<20
+	result, err := r.Runtime.Run(ctx, source, in)
+	r.t.Cleanup(result.Close)
+	return result, err
+}
+func testRuntime(t *testing.T, opts RuntimeOptions) *runtimeHarness {
 	t.Helper()
 	r, err := NewRuntime(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return r
+	budget := membuffer.NewBudget(256 << 20)
+	t.Cleanup(func() {
+		if used := budget.Status().Used; used != 0 {
+			t.Errorf("leaked body ownership: %d", used)
+		}
+	})
+	return &runtimeHarness{Runtime: r, t: t, budget: budget}
 }
 
 func TestRuntimeConsoleLevels(t *testing.T) {
@@ -62,7 +82,7 @@ func TestRuntimeRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Body == nil || string(*result.Body) != `{"name":"测试"}` || result.Headers["X-Script"] != "demo" {
+	if result.Body == nil || string(result.Body.Bytes()) != `{"name":"测试"}` || result.Headers["X-Script"] != "demo" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 }
@@ -85,7 +105,7 @@ func TestRuntimeBinaryAndText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Body == nil || !bytes.Equal(*result.Body, []byte{255, 254, 1, 128}) {
+	if result.Body == nil || !bytes.Equal(result.Body.Bytes(), []byte{255, 254, 1, 128}) {
 		t.Fatalf("binary body corrupt: %#v", result.Body)
 	}
 }
@@ -141,7 +161,7 @@ func TestRuntimeMessageBodyEncoding(t *testing.T) {
 			if !binaryMode {
 				want = []byte(strings.TrimPrefix(strings.ToValidUTF8(string(body), "\ufffd"), "\ufeff"))
 			}
-			if result.Body == nil || !bytes.Equal(*result.Body, want) {
+			if result.Body == nil || !bytes.Equal(result.Body.Bytes(), want) {
 				t.Fatalf("body=%v, binary=%v, want %v", result.Body, binaryMode, want)
 			}
 		}
@@ -157,7 +177,7 @@ func TestRuntimeResultPresenceAndSyntheticResponse(t *testing.T) {
 		}
 	}
 	result, err := r.Run(context.Background(), `$done({response:{status:204,body:""}})`, Invocation{})
-	if err != nil || result.Response == nil || result.Response.Status != 204 || result.Response.Body == nil || len(*result.Response.Body) != 0 {
+	if err != nil || result.Response == nil || result.Response.Status != 204 || result.Response.Body == nil || len(result.Response.Body.Bytes()) != 0 {
 		t.Fatalf("synthetic response: %v %#v", err, result)
 	}
 	_, err = r.Run(context.Background(), `if ("body" in $request) throw Error("unexpected body"); $done()`, Invocation{Request: &Message{}})
@@ -177,7 +197,7 @@ func TestRuntimePromisesAndTimers(t *testing.T) {
         $done({body:"async"});
       })();
     `, Invocation{})
-	if err != nil || result.Body == nil || string(*result.Body) != "async" {
+	if err != nil || result.Body == nil || string(result.Body.Bytes()) != "async" {
 		t.Fatalf("async result: %v %#v", err, result)
 	}
 }
@@ -197,7 +217,7 @@ func TestRuntimeHTTPCallbacks(t *testing.T) {
         Promise.resolve().then(() => $done({body:data}));
       });
     `, server.URL), Invocation{HTTPClient: server.Client()})
-	if err != nil || result.Body == nil || string(*result.Body) != "POST:hello" {
+	if err != nil || result.Body == nil || string(result.Body.Bytes()) != "POST:hello" {
 		t.Fatalf("HTTP result: %v %#v", err, result)
 	}
 	result, err = r.Run(context.Background(), fmt.Sprintf(`
@@ -207,11 +227,11 @@ func TestRuntimeHTTPCallbacks(t *testing.T) {
         $done({body:data.subarray(5)});
       });
     `, server.URL), Invocation{HTTPClient: server.Client()})
-	if err != nil || result.Body == nil || !bytes.Equal(*result.Body, []byte{0, 255}) {
+	if err != nil || result.Body == nil || !bytes.Equal(result.Body.Bytes(), []byte{0, 255}) {
 		t.Fatalf("HTTP binary result: %v %#v", err, result)
 	}
 	result, err = r.Run(context.Background(), `$httpClient.get("file:///etc/passwd", error => $done({body: error}))`, Invocation{})
-	if err != nil || result.Body == nil || !strings.Contains(string(*result.Body), "only supports") {
+	if err != nil || result.Body == nil || !strings.Contains(string(result.Body.Bytes()), "only supports") {
 		t.Fatalf("HTTP protocol restriction: %v %#v", err, result)
 	}
 }
@@ -244,7 +264,7 @@ func TestRuntimeMaaseaCompatibility(t *testing.T) {
 	}
 	request.URL = "https://rr1.googlevideo.com/initplayback?foo=bar&ack=1"
 	result, err = r.Run(context.Background(), string(requestSource), Invocation{Request: request, BinaryBodyMode: true, ScriptType: "http-request", Argument: `{"captionLang":"off"}`})
-	if err != nil || result.Response == nil || result.Response.Status != 200 || result.Response.Body == nil || len(*result.Response.Body) != 0 {
+	if err != nil || result.Response == nil || result.Response.Status != 200 || result.Response.Body == nil || len(result.Response.Body.Bytes()) != 0 {
 		t.Fatalf("Maasea initplayback synthetic response failed: %v %#v logs %v", err, result, logs)
 	}
 	request.URL = "https://youtubei.googleapis.com/youtubei/v1/player"
@@ -255,7 +275,7 @@ func TestRuntimeMaaseaCompatibility(t *testing.T) {
 		Request: request, Response: &Message{Status: 200, Body: []byte{0x12, 0, 0x3a, 0, 0xa2, 4, 0}},
 		BinaryBodyMode: true, ScriptType: "http-response", Argument: `{"captionLang":"off","blockUpload":true,"blockImmersive":true,"blockShorts":false}`,
 	})
-	if err != nil || result.Body == nil || len(*result.Body) <= 2 || (*result.Body)[0] != 0x12 || int((*result.Body)[1])+2 != len(*result.Body) {
+	if err != nil || result.Body == nil || len(result.Body.Bytes()) <= 2 || (result.Body.Bytes())[0] != 0x12 || int((result.Body.Bytes())[1])+2 != len(result.Body.Bytes()) {
 		t.Fatalf("Maasea binary player rewrite failed: %v %#v logs %v", err, result, logs)
 	}
 }
@@ -317,7 +337,7 @@ func TestRuntimePersistentStoreConcurrentReload(t *testing.T) {
       let sum = 0; for(let i = 0; i < 8; i++) sum += Number($persistentStore.read(String(i)));
       $done({body:String(sum)});
     `, Invocation{})
-	if err != nil || result.Body == nil || string(*result.Body) != "28" {
+	if err != nil || result.Body == nil || string(result.Body.Bytes()) != "28" {
 		t.Fatalf("concurrent store data lost: %v %#v", err, result)
 	}
 	st, err := os.Stat(path)

@@ -23,6 +23,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 )
 
 func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls.Config) (*integrationFixture, *x509.CertPool) {
@@ -59,7 +60,7 @@ func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls
 	for i := range module.Scripts {
 		module.Scripts[i].Source = scripts[module.Scripts[i].Type]
 	}
-	engine, err := NewEngine(EngineOptions{
+	engine, err := NewEngine(EngineOptions{BodyMemory: plugin.BodyMemory,
 		Modules: []*Module{module}, Runtime: runtime,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 4, ScriptTimeout: 2 * time.Second,
 	})

@@ -7,21 +7,24 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 // scriptExecution belongs to one VM on one OS thread. HTTP goroutines only
 // send events; host calls and callbacks update this state on the VM thread.
 type scriptExecution struct {
+	httpWorkers            sync.WaitGroup
 	runtime                *Runtime
 	ctx                    context.Context
 	client                 *http.Client
@@ -31,11 +34,15 @@ type scriptExecution struct {
 	timers                 []runtimeTimer
 	pendingHTTP, totalHTTP int
 	result                 *Result
+	bodyMemory             *membuffer.Budget
+	bodyLimit              int64
+	bodyError              error
 }
 
 type runtimeEvent struct {
-	id   int
-	data string
+	id     int
+	data   string
+	memory membuffer.Reservation
 }
 
 type runtimeTimer struct {
@@ -62,8 +69,9 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		return s.dom.call(arg(1), arg(2), arg(3))
 	case "done":
 		if s.result == nil {
-			result, err := decodeScriptResult([]byte(arg(1)))
+			result, err := decodeScriptResult([]byte(arg(1)), s.bodyMemory, s.bodyLimit)
 			if err != nil {
+				s.bodyError = err
 				return nil, err
 			}
 			s.result = result
@@ -122,17 +130,18 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		spec := arg(2)
 		s.pendingHTTP++
 		s.totalHTTP++
-		go func() {
-			response, err := scriptHTTP(s.ctx, s.client, spec, min(s.runtime.opts.MemoryLimit/4, 32<<20))
+		s.httpWorkers.Go(func() {
+			data, memory, err := scriptHTTP(s.ctx, s.client, spec, min(s.runtime.opts.MemoryLimit/4, 32<<20), s.bodyMemory)
 			if err != nil {
-				response = map[string]any{"error": err.Error()}
+				failure, _ := json.Marshal(map[string]any{"error": err.Error()})
+				data = string(failure)
 			}
-			data, _ := json.Marshal(response)
 			select {
-			case s.events <- runtimeEvent{id, string(data)}:
+			case s.events <- runtimeEvent{id: id, data: data, memory: memory}:
 			case <-s.ctx.Done():
+				memory.Close()
 			}
-		}()
+		})
 		return nil, nil
 	default:
 		return nil, errors.New("unknown script host operation")
@@ -170,7 +179,7 @@ func (s *scriptExecution) waitResult(vm *quickjs.VM) (*Result, error) {
 			}
 			return nil, s.ctx.Err()
 		case <-timerC:
-			event = runtimeEvent{s.timers[next].id, "null"}
+			event = runtimeEvent{id: s.timers[next].id, data: "null"}
 			s.timers = append(s.timers[:next], s.timers[next+1:]...)
 		case event = <-s.events:
 			s.pendingHTTP--
@@ -178,13 +187,15 @@ func (s *scriptExecution) waitResult(vm *quickjs.VM) (*Result, error) {
 		if timer != nil {
 			timer.Stop()
 		}
-		if err := vm.Dispatch(event.id, event.data); err != nil {
+		err := vm.Dispatch(event.id, event.data)
+		event.memory.Close()
+		if err != nil {
 			return nil, fmt.Errorf("execute Surge script callback: %w", err)
 		}
 	}
 }
 
-func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody int64) (map[string]any, error) {
+func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody int64, budget *membuffer.Budget) (string, membuffer.Reservation, error) {
 	var options struct {
 		URL     string            `json:"url"`
 		Method  string            `json:"method"`
@@ -194,7 +205,7 @@ func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody i
 		Timeout float64           `json:"timeout"`
 	}
 	if err := json.Unmarshal([]byte(spec), &options); err != nil {
-		return nil, err
+		return "", membuffer.Reservation{}, err
 	}
 	if options.Timeout > 0 && options.Timeout < 86400 {
 		var cancel context.CancelFunc
@@ -209,15 +220,15 @@ func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody i
 		var err error
 		body, err = base64.StdEncoding.DecodeString(*options.Binary)
 		if err != nil {
-			return nil, err
+			return "", membuffer.Reservation{}, err
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, options.Method, options.URL, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return "", membuffer.Reservation{}, err
 	}
 	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-		return nil, errors.New("$httpClient only supports http and https")
+		return "", membuffer.Reservation{}, errors.New("$httpClient only supports http and https")
 	}
 	for k, v := range options.Headers {
 		if strings.EqualFold(k, "Host") {
@@ -228,19 +239,30 @@ func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody i
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return "", membuffer.Reservation{}, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	data, err := membuffer.Read(resp.Body, maxBody, budget)
+	defer data.Close()
 	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxBody {
-		return nil, errors.New("$httpClient response exceeds body limit")
+		return "", membuffer.Reservation{}, err
 	}
 	message := map[string]any{"status": resp.StatusCode, "headers": messageHeaders(resp.Header)}
 	if len(resp.Trailer) > 0 {
 		message["h2_trailers"] = messageHeaders(resp.Trailer)
 	}
-	return map[string]any{"response": message, "bodyBase64": base64.StdEncoding.EncodeToString(data)}, nil
+	// []byte is serialized as base64 by JSON without a separately retained
+	// base64 string. Charge the event until Dispatch consumes it or cancellation.
+	writer := &membuffer.Buffer{Budget: budget, Limit: 2*maxBody + 1<<20}
+	defer writer.Close()
+	if err := jsonv2.MarshalWrite(writer, map[string]any{"response": message, "bodyBase64": data.Bytes()}); err != nil {
+		return "", membuffer.Reservation{}, err
+	}
+	view := writer.View()
+	defer view.Close()
+	memory, err := budget.Reserve(int64(len(view.Bytes())))
+	if err != nil {
+		return "", membuffer.Reservation{}, err
+	}
+	return string(view.Bytes()), memory, nil
 }

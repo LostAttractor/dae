@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 func (e *Engine) tracing() bool {
@@ -71,7 +72,9 @@ func traceErrorReason(err error) string {
 		return "timeout"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
-	case errors.Is(err, errBodyTooLarge):
+	case errors.Is(err, membuffer.ErrBudgetExhausted):
+		return "buffer_memory_limit"
+	case errors.Is(err, membuffer.ErrTooLarge):
 		return "body_limit"
 	case errors.Is(err, ErrMissingDone):
 		return "missing_done"

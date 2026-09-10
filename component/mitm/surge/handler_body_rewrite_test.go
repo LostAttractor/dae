@@ -18,11 +18,12 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 )
 
 func bodyRewriteEngine(t *testing.T, limit int64, expressions ...string) *Engine {
 	t.Helper()
-	e := &Engine{options: EngineOptions{MaxBodySize: limit, ScriptTimeout: 200 * time.Millisecond}, slots: make(chan struct{}, 1)}
+	e := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, MaxBodySize: limit, ScriptTimeout: 200 * time.Millisecond}, slots: make(chan struct{}, 1)}
 	for _, expression := range expressions {
 		e.options.Modules = append(e.options.Modules, &Module{BodyRewrites: []BodyRewrite{testBodyRewrite(t, expression)}})
 	}
@@ -217,9 +218,10 @@ func TestBodyRewriteCompiledFilterConcurrentUse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			body, err := rule.Apply(context.Background(), []byte(fmt.Sprintf(`{"value":%d}`, i)), 64)
-			if err != nil || string(body) != fmt.Sprintf(`{"value":%d}`, i+1) {
-				t.Errorf("shared compiled jq result: %q %v", body, err)
+			body, err := rule.Apply(context.Background(), []byte(fmt.Sprintf(`{"value":%d}`, i)), 64, plugin.BodyMemory)
+			defer body.Close()
+			if err != nil || string(body.Bytes()) != fmt.Sprintf(`{"value":%d}`, i+1) {
+				t.Errorf("shared compiled jq result: %v %v", body, err)
 			}
 		}()
 	}

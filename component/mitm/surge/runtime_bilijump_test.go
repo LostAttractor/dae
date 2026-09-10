@@ -43,7 +43,7 @@ func TestRuntimeWebCompatibilityAPIs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Body == nil || !strings.Contains(string(*result.Body), "<head><title>test</title><script>globalThis.onlyInClient=true</script></head>") || result.Trailers["grpc-status"] != "0" {
+	if result.Body == nil || !strings.Contains(string(result.Body.Bytes()), "<head><title>test</title><script>globalThis.onlyInClient=true</script></head>") || result.Trailers["grpc-status"] != "0" {
 		t.Fatalf("unexpected compatibility result: %#v", result)
 	}
 }
@@ -117,8 +117,8 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			Request:  &Message{URL: "https://app.bilibili.com/x/v2/feed/index?build=999", Method: "GET"},
 			Response: &Message{Status: 200, Body: []byte(`{"code":0,"data":{"items":[{"id":1,"card_type":"small_cover_v2","card_goto":"av"},{"id":2,"card_type":"large_cover_v1","card_goto":"av","ad_info":{"id":1}},{"id":3,"card_type":"large_cover_v1","card_goto":"av","banner_item":{}}]}}`)},
 		})
-		if !bytes.Contains(*out.Body, []byte(`"id":1`)) || bytes.Contains(*out.Body, []byte(`"id":2`)) || bytes.Contains(*out.Body, []byte(`"id":3`)) {
-			t.Fatalf("feed filter failed: %s", *out.Body)
+		if !bytes.Contains(out.Body.Bytes(), []byte(`"id":1`)) || bytes.Contains(out.Body.Bytes(), []byte(`"id":2`)) || bytes.Contains(out.Body.Bytes(), []byte(`"id":3`)) {
+			t.Fatalf("feed filter failed: %s", out.Body.Bytes())
 		}
 	})
 	t.Run("json-localized-tabs", func(t *testing.T) {
@@ -126,8 +126,8 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			Request:  &Message{URL: "https://app.bilibili.com/x/resource/show/tab/v2?s_locale=en", Method: "GET"},
 			Response: &Message{Status: 200, Body: []byte(`{"code":0,"data":{"tab":[{"name":"old"}],"bottom":[]}}`)},
 		})
-		if bytes.Contains(*out.Body, []byte(`"old"`)) || !bytes.Contains(*out.Body, []byte(`"Live"`)) {
-			t.Fatalf("localized tab rewrite failed: %s", *out.Body)
+		if bytes.Contains(out.Body.Bytes(), []byte(`"old"`)) || !bytes.Contains(out.Body.Bytes(), []byte(`"Live"`)) {
+			t.Fatalf("localized tab rewrite failed: %s", out.Body.Bytes())
 		}
 	})
 	t.Run("live-feed", func(t *testing.T) {
@@ -135,14 +135,14 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			Request:  &Message{URL: "https://api.live.bilibili.com/xlive/app-interface/v2/index/feed?build=999", Method: "GET"},
 			Response: &Message{Status: 200, Body: []byte(`{"code":0,"data":{"card_list":[{"card_type":"banner_v2"},{"card_type":"activity_card_v1"},{"card_type":"small_card","room_id":42}]}}`)},
 		})
-		if !bytes.Contains(*out.Body, []byte(`"room_id":42`)) || bytes.Contains(*out.Body, []byte(`banner_v2`)) {
-			t.Fatalf("live feed rewrite failed: %s", *out.Body)
+		if !bytes.Contains(out.Body.Bytes(), []byte(`"room_id":42`)) || bytes.Contains(out.Body.Bytes(), []byte(`banner_v2`)) {
+			t.Fatalf("live feed rewrite failed: %s", out.Body.Bytes())
 		}
 	})
 	t.Run("skin", func(t *testing.T) {
 		out := run(t, "bili-suit-diy.js", Invocation{Response: &Message{Status: 200, Body: []byte(`{"data":{"common_equip":{"id":1},"user_equip":{"id":42}}}`)}})
-		if bytes.Contains(*out.Body, []byte("common_equip")) || !bytes.Contains(*out.Body, []byte(`"id":42`)) {
-			t.Fatalf("skin rewrite failed: %s", *out.Body)
+		if bytes.Contains(out.Body.Bytes(), []byte("common_equip")) || !bytes.Contains(out.Body.Bytes(), []byte(`"id":42`)) {
+			t.Fatalf("skin rewrite failed: %s", out.Body.Bytes())
 		}
 	})
 	t.Run("webpage", func(t *testing.T) {
@@ -150,7 +150,7 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			Request:  &Message{URL: "https://www.bilibili.com/blackboard/era/example.html?x=1", Method: "GET"},
 			Response: &Message{Status: 200, Body: []byte(`<!doctype html><html><head><title>Activity</title></head><body><main id="video">Keep this</main></body></html>`)},
 		})
-		body := string(*out.Body)
+		body := string(out.Body.Bytes())
 		if !strings.Contains(body, `__BILIACT_EVAPAGEDATA__`) || !strings.Contains(body, `<main id="video">Keep this</main>`) || strings.Index(body, "<script>") > strings.Index(body, "</head>") {
 			t.Fatalf("webpage injection failed: %s", body)
 		}
@@ -165,8 +165,8 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			Response:       &Message{Status: 200, Body: grpcFixture(gzipFixture(t, payload), true), Headers: map[string]string{"Content-Type": "application/grpc"}},
 			BinaryBodyMode: true,
 		})
-		if !bytes.Equal(*out.Body, grpcFixture([]byte{8, 7}, false)) || out.Headers["grpc-status"] != "0" {
-			t.Fatalf("gRPC rewrite failed: %#v %x", out, *out.Body)
+		if !bytes.Equal(out.Body.Bytes(), grpcFixture([]byte{8, 7}, false)) || out.Headers["grpc-status"] != "0" {
+			t.Fatalf("gRPC rewrite failed: %#v %x", out, out.Body.Bytes())
 		}
 	})
 	t.Run("request-fetch-and-filter", func(t *testing.T) {
@@ -186,7 +186,7 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			Request:        &Message{URL: "https://grpc.biliapi.net/bilibili.main.community.reply.v1.Reply/MainList", Method: "POST", Headers: map[string]string{"Content-Type": "application/grpc"}, Body: grpcFixture([]byte{8, 1}, false)},
 			BinaryBodyMode: true, HTTPClient: client, Argument: `{"purifyComment":true,"logLevel":4}`,
 		})
-		if calls.Load() != 1 || out.Response == nil || out.Response.Body == nil || !bytes.Equal(*out.Response.Body, grpcFixture(good, false)) || out.Response.Trailers["Grpc-Status"] != "0" {
+		if calls.Load() != 1 || out.Response == nil || out.Response.Body == nil || !bytes.Equal(out.Response.Body.Bytes(), grpcFixture(good, false)) || out.Response.Trailers["Grpc-Status"] != "0" {
 			t.Fatalf("request rewrite failed: %#v", out)
 		}
 	})
@@ -223,7 +223,7 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 		if calls.Load() != 2 || out.Response == nil || out.Response.Body == nil {
 			t.Fatalf("airborne did not fetch both fixtures: %#v calls %d", out, calls.Load())
 		}
-		body := *out.Response.Body
+		body := out.Response.Body.Bytes()
 		if len(body) < 5 || int(binary.BigEndian.Uint32(body[1:5])) != len(body)-5 || !bytes.Contains(body, []byte("existing danmaku")) || !bytes.Contains(body, []byte("airborne:20000")) || !bytes.Contains(body, []byte("00:10-00:20")) {
 			t.Fatalf("airborne protobuf did not retain/add expected elements: %x", body)
 		}

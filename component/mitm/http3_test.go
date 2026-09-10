@@ -21,6 +21,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
@@ -139,7 +140,12 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 			if err := e.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 				t.Errorf("HTTP/3 body read deadline unsupported: %v", err)
 			}
-			plugin.ReplaceRequestBody(e.Request, []byte("modified request"))
+			view, err := membuffer.Copy([]byte("modified request"), plugin.BodyMemory)
+			if err != nil {
+				return nil, err
+			}
+			e.SetRequestBody(view)
+			view.Close()
 			e.Request.Header.Set("X-Plugin", "request")
 			r, err := next(e)
 			if err != nil {
@@ -150,7 +156,13 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 				_ = r.Body.Close()
 				return nil, err
 			}
-			plugin.ReplaceResponseBody(r, append(body, []byte(" modified response")...))
+			view, err = membuffer.Copy(append(body, []byte(" modified response")...), plugin.BodyMemory)
+			if err != nil {
+				_ = r.Body.Close()
+				return nil, err
+			}
+			plugin.SetResponseBody(r, view)
+			view.Close()
 			return r, nil
 		}
 	}}

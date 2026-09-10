@@ -4,9 +4,6 @@ package surge
 
 import (
 	"bytes"
-	"compress/flate"
-	"compress/gzip"
-	"compress/zlib"
 	"context"
 	"errors"
 	"fmt"
@@ -17,12 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andybalholm/brotli"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	"golang.org/x/net/http/httpguts"
 )
 
-var errBodyTooLarge = plugin.ErrBodyTooLarge
 var errScriptAbort = errors.New("request aborted by script")
 
 func (e *Engine) acquire(ctx context.Context) (func(), error) {
@@ -58,10 +54,12 @@ func (e *Engine) runScript(ctx context.Context, s *Script, req, resp *Message, c
 		Request: req, Response: resp, ScriptName: s.Name, ScriptType: s.Type,
 		Argument: s.Argument, BinaryBodyMode: s.BinaryBodyMode,
 		Timeout: e.scriptTimeout(s), HTTPClient: client,
+		BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize,
 	})
 }
 
-func (e *Engine) processRequest(r *http.Request, client *http.Client, setReadDeadline func(time.Time) error) (response *http.Response, err error) {
+func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Response, err error) {
+	r, client, setReadDeadline := exchange.Request, exchange.Client, exchange.SetReadDeadline
 	r.Header.Set("Host", r.Host)
 	if err := e.rewriteHeaders("http-request", r, r.Header); err != nil {
 		return nil, err
@@ -99,10 +97,16 @@ func (e *Engine) processRequest(r *http.Request, client *http.Client, setReadDea
 	message := requestMessage(r)
 	if s.RequiresBody && r.Body != nil {
 		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
+		if errors.Is(err, membuffer.ErrBudgetExhausted) {
+			execution.outcome, execution.reason = "skipped", "buffer_memory_limit"
+			e.logRequest(r, "surge script "+s.Name+" skipped; forwarding original request: "+err.Error())
+			return nil, nil
+		}
 		if err != nil {
 			return nil, err
 		}
-		message.Body = body
+		defer body.Close()
+		message.Body = body.Bytes()
 	}
 	execution.start()
 	result, err := e.runScript(ctx, s, message, nil, client)
@@ -111,12 +115,13 @@ func (e *Engine) processRequest(r *http.Request, client *http.Client, setReadDea
 		e.logRequest(r, fmt.Sprintf("surge script %s failed; forwarding original request: %v", s.Name, err))
 		return nil, nil
 	}
+	defer result.Close()
 	if result.Abort {
 		return nil, errScriptAbort
 	}
 	if result.Response != nil {
 		execution.outcome = "synthetic"
-		return responseFromResult(r, result.Response, e.options.MaxBodySize)
+		return responseFromResult(r, result.Response)
 	}
 	if result.URL != nil {
 		if err := replaceURL(r, *result.URL); err != nil {
@@ -140,10 +145,7 @@ func (e *Engine) processRequest(r *http.Request, client *http.Client, setReadDea
 		execution.outcome = "success"
 	}
 	if s.RequiresBody && result.Body != nil {
-		if int64(len(*result.Body)) > e.options.MaxBodySize {
-			return nil, errBodyTooLarge
-		}
-		plugin.ReplaceRequestBody(r, *result.Body)
+		exchange.SetRequestBody(result.Body)
 		execution.outcome = "success"
 	}
 	return nil, nil
@@ -178,15 +180,16 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	hasBody := responseHasBody(r.Request.Method, r.StatusCode)
 	if s.RequiresBody && hasBody && r.Body != nil {
 		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
-		if errors.Is(err, errBodyTooLarge) {
-			execution.outcome, execution.reason = "skipped", "body_limit"
-			e.logRequest(r.Request, fmt.Sprintf("surge script %s skipped; response exceeds body limit; forwarding original response", s.Name))
+		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
+			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
+			e.logRequest(r.Request, fmt.Sprintf("surge script %s skipped; forwarding original response: %v", s.Name, err))
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		message.Body = body
+		defer body.Close()
+		message.Body = body.Bytes()
 	}
 	// net/http populates trailers after the response body reaches EOF.
 	if len(r.Trailer) != 0 {
@@ -199,6 +202,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		e.logRequest(r.Request, fmt.Sprintf("surge script %s failed; forwarding original response: %v", s.Name, err))
 		return nil
 	}
+	defer result.Close()
 	if result.Abort {
 		return errScriptAbort
 	}
@@ -230,10 +234,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		execution.outcome = "success"
 	}
 	if s.RequiresBody && hasBody && result.Body != nil {
-		if int64(len(*result.Body)) > e.options.MaxBodySize {
-			return errBodyTooLarge
-		}
-		plugin.ReplaceResponseBody(r, *result.Body)
+		plugin.SetResponseBody(r, result.Body)
 		execution.outcome = "success"
 	}
 	if !responseHasBody(r.Request.Method, r.StatusCode) {
@@ -298,7 +299,7 @@ func (e *Engine) rewriteHeaders(kind string, request *http.Request, headers http
 	return nil
 }
 
-func (e *Engine) bufferBody(ctx context.Context, body *io.ReadCloser, header http.Header, s *Script) ([]byte, error) {
+func (e *Engine) bufferBody(ctx context.Context, body *io.ReadCloser, header http.Header, s *Script) (*membuffer.View, error) {
 	limit := e.options.MaxBodySize
 	if s.MaxSize > 0 && s.MaxSize < limit {
 		limit = s.MaxSize
@@ -308,55 +309,16 @@ func (e *Engine) bufferBody(ctx context.Context, body *io.ReadCloser, header htt
 	// Keep the unread tail attached on overflow so response scripts can skip
 	// buffering without truncating the upstream response. Ownership stays with
 	// the exchange until the body is forwarded or replaced.
-	raw, err := plugin.SnapshotBody(body, limit)
+	raw, err := plugin.SnapshotBody(body, limit, e.options.BodyMemory)
 	stop()
 	if ctx.Err() != nil {
+		raw.Close()
 		return nil, ctx.Err()
 	}
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	return decodeBody(raw, header.Get("Content-Encoding"), limit)
-}
-
-func decodeBody(data []byte, encoding string, limit int64) ([]byte, error) {
-	encodings := strings.Split(strings.ToLower(encoding), ",")
-	for i := len(encodings) - 1; i >= 0; i-- {
-		var reader io.Reader
-		var closer io.Closer
-		switch strings.TrimSpace(encodings[i]) {
-		case "", "identity":
-			continue
-		case "gzip":
-			r, err := gzip.NewReader(bytes.NewReader(data))
-			if err != nil {
-				return nil, err
-			}
-			reader, closer = r, r
-		case "deflate":
-			r, err := zlib.NewReader(bytes.NewReader(data))
-			if err != nil {
-				r = flate.NewReader(bytes.NewReader(data))
-			}
-			reader, closer = r, r
-		case "br":
-			reader = brotli.NewReader(bytes.NewReader(data))
-		default:
-			return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
-		}
-		decoded, err := readLimited(reader, limit)
-		if closer != nil {
-			_ = closer.Close()
-		}
-		if err != nil {
-			return nil, err
-		}
-		data = decoded
-	}
-	return data, nil
+	return decodeBodyView(raw, header.Get("Content-Encoding"), limit, e.options.BodyMemory)
 }
 
 func requestMessage(r *http.Request) *Message {
@@ -411,7 +373,7 @@ func syntheticResponse(request *http.Request, status int, header http.Header, bo
 	return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(bytes.NewReader(body)), ContentLength: int64(len(body)), Request: request}
 }
 
-func responseFromResult(request *http.Request, result *Result, limit int64) (*http.Response, error) {
+func responseFromResult(request *http.Request, result *Result) (*http.Response, error) {
 	status := result.Status
 	if status == 0 {
 		status = http.StatusOK
@@ -425,15 +387,16 @@ func responseFromResult(request *http.Request, result *Result, limit int64) (*ht
 	}
 	var body []byte
 	if result.Body != nil {
-		body = *result.Body
-	}
-	if int64(len(body)) > limit {
-		return nil, errBodyTooLarge
+		body = result.Body.Bytes()
 	}
 	response := syntheticResponse(request, status, header, body)
+	if result.Body != nil {
+		response.Body = result.Body.Open()
+	}
 	if result.Trailers != nil {
 		response.Trailer, err = resultTrailers(result.Trailers)
 		if err != nil {
+			_ = response.Body.Close()
 			return nil, err
 		}
 	}

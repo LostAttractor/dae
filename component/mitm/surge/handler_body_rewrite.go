@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 // rewriteResponseBody runs matching rules before the response script. Invalid
@@ -40,7 +41,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 	limit := e.options.MaxBodySize
 	if r.ContentLength > limit {
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "body_limit")
-		e.logRequest(r.Request, "surge Body Rewrite skipped: "+errBodyTooLarge.Error())
+		e.logRequest(r.Request, "surge Body Rewrite skipped: "+membuffer.ErrTooLarge.Error())
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(r.Request.Context(), e.options.ScriptTimeout)
@@ -55,35 +56,42 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 
 	original := r.Body
 	stop := context.AfterFunc(ctx, func() { _ = original.Close() })
-	raw, err := plugin.SnapshotBody(&r.Body, limit)
+	raw, err := plugin.SnapshotBody(&r.Body, limit, e.options.BodyMemory)
 	stop()
-	if (err != nil && !errors.Is(err, plugin.ErrBodyTooLarge)) || ctx.Err() != nil {
+	if (err != nil && !errors.Is(err, membuffer.ErrTooLarge) && !errors.Is(err, membuffer.ErrBudgetExhausted)) || ctx.Err() != nil {
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "read_failed")
+		raw.Close()
 		_ = r.Body.Close()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return err
 	}
-	if errors.Is(err, plugin.ErrBodyTooLarge) {
-		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "body_limit")
-		e.logRequest(r.Request, "surge Body Rewrite skipped: "+errBodyTooLarge.Error())
+	if err != nil {
+		e.traceRequest(r.Request, "body_rewrite_skip", "reason", traceErrorReason(err))
+		e.logRequest(r.Request, "surge Body Rewrite skipped: "+err.Error())
 		return nil
 	}
-	body, err := decodeBody(raw, r.Header.Get("Content-Encoding"), limit)
+	body, err := decodeBodyView(raw, r.Header.Get("Content-Encoding"), limit, e.options.BodyMemory)
 	if err != nil {
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "decode_failed")
 		e.logRequest(r.Request, "surge Body Rewrite skipped; forwarding original response: "+err.Error())
 		return nil
 	}
 	decoded := body
+	defer func() {
+		if body != decoded {
+			body.Close()
+		}
+	}()
+	defer decoded.Close()
 	for _, match := range matches {
 		tracing := e.tracing()
 		var started time.Time
 		if tracing {
 			started = time.Now()
 		}
-		output, err := match.rule.Apply(ctx, body, limit)
+		output, err := match.rule.Apply(ctx, body.Bytes(), limit, e.options.BodyMemory)
 		if err != nil {
 			if tracing {
 				e.traceRequest(r.Request, "body_rewrite_end", "module", match.module, "rule", match.index, "outcome", "failed", "reason", traceErrorReason(err), "elapsed_ms", time.Since(started).Milliseconds())
@@ -96,18 +104,23 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 		}
 		if tracing {
 			outcome := "unchanged"
-			if output != nil && !bytes.Equal(output, body) {
+			if len(output.Bytes()) != 0 && !bytes.Equal(output.Bytes(), body.Bytes()) {
 				outcome = "modified"
 			}
 			e.traceRequest(r.Request, "body_rewrite_end", "module", match.module, "rule", match.index, "outcome", outcome, "elapsed_ms", time.Since(started).Milliseconds())
 		}
-		if output != nil {
+		if len(output.Bytes()) != 0 {
+			if body != decoded {
+				body.Close()
+			}
 			body = output
+		} else {
+			output.Close()
 		}
 	}
-	if bytes.Equal(body, decoded) {
+	if bytes.Equal(body.Bytes(), decoded.Bytes()) {
 		return nil
 	}
-	plugin.ReplaceResponseBody(r, body)
+	plugin.SetResponseBody(r, body)
 	return nil
 }

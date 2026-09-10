@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 // These four filters are from the user's Bilijump module:
@@ -90,11 +93,12 @@ func TestBodyRewriteBilijumpFilters(t *testing.T) {
 			if !rule.Match(test.url) || rule.Match("https://unrelated.example/") {
 				t.Fatal("Bilijump URL pattern did not retain its scope")
 			}
-			body, err := rule.Apply(context.Background(), []byte(test.input), 1<<20)
+			body, err := rule.Apply(context.Background(), []byte(test.input), 1<<20, plugin.BodyMemory)
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertBodyRewriteJSON(t, body, test.want)
+			defer body.Close()
+			assertBodyRewriteJSON(t, body.Bytes(), test.want)
 		})
 	}
 }
@@ -116,11 +120,12 @@ func TestBodyRewriteWarnsForUnsupportedAndInvalidFilters(t *testing.T) {
 	}
 	t.Setenv("DAE_BODY_REWRITE_SECRET", "must not be exposed")
 	rule := testBodyRewrite(t, "env")
-	body, err := rule.Apply(context.Background(), []byte(`{}`), 1024)
+	body, err := rule.Apply(context.Background(), []byte(`{}`), 1024, plugin.BodyMemory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertBodyRewriteJSON(t, body, `{}`)
+	defer body.Close()
+	assertBodyRewriteJSON(t, body.Bytes(), `{}`)
 }
 
 func TestBodyRewriteExecutionLimitsAndEmptyOutput(t *testing.T) {
@@ -138,12 +143,13 @@ func TestBodyRewriteExecutionLimitsAndEmptyOutput(t *testing.T) {
 	} {
 		t.Run(test.expression+test.input, func(t *testing.T) {
 			rule := testBodyRewrite(t, test.expression)
-			output, err := rule.Apply(context.Background(), []byte(test.input), test.limit)
-			if test.wantError != errors.Is(err, errBodyTooLarge) {
-				t.Fatalf("size limit: output=%q err=%v", output, err)
+			output, err := rule.Apply(context.Background(), []byte(test.input), test.limit, plugin.BodyMemory)
+			defer output.Close()
+			if test.wantError != errors.Is(err, membuffer.ErrTooLarge) {
+				t.Fatalf("size limit: output=%v err=%v", output, err)
 			}
-			if test.expression == "empty" && output != nil {
-				t.Fatalf("empty filter returned a replacement: %q", output)
+			if test.expression == "empty" && len(output.Bytes()) != 0 {
+				t.Fatalf("empty filter returned a replacement: %v", output)
 			}
 		})
 	}
@@ -151,7 +157,7 @@ func TestBodyRewriteExecutionLimitsAndEmptyOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := rule.Apply(ctx, []byte(`{}`), 1024)
+	_, err := rule.Apply(ctx, []byte(`{}`), 1024, plugin.BodyMemory)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
 		t.Fatalf("jq execution exceeded deadline: %v in %v", err, time.Since(start))
 	}

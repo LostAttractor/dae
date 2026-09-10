@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 type countedBody struct {
@@ -27,14 +29,15 @@ func TestBodySnapshotReplay(t *testing.T) {
 	for _, data := range []string{"", "12345678", "1234567890123456"} {
 		original := &countedBody{Reader: strings.NewReader(data)}
 		var body io.ReadCloser = original
-		snapshot, err := SnapshotBody(&body, 8)
+		snapshot, err := SnapshotBody(&body, 8, BodyMemory)
 		if len(data) > 8 {
-			if !errors.Is(err, ErrBodyTooLarge) {
+			if !errors.Is(err, membuffer.ErrTooLarge) {
 				t.Fatalf("overflow: %v", err)
 			}
-		} else if err != nil || string(snapshot) != data {
-			t.Fatalf("snapshot %q: %v", snapshot, err)
+		} else if err != nil || string(snapshot.Bytes()) != data {
+			t.Fatalf("snapshot: %v", err)
 		}
+		snapshot.Close()
 		if original.reads > 9 || original.closes != 0 {
 			t.Fatal("unbounded read or premature close")
 		}
@@ -61,7 +64,7 @@ func (r *onceReadError) Read(p []byte) (int, error) {
 func TestSnapshotPreservesReadError(t *testing.T) {
 	original := &countedBody{Reader: &onceReadError{}}
 	var body io.ReadCloser = original
-	if _, err := SnapshotBody(&body, 32); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, err := SnapshotBody(&body, 32, BodyMemory); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatal(err)
 	}
 	replay, err := io.ReadAll(body)
@@ -77,16 +80,16 @@ func TestSnapshotInvalidLimitAndRepeatedReads(t *testing.T) {
 	original := &countedBody{Reader: strings.NewReader("abc")}
 	var body io.ReadCloser = original
 	for _, limit := range []int64{-1, 0, math.MaxInt64} {
-		if _, err := SnapshotBody(&body, limit); err == nil || body != original || original.reads != 0 {
+		if _, err := SnapshotBody(&body, limit, BodyMemory); err == nil || body != original || original.reads != 0 {
 			t.Fatal("invalid limit consumed body")
 		}
 	}
 	for range 2 {
-		raw, err := SnapshotBody(&body, 8)
-		if err != nil || string(raw) != "abc" {
-			t.Fatalf("repeat: %q %v", raw, err)
+		raw, err := SnapshotBody(&body, 8, BodyMemory)
+		if err != nil || string(raw.Bytes()) != "abc" {
+			t.Fatalf("repeat: %v", err)
 		}
-		raw[0] = 'z' // Edits must not change the next reader's original body.
+		raw.Close()
 	}
 	body.Close()
 	if original.closes != 1 {
@@ -106,7 +109,12 @@ func TestReplaceBodyMetadataAndTrailers(t *testing.T) {
 			response.Trailer.Set("Grpc-Status", "0")
 			response.Trailer.Set("Content-Digest", "old")
 		}
-		ReplaceResponseBody(response, []byte("new bytes"))
+		view, err := membuffer.Copy([]byte("new bytes"), BodyMemory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		SetResponseBody(response, view)
+		view.Close()
 		if original.closes != 1 || len(response.TransferEncoding) != 0 {
 			t.Fatal("ownership/framing not updated")
 		}
@@ -129,7 +137,14 @@ func TestReplaceBodyMetadataAndTrailers(t *testing.T) {
 		}
 	}
 	request := &http.Request{}
-	ReplaceRequestBody(request, []byte("retry"))
+	view, err := membuffer.Copy([]byte("retry"), BodyMemory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange := &Exchange{Request: request}
+	exchange.SetRequestBody(view)
+	view.Close()
+	defer exchange.Close()
 	for range 2 {
 		body, err := request.GetBody()
 		if err != nil {

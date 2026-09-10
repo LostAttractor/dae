@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 var ErrMissingDone = errors.New("script completed without calling $done")
@@ -33,6 +35,8 @@ type Invocation struct {
 	BinaryBodyMode                   bool
 	Timeout                          time.Duration
 	HTTPClient                       *http.Client
+	BodyMemory                       *membuffer.Budget
+	BodyLimit                        int64
 }
 
 // Result distinguishes an omitted body from replacing the body with empty data.
@@ -40,7 +44,7 @@ type Result struct {
 	URL      *string
 	Headers  map[string]string
 	Trailers map[string]string
-	Body     *[]byte
+	Body     *membuffer.View
 	Status   int
 	Response *Result
 	Abort    bool
@@ -51,4 +55,12 @@ type RuntimeOptions struct {
 	Timeout     time.Duration
 	StorePath   string
 	Log         func(level, message string)
+}
+
+// The engine transfers body ownership to the exchange before releasing results.
+func (r *Result) Close() {
+	if r != nil {
+		r.Body.Close()
+		r.Response.Close()
+	}
 }
