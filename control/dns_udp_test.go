@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/dns"
 	componentdialer "github.com/daeuniverse/dae/component/outbound/dialer"
 	dnsmessage "github.com/miekg/dns"
 )
@@ -44,9 +45,8 @@ func TestDoUDPCloseClosesActiveConnections(t *testing.T) {
 	defer server1.Close()
 	client2, server2 := net.Pipe()
 	defer server2.Close()
-	d := &DoUDP{
-		connections: map[net.Conn]struct{}{client1: {}, client2: {}},
-	}
+	d := newTestDNSForwarder(t, dns.UpstreamScheme_UDP, dialArgument{}).(*udpDNSForwarder)
+	d.connections = map[net.Conn]struct{}{client1: {}, client2: {}}
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,8 @@ func TestDoUDPTracksConnectionUntilAsyncCloseFinishes(t *testing.T) {
 	conn := &blockingDNSCloseConn{
 		Conn: client, closeStarted: make(chan struct{}), closeRelease: make(chan struct{}),
 	}
-	d := &DoUDP{connections: map[net.Conn]struct{}{conn: {}}}
+	d := newTestDNSForwarder(t, dns.UpstreamScheme_UDP, dialArgument{}).(*udpDNSForwarder)
+	d.connections = map[net.Conn]struct{}{conn: {}}
 	d.releaseConnection(conn)
 	<-conn.closeStarted
 	d.mu.Lock()
@@ -98,11 +99,10 @@ func TestDoUDPUsesDistinctSocketsForConcurrentQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	forwarder := &DoUDP{dialArgument: dialArgument{
+	forwarder := newTestDNSForwarder(t, dns.UpstreamScheme_UDP, dialArgument{
 		Dialer: &componentdialer.Dialer{Dialer: directDnsTestDialer{}},
 		Target: server.LocalAddr().(*net.UDPAddr).AddrPort(),
-	}}
-	defer forwarder.Close()
+	})
 
 	ports := make(chan int, 2)
 	go func() {
@@ -156,9 +156,9 @@ func TestDoUDPUsesDistinctSocketsForConcurrentQueries(t *testing.T) {
 
 func TestDoUDPCloseCancelsInProgressDial(t *testing.T) {
 	started := make(chan struct{})
-	forwarder := &DoUDP{dialArgument: dialArgument{
+	forwarder := newTestDNSForwarder(t, dns.UpstreamScheme_UDP, dialArgument{
 		Dialer: &componentdialer.Dialer{Dialer: blockingDnsTestDialer{started: started}},
-	}}
+	})
 	forwardDone := make(chan error, 1)
 	go func() {
 		forwardDone <- forwarder.ForwardDNS(context.Background(), testQuery("example.com.", dnsmessage.TypeA, 1))
@@ -174,5 +174,57 @@ func TestDoUDPCloseCancelsInProgressDial(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Close did not cancel and wait for the in-progress dial")
+	}
+}
+
+func TestDoUDPShutdownUnblocksQueuedExchanges(t *testing.T) {
+	requests := maxConcurrentDnsUDPExchanges + 8
+	transport := &concurrentTLSTestDialer{
+		entered: make(chan struct{}, requests), release: make(chan struct{}),
+	}
+	forwarder := newTestDNSForwarder(t, dns.UpstreamScheme_UDP, dialArgument{
+		Dialer: &componentdialer.Dialer{Dialer: transport},
+	})
+	results := make(chan error, requests)
+	for i := range requests {
+		go func() {
+			results <- forwarder.ForwardDNS(t.Context(), testDNSQuery("example.com.", dnsmessage.TypeA, uint16(i)))
+		}()
+	}
+	for range maxConcurrentDnsUDPExchanges {
+		select {
+		case <-transport.entered:
+		case <-time.After(time.Second):
+			t.Fatal("concurrent exchanges did not reach the admission limit")
+		}
+	}
+	select {
+	case <-transport.entered:
+		t.Error("queued exchange dialed beyond the admission limit")
+	case <-time.After(25 * time.Millisecond):
+	}
+	closed := make(chan error, 3)
+	for range 3 {
+		go func() { closed <- forwarder.Close() }()
+	}
+	for range requests {
+		select {
+		case err := <-results:
+			if !errors.Is(err, net.ErrClosed) {
+				t.Errorf("exchange after shutdown: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("shutdown did not release an active or queued exchange")
+		}
+	}
+	for range 3 {
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("concurrent Close did not finish")
+		}
 	}
 }

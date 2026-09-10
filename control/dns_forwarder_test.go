@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	dnsmessage "github.com/miekg/dns"
 )
@@ -110,7 +111,7 @@ func (d *concurrentTLSTestDialer) DialContext(ctx context.Context, _, _ string) 
 	}
 }
 
-func waitForDoTLSExchange(t *testing.T, forwarder *DoTLS) {
+func waitForDoTLSExchange(t *testing.T, forwarder *tlsDNSForwarder) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -138,7 +139,7 @@ func TestDoTLSAllowsConcurrentExchanges(t *testing.T) {
 			close(transport.release)
 		}
 	}()
-	forwarder := &DoTLS{
+	forwarder := &tlsDNSForwarder{
 		dialArgument: dialArgument{Dialer: &dialer.Dialer{Dialer: transport}},
 		state:        newDNSForwarderState(context.Background()),
 	}
@@ -182,11 +183,11 @@ func TestDNSForwardersRejectUnsupportedQueriesBeforeDial(t *testing.T) {
 		forwarder         DnsForwarder
 		allowZoneTransfer bool
 	}{
-		{name: "DoH", forwarder: &DoH{}, allowZoneTransfer: true},
-		{name: "DoQ", forwarder: &DoQ{}},
-		{name: "DoT", forwarder: &DoTLS{}},
-		{name: "TCP", forwarder: &DoTCP{}},
-		{name: "UDP", forwarder: &DoUDP{}},
+		{name: "DoH", forwarder: newTestDNSForwarder(t, dns.UpstreamScheme_HTTPS, dialArgument{}), allowZoneTransfer: true},
+		{name: "DoQ", forwarder: newTestDNSForwarder(t, dns.UpstreamScheme_QUIC, dialArgument{})},
+		{name: "DoT", forwarder: newTestDNSForwarder(t, dns.UpstreamScheme_TLS, dialArgument{})},
+		{name: "TCP", forwarder: newTestDNSForwarder(t, dns.UpstreamScheme_TCP, dialArgument{})},
+		{name: "UDP", forwarder: newTestDNSForwarder(t, dns.UpstreamScheme_UDP, dialArgument{})},
 	}
 	signatures := map[string]dnsmessage.RR{
 		"TSIG": &dnsmessage.TSIG{Hdr: dnsmessage.RR_Header{Rrtype: dnsmessage.TypeTSIG}},
@@ -255,7 +256,7 @@ func TestDNSForwarderOperationErrorPriority(t *testing.T) {
 
 func TestDoTLSCloseWaitsForExchange(t *testing.T) {
 	transport := &pipeTLSTestDialer{server: make(chan net.Conn, 1)}
-	forwarder := &DoTLS{
+	forwarder := &tlsDNSForwarder{
 		dialArgument: dialArgument{Dialer: &dialer.Dialer{Dialer: transport}},
 		state:        newDNSForwarderState(context.Background()),
 	}
@@ -290,7 +291,7 @@ func TestDoTLSCloseWaitsForExchange(t *testing.T) {
 
 func TestDoTLSCallerCancellationStopsExchange(t *testing.T) {
 	transport := &pipeTLSTestDialer{server: make(chan net.Conn, 1)}
-	forwarder := &DoTLS{
+	forwarder := &tlsDNSForwarder{
 		dialArgument: dialArgument{Dialer: &dialer.Dialer{Dialer: transport}},
 		state:        newDNSForwarderState(context.Background()),
 	}
@@ -326,7 +327,7 @@ func TestDoTLSCancellationDoesNotWaitForBlockingClose(t *testing.T) {
 			return &blockingDNSCloseConn{Conn: conn, closeStarted: closeStarted, closeRelease: closeRelease}
 		},
 	}
-	forwarder := &DoTLS{
+	forwarder := &tlsDNSForwarder{
 		dialArgument: dialArgument{Dialer: &dialer.Dialer{Dialer: transport}},
 		state:        newDNSForwarderState(context.Background()),
 	}
@@ -368,7 +369,7 @@ func TestManagedDNSForwarderBoundsBlockedRetirement(t *testing.T) {
 	currentClient, currentServer := net.Pipe()
 	defer currentServer.Close()
 	currentManager := NewDnsManager(currentClient)
-	forwarder := &DoTCP{
+	forwarder := &tcpDNSForwarder{
 		state:      newDNSForwarderState(context.Background()),
 		dnsManager: currentManager,
 		retiring:   oldManager,
@@ -406,7 +407,7 @@ func TestManagedDNSForwarderRetriesDialBeforeOccupyingRetiringSlot(t *testing.T)
 
 	wantErr := errors.New("temporary dial failure")
 	transport := &retryTCPTestDialer{firstErr: wantErr, server: make(chan net.Conn, 1)}
-	forwarder := &DoTCP{
+	forwarder := &tcpDNSForwarder{
 		state:      newDNSForwarderState(context.Background()),
 		dnsManager: oldManager,
 		dialArgument: dialArgument{
@@ -448,7 +449,7 @@ func TestManagedDNSForwarderRecoversAfterTransportCloseError(t *testing.T) {
 	}
 
 	transport := &pipeTLSTestDialer{server: make(chan net.Conn, 1)}
-	forwarder := &DoTCP{
+	forwarder := &tcpDNSForwarder{
 		state:      newDNSForwarderState(context.Background()),
 		dnsManager: oldManager,
 		dialArgument: dialArgument{
@@ -473,7 +474,7 @@ func TestDoQCoalescesBlockedConnectionDials(t *testing.T) {
 	transport := &blockingPacketTestDialer{
 		entered: make(chan struct{}), canceled: make(chan struct{}), release: make(chan struct{}),
 	}
-	forwarder := &DoQ{
+	forwarder := &quicDNSForwarder{
 		state: newDNSForwarderState(context.Background()),
 		dialArgument: dialArgument{
 			Dialer: &dialer.Dialer{Dialer: transport},
