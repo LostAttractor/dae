@@ -8,10 +8,14 @@ package control
 import (
 	"errors"
 	"fmt"
+	"net"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/network"
+	"github.com/samber/oops"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -167,4 +171,89 @@ func (c *controlPlaneCore) outboundUsable(outbound uint8, l4proto consts.L4Proto
 		return true
 	}
 	return c.outboundConnectivityMap[outbound][networkType.Index()].Load()
+}
+
+const initialConnectivityTimeout = 60 * time.Second
+
+func (c *ControlPlane) startConnectivityChecks() ([]startupConnectivityWaiter, error) {
+	core := c.core
+	core.netmon.Register(func(previous, current network.HostNetworkSnapshot) {
+		if c.ctx.Err() != nil {
+			return
+		}
+		if current.ConnectivityChanged(previous) {
+			c.requestConnectivityRechecks()
+		}
+		if c.autoWan {
+			c.requestHostReconcile()
+		}
+	})
+	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
+	checkStart := make(chan struct{})
+	waiters := make([]startupConnectivityWaiter, 0, len(c.outbounds))
+	for _, group := range c.outbounds {
+		ready, err := group.StartConnectivityChecks(checkStart)
+		if err != nil {
+			return nil, oops.Errorf("start outbound %q connectivity checks: %w", group.Name, err)
+		}
+		if ready != nil {
+			waiters = append(waiters, startupConnectivityWaiter{name: group.Name, ready: ready})
+		}
+	}
+	close(checkStart)
+	return waiters, nil
+}
+
+type startupConnectivityWaiter struct {
+	name  string
+	ready <-chan struct{}
+}
+
+func waitForStartupConnectivity(waiters []startupConnectivityWaiter, timeout time.Duration, stop <-chan struct{}) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for i, waiter := range waiters {
+		select {
+		case <-waiter.ready:
+			continue
+		case <-stop:
+			return net.ErrClosed
+		case <-timer.C:
+		}
+		select {
+		case <-stop:
+			return net.ErrClosed
+		default:
+		}
+		for _, pending := range waiters[i:] {
+			select {
+			case <-pending.ready:
+			default:
+				log.WithField("group", pending.name).Warn(
+					"No usable candidate before the startup connectivity deadline; startup continues and checking remains active",
+				)
+			}
+		}
+		return nil
+	}
+	select {
+	case <-stop:
+		return net.ErrClosed
+	default:
+		return nil
+	}
+}
+
+func (c *ControlPlane) requestConnectivityRechecks() {
+	if c.ctx.Err() != nil {
+		return
+	}
+	for _, group := range c.outbounds {
+		if !group.ChecksConnectivity() {
+			continue
+		}
+		for _, d := range group.Dialers {
+			d.RequestConnectivityCheck()
+		}
+	}
 }
