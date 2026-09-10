@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 )
 
 func TestSurgePluginsShareHostAndKeepIndependentState(t *testing.T) {
@@ -68,7 +69,7 @@ func TestHostOnlyPlanAndUnsupportedDNS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := &Engine{options: EngineOptions{Modules: []*Module{module}}}
+	engine := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: []*Module{module}}}
 	host, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "hosts", Plugin: engine})
 	if err != nil {
 		t.Fatal(err)

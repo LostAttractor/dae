@@ -95,6 +95,27 @@ route; retiring a pool waits for its active responses before closing QUIC.
 bounds request-body reads and is reset by the host before forwarding.
 [Body helpers](body.go) provide bounded snapshots and replacement with correct
 framing and trailers; plugins handle decompression and protocol-specific semantics.
+`SnapshotBody` returns an immutable `membuffer.View` and reuses untouched
+snapshots. Close the view after use; forwarding owns the replay reader. Supply
+`plugin.BodyMemory` to share the MITM budget across instances and overlapping
+hosts. `membuffer.ErrBudgetExhausted` never waits: a failed snapshot restores the
+consumed prefix and unread tail for forwarding.
+
+`Exchange.SetRequestBody` and `SetResponseBody` retain independent references;
+callers still close their own views. The host calls `Exchange.Close` after the
+entire response has been forwarded, releasing request retry ownership even on
+abort or cancellation. Standalone callers must close the exchange after all
+retries finish. Lifetime is explicit; garbage collection does not release budget
+reservations. Arbitrary plugin allocations and interpreter heaps are outside
+this budget.
+
+[`pkg/membuffer`](../../../pkg/membuffer) owns admission, buffer growth and shared
+immutable storage. `Read`, `Copy` and `Buffer.Write` reserve capacity before
+allocation. `Read` returns consumed bytes even on failure; close that view or
+transfer it to replay storage. `View.Clone` and `View.Open` share bytes without
+copying, and each owner must be closed. Components outside MITM provide their own
+`NewBudget`; the package has no protocol dependency or global budget. The plugin
+package adds only HTTP replay, framing, trailers and exchange ownership.
 
 ## Lifecycle
 

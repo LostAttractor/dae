@@ -18,8 +18,9 @@ func (h *Host) Status() []plugin.InstanceStatus {
 		state = "draining"
 	}
 	result := make([]plugin.InstanceStatus, 0, len(h.instances))
+	memory := plugin.BodyMemory.Status()
 	for _, p := range h.instances {
-		result = append(result, plugin.InstanceStatus{ID: p.ID, Type: p.Type, State: state, Scopes: len(p.plan.Scopes), DestinationRules: len(p.plan.Destinations)})
+		result = append(result, plugin.InstanceStatus{BufferMemory: &memory, ID: p.ID, Type: p.Type, State: state, Scopes: len(p.plan.Scopes), DestinationRules: len(p.plan.Destinations)})
 	}
 	h.mu.Unlock()
 	for i, p := range h.instances {

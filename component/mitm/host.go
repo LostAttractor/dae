@@ -17,6 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -60,6 +61,7 @@ type Instance struct {
 	plan     plugin.Plan
 }
 type Options struct {
+	BufferMemoryLimit int64
 	Authority         *mitmca.Authority
 	UpstreamTLSConfig *tls.Config
 	Log               func(string)
@@ -82,11 +84,18 @@ type Host struct {
 	forceCancel  context.CancelFunc
 	closeDone    chan struct{}
 	closeErr     error
+	memoryLimit  *membuffer.Limit
 }
 
 // New takes ownership of the instances and their plans on success. Plans remain read-only
 // for the lifetime of the host; construction is the only mutation phase.
 func New(options Options, instances ...Instance) (*Host, error) {
+	if options.BufferMemoryLimit < 0 {
+		return nil, errors.New("mitm: buffer memory limit must be positive")
+	}
+	if options.BufferMemoryLimit == 0 {
+		options.BufferMemoryLimit = plugin.DefaultBufferMemoryLimit
+	}
 	if options.DrainTimeout <= 0 {
 		options.DrainTimeout = 5 * time.Second
 	}
@@ -103,6 +112,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		return nil, errors.New("mitm: HTTPS scopes require ca_cert and ca_key")
 	}
 	h.forceContext, h.forceCancel = context.WithCancel(context.Background())
+	h.memoryLimit = plugin.BodyMemory.UseLimit(options.BufferMemoryLimit)
 	return h, nil
 }
 

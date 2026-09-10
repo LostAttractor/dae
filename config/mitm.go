@@ -14,6 +14,7 @@ import (
 
 // MITM owns transport settings and ordered, independently configured plugins.
 type MITM struct {
+	BufferMemoryLimit   int64        `mapstructure:"buffer_memory_limit" default:"0"`
 	Enabled             bool         `mapstructure:"enabled" default:"false"`
 	ClientSourceAddress []string     `mapstructure:"client_source_address"`
 	CACert              string       `mapstructure:"ca_cert"`
@@ -29,7 +30,7 @@ type PluginSpec struct {
 }
 
 var mitmHostKeys = map[string]bool{
-	"enabled": true, "client_source_address": true, "ca_cert": true, "ca_key": true,
+	"enabled": true, "client_source_address": true, "ca_cert": true, "ca_key": true, "buffer_memory_limit": true,
 }
 
 var pluginIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
@@ -38,6 +39,7 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 	*to = MITM{}
 	host := &config_parser.Section{Name: section.Name}
 	names := make(map[string]bool)
+	bufferLimitSet := false
 	for _, item := range section.Items {
 		switch value := item.Value.(type) {
 		case *config_parser.Param:
@@ -45,6 +47,7 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 				return fmt.Errorf("unknown mitm setting %q", value.Key)
 			}
 			host.Items = append(host.Items, item)
+			bufferLimitSet = bufferLimitSet || value.Key == "buffer_memory_limit"
 		case *config_parser.Section:
 			if !pluginIdentifier.MatchString(value.Name) {
 				return fmt.Errorf("invalid mitm instance name %q", value.Name)
@@ -92,6 +95,9 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 	if err := ParamParser(reflect.ValueOf(to), host, nil); err != nil {
 		return err
 	}
+	if to.BufferMemoryLimit < 0 || bufferLimitSet && to.BufferMemoryLimit == 0 {
+		return fmt.Errorf("mitm.buffer_memory_limit: expected a positive byte count")
+	}
 	if (to.CACert == "") != (to.CAKey == "") {
 		return fmt.Errorf("mitm: ca_cert and ca_key must be configured together")
 	}
@@ -103,6 +109,9 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 
 func (m *Marshaller) marshalMITM(conf MITM, depth int) error {
 	m.writeLine(depth, "enabled:"+strconv.FormatBool(conf.Enabled))
+	if conf.BufferMemoryLimit > 0 {
+		m.writeLine(depth, "buffer_memory_limit:"+strconv.FormatInt(conf.BufferMemoryLimit, 10))
+	}
 	for _, value := range conf.ClientSourceAddress {
 		m.writeLine(depth, "client_source_address:"+strconv.Quote(value))
 	}

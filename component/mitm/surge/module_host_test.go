@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 )
 
 func TestHostProxyCompatibilityWarning(t *testing.T) {
@@ -41,7 +43,7 @@ func TestHostProxyCompatibilityWarning(t *testing.T) {
 			modules = append(modules, module)
 		})
 	}
-	engine := &Engine{options: EngineOptions{Modules: modules}}
+	engine := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: modules}}
 	rules := engine.Plan().Destinations
 	if len(rules) != 2*len(modules) {
 		t.Fatalf("lost module mappings: %+v", rules)

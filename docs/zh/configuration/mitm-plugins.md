@@ -26,6 +26,10 @@ mitm {
 
 `ca_cert`、`ca_key`、`client_source_address` 放在宿主；module、store 和 JS 限制放在 Surge 实例中。仅贡献 Host 或路由的实例无需 CA；HTTP scope 要求 CA。客户端开关只控制 HTTP/MITM，不撤销 Host 拨号覆盖。相对路径继续以 `DAE_LOCATION_CACHE` 为基准；新实例缓存位于 `mitm/<ID>/surge-cache`。
 
+`buffer_memory_limit` 放在宿主，默认 `268435456`（256 MiB），按进程共享受管理的正文缓冲额度。它覆盖正文快照、Surge 解压和改写输出，以及脚本 HTTP 响应和待交付的回调数据；转发未完成、只读借用或请求重试仍需保留的数据继续计入额度。分配前申请，扩容同时计算新旧两份容量；额度不足立即返回，不持有部分额度等待其他请求。Surge 跳过当前处理并转发原文，已成功应用的前序规则保留；脚本 HTTP 请求通过回调报告失败。
+
+重载期间新旧宿主共用额度，采用两者中较小的限制，旧宿主退出后使用新限制；调低上限不会丢弃已有正文。`dae mitm status` 显示当前用量、有效上限、进程峰值和申请被拒次数。这个额度不是 RSS 上限，不覆盖 QuickJS 堆、jq 中间对象、插件自行分配的数据、缓存或网络协议缓冲；单脚本 `memory_limit`、正文大小和并发限制仍然生效。
+
 `dae mitm surge configure` 输出的 module 段可放入所选 Surge 实例。
 
 插件按声明顺序执行，请求 A → B → 上游，响应 B → A。每个插件的 scope 独立判断，使用连接最初的主机与端口；URL/Host 改写不会激活另一个 scope。一个 Surge 实例内部仍保持原有模块顺序及“每个方向只运行第一个匹配脚本”的行为。

@@ -49,6 +49,7 @@ var ClientDesc = Desc{
 }
 
 var MITMDesc = Desc{
+	"buffer_memory_limit":   "Process-wide managed body buffer budget in bytes, shared across plugin instances and reloads. Defaults to 256 MiB. Exhaustion skips Surge body processing and preserves the original stream. Does not limit RSS, native script heaps or arbitrary plugin allocations.",
 	"enabled":               "Enable the MITM plugin host, including plugin routing contributions and background tasks.",
 	"ca_cert":               "Shared PEM CA certificate path; required by HTTPS plugins. Destination-only plugins need no CA.",
 	"ca_key":                "Shared PEM CA private key path.",

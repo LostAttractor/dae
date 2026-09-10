@@ -42,7 +42,7 @@ Promise.resolve().then(() => setTimeout(() => {
   $done({body: $argument});
 }, 0));
 `, Invocation{Argument: id})
-			if err == nil && (result == nil || result.Body == nil || string(*result.Body) != id) {
+			if err == nil && (result == nil || result.Body == nil || string(result.Body.Bytes()) != id) {
 				err = fmt.Errorf("invocation %s returned another VM's result: %#v", id, result)
 			}
 			finished <- err
@@ -150,7 +150,7 @@ func TestRuntimeCGORepeatedCancellationAndClose(t *testing.T) {
 	}
 	workers.Wait()
 	result, err := r.Run(context.Background(), `$done({body:"new VM remains usable"})`, Invocation{})
-	if err != nil || result.Body == nil || string(*result.Body) != "new VM remains usable" {
+	if err != nil || result.Body == nil || string(result.Body.Bytes()) != "new VM remains usable" {
 		t.Fatalf("canceled VMs poisoned a later invocation: result=%#v err=%v", result, err)
 	}
 }
@@ -213,7 +213,7 @@ func TestRuntimeCGONativeModulesAndFilesystemUnavailable(t *testing.T) {
   $done({body:"native modules unavailable"});
 })();
 `, path), Invocation{})
-	if err != nil || result.Body == nil || string(*result.Body) != "native modules unavailable" {
+	if err != nil || result.Body == nil || string(result.Body.Bytes()) != "native modules unavailable" {
 		t.Fatalf("unexpected native module capability: result=%#v err=%v", result, err)
 	}
 }
@@ -230,7 +230,7 @@ if (typeof beforeOOM !== "undefined") throw Error("failed VM was reused");
 const buffer = new Uint8Array(65536); buffer[65535] = 123;
 $done({body:String(buffer[65535])});
 `, Invocation{})
-		if err != nil || result.Body == nil || string(*result.Body) != "123" {
+		if err != nil || result.Body == nil || string(result.Body.Bytes()) != "123" {
 			t.Fatalf("allocation failure damaged later VM: result=%#v err=%v", result, err)
 		}
 	}
@@ -250,7 +250,7 @@ catch (error) {
 if (!rejected) throw Error("Atomics.wait was allowed to block the VM thread");
 $done({body:"nonblocking"});
 `, Invocation{})
-	if err != nil || result.Body == nil || string(*result.Body) != "nonblocking" {
+	if err != nil || result.Body == nil || string(result.Body.Bytes()) != "nonblocking" {
 		t.Fatalf("Atomics.wait did not throw a catchable error: result=%#v err=%v", result, err)
 	}
 	if elapsed := time.Since(started); elapsed >= 750*time.Millisecond {
@@ -277,7 +277,7 @@ catch (error) {
 if (!caught) throw Error("recursion exceeded no limit");
 $done({body:"stack failure recovered"});
 `, Invocation{})
-			if err == nil && (result == nil || result.Body == nil || string(*result.Body) != "stack failure recovered") {
+			if err == nil && (result == nil || result.Body == nil || string(result.Body.Bytes()) != "stack failure recovered") {
 				err = fmt.Errorf("worker stack failure did not recover: %#v", result)
 			}
 			finished <- err
@@ -317,7 +317,7 @@ equal(Atomics.exchange(words, 0, -base), base + 9n);
 equal(Atomics.load(words, 0), -base);
 $done({body:"64-bit atomics work"});
 `, Invocation{})
-	if err != nil || result == nil || result.Body == nil || string(*result.Body) != "64-bit atomics work" {
+	if err != nil || result == nil || result.Body == nil || string(result.Body.Bytes()) != "64-bit atomics work" {
 		t.Fatalf("64-bit atomics: result=%#v err=%v", result, err)
 	}
 }

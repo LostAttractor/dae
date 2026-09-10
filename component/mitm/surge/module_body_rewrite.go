@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/dlclark/regexp2"
 	"github.com/itchyny/gojq"
 )
@@ -64,10 +65,10 @@ func parseBodyRewrite(line string, warnings *[]string) (*BodyRewrite, error) {
 	return rule, nil
 }
 
-// Apply returns nil when jq produces no output, which means keep the original
+// Apply returns an empty view when jq produces no output, which means keep the original
 // body. JSON numbers retain their precision. Multiple jq results form a JSON
 // stream, separated by newlines, as with jq's standard output.
-func (r BodyRewrite) Apply(ctx context.Context, body []byte, limit int64) ([]byte, error) {
+func (r BodyRewrite) Apply(ctx context.Context, body []byte, limit int64, budget *membuffer.Budget) (*membuffer.View, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -75,7 +76,7 @@ func (r BodyRewrite) Apply(ctx context.Context, body []byte, limit int64) ([]byt
 		return nil, fmt.Errorf("Body Rewrite jq expression is not compiled")
 	}
 	if int64(len(body)) > limit {
-		return nil, errBodyTooLarge
+		return nil, membuffer.ErrTooLarge
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
@@ -87,7 +88,8 @@ func (r BodyRewrite) Apply(ctx context.Context, body []byte, limit int64) ([]byt
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("Body Rewrite requires one JSON document")
 	}
-	writer := &bodyRewriteWriter{ctx: ctx, limit: limit}
+	writer := &bodyRewriteWriter{ctx: ctx, Buffer: membuffer.Buffer{Limit: limit, Budget: budget}}
+	defer writer.Close()
 	iterator := r.code.RunWithContext(ctx, input)
 	for {
 		value, ok := iterator.Next()
@@ -109,21 +111,17 @@ func (r BodyRewrite) Apply(ctx context.Context, body []byte, limit int64) ([]byt
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return writer.Bytes(), nil
+	return writer.View(), nil
 }
 
 type bodyRewriteWriter struct {
-	bytes.Buffer
-	ctx   context.Context
-	limit int64
+	membuffer.Buffer
+	ctx context.Context
 }
 
 func (w *bodyRewriteWriter) Write(p []byte) (int, error) {
 	if err := w.ctx.Err(); err != nil {
 		return 0, err
-	}
-	if int64(len(p)) > w.limit-int64(w.Len()) {
-		return 0, errBodyTooLarge
 	}
 	return w.Buffer.Write(p)
 }

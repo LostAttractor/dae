@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/dlclark/regexp2"
 	"golang.org/x/net/http/httpguts"
 )
@@ -173,7 +174,7 @@ func (e *Engine) mapLocal(r *http.Request) (*http.Response, error) {
 			}
 			e.traceRequest(r, "map_local_match", "module", m.Name, "rule", i+1, "status", rule.Status)
 			if int64(len(rule.Body)) > e.options.MaxBodySize {
-				return nil, errBodyTooLarge
+				return nil, membuffer.ErrTooLarge
 			}
 			return syntheticResponse(r, rule.Status, rule.Header.Clone(), rule.Body), nil
 		}

@@ -12,6 +12,7 @@ import (
 func TestMITMConfigRoundTrip(t *testing.T) {
 	c := parseConfig(t, `global {}
 mitm {
+  buffer_memory_limit: 67108864
  enabled: true
  client_source_address: '192.0.2.0/24'
  surge_work { type: surge
@@ -30,6 +31,9 @@ rules {
  dip(192.0.2.1) -> dnat(198.51.100.2)
 }
 routing { fallback: direct }`)
+	if c.MITM.BufferMemoryLimit != 67108864 {
+		t.Fatal(c.MITM.BufferMemoryLimit)
+	}
 	if len(c.MITM.Plugins) != 3 || c.MITM.Plugins[0].Name != "surge_work" || c.MITM.Plugins[0].Type != "surge" || c.MITM.Plugins[1].Enabled || !c.MITM.Plugins[2].Enabled {
 		t.Fatalf("wrong instances: %+v", c.MITM)
 	}
@@ -46,6 +50,9 @@ routing { fallback: direct }`)
 	}
 	if string(b) != string(b2) {
 		t.Fatalf("unstable marshal:\n%s\n%s", b, b2)
+	}
+	if round.MITM.BufferMemoryLimit != c.MITM.BufferMemoryLimit {
+		t.Fatal("memory limit changed")
 	}
 	for i, p := range round.MITM.Plugins {
 		if p.Name != c.MITM.Plugins[i].Name || p.Type != c.MITM.Plugins[i].Type || p.Enabled != c.MITM.Plugins[i].Enabled {
@@ -72,6 +79,8 @@ routing { fallback: direct }`)
 func TestMITMConfigRejectsInvalid(t *testing.T) {
 	for _, body := range []string{
 		`mitm { ca_cert: cert }`,
+		`mitm { buffer_memory_limit: 0 }`,
+		`mitm { buffer_memory_limit: -1 }`,
 		`mitm { unknown: true }`,
 		`mitm { surge {} surge {} }`,
 		`mitm { ../escape {} }`,

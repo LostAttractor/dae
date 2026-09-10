@@ -99,6 +99,10 @@ func newMITMStatusCommand(services plugin.CommandServices, definitions map[strin
 				_, err = fmt.Fprintln(cmd.OutOrStdout(), "MITM: no active plugin instances")
 				return err
 			}
+			if memory := statuses[0].BufferMemory; memory != nil {
+				fmt.Fprintf(cmd.OutOrStdout(), "Body buffers (process): %.2f / %.2f MiB; peak=%.2f MiB; denied=%d\n\n",
+					float64(memory.Used)/(1<<20), float64(memory.Limit)/(1<<20), float64(memory.Peak)/(1<<20), memory.Denied)
+			}
 			rows := make([]table.Row, 0, len(statuses))
 			for _, status := range statuses {
 				rows = append(rows, table.Row{status.ID, status.Type, status.State, status.Scopes, status.DestinationRules})

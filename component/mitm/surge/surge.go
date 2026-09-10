@@ -9,11 +9,14 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 type EngineOptions struct {
 	Modules []*Module
 
+	// BodyMemory defaults to the process-wide budget shared across instances.
+	BodyMemory           *membuffer.Budget
 	Runtime              *Runtime
 	MaxBodySize          int64
 	MaxConcurrentScripts int
@@ -44,6 +47,9 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 	}
 	if o.MaxBodySize <= 0 || o.MaxConcurrentScripts <= 0 || o.ScriptTimeout <= 0 {
 		return nil, errors.New("surge: positive body, concurrency and timeout limits are required")
+	}
+	if o.BodyMemory == nil {
+		o.BodyMemory = plugin.BodyMemory
 	}
 	return &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts)}, nil
 }
@@ -109,7 +115,7 @@ func (e *Engine) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 	return func(exchange *plugin.Exchange) (response *http.Response, err error) {
 		r := exchange.Request
 		e.traceRequest(r, "request_begin", "protocol", r.Proto)
-		response, err = e.processRequest(r, exchange.Client, exchange.SetReadDeadline)
+		response, err = e.processRequest(exchange)
 		if err == nil && response != nil {
 			e.traceRequest(r, "response_local", "status", response.StatusCode)
 			return response, nil
@@ -128,7 +134,7 @@ func (e *Engine) Wrap(flow plugin.Flow, next plugin.Handler) plugin.Handler {
 		}
 		if errors.Is(err, errScriptAbort) {
 			err = plugin.ErrAbort
-		} else if errors.Is(err, errBodyTooLarge) {
+		} else if errors.Is(err, membuffer.ErrTooLarge) {
 			err = &plugin.HTTPError{Status: http.StatusRequestEntityTooLarge, Err: err}
 		}
 		if err != nil {

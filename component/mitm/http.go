@@ -68,10 +68,17 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		r = r.WithContext(plugin.WithIDs(r.Context(), connection, strconv.FormatUint(serial.Add(1), 10)))
 		controller := http.NewResponseController(w)
 		defer controller.SetReadDeadline(time.Time{})
+		exchange := &plugin.Exchange{Client: client, SetReadDeadline: controller.SetReadDeadline}
+		defer func() {
+			if exchange.Request != nil {
+				_ = exchange.Close()
+			}
+		}()
 		proxy := &httputil.ReverseProxy{
 			Director: func(req *http.Request) { req.RemoteAddr = "" },
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				response, err := chain(&plugin.Exchange{Request: req, Client: client, SetReadDeadline: controller.SetReadDeadline})
+				exchange.Request = req
+				response, err := chain(exchange)
 				_ = controller.SetReadDeadline(time.Time{})
 				if err != nil {
 					return nil, err
