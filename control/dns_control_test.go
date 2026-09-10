@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"reflect"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +27,57 @@ import (
 
 type failDnsForwarder struct {
 	t *testing.T
+}
+
+func TestDnsControllerBoundsRequestsBeforeSpawning(t *testing.T) {
+	c, _, _ := newTestDnsController(t, nil)
+	started, unblock := make(chan struct{}, maxConcurrentDNSRequests+1), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(unblock) }) }
+	t.Cleanup(release)
+	c.sendPacket = func([]byte, netip.AddrPort, netip.AddrPort) error {
+		started <- struct{}{}
+		<-unblock
+		return nil
+	}
+	// Malformed requests take the response path without routing or sockets.
+	// A blocked final send must keep its admission, just like a queued lookup.
+	for range maxConcurrentDNSRequests {
+		if err := c.Handle(new(dnsmessage.Msg), &udpRequest{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range maxConcurrentDNSRequests {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("admitted request did not start")
+		}
+	}
+	if err := c.Handle(new(dnsmessage.Msg), &udpRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+		t.Fatal("request beyond the limit started response work")
+	case <-time.After(20 * time.Millisecond):
+	}
+	release()
+	c.activeRequests.Wait()
+	if err := c.Handle(new(dnsmessage.Msg), &udpRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("completed requests did not release admission")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if c.requestCount != 0 {
+		t.Fatalf("shutdown retained %d request admissions", c.requestCount)
+	}
 }
 
 type closeTrackingDnsForwarder struct {
@@ -1004,7 +1056,7 @@ func TestDnsControllerCloseInterruptsForwarderAndPreventsReuse(t *testing.T) {
 	}
 	requestDone := make(chan error, 1)
 	go func() {
-		defer c.activeRequests.Done()
+		defer c.finishDNSRequest()
 		query := testDNSQuery(qi.qname, qi.qtype, 1)
 		queryKey, _, cacheable := makeDNSQueryKey(query, qi)
 		_, err := c.dialSend(context.Background(), query, upstream, dialArg, queryKey, cacheable, true)
@@ -1041,7 +1093,7 @@ func TestDnsControllerCloseWaitsForAdmittedRequestSend(t *testing.T) {
 		t.Fatal("open controller rejected request admission")
 	}
 	go func() {
-		defer c.activeRequests.Done()
+		defer c.finishDNSRequest()
 		sendDone <- c.sendDNSPacket(nil, netip.AddrPort{}, netip.AddrPort{})
 	}()
 	<-started
@@ -1077,12 +1129,12 @@ func TestDnsControllerCloseWaitsForAdmittedRequest(t *testing.T) {
 		t.Fatalf("Close returned before admitted request finished: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	c.activeRequests.Done()
+	c.finishDNSRequest()
 	if err := <-closeDone; err != nil {
 		t.Fatal(err)
 	}
 	if c.admitDNSRequest() {
-		c.activeRequests.Done()
+		c.finishDNSRequest()
 		t.Fatal("closed controller admitted a request")
 	}
 }
@@ -1145,7 +1197,7 @@ func TestAcceptedResponseDuringCloseDoesNotPublish(t *testing.T) {
 	c.finalizeAcceptedResponse(msg, &pendingDNSResponse{
 		cacheKey: testDNSCacheKey(qi), register: true, receivedAt: time.Now(),
 	})
-	c.activeRequests.Done()
+	c.finishDNSRequest()
 	if err := <-closeDone; err != nil {
 		t.Fatal(err)
 	}
@@ -1211,7 +1263,7 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 	requestDone := false
 	defer func() {
 		if !requestDone {
-			c.activeRequests.Done()
+			c.finishDNSRequest()
 		}
 	}()
 
@@ -1236,7 +1288,7 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 	default:
 	}
 
-	c.activeRequests.Done()
+	c.finishDNSRequest()
 	requestDone = true
 	select {
 	case err := <-done:
@@ -1247,7 +1299,7 @@ func TestDnsControllerCloseWaitsForInFlightRequests(t *testing.T) {
 		t.Fatal("Close did not finish after the request ended")
 	}
 	if c.admitDNSRequest() {
-		c.activeRequests.Done()
+		c.finishDNSRequest()
 		t.Fatal("closed controller accepted a new request")
 	}
 }
@@ -1270,7 +1322,7 @@ func TestDnsControllerCloseCancelsInFlightForwarder(t *testing.T) {
 	}
 	requestDone := make(chan error, 1)
 	go func() {
-		defer c.activeRequests.Done()
+		defer c.finishDNSRequest()
 		qi := queryInfo{qname: "example.com.", qtype: dnsmessage.TypeA}
 		query := testDNSQuery(qi.qname, qi.qtype, 1)
 		queryKey, _, cacheable := makeDNSQueryKey(query, qi)

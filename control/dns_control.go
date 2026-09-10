@@ -51,6 +51,13 @@ type DnsControllerOption struct {
 	InterfaceName     func(uint32) string
 }
 
+// Bounds listener requests before spawning goroutines, including requests
+// waiting for per-upstream capacity. A preferred-family query can additionally
+// run one companion lookup; both complete before the admission is released.
+const maxConcurrentDNSRequests = 1024
+
+var dnsRequestDrops udpPacketDrops
+
 type DnsController struct {
 	routing     *dns.Dns
 	qtypePrefer uint16
@@ -77,6 +84,7 @@ type DnsController struct {
 	closeOnce      sync.Once
 	closeErr       error
 	activeRequests sync.WaitGroup
+	requestCount   int
 	sendPacket     func([]byte, netip.AddrPort, netip.AddrPort) error
 	// closed is canceled by Close: once closed, the controller must not serve
 	// new requests — its forwarders are closed, and its writes would land on
@@ -386,8 +394,20 @@ func (c *DnsController) admitDNSRequest() bool {
 	if c.closed.Err() != nil {
 		return false
 	}
+	if c.requestCount == maxConcurrentDNSRequests {
+		dnsRequestDrops.report("dns_request_limit")
+		return false
+	}
+	c.requestCount++
 	c.activeRequests.Add(1)
 	return true
+}
+
+func (c *DnsController) finishDNSRequest() {
+	c.lifecycleMu.Lock()
+	c.requestCount--
+	c.lifecycleMu.Unlock()
+	c.activeRequests.Done()
 }
 
 func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err error) {
@@ -398,16 +418,15 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 		return nil
 	}
 
+	if !c.admitDNSRequest() {
+		return nil
+	}
 	id := dnsMessage.Id
 	question := append([]dnsmessage.Question(nil), dnsMessage.Question...)
 	udpPayloadSize := dnsUDPPayloadSize(dnsMessage)
-	if !c.admitDNSRequest() {
-		// Drop requests arriving while the owning plane is being retired.
-		return nil
-	}
 	if len(dnsMessage.Question) != 1 {
 		go func() {
-			defer c.activeRequests.Done()
+			defer c.finishDNSRequest()
 			response := new(dnsmessage.Msg)
 			response.SetRcode(dnsMessage, dnsmessage.RcodeFormatError)
 			*dnsMessage = *response
@@ -423,7 +442,7 @@ func (c *DnsController) Handle(dnsMessage *dnsmessage.Msg, req *udpRequest) (err
 	}
 
 	go func() {
-		defer c.activeRequests.Done()
+		defer c.finishDNSRequest()
 		var err error
 		// Try to make both A and AAAA lookups.
 		if (queryInfo.qtype == dnsmessage.TypeA || queryInfo.qtype == dnsmessage.TypeAAAA) && c.qtypePrefer != 0 {
