@@ -6,11 +6,28 @@
 package control
 
 import (
+	"context"
 	"net"
+	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/dns"
 	dnsmessage "github.com/miekg/dns"
 )
+
+func newTestDNSForwarder(t testing.TB, scheme dns.UpstreamScheme, args dialArgument) DnsForwarder {
+	t.Helper()
+	upstream := &dns.Upstream{Scheme: scheme, Ip46: new(netutils.Ip46)}
+	_, protocols := upstream.SupportedNetworks()
+	args.networkType.L4Proto = protocols[0]
+	forwarder, err := newDnsForwarder(context.Background(), upstream, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = forwarder.Close() })
+	return forwarder
+}
 
 func testDNSQuery(name string, qtype uint16, id uint16) *dnsmessage.Msg {
 	return &dnsmessage.Msg{

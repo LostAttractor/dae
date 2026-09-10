@@ -178,7 +178,7 @@ func TestDoQRejectsTcpKeepaliveQueryBeforeDial(t *testing.T) {
 	query.IsEdns0().Option = append(query.IsEdns0().Option, &dnsmessage.EDNS0_TCP_KEEPALIVE{
 		Code: dnsmessage.EDNS0TCPKEEPALIVE,
 	})
-	if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
+	if err := newTestDNSForwarder(t, dns.UpstreamScheme_QUIC, dialArgument{}).ForwardDNS(context.Background(), query); err == nil {
 		t.Fatal("DoQ query with TCP keepalive unexpectedly reached the dial path")
 	}
 }
@@ -189,7 +189,7 @@ func TestDoQRejectsMultipleOptRecordsBeforeDial(t *testing.T) {
 		&dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT}},
 		&dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT}},
 	)
-	if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
+	if err := newTestDNSForwarder(t, dns.UpstreamScheme_QUIC, dialArgument{}).ForwardDNS(context.Background(), query); err == nil {
 		t.Fatal("DoQ query with multiple OPT records unexpectedly reached the dial path")
 	}
 }
@@ -218,7 +218,7 @@ func TestDoQRejectsInvalidOptBeforeDial(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			query := testQuery("example.com.", dnsmessage.TypeA, 42)
 			query.Extra = append(query.Extra, tt.opt)
-			if err := (&DoQ{}).ForwardDNS(context.Background(), query); err == nil {
+			if err := newTestDNSForwarder(t, dns.UpstreamScheme_QUIC, dialArgument{}).ForwardDNS(context.Background(), query); err == nil {
 				t.Fatal("invalid DoQ OPT unexpectedly reached the dial path")
 			}
 		})
@@ -313,13 +313,12 @@ func TestPackDoqQueryUsesAvailableNearLimitPadding(t *testing.T) {
 }
 
 func TestDoHUsesHostnameAsAuthority(t *testing.T) {
-	forwarder := &DoH{
-		Upstream: dns.Upstream{
-			Scheme:   dns.UpstreamScheme_HTTPS,
-			Hostname: "dns.example",
-			Port:     443,
-			Path:     "/dns-query",
-		},
+	forwarder := newTestDNSForwarder(t, dns.UpstreamScheme_HTTPS, dialArgument{}).(*httpDNSForwarder)
+	forwarder.Upstream = dns.Upstream{
+		Scheme:   dns.UpstreamScheme_HTTPS,
+		Hostname: "dns.example",
+		Port:     443,
+		Path:     "/dns-query",
 	}
 	forwarder.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host != "dns.example:443" || req.Host != "dns.example:443" {
