@@ -198,8 +198,9 @@ subscription {
     # Ordinary HTTP(S) sources do not fall back to cache. Sources with '-file' require a tag
     # and will be saved to 'DAE_LOCATION_CACHE/persist.d/your_sub_tag.sub'
     # (default: /var/lib/dae/persist.d/your_sub_tag.sub).
-    # This file will serve as a fallback when fetching the subscription via a link fails.
-    # It will be updated automatically once the fetch is successful.
+    # Fall back to this file if downloading or parsing fails, or no usable nodes are found,
+    # including HTTP 200 responses containing timeout or rate-limit messages.
+    # Update the file only after parsing and node validation succeed.
     persist_sub: 'https-file://www.example.com/persist_sub/link'
 }
 
