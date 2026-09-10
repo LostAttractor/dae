@@ -411,7 +411,7 @@ func TestValidateSubscriptionNodesRejectsPanickingValidator(t *testing.T) {
 }
 
 func persistentURL(tag, rawURL string) string {
-	return tag + ":" + strings.Replace(rawURL, "http://", "http-file://", 1)
+	return tag + ":" + strings.Replace(rawURL, "://", "-file://", 1)
 }
 
 func TestResolveSubscriptionInvalidResponsePreservesCache(t *testing.T) {
@@ -423,35 +423,51 @@ func TestResolveSubscriptionInvalidResponsePreservesCache(t *testing.T) {
 		{name: "non-2xx status", status: http.StatusBadGateway, body: "upstream unavailable"},
 		{name: "malformed 2xx", status: http.StatusOK, body: "not a subscription"},
 		{name: "HTML URL error page", status: http.StatusOK, body: "<!doctype html>\n<a href=\"https://example.com/help\">service unavailable</a>"},
+		{name: "timeout text", status: http.StatusOK, body: "Subscription request timed out. Please try again later."},
+		{name: "rate limit text", status: http.StatusOK, body: "订阅请求过于频繁，请稍后重试"},
+		{name: "timeout JSON", status: http.StatusOK, body: `{"status":"error","message":"subscription request timed out"}`},
+		{name: "encoded timeout", status: http.StatusOK, body: string(encodedSubscription("Subscription request timed out"))},
+		{name: "empty response", status: http.StatusOK},
+		{name: "malformed SIP008", status: http.StatusOK, body: `{"version":1,"servers":[`},
+		{name: "empty SIP008", status: http.StatusOK, body: `{"version":1,"servers":[]}`},
+		{name: "unusable nodes", status: http.StatusOK, body: string(encodedSubscription("unsupported://invalid"))},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			cachedNode := testSSNode("cached.example")
-			cached := encodedSubscription("unsupported://cached", cachedNode)
-			path := writePersistedSubscription(t, dir, "test", cached)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(tt.status)
-				_, _ = w.Write([]byte(tt.body))
-			}))
-			defer server.Close()
+	for _, transport := range []struct {
+		name  string
+		serve func(http.Handler) *httptest.Server
+	}{
+		{"http", httptest.NewServer},
+		{"https", httptest.NewTLSServer},
+	} {
+		for _, tt := range tests {
+			t.Run(transport.name+"/"+tt.name, func(t *testing.T) {
+				dir := t.TempDir()
+				cachedNode := testSSNode("cached.example")
+				cached := encodedSubscription("unsupported://cached", cachedNode)
+				path := writePersistedSubscription(t, dir, "test", cached)
+				server := transport.serve(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tt.status)
+					_, _ = w.Write([]byte(tt.body))
+				}))
+				defer server.Close()
 
-			tag, nodes, err := ResolveSubscription(server.Client(), dir, persistentURL("test", server.URL), componentoutbound.ValidateNodeLink)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tag != "test" || len(nodes) != 1 || nodes[0] != cachedNode {
-				t.Fatalf("fallback result = %q, %v", tag, nodes)
-			}
-			got, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(got, cached) {
-				t.Fatal("invalid response replaced persisted subscription")
-			}
-		})
+				tag, nodes, err := ResolveSubscription(server.Client(), dir, persistentURL("test", server.URL), componentoutbound.ValidateNodeLink)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tag != "test" || len(nodes) != 1 || nodes[0] != cachedNode {
+					t.Fatalf("fallback result = %q, %v", tag, nodes)
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, cached) {
+					t.Fatal("invalid response replaced persisted subscription")
+				}
+			})
+		}
 	}
 }
 

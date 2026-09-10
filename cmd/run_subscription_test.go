@@ -239,7 +239,12 @@ func TestResolveNodeDescriptorsPersistsAndFallsBackInCacheDirectory(t *testing.T
 	configDir, cacheDir := filepath.Join(root, "missing-config"), filepath.Join(root, "cache")
 	t.Setenv("DAE_LOCATION_CACHE", cacheDir)
 	node, content := subscriptionTestContent("cached.example")
+	var timedOut atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if timedOut.Load() {
+			_, _ = w.Write([]byte(`{"message":"subscription request timed out"}`))
+			return
+		}
 		_, _ = w.Write(content)
 	}))
 	defer server.Close()
@@ -253,18 +258,19 @@ func TestResolveNodeDescriptorsPersistsAndFallsBackInCacheDirectory(t *testing.T
 		}},
 	}
 	activeTags := map[string]struct{}{"cached": {}}
-	for _, offline := range []bool{false, true} {
-		if offline {
+	for _, state := range []string{"fresh", "timeout response", "offline"} {
+		timedOut.Store(state == "timeout response")
+		if state == "offline" {
 			server.Close()
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		descriptors, err := resolveNodeDescriptors(ctx, conf, activeTags, false, configDir, subscription.ResolveSubscriptionContext)
 		cancel()
 		if err != nil {
-			t.Fatalf("offline=%t: %v", offline, err)
+			t.Fatalf("%s: %v", state, err)
 		}
 		if len(descriptors) != 1 || descriptors[0].Link != node || descriptors[0].SubscriptionTag != "cached" {
-			t.Fatalf("offline=%t: descriptors = %+v, want cached node %q", offline, descriptors, node)
+			t.Fatalf("%s: descriptors = %+v, want cached node %q", state, descriptors, node)
 		}
 	}
 	cacheFile := filepath.Join(cacheDir, "persist.d", "cached.sub")
