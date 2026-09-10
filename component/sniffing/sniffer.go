@@ -295,13 +295,22 @@ func (s *Sniffer) Read(p []byte) (n int, err error) {
 		s.dataError = read.err
 	}
 
-	if s.buf != nil && s.buf.Len() > 0 {
-		// Read buf first.
-		n, _ = s.buf.Read(p)
-		if s.buf.Len() == 0 && s.dataError != nil {
+	if s.buf != nil {
+		if s.buf.Len() > 0 {
+			n, _ = s.buf.Read(p)
+			if s.buf.Len() > 0 {
+				return n, nil
+			}
+		}
+		// Stream replay owns the buffer only until its last byte is read.
+		// Packet Data still aliases it, so packet sniffers retain ownership.
+		if s.stream {
+			pool.PutBytesBuffer(s.buf)
+			s.buf = nil
+		}
+		if n > 0 {
 			return n, s.dataError
 		}
-		return n, nil
 	}
 	if s.dataError != nil {
 		return 0, s.dataError

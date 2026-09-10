@@ -151,6 +151,64 @@ func TestConnSnifferWriteBufferedToExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestConnSnifferReleasesReplayBuffer(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	sniffer := NewConnSniffer(server, time.Second).(*ConnSniffer)
+	defer sniffer.Close()
+	prefix := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	tail := []byte("body arriving after replay")
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := client.Write(prefix)
+		if err == nil {
+			_, err = client.Write(tail)
+		}
+		writeDone <- err
+	}()
+	if _, err := sniffer.SniffTcp(); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(prefix)+len(tail))
+	if _, err := io.ReadFull(sniffer, got[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if sniffer.buf == nil {
+		t.Fatal("released buffer before all sniffed bytes were replayed")
+	}
+	if _, err := io.ReadFull(sniffer, got[1:len(prefix)]); err != nil {
+		t.Fatal(err)
+	}
+	if sniffer.buf != nil {
+		t.Fatal("live connection retained an exhausted sniff buffer")
+	}
+	if err := server.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(sniffer, got[len(prefix):]); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	if want := append(prefix, tail...); !bytes.Equal(got, want) {
+		t.Fatalf("replayed data = %q, want %q", got, want)
+	}
+}
+
+func TestPacketSnifferRetainsReplayData(t *testing.T) {
+	payload := []byte("not QUIC")
+	sniffer := NewPacketSniffer(payload)
+	defer sniffer.Close()
+	_, _, _ = sniffer.SniffUdp()
+	if _, err := io.ReadAll(sniffer); err != nil {
+		t.Fatal(err)
+	}
+	if sniffer.buf == nil || !bytes.Equal(sniffer.Data()[0], payload) {
+		t.Fatal("reading packet buffer invalidated packet replay data")
+	}
+}
+
 func TestSnifferDeliversWholeBufferBeforeEOF(t *testing.T) {
 	sniffer := NewStreamSniffer(bytes.NewReader(nil), time.Second)
 	payload := bytes.Repeat([]byte("buffered"), 16*1024)
