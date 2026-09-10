@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 const (
@@ -19,9 +21,12 @@ const (
 	mitmPacketMaxSize   = 65535
 )
 
+var mitmPacketDrops udpPacketDrops
+
 type mitmPacketPair struct {
 	mu     sync.Mutex
 	closed bool
+	memory *membuffer.Budget
 }
 
 type mitmPacketConn struct {
@@ -31,7 +36,7 @@ type mitmPacketConn struct {
 	readDeadline  time.Time
 	writeDeadline time.Time
 	readChanged   chan struct{}
-	packets       [mitmPacketQueueSize][]byte
+	packets       [mitmPacketQueueSize]udpPacket
 	head          int
 	count         int
 }
@@ -42,7 +47,7 @@ type mitmPacketConn struct {
 // their source. A full receive queue drops incoming datagrams, so a slow QUIC
 // connection cannot block the transparent packet worker.
 func newMITMPacketPair(client, destination netip.AddrPort) (ingress, server net.PacketConn) {
-	pair := new(mitmPacketPair)
+	pair := &mitmPacketPair{memory: udpPacketMemory}
 	a := &mitmPacketConn{pair: pair, local: client, readChanged: make(chan struct{})}
 	b := &mitmPacketConn{pair: pair, local: destination, readChanged: make(chan struct{})}
 	a.peer, b.peer = b, a
@@ -63,11 +68,13 @@ func (c *mitmPacketConn) ReadFrom(buf []byte) (int, net.Addr, error) {
 		}
 		if c.count > 0 {
 			packet := c.packets[c.head]
-			c.packets[c.head] = nil
+			c.packets[c.head] = udpPacket{}
 			c.head = (c.head + 1) % mitmPacketQueueSize
 			c.count--
 			c.pair.mu.Unlock()
-			return copy(buf, packet), net.UDPAddrFromAddrPort(c.peer.local), nil
+			n := copy(buf, packet.data)
+			packet.release()
+			return n, net.UDPAddrFromAddrPort(c.peer.local), nil
 		}
 		changed := c.readChanged
 		c.pair.mu.Unlock()
@@ -113,7 +120,12 @@ func (c *mitmPacketConn) WriteTo(buf []byte, addr net.Addr) (int, error) {
 		return len(buf), nil
 	}
 	index := (c.peer.head + c.peer.count) % mitmPacketQueueSize
-	c.peer.packets[index] = append([]byte(nil), buf...)
+	packet, ok := copyUDPPacket(buf, c.pair.memory)
+	if !ok {
+		mitmPacketDrops.report("packet_memory_limit")
+		return len(buf), nil
+	}
+	c.peer.packets[index] = packet
 	c.peer.count++
 	if c.peer.count == 1 {
 		c.peer.notifyReaders()
@@ -132,7 +144,10 @@ func (c *mitmPacketConn) Close() error {
 		c.pair.closed = true
 		close(c.readChanged)
 		close(c.peer.readChanged)
-		c.packets, c.peer.packets = [mitmPacketQueueSize][]byte{}, [mitmPacketQueueSize][]byte{}
+		for i := range c.packets {
+			c.packets[i].release()
+			c.peer.packets[i].release()
+		}
 		c.count, c.peer.count = 0, 0
 	}
 	return nil

@@ -238,24 +238,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				}
 			}
 
-			data := pool.GetBuffer(n)
-			copy(data, buf[:n])
-			taskCtx, cancelTask := context.WithTimeout(c.ctx, consts.DefaultDialTimeout)
-
-			if !c.udpTaskPool.emit(src, func() {
-				defer cancelTask()
-				defer pool.PutBuffer(data)
-				if e := c.handlePkt(taskCtx, data, src, dst, nil); e != nil && taskCtx.Err() == nil {
-					if log.IsLevelEnabled(log.DebugLevel) {
-						log.Warnf("%+v", oops.Wrapf(e, "handlePkt"))
-					} else {
-						log.Warnf("%v", oops.Wrapf(e, "handlePkt"))
-					}
-				}
-			}) {
-				cancelTask()
-				pool.PutBuffer(data)
-			}
+			c.enqueueUDPPacket(buf[:n], src, dst)
 		}
 	}()
 	sentReady = true
