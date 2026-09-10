@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
-	"unicode/utf16"
 
 	qjs "github.com/buke/quickjs-go"
 )
@@ -183,9 +182,9 @@ func (vm *VM) arguments(values []*qjs.Value) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		text := string(utf16.Decode(units))
-		if uint64(len(text)) > vm.memoryLimit-totalBytes {
-			return nil, errors.New("host argument strings exceed memory limit")
+		text, err := hostString(units, vm.memoryLimit-totalBytes)
+		if err != nil {
+			return nil, err
 		}
 		totalBytes += uint64(len(text))
 		args[i] = text
@@ -222,6 +221,28 @@ func (vm *VM) Eval(source string) error {
 		return errors.New("quickjs: source exceeds memory limit")
 	}
 	return vm.result(vm.context.Eval(source, qjs.EvalFileName("surge.js")))
+}
+
+// SetInputJSON installs invocation data without compiling the request/response
+// body as a JavaScript literal alongside the bootstrap.
+func (vm *VM) SetInputJSON(data []byte) error {
+	if err := vm.check(); err != nil {
+		return err
+	}
+	if uint64(len(data)) > vm.memoryLimit {
+		return errors.New("quickjs: input data exceeds memory limit")
+	}
+	value := vm.context.ParseJSON(string(data))
+	if value.IsException() {
+		value.Free()
+		return vm.exception()
+	}
+	// Set transfers ownership of the parsed value to the global object.
+	vm.context.Globals().Set("__daeInput", value)
+	if vm.context.HasException() {
+		return vm.exception()
+	}
+	return vm.check()
 }
 
 // Dispatch delivers an HTTP/timer event to the bootstrap's __daeDispatch.

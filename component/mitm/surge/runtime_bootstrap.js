@@ -3,29 +3,15 @@
   "use strict";
   delete globalThis.__daeHost;
   delete globalThis.__daeInput;
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  function toBase64(bytes) {
-    const parts = [];
-    for (let i = 0; i < bytes.length; i += 3) {
-      const a = bytes[i], b = bytes[i + 1], c = bytes[i + 2];
-      parts.push(alphabet[a >> 2] + alphabet[((a & 3) << 4) | ((b || 0) >> 4)] +
-        (i + 1 < bytes.length ? alphabet[((b & 15) << 2) | ((c || 0) >> 6)] : "=") +
-        (i + 2 < bytes.length ? alphabet[c & 63] : "="));
-    }
-    return parts.join("");
-  }
+  // Capture the bundled QuickJS intrinsics before running user scripts. Native
+  // encoding avoids building one temporary JS string for every three bytes.
+  const toBase64 = Function.prototype.call.bind(Uint8Array.prototype.toBase64);
+  const decodeBase64 = Uint8Array.fromBase64;
   function fromBase64(text) {
     text = String(text).replace(/[\t\n\f\r ]/g, "");
     if (text.length % 4 === 0) text = text.replace(/={1,2}$/, "");
     if (text.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(text)) throw new TypeError("Invalid base64");
-    const out = new Uint8Array(Math.floor(text.length * 6 / 8));
-    let bits = 0, value = 0, cursor = 0;
-    for (const char of text) {
-      value = (value << 6) | alphabet.indexOf(char);
-      bits += 6;
-      if (bits >= 8) { bits -= 8; out[cursor++] = (value >> bits) & 255; }
-    }
-    return out;
+    return decodeBase64(text);
   }
   function bytes(value) {
     if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -77,8 +63,7 @@
     value.headers = headerObject(value.headers);
     if (value.h2_trailers != null) value.h2_trailers = headerObject(value.h2_trailers);
     if (Object.prototype.hasOwnProperty.call(value, "bodyBase64")) {
-      const raw = fromBase64(value.bodyBase64);
-      value.body = input.binary ? raw : new TextDecoder().decode(raw);
+      value.body = input.binary ? fromBase64(value.bodyBase64) : host("decode", value.bodyBase64, "", "");
       delete value.bodyBase64;
     }
     return value;
@@ -168,8 +153,8 @@
       payload.method = method.toUpperCase(); payload.timeout = options.timeout;
       const id = ++sequence;
       callbacks.set(id, event => {
-        let body = event.bodyBase64 == null ? null : fromBase64(event.bodyBase64);
-        if (body !== null && !options["binary-mode"]) body = new TextDecoder().decode(body);
+        const body = event.bodyBase64 == null ? null : options["binary-mode"]
+          ? fromBase64(event.bodyBase64) : host("decode", event.bodyBase64, "", "");
         if (event.response) {
           event.response.headers = headerObject(event.response.headers);
           if (event.response.h2_trailers != null) event.response.h2_trailers = headerObject(event.response.h2_trailers);
