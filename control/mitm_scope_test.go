@@ -4,21 +4,20 @@ package control
 
 import (
 	"testing"
-	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/surge"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-type surgeScopeHostCase struct {
+type scopeHostCase struct {
 	host    string
 	mitm    bool
 	capture bool // A positive wildcard may also cover an excluded hostname.
 }
 
-func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeScopeHostCase) {
+func testMITMScopeRouting(t *testing.T, scopes []plugin.HTTPScope, hosts []scopeHostCase) {
 	t.Helper()
 	for _, order := range []struct {
 		name    string
@@ -28,21 +27,8 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 		{name: "second then first", indices: [2]int{1, 0}},
 	} {
 		t.Run(order.name, func(t *testing.T) {
-			var modules []*surge.Module
-			for _, index := range order.indices {
-				module, err := surge.Parse(sources[index], nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				modules = append(modules, module)
-			}
-			engine, err := surge.NewEngine(surge.EngineOptions{
-				Modules: modules, Runtime: &surge.Runtime{},
-				MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			plan := plugin.Plan{Scopes: []plugin.HTTPScope{scopes[order.indices[0]], scopes[order.indices[1]]}}
+			host := controlTestHost(t, &controlTestPlugin{plan: plan}, nil)
 			// Mark the explicit direct rule so a fallback to direct cannot conceal
 			// an accidentally replaced or skipped user rule.
 			original := &config_parser.RoutingRule{
@@ -50,31 +36,31 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 				Outbound:     config_parser.Function{Name: "direct", Params: []*config_parser.Param{{Key: "mark", Val: "37"}}},
 			}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{original}}}
-			preparation.rules.enableMITMPlan(engine.Plan())
+			preparation.rules.enableMITMPlan(host.Plan())
 			if len(preparation.rules.routing) != 1 || preparation.rules.routing[0] != original {
-				t.Fatal("module capture replaced the explicit direct route")
+				t.Fatal("plugin capture replaced the explicit direct route")
 			}
-			userspace, _ := surgeRoutingMatcher(t, preparation.rules)
-			capture, builder := surgeRoutingMatcher(t, preparation.rules)
+			userspace, _ := routingMatcherForTest(t, preparation.rules)
+			capture, builder := routingMatcherForTest(t, preparation.rules)
 			// Keep the kernel's match conditions, replacing only its terminal
 			// action so the userspace evaluator exposes capture without BPF maps.
 			exposeCapturePredicates(t, builder)
-			for _, host := range hosts {
-				t.Run(host.host, func(t *testing.T) {
+			for _, target := range hosts {
+				t.Run(target.host, func(t *testing.T) {
 
-					if got := controlTestHost(t, engine, nil).Match(host.host, 443) != mitm.HTTPBypass; got != host.mitm {
-						t.Errorf("MITM match = %v, want %v", got, host.mitm)
+					if got := host.Match(target.host, 443) != mitm.HTTPBypass; got != target.mitm {
+						t.Errorf("MITM match = %v, want %v", got, target.mitm)
 					}
 					for _, proto := range []consts.L4ProtoType{consts.L4ProtoType_TCP, consts.L4ProtoType_UDP} {
-						got, mark, must := surgeMatchRoute(t, userspace, host.host, proto)
+						got, mark, must := matchTestRoute(t, userspace, target.host, proto)
 						if got != consts.OutboundDirect || mark != 37 || must {
 							t.Errorf("userspace route(%v) = (%v,%d,%v), want (direct,37,false)", proto, got, mark, must)
 						}
-						got, mark, must = surgeMatchRoute(t, capture, host.host, proto)
+						got, mark, must = matchTestRoute(t, capture, target.host, proto)
 						wantOutbound, wantMark := consts.OutboundDirect, uint32(37)
-						// HTTP/3 uses the same per-module scope as TCP HTTP.
+						// HTTP/3 uses the same per-plugin scope as TCP HTTP.
 						// Candidate capture still does not override exclusions.
-						if host.mitm || host.capture {
+						if target.mitm || target.capture {
 							wantOutbound, wantMark = consts.OutboundUserDefinedMin, 0
 						}
 						if got != wantOutbound || mark != wantMark || must {
@@ -87,28 +73,32 @@ func testSurgeModuleScopeRouting(t *testing.T, sources []string, hosts []surgeSc
 	}
 }
 
-func TestSurgeModuleScopeBilijumpAndEmbyCapture(t *testing.T) {
-	testSurgeModuleScopeRouting(t, []string{
-		"#!name=Bilijump-like\n[MITM]\nhostname = %APPEND% app.bilibili.com, api.bilibili.com\n",
-		"#!name=Emby-like\n[MITM]\nhostname = mb3admin.com\n",
-	}, []surgeScopeHostCase{
-		{host: "app.bilibili.com", mitm: true},
-		{host: "api.bilibili.com", mitm: true},
-		{host: "mb3admin.com", mitm: true},
+func TestMITMPluginScopesCombine(t *testing.T) {
+	testMITMScopeRouting(t, []plugin.HTTPScope{
+		mitmRoutingPlugin("app.video.example", "api.video.example").plan.Scopes[0],
+		mitmRoutingPlugin("media.example").plan.Scopes[0],
+	}, []scopeHostCase{
+		{host: "app.video.example", mitm: true},
+		{host: "api.video.example", mitm: true},
+		{host: "media.example", mitm: true},
 		{host: "outside.example"},
-		{host: "app.bilibili.com.outside.example"},
+		{host: "app.video.example.outside.example"},
 	})
 }
 
-func TestSurgeModuleScopeExclusionDoesNotEraseAnotherModule(t *testing.T) {
-	testSurgeModuleScopeRouting(t, []string{
-		"#!name=Wildcard exclusions\n[MITM]\nhostname = -private.example.com, -blocked.example.com, *.example.com\n",
-		"#!name=Explicit private host\n[MITM]\nhostname = %APPEND% private.example.com\n",
-	}, []surgeScopeHostCase{
+func TestMITMPluginScopeExclusionDoesNotEraseAnotherPlugin(t *testing.T) {
+	testMITMScopeRouting(t, []plugin.HTTPScope{
+		{PreserveRoute: true, Scope: plugin.Scope{
+			{Host: "private.example.com", Ports: []uint16{80, 443}, Exclude: true},
+			{Host: "blocked.example.com", Ports: []uint16{80, 443}, Exclude: true},
+			{Host: "*.example.com", Ports: []uint16{80, 443}},
+		}},
+		mitmRoutingPlugin("private.example.com").plan.Scopes[0],
+	}, []scopeHostCase{
 		{host: "private.example.com", mitm: true},
 		{host: "public.example.com", mitm: true},
 		// Capture is an overapproximation; exclusions are enforced by each
-		// module at MITM selection, not by the shared kernel capture rule.
+		// plugin at MITM selection, not by the shared kernel capture rule.
 		{host: "blocked.example.com", mitm: false, capture: true},
 		{host: "outside.test"},
 	})

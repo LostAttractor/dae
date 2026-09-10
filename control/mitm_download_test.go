@@ -26,17 +26,17 @@ import (
 	dnsmessage "github.com/miekg/dns"
 )
 
-type surgeDownloadTestDialer func(context.Context, string, string) (net.Conn, error)
+type downloadTestDialer func(context.Context, string, string) (net.Conn, error)
 
-func (d surgeDownloadTestDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+func (d downloadTestDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return d(ctx, network, address)
 }
 
-func (surgeDownloadTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+func (downloadTestDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, net.ErrClosed
 }
 
-func surgeDownloadTestGroup(t *testing.T, name string, dial surgeDownloadTestDialer) *outbound.DialerGroup {
+func downloadTestGroup(t *testing.T, name string, dial downloadTestDialer) *outbound.DialerGroup {
 	t.Helper()
 	option := &dialer.GlobalOption{}
 	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dial}), option,
@@ -47,7 +47,7 @@ func surgeDownloadTestGroup(t *testing.T, name string, dial surgeDownloadTestDia
 	return group
 }
 
-func surgeDownloadTestPlane(t *testing.T, rules string, groups ...*outbound.DialerGroup) *ControlPlane {
+func downloadTestPlane(t *testing.T, rules string, groups ...*outbound.DialerGroup) *ControlPlane {
 	t.Helper()
 	sections, err := config_parser.Parse("global {}\nrouting {\n" + rules + "\nfallback: direct\n}")
 	if err != nil {
@@ -72,15 +72,15 @@ func surgeDownloadTestPlane(t *testing.T, rules string, groups ...*outbound.Dial
 	return &ControlPlane{core: &controlPlaneCore{}, outbounds: groups, routingMatcher: matcher, fallbackResolver: "192.0.2.53:53"}
 }
 
-type surgeDownloadTestDNS func(*dnsmessage.Msg)
+type downloadTestDNS func(*dnsmessage.Msg)
 
-func (f surgeDownloadTestDNS) ForwardDNS(_ context.Context, message *dnsmessage.Msg) error {
+func (f downloadTestDNS) ForwardDNS(_ context.Context, message *dnsmessage.Msg) error {
 	f(message)
 	return nil
 }
-func (surgeDownloadTestDNS) Close() error { return nil }
+func (downloadTestDNS) Close() error { return nil }
 
-func attachSurgeDownloadTestDNS(t *testing.T, c *ControlPlane, request, response string, answer surgeDownloadTestDNS) *config.Dns {
+func attachDownloadTestDNS(t *testing.T, c *ControlPlane, request, response string, answer downloadTestDNS) *config.Dns {
 	t.Helper()
 	configuration := &config.Dns{
 		Upstream: []config.KeyableString{"test:tcp://192.0.2.53:53"},
@@ -107,12 +107,12 @@ func attachSurgeDownloadTestDNS(t *testing.T, c *ControlPlane, request, response
 	return configuration
 }
 
-func TestSurgeDownloadRoutesResolvedDestination(t *testing.T) {
+func TestMITMDownloadRoutesResolvedDestination(t *testing.T) {
 	for _, override := range []bool{false, true} {
 		t.Run(map[bool]string{false: "ip", true: "domain"}[override], func(t *testing.T) {
 			var calls []string
 			group := func(name string) *outbound.DialerGroup {
-				return surgeDownloadTestGroup(t, name, func(ctx context.Context, network, address string) (net.Conn, error) {
+				return downloadTestGroup(t, name, func(ctx context.Context, network, address string) (net.Conn, error) {
 					calls = append(calls, name+" "+network+" "+address)
 					if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > consts.DefaultDialTimeout {
 						t.Error("download dial has no bounded timeout")
@@ -122,9 +122,9 @@ func TestSurgeDownloadRoutesResolvedDestination(t *testing.T) {
 					return conn, nil
 				})
 			}
-			c := surgeDownloadTestPlane(t, "domain(full: raw.example) && dip(198.51.100.0/24) && dport(443) -> proxy", group("direct"), group("block"), group("proxy"), group("unused"))
+			c := downloadTestPlane(t, "domain(full: raw.example) && dip(198.51.100.0/24) && dport(443) -> proxy", group("direct"), group("block"), group("proxy"), group("unused"))
 			c.dialTargetOverride = override
-			attachSurgeDownloadTestDNS(t, c, "test", "accept", func(message *dnsmessage.Msg) {
+			attachDownloadTestDNS(t, c, "test", "accept", func(message *dnsmessage.Msg) {
 				question := message.Question[0]
 				if question.Name != "raw.example." || question.Qtype != dnsmessage.TypeA {
 					t.Errorf("unexpected DNS query: %+v", question)
@@ -152,20 +152,20 @@ func TestSurgeDownloadRoutesResolvedDestination(t *testing.T) {
 	}
 }
 
-func TestSurgeDownloadHonorsDNSRejection(t *testing.T) {
+func TestMITMDownloadHonorsDNSRejection(t *testing.T) {
 	for _, stage := range []string{"request", "response"} {
 		t.Run(stage, func(t *testing.T) {
-			unexpected := surgeDownloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
+			unexpected := downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
 				t.Error("DNS-rejected download reached a TCP dialer")
 				return nil, net.ErrClosed
 			})
-			c := surgeDownloadTestPlane(t, "", unexpected)
+			c := downloadTestPlane(t, "", unexpected)
 			request, response := "test", "reject"
 			if stage == "request" {
 				request, response = "reject", "accept"
 			}
 			queries := 0
-			attachSurgeDownloadTestDNS(t, c, request, response, func(message *dnsmessage.Msg) {
+			attachDownloadTestDNS(t, c, request, response, func(message *dnsmessage.Msg) {
 				queries++
 				message.Response = true
 				message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
@@ -181,7 +181,7 @@ func TestSurgeDownloadHonorsDNSRejection(t *testing.T) {
 	}
 }
 
-func TestSurgeDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
+func TestMITMDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 	for _, test := range []struct {
 		name, rules string
 		fallback    consts.OutboundIndex
@@ -195,7 +195,7 @@ func TestSurgeDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directCalls := 0
-			direct := surgeDownloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
+			direct := downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
 				directCalls++
 				conn, peer := net.Pipe()
 				_ = peer.Close()
@@ -205,14 +205,14 @@ func TestSurgeDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 				t.Error("download dialed a blocked or unhealthy path")
 				return nil, net.ErrClosed
 			}
-			block := surgeDownloadTestGroup(t, "block", unexpected)
+			block := downloadTestGroup(t, "block", unexpected)
 			option := &dialer.GlobalOption{}
-			d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: surgeDownloadTestDialer(unexpected)}), option,
+			d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: downloadTestDialer(unexpected)}), option,
 				&dialer.Property{Name: "unavailable"}, true, "")
 			unavailable := outbound.NewDialerGroup(option, "unavailable", outbound.GroupKindSelector,
 				[]*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
 			t.Cleanup(func() { _ = unavailable.Close() })
-			c := surgeDownloadTestPlane(t, test.rules, direct, block, unavailable)
+			c := downloadTestPlane(t, test.rules, direct, block, unavailable)
 			c.noConnectivityOutbound = test.fallback
 			c.routingMatcher.outboundUsable = func(index uint8, _ consts.L4ProtoType, version consts.IpVersionType) bool {
 				_, err := c.outbounds[index].Select(&common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: version.ToIpVersionStr()})
@@ -231,21 +231,21 @@ func TestSurgeDownloadHonorsBlockAndConnectivityFallback(t *testing.T) {
 	}
 }
 
-func TestSurgeDownloadRoutesRedirectDestination(t *testing.T) {
+func TestMITMDownloadRoutesRedirectDestination(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "http://203.0.113.8/module.sgmodule", http.StatusFound)
+		http.Redirect(w, r, "http://203.0.113.8/resource.json", http.StatusFound)
 	}))
 	defer server.Close()
 	calls := 0
-	direct := surgeDownloadTestGroup(t, "direct", func(ctx context.Context, network, address string) (net.Conn, error) {
+	direct := downloadTestGroup(t, "direct", func(ctx context.Context, network, address string) (net.Conn, error) {
 		calls++
 		return new(net.Dialer).DialContext(ctx, network, address)
 	})
-	block := surgeDownloadTestGroup(t, "block", func(context.Context, string, string) (net.Conn, error) {
+	block := downloadTestGroup(t, "block", func(context.Context, string, string) (net.Conn, error) {
 		t.Error("redirect bypassed the block rule")
 		return nil, net.ErrClosed
 	})
-	c := surgeDownloadTestPlane(t, "dip(203.0.113.8) -> block", direct, block)
+	c := downloadTestPlane(t, "dip(203.0.113.8) -> block", direct, block)
 	client, closeDownloads := newMITMClient(c, 30*time.Second)
 	defer closeDownloads()
 	_, err := client.Get(server.URL)
@@ -254,16 +254,16 @@ func TestSurgeDownloadRoutesRedirectDestination(t *testing.T) {
 	}
 }
 
-func TestSurgeDownloadStopsOnCancellation(t *testing.T) {
+func TestMITMDownloadStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := make(chan struct{})
-	direct := surgeDownloadTestGroup(t, "direct", func(ctx context.Context, _, _ string) (net.Conn, error) {
+	direct := downloadTestGroup(t, "direct", func(ctx context.Context, _, _ string) (net.Conn, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
-	client, closeDownloads := newMITMClient(surgeDownloadTestPlane(t, "", direct), 30*time.Second)
+	client, closeDownloads := newMITMClient(downloadTestPlane(t, "", direct), 30*time.Second)
 	defer closeDownloads()
 	transport := client.Transport.(*http.Transport)
 	dial := transport.DialContext
@@ -273,7 +273,7 @@ func TestSurgeDownloadStopsOnCancellation(t *testing.T) {
 		dialDone <- err
 		return conn, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://198.51.100.4/module.sgmodule", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://198.51.100.4/resource.json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,14 +312,14 @@ func TestSurgeDownloadStopsOnCancellation(t *testing.T) {
 	}
 }
 
-func TestSurgeDownloadPreservesDirectRouteMark(t *testing.T) {
+func TestMITMDownloadPreservesDirectRouteMark(t *testing.T) {
 	marked := false
-	direct := surgeDownloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
+	direct := downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
 		t.Error("marked route used the default direct dialer")
 		return nil, net.ErrClosed
 	})
-	c := surgeDownloadTestPlane(t, "dport(443) -> direct(mark: 37)", direct)
-	c.markedDirectDialers.Store(uint32(37), surgeDownloadTestDialer(func(_ context.Context, network, address string) (net.Conn, error) {
+	c := downloadTestPlane(t, "dport(443) -> direct(mark: 37)", direct)
+	c.markedDirectDialers.Store(uint32(37), downloadTestDialer(func(_ context.Context, network, address string) (net.Conn, error) {
 		marked = true
 		if network != "tcp" || address != "[2001:db8::1]:443" {
 			t.Errorf("marked dial target = %s %s", network, address)
@@ -332,29 +332,29 @@ func TestSurgeDownloadPreservesDirectRouteMark(t *testing.T) {
 	}
 }
 
-func TestSurgeDownloadDoesNotChangeOutboundAfterDialFailure(t *testing.T) {
+func TestMITMDownloadDoesNotChangeOutboundAfterDialFailure(t *testing.T) {
 	var calls []string
 	group := func(name string) *outbound.DialerGroup {
-		return surgeDownloadTestGroup(t, name, func(context.Context, string, string) (net.Conn, error) {
+		return downloadTestGroup(t, name, func(context.Context, string, string) (net.Conn, error) {
 			calls = append(calls, name)
 			return nil, io.EOF
 		})
 	}
-	c := surgeDownloadTestPlane(t, "dport(443) -> proxy", group("direct"), group("block"), group("proxy"), group("unrelated"))
+	c := downloadTestPlane(t, "dport(443) -> proxy", group("direct"), group("block"), group("proxy"), group("unrelated"))
 	_, err := mitmClientDialContext(c)(context.Background(), "tcp", "198.51.100.4:443")
 	if !errors.Is(err, io.EOF) || !reflect.DeepEqual(calls, []string{"proxy"}) {
 		t.Fatalf("dial error=%v, attempted outbounds=%v", err, calls)
 	}
 }
 
-func TestSurgeDownloadUsesCheckedSelectorPolicy(t *testing.T) {
+func TestMITMDownloadUsesCheckedSelectorPolicy(t *testing.T) {
 	var selected string
 	option := &dialer.GlobalOption{
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"check.example:53", "192.0.2.53"}},
 		CheckInterval:     time.Hour, CheckIntervalMax: time.Hour,
 	}
 	newDialer := func(name string) *dialer.Dialer {
-		transport := surgeDownloadTestDialer(func(_ context.Context, network, address string) (net.Conn, error) {
+		transport := downloadTestDialer(func(_ context.Context, network, address string) (net.Conn, error) {
 			if address != "192.0.2.53:53" {
 				selected = name
 				return nil, io.EOF
@@ -398,24 +398,24 @@ func TestSurgeDownloadUsesCheckedSelectorPolicy(t *testing.T) {
 		t.Error("healthy selector fell back to another outbound")
 		return nil, net.ErrClosed
 	}
-	c := surgeDownloadTestPlane(t, "dport(443) -> proxy",
-		surgeDownloadTestGroup(t, "direct", unexpected), surgeDownloadTestGroup(t, "block", unexpected), selector)
+	c := downloadTestPlane(t, "dport(443) -> proxy",
+		downloadTestGroup(t, "direct", unexpected), downloadTestGroup(t, "block", unexpected), selector)
 	_, err = mitmClientDialContext(c)(context.Background(), "tcp4", "198.51.100.4:443")
 	if !errors.Is(err, io.EOF) || selected != "selected" {
 		t.Fatalf("selected dialer = %q, error = %v", selected, err)
 	}
 }
 
-func TestSurgeDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
-	direct := surgeDownloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
+func TestMITMDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
+	direct := downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
 		t.Error("DNS fixture unexpectedly dialed the network")
 		return nil, net.ErrClosed
 	})
-	c := surgeDownloadTestPlane(t, "domain(full: raw.example, full: 192.0.2.53) -> direct", direct)
+	c := downloadTestPlane(t, "domain(full: raw.example, full: 192.0.2.53) -> direct", direct)
 	registry, kernel := newTestRegistry(16, 16, time.Second)
 	c.core.domainRegistry = registry
 	queries := 0
-	configuration := attachSurgeDownloadTestDNS(t, c, "test", "accept", func(message *dnsmessage.Msg) {
+	configuration := attachDownloadTestDNS(t, c, "test", "accept", func(message *dnsmessage.Msg) {
 		queries++
 		message.Response = true
 		message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
@@ -453,20 +453,20 @@ func TestSurgeDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
 	}
 }
 
-func TestSurgeDownloadCleanupJoinsDialsBeforeReplacingPlane(t *testing.T) {
+func TestMITMDownloadCleanupJoinsDialsBeforeReplacingPlane(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	direct := surgeDownloadTestGroup(t, "direct", func(ctx context.Context, _, _ string) (net.Conn, error) {
+	direct := downloadTestGroup(t, "direct", func(ctx context.Context, _, _ string) (net.Conn, error) {
 		close(started)
 		<-ctx.Done()
 		close(canceled)
 		<-release
 		return nil, ctx.Err()
 	})
-	c := surgeDownloadTestPlane(t, "", direct)
+	c := downloadTestPlane(t, "", direct)
 	client, closeDownloads := newMITMClient(c, 30*time.Second)
 	defer closeDownloads()
 	defer unblock()

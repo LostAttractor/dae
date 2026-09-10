@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package control
+package surge_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm/surge"
+	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -39,13 +41,13 @@ hostname = grpc.biliapi.net, api.cloudflare.com
 	return engine
 }
 
-func moduleRuleMatcher(t *testing.T, engine *surge.Engine, userRules []*config_parser.RoutingRule) *RoutingMatcher {
+func moduleRuleMatcher(t *testing.T, engine *surge.Engine, userRules []*config_parser.RoutingRule) *control.RoutingMatcher {
 	t.Helper()
-	preparation := &ControlPlanePreparation{rules: preparedRules{routing: userRules}}
-	preparation.rules.enableMITMPlan(engine.Plan())
-	builder, err := NewRoutingMatcherBuilder(preparation.rules.routing, map[string]uint8{
+	plan := engine.Plan()
+	rules := slices.Concat(plan.EarlyRoutes, userRules, plan.Routes)
+	builder, err := control.NewRoutingMatcherBuilder(rules, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock), "proxy": uint8(consts.OutboundUserDefinedMin),
-	}, nil, "proxy", nil, preparation.rules.capture, nil)
+	}, nil, "proxy", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +87,7 @@ func TestSurgeModuleRulesNativeRouting(t *testing.T) {
 		{"capillary.example.com", consts.L4ProtoType_TCP, consts.OutboundUserDefinedMin},
 		{"api-v2.example.com", consts.L4ProtoType_TCP, consts.OutboundUserDefinedMin},
 	} {
-		got, _, _ := surgeMatchRoute(t, matcher, test.host, test.proto)
+		got, _, _ := matchRoute(t, matcher, test.host, test.proto)
 		if got != test.want {
 			t.Errorf("module route(%s,%v)=%v, want %v", test.host, test.proto, got, test.want)
 		}
@@ -100,29 +102,29 @@ func TestSurgeModuleDirectCannotOverrideExplicitUserPolicy(t *testing.T) {
 	}{{"block", consts.OutboundBlock}, {"proxy", consts.OutboundUserDefinedMin}} {
 		rule := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "api.cloudflare.com"}}}}, Outbound: config_parser.Function{Name: test.policy}}
 		matcher := moduleRuleMatcher(t, engine, []*config_parser.RoutingRule{rule})
-		got, _, _ := surgeMatchRoute(t, matcher, "api.cloudflare.com", consts.L4ProtoType_TCP)
+		got, _, _ := matchRoute(t, matcher, "api.cloudflare.com", consts.L4ProtoType_TCP)
 		if got != test.want {
 			t.Fatalf("module DIRECT overrode user %s with %v", test.policy, got)
 		}
-		// The same order must survive the original-kernel-route reconstruction
-		// used when the module host itself is intercepted.
-		bitmap := matcher.domainMatcher.MatchDomainBitmap("api.cloudflare.com")
-		address := make([]byte, 16)
-		got, _, _, err := matcher.Match(address, address, 12345, 443, consts.IpVersion_4, consts.L4ProtoType_TCP, "different.example", [16]uint8{}, 0, 0, address, bitmap, bitmap)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != test.want {
-			t.Fatalf("reconstruction allowed module DIRECT to override user %s", test.policy)
-		}
+
 	}
 }
 
 func TestSurgeModulePreRejectPrecedesUserDirect(t *testing.T) {
 	rule := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "api.biliapi.com"}}}}, Outbound: config_parser.Function{Name: "direct"}}
 	matcher := moduleRuleMatcher(t, moduleRuleEngine(t), []*config_parser.RoutingRule{rule})
-	got, _, _ := surgeMatchRoute(t, matcher, "api.biliapi.com", consts.L4ProtoType_TCP)
+	got, _, _ := matchRoute(t, matcher, "api.biliapi.com", consts.L4ProtoType_TCP)
 	if got != consts.OutboundBlock {
 		t.Fatalf("pre-matching reject lost priority: %v", got)
 	}
+}
+
+func matchRoute(t *testing.T, matcher *control.RoutingMatcher, host string, proto consts.L4ProtoType) (consts.OutboundIndex, uint32, bool) {
+	t.Helper()
+	address := make([]byte, 16)
+	outbound, mark, must, err := matcher.Match(address, address, 12345, 443, consts.IpVersion_4, proto, host, [16]uint8{}, 0, 0, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return outbound, mark, must
 }

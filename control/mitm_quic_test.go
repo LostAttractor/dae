@@ -20,7 +20,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/surge"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -76,7 +76,7 @@ func TestMITMQUICUsesSelectedOutboundAndOriginalTarget(t *testing.T) {
 	}
 	defer upstreamPackets.Close()
 	upstream := &http3.Server{TLSConfig: authority.TLSConfig("video.example"), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 3 || r.Header.Get("X-Script") != "request" || r.Host != "video.example" {
+		if r.ProtoMajor != 3 || r.Header.Get("X-Plugin") != "request" || r.Host != "video.example" {
 			t.Errorf("unexpected upstream request: %s %s %v", r.Proto, r.Host, r.Header)
 		}
 		body, err := io.ReadAll(r.Body)
@@ -88,26 +88,25 @@ func TestMITMQUICUsesSelectedOutboundAndOriginalTarget(t *testing.T) {
 	upstreamDone := make(chan error, 1)
 	go func() { upstreamDone <- upstream.Serve(upstreamPackets) }()
 	defer func() { _ = upstream.Close(); <-upstreamDone }()
-	module, err := surge.Parse(`[MITM]
-hostname=video.example
-[Script]
-request=type=http-request,pattern=.,script-path=request.js
-response=type=http-response,pattern=.,requires-body=true,script-path=response.js
-`, nil)
-	if err != nil {
-		t.Fatal(err)
+	extension := mitmRoutingPlugin("video.example")
+	extension.handle = func(e *plugin.Exchange, next plugin.Handler) (*http.Response, error) {
+		e.Request.Header.Set("X-Plugin", "request")
+		response, err := next(e)
+		if err != nil {
+			return nil, err
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, []byte(" rewritten")...)
+		response.Body = io.NopCloser(strings.NewReader(string(body)))
+		response.ContentLength = int64(len(body))
+		response.Header.Del("Content-Length")
+		return response, nil
 	}
-	module.Scripts[0].Source = `const headers=$request.headers; headers["X-Script"]="request"; $done({headers});`
-	module.Scripts[1].Source = `$done({body:$response.body+" rewritten"});`
-	runtime, err := surge.NewRuntime(surge.RuntimeOptions{Timeout: time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine, err := surge.NewEngine(surge.EngineOptions{Modules: []*surge.Module{module}, Runtime: runtime, MaxBodySize: 1 << 20, MaxConcurrentScripts: 2, ScriptTimeout: time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, err := mitm.New(mitm.Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
+	host, err := mitm.New(mitm.Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}}, mitm.Instance{ID: "test", Type: "test", Plugin: extension})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,9 +21,9 @@ import (
 func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 	src := netip.MustParseAddrPort("192.0.2.10:12345")
 	dst := netip.MustParseAddrPort("91.108.56.100:443")
-	unused := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 	groups := []*outbound.DialerGroup{
-		surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), surgeDownloadTestGroup(t, "proxy", unused),
+		downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused),
 	}
 	for _, test := range []struct {
 		route, target string
@@ -45,7 +45,7 @@ func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 				Outbound:     config_parser.Function{Name: "block"},
 			}}}
 			prepared.destinations = rules
-			matcher, _ := surgeRoutingMatcher(t, prepared)
+			matcher, _ := routingMatcherForTest(t, prepared)
 			plane := &ControlPlane{routingMatcher: matcher, outbounds: groups}
 			plane.markedDirectDialers.Store(uint32(37), unused)
 			param := &RouteParam{
@@ -66,14 +66,14 @@ func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 }
 
 func TestDestinationRewriteUsesFallbackPolicy(t *testing.T) {
-	unused := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 	global := &dialer.GlobalOption{}
 	unavailable := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: unused}), global, &dialer.Property{Name: "unavailable"}, true, "")
 	group := outbound.NewDialerGroup(global, "proxy", outbound.GroupKindSelector, []*dialer.Dialer{unavailable}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
 	t.Cleanup(func() { group.Close() })
 	dst := netip.MustParseAddrPort("192.0.2.1:443")
-	matcher, _ := surgeRoutingMatcher(t, prepareFlowRulesForTest(t, "dip(192.0.2.1) -> dnat('2001:db8::1')", "ipversion(6) -> proxy"))
-	plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), group}}
+	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "dip(192.0.2.1) -> dnat('2001:db8::1')", "ipversion(6) -> proxy"))
+	plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), group}}
 
 	for _, fallback := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
 		plane.noConnectivityOutbound = fallback
@@ -95,10 +95,10 @@ dip('2001:db8::/32') -> must
 dip(192.0.2.1) -> dnat('2001:db8::1')`, `
 dip('2001:db8::/32') -> proxy(skip_while_noalive, mark:37)
 dip(192.0.2.1) -> block`)
-	matcher, _ := surgeRoutingMatcher(t, prepared)
-	unused := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	matcher, _ := routingMatcherForTest(t, prepared)
+	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 	plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{
-		surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), surgeDownloadTestGroup(t, "proxy", unused),
+		downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused),
 	}}
 	for _, retained := range []bool{false, true} {
 		src, dst := netip.MustParseAddrPort("192.0.2.10:12345"), netip.MustParseAddrPort("192.0.2.1:443")

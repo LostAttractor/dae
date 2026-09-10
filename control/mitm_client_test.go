@@ -19,7 +19,6 @@ import (
 	"github.com/daeuniverse/dae/component/api"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/settings"
 )
 
@@ -39,19 +38,12 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	makePlane := func(selectors []string) *ControlPlane {
 		t.Helper()
-		engine, err := surge.NewEngine(surge.EngineOptions{
-			Modules:     []*surge.Module{{Name: "test", Hostnames: []string{"example.test"}}},
-			Runtime:     &surge.Runtime{},
-			MaxBodySize: 1024, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		extension := mitmRoutingPlugin("example.test")
 		clients, err := clientmatch.Parse(selectors)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return &ControlPlane{mitmHost: controlTestHost(t, engine, authority), settings: store, mitmClients: clients, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+		return &ControlPlane{mitmHost: controlTestHost(t, extension, authority), settings: store, mitmClients: clients, routingMatcherBuilder: &RoutingMatcherBuilder{}}
 	}
 	plane := makePlane(nil)
 	ip := netip.MustParseAddr("192.0.2.10")
@@ -152,14 +144,8 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine, err := surge.NewEngine(surge.EngineOptions{
-		Runtime:     &surge.Runtime{},
-		MaxBodySize: 1024, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plane := &ControlPlane{mitmHost: controlTestHost(t, engine, a), settings: store, routingMatcherBuilder: &RoutingMatcherBuilder{}}
+	extension := &controlTestPlugin{}
+	plane := &ControlPlane{mitmHost: controlTestHost(t, extension, a), settings: store, routingMatcherBuilder: &RoutingMatcherBuilder{}}
 	for _, test := range []struct {
 		name, method, body, origin, site, contentType, marker, query, host string
 		status                                                             int
@@ -231,17 +217,4 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 			}
 		})
 	}
-}
-
-func controlTestHost(t *testing.T, engine *surge.Engine, authority *mitmca.Authority) *mitm.Host {
-	t.Helper()
-	if authority == nil && len(engine.Plan().Scopes) > 0 {
-		authority = &mitmca.Authority{}
-	}
-	host, err := mitm.New(mitm.Options{Authority: authority}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = host.Close() })
-	return host
 }

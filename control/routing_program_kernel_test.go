@@ -15,7 +15,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 )
 
@@ -53,18 +52,14 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 			controls += "\ndport(443) -> must"
 		}
 		prepared := prepareFlowRulesForTest(t, controls, "dip(198.51.100.20) -> proxy(mark:91)\ndomain(full: one.example) && dport(443) -> block\ndport(443) -> direct(mark:37)")
-		prepared.enableMITMPlan(surgeRoutingEngine(t, "one.example").Plan())
-		module, err := surge.Parse("[Host]\n192.0.2.20 = 198.51.100.20", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		prepared.destinations = append(prepared.destinations, module.Hosts...)
+		prepared.enableMITMPlan(mitmRoutingPlugin("one.example").Plan())
+		prepared.destinations = append(prepared.destinations, prepareFlowRulesForTest(t, "dip(192.0.2.20) -> dnat(198.51.100.20)", "").destinations...)
 		prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-		matcher, builder := surgeRoutingMatcher(t, prepared)
-		unused := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+		matcher, builder := routingMatcherForTest(t, prepared)
+		unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 		plane := &ControlPlane{routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_None,
 			core:      &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)},
-			outbounds: []*outbound.DialerGroup{surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), surgeDownloadTestGroup(t, "proxy", unused)}}
+			outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused)}}
 		builder.bpf = state
 		if err := builder.BuildKernspace(); err != nil {
 			t.Fatal(err)
@@ -90,7 +85,7 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 			{"API bypass", "192.0.2.1:40008", "10.0.0.1:443", []string{"one.example", "bump.example"}, false, false, false},
 			{"IPv6 missing DNS", "[2001:db8::1]:40009", "[2001:db8::2]:443", nil, false, false, false},
 			{"IPv6 matched", "[2001:db8::1]:40010", "[2001:db8::2]:443", []string{"one.example"}, true, false, false},
-			{"Host without proxy option or DNS", "192.0.2.1:40011", "192.0.2.20:443", nil, true, false, false},
+			{"plugin destination without DNS", "192.0.2.1:40011", "192.0.2.20:443", nil, true, false, false},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				for _, network := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP} {

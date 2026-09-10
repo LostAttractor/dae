@@ -15,7 +15,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/surge"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
@@ -23,21 +23,7 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-// Routing tests only inspect the engine's allowlist; no CA operations or JS run.
-func surgeRoutingEngine(t *testing.T, hostnames ...string) *surge.Engine {
-	t.Helper()
-	engine, err := surge.NewEngine(surge.EngineOptions{
-		Modules:     []*surge.Module{{Hostnames: hostnames}},
-		Runtime:     &surge.Runtime{},
-		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return engine
-}
-
-func TestSurgeKernelRoutingReconstruction(t *testing.T) {
+func TestMITMKernelRoutingReconstruction(t *testing.T) {
 	for _, test := range []struct {
 		name, rules, controls string
 		want                  consts.OutboundIndex
@@ -66,10 +52,10 @@ func TestSurgeKernelRoutingReconstruction(t *testing.T) {
 			if err := preparation.rules.enableFlowRules(context.Background(), configuration.Rules, nil); err != nil {
 				t.Fatal(err)
 			}
-			// Only one of the IP's hostnames belongs to the module: uncertainty
+			// Only one of the IP's hostnames belongs to the plugin: uncertainty
 			// in the injected capture rule itself must be skipped in simulation.
-			preparation.rules.enableMITMPlan(surgeRoutingEngine(t, "one.example").Plan())
-			matcher, _ := surgeRoutingMatcher(t, preparation.rules)
+			preparation.rules.enableMITMPlan(mitmRoutingPlugin("one.example").Plan())
+			matcher, _ := routingMatcherForTest(t, preparation.rules)
 			matcher.outboundUsable = func(uint8, consts.L4ProtoType, consts.IpVersionType) bool { return !test.unavailable }
 			first := matcher.domainMatcher.MatchDomainBitmap("one.example")
 			second := matcher.domainMatcher.MatchDomainBitmap("two.example")
@@ -90,7 +76,7 @@ func TestSurgeKernelRoutingReconstruction(t *testing.T) {
 	}
 }
 
-func surgeRoutingMatcher(t *testing.T, rules preparedRules) (*RoutingMatcher, *RoutingMatcherBuilder) {
+func routingMatcherForTest(t *testing.T, rules preparedRules) (*RoutingMatcher, *RoutingMatcherBuilder) {
 	t.Helper()
 	builder, err := NewRoutingMatcherBuilder(rules.routing, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock),
@@ -106,7 +92,7 @@ func surgeRoutingMatcher(t *testing.T, rules preparedRules) (*RoutingMatcher, *R
 	return matcher, builder
 }
 
-func surgeMatchRoute(t *testing.T, matcher *RoutingMatcher, host string, proto consts.L4ProtoType) (consts.OutboundIndex, uint32, bool) {
+func matchTestRoute(t *testing.T, matcher *RoutingMatcher, host string, proto consts.L4ProtoType) (consts.OutboundIndex, uint32, bool) {
 	t.Helper()
 	address := make([]byte, 16)
 	result, mark, must, err := matcher.Match(address, address, 12345, 443, consts.IpVersion_4, proto, host, [16]uint8{}, 0, 0, address)
@@ -116,8 +102,8 @@ func surgeMatchRoute(t *testing.T, matcher *RoutingMatcher, host string, proto c
 	return result, mark, must
 }
 
-func TestSurgeCapturePreservesUserspaceRoute(t *testing.T) {
-	engine := surgeRoutingEngine(t, "*.example")
+func TestMITMCapturePreservesUserspaceRoute(t *testing.T) {
+	extension := mitmRoutingPlugin("*.example")
 	for _, test := range []struct {
 		name     string
 		outbound config_parser.Function
@@ -133,12 +119,12 @@ func TestSurgeCapturePreservesUserspaceRoute(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			original := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "service.example"}}}}, Outbound: test.outbound}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: []*config_parser.RoutingRule{original}}}
-			preparation.rules.enableMITMPlan(engine.Plan())
+			preparation.rules.enableMITMPlan(extension.Plan())
 			if len(preparation.rules.routing) != 1 || preparation.rules.routing[0] != original || preparation.rules.capture == nil {
 				t.Fatalf("overlay replaced original routing: %+v", preparation.rules.routing)
 			}
-			matcher, _ := surgeRoutingMatcher(t, preparation.rules)
-			got, mark, must := surgeMatchRoute(t, matcher, "service.example", consts.L4ProtoType_TCP)
+			matcher, _ := routingMatcherForTest(t, preparation.rules)
+			got, mark, must := matchTestRoute(t, matcher, "service.example", consts.L4ProtoType_TCP)
 			if got != test.want || mark != test.mark || must != test.must {
 				t.Fatalf("route=(%v,%d,%v), want (%v,%d,%v)", got, mark, must, test.want, test.mark, test.must)
 			}
@@ -147,10 +133,15 @@ func TestSurgeCapturePreservesUserspaceRoute(t *testing.T) {
 }
 
 func TestMITMCaptureRetainsHostnameAndPortConstraints(t *testing.T) {
-	engine := surgeRoutingEngine(t, "-excluded.example", "*.example", "node?.test:8443", "UPPER.EXAMPLE.")
+	extension := &controlTestPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{PreserveRoute: true, Scope: plugin.Scope{
+		{Host: "excluded.example", Ports: []uint16{80, 443}, Exclude: true},
+		{Host: "*.example", Ports: []uint16{80, 443}},
+		{Host: "node?.test", Ports: []uint16{80, 8443}},
+		{Host: "UPPER.EXAMPLE.", Ports: []uint16{80, 443}},
+	}}}}}
 	preparation := &ControlPlanePreparation{}
-	preparation.rules.enableMITMPlan(engine.Plan())
-	matcher, builder := surgeRoutingMatcher(t, preparation.rules)
+	preparation.rules.enableMITMPlan(extension.Plan())
+	matcher, builder := routingMatcherForTest(t, preparation.rules)
 	// Change only the marker action to observe whether the preceding conditions
 	// select capture, without loading BPF maps or altering userspace skip logic.
 	exposeCapturePredicates(t, builder)
@@ -186,22 +177,22 @@ func TestMITMCaptureRetainsHostnameAndPortConstraints(t *testing.T) {
 			t.Errorf("capture(%q:%d,%v)=%v", test.host, test.port, test.proto, got)
 		}
 	}
-	if controlTestHost(t, engine, nil).Match("excluded.example", 443) != mitm.HTTPBypass {
+	if controlTestHost(t, extension, nil).Match("excluded.example", 443) != mitm.HTTPBypass {
 		t.Fatal("capturing an excluded hostname must not enable its MITM")
 	}
-	if controlTestHost(t, engine, nil).Match("node1.test", 8443) == mitm.HTTPBypass || controlTestHost(t, engine, nil).Match("node1.test", 443) != mitm.HTTPBypass {
+	if controlTestHost(t, extension, nil).Match("node1.test", 8443) == mitm.HTTPBypass || controlTestHost(t, extension, nil).Match("node1.test", 443) != mitm.HTTPBypass {
 		t.Fatal("MITM lost hostname port constraint")
 	}
 }
 
-func TestSurgeAPIRoutingPreservesDirectLANConnection(t *testing.T) {
+func TestMITMAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 	addresses := []net.Addr{
 		&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)},
 		&net.IPNet{IP: net.ParseIP("fd00::1"), Mask: net.CIDRMask(64, 128)},
 	}
 	for _, port := range []uint16{8081, 0} {
 		prepared := preparedRules{}
-		prepared.enableMITMPlan(surgeRoutingEngine(t, "service.example").Plan())
+		prepared.enableMITMPlan(mitmRoutingPlugin("service.example").Plan())
 		prepared.bypassAPI(port, addresses)
 		builder, err := NewRoutingMatcherBuilder(prepared.routing, map[string]uint8{
 			"direct": uint8(consts.OutboundDirect), "proxy": uint8(consts.OutboundUserDefinedMin),
@@ -260,9 +251,9 @@ func TestSurgeAPIRoutingPreservesDirectLANConnection(t *testing.T) {
 
 // Kernel terminal decisions carry capture separately; SNI does not replace them.
 func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
-	unused := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
-	groups := []*outbound.DialerGroup{surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), surgeDownloadTestGroup(t, "proxy", unused)}
-	matcher, _ := surgeRoutingMatcher(t, preparedRules{})
+	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
+	groups := []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused)}
+	matcher, _ := routingMatcherForTest(t, preparedRules{})
 	plane := &ControlPlane{outbounds: groups, routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_None, rerouteMode: consts.RerouteMode_Force, dialTargetOverride: true}
 	plane.markedDirectDialers.Store(uint32(37), unused)
 	for _, out := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
@@ -284,7 +275,7 @@ func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
 	}
 }
 
-func TestSurgeDialReportsConnectivityFailures(t *testing.T) {
+func TestMITMDialReportsConnectivityFailures(t *testing.T) {
 	refused := &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
 	for _, test := range []struct {
 		name                string
@@ -303,7 +294,7 @@ func TestSurgeDialReportsConnectivityFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			transport := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
+			transport := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
 				if test.canceled {
 					cancel()
 				}
@@ -349,7 +340,7 @@ func TestMITMDialPreservesTargetForEquivalentAuthorities(t *testing.T) {
 		{"api.example", "api.example:8443", "api.example:8443"},
 	} {
 		t.Run(test.requested, func(t *testing.T) {
-			transport := surgeDownloadTestDialer(func(_ context.Context, network, address string) (net.Conn, error) {
+			transport := downloadTestDialer(func(_ context.Context, network, address string) (net.Conn, error) {
 				if network != "tcp" || address != test.want {
 					t.Fatalf("dial target=%s/%s, want tcp/%s", network, address, test.want)
 				}

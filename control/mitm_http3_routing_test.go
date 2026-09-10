@@ -64,7 +64,7 @@ func TestHTTP3RequestsRouteAfterRewriteAndBeforePoolLookup(t *testing.T) {
 	auxiliary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "TCP") }))
 	defer auxiliary.Close()
 	var tcpDials atomic.Int32
-	plane, _, param := newHTTPRequestRouteTest(t, "", "", func(context.Context, string, string) (net.Conn, error) {
+	plane, _, param := newHTTPRequestRouteTest(t, "", mitmRoutingPlugin("original.example"), func(context.Context, string, string) (net.Conn, error) {
 		t.Error("unexpected unplanned dial")
 		return nil, net.ErrClosed
 	})
@@ -86,9 +86,9 @@ l4proto(udp) && dip(127.0.0.1) && dport(%d) && sip(192.0.2.10) && sport(5000) &&
 domain(full: original.example) -> block
 dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(packets.LocalAddr()).Port()))
 	prepared.enableMITMPlan(host.Plan())
-	matcher, builder := surgeRoutingMatcher(t, prepared)
+	matcher, builder := routingMatcherForTest(t, prepared)
 	plane.routingMatcher = matcher
-	plane.outbounds[2] = surgeDownloadTestGroup(t, "proxy", func(ctx context.Context, network, address string) (net.Conn, error) {
+	plane.outbounds[2] = downloadTestGroup(t, "proxy", func(ctx context.Context, network, address string) (net.Conn, error) {
 		if network != "tcp" || address != "198.51.100.30:8080" {
 			t.Errorf("auxiliary route=%s/%s", network, address)
 		}

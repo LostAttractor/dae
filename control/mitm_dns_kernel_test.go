@@ -54,7 +54,7 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 		UnusedLpmType: collection.Maps["unused_lpm_type"], DomainRoutingMap: collection.Maps["domain_routing_map"],
 	}}}
 	prepared := prepareFlowRulesForTest(t, "", "")
-	plan := surgeRoutingEngine(t, "grpc.biliapi.net", "app.bilibili.com", "api.bilibili.com", "www.bilibili.com").Plan()
+	plan := mitmRoutingPlugin("grpc.biliapi.net", "app.bilibili.com", "api.bilibili.com", "www.bilibili.com").Plan()
 	if requestRouting {
 		// An old-target block/must/mark cannot precede request transformations.
 		prepared = prepareFlowRulesForTest(t, "dport(80,443) -> must", "domain(full: grpc.biliapi.net, full: app.bilibili.com, full: api.bilibili.com, full: www.bilibili.com) && dport(80,443) -> block(mark:37)")
@@ -69,7 +69,7 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 		{Host: "2001:db8::10", Ports: []uint16{443}},
 	}, PreserveRoute: !requestRouting}}})
 	prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-	matcher, builder := surgeRoutingMatcher(t, prepared)
+	matcher, builder := routingMatcherForTest(t, prepared)
 	builder.bpf = state
 	if err := builder.BuildKernspace(); err != nil {
 		t.Fatal(err)

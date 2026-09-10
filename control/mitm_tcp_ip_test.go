@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"golang.org/x/sys/unix"
 )
 
@@ -41,21 +42,27 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 	defer tuples.Close()
 	authority, roots := mitmQUICTestAuthority(t)
 	for _, test := range []struct {
-		name, destination, scope, sni string
-		h2, excluded, ssh, intercept  bool
+		name, destination, sni       string
+		scope                        plugin.Scope
+		h2, excluded, ssh, intercept bool
 	}{
-		{name: "IPv4 TLS 1.2", destination: "192.0.2.20:8443", scope: "192.0.2.20:8443", intercept: true},
-		{name: "IPv6 TLS 1.3 h2", destination: "[2001:db8::20]:8443", scope: "[2001:db8::20]:8443", h2: true, intercept: true},
-		{name: "wrong port", destination: "192.0.2.20:443", scope: "192.0.2.20:8443"},
-		{name: "unrelated IP", destination: "192.0.2.21:8443", scope: "192.0.2.20:8443"},
-		{name: "domain scope only", destination: "192.0.2.20:8443", scope: "service.example:8443"},
-		{name: "existing SNI", destination: "192.0.2.20:8443", scope: "192.0.2.20:8443", sni: "outside.example"},
-		{name: "excluded client", destination: "192.0.2.20:8443", scope: "192.0.2.20:8443", excluded: true},
-		{name: "non TLS", destination: "192.0.2.20:8443", scope: "192.0.2.20:8443", ssh: true},
+		{name: "IPv4 TLS 1.2", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, intercept: true},
+		{name: "IPv6 TLS 1.3 h2", destination: "[2001:db8::20]:8443", scope: plugin.Scope{{Host: "2001:db8::20", Ports: []uint16{8443}}}, h2: true, intercept: true},
+		{name: "wrong port", destination: "192.0.2.20:443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}},
+		{name: "unrelated IP", destination: "192.0.2.21:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}},
+		{name: "domain scope only", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "service.example", Ports: []uint16{8443}}}},
+		{name: "existing SNI", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, sni: "outside.example"},
+		{name: "excluded client", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, excluded: true},
+		{name: "non TLS", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, ssh: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var bypassDials atomic.Int32
-			plane, _, param := newHTTPRequestRouteTestWithAuthority(t, "", "[MITM]\nhostname="+test.scope+"\n[URL Rewrite]\n^https://.*/blocked$ http://unused.example/ reject\n",
+			extension := &controlTestPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: test.scope}}},
+				handle: func(*plugin.Exchange, plugin.Handler) (*http.Response, error) {
+					return &http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}, nil
+				},
+			}
+			plane, _, param := newHTTPRequestRouteTestWithAuthority(t, "", extension,
 				func(context.Context, string, string) (net.Conn, error) {
 					bypassDials.Add(1)
 					return nil, errors.New("test raw connection bypass")

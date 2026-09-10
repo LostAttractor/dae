@@ -12,10 +12,10 @@ func TestCaptureAPIPrefixAndIndependentActions(t *testing.T) {
 	for _, http := range []bool{false, true} {
 		prepared := prepareFlowRulesForTest(t, "dip(10.0.0.1) -> dnat(198.51.100.1)", "")
 		if http {
-			prepared.enableMITMPlan(surgeRoutingEngine(t, "service.example").Plan())
+			prepared.enableMITMPlan(mitmRoutingPlugin("service.example").Plan())
 		}
 		prepared.bypassAPI(8081, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-		matcher, builder := surgeRoutingMatcher(t, prepared)
+		matcher, builder := routingMatcherForTest(t, prepared)
 		for i := range builder.rules {
 			if builder.rules[i].CaptureFlags != 0 {
 				if i < 3 {

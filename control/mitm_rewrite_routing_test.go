@@ -17,9 +17,6 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/settings"
 	dnsmessage "github.com/miekg/dns"
@@ -50,7 +47,7 @@ func TestMITMURLRewriteRoutesEffectiveTarget(t *testing.T) {
 			dials := 0
 			groups := make([]*outbound.DialerGroup, 0, 3)
 			for _, name := range []string{"direct", "block", "proxy"} {
-				groups = append(groups, surgeDownloadTestGroup(t, name, func(ctx context.Context, _, address string) (net.Conn, error) {
+				groups = append(groups, downloadTestGroup(t, name, func(ctx context.Context, _, address string) (net.Conn, error) {
 					mu.Lock()
 					gotOutbound, gotTarget = name, address
 					dials++
@@ -64,26 +61,13 @@ domain(full: blocked.example) -> block
 domain(full: original.example) && dport(8080) -> block
 dip(198.51.100.4,198.51.100.40) && sip(192.0.2.10) && sport(5000) && pname(app) && dscp(46) && dport(8080,8081) -> proxy(mark:91)
 domain(full: original.example) -> block`)
-			matcher, _ := surgeRoutingMatcher(t, prepared)
+			matcher, _ := routingMatcherForTest(t, prepared)
 			plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)}, routingMatcher: matcher, outbounds: groups, fallbackResolver: "192.0.2.53:53", sniffVerifyMode: consts.SniffVerifyMode_None}
-			attachSurgeDownloadTestDNS(t, plane, "test", "accept", func(message *dnsmessage.Msg) {
+			attachDownloadTestDNS(t, plane, "test", "accept", func(message *dnsmessage.Msg) {
 				message.Response = true
 				message.Answer = []dnsmessage.RR{&dnsmessage.A{Hdr: dnsmessage.RR_Header{Name: message.Question[0].Name, Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60}, A: net.ParseIP("198.51.100.4")}}
 			})
-			module, err := surge.Parse("[MITM]\nhostname = original.example:80\n[URL Rewrite]\n^http://original.example/old$ "+test.url+" header\n", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			engine, err := surge.NewEngine(surge.EngineOptions{Modules: []*surge.Module{module}, Runtime: &surge.Runtime{}, MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// This exercises the HTTP handler; no TLS handshake uses the CA.
-			host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = host.Close() })
+			host := controlTestHost(t, rewriteTestPlugin(t, map[string]string{"/old": test.url}), nil)
 			selected, err := groups[0].Select(common.NetworkTCP4.NetworkType())
 			if err != nil {
 				t.Fatal(err)

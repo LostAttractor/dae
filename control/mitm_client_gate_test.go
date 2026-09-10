@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/surge"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
@@ -35,26 +36,22 @@ import (
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
-var surgeTestClients = []string{"-02:00:00:00:00:02", "02:00:00:00:00:01", "10.0.0.0/24"}
+var mitmTestClients = []string{"-02:00:00:00:00:02", "02:00:00:00:00:01", "10.0.0.0/24"}
 
-func surgeClientTestEngine(t *testing.T, authority *mitmca.Authority, upstreamTLS *tls.Config, trace func(string)) *mitm.Host {
+func mitmClientTestHost(t *testing.T, authority *mitmca.Authority, upstreamTLS *tls.Config, observe func()) *mitm.Host {
 	t.Helper()
-	module, err := surge.Parse("[MITM]\nhostname = example.com\n[Header Rewrite]\nhttp-response ^https://example\\.com/ header-add X-Dae-Mitm selected\n", nil)
-	if err != nil {
-		t.Fatal(err)
+	extension := mitmRoutingPlugin("example.com")
+	extension.handle = func(e *plugin.Exchange, next plugin.Handler) (*http.Response, error) {
+		if observe != nil {
+			observe()
+		}
+		response, err := next(e)
+		if err == nil {
+			response.Header.Set("X-Dae-Mitm", "selected")
+		}
+		return response, err
 	}
-	if len(module.HeaderRewrites) != 1 || len(module.Warnings) != 0 {
-		t.Fatalf("test module did not parse: %+v", module)
-	}
-	engine, err := surge.NewEngine(surge.EngineOptions{
-		Modules: []*surge.Module{module}, Runtime: &surge.Runtime{},
-		Trace:       trace,
-		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	host, err := mitm.New(mitm.Options{Authority: authority, UpstreamTLSConfig: upstreamTLS}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
+	host, err := mitm.New(mitm.Options{Authority: authority, UpstreamTLSConfig: upstreamTLS}, mitm.Instance{ID: "test", Type: "test", Plugin: extension})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,24 +59,7 @@ func surgeClientTestEngine(t *testing.T, authority *mitmca.Authority, upstreamTL
 	return host
 }
 
-type surgeClientTrace struct {
-	mu    sync.Mutex
-	lines []string
-}
-
-func (c *surgeClientTrace) write(line string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.lines = append(c.lines, line)
-}
-
-func (c *surgeClientTrace) text() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return strings.Join(c.lines, "\n")
-}
-
-func surgeClientLogHook(t *testing.T) *logtest.Hook {
+func mitmClientLogHook(t *testing.T) *logtest.Hook {
 	t.Helper()
 	logger := log.StandardLogger()
 	hooks, level := logger.ReplaceHooks(make(log.LevelHooks)), logger.GetLevel()
@@ -92,7 +72,7 @@ func surgeClientLogHook(t *testing.T) *logtest.Hook {
 	return hook
 }
 
-func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
+func TestMITMClientGateUsesRoutingMetadata(t *testing.T) {
 	for _, test := range []struct {
 		name, source, host string
 		mac                [6]byte
@@ -114,16 +94,16 @@ func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 			if test.port == 0 {
 				test.port = 443
 			}
-			hook := surgeClientLogHook(t)
+			hook := mitmClientLogHook(t)
 			store, err := settings.Open(filepath.Join(t.TempDir(), "runtime-state.json"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			clients, err := clientmatch.Parse(surgeTestClients)
+			clients, err := clientmatch.Parse(mitmTestClients)
 			if err != nil {
 				t.Fatal(err)
 			}
-			plane := &ControlPlane{mitmHost: surgeClientTestEngine(t, &mitmca.Authority{}, nil, nil), settings: store, mitmClients: clients}
+			plane := &ControlPlane{mitmHost: mitmClientTestHost(t, &mitmca.Authority{}, nil, nil), settings: store, mitmClients: clients}
 			result := &bpfRoutingResult{Mac: test.mac, Mark: 37, Must: 1}
 			beforeResult := *result
 			source := netip.MustParseAddrPort(test.source)
@@ -159,14 +139,14 @@ func TestSurgeClientGateUsesRoutingMetadata(t *testing.T) {
 	}
 }
 
-type surgeClientDialer struct {
+type mitmClientDialer struct {
 	mu       sync.Mutex
 	upstream string
 	block    bool
 	targets  []string
 }
 
-func (d *surgeClientDialer) DialContext(ctx context.Context, network, target string) (net.Conn, error) {
+func (d *mitmClientDialer) DialContext(ctx context.Context, network, target string) (net.Conn, error) {
 	d.mu.Lock()
 	d.targets = append(d.targets, target)
 	d.mu.Unlock()
@@ -179,17 +159,17 @@ func (d *surgeClientDialer) DialContext(ctx context.Context, network, target str
 	return (&net.Dialer{}).DialContext(ctx, network, d.upstream)
 }
 
-func (*surgeClientDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
+func (*mitmClientDialer) ListenPacket(context.Context, string) (net.PacketConn, error) {
 	return nil, net.ErrClosed
 }
 
-func (d *surgeClientDialer) calls() int {
+func (d *mitmClientDialer) calls() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.targets)
 }
 
-func surgeClientTestPlane(t *testing.T, engine *mitm.Host, upstream string) (*ControlPlane, []*surgeClientDialer) {
+func mitmClientTestPlane(t *testing.T, host *mitm.Host, upstream string) (*ControlPlane, []*mitmClientDialer) {
 	t.Helper()
 	registry, _ := newTestRegistry(10, 10, time.Minute)
 	t.Cleanup(func() { _ = registry.Close() })
@@ -197,29 +177,29 @@ func surgeClientTestPlane(t *testing.T, engine *mitm.Host, upstream string) (*Co
 	if err != nil {
 		t.Fatal(err)
 	}
-	clients, err := clientmatch.Parse(surgeTestClients)
+	clients, err := clientmatch.Parse(mitmTestClients)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: registry}, mitmHost: engine, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
-	var transports []*surgeClientDialer
+	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: registry}, mitmHost: host, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
+	var transports []*mitmClientDialer
 	global := &dialer.GlobalOption{}
 	for _, name := range []string{"direct", "block", "proxy"} {
-		transport := &surgeClientDialer{upstream: upstream, block: name == "block"}
+		transport := &mitmClientDialer{upstream: upstream, block: name == "block"}
 		transports = append(transports, transport)
-		d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: transport}), global, &dialer.Property{Name: name, Link: "test://surge-client/" + name}, false, name)
+		d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: transport}), global, &dialer.Property{Name: name, Link: "test://mitm-client/" + name}, false, name)
 		group := outbound.NewDialerGroup(global, name, outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{d}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, func(bool, *common.NetworkType) error { return nil })
 		plane.outbounds = append(plane.outbounds, group)
 		t.Cleanup(func() { _ = group.Close() })
 	}
 	// Substitute only the socket-opening implementation of the existing marked
 	// direct path, so this test does not need SO_MARK privileges.
-	marked := &surgeClientDialer{upstream: upstream}
+	marked := &mitmClientDialer{upstream: upstream}
 	plane.markedDirectDialers.Store(uint32(37), marked)
 	return plane, append(transports, marked)
 }
 
-func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
+func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 	for _, test := range []struct {
 		name, source string
 		mac          [6]byte
@@ -234,7 +214,7 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 		{name: "allowed client cannot bypass block", source: "10.0.0.5:12345", mac: [6]byte{2, 0, 0, 0, 0, 1}, outbound: consts.OutboundBlock},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			hook := surgeClientLogHook(t)
+			hook := mitmClientLogHook(t)
 			requests := make(chan string, 1)
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
@@ -262,9 +242,9 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			trace := new(surgeClientTrace)
-			engine := surgeClientTestEngine(t, authority, upstreamTLS, trace.write)
-			plane, dialers := surgeClientTestPlane(t, engine, upstream.Listener.Addr().String())
+			trace := new(atomic.Int32)
+			host := mitmClientTestHost(t, authority, upstreamTLS, func() { trace.Add(1) })
+			plane, dialers := mitmClientTestPlane(t, host, upstream.Listener.Addr().String())
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -309,7 +289,7 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 					relay := &tcpRelay{lConn: sniffer, dialer: option.Dialer, statsPath: path, fallback: fallback, src: src, dst: dst, domain: domain}
 					if selected {
 						relay.mitmRelease = release
-						relay.mitmHost, relay.mitmPlanner = engine, planner
+						relay.mitmHost, relay.mitmPlanner = host, planner
 					} else {
 						relay.rConn, err = option.dialerForConnection().DialContext(context.Background(), "tcp", option.DialTarget)
 						if err != nil {
@@ -375,7 +355,7 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 				body, err := io.ReadAll(response.Body)
 				_ = response.Body.Close()
 				if err != nil || string(body) != "upstream response" || (response.Header.Get("X-Dae-Mitm") == "selected") != test.selected {
-					t.Fatalf("wrong module treatment: body=%q headers=%v err=%v", body, response.Header, err)
+					t.Fatalf("wrong plugin treatment: body=%q headers=%v err=%v", body, response.Header, err)
 				}
 				_ = client.Close()
 				if err := wait(); err != nil {
@@ -403,9 +383,8 @@ func TestSurgeClientTLSBypassReplaysClientHello(t *testing.T) {
 					t.Errorf("dialer %d calls=%d, want %d", i, got, want)
 				}
 			}
-			logs := trace.text()
-			if strings.Contains(logs, "event=request_begin") != test.selected {
-				t.Errorf("unexpected MITM start log: %s", logs)
+			if got := trace.Load(); (got == 1) != test.selected || got > 1 {
+				t.Errorf("plugin calls=%d, selected=%v", got, test.selected)
 			}
 			wantBypass := !test.selected && test.outbound != consts.OutboundBlock
 			bypassed := false
