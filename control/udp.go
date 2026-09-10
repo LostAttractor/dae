@@ -33,6 +33,9 @@ var (
 const (
 	DnsNatTimeout = 17 * time.Second // RFC 5452
 	MaxRetry      = 2
+	// Leave worker capacity for established associations while new routes or
+	// proxy handshakes are slow. Admission never waits inside a packet worker.
+	maxConcurrentUDPSetups = udpTaskMaxWorkers / 4
 )
 
 func shouldTryRawUDPFallback(err error, from, to netip.AddrPort) bool {
@@ -110,6 +113,28 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 		_ = conn.SetWriteDeadline(time.Time{})
 	}
 	return n, err
+}
+
+// enqueueUDPPacket borrows data only until emit returns. Queued packets retain
+// an absolute deadline, but allocate their context/timer only when dispatched.
+func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort) {
+	deadline := time.Now().Add(consts.DefaultDialTimeout)
+	c.udpTaskPool.emit(src, data, func(owned []byte) udpTask {
+		return func() {
+			if c.ctx.Err() != nil || !time.Now().Before(deadline) {
+				return
+			}
+			ctx, cancel := context.WithDeadline(c.ctx, deadline)
+			defer cancel()
+			if err := c.handlePkt(ctx, owned, src, dst, nil); err != nil && ctx.Err() == nil {
+				if log.IsLevelEnabled(log.DebugLevel) {
+					log.Warnf("%+v", oops.Wrapf(err, "handlePkt"))
+				} else {
+					log.Warnf("%v", oops.Wrapf(err, "handlePkt"))
+				}
+			}
+		}
+	})
 }
 
 type packetSniff struct {
@@ -225,6 +250,12 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		ok = false
 	}
 	if !ok {
+		if c.udpSetups.Add(1) > maxConcurrentUDPSetups {
+			c.udpSetups.Add(-1)
+			c.udpSetupDrops.report("association_setup_limit")
+			return nil
+		}
+		defer c.udpSetups.Add(-1)
 		// Route
 		param := &RouteParam{
 			destination:   previousDestination,

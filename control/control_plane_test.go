@@ -634,7 +634,7 @@ func newLifecycleTestControlPlane(udpEndpoints *UdpEndpointPool) *ControlPlane {
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	return &ControlPlane{
 		tcpConnections:  new(tcpConnectionTracker),
-		udpTaskPool:     newUdpTaskPool[netip.AddrPort](time.Hour),
+		udpTaskPool:     newUdpTaskPool[netip.AddrPort](),
 		udpEndpoints:    udpEndpoints,
 		ctx:             ctx,
 		cancel:          cancel,
@@ -673,7 +673,7 @@ func TestControlPlaneRetireClosesIngressBeforeWaitAndDrainsUDPWithLiveContext(t 
 	finishSetup := func() { finishSetupOnce.Do(plane.tcpConnections.finishSetup) }
 	t.Cleanup(finishSetup)
 	taskContextErrors := make(chan error, 2)
-	if !plane.udpTaskPool.emit(testUdpKey(11001), func() {
+	if !emitUDPTask(plane.udpTaskPool, testUdpKey(11001), func() {
 		taskContextErrors <- plane.ctx.Err()
 		close(taskStarted)
 		<-releaseTask
@@ -780,7 +780,7 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 	release := func() { releaseTaskOnce.Do(func() { close(releaseTask) }) }
 	t.Cleanup(release)
 	replacementPublished := make(chan *testPacketConn, 1)
-	if !plane.udpTaskPool.emit(key, func() {
+	if !emitUDPTask(plane.udpTaskPool, key, func() {
 		close(taskStarted)
 		<-releaseTask
 		if err := plane.ctx.Err(); err != nil {

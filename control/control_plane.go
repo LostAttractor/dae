@@ -38,6 +38,8 @@ type ControlPlane struct {
 	noConnectivityOutbound consts.OutboundIndex
 	tcpConnections         *tcpConnectionTracker
 	udpTaskPool            *udpTaskPool[netip.AddrPort]
+	udpSetups              atomic.Int32
+	udpSetupDrops          udpPacketDrops
 	udpEndpoints           *UdpEndpointPool
 
 	dnsController *DnsController
@@ -243,7 +245,7 @@ func NewControlPlane(
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
 		tcpConnections:            new(tcpConnectionTracker),
-		udpTaskPool:               newUdpTaskPool[netip.AddrPort](DefaultNatTimeoutUDP),
+		udpTaskPool:               newUdpTaskPool[netip.AddrPort](),
 		udpEndpoints:              &DefaultUdpEndpointPool,
 		hostReconcileCh:           make(chan struct{}, 1),
 		routingMatcher:            routingMatcher,

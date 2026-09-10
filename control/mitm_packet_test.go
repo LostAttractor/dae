@@ -15,6 +15,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMITMPacketPairDatagrams(t *testing.T) {
@@ -55,6 +58,56 @@ func TestMITMPacketPairDatagrams(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUDPPacketMemorySharedByIngressAndMITM(t *testing.T) {
+	budget := membuffer.NewBudget(16)
+	p := newUdpTaskPool[int]()
+	p.memory = budget
+	t.Cleanup(p.close)
+	started, unblock := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(unblock) }) }
+	t.Cleanup(release)
+	require.True(t, p.emit(1, []byte("12345"), func([]byte) udpTask {
+		return func() { close(started); <-unblock }
+	}))
+	<-started
+
+	client, dest := netip.MustParseAddrPort("192.0.2.1:5000"), netip.MustParseAddrPort("198.51.100.1:443")
+	first, firstPeer := newMITMPacketPair(client, dest)
+	second, secondPeer := newMITMPacketPair(client, dest)
+	first.(*mitmPacketConn).pair.memory = budget
+	second.(*mitmPacketConn).pair.memory = budget
+	t.Cleanup(func() { _ = first.Close(); _ = second.Close() })
+	_, err := first.WriteTo([]byte("abcde"), firstPeer.LocalAddr())
+	require.NoError(t, err)
+	require.EqualValues(t, 16, budget.Status().Used)
+	// Another association cannot allocate beyond the shared budget. Like a
+	// full UDP queue, overload reports a successful send followed by packet loss.
+	n, err := second.WriteTo([]byte("lost"), secondPeer.LocalAddr())
+	require.NoError(t, err)
+	require.Equal(t, 4, n)
+	require.Zero(t, secondPeer.(*mitmPacketConn).count)
+	require.EqualValues(t, 16, budget.Status().Peak)
+	// A truncated read still releases the entire datagram allocation.
+	buf := make([]byte, 2)
+	n, _, err = firstPeer.ReadFrom(buf)
+	require.NoError(t, err)
+	require.Equal(t, "ab", string(buf[:n]))
+	require.EqualValues(t, 8, budget.Status().Used)
+	release()
+	p.close()
+	require.Zero(t, budget.Status().Used)
+	// Closing either side releases queued datagrams in both directions.
+	_, err = second.WriteTo([]byte("inbound"), secondPeer.LocalAddr())
+	require.NoError(t, err)
+	_, err = secondPeer.WriteTo([]byte("outbound"), second.LocalAddr())
+	require.NoError(t, err)
+	require.EqualValues(t, 16, budget.Status().Used)
+	require.NoError(t, second.Close())
+	require.NoError(t, secondPeer.Close())
+	require.Zero(t, budget.Status().Used)
 }
 
 func TestMITMPacketPairBounds(t *testing.T) {

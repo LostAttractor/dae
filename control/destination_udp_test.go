@@ -65,6 +65,16 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			association := udpRoutingKey(source, original, &result)
+			// Exhausted setup capacity drops new associations before routing or
+			// dialing, but must not interfere with an established association.
+			plane.udpSetups.Store(maxConcurrentUDPSetups)
+			if err := plane.handlePkt(t.Context(), []byte("overload"), source, original, &packetSniff{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := endpoints.Get(association); ok || len(recorder.targets) != 0 {
+				t.Fatal("created an association beyond setup capacity")
+			}
+			plane.udpSetups.Store(0)
 			for generation, wantMark := range []uint32{37, 91} {
 				if err := plane.handlePkt(t.Context(), []byte("payload"), source, original, &packetSniff{}); err != nil {
 					t.Fatal(err)
@@ -73,6 +83,17 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 				if !ok || endpoint.destination != target || len(recorder.targets) != generation+1 || recorder.targets[generation] != target.String() {
 					t.Fatalf("generation %d changed the session target: endpoint=%+v dials=%v", generation, endpoint, recorder.targets)
 				}
+				if plane.udpSetups.Load() != 0 {
+					t.Fatal("completed setup retained admission")
+				}
+				plane.udpSetups.Store(maxConcurrentUDPSetups)
+				if err := plane.handlePkt(t.Context(), []byte("established"), source, original, &packetSniff{}); err != nil {
+					t.Fatal(err)
+				}
+				if plane.udpSetupDrops.total.Load() != 1 || len(recorder.targets) != generation+1 {
+					t.Fatal("established association passed through setup admission")
+				}
+				plane.udpSetups.Store(0)
 				var owner bpfDestinationUdpValue
 				if err := owners.Lookup(bpfDestinationUdpKey{Tuples: key, Ifindex: 7}, &owner); err != nil || owner.Result.Mark != wantMark {
 					t.Fatalf("generation %d lost current policy/ownership: %+v, %v", generation, owner, err)
