@@ -18,7 +18,7 @@ import (
 )
 
 type destinationUDPRecorder struct {
-	surgeDownloadTestDialer
+	downloadTestDialer
 	targets []string
 }
 
@@ -41,12 +41,12 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			if rewritten {
 				target, filter = netip.MustParseAddrPort("198.51.100.20:53"), "dip(192.0.2.20)"
 			}
-			matcher, _ := surgeRoutingMatcher(t, prepareFlowRulesForTest(t, filter+" -> dnat(198.51.100.20)", "dip(192.0.2.20,198.51.100.20) -> proxy(mark:37)"))
-			unused := surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
+			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, filter+" -> dnat(198.51.100.20)", "dip(192.0.2.20,198.51.100.20) -> proxy(mark:37)"))
+			unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
 				t.Fatal("UDP association must use the selected packet dialer")
 				return nil, net.ErrClosed
 			})
-			recorder := &destinationUDPRecorder{surgeDownloadTestDialer: unused}
+			recorder := &destinationUDPRecorder{downloadTestDialer: unused}
 			newGroup := func() *outbound.DialerGroup {
 				global := &dialer.GlobalOption{}
 				d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: recorder}), global, &dialer.Property{Name: t.Name()}, false, "")
@@ -56,7 +56,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			plane := &ControlPlane{udpEndpoints: &endpoints, routingMatcher: matcher,
 				core:      &controlPlaneCore{bpf: &bpfState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{RoutingTuplesMap: tuples, DestinationUdpMap: owners}}}},
-				outbounds: []*outbound.DialerGroup{surgeDownloadTestGroup(t, "direct", unused), surgeDownloadTestGroup(t, "block", unused), newGroup()},
+				outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), newGroup()},
 			}
 			result := bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7}
 			key := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(original.Port()), L4proto: 17}
@@ -80,7 +80,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 				if generation == 0 {
 					// Replace both config and node. The old target must survive even
 					// when the old rule missed, while mark comes from the new policy.
-					plane.routingMatcher, _ = surgeRoutingMatcher(t, prepareFlowRulesForTest(t, "dip(192.0.2.20) -> dnat(203.0.113.20)", "dip(192.0.2.20,198.51.100.20) -> proxy(mark:91)\ndip(203.0.113.20) -> block"))
+					plane.routingMatcher, _ = routingMatcherForTest(t, prepareFlowRulesForTest(t, "dip(192.0.2.20) -> dnat(203.0.113.20)", "dip(192.0.2.20,198.51.100.20) -> proxy(mark:91)\ndip(203.0.113.20) -> block"))
 					if err := endpoint.dialer.Close(); err != nil {
 						t.Fatal(err)
 					}

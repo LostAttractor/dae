@@ -41,7 +41,7 @@ func TestFlowRulesPreserveOutboundAndDirect(t *testing.T) {
 ip(10.0.0.0/8) -> direct
 domain(full: api.example.com) -> proxy(mark: 37)
 dport(80) -> block`)
-		matcher, builder := surgeRoutingMatcher(t, prepared)
+		matcher, builder := routingMatcherForTest(t, prepared)
 		for _, rule := range builder.rules {
 			if rule.CaptureFlags != 0 {
 				t.Fatal("must/bump introduced implicit capture")
@@ -93,9 +93,9 @@ func TestFlowRulesComposeWithCaptureAndAPIBypass(t *testing.T) {
 dport(443) -> bump
 dport(443) -> dnat(198.51.100.20)
 dport(443) -> must`, "")
-	prepared.enableMITMPlan(surgeRoutingEngine(t, "api.example.com").Plan())
+	prepared.enableMITMPlan(mitmRoutingPlugin("api.example.com").Plan())
 	prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
-	matcher, _ := surgeRoutingMatcher(t, prepared)
+	matcher, _ := routingMatcherForTest(t, prepared)
 	// Destination candidates hand off before old-target flow controls.
 	for _, destination := range []string{"10.0.0.1", "198.51.100.1"} {
 		address := netip.MustParseAddr(destination).As16()

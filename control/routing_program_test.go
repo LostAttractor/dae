@@ -18,8 +18,8 @@ func TestFlowProgramDefersUncertainMust(t *testing.T) {
 			controls += "\ndport(443) -> must"
 		}
 		prepared := prepareFlowRulesForTest(t, controls, "dport(443) -> direct(mark:37)")
-		prepared.enableMITMPlan(surgeRoutingEngine(t, "one.example").Plan())
-		m, _ := surgeRoutingMatcher(t, prepared)
+		prepared.enableMITMPlan(mitmRoutingPlugin("one.example").Plan())
+		m, _ := routingMatcherForTest(t, prepared)
 		first := m.domainMatcher.MatchDomainBitmap("one.example")
 		second := m.domainMatcher.MatchDomainBitmap("two.example")
 		bump, trusted := make([]uint32, len(first)), make([]uint32, len(first))
@@ -49,7 +49,7 @@ domain(full: two.example, full: one.example) -> bump
 domain(full: one.example, full: two.example) && sip(192.0.2.3/24) -> dnat(198.51.100.20)
 domain(full: one.example, full: two.example) && dip(192.0.2.0/24) -> dnat(198.51.100.21)`, `
 !domain(full: two.example, full: one.example) -> block`)
-	_, b := surgeRoutingMatcher(t, prepared)
+	_, b := routingMatcherForTest(t, prepared)
 	if len(b.simulatedDomainSet) != 1 || len(b.simulatedLpmTries) != 1 || b.kernelLpmLen != 1 {
 		t.Fatalf("duplicate predicate resources: domains=%d lpm=%d kernel_lpm=%d", len(b.simulatedDomainSet), len(b.simulatedLpmTries), b.kernelLpmLen)
 	}

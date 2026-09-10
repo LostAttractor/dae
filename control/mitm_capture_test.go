@@ -18,7 +18,7 @@ func TestMITMCaptureKeepsUnrelatedDirectInKernel(t *testing.T) {
 		{Host: "192.0.2.10", Ports: []uint16{8443}},
 		{Host: "2001:db8::10", Ports: []uint16{443}},
 	}}}})
-	matcher, builder := surgeRoutingMatcher(t, prepared)
+	matcher, builder := routingMatcherForTest(t, prepared)
 	exposeCapturePredicates(t, builder)
 	for _, test := range []struct {
 		name, destination string
@@ -77,7 +77,7 @@ func TestMITMEmptyAndExcludedScopesDoNotCapture(t *testing.T) {
 	} {
 		prepared := preparedRules{}
 		prepared.enableMITMPlan(plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: scope}}})
-		_, builder := surgeRoutingMatcher(t, prepared)
+		_, builder := routingMatcherForTest(t, prepared)
 		for _, rule := range builder.rules {
 			if rule.CaptureFlags != 0 {
 				t.Fatalf("nonmatching scope caused capture: %+v", scope)

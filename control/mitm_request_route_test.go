@@ -20,30 +20,22 @@ import (
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/surge"
+	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	dnsmessage "github.com/miekg/dns"
 )
 
-func newHTTPRequestRouteTest(t *testing.T, routing, moduleText string, dial surgeDownloadTestDialer) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
+func newHTTPRequestRouteTest(t *testing.T, routing string, extension plugin.Plugin, dial downloadTestDialer) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
 	t.Helper()
-	return newHTTPRequestRouteTestWithAuthority(t, routing, moduleText, dial, &mitmca.Authority{})
+	return newHTTPRequestRouteTestWithAuthority(t, routing, extension, dial, &mitmca.Authority{})
 }
 
-func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing, moduleText string, dial surgeDownloadTestDialer, authority *mitmca.Authority) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
+func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing string, extension plugin.Plugin, dial downloadTestDialer, authority *mitmca.Authority) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
 	t.Helper()
-	module, err := surge.Parse("[MITM]\nhostname=original.example:80\n"+moduleText, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine, err := surge.NewEngine(surge.EngineOptions{Modules: []*surge.Module{module}, Runtime: &surge.Runtime{}, MaxBodySize: 1 << 20, MaxConcurrentScripts: 2, ScriptTimeout: time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	host := controlTestHost(t, engine, authority)
+	host := controlTestHost(t, extension, authority)
 	prepared := prepareFlowRulesForTest(t, "", routing)
 	prepared.enableMITMPlan(host.Plan())
-	matcher, builder := surgeRoutingMatcher(t, prepared)
+	matcher, builder := routingMatcherForTest(t, prepared)
 	store, err := settings.Open(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +46,7 @@ func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing, moduleText stri
 	}
 	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)}, routingMatcher: matcher, mitmHost: host, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
 	for _, name := range []string{"direct", "block", "proxy"} {
-		plane.outbounds = append(plane.outbounds, surgeDownloadTestGroup(t, name, dial))
+		plane.outbounds = append(plane.outbounds, downloadTestGroup(t, name, dial))
 	}
 	param := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: netip.MustParseAddrPort("192.0.2.20:80"), Domain: "original.example", networkType: *common.NetworkTCP4.NetworkType(),
 		routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureHTTP | captureHTTPRequest, Mac: [6]byte{2, 0, 0, 0, 0, 1}}}
@@ -66,7 +58,7 @@ func TestHTTPRequestPoolUsesCurrentRouteAndMark(t *testing.T) {
 	defer upstream.Close()
 	var dials atomic.Int32
 	plane, builder, param := newHTTPRequestRouteTest(t, "client(blocked) -> block\nclient(marked) -> proxy(mark:91)\ndport(80) -> proxy(mark:92)",
-		"[URL Rewrite]\n^http://original.example/old$ http://original.example/new header\n",
+		rewriteTestPlugin(t, map[string]string{"/old": "http://original.example/new"}),
 		func(ctx context.Context, _, _ string) (net.Conn, error) {
 			dials.Add(1)
 			return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
@@ -111,16 +103,21 @@ func TestHTTPRequestPoolUsesCurrentRouteAndMark(t *testing.T) {
 
 func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 	for _, test := range []struct {
-		name, rewrite string
-		status        int
-		denied        bool
+		name   string
+		status int
+		denied bool
 	}{
-		{"redirect", "http://new.example/ 302", 302, false},
-		{"reject", "http://unused.example/ reject", 403, false},
-		{"client exclusion", "http://new.example/ header", 0, true},
+		{"redirect", 302, false},
+		{"reject", 403, false},
+		{"client exclusion", 0, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plane, _, param := newHTTPRequestRouteTest(t, "dport(80) -> block", "[URL Rewrite]\n^http://original.example/old$ "+test.rewrite+"\n", func(context.Context, string, string) (net.Conn, error) {
+			extension := mitmRoutingPlugin("original.example")
+			extension.plan.Scopes[0].PreserveRoute = false
+			extension.handle = func(*plugin.Exchange, plugin.Handler) (*http.Response, error) {
+				return &http.Response{StatusCode: test.status, Header: http.Header{"Location": {"http://new.example/"}}, Body: http.NoBody}, nil
+			}
+			plane, _, param := newHTTPRequestRouteTest(t, "dport(80) -> block", extension, func(context.Context, string, string) (net.Conn, error) {
 				t.Error("unexpected upstream dial")
 				return nil, net.ErrClosed
 			})
@@ -157,7 +154,7 @@ func TestHTTPRequestAdmissionAndLocalResponses(t *testing.T) {
 func TestPendingHTTPWithoutHostnameUsesDNSEvidence(t *testing.T) {
 	for _, ambiguous := range []bool{false, true} {
 		t.Run(fmt.Sprint(ambiguous), func(t *testing.T) {
-			plane, _, param := newHTTPRequestRouteTest(t, "domain(full: original.example) -> block", "[URL Rewrite]\n^http://original.example/old$ http://original.example/new header\n", func(context.Context, string, string) (net.Conn, error) {
+			plane, _, param := newHTTPRequestRouteTest(t, "domain(full: original.example) -> block", rewriteTestPlugin(t, map[string]string{"/old": "http://original.example/new"}), func(context.Context, string, string) (net.Conn, error) {
 				t.Error("selection must not dial")
 				return nil, net.ErrClosed
 			})
@@ -195,7 +192,7 @@ func TestHTTP2RequestTargetsRemainIndependent(t *testing.T) {
 	defer backend.Close()
 	plane, _, param := newHTTPRequestRouteTest(t,
 		"dip(198.51.100.1) -> proxy(mark:91)\ndip(198.51.100.2) -> direct\ndip(192.0.2.20,203.0.113.1) -> block",
-		"[MITM]\nhostname=original.example\n[URL Rewrite]\n^https://original.example/proxy$ http://198.51.100.1:8080/ok header\n^https://original.example/direct$ http://198.51.100.2:8080/ok header\n^https://original.example/blocked$ http://203.0.113.1:8080/ok header\n",
+		rewriteTestPlugin(t, map[string]string{"/proxy": "http://198.51.100.1:8080/ok", "/direct": "http://198.51.100.2:8080/ok", "/blocked": "http://203.0.113.1:8080/ok"}),
 		func(context.Context, string, string) (net.Conn, error) {
 			t.Error("blocked or unplanned dial")
 			return nil, net.ErrClosed
@@ -203,7 +200,7 @@ func TestHTTP2RequestTargetsRemainIndependent(t *testing.T) {
 	param.Dest = netip.MustParseAddrPort("192.0.2.20:443")
 	before := *param.routingResult
 	for index, name := range map[int]string{0: "direct", 2: "proxy"} {
-		plane.outbounds[index] = surgeDownloadTestGroup(t, name, func(ctx context.Context, _, address string) (net.Conn, error) {
+		plane.outbounds[index] = downloadTestGroup(t, name, func(ctx context.Context, _, address string) (net.Conn, error) {
 			want := "198.51.100.1:8080"
 			if name == "direct" {
 				want = "198.51.100.2:8080"

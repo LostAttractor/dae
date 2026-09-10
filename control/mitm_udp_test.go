@@ -16,7 +16,7 @@ import (
 )
 
 func TestMITMUDPAssociationSelection(t *testing.T) {
-	host := controlTestHost(t, surgeRoutingEngine(t, "service.example"), nil)
+	host := controlTestHost(t, mitmRoutingPlugin("service.example"), nil)
 	source := netip.MustParseAddrPort("192.0.2.1:51000")
 	destination := netip.MustParseAddrPort("198.51.100.1:443")
 	for _, test := range []struct {
@@ -142,7 +142,7 @@ func TestMITMUDPDrainOnlyDeliversExactAssociation(t *testing.T) {
 
 func TestMITMUDPAssociationRequiresHTTP3Scope(t *testing.T) {
 	var pool UdpEndpointPool
-	plane := &ControlPlane{udpEndpoints: &pool, mitmHost: controlTestHost(t, surgeRoutingEngine(t, "service.example"), nil)}
+	plane := &ControlPlane{udpEndpoints: &pool, mitmHost: controlTestHost(t, mitmRoutingPlugin("service.example"), nil)}
 	source := netip.MustParseAddrPort("192.0.2.1:51000")
 	for _, test := range []struct {
 		name    string

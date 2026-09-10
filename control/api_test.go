@@ -17,7 +17,6 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/api"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
@@ -30,7 +29,7 @@ func newAPITestPlane(t *testing.T, store *settings.Store) *ControlPlane {
 	option := &dialer.GlobalOption{}
 	var paths []*dialer.Dialer
 	for _, name := range []string{"one", "two"} {
-		runtime := netproxy.NewRuntime(netproxy.Layer{Data: surgeDownloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })})
+		runtime := netproxy.NewRuntime(netproxy.Layer{Data: downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })})
 		paths = append(paths, dialer.NewDialer(runtime, option, &dialer.Property{Name: name, Link: "test://" + name}, true, "api-test"))
 	}
 	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}, nil)
@@ -55,7 +54,7 @@ func testClientMAC(netip.AddrPort, netip.AddrPort) ([6]byte, error) {
 	return [6]byte{2, 0, 0, 0, 0, 10}, nil
 }
 
-func TestGlobalAPISelectorAndDeviceRulesWithoutSurge(t *testing.T) {
+func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
 	store, err := settings.Open(path)
 	if err != nil {
@@ -307,7 +306,7 @@ func TestSelectorAPIUsesEscapedGroupName(t *testing.T) {
 }
 
 func TestHostOnlyAPIDisablesCertificateAndMITM(t *testing.T) {
-	plane := &ControlPlane{mitmHost: controlTestHost(t, &surge.Engine{}, nil), routingMatcherBuilder: &RoutingMatcherBuilder{}}
+	plane := &ControlPlane{mitmHost: controlTestHost(t, &controlTestPlugin{}, nil), routingMatcherBuilder: &RoutingMatcherBuilder{}}
 	handler := plane.apiHandler(testClientMAC)
 	if w := apiTestRequest(handler, "GET", "/ca.cer", "", ""); w.Code != 404 {
 		t.Fatalf("certificate without CA: %d", w.Code)
