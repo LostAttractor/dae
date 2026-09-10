@@ -59,6 +59,29 @@ func TestStringBridge(t *testing.T) {
 	}
 }
 
+func TestInputJSON(t *testing.T) {
+	vm := testVM(t, 1<<20)
+	if err := vm.SetInputJSON([]byte(`{"body":"你好\u0000🚀", "__proto__":{"inherited":true}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Eval(`
+      if (__daeInput.body !== "你好\x00🚀") throw Error("input string corrupted");
+      if (__daeInput.inherited || !Object.hasOwn(__daeInput, "__proto__")) throw Error("input must be data");
+    `); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetInputJSON([]byte(`{"incomplete":`)); err == nil {
+		t.Fatal("invalid input JSON accepted")
+	}
+	if err := vm.SetInputJSON([]byte(strings.Repeat(" ", (1<<20)+1))); err == nil {
+		t.Fatal("input exceeding memory budget accepted")
+	}
+	vm.Interrupt()
+	if err := vm.SetInputJSON([]byte(`{}`)); err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("interrupted input: %v", err)
+	}
+}
+
 func TestHostErrorsAndStringArguments(t *testing.T) {
 	vm := testVM(t, 16<<20)
 	if err := vm.SetHostFunc(func(args []string) (any, error) {

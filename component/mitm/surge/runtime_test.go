@@ -90,6 +90,64 @@ func TestRuntimeBinaryAndText(t *testing.T) {
 	}
 }
 
+func TestRuntimeBase64Bridge(t *testing.T) {
+	r := testRuntime(t, RuntimeOptions{})
+	_, err := r.Run(context.Background(), `
+      for (const [input, output] of [["", ""], ["Zg==", "f"], ["Zg", "f"],
+          ["Zh==", "f"], ["Zm8", "fo"], [" Z\tm9v\n", "foo"]]) {
+        if (atob(input) !== output) throw Error("base64 decoding: " + input);
+      }
+      for (const input of ["A", "===", "Zg=", "Zg==A", "Zg\u00a0", "-_=="]) {
+        let rejected = false;
+        try { atob(input); } catch (e) { rejected = e instanceof TypeError; }
+        if (!rejected) throw Error("invalid base64 accepted: " + input);
+      }
+      // Cover all byte values, padding lengths and nonzero view offsets.
+      for (let n = 0; n < 260; n++) {
+        const raw = new Uint8Array(n + 2);
+        for (let i = 0; i < raw.length; i++) raw[i] = i;
+        const view = raw.subarray(1, n + 1);
+        const text = String.fromCharCode(...view);
+        if (atob(btoa(text)) !== text) throw Error("byte roundtrip: " + n);
+      }
+      // Script changes to public methods must not replace the host codec.
+      Uint8Array.prototype.toBase64 = () => { throw Error("replaced encoder"); };
+      Uint8Array.fromBase64 = () => { throw Error("replaced decoder"); };
+      if (atob(btoa("\x00\xff")) !== "\x00\xff") throw Error("captured codecs");
+      $done();
+    `, Invocation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeMessageBodyEncoding(t *testing.T) {
+	r := testRuntime(t, RuntimeOptions{})
+	for _, body := range [][]byte{nil, {}, []byte("\xef\xbb\xbfhello\x00你好🚀"), {0xff, 0xfe, 'x'}} {
+		for _, binaryMode := range []bool{false, true} {
+			result, err := r.Run(context.Background(), `$done({body: $response.body});`, Invocation{
+				BinaryBodyMode: binaryMode, Response: &Message{Body: body},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body == nil {
+				if result.Body != nil {
+					t.Fatal("absent body became an empty body")
+				}
+				continue
+			}
+			want := body
+			if !binaryMode {
+				want = []byte(strings.TrimPrefix(strings.ToValidUTF8(string(body), "\ufffd"), "\ufeff"))
+			}
+			if result.Body == nil || !bytes.Equal(*result.Body, want) {
+				t.Fatalf("body=%v, binary=%v, want %v", result.Body, binaryMode, want)
+			}
+		}
+	}
+}
+
 func TestRuntimeResultPresenceAndSyntheticResponse(t *testing.T) {
 	r := testRuntime(t, RuntimeOptions{})
 	for _, script := range []string{`$done()`, `$done({})`} {

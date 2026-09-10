@@ -111,7 +111,10 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	if err != nil {
 		return nil, err
 	}
-	if err := vm.Eval("globalThis.__daeInput=" + string(input) + ";\n" + runtimeWebBootstrap + "\n" + runtimeBootstrap); err != nil {
+	if err := vm.SetInputJSON(input); err != nil {
+		return nil, fmt.Errorf("initialize Surge script input: %w", err)
+	}
+	if err := vm.Eval(runtimeWebBootstrap + "\n" + runtimeBootstrap); err != nil {
 		return nil, fmt.Errorf("initialize Surge script: %w", err)
 	}
 	if err := vm.Eval(source); err != nil {
