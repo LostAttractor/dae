@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 // Keep Surge's ordered exclusions, :0 wildcard and HTTP-port exception inside

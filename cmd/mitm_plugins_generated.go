@@ -4,8 +4,8 @@
 package cmd
 
 import (
-	"github.com/daeuniverse/dae/component/mitm/plugin"
 	plugin2 "github.com/daeuniverse/dae/component/mitm/surge"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func compiledMITMPlugins() map[string]plugin.Definition {

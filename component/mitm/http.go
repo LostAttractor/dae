@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/resource"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	logrus "github.com/sirupsen/logrus"
 )
 

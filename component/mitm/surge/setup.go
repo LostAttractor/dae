@@ -10,7 +10,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/resource"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
 

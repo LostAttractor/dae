@@ -19,7 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/sys/unix"
 )
 

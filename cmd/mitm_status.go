@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/daeuniverse/dae/client/cli"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )

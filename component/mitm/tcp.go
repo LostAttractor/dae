@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	logrus "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 )

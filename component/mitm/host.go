@@ -17,7 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	logrus "github.com/sirupsen/logrus"
 )

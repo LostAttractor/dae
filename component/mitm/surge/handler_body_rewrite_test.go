@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func bodyRewriteEngine(t *testing.T, limit int64, expressions ...string) *Engine {

@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )

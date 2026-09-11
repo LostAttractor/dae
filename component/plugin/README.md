@@ -1,7 +1,7 @@
 # MITM Go plugins
 
 Implement an independent Go module importing
-`github.com/daeuniverse/dae/component/mitm/plugin` and export:
+`github.com/daeuniverse/dae/component/plugin` and export:
 
 ```go
 var Plugin = plugin.Definition{Setup: Setup, Commands: Commands} // Commands is optional
@@ -11,8 +11,8 @@ func Setup(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error)
 
 Decode settings in `Setup` (`DecodeSettings` handles scalar fields), implement
 `Plan` and `Wrap`, add `type:Go/import/path` to
-[mitm_plugins.cfg](../../../mitm_plugins.cfg), then run `make`.
-See the [build guide](../../../docs/en/user-guide/build-by-yourself.md#external-mitm-plugins)
+[mitm_plugins.cfg](../../mitm_plugins.cfg), then run `make`.
+See the [build guide](../../docs/en/user-guide/build-by-yourself.md#external-mitm-plugins)
 for dependencies and multiple plugins.
 
 ## HTTP contract
@@ -117,7 +117,7 @@ or a local response. There is no Exchange-owned retry state or cleanup API.
 Lifetime is explicit; garbage collection does not release budget reservations.
 Arbitrary plugin allocations and interpreter heaps are outside this budget.
 
-[`pkg/membuffer`](../../../pkg/membuffer) owns admission, buffer growth and shared
+[`pkg/membuffer`](../../pkg/membuffer) owns admission, buffer growth and shared
 immutable storage. `Read`, `Copy` and `Buffer.Write` reserve capacity before
 allocation. `Read` returns consumed bytes even on failure; close that view or
 transfer it to replay storage. `Snapshot` borrows an untouched reader's complete
@@ -143,8 +143,8 @@ waiting belong to the plugin. Copy needed exchange data for background work.
 Reload cancels workers and drains requests; after 5 seconds it cancels requests
 and closes connections, then closes plugins after execution exits.
 
-See [configuration](../../../docs/zh/configuration/mitm-plugins.md) and
-[status fields](../../../docs/en/configuration/api.md).
+See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
+[status fields](../../docs/en/configuration/api.md).
 
 ## Commands
 
@@ -167,7 +167,7 @@ a renderer failure also shows its raw reports and does not hide other types.
 These commands use the local Unix status socket and do not require `api_port`.
 See Surge's [command implementation](../surge/command_configure.go).
 
-Create human-readable tables with [`clitable.New()`](../../../pkg/clitable/table.go)
+Create human-readable tables with [`clitable.New()`](../../pkg/clitable/table.go)
 from `github.com/daeuniverse/dae/pkg/clitable` to share the host CLI style:
 no borders, two spaces between columns, left-aligned text, right-aligned numbers,
 and no trailing spaces. Use uppercase column headers and column overrides for

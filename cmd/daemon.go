@@ -18,7 +18,7 @@ import (
 	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"

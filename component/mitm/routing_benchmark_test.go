@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 // One plugin may contain many independently scoped modules. Measure plan

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func TestMITMCaptureKeepsUnrelatedDirectInKernel(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func waitHostState(t *testing.T, h *Host, ready func(*Host) bool) {

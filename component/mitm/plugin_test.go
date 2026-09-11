@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 type testPlugin struct {

@@ -22,7 +22,7 @@ func generate(data []byte) ([]byte, error) {
 	var out, setups bytes.Buffer
 	fmt.Fprintln(&out, "// Code generated from mitm_plugins.cfg; DO NOT EDIT.")
 	fmt.Fprintln(&out, "//go:build linux\n\npackage cmd")
-	fmt.Fprintln(&out, "\nimport (\n\"github.com/daeuniverse/dae/component/mitm/plugin\"")
+	fmt.Fprintln(&out, "\nimport (\n\"github.com/daeuniverse/dae/component/plugin\"")
 	for line, text := range strings.Split(string(data), "\n") {
 		value, _, _ := strings.Cut(text, "#")
 		if strings.TrimSpace(value) == "" {

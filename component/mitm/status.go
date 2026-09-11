@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func (h *Host) Status() []plugin.InstanceStatus {

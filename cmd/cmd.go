@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/client/cli"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
 	"github.com/spf13/cobra"
 )

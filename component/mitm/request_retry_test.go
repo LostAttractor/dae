@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 )

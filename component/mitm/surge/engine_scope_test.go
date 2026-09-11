@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func newScopeTestEngine(t *testing.T, sources ...string) *Engine {

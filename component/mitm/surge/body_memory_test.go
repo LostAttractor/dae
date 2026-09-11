@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	log "github.com/sirupsen/logrus"
 )

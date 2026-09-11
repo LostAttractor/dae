@@ -13,7 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func TestSurgePluginsShareHostAndKeepIndependentState(t *testing.T) {

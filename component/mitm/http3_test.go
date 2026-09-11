@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"

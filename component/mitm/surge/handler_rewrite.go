@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"golang.org/x/net/http/httpguts"
 )

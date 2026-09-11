@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
 

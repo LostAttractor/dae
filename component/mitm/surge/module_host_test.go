@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func TestHostProxyCompatibilityWarning(t *testing.T) {

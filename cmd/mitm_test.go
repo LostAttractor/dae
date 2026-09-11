@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/plugin"
+	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func runMITMCommand(args ...string) (string, error) {
