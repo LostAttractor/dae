@@ -15,6 +15,7 @@ import (
 
 func decodeScriptResult(data []byte, budget *membuffer.Budget, limit int64) (_ *Result, err error) {
 	var raw struct {
+		DNSResult
 		URL      *string           `json:"url"`
 		Headers  map[string]string `json:"headers"`
 		Trailers map[string]string `json:"h2_trailers"`
@@ -27,7 +28,7 @@ func decodeScriptResult(data []byte, budget *membuffer.Budget, limit int64) (_ *
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("invalid $done result: %w", err)
 	}
-	r := &Result{URL: raw.URL, Headers: raw.Headers, Trailers: raw.Trailers, Abort: raw.Abort}
+	r := &Result{DNS: raw.DNSResult, URL: raw.URL, Headers: raw.Headers, Trailers: raw.Trailers, Abort: raw.Abort}
 	defer func() {
 		if err != nil {
 			r.Close()

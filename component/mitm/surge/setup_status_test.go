@@ -54,7 +54,7 @@ use-local-host-item-for-proxy = true
 	}
 }
 
-func TestLoadHostCompatibilityWarning(t *testing.T) {
+func TestLoadDNSHostWithoutCompatibilityWarning(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "host.sgmodule")
 	if err := os.WriteFile(path, []byte("[Host]\nexample.com = 192.0.2.1\n"), 0600); err != nil {
@@ -72,11 +72,11 @@ func TestLoadHostCompatibilityWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := engine.Status().Modules[0]
-	if status.HostMappings != 1 || len(engine.Plan().Destinations) != 1 || len(status.Warnings) != 1 {
-		t.Fatalf("compatibility warning must not prevent loading: %+v", status)
+	if status.HostMappings != 1 || len(engine.Plan().Destinations) != 0 || len(engine.Plan().DNS) != 1 || len(status.Warnings) != 0 {
+		t.Fatalf("DNS Host plan: %+v", status)
 	}
-	if !strings.Contains(output.String(), "level=warning") || !strings.Contains(output.String(), "host-compatibility") || !strings.Contains(output.String(), status.Warnings[0]) {
-		t.Fatalf("module compatibility warning missing from startup log: %s", output.String())
+	if strings.Contains(output.String(), "level=warning") {
+		t.Fatalf("supported Host emitted a warning: %s", output.String())
 	}
 }
 

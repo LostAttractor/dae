@@ -58,10 +58,10 @@ response=type=http-response,pattern=.,requires-body=1,script-path=response.js
 	}
 }
 
-func TestHostOnlyPlanAndUnsupportedDNS(t *testing.T) {
-	for _, value := range []string{"server:system", "script:dns.js", "alias.example"} {
+func TestHostOnlyPlanAndDNS(t *testing.T) {
+	for _, value := range []string{"script:dns.js"} {
 		_, err := Parse("[Host]\napi.example.com = "+value+"\n*.example.com = 198.51.100.2\n", nil)
-		if err == nil || !strings.Contains(err.Error(), "module line 2") {
+		if err == nil || !strings.Contains(err.Error(), "missing DNS script") {
 			t.Fatalf("missing Host diagnostic: %v", err)
 		}
 	}
@@ -75,7 +75,7 @@ func TestHostOnlyPlanAndUnsupportedDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.Close()
-	if p := host.Plan(); len(p.Scopes) != 0 || len(p.Destinations) != 2 {
+	if p := host.Plan(); len(p.Scopes) != 0 || len(p.Destinations) != 0 || len(p.DNS) != 1 {
 		t.Fatalf("Host-only plan: %+v", p)
 	}
 }

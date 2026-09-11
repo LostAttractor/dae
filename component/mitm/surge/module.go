@@ -25,19 +25,21 @@ const (
 // report unexpected or behavior-changing limitations; Ignored lists documented
 // unsupported options for trace logging.
 type Module struct {
-	Name           string
-	Hostnames      []string
-	Scripts        []Script
-	URLRewrites    []URLRewrite
-	HeaderRewrites []HeaderRewrite
-	MapLocals      []MapLocal
-	BodyRewrites   []BodyRewrite
-	Rules          []ModuleRule
-	Hosts          routing.DestinationRewrites
-	Warnings       []string
-	Ignored        []string
-	source         string
-	cacheState     string
+	Name             string
+	Hostnames        []string
+	Scripts          []Script
+	URLRewrites      []URLRewrite
+	HeaderRewrites   []HeaderRewrite
+	MapLocals        []MapLocal
+	BodyRewrites     []BodyRewrite
+	Rules            []ModuleRule
+	Hosts            routing.DestinationRewrites
+	DNSHosts         []HostEntry
+	UseHostsForProxy bool
+	Warnings         []string
+	Ignored          []string
+	source           string
+	cacheState       string
 }
 
 type Script struct {

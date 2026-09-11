@@ -117,6 +117,7 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 		return nil, err
 	}
 	input, err := json.Marshal(map[string]any{
+		"domain":  in.Domain,
 		"request": runtimeMessage(in.Request), "response": runtimeMessage(in.Response),
 		"name": in.ScriptName, "type": in.ScriptType, "argument": in.Argument,
 		"binary": in.BinaryBodyMode,

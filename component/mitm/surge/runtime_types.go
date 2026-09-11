@@ -31,6 +31,7 @@ func messageHeaders(header http.Header) map[string]string {
 }
 
 type Invocation struct {
+	Domain                           string
 	Request, Response                *Message
 	ScriptName, ScriptType, Argument string
 	BinaryBodyMode                   bool
@@ -42,6 +43,7 @@ type Invocation struct {
 
 // Result distinguishes an omitted body from replacing the body with empty data.
 type Result struct {
+	DNS      DNSResult
 	URL      *string
 	Headers  map[string]string
 	Trailers map[string]string
@@ -49,6 +51,14 @@ type Result struct {
 	Status   int
 	Response *Result
 	Abort    bool
+}
+
+type DNSResult struct {
+	Address   string   `json:"address"`
+	Addresses []string `json:"addresses"`
+	Server    string   `json:"server"`
+	Servers   []string `json:"servers"`
+	TTL       *uint32  `json:"ttl"`
 }
 
 type RuntimeOptions struct {

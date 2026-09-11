@@ -47,7 +47,7 @@ plugins {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Authority() != nil || len(h.Status()) != 2 || len(h.Plan().Destinations) != 2 {
+	if h.Authority() != nil || len(h.Status()) != 2 || len(h.Plan().Destinations) != 0 || len(h.Plan().DNS) != 2 {
 		t.Fatalf("unexpected host plan: %+v", h.Plan())
 	}
 	if h.Status()[0].ID != "first" || h.Status()[1].ID != "second" {

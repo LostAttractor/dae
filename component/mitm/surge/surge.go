@@ -69,6 +69,9 @@ func (e *Engine) forConnection(host string, port uint16) *Engine {
 func (e *Engine) Plan() plugin.Plan {
 	var plan plugin.Plan
 	for _, module := range e.options.Modules {
+		if len(module.DNSHosts) != 0 {
+			plan.DNS = append(plan.DNS, plugin.DNSScope{})
+		}
 		if len(module.Hostnames) > 0 {
 			scope, _ := moduleScope(module.Hostnames) // validated by NewEngine
 			// Scripts may issue requests or replace URLs; rewrites and Map Local

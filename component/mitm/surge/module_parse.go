@@ -32,7 +32,6 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 	lines := strings.Split(strings.TrimPrefix(source, "\ufeff"), "\n")
 	m := &Module{Name: metadata.Name}
 	section := ""
-	useHostsForProxy := false
 	warnedSections := make(map[string]bool)
 	for i, line := range lines {
 		lineNumber := i + 1
@@ -68,7 +67,7 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 			if !ok {
 				err = fmt.Errorf("General directive requires key=value")
 			} else if key == "use-local-host-item-for-proxy" {
-				useHostsForProxy, err = parseBool(strings.TrimSpace(value))
+				m.UseHostsForProxy, err = parseBool(strings.TrimSpace(value))
 			} else {
 				m.Warnings = append(m.Warnings, fmt.Sprintf("unsupported General directive %q is ignored", key))
 			}
@@ -125,8 +124,17 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 			return nil, fmt.Errorf("module line %d: %w", lineNumber, err)
 		}
 	}
-	if len(m.Hosts) > 0 && !useHostsForProxy {
-		m.Warnings = append(m.Warnings, "[Host] mappings apply to both direct and proxy in dae; use-local-host-item-for-proxy is not true, so behavior differs from Surge")
+	for _, host := range m.DNSHosts {
+		if host.Script == "" {
+			continue
+		}
+		found := false
+		for _, script := range m.Scripts {
+			found = found || script.Name == host.Script && script.Type == "dns"
+		}
+		if !found {
+			return nil, fmt.Errorf("Host references missing DNS script %q", host.Script)
+		}
 	}
 	return m, nil
 }
@@ -141,14 +149,17 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 		return nil, err
 	}
 	s := &Script{Name: strings.TrimSpace(name), Type: params["type"], Path: params["script-path"], Pattern: params["pattern"], Argument: params["argument"], MaxSize: DefaultScriptMaxSize}
-	if s.Type != "http-request" && s.Type != "http-response" {
+	if s.Type != "http-request" && s.Type != "http-response" && s.Type != "dns" {
 		*warnings = append(*warnings, fmt.Sprintf("script %q: unsupported type %q; script is ignored", s.Name, s.Type))
 		return nil, nil
 	}
-	if s.Path == "" || s.Pattern == "" {
+	if s.Path == "" || s.Type != "dns" && s.Pattern == "" {
 		return nil, fmt.Errorf("script %q requires script-path and pattern", s.Name)
 	}
-	if s.pattern, err = compilePattern(s.Pattern); err != nil {
+	if s.Type != "dns" {
+		s.pattern, err = compilePattern(s.Pattern)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("script %q pattern: %w", s.Name, err)
 	}
 	for key, value := range params {

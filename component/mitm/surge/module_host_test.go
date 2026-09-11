@@ -3,63 +3,24 @@
 package surge
 
 import (
-	"reflect"
-	"strings"
 	"testing"
-
-	"github.com/daeuniverse/dae/component/plugin"
 )
 
-func TestHostProxyCompatibilityWarning(t *testing.T) {
-	const hosts = "[Host]\n192.0.2.1 = 192.0.2.2\nexample.com = 192.0.2.3, 2001:db8::1\n"
-	const enabled = "[General]\nuse-local-host-item-for-proxy = true\n"
-	const disabled = "[General]\nuse-local-host-item-for-proxy = false\n"
-	var modules []*Module
-	for _, test := range []struct {
-		name, source string
-		warnings     int
-	}{
-		{"absent", hosts, 1},
-		{"false", disabled + hosts, 1},
-		{"true before Host", enabled + hosts, 0},
-		{"true after Host", hosts + enabled, 0},
-		{"last value wins", hosts + enabled + disabled, 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			module, err := Parse(test.source, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(module.Hosts) != 2 || len(module.Warnings) != test.warnings {
-				t.Fatalf("Host mappings or compatibility warnings: %+v", module)
-			}
-			for _, warning := range module.Warnings {
-				for _, want := range []string{"[Host]", "direct and proxy", "use-local-host-item-for-proxy", "differs from Surge"} {
-					if !strings.Contains(warning, want) {
-						t.Errorf("warning missing %q: %s", want, warning)
-					}
-				}
-			}
-			modules = append(modules, module)
-		})
-	}
-	engine := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: modules}}
-	rules := engine.Plan().Destinations
-	if len(rules) != 2*len(modules) {
-		t.Fatalf("lost module mappings: %+v", rules)
-	}
-	for i, module := range modules {
-		if !reflect.DeepEqual(rules[i*2:(i+1)*2], modules[0].Hosts) {
-			t.Fatal("compatibility option changed the destination plan")
+func TestHostDNSAndLiteralDestinationPlans(t *testing.T) {
+	for _, enabled := range []string{"false", "true"} {
+		module, err := Parse("[General]\nuse-local-host-item-for-proxy="+enabled+"\n[Host]\n192.0.2.1 = 192.0.2.2\nexample.com = 192.0.2.3, 2001:db8::1", nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(engine.Status().Modules[i].Warnings, module.Warnings) {
-			t.Fatal("compatibility warnings leaked between modules")
+		engine := &Engine{options: EngineOptions{Modules: []*Module{module}}}
+		plan := engine.Plan()
+		if len(plan.Destinations) != 1 || len(plan.DNS) != 1 || len(module.DNSHosts) != 1 || len(module.Warnings) != 0 {
+			t.Fatalf("domain Host must be DNS-only: module=%+v plan=%+v", module, plan)
 		}
-	}
-	for _, source := range []string{"[Host]\n", disabled, disabled + "[Host]\n"} {
-		module, err := Parse(source, nil)
-		if err != nil || len(module.Warnings) != 0 {
-			t.Fatalf("unused Host must not warn: %+v, %v", module, err)
+		direct, directMatch := engine.UseDNSAddress("example.com", false)
+		proxy, proxyMatch := engine.UseDNSAddress("example.com", true)
+		if !directMatch || !proxyMatch || !direct || proxy != (enabled == "true") {
+			t.Fatal("Host proxy address policy lost")
 		}
 	}
 }
@@ -67,14 +28,34 @@ func TestHostProxyCompatibilityWarning(t *testing.T) {
 func TestHostMappingSyntax(t *testing.T) {
 	for _, source := range []string{
 		"[Host]\n192.0.2.1", "[Host]\n192.0.2.1 =", "[Host]\n192.0.2.1 = 192.0.2.2,invalid",
-		"[General]\nuse-local-host-item-for-proxy = invalid",
+		"[General]\nuse-local-host-item-for-proxy = invalid", "[Host]\na = server:invalid", "[Host]\na = script:missing",
 	} {
 		if _, err := Parse(source, nil); err == nil {
 			t.Fatalf("accepted invalid module: %s", source)
 		}
 	}
 	module, err := Parse("[Host]\nexample.com = 192.0.2.1\n[General]\nipv6=true", nil)
-	if err != nil || len(module.Hosts) != 1 || len(module.Warnings) != 2 {
+	if err != nil || len(module.DNSHosts) != 1 || len(module.Hosts) != 0 || len(module.Warnings) != 1 {
 		t.Fatalf("unsupported entries: %+v, %v", module, err)
+	}
+}
+
+func TestHostSetURLAssignmentDelimiter(t *testing.T) {
+	for _, kind := range []string{"DOMAIN-SET", "RULE-SET"} {
+		for _, target := range []string{"192.0.2.1", "server:https://dns.example/query?token=def"} {
+			for _, separator := range []string{" = ", "\t=\t"} {
+				source := "https://lists.example/domains?token=abc&key=123=="
+				m, err := Parse("[Host]\n"+kind+":"+source+separator+target, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(m.DNSHosts) != 1 || m.DNSHosts[0].SetSource != source || m.DNSHosts[0].SetKind != kind {
+					t.Fatalf("URL assignment changed: %+v", m.DNSHosts)
+				}
+				if target != "192.0.2.1" && m.DNSHosts[0].Servers[0] != "https://dns.example/query?token=def" {
+					t.Fatal("target URL query lost")
+				}
+			}
+		}
 	}
 }

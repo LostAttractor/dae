@@ -241,6 +241,47 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 		}
 		script.Source = contents
 	}
+	for i := range m.DNSHosts {
+		host := &m.DNSHosts[i]
+		if host.SetKind == "" {
+			continue
+		}
+		path, err := resource.Resolve(location, host.SetSource)
+		if err != nil {
+			return nil, err
+		}
+		contents, err := loadResource(path, false)
+		if err != nil {
+			return nil, fmt.Errorf("load Host %s: %w", host.SetKind, err)
+		}
+		for _, line := range strings.Split(contents, "\n") {
+			line = strings.TrimSpace(trimModuleRuleComment(line))
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+				continue
+			}
+			var fields []string
+			if host.SetKind == "DOMAIN-SET" {
+				kind := "DOMAIN"
+				if strings.HasPrefix(line, ".") {
+					kind, line = "DOMAIN-SUFFIX", strings.TrimPrefix(line, ".")
+				}
+				fields = []string{kind, line}
+			} else {
+				fields, err = splitModuleRuleFields(line)
+				if err != nil {
+					return nil, err
+				}
+			}
+			clauses, _, err := parseModuleRuleExpression(fields, 0, false)
+			if errors.Is(err, errUnsupportedModuleRule) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("Host set: %w", err)
+			}
+			host.Rules = append(host.Rules, ModuleRule{clauses: clauses})
+		}
+	}
 	mapBodies := make(map[resource.Source][]byte)
 	for i := range m.MapLocals {
 		if err := ctx.Err(); err != nil {

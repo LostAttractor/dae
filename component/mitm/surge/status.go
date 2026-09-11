@@ -15,7 +15,7 @@ func (m *Module) Status() api.ModuleStatus {
 	}
 	return api.ModuleStatus{
 		Name: m.Name, Source: m.source, State: state,
-		Scripts: len(m.Scripts), Hostnames: len(m.Hostnames), HostMappings: len(m.Hosts),
+		Scripts: len(m.Scripts), Hostnames: len(m.Hostnames), HostMappings: len(m.Hosts) + len(m.DNSHosts),
 		URLRewrites: len(m.URLRewrites), HeaderRewrites: len(m.HeaderRewrites),
 		BodyRewrites: len(m.BodyRewrites), MapLocals: len(m.MapLocals), Rules: len(m.Rules),
 		Warnings: slices.Clone(m.Warnings),

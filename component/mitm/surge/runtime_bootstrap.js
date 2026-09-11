@@ -71,6 +71,7 @@
   if (input.request) globalThis.$request = message(input.request);
   if (input.response) globalThis.$response = message(input.response);
   if (input.argument) globalThis.$argument = input.argument;
+  if (input.type === "dns") globalThis.$domain = input.domain;
   globalThis.$script = { name: input.name, type: input.type, startTime: Date.now(), binaryBodyMode: input.binary };
   globalThis.$environment = { "surge-version": "5.0", "surge-build": "0", "dae-runtime": "quickjs" };
   globalThis.$persistentStore = {
@@ -125,7 +126,7 @@
   let completed = false;
   globalThis.$done = value => {
     if (completed) return;
-    host("done", JSON.stringify(normalize(value)));
+    host("done", JSON.stringify(input.type === "dns" ? value ?? {} : normalize(value)));
     completed = true;
   };
   let sequence = 0;

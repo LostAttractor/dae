@@ -10,7 +10,7 @@ import (
 func logModuleStatus(status api.SurgeStatus, logger *log.Entry, instanceID string) {
 	for _, module := range status.Modules {
 		logger.WithFields(log.Fields{
-			"mitm_instance": instanceID, "module": module.Name,
+			"plugin_instance": instanceID, "module": module.Name,
 			"state": module.State, "scripts": module.Scripts,
 		}).Info("Surge module loaded")
 	}
