@@ -111,6 +111,7 @@ struct match_set {
 #define MATCH_FLAG_NOT 0x01 /* Negates the whole OR subrule. */
 #define MATCH_FLAG_MUST 0x02
 #define MATCH_FLAG_SKIP_NOALIVE 0x04
+#define MATCH_FLAG_BYPASS 0x40
 #define MATCH_CAPTURE_SHIFT 3
 #define MATCH_CAPTURE_FLAGS(m) (((m)->flags >> MATCH_CAPTURE_SHIFT) & 0x07)
 

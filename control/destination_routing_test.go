@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"testing"
-	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -35,7 +34,7 @@ dip(192.0.2.20) -> block`)
 			})
 			plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{
 				downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused),
-			}, core: &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)}, sniffVerifyMode: consts.SniffVerifyMode_None}
+			}, core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}, sniffVerifyMode: consts.SniffVerifyMode_None}
 			result := bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, ProfileId: 42, Ifindex: 7, Dscp: 46, Mac: [6]byte{2, 0, 0, 0, 0, 1}}
 			copy(result.Pname[:], "app")
 			original := netip.MustParseAddrPort("192.0.2.20:443")
@@ -84,7 +83,7 @@ dip('2001:db8::20') -> dnat(203.0.113.40)`, "").destinations
 				return nil, net.ErrClosed
 			})
 			plane := &ControlPlane{routingMatcher: matcher, dialTargetOverride: test.override, sniffVerifyMode: consts.SniffVerifyMode_None,
-				core: &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)}, outbounds: []*outbound.DialerGroup{
+				core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}, outbounds: []*outbound.DialerGroup{
 					downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused),
 				}}
 			if test.unverified {

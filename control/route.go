@@ -128,11 +128,11 @@ func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, doma
 		return
 	}
 	fqdn := dnsmessage.CanonicalName(domain)
-	// Historical pairing remains valid for sniff verification after the
-	// corresponding kernel contribution expires or is capacity-evicted. Keep
+	// Pairing remains valid until time GC, even if the corresponding kernel
+	// state is capacity-evicted. Keep
 	// that trust decision separate from whether the current kernel map could
 	// route this connection accurately.
-	verification := c.core.domainRegistry.Verify(queryInfo{qname: fqdn, qtype: common.AddrToDnsType(dst.Addr())}, dst.Addr())
+	verification := c.core.domainRegistry.Verify(fqdn, dst.Addr())
 	if verification.Registered {
 		shouldReroute = !verification.KernelCovered
 		switch c.sniffVerifyMode {
@@ -151,12 +151,11 @@ func (c *ControlPlane) verifySniff(ctx context.Context, dst netip.AddrPort, doma
 		case consts.SniffVerifyMode_Strict:
 			verified = false
 		case consts.SniffVerifyMode_Loose:
-			// TODO: 产生一个真的DNS查询? 这样能被缓存
 			c.muRealDomainSet.Lock()
 			verified = c.realDomainSet.TestString(fqdn)
 			c.muRealDomainSet.Unlock()
 			if !verified {
-				// TODO: 这里可能可以直接使用正常的 DNS 解析流程, 从而可以得到缓存
+				// Check existence through the system resolver; this is not observed client DNS evidence.
 				ip46, resolveErr := netutils.ResolveIp46Context(ctx, fqdn)
 				if resolveErr != nil {
 					if ctxErr := ctx.Err(); ctxErr != nil {

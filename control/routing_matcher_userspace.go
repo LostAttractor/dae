@@ -171,7 +171,11 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 				if ruleUnknown {
 					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
 				}
-				return routingEvaluation{outbound: consts.OutboundIndex(match.Outbound), mark: match.Mark, must: must == predicateMatch || match.Flags&matchFlagMust != 0, captureFlags: captureFlags}, nil
+				forced := must == predicateMatch || match.Flags&matchFlagMust != 0
+				if simulateKernel && !forced && p.dst.Port() == 53 && match.Flags&matchFlagBypass == 0 {
+					captureFlags |= 8
+				}
+				return routingEvaluation{outbound: consts.OutboundIndex(match.Outbound), mark: match.Mark, must: forced, captureFlags: captureFlags}, nil
 			default:
 				return routingEvaluation{}, fmt.Errorf("unknown match action: %d", action)
 			}

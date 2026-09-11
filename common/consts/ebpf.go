@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 )
@@ -102,26 +103,8 @@ var (
 	MaxMatchSetLen  = 32 * 32
 )
 
-// Domain registry sizing and lifetime (see control/domain_registry.go).
-// The kernel-side domain maps are created with a fixed max_entries
-// (MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c); the userspace registry
-// mirrors their occupancy and never lets them overflow. The userspace
-// registry itself is larger and uses a hard limit to keep DNS churn from
-// growing userspace memory without bound.
-var (
-	// MinDomainTTL is the lower bound (seconds) for both the lifetime of an
-	// IP->domain-rules mapping in the kernel maps and the eviction-priority
-	// deadline of its userspace registration. Many apps ignore the DNS TTL
-	// and keep using a cached answer for a long time, so short DNS TTLs need
-	// a wide floor for domain routing and sniff verification to keep working.
-	// The userspace deadline does not bound validity: it only orders
-	// reclamation when the registry exceeds DomainRegistryMaxSize.
-	MinDomainTTL = 7 * 24 * 3600
-	// DomainRegistryMaxSize is the hard limit of userspace registrations.
-	// The earliest-expiring history is reclaimed on the update path when this
-	// size is exceeded, even if all retained observations are still live.
-	DomainRegistryMaxSize = 4 * 65536
-)
+// A policy assumption, independent of response caching and DNSSEC validity.
+const DefaultDNSRetentionWindow = 7 * 24 * time.Hour
 
 func init() {
 	if MaxMatchSetLen_ != "" {

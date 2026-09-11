@@ -66,9 +66,6 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 		literal, _ := netip.ParseAddr(target.host)
 		domain := target.host
 		queryTypes := []uint16{dnsmessage.TypeA, dnsmessage.TypeAAAA}
-		if c.dnsController != nil && c.dnsController.qtypePrefer == dnsmessage.TypeAAAA {
-			queryTypes[0], queryTypes[1] = queryTypes[1], queryTypes[0]
-		}
 		switch {
 		case literal.IsValid():
 			domain, queryTypes = "", []uint16{0}
@@ -139,35 +136,18 @@ func httpClientSource(destination netip.Addr) netip.AddrPort {
 	return netip.AddrPortFrom(netip.IPv6Unspecified(), 0)
 }
 
-// Resolve through dae's DNS request/response rules; asis uses fallback_resolver
-// because these daemon requests have no intercepted DNS destination.
+// Daemon-originated lookups use the marked system resolver installed at startup.
+// They do not depend on the availability or configuration of DNS plugins.
 func (c *ControlPlane) resolveHTTPAddresses(parent context.Context, host string, qtype uint16, source netip.AddrPort, process bpfRoutingResult) ([]netip.Addr, error) {
-	dns := c.dnsController
-	if dns == nil || !dns.admitDNSRequest() {
-		return nil, net.ErrClosed
-	}
-	defer dns.activeRequests.Done()
 	ctx, cancel := context.WithTimeout(parent, consts.DefaultDNSTimeout)
 	defer cancel()
-	stop := context.AfterFunc(dns.closed, cancel)
-	defer stop()
-	target, err := netip.ParseAddrPort(c.fallbackResolver)
-	if err != nil {
-		return nil, fmt.Errorf("mitm DNS fallback_resolver: %w", err)
+	if c.ctx != nil {
+		stop := context.AfterFunc(c.ctx, cancel)
+		defer stop()
 	}
-	message := new(dnsmessage.Msg)
-	message.SetQuestion(dnsmessage.Fqdn(host), qtype)
-	if !source.IsValid() {
-		source = httpClientSource(target.Addr())
+	network := "ip4"
+	if qtype == dnsmessage.TypeAAAA {
+		network = "ip6"
 	}
-	request := &udpRequest{src: source, dst: target, routingResult: &process}
-	query := dns.prepareQueryInfo(message)
-	if err := dns.handleDNSRequest(ctx, message, request, query); err != nil {
-		return nil, fmt.Errorf("resolve %s %s: %w", host, dnsmessage.TypeToString[qtype], err)
-	}
-	plan := dns.planDNSResponse(query, message.Answer)
-	if message.Response && message.Rcode == dnsmessage.RcodeSuccess && plan != nil && len(plan.views) > 0 && len(plan.views[0].addresses) > 0 {
-		return plan.views[0].addresses, nil
-	}
-	return nil, fmt.Errorf("resolve %s: no %s addresses (rcode %s)", host, dnsmessage.TypeToString[qtype], dnsmessage.RcodeToString[message.Rcode])
+	return net.DefaultResolver.LookupNetIP(ctx, network, host)
 }

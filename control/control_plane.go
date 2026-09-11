@@ -40,7 +40,8 @@ type ControlPlane struct {
 	udpSetupDrops          udpPacketDrops
 	udpEndpoints           *UdpEndpointPool
 
-	dnsController      *DnsController
+	dnsRelay           *dnsRelay
+	domainRegistryPath string
 	mitmHost           *mitm.Host
 	mitmClients        clientmatch.Matcher
 	settings           *settings.Store
@@ -86,7 +87,6 @@ type ControlPlane struct {
 	sniffingTimeout     time.Duration
 	sniffVerifyMode     consts.SniffVerifyMode
 	soMarkFromDae       uint32
-	fallbackResolver    string
 	mptcp               bool
 	markedDirectDialers sync.Map
 
@@ -112,7 +112,7 @@ func NewControlPlane(
 	runtimeSettings *settings.Store,
 	loadMITM func(*http.Client, *http.Client) (*mitm.Host, error),
 ) (c *ControlPlane, err error) {
-	groups, routingA, global, dnsConfig := conf.Group, &conf.Routing, &conf.Global, &conf.Dns
+	groups, routingA, global := conf.Group, &conf.Routing, &conf.Global
 	var mitmClients clientmatch.Matcher
 	if conf.MITM.Enabled {
 		clients := conf.MITM.ClientSourceAddress
@@ -229,6 +229,11 @@ func NewControlPlane(
 	// Back skip_while_noalive rule evaluation with the core's in-memory
 	// mirror of outbound connectivity.
 	routingMatcher.outboundUsable = core.outboundUsable
+	if global.DNSRetentionWindow > 0 {
+		core.domainRegistry.mu.Lock()
+		core.domainRegistry.window = global.DNSRetentionWindow
+		core.domainRegistry.mu.Unlock()
+	}
 
 	wanInterface, autoWan := splitWanInterfaces(global.WanInterface)
 
@@ -240,6 +245,7 @@ func NewControlPlane(
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	plane = &ControlPlane{
 		core:                      core,
+		dnsRelay:                  newDNSRelay(),
 		settings:                  runtimeSettings,
 		mitmClients:               mitmClients,
 		deviceRoutes:              core.bpf.deviceRoutes,
@@ -270,7 +276,6 @@ func NewControlPlane(
 		sniffVerifyMode:           global.SniffVerifyMode,
 		sniffingTimeout:           sniffingTimeout,
 		soMarkFromDae:             global.SoMarkFromDae,
-		fallbackResolver:          global.FallbackResolver,
 		mptcp:                     global.Mptcp,
 	}
 	for _, predicate := range builder.destination.predicates {
@@ -279,15 +284,12 @@ func NewControlPlane(
 			break
 		}
 	}
-	// Stop connectivity checks after DNS forwarders have been retired. A
-	// forwarder close is bounded, so a broken tunneled Conn.Close cannot block
-	// the remainder of control-plane shutdown indefinitely.
+	// Retire DNS work before closing its outbound resources and checks.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
-	// Close plugin transports (registered below) before their resolver. The
-	// closure follows the final controller after preparation replaces it.
+	// Plugin shutdown drains requests before this relay cancellation and join.
 	plane.deferFuncs = append(plane.deferFuncs, func() error {
-		if plane.dnsController != nil {
-			return plane.dnsController.Close()
+		if plane.dnsRelay != nil {
+			return plane.dnsRelay.Close()
 		}
 		return nil
 	})
@@ -317,12 +319,6 @@ func NewControlPlane(
 	if err := startupCtx.Err(); err != nil {
 		return nil, err
 	}
-	if plane.dnsController, err = plane.newDNSController(dnsConfig, preparedRules, core.domainRegistry); err != nil {
-		return nil, err
-	}
-	dnsConfig.Routing.Request.Rules = nil
-	dnsConfig.Routing.Response.Rules = nil
-
 	plane.apiBypass = preparedRules.apiBypass
 	return plane, nil
 }

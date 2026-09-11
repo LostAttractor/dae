@@ -53,6 +53,9 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 	// UDP relays use IPs; replacing them with sniffed QUIC hostnames breaks
 	// full-cone reply addressing. Explicit destination IP rewrites remain applicable.
 	override = override && p.networkType.L4Proto != consts.L4ProtoStr_UDP
+	if c.mitmHost.UseDNSAddress(p.Domain, outboundIndex != consts.OutboundDirect) {
+		override = false
+	}
 	dialTarget := p.dialTarget(override)
 	target, ipErr := netip.ParseAddrPort(dialTarget)
 	networkType := p.networkType
@@ -100,9 +103,8 @@ func (c *ControlPlane) directDialerForMark(outboundIndex consts.OutboundIndex, m
 		return cached.(netproxy.Dialer)
 	}
 	d := protocolDirect.NewDirectDialer(protocolDirect.Option{
-		FallbackDNS: c.fallbackResolver,
-		Mptcp:       c.mptcp,
-		Mark:        int(mark),
+		Mptcp: c.mptcp,
+		Mark:  int(mark),
 	})
 	actual, _ := c.markedDirectDialers.LoadOrStore(mark, d)
 	return actual.(netproxy.Dialer)

@@ -23,7 +23,7 @@ func prepareFlowRulesForTest(t *testing.T, controls, routes string) preparedRule
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := prepareRoutingRules(context.Background(), &c.Routing, &c.Dns, nil)
+	p, err := prepareRoutingRules(context.Background(), &c.Routing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

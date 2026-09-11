@@ -6,28 +6,9 @@
 package control
 
 import (
-	"context"
-	"net"
-	"testing"
-	"time"
-
-	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/component/dns"
 	dnsmessage "github.com/miekg/dns"
+	"net"
 )
-
-func newTestDNSForwarder(t testing.TB, scheme dns.UpstreamScheme, args dialArgument) DnsForwarder {
-	t.Helper()
-	upstream := &dns.Upstream{Scheme: scheme, Ip46: new(netutils.Ip46)}
-	_, protocols := upstream.SupportedNetworks()
-	args.networkType.L4Proto = protocols[0]
-	forwarder, err := newDnsForwarder(context.Background(), upstream, args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = forwarder.Close() })
-	return forwarder
-}
 
 func testDNSQuery(name string, qtype uint16, id uint16) *dnsmessage.Msg {
 	return &dnsmessage.Msg{
@@ -41,43 +22,6 @@ func testDNSQuery(name string, qtype uint16, id uint16) *dnsmessage.Msg {
 			Qclass: dnsmessage.ClassINET,
 		}},
 	}
-}
-
-func testDNSQueryKey(qi queryInfo, variant string) dnsQueryKey {
-	return dnsQueryKey{queryInfo: qi, qclass: dnsmessage.ClassINET, variant: variant}
-}
-
-func testDNSCacheKey(qi queryInfo) dnsCacheKey {
-	return dnsCacheKey{queryInfo: qi}
-}
-
-func testDNSFlightKey(qi queryInfo, variant string) dnsFlightKey {
-	return dnsFlightKey{query: testDNSQueryKey(qi, variant)}
-}
-
-func testPlannedRRSeconds(plan *responsePlan, rr plannedRR) int {
-	return deadlineSeconds(rr.absoluteDeadline, plan.observedAt)
-}
-
-func testViewDeadlineSeconds(plan *responsePlan, deadline time.Time) int {
-	if deadline.IsZero() {
-		return 0
-	}
-	return int(deadline.Sub(plan.observedAt) / time.Second)
-}
-
-func getTestDNSCache(c *commonDnsCache, key dnsCacheKey) []*DnsCache {
-	if !c.FillInto(key, new(dnsmessage.Msg)) {
-		return nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	elem := c.cache[key]
-	if elem == nil {
-		return nil
-	}
-	entry := elem.Value.(*cacheEntry)
-	return append([]*DnsCache(nil), entry.value...)
 }
 
 func testARecord(name, ip string) *dnsmessage.A {

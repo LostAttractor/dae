@@ -255,9 +255,8 @@ static int route_step(struct route_ctx *ctx)
 	bool must = ctx->must == MATCH_HIT || (match->flags & MATCH_FLAG_MUST);
 	__u8 outbound = match->outbound;
 
-	if (!must && ctx->params->isdns &&
-	    !(ctx->capture_flags & CAPTURE_DESTINATION))
-		outbound = OUTBOUND_CONTROL_PLANE_ROUTING;
+	if (!must && ctx->params->isdns && !(match->flags & MATCH_FLAG_BYPASS))
+		ctx->capture_flags |= CAPTURE_DNS;
 	ctx->result = (__s64)outbound | ((__s64)match->mark << 8) |
 		      ((__s64)must << 40);
 	return 1;

@@ -104,6 +104,11 @@ func (b *RoutingMatcherBuilder) addControlPlaneFragment(p *preparedRules) (routi
 	if err := b.rulesBuilder.Apply(p.bypass); err != nil {
 		return routingSpan{}, err
 	}
+	for i := int(start); i < len(b.rules); i++ {
+		if b.rules[i].Action == uint8(consts.MatchActionRoute) {
+			b.rules[i].Flags |= matchFlagBypass
+		}
+	}
 	applyEffect := func(filter []*config_parser.Function, action consts.MatchAction, flags uint8) error {
 		if err := b.rulesBuilder.ApplyPredicate(filter, &routing.Outbound{Name: "direct"}); err != nil {
 			return err

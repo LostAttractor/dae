@@ -171,7 +171,7 @@ func (d *mitmClientDialer) calls() int {
 
 func mitmClientTestPlane(t *testing.T, host *mitm.Host, upstream string) (*ControlPlane, []*mitmClientDialer) {
 	t.Helper()
-	registry, _ := newTestRegistry(10, 10, time.Minute)
+	registry, _ := newTestRegistry(10, time.Minute)
 	t.Cleanup(func() { _ = registry.Close() })
 	store, err := settings.Open(filepath.Join(t.TempDir(), "runtime-state.json"))
 	if err != nil {

@@ -17,11 +17,13 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	want.Groups[0].Nodes[0].Availability.LastFailureDuration = time.Second
 	want.Plugins = []PluginInstanceStatus{{ID: "example", Type: "example", State: "active",
 		BufferMemory: &BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}}}
+	want.Tables = []TableUsage{{Name: "domain-registry", Used: 8,
+		Breakdown: &TableUsageBreakdown{GC: ^uint64(0)}}}
 	payload, err := json.Marshal(want, jsonv1.FormatDurationAsNano(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":8`, `"plugins":`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":9`, `"plugins":`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}
@@ -42,5 +44,8 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Plugins, want.Plugins) {
 		t.Fatal("MITM buffer memory statistics changed after round trip")
+	}
+	if !reflect.DeepEqual(got.Tables, want.Tables) {
+		t.Fatal("domain/IP counts changed after round trip")
 	}
 }

@@ -121,11 +121,11 @@ func expectEOF(t *testing.T, conn *net.TCPConn, direction string) {
 	}
 }
 
-func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn, traffic *stats.Connection) <-chan error {
+func runSplice(t *testing.T, runtime *Runtime, accepted, remote *net.TCPConn, traffic *stats.Connection, observers ...func()) <-chan error {
 	t.Helper()
 	result := make(chan error, 1)
 	go func() {
-		handled, err := runtime.Relay(accepted, remote, traffic)
+		handled, err := runtime.Relay(accepted, remote, traffic, observers...)
 		if !handled && err == nil {
 			err = errors.New("direct splice relay was not handled")
 		}
@@ -214,8 +214,19 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "direct", Network: common.NetworkTCP4,
 	}
 	traffic := stats.DefaultStore.OpenConnection(path, false)
-	result := runSplice(t, runtime, accepted, remote, traffic)
+	observed := make(chan struct{}, 16)
+	result := runSplice(t, runtime, accepted, remote, traffic, func() {
+		select {
+		case observed <- struct{}{}:
+		default:
+		}
+	})
 	waitRedirectArmed(t, runtime, cookieA, cookieR)
+	select {
+	case <-observed:
+		t.Fatal("idle splice reported traffic")
+	case <-time.After(1100 * time.Millisecond):
+	}
 
 	upload := []byte("upload")
 	if err := writeFull(client, upload); err != nil {
@@ -225,6 +236,11 @@ func TestSpliceAcceptedRemoteIntegration(t *testing.T) {
 	statsA, err := runtime.stats(cookieA)
 	if err != nil || statsA.SkbRedirected == 0 {
 		t.Fatalf("accepted-to-remote redirect is inactive: stats=%+v err=%v", statsA, err)
+	}
+	select {
+	case <-observed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("kernel redirected bytes did not report activity")
 	}
 
 	download := []byte("download")

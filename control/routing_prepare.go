@@ -26,8 +26,6 @@ type preparedRules struct {
 	earlyRoutes  []*config_parser.RoutingRule
 	lateRoutes   []*config_parser.RoutingRule
 	capture      *routingCapture
-	dnsRequest   []*config_parser.RoutingRule
-	dnsResponse  []*config_parser.RoutingRule
 }
 
 func (p *preparedRules) enableFlowRules(ctx context.Context, rules config.Rules, dirs []string) error {
@@ -85,7 +83,7 @@ func prepareDestinationRules(ctx context.Context, rules routing.DestinationRewri
 	return result, nil
 }
 
-func prepareRoutingRules(ctx context.Context, routingConfig *config.Routing, dnsConfig *config.Dns, externGeoDataDirs []string) (preparedRules, error) {
+func prepareRoutingRules(ctx context.Context, routingConfig *config.Routing, externGeoDataDirs []string) (preparedRules, error) {
 	var prepared preparedRules
 	prepared.geoDirs = append([]string(nil), externGeoDataDirs...)
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
@@ -97,17 +95,6 @@ func prepareRoutingRules(ctx context.Context, routingConfig *config.Routing, dns
 	prepared.routing, err = prepareRoutingConfig(routingConfig, datReader)
 	if err != nil {
 		return prepared, fmt.Errorf("prepare routing rules: %w", err)
-	}
-	prepared.dnsRequest, err = routing.ApplyRulesOptimizers(dnsConfig.Routing.Request.Rules,
-		&routing.AliasOptimizer{}, datReader,
-		&routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
-	if err != nil {
-		return prepared, fmt.Errorf("prepare DNS request rules: %w", err)
-	}
-	prepared.dnsResponse, err = routing.ApplyRulesOptimizers(dnsConfig.Routing.Response.Rules,
-		datReader, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
-	if err != nil {
-		return prepared, fmt.Errorf("prepare DNS response rules: %w", err)
 	}
 	return prepared, nil
 }

@@ -114,6 +114,13 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	}
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
+	if dst.Port() == 53 && routingResult.Must == 0 {
+		observe := c.domainActivity().connection(dst.Addr(), "")
+		observe()
+		lConn = &activityConn{lConn, observe}
+		return &tcpRelay{lConn: sniffing.NewConnSniffer(lConn, 0), src: src, dst: dst,
+			custom: func() error { return c.serveDNSTCP(lConn, src, dst, *routingResult) }}, nil
+	}
 
 	routeLease, err := c.deviceRoutes.acquire(routingResult)
 	if err != nil {
@@ -148,13 +155,17 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	}()
 
 	domain, err := sniffer.SniffTcp()
+	observedAt := time.Now()
 	if err != nil && !sniffing.IsSniffingError(err) {
+		c.domainActivity().observe(dst.Addr(), domain, observedAt)
 		// We ignore lConn errors or temporary network errors
 		if _, ok := IsNetError(err); ok {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("sniff TCP destination: %w", err)
 	}
+	observe := c.domainActivity().connection(dst.Addr(), domain)
+	sniffer = withDomainActivity(sniffer, observe)
 
 	host := domain
 	if host == "" && sniffer.IsTLS() {
@@ -170,6 +181,10 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		routingResult: routingResult, networkType: networkType,
 		Domain: domain, Src: src, Dest: dst,
 	})
+	// Route against the pre-activity projection first. Promoting a missing IP
+	// before verification would conceal the kernel coverage gap that requires
+	// while_needed rerouting for this connection. Failed attempts still count.
+	c.domainActivity().observe(dst.Addr(), domain, observedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +195,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		}
 		return &tcpRelay{
 			lConn: sniffer, src: src, dst: dst, domain: host,
+			activity: observe,
 			mitmHost: c.mitmHost, mitmPlanner: mitmPlanner, mitmRelease: release, routeLease: routeLease, policyLease: policyLease,
 		}, nil
 	}
@@ -223,6 +239,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 
 	stats.DefaultStore.RecordDial(statsPath, time.Since(start))
 	relay = &tcpRelay{
+		activity:    observe,
 		lConn:       sniffer,
 		rConn:       rConn,
 		dialer:      dialOption.Dialer,

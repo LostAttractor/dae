@@ -22,8 +22,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/component/dns"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -60,7 +58,6 @@ routing {
 	dport(82) -> ordinary
 	fallback: bar
 }
-dns { routing { request { fallback: asis } response { fallback: accept } } }
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -576,7 +573,7 @@ func (dnsPathDialer) ListenPacket(context.Context, string) (net.PacketConn, erro
 	return nil, fmt.Errorf("not implemented")
 }
 
-func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
+func TestDNSRelayDialPreservesNetworkAndMark(t *testing.T) {
 	option := &dialer.GlobalOption{}
 	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: dnsPathDialer{}}), option, &dialer.Property{
 		Name: "dns-path",
@@ -608,31 +605,22 @@ func TestChooseBestDnsDialerReturnsSuccessfulNetworkType(t *testing.T) {
 			}},
 		},
 	}
-	upstream := &dns.Upstream{
-		Scheme: dns.UpstreamScheme_TCP_UDP,
-		Port:   53,
-		Ip46: &netutils.Ip46{
-			Ip4: netip.MustParseAddr("192.0.2.1"),
-			Ip6: netip.MustParseAddr("2001:db8::1"),
-		},
+	request, _, err := c.dnsRequest(nil, "udp", netip.MustParseAddrPort("192.0.2.2:12345"), netip.MustParseAddrPort("192.0.2.1:53"), bpfRoutingResult{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	req := &udpRequest{
-		src:           netip.MustParseAddrPort("192.0.2.2:12345"),
-		routingResult: &bpfRoutingResult{},
-	}
-
-	got, err := c.chooseBestDnsDialer(req, upstream)
+	got, err := c.dnsDialOption(context.Background(), "udp", "192.0.2.1:53", "", request, bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)})
 	if err != nil {
 		t.Fatalf("chooseBestDnsDialer: %v", err)
 	}
-	if got.networkType != wantNetwork {
-		t.Fatalf("network type = %+v, want %+v", got.networkType, wantNetwork)
+	if got.NetworkType != wantNetwork {
+		t.Fatalf("network type = %+v, want %+v", got.NetworkType, wantNetwork)
 	}
-	if want := netip.MustParseAddrPort("192.0.2.1:53"); got.Target != want {
-		t.Fatalf("target = %v, want %v", got.Target, want)
+	if got.DialTarget != "192.0.2.1:53" {
+		t.Fatalf("target = %v", got.DialTarget)
 	}
-	if got.Mark != 42 || got.connectionDialer == nil {
-		t.Fatalf("marked DNS path = mark %d, dialer %v", got.Mark, got.connectionDialer)
+	if got.dialerForConnection() == got.Dialer {
+		t.Fatal("marked DNS path used the unmarked dialer")
 	}
 }
 

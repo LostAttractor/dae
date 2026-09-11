@@ -88,13 +88,19 @@ func (e *relayEndpoint) failure(err error, phase netproxy.Operation) error {
 	return errors.Join(causes...)
 }
 
-// The sniffer is the only transparent wrapper on an accepted connection.
+// Preserve native-socket handling through transparent observation wrappers.
 func unwrapSniffer(conn any) any {
 	switch c := conn.(type) {
+	case *activitySniffer:
+		return unwrapSniffer(c.ConnSnifferInterface)
+	case *activitySnifferCloseWriter:
+		return unwrapSniffer(c.ConnSnifferInterface)
+	case *activityConn:
+		return unwrapSniffer(c.Conn)
 	case *sniffing.ConnSniffer:
-		return c.Conn
+		return unwrapSniffer(c.Conn)
 	case *sniffing.ConnSnifferCloseWriter:
-		return c.ConnSniffer.Conn
+		return unwrapSniffer(c.ConnSniffer.Conn)
 	default:
 		return conn
 	}

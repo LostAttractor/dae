@@ -8,14 +8,11 @@ package netutils
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
-	"net/http"
 	"net/netip"
-	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -24,10 +21,6 @@ import (
 )
 
 type blockingDNSDialer struct{ conn net.Conn }
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 type doqTestStream struct {
 	response *bytes.Reader
@@ -214,111 +207,6 @@ func TestResolveUDPDoesNotCommitAfterCancellation(t *testing.T) {
 	}
 	if query.Response {
 		t.Fatalf("canceled UDP response was committed: %+v", query)
-	}
-}
-
-func TestResolveHttpAppliesAge(t *testing.T) {
-	tests := []struct {
-		name string
-		age  string
-		want uint32
-	}{
-		{name: "valid", age: "50", want: 10},
-		{name: "combined", age: "50, 999", want: 10},
-		{name: "invalid", age: "invalid", want: 60},
-		{name: "overflow", age: "18446744073709551616", want: 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
-			query.Id = 42
-			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				if got := req.URL.Query().Get("existing"); got != "value" {
-					t.Fatalf("existing DoH query parameter = %q, want value", got)
-				}
-				wire, err := base64.RawURLEncoding.DecodeString(req.URL.Query().Get("dns"))
-				if err != nil {
-					return nil, err
-				}
-				var wireQuery dnsmessage.Msg
-				if err := wireQuery.Unpack(wire); err != nil {
-					return nil, err
-				}
-				if wireQuery.Id != 0 {
-					t.Fatalf("DoH query ID = %d, want 0", wireQuery.Id)
-				}
-				response := new(dnsmessage.Msg)
-				response.SetReply(&wireQuery)
-				response.Answer = []dnsmessage.RR{&dnsmessage.A{
-					Hdr: dnsmessage.RR_Header{Name: "example.com.", Rrtype: dnsmessage.TypeA, Class: dnsmessage.ClassINET, Ttl: 60},
-					A:   net.ParseIP("192.0.2.1").To4(),
-				}}
-				payload, err := response.Pack()
-				if err != nil {
-					return nil, err
-				}
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Status:     "200 OK",
-					Header: http.Header{
-						"Content-Type": []string{"application/dns-message"},
-						"Age":          []string{tt.age},
-					},
-					Body: io.NopCloser(bytes.NewReader(payload)),
-				}, nil
-			})}
-			endpoint := &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query", RawQuery: "existing=value"}
-			originalURL := endpoint.String()
-			if err := ResolveHttp(context.Background(), client, endpoint, query); err != nil {
-				t.Fatal(err)
-			}
-			if got := endpoint.String(); got != originalURL {
-				t.Fatalf("ResolveHttp mutated endpoint to %q, want %q", got, originalURL)
-			}
-			if query.Id != 42 {
-				t.Fatalf("DoH response ID = %d, want 42", query.Id)
-			}
-			if got := query.Answer[0].Header().Ttl; got != tt.want {
-				t.Fatalf("aged TTL = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestResolveHttpDoesNotCommitAfterCancellation(t *testing.T) {
-	query := new(dnsmessage.Msg).SetQuestion("example.com.", dnsmessage.TypeA)
-	query.Id = 42
-	ctx, cancel := context.WithCancel(context.Background())
-	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		wire, err := base64.RawURLEncoding.DecodeString(req.URL.Query().Get("dns"))
-		if err != nil {
-			return nil, err
-		}
-		var wireQuery dnsmessage.Msg
-		if err := wireQuery.Unpack(wire); err != nil {
-			return nil, err
-		}
-		response := new(dnsmessage.Msg)
-		response.SetReply(&wireQuery)
-		payload, err := response.Pack()
-		if err != nil {
-			return nil, err
-		}
-		cancel()
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     http.Header{"Content-Type": []string{"application/dns-message"}},
-			Body:       io.NopCloser(bytes.NewReader(payload)),
-		}, nil
-	})}
-
-	err := ResolveHttp(ctx, client, &url.URL{Scheme: "https", Host: "dns.example", Path: "/dns-query"}, query)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled DoH response error = %v, want context.Canceled", err)
-	}
-	if query.Response {
-		t.Fatalf("canceled DoH response was committed: %+v", query)
 	}
 }
 

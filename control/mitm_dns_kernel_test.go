@@ -76,15 +76,7 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 		t.Fatal(err)
 	}
 	core := &controlPlaneCore{bpf: state}
-	registry := newDomainRegistry(int(state.DomainRoutingMap.MaxEntries()), 256, time.Duration(consts.MinDomainTTL)*time.Second)
-	registry.update, registry.remove = core.writeDomainBitmaps, core.deleteDomainBitmaps
-	controller, err := NewDnsController(nil, &DnsControllerOption{
-		MatchBitmap: matcher.domainMatcher.MatchDomainBitmap, DomainRegistry: registry,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer controller.Close()
+	registry := newDomainRegistry(int(state.DomainRoutingMap.MaxEntries()), consts.DefaultDNSRetentionWindow, core.writeDomainBitmaps, core.deleteDomainBitmaps)
 	for i, test := range []struct {
 		name, destination, host string
 		cname, capture          bool
@@ -120,13 +112,13 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 						sourceIP, qtype = netip.MustParseAddr("2001:db8::1"), dnsmessage.TypeAAAA
 					}
 					if test.host != "" {
-						query := queryInfo{qname: dnsmessage.Fqdn(test.host), qtype: qtype}
-						request := new(dnsmessage.Msg).SetQuestion(query.qname, qtype)
+						name := dnsmessage.Fqdn(test.host)
+						request := new(dnsmessage.Msg).SetQuestion(name, qtype)
 						response := new(dnsmessage.Msg).SetReply(request)
-						owner := query.qname
+						owner := name
 						if test.cname {
 							owner = "edge.cdn.example."
-							response.Answer = append(response.Answer, testCNAMERecord(query.qname, owner))
+							response.Answer = append(response.Answer, testCNAMERecord(name, owner))
 						}
 						header := dnsmessage.RR_Header{Name: owner, Rrtype: qtype, Class: dnsmessage.ClassINET, Ttl: 60}
 						if qtype == dnsmessage.TypeA {
@@ -134,9 +126,8 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 						} else {
 							response.Answer = append(response.Answer, &dnsmessage.AAAA{Hdr: header, AAAA: net.IP(destination.Addr().AsSlice())})
 						}
-						controller.finalizeAcceptedResponse(response, &pendingDNSResponse{
-							cacheKey: testDNSCacheKey(query), register: true, cacheable: true, receivedAt: time.Now(),
-						})
+						observeDNSRegistry(registry, matcher.domainMatcher.MatchDomainBitmap,
+							&plugin.DNSRequest{Message: request}, &plugin.DNSResponse{Message: response, ReceivedAt: time.Now()})
 					}
 					source := netip.AddrPortFrom(sourceIP, uint16(41000+i))
 					packet, ipProto := routingKernelPacket(source, destination, proto)

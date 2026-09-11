@@ -47,7 +47,7 @@ func newMITMClient(c *ControlPlane, timeout time.Duration) (*http.Client, func()
 		cancel()
 		client.CloseIdleConnections()
 		// Transport may outlive a canceled request. Join its dials before the
-		// constructor replaces the DNS controller and routing matcher.
+		// constructor installs the final routing matcher.
 		dials.Lock()
 		dials.Unlock()
 	}

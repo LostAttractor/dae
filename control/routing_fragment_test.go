@@ -44,7 +44,7 @@ tunnel {
 wg0: tunnel }`)
 	// Preparation's context is cancelled by errgroup.Wait before compilation.
 	ctx, cancel := context.WithCancel(context.Background())
-	prepared, err := prepareRoutingRules(ctx, &conf.Routing, &conf.Dns, nil)
+	prepared, err := prepareRoutingRules(ctx, &conf.Routing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,9 +274,16 @@ func TestFailedStructuredCandidateDoesNotConsumeProfileIDs(t *testing.T) {
 
 func TestProfileSeparatesDNSReroutes(t *testing.T) {
 	source := netip.MustParseAddrPort("192.0.2.1:1234")
-	a := &udpRequest{src: source, routingResult: &bpfRoutingResult{Ifindex: 7, ProfileId: 1}}
-	b := &udpRequest{src: source, routingResult: &bpfRoutingResult{Ifindex: 7, ProfileId: 2}}
-	if makeDNSRerouteKey(a) == makeDNSRerouteKey(b) {
+	c := &ControlPlane{}
+	a, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{Ifindex: 7, ProfileId: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{Ifindex: 7, ProfileId: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ContextKey == b.ContextKey {
 		t.Fatal("DNS reroutes coalesce across profiles")
 	}
 

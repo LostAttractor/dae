@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 8
+const StatusSchemaVersion = 9
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -23,18 +23,17 @@ type StatusSnapshot struct {
 	Plugins      []PluginInstanceStatus   `json:"plugins,omitempty"`
 }
 
-// TableUsage is the fill level of one capacity-limited DNS/domain table.
+// TableUsage describes a domain table. Limit zero means no capacity limit.
 type TableUsage struct {
-	Name      string               `json:"name"`
-	Used      int                  `json:"used"`
-	Limit     int                  `json:"limit"`
-	Breakdown *TableUsageBreakdown `json:"breakdown,omitempty"`
+	Name       string               `json:"name"`
+	Used       int                  `json:"used"` // IPs for domain-kernel; domain-IP pairs for domain-registry
+	Limit      int                  `json:"limit"`
+	Candidates int                  `json:"candidates,omitempty"`
+	Breakdown  *TableUsageBreakdown `json:"breakdown,omitempty"`
 }
 
 type TableUsageBreakdown struct {
-	Live     int    `json:"live"`
-	Retained int    `json:"retained"`
-	LimitGC  uint64 `json:"limit_gc"`
+	GC uint64 `json:"gc"` // pairs removed by time-based GC; cumulative across reload
 }
 
 type GroupStatus struct {

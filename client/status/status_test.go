@@ -81,10 +81,9 @@ func testNodeStatus(now time.Time) api.NodeStatus {
 func TestTableUsageRow(t *testing.T) {
 	withoutStatusColors(t)
 	row := tableUsageRow(api.TableUsage{
-		Name: "domain-history", Used: 32768, Limit: 60000,
-		Breakdown: &api.TableUsageBreakdown{Live: 5536, Retained: 27232, LimitGC: 123},
+		Name: "domain-kernel", Used: 2, Limit: 4, Candidates: 3,
 	})
-	want := []string{"domain-history", "32768 (LAZY)", "60000", "54.6%", "5536/27232", "123"}
+	want := []string{"domain-kernel", "2", "4", "50.0%", "3", "1"}
 	for index, expected := range want {
 		if got := fmt.Sprint(row[index]); got != expected {
 			t.Errorf("tableUsageRow()[%d] = %q, want %q", index, got, expected)

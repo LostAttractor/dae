@@ -27,7 +27,6 @@ var patches = []patch{
 	validateGroupNames,
 	validateCheckIntervals,
 	validateCheckDNS,
-	patchEmptyDns,
 	validateFallbacks,
 	validateRoutingActions,
 }
@@ -54,6 +53,9 @@ func validateSoMarkFromDae(params *Config) error {
 }
 
 func validateControlModes(params *Config) error {
+	if params.Global.DNSRetentionWindow <= 0 {
+		return fmt.Errorf("dns_retention_window must be positive")
+	}
 	if err := consts.VerifyRerouteMode(string(params.Global.RerouteMode)); err != nil {
 		return err
 	}
@@ -122,29 +124,7 @@ func validateCheckDNSEndpoint(raw []string) error {
 	return nil
 }
 
-func patchEmptyDns(params *Config) error {
-	if params.Dns.Routing.Request.Fallback == nil {
-		params.Dns.Routing.Request.Fallback = consts.DnsRequestOutboundIndex_AsIs.String()
-	}
-	if params.Dns.Routing.Response.Fallback == nil {
-		params.Dns.Routing.Response.Fallback = consts.DnsResponseOutboundIndex_Accept.String()
-	}
-	return nil
-}
-
 func validateFallbacks(params *Config) error {
-	validate := func(name string, value FunctionOrString) error {
-		if _, err := ParseFunctionOrString(value); err != nil {
-			return fmt.Errorf("invalid %s: %w", name, err)
-		}
-		return nil
-	}
-	if err := validate("dns.routing.request.fallback", params.Dns.Routing.Request.Fallback); err != nil {
-		return err
-	}
-	if err := validate("dns.routing.response.fallback", params.Dns.Routing.Response.Fallback); err != nil {
-		return err
-	}
 	return params.Routing.Validate()
 }
 

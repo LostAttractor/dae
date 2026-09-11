@@ -222,7 +222,7 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 			// Snapshot the first packet before another packet replaces the handoff.
 			// Existing sources already own their route.
 			var routingResult *bpfRoutingResult
-			if _, exists := c.udpEndpoints.pool.Load(src); !exists {
+			if _, exists := c.udpEndpoints.pool.Load(src); !exists || dst.Port() == 53 {
 				routingResult, err = c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
 				if err != nil {
 					log.WithError(err).WithFields(log.Fields{"source": src, "destination": dst}).Debug("UDP routing handoff failed")

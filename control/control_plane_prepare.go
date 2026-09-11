@@ -42,7 +42,6 @@ func PrepareControlPlane(
 	reusableBpf *BPFState,
 	routingConfig *config.Routing,
 	global *config.Global,
-	dnsConfig *config.Dns,
 	externGeoDataDirs []string,
 	flowRules config.Rules,
 ) (_ *ControlPlanePreparation, err error) {
@@ -63,7 +62,7 @@ func PrepareControlPlane(
 	})
 	group.Go(func() error {
 		phaseStarted := time.Now()
-		rules, err := prepareRoutingRules(groupCtx, routingConfig, dnsConfig, externGeoDataDirs)
+		rules, err := prepareRoutingRules(groupCtx, routingConfig, externGeoDataDirs)
 		if err == nil {
 			err = rules.enableFlowRules(groupCtx, flowRules, externGeoDataDirs)
 		}

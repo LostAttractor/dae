@@ -258,6 +258,7 @@ type spliceDirectEdge struct {
 	paused           bool
 	closed           bool
 	recordBytes      func(uint64)
+	activity         func()
 }
 
 type spliceEdgeSnapshot struct {
@@ -585,6 +586,9 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 				if counter != edgeCounters[i] {
 					edgeCounters[i] = counter
 					lastProgress = time.Now()
+					if edge.activity != nil {
+						edge.activity()
+					}
 				}
 				continue
 			}
@@ -617,6 +621,9 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 			if counter != edgeCounters[i] {
 				edgeCounters[i] = counter
 				lastProgress = time.Now()
+				if edge.activity != nil {
+					edge.activity()
+				}
 			}
 			transitioned, err := r.updateFuse(edge, &snapshot)
 			if err != nil {
@@ -654,7 +661,14 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 	}
 }
 
-func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Connection) (handled bool, err error) {
+func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Connection, observers ...func()) (handled bool, err error) {
+	activity := func() {
+		for _, observe := range observers {
+			if observe != nil {
+				observe()
+			}
+		}
+	}
 	if !r.beginSession() {
 		return false, nil
 	}
@@ -701,8 +715,12 @@ func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Connect
 	edges := [2]*spliceDirectEdge{
 		{
 			src: acceptedConn, dst: remoteConn,
+			activity:  activity,
 			srcCookie: cookieA, dstCookie: cookieR,
 			recordBytes: func(bytes uint64) {
+				if bytes > 0 {
+					activity()
+				}
 				if traffic != nil {
 					traffic.RecordUpload(bytes)
 				}
@@ -710,8 +728,12 @@ func (r *Runtime) Relay(acceptedConn, remoteConn TCPConn, traffic *stats.Connect
 		},
 		{
 			src: remoteConn, dst: acceptedConn,
+			activity:  activity,
 			srcCookie: cookieR, dstCookie: cookieA,
 			recordBytes: func(bytes uint64) {
+				if bytes > 0 {
+					activity()
+				}
 				if traffic != nil {
 					traffic.RecordDownload(bytes)
 				}

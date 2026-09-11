@@ -83,6 +83,7 @@
 #define CAPTURE_HTTP 1
 #define CAPTURE_DESTINATION 2
 #define CAPTURE_HTTP_REQUEST 4
+#define CAPTURE_DNS 8
 
 #define TPROXY_MARK 0x8000000
 
@@ -1159,8 +1160,7 @@ static __always_inline int do_tproxy_first_fragment(
 	params.mac = ethh->h_source;
 	params.saddr = tuples->five.sip.u6_addr32;
 	params.daddr = tuples->five.dip.u6_addr32;
-	params.isdns = tuples->five.dport == bpf_htons(53) &&
-			 l4proto == IPPROTO_UDP;
+	params.isdns = tuples->five.dport == bpf_htons(53);
 
 	if (select_routing_profile(&params))
 		return TCX_DROP;
@@ -1260,7 +1260,7 @@ static __always_inline int do_tproxy_unfragmented(
 		return TCX_NEXT;
 	}
 
-	bool isdns = tuples->five.dport == bpf_htons(53) && l4proto == IPPROTO_UDP;
+	bool isdns = tuples->five.dport == bpf_htons(53);
 
 	struct device_route_state *device = device_route(ethh->h_source);
 	struct ip_port destination = { .ip = tuples->five.dip, .port = tuples->five.dport };
@@ -1322,6 +1322,10 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (l4proto == IPPROTO_UDP) {
 		fill_udp_routing_cache_key(&udp_key, tuples);
+	}
+	/* DNS is a per-destination observation flow, even if the same UDP source
+	 * already owns a non-DNS association. Explicit must is evaluated below. */
+	if (l4proto == IPPROTO_UDP && !isdns) {
 		__u64 *binding = bpf_map_lookup_elem(&udp_bindings_map, &udp_key);
 
 		if (binding) {
@@ -1335,9 +1339,6 @@ static __always_inline int do_tproxy_unfragmented(
 		if (hit < 0)
 			return TCX_DROP;
 		if (hit) {
-			/* A later DNS destination is part of this source's relay. */
-			if (isdns)
-				routing_result->must = 1;
 			goto selected;
 		}
 	}
@@ -1392,9 +1393,17 @@ static __always_inline int do_tproxy_unfragmented(
 		if (*state == OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT)
 			routing_result->no_sniff = 1;
 	}
-	if (l4proto == IPPROTO_UDP && (!isdns || routing_result->must || routing_result->capture_flags) &&
-	    save_udp_route(&udp_key, routing_result))
-		return TCX_DROP;
+	if (l4proto == IPPROTO_UDP && (!isdns || routing_result->must)) {
+		bool dns_must = isdns && routing_result->must;
+
+		if (save_udp_route(&udp_key, routing_result))
+			return TCX_DROP;
+		/* Adopt the source's existing outbound/mark, but do not let its
+		 * non-DNS decision admit this explicitly bypassed packet to DNS plugins.
+		 * This is per-packet: the cached source decision stays unchanged. */
+		if (dns_must)
+			routing_result->must = 1;
+	}
 
 selected:
 	/* A membership commit may have raced route evaluation. */

@@ -84,7 +84,7 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 					key.Sip.U6Addr8 = netip.AddrFrom4([4]byte(packet[26:30])).As16()
 					key.Dip.U6Addr8 = netip.AddrFrom4([4]byte(packet[30:34])).As16()
 					matched := test.port == 53 || test.port == 443
-					redirect := matched && (test.bump || test.capture || network.proto == 17 && test.port == 53 && !test.must)
+					redirect := matched && (test.bump || test.capture || test.port == 53 && !test.must)
 					for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
 						if err := clearUDPRoutingCache(obj.UdpRoutingCacheMap); err != nil {
 							t.Fatal(err)
@@ -114,6 +114,8 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 						}
 						if test.capture {
 							capture = 2
+						} else if test.port == 53 && !test.must && !test.bump {
+							capture = 8
 						}
 						if err != nil || result.Must != must || result.CaptureFlags != capture {
 							t.Fatalf("lost controls: %+v, %v", result, err)
@@ -123,7 +125,7 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 							source.Sip = key.Sip
 							var cached bpftestUdpRoutingCacheValue
 							err := obj.UdpRoutingCacheMap.Lookup(source, &cached)
-							if test.port == 53 && !test.must && !test.capture {
+							if test.port == 53 && result.Must == 0 {
 								if !errors.Is(err, ebpf.ErrKeyNotExist) {
 									t.Fatalf("intercepted DNS retained a UDP route: %+v, %v", cached, err)
 								}

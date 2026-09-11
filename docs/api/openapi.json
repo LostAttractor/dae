@@ -839,7 +839,7 @@
             "type": "array"
           },
           "schema": {
-            "const": 8,
+            "const": 9,
             "format": "int64",
             "type": "integer"
           },
@@ -892,6 +892,11 @@
       },
       "TableUsage": {
         "properties": {
+          "candidates": {
+            "description": "IP states with a nonzero domain bitmap before capacity selection. candidates - used is the number excluded by kernel capacity.",
+            "format": "int64",
+            "type": "integer"
+          },
           "breakdown": {
             "anyOf": [
               {
@@ -910,6 +915,7 @@
             "type": "string"
           },
           "used": {
+            "description": "Resident IP count for domain-kernel; retained domain-IP pair count for domain-registry.",
             "format": "int64",
             "type": "integer"
           }
@@ -923,31 +929,21 @@
       },
       "TableUsageBreakdown": {
         "properties": {
-          "limit_gc": {
-            "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
+          "gc": {
+            "description": "Pairs removed by time-based GC, cumulative across reload and reset on cold start. Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
             "minimum": 0,
-            "type": "integer"
-          },
-          "live": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "retained": {
-            "format": "int64",
             "type": "integer"
           }
         },
         "required": [
-          "live",
-          "retained",
-          "limit_gc"
+          "gc"
         ],
         "type": "object"
       },
       "TrafficHistory": {
         "properties": {
           "download_bytes_per_second": {
-            "description": "Oldest first; completed 5-second averages in bytes/second. Both directions have equal length, 0–12 samples.",
+            "description": "Oldest first; completed 5-second averages in bytes/second. Both directions have equal length, 0\u201312 samples.",
             "items": {
               "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
               "minimum": 0,
@@ -957,7 +953,7 @@
             "type": "array"
           },
           "upload_bytes_per_second": {
-            "description": "Oldest first; completed 5-second averages in bytes/second. Both directions have equal length, 0–12 samples.",
+            "description": "Oldest first; completed 5-second averages in bytes/second. Both directions have equal length, 0\u201312 samples.",
             "items": {
               "description": "Unsigned 64-bit count; JavaScript clients must account for integer precision above 2^53-1.",
               "minimum": 0,
@@ -1148,7 +1144,7 @@
     }
   },
   "info": {
-    "description": "Status schema 8. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 9. Domain tables report kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },

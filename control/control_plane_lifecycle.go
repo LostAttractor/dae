@@ -69,6 +69,10 @@ func (c *ControlPlane) Activate() error {
 		g.EnableSelectionTolerance()
 	}
 	c.kernelActive = true
+	log.WithFields(log.Fields{"window": core.domainRegistry.window, "activity": "userspace and captured splice", "kernel_capacity": core.domainRegistry.kernel.max}).Info("Domain retention active; uncaptured kernel-direct traffic does not refresh evidence")
+	if c.domainRegistryPath != "" {
+		core.domainRegistry.EnablePersistence(c.domainRegistryPath)
+	}
 	if c.mitmHost != nil {
 		if err := c.mitmHost.Start(c.ctx); err != nil {
 			return err
@@ -89,6 +93,11 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 	}
 	if err := builder.BuildKernspace(); err != nil {
 		return fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
+	}
+	if !core.isReload && c.domainRegistryPath != "" {
+		if err := core.domainRegistry.Restore(c.domainRegistryPath, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
+			log.WithError(err).Warn("Restore domain registry; starting without disk observations")
+		}
 	}
 	if core.isReload {
 		if err := deleteUDPRoutingTuples(core.bpf.RoutingTuplesMap); err != nil {
@@ -118,19 +127,25 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 // EjectBpf releases this plane's cleanup ownership of the shared BPF state and
 // returns it for a reload candidate. The state remains unowned until InjectBpf.
 func (c *ControlPlane) EjectBpf() *BPFState {
+	c.core.domainRegistry.activity.prepareHandoff()
 	return c.core.EjectBpf()
 }
+
+// SetDomainRegistryPath selects the state file before activation. Reload uses
+// in-memory adoption; cold starts restore observations from this path.
+func (c *ControlPlane) SetDomainRegistryPath(path string) { c.domainRegistryPath = path }
 
 // InjectBpf makes this plane responsible for closing the shared BPF state.
 func (c *ControlPlane) InjectBpf() {
 	c.core.InjectBpf()
 }
 
-// InheritDomainRegistry transfers the finite domain -> IP registrations of a
+// InheritDomainRegistry transfers DNS domain -> IP registrations of a
 // retired plane into this plane's registry, recomputing every domain's match
 // bitmap with this plane's routing rules, and syncs the shared kernel domain
-// map to the adopted state. Plane-local no-expiry upstream observations are
-// rebuilt by the new resolver. This must be called after the old plane is
+// map to the adopted state. Retention deadlines survive unchanged except for
+// actual connection activity observed during the handoff.
+// This must be called after the old plane is
 // retired (its writers stopped, its kernel programs detached) and before
 // Activate, which then skips wiping the kernel map. Domain routing and
 // sniff verification therefore survive a reload instead of waiting for every

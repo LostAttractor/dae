@@ -17,6 +17,8 @@ import (
 )
 
 type tcpRelay struct {
+	custom         func() error
+	activity       func()
 	lConn          sniffing.ConnSnifferInterface
 	rConn          net.Conn
 	directSplice   *splice.Runtime
@@ -42,6 +44,9 @@ func (r *tcpRelay) run() (err error) {
 		defer r.rConn.Close()
 	}
 	defer r.lConn.Close()
+	if r.custom != nil {
+		return r.custom()
+	}
 	if r.mitmHost != nil {
 		lease := netproxy.NewLease(netproxy.NewResourceRef())
 		defer lease.Invalidate(net.ErrClosed)
@@ -66,7 +71,7 @@ func (r *tcpRelay) run() (err error) {
 		if err == nil {
 			handled, err = r.directSplice.Relay(
 				&spliceEndpoint{TCPConn: left, endpoint: accepted},
-				&spliceEndpoint{TCPConn: right, endpoint: remote}, traffic)
+				&spliceEndpoint{TCPConn: right, endpoint: remote}, traffic, r.activity)
 		}
 	}
 	if !handled && err == nil {

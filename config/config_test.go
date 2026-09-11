@@ -78,6 +78,41 @@ routing { fallback: direct }
 	}
 }
 
+func TestDNSRetentionWindow(t *testing.T) {
+	for _, test := range []struct {
+		value   string
+		want    time.Duration
+		invalid bool
+	}{
+		{"", 168 * time.Hour, false}, {"dns_retention_window: 48h", 48 * time.Hour, false},
+		{"dns_retention_window: 0s", 0, true}, {"dns_retention_window: -1h", 0, true},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			sections, err := config_parser.Parse("global { " + test.value + " } routing { fallback: direct }")
+			if err != nil {
+				t.Fatal(err)
+			}
+			conf, err := New(sections)
+			if test.invalid {
+				if err == nil || !strings.Contains(err.Error(), "dns_retention_window") {
+					t.Fatalf("invalid window accepted: %v", err)
+				}
+				return
+			}
+			if err != nil || conf.Global.DNSRetentionWindow != test.want {
+				t.Fatalf("window=%v error=%v", conf, err)
+			}
+			wire, err := conf.Marshal(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := parseConfig(t, string(wire)).Global.DNSRetentionWindow; got != test.want {
+				t.Fatalf("window changed in round trip: %v", got)
+			}
+		})
+	}
+}
+
 func TestNestedGroupNameDoesNotEnableProxyPathContext(t *testing.T) {
 	conf := parseConfig(t, `
 global {}
@@ -301,9 +336,6 @@ routing {
 	}
 	if g.MetricsPort != 0 {
 		t.Errorf("MetricsPort: got %v", g.MetricsPort)
-	}
-	if g.FallbackResolver != "8.8.8.8:53" {
-		t.Errorf("FallbackResolver: got %v", g.FallbackResolver)
 	}
 	if !g.NoConnectivityTrySniff {
 		t.Errorf("NoConnectivityTrySniff should default to true")
@@ -608,24 +640,17 @@ routing {
 	}
 }
 
-func TestNew_PatchEmptyDns(t *testing.T) {
-	conf := parseConfig(t, `
-global {}
-routing { fallback: direct }
-`)
-	requestFallback, err := ParseFunctionOrString(conf.Dns.Routing.Request.Fallback)
+func TestDNSSettingsBelongToPlugins(t *testing.T) {
+	conf := parseConfig(t, `global {} routing { fallback: direct } plugins { dns { type: dns-router upstream { local: 'udp://192.0.2.53' } } }`)
+	if len(conf.Plugins) != 1 || conf.Plugins[0].Type != "dns-router" {
+		t.Fatal("DNS plugin configuration lost")
+	}
+	sections, err := config_parser.Parse(`global {} routing { fallback: direct } dns {}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requestFallback.Name != consts.DnsRequestOutboundIndex_AsIs.String() {
-		t.Errorf("dns request fallback should default to %v", consts.DnsRequestOutboundIndex_AsIs)
-	}
-	responseFallback, err := ParseFunctionOrString(conf.Dns.Routing.Response.Fallback)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if responseFallback.Name != consts.DnsResponseOutboundIndex_Accept.String() {
-		t.Errorf("dns response fallback should default to %v", consts.DnsResponseOutboundIndex_Accept)
+	if _, err := New(sections); err == nil {
+		t.Fatal("legacy core DNS section accepted")
 	}
 }
 

@@ -88,7 +88,7 @@ routing { fallback: direct(test) && block(test) }
 	}
 }
 
-func TestNewRejectsMultipleDNSFallbacks(t *testing.T) {
+func TestNewRejectsRemovedDNSSection(t *testing.T) {
 	tests := []struct {
 		name string
 		dns  string
@@ -97,12 +97,12 @@ func TestNewRejectsMultipleDNSFallbacks(t *testing.T) {
 		{
 			name: "request",
 			dns:  `request { fallback: asis(test) && block(test) }`,
-			path: "dns.routing.request.fallback",
+			path: "unknown section: dns",
 		},
 		{
 			name: "response",
 			dns:  `response { fallback: accept(test) && block(test) }`,
-			path: "dns.routing.response.fallback",
+			path: "unknown section: dns",
 		},
 	}
 
@@ -117,7 +117,7 @@ dns { routing { ` + tt.dns + ` } }
 				t.Fatal(err)
 			}
 			if _, err := New(sections); err == nil {
-				t.Fatal("multiple DNS fallback functions were accepted")
+				t.Fatal("removed core DNS section was accepted")
 			} else if !strings.Contains(err.Error(), tt.path) {
 				t.Fatalf("error %q does not identify %s", err, tt.path)
 			}

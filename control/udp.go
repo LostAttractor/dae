@@ -20,7 +20,6 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
-	dnsmessage "github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -144,6 +143,14 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, ro
 // handlePkt serializes the complete source lifetime, including sniffing and
 // setup. An endpoint's first routing result never changes while it is in the pool.
 func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (err error) {
+	if dst.Port() == 53 && routingResult != nil && routingResult.Must == 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.handleDNSUDP(data, src, dst, *routingResult)
+		c.domainActivity().observe(dst.Addr(), "", time.Now())
+		return nil
+	}
 	p := c.udpEndpoints
 	lock, _ := p.UdpEndpointKeyLocker.Lock(src)
 	defer p.UdpEndpointKeyLocker.Unlock(src, lock)
@@ -169,19 +176,13 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		if err != nil {
 			return err
 		}
-		if dst.Port() == 53 && routingResult.Must == 0 && routingResult.CaptureFlags&captureDestination == 0 {
-			var message dnsmessage.Msg
-			if message.Unpack(data) == nil {
-				c.dnsController.Handle(&message, &udpRequest{src: src, dst: dst, routingResult: routingResult})
-				return nil
-			}
-		}
 		unbind, err := c.bindUDPSource(src, routingResult)
 		if err != nil {
 			return err
 		}
 		mark := c.soMarkFromDae
 		ue = &UdpEndpoint{
+			activity:     c.domainActivity(),
 			routeLease:   routeLease,
 			pending:      &udpSetup{routingResult: routingResult, sniffer: sniffing.NewPacketSniffer(nil)},
 			firstDst:     dst,
@@ -213,6 +214,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) (err error) {
 	p := c.udpEndpoints
 	pending := ue.pending
+	observedAt := time.Now()
 
 	ctx, cancelRoute := context.WithCancel(ctx)
 	defer cancelRoute()
@@ -229,14 +231,21 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 			domain, isQuic, err = pending.sniffer.SniffUdp()
 		}
 		if err != nil && !sniffing.IsSniffingError(err) {
+			pending.observedAt = time.Time{}
+			ue.activity.observe(dst.Addr(), domain, observedAt)
 			p.removeInBackgroundLocked(src, ue)
 			return err
 		}
 		if pending.sniffer.NeedMore() {
+			// Wait for the sniff identity before refreshing. Publishing an IP
+			// promotion here could hide the first packet's kernel coverage gap
+			// from the eventual routing decision.
+			pending.observedAt = observedAt
 			return nil
 		}
 	}
 
+	ue.domain = domain
 	network := common.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStrFromAddr(ue.firstDst.Addr())}
 	param := &RouteParam{
 		routingResult: pending.routingResult, networkType: network,
@@ -252,6 +261,13 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		option, planner, release, err = c.prepareHTTPRoute(ctx, param.Domain, param)
 	} else {
 		option, err = c.RouteDialOption(ctx, param)
+	}
+	// Preserve the initial kernel-coverage decision before activity can promote
+	// an omitted candidate. The client's attempt counts even if routing fails.
+	pending.observedAt = time.Time{}
+	ue.activity.observe(ue.firstDst.Addr(), domain, observedAt)
+	if dst != ue.firstDst {
+		ue.activity.observe(dst.Addr(), "", observedAt)
 	}
 	if err != nil {
 		p.removeInBackgroundLocked(src, ue)
@@ -275,14 +291,6 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		if option.Outbound.Name == consts.OutboundBlock.String() {
 			p.removeInBackgroundLocked(src, ue)
 			return nil
-		}
-		if ue.firstDst.Port() == 53 && pending.routingResult.Must == 0 && !param.destination.IsValid() {
-			var message dnsmessage.Msg
-			if message.Unpack(data) == nil {
-				c.dnsController.Handle(&message, &udpRequest{src: src, dst: ue.firstDst, routingResult: pending.routingResult})
-				p.removeInBackgroundLocked(src, ue)
-				return nil
-			}
 		}
 		path, fallback := option.trafficAttribution()
 		ue.policyLease = option.PolicyLease
@@ -373,6 +381,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 }
 
 func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) error {
+	ue.observeDomain(dst)
 	// Request-routing HTTP/3 has no connection-wide outbound. Its source
 	// lifetime is scoped to the admitted destination; it cannot migrate.
 	if ue.mitm && ue.packetDialer == nil && dst != ue.firstDst {

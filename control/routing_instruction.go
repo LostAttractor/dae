@@ -21,6 +21,9 @@ const (
 // The three processing bits follow Not/Must/Skip; Action remains an independent byte.
 const matchCaptureShift = 3
 
+// Bypass rules terminate before automatic DNS capture, without changing must.
+const matchFlagBypass uint8 = 1 << 6
+
 func routingMatchFlags(not, must, skipNoalive bool) (flags uint8) {
 	if not {
 		flags |= matchFlagNot

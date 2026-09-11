@@ -37,6 +37,7 @@ type Global struct {
 	RerouteMode           consts.RerouteMode     `mapstructure:"reroute_mode" default:"while_needed"`
 	SniffVerifyMode       consts.SniffVerifyMode `mapstructure:"sniff_verify_mode" default:"loose"`
 	SniffingTimeout       time.Duration          `mapstructure:"sniffing_timeout" default:"100ms"`
+	DNSRetentionWindow    time.Duration          `mapstructure:"dns_retention_window" default:"168h"`
 	DisableWaitingNetwork bool                   `mapstructure:"disable_waiting_network" default:"false"`
 	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/912
 	EnableLocalTcpFastRedirect bool `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`
@@ -51,7 +52,6 @@ type Global struct {
 	PprofPort              uint16 `mapstructure:"pprof_port" default:"0"`
 	MetricsPort            uint16 `mapstructure:"metrics_port" default:"0"`
 	Mptcp                  bool   `mapstructure:"mptcp" default:"false"`
-	FallbackResolver       string `mapstructure:"fallback_resolver" default:"8.8.8.8:53"`
 	BandwidthMaxTx         string `mapstructure:"bandwidth_max_tx" default:"0"`
 	BandwidthMaxRx         string `mapstructure:"bandwidth_max_rx" default:"0"`
 	NoConnectivityTrySniff bool   `mapstructure:"no_connectivity_try_sniff" default:"true"`
@@ -149,25 +149,7 @@ func ValidateConnectionBehavior(name, value string) error {
 	}
 }
 
-type DnsRequestRouting struct {
-	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback FunctionOrString             `mapstructure:"fallback" required:""`
-}
-type DnsResponseRouting struct {
-	Rules    []*config_parser.RoutingRule `mapstructure:"_"`
-	Fallback FunctionOrString             `mapstructure:"fallback" required:""`
-}
-type DnsRouting struct {
-	Request  DnsRequestRouting  `mapstructure:"request"`
-	Response DnsResponseRouting `mapstructure:"response"`
-}
 type KeyableString string
-type Dns struct {
-	IpVersionPrefer int             `mapstructure:"ipversion_prefer"`
-	FixedDomainTtl  []KeyableString `mapstructure:"fixed_domain_ttl"`
-	Upstream        []KeyableString `mapstructure:"upstream"`
-	Routing         DnsRouting      `mapstructure:"routing"`
-}
 
 // Routing separates reusable rule sets, complete policies, and their bindings.
 // An empty Default selects the anonymous policy written directly in routing.
@@ -218,7 +200,6 @@ type Config struct {
 	Client       []Client       `mapstructure:"client" desc:"ClientDesc"`
 	Routing      Routing        `mapstructure:"routing" required:""`
 	Rules        Rules          `mapstructure:"rules"`
-	Dns          Dns            `mapstructure:"dns" desc:"DnsDesc"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {

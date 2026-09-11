@@ -7,19 +7,13 @@ package netutils
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"math"
-	"mime"
 	"net"
-	"net/http"
 	"net/netip"
-	"net/url"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -150,78 +144,6 @@ func closeConnAsync(conn net.Conn) {
 	if conn != nil {
 		go func() { _ = conn.Close() }()
 	}
-}
-
-func ResolveHttp(ctx context.Context, client *http.Client, endpoint *url.URL, msg *dnsmessage.Msg) error {
-	requestID := msg.Id
-	query := msg.Copy()
-	query.Id = 0
-	data, err := query.Pack()
-	if err != nil {
-		return fmt.Errorf("pack DNS packet: %w", err)
-	}
-	if err := CheckDnsMessageSize(len(data)); err != nil {
-		return err
-	}
-
-	requestURL := *endpoint
-	q := requestURL.Query()
-	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
-	requestURL.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/dns-message")
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("unexpected DoH response status: %v", resp.Status)
-	}
-	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/dns-message" {
-		return fmt.Errorf("unexpected DoH response content type: %q", resp.Header.Get("Content-Type"))
-	}
-	buf, err := io.ReadAll(io.LimitReader(resp.Body, math.MaxUint16+1))
-	if err != nil {
-		return err
-	}
-	if err := CheckDnsMessageSize(len(buf)); err != nil {
-		return err
-	}
-	var response dnsmessage.Msg
-	if err = UnpackDnsMessage(buf, &response); err != nil {
-		return err
-	}
-	if err = ValidateDnsResponseAllowEmptyQuestion(query, &response, 0); err != nil {
-		return err
-	}
-	if ageValue := resp.Header.Get("Age"); ageValue != "" {
-		ageValue, _, _ = strings.Cut(ageValue, ",")
-		age, _ := strconv.ParseUint(strings.TrimSpace(ageValue), 10, 64)
-		for _, rrs := range [][]dnsmessage.RR{response.Answer, response.Ns, response.Extra} {
-			for _, rr := range rrs {
-				if rr == nil || rr.Header().Rrtype == dnsmessage.TypeOPT {
-					continue
-				}
-				if uint64(rr.Header().Ttl) <= age {
-					rr.Header().Ttl = 0
-				} else {
-					rr.Header().Ttl -= uint32(age)
-				}
-			}
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	response.Id = requestID
-	*msg = response
-	return nil
 }
 
 func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {

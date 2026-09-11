@@ -13,7 +13,6 @@ var SectionSummaryDesc = Desc{
 	"rules":        "Flow rules: filter() -> must, bump or dnat(ip). must skips automatic DNS interception; bump requires userspace routing; first matching DNAT overrides the dial IP. Outbound selection remains in routing.",
 	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
 	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
-	"dns":          "See more at https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md.",
 	"group":        "Proxy path groups. Declare ordered stages with ->. Groups with a policy select complete paths; policyless groups can be referenced as reusable path stages.",
 	"client":       "Dynamic MAC sets: name { description: 'text' ipset: kernel_name nftset: 'family/table/set' }. All fields are optional. The device page shows sets referenced by client(name) routing rules or configured for kernel export. Configuration reloads update descriptions and exports; membership is stored separately.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
@@ -43,7 +42,6 @@ interface: Match the interface that received the traffic.`,
 var SectionDescription = map[string]Desc{
 	"MITMDesc":   MITMDesc,
 	"GlobalDesc": GlobalDesc,
-	"DnsDesc":    DnsDesc,
 	"GroupDesc":  GroupDesc,
 	"ClientDesc": ClientDesc,
 }
@@ -64,6 +62,7 @@ var MITMDesc = Desc{
 }
 
 var GlobalDesc = Desc{
+	"dns_retention_window":  "Sliding retention policy for observed domain-IP evidence, not a measured client cache lifetime. Defaults to 168h (seven days); must be positive. Delivered DNS uses max(TTL, window); observed traffic refreshes existing pairs by this window. Uncaptured kernel-direct traffic is not observed.",
 	"api_port":              "HTTP port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",
 	"api_token":             "Administrator bearer token required to change selector groups. Empty disables selector writes; current-device controls require a directly connected LAN client, but no token.",
 	"tproxy_port":           "Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.",
@@ -89,18 +88,6 @@ var GlobalDesc = Desc{
 	"tls_implementation":           "TLS implementation. \"tls\" is to use Go's crypto/tls. \"utls\" is to use uTLS, which can imitate browser's Client Hello.",
 	"utls_imitate":                 "The Client Hello ID for uTLS to imitate. This takes effect only if tls_implementation is utls. See more: https://github.com/daeuniverse/dae/blob/331fa23c16/component/outbound/transport/tls/utls.go#L17",
 	"mptcp":                        "Enable Multipath TCP.  If is true, dae will try to use MPTCP to connect all nodes, but it will only take effects when the node supports MPTCP. It can use for load balance and failover to multiple interfaces and IPs.",
-}
-
-var DnsDesc = Desc{
-	"ipversion_prefer": "For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only respond to type A queries and response empty answer to type AAAA queries.",
-	"fixed_domain_ttl": "Give a fixed ttl for domains. Zero means that dae will request to upstream every time and not cache DNS results for these domains.",
-	"upstream":         "Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp.\nIf host is a domain and has both IPv4 and IPv6 record, dae will automatically choose IPv4 or IPv6 to use according to group policy (such as min latency policy).\nPlease make sure DNS traffic will go through and be forwarded by dae, which is REQUIRED for domain routing.\nIf dial_mode is \"ip\", the upstream DNS answer SHOULD NOT be polluted, so domestic public DNS is not recommended.",
-	"request": `DNS requests will follow this routing.
-Built-in outbound: asis.
-Available functions: qname, qtype, dip, sip, interface`,
-	"response": `DNS responses will follow this routing.
-Built-in outbound: accept, reject.
-Available functions: qname, qtype, ip, upstream`,
 }
 
 var GroupDesc = Desc{

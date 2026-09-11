@@ -22,7 +22,7 @@ func TestStatusRecoveryValidation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = io.WriteString(w, `{"schema":8,"groups":[{"nodes":[`+test.node+`]}]}`)
+				_, _ = io.WriteString(w, `{"schema":9,"groups":[{"nodes":[`+test.node+`]}]}`)
 			}))
 			defer server.Close()
 			c, err := New(Options{Endpoint: server.URL})

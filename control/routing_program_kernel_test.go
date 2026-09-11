@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
@@ -59,7 +58,7 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 		matcher, builder := routingMatcherForTest(t, prepared)
 		unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 		plane := &ControlPlane{routingMatcher: matcher, sniffVerifyMode: consts.SniffVerifyMode_None,
-			core:      &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)},
+			core:      &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()},
 			outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused)}}
 		builder.bpf = state
 		if err := builder.BuildKernspace(); err != nil {

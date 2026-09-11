@@ -144,13 +144,8 @@ global {
     bandwidth_max_tx: '200 mbps' # uplink, or '200 m' or '200 mb' or '200 mbps' or 25000000(which is 200/8*1000*1000)
     bandwidth_max_rx: '1 gbps' # downlink, or '1 g' or '1 gb' or '1 gbps' or 125000000(which is 1000/8*1000*1000)
 
-    # dae use system DNS to resolve DoH/DoT domain and subscription links. However, system DNS may not be reliable or may be
-    # broken, so we specify a fallback DNS resolver to be used when DNS resolution using resolv.conf fails. This ensures DNS
-    # resolution continues to work even when the system's default DNS servers are unavailable or not responding properly.
-    # The default value is the Google's DNS (8.8.8.8:53). For IPv4 DNS servers, the format is "ipv4:port", such as "8.8.8.8:53".
-    # For IPv6 DNS servers, the format is "[ipv6]:port", such as "[2001:4860:4860::8888]:53".
-    # Fallback resolver will always be available, even if you do not specify it in the configuration file.
-    # fallback_resolver: '8.8.8.8:53'
+    # dae's own hostname lookups use the marked system resolver, including node,
+    # subscription and plugin bootstrap names. Configure the OS resolver normally.
 
     # Behavior when all nodes of a group have no connectivity.
     # If no_connectivity_try_sniff is true (default), traffic of the group is still sent to the control plane
@@ -219,75 +214,10 @@ node {
     hysteria2: 'hysteria2://password@server-ip:port/?sni=domain'
 }
 
-# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
-dns {
-    # For example, if ipversion_prefer is 4 and the domain name has both type A and type AAAA records, the dae will only
-    # respond to type A queries and response empty answer to type AAAA queries.
-    #ipversion_prefer: 4
-
-    # Give a fixed ttl for domains. Zero means that dae will request to upstream every time and not cache DNS results
-    # for these domains.
-    #fixed_domain_ttl {
-    #    ddns.example.org: 10
-    #    test.example.org: 3600
-    #}
-
-    upstream {
-        # Value can be scheme://host:port, where the scheme can be tcp/udp/tcp+udp/h3/http3/quic/https/tls.
-        # If the protocol is h3/http3/https, it supports setting a custom path, that is, the format can be "protocol://host:port/custom path".
-        # If host is a domain and has both IPv4 and IPv6 record, dae will automatically choose
-        # IPv4 or IPv6 to use according to group policy (such as min latency policy).
-        # DNS-backed domain routing uses answers forwarded by dae. TLS SNI/HTTP Host sniffing can also
-        # supply domains, subject to reroute_mode and sniff_verify_mode. The strict verification mode
-        # requires DNS records learned by dae. Domain-based MITM and Host/DNAT capture also use these
-        # mappings; missing mappings never trigger an implicit all-traffic capture fallback.
-
-        alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google:53'
-
-        # alih3: 'h3://dns.alidns.com:443'
-        # alih3_path: 'h3://dns.alidns.com:443/dns-query'
-        # alihttp3: 'http3://dns.alidns.com:443'
-        # alihttp3_path: 'http3://dns.alidns.com:443/dns-query'
-        # ali_quic: 'quic://dns.alidns.com:853'
-
-        # h3_custom_path: 'h3://dns.example.com:443/custom-path'
-        # http3_custom_path: 'http3://dns.example.com:443/custom-path'
-
-        # ali_doh: 'https://dns.alidns.com:443'
-        # ali_dot: 'tls://dns.alidns.com:853'
-
-        # doh_custom_path: 'https://dns.example.com:443/custom-path'
-    }
-    routing {
-        # According to the request of dns query, decide to use which DNS upstream.
-        # Match rules from top to bottom.
-        request {
-            # Lookup China mainland domains using alidns, otherwise googledns.
-            qname(geosite:cn) -> alidns
-            # fallback is also called default.
-            fallback: googledns
-        }
-    }
-    #routing {
-    #    # According to the request of dns query, decide to use which DNS upstream.
-    #    # Match rules from top to bottom.
-    #    request {
-    #        # fallback is also called default.
-    #        fallback: alidns
-    #    }
-    #    # According to the response of dns query, decide to accept or re-lookup using another DNS upstream.
-    #    # Match rules from top to bottom.
-    #    response {
-    #        # Trusted upstream. Always accept its result.
-    #        upstream(googledns) -> accept
-    #        # Possibly polluted, re-lookup using googledns.
-    #        ip(geoip:private) && !qname(geosite:cn) -> googledns
-    #        # fallback is also called default.
-    #        fallback: accept
-    #    }
-    #}
-}
+# TCP/UDP destination port 53 is automatically relayed to its routed destination.
+# Core DNS has no resolver policy/cache. Observed A/AAAA mappings are persisted in
+# $DAE_LOCATION_CACHE/domain-registry.json (default /var/lib/dae).
+# Optional DNS router/cache configuration: docs/en/configuration/dns.md.
 
 # Node group (outbound).
 group {
@@ -386,7 +316,6 @@ mitm {
     # Replace with a client MAC, IP or CIDR. Omitted/unmatched clients bypass HTTP processing.
     # The page/API can override this selection per device; use 'all' to explicitly select all clients.
     client_source_address: '02:00:00:00:00:50'
-
 }
 
 plugins {

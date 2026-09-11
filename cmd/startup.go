@@ -157,7 +157,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	if err != nil {
 		return nil, err
 	}
-	direct.InitDirectDialers(conf.Global.FallbackResolver, conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
+	direct.InitDirectDialers("", conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
 
 	var nodeDescriptors []outbound.NodeDescriptor
 	var preparation *control.ControlPlanePreparation
@@ -173,7 +173,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		var prepareErr error
-		preparation, prepareErr = control.PrepareControlPlane(groupCtx, bpf, &conf.Routing, &conf.Global, &conf.Dns, externGeoDataDirs, conf.Rules)
+		preparation, prepareErr = control.PrepareControlPlane(groupCtx, bpf, &conf.Routing, &conf.Global, externGeoDataDirs, conf.Rules)
 		return prepareErr
 	})
 	group.Go(func() error {
@@ -209,6 +209,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 		return nil, err
 	}
 	runtime.GC()
+	c.SetDomainRegistryPath(filepath.Join(cacheDirectory(), "domain-registry.json.gz"))
 	log.WithField("duration", time.Since(assemblyStarted)).Debug("Assembled control plane")
 	logStartupMITMStatus(c.MITMStatus())
 	return c, nil

@@ -69,42 +69,31 @@ func downloadTestPlane(t *testing.T, rules string, groups ...*outbound.DialerGro
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &ControlPlane{core: &controlPlaneCore{}, outbounds: groups, routingMatcher: matcher, fallbackResolver: "192.0.2.53:53"}
+	return &ControlPlane{core: &controlPlaneCore{}, outbounds: groups, routingMatcher: matcher}
 }
 
 type downloadTestDNS func(*dnsmessage.Msg)
 
-func (f downloadTestDNS) ForwardDNS(_ context.Context, message *dnsmessage.Msg) error {
-	f(message)
-	return nil
-}
-func (downloadTestDNS) Close() error { return nil }
-
-func attachDownloadTestDNS(t *testing.T, c *ControlPlane, request, response string, answer downloadTestDNS) *config.Dns {
+func attachDownloadTestDNS(t *testing.T, c *ControlPlane, request, response string, answer downloadTestDNS) {
 	t.Helper()
-	configuration := &config.Dns{
-		Upstream: []config.KeyableString{"test:tcp://192.0.2.53:53"},
-		Routing: config.DnsRouting{
-			Request:  config.DnsRequestRouting{Fallback: config.FunctionOrString(request)},
-			Response: config.DnsResponseRouting{Fallback: config.FunctionOrString(response)},
-		},
-	}
-	controller, err := c.newDNSController(configuration, preparedRules{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = controller.Close() })
-	c.dnsController = controller
-	upstream, err := controller.routing.GetUpstream(context.Background(), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	argument, err := c.chooseBestDnsDialer(&udpRequest{src: httpClientSource(upstream.Ip4), routingResult: &bpfRoutingResult{}}, upstream)
-	if err != nil {
-		t.Fatal(err)
-	}
-	controller.dnsForwarderCache[makeDNSForwarderKey(upstream, argument)] = answer
-	return configuration
+	previous := net.DefaultResolver
+	t.Cleanup(func() { net.DefaultResolver = previous })
+	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		conn, peer := net.Pipe()
+		go func() {
+			defer peer.Close()
+			server := &dnsmessage.Conn{Conn: peer}
+			message, err := server.ReadMsg()
+			if err != nil {
+				return
+			}
+			answer(message)
+			message.Response = true
+			message.RecursionAvailable = true
+			_ = server.WriteMsg(message)
+		}()
+		return conn, nil
+	}}
 }
 
 func TestMITMDownloadRoutesResolvedDestination(t *testing.T) {
@@ -131,7 +120,6 @@ func TestMITMDownloadRoutesResolvedDestination(t *testing.T) {
 				}
 				message.Response = true
 				message.Answer = []dnsmessage.RR{
-					testARecord("unrelated.example.", "203.0.113.8"),
 					&dnsmessage.CNAME{Hdr: dnsmessage.RR_Header{Name: question.Name, Rrtype: dnsmessage.TypeCNAME, Class: dnsmessage.ClassINET, Ttl: 60}, Target: "edge.example."},
 					testARecord("edge.example.", "198.51.100.4"),
 				}
@@ -152,32 +140,14 @@ func TestMITMDownloadRoutesResolvedDestination(t *testing.T) {
 	}
 }
 
-func TestMITMDownloadHonorsDNSRejection(t *testing.T) {
-	for _, stage := range []string{"request", "response"} {
-		t.Run(stage, func(t *testing.T) {
-			unexpected := downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
-				t.Error("DNS-rejected download reached a TCP dialer")
-				return nil, net.ErrClosed
-			})
-			c := downloadTestPlane(t, "", unexpected)
-			request, response := "test", "reject"
-			if stage == "request" {
-				request, response = "reject", "accept"
-			}
-			queries := 0
-			attachDownloadTestDNS(t, c, request, response, func(message *dnsmessage.Msg) {
-				queries++
-				message.Response = true
-				message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
-			})
-			_, err := mitmClientDialContext(c)(context.Background(), "tcp4", "raw.example:443")
-			if err == nil || !strings.Contains(err.Error(), "no A addresses") {
-				t.Fatalf("DNS rejection = %v", err)
-			}
-			if (stage == "request" && queries != 0) || (stage == "response" && queries != 1) {
-				t.Fatalf("upstream queries = %d at %s rejection", queries, stage)
-			}
-		})
+func TestMITMDownloadHonorsSystemDNSFailure(t *testing.T) {
+	c := downloadTestPlane(t, "", downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {
+		t.Error("unresolved download reached a TCP dialer")
+		return nil, net.ErrClosed
+	}))
+	attachDownloadTestDNS(t, c, "", "", func(message *dnsmessage.Msg) { message.Rcode = dnsmessage.RcodeNameError })
+	if _, err := mitmClientDialContext(c)(context.Background(), "tcp4", "raw.example:443"); err == nil {
+		t.Fatal("system resolver failure ignored")
 	}
 }
 
@@ -412,10 +382,10 @@ func TestMITMDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
 		return nil, net.ErrClosed
 	})
 	c := downloadTestPlane(t, "domain(full: raw.example, full: 192.0.2.53) -> direct", direct)
-	registry, kernel := newTestRegistry(16, 16, time.Second)
+	registry, kernel := newTestRegistry(16, time.Second)
 	c.core.domainRegistry = registry
 	queries := 0
-	configuration := attachDownloadTestDNS(t, c, "test", "accept", func(message *dnsmessage.Msg) {
+	attachDownloadTestDNS(t, c, "test", "accept", func(message *dnsmessage.Msg) {
 		queries++
 		message.Response = true
 		message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
@@ -426,30 +396,6 @@ func TestMITMDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
 	}
 	if registry.Size() != 0 || len(kernel.bump) != 0 {
 		t.Fatal("bootstrap DNS published answers or upstreams to the shared registry")
-	}
-	bootstrap := c.dnsController
-	if err := bootstrap.Close(); err != nil {
-		t.Fatal(err)
-	}
-	final, err := c.newDNSController(configuration, preparedRules{}, registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer final.Close()
-	// Keep c.dnsController pointing at the closed bootstrap controller until
-	// after GetUpstream: the callback must belong to the new controller itself.
-	upstream, err := final.routing.GetUpstream(context.Background(), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := registry.Lookup(queryInfo{qname: "192.0.2.53.", qtype: dnsmessage.TypeA}); !reflect.DeepEqual(got, []netip.Addr{upstream.Ip4}) {
-		t.Fatalf("final controller did not register its upstream: %v", got)
-	}
-	if !kernel.has(upstream.Ip4) {
-		t.Fatal("final upstream routing bitmap was not published")
-	}
-	if got := registry.Lookup(queryInfo{qname: "raw.example.", qtype: dnsmessage.TypeA}); len(got) != 0 {
-		t.Fatalf("bootstrap answer leaked into the final registry: %v", got)
 	}
 }
 
@@ -506,7 +452,7 @@ func TestMITMDownloadCleanupJoinsDialsBeforeReplacingPlane(t *testing.T) {
 		t.Fatalf("in-flight dial returned %v", err)
 	}
 	// A late Transport dial must stop before reading the old plane fields.
-	c.dnsController, c.routingMatcher, c.outbounds = nil, nil, nil
+	c.dnsRelay, c.routingMatcher, c.outbounds = nil, nil, nil
 	if _, err := dial(context.Background(), "tcp", "raw.example:443"); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("dial after cleanup returned %v", err)
 	}

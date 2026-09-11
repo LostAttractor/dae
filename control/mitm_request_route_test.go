@@ -22,7 +22,6 @@ import (
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
-	dnsmessage "github.com/miekg/dns"
 )
 
 func newHTTPRequestRouteTest(t *testing.T, routing string, extension plugin.Plugin, dial downloadTestDialer) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
@@ -44,7 +43,7 @@ func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing string, extensio
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: newDomainRegistry(32, 32, time.Second)}, routingMatcher: matcher, mitmHost: host, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
+	plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}, routingMatcher: matcher, mitmHost: host, settings: store, mitmClients: clients, sniffVerifyMode: consts.SniffVerifyMode_None}
 	for _, name := range []string{"direct", "block", "proxy"} {
 		plane.outbounds = append(plane.outbounds, downloadTestGroup(t, name, dial))
 	}
@@ -160,11 +159,9 @@ func TestPendingHTTPWithoutHostnameUsesDNSEvidence(t *testing.T) {
 			})
 			param.Domain = "" // No usable SNI/Host, so the candidate cannot enter MITM.
 			registry, matcher := plane.core.domainRegistry, plane.routingMatcher
-			registry.update = func(netip.Addr, []uint32, []uint32) {}
-			registry.remove = func(netip.Addr) {}
-			registry.UpsertNoExpiry(queryInfo{qname: "original.example.", qtype: dnsmessage.TypeA}, param.Dest.Addr(), matcher.domainMatcher.MatchDomainBitmap("original.example"), time.Now())
+			registry.Upsert("original.example.", param.Dest.Addr(), matcher.domainMatcher.MatchDomainBitmap("original.example"), 3600, time.Now())
 			if ambiguous {
-				registry.UpsertNoExpiry(queryInfo{qname: "outside.example.", qtype: dnsmessage.TypeA}, param.Dest.Addr(), matcher.domainMatcher.MatchDomainBitmap("outside.example"), time.Now())
+				registry.Upsert("outside.example.", param.Dest.Addr(), matcher.domainMatcher.MatchDomainBitmap("outside.example"), 3600, time.Now())
 			}
 			option, planner, _, err := plane.prepareHTTPRoute(context.Background(), param.Domain, param)
 			if planner != nil {

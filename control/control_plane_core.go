@@ -13,7 +13,6 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/cilium/ebpf"
 	ciliumLink "github.com/cilium/ebpf/link"
@@ -45,7 +44,7 @@ type controlPlaneCore struct {
 	// core owns them between the old core's EjectBpf and the new core's InjectBpf.
 	bpfOwned bool
 
-	// domainRegistry tracks every (domain, qtype) -> IP registration learned
+	// domainRegistry tracks every domain -> IP registration learned
 	// from DNS. It is the single source of truth for domain_routing_map in
 	// eBPF; every mutation atomically replaces the affected IP's combined
 	// bump/routing value, so user space and BPF stay in sync.
@@ -124,12 +123,10 @@ func newControlPlaneCore(
 	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.
 	core.domainRegistry = newDomainRegistry(
 		int(bpf.DomainRoutingMap.MaxEntries()),
-		consts.DomainRegistryMaxSize,
-		time.Duration(consts.MinDomainTTL)*time.Second,
+		consts.DefaultDNSRetentionWindow,
+		core.writeDomainBitmaps, core.deleteDomainBitmaps,
 	)
-	core.domainRegistry.update = core.writeDomainBitmaps
-	core.domainRegistry.remove = core.deleteDomainBitmaps
-	core.domainRegistry.StartSweeper()
+	core.domainRegistry.Start()
 	core.addCleanup(core.closeBpf)
 	core.addCleanup(core.domainRegistry.Close)
 	return core, nil

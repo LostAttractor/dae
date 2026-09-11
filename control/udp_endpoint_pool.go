@@ -34,8 +34,10 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 }
 
 type UdpEndpoint struct {
-	conn net.PacketConn
-	mitm bool // The first destination is served by the HTTP/3 packet bridge.
+	conn     net.PacketConn
+	mitm     bool // The first destination is served by the HTTP/3 packet bridge.
+	activity *domainActivity
+	domain   string
 	// mu protects timer state and cleanup snapshots.
 	mu            sync.Mutex
 	deadlineTimer *time.Timer
@@ -73,6 +75,7 @@ type UdpEndpoint struct {
 type udpSetup struct {
 	routingResult *bpfRoutingResult
 	sniffer       *sniffing.Sniffer
+	observedAt    time.Time // incomplete sniff activity, applied on setup or retirement
 }
 
 func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort, conn net.PacketConn) error {
@@ -100,6 +103,7 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPor
 		if !endpointPool.refreshTimer(src, ue, time.Now()) {
 			break
 		}
+		ue.observeDomain(addrPortOf(from))
 		if err = ue.handler(buf[:n], addrPortOf(from)); err != nil {
 			return netproxy.WrapFailure(err, netproxy.Failure{Phase: netproxy.OpWrite, Origin: netproxy.OriginCaller})
 		}
@@ -137,6 +141,9 @@ func (ue *UdpEndpoint) retireLocked() {
 		ue.releaseDialer = nil
 	}
 	if ue.pending != nil {
+		if !ue.pending.observedAt.IsZero() {
+			ue.activity.observe(ue.firstDst.Addr(), ue.domain, ue.pending.observedAt)
+		}
 		_ = ue.pending.sniffer.Close()
 		ue.pending = nil
 	}
@@ -218,6 +225,7 @@ func (p *UdpEndpointPool) deliverMITM(src, dst netip.AddrPort, ifindex uint32, d
 		return
 	}
 	_, _ = ue.conn.WriteTo(data, net.UDPAddrFromAddrPort(dst))
+	ue.observeDomain(dst)
 }
 
 func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {

@@ -50,19 +50,14 @@ func renderLogTable(header table.Row, rows []table.Row) string {
 }
 
 func tableUsageRow(usage api.TableUsage) table.Row {
-	ratio := 0.0
+	limit, ratio := "unlimited", "-"
 	if usage.Limit > 0 {
-		ratio = float64(usage.Used) / float64(usage.Limit)
+		limit = fmt.Sprint(usage.Limit)
+		fraction := float64(usage.Used) / float64(usage.Limit)
+		ratio = colorUsage(fraction, formatRatio(fraction))
 	}
-	used := fmt.Sprintf("%d", usage.Used)
-	var breakdown any = "-"
-	limitGC := "-"
-	if usage.Breakdown != nil {
-		used += " (LAZY)"
-		breakdown = clitable.Parts(fmt.Sprint(usage.Breakdown.Live), "/", fmt.Sprint(usage.Breakdown.Retained))
-		limitGC = fmt.Sprintf("%d", usage.Breakdown.LimitGC)
-	}
-	return table.Row{usage.Name, used, usage.Limit, colorUsage(ratio, formatRatio(ratio)), breakdown, limitGC}
+	return table.Row{usage.Name, fmt.Sprint(usage.Used), limit, ratio,
+		fmt.Sprint(usage.Candidates), fmt.Sprint(max(0, usage.Candidates-usage.Used))}
 }
 
 func nodeLabel(status api.NodeStatus, index int) string {
@@ -496,9 +491,25 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 		fmt.Fprintln(out, "\nTables:")
 		rows := make([]table.Row, 0, len(snapshot.Tables))
 		for _, usage := range snapshot.Tables {
-			rows = append(rows, tableUsageRow(usage))
+			if usage.Breakdown == nil {
+				rows = append(rows, tableUsageRow(usage))
+			}
 		}
-		printTable(out, table.Row{"TABLE", "USED", "LIMIT", "USAGE", "LIVE/RETAINED", "LIMIT-GC"}, rows)
+		if len(rows) > 0 {
+			printTable(out, table.Row{"TABLE", "USED (IPs)", "LIMIT", "USAGE", "CANDIDATES", "OMITTED"}, rows)
+		}
+		for _, usage := range snapshot.Tables {
+			if detail := usage.Breakdown; detail != nil {
+				limit := "unlimited"
+				if usage.Limit > 0 {
+					limit = fmt.Sprintf("limit: %d pairs", usage.Limit)
+				}
+				fmt.Fprintf(out, "\n%s (%s):\n", usage.Name, limit)
+				printTable(out, table.Row{"PAIRS", "GC (PAIRS)"}, []table.Row{
+					{usage.Used, detail.GC},
+				})
+			}
+		}
 	}
 
 	for _, group := range snapshot.Groups {

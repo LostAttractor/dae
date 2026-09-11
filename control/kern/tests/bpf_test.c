@@ -2833,9 +2833,24 @@ SEC("tc/check/udp_route_cache_dns_change")
 int testcheck_udp_route_cache_dns_change(struct __sk_buff *skb)
 {
 	clear_routing_entry(&zero_key);
-	int ret = check_ipv4_udp_routing_cache(
-		skb, TC_ACT_REDIRECT, IPV4(192,168,1,11), IPV4(1,1,1,11),
-		20011, 53, true, OUTBOUND_USER_DEFINED_MIN + 44);
+	int ret = check_status_code(skb, TC_ACT_REDIRECT);
+	struct tuples_key key;
+	struct udp_routing_cache_key cache_key;
+
+	make_ipv4_udp_routing_key(&key, IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 53);
+	struct routing_result *result = bpf_map_lookup_elem(&routing_tuples_map, &key);
+
+	if (!result || result->outbound != OUTBOUND_USER_DEFINED_MIN + 45 ||
+	    result->capture_flags != CAPTURE_DNS || result->must)
+		ret = TC_ACT_SHOT;
+	/* DNS gets fresh policy without replacing the existing non-DNS source route. */
+	make_ipv4_udp_cache_key(&cache_key, IPV4(192,168,1,11), IPV4(1,1,1,11),
+			       20011, 443, skb->ifindex);
+	struct udp_routing_cache_value *cached = bpf_map_lookup_elem(&udp_routing_cache_map, &cache_key);
+
+	if (!cached || cached->result.outbound != OUTBOUND_USER_DEFINED_MIN + 44)
+		ret = TC_ACT_SHOT;
+	bpf_map_delete_elem(&routing_tuples_map, &key);
 	delete_ipv4_udp_routing_cache(skb,
 		IPV4(192,168,1,11), IPV4(1,1,1,11), 20011, 443);
 	delete_ipv4_udp_routing_handoff(

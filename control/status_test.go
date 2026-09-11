@@ -95,40 +95,47 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	}
 }
 
-func TestStatusSnapshotReportsDomainHistory(t *testing.T) {
-	domainRegistry, _ := newTestRegistry(16, 32, 0)
-	now := time.Now()
-	domainRegistry.Upsert(
-		queryInfo{qname: "live.example.", qtype: 1},
-		netip.MustParseAddr("1.1.1.1"),
-		testBitmap(),
-		60,
-		now,
-	)
-	domainRegistry.Upsert(
-		queryInfo{qname: "retained.example.", qtype: 1},
-		netip.MustParseAddr("2.2.2.2"),
-		testBitmap(),
-		1,
-		now.Add(-time.Minute),
-	)
+func TestStatusSnapshotReportsDomainRegistryCounts(t *testing.T) {
+	domainRegistry, _ := newTestRegistry(1, time.Minute)
+	// Evidence is overdue by wall time but has not been swept: status must not
+	// run GC, advance the registry clock or extend any retention deadline.
+	now := time.Now().Add(-5 * time.Minute)
+	domainRegistry.Upsert("first.example.", netip.MustParseAddr("192.0.2.1"), testBitmap(0), 60, now)
+	domainRegistry.Upsert("first.example.", netip.MustParseAddr("2001:db8::1"), testBitmap(0), 120, now)
+	domainRegistry.Upsert("second.example.", netip.MustParseAddr("192.0.2.1"), testBitmap(), 120, now)
+	// A repeated observation and a mapped IPv4 spelling are still one pair.
+	domainRegistry.Upsert("second.example.", netip.MustParseAddr("::ffff:192.0.2.1"), testBitmap(), 180, now)
+	// Zero-bit evidence is counted even though this IP is not a kernel candidate.
+	domainRegistry.Upsert("third.example.", netip.MustParseAddr("192.0.2.2"), testBitmap(), 60, now)
 
 	plane := &ControlPlane{
 		core: &controlPlaneCore{domainRegistry: domainRegistry},
 	}
-	tables := mustStatusSnapshot(t, plane).Tables
-	if len(tables) != 2 {
-		t.Fatalf("table count = %d, want 2", len(tables))
-	}
-	history := tables[len(tables)-1]
-	if history.Name != "domain-history" || history.Used != 2 || history.Breakdown == nil {
-		t.Fatalf("domain history table = %+v", history)
-	}
-	if history.Breakdown.LimitGC != 0 {
-		t.Fatalf("domain history GC state = %+v", history)
-	}
-	if history.Breakdown.Live != 1 || history.Breakdown.Retained != 1 {
-		t.Fatalf("domain history breakdown = %+v, want 1 live and 1 retained", history.Breakdown)
+	for _, test := range []struct {
+		elapsed                   time.Duration
+		pairs, kernel, candidates int
+		counts                    api.TableUsageBreakdown
+	}{
+		{0, 4, 1, 2, api.TableUsageBreakdown{}},
+		{61 * time.Second, 2, 1, 1, api.TableUsageBreakdown{GC: 2}},
+		{181 * time.Second, 0, 0, 0, api.TableUsageBreakdown{GC: 4}},
+	} {
+		domainRegistry.Sweep(now.Add(test.elapsed))
+		generation, evaluatedAt := domainRegistry.generation, domainRegistry.evaluatedAt
+		tables := mustStatusSnapshot(t, plane).Tables
+		if domainRegistry.generation != generation || domainRegistry.evaluatedAt != evaluatedAt {
+			t.Fatal("status read mutated registry evidence or its clock")
+		}
+		if len(tables) != 2 {
+			t.Fatalf("table count = %d, want 2", len(tables))
+		}
+		kernel, history := tables[0], tables[1]
+		if kernel.Used != test.kernel || kernel.Candidates != test.candidates || kernel.Limit != 1 {
+			t.Fatalf("kernel counts = %+v", kernel)
+		}
+		if history.Name != "domain-registry" || history.Used != test.pairs || history.Limit != 0 || history.Breakdown == nil || *history.Breakdown != test.counts {
+			t.Fatalf("elapsed=%s table=%+v counts=%+v, want %+v", test.elapsed, history, history.Breakdown, test.counts)
+		}
 	}
 }
 
