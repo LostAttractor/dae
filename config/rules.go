@@ -54,10 +54,21 @@ func (r Rules) Plan() (RulePlan, error) {
 			return RulePlan{}, fmt.Errorf("rules rule %d: expected dnat(ip), must or bump", i+1)
 		}
 		ip, err := netip.ParseAddr(a.Params[0].Val)
-		if err != nil || ip.Zone() != "" {
-			return RulePlan{}, fmt.Errorf("rules rule %d: dnat target must be an IPv4 or IPv6 address without a port or zone", i+1)
+		var port uint16
+		if err != nil {
+			var target netip.AddrPort
+			target, err = netip.ParseAddrPort(a.Params[0].Val)
+			if err == nil && target.Port() == 0 {
+				err = fmt.Errorf("zero port")
+			}
+			if err == nil {
+				ip, port = target.Addr(), target.Port()
+			}
 		}
-		result.Destinations = append(result.Destinations, routing.DestinationRewrite{Filter: rule.AndFunctions, To: []netip.Addr{ip.Unmap()}})
+		if err != nil || ip.Zone() != "" {
+			return RulePlan{}, fmt.Errorf("rules rule %d: dnat target must be an IP or IP:port without a zone", i+1)
+		}
+		result.Destinations = append(result.Destinations, routing.DestinationRewrite{Filter: rule.AndFunctions, To: []netip.Addr{ip.Unmap()}, Port: port})
 	}
 	return result, nil
 }

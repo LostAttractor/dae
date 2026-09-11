@@ -8,11 +8,12 @@ import (
 )
 
 // DestinationRewrite changes the destination before flow controls and routing,
-// keeping the original port. The mapping applies to direct and proxy outbounds.
+// keeping the original port unless Port is nonzero. Applies to direct and proxy.
 // Filter uses ordinary routing predicates; To contains at least one target IP.
 type DestinationRewrite struct {
 	Filter []*config_parser.Function
 	To     []netip.Addr
+	Port   uint16
 }
 
 // DestinationRewrites is ordered: the first matching predicate wins.

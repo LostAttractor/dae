@@ -52,7 +52,11 @@ func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error)
 		if !result.matched {
 			continue
 		}
-		return netip.AddrPortFrom(entry.targets[rand.IntN(len(entry.targets))], p.Dest.Port()), nil
+		port := entry.port
+		if port == 0 {
+			port = p.Dest.Port()
+		}
+		return netip.AddrPortFrom(entry.targets[rand.IntN(len(entry.targets))], port), nil
 	}
 	return netip.AddrPort{}, nil
 }

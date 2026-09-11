@@ -20,10 +20,10 @@ func TestDestinationRoutingPreservesIdentityAndUsesNewContext(t *testing.T) {
 	for _, proto := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP} {
 		t.Run(string(proto), func(t *testing.T) {
 			prepared := prepareFlowRulesForTest(t, `
-dip(192.0.2.20) -> dnat('2001:db8::20')
+dip(192.0.2.20) -> dnat('[2001:db8::20]:1053')
 dip('2001:db8::20') -> dnat(203.0.113.30)
 ipversion(6) && dip('2001:db8::20') -> must`, `
-domain(full: original.example) && ipversion(6) && dip('2001:db8::20') && sip(192.0.2.10) && sport(5000) && dport(443) && dscp(46) && pname(app) -> proxy(mark:91)
+domain(full: original.example) && ipversion(6) && dip('2001:db8::20') && sip(192.0.2.10) && sport(5000) && dport(1053) && dscp(46) && pname(app) -> proxy(mark:91)
 dip(192.0.2.20) -> block`)
 			matcher, _ := routingMatcherForTest(t, prepared)
 			// A separate selected profile must survive destination reevaluation.
@@ -45,7 +45,7 @@ dip(192.0.2.20) -> block`)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if option.Outbound.Name != "proxy" || option.DialTarget != "[2001:db8::20]:443" || option.NetworkType.IpVersion != consts.IpVersionStr_6 || result.Mark != 91 || result.Must != 1 {
+			if option.Outbound.Name != "proxy" || option.DialTarget != "[2001:db8::20]:1053" || option.NetworkType.IpVersion != consts.IpVersionStr_6 || result.Mark != 91 || result.Must != 1 {
 				t.Fatalf("effective context lost: option=%+v result=%+v", option, result)
 			}
 			if param.Dest != original || result.ProfileId != 42 || result.Ifindex != 7 || result.Mac[5] != 1 {

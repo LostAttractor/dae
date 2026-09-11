@@ -9,6 +9,7 @@ type destinationPredicate struct {
 	span    routingSpan
 	domain  bool
 	targets []netip.Addr
+	port    uint16
 }
 
 // DestinationProgram prepares targets before FlowProgram. Its kernel range

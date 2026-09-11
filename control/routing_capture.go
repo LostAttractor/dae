@@ -158,7 +158,7 @@ func (b *RoutingMatcherBuilder) addControlPlaneFragment(p *preparedRules) (routi
 
 func (b *RoutingMatcherBuilder) addDestinationPredicates(destinations routing.DestinationRewrites) error {
 	for _, rule := range destinations {
-		entry := destinationPredicate{span: routingSpan{Start: uint32(len(b.rules))}, targets: rule.To}
+		entry := destinationPredicate{span: routingSpan{Start: uint32(len(b.rules))}, targets: rule.To, port: rule.Port}
 		for _, f := range rule.Filter {
 			entry.domain = entry.domain || f.Name == consts.Function_Domain
 		}

@@ -3,11 +3,37 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+func TestDNATPortRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		target, ip string
+		port       uint16
+	}{
+		{"198.51.100.53", "198.51.100.53", 0},
+		{"198.51.100.53:1053", "198.51.100.53", 1053},
+		{"[2001:db8::53]:1053", "2001:db8::53", 1053},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			conf := parseConfig(t, fmt.Sprintf("global {} rules { dport(53) -> dnat('%s') } routing { fallback: direct }", tc.target))
+			wire, err := conf.Marshal(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range []*Config{conf, parseConfig(t, string(wire))} {
+				rules, err := c.Rules.Destinations()
+				if err != nil || len(rules) != 1 || len(rules[0].To) != 1 || rules[0].To[0].String() != tc.ip || rules[0].Port != tc.port {
+					t.Fatalf("DNAT target: %+v %v", rules, err)
+				}
+			}
+		})
+	}
+}
 
 func TestRoutingControlsRequireRulesSection(t *testing.T) {
 	for _, action := range []string{"must", "must_rules", "must_direct", "must_my_group", "direct(must)", "my_group(mark: 37, must)", "bump"} {

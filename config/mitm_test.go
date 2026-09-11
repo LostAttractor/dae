@@ -96,7 +96,7 @@ func TestMITMConfigRejectsInvalid(t *testing.T) {
 		`rules { dip(192.0.2.1) -> dnat() }`,
 		`rules { dip(192.0.2.1) -> dnat(192.0.2.2, 192.0.2.3) }`,
 		`rules { dip(192.0.2.1) -> dnat(example.com) }`,
-		`rules { dip(192.0.2.1) -> dnat('192.0.2.1:80') }`,
+		`rules { dip(192.0.2.1) -> dnat('192.0.2.1:0') }`,
 		`rules { dip(192.0.2.1) -> dnat('fe80::1%eth0') }`,
 		`rules { dip(192.0.2.1) -> dnat(192.0.2.0/24) }`,
 	} {
