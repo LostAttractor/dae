@@ -94,6 +94,6 @@ PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: applicat
 
 MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
 
-daemon 的状态 schema 为 7，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae mitm status` 和插件命令使用，无需开启 `global.api_port`。`mitm_plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。CLI 与 daemon 应使用同一版本。
+daemon 的状态 schema 为 10，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。域名表报告时间 GC 和内核候选数量，用户态 `limit: 0` 表示无容量上限。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。CLI 与 daemon 应使用同一版本。
 
-`dae mitm status --json` 输出完整 `mitm_plugins`；`dae mitm <类型> status --instance <ID>` 查询单个实例。插件的任务详情可能包含视频 BV/CID、标题等上下文，但不得包含 Cookie 或 API 密钥。
+`dae plugins status --json` 输出完整 `plugins`；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件的任务详情可能包含视频 BV/CID、标题等上下文，但不得包含 Cookie 或 API 密钥。

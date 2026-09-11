@@ -1,19 +1,89 @@
-# MITM Go plugins
+# Go plugins
 
 Implement an independent Go module importing
 `github.com/daeuniverse/dae/component/plugin` and export:
 
 ```go
-var Plugin = plugin.Definition{Setup: Setup, Commands: Commands} // Commands is optional
+var Plugin = plugin.Definition{Setup: Setup, Validate: Validate, Commands: Commands}
 
+func Validate(plugin.Spec) error // optional, static configuration checks only
 func Setup(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error)
 ```
 
 Decode settings in `Setup` (`DecodeSettings` handles scalar fields), implement
-`Plan` and `Wrap`, add `type:Go/import/path` to
-[mitm_plugins.cfg](../../mitm_plugins.cfg), then run `make`.
-See the [build guide](../../docs/en/user-guide/build-by-yourself.md#external-mitm-plugins)
+`Plan` and optional protocol interfaces, add `type:Go/import/path` to
+[plugins.cfg](../../plugins.cfg), then run `make`.
+See the [build guide](../../docs/en/user-guide/build-by-yourself.md#external-plugins)
 for dependencies and multiple plugins.
+
+## Configuration preflight and preparation
+
+`Validate` and `Commands` are optional. Startup and reload first check that **all
+enabled plugin types are compiled in**, then run every available `Validate` hook
+before subscriptions, eBPF preparation, connectivity checks or module downloads.
+Disabled instances are skipped. Reload rejects a failed preflight before handing
+over the running control plane's BPF ownership.
+
+`Validate` must be deterministic, perform no I/O, start no workers and leave
+`Spec.Config` unchanged. Share a parser between `Validate` and `Setup` so checks
+stay consistent; `Setup` still validates when called directly. Type checks apply
+even to plugins without this optional hook, whose specific settings are checked
+during setup. Remote module contents, certificates and other resource-dependent
+errors are diagnosed during preparation.
+
+Pass the complete `map[string]plugin.Definition` to daemon/host loaders instead
+of discarding validators into a setup-only table. `mitm.Load` also preflights the
+whole instance list before the first `Setup`; setup still runs in declaration
+order with the routed preparation client, and failures close prepared instances.
+
+## DNS contract
+
+`Plugin` requires only `Plan() Plan`. `HTTPPlugin` adds `Wrap`; `DNSPlugin`
+adds `WrapDNS`. A DNS-only plugin contributes `Plan.DNS` and requires no HTTP
+scope, CA or client MITM switch. All captured TCP/UDP port-53 flows can enter
+the DNS chain; DNS scopes do not expand HTTP capture.
+
+`DNSRequest` carries exact `Wire`, parsed `Message` when valid, transport, source,
+original/effective destination, interface and an opaque policy `ContextKey`.
+Copy before modifying or retaining it. After changing Message, replace Wire too.
+Use request-bound `DialContext`/`ListenPacket` for literal IP:port targets; these
+preserve client identity and route the selected target, with marks, accounting
+and connection lifetimes. Close every owned connection before returning.
+Use the system resolver to bootstrap upstream hostnames.
+
+DNS dial callbacks take `(ctx, network, address, hostname)` for connections and
+`(ctx, address, hostname)` for packet sockets. `address` is the selected IP:port;
+`hostname` is the trusted upstream endpoint hostname, or empty for a literal IP.
+The hostname participates in route selection while the connection retains its
+selected IP. Do not pass the client's question name as the endpoint hostname.
+Set `DNSRequest.Independent` on auxiliary queries (such as family probes): the
+core gives them a separate TCP lifetime and never delivers their unsolicited
+frames to the client. Bound their context so the original response can be delivered
+before the invocation deadline.
+
+`DNSRequest.Client` provides auxiliary HTTP with the original client's source,
+interface, process and routing policy. Each invocation owns separate policy-keyed
+pools. Use the invocation context for requests, finish HTTP work and close response
+bodies before returning; do not retain the client for background work. The host's
+daemon HTTP client belongs to background workers, not intercepted DNS requests.
+
+Middleware order is request A → B → relay, response B → A. Call next synchronously.
+Responses may carry exact Wire or a local Message; core only packs/truncates local
+messages. Set `ReceivedAt` once. Cache hits set `Cached` and retain original receipt
+time. Successful delivery, including replay, refreshes DomainRegistry retention
+using the final TTL and the configured sliding window. Errors do not implicitly retry or
+select a different resolver. Unsupported operations should pass through unchanged.
+
+`DNSObserver` receives isolated copies of final correlated responses, including
+local answers, while host admission remains held. `DNSResolver` supplies an
+optional cross-plugin explicit-server service. `ServerAssigned` marks a preceding
+plugin's authoritative server choice. `DNSAddressPolicy` can retain an already
+selected DNS IP for direct/proxy dialing; it never captures additional traffic.
+`UseDNSAddress(host, proxy)` returns `(use, applicable)`; the first applicable
+instance wins even when `use` is false, matching Host answer precedence.
+
+See [DNS configuration](../../docs/en/configuration/dns.md) for persistence,
+middleware ordering and the independent router/cache modules.
 
 ## HTTP contract
 
@@ -81,7 +151,7 @@ migration and cross-host connection reuse are not supported.
 `Exchange.Client` and upstream forwarding share request routing. Deferred scopes
 route the final target after middleware and before pool lookup; local responses
 do not choose an upstream. The original authority uses the intercepted IP; other
-authorities resolve through dae DNS. Destination rules determine the effective
+authorities resolve through the system resolver. Destination rules determine the effective
 IP while preserving client identity. Pure inspection reuses its valid route for
 the original authority. Pools are isolated per client connection and keyed by
 the full dial plan: addresses, nodes, outbounds, marks and transport/TLS authority.
@@ -149,7 +219,7 @@ See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
 ## Commands
 
 `Definition.Commands` returns fresh `[]*cobra.Command` using `plugin.CommandServices`.
-The host mounts them under `dae mitm <type>` and supplies `--instance <ID>`.
+The host mounts them under `dae plugins <type>` and supplies `--instance <ID>`.
 The factory must not load runtime configuration, initialize workers, query the
 daemon or fetch remote resources. Perform command work in `RunE`, using Cobra's
 context and input/output streams.
@@ -158,14 +228,14 @@ context and input/output streams.
 filtered by plugin type and `--instance`. `services.BaseDir` is the local cache
 base directory for commands such as Surge's interactive module configurator.
 A plugin can define its own `status`; otherwise the host provides generic status.
-`dae mitm status [--instance ID]` shows an overview. `--verbose` (`-v`) runs
+`dae plugins status [--instance ID]` shows an overview. `--verbose` (`-v`) runs
 each active type's `status` command with defaults against the same daemon snapshot,
 preserving its Cobra lifecycle, context and instance selection. Status commands
 must be read-only. Types without a status renderer fall back to full JSON reports;
 a renderer failure also shows its raw reports and does not hide other types.
 `--json` prints the complete snapshot directly, including when combined with `-v`.
 These commands use the local Unix status socket and do not require `api_port`.
-See Surge's [command implementation](../surge/command_configure.go).
+See Surge's [command implementation](../mitm/surge/command_configure.go).
 
 Create human-readable tables with [`clitable.New()`](../../pkg/clitable/table.go)
 from `github.com/daeuniverse/dae/pkg/clitable` to share the host CLI style:
@@ -195,6 +265,6 @@ additional lines when task details need them, without indentation. Preserve full
 data in JSON output.
 
 For runtime logs, use the instance logger supplied to `Setup` in
-`plugin.Services.Logger`; it carries `mitm_instance` so messages do not need a
+`plugin.Services.Logger`; it carries `plugin_instance` so messages do not need a
 repeated plugin-name prefix. In plain-text logs the instance appears first after
 the optional timestamp, before severity and message.

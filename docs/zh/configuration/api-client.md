@@ -1,6 +1,6 @@
 # API 与独立客户端开发
 
-`dae status`、`dae status --verbose`、`dae status --recent` 和 `dae mitm surge status` 通过 HTTP API 读取运行状态，Web 通过 API 获取状态和修改设置。独立客户端无需加载配置、读取运行时状态文件、链接 QuickJS 或生成 eBPF。
+`dae status`、`dae status --verbose`、`dae status --recent` 和 `dae plugins surge status` 通过 HTTP API 读取运行状态，Web 通过 API 获取状态和修改设置。独立客户端无需加载配置、读取运行时状态文件、链接 QuickJS 或生成 eBPF。
 
 ## 构建与使用
 
@@ -10,9 +10,9 @@
 make client
 sudo ./dae-client status
 ./dae-client status --api http://192.168.1.1:9080 --recent
-./dae-client mitm status --api http://192.168.1.1:9080 --json
-./dae-client mitm status --api http://192.168.1.1:9080 --verbose
-./dae-client mitm surge status --api http://192.168.1.1:9080 --instance personal
+./dae-client plugins status --api http://192.168.1.1:9080 --json
+./dae-client plugins status --api http://192.168.1.1:9080 --verbose
+./dae-client plugins surge status --api http://192.168.1.1:9080 --instance personal
 ./dae-client status --api unix:///var/run/dae.sock --json
 ```
 
@@ -55,7 +55,7 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 `make` 和 `make test` 会通过 `make web-assets` 构建前端，并以产物替换 `internal/webui/assets/`，随后编译 Go。构建产物由 Git 忽略，只编辑 `web/src/`。直接执行 `go build` 或 `internal/webui`、`cmd` 的测试时，除了守护进程原有的构建前置步骤，还需先运行 `make web-assets`。仅构建或测试独立客户端时无需此步骤。
 
-`dae mitm status`、`dae mitm <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_TOKEN` 选择连接，`--instance` 按实例过滤。独立客户端提供 `mitm status` 和 `mitm surge status`，不加载运行时插件；前者可查看任意插件报告。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
+`dae plugins status`、`dae plugins <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_TOKEN` 选择连接，`--instance` 按实例过滤。独立客户端提供 `plugins status` 和 `plugins surge status`，不加载运行时插件；前者可查看任意插件报告。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
 
 端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`cmd/api_server.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
 
@@ -126,7 +126,11 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 ## 状态字段与版本兼容
 
-当前 `StatusSnapshot.schema` 为 `7`。插件报告位于 `mitm_plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。状态顶层不再包含 `surge` 字段。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
+当前 `StatusSnapshot.schema` 为 `10`。域名表的 `limit: 0` 表示用户态无容量上限，`breakdown.gc` 是按时间回收的 pair 数量；内核 `candidates` 表示容量选择前的候选 IP 数量。插件报告位于 `plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。状态顶层不再包含 `surge` 字段。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
+
+Registry 的 `used` 是域名–IP 配对数，`breakdown.domains`、`ips`、`ipv4`、`ipv6` 分别表示保留的域名数、去重 IP 数及地址类型分布。同一 IP 被多个域名引用仍只计一次，`ips = ipv4 + ipv6`。CLI 明确区分这些数量与内核驻留、容量遗漏数量。
+
+Schema 10 将这些 Registry 计数作为必需字段。daemon 与 CLI 需一起升级；缺少计数的 schema 9 响应会被拒绝，避免显示假零值。
 
 `groups[].nodes[].revision` 标识节点状态版本，`observed_session_seq` 与可选的 `session_detail` 描述已观察到的会话及其资源身份。`recovery` 提供恢复执行方、阶段、验证结果和尝试次数；`retry_at` 仅在确有退避定时器时出现，客户端不能为库自行管理的恢复推测倒计时。可选的 `failure` 记录故障来源及对应资源，便于 TUI 区分当前恢复状态和最近故障。
 
@@ -141,7 +145,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `groups` | 可见目标的策略、关键性、连通状态、统计、节点与当前选择 |
 | `groups[].selected_node_ids` | 同样的四项网络顺序；空字符串表示该网络当前没有已选择的节点 |
 | `groups[].nodes[].support` | 四项网络能力：`unknown`、`confirmed`、`unsupported`；能力与当前健康不同 |
-| `mitm_plugins` | 插件实例状态、数量与可选的 `details` 报告，不包含插件配置对象 |
+| `plugins` | 插件实例状态、数量与可选的 `details` 报告，不包含插件配置对象 |
 
 时间戳采用 RFC 3339；Go 零时间 `0001-01-01T00:00:00Z` 表示尚未发生。状态内所有 duration 为整数纳秒；selector 的 `latency_ms` 单独采用毫秒。`up_ratio` 范围为 `0..1`，依据可观测时间加权；`seen=false` 表示尚无有效观察。
 

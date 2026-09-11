@@ -36,7 +36,7 @@ Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` ri
 
 Source builds require cgo and a target C compiler; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
 
-The [configuration example](./example.dae) includes `mitm` plugin instances and `rules` flow controls / DNAT. The default build includes Surge; add external Go plugins to [mitm_plugins.cfg](./mitm_plugins.cfg) and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-mitm-plugins).
+The [configuration example](./example.dae) includes ordered `plugins` instances and `rules` flow controls / DNAT. Core [DNS](./docs/en/configuration/dns.md) is a transparent relay with persistent domain evidence; advanced resolver/cache features are independent plugins. The default build includes Surge. Add external Go plugins to [plugins.cfg](./plugins.cfg) and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-plugins).
 
 `DAE_LOCATION_CACHE` selects the [writable state directory](./docs/zh/configuration/cache-directory.md) for certificates, subscription caches and Surge resources (default `/var/lib/dae`).
 

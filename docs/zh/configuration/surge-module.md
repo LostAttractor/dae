@@ -17,7 +17,8 @@ mitm {
   client_source_address: '02:00:00:00:00:50'
   ca_cert: 'mitm-ca.pem'
   ca_key: 'mitm-ca.key'
-
+}
+plugins {
   surge {
     module {
       demo: 'file:modules/demo.sgmodule'
@@ -29,7 +30,7 @@ mitm {
 }
 ```
 
-旧顶层 `surge {}` 不再接受，请使用 `mitm` 下的实例配置。多个插件实例的配置见 [MITM 插件](mitm-plugins.md)。
+插件实例统一放在 `plugins {}` 中，旧顶层 `surge {}` 和 `mitm.surge {}` 不再接受。多个实例的配置见[插件配置](mitm-plugins.md)。
 
 模块使用 `名称: '来源'` 或匿名 `'来源'`，参数配置见下节。名称不可重复；显示名优先使用配置名称，其次 `#!name`、文件名。
 
@@ -42,7 +43,7 @@ mitm {
 
 `ca_cert`、`ca_key`、`store` 的相对路径也使用 `DAE_LOCATION_CACHE`。模块内相对脚本及 Map Local 文件相对模块目录或重定向后的最终 URL；远程模块不能读本地文件，HTTPS 下载不能降级 HTTP。本地及普通远程模块只允许显式 `-file` 依赖使用缓存。缓存按来源和显式参数区分，与名称无关；写入和目录规则见[缓存目录](cache-directory.md)。
 
-启动或重载时，先等待节点的初始连通性检查阶段结束，再按 dae DNS/路由规则下载模块，加载完成后接管流量。初始检查最多等待 60 秒；超时按现有断网策略继续。模块列表共用两分钟刷新预算，模块自身规则在加载后才生效。没有可用来源或缓存时加载失败，重载保留旧实例。重载会停止旧实例的新请求并在 5 秒预算内排空 HTTP 请求；普通 TCP/UDP 连接按各自生命周期处理；不按 `script-update-interval` 定时刷新。
+启动或重载时，先等待节点的初始连通性检查阶段结束，再用系统解析器解析模块主机，按普通路由下载模块，加载完成后接管流量。初始检查最多等待 60 秒；超时按现有断网策略继续。模块列表共用两分钟刷新预算，模块自身规则在加载后才生效。没有可用来源或缓存时加载失败，重载保留旧实例。重载会停止旧实例的新请求并在 5 秒预算内排空请求；普通 TCP/UDP 连接按各自生命周期处理；不按 `script-update-interval` 定时刷新。
 
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -59,13 +60,13 @@ mitm {
 模块用 `#!arguments=名称:默认值,...` 声明参数，在正文中写 `{{{名称}}}`。中文名称可用、大小写敏感；参数按原文替换，不自动 JSON 编码。未知或重复参数、未提供的必填项、值中的换行/NUL 会报错。
 
 ```sh
-dae mitm surge configure 'file:modules/youtube.sgmodule' \
+dae plugins surge configure 'file:modules/youtube.sgmodule' \
   --name youtube > youtube-module.dae
 ```
 
 命令显示模块说明和参数，直接回车继承默认值，显式输入固定该值，`""` 表示空字符串；无默认值必须填写。仅显式值写入配置，全部继承时生成简写。`--name` 默认 `module`。
 
-提示写入 stderr，stdout 输出的 `module` 段放入 `mitm` 中对应的 Surge 实例。例如：
+提示写入 stderr，stdout 输出的 `module` 段放入 `plugins` 中对应的 Surge 实例。例如：
 
 ```text
 module {
@@ -94,20 +95,36 @@ hostname = %APPEND% -private.example.com, *.example.com
 
 每个模块独立计算 hostname：`%APPEND%` 追加、`%INSERT%` 前插、无标记则替换。连接只使用匹配其最初主机和端口的模块，URL/Host 改写不会激活其他模块。无 hostname 的模块执行受支持的 `[Rule]` 和 `[Host]`，无需配置 CA。重叠模块按声明顺序处理，每个方向只运行首个匹配脚本。
 
-### IP 目标重写
+### DNS Host 与 IP 目标重写
 
-`[Host]` 支持 IP、域名或通配符 → 单个或多个 IPv4/IPv6，适用于 TCP/UDP。例如：
+`[Host]` 域名/通配符条目处理 DNS，应答支持多个混合 IPv4/IPv6、`*`/`?`、别名、`server:`、`script:`、`DOMAIN-SET:`/`RULE-SET:`。按模块和条目顺序首个命中；别名重新查找并有循环/深度限制。DNS script 使用 `$domain` 和 `$done({address|addresses|server|servers, ttl?})`，只允许一种结果形式；`$done({})` 调用后续处理器。
+
+静态地址按 A/AAAA/ANY 类型返回；其它类型返回空应答。`server:IP[:port]` 重定向原请求；加密/多个服务器由可选 `dns-router` 提供。`system`、`syslib`、`force-syslib` 在 Linux 上使用 dae 的 Go 内部解析器：地址查询支持 `/etc/hosts`，默认 DNS 服务器来自 `/etc/resolv.conf`，可由 [`global.dns_resolver`](dns.md#指定内部-dns-服务器) 覆盖；不模拟 macOS 的分域系统解析器或 libc-only NSS。域名集和规则集使用现有模块依赖下载/显式缓存机制。
+
+system 查询保留绝对域名，不附加本机 search 域。Go 地址查询无法区分 NXDOMAIN 与 NODATA 时，通过同一内部 DNS Dial 服务再取得协议响应，保留 rcode 和 authority。别名响应在改写前必须匹配实际 alias 查询。
+
+集合 URL 含 `=` 时，在赋值符两侧使用空格或 tab，以免与 URL 查询参数混淆。例如：
+
+```ini
+[Host]
+DOMAIN-SET:https://lists.example/domains?token=abc = 192.0.2.1
+RULE-SET:https://lists.example/rules?token=abc = server:https://dns.example/query?token=def
+```
+
+DNS 脚本的预算包含等待执行名额；`$httpClient` 保留原 DNS 客户端的路由身份，支持二进制 body，连接池只在该次 DNS 调用内使用。
+
+域名 Host 不生成 DNAT，也不扩大 HTTP 捕获。`use-local-host-item-for-proxy` 决定已截获代理连接是否保留静态 Host 的 DNS IP（默认 false）；direct 保留该 IP。字面 IP → IP 生成原生目的地址规则，例如：
 
 ```ini
 [Host]
 192.0.2.1 = 198.51.100.1,198.51.100.2
 ```
 
-仅含 Host 的模块无需 CA 或客户端 MITM 开关。映射按模块及条目顺序首个命中，保留原端口；后续路由使用重写后的目标。多个目标按连接随机选择，UDP 固定会话目标并还原回包来源。只有命中完整捕获条件的流量会进入用户态，新目标的 block 仍然生效。
+仅含 Host 的模块无需 CA 或客户端 MITM 开关。字面 IP 映射按模块及条目顺序首个命中，保留原端口；后续路由使用重写后的目标。多个目标按连接随机选择，UDP 固定会话目标并还原回包来源。
 
-Host 转换成与原生 [rules / DNAT](destination-rules.md) 共用的目的地址规则。内核保留完整过滤条件筛选候选连接，域名条件使用已有 DNS 域名—IP 映射，字面 IP 条件无需 DNS；用户态再按本连接的 SNI、HTTP Host 或可嗅探的 QUIC 判断实际目标。原生 rules 排在插件贡献之前，不修改 DNS 请求或应答。
+字面 IP Host 与原生 [rules / DNAT](destination-rules.md) 共用目的地址规则，原生 rules 排在插件贡献之前。只有完整过滤条件命中的流量才进入用户态，新目标 block 仍生效。DNS 的透明转发和持久化域名登记见 [DNS](dns.md)。
 
-Host 映射始终对 direct 和 proxy 生效，优先于 `dial_target_override`，不因出站选择撤销映射。模块包含 Host 映射且未设置 `[General] use-local-host-item-for-proxy = true`（未填写或为 false）时，加载日志和模块状态会提示与 Surge 的行为差异；设置 true 只消除此提示。映射不影响代理服务器自身地址。不支持 Host 别名、指定 DNS、DNS script 或 ruleset 引用，加载时报错并报告行号。不会自动测速、重试或递归重写。
+字面 IP 映射对 direct 和 proxy 生效，优先于 `dial_target_override`，不影响代理服务器自身地址。域名条目的静态 DNS TTL 为 60 秒；系统与脚本默认 TTL 为 0，脚本可显式指定 TTL。
 
 ### 限制客户端来源
 
@@ -125,7 +142,7 @@ client_source_address: '-02:00:00:00:00:10,all'
 
 启用 HTTP scope 后，仅按模块的正向 hostname 和对应端口捕获 TCP/UDP 候选连接，再按实际主机名、排除项和客户端开关决定是否解密。无关 direct 流量保留 eBPF 内核直通。含脚本、URL Rewrite 或 Map Local 的模块先执行 HTTP 处理，随后按最终目标执行目的地址规则 → flow → 模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。原目标的 block 不会抢先阻止这些已准入的请求；新目标命中 block 则拒绝。未准入客户端仍按普通连接路由处理。
 
-HTTP 转发和脚本 `$httpClient` 共用请求路由：原主机及端口使用截获 IP，其他目标经 dae DNS 解析，再执行目标规则和路由，保留客户端来源、接口及策略。请求型模块即使只改路径，也在 HTTP 处理后确定路由；纯检查模块保留原路由。路由在连接池查找前执行，出站、节点、mark 或实际目标变化会隔离连接池。302/307 返回客户端请求新目标，reject 和 Map Local 可直接生成响应，无需上游拨号。
+HTTP 转发和脚本 `$httpClient` 共用请求路由：原主机及端口使用截获 IP，其他目标经系统解析器解析，再执行目标规则和路由，保留客户端来源、接口及策略。请求型模块在 HTTP 处理后确定路由；纯检查模块保留原路由。出站、节点、mark 或实际目标变化会隔离连接池。302/307 返回客户端请求新目标，reject 和 Map Local 可直接生成响应。
 
 支持 HTTP/1.1、TLS HTTP/2 和 HTTP/3（QUIC v1/v2）。HTTP/3 自动使用现有 CA、客户端开关和 hostname 范围；只有完整 ClientHello 的 ALPN 包含 `h3` 才解密，其它 QUIC/UDP 保持转发。客户端与上游都使用 HTTP/3，支持同一源/目标/域名下多连接及重连；上游握手失败不会自动改用 TCP 重试。HTTP/3 上游按最终目标匹配 UDP 路由；命中 block 时不会建立上游连接，模块的本地响应仍可直接返回。
 
@@ -144,7 +161,7 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 运行中查询当前模块：
 
 ```sh
-./dae mitm surge status
+./dae plugins surge status
 ```
 
 查询复用 daemon 的状态服务，无需开启 `global.api_port`。`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败时报告具体原因，`debug` 可查看各模块已加载、失败或尚未加载的进度；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。

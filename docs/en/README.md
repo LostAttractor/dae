@@ -2,7 +2,7 @@
 
 [**简体中文**](../zh/README.md) | [**English**](README.md)
 
-The [full configuration example](../../example.dae) includes the [management API](configuration/api.md), optional [MITM plugin instances](../zh/configuration/mitm-plugins.md) with [Surge compatibility](../zh/configuration/surge-module.md), and [destination IP overrides](../zh/configuration/destination-rules.md). MITM and DNAT guides are currently in Chinese. External plugins use the [public Go contract](../../component/mitm/plugin/README.md).
+The [full configuration example](../../example.dae) includes the [management API](configuration/api.md), optional [plugin instances](../zh/configuration/mitm-plugins.md) with [Surge compatibility](../zh/configuration/surge-module.md), [DNS relay/plugins](configuration/dns.md), and [destination overrides](../zh/configuration/destination-rules.md). External plugins use the [public Go contract](../../component/plugin/README.md).
 
 ## Linux Kernel Requirement
 

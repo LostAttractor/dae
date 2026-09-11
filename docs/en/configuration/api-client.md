@@ -1,6 +1,6 @@
 # API and independent clients
 
-`dae status`, its `--verbose` and `--recent` modes, and `dae mitm surge status` read runtime state through the same API client. The Web application communicates through HTTP APIs.
+`dae status`, its `--verbose` and `--recent` modes, and `dae plugins surge status` read runtime state through the same API client. The Web application communicates through HTTP APIs.
 
 ## Build and connect
 
@@ -10,9 +10,9 @@ With Go 1.27+ (or inside `nix-shell`):
 make client
 sudo ./dae-client status
 ./dae-client status --api http://192.168.1.1:9080 --recent
-./dae-client mitm status --api http://192.168.1.1:9080 --json
-./dae-client mitm status --api http://192.168.1.1:9080 --verbose
-./dae-client mitm surge status --api http://192.168.1.1:9080 --instance personal
+./dae-client plugins status --api http://192.168.1.1:9080 --json
+./dae-client plugins status --api http://192.168.1.1:9080 --verbose
+./dae-client plugins surge status --api http://192.168.1.1:9080 --instance personal
 ./dae-client status --api unix:///var/run/dae.sock --json
 ```
 
@@ -53,7 +53,7 @@ The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these 
 
 `make` and `make test` run `make web-assets` to build the frontend and replace `internal/webui/assets/` with its output before compiling Go. Generated bundles are ignored by Git; only `web/src/` is edited. When invoking `go build` or tests of `internal/webui` or `cmd` directly, first run `make web-assets` alongside the usual daemon build prerequisites. Client-only builds and tests do not need this step.
 
-`dae mitm status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_TOKEN`; filter reports with `--instance`. The standalone client provides `mitm status` for any plugin report and `mitm surge status` for Surge tables without loading runtime plugins. Report commands emit the filtered instance array with `--json`; `status --json` emits the complete daemon snapshot.
+`dae plugins status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_TOKEN`; filter reports with `--instance`. The standalone client provides `plugins status` for any plugin report and `plugins surge status` for Surge tables without loading runtime plugins. Report commands emit the filtered instance array with `--json`; `status --json` emits the complete daemon snapshot.
 
 The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `cmd/api_server.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the internal/apiserver handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
 
@@ -102,7 +102,15 @@ Successful operations return `200` with current state. Application errors have `
 
 ## Snapshot semantics and TUI integration
 
-The current status schema is `7`. Plugin state is carried in `mitm_plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. There is no top-level `surge` field. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
+The current status schema is `10`. Domain table `limit: 0` means unbounded userspace retention; `breakdown.gc` counts time-collected pairs. Kernel `candidates` reports IPs eligible before capacity selection. Plugin state is carried in `plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. There is no top-level `surge` field. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
+
+Registry `used` counts domain-IP pairs. Its `breakdown.domains`, `ips`, `ipv4` and
+`ipv6` describe distinct retained names and addresses; IPs shared by multiple names
+count once, and `ips = ipv4 + ipv6`. The CLI labels these quantities separately
+from kernel residency and capacity omissions.
+
+Schema 10 requires these registry counts. Upgrade the daemon and CLI together;
+schema 9 responses without the counts are rejected instead of displaying zeros.
 
 `groups[].nodes[].revision` identifies the node state revision. `observed_session_seq` and optional `session_detail` describe the observed session and its resource identity. `recovery` exposes the executor, phase, verification and attempt count; `retry_at` appears only when an actual backoff timer exists. Clients must not infer a countdown for library-managed recovery. Optional `failure` identifies the failure source and resource so a TUI can distinguish current recovery from the most recent failure.
 

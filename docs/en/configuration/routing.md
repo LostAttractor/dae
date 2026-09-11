@@ -135,7 +135,7 @@ A configuration supports up to 1024 fragments and policies, 65536 source rules a
 
 ### Shared MITM, DNAT and Host capture
 
-MITM plugins, native `rules { ... -> dnat(ip) }` and Surge Host mappings automatically share an internal capture and flow-control fragment across all policies. No manual rules or `use` are needed.
+HTTP plugins, native `rules { ... -> dnat(ip) }` and literal-IP Surge Host mappings automatically share an internal capture and flow-control fragment across all policies. No manual rules or `use` are needed. Domain Host entries answer DNS without creating DNAT rules; ordinary uncaptured direct traffic stays in the kernel.
 
 Execution order is: local API bypass → DNAT/Host and request-routing HTTP capture → must/bump controls and pure MITM capture → module `pre-matching` rules → user policy rules → ordinary module rules → policy fallback. All policies share the same capture and control instructions, while each policy selects the outbound, mark and block behavior. MITM retains each declared domain/IP and its ports; DNAT/Host retain their complete predicates, including domains. Missing DNS mappings do not widen capture, and unrelated direct traffic stays in the kernel. Exact userspace destination matching does not consume kernel instruction slots; identical domain and static IP predicates share resources across stages.
 
