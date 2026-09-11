@@ -79,6 +79,9 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 	if from.Type() == reflect.TypeOf(MITM{}) {
 		return m.marshalMITM(from.Interface().(MITM), depth+1)
 	}
+	if from.Type() == reflect.TypeOf(Plugins{}) {
+		return m.marshalPlugins(from.Interface().(Plugins), depth+1)
+	}
 	if from.Type() == reflect.TypeOf([]Node{}) {
 		return m.marshalNodes(from.Interface().([]Node), depth+1)
 	}

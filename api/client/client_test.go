@@ -129,7 +129,7 @@ func TestClientDoesNotDependOnDefaultTransport(t *testing.T) {
 	defer func() { http.DefaultTransport = previous }()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"schema":7}`)
+		_, _ = io.WriteString(w, `{"schema":8}`)
 	}))
 	defer server.Close()
 	c, err := New(Options{Endpoint: server.URL})
@@ -165,13 +165,13 @@ func TestStatusAcceptsChangingHealthAndRejectsInvalidEnvelope(t *testing.T) {
 		name, body string
 		wantError  bool
 	}{
-		{"health transition", `{"schema":7,"version":"test","groups":[{"name":"proxy","selected_node_ids":["node","","",""],"nodes":[{"id":"node","healthy":false}]}]}`, false},
+		{"health transition", `{"schema":8,"version":"test","groups":[{"name":"proxy","selected_node_ids":["node","","",""],"nodes":[{"id":"node","healthy":false}]}]}`, false},
 		{"unsupported schema", `{"schema":99}`, true},
 		{"missing schema", `{}`, true},
 		{"null", `null`, true},
-		{"duplicate key", `{"schema":7,"schema":7}`, true},
-		{"trailing JSON", `{"schema":7} {}`, true},
-		{"wrong type", `{"schema":"7"}`, true},
+		{"duplicate key", `{"schema":8,"schema":8}`, true},
+		{"trailing JSON", `{"schema":8} {}`, true},
+		{"wrong type", `{"schema":"8"}`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, test.body) }))

@@ -37,12 +37,13 @@ func TestLoadMITMInstances(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "host.sgmodule"), []byte("[Host]\napi.example.com = 198.51.100.1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	body := `mitm { enabled: true
+	body := `mitm { enabled: false ca_cert: 'absent.pem' ca_key: 'absent.key' }
+plugins {
  first { type: surge module { 'file:host.sgmodule' } }
  disabled { type: unavailable enabled: false token: 'private' }
  second { type: surge module { 'file:host.sgmodule' } }
 }`
-	h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Setup{"surge": surge.Setup})
+	h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,10 +65,10 @@ func TestLoadMITMRejectsUnknownSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, body := range []string{
-		`mitm { enabled: true unknown { api_key: 'secret' } }`,
-		`mitm { enabled: true surge { invalid: 'secret' module { 'file:host.sgmodule' } } }`,
+		`plugins { unknown { api_key: 'secret' } }`,
+		`plugins { surge { invalid: 'secret' module { 'file:host.sgmodule' } } }`,
 	} {
-		h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Setup{"surge": surge.Setup})
+		h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
 		if err == nil {
 			h.Close()
 			t.Fatal("accepted invalid instance")
@@ -93,11 +94,12 @@ func TestMITMInstancesCanExplicitlyShareStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "count.js"), []byte(`const n=Number($persistentStore.read("counter")||0)+1;$persistentStore.write(String(n),"counter");$done({response:{status:200,body:String(n)}});`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	conf := mitmConfigForTest(t, `mitm { enabled: true ca_cert: 'ca.pem' ca_key: 'ca.key'
+	conf := mitmConfigForTest(t, `mitm { enabled: true ca_cert: 'ca.pem' ca_key: 'ca.key' }
+plugins {
  first {type:surge store:'shared.json' module {'file:first.sgmodule'}}
  second {type:surge store:'shared.json' module {'file:second.sgmodule'}}
  }`)
-	host, err := loadMITM(context.Background(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Setup{"surge": surge.Setup})
+	host, err := loadMITM(context.Background(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
 	if err != nil {
 		t.Fatal(err)
 	}

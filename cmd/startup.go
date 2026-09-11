@@ -132,7 +132,12 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, setups map[string]plugin.Setup) (c *control.ControlPlane, err error) {
+func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, definitions map[string]plugin.Definition) (c *control.ControlPlane, err error) {
+	// This also covers embedders of Run and direct constructor callers. Do not
+	// allocate resources or run startup cleanup for a failed static preflight.
+	if err := validatePlugins(conf, definitions); err != nil {
+		return nil, fmt.Errorf("validate plugins: %w", err)
+	}
 	defer func() {
 		if err == nil || bpf != nil {
 			return
@@ -184,12 +189,12 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	}
 
 	var mitmLoader func(*http.Client, *http.Client) (*mitm.Host, error)
-	if conf.MITM.Enabled {
+	if len(conf.Plugins) != 0 {
 		mitmLoader = func(client, background *http.Client) (*mitm.Host, error) {
 			if bpf != nil {
-				writeReloadProgress("Preparing MITM plugins using routing rules...")
+				writeReloadProgress("Preparing plugins using routing rules...")
 			}
-			return loadMITM(ctx, conf, client, background, setups)
+			return loadMITM(ctx, conf, client, background, definitions)
 		}
 	}
 	assemblyStarted := time.Now()

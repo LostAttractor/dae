@@ -21,7 +21,7 @@ import (
 func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 	t.Setenv("DAE_API_ENDPOINT", "http://127.0.0.1:1")
 	t.Setenv("DAE_API_TOKEN", "report-secret")
-	instances := []api.MITMInstanceStatus{
+	instances := []api.PluginInstanceStatus{
 		{ID: "personal", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"cached","warnings":["offline"]}]}`)},
 		{ID: "work", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"loaded"}]}`)},
 		{ID: "native", Type: "demo", State: "active", Details: jsonv1.RawMessage(`{"running":7,"tasks":[{"name":"hidden-in-summary"}]}`)},
@@ -36,7 +36,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 		if r.Method != "GET" || r.URL.Path != "/api/status" || r.Header.Get("Authorization") != "Bearer report-secret" {
 			t.Errorf("unexpected API request: %s %s", r.Method, r.URL.Path)
 		}
-		_ = json.MarshalWrite(w, api.StatusSnapshot{Schema: api.StatusSchemaVersion, MITMPlugins: instances})
+		_ = json.MarshalWrite(w, api.StatusSnapshot{Schema: api.StatusSchemaVersion, Plugins: instances})
 	}))
 	defer server.Close()
 	for _, test := range []struct {
@@ -77,7 +77,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 				t.Fatalf("unexpected report: %s", output.String())
 			}
 			if test.count > 0 {
-				var reports []api.MITMInstanceStatus
+				var reports []api.PluginInstanceStatus
 				if err := json.Unmarshal(output.Bytes(), &reports); err != nil || len(reports) != test.count || len(reports[0].Details) == 0 {
 					t.Fatalf("raw reports lost details: %v %s", err, output.String())
 				}
@@ -99,7 +99,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 func TestReportCommandsPreserveCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fetch := func(ctx context.Context) ([]api.MITMInstanceStatus, error) { return nil, ctx.Err() }
+	fetch := func(ctx context.Context) ([]api.PluginInstanceStatus, error) { return nil, ctx.Err() }
 	for _, command := range []*cobra.Command{NewMITMStatusCommand(fetch, nil), NewSurgeStatusCommand(fetch)} {
 		command.SetContext(ctx)
 		command.SetArgs(nil)

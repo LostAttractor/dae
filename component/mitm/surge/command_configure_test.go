@@ -39,7 +39,7 @@ func parseSurgeConfigureOutput(t *testing.T, output string) []surge.ModuleSource
 	if !strings.HasPrefix(strings.TrimSpace(output), "module {") {
 		t.Fatalf("stdout does not start with a module section:\n%s", output)
 	}
-	sections, err := config_parser.Parse("global {}\nmitm { surge {\n" + output + "\n} }\nrouting { fallback: direct }")
+	sections, err := config_parser.Parse("global {}\nplugins { surge {\n" + output + "\n} }\nrouting { fallback: direct }")
 	if err != nil {
 		t.Fatalf("generated configuration cannot be parsed: %v\n%s", err, output)
 	}
@@ -47,7 +47,7 @@ func parseSurgeConfigureOutput(t *testing.T, output string) []surge.ModuleSource
 	if err != nil {
 		t.Fatalf("generated configuration is invalid: %v\n%s", err, output)
 	}
-	s, err := surge.ParseConfig(conf.MITM.Plugins[0].Config)
+	s, err := surge.ParseConfig(conf.Plugins[0].Config)
 	if err != nil {
 		t.Fatal(err)
 	}

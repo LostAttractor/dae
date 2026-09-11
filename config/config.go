@@ -211,6 +211,7 @@ type RoutingInterface struct {
 type Config struct {
 	Global       Global         `mapstructure:"global" required:"" desc:"GlobalDesc"`
 	MITM         MITM           `mapstructure:"mitm" desc:"MITMDesc"`
+	Plugins      Plugins        `mapstructure:"plugins"`
 	Subscription []Subscription `mapstructure:"subscription"`
 	Node         []Node         `mapstructure:"node"`
 	Group        []Group        `mapstructure:"group" desc:"GroupDesc"`

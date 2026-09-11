@@ -208,6 +208,8 @@ func SectionParser(to reflect.Value, section *config_parser.Section) error {
 	switch target := to.Interface().(type) {
 	case *MITM:
 		return parseMITM(target, section)
+	case *Plugins:
+		return parsePlugins(target, section)
 	case *[]Node:
 		return parseNodeList(target, section)
 	case *[]Subscription:

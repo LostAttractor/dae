@@ -43,6 +43,14 @@ func (h *Host) plannedTransport(plan UpstreamPlanner, packet bool) *plannedTrans
 	return &plannedTransport{host: h, packet: packet, plan: plan, pools: make(map[string]*routePool), owned: make(map[*routePool]func())}
 }
 
+// RoutedHTTPClient gives one protocol invocation its own policy-keyed pools.
+// The owner supplies the intercepted identity in plan and closes the pools when
+// the invocation finishes, after its HTTP requests and response bodies finish.
+func (h *Host) RoutedHTTPClient(plan UpstreamPlanner) (*http.Client, func()) {
+	transport := h.plannedTransport(plan, false)
+	return &http.Client{Transport: transport}, transport.close
+}
+
 func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	pool, err := p.acquire(request)
 	if err != nil {

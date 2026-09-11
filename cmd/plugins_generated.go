@@ -1,4 +1,4 @@
-// Code generated from mitm_plugins.cfg; DO NOT EDIT.
+// Code generated from plugins.cfg; DO NOT EDIT.
 //go:build linux
 
 package cmd
@@ -8,7 +8,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-func compiledMITMPlugins() map[string]plugin.Definition {
+func compiledPlugins() map[string]plugin.Definition {
 	return map[string]plugin.Definition{
 		"surge": plugin2.Plugin,
 	}

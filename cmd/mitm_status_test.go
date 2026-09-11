@@ -45,7 +45,7 @@ func TestMITMPluginCommandsUseDaemonReportsWithoutSetup(t *testing.T) {
 			},
 		},
 	}
-	command := newMITMCommand(definitions, services)
+	command := newPluginsCommand(definitions, services)
 	if queried {
 		t.Fatal("command registration queried daemon")
 	}
@@ -59,7 +59,7 @@ func TestMITMPluginCommandsUseDaemonReportsWithoutSetup(t *testing.T) {
 	if !queried || !strings.Contains(output.String(), `"work"`) || strings.Contains(output.String(), `"personal"`) || strings.Contains(output.String(), `"other"`) {
 		t.Fatalf("scope leaked: %s", output.String())
 	}
-	for _, path := range [][]string{{"status"}, {"demo", "status"}, {"custom", "status"}, {"surge", "status"}, {"surge", "configure"}, {"ca", "info"}} {
+	for _, path := range [][]string{{"status"}, {"demo", "status"}, {"custom", "status"}, {"surge", "status"}, {"surge", "configure"}} {
 		child, rest, err := command.Find(path)
 		if err != nil || len(rest) != 0 || child.RunE == nil {
 			t.Fatalf("missing %v: %v", path, err)
@@ -74,7 +74,7 @@ func TestMITMPluginCommandsUseDaemonReportsWithoutSetup(t *testing.T) {
 
 func TestMITMStatusAggregationAndErrors(t *testing.T) {
 	for _, args := range [][]string{{"status", "--json"}, {"demo", "status", "--json"}, {"status", "--instance", "missing"}} {
-		command := newMITMCommand(map[string]plugin.Definition{"demo": {}}, plugin.CommandServices{Status: func(context.Context) ([]plugin.InstanceStatus, error) {
+		command := newPluginsCommand(map[string]plugin.Definition{"demo": {}}, plugin.CommandServices{Status: func(context.Context) ([]plugin.InstanceStatus, error) {
 			return []plugin.InstanceStatus{{ID: "demo", Type: "demo", State: "active", Details: json.RawMessage(`{"running":1}`)}}, nil
 		}})
 		var output bytes.Buffer
@@ -164,7 +164,7 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 					},
 				},
 			}
-			command := newMITMCommand(definitions, plugin.CommandServices{BaseDir: "/unused/cache", Status: func(ctx context.Context) ([]plugin.InstanceStatus, error) {
+			command := newPluginsCommand(definitions, plugin.CommandServices{BaseDir: "/unused/cache", Status: func(ctx context.Context) ([]plugin.InstanceStatus, error) {
 				queries++
 				return statuses, nil
 			}})
@@ -199,7 +199,7 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 }
 
 func TestMITMVerboseStatusKeepsReportsAfterRendererFailure(t *testing.T) {
-	command := newMITMCommand(map[string]plugin.Definition{"surge": surge.Plugin}, plugin.CommandServices{Status: func(context.Context) ([]plugin.InstanceStatus, error) {
+	command := newPluginsCommand(map[string]plugin.Definition{"surge": surge.Plugin}, plugin.CommandServices{Status: func(context.Context) ([]plugin.InstanceStatus, error) {
 		return []plugin.InstanceStatus{
 			{ID: "broken", Type: "surge", Details: json.RawMessage(`{"enabled":"invalid"}`)},
 			{ID: "healthy", Type: "surge", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"kept-module"}]}`)},
@@ -210,7 +210,7 @@ func TestMITMVerboseStatusKeepsReportsAfterRendererFailure(t *testing.T) {
 	command.SetOut(&output)
 	command.SetErr(&output)
 	command.SetArgs([]string{"status", "-v"})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "mitm.broken: invalid Surge status") {
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "plugins.broken: invalid Surge status") {
 		t.Fatalf("lost renderer failure: %v", err)
 	}
 	for _, want := range []string{`"enabled": "invalid"`, "kept-module", "still shown"} {

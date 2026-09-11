@@ -15,13 +15,6 @@ import (
 
 func (c *ControlPlane) tableStatuses() []api.TableUsage {
 	var tables []api.TableUsage
-	if c.dnsController != nil {
-		tables = append(tables, api.TableUsage{
-			Name:  "dns-cache",
-			Used:  c.dnsController.dnsCache.Len(),
-			Limit: c.dnsController.dnsCache.MaxSize(),
-		})
-	}
 	if c.core == nil || c.core.domainRegistry == nil {
 		return tables
 	}
@@ -160,7 +153,7 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 		Tables:       c.tableStatuses(),
 		Groups:       c.groupStatuses(paths),
 	}
-	snapshot.MITMPlugins = c.MITMStatus()
+	snapshot.Plugins = c.MITMStatus()
 	return snapshot
 }
 

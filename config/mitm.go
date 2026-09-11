@@ -12,15 +12,16 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-// MITM owns transport settings and ordered, independently configured plugins.
+// MITM owns HTTP interception settings. Plugin instances live in plugins{}.
 type MITM struct {
-	BufferMemoryLimit   int64        `mapstructure:"buffer_memory_limit" default:"0"`
-	Enabled             bool         `mapstructure:"enabled" default:"false"`
-	ClientSourceAddress []string     `mapstructure:"client_source_address"`
-	CACert              string       `mapstructure:"ca_cert"`
-	CAKey               string       `mapstructure:"ca_key"`
-	Plugins             []PluginSpec `mapstructure:"_"`
+	BufferMemoryLimit   int64    `mapstructure:"buffer_memory_limit" default:"0"`
+	Enabled             bool     `mapstructure:"enabled" default:"false"`
+	ClientSourceAddress []string `mapstructure:"client_source_address"`
+	CACert              string   `mapstructure:"ca_cert"`
+	CAKey               string   `mapstructure:"ca_key"`
 }
+
+type Plugins []PluginSpec
 
 type PluginSpec struct {
 	Name    string                 `mapstructure:"_"`
@@ -38,7 +39,6 @@ var pluginIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_-]*$`)
 func parseMITM(to *MITM, section *config_parser.Section) error {
 	*to = MITM{}
 	host := &config_parser.Section{Name: section.Name}
-	names := make(map[string]bool)
 	bufferLimitSet := false
 	for _, item := range section.Items {
 		switch value := item.Value.(type) {
@@ -49,47 +49,9 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 			host.Items = append(host.Items, item)
 			bufferLimitSet = bufferLimitSet || value.Key == "buffer_memory_limit"
 		case *config_parser.Section:
-			if !pluginIdentifier.MatchString(value.Name) {
-				return fmt.Errorf("invalid mitm instance name %q", value.Name)
-			}
-			if mitmHostKeys[value.Name] || value.Name == "type" {
-				return fmt.Errorf("reserved plugin instance name %q", value.Name)
-			}
-			if names[value.Name] {
-				return fmt.Errorf("duplicate mitm plugin instance %q", value.Name)
-			}
-			names[value.Name] = true
-			p := PluginSpec{Name: value.Name, Type: value.Name, Enabled: true, Config: &config_parser.Section{Name: value.Name}}
-			seen := make(map[string]bool)
-			for _, child := range value.Items {
-				param, ok := child.Value.(*config_parser.Param)
-				if !ok || param.Key != "type" && param.Key != "enabled" {
-					p.Config.Items = append(p.Config.Items, child)
-					continue
-				}
-				if seen[param.Key] || param.AndFunctions != nil || len(param.Annotation) != 0 {
-					return fmt.Errorf("mitm.%s: invalid or duplicate %s", p.Name, param.Key)
-				}
-				seen[param.Key] = true
-				if param.Key == "type" {
-					if param.Val == "" {
-						return fmt.Errorf("mitm.%s: empty plugin type", p.Name)
-					}
-					p.Type = param.Val
-					if !pluginIdentifier.MatchString(p.Type) {
-						return fmt.Errorf("mitm.%s: invalid plugin type", p.Name)
-					}
-				} else {
-					var err error
-					p.Enabled, err = strconv.ParseBool(param.Val)
-					if err != nil {
-						return fmt.Errorf("mitm.%s.enabled: expected boolean", p.Name)
-					}
-				}
-			}
-			to.Plugins = append(to.Plugins, p)
+			return fmt.Errorf("mitm.%s: move plugin instances to plugins{}", value.Name)
 		default:
-			return fmt.Errorf("mitm: expected a setting or named plugin section")
+			return fmt.Errorf("mitm: expected a transport setting")
 		}
 	}
 	if err := ParamParser(reflect.ValueOf(to), host, nil); err != nil {
@@ -103,6 +65,58 @@ func parseMITM(to *MITM, section *config_parser.Section) error {
 	}
 	if _, err := clientmatch.Parse(to.ClientSourceAddress); err != nil {
 		return fmt.Errorf("mitm.client_source_address: %w", err)
+	}
+	return nil
+}
+
+func parsePlugins(to *Plugins, section *config_parser.Section) error {
+	*to = nil
+	names := make(map[string]bool)
+	for _, item := range section.Items {
+		switch value := item.Value.(type) {
+		case *config_parser.Section:
+			if !pluginIdentifier.MatchString(value.Name) {
+				return fmt.Errorf("invalid plugin instance name %q", value.Name)
+			}
+			if mitmHostKeys[value.Name] || value.Name == "type" {
+				return fmt.Errorf("reserved plugin instance name %q", value.Name)
+			}
+			if names[value.Name] {
+				return fmt.Errorf("duplicate plugin instance %q", value.Name)
+			}
+			names[value.Name] = true
+			p := PluginSpec{Name: value.Name, Type: value.Name, Enabled: true, Config: &config_parser.Section{Name: value.Name}}
+			seen := make(map[string]bool)
+			for _, child := range value.Items {
+				param, ok := child.Value.(*config_parser.Param)
+				if !ok || param.Key != "type" && param.Key != "enabled" {
+					p.Config.Items = append(p.Config.Items, child)
+					continue
+				}
+				if seen[param.Key] || param.AndFunctions != nil || len(param.Annotation) != 0 {
+					return fmt.Errorf("plugins.%s: invalid or duplicate %s", p.Name, param.Key)
+				}
+				seen[param.Key] = true
+				if param.Key == "type" {
+					if param.Val == "" {
+						return fmt.Errorf("plugins.%s: empty plugin type", p.Name)
+					}
+					p.Type = param.Val
+					if !pluginIdentifier.MatchString(p.Type) {
+						return fmt.Errorf("plugins.%s: invalid plugin type", p.Name)
+					}
+				} else {
+					var err error
+					p.Enabled, err = strconv.ParseBool(param.Val)
+					if err != nil {
+						return fmt.Errorf("plugins.%s.enabled: expected boolean", p.Name)
+					}
+				}
+			}
+			*to = append(*to, p)
+		default:
+			return fmt.Errorf("plugins: expected a named plugin section")
+		}
 	}
 	return nil
 }
@@ -121,7 +135,11 @@ func (m *Marshaller) marshalMITM(conf MITM, depth int) error {
 	if conf.CAKey != "" {
 		m.writeLine(depth, "ca_key:"+strconv.Quote(conf.CAKey))
 	}
-	for _, p := range conf.Plugins {
+	return nil
+}
+
+func (m *Marshaller) marshalPlugins(conf Plugins, depth int) error {
+	for _, p := range conf {
 		m.writeLine(depth, p.Name+" {")
 		m.writeLine(depth+1, "type:"+strconv.Quote(p.Type))
 		m.writeLine(depth+1, "enabled:"+strconv.FormatBool(p.Enabled))

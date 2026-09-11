@@ -8,7 +8,8 @@ package config
 type Desc map[string]string
 
 var SectionSummaryDesc = Desc{
-	"mitm":         "Shared HTTP/TLS host with ordered, statically registered Go plugin instances. Surge compatibility is configured as a child instance.",
+	"mitm":         "Shared HTTP/TLS certificates, client selection and body memory settings.",
+	"plugins":      "Ordered, statically compiled Go plugin instances, including HTTP and DNS processing.",
 	"rules":        "Flow rules: filter() -> must, bump or dnat(ip). must skips automatic DNS interception; bump requires userspace routing; first matching DNAT overrides the dial IP. Outbound selection remains in routing.",
 	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
 	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
@@ -55,7 +56,7 @@ var ClientDesc = Desc{
 
 var MITMDesc = Desc{
 	"buffer_memory_limit":   "Process-wide managed body buffer budget in bytes, shared across plugin instances and reloads. Defaults to 256 MiB. Exhaustion skips Surge body processing and preserves the original stream. Does not limit RSS, native script heaps or arbitrary plugin allocations.",
-	"enabled":               "Enable the MITM plugin host, including plugin routing contributions and background tasks.",
+	"enabled":               "Enable HTTP/TLS interception. DNS plugins, routing contributions and background tasks are configured independently in plugins{}.",
 	"ca_cert":               "Shared PEM CA certificate path; required by HTTPS plugins. Destination-only plugins need no CA.",
 	"ca_key":                "Shared PEM CA private key path.",
 	"client_source_address": "HTTP/MITM client selection; per-device settings take precedence. Does not gate destination rules.",

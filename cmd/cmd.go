@@ -49,14 +49,11 @@ func init() {
 // Execute runs the process CLI. Plugin selection is captured by its run command
 // and carried through startup and reload, without a global plugin registry.
 func Execute() error {
-	definitions := compiledMITMPlugins()
-	setups := make(map[string]plugin.Setup, len(definitions))
-	for name, definition := range definitions {
-		setups[name] = definition.Setup
-	}
+	definitions := compiledPlugins()
 	var connection cli.Connection
 	mitm := newMITMCommand(definitions, plugin.CommandServices{BaseDir: cacheDirectory(), Status: connection.MITM})
-	connection.Bind(mitm.PersistentFlags())
-	rootCmd.AddCommand(newRunCommand(setups), mitm)
+	plugins := newPluginsCommand(definitions, plugin.CommandServices{BaseDir: cacheDirectory(), Status: connection.MITM})
+	connection.Bind(plugins.PersistentFlags())
+	rootCmd.AddCommand(newRunCommand(definitions), mitm, plugins)
 	return rootCmd.Execute()
 }

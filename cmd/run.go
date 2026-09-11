@@ -34,7 +34,7 @@ var (
 	disableAuthSudo   bool
 )
 
-func newRunCommand(setups map[string]plugin.Setup) *cobra.Command {
+func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 	runCmd := &cobra.Command{
 		Use:   "run",
 		Short: "To run dae in the foreground.",
@@ -59,6 +59,9 @@ func newRunCommand(setups map[string]plugin.Setup) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read config: %w", err)
 			}
+			if err := validatePlugins(conf, definitions); err != nil {
+				return fmt.Errorf("validate plugins: %w", err)
+			}
 			// AutoSu has returned in the final privileged process. Install the
 			// process-global resolver before constructors can resolve hostnames.
 			if err = configureDaemonResolver(&conf.Global); err != nil {
@@ -78,7 +81,7 @@ func newRunCommand(setups map[string]plugin.Setup) *cobra.Command {
 			logger.SetLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			log.WithField("files", includes).Debug("Loaded configuration files")
-			err = Run(conf, []string{filepath.Dir(cfgFile)}, setups)
+			err = Run(conf, []string{filepath.Dir(cfgFile)}, definitions)
 			if err != nil {
 				// Own the terminal error here so Cobra does not print it again.
 				cmd.SilenceErrors = true

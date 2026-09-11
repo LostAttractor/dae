@@ -15,13 +15,13 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	want := benchmarkStatus()
 	want.Groups[0].Nodes[0].InitialCheckDone = true
 	want.Groups[0].Nodes[0].Availability.LastFailureDuration = time.Second
-	want.MITMPlugins = []MITMInstanceStatus{{ID: "example", Type: "example", State: "active",
+	want.Plugins = []PluginInstanceStatus{{ID: "example", Type: "example", State: "active",
 		BufferMemory: &BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}}}
 	payload, err := json.Marshal(want, jsonv1.FormatDurationAsNano(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":7`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":8`, `"plugins":`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}
@@ -40,7 +40,7 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got.Groups[0].Nodes[0].Latency, want.Groups[0].Nodes[0].Latency) {
 		t.Fatal("latency units changed")
 	}
-	if !reflect.DeepEqual(got.MITMPlugins, want.MITMPlugins) {
+	if !reflect.DeepEqual(got.Plugins, want.Plugins) {
 		t.Fatal("MITM buffer memory statistics changed after round trip")
 	}
 }

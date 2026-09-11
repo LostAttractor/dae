@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 7
+const StatusSchemaVersion = 8
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -20,7 +20,7 @@ type StatusSnapshot struct {
 	Networks     NetworkValues[PathStats] `json:"networks"`
 	Tables       []TableUsage             `json:"tables"`
 	Groups       []GroupStatus            `json:"groups"`
-	MITMPlugins  []MITMInstanceStatus     `json:"mitm_plugins,omitempty"`
+	Plugins      []PluginInstanceStatus   `json:"plugins,omitempty"`
 }
 
 // TableUsage is the fill level of one capacity-limited DNS/domain table.

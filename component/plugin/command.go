@@ -13,6 +13,11 @@ import (
 type Definition struct {
 	Setup    Setup
 	Commands func(CommandServices) []*cobra.Command
+	// Validate optionally checks local configuration before any plugin setup or
+	// network/resource preparation. It must be deterministic and side-effect
+	// free: do not perform I/O, start workers, or mutate Spec.Config. Setup must
+	// still validate its input for callers that invoke it directly.
+	Validate func(Spec) error
 }
 
 // CommandServices queries the running daemon, scoped to the plugin type and
@@ -23,4 +28,4 @@ type CommandServices struct {
 }
 
 // InstanceStatus carries host state and the plugin's credential-free Report.
-type InstanceStatus = api.MITMInstanceStatus
+type InstanceStatus = api.PluginInstanceStatus

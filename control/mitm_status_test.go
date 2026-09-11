@@ -67,16 +67,16 @@ func TestAPIPluginsFollowPublishedPlane(t *testing.T) {
 		if err := jsonv2.Unmarshal(response.Body.Bytes(), &snapshot, jsonv1.FormatDurationAsNano(true)); err != nil {
 			t.Fatal(err)
 		}
-		if (len(snapshot.MITMPlugins) > 0) != test.enabled {
-			t.Fatalf("plugin status enabled=%v, want %v", len(snapshot.MITMPlugins) > 0, test.enabled)
+		if (len(snapshot.Plugins) > 0) != test.enabled {
+			t.Fatalf("plugin status enabled=%v, want %v", len(snapshot.Plugins) > 0, test.enabled)
 		}
 		if !test.enabled {
 			continue
 		}
-		if len(snapshot.MITMPlugins) != 1 {
-			t.Fatalf("unexpected plugins: %+v", snapshot.MITMPlugins)
+		if len(snapshot.Plugins) != 1 {
+			t.Fatalf("unexpected plugins: %+v", snapshot.Plugins)
 		}
-		status := snapshot.MITMPlugins[0]
+		status := snapshot.Plugins[0]
 		var details map[string]string
 		if err := jsonv2.Unmarshal(status.Details, &details); err != nil {
 			t.Fatal(err)

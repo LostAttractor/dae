@@ -49,8 +49,8 @@ func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections b
 // Run starts dae after command startup has configured process-wide name
 // resolution. Embedders calling Run directly must install a marked default
 // resolver before starting concurrent work.
-// Run starts the daemon with the binary's complete set of MITM plugin types.
-func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plugin.Setup) error {
+// Run starts the daemon with the binary's complete set of plugin types.
+func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string]plugin.Definition) error {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 	startPprofServer(conf.Global.PprofPort)
@@ -71,7 +71,7 @@ func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plug
 	startupStarted := time.Now()
 	shutdownCtx, stopShutdownSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stopShutdownSignals()
-	c, err := newControlPlane(shutdownCtx, nil, conf, externGeoDataDirs, runtimeSettings, setups)
+	c, err := newControlPlane(shutdownCtx, nil, conf, externGeoDataDirs, runtimeSettings, definitions)
 	startupErr := shutdownCtx.Err()
 	if err == nil && startupErr != nil {
 		err = errors.Join(startupErr, cleanupStartup(c))
@@ -152,7 +152,7 @@ func Run(conf *config.Config, externGeoDataDirs []string, setups map[string]plug
 	sdnotify.Ready()
 	log.WithFields(log.Fields{
 		"duration": time.Since(startupStarted), "targets": len(startupPlane.GroupsStatus()),
-		"mitm_plugins": len(startupPlane.MITMStatus()),
+		"plugins": len(startupPlane.MITMStatus()),
 	}).Info("Startup completed")
 	if !disablePidFile {
 		_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
@@ -254,6 +254,10 @@ loop:
 				if includes != nil {
 					log.WithField("files", includes).Debug("Loaded configuration files")
 				}
+				if err := validatePlugins(newConf, definitions); err != nil {
+					reloadFailed("Failed to validate plugins", err)
+					continue
+				}
 				// The tproxy listener is reused across reloads, so a port
 				// change cannot take effect without a restart.
 				if newConf.Global.TproxyPort != conf.Global.TproxyPort {
@@ -276,7 +280,7 @@ loop:
 				log.Debug("Building replacement control plane")
 				writeReloadProgress("Building new control plane...")
 				obj := c.EjectBpf()
-				newC, err := newControlPlane(shutdownCtx, obj, newConf, externGeoDataDirs, runtimeSettings, setups)
+				newC, err := newControlPlane(shutdownCtx, obj, newConf, externGeoDataDirs, runtimeSettings, definitions)
 				reloadErr := shutdownCtx.Err()
 				if err == nil && reloadErr != nil {
 					err = errors.Join(reloadErr, newC.Close())

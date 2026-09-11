@@ -15,6 +15,8 @@ mitm {
   buffer_memory_limit: 67108864
  enabled: true
  client_source_address: '192.0.2.0/24'
+}
+plugins {
  surge_work { type: surge
    module { work: 'file:work.sgmodule' }
    script_timeout: 9s
@@ -34,7 +36,7 @@ routing { fallback: direct }`)
 	if c.MITM.BufferMemoryLimit != 67108864 {
 		t.Fatal(c.MITM.BufferMemoryLimit)
 	}
-	if len(c.MITM.Plugins) != 3 || c.MITM.Plugins[0].Name != "surge_work" || c.MITM.Plugins[0].Type != "surge" || c.MITM.Plugins[1].Enabled || !c.MITM.Plugins[2].Enabled {
+	if len(c.Plugins) != 3 || c.Plugins[0].Name != "surge_work" || c.Plugins[0].Type != "surge" || c.Plugins[1].Enabled || !c.Plugins[2].Enabled {
 		t.Fatalf("wrong instances: %+v", c.MITM)
 	}
 	b, err := c.Marshal(2)
@@ -54,8 +56,8 @@ routing { fallback: direct }`)
 	if round.MITM.BufferMemoryLimit != c.MITM.BufferMemoryLimit {
 		t.Fatal("memory limit changed")
 	}
-	for i, p := range round.MITM.Plugins {
-		if p.Name != c.MITM.Plugins[i].Name || p.Type != c.MITM.Plugins[i].Type || p.Enabled != c.MITM.Plugins[i].Enabled {
+	for i, p := range round.Plugins {
+		if p.Name != c.Plugins[i].Name || p.Type != c.Plugins[i].Type || p.Enabled != c.Plugins[i].Enabled {
 			t.Fatal("instance order changed")
 		}
 	}

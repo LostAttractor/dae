@@ -32,7 +32,7 @@ func addMITMCommands(command *cobra.Command, definitions map[string]plugin.Defin
 }
 
 func newMITMPluginCommand(name string, definition plugin.Definition, services plugin.CommandServices) (*cobra.Command, bool) {
-	group := &cobra.Command{Use: name, Short: "Manage " + name + " MITM plugins."}
+	group := &cobra.Command{Use: name, Short: "Manage " + name + " plugins."}
 	var id string
 	group.PersistentFlags().StringVar(&id, "instance", "", "Query only this plugin instance")
 	services.Status = cli.SelectMITM(services.Status, name, &id)
@@ -50,8 +50,8 @@ func newMITMPluginCommand(name string, definition plugin.Definition, services pl
 
 func logStartupMITMStatus(instances []plugin.InstanceStatus) {
 	for _, instance := range instances {
-		log.WithFields(log.Fields{"mitm_instance": instance.ID, "type": instance.Type,
+		log.WithFields(log.Fields{"plugin_instance": instance.ID, "type": instance.Type,
 			"state": instance.State, "scopes": instance.Scopes, "destination_rules": instance.DestinationRules,
-		}).Debug("MITM plugin prepared")
+		}).Debug("Plugin prepared")
 	}
 }

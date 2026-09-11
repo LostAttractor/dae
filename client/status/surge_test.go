@@ -11,7 +11,7 @@ import (
 )
 
 func TestSurgeUsesInstanceReports(t *testing.T) {
-	instances := []api.MITMInstanceStatus{
+	instances := []api.PluginInstanceStatus{
 		{ID: "other", Type: "demo", Details: json.RawMessage(`{"tasks":1}`)},
 		{ID: "first", Type: "surge", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"one","state":"loaded"}],"future_field":true}`)},
 		{ID: "second", Type: "surge", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"two","state":"cached","warnings":["offline"]}]}`)},
@@ -30,7 +30,7 @@ func TestSurgeUsesInstanceReports(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{"", "null", "{"} {
-		if _, err := Surge([]api.MITMInstanceStatus{{ID: "broken", Type: "surge", Details: json.RawMessage(raw)}}); err == nil {
+		if _, err := Surge([]api.PluginInstanceStatus{{ID: "broken", Type: "surge", Details: json.RawMessage(raw)}}); err == nil {
 			t.Errorf("invalid report %q accepted", raw)
 		}
 	}

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package plugin defines the contract shared by HTTP plugins and their host.
+// Package plugin defines protocol-independent plugin lifecycle and optional capabilities.
 package plugin
 
 import (
@@ -38,6 +38,7 @@ type Handler func(*Exchange) (*http.Response, error)
 
 // Plan is immutable after setup; the host takes ownership without copying it.
 type Plan struct {
+	DNS                 []DNSScope
 	Scopes              []HTTPScope
 	Destinations        routing.DestinationRewrites
 	EarlyRoutes, Routes []*config_parser.RoutingRule
@@ -53,6 +54,11 @@ type HTTPScope struct {
 
 type Plugin interface {
 	Plan() Plan
+}
+
+// HTTPPlugin is optional. DNS-only and routing-only plugins need no HTTP handler.
+type HTTPPlugin interface {
+	Plugin
 	Wrap(Flow, Handler) Handler
 }
 

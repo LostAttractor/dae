@@ -407,7 +407,7 @@
         ],
         "type": "object"
       },
-      "MITMInstanceStatus": {
+      "PluginInstanceStatus": {
         "properties": {
           "buffer_memory": {
             "$ref": "#/components/schemas/BufferMemoryStatus",
@@ -823,9 +823,9 @@
             "format": "date-time",
             "type": "string"
           },
-          "mitm_plugins": {
+          "plugins": {
             "items": {
-              "$ref": "#/components/schemas/MITMInstanceStatus"
+              "$ref": "#/components/schemas/PluginInstanceStatus"
             },
             "type": "array"
           },
@@ -839,7 +839,7 @@
             "type": "array"
           },
           "schema": {
-            "const": 7,
+            "const": 8,
             "format": "int64",
             "type": "integer"
           },
@@ -1148,7 +1148,7 @@
     }
   },
   "info": {
-    "description": "Status schema 7. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 8. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },

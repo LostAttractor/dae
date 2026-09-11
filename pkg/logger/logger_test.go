@@ -45,7 +45,7 @@ func TestSetLoggerRendersStableNonTTYFormat(t *testing.T) {
 	if string(rendered) != want {
 		t.Fatalf("rendered log = %q, want %q", rendered, want)
 	}
-	entry.Data["mitm_instance"] = "personal"
+	entry.Data["plugin_instance"] = "personal"
 	for _, disableTimestamp := range []bool{false, true} {
 		SetLogger("info", disableTimestamp, nil)
 		rendered, err = standard.Formatter.Format(entry)
@@ -53,7 +53,7 @@ func TestSetLoggerRendersStableNonTTYFormat(t *testing.T) {
 			t.Fatal(err)
 		}
 		timestamp := "time=\"2026-08-14 01:02:03\" "
-		wantInstance := "mitm_instance=personal " + strings.TrimPrefix(want, timestamp)
+		wantInstance := "plugin_instance=personal " + strings.TrimPrefix(want, timestamp)
 		if !disableTimestamp {
 			wantInstance = timestamp + wantInstance
 		}

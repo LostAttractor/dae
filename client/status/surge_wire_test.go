@@ -25,7 +25,7 @@ func TestSurgeStatusWireAndTable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		decoded, err := Surge([]api.MITMInstanceStatus{{ID: "test", Type: "surge", Details: details}})
+		decoded, err := Surge([]api.PluginInstanceStatus{{ID: "test", Type: "surge", Details: details}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,7 +70,7 @@ func TestSurgeStatusWireAndTable(t *testing.T) {
 
 func TestSurgeStatusSelectsAndLabelsInstances(t *testing.T) {
 	detail := jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"loaded","warnings":["unsupported rule"]}]}`)
-	status, err := Surge([]api.MITMInstanceStatus{
+	status, err := Surge([]api.PluginInstanceStatus{
 		{ID: "native", Type: "example", Details: jsonv1.RawMessage(`{"pending":1}`)},
 		{ID: "personal", Type: "surge", Details: detail},
 		{ID: "work", Type: "surge", Details: detail},
@@ -85,7 +85,7 @@ func TestSurgeStatusSelectsAndLabelsInstances(t *testing.T) {
 		}
 	}
 	for _, detail := range []jsonv1.RawMessage{nil, jsonv1.RawMessage(`null`), jsonv1.RawMessage(`{"enabled":"bad"}`)} {
-		if _, err := Surge([]api.MITMInstanceStatus{{ID: "broken", Type: "surge", Details: detail}}); err == nil {
+		if _, err := Surge([]api.PluginInstanceStatus{{ID: "broken", Type: "surge", Details: detail}}); err == nil {
 			t.Fatal("invalid plugin report was silently accepted")
 		}
 	}

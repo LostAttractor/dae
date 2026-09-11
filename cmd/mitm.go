@@ -17,7 +17,7 @@ import (
 
 func newMITMCommand(definitions map[string]plugin.Definition, services plugin.CommandServices) *cobra.Command {
 	var certPath, keyPath string
-	mitm := &cobra.Command{Use: "mitm", Short: "Manage MITM certificates, plugins and status."}
+	mitm := &cobra.Command{Use: "mitm", Short: "Manage MITM certificates."}
 	ca := &cobra.Command{Use: "ca", Short: "Generate, inspect and export the local MITM CA."}
 	caDir := cacheDirectory()
 	ca.PersistentFlags().StringVar(&certPath, "cert", filepath.Join(caDir, "mitm-ca.pem"), "CA certificate path (PEM or DER); default directory: DAE_LOCATION_CACHE or /var/lib/dae")
@@ -96,8 +96,13 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 	export.Flags().StringVar(&format, "format", "pem", "export format: pem, der, mobileconfig")
 	export.Flags().StringVarP(&output, "output", "o", "-", "new output file, or - for stdout")
 	ca.AddCommand(export)
-	addMITMCommands(mitm, definitions, services)
 	return mitm
+}
+
+func newPluginsCommand(definitions map[string]plugin.Definition, services plugin.CommandServices) *cobra.Command {
+	command := &cobra.Command{Use: "plugins", Short: "Manage plugins and inspect their reports."}
+	addMITMCommands(command, definitions, services)
+	return command
 }
 
 func printMITMCAInfo(w io.Writer, cert *x509.Certificate) error {

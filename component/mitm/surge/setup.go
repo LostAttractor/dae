@@ -14,7 +14,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var Plugin = plugin.Definition{Setup: Setup, Commands: Commands}
+var Plugin = plugin.Definition{Setup: Setup, Commands: Commands, Validate: Validate}
+
+func Validate(spec plugin.Spec) error {
+	_, err := ParseConfig(spec.Config)
+	return err
+}
 
 func prepare(ctx context.Context, conf Config, services plugin.Services, instanceID string) (engine *Engine, err error) {
 	logger := services.Logger
@@ -51,7 +56,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	// Bound remote refreshes across the module list, while allowing remaining
 	// modules to use their complete snapshots after the network budget expires.
 	refreshDeadline := time.Now().Add(2 * time.Minute)
-	moduleCache := filepath.Join(baseDir, "mitm", instanceID, "surge-cache")
+	moduleCache := filepath.Join(baseDir, "plugins", instanceID, "surge-cache")
 	modules := make([]*Module, 0, len(conf.Modules))
 	for i, source := range conf.Modules {
 		module, err := Load(ctx, source.Link, client, LoadOptions{

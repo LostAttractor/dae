@@ -36,10 +36,10 @@ func (c *Connection) Status(ctx context.Context) (*api.StatusSnapshot, error) {
 	return remote.Status(ctx)
 }
 
-func (c *Connection) MITM(ctx context.Context) ([]api.MITMInstanceStatus, error) {
+func (c *Connection) MITM(ctx context.Context) ([]api.PluginInstanceStatus, error) {
 	snapshot, err := c.Status(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return snapshot.MITMPlugins, nil
+	return snapshot.Plugins, nil
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// dae-plugin-gen reads the root mitm_plugins.cfg and generates cmd's setup table.
+// dae-plugin-gen reads the root plugins.cfg and generates cmd's setup table.
 package main
 
 import (
@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	configFile = "mitm_plugins.cfg"
-	outputFile = "cmd/mitm_plugins_generated.go"
+	configFile = "plugins.cfg"
+	outputFile = "cmd/plugins_generated.go"
 )
 
 // Go checks import paths, Plugin definitions and duplicate map keys at compile time.
 func generate(data []byte) ([]byte, error) {
 	var out, setups bytes.Buffer
-	fmt.Fprintln(&out, "// Code generated from mitm_plugins.cfg; DO NOT EDIT.")
+	fmt.Fprintln(&out, "// Code generated from plugins.cfg; DO NOT EDIT.")
 	fmt.Fprintln(&out, "//go:build linux\n\npackage cmd")
 	fmt.Fprintln(&out, "\nimport (\n\"github.com/daeuniverse/dae/component/plugin\"")
 	for line, text := range strings.Split(string(data), "\n") {
@@ -34,12 +34,12 @@ func generate(data []byte) ([]byte, error) {
 			return nil, fmt.Errorf("line %d: expected <type>:<Go import path>", line+1)
 		}
 		if !regexp.MustCompile(`^[a-z][a-z0-9_-]*$`).MatchString(name) || name == "ca" || name == "status" || name == "help" {
-			return nil, fmt.Errorf("line %d: invalid or reserved MITM command name %q", line+1, name)
+			return nil, fmt.Errorf("line %d: invalid or reserved plugin command name %q", line+1, name)
 		}
 		fmt.Fprintf(&out, "plugin%d %q\n", line, path)
 		fmt.Fprintf(&setups, "%q: plugin%d.Plugin,\n", name, line)
 	}
-	fmt.Fprintln(&out, ")\n\nfunc compiledMITMPlugins() map[string]plugin.Definition {\nreturn map[string]plugin.Definition{")
+	fmt.Fprintln(&out, ")\n\nfunc compiledPlugins() map[string]plugin.Definition {\nreturn map[string]plugin.Definition{")
 	out.Write(setups.Bytes())
 	fmt.Fprintln(&out, "}\n}")
 	return format.Source(out.Bytes())

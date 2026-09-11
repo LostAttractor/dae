@@ -387,9 +387,13 @@ mitm {
     # The page/API can override this selection per device; use 'all' to explicitly select all clients.
     client_source_address: '02:00:00:00:00:50'
 
+}
+
+plugins {
     # A section name is the instance ID and defaults to its plugin type.
-    # mitm_plugins.cfg selects surge by default; add external Go plugins there and run make.
+    # plugins.cfg selects surge by default; add external Go plugins there and run make.
     surge {
+        enabled: false
         module {
             demo: 'file:modules/demo.sgmodule'
             # Remote modules only fall back to cache with explicit http-file:// or https-file://.

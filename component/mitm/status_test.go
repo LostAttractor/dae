@@ -26,15 +26,15 @@ func TestLoadIndependentSetupTablesAndReports(t *testing.T) {
 	section := &config_parser.Section{Name: "example"}
 	client := &http.Client{}
 	for _, label := range []string{"first", "second"} {
-		setups := map[string]plugin.Setup{
-			"example": func(_ context.Context, spec plugin.Spec, services plugin.Services) (plugin.Plugin, error) {
-				if spec.Config != section || services.BaseDir != "/fixture" || services.PrepareClient != client || services.Logger.Data["mitm_instance"] != "instance" {
+		definitions := map[string]plugin.Definition{
+			"example": {Setup: func(_ context.Context, spec plugin.Spec, services plugin.Services) (plugin.Plugin, error) {
+				if spec.Config != section || services.BaseDir != "/fixture" || services.PrepareClient != client || services.Logger.Data["plugin_instance"] != "instance" {
 					t.Fatal("setup did not receive instance-local services")
 				}
 				return &reportingPlugin{Secret: "private-credential", detail: map[string]string{"label": label}}, nil
-			},
+			}},
 		}
-		host, err := Load(context.Background(), setups, []plugin.Spec{{ID: "instance", Type: "example", Config: section}}, Options{}, plugin.Services{BaseDir: "/fixture", PrepareClient: client})
+		host, err := Load(context.Background(), definitions, []plugin.Spec{{ID: "instance", Type: "example", Config: section}}, Options{}, plugin.Services{BaseDir: "/fixture", PrepareClient: client})
 		if err != nil {
 			t.Fatal(err)
 		}

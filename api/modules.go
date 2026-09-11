@@ -28,8 +28,8 @@ type ModuleStatus struct {
 	Error          string   `json:"error,omitempty"`
 }
 
-// MITMInstanceStatus intentionally excludes plugin configuration and credentials.
-type MITMInstanceStatus struct {
+// PluginInstanceStatus intentionally excludes plugin configuration and credentials.
+type PluginInstanceStatus struct {
 	BufferMemory     *BufferMemoryStatus `json:"buffer_memory,omitempty"`
 	ID               string              `json:"id"`
 	Type             string              `json:"type"`

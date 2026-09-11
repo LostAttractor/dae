@@ -158,7 +158,7 @@ module { test: 'https://example.com/second.sgmodule' }`,
 
 func TestSurgeModuleSourcesAndArgumentsRoundTrip(t *testing.T) {
 	conf := parseConfig(t, `global {}
-mitm {
+plugins {
  surge {
   module {
     youtube {
@@ -254,14 +254,14 @@ func TestMarshalModuleArgumentsRejectInvalidSources(t *testing.T) {
 
 func decodedSurge(t *testing.T, conf *config.Config) Config {
 	t.Helper()
-	s, err := ParseConfig(conf.MITM.Plugins[0].Config)
+	s, err := ParseConfig(conf.Plugins[0].Config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
 }
 func TestSurgePluginDefaultsAndLimits(t *testing.T) {
-	c := parseConfig(t, `global {} mitm { surge { module { 'file:module.sgmodule' } } } routing {fallback: direct}`)
+	c := parseConfig(t, `global {} plugins { surge { module { 'file:module.sgmodule' } } } routing {fallback: direct}`)
 	s := decodedSurge(t, c)
 	if s.ScriptTimeout != 5*time.Second || s.MaxBodySize != 32<<20 || s.MemoryLimit != 128<<20 || s.MaxConcurrentScripts != 16 {
 		t.Fatalf("defaults: %+v", s)

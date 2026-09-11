@@ -51,8 +51,8 @@ func RenderSurge(status api.SurgeStatus, showWarnings bool) string {
 	return strings.Join(sections, "\n\n")
 }
 
-// Surge combines the plugin reports carried by a schema-7 status snapshot.
-func Surge(instances []api.MITMInstanceStatus) (api.SurgeStatus, error) {
+// Surge combines the plugin reports carried by a status snapshot.
+func Surge(instances []api.PluginInstanceStatus) (api.SurgeStatus, error) {
 	var status api.SurgeStatus
 	for _, instance := range instances {
 		if instance.Type != "surge" {
@@ -60,10 +60,10 @@ func Surge(instances []api.MITMInstanceStatus) (api.SurgeStatus, error) {
 		}
 		var detail *api.SurgeStatus
 		if err := json.Unmarshal(instance.Details, &detail); err != nil {
-			return status, fmt.Errorf("mitm.%s: invalid Surge status: %w", instance.ID, err)
+			return status, fmt.Errorf("plugins.%s: invalid Surge status: %w", instance.ID, err)
 		}
 		if detail == nil {
-			return status, fmt.Errorf("mitm.%s: missing Surge status", instance.ID)
+			return status, fmt.Errorf("plugins.%s: missing Surge status", instance.ID)
 		}
 		status.Enabled = status.Enabled || detail.Enabled
 		for _, module := range detail.Modules {

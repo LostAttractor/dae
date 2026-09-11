@@ -12,7 +12,7 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 )
 
-func RenderMITM(instances []api.MITMInstanceStatus, withSummary bool) string {
+func RenderMITM(instances []api.PluginInstanceStatus, withSummary bool) string {
 	if len(instances) == 0 {
 		return "MITM: no active plugin instances"
 	}

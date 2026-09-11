@@ -24,9 +24,12 @@ import (
 
 type DialContext func(context.Context, string, string) (net.Conn, error)
 
-// Load prepares every configured plugin before constructing its host. Failed
+// Load validates the complete configuration before preparing any plugin. Failed
 // preparation releases the instances created by this call.
-func Load(ctx context.Context, setups map[string]plugin.Setup, specs []plugin.Spec, options Options, services plugin.Services) (_ *Host, err error) {
+func Load(ctx context.Context, definitions map[string]plugin.Definition, specs []plugin.Spec, options Options, services plugin.Services) (_ *Host, err error) {
+	if err := plugin.ValidateSpecs(definitions, specs); err != nil {
+		return nil, err
+	}
 	var instances []Instance
 	defer func() {
 		if err != nil {
@@ -38,18 +41,15 @@ func Load(ctx context.Context, setups map[string]plugin.Setup, specs []plugin.Sp
 		}
 	}()
 	for _, spec := range specs {
-		setup := setups[spec.Type]
-		if setup == nil {
-			return nil, fmt.Errorf("mitm.%s: plugin type %q is not compiled into this binary", spec.ID, spec.Type)
-		}
+		setup := definitions[spec.Type].Setup
 		local := services
 		if local.Logger == nil {
 			local.Logger = logrus.NewEntry(logrus.StandardLogger())
 		}
-		local.Logger = local.Logger.WithField("mitm_instance", spec.ID)
+		local.Logger = local.Logger.WithField("plugin_instance", spec.ID)
 		implementation, err := setup(ctx, spec, local)
 		if err != nil {
-			return nil, fmt.Errorf("mitm.%s: %w", spec.ID, err)
+			return nil, fmt.Errorf("plugins.%s: %w", spec.ID, err)
 		}
 		instances = append(instances, Instance{ID: spec.ID, Type: spec.Type, Plugin: implementation})
 	}
@@ -62,6 +62,7 @@ type Instance struct {
 	plan     plugin.Plan
 }
 type Options struct {
+	DisableHTTP       bool
 	BufferMemoryLimit int64
 	Authority         *mitmca.Authority
 	UpstreamTLSConfig *tls.Config
@@ -108,6 +109,10 @@ func New(options Options, instances ...Instance) (*Host, error) {
 	for i := range h.instances {
 		instance := &h.instances[i]
 		instance.plan = instance.Plugin.Plan()
+		if options.DisableHTTP {
+			instance.plan.Scopes = nil
+		}
+		h.plan.DNS = append(h.plan.DNS, instance.plan.DNS...)
 		h.plan.Scopes = append(h.plan.Scopes, instance.plan.Scopes...)
 		h.plan.Destinations = append(h.plan.Destinations, instance.plan.Destinations...)
 		h.plan.EarlyRoutes = append(h.plan.EarlyRoutes, instance.plan.EarlyRoutes...)
@@ -169,7 +174,7 @@ func (h *Host) Start(parent context.Context) error {
 		go func() {
 			defer h.workers.Done()
 			if err := worker.Run(ctx, h.options.HTTPClient); err != nil && ctx.Err() == nil {
-				h.options.Logger.WithField("mitm_instance", instance.ID).WithError(resource.RedactError(err)).Error("MITM worker stopped")
+				h.options.Logger.WithField("plugin_instance", instance.ID).WithError(resource.RedactError(err)).Error("Plugin worker stopped")
 			}
 		}()
 	}
@@ -190,7 +195,11 @@ func (h *Host) chain(flow plugin.Flow, terminal plugin.Handler) plugin.Handler {
 			continue
 		}
 		next := terminal
-		terminal = instance.Plugin.Wrap(flow, func(e *plugin.Exchange) (*http.Response, error) {
+		httpPlugin, ok := instance.Plugin.(plugin.HTTPPlugin)
+		if !ok {
+			continue
+		}
+		terminal = httpPlugin.Wrap(flow, func(e *plugin.Exchange) (*http.Response, error) {
 			// A plugin's read budget ends when it hands the request downstream,
 			// before another plugin buffers it or the transport streams it.
 			if e.SetReadDeadline != nil {
