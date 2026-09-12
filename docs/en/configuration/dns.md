@@ -101,13 +101,14 @@ window `W`:
 | --- | --- |
 | Valid DNS reply successfully delivered | `max(retain_until, delivered_at + max(ttl, W))` |
 | Actual connection/traffic activity | `max(retain_until, observed_at + W)` |
-| GC | Delete due pairs and recompute the kernel projection |
+| GC | Delete due pairs, recompute affected IPs, and adjust kernel residency |
 
 Use the final delivered TTL; a CNAME alias uses the shortest TTL along its path
 to the address RRset. A TTL with its high bit set means zero (RFC 2181), only for
 the retention calculation; forwarded bytes are unchanged. Updates never shorten an existing deadline. GC runs on
-updates and on a one-minute sweep, so quiet entries may be collected up to one
-sweep later. The first implementation has **no userspace entry or memory limit**.
+updates and on a one-minute check, so quiet entries may be collected up to one
+sweep later. The Registry tracks the earliest possible expiry and skips full
+collection scans before that time. The first implementation has **no userspace entry or memory limit**.
 Kernel capacity eviction leaves userspace evidence intact; time GC removes both
 verification evidence and kernel contributions. `Verify` itself never refreshes
 retention. Once collected, a pair needs a new valid DNS observation to return.
@@ -143,18 +144,41 @@ connections subsequently using sockmap/splice reuse existing byte-counter growth
 for refresh, with approximately one-second polling granularity. Idle connections
 do not refresh. Observed client attempts count even if upstream dialing fails.
 
-Surviving connections use a shared activity handle redirected to the successor
-Registry on reload. Handoff observations retain their original timestamps and
-all refreshes run before GC. Taking the maximum deadline is order-independent,
-so replay needs no sorting. Reload and window changes preserve existing
-deadlines; subsequent observations use the new window and kernel bitmaps always
-reflect the current rules.
+Connection entry, the first activity for a new UDP destination, and DNS evidence
+registration are synchronous. The initial route decision still precedes any
+capacity promotion caused by that first activity. Continued I/O is coalesced by
+`(original IP, canonical domain or empty string)`, retaining the latest
+`observed_at` for each key in a single queue. Enqueue briefly holds the queue
+lock. The existing Registry worker attempts to apply a batch
+every second. Processing time never replaces observation time; an empty batch
+cannot renew an idle connection. Splice counter polling is followed by this
+batch application too.
+
+GC, DNS registration and snapshot copying first apply already queued activity.
+The consumer swaps two reusable buffers under the queue lock, establishing one
+observation boundary, then releases the lock. Later enqueues belong to the next
+batch. Pair updates and kernel writes run without the queue lock.
+Earlier unknown-pair activity is therefore consumed before subsequent DNS
+registration, rather than applied to newly created evidence. Status and
+verification read applied evidence without consuming the queue. Continued-I/O
+deadline changes and capacity promotions become visible when a batch is applied.
+Synchronous operations may apply it earlier, while a busy worker can delay it
+beyond the next one-second check.
+
+Surviving connections use a shared activity handle redirected on reload. Closing
+the old Registry atomically detaches its final activity batch, applies the old
+window and saves it. Handoff activity accepted after retirement uses the new
+window and is applied before the successor's GC. Taking the maximum deadline is
+order-independent, so replay needs no sorting. Reload preserves existing
+deadlines and rebuilds bitmaps with current rules. Ordinary shutdown rejects
+further activity.
 
 ## Kernel AND/OR projection
 
-Userspace keeps one evidence index: `domain → {bitmap, IP → retain_until}`.
-All addresses of a domain share one bitmap. IP-only activity scans the domain
-buckets, and kernel projection aggregates directly from this index. Kernel
+Userspace keeps one evidence object per domain–IP pair. The domain and IP indexes
+reference the same pair, with one `retain_until`. Each domain owns one bitmap;
+each IP node stores its associated domains and their aggregate. Named activity
+looks up the exact pair, while IP-only activity visits only that IP's domains. Kernel
 capacity is counted in **IPs**, with two bitmaps published together in one atomic
 map value:
 
@@ -178,11 +202,21 @@ actual map capacity permits. Zero-bit pairs affect AND but not priority. Updates
 activity, GC and reload reconsider omitted candidates and fill free slots. Delete
 evicted entries before inserting replacements into the non-LRU map.
 
-The initial implementation uses straightforward scans, aggregation and sorting;
-incremental heaps, sharding and asynchronous batching are deferred. The single
-index reduces persistent state and consistency bookkeeping at the cost of more
-scanning and temporary aggregation during activity refresh. Measurements are in
-the [Registry ablation record](../../zh/design/project-structure.md#dns-registry-消融与结构简化).
+Pair additions and deletions recompute only the affected IPs, reusing their bitmap
+buffers. Query names, aliases and addresses from one DNS response are registered
+as a batch, publishing each affected IP's complete aggregate once. Deadline
+extensions update only the pair deadline and IP priority. Raising a resident
+IP's priority leaves the resident set unchanged and needs no bitmap write.
+
+Capacity selection reads the cached IP aggregates. When all possible new
+candidates fit, only changed IPs need processing; capacity competition triggers
+reselection, with sorting only when candidates outnumber slots. Retained index
+and aggregate memory grows with the evidence, and capacity selection cost grows
+with the IP count. Queued activity uses space per distinct observation key in a
+batch, and reusable maps retain their allocated capacity. Applying observations
+advances the monotonic watermark and checks for due collection. See
+the [DNS architecture](../../zh/design/project-structure.md#dns) for component
+responsibilities and lifecycle.
 
 ### CDN tradeoff and observation gaps
 
