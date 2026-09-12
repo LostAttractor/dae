@@ -14,6 +14,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -397,6 +398,39 @@ func TestUdpEndpointPoolTimerExpiresEndpoint(t *testing.T) {
 	if !endpoint.IsClosed() {
 		t.Fatal("endpoint timer did not retire the endpoint")
 	}
+}
+
+func TestUdpEndpointPoolTimerFollowsActivity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var pool UdpEndpointPool
+		key := testUdpKey(12006)
+		conn := newTestPacketConn(false)
+		endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: 10 * time.Second})
+		pool.add(key, endpoint)
+		defer pool.closeAll()
+
+		time.Sleep(9 * time.Second)
+		if !pool.refreshTimer(key, endpoint, time.Now()) {
+			t.Fatal("active endpoint rejected refresh")
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		select {
+		case <-conn.closed:
+			t.Fatal("old timer deadline closed an active endpoint")
+		default:
+		}
+		time.Sleep(8 * time.Second)
+		synctest.Wait()
+		select {
+		case <-conn.closed:
+		default:
+			t.Fatal("timer did not close endpoint at its refreshed deadline")
+		}
+		if _, ok := pool.pool.Load(key); ok {
+			t.Fatal("expired endpoint remained in the pool")
+		}
+	})
 }
 
 func TestWritePacketDeadlinePreservesSupportedSocket(t *testing.T) {

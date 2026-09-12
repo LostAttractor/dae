@@ -351,16 +351,13 @@ func (p *UdpEndpointPool) refreshTimer(key netip.AddrPort, endpoint *UdpEndpoint
 }
 
 func (p *UdpEndpointPool) refreshTimerStateLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) {
-	deadline := now.Add(endpoint.NatTimeout)
-	delay := time.Until(deadline)
-	endpoint.timerDeadline = deadline
+	endpoint.timerDeadline = now.Add(endpoint.NatTimeout)
+	// Activity extends the deadline. An early expiry rearms the existing timer.
 	if endpoint.deadlineTimer == nil {
-		endpoint.deadlineTimer = time.AfterFunc(delay, func() {
+		endpoint.deadlineTimer = time.AfterFunc(time.Until(endpoint.timerDeadline), func() {
 			p.expire(key, endpoint)
 		})
-		return
 	}
-	endpoint.deadlineTimer.Reset(delay)
 }
 
 func (p *UdpEndpointPool) expire(key netip.AddrPort, endpoint *UdpEndpoint) {

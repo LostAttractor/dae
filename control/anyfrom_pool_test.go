@@ -3,6 +3,7 @@ package control
 import (
 	"net"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -34,4 +35,40 @@ func TestAnyfromRefreshSurvivesPendingExpiry(t *testing.T) {
 	if len(p.pool) != 0 {
 		t.Fatal("idle reply socket was not evicted")
 	}
+}
+
+func TestAnyfromTimerFollowsActivity(t *testing.T) {
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	synctest.Test(t, func(t *testing.T) {
+		conn := &Anyfrom{UDPConn: udp, idleTTL: 10 * time.Second}
+		p := NewAnyfromPool()
+		addr := udp.LocalAddr().(*net.UDPAddr).AddrPort()
+		p.pool[addr] = conn
+		conn.refreshIdleDeadline()
+		conn.idleEvictTimer = time.AfterFunc(conn.idleTTL, func() { p.expire(addr, conn) })
+		defer conn.idleEvictTimer.Stop()
+
+		time.Sleep(9 * time.Second)
+		conn.refreshIdleDeadline()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		p.mu.Lock()
+		active := p.pool[addr] == conn
+		p.mu.Unlock()
+		if !active {
+			t.Fatal("old timer deadline evicted an active reply socket")
+		}
+		time.Sleep(8 * time.Second)
+		synctest.Wait()
+		p.mu.Lock()
+		remaining := len(p.pool)
+		p.mu.Unlock()
+		if remaining != 0 {
+			t.Fatal("reply socket remained after its refreshed deadline")
+		}
+	})
 }

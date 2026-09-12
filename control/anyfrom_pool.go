@@ -38,14 +38,11 @@ type Anyfrom struct {
 	writeMu        sync.Mutex
 }
 
-// refreshIdleDeadline extends the pool eviction timer by the connection's idle TTL.
+// Activity advances the deadline; the eviction callback rearms itself if early.
 func (a *Anyfrom) refreshIdleDeadline() {
 	a.idleMu.Lock()
 	defer a.idleMu.Unlock()
 	a.idleDeadline = time.Now().Add(a.idleTTL)
-	if a.idleEvictTimer != nil {
-		a.idleEvictTimer.Reset(a.idleTTL)
-	}
 }
 
 func (a *Anyfrom) ReadFrom(b []byte) (int, net.Addr, error) {
@@ -191,7 +188,7 @@ func (p *AnyfromPool) expire(addr netip.AddrPort, conn *Anyfrom) {
 	}
 	conn.idleMu.Lock()
 	defer conn.idleMu.Unlock()
-	// Reset cannot cancel a callback already waiting for the pool lock.
+	// Activity may have advanced the deadline while this callback was waiting.
 	if remaining := time.Until(conn.idleDeadline); remaining > 0 {
 		conn.idleEvictTimer.Reset(remaining)
 		return
