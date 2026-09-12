@@ -53,8 +53,11 @@ func (m SelectionForceMask) Contains(index common.NetworkIndex) bool {
 }
 
 type groupBinding struct {
-	observer       DialerGroup
-	latencies      *LatenciesN
+	observer DialerGroup
+	// The fixed ten-check history is owned by Dialer.mu.
+	latencies      [10]time.Duration
+	failed         [10]bool
+	next, count    int
 	movingAverage  time.Duration
 	emaAlpha       float64
 	timeoutPenalty time.Duration
@@ -70,7 +73,9 @@ func (g *groupBinding) recordLatency(latency time.Duration, success bool) {
 	} else {
 		g.movingAverage = time.Duration(float64(g.movingAverage)*(1-g.emaAlpha) + float64(sample)*g.emaAlpha)
 	}
-	g.latencies.AppendSample(sample, !success)
+	g.latencies[g.next], g.failed[g.next] = sample, !success
+	g.next = (g.next + 1) % len(g.latencies)
+	g.count = min(g.count+1, len(g.latencies))
 }
 
 type networkState uint8
@@ -316,7 +321,9 @@ func (d *Dialer) healthyLocked(session netproxy.StateEvent) bool {
 }
 
 func (d *Dialer) Usable(networkType *common.NetworkType) bool {
-	return d.SelectionSnapshot(networkType).Usable
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.healthyLocked(d.sessionSnapshot()) && d.networks[networkType.Index()] == networkSupported
 }
 
 func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSnapshot {
@@ -373,7 +380,6 @@ func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, timeou
 	d.mu.Lock()
 	d.group = &groupBinding{
 		observer:       group,
-		latencies:      NewLatenciesN(10),
 		emaAlpha:       emaAlpha,
 		timeoutPenalty: timeoutPenalty,
 	}
@@ -387,16 +393,17 @@ func (d *Dialer) latencyStats() (lat api.LatencyStats, ok bool) {
 }
 
 func (d *Dialer) latencyStatsLocked() (lat api.LatencyStats, ok bool) {
-	if d.group == nil {
+	g := d.group
+	if g == nil || g.count == 0 {
 		return api.LatencyStats{}, false
 	}
-	lat.Last, ok = d.group.latencies.LastLatency()
-	if !ok {
-		return api.LatencyStats{}, false
+	lat.Last = g.latencies[(g.next+len(g.latencies)-1)%len(g.latencies)]
+	for i, sample := range g.latencies[:g.count] {
+		lat.Avg10 += sample
+		lat.Avg10HasFailure = lat.Avg10HasFailure || g.failed[i]
 	}
-	lat.Avg10, _ = d.group.latencies.AvgLatency()
-	lat.MovingAvg = d.group.movingAverage
-	lat.Avg10HasFailure = d.group.latencies.HasFailure()
+	lat.Avg10 /= time.Duration(g.count)
+	lat.MovingAvg = g.movingAverage
 	return lat, true
 }
 
