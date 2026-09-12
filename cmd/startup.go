@@ -157,7 +157,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	if err != nil {
 		return nil, err
 	}
-	direct.InitDirectDialers("", conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
+	direct.InitDirectDialers(conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
 
 	var nodeDescriptors []outbound.NodeDescriptor
 	var preparation *control.ControlPlanePreparation

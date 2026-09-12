@@ -9,11 +9,9 @@ import (
 	"path/filepath"
 
 	"github.com/daeuniverse/dae/cmd/internal"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/logger"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -64,7 +62,8 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			}
 			// AutoSu has returned in the final privileged process. Install the
 			// process-global resolver before constructors can resolve hostnames.
-			if err = configureDaemonResolver(&conf.Global); err != nil {
+			resolver, err := netutils.InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)
+			if err != nil {
 				return fmt.Errorf("configure marked resolver: %w", err)
 			}
 			var logOpts *lumberjack.Logger
@@ -81,7 +80,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			logger.SetLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			log.WithField("files", includes).Debug("Loaded configuration files")
-			err = Run(conf, []string{filepath.Dir(cfgFile)}, definitions)
+			err = Run(conf, []string{filepath.Dir(cfgFile)}, definitions, resolver)
 			if err != nil {
 				// Own the terminal error here so Cobra does not print it again.
 				cmd.SilenceErrors = true
@@ -99,12 +98,4 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 	runCmd.PersistentFlags().BoolVar(&disablePidFile, "disable-pidfile", false, "Not generate /var/run/dae.pid.")
 	runCmd.PersistentFlags().BoolVar(&disableAuthSudo, "disable-sudo", false, "Disable sudo prompt ,may cause startup failure due to insufficient permissions")
 	return runCmd
-}
-
-func configureDaemonResolver(global *config.Global) error {
-	mark := common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
-	if err := common.ValidateSoMarkFromDae(mark); err != nil {
-		return err
-	}
-	return netutils.InstallDefaultResolver(mark)
 }

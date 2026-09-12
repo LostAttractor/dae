@@ -12,18 +12,9 @@ import (
 	"github.com/daeuniverse/outbound/protocol/direct"
 )
 
-func TestConfigureDaemonResolverValidation(t *testing.T) {
-	invalid := &config.Global{SoMarkFromDae: consts.TproxyMark | 1}
-	if err := configureDaemonResolver(invalid); err == nil {
-		t.Fatal("configureDaemonResolver accepted TproxyMark")
-	} else if !strings.Contains(err.Error(), "reserved tproxy mark") {
-		t.Fatalf("configureDaemonResolver returned unexpected error: %v", err)
-	}
-}
-
 func TestNewControlPlaneHonorsCanceledContext(t *testing.T) {
-	previousDirect := direct.Direct
-	t.Cleanup(func() { direct.Direct = previousDirect })
+	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
+	t.Cleanup(func() { direct.Direct, direct.Bootstrap = previousDirect, previousBootstrap })
 	for name, bpf := range map[string]*control.BPFState{"startup": nil, "reload": {}} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())

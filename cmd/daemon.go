@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/filewatch"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -47,10 +48,9 @@ func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections b
 }
 
 // Run starts dae after command startup has configured process-wide name
-// resolution. Embedders calling Run directly must install a marked default
-// resolver before starting concurrent work.
+// resolution. Embedders install and pass the resolver before concurrent work.
 // Run starts the daemon with the binary's complete set of plugin types.
-func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string]plugin.Definition) error {
+func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string]plugin.Definition, resolver *netutils.InternalResolver) error {
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 	startPprofServer(conf.Global.PprofPort)
@@ -131,6 +131,7 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 	// a deferred exit(c) would capture the startup plane, closing the retired
 	// plane a second time while the final, bpf-owning plane is never closed.
 	defer func() {
+		resolver.SetRoute(nil)
 		localAPI.Close()
 		managementAPI.Close()
 		exit(c)
@@ -143,6 +144,7 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 	case startupErr := <-errCh:
 		return startupErr
 	}
+	resolver.SetRoute(startupPlane.DNSResolverDialer())
 	handler := startupPlane.APIHandler(Version)
 	localAPI.SetHandler(handler)
 	managementAPI.SetHandler(daemonAPIHandler(handler))
@@ -199,6 +201,7 @@ loop:
 					return serveErr
 				}
 				if pendingReload {
+					resolver.SetRoute(c.DNSResolverDialer())
 					reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
 					stats.DefaultStore.RecordReload()
 					handler := c.APIHandler(Version)
@@ -256,6 +259,11 @@ loop:
 				}
 				if err := validatePlugins(newConf, definitions); err != nil {
 					reloadFailed("Failed to validate plugins", err)
+					continue
+				}
+				resolverServer, err := netutils.ParseDNSServer(newConf.Global.DNSResolver)
+				if err != nil {
+					reloadFailed("Failed to configure DNS resolver", err)
 					continue
 				}
 				// The tproxy listener is reused across reloads, so a port
@@ -318,6 +326,7 @@ loop:
 					managementAPI.Close()
 				}
 				managementAPI = nextAPI
+				resolver.Configure(resolverServer, nil)
 				if closeErr := retireControlPlaneForReload(c, abortConnections); closeErr != nil {
 					// The old filters may still interpret shared maps with the old
 					// rule layout. Do not install new rules or adopt bitmaps into

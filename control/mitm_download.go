@@ -9,9 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -56,12 +53,7 @@ func newMITMClient(c *ControlPlane, timeout time.Duration) (*http.Client, func()
 // Downloads originate in the daemon, before any client socket exists. Match
 // its process name and an unspecified source, never a fabricated LAN device.
 func mitmClientDialContext(c *ControlPlane) mitm.DialContext {
-	processName, err := os.ReadFile("/proc/self/comm")
-	if err != nil {
-		processName = []byte(filepath.Base(os.Args[0]))
-	}
-	process := bpfRoutingResult{Pid: uint32(os.Getpid())}
-	copy(process.Pname[:], strings.TrimSpace(string(processName)))
+	process := daemonProcessIdentity()
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		target, err := parseHTTPTarget(address)
 		if err != nil {

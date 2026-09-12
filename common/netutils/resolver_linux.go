@@ -8,30 +8,16 @@
 package netutils
 
 import (
-	"context"
 	"net"
 	"syscall"
 
-	"golang.org/x/sys/unix"
+	"github.com/daeuniverse/outbound/netproxy"
 )
 
-func newMarkedResolver(mark uint32) (*net.Resolver, error) {
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			dialer := net.Dialer{}
-			if mark != 0 {
-				dialer.Control = func(_, _ string, c syscall.RawConn) error {
-					var sockErr error
-					if err := c.Control(func(fd uintptr) {
-						sockErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
-					}); err != nil {
-						return err
-					}
-					return sockErr
-				}
-			}
-			return dialer.DialContext(ctx, network, address)
+func newMarkedDialer(mark uint32) (*net.Dialer, error) {
+	return &net.Dialer{
+		Control: func(_, _ string, c syscall.RawConn) error {
+			return netproxy.SoMarkControl(c, int(mark))
 		},
 	}, nil
 }

@@ -34,7 +34,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	outboundDirect.Direct = outboundDirect.NewDirectDialer(outboundDirect.Option{})
+	outboundDirect.InitDirectDialers(false, 0)
 	os.Exit(m.Run())
 }
 

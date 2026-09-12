@@ -10,12 +10,15 @@ package netutils
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"syscall"
 	"testing"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	outbound "github.com/daeuniverse/outbound/common"
+	"github.com/daeuniverse/outbound/protocol/direct"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,11 +30,26 @@ func TestMarkedResolverDialAppliesSoMark(t *testing.T) {
 	defer server.Close()
 
 	const mark = uint32(0x2345)
-	resolver, err := newMarkedResolver(mark)
+	dialer, err := newMarkedDialer(mark)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := resolver.Dial(context.Background(), "udp4", server.LocalAddr().String())
+	for _, mode := range []string{"resolver", "direct-packet"} {
+		t.Run(mode, func(t *testing.T) {
+			var conn io.Closer
+			var err error
+			if mode == "resolver" {
+				conn, err = dialer.DialContext(context.Background(), "udp4", server.LocalAddr().String())
+			} else {
+				conn, err = direct.NewDirectDialer(direct.Option{Mark: int(mark)}).ListenPacket(context.Background(), "")
+			}
+			checkResolverSocketMark(t, conn, err, int(mark))
+		})
+	}
+}
+
+func checkResolverSocketMark(t *testing.T, conn io.Closer, err error, mark int) {
+	t.Helper()
 	if err != nil {
 		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) || errors.Is(err, unix.ENOPROTOOPT) {
 			t.Skipf("SO_MARK is unavailable: %v", err)
@@ -60,42 +78,39 @@ func TestMarkedResolverDialAppliesSoMark(t *testing.T) {
 	if sockErr != nil {
 		t.Fatal(sockErr)
 	}
-	if got != int(mark) {
+	if got != mark {
 		t.Fatalf("resolver socket SO_MARK = %#x, want %#x", got, mark)
 	}
 }
 
 func TestInstallDefaultResolver(t *testing.T) {
 	original := net.DefaultResolver
+	bootstrap := outbound.BootstrapResolver
 	t.Cleanup(func() {
-		defaultResolverState.Lock()
 		net.DefaultResolver = original
-		defaultResolverState.configured = false
-		defaultResolverState.mark = 0
-		defaultResolverState.Unlock()
+		outbound.BootstrapResolver = bootstrap
 	})
 
-	if err := InstallDefaultResolver(consts.TproxyMark); err == nil {
+	if _, err := InstallDefaultResolver(consts.TproxyMark, ""); err == nil {
 		t.Fatal("InstallDefaultResolver accepted TproxyMark")
 	}
-	if net.DefaultResolver != original || defaultResolverState.configured {
+	if net.DefaultResolver != original || outbound.BootstrapResolver != bootstrap {
 		t.Fatal("invalid resolver mark changed global resolver state")
 	}
 
-	if err := InstallDefaultResolver(0); err != nil {
+	r, err := InstallDefaultResolver(common.InternalSoMarkFromDae, "192.0.2.53")
+	if err != nil {
 		t.Fatal(err)
 	}
 	configured := net.DefaultResolver
 	if configured == original || !configured.PreferGo || configured.Dial == nil {
 		t.Fatal("InstallDefaultResolver did not install the marked Go resolver")
 	}
-	if err := InstallDefaultResolver(common.InternalSoMarkFromDae); err != nil {
-		t.Fatalf("same-mark configuration failed: %v", err)
-	}
+	r.SetRoute(nil)
 	if net.DefaultResolver != configured {
-		t.Fatal("same-mark configuration replaced net.DefaultResolver")
+		t.Fatal("policy update replaced net.DefaultResolver")
 	}
-	if err := InstallDefaultResolver(0x3456); err == nil {
-		t.Fatal("InstallDefaultResolver accepted a mark change")
+	if outbound.BootstrapResolver != r.Bootstrap || r.Bootstrap == r.Resolver {
+		t.Fatal("proxy bootstrap did not get its own resolver")
 	}
 }

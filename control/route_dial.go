@@ -5,6 +5,7 @@ package control
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 
 	"github.com/daeuniverse/dae/common"
@@ -27,6 +28,30 @@ type DialOption struct {
 	Direct            bool
 	FallbackIpVersion bool
 	PolicyLease       *netproxy.Lease
+}
+
+// selectRoutedAddress is shared by HTTP targets and internal DNS transports.
+// Match destination transformations once, then flow/routing with the caller's
+// original identity. Daemon requests supply an unspecified source address.
+func (c *ControlPlane) selectRoutedAddress(network string, source netip.AddrPort, identity bpfRoutingResult, domain string, address netip.AddrPort) (*DialOption, error) {
+	if !source.IsValid() {
+		ip := netip.IPv6Unspecified()
+		if address.Addr().Is4() {
+			ip = netip.IPv4Unspecified()
+		}
+		source = netip.AddrPortFrom(ip, 0)
+	}
+	proto := consts.L4ProtoStr_TCP
+	if network == "udp" {
+		proto = consts.L4ProtoStr_UDP
+	}
+	param := &RouteParam{Src: source, Dest: address, Domain: domain, explicitTarget: true, routingResult: &identity, networkType: common.NetworkType{L4Proto: proto, IpVersion: consts.IpVersionStrFromAddr(address.Addr())}}
+	var err error
+	param.destination, err = c.routingMatcher.matchDestination(param)
+	if err != nil {
+		return nil, err
+	}
+	return c.routeDestination(param, domain)
 }
 
 func (o *DialOption) dialerForConnection() netproxy.Dialer {
@@ -103,8 +128,9 @@ func (c *ControlPlane) directDialerForMark(outboundIndex consts.OutboundIndex, m
 		return cached.(netproxy.Dialer)
 	}
 	d := protocolDirect.NewDirectDialer(protocolDirect.Option{
-		Mptcp: c.mptcp,
-		Mark:  int(mark),
+		Resolver: net.DefaultResolver,
+		Mptcp:    c.mptcp,
+		Mark:     int(mark),
 	})
 	actual, _ := c.markedDirectDialers.LoadOrStore(mark, d)
 	return actual.(netproxy.Dialer)

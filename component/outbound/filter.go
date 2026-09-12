@@ -440,7 +440,7 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 			builders = append(builders, pathNodeBuilder{node: node, builder: builder})
 		}
 	}
-	runtime, err := D.BuildRuntime(netproxy.Layer{Data: direct.Direct}, &option.ExtraOption, builders...)
+	runtime, err := D.BuildRuntime(netproxy.Layer{Data: direct.Bootstrap}, &option.ExtraOption, builders...)
 	if err != nil {
 		return nil, err
 	}

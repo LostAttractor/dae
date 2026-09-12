@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	dnsmessage "github.com/miekg/dns"
 )
@@ -102,7 +101,7 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 					}
 					continue
 				}
-				option, err := c.selectHTTPAddress(network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
+				option, err := c.selectRoutedAddress(network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
 				if !yield(option, err) || (err == nil && option.Outbound.Name == consts.OutboundBlock.String()) {
 					return
 				}
@@ -111,32 +110,7 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 	}
 }
 
-func (c *ControlPlane) selectHTTPAddress(network string, source netip.AddrPort, identity bpfRoutingResult, domain string, address netip.AddrPort) (*DialOption, error) {
-	result := identity
-	if !source.IsValid() {
-		source = httpClientSource(address.Addr())
-	}
-	proto := consts.L4ProtoStr_TCP
-	if network == "udp" {
-		proto = consts.L4ProtoStr_UDP
-	}
-	param := &RouteParam{Src: source, Dest: address, Domain: domain, explicitTarget: true, routingResult: &result, networkType: common.NetworkType{L4Proto: proto, IpVersion: consts.IpVersionStrFromAddr(address.Addr())}}
-	var err error
-	param.destination, err = c.routingMatcher.matchDestination(param)
-	if err != nil {
-		return nil, err
-	}
-	return c.routeDestination(param, domain)
-}
-
-func httpClientSource(destination netip.Addr) netip.AddrPort {
-	if destination.Is4() {
-		return netip.AddrPortFrom(netip.IPv4Unspecified(), 0)
-	}
-	return netip.AddrPortFrom(netip.IPv6Unspecified(), 0)
-}
-
-// Daemon-originated lookups use the marked system resolver installed at startup.
+// Daemon-originated lookups use the internal resolver installed at startup.
 // They do not depend on the availability or configuration of DNS plugins.
 func (c *ControlPlane) resolveHTTPAddresses(parent context.Context, host string, qtype uint16, source netip.AddrPort, process bpfRoutingResult) ([]netip.Addr, error) {
 	ctx, cancel := context.WithTimeout(parent, consts.DefaultDNSTimeout)

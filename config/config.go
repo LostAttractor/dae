@@ -38,6 +38,7 @@ type Global struct {
 	SniffVerifyMode       consts.SniffVerifyMode `mapstructure:"sniff_verify_mode" default:"loose"`
 	SniffingTimeout       time.Duration          `mapstructure:"sniffing_timeout" default:"100ms"`
 	DNSRetentionWindow    time.Duration          `mapstructure:"dns_retention_window" default:"168h"`
+	DNSResolver           string                 `mapstructure:"dns_resolver"`
 	DisableWaitingNetwork bool                   `mapstructure:"disable_waiting_network" default:"false"`
 	// DEPRECATED: not used as of https://github.com/daeuniverse/dae/pull/912
 	EnableLocalTcpFastRedirect bool `mapstructure:"enable_local_tcp_fast_redirect" default:"false"`

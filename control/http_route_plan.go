@@ -64,7 +64,7 @@ func (p *httpRoutePlanner) routeOptions(ctx context.Context, target httpTarget) 
 		if _, err := netip.ParseAddr(domain); err == nil {
 			domain = ""
 		}
-		option, err := p.plane.selectHTTPAddress(p.network, p.source, p.identity, domain, p.destination)
+		option, err := p.plane.selectRoutedAddress(p.network, p.source, p.identity, domain, p.destination)
 		if err != nil {
 			return nil, err
 		}

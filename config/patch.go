@@ -16,6 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -53,6 +54,9 @@ func validateSoMarkFromDae(params *Config) error {
 }
 
 func validateControlModes(params *Config) error {
+	if _, err := netutils.ParseDNSServer(params.Global.DNSResolver); err != nil {
+		return err
+	}
 	if params.Global.DNSRetentionWindow <= 0 {
 		return fmt.Errorf("dns_retention_window must be positive")
 	}

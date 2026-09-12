@@ -12,6 +12,6 @@ import (
 	"net"
 )
 
-func newMarkedResolver(uint32) (*net.Resolver, error) {
+func newMarkedDialer(uint32) (*net.Dialer, error) {
 	return nil, errors.New("marked resolver requires Linux SO_MARK support")
 }
