@@ -7,44 +7,89 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
-	"strings"
+	"sync"
 
-	dns "github.com/daeuniverse/dae-plugin-dns-router/policy"
-	"github.com/daeuniverse/dae/common"
+	policy "github.com/daeuniverse/dae-plugin-dns-router/policy"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/outbound/netproxy"
-	dnsmessage "github.com/miekg/dns"
+	dns "github.com/miekg/dns"
 )
 
-type dialArgument struct {
-	networkType common.NetworkType
-	Dialer      netproxy.Dialer
-	Target      netip.AddrPort
+// Exchange owns one query's transport. The caller supplies the selected address
+// and a request-bound dialer; nothing is pooled across exchanges or clients.
+// A failed/canceled exchange never modifies query or publishes a partial reply.
+func Exchange(ctx context.Context, upstream *policy.Upstream, dialer netproxy.Dialer, target netip.AddrPort, protocol string, query *dns.Msg) (*dns.Msg, error) {
+	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	scheme := upstream.Scheme
+	if scheme == policy.UpstreamScheme_TCP_UDP {
+		scheme = policy.UpstreamScheme(protocol)
+	}
+	if err := validateDNSForwardQuery(query, string(scheme), scheme != policy.UpstreamScheme_HTTPS && scheme != policy.UpstreamScheme_H3); err != nil {
+		return nil, err
+	}
+	response := query.Copy()
+	var err error
+	switch scheme {
+	case policy.UpstreamScheme_UDP:
+		err = exchangeUDP(ctx, dialer, target, response)
+	case policy.UpstreamScheme_TCP, policy.UpstreamScheme_TLS:
+		err = exchangeTCP(ctx, dialer, target, upstream, response)
+	case policy.UpstreamScheme_HTTPS, policy.UpstreamScheme_H3:
+		err = exchangeHTTP(ctx, dialer, target, upstream, response)
+	case policy.UpstreamScheme_QUIC:
+		err = exchangeQUIC(ctx, dialer, target, upstream, response)
+	default:
+		err = fmt.Errorf("unsupported DNS transport %q", scheme)
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	response.Id = query.Id
+	return response, nil
 }
 
-func (a *dialArgument) dialerForConnection() netproxy.Dialer { return a.Dialer }
-
-func closeInBackground(conn io.Closer) {
-	if conn != nil {
-		go conn.Close()
+// The I/O worker owns the response and closes its socket. On cancellation,
+// interrupt I/O without making the caller wait for an outbound's blocking Close.
+func exchangeIO(ctx context.Context, conn io.Closer, exchange func() error) error {
+	closeConn := sync.OnceFunc(func() { _ = conn.Close() })
+	done := make(chan error, 1)
+	go func() {
+		defer closeConn()
+		done <- exchange()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		go closeConn()
+		return ctx.Err()
 	}
 }
 
-// New owns protocol transport and connection reuse, but never response caching.
-func New(ctx context.Context, upstream *dns.Upstream, dialer netproxy.Dialer, target netip.AddrPort, protocol string) (DnsForwarder, error) {
-	return newDnsForwarder(ctx, upstream, dialArgument{Dialer: dialer, Target: target,
-		networkType: common.NetworkType{L4Proto: consts.L4ProtoStr(protocol), IpVersion: consts.IpVersionStrFromAddr(target.Addr())}})
-}
-
-func validateDNSResponseIdentity(request, response *dnsmessage.Msg) error {
-	if request == nil || response == nil || !response.Response || request.Id != response.Id || request.Opcode != response.Opcode || len(request.Question) != len(response.Question) {
-		return fmt.Errorf("DNS response identity mismatch")
-	}
-	for i, q := range request.Question {
-		r := response.Question[i]
-		if !strings.EqualFold(q.Name, r.Name) || q.Qtype != r.Qtype || q.Qclass != r.Qclass {
-			return fmt.Errorf("DNS response question mismatch")
+func hasDnsTransactionSignature(msg *dns.Msg) bool {
+	for _, rr := range msg.Extra {
+		if rr.Header().Rrtype == dns.TypeTSIG || rr.Header().Rrtype == dns.TypeSIG {
+			return true
 		}
+	}
+	return false
+}
+
+func validateDNSForwardQuery(msg *dns.Msg, transport string, rejectZoneTransfer bool) error {
+	for _, question := range msg.Question {
+		if rejectZoneTransfer && (question.Qtype == dns.TypeAXFR || question.Qtype == dns.TypeIXFR) {
+			return fmt.Errorf("%s zone transfers are not supported", transport)
+		}
+	}
+	if hasDnsTransactionSignature(msg) {
+		return fmt.Errorf("%s transport does not support transaction signatures", transport)
 	}
 	return nil
 }

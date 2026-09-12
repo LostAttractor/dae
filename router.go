@@ -328,15 +328,8 @@ func Exchange(ctx context.Context, request *plugin.DNSRequest, upstream *policy.
 			if i+1 < len(protocols) {
 				operation, cancel = context.WithTimeout(ctx, partialBudget(ctx))
 			}
-			forwarder, err := transport.New(ctx, upstream, requestDialer{request, upstream.Hostname}, netip.AddrPortFrom(ip, upstream.Port), string(protocol))
-			if err != nil {
-				cancel()
-				return nil, err
-			}
-			message := request.Message.Copy()
-			err = forwarder.ForwardDNS(operation, message)
+			message, err := transport.Exchange(operation, upstream, requestDialer{request, upstream.Hostname}, netip.AddrPortFrom(ip, upstream.Port), string(protocol), request.Message)
 			cancel()
-			_ = forwarder.Close()
 			if err == nil {
 				response := &plugin.DNSResponse{Message: message, ReceivedAt: time.Now(), Origin: upstream.String()}
 				if !message.Truncated || i+1 == len(protocols) {

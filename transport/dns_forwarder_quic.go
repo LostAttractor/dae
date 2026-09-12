@@ -13,12 +13,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
 	dns "github.com/daeuniverse/dae-plugin-dns-router/policy"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"
 	dnsmessage "github.com/miekg/dns"
 )
@@ -232,159 +234,20 @@ func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []by
 	}
 }
 
-type quicDNSForwarder struct {
-	dns.Upstream
-	dialArgument dialArgument
-	state        *dnsForwarderState
-	mu           sync.Mutex
-	conn         *quic.Conn
-	packetConn   net.PacketConn
-	dial         *doqDialState
-}
-
-type doqDialState struct {
-	done       chan struct{}
-	cancel     context.CancelFunc
-	conn       *quic.Conn
-	packetConn net.PacketConn
-	err        error
-}
-
-// getConn lazily dials the shared QUIC connection. One shared dial runs outside
-// mu so Close can cancel it without allowing concurrent requests to accumulate
-// blocked dials or packet sockets.
-func (d *quicDNSForwarder) getConn(requestCtx context.Context) (*quic.Conn, error) {
-	if d.state.isClosed() {
-		return nil, net.ErrClosed
-	}
-	d.mu.Lock()
-	if d.state.isClosed() {
-		d.mu.Unlock()
-		return nil, net.ErrClosed
-	}
-	if d.conn != nil && d.conn.Context().Err() == nil {
-		conn := d.conn
-		d.mu.Unlock()
-		return conn, nil
-	}
-	if d.dial != nil {
-		dial := d.dial
-		d.mu.Unlock()
-		return d.waitForDial(requestCtx, dial)
-	}
-	staleConn, stalePacket := d.conn, d.packetConn
-	d.conn = nil
-	d.packetConn = nil
-	dial := &doqDialState{done: make(chan struct{})}
-	d.dial = dial
-	d.mu.Unlock()
-	if staleConn != nil {
-		_ = staleConn.CloseWithError(doqNoError, "")
-	}
-	closeInBackground(stalePacket)
-	go d.runDial(dial)
-	return d.waitForDial(requestCtx, dial)
-}
-
-func (d *quicDNSForwarder) waitForDial(requestCtx context.Context, dial *doqDialState) (*quic.Conn, error) {
-	ctx, cancelState := d.state.deriveContext(requestCtx)
-	defer cancelState()
-	select {
-	case <-dial.done:
-		return dial.conn, dial.err
-	case <-ctx.Done():
-		if d.state.isClosed() {
-			return nil, net.ErrClosed
-		}
-		if requestCtx.Err() != nil {
-			return nil, requestCtx.Err()
-		}
-		return nil, ctx.Err()
-	}
-}
-
-func (d *quicDNSForwarder) runDial(dial *doqDialState) {
-	ctx, cancel := context.WithTimeout(d.state.ctx, consts.DefaultDialTimeout)
-	d.mu.Lock()
-	dial.cancel = cancel
-	d.mu.Unlock()
-	conn, packetConn, err := d.createConnection(ctx, dial)
-	cancel()
-
-	var closeConn *quic.Conn
-	var closePacket net.PacketConn
-	d.mu.Lock()
-	if dial.packetConn == packetConn {
-		dial.packetConn = nil
-	}
-	if err == nil && !d.state.isClosed() {
-		d.conn = conn
-		d.packetConn = packetConn
-		dial.conn = conn
-	} else {
-		if d.state.isClosed() {
-			err = net.ErrClosed
-		}
-		closeConn, closePacket = conn, packetConn
-	}
-	dial.err = err
-	d.mu.Unlock()
-
-	if closeConn != nil {
-		_ = closeConn.CloseWithError(doqNoError, "")
-	}
-	if closePacket != nil {
-		_ = closePacket.Close()
-	}
-	if err == nil {
-		go func(connection *quic.Conn, packet net.PacketConn) {
-			<-connection.Context().Done()
-			d.mu.Lock()
-			if d.conn == connection {
-				d.conn = nil
-				d.packetConn = nil
-			}
-			d.mu.Unlock()
-			closeInBackground(packet)
-		}(conn, packetConn)
-	}
-	d.mu.Lock()
-	if d.dial == dial {
-		d.dial = nil
-	}
-	close(dial.done)
-	d.mu.Unlock()
-}
-
-func (d *quicDNSForwarder) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) error {
-	originalID := msg.Id
+func exchangeQUIC(ctx context.Context, dialer netproxy.Dialer, target netip.AddrPort, upstream *dns.Upstream, msg *dnsmessage.Msg) error {
 	query, frame, err := packDoqQuery(msg)
 	if err != nil {
 		return err
 	}
-	conn, err := d.getConn(ctx)
+	conn, err := dialQUIC(ctx, dialer, target, &tls.Config{ServerName: upstream.Hostname, NextProtos: []string{"doq"}}, &quic.Config{
+		MaxIncomingStreams: -1, MaxIncomingUniStreams: -1,
+	})
 	if err != nil {
 		return err
 	}
-
-	parentCtx := ctx
-	ctx, cancelState := d.state.deriveContext(ctx)
-	defer cancelState()
-	ctx, cancelTimeout := context.WithTimeout(ctx, consts.DefaultDNSTimeout)
-	defer cancelTimeout()
+	defer conn.CloseWithError(doqNoError, "")
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
-		// A local stream-limit timeout doesn't make the shared connection bad.
-		// Only discard it when quic-go has already closed the connection.
-		if conn.Context().Err() != nil {
-			d.detachConnection(conn, doqNoError, "")
-		}
-		if parentCtx.Err() != nil {
-			return parentCtx.Err()
-		}
-		if d.state.isClosed() {
-			return net.ErrClosed
-		}
 		return err
 	}
 	defer stream.CancelRead(doqRequestCancelled)
@@ -394,142 +257,30 @@ func (d *quicDNSForwarder) ForwardDNS(ctx context.Context, msg *dnsmessage.Msg) 
 		return err
 	}
 	stopDeadline := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
-	response := msg.Copy()
-	err = resolvePreparedDoQ(stream, response, query, frame)
-	stopDeadline()
-	if err != nil && parentCtx.Err() != nil {
-		return parentCtx.Err()
-	}
-	if err != nil && d.state.isClosed() {
-		return net.ErrClosed
-	}
+	defer stopDeadline()
+	err = resolvePreparedDoQ(stream, msg, query, frame)
 	var protocolErr *doqProtocolErrorCause
 	if errors.As(err, &protocolErr) {
-		d.detachConnection(conn, doqProtocolError, "DoQ protocol error")
-		return err
-	}
-	if err != nil && ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	response.Id = originalID
-	*msg = *response
-	return nil
-}
-
-func (d *quicDNSForwarder) detachConnection(conn *quic.Conn, code quic.ApplicationErrorCode, reason string) {
-	d.mu.Lock()
-	if d.conn != conn {
-		d.mu.Unlock()
-		return
-	}
-	packetConn := d.packetConn
-	d.conn = nil
-	d.packetConn = nil
-	d.mu.Unlock()
-	go func() {
-		_ = conn.CloseWithError(code, reason)
-		if packetConn != nil {
-			_ = packetConn.Close()
-		}
-	}()
-}
-
-func (d *quicDNSForwarder) Close() error {
-	if !d.state.close() {
-		return nil
-	}
-	d.mu.Lock()
-	conn, packetConn := d.conn, d.packetConn
-	dial := d.dial
-	var dialPacket net.PacketConn
-	var dialCancel context.CancelFunc
-	if dial != nil {
-		dialPacket = dial.packetConn
-		dialCancel = dial.cancel
-	}
-	d.conn = nil
-	d.packetConn = nil
-	d.mu.Unlock()
-	if dialCancel != nil {
-		dialCancel()
-	}
-	var err error
-	if conn != nil {
-		if closeErr := conn.CloseWithError(doqNoError, ""); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-			err = closeErr
-		}
-	}
-	if packetConn != nil {
-		if closeErr := packetConn.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-			err = errors.Join(err, closeErr)
-		}
-	}
-	if dialPacket != nil && dialPacket != packetConn {
-		closeInBackground(dialPacket)
-	}
-	if dial != nil {
-		timer := time.NewTimer(consts.DefaultDialTimeout)
-		defer timer.Stop()
-		select {
-		case <-dial.done:
-		case <-timer.C:
-			err = errors.Join(err, fmt.Errorf("DoQ dial shutdown timeout: %w", context.DeadlineExceeded))
-		}
+		_ = conn.CloseWithError(doqProtocolError, "DoQ protocol error")
 	}
 	return err
 }
 
-func (d *quicDNSForwarder) createConnection(ctx context.Context, dial *doqDialState) (*quic.Conn, net.PacketConn, error) {
-	packetConn, err := d.dialArgument.dialerForConnection().ListenPacket(ctx, d.dialArgument.Target.String())
+// The socket follows its QUIC connection, including failed handshakes and
+// HTTP/3 transport retries. No forwarder-wide packet set or dial state is needed.
+func dialQUIC(ctx context.Context, dialer netproxy.Dialer, target netip.AddrPort, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
+	packet, err := dialer.ListenPacket(ctx, target.String())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	d.mu.Lock()
-	if d.state.isClosed() || d.dial != dial {
-		d.mu.Unlock()
-		return nil, packetConn, net.ErrClosed
-	}
-	dial.packetConn = packetConn
-	d.mu.Unlock()
-	contextCloseDone := make(chan error, 1)
-	stopClose := context.AfterFunc(ctx, func() { contextCloseDone <- packetConn.Close() })
-
-	tlsCfg := &tls.Config{
-		NextProtos:         []string{"doq"},
-		InsecureSkipVerify: false,
-		ServerName:         d.Upstream.Hostname,
-	}
-	addr := net.UDPAddrFromAddrPort(d.dialArgument.Target)
-	connection, err := quic.DialEarly(ctx, packetConn, addr, tlsCfg, &quic.Config{
-		MaxIncomingStreams:    -1,
-		MaxIncomingUniStreams: -1,
-	})
-	if !stopClose() {
-		closeErr := <-contextCloseDone
-		d.mu.Lock()
-		if dial.packetConn == packetConn {
-			dial.packetConn = nil
-		}
-		d.mu.Unlock()
-		if connection != nil {
-			_ = connection.CloseWithError(doqNoError, "")
-		}
-		if closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-			err = errors.Join(err, closeErr)
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, errors.Join(ctxErr, err)
-		}
-		return nil, nil, errors.Join(context.Canceled, err)
-	}
+	closePacket := sync.OnceFunc(func() { _ = packet.Close() })
+	stop := context.AfterFunc(ctx, closePacket)
+	conn, err := quic.DialEarly(ctx, packet, net.UDPAddrFromAddrPort(target), tlsConfig, config)
+	stop()
 	if err != nil {
-		return nil, packetConn, err
+		go closePacket()
+		return nil, err
 	}
-	return connection, packetConn, nil
+	go func() { <-conn.Context().Done(); closePacket() }()
+	return conn, nil
 }

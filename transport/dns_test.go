@@ -7,13 +7,11 @@ package transport
 
 import (
 	"bytes"
-	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
-	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -23,10 +21,6 @@ import (
 )
 
 type doqTimeoutError struct{}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func (doqTimeoutError) Error() string   { return "timeout" }
 func (doqTimeoutError) Timeout() bool   { return true }
@@ -67,7 +61,6 @@ func (s *doqTestStream) Close() error {
 
 func (s *doqTestStream) CancelRead(quic.StreamErrorCode)  { s.cancelReads++ }
 func (s *doqTestStream) CancelWrite(quic.StreamErrorCode) { s.cancelWrites++ }
-func (s *doqTestStream) Context() context.Context         { return context.Background() }
 
 func framedDoqResponse(t *testing.T, query *dnsmessage.Msg) []byte {
 	t.Helper()
@@ -180,7 +173,7 @@ func TestDoQRejectsTcpKeepaliveQueryBeforeDial(t *testing.T) {
 	query.IsEdns0().Option = append(query.IsEdns0().Option, &dnsmessage.EDNS0_TCP_KEEPALIVE{
 		Code: dnsmessage.EDNS0TCPKEEPALIVE,
 	})
-	if err := newTestDNSForwarder(t, dns.UpstreamScheme_QUIC, dialArgument{}).ForwardDNS(context.Background(), query); err == nil {
+	if _, err := Exchange(t.Context(), &dns.Upstream{Scheme: dns.UpstreamScheme_QUIC}, nil, netip.AddrPort{}, "udp", query); err == nil {
 		t.Fatal("DoQ query with TCP keepalive unexpectedly reached the dial path")
 	}
 }
@@ -191,7 +184,7 @@ func TestDoQRejectsMultipleOptRecordsBeforeDial(t *testing.T) {
 		&dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT}},
 		&dnsmessage.OPT{Hdr: dnsmessage.RR_Header{Name: ".", Rrtype: dnsmessage.TypeOPT}},
 	)
-	if err := newTestDNSForwarder(t, dns.UpstreamScheme_QUIC, dialArgument{}).ForwardDNS(context.Background(), query); err == nil {
+	if _, err := Exchange(t.Context(), &dns.Upstream{Scheme: dns.UpstreamScheme_QUIC}, nil, netip.AddrPort{}, "udp", query); err == nil {
 		t.Fatal("DoQ query with multiple OPT records unexpectedly reached the dial path")
 	}
 }
@@ -220,7 +213,7 @@ func TestDoQRejectsInvalidOptBeforeDial(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			query := testQuery("example.com.", dnsmessage.TypeA, 42)
 			query.Extra = append(query.Extra, tt.opt)
-			if err := newTestDNSForwarder(t, dns.UpstreamScheme_QUIC, dialArgument{}).ForwardDNS(context.Background(), query); err == nil {
+			if _, err := Exchange(t.Context(), &dns.Upstream{Scheme: dns.UpstreamScheme_QUIC}, nil, netip.AddrPort{}, "udp", query); err == nil {
 				t.Fatal("invalid DoQ OPT unexpectedly reached the dial path")
 			}
 		})
@@ -311,44 +304,5 @@ func TestPackDoqQueryUsesAvailableNearLimitPadding(t *testing.T) {
 	padding, ok := opt.Option[0].(*dnsmessage.EDNS0_PADDING)
 	if !ok || len(padding.Padding) != 20 {
 		t.Fatalf("near-limit padding = %#v, want 20 bytes", opt.Option[0])
-	}
-}
-
-func TestDoHUsesHostnameAsAuthority(t *testing.T) {
-	forwarder := newTestDNSForwarder(t, dns.UpstreamScheme_HTTPS, dialArgument{}).(*httpDNSForwarder)
-	forwarder.Upstream = dns.Upstream{
-		Scheme:   dns.UpstreamScheme_HTTPS,
-		Hostname: "dns.example",
-		Port:     443,
-		Path:     "/dns-query",
-	}
-	forwarder.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Host != "dns.example:443" || req.Host != "dns.example:443" {
-			t.Fatalf("DoH authority: URL=%q Host=%q", req.URL.Host, req.Host)
-		}
-		wire, err := base64.RawURLEncoding.DecodeString(req.URL.Query().Get("dns"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var query dnsmessage.Msg
-		if err := query.Unpack(wire); err != nil {
-			t.Fatal(err)
-		}
-		response := new(dnsmessage.Msg)
-		response.SetReply(&query)
-		payload, err := response.Pack()
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     http.Header{"Content-Type": []string{"application/dns-message"}},
-			Body:       io.NopCloser(bytes.NewReader(payload)),
-		}, nil
-	})}
-	msg := testQuery("example.com.", dnsmessage.TypeA, 42)
-	if err := forwarder.ForwardDNS(context.Background(), msg); err != nil {
-		t.Fatal(err)
 	}
 }

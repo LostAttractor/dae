@@ -39,8 +39,11 @@ Upstream scheme may be `udp`, `tcp`, `tcp+udp`, `tls`, `https`, `quic`, `h3` or
 The router supplies `DNSResolver` for Surge encrypted/multiple-server assignments.
 Endpoint hostname bootstrap uses the system resolver. Upstream sockets go through
 dae's request-bound dial services, retaining client identity and applying target
-routing, marks, accounting and route/policy lifetimes. Forwarder lifetime is bounded
-to the current exchange; transport connections are not shared across clients.
+routing, marks, accounting and route/policy lifetimes. `transport.Exchange` owns
+one query and its sockets; connections are scoped to that exchange. Plain TCP
+can retry an interrupted query on one new connection; it never retransmits on
+a live stream.
+Cancellation ends the exchange budget even if an outbound's `Close` is blocked.
 
 Dial services receive both the selected IP:port and the configured endpoint
 hostname. `domain()` rules match that hostname, not the client's DNS question;
