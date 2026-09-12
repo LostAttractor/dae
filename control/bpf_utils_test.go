@@ -4,6 +4,7 @@
 package control
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,28 @@ import (
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
 )
+
+// The caller supplies expectations after building with make capacity overrides.
+func TestConfiguredBPFMapCapacities(t *testing.T) {
+	raw := os.Getenv("DAE_TEST_MAP_CAPACITIES")
+	if raw == "" {
+		t.Skip("set DAE_TEST_MAP_CAPACITIES after an override build")
+	}
+	var expected map[string]uint32
+	if err := json.Unmarshal([]byte(raw), &expected); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := loadBpf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range expected {
+		m := spec.Maps[name]
+		if m == nil || m.MaxEntries != want {
+			t.Fatalf("%s: spec=%+v, want capacity=%d", name, m, want)
+		}
+	}
+}
 
 func TestRoutingTupleMapLayout(t *testing.T) {
 	spec, err := loadBpf()
@@ -46,8 +69,8 @@ func TestDomainRoutingMapSpec(t *testing.T) {
 	if m.Flags != unix.BPF_F_NO_PREALLOC {
 		t.Fatalf("domain_routing_map flags = %#x, want BPF_F_NO_PREALLOC", m.Flags)
 	}
-	if m.MaxEntries != 65536 {
-		t.Fatalf("domain_routing_map max entries = %d, want 65536", m.MaxEntries)
+	if m.MaxEntries == 0 {
+		t.Fatal("domain_routing_map capacity must be positive")
 	}
 	if m.KeySize != 16 || m.ValueSize != uint32(unsafe.Sizeof(bpfDomainRouting{})) {
 		t.Fatalf("domain_routing_map layout = key %d, value %d; want 16, %d", m.KeySize, m.ValueSize, unsafe.Sizeof(bpfDomainRouting{}))

@@ -50,22 +50,38 @@
 #define NOWHERE_IFINDEX 0
 #define CLOCK_MONOTONIC 1
 
+/* Internal layout and metadata limits are not workload tuning parameters. */
 #define MAX_INTERFACE_NUM 256
+#define MAX_LPM_SIZE 2048000
+#define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
+#define MAX_API_CLIENT_NUM 1024
+
 #ifndef MAX_MATCH_SET_LEN
 #define MAX_MATCH_SET_LEN \
 	(32 * 32) // Should be sync with common/consts/ebpf.go.
 #endif
-#if MAX_MATCH_SET_LEN > 65536
-#error "routing profile indices require MAX_MATCH_SET_LEN <= 65536"
+#if MAX_MATCH_SET_LEN < 32 || MAX_MATCH_SET_LEN > 65536 || MAX_MATCH_SET_LEN % 32
+#error "MAX_MATCH_SET_LEN must be a multiple of 32 in [32, 65536]"
 #endif
-#define MAX_LPM_SIZE 2048000
 #define MAX_LPM_NUM (MAX_MATCH_SET_LEN + 8)
+
+/* Public build-time capacity knobs for traffic-dependent state. */
+#ifndef MAX_DST_MAPPING_NUM
 #define MAX_DST_MAPPING_NUM (65536 * 4)
+#endif
+#ifndef MAX_DST_MAPPING_NUM_UDP
 #define MAX_DST_MAPPING_NUM_UDP (65536 * 2)
+#endif
+#ifndef MAX_UDP_ROUTING_CACHE_NUM
 #define MAX_UDP_ROUTING_CACHE_NUM 65536
-#define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
-#define MAX_API_CLIENT_NUM 1024
+#endif
+#ifndef MAX_DOMAIN_ROUTING_NUM
 #define MAX_DOMAIN_ROUTING_NUM 65536
+#endif
+#if MAX_DST_MAPPING_NUM < 1 || MAX_DST_MAPPING_NUM_UDP < 1 || \
+    MAX_UDP_ROUTING_CACHE_NUM < 1 || MAX_DOMAIN_ROUTING_NUM < 1
+#error "BPF map capacities must be positive"
+#endif
 #define MAX_ARG_LEN 128
 
 #define UTP_MAX_EXTENSIONS 4

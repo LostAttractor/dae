@@ -10,7 +10,7 @@ import (
 	"maps"
 )
 
-// Keep in sync with MAX_INTERFACE_NUM in control/kern/tproxy.c.
+// Keep in sync with the internal MAX_INTERFACE_NUM in control/kern/tproxy.c.
 const maxRoutingInterfaces = 256
 
 type routingSpan struct {

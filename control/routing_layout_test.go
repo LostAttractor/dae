@@ -25,6 +25,9 @@ func TestRoutingMapLayouts(t *testing.T) {
 		t.Fatal("routing_map does not use the compact match_set ABI")
 	}
 	profile := spec.Maps["routing_profile_map"]
+	if spec.Maps["routing_interface_map"].MaxEntries != maxRoutingInterfaces {
+		t.Fatal("kernel interface capacity differs from the Go compiler limit")
+	}
 	if profile.Type != ebpf.Hash || profile.Flags != unix.BPF_F_NO_PREALLOC || profile.KeySize != 4 ||
 		profile.ValueSize != 4+2*uint32(consts.MaxMatchSetLen) || profile.ValueSize != uint32(unsafe.Sizeof(bpfRoutingProfile{})) ||
 		profile.MaxEntries != maxRoutingInterfaces+1 {

@@ -114,8 +114,8 @@ func init() {
 		}
 		MaxMatchSetLen = i
 	}
-	if MaxMatchSetLen%32 != 0 {
-		panic("MaxMatchSetLen should be a multiple of 32: " + strconv.Itoa(MaxMatchSetLen))
+	if MaxMatchSetLen < 32 || MaxMatchSetLen > 65536 || MaxMatchSetLen%32 != 0 {
+		panic("MaxMatchSetLen must be a multiple of 32 in [32, 65536]: " + strconv.Itoa(MaxMatchSetLen))
 	}
 }
 

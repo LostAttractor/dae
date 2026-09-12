@@ -8,6 +8,7 @@ OBJDUMP_BIN="${LLVM_OBJDUMP:-llvm-objdump}"
 BPFTOOL_BIN="${BPFTOOL_BIN:-bpftool}"
 BPF_ENDIAN_TARGET="${BPF_ENDIAN_TARGET:-bpfel}"
 MAX_MATCH_SET_LEN="${MAX_MATCH_SET_LEN:-1024}"
+read -r -a capacity_flags <<< "${BPF_CAPACITY_FLAGS:--DMAX_MATCH_SET_LEN=${MAX_MATCH_SET_LEN}}"
 
 for command_name in findmnt git realpath; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
@@ -170,7 +171,7 @@ git submodule update --init --recursive
 
 if ! "${CLANG_BIN}" -O2 -g -target "${BPF_ENDIAN_TARGET}" -mcpu=v1 -Wall -Werror \
   -Wno-unused-command-line-argument \
-  -DMAX_MATCH_SET_LEN="${MAX_MATCH_SET_LEN}" \
+  "${capacity_flags[@]}" \
   -c control/kern/tproxy.c -o "${OBJECT_PATH}" \
   > "${OUT_DIR}/static/compile.stdout.txt" 2> "${OUT_DIR}/static/compile.stderr.txt"; then
   exit 1

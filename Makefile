@@ -14,7 +14,14 @@ TARGET ?= bpfel,bpfeb
 OUTPUT ?= dae
 TEST_ARGS ?=
 MAX_MATCH_SET_LEN ?= 1024
-CFLAGS := -DMAX_MATCH_SET_LEN=$(MAX_MATCH_SET_LEN) $(CFLAGS)
+# Workload-sized tables; internal layout and metadata limits stay in tproxy.c.
+MAX_DST_MAPPING_NUM ?= 262144
+MAX_DST_MAPPING_NUM_UDP ?= 131072
+MAX_UDP_ROUTING_CACHE_NUM ?= 65536
+MAX_DOMAIN_ROUTING_NUM ?= 65536
+BPF_CAPACITIES := MAX_MATCH_SET_LEN MAX_DST_MAPPING_NUM MAX_DST_MAPPING_NUM_UDP MAX_UDP_ROUTING_CACHE_NUM MAX_DOMAIN_ROUTING_NUM
+BPF_CAPACITY_FLAGS := $(foreach name,$(BPF_CAPACITIES),-D$(name)=$($(name)))
+BPF_GO_LDFLAGS := -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)
 NOSTRIP ?= n
 STATIC ?= n
 CGO_ENABLED ?= 1
@@ -51,9 +58,19 @@ endif
 ifeq ($(STATIC),y)
 STATIC_LDFLAGS := -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'
 endif
-BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
+BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) $(BPF_GO_LDFLAGS) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
 
-.PHONY: check-go-arch check-go-version check-cgo clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt plugins submodule submodules test
+.PHONY: check-go-arch check-go-version check-cgo check-bpf-capacities clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt plugins submodule submodules test
+
+check-bpf-capacities:
+	@for entry in $(foreach name,$(BPF_CAPACITIES),'$(name)=$($(name))'); do \
+		value=$${entry#*=}; \
+		case "$$value" in ''|*[!0-9]*) echo "ERROR: $$entry must be a positive integer" >&2; exit 1 ;; esac; \
+		if [ "$$value" -eq 0 ] || [ "$$value" -gt 4294967294 ]; then echo "ERROR: invalid capacity $$entry" >&2; exit 1; fi; \
+	done
+	@if [ "$(MAX_MATCH_SET_LEN)" -lt 32 ] || [ "$(MAX_MATCH_SET_LEN)" -gt 65536 ] || [ $$(( $(MAX_MATCH_SET_LEN) % 32 )) -ne 0 ]; then \
+		echo "ERROR: MAX_MATCH_SET_LEN must be a multiple of 32 in [32, 65536]" >&2; exit 1; \
+	fi
 
 check-cgo:
 	@if [ "$(CGO_ENABLED)" != "1" ]; then \
@@ -142,12 +159,12 @@ fmt: check-go-version submodule web-assets
 # $BPF_CLANG is used in go:generate invocations.
 ebpf: export BPF_CLANG := $(CLANG)
 ebpf: export BPF_STRIP_FLAG := $(STRIP_FLAG)
-ebpf: export BPF_CFLAGS := $(CFLAGS)
+ebpf: export BPF_CFLAGS := $(BPF_CAPACITY_FLAGS) $(CFLAGS)
 ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET = $(GOARCH)
 # bpf2go uses -mod=mod, so generate BPF from dae's pinned module outside any
 # plugin workspace. The final Go build still uses the caller's workspace.
-ebpf: check-go-version submodule clean-ebpf
+ebpf: check-go-version check-bpf-capacities submodule clean-ebpf
 	@unset GOOS && \
 	unset GOARCH && \
     unset GOARM && \
@@ -164,7 +181,7 @@ ebpf: check-go-version submodule clean-ebpf
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
 test: check-cgo plugins ebpf web-assets
-	go test $(TEST_ARGS) -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
+	go test $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
@@ -172,10 +189,10 @@ ebpf-lint:
 
 ebpf-test: export BPF_CLANG := $(CLANG)
 ebpf-test: export BPF_STRIP_FLAG := $(STRIP_FLAG)
-ebpf-test: export BPF_CFLAGS := $(CFLAGS)
+ebpf-test: export BPF_CFLAGS := $(BPF_CAPACITY_FLAGS) $(CFLAGS)
 ebpf-test: export BPF_TARGET := $(TARGET)
 ebpf-test: export BPF_TRACE_TARGET = $(GOARCH)
-ebpf-test: check-go-version submodule clean-ebpf
+ebpf-test: check-go-version check-bpf-capacities submodule clean-ebpf
 	@goos=$$(go env GOOS); \
 	if [ "$$goos" != "linux" ]; then \
 		echo "ERROR: eBPF tests require Linux (found $$goos)." >&2; \
@@ -187,10 +204,10 @@ ebpf-test: check-go-version submodule clean-ebpf
     echo $(STRIP_FLAG) && \
     GOWORK=off go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
-    go test -v -tags dae_bpf_tests ./control/kern/tests/...
+    go test -v -ldflags "$(BPF_GO_LDFLAGS)" -tags dae_bpf_tests ./control/kern/tests/...
 
-ebpf-audit: check-go-version
-	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh
+ebpf-audit: check-go-version check-bpf-capacities
+	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" BPF_CAPACITY_FLAGS="$(BPF_CAPACITY_FLAGS)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh
 
 ## End Ebpf
 
