@@ -65,6 +65,7 @@ type DNSPlugin interface {
 
 // DNSObserver sees final valid responses, including local and cached answers,
 // after middleware and successful delivery. It cannot change the delivered response.
+// ReceivedAt is nonzero: the core supplies delivery time if the producer omitted it.
 // Calls may be concurrent; background consumers must copy retained data.
 type DNSObserver interface {
 	ObserveDNS(context.Context, *DNSRequest, *DNSResponse)

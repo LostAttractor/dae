@@ -3,11 +3,11 @@
 package control
 
 import (
-	"encoding/binary"
 	"net/netip"
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
 	dns "github.com/miekg/dns"
 )
@@ -16,35 +16,7 @@ import (
 // relayed verbatim, but must not trigger plugins or publish registry evidence.
 func unpackDNSMessage(wire []byte) *dns.Msg {
 	m := new(dns.Msg)
-	if len(wire) < 12 || m.Unpack(wire) != nil {
-		return nil
-	}
-	counts := []int{len(m.Question), len(m.Answer), len(m.Ns), len(m.Extra)}
-	off := 12
-	for section, count := range counts {
-		if count != int(binary.BigEndian.Uint16(wire[4+section*2:])) {
-			return nil
-		}
-		for range count {
-			_, next, err := dns.UnpackDomainName(wire, off)
-			if err != nil {
-				return nil
-			}
-			off = next
-			if section == 0 {
-				off += 4
-			} else {
-				if off+10 > len(wire) {
-					return nil
-				}
-				off += 10 + int(binary.BigEndian.Uint16(wire[off+8:]))
-			}
-			if off > len(wire) {
-				return nil
-			}
-		}
-	}
-	if off != len(wire) {
+	if netutils.UnpackDnsMessage(wire, m) != nil {
 		return nil
 	}
 	return m

@@ -249,7 +249,9 @@ func TestDNSStreamTransferOrdering(t *testing.T) {
 	select {
 	case <-continuation:
 		t.Fatal("continuation overtook first delivery")
-	default:
+	case <-time.After(20 * time.Millisecond):
+		// Give the independent reader a chance to forward the next frame.
+		// A nonblocking check can pass even when the delivery barrier is absent.
 	}
 	cancel() // The relay cancels the operation only after first-frame delivery.
 	select {
