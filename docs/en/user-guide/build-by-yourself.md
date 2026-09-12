@@ -27,9 +27,32 @@ On NixOS, `nix-shell --run make` supplies the development tools. A regular build
 
 `CC` selects the compiler for QuickJS/cgo. `CLANG` selects the host Clang used for eBPF. The Makefile's `CFLAGS` belong to eBPF; use `CGO_CFLAGS` for additional cgo compiler options. Keep these toolchains separate when cross-compiling.
 
-## Portable static musl build
+## Static builds
 
-`STATIC=y` selects external static linking and a 2 MiB thread stack. `CC` must point to a musl compiler and its target sysroot; the flag does not select a libc.
+`STATIC=y` selects external static linking and requests a 2 MiB thread stack.
+The libc is selected by `CC`, whose target sysroot must supply static archives.
+`STATIC=y` does not switch the compiler or libc.
+
+### glibc
+
+The default Nix development shell supplies the glibc compiler and `glibc.static`.
+After reloading direnv when the shell changes, build with:
+
+```sh
+make STATIC=y
+scripts/check-static.sh dae
+```
+
+Without direnv, use `nix-shell --run 'make STATIC=y && scripts/check-static.sh dae'`.
+On other glibc-based Linux systems, install the target libc's static development
+libraries and use the same make command with a glibc compiler.
+
+glibc's `dlopen` and some NSS modules can still require shared libraries at
+runtime. The current daemon uses `netgo,osusergo` and disables QuickJS native
+module imports and std/os modules. QuickJS's bundled native module loader still
+produces a `dlopen` linker warning, although that path is disabled in dae's VM.
+
+### musl
 
 On Debian/Ubuntu, install `musl-tools`, then run:
 
@@ -38,13 +61,17 @@ make STATIC=y CC=musl-gcc
 scripts/check-static.sh dae
 ```
 
-On NixOS, the provided shell selects the host architecture's Linux musl toolchain:
+On NixOS, `musl.nix` reuses the development shell with the host architecture's
+Linux musl compiler and defaults `STATIC=y`:
 
 ```sh
 nix-shell musl.nix --run 'make && scripts/check-static.sh dae'
 ```
 
-The static check rejects an ELF interpreter or shared-library dependencies. A verified static executable can be copied without libc or `/nix/store` dependencies. The Dockerfile also builds with musl and verifies the executable before copying it into Alpine.
+The static check rejects an ELF interpreter or startup shared-library dependencies;
+it does not detect libraries loaded later with `dlopen`. The static musl daemon
+can be copied without libc or `/nix/store` dependencies. The Dockerfile also builds
+with musl and verifies the executable before copying it into Alpine.
 
 ## Cross-compilation
 
