@@ -31,10 +31,10 @@ type settings struct {
 
 type key struct{ context, network, query string }
 type entry struct {
-	key         key
-	response    *plugin.DNSResponse
-	at, expires time.Time
-	bytes       int
+	key      key
+	response *plugin.DNSResponse
+	expires  time.Time
+	bytes    int
 }
 
 type Cache struct {
@@ -148,7 +148,7 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 					c.lru.MoveToFront(elem)
 					c.hits++
 					response := e.response.Copy()
-					elapsed := uint32(now.Sub(e.at) / time.Second)
+					elapsed := uint32(now.Sub(e.response.ReceivedAt) / time.Second)
 					c.mu.Unlock()
 					for _, section := range [][]dns.RR{response.Message.Answer, response.Message.Ns, response.Message.Extra} {
 						for _, rr := range section {
@@ -219,8 +219,7 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSRequest, respon
 	if ttl, exists := c.fixed[dns.CanonicalName(request.Message.Question[0].Name)]; exists && ttl == 0 {
 		return
 	}
-	ttl := uint32(1<<31 - 1)
-	count := 0
+	ttl := ^uint32(0) // No ordinary RR has contributed a lifetime yet.
 	negative := true
 	for _, rr := range m.Answer {
 		if rr.Header().Rrtype == request.Message.Question[0].Qtype || request.Message.Question[0].Qtype == dns.TypeANY {
@@ -251,16 +250,12 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSRequest, respon
 				return
 			}
 			ttl = min(ttl, rr.Header().Ttl)
-			count++
 		}
 	}
-	if count == 0 || ttl == 0 || negative && !soa {
+	if ttl == ^uint32(0) || ttl == 0 || negative && !soa {
 		return
 	}
 	at := response.ReceivedAt
-	if at.IsZero() {
-		at = time.Now()
-	}
 	expires := at.Add(time.Duration(ttl) * time.Second)
 	if !time.Now().Before(expires) {
 		return
@@ -273,7 +268,7 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSRequest, respon
 	if bytes > c.memoryLimit {
 		return
 	}
-	e := &entry{key: k, response: response.Copy(), at: at, expires: expires, bytes: bytes}
+	e := &entry{key: k, response: response.Copy(), expires: expires, bytes: bytes}
 	e.response.Wire = nil
 	if negative {
 		// RFC 2308: clients must see the remaining negative lifetime too,

@@ -48,6 +48,8 @@ Cache hits retain their original receipt time and are marked as replays. On
 successful client delivery, dae independently refreshes DomainRegistry retention
 using the delivered TTL and `global.dns_retention_window`; this does not renew the
 cached response's own TTL or receipt time.
+TTL aging uses the response's `ReceivedAt`. The core fills an omitted timestamp
+before observer delivery.
 Reload creates a fresh response cache; domain evidence persists independently.
 `dae plugins dns-cache status` reports entry count, byte usage, hits and misses.
 
