@@ -6,9 +6,81 @@
 package trie
 
 import (
+	"math/rand/v2"
 	"net/netip"
 	"testing"
 )
+
+func TestSelectIthOneAgainstBitScan(t *testing.T) {
+	rng := rand.New(rand.NewPCG(25, 180))
+	for trial := range 128 {
+		bitmap := make([]uint64, 64)
+		for i := range bitmap {
+			switch trial % 4 {
+			case 0:
+				bitmap[i] = rng.Uint64()
+			case 1:
+				bitmap[i] = ^uint64(0)
+			case 2:
+				bitmap[i] = uint64(1) << uint(i%64)
+			case 3:
+				if i%7 == 0 {
+					bitmap[i] = rng.Uint64()
+				}
+			}
+		}
+		ss := &Trie{labelBitmap: bitmap}
+		ss.init()
+		index := 0
+		for pos := range len(bitmap) * 64 {
+			if bitmap[pos/64]&(uint64(1)<<uint(pos%64)) == 0 {
+				continue
+			}
+			if got := selectIthOne(bitmap, ss.ranksBL, ss.selectsBL, index); got != pos {
+				t.Fatalf("trial %d, one %d: got %d, want %d", trial, index, got, pos)
+			}
+			index++
+		}
+	}
+}
+
+func TestTriePrefixesAgainstContains(t *testing.T) {
+	rng := rand.New(rand.NewPCG(128, 64))
+	for _, v6 := range []bool{false, true} {
+		address := func() netip.Addr {
+			var bytes [16]byte
+			for i := range bytes {
+				bytes[i] = byte(rng.Uint32())
+			}
+			if v6 {
+				return netip.AddrFrom16(bytes)
+			}
+			return netip.AddrFrom4([4]byte(bytes[:4]))
+		}
+		prefixes := make([]netip.Prefix, 128)
+		for i := range prefixes {
+			ip := address()
+			prefixes[i] = netip.PrefixFrom(ip, 8+rng.IntN(ip.BitLen()-7)).Masked()
+		}
+		ss, err := NewTrieFromPrefixes(prefixes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range 1024 {
+			ip := address()
+			if i < len(prefixes) {
+				ip = prefixes[i].Addr()
+			}
+			want := false
+			for _, prefix := range prefixes {
+				want = want || prefix.Contains(ip)
+			}
+			if got := ss.HasPrefix(Prefix2bin128(netip.PrefixFrom(ip, ip.BitLen()))); got != want {
+				t.Fatalf("address %v: got %v, want %v", ip, got, want)
+			}
+		}
+	}
+}
 
 func TestTrie(t *testing.T) {
 	trie, err := NewTrie([]string{

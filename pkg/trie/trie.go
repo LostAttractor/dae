@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/bits"
 	"net/netip"
+	"slices"
 	"sort"
 
 	"github.com/daeuniverse/dae/common"
@@ -91,7 +92,6 @@ func (v *ValidChars) IsValidChar(c byte) bool {
 // A nil *Trie represents an empty set.
 type Trie struct {
 	leaves, labelBitmap []uint64
-	ranks, selects      []int32
 	labels              *bitlist.CompactBitList
 	ranksBL, selectsBL  *bitlist.CompactBitList
 
@@ -194,27 +194,8 @@ func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
 
 	// Tighten.
 	ss.labels.Tighten()
-
-	leaves := make([]uint64, len(ss.leaves))
-	copy(leaves, ss.leaves)
-	ss.leaves = leaves
-
-	labelBitmap := make([]uint64, len(ss.labelBitmap))
-	copy(labelBitmap, ss.labelBitmap)
-	ss.labelBitmap = labelBitmap
-
-	ss.ranksBL = bitlist.NewCompactBitList(bits.Len64(uint64(ss.ranks[len(ss.ranks)-1])))
-	ss.selectsBL = bitlist.NewCompactBitList(bits.Len64(uint64(ss.selects[len(ss.selects)-1])))
-	for _, v := range ss.ranks {
-		ss.ranksBL.Append(uint64(v))
-	}
-	for _, v := range ss.selects {
-		ss.selectsBL.Append(uint64(v))
-	}
-	ss.ranksBL.Tighten()
-	ss.selectsBL.Tighten()
-	ss.ranks = nil
-	ss.selects = nil
+	ss.leaves = slices.Clone(ss.leaves)
+	ss.labelBitmap = slices.Clone(ss.labelBitmap)
 
 	return ss, nil
 }
@@ -265,23 +246,34 @@ func getBit(bm []uint64, i int) uint64 {
 	return bm[i>>6] & (1 << uint(i&63))
 }
 
-// init builds pre-calculated cache to speed up rank() and select()
+// init builds compact rank/select indexes. Unpacked construction buffers stay local.
 func (ss *Trie) init() {
-	ss.ranks = []int32{0}
+	ranks := []int32{0}
 	for i := 0; i < len(ss.labelBitmap); i++ {
 		n := bits.OnesCount64(ss.labelBitmap[i])
-		ss.ranks = append(ss.ranks, ss.ranks[len(ss.ranks)-1]+int32(n))
+		ranks = append(ranks, ranks[len(ranks)-1]+int32(n))
 	}
 
-	ss.selects = []int32{}
+	var selects []int32
 	n := 0
 	for i := 0; i < len(ss.labelBitmap)<<6; i++ {
 		z := int(ss.labelBitmap[i>>6]>>uint(i&63)) & 1
 		if z == 1 && n&63 == 0 {
-			ss.selects = append(ss.selects, int32(i))
+			selects = append(selects, int32(i))
 		}
 		n += z
 	}
+	ss.ranksBL = bitlist.NewCompactBitList(bits.Len64(uint64(ranks[len(ranks)-1])))
+	// A sole separator at bit zero still needs a readable index unit.
+	ss.selectsBL = bitlist.NewCompactBitList(max(1, bits.Len64(uint64(selects[len(selects)-1]))))
+	for _, v := range ranks {
+		ss.ranksBL.Append(uint64(v))
+	}
+	for _, v := range selects {
+		ss.selectsBL.Append(uint64(v))
+	}
+	ss.ranksBL.Tighten()
+	ss.selectsBL.Tighten()
 }
 
 // countZeros counts the number of "0" in a bitmap before the i-th bit(excluding
@@ -305,16 +297,16 @@ func selectIthOne(bm []uint64, ranks, selects *bitlist.CompactBitList, i int) in
 	findIthOne := i - int(ranks.Get(base>>6))
 
 	for i := base >> 6; i < len(bm); i++ {
-		bitIdx := 0
-		for w := bm[i]; w > 0; {
-			findIthOne -= int(w & 1)
-			if findIthOne < 0 {
-				return i<<6 + bitIdx
-			}
-			t0 := bits.TrailingZeros64(w &^ 1)
-			w >>= uint(t0)
-			bitIdx += t0
+		w := bm[i]
+		if n := bits.OnesCount64(w); findIthOne >= n {
+			findIthOne -= n
+			continue
 		}
+		// Only the target word needs individual set bits removed.
+		for ; findIthOne > 0; findIthOne-- {
+			w &= w - 1
+		}
+		return i<<6 + bits.TrailingZeros64(w)
 	}
 	panic("no more ones")
 }
