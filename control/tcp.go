@@ -115,8 +115,8 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
 	if dst.Port() == 53 && routingResult.Must == 0 {
+		c.domainActivity().observe(dst.Addr(), "", time.Now())
 		observe := c.domainActivity().connection(dst.Addr(), "")
-		observe()
 		lConn = &activityConn{lConn, observe}
 		return &tcpRelay{lConn: sniffing.NewConnSniffer(lConn, 0), src: src, dst: dst,
 			custom: func() error { return c.serveDNSTCP(lConn, src, dst, *routingResult) }}, nil
@@ -165,7 +165,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		return nil, fmt.Errorf("sniff TCP destination: %w", err)
 	}
 	observe := c.domainActivity().connection(dst.Addr(), domain)
-	sniffer = withDomainActivity(sniffer, observe)
+	sniffer = &activitySniffer{sniffer, observe}
 
 	host := domain
 	if host == "" && sniffer.IsTLS() {

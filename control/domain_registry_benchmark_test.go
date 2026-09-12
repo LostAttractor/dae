@@ -286,3 +286,134 @@ func BenchmarkDomainRegistryFootprint(b *testing.B) {
 		b.ReportMetric(float64(int64(after.HeapObjects)-int64(before.HeapObjects)), "retained-objects")
 	}
 }
+
+// Repeated I/O from 64 connections to shared IPs. Sweep at each batch boundary
+// includes application work in the timing, even with no background worker.
+func BenchmarkDomainActivityBatch(b *testing.B) {
+	for _, named := range []bool{true, false} {
+		label := "unnamed"
+		if named {
+			label = "named"
+		}
+		b.Run(label, func(b *testing.B) {
+			g, keys, _ := benchmarkActivityRegistry(b)
+			g.window *= 3 // Current-time I/O really extends the fixture's deadlines.
+			callbacks := make([]func(), 64)
+			for i := range callbacks {
+				key := keys[len(keys)-len(callbacks)+i]
+				if !named {
+					key.domain = ""
+				}
+				callbacks[i] = g.activity.connection(key.ip, key.domain)
+			}
+			b.ReportAllocs()
+			i := 0
+			for b.Loop() {
+				callbacks[i%len(callbacks)]()
+				i++
+				if i%1024 == 0 {
+					g.Sweep(time.Now())
+				}
+			}
+			g.Sweep(time.Now())
+		})
+	}
+}
+
+// Foreground latency includes queue admission, not delayed state visibility.
+// Throughput includes the worker's CPU and Close draining the final batch.
+func BenchmarkDomainActivityIOContention(b *testing.B) {
+	g, keys, _ := benchmarkActivityRegistry(b)
+	g.window *= 3
+	callbacks := make([]func(), 64)
+	for i := range callbacks {
+		key := keys[len(keys)-len(callbacks)+i]
+		if i%2 == 0 {
+			key.domain = ""
+		}
+		callbacks[i] = g.activity.connection(key.ip, key.domain)
+	}
+	g.Start()
+	var mu sync.Mutex
+	var latencies []time.Duration
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		var samples []time.Duration
+		i := 0
+		for pb.Next() {
+			start := time.Now()
+			callbacks[i%len(callbacks)]()
+			samples = append(samples, time.Since(start))
+			i++
+		}
+		mu.Lock()
+		latencies = append(latencies, samples...)
+		mu.Unlock()
+	})
+	if err := g.Close(); err != nil {
+		b.Fatal(err)
+	}
+	b.StopTimer()
+	slices.Sort(latencies)
+	b.ReportMetric(float64(latencies[(len(latencies)-1)*95/100]), "p95-ns")
+	b.ReportMetric(float64(latencies[(len(latencies)-1)*99/100]), "p99-ns")
+}
+
+// Stable per-worker destinations model independent connections. The single-IP
+// case deliberately keeps every producer on the same key. Sample 1/64 calls so
+// recording latency does not dominate the short enqueue path.
+func BenchmarkDomainActivityQueue(b *testing.B) {
+	for _, single := range []bool{false, true} {
+		name := "many-targets"
+		if single {
+			name = "single-IP"
+		}
+		b.Run(name, func(b *testing.B) {
+			g, keys, _ := benchmarkActivityRegistry(b)
+			g.window *= 3
+			callbacks := make([]func(), 64)
+			for i := range callbacks {
+				key := keys[len(keys)-len(callbacks)+i]
+				if single {
+					key = keys[len(keys)-1]
+				}
+				if single || i%2 == 0 {
+					key.domain = ""
+				}
+				callbacks[i] = g.activity.connection(key.ip, key.domain)
+			}
+			g.Start()
+			var worker atomic.Uint64
+			var mu sync.Mutex
+			var latencies []time.Duration
+			b.ReportAllocs()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				observe := callbacks[(worker.Add(1)-1)%uint64(len(callbacks))]
+				var samples []time.Duration
+				i := 0
+				for pb.Next() {
+					if i%64 == 0 {
+						start := time.Now()
+						observe()
+						samples = append(samples, time.Since(start))
+					} else {
+						observe()
+					}
+					i++
+				}
+				mu.Lock()
+				latencies = append(latencies, samples...)
+				mu.Unlock()
+			})
+			if err := g.Close(); err != nil {
+				b.Fatal(err)
+			}
+			b.StopTimer()
+			slices.Sort(latencies)
+			b.ReportMetric(float64(latencies[(len(latencies)-1)*95/100]), "p95-ns")
+			b.ReportMetric(float64(latencies[(len(latencies)-1)*99/100]), "p99-ns")
+		})
+	}
+}

@@ -13,22 +13,27 @@ import (
 )
 
 // Start is called once by the owner before publishing the registry. One worker
-// owns both periodic jobs; persistence is enabled only after activation commits.
+// owns activity batches, GC and saving; persistence starts after activation.
 func (g *DomainRegistry) Start() {
 	g.workerDone = make(chan struct{})
 	go func() {
 		defer close(g.workerDone)
+		activity := time.NewTicker(time.Second)
 		sweep := time.NewTicker(consts.DnsStateSweepInterval)
 		save := time.NewTicker(30 * time.Second)
+		defer activity.Stop()
 		defer sweep.Stop()
 		defer save.Stop()
 		for {
 			select {
 			case <-g.stopCh:
 				return
+			case <-activity.C:
+				g.flushActivity()
 			case now := <-sweep.C:
 				g.Sweep(now)
 			case <-save.C:
+				g.flushActivity()
 				g.mu.Lock()
 				path, dirty := g.diskPath, g.generation != g.savedGeneration
 				g.mu.Unlock()
@@ -55,7 +60,18 @@ func (g *DomainRegistry) Close() error {
 		<-g.closeDone
 		return nil
 	}
+	a := g.activity
+	a.mu.Lock()
 	g.closed = true
+	a.pending, g.activityBatch = g.activityBatch, a.pending
+	if !a.handoff {
+		a.registry = nil
+	}
+	a.mu.Unlock()
+	// This batch precedes retirement and uses this registry's window. The
+	// detached queue now accepts only handoff events for the successor.
+	reconsider := g.applyActivity()
+	g.syncProjection(g.gc(g.evaluatedAt), reconsider, g.evaluatedAt)
 	done, path := g.workerDone, g.diskPath
 	g.mu.Unlock()
 	defer close(g.closeDone)
@@ -73,11 +89,10 @@ func (g *DomainRegistry) Close() error {
 	return nil
 }
 
-// installRecords is shared by cold restore and reload. Caller holds mu and owns
-// the supplied records; only current-rule bitmaps are attached to them.
+// installRecords is shared by cold restore and reload. Caller holds mu on a
+// fresh registry and owns the supplied records; attach current-rule bitmaps and
+// index their shared pairs using the maps allocated by the constructor.
 func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchBitmap func(string) []uint32) {
-	g.nextGC = time.Time{}
-	g.byIP = make(map[netip.Addr]*ipRecord)
 	for name, r := range records {
 		r.bitmap = slices.Clone(matchBitmap(name))
 		for ip, pair := range r.addresses {
@@ -91,16 +106,9 @@ func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchB
 // closed. The retired records are immutable; the activity lock owns the handoff.
 func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(string) []uint32, now time.Time) {
 	a := old.activity
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.closed {
-		return
-	}
-	if old.evaluatedAt.After(now) {
-		now = old.evaluatedAt
-	}
+	g.clock(old.evaluatedAt)
 	now = g.clock(now)
 	g.gcCount = old.gcCount
 	records := make(map[string]*domainRecord, len(old.byName))
@@ -112,16 +120,18 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(string)
 		records[name] = &domainRecord{addresses: addresses}
 	}
 	g.installRecords(records, matchBitmap)
+	a.mu.Lock()
+	g.activity = a
+	a.registry, a.handoff = g, false
+	a.pending, g.activityBatch = g.activityBatch, a.pending
+	a.mu.Unlock()
 	// max(existing deadline, event time + window) is order-independent. Apply
 	// all queued activity before GC; collected evidence cannot be recreated.
-	for _, event := range a.pending {
-		g.touch(event.key, event.at)
-	}
+	g.applyActivity()
+	now = g.clock(now)
 	g.gc(now)
 	g.kernel.resident = maps.Clone(old.kernel.resident)
 	g.rebuildProjection(now)
-	g.activity = a
-	a.registry, a.pending, a.handoff = g, nil, false
 	g.adopted = true
 	g.generation++
 }

@@ -116,7 +116,9 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 	g.activity.observe(a, "unobserved.example.", now.Add(10*time.Second))
 	check("zero pair GC", a, 443, true, uint8(consts.OutboundDirect), 37)
 	g.activity.observe(b, "target.example", now.Add(49*time.Second))
-	g.activity.observe(b, "target.example", now.Add(58*time.Second))
+	g.activity.enqueue(newDomainActivityKey(b, "target.example"), now.Add(58*time.Second))
+	check("queued activity awaits projection publication", b, 443, false, 0, 0)
+	g.Sweep(now.Add(58 * time.Second))
 	check("traffic promoted omitted IP", b, 443, true, uint8(consts.OutboundDirect), 37)
 	check("complete IP eviction", a, 443, false, 0, 0)
 	if !g.Verify(domain, a).Paired {

@@ -30,17 +30,18 @@ type ipRecord struct {
 // DomainRegistry owns domain-IP evidence with two lookup directions. Kernel
 // eviction only changes projection membership, never userspace evidence.
 type DomainRegistry struct {
-	mu          sync.Mutex
-	byName      map[string]*domainRecord
-	byIP        map[netip.Addr]*ipRecord
-	kernel      domainProjection
-	window      time.Duration
-	evaluatedAt time.Time
-	nextGC      time.Time // lower bound on pair deadlines; zero when empty
-	gcCount     uint64
-	generation  uint64
-	activity    *domainActivity
-	adopted     bool
+	mu            sync.Mutex
+	byName        map[string]*domainRecord
+	byIP          map[netip.Addr]*ipRecord
+	kernel        domainProjection
+	window        time.Duration
+	evaluatedAt   time.Time
+	nextGC        time.Time // lower bound on pair deadlines; zero when empty
+	gcCount       uint64
+	generation    uint64
+	activity      *domainActivity
+	activityBatch map[domainActivityKey]time.Time // reusable drain buffer, owned by mu
+	adopted       bool
 
 	closed     bool
 	stopCh     chan struct{}
@@ -60,9 +61,9 @@ func newDomainRegistry(kernelMax int, window time.Duration, update domainMapUpda
 	g := &DomainRegistry{
 		byName: make(map[string]*domainRecord), byIP: make(map[netip.Addr]*ipRecord), window: window,
 		kernel: domainProjection{max: kernelMax, resident: make(map[netip.Addr]struct{}), update: update, remove: remove},
-		stopCh: make(chan struct{}), closeDone: make(chan struct{}),
+		stopCh: make(chan struct{}), closeDone: make(chan struct{}), activityBatch: make(map[domainActivityKey]time.Time),
 	}
-	g.activity = &domainActivity{registry: g}
+	g.activity = &domainActivity{registry: g, pending: make(map[domainActivityKey]time.Time)}
 	return g
 }
 
@@ -89,9 +90,9 @@ func (g *DomainRegistry) ObserveDNS(observations []domainObservation, at time.Ti
 	if g.closed {
 		return
 	}
+	reconsider := g.drainActivity()
 	now := g.clock(at)
 	changed := g.gc(now)
-	reconsider := false
 	for _, observation := range observations {
 		deadline := at.Add(max(time.Duration(observation.ttl)*time.Second, g.window))
 		if !deadline.After(now) {
@@ -227,8 +228,9 @@ func (g *DomainRegistry) Sweep(now time.Time) {
 	if g.closed {
 		return
 	}
+	reconsider := g.drainActivity()
 	now = g.clock(now)
-	g.syncProjection(g.gc(now), false, now)
+	g.syncProjection(g.gc(now), reconsider, now)
 }
 
 type RegistryUsage struct {

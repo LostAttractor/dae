@@ -93,8 +93,6 @@ func unwrapSniffer(conn any) any {
 	switch c := conn.(type) {
 	case *activitySniffer:
 		return unwrapSniffer(c.ConnSnifferInterface)
-	case *activitySnifferCloseWriter:
-		return unwrapSniffer(c.ConnSnifferInterface)
 	case *activityConn:
 		return unwrapSniffer(c.Conn)
 	case *sniffing.ConnSniffer:

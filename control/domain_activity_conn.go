@@ -32,6 +32,8 @@ func (c *activityConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// The transparent TCP ingress supplies an accepted TCP socket through the
+// sniffer, so this adapter always preserves its CloseWrite capability.
 type activitySniffer struct {
 	sniffing.ConnSnifferInterface
 	observe func()
@@ -53,30 +55,37 @@ func (c *activitySniffer) Write(p []byte) (int, error) {
 	return n, err
 }
 
-type activitySnifferCloseWriter struct{ *activitySniffer }
-
-func (c *activitySnifferCloseWriter) CloseWrite() error {
+func (c *activitySniffer) CloseWrite() error {
 	return c.ConnSnifferInterface.(netproxy.CloseWriter).CloseWrite()
 }
 
-func withDomainActivity(conn sniffing.ConnSnifferInterface, observe func()) sniffing.ConnSnifferInterface {
-	c := &activitySniffer{conn, observe}
-	if _, ok := conn.(netproxy.CloseWriter); ok {
-		return &activitySnifferCloseWriter{c}
-	}
-	return c
-}
-
 func (a *domainActivity) connection(ip netip.Addr, domain string) func() {
-	return func() { a.observe(ip, domain, time.Now()) }
+	key := newDomainActivityKey(ip, domain)
+	return func() { a.enqueue(key, time.Now()) }
 }
 
 // A UDP source can address several destinations. Only the first sniffed
 // destination owns the name; other targets refresh their IP evidence only.
 func (ue *UdpEndpoint) observeDomain(dst netip.AddrPort) {
+	if ue.activity == nil {
+		return
+	}
 	domain := ""
 	if dst == ue.firstDst {
 		domain = ue.domain
 	}
-	ue.activity.observe(dst.Addr(), domain, time.Now())
+	at := time.Now()
+	ue.mu.Lock()
+	key, seen := ue.activityTargets[dst]
+	if !seen {
+		if ue.activityTargets == nil {
+			ue.activityTargets = make(map[netip.AddrPort]domainActivityKey)
+		}
+		key = newDomainActivityKey(dst.Addr(), domain)
+		ue.activityTargets[dst] = key
+	}
+	ue.mu.Unlock()
+	if g := ue.activity.enqueue(key, at); g != nil && !seen {
+		g.flushActivity()
+	}
 }

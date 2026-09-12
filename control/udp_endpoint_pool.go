@@ -38,13 +38,14 @@ type UdpEndpoint struct {
 	mitm     bool // The first destination is served by the HTTP/3 packet bridge.
 	activity *domainActivity
 	domain   string
-	// mu protects timer state and cleanup snapshots.
-	mu            sync.Mutex
-	deadlineTimer *time.Timer
-	timerDeadline time.Time
-	handler       UdpHandler
-	NatTimeout    time.Duration
-	closed        atomic.Bool
+	// mu protects timer state, observed destinations and cleanup snapshots.
+	mu              sync.Mutex
+	activityTargets map[netip.AddrPort]domainActivityKey
+	deadlineTimer   *time.Timer
+	timerDeadline   time.Time
+	handler         UdpHandler
+	NatTimeout      time.Duration
+	closed          atomic.Bool
 
 	origin             netproxy.FailureOrigin
 	dialer             *dialer.Dialer

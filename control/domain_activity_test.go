@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/outbound/netproxy"
 )
 
 func TestTCPDomainActivityPreservesDataAndHalfClose(t *testing.T) {
@@ -32,12 +31,14 @@ func TestTCPDomainActivityPreservesDataAndHalfClose(t *testing.T) {
 	}
 	at := now.Add(50 * time.Second)
 	activity := g.activity
-	conn := withDomainActivity(sniffer, func() { activity.observe(ip, sniffed, at) })
+	key := newDomainActivityKey(ip, sniffed)
+	conn := &activitySniffer{sniffer, func() { activity.enqueue(key, at) }}
 	defer conn.Close()
 	buf := make([]byte, len(request))
 	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != request {
 		t.Fatalf("buffered client data changed: %q %v", buf, err)
 	}
+	g.flushActivity()
 	if !g.retention(domain, ip).Equal(now.Add(110*time.Second)) || !g.retention(unrelated, ip).Equal(now.Add(time.Minute)) {
 		t.Fatal("client I/O did not precisely refresh retention")
 	}
@@ -65,13 +66,14 @@ func TestTCPDomainActivityPreservesDataAndHalfClose(t *testing.T) {
 	if _, err := io.ReadFull(peer, make([]byte, 5)); err != nil {
 		t.Fatal(err)
 	}
+	next.flushActivity()
 	if !next.retention(domain, ip).Equal(now.Add(220*time.Second)) || !g.retention(domain, ip).Equal(now.Add(110*time.Second)) {
 		t.Fatal("continued downstream I/O did not retain the long connection's evidence")
 	}
 	if unwrapSniffer(conn) != accepted {
 		t.Fatal("native socket identity was hidden")
 	}
-	if err := conn.(netproxy.CloseWriter).CloseWrite(); err != nil {
+	if err := conn.CloseWrite(); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := peer.Read(make([]byte, 1)); n != 0 || err != io.EOF {
@@ -109,6 +111,20 @@ func TestUDPContinuedActivityUsesEachOriginalDestination(t *testing.T) {
 		if !g.retention(name, other.Addr()).After(now.Add(time.Minute)) {
 			t.Fatal("later unnamed destination did not refresh all its pairs")
 		}
+	}
+	firstDeadline := g.retention(a, first.Addr())
+	otherDeadline := g.retention(b, other.Addr())
+	if err := c.writeUDP(context.Background(), ue, src, first, []byte("continued")); err != nil {
+		t.Fatal(err)
+	}
+	// Receive-side accounting uses the same per-destination observation path.
+	ue.observeDomain(other)
+	if !g.retention(a, first.Addr()).Equal(firstDeadline) || !g.retention(b, other.Addr()).Equal(otherDeadline) {
+		t.Fatal("continued UDP traffic applied synchronously")
+	}
+	g.flushActivity()
+	if !g.retention(a, first.Addr()).After(firstDeadline) || !g.retention(b, other.Addr()).After(otherDeadline) || !g.retention(b, first.Addr()).Equal(now.Add(time.Minute)) {
+		t.Fatal("continued UDP batch lost original target/name scope")
 	}
 }
 

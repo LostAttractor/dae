@@ -15,18 +15,14 @@ type domainActivityKey struct {
 	domain string
 }
 
-type domainActivityEvent struct {
-	key domainActivityKey
-	at  time.Time
-}
-
 // Connections retain this handle, not a control plane or rule matcher. A reload
-// moves its destination under the same lock used by observations.
+// moves its destination under the queue lock. This lock is never held while
+// waiting for the registry or applying observations / writing kernel maps.
 type domainActivity struct {
 	mu       sync.Mutex
 	registry *DomainRegistry
 	handoff  bool
-	pending  []domainActivityEvent
+	pending  map[domainActivityKey]time.Time
 }
 
 func (a *domainActivity) prepareHandoff() {
@@ -35,10 +31,7 @@ func (a *domainActivity) prepareHandoff() {
 	a.handoff = true
 }
 
-func (a *domainActivity) observe(ip netip.Addr, domain string, at time.Time) {
-	if a == nil || !ip.IsValid() {
-		return
-	}
+func newDomainActivityKey(ip netip.Addr, domain string) domainActivityKey {
 	ip = ip.Unmap()
 	if domain != "" {
 		// Literal authorities are not sniffed domains.
@@ -48,24 +41,71 @@ func (a *domainActivity) observe(ip netip.Addr, domain string, at time.Time) {
 			domain = dns.CanonicalName(domain)
 		}
 	}
-	key := domainActivityKey{ip, domain}
+	return domainActivityKey{ip, domain}
+}
+
+// enqueue records the latest observation per key. The original timestamp is
+// retained even if the worker is busy. Membership-changing operations drain
+// earlier observations before changing evidence, including unknown-key events.
+// Keys come from valid original flow destinations; nil handles disable observing.
+func (a *domainActivity) enqueue(key domainActivityKey, at time.Time) *DomainRegistry {
+	if a == nil {
+		return nil
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	g := a.registry
+	// Ordinary retirement clears the queue's owner. Handoff retains the old
+	// owner until adoption; its flush is inert while the successor is prepared.
+	if g == nil {
+		return nil
+	}
+	if at.After(a.pending[key]) {
+		a.pending[key] = at
+	}
+	return g
+}
+
+// Initial attempts remain synchronous, after their first routing decision.
+// A close racing this call either drains it or queues it for reload adoption.
+func (a *domainActivity) observe(ip netip.Addr, domain string, at time.Time) {
+	if g := a.enqueue(newDomainActivityKey(ip, domain), at); g != nil {
+		g.flushActivity()
+	}
+}
+
+func (g *DomainRegistry) flushActivity() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.closed {
-		if a.handoff {
-			a.pending = append(a.pending, domainActivityEvent{key, at})
+	if !g.closed {
+		reconsider := g.drainActivity()
+		g.syncProjection(g.gc(g.evaluatedAt), reconsider, g.evaluatedAt)
+	}
+}
+
+// All callers own g.mu. Swap reusable maps under the queue lock, then release
+// it before visiting pairs. Enqueues after this boundary belong to the next
+// batch; they can proceed while this operation updates registry membership.
+func (g *DomainRegistry) drainActivity() bool {
+	a := g.activity
+	a.mu.Lock()
+	a.pending, g.activityBatch = g.activityBatch, a.pending
+	a.mu.Unlock()
+	return g.applyActivity()
+}
+
+func (g *DomainRegistry) applyActivity() bool {
+	reconsider := false
+	for key, at := range g.activityBatch {
+		g.clock(at)
+		if g.touch(key, at) {
+			if _, resident := g.kernel.resident[key.ip]; !resident {
+				reconsider = true
+			}
 		}
-		return
 	}
-	now := g.clock(at)
-	reconsider := g.touch(key, at)
-	if _, resident := g.kernel.resident[ip]; resident {
-		reconsider = false
-	}
-	g.syncProjection(g.gc(now), reconsider, now)
+	clear(g.activityBatch)
+	return reconsider
 }
 
 func (g *DomainRegistry) touch(key domainActivityKey, at time.Time) bool {

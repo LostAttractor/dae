@@ -22,6 +22,10 @@ func (g *DomainRegistry) Save(path string) error {
 	g.diskMu.Lock()
 	defer g.diskMu.Unlock()
 	g.mu.Lock()
+	if !g.closed {
+		reconsider := g.drainActivity()
+		g.syncProjection(g.gc(g.evaluatedAt), reconsider, g.evaluatedAt)
+	}
 	generation := g.generation
 	entries := make(map[string]map[string]time.Time, len(g.byName))
 	for name, r := range g.byName {
@@ -70,7 +74,8 @@ func (g *DomainRegistry) Save(path string) error {
 // Restore validates the complete gzip snapshot before publishing anything.
 // Like reload adoption it rebuilds complete shared-IP states with current rules;
 // expired entries are collected without extending their original deadlines.
-// Call only on an empty registry before attaching packet-processing programs.
+// The startup owner calls only on a fresh registry before publication, while
+// holding the control-plane lifecycle lock that excludes concurrent shutdown.
 func (g *DomainRegistry) Restore(path string, matchBitmap func(string) []uint32, now time.Time) error {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -116,9 +121,6 @@ func (g *DomainRegistry) Restore(path string, matchBitmap func(string) []uint32,
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.closed {
-		return nil
-	}
 	g.installRecords(records, matchBitmap)
 	now = g.clock(now)
 	g.gc(now)
