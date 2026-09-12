@@ -61,27 +61,34 @@ func (a *domainActivity) observe(ip netip.Addr, domain string, at time.Time) {
 		return
 	}
 	now := g.clock(at)
-	g.touch(key, at)
-	g.gc(now)
-	g.kernel.reconcile(g.byName, now)
+	reconsider := g.touch(key, at)
+	if _, resident := g.kernel.resident[ip]; resident {
+		reconsider = false
+	}
+	g.syncProjection(g.gc(now), reconsider, now)
 }
 
-func (g *DomainRegistry) touch(key domainActivityKey, at time.Time) {
+func (g *DomainRegistry) touch(key domainActivityKey, at time.Time) bool {
 	deadline := at.Add(g.window)
-	refresh := func(r *domainRecord) {
-		if _, exists := r.addresses[key.ip]; exists {
-			g.extend(r, key.ip, deadline)
-		}
-	}
 	if key.domain != "" {
 		if r := g.byName[key.domain]; r != nil {
-			refresh(r)
+			if pair := r.addresses[key.ip]; pair != nil {
+				return g.extend(r, g.byIP[key.ip], pair, deadline)
+			}
 		}
-		return
+		return false
 	}
-	for _, r := range g.byName {
-		refresh(r)
+	s := g.byIP[key.ip]
+	if s == nil {
+		return false
 	}
+	reconsider := false
+	for r, pair := range s.domains {
+		if g.extend(r, s, pair, deadline) {
+			reconsider = true
+		}
+	}
+	return reconsider
 }
 
 func (c *ControlPlane) domainActivity() *domainActivity {

@@ -4,6 +4,7 @@ package control
 
 import (
 	"maps"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -75,8 +76,13 @@ func (g *DomainRegistry) Close() error {
 // installRecords is shared by cold restore and reload. Caller holds mu and owns
 // the supplied records; only current-rule bitmaps are attached to them.
 func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchBitmap func(string) []uint32) {
+	g.nextGC = time.Time{}
+	g.byIP = make(map[netip.Addr]*ipRecord)
 	for name, r := range records {
 		r.bitmap = slices.Clone(matchBitmap(name))
+		for ip, pair := range r.addresses {
+			g.addPair(r, ip, pair)
+		}
 	}
 	g.byName = records
 }
@@ -99,7 +105,11 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(string)
 	g.gcCount = old.gcCount
 	records := make(map[string]*domainRecord, len(old.byName))
 	for name, r := range old.byName {
-		records[name] = &domainRecord{addresses: maps.Clone(r.addresses)}
+		addresses := make(map[netip.Addr]*domainPair, len(r.addresses))
+		for ip, pair := range r.addresses {
+			addresses[ip] = &domainPair{retainUntil: pair.retainUntil}
+		}
+		records[name] = &domainRecord{addresses: addresses}
 	}
 	g.installRecords(records, matchBitmap)
 	// max(existing deadline, event time + window) is order-independent. Apply
@@ -108,8 +118,8 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(string)
 		g.touch(event.key, event.at)
 	}
 	g.gc(now)
-	g.kernel.resident = old.kernel.resident
-	g.kernel.reconcile(g.byName, now)
+	g.kernel.resident = maps.Clone(old.kernel.resident)
+	g.rebuildProjection(now)
 	g.activity = a
 	a.registry, a.pending, a.handoff = g, nil, false
 	g.adopted = true

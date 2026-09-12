@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
 	"slices"
 	"sync"
@@ -46,14 +47,16 @@ func newRoutingDomainRegistry() *DomainRegistry {
 	return g
 }
 func (g *DomainRegistry) Upsert(name string, ip netip.Addr, bitmap []uint32, ttl int, now time.Time) {
-	g.ObserveDNS(name, ip, bitmap, ttl, now)
+	g.ObserveDNS([]domainObservation{{name: name, ips: []netip.Addr{ip}, bitmap: bitmap, ttl: ttl}}, now)
 }
 func (g *DomainRegistry) Size() int { return g.Usage().UserUsed }
 func (g *DomainRegistry) retention(name string, ip netip.Addr) time.Time {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if r := g.byName[name]; r != nil {
-		return r.addresses[ip]
+		if pair := r.addresses[ip]; pair != nil {
+			return pair.retainUntil
+		}
 	}
 	return time.Time{}
 }
@@ -61,19 +64,48 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 	t.Helper()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	names := make(map[*domainRecord]bool)
 	for _, r := range g.byName {
+		names[r] = true
 		if len(r.addresses) == 0 {
 			t.Fatal("empty name bucket")
+		}
+		for ip, pair := range r.addresses {
+			if g.nextGC.IsZero() || g.nextGC.After(pair.retainUntil) {
+				t.Fatal("GC bound can miss a retained deadline")
+			}
+			if s := g.byIP[ip]; s == nil || s.domains[r] != pair {
+				t.Fatal("domain and IP indexes disagree on pair identity")
+			}
+		}
+	}
+	for ip, s := range g.byIP {
+		if len(s.domains) == 0 {
+			t.Fatal("empty IP bucket")
+		}
+		for r, pair := range s.domains {
+			if !names[r] || r.addresses[ip] != pair {
+				t.Fatal("IP index retained a removed pair")
+			}
 		}
 	}
 	if len(g.kernel.resident) > g.kernel.max || len(fake.bump) != len(g.kernel.resident) || len(fake.routing) != len(g.kernel.resident) {
 		t.Fatal("kernel occupancy mismatch")
 	}
-	for ip, s := range g.kernel.resident {
+	if len(g.byName) == 0 && (!g.nextGC.IsZero() || len(g.byIP) != 0) {
+		t.Fatal("empty registry retained index state")
+	}
+	// Compare every cached IP, including omitted candidates, against a full
+	// fold of canonical pairs. This also checks priority decreases after GC.
+	var ranked []netip.Addr
+	priorities := make(map[netip.Addr]time.Time)
+	for ip, s := range g.byIP {
 		var intersection []uint32
 		union := testBitmap()
+		var priority time.Time
 		for _, r := range g.byName {
-			if _, exists := r.addresses[ip]; !exists {
+			pair := r.addresses[ip]
+			if pair == nil {
 				continue
 			}
 			if intersection == nil {
@@ -83,9 +115,33 @@ func checkInvariants(t *testing.T, g *DomainRegistry, fake *fakeKernelDomainMaps
 				union[i] |= bits
 				intersection[i] &= bits
 			}
+			if !domainBitmapAllZero(r.bitmap) && pair.retainUntil.After(priority) {
+				priority = pair.retainUntil
+			}
 		}
-		if domainBitmapAllZero(union) || !slices.Equal(union, fake.bump[ip]) || !slices.Equal(intersection, fake.routing[ip]) || !slices.Equal(s.bump, union) {
-			t.Fatal("kernel does not contain complete shared-IP aggregate")
+		if !slices.Equal(s.bump, union) || !slices.Equal(s.routing, intersection) || !s.priority.Equal(priority) {
+			t.Fatal("cached IP aggregate disagrees with complete pair evidence")
+		}
+		if !domainBitmapAllZero(union) {
+			ranked = append(ranked, ip)
+			priorities[ip] = priority
+		}
+		if fake.has(ip) && (!slices.Equal(union, fake.bump[ip]) || !slices.Equal(intersection, fake.routing[ip])) {
+			t.Fatal("kernel does not contain the current complete-IP aggregate")
+		}
+	}
+	slices.SortFunc(ranked, func(a, b netip.Addr) int {
+		if c := priorities[b].Compare(priorities[a]); c != 0 {
+			return c
+		}
+		return a.Compare(b)
+	})
+	if len(g.kernel.resident) != min(len(ranked), g.kernel.max) {
+		t.Fatal("projection has unfilled slots")
+	}
+	for _, ip := range ranked[:min(len(ranked), g.kernel.max)] {
+		if _, resident := g.kernel.resident[ip]; !resident || !fake.has(ip) {
+			t.Fatal("projection did not retain the highest-ranked complete IPs")
 		}
 	}
 }
@@ -363,5 +419,200 @@ func TestDomainRegistryConcurrent(t *testing.T) {
 	checkInvariants(t, g, fake)
 	if g.Size() != 8 {
 		t.Fatal("lost concurrent evidence")
+	}
+}
+
+func TestDomainGCDeadlineAfterExtensionAndInsertion(t *testing.T) {
+	g, fake := newTestRegistry(4, time.Second)
+	now := time.Now()
+	a, b, c := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("192.0.2.3")
+	g.Upsert("a.example.", a, testBitmap(0), 60, now)
+	g.Upsert("b.example.", b, testBitmap(1), 120, now)
+	// Extending the earliest pair must neither collect it at its old deadline
+	// nor hide the next pair's deadline.
+	g.Upsert("a.example.", a, testBitmap(0), 300, now.Add(30*time.Second))
+	g.Sweep(now.Add(60 * time.Second))
+	if g.Size() != 2 || g.Usage().GC != 0 {
+		t.Fatal("old deadline collected extended evidence")
+	}
+	// A new deadline can precede all retained deadlines after that scan.
+	g.Upsert("c.example.", c, testBitmap(2), 10, now.Add(61*time.Second))
+	g.Sweep(now.Add(71*time.Second - time.Nanosecond))
+	if !fake.has(c) {
+		t.Fatal("new evidence collected before its deadline")
+	}
+	g.Sweep(now.Add(71 * time.Second))
+	if fake.has(c) || g.Verify("c.example.", c).Paired || g.Usage().GC != 1 {
+		t.Fatal("earlier inserted deadline was missed")
+	}
+	g.Sweep(now.Add(120 * time.Second))
+	if fake.has(b) || !fake.has(a) || g.Usage().GC != 2 {
+		t.Fatal("extension hid another pair's deadline")
+	}
+	g.Sweep(now.Add(330 * time.Second))
+	if g.Size() != 0 || len(fake.bump) != 0 {
+		t.Fatal("extended deadline was missed")
+	}
+	g.Upsert("a.example.", a, testBitmap(0), 10, now.Add(400*time.Second))
+	g.Sweep(now.Add(410 * time.Second))
+	if g.Size() != 0 || len(fake.bump) != 0 || g.Usage().GC != 4 {
+		t.Fatal("repopulated registry did not resume collection")
+	}
+	checkInvariants(t, g, fake)
+}
+
+func TestDomainUnchangedObservationStillCollects(t *testing.T) {
+	ip := netip.MustParseAddr("192.0.2.1")
+	for _, observation := range []struct {
+		name string
+		run  func(*DomainRegistry, time.Time)
+	}{
+		{"unknown-name", func(g *DomainRegistry, at time.Time) { g.activity.observe(ip, "unknown.example.", at) }},
+		{"unknown-ip", func(g *DomainRegistry, at time.Time) { g.activity.observe(netip.MustParseAddr("192.0.2.2"), "", at) }},
+		{"unchanged-activity", func(g *DomainRegistry, at time.Time) { g.activity.observe(ip, "match.example.", at) }},
+		{"unchanged-dns", func(g *DomainRegistry, at time.Time) { g.Upsert("match.example.", ip, testBitmap(0), 1, at) }},
+		{"sweep", func(g *DomainRegistry, at time.Time) { g.Sweep(at) }},
+	} {
+		t.Run(observation.name, func(t *testing.T) {
+			g, fake := newTestRegistry(1, time.Second)
+			now := time.Now()
+			g.Upsert("match.example.", ip, testBitmap(0), 60, now)
+			g.Upsert("zero.example.", ip, testBitmap(), 10, now)
+			generation := g.generation
+			observation.run(g, now.Add(9*time.Second))
+			if g.generation != generation || bitmapHas(fake.routing[ip], 0) {
+				t.Fatal("unchanged observation modified retained evidence")
+			}
+			observation.run(g, now.Add(10*time.Second))
+			if g.Verify("zero.example.", ip).Paired || g.Usage().GC != 1 || !bitmapHas(fake.routing[ip], 0) {
+				t.Fatal("unchanged observation failed to collect and republish the shared IP")
+			}
+			// Even an observation that changed no pair must advance the watermark.
+			g.Upsert("delayed.example.", ip, testBitmap(2), 5, now)
+			if g.Verify("delayed.example.", ip).Paired {
+				t.Fatal("unchanged observation failed to advance the watermark")
+			}
+			checkInvariants(t, g, fake)
+		})
+	}
+}
+
+func TestDomainPriorityRefreshAndZeroMembers(t *testing.T) {
+	g, fake := newTestRegistry(1, time.Minute)
+	now := time.Now()
+	a, b := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	g.Upsert("a.example.", a, testBitmap(0), 100, now)
+	g.Upsert("zero.example.", a, testBitmap(), 60, now)
+	g.Upsert("b.example.", b, testBitmap(1), 90, now)
+	writes, removes := 0, 0
+	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) {
+		if !fake.has(ip) && len(fake.bump) == 1 {
+			t.Fatal("replacement was inserted before freeing its kernel slot")
+		}
+		writes++
+		fake.update(ip, bump, routing)
+	}
+	g.kernel.remove = func(ip netip.Addr) { removes++; fake.remove(ip) }
+	g.activity.observe(a, "a.example.", now.Add(50*time.Second)) // priority 110
+	g.activity.observe(b, "b.example.", now.Add(45*time.Second)) // priority 105
+	if !fake.has(a) || fake.has(b) || writes != 0 || removes != 0 {
+		t.Fatal("resident priority was stale or a deadline change rewrote bitmaps")
+	}
+	g.activity.observe(a, "zero.example.", now.Add(55*time.Second)) // zero pair 115, priority still 110
+	g.activity.observe(b, "b.example.", now.Add(54*time.Second))    // priority 114, now wins
+	if fake.has(a) || !fake.has(b) || writes != 1 || removes != 1 {
+		t.Fatal("zero-bit retention affected ranking or replacement was not local")
+	}
+	checkInvariants(t, g, fake)
+	g.Sweep(now.Add(110 * time.Second))
+	if g.Usage().KernelCandidates != 1 || !g.Verify("zero.example.", a).Paired {
+		t.Fatal("GC left a stale candidate or removed surviving zero-bit evidence")
+	}
+	checkInvariants(t, g, fake)
+}
+
+func TestDomainBatchCollectsAndRecreatesResident(t *testing.T) {
+	g, fake := newTestRegistry(1, time.Second)
+	now := time.Now()
+	a, b := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	g.Upsert("a.example.", a, testBitmap(0), 5, now)
+	g.Upsert("b.example.", b, testBitmap(1), 4, now)
+	g.ObserveDNS([]domainObservation{
+		{name: "a.example.", ips: []netip.Addr{a, a}, bitmap: testBitmap(2), ttl: 100},
+		{name: "b.example.", ips: []netip.Addr{b}, bitmap: testBitmap(3), ttl: 50},
+	}, now.Add(5*time.Second))
+	if g.Size() != 2 || g.Usage().GC != 2 || fake.has(b) || !bitmapHas(fake.routing[a], 2) || bitmapHas(fake.bump[a], 0) {
+		t.Fatal("batch reused expired pair state or lost a replacement publication")
+	}
+	checkInvariants(t, g, fake)
+	g.Sweep(now.Add(105 * time.Second))
+	checkInvariants(t, g, fake)
+}
+
+func TestDomainIndexesAndProjectionUnderChurn(t *testing.T) {
+	for _, capacity := range []int{0, 1, 8, 32} {
+		t.Run(fmt.Sprint(capacity), func(t *testing.T) {
+			g, fake := newTestRegistry(capacity, 5*time.Second)
+			random := rand.New(rand.NewPCG(1, 2))
+			base := time.Now()
+			names := make([]string, 24)
+			bitmaps := make(map[string][]uint32)
+			for i := range names {
+				names[i] = fmt.Sprintf("d%d.example.", i)
+				bitmaps[names[i]] = testBitmap(i % 8)
+				if i%4 == 0 {
+					bitmaps[names[i]] = testBitmap()
+				}
+			}
+			address := func(i int) netip.Addr {
+				if i%2 == 0 {
+					return netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)})
+				}
+				return netip.AddrFrom16([16]byte{0x20, 1, 0x0d, 0xb8, 15: byte(i + 1)})
+			}
+			match := func(name string) []uint32 { return bitmaps[name] }
+			for step := range 512 {
+				now := base.Add(time.Duration(step/4) * time.Second)
+				at := now.Add(-time.Duration(random.IntN(8)) * time.Second)
+				name, ip := names[random.IntN(len(names))], address(random.IntN(16))
+				switch random.IntN(6) {
+				case 0, 1, 2:
+					other := names[random.IntN(len(names))]
+					ips := []netip.Addr{ip, address(random.IntN(16))}
+					g.ObserveDNS([]domainObservation{
+						{name: name, ips: ips, bitmap: match(name), ttl: random.IntN(30)},
+						{name: other, ips: ips, bitmap: match(other), ttl: random.IntN(30)},
+					}, at)
+				case 3:
+					g.activity.observe(ip, name, at)
+				case 4:
+					g.activity.observe(ip, "", at)
+				case 5:
+					g.Sweep(now)
+				}
+				checkInvariants(t, g, fake)
+				if step%128 == 127 {
+					// New rule bitmaps and a new window, with queued observations
+					// replayed into fresh pair objects before collection.
+					activity := g.activity
+					activity.prepareHandoff()
+					if err := g.Close(); err != nil {
+						t.Fatal(err)
+					}
+					activity.observe(ip, "", now)
+					for i, name := range names {
+						bitmaps[name] = testBitmap((i + step/128) % 8)
+						if i%4 == step/128 {
+							bitmaps[name] = testBitmap()
+						}
+					}
+					next, _ := newTestRegistry(capacity, time.Duration(2+step/128)*time.Second)
+					next.kernel.update, next.kernel.remove = fake.update, fake.remove
+					next.AdoptFrom(g, match, now)
+					g = next
+					checkInvariants(t, g, fake)
+				}
+			}
+		})
 	}
 }

@@ -26,8 +26,8 @@ func (g *DomainRegistry) Save(path string) error {
 	entries := make(map[string]map[string]time.Time, len(g.byName))
 	for name, r := range g.byName {
 		deadlines := make(map[string]time.Time, len(r.addresses))
-		for ip, deadline := range r.addresses {
-			deadlines[ip.String()] = deadline
+		for ip, pair := range r.addresses {
+			deadlines[ip.String()] = pair.retainUntil
 		}
 		entries[name] = deadlines
 	}
@@ -100,7 +100,7 @@ func (g *DomainRegistry) Restore(path string, matchBitmap func(string) []uint32,
 		if !validName || name != dnsmessage.CanonicalName(name) || len(addresses) == 0 {
 			return fmt.Errorf("invalid domain registry entry for %q", name)
 		}
-		r := &domainRecord{addresses: make(map[netip.Addr]time.Time, len(addresses))}
+		r := &domainRecord{addresses: make(map[netip.Addr]*domainPair, len(addresses))}
 		records[name] = r
 		for address, deadline := range addresses {
 			ip, err := netip.ParseAddr(address)
@@ -110,7 +110,7 @@ func (g *DomainRegistry) Restore(path string, matchBitmap func(string) []uint32,
 			if _, duplicate := r.addresses[ip]; duplicate {
 				return fmt.Errorf("duplicate domain registry address %q for %q", address, name)
 			}
-			r.addresses[ip] = deadline
+			r.addresses[ip] = &domainPair{retainUntil: deadline}
 		}
 	}
 
@@ -122,7 +122,7 @@ func (g *DomainRegistry) Restore(path string, matchBitmap func(string) []uint32,
 	g.installRecords(records, matchBitmap)
 	now = g.clock(now)
 	g.gc(now)
-	g.kernel.reconcile(g.byName, now)
+	g.rebuildProjection(now)
 	g.generation++
 	return nil
 }

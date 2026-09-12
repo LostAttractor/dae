@@ -234,7 +234,7 @@ func TestDomainRegistryDiskEscapedNames(t *testing.T) {
 	ip := netip.MustParseAddr("192.0.2.1")
 	for i := range 16 {
 		name := fmt.Sprint(i) + "." + strings.Repeat(strings.Repeat(`\001`, 60)+".", 4)
-		g.ObserveDNS(name, ip, make([]uint32, domainBitmapWords()), 60, now)
+		g.Upsert(name, ip, make([]uint32, domainBitmapWords()), 60, now)
 	}
 	path := filepath.Join(t.TempDir(), "registry.json.gz")
 	if err := g.Save(path); err != nil {
@@ -257,7 +257,7 @@ func TestDomainRegistryConcurrentCloseFinalSave(t *testing.T) {
 	now := time.Now()
 	ip := netip.MustParseAddr("192.0.2.1")
 	name := "final.example."
-	g.ObserveDNS(name, ip, make([]uint32, domainBitmapWords()), 60, now)
+	g.Upsert(name, ip, make([]uint32, domainBitmapWords()), 60, now)
 	var closers sync.WaitGroup
 	for range 8 {
 		closers.Go(func() {
@@ -276,7 +276,7 @@ func TestDomainRegistryConcurrentCloseFinalSave(t *testing.T) {
 		})
 	}
 	closers.Wait()
-	g.ObserveDNS("late.example.", ip, make([]uint32, domainBitmapWords()), 60, now)
+	g.Upsert("late.example.", ip, make([]uint32, domainBitmapWords()), 60, now)
 	if g.Usage().UserUsed != 1 {
 		t.Fatal("closed registry accepted late observation")
 	}
@@ -292,7 +292,7 @@ func TestDomainRegistrySaveFailureDoesNotPreventRetirement(t *testing.T) {
 	g.Start()
 	g.EnablePersistence(filepath.Join(path, "state.json.gz"))
 	now, ip := time.Now(), netip.MustParseAddr("192.0.2.1")
-	g.ObserveDNS("retained.example.", ip, testBitmap(0), 60, now)
+	g.Upsert("retained.example.", ip, testBitmap(0), 60, now)
 	activity := g.activity
 	activity.prepareHandoff()
 	ifmgr, err := network.NewInterfaceManager()

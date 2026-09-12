@@ -4,6 +4,7 @@ package control
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -119,4 +120,56 @@ func TestPassiveDNSHighBitTTLsMeanZero(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPassiveDNSBatchPublishesCompleteIPOnce(t *testing.T) {
+	now := time.Now()
+	g, fake := newTestRegistry(8, time.Second)
+	untouched := netip.MustParseAddr("203.0.113.1")
+	g.Upsert("untouched.example.", untouched, testBitmap(2), 100, now)
+	ips := []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")}
+	writes := make(map[netip.Addr]int)
+	wantRouting := testBitmap()
+	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) {
+		if ip == untouched || !slices.Equal(bump, testBitmap(1)) || !slices.Equal(routing, wantRouting) {
+			t.Fatal("published an unrelated or incomplete shared-IP state")
+		}
+		writes[ip]++
+		fake.update(ip, bump, routing)
+	}
+	request := dnsTestRequest(t, "alias.example.", 1)
+	response := &plugin.DNSResponse{Message: new(dns.Msg).SetReply(request.Message)}
+	alias := testCNAMERecord("alias.example.", "edge.example.")
+	alias.Header().Ttl = 10
+	response.Message.Answer = []dns.RR{alias}
+	for _, ip := range ips {
+		rr := testARecord("edge.example.", ip.String())
+		rr.Header().Ttl = 60
+		response.Message.Answer = append(response.Message.Answer, rr, dns.Copy(rr))
+	}
+	match := func(name string) []uint32 {
+		if name == "edge.example." {
+			return testBitmap(1)
+		}
+		return testBitmap()
+	}
+	observeDNSRegistryAt(g, match, request, response, now)
+	for _, ip := range ips {
+		if writes[ip] != 1 || !g.retention("alias.example.", ip).Equal(now.Add(10*time.Second)) || !g.retention("edge.example.", ip).Equal(now.Add(time.Minute)) {
+			t.Fatal("batch duplicated publication or lost per-pair deadlines")
+		}
+	}
+	clear(writes)
+	observeDNSRegistryAt(g, match, request, response, now.Add(time.Second))
+	if len(writes) != 0 {
+		t.Fatal("deadline-only replay republished bitmaps")
+	}
+	wantRouting = testBitmap(1)
+	g.Sweep(now.Add(11 * time.Second))
+	for _, ip := range ips {
+		if writes[ip] != 1 || g.Verify("alias.example.", ip).Paired {
+			t.Fatal("alias collection did not locally update both IPs")
+		}
+	}
+	checkInvariants(t, g, fake)
 }

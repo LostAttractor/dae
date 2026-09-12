@@ -105,13 +105,12 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 			ips = append(ips, ip.Unmap())
 		}
 	}
+	if len(ips) == 0 {
+		return
+	}
 	// Validate signature times at delivery. Retaining accepted historical
 	// evidence does not claim that a signature remains valid afterwards.
-	type observation struct {
-		name string
-		ttl  uint32
-	}
-	var observations []observation
+	var observations []domainObservation
 	for i := len(names) - 1; i >= 0; i-- {
 		name := names[i]
 		rrtype := q.Qtype
@@ -129,15 +128,13 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 				return
 			}
 		}
-		observations = append(observations, observation{name, ttl})
+		observations = append(observations, domainObservation{name: name, ips: ips, ttl: int(ttl)})
 	}
 	// Validate the entire chain before publishing any terminal or alias evidence.
-	for _, o := range observations {
-		bitmap := match(o.name)
-		for _, ip := range ips {
-			registry.ObserveDNS(o.name, ip, bitmap, int(o.ttl), at)
-		}
+	for i := range observations {
+		observations[i].bitmap = match(observations[i].name)
 	}
+	registry.ObserveDNS(observations, at)
 }
 
 // RFC 2181 section 8: high-bit TTLs mean zero. Normalize only the evidence

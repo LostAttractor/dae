@@ -107,7 +107,13 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 	check("capacity omission", b, 443, false, 0, 0)
 	check("SSH", a, 22, false, 0, 0)
 	check("unrelated HTTPS", netip.MustParseAddr("198.51.100.3"), 443, false, 0, 0)
-	g.Sweep(now.Add(10 * time.Second))
+	g.activity.observe(a, "unobserved.example.", now.Add(9*time.Second))
+	g.Upsert(domain, a, matcher.domainMatcher.MatchDomainBitmap(domain), 1, now.Add(9*time.Second))
+	g.Sweep(now.Add(9 * time.Second))
+	check("unchanged observations preserve shared CDN", a, 443, true, uint8(consts.OutboundControlPlaneRouting), 0)
+	// This name has no pair to extend. Collection of another pair still changes
+	// the complete-IP projection, including the actual kernel capture decision.
+	g.activity.observe(a, "unobserved.example.", now.Add(10*time.Second))
 	check("zero pair GC", a, 443, true, uint8(consts.OutboundDirect), 37)
 	g.activity.observe(b, "target.example", now.Add(49*time.Second))
 	g.activity.observe(b, "target.example", now.Add(58*time.Second))
@@ -116,7 +122,13 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 	if !g.Verify(domain, a).Paired {
 		t.Fatal("capacity eviction destroyed verification evidence")
 	}
-	g.Sweep(now.Add(68 * time.Second))
+	// Resident-only refresh must raise its cached priority without changing
+	// capture. A later-delivered older observation must not evict that winner.
+	g.activity.observe(b, "target.example", now.Add(59*time.Second))
+	g.activity.observe(a, "target.example", now.Add(58500*time.Millisecond))
+	check("refreshed resident keeps its slot", b, 443, true, uint8(consts.OutboundDirect), 37)
+	check("lower-priority omitted refresh remains direct", a, 443, false, 0, 0)
+	g.Sweep(now.Add(69 * time.Second))
 	check("GC restored kernel direct", b, 443, false, 0, 0)
 	if g.Verify(domain, b).Paired {
 		t.Fatal("expired verification evidence survived GC")

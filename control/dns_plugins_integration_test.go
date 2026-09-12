@@ -155,7 +155,7 @@ func TestDNSRouterEndpointHostnameEnforcesBlock(t *testing.T) {
 		registry, _ := newTestRegistry(4, time.Hour)
 		target := netip.MustParseAddrPort("192.0.2.54:53")
 		if seeded {
-			registry.ObserveDNS("dns.example.", target.Addr(), matcher.domainMatcher.MatchDomainBitmap("dns.example."), 60, time.Now())
+			registry.Upsert("dns.example.", target.Addr(), matcher.domainMatcher.MatchDomainBitmap("dns.example."), 60, time.Now())
 		}
 		c := &ControlPlane{outbounds: []*outbound.DialerGroup{direct, block}, routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: registry}}
 		source := netip.MustParseAddrPort("192.0.2.1:2345")
