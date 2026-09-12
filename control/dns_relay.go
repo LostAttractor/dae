@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/outbound/pool"
 	dns "github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
 )
@@ -266,12 +267,14 @@ func relayDNSUDP(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSRe
 	if _, err := conn.Write(request.Wire); err != nil {
 		return nil, err
 	}
-	wire := make([]byte, consts.MaxDnsMessageSize)
+	wire := pool.GetBuffer(consts.MaxDnsMessageSize)
+	defer pool.PutBuffer(wire)
 	n, err := conn.Read(wire)
 	if err != nil {
 		return nil, err
 	}
-	return &plugin.DNSResponse{Wire: wire[:n], ReceivedAt: time.Now(), Origin: "relay"}, nil
+	// The response owns only its received bytes, not the pooled receive buffer.
+	return &plugin.DNSResponse{Wire: append([]byte(nil), wire[:n]...), ReceivedAt: time.Now(), Origin: "relay"}, nil
 }
 
 func readDNSFrame(conn io.Reader) ([]byte, error) {

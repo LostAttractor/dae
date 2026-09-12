@@ -166,6 +166,47 @@ func TestDNSUDPExactWireAndCancellation(t *testing.T) {
 	}
 }
 
+// The in-memory peer isolates response storage from socket and routing costs.
+type dnsBufferConn struct {
+	net.Conn
+	payload []byte
+}
+
+func (c *dnsBufferConn) Read(p []byte) (int, error)  { return copy(p, c.payload), nil }
+func (c *dnsBufferConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *dnsBufferConn) Close() error                { return nil }
+
+func dnsBufferRequest(conn *dnsBufferConn) *plugin.DNSRequest {
+	return &plugin.DNSRequest{
+		Destination: netip.MustParseAddrPort("192.0.2.53:53"), Network: "udp", Wire: make([]byte, 32),
+		DialContext: func(context.Context, string, string, string) (net.Conn, error) { return conn, nil },
+	}
+}
+
+func TestDNSUDPResponseOwnership(t *testing.T) {
+	conn := new(dnsBufferConn)
+	request := dnsBufferRequest(conn)
+	var responses []*plugin.DNSResponse
+	var payloads [][]byte
+	for round := range 16 {
+		for _, size := range []int{0, 128, 1232, 4096, consts.MaxDnsMessageSize} {
+			conn.payload = bytes.Repeat([]byte{byte(round + 1)}, size)
+			response, err := relayDNSUDP(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			responses = append(responses, response)
+			payloads = append(payloads, conn.payload)
+		}
+	}
+	// Responses can outlive the exchange and later receives using the same pool.
+	for i, response := range responses {
+		if !bytes.Equal(response.Wire, payloads[i]) {
+			t.Fatalf("retained response %d changed or was truncated: got %d bytes, want %d", i, len(response.Wire), len(payloads[i]))
+		}
+	}
+}
+
 func TestDNSUDPReplyRestoresOriginalDestination(t *testing.T) {
 	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
