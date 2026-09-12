@@ -26,7 +26,7 @@ func (c *ControlPlane) tableStatuses() []api.TableUsage {
 			Name: "domain-registry",
 			Used: usage.UserUsed,
 			Breakdown: &api.TableUsageBreakdown{
-				GC: usage.GC,
+				Domains: usage.Domains, IPs: usage.IPs, IPv4: usage.IPv4, IPv6: usage.IPv6, GC: usage.GC,
 			},
 		},
 	)

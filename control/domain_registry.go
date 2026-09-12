@@ -145,19 +145,41 @@ func (g *DomainRegistry) Sweep(now time.Time) {
 
 type RegistryUsage struct {
 	UserUsed         int // retained domain-IP pairs
+	Domains          int
+	IPs              int // distinct across all domains
+	IPv4             int
+	IPv6             int
 	GC               uint64
 	KernelUsed       int
 	KernelMax        int
 	KernelCandidates int
 }
 
-// Usage reads retained pairs without collecting or refreshing evidence.
+// Usage takes one coherent snapshot without collecting or refreshing evidence.
+// Its temporary deduplication set is not maintained on the observation path.
 func (g *DomainRegistry) Usage() RegistryUsage {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	usage := RegistryUsage{GC: g.gcCount, KernelUsed: len(g.kernel.resident), KernelMax: g.kernel.max, KernelCandidates: g.kernel.candidates}
+	usage := RegistryUsage{
+		Domains: len(g.byName), GC: g.gcCount,
+		KernelUsed: len(g.kernel.resident), KernelMax: g.kernel.max, KernelCandidates: g.kernel.candidates,
+	}
+	// Count from the evidence index only when status is requested. Shared IPs
+	// count once regardless of domain count or kernel residency.
+	ips := make(map[netip.Addr]struct{})
 	for _, r := range g.byName {
 		usage.UserUsed += len(r.addresses)
+		for ip := range r.addresses {
+			ips[ip] = struct{}{}
+		}
+	}
+	usage.IPs = len(ips)
+	for ip := range ips {
+		if ip.Is4() {
+			usage.IPv4++
+		} else {
+			usage.IPv6++
+		}
 	}
 	return usage
 }

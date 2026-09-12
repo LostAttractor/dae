@@ -91,6 +91,47 @@ func TestTableUsageRow(t *testing.T) {
 	}
 }
 
+func TestDomainTableDetailsFitTerminal(t *testing.T) {
+	withoutStatusColors(t)
+	withStatusTerminalWidth(t, 80)
+	var out strings.Builder
+	Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
+		{Name: "domain-kernel", Used: 161, Limit: 65536, Candidates: 163},
+		{Name: "domain-registry", Used: 6896, Breakdown: &api.TableUsageBreakdown{Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123}},
+	}}, false)
+	output := out.String()
+	for _, label := range []string{"USED (IPs)", "CANDIDATES", "OMITTED", "domain-registry (unlimited):", "DOMAINS", "GC (PAIRS)"} {
+		if !strings.Contains(output, label) {
+			t.Fatalf("missing %q:\n%s", label, output)
+		}
+	}
+	kernel, registry := false, false
+	for _, line := range strings.Split(output, "\n") {
+		cells := strings.Join(strings.Fields(line), " ")
+		kernel = kernel || cells == "domain-kernel 161 65536 0.2% 163 2"
+		registry = registry || cells == "6896 2000 5000 4000 1000 123"
+	}
+	if !kernel || !registry {
+		t.Fatalf("domain statistics were clipped or mislabeled:\n%s", output)
+	}
+	// Empty registries report real zeros. The cumulative GC counter retains its
+	// full uint64 precision and remains visible in an 80-column terminal.
+	for _, gc := range []uint64{0, ^uint64(0)} {
+		out.Reset()
+		Print(&out, &api.StatusSnapshot{StartedAt: time.Now(), Tables: []api.TableUsage{
+			{Name: "domain-kernel", Limit: 65536},
+			{Name: "domain-registry", Breakdown: &api.TableUsageBreakdown{GC: gc}},
+		}}, false)
+		found := false
+		for _, line := range strings.Split(out.String(), "\n") {
+			found = found || strings.Join(strings.Fields(line), " ") == fmt.Sprintf("0 0 0 0 0 %d", gc)
+		}
+		if !found {
+			t.Fatalf("empty registry/GC count changed:\n%s", out.String())
+		}
+	}
+}
+
 func TestStatusTableClipsRowsToFitTerminal(t *testing.T) {
 	withoutStatusColors(t)
 	withStatusTerminalWidth(t, 16)

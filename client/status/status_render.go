@@ -505,8 +505,8 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 					limit = fmt.Sprintf("limit: %d pairs", usage.Limit)
 				}
 				fmt.Fprintf(out, "\n%s (%s):\n", usage.Name, limit)
-				printTable(out, table.Row{"PAIRS", "GC (PAIRS)"}, []table.Row{
-					{usage.Used, detail.GC},
+				printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
+					{usage.Used, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
 				})
 			}
 		}

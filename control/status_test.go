@@ -116,8 +116,8 @@ func TestStatusSnapshotReportsDomainRegistryCounts(t *testing.T) {
 		pairs, kernel, candidates int
 		counts                    api.TableUsageBreakdown
 	}{
-		{0, 4, 1, 2, api.TableUsageBreakdown{}},
-		{61 * time.Second, 2, 1, 1, api.TableUsageBreakdown{GC: 2}},
+		{0, 4, 1, 2, api.TableUsageBreakdown{Domains: 3, IPs: 3, IPv4: 2, IPv6: 1}},
+		{61 * time.Second, 2, 1, 1, api.TableUsageBreakdown{Domains: 2, IPs: 2, IPv4: 1, IPv6: 1, GC: 2}},
 		{181 * time.Second, 0, 0, 0, api.TableUsageBreakdown{GC: 4}},
 	} {
 		domainRegistry.Sweep(now.Add(test.elapsed))

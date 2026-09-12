@@ -18,12 +18,12 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	want.Plugins = []PluginInstanceStatus{{ID: "example", Type: "example", State: "active",
 		BufferMemory: &BufferMemoryStatus{Limit: 64 << 20, Used: 1 << 20, Peak: 2 << 20, Denied: 3}}}
 	want.Tables = []TableUsage{{Name: "domain-registry", Used: 8,
-		Breakdown: &TableUsageBreakdown{GC: ^uint64(0)}}}
+		Breakdown: &TableUsageBreakdown{Domains: 3, IPs: 5, IPv4: 4, IPv6: 1, GC: ^uint64(0)}}}
 	payload, err := json.Marshal(want, jsonv1.FormatDurationAsNano(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":9`, `"plugins":`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":10`, `"plugins":`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}

@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 9
+const StatusSchemaVersion = 10
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -33,7 +33,11 @@ type TableUsage struct {
 }
 
 type TableUsageBreakdown struct {
-	GC uint64 `json:"gc"` // pairs removed by time-based GC; cumulative across reload
+	Domains int    `json:"domains"` // distinct retained domain names
+	IPs     int    `json:"ips"`     // distinct retained IPs across all domains
+	IPv4    int    `json:"ipv4"`    // distinct IPv4 addresses, not pairs
+	IPv6    int    `json:"ipv6"`    // distinct IPv6 addresses, not pairs
+	GC      uint64 `json:"gc"`      // pairs removed by time-based GC; cumulative across reload
 }
 
 type GroupStatus struct {
