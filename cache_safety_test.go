@@ -65,7 +65,7 @@ func TestFixedTTLStrictWireAndCorrelation(t *testing.T) {
 				r.Wire = append(r.Wire, 0xff)
 			}
 			// Even a supplied valid Message must not override invalid wire.
-			original := append([]byte(nil), r.Wire...)
+			original := bytes.Clone(r.Wire)
 			got, err := c.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) { return r, nil })(t.Context(), q)
 			if err != nil {
 				t.Fatal(err)

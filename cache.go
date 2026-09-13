@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -158,7 +159,7 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 						}
 					}
 					response.Message.Id = request.Message.Id
-					response.Message.Question = append([]dns.Question(nil), request.Message.Question...)
+					response.Message.Question = slices.Clone(request.Message.Question)
 					response.Wire = nil
 					response.Cached = true
 					return response, nil
