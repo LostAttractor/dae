@@ -8,6 +8,7 @@ package dns
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -227,13 +228,7 @@ func (m *ResponseMatcher) Match(
 				goodSubrule = true
 			}
 		case consts.MatchType_IpSet:
-			for _, bin128 := range bin128 {
-				// Check if any of IP hit the rule.
-				if m.ipSet[match.Value].HasPrefix(bin128) {
-					goodSubrule = true
-					break
-				}
-			}
+			goodSubrule = slices.ContainsFunc(bin128, m.ipSet[match.Value].HasPrefix)
 		case consts.MatchType_QType:
 			if qType == uint16(match.Value) {
 				goodSubrule = true

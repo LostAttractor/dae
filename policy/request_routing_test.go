@@ -173,18 +173,15 @@ func TestRequestMatcherConcurrentIfindexUpdate(t *testing.T) {
 	const iterations = 10_000
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			matcher.matches[0].storeIfindex(uint32(i%2 + 1))
 		}
-	}()
-	go func() {
-		defer wg.Done()
+	})
+	wg.Go(func() {
 		<-start
-		for i := 0; i < iterations; i++ {
+		for range iterations {
 			upstream, err := matcher.Match(
 				"",
 				0,
@@ -201,7 +198,7 @@ func TestRequestMatcherConcurrentIfindexUpdate(t *testing.T) {
 				return
 			}
 		}
-	}()
+	})
 	close(start)
 	wg.Wait()
 }

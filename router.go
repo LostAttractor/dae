@@ -265,7 +265,7 @@ func (r *Router) resolve(ctx context.Context, request *plugin.DNSRequest, next p
 	if index == policy.DnsRequestOutboundIndex_Reject {
 		return emptyResponse(request), nil
 	}
-	for depth := 0; depth < policy.MaxDnsLookupDepth; depth++ {
+	for range policy.MaxDnsLookupDepth {
 		var response *plugin.DNSResponse
 		if index == policy.DnsRequestOutboundIndex_AsIs {
 			response, err = next(ctx, request)

@@ -6,7 +6,6 @@
 package dns
 
 import (
-	"context"
 	"net/url"
 	"testing"
 
@@ -37,13 +36,13 @@ func TestGetUpstreamValidatesIndex(t *testing.T) {
 	}
 	for _, tt := range invalid {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := s.GetUpstream(context.Background(), tt.index); err == nil {
+			if _, err := s.GetUpstream(t.Context(), tt.index); err == nil {
 				t.Fatalf("GetUpstream(%v) succeeded", tt.index)
 			}
 		})
 	}
 
-	upstream, err := s.GetUpstream(context.Background(), 0)
+	upstream, err := s.GetUpstream(t.Context(), 0)
 	if err != nil {
 		t.Fatalf("GetUpstream(0): %v", err)
 	}
@@ -106,7 +105,7 @@ func TestResponseSelectOnlyMatches(t *testing.T) {
 		respMatcher: matcher,
 	}
 	msg := &dnsmessage.Msg{
-		MsgHdr: dnsmessage.MsgHdr{Response: true},
+		Response: true,
 		Question: []dnsmessage.Question{{
 			Name:  "example.com.",
 			Qtype: dnsmessage.TypeA,

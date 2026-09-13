@@ -231,18 +231,18 @@ type RequestMatcher struct {
 
 type requestMatchSet struct {
 	Value    uint16
-	Ifindex  uint32
+	Ifindex  atomic.Uint32
 	Not      bool
 	Type     consts.MatchType
 	Upstream uint8
 }
 
 func (m *requestMatchSet) loadIfindex() uint32 {
-	return atomic.LoadUint32(&m.Ifindex)
+	return m.Ifindex.Load()
 }
 
 func (m *requestMatchSet) storeIfindex(ifindex uint32) {
-	atomic.StoreUint32(&m.Ifindex, ifindex)
+	m.Ifindex.Store(ifindex)
 }
 
 func addrToBin128(addr netip.Addr) string {

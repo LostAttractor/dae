@@ -19,7 +19,7 @@ func TestUpstreamResolverWaitHonorsContext(t *testing.T) {
 	resolver.resolving = make(chan struct{})
 	resolver.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 	started := time.Now()
 	_, err := resolver.GetUpstream(ctx)
@@ -39,7 +39,7 @@ func TestUpstreamResolverCallbacks(t *testing.T) {
 
 	t.Run("nil", func(t *testing.T) {
 		resolver := &UpstreamResolver{Raw: raw}
-		if _, err := resolver.GetUpstream(context.Background()); err != nil {
+		if _, err := resolver.GetUpstream(t.Context()); err != nil {
 			t.Fatalf("GetUpstream: %v", err)
 		}
 	})
@@ -55,8 +55,8 @@ func TestUpstreamResolverCallbacks(t *testing.T) {
 				}
 			},
 		}
-		for i := 0; i < 2; i++ {
-			if _, err := resolver.GetUpstream(context.Background()); err != nil {
+		for range 2 {
+			if _, err := resolver.GetUpstream(t.Context()); err != nil {
 				t.Fatalf("GetUpstream: %v", err)
 			}
 		}

@@ -178,8 +178,7 @@ func resolvePreparedDoQ(stream doqStream, msg, query *dnsmessage.Msg, frame []by
 		if err == nil {
 			err = io.ErrShortWrite
 		}
-		var streamErr *quic.StreamError
-		if errors.As(err, &streamErr) && streamErr.Remote {
+		if streamErr, ok := errors.AsType[*quic.StreamError](err); ok && streamErr.Remote {
 			return newDoqProtocolError(err)
 		}
 		return fmt.Errorf("write DoQ query: %w", err)
@@ -259,8 +258,7 @@ func exchangeQUIC(ctx context.Context, dialer netproxy.Dialer, target netip.Addr
 	stopDeadline := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
 	defer stopDeadline()
 	err = resolvePreparedDoQ(stream, msg, query, frame)
-	var protocolErr *doqProtocolErrorCause
-	if errors.As(err, &protocolErr) {
+	if _, ok := errors.AsType[*doqProtocolErrorCause](err); ok {
 		_ = conn.CloseWithError(doqProtocolError, "DoQ protocol error")
 	}
 	return err

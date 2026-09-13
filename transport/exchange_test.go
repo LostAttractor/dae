@@ -36,7 +36,7 @@ func TestExchangeAdmission(t *testing.T) {
 		if _, err := Exchange(ctx, upstream, nil, netip.AddrPort{}, "", query); !errors.Is(err, context.Canceled) {
 			t.Fatalf("%s pre-canceled exchange: %v", scheme, err)
 		}
-		for _, signature := range []dns.RR{&dns.TSIG{Hdr: dns.RR_Header{Rrtype: dns.TypeTSIG}}, &dns.SIG{RRSIG: dns.RRSIG{Hdr: dns.RR_Header{Rrtype: dns.TypeSIG}}}} {
+		for _, signature := range []dns.RR{&dns.TSIG{Hdr: dns.RR_Header{Rrtype: dns.TypeTSIG}}, &dns.SIG{Hdr: dns.RR_Header{Rrtype: dns.TypeSIG}}} {
 			query.Extra = []dns.RR{signature}
 			if _, err := Exchange(t.Context(), upstream, nil, netip.AddrPort{}, "", query); err == nil {
 				t.Fatalf("%s accepted signed query", scheme)

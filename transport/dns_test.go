@@ -129,9 +129,9 @@ func TestResolveDoQFinTimeoutLeavesQueryUntouched(t *testing.T) {
 		withholdFin: true,
 	}
 	err := resolveDoQ(stream, query)
-	var protocolErr *doqProtocolErrorCause
-	var timeout net.Error
-	if errors.As(err, &protocolErr) || !errors.As(err, &timeout) || !timeout.Timeout() {
+	_, protocolError := errors.AsType[*doqProtocolErrorCause](err)
+	timeout, isTimeout := errors.AsType[net.Error](err)
+	if protocolError || !isTimeout || !timeout.Timeout() {
 		t.Fatalf("waiting for FIN should time out without failing the shared connection: %v", err)
 	}
 	if query.Response || query.Id != 42 || len(query.Answer) != 0 {
@@ -158,8 +158,7 @@ func TestResolveDoQRejectsTcpKeepalive(t *testing.T) {
 	query := testQuery("example.com.", dnsmessage.TypeA, 42)
 	stream := &doqTestStream{response: bytes.NewReader(framedDoqKeepaliveResponse(t, query))}
 	err := resolveDoQ(stream, query)
-	var protocolErr *doqProtocolErrorCause
-	if !errors.As(err, &protocolErr) {
+	if _, ok := errors.AsType[*doqProtocolErrorCause](err); !ok {
 		t.Fatalf("TCP keepalive error = %v, want protocol error", err)
 	}
 	if query.Response || query.Id != 42 || len(query.Answer) != 0 {
@@ -250,8 +249,7 @@ func TestResolveDoQDoesNotTreatSignatureAsProtocolError(t *testing.T) {
 	if err == nil {
 		t.Fatal("signed DoQ response unexpectedly succeeded")
 	}
-	var protocolErr *doqProtocolErrorCause
-	if errors.As(err, &protocolErr) {
+	if _, ok := errors.AsType[*doqProtocolErrorCause](err); ok {
 		t.Fatalf("unsupported signature was treated as a DoQ protocol error: %v", err)
 	}
 }
@@ -261,8 +259,7 @@ func TestResolveDoQRejectsTrailingData(t *testing.T) {
 	response := append(framedDoqResponse(t, query), 0)
 	stream := &doqTestStream{response: bytes.NewReader(response)}
 	err := resolveDoQ(stream, query)
-	var protocolErr *doqProtocolErrorCause
-	if !errors.As(err, &protocolErr) {
+	if _, ok := errors.AsType[*doqProtocolErrorCause](err); !ok {
 		t.Fatalf("trailing DoQ data error = %v, want protocol error", err)
 	}
 	if query.Response {

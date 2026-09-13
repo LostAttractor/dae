@@ -29,7 +29,7 @@ func ResolveHttp(ctx context.Context, client *http.Client, endpoint *url.URL, ms
 	if err := netutils.CheckDnsMessageSize(len(data)); err != nil {
 		return err
 	}
-	requestURL := *endpoint
+	requestURL := endpoint.Clone()
 	q := requestURL.Query()
 	q.Set("dns", base64.RawURLEncoding.EncodeToString(data))
 	requestURL.RawQuery = q.Encode()

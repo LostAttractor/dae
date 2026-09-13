@@ -35,7 +35,7 @@ func exchangeUDP(ctx context.Context, dialer netproxy.Dialer, target netip.AddrP
 
 func exchangeTCP(ctx context.Context, dialer netproxy.Dialer, target netip.AddrPort, upstream *policy.Upstream, msg *dns.Msg) error {
 	var err error
-	for attempt := 0; attempt < 2; attempt++ {
+	for range 2 {
 		conn, dialErr := dialer.DialContext(ctx, "tcp", target.String())
 		if dialErr != nil {
 			return dialErr
