@@ -20,7 +20,7 @@ func (g *DomainRegistry) Start() {
 		defer close(g.workerDone)
 		activity := time.NewTicker(time.Second)
 		sweep := time.NewTicker(consts.DnsStateSweepInterval)
-		save := time.NewTicker(30 * time.Second)
+		save := time.NewTicker(time.Minute)
 		defer activity.Stop()
 		defer sweep.Stop()
 		defer save.Stop()

@@ -44,7 +44,7 @@ func (g *DomainRegistry) Save(path string) error {
 		return err
 	}
 	defer os.Remove(f.Name())
-	compressed := gzip.NewWriter(f)
+	compressed, _ := gzip.NewWriterLevel(f, gzip.BestSpeed)
 	err = json.MarshalWrite(compressed, entries, json.Deterministic(true))
 	// Finish the stream (including its checksum) before syncing and publishing.
 	err = errors.Join(err, compressed.Close())

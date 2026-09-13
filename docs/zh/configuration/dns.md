@@ -127,7 +127,7 @@ pair 新增或删除时，只合并受影响 IP 的关联域名，复用该 IP �
 
 ## 持久化和诊断
 
-有变更时每 30 秒保存，正常关闭时最终保存到 `$DAE_LOCATION_CACHE/domain-registry.json.gz`，默认 `/var/lib/dae/domain-registry.json.gz`。文件内容为 **gzip 压缩的 JSON**。文件权限 0600，将 JSON 流式压缩到临时文件，完成 gzip 写入后执行文件 fsync、原子 rename 和目录 fsync。可以直接查看：
+有变更时每 60 秒保存，正常关闭时最终保存到 `$DAE_LOCATION_CACHE/domain-registry.json.gz`，默认 `/var/lib/dae/domain-registry.json.gz`。文件内容为 **gzip 压缩的 JSON**。文件权限 0600，将 JSON 以 gzip 最快压缩级别流式写入临时文件，完成 gzip 写入后执行文件 fsync、原子 rename 和目录 fsync。可以直接查看：
 
 ```sh
 zcat /var/lib/dae/domain-registry.json.gz | jq .

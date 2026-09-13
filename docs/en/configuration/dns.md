@@ -235,13 +235,14 @@ Encrypted DNS not handled by a plugin cannot supply passive core observations.
 
 ## Persistence and diagnostics
 
-Dirty state is saved every 30 seconds and once on clean close to
+Dirty state is saved every 60 seconds and once on clean close to
 `$DAE_LOCATION_CACHE/domain-registry.json.gz` (default
 `/var/lib/dae/domain-registry.json.gz`), mode 0600. The file contains **gzip-compressed
-JSON**. Writes stream JSON through gzip to a temporary file, finish the compressed
-stream, then use file fsync, atomic rename and directory fsync. Save failures are
-logged, including the final save; they do not prevent safe retirement or in-memory
-registry adoption during reload. View it with:
+JSON**. Writes stream JSON through gzip at its fastest compression level to a
+temporary file, finish the compressed stream, then use file fsync, atomic rename
+and directory fsync. Save failures are logged, including the final save; they do
+not prevent safe retirement or in-memory registry adoption during reload. View
+it with:
 
 ```sh
 zcat /var/lib/dae/domain-registry.json.gz | jq .
