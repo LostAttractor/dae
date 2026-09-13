@@ -151,8 +151,7 @@ func TestResourceDiagnosticsRedactRemoteSecrets(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("redaction lost error identity: %v", err)
 	}
-	var urlErr *url.Error
-	if !errors.As(err, &urlErr) {
+	if _, ok := errors.AsType[*url.Error](err); !ok {
 		t.Fatal("redaction lost wrapped URL error")
 	}
 	for _, secret := range []string{"user", "password", "path-token", "query-token"} {

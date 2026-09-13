@@ -50,8 +50,7 @@ func TestUdpTaskPool_TasksWithSameKeyAreOrdered(t *testing.T) {
 	var mu sync.Mutex
 	executed := make([]int, 0, n)
 	done := make(chan struct{})
-	for i := 0; i < n; i++ {
-		i := i
+	for i := range n {
 		emitUDPTask(pool, key, func() {
 			mu.Lock()
 			executed = append(executed, i)
@@ -67,7 +66,7 @@ func TestUdpTaskPool_TasksWithSameKeyAreOrdered(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("tasks were not fully executed")
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if executed[i] != i {
 			t.Fatalf("tasks executed out of order: executed[%v] = %v", i, executed[i])
 		}
@@ -92,7 +91,7 @@ func TestUdpTaskPool_DropWhenQueueFull(t *testing.T) {
 	<-started
 
 	// Fill the queue channel.
-	for i := 0; i < udpTaskQueueLength; i++ {
+	for range udpTaskQueueLength {
 		require.True(t, emitUDPTask(pool, key, func() {}))
 	}
 
@@ -191,16 +190,14 @@ func TestUdpTaskPool_ConcurrentEmitAndClose(t *testing.T) {
 	var accepted atomic.Int64
 	var executed atomic.Int64
 	for range 8 {
-		producers.Add(1)
-		go func() {
-			defer producers.Done()
+		producers.Go(func() {
 			<-start
 			for range 100 {
 				if emitUDPTask(pool, key, func() { executed.Add(1) }) {
 					accepted.Add(1)
 				}
 			}
-		}()
+		})
 	}
 
 	close(start)

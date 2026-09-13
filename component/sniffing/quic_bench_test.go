@@ -19,7 +19,7 @@ var QuicStream, _ = hex.DecodeString("c00000000108d60451e5cb0f7050000044bc9acdca
 func BenchmarkSniffQuic(b *testing.B) {
 	log.SetLevel(log.DebugLevel)
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		sniffer := NewPacketSniffer(QuicStream)
 		d, err := sniffer.SniffQuic()
 		if err != nil {

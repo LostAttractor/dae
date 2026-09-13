@@ -5,7 +5,7 @@ package surge
 import (
 	"fmt"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -210,7 +210,7 @@ func FormatModuleSource(source ModuleSource) (string, error) {
 			}
 			names = append(names, name)
 		}
-		sort.Strings(names)
+		slices.Sort(names)
 		for _, name := range names {
 			line(3, (&config_parser.Param{Val: name + "=" + source.Arguments[name]}).String(true, true))
 		}

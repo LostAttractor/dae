@@ -32,8 +32,7 @@ func loadTestSpliceRuntime(t *testing.T) *Runtime {
 	}
 	runtime, err := New(&ebpf.CollectionOptions{}, 7440*time.Second)
 	if err != nil {
-		var verifierErr *ebpf.VerifierError
-		if errors.As(err, &verifierErr) {
+		if verifierErr, ok := errors.AsType[*ebpf.VerifierError](err); ok {
 			t.Logf("%+v", verifierErr)
 		}
 		t.Fatalf("%+v", err)

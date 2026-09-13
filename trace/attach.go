@@ -47,16 +47,14 @@ func runClosersConcurrently(closers []func() error, maxWorkers int) error {
 	close(jobs)
 
 	var workersDone sync.WaitGroup
-	workersDone.Add(workers)
 	for range workers {
-		go func() {
-			defer workersDone.Done()
+		workersDone.Go(func() {
 			for closeFn := range jobs {
 				if err := closeFn(); err != nil {
 					errs <- err
 				}
 			}
-		}()
+		})
 	}
 	workersDone.Wait()
 	close(errs)

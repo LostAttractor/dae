@@ -58,7 +58,7 @@ func ReadMetadata(contents string) (Metadata, error) {
 			if value == "" {
 				continue
 			}
-			for _, field := range strings.Split(value, ",") {
+			for field := range strings.SplitSeq(value, ",") {
 				name, defaultValue, hasDefault := strings.Cut(field, ":")
 				name, defaultValue = strings.TrimSpace(name), strings.TrimSpace(defaultValue)
 				if name == "" || strings.ContainsAny(name, "{}\r\n\x00") {

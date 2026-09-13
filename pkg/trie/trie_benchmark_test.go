@@ -34,11 +34,12 @@ func BenchmarkTrieHasPrefix(b *testing.B) {
 					b.Fatal(err)
 				}
 				b.ReportAllocs()
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
+				i := 0
+				for b.Loop() {
 					if got := ss.HasPrefix(words[i%(2*n)]); got != (i%2 == 0) {
 						b.Fatal("incorrect prefix result")
 					}
+					i++
 				}
 			})
 		}

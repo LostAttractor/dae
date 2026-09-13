@@ -27,8 +27,7 @@ func generate(output string) error {
 	var lanProgFields []ProgField
 	var wanProgFields []ProgField
 	tBpfProg := reflect.ValueOf(bpfObjects{}).FieldByName("bpfPrograms").Type()
-	for i := 0; i < tBpfProg.NumField(); i++ {
-		structField := tBpfProg.Field(i)
+	for structField := range tBpfProg.Fields() {
 		switch {
 		case strings.HasPrefix(structField.Name, "TproxyLan"):
 			lanProgFields = append(lanProgFields, ProgField{
@@ -59,7 +58,7 @@ func generate(output string) error {
 		return err
 	}
 	fmt.Printf("Write to %v\n", abs)
-	if err = t.Execute(f, map[string]interface{}{
+	if err = t.Execute(f, map[string]any{
 		"WanProgFields": wanProgFields,
 		"LanProgFields": lanProgFields,
 	}); err != nil {

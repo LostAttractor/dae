@@ -24,13 +24,14 @@ func recentTestGroup() api.GroupStatus {
 		ChecksConnectivity: true,
 		Connectivity:       api.GroupStateAvailable,
 		Availability: api.GroupAvailability{
-			Availability: api.Availability{Seen: true, Recent24h: api.AvailabilityWindow{UpRatio: 0.9992}},
-			Recent:       api.GroupStateWindow{States: states},
+			Seen: true, Recent24h: api.AvailabilityWindow{UpRatio: 0.9992},
+			Recent: api.GroupStateWindow{States: states},
 		},
 		Stats: api.PathStats{
 			ActiveConnections:   31,
 			FallbackConnections: 2,
-			TrafficCounters:     api.TrafficCounters{UploadBytes: 3000, DownloadBytes: 4000},
+			UploadBytes:         3000,
+			DownloadBytes:       4000,
 			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{100}, DownloadBytesPerSecond: []uint64{200},
 			},

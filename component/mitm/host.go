@@ -170,13 +170,11 @@ func (h *Host) Start(parent context.Context) error {
 		if !ok {
 			continue
 		}
-		h.workers.Add(1)
-		go func() {
-			defer h.workers.Done()
+		h.workers.Go(func() {
 			if err := worker.Run(ctx, h.options.HTTPClient); err != nil && ctx.Err() == nil {
 				h.options.Logger.WithField("plugin_instance", instance.ID).WithError(resource.RedactError(err)).Error("Plugin worker stopped")
 			}
-		}()
+		})
 	}
 	return nil
 }

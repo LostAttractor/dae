@@ -43,8 +43,7 @@ func TestRelativeSubscriptionOpenErrorIdentifiesComponent(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = ResolveFile(u, dir)
-			var pathErr *os.PathError
-			if !errors.As(err, &pathErr) || pathErr.Path != component || !errors.Is(err, unix.ENOTDIR) {
+			if pathErr, ok := errors.AsType[*os.PathError](err); !ok || pathErr.Path != component || !errors.Is(err, unix.ENOTDIR) {
 				t.Fatalf("open error = %v, want ENOTDIR identifying %s", err, component)
 			}
 			if strings.Contains(err.Error(), "symbolic links are not allowed") != symlink {

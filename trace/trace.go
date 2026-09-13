@@ -416,11 +416,8 @@ func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons drop
 	opts.Programs.LogLevel = ebpf.LogLevelInstruction
 	collection, err := ebpf.NewCollectionWithOptions(spec, opts)
 	if err != nil {
-		var (
-			ve          *ebpf.VerifierError
-			verifierLog string
-		)
-		if errors.As(err, &ve) {
+		var verifierLog string
+		if ve, ok := errors.AsType[*ebpf.VerifierError](err); ok {
 			verifierLog = fmt.Sprintf("Verifier error: %+v\n", ve)
 		}
 		return nil, fmt.Errorf("failed to load BPF: %w\n%s", err, verifierLog)

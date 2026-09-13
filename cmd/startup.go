@@ -115,8 +115,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 				continue
 			}
 			log.WithError(resource.RedactError(err)).WithField("endpoint", resource.RedactURL(req.URL.String())).Debug("Startup network check failed")
-			var neterr net.Error
-			if errors.As(err, &neterr) && neterr.Timeout() {
+			if neterr, ok := errors.AsType[net.Error](err); ok && neterr.Timeout() {
 				continue
 			}
 			waitRetry()

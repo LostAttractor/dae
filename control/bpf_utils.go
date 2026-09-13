@@ -170,7 +170,7 @@ func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
 }
 
 // BpfMapBatchDelete deletes keys and ignores ErrKeyNotExist.
-func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
+func BpfMapBatchDelete(m *ebpf.Map, keys any) (n int, err error) {
 	// Simulate
 	vKeys := reflect.ValueOf(keys)
 	if vKeys.Kind() != reflect.Slice {
@@ -178,7 +178,7 @@ func BpfMapBatchDelete(m *ebpf.Map, keys interface{}) (n int, err error) {
 	}
 	length := vKeys.Len()
 
-	for i := 0; i < length; i++ {
+	for i := range length {
 		vKey := vKeys.Index(i)
 		if err = m.Delete(vKey.Interface()); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 			return i, err
@@ -208,7 +208,7 @@ func detectCgroupPath() (string, error) {
 	return "", errors.New("cgroup2 not mounted")
 }
 
-func loadBpfObjectsWithConstants(obj interface{}, opts *ebpf.CollectionOptions, constants map[string]interface{}) error {
+func loadBpfObjectsWithConstants(obj any, opts *ebpf.CollectionOptions, constants map[string]any) error {
 	spec, err := loadBpf()
 	if err != nil {
 		return err
@@ -245,7 +245,7 @@ func fullLoadBpfObjects(
 	} else {
 		log.WithError(err).Warn("Kernel lacks bpf_get_current_task; process name routing uses truncated task names")
 	}
-	constants := map[string]interface{}{
+	constants := map[string]any{
 		"PARAM": struct {
 			controlPlanePid      uint32
 			dae0Ifindex          uint32

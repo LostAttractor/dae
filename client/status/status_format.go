@@ -35,7 +35,7 @@ func groupHealth(group api.GroupStatus) healthStatus {
 		return healthHealthy
 	}
 	if group.Connectivity == api.GroupStateAvailable {
-		for network := api.NetworkIndex(0); network < api.NetworkTypeCount; network++ {
+		for network := range api.NetworkIndex(api.NetworkTypeCount) {
 			if groupNetworkSupport(group.Nodes, network) == api.NetworkSupportConfirmed && !groupNetworkRoutable(group, network) {
 				return healthWarning
 			}
@@ -274,7 +274,7 @@ func compactNetworks(mask uint8) string {
 		return "all ipv6"
 	}
 	parts := make([]string, 0, api.NetworkTypeCount)
-	for index := api.NetworkIndex(0); index < api.NetworkTypeCount; index++ {
+	for index := range api.NetworkIndex(api.NetworkTypeCount) {
 		if mask&(1<<index) != 0 {
 			parts = append(parts, index.String())
 		}
@@ -299,7 +299,7 @@ func nodeNetworks(status api.NodeStatus, selected api.NetworkValues[string]) (st
 	selectionText := "*"
 	if selection != support {
 		parts := make([]string, 0, api.NetworkTypeCount)
-		for index := api.NetworkIndex(0); index < api.NetworkTypeCount; index++ {
+		for index := range api.NetworkIndex(api.NetworkTypeCount) {
 			if selection&(1<<index) != 0 {
 				parts = append(parts, index.String()+"*")
 			}

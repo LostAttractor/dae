@@ -72,7 +72,7 @@ routing {
 	}
 	// Reload preparation borrows the map; construction only reads its capacity.
 	preparation := &ControlPlanePreparation{
-		bpf:      &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{DomainRoutingMap: &ebpf.Map{}}}},
+		bpf:      &BPFState{bpfObjects: &bpfObjects{DomainRoutingMap: &ebpf.Map{}}},
 		rules:    preparedRules{routing: &conf.Routing},
 		isReload: true,
 	}
@@ -186,8 +186,7 @@ func TestPrepareWanAcceptRA(t *testing.T) {
 }
 
 func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
-	closed, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	closed := t.Context()
 	core := &controlPlaneCore{closed: closed, wanBindings: make(map[int]*wanBinding)}
 	snapshot := network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
 		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
@@ -204,7 +203,7 @@ func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
 		if index != 2 {
 			return nil, fmt.Errorf("unexpected link lookup: %d", index)
 		}
-		return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "eth0"}}, nil
+		return &netlink.Dummy{Index: 2, Name: "eth0"}, nil
 	})
 	if !retry {
 		t.Fatal("WAN preparation failure did not request retry")
@@ -218,8 +217,7 @@ func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
 }
 
 func TestReconcileWanRetriesManualPreparation(t *testing.T) {
-	closed, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	closed := t.Context()
 	const index = 2
 	core := &controlPlaneCore{
 		closed: closed,
@@ -236,7 +234,7 @@ func TestReconcileWanRetriesManualPreparation(t *testing.T) {
 		}
 		return nil
 	}, func(int) (netlink.Link, error) {
-		return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}}, nil
+		return &netlink.Dummy{Index: index, Name: "eth0"}, nil
 	})
 	if !retry || attempts != 1 {
 		t.Fatalf("first reconciliation = retry %v, attempts %d; want true, 1", retry, attempts)
@@ -250,7 +248,7 @@ func TestReconcileWanRetriesManualPreparation(t *testing.T) {
 		attempts++
 		return nil
 	}, func(int) (netlink.Link, error) {
-		return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}}, nil
+		return &netlink.Dummy{Index: index, Name: "eth0"}, nil
 	}) {
 		t.Fatal("successful manual WAN preparation requested retry")
 	}
@@ -260,21 +258,19 @@ func TestReconcileWanRetriesManualPreparation(t *testing.T) {
 }
 
 func TestManualWanRejectsLoopback(t *testing.T) {
-	closed, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	closed := t.Context()
 	core := &controlPlaneCore{closed: closed, wanBindings: make(map[int]*wanBinding)}
-	core.setManualWan(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{
+	core.setManualWan(&netlink.Dummy{
 		Index: consts.LoopbackIfIndex,
 		Name:  "lo",
-	}}, "*", true)
+	}, "*", true)
 	if len(core.wanBindings) != 0 {
 		t.Fatalf("loopback WAN binding = %+v", core.wanBindings)
 	}
 }
 
 func TestManualWanRenamePreservesAttachment(t *testing.T) {
-	closed, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	closed := t.Context()
 	const index = 2
 	core := &controlPlaneCore{
 		closed: closed,
@@ -283,7 +279,7 @@ func TestManualWanRenamePreservesAttachment(t *testing.T) {
 			manualPatterns: map[string]struct{}{"eth*": {}},
 		}},
 	}
-	core.setManualWan(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "wan0"}}, "wan*", true)
+	core.setManualWan(&netlink.Dummy{Index: index, Name: "wan0"}, "wan*", true)
 	binding := core.wanBindings[index]
 	if binding.ifname != "wan0" {
 		t.Fatalf("renamed binding = %+v", binding)
@@ -294,8 +290,7 @@ func TestManualWanRenamePreservesAttachment(t *testing.T) {
 }
 
 func TestRemoveWanOwnerPreservesTCXForOtherOwners(t *testing.T) {
-	closed, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	closed := t.Context()
 	const index = 2
 	var closes int
 	core := &controlPlaneCore{
@@ -311,7 +306,7 @@ func TestRemoveWanOwnerPreservesTCXForOtherOwners(t *testing.T) {
 		},
 	}
 
-	core.removeWanLink(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}}, "eth*")
+	core.removeWanLink(&netlink.Dummy{Index: index, Name: "eth0"}, "eth*")
 	if closes != 0 || len(core.hostTCXLinks) != 2 {
 		t.Fatalf("removing one owner detached WAN TCX: closes=%d links=%v", closes, core.hostTCXLinks)
 	}
@@ -325,8 +320,7 @@ func TestRemoveWanOwnerPreservesTCXForOtherOwners(t *testing.T) {
 }
 
 func TestInvalidateAutoWanLinkClearsTCXOwnership(t *testing.T) {
-	closed, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	closed := t.Context()
 	const index = 2
 	var closes int
 	core := &controlPlaneCore{
@@ -342,7 +336,7 @@ func TestInvalidateAutoWanLinkClearsTCXOwnership(t *testing.T) {
 		},
 	}
 
-	core.invalidateWanLink(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: index, Name: "eth0"}})
+	core.invalidateWanLink(&netlink.Dummy{Index: index, Name: "eth0"})
 	if closes != 2 || len(core.hostTCXLinks) != 0 {
 		t.Fatalf("auto-WAN TCX ownership retained after delete: closes=%d links=%v", closes, core.hostTCXLinks)
 	}
@@ -353,9 +347,9 @@ func TestInvalidateAutoWanLinkClearsTCXOwnership(t *testing.T) {
 
 func TestReconcileLanLinksRetriesAndDeduplicatesPatterns(t *testing.T) {
 	links := []netlink.Link{
-		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "eth0"}},
-		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 3, Name: "eth1"}},
-		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 4, Name: hostLinkName}},
+		&netlink.Dummy{Index: 2, Name: "eth0"},
+		&netlink.Dummy{Index: 3, Name: "eth1"},
+		&netlink.Dummy{Index: 4, Name: hostLinkName},
 	}
 	attempts := make(map[string]int)
 	bind := func(link netlink.Link) error {

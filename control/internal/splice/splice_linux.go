@@ -230,8 +230,7 @@ func drainTCP(src, dst net.Conn, recordBytes func(uint64)) (eof, empty bool, err
 		if readErr == io.EOF {
 			return true, true, nil
 		}
-		var netErr net.Error
-		if errors.As(readErr, &netErr) && netErr.Timeout() {
+		if netErr, ok := errors.AsType[net.Error](readErr); ok && netErr.Timeout() {
 			return false, true, nil
 		}
 		return false, false, readErr
@@ -548,7 +547,7 @@ func (r *Runtime) runDirectSession(edges [2]*spliceDirectEdge) error {
 		if err != nil && !errors.Is(err, unix.EINTR) {
 			return err
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			event := events[i]
 			edgeIndex := int(event.Fd)
 			edge := edges[edgeIndex]

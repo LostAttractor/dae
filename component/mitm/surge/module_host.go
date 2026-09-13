@@ -82,7 +82,7 @@ func parseHost(line string, m *Module) error {
 		host.SetKind, host.SetSource = kind, source
 	} else if source, err := netip.ParseAddr(key); err == nil && source.Zone() == "" {
 		mapping := routing.DestinationRewrite{Filter: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: source.Unmap().String()}}}}}
-		for _, target := range strings.Split(value, ",") {
+		for target := range strings.SplitSeq(value, ",") {
 			ip, err := netip.ParseAddr(strings.TrimSpace(target))
 			if err != nil || ip.Zone() != "" {
 				return fmt.Errorf("IP Host mapping requires literal target IPs")
@@ -96,7 +96,7 @@ func parseHost(line string, m *Module) error {
 	}
 	switch {
 	case strings.HasPrefix(value, "server:"):
-		for _, server := range strings.Split(strings.TrimPrefix(value, "server:"), ",") {
+		for server := range strings.SplitSeq(strings.TrimPrefix(value, "server:"), ",") {
 			server = strings.TrimSpace(server)
 			if err := validateHostServer(server); err != nil {
 				return err
@@ -112,7 +112,7 @@ func parseHost(line string, m *Module) error {
 			return fmt.Errorf("empty DNS script name")
 		}
 	default:
-		for _, target := range strings.Split(value, ",") {
+		for target := range strings.SplitSeq(value, ",") {
 			ip, err := netip.ParseAddr(strings.TrimSpace(target))
 			if err != nil || ip.Zone() != "" {
 				if !strings.Contains(value, ",") {

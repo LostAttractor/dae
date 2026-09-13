@@ -7,6 +7,7 @@ package stats
 
 import (
 	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -25,9 +26,7 @@ func gatheredPathMetric(t *testing.T, registry *prometheus.Registry, familyName 
 		"id": path.NodeID, "outbound": path.Outbound, "subtag": path.Subtag,
 		"dialer": path.Dialer, "network": path.Network.String(),
 	}
-	for name, value := range extraLabels {
-		want[name] = value
-	}
+	maps.Copy(want, extraLabels)
 	for _, family := range families {
 		if family.GetName() != familyName {
 			continue

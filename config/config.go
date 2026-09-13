@@ -66,7 +66,7 @@ type Utls struct {
 	Imitate string `mapstructure:"imitate"`
 }
 
-type FunctionOrString interface{}
+type FunctionOrString any
 
 // QuotedString preserves a routing target's explicit quoting so names using
 // reserved must spellings can be resolved literally.
@@ -96,7 +96,7 @@ func ParseFunctionOrString(fs FunctionOrString) (*config_parser.Function, error)
 	}
 }
 
-type FunctionListOrString interface{}
+type FunctionListOrString any
 
 func ParseFunctionListOrString(fs FunctionListOrString) ([]*config_parser.Function, error) {
 	switch fs := fs.(type) {

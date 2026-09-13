@@ -6,10 +6,11 @@
 package routing
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/netip"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/daeuniverse/dae/common/assets"
@@ -79,8 +80,8 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 	}
 	// Sort AndFunctions by FunctionName.
 	for _, rule := range rules {
-		sort.SliceStable(rule.AndFunctions, func(i, j int) bool {
-			return rule.AndFunctions[i].Name < rule.AndFunctions[j].Name
+		slices.SortStableFunc(rule.AndFunctions, func(a, b *config_parser.Function) int {
+			return cmp.Compare(a.Name, b.Name)
 		})
 	}
 	// Merge singleton rules with the same outbound.
@@ -107,26 +108,20 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 		for _, function := range newRules[i].AndFunctions {
 			if function.Name == consts.Function_DestIp || function.Name == consts.Function_SourceIp {
 				// Sort by IPv4, IPv6, vals.
-				sort.SliceStable(function.Params, func(i, j int) bool {
+				slices.SortStableFunc(function.Params, func(a, b *config_parser.Param) int {
 					vi, vj := 4, 4
-					if strings.Contains(function.Params[i].Val, ":") {
+					if strings.Contains(a.Val, ":") {
 						vi = 6
 					}
-					if strings.Contains(function.Params[j].Val, ":") {
+					if strings.Contains(b.Val, ":") {
 						vj = 6
 					}
-					if vi == vj {
-						return function.Params[i].Val < function.Params[j].Val
-					}
-					return vi < vj
+					return cmp.Or(cmp.Compare(vi, vj), cmp.Compare(a.Val, b.Val))
 				})
 			} else {
 				// Sort by keys, vals.
-				sort.SliceStable(function.Params, func(i, j int) bool {
-					if function.Params[i].Key == function.Params[j].Key {
-						return function.Params[i].Val < function.Params[j].Val
-					}
-					return function.Params[i].Key < function.Params[j].Key
+				slices.SortStableFunc(function.Params, func(a, b *config_parser.Param) int {
+					return cmp.Or(cmp.Compare(a.Key, b.Key), cmp.Compare(a.Val, b.Val))
 				})
 			}
 		}

@@ -6,11 +6,12 @@
 package network
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net"
 	"path"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -264,7 +265,7 @@ func (m *InterfaceManager) replaceLinks(links []netlink.Link) {
 		current = append(current, link)
 	}
 	sortLinks(current)
-	callbacks := append([]callbackSet(nil), m.callbacks...)
+	callbacks := slices.Clone(m.callbacks)
 	onReset := m.onReset
 	onChange := m.onChange
 	delivery := make([]func() error, 0, len(previous)+len(current)+2)
@@ -298,7 +299,7 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 	}
 	attrs := update.Link.Attrs()
 	m.mu.Lock()
-	callbacks := append([]callbackSet(nil), m.callbacks...)
+	callbacks := slices.Clone(m.callbacks)
 	onChange := m.onChange
 	var previous netlink.Link
 	switch update.Header.Type {
@@ -425,7 +426,6 @@ func (m *InterfaceManager) register(name string, exact bool, initCallback func(n
 	m.callbacks = append(m.callbacks, registered)
 	delivery := make([]func() error, 0, len(initialLinks))
 	for _, link := range initialLinks {
-		link := link
 		delivery = append(delivery, func() error {
 			if err := initCallback(link); err != nil {
 				registration.Store(false)
@@ -485,20 +485,17 @@ func (m *InterfaceManager) RegisterSyncCancelable(ifname string, initCallback fu
 	if err != nil {
 		return nil, err
 	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			m.disableRegistration(registration)
-			done := make(chan error, 1)
-			if !m.enqueueDelivery([]func() error{func() error { return nil }}, done) {
-				// Shutdown rejects new barriers while already dispatched callbacks
-				// are still draining. Join the dispatcher before releasing map ownership.
-				<-m.deliveryDone
-				return
-			}
-			<-done
-		})
-	}, nil
+	return sync.OnceFunc(func() {
+		m.disableRegistration(registration)
+		done := make(chan error, 1)
+		if !m.enqueueDelivery([]func() error{func() error { return nil }}, done) {
+			// Shutdown rejects new barriers while already dispatched callbacks
+			// are still draining. Join the dispatcher before releasing map ownership.
+			<-m.deliveryDone
+			return
+		}
+		<-done
+	}), nil
 }
 
 func (m *InterfaceManager) disableRegistration(registration *atomic.Bool) {
@@ -523,17 +520,19 @@ func (m *InterfaceManager) isStopped() bool {
 }
 
 func sortLinks(links []netlink.Link) {
-	sort.Slice(links, func(i, j int) bool {
-		if links[i] == nil || links[i].Attrs() == nil {
-			return false
+	slices.SortFunc(links, func(a, b netlink.Link) int {
+		aInvalid := a == nil || a.Attrs() == nil
+		bInvalid := b == nil || b.Attrs() == nil
+		if aInvalid && bInvalid {
+			return 0
 		}
-		if links[j] == nil || links[j].Attrs() == nil {
-			return true
+		if aInvalid {
+			return 1
 		}
-		if links[i].Attrs().Name != links[j].Attrs().Name {
-			return links[i].Attrs().Name < links[j].Attrs().Name
+		if bInvalid {
+			return -1
 		}
-		return links[i].Attrs().Index < links[j].Attrs().Index
+		return cmp.Or(cmp.Compare(a.Attrs().Name, b.Attrs().Name), cmp.Compare(a.Attrs().Index, b.Attrs().Index))
 	})
 }
 

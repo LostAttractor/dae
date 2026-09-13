@@ -76,20 +76,20 @@ func (m *Marshaller) marshalStringList(from reflect.Value, depth int, keyable bo
 func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) (err error) {
 	m.writeLine(depth, name+" {")
 	defer m.writeLine(depth, "}")
-	if from.Type() == reflect.TypeOf(MITM{}) {
+	if from.Type() == reflect.TypeFor[MITM]() {
 		return m.marshalMITM(from.Interface().(MITM), depth+1)
 	}
-	if from.Type() == reflect.TypeOf(Plugins{}) {
+	if from.Type() == reflect.TypeFor[Plugins]() {
 		return m.marshalPlugins(from.Interface().(Plugins), depth+1)
 	}
-	if from.Type() == reflect.TypeOf([]Node{}) {
+	if from.Type() == reflect.TypeFor[[]Node]() {
 		return m.marshalNodes(from.Interface().([]Node), depth+1)
 	}
-	if from.Type() == reflect.TypeOf([]Subscription{}) {
+	if from.Type() == reflect.TypeFor[[]Subscription]() {
 		return m.marshalSubscriptions(from.Interface().([]Subscription), depth+1)
 	}
 
-	if from.Type() == reflect.TypeOf(Routing{}) {
+	if from.Type() == reflect.TypeFor[Routing]() {
 		return m.marshalRouting(from.Interface().(Routing), depth+1)
 	}
 
@@ -100,7 +100,7 @@ func (m *Marshaller) MarshalSection(name string, from reflect.Value, depth int) 
 		case reflect.String:
 			keyable := false
 			switch elemType {
-			case reflect.TypeOf(KeyableString("")):
+			case reflect.TypeFor[KeyableString]():
 				keyable = true
 			default:
 			}
@@ -311,7 +311,7 @@ func (m *Marshaller) marshalParam(from reflect.Value, depth int) (err error) {
 		if !ok {
 			return fmt.Errorf("tag mapstructure is required")
 		}
-		if present := from.FieldByName("Present"); key != "_" && field.IsZero() && present.IsValid() && present.Type() == reflect.TypeOf(map[string]bool{}) && !present.MapIndex(reflect.ValueOf(key)).IsValid() {
+		if present := from.FieldByName("Present"); key != "_" && field.IsZero() && present.IsValid() && present.Type() == reflect.TypeFor[map[string]bool]() && !present.MapIndex(reflect.ValueOf(key)).IsValid() {
 			continue
 		}
 		// Reserved field.

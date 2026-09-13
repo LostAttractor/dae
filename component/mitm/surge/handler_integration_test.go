@@ -104,12 +104,10 @@ func integrationClient(t *testing.T, engine *integrationFixture, roots *x509.Cer
 				return
 			}
 			connections.Store(conn, struct{}{})
-			handlers.Add(1)
-			go func() {
-				defer handlers.Done()
+			handlers.Go(func() {
 				defer connections.Delete(conn)
 				_ = host.ServeConn(conn, "example.com", 443, testUpstream(mitm.DialContext(dial)))
-			}()
+			})
 		}
 	}()
 	transport := &http.Transport{

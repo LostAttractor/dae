@@ -42,7 +42,7 @@ type dnsConfig struct {
 	lookup        []string      // OpenBSD top-level database "lookup" order
 	err           error         // any error that occurs during open of resolv.conf
 	mtime         time.Time     // time of resolv.conf modification
-	soffset       uint32        // used by serverOffset
+	soffset       atomic.Uint32 // used by serverOffset
 	singleRequest bool          // use sequential A and AAAA queries instead of parallel queries
 	useTCP        bool          // force usage of TCP for DNS resolutions
 }
@@ -98,7 +98,7 @@ func dnsReadConfig(filename string) *dnsConfig {
 
 		case "search": // set search path to given servers
 			conf.search = make([]string, len(f)-1)
-			for i := 0; i < len(conf.search); i++ {
+			for i := range conf.search {
 				conf.search[i] = ensureRooted(f[i+1])
 			}
 
@@ -107,24 +107,13 @@ func dnsReadConfig(filename string) *dnsConfig {
 				switch {
 				case hasPrefix(s, "ndots:"):
 					n, _ := strconv.Atoi(s[6:])
-					if n < 0 {
-						n = 0
-					} else if n > 15 {
-						n = 15
-					}
-					conf.ndots = n
+					conf.ndots = min(max(n, 0), 15)
 				case hasPrefix(s, "timeout:"):
 					n, _ := strconv.Atoi(s[8:])
-					if n < 1 {
-						n = 1
-					}
-					conf.timeout = time.Duration(n) * time.Second
+					conf.timeout = time.Duration(max(n, 1)) * time.Second
 				case hasPrefix(s, "attempts:"):
 					n, _ := strconv.Atoi(s[9:])
-					if n < 1 {
-						n = 1
-					}
-					conf.attempts = n
+					conf.attempts = max(n, 1)
 				case s == "rotate":
 					conf.rotate = true
 				case s == "single-request" || s == "single-request-reopen":
@@ -172,7 +161,7 @@ func dnsReadConfig(filename string) *dnsConfig {
 // Otherwise it is always 0.
 func (c *dnsConfig) serverOffset() uint32 {
 	if c.rotate {
-		return atomic.AddUint32(&c.soffset, 1) - 1 // return 0 to start
+		return c.soffset.Add(1) - 1 // return 0 to start
 	}
 	return 0
 }

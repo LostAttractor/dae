@@ -9,10 +9,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -298,8 +299,7 @@ func loadCollection(spec *ebpf.CollectionSpec, scenario auditScenario, outputDir
 
 	message := fmt.Sprintf("scenario=%s\n%s\n", scenario.name, err)
 	_ = os.WriteFile(filepath.Join(outputDir, "load-error.txt"), []byte(message), 0o644)
-	var verifierError *ebpf.VerifierError
-	if errors.As(err, &verifierError) {
+	if verifierError, ok := errors.AsType[*ebpf.VerifierError](err); ok {
 		_ = os.WriteFile(filepath.Join(verifierDir, "load-main-bpf.log"), fmt.Appendf(nil, "%+v\n", verifierError), 0o644)
 	}
 	return nil, fmt.Errorf("load collection for %s scenario: %w", scenario.name, err)
@@ -313,7 +313,7 @@ func writeSpecSummaries(spec *ebpf.CollectionSpec, specDir string) error {
 		}
 		programs = append(programs, fmt.Sprintf("%s\t%s\t%s", name, prog.Type, prog.SectionName))
 	}
-	sort.Strings(programs)
+	slices.Sort(programs)
 	if err := os.WriteFile(filepath.Join(specDir, "programs.tsv"), []byte(strings.Join(programs, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write program spec summary: %w", err)
 	}
@@ -325,7 +325,7 @@ func writeSpecSummaries(spec *ebpf.CollectionSpec, specDir string) error {
 		}
 		maps = append(maps, fmt.Sprintf("%s\t%s\t%d\t%d\t%d\t%d", name, m.Type, m.KeySize, m.ValueSize, m.MaxEntries, m.Flags))
 	}
-	sort.Strings(maps)
+	slices.Sort(maps)
 	if err := os.WriteFile(filepath.Join(specDir, "maps.tsv"), []byte(strings.Join(maps, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write map spec summary: %w", err)
 	}
@@ -337,7 +337,7 @@ func writeSpecSummaries(spec *ebpf.CollectionSpec, specDir string) error {
 		}
 		variables = append(variables, fmt.Sprintf("%s\tconstant=%t\tsize=%d\toffset=%d\tmap=%s", name, variable.Constant(), variable.Size(), variable.Offset, variable.SectionName))
 	}
-	sort.Strings(variables)
+	slices.Sort(variables)
 	if err := os.WriteFile(filepath.Join(specDir, "variables.tsv"), []byte(strings.Join(variables, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write variable spec summary: %w", err)
 	}
@@ -391,7 +391,7 @@ func writeLiveObjectManifest(coll *ebpf.Collection, outputDir string) error {
 		manifest = append(manifest, fmt.Sprintf("map\t%s\t%d", name, id))
 	}
 
-	sort.Strings(manifest)
+	slices.Sort(manifest)
 	if err := os.WriteFile(filepath.Join(outputDir, "manifest.tsv"), []byte(strings.Join(manifest, "\n")+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
@@ -407,10 +407,5 @@ func waitForTermination() error {
 }
 
 func sortedKeys[T any](m map[string]T) []string {
-	keys := make([]string, 0, len(m))
-	for name := range m {
-		keys = append(keys, name)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }

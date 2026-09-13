@@ -78,12 +78,10 @@ func TestDialerRetainAllowsUpstreamRequestsAfterClose(t *testing.T) {
 	}
 	defer release()
 	checksFinished := make(chan struct{})
-	d.checkWG.Add(1)
-	go func() {
-		defer d.checkWG.Done()
+	d.checkWG.Go(func() {
 		<-d.ctx.Done()
 		close(checksFinished)
-	}()
+	})
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -117,7 +118,10 @@ func (s DNSScope) Match(m *dns.Msg) bool {
 
 func (r *DNSRequest) Copy() *DNSRequest {
 	copy := *r
-	copy.Wire = append([]byte(nil), r.Wire...)
+	copy.Wire = nil
+	if len(r.Wire) != 0 {
+		copy.Wire = bytes.Clone(r.Wire)
+	}
 	if r.Message != nil {
 		copy.Message = r.Message.Copy()
 	}
@@ -126,7 +130,10 @@ func (r *DNSRequest) Copy() *DNSRequest {
 
 func (r *DNSResponse) Copy() *DNSResponse {
 	copy := *r
-	copy.Wire = append([]byte(nil), r.Wire...)
+	copy.Wire = nil
+	if len(r.Wire) != 0 {
+		copy.Wire = bytes.Clone(r.Wire)
+	}
 	if r.Message != nil {
 		copy.Message = r.Message.Copy()
 	}

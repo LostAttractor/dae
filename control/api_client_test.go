@@ -85,8 +85,7 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 				}
 				local.SetHandler(nil)
 				_, err := client.Status(ctx)
-				var unavailable *apiclient.Error
-				if !errors.As(err, &unavailable) || unavailable.StatusCode != 503 {
+				if unavailable, ok := errors.AsType[*apiclient.Error](err); !ok || unavailable.StatusCode != 503 {
 					t.Fatalf("reload: %v", err)
 				}
 				local.SetHandler(plane.APIHandler("integration-test"))

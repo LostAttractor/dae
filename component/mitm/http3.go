@@ -81,13 +81,11 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 			upstream := h.plannedTransport(packetPlan, true)
 			auxiliary := h.plannedTransport(plan, false)
 			handler := h.handlerForFlow("https", flow, upstream, &http.Client{Transport: auxiliary})
-			connections.Add(1)
-			go func() {
-				defer connections.Done()
+			connections.Go(func() {
 				<-conn.Context().Done()
 				upstream.close()
 				auxiliary.close()
-			}()
+			})
 			ctx = plugin.WithIDs(ctx, strconv.FormatUint(serial.Add(1), 10), "")
 			return context.WithValue(ctx, http3HandlerKey{}, handler)
 		},

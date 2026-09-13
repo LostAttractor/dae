@@ -7,8 +7,9 @@ package logger
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"unicode/utf8"
 
 	log "github.com/sirupsen/logrus"
@@ -32,16 +33,19 @@ var fieldPriority = map[string]int{
 }
 
 func sortFields(keys []string) {
-	sort.Slice(keys, func(i, j int) bool {
-		left, leftPrioritized := fieldPriority[keys[i]]
-		right, rightPrioritized := fieldPriority[keys[j]]
+	slices.SortFunc(keys, func(a, b string) int {
+		left, leftPrioritized := fieldPriority[a]
+		right, rightPrioritized := fieldPriority[b]
 		if leftPrioritized != rightPrioritized {
-			return leftPrioritized
+			if leftPrioritized {
+				return -1
+			}
+			return 1
 		}
 		if leftPrioritized && left != right {
-			return left < right
+			return cmp.Compare(left, right)
 		}
-		return keys[i] < keys[j]
+		return cmp.Compare(a, b)
 	})
 }
 

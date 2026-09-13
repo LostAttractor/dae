@@ -172,7 +172,7 @@ func extractCryptoFrame(remainder []byte) (appOffset int, data []byte, isCrypto 
 			return value, nil
 		}
 		var ackRangeCount uint64
-		for field := 0; field < 4; field++ {
+		for field := range 4 {
 			value, err := readAckVarint()
 			if err != nil {
 				return 0, nil, false, 0, false, err
@@ -181,15 +181,15 @@ func extractCryptoFrame(remainder []byte) (appOffset int, data []byte, isCrypto 
 				ackRangeCount = value
 			}
 		}
-		for rangeIndex := uint64(0); rangeIndex < ackRangeCount; rangeIndex++ {
-			for rangeField := 0; rangeField < 2; rangeField++ {
+		for range ackRangeCount {
+			for range 2 {
 				if _, err := readAckVarint(); err != nil {
 					return 0, nil, false, 0, false, err
 				}
 			}
 		}
 		if frameType == Quic_FrameType_AckECN {
-			for ecnCounter := 0; ecnCounter < 3; ecnCounter++ {
+			for range 3 {
 				if _, err := readAckVarint(); err != nil {
 					return 0, nil, false, 0, false, err
 				}

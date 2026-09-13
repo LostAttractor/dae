@@ -106,9 +106,7 @@ func TestRuntimeCGORepeatedCancellationAndClose(t *testing.T) {
 	}
 	var workers sync.WaitGroup
 	for worker := range 6 {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			for iteration := range 12 {
 				id := fmt.Sprintf("cancel-%d-%d", worker, iteration)
 				ready := make(chan struct{})
@@ -148,7 +146,7 @@ func TestRuntimeCGORepeatedCancellationAndClose(t *testing.T) {
 				cancel()
 				signals.Delete(id)
 			}
-		}()
+		})
 	}
 	workers.Wait()
 	result, err := r.Run(context.Background(), `$done({body:"new VM remains usable"})`, Invocation{})

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -452,7 +453,7 @@ func TestAccumulatorOrdersBySequenceAndDetectsLoss(t *testing.T) {
 
 func TestAccumulatorEvictsOldestDeterministically(t *testing.T) {
 	accumulator := newEventAccumulator()
-	for i := uint64(0); i < maxPendingTraces; i++ {
+	for i := range uint64(maxPendingTraces) {
 		accumulator.add(traceEvent{Skb: i, Generation: 1})
 	}
 	evicted := accumulator.add(traceEvent{Skb: maxPendingTraces, Generation: 1})
@@ -533,17 +534,17 @@ func TestRunClosersConcurrentlyIsBounded(t *testing.T) {
 	const workers = 2
 	started := make(chan struct{}, 4)
 	release := make(chan struct{})
-	var active int32
-	var maximum int32
+	var active atomic.Int32
+	var maximum atomic.Int32
 	closers := make([]func() error, 4)
 	for i := range closers {
 		closers[i] = func() error {
-			current := atomic.AddInt32(&active, 1)
-			for old := atomic.LoadInt32(&maximum); current > old && !atomic.CompareAndSwapInt32(&maximum, old, current); old = atomic.LoadInt32(&maximum) {
+			current := active.Add(1)
+			for old := maximum.Load(); current > old && !maximum.CompareAndSwap(old, current); old = maximum.Load() {
 			}
 			started <- struct{}{}
 			<-release
-			atomic.AddInt32(&active, -1)
+			active.Add(-1)
 			return nil
 		}
 	}
@@ -566,7 +567,7 @@ func TestRunClosersConcurrentlyIsBounded(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if got := atomic.LoadInt32(&maximum); got != workers {
+	if got := maximum.Load(); got != workers {
 		t.Fatalf("maximum parallel closers = %d, want %d", got, workers)
 	}
 }
@@ -970,10 +971,8 @@ func TestAttachProbeGroupRecursivelySplitsFailedMultiBatch(t *testing.T) {
 		true,
 		func(symbols []string) (probeAttachment, error) {
 			multiCalls++
-			for _, symbol := range symbols {
-				if symbol == "bad" {
-					return nil, wantErr
-				}
+			if slices.Contains(symbols, "bad") {
+				return nil, wantErr
 			}
 			return &fakeProbeAttachment{}, nil
 		},
@@ -1050,7 +1049,7 @@ func TestKprobeMultiVersionBoundary(t *testing.T) {
 
 func TestLimitLegacyProbeTargetsPrefersNetworkPaths(t *testing.T) {
 	targets := make([]probeTarget, 0, maxLegacyProbeTargets+2)
-	for i := 0; i < maxLegacyProbeTargets; i++ {
+	for i := range maxLegacyProbeTargets {
 		targets = append(targets, probeTarget{name: fmt.Sprintf("unrelated_%03d", i), skbPosition: 1})
 	}
 	targets = append(targets,

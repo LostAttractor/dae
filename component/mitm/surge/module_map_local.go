@@ -60,7 +60,7 @@ func parseMapLocal(line string, warnings *[]string) (*MapLocal, error) {
 				}
 				value = strings.ReplaceAll(strings.ReplaceAll(string(decoded), "\r\n", "\n"), "\n", "|")
 			}
-			for _, entry := range strings.Split(value, "|") {
+			for entry := range strings.SplitSeq(value, "|") {
 				if strings.TrimSpace(entry) == "" {
 					continue
 				}

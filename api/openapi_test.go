@@ -90,15 +90,14 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 			fields := map[string]reflect.StructField{}
 			var collect func(reflect.Type)
 			collect = func(typ reflect.Type) {
-				for i := range typ.NumField() {
-					f := typ.Field(i)
+				for f := range typ.Fields() {
 					if f.Tag.Get("json") == "-" {
 						continue
 					}
 					if f.Anonymous {
 						collect(f.Type)
 					} else {
-						name := strings.Split(f.Tag.Get("json"), ",")[0]
+						name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
 						fields[name] = f
 					}
 				}

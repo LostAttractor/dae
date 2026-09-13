@@ -8,6 +8,7 @@ package domain_matcher
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -156,10 +157,7 @@ func ToSuffixTrieString(s string) string {
 	// No need for end char "$".
 	b := []byte(strings.TrimSuffix(s, "$"))
 	// Reverse.
-	half := len(b) / 2
-	for i := 0; i < half; i++ {
-		b[i], b[len(b)-i-1] = b[len(b)-i-1], b[i]
-	}
+	slices.Reverse(b)
 	return string(b)
 }
 func ToSuffixTrieStrings(s []string) []string {

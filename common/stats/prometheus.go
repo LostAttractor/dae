@@ -6,6 +6,7 @@
 package stats
 
 import (
+	"slices"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -82,10 +83,8 @@ func (s *Store) nodeMetricLabels(key string) []string {
 }
 
 func boundedFailureLabel(value string, allowed ...string) string {
-	for _, candidate := range allowed {
-		if value == candidate {
-			return value
-		}
+	if slices.Contains(allowed, value) {
+		return value
 	}
 	return "unknown"
 }

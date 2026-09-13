@@ -43,7 +43,7 @@ func CloneStrings(slice []string) []string {
 
 func ARangeU32(n uint32) []uint32 {
 	ret := make([]uint32, n)
-	for i := uint32(0); i < n; i++ {
+	for i := range n {
 		ret[i] = i
 	}
 	return ret
@@ -63,7 +63,7 @@ func Ipv6ByteSliceToUint8Array(_ip []byte) (ip [16]uint8) {
 
 func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
 	ip = make([]byte, 16)
-	for j := 0; j < 4; j++ {
+	for j := range 4 {
 		internal.NativeEndian.PutUint32(ip[j*4:], _ip[j])
 	}
 	return ip
@@ -157,21 +157,21 @@ func ParsePortRange(pr string) (portRange [2]uint16, err error) {
 	return portRange, nil
 }
 
-func SetValueHierarchicalMap(m map[string]interface{}, key string, val interface{}) error {
+func SetValueHierarchicalMap(m map[string]any, key string, val any) error {
 	keys := strings.Split(key, ".")
 	lastKey := keys[len(keys)-1]
 	keys = keys[:len(keys)-1]
 	p := &m
 	for _, key := range keys {
 		if v, ok := (*p)[key]; ok {
-			vv, ok := v.(map[string]interface{})
+			vv, ok := v.(map[string]any)
 			if !ok {
 				return ErrOverlayHierarchicalKey
 			}
 			p = &vv
 		} else {
-			(*p)[key] = make(map[string]interface{})
-			vv := (*p)[key].(map[string]interface{})
+			(*p)[key] = make(map[string]any)
+			vv := (*p)[key].(map[string]any)
 			p = &vv
 		}
 	}
@@ -179,7 +179,7 @@ func SetValueHierarchicalMap(m map[string]interface{}, key string, val interface
 	return nil
 }
 
-func SetValueHierarchicalStruct(m interface{}, key string, val string) error {
+func SetValueHierarchicalStruct(m any, key string, val string) error {
 	ifv, err := GetValueHierarchicalStruct(m, key)
 	if err != nil {
 		return err
@@ -190,15 +190,14 @@ func SetValueHierarchicalStruct(m interface{}, key string, val string) error {
 	return nil
 }
 
-func GetValueHierarchicalStruct(m interface{}, key string) (reflect.Value, error) {
-	keys := strings.Split(key, ".")
+func GetValueHierarchicalStruct(m any, key string) (reflect.Value, error) {
 	ifv := reflect.Indirect(reflect.ValueOf(m))
 	ift := ifv.Type()
 	lastK := ""
-	for _, k := range keys {
+	for k := range strings.SplitSeq(key, ".") {
 		found := false
 		if ift.Kind() == reflect.Struct {
-			for i := 0; i < ifv.NumField(); i++ {
+			for i := range ifv.NumField() {
 				name, ok := ift.Field(i).Tag.Lookup("mapstructure")
 				if ok && name == k {
 					found = true
@@ -216,7 +215,7 @@ func GetValueHierarchicalStruct(m interface{}, key string) (reflect.Value, error
 	return ifv, nil
 }
 
-func FuzzyDecode(to interface{}, val string) bool {
+func FuzzyDecode(to any, val string) bool {
 	v := reflect.Indirect(reflect.ValueOf(to))
 	switch v.Kind() {
 	case reflect.Int:
@@ -356,7 +355,7 @@ func EnsureFileInSubDir(filePath string, dir string) (err error) {
 	return nil
 }
 
-func MapKeys(m interface{}) (keys []string, err error) {
+func MapKeys(m any) (keys []string, err error) {
 	v := reflect.ValueOf(m)
 	if v.Kind() != reflect.Map {
 		return nil, fmt.Errorf("MapKeys requires map[string]*")
@@ -373,16 +372,16 @@ func MapKeys(m interface{}) (keys []string, err error) {
 }
 
 func GetTagFromLinkLikePlaintext(link string) (tag string, afterTag string) {
-	iColon := strings.Index(link, ":")
-	if iColon == -1 {
+	before, after, found := strings.Cut(link, ":")
+	if !found {
 		return "", link
 	}
 	// If first colon is like "://" in "scheme://linkbody", no tag is present.
-	if strings.HasPrefix(link[iColon:], "://") {
+	if strings.HasPrefix(after, "//") {
 		return "", link
 	}
 	// Else tag is the part before colon.
-	return link[:iColon], link[iColon+1:]
+	return before, after
 }
 
 func BoolToString(b bool) string {

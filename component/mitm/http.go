@@ -111,8 +111,7 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 					}).WithError(resource.RedactError(err)).Trace("MITM request failed")
 				}
 				status := http.StatusBadGateway
-				var failure *plugin.HTTPError
-				if errors.As(err, &failure) {
+				if failure, ok := errors.AsType[*plugin.HTTPError](err); ok {
 					status = failure.Status
 				}
 				http.Error(w, "MITM upstream processing failed", status)

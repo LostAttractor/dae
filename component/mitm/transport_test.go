@@ -40,8 +40,7 @@ func TestHTTP3UpstreamCloseAfterStreamReset(t *testing.T) {
 	}
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
 	_, err := client.Get("https://example.com/reset")
-	var h3err *http3.Error
-	if !errors.As(err, &h3err) || h3err.ErrorCode != http3.ErrCodeInternalError {
+	if h3err, ok := errors.AsType[*http3.Error](err); !ok || h3err.ErrorCode != http3.ErrCodeInternalError {
 		t.Fatalf("expected a stream reset, got %v", err)
 	}
 	evicted := <-connections

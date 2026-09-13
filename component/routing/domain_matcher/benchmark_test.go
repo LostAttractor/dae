@@ -222,7 +222,7 @@ func BenchmarkAhocorasickSlimtrie(b *testing.B) {
 
 func runBenchmark(b *testing.B, matcher routing.DomainMatcher) {
 	rand.Seed(100)
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		sample := TestSample[rand.Intn(len(TestSample))]
 		choice := rand.Intn(10)
 		switch {

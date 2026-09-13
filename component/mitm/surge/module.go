@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -91,7 +92,7 @@ func (r HeaderRewrite) Apply(header http.Header) error {
 		if r.valuePattern == nil {
 			return fmt.Errorf("header rewrite is not compiled")
 		}
-		values := append([]string(nil), header[field]...)
+		values := slices.Clone(header[field])
 		for i, value := range values {
 			replaced, err := r.valuePattern.Replace(value, r.Replacement, -1, -1)
 			if err != nil {

@@ -44,14 +44,14 @@ func UnpackDnsMessage(payload []byte, msg *dnsmessage.Msg) error {
 	records := int(binary.BigEndian.Uint16(payload[6:8])) +
 		int(binary.BigEndian.Uint16(payload[8:10])) +
 		int(binary.BigEndian.Uint16(payload[10:12]))
-	for i := 0; i < questions; i++ {
+	for range questions {
 		next, err := skipDnsWireName(payload, offset)
 		if err != nil || next+4 > len(payload) {
 			return fmt.Errorf("%w: malformed DNS question", ErrBadDnsResponse)
 		}
 		offset = next + 4
 	}
-	for i := 0; i < records; i++ {
+	for range records {
 		next, err := skipDnsWireName(payload, offset)
 		if err != nil || next+10 > len(payload) {
 			return fmt.Errorf("%w: malformed DNS resource record", ErrBadDnsResponse)

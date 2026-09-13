@@ -9,12 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -65,10 +65,7 @@ func (m *Merger) Merge() (sections []*config_parser.Section, entries []string, e
 	if err != nil {
 		return nil, nil, err
 	}
-	entries, err = common.MapKeys(m.entryToSectionMap)
-	if err != nil {
-		return nil, nil, err
-	}
+	entries = slices.AppendSeq(make([]string, 0, len(m.entryToSectionMap)), maps.Keys(m.entryToSectionMap))
 	return m.convertMapToSections(m.entryToSectionMap[m.entry]), entries, nil
 }
 
@@ -246,7 +243,7 @@ func globConfigFiles(pattern string, limit int) ([]string, error) {
 	if err := walk(base, 0); err != nil {
 		return nil, err
 	}
-	sort.Strings(matches)
+	slices.Sort(matches)
 	return matches, nil
 }
 

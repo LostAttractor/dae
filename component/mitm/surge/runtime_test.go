@@ -324,9 +324,7 @@ func TestRuntimePersistentStoreConcurrentReload(t *testing.T) {
 	b := testRuntime(t, RuntimeOptions{StorePath: path})
 	var wg sync.WaitGroup
 	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			r := a
 			if i%2 == 0 {
 				r = b
@@ -337,7 +335,7 @@ func TestRuntimePersistentStoreConcurrentReload(t *testing.T) {
 			if err != nil {
 				t.Error(err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	result, err := b.Run(context.Background(), `

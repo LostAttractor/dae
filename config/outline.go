@@ -6,8 +6,9 @@
 package config
 
 import (
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 
 	jsoniter "github.com/json-iterator/go"
 )
@@ -31,18 +32,14 @@ type OutlineElem struct {
 
 func ExportOutline(version string) *Outline {
 	// Get structure.
-	t := reflect.TypeOf(Config{})
+	t := reflect.TypeFor[Config]()
 	exporter := outlineExporter{
 		leaves:       make(map[string]reflect.Type),
 		pkgPathScope: t.PkgPath(),
 	}
 	structure := exporter.exportStruct(t, SectionSummaryDesc, false)
 	// Get string type leaves.
-	var leaves []string
-	for k := range exporter.leaves {
-		leaves = append(leaves, k)
-	}
-	sort.Strings(leaves)
+	leaves := slices.Sorted(maps.Keys(exporter.leaves))
 
 	return &Outline{
 		Version:   version,
@@ -65,8 +62,7 @@ type outlineExporter struct {
 }
 
 func (e *outlineExporter) exportStruct(t reflect.Type, descSource Desc, inheritSource bool) (outlines []*OutlineElem) {
-	for i := 0; i < t.NumField(); i++ {
-		section := t.Field(i)
+	for section := range t.Fields() {
 		if section.Tag.Get("outline") == "-" {
 			continue
 		}

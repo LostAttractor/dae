@@ -1,7 +1,8 @@
 package outbound
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -21,11 +22,8 @@ type latencyBasedSelector struct {
 
 func (s *latencyBasedSelector) sortedCandidates(networkType *common.NetworkType) []selectorCandidate {
 	candidates := s.dialerGroup.candidates(networkType)
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].priority != candidates[j].priority {
-			return candidates[i].priority > candidates[j].priority
-		}
-		return candidates[i].sortingLatency < candidates[j].sortingLatency
+	slices.SortStableFunc(candidates, func(a, b selectorCandidate) int {
+		return cmp.Or(cmp.Compare(b.priority, a.priority), cmp.Compare(a.sortingLatency, b.sortingLatency))
 	})
 	return candidates
 }
@@ -81,7 +79,7 @@ func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed
 
 // The group's mutex protects all selection state and policy generations.
 func (s *latencyBasedSelector) refresh(changed *dialer.Dialer, force dialer.SelectionForceMask) {
-	for i := common.NetworkIndex(0); i < common.NetworkTypeCount; i++ {
+	for i := range common.NetworkIndex(common.NetworkTypeCount) {
 		s.refreshNetwork(i, changed, force.Contains(i))
 		network := i.NetworkType()
 		if selected := s.selected[i]; selected != nil && selected.Usable(network) {

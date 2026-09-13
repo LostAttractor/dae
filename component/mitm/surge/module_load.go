@@ -254,7 +254,7 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 		if err != nil {
 			return nil, fmt.Errorf("load Host %s: %w", host.SetKind, err)
 		}
-		for _, line := range strings.Split(contents, "\n") {
+		for line := range strings.SplitSeq(contents, "\n") {
 			line = strings.TrimSpace(trimModuleRuleComment(line))
 			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 				continue
@@ -262,8 +262,8 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 			var fields []string
 			if host.SetKind == "DOMAIN-SET" {
 				kind := "DOMAIN"
-				if strings.HasPrefix(line, ".") {
-					kind, line = "DOMAIN-SUFFIX", strings.TrimPrefix(line, ".")
+				if after, ok := strings.CutPrefix(line, "."); ok {
+					kind, line = "DOMAIN-SUFFIX", after
 				}
 				fields = []string{kind, line}
 			} else {
@@ -313,7 +313,7 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 // marker first so that an HTTP 200 plain-text error cannot replace its cache.
 // Metadata-only modules can intentionally disable all of their directives.
 func hasModuleSyntax(contents string) bool {
-	for _, line := range strings.Split(strings.TrimPrefix(contents, "\ufeff"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimPrefix(contents, "\ufeff"), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#!") && strings.Contains(line, "=") || strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			return true

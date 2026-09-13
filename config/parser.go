@@ -19,7 +19,7 @@ func StringListParser(to reflect.Value, section *config_parser.Section) error {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
 	}
 	to = to.Elem()
-	if to.Type() != reflect.TypeOf([]string{}) &&
+	if to.Type() != reflect.TypeFor[[]string]() &&
 		!(to.Kind() == reflect.Slice && to.Type().Elem().Kind() == reflect.String) {
 		return fmt.Errorf("StringListParser can only unmarshal section to *[]string")
 	}
@@ -104,7 +104,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			}
 			if itemVal.AndFunctions != nil {
 				// AndFunctions.
-				// If field is interface{} or types equal, we can assign.
+				// If field is any or types equal, we can assign.
 				if field.Val.Kind() == reflect.Interface ||
 					field.Val.Type() == reflect.TypeOf(itemVal.AndFunctions) {
 					field.Val.Set(reflect.ValueOf(itemVal.AndFunctions))
@@ -118,14 +118,14 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 				// String value.
 				switch field.Val.Kind() {
 				case reflect.Interface:
-					// Field is interface{}, we can assign.
+					// Field is any, we can assign.
 					if itemVal.Key == "fallback" && itemVal.Quoted {
 						field.Val.Set(reflect.ValueOf(QuotedString(itemVal.Val)))
 					} else {
 						field.Val.Set(reflect.ValueOf(itemVal.Val))
 					}
 				case reflect.Slice:
-					// Field is not interface{}, we can decode.
+					// Field is not any, we can decode.
 					values := strings.Split(itemVal.Val, ",")
 					if len(values) > 0 && !field.Set {
 						// Clear default value to avoid appending values to it.
@@ -139,14 +139,14 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 						field.Val.Set(reflect.Append(field.Val, vPointerNew.Elem()))
 					}
 				default:
-					// Field is not interface{}, we can decode.
+					// Field is not any, we can decode.
 					if !common.FuzzyDecode(field.Val.Addr().Interface(), itemVal.Val) {
 						return fmt.Errorf("failed to parse \"%v\": value \"%v\" cannot be convert to %v", itemVal.Key, itemVal.Val, field.Val.Type().String())
 					}
 				}
 			}
 			field.Set = true
-			if present := to.FieldByName("Present"); present.IsValid() && present.CanSet() && present.Type() == reflect.TypeOf(map[string]bool{}) {
+			if present := to.FieldByName("Present"); present.IsValid() && present.CanSet() && present.Type() == reflect.TypeFor[map[string]bool]() {
 				if present.IsNil() {
 					present.Set(reflect.MakeMap(present.Type()))
 				}
@@ -165,7 +165,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 		case *config_parser.RoutingRule:
 			// Assign. "to" should have field "Rules".
 			structField, ok := to.Type().FieldByName("Rules")
-			if !ok || structField.Type != reflect.TypeOf([]*config_parser.RoutingRule{}) {
+			if !ok || structField.Type != reflect.TypeFor[[]*config_parser.RoutingRule]() {
 				return fmt.Errorf("cannot use routing rule in this context: %v", itemVal.String(true, false, false))
 			}
 			if structField.Tag.Get("mapstructure") != "_" {
@@ -175,7 +175,7 @@ func ParamParser(to reflect.Value, section *config_parser.Section, ignoreType []
 			field.Set(reflect.Append(field, reflect.ValueOf(itemVal)))
 		case *config_parser.ProxyPath:
 			field, ok := keyToField["path"]
-			if !ok || field.Val.Type() != reflect.TypeOf([]*config_parser.ProxyPath{}) {
+			if !ok || field.Val.Type() != reflect.TypeFor[[]*config_parser.ProxyPath]() {
 				return fmt.Errorf("cannot use proxy path in this context: %v", itemVal.String(true, false))
 			}
 			field.Val.Set(reflect.Append(field.Val, reflect.ValueOf(itemVal)))

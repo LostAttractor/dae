@@ -313,7 +313,7 @@ func compactNodeStatusRow(status api.NodeStatus, index int, selected api.Network
 
 func uncheckedNetworkRows(group api.GroupStatus) []table.Row {
 	rows := make([]table.Row, api.NetworkTypeCount)
-	for index := api.NetworkIndex(0); index < api.NetworkTypeCount; index++ {
+	for index := range api.NetworkIndex(api.NetworkTypeCount) {
 		rows[index] = table.Row{index.String(), formatConnCounts(group.Networks[index])}
 	}
 	return rows
@@ -321,7 +321,7 @@ func uncheckedNetworkRows(group api.GroupStatus) []table.Row {
 
 func checkedNetworkRows(group api.GroupStatus, verbose bool) []table.Row {
 	rows := make([]table.Row, 0, api.NetworkTypeCount)
-	for index := api.NetworkIndex(0); index < api.NetworkTypeCount; index++ {
+	for index := range api.NetworkIndex(api.NetworkTypeCount) {
 		support := groupNetworkSupport(group.Nodes, index)
 		if !verbose && support != api.NetworkSupportConfirmed {
 			continue
@@ -470,7 +470,7 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Status:      %s\n", statusSummary(snapshot))
 	perNet := make([]string, api.NetworkTypeCount)
-	for index := api.NetworkIndex(0); index < api.NetworkTypeCount; index++ {
+	for index := range api.NetworkIndex(api.NetworkTypeCount) {
 		perNet[index] = fmt.Sprintf("%s %d", index.String(), snapshot.Networks[index].ActiveConnections)
 	}
 	fmt.Fprintf(out,

@@ -12,12 +12,11 @@ import (
 	"cmp"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/exp/slices"
 )
 
 type Symbol struct {
@@ -56,8 +55,8 @@ func ReadKallsyms() error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read kernel symbols: %w", err)
 	}
-	sort.Slice(kallsyms, func(i, j int) bool {
-		return kallsyms[i].Addr < kallsyms[j].Addr
+	slices.SortFunc(kallsyms, func(a, b Symbol) int {
+		return cmp.Compare(a.Addr, b.Addr)
 	})
 	readKprobeSymbols()
 	return nil

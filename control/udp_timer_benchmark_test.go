@@ -17,8 +17,7 @@ func BenchmarkUDPIdleRefresh(b *testing.B) {
 		p.refreshTimer(key, e, time.Now())
 		defer e.deadlineTimer.Stop()
 		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			p.refreshTimer(key, e, time.Now())
 		}
 	})
@@ -26,8 +25,7 @@ func BenchmarkUDPIdleRefresh(b *testing.B) {
 		a := &Anyfrom{idleTTL: time.Hour, idleEvictTimer: time.AfterFunc(time.Hour, func() {})}
 		defer a.idleEvictTimer.Stop()
 		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			a.refreshIdleDeadline()
 		}
 	})

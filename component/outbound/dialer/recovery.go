@@ -130,8 +130,11 @@ func (d *Dialer) observeResourceFailureLocked(event netproxy.StateEvent, failed 
 }
 
 func failureTimeout(failure netproxy.Failure) bool {
-	var timeout net.Error
-	return failure.Reason == netproxy.ReasonDeadline || errors.As(failure.Cause, &timeout) && timeout.Timeout()
+	if failure.Reason == netproxy.ReasonDeadline {
+		return true
+	}
+	timeout, ok := errors.AsType[net.Error](failure.Cause)
+	return ok && timeout.Timeout()
 }
 
 func failureSnapshot(failure netproxy.Failure, episode uint64) *FailureSnapshot {

@@ -104,8 +104,7 @@ func (p *udpTaskPool[K]) emit(key K, data []byte, prepare func([]byte) udpTask) 
 	// Workers wait on one shared condition; idle sources retain no workers.
 	if p.workers < min(p.maxWorkers, len(p.queues)) {
 		p.workers++
-		p.workersDone.Add(1)
-		go p.run()
+		p.workersDone.Go(p.run)
 	}
 	p.ready.Signal()
 	p.mu.Unlock()
@@ -123,7 +122,6 @@ func (p *udpTaskPool[K]) enqueue(q *udpTaskQueue[K]) {
 }
 
 func (p *udpTaskPool[K]) run() {
-	defer p.workersDone.Done()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for {

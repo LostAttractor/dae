@@ -404,7 +404,7 @@ func responseFromResult(request *http.Request, result *Result) (*http.Response, 
 }
 
 func removeHopHeaders(header http.Header) {
-	for _, name := range strings.Split(header.Get("Connection"), ",") {
+	for name := range strings.SplitSeq(header.Get("Connection"), ",") {
 		header.Del(strings.TrimSpace(name))
 	}
 	for _, name := range []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade", "Alt-Svc"} {

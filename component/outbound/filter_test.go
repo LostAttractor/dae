@@ -430,8 +430,7 @@ func TestPathBuildErrorRetainsNodeRequirement(t *testing.T) {
 		Dialers:  []D.Builder{new(failingBuilder)},
 	}
 	_, err := new(DialerSet).BuildPath(NodePath(node), &dialer.GlobalOption{}, t.Name())
-	var buildErr *PathBuildError
-	if !errors.As(err, &buildErr) || buildErr.Node != node || buildErr.Node.Required {
+	if buildErr, ok := errors.AsType[*PathBuildError](err); !ok || buildErr.Node != node || buildErr.Node.Required {
 		t.Fatalf("path build error = %#v, want optional node", err)
 	}
 }
@@ -441,8 +440,6 @@ const testShadowsocksLink = "ss://YWVzLTEyOC1nY206cGFzcw@proxy.example.com:443"
 func descriptorFilter(name string, params ...*config_parser.Param) []*config_parser.Function {
 	return []*config_parser.Function{{Name: name, Params: params}}
 }
-
-func nodeOptionUint16(value uint16) *uint16 { return &value }
 
 func TestNewDialerSetAppliesSubscriptionOptionsInOrder(t *testing.T) {
 	nodes := []NodeDescriptor{{
@@ -569,11 +566,11 @@ func TestNodeIdentityIncludesMultiplexConnections(t *testing.T) {
 	set, err := NewDialerSet([]NodeDescriptor{
 		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{
 			Multiplex:               config.MultiplexModeSmux,
-			MultiplexMaxConnections: nodeOptionUint16(4),
+			MultiplexMaxConnections: new(uint16(4)),
 		}},
 		{Link: testShadowsocksLink + "#HK", Options: config.NodeOptions{
 			Multiplex:               config.MultiplexModeSmux,
-			MultiplexMaxConnections: nodeOptionUint16(10),
+			MultiplexMaxConnections: new(uint16(10)),
 		}},
 	})
 	if err != nil {
@@ -596,7 +593,7 @@ func TestMultiplexConnectionsRequireSmux(t *testing.T) {
 		Link: testShadowsocksLink,
 		Options: config.NodeOptions{
 			Multiplex:               config.MultiplexModeOff,
-			MultiplexMaxConnections: nodeOptionUint16(4),
+			MultiplexMaxConnections: new(uint16(4)),
 		},
 	}})
 	if err == nil || !strings.Contains(err.Error(), "multiplex_max_connections requires") {
@@ -610,7 +607,7 @@ func TestMultiplexConnectionsRejectInvalidProgrammaticValues(t *testing.T) {
 			Link: testShadowsocksLink,
 			Options: config.NodeOptions{
 				Multiplex:               config.MultiplexModeSmux,
-				MultiplexMaxConnections: nodeOptionUint16(connections),
+				MultiplexMaxConnections: new(connections),
 			},
 		}})
 		if err == nil || !strings.Contains(err.Error(), "multiplex_max_connections must be between") {

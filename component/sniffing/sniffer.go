@@ -177,8 +177,7 @@ func (s *Sniffer) readConnOnce(conn net.Conn) error {
 		s.buf.Write(buf[:n])
 	}
 	if err != nil {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
+		if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 			if n > 0 {
 				return nil
 			}

@@ -228,9 +228,7 @@ func TestHTTP2RequestTargetsRemainIndependent(t *testing.T) {
 	client.Transport.(*http.Transport).MaxConnsPerHost = 1
 	var wg sync.WaitGroup
 	for i := range 18 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			path, status := []string{"proxy", "direct", "blocked"}[i%3], http.StatusOK
 			if path == "blocked" {
 				status = http.StatusBadGateway
@@ -251,7 +249,7 @@ func TestHTTP2RequestTargetsRemainIndependent(t *testing.T) {
 			if err != nil || response.StatusCode != status || (status == http.StatusOK && string(body) != "ok") {
 				t.Errorf("%s: status=%d body=%q err=%v", path, response.StatusCode, body, err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if *param.routingResult != before {

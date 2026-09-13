@@ -5,6 +5,7 @@ package client
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
@@ -35,7 +36,7 @@ type Client struct {
 	http  *http.Client
 }
 
-// Error is a non-success API response. StatusCode can be used with errors.As
+// Error is a non-success API response. StatusCode can be used with errors.AsType
 // to distinguish authentication failures, conflicts, and reloads (503).
 type Error struct {
 	StatusCode int
@@ -45,10 +46,7 @@ type Error struct {
 func (e *Error) Error() string { return fmt.Sprintf("dae API: HTTP %d: %s", e.StatusCode, e.Message) }
 
 func New(options Options) (*Client, error) {
-	endpoint := options.Endpoint
-	if endpoint == "" {
-		endpoint = DefaultEndpoint
-	}
+	endpoint := cmp.Or(options.Endpoint, DefaultEndpoint)
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("API endpoint: %w", err)
@@ -76,10 +74,7 @@ func New(options Options) (*Client, error) {
 	default:
 		return nil, fmt.Errorf("API endpoint requires unix, http, or https scheme")
 	}
-	timeout := options.Timeout
-	if timeout == 0 {
-		timeout = 10 * time.Second
-	}
+	timeout := cmp.Or(options.Timeout, 10*time.Second)
 	if timeout < 0 {
 		return nil, fmt.Errorf("API timeout must be positive")
 	}
@@ -93,7 +88,7 @@ func New(options Options) (*Client, error) {
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 
 // request is the single HTTP/JSON path for all operations. It never retries writes.
-func request[T any](c *Client, ctx context.Context, method, path string, body any, fingerprint string) (*T, error) {
+func (c *Client) request[T any](ctx context.Context, method, path string, body any, fingerprint string) (*T, error) {
 	var payload []byte
 	var err error
 	if body != nil {
@@ -160,7 +155,7 @@ func request[T any](c *Client, ctx context.Context, method, path string, body an
 }
 
 func (c *Client) Status(ctx context.Context) (*api.StatusSnapshot, error) {
-	snapshot, err := request[api.StatusSnapshot](c, ctx, "GET", "/api/status", nil, "")
+	snapshot, err := c.request[api.StatusSnapshot](ctx, "GET", "/api/status", nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -185,19 +180,19 @@ func (c *Client) Status(ctx context.Context) (*api.StatusSnapshot, error) {
 }
 
 func (c *Client) Selectors(ctx context.Context) (*api.SelectorsResponse, error) {
-	return request[api.SelectorsResponse](c, ctx, "GET", "/api/selectors", nil, "")
+	return c.request[api.SelectorsResponse](ctx, "GET", "/api/selectors", nil, "")
 }
 
 func (c *Client) SelectNode(ctx context.Context, group, nodeID string) (*api.SelectorState, error) {
-	return request[api.SelectorState](c, ctx, "PUT", "/api/selectors/"+url.PathEscape(group), api.SelectNodeRequest{NodeID: nodeID}, "")
+	return c.request[api.SelectorState](ctx, "PUT", "/api/selectors/"+url.PathEscape(group), api.SelectNodeRequest{NodeID: nodeID}, "")
 }
 
 func (c *Client) ResetSelector(ctx context.Context, group string) (*api.SelectorState, error) {
-	return request[api.SelectorState](c, ctx, "DELETE", "/api/selectors/"+url.PathEscape(group), nil, "")
+	return c.request[api.SelectorState](ctx, "DELETE", "/api/selectors/"+url.PathEscape(group), nil, "")
 }
 
 func (c *Client) Device(ctx context.Context) (*api.DeviceState, error) {
-	return request[api.DeviceState](c, ctx, "GET", "/api/device", nil, "")
+	return c.request[api.DeviceState](ctx, "GET", "/api/device", nil, "")
 }
 
 func (c *Client) SetMembership(ctx context.Context, name string, joined bool) (*api.DeviceState, error) {
@@ -205,19 +200,19 @@ func (c *Client) SetMembership(ctx context.Context, name string, joined bool) (*
 	if joined {
 		method = "PUT"
 	}
-	return request[api.DeviceState](c, ctx, method, "/api/device/sets/"+url.PathEscape(name), nil, "")
+	return c.request[api.DeviceState](ctx, method, "/api/device/sets/"+url.PathEscape(name), nil, "")
 }
 
 // SetMITM explicitly enables or disables HTTPS modules for the calling device.
 // Fingerprint must identify the CA certificate the user has verified.
 func (c *Client) SetMITM(ctx context.Context, enabled bool, fingerprint string) (*api.DeviceState, error) {
-	return request[api.DeviceState](c, ctx, "PUT", "/api/device/mitm", api.SetMITMRequest{Enabled: &enabled}, fingerprint)
+	return c.request[api.DeviceState](ctx, "PUT", "/api/device/mitm", api.SetMITMRequest{Enabled: &enabled}, fingerprint)
 }
 
 func (c *Client) ResetMITM(ctx context.Context, fingerprint string) (*api.DeviceState, error) {
-	return request[api.DeviceState](c, ctx, "DELETE", "/api/device/mitm", nil, fingerprint)
+	return c.request[api.DeviceState](ctx, "DELETE", "/api/device/mitm", nil, fingerprint)
 }
 
 func (c *Client) Certificate(ctx context.Context) (*api.Certificate, error) {
-	return request[api.Certificate](c, ctx, "GET", "/api/certificate", nil, "")
+	return c.request[api.Certificate](ctx, "GET", "/api/certificate", nil, "")
 }

@@ -6,12 +6,12 @@
 package network
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -580,7 +580,7 @@ func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {
 			}
 			fingerprints = append(fingerprints, routeFingerprint(route))
 		}
-		sort.Strings(fingerprints)
+		slices.Sort(fingerprints)
 		return strings.Join(fingerprints, "|")
 	}
 
@@ -612,8 +612,8 @@ func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {
 		}
 		snapshot.Interfaces = append(snapshot.Interfaces, intf)
 	}
-	sort.Slice(snapshot.Interfaces, func(i, j int) bool {
-		return snapshot.Interfaces[i].Index < snapshot.Interfaces[j].Index
+	slices.SortFunc(snapshot.Interfaces, func(a, b DefaultRouteInterface) int {
+		return cmp.Compare(a.Index, b.Index)
 	})
 	return snapshot
 }
@@ -636,7 +636,7 @@ func unsuppressedDefaultRouteLinkIndices(indices []int, rules []netlink.Rule, li
 			}
 		}
 	}
-	sort.Ints(reachable)
+	slices.Sort(reachable)
 	return reachable
 }
 
@@ -664,7 +664,7 @@ func rulesFingerprint(rules []netlink.Rule) string {
 			rule.SuppressPrefixlen, rule.Invert, portRange(rule.Dport), portRange(rule.Sport),
 			rule.IPProto, uidRange, rule.Protocol, rule.Type))
 	}
-	sort.Strings(fingerprints)
+	slices.Sort(fingerprints)
 	return strings.Join(fingerprints, "|")
 }
 
@@ -692,7 +692,7 @@ func routeLinkIndices(route netlink.Route) []int {
 			indices = append(indices, nextHop.LinkIndex)
 		}
 	}
-	sort.Ints(indices)
+	slices.Sort(indices)
 	return indices
 }
 
@@ -702,7 +702,7 @@ func routeFingerprint(route netlink.Route) string {
 	for _, nextHop := range route.MultiPath {
 		parts = append(parts, "nexthop="+nextHop.String())
 	}
-	sort.Strings(parts[1:])
+	slices.Sort(parts[1:])
 	return strings.Join(parts, ";")
 }
 
@@ -735,7 +735,7 @@ func usableAddress(addrs []netlink.Addr, ipv4 bool) string {
 		}
 		usable = append(usable, addr.IP.String())
 	}
-	sort.Strings(usable)
+	slices.Sort(usable)
 	if len(usable) == 0 {
 		return ""
 	}

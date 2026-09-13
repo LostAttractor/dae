@@ -88,7 +88,7 @@ func (r BodyRewrite) Apply(ctx context.Context, body []byte, limit int64, budget
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return nil, fmt.Errorf("Body Rewrite requires one JSON document")
 	}
-	writer := &bodyRewriteWriter{ctx: ctx, Buffer: membuffer.Buffer{Limit: limit, Budget: budget}}
+	writer := &bodyRewriteWriter{ctx: ctx, Limit: limit, Budget: budget}
 	defer writer.Close()
 	iterator := r.code.RunWithContext(ctx, input)
 	for {

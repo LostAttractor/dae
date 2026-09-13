@@ -128,7 +128,7 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 	for _, node := range group.Dialers {
 		status.Nodes = append(status.Nodes, newNodeStatus(paths, group, node))
 	}
-	for index := common.NetworkIndex(0); index < common.NetworkTypeCount; index++ {
+	for index := range common.NetworkIndex(common.NetworkTypeCount) {
 		if selected := group.SelectedDialer(index.NetworkType()); selected != nil {
 			status.SelectedNodeIDs[index] = selected.StatsID()
 		}

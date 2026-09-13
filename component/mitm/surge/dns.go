@@ -157,8 +157,7 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSRequest, servers
 			}
 			ips, err := net.DefaultResolver.LookupNetIP(ctx, network, q.Name)
 			if err != nil {
-				var dnsErr *net.DNSError
-				if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+				if dnsErr, ok := errors.AsType[*net.DNSError](err); ok && dnsErr.IsNotFound {
 					// LookupNetIP collapses NXDOMAIN and NODATA. Retrieve the
 					// protocol response to preserve its rcode and authority.
 					return resolveSystemDNS(ctx, request)

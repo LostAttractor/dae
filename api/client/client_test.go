@@ -94,8 +94,7 @@ func TestErrorsCancellationAndRedirects(t *testing.T) {
 			}
 			defer c.Close()
 			_, err = c.Status(context.Background())
-			var apiErr *Error
-			if !errors.As(err, &apiErr) || apiErr.StatusCode != code || apiErr.Message != "try again" {
+			if apiErr, ok := errors.AsType[*Error](err); !ok || apiErr.StatusCode != code || apiErr.Message != "try again" {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -154,8 +153,7 @@ func TestOversizedErrorKeepsHTTPStatus(t *testing.T) {
 	}
 	defer c.Close()
 	result, err := c.Status(context.Background())
-	var apiErr *Error
-	if result != nil || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusServiceUnavailable {
+	if apiErr, ok := errors.AsType[*Error](err); result != nil || !ok || apiErr.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("oversized error lost HTTP status: %v", err)
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"math/bits"
 	"net/netip"
 	"slices"
-	"sort"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/bitlist"
@@ -113,7 +112,7 @@ func Prefix2bin128(prefix netip.Prefix) (bin128 string) {
 	buf := pool.GetBytesBuffer()
 	defer pool.PutBytesBuffer(buf)
 loop:
-	for i := 0; i < len(ip); i++ {
+	for i := range len(ip) {
 		for j := 7; j >= 0; j-- {
 			if (ip[i]>>j)&1 == 1 {
 				_ = buf.WriteByte('1')
@@ -145,7 +144,7 @@ func NewTrie(keys []string, chars *ValidChars) (*Trie, error) {
 	}
 	// Check chars.
 	keys = common.Deduplicate(keys)
-	sort.Strings(keys)
+	slices.Sort(keys)
 	for _, key := range keys {
 		for _, c := range []byte(key) {
 			if !chars.IsValidChar(c) {

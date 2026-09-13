@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +35,7 @@ var (
 )
 
 func dumpNetworkInfo() {
-	tempDir, err := ioutil.TempDir("", "sysdump")
+	tempDir, err := os.MkdirTemp("", "sysdump")
 	if err != nil {
 		fmt.Printf("Failed to create temp directory: %v\n", err)
 		return
@@ -246,7 +245,7 @@ func dumpRouting(outputDir string) {
 
 		buffer.WriteString(routeStr + "\n")
 	}
-	err = ioutil.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644)
+	err = os.WriteFile(filepath.Join(outputDir, "routing.txt"), buffer.Bytes(), 0644)
 	if err != nil {
 		fmt.Printf("Failed to write routing information to file: %v\n", err)
 	}
@@ -269,7 +268,7 @@ func dumpNetInterfaces(outputDir string) {
 		}
 	}
 
-	ioutil.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
+	os.WriteFile(filepath.Join(outputDir, "interfaces.txt"), buffer.Bytes(), 0644)
 }
 
 func dumpSysctl(outputDir string) {
@@ -282,7 +281,7 @@ func dumpSysctl(outputDir string) {
 		}
 
 		if !info.IsDir() {
-			value, err := ioutil.ReadFile(path)
+			value, err := os.ReadFile(path)
 			if err != nil {
 				fmt.Printf("Fail in filepath.Walk: %v\n", err)
 			}
@@ -297,7 +296,7 @@ func dumpSysctl(outputDir string) {
 		fmt.Printf("Failed to get sysctl settings: %v\n", err)
 	}
 
-	ioutil.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
+	os.WriteFile(filepath.Join(outputDir, "sysctl.txt"), buffer.Bytes(), 0644)
 }
 
 func dumpNetfilter(outputDir string) {
@@ -308,7 +307,7 @@ func dumpNetfilter(outputDir string) {
 		return
 	}
 
-	ioutil.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
+	os.WriteFile(filepath.Join(outputDir, "nftables.txt"), output, 0644)
 }
 
 func dumpIPTables(outputDir string) {
@@ -317,7 +316,7 @@ func dumpIPTables(outputDir string) {
 	if err != nil {
 		fmt.Printf("Failed to get iptables: %v\n", err)
 	} else {
-		ioutil.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
+		os.WriteFile(filepath.Join(outputDir, "iptables.txt"), output, 0644)
 	}
 
 	ip6tables := exec.Command("ip6tables-save", "-c")
@@ -325,7 +324,7 @@ func dumpIPTables(outputDir string) {
 	if err != nil {
 		fmt.Printf("Failed to get ip6tables: %v\n", err)
 	} else {
-		ioutil.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
+		os.WriteFile(filepath.Join(outputDir, "ip6tables.txt"), output, 0644)
 	}
 }
 

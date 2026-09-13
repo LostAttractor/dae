@@ -404,15 +404,14 @@ func linkSnapshotDisappeared(link netlink.Link, cause error, linkByName func(str
 	if errors.As(cause, &joined) && !onlyLinkDisappearanceErrors(cause) {
 		return false
 	}
-	var notFound netlink.LinkNotFoundError
-	if errors.As(cause, &notFound) {
+	if _, ok := errors.AsType[netlink.LinkNotFoundError](cause); ok {
 		return true
 	}
 	if !errors.Is(cause, unix.ENOENT) {
 		return false
 	}
 	current, err := linkByName(link.Attrs().Name)
-	if errors.As(err, &notFound) || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENODEV) {
+	if _, ok := errors.AsType[netlink.LinkNotFoundError](err); ok || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENODEV) {
 		return true
 	}
 	return err == nil && current != nil && current.Attrs() != nil &&
@@ -429,8 +428,8 @@ func onlyLinkDisappearanceErrors(err error) bool {
 		}
 		return true
 	}
-	var notFound netlink.LinkNotFoundError
-	return errors.As(err, &notFound) || errors.Is(err, unix.ENOENT) ||
+	_, notFound := errors.AsType[netlink.LinkNotFoundError](err)
+	return notFound || errors.Is(err, unix.ENOENT) ||
 		errors.Is(err, unix.ENODEV)
 }
 

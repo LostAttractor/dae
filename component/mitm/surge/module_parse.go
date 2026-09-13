@@ -307,7 +307,7 @@ func parseMITM(line string, m *Module) error {
 	appendHosts, insertHosts := strings.HasPrefix(value, "%APPEND%"), strings.HasPrefix(value, "%INSERT%")
 	value = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(value, "%APPEND%"), "%INSERT%"))
 	var hosts []string
-	for _, host := range strings.Split(value, ",") {
+	for host := range strings.SplitSeq(value, ",") {
 		host = strings.TrimSpace(host)
 		if host == "" {
 			continue

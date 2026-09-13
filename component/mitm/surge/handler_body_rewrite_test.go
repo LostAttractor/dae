@@ -215,15 +215,13 @@ func TestBodyRewriteCompiledFilterConcurrentUse(t *testing.T) {
 	rule := testBodyRewrite(t, ".value += 1")
 	var wg sync.WaitGroup
 	for i := range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			body, err := rule.Apply(context.Background(), []byte(fmt.Sprintf(`{"value":%d}`, i)), 64, plugin.BodyMemory)
 			defer body.Close()
 			if err != nil || string(body.Bytes()) != fmt.Sprintf(`{"value":%d}`, i+1) {
 				t.Errorf("shared compiled jq result: %v %v", body, err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }

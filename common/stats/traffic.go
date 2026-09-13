@@ -286,7 +286,7 @@ func (s *Store) pathHistoryLocked(path Path) api.TrafficHistory {
 		DownloadBytesPerSecond: make([]uint64, count),
 	}
 	start := int((s.completedSamples - uint64(count)) % api.TrafficHistorySampleCount)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		rate := s.history[(start+i)%api.TrafficHistorySampleCount][path]
 		history.UploadBytesPerSecond[i] = rate.UploadBytesPerSecond
 		history.DownloadBytesPerSecond[i] = rate.DownloadBytesPerSecond
@@ -309,10 +309,8 @@ func (s *Store) snapshot(includeHistory bool) map[Path]api.PathStats {
 			ActiveConnections:   active,
 			TotalConnections:    total,
 			FallbackConnections: fallback,
-			TrafficCounters: api.TrafficCounters{
-				UploadBytes:   counters.upload.Load(),
-				DownloadBytes: counters.download.Load(),
-			},
+			UploadBytes:         counters.upload.Load(),
+			DownloadBytes:       counters.download.Load(),
 		}
 		if includeHistory {
 			pathStats.History = s.pathHistoryLocked(path)
