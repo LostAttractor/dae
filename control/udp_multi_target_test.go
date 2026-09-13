@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -47,12 +48,14 @@ func TestUDPMultipleDestinationsKeepSourceLifetime(t *testing.T) {
 			ue := &UdpEndpoint{conn: pc, dialer: d, NatTimeout: time.Minute, traffic: stats.DefaultStore.OpenConnection(stats.Path{}, false)}
 			p.add(src, ue)
 			c := &ControlPlane{udpEndpoints: p}
-			if err := c.writeUDP(context.Background(), ue, src, first, []byte("first")); err != nil {
+			ctx, cancel := context.WithTimeout(t.Context(), consts.DefaultDialTimeout)
+			defer cancel()
+			if err := c.writeUDP(ctx, ue, src, first, []byte("first")); err != nil {
 				t.Fatal(err)
 			}
 			// A retained association keeps its selected runtime after configuration retirement.
 			_ = d.Close()
-			err = c.writeUDP(context.Background(), ue, src, second, []byte("second"))
+			err = c.writeUDP(ctx, ue, src, second, []byte("second"))
 			_, exists := p.pool.Load(src)
 			if err != nil || !exists {
 				t.Fatalf("second destination ended a healthy source lifetime: err=%v endpoint_present=%v", err, exists)

@@ -12,8 +12,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/stretchr/testify/require"
 )
@@ -362,4 +364,40 @@ func TestUDPQueuedCancellationReleasesBuffer(t *testing.T) {
 	// A canceled queued packet must release storage without touching routing
 	// state (the plane intentionally has no core or endpoints).
 	require.Zero(t, p.memory.Status().Used)
+}
+
+func TestUDPQueuedWriteUsesRemainingDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := newUdpTaskPool[netip.AddrPort]()
+		defer p.close()
+		endpoints := new(UdpEndpointPool)
+		defer endpoints.closeAll()
+		conn := newDeadlineInterruptPacketConn()
+		defer close(conn.releaseClose)
+		source := testUdpKey(12347)
+		destination := netip.MustParseAddrPort("192.0.2.1:443")
+		endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: conn, NatTimeout: time.Hour})
+		endpoints.add(source, endpoint)
+		plane := &ControlPlane{ctx: t.Context(), udpTaskPool: p, udpEndpoints: endpoints}
+
+		// Hold this source's queue until only one second of the packet's
+		// original timeout remains, then let its write block on the socket.
+		unblock := make(chan struct{})
+		require.True(t, emitUDPTask(p, source, func() { <-unblock }))
+		queuedAt := time.Now()
+		plane.enqueueUDPPacket([]byte("packet"), source, destination, nil)
+		time.Sleep(consts.DefaultDialTimeout - time.Second)
+		close(unblock)
+		<-conn.writeStarted
+		<-conn.interrupted
+		require.Equal(t, consts.DefaultDialTimeout, time.Since(queuedAt))
+		p.close()
+		require.Zero(t, p.memory.Status().Used)
+		require.False(t, endpoint.IsClosed(), "packet timeout retired a deadline-capable socket")
+		select {
+		case <-conn.closeStarted:
+			t.Fatal("packet timeout closed a deadline-capable socket")
+		default:
+		}
+	})
 }

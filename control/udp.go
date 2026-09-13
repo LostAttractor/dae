@@ -391,12 +391,11 @@ func (c *ControlPlane) writeUDP(ctx context.Context, ue *UdpEndpoint, src, dst n
 		c.udpEndpoints.removeInBackgroundLocked(src, ue)
 		return cause
 	}
-	writeCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
-	defer cancel()
-	conn, err := ue.socket(writeCtx, c.udpEndpoints, src, dst)
+	// The dispatch context already includes the packet's queue time in its deadline.
+	conn, err := ue.socket(ctx, c.udpEndpoints, src, dst)
 	var n int
 	if err == nil {
-		n, err = writePacket(writeCtx, conn, data, net.UDPAddrFromAddrPort(dst))
+		n, err = writePacket(ctx, conn, data, net.UDPAddrFromAddrPort(dst))
 	}
 	if !(ue.mitm && conn == ue.conn) && n > 0 && ue.traffic != nil {
 		ue.traffic.RecordUpload(uint64(n))
