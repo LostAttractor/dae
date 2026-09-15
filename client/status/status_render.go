@@ -32,10 +32,11 @@ func renderStatusTable(header table.Row, rows []table.Row, configs []table.Colum
 		writer.Style().Box.UnfinishedRow = ""
 	}
 	writer.SetColumnConfigs(configs)
+	aligned := clitable.AlignRows(append([]table.Row{header}, rows...))
 	if len(header) > 0 {
-		writer.AppendHeader(header)
+		writer.AppendHeader(aligned[0])
 	}
-	writer.AppendRows(clitable.AlignRows(rows))
+	writer.AppendRows(aligned[1:])
 	return writer.Render()
 }
 
@@ -353,7 +354,7 @@ func nodeTable(group api.GroupStatus, verbose bool, now time.Time) (table.Row, [
 	for index, status := range group.Nodes {
 		rows = append(rows, compactNodeStatusRow(status, index, group.SelectedNodeIDs, showFailure, now))
 	}
-	header := table.Row{"PATH", "PROTO", "STATE", "NETWORKS", "LAT L/A/M(ms)", "UP/24H"}
+	header := table.Row{"PATH", "PROTO", "STATE", "NETWORKS", "LAT L/A/M(ms)", clitable.Parts("UP", "/", "24H")}
 	if showFailure {
 		header = append(header, "FAIL A/D")
 	}

@@ -68,3 +68,51 @@ func TestCompositeUnicodeANSI(t *testing.T) {
 		}
 	}
 }
+
+func TestCompositeHeadersShareFieldWidths(t *testing.T) {
+	rows := []table.Row{
+		{"PATH/NAME", Parts("UP", "/", "24H"), Parts("ACTIVE", " / ", "FB")},
+		{"日本节点", Parts("100.0", "/", "100.0%"), Parts("1", " / ", "2000")},
+		{"node", Parts("99.5", "/", "99.5%"), Parts("1234567", " / ", "0")},
+		{"idle", "-", Parts("0", " / ", "0")},
+	}
+	out := AlignRows(rows)
+	for i, want := range []string{"UP   /24H   ", "100.0/100.0%", "99.5 /99.5% ", "-"} {
+		if got := out[i][1]; got != want {
+			t.Fatalf("availability row %d: got %q, want %q", i, got, want)
+		}
+	}
+	for i, want := range []string{"ACTIVE  / FB  ", "1       / 2000", "1234567 / 0   ", "0       / 0   "} {
+		if got := out[i][2]; got != want {
+			t.Fatalf("counter row %d: got %q, want %q", i, got, want)
+		}
+	}
+	if out[0][0] != "PATH/NAME" || fmt.Sprint(rows[0][1]) != "UP/24H" {
+		t.Fatal("ordinary title or original header was modified")
+	}
+}
+
+func TestCompositeOwnsParts(t *testing.T) {
+	parts := []string{"12", "/", "345"}
+	cell := Parts(parts...)
+	parts[0] = "changed"
+	if cell.String() != "12/345" {
+		t.Fatalf("caller mutation changed stored cell: %q", cell.String())
+	}
+}
+
+func TestCompositeRaggedRows(t *testing.T) {
+	rows := []table.Row{
+		nil,
+		{"short", Parts("L", "/", "R")},
+		{"long", Parts("100", "/", "2"), "plain", Parts("界", "/", "30")},
+		{"other", Parts("4", "/", "500"), "plain", Parts("中文", "/", "1")},
+	}
+	out := AlignRows(rows)
+	if len(out[0]) != 0 || out[1][1] != "L  /R  " || out[2][3] != "界  /30" || out[3][3] != "中文/1 " {
+		t.Fatalf("ragged rows lost alignment: %v", out)
+	}
+	if fmt.Sprint(rows[1][1]) != "L/R" {
+		t.Fatal("input cell was padded")
+	}
+}

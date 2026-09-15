@@ -11,7 +11,8 @@ import (
 // New returns a borderless table with two spaces between columns and no trailing
 // spaces. Text aligns left and numbers align right by default. Header casing is
 // preserved. Callers can configure column widths and alignment as needed.
-// For composite metrics, pass data rows through AlignRows before AppendRows.
+// For composite metrics, pass headers and data together through AlignRows before
+// calling AppendHeader and AppendRows.
 func New() table.Writer {
 	writer := table.NewWriter()
 	style := table.StyleDefault

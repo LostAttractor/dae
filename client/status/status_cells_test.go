@@ -3,6 +3,7 @@
 package status
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -55,6 +56,22 @@ func TestStatusCompositeMetricsAlign(t *testing.T) {
 			a, b := metricAnchors(lines[1]), metricAnchors(lines[2])
 			if len(a) < 7 || !reflect.DeepEqual(a, b) {
 				t.Fatalf("verbose=%t color=%t metrics shifted: %v vs %v\n%s", verbose, color, a, b, rendered)
+			}
+			if !verbose {
+				column := func(line, label string) int {
+					line = text.StripEscape(line)
+					position := strings.Index(line, label)
+					if position < 0 {
+						t.Fatalf("missing %q in %q", label, line)
+					}
+					return text.StringWidthWithoutEscSequences(line[:position])
+				}
+				for i, node := range group.Nodes {
+					if column(lines[0], "UP") != column(lines[i+1], fmt.Sprintf("%.1f", node.Availability.UpRatio*100)) ||
+						column(lines[0], "24H") != column(lines[i+1], fmt.Sprintf("%.1f%%", node.Availability.Recent24h.UpRatio*100)) {
+						t.Fatalf("availability subheaders shifted:\n%s", rendered)
+					}
+				}
 			}
 		}
 	}
