@@ -54,7 +54,7 @@ func TestStatusCompositeMetricsAlign(t *testing.T) {
 				t.Fatalf("unexpected table lines: %s", rendered)
 			}
 			a, b := metricAnchors(lines[1]), metricAnchors(lines[2])
-			if len(a) < 7 || !reflect.DeepEqual(a, b) {
+			if len(a) < 5 || !reflect.DeepEqual(a, b) {
 				t.Fatalf("verbose=%t color=%t metrics shifted: %v vs %v\n%s", verbose, color, a, b, rendered)
 			}
 			if !verbose {
@@ -93,5 +93,42 @@ func TestNetworkConnectionsAndUsageAlignParts(t *testing.T) {
 	got := clitable.AlignRows(usage)
 	if got[0][3] != "20000" || got[1][3] != "4" {
 		t.Fatalf("usage counts: %+v", got)
+	}
+}
+
+func TestNodeTablesKeepHealthSeparateFromTraffic(t *testing.T) {
+	withoutStatusColors(t)
+	for _, verbose := range []bool{false, true} {
+		for _, color := range []bool{false, true} {
+			t.Run(fmt.Sprintf("verbose=%v/color=%v", verbose, color), func(t *testing.T) {
+				colorsEnabled = color
+				now := time.Now()
+				node := testNodeStatus(now)
+				node.Name = "日本高级 IEPL 专线 1 -> lightsail"
+				idle := node
+				idle.ID, idle.Name, idle.Stats = "idle", "idle", api.PathStats{}
+				group := api.GroupStatus{Name: "proxy", ChecksConnectivity: true,
+					Nodes: []api.NodeStatus{node, idle}, SelectedNodeIDs: api.NetworkValues[string]{node.ID}}
+				for _, width := range []int{0, 40, 80, 160} {
+					withStatusTerminalWidth(t, width)
+					var out strings.Builder
+					printGroupStatus(&out, group, verbose)
+					_, rendered, found := strings.Cut(out.String(), "Paths of target 'proxy':\n")
+					if !found {
+						t.Fatalf("node table missing:\n%s", out.String())
+					}
+					if strings.Contains(out.String(), "Traffic:") || strings.Contains(rendered, "TOTAL") || strings.Contains(rendered, "bps") {
+						t.Fatalf("health table retained traffic fields:\n%s", out.String())
+					}
+					rendered = strings.TrimSuffix(rendered, "\n")
+					if len(strings.Split(rendered, "\n")) != 3 || width > 0 && text.LongestLineLen(rendered) > width {
+						t.Fatalf("node rows wrapped or overflowed:\n%s", rendered)
+					}
+					if width == 0 && (!strings.Contains(rendered, node.Name) || !strings.Contains(rendered, "CONNS") || !strings.Contains(rendered, "healthy")) {
+						t.Fatalf("health information missing:\n%s", rendered)
+					}
+				}
+			})
+		}
 	}
 }

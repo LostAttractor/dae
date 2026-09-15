@@ -22,7 +22,7 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 		column := 2
 		want := "fail (retry #3 in 1.7s)"
 		if verbose {
-			column = 16
+			column = 14
 			want = "retry #3 in 1.7s"
 		}
 		if got := rows[0][column]; got != want {

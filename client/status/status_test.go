@@ -219,8 +219,6 @@ func TestNodeRowsUseRawState(t *testing.T) {
 		5:  "all tcp(*)",
 		6:  "10/20/30",
 		13: "2/3 (fb 1)",
-		14: "↑..........▅▅ 800/800bps ↓..........██ 1.60/1.60Kbps",
-		15: "↑1.00K ↓2.00K",
 	}
 	for index, expected := range checks {
 		if got := fmt.Sprint(verbose[index]); got != expected {
@@ -397,16 +395,16 @@ func TestNetworkCompaction(t *testing.T) {
 
 func TestTrafficFormatting(t *testing.T) {
 	value := api.PathStats{TrafficCounters: api.TrafficCounters{UploadBytes: 3 * 1024, DownloadBytes: 5 * 1024}}
-	if got, want := formatTrafficSummary(value), "total ↑3.00K ↓5.00K"; got != want {
-		t.Fatalf("formatTrafficSummary() = %q, want %q", got, want)
+	if row := trafficRow("", value); row[5] != "3.00K" || row[6] != "5.00K" {
+		t.Fatalf("traffic totals: %v", row)
 	}
-	if got, want := formatBitRatePair(1_250_000, 12_500_000), "10.0/100Mbps"; got != want {
+	if got, want := trafficRateCell(1_250_000, 12_500_000).String(), "10.0/100Mbps"; got != want {
 		t.Fatalf("rate threshold pair = %q, want %q", got, want)
 	}
-	if got, want := formatBitRatePair(100, 110), "800/880bps"; got != want {
+	if got, want := trafficRateCell(100, 110).String(), "800/880bps"; got != want {
 		t.Fatalf("same-unit rate pair = %q, want %q", got, want)
 	}
-	if got, want := formatBitRatePair(100, 1_250_000), "800bps/10.0Mbps"; got != want {
+	if got, want := trafficRateCell(100, 1_250_000).String(), "800bps/10.0Mbps"; got != want {
 		t.Fatalf("mixed-unit rate pair = %q, want %q", got, want)
 	}
 	maximum := ^uint64(0)

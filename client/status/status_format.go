@@ -376,11 +376,6 @@ func formatBitRateParts(bytesPerSecond uint64) (string, string) {
 	return fmt.Sprintf(format, value), unit
 }
 
-func formatBitRatePair(average, maximum uint64) string {
-	a, b := bitRatePairParts(average, maximum)
-	return a + "/" + b
-}
-
 func trafficMaximum(values []uint64) uint64 {
 	var maximum uint64
 	for _, value := range values {
@@ -432,37 +427,4 @@ func trafficSparkline(values []uint64, scale uint64) string {
 		line.WriteString(colorize(string(trafficSparklineGlyphs[level]), trafficSpeedColor(value)))
 	}
 	return line.String()
-}
-
-func hasTrafficHistory(value api.PathStats) bool {
-	return len(value.History.UploadBytesPerSecond) > 0
-}
-
-func formatTrafficSparklineCell(value api.PathStats) string {
-	upload := value.History.UploadBytesPerSecond
-	download := value.History.DownloadBytesPerSecond
-	if !hasTrafficHistory(value) {
-		return "-"
-	}
-	scale := max(trafficMaximum(upload), trafficMaximum(download))
-	return "↑" + trafficSparkline(upload, scale) + " ↓" + trafficSparkline(download, scale)
-}
-
-func formatTrafficCell(value api.PathStats) string {
-	return trafficCell(value).String()
-}
-
-func formatTrafficTotalCell(value api.PathStats) string {
-	return trafficTotalCell(value).String()
-}
-
-func formatTrafficSummary(value api.PathStats) string {
-	var parts []string
-	if traffic := formatTrafficCell(value); traffic != "-" {
-		parts = append(parts, "1m "+traffic)
-	}
-	if total := formatTrafficTotalCell(value); total != "-" {
-		parts = append(parts, "total "+total)
-	}
-	return strings.Join(parts, " · ")
 }

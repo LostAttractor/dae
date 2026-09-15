@@ -31,6 +31,89 @@ Enable the [TCP API](api.md) and set `DAE_API_TOKEN` before requesting remote st
 
 The Go SDK owns its transport and does not depend on application changes to `http.DefaultTransport`. Successful responses are limited to 32 MiB and error bodies to 8 KiB. Oversized error bodies still preserve the HTTP status in `client.Error.StatusCode`.
 
+Status tables use composite titles for `UP/24H`, `ACTIVE / FALLBACK TOTAL`, and the traffic
+`AVG/MAX` pairs. These titles share field widths with their data: each title
+and value starts at the left of its field, and `/` stays
+at the same position across rows. Display widths account for CJK text and ANSI colors.
+
+## Traffic table
+
+All text status modes end with a shared `Traffic` table:
+
+```text
+GROUP / DIALER       UPLOAD 1M     DOWNLOAD 1M   AVG /MAX ↑     AVG /MAX ↓     TOTAL ↑  TOTAL ↓
+ALL                  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  54.3/146Kbps   2.48/20.8Mbps  7.21M    85.5M
+direct(direct)       ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
+proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  51.5/144Kbps   2.47/20.8Mbps  7.15M    85.4M
+```
+
+- Ordinary status shows groups with active connections or cumulative payload bytes,
+  including their selected or active/data-bearing dialers. `--recent` shows only
+  groups and dialers with a nonzero upload or download sample in the last minute;
+  selection, active connections and historical totals alone do not keep a row visible.
+  After filtering, one dialer gives a `group(dialer)` row; multiple dialers give
+  `group (total)` followed by indented rows. Distinct IDs remain separate even if
+  their names match. `--verbose` expands all groups and includes idle dialers.
+- `ALL` is always shown and uses daemon statistics; group rows, including collapsed
+  rows, use group statistics from the API, including retired paths. Dialers are accounted for
+  separately in each group. These aggregation levels should not be added together.
+  `TOTAL ↑` and `TOTAL ↓` are cumulative payload bytes, preserved across reloads
+  and reset on daemon restart.
+- `UPLOAD 1M` and `DOWNLOAD 1M` contain the twelve most recent completed five-second
+  throughput samples, oldest first. Both directions share a scale within each
+  row; rows scale independently. Missing history shows `-`.
+- The `AVG/MAX` columns follow the graphs and precede `TOTAL ↑/↓`, showing each
+  direction's average and maximum bit rates over the available samples. Ordinary
+  and recent views hide both rate columns when the full table exceeds the terminal
+  width. `--verbose` always includes
+  them; remaining overflow is clipped at the right edge.
+- The shared `GROUP / DIALER` label uses at most 52 display columns. Long labels
+  are elided with `…`, and whitespace within names is normalized so each entry
+  occupies one row.
+
+## Recent status view
+
+`status --recent` puts each group's current selection and connectivity on one row,
+followed by the shared traffic table at the bottom.
+For example, without color:
+
+```text
+GROUP     STATE  24H      1H            SELECTED              ACTIVE / FALLBACK TOTAL
+direct    N/A    -        -             direct                8      / 3
+proxy_hk  UP     100.00%  [......++++]  香港标准 IEPL 专线 2  0
+proxy_jp  UP     100.00%  [......++++]  lightsail             108
+proxy_tw  UP     100.00%  [......++++]  台湾标准 IEPL 专线 3  0
+proxy_us  UP     100.00%  [......++++]  美国高级 IEPL 专线 1  0
+tor       UP     100.00%  [......++++]  tor                   0
+```
+
+- `ACTIVE / FALLBACK TOTAL` shows active and cumulative fallback connections. Each number
+  and its header is left-aligned independently, keeping `/` at a fixed position.
+  Zero fallback counts and their separator are omitted. The fallback total
+  survives reloads and resets on daemon restart; it is not the number currently
+  using fallback.
+- `SELECTED` uses `selected_node_ids`. This compact view only includes confirmed
+  capabilities or live selections; `unknown` and `unsupported` networks without
+  a current selection are omitted. If all displayed networks select one node,
+  only its name is shown.
+  Different selections are joined with semicolons and prefixed with `ipv4:`, `ipv6:`, `tcp:`,
+  `udp:`, or explicit network names. Confirmed networks without a current
+  selection show `-`; a group with no selection also shows `-`. `random` means per-connection
+  selection with no stable group-level node. Existing connections may still use
+  previously selected nodes.
+- `STATE`, `24H`, and `1H` are separate columns for current state, time-weighted
+  availability, and ten six-minute connectivity buckets. Titles and values are
+  left-aligned consistently, including the percentage and history columns. Without color,
+  `+`, `x`, and `.` mean available, unavailable, and
+  unobserved. Color terminals use green/red dots and gray hollow dots. Unchecked
+  groups show `N/A`, with `-` for availability and history.
+- Group names use at most 18 display columns; each node selection uses at most
+  32, with longer names elided using `…`, including CJK text and ANSI colors.
+  Table headers, group rows and daemon summaries are clipped at the terminal's
+  right edge instead of wrapping;
+  trailing selections or counters may therefore be partially hidden.
+  Without a known terminal width, lines are not clipped.
+
 ## Independently deployable Web assets
 
 ```sh

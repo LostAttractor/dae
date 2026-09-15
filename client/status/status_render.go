@@ -199,8 +199,6 @@ func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[
 		health.lastCheck,
 		formatAgo(status.Availability.LastConnFailAt),
 		formatConnCounts(status.Stats),
-		trafficCell(status.Stats),
-		trafficTotalCell(status.Stats),
 		formatRecovery(status.Recovery, now),
 		formatRecoveryFailure(status.Failure),
 	}
@@ -304,11 +302,7 @@ func compactNodeStatusRow(status api.NodeStatus, index int, selected api.Network
 	if showFailure {
 		row = append(row, compactFailure(status, now))
 	}
-	return append(row,
-		formatConnCounts(status.Stats),
-		trafficCell(status.Stats),
-		trafficTotalCell(status.Stats),
-	)
+	return append(row, formatConnCounts(status.Stats))
 }
 
 func uncheckedNetworkRows(group api.GroupStatus) []table.Row {
@@ -340,7 +334,7 @@ func nodeTable(group api.GroupStatus, verbose bool, now time.Time) (table.Row, [
 		return table.Row{
 			"PATH", "SUB", "PROTO", "SESSION", "HEALTH", "NETWORKS",
 			"LATENCY last/avg10/mov(ms)", "UP% (FAIL/CHK)", "24H UP% (FAIL/CHK)", "FAILURE (START/DURATION)",
-			"HEALTHY-SINCE", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)", "TRAFFIC 1M ↑/↓ AVG/MAX", "TOTAL ↑/↓",
+			"HEALTHY-SINCE", "LAST-CHECK", "LAST-CONN-FAIL", "CONNS(A/T)",
 			"RECOVERY", "CAUSE",
 		}, rows
 	}
@@ -353,7 +347,7 @@ func nodeTable(group api.GroupStatus, verbose bool, now time.Time) (table.Row, [
 	if showFailure {
 		header = append(header, "FAIL A/D")
 	}
-	header = append(header, "CONNS", "TRAFFIC 1M ↑/↓ AVG/MAX", "TOTAL ↑/↓")
+	header = append(header, "CONNS")
 	return header, rows
 }
 
@@ -415,9 +409,6 @@ func printGroupStatus(out io.Writer, group api.GroupStatus, verbose bool) {
 		status += fmt.Sprintf(" · %d fallback total", group.Stats.FallbackConnections)
 	}
 	fmt.Fprintf(out, "Status: %s\n", status)
-	if traffic := formatTrafficSummary(group.Stats); traffic != "" {
-		fmt.Fprintf(out, "Traffic: %s\n", traffic)
-	}
 	if !group.ChecksConnectivity {
 		printTable(out, table.Row{"NETWORK", "CONNS(A/T)"}, uncheckedNetworkRows(group))
 		return
@@ -483,9 +474,6 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 		fmt.Fprintf(out, ", %d fallback total", snapshot.Stats.FallbackConnections)
 	}
 	fmt.Fprintln(out)
-	if traffic := formatTrafficSummary(snapshot.Stats); traffic != "" {
-		fmt.Fprintf(out, "Traffic:     %s\n", traffic)
-	}
 
 	// Present retained evidence before its kernel projection.
 	for _, usage := range snapshot.Tables {
@@ -510,6 +498,11 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 	for _, group := range snapshot.Groups {
 		printGroupStatus(out, group, verbose)
 	}
+	mode := trafficOrdinary
+	if verbose {
+		mode = trafficVerbose
+	}
+	printTraffic(out, snapshot, mode)
 }
 
 func nodeSessionState(status api.NodeStatus) string {

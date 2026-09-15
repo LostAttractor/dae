@@ -8,140 +8,143 @@ package status
 import (
 	"fmt"
 	"io"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/pkg/clitable"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
-
-func colorRecentHealth(health healthStatus) string {
-	label := strings.ToUpper(string(health))
-	switch health {
-	case healthHealthy:
-		return colorize(label, text.FgGreen)
-	case healthWarning:
-		return colorize(label, text.FgYellow)
-	case healthDegraded:
-		return colorize(label, text.FgRed)
-	default:
-		return label
-	}
-}
-
-func recentStatePoint(state api.GroupHistoryState) string {
-	if !colorsEnabled {
-		switch state {
-		case api.GroupHistoryAvailable:
-			return "+"
-		case api.GroupHistoryUnavailable:
-			return "x"
-		default:
-			return "."
-		}
-	}
-	switch state {
-	case api.GroupHistoryAvailable:
-		return colorize("●", text.FgGreen)
-	case api.GroupHistoryUnavailable:
-		return colorize("●", text.FgRed)
-	default:
-		return colorize("○", text.FgHiBlack)
-	}
-}
-
-func recentWindowLabel(duration time.Duration) string {
-	switch {
-	case duration%time.Hour == 0:
-		return fmt.Sprintf("%dH", duration/time.Hour)
-	case duration%time.Minute == 0:
-		return fmt.Sprintf("%dM", duration/time.Minute)
-	default:
-		return fmt.Sprintf("%dS", duration/time.Second)
-	}
-}
 
 func recentTimeline(group api.GroupStatus) string {
 	var timeline strings.Builder
 	timeline.WriteByte('[')
 	for _, state := range group.Availability.Recent.States {
-		timeline.WriteString(recentStatePoint(state))
+		plain, glyph, color := ".", "○", text.FgHiBlack
+		switch state {
+		case api.GroupHistoryAvailable:
+			plain, glyph, color = "+", "●", text.FgGreen
+		case api.GroupHistoryUnavailable:
+			plain, glyph, color = "x", "●", text.FgRed
+		}
+		if colorsEnabled {
+			timeline.WriteString(colorize(glyph, color))
+		} else {
+			timeline.WriteString(plain)
+		}
 	}
-	timeline.WriteString("] / ")
-	timeline.WriteString(recentWindowLabel(api.GroupStateWindowDuration))
+	timeline.WriteByte(']')
 	return timeline.String()
 }
 
-func recentUpRatio(group api.GroupStatus) string {
-	if !group.Availability.Seen {
-		return "- / 24H"
+// Group by identity rather than display name, preserving the wire network order.
+// Only confirmed capabilities and live selections need entries in this compact
+// view. Unknown/unsupported networks without a selection are omitted.
+func recentSelections(group api.GroupStatus) []string {
+	if group.Policy == "random" {
+		return []string{"random"}
 	}
-	ratio := group.Availability.Recent24h.UpRatio
-	formatted := fmt.Sprintf("%.2f%% / 24H", ratio*100)
-	return colorRatio(ratio, formatted)
-}
-
-func recentActiveWidth(groups []api.GroupStatus) int {
-	width := 1
-	for _, group := range groups {
-		if digits := len(strconv.FormatInt(group.Stats.ActiveConnections, 10)); digits > width {
-			width = digits
+	var visible uint8
+	for network, id := range group.SelectedNodeIDs {
+		if id != "" || groupNetworkSupport(group.Nodes, api.NetworkIndex(network)) == api.NetworkSupportConfirmed {
+			visible |= 1 << network
 		}
 	}
-	return width
+	var selections []string
+	remaining := visible
+	for network, id := range group.SelectedNodeIDs {
+		if remaining&(1<<network) == 0 {
+			continue
+		}
+		var mask uint8
+		for i, selected := range group.SelectedNodeIDs {
+			if selected == id {
+				mask |= 1 << i
+			}
+		}
+		mask &= visible
+		remaining &^= mask
+		label := emptyDash(id)
+		if index := slices.IndexFunc(group.Nodes, func(node api.NodeStatus) bool { return id != "" && node.ID == id }); index >= 0 {
+			label = nodeLabel(group.Nodes[index], index)
+		}
+		label = colorSelected(label, id != "")
+		if mask != visible {
+			label = strings.TrimPrefix(compactNetworks(mask), "all ") + ": " + label
+		}
+		selections = append(selections, label)
+	}
+	if len(selections) == 0 {
+		return []string{"-"}
+	}
+	return selections
 }
 
-func recentGroupRow(group api.GroupStatus, activeWidth int) table.Row {
-	activity := fmt.Sprintf("%*d active", activeWidth, group.Stats.ActiveConnections)
-	if group.Stats.FallbackConnections > 0 {
-		activity += fmt.Sprintf(" · %d fallback total", group.Stats.FallbackConnections)
+// Clip at display width without introducing continuation lines. A zero width
+// means stdout has no known terminal width, so retain the complete line.
+func writeRecentLine(out io.Writer, line string, width int) {
+	if width > 0 {
+		line = text.Snip(line, width, "")
 	}
-	traffic := formatTrafficSparklineCell(group.Stats)
-	if !group.ChecksConnectivity {
-		return table.Row{group.Name, "", "", "", activity, traffic}
-	}
-	return table.Row{
-		group.Name,
-		formatGroupConnectivityState(group),
-		recentTimeline(group),
-		recentUpRatio(group),
-		activity,
-		traffic,
-	}
+	fmt.Fprintln(out, line)
 }
 
 func renderRecentGroups(groups []api.GroupStatus) string {
-	configs := []table.ColumnConfig{
-		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateStatusCell},
-		{Number: 4, Align: text.AlignRight},
+	if len(groups) == 0 {
+		return ""
 	}
-	activeWidth := recentActiveWidth(groups)
+	header := table.Row{"GROUP", "STATE", "24H", "1H", "SELECTED",
+		clitable.Parts("ACTIVE", " / ", "FALLBACK TOTAL")}
 	rows := make([]table.Row, 0, len(groups))
 	for _, group := range groups {
-		rows = append(rows, recentGroupRow(group, activeWidth))
+		ratio, history := "-", "-"
+		if group.ChecksConnectivity {
+			history = recentTimeline(group)
+			if group.Availability.Seen {
+				up := group.Availability.Recent24h.UpRatio
+				ratio = colorRatio(up, fmt.Sprintf("%.2f%%", up*100))
+			}
+		}
+		selections := recentSelections(group)
+		for i, selection := range selections {
+			selections[i] = truncateStatusCell(selection, 32)
+		}
+		connections := clitable.Parts(fmt.Sprint(group.Stats.ActiveConnections))
+		if group.Stats.FallbackConnections > 0 {
+			connections = clitable.Parts(fmt.Sprint(group.Stats.ActiveConnections), " / ", fmt.Sprint(group.Stats.FallbackConnections))
+		}
+		row := table.Row{group.Name, formatGroupConnectivityState(group), ratio, history, strings.Join(selections, "; "),
+			connections}
+		rows = append(rows, row)
 	}
-	return renderStatusTable(nil, rows, configs, getStatusTerminalWidth())
+	return renderStatusTable(header, rows, []table.ColumnConfig{
+		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateStatusCell},
+	}, getStatusTerminalWidth())
 }
 
 func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
-	fallback := ""
+	width := getStatusTerminalWidth()
+	health, color := statusHealth(snapshot.Groups), text.FgGreen
+	switch health {
+	case healthWarning:
+		color = text.FgYellow
+	case healthDegraded:
+		color = text.FgRed
+	}
+	summary := []string{
+		"dae " + snapshot.Version,
+		colorize(strings.ToUpper(string(health)), color),
+		"up " + formatUptime(time.Since(snapshot.StartedAt)),
+		fmt.Sprintf("%d active", snapshot.Stats.ActiveConnections),
+	}
 	if snapshot.Stats.FallbackConnections > 0 {
-		fallback = fmt.Sprintf(" · %d fallback total", snapshot.Stats.FallbackConnections)
+		summary = append(summary, fmt.Sprintf("Fallback Total %d", snapshot.Stats.FallbackConnections))
 	}
-	fmt.Fprintf(out,
-		"dae %s · %s · up %s · %d active%s\n",
-		snapshot.Version,
-		colorRecentHealth(statusHealth(snapshot.Groups)),
-		formatUptime(time.Since(snapshot.StartedAt)),
-		snapshot.Stats.ActiveConnections,
-		fallback,
-	)
-	if traffic := formatTrafficSummary(snapshot.Stats); traffic != "" {
-		fmt.Fprintf(out, "Traffic: %s\n", traffic)
-	}
+	writeRecentLine(out, strings.Join(summary, "  "), width)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, renderRecentGroups(snapshot.Groups))
+	printTraffic(out, snapshot, trafficRecent)
 }
