@@ -1,6 +1,7 @@
 .vscode
 .idea
 *.o
+*.o.gz
 *.tmp
 bpf*_bpfeb*.go
 bpf*_bpfel*.go

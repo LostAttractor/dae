@@ -34,6 +34,7 @@ import (
 )
 
 //go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS -mcpu=v3" -tags trace -target "$BPF_TRACE_TARGET" -type event bpf kern/trace.c -- -I./headers
+//go:generate go run ../cmd/dae-bpf-pack bpf_*_bpf*.go
 
 var nativeEndian binary.ByteOrder
 

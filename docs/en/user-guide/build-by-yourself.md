@@ -130,6 +130,29 @@ RPC trace web implementation and its template dependencies. Use
 `make GRPC_TRACE=y` to include it. The architecture-specific eBPF `trace` tag is
 controlled separately by BPF generation.
 
+Release daemon builds use `-trimpath` and strip Go debug symbols with `-s -w`.
+The BPF generators also run `cmd/dae-bpf-pack`: it deterministically compresses
+each ELF into an adjacent `.o.gz` and updates the generated Go loader to embed
+that file. The original `.o` remains available for ELF/BTF inspection and audits.
+Run the complete `go generate` directive sequence, or `make ebpf`, when refreshing
+objects; invoking `bpf2go` alone does not perform the compression step.
+
+Objects are decompressed and checksum-checked when their collection specs are
+loaded. The ELF, BTF and relocations are restored byte for byte. Decompressed
+objects are not kept in a package-global cache. `make clean-ebpf` removes both
+the raw and compressed generated objects.
+
+Configuration outlines and VMess share links use the standard library JSON
+implementation. VMess parsing retains numeric/string subscription fields and
+the existing `allowInsecure` conversions locally, without global JSON decoder
+registration.
+
+To inspect a build, use `go version -m dae`, `readelf -SW dae` and `size -A dae`.
+Sections of type `NOBITS`, including `.bss` and `.noptrbss`, do not contribute
+their reported size to the executable file. Go function and type metadata is
+needed at runtime even in a stripped binary. Compare builds with the same Go/C
+toolchains, plugins, build tags and static-linking settings.
+
 ## BPF map capacities
 
 The following make arguments tune rule scale and traffic-dependent table

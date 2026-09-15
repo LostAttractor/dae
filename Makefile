@@ -46,9 +46,9 @@ GO_TRIMPATH_FLAG := -trimpath
 GO_STRIP_FLAGS := -s -w
 GO_DEBUG_FLAGS :=
 ifeq ($(strip $(DEBUG_FLAGS)),y)
-GO_TRIMPATH_FLAG :=
-GO_STRIP_FLAGS :=
-GO_DEBUG_FLAGS := -gcflags="all=-N -l"
+	GO_TRIMPATH_FLAG :=
+	GO_STRIP_FLAGS :=
+	GO_DEBUG_FLAGS := -gcflags="all=-N -l"
 endif
 
 GOARCH ?= $(shell go env GOARCH)
@@ -161,11 +161,11 @@ endif
 clean-ebpf:
 	@rm -f $(BUILD_TAGS_FILE)
 	@rm -f control/bpf_*bpf*.go && \
-		rm -f control/bpf_*bpf*.o
+		rm -f control/bpf_*bpf*.o control/bpf_*bpf*.o.gz
 	@rm -f control/internal/splice/bpf_*bpf*.go && \
-		rm -f control/internal/splice/bpf_*bpf*.o
+		rm -f control/internal/splice/bpf_*bpf*.o control/internal/splice/bpf_*bpf*.o.gz
 	@rm -f trace/bpf_*bpf*.go && \
-		rm -f trace/bpf_*bpf*.o
+		rm -f trace/bpf_*bpf*.o trace/bpf_*bpf*.o.gz
 	@rm -f control/kern/tests/bpftest_*bpf*.go && \
 		rm -f control/kern/tests/bpftest_*bpf*.o
 fmt: check-go-version submodule web-assets
