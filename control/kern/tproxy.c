@@ -622,12 +622,20 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			return -EFAULT;
 		__u32 ip_header_len = l3h->iph.ihl * 4;
 		__u32 packet_len = bpf_ntohs(l3h->iph.tot_len);
+		__u16 frag_off = bpf_ntohs(l3h->iph.frag_off);
+
+		/* BIG TCP uses tot_len=0 before GSO segmentation. Only kernel GSO
+		 * metadata permits this encoding; an on-wire zero length is invalid.
+		 */
+		if (!packet_len && skb->gso_size &&
+		    skb->len > l3_offset + 0xffff &&
+		    l3h->iph.protocol == IPPROTO_TCP && !(frag_off & 0x3fff))
+			packet_len = skb->len - l3_offset;
 
 		if (l3h->iph.version != 4 || l3h->iph.ihl < 5 ||
 		    packet_len < ip_header_len || l3_offset + packet_len > skb->len)
 			return -EINVAL;
 		*packet_end = l3_offset + packet_len;
-		__u16 frag_off = bpf_ntohs(l3h->iph.frag_off);
 
 		*l4proto = l3h->iph.protocol;
 		if (frag_off & 0x1fff)
@@ -643,40 +651,6 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			return 1;
 		// Skip ipv4hdr and options for next hdr.
 		*offset += ip_header_len;
-
-		// We only process TCP and UDP traffic.
-		switch (l3h->iph.protocol) {
-		case IPPROTO_TCP:
-			if (*offset + sizeof(struct tcphdr) > *packet_end)
-				return -EFAULT;
-			ret = bpf_skb_load_bytes(skb, *offset, l4h,
-						 sizeof(struct tcphdr));
-			if (ret) {
-				// Not a complete tcphdr.
-				return -EFAULT;
-			}
-			if (l4h->tcph.doff < 5 ||
-			    *offset + l4h->tcph.doff * 4 > *packet_end)
-				return -EINVAL;
-			*offset += l4h->tcph.doff * 4;
-			break;
-		case IPPROTO_UDP:
-			if (*offset + sizeof(struct udphdr) > *packet_end)
-				return -EFAULT;
-			ret = bpf_skb_load_bytes(skb, *offset, l4h,
-						 sizeof(struct udphdr));
-			if (ret) {
-				// Not a complete udphdr.
-				return -EFAULT;
-			}
-			if (bpf_ntohs(l4h->udph.len) < sizeof(struct udphdr))
-				return -EINVAL;
-			*offset += sizeof(struct udphdr);
-			break;
-		default:
-			return 1;
-		}
-		return 0;
 	} else if (ethh->h_proto == bpf_htons(ETH_P_IPV6)) {
 		__u32 l3_offset = *offset;
 		int ret = bpf_skb_load_bytes(skb, *offset, l3h,
@@ -685,14 +659,34 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 			bpf_printk("not a valid IPv6 packet");
 			return -EFAULT;
 		}
-		__u32 ip_packet_end = l3_offset + sizeof(struct ipv6hdr) +
-			bpf_ntohs(l3h->ipv6h.payload_len);
+		__u32 payload_offset = l3_offset + sizeof(struct ipv6hdr);
+		__u32 payload_len = bpf_ntohs(l3h->ipv6h.payload_len);
+		__u32 ip_packet_end = payload_offset + payload_len;
+		bool big_tcp = !payload_len && skb->gso_size &&
+			skb->len > payload_offset + 0xffff;
+
+		if (big_tcp) {
+			ip_packet_end = skb->len;
+			/* BIG TCP may carry the kernel's eight-byte Jumbo Payload HBH
+			 * header, or have it removed before reaching this hook.
+			 */
+			if (l3h->ipv6h.nexthdr == IPPROTO_HOPOPTS) {
+				struct hop_jumbo_hdr jumbo;
+
+				if (bpf_skb_load_bytes(skb, payload_offset, &jumbo,
+						       sizeof(jumbo)) ||
+				    jumbo.nexthdr != IPPROTO_TCP || jumbo.hdrlen != 0 ||
+				    jumbo.tlv_type != 0xc2 || jumbo.tlv_len != 4 ||
+				    bpf_ntohl(jumbo.jumbo_payload_len) != skb->len - payload_offset)
+					return -EINVAL;
+			}
+		}
 
 		if (l3h->ipv6h.version != 6 || ip_packet_end > skb->len)
 			return -EINVAL;
 		*packet_end = ip_packet_end;
 
-		*offset += sizeof(struct ipv6hdr);
+		*offset = payload_offset;
 		__u8 nexthdr = l3h->ipv6h.nexthdr;
 
 		// Skip all extension headers.
@@ -712,6 +706,9 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 				break;
 		}
 		*fragment_state = ext_ctx.fragment_state;
+		if (big_tcp && (nexthdr != IPPROTO_TCP ||
+			       ext_ctx.seen_fragment || ext_ctx.seen_ah))
+			return -EINVAL;
 		if (ext_ctx.result)
 			return ext_ctx.result;
 		if (ext_ctx.seen_ah && ext_ctx.fragment_state == FRAGMENT_NONE)
@@ -723,55 +720,56 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 
 		*l4proto = nexthdr;
-
-		switch (nexthdr) {
-		case IPPROTO_TCP:
-			if (*offset + sizeof(struct tcphdr) > ip_packet_end)
-				return -EFAULT;
-			ret = bpf_skb_load_bytes(skb, *offset, l4h,
-						 sizeof(struct tcphdr));
-			if (ret) {
-				// Not a complete tcphdr.
-				return -EFAULT;
-			}
-			if (l4h->tcph.doff < 5 ||
-			    *offset + l4h->tcph.doff * 4 > ip_packet_end)
-				return -EINVAL;
-			*offset += l4h->tcph.doff * 4;
-			break;
-		case IPPROTO_UDP:
-			if (*offset + sizeof(struct udphdr) > ip_packet_end)
-				return -EFAULT;
-			ret = bpf_skb_load_bytes(skb, *offset, l4h,
-						 sizeof(struct udphdr));
-			if (ret) {
-				// Not a complete udphdr.
-				return -EFAULT;
-			}
-			if (bpf_ntohs(l4h->udph.len) < sizeof(struct udphdr))
-				return -EINVAL;
-			*offset += sizeof(struct udphdr);
-			break;
-		case IPPROTO_ICMPV6:
-			if (*offset + sizeof(struct icmp6hdr) > ip_packet_end)
-				return -EFAULT;
-			ret = bpf_skb_load_bytes(skb, *offset, l4h,
-						 sizeof(struct icmp6hdr));
-			if (ret) {
-				// Not a complete icmp6hdr.
-				return -EFAULT;
-			}
-			break;
-		default:
-			/// EXPECTED: Maybe ICMP, MPLS, etc.
-			// bpf_printk("IP but not supported packet: protocol is %u",
-			// iph->protocol);
-			return 1;
-		}
-		return 0;
+	} else {
+		return 1;
 	}
-	// bpf_printk("unknown link proto: %u", bpf_ntohl(ethh->h_proto));
-	return 1;
+
+	int ret;
+
+	switch (*l4proto) {
+	case IPPROTO_TCP:
+		if (*offset + sizeof(struct tcphdr) > *packet_end)
+			return -EFAULT;
+		ret = bpf_skb_load_bytes(skb, *offset, l4h,
+					 sizeof(struct tcphdr));
+		if (ret) {
+			// Not a complete tcphdr.
+			return -EFAULT;
+		}
+		if (l4h->tcph.doff < 5 ||
+		    *offset + l4h->tcph.doff * 4 > *packet_end)
+			return -EINVAL;
+		*offset += l4h->tcph.doff * 4;
+		break;
+	case IPPROTO_UDP:
+		if (*offset + sizeof(struct udphdr) > *packet_end)
+			return -EFAULT;
+		ret = bpf_skb_load_bytes(skb, *offset, l4h,
+					 sizeof(struct udphdr));
+		if (ret) {
+			// Not a complete udphdr.
+			return -EFAULT;
+		}
+		if (bpf_ntohs(l4h->udph.len) < sizeof(struct udphdr))
+			return -EINVAL;
+		*offset += sizeof(struct udphdr);
+		break;
+	case IPPROTO_ICMPV6:
+		if (ethh->h_proto != bpf_htons(ETH_P_IPV6))
+			return 1;
+		if (*offset + sizeof(struct icmp6hdr) > *packet_end)
+			return -EFAULT;
+		ret = bpf_skb_load_bytes(skb, *offset, l4h,
+					 sizeof(struct icmp6hdr));
+		if (ret) {
+			// Not a complete icmp6hdr.
+			return -EFAULT;
+		}
+		break;
+	default:
+		return 1;
+	}
+	return 0;
 }
 
 // Only work for first packet of a new connection.
