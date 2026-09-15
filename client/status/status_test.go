@@ -83,7 +83,7 @@ func TestTableUsageRow(t *testing.T) {
 	row := tableUsageRow(api.TableUsage{
 		Name: "domain-kernel", Used: 2, Limit: 4, Candidates: 3,
 	})
-	want := []string{"domain-kernel", "2", "4", "50.0%", "3", "1"}
+	want := []string{"2", "4", "50.0%", "3", "1"}
 	for index, expected := range want {
 		if got := fmt.Sprint(row[index]); got != expected {
 			t.Errorf("tableUsageRow()[%d] = %q, want %q", index, got, expected)
@@ -100,15 +100,21 @@ func TestDomainTableDetailsFitTerminal(t *testing.T) {
 		{Name: "domain-registry", Used: 6896, Breakdown: &api.TableUsageBreakdown{Domains: 2000, IPs: 5000, IPv4: 4000, IPv6: 1000, GC: 123}},
 	}}, false)
 	output := out.String()
-	for _, label := range []string{"USED (IPs)", "CANDIDATES", "OMITTED", "domain-registry (unlimited):", "DOMAINS", "GC (PAIRS)"} {
+	for _, label := range []string{"domain-kernel:", "USED (IPs)", "CANDIDATES", "OMITTED", "domain-registry (unlimited):", "DOMAINS", "GC (PAIRS)"} {
 		if !strings.Contains(output, label) {
 			t.Fatalf("missing %q:\n%s", label, output)
 		}
 	}
+	if strings.Contains(output, "Tables:") || strings.Contains(output, "TABLE ") {
+		t.Fatalf("redundant table heading or name column:\n%s", output)
+	}
+	if strings.Index(output, "domain-registry (unlimited):") > strings.Index(output, "domain-kernel:") {
+		t.Fatalf("kernel projection appeared before registry evidence:\n%s", output)
+	}
 	kernel, registry := false, false
 	for _, line := range strings.Split(output, "\n") {
 		cells := strings.Join(strings.Fields(line), " ")
-		kernel = kernel || cells == "domain-kernel 161 65536 0.2% 163 2"
+		kernel = kernel || cells == "161 65536 0.2% 163 2"
 		registry = registry || cells == "6896 2000 5000 4000 1000 123"
 	}
 	if !kernel || !registry {

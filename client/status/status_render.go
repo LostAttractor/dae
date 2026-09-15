@@ -56,7 +56,7 @@ func tableUsageRow(usage api.TableUsage) table.Row {
 		fraction := float64(usage.Used) / float64(usage.Limit)
 		ratio = colorUsage(fraction, formatRatio(fraction))
 	}
-	return table.Row{usage.Name, fmt.Sprint(usage.Used), limit, ratio,
+	return table.Row{fmt.Sprint(usage.Used), limit, ratio,
 		fmt.Sprint(usage.Candidates), fmt.Sprint(max(0, usage.Candidates-usage.Used))}
 }
 
@@ -487,28 +487,23 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 		fmt.Fprintf(out, "Traffic:     %s\n", traffic)
 	}
 
-	if len(snapshot.Tables) > 0 {
-		fmt.Fprintln(out, "\nTables:")
-		rows := make([]table.Row, 0, len(snapshot.Tables))
-		for _, usage := range snapshot.Tables {
-			if usage.Breakdown == nil {
-				rows = append(rows, tableUsageRow(usage))
+	// Present retained evidence before its kernel projection.
+	for _, usage := range snapshot.Tables {
+		if detail := usage.Breakdown; detail != nil {
+			limit := "unlimited"
+			if usage.Limit > 0 {
+				limit = fmt.Sprintf("limit: %d pairs", usage.Limit)
 			}
+			fmt.Fprintf(out, "\n%s (%s):\n", usage.Name, limit)
+			printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
+				{usage.Used, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
+			})
 		}
-		if len(rows) > 0 {
-			printTable(out, table.Row{"TABLE", "USED (IPs)", "LIMIT", "USAGE", "CANDIDATES", "OMITTED"}, rows)
-		}
-		for _, usage := range snapshot.Tables {
-			if detail := usage.Breakdown; detail != nil {
-				limit := "unlimited"
-				if usage.Limit > 0 {
-					limit = fmt.Sprintf("limit: %d pairs", usage.Limit)
-				}
-				fmt.Fprintf(out, "\n%s (%s):\n", usage.Name, limit)
-				printTable(out, table.Row{"PAIRS", "DOMAINS", "IPs", "IPv4", "IPv6", "GC (PAIRS)"}, []table.Row{
-					{usage.Used, detail.Domains, detail.IPs, detail.IPv4, detail.IPv6, detail.GC},
-				})
-			}
+	}
+	for _, usage := range snapshot.Tables {
+		if usage.Breakdown == nil {
+			fmt.Fprintf(out, "\n%s:\n", usage.Name)
+			printTable(out, table.Row{"USED (IPs)", "LIMIT", "USAGE", "CANDIDATES", "OMITTED"}, []table.Row{tableUsageRow(usage)})
 		}
 	}
 
