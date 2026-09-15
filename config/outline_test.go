@@ -6,8 +6,20 @@
 package config
 
 import (
+	"encoding/json"
 	"testing"
 )
+
+func TestExportOutlineJSONCompatibility(t *testing.T) {
+	const version = "test <version> & unicode 节点"
+	want, err := json.MarshalIndent(ExportOutline(version), "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ExportOutlineJson(version); got != string(want) {
+		t.Fatal("outline JSON changed field omission, escaping or formatting")
+	}
+}
 
 func TestExportOutline(t *testing.T) {
 	outline := ExportOutline("test")

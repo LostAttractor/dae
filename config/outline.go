@@ -6,11 +6,12 @@
 package config
 
 import (
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"maps"
 	"reflect"
 	"slices"
-
-	jsoniter "github.com/json-iterator/go"
 )
 
 type Outline struct {
@@ -49,7 +50,7 @@ func ExportOutline(version string) *Outline {
 }
 
 func ExportOutlineJson(version string) string {
-	b, err := jsoniter.MarshalIndent(ExportOutline(version), "", "  ")
+	b, err := json.Marshal(ExportOutline(version), jsonv1.DefaultOptionsV1(), jsontext.WithIndent("  "))
 	if err != nil {
 		panic(err)
 	}
