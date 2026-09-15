@@ -101,6 +101,28 @@ export CGO_ENABLED=1
 go test -tags=netgo,osusergo ./component/mitm/surge
 ```
 
+## Debug builds
+
+`DEBUG_FLAGS` defaults to `n`. Enable it for source-level debugging:
+
+```sh
+make STATIC=y DEBUG_FLAGS=y OUTPUT=dae-debug
+```
+
+For daemon builds, this retains Go symbols and DWARF by omitting `-s -w`,
+disables Go optimization and inlining with `-gcflags="all=-N -l"`, and omits
+`-trimpath` so debuggers can find local source files. It also disables stripping
+of the embedded eBPF objects. eBPF still compiles with `-O2`; native QuickJS
+compilation uses the selected `CGO_CFLAGS` (Go's default is `-O2 -g`).
+
+The Go debugging flags also apply to `make test`, `make ebpf-test`, `make client`
+and `make client-test`. `NOSTRIP=y` remains an eBPF-only option; `DEBUG_FLAGS=y`
+disables eBPF stripping even if `NOSTRIP=n` is specified.
+
+Use `make STATIC=y` (or explicitly `DEBUG_FLAGS=n`) for a release daemon build.
+Debug builds are larger and execute different, unoptimized Go code, so their
+size and performance differ from optimized builds that merely retain symbols.
+
 ## BPF map capacities
 
 The following make arguments tune rule scale and traffic-dependent table

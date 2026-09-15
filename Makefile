@@ -22,18 +22,28 @@ MAX_DOMAIN_ROUTING_NUM ?= 65536
 BPF_CAPACITIES := MAX_MATCH_SET_LEN MAX_DST_MAPPING_NUM MAX_DST_MAPPING_NUM_UDP MAX_UDP_ROUTING_CACHE_NUM MAX_DOMAIN_ROUTING_NUM
 BPF_CAPACITY_FLAGS := $(foreach name,$(BPF_CAPACITIES),-D$(name)=$($(name)))
 BPF_GO_LDFLAGS := -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(MAX_MATCH_SET_LEN)
+DEBUG_FLAGS ?= n
 NOSTRIP ?= n
 STATIC ?= n
 CGO_ENABLED ?= 1
 export CGO_ENABLED
 STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
 BUILD_TAGS_FILE := .build_tags
-ifeq ($(strip $(NOSTRIP)),y)
+ifneq ($(filter y,$(DEBUG_FLAGS) $(NOSTRIP)),)
 	STRIP_FLAG := -no-strip
 else ifeq ($(wildcard $(STRIP_PATH)),)
 	STRIP_FLAG := -no-strip
 else
 	STRIP_FLAG := -strip=$(STRIP_PATH)
+endif
+
+GO_TRIMPATH_FLAG := -trimpath
+GO_STRIP_FLAGS := -s -w
+GO_DEBUG_FLAGS :=
+ifeq ($(strip $(DEBUG_FLAGS)),y)
+GO_TRIMPATH_FLAG :=
+GO_STRIP_FLAGS :=
+GO_DEBUG_FLAGS := -gcflags="all=-N -l"
 endif
 
 GOARCH ?= $(shell go env GOARCH)
@@ -58,7 +68,7 @@ endif
 ifeq ($(STATIC),y)
 STATIC_LDFLAGS := -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'
 endif
-BUILD_ARGS := -trimpath -ldflags "-s -w -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) $(BPF_GO_LDFLAGS) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
+BUILD_ARGS := $(GO_TRIMPATH_FLAG) $(GO_DEBUG_FLAGS) -ldflags "$(GO_STRIP_FLAGS) -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) $(BPF_GO_LDFLAGS) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
 
 .PHONY: check-go-arch check-go-version check-cgo check-bpf-capacities clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt plugins submodule submodules test
 
@@ -181,7 +191,7 @@ ebpf: check-go-version check-bpf-capacities submodule clean-ebpf
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
 test: check-cgo plugins ebpf web-assets
-	go test $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
+	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
@@ -204,7 +214,7 @@ ebpf-test: check-go-version check-bpf-capacities submodule clean-ebpf
     echo $(STRIP_FLAG) && \
     GOWORK=off go generate ./control/kern/tests/bpf_test.go && \
     go clean -testcache && \
-    go test -v -ldflags "$(BPF_GO_LDFLAGS)" -tags dae_bpf_tests ./control/kern/tests/...
+    go test $(GO_DEBUG_FLAGS) -v -ldflags "$(BPF_GO_LDFLAGS)" -tags dae_bpf_tests ./control/kern/tests/...
 
 ebpf-audit: check-go-version check-bpf-capacities
 	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" BPF_CAPACITY_FLAGS="$(BPF_CAPACITY_FLAGS)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh
@@ -216,7 +226,7 @@ CLIENT_OUTPUT ?= dae-client
 WEB_OUTPUT ?= build/web
 .PHONY: client web web-assets client-test
 client: check-go-version
-	CGO_ENABLED=0 go build -trimpath -o $(CLIENT_OUTPUT) ./cmd/dae-client
+	CGO_ENABLED=0 go build $(GO_TRIMPATH_FLAG) $(GO_DEBUG_FLAGS) -o $(CLIENT_OUTPUT) ./cmd/dae-client
 
 web:
 	$(MAKE) -C web DIST="$(abspath $(WEB_OUTPUT))"
@@ -228,7 +238,7 @@ web-assets: web
 	cp -R "$(WEB_OUTPUT)/." internal/webui/assets/
 
 client-test: check-go-version
-	CGO_ENABLED=0 go test ./api/... ./client/... ./cmd/dae-client
+	CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) ./api/... ./client/... ./cmd/dae-client
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/... ./cmd/dae-client) && \
 		printf '%s\n' "$$dependencies" | \
 		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/(api|client)\// && $$0 != "github.com/daeuniverse/dae/api" && $$0 != "github.com/daeuniverse/dae/cmd/dae-client" && $$0 != "github.com/daeuniverse/dae/pkg/clitable" { print "Forbidden client dependency: " $$0; bad=1 } END { exit bad }'
