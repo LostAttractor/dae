@@ -1746,15 +1746,24 @@ static __always_inline int get_pid_pname(struct pid_pname *pid_pname)
 			break;
 	}
 
-	u8 offset = ctx.l;
+	__u32 offset = ctx.l;
 
-	for (u8 i = 0; i < TASK_COMM_LEN; i++) {
-		if (offset + i < MAX_ARG_LEN && arg_buf[offset + i] != '\0') {
-			pid_pname->pname[i] = arg_buf[offset + i];
-		} else {
+	for (__u32 i = 0; i < TASK_COMM_LEN; i++) {
+		__u32 arg_index = offset + i;
+
+		/* Keep the checked scalar as the stack index. Otherwise LLVM can
+		 * hoist arg_buf + offset and the verifier loses the bound on it.
+		 */
+		barrier_var(arg_index);
+		if (arg_index >= MAX_ARG_LEN) {
 			pid_pname->pname[i] = '\0';
 			break;
 		}
+		char c = arg_buf[arg_index];
+
+		pid_pname->pname[i] = c;
+		if (c == '\0')
+			break;
 	}
 
 	// Pupulate tgid

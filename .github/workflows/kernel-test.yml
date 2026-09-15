@@ -103,7 +103,7 @@ jobs:
             apt install -y unzip
 
             DAE_NETKIT_TEST=1 /host/dae/control.test \
-              -test.run '^(TestCreateNetkitPairIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
+              -test.run '^(TestBPFStartupVerifierLoad|TestCreateNetkitPairIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
               -test.count=1
 
             /host/dae/splice.test -test.count=1
