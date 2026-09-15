@@ -43,6 +43,11 @@ func (cell Cell) styled(value string) string {
 
 func (cell Cell) aligned(widths []int) string {
 	var out strings.Builder
+	var size int
+	for i, part := range cell.parts {
+		size += max(len(part), widths[i])
+	}
+	out.Grow(size)
 	for i, value := range cell.parts {
 		out.WriteString(value)
 		out.WriteString(strings.Repeat(" ", widths[i]-text.StringWidthWithoutEscSequences(value)))
@@ -51,10 +56,15 @@ func (cell Cell) aligned(widths []int) string {
 }
 
 // AlignRows returns a copy with composite cells padded to their column's shared
-// field widths. Pass all data rows together before AppendRows. Headers, ordinary
-// strings, numbers and placeholders are not interpreted or changed.
+// field widths. Include the header alongside data rows to align its Parts with
+// the values beneath them. Ordinary strings, numbers and placeholders are not
+// interpreted or changed.
 func AlignRows(rows []table.Row) []table.Row {
-	widths := make(map[int][]int)
+	var columns int
+	for _, row := range rows {
+		columns = max(columns, len(row))
+	}
+	widths := make([][]int, columns)
 	for _, row := range rows {
 		for column, value := range row {
 			cell, ok := value.(Cell)
