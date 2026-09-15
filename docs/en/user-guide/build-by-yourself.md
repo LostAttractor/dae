@@ -98,7 +98,7 @@ The Makefile supplies these settings. When invoking Go yourself, set them explic
 
 ```sh
 export CGO_ENABLED=1
-go test -tags=netgo,osusergo ./component/mitm/surge
+go test -tags=netgo,osusergo,grpcnotrace ./component/mitm/surge
 ```
 
 ## Debug builds
@@ -122,6 +122,13 @@ disables eBPF stripping even if `NOSTRIP=n` is specified.
 Use `make STATIC=y` (or explicitly `DEBUG_FLAGS=n`) for a release daemon build.
 Debug builds are larger and execute different, unoptimized Go code, so their
 size and performance differ from optimized builds that merely retain symbols.
+
+## Binary size
+
+`make` includes gRPC's `grpcnotrace` build tag by default to omit the optional
+RPC trace web implementation and its template dependencies. Use
+`make GRPC_TRACE=y` to include it. The architecture-specific eBPF `trace` tag is
+controlled separately by BPF generation.
 
 ## BPF map capacities
 

@@ -25,8 +25,13 @@ BPF_GO_LDFLAGS := -X github.com/daeuniverse/dae/common/consts.MaxMatchSetLen_=$(
 DEBUG_FLAGS ?= n
 NOSTRIP ?= n
 STATIC ?= n
+GRPC_TRACE ?= n
 CGO_ENABLED ?= 1
 export CGO_ENABLED
+GO_BUILD_TAGS := netgo,osusergo
+ifneq ($(GRPC_TRACE),y)
+GO_BUILD_TAGS := $(GO_BUILD_TAGS),grpcnotrace
+endif
 STRIP_PATH := $(shell command -v $(STRIP) 2>/dev/null)
 BUILD_TAGS_FILE := .build_tags
 ifneq ($(filter y,$(DEBUG_FLAGS) $(NOSTRIP)),)
@@ -134,7 +139,7 @@ check-go-version:
 dae: export GOOS=linux
 dae: check-cgo check-go-arch check-go-version plugins ebpf web-assets
 	@echo $(CFLAGS)
-	go build -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
+	go build -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
 
 # Refresh even after removing a plugin; run the generator on the build host.
@@ -191,7 +196,7 @@ ebpf: check-go-version check-bpf-capacities submodule clean-ebpf
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
 test: check-cgo plugins ebpf web-assets
-	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=netgo,osusergo,$(shell cat $(BUILD_TAGS_FILE)) ./...
+	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
