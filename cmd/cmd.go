@@ -13,11 +13,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/client/cli"
-	"github.com/daeuniverse/dae/common/json"
 	"github.com/daeuniverse/dae/component/mitm/plugin"
 	"github.com/daeuniverse/dae/config"
-	jsoniter "github.com/json-iterator/go"
-	"github.com/json-iterator/go/extra"
 	"github.com/spf13/cobra"
 )
 
@@ -39,8 +36,6 @@ var (
 )
 
 func init() {
-	jsoniter.RegisterTypeDecoder("bool", &json.FuzzyBoolDecoder{})
-	extra.RegisterFuzzyDecoders()
 	http.DefaultClient.Timeout = 30 * time.Second
 	config.Version = Version
 	rootCmd.Version = strings.Join([]string{
