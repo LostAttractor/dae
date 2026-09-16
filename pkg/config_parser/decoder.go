@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 )
 

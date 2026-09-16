@@ -6,7 +6,7 @@
 package config_parser
 
 import (
-	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
+	"github.com/antlr4-go/antlr/v4"
 	"github.com/daeuniverse/dae-config-dist/go/dae_config"
 )
 
@@ -21,7 +21,7 @@ func Parse(in string) (sections []*Section, err error) {
 	parser.RemoveErrorListeners()
 	parser.AddErrorListener(errorListener)
 	parser.BuildParseTrees = true
-	tree := parser.Start()
+	tree := parser.Start_()
 	if errorListener.err != nil {
 		return nil, errorListener.err
 	}
