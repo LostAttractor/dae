@@ -52,36 +52,39 @@ func (c *closeTrackingConn) Close() error {
 
 func TestStopAndAbortConnectionsClosesConcurrentSetups(t *testing.T) {
 	for range 1000 {
-		plane := &ControlPlane{tcpConnections: new(tcpConnectionTracker)}
+		plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
 		conn := newCloseTrackingConn()
 		start := make(chan struct{})
 		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
-			plane.tcpConnections.beginSetup(conn)
-		}()
-		go func() {
-			defer wg.Done()
+			if plane.tcpConnections.beginSetup(conn) {
+				plane.tcpConnections.finishSetup()
+			}
+		})
+		wg.Go(func() {
 			<-start
 			if err := plane.StopAndAbortConnections(); err != nil {
 				t.Errorf("StopAndAbortConnections: %v", err)
 			}
-		}()
+		})
 		close(start)
 		wg.Wait()
+		if err := plane.retireTraffic(); err != nil {
+			t.Fatal(err)
+		}
 
 		select {
 		case <-conn.closed:
-		default:
+		case <-time.After(time.Second):
 			t.Fatal("connection escaped concurrent abort")
 		}
 	}
 }
 
 func TestBeginTCPSetupAfterStopClosesConnection(t *testing.T) {
-	plane := &ControlPlane{tcpConnections: new(tcpConnectionTracker)}
+	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+	t.Cleanup(func() { _ = plane.retireTraffic() })
 	if err := plane.StopAndAbortConnections(); err != nil {
 		t.Fatal(err)
 	}

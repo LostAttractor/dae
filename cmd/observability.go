@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -18,8 +17,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 )
-
-const observabilityShutdownTimeout = 3 * time.Second
 
 var (
 	pprofServer     *http.Server
@@ -37,25 +34,16 @@ func init() {
 	metricsRegistry.MustRegister(stats.DefaultStore)
 }
 
+// Metrics and profiling have no state to commit; interrupted clients can retry.
 func stopHTTPServer(name string, server *http.Server, listener net.Listener) {
-	stopHTTPServerWithin(name, server, listener, observabilityShutdownTimeout)
-}
-
-func stopHTTPServerWithin(name string, server *http.Server, listener net.Listener, timeout time.Duration) {
 	if server == nil {
 		return
 	}
-	if listener != nil {
-		_ = listener.Close()
+	if err := server.Close(); err != nil {
+		log.WithError(err).WithField("server", name).Error("Could not close HTTP server")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		log.WithError(err).WithField("server", name).Debug("Graceful HTTP shutdown failed; closing remaining connections")
-		if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
-			log.WithError(closeErr).WithField("server", name).Error("Could not close HTTP server")
-		}
-	}
+	// Serve may not have registered the listener yet.
+	_ = listener.Close()
 }
 
 func serveHTTP(name string, server *http.Server, listener net.Listener, clearCurrent func(*http.Server)) {

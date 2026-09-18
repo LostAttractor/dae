@@ -3,6 +3,7 @@
 package control
 
 import (
+	"context"
 	"sync"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -33,6 +34,10 @@ type udpTaskQueue[K comparable] struct {
 }
 
 type udpTaskPool[K comparable] struct {
+	// Cancel packet work independently of ingress, which still delivers QUIC
+	// packets during MITM's graceful shutdown.
+	ctx                              context.Context
+	cancel                           context.CancelFunc
 	mu                               sync.Mutex
 	ready                            *sync.Cond
 	queues                           map[K]*udpTaskQueue[K]
@@ -47,7 +52,9 @@ type udpTaskPool[K comparable] struct {
 }
 
 func newUdpTaskPool[K comparable]() *udpTaskPool[K] {
+	ctx, cancel := context.WithCancel(context.Background())
 	p := &udpTaskPool[K]{
+		ctx: ctx, cancel: cancel,
 		queues: make(map[K]*udpTaskQueue[K]), memory: udpPacketMemory,
 		maxWorkers: udpTaskMaxWorkers, maxSources: udpTaskMaxSources, maxTasks: udpTaskMaxPending,
 	}
@@ -61,7 +68,7 @@ func newUdpTaskPool[K comparable]() *udpTaskPool[K] {
 // datagram until it returns; the pool then releases its buffer and budget.
 func (p *udpTaskPool[K]) emit(key K, data []byte, prepare func([]byte) udpTask) bool {
 	p.mu.Lock()
-	if p.closed {
+	if p.closed || p.ctx.Err() != nil {
 		p.mu.Unlock()
 		return false
 	}
@@ -143,7 +150,9 @@ func (p *udpTaskPool[K]) run() {
 		}
 		q.pending--
 		p.mu.Unlock()
-		task.run()
+		if p.ctx.Err() == nil {
+			task.run()
+		}
 		task.packet.release()
 		p.mu.Lock()
 		p.tasks--
@@ -165,4 +174,5 @@ func (p *udpTaskPool[K]) close() {
 	p.ready.Broadcast()
 	p.mu.Unlock()
 	p.workersDone.Wait()
+	p.cancel()
 }

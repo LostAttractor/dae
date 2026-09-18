@@ -54,11 +54,15 @@ func (r *dnsRelay) admit() bool {
 
 func (r *dnsRelay) finish() { <-r.slots; r.active.Done() }
 
-func (r *dnsRelay) Close() error {
+func (r *dnsRelay) stop() {
 	r.mu.Lock()
 	r.closed = true
 	r.cancel()
 	r.mu.Unlock()
+}
+
+func (r *dnsRelay) Close() error {
+	r.stop()
 	r.active.Wait()
 	return nil
 }

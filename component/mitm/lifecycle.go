@@ -41,10 +41,22 @@ func (h *Host) untrack(conn io.Closer) {
 	h.serving.Done()
 }
 
+// Abort interrupts requests and workers immediately. Close then joins their
+// cleanup without giving active connections a grace period.
+func (h *Host) Abort() {
+	h.forceCancel()
+	h.mu.Lock()
+	if h.cancel != nil {
+		h.cancel()
+	}
+	h.mu.Unlock()
+}
+
 // Close drains active work, forcing cancellation when the grace period expires.
 // Budget exhaustion is normal retirement; only resource cleanup errors are
 // returned. In either case, all host work finishes before plugin resources close
-// and the caller can retire routing, DNS and outbound state.
+// and the caller can retire routing, DNS and outbound state. Terminal callers
+// must enforce a process deadline for work that does not honor cancellation.
 func (h *Host) Close() error {
 	h.mu.Lock()
 	if h.closed {
@@ -56,48 +68,44 @@ func (h *Host) Close() error {
 	if h.cancel != nil {
 		h.cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), h.options.DrainTimeout)
+	ctx, cancel := context.WithTimeout(h.forceContext, h.options.DrainTimeout)
 	defer cancel()
 	var shutdowns sync.WaitGroup
 	for _, shutdown := range h.connections {
 		shutdowns.Go(func() { _ = shutdown(ctx) })
 	}
 	h.mu.Unlock()
-	finished := make(chan error, 1)
+	finished := make(chan struct{})
 	go func() {
 		h.workers.Wait()
 		shutdowns.Wait()
 		h.serving.Wait()
 		h.requests.Wait()
-		var errs []error
-		for i := len(h.instances) - 1; i >= 0; i-- {
-			if c, ok := h.instances[i].Plugin.(io.Closer); ok {
-				errs = append(errs, c.Close())
-			}
-		}
-		finished <- errors.Join(errs...)
+		close(finished)
 	}()
-	forced := false
 	select {
-	case h.closeErr = <-finished:
+	case <-finished:
 	case <-ctx.Done():
-		forced = true
-		h.options.Logger.WithField("drain_timeout", h.options.DrainTimeout).Debug("MITM drain deadline reached; forcing active connections to close")
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			h.options.Logger.WithField("drain_timeout", h.options.DrainTimeout).Debug("MITM drain deadline reached; forcing active connections to close")
+		}
 	}
 	h.forceCancel()
+	var forceCloses sync.WaitGroup
 	h.mu.Lock()
-	var remaining []io.Closer
 	for conn := range h.connections {
-		remaining = append(remaining, conn)
+		// One blocked transport must not prevent cancellation of the others.
+		forceCloses.Go(func() { _ = conn.Close() })
 	}
 	h.mu.Unlock()
-	for _, conn := range remaining {
-		_ = conn.Close()
-	}
-	if forced {
-		// Cancellation and socket closure unblock streams, uploads, WebSockets
-		// and upstream dials. Join their cleanup before retiring shared state.
-		h.closeErr = <-finished
+	// Join both request cleanup and forced socket closure before releasing any
+	// plugin resources. The daemon's shutdown watchdog bounds a stuck join.
+	forceCloses.Wait()
+	<-finished
+	for i := len(h.instances) - 1; i >= 0; i-- {
+		if c, ok := h.instances[i].Plugin.(io.Closer); ok {
+			h.closeErr = errors.Join(h.closeErr, c.Close())
+		}
 	}
 	h.memoryLimit.Close()
 	close(h.closeDone)

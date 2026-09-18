@@ -51,6 +51,13 @@ func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections b
 // resolution. Embedders install and pass the resolver before concurrent work.
 // Run starts the daemon with the binary's complete set of plugin types.
 func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string]plugin.Definition, resolver *netutils.InternalResolver) error {
+	shutdownCtx, stopShutdownSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	defer stopShutdownSignals()
+	stopWatchdog := watchShutdown(shutdownCtx, shutdownTimeout, func() {
+		log.WithField("timeout", shutdownTimeout).Error("Shutdown timed out; forcing process exit")
+		os.Exit(1)
+	})
+	defer stopWatchdog()
 	// Remove AbortFile at beginning.
 	_ = os.Remove(AbortFile)
 	startPprofServer(conf.Global.PprofPort)
@@ -69,8 +76,6 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 
 	// New ControlPlane.
 	startupStarted := time.Now()
-	shutdownCtx, stopShutdownSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	defer stopShutdownSignals()
 	c, err := newControlPlane(shutdownCtx, nil, conf, externGeoDataDirs, runtimeSettings, definitions)
 	startupErr := shutdownCtx.Err()
 	if err == nil && startupErr != nil {
@@ -131,10 +136,12 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 	// a deferred exit(c) would capture the startup plane, closing the retired
 	// plane a second time while the final, bpf-owning plane is never closed.
 	defer func() {
+		// Cancel even on an internal error, arming the shutdown deadline and
+		// restoring default handling for any further termination signals.
+		stopShutdownSignals()
+		log.Info("Shutting down")
 		resolver.SetRoute(nil)
-		localAPI.Close()
-		managementAPI.Close()
-		exit(c)
+		exit(c, localAPI, managementAPI)
 	}()
 	select {
 	case ready := <-readyChan:
@@ -374,10 +381,41 @@ loop:
 	return nil
 }
 
-func exit(c *control.ControlPlane) {
-	log.Info("Shutting down")
+const shutdownTimeout = 15 * time.Second
+
+// Bound terminal shutdown even when a plugin or an I/O operation cannot be
+// canceled. Shared state must stay alive until its users finish; on timeout the
+// daemon exits instead of continuing teardown underneath those users.
+func watchShutdown(ctx context.Context, timeout time.Duration, forceExit func()) func() {
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			forceExit()
+		}
+	})
+	return func() {
+		close(done)
+		stop()
+	}
+}
+
+func exit(c *control.ControlPlane, servers ...*apiserver.Server) {
 	startPprofServer(0)
 	startMetricsServer(0)
+	// Interrupt API requests and traffic before joining handlers or workers.
+	for _, server := range servers {
+		server.Stop()
+	}
+	if err := c.StopAndAbortConnections(); err != nil {
+		log.WithError(err).Error("Could not stop control plane ingress")
+	}
+	for _, server := range servers {
+		server.Close()
+	}
 	if err := os.Remove(PidFilePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.WithError(err).Warn("Could not remove PID file")
 	}

@@ -366,6 +366,27 @@ func TestUDPQueuedCancellationReleasesBuffer(t *testing.T) {
 	require.Zero(t, p.memory.Status().Used)
 }
 
+func TestUdpTaskPoolAbortDiscardsQueuedWork(t *testing.T) {
+	p := newUdpTaskPool[int]()
+	p.memory = membuffer.NewBudget(4096)
+	t.Cleanup(p.close)
+	started, release := make(chan struct{}), make(chan struct{})
+	finish := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(finish)
+	require.True(t, emitUDPTask(p, 1, func() { close(started); <-release }))
+	<-started
+	queuedRan := false
+	require.True(t, p.emit(1, []byte("discard on shutdown"), func([]byte) udpTask {
+		return func() { queuedRan = true }
+	}))
+	require.NotZero(t, p.memory.Status().Used)
+	p.cancel()
+	finish()
+	p.close()
+	require.False(t, queuedRan, "aborted pool executed queued business work")
+	require.Zero(t, p.memory.Status().Used)
+}
+
 func TestUDPQueuedWriteUsesRemainingDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := newUdpTaskPool[netip.AddrPort]()

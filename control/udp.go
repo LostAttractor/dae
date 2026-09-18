@@ -128,10 +128,10 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, ro
 	deadline := time.Now().Add(consts.DefaultDialTimeout)
 	c.udpTaskPool.emit(src, data, func(owned []byte) udpTask {
 		return func() {
-			if c.ctx.Err() != nil || !time.Now().Before(deadline) {
+			if c.ctx.Err() != nil || c.udpTaskPool.ctx.Err() != nil || !time.Now().Before(deadline) {
 				return
 			}
-			ctx, cancel := context.WithDeadline(c.ctx, deadline)
+			ctx, cancel := context.WithDeadline(c.udpTaskPool.ctx, deadline)
 			defer cancel()
 			if err := c.handlePkt(ctx, owned, src, dst, routingResult); err != nil && ctx.Err() == nil {
 				log.WithError(err).WithFields(log.Fields{"source": src, "destination": dst}).Debug("UDP packet handling failed")

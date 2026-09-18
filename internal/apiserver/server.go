@@ -6,6 +6,7 @@
 package apiserver
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 type Server struct {
 	listener net.Listener
 	http     *http.Server
+	cancel   context.CancelFunc
 	mu       sync.RWMutex
 	handler  http.Handler
 }
@@ -34,8 +36,9 @@ func Listen(network, address string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{listener: listener}
-	s.http = &http.Server{Handler: s, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8 << 10}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Server{listener: listener, cancel: cancel}
+	s.http = &http.Server{Handler: s, BaseContext: func(net.Listener) context.Context { return ctx }, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8 << 10}
 	go func() {
 		if err := s.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			log.WithError(err).Error("API server stopped")
@@ -70,13 +73,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
 }
 
-func (s *Server) Close() {
+// Stop closes ingress and cancels requests. Close joins their state mutations
+// before the owner releases the control plane.
+func (s *Server) Stop() {
 	if s == nil {
 		return
 	}
-	s.SetHandler(nil)
+	// Interrupt requests before joining them. A handler may be waiting for
+	// cancellation or blocked reading/writing its connection while holding mu.
+	s.cancel()
 	_ = s.http.Close()
 	// Also close when Serve has not yet registered the listener. UnixListener
 	// owns unlinking, so repeated Close cannot unlink a replacement daemon's socket.
 	_ = s.listener.Close()
+}
+
+func (s *Server) Close() {
+	s.Stop()
+	s.SetHandler(nil)
 }

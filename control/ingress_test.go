@@ -1,7 +1,6 @@
 package control
 
 import (
-	"context"
 	"errors"
 	"net"
 	"strings"
@@ -42,9 +41,8 @@ func TestServeReportsIngressFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer udp.Close()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			c := &ControlPlane{ctx: ctx, cancel: cancel, core: &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{ListenSocketMap: m}}}}}
+			c := newLifecycleTestControlPlane(new(UdpEndpointPool))
+			c.core = &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{ListenSocketMap: m}}}}
 			defer c.retireTraffic()
 			ready, done := make(chan bool, 1), make(chan error, 1)
 			go func() { done <- c.Serve(ready, &Listener{tcpListener: tcp, packetConn: udp}) }()
@@ -77,7 +75,7 @@ func TestServeReportsIngressFailure(t *testing.T) {
 				} else if err == nil || !strings.Contains(err.Error(), test.failure) {
 					t.Fatalf("ingress failure = %v, want %q", err, test.failure)
 				}
-				if ctx.Err() == nil {
+				if c.ctx.Err() == nil {
 					t.Fatal("failed serving plane retained an active context")
 				}
 			case <-time.After(time.Second):

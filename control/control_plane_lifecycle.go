@@ -166,25 +166,24 @@ func (c *ControlPlane) InheritDomainRegistry(old *ControlPlane) {
 	)
 }
 
-func (c *ControlPlane) StopAndAbortConnections() (err error) {
+// StopAndAbortConnections interrupts traffic without waiting for peer EOF or
+// handlers to finish. Close must join control-plane users before freeing state.
+func (c *ControlPlane) StopAndAbortConnections() error {
 	c.abortConnections.Store(true)
-	var errs []error
 	// Retire ingress first: closing a large connection set must not leave the
 	// old Accept/Read calls consuming traffic intended for the successor.
-	if _, ingressErr := c.closeIngress(); ingressErr != nil {
-		errs = append(errs, ingressErr)
+	_, err := c.closeIngress()
+	c.cancelTCPSetups()
+	c.udpTaskPool.cancel()
+	c.dnsRelay.stop()
+	if c.mitmHost != nil {
+		c.mitmHost.Abort()
 	}
-	if c.tcpConnections != nil {
-		for _, conn := range c.tcpConnections.stopAndSnapshot() {
-			if err = conn.Close(); err != nil {
-				errs = append(errs, err)
-			}
-		}
+	for _, conn := range c.tcpConnections.stopAndSnapshot() {
+		closeInBackground(conn)
 	}
-	if c.udpEndpoints != nil {
-		c.udpEndpoints.closeAll()
-	}
-	return errors.Join(errs...)
+	c.udpEndpoints.closeAll()
+	return err
 }
 
 func (c *ControlPlane) retireTraffic() error {
@@ -192,42 +191,31 @@ func (c *ControlPlane) retireTraffic() error {
 	// MITM has drained. The successor does not start serving until Close returns.
 	keepUDP := c.mitmHost != nil && !c.abortConnections.Load()
 	ingress, ingressErr := c.retireIngress(keepUDP)
-	if c.tcpConnections != nil {
-		c.tcpConnections.stopAccepting()
-	}
-	if c.cancelTCPSetups != nil {
-		c.cancelTCPSetups()
-	}
-	if ingress != nil && !keepUDP {
-		ingress.loops.Wait()
-	}
-	if c.udpTaskPool != nil {
-		c.udpTaskPool.close()
-	}
-	if c.tcpConnections != nil {
-		c.tcpConnections.waitForSetups()
-	}
-	if c.udpEndpoints != nil {
-		c.udpEndpoints.removePending()
-	}
-	if c.abortConnections.Load() && c.udpEndpoints != nil {
+	c.tcpConnections.stopAccepting()
+	c.cancelTCPSetups()
+	c.udpTaskPool.close()
+	c.tcpConnections.waitForSetups()
+	if c.abortConnections.Load() {
 		// StopAndAbortConnections performs an initial sweep. Repeat after the
 		// task drain to catch an endpoint published by an already-accepted task.
 		c.udpEndpoints.closeAll()
+	} else {
+		c.udpEndpoints.removePending()
 	}
 	if c.mitmHost != nil {
 		ingressErr = errors.Join(ingressErr, c.mitmHost.Close())
 	}
 	_, closeErr := c.closeIngress()
+	// Admission is closed above; join any final reads before releasing maps.
 	if ingress != nil {
 		ingress.loops.Wait()
 	}
-	if c.cancel != nil {
-		c.cancel()
-	}
+	c.cancel()
 	return errors.Join(ingressErr, closeErr)
 }
 
+// Close drains requests and releases the plane. For terminal shutdown or an
+// aborting reload, call StopAndAbortConnections first to skip business draining.
 func (c *ControlPlane) Close() (err error) {
 	c.core.lifecycleMu.Lock()
 	defer c.core.lifecycleMu.Unlock()

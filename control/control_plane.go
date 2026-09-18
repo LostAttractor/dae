@@ -287,12 +287,7 @@ func NewControlPlane(
 	// Retire DNS work before closing its outbound resources and checks.
 	plane.deferFuncs = append(plane.deferFuncs, plane.closeOutbounds)
 	// Plugin shutdown drains requests before this relay cancellation and join.
-	plane.deferFuncs = append(plane.deferFuncs, func() error {
-		if plane.dnsRelay != nil {
-			return plane.dnsRelay.Close()
-		}
-		return nil
-	})
+	plane.deferFuncs = append(plane.deferFuncs, plane.dnsRelay.Close)
 
 	for _, group := range outbounds {
 		group.DeferStats()

@@ -622,6 +622,7 @@ func newLifecycleTestControlPlane(udpEndpoints *UdpEndpointPool) *ControlPlane {
 	ctx, cancel := context.WithCancel(context.Background())
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	return &ControlPlane{
+		dnsRelay:        newDNSRelay(),
 		tcpConnections:  new(tcpConnectionTracker),
 		udpTaskPool:     newUdpTaskPool[netip.AddrPort](),
 		udpEndpoints:    udpEndpoints,

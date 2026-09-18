@@ -192,7 +192,7 @@ func TestObservabilityServersCanSwapPorts(t *testing.T) {
 	}
 }
 
-func TestStopHTTPServerForcesCloseAfterTimeout(t *testing.T) {
+func TestStopHTTPServerDoesNotDrainRequests(t *testing.T) {
 	listener, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestStopHTTPServerForcesCloseAfterTimeout(t *testing.T) {
 	}
 
 	started := time.Now()
-	stopHTTPServerWithin("test", server, listener, 25*time.Millisecond)
+	stopHTTPServer("test", server, listener)
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("forced server shutdown took %v", elapsed)
 	}
