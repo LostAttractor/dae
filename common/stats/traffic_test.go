@@ -113,6 +113,7 @@ func TestStoreHistoryKeepsLastMinute(t *testing.T) {
 
 func TestStoreCountsFallbackConnections(t *testing.T) {
 	path := trafficTestPath(t.Name())
+	path.Outbound = "direct"
 	store := newStoreAt(time.Now())
 	regular := store.OpenConnection(path, false)
 	fallback := store.OpenConnection(path, true)
@@ -120,8 +121,19 @@ func TestStoreCountsFallbackConnections(t *testing.T) {
 	fallback.Close()
 
 	got := pathStats(t, store, path)
-	if got.TotalConnections != 2 || got.FallbackConnections != 1 {
+	if got.TotalConnections != 2 || store.DirectFallbackConnections() != 1 {
 		t.Fatalf("connection counts = %+v", got)
+	}
+	other := path
+	other.Network = common.NetworkUDP6
+	other.NodeID = "replacement-direct"
+	store.OpenConnection(other, true).Close()
+	store.RecordReload()
+	if got := store.DirectFallbackConnections(); got != 2 {
+		t.Fatalf("fallback total across paths and reload = %d, want 2", got)
+	}
+	if got := newStoreAt(time.Now()).DirectFallbackConnections(); got != 0 {
+		t.Fatalf("new process inherited fallback total %d", got)
 	}
 }
 
@@ -138,8 +150,9 @@ func TestSnapshotKeepsConcurrentFallbackCountsConsistent(t *testing.T) {
 	}()
 
 	for {
+		fallback := store.DirectFallbackConnections()
 		got := pathStats(t, store, path)
-		if got.FallbackConnections > got.TotalConnections || got.ActiveConnections > got.TotalConnections {
+		if fallback > got.TotalConnections || got.ActiveConnections > got.TotalConnections {
 			t.Fatalf("inconsistent connection counts: %+v", got)
 		}
 		select {
@@ -357,6 +370,7 @@ func TestStoreCollectsConnectionMetrics(t *testing.T) {
 	connection := store.OpenConnection(path, true)
 	connection.RecordUpload(42)
 	connection.Close()
+	store.OpenConnection(trafficTestPath(t.Name()+"-other"), false).Close()
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(store)
 
@@ -367,6 +381,11 @@ func TestStoreCollectsConnectionMetrics(t *testing.T) {
 	uploadFound := false
 	fallbackFound := false
 	for _, family := range families {
+		if family.GetName() == "dae_fallback_connections_total" {
+			if len(family.Metric) != 1 || len(family.Metric[0].Label) != 0 {
+				t.Fatalf("fallback metric retained per-path series: %v", family)
+			}
+		}
 		for _, metric := range family.GetMetric() {
 			if family.GetName() == "dae_fallback_connections_total" && metric.GetCounter().GetValue() == 1 {
 				fallbackFound = true

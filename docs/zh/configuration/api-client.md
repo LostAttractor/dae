@@ -42,7 +42,7 @@ TCP 需要启用 [API 配置](api.md)。设置 `DAE_API_TOKEN` 后再执行远�
 
 Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改。成功响应上限为 32 MiB，错误正文上限为 8 KiB；错误正文过长时仍可通过 `client.Error.StatusCode` 判断 HTTP 状态。
 
-状态表中的 `UP/24H`、`ACTIVE / FALLBACK TOTAL` 和流量的 `AVG/MAX` 使用复合表头，与数据共用各子字段的宽度：标题与数值都从各自字段左侧开始，`/` 在各行中的位置固定。显示宽度计算支持中文和 ANSI 颜色。
+状态表中的 `UP/24H` 和流量的 `AVG/MAX` 使用复合表头，与数据共用各子字段的宽度：标题与数值都从各自字段左侧开始，`/` 在各行中的位置固定。显示宽度计算支持中文和 ANSI 颜色。
 
 ## 流量表
 
@@ -51,11 +51,12 @@ Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改�
 ```text
 GROUP / DIALER       UPLOAD 1M     DOWNLOAD 1M   AVG /MAX ↑     AVG /MAX ↓     TOTAL ↑  TOTAL ↓
 ALL                  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  54.3/146Kbps   2.48/20.8Mbps  7.21M    85.5M
-direct(direct)       ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
+direct              ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
 proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  51.5/144Kbps   2.47/20.8Mbps  7.15M    85.4M
 ```
 
 - 普通 status 显示有活动连接或累计有效载荷字节的 group，组内列出当前选中、有活动连接或累计字节的 dialer。`--recent` 只显示最近一分钟上传或下载样本非零的 group/dialer；仅有当前选择、活动连接或历史累计量不会保留该行。筛选后只有一个 dialer 时合并为 `group(dialer)`；多个时显示 `group (total)` 和缩进明细。同名但不同 ID 的 dialer 分开统计。`--verbose` 展开全部 group，并包含空闲 dialer。
+- 内置 direct 在各模式下都使用一行 `direct` 展示组级总量，不重复展开同名节点。
 - `ALL` 始终显示并使用全局统计；group 行（包括合并行）使用 API 的 group 统计，包含已退休路径。同一 dialer 在不同 group 中分别计量，各统计层级不应相加。`TOTAL ↑`、`TOTAL ↓` 是累计上传、下载的有效载荷字节数，跨 reload 保留，重启清零。
 - `UPLOAD 1M`、`DOWNLOAD 1M` 使用最近十二个已完成的五秒吞吐样本，时间从左到右。同一行上下行共用高度尺度，各行分别缩放；没有历史时显示 `-`。
 - `AVG/MAX` 位于趋势图之后、`TOTAL ↑/↓` 之前，显示同一窗口内已有样本的平均和最大比特率。完整表格超出终端宽度时，普通和 recent 视图隐藏这两个速率列；`--verbose` 始终包含它们。剩余溢出从右缘截断。
@@ -63,11 +64,14 @@ proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂
 
 ## 近期状态视图
 
-`status --recent` 每组一行显示当前选择与连通性，底部再显示统一的流量表。例如主表的无颜色输出：
+所有文本模式都单独显示内置 direct 的活动连接数、累计连接数及非零的 `Fallback Total`。direct 没有连通性检查或可用率历史；`--verbose` 额外显示其分网络连接数。内置 block 由 daemon 隐藏。
+
+`status --recent` 每个代理组一行显示当前选择与连通性，底部再显示统一的流量表。例如无颜色输出：
 
 ```text
-GROUP     STATE  24H      1H            SELECTED              ACTIVE / FALLBACK TOTAL
-direct    N/A    -        -             direct                8      / 3
+direct: 8 active · 120 total · Fallback Total 3
+
+GROUP     STATE  24H      1H            SELECTED              ACTIVE
 proxy_hk  UP     100.00%  [......++++]  香港标准 IEPL 专线 2  0
 proxy_jp  UP     100.00%  [......++++]  lightsail             108
 proxy_tw  UP     100.00%  [......++++]  台湾标准 IEPL 专线 3  0
@@ -75,7 +79,7 @@ proxy_us  UP     100.00%  [......++++]  美国高级 IEPL 专线 1  0
 tor       UP     100.00%  [......++++]  tor                   0
 ```
 
-- `ACTIVE / FALLBACK TOTAL` 分别显示活动连接数和进程生命周期内累计 fallback 连接数，两个数字及对应表头各自左对齐，`/` 的位置固定。fallback 为零时省略该计数及分隔符。累计 fallback 跨 reload 保留，重启清零，不表示当前正在 fallback。
+- `ACTIVE` 显示组的活动连接数。fallback 是进程级的单一 direct 计数，不按节点、组或网络分别维护。它累计因无可用节点而回退到 direct 且成功建立的连接，跨 reload 保留，重启清零，不表示当前正在 fallback 的连接数。
 - `SELECTED` 按 `selected_node_ids` 显示当前选中的节点。紧凑视图只列出已确认支持或已经有选择的网络；没有当前选择的 `unknown` 和 `unsupported` IP 家族、协议均省略。所有显示的网络选中同一节点时只写节点名。只有选择不同才用 `ipv4:`、`ipv6:`、`tcp:`、`udp:` 或具体网络名区分，并用分号连接。已确认支持但没有当前选择时显示 `-`；所有网络都没有选择时也显示 `-`。`random` 表示逐连接随机选择，没有稳定的组级节点。已有连接可能仍使用先前选择的节点。
 - `STATE`、`24H`、`1H` 分列显示当前状态、时间加权可用率和十个六分钟连通性桶。表头和数据统一左对齐，百分比与历史图也保持各自固定的左侧起点。无颜色时 `+` / `x` / `.` 分别表示可用、不可用、未观察；彩色终端使用绿点、红点和灰色空心点。无连通性检查的组显示 `N/A`，可用率和历史显示 `-`。
 - 组名最多占 18 个显示列，每个节点选择最多占 32 个显示列，超长部分以 `…` 省略，支持中文和 ANSI 颜色。表头、组行和全局摘要超过终端宽度时直接截断右侧，不生成续行，右侧的部分节点或计数可能因此不可见。无法获取终端宽度时不做整行截断。
@@ -173,7 +177,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 ## 状态字段与版本兼容
 
-当前 `StatusSnapshot.schema` 为 `10`。域名表的 `limit: 0` 表示用户态无容量上限，`breakdown.gc` 是按时间回收的 pair 数量；内核 `candidates` 表示容量选择前的候选 IP 数量。插件报告位于 `plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。状态顶层不再包含 `surge` 字段。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
+当前 `StatusSnapshot.schema` 为 `11`。顶层 `direct_fallback_connections` 是单一的 direct fallback 计数；`PathStats` 只包含活动/累计连接、流量总量及历史，不包含 fallback 字段。Prometheus 的 `dae_fallback_connections_total` 是一条无标签的进程级计数。域名表的 `limit: 0` 表示用户态无容量上限，`breakdown.gc` 是按时间回收的 pair 数量；内核 `candidates` 表示容量选择前的候选 IP 数量。插件报告位于 `plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。状态顶层不再包含 `surge` 字段。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
 
 Registry 的 `used` 是域名–IP 配对数，`breakdown.domains`、`ips`、`ipv4`、`ipv6` 分别表示保留的域名数、去重 IP 数及地址类型分布。同一 IP 被多个域名引用仍只计一次，`ips = ipv4 + ipv6`。CLI 明确区分这些数量与内核驻留、容量遗漏数量。
 

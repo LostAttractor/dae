@@ -128,7 +128,7 @@ func TestClientDoesNotDependOnDefaultTransport(t *testing.T) {
 	defer func() { http.DefaultTransport = previous }()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, `{"schema":10}`)
+		_, _ = io.WriteString(w, `{"schema":11}`)
 	}))
 	defer server.Close()
 	c, err := New(Options{Endpoint: server.URL})
@@ -163,14 +163,15 @@ func TestStatusAcceptsChangingHealthAndRejectsInvalidEnvelope(t *testing.T) {
 		name, body string
 		wantError  bool
 	}{
-		{"health transition", `{"schema":10,"version":"test","groups":[{"name":"proxy","selected_node_ids":["node","","",""],"nodes":[{"id":"node","healthy":false}]}]}`, false},
+		{"health transition", `{"schema":11,"version":"test","groups":[{"name":"proxy","selected_node_ids":["node","","",""],"nodes":[{"id":"node","healthy":false}]}]}`, false},
 		{"unsupported schema", `{"schema":99}`, true},
 		{"registry counts unavailable", `{"schema":9,"tables":[{"name":"domain-registry","used":6896,"limit":0,"breakdown":{"gc":0}}]}`, true},
 		{"missing schema", `{}`, true},
 		{"null", `null`, true},
-		{"duplicate key", `{"schema":10,"schema":10}`, true},
-		{"trailing JSON", `{"schema":10} {}`, true},
-		{"wrong type", `{"schema":"10"}`, true},
+		{"old per-path fallback schema", `{"schema":10}`, true},
+		{"duplicate key", `{"schema":11,"schema":11}`, true},
+		{"trailing JSON", `{"schema":11} {}`, true},
+		{"wrong type", `{"schema":"11"}`, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, test.body) }))

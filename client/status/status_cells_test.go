@@ -31,8 +31,8 @@ func TestStatusCompositeMetricsAlign(t *testing.T) {
 	now := time.Now()
 	first, second := testNodeStatus(now), testNodeStatus(now)
 	first.Name, second.Name = "日本节点", "short"
-	first.Stats.ActiveConnections, first.Stats.TotalConnections, first.Stats.FallbackConnections = 47, 89296, 0
-	second.Stats.ActiveConnections, second.Stats.TotalConnections, second.Stats.FallbackConnections = 8, 402, 12
+	first.Stats.ActiveConnections, first.Stats.TotalConnections = 47, 89296
+	second.Stats.ActiveConnections, second.Stats.TotalConnections = 8, 402
 	first.Availability.LastFailureStartedAt, first.Availability.LastFailureDuration = now.Add(-31*time.Second), 0
 	second.Availability.LastFailureStartedAt, second.Availability.LastFailureDuration = now.Add(-85*time.Second), 85*time.Second
 	first.Latency.Last, first.Latency.Avg10, first.Latency.MovingAvg = 9*time.Millisecond, 1020*time.Millisecond, 40*time.Millisecond

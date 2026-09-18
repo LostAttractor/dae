@@ -11,12 +11,7 @@ import (
 )
 
 func formatConnCounts(value api.PathStats) clitable.Cell {
-	fallback := ""
-	if value.FallbackConnections > 0 {
-		fallback = fmt.Sprintf(" (fb %d)", value.FallbackConnections)
-	}
-	return clitable.Parts(fmt.Sprint(value.ActiveConnections), "/", fmt.Sprint(value.TotalConnections),
-		fallback)
+	return clitable.Parts(fmt.Sprint(value.ActiveConnections), "/", fmt.Sprint(value.TotalConnections))
 }
 
 func availabilityCell(ratio float64, failed, total int64) clitable.Cell {

@@ -70,6 +70,10 @@ func renderTraffic(snapshot *api.StatusSnapshot, mode trafficMode) string {
 		if mode != trafficVerbose && !include(group.Stats) {
 			continue
 		}
+		if group.TargetKind == "builtin" {
+			rows = append(rows, trafficRow(colorize(group.Name, text.Bold), group.Stats))
+			continue
+		}
 		var nodes []int
 		for i, node := range group.Nodes {
 			if mode == trafficVerbose || include(node.Stats) || mode == trafficOrdinary && slices.Contains(group.SelectedNodeIDs[:], node.ID) {

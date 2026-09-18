@@ -140,8 +140,8 @@ var (
 	)
 	fallbackConnectionsDesc = prometheus.NewDesc(
 		"dae_fallback_connections_total",
-		"Cumulative number of established connections using no-connectivity fallback.",
-		pathLabels,
+		"Cumulative number of established connections falling back to direct when no proxy node is available.",
+		nil,
 		nil,
 	)
 	trafficBytesDesc = prometheus.NewDesc(
@@ -262,12 +262,13 @@ func unixSeconds(value time.Time) float64 {
 }
 
 func (s *Store) collectConnections(ch chan<- prometheus.Metric) {
+	fallback := s.DirectFallbackConnections()
 	snapshot := s.Snapshot()
+	ch <- prometheus.MustNewConstMetric(fallbackConnectionsDesc, prometheus.CounterValue, float64(fallback))
 	for path, stats := range snapshot {
 		labels := pathLabelValues(path)
 		ch <- prometheus.MustNewConstMetric(activeConnectionsDesc, prometheus.GaugeValue, float64(stats.ActiveConnections), labels...)
 		ch <- prometheus.MustNewConstMetric(totalConnectionsDesc, prometheus.CounterValue, float64(stats.TotalConnections), labels...)
-		ch <- prometheus.MustNewConstMetric(fallbackConnectionsDesc, prometheus.CounterValue, float64(stats.FallbackConnections), labels...)
 		ch <- prometheus.MustNewConstMetric(trafficBytesDesc, prometheus.CounterValue, float64(stats.UploadBytes),
 			path.NodeID, path.Outbound, path.Subtag, path.Dialer, path.Network.String(), trafficDirectionUpload)
 		ch <- prometheus.MustNewConstMetric(trafficBytesDesc, prometheus.CounterValue, float64(stats.DownloadBytes),

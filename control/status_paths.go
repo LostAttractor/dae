@@ -60,7 +60,6 @@ func indexPathStats(snapshot map[stats.Path]api.PathStats) pathStatsIndex {
 func addPathStats(dst *api.PathStats, other api.PathStats) {
 	dst.ActiveConnections += other.ActiveConnections
 	dst.TotalConnections += other.TotalConnections
-	dst.FallbackConnections += other.FallbackConnections
 	dst.UploadBytes += other.UploadBytes
 	dst.DownloadBytes += other.DownloadBytes
 	dst.History.UploadBytesPerSecond = addHistorySamples(dst.History.UploadBytesPerSecond, other.History.UploadBytesPerSecond)

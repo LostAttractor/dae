@@ -40,7 +40,7 @@ func (statusTestDialer) ListenPacket(context.Context, string) (net.PacketConn, e
 func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	snapshot := map[stats.Path]api.PathStats{
 		{NodeID: "shared-id", Outbound: "group", Subtag: "sub", Dialer: "alias-a", Network: common.NetworkTCP4}: {
-			ActiveConnections: 2, TotalConnections: 3, FallbackConnections: 1,
+			ActiveConnections: 2, TotalConnections: 3,
 			TrafficCounters: api.TrafficCounters{UploadBytes: 1000, DownloadBytes: 2000},
 			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{10, 100}, DownloadBytesPerSecond: []uint64{20, 200},
@@ -54,7 +54,7 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 			},
 		},
 		{NodeID: "shared-id", Outbound: "other", Dialer: "node", Network: common.NetworkTCP6}: {
-			ActiveConnections: 1, TotalConnections: 2, FallbackConnections: 2,
+			ActiveConnections: 1, TotalConnections: 2,
 			TrafficCounters: api.TrafficCounters{UploadBytes: 5000, DownloadBytes: 6000},
 			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{50, 500}, DownloadBytesPerSecond: []uint64{60, 600},
@@ -67,7 +67,7 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 	index := indexPathStats(snapshot)
 
 	if got := index.total; !reflect.DeepEqual(got, api.PathStats{
-		ActiveConnections: 8, TotalConnections: 12, FallbackConnections: 3,
+		ActiveConnections: 8, TotalConnections: 12,
 		TrafficCounters: api.TrafficCounters{UploadBytes: 9000, DownloadBytes: 12000},
 		History: api.TrafficHistory{
 			UploadBytesPerSecond: []uint64{90, 900}, DownloadBytesPerSecond: []uint64{120, 1200},
@@ -76,7 +76,7 @@ func TestPathStatsAggregateByNetworkGroupAndNode(t *testing.T) {
 		t.Fatalf("global path stats = %+v", got)
 	}
 	if got := index.groups["group"].total; !reflect.DeepEqual(got, api.PathStats{
-		ActiveConnections: 7, TotalConnections: 10, FallbackConnections: 1,
+		ActiveConnections: 7, TotalConnections: 10,
 		TrafficCounters: api.TrafficCounters{UploadBytes: 4000, DownloadBytes: 6000},
 		History: api.TrafficHistory{
 			UploadBytesPerSecond: []uint64{40, 400}, DownloadBytesPerSecond: []uint64{60, 600},
@@ -155,9 +155,9 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		Link: "block://",
 	}, false, "")
 	direct := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive,
-		[]*dialer.Dialer{directDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{directDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback).SetTargetMetadata(outbound.TargetKindBuiltin)
 	block := outbound.NewDialerGroup(option, "block", outbound.GroupKindInvisible,
-		[]*dialer.Dialer{blockDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback)
+		[]*dialer.Dialer{blockDialer}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, callback).SetTargetMetadata(outbound.TargetKindBuiltin)
 	t.Cleanup(func() {
 		_ = direct.Close()
 		_ = block.Close()
@@ -182,8 +182,13 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 		outbounds:         []*outbound.DialerGroup{direct, block, group},
 		criticalOutbounds: []bool{false, false, true},
 	}
+	before := stats.DefaultStore.DirectFallbackConnections()
+	stats.DefaultStore.OpenConnection(directDialer.StatsPath("direct", common.NetworkTCP4.NetworkType()), true).Close()
 	snapshot := mustStatusSnapshot(t, plane)
-	if directStatus := snapshot.Groups[0]; directStatus.ChecksConnectivity || directStatus.Policy != "" {
+	if snapshot.DirectFallbackConnections != before+1 {
+		t.Fatalf("snapshot lost the direct fallback counter: %d", snapshot.DirectFallbackConnections)
+	}
+	if directStatus := snapshot.Groups[0]; directStatus.ChecksConnectivity || directStatus.Policy != "" || directStatus.Availability.Seen || len(directStatus.Availability.Recent.States) != 0 {
 		t.Fatalf("direct status = %+v, want singleton without connectivity or policy", directStatus)
 	}
 	if groupStatus := snapshot.Groups[1]; !groupStatus.Critical || !groupStatus.ChecksConnectivity || groupStatus.Connectivity != api.GroupStateChecking {
@@ -202,6 +207,9 @@ func TestStatusSnapshotAggregatesGroupHealth(t *testing.T) {
 
 	plane.criticalOutbounds[2] = false
 	snapshot = mustStatusSnapshot(t, plane)
+	if len(snapshot.Groups) != 2 || snapshot.DirectFallbackConnections != before+1 {
+		t.Fatal("status exposed block or duplicated fallback accounting")
+	}
 	if snapshot.Groups[1].Critical {
 		t.Fatal("non-critical group remained critical")
 	}

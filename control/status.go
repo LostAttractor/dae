@@ -139,16 +139,20 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 // StatusSnapshot aggregates this plane's current runtime state. The caller must
 // keep the plane alive until snapshot construction returns.
 func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
+	// Read the fallback counter before path totals so concurrent opens cannot
+	// make it exceed the direct connections included in this snapshot.
+	directFallback := stats.DefaultStore.DirectFallbackConnections()
 	paths := indexPathStats(stats.DefaultStore.SnapshotWithHistory())
 	snapshot := &api.StatusSnapshot{
-		Schema:       api.StatusSchemaVersion,
-		Version:      version,
-		StartedAt:    stats.DefaultStore.StartedAt(),
-		LastReloadAt: stats.DefaultStore.LastReload(),
-		Stats:        paths.total,
-		Networks:     api.NetworkValues[api.PathStats](paths.networks),
-		Tables:       c.tableStatuses(),
-		Groups:       c.groupStatuses(paths),
+		Schema:                    api.StatusSchemaVersion,
+		Version:                   version,
+		StartedAt:                 stats.DefaultStore.StartedAt(),
+		LastReloadAt:              stats.DefaultStore.LastReload(),
+		Stats:                     paths.total,
+		DirectFallbackConnections: directFallback,
+		Networks:                  api.NetworkValues[api.PathStats](paths.networks),
+		Tables:                    c.tableStatuses(),
+		Groups:                    c.groupStatuses(paths),
 	}
 	snapshot.Plugins = c.MITMStatus()
 	return snapshot

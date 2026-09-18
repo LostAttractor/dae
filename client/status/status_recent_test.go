@@ -33,10 +33,9 @@ func recentTestGroup() api.GroupStatus {
 			Recent: api.GroupStateWindow{States: states},
 		},
 		Stats: api.PathStats{
-			ActiveConnections:   31,
-			FallbackConnections: 2,
-			UploadBytes:         3000,
-			DownloadBytes:       4000,
+			ActiveConnections: 31,
+			UploadBytes:       3000,
+			DownloadBytes:     4000,
 			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{100}, DownloadBytesPerSecond: []uint64{200},
 			},
@@ -52,10 +51,10 @@ func TestRecentGroupOverviewAndTrends(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("want a header and one single-line group row:\n%s", got)
 	}
-	if header := strings.Join(strings.Fields(lines[0]), " "); header != "GROUP STATE 24H 1H SELECTED ACTIVE / FALLBACK TOTAL" {
+	if header := strings.Join(strings.Fields(lines[0]), " "); header != "GROUP STATE 24H 1H SELECTED ACTIVE" {
 		t.Fatalf("unclear column labels: %s", header)
 	}
-	if overview := strings.Join(strings.Fields(lines[1]), " "); overview != "proxy UP 99.92% [+.x.......] HK-01 31 / 2" {
+	if overview := strings.Join(strings.Fields(lines[1]), " "); overview != "proxy UP 99.92% [+.x.......] HK-01 31" {
 		t.Fatalf("selection or counters missing: %s", overview)
 	}
 	if text.StringWidthWithoutEscSequences(lines[1]) > 96 {
@@ -68,21 +67,19 @@ func TestRecentColumnsAlignAcrossGroups(t *testing.T) {
 	withStatusTerminalWidth(t, 160)
 	var groups []api.GroupStatus
 	for _, tc := range []struct {
-		name, node       string
-		active, fallback int64
-		ratio            float64
+		name, node string
+		active     int64
+		ratio      float64
 	}{
-		{"direct", "direct", 2, 1, 0},
-		{"proxy_hk", "香港高级 IEPL 专线 3", 0, 0, 1},
-		{"proxy_jp", "lightsail", 162, 12, 1},
-		{"tor", "tor", 9, 3, .5538},
-		{"busy", "busy", 1234567, 123456789, .9},
+		{"proxy_hk", "香港高级 IEPL 专线 3", 0, 1},
+		{"proxy_jp", "lightsail", 162, 1},
+		{"tor", "tor", 9, .5538},
+		{"busy", "busy", 1234567, .9},
 	} {
 		group := recentTestGroup()
 		group.Name = tc.name
-		group.ChecksConnectivity = tc.name != "direct"
 		group.Availability.Recent24h.UpRatio = tc.ratio
-		group.Stats.ActiveConnections, group.Stats.FallbackConnections = tc.active, tc.fallback
+		group.Stats.ActiveConnections = tc.active
 		group.Nodes = []api.NodeStatus{{ID: "node", Name: tc.node, Support: api.NetworkValues[api.NetworkSupportState]{
 			api.NetworkSupportConfirmed, api.NetworkSupportUnknown, api.NetworkSupportConfirmed, api.NetworkSupportUnknown,
 		}}}
@@ -120,22 +117,9 @@ func TestRecentColumnsAlignAcrossGroups(t *testing.T) {
 					t.Fatalf("node names shifted between groups:\n%s", got)
 				}
 				active := fmt.Sprint(groups[i].Stats.ActiveConnections)
-				if groups[i].Stats.FallbackConnections == 0 {
-					if strings.Contains(line, " / ") || !strings.HasSuffix(line, active) ||
-						column(line, strings.LastIndex(line, active)) != column(header, strings.Index(header, "ACTIVE")) {
-						t.Fatalf("zero fallback added filler or shifted active counts:\n%s", got)
-					}
-					continue
-				}
-				slash := strings.LastIndex(line, " / ")
-				if column(line, slash) != column(header, strings.Index(header, " / ")) {
-					t.Fatalf("active counts or slash are not aligned:\n%s", got)
-				}
-				fallback := strings.Fields(line[slash+3:])[0]
-				start := slash + 3 + strings.Index(line[slash+3:], fallback)
-				if column(line, start) != column(header, strings.Index(header, "FALLBACK TOTAL")) ||
-					column(line, strings.LastIndex(line[:slash], active)) != column(header, strings.Index(header, "ACTIVE")) {
-					t.Fatalf("counter titles and values are not independently left-aligned:\n%s", got)
+				if strings.Contains(line, " / ") || !strings.HasSuffix(line, active) ||
+					column(line, strings.LastIndex(line, active)) != column(header, strings.Index(header, "ACTIVE")) {
+					t.Fatalf("active counts shifted or gained fallback fields:\n%s", got)
 				}
 			}
 			if strings.Contains(got, "ipv6:") || strings.Contains(got, "tcp6:") || strings.Contains(got, "ipv4:") {
@@ -203,12 +187,12 @@ func TestRecentEmptyAndLongSelections(t *testing.T) {
 func TestRecentUncheckedAndUnobservedGroups(t *testing.T) {
 	withoutStatusColors(t)
 	withStatusTerminalWidth(t, 80)
-	group := api.GroupStatus{Name: "direct", Stats: api.PathStats{ActiveConnections: 3},
+	group := api.GroupStatus{Name: "direct", TargetKind: "builtin", Stats: api.PathStats{ActiveConnections: 3},
 		SelectedNodeIDs: api.NetworkValues[string]{"direct", "direct", "direct", "direct"},
 		Nodes:           []api.NodeStatus{{ID: "direct", Name: "direct"}}}
 	got := renderRecentGroups([]api.GroupStatus{group})
-	if !strings.Contains(got, "N/A") || strings.Count(got, "direct") != 2 || strings.Contains(got, "1H [") || len(strings.Split(got, "\n")) != 2 {
-		t.Fatalf("unchecked group lost its route or gained fake health history:\n%s", got)
+	if got != "" {
+		t.Fatalf("direct appeared in the connectivity table:\n%s", got)
 	}
 	group = recentTestGroup()
 	group.Availability.Seen = false
@@ -320,7 +304,6 @@ func TestRecentNarrowLayoutClipsWithoutWrapping(t *testing.T) {
 				group.Nodes[0].Name = strings.Repeat("香港节点🇭🇰", 12)
 				group.SelectedNodeIDs = api.NetworkValues[string]{"hk", "sg", "hk", "sg"}
 				group.Stats.ActiveConnections = 1234567
-				group.Stats.FallbackConnections = 9223372036854775807
 				got := renderRecentGroups([]api.GroupStatus{group})
 				if len(strings.Split(got, "\n")) != 2 {
 					t.Fatalf("narrow output expanded a group into multiple rows:\n%s", got)

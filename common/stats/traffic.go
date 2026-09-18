@@ -39,7 +39,6 @@ type trafficRate struct {
 type pathCounters struct {
 	active      atomic.Int64
 	total       atomic.Int64
-	fallback    atomic.Int64
 	upload      atomic.Uint64
 	download    atomic.Uint64
 	rateInvalid atomic.Bool
@@ -64,8 +63,9 @@ type Connection struct {
 type Store struct {
 	startedAt time.Time
 
-	pathsMu sync.RWMutex
-	paths   map[Path]*pathCounters
+	pathsMu        sync.RWMutex
+	paths          map[Path]*pathCounters
+	directFallback atomic.Int64
 
 	externalMu          sync.RWMutex
 	externalConnections map[*Connection]struct{}
@@ -124,14 +124,20 @@ func (s *Store) pathCounters(path Path) *pathCounters {
 	return counters
 }
 
-func (s *Store) OpenConnection(path Path, fallback bool) *Connection {
+func (s *Store) OpenConnection(path Path, directFallback bool) *Connection {
 	counters := s.pathCounters(path)
 	counters.total.Add(1)
-	if fallback {
-		counters.fallback.Add(1)
+	if directFallback {
+		s.directFallback.Add(1)
 	}
 	counters.active.Add(1)
 	return &Connection{store: s, stats: counters}
+}
+
+// DirectFallbackConnections counts established no-connectivity fallbacks to
+// direct across all paths. Like traffic totals, it survives control-plane reloads.
+func (s *Store) DirectFallbackConnections() int64 {
+	return s.directFallback.Load()
 }
 
 func (c *Connection) RecordUpload(bytes uint64) {
@@ -300,17 +306,15 @@ func (s *Store) snapshot(includeHistory bool) map[Path]api.PathStats {
 	snapshot := make(map[Path]api.PathStats)
 	s.pathsMu.RLock()
 	for path, counters := range s.paths {
-		// OpenConnection increments total, fallback, then active. Reading in the
+		// OpenConnection increments total before active. Reading in the
 		// opposite order preserves their invariants without affecting the hot path.
 		active := counters.active.Load()
-		fallback := counters.fallback.Load()
 		total := counters.total.Load()
 		pathStats := api.PathStats{
-			ActiveConnections:   active,
-			TotalConnections:    total,
-			FallbackConnections: fallback,
-			UploadBytes:         counters.upload.Load(),
-			DownloadBytes:       counters.download.Load(),
+			ActiveConnections: active,
+			TotalConnections:  total,
+			UploadBytes:       counters.upload.Load(),
+			DownloadBytes:     counters.download.Load(),
 		}
 		if includeHistory {
 			pathStats.History = s.pathHistoryLocked(path)

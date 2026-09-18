@@ -231,6 +231,7 @@ func TestUdpEndpointPoolRemoveAccountsTrafficBeforeBlockingClose(t *testing.T) {
 		NodeID: statsPathID, Outbound: statsPathID, Subtag: "sub", Dialer: "node", Network: common.NetworkUDP4,
 	}
 	store := stats.DefaultStore
+	fallbackBefore := store.DirectFallbackConnections()
 
 	var endpointPool UdpEndpointPool
 	conn := newDeadlineInterruptPacketConn()
@@ -261,8 +262,8 @@ func TestUdpEndpointPoolRemoveAccountsTrafficBeforeBlockingClose(t *testing.T) {
 	if got := snapshot[path].UploadBytes; got != 77 {
 		t.Fatalf("traffic bytes before connection close = %v, want 77", got)
 	}
-	if got := snapshot[path].FallbackConnections; got != 1 {
-		t.Fatalf("fallback connections = %v, want 1", got)
+	if got := store.DirectFallbackConnections(); got != fallbackBefore+1 {
+		t.Fatalf("fallback connections = %v, want %v", got, fallbackBefore+1)
 	}
 	close(conn.releaseClose)
 	<-removed

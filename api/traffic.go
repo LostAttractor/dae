@@ -23,9 +23,8 @@ type TrafficHistory struct {
 // PathStats is the process-lifetime state and recent traffic history of one
 // outbound path.
 type PathStats struct {
-	ActiveConnections   int64 `json:"active_connections"`
-	TotalConnections    int64 `json:"total_connections"`
-	FallbackConnections int64 `json:"fallback_connections"`
+	ActiveConnections int64 `json:"active_connections"`
+	TotalConnections  int64 `json:"total_connections"`
 	TrafficCounters
 	History TrafficHistory `json:"history"`
 }

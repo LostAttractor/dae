@@ -13,6 +13,7 @@ import (
 
 func TestStatusWireRoundTrip(t *testing.T) {
 	want := benchmarkStatus()
+	want.DirectFallbackConnections = 1<<53 + 1
 	want.Groups[0].Nodes[0].InitialCheckDone = true
 	want.Groups[0].Nodes[0].Availability.LastFailureDuration = time.Second
 	want.Plugins = []PluginInstanceStatus{{ID: "example", Type: "example", State: "active",
@@ -23,10 +24,13 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":10`, `"plugins":`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":11`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}
+	}
+	if strings.Contains(string(payload), `"fallback_connections":`) || strings.Count(string(payload), `"direct_fallback_connections":`) != 1 {
+		t.Fatal("fallback counters leaked into path/group/node statistics")
 	}
 	var got StatusSnapshot
 	if err := json.Unmarshal(payload, &got, jsonv1.FormatDurationAsNano(true)); err != nil {
@@ -34,6 +38,9 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	}
 	if got.Groups[0].Nodes[0].InitialCheckDone {
 		t.Fatal("runtime-only initial check state leaked into API JSON")
+	}
+	if got.DirectFallbackConnections != want.DirectFallbackConnections {
+		t.Fatal("direct fallback precision changed")
 	}
 	encoded, err := json.Marshal(got, jsonv1.FormatDurationAsNano(true))
 	if err != nil || string(encoded) != string(payload) {

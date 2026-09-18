@@ -677,10 +677,6 @@
             "minimum": 0,
             "type": "integer"
           },
-          "fallback_connections": {
-            "format": "int64",
-            "type": "integer"
-          },
           "history": {
             "$ref": "#/components/schemas/TrafficHistory"
           },
@@ -697,7 +693,6 @@
         "required": [
           "active_connections",
           "total_connections",
-          "fallback_connections",
           "upload_bytes",
           "download_bytes",
           "history"
@@ -813,6 +808,11 @@
       },
       "StatusSnapshot": {
         "properties": {
+          "direct_fallback_connections": {
+            "description": "Process-lifetime count of established no-connectivity fallbacks to direct; preserved across reloads. Not a per-path or per-node counter.",
+            "format": "int64",
+            "type": "integer"
+          },
           "groups": {
             "items": {
               "$ref": "#/components/schemas/GroupStatus"
@@ -839,7 +839,7 @@
             "type": "array"
           },
           "schema": {
-            "const": 10,
+            "const": 11,
             "format": "int64",
             "type": "integer"
           },
@@ -866,6 +866,7 @@
           "started_at",
           "last_reload_at",
           "stats",
+          "direct_fallback_connections",
           "networks",
           "tables",
           "groups"
@@ -1172,7 +1173,7 @@
     }
   },
   "info": {
-    "description": "Status schema 10. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 11. Direct fallback connections are a single process-lifetime counter outside path statistics. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },

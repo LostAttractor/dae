@@ -405,9 +405,6 @@ func printGroupStatus(out io.Writer, group api.GroupStatus, verbose bool) {
 			formatFailure(group.Availability.LastFailureStartedAt, group.Availability.LastFailureDuration),
 		)
 	}
-	if group.Stats.FallbackConnections > 0 {
-		status += fmt.Sprintf(" · %d fallback total", group.Stats.FallbackConnections)
-	}
 	fmt.Fprintf(out, "Status: %s\n", status)
 	if !group.ChecksConnectivity {
 		printTable(out, table.Row{"NETWORK", "CONNS(A/T)"}, uncheckedNetworkRows(group))
@@ -470,9 +467,6 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 		strings.Join(perNet, ", "),
 		snapshot.Stats.TotalConnections,
 	)
-	if snapshot.Stats.FallbackConnections > 0 {
-		fmt.Fprintf(out, ", %d fallback total", snapshot.Stats.FallbackConnections)
-	}
 	fmt.Fprintln(out)
 
 	// Present retained evidence before its kernel projection.
@@ -495,14 +489,44 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 		}
 	}
 
+	printBuiltinStatus(out, snapshot, verbose)
 	for _, group := range snapshot.Groups {
-		printGroupStatus(out, group, verbose)
+		if group.TargetKind != "builtin" {
+			printGroupStatus(out, group, verbose)
+		}
 	}
 	mode := trafficOrdinary
 	if verbose {
 		mode = trafficVerbose
 	}
 	printTraffic(out, snapshot, mode)
+}
+
+// Clip complete status lines at display width, preserving ANSI color sequences.
+// A zero width means stdout has no known terminal width.
+func writeStatusLine(out io.Writer, line string, width int) {
+	if width > 0 {
+		line = text.Snip(line, width, "")
+	}
+	fmt.Fprintln(out, line)
+}
+
+func printBuiltinStatus(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
+	for _, group := range snapshot.Groups {
+		if group.TargetKind != "builtin" {
+			continue
+		}
+		line := fmt.Sprintf("%s: %d active · %d total", colorize(group.Name, text.Bold),
+			group.Stats.ActiveConnections, group.Stats.TotalConnections)
+		if group.Name == "direct" && snapshot.DirectFallbackConnections > 0 {
+			line += fmt.Sprintf(" · Fallback Total %d", snapshot.DirectFallbackConnections)
+		}
+		writeStatusLine(out, line, getStatusTerminalWidth())
+		if verbose {
+			printTable(out, table.Row{"NETWORK", "CONNS(A/T)"}, uncheckedNetworkRows(group))
+		}
+		fmt.Fprintln(out)
+	}
 }
 
 func nodeSessionState(status api.NodeStatus) string {

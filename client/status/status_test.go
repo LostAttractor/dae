@@ -67,10 +67,9 @@ func testNodeStatus(now time.Time) api.NodeStatus {
 			api.NetworkSupportUnknown,
 		},
 		Stats: api.PathStats{
-			ActiveConnections:   2,
-			TotalConnections:    3,
-			FallbackConnections: 1,
-			TrafficCounters:     api.TrafficCounters{UploadBytes: 1024, DownloadBytes: 2048},
+			ActiveConnections: 2,
+			TotalConnections:  3,
+			TrafficCounters:   api.TrafficCounters{UploadBytes: 1024, DownloadBytes: 2048},
 			History: api.TrafficHistory{
 				UploadBytesPerSecond: []uint64{100, 100}, DownloadBytesPerSecond: []uint64{200, 200},
 			},
@@ -218,7 +217,7 @@ func TestNodeRowsUseRawState(t *testing.T) {
 		4:  "healthy",
 		5:  "all tcp(*)",
 		6:  "10/20/30",
-		13: "2/3 (fb 1)",
+		13: "2/3",
 	}
 	for index, expected := range checks {
 		if got := fmt.Sprint(verbose[index]); got != expected {

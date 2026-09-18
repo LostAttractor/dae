@@ -7,20 +7,21 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 10
+const StatusSchemaVersion = 11
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
 type StatusSnapshot struct {
-	Schema       int                      `json:"schema"`
-	Version      string                   `json:"version"`
-	StartedAt    time.Time                `json:"started_at"`
-	LastReloadAt time.Time                `json:"last_reload_at"`
-	Stats        PathStats                `json:"stats"`
-	Networks     NetworkValues[PathStats] `json:"networks"`
-	Tables       []TableUsage             `json:"tables"`
-	Groups       []GroupStatus            `json:"groups"`
-	Plugins      []PluginInstanceStatus   `json:"plugins,omitempty"`
+	Schema                    int                      `json:"schema"`
+	Version                   string                   `json:"version"`
+	StartedAt                 time.Time                `json:"started_at"`
+	LastReloadAt              time.Time                `json:"last_reload_at"`
+	Stats                     PathStats                `json:"stats"`
+	DirectFallbackConnections int64                    `json:"direct_fallback_connections"`
+	Networks                  NetworkValues[PathStats] `json:"networks"`
+	Tables                    []TableUsage             `json:"tables"`
+	Groups                    []GroupStatus            `json:"groups"`
+	Plugins                   []PluginInstanceStatus   `json:"plugins,omitempty"`
 }
 
 // TableUsage describes a domain table. Limit zero means no capacity limit.

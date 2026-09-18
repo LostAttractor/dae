@@ -270,7 +270,7 @@ collects expired records and recomputes current-rule bitmaps before interface
 attachment. There is no snapshot entry/size cap; format, address/name, duplicate
 and trailing-data checks remain.
 
-Status schema **10** reports:
+Status schema **11** reports:
 
 - `domain-registry`: `used` counts domain-IP pairs; `limit: 0` means unbounded.
   `breakdown.domains` counts names; `breakdown.ips` counts distinct addresses across

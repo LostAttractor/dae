@@ -46,7 +46,7 @@ Enable the [TCP API](api.md) and set `DAE_API_TOKEN` before requesting remote st
 
 The Go SDK owns its transport and does not depend on application changes to `http.DefaultTransport`. Successful responses are limited to 32 MiB and error bodies to 8 KiB. Oversized error bodies still preserve the HTTP status in `client.Error.StatusCode`.
 
-Status tables use composite titles for `UP/24H`, `ACTIVE / FALLBACK TOTAL`, and the traffic
+Status tables use composite titles for `UP/24H` and the traffic
 `AVG/MAX` pairs. These titles share field widths with their data: each title
 and value starts at the left of its field, and `/` stays
 at the same position across rows. Display widths account for CJK text and ANSI colors.
@@ -58,7 +58,7 @@ All text status modes end with a shared `Traffic` table:
 ```text
 GROUP / DIALER       UPLOAD 1M     DOWNLOAD 1M   AVG /MAX ↑     AVG /MAX ↓     TOTAL ↑  TOTAL ↓
 ALL                  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  54.3/146Kbps   2.48/20.8Mbps  7.21M    85.5M
-direct(direct)       ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
+direct              ▃▂▄▅▃▃▃▃▃▂▃▃  ▄▅▅█▄▅▆▄▃▃▃▃  2.77/6.00Kbps  5.26/11.2Kbps  63.5K    112K
 proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂▂▂▂▂▂  51.5/144Kbps   2.47/20.8Mbps  7.15M    85.4M
 ```
 
@@ -69,6 +69,7 @@ proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂
   After filtering, one dialer gives a `group(dialer)` row; multiple dialers give
   `group (total)` followed by indented rows. Distinct IDs remain separate even if
   their names match. `--verbose` expands all groups and includes idle dialers.
+  Built-in direct uses one `direct` row with its group totals in every mode.
 - `ALL` is always shown and uses daemon statistics; group rows, including collapsed
   rows, use group statistics from the API, including retired paths. Dialers are accounted for
   separately in each group. These aggregation levels should not be added together.
@@ -88,13 +89,19 @@ proxy_jp(lightsail)  ▂▂▂▂▂▂▂▂▂▂▂▂  █▂▂▂▂▂▂
 
 ## Recent status view
 
-`status --recent` puts each group's current selection and connectivity on one row,
+All text modes render built-in direct separately with active and lifetime connection
+counts, plus `Fallback Total` when nonzero. It has no connectivity check or
+availability history. `--verbose` also shows its per-network connection counts.
+Built-in block remains hidden by the daemon.
+
+`status --recent` puts each proxy group's current selection and connectivity on one row,
 followed by the shared traffic table at the bottom.
 For example, without color:
 
 ```text
-GROUP     STATE  24H      1H            SELECTED              ACTIVE / FALLBACK TOTAL
-direct    N/A    -        -             direct                8      / 3
+direct: 8 active · 120 total · Fallback Total 3
+
+GROUP     STATE  24H      1H            SELECTED              ACTIVE
 proxy_hk  UP     100.00%  [......++++]  香港标准 IEPL 专线 2  0
 proxy_jp  UP     100.00%  [......++++]  lightsail             108
 proxy_tw  UP     100.00%  [......++++]  台湾标准 IEPL 专线 3  0
@@ -102,11 +109,10 @@ proxy_us  UP     100.00%  [......++++]  美国高级 IEPL 专线 1  0
 tor       UP     100.00%  [......++++]  tor                   0
 ```
 
-- `ACTIVE / FALLBACK TOTAL` shows active and cumulative fallback connections. Each number
-  and its header is left-aligned independently, keeping `/` at a fixed position.
-  Zero fallback counts and their separator are omitted. The fallback total
-  survives reloads and resets on daemon restart; it is not the number currently
-  using fallback.
+- `ACTIVE` is the group's active connection count. Fallback is a single
+  process-lifetime direct counter, not a per-node, per-group or per-network metric.
+  It counts established connections using no-connectivity fallback, survives reloads
+  and resets on restart; it is not the number currently using fallback.
 - `SELECTED` uses `selected_node_ids`. This compact view only includes confirmed
   capabilities or live selections; `unknown` and `unsupported` networks without
   a current selection are omitted. If all displayed networks select one node,
@@ -200,7 +206,7 @@ Successful operations return `200` with current state. Application errors have `
 
 ## Snapshot semantics and TUI integration
 
-The current status schema is `10`. Domain table `limit: 0` means unbounded userspace retention; `breakdown.gc` counts time-collected pairs. Kernel `candidates` reports IPs eligible before capacity selection. Plugin state is carried in `plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. There is no top-level `surge` field. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
+The current status schema is `11`. Top-level `direct_fallback_connections` contains the single direct fallback counter; `PathStats` contains active/total connections, payload totals and history without fallback fields. Prometheus exports `dae_fallback_connections_total` as one unlabeled process counter. Domain table `limit: 0` means unbounded userspace retention; `breakdown.gc` counts time-collected pairs. Kernel `candidates` reports IPs eligible before capacity selection. Plugin state is carried in `plugins`; optional `details` contains the plugin-defined report. Surge reports contain `enabled` and `modules`, and the standalone Surge command combines these reports by instance. There is no top-level `surge` field. Clients tolerate additive response fields and reject unsupported schemas, null responses, duplicate keys and type errors. Unknown request fields are invalid. Breaking changes require a new schema version. The status endpoint is `/api/status`.
 
 Registry `used` counts domain-IP pairs. Its `breakdown.domains`, `ips`, `ipv4` and
 `ipv6` describe distinct retained names and addresses; IPs shared by multiple names

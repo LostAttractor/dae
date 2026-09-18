@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/pkg/clitable"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
@@ -82,23 +81,13 @@ func recentSelections(group api.GroupStatus) []string {
 	return selections
 }
 
-// Clip at display width without introducing continuation lines. A zero width
-// means stdout has no known terminal width, so retain the complete line.
-func writeRecentLine(out io.Writer, line string, width int) {
-	if width > 0 {
-		line = text.Snip(line, width, "")
-	}
-	fmt.Fprintln(out, line)
-}
-
 func renderRecentGroups(groups []api.GroupStatus) string {
-	if len(groups) == 0 {
-		return ""
-	}
-	header := table.Row{"GROUP", "STATE", "24H", "1H", "SELECTED",
-		clitable.Parts("ACTIVE", " / ", "FALLBACK TOTAL")}
+	header := table.Row{"GROUP", "STATE", "24H", "1H", "SELECTED", "ACTIVE"}
 	rows := make([]table.Row, 0, len(groups))
 	for _, group := range groups {
+		if group.TargetKind == "builtin" {
+			continue
+		}
 		ratio, history := "-", "-"
 		if group.ChecksConnectivity {
 			history = recentTimeline(group)
@@ -111,13 +100,12 @@ func renderRecentGroups(groups []api.GroupStatus) string {
 		for i, selection := range selections {
 			selections[i] = truncateStatusCell(selection, 32)
 		}
-		connections := clitable.Parts(fmt.Sprint(group.Stats.ActiveConnections))
-		if group.Stats.FallbackConnections > 0 {
-			connections = clitable.Parts(fmt.Sprint(group.Stats.ActiveConnections), " / ", fmt.Sprint(group.Stats.FallbackConnections))
-		}
 		row := table.Row{group.Name, formatGroupConnectivityState(group), ratio, history, strings.Join(selections, "; "),
-			connections}
+			fmt.Sprint(group.Stats.ActiveConnections)}
 		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return ""
 	}
 	return renderStatusTable(header, rows, []table.ColumnConfig{
 		{Number: 1, WidthMax: 18, WidthMaxEnforcer: truncateStatusCell},
@@ -139,12 +127,12 @@ func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
 		"up " + formatUptime(time.Since(snapshot.StartedAt)),
 		fmt.Sprintf("%d active", snapshot.Stats.ActiveConnections),
 	}
-	if snapshot.Stats.FallbackConnections > 0 {
-		summary = append(summary, fmt.Sprintf("Fallback Total %d", snapshot.Stats.FallbackConnections))
-	}
-	writeRecentLine(out, strings.Join(summary, "  "), width)
+	writeStatusLine(out, strings.Join(summary, "  "), width)
 	fmt.Fprintln(out)
 
-	fmt.Fprintln(out, renderRecentGroups(snapshot.Groups))
+	printBuiltinStatus(out, snapshot, false)
+	if groups := renderRecentGroups(snapshot.Groups); groups != "" {
+		fmt.Fprintln(out, groups)
+	}
 	printTraffic(out, snapshot, trafficRecent)
 }
