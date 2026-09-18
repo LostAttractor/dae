@@ -24,6 +24,21 @@ sudo ./dae-client status
 | `--timeout` | Request timeout, default `10s` |
 | `DAE_API_TOKEN` | Bearer token for TCP administration; kept out of URL and command arguments |
 | `--json` | `status`: full snapshot, mutually exclusive with `--verbose` and `--recent`; MITM report commands: filtered instance array |
+| `--color` | `status` text colors: `auto` (default), `always`, or `never` |
+
+`status --color always` (or `--color=always`) preserves ANSI colors in pipes and
+redirected output; `--color never` disables them. Both override the environment.
+The default `auto` retains terminal detection and the `FORCE_COLOR`, `NO_COLOR`,
+and `TERM` settings. This applies to ordinary, `--verbose`, and `--recent` text
+views; `--json` always emits plain JSON. With `watch`, also enable its `--color`
+(`-c`) option to display the colors:
+
+```sh
+watch --color -n 2 'dae status --recent --color always'
+```
+
+The standalone client also supports this, for example
+`watch --color -n 2 'dae-client status --recent --color always'`.
 
 The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing filesystem permission for the local socket.
 

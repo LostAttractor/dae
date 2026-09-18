@@ -26,6 +26,15 @@ sudo ./dae-client status
 | `--timeout` | `10s`，单次请求超时；取消命令上下文也会取消请求 |
 | `DAE_API_TOKEN` | TCP 管理接口的 Bearer token，不写入 URL 或命令行参数 |
 | `--json` | `status` 输出完整 API 快照，与 `--verbose`、`--recent` 互斥；MITM 报告命令输出筛选后的实例数组 |
+| `--color` | `status` 文本输出的颜色模式：`auto`（默认）、`always` 或 `never` |
+
+`status --color always`（也可写成 `--color=always`）在管道或重定向输出中仍保留 ANSI 颜色，`--color never` 强制禁用颜色；两者均覆盖环境变量。默认的 `auto` 沿用终端检测及 `FORCE_COLOR`、`NO_COLOR`、`TERM` 设置。该选项适用于普通、`--verbose` 和 `--recent` 文本视图，`--json` 始终输出无颜色的 JSON。使用 `watch` 时还需加上它的 `--color`（`-c`）选项来显示颜色：
+
+```sh
+watch --color -n 2 'dae status --recent --color always'
+```
+
+独立客户端同样支持，例如 `watch --color -n 2 'dae-client status --recent --color always'`。
 
 本地 socket 权限仍为 `0600`，不依赖 `global.api_port`。两种命令入口均不自动提权；访问默认 socket 时使用 `sudo` 或已有的文件系统权限。
 

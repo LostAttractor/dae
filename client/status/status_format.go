@@ -116,21 +116,26 @@ func formatRatio(ratio float64) string {
 	return fmt.Sprintf("%.1f%%", ratio*100)
 }
 
-func shouldEnableColors() bool {
-	forceColor := os.Getenv("FORCE_COLOR")
-	if forceColor != "" && forceColor != "0" && forceColor != "false" {
-		return true
-	}
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
-		return false
-	}
-	if noColor := os.Getenv("NO_COLOR"); noColor != "" && noColor != "0" {
-		return false
-	}
-	return os.Getenv("TERM") != "dumb"
-}
+var colorsEnabled bool
 
-var colorsEnabled = shouldEnableColors()
+// SetColorMode configures process-wide status colors before rendering.
+// Auto respects terminal detection and the environment; always and never override both.
+func SetColorMode(mode string) error {
+	switch mode {
+	case "auto":
+		forceColor, noColor := os.Getenv("FORCE_COLOR"), os.Getenv("NO_COLOR")
+		forced := forceColor != "" && forceColor != "0" && forceColor != "false"
+		disabled := noColor != "" && noColor != "0"
+		colorsEnabled = forced || (!disabled && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(os.Stdout.Fd())))
+	case "always":
+		colorsEnabled = true
+	case "never":
+		colorsEnabled = false
+	default:
+		return fmt.Errorf("invalid --color value %q: expected auto, always, or never", mode)
+	}
+	return nil
+}
 
 var getStatusTerminalWidth = func() int {
 	width, _, err := term.GetSize(int(os.Stdout.Fd()))
