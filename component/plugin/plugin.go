@@ -14,6 +14,9 @@ import (
 	logrus "github.com/sirupsen/logrus"
 )
 
+// Flow retains the original captured Source/Destination tuple. Host/Port identify
+// the incoming authority admitted before middleware; H2/H3 fronting can select a
+// different business host on the same connection. It is not proof of TLS identity.
 type Flow struct {
 	Host                string
 	Port                uint16

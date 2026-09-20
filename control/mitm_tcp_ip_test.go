@@ -56,16 +56,17 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 		{name: "non TLS", destination: "192.0.2.20:8443", scope: plugin.Scope{{Host: "192.0.2.20", Ports: []uint16{8443}}}, ssh: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var bypassDials atomic.Int32
+			var dials, pluginCalls atomic.Int32
 			extension := &controlTestPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: test.scope}}},
 				handle: func(*plugin.Exchange, plugin.Handler) (*http.Response, error) {
+					pluginCalls.Add(1)
 					return &http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}, nil
 				},
 			}
 			plane, _, param := newHTTPRequestRouteTestWithAuthority(t, "", extension,
 				func(context.Context, string, string) (net.Conn, error) {
-					bypassDials.Add(1)
-					return nil, errors.New("test raw connection bypass")
+					dials.Add(1)
+					return nil, errors.New("test upstream unavailable")
 				}, authority)
 			plane.soMarkFromDae = 37 // Keep marked direct on the fixture dialer.
 			plane.sniffingTimeout = time.Second
@@ -129,8 +130,14 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("relay did not close")
 			}
-			if got := bypassDials.Load(); (got == 0) != test.intercept {
-				t.Fatalf("raw bypass dials=%d, intercept=%v", got, test.intercept)
+			// Intercepted TLS answers locally without dialing. Bypass attempts
+			// one raw relay and never enters HTTP middleware.
+			wantCalls, wantDials := int32(0), int32(1)
+			if test.intercept {
+				wantCalls, wantDials = 1, 0
+			}
+			if dials.Load() != wantDials || pluginCalls.Load() != wantCalls {
+				t.Fatalf("dials=%d plugin calls=%d, intercept=%v", dials.Load(), pluginCalls.Load(), test.intercept)
 			}
 		})
 	}

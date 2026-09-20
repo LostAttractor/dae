@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
@@ -52,12 +53,12 @@ func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing string, extensio
 	return plane, builder, param
 }
 
-func TestHTTPRequestPoolUsesCurrentRouteAndMark(t *testing.T) {
+func TestHTTPRequestRewritePoolUsesCurrentRouteAndMark(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") }))
 	defer upstream.Close()
 	var dials atomic.Int32
 	plane, builder, param := newHTTPRequestRouteTest(t, "client(blocked) -> block\nclient(marked) -> proxy(mark:91)\ndport(80) -> proxy(mark:92)",
-		rewriteTestPlugin(t, map[string]string{"/old": "http://original.example/new"}),
+		rewriteTestPlugin(t, map[string]string{"/old": "http://198.51.100.9/new"}),
 		func(ctx context.Context, _, _ string) (net.Conn, error) {
 			dials.Add(1)
 			return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
@@ -97,6 +98,69 @@ func TestHTTPRequestPoolUsesCurrentRouteAndMark(t *testing.T) {
 	}
 	if param.routingResult.Outbound != uint8(consts.OutboundControlPlaneRouting) || param.routingResult.Mark != 0 {
 		t.Fatal("HTTP requests mutated ingress routing state")
+	}
+}
+
+func TestHTTPOriginalPoolKeepsRouteAndMark(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") }))
+	defer upstream.Close()
+	var dials atomic.Int32
+	plane, builder, param := newHTTPRequestRouteTest(t, "client(blocked) -> block\nclient(marked) -> proxy(mark:91)\ndport(80) -> proxy(mark:92)",
+		rewriteTestPlugin(t, map[string]string{"/old": "http://original.example/new"}),
+		func(ctx context.Context, _, address string) (net.Conn, error) {
+			if address != "192.0.2.20:80" {
+				t.Errorf("original target changed: %s", address)
+			}
+			dials.Add(1)
+			return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
+		})
+	planner := &httpRoutePlanner{plane: plane, network: "tcp", original: httpTarget{host: param.Domain, port: 80},
+		source: param.Src, destination: param.Dest, identity: *param.routingResult}
+	var marks []uint32
+	observePlan := func(r *http.Request) (mitm.UpstreamPlan, error) {
+		target, err := requestHTTPTarget(r)
+		if err != nil {
+			return mitm.UpstreamPlan{}, err
+		}
+		options, err := planner.routeOptions(r.Context(), target)
+		if err != nil {
+			return mitm.UpstreamPlan{}, err
+		}
+		marks = append(marks, options[0].Mark)
+		return planner.upstreamPlan(r.URL.Scheme, target, options)
+	}
+	handler, closePools := plane.mitmHost.Handler("http", "original.example", 80, observePlan)
+	defer closePools()
+	request := func(handler http.Handler, want int) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("GET", "http://original.example/old", nil))
+		if w.Code != want {
+			t.Fatalf("HTTP status=%d, want %d: %s", w.Code, want, w.Body.String())
+		}
+	}
+	request(handler, 200)
+	if err := builder.SetClientMembers(plane.routingMatcher, "marked", [][6]byte{param.routingResult.Mac}, false); err != nil {
+		t.Fatal(err)
+	}
+	request(handler, 200)
+	if dials.Load() != 1 || len(marks) != 1 || marks[0] != 92 {
+		t.Fatalf("existing ingress reselected its route: dials=%d marks=%v", dials.Load(), marks)
+	}
+	fresh, closeFresh := plane.mitmHost.Handler("http", "original.example", 80, observePlan)
+	defer closeFresh()
+	request(fresh, 200)
+	if dials.Load() != 2 || len(marks) != 2 || marks[1] != 91 {
+		t.Fatalf("new connection missed current route: dials=%d marks=%v", dials.Load(), marks)
+	}
+	if err := builder.SetClientMembers(plane.routingMatcher, "blocked", [][6]byte{param.routingResult.Mac}, false); err != nil {
+		t.Fatal(err)
+	}
+	blocked, closeBlocked := plane.mitmHost.Handler("http", "original.example", 80, observePlan)
+	defer closeBlocked()
+	request(blocked, 502)
+	if dials.Load() != 2 {
+		t.Fatal("blocked new ingress dialed upstream")
 	}
 }
 

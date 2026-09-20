@@ -35,7 +35,11 @@ plugins {
 
 `dae plugins surge configure` 输出的 module 段可放入所选 Surge 实例。
 
-插件按声明顺序执行，请求 A → B → 上游，响应 B → A。每个插件的 scope 独立判断，使用连接最初的主机与端口；URL/Host 改写不会激活另一个 scope。一个 Surge 实例内部仍保持原有模块顺序及“每个方向只运行第一个匹配脚本”的行为。
+插件按声明顺序执行，请求 A → B → 上游，响应 B → A。每个插件的 scope 独立判断，使用当前请求在插件执行前准入的主机与端口；URL/Host 改写不会激活另一个 scope。一个 Surge 实例内部仍保持原有模块顺序及“每个方向只运行第一个匹配脚本”的行为。
+
+已经准入的 HTTPS/HTTP/2、HTTP/3 连接允许同端口的跨主机请求复用，包括单主机证书未覆盖的业务 authority。未命中任何 HTTP scope 的请求跳过全部插件请求/响应钩子，保留原 Alt-Svc。没有插件显式改写 URL 的 scheme/主机/端口时，所有 stream 保持原接入目标、出站、mark 和上游 TLS 身份，不因 authority 改变而重复 DNS/选路；由原入口按 HTTP authority 分发。仅 path/query 或 Host 头变化不改变网络目标。显式 URL 目标改写和插件主动请求才为新目标解析、选路并验证 TLS。`domain()` 路由匹配实际接入目标，不是逐 stream 业务 authority 的过滤器。插件收到的 `Flow.Host` 是业务 authority，不是独立认证证明；`Source/Destination` 保留捕获地址。端口变化和 HTTP/1 跨主机请求仍返回 421。
+
+下游握手仅签发本地单主机证书，没有上游探测、SAN 镜像或路由证书缓存；证书选择不依赖 scope、脚本阶段和 `PreserveRoute`。本地签发缓存最多 256 项，叶证书有效期不超过 24 小时和 CA 到期时间。真实转发仍验证上游接入点的证书名称、有效期和信任链；失败返回上游错误。本地响应零拨号，原目标 block 不阻止插件先生成本地响应或改写到允许的目标。无需新增配置或重建 CA。详见[证书与跨域连接复用：方案、边界和替代方案](mitm-certificates.md)。
 
 插件的每个 `Plan.Scopes` 项同时保存捕获范围与路由属性；默认在 HTTP 处理后确定路由，仅保持目标且始终转发的纯检查可声明 `PreserveRoute: true`。重叠范围中的请求处理优先。Surge 自动将含脚本、URL Rewrite 或 Map Local 的模块归入请求路由。请求型连接先通过 scope 与客户端准入，再执行 HTTP 规则，最后按有效目标决定出站、mark、must 和 block。原目标的 block 不会阻止已准入请求改写到允许的目标；新目标的 block 仍拒绝。纯检查保留已有内核路由；未准入连接执行普通路由。转发与脚本子请求共用按目标、节点、出站及 mark 隔离的连接池，流量统计归属实际上游连接。
 
@@ -45,7 +49,7 @@ plugins {
 
 客户端使用的解析结果与 dae 当前保存的域名—IP 映射可能不同步，例如设备切换网络后沿用旧地址。dae 重启恢复磁盘登记表的原期限、重载继承内存表；尚未观察到或已经失效的映射不能支持正向域名捕获。详见 [DomainRegistry](dns.md#持久化和诊断)。
 
-HTTP/3 使用现有 CA、客户端开关与插件 scope，无需新增配置。仅在完整 QUIC ClientHello 声明 `h3` 后解密；客户端请求与上游都使用 HTTP/3，插件主动 HTTP 请求按最终目标重新匹配 TCP 路由并使用 HTTP/1 或 HTTP/2。支持同一源/目标/域名下的多连接和重连，不支持跨地址迁移、跨主机复用或 0-RTT。仅保留上游提供的同主机、同端口 H3 Alt-Svc 广告，跨主机或跨端口广告会移除。
+HTTP/3 使用现有 CA、客户端开关与插件 scope，无需新增配置。仅在完整 QUIC ClientHello 声明 `h3` 后解密；客户端请求与上游都使用 HTTP/3，插件主动 HTTP 请求按最终目标重新匹配 TCP 路由并使用 HTTP/1 或 HTTP/2。支持同一源/目标/握手域名下的多连接和重连，以及同端口请求 authority 复用；不支持跨地址迁移或 0-RTT。下游 TLS session ticket 暂时禁用。命中 scope 的请求仅保留同请求主机、同端口的 H3 Alt-Svc 广告；scope 外普通转发保留原 Alt-Svc。
 
 被明确捕获后使用 `direct` 出站的连接依赖 dae 转发，停止 dae 会使它断开；这与未被捕获的 eBPF direct 不同。
 
@@ -54,3 +58,31 @@ HTTP/3 使用现有 CA、客户端开关与插件 scope，无需新增配置。�
 `dae plugins status` 汇总所有已启用实例，`--verbose`（`-v`）聚合各插件的完整 status 输出。整次命令只查询 daemon 一次，`--instance ID` 筛选实例。没有自定义 status 的插件展示完整 JSON 报告；渲染失败时保留原始报告并继续显示其他插件，命令最终返回错误。`--json` 输出完整插件报告，优先于 `-v`。
 
 `dae plugins surge status` 查看 Surge 模块状态；外部插件可注册命令，例如 `dae plugins bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`。证书命令仍为 `dae mitm ca`。状态字段见[页面/API](api.md)，编译见[构建说明](../../en/user-guide/build-by-yourself.md#external-plugins)，编写插件见[插件 API](../../../component/plugin/README.md)。
+
+## 排查偶发 HTTP / gRPC 失败
+
+临时将 `global.log_level` 设为 `trace`，可记录 MITM 请求从入口到响应处理结束的过程，适用于仅声明捕获域名、不改写请求的透传模块。按 `connection_id` 和 `request_id` 关联事件；`path_id` 是不含查询参数的转义路径的 SHA-256 前 16 位十六进制摘要，可比较失败与重试是否为同一路径。`host` 和 `connection_host` 表示连接最初的主机，`request_authority` 是当前请求规范化后的主机及端口；无效 authority 只记录为 `invalid`。自动诊断不记录原始路径、查询参数、认证头或正文。
+
+| 事件 | 观察内容 |
+| --- | --- |
+| `mitm_request_begin` | 捕获主机、端口、原始源/目标地址、客户端 HTTP 协议与路径摘要 |
+| `mitm_certificate` | 本地单主机证书（`certificate_source=single`）、证书摘要和 DNS/IP SAN（`trace`） |
+| `mitm_authority_coalesced` / `mitm_authority_rejected` | 接受 H2/H3 跨主机请求（`trace`，`plugin_scope=false` 表示跳过插件）或拒绝 authority（`debug`），同时记录连接与请求的主机身份；插件执行后才决定实际转发目标 |
+| `mitm_upstream_connection` | 上游连接本地/对端地址、`reused`、`was_idle`、`idle_ms`；传输层重试可能产生多条 |
+| `mitm_upstream_tls` / `mitm_upstream_written` / `mitm_upstream_first_byte` | TLS 协商 ALPN、请求写出与首字节耗时；`elapsed_ms` 从本次上游转发开始计算 |
+| `mitm_upstream_response` | 上游 HTTP 状态、协议与正文长度声明，只表示取得响应头 |
+| `mitm_request_end` | 最终 HTTP 状态、总耗时、正文读写字节数、`body_eof`、错误及最终 `grpc_status` |
+| `mitm_response_failed` | 响应正文读取或下游写入/flush 失败，`debug` 即可见 |
+| `mitm_http2_error` / `mitm_connection_end` | 客户端 HTTP/2 协议错误（`debug`）及 TCP 连接结束（`trace`） |
+
+`mitm_request_end.outcome` 区分 `completed`、`local_rejection`、`processing_error`、`transfer_error`、`aborted`、`canceled` 和 `upgrade`。`completed` 表示宿主 HTTP 处理完成，仍需检查 HTTP / gRPC 状态；写入字节数表示交给 HTTP 服务器的正文，不是客户端接收回执。gRPC 状态在正文 EOF 后读取，兼容普通 trailer 与 trailers-only 响应头；`missing` 表示没有最终状态，`invalid` 表示格式不合法。Upgrade 隧道不记录 HTTP 正文字节数。
+
+421 的 `reason` 区分 `scheme_mismatch`（请求 scheme 与透明监听连接不一致）、`invalid_authority`（格式不合法）、`authority_port_mismatch`（端口不一致）和 `authority_mismatch`（该协议不支持跨主机）。不再因 SAN 未覆盖、证书快照或 scope 不匹配而拒绝跨域请求。上游自身仍可能返回 421，应结合 `outcome` 判断是否为本地拒绝。同一连接的日志 `host` 相同不代表每个请求的 `:authority` 相同，应比较 `connection_host` 和 `request_authority`；scheme 问题可比较 `connection_scheme` 与 `request_scheme`。
+
+出现错误时记录操作时间，再正常重试一次，保留前后几分钟的完整日志。systemd 部署可使用：
+
+```sh
+sudo journalctl -u dae --since "10 minutes ago" -o short-iso-precise > mitm-failure.log
+```
+
+若没有对应的请求入口，应继续检查捕获映射、TLS 握手和连接层；仅凭没有 `upstream_error` 不能认定响应完整。日志中的 HTTP 200 也不代表 gRPC 成功。响应头已发送后发生正文传输错误时，宿主中止 HTTP/1 连接或重置 HTTP/2、HTTP/3 流，不把半截响应作为正常完成返回。

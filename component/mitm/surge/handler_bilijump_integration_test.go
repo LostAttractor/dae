@@ -9,15 +9,19 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 )
 
-func TestProxyIntegrationMapLocalSkipsScriptAndUpstream(t *testing.T) {
+func TestProxyIntegrationMapLocalSkipsScriptAndUpstreamHTTP(t *testing.T) {
 	for _, h2 := range []bool{false, true} {
 		t.Run(fmt.Sprintf("http2=%t", h2), func(t *testing.T) {
+			_, trust, dial := integrationUpstream(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("Map Local sent an upstream HTTP request")
+			}))
 			engine, roots := integrationEngine(t, map[string]string{
 				"http-request": `$done({response:{body:"unexpected script execution"}});`,
-			}, nil)
+			}, trust)
 			module, err := Parse(`[Map Local]
 ^https://example.com/grpc data-type=base64 data="AAAAAAA=" header="content-type: application/grpc|grpc-status: 0"
 `, nil)
@@ -25,9 +29,10 @@ func TestProxyIntegrationMapLocalSkipsScriptAndUpstream(t *testing.T) {
 				t.Fatal(err)
 			}
 			engine.options.Modules[0].MapLocals = module.MapLocals
-			client := integrationClient(t, engine, roots, func(context.Context, string, string) (net.Conn, error) {
-				t.Error("Map Local dialed upstream")
-				return nil, fmt.Errorf("unexpected upstream request")
+			var dials atomic.Int32
+			client := integrationClient(t, engine, roots, func(ctx context.Context, network, address string) (net.Conn, error) {
+				dials.Add(1)
+				return dial(ctx, network, address)
 			}, h2)
 			resp, err := client.Post("https://example.com/grpc", "application/grpc", bytes.NewReader([]byte{0, 0, 0, 0, 0}))
 			if err != nil {
@@ -40,6 +45,9 @@ func TestProxyIntegrationMapLocalSkipsScriptAndUpstream(t *testing.T) {
 			}
 			if h2 && resp.ProtoMajor != 2 {
 				t.Fatal("expected HTTP/2")
+			}
+			if dials.Load() != 0 {
+				t.Fatalf("local response dialed upstream %d times", dials.Load())
 			}
 		})
 	}

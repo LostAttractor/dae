@@ -52,7 +52,7 @@ func TestProxyTLSLogHTTP1AndHTTP2RequestCorrelation(t *testing.T) {
 			var dials atomic.Int32
 			client := integrationClient(t, engine, roots, func(context.Context, string, string) (net.Conn, error) {
 				dials.Add(1)
-				return nil, errors.New("synthetic request must not dial upstream")
+				return nil, errors.New("unexpected upstream dial")
 			}, useHTTP2)
 			for _, path := range []string{"/trace/first", "/trace/second"} {
 				response, err := client.Get("https://example.com" + path + "?token=tls-query-private#tls-fragment-private")
@@ -118,7 +118,7 @@ func TestProxyTLSLogHandshakeFailures(t *testing.T) {
 			var dials atomic.Int32
 			client := integrationClient(t, engine, roots, func(context.Context, string, string) (net.Conn, error) {
 				dials.Add(1)
-				return nil, errors.New("failed TLS must not reach upstream")
+				return nil, errors.New("unexpected upstream dial")
 			}, true)
 			if response, err := client.Get("https://" + test.target + "/trace/failed"); err == nil {
 				response.Body.Close()

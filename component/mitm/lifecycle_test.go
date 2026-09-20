@@ -172,7 +172,8 @@ func TestMITMForceCloseStreamAndUpgrade(t *testing.T) {
 				}
 			}))
 			defer upstream.Close()
-			host := testHost(t, Options{DrainTimeout: 20 * time.Millisecond})
+			logger, _, _ := observationLogger()
+			host := testHost(t, Options{DrainTimeout: 20 * time.Millisecond, Logger: logger})
 			client, served := tcpDrainClient(t, host, nil, "http", testUpstream(func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "tcp", upstream.Listener.Addr().String())
 			}))

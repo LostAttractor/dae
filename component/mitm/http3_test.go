@@ -89,6 +89,9 @@ func http3TestClient(t *testing.T, host *Host, roots *x509.CertPool, name string
 				return nil, errors.New("unexpected TCP dial")
 			}),
 			testPacketUpstream(func(_ context.Context, address string) (net.PacketConn, net.Addr, error) {
+				if upstream == nil {
+					return nil, nil, errors.New("no upstream in local-response fixture")
+				}
 				if address != net.JoinHostPort(name, "443") {
 					return nil, nil, fmt.Errorf("unexpected upstream address: %s", address)
 				}
@@ -184,10 +187,10 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 		})
 	}
 	requests.Wait()
-	for _, path := range []string{"/local", "/wrong-authority"} {
+	for _, path := range []string{"/local", "/wrong-port"} {
 		req, _ := http.NewRequest(http.MethodGet, "https://example.com"+path, nil)
-		if path == "/wrong-authority" {
-			req.Host = "other.example.com"
+		if path == "/wrong-port" {
+			req.Host = "other.example.com:8443"
 		}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -195,7 +198,7 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 		}
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if path == "/local" && string(body) != "local" || path == "/wrong-authority" && resp.StatusCode != 421 {
+		if path == "/local" && string(body) != "local" || path == "/wrong-port" && resp.StatusCode != 421 {
 			t.Fatalf("%s: status=%d body=%q", path, resp.StatusCode, body)
 		}
 	}

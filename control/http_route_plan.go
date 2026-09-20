@@ -15,9 +15,10 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 )
 
-// httpRoutePlanner retains only ingress identity and an optional inspection
-// route. Each final HTTP request selects its own immutable upstream options
-// before transport reuse, including after a plugin rewrites its authority.
+// httpRoutePlanner retains ingress identity and an optional inspection route.
+// MITM binds unchanged requests to the original URL target and retains that plan
+// for the connection. Explicit URL rewrites and auxiliary requests select their
+// own immutable routes. Request.Host never changes the network target.
 type httpRoutePlanner struct {
 	plane       *ControlPlane
 	network     string
@@ -117,6 +118,11 @@ func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, option
 		}
 		return nil, errors.Join(failures...)
 	}}
+	if target == p.original {
+		// The original plan is pinned even if its first dial fails. Keep its
+		// policy revocation observable without requiring a successful socket.
+		plan.Check = options[0].PolicyLease.AbortCause
+	}
 	if p.network == "udp" {
 		plan.Dial = nil
 		plan.DialPacket = func(ctx context.Context, _ string) (net.PacketConn, net.Addr, error) {

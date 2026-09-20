@@ -10,8 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/netip"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -35,20 +33,45 @@ func (h *Host) Handler(scheme, host string, port uint16, plan UpstreamPlanner) (
 }
 
 func (h *Host) HandlerForFlow(scheme string, flow plugin.Flow, plan UpstreamPlanner) (http.Handler, func()) {
-	transport := h.plannedTransport(plan, false)
-	return h.handlerForFlow(scheme, flow, transport, &http.Client{Transport: transport}), transport.close
+	transport := h.connectionTransport(scheme, flow, plan, false)
+	client, closeClient := h.RoutedHTTPClient(plan)
+	return h.handlerForFlow(scheme, flow, transport, client), func() {
+		transport.close()
+		closeClient()
+	}
 }
 
 // The intercepted protocol and auxiliary plugin requests can use different
-// transports. Both plan the final request before looking up a connection.
+// transports. Forwarding binds unchanged URL targets to the original ingress;
+// auxiliary requests are independently routed using their own URLs.
 func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.RoundTripper, client *http.Client) http.Handler {
-	host, port := flow.Host, flow.Port
-	chain := h.chain(flow, func(e *plugin.Exchange) (*http.Response, error) {
-		return h.roundTrip(transport, e.Request)
+	host := flow.Host
+	chainFor := h.chainsForFlow(flow, func(incoming plugin.Flow) plugin.Handler {
+		return func(e *plugin.Exchange) (*http.Response, error) {
+			request := upstreamRequest(e.Request, scheme, incoming, flow)
+			return h.roundTrip(transport, request)
+		}
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// HTTP/3 replaces the server request Trailer map at EOF.
+		// Keep the server's request: HTTP/3 replaces its Trailer map at EOF,
+		// so even a WithContext copy cannot observe the final trailers.
 		source := r
+		ctx, cancel := context.WithCancel(r.Context())
+		stop := context.AfterFunc(h.forceContext, cancel)
+		defer func() { stop(); cancel() }()
+		connection, _ := plugin.IDs(ctx)
+		r = r.WithContext(plugin.WithIDs(ctx, connection, strconv.FormatUint(serial.Add(1), 10)))
+		observation := h.observeRequest(w, r, scheme, flow)
+		if observation != nil {
+			w = observation.writer
+			defer func() {
+				failure := recover()
+				observation.finish(r, failure)
+				if failure != nil {
+					panic(failure)
+				}
+			}()
+		}
 		h.mu.Lock()
 		if h.closed {
 			h.mu.Unlock()
@@ -58,25 +81,29 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		h.requests.Add(1)
 		h.mu.Unlock()
 		defer h.requests.Done()
-		ctx, cancel := context.WithCancel(r.Context())
-		stop := context.AfterFunc(h.forceContext, cancel)
-		defer func() { stop(); cancel() }()
-		r = r.WithContext(ctx)
 		if r.Method == http.MethodConnect {
 			http.Error(w, "CONNECT is not supported on the transparent listener", 405)
 			return
 		}
-		if !sameAuthority(r.Host, host, port, scheme) {
-			http.Error(w, "Request authority differs from intercepted destination", 421)
+		requestFlow, reason := admitRequestAuthority(r, scheme, flow)
+		if reason != "" {
+			if observation != nil {
+				observation.authorityRejected(reason)
+			}
+			http.Error(w, "Request target differs from intercepted connection", 421)
 			return
+		}
+		chain := chainFor(requestFlow)
+		scoped := h.Match(requestFlow.Host, requestFlow.Port) != HTTPBypass
+		if observation != nil && requestFlow.Host != flow.Host {
+			observation.logger.WithFields(logrus.Fields{"event": "mitm_authority_coalesced", "plugin_scope": scoped}).Trace("MITM accepted alternate request authority")
 		}
 		r.URL.Scheme, r.URL.Host = scheme, r.Host
 		r.RequestURI = ""
-		connection, _ := plugin.IDs(r.Context())
-		r = r.WithContext(plugin.WithIDs(r.Context(), connection, strconv.FormatUint(serial.Add(1), 10)))
 		controller := http.NewResponseController(w)
 		if r.ProtoMajor == 1 {
-			// Forward uploads and early responses concurrently.
+			// Upload and response forwarding run concurrently. The HTTP/1
+			// server must not drain the upload before sending an early response.
 			_ = controller.EnableFullDuplex()
 		}
 		defer controller.SetReadDeadline(time.Time{})
@@ -87,6 +114,8 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 			}
 		}()
 		proxy := &httputil.ReverseProxy{
+			// The destination is already set. Director preserves forwarding
+			// headers and the raw query; request preparation can fail in RoundTrip.
 			Director: func(*http.Request) {},
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				exchange.Request = req
@@ -96,22 +125,32 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				if err != nil {
 					return nil, err
 				}
+				// Also associate responses for authorities without plugin hooks.
 				response.Request = req
 				return response, nil
 			}),
 			ModifyResponse: func(response *http.Response) error {
-				// Prevent net/http from inventing an absent Content-Type.
+				// A missing upstream type must remain missing. Set the writer's
+				// sentinel: ReverseProxy does not copy nil-valued header entries.
 				if len(response.Header["Content-Type"]) == 0 {
 					w.Header()["Content-Type"] = nil
+				}
+				if observation != nil {
+					observation.observeResponse(response)
 				}
 				if len(response.Trailer) > 0 {
 					response.Header.Del("Content-Length")
 					response.ContentLength = -1
 				}
-				h.filterAltSvc(response.Header, scheme, flow)
+				if requestFlow.Host == flow.Host || scoped {
+					h.filterAltSvc(response.Header, scheme, requestFlow)
+				}
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				if observation != nil {
+					observation.processingError = err
+				}
 				if errors.Is(err, plugin.ErrAbort) {
 					panic(http.ErrAbortHandler)
 				}
@@ -126,36 +165,15 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 					status = failure.Status
 				}
 				http.Error(w, "MITM upstream processing failed", status)
-			}, ErrorLog: log.New(logWriter{h.options.Logger, logrus.TraceLevel}, "", 0),
+			}, ErrorLog: log.New(logWriter{h.requestLogger(r), logrus.TraceLevel}, "", 0),
 		}
-		// ReverseProxy derives X-Forwarded-For from its incoming request.
+		// ReverseProxy derives X-Forwarded-For from its incoming request, not
+		// the Director's copy. Transparent forwarding must not append our
+		// client's address or change an existing forwarding header.
 		incoming := r.WithContext(r.Context())
 		incoming.RemoteAddr = ""
 		proxy.ServeHTTP(w, incoming)
 	})
-}
-
-func sameAuthority(authority, host string, port uint16, scheme string) bool {
-	u, err := url.Parse(scheme + "://" + authority)
-	if err != nil || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return false
-	}
-	p := u.Port()
-	if p == "" {
-		p = "80"
-		if scheme == "https" {
-			p = "443"
-		}
-	}
-	requestedPort, err := strconv.ParseUint(p, 10, 16)
-	if err != nil || requestedPort != uint64(port) {
-		return false
-	}
-	if target, err := netip.ParseAddr(host); err == nil {
-		requested, err := netip.ParseAddr(u.Hostname())
-		return err == nil && requested.Unmap() == target.Unmap()
-	}
-	return strings.EqualFold(strings.TrimSuffix(u.Hostname(), "."), strings.TrimSuffix(host, "."))
 }
 
 type logWriter struct {

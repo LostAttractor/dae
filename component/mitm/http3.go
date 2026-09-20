@@ -45,7 +45,7 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 	if !flow.Source.IsValid() || !flow.Destination.IsValid() {
 		return errors.New("mitm: HTTP/3 requires the original source and destination")
 	}
-	cfg := h.options.Authority.TLSConfig(flow.Host)
+	cfg := h.interceptionTLSConfig(flow)
 	cfg.MinVersion = tls.VersionTLS13
 	cfg.NextProtos = []string{http3.NextProtoH3}
 	transport := &quic.Transport{
@@ -55,7 +55,7 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 			if err != nil || peer.Addr().Unmap() != flow.Source.Addr().Unmap() || peer.Port() != flow.Source.Port() {
 				return nil, errors.New("mitm: QUIC peer differs from intercepted source")
 			}
-			return ctx, nil
+			return plugin.WithIDs(ctx, strconv.FormatUint(serial.Add(1), 10), ""), nil
 		},
 	}
 	defer transport.Close()
@@ -71,7 +71,10 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 	defer listener.Close()
 	var connections sync.WaitGroup
 	defer connections.Wait()
-	// ReverseProxy must abort a truncated response in the HTTP/3 server too.
+	// ReverseProxy uses net/http's server context to decide whether a body
+	// copy failure must panic with ErrAbortHandler. quic-go supplies its own
+	// server key only; without this compatibility context ReverseProxy takes
+	// its legacy non-server path and returns a truncated response normally.
 	base := new(http.Server)
 	server := &http3.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +83,7 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 		MaxHeaderBytes: 1 << 20,
 		IdleTimeout:    90 * time.Second,
 		ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
-			upstream := h.plannedTransport(packetPlan, true)
+			upstream := h.connectionTransport("https", flow, packetPlan, true)
 			auxiliary := h.plannedTransport(plan, false)
 			handler := h.handlerForFlow("https", flow, upstream, &http.Client{Transport: auxiliary})
 			connections.Go(func() {
@@ -88,7 +91,6 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 				upstream.close()
 				auxiliary.close()
 			})
-			ctx = plugin.WithIDs(ctx, strconv.FormatUint(serial.Add(1), 10), "")
 			ctx = context.WithValue(ctx, http.ServerContextKey, base)
 			return context.WithValue(ctx, http3HandlerKey{}, handler)
 		},

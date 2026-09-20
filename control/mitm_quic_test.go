@@ -145,6 +145,7 @@ func TestMITMQUICUsesSelectedOutboundAndOriginalTarget(t *testing.T) {
 	defer selected.mu.Unlock()
 	base.mu.Lock()
 	defer base.mu.Unlock()
+	// Forwarding uses the selected mark-aware outbound and original destination.
 	if len(base.targets) != 0 || len(selected.targets) != 1 || selected.targets[0] != option.DialTarget {
 		t.Fatalf("selected outbound or original target lost: default=%v selected=%v", base.targets, selected.targets)
 	}

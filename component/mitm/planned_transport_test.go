@@ -33,7 +33,11 @@ func TestPlannedTransportClosesUnsentBody(t *testing.T) {
 		{name: "closed", plan: testUpstream((&net.Dialer{}).DialContext), closed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &plannedTransport{plan: tc.plan, closed: tc.closed}
+			p := testHost(t, Options{}).plannedTransport(tc.plan, false)
+			defer p.close()
+			if tc.closed {
+				p.close()
+			}
 			body := &replayCountedBody{Reader: strings.NewReader("upload")}
 			r, _ := http.NewRequest("POST", "https://example.com/", body)
 			if _, err := p.RoundTrip(r); err == nil {
@@ -64,7 +68,7 @@ func TestPlannedTransportConcurrentResponseCleanup(t *testing.T) {
 				}
 				// net/http permits Body.Close concurrently with Body.Read. An
 				// empty body lets both reach the pool release at the same time.
-				body := &plannedResponseBody{ReadCloser: http.NoBody, release: func() { p.release(pool) }}
+				body := &plannedResponseBody{ReadCloser: http.NoBody, release: sync.OnceFunc(func() { p.release(pool) })}
 				start := make(chan struct{})
 				var done sync.WaitGroup
 				for _, finish := range []func(){p.close, p.close, func() { _, _ = body.Read(make([]byte, 1)) }, func() { _ = body.Close() }} {

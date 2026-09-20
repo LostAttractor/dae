@@ -16,12 +16,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
 	logrus "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 )
 
-func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamPlanner) error {
+func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamPlanner) (err error) {
 	original := conn
 	if err := h.track(original); err != nil {
 		_ = conn.Close()
@@ -33,6 +34,19 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 	flow.Destination, _ = netip.ParseAddrPort(conn.LocalAddr().String())
 	ctx, cancel := context.WithCancel(plugin.WithIDs(context.Background(), strconv.FormatUint(serial.Add(1), 10), ""))
 	defer cancel()
+	connection, _ := plugin.IDs(ctx)
+	logger := h.options.Logger.WithFields(logrus.Fields{
+		"connection_id": connection, "host": host, "port": port,
+		"source": flow.Source, "destination": flow.Destination,
+	})
+	started := time.Now()
+	defer func() {
+		entry := logger.WithFields(logrus.Fields{"event": "mitm_connection_end", "elapsed_ms": time.Since(started).Milliseconds()})
+		if err != nil {
+			entry = entry.WithError(resource.RedactError(err))
+		}
+		entry.Trace("MITM TCP connection finished")
+	}()
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	reader := bufio.NewReader(conn)
 	first, err := reader.Peek(1)
@@ -48,7 +62,7 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 			return errors.New("mitm: HTTPS requires a CA")
 		}
 		scheme = "https"
-		cfg := h.options.Authority.TLSConfig(host)
+		cfg := h.interceptionTLSConfig(flow)
 		cfg.NextProtos = []string{"h2", "http/1.1"}
 		tlsConn := tls.Server(conn, cfg)
 		handshake, stop := context.WithTimeout(ctx, 10*time.Second)
@@ -60,6 +74,7 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 		conn = tlsConn
 		s := tlsConn.ConnectionState()
 		state = &s
+		logger.WithFields(logrus.Fields{"event": "mitm_client_tls", "alpn": s.NegotiatedProtocol}).Trace("MITM client TLS handshake finished")
 	}
 	handler, closeTransport := h.HandlerForFlow(scheme, flow, plan)
 	defer closeTransport()
@@ -70,9 +85,12 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
-		ErrorLog:          log.New(logWriter{h.options.Logger, logrus.DebugLevel}, "", 0),
+		ErrorLog:          log.New(logWriter{logger, logrus.DebugLevel}, "", 0),
 	}
 	h2 := &http2.Server{MaxConcurrentStreams: 64, IdleTimeout: 90 * time.Second, MaxReadFrameSize: 1 << 20}
+	h2.CountError = func(kind string) {
+		logger.WithFields(logrus.Fields{"event": "mitm_http2_error", "reason": kind}).Debug("MITM client HTTP/2 error")
+	}
 	if err := http2.ConfigureServer(base, h2); err != nil {
 		return err
 	}

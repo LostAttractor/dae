@@ -139,8 +139,8 @@ const (
 	HTTPRequest
 )
 
-// Match classifies once. A request-transforming scope takes precedence when
-// several plugins match the same connection; exclusions remain scope-local.
+// Match classifies a host/port. A request-transforming scope takes precedence
+// when several plugins match; exclusions remain scope-local.
 func (h *Host) Match(host string, port uint16) HTTPMode {
 	mode := HTTPBypass
 	for _, scope := range h.plan.Scopes {
@@ -205,8 +205,8 @@ func (h *Host) chain(flow plugin.Flow, terminal plugin.Handler) plugin.Handler {
 			}
 			response, err := next(e)
 			if response != nil {
-				// Local responses need the same request association as RoundTrip
-				// responses before an outer plugin can inspect or rewrite them.
+				// Every response hook sees its business request, including local
+				// responses and transports using an ingress-bound request copy.
 				response.Request = e.Request
 			}
 			return response, err

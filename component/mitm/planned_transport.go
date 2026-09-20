@@ -10,21 +10,42 @@ import (
 	"sync"
 )
 
-// UpstreamPlanner runs after request middleware, before connection-pool lookup.
+// UpstreamPlanner runs before connection-pool lookup. The URL identifies the
+// network/TLS target; Host identifies the HTTP authority. Unrewritten requests
+// share the intercepted connection's original plan. Rewrites and auxiliary
+// requests plan their explicit URL targets independently.
 // Key identifies the complete immutable plan, including protocol, node, mark
-// and actual addresses. URL/TLS authority remains the transport's responsibility.
+// and actual addresses. URL/TLS identity remains the transport's responsibility.
 type UpstreamPlanner func(*http.Request) (UpstreamPlan, error)
 
 type UpstreamPlan struct {
 	Key        string
 	Dial       DialContext
 	DialPacket DialPacketContext
+	// Check validates a connection-bound plan's lifetime without selecting a
+	// new route. The owner may terminate the downstream on revocation.
+	Check func() error
+}
+
+// Validate the planner contract before forwarding.
+func planUpstream(planner UpstreamPlanner, request *http.Request, packet bool) (UpstreamPlan, error) {
+	if planner == nil {
+		return UpstreamPlan{}, fmt.Errorf("mitm: missing upstream planner")
+	}
+	plan, err := planner(request)
+	if err != nil {
+		return UpstreamPlan{}, err
+	}
+	if plan.Key == "" || packet && plan.DialPacket == nil || !packet && plan.Dial == nil {
+		return UpstreamPlan{}, fmt.Errorf("mitm: incomplete upstream plan")
+	}
+	return plan, nil
 }
 
 type plannedTransport struct {
 	host   *Host
 	packet bool
-	plan   UpstreamPlanner
+	plan   UpstreamPlanner // Returns structurally valid plans; may cache selection.
 	mu     sync.Mutex
 	closed bool
 	serial uint64
@@ -40,7 +61,11 @@ type routePool struct {
 }
 
 func (h *Host) plannedTransport(plan UpstreamPlanner, packet bool) *plannedTransport {
-	return &plannedTransport{host: h, packet: packet, plan: plan, pools: make(map[string]*routePool), owned: make(map[*routePool]func())}
+	return &plannedTransport{
+		host: h, packet: packet,
+		plan:  func(r *http.Request) (UpstreamPlan, error) { return planUpstream(plan, r, packet) },
+		pools: make(map[string]*routePool), owned: make(map[*routePool]func()),
+	}
 }
 
 // RoutedHTTPClient gives one protocol invocation its own policy-keyed pools.
@@ -64,7 +89,7 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, err
 		p.release(pool)
 		return response, err
 	}
-	body := &plannedResponseBody{ReadCloser: response.Body, release: func() { p.release(pool) }}
+	body := &plannedResponseBody{ReadCloser: response.Body, release: sync.OnceFunc(func() { p.release(pool) })}
 	if writer, ok := response.Body.(io.Writer); ok {
 		// HTTP/1 upgrades retain bidirectional body access for ReverseProxy.
 		response.Body = &plannedReadWriteBody{plannedResponseBody: body, Writer: writer}
@@ -78,15 +103,14 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, err
 // request-body closure to the underlying transport and leases its pool until
 // the response finishes (or RoundTrip fails).
 func (p *plannedTransport) acquire(request *http.Request) (*routePool, error) {
-	if p.plan == nil {
-		return nil, fmt.Errorf("mitm: missing upstream planner")
-	}
 	plan, err := p.plan(request)
 	if err != nil {
 		return nil, err
 	}
-	if plan.Key == "" || p.packet && plan.DialPacket == nil || !p.packet && plan.Dial == nil {
-		return nil, fmt.Errorf("mitm: incomplete upstream plan")
+	if plan.Check != nil {
+		if err := plan.Check(); err != nil {
+			return nil, err
+		}
 	}
 	p.mu.Lock()
 	if p.closed {
@@ -168,8 +192,7 @@ func (p *plannedTransport) close() {
 
 type plannedResponseBody struct {
 	io.ReadCloser
-	once    sync.Once
-	release func()
+	release func() // OnceFunc shared by Read and Close.
 }
 
 type plannedReadWriteBody struct {
@@ -180,13 +203,13 @@ type plannedReadWriteBody struct {
 func (b *plannedResponseBody) Read(data []byte) (int, error) {
 	n, err := b.ReadCloser.Read(data)
 	if err != nil {
-		b.once.Do(b.release)
+		b.release()
 	}
 	return n, err
 }
 
 func (b *plannedResponseBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.once.Do(b.release)
+	b.release()
 	return err
 }

@@ -88,7 +88,8 @@ middleware ordering and the independent router/cache modules.
 ## HTTP contract
 
 `Plan` declares immutable scopes and routing rules; the host takes ownership
-without copying. Scope rules match the original host and port, first match wins,
+without copying. Scope rules match the incoming authority admitted before
+middleware, first match wins,
 unmatched hosts are denied, and separate scopes are ORed:
 
 ```go
@@ -125,13 +126,14 @@ Each `Plan.Scopes` entry combines its ordered `Scope` with `PreserveRoute`.
 The default processes HTTP before choosing a final route, covering scripts,
 URL changes and local responses. Set `PreserveRoute: true` only when the plugin
 preserves the target and always forwards upstream. This keeps pure inspection
-on its valid kernel decision. Effects cannot expand their associated scope, and
+on its valid kernel decision. Certificate selection is entirely local and does
+not contact the upstream. Effects cannot expand their associated scope, and
 request processing takes precedence when several matching scopes overlap.
 Request candidates hand off before old-target block, mark or must decisions.
 Client exclusions still follow ordinary connection routing.
 
 `Wrap(flow, next)` builds middleware separately for each HTTP/1, HTTP/2 or
-HTTP/3 connection, in configuration order: requests A → B →
+HTTP/3 connection and each admitted H2/H3 authority, in configuration order: requests A → B →
 upstream, responses B → A. Call `next` synchronously. Success returns a valid
 response with non-nil Header and Body, transferring body ownership; failure closes
 owned bodies and returns `nil, err`. Compiled plugins must honor this contract.
@@ -139,22 +141,53 @@ The host associates the response returned by `next` with `Exchange.Request`,
 including local responses produced by downstream plugins.
 `HTTPError` requires an underlying error and a valid HTTP error status.
 
+An admitted HTTPS/H2 or HTTPS/H3 connection may carry another incoming authority
+on the original port, including names outside the downstream certificate. The
+original network/TLS ingress stays fixed. Scope is not an authority allowlist:
+an out-of-scope request bypasses all plugin middleware, including response hooks,
+and forwards normally (including its Alt-Svc). Middleware
+is selected for that incoming authority, before rewrites; changing URL/Host in a
+plugin does not activate another scope. `Flow.Host` identifies this admitted
+authority, while `Flow.Source` and `Flow.Destination` remain the original captured
+tuple. The original middleware chain is retained; up to 32 additional authority
+chains are cached per connection, with further names built per invocation.
+The business authority does not trigger DNS or route selection. Only an explicit
+URL scheme/host/port rewrite changes the network target; path/query and Host-only
+changes retain the original ingress. Scheme mismatch, invalid authority,
+port changes, and cross-host HTTP/1 requests receive 421. Kernel capture and client
+admission continue to use the declared host/port predicates.
+
+The host issues a local single-host leaf for the intercepted TLS/QUIC ingress,
+independently of scope and routing effects. The signing cache has 256 LRU entries;
+leaves expire within 24 hours and no later than the local CA. There is no upstream
+certificate probe or SAN mirror. Forwarding authenticates the actual ingress
+(or rewritten target) with normal upstream TLS verification. This authenticates
+the ingress, not each fronted business origin; `Flow.Host` is not independent
+proof of service identity. Downstream session tickets and 0-RTT remain disabled. See the
+[certificate design and tradeoffs](../../docs/zh/configuration/mitm-certificates.md).
+
 HTTP/3 uses the same plugin contract and CA. `ServePacketConn` requires the
 original source and destination addresses and serves a fixed UDP association; `DialPacketContext` opens its upstream packet sockets through the
 planned outbound. HTTP/3 requests stay on HTTP/3 upstream, while
 `Exchange.Client` uses HTTP/1 or HTTP/2 with a separate TCP route plan.
 Only QUIC ClientHellos advertising `h3` enter this path; other UDP is relayed.
 The host disables 0-RTT, preserves per-connection middleware and supports multiple
-QUIC connection IDs for the same source, destination and hostname. Cross-tuple
-migration and cross-host connection reuse are not supported.
+QUIC connection IDs for the same source, destination and handshake hostname.
+Cross-tuple migration is not supported; request authorities can differ
+from that handshake hostname.
 
-`Exchange.Client` and upstream forwarding share request routing. Deferred scopes
-route the final target after middleware and before pool lookup; local responses
-do not choose an upstream. The original authority uses the intercepted IP; other
-authorities resolve through the system resolver. Destination rules determine the effective
-IP while preserving client identity. Pure inspection reuses its valid route for
-the original authority. Pools are isolated per client connection and keyed by
+Unrewritten forwarding binds the transport URL to the original ingress while
+preserving the HTTP Host; plugins retain their business URL, including in
+`Response.Request`. Its original plan is selected lazily once per downstream
+connection and retains the intercepted IP, node, outbound and mark. Local
+responses do not choose an upstream. `Exchange.Client` and explicit URL target
+rewrites resolve/route their own URLs through the system resolver. Destination
+rules determine the effective IP while preserving client identity. Block applies
+to the network target, not each fronted business authority. Pure inspection
+reuses its valid route. Pools are isolated per client connection and keyed by
 the full dial plan: addresses, nodes, outbounds, marks and transport/TLS authority.
+Pinned plans also validate their policy lifetime before pool reuse: a revoked
+original plan terminates its downstream even if the first upstream dial failed.
 TCP dial failures can try the next address before writing HTTP data. Before
 upstream forwarding, the host enables transport-controlled safe retries for
 request bodies by sharing complete snapshots, or recording up to 64 KiB of

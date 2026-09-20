@@ -351,7 +351,7 @@ func TestProxyIntegrationRejectsUntrustedUpstreamTLS(t *testing.T) {
 	}
 }
 
-func TestProxyIntegrationRestrictsSNIAndRequestAuthority(t *testing.T) {
+func TestProxyIntegrationRestrictsSNIButForwardsAuthority(t *testing.T) {
 	var dialCalls atomic.Int32
 	engine, roots := integrationEngine(t, nil, nil)
 	dial := func(context.Context, string, string) (net.Conn, error) {
@@ -363,6 +363,9 @@ func TestProxyIntegrationRestrictsSNIAndRequestAuthority(t *testing.T) {
 		response.Body.Close()
 		t.Fatal("TLS accepted SNI different from sniffed hostname")
 	}
+	if dialCalls.Load() != 0 {
+		t.Fatal("mismatched SNI triggered an upstream probe")
+	}
 	request, err := http.NewRequest(http.MethodGet, "https://example.com/", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -373,8 +376,9 @@ func TestProxyIntegrationRestrictsSNIAndRequestAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusMisdirectedRequest || dialCalls.Load() != 0 {
-		t.Fatalf("coalesced authority escaped MITM scope: status=%d dials=%d", response.StatusCode, dialCalls.Load())
+	// The fronted authority reaches forwarding, where the fixture dial fails.
+	if response.StatusCode != http.StatusBadGateway || dialCalls.Load() != 1 {
+		t.Fatalf("fronted authority did not reach ingress: status=%d dials=%d", response.StatusCode, dialCalls.Load())
 	}
 }
 

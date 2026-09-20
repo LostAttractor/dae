@@ -10,7 +10,7 @@ import (
 )
 
 // Keep the accepted connection's lifetime across per-request route plans.
-// Only the actual upstream's resource/policy Abort can terminate its client.
+// The pinned original policy and actual upstream resources can terminate it.
 func mitmPlannerWithLease(planner mitm.UpstreamPlanner, lease *netproxy.Lease) mitm.UpstreamPlanner {
 	return func(request *http.Request) (mitm.UpstreamPlan, error) {
 		if cause := lease.AbortCause(); cause != nil {
@@ -19,6 +19,15 @@ func mitmPlannerWithLease(planner mitm.UpstreamPlanner, lease *netproxy.Lease) m
 		plan, err := planner(request)
 		if err != nil {
 			return plan, err
+		}
+		if check := plan.Check; check != nil {
+			plan.Check = func() error {
+				if cause := check(); cause != nil {
+					lease.Abort(cause)
+					return cause
+				}
+				return lease.AbortCause()
+			}
 		}
 		if dial := plan.Dial; dial != nil {
 			plan.Dial = func(parent context.Context, network, address string) (net.Conn, error) {
