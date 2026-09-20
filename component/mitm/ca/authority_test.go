@@ -4,6 +4,7 @@ package mitmca
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -136,7 +137,7 @@ func TestLeafValidityStopsAtRootExpiration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	leaf, err := a.serverCertificate("test.example")
+	leaf, err := a.ServerCertificate("test.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,18 +162,18 @@ func TestIssuedCertificatesVerifyAndCacheExpires(t *testing.T) {
 			t.Fatal("leaf validity exceeds CA or 24 hours")
 		}
 	}
-	first, _ := a.serverCertificate("example.com")
-	cached, _ := a.serverCertificate("EXAMPLE.COM.")
+	first, _ := a.ServerCertificate("example.com")
+	cached, _ := a.ServerCertificate("EXAMPLE.COM.")
 	if first != cached {
 		t.Fatal("equivalent hosts missed cache")
 	}
 	first.Leaf.NotAfter = time.Now().Add(-time.Second)
-	renewed, err := a.serverCertificate("example.com")
+	renewed, err := a.ServerCertificate("example.com")
 	if err != nil || first == renewed {
 		t.Fatalf("expired cached certificate not renewed: %v", err)
 	}
 	for i := 0; i < maxCachedCertificates+1; i++ {
-		if _, err := a.serverCertificate(fmt.Sprintf("host%d.example.com", i)); err != nil {
+		if _, err := a.ServerCertificate(fmt.Sprintf("host%d.example.com", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -183,7 +184,7 @@ func TestIssuedCertificatesVerifyAndCacheExpires(t *testing.T) {
 		t.Fatal("least recently used certificate was not evicted")
 	}
 	a.certificate.NotAfter = time.Now().Add(-time.Second)
-	if _, err := a.serverCertificate("host256.example.com"); err == nil {
+	if _, err := a.ServerCertificate("host256.example.com"); err == nil {
 		t.Fatal("cached leaf was returned after CA expiration")
 	}
 }
@@ -191,9 +192,44 @@ func TestIssuedCertificatesVerifyAndCacheExpires(t *testing.T) {
 func TestIssuerRejectsInvalidServerNames(t *testing.T) {
 	a, _, _ := testAuthority(t)
 	for _, host := range []string{"", "*", "*.example.com", "example.com:443", "foo..bar", "-bad.example", "bad-.example", "example.com/path", "bad\x00.example", "例子.example"} {
-		if _, err := a.serverCertificate(host); err == nil {
+		if _, err := a.ServerCertificate(host); err == nil {
 			t.Errorf("accepted invalid hostname %q", host)
 		}
+	}
+}
+
+func TestServerCertificateRespectsLocalNameConstraints(t *testing.T) {
+	a, certPath, keyPath := testAuthority(t)
+	root := *a.certificate
+	root.PermittedDNSDomainsCritical = true
+	root.PermittedDNSDomains = []string{"example.com"}
+	der, err := x509.CreateCertificate(rand.Reader, &root, &root, a.key.(crypto.Signer).Public(), a.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	a, err = Load(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // A rejected name must not enter the cache.
+		if _, err := a.ServerCertificate("service.example.net"); err == nil {
+			t.Fatal("issued a SAN prohibited by the local issuer")
+		}
+	}
+	if len(a.cache) != 0 {
+		t.Fatal("rejected name was cached")
+	}
+	cert, err := a.TLSConfig("api.example.com").GetCertificate(&tls.ClientHelloInfo{ServerName: "api.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRoots := x509.NewCertPool()
+	localRoots.AddCert(a.certificate)
+	if _, err := cert.Leaf.Verify(x509.VerifyOptions{Roots: localRoots, DNSName: "api.example.com"}); err != nil {
+		t.Fatalf("single-host certificate does not verify: %v", err)
 	}
 }
 
