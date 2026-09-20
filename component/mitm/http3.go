@@ -71,6 +71,8 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 	defer listener.Close()
 	var connections sync.WaitGroup
 	defer connections.Wait()
+	// ReverseProxy must abort a truncated response in the HTTP/3 server too.
+	base := new(http.Server)
 	server := &http3.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.Context().Value(http3HandlerKey{}).(http.Handler).ServeHTTP(w, r)
@@ -87,6 +89,7 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 				auxiliary.close()
 			})
 			ctx = plugin.WithIDs(ctx, strconv.FormatUint(serial.Add(1), 10), "")
+			ctx = context.WithValue(ctx, http.ServerContextKey, base)
 			return context.WithValue(ctx, http3HandlerKey{}, handler)
 		},
 	}

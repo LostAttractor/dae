@@ -47,6 +47,8 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		return h.roundTrip(transport, e.Request)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// HTTP/3 replaces the server request Trailer map at EOF.
+		source := r
 		h.mu.Lock()
 		if h.closed {
 			h.mu.Unlock()
@@ -73,6 +75,10 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		connection, _ := plugin.IDs(r.Context())
 		r = r.WithContext(plugin.WithIDs(r.Context(), connection, strconv.FormatUint(serial.Add(1), 10)))
 		controller := http.NewResponseController(w)
+		if r.ProtoMajor == 1 {
+			// Forward uploads and early responses concurrently.
+			_ = controller.EnableFullDuplex()
+		}
 		defer controller.SetReadDeadline(time.Time{})
 		exchange := &plugin.Exchange{Request: r, Client: client, SetReadDeadline: controller.SetReadDeadline}
 		defer func() {
@@ -81,9 +87,10 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 			}
 		}()
 		proxy := &httputil.ReverseProxy{
-			Director: func(req *http.Request) { req.RemoteAddr = "" },
+			Director: func(*http.Request) {},
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				exchange.Request = req
+				forwardRequestTrailers(req, source)
 				response, err := chain(exchange)
 				_ = controller.SetReadDeadline(time.Time{})
 				if err != nil {
@@ -93,6 +100,10 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				return response, nil
 			}),
 			ModifyResponse: func(response *http.Response) error {
+				// Prevent net/http from inventing an absent Content-Type.
+				if len(response.Header["Content-Type"]) == 0 {
+					w.Header()["Content-Type"] = nil
+				}
 				if len(response.Trailer) > 0 {
 					response.Header.Del("Content-Length")
 					response.ContentLength = -1
@@ -117,7 +128,10 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				http.Error(w, "MITM upstream processing failed", status)
 			}, ErrorLog: log.New(logWriter{h.options.Logger, logrus.TraceLevel}, "", 0),
 		}
-		proxy.ServeHTTP(w, r)
+		// ReverseProxy derives X-Forwarded-For from its incoming request.
+		incoming := r.WithContext(r.Context())
+		incoming.RemoteAddr = ""
+		proxy.ServeHTTP(w, incoming)
 	})
 }
 

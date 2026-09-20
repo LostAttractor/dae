@@ -14,6 +14,10 @@ import (
 // Retry ownership ends when the transport returns headers. Upload cursors can
 // still be active then; their lifetime belongs to the transport, not the cache.
 func (h *Host) roundTrip(transport http.RoundTripper, r *http.Request) (*http.Response, error) {
+	if err := prepareRequestFraming(r); err != nil {
+		_ = r.Body.Close()
+		return nil, err
+	}
 	release := prepareRequestReplay(r, plugin.BodyMemory)
 	defer release()
 	response, err := transport.RoundTrip(r)
