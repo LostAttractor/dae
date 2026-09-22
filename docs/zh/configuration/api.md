@@ -6,7 +6,7 @@
 global {
   lan_interface: br-lan
   api_port: 9080
-  api_token: '替换为私密令牌'
+  api_key: '替换为私密密钥'
 }
 group {
   manual {
@@ -29,9 +29,15 @@ routing {
 
 ## 使用与持久化
 
-- **Selectors**：`selector` 等价于 `selector(0)`；`selector(n)` 指定默认路径索引。选择影响使用该组的所有设备，需要 `api_token`。选择按节点 ID 保存，重排不变，配置中节点消失时恢复默认。
-- **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，节点列表和证书下载仍可用。
+- **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过直连 LAN 身份校验的客户端可直接使用，顶部显示 **LAN access**。`selector` 等价于 `selector(0)`；`selector(n)` 指定默认路径索引。选择影响使用该组的所有设备。选择按节点 ID 保存，重排不变，配置中节点消失时恢复默认。
+- **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
 - **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)，页面不会探测信任状态。
+
+登录后使用 `HttpOnly`、`SameSite=Strict` Cookie 保存有效期为 7 天的签名会话，Cookie 不包含 API key 原文。刷新页面或重载 daemon 后保留登录状态；**Logout** 清除浏览器 Cookie，修改 `api_key` 会使已有会话失效。**Refresh** 更新状态和刷新时间。设备自助设置无需管理员登录。
+
+`global.api_key` 为可选项。未配置或留空时，状态查询和 selector 管理沿用设备自助接口的直连 LAN 校验：连接必须有 `global.lan_interface` 的有效 eBPF 入口记录，源 MAC 与直连 ARP/NDP 邻居一致。每个请求都会校验，私网源 IP、转发头或旧会话 Cookie 均不能代替此身份；WAN、经路由转发或无法识别的客户端返回 `403`。此模式无需登录，也不签发会话 Cookie。配置密钥后，TCP 管理请求（包括 LAN 客户端）必须通过密钥/会话认证。两种模式下 Unix socket 均使用文件系统权限。
+
+配置项已由 `global.api_token` 更名为 `global.api_key`，升级时需同步修改已有配置；CLI 环境变量使用 `DAE_API_KEY`，Go SDK 使用 `client.Options.APIKey`。
 
 设备识别使用 eBPF 在 LAN 入口记录的 TCP 连接信息，不要求路由或邻居表中的接口名匹配 `lan_interface`。例如 `enp1s0f0np0 → lan（VLAN）→ br-lan` 可保留 `lan_interface: lan`；bond 或其他分层以太网接口使用相同的识别流程。每个请求更新入口 MAC 和时间戳，配置重载时清除记录。无入口记录、记录超过 30 秒、回程路由非直连，或入口 MAC 与该路由接口上的 ARP/NDP 邻居不一致时拒绝设备操作；其他接口上的同名 IP 不影响识别。
 
@@ -75,18 +81,20 @@ client {
 
 ## API
 
-PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: application/json`，无 JSON 的请求使用空正文。selector 修改需要 `Authorization: Bearer <api_token>`；MITM 修改需要 `X-Dae-MITM: <当前 CA 的 SHA-256 指纹>`。名称须 URL 编码；命令行可省略 `Origin`。
+PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: application/json`，无 JSON 的请求使用空正文。配置密钥时，状态查询及 selector 读写需要 `Authorization: Bearer <api_key>` 或有效的浏览器会话 Cookie；未配置时要求通过直连 LAN 身份校验。MITM 修改需要 `X-Dae-MITM: <当前 CA 的 SHA-256 指纹>`。密钥模式下显式 Authorization 头优先于 Cookie。名称须 URL 编码；命令行可省略 `Origin`。
 
-未配置 `global.api_token` 时，selector 修改返回 `403` 并说明未配置；已配置但请求令牌缺失或错误时返回 `401`。设备自助设置不需要该令牌。
+未配置 `global.api_key` 时，TCP 管理请求未通过 LAN 身份校验返回 `403`；已配置但请求密钥/会话缺失、错误或过期时返回 `401`。设备自助设置始终要求直连 LAN 身份，不需要该密钥。
 
 | 方法与路径 | 行为 |
 | --- | --- |
-| `GET /api/status` | 运行时完整状态；TCP 需要管理 token，本地 Unix socket 使用文件系统权限 |
+| `PUT /api/session` | 配置密钥时使用 `Authorization: Bearer <api_key>` 登录并设置会话 Cookie；未配置时校验 LAN/Unix 权限并清除旧 Cookie。空正文，成功返回 `204` |
+| `DELETE /api/session` | 清除浏览器会话 Cookie；空正文，成功返回 `204` |
+| `GET /api/status` | 运行时完整状态；TCP 配置密钥时需要 API key/会话，未配置时校验直连 LAN 身份；Unix socket 使用文件系统权限 |
 | `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
 | `PUT` / `DELETE /api/device/sets/{name}` | 加入 / 退出集合 |
 | `PUT /api/device/mitm` | `{"enabled":true}` 开启，`false` 关闭 |
 | `DELETE /api/device/mitm` | 恢复配置 |
-| `GET /api/selectors` | 各组的默认/当前节点 ID、覆盖状态、候选节点健康与延迟；`admin_enabled` 表示该传输上的管理功能已启用 |
+| `GET /api/selectors` | 需要管理权限；各组的默认/当前节点 ID、覆盖状态、候选节点健康与延迟；授权成功后 `admin_enabled` 为 true，`auth_mode` 为 `api_key`、`lan` 或 `unix` |
 | `PUT /api/selectors/{name}` | `{"node_id":"状态返回的 ID"}` 选择节点 |
 | `DELETE /api/selectors/{name}` | 恢复配置 |
 | `GET /api/certificate` | CA 名称与 SHA-256 指纹；不可用时 `404` |

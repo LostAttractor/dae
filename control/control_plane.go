@@ -48,7 +48,7 @@ type ControlPlane struct {
 	mitmClients        clientmatch.Matcher
 	settings           *settings.Store
 	settingsMu         sync.Mutex
-	apiToken           string
+	apiKey             string
 	apiPort            uint16
 	kernelActive       bool
 	clients            map[string]config.Client
@@ -250,7 +250,7 @@ func NewControlPlane(
 		mitmClients:               mitmClients,
 		deviceRoutes:              core.bpf.deviceRoutes,
 		closeOnRouteChange:        global.RouteChangeBehavior == "close",
-		apiToken:                  global.APIToken,
+		apiKey:                    global.APIKey,
 		apiPort:                   global.APIPort,
 		clients:                   clients,
 		outbounds:                 outbounds,

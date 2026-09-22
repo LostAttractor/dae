@@ -3,8 +3,12 @@
 package control
 
 import (
+	"context"
 	"encoding/binary"
+	"encoding/json/v2"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"runtime"
@@ -12,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/vishvananda/netlink"
@@ -132,6 +137,23 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 			t.Fatalf("API packet left kernel direct: verdict %d", status)
 		}
 	}
+	handler := plane.APIHandler("identity-test")
+	checkKeylessAdmin := func(source, destination netip.AddrPort, allowed bool) {
+		t.Helper()
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "http://192.0.2.1:9080/api/selectors", nil)
+		r.Host, r.RemoteAddr = destination.String(), source.String()
+		r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, net.TCPAddrFromAddrPort(destination)))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if allowed {
+			var data api.SelectorsResponse
+			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &data) != nil || !data.AdminEnabled || data.AuthMode != "lan" {
+				t.Fatalf("keyless LAN administration: %d %s", w.Code, w.Body.String())
+			}
+		} else if w.Code != 403 {
+			t.Fatalf("keyless non-LAN administration: %d %s", w.Code, w.Body.String())
+		}
+	}
 	for _, test := range []struct {
 		name, source, destination string
 		ingress                   netlink.Link
@@ -156,6 +178,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		if (err == nil) != test.want || test.want && got != mac {
 			t.Errorf("%s: want accepted = %v", test.name, test.want)
 		}
+		checkKeylessAdmin(source, destination, test.want)
 	}
 	source, destination := netip.MustParseAddrPort("192.0.2.23:40001"), netip.MustParseAddrPort("192.0.2.1:9080")
 	{ // A tuple and observed MAC identify the peer despite another link's IP.
@@ -189,9 +212,11 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		if _, err := plane.resolveAPIClient(source, destination); err == nil {
 			t.Fatal("accepted expired LAN evidence")
 		}
+		checkKeylessAdmin(source, destination, false)
 		observe(source, destination, lan, mac, true)
 		_, err := plane.resolveAPIClient(source, destination)
 		must(err)
+		checkKeylessAdmin(source, destination, true)
 	}
 	{ // Reload retires the previous LAN authorization.
 		must(plane.publishAPIObservation())
@@ -200,6 +225,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		if _, err := plane.resolveAPIClient(source, destination); err == nil {
 			t.Fatal("accepted evidence retained across reload")
 		}
+		checkKeylessAdmin(source, destination, false)
 	}
 }
 

@@ -24,7 +24,7 @@ sudo ./dae-client status
 | --- | --- |
 | `--api` | `DAE_API_ENDPOINT`，未设置时为 `unix:///var/run/dae.sock` |
 | `--timeout` | `10s`，单次请求超时；取消命令上下文也会取消请求 |
-| `DAE_API_TOKEN` | TCP 管理接口的 Bearer token，不写入 URL 或命令行参数 |
+| `DAE_API_KEY` | TCP 管理接口配置的 API key，以 Bearer 凭据发送；daemon 未配置密钥时，已验证的直连 LAN 客户端无需设置 |
 | `--json` | `status` 输出完整 API 快照，与 `--verbose`、`--recent` 互斥；MITM 报告命令输出筛选后的实例数组 |
 | `--color` | `status` 文本输出的颜色模式：`auto`（默认）、`always` 或 `never` |
 
@@ -38,7 +38,7 @@ watch --color -n 2 'dae status --recent --color always'
 
 本地 socket 权限仍为 `0600`，不依赖 `global.api_port`。两种命令入口均不自动提权；访问默认 socket 时使用 `sudo` 或已有的文件系统权限。
 
-TCP 需要启用 [API 配置](api.md)。设置 `DAE_API_TOKEN` 后再执行远程状态命令。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把 token 发往其他地址。守护进程直接提供 HTTP；客户端支持 HTTPS 传输，但这不会给守护进程增加 TLS 或反向代理支持。
+TCP 需要启用 [API 配置](api.md)。daemon 配置密钥时需设置 `DAE_API_KEY`；未配置时，已验证的直连 LAN 客户端可以无凭据查询状态，WAN 或无法识别的客户端会被拒绝。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。守护进程直接提供 HTTP；客户端支持 HTTPS 传输，但这不会给守护进程增加 TLS 或反向代理支持。
 
 Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改。成功响应上限为 32 MiB，错误正文上限为 8 KiB；错误正文过长时仍可通过 `client.Error.StatusCode` 判断 HTTP 状态。
 
@@ -106,7 +106,7 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 `make` 和 `make test` 会通过 `make web-assets` 构建前端，并以产物替换 `internal/webui/assets/`，随后编译 Go。构建产物由 Git 忽略，只编辑 `web/src/`。直接执行 `go build` 或 `internal/webui`、`cmd` 的测试时，除了守护进程原有的构建前置步骤，还需先运行 `make web-assets`。仅构建或测试独立客户端时无需此步骤。
 
-`dae plugins status`、`dae plugins <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_TOKEN` 选择连接，`--instance` 按实例过滤。独立客户端提供 `plugins status` 和 `plugins surge status`，不加载运行时插件；前者可查看任意插件报告。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
+`dae plugins status`、`dae plugins <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_KEY` 选择连接，`--instance` 按实例过滤。独立客户端提供 `plugins status` 和 `plugins surge status`，不加载运行时插件；前者可查看任意插件报告。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
 
 端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`cmd/api_server.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
 
@@ -134,7 +134,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 - `internal/apiserver`：TCP/Unix 监听、HTTP 路由、鉴权、请求校验与重载等待；使用公开契约，通过存储接口访问运行时。
 - `control`：读取运行状态、校验 LAN 身份、应用设置并持久化；Unix 与 TCP 使用同一套 API handler。重载先等待旧 handler 的请求结束，再释放旧控制平面。
 
-运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 注册路由，`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
+运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 注册路由，`auth.go` 统一处理 Unix、LAN 和密钥/会话授权，`session.go` 处理登录、退出及签名 Cookie；`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
 
 前端与 dae 的边界是公开构建产物和 HTTP API 契约。以后可将整个 `web/` 迁移为独立仓库或 submodule，嵌入、静态托管与端口分发代码继续留在 dae。
 
@@ -146,8 +146,9 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 | 方法与路径 | 响应 | 权限与请求 |
 | --- | --- | --- |
-| `GET /api/status` | `StatusSnapshot` | TCP 需要管理 token；Unix 使用 socket 权限 |
-| `GET /api/selectors` | `SelectorsResponse` | 公开；`admin_enabled` 表示此传输上的管理功能是否启用 |
+| `GET /api/status` | `StatusSnapshot` | TCP 配置密钥时需要 API key/会话，未配置时校验直连 LAN 身份；Unix 使用 socket 权限 |
+| `GET /api/selectors` | `SelectorsResponse` | 管理权限；授权成功后 `admin_enabled` 为 true，`auth_mode` 为 `api_key`、`lan` 或 `unix` |
+| `PUT` / `DELETE /api/session` | `204`，无响应正文 | 浏览器登录 / 清除 Cookie；空请求正文。无密钥时验证 LAN/Unix 权限并清除旧 Cookie，不签发会话 |
 | `PUT /api/selectors/{group}` | `SelectorState` | 管理权限；`{"node_id":"..."}` |
 | `DELETE /api/selectors/{group}` | `SelectorState` | 管理权限；空正文，恢复配置 |
 | `GET /api/device` | `DeviceState` | 仅 TCP，需识别直连 LAN 设备 |
@@ -157,16 +158,16 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `GET /api/certificate` | `Certificate` | 公开 CA 名称与指纹；未启用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
 
-所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。TCP 管理请求带 `Authorization: Bearer <api_token>`；未配置 token 返回 `403`，已配置但请求 token 缺失或错误返回 `401`。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
+所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过直连 LAN 入口和邻居校验，否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
 
 名称按 URL 路径段编码；正文限制为 1 KiB，有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
 
-成功返回 `200`。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
+状态操作成功返回 `200`；会话操作成功返回 `204`，无响应正文。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
 
 | 状态码 | 含义 |
 | --- | --- |
 | `400` | 正文、字段、节点 ID 等不合法；Unix 无法识别设备地址 |
-| `401` / `403` | 鉴权失败、管理 token 未配置、跨源或设备身份无法确认 |
+| `401` / `403` | 密钥/会话鉴权失败、无密钥模式下 LAN 身份校验失败、跨源或设备身份无法确认 |
 | `404` / `405` | 资源不存在 / 方法不支持 |
 | `409` | CA 已变化，应重新获取并核验当前证书 |
 | `413` / `415` | 正文过大 / Content-Type 不正确 |
@@ -221,7 +222,7 @@ import (
 func main() {
     c, err := client.New(client.Options{
         Endpoint: os.Getenv("DAE_API_ENDPOINT"),
-        Token:    os.Getenv("DAE_API_TOKEN"),
+        APIKey:   os.Getenv("DAE_API_KEY"),
         Timeout:  5 * time.Second,
     })
     if err != nil {

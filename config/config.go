@@ -20,7 +20,7 @@ var (
 
 type Global struct {
 	APIPort               uint16                 `mapstructure:"api_port" default:"0"`
-	APIToken              string                 `mapstructure:"api_token"`
+	APIKey                string                 `mapstructure:"api_key"`
 	TproxyPort            uint16                 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect     bool                   `mapstructure:"tproxy_port_protect" default:"true"`
 	SoMarkFromDae         uint32                 `mapstructure:"so_mark_from_dae"`

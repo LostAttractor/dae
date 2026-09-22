@@ -22,7 +22,7 @@ sudo ./dae-client status
 | --- | --- |
 | `--api` | Defaults to `DAE_API_ENDPOINT`, then `unix:///var/run/dae.sock` |
 | `--timeout` | Request timeout, default `10s` |
-| `DAE_API_TOKEN` | Bearer token for TCP administration; kept out of URL and command arguments |
+| `DAE_API_KEY` | Configured API key for TCP administration, sent as a Bearer credential; unnecessary for verified direct LAN clients when the daemon has no key |
 | `--json` | `status`: full snapshot, mutually exclusive with `--verbose` and `--recent`; MITM report commands: filtered instance array |
 | `--color` | `status` text colors: `auto` (default), `always`, or `never` |
 
@@ -42,7 +42,7 @@ The standalone client also supports this, for example
 
 The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing filesystem permission for the local socket.
 
-Enable the [TCP API](api.md) and set `DAE_API_TOKEN` before requesting remote status. Clients bypass environment proxies and reject redirects. The daemon serves HTTP; HTTPS support in the Go client does not add TLS or reverse-proxy support to the daemon.
+Enable the [TCP API](api.md) and set `DAE_API_KEY` if the daemon has a configured key. Without one, a verified direct LAN client can request status without credentials; WAN and unidentifiable callers are rejected. Clients bypass environment proxies and reject redirects. The daemon serves HTTP; HTTPS support in the Go client does not add TLS or reverse-proxy support to the daemon.
 
 The Go SDK owns its transport and does not depend on application changes to `http.DefaultTransport`. Successful responses are limited to 32 MiB and error bodies to 8 KiB. Oversized error bodies still preserve the HTTP status in `client.Error.StatusCode`.
 
@@ -157,7 +157,7 @@ The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these 
 
 `make` and `make test` run `make web-assets` to build the frontend and replace `internal/webui/assets/` with its output before compiling Go. Generated bundles are ignored by Git; only `web/src/` is edited. When invoking `go build` or tests of `internal/webui` or `cmd` directly, first run `make web-assets` alongside the usual daemon build prerequisites. Client-only builds and tests do not need this step.
 
-`dae plugins status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_TOKEN`; filter reports with `--instance`. The standalone client provides `plugins status` for any plugin report and `plugins surge status` for Surge tables without loading runtime plugins. Report commands emit the filtered instance array with `--json`; `status --json` emits the complete daemon snapshot.
+`dae plugins status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_KEY`; filter reports with `--instance`. The standalone client provides `plugins status` for any plugin report and `plugins surge status` for Surge tables without loading runtime plugins. Report commands emit the filtered instance array with `--json`; `status --json` emits the complete daemon snapshot.
 
 The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `cmd/api_server.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the internal/apiserver handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
 
@@ -175,7 +175,7 @@ The port is bound once: `internal/apiserver` creates one TCP listener and `http.
 | `internal/apiserver` | TCP/Unix listeners, reload draining, HTTP routing, authorization and validation; runtime access through stores |
 | `control` | Runtime projection, LAN identity, settings application and persistence |
 
-Runtime and client code use `api` types directly. `internal/apiserver` owns the server-side protocol and transport without importing the control plane, clients or frontend. `handler.go` registers API routes; `request.go`, `device.go` and `selectors.go` validate and handle operations; `server.go` and `unix.go` own listener lifecycle. The control plane supplies the stores defined in `state.go`. `control` does not import UI packages; the daemon command layer composes the Web routes. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
+Runtime and client code use `api` types directly. `internal/apiserver` owns the server-side protocol and transport without importing the control plane, clients or frontend. `handler.go` registers API routes; `auth.go` authorizes Unix, LAN and key/session access; `session.go` handles login/logout and signed cookies; `request.go`, `device.go` and `selectors.go` validate and handle operations; `server.go` and `unix.go` own listener lifecycle. The control plane supplies the stores defined in `state.go`. `control` does not import UI packages; the daemon command layer composes the Web routes. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
 
 The frontend boundary consists of its public build output and the HTTP API contract. `web/` builds without reading its parent directory, so it can later move into a separate repository or submodule while the embedding and routing code stays in dae.
 
@@ -187,8 +187,9 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 
 | Operation | Response / requirement |
 | --- | --- |
-| `GET /api/status` | `StatusSnapshot`; TCP admin token or filesystem-authorized Unix connection |
-| `GET /api/selectors` | `SelectorsResponse`; public |
+| `GET /api/status` | `StatusSnapshot`; TCP uses the configured key/session or verified direct LAN identity when no key is configured; Unix uses filesystem permissions |
+| `GET /api/selectors` | `SelectorsResponse`; administration required; `auth_mode` is `api_key`, `lan` or `unix` |
+| `PUT` / `DELETE /api/session` | Browser login / clear cookie; `204`, empty body; keyless login verifies LAN/Unix access and clears stale cookies without issuing a session |
 | `PUT /api/selectors/{group}` | `SelectorState`; admin, `{"node_id":"..."}` |
 | `DELETE /api/selectors/{group}` | Restore configured selection; admin, empty body |
 | `GET /api/device` | `DeviceState`; direct identifiable LAN caller, TCP only |
@@ -198,11 +199,11 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `GET /api/certificate` | Public CA name and SHA-256 fingerprint |
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Public certificate downloads, `404` when unavailable |
 
-All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. TCP admin operations require `Authorization: Bearer <api_token>`: `403` if no token is configured, `401` if a configured token is missing or incorrect. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
+All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. If `global.api_key` is configured, TCP administration (including LAN selector reads) requires `Authorization: Bearer <api_key>` or a valid session; missing/incorrect credentials return `401`. The Go SDK accepts `client.Options.APIKey`. Without a configured key, each TCP administration request must pass the direct LAN ingress and neighbor checks, otherwise it returns `403`; credentials are not required. Browsers in key mode may use the seven-day session cookie issued by `PUT /api/session`; `DELETE /api/session` clears it. Both session operations use empty bodies and return `204` on success; keyless access never issues a session. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
 
 URL-encode names as path segments. Bodies are limited to 1 KiB; JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browsers must use the same origin; TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
 
-Successful operations return `200` with current state. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
+Successful state operations return `200`; session operations return `204` without a body. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
 
 ## Snapshot semantics and TUI integration
 

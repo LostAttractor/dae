@@ -13,10 +13,10 @@ import (
 
 func TestSyntaxErrorsOmitConfigurationSecrets(t *testing.T) {
 	for _, input := range []string{
-		"global { api_token: 'password-secret' ( }",
+		"global { api_key: 'password-secret' ( }",
 		"node { 'trojan://password-secret@example.com:443' ( }",
-		"global { api_token: 'password-secret' ",
-		"global { api_token: 'password-secret\n}",
+		"global { api_key: 'password-secret' ",
+		"global { api_key: 'password-secret\n}",
 		"password-secret 'unexpected-value'",
 		"group { target { name(password-secret) } }",
 	} {

@@ -16,7 +16,7 @@ import (
 )
 
 func TestStatusCommandUsesConfiguredAPIAndOutput(t *testing.T) {
-	t.Setenv("DAE_API_TOKEN", "cli-secret")
+	t.Setenv("DAE_API_KEY", "cli-secret")
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++

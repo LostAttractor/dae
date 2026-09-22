@@ -40,6 +40,8 @@ type DeviceState struct {
 type SelectorsResponse struct {
 	Selectors    []SelectorState `json:"selectors"`
 	AdminEnabled bool            `json:"admin_enabled"`
+	// AuthMode is api_key (Bearer/session), lan (verified direct LAN), or unix.
+	AuthMode string `json:"auth_mode"`
 }
 type SelectNodeRequest struct {
 	NodeID string `json:"node_id"`

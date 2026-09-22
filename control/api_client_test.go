@@ -47,7 +47,7 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 			if strings.HasPrefix(endpoint, "unix:") {
 				token = ""
 			}
-			client, err := apiclient.New(apiclient.Options{Endpoint: endpoint, Token: token})
+			client, err := apiclient.New(apiclient.Options{Endpoint: endpoint, APIKey: token})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,10 +127,14 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 			t.Fatalf("status: %d %s", w.Code, w.Body.String())
 		}
 	}
-	plane.apiToken = ""
+	plane.apiKey = ""
 	handler = plane.apiHandler("test", testClientMAC)
+	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 200 {
+		t.Fatal("verified LAN client could not read status without an API key", w.Code, w.Body.String())
+	}
+	handler = plane.APIHandler("test")
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 403 {
-		t.Fatal("status exposed without configured token")
+		t.Fatal("status exposed without configured API key or LAN identity")
 	}
 	// Forwarding headers never grant the Unix socket's local administration privilege.
 	r := httptest.NewRequest("GET", "http://192.0.2.1:9080/api/status", nil)

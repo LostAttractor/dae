@@ -46,7 +46,7 @@ func TestSettingsRequests(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	c, err := New(Options{Endpoint: server.URL, Token: "secret"})
+	c, err := New(Options{Endpoint: server.URL, APIKey: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestErrorsCancellationAndRedirects(t *testing.T) {
 				_, _ = io.WriteString(w, `{"error":"try again"}`)
 			}))
 			defer server.Close()
-			c, err := New(Options{Endpoint: server.URL, Token: "secret"})
+			c, err := New(Options{Endpoint: server.URL, APIKey: "secret"})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -3,42 +3,25 @@
 package apiserver
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"net/http"
-	"strings"
 
 	contract "github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	if localAPISocket(r) {
-		return true
-	}
-	if s.options.Token == "" {
-		apiError(w, 403, "global.api_token is not configured; administration is disabled")
-		return false
-	}
-	actual, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	got, want := sha256.Sum256([]byte(actual)), sha256.Sum256([]byte(s.options.Token))
-	if !bearer || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="dae"`)
-		apiError(w, 401, "API token is missing or incorrect")
-		return false
-	}
-	return true
-}
-
 func (s *handler) serveSelectors(w http.ResponseWriter, r *http.Request) {
-	if !apiBody(w, r, nil) {
+	mode, ok := s.requireAdmin(w, r)
+	if !ok || !apiBody(w, r, nil) {
 		return
 	}
-	writeAPI(w, contract.SelectorsResponse{Selectors: s.options.Selectors.Selectors(), AdminEnabled: localAPISocket(r) || s.options.Token != ""})
+	writeAPI(w, contract.SelectorsResponse{
+		Selectors: s.options.Selectors.Selectors(), AdminEnabled: true,
+		AuthMode: mode,
+	})
 }
 
 func (s *handler) serveSelector(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
+	if _, ok := s.requireAdmin(w, r); !ok {
 		return
 	}
 	id := ""

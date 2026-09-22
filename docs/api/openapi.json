@@ -22,7 +22,7 @@
             }
           }
         },
-        "description": "400 invalid request; 401 wrong/missing configured token; 403 forbidden or admin token not configured; 404 absent resource; 405 unsupported method; 409 CA changed; 413 body over 1 KiB; 415 wrong media type; 500 persistence failure; 503 starting/reloading. Route/method errors and missing certificates may be plain text."
+        "description": "400 invalid request; 401 missing/incorrect configured API key or invalid/expired session; 403 forbidden or unverified LAN identity when no API key is configured; 404 absent resource; 405 unsupported method; 409 CA changed; 413 body over 1 KiB; 415 wrong media type; 500 persistence failure; 503 starting/reloading. Route/method errors and missing certificates may be plain text."
       }
     },
     "schemas": {
@@ -781,6 +781,11 @@
           "admin_enabled": {
             "type": "boolean"
           },
+          "auth_mode": {
+            "type": "string",
+            "enum": ["api_key", "lan", "unix"],
+            "description": "The request's administrative access mode: configured API key/session, verified direct LAN identity with no configured key, or filesystem-authorized Unix socket. LAN access is revalidated for every request and creates no browser session."
+          },
           "selectors": {
             "items": {
               "$ref": "#/components/schemas/SelectorState"
@@ -790,7 +795,8 @@
         },
         "required": [
           "selectors",
-          "admin_enabled"
+          "admin_enabled",
+          "auth_mode"
         ],
         "type": "object"
       },
@@ -1167,13 +1173,20 @@
     },
     "securitySchemes": {
       "bearerAuth": {
+        "description": "The configured global.api_key, sent as a Bearer credential.",
         "scheme": "bearer",
         "type": "http"
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "dae_session",
+        "description": "Signed seven-day browser session issued by PUT /api/session. HttpOnly, SameSite=Strict; scoped to /api and the listener host/port. Changing global.api_key invalidates it. An explicit Authorization header takes precedence."
       }
     }
   },
   "info": {
-    "description": "Status schema 11. Direct fallback connections are a single process-lifetime counter outside path statistics. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. All successful operations return JSON, except certificate downloads. GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 11. Direct fallback connections are a single process-lifetime counter outside path statistics. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },
@@ -1393,6 +1406,7 @@
     },
     "/api/selectors": {
       "get": {
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "getSelectors",
         "responses": {
           "200": {
@@ -1409,12 +1423,17 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "summary": "List manual selectors"
+        "security": [
+          { "bearerAuth": [] },
+          { "sessionCookie": [] },
+          {}
+        ],
+        "summary": "List manual selectors (requires administration)"
       }
     },
     "/api/selectors/{group}": {
       "delete": {
-        "description": "On TCP requires global.api_token and its Bearer token. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "resetSelector",
         "parameters": [
           {
@@ -1454,12 +1473,16 @@
         "security": [
           {
             "bearerAuth": []
-          }
+          },
+          {
+            "sessionCookie": []
+          },
+          {}
         ],
         "summary": "Restore configured selection"
       },
       "put": {
-        "description": "On TCP requires global.api_token and its Bearer token. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "selectNode",
         "parameters": [
           {
@@ -1509,14 +1532,71 @@
         "security": [
           {
             "bearerAuth": []
-          }
+          },
+          {
+            "sessionCookie": []
+          },
+          {}
         ],
         "summary": "Override a selector"
       }
     },
+    "/api/session": {
+      "put": {
+        "operationId": "login",
+        "summary": "Create a browser session",
+        "description": "With a configured global.api_key, requires Authorization: Bearer <api_key>, including on Unix, and issues a signed seven-day session cookie without the API key. Missing/incorrect credentials return 401. Without a configured key, requires a verified direct LAN connection or filesystem-authorized Unix access, returns 204 and clears stale cookies without issuing a session; failed LAN identification returns 403. Empty request body.",
+        "parameters": [
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "const": "1" }
+          }
+        ],
+        "security": [ { "bearerAuth": [] }, {} ],
+        "responses": {
+          "204": {
+            "description": "Access verified; no response body",
+            "headers": {
+              "Set-Cookie": {
+                "description": "With a configured key: dae_session; Path=/api; HttpOnly; SameSite=Strict; Max-Age=604800. Without a key: expires any stale dae_session cookie instead.",
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "operationId": "logout",
+        "summary": "Clear the browser session cookie",
+        "description": "Empty request body. Clears the caller's cookie even if its session is expired. Does not require authentication.",
+        "parameters": [
+          {
+            "name": "X-Dae-API",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "const": "1" }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Cookie cleared; no response body",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Expires the dae_session cookie at Path=/api",
+                "schema": { "type": "string" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/api/status": {
       "get": {
-        "description": "On TCP requires global.api_token and its Bearer token. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "getStatus",
         "responses": {
           "200": {
@@ -1536,7 +1616,11 @@
         "security": [
           {
             "bearerAuth": []
-          }
+          },
+          {
+            "sessionCookie": []
+          },
+          {}
         ],
         "summary": "Read the runtime snapshot"
       }

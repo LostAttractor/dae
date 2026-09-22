@@ -28,7 +28,7 @@ func (c *Connection) Bind(flags *pflag.FlagSet) {
 }
 
 func (c *Connection) Status(ctx context.Context) (*api.StatusSnapshot, error) {
-	remote, err := client.New(client.Options{Endpoint: c.endpoint, Token: os.Getenv("DAE_API_TOKEN"), Timeout: c.timeout})
+	remote, err := client.New(client.Options{Endpoint: c.endpoint, APIKey: os.Getenv("DAE_API_KEY"), Timeout: c.timeout})
 	if err != nil {
 		return nil, err
 	}

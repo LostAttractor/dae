@@ -19,13 +19,14 @@ type ClientResolver func(source, destination netip.AddrPort) ([6]byte, error)
 
 // Options captures one plane's configuration. Publish a new handler when
 // configuration changes; stores continue to provide live runtime state.
+// Status, Selectors, Devices and ResolveClient are required dependencies.
 type Options struct {
 	Status        func() *contract.StatusSnapshot
 	Selectors     SelectorStore
 	Devices       DeviceStore
 	ResolveClient ClientResolver
 	Certificates  *Certificates
-	Token         string
+	APIKey        string
 }
 
 type handler struct{ options Options }
@@ -35,8 +36,10 @@ type handler struct{ options Options }
 func NewHandler(options Options) http.Handler {
 	s := &handler{options: options}
 	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/session", s.serveLogin)
+	mux.HandleFunc("DELETE /api/session", serveLogout)
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		if s.requireAdmin(w, r) && apiBody(w, r, nil) {
+		if _, ok := s.requireAdmin(w, r); ok && apiBody(w, r, nil) {
 			writeAPI(w, options.Status())
 		}
 	})

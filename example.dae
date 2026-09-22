@@ -28,8 +28,9 @@ global {
 
     # Device settings, selectors and certificate downloads. Zero disables the HTTP page/API.
     api_port: 0
-    # Required for selector changes. Device settings need no token.
-    #api_token: 'replace-with-a-private-token'
+    # Optional: when unset, verified direct LAN clients can view status and change selectors without login.
+    # When set, administration requires this key. Device settings always require direct LAN identification.
+    #api_key: 'replace-with-a-private-key'
 
     # SO_MARK applied to traffic and hostname lookups sent by dae to prevent them from being captured again. Zero uses
     # the reserved internal mark 0x100. Set a non-zero value only when policy-routing rules require it, ensure no unrelated

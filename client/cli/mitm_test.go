@@ -20,7 +20,7 @@ import (
 
 func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 	t.Setenv("DAE_API_ENDPOINT", "http://127.0.0.1:1")
-	t.Setenv("DAE_API_TOKEN", "report-secret")
+	t.Setenv("DAE_API_KEY", "report-secret")
 	instances := []api.PluginInstanceStatus{
 		{ID: "personal", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"cached","warnings":["offline"]}]}`)},
 		{ID: "work", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"loaded"}]}`)},

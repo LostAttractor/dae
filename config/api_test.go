@@ -12,7 +12,7 @@ import (
 )
 
 func TestGlobalAPIAndDynamicRoutingRoundTrip(t *testing.T) {
-	conf := parseConfig(t, `global { api_port: 9080 api_token: 'test-token' }
+	conf := parseConfig(t, `global { api_port: 9080 api_key: 'test-key' }
 group { proxy { filter: subtag(subscription) policy: selector } }
 client {
  gaming {
@@ -26,7 +26,7 @@ routing { client('游戏 加速') && l4proto(udp) -> proxy
  client(gaming) -> proxy
  fallback: direct }
 `)
-	if conf.Global.APIPort != 9080 || conf.Global.APIToken != "test-token" || conf.MITM.Enabled {
+	if conf.Global.APIPort != 9080 || conf.Global.APIKey != "test-key" || conf.MITM.Enabled {
 		t.Fatal("API configuration depends on Surge")
 	}
 	if len(conf.Client) != 2 || conf.Client[0].Description != `游戏加速：加入后使用 "代理"，路径 C:\games` {

@@ -26,14 +26,14 @@ const maxResponseSize = 32 << 20
 // Options are immutable after New. A Client can be shared by concurrent callers.
 type Options struct {
 	Endpoint string
-	Token    string
+	APIKey   string
 	Timeout  time.Duration
 }
 
 type Client struct {
-	base  string
-	token string
-	http  *http.Client
+	base   string
+	apiKey string
+	http   *http.Client
 }
 
 // Error is a non-success API response. StatusCode can be used with errors.AsType
@@ -78,7 +78,7 @@ func New(options Options) (*Client, error) {
 	if timeout < 0 {
 		return nil, fmt.Errorf("API timeout must be positive")
 	}
-	return &Client{base: endpoint, token: options.Token, http: &http.Client{
+	return &Client{base: endpoint, apiKey: options.APIKey, http: &http.Client{
 		Transport: transport, Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
@@ -108,8 +108,8 @@ func (c *Client) request[T any](ctx context.Context, method, path string, body a
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	if fingerprint != "" {
 		req.Header.Set("X-Dae-MITM", fingerprint)

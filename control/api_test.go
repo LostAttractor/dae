@@ -36,7 +36,7 @@ func newAPITestPlane(t *testing.T, store *settings.Store) *ControlPlane {
 	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}, nil)
 	t.Cleanup(func() { _ = group.Close() })
 	builder, matcher := buildClientMatcher(t, clientRule("gaming", false, "proxy"), clientRule("streaming", false, "proxy"))
-	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, apiToken: "test-secret", routingMatcherBuilder: builder, routingMatcher: matcher}
+	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, apiKey: "test-secret", routingMatcherBuilder: builder, routingMatcher: matcher}
 }
 func apiTestRequest(handler http.Handler, method, path, body, token string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, "http://192.0.2.1:9080"+path, strings.NewReader(body))
@@ -68,7 +68,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	body := `{"node_id":"` + selected + `"}`
 	// Global selectors remain available when no device-facing LAN is configured.
 	production := plane.APIHandler("test")
-	if w := apiTestRequest(production, "GET", "/api/selectors", "", ""); w.Code != 200 {
+	if w := apiTestRequest(production, "GET", "/api/selectors", "", "test-secret"); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	for _, method := range []string{"PUT", "DELETE"} {
@@ -80,7 +80,9 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 		method, path, body, token string
 		code                      int
 	}{
-		{"GET", "/api/selectors", "", "", 200},
+		{"GET", "/api/selectors", "", "", 401},
+		{"GET", "/api/selectors", "", "wrong", 401},
+		{"GET", "/api/selectors", "", "test-secret", 200},
 		{"GET", "/api/device", "", "", 200},
 		{"PUT", "/api/selectors/proxy", body, "", 401},
 		{"PUT", "/api/selectors/proxy", body, "wrong", 401},
@@ -138,13 +140,16 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != "" {
 		t.Fatal("selector reset failed")
 	}
-	plane.apiToken = ""
+	plane.apiKey = ""
 	// Configuration changes publish a new handler, as on daemon reload.
 	handler = plane.apiHandler("test", testClientMAC)
-	if w := apiTestRequest(handler, "PUT", "/api/selectors/proxy", body, "test-secret"); w.Code != 403 {
-		t.Fatal("selector mutation enabled without configured token")
+	if w := apiTestRequest(handler, "PUT", "/api/selectors/proxy", body, ""); w.Code != 200 || group.Selection() != selected {
+		t.Fatal("keyless LAN selector mutation failed", w.Code, w.Body.String())
 	}
-	// A disabled admin token must not disable device self-service.
+	if w := apiTestRequest(plane.APIHandler("test"), "PUT", "/api/selectors/proxy", body, "test-secret"); w.Code != 403 {
+		t.Fatal("keyless selector mutation bypassed LAN identification", w.Code, w.Body.String())
+	}
+	// Device self-service uses the same LAN identity boundary.
 	if w := apiTestRequest(handler, "PUT", "/api/device/sets/gaming", "", ""); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
@@ -269,7 +274,7 @@ func TestDeviceAPIReportsIdentityFailureWithoutHidingSelectors(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	w := apiTestRequest(handler, "GET", "/api/selectors", "", "")
+	w := apiTestRequest(handler, "GET", "/api/selectors", "", "test-secret")
 	var state struct {
 		Selectors    []api.SelectorState `json:"selectors"`
 		AdminEnabled bool                `json:"admin_enabled"`

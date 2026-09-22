@@ -42,12 +42,12 @@ func TestMergerSyntaxErrorPreservesLocationWithoutSecrets(t *testing.T) {
 
 func TestMergerInvalidIncludeDoesNotEchoConfiguration(t *testing.T) {
 	entry := filepath.Join(t.TempDir(), "config.dae")
-	writeConfigFile(t, entry, "include { nested { api_token: 'password-secret' } }\n")
+	writeConfigFile(t, entry, "include { nested { api_key: 'password-secret' } }\n")
 	_, _, err := NewMerger(entry).Merge()
 	if err == nil || !strings.Contains(err.Error(), entry) || !strings.Contains(err.Error(), "expected a configuration file path or glob pattern") {
 		t.Fatalf("invalid include error lost its source or guidance: %v", err)
 	}
-	if strings.Contains(err.Error(), "password-secret") || strings.Contains(err.Error(), "api_token") {
+	if strings.Contains(err.Error(), "password-secret") || strings.Contains(err.Error(), "api_key") {
 		t.Fatalf("invalid include error exposed configuration: %v", err)
 	}
 }

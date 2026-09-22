@@ -7,7 +7,7 @@ See [API and independent clients](api-client.md) for standalone builds, TUI inte
 global {
   lan_interface: br-lan
   api_port: 9080
-  api_token: 'replace-with-a-private-token'
+  api_key: 'replace-with-a-private-key'
 }
 group {
   manual {
@@ -30,9 +30,15 @@ routing {
 
 ## Usage and Persistence
 
-- **Selectors**: `selector` means `selector(0)`; `selector(n)` sets the default path index. Changes affect everyone using the group and require `api_token`. Choices use node IDs, survive reordering, and reset when the configured node disappears.
-- **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. The API connection must traverse `global.lan_interface` ingress, and its observed source MAC must match a direct ARP/NDP neighbor. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; node lists and certificate downloads remain available.
+- **Selectors**: When `api_key` is configured, enter it in the top toolbar and click **Login** to view selector status or change nodes. Without a key, verified direct LAN clients can use selectors immediately; the toolbar shows **LAN access**. `selector` means `selector(0)`; `selector(n)` sets the default path index. Changes affect everyone using the group. Choices use node IDs, survive reordering, and reset when the configured node disappears.
+- **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. The API connection must traverse `global.lan_interface` ingress, and its observed source MAC must match a direct ARP/NDP neighbor. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; authenticated selector access and public certificate downloads remain available.
 - **HTTPS Modules**: Device settings override `mitm.client_source_address`, including explicit disabling. Install and trust the CA before enabling; the page cannot detect trust.
+
+Login stores a signed session in an `HttpOnly`, `SameSite=Strict` cookie for seven days; the API key itself is not stored in the cookie. Reloading the page or daemon preserves the session. **Logout** clears the browser cookie; changing `api_key` invalidates existing sessions. **Refresh** updates the displayed state and timestamp. Device self-service remains available without administrator login.
+
+`global.api_key` is optional. When omitted or empty, status and selector administration use the same direct LAN identity checks as device self-service: current eBPF ingress evidence on `global.lan_interface` and a matching direct ARP/NDP neighbor. Each request is verified; a private source IP, forwarded header, or old session cookie is insufficient. WAN, routed peers and unidentifiable clients receive `403`. This mode needs no login and creates no session cookie. Configuring a key requires key/session authentication for TCP administration, including LAN callers. Unix socket administration uses filesystem permissions in either mode.
+
+The configuration field is now `global.api_key` (formerly `global.api_token`). Update existing configurations when upgrading; CLI clients use `DAE_API_KEY` and the Go SDK uses `client.Options.APIKey`.
 
 Identification uses TCP connection metadata recorded by eBPF at LAN ingress. The route or neighbor table's interface name does not need to match `lan_interface`. For `enp1s0f0np0 → lan (VLAN) → br-lan`, keep `lan_interface: lan`; bonds and other layered Ethernet interfaces use the same identification path. Each request updates the observed MAC and timestamp; configuration reloads clear observations. Missing observations, observations older than 30 seconds, indirect return routes, and MACs that do not match the ARP/NDP neighbor on the route's interface prevent device operations. The same IP on another interface does not affect identification.
 
@@ -76,18 +82,20 @@ Inspect with `ipset list dae_work` or `nft list set inet filter dae_work`. Match
 
 ## API
 
-PUT and DELETE requests require `X-Dae-API: 1`. JSON bodies require `Content-Type: application/json`; other requests use empty bodies. Selector writes require `Authorization: Bearer <api_token>`; MITM writes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. URL-encode names in paths. Command-line clients may omit `Origin`.
+PUT and DELETE requests require `X-Dae-API: 1`. JSON bodies require `Content-Type: application/json`; other requests use empty bodies. With a configured key, status and selector reads/writes require `Authorization: Bearer <api_key>` or a valid browser session cookie; without a key they require verified direct LAN identity. MITM writes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. In key mode, an explicit Authorization header takes precedence over the cookie. URL-encode names in paths. Command-line clients may omit `Origin`.
 
-Selector writes return `403` with an explanation when `global.api_token` is not configured, or `401` when the request token is missing or incorrect. Device self-service does not require this token.
+Keyless TCP administration returns `403` if LAN identification fails. With a configured key, a missing, incorrect or expired key/session returns `401`. Device self-service always requires direct LAN identification and does not require this key.
 
 | Method and path | Behavior |
 | --- | --- |
-| `GET /api/status` | Full runtime snapshot; requires the TCP admin token or filesystem-authorized Unix access |
+| `PUT /api/session` | With a configured key, login using `Authorization: Bearer <api_key>` and receive a session cookie; without a key, verify LAN/Unix access and clear stale cookies. Empty body, `204` on success |
+| `DELETE /api/session` | Clear the browser session cookie; empty body, `204` on success |
+| `GET /api/status` | Full runtime snapshot; TCP uses the configured API key/session, or verified direct LAN identity when no key is configured; Unix uses filesystem permissions |
 | `GET /api/device` | Caller IP, MAC, sets (`name`, `description`, `joined`), and MITM state (`enabled`, `override`, `ca_fingerprint`); `403` for an unknown MAC |
 | `PUT` / `DELETE /api/device/sets/{name}` | Join / leave a set |
 | `PUT /api/device/mitm` | Enable with `{"enabled":true}`, or disable with `false` |
 | `DELETE /api/device/mitm` | Restore configuration |
-| `GET /api/selectors` | Default/current node IDs, overrides, candidate health and latency; `admin_enabled` indicates administration is enabled for this transport |
+| `GET /api/selectors` | Requires administration; default/current node IDs, overrides, candidate health and latency; `admin_enabled` is true after authorization, and `auth_mode` is `api_key`, `lan` or `unix` |
 | `PUT /api/selectors/{name}` | Select with `{"node_id":"ID from status"}` |
 | `DELETE /api/selectors/{name}` | Restore configuration |
 | `GET /api/certificate` | CA name and SHA-256 fingerprint; `404` when unavailable |
