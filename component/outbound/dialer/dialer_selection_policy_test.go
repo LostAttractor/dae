@@ -15,7 +15,7 @@ import (
 func TestIndexedSelectionPolicy(t *testing.T) {
 	for _, input := range []config.FunctionListOrString{"selector", &config_parser.Function{Name: "selector"}} {
 		policy, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{Policy: input})
-		if err != nil || policy.Policy != "selector" || policy.FixedIndex != 0 {
+		if err != nil || policy.Policy != "selector" || policy.FixedIndex != 0 || policy.FixedIndexSet {
 			t.Fatalf("selector without index = %+v, %v", policy, err)
 		}
 	}
@@ -36,10 +36,27 @@ func TestIndexedSelectionPolicy(t *testing.T) {
 					if err == nil {
 						t.Fatal("invalid index was accepted")
 					}
-				} else if err != nil || string(policy.Policy) != name || policy.FixedIndex != test.want {
+				} else if err != nil || string(policy.Policy) != name || policy.FixedIndex != test.want || !policy.FixedIndexSet {
 					t.Fatalf("policy = %+v, %v; want %s(%d)", policy, err, name, test.want)
 				}
 			})
+		}
+	}
+}
+
+func TestTrackAllRequiresSelector(t *testing.T) {
+	for _, name := range []string{"selector", "random"} {
+		for _, enabled := range []bool{false, true} {
+			policy, err := NewDialerSelectionPolicyFromGroupParam(&config.Group{
+				Policy: name, TrackAll: enabled, Present: map[string]bool{"track_all": true},
+			})
+			if name != "selector" {
+				if err == nil {
+					t.Fatal("non-selector accepted track_all")
+				}
+			} else if err != nil || policy.TrackAll != enabled || policy.FixedIndexSet {
+				t.Fatalf("configured tracking = %+v, %v", policy, err)
+			}
 		}
 	}
 }

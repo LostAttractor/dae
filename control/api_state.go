@@ -31,11 +31,15 @@ func (c *ControlPlane) deviceState(ip netip.Addr, mac [6]byte) api.DeviceState {
 }
 
 func (c *ControlPlane) selectorState(group *outbound.DialerGroup) api.SelectorState {
-	state := api.SelectorState{Name: group.Name, DefaultNodeID: group.DefaultSelection(), NodeID: group.Selection(), Nodes: make([]api.SelectorNode, 0, len(group.Dialers))}
+	state := api.SelectorState{Name: group.Name, DefaultNodeID: group.DefaultSelection(), NodeID: group.Selection(), TrackAll: group.TrackAll(), Nodes: make([]api.SelectorNode, 0, len(group.Dialers))}
 	state.Overridden = c.settings.Selection(group.Name) != ""
 	for _, d := range group.Dialers {
 		status := d.RuntimeStatus()
-		node := api.SelectorNode{ID: d.StatsID(), Name: d.Name, Healthy: status.Healthy, Checking: !d.ConnectivitySnapshot().InitialCheckDone}
+		node := api.SelectorNode{
+			ID: d.StatsID(), Name: d.Name, Healthy: status.Healthy,
+			Checking: status.Checking, Tested: !status.CheckedAt.IsZero(),
+			Tracking: status.CheckEnabled, CheckedAt: status.CheckedAt,
+		}
 		if status.Healthy && status.HasLatency {
 			ms := float64(status.Latency.Last) / float64(time.Millisecond)
 			node.LatencyMS = &ms
@@ -58,15 +62,12 @@ func (c *ControlPlane) Selectors() []api.SelectorState {
 }
 
 func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error) {
-	var group *outbound.DialerGroup
-	for _, candidate := range c.outbounds {
-		if candidate.Name == name && candidate.IsSelector() {
-			group = candidate
-			break
-		}
-	}
-	if group == nil {
+	group := c.outboundGroup(name)
+	if group == nil || !group.IsSelector() {
 		return api.SelectorState{}, apiserver.ErrSelectorNotFound
+	}
+	if id == "" && group.DefaultSelection() == "" {
+		return api.SelectorState{}, apiserver.ErrSelectorNoDefault
 	}
 	if id != "" && !slices.ContainsFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id }) {
 		return api.SelectorState{}, apiserver.ErrSelectorNode
@@ -79,6 +80,15 @@ func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error
 	}
 	log.WithFields(log.Fields{"event": "selector_update", "group": group.Name, "node_id": group.Selection(), "source_ip": source, "overridden": id != ""}).Info("API settings changed")
 	return c.selectorState(group), nil
+}
+
+func (c *ControlPlane) outboundGroup(name string) *outbound.DialerGroup {
+	for _, candidate := range c.outbounds {
+		if candidate.Name == name {
+			return candidate
+		}
+	}
+	return nil
 }
 
 func (c *ControlPlane) HasClientSet(name string) bool {

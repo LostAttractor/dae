@@ -120,7 +120,12 @@ func apiDevice(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (
 }
 
 func writeAPI(w http.ResponseWriter, value any) {
+	writeAPIStatus(w, value, http.StatusOK)
+}
+
+func writeAPIStatus(w http.ResponseWriter, value any, status int) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.MarshalWrite(w, value, jsonv1.FormatDurationAsNano(true))
 }
 

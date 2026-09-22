@@ -49,7 +49,7 @@ func (g *DialerGroup) IsSelector() bool {
 
 func (g *DialerGroup) DefaultSelection() string {
 	index := g.selectionPolicy.FixedIndex
-	if !g.IsSelector() || index < 0 || index >= len(g.Dialers) {
+	if !g.IsSelector() || !g.selectionPolicy.FixedIndexSet || index < 0 || index >= len(g.Dialers) {
 		return ""
 	}
 	return g.Dialers[index].StatsID()
@@ -69,7 +69,9 @@ func (g *DialerGroup) Selection() string {
 }
 
 // SetSelection changes the path for new connections. An empty ID restores the
-// configured default. Kernel connectivity is published before success returns.
+// startup choice (the explicit default, or the first path). This internal restore
+// is also used when no saved selection exists; the API only allows resetting an
+// explicit default. Kernel connectivity is published before success returns.
 func (g *DialerGroup) SetSelection(id string) error {
 	return g.ChangeSelection(id, func() error { return nil })
 }
@@ -88,7 +90,7 @@ func (g *DialerGroup) ChangeSelection(id string, commit func() error) error {
 	}
 	index := g.selectionPolicy.FixedIndex
 	if index < 0 || index >= len(g.Dialers) {
-		return fmt.Errorf("group %q: selector default index %d is out of range for %d paths", g.Name, index, len(g.Dialers))
+		return fmt.Errorf("group %q: selector initial index %d is out of range for %d paths", g.Name, index, len(g.Dialers))
 	}
 	if id != "" {
 		index = slices.IndexFunc(g.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id })
@@ -110,12 +112,29 @@ func (g *DialerGroup) ChangeSelection(id string, commit func() error) error {
 		return errors.Join(fmt.Errorf("change selector %q: %w", g.Name, err), g.updateConnectivity())
 	}
 	g.closeRecoveredConnections()
+	g.updateCheckTracking()
 	for i := range common.NetworkTypeCount {
 		g.closeReselectedConnections(common.NetworkIndex(i).NetworkType())
 		g.connections.networks[i].selected = g.Dialers[index].StatsID()
 	}
 	g.Dialers[index].RequestConnectivityCheck()
 	return nil
+}
+
+// TrackAll is immutable configuration, applied before any checker starts.
+func (g *DialerGroup) TrackAll() bool {
+	return g.IsSelector() && g.selectionPolicy.TrackAll
+}
+
+// Caller holds mu or is constructing an unpublished group. Fixed and automatic
+// policies retain their existing check scheduling; only API selectors are lazy.
+func (g *DialerGroup) updateCheckTracking() {
+	if !g.IsSelector() {
+		return
+	}
+	for i, d := range g.Dialers {
+		d.SetCheckEnabled(g.TrackAll() || i == g.selectionIndex)
+	}
 }
 
 // EnableSelectionTolerance switches latency selection from startup best-so-far

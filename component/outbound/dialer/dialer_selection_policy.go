@@ -15,8 +15,10 @@ import (
 )
 
 type DialerSelectionPolicy struct {
-	Policy     consts.DialerSelectionPolicy
-	FixedIndex int
+	Policy        consts.DialerSelectionPolicy
+	FixedIndex    int
+	FixedIndexSet bool
+	TrackAll      bool
 	// For moving average
 	EmaAlpha       float64
 	TimeoutPenalty time.Duration
@@ -36,6 +38,9 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 		return nil, fmt.Errorf("policy should be exact 1 function: got %v", len(fs))
 	}
 	f := fs[0]
+	if (param.TrackAll || param.Present["track_all"]) && f.Name != string(consts.DialerSelectionPolicy_Selector) {
+		return nil, fmt.Errorf("track_all requires selector policy")
+	}
 	if f.Not {
 		return nil, fmt.Errorf("policy param does not support not operator: !%v()", f.Name)
 	}
@@ -83,7 +88,7 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 		}, nil
 	case consts.DialerSelectionPolicy_Fixed, consts.DialerSelectionPolicy_Selector:
 		if fName == consts.DialerSelectionPolicy_Selector && len(f.Params) == 0 {
-			return &DialerSelectionPolicy{Policy: fName}, nil
+			return &DialerSelectionPolicy{Policy: fName, TrackAll: param.TrackAll}, nil
 		}
 		if len(f.Params) != 1 || f.Params[0].Key != "" {
 			return nil, fmt.Errorf(`invalid "%v" param format`, fName)
@@ -97,8 +102,10 @@ func NewDialerSelectionPolicyFromGroupParam(param *config.Group) (policy *Dialer
 			return nil, fmt.Errorf(`invalid "%v" param format: index must not be negative`, fName)
 		}
 		return &DialerSelectionPolicy{
-			Policy:     consts.DialerSelectionPolicy(fName),
-			FixedIndex: index,
+			Policy:        consts.DialerSelectionPolicy(fName),
+			FixedIndex:    index,
+			FixedIndexSet: true,
+			TrackAll:      param.TrackAll,
 		}, nil
 
 	default:

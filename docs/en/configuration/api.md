@@ -13,6 +13,7 @@ group {
   manual {
     filter: subtag(my_sub)
     policy: selector
+    # track_all: true  # Monitor every candidate; apply with dae reload
   }
 }
 client {
@@ -30,7 +31,13 @@ routing {
 
 ## Usage and Persistence
 
-- **Selectors**: When `api_key` is configured, enter it in the top toolbar and click **Login** to view selector status or change nodes. Without a key, verified direct LAN clients can use selectors immediately; the toolbar shows **LAN access**. `selector` means `selector(0)`; `selector(n)` sets the default path index. Changes affect everyone using the group. Choices use node IDs, survive reordering, and reset when the configured node disappears.
+`selector` continuously checks only the selected node by default; its startup barrier also waits only for that node. Switching immediately checks the new selection and pauses periodic checks on the old one. An in-flight test may finish. Other selection policies keep their existing check scope.
+
+Set `track_all: true` in a selector's group block and reload to continuously monitor every candidate; it defaults to false. This is configuration-only, with no mutation API or runtime preference. When enabled, the page shows **Tracking all nodes** in place of every **Test / Test all** button. Checks use the group's interval settings; the startup barrier still waits only for the selected node. The option is selector-only and is not inherited through `group(name)`.
+
+For selector groups, `dae status` (including verbose/JSON) includes only selected, monitored, currently testing, or actively connected nodes. Idle untracked candidates retain their last result in `/api/selectors` and the page. Group/global traffic totals still include those paths.
+
+- **Selectors**: When `api_key` is configured, enter it in the top toolbar and click **Login** to view selector status or change nodes. Without a key, verified direct LAN clients can use selectors immediately; the toolbar shows **LAN access**. Plain `selector` has no configured default: restore a saved choice, otherwise initially select the first candidate, without a default badge or reset button. Only explicit `selector(n)`, including `selector(0)`, declares a default path index. Changes affect everyone using the group. Saved node IDs survive reordering; a missing saved node uses the explicit default, or the first candidate if no default exists.
 - **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. The API connection must traverse `global.lan_interface` ingress, and its observed source MAC must match a direct ARP/NDP neighbor. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; authenticated selector access and public certificate downloads remain available.
 - **HTTPS Modules**: Device settings override `mitm.client_source_address`, including explicit disabling. Install and trust the CA before enabling; the page cannot detect trust.
 
@@ -44,7 +51,7 @@ Identification uses TCP connection metadata recorded by eBPF at LAN ingress. The
 
 The `client` block supplies plain-text descriptions below set names; empty descriptions are hidden. Sets referenced by routing or configured for kernel export appear, and duplicate definitions are rejected. Descriptions update with `dae reload` without changing membership.
 
-**Use Configuration** clears selector or MITM overrides. Settings persist in `$DAE_LOCATION_CACHE/runtime-state.json` (default `/var/lib/dae/runtime-state.json`, mode `0600`) across reloads, restarts, and API disabling. The main configuration is untouched. Existing connections and UDP sessions keep their paths.
+**Reset to default** is available for selectors only when `selector(n)` explicitly configures a default; it clears the saved selection and restores that path. MITM reset still clears the device override. Settings persist in `$DAE_LOCATION_CACHE/runtime-state.json` (default `/var/lib/dae/runtime-state.json`, mode `0600`) across reloads, restarts, and API disabling. The main configuration is untouched. Existing connections and UDP sessions keep their paths.
 
 Manual file edits trigger reloads through filesystem events, including atomic replacements. Invalid contents, unknown node IDs, application failures, or a temporarily missing file preserve current state. For example:
 
@@ -57,6 +64,8 @@ Manual file edits trigger reloads through filesystem events, including atomic re
 ```
 
 Keep all three objects; remove entries to clear overrides or memberships. Use node IDs from `/api/selectors` and lowercase colon-separated MACs. Avoid concurrent file edits and API writes.
+
+Legacy `selector_tracking` entries are ignored on read and removed on subsequent writes. Configure `track_all` in the group block instead; runtime state cannot override it.
 
 ## Exporting MAC Sets
 
@@ -82,7 +91,7 @@ Inspect with `ipset list dae_work` or `nft list set inet filter dae_work`. Match
 
 ## API
 
-PUT and DELETE requests require `X-Dae-API: 1`. JSON bodies require `Content-Type: application/json`; other requests use empty bodies. With a configured key, status and selector reads/writes require `Authorization: Bearer <api_key>` or a valid browser session cookie; without a key they require verified direct LAN identity. MITM writes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. In key mode, an explicit Authorization header takes precedence over the cookie. URL-encode names in paths. Command-line clients may omit `Origin`.
+POST, PUT and DELETE requests require `X-Dae-API: 1`. JSON bodies require `Content-Type: application/json`; other requests use empty bodies. With a configured key, status and selector reads/writes require `Authorization: Bearer <api_key>` or a valid browser session cookie; without a key they require verified direct LAN identity. MITM writes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. In key mode, an explicit Authorization header takes precedence over the cookie. URL-encode names in paths. Command-line clients may omit `Origin`.
 
 Keyless TCP administration returns `403` if LAN identification fails. With a configured key, a missing, incorrect or expired key/session returns `401`. Device self-service always requires direct LAN identification and does not require this key.
 
@@ -97,11 +106,16 @@ Keyless TCP administration returns `403` if LAN identification fails. With a con
 | `DELETE /api/device/mitm` | Restore configuration |
 | `GET /api/selectors` | Requires administration; default/current node IDs, overrides, candidate health and latency; `admin_enabled` is true after authorization, and `auth_mode` is `api_key`, `lan` or `unix` |
 | `PUT /api/selectors/{name}` | Select with `{"node_id":"ID from status"}` |
-| `DELETE /api/selectors/{name}` | Restore configuration |
+| `DELETE /api/selectors/{name}` | Restore explicit `selector(n)`; `409` if no default exists |
+| `POST /api/probes` | `{"outbound":"manual","node_id":"node ID"}` probes one node; omit or leave `node_id` empty for the whole outbound; returns `202` with accepted node IDs |
 | `GET /api/certificate` | CA name and SHA-256 fingerprint; `404` when unavailable |
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Download the public certificate without MAC identification |
 
 A `null` MITM `override` inherits the configuration. Fetch the corresponding status after changes. A changed CA causes MITM writes to return `409`; refresh the page, verify the fingerprint, and install and trust the current certificate.
+
+`POST /api/probes` is the shared manual probe API for instantiated, checked outbounds, including selectors, automatic policies and direct node references. It uses configured DNS probes, timeouts and concurrency bounds; arbitrary URLs and per-request probe configuration are not accepted. `202` acknowledges acceptance, including coalescing with queued/running work; it is not a health result or persistent job, and changes neither selection nor `track_all`. Poll `/api/selectors` for selector `checking`, `tested`, `checked_at`, `healthy` and `latency_ms`; other outbounds publish runtime health and latency through `/api/status`. Unknown outbound: `404`; node outside that outbound: `400`; unchecked builtin: `409`. The old selector `/test` and `/tracking` operations have been removed.
+
+`SelectorState.track_all` is read-only configuration. `default_node_id` is present only for explicit `selector(n)`; clients should hide default labels and reset controls when it is absent.
 
 The daemon status schema is 11, served at `/api/status` over the Unix socket `/var/run/dae.sock` for `dae status`, `dae plugins status` and plugin commands. It does not require `global.api_port`. Top-level `direct_fallback_connections` counts established no-connectivity fallbacks to direct across the process lifetime; path, group and node statistics contain no fallback field. Domain tables report time-based GC and kernel candidates; userspace `limit: 0` means unbounded. Registry `used` counts domain-IP pairs; its `breakdown` includes distinct `domains`, distinct `ips`, address-family counts `ipv4` / `ipv6`, and cumulative collected pairs `gc`. `plugins` contains instance IDs, types, host lifecycle states and rule counts. Optional `details` is defined by each plugin; Surge supplies `enabled` and `modules`. Use matching CLI and daemon versions.
 

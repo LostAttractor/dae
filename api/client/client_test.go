@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/daeuniverse/dae/api"
 )
 
 func TestSettingsRequests(t *testing.T) {
@@ -43,6 +45,16 @@ func TestSettingsRequests(t *testing.T) {
 				t.Error("reset must not send JSON null")
 			}
 			_, _ = io.WriteString(w, `{}`)
+		case 6, 7:
+			want := `{"outbound":"proxy/香港","node_id":"node"}`
+			if requests == 7 {
+				want = `{"outbound":"proxy/香港"}`
+			}
+			if r.Method != "POST" || r.URL.Path != "/api/probes" || string(body) != want || r.Header.Get("X-Dae-API") != "1" || r.Header.Get("Content-Type") != "application/json" {
+				t.Errorf("unexpected probe request: %s %s %s", r.Method, r.URL.EscapedPath(), body)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"outbound":"proxy/香港","node_ids":["node"]}`)
 		}
 	}))
 	defer server.Close()
@@ -69,7 +81,12 @@ func TestSettingsRequests(t *testing.T) {
 	if _, err := c.ResetMITM(ctx, "fingerprint"); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 5 {
+	for _, node := range []string{"node", ""} {
+		if accepted, err := c.Probe(t.Context(), api.ProbeRequest{Outbound: "proxy/香港", NodeID: node}); err != nil || accepted.Outbound != "proxy/香港" || len(accepted.NodeIDs) != 1 {
+			t.Fatal(accepted, err)
+		}
+	}
+	if requests != 7 {
 		t.Fatalf("requests = %d", requests)
 	}
 }

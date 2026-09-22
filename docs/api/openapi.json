@@ -714,8 +714,19 @@
       },
       "SelectorNode": {
         "properties": {
+          "checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Completion time of the last test; absent before the first completed test. Untracked results are historical."
+          },
           "checking": {
+            "description": "A test is queued/running, or the monitored node awaits its initial check. Untested dormant nodes are not checking.",
             "type": "boolean"
+          },
+          "tested": { "type": "boolean" },
+          "tracking": {
+            "type": "boolean",
+            "description": "Automatic connectivity checks are enabled."
           },
           "healthy": {
             "type": "boolean"
@@ -742,14 +753,21 @@
           "id",
           "name",
           "healthy",
-          "checking"
+          "checking",
+          "tested",
+          "tracking"
         ],
         "type": "object"
       },
       "SelectorState": {
         "properties": {
+          "track_all": {
+            "type": "boolean",
+            "description": "Read-only group track_all configuration. False by default: only the selected node is monitored. Configure the file and reload to change it."
+          },
           "default_node_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Present only for an explicitly indexed selector(n). Plain selector has no configured default and cannot be reset."
           },
           "name": {
             "type": "string"
@@ -769,9 +787,9 @@
         },
         "required": [
           "name",
-          "default_node_id",
           "node_id",
           "overridden",
+          "track_all",
           "nodes"
         ],
         "type": "object"
@@ -799,6 +817,26 @@
           "auth_mode"
         ],
         "type": "object"
+      },
+      "ProbeRequest": {
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "outbound": { "type": "string", "minLength": 1, "description": "Name of an instantiated, checked outbound. Applies to selector and automatic policies, and checked direct-node targets." },
+          "node_id": {
+            "type": "string",
+            "description": "Path ID within that outbound. Empty or omitted probes every path once."
+          }
+        },
+        "required": ["outbound"]
+      },
+      "ProbeResponse": {
+        "type": "object",
+        "properties": {
+          "outbound": { "type": "string" },
+          "node_ids": { "type": "array", "items": { "type": "string" }, "description": "Accepted targets, including requests coalesced with queued/running checks. Acceptance is not a health result." }
+        },
+        "required": ["outbound", "node_ids"]
       },
       "SetMITMRequest": {
         "additionalProperties": false,
@@ -1479,7 +1517,7 @@
           },
           {}
         ],
-        "summary": "Restore configured selection"
+        "summary": "Restore an explicitly configured selector(n) default; 409 when none exists"
       },
       "put": {
         "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
@@ -1539,6 +1577,25 @@
           {}
         ],
         "summary": "Override a selector"
+      }
+    },
+    "/api/probes": {
+      "post": {
+        "operationId": "probe",
+        "summary": "Request configured outbound connectivity probes",
+        "description": "Requires administration. Uses the outbound's configured DNS probe, existing concurrency bounds and timeouts. No arbitrary URL, network, or timeout overrides are accepted. node_id selects one path; omission or an empty value selects all paths. Returns 202 immediately with accepted IDs; repeated requests for queued/running work coalesce. Selector results are available through GET /api/selectors (checking/tested/checked_at/healthy/latency_ms); other outbounds publish their runtime health and latency through GET /api/status. This is not a persistent probe job and does not change selection or monitoring configuration. Unknown outbound: 404; invalid node/body: 400; unchecked builtin: 409.",
+        "parameters": [
+          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProbeRequest" } } }
+        },
+        "responses": {
+          "202": { "description": "Probe targets accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProbeResponse" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        },
+        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
       }
     },
     "/api/session": {

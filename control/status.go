@@ -6,6 +6,8 @@
 package control
 
 import (
+	"slices"
+
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
@@ -125,13 +127,23 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 	if status.ChecksConnectivity {
 		status.Connectivity, status.Availability = group.Connectivity()
 	}
-	for _, node := range group.Dialers {
-		status.Nodes = append(status.Nodes, newNodeStatus(paths, group, node))
-	}
+	selectedID := group.Selection()
+	// Capture network selections before filtering so a concurrent switch cannot
+	// leave selected_node_ids referring to an omitted candidate.
 	for index := range common.NetworkIndex(common.NetworkTypeCount) {
 		if selected := group.SelectedDialer(index.NetworkType()); selected != nil {
 			status.SelectedNodeIDs[index] = selected.StatsID()
 		}
+	}
+	for _, node := range group.Dialers {
+		if group.IsSelector() && node.StatsID() != selectedID && !slices.Contains(status.SelectedNodeIDs[:], node.StatsID()) {
+			runtime := node.RuntimeStatus()
+			active := paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}].ActiveConnections
+			if !runtime.CheckEnabled && !runtime.Checking && active == 0 {
+				continue
+			}
+		}
+		status.Nodes = append(status.Nodes, newNodeStatus(paths, group, node))
 	}
 	return status
 }

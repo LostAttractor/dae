@@ -122,6 +122,7 @@ func NewDialerGroup(
 		for _, d := range dialers {
 			d.RegisterDialerGroup(g, selectionPolicy.EmaAlpha, selectionPolicy.TimeoutPenalty)
 		}
+		g.updateCheckTracking()
 	}
 	if kind == GroupKindSingleAlwaysAlive || kind == GroupKindInvisible {
 		g.availabilityKnown = true
@@ -228,7 +229,6 @@ func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan str
 	return g.startupReady, nil
 }
 
-// DeferStats isolates a candidate group before its connectivity checks start.
 // StartupReady also supports a previously asynchronous group becoming critical
 // after plugin routes load. Reuse its checks and publish their current results
 // before releasing the new startup barrier.
@@ -250,6 +250,7 @@ func (g *DialerGroup) StartupReady() (<-chan struct{}, error) {
 	return g.startupReady, nil
 }
 
+// DeferStats isolates a candidate group before its connectivity checks start.
 func (g *DialerGroup) DeferStats() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

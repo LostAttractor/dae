@@ -53,6 +53,8 @@ at the same position across rows. Display widths account for CJK text and ANSI c
 
 ## Traffic table
 
+For `selector` groups, the API's `nodes` includes only selected, continuously monitored, currently testing, or actively connected nodes. All status modes respect this scope; group/global totals still include omitted paths. Fetch `/api/selectors` for every candidate and its last test result.
+
 All text status modes end with a shared `Traffic` table:
 
 ```text
@@ -191,7 +193,8 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `GET /api/selectors` | `SelectorsResponse`; administration required; `auth_mode` is `api_key`, `lan` or `unix` |
 | `PUT` / `DELETE /api/session` | Browser login / clear cookie; `204`, empty body; keyless login verifies LAN/Unix access and clears stale cookies without issuing a session |
 | `PUT /api/selectors/{group}` | `SelectorState`; admin, `{"node_id":"..."}` |
-| `DELETE /api/selectors/{group}` | Restore configured selection; admin, empty body |
+| `DELETE /api/selectors/{group}` | Restore explicit `selector(n)`; admin, empty body; `409` without a default |
+| `POST /api/probes` | `202` + `ProbeResponse`; admin, `{"outbound":"group","node_id":"..."}`; omit or leave `node_id` empty for the entire outbound |
 | `GET /api/device` | `DeviceState`; direct identifiable LAN caller, TCP only |
 | `PUT` / `DELETE /api/device/sets/{name}` | Join / leave a set; empty body |
 | `PUT /api/device/mitm` | Explicit override, `{"enabled":true}` or `{"enabled":false}` |
@@ -203,7 +206,7 @@ All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM ch
 
 URL-encode names as path segments. Bodies are limited to 1 KiB; JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browsers must use the same origin; TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
 
-Successful state operations return `200`; session operations return `204` without a body. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
+Successful state operations return `200`; probes return `202` with accepted targets; session operations return `204` without a body. POST also requires `X-Dae-API: 1`, supplied by the SDK. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA, absent selector default, or unsupported probe target; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
 
 ## Snapshot semantics and TUI integration
 
@@ -229,6 +232,10 @@ Traffic totals are bytes. Each traffic history contains up to 12 completed five-
 
 Checked groups have ten six-minute history buckets over the last hour, oldest first. Each bucket records the worst observed state: unavailable, available, or unknown if unobserved. Unchecked groups have no connectivity history.
 
-Create an `api/client.Client`, reuse it across requests, and pass cancelable contexts. Use `Status`, `Selectors`, `SelectNode`, `ResetSelector`, `Device`, `SetMembership`, `SetMITM`, `ResetMITM` and `Certificate` as needed. `SetMITM(ctx, false, fingerprint)` explicitly disables it; `ResetMITM(ctx, fingerprint)` restores configuration.
+Create an `api/client.Client`, reuse it across requests, and pass cancelable contexts. Use `Status`, `Selectors`, `SelectNode`, `ResetSelector`, `Probe`, `Device`, `SetMembership`, `SetMITM`, `ResetMITM` and `Certificate` as needed. `SetMITM(ctx, false, fingerprint)` explicitly disables it; `ResetMITM(ctx, fingerprint)` restores configuration.
+
+`Probe(ctx, api.ProbeRequest{Outbound: "group", NodeID: "..."})` requests a one-shot probe. Empty/omitted NodeID targets the whole outbound. `ProbeResponse` contains `outbound` and accepted `node_ids`; `202` includes coalescing with queued/running checks, not a completed test result. It uses configured DNS probes, timeouts and concurrency bounds for any instantiated, checked outbound. Arbitrary URLs and per-request probe configuration are not supported. Poll selectors for selector results, and status for other outbound health/latency.
+
+`SelectorState.track_all` is read-only group configuration; when true, the UI shows continuous monitoring instead of test buttons. There is no mutation API. `default_node_id` is present only for explicit `selector(n)`; hide default badges and reset controls when absent. Candidate `tested` distinguishes untested from failed, `checking` indicates queued/running work, `tracking` indicates continuous monitoring, and optional `checked_at` is the last completion time in RFC 3339. Untracked results are historical, not a continuous health guarantee.
 
 Use `errors.As` with a `*client.Error` variable to inspect `StatusCode`. Poll at a suitable interval, such as two seconds; keep the last snapshot and back off on `503`. No push stream or cross-request transaction is currently provided. The library does not retry writes: after a timeout, query the current state before deciding whether to repeat an operation.

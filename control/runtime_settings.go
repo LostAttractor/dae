@@ -83,7 +83,7 @@ func (c *ControlPlane) restoreRuntimeSettings(prune bool) error {
 		missing := id != "" && !slices.ContainsFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id })
 		if missing {
 			if prune {
-				log.WithFields(log.Fields{"group": group.Name, "node_id": id}).Warn("Saved selector path disappeared; restoring configuration")
+				log.WithFields(log.Fields{"group": group.Name, "node_id": id}).Warn("Saved selector path disappeared; using the startup choice")
 				if err := c.settings.SetSelection(group.Name, ""); err != nil {
 					return fmt.Errorf("reset selector %q: %w", group.Name, err)
 				}

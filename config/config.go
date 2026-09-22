@@ -138,6 +138,7 @@ type Group struct {
 	CheckIntervalMax time.Duration `mapstructure:"check_interval_max"`
 	CheckTolerance   time.Duration `mapstructure:"check_tolerance"`
 	CheckAsync       bool          `mapstructure:"check_async"`
+	TrackAll         bool          `mapstructure:"track_all"`
 	ReselectBehavior string        `mapstructure:"reselect_behavior"`
 }
 

@@ -575,6 +575,29 @@ routing { fallback: target }
 	}
 }
 
+func TestGroupTrackAllAndExplicitSelectorDefaultRoundTrip(t *testing.T) {
+	for _, policy := range []string{"selector", "selector(0)", "selector(1)"} {
+		for _, value := range []string{"", "true", "false"} {
+			setting := ""
+			if value != "" {
+				setting = "track_all: " + value
+			}
+			conf := parseConfig(t, "global {}\ngroup { target { policy: "+policy+" "+setting+" } }\nrouting { fallback: target }")
+			if conf.Group[0].TrackAll != (value == "true") || conf.Group[0].Present["track_all"] != (value != "") {
+				t.Fatalf("track_all parse = %+v", conf.Group[0])
+			}
+			marshaled, err := conf.Marshal(2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			roundTrip := parseConfig(t, string(marshaled))
+			if !reflect.DeepEqual(conf.Group, roundTrip.Group) {
+				t.Fatalf("group changed on round trip: %s", marshaled)
+			}
+		}
+	}
+}
+
 func TestNew_ParsesProxyPathExpressions(t *testing.T) {
 	conf := parseConfig(t, `
 global {}

@@ -79,6 +79,9 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 	}
 	for i := range groups {
 		group := &groups[i]
+		if group.Policy == nil && (group.TrackAll || group.Present["track_all"]) {
+			return nil, fmt.Errorf("group %q: track_all requires selector policy", group.Name)
+		}
 		if err := config.ValidateConnectionBehavior("reselect_behavior", group.ReselectBehavior); err != nil {
 			return nil, fmt.Errorf("group %q: %w", group.Name, err)
 		}

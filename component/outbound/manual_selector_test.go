@@ -20,7 +20,7 @@ func TestManualSelectorPublishesConnectivityAndRetainsUnavailableChoice(t *testi
 	paths := []*dialer.Dialer{newUncheckedDialer(t, "available"), newCheckedDialer(t, "pending")}
 	var published [common.NetworkTypeCount]bool
 	g := newSelectorTestGroup(t, paths, emptyAnnotations(2), dialer.DialerSelectionPolicy{
-		Policy: consts.DialerSelectionPolicy_Selector,
+		Policy: consts.DialerSelectionPolicy_Selector, FixedIndexSet: true,
 	}, func(available bool, network *common.NetworkType) error {
 		published[network.Index()] = available
 		return nil
@@ -96,55 +96,57 @@ func TestManualSelectorValidation(t *testing.T) {
 	g := newSelectorTestGroup(t, []*dialer.Dialer{newUncheckedDialer(t, "node")}, emptyAnnotations(1), dialer.DialerSelectionPolicy{
 		Policy: consts.DialerSelectionPolicy_Selector,
 	}, nil)
-	if err := g.SetSelection("unknown"); err == nil || g.Selection() != g.DefaultSelection() {
+	if err := g.SetSelection("unknown"); err == nil || g.Selection() != g.Dialers[0].StatsID() || g.DefaultSelection() != "" {
 		t.Fatal("unknown ID was accepted or changed selection")
 	}
 }
 
 func TestManualSelectorStartupUsesRestoredSelection(t *testing.T) {
-	for _, async := range []bool{false, true} {
-		for _, selected := range []int{0, 1} {
-			option := &dialer.GlobalOption{
-				CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
-				CheckInterval:     time.Hour, CheckIntervalMax: time.Hour,
-			}
-			paths := []*dialer.Dialer{newCheckedDialer(t, "first"), newCheckedDialer(t, "second")}
-			for _, d := range paths {
-				d.GlobalOption = option
-			}
-			g := NewDialerGroup(option, t.Name(), GroupKindSelector, paths, emptyAnnotations(2), dialer.DialerSelectionPolicy{
-				Policy: consts.DialerSelectionPolicy_Selector, FixedIndex: 1 - selected,
-			}, nil)
-			g.CheckAsync = async
-			t.Cleanup(func() { _ = g.Close() })
-			if err := g.SetSelection(paths[selected].StatsID()); err != nil {
-				t.Fatal(err)
-			}
-			if err := g.initializeConnectivity(); err != nil {
-				t.Fatal(err)
-			}
-			ready := g.startupReady
-			if (ready == nil) != async {
-				t.Fatalf("async=%t restored path %d: startup barrier = %v", async, selected, ready)
-			}
-			select {
-			case <-ready:
-				t.Fatal("pending selected path released startup")
-			default:
-			}
-			start := make(chan struct{})
-			close(start)
-			paths[selected].ActivateCheck(start)
-			waitForInitialCheck(t, paths[selected])
-			if !async {
+	for _, trackAll := range []bool{false, true} {
+		for _, async := range []bool{false, true} {
+			for _, selected := range []int{0, 1} {
+				option := &dialer.GlobalOption{
+					CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
+					CheckInterval:     time.Hour, CheckIntervalMax: time.Hour,
+				}
+				paths := []*dialer.Dialer{newCheckedDialer(t, "first"), newCheckedDialer(t, "second")}
+				for _, d := range paths {
+					d.GlobalOption = option
+				}
+				g := NewDialerGroup(option, t.Name(), GroupKindSelector, paths, emptyAnnotations(2), dialer.DialerSelectionPolicy{
+					Policy: consts.DialerSelectionPolicy_Selector, FixedIndex: 1 - selected, FixedIndexSet: true, TrackAll: trackAll,
+				}, nil)
+				g.CheckAsync = async
+				t.Cleanup(func() { _ = g.Close() })
+				if err := g.SetSelection(paths[selected].StatsID()); err != nil {
+					t.Fatal(err)
+				}
+				if err := g.initializeConnectivity(); err != nil {
+					t.Fatal(err)
+				}
+				ready := g.startupReady
+				if (ready == nil) != async {
+					t.Fatalf("async=%t restored path %d: startup barrier = %v", async, selected, ready)
+				}
 				select {
 				case <-ready:
-				case <-time.After(time.Second):
-					t.Fatal("completed restored path did not release startup")
+					t.Fatal("pending selected path released startup")
+				default:
 				}
-			}
-			if paths[1-selected].ConnectivitySnapshot().InitialCheckDone {
-				t.Fatal("non-selected path unexpectedly completed its initial check")
+				start := make(chan struct{})
+				close(start)
+				paths[selected].ActivateCheck(start)
+				waitForInitialCheck(t, paths[selected])
+				if !async {
+					select {
+					case <-ready:
+					case <-time.After(time.Second):
+						t.Fatal("completed restored path did not release startup")
+					}
+				}
+				if paths[1-selected].ConnectivitySnapshot().InitialCheckDone {
+					t.Fatal("non-selected path unexpectedly completed its initial check")
+				}
 			}
 		}
 	}
@@ -175,4 +177,33 @@ func TestManualSelectorConcurrentSelectionAndConnectivity(t *testing.T) {
 		}
 	})
 	workers.Wait()
+}
+
+func TestManualSelectorTrackingFollowsCommittedSelection(t *testing.T) {
+	for _, trackAll := range []bool{false, true} {
+		paths := []*dialer.Dialer{newCheckedDialer(t, "first"), newCheckedDialer(t, "second")}
+		g := NewDialerGroup(paths[0].GlobalOption, t.Name(), GroupKindSelector, paths, emptyAnnotations(2), dialer.DialerSelectionPolicy{
+			Policy: consts.DialerSelectionPolicy_Selector, FixedIndexSet: true, TrackAll: trackAll,
+		}, nil)
+		t.Cleanup(func() { _ = g.Close() })
+		assertTracking := func(first, second bool) {
+			t.Helper()
+			if paths[0].RuntimeStatus().CheckEnabled != first || paths[1].RuntimeStatus().CheckEnabled != second {
+				t.Fatalf("tracking = %t/%t, want %t/%t", paths[0].RuntimeStatus().CheckEnabled, paths[1].RuntimeStatus().CheckEnabled, first, second)
+			}
+		}
+		assertTracking(true, trackAll)
+		if err := g.ChangeSelection(paths[1].StatsID(), func() error { return errors.New("save failed") }); err == nil {
+			t.Fatal("failed selection unexpectedly committed")
+		}
+		assertTracking(true, trackAll)
+		if err := g.SetSelection(paths[1].StatsID()); err != nil {
+			t.Fatal(err)
+		}
+		assertTracking(trackAll, true)
+		if err := g.SetSelection(""); err != nil {
+			t.Fatal(err)
+		}
+		assertTracking(true, trackAll)
+	}
 }

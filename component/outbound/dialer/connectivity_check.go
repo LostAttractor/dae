@@ -48,15 +48,49 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 	}()
 }
 
-// RequestConnectivityCheck asks the checker to run as soon as practical.
+// RequestConnectivityCheck asks an automatically monitored checker to run soon.
 // Requests that arrive during a check are coalesced into one follow-up round.
 func (d *Dialer) RequestConnectivityCheck() {
 	d.mu.Lock()
-	if d.ctx.Err() != nil || !d.checksConnectivity && d.session == nil {
+	if d.ctx.Err() != nil || d.checkPaused || !d.checksConnectivity && d.session == nil {
 		d.mu.Unlock()
 		return
 	}
 	d.pendingCheck |= checkRequestEnvironment
+	d.mu.Unlock()
+	d.signalConnectivityCheck()
+}
+
+// SetCheckEnabled controls automatic checks without retiring the transport or
+// interrupting an in-flight check. Explicit tests and data-plane confirmations
+// can still run once while automatic checking is paused.
+func (d *Dialer) SetCheckEnabled(enabled bool) {
+	d.mu.Lock()
+	if d.ctx.Err() != nil || d.checkPaused == !enabled {
+		d.mu.Unlock()
+		return
+	}
+	d.checkPaused = !enabled
+	if enabled {
+		d.pendingCheck |= checkRequestEnvironment
+	} else {
+		d.pendingCheck &^= checkRequestEnvironment
+	}
+	d.statusRevision++
+	d.mu.Unlock()
+	d.signalConnectivityCheck()
+}
+
+// RequestManualCheck preserves explicit demand when automatic work is canceled.
+// Only an actual probe can satisfy it; capacity replenishment cannot.
+func (d *Dialer) RequestManualCheck() {
+	d.mu.Lock()
+	if d.ctx.Err() != nil || !d.checksConnectivity || d.checkProbing || d.pendingCheck&checkRequestManual != 0 {
+		d.mu.Unlock()
+		return
+	}
+	d.pendingCheck |= checkRequestManual
+	d.statusRevision++
 	d.mu.Unlock()
 	d.signalConnectivityCheck()
 }
@@ -84,6 +118,9 @@ func (d *Dialer) beginConnectivityCheck(kind checkKind) checkAttempt {
 		reasons:    d.pendingCheck,
 	}
 	d.pendingCheck = 0
+	d.checkRunning = true
+	// Explicit demand promotes capacity work to a probe in start.
+	d.checkProbing = kind != checkCapacity || attempt.reasons != 0
 	d.mu.Unlock()
 	return attempt
 }
@@ -209,14 +246,14 @@ func (c *connectivityChecker) requestedCheckKind() checkKind {
 }
 
 func (c *connectivityChecker) resetForRequest(reasons checkRequestReason) {
-	if reasons&checkRequestEnvironment != 0 {
+	if reasons&(checkRequestEnvironment|checkRequestManual) != 0 {
 		c.capacityBlockReason = ""
 		c.capacityInterval = 0
 		c.capacityAt = time.Time{}
 		c.retryInterval = initialRetryInterval(c.d.CheckIntervalMax)
 		c.supportAt = time.Time{}
 	}
-	if reasons&(checkRequestEnvironment|checkRequestDataPlane) != 0 {
+	if reasons&(checkRequestEnvironment|checkRequestManual|checkRequestDataPlane) != 0 {
 		c.resetHealthRetry()
 	}
 }
@@ -348,6 +385,16 @@ func (c *connectivityChecker) stopRetries() {
 }
 
 func (c *connectivityChecker) finish(result checkResult) bool {
+	defer func() {
+		c.d.mu.Lock()
+		c.d.checkRunning = false
+		c.d.checkProbing = false
+		if result.kind != checkCapacity {
+			c.d.checkedAt = time.Now()
+		}
+		c.d.statusRevision++
+		c.d.mu.Unlock()
+	}()
 	c.cancel()
 	c.cancel = nil
 	if c.d.ctx.Err() != nil {
@@ -511,6 +558,21 @@ func (c *connectivityChecker) dispatch() {
 	if c.d.connectivityCheckRequested() {
 		c.start(c.requestedCheckKind())
 		return
+	}
+	if !status.CheckEnabled {
+		c.d.mu.RLock()
+		recoverRetained := c.d.retains > 0 && status.HasSession && !status.Healthy
+		c.d.mu.RUnlock()
+		if !recoverRetained {
+			c.stopRetries()
+			c.d.setRecovery(RecoveryReady, time.Time{}, "")
+			return
+		}
+		// Retained HTTP clients may still open upstream connections. Recover
+		// their session with the existing backoff, then return to paused checks.
+		if c.healthAt.IsZero() {
+			c.healthAt = time.Now()
+		}
 	}
 	if c.blockedBy != "" {
 		c.d.setRecovery(RecoveryBlocked, time.Time{}, c.blockedBy)

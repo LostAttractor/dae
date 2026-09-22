@@ -19,10 +19,11 @@ type ClientResolver func(source, destination netip.AddrPort) ([6]byte, error)
 
 // Options captures one plane's configuration. Publish a new handler when
 // configuration changes; stores continue to provide live runtime state.
-// Status, Selectors, Devices and ResolveClient are required dependencies.
+// Status, Selectors, Probes, Devices and ResolveClient are required dependencies.
 type Options struct {
 	Status        func() *contract.StatusSnapshot
 	Selectors     SelectorStore
+	Probes        ProbeStore
 	Devices       DeviceStore
 	ResolveClient ClientResolver
 	Certificates  *Certificates
@@ -57,6 +58,7 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /api/selectors", s.serveSelectors)
 	mux.HandleFunc("PUT /api/selectors/{group}", s.serveSelector)
 	mux.HandleFunc("DELETE /api/selectors/{group}", s.serveSelector)
+	mux.HandleFunc("POST /api/probes", s.serveProbe)
 	mux.HandleFunc("GET /api/device", s.serveDevice)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		mux.HandleFunc(method+" /api/device/sets/{name}", s.serveClientSet)
@@ -76,7 +78,7 @@ func NewHandler(options Options) http.Handler {
 				apiError(w, 400, "API requests do not accept query parameters")
 				return
 			}
-			if (r.Method == http.MethodPut || r.Method == http.MethodDelete) && r.Header.Get("X-Dae-API") != "1" {
+			if (r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPost) && r.Header.Get("X-Dae-API") != "1" {
 				apiError(w, 403, "changes require X-Dae-API: 1")
 				return
 			}

@@ -242,8 +242,12 @@ group {
         # Select the first node from the group for every connection.
         #policy: fixed(0)
 
-        # Select the first node by default; allow changes through the page/API.
+        # Restore the saved choice, or initially use the first node; no default/reset.
         #policy: selector
+        # Explicitly configure a default and enable Reset to default:
+        #policy: selector(0)
+        # For selector only: continuously check all nodes instead of testing on demand.
+        #track_all: true
 
         # Select the node with min last latency from the group for every connection.
         #policy: min

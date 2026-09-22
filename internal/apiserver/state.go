@@ -14,6 +14,10 @@ type SelectorStore interface {
 	Select(group, node, source string) (contract.SelectorState, error)
 }
 
+type ProbeStore interface {
+	Probe(contract.ProbeRequest, string) (contract.ProbeResponse, error)
+}
+
 // DeviceStore owns membership, MITM overrides, and atomic persistence.
 type DeviceStore interface {
 	HasClientSet(string) bool
@@ -23,6 +27,10 @@ type DeviceStore interface {
 }
 
 var (
-	ErrSelectorNotFound = errors.New("selector group not found")
-	ErrSelectorNode     = errors.New("node_id is not a path in this selector")
+	ErrSelectorNotFound  = errors.New("selector group not found")
+	ErrSelectorNode      = errors.New("node_id is not a path in this selector")
+	ErrSelectorNoDefault = errors.New("selector has no configured default")
+	ErrProbeOutbound     = errors.New("probe outbound not found")
+	ErrProbeNode         = errors.New("node_id is not a path in this outbound")
+	ErrProbeUnsupported  = errors.New("outbound does not support connectivity probes")
 )

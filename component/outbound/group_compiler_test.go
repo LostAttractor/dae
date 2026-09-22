@@ -456,6 +456,19 @@ func TestGroupCompilerRejectsLogicalRuntimeOptions(t *testing.T) {
 	}
 }
 
+func TestGroupCompilerRejectsTrackingWithoutSelectorPolicy(t *testing.T) {
+	set := &DialerSet{nodeInfos: []*NodeInfo{testNode("node", "all")}}
+	for _, group := range []config.Group{
+		{Name: "logical", TrackAll: true},
+		{Name: "logical", Present: map[string]bool{"track_all": true}},
+		{Name: "automatic", Policy: "random", TrackAll: true},
+	} {
+		if _, err := NewGroupCompiler(set, []config.Group{group}, []string{group.Name}); err == nil || !strings.Contains(err.Error(), "track_all requires selector") {
+			t.Fatalf("tracking option accepted without selector: %v", err)
+		}
+	}
+}
+
 func TestGroupCompilerRejectsCheckAsyncPathAnnotation(t *testing.T) {
 	set := &DialerSet{nodeInfos: []*NodeInfo{testNode("node", "all")}}
 	group := config.Group{

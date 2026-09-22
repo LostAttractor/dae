@@ -104,7 +104,7 @@ Available keys in subtag function: regex. No key indicates full match.`,
 Available values: random, fixed, selector, min, min_avg10, min_moving_avg.
 random: Select a complete path randomly.
 fixed: Select the complete path at the stable expanded index.
-selector: Select a path through the global API. Defaults to the first path; selector(n) sets another zero-based default index.
+selector: Select a path through the global API. Without an index, the initial choice is the first path and there is no configured default or reset operation. selector(n) explicitly sets a zero-based default index. Saved choices are restored first. Only the selected path is checked unless track_all is enabled; the probe API supports one-shot checks.
 min: Select a path by the latency of its last check.
 min_avg10: Select a path by the average of its last 10 check latencies.
 min_moving_avg: Select a path by its moving average of check latencies, which gives recent checks more weight.
@@ -114,4 +114,5 @@ min_moving_avg: Select a path by its moving average of check latencies, which gi
 	"check_interval_max": "Override global config when non-zero.",
 	"check_tolerance":    "Override global config.",
 	"check_async":        "Skip startup waiting for this group. Defaults to true when all active routing uses specify skip_while_noalive; fallback defaults to false. Unused targets are not instantiated. Explicit values override this default. Not inherited through group(name).",
+	"track_all":          "For selector policy only: continuously check all nodes instead of only the current selection. Defaults to false. Config-only; reload to apply. The startup barrier still waits only for the selected node. Not inherited through group(name).",
 }

@@ -89,6 +89,10 @@ func (c *Client) Close() { c.http.CloseIdleConnections() }
 
 // request is the single HTTP/JSON path for all operations. It never retries writes.
 func (c *Client) request[T any](ctx context.Context, method, path string, body any, fingerprint string) (*T, error) {
+	return c.requestStatus[T](ctx, method, path, body, fingerprint, http.StatusOK)
+}
+
+func (c *Client) requestStatus[T any](ctx context.Context, method, path string, body any, fingerprint string, status int) (*T, error) {
 	var payload []byte
 	var err error
 	if body != nil {
@@ -102,7 +106,7 @@ func (c *Client) request[T any](ctx context.Context, method, path string, body a
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	if method == http.MethodPut || method == http.MethodDelete {
+	if method == http.MethodPut || method == http.MethodDelete || method == http.MethodPost {
 		req.Header.Set("X-Dae-API", "1")
 	}
 	if body != nil {
@@ -120,14 +124,14 @@ func (c *Client) request[T any](ctx context.Context, method, path string, body a
 	}
 	defer response.Body.Close()
 	limit := int64(maxResponseSize)
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != status {
 		limit = 8 << 10
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != status {
 		var detail struct {
 			Error string `json:"error"`
 		}
@@ -189,6 +193,12 @@ func (c *Client) SelectNode(ctx context.Context, group, nodeID string) (*api.Sel
 
 func (c *Client) ResetSelector(ctx context.Context, group string) (*api.SelectorState, error) {
 	return c.request[api.SelectorState](ctx, "DELETE", "/api/selectors/"+url.PathEscape(group), nil, "")
+}
+
+// Probe queues one round of configured connectivity checks. HTTP 202 acknowledges
+// acceptance, including coalescing with in-flight work; it is not a test result.
+func (c *Client) Probe(ctx context.Context, request api.ProbeRequest) (*api.ProbeResponse, error) {
+	return c.requestStatus[api.ProbeResponse](ctx, "POST", "/api/probes", request, "", http.StatusAccepted)
 }
 
 func (c *Client) Device(ctx context.Context) (*api.DeviceState, error) {

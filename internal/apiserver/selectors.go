@@ -45,6 +45,8 @@ func (s *handler) serveSelector(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 404, err.Error())
 		case errors.Is(err, ErrSelectorNode):
 			apiError(w, 400, err.Error())
+		case errors.Is(err, ErrSelectorNoDefault):
+			apiError(w, 409, err.Error())
 		default:
 			apiSaveError(w, err)
 		}

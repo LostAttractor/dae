@@ -27,13 +27,18 @@ import (
 
 func newAPITestPlane(t *testing.T, store *settings.Store) *ControlPlane {
 	t.Helper()
+	return newAPITestPlaneWithPolicy(t, store, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector, FixedIndexSet: true})
+}
+
+func newAPITestPlaneWithPolicy(t *testing.T, store *settings.Store, policy dialer.DialerSelectionPolicy) *ControlPlane {
+	t.Helper()
 	option := &dialer.GlobalOption{}
 	var paths []*dialer.Dialer
 	for _, name := range []string{"one", "two"} {
 		runtime := netproxy.NewRuntime(netproxy.Layer{Data: downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })})
 		paths = append(paths, dialer.NewDialer(runtime, option, &dialer.Property{Name: name, Link: "test://" + name}, true, "api-test"))
 	}
-	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}, nil)
+	group := outbound.NewDialerGroup(option, "proxy", outbound.GroupKindSelector, paths, []*dialer.Annotation{{}, {}}, policy, nil)
 	t.Cleanup(func() { _ = group.Close() })
 	builder, matcher := buildClientMatcher(t, clientRule("gaming", false, "proxy"), clientRule("streaming", false, "proxy"))
 	return &ControlPlane{outbounds: []*outbound.DialerGroup{group}, settings: store, apiKey: "test-secret", routingMatcherBuilder: builder, routingMatcher: matcher}

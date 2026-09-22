@@ -71,16 +71,23 @@ func readState(path string) (Snapshot, error) {
 	if len(data) > maxFileSize {
 		return Snapshot{}, fmt.Errorf("runtime settings exceed %d bytes", maxFileSize)
 	}
-	// JSON null must not become an explicit false MITM preference.
+	// JSON null must not become an explicit false runtime preference.
 	booleans := json.UnmarshalFunc(func(data []byte, value *bool) error {
 		if string(data) == "null" {
-			return fmt.Errorf("MITM preference must be true or false")
+			return fmt.Errorf("runtime preference must be true or false")
 		}
 		return json.Unmarshal(data, value)
 	})
-	if err := json.Unmarshal(data, &value, json.RejectUnknownMembers(true), json.WithUnmarshalers(booleans)); err != nil {
+	// Older builds saved tracking as an API preference. Accept and discard that
+	// field on read; only the group configuration now controls monitoring scope.
+	var stored struct {
+		Snapshot
+		LegacySelectorTracking map[string]bool `json:"selector_tracking,omitempty"`
+	}
+	if err := json.Unmarshal(data, &stored, json.RejectUnknownMembers(true), json.WithUnmarshalers(booleans)); err != nil {
 		return Snapshot{}, fmt.Errorf("decode runtime settings: %w", err)
 	}
+	value = stored.Snapshot
 	if err := value.validate(); err != nil {
 		return Snapshot{}, err
 	}

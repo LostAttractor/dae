@@ -46,6 +46,8 @@ Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改�
 
 ## 流量表
 
+对于 `selector` 组，API 的 `nodes` 只包含当前选中、持续追踪、正在测试或仍有活动连接的节点；所有 status 模式均遵守此范围，组及全局统计仍保留未展示路径的累计量。完整候选及其上次测试结果通过 `/api/selectors` 查询。
+
 所有文本状态模式都在底部显示统一的 `Traffic` 表：
 
 ```text
@@ -150,7 +152,8 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `GET /api/selectors` | `SelectorsResponse` | 管理权限；授权成功后 `admin_enabled` 为 true，`auth_mode` 为 `api_key`、`lan` 或 `unix` |
 | `PUT` / `DELETE /api/session` | `204`，无响应正文 | 浏览器登录 / 清除 Cookie；空请求正文。无密钥时验证 LAN/Unix 权限并清除旧 Cookie，不签发会话 |
 | `PUT /api/selectors/{group}` | `SelectorState` | 管理权限；`{"node_id":"..."}` |
-| `DELETE /api/selectors/{group}` | `SelectorState` | 管理权限；空正文，恢复配置 |
+| `DELETE /api/selectors/{group}` | `SelectorState` | 管理权限；空正文，恢复显式 `selector(n)`；没有默认时 `409` |
+| `POST /api/probes` | `202` + `ProbeResponse` | 管理权限；`{"outbound":"group","node_id":"..."}` 探测单路径；省略或留空 `node_id` 探测整个出站 |
 | `GET /api/device` | `DeviceState` | 仅 TCP，需识别直连 LAN 设备 |
 | `PUT` / `DELETE /api/device/sets/{name}` | `DeviceState` | 加入 / 退出集合，空正文 |
 | `PUT /api/device/mitm` | `DeviceState` | `{"enabled":true}` 或 `{"enabled":false}` |
@@ -158,18 +161,22 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `GET /api/certificate` | `Certificate` | 公开 CA 名称与指纹；未启用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
 
+统一探测接口使用 `ProbeRequest`，SDK 为 `Probe(ctx, api.ProbeRequest{Outbound: "group", NodeID: "..."})`。响应 `ProbeResponse` 包含 `outbound`、`node_ids`，`202` 表示已受理；排队或进行中的重复请求会合并。使用出站配置的 DNS 探测、超时和并发限制，支持所有已实例化的受检测出站，不接受任意 URL 或请求级配置覆盖。selector 的结果继续从 `/api/selectors` 获取，其他出站从 `/api/status` 查看健康与延迟。
+
+`SelectorState.track_all` 是 group 配置的只读值，开启时前端用持续检测状态替代 Test 按钮；没有对应的修改 API。`default_node_id` 仅在显式 `selector(n)` 时存在，省略时隐藏所有默认标记和重置操作。候选的 `tested` 区分未测试与失败，`checking` 表示排队/检测中，`tracking` 表示持续监测，`checked_at` 是最近完成测试时间（RFC 3339，首次完成前省略）。未追踪节点的结果是历史结果，不代表持续健康保证。
+
 所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过直连 LAN 入口和邻居校验，否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
 
 名称按 URL 路径段编码；正文限制为 1 KiB，有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
 
-状态操作成功返回 `200`；会话操作成功返回 `204`，无响应正文。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
+状态操作成功返回 `200`；探测受理返回 `202`；会话操作成功返回 `204`，无响应正文。POST 同样需要 `X-Dae-API: 1`，SDK 自动携带。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
 
 | 状态码 | 含义 |
 | --- | --- |
 | `400` | 正文、字段、节点 ID 等不合法；Unix 无法识别设备地址 |
 | `401` / `403` | 密钥/会话鉴权失败、无密钥模式下 LAN 身份校验失败、跨源或设备身份无法确认 |
 | `404` / `405` | 资源不存在 / 方法不支持 |
-| `409` | CA 已变化，应重新获取并核验当前证书 |
+| `409` | CA 已变化、selector 没有可重置的默认节点，或目标出站不支持探测 |
 | `413` / `415` | 正文过大 / Content-Type 不正确 |
 | `500` | 应用或持久化失败，检查守护进程日志 |
 | `503` | 正在启动或重载，稍后重试 |

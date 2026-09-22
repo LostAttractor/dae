@@ -106,6 +106,7 @@ type checkRequestReason uint8
 const (
 	checkRequestDataPlane checkRequestReason = 1 << iota
 	checkRequestEnvironment
+	checkRequestManual
 )
 
 type Dialer struct {
@@ -141,6 +142,10 @@ type Dialer struct {
 	cancel  context.CancelFunc
 
 	checkActivated bool
+	checkPaused    bool
+	checkRunning   bool
+	checkProbing   bool // The running operation includes a connectivity probe.
+	checkedAt      time.Time
 	checkWG        sync.WaitGroup
 	closeOnce      sync.Once
 	// Protected by mu. Retains keep an existing intercepted client connection
@@ -184,6 +189,9 @@ type RuntimeSnapshot struct {
 	Failure            *FailureSnapshot
 	Healthy            bool
 	InitialCheckDone   bool
+	CheckEnabled       bool
+	Checking           bool
+	CheckedAt          time.Time
 	ConfirmingFailure  bool
 	SupportState       [common.NetworkTypeCount]api.NetworkSupportState
 	Session            netproxy.StateEvent
@@ -418,6 +426,9 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 		Failure:            d.lastFailure,
 		Healthy:            healthy,
 		InitialCheckDone:   d.initialCheckCompletedLocked(),
+		CheckEnabled:       !d.checkPaused,
+		Checking:           d.checkRunning || d.pendingCheck != 0 || (!d.checkPaused && d.checkedAt.IsZero()),
+		CheckedAt:          d.checkedAt,
 		ConfirmingFailure:  healthy && d.health == healthConfirming,
 		Session:            session,
 		HasSession:         d.session != nil,
@@ -443,11 +454,13 @@ func (d *Dialer) Retain() (release func(), err error) {
 	}
 	d.retains++
 	d.mu.Unlock()
+	d.signalConnectivityCheck()
 	return sync.OnceFunc(func() {
 		d.mu.Lock()
 		d.retains--
 		retire := d.checksStopped && d.retains == 0
 		d.mu.Unlock()
+		d.signalConnectivityCheck()
 		if retire {
 			d.retireRuntime()
 		}

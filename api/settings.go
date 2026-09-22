@@ -2,19 +2,25 @@
 
 package api
 
+import "time"
+
 type SelectorNode struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Healthy   bool     `json:"healthy"`
-	Checking  bool     `json:"checking"`
-	LatencyMS *float64 `json:"latency_ms,omitempty"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Healthy   bool      `json:"healthy"`
+	Checking  bool      `json:"checking"`
+	Tested    bool      `json:"tested"`
+	Tracking  bool      `json:"tracking"`
+	CheckedAt time.Time `json:"checked_at,omitzero"`
+	LatencyMS *float64  `json:"latency_ms,omitempty"`
 }
 
 type SelectorState struct {
 	Name          string         `json:"name"`
-	DefaultNodeID string         `json:"default_node_id"`
+	DefaultNodeID string         `json:"default_node_id,omitempty"`
 	NodeID        string         `json:"node_id"`
 	Overridden    bool           `json:"overridden"`
+	TrackAll      bool           `json:"track_all"`
 	Nodes         []SelectorNode `json:"nodes"`
 }
 
@@ -46,6 +52,7 @@ type SelectorsResponse struct {
 type SelectNodeRequest struct {
 	NodeID string `json:"node_id"`
 }
+
 type SetMITMRequest struct {
 	Enabled *bool `json:"enabled"`
 }
