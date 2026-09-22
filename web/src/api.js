@@ -1,9 +1,10 @@
 // HTTP boundary shared by browser clients. All paths are relative to the API origin.
 export async function request(path, method = "GET", body, headers = {}) {
-  if (method === "PUT" || method === "DELETE") headers["X-Dae-API"] = "1";
+  if (method === "PUT" || method === "DELETE" || method === "POST") headers["X-Dae-API"] = "1";
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const response = await fetch(path, {
-    method, headers, cache: "no-store",
+    method, headers, cache: "no-store", credentials: "same-origin",
+    signal: AbortSignal.timeout(15000),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
@@ -13,5 +14,5 @@ export async function request(path, method = "GET", body, headers = {}) {
     error.status = response.status;
     throw error;
   }
-  return response.json();
+  return response.status === 204 ? undefined : response.json();
 }

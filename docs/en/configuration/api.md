@@ -33,6 +33,8 @@ routing {
 
 `selector` continuously checks only the selected node by default; its startup barrier also waits only for that node. Switching immediately checks the new selection and pauses periodic checks on the old one. An in-flight test may finish. Other selection policies keep their existing check scope.
 
+Selectors use searchable dropdowns: the collapsed control shows the selected node, while the bounded, scrollable popup handles large lists and long names. By default, use **Test** beside the selected node or a candidate, or **Test all**. Each button requests one round of the group's configured DNS connectivity probe without changing selection or monitoring scope. Authorized, visible pages refresh results every two seconds. Untested nodes show **Not tested**.
+
 Set `track_all: true` in a selector's group block and reload to continuously monitor every candidate; it defaults to false. This is configuration-only, with no mutation API or runtime preference. When enabled, the page shows **Tracking all nodes** in place of every **Test / Test all** button. Checks use the group's interval settings; the startup barrier still waits only for the selected node. The option is selector-only and is not inherited through `group(name)`.
 
 For selector groups, `dae status` (including verbose/JSON) includes only selected, monitored, currently testing, or actively connected nodes. Idle untracked candidates retain their last result in `/api/selectors` and the page. Group/global traffic totals still include those paths.
@@ -49,7 +51,7 @@ The configuration field is now `global.api_key` (formerly `global.api_token`). U
 
 Identification uses TCP connection metadata recorded by eBPF at LAN ingress. The route or neighbor table's interface name does not need to match `lan_interface`. For `enp1s0f0np0 → lan (VLAN) → br-lan`, keep `lan_interface: lan`; bonds and other layered Ethernet interfaces use the same identification path. Each request updates the observed MAC and timestamp; configuration reloads clear observations. Missing observations, observations older than 30 seconds, indirect return routes, and MACs that do not match the ARP/NDP neighbor on the route's interface prevent device operations. The same IP on another interface does not affect identification.
 
-The `client` block supplies plain-text descriptions below set names; empty descriptions are hidden. Sets referenced by routing or configured for kernel export appear, and duplicate definitions are rejected. Descriptions update with `dae reload` without changing membership.
+The `client` block supplies the plain-text description used as the set's display label. When a description is provided, the page shows only that description; otherwise it shows the set name. Button accessibility labels and operation messages use the same display label. API requests still identify sets by their configuration names. Sets referenced by routing or configured for kernel export appear, and duplicate definitions are rejected. Descriptions update with `dae reload` without changing membership.
 
 **Reset to default** is available for selectors only when `selector(n)` explicitly configures a default; it clears the saved selection and restores that path. MITM reset still clears the device override. Settings persist in `$DAE_LOCATION_CACHE/runtime-state.json` (default `/var/lib/dae/runtime-state.json`, mode `0600`) across reloads, restarts, and API disabling. The main configuration is untouched. Existing connections and UDP sessions keep their paths.
 
