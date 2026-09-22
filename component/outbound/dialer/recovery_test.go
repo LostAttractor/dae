@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,23 +59,30 @@ func waitRecoveryPhase(t *testing.T, d *Dialer, phase RecoveryPhase) RecoverySna
 	return RecoverySnapshot{}
 }
 
-func TestReportDataPlaneErrorOnlyConfirmsUnknownUpstreamFailure(t *testing.T) {
+func TestReportDataPlaneErrorConfirmsUpstreamFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		metadata netproxy.Failure
+		cause    error
+		confirm  bool
 	}{
-		{"stream", netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer}},
-		{"caller", netproxy.Failure{Scope: netproxy.ScopeUnknown, Origin: netproxy.OriginCaller}},
-		{"target", netproxy.Failure{Scope: netproxy.ScopeUnknown, Origin: netproxy.OriginTarget}},
-		{"cleanup", netproxy.Failure{Scope: netproxy.ScopeUnknown, Origin: netproxy.OriginLocalCleanup}},
-		{"capacity", netproxy.Failure{Scope: netproxy.ScopeOperation, Reason: netproxy.ReasonCapacity}},
+		{"unknown", netproxy.Failure{}, errors.New("upstream failed"), true},
+		{"stream", netproxy.Failure{}, &quic.StreamError{Remote: true, ErrorCode: 42}, true},
+		{"io timeout", netproxy.Failure{Layer: netproxy.LayerQUIC}, os.ErrDeadlineExceeded, true},
+		{"fast open timeout", netproxy.Failure{Origin: netproxy.OriginLocalProtocol}, context.DeadlineExceeded, true},
+		{"caller", netproxy.Failure{Origin: netproxy.OriginCaller}, context.DeadlineExceeded, false},
+		{"target", netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginTarget}, errors.New("target refused"), false},
+		{"cleanup", netproxy.Failure{Origin: netproxy.OriginLocalCleanup}, net.ErrClosed, false},
+		{"capacity", netproxy.Failure{}, quic.StreamLimitReachedError{}, false},
+		{"canceled", netproxy.Failure{}, context.Canceled, false},
+		{"shared timeout", netproxy.Failure{}, new(quic.IdleTimeoutError), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newTestDialer(t, testTransport{})
 			prepareRecoveryDialer(d)
-			d.ReportDataPlaneError(netproxy.WrapFailure(errors.New("failed"), tc.metadata))
-			if status := d.RuntimeStatus(); !status.Healthy || status.ConfirmingFailure || d.connectivityCheckRequested() {
-				t.Fatalf("isolated failure changed node health: %+v", status)
+			d.ReportDataPlaneError(netproxy.WrapFailure(tc.cause, tc.metadata))
+			if status := d.RuntimeStatus(); !status.Healthy || status.ConfirmingFailure != tc.confirm || d.connectivityCheckRequested() != tc.confirm {
+				t.Fatalf("confirmation = %v, want %v: %+v", d.connectivityCheckRequested(), tc.confirm, status)
 			}
 		})
 	}
@@ -81,13 +90,69 @@ func TestReportDataPlaneErrorOnlyConfirmsUnknownUpstreamFailure(t *testing.T) {
 		t.Run(fmt.Sprintf("join_reversed_%v", reversed), func(t *testing.T) {
 			d := newTestDialer(t, testTransport{})
 			prepareRecoveryDialer(d)
-			errs := []error{context.DeadlineExceeded, netproxy.WrapFailure(errors.New("unknown upstream failure"), netproxy.Failure{Origin: netproxy.OriginPeer})}
+			errs := []error{netproxy.WrapFailure(context.DeadlineExceeded, netproxy.Failure{Origin: netproxy.OriginCaller}), netproxy.WrapFailure(errors.New("unknown upstream failure"), netproxy.Failure{Origin: netproxy.OriginPeer})}
 			if reversed {
 				errs[0], errs[1] = errs[1], errs[0]
 			}
 			d.ReportDataPlaneError(errors.Join(errs...))
 			if !d.RuntimeStatus().ConfirmingFailure || !d.connectivityCheckRequested() {
 				t.Fatal("timeout hid independent unknown failure")
+			}
+		})
+	}
+}
+
+func TestUpstreamTimeoutConfirmationCoalescesAndAppliesProbe(t *testing.T) {
+	for _, succeeds := range []bool{false, true} {
+		t.Run(fmt.Sprintf("probe_success=%t", succeeds), func(t *testing.T) {
+			d := newTestDialer(t, testTransport{})
+			prepareRecoveryDialer(d)
+			started, release := make(chan struct{}, 2), make(chan struct{})
+			var calls atomic.Int32
+			c := newConnectivityChecker(d, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+				calls.Add(1)
+				started <- struct{}{}
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return false, ctx.Err()
+				}
+				if succeeds {
+					return true, nil
+				}
+				return false, context.DeadlineExceeded
+			})
+			defer c.stopRetries()
+			d.ReportDataPlaneError(os.ErrDeadlineExceeded)
+			generation, reported := d.failureGeneration, d.failureReportedAt
+			c.dispatch()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("upstream timeout did not start a probe")
+			}
+			for range 50 {
+				d.ReportDataPlaneError(os.ErrDeadlineExceeded)
+			}
+			if d.connectivityCheckRequested() || d.failureGeneration != generation || d.failureReportedAt != reported {
+				t.Fatal("concurrent errors restarted confirmation")
+			}
+			close(release)
+			if !finishCheck(c, <-c.results) {
+				t.Fatal("checker stopped")
+			}
+			status := d.RuntimeStatus()
+			if status.Healthy != succeeds || status.ConfirmingFailure || d.connectivityCheckRequested() {
+				t.Fatalf("confirmation result = %+v", status)
+			}
+			if !succeeds {
+				if calls.Load() != 2 || status.Recovery.Phase != RecoveryBackoff {
+					t.Fatalf("existing probe retry policy was not retained: calls=%d status=%+v", calls.Load(), status)
+				}
+				d.ReportDataPlaneError(os.ErrDeadlineExceeded)
+				if d.connectivityCheckRequested() || d.RuntimeStatus().Recovery != status.Recovery {
+					t.Fatal("unhealthy traffic reset recovery backoff")
+				}
 			}
 		})
 	}

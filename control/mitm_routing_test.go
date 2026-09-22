@@ -304,11 +304,12 @@ func TestMITMDialReportsConnectivityFailures(t *testing.T) {
 	}{
 		{name: "connection refused", err: refused, wantReport: true},
 		{name: "wrapped connection reset", err: fmt.Errorf("proxy: %w", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNRESET}), wantReport: true},
-		{name: "timeout", err: &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}},
+		{name: "timeout", err: &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}, wantReport: true},
+		{name: "caller deadline", err: netproxy.WrapFailure(context.DeadlineExceeded, netproxy.Failure{Origin: netproxy.OriginCaller})},
 		{name: "unknown protocol error", err: errors.New("invalid proxy response"), wantReport: true},
 		{name: "canceled request", err: refused, canceled: true},
 		{name: "direct target refusal", err: refused, unchecked: true},
-		{name: "stream reset", err: netproxy.WrapFailure(refused, netproxy.Failure{Scope: netproxy.ScopeStream})},
+		{name: "stream reset", err: netproxy.WrapFailure(refused, netproxy.Failure{Scope: netproxy.ScopeStream}), wantReport: true},
 		{name: "shared resource failure", err: netproxy.WrapFailure(refused, netproxy.Failure{Scope: netproxy.ScopeSharedResource})},
 		{name: "successful dial"},
 	} {
@@ -338,8 +339,8 @@ func TestMITMDialReportsConnectivityFailures(t *testing.T) {
 			if !errors.Is(err, test.err) {
 				t.Fatalf("dial error = %v, want %v", err, test.err)
 			}
-			// Unknown upstream failures request confirmation even before a node
-			// becomes healthy; no background probe is needed to observe the call.
+			// Eligible upstream failures are recorded even before a node becomes
+			// healthy; no background probe is needed to observe the report.
 			reported := !stats.DefaultStore.GetNode(d.StatsKey()).LastConnFailAt.IsZero()
 			if reported != test.wantReport {
 				t.Fatalf("connectivity failure reported = %v, want %v", reported, test.wantReport)

@@ -1,8 +1,6 @@
 package dialer
 
 import (
-	"errors"
-	"net"
 	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
@@ -129,14 +127,6 @@ func (d *Dialer) observeResourceFailureLocked(event netproxy.StateEvent, failed 
 	return fresh
 }
 
-func failureTimeout(failure netproxy.Failure) bool {
-	if failure.Reason == netproxy.ReasonDeadline {
-		return true
-	}
-	timeout, ok := errors.AsType[net.Error](failure.Cause)
-	return ok && timeout.Timeout()
-}
-
 func failureSnapshot(failure netproxy.Failure, episode uint64) *FailureSnapshot {
 	message := ""
 	if failure.Cause != nil {
@@ -191,10 +181,13 @@ func (d *Dialer) ReportDataPlaneError(err error) {
 		if failure.Origin == netproxy.OriginCaller || failure.Origin == netproxy.OriginTarget {
 			continue
 		}
-		// Proxy authentication is not retryable with the same credentials, even
-		// when reported on one stream. Confirm it through the checker, which
-		// owns retry policy; shared resource failures arrive via Session watch.
-		if (failure.Scope == netproxy.ScopeUnknown || failure.Reason == netproxy.ReasonAuth) && !failureTimeout(failure) && confirmation == nil {
+		// Stream errors and upstream timeouts warrant a probe, not a resource
+		// abort. The existing confirming phase coalesces concurrent reports;
+		// shared resource failures arrive independently via Session watch.
+		if failure.Scope == netproxy.ScopeSharedResource || failure.Reason == netproxy.ReasonCapacity || failure.Reason == netproxy.ReasonCanceled {
+			continue
+		}
+		if confirmation == nil {
 			confirmation = &failure
 		}
 	}
