@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
+	"github.com/daeuniverse/dae/component/outbound"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -117,6 +118,8 @@ func (c *controlPlaneCore) publishOutboundConnectivity() error {
 }
 
 func (c *controlPlaneCore) setOutboundRecoveryCallback(callback func()) {
+	c.outboundCallbackMu.Lock()
+	defer c.outboundCallbackMu.Unlock()
 	c.outboundRecovery = callback
 }
 
@@ -169,7 +172,8 @@ func (c *controlPlaneCore) outboundUsable(outbound uint8, l4proto consts.L4Proto
 
 const initialConnectivityTimeout = 60 * time.Second
 
-func (c *ControlPlane) startConnectivityChecks() ([]startupConnectivityWaiter, error) {
+func (c *ControlPlane) watchConnectivity() {
+	c.connectivityOutbounds.Store(new(c.outbounds))
 	core := c.core
 	core.netmon.Register(func(previous, current network.HostNetworkSnapshot) {
 		if c.ctx.Err() != nil {
@@ -183,9 +187,12 @@ func (c *ControlPlane) startConnectivityChecks() ([]startupConnectivityWaiter, e
 		}
 	})
 	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
+}
+
+func startConnectivityChecks(groups []*outbound.DialerGroup) ([]startupConnectivityWaiter, error) {
 	checkStart := make(chan struct{})
-	waiters := make([]startupConnectivityWaiter, 0, len(c.outbounds))
-	for _, group := range c.outbounds {
+	waiters := make([]startupConnectivityWaiter, 0, len(groups))
+	for _, group := range groups {
 		ready, err := group.StartConnectivityChecks(checkStart)
 		if err != nil {
 			return nil, fmt.Errorf("start outbound %q connectivity checks: %w", group.Name, err)
@@ -242,7 +249,11 @@ func (c *ControlPlane) requestConnectivityRechecks() {
 	if c.ctx.Err() != nil {
 		return
 	}
-	for _, group := range c.outbounds {
+	groups := c.connectivityOutbounds.Load()
+	if groups == nil {
+		return
+	}
+	for _, group := range *groups {
 		if !group.ChecksConnectivity() {
 			continue
 		}

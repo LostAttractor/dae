@@ -64,7 +64,9 @@ routing { fallback: foo }
 
 启动完成前，延迟策略会忽略 `check_tolerance`；每个新确认的模式也会额外忽略一次，使后续新连接能够修正选择。已有连接仍保留原 outbound。
 
-`check_async: true` 使整个 group 的首次检查都不阻塞启动。所有路由引用都配置 `skip_while_noalive` 时默认开启，没有路由引用时也默认开启；存在任何未配置该参数的引用（包括 `fallback`）时默认关闭。显式 `true` 或 `false` 覆盖默认值。直接作为路由目标的节点使用相同默认规则。`group(name)` 不继承此设置，仅作为模板的 group 不能配置它。
+`check_async: true` 使整个 group 的首次检查都不阻塞启动。所有生效路由引用都配置 `skip_while_noalive` 时默认开启；存在任何未配置该参数的生效引用（包括 `fallback`）时默认关闭。显式 `true` 或 `false` 覆盖默认值。直接作为路由目标的节点使用相同默认规则。`group(name)` 不继承此设置，仅作为模板的 group 不能配置它。
+
+只有默认策略、接口绑定策略、它们递归 `use` 的 `rule_set` 或插件路由引用的 group 和直接路由节点才会创建运行时出站。仅被未启用定义引用的目标仍会校验，但不会创建运行时出站、启动健康检查，也不会出现在状态和 selector API 中。模板依赖展开到生效目标的完整路径中。是否使用按配置引用判定，与当前流量或连通性无关；reload 时重新计算，并保留手动 selector 选择，以便重新启用时恢复。
 
 旧的 `[via: ...]` annotation 会被拒绝。每个 node 仍只能包含一个分享链接；代理链统一使用 group path expression 组合。
 

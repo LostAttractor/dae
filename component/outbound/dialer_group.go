@@ -41,7 +41,7 @@ type DialerGroup struct {
 	TargetKind TargetKind
 	Dialers    []*dialer.Dialer
 	// CheckAsync skips the startup barrier for every dialer in this group.
-	// Set it before starting connectivity checks.
+	// Set it during preparation, before starting checks or querying StartupReady.
 	CheckAsync      bool
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        *latencyBasedSelector
@@ -229,6 +229,27 @@ func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan str
 }
 
 // DeferStats isolates a candidate group before its connectivity checks start.
+// StartupReady also supports a previously asynchronous group becoming critical
+// after plugin routes load. Reuse its checks and publish their current results
+// before releasing the new startup barrier.
+func (g *DialerGroup) StartupReady() (<-chan struct{}, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed.Load() {
+		return nil, net.ErrClosed
+	}
+	if !g.ChecksConnectivity() || g.CheckAsync || len(g.policyDialers()) == 0 {
+		return nil, nil
+	}
+	if g.startupReady == nil {
+		g.startupReady = make(chan struct{})
+	}
+	if err := g.updateConnectivity(); err != nil {
+		return nil, err
+	}
+	return g.startupReady, nil
+}
+
 func (g *DialerGroup) DeferStats() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

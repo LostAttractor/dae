@@ -30,8 +30,10 @@ type ControlPlane struct {
 	core       *controlPlaneCore
 	deferFuncs []func() error
 
-	// TODO: add mutex?
+	// Outbounds are immutable after preparation. Connectivity callbacks use a
+	// snapshot while plugin preparation can still append targets.
 	outbounds              []*outbound.DialerGroup
+	connectivityOutbounds  atomic.Pointer[[]*outbound.DialerGroup]
 	criticalOutbounds      []bool
 	noConnectivityOutbound consts.OutboundIndex
 	tcpConnections         *tcpConnectionTracker
@@ -112,7 +114,7 @@ func NewControlPlane(
 	runtimeSettings *settings.Store,
 	loadMITM func(*http.Client, *http.Client) (*mitm.Host, error),
 ) (c *ControlPlane, err error) {
-	groups, routingA, global := conf.Group, &conf.Routing, &conf.Global
+	groups, global := conf.Group, &conf.Global
 	var mitmClients clientmatch.Matcher
 	if conf.MITM.Enabled {
 		clients := conf.MITM.ClientSourceAddress
@@ -178,7 +180,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
 	}
 
-	outbounds, outboundName2Id, err := core.buildOutbounds(nodes, groups, routingA, global, noConnectivityOutbound)
+	outboundBuilder, err := core.buildOutbounds(nodes, groups, preparedRules.routing, global, noConnectivityOutbound)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +189,7 @@ func NewControlPlane(
 	defer func() {
 		if err != nil {
 			if plane == nil {
-				_ = closeDialerGroups(outbounds)
+				_ = closeDialerGroups(outboundBuilder.outbounds)
 			} else {
 				cancel()
 				if plane.mitmHost != nil {
@@ -199,6 +201,11 @@ func NewControlPlane(
 			}
 		}
 	}()
+	if err := outboundBuilder.buildRuleTargets(preparedRules.earlyRoutes, preparedRules.lateRoutes); err != nil {
+		return nil, err
+	}
+	outbounds, outboundName2Id := outboundBuilder.outbounds, outboundBuilder.nameToID
+	preparedRules.validationOutbounds = outboundBuilder.validationOutbounds
 
 	if loadMITM == nil {
 		if err := preparedRules.bypassLocalAPI(global.APIPort); err != nil {
@@ -214,14 +221,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("compile routing: %w", err)
 	}
 	criticalOutbounds := builder.criticalOutbounds(len(outbounds))
-	for i, group := range outbounds {
-		group.CheckAsync = group.ChecksConnectivity() && !criticalOutbounds[i]
-	}
-	for _, group := range groups {
-		if id, ok := outboundName2Id[group.Name]; ok && (group.CheckAsync || group.Present["check_async"]) {
-			outbounds[id].CheckAsync = group.CheckAsync
-		}
-	}
+	configureOutboundChecks(outbounds, groups, criticalOutbounds)
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
@@ -295,8 +295,9 @@ func NewControlPlane(
 	if err := plane.restoreRuntimeSettings(false); err != nil {
 		return nil, err
 	}
+	plane.watchConnectivity()
 	connectivityStarted := time.Now()
-	waiters, err := plane.startConnectivityChecks()
+	waiters, err := startConnectivityChecks(outbounds)
 	if err != nil {
 		return nil, err
 	}
@@ -307,12 +308,17 @@ func NewControlPlane(
 	log.WithField("duration", time.Since(connectivityStarted)).Debug("Initial connectivity checks finished")
 
 	if loadMITM != nil {
-		if err := plane.prepareMITM(startupCtx, conf, &preparedRules, outboundName2Id, loadMITM); err != nil {
+		if err := plane.prepareMITM(startupCtx, conf, &preparedRules, outboundBuilder, loadMITM); err != nil {
 			return nil, err
 		}
 	}
 	if err := startupCtx.Err(); err != nil {
 		return nil, err
+	}
+	for _, group := range groups {
+		if _, used := outboundName2Id[group.Name]; !used {
+			log.WithField("group", group.Name).Debug("Group has no active routing references; skipping standalone outbound")
+		}
 	}
 	plane.apiBypass = preparedRules.apiBypass
 	return plane, nil

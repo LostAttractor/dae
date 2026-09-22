@@ -15,7 +15,7 @@ import (
 // prepareMITM loads plugins through the base routing policy, then rebuilds the
 // userspace matcher with their declared routes and capture scopes. Shared BPF
 // maps remain untouched until the control plane is activated.
-func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rules *preparedRules, outboundName2Id map[string]uint8, load func(*http.Client, *http.Client) (*mitm.Host, error)) error {
+func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rules *preparedRules, outbounds *outboundBuilder, load func(*http.Client, *http.Client) (*mitm.Host, error)) error {
 	host, err := c.loadMITMHost(load)
 	if err != nil {
 		return err
@@ -40,10 +40,25 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 		c.sniffingTimeout = time.Second
 	}
 	rules.enableMITMPlan(plan)
+	previousCount := len(c.outbounds)
+	wasAsync := make([]bool, previousCount)
+	for i, group := range c.outbounds {
+		wasAsync[i] = group.CheckAsync
+	}
+	err = outbounds.buildRuleTargets(rules.earlyRoutes, rules.lateRoutes)
+	// Transfer partial construction too, so plane cleanup owns every transport.
+	c.outbounds = outbounds.outbounds
+	if err != nil {
+		return err
+	}
+	for _, group := range c.outbounds[previousCount:] {
+		group.DeferStats()
+	}
+	c.connectivityOutbounds.Store(new(c.outbounds))
 	if err := rules.bypassLocalAPI(conf.Global.APIPort); err != nil {
 		return err
 	}
-	builder, err := rules.compileRouting(outboundName2Id, c.core.bpf, c.core.ifmgr)
+	builder, err := rules.compileRouting(outbounds.nameToID, c.core.bpf, c.core.ifmgr)
 	if err != nil {
 		return err
 	}
@@ -52,11 +67,31 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	}
 	c.routingMatcher.outboundUsable = c.core.outboundUsable
 	c.routingMatcherBuilder = builder
-	if err := c.restoreClientSets(); err != nil {
+	c.criticalOutbounds = builder.criticalOutbounds(len(c.outbounds))
+	configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds)
+	if err := c.restoreRuntimeSettings(false); err != nil {
 		return err
 	}
-	c.criticalOutbounds = builder.criticalOutbounds(len(c.outbounds))
-	return nil
+	started := time.Now()
+	waiters, err := startConnectivityChecks(c.outbounds[previousCount:])
+	if err != nil {
+		return err
+	}
+	for i, group := range c.outbounds[:previousCount] {
+		// Existing synchronous groups already had their startup deadline. Only
+		// newly critical groups need a barrier after the plugin phase.
+		if !wasAsync[i] || group.CheckAsync {
+			continue
+		}
+		ready, err := group.StartupReady()
+		if err != nil {
+			return fmt.Errorf("prepare outbound %q connectivity: %w", group.Name, err)
+		}
+		if ready != nil {
+			waiters = append(waiters, startupConnectivityWaiter{name: group.Name, ready: ready})
+		}
+	}
+	return waitForStartupConnectivity(waiters, max(initialConnectivityTimeout-time.Since(started), 0), ctx.Done())
 }
 
 func (c *ControlPlane) loadMITMHost(load func(*http.Client, *http.Client) (*mitm.Host, error)) (*mitm.Host, error) {

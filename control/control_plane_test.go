@@ -49,6 +49,7 @@ node {
 }
 group {
 	unused { policy: random }
+	skipped { policy: random }
 	foo { check_async: false }
 	bar { check_async: true }
 }
@@ -56,6 +57,8 @@ routing {
 	dport(80) -> implicit(skip_while_noalive)
 	dport(81) -> foo(skip_while_noalive)
 	dport(82) -> ordinary
+	dport(83) -> skipped(skip_while_noalive)
+	dport(84) -> ordinary(skip_while_noalive)
 	fallback: bar
 }
 `)
@@ -93,7 +96,7 @@ routing {
 		"block":    {false, outbound.TargetKindBuiltin},
 		"implicit": {true, outbound.TargetKindNode},
 		"ordinary": {false, outbound.TargetKindNode},
-		"unused":   {true, outbound.TargetKindGroup},
+		"skipped":  {true, outbound.TargetKindGroup},
 		"foo":      {false, outbound.TargetKindGroup},
 		"bar":      {true, outbound.TargetKindGroup},
 	}

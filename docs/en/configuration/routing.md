@@ -64,7 +64,9 @@ Once a connectivity mode is confirmed, dae retains that capability. A node uses 
 
 Latency selection ignores `check_tolerance` until startup completes and once for each newly confirmed mode, so late support can correct selection for new connections. Existing connections remain on their original outbound.
 
-`check_async: true` makes initial checks for the entire group run without blocking startup. It defaults to `true` when every routing reference uses `skip_while_noalive`, including unused groups; any reference without it, including `fallback`, makes the default `false`. Explicit `true` or `false` overrides this default. Directly routed nodes use the same default. `group(name)` does not inherit this setting, and groups used only as templates cannot configure it.
+`check_async: true` makes initial checks for the entire group run without blocking startup. It defaults to `true` when every active routing reference uses `skip_while_noalive`; any active reference without it, including `fallback`, makes the default `false`. Explicit `true` or `false` overrides this default. Directly routed nodes use the same default. `group(name)` does not inherit this setting, and groups used only as templates cannot configure it.
+
+Groups and directly routed nodes are instantiated only when referenced by the default policy, an interface-bound policy, their recursively included `rule_set`s, or plugin routes. Targets referenced only by inactive definitions are validated but have no runtime outbound, connectivity checks, or status/selector API entry. Template dependencies are expanded into the active target's paths. Usage is determined from configuration, regardless of current traffic or availability, and is recalculated on reload; saved manual selector choices are retained for reactivation.
 
 The former `[via: ...]` annotation is rejected. Node entries still contain exactly one share link; compose links only with group path expressions.
 

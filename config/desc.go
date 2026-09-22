@@ -113,5 +113,5 @@ min_moving_avg: Select a path by its moving average of check latencies, which gi
 	"check_interval":     "Override global config when non-zero.",
 	"check_interval_max": "Override global config when non-zero.",
 	"check_tolerance":    "Override global config.",
-	"check_async":        "Skip startup waiting for this group. Defaults to true when all routing uses specify skip_while_noalive (including unused groups); fallback defaults to false. Explicit values override this default. Not inherited through group(name).",
+	"check_async":        "Skip startup waiting for this group. Defaults to true when all active routing uses specify skip_while_noalive; fallback defaults to false. Unused targets are not instantiated. Explicit values override this default. Not inherited through group(name).",
 }

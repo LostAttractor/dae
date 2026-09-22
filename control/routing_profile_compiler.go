@@ -46,11 +46,12 @@ type routingRuleSetKey struct {
 }
 
 type routingCompiler struct {
-	builder  *RoutingMatcherBuilder
-	sets     map[string]config.RoutingRuleSet
-	resolved map[routingRuleSetKey]resolvedRoutingBlock
-	preamble routingSpan
-	epilogue routingSpan
+	validationOutbounds map[string]uint8
+	builder             *RoutingMatcherBuilder
+	sets                map[string]config.RoutingRuleSet
+	resolved            map[routingRuleSetKey]resolvedRoutingBlock
+	preamble            routingSpan
+	epilogue            routingSpan
 }
 
 // compileRouting consumes prepared rules only: external data and optimizer
@@ -65,7 +66,7 @@ func (p *preparedRules) compileRouting(outbounds map[string]uint8, bpf *BPFState
 	for _, set := range p.routing.RuleSets {
 		sets[set.Name] = set
 	}
-	compiler := routingCompiler{builder: builder, sets: sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock), preamble: preamble}
+	compiler := routingCompiler{builder: builder, sets: sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock), preamble: preamble, validationOutbounds: p.validationOutbounds}
 	compiler.epilogue, err = compiler.compileRuleBatch(p.lateRoutes)
 	if err != nil {
 		return nil, err
@@ -304,8 +305,12 @@ func (c *routingCompiler) validateUnusedRuleSets(ruleSets []config.RoutingRuleSe
 }
 
 func (c *routingCompiler) newValidator() *routingCompiler {
+	outbounds := c.validationOutbounds
+	if outbounds == nil {
+		outbounds = c.builder.outboundName2Id
+	}
 	return &routingCompiler{
-		builder: newRoutingMatcherBuilder(c.builder.outboundName2Id, nil, c.builder.ifmgr),
+		builder: newRoutingMatcherBuilder(outbounds, nil, c.builder.ifmgr),
 		sets:    c.sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock),
 	}
 }

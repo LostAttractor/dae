@@ -565,6 +565,47 @@ func TestDialerGroupCheckAsyncAppliesToAllCandidates(t *testing.T) {
 	}
 }
 
+func TestDialerGroupAsyncBecomesCritical(t *testing.T) {
+	for _, completed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("checks completed=%v", completed), func(t *testing.T) {
+			d := newCheckedDialer(t, "node")
+			d.GlobalOption = &dialer.GlobalOption{
+				CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
+				CheckInterval:     time.Hour, CheckIntervalMax: time.Hour,
+			}
+			g := NewDialerGroup(d.GlobalOption, t.Name(), GroupKindSelector, []*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
+			t.Cleanup(func() { _ = g.Close() })
+			g.CheckAsync = true
+			start := make(chan struct{})
+			if ready, err := g.StartConnectivityChecks(start); err != nil || ready != nil {
+				t.Fatalf("asynchronous startup = %v, %v", ready, err)
+			}
+			if completed {
+				close(start)
+				waitForInitialCheck(t, d)
+			}
+			g.CheckAsync = false
+			ready, err := g.StartupReady()
+			if err != nil || ready == nil {
+				t.Fatalf("critical startup = %v, %v", ready, err)
+			}
+			if !completed {
+				select {
+				case <-ready:
+					t.Fatal("pending asynchronous check released critical startup")
+				default:
+				}
+				close(start)
+			}
+			select {
+			case <-ready:
+			case <-time.After(time.Second):
+				t.Fatal("critical startup did not reuse the asynchronous check result")
+			}
+		})
+	}
+}
+
 func TestDialerGroupFixedWaitsOnlyForSelectedCandidate(t *testing.T) {
 	option := &dialer.GlobalOption{
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
