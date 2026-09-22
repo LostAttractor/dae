@@ -29,7 +29,7 @@ func TestColoredMessageHasNoFixedPadding(t *testing.T) {
 				}
 				want += " " + strings.TrimSuffix(message, "\n")
 				if fields {
-					want += " \x1b[36mnetwork\x1b[0m=tcp4 \x1b[36mdetail\x1b[0m=\"keep  two spaces\""
+					want += " \x1b[36mnetwork\x1b[0m=tcp4 \x1b[36mdetail\x1b[0m=keep  two spaces"
 				}
 				want += "\n"
 				if err != nil || string(got) != want {
