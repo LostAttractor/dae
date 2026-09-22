@@ -17,10 +17,12 @@ import (
 )
 
 type tcpRelay struct {
-	custom         func() error
-	activity       func()
-	lConn          sniffing.ConnSnifferInterface
-	rConn          net.Conn
+	lConn  sniffing.ConnSnifferInterface
+	rConn  net.Conn
+	dst    netip.AddrPort
+	domain string
+
+	// Ordinary relay dependencies and accounting.
 	directSplice   *splice.Runtime
 	dialer         *dialer.Dialer
 	outboundOrigin netproxy.FailureOrigin
@@ -28,12 +30,13 @@ type tcpRelay struct {
 	fallback       bool
 	routeLease     *netproxy.Lease
 	policyLease    *netproxy.Lease
-	src            netip.AddrPort
-	dst            netip.AddrPort
-	domain         string
-	mitmHost       *mitm.Host
-	mitmPlanner    mitm.UpstreamPlanner
-	mitmRelease    func()
+	activity       func()
+
+	// DNS and MITM take over the accepted connection instead of copying bytes.
+	custom      func() error
+	mitmHost    *mitm.Host
+	mitmPlanner mitm.UpstreamPlanner
+	mitmRelease func()
 }
 
 func (r *tcpRelay) run() (err error) {
@@ -48,32 +51,12 @@ func (r *tcpRelay) run() (err error) {
 		return r.custom()
 	}
 	if r.mitmHost != nil {
-		lease := netproxy.NewLease(netproxy.NewResourceRef())
-		defer lease.Invalidate(net.ErrClosed)
-		stop := watchAbort(lease, r.policyLease, r.routeLease, func() {
-			lease.Abort(connectionAbortCause(lease, r.policyLease, r.routeLease))
-			setTCPResetOnClose(r.lConn)
-			_ = r.lConn.Close()
-		})
-		defer stop()
-		return r.mitmHost.ServeConn(r.lConn, r.domain, r.dst.Port(), mitmPlannerWithLease(r.mitmPlanner, lease))
+		return r.runMITM()
 	}
 	traffic := stats.DefaultStore.OpenConnection(r.statsPath, r.fallback)
 	defer func() { err = errors.Join(err, traffic.Close()) }()
 
-	// Relay
-	handled := false
-	if r.directSplice != nil {
-		left, right := unwrapSniffer(r.lConn).(splice.TCPConn), r.rConn.(splice.TCPConn)
-		accepted := &relayEndpoint{conn: left, origin: netproxy.OriginCaller}
-		remote := &relayEndpoint{conn: right, origin: netproxy.OriginTarget}
-		err = r.lConn.WriteBufferedTo(&trafficWriter{Writer: remote, add: traffic.RecordUpload})
-		if err == nil {
-			handled, err = r.directSplice.Relay(
-				&spliceEndpoint{TCPConn: left, endpoint: accepted},
-				&spliceEndpoint{TCPConn: right, endpoint: remote}, traffic, r.activity)
-		}
-	}
+	handled, err := r.trySplice(traffic)
 	if !handled && err == nil {
 		err = relayTCP(r.lConn, r.rConn, traffic, 10*time.Second, r.outboundOrigin, r.policyLease, r.routeLease)
 	} else {
@@ -83,6 +66,18 @@ func (r *tcpRelay) run() (err error) {
 		return err
 	}
 	return nil
+}
+
+func (r *tcpRelay) runMITM() error {
+	lease := netproxy.NewLease(netproxy.NewResourceRef())
+	defer lease.Invalidate(net.ErrClosed)
+	stop := watchAbort(lease, r.policyLease, r.routeLease, func() {
+		lease.Abort(connectionAbortCause(lease, r.policyLease, r.routeLease))
+		setTCPResetOnClose(r.lConn)
+		_ = r.lConn.Close()
+	})
+	defer stop()
+	return r.mitmHost.ServeConn(r.lConn, r.domain, r.dst.Port(), mitmPlannerWithLease(r.mitmPlanner, lease))
 }
 
 type trafficWriter struct {
@@ -98,16 +93,29 @@ func (w *trafficWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+type tcpCopyResult struct {
+	err        error
+	needsDrain bool
+}
+
 func relayEndpointDirection(dst, src *relayEndpoint, add func(uint64)) error {
 	return copyRelay(&trafficWriter{Writer: dst, add: add}, src)
 }
 
-func relayTCP(lConn, rConn net.Conn, traffic *stats.Connection, drainTimeout time.Duration, origin netproxy.FailureOrigin, policyLease, routeLease *netproxy.Lease) error {
-	type result struct {
-		err        error
-		needsDrain bool
+func copyTCPDirection(dst, src *relayEndpoint, add func(uint64), abortCause func() error) tcpCopyResult {
+	outcome := tcpCopyResult{err: relayEndpointDirection(dst, src, add)}
+	// copyRelay consumes read EOF. Propagate FIN only while the owner
+	// still allows it; resource cleanup can itself surface as EOF.
+	if outcome.err == nil && abortCause() == nil {
+		outcome.needsDrain, outcome.err = dst.halfClose()
 	}
-	results := make(chan result, 2)
+	return outcome
+}
+
+// relayTCP owns two copy workers. EOF half-closes the destination; a failure or
+// owner abort closes both endpoints and waits for both workers to finish.
+func relayTCP(lConn, rConn net.Conn, traffic *stats.Connection, drainTimeout time.Duration, origin netproxy.FailureOrigin, policyLease, routeLease *netproxy.Lease) error {
+	results := make(chan tcpCopyResult, 2)
 	left := &relayEndpoint{conn: lConn, origin: netproxy.OriginCaller}
 	right := &relayEndpoint{conn: rConn, origin: origin}
 	lease := netproxy.DependencyOf(rConn)
@@ -116,15 +124,9 @@ func relayTCP(lConn, rConn net.Conn, traffic *stats.Connection, drainTimeout tim
 	routeChanged := routeLease.Done()
 	abortCause := func() error { return connectionAbortCause(lease, policyLease, routeLease) }
 	copyDirection := func(dst, src *relayEndpoint, add func(uint64)) {
-		outcome := result{err: relayEndpointDirection(dst, src, add)}
-		// copyRelay consumes read EOF. Propagate FIN only while the owner
-		// still allows it; resource cleanup can itself surface as EOF.
-		if outcome.err == nil && abortCause() == nil {
-			outcome.needsDrain, outcome.err = dst.halfClose()
-		}
 		// Keep CloseWrite in the worker: an owner abort must be able to
 		// interrupt it if sending FIN blocks.
-		results <- outcome
+		results <- copyTCPDirection(dst, src, add, abortCause)
 	}
 	go copyDirection(left, right, traffic.RecordDownload)
 	go copyDirection(right, left, traffic.RecordUpload)

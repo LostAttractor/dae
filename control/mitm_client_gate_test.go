@@ -286,7 +286,7 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 						return fmt.Errorf("gate changed route: selected=%v option=%+v mark=%d", selected, option, result.Mark)
 					}
 					path, fallback := option.trafficAttribution()
-					relay := &tcpRelay{lConn: sniffer, dialer: option.Dialer, statsPath: path, fallback: fallback, src: src, dst: dst, domain: domain}
+					relay := &tcpRelay{lConn: sniffer, dialer: option.Dialer, statsPath: path, fallback: fallback, dst: dst, domain: domain}
 					if selected {
 						relay.mitmRelease = release
 						relay.mitmHost, relay.mitmPlanner = host, planner

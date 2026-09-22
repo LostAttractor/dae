@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
@@ -18,7 +17,6 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,84 +25,10 @@ const (
 	DefaultNatTimeoutTCPEstablished = 7440 * time.Second
 )
 
-type tcpConnectionTracker struct {
-	// mu serializes setup Add calls with the stopped transition before Wait.
-	mu          sync.Mutex
-	connections map[net.Conn]struct{}
-	setups      sync.WaitGroup
-	stopped     bool
-}
-
-func (t *tcpConnectionTracker) beginSetup(conn net.Conn) bool {
-	t.mu.Lock()
-	if t.stopped {
-		t.mu.Unlock()
-		_ = conn.Close()
-		return false
-	}
-	if t.connections == nil {
-		t.connections = make(map[net.Conn]struct{})
-	}
-	t.connections[conn] = struct{}{}
-	t.setups.Add(1)
-	t.mu.Unlock()
-	return true
-}
-
-func (t *tcpConnectionTracker) removeConnection(conn net.Conn) {
-	t.mu.Lock()
-	delete(t.connections, conn)
-	t.mu.Unlock()
-}
-
-func (t *tcpConnectionTracker) stopAndSnapshot() []net.Conn {
-	t.mu.Lock()
-	t.stopped = true
-	connections := make([]net.Conn, 0, len(t.connections))
-	for conn := range t.connections {
-		connections = append(connections, conn)
-	}
-	t.mu.Unlock()
-	return connections
-}
-
-func (t *tcpConnectionTracker) stopAccepting() {
-	t.mu.Lock()
-	t.stopped = true
-	t.mu.Unlock()
-}
-
-func (t *tcpConnectionTracker) waitForSetups() {
-	t.setups.Wait()
-}
-
-func (t *tcpConnectionTracker) finishSetup() {
-	t.setups.Done()
-}
-
-func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, tracker *tcpConnectionTracker) {
-	defer tracker.removeConnection(lConn)
-	relay, err := c.prepareTCPRelay(ctx, lConn)
-	// Raw TCP relays retain only their dialer. MITM may route rewritten targets
-	// until Host.Close drains its requests, before DNS and outbounds are closed.
-	c = nil
-	tracker.finishSetup()
-	if relay != nil {
-		err = relay.run()
-	}
-	if err != nil && ctx.Err() == nil {
-		if log.IsLevelEnabled(log.DebugLevel) {
-			fields := log.Fields{"source": lConn.RemoteAddr(), "destination": lConn.LocalAddr()}
-			if relay != nil {
-				fields["outbound"], fields["dialer"], fields["domain"] = relay.statsPath.Outbound, relay.statsPath.Dialer, relay.domain
-			}
-			log.WithFields(fields).WithError(err).Debug("TCP connection failed")
-		}
-	}
-}
-
+// prepareTCPRelay owns connection setup through sniffing, routing, and dialing.
+// A non-nil result transfers connection ownership to tcpRelay.run.
 func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn) (relay *tcpRelay, err error) {
-	// Get tuples and outbound.
+	// Recover the kernel's routing decision before normalizing the tuple.
 	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
 	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
 	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
@@ -118,8 +42,10 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		c.domainActivity().observe(dst.Addr(), "", time.Now())
 		observe := c.domainActivity().connection(dst.Addr(), "")
 		lConn = &activityConn{lConn, observe}
-		return &tcpRelay{lConn: sniffing.NewConnSniffer(lConn, 0), src: src, dst: dst,
-			custom: func() error { return c.serveDNSTCP(lConn, src, dst, *routingResult) }}, nil
+		return &tcpRelay{
+			lConn: sniffing.NewConnSniffer(lConn, 0), dst: dst,
+			custom: func() error { return c.serveDNSTCP(lConn, src, dst, *routingResult) },
+		}, nil
 	}
 
 	routeLease, err := c.deviceRoutes.acquire(routingResult)
@@ -136,7 +62,8 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		_ = lConn.Close()
 	})
 	defer stopRoute()
-	// Sniff target domain.
+
+	// Cancellation owns the accepted connection until setup hands it to the relay.
 	sniffer := sniffing.NewConnSniffer(lConn, c.sniffingTimeout)
 	stopClose := context.AfterFunc(setupCtx, func() { _ = lConn.Close() })
 	defer func() {
@@ -172,7 +99,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		host = dst.Addr().String()
 	}
 
-	// Route
+	// Select the route and any MITM plan using the sniffed identity.
 	networkType := common.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionStrFromAddr(dst.Addr()),
@@ -194,11 +121,17 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 			policyLease = dialOption.PolicyLease
 		}
 		return &tcpRelay{
-			lConn: sniffer, src: src, dst: dst, domain: host,
-			activity: observe,
-			mitmHost: c.mitmHost, mitmPlanner: mitmPlanner, mitmRelease: release, routeLease: routeLease, policyLease: policyLease,
+			lConn: sniffer, dst: dst, domain: host,
+			activity:    observe,
+			mitmHost:    c.mitmHost,
+			mitmPlanner: mitmPlanner,
+			mitmRelease: release,
+			routeLease:  routeLease,
+			policyLease: policyLease,
 		}, nil
 	}
+
+	// Ordinary relays establish their outbound before leaving the setup phase.
 	statsPath, noConnectivityFallback := dialOption.trafficAttribution()
 	ctx, cancel := context.WithTimeout(setupCtx, consts.DefaultDialTimeout)
 	defer cancel()
@@ -209,7 +142,6 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	})
 	defer stopPolicy()
 
-	// Dial
 	c.logDial(src, dst, domain, dialOption, dialOption.NetworkType.String(), routingResult)
 	start := time.Now()
 	rConn, err := dialOption.dialerForConnection().DialContext(ctx, "tcp", dialOption.DialTarget)
@@ -247,13 +179,14 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 		fallback:    noConnectivityFallback,
 		policyLease: dialOption.PolicyLease,
 		routeLease:  routeLease,
-		src:         src,
 		dst:         dst,
 		domain:      domain,
 	}
 	if dialOption.Direct {
 		relay.outboundOrigin = netproxy.OriginTarget
 	}
+	// Splice only accelerates an already-captured direct connection. Connections
+	// governed by policy or route leases need the userspace abort watcher.
 	if dialOption.Direct && dialOption.PolicyLease == nil && routeLease == nil && c.core.bpf.splice != nil {
 		if _, ok := rConn.(splice.TCPConn); ok {
 			relay.directSplice = c.core.bpf.splice

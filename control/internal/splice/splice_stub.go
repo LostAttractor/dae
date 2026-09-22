@@ -6,8 +6,6 @@
 package splice
 
 import (
-	"net"
-	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -15,12 +13,6 @@ import (
 )
 
 type Runtime struct{}
-
-type TCPConn interface {
-	net.Conn
-	syscall.Conn
-	CloseWrite() error
-}
 
 func New(_ *ebpf.CollectionOptions, _ time.Duration) (*Runtime, error) {
 	return nil, nil

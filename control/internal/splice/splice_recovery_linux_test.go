@@ -22,9 +22,12 @@ type recoveryConn struct {
 	once   sync.Once
 }
 
-func (c *recoveryConn) Read(p []byte) (int, error)            { return c.read(p) }
-func (c *recoveryConn) Write(p []byte) (int, error)           { return c.write(p) }
-func (c *recoveryConn) Close() error                          { c.once.Do(func() { close(c.closed) }); return nil }
+func (c *recoveryConn) Read(p []byte) (int, error)  { return c.read(p) }
+func (c *recoveryConn) Write(p []byte) (int, error) { return c.write(p) }
+func (c *recoveryConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
 func (c *recoveryConn) CloseWrite() error                     { return nil }
 func (c *recoveryConn) SetReadDeadline(time.Time) error       { return nil }
 func (c *recoveryConn) SetWriteDeadline(time.Time) error      { return nil }

@@ -317,7 +317,7 @@ func TestSpliceInitialHalfCloseDoesNotArmIntegration(t *testing.T) {
 	}
 	readExactly(t, server, payload)
 	expectEOF(t, server, "initial upload")
-	if !edges[0].closed || !edges[1].userspace {
+	if edges[0].state != edgeClosed || edges[1].state != edgeUserspace {
 		t.Fatalf("initial half-close state: upload=%+v download=%+v", edges[0], edges[1])
 	}
 	for _, cookie := range []uint64{cookieA, cookieR} {
