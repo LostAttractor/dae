@@ -173,6 +173,8 @@ type RoutingStatement struct {
 	Kind RoutingStatementKind
 	Rule *config_parser.RoutingRule
 	Use  string
+	// Condition is ANDed with every rule reached by this use, including nested uses.
+	Condition []*config_parser.Function
 }
 
 type RoutingRuleSet struct {

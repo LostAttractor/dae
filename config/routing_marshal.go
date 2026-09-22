@@ -83,7 +83,16 @@ func (m *Marshaller) marshalRoutingStatements(statements []RoutingStatement, dep
 			}
 			m.writeLine(depth, line)
 		case RoutingStatementUse:
-			m.writeLine(depth, "use:"+statement.Use)
+			if len(statement.Condition) == 0 {
+				m.writeLine(depth, "use:"+statement.Use)
+				continue
+			}
+			// use arguments are fragment names, including the literal name must.
+			rule := config_parser.RoutingRule{
+				AndFunctions: statement.Condition,
+				Outbound:     config_parser.Function{Name: "use", Params: []*config_parser.Param{{Val: statement.Use}}},
+			}
+			m.writeLine(depth, rule.String(false, true, true))
 		}
 	}
 	return nil

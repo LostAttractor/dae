@@ -127,6 +127,39 @@ routing {
 
 This anonymous default policy can coexist with `rule_set`, named `policy` and `interface` declarations, but cannot be combined with `default: policy_name`. Its fallback is also required. The old `default { ... }` form and policies defined inside interface blocks are no longer supported.
 
+### Shared conditions on rule fragments
+
+Use `condition -> use(fragment)` to add a common condition to every rule in a referenced fragment:
+
+```shell
+routing {
+    rule_set {
+        office {
+            domain(suffix: corp.example) -> proxy
+            dip(10.20.0.0/16) -> proxy
+            dport(853) -> block
+        }
+        tcp_office {
+            l4proto(tcp) -> use(office)
+        }
+    }
+
+    sip(192.168.10.0/24) -> use(tcp_office)
+    fallback: direct
+}
+```
+
+Each `office` rule now requires `sip(192.168.10.0/24)`, `l4proto(tcp)` and its own predicate to match. If the common condition fails, or no rule in the fragment matches, evaluation continues after the `use` statement.
+
+- All existing routing predicates are supported, including `client()`, `interface()`, `domain()`, `!`, `&&` and multiple values within a function. For example: `client(work) && !l4proto(udp) -> use(office)`.
+- `condition -> use(a, b)` references a then b, applying the condition to both. `use: a, b` remains an unconditional reference.
+- Conditional uses work in the anonymous default policy, named policies and rule fragments. Nested conditions are ANDed with each other and the final rule. Repeated functions also intersect: an outer `dport(80,443)` and inner `dport(443,853)` match only 443.
+- Outbounds, marks and `skip_while_noalive` keep their existing behavior. The enclosing policy's fallback runs after all rules fail to match. A conditional use cannot be a fallback.
+- `use(...)` accepts only rule-set names. To pass options to an outbound named `use`, quote it: `'use'(mark: 0x800)`. Bare `-> use` still selects that outbound.
+- Export preserves conditions and references; multiple fragments may be exported as consecutive conditional uses. Identical fragments and normalized condition sequences share compiled instructions. Different conditions create separate variants whose instructions count toward the routing limits. Each compilation also limits fragment/condition variants to `MaxMatchSetLen`.
+
+Common conditions are compiled into both kernel and userspace routing rules. `domain()` retains the existing domain-to-IP mapping and negation semantics: a positive domain condition does not match without a DNS mapping, and no additional traffic is captured to obtain SNI/Host. Existing MITM, DNAT/Host capture and API bypass rules continue to follow their own predicates.
+
 ### Splitting policies across files
 
 Use `include` to maintain fragments, policies and bindings in separate files, each with a `routing { ... }` wrapper. Declare each named fragment and policy once; compose larger policies with `use`. References may precede declarations. Rules and uses determine execution order, independently of declaration order. Export preserves references and rule order, placing fallback last in each policy. See [separate configuration files](separate-config.md) for a complete example.

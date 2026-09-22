@@ -7,6 +7,8 @@ package control
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
@@ -39,10 +41,14 @@ func (b *resolvedRoutingBlock) appendBlock(other resolvedRoutingBlock) error {
 	return nil
 }
 
+type routingRuleSetKey struct {
+	name, condition string
+}
+
 type routingCompiler struct {
 	builder  *RoutingMatcherBuilder
 	sets     map[string]config.RoutingRuleSet
-	resolved map[string]resolvedRoutingBlock
+	resolved map[routingRuleSetKey]resolvedRoutingBlock
 	preamble routingSpan
 	epilogue routingSpan
 }
@@ -59,7 +65,7 @@ func (p *preparedRules) compileRouting(outbounds map[string]uint8, bpf *BPFState
 	for _, set := range p.routing.RuleSets {
 		sets[set.Name] = set
 	}
-	compiler := routingCompiler{builder: builder, sets: sets, resolved: make(map[string]resolvedRoutingBlock), preamble: preamble}
+	compiler := routingCompiler{builder: builder, sets: sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock), preamble: preamble}
 	compiler.epilogue, err = compiler.compileRuleBatch(p.lateRoutes)
 	if err != nil {
 		return nil, err
@@ -129,7 +135,7 @@ func (c *routingCompiler) compile(routingConfig *config.Routing) error {
 }
 
 func (c *routingCompiler) addProfile(id uint32, interfaceNames []string, policy config.RoutingPolicy) error {
-	body, err := c.resolveStatements(policy.Name, policy.Statements)
+	body, err := c.resolveStatements(policy.Name, policy.Statements, nil)
 	if err != nil {
 		return err
 	}
@@ -156,29 +162,47 @@ func (c *routingCompiler) addProfile(id uint32, interfaceNames []string, policy 
 	}
 	c.builder.profiles = append(c.builder.profiles, routingProfile{
 		ID:             id,
-		InterfaceNames: append([]string(nil), interfaceNames...),
+		InterfaceNames: slices.Clone(interfaceNames),
 		Spans:          block.spans,
 	})
 	return nil
 }
 
-func (c *routingCompiler) resolveSet(name string) (resolvedRoutingBlock, error) {
-	if block, ok := c.resolved[name]; ok {
+func (c *routingCompiler) resolveSet(name string, condition []*config_parser.Function) (resolvedRoutingBlock, error) {
+	// Quote values in the key so regexes and other literals cannot collide with
+	// function/parameter separators. Prepared predicates are immutable.
+	var signature strings.Builder
+	for _, f := range condition {
+		signature.WriteString(f.String(true, true, false))
+		signature.WriteString("&&")
+	}
+	key := routingRuleSetKey{name: name, condition: signature.String()}
+	if block, ok := c.resolved[key]; ok {
 		return block, nil
 	}
 	set, ok := c.sets[name]
 	if !ok {
 		return resolvedRoutingBlock{}, fmt.Errorf("undefined routing rule_set %q", name)
 	}
-	block, err := c.resolveStatements(set.Name, set.Statements)
+	block, err := c.resolveStatements(set.Name, set.Statements, condition)
 	if err != nil {
 		return resolvedRoutingBlock{}, err
 	}
-	c.resolved[name] = block
+	if len(block.spans) == 0 && len(condition) != 0 {
+		if err := validateEmptyRoutingUse(condition); err != nil {
+			return resolvedRoutingBlock{}, fmt.Errorf("routing rule_set %q condition: %w", name, err)
+		}
+	}
+	// Empty fragments consume no instructions, but conditional DAGs can still
+	// create exponentially many distinct specializations. Bound those too.
+	if len(c.resolved) >= consts.MaxMatchSetLen {
+		return resolvedRoutingBlock{}, fmt.Errorf("too many routing rule_set condition variants: limit %d", consts.MaxMatchSetLen)
+	}
+	c.resolved[key] = block
 	return block, nil
 }
 
-func (c *routingCompiler) resolveStatements(name string, statements []config.RoutingStatement) (resolvedRoutingBlock, error) {
+func (c *routingCompiler) resolveStatements(name string, statements []config.RoutingStatement, condition []*config_parser.Function) (resolvedRoutingBlock, error) {
 	var block resolvedRoutingBlock
 	var localRules []*config_parser.RoutingRule
 	flush := func() error {
@@ -199,12 +223,19 @@ func (c *routingCompiler) resolveStatements(name string, statements []config.Rou
 	for _, statement := range statements {
 		switch statement.Kind {
 		case config.RoutingStatementRule:
-			localRules = append(localRules, statement.Rule)
+			rule := statement.Rule
+			if len(condition) != 0 {
+				rule = &config_parser.RoutingRule{
+					AndFunctions: slices.Concat(condition, rule.AndFunctions),
+					Outbound:     rule.Outbound,
+				}
+			}
+			localRules = append(localRules, rule)
 		case config.RoutingStatementUse:
 			if err := flush(); err != nil {
 				return resolvedRoutingBlock{}, err
 			}
-			called, err := c.resolveSet(statement.Use)
+			called, err := c.resolveSet(statement.Use, slices.Concat(condition, statement.Condition))
 			if err != nil {
 				return resolvedRoutingBlock{}, fmt.Errorf("routing block %q: %w", name, err)
 			}
@@ -221,6 +252,21 @@ func (c *routingCompiler) resolveStatements(name string, statements []config.Rou
 	return block, nil
 }
 
+// Even an empty referenced fragment must validate its condition, without
+// publishing predicates or interface subscriptions into the active program.
+func validateEmptyRoutingUse(condition []*config_parser.Function) error {
+	b := newRoutingMatcherBuilder(map[string]uint8{"direct": uint8(consts.OutboundDirect)}, nil, nil)
+	if err := b.rulesBuilder.ApplyPredicate(condition, &routing.Outbound{Name: "direct"}); err != nil {
+		return err
+	}
+	b.routing.end = len(b.rules)
+	if err := b.validate(); err != nil {
+		return err
+	}
+	_, err := b.BuildUserspace()
+	return err
+}
+
 func (c *routingCompiler) compileRuleBatch(rules []*config_parser.RoutingRule) (routingSpan, error) {
 	start := uint32(len(c.builder.rules))
 	if err := c.builder.rulesBuilder.Apply(rules); err != nil {
@@ -235,12 +281,16 @@ func (c *routingCompiler) compileRuleBatch(rules []*config_parser.RoutingRule) (
 // Validate unused definitions without adding their match sets, interface
 // subscriptions or connectivity requirements to the active policy.
 func (c *routingCompiler) validateUnusedRuleSets(ruleSets []config.RoutingRuleSet) error {
+	reachable := make(map[string]bool, len(c.resolved))
+	for key := range c.resolved {
+		reachable[key.name] = true
+	}
 	for _, set := range ruleSets {
-		if _, reachable := c.resolved[set.Name]; reachable {
+		if reachable[set.Name] {
 			continue
 		}
 		validator := c.newValidator()
-		if _, err := validator.resolveSet(set.Name); err != nil {
+		if _, err := validator.resolveSet(set.Name, nil); err != nil {
 			return err
 		}
 		if err := validator.builder.validate(); err != nil {
@@ -256,7 +306,7 @@ func (c *routingCompiler) validateUnusedRuleSets(ruleSets []config.RoutingRuleSe
 func (c *routingCompiler) newValidator() *routingCompiler {
 	return &routingCompiler{
 		builder: newRoutingMatcherBuilder(c.builder.outboundName2Id, nil, c.builder.ifmgr),
-		sets:    c.sets, resolved: make(map[string]resolvedRoutingBlock),
+		sets:    c.sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock),
 	}
 }
 
@@ -268,13 +318,22 @@ func prepareRoutingConfig(source *config.Routing, reader *routing.DatReaderOptim
 		return nil, err
 	}
 	result := *source
-	result.RuleSets = append([]config.RoutingRuleSet(nil), source.RuleSets...)
-	result.Policies = append([]config.RoutingPolicy(nil), source.Policies...)
+	result.RuleSets = slices.Clone(source.RuleSets)
+	result.Policies = slices.Clone(source.Policies)
 	prepare := func(name string, statements []config.RoutingStatement) ([]config.RoutingStatement, error) {
 		var result []config.RoutingStatement
 		for i := 0; i < len(statements); {
 			if statements[i].Kind != config.RoutingStatementRule {
-				result = append(result, statements[i])
+				statement := statements[i]
+				if len(statement.Condition) != 0 {
+					normalized, err := routing.ApplyRulesOptimizers([]*config_parser.RoutingRule{{AndFunctions: statement.Condition}},
+						&routing.AliasOptimizer{}, reader, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
+					if err != nil {
+						return nil, fmt.Errorf("prepare routing block %q use %q: %w", name, statement.Use, err)
+					}
+					statement.Condition = normalized[0].AndFunctions
+				}
+				result = append(result, statement)
 				i++
 				continue
 			}

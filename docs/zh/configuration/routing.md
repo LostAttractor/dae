@@ -127,6 +127,39 @@ routing {
 
 这种写法是匿名默认策略，可与 `rule_set`、命名 `policy` 和 `interface` 声明共存，但不能同时设置 `default: 策略名`。匿名默认策略也必须显式声明 fallback。旧的 `default { ... }` 和在接口块内定义规则的写法不再支持。
 
+### 为规则片段添加公共条件
+
+使用 `条件 -> use(片段名)`，给引用片段中的所有规则附加同一个条件：
+
+```shell
+routing {
+    rule_set {
+        office {
+            domain(suffix: corp.example) -> proxy
+            dip(10.20.0.0/16) -> proxy
+            dport(853) -> block
+        }
+        tcp_office {
+            l4proto(tcp) -> use(office)
+        }
+    }
+
+    sip(192.168.10.0/24) -> use(tcp_office)
+    fallback: direct
+}
+```
+
+此例中，`office` 的每条规则都需要同时满足 `sip(192.168.10.0/24)`、`l4proto(tcp)` 和自身的条件。公共条件不成立，或片段中所有规则均未命中时，继续匹配 `use` 后面的规则。
+
+- 支持现有 routing 条件，包括 `client()`、`interface()`、`domain()`、`!`、`&&` 和函数内的多值匹配。例如 `client(work) && !l4proto(udp) -> use(office)`。
+- `条件 -> use(a, b)` 按顺序引用 a 和 b，条件对两者都生效。仍可使用 `use: a, b` 无条件引用。
+- 条件可写在匿名默认策略、命名策略或规则片段内；嵌套引用时，各层条件与最终规则条件取 AND。同名函数的条件也取交集，例如外层 `dport(80,443)` 与内层 `dport(443,853)` 只匹配 443。
+- 片段内部的出站、mark 和 `skip_while_noalive` 保留原有语义；fallback 仍由所属策略在所有规则未命中后执行。条件引用不能作为 fallback。
+- `use(...)` 的参数只能是规则片段名称。若出站本身名为 `use` 且需要参数，写作 `'use'(mark: 0x800)`；不带参数的 `-> use` 仍表示同名出站。
+- 导出配置保留条件和引用，多个片段可以导出为连续的条件引用。相同片段与相同已规范化条件序列共享编译结果；不同条件生成不同版本，其指令计入规则容量限制。每次编译的片段与条件组合数也受 `MaxMatchSetLen` 限制。
+
+公共条件直接编入内核和用户态路由规则。`domain()` 沿用已有域名—IP 映射及否定匹配语义：缺少 DNS 映射时，正向域名条件不命中，不会为获取 SNI/Host 而额外捕获流量。已有 MITM、DNAT/Host 捕获和 API 直通规则仍按各自的条件执行。
+
 ### 拆分为多个文件
 
 通过 `include` 分别维护规则片段、策略和接口绑定；每个文件保留 `routing { ... }` 外层。每个命名片段和策略只能声明一次，大型策略通过 `use` 组合更小的片段。引用可以先于声明；执行顺序由策略内的规则和 `use` 决定，与声明文件顺序无关。导出配置会保留引用和执行顺序，并将 fallback 写在策略末尾。完整示例见[拆分配置文件](separate-config.md)。

@@ -382,6 +382,7 @@ rules {
 routing {
     # Reusable fragments contain rules and nested use statements, without a fallback.
     # use: a, b inserts both rule sets at that position, in order.
+    # condition -> use(a, b) adds the condition to every referenced rule; nested conditions are ANDed.
     rule_set {
         base {
             # Keep local network managers direct so WAN capture does not break connectivity checks.
@@ -412,6 +413,9 @@ routing {
 
             # Devices join or leave this MAC set through the page/API. See docs/en/configuration/api.md.
             #client(proxy_devices) -> my_group
+
+            # Apply a shared fragment only to this subnet (as an alternative to the unconditional use below).
+            #sip(192.168.10.0/24) -> use(regional)
 
             use: regional
             fallback: my_group

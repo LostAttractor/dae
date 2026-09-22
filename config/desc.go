@@ -17,6 +17,7 @@ var SectionSummaryDesc = Desc{
 	"client":       "Dynamic MAC sets: name { description: 'text' ipset: kernel_name nftset: 'family/table/set' }. All fields are optional. The device page shows sets referenced by client(name) routing rules or configured for kernel export. Configuration reloads update descriptions and exports; membership is stored separately.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 rule_set contains reusable rules and ordered uses; use: a, b inserts both fragments in order.
+filter() -> use(a, b) ANDs the filter with every referenced rule; nested use conditions accumulate.
 policy declares complete policies with exactly one fallback each. Fragments cannot contain fallback.
 default: policy_name and interface { device: policy_name } select policies; configure global capture bindings separately.
 Inline rules/use/fallback define an anonymous default policy and cannot be combined with default: policy_name.

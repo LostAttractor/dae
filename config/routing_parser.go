@@ -104,6 +104,18 @@ func parseRoutingBlock(section *config_parser.Section, policy bool) (statements 
 	for _, item := range section.Items {
 		switch value := item.Value.(type) {
 		case *config_parser.RoutingRule:
+			if target := &value.Outbound; target.Name == "use" && !target.Quoted && (target.Not || len(target.Params) != 0) {
+				if target.Not || len(target.Params) == 0 {
+					return nil, nil, fmt.Errorf("conditional use requires use(rule_set, ...) without negation")
+				}
+				for _, param := range target.Params {
+					if param == nil || param.Key != "" || param.Val == "" || param.AndFunctions != nil || len(param.Annotation) != 0 {
+						return nil, nil, fmt.Errorf("conditional use requires nonempty positional rule_set names")
+					}
+					statements = append(statements, RoutingStatement{Kind: RoutingStatementUse, Use: param.Val, Condition: value.AndFunctions})
+				}
+				continue
+			}
 			statements = append(statements, RoutingStatement{Kind: RoutingStatementRule, Rule: value})
 		case *config_parser.Param:
 			if len(value.Annotation) > 0 {
@@ -161,6 +173,9 @@ func parseRoutingFallback(param *config_parser.Param) (*config_parser.Function, 
 	if err != nil {
 		return nil, fmt.Errorf("invalid fallback: %w", err)
 	}
+	if fallback.Name == "use" && !fallback.Quoted && len(fallback.Params) != 0 {
+		return nil, fmt.Errorf("conditional use requires a routing condition; it cannot be a fallback")
+	}
 	return fallback, nil
 }
 
@@ -200,7 +215,7 @@ func (routing *Routing) Validate() error {
 		for _, statement := range statements {
 			switch statement.Kind {
 			case RoutingStatementRule:
-				if statement.Rule == nil || len(statement.Rule.AndFunctions) == 0 || statement.Use != "" {
+				if statement.Rule == nil || len(statement.Rule.AndFunctions) == 0 || statement.Use != "" || len(statement.Condition) != 0 {
 					return fmt.Errorf("routing block %q contains an invalid rule", name)
 				}
 				if err := validateFunction(&statement.Rule.Outbound); err != nil {
@@ -214,6 +229,11 @@ func (routing *Routing) Validate() error {
 			case RoutingStatementUse:
 				if statement.Use == "" || statement.Rule != nil {
 					return fmt.Errorf("routing block %q contains an invalid use", name)
+				}
+				for _, f := range statement.Condition {
+					if err := validateFunction(f); err != nil {
+						return fmt.Errorf("routing block %q use %q: %w", name, statement.Use, err)
+					}
 				}
 			default:
 				return fmt.Errorf("routing block %q contains an unknown statement", name)
