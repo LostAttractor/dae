@@ -53,6 +53,29 @@ before observer delivery.
 Reload creates a fresh response cache; domain evidence persists independently.
 `dae plugins dns-cache status` reports entry count, byte usage, hits and misses.
 
+## Prometheus metrics
+
+Enable dae's `global.metrics_port` and scrape `/metrics` on that localhost port.
+This plugin registers through `plugin.Services.Metrics`. All metrics carry the
+host's `plugin_type` and `plugin_instance` labels and the `dae_plugin_` prefix:
+
+| Local name | Type | Meaning |
+| --- | --- | --- |
+| `dns_cache_lookups_total{result}` | Counter | `hit`, `miss`, `bypass` |
+| `dns_cache_entries` | Gauge | Retained entries |
+| `dns_cache_capacity_entries` | Gauge | Entry limit |
+| `dns_cache_memory_bytes` | Gauge | Accounted bytes, not RSS |
+| `dns_cache_memory_limit_bytes` | Gauge | Accounted byte limit |
+| `dns_cache_evictions_total{reason}` | Counter | `expired`, `capacity` |
+
+Lookup and capacity metrics read the same state as status. Unsupported query
+keys bypass lookup; eligible keys without an entry are misses even when the
+response cannot be stored. Expiration includes lazy and worker cleanup, capacity
+includes entry and byte pressure, and replacing a key is not an eviction.
+Entries awaiting expiration cleanup remain included in the gauges.
+Counters reset with the cache on reload. Failed candidate preparation preserves
+the active instance's metrics; closing an instance removes its series.
+
 Run `go test ../dae-plugin-dns-cache/...` from the dae workspace.
 
 License: AGPL-3.0-only.

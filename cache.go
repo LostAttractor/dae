@@ -44,7 +44,8 @@ type Cache struct {
 	lru                       list.List
 	limit, memoryLimit, bytes int
 	fixed                     map[string]uint32
-	hits, misses              uint64
+	hits, misses, bypasses    uint64
+	expired, evicted          uint64
 }
 
 func Configure(spec plugin.Spec) (plugin.Factory, error) {
@@ -54,6 +55,11 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 	}
 	return func(_ context.Context, services plugin.Services) (plugin.Plugin, error) {
 		c := &Cache{entries: make(map[key]*list.Element), limit: conf.Size, memoryLimit: conf.MemoryLimit, fixed: fixed}
+		if services.Metrics != nil {
+			if err := services.Metrics.Register(c); err != nil {
+				return nil, fmt.Errorf("cache metrics: %w", err)
+			}
+		}
 		return c, nil
 	}, nil
 }
@@ -166,8 +172,13 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 					return response, nil
 				}
 				c.remove(elem)
+				c.expired++
 			}
 			c.misses++
+			c.mu.Unlock()
+		} else {
+			c.mu.Lock()
+			c.bypasses++
 			c.mu.Unlock()
 		}
 		response, err := next(ctx, request)
@@ -288,6 +299,7 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, respo
 	}
 	for len(c.entries) >= c.limit || c.bytes+bytes > c.memoryLimit {
 		c.remove(c.lru.Back())
+		c.evicted++
 	}
 	c.entries[k] = c.lru.PushFront(e)
 	c.bytes += bytes
@@ -308,13 +320,18 @@ func (c *Cache) Run(ctx context.Context, _ *http.Client) error {
 		case <-ctx.Done():
 			return nil
 		case now := <-ticker.C:
-			c.mu.Lock()
-			for _, elem := range c.entries {
-				if !now.Before(elem.Value.(*entry).expires) {
-					c.remove(elem)
-				}
-			}
-			c.mu.Unlock()
+			c.expire(now)
+		}
+	}
+}
+
+func (c *Cache) expire(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, elem := range c.entries {
+		if !now.Before(elem.Value.(*entry).expires) {
+			c.remove(elem)
+			c.expired++
 		}
 	}
 }
