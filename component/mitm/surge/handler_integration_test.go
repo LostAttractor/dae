@@ -23,7 +23,6 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/sirupsen/logrus"
 )
 
@@ -61,7 +60,7 @@ func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls
 	for i := range module.Scripts {
 		module.Scripts[i].Source = scripts[module.Scripts[i].Type]
 	}
-	engine, err := NewEngine(EngineOptions{BodyMemory: plugin.BodyMemory,
+	engine, err := NewEngine(EngineOptions{BodyMemory: testBodyMemory,
 		Modules: []*Module{module}, Runtime: runtime,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 4, ScriptTimeout: 2 * time.Second,
 	})

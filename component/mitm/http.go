@@ -17,6 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/internal/pluginctx"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -60,7 +61,7 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 		stop := context.AfterFunc(h.forceContext, cancel)
 		defer func() { stop(); cancel() }()
 		connection, _ := plugin.IDs(ctx)
-		r = r.WithContext(plugin.WithIDs(ctx, connection, strconv.FormatUint(serial.Add(1), 10)))
+		r = r.WithContext(pluginctx.WithIDs(ctx, connection, strconv.FormatUint(serial.Add(1), 10)))
 		observation := h.observeRequest(w, r, scheme, flow)
 		if observation != nil {
 			w = observation.writer

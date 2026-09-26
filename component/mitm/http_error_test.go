@@ -15,6 +15,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/internal/pluginctx"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
@@ -49,7 +50,7 @@ func TestUpstreamFailureDiagnostics(t *testing.T) {
 			})
 			handler := h.handlerForFlow("https", plugin.Flow{Host: "example.com", Port: 443}, transport, http.DefaultClient)
 			r := httptest.NewRequest("POST", "https://example.com/private?token=secret", nil)
-			ctx, cancel := context.WithCancel(plugin.WithIDs(r.Context(), "connection-1", ""))
+			ctx, cancel := context.WithCancel(pluginctx.WithIDs(r.Context(), "connection-1", ""))
 			defer cancel()
 			if tc.canceled {
 				cancel()

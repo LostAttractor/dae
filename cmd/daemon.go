@@ -51,6 +51,10 @@ func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections b
 // resolution. Embedders install and pass the resolver before concurrent work.
 // Run starts the daemon with the binary's complete set of plugin types.
 func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string]plugin.Definition, resolver *netutils.InternalResolver) error {
+	plugins, err := configurePlugins(conf, definitions)
+	if err != nil {
+		return fmt.Errorf("configure plugins: %w", err)
+	}
 	shutdownCtx, stopShutdownSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stopShutdownSignals()
 	stopWatchdog := watchShutdown(shutdownCtx, shutdownTimeout, func() {
@@ -76,7 +80,7 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 
 	// New ControlPlane.
 	startupStarted := time.Now()
-	c, err := newControlPlane(shutdownCtx, nil, conf, externGeoDataDirs, runtimeSettings, definitions)
+	c, err := newControlPlane(shutdownCtx, nil, conf, externGeoDataDirs, runtimeSettings, plugins)
 	startupErr := shutdownCtx.Err()
 	if err == nil && startupErr != nil {
 		err = errors.Join(startupErr, cleanupStartup(c))
@@ -264,8 +268,9 @@ loop:
 				if includes != nil {
 					log.WithField("files", includes).Debug("Loaded configuration files")
 				}
-				if err := validatePlugins(newConf, definitions); err != nil {
-					reloadFailed("Failed to validate plugins", err)
+				plugins, err := configurePlugins(newConf, definitions)
+				if err != nil {
+					reloadFailed("Failed to configure plugins", err)
 					continue
 				}
 				resolverServer, err := netutils.ParseDNSServer(newConf.Global.DNSResolver)
@@ -295,7 +300,7 @@ loop:
 				log.Debug("Building replacement control plane")
 				writeReloadProgress("Building new control plane...")
 				obj := c.EjectBpf()
-				newC, err := newControlPlane(shutdownCtx, obj, newConf, externGeoDataDirs, runtimeSettings, definitions)
+				newC, err := newControlPlane(shutdownCtx, obj, newConf, externGeoDataDirs, runtimeSettings, plugins)
 				reloadErr := shutdownCtx.Err()
 				if err == nil && reloadErr != nil {
 					err = errors.Join(reloadErr, newC.Close())

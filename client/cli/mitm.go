@@ -21,7 +21,7 @@ type MITMSource func(context.Context) ([]api.PluginInstanceStatus, error)
 
 // MITMCommandFactory builds a fresh plugin command group from a scoped snapshot.
 // The bool reports whether the group has a runnable custom status command.
-// Runtime command registration stays with the caller; no plugin Setup is needed.
+// Command registration stays with the caller; no runtime plugin is prepared.
 type MITMCommandFactory func(kind string, fetch MITMSource) (*cobra.Command, bool)
 
 // SelectMITM scopes both built-in status commands and plugin-provided commands.

@@ -14,12 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var Plugin = plugin.Definition{Setup: Setup, Commands: Commands, Validate: Validate}
-
-func Validate(spec plugin.Spec) error {
-	_, err := ParseConfig(spec.Config)
-	return err
-}
+var Plugin = plugin.Definition{Configure: Configure, Commands: Commands}
 
 func prepare(ctx context.Context, conf Config, services plugin.Services, instanceID string) (engine *Engine, err error) {
 	logger := services.Logger
@@ -91,21 +86,23 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	}
 	return NewEngine(EngineOptions{
 		Modules: modules, Runtime: runtime,
+		BodyMemory:  services.BodyMemory,
 		MaxBodySize: conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,
 		ScriptTimeout: conf.ScriptTimeout, Logger: logger,
 	})
 }
 
-// Setup decodes and prepares one complete Surge compatibility engine.
-func Setup(ctx context.Context, spec plugin.Spec, services plugin.Services) (plugin.Plugin, error) {
+func Configure(spec plugin.Spec) (plugin.Factory, error) {
 	conf, err := ParseConfig(spec.Config)
 	if err != nil {
 		return nil, err
 	}
-	engine, err := prepare(ctx, conf, services, spec.ID)
-	if err != nil {
-		return nil, err
-	}
-	logModuleStatus(engine.Status(), services.Logger, spec.ID)
-	return engine, nil
+	return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
+		engine, err := prepare(ctx, conf, services, spec.ID)
+		if err != nil {
+			return nil, err
+		}
+		logModuleStatus(engine.Status(), services.Logger, spec.ID)
+		return engine, nil
+	}, nil
 }

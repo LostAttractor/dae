@@ -4,13 +4,20 @@ Implement an independent Go module importing
 `github.com/daeuniverse/dae/component/plugin` and export:
 
 ```go
-var Plugin = plugin.Definition{Setup: Setup, Validate: Validate, Commands: Commands}
+var Plugin = plugin.Definition{Configure: Configure, Commands: Commands}
 
-func Validate(plugin.Spec) error // optional, static configuration checks only
-func Setup(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error)
+func Configure(spec plugin.Spec) (plugin.Factory, error) {
+    conf, err := parseConfig(spec.Config) // defaults and validation, no I/O
+    if err != nil {
+        return nil, err
+    }
+    return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
+        return prepare(ctx, conf, services)
+    }, nil
+}
 ```
 
-Decode settings in `Setup` (`DecodeSettings` handles scalar fields), implement
+Decode settings in `Configure` (`DecodeSettings` handles scalar fields), implement
 `Plan` and optional protocol interfaces, add `type:Go/import/path` to
 [plugins.cfg](../../plugins.cfg), then run `make`.
 See the [build guide](../../docs/en/user-guide/build-by-yourself.md#external-plugins)
@@ -18,23 +25,24 @@ for dependencies and multiple plugins.
 
 ## Configuration preflight and preparation
 
-`Validate` and `Commands` are optional. Startup and reload first check that **all
-enabled plugin types are compiled in**, then run every available `Validate` hook
-before subscriptions, eBPF preparation, connectivity checks or module downloads.
-Disabled instances are skipped. Reload rejects a failed preflight before handing
-over the running control plane's BPF ownership.
+`Configure` is required; `Commands` is optional. `mitm.Configure(definitions, specs)`
+first checks that **all enabled plugin types are compiled in**, then parses every
+instance once, collecting configuration errors without preparing resources.
+The daemon calls it before subscriptions, eBPF preparation, connectivity checks
+or module downloads, and before ejecting BPF ownership on reload. Disabled
+instances are skipped.
 
-`Validate` must be deterministic, perform no I/O, start no workers and leave
-`Spec.Config` unchanged. Share a parser between `Validate` and `Setup` so checks
-stay consistent; `Setup` still validates when called directly. Type checks apply
-even to plugins without this optional hook, whose specific settings are checked
-during setup. Remote module contents, certificates and other resource-dependent
-errors are diagnosed during preparation.
+`Configure` must be deterministic, perform no I/O, start no workers and leave
+`Spec.Config` unchanged. Return a factory capturing the validated configuration.
+Remote module contents, certificates and other resource-dependent errors belong
+to the factory. It releases partial resources on error and returns a non-nil
+plugin on success. Factories must not mutate their captured configuration.
 
-Pass the complete `map[string]plugin.Definition` to daemon/host loaders instead
-of discarding validators into a setup-only table. `mitm.Load` also preflights the
-whole instance list before the first `Setup`; setup still runs in declaration
-order with the routed preparation client, and failures close prepared instances.
+Pass the returned `*mitm.Configuration` through preparation, then call
+`configured.Load(ctx, options, services)`. Load invokes factories in declaration
+order with instance-local services, without parsing again; failure closes already
+prepared instances. Configuration objects own no runtime resources. Direct plugin
+callers use `Configure(spec)` followed by the returned factory.
 
 ## DNS contract
 
@@ -205,8 +213,11 @@ bounds request-body reads and is reset by the host before forwarding.
 framing and trailers; plugins handle decompression and protocol-specific semantics.
 `SnapshotBody` returns an immutable `membuffer.View` and reuses untouched
 snapshots. Close the view after use; forwarding owns the replay reader. Supply
-`plugin.BodyMemory` to share the MITM budget across instances and overlapping
-hosts. `membuffer.ErrBudgetExhausted` never waits: a failed snapshot restores the
+the factory's `Services.BodyMemory` to share the MITM budget across instances and
+overlapping hosts. Embedders may supply a process-owned budget in
+`mitm.Options.BodyMemory`; the host injects the same budget into every factory.
+Direct factory callers must supply a budget when the plugin processes bodies.
+`membuffer.ErrBudgetExhausted` never waits: a failed snapshot restores the
 consumed prefix and unread tail for forwarding.
 
 `SetRequestBody` and `SetResponseBody` transfer an independent body cursor;
@@ -232,7 +243,7 @@ The host owns transport retries and their lifetime.
 
 ## Lifecycle
 
-`Setup` prepares a non-nil plugin using the instance logger, base directory and
+The configured factory prepares a non-nil plugin using the instance logger, base directory and
 `PrepareClient`; release partial resources on error. Optional methods are:
 
 - `Run(ctx, client)`: background work after activation. Set task deadlines, honor
@@ -297,7 +308,7 @@ one per line, without extra blank lines after headings or between entries. Use
 additional lines when task details need them, without indentation. Preserve full
 data in JSON output.
 
-For runtime logs, use the instance logger supplied to `Setup` in
+For runtime logs, use the instance logger supplied to the factory in
 `plugin.Services.Logger`; it carries `plugin_instance` so messages do not need a
 repeated plugin-name prefix. In plain-text logs the instance appears first after
 the optional timestamp, before severity and message.

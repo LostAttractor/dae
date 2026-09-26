@@ -143,7 +143,7 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 			if err := e.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 				t.Errorf("HTTP/3 body read deadline unsupported: %v", err)
 			}
-			view, err := membuffer.Copy([]byte("modified request"), plugin.BodyMemory)
+			view, err := membuffer.Copy([]byte("modified request"), bodyMemory)
 			if err != nil {
 				return nil, err
 			}
@@ -159,7 +159,7 @@ func TestHTTP3MITMPluginsAndTrailers(t *testing.T) {
 				_ = r.Body.Close()
 				return nil, err
 			}
-			view, err = membuffer.Copy(append(body, []byte(" modified response")...), plugin.BodyMemory)
+			view, err = membuffer.Copy(append(body, []byte(" modified response")...), bodyMemory)
 			if err != nil {
 				_ = r.Body.Close()
 				return nil, err

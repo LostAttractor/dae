@@ -198,7 +198,7 @@ candidate selection and the effect of omitted IPs on domain capture.
 
 Add one `type:Go/import/path` line per plugin to
 [`plugins.cfg`](../../../plugins.cfg), then run `make` in dae.
-Each package exports `Plugin` (`plugin.Definition` with `Setup` and optional `Validate`/`Commands`); the output binary is `./dae`. `Validate` enables early static configuration checks before network and resource preparation. For example:
+Each package exports `Plugin` (`plugin.Definition` with `Configure` and optional `Commands`); the output binary is `./dae`. `Configure` parses and validates settings once before network and resource preparation, returning a factory that prepares the runtime instance. For example:
 
 ```text
 surge:github.com/daeuniverse/dae/component/mitm/surge

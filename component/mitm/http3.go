@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/internal/pluginctx"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
 )
@@ -55,7 +56,7 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 			if err != nil || peer.Addr().Unmap() != flow.Source.Addr().Unmap() || peer.Port() != flow.Source.Port() {
 				return nil, errors.New("mitm: QUIC peer differs from intercepted source")
 			}
-			return plugin.WithIDs(ctx, strconv.FormatUint(serial.Add(1), 10), ""), nil
+			return pluginctx.WithIDs(ctx, strconv.FormatUint(serial.Add(1), 10), ""), nil
 		},
 	}
 	defer transport.Close()

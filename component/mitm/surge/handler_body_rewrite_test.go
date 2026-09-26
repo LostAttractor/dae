@@ -18,12 +18,11 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
-	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func bodyRewriteEngine(t *testing.T, limit int64, expressions ...string) *Engine {
 	t.Helper()
-	e := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, MaxBodySize: limit, ScriptTimeout: 200 * time.Millisecond}, slots: make(chan struct{}, 1)}
+	e := &Engine{options: EngineOptions{BodyMemory: testBodyMemory, MaxBodySize: limit, ScriptTimeout: 200 * time.Millisecond}, slots: make(chan struct{}, 1)}
 	for _, expression := range expressions {
 		e.options.Modules = append(e.options.Modules, &Module{BodyRewrites: []BodyRewrite{testBodyRewrite(t, expression)}})
 	}
@@ -216,7 +215,7 @@ func TestBodyRewriteCompiledFilterConcurrentUse(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Go(func() {
-			body, err := rule.Apply(context.Background(), []byte(fmt.Sprintf(`{"value":%d}`, i)), 64, plugin.BodyMemory)
+			body, err := rule.Apply(context.Background(), []byte(fmt.Sprintf(`{"value":%d}`, i)), 64, testBodyMemory)
 			defer body.Close()
 			if err != nil || string(body.Bytes()) != fmt.Sprintf(`{"value":%d}`, i+1) {
 				t.Errorf("shared compiled jq result: %v %v", body, err)

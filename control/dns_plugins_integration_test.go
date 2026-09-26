@@ -25,13 +25,17 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-func integrationDNSPlugin(t *testing.T, setup plugin.Setup, body string) plugin.Plugin {
+func integrationDNSPlugin(t *testing.T, definition plugin.Definition, body string) plugin.Plugin {
 	t.Helper()
 	sections, err := config_parser.Parse("test {" + body + "}")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := setup(t.Context(), plugin.Spec{Config: sections[0]}, plugin.Services{BaseDir: t.TempDir()})
+	factory, err := definition.Configure(plugin.Spec{Config: sections[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := factory(t.Context(), plugin.Services{BaseDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +59,7 @@ func TestDNSCacheEvidenceBoundary(t *testing.T) {
 			if malformed {
 				body = "fixed_domain_ttl { test.example: 60 }"
 			}
-			host := integrationDNSHost(t, integrationDNSPlugin(t, cache.Setup, body))
+			host := integrationDNSHost(t, integrationDNSPlugin(t, cache.Plugin, body))
 			registry, _ := newTestRegistry(4, 168*time.Hour)
 			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", "domain(full:test.example) -> proxy"))
 			c := &ControlPlane{mitmHost: host, core: &controlPlaneCore{domainRegistry: registry}, routingMatcher: matcher}
@@ -100,7 +104,7 @@ func TestDNSCacheEvidenceBoundary(t *testing.T) {
 }
 
 func TestDNSPreferenceProbeLeavesDeliveryBudget(t *testing.T) {
-	host := integrationDNSHost(t, integrationDNSPlugin(t, router.Setup, "ipversion_prefer:6"))
+	host := integrationDNSHost(t, integrationDNSPlugin(t, router.Plugin, "ipversion_prefer:6"))
 	c := &ControlPlane{mitmHost: host}
 	q := dnsTestRequest(t, "test.example.", 7)
 	q.Network, q.Source = "udp", netip.MustParseAddrPort("192.0.2.1:2345")
@@ -190,7 +194,7 @@ func (p budgetDNSPlugin) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 func (p budgetDNSPlugin) Close() error { return p.DNSPlugin.(*router.Router).Close() }
 
 func TestDNSPreferenceTCPCancellationPreservesClientStream(t *testing.T) {
-	p := integrationDNSPlugin(t, router.Setup, "ipversion_prefer:6").(plugin.DNSPlugin)
+	p := integrationDNSPlugin(t, router.Plugin, "ipversion_prefer:6").(plugin.DNSPlugin)
 	host := integrationDNSHost(t, budgetDNSPlugin{p})
 	var streams atomic.Int32
 	group := downloadTestGroup(t, "direct", func(context.Context, string, string) (net.Conn, error) {

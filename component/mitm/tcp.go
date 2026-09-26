@@ -18,6 +18,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/internal/pluginctx"
 	logrus "github.com/sirupsen/logrus"
 	"golang.org/x/net/http2"
 )
@@ -32,7 +33,7 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 	flow := plugin.Flow{Host: host, Port: port}
 	flow.Source, _ = netip.ParseAddrPort(conn.RemoteAddr().String())
 	flow.Destination, _ = netip.ParseAddrPort(conn.LocalAddr().String())
-	ctx, cancel := context.WithCancel(plugin.WithIDs(context.Background(), strconv.FormatUint(serial.Add(1), 10), ""))
+	ctx, cancel := context.WithCancel(pluginctx.WithIDs(context.Background(), strconv.FormatUint(serial.Add(1), 10), ""))
 	defer cancel()
 	connection, _ := plugin.IDs(ctx)
 	logger := h.options.Logger.WithFields(logrus.Fields{

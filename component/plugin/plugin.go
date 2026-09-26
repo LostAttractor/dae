@@ -11,6 +11,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -39,7 +40,7 @@ type Exchange struct {
 // The host associates next's response with Exchange.Request before returning it.
 type Handler func(*Exchange) (*http.Response, error)
 
-// Plan is immutable after setup; the host takes ownership without copying it.
+// Plan is immutable after preparation; the host takes ownership without copying it.
 type Plan struct {
 	DNS                 []DNSScope
 	Scopes              []HTTPScope
@@ -76,17 +77,19 @@ type Spec struct {
 	Config   *config_parser.Section
 }
 
-// Services is provided by the host for setup. Logger is non-nil and includes
+// Services is provided by the host to factories. Logger is non-nil and includes
 // the instance ID; PrepareClient is for preparation only, never background work.
 type Services struct {
 	BaseDir       string
 	Logger        *logrus.Entry
 	PrepareClient *http.Client
+	// BodyMemory is the host-owned process budget, shared across reloads.
+	BodyMemory *membuffer.Budget
 }
 
-// Setup prepares resources without starting workers. On error it must release
+// Factory prepares resources without starting workers. On error it must release
 // its own partial state; on success the host takes ownership of the plugin.
-type Setup func(context.Context, Spec, Services) (Plugin, error)
+type Factory func(context.Context, Services) (Plugin, error)
 
 // Reporter returns a JSON-serializable, credential-free status snapshot.
 type Reporter interface{ Report() any }

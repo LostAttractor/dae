@@ -24,7 +24,6 @@ import (
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
-	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -131,12 +130,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, definitions map[string]plugin.Definition) (c *control.ControlPlane, err error) {
-	// This also covers embedders of Run and direct constructor callers. Do not
-	// allocate resources or run startup cleanup for a failed static preflight.
-	if err := validatePlugins(conf, definitions); err != nil {
-		return nil, fmt.Errorf("validate plugins: %w", err)
-	}
+func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, plugins *mitm.Configuration) (c *control.ControlPlane, err error) {
 	defer func() {
 		if err == nil || bpf != nil {
 			return
@@ -193,7 +187,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 			if bpf != nil {
 				writeReloadProgress("Preparing plugins using routing rules...")
 			}
-			return loadMITM(ctx, conf, client, background, definitions)
+			return loadMITM(ctx, conf, client, background, plugins)
 		}
 	}
 	assemblyStarted := time.Now()

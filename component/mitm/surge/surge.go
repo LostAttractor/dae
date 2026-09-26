@@ -16,7 +16,7 @@ import (
 type EngineOptions struct {
 	Modules []*Module
 
-	// BodyMemory defaults to the process-wide budget shared across instances.
+	// BodyMemory is supplied by the host, shared across instances and reloads.
 	BodyMemory           *membuffer.Budget
 	Runtime              *Runtime
 	MaxBodySize          int64
@@ -45,7 +45,7 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 		return nil, errors.New("surge: positive body, concurrency and timeout limits are required")
 	}
 	if o.BodyMemory == nil {
-		o.BodyMemory = plugin.BodyMemory
+		return nil, errors.New("surge: body memory budget is required")
 	}
 	return &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts)}, nil
 }

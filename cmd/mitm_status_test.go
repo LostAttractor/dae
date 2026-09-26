@@ -30,7 +30,7 @@ func TestMITMPluginCommandsUseDaemonReportsWithoutSetup(t *testing.T) {
 		"surge": surge.Plugin,
 		"demo":  {},
 		"custom": {
-			Setup: func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) {
+			Configure: func(plugin.Spec) (plugin.Factory, error) {
 				t.Fatal("CLI initialized a runtime plugin")
 				return nil, nil
 			},
@@ -131,7 +131,7 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 					return []*cobra.Command{{Use: "inspect", Run: func(*cobra.Command, []string) { t.Fatal("ran a non-status command") }}}
 				}},
 				"custom": {
-					Setup: func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) {
+					Configure: func(plugin.Spec) (plugin.Factory, error) {
 						t.Fatal("status initialized a runtime plugin")
 						return nil, nil
 					},

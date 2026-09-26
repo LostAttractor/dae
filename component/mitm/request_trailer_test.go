@@ -84,7 +84,7 @@ func testRequestTrailerRewrite(t *testing.T, snapshot bool) {
 		wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
 			return func(e *plugin.Exchange) (*http.Response, error) {
 				if snapshot {
-					view, err := plugin.SnapshotBody(&e.Request.Body, 1024, plugin.BodyMemory)
+					view, err := plugin.SnapshotBody(&e.Request.Body, 1024, bodyMemory)
 					if err != nil {
 						return nil, err
 					}

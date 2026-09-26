@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
@@ -93,7 +92,7 @@ func TestBodyRewriteBilijumpFilters(t *testing.T) {
 			if !rule.Match(test.url) || rule.Match("https://unrelated.example/") {
 				t.Fatal("Bilijump URL pattern did not retain its scope")
 			}
-			body, err := rule.Apply(context.Background(), []byte(test.input), 1<<20, plugin.BodyMemory)
+			body, err := rule.Apply(context.Background(), []byte(test.input), 1<<20, testBodyMemory)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +119,7 @@ func TestBodyRewriteWarnsForUnsupportedAndInvalidFilters(t *testing.T) {
 	}
 	t.Setenv("DAE_BODY_REWRITE_SECRET", "must not be exposed")
 	rule := testBodyRewrite(t, "env")
-	body, err := rule.Apply(context.Background(), []byte(`{}`), 1024, plugin.BodyMemory)
+	body, err := rule.Apply(context.Background(), []byte(`{}`), 1024, testBodyMemory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +142,7 @@ func TestBodyRewriteExecutionLimitsAndEmptyOutput(t *testing.T) {
 	} {
 		t.Run(test.expression+test.input, func(t *testing.T) {
 			rule := testBodyRewrite(t, test.expression)
-			output, err := rule.Apply(context.Background(), []byte(test.input), test.limit, plugin.BodyMemory)
+			output, err := rule.Apply(context.Background(), []byte(test.input), test.limit, testBodyMemory)
 			defer output.Close()
 			if test.wantError != errors.Is(err, membuffer.ErrTooLarge) {
 				t.Fatalf("size limit: output=%v err=%v", output, err)
@@ -157,7 +156,7 @@ func TestBodyRewriteExecutionLimitsAndEmptyOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := rule.Apply(ctx, []byte(`{}`), 1024, plugin.BodyMemory)
+	_, err := rule.Apply(ctx, []byte(`{}`), 1024, testBodyMemory)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
 		t.Fatalf("jq execution exceeded deadline: %v in %v", err, time.Since(start))
 	}

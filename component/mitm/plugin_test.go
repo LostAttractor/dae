@@ -217,12 +217,12 @@ func TestLoadRollsBackPreparedPlugins(t *testing.T) {
 	p := &workerPlugin{started: make(chan struct{}), stopped: make(chan struct{})}
 	name := "rollback_test"
 	definitions := map[string]plugin.Definition{
-		name: {Setup: func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) { return p, nil }},
-		"failing": {Setup: func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) {
+		name: testDefinition(func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) { return p, nil }),
+		"failing": testDefinition(func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) {
 			return nil, errors.New("resource preparation failed")
-		}},
+		}),
 	}
-	_, err := Load(context.Background(), definitions, []plugin.Spec{{ID: "first", Type: name}, {ID: "second", Type: "failing"}}, Options{}, plugin.Services{})
+	_, err := loadTestPlugins(t.Context(), definitions, []plugin.Spec{{ID: "first", Type: name}, {ID: "second", Type: "failing"}}, Options{}, plugin.Services{})
 	if err == nil || !p.closed {
 		t.Fatalf("failed preparation leaked resources: err=%v closed=%v", err, p.closed)
 	}

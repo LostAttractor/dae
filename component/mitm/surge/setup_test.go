@@ -73,7 +73,7 @@ test = type=http-request,pattern=^https://target\.test/script,script-path=../scr
 	}
 	for _, cached := range []bool{false, true} {
 		offline.Store(cached)
-		engine, err := prepare(context.Background(), conf, plugin.Services{BaseDir: dir, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}, "test")
+		engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}, "test")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -100,7 +100,7 @@ test = type=http-request,pattern=^https://target\.test/script,script-path=../scr
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := prepare(ctx, conf, plugin.Services{BaseDir: dir, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}, "test"); !errors.Is(err, context.Canceled) {
+	if _, err := prepare(ctx, conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}, "test"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled startup used cache: %v", err)
 	}
 }
@@ -172,7 +172,7 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 				conf.Modules = []ModuleSource{{Link: "file://" + modulePath}}
 				conf.Store = storePath
 			}
-			engine, err := prepare(context.Background(), conf, plugin.Services{BaseDir: envDir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
+			engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: envDir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
 			if err != nil {
 				t.Fatal(err)
 			}

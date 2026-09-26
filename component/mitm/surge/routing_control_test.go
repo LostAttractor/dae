@@ -11,6 +11,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/control"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 func moduleRuleEngine(t *testing.T) *surge.Engine {
@@ -32,7 +33,8 @@ hostname = grpc.biliapi.net, api.cloudflare.com
 		t.Fatal(err)
 	}
 	engine, err := surge.NewEngine(surge.EngineOptions{
-		Modules: []*surge.Module{module}, Runtime: &surge.Runtime{},
+		BodyMemory: membuffer.NewBudget(256 << 20),
+		Modules:    []*surge.Module{module}, Runtime: &surge.Runtime{},
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second,
 	})
 	if err != nil {

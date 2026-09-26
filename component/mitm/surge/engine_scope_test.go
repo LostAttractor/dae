@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func newScopeTestEngine(t *testing.T, sources ...string) *Engine {
@@ -23,7 +22,7 @@ func newScopeTestEngine(t *testing.T, sources ...string) *Engine {
 	}
 	// Selection does not use TLS or execute JavaScript; those paths have their
 	// own integration tests and do not need to run for these scope assertions.
-	engine, err := NewEngine(EngineOptions{BodyMemory: plugin.BodyMemory,
+	engine, err := NewEngine(EngineOptions{BodyMemory: testBodyMemory,
 		Modules: modules, Runtime: &Runtime{},
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 2, ScriptTimeout: time.Second,
 	})

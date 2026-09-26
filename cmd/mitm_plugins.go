@@ -25,18 +25,14 @@ func configuredPluginSpecs(conf *config.Config) []plugin.Spec {
 	return specs
 }
 
-func validatePlugins(conf *config.Config, definitions map[string]plugin.Definition) error {
-	return plugin.ValidateSpecs(definitions, configuredPluginSpecs(conf))
+func configurePlugins(conf *config.Config, definitions map[string]plugin.Definition) (*mitm.Configuration, error) {
+	return mitm.Configure(definitions, configuredPluginSpecs(conf))
 }
 
-func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, definitions map[string]plugin.Definition) (host *mitm.Host, err error) {
+func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *mitm.Configuration) (host *mitm.Host, err error) {
 	m := conf.MITM
 	if len(conf.Plugins) == 0 {
 		return nil, nil
-	}
-	specs := configuredPluginSpecs(conf)
-	if err := plugin.ValidateSpecs(definitions, specs); err != nil {
-		return nil, err
 	}
 	base := cacheDirectory()
 	resolve := func(path string) string {
@@ -59,5 +55,5 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 	options := mitm.Options{DisableHTTP: !m.Enabled, BufferMemoryLimit: m.BufferMemoryLimit, Authority: authority, HTTPClient: background, Logger: log.NewEntry(log.StandardLogger())}
 
 	services := plugin.Services{BaseDir: base, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}
-	return mitm.Load(ctx, definitions, specs, options, services)
+	return plugins.Load(ctx, options, services)
 }

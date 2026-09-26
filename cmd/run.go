@@ -57,9 +57,6 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read config: %w", err)
 			}
-			if err := validatePlugins(conf, definitions); err != nil {
-				return fmt.Errorf("validate plugins: %w", err)
-			}
 			// AutoSu has returned in the final privileged process. Install the
 			// process-global resolver before constructors can resolve hostnames.
 			resolver, err := netutils.InstallDefaultResolver(conf.Global.SoMarkFromDae, conf.Global.DNSResolver)

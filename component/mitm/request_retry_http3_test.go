@@ -122,7 +122,7 @@ func TestHTTP3RequestRetry(t *testing.T) {
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
 					return func(e *plugin.Exchange) (*http.Response, error) {
 						if mode != "passthrough" {
-							view, err := plugin.SnapshotBody(&e.Request.Body, 64, plugin.BodyMemory)
+							view, err := plugin.SnapshotBody(&e.Request.Body, 64, bodyMemory)
 							if err != nil {
 								return nil, err
 							}

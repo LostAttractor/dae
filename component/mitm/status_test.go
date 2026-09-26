@@ -22,19 +22,19 @@ type reportingPlugin struct {
 
 func (p *reportingPlugin) Report() any { return p.detail }
 
-func TestLoadIndependentSetupTablesAndReports(t *testing.T) {
+func TestLoadIndependentFactoriesAndReports(t *testing.T) {
 	section := &config_parser.Section{Name: "example"}
 	client := &http.Client{}
 	for _, label := range []string{"first", "second"} {
 		definitions := map[string]plugin.Definition{
-			"example": {Setup: func(_ context.Context, spec plugin.Spec, services plugin.Services) (plugin.Plugin, error) {
+			"example": testDefinition(func(_ context.Context, spec plugin.Spec, services plugin.Services) (plugin.Plugin, error) {
 				if spec.Config != section || services.BaseDir != "/fixture" || services.PrepareClient != client || services.Logger.Data["plugin_instance"] != "instance" {
 					t.Fatal("setup did not receive instance-local services")
 				}
 				return &reportingPlugin{Secret: "private-credential", detail: map[string]string{"label": label}}, nil
-			}},
+			}),
 		}
-		host, err := Load(context.Background(), definitions, []plugin.Spec{{ID: "instance", Type: "example", Config: section}}, Options{}, plugin.Services{BaseDir: "/fixture", PrepareClient: client})
+		host, err := loadTestPlugins(t.Context(), definitions, []plugin.Spec{{ID: "instance", Type: "example", Config: section}}, Options{}, plugin.Services{BaseDir: "/fixture", PrepareClient: client})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +53,7 @@ func TestLoadIndependentSetupTablesAndReports(t *testing.T) {
 			if len(status) != 1 || status[0].State != state || string(status[0].Details) != `{"label":"`+label+`"}` {
 				t.Fatalf("incorrect instance status: %+v", status)
 			}
-			if memory := status[0].BufferMemory; memory == nil || *memory != api.BufferMemoryStatus(plugin.BodyMemory.Status()) {
+			if memory := status[0].BufferMemory; memory == nil || *memory != api.BufferMemoryStatus(bodyMemory.Status()) {
 				t.Fatalf("lost process buffer budget: %+v", memory)
 			}
 			wire, err := json.Marshal(status)

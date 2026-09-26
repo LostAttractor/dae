@@ -25,7 +25,7 @@ plugins {
 
 子段名是实例 ID，也是默认的类型。`type` 用于多个同类实例。空 `store` 为实例独立的内存存储；显式指定相同路径则共享持久数据，读写由同一个存储对象串行执行。实例默认启用，可用 `enabled: false` 关闭；HTTP 总开关默认关闭，不影响 DNS 插件。未知的活动类型、重复 ID 或未知插件字段会报错。显式关闭的插件不加载。
 
-启动和重载会先检查全部启用实例的类型是否已编译，再执行插件提供的静态 `Validate` 检查，之后才准备订阅、eBPF、连通性检查及远程模块。例如，后面的 bilijump 未编译时会立即报错，不必等前面的 Surge 模块下载。静态预检失败的重载会保持当前控制平面；依赖证书、远程模块内容等资源的错误在准备阶段报告。未提供 `Validate` 的外部插件仍在 `Setup` 中检查专属字段，见[插件 API](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
+启动和重载会先检查全部启用实例的类型是否已编译，再调用 `Configure` 一次性解析并校验各实例配置，得到准备运行资源的工厂，之后才准备订阅、eBPF、连通性检查及远程模块。例如，后面的 bilijump 未编译时会立即报错，不必等前面的 Surge 模块下载。静态预检失败的重载会保持当前控制平面；依赖证书、远程模块内容等资源的错误在工厂准备阶段报告。加载阶段直接使用已解析的配置，见[插件 API](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
 
 `ca_cert`、`ca_key`、`client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。仅贡献 DNS、IP Host 或路由的实例无需 CA；启用 HTTP scope 时要求 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；新实例缓存位于 `plugins/<ID>/surge-cache`。
 

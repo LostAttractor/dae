@@ -47,7 +47,7 @@ func testProxyEngine(t *testing.T, module, source string) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: []*Module{m}, Runtime: rt, MaxBodySize: 1 << 20, ScriptTimeout: time.Second}, slots: make(chan struct{}, 2)}
+	return &Engine{options: EngineOptions{BodyMemory: testBodyMemory, Modules: []*Module{m}, Runtime: rt, MaxBodySize: 1 << 20, ScriptTimeout: time.Second}, slots: make(chan struct{}, 2)}
 }
 
 func TestSurgeProxyRequestRewriteAndFirstMatch(t *testing.T) {
@@ -134,11 +134,11 @@ bounded = type=http-request,pattern=.,requires-body=1,max-size=16,script-path=a.
 	z := gzip.NewWriter(&compressed)
 	_, _ = z.Write([]byte(strings.Repeat("x", 100)))
 	_ = z.Close()
-	view, err := membuffer.Read(bytes.NewReader(compressed.Bytes()), 1024, plugin.BodyMemory)
+	view, err := membuffer.Read(bytes.NewReader(compressed.Bytes()), 1024, testBodyMemory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeBodyView(view, "gzip", 16, plugin.BodyMemory); err != membuffer.ErrTooLarge {
+	if _, err := decodeBodyView(view, "gzip", 16, testBodyMemory); err != membuffer.ErrTooLarge {
 		t.Fatalf("decode error=%v", err)
 	}
 }

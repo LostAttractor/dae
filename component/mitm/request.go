@@ -17,7 +17,7 @@ func (h *Host) roundTrip(transport http.RoundTripper, r *http.Request) (*http.Re
 		_ = r.Body.Close()
 		return nil, err
 	}
-	release := prepareRequestReplay(r, plugin.BodyMemory)
+	release := prepareRequestReplay(r, h.options.bodyMemory())
 	defer release()
 	r = h.traceUpstream(r)
 	response, err := transport.RoundTrip(r)

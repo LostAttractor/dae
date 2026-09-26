@@ -33,7 +33,7 @@ use-local-host-item-for-proxy = true
 		Modules:       []ModuleSource{{Link: "file://" + path}},
 		ScriptTimeout: time.Second, MemoryLimit: 16 << 20, MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 	}
-	engine, err := prepare(t.Context(), conf, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
+	engine, err := prepare(t.Context(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ use-local-host-item-for-proxy = true
 		t.Fatal(err)
 	}
 	conf.Modules[0].Link = "file://" + mitmPath
-	engine, err = prepare(t.Context(), conf, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
+	engine, err = prepare(t.Context(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestLoadDNSHostWithoutCompatibilityWarning(t *testing.T) {
 		Modules:       []ModuleSource{{Name: "host-compatibility", Link: "file://" + path}},
 		ScriptTimeout: time.Second, MemoryLimit: 16 << 20, MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 	}
-	engine, err := prepare(t.Context(), conf, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(logger)}, "test")
+	engine, err := prepare(t.Context(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(logger)}, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 	for _, level := range []log.Level{log.InfoLevel, log.TraceLevel} {
 		output.Reset()
 		logger.SetLevel(level)
-		engine, err := prepare(context.Background(), conf, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
+		engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +139,7 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 		ModuleSource{Name: "broken", Link: "file:missing.sgmodule"},
 		ModuleSource{Name: "later", Link: "file:module.sgmodule"},
 	)
-	if _, err := prepare(context.Background(), conf, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test"); err == nil {
+	if _, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test"); err == nil {
 		t.Fatal("missing module did not fail loading")
 	}
 	for _, want := range []string{"Surge module load status", "ready", "loaded", "broken", "failed", "later", "not loaded"} {

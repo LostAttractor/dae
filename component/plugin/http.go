@@ -5,6 +5,8 @@ package plugin
 import (
 	"context"
 	"errors"
+
+	"github.com/daeuniverse/dae/internal/pluginctx"
 )
 
 var ErrAbort = errors.New("mitm: abort HTTP stream")
@@ -17,15 +19,6 @@ type HTTPError struct {
 func (e *HTTPError) Error() string { return e.Err.Error() }
 func (e *HTTPError) Unwrap() error { return e.Err }
 
-type idsKey struct{}
-type ids struct{ connection, request string }
-
 func IDs(ctx context.Context) (string, string) {
-	v, _ := ctx.Value(idsKey{}).(ids)
-	return v.connection, v.request
-}
-
-// WithIDs attaches host-assigned trace identities to a request context.
-func WithIDs(ctx context.Context, connection, request string) context.Context {
-	return context.WithValue(ctx, idsKey{}, ids{connection: connection, request: request})
+	return pluginctx.IDs(ctx)
 }

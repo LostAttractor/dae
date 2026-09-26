@@ -24,11 +24,11 @@ import (
 
 type DialContext func(context.Context, string, string) (net.Conn, error)
 
-// Load validates the complete configuration before preparing any plugin. Failed
-// preparation releases the instances created by this call.
-func Load(ctx context.Context, definitions map[string]plugin.Definition, specs []plugin.Spec, options Options, services plugin.Services) (_ *Host, err error) {
-	if err := plugin.ValidateSpecs(definitions, specs); err != nil {
-		return nil, err
+// Load prepares the configured instances. Failed preparation releases all
+// instances created by this call. The configuration itself owns no resources.
+func (c *Configuration) Load(ctx context.Context, options Options, services plugin.Services) (_ *Host, err error) {
+	if c == nil || len(c.instances) == 0 {
+		return nil, nil
 	}
 	var instances []Instance
 	defer func() {
@@ -40,16 +40,20 @@ func Load(ctx context.Context, definitions map[string]plugin.Definition, specs [
 			}
 		}
 	}()
-	for _, spec := range specs {
-		setup := definitions[spec.Type].Setup
+	for _, configured := range c.instances {
+		spec := plugin.Spec{ID: configured.id, Type: configured.typ}
 		local := services
 		if local.Logger == nil {
 			local.Logger = logrus.NewEntry(logrus.StandardLogger())
 		}
 		local.Logger = local.Logger.WithField("plugin_instance", spec.ID)
-		implementation, err := setup(ctx, spec, local)
+		local.BodyMemory = options.bodyMemory()
+		implementation, err := configured.factory(ctx, local)
 		if err != nil {
 			return nil, fmt.Errorf("plugins.%s: %w", spec.ID, err)
+		}
+		if implementation == nil {
+			return nil, fmt.Errorf("plugins.%s: factory returned a nil plugin", spec.ID)
 		}
 		instances = append(instances, Instance{ID: spec.ID, Type: spec.Type, Plugin: implementation})
 	}
@@ -64,6 +68,7 @@ type Instance struct {
 type Options struct {
 	DisableHTTP       bool
 	BufferMemoryLimit int64
+	BodyMemory        *membuffer.Budget
 	Authority         *mitmca.Authority
 	UpstreamTLSConfig *tls.Config
 	Logger            *logrus.Entry
@@ -96,7 +101,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		return nil, errors.New("mitm: buffer memory limit must be positive")
 	}
 	if options.BufferMemoryLimit == 0 {
-		options.BufferMemoryLimit = plugin.DefaultBufferMemoryLimit
+		options.BufferMemoryLimit = defaultBufferMemoryLimit
 	}
 	if options.Logger == nil {
 		options.Logger = logrus.NewEntry(logrus.StandardLogger())
@@ -122,7 +127,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		return nil, errors.New("mitm: HTTPS scopes require ca_cert and ca_key")
 	}
 	h.forceContext, h.forceCancel = context.WithCancel(context.Background())
-	h.memoryLimit = plugin.BodyMemory.UseLimit(options.BufferMemoryLimit)
+	h.memoryLimit = options.bodyMemory().UseLimit(options.BufferMemoryLimit)
 	return h, nil
 }
 

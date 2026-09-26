@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
@@ -30,7 +29,7 @@ func TestMapLocalTextAndBinary(t *testing.T) {
 	if len(m.Warnings) != 0 || len(m.MapLocals) != 4 {
 		t.Fatalf("Map Local parsing: %+v", m)
 	}
-	e := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: []*Module{m}, MaxBodySize: 1 << 20}}
+	e := &Engine{options: EngineOptions{BodyMemory: testBodyMemory, Modules: []*Module{m}, MaxBodySize: 1 << 20}}
 	for _, test := range []struct {
 		path, contentType, body string
 		status                  int
@@ -111,7 +110,7 @@ func TestMapLocalLoadsRelativeFileAndBoundsBody(t *testing.T) {
 	if &m.MapLocals[0].Body[0] != &m.MapLocals[1].Body[0] {
 		t.Fatal("repeated file references must share their immutable body")
 	}
-	e := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: []*Module{m}, MaxBodySize: 1}}
+	e := &Engine{options: EngineOptions{BodyMemory: testBodyMemory, Modules: []*Module{m}, MaxBodySize: 1}}
 	req, _ := http.NewRequest("GET", "https://example.com/", nil)
 	if _, err := e.mapLocal(req); err != membuffer.ErrTooLarge {
 		t.Fatalf("body cap not enforced: %v", err)
@@ -141,7 +140,7 @@ func TestBilijumpModuleMapLocalCompatibility(t *testing.T) {
 			t.Errorf("unhandled Bilijump directive: %s", warning)
 		}
 	}
-	e := &Engine{options: EngineOptions{BodyMemory: plugin.BodyMemory, Modules: []*Module{m}, MaxBodySize: 1 << 20}}
+	e := &Engine{options: EngineOptions{BodyMemory: testBodyMemory, Modules: []*Module{m}, MaxBodySize: 1 << 20}}
 	for _, test := range []struct{ url, body string }{
 		{"https://api.bilibili.com/x/resource/top/activity?x=1", `{"code":-404,"message":"-404","ttl":1,"data":null}`},
 		{"https://api.bilibili.com/pgc/activity/deliver/material/receive?x=1", `{"code":0,"data":{"closeType":"close_win","container":[],"showTime":""},"message":"success"}`},

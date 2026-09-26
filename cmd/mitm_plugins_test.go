@@ -11,12 +11,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+func loadTestMITM(ctx context.Context, conf *config.Config, client, background *http.Client, definitions map[string]plugin.Definition) (*mitm.Host, error) {
+	plugins, err := configurePlugins(conf, definitions)
+	if err != nil {
+		return nil, err
+	}
+	return loadMITM(ctx, conf, client, background, plugins)
+}
 
 func mitmConfigForTest(t *testing.T, body string) *config.Config {
 	t.Helper()
@@ -43,7 +52,7 @@ plugins {
  disabled { type: unavailable enabled: false token: 'private' }
  second { type: surge module { 'file:host.sgmodule' } }
 }`
-	h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
+	h, err := loadTestMITM(t.Context(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +77,7 @@ func TestLoadMITMRejectsUnknownSettings(t *testing.T) {
 		`plugins { unknown { api_key: 'secret' } }`,
 		`plugins { surge { invalid: 'secret' module { 'file:host.sgmodule' } } }`,
 	} {
-		h, err := loadMITM(context.Background(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
+		h, err := loadTestMITM(t.Context(), mitmConfigForTest(t, body), http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
 		if err == nil {
 			h.Close()
 			t.Fatal("accepted invalid instance")
@@ -99,7 +108,7 @@ plugins {
  first {type:surge store:'shared.json' module {'file:first.sgmodule'}}
  second {type:surge store:'shared.json' module {'file:second.sgmodule'}}
  }`)
-	host, err := loadMITM(context.Background(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
+	host, err := loadTestMITM(t.Context(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
 	if err != nil {
 		t.Fatal(err)
 	}
