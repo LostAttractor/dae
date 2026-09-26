@@ -32,9 +32,11 @@ import (
 var Plugin = plugin.Definition{Configure: Configure}
 
 type Router struct {
-	policy     *policy.Dns
-	prefer     uint16
-	interfaces *network.InterfaceManager
+	policy        *policy.Dns
+	prefer        uint16
+	interfaces    *network.InterfaceManager
+	metrics       *routerMetrics
+	upstreamNames []string
 }
 
 func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
@@ -107,7 +109,18 @@ func prepare(ctx context.Context, conf policy.Config, prefer uint16, services pl
 		interfaces.Close()
 		return nil, err
 	}
-	return &Router{policy: p, prefer: prefer, interfaces: interfaces}, nil
+	r := &Router{policy: p, prefer: prefer, interfaces: interfaces, metrics: newRouterMetrics()}
+	for _, upstream := range conf.Upstream {
+		name, _ := common.GetTagFromLinkLikePlaintext(string(upstream))
+		r.upstreamNames = append(r.upstreamNames, name)
+	}
+	if services.Metrics != nil {
+		if err := services.Metrics.Register(r.metrics); err != nil {
+			_ = r.Close()
+			return nil, fmt.Errorf("router metrics: %w", err)
+		}
+	}
+	return r, nil
 }
 
 func (r *Router) Close() error {
@@ -119,7 +132,10 @@ func (r *Router) Close() error {
 
 func (*Router) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
 
-func (*Router) ResolveDNS(ctx context.Context, request *plugin.DNSExchange, servers []string) (*plugin.DNSResponse, error) {
+func (r *Router) ResolveDNS(ctx context.Context, request *plugin.DNSExchange, servers []string) (_ *plugin.DNSResponse, err error) {
+	defer func(parent context.Context, started time.Time) {
+		r.metrics.request(parent, "resolver", false, err, started)
+	}(ctx, time.Now())
 	if len(servers) == 0 || len(servers) > 16 {
 		return nil, fmt.Errorf("expected 1..16 DNS servers")
 	}
@@ -146,7 +162,7 @@ func (*Router) ResolveDNS(ctx context.Context, request *plugin.DNSExchange, serv
 				var upstream *policy.Upstream
 				upstream, err = policy.NewUpstream(ctx, raw)
 				if err == nil {
-					response, err = Exchange(ctx, request, upstream)
+					response, err = exchange(ctx, request, upstream, r.metrics, "explicit", "explicit")
 				}
 			}
 			results <- result{response, err}
@@ -165,19 +181,19 @@ func (*Router) ResolveDNS(ctx context.Context, request *plugin.DNSExchange, serv
 }
 
 func (r *Router) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
-	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+	return func(ctx context.Context, request *plugin.DNSExchange) (response *plugin.DNSResponse, err error) {
+		bypass := false
+		defer func(started time.Time) { r.metrics.request(ctx, "middleware", bypass, err, started) }(time.Now())
 		query := request.MessageCopy()
-		if !replayable(query) {
-			return next(ctx, request)
-		}
 		// An earlier plugin's explicit server assignment takes precedence over
 		// general upstream policy, but still uses the ordinary routed dial service.
-		if request.ServerAssigned {
+		if !replayable(query) || request.ServerAssigned {
+			bypass = true
 			return next(ctx, request)
 		}
 		q := query.Question[0]
 		if r.prefer == 0 || q.Qtype == r.prefer || q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
-			return r.resolve(ctx, request, next)
+			return r.resolve(ctx, request, next, "query")
 		}
 		preferred := request.Fork()
 		query.Question[0].Qtype = r.prefer
@@ -187,8 +203,8 @@ func (r *Router) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 		var probe *plugin.DNSResponse
 		var probeErr error
 		var wg sync.WaitGroup
-		wg.Go(func() { probe, probeErr = r.resolve(probeCtx, preferred, next) })
-		response, err := r.resolve(ctx, request, next)
+		wg.Go(func() { probe, probeErr = r.resolve(probeCtx, preferred, next, "probe") })
+		response, err = r.resolve(ctx, request, next, "query")
 		if err != nil {
 			cancelProbe()
 		}
@@ -197,6 +213,13 @@ func (r *Router) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 		if err == nil && probeErr == nil && message != nil && !message.Truncated && message.Rcode == dns.RcodeSuccess && responseMessage(request, response) != nil {
 			for _, rr := range message.Answer {
 				if rr.Header().Rrtype == r.prefer {
+					if r.metrics != nil {
+						family := "ipv6"
+						if q.Qtype == dns.TypeA {
+							family = "ipv4"
+						}
+						r.metrics.suppressions.WithLabelValues(family).Inc()
+					}
 					return emptyResponse(request), nil
 				}
 			}
@@ -251,14 +274,20 @@ func emptyResponse(request *plugin.DNSExchange) *plugin.DNSResponse {
 	return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m), ReceivedAt: time.Now(), Origin: "dns-router:reject"}
 }
 
-func (r *Router) resolve(ctx context.Context, request *plugin.DNSExchange, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
+func (r *Router) resolve(ctx context.Context, request *plugin.DNSExchange, next plugin.DNSHandler, purpose string) (*plugin.DNSResponse, error) {
 	q := request.MessageCopy().Question[0]
 	index, err := r.policy.RequestSelect(q.Name, q.Qtype, request.Interface, request.OriginalDestination.Addr(), request.Source.Addr())
 	if err != nil {
 		return nil, err
 	}
 	if index == policy.DnsRequestOutboundIndex_Reject {
+		r.metrics.decision("request", "reject", purpose)
 		return emptyResponse(request), nil
+	}
+	if index == policy.DnsRequestOutboundIndex_AsIs {
+		r.metrics.decision("request", "asis", purpose)
+	} else {
+		r.metrics.decision("request", "upstream", purpose)
 	}
 	for range policy.MaxDnsLookupDepth {
 		var response *plugin.DNSResponse
@@ -268,7 +297,7 @@ func (r *Router) resolve(ctx context.Context, request *plugin.DNSExchange, next 
 			var upstream *policy.Upstream
 			upstream, err = r.policy.GetUpstream(ctx, index)
 			if err == nil {
-				response, err = Exchange(ctx, request, upstream)
+				response, err = exchange(ctx, request, upstream, r.metrics, r.upstreamNames[int(index)], purpose)
 			}
 		}
 		if err != nil || response == nil {
@@ -284,10 +313,13 @@ func (r *Router) resolve(ctx context.Context, request *plugin.DNSExchange, next 
 		}
 		switch selected {
 		case policy.DnsResponseOutboundIndex_Accept:
+			r.metrics.decision("response", "accept", purpose)
 			return response, nil
 		case policy.DnsResponseOutboundIndex_Reject:
+			r.metrics.decision("response", "reject", purpose)
 			return emptyResponse(request), nil
 		default:
+			r.metrics.decision("response", "reroute", purpose)
 			index = policy.DnsRequestOutboundIndex(selected)
 		}
 	}
@@ -309,6 +341,10 @@ func (d requestDialer) ListenPacket(ctx context.Context, target string) (net.Pac
 // Exchange is also available to plugins implementing server assignments. Every
 // exchange is routed with the original client's identity by dae's dial services.
 func Exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream) (*plugin.DNSResponse, error) {
+	return exchange(ctx, request, upstream, nil, "", "")
+}
+
+func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream, metrics *routerMetrics, name, purpose string) (*plugin.DNSResponse, error) {
 	query := request.MessageCopy()
 	versions, protocols := upstream.SupportedNetworks()
 	var last error
@@ -324,7 +360,13 @@ func Exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 			if i+1 < len(protocols) {
 				operation, cancel = context.WithTimeout(ctx, partialBudget(ctx))
 			}
+			started := time.Now()
 			message, err := transport.Exchange(operation, upstream, requestDialer{request, upstream.Hostname}, netip.AddrPortFrom(ip, upstream.Port), string(protocol), query)
+			transportName := string(upstream.Scheme)
+			if upstream.Scheme == policy.UpstreamScheme_TCP_UDP {
+				transportName = string(protocol)
+			}
+			metrics.attempt(operation, name, transportName, purpose, err, message != nil && message.Truncated, started)
 			cancel()
 			if err == nil {
 				response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: time.Now(), Origin: upstream.String()}

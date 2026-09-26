@@ -63,6 +63,40 @@ Recommended ordering: `dns-cache`, `surge`, `dns-router`. An earlier explicit pl
 server assignment bypasses general router policy. Unsupported operations and
 transaction-signed messages pass to the next handler unchanged.
 
+## Prometheus metrics
+
+Enable dae's `global.metrics_port` and scrape `/metrics` on that localhost port.
+Collectors register through `plugin.Services.Metrics`. All metrics have the
+`dae_plugin_` prefix and `plugin_type` / `plugin_instance` labels:
+
+| Local name | Type | Additional labels |
+| --- | --- | --- |
+| `dns_router_requests_total` | Counter | `entrypoint`, `result` |
+| `dns_router_request_duration_seconds` | Histogram | `entrypoint` |
+| `dns_router_upstream_attempts_total` | Counter | `upstream`, `transport`, `purpose`, `result` |
+| `dns_router_upstream_attempt_duration_seconds` | Histogram | `upstream`, `transport`, `purpose` |
+| `dns_router_policy_decisions_total` | Counter | `stage`, `action`, `purpose` |
+| `dns_router_family_suppressions_total` | Counter | suppressed `family`: `ipv4`, `ipv6` |
+
+`entrypoint` is `middleware` or `resolver`; full invocation duration includes
+downstream work and joining auxiliary queries. Results are `success`, `bypass`,
+`error`, `timeout`, `canceled`; success includes DNS error rcodes and policy
+rejection. Attempts also distinguish `truncated`. `upstream` is a configured tag
+or `explicit` for dynamically assigned servers. `transport` is `udp`, `tcp`,
+`tls`, `https`, `quic` or `h3`; `purpose` is `query`, `probe` or `explicit`.
+
+Each address/transport fallback is a separate `transport.Exchange` attempt,
+including that call's internal TCP reconnect. Bootstrap is excluded from attempts
+but its failures affect invocation results. Family probes do not add client
+invocations; explicit-server races have one invocation with separate attempts,
+including canceled losers. The standalone `Exchange` helper has no owning
+instance and exports no metrics. Request policy actions are `asis`, `upstream`,
+`reject`; response actions are `accept`, `reject`, `reroute`.
+
+Counters and histograms reset on instance reconstruction. Failed candidate
+preparation preserves active metrics; closing an instance removes its series.
+Collection uses in-memory counters and does not depend on log level.
+
 Run `go test ../dae-plugin-dns-router/...` from the dae workspace. Optional
 composition tests also use the sibling `dae-plugin-dns-cache` from the workspace:
 
