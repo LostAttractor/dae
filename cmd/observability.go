@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -27,6 +28,7 @@ var (
 	// metricsPort is the port metricsServer listens on; 0 means disabled.
 	metricsPort     uint16
 	metricsRegistry = prometheus.NewRegistry()
+	pluginMetrics   mitm.Metrics
 	observabilityMu sync.Mutex
 )
 
@@ -158,7 +160,7 @@ func startMetricsServer(port uint16) {
 
 	server := &http.Server{
 		Addr: fmt.Sprintf("localhost:%d", port),
-		Handler: promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{
+		Handler: promhttp.HandlerFor(prometheus.Gatherers{metricsRegistry, &pluginMetrics}, promhttp.HandlerOpts{
 			ErrorHandling: promhttp.ContinueOnError,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,

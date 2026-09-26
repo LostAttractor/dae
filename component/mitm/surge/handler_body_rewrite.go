@@ -32,6 +32,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 			if rule.Match(r.Request.URL.String()) {
 				matches = append(matches, matchedBodyRewrite{rule, module.Name, i + 1})
 				e.traceRequest(r.Request, "body_rewrite_match", "module", module.Name, "rule", i+1)
+				e.metrics.match("body_rewrite")
 			}
 		}
 	}
@@ -40,14 +41,16 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 	}
 	limit := e.options.MaxBodySize
 	if r.ContentLength > limit {
+		e.metrics.skip("body_rewrite", "body_limit")
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "body_limit")
 		e.logRequest(r.Request, "Surge Body Rewrite skipped; increase max_body_size to process this response", membuffer.ErrTooLarge)
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(r.Request.Context(), e.options.ScriptTimeout)
 	defer cancel()
-	release, err := e.acquire(ctx)
+	release, err := e.acquire(ctx, "body_rewrite")
 	if err != nil {
+		e.metrics.skip("body_rewrite", traceErrorReason(err))
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", traceErrorReason(err))
 		e.logRequest(r.Request, "Surge Body Rewrite skipped while waiting for execution slot", err)
 		return nil
@@ -59,6 +62,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 	raw, err := plugin.SnapshotBody(&r.Body, limit, e.options.BodyMemory)
 	stop()
 	if (err != nil && !errors.Is(err, membuffer.ErrTooLarge) && !errors.Is(err, membuffer.ErrBudgetExhausted)) || ctx.Err() != nil {
+		e.metrics.skip("body_rewrite", "read_failed")
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "read_failed")
 		raw.Close()
 		_ = r.Body.Close()
@@ -68,13 +72,19 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 		return err
 	}
 	if err != nil {
+		e.metrics.skip("body_rewrite", traceErrorReason(err))
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", traceErrorReason(err))
 		e.logRequest(r.Request, "Surge Body Rewrite skipped; forwarding original response", err)
 		return nil
 	}
 	body, err := decodeBodyView(raw, r.Header.Get("Content-Encoding"), limit, e.options.BodyMemory)
 	if err != nil {
-		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "decode_failed")
+		reason := "decode_failed"
+		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
+			reason = traceErrorReason(err)
+		}
+		e.metrics.skip("body_rewrite", reason)
+		e.traceRequest(r.Request, "body_rewrite_skip", "reason", reason)
 		e.logRequest(r.Request, "Surge Body Rewrite skipped; forwarding original response", err)
 		return nil
 	}
@@ -93,6 +103,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 		}
 		output, err := match.rule.Apply(ctx, body.Bytes(), limit, e.options.BodyMemory)
 		if err != nil {
+			e.metrics.skip("body_rewrite", traceErrorReason(err))
 			if tracing {
 				e.traceRequest(r.Request, "body_rewrite_end", "module", match.module, "rule", match.index, "outcome", "failed", "reason", traceErrorReason(err), "elapsed_ms", time.Since(started).Milliseconds())
 			}

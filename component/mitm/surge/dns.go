@@ -82,6 +82,7 @@ func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSExchange, n
 	if host == nil {
 		return next(ctx, request)
 	}
+	e.metrics.match("dns_host")
 	if len(host.Addresses) > 0 {
 		return hostAddressResponse(request, host.Addresses, 60), nil
 	}
@@ -215,7 +216,7 @@ func resolveSystemDNS(ctx context.Context, request *plugin.DNSExchange) (*plugin
 	return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: time.Now(), Origin: "surge:system"}, nil
 }
 
-func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, request *plugin.DNSExchange, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
+func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, request *plugin.DNSExchange, next plugin.DNSHandler) (_ *plugin.DNSResponse, err error) {
 	var script *Script
 	for i := range module.Scripts {
 		if module.Scripts[i].Name == name && module.Scripts[i].Type == "dns" {
@@ -226,14 +227,17 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 	if script == nil {
 		return nil, fmt.Errorf("missing DNS script %q", name)
 	}
+	execution := e.traceScript(nil, script)
+	defer func() { execution.finish(err) }()
 	ctx, cancel := context.WithTimeout(ctx, e.scriptTimeout(script))
 	defer cancel()
-	release, err := e.acquire(ctx)
+	release, err := e.acquire(ctx, "dns")
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	result, err := e.options.Runtime.Run(ctx, script.Source, Invocation{Domain: strings.TrimSuffix(request.MessageCopy().Question[0].Name, "."),
+	execution.start()
+	result, err := e.runInvocation(ctx, script.Source, Invocation{Domain: strings.TrimSuffix(request.MessageCopy().Question[0].Name, "."),
 		ScriptName: script.Name, ScriptType: "dns", Argument: script.Argument, Timeout: e.scriptTimeout(script),
 		HTTPClient: request.Client, BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize})
 	if err != nil {
@@ -255,6 +259,7 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 		forms++
 	}
 	if forms == 0 {
+		execution.finish(nil)
 		return next(ctx, request)
 	}
 	if forms != 1 {
@@ -272,6 +277,8 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 				return nil, err
 			}
 		}
+		execution.outcome = "success"
+		execution.finish(nil)
 		return resolveHostServers(ctx, request, value.Servers, next)
 	}
 	if len(value.Addresses) > 256 {
@@ -289,5 +296,6 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 	if value.TTL != nil {
 		ttl = *value.TTL
 	}
+	execution.outcome = "synthetic"
 	return hostAddressResponse(request, addresses, ttl), nil
 }

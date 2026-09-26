@@ -19,6 +19,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/prometheus/client_golang/prometheus"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -31,6 +32,7 @@ func (c *Configuration) Load(ctx context.Context, options Options, services plug
 		return nil, nil
 	}
 	var instances []Instance
+	registry := prometheus.NewRegistry()
 	defer func() {
 		if err != nil {
 			for i := len(instances) - 1; i >= 0; i-- {
@@ -52,6 +54,9 @@ func (c *Configuration) Load(ctx context.Context, options Options, services plug
 		if err != nil {
 			return nil, fmt.Errorf("plugins.%s storage: %w", spec.ID, err)
 		}
+		local.Metrics = prometheus.WrapRegistererWithPrefix("dae_plugin_", prometheus.WrapRegistererWith(prometheus.Labels{
+			"plugin_type": spec.Type, "plugin_instance": spec.ID,
+		}, registry))
 		implementation, err := configured.factory(ctx, local)
 		if err != nil {
 			return nil, fmt.Errorf("plugins.%s: %w", spec.ID, err)
@@ -61,7 +66,7 @@ func (c *Configuration) Load(ctx context.Context, options Options, services plug
 		}
 		instances = append(instances, Instance{ID: spec.ID, Type: spec.Type, Plugin: implementation})
 	}
-	return New(options, instances...)
+	return newHost(options, registry, instances...)
 }
 
 type Instance struct {
@@ -79,6 +84,8 @@ type Options struct {
 	DrainTimeout      time.Duration
 	// HTTPClient is passed to workers only after activation.
 	HTTPClient *http.Client
+	// Metrics is the process-level gatherer receiving this host on Start.
+	Metrics *Metrics
 }
 type Host struct {
 	options      Options
@@ -96,11 +103,17 @@ type Host struct {
 	closeDone    chan struct{}
 	closeErr     error
 	memoryLimit  *membuffer.Limit
+	metrics      *prometheus.Registry
+	startedAt    *prometheus.GaugeVec
 }
 
 // New takes ownership of the instances and their plans on success. Plans remain read-only
 // for the lifetime of the host; construction is the only mutation phase.
 func New(options Options, instances ...Instance) (*Host, error) {
+	return newHost(options, prometheus.NewRegistry(), instances...)
+}
+
+func newHost(options Options, registry *prometheus.Registry, instances ...Instance) (*Host, error) {
 	if options.BufferMemoryLimit < 0 {
 		return nil, errors.New("mitm: buffer memory limit must be positive")
 	}
@@ -129,6 +142,14 @@ func New(options Options, instances ...Instance) (*Host, error) {
 	}
 	if len(h.plan.Scopes) > 0 && options.Authority == nil {
 		return nil, errors.New("mitm: HTTPS scopes require ca_cert and ca_key")
+	}
+	h.metrics = registry
+	h.startedAt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "dae_plugin_instance_start_time_seconds",
+		Help: "Activation time of the current plugin instance as Unix seconds. Instance counters reset on reconstruction.",
+	}, []string{"plugin_type", "plugin_instance"})
+	if err := registry.Register(h.startedAt); err != nil {
+		return nil, fmt.Errorf("plugin metrics: %w", err)
 	}
 	h.forceContext, h.forceCancel = context.WithCancel(context.Background())
 	h.memoryLimit = options.bodyMemory().UseLimit(options.BufferMemoryLimit)
@@ -174,6 +195,10 @@ func (h *Host) Start(parent context.Context) error {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	h.cancel = cancel
+	for _, instance := range h.instances {
+		h.startedAt.WithLabelValues(instance.Type, instance.ID).SetToCurrentTime()
+	}
+	h.options.Metrics.publish(h.metrics)
 	for _, instance := range h.instances {
 		worker, ok := instance.Plugin.(plugin.Worker)
 		if !ok {

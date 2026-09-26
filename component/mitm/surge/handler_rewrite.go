@@ -21,7 +21,12 @@ import (
 
 var errScriptAbort = errors.New("request aborted by script")
 
-func (e *Engine) acquire(ctx context.Context) (func(), error) {
+func (e *Engine) acquire(ctx context.Context, kind string) (func(), error) {
+	if e.metrics != nil {
+		defer func(started time.Time) {
+			e.metrics.wait.WithLabelValues(kind).Observe(time.Since(started).Seconds())
+		}(time.Now())
+	}
 	select {
 	case e.slots <- struct{}{}:
 		return func() { <-e.slots }, nil
@@ -50,7 +55,7 @@ func (e *Engine) scriptTimeout(s *Script) time.Duration {
 }
 
 func (e *Engine) runScript(ctx context.Context, s *Script, req, resp *Message, client *http.Client) (*Result, error) {
-	return e.options.Runtime.Run(ctx, s.Source, Invocation{
+	return e.runInvocation(ctx, s.Source, Invocation{
 		Request: req, Response: resp, ScriptName: s.Name, ScriptType: s.Type,
 		Argument: s.Argument, BinaryBodyMode: s.BinaryBodyMode,
 		Timeout: e.scriptTimeout(s), HTTPClient: client,
@@ -89,7 +94,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	if setReadDeadline != nil {
 		_ = setReadDeadline(deadline)
 	}
-	release, err := e.acquire(ctx)
+	release, err := e.acquire(ctx, "http-request")
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +176,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	defer func() { execution.finish(err) }()
 	ctx, cancel := context.WithTimeout(r.Request.Context(), e.scriptTimeout(s))
 	defer cancel()
-	release, err := e.acquire(ctx)
+	release, err := e.acquire(ctx, "http-response")
 	if err != nil {
 		return err
 	}
@@ -261,6 +266,7 @@ func (e *Engine) rewriteURL(r *http.Request) (*http.Response, error) {
 				continue
 			}
 			e.traceRequest(r, "url_rewrite_match", "module", module.Name, "rule", i+1, "action", rewrite.Type)
+			e.metrics.match("url_rewrite")
 			target, err := rewrite.Rewrite(r.URL.String())
 			if err != nil {
 				return nil, err
@@ -290,6 +296,7 @@ func (e *Engine) rewriteHeaders(kind string, request *http.Request, headers http
 		for i, rewrite := range m.HeaderRewrites {
 			if rewrite.Type == kind && rewrite.Match(request.URL.String()) {
 				e.traceRequest(request, "header_rewrite_match", "module", m.Name, "rule", i+1, "phase", kind, "action", rewrite.Action)
+				e.metrics.match("header_rewrite")
 				if err := rewrite.Apply(headers); err != nil {
 					return err
 				}

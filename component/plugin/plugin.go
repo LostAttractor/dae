@@ -12,6 +12,7 @@ import (
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/prometheus/client_golang/prometheus"
 	logrus "github.com/sirupsen/logrus"
 )
 
@@ -90,6 +91,11 @@ type Services struct {
 	// Preparation must only read: failed/replaced preparations can be closed
 	// without activation. Reload-sensitive state should be read after activation.
 	Storage Storage
+	// Metrics registers instance-owned collectors during preparation. The host adds
+	// dae_plugin_ and the plugin_type/plugin_instance labels. Collect must be
+	// concurrency-safe, perform no I/O and finish promptly. Nil is allowed for
+	// direct factory callers. Counters reset when the instance is reconstructed.
+	Metrics prometheus.Registerer
 }
 
 // Factory prepares resources without starting workers. On error it must release

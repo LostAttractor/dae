@@ -102,6 +102,7 @@ func (h *Host) Close() error {
 	// plugin resources. The daemon's shutdown watchdog bounds a stuck join.
 	forceCloses.Wait()
 	<-finished
+	h.options.Metrics.retire(h.metrics)
 	for i := len(h.instances) - 1; i >= 0; i-- {
 		if c, ok := h.instances[i].Plugin.(io.Closer); ok {
 			h.closeErr = errors.Join(h.closeErr, c.Close())

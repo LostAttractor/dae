@@ -30,6 +30,7 @@ type EngineOptions struct {
 type Engine struct {
 	options EngineOptions
 	slots   chan struct{}
+	metrics *engineMetrics
 }
 
 func NewEngine(o EngineOptions) (*Engine, error) {
@@ -47,7 +48,9 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 	if o.BodyMemory == nil {
 		return nil, errors.New("surge: body memory budget is required")
 	}
-	return &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts)}, nil
+	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts)}
+	e.metrics = newEngineMetrics(e)
+	return e, nil
 }
 
 // forConnection fixes HTTP processing to modules that allow the intercepted

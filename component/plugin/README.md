@@ -331,6 +331,47 @@ after activation so the old generation's final flush and invalidations are seen.
 The daemon closes the old host before starting the successor. Direct embedders
 must preserve that ordering or coordinate concurrent writers themselves.
 
+## Prometheus metrics
+
+`Services.Metrics` is a standard `prometheus.Registerer` scoped to the instance.
+Register collectors in the factory, return registration errors, and retain the
+metric handles on the instance. The host adds the `dae_plugin_` prefix and
+constant `plugin_type` / `plugin_instance` labels. Use a plugin-specific local
+namespace such as `dns_cache_lookups_total`; reserve the host labels and the
+`instance_start_time_seconds` name.
+
+```go
+requests := prometheus.NewCounter(prometheus.CounterOpts{
+    Name: "example_requests_total",
+    Help: "Requests processed by this example instance.",
+})
+if services.Metrics != nil {
+    if err := services.Metrics.Register(requests); err != nil {
+        return nil, err
+    }
+}
+```
+
+`Configuration.Load` supplies a non-nil registerer even when `metrics_port` is zero.
+Direct factory callers may leave it nil. Each host generation owns a private
+registry: preparation registers collectors, `Start` publishes them, and `Close`
+removes them and joins in-flight collection before closing plugin resources.
+Failed preparation leaves the active generation intact. Counters and histogram
+observations reset on reconstruction, including reload; listener changes alone
+preserve them. The host exports `dae_plugin_instance_start_time_seconds` with
+each activated instance's start time.
+
+Custom collectors must describe their fixed metric schema, support concurrent
+collection, finish promptly and perform no I/O. Copy authoritative state under
+its lock, then release the lock before sending metrics. Metric help, types and
+label names must agree across instances. Use bounded result/reason categories
+and configuration-defined identifiers for labels. Query names, request URLs,
+client addresses and raw error messages are unsuitable label values.
+
+Embedders pass a process-owned `*mitm.Metrics` in `mitm.Options.Metrics` and
+aggregate it with their other gatherers. The daemon already does this on its
+existing metrics listener. See [metrics and PromQL examples](../../docs/en/configuration/metrics.md).
+
 ## Commands
 
 `Definition.Commands` returns fresh `[]*cobra.Command` using `plugin.CommandServices`.

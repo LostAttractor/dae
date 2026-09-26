@@ -173,7 +173,9 @@ func (e *Engine) mapLocal(r *http.Request) (*http.Response, error) {
 				continue
 			}
 			e.traceRequest(r, "map_local_match", "module", m.Name, "rule", i+1, "status", rule.Status)
+			e.metrics.match("map_local")
 			if int64(len(rule.Body)) > e.options.MaxBodySize {
+				e.metrics.skip("map_local", "body_limit")
 				return nil, membuffer.ErrTooLarge
 			}
 			return syntheticResponse(r, rule.Status, rule.Header.Clone(), rule.Body), nil

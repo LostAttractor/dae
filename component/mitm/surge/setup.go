@@ -102,6 +102,11 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 		if err != nil {
 			return nil, err
 		}
+		if services.Metrics != nil {
+			if err := services.Metrics.Register(engine.metrics); err != nil {
+				return nil, fmt.Errorf("surge metrics: %w", err)
+			}
+		}
 		logModuleStatus(engine.Status(), services.Logger, spec.ID)
 		return engine, nil
 	}, nil

@@ -59,6 +59,8 @@ HTTP/3 使用现有 CA、客户端开关与插件 scope，无需新增配置。�
 
 `dae plugins surge status` 查看 Surge 模块状态；外部插件可注册命令，例如 `dae plugins bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`。证书命令仍为 `dae mitm ca`。状态字段见[页面/API](api.md)，编译见[构建说明](../../en/user-guide/build-by-yourself.md#external-plugins)，编写插件见[插件 API](../../../component/plugin/README.md)。
 
+插件也可以通过 `Services.Metrics` 注册 Prometheus 指标，与核心指标一起由 `global.metrics_port` 暴露。内置 Surge 和独立的 dns-cache、dns-router 已提供指标；宿主统一添加 `plugin_type`、`plugin_instance` 标签。指标随实例重建而重置，详见[指标与 PromQL 示例](metrics.md)。
+
 Go 插件可以通过 `Services.Storage` 保存实例状态，提供 `Get`、`Put`、`Delete`；单值上限 8 MiB，原子替换并同步磁盘。文件位于 `DAE_LOCATION_CACHE/plugins/state/`（默认基目录 `/var/lib/dae`），新目录权限 `0700`、文件 `0600`。默认实例（实例名等于类型名）直接使用 `<类型>/`，命名实例使用 `<类型>@<实例名>/`：例如 `plugins/state/bilijump/` 和 `plugins/state/bilijump@personal/`。类型和实例名分别做路径转义，名称中的 `@` 也转义，避免不同实例或类型混用状态。路径不随实例数量变化，增加实例不会移动已有状态。相同类型与实例名在重载、重启后复用数据，改名或禁用不会自动删除文件。具体格式、有效期与开关由插件定义。bilijump 默认使用此 API 保存捕获的登录 Cookie，`persist_cookie: false` 可改为仅内存；重载恢复时保留原有效期。开发约定见[持久化 API](../../../component/plugin/README.md#persistent-storage)。
 
 ## 排查偶发 HTTP / gRPC 失败

@@ -23,7 +23,7 @@ func (e *Engine) tracing() bool {
 
 // Automatic traces include identity and hostname, never request URLs or bodies.
 func (e *Engine) traceRequest(r *http.Request, event string, fields ...any) {
-	if !e.tracing() {
+	if r == nil || !e.tracing() {
 		return
 	}
 	connection, request := plugin.IDs(r.Context())
@@ -76,6 +76,7 @@ type scriptExecutionLog struct {
 	script   *Script
 	started  time.Time
 	executed bool
+	finished bool
 	outcome  string
 	reason   string
 }
@@ -96,9 +97,10 @@ func (l *scriptExecutionLog) failed(err error) {
 }
 
 func (l *scriptExecutionLog) finish(err error) {
-	if !l.engine.tracing() {
+	if l.finished {
 		return
 	}
+	l.finished = true
 	if errors.Is(err, errScriptAbort) {
 		l.outcome = "abort"
 	} else if err != nil {
@@ -106,6 +108,15 @@ func (l *scriptExecutionLog) finish(err error) {
 		if !l.executed {
 			l.outcome = "skipped"
 		}
+	}
+	if l.engine.metrics != nil {
+		l.engine.metrics.scripts.WithLabelValues(l.script.Type, l.outcome).Inc()
+		if l.outcome == "skipped" {
+			l.engine.metrics.skip(l.script.Type, l.reason)
+		}
+	}
+	if !l.engine.tracing() {
+		return
 	}
 	fields := []any{"script", l.script.Name, "phase", l.script.Type, "outcome", l.outcome, "elapsed_ms", time.Since(l.started).Milliseconds()}
 	if l.reason != "" {
