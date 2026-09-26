@@ -12,7 +12,7 @@ import (
 
 // HandleDNS shares the plugin lifecycle with HTTP. The terminal is the core's
 // transparent relay; protocol-aware upstream querying belongs to plugins.
-func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSRequest, terminal plugin.DNSHandler, finalize func(*plugin.DNSResponse) error) (*plugin.DNSResponse, error) {
+func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, terminal plugin.DNSHandler, finalize func(*plugin.DNSResponse) error) (*plugin.DNSResponse, error) {
 	if h == nil {
 		response, err := terminal(ctx, request)
 		if err == nil && response != nil {
@@ -32,7 +32,7 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSRequest, termin
 	defer cancel()
 	stop := context.AfterFunc(h.forceContext, cancel)
 	defer stop()
-	request.Resolve = func(ctx context.Context, request *plugin.DNSRequest, servers []string) (*plugin.DNSResponse, error) {
+	request.Resolve = func(ctx context.Context, request *plugin.DNSExchange, servers []string) (*plugin.DNSResponse, error) {
 		for _, instance := range h.instances {
 			if resolver, ok := instance.Plugin.(plugin.DNSResolver); ok {
 				return resolver.ResolveDNS(ctx, request, servers)
@@ -40,6 +40,7 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSRequest, termin
 		}
 		return nil, fmt.Errorf("DNS server assignment requires a resolver plugin (enable dns-router)")
 	}
+	message := request.MessageCopy()
 	for i := len(h.instances) - 1; i >= 0; i-- {
 		instance := h.instances[i]
 		implementation, ok := instance.Plugin.(plugin.DNSPlugin)
@@ -47,7 +48,7 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSRequest, termin
 			continue
 		}
 		for _, scope := range instance.plan.DNS {
-			if scope.Match(request.Message) {
+			if scope.Match(message) {
 				terminal = implementation.WrapDNS(terminal)
 				break
 			}
@@ -61,7 +62,7 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSRequest, termin
 }
 
 // ObserveDNS must be called from HandleDNS's finalizer, under its admission.
-func (h *Host) ObserveDNS(ctx context.Context, request *plugin.DNSRequest, response *plugin.DNSResponse) {
+func (h *Host) ObserveDNS(ctx context.Context, request *plugin.DNSExchange, response *plugin.DNSResponse) {
 	if h == nil {
 		return
 	}

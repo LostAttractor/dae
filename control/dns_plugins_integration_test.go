@@ -66,9 +66,9 @@ func TestDNSCacheEvidenceBoundary(t *testing.T) {
 			q := dnsTestRequest(t, "test.example.", 7)
 			q.ContextKey, q.Destination = "same-client", netip.MustParseAddrPort("192.0.2.53:53")
 			calls := 0
-			terminal := func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+			terminal := func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				calls++
-				m := new(dns.Msg).SetReply(q.Message)
+				m := new(dns.Msg).SetReply(q.MessageCopy())
 				m.Answer = []dns.RR{testARecord("test.example.", "192.0.2.66")}
 				if !malformed {
 					m.Answer[0].Header().Ttl = 0x80000000
@@ -77,11 +77,12 @@ func TestDNSCacheEvidenceBoundary(t *testing.T) {
 				if malformed {
 					wire = append(wire, 0xff)
 				}
-				return &plugin.DNSResponse{Wire: wire, ReceivedAt: time.Now().Add(-3 * time.Second)}, nil
+				return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire), ReceivedAt: time.Now().Add(-3 * time.Second)}, nil
 			}
 			for range 2 {
-				q.Message.Id++
-				q.Wire, _ = q.Message.Pack()
+				message := q.MessageCopy()
+				message.Id++
+				q.DNSPacket = plugin.DNSMessage(message)
 				if err := c.processDNS(t.Context(), q, bpfRoutingResult{}, false, terminal, func([]byte) error { return nil }); err != nil {
 					t.Fatal(err)
 				}
@@ -136,7 +137,7 @@ func TestDNSPreferenceProbeLeavesDeliveryBudget(t *testing.T) {
 	delivered := false
 	err := c.processDNS(ctx, q, bpfRoutingResult{}, false, relayDNSUDP, func(wire []byte) error {
 		m := unpackDNSMessage(wire)
-		if !dnsResponseMatches(q.Message, m) || len(m.Answer) != 1 {
+		if !dnsResponseMatches(q.MessageCopy(), m) || len(m.Answer) != 1 {
 			t.Fatal("requested answer changed")
 		}
 		delivered = true
@@ -168,7 +169,7 @@ func TestDNSRouterEndpointHostnameEnforcesBlock(t *testing.T) {
 			t.Fatalf("fixture route: %v %v", outbound, err)
 		}
 		for _, scheme := range []policy.UpstreamScheme{policy.UpstreamScheme_UDP, policy.UpstreamScheme_TCP} {
-			q, _, err := c.dnsRequest(dnsTestRequest(t, "test.example.", 1).Wire, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: 8})
+			q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "test.example.", 1)), "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: 8})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +186,7 @@ type budgetDNSPlugin struct{ plugin.DNSPlugin }
 
 func (p budgetDNSPlugin) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 	handler := p.DNSPlugin.WrapDNS(next)
-	return func(ctx context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+	return func(ctx context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		ctx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
 		defer cancel()
 		return handler(ctx, r)
@@ -233,12 +234,12 @@ func TestDNSPreferenceTCPCancellationPreservesClientStream(t *testing.T) {
 	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
 	for id := range uint16(2) {
 		q := dnsTestRequest(t, "test.example.", id)
-		if err := writeDNSFrame(client, q.Wire); err != nil {
+		if err := writeDNSFrame(client, dnsTestWire(t, q)); err != nil {
 			t.Fatal(err)
 		}
 		wire, err := readDNSFrame(client)
 		m := unpackDNSMessage(wire)
-		if err != nil || !dnsResponseMatches(q.Message, m) || len(m.Answer) != 1 {
+		if err != nil || !dnsResponseMatches(q.MessageCopy(), m) || len(m.Answer) != 1 {
 			t.Fatalf("client stream lost after probe cancellation: %v", err)
 		}
 	}

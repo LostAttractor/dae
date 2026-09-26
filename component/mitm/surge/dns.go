@@ -17,15 +17,16 @@ import (
 )
 
 func (e *Engine) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
-	return func(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-		if request.Message == nil || request.Message.Opcode != dns.OpcodeQuery || len(request.Message.Question) != 1 || request.Message.Question[0].Qclass != dns.ClassINET {
+	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		message := request.MessageCopy()
+		if message == nil || message.Response || message.Opcode != dns.OpcodeQuery || len(message.Question) != 1 || message.Question[0].Qclass != dns.ClassINET {
 			return next(ctx, request)
 		}
-		qtype := request.Message.Question[0].Qtype
+		qtype := message.Question[0].Qtype
 		if qtype == dns.TypeAXFR || qtype == dns.TypeIXFR || qtype == dns.TypeTKEY {
 			return next(ctx, request)
 		}
-		for _, rr := range request.Message.Extra {
+		for _, rr := range message.Extra {
 			if rr.Header().Rrtype == dns.TypeTSIG || rr.Header().Rrtype == dns.TypeSIG {
 				return next(ctx, request)
 			}
@@ -69,8 +70,9 @@ func (e *Engine) UseDNSAddress(name string, proxy bool) (use, applicable bool) {
 	return false, true
 }
 
-func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSRequest, next plugin.DNSHandler, seen map[string]bool) (*plugin.DNSResponse, error) {
-	q := request.Message.Question[0]
+func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSExchange, next plugin.DNSHandler, seen map[string]bool) (*plugin.DNSResponse, error) {
+	query := request.MessageCopy()
+	q := query.Question[0]
 	name := dns.CanonicalName(q.Name)
 	if seen[name] || len(seen) >= 16 {
 		return nil, fmt.Errorf("Host alias loop or depth limit at %s", name)
@@ -87,12 +89,15 @@ func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSRequest, ne
 		cname := &dns.CNAME{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 60}, Target: host.Alias}
 		if q.Qtype == dns.TypeCNAME {
 			response := hostAddressResponse(request, nil, 60)
-			response.Message.Answer = []dns.RR{cname}
+			message := response.MessageCopy()
+			message.Answer = []dns.RR{cname}
+			response.DNSPacket = plugin.DNSMessage(message)
 			return response, nil
 		}
 		alias := request.Copy()
-		alias.Message.Question[0].Name = host.Alias
-		alias.Wire, _ = alias.Message.Pack()
+		aliasQuery := query.Copy()
+		aliasQuery.Question[0].Name = host.Alias
+		alias.DNSPacket = plugin.DNSMessage(aliasQuery)
 		response, err := e.resolveHost(ctx, alias, next, seen)
 		if err != nil || response == nil {
 			return response, err
@@ -100,26 +105,21 @@ func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSRequest, ne
 		response = response.Copy()
 		// The relay intentionally forwards uncorrelated datagrams. Rewriting
 		// must never turn one into an answer for the original client query.
-		if len(response.Wire) != 0 {
-			response.Message = new(dns.Msg)
-			if err := netutils.UnpackDnsMessage(response.Wire, response.Message); err != nil {
-				return nil, err
-			}
-		}
-		if response.Message == nil {
+		message := response.MessageCopy()
+		if message == nil {
 			return nil, fmt.Errorf("Host alias returned an empty DNS response")
 		}
-		if err := netutils.ValidateDnsResponseAllowEmptyQuestion(alias.Message, response.Message, alias.Message.Id); err != nil {
+		if err := netutils.ValidateDnsResponseAllowEmptyQuestion(aliasQuery, message, aliasQuery.Id); err != nil {
 			return nil, err
 		}
-		response.Wire = nil
-		response.Message.Id = request.Message.Id
-		response.Message.Question = append([]dns.Question(nil), request.Message.Question...)
-		response.Message.AuthenticatedData = false
-		for _, rr := range response.Message.Answer {
+		message.Id = query.Id
+		message.Question = query.Question
+		message.AuthenticatedData = false
+		for _, rr := range message.Answer {
 			cname.Hdr.Ttl = min(cname.Hdr.Ttl, rr.Header().Ttl)
 		}
-		response.Message.Answer = append([]dns.RR{cname}, response.Message.Answer...)
+		message.Answer = append([]dns.RR{cname}, message.Answer...)
+		response.DNSPacket = plugin.DNSMessage(message)
 		return response, nil
 	}
 	if host.Script != "" {
@@ -128,10 +128,11 @@ func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSRequest, ne
 	return resolveHostServers(ctx, request, host.Servers, next)
 }
 
-func hostAddressResponse(request *plugin.DNSRequest, addresses []netip.Addr, ttl uint32) *plugin.DNSResponse {
-	m := new(dns.Msg).SetReply(request.Message)
+func hostAddressResponse(request *plugin.DNSExchange, addresses []netip.Addr, ttl uint32) *plugin.DNSResponse {
+	query := request.MessageCopy()
+	m := new(dns.Msg).SetReply(query)
 	m.Authoritative, m.RecursionAvailable = true, true
-	q := request.Message.Question[0]
+	q := query.Question[0]
 	for _, ip := range addresses {
 		if ip.Is4() && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
 			m.Answer = append(m.Answer, &dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}, A: net.IP(ip.AsSlice())})
@@ -139,14 +140,14 @@ func hostAddressResponse(request *plugin.DNSRequest, addresses []netip.Addr, ttl
 			m.Answer = append(m.Answer, &dns.AAAA{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl}, AAAA: net.IP(ip.AsSlice())})
 		}
 	}
-	return &plugin.DNSResponse{Message: m, ReceivedAt: time.Now(), Origin: "surge:host"}
+	return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m), ReceivedAt: time.Now(), Origin: "surge:host"}
 }
 
-func resolveHostServers(ctx context.Context, request *plugin.DNSRequest, servers []string, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
+func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, servers []string, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
 	if len(servers) == 1 {
 		switch servers[0] {
 		case "system", "syslib", "force-syslib":
-			q := request.Message.Question[0]
+			q := request.MessageCopy().Question[0]
 			network := "ip"
 			if q.Qtype == dns.TypeA {
 				network = "ip4"
@@ -188,7 +189,7 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSRequest, servers
 
 // Go's system resolver handles address lookups (including /etc/hosts). Other
 // record types use the configured OS nameserver with the same marked Dial hook.
-func resolveSystemDNS(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+func resolveSystemDNS(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 	conf, err := dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err != nil {
 		return nil, err
@@ -207,14 +208,14 @@ func resolveSystemDNS(ctx context.Context, request *plugin.DNSRequest) (*plugin.
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	message, _, err := (&dns.Client{Net: request.Network}).ExchangeWithConnContext(ctx, request.Message, &dns.Conn{Conn: conn})
+	message, _, err := (&dns.Client{Net: request.Network}).ExchangeWithConnContext(ctx, request.MessageCopy(), &dns.Conn{Conn: conn})
 	if err != nil {
 		return nil, err
 	}
-	return &plugin.DNSResponse{Message: message, ReceivedAt: time.Now(), Origin: "surge:system"}, nil
+	return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: time.Now(), Origin: "surge:system"}, nil
 }
 
-func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, request *plugin.DNSRequest, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
+func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, request *plugin.DNSExchange, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
 	var script *Script
 	for i := range module.Scripts {
 		if module.Scripts[i].Name == name && module.Scripts[i].Type == "dns" {
@@ -232,7 +233,7 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 		return nil, err
 	}
 	defer release()
-	result, err := e.options.Runtime.Run(ctx, script.Source, Invocation{Domain: strings.TrimSuffix(request.Message.Question[0].Name, "."),
+	result, err := e.options.Runtime.Run(ctx, script.Source, Invocation{Domain: strings.TrimSuffix(request.MessageCopy().Question[0].Name, "."),
 		ScriptName: script.Name, ScriptType: "dns", Argument: script.Argument, Timeout: e.scriptTimeout(script),
 		HTTPClient: request.Client, BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize})
 	if err != nil {

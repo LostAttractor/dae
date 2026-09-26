@@ -37,18 +37,16 @@ func TestSurgeAliasValidatesDownstreamBeforeRewriting(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			q := hostDNSRequest(t, "alias.example.", dns.TypeA)
-			response, err := e.WrapDNS(func(_ context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-				message := new(dns.Msg).SetReply(r.Message)
+			response, err := e.WrapDNS(func(_ context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+				message := new(dns.Msg).SetReply(r.MessageCopy())
 				rr, _ := dns.NewRR("target.example. 60 IN A 192.0.2.66")
 				message.Answer = []dns.RR{rr}
-				valid := message.Copy()
 				test.mutate(message)
 				wire, _ := message.Pack()
 				if test.name == "trailing bytes" {
 					wire = append(wire, 0xff)
 				}
-				// The wire is authoritative even when a plugin supplies Message too.
-				return &plugin.DNSResponse{Wire: wire, Message: valid}, nil
+				return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, nil
 			})(t.Context(), q)
 			if err == nil || response != nil {
 				t.Fatalf("invalid response was repaired: %+v %v", response, err)
@@ -56,13 +54,13 @@ func TestSurgeAliasValidatesDownstreamBeforeRewriting(t *testing.T) {
 		})
 	}
 	q := hostDNSRequest(t, "alias.example.", dns.TypeA)
-	response, err := e.WrapDNS(func(_ context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-		message := new(dns.Msg).SetReply(r.Message)
+	response, err := e.WrapDNS(func(_ context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		message := new(dns.Msg).SetReply(r.MessageCopy())
 		message.Question, message.Rcode = nil, dns.RcodeRefused
 		wire, _ := message.Pack()
-		return &plugin.DNSResponse{Wire: wire}, nil
+		return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, nil
 	})(t.Context(), q)
-	if err != nil || response.Message.Rcode != dns.RcodeRefused || response.Message.Question[0] != q.Message.Question[0] {
+	if err != nil || response.MessageCopy().Rcode != dns.RcodeRefused || response.MessageCopy().Question[0] != q.MessageCopy().Question[0] {
 		t.Fatalf("valid alias error response lost: %+v %v", response, err)
 	}
 }
@@ -133,7 +131,7 @@ func TestSurgeHostPolicyFollowsFirstMatchingInstance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if response.Message.Answer[0].(*dns.A).A.String() != "192.0.2.1" || host.UseDNSAddress("example.com", true) != enabled {
+		if response.MessageCopy().Answer[0].(*dns.A).A.String() != "192.0.2.1" || host.UseDNSAddress("example.com", true) != enabled {
 			t.Fatal("shadowed Host changed the winning entry's proxy policy")
 		}
 		if host.UseDNSAddress("other.example", true) != !enabled || host.UseDNSAddress("absent.example", true) {
@@ -186,8 +184,9 @@ func TestSurgeSystemDNSNegativeReplies(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if response.Message.Rcode != rcode || len(response.Message.Answer) != 0 || len(response.Message.Ns) != 1 || response.Message.Id != q.Message.Id {
-					t.Fatalf("negative semantics lost: %s", response.Message)
+				message := response.MessageCopy()
+				if message.Rcode != rcode || len(message.Answer) != 0 || len(message.Ns) != 1 || message.Id != q.MessageCopy().Id {
+					t.Fatalf("negative semantics lost: %s", message)
 				}
 			})
 		}
@@ -213,7 +212,7 @@ func TestSurgeSystemDNSAbsoluteName(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(questions) != 1 || questions[0] != "www.example.com." || response.Message.Answer[0].Header().Name != "www.example.com." {
-		t.Fatalf("absolute name used search domains: questions=%v response=%s", questions, response.Message)
+	if len(questions) != 1 || questions[0] != "www.example.com." || response.MessageCopy().Answer[0].Header().Name != "www.example.com." {
+		t.Fatalf("absolute name used search domains: questions=%v response=%s", questions, response.MessageCopy())
 	}
 }

@@ -3,7 +3,6 @@
 package plugin
 
 import (
-	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -14,39 +13,40 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-// DNSRequest and its wire/message are owned by one synchronous invocation.
-// Copy before changing or retaining them. Wire is the exact client packet;
-// a plugin changing Message must also replace Wire before calling next.
+// DNSRequest contains query data and routing identity, without runtime services.
+// Replace DNSPacket to edit a query; its immutable representation can be shared.
 type DNSRequest struct {
-	Message                                  *dns.Msg
-	Wire                                     []byte
+	DNSPacket
 	Network                                  string
 	Source, OriginalDestination, Destination netip.AddrPort
 	Interface                                uint32
 	// ServerAssigned prevents a later general resolver policy from overriding an
 	// explicit per-domain assignment. Caches must isolate the selected Destination.
 	ServerAssigned bool
-	// Independent marks an auxiliary query with its own transport lifetime.
-	// Cancelling it cannot close the client's shared TCP stream, and unsolicited
-	// frames from it must not be delivered to the client.
-	Independent bool
 	// ContextKey isolates policy, source, destination, process and mark. Caches
 	// must include it, the transport and all response-varying query fields.
 	ContextKey string
+}
+
+// DNSExchange belongs to one synchronous invocation. Copy retains its scoped
+// services; Fork additionally gives an auxiliary query an independent transport
+// lifetime. Neither may outlive the invocation. Background work retains only data.
+type DNSExchange struct {
+	DNSRequest
+	independent bool
 	// Dial methods preserve the intercepted flow's identity while routing the
 	// requested IP:port and optional trusted endpoint hostname (not the question
 	// name). Hostname affects routing, while the selected IP remains the dial target.
 	DialContext  func(ctx context.Context, network, address, hostname string) (net.Conn, error)
 	ListenPacket func(ctx context.Context, address, hostname string) (net.PacketConn, error)
-	Resolve      func(context.Context, *DNSRequest, []string) (*DNSResponse, error)
+	Resolve      func(context.Context, *DNSExchange, []string) (*DNSResponse, error)
 	// Client routes auxiliary HTTP requests with the same intercepted identity.
 	// Its connection pools belong to this invocation; do not retain it afterwards.
 	Client *http.Client
 }
 
 type DNSResponse struct {
-	Message    *dns.Msg
-	Wire       []byte
+	DNSPacket
 	ReceivedAt time.Time
 	// Cached marks replayed responses. ReceivedAt remains the original receipt
 	// time; successful client delivery independently refreshes registry retention.
@@ -54,7 +54,7 @@ type DNSResponse struct {
 	Origin string
 }
 
-type DNSHandler func(context.Context, *DNSRequest) (*DNSResponse, error)
+type DNSHandler func(context.Context, *DNSExchange) (*DNSResponse, error)
 
 // DNSPlugin may answer locally or call next synchronously. Configuration order
 // is request A -> B -> relay, response B -> A. Errors do not implicitly fall
@@ -69,13 +69,13 @@ type DNSPlugin interface {
 // ReceivedAt is nonzero: the core supplies delivery time if the producer omitted it.
 // Calls may be concurrent; background consumers must copy retained data.
 type DNSObserver interface {
-	ObserveDNS(context.Context, *DNSRequest, *DNSResponse)
+	ObserveDNS(context.Context, *DNSExchange, *DNSResponse)
 }
 
 // DNSResolver is an optional cross-plugin service for explicit server
 // assignments. It belongs to resolver plugins, never the transparent core.
 type DNSResolver interface {
-	ResolveDNS(context.Context, *DNSRequest, []string) (*DNSResponse, error)
+	ResolveDNS(context.Context, *DNSExchange, []string) (*DNSResponse, error)
 }
 
 // DNSAddressPolicy can preserve an already selected DNS IP when dialing an
@@ -116,26 +116,18 @@ func (s DNSScope) Match(m *dns.Msg) bool {
 	return false
 }
 
-func (r *DNSRequest) Copy() *DNSRequest {
-	copy := *r
-	copy.Wire = nil
-	if len(r.Wire) != 0 {
-		copy.Wire = bytes.Clone(r.Wire)
-	}
-	if r.Message != nil {
-		copy.Message = r.Message.Copy()
-	}
-	return &copy
+func (r *DNSExchange) Copy() *DNSExchange {
+	return new(*r)
 }
 
+func (r *DNSExchange) Fork() *DNSExchange {
+	copy := r.Copy()
+	copy.independent = true
+	return copy
+}
+
+func (r *DNSExchange) Independent() bool { return r.independent }
+
 func (r *DNSResponse) Copy() *DNSResponse {
-	copy := *r
-	copy.Wire = nil
-	if len(r.Wire) != 0 {
-		copy.Wire = bytes.Clone(r.Wire)
-	}
-	if r.Message != nil {
-		copy.Message = r.Message.Copy()
-	}
-	return &copy
+	return new(*r)
 }

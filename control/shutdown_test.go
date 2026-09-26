@@ -116,7 +116,7 @@ func TestShutdownInterruptsTrafficBeforeJoiningStateUsers(t *testing.T) {
 	plane.mitmHost = host
 	mitmStarted, mitmCanceled := make(chan struct{}), make(chan struct{})
 	go func() {
-		_, _ = host.HandleDNS(t.Context(), &plugin.DNSRequest{}, func(ctx context.Context, _ *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+		_, _ = host.HandleDNS(t.Context(), &plugin.DNSExchange{}, func(ctx context.Context, _ *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 			close(mitmStarted)
 			<-ctx.Done()
 			close(mitmCanceled)

@@ -51,10 +51,20 @@ adds `WrapDNS`. A DNS-only plugin contributes `Plan.DNS` and requires no HTTP
 scope, CA or client MITM switch. All captured TCP/UDP port-53 flows can enter
 the DNS chain; DNS scopes do not expand HTTP capture.
 
-`DNSRequest` carries exact `Wire`, parsed `Message` when valid, transport, source,
-original/effective destination, interface and an opaque policy `ContextKey`.
-Copy before modifying or retaining it. After changing Message, replace Wire too.
-Use request-bound `DialContext`/`ListenPacket` for literal IP:port targets; these
+`DNSRequest` contains a `DNSPacket`, transport, source, original/effective
+destination, interface and an opaque policy `ContextKey`. `DNSExchange` embeds
+that data and adds invocation-scoped `DialContext`, `ListenPacket`, `Resolve` and
+`Client`. Handlers receive `*DNSExchange`; `Copy()` isolates query/routing changes
+while retaining the same services.
+
+`DNSPacket` is immutable and shared safely by copies. `DNSWire(bytes)` copies an
+exact received packet, including malformed/opaque bytes. `DNSMessage(message)`
+copies a local message. `MessageCopy()` returns an owned editable message, or nil
+when strict decoding fails; assign `exchange.DNSPacket = plugin.DNSMessage(m)` to
+publish an edit. There is no separate Wire field to synchronize. `Wire()` returns
+read-only bytes or a local encoding error; `IsWire()` identifies exact packets.
+
+Use exchange-bound `DialContext`/`ListenPacket` for literal IP:port targets; these
 preserve client identity and route the selected target, with marks, accounting
 and connection lifetimes. Close every owned connection before returning.
 Use the system resolver to bootstrap upstream hostnames.
@@ -64,19 +74,19 @@ DNS dial callbacks take `(ctx, network, address, hostname)` for connections and
 `hostname` is the trusted upstream endpoint hostname, or empty for a literal IP.
 The hostname participates in route selection while the connection retains its
 selected IP. Do not pass the client's question name as the endpoint hostname.
-Set `DNSRequest.Independent` on auxiliary queries (such as family probes): the
+Use `exchange.Fork()` for auxiliary queries (such as family probes): the
 core gives them a separate TCP lifetime and never delivers their unsolicited
 frames to the client. Bound their context so the original response can be delivered
 before the invocation deadline.
 
-`DNSRequest.Client` provides auxiliary HTTP with the original client's source,
+`DNSExchange.Client` provides auxiliary HTTP with the original client's source,
 interface, process and routing policy. Each invocation owns separate policy-keyed
 pools. Use the invocation context for requests, finish HTTP work and close response
 bodies before returning; do not retain the client for background work. The host's
 daemon HTTP client belongs to background workers, not intercepted DNS requests.
 
 Middleware order is request A → B → relay, response B → A. Call next synchronously.
-Responses may carry exact Wire or a local Message; core only packs/truncates local
+Responses embed `DNSPacket`; core only packs/truncates locally constructed
 messages. Set `ReceivedAt` once. Cache hits set `Cached` and retain original receipt
 time. Successful delivery, including replay, refreshes DomainRegistry retention
 using the final TTL and the configured sliding window. Errors do not implicitly retry or

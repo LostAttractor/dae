@@ -57,7 +57,8 @@ func (s *dnsStream) read() {
 			return
 		}
 		id := frameID(wire)
-		message := unpackDNSMessage(wire)
+		packet := plugin.DNSWire(wire)
+		message := packet.MessageCopy()
 		valid := message != nil
 		s.mu.Lock()
 		var waiter *dnsStreamWaiter
@@ -79,7 +80,7 @@ func (s *dnsStream) read() {
 		}
 		s.mu.Unlock()
 		if waiter != nil {
-			waiter.response <- &plugin.DNSResponse{Message: message, Wire: wire, ReceivedAt: time.Now(), Origin: "relay"}
+			waiter.response <- &plugin.DNSResponse{DNSPacket: packet, ReceivedAt: time.Now(), Origin: "relay"}
 			// Transfers may produce additional frames with the same ID. Their
 			// first frame must reach the client before unsolicited continuation.
 			if waiter.complete != nil {
@@ -92,7 +93,7 @@ func (s *dnsStream) read() {
 	}
 }
 
-func (s *dnsStream) exchange(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+func (s *dnsStream) exchange(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -101,10 +102,18 @@ func (s *dnsStream) exchange(ctx context.Context, request *plugin.DNSRequest) (*
 		return nil, s.err
 	default:
 	}
-	id := frameID(request.Wire)
-	waiter := &dnsStreamWaiter{request: request.Message, response: make(chan *plugin.DNSResponse, 1)}
-	if request.Message != nil && len(request.Message.Question) == 1 {
-		qtype := request.Message.Question[0].Qtype
+	wire, err := request.Wire()
+	if err != nil {
+		return nil, err
+	}
+	id := frameID(wire)
+	message := request.MessageCopy()
+	if message != nil && message.Response {
+		message = nil // A client-supplied response remains an opaque frame.
+	}
+	waiter := &dnsStreamWaiter{request: message, response: make(chan *plugin.DNSResponse, 1)}
+	if message != nil && len(message.Question) == 1 {
+		qtype := message.Question[0].Qtype
 		if qtype == dns.TypeAXFR || qtype == dns.TypeIXFR {
 			waiter.complete = ctx.Done()
 		}
@@ -122,7 +131,7 @@ func (s *dnsStream) exchange(ctx context.Context, request *plugin.DNSRequest) (*
 	s.mu.Lock()
 	s.pending[id] = append(s.pending[id], waiter)
 	s.mu.Unlock()
-	err := writeDNSFrame(s.conn, request.Wire)
+	err = writeDNSFrame(s.conn, wire)
 	s.writeMu.Unlock()
 	defer func() {
 		s.mu.Lock()

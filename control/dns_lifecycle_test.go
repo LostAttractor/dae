@@ -33,7 +33,7 @@ func TestDNSStreamHeaderOnlyErrors(t *testing.T) {
 					}
 					request := unpackDNSMessage(wire)
 					response := new(dns.Msg).SetReply(request)
-					if request.Id == q.Message.Id {
+					if request.Id == q.MessageCopy().Id {
 						response.Question, response.Rcode = nil, rcode
 					}
 					wire, _ = response.Pack()
@@ -45,10 +45,10 @@ func TestDNSStreamHeaderOnlyErrors(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			response, err := stream.exchange(ctx, q)
-			if err != nil || response.Message.Rcode != rcode || len(response.Message.Question) != 0 {
+			if err != nil || response.MessageCopy().Rcode != rcode || len(response.MessageCopy().Question) != 0 {
 				t.Fatalf("header-only response was lost/rewritten: %+v %v", response, err)
 			}
-			if dnsResponseMatches(q.Message, response.Message) {
+			if dnsResponseMatches(q.MessageCopy(), response.MessageCopy()) {
 				t.Fatal("header-only error became evidence")
 			}
 			if _, err := stream.exchange(ctx, dnsTestRequest(t, "next.example.", 124)); err != nil {
@@ -143,13 +143,13 @@ func TestDNSTCPUpstreamEOFDrainsLastResponse(t *testing.T) {
 		_ = writeDNSFrame(peer, wire)
 	})
 	query := dnsTestRequest(t, "eof.example.", 1)
-	if err := writeDNSFrame(client, query.Wire); err != nil {
+	if err := writeDNSFrame(client, dnsTestWire(t, query)); err != nil {
 		t.Fatal(err)
 	}
 	// Give the upstream time to close while delivery is blocked on this client.
 	time.Sleep(20 * time.Millisecond)
 	wire, err := readDNSFrame(client)
-	if err != nil || !dnsResponseMatches(query.Message, unpackDNSMessage(wire)) {
+	if err != nil || !dnsResponseMatches(query.MessageCopy(), unpackDNSMessage(wire)) {
 		t.Fatalf("lost last response: %v", err)
 	}
 	_ = client.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
@@ -181,9 +181,10 @@ func TestDNSTCPActiveTransferAndIdleExpiry(t *testing.T) {
 				_, _ = peer.Read(make([]byte, 1))
 			})
 			query := dnsTestRequest(t, "zone.example.", 1)
-			query.Message.Question[0].Qtype = qtype
-			query.Wire, _ = query.Message.Pack()
-			if err := writeDNSFrame(client, query.Wire); err != nil {
+			message := query.MessageCopy()
+			message.Question[0].Qtype = qtype
+			query.DNSPacket = plugin.DNSMessage(message)
+			if err := writeDNSFrame(client, dnsTestWire(t, query)); err != nil {
 				t.Fatal(err)
 			}
 			for i := range frames {
@@ -208,10 +209,10 @@ func TestDNSUDPDeviceRouteAdmissionAndCancellation(t *testing.T) {
 	for _, stale := range []bool{true, false} {
 		t.Run(map[bool]string{true: "stale", false: "changed during local response"}[stale], func(t *testing.T) {
 			entered := make(chan struct{}, 1)
-			p := &dnsCallbackPlugin{handle: func(ctx context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+			p := &dnsCallbackPlugin{handle: func(ctx context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				entered <- struct{}{}
 				<-ctx.Done()
-				return &plugin.DNSResponse{Message: new(dns.Msg).SetReply(r.Message)}, nil
+				return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetReply(r.MessageCopy()))}, nil
 			}}
 			host, err := mitm.New(mitm.Options{DisableHTTP: true}, mitm.Instance{ID: "local", Plugin: p})
 			if err != nil {
@@ -230,7 +231,7 @@ func TestDNSUDPDeviceRouteAdmissionAndCancellation(t *testing.T) {
 			}
 			c := &ControlPlane{dnsRelay: newDNSRelay(), mitmHost: host, deviceRoutes: routes}
 			defer c.dnsRelay.Close()
-			c.handleDNSUDP(dnsTestRequest(t, "local.example.", 1).Wire, netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), identity)
+			c.handleDNSUDP(dnsTestWire(t, dnsTestRequest(t, "local.example.", 1)), netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), identity)
 			if !stale {
 				select {
 				case <-entered:

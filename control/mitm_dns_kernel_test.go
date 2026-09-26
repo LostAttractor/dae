@@ -127,7 +127,7 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 							response.Answer = append(response.Answer, &dnsmessage.AAAA{Hdr: header, AAAA: net.IP(destination.Addr().AsSlice())})
 						}
 						observeDNSRegistry(registry, matcher.domainMatcher.MatchDomainBitmap,
-							&plugin.DNSRequest{Message: request}, &plugin.DNSResponse{Message: response, ReceivedAt: time.Now()})
+							&plugin.DNSExchange{DNSPacket: plugin.DNSMessage(request)}, &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(response), ReceivedAt: time.Now()})
 					}
 					source := netip.AddrPortFrom(sourceIP, uint16(41000+i))
 					packet, ipProto := routingKernelPacket(source, destination, proto)

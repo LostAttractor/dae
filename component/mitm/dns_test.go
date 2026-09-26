@@ -19,21 +19,23 @@ type blockingDNSObserver struct {
 
 func (*blockingDNSObserver) Plan() plugin.Plan { return plugin.Plan{} }
 func (p *blockingDNSObserver) Close() error    { p.closed.Store(true); return nil }
-func (p *blockingDNSObserver) ObserveDNS(_ context.Context, request *plugin.DNSRequest, response *plugin.DNSResponse) {
+func (p *blockingDNSObserver) ObserveDNS(_ context.Context, request *plugin.DNSExchange, response *plugin.DNSResponse) {
 	close(p.entered)
 	<-p.release
-	request.Message.Question[0].Name = "mutated.example."
-	response.Message.Id++
+	query, message := request.MessageCopy(), response.MessageCopy()
+	query.Question[0].Name = "mutated.example."
+	message.Id++
+	request.DNSPacket, response.DNSPacket = plugin.DNSMessage(query), plugin.DNSMessage(message)
 }
 
 func TestDNSObserversHoldHostAdmission(t *testing.T) {
 	p := &blockingDNSObserver{entered: make(chan struct{}), release: make(chan struct{})}
 	h := testHost(t, Options{DisableHTTP: true, DrainTimeout: time.Second}, Instance{ID: "observer", Plugin: p})
-	request := &plugin.DNSRequest{Message: new(dns.Msg).SetQuestion("original.example.", dns.TypeA)}
-	response := &plugin.DNSResponse{Message: new(dns.Msg).SetReply(request.Message)}
+	request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetQuestion("original.example.", dns.TypeA))}
+	response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(new(dns.Msg).SetReply(request.MessageCopy()))}
 	done := make(chan error, 1)
 	go func() {
-		_, err := h.HandleDNS(t.Context(), request, func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) { return response, nil }, func(r *plugin.DNSResponse) error { h.ObserveDNS(t.Context(), request, r); return nil })
+		_, err := h.HandleDNS(t.Context(), request, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return response, nil }, func(r *plugin.DNSResponse) error { h.ObserveDNS(t.Context(), request, r); return nil })
 		done <- err
 	}()
 	<-p.entered
@@ -54,7 +56,7 @@ func TestDNSObserversHoldHostAdmission(t *testing.T) {
 	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}
-	if !p.closed.Load() || request.Message.Question[0].Name != "original.example." || response.Message.Id != request.Message.Id {
+	if !p.closed.Load() || request.MessageCopy().Question[0].Name != "original.example." || response.MessageCopy().Id != request.MessageCopy().Id {
 		t.Fatal("observer ownership or close order violated")
 	}
 }

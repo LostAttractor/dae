@@ -20,7 +20,7 @@ func BenchmarkDNSUDPBuffer(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				response, err := relayDNSUDP(context.Background(), request)
-				if err != nil || len(response.Wire) != size {
+				if err != nil || len(dnsTestWire(b, response)) != size {
 					b.Fatal("incorrect response", err)
 				}
 			}

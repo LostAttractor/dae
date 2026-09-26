@@ -21,7 +21,7 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-func dnsTestRequest(t *testing.T, name string, id uint16) *plugin.DNSRequest {
+func dnsTestRequest(t *testing.T, name string, id uint16) *plugin.DNSExchange {
 	t.Helper()
 	m := new(dns.Msg).SetQuestion(name, dns.TypeA)
 	m.Id = id
@@ -30,19 +30,28 @@ func dnsTestRequest(t *testing.T, name string, id uint16) *plugin.DNSRequest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &plugin.DNSRequest{Message: m, Wire: wire, Network: "tcp"}
+	return &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: "tcp"}
+}
+
+func dnsTestWire(t testing.TB, packet interface{ Wire() ([]byte, error) }) []byte {
+	t.Helper()
+	wire, err := packet.Wire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
 }
 
 type relayTestPlugin struct{ calls, observations int }
 
 func (*relayTestPlugin) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
 func (p *relayTestPlugin) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
-	return func(ctx context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+	return func(ctx context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		p.calls++
 		return next(ctx, r)
 	}
 }
-func (p *relayTestPlugin) ObserveDNS(context.Context, *plugin.DNSRequest, *plugin.DNSResponse) {
+func (p *relayTestPlugin) ObserveDNS(context.Context, *plugin.DNSExchange, *plugin.DNSResponse) {
 	p.observations++
 }
 
@@ -70,19 +79,19 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 			defer host.Close()
 			c := &ControlPlane{routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: registry}, mitmHost: host}
 			query := dnsTestRequest(t, "test.example.", 1)
-			request, bypass, err := c.dnsRequest(query.Wire, "udp", netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: captureDestination})
+			request, bypass, err := c.dnsRequest(dnsTestWire(t, query), "udp", netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: captureDestination})
 			if err != nil || bypass != tc.must {
 				t.Fatalf("must decision: %v %v", bypass, err)
 			}
-			m := new(dns.Msg).SetReply(request.Message)
+			m := new(dns.Msg).SetReply(request.MessageCopy())
 			m.Answer = []dns.RR{testARecord("test.example.", "203.0.113.9")}
 			wire, _ := m.Pack()
 			if tc.trailing {
 				wire = append(wire, 0xff)
 			}
 			delivered := false
-			err = c.processDNS(t.Context(), request, bpfRoutingResult{CaptureFlags: captureDestination}, bypass, func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-				return &plugin.DNSResponse{Wire: wire}, nil
+			err = c.processDNS(t.Context(), request, bpfRoutingResult{CaptureFlags: captureDestination}, bypass, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+				return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, nil
 			}, func(got []byte) error {
 				if p.observations != 0 || registry.Usage().UserUsed != 0 {
 					t.Error("published before delivery")
@@ -112,7 +121,7 @@ func TestDNSDNATBlockPreventsPluginAdmission(t *testing.T) {
 	c := &ControlPlane{routingMatcher: matcher}
 	query := dnsTestRequest(t, "local.example.", 1)
 	for _, network := range []string{"tcp", "udp"} {
-		request, _, err := c.dnsRequest(query.Wire, network, netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: captureDestination})
+		request, _, err := c.dnsRequest(dnsTestWire(t, query), network, netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: captureDestination})
 		if err == nil || request != nil {
 			t.Fatalf("%s admitted a blocked DNS destination: %+v %v", network, request, err)
 		}
@@ -122,7 +131,7 @@ func TestDNSDNATBlockPreventsPluginAdmission(t *testing.T) {
 func TestDNSUDPExactWireAndCancellation(t *testing.T) {
 	for _, blocked := range []bool{false, true} {
 		t.Run(fmt.Sprint(blocked), func(t *testing.T) {
-			request := &plugin.DNSRequest{Wire: []byte{0, 1, 99}, Network: "udp", Destination: netip.MustParseAddrPort("198.51.100.53:1053")}
+			request := &plugin.DNSExchange{DNSPacket: plugin.DNSWire([]byte{0, 1, 99}), Network: "udp", Destination: netip.MustParseAddrPort("198.51.100.53:1053")}
 			var dials atomic.Int32
 			peerDone := make(chan struct{})
 			request.DialContext = func(ctx context.Context, network, target, hostname string) (net.Conn, error) {
@@ -136,7 +145,7 @@ func TestDNSUDPExactWireAndCancellation(t *testing.T) {
 					defer peer.Close()
 					wire := make([]byte, 65535)
 					n, err := peer.Read(wire)
-					if err != nil || !bytes.Equal(wire[:n], request.Wire) {
+					if err != nil || !bytes.Equal(wire[:n], dnsTestWire(t, request)) {
 						t.Error("changed opaque UDP request")
 						return
 					}
@@ -155,7 +164,7 @@ func TestDNSUDPExactWireAndCancellation(t *testing.T) {
 				if err == nil {
 					t.Fatal("blocked read survived cancellation")
 				}
-			} else if err != nil || !bytes.Equal(response.Wire, []byte{0, 1, 0xff, 99}) {
+			} else if err != nil || !bytes.Equal(dnsTestWire(t, response), []byte{0, 1, 0xff, 99}) {
 				t.Fatalf("response changed: %+v %v", response, err)
 			}
 			<-peerDone
@@ -176,9 +185,9 @@ func (c *dnsBufferConn) Read(p []byte) (int, error)  { return copy(p, c.payload)
 func (c *dnsBufferConn) Write(p []byte) (int, error) { return len(p), nil }
 func (c *dnsBufferConn) Close() error                { return nil }
 
-func dnsBufferRequest(conn *dnsBufferConn) *plugin.DNSRequest {
-	return &plugin.DNSRequest{
-		Destination: netip.MustParseAddrPort("192.0.2.53:53"), Network: "udp", Wire: make([]byte, 32),
+func dnsBufferRequest(conn *dnsBufferConn) *plugin.DNSExchange {
+	return &plugin.DNSExchange{
+		Destination: netip.MustParseAddrPort("192.0.2.53:53"), Network: "udp", DNSPacket: plugin.DNSWire(make([]byte, 32)),
 		DialContext: func(context.Context, string, string, string) (net.Conn, error) { return conn, nil },
 	}
 }
@@ -201,8 +210,8 @@ func TestDNSUDPResponseOwnership(t *testing.T) {
 	}
 	// Responses can outlive the exchange and later receives using the same pool.
 	for i, response := range responses {
-		if !bytes.Equal(response.Wire, payloads[i]) {
-			t.Fatalf("retained response %d changed or was truncated: got %d bytes, want %d", i, len(response.Wire), len(payloads[i]))
+		if !bytes.Equal(dnsTestWire(t, response), payloads[i]) {
+			t.Fatalf("retained response %d changed or was truncated: got %d bytes, want %d", i, len(dnsTestWire(t, response)), len(payloads[i]))
 		}
 	}
 }
@@ -267,9 +276,10 @@ func TestDNSStreamTransferOrdering(t *testing.T) {
 	stream := newDNSStream(conn, func(wire []byte) error { continuation <- wire; return nil }, func() {})
 	defer stream.close()
 	request := dnsTestRequest(t, "zone.example.", 42)
-	request.Message.Question[0].Qtype = dns.TypeAXFR
-	request.Wire, _ = request.Message.Pack()
-	first := new(dns.Msg).SetReply(request.Message)
+	query := request.MessageCopy()
+	query.Question[0].Qtype = dns.TypeAXFR
+	request.DNSPacket = plugin.DNSMessage(query)
+	first := new(dns.Msg).SetReply(query)
 	firstWire, _ := first.Pack()
 	last := first.Copy()
 	last.Question = nil
@@ -284,7 +294,7 @@ func TestDNSStreamTransferOrdering(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	response, err := stream.exchange(ctx, request)
-	if err != nil || !bytes.Equal(response.Wire, firstWire) {
+	if err != nil || !bytes.Equal(dnsTestWire(t, response), firstWire) {
 		t.Fatalf("first frame: %+v %v", response, err)
 	}
 	select {
@@ -362,7 +372,7 @@ func TestDNSRelayTCPPipeline(t *testing.T) {
 		done <- plane.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:1000"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: 8})
 	}()
 	for i := range count {
-		if err := writeDNSFrame(client, dnsTestRequest(t, fmt.Sprintf("q%d.example.", i), uint16(i)).Wire); err != nil {
+		if err := writeDNSFrame(client, dnsTestWire(t, dnsTestRequest(t, fmt.Sprintf("q%d.example.", i), uint16(i)))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -422,7 +432,7 @@ func TestDNSStreamRepeatedIDAndOpaqueFrames(t *testing.T) {
 	defer stream.close()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	requests := []*plugin.DNSRequest{dnsTestRequest(t, "a.example.", 7), dnsTestRequest(t, "b.example.", 7), {Wire: []byte{0, 8, 99}, Network: "tcp"}}
+	requests := []*plugin.DNSExchange{dnsTestRequest(t, "a.example.", 7), dnsTestRequest(t, "b.example.", 7), {DNSPacket: plugin.DNSWire([]byte{0, 8, 99}), Network: "tcp"}}
 	go func() {
 		var frames [][]byte
 		for range requests {
@@ -449,11 +459,11 @@ func TestDNSStreamRepeatedIDAndOpaqueFrames(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			if request.Message == nil {
-				if !bytes.Equal(request.Wire, response.Wire) {
+			if request.MessageCopy() == nil {
+				if !bytes.Equal(dnsTestWire(t, request), dnsTestWire(t, response)) {
 					t.Error("opaque frame changed")
 				}
-			} else if !dnsResponseMatches(request.Message, response.Message) {
+			} else if !dnsResponseMatches(request.MessageCopy(), response.MessageCopy()) {
 				t.Error("repeated ID matched the wrong question")
 			}
 		})

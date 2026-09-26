@@ -24,16 +24,18 @@ func unpackDNSMessage(wire []byte) *dns.Msg {
 
 // Observe only correlated, complete IN address responses. The wire message is
 // never normalized or edited: DNSSEC, EDNS and upstream TTLs belong to endpoints.
-func observeDNSRegistry(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSRequest, response *plugin.DNSResponse) {
+func observeDNSRegistry(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse) {
 	observeDNSRegistryAt(registry, match, request, response, time.Now())
 }
 
-func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSRequest, response *plugin.DNSResponse, deliveredAt time.Time) {
-	if registry == nil || match == nil || request == nil || response == nil ||
-		!dnsResponseMatches(request.Message, response.Message) {
+func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse, deliveredAt time.Time) {
+	if registry == nil || match == nil || request == nil || response == nil {
 		return
 	}
-	m := response.Message
+	m := response.MessageCopy()
+	if !dnsResponseMatches(request.MessageCopy(), m) {
+		return
+	}
 	if m.Opcode != dns.OpcodeQuery || m.Truncated || m.Rcode != dns.RcodeSuccess || len(m.Question) != 1 {
 		return
 	}

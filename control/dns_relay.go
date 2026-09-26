@@ -67,7 +67,7 @@ func (r *dnsRelay) Close() error {
 	return nil
 }
 
-func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.AddrPort, identity bpfRoutingResult) (*plugin.DNSRequest, bool, error) {
+func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.AddrPort, identity bpfRoutingResult) (*plugin.DNSExchange, bool, error) {
 	proto := consts.L4ProtoStr_TCP
 	if network == "udp" {
 		proto = consts.L4ProtoStr_UDP
@@ -95,12 +95,9 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 		}
 		bypass = bypass || must
 	}
-	request := &plugin.DNSRequest{Wire: append([]byte(nil), wire...), Network: network,
+	request := &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: network,
 		Source: src, OriginalDestination: dst, Destination: target, Interface: identity.Ifindex,
 		ContextKey: fmt.Sprintf("%s/%s/%+v", src, dst, identity)}
-	if message := unpackDNSMessage(wire); message != nil && !message.Response {
-		request.Message = message
-	}
 	request.DialContext = func(ctx context.Context, network, address, hostname string) (net.Conn, error) {
 		option, err := c.dnsDialOption(ctx, network, address, hostname, request, identity)
 		if err != nil {
@@ -118,7 +115,7 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 	return request, bypass, nil
 }
 
-func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, hostname string, request *plugin.DNSRequest, identity bpfRoutingResult) (*DialOption, error) {
+func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity bpfRoutingResult) (*DialOption, error) {
 	if network != "tcp" && network != "udp" {
 		return nil, fmt.Errorf("unsupported DNS dial network %q", network)
 	}
@@ -159,7 +156,7 @@ func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, host
 	return option, err
 }
 
-func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSRequest, identity bpfRoutingResult, bypass bool, terminal plugin.DNSHandler, deliver func([]byte) error) error {
+func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchange, identity bpfRoutingResult, bypass bool, terminal plugin.DNSHandler, deliver func([]byte) error) error {
 	if bypass {
 		response, err := terminal(ctx, request)
 		if err != nil {
@@ -169,7 +166,11 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSReques
 			return err
 		}
 		if response != nil {
-			return deliver(response.Wire)
+			wire, err := response.Wire()
+			if err != nil {
+				return err
+			}
+			return deliver(wire)
 		}
 		return nil
 	}
@@ -183,34 +184,42 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSReques
 		defer closeClient()
 	}
 	_, err := c.mitmHost.HandleDNS(ctx, request, terminal, func(response *plugin.DNSResponse) error {
+		query := request.MessageCopy()
+		var wire []byte
 		var err error
-		if len(response.Wire) == 0 && response.Message != nil {
-			message := response.Message.Copy()
+		if response.IsWire() {
+			wire, err = response.Wire()
+		} else {
+			message := response.MessageCopy()
+			if message == nil {
+				return errors.New("empty DNS response")
+			}
 			if request.Network == "udp" {
 				limit := dns.MinMsgSize
-				if request.Message != nil {
-					if opt := request.Message.IsEdns0(); opt != nil {
+				if query != nil {
+					if opt := query.IsEdns0(); opt != nil {
 						limit = max(limit, int(opt.UDPSize()))
 					}
 				}
 				message.Truncate(limit)
 			}
-			response.Wire, err = message.Pack()
-			if err != nil {
-				return err
-			}
+			wire, err = message.Pack()
+		}
+		if err != nil {
+			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := deliver(response.Wire); err != nil {
+		if err := deliver(wire); err != nil {
 			return err
 		}
 		deliveredAt := time.Now()
 		// Publish only successfully delivered bytes, including local truncation.
-		message := unpackDNSMessage(response.Wire)
-		if dnsResponseMatches(request.Message, message) {
-			response.Message = message
+		if !response.IsWire() {
+			response.DNSPacket = plugin.DNSWire(wire)
+		}
+		if dnsResponseMatches(query, response.MessageCopy()) {
 			if response.ReceivedAt.IsZero() {
 				response.ReceivedAt = deliveredAt
 			}
@@ -260,7 +269,11 @@ func (c *ControlPlane) handleDNSUDP(wire []byte, src, dst netip.AddrPort, identi
 	}()
 }
 
-func relayDNSUDP(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+func relayDNSUDP(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+	query, err := request.Wire()
+	if err != nil {
+		return nil, err
+	}
 	conn, err := request.DialContext(ctx, "udp", request.Destination.String(), "")
 	if err != nil {
 		return nil, err
@@ -268,7 +281,7 @@ func relayDNSUDP(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSRe
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	if _, err := conn.Write(request.Wire); err != nil {
+	if _, err := conn.Write(query); err != nil {
 		return nil, err
 	}
 	wire := pool.GetBuffer(consts.MaxDnsMessageSize)
@@ -278,7 +291,7 @@ func relayDNSUDP(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSRe
 		return nil, err
 	}
 	// The response owns only its received bytes, not the pooled receive buffer.
-	return &plugin.DNSResponse{Wire: append([]byte(nil), wire[:n]...), ReceivedAt: time.Now(), Origin: "relay"}, nil
+	return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire[:n]), ReceivedAt: time.Now(), Origin: "relay"}, nil
 }
 
 func readDNSFrame(conn io.Reader) ([]byte, error) {
@@ -376,8 +389,8 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			stream.close()
 		}
 	}()
-	terminal := func(operation context.Context, request *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-		if request.Independent {
+	terminal := func(operation context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		if request.Independent() {
 			upstream, err := request.DialContext(operation, "tcp", request.Destination.String(), "")
 			if err != nil {
 				return nil, err
@@ -430,10 +443,7 @@ func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, ident
 			return fmt.Errorf("DNS request capacity exhausted")
 		}
 		request := template.Copy()
-		request.Wire = wire
-		if message := unpackDNSMessage(wire); message != nil && !message.Response {
-			request.Message = message
-		}
+		request.DNSPacket = plugin.DNSWire(wire)
 		workers.Go(func() {
 			defer r.finish()
 			defer func() { <-concurrency }()

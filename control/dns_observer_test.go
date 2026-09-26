@@ -17,37 +17,40 @@ func TestPassiveDNSObservationBoundaries(t *testing.T) {
 	ip := netip.MustParseAddr("198.51.100.1")
 	for _, test := range []struct {
 		name   string
-		mutate func(*plugin.DNSRequest, *plugin.DNSResponse)
+		mutate func(*dns.Msg, *dns.Msg)
 		want   bool
 	}{
-		{"valid CNAME", func(*plugin.DNSRequest, *plugin.DNSResponse) {}, true},
-		{"mismatched ID", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) { r.Message.Id++ }, false},
-		{"mismatched question", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) { r.Message.Question[0].Name = "other.example." }, false},
-		{"mismatched question type", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) { r.Message.Question[0].Qtype = dns.TypeAAAA }, false},
-		{"wrong address record type", func(q *plugin.DNSRequest, r *plugin.DNSResponse) {
-			q.Message.Question[0].Qtype = dns.TypeAAAA
-			r.Message.Question[0].Qtype = dns.TypeAAAA
+		{"valid CNAME", func(*dns.Msg, *dns.Msg) {}, true},
+		{"mismatched ID", func(_ *dns.Msg, r *dns.Msg) { r.Id++ }, false},
+		{"mismatched question", func(_ *dns.Msg, r *dns.Msg) { r.Question[0].Name = "other.example." }, false},
+		{"mismatched question type", func(_ *dns.Msg, r *dns.Msg) { r.Question[0].Qtype = dns.TypeAAAA }, false},
+		{"wrong address record type", func(q *dns.Msg, r *dns.Msg) {
+			q.Question[0].Qtype = dns.TypeAAAA
+			r.Question[0].Qtype = dns.TypeAAAA
 		}, false},
-		{"truncated", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) { r.Message.Truncated = true }, false},
-		{"error", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) { r.Message.Rcode = dns.RcodeServerFailure }, false},
-		{"cached", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) { r.Cached = true }, true},
-		{"notify", func(q *plugin.DNSRequest, r *plugin.DNSResponse) {
-			q.Message.Opcode = dns.OpcodeNotify
-			r.Message.Opcode = dns.OpcodeNotify
+		{"truncated", func(_ *dns.Msg, r *dns.Msg) { r.Truncated = true }, false},
+		{"error", func(_ *dns.Msg, r *dns.Msg) { r.Rcode = dns.RcodeServerFailure }, false},
+		{"cached", func(*dns.Msg, *dns.Msg) {}, true},
+		{"notify", func(q *dns.Msg, r *dns.Msg) {
+			q.Opcode = dns.OpcodeNotify
+			r.Opcode = dns.OpcodeNotify
 		}, false},
-		{"cycle", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) {
-			r.Message.Answer = append(r.Message.Answer, testCNAMERecord("edge.example.", "original.example."))
+		{"cycle", func(_ *dns.Msg, r *dns.Msg) {
+			r.Answer = append(r.Answer, testCNAMERecord("edge.example.", "original.example."))
 		}, false},
-		{"invalid alias signature", func(_ *plugin.DNSRequest, r *plugin.DNSResponse) {
-			r.Message.Answer = append(r.Message.Answer, &dns.RRSIG{Hdr: dns.RR_Header{Name: "original.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 60}, TypeCovered: dns.TypeCNAME, Inception: uint32(now.Add(-time.Hour).Unix()), Expiration: uint32(now.Add(-time.Second).Unix()), OrigTtl: 60})
+		{"invalid alias signature", func(_ *dns.Msg, r *dns.Msg) {
+			r.Answer = append(r.Answer, &dns.RRSIG{Hdr: dns.RR_Header{Name: "original.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 60}, TypeCovered: dns.TypeCNAME, Inception: uint32(now.Add(-time.Hour).Unix()), Expiration: uint32(now.Add(-time.Second).Unix()), OrigTtl: 60})
 		}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			g, fake := newTestRegistry(16, 7*24*time.Hour)
 			request := dnsTestRequest(t, "original.example.", 1)
-			response := &plugin.DNSResponse{Message: new(dns.Msg).SetReply(request.Message), ReceivedAt: now}
-			response.Message.Answer = []dns.RR{testARecord("unrelated.example.", "203.0.113.9"), testCNAMERecord("original.example.", "edge.example."), testARecord("edge.example.", ip.String())}
-			test.mutate(request, response)
+			query := request.MessageCopy()
+			message := new(dns.Msg).SetReply(query)
+			message.Answer = []dns.RR{testARecord("unrelated.example.", "203.0.113.9"), testCNAMERecord("original.example.", "edge.example."), testARecord("edge.example.", ip.String())}
+			test.mutate(query, message)
+			request.DNSPacket = plugin.DNSMessage(query)
+			response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: now, Cached: test.name == "cached"}
 			observeDNSRegistryAt(g, func(string) []uint32 { return make([]uint32, domainBitmapWords()) }, request, response, now)
 			for _, name := range []string{"original.example.", "edge.example."} {
 				if g.Verify(name, ip).Paired != test.want {
@@ -69,8 +72,9 @@ func TestPassiveDNSRetentionIsIndependentOfSignatureAndReceipt(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	g, _ := newTestRegistry(16, 7*24*time.Hour)
 	request := dnsTestRequest(t, "signed.example.", 1)
-	response := &plugin.DNSResponse{Message: new(dns.Msg).SetReply(request.Message), ReceivedAt: now}
-	response.Message.Answer = []dns.RR{testARecord("signed.example.", "198.51.100.1"), &dns.RRSIG{Hdr: dns.RR_Header{Name: "signed.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 60}, TypeCovered: dns.TypeA, Inception: uint32(now.Add(-time.Hour).Unix()), Expiration: uint32(now.Add(20 * time.Second).Unix()), OrigTtl: 60}}
+	message := new(dns.Msg).SetReply(request.MessageCopy())
+	message.Answer = []dns.RR{testARecord("signed.example.", "198.51.100.1"), &dns.RRSIG{Hdr: dns.RR_Header{Name: "signed.example.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 60}, TypeCovered: dns.TypeA, Inception: uint32(now.Add(-time.Hour).Unix()), Expiration: uint32(now.Add(20 * time.Second).Unix()), OrigTtl: 60}}
+	response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: now}
 	match := func(string) []uint32 { return make([]uint32, domainBitmapWords()) }
 	observeDNSRegistryAt(g, match, request, response, now)
 	name, ip := "signed.example.", netip.MustParseAddr("198.51.100.1")
@@ -106,11 +110,12 @@ func TestPassiveDNSHighBitTTLsMeanZero(t *testing.T) {
 			now := time.Now()
 			ip := netip.MustParseAddr("192.0.2.9")
 			q := dnsTestRequest(t, "alias.example.", 1)
-			response := &plugin.DNSResponse{Message: new(dns.Msg).SetReply(q.Message)}
+			message := new(dns.Msg).SetReply(q.MessageCopy())
 			alias := testCNAMERecord("alias.example.", "target.example.")
 			address := testARecord("target.example.", ip.String())
 			alias.Header().Ttl, address.Header().Ttl = test.aliasTTL, test.addressTTL
-			response.Message.Answer = []dns.RR{alias, address}
+			message.Answer = []dns.RR{alias, address}
+			response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message)}
 			observeDNSRegistryAt(g, func(string) []uint32 { return testBitmap(0) }, q, response, now)
 			if !g.retention("alias.example.", ip).Equal(now.Add(test.aliasWindow)) || !g.retention("target.example.", ip).Equal(now.Add(test.addressWindow)) {
 				t.Fatal("high-bit TTL changed evidence deadline")
@@ -138,15 +143,16 @@ func TestPassiveDNSBatchPublishesCompleteIPOnce(t *testing.T) {
 		fake.update(ip, bump, routing)
 	}
 	request := dnsTestRequest(t, "alias.example.", 1)
-	response := &plugin.DNSResponse{Message: new(dns.Msg).SetReply(request.Message)}
+	message := new(dns.Msg).SetReply(request.MessageCopy())
 	alias := testCNAMERecord("alias.example.", "edge.example.")
 	alias.Header().Ttl = 10
-	response.Message.Answer = []dns.RR{alias}
+	message.Answer = []dns.RR{alias}
 	for _, ip := range ips {
 		rr := testARecord("edge.example.", ip.String())
 		rr.Header().Ttl = 60
-		response.Message.Answer = append(response.Message.Answer, rr, dns.Copy(rr))
+		message.Answer = append(message.Answer, rr, dns.Copy(rr))
 	}
+	response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message)}
 	match := func(name string) []uint32 {
 		if name == "edge.example." {
 			return testBitmap(1)

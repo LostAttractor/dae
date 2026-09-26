@@ -33,7 +33,7 @@ func TestDNSHTTPPreservesClientPolicyAndInvocationLifetime(t *testing.T) {
 	c := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{group, block}}
 	var childErr error
 	var client *http.Client
-	p := &dnsCallbackPlugin{handle: func(ctx context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+	p := &dnsCallbackPlugin{handle: func(ctx context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		client = r.Client
 		request, _ := http.NewRequestWithContext(ctx, "GET", "http://198.51.100.9/", nil)
 		response, err := r.Client.Do(request)
@@ -51,7 +51,7 @@ func TestDNSHTTPPreservesClientPolicyAndInvocationLifetime(t *testing.T) {
 	c.mitmHost = host
 	for _, source := range []string{"192.0.2.11:1234", "192.0.2.10:1234"} {
 		identity := bpfRoutingResult{CaptureFlags: 8}
-		q, _, err := c.dnsRequest(dnsTestRequest(t, "script.example.", 1).Wire, "udp", netip.MustParseAddrPort(source), netip.MustParseAddrPort("192.0.2.53:53"), identity)
+		q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "script.example.", 1)), "udp", netip.MustParseAddrPort(source), netip.MustParseAddrPort("192.0.2.53:53"), identity)
 		if err != nil {
 			t.Fatal(err)
 		}

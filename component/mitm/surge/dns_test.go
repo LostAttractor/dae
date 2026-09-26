@@ -13,14 +13,14 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-func hostDNSRequest(t *testing.T, name string, typ uint16) *plugin.DNSRequest {
+func hostDNSRequest(t *testing.T, name string, typ uint16) *plugin.DNSExchange {
 	t.Helper()
 	m := new(dns.Msg).SetQuestion(name, typ)
 	wire, err := m.Pack()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &plugin.DNSRequest{Message: m, Wire: wire, Network: "udp", Destination: netip.MustParseAddrPort("192.0.2.53:53")}
+	return &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: "udp", Destination: netip.MustParseAddrPort("192.0.2.53:53")}
 }
 
 func TestSurgeDNSHostAnswers(t *testing.T) {
@@ -42,17 +42,18 @@ loop.test = loop.test
 	} {
 		t.Run(test.name+dns.TypeToString[test.typ], func(t *testing.T) {
 			req := hostDNSRequest(t, test.name, test.typ)
-			response, err := e.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+			response, err := e.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				t.Fatal("static Host reached upstream")
 				return nil, nil
 			})(t.Context(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(response.Message.Answer) != test.answers || response.Message.Id != req.Message.Id || response.Message.Question[0] != req.Message.Question[0] || response.Message.AuthenticatedData {
-				t.Fatalf("Host response: %s", response.Message)
+			message, query := response.MessageCopy(), req.MessageCopy()
+			if len(message.Answer) != test.answers || message.Id != query.Id || message.Question[0] != query.Question[0] || message.AuthenticatedData {
+				t.Fatalf("Host response: %s", message)
 			}
-			if test.answers > 0 && response.Message.Answer[0].Header().Rrtype != test.first {
+			if test.answers > 0 && message.Answer[0].Header().Rrtype != test.first {
 				t.Fatal("alias or address family lost")
 			}
 		})
@@ -80,14 +81,14 @@ func TestSurgeDNSScriptsAndServers(t *testing.T) {
 			e := moduleScopeEngine(t, m)
 			req := hostDNSRequest(t, "script.test.", dns.TypeA)
 			var target string
-			req.Resolve = func(_ context.Context, _ *plugin.DNSRequest, servers []string) (*plugin.DNSResponse, error) {
+			req.Resolve = func(_ context.Context, _ *plugin.DNSExchange, servers []string) (*plugin.DNSResponse, error) {
 				target = "resolver"
 				if len(servers) != 2 {
 					t.Fatal("multiple servers lost")
 				}
 				return hostAddressResponse(req, nil, 0), nil
 			}
-			response, err := e.WrapDNS(func(_ context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+			response, err := e.WrapDNS(func(_ context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				target = r.Destination.String()
 				if target == "192.0.2.54:5353" && !r.ServerAssigned {
 					t.Fatal("server priority lost")
@@ -100,10 +101,10 @@ func TestSurgeDNSScriptsAndServers(t *testing.T) {
 			if test.fails {
 				return
 			}
-			if target != test.server || len(response.Message.Answer) != test.count {
+			if target != test.server || len(response.MessageCopy().Answer) != test.count {
 				t.Fatalf("script result: %s %v", target, response)
 			}
-			if test.count != 0 && response.Message.Answer[0].Header().Ttl != 42 {
+			if test.count != 0 && response.MessageCopy().Answer[0].Header().Ttl != 42 {
 				t.Fatal("script TTL lost")
 			}
 		})
