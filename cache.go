@@ -22,7 +22,7 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-var Plugin = plugin.Definition{Setup: Setup, Validate: Validate}
+var Plugin = plugin.Definition{Configure: Configure}
 
 type settings struct {
 	Size        int                    `mapstructure:"size" default:"32768"`
@@ -47,17 +47,15 @@ type Cache struct {
 	hits, misses              uint64
 }
 
-func Setup(_ context.Context, spec plugin.Spec, _ plugin.Services) (plugin.Plugin, error) {
+func Configure(spec plugin.Spec) (plugin.Factory, error) {
 	conf, fixed, err := parseSettings(spec)
 	if err != nil {
 		return nil, err
 	}
-	return &Cache{entries: make(map[key]*list.Element), limit: conf.Size, memoryLimit: conf.MemoryLimit, fixed: fixed}, nil
-}
-
-func Validate(spec plugin.Spec) error {
-	_, _, err := parseSettings(spec)
-	return err
+	return func(_ context.Context, services plugin.Services) (plugin.Plugin, error) {
+		c := &Cache{entries: make(map[key]*list.Element), limit: conf.Size, memoryLimit: conf.MemoryLimit, fixed: fixed}
+		return c, nil
+	}, nil
 }
 
 func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
@@ -82,8 +80,8 @@ func parseSettings(spec plugin.Spec) (settings, map[string]uint32, error) {
 
 func (*Cache) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
 
-func cacheKey(request *plugin.DNSRequest) (key, bool) {
-	m := request.Message
+func cacheKey(request *plugin.DNSExchange) (key, bool) {
+	m := request.MessageCopy()
 	if m == nil || m.Response || m.Opcode != dns.OpcodeQuery || len(m.Question) != 1 ||
 		m.Question[0].Qclass != dns.ClassINET || len(m.Answer) != 0 || len(m.Ns) != 0 || m.Truncated || m.Rcode != 0 {
 		return key{}, false
@@ -100,7 +98,7 @@ func cacheKey(request *plugin.DNSRequest) (key, bool) {
 	if !replayableExtra(m.Extra) {
 		return key{}, false
 	}
-	canonical := m.Copy()
+	canonical := m
 	canonical.Id = 0
 	canonical.Compress = false
 	canonical.Question[0].Name = dns.CanonicalName(q.Name)
@@ -138,9 +136,11 @@ func replayableExtra(records []dns.RR) bool {
 }
 
 func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
-	return func(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		k, ok := cacheKey(request)
+		var query *dns.Msg
 		if ok {
+			query = request.MessageCopy()
 			c.mu.Lock()
 			if elem := c.entries[k]; elem != nil {
 				e := elem.Value.(*entry)
@@ -151,16 +151,17 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 					response := e.response.Copy()
 					elapsed := uint32(now.Sub(e.response.ReceivedAt) / time.Second)
 					c.mu.Unlock()
-					for _, section := range [][]dns.RR{response.Message.Answer, response.Message.Ns, response.Message.Extra} {
+					message := response.MessageCopy()
+					for _, section := range [][]dns.RR{message.Answer, message.Ns, message.Extra} {
 						for _, rr := range section {
 							if rr.Header().Rrtype != dns.TypeOPT {
 								rr.Header().Ttl -= min(rr.Header().Ttl, elapsed)
 							}
 						}
 					}
-					response.Message.Id = request.Message.Id
-					response.Message.Question = slices.Clone(request.Message.Question)
-					response.Wire = nil
+					message.Id = query.Id
+					message.Question = slices.Clone(query.Question)
+					response.DNSPacket = plugin.DNSMessage(message)
 					response.Cached = true
 					return response, nil
 				}
@@ -171,24 +172,17 @@ func (c *Cache) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 		}
 		response, err := next(ctx, request)
 		if err == nil && response != nil && !response.Cached && ok {
-			if ttl, exists := c.fixed[dns.CanonicalName(request.Message.Question[0].Name)]; exists {
+			if ttl, exists := c.fixed[dns.CanonicalName(query.Question[0].Name)]; exists {
 				// Wire is authoritative. Never repair an opaque/malformed packet
 				// by unpacking loosely and then discarding the original bytes.
-				message := response.Message
-				if len(response.Wire) != 0 {
-					message = new(dns.Msg)
-					if netutils.UnpackDnsMessage(response.Wire, message) != nil {
-						return response, nil
-					}
-				}
-				if message != nil && netutils.ValidateDnsResponse(request.Message, message, request.Message.Id) == nil && !signed(message) {
+				message := response.MessageCopy()
+				if message != nil && netutils.ValidateDnsResponse(query, message, query.Id) == nil && !signed(message) {
 					response = response.Copy()
-					response.Message = message.Copy()
-					response.Wire = nil
-					for _, rr := range response.Message.Answer {
+					for _, rr := range message.Answer {
 						rr.Header().Ttl = ttl
 					}
-					response.Message.AuthenticatedData = false
+					message.AuthenticatedData = false
+					response.DNSPacket = plugin.DNSMessage(message)
 				}
 			}
 		}
@@ -208,22 +202,29 @@ func signed(m *dns.Msg) bool {
 	return false
 }
 
-func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSRequest, response *plugin.DNSResponse) {
+func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSExchange, response *plugin.DNSResponse) {
+	if response.Cached {
+		return
+	}
 	k, ok := cacheKey(request)
-	m := response.Message
+	if !ok {
+		return
+	}
+	m := response.MessageCopy()
 	// Signed messages pass through unchanged, including authentication flags.
 	// Retaining only unsigned responses avoids replaying transaction signatures.
-	if !ok || response.Cached || m == nil || !m.Response || m.Truncated || signed(m) || !replayableExtra(m.Extra) ||
+	if m == nil || !m.Response || m.Truncated || signed(m) || !replayableExtra(m.Extra) ||
 		(m.Rcode != dns.RcodeSuccess && m.Rcode != dns.RcodeNameError) {
 		return
 	}
-	if ttl, exists := c.fixed[dns.CanonicalName(request.Message.Question[0].Name)]; exists && ttl == 0 {
+	query := request.MessageCopy()
+	if ttl, exists := c.fixed[dns.CanonicalName(query.Question[0].Name)]; exists && ttl == 0 {
 		return
 	}
 	ttl := ^uint32(0) // No ordinary RR has contributed a lifetime yet.
 	negative := true
 	for _, rr := range m.Answer {
-		if rr.Header().Rrtype == request.Message.Question[0].Qtype || request.Message.Question[0].Qtype == dns.TypeANY {
+		if rr.Header().Rrtype == query.Question[0].Qtype || query.Question[0].Qtype == dns.TypeANY {
 			negative = false
 		}
 	}
@@ -270,16 +271,16 @@ func (c *Cache) ObserveDNS(_ context.Context, request *plugin.DNSRequest, respon
 		return
 	}
 	e := &entry{key: k, response: response.Copy(), expires: expires, bytes: bytes}
-	e.response.Wire = nil
 	if negative {
 		// RFC 2308: clients must see the remaining negative lifetime too,
 		// rather than starting a new MINIMUM interval on every cache hit.
-		for _, rr := range e.response.Message.Ns {
+		for _, rr := range m.Ns {
 			if record, ok := rr.(*dns.SOA); ok {
 				record.Hdr.Ttl = min(record.Hdr.Ttl, ttl)
 			}
 		}
 	}
+	e.response.DNSPacket = plugin.DNSMessage(m)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if old := c.entries[k]; old != nil {

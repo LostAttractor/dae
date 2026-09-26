@@ -18,21 +18,23 @@ func TestHighBitTTLIsNotCached(t *testing.T) {
 			c := testCache(t, "")
 			q := testRequest()
 			r := testResponse(q)
+			message := r.MessageCopy()
 			switch section {
 			case "answer":
-				r.Message.Answer[0].Header().Ttl = ttl
+				message.Answer[0].Header().Ttl = ttl
 			case "authority", "minimum":
-				r.Message.Answer = nil
+				message.Answer = nil
 				soa := &dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 60}
 				if section == "authority" {
 					soa.Hdr.Ttl = ttl
 				} else {
 					soa.Minttl = ttl
 				}
-				r.Message.Ns = []dns.RR{soa}
+				message.Ns = []dns.RR{soa}
 			case "additional":
-				r.Message.Extra = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "ns.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}, A: r.Message.Answer[0].(*dns.A).A}}
+				message.Extra = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "ns.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl}, A: message.Answer[0].(*dns.A).A}}
 			}
+			r.DNSPacket = plugin.DNSMessage(message)
 			c.ObserveDNS(t.Context(), q, r)
 			if len(c.entries) != 0 {
 				t.Fatalf("cached high-bit %s TTL %x", section, ttl)
@@ -47,7 +49,7 @@ func TestFixedTTLStrictWireAndCorrelation(t *testing.T) {
 			c := testCache(t, "fixed_domain_ttl { test.example: 120 }")
 			q := testRequest()
 			r := testResponse(q)
-			m := r.Message.Copy()
+			m := r.MessageCopy()
 			switch kind {
 			case "ID":
 				m.Id++
@@ -60,24 +62,24 @@ func TestFixedTTLStrictWireAndCorrelation(t *testing.T) {
 			case "header-only error":
 				m.Question, m.Answer, m.Rcode = nil, nil, dns.RcodeRefused
 			}
-			r.Wire, _ = m.Pack()
+			wire, _ := m.Pack()
 			if kind == "trailing" {
-				r.Wire = append(r.Wire, 0xff)
+				wire = append(wire, 0xff)
 			}
-			// Even a supplied valid Message must not override invalid wire.
-			original := bytes.Clone(r.Wire)
-			got, err := c.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) { return r, nil })(t.Context(), q)
+			r.DNSPacket = plugin.DNSWire(wire)
+			original := bytes.Clone(wire)
+			got, err := c.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return r, nil })(t.Context(), q)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if kind == "valid" {
-				if len(got.Wire) != 0 || got.Message.Answer[0].Header().Ttl != 120 {
+				if got.IsWire() || got.MessageCopy().Answer[0].Header().Ttl != 120 {
 					t.Fatal("fixed TTL not applied")
 				}
-			} else if !bytes.Equal(got.Wire, original) {
+			} else if !bytes.Equal(packetWire(t, got), original) {
 				t.Fatal("invalid response was rewritten")
 			}
-			if !bytes.Equal(r.Wire, original) || r.Message.Answer[0].Header().Ttl != 60 {
+			if !bytes.Equal(packetWire(t, r), original) {
 				t.Fatal("downstream response mutated")
 			}
 		})
@@ -89,23 +91,34 @@ func TestNegativeReplayAgesSOAMinimum(t *testing.T) {
 		c := testCache(t, "")
 		q := testRequest()
 		r := testResponse(q)
-		r.Message.Answer, r.Message.Rcode = nil, rcode
-		r.Message.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 5}}
+		message := r.MessageCopy()
+		message.Answer, message.Rcode = nil, rcode
+		message.Ns = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60}, Ns: "ns.example.", Mbox: "hostmaster.example.", Minttl: 5}}
+		r.DNSPacket = plugin.DNSMessage(message)
 		r.ReceivedAt = time.Now().Add(-3 * time.Second)
 		c.ObserveDNS(t.Context(), q, r)
-		got, err := c.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+		got, err := c.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 			t.Fatal("cache miss")
 			return nil, nil
 		})(t.Context(), q)
 		if err != nil {
 			t.Fatal(err)
 		}
-		soa := got.Message.Ns[0].(*dns.SOA)
+		soa := got.MessageCopy().Ns[0].(*dns.SOA)
 		if soa.Hdr.Ttl > 2 || soa.Minttl != 5 {
 			t.Fatalf("negative lifetime extended: %s", soa)
 		}
-		if r.Message.Ns[0].Header().Ttl != 60 {
+		if r.MessageCopy().Ns[0].Header().Ttl != 60 {
 			t.Fatal("original SOA modified")
 		}
 	}
+}
+
+func packetWire(t *testing.T, packet interface{ Wire() ([]byte, error) }) []byte {
+	t.Helper()
+	wire, err := packet.Wire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
 }
