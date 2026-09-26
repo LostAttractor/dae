@@ -360,11 +360,11 @@ plugins {
     #}
 }
 
-# Flow controls and destination IP overrides, independent of MITM.
+# Flow controls and destination IP/port overrides, independent of MITM.
 # Filters use the routing syntax. must, bump and DNAT can apply to the same connection.
 # Destination matching runs before flow controls, followed by outbound routing.
 # Flow controls accumulate; a bump does not hide later must/capture effects.
-# Destination candidates hand off before flow controls; routing uses the rewritten IP.
+# Destination candidates hand off before flow controls; routing uses the rewritten IP and port.
 # Source, interface, process and Host/SNI identity remain available after rewriting.
 # Domain conditions use existing DNS mappings in the kernel; no implicit all-traffic capture.
 # See docs/zh/configuration/destination-rules.md.
@@ -375,9 +375,16 @@ rules {
     # Require userspace routing for matching traffic.
     #domain(full: api.example.com) && l4proto(tcp) -> bump
 
-    # First matching DNAT wins, keeping the original port and Host/SNI.
+    # First matching DNAT wins; Host/SNI are preserved.
     # Native DNAT applies before routing to direct/proxy/block, before Surge [Host].
     # In userspace, DNAT domain filters (including negation) need a sniffed hostname.
+
+    # Rewrite both destination IP and port. Quote the entire target because ':' separates named parameters.
+    # IPv6 targets with a port use '[IP]:port'; keep the brackets inside the quotes.
+    #dip(192.0.2.53) && dport(53) -> dnat('198.51.100.53:1053')
+    #dip('2001:db8::53') && dport(53) -> dnat('[2001:db8::54]:1053')
+
+    # Omit the target port to keep the original port. IPv6 literals still need quotes.
     #domain(full: api.example.com) && dport(443) -> dnat(198.51.100.20)
     #sip(192.168.10.0/24) && dip(192.0.2.0/24) -> dnat(198.51.100.30)
     #ipversion(6) && domain(suffix: example.net) -> dnat('2001:db8::20')
