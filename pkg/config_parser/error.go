@@ -16,13 +16,17 @@ type syntaxErrorListener struct {
 	err error
 }
 
-func (l *syntaxErrorListener) SyntaxError(recognizer antlr.Recognizer, _ any, line, column int, _ string, _ antlr.RecognitionException) {
+func (l *syntaxErrorListener) SyntaxError(recognizer antlr.Recognizer, offendingSymbol any, line, column int, _ string, _ antlr.RecognitionException) {
 	if l.err != nil {
 		return
 	}
 	message := "invalid token"
 	if parser, ok := recognizer.(antlr.Parser); ok {
 		message = "invalid syntax; expected " + parser.GetExpectedTokens().StringVerbose(parser.GetLiteralNames(), parser.GetSymbolicNames(), false)
+		if token, ok := offendingSymbol.(antlr.Token); ok && token.GetText() == ":" {
+			// Use fixed examples rather than echoing potentially secret configuration values.
+			message += "; unexpected ':' (key/value separator); if ':' is part of a value, quote the entire value, e.g. '192.0.2.1:443' or '[2001:db8::1]:443'"
+		}
 	}
 	l.err = fmt.Errorf("line %d:%d %s", line, column, message)
 }

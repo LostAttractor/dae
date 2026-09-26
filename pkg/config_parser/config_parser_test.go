@@ -17,6 +17,8 @@ func TestSyntaxErrorsOmitConfigurationSecrets(t *testing.T) {
 		"node { 'trojan://password-secret@example.com:443' ( }",
 		"global { api_key: 'password-secret' ",
 		"global { api_key: 'password-secret\n}",
+		"global { api_key: password-secret:unexpected-value }",
+		"group { proxy { filter: name(regex: password-secret:unexpected-value) } }",
 		"password-secret 'unexpected-value'",
 		"group { target { name(password-secret) } }",
 	} {
@@ -33,6 +35,46 @@ func TestSyntaxErrorsOmitConfigurationSecrets(t *testing.T) {
 		}
 		if !strings.Contains(message, "expected") && !strings.Contains(message, "invalid token") && !strings.Contains(message, "path reference") {
 			t.Fatalf("syntax diagnostic lost its grammar guidance: %s", message)
+		}
+	}
+}
+
+func TestSyntaxErrorsExplainUnquotedColons(t *testing.T) {
+	for _, target := range []string{"198.51.100.53:1053", "2001:db8::53", "fe80::1", "::1"} {
+		t.Run(target, func(t *testing.T) {
+			_, err := Parse("rules {\n  dport(53) -> dnat(" + target + ")\n}")
+			if err == nil {
+				t.Fatal("accepted an unquoted address containing colons")
+			}
+			message := err.Error()
+			for _, want := range []string{"expected", "unexpected ':'", "key/value separator", "quote the entire value", "'192.0.2.1:443'", "'[2001:db8::1]:443'"} {
+				if !strings.Contains(message, want) {
+					t.Errorf("error = %q, want guidance %q", message, want)
+				}
+			}
+			if !strings.HasPrefix(message, "line 2:") || strings.Contains(message, "\n") {
+				t.Fatalf("syntax diagnostic must retain location in one line: %s", message)
+			}
+			for _, quote := range []string{"'", `"`} {
+				if _, err := Parse("rules { dport(53) -> dnat(" + quote + target + quote + ") }"); err != nil {
+					t.Fatalf("quoting the address did not fix the syntax error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestSyntaxErrorsDoNotSuggestQuotingUnrelatedColons(t *testing.T) {
+	for _, input := range []string{
+		"rules { dport(53) -> dnat('198.51.100.53:1053' ( }",
+		"global { api_key: 'password-secret:unexpected-value\n}",
+	} {
+		_, err := Parse(input)
+		if err == nil {
+			t.Fatal("accepted malformed configuration")
+		}
+		if strings.Contains(err.Error(), "quote the entire value") {
+			t.Fatalf("unrelated syntax error received colon guidance: %v", err)
 		}
 	}
 }
