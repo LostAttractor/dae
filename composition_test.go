@@ -35,7 +35,11 @@ func TestDNSPluginComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := []plugin.Spec{{ID: "cache", Type: "cache", Config: sections[0]}, {ID: "surge", Type: "surge", Config: sections[1]}, {ID: "router", Type: "router", Config: sections[2]}}
-	h, err := mitm.Load(t.Context(), map[string]plugin.Definition{"cache": cache.Plugin, "surge": surge.Plugin, "router": router.Plugin}, specs, mitm.Options{DisableHTTP: true}, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient})
+	configured, err := mitm.Configure(map[string]plugin.Definition{"cache": cache.Plugin, "surge": surge.Plugin, "router": router.Plugin}, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := configured.Load(t.Context(), mitm.Options{DisableHTTP: true}, plugin.Services{BaseDir: dir, PrepareClient: http.DefaultClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,36 +86,29 @@ func TestDNSPluginComposition(t *testing.T) {
 		return conn, nil
 	}
 	terminalCalls := 0
-	terminal := func(_ context.Context, r *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+	terminal := func(_ context.Context, r *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 		terminalCalls++
 		if !r.ServerAssigned || r.Destination.String() != "192.0.2.54:5353" {
 			return nil, fmt.Errorf("lost assignment: %+v", r)
 		}
-		m := new(dns.Msg).SetReply(r.Message)
+		m := new(dns.Msg).SetReply(r.MessageCopy())
 		m.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: m.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("198.51.100.3")}}
-		return &plugin.DNSResponse{Message: m}, nil
+		return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m)}, nil
 	}
 	for _, name := range []string{"local.example.", "alias.example.", "assigned.example.", "router.example."} {
 		t.Run(name, func(t *testing.T) {
 			m := new(dns.Msg).SetQuestion(name, dns.TypeA)
-			wire, _ := m.Pack()
-			request := &plugin.DNSRequest{Message: m, Wire: wire, Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1000"), OriginalDestination: netip.MustParseAddrPort("192.0.2.1:53"), Destination: netip.MustParseAddrPort("192.0.2.1:53"), ContextKey: "source/profile", DialContext: dial}
+			request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1000"), OriginalDestination: netip.MustParseAddrPort("192.0.2.1:53"), Destination: netip.MustParseAddrPort("192.0.2.1:53"), ContextKey: "source/profile", DialContext: dial}
 			var first time.Time
 			for attempt := range 2 {
-				request.Message.Id++
-				request.Wire, _ = request.Message.Pack()
+				m.Id++
+				request.DNSPacket = plugin.DNSMessage(m)
 				response, err := h.HandleDNS(t.Context(), request, terminal, func(response *plugin.DNSResponse) error {
-					if len(response.Wire) == 0 {
-						var err error
-						response.Wire, err = response.Message.Pack()
-						if err != nil {
-							return err
-						}
-					}
-					response.Message = new(dns.Msg)
-					if err := response.Message.Unpack(response.Wire); err != nil {
+					wire, err := response.Wire()
+					if err != nil {
 						return err
 					}
+					response.DNSPacket = plugin.DNSWire(wire)
 					if response.ReceivedAt.IsZero() {
 						response.ReceivedAt = time.Now()
 					}
@@ -121,7 +118,7 @@ func TestDNSPluginComposition(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if response.Cached != (attempt == 1) || response.Message.Id != request.Message.Id || len(response.Message.Answer) == 0 {
+				if response.Cached != (attempt == 1) || response.MessageCopy().Id != request.MessageCopy().Id || len(response.MessageCopy().Answer) == 0 {
 					t.Fatalf("bad response: %+v", response)
 				}
 				if attempt == 0 {
@@ -146,7 +143,7 @@ func TestMultiServerCancellationJoinsLoser(t *testing.T) {
 	r := new(router.Router)
 	started, stopped := make(chan struct{}), make(chan struct{})
 	m := new(dns.Msg).SetQuestion("race.example.", dns.TypeA)
-	request := &plugin.DNSRequest{Message: m}
+	request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m)}
 	request.DialContext = func(ctx context.Context, network, target, hostname string) (net.Conn, error) {
 		if target == "192.0.2.54:53" {
 			close(started)

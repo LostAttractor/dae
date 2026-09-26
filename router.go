@@ -29,17 +29,12 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-var Plugin = plugin.Definition{Setup: Setup, Validate: Validate}
+var Plugin = plugin.Definition{Configure: Configure}
 
 type Router struct {
 	policy     *policy.Dns
 	prefer     uint16
 	interfaces *network.InterfaceManager
-}
-
-func Validate(spec plugin.Spec) error {
-	_, _, err := parseSettings(spec)
-	return err
 }
 
 func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
@@ -79,11 +74,17 @@ func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
 	return conf, prefer, policy.Validate(&conf)
 }
 
-func Setup(ctx context.Context, spec plugin.Spec, services plugin.Services) (plugin.Plugin, error) {
+func Configure(spec plugin.Spec) (plugin.Factory, error) {
 	conf, prefer, err := parseSettings(spec)
 	if err != nil {
 		return nil, err
 	}
+	return func(ctx context.Context, services plugin.Services) (plugin.Plugin, error) {
+		return prepare(ctx, conf, prefer, services)
+	}, nil
+}
+
+func prepare(ctx context.Context, conf policy.Config, prefer uint16, services plugin.Services) (plugin.Plugin, error) {
 	reader := routing.NewDatReaderOptimizer(ctx, assets.NewLocationFinder([]string{services.BaseDir}))
 	request, err := routing.ApplyRulesOptimizers(conf.Routing.Request.Rules, &routing.AliasOptimizer{}, reader, &routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
 	if err != nil {
@@ -118,7 +119,7 @@ func (r *Router) Close() error {
 
 func (*Router) Plan() plugin.Plan { return plugin.Plan{DNS: []plugin.DNSScope{{}}} }
 
-func (*Router) ResolveDNS(ctx context.Context, request *plugin.DNSRequest, servers []string) (*plugin.DNSResponse, error) {
+func (*Router) ResolveDNS(ctx context.Context, request *plugin.DNSExchange, servers []string) (*plugin.DNSResponse, error) {
 	if len(servers) == 0 || len(servers) > 16 {
 		return nil, fmt.Errorf("expected 1..16 DNS servers")
 	}
@@ -164,8 +165,9 @@ func (*Router) ResolveDNS(ctx context.Context, request *plugin.DNSRequest, serve
 }
 
 func (r *Router) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
-	return func(ctx context.Context, request *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-		if !replayable(request.Message) {
+	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		query := request.MessageCopy()
+		if !replayable(query) {
 			return next(ctx, request)
 		}
 		// An earlier plugin's explicit server assignment takes precedence over
@@ -173,14 +175,13 @@ func (r *Router) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 		if request.ServerAssigned {
 			return next(ctx, request)
 		}
-		q := request.Message.Question[0]
+		q := query.Question[0]
 		if r.prefer == 0 || q.Qtype == r.prefer || q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
 			return r.resolve(ctx, request, next)
 		}
-		preferred := request.Copy()
-		preferred.Independent = true
-		preferred.Message.Question[0].Qtype = r.prefer
-		preferred.Wire, _ = preferred.Message.Pack()
+		preferred := request.Fork()
+		query.Question[0].Qtype = r.prefer
+		preferred.DNSPacket = plugin.DNSMessage(query)
 		probeCtx, cancelProbe := context.WithTimeout(ctx, partialBudget(ctx))
 		defer cancelProbe()
 		var probe *plugin.DNSResponse
@@ -216,22 +217,16 @@ func partialBudget(ctx context.Context) time.Duration {
 // Policy operates on a private, correlated view. Header-only errors borrow the
 // request question for matching; accepting them still returns the original wire.
 // Invalid/uncorrelated asis frames remain transparent and cannot drive policy.
-func responseMessage(request *plugin.DNSRequest, response *plugin.DNSResponse) *dns.Msg {
+func responseMessage(request *plugin.DNSExchange, response *plugin.DNSResponse) *dns.Msg {
 	if response == nil {
 		return nil
 	}
-	var message *dns.Msg
-	if len(response.Wire) != 0 {
-		message = new(dns.Msg)
-		if netutils.UnpackDnsMessage(response.Wire, message) != nil {
-			return nil
-		}
-	} else if response.Message != nil {
-		message = response.Message.Copy()
-	} else {
+	message := response.MessageCopy()
+	query := request.MessageCopy()
+	if message == nil || query == nil {
 		return nil
 	}
-	if netutils.ValidateDnsResponseAllowEmptyQuestion(request.Message, message, request.Message.Id) != nil {
+	if netutils.ValidateDnsResponseAllowEmptyQuestion(query, message, query.Id) != nil {
 		return nil
 	}
 	return message
@@ -250,14 +245,14 @@ func replayable(message *dns.Msg) bool {
 	return q.Qtype != dns.TypeAXFR && q.Qtype != dns.TypeIXFR && q.Qtype != dns.TypeTKEY
 }
 
-func emptyResponse(request *plugin.DNSRequest) *plugin.DNSResponse {
-	m := new(dns.Msg).SetReply(request.Message)
+func emptyResponse(request *plugin.DNSExchange) *plugin.DNSResponse {
+	m := new(dns.Msg).SetReply(request.MessageCopy())
 	m.RecursionAvailable = true
-	return &plugin.DNSResponse{Message: m, ReceivedAt: time.Now(), Origin: "dns-router:reject"}
+	return &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(m), ReceivedAt: time.Now(), Origin: "dns-router:reject"}
 }
 
-func (r *Router) resolve(ctx context.Context, request *plugin.DNSRequest, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
-	q := request.Message.Question[0]
+func (r *Router) resolve(ctx context.Context, request *plugin.DNSExchange, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
+	q := request.MessageCopy().Question[0]
 	index, err := r.policy.RequestSelect(q.Name, q.Qtype, request.Interface, request.OriginalDestination.Addr(), request.Source.Addr())
 	if err != nil {
 		return nil, err
@@ -300,7 +295,7 @@ func (r *Router) resolve(ctx context.Context, request *plugin.DNSRequest, next p
 }
 
 type requestDialer struct {
-	request  *plugin.DNSRequest
+	request  *plugin.DNSExchange
 	hostname string
 }
 
@@ -313,7 +308,8 @@ func (d requestDialer) ListenPacket(ctx context.Context, target string) (net.Pac
 
 // Exchange is also available to plugins implementing server assignments. Every
 // exchange is routed with the original client's identity by dae's dial services.
-func Exchange(ctx context.Context, request *plugin.DNSRequest, upstream *policy.Upstream) (*plugin.DNSResponse, error) {
+func Exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy.Upstream) (*plugin.DNSResponse, error) {
+	query := request.MessageCopy()
 	versions, protocols := upstream.SupportedNetworks()
 	var last error
 	for _, version := range versions {
@@ -328,10 +324,10 @@ func Exchange(ctx context.Context, request *plugin.DNSRequest, upstream *policy.
 			if i+1 < len(protocols) {
 				operation, cancel = context.WithTimeout(ctx, partialBudget(ctx))
 			}
-			message, err := transport.Exchange(operation, upstream, requestDialer{request, upstream.Hostname}, netip.AddrPortFrom(ip, upstream.Port), string(protocol), request.Message)
+			message, err := transport.Exchange(operation, upstream, requestDialer{request, upstream.Hostname}, netip.AddrPortFrom(ip, upstream.Port), string(protocol), query)
 			cancel()
 			if err == nil {
-				response := &plugin.DNSResponse{Message: message, ReceivedAt: time.Now(), Origin: upstream.String()}
+				response := &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message), ReceivedAt: time.Now(), Origin: upstream.String()}
 				if !message.Truncated || i+1 == len(protocols) {
 					return response, nil
 				}

@@ -22,7 +22,11 @@ func testRouter(t *testing.T, body string) *Router {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := Setup(t.Context(), plugin.Spec{Config: sections[0]}, plugin.Services{BaseDir: t.TempDir()})
+	factory, err := Configure(plugin.Spec{Config: sections[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := factory(t.Context(), plugin.Services{BaseDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,9 +40,9 @@ func TestAsisPreservesDownstreamError(t *testing.T) {
 	m := new(dns.Msg).SetQuestion("failed.example.", dns.TypeA)
 	wire, _ := new(dns.Msg).SetReply(m).Pack()
 	want := errors.New("downstream exchange failed")
-	_, err := r.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-		return &plugin.DNSResponse{Wire: wire}, want
-	})(t.Context(), &plugin.DNSRequest{Message: m, Source: netip.MustParseAddrPort("192.0.2.1:1234"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53")})
+	_, err := r.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, want
+	})(t.Context(), &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), Source: netip.MustParseAddrPort("192.0.2.1:1234"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53")})
 	if !errors.Is(err, want) {
 		t.Fatalf("downstream error lost: %v", err)
 	}
@@ -54,7 +58,7 @@ response { upstream(first) -> second fallback:accept } }
 `)
 			m := new(dns.Msg).SetQuestion("test.example.", dns.TypeAAAA)
 			wire, _ := m.Pack()
-			request := &plugin.DNSRequest{Message: m, Wire: wire, Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1234"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53")}
+			request := &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:1234"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53")}
 			var mu sync.Mutex
 			var calls []string
 			request.DialContext = func(_ context.Context, network, target, hostname string) (net.Conn, error) {
@@ -84,15 +88,15 @@ response { upstream(first) -> second fallback:accept } }
 				}()
 				return conn, nil
 			}
-			response, err := r.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) {
+			response, err := r.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				t.Fatal("unexpected asis")
 				return nil, nil
 			})(t.Context(), request)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (len(response.Message.Answer) == 0) != (prefer != "") {
-				t.Fatalf("family preference: %s", response.Message)
+			if (len(response.MessageCopy().Answer) == 0) != (prefer != "") {
+				t.Fatalf("family preference: %s", response.MessageCopy())
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -100,11 +104,12 @@ response { upstream(first) -> second fallback:accept } }
 				t.Fatalf("response reroute missing: %v", calls)
 			}
 			blocked := request.Copy()
-			blocked.Message.Question[0].Name = "blocked.example."
-			blocked.Wire, _ = blocked.Message.Pack()
-			blocked.Message.Question[0].Qtype = dns.TypeA
+			query := blocked.MessageCopy()
+			query.Question[0].Name = "blocked.example."
+			query.Question[0].Qtype = dns.TypeA
+			blocked.DNSPacket = plugin.DNSMessage(query)
 			response, err = r.WrapDNS(nil)(t.Context(), blocked)
-			if err != nil || len(response.Message.Answer) != 0 {
+			if err != nil || len(response.MessageCopy().Answer) != 0 {
 				t.Fatalf("request rejection: %+v %v", response, err)
 			}
 		})
@@ -114,9 +119,12 @@ response { upstream(first) -> second fallback:accept } }
 func TestExplicitServerAndAsisPreserveWire(t *testing.T) {
 	r := testRouter(t, "routing { request { fallback:reject } }")
 	m := new(dns.Msg).SetQuestion("explicit.example.", dns.TypeA)
-	request := &plugin.DNSRequest{Message: m, ServerAssigned: true}
+	request := &plugin.DNSExchange{DNSPacket: plugin.DNSMessage(m), ServerAssigned: true}
 	called := false
-	_, err := r.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) { called = true; return nil, nil })(t.Context(), request)
+	_, err := r.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		called = true
+		return nil, nil
+	})(t.Context(), request)
 	if err != nil || !called {
 		t.Fatal("general policy overrode explicit server")
 	}

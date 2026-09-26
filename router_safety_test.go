@@ -20,10 +20,19 @@ import (
 	dns "github.com/miekg/dns"
 )
 
-func safetyRequest(qtype uint16) *plugin.DNSRequest {
+func safetyRequest(qtype uint16) *plugin.DNSExchange {
 	m := new(dns.Msg).SetQuestion("test.example.", qtype)
 	wire, _ := m.Pack()
-	return &plugin.DNSRequest{Message: m, Wire: wire, Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:2345"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53")}
+	return &plugin.DNSExchange{DNSPacket: plugin.DNSWire(wire), Network: "udp", Source: netip.MustParseAddrPort("192.0.2.1:2345"), OriginalDestination: netip.MustParseAddrPort("192.0.2.53:53")}
+}
+
+func packetWire(t *testing.T, packet interface{ Wire() ([]byte, error) }) []byte {
+	t.Helper()
+	wire, err := packet.Wire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
 }
 
 func TestTCPFallbackReservesCallerBudget(t *testing.T) {
@@ -66,8 +75,7 @@ func TestAsisInvalidResponsesBypassPolicy(t *testing.T) {
 	for _, kind := range []string{"ID", "question", "trailing bytes", "malformed", "QR", "opcode"} {
 		t.Run(kind, func(t *testing.T) {
 			q := safetyRequest(dns.TypeA)
-			m := new(dns.Msg).SetReply(q.Message)
-			valid := m.Copy()
+			m := new(dns.Msg).SetReply(q.MessageCopy())
 			switch kind {
 			case "ID":
 				m.Id++
@@ -85,9 +93,9 @@ func TestAsisInvalidResponsesBypassPolicy(t *testing.T) {
 			if kind == "malformed" {
 				wire = []byte{0, 1, 2}
 			}
-			original := &plugin.DNSResponse{Wire: wire, Message: valid}
-			got, err := r.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) { return original, nil })(t.Context(), q)
-			if err != nil || got != original || !bytes.Equal(got.Wire, wire) {
+			original := &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}
+			got, err := r.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) { return original, nil })(t.Context(), q)
+			if err != nil || got != original || !bytes.Equal(packetWire(t, got), wire) {
 				t.Fatalf("invalid frame became a policy answer: %+v %v", got, err)
 			}
 		})
@@ -98,10 +106,10 @@ func TestPreferenceIgnoresUncorrelatedProbe(t *testing.T) {
 	r := testRouter(t, "ipversion_prefer:4")
 	for _, valid := range []bool{false, true} {
 		q := safetyRequest(dns.TypeAAAA)
-		got, err := r.WrapDNS(func(_ context.Context, req *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-			m := new(dns.Msg).SetReply(req.Message)
+		got, err := r.WrapDNS(func(_ context.Context, req *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+			m := new(dns.Msg).SetReply(req.MessageCopy())
 			var rr dns.RR
-			if req.Message.Question[0].Qtype == dns.TypeA {
+			if req.MessageCopy().Question[0].Qtype == dns.TypeA {
 				if !valid {
 					m.Id++
 				}
@@ -111,7 +119,7 @@ func TestPreferenceIgnoresUncorrelatedProbe(t *testing.T) {
 			}
 			m.Answer = []dns.RR{rr}
 			wire, _ := m.Pack()
-			return &plugin.DNSResponse{Wire: wire}, nil
+			return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, nil
 		})(t.Context(), q)
 		if err != nil {
 			t.Fatal(err)
@@ -129,14 +137,14 @@ func TestAsisHeaderOnlyErrorsPreserveWire(t *testing.T) {
 		for _, rcode := range []int{dns.RcodeFormatError, dns.RcodeRefused, dns.RcodeServerFailure} {
 			q := safetyRequest(dns.TypeA)
 			q.Network = "tcp"
-			m := new(dns.Msg).SetReply(q.Message)
+			m := new(dns.Msg).SetReply(q.MessageCopy())
 			m.Rcode, m.Question = rcode, nil
 			wire, _ := m.Pack()
-			for _, parsed := range []*dns.Msg{nil, m} {
-				got, err := r.WrapDNS(func(context.Context, *plugin.DNSRequest) (*plugin.DNSResponse, error) {
-					return &plugin.DNSResponse{Message: parsed, Wire: wire}, nil
+			for _, packet := range []plugin.DNSPacket{plugin.DNSWire(wire), plugin.DNSMessage(m)} {
+				got, err := r.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+					return &plugin.DNSResponse{DNSPacket: packet}, nil
 				})(t.Context(), q)
-				if err != nil || got == nil || !bytes.Equal(got.Wire, wire) || len(m.Question) != 0 {
+				if err != nil || got == nil || !bytes.Equal(packetWire(t, got), wire) || len(m.Question) != 0 {
 					t.Fatalf("header-only %s lost/rewritten: %+v %v", dns.RcodeToString[rcode], got, err)
 				}
 			}
@@ -194,7 +202,7 @@ func TestPreflightStaticRoutingAndDeferredResources(t *testing.T) {
 				t.Fatal(err)
 			}
 			spec := plugin.Spec{ID: "router", Type: "router", Config: sections[0]}
-			if err := Validate(spec); (err == nil) != test.valid {
+			if _, err := Configure(spec); (err == nil) != test.valid {
 				t.Fatalf("preflight valid=%v: %v", test.valid, err)
 			}
 			if !reflect.DeepEqual(sections, copy) {
@@ -202,11 +210,13 @@ func TestPreflightStaticRoutingAndDeferredResources(t *testing.T) {
 			}
 			if !test.valid {
 				started := false
-				definitions := map[string]plugin.Definition{"router": Plugin, "first": {Setup: func(context.Context, plugin.Spec, plugin.Services) (plugin.Plugin, error) {
-					started = true
-					return nil, nil
+				definitions := map[string]plugin.Definition{"router": Plugin, "first": {Configure: func(plugin.Spec) (plugin.Factory, error) {
+					return func(context.Context, plugin.Services) (plugin.Plugin, error) {
+						started = true
+						return nil, nil
+					}, nil
 				}}}
-				_, err := mitm.Load(t.Context(), definitions, []plugin.Spec{{ID: "first", Type: "first"}, spec}, mitm.Options{DisableHTTP: true}, plugin.Services{})
+				_, err := mitm.Configure(definitions, []plugin.Spec{{ID: "first", Type: "first"}, spec})
 				if err == nil || started {
 					t.Fatal("invalid router started plugin preparation")
 				}

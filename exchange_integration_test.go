@@ -23,6 +23,7 @@ import (
 
 	policy "github.com/daeuniverse/dae-plugin-dns-router/policy"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
 	dns "github.com/miekg/dns"
@@ -60,7 +61,9 @@ func TestExchangeWireTransports(t *testing.T) {
 			var closes atomic.Int32
 			for i := range 2 {
 				request := safetyRequest(dns.TypeA)
-				request.Message.Id = uint16(400 + i)
+				message := request.MessageCopy()
+				message.Id = uint16(400 + i)
+				request.DNSPacket = plugin.DNSMessage(message)
 				request.DialContext = func(ctx context.Context, network, target, hostname string) (net.Conn, error) {
 					if target != address.String() || hostname != "example.com" {
 						t.Errorf("lost routed target/hostname: %s %s", target, hostname)
@@ -87,7 +90,7 @@ func TestExchangeWireTransports(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if response.Message.Id != request.Message.Id || len(response.Message.Answer) != 1 || request.Message.Response {
+				if response.MessageCopy().Id != request.MessageCopy().Id || len(response.MessageCopy().Answer) != 1 || request.MessageCopy().Response {
 					t.Fatalf("response identity/ownership changed: %+v", response)
 				}
 				query := <-requests
@@ -273,7 +276,7 @@ func TestExchangeTCPCorrelationRetryAndEOF(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		response, err := Exchange(ctx, request, upstream)
 		cancel()
-		if err != nil || response.Message.Rcode != dns.RcodeRefused || response.Message.Id != request.Message.Id {
+		if err != nil || response.MessageCopy().Rcode != dns.RcodeRefused || response.MessageCopy().Id != request.MessageCopy().Id {
 			t.Fatalf("response lost: %+v %v", response, err)
 		}
 		want := 1
@@ -326,7 +329,7 @@ func TestExchangeCancellationDoesNotWaitForClose(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("cancellation waited for transport Close")
 			}
-			if request.Message.Response {
+			if request.MessageCopy().Response {
 				t.Fatal("canceled exchange mutated query")
 			}
 		})
