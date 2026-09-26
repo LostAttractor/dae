@@ -39,10 +39,11 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			decisions := newRoutingLayoutTestMap(t, "udp_routing_cache_map", 8)
 			var endpoints UdpEndpointPool
 			defer endpoints.closeAll()
-			source, original := netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort("192.0.2.20:53")
+			// Ordinary association traffic must not enter the DNS interception path.
+			source, original := netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort("192.0.2.20:443")
 			target, filter := original, "domain(full: declared.example)"
 			if rewritten {
-				target, filter = netip.MustParseAddrPort("198.51.100.20:53"), "dip(192.0.2.20)"
+				target, filter = netip.MustParseAddrPort("198.51.100.20:443"), "dip(192.0.2.20)"
 			}
 			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, filter+" -> dnat(198.51.100.20)", "dip(192.0.2.20,198.51.100.20) -> proxy(mark:37)"))
 			matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
@@ -93,7 +94,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			// A config/node replacement only affects new lifetimes. The original
 			// target and mark survive even when the first destination rule missed.
-			newTarget := netip.MustParseAddrPort("203.0.113.20:53")
+			newTarget := netip.MustParseAddrPort("203.0.113.20:443")
 			plane.routingMatcher, _ = routingMatcherForTest(t, prepareFlowRulesForTest(t, "dip(192.0.2.20) -> dnat(203.0.113.20)", "dip(203.0.113.20) -> proxy(mark:91)"))
 			profileID = plane.routingMatcher.defaultProfileID
 			if err := plane.outbounds[2].Close(); err != nil {
