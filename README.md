@@ -33,7 +33,9 @@ plugins {
 Request predicates: `qname`, `qtype`, `dip`, `sip`, `interface`. Response predicates:
 `qname`, `qtype`, `ip`, `upstream`. Interface-name rules track Linux link changes.
 Upstream scheme may be `udp`, `tcp`, `tcp+udp`, `tls`, `https`, `quic`, `h3` or
-`http3`. HTTPS/H3 accept custom paths. Defaults are request `asis`, response
+`http3`. HTTPS/H3 preserve custom paths (including escaped separators) and
+query parameters, replacing only the `dns` parameter with the current query.
+Defaults are request `asis`, response
 `accept`; `reject` produces an empty response. Response rerouting is depth-bounded.
 
 The router supplies `DNSResolver` for Surge encrypted/multiple-server assignments.

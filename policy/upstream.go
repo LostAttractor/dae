@@ -86,6 +86,8 @@ type Upstream struct {
 	Hostname string
 	Port     uint16
 	Path     string
+	RawPath  string // Preserve escaped separators in HTTP endpoint paths.
+	RawQuery string // Configured HTTP parameters, before adding the DNS query.
 	*netutils.Ip46
 }
 
@@ -109,6 +111,8 @@ func NewUpstream(ctx context.Context, upstream *url.URL) (up *Upstream, err erro
 		Hostname: hostname,
 		Port:     port,
 		Path:     path,
+		RawPath:  upstream.RawPath,
+		RawQuery: upstream.RawQuery,
 		Ip46:     ip46,
 	}, nil
 }

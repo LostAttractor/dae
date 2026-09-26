@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,6 +112,66 @@ func TestExchangeWireTransports(t *testing.T) {
 	}
 }
 
+func TestExchangeHTTPConfiguredEndpoint(t *testing.T) {
+	for _, scheme := range []policy.UpstreamScheme{"https", "h3"} {
+		for _, path := range []string{"", "/tenant%2Fhome/dns-query"} {
+			t.Run(string(scheme)+path, func(t *testing.T) {
+				wantPath := path
+				if wantPath == "" {
+					wantPath = "/dns-query"
+				}
+				address := exchangeHTTPServer(t, scheme, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					values := r.URL.Query()
+					if r.URL.EscapedPath() != wantPath || values.Get("profile") != "home+mobile" || !slices.Equal(values["tag"], []string{"one", "two"}) {
+						t.Errorf("configured endpoint changed: %s", r.URL)
+					}
+					wire, err := base64.RawURLEncoding.DecodeString(values.Get("dns"))
+					query := new(dns.Msg)
+					if err != nil || query.Unpack(wire) != nil || query.Id != 0 || len(values["dns"]) != 1 {
+						t.Error("invalid DoH query")
+						http.Error(w, "invalid query", http.StatusBadRequest)
+						return
+					}
+					wire, _ = new(dns.Msg).SetReply(query).Pack()
+					w.Header().Set("Content-Type", "application/dns-message")
+					_, _ = w.Write(wire)
+				}))
+				raw, err := url.Parse(string(scheme) + "://" + address.String() + path + "?profile=home%2Bmobile&tag=one&tag=two&dns=stale")
+				if err != nil {
+					t.Fatal(err)
+				}
+				original := raw.String()
+				upstream, err := policy.NewUpstream(t.Context(), raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := safetyRequest(dns.TypeA)
+				request.DialContext = func(ctx context.Context, network, target, hostname string) (net.Conn, error) {
+					if target != address.String() || hostname != address.Addr().String() {
+						t.Errorf("routed endpoint changed: %s %s", target, hostname)
+					}
+					return (&net.Dialer{}).DialContext(ctx, network, target)
+				}
+				request.ListenPacket = func(ctx context.Context, target, hostname string) (net.PacketConn, error) {
+					if target != address.String() || hostname != address.Addr().String() {
+						t.Errorf("routed packet endpoint changed: %s %s", target, hostname)
+					}
+					return (&net.ListenConfig{}).ListenPacket(ctx, "udp", "127.0.0.1:0")
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+				defer cancel()
+				response, err := Exchange(ctx, request, upstream)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.MessageCopy().Id != request.MessageCopy().Id || !response.MessageCopy().Response || raw.String() != original {
+					t.Fatal("exchange changed query identity or configured URL")
+				}
+			})
+		}
+	}
+}
+
 type exchangeCountConn struct {
 	net.Conn
 	once   sync.Once
@@ -190,21 +252,8 @@ func exchangeServer(t *testing.T, scheme policy.UpstreamScheme, answer func(*dns
 			}
 		}()
 		return listener.Addr().(*net.TCPAddr).AddrPort()
-	case "https":
-		server := httptest.NewUnstartedServer(handler)
-		server.TLS, server.EnableHTTP2 = exchangeTLS.Clone(), true
-		server.StartTLS()
-		t.Cleanup(server.Close)
-		return server.Listener.Addr().(*net.TCPAddr).AddrPort()
-	case "h3":
-		conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		server := &http3.Server{Handler: handler, TLSConfig: exchangeTLS.Clone()}
-		go server.Serve(conn)
-		t.Cleanup(func() { _ = server.Close(); _ = conn.Close() })
-		return conn.LocalAddr().(*net.UDPAddr).AddrPort()
+	case "https", "h3":
+		return exchangeHTTPServer(t, scheme, handler)
 	default:
 		config := exchangeTLS.Clone()
 		config.NextProtos = []string{"doq"}
@@ -246,6 +295,25 @@ func exchangeServer(t *testing.T, scheme policy.UpstreamScheme, answer func(*dns
 		}()
 		return listener.Addr().(*net.UDPAddr).AddrPort()
 	}
+}
+
+func exchangeHTTPServer(t *testing.T, scheme policy.UpstreamScheme, handler http.Handler) netip.AddrPort {
+	t.Helper()
+	if scheme == "https" {
+		server := httptest.NewUnstartedServer(handler)
+		server.TLS, server.EnableHTTP2 = exchangeTLS.Clone(), true
+		server.StartTLS()
+		t.Cleanup(server.Close)
+		return server.Listener.Addr().(*net.TCPAddr).AddrPort()
+	}
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http3.Server{Handler: handler, TLSConfig: exchangeTLS.Clone()}
+	go server.Serve(conn)
+	t.Cleanup(func() { _ = server.Close(); _ = conn.Close() })
+	return conn.LocalAddr().(*net.UDPAddr).AddrPort()
 }
 
 func TestExchangeTCPCorrelationRetryAndEOF(t *testing.T) {

@@ -51,5 +51,8 @@ func exchangeHTTP(ctx context.Context, dialer netproxy.Dialer, target netip.Addr
 	client := &http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return fmt.Errorf("DNS endpoint must not redirect: %s", upstream)
 	}}
-	return ResolveHttp(ctx, client, &url.URL{Scheme: "https", Host: net.JoinHostPort(upstream.Hostname, fmt.Sprint(upstream.Port)), Path: upstream.Path}, msg)
+	return ResolveHttp(ctx, client, &url.URL{
+		Scheme: "https", Host: net.JoinHostPort(upstream.Hostname, fmt.Sprint(upstream.Port)),
+		Path: upstream.Path, RawPath: upstream.RawPath, RawQuery: upstream.RawQuery,
+	}, msg)
 }
