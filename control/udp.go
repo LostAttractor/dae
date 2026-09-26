@@ -433,7 +433,7 @@ func temporaryUDPError(err error) bool {
 		if failure.Scope == netproxy.ScopeOperation && failure.Reason == netproxy.ReasonCapacity {
 			continue
 		}
-		if timeout, ok := IsNetError(failure.Cause); ok && timeout.Timeout() {
+		if timeout, ok := errors.AsType[net.Error](failure.Cause); ok && timeout.Timeout() {
 			continue
 		}
 		if failure.Layer != netproxy.LayerUnknown && failure.Layer != "" && failure.Layer != netproxy.LayerUDP {

@@ -1,15 +1,68 @@
 package control
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fsnotify/fsnotify"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
+
+func TestSetHostSysctlWith(t *testing.T) {
+	t.Run("same value does not write", func(t *testing.T) {
+		writes := 0
+		err := setHostSysctlWith("net.ipv4.ip_forward", "1", func() ([]byte, error) {
+			return []byte("1\n"), nil
+		}, func([]byte) error {
+			writes++
+			return nil
+		})
+		if err != nil || writes != 0 {
+			t.Fatalf("same-value set = %v, writes = %d; want nil, 0", err, writes)
+		}
+	})
+
+	t.Run("different value writes once", func(t *testing.T) {
+		var writes [][]byte
+		err := setHostSysctlWith("net.ipv4.ip_forward", "1", func() ([]byte, error) {
+			return []byte("0\n"), nil
+		}, func(value []byte) error {
+			writes = append(writes, bytes.Clone(value))
+			return nil
+		})
+		if err != nil || len(writes) != 1 || string(writes[0]) != "1" {
+			t.Fatalf("changed-value set = %v, writes = %q; want nil, [1]", err, writes)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		readError bool
+	}{
+		{name: "read error", readError: true},
+		{name: "write error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sentinel := errors.New("permission denied")
+			err := setHostSysctlWith("net.ipv6.conf.all.forwarding", "1", func() ([]byte, error) {
+				if tc.readError {
+					return nil, sentinel
+				}
+				return []byte("0"), nil
+			}, func([]byte) error {
+				return sentinel
+			})
+			if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "net.ipv6.conf.all.forwarding") {
+				t.Fatalf("set error = %v; want wrapped error with exact sysctl name", err)
+			}
+		})
+	}
+}
 
 func TestSysctlWatchLogsRepairOutcome(t *testing.T) {
 	logger := log.StandardLogger()

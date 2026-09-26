@@ -1,12 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
 
 package control
 
 import (
+	"fmt"
 	"net/netip"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 )
+
+func (c *controlPlaneCore) RetrieveRoutingResult(src, dst netip.AddrPort, l4proto uint8) (*bpfRoutingResult, error) {
+	tuples := bpfTuplesKey{
+		Sport:   common.Htons(src.Port()),
+		Dport:   common.Htons(dst.Port()),
+		L4proto: l4proto,
+	}
+	tuples.Sip.U6Addr8 = src.Addr().As16()
+	tuples.Dip.U6Addr8 = dst.Addr().As16()
+
+	var result bpfRoutingResult
+	if err := c.bpf.RoutingTuplesMap.Lookup(&tuples, &result); err != nil {
+		return nil, fmt.Errorf("reading map: key [%v, %v, %v]: %w", src.String(), l4proto, dst.String(), err)
+	}
+	return &result, nil
+}
 
 // routingInput carries the flow properties shared by routing and destination
 // predicates. profileID is the stable identity selected by the kernel; zero

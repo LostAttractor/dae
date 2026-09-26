@@ -6,10 +6,45 @@
 package control
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
+
+	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
+
+func TestLinkSnapshotDisappeared(t *testing.T) {
+	stale := &netlink.Dummy{Index: 2, Name: "eth0"}
+	for _, tc := range []struct {
+		name      string
+		cause     error
+		current   netlink.Link
+		lookupErr error
+		want      bool
+	}{
+		{name: "removed", cause: fmt.Errorf("read sysctl: %w", unix.ENOENT), lookupErr: unix.ENODEV, want: true},
+		{name: "replaced", cause: fmt.Errorf("read sysctl: %w", unix.ENOENT), current: &netlink.Dummy{Index: 3, Name: "eth0"}, want: true},
+		{name: "sysctl missing on live link", cause: fmt.Errorf("read sysctl: %w", unix.ENOENT), current: stale},
+		{name: "permission denied", cause: fmt.Errorf("read sysctl: %w", unix.EACCES), lookupErr: unix.ENODEV},
+		{name: "dual disappearance", cause: errors.Join(unix.ENOENT, unix.ENODEV), lookupErr: unix.ENODEV, want: true},
+		{name: "rollback failure", cause: errors.Join(unix.ENOENT, unix.EIO), lookupErr: unix.ENODEV},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := linkSnapshotDisappeared(stale, tc.cause, func(name string) (netlink.Link, error) {
+				if name != "eth0" {
+					t.Fatalf("lookup name = %q, want eth0", name)
+				}
+				return tc.current, tc.lookupErr
+			})
+			if got != tc.want {
+				t.Fatalf("linkSnapshotDisappeared() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestControlPlaneCoreCleanupOwnership(t *testing.T) {
 	core := &controlPlaneCore{}

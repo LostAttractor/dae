@@ -6,14 +6,106 @@
 package control
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 
+	"github.com/daeuniverse/dae/common/consts"
 	"github.com/fsnotify/fsnotify"
 	log "github.com/sirupsen/logrus"
 )
+
+func checkIpforward(ifname string, ipversion consts.IpVersionStr) error {
+	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/forwarding", ipversion, ifname)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(bytes.TrimSpace(b), []byte("1")) {
+		return nil
+	}
+	return fmt.Errorf("ipforward on %v is off: %v; see docs of dae for help", ifname, path)
+}
+
+func CheckIpforward(ifname string) error {
+	if err := checkIpforward(ifname, consts.IpVersionStr_4); err != nil {
+		return err
+	}
+	if err := checkIpforward(ifname, consts.IpVersionStr_6); err != nil {
+		return err
+	}
+	return nil
+}
+
+func setHostSysctl(name, path, value string) error {
+	return setHostSysctlWith(name, value, func() ([]byte, error) {
+		return os.ReadFile(path)
+	}, func(value []byte) error {
+		return os.WriteFile(path, value, 0644)
+	})
+}
+
+func setHostSysctlWith(name, value string, read func() ([]byte, error), write func([]byte) error) error {
+	current, err := read()
+	if err != nil {
+		return fmt.Errorf("read %s: %w", name, err)
+	}
+	if string(bytes.TrimSpace(current)) == value {
+		return nil
+	}
+	if err := write([]byte(value)); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	return nil
+}
+
+func setForwarding(ifname string, ipversion consts.IpVersionStr, val string) error {
+	name := fmt.Sprintf("net.ipv%v.conf.%v.forwarding", ipversion, ifname)
+	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/forwarding", ipversion, ifname)
+	return setHostSysctl(name, path, val)
+}
+
+func SetIpv4forward(val string) error {
+	return setHostSysctl("net.ipv4.ip_forward", "/proc/sys/net/ipv4/ip_forward", val)
+}
+
+func SetForwarding(ifname string, val string) error {
+	if err := setForwarding(ifname, consts.IpVersionStr_4, val); err != nil {
+		return err
+	}
+	return setForwarding(ifname, consts.IpVersionStr_6, val)
+}
+
+func checkSendRedirects(ifname string, ipversion consts.IpVersionStr) error {
+	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(bytes.TrimSpace(b), []byte("0")) {
+		return nil
+	}
+	return fmt.Errorf("send_redirects on %v is on: %v; see docs of dae for help", ifname, path)
+}
+
+func CheckSendRedirects(ifname string) error {
+	if err := checkSendRedirects(ifname, consts.IpVersionStr_4); err != nil {
+		return err
+	}
+	return nil
+}
+
+func setSendRedirects(ifname string, ipversion consts.IpVersionStr, val string) error {
+	name := fmt.Sprintf("net.ipv%v.conf.%v.send_redirects", ipversion, ifname)
+	path := fmt.Sprintf("/proc/sys/net/ipv%v/conf/%v/send_redirects", ipversion, ifname)
+	return setHostSysctl(name, path, val)
+}
+
+func SetSendRedirects(ifname string, val string) error {
+	return setSendRedirects(ifname, consts.IpVersionStr_4, val)
+}
 
 const SysctlPrefixPath = "/proc/sys/"
 

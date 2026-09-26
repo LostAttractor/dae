@@ -8,12 +8,58 @@ package control
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	log "github.com/sirupsen/logrus"
 )
+
+type _bpfLpmKey struct {
+	PrefixLen uint32
+	Data      [4]uint32
+}
+
+func (o *bpfObjects) newLpmMap(prefixes []netip.Prefix) (m *ebpf.Map, err error) {
+	m, err = ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.LPMTrie,
+		Flags:      o.UnusedLpmType.Flags(),
+		MaxEntries: o.UnusedLpmType.MaxEntries(),
+		KeySize:    o.UnusedLpmType.KeySize(),
+		ValueSize:  o.UnusedLpmType.ValueSize(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(prefixes) == 0 {
+		return m, nil
+	}
+	keys := make([]_bpfLpmKey, len(prefixes))
+	values := make([]uint32, len(prefixes))
+	for i, prefix := range prefixes {
+		keys[i], values[i] = cidrToBpfLpmKey(prefix), 1
+	}
+	if _, err = m.BatchUpdate(keys, values, &ebpf.BatchOptions{
+		ElemFlags: uint64(ebpf.UpdateAny),
+	}); err != nil {
+		_ = m.Close()
+		return nil, err
+	}
+	return m, nil
+}
+
+func cidrToBpfLpmKey(prefix netip.Prefix) _bpfLpmKey {
+	bits := prefix.Bits()
+	if prefix.Addr().Is4() {
+		bits += 96
+	}
+	ip := prefix.Addr().As16()
+	return _bpfLpmKey{
+		PrefixLen: uint32(bits),
+		Data:      common.Ipv6ByteSliceToUint32Array(ip[:]),
+	}
+}
 
 func encodeRoutingProfiles(profiles []routingProfile) (ids []uint32, values []bpfRoutingProfile) {
 	ids = make([]uint32, len(profiles))

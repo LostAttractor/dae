@@ -7,9 +7,11 @@ package control
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
 	"syscall"
@@ -21,6 +23,25 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
+
+func RetrieveOriginalDest(oob []byte) netip.AddrPort {
+	msgs, err := syscall.ParseSocketControlMessage(oob)
+	if err != nil {
+		return netip.AddrPort{}
+	}
+	for _, msg := range msgs {
+		if msg.Header.Level == syscall.SOL_IP && msg.Header.Type == syscall.IP_RECVORIGDSTADDR {
+			ip := msg.Data[4:8]
+			port := binary.BigEndian.Uint16(msg.Data[2:4])
+			return netip.AddrPortFrom(netip.AddrFrom4([4]byte(ip)), port)
+		} else if msg.Header.Level == syscall.SOL_IPV6 && msg.Header.Type == unix.IPV6_RECVORIGDSTADDR {
+			ip := msg.Data[8:24]
+			port := binary.BigEndian.Uint16(msg.Data[2:4])
+			return netip.AddrPortFrom(netip.AddrFrom16([16]byte(ip)), port)
+		}
+	}
+	return netip.AddrPort{}
+}
 
 type Listener struct {
 	tcpListener net.Listener

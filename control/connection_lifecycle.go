@@ -1,10 +1,22 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
+
 package control
 
 import (
 	"errors"
+	"io"
 
 	"github.com/daeuniverse/outbound/netproxy"
 )
+
+// closeInBackground starts cleanup without making control-plane shutdown wait
+// for transports whose Close may block. It does not guarantee cleanup completion.
+func closeInBackground(closer io.Closer) {
+	if closer != nil {
+		go func() { _ = closer.Close() }()
+	}
+}
 
 func connectionAbortCause(leases ...*netproxy.Lease) error {
 	var err error

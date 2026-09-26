@@ -1,15 +1,49 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
 
 package control
 
 import (
+	"bytes"
+	"encoding/hex"
+	"net"
 	"net/netip"
+	"strconv"
 
 	"github.com/daeuniverse/dae/common/consts"
 	log "github.com/sirupsen/logrus"
 )
 
 const routeLogMessage = "route"
+
+func RefineSourceToShow(src netip.AddrPort, dst netip.Addr) string {
+	if src.Addr() == dst {
+		// If nothing else, this means this packet is sent from localhost.
+		return net.JoinHostPort("localhost", strconv.Itoa(int(src.Port())))
+	}
+	return RefineAddrPortToShow(src)
+}
+
+func RefineAddrPortToShow(addrPort netip.AddrPort) string {
+	return net.JoinHostPort(net.IP(addrPort.Addr().AsSlice()).String(), strconv.Itoa(int(addrPort.Port())))
+}
+
+func ProcessName2String(pname []uint8) string {
+	return string(bytes.TrimRight(pname, "\x00"))
+}
+
+func Mac2String(mac []uint8) string {
+	ori := []byte(hex.EncodeToString(mac))
+	// Insert ":".
+	b := make([]byte, len(ori)/2*3-1)
+	for i, j := 0, 0; i < len(ori); i, j = i+2, j+3 {
+		copy(b[j:j+2], ori[i:i+2])
+		if j+2 < len(b) {
+			b[j+2] = ':'
+		}
+	}
+	return string(b)
+}
 
 func routingLogFields(routingResult *bpfRoutingResult, interfaceName string) log.Fields {
 	fields := make(log.Fields)

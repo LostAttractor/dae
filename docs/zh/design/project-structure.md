@@ -93,7 +93,7 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 
 内核仍使用一张 `routing_map`，顺序为 API 精确直通前缀 → DestinationProgram 捕获段 → FlowProgram（包含结束指令）→ RoutingProgram。Go 编译结果记录各段边界，`BuildKernspace` 只上传内核段。DestinationProgram 的精确匹配指令存放在 Go 指令表的用户态后缀，运行时在 FlowProgram 之前单独求值；TCP 连接和活动 UDP 会话复用已经选定的目标。内核段沿用 `MAX_MATCH_SET_LEN` 上限，用户态目的地址段独立检查容量，上限为它的两倍。
 
-内核以 `control_plane_routing` 表示未决路由。路由结果中的 `profile_id` 位于偏移 36，`no_sniff` 位于偏移 43，`route_epoch` 位于偏移 48，完整结果为 56 字节。编译后的目的地址谓词保存指令范围和目标 IP。`RouteParam.destination` 使用有效地址表示已选定目标，UDP 源生命周期固定首次选定的节点、路由及目的地址规则；规则或节点更新不改变已有生命周期，故障结束后同一源端口可按当前规则重新建立。`destination_udp.go` 处理应答地址还原，`udp_binding.go` 管理源绑定。
+内核以 `control_plane_routing` 表示未决路由。路由结果中的 `profile_id` 位于偏移 36，`no_sniff` 位于偏移 43，`route_epoch` 位于偏移 48，完整结果为 56 字节。编译后的目的地址谓词保存指令范围和目标 IP。`RouteParam.destination` 使用有效地址表示已选定目标，UDP 源生命周期固定首次选定的节点、路由及目的地址规则；规则或节点更新不改变已有生命周期，故障结束后同一源端口可按当前规则重新建立。`udp_destination.go` 管理目标 socket 与应答地址还原，`udp_binding.go` 管理源绑定。
 
 `routingInput` 是目的地址谓词和后续路由共用的输入，统一从原始来源、接口、进程、MAC、DSCP 和策略构造；调用方传入本次目标和实际请求协议，无需中间 context 或改写内核记录的协议字段。`RouteParam.Dest` 保留本次匹配的原目标，`destination` 只保存已选定的有效地址，`effectiveDestination()` 提供后续路由和拨号的目标。UDP 建立源生命周期时保存首次 profile 和目的地址匹配器；后续目的地址复用这套规则，已匹配的目的地址（包括未命中改写的原地址）保持不变。只有生命周期结束后，新报文才按当前接口策略和配置重新选路。
 
@@ -101,7 +101,7 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 
 插件用 `HTTPScope{Scope, PreserveRoute}` 声明捕获范围与路由属性；默认在 HTTP 处理后选路，纯检查显式声明 `PreserveRoute: true`。Surge 按模块将脚本、URL Rewrite 和 Map Local 归入请求路由，域名、端口与排除条件保持原样。内核在目标处理前缀捕获这些候选，以 `control_plane_routing` 表示需要用户态决定出站。普通 MITM 保留有效内核路由。客户端准入独立于最终上游路由，已准入的请求先执行 rewrite，再根据最终目标决定 block/direct/proxy；未准入或精确范围未命中时执行普通连接路由。
 
-控制面的职责按文件划分：`route.go` 决定复用或重算路由并提交纯策略结果，`routing_input.go` 统一输入构造，`route_dial.go` 选择节点与带 mark 的拨号器，`route_log.go` 记录路由。`destination_matcher.go` 选择 IP 目标；`destination_udp.go` 处理回包地址还原，`udp_binding.go` 管理源生命周期的内核绑定。`mitm.go` 负责插件接入和连接准入；`http_target.go` 共用目标解析、DNS 候选与 DestinationRule 求值，`http_route_plan.go` 构建逐请求计划，`http_dial.go` 负责实际上游拨号与统计。`mitm_download.go` 管理后台客户端生命周期和 daemon 身份。HTTP Host 接受 planner，由计划确定目标、路由及传输资源。
+控制面的职责按文件划分：`route.go` 决定复用或重算路由并提交纯策略结果，`routing_input.go` 统一输入构造，`route_dial.go` 选择节点与带 mark 的拨号器，`route_log.go` 记录路由。`destination_matcher.go` 选择 IP 目标；`udp_destination.go` 管理目标 socket 与回包地址还原，`udp_binding.go` 管理源生命周期的内核绑定。`mitm.go` 负责插件接入和连接准入；`http_target.go` 共用目标解析、DNS 候选与 DestinationRule 求值，`http_route_plan.go` 构建逐请求计划，`http_dial.go` 负责实际上游拨号与统计。`mitm_download.go` 管理后台客户端生命周期和 daemon 身份。HTTP Host 接受 planner，由计划确定目标、路由及传输资源。
 
 节点的 `groupBinding` 直接保存最近十次连通性检查的延迟与失败标记，由 `Dialer.mu` 统一保护。失败检查按配置罚时入窗，读取快照时从这十个样本计算平均值和窗口失败状态；移动平均在记录样本时更新。可用性查询只检查健康、当前 Session 和网络支持状态。用户态 Trie 构造时的未压缩 rank/select 数组为局部临时数据，对象只保留查询所需的紧凑索引。
 

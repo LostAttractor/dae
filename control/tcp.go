@@ -7,6 +7,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -86,7 +87,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	if err != nil && !sniffing.IsSniffingError(err) {
 		c.domainActivity().observe(dst.Addr(), domain, observedAt)
 		// We ignore lConn errors or temporary network errors
-		if _, ok := IsNetError(err); ok {
+		if _, ok := errors.AsType[net.Error](err); ok {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("sniff TCP destination: %w", err)

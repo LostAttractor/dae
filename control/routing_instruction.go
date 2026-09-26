@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
 
 package control
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strconv"
 
@@ -10,6 +12,23 @@ import (
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+type _bpfPortRange struct {
+	PortStart uint16
+	PortEnd   uint16
+}
+
+func (r _bpfPortRange) Encode() (b [16]byte) {
+	binary.LittleEndian.PutUint16(b[:2], r.PortStart)
+	binary.LittleEndian.PutUint16(b[2:], r.PortEnd)
+	return b
+}
+
+func ParsePortRange(b []byte) (portStart, portEnd uint16) {
+	portStart = binary.LittleEndian.Uint16(b[:2])
+	portEnd = binary.LittleEndian.Uint16(b[2:])
+	return portStart, portEnd
+}
 
 // Keep these bits in sync with MATCH_FLAG_* in kern/routing_abi.h.
 const (
