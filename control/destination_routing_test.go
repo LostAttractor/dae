@@ -19,12 +19,17 @@ func TestDestinationRoutingPreservesIdentityAndUsesNewContext(t *testing.T) {
 	for _, proto := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP} {
 		t.Run(string(proto), func(t *testing.T) {
 			prepared := prepareFlowRulesForTest(t, `
-dip(192.0.2.20) -> dnat('[2001:db8::20]:1053')
+interface(lan) && dip(192.0.2.20) -> dnat('[2001:db8::20]:1053')
 dip('2001:db8::20') -> dnat(203.0.113.30)
 ipversion(6) && dip('2001:db8::20') -> must`, `
-domain(full: original.example) && ipversion(6) && dip('2001:db8::20') && sip(192.0.2.10) && sport(5000) && dport(1053) && dscp(46) && pname(app) -> proxy(mark:91)
+interface(lan) && domain(full: original.example) && ipversion(6) && dip('2001:db8::20') && sip(192.0.2.10) && sport(5000) && dport(1053) && dscp(46) && pname(app) -> proxy(mark:91)
 dip(192.0.2.20) -> block`)
-			matcher, _ := routingMatcherForTest(t, prepared)
+			matcher, builder := routingMatcherForTest(t, prepared)
+			for _, patch := range builder.interfaceRulePatches {
+				if err := builder.updateIfindex(patch.matchIndex, 8, false); err != nil {
+					t.Fatal(err)
+				}
+			}
 			// A separate selected profile must survive destination reevaluation.
 			matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
 			matcher.defaultProfileID = 99
@@ -35,7 +40,7 @@ dip(192.0.2.20) -> block`)
 			plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{
 				downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused),
 			}, core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}, sniffVerifyMode: consts.SniffVerifyMode_None}
-			result := bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, ProfileId: 42, Ifindex: 7, Dscp: 46, Mac: [6]byte{2, 0, 0, 0, 0, 1}}
+			result := bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, ProfileId: 42, Ifindex: 7, Physinif: 8, Dscp: 46, Mac: [6]byte{2, 0, 0, 0, 0, 1}}
 			copy(result.Pname[:], "app")
 			original := netip.MustParseAddrPort("192.0.2.20:443")
 			param := &RouteParam{Dest: original, Src: netip.MustParseAddrPort("192.0.2.10:5000"), Domain: "original.example", routingResult: &result,
@@ -47,7 +52,7 @@ dip(192.0.2.20) -> block`)
 			if option.Outbound.Name != "proxy" || option.DialTarget != "[2001:db8::20]:1053" || option.NetworkType.IpVersion != consts.IpVersionStr_6 || result.Mark != 91 || result.Must != 1 {
 				t.Fatalf("effective context lost: option=%+v result=%+v", option, result)
 			}
-			if param.Dest != original || result.ProfileId != 42 || result.Ifindex != 7 || result.Mac[5] != 1 {
+			if param.Dest != original || result.ProfileId != 42 || result.Ifindex != 7 || result.Physinif != 8 || result.Mac[5] != 1 {
 				t.Fatal("destination rewrite changed ingress identity")
 			}
 		})

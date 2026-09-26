@@ -301,6 +301,24 @@ domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 
 ```
 
+## Bridge 成员接口匹配
+
+`interface(name)` 同时匹配捕获接口和内核 bridge netfilter 保存的入口成员接口（`physinif`）。例如，`global.lan_interface: br-lan`，且 `br-lan` 下有 `lan`、`direct` 两个成员时：
+
+```text
+routing {
+    interface(direct) -> direct
+    interface(lan) -> my_group
+    fallback: direct
+}
+```
+
+`interface(br-lan)` 可以匹配两边的流量。多值条件匹配任一接口即可；`!interface(lan,direct)` 表示捕获接口和入口成员均未匹配这些名称。尚未存在的接口不会以索引 `0` 命中。
+
+成员信息依赖内核 `CONFIG_BRIDGE_NETFILTER`、`br_netfilter` 模块以及对应协议的 bridge netfilter 路径，例如 IPv4 的 `net.bridge.bridge-nf-call-iptables=1`、IPv6 的 `net.bridge.bridge-nf-call-ip6tables=1`。dae 只读取已有信息，不自动开启这些选项。没有 `physinif` 时只匹配捕获接口；普通 `ingress_ifindex` 在 bridge 上通常已经被改为 bridge 自身。VLAN 等封装还取决于相应 bridge netfilter 设置。
+
+入口成员身份会随路由结果保留到 UDP 缓存及用户态重路由。策略的接口绑定仍按捕获接口选择策略，`interface()` 在选中的策略内匹配。
+
 ## `rules {}` 中的流量控制
 
 `must` 跳过自动 DNS 接管，继续由普通路由选择出站。`bump` 要求用户态重新路由，出站和 mark 仍由 `routing {}` 决定。它们独立于 MITM，可同时命中，不依赖书写顺序。`must` 不会取消显式的 `bump`、MITM 或 DNAT 捕获。 整个控制段执行完后才决定是否进入用户态；域名歧义不会遮蔽后续确定性 must 或捕获动作。

@@ -83,7 +83,8 @@ func (p *routingPredicates) match(m *RoutingMatcher, match *bpfMatchSet) (predic
 	case consts.MatchType_ProcessName:
 		hit = p.input.processName[0] != 0 && match.Value == p.input.processName
 	case consts.MatchType_IfIndex:
-		hit = p.input.ifindex != 0 && p.input.ifindex == binary.LittleEndian.Uint32(match.Value[:])
+		index := binary.LittleEndian.Uint32(match.Value[:])
+		hit = index != 0 && (p.input.ifindex == index || p.input.physinif == index)
 	case consts.MatchType_Dscp:
 		hit = p.input.dscp == match.Value[0]
 	case consts.MatchType_Fallback:

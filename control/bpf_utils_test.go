@@ -44,12 +44,12 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 	}
 	var result bpfRoutingResult
 	if size := unsafe.Sizeof(result); size != 56 || spec.Maps["routing_tuples_map"].ValueSize != uint32(size) ||
-		unsafe.Offsetof(result.Protocol) != 42 || unsafe.Offsetof(result.NoSniff) != 43 || unsafe.Offsetof(result.RouteEpoch) != 48 {
-		t.Fatalf("routing result layout: size=%d protocol=%d no_sniff=%d route_epoch=%d", size, unsafe.Offsetof(result.Protocol), unsafe.Offsetof(result.NoSniff), unsafe.Offsetof(result.RouteEpoch))
+		unsafe.Offsetof(result.Protocol) != 42 || unsafe.Offsetof(result.NoSniff) != 43 || unsafe.Offsetof(result.Physinif) != 44 || unsafe.Offsetof(result.RouteEpoch) != 48 {
+		t.Fatalf("routing result layout: size=%d protocol=%d no_sniff=%d physinif=%d route_epoch=%d", size, unsafe.Offsetof(result.Protocol), unsafe.Offsetof(result.NoSniff), unsafe.Offsetof(result.Physinif), unsafe.Offsetof(result.RouteEpoch))
 	}
 	cache := spec.Maps["udp_routing_cache_map"]
 	var value bpfUdpRoutingCacheValue
-	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 32 || unsafe.Sizeof(value) != 64 || unsafe.Sizeof(value.Result) != 32 {
+	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 40 || unsafe.Sizeof(value) != 72 || unsafe.Sizeof(value.Result) != 40 {
 		t.Fatalf("UDP cache layout: key=%d value=%d cached_until=%d", cache.KeySize, cache.ValueSize, unsafe.Offsetof(value.CachedUntil))
 	}
 }

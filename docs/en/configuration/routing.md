@@ -305,6 +305,24 @@ domain(geosite:category-games) -> game_proxy(skip_while_noalive: true)
 
 ```
 
+## Bridge member interface matching
+
+`interface(name)` matches either the capture interface or the ingress bridge member saved by kernel bridge netfilter (`physinif`). For example, with `global.lan_interface: br-lan` and members named `lan` and `direct`:
+
+```text
+routing {
+    interface(direct) -> direct
+    interface(lan) -> my_group
+    fallback: direct
+}
+```
+
+`interface(br-lan)` matches traffic from either member. Multiple values match any listed interface; `!interface(lan,direct)` requires neither identity to match any listed name. An unresolved interface never matches index `0`.
+
+Member metadata requires kernel `CONFIG_BRIDGE_NETFILTER`, the `br_netfilter` module, and the corresponding protocol's bridge netfilter path, for example `net.bridge.bridge-nf-call-iptables=1` for IPv4 and `net.bridge.bridge-nf-call-ip6tables=1` for IPv6. dae only reads existing metadata and does not enable these settings. Without `physinif`, only the capture interface matches; ordinary `ingress_ifindex` has usually already become the bridge itself. VLAN and other encapsulations also depend on their bridge netfilter settings.
+
+The member identity is retained through UDP caching and userspace rerouting. Policy interface bindings still select a policy by capture interface; `interface()` matches within the selected policy.
+
 ## Flow controls in `rules {}`
 
 `must` skips automatic DNS interception and continues to ordinary outbound selection. `bump` requires userspace routing; `routing {}` still chooses the outbound and mark. These controls are independent of MITM and may both match a connection, regardless of their order. A `must` match does not cancel explicit `bump`, MITM or DNAT capture. The entire flow-control phase runs before handing off to userspace: an ambiguous domain match cannot hide a later definite `must` or capture action.

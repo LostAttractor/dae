@@ -17,6 +17,7 @@ type routingInput struct {
 	domain             string
 	processName        [16]byte
 	ifindex, profileID uint32
+	physinif           uint32
 	dscp               uint8
 	mac                [6]byte
 	domainBitmap       []uint32
@@ -40,7 +41,8 @@ func (r *bpfRoutingResult) routingInput(src, dst netip.AddrPort, domain string, 
 	return routingInput{
 		src: src, dst: dst, domain: domain, l4proto: protocol,
 		processName: r.Pname, ifindex: r.Ifindex, profileID: r.ProfileId,
-		dscp: r.Dscp, mac: r.Mac,
+		physinif: r.Physinif,
+		dscp:     r.Dscp, mac: r.Mac,
 	}
 }
 

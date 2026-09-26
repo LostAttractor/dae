@@ -26,6 +26,8 @@
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
 
+#include "bridge.h"
+
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
 // #define __PRINT_SETUP_PROCESS_CONNNECTION
@@ -188,6 +190,8 @@ struct routing_result {
 	__u8 capture_flags;
 	__u8 protocol;
 	__u8 no_sniff;
+	/* Use the former padding before route_epoch to retain the pinned ABI. */
+	__u32 physinif;
 	__u64 route_epoch;
 };
 
@@ -195,6 +199,8 @@ _Static_assert(sizeof(struct routing_result) == 56,
 	       "routing_result pinned-map ABI changed unexpectedly");
 _Static_assert(__builtin_offsetof(struct routing_result, capture_flags) == 41,
 	       "routing_result capture flags ABI offset");
+_Static_assert(__builtin_offsetof(struct routing_result, physinif) == 44,
+	       "routing_result bridge member ABI offset");
 
 struct tuples_key {
 	union ip6 sip;
@@ -233,6 +239,7 @@ struct routing_decision {
 	__u8 protocol;
 	__u8 no_sniff;
 	__u8 dscp;
+	__u32 physinif;
 };
 
 struct udp_routing_cache_value {
@@ -250,10 +257,10 @@ struct udp_routing_scratch {
 	__u64 zero[3];
 };
 
-_Static_assert(sizeof(struct routing_decision) == 32, "UDP decision ABI size");
+_Static_assert(sizeof(struct routing_decision) == 40, "UDP decision ABI size");
 _Static_assert(sizeof(struct udp_routing_cache_key) == 24, "UDP source key ABI size");
-_Static_assert(sizeof(struct udp_routing_cache_value) == 64, "UDP cache value ABI size");
-_Static_assert(__builtin_offsetof(struct udp_routing_cache_value, cached_until) == 32,
+_Static_assert(sizeof(struct udp_routing_cache_value) == 72, "UDP cache value ABI size");
+_Static_assert(__builtin_offsetof(struct udp_routing_cache_value, cached_until) == 40,
 	       "UDP cache expiry ABI offset");
 _Static_assert(sizeof(struct udp_routing_scratch) == sizeof(struct udp_routing_cache_value),
 	       "UDP insertion layout mismatch");
@@ -886,6 +893,7 @@ static __always_inline void expand_udp_decision(struct routing_result *result,
 	result->route_epoch = decision->route_epoch;
 	result->mark = decision->mark;
 	result->ifindex = decision->ifindex;
+	result->physinif = decision->physinif;
 	result->profile_id = decision->profile_id;
 	result->outbound = decision->outbound;
 	result->must = decision->must;
@@ -902,6 +910,7 @@ static __always_inline void compact_udp_decision(struct routing_decision *decisi
 	decision->route_epoch = result->route_epoch;
 	decision->mark = result->mark;
 	decision->ifindex = result->ifindex;
+	decision->physinif = result->physinif;
 	decision->profile_id = result->profile_id;
 	decision->outbound = result->outbound;
 	decision->must = result->must;
@@ -1173,6 +1182,7 @@ static __always_inline int do_tproxy_first_fragment(
 	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
 	params.dscp = tuples->dscp;
 	params.ifindex = skb->ifindex;
+	params.physinif = is_wan ? 0 : skb_bridge_physinif(skb);
 	params.mac = ethh->h_source;
 	params.saddr = tuples->five.sip.u6_addr32;
 	params.daddr = tuples->five.dip.u6_addr32;
@@ -1196,6 +1206,8 @@ static __always_inline int do_tproxy_first_fragment(
 		result->outbound = OUTBOUND_DIRECT;
 		result->route_epoch = route_epoch;
 		result->profile_id = params.profile_id;
+		result->ifindex = params.ifindex;
+		result->physinif = params.physinif;
 
 		__builtin_memcpy(result->mac, ethh->h_source, sizeof(result->mac));
 		if (l4proto == IPPROTO_UDP) {
@@ -1369,6 +1381,7 @@ static __always_inline int do_tproxy_unfragmented(
 	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
 	params.dscp = tuples->dscp;
 	params.ifindex = ifindex;
+	params.physinif = is_wan ? 0 : skb_bridge_physinif(skb);
 	params.mac = ethh->h_source;
 	params.saddr = tuples->five.sip.u6_addr32;
 	params.daddr = tuples->five.dip.u6_addr32;
@@ -1389,6 +1402,7 @@ static __always_inline int do_tproxy_unfragmented(
 	routing_result->protocol = params.l4proto_type;
 	routing_result->dscp = tuples->dscp;
 	routing_result->ifindex = ifindex;
+	routing_result->physinif = params.physinif;
 	__builtin_memcpy(routing_result->mac, ethh->h_source, sizeof(routing_result->mac));
 
 	if (routing_result->outbound == OUTBOUND_BLOCK)

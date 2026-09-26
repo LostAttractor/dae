@@ -8,6 +8,56 @@
 #include "../tproxy.c"
 #include "./bpf_test.h"
 
+struct bridge_test_result {
+	__u32 ifindex;
+	__u32 physinif;
+	__u32 verdict;
+	__u32 mark;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, __u32);
+	__type(value, struct bridge_test_result);
+	__uint(max_entries, 256);
+} bridge_test_results SEC(".maps");
+
+struct bridge_test_scratch {
+	struct bridge_test_result result;
+	__be16 source;
+	__u32 key;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct bridge_test_scratch);
+	__uint(max_entries, 1);
+} bridge_test_scratch_map SEC(".maps");
+
+/* Observe the real classifier decision on a live bridge, including direct.
+ * The integration test sends fixed-size IPv4/IPv6 headers without options.
+ */
+SEC("tc/test_bridge_ingress")
+int test_bridge_ingress(struct __sk_buff *skb)
+{
+	__u32 ip_len = skb->protocol == bpf_htons(ETH_P_IP) ? 20 : 40;
+	struct bridge_test_scratch *scratch =
+		bpf_map_lookup_elem(&bridge_test_scratch_map, &zero_key);
+
+	if (!scratch || bpf_skb_load_bytes(skb, ETH_HLEN + ip_len,
+					  &scratch->source, sizeof(scratch->source)))
+		return TCX_NEXT;
+	scratch->key = bpf_ntohs(scratch->source);
+	scratch->result.ifindex = skb->ifindex;
+	scratch->result.physinif = skb_bridge_physinif(skb);
+
+	scratch->result.verdict = do_tproxy(skb, false, ETH_HLEN);
+	scratch->result.mark = skb->mark;
+	bpf_map_update_elem(&bridge_test_results, &scratch->key, &scratch->result, BPF_ANY);
+	return scratch->result.verdict;
+}
+
 /* A full profile exceeds the BPF stack limit; prepare test values in .bss. */
 struct routing_profile test_profile;
 

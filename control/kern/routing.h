@@ -26,6 +26,7 @@ struct route_params {
 	__u32 ifindex;
 	__u32 profile_id;
 	const struct routing_profile *profile;
+	__u32 physinif;
 	__u8 l4proto_type;
 	__u8 ipversion_type;
 	__u8 dscp;
@@ -139,7 +140,9 @@ lookup_lpm:
 			return MATCH_HIT;
 		break;
 	case MatchType_IfIndex:
-		if (ctx->params->ifindex == match_set->ifindex)
+		if (match_set->ifindex &&
+		    (ctx->params->ifindex == match_set->ifindex ||
+		     ctx->params->physinif == match_set->ifindex))
 			return MATCH_HIT;
 		break;
 	case MatchType_Dscp:

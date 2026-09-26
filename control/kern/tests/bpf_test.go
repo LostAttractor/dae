@@ -67,6 +67,11 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 	})
 
 	spec, err := loadBpftest()
+	// Ablation experiments load separately compiled test objects, keeping
+	// experimental switches out of the production classifier.
+	if path := os.Getenv("DAE_BPF_TEST_OBJECT"); path != "" {
+		spec, err = ebpf.LoadCollectionSpec(path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -90,11 +95,8 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 			Programs: ebpf.ProgramOptions{},
 		},
 	); err != nil {
-		var (
-			ve          *ebpf.VerifierError
-			verifierLog string
-		)
-		if errors.As(err, &ve) {
+		var verifierLog string
+		if ve, ok := errors.AsType[*ebpf.VerifierError](err); ok {
 			verifierLog = fmt.Sprintf("Verifier error: %+v\n", ve)
 		}
 		return nil, fmt.Errorf("failed to load objects: %s%w", verifierLog, err)
