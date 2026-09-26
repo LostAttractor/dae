@@ -270,6 +270,67 @@ and closes connections, then closes plugins after execution exits.
 See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
 [status fields](../../docs/en/configuration/api.md).
 
+## Persistent storage
+
+`Services.Storage` provides instance-scoped `Get(key)`, `Put(key, []byte)` and
+`Delete(key)` operations for small persistent state. The daemon supplies it
+automatically through `Configuration.Load` when `Services.BaseDir` is nonempty. Direct
+factory callers can leave it nil for memory-only operation or inject a store
+implementing the same contract. Backend construction and lifetime belong to the
+host; `Configuration.Load` derives each instance's store from its base directory, type and
+ID rather than sharing an incoming `Services.Storage` across instances.
+
+```go
+// Restore after activation (Run, or a synchronized first invocation).
+raw, err := services.Storage.Get("state.json")
+if errors.Is(err, fs.ErrNotExist) {
+    // No state saved yet.
+} else if err != nil {
+    // Handle a storage failure without logging secret values.
+} else {
+    // Decode and validate the plugin's versioned state.
+    _ = raw
+}
+// Serialize related fields as one value for atomic replacement.
+err = services.Storage.Put("state.json", encodedState)
+// Removing a missing key succeeds.
+err = services.Storage.Delete("state.json")
+```
+
+Keys contain 1–128 ASCII letters, digits, `.`, `_` or `-`, starting with a letter
+or digit. Values are opaque bytes, limited to 8 MiB on reads and writes. Invalid
+keys and oversized values return errors matching `fs.ErrInvalid`.
+`Get` returns caller-owned bytes. Operations are concurrency-safe and writes
+atomically replace whole values, including across
+separately opened handles. There are no multi-key transactions or atomic
+read/modify/write operations; concurrent writes to one key are last-commit-wins.
+The caller must not mutate a value while `Put` is running.
+
+The disk layout is `BaseDir/plugins/state/<namespace>/<key>`. The namespace is
+`<type>` when the instance ID equals the type, otherwise `<type>@<instance>`.
+For example, the default bilijump instance uses `plugins/state/bilijump/`, and
+an instance named `personal` uses `plugins/state/bilijump@personal/`. Paths are
+independent of instance count, so adding another instance does not move state.
+Type and instance names are separately URL-path-escaped, including `@`, `.` and
+`..`, to avoid namespace collisions. The daemon base is `DAE_LOCATION_CACHE`,
+defaulting to `/var/lib/dae`. Keeping the type and instance ID stable preserves
+state through reload/restart; changing type selects a different namespace.
+Renaming, disabling or removing an instance does not delete its files. Reads and
+deletes do not create directories; writes create directories with mode `0700`
+and files with `0600`, sync the temporary file, rename it, then sync the directory.
+Values are stored unencrypted. Storage has no open resources between calls and
+requires no `Close`.
+
+Plugins own schemas, validation, migrations, TTLs, limits and error policy.
+Retain original timestamps when restoring expiring state. Coalesce frequent
+writes in a worker and flush in `Close` after requests/workers have drained;
+`Report` must not perform storage I/O. Preparation may overlap the active old
+generation: the factory must not write state, and a failed/abandoned preparation's
+`Close` must not flush an unactivated snapshot. Restore mutable runtime state
+after activation so the old generation's final flush and invalidations are seen.
+The daemon closes the old host before starting the successor. Direct embedders
+must preserve that ordering or coordinate concurrent writers themselves.
+
 ## Commands
 
 `Definition.Commands` returns fresh `[]*cobra.Command` using `plugin.CommandServices`.

@@ -48,6 +48,10 @@ func (c *Configuration) Load(ctx context.Context, options Options, services plug
 		}
 		local.Logger = local.Logger.WithField("plugin_instance", spec.ID)
 		local.BodyMemory = options.bodyMemory()
+		local.Storage, err = newPluginStorage(local.BaseDir, spec)
+		if err != nil {
+			return nil, fmt.Errorf("plugins.%s storage: %w", spec.ID, err)
+		}
 		implementation, err := configured.factory(ctx, local)
 		if err != nil {
 			return nil, fmt.Errorf("plugins.%s: %w", spec.ID, err)

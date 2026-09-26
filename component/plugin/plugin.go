@@ -85,6 +85,11 @@ type Services struct {
 	PrepareClient *http.Client
 	// BodyMemory is the host-owned process budget, shared across reloads.
 	BodyMemory *membuffer.Budget
+	// Storage persists opaque values in this type/instance's namespace. The host
+	// supplies it when BaseDir is nonempty; direct factory callers may leave it nil.
+	// Preparation must only read: failed/replaced preparations can be closed
+	// without activation. Reload-sensitive state should be read after activation.
+	Storage Storage
 }
 
 // Factory prepares resources without starting workers. On error it must release
