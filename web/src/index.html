@@ -4,30 +4,30 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>dae · Network settings</title>
+  <title>dae · Network Settings</title>
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
   <div class="shell">
     <header class="page-header">
-      <h1>Network settings</h1>
+      <h1>Network Settings</h1>
     </header>
 
     <main>
-      <noscript><p class="notice">Enable JavaScript to use the network console.</p></noscript>
+      <noscript><p class="notice">Enable JavaScript to manage network settings.</p></noscript>
 
       <fieldset id="controls" aria-label="Network controls">
         <div class="toolbar card">
           <form id="login-form" class="login-form">
             <div class="key-field">
-              <label for="api-key">API key</label>
+              <label for="api-key">API Key</label>
               <input id="api-key" name="api-key" type="password" autocomplete="current-password" spellcheck="false" placeholder="Enter your API key" required>
             </div>
-            <button id="login" class="primary" type="submit">Login</button>
+            <button id="login" type="submit">Login</button>
           </form>
           <div id="session-info" class="session-info" hidden>
-            <div><strong id="access-title">Administrator</strong><p id="access-description">Signed in · Remembered for 7 days</p></div>
+            <div><span id="access-title" class="badge">Administrator</span><p id="access-description">Logged in · Remembered for 7 days</p></div>
             <button id="logout" type="button">Logout</button>
           </div>
           <div class="refresh-controls">
@@ -41,35 +41,34 @@
           <section class="card selectors-card" aria-labelledby="selectors-title">
             <div class="card-heading">
               <h2 id="selectors-title">Selectors</h2>
-              <span id="selector-count" class="badge">Login required</span>
+              <span id="selector-count" class="count" hidden>Login required</span>
             </div>
-            <p class="section-description">Choose a node or test connectivity. Selections apply to devices using the group.</p>
+            <p class="section-description">Select a node or test connectivity. Selections apply to devices using the group.</p>
             <div id="selectors-locked" class="empty-state">
-              <h3 id="access-required">Login required</h3>
+              <p id="access-required" class="badge">Login required</p>
               <p id="login-hint">Enter your API key above to view selector status and switch nodes.</p>
             </div>
             <div id="selectors" class="selector-list" hidden></div>
           </section>
 
-          <div class="sidebar">
-            <section class="card" aria-labelledby="device-title">
-              <h2 id="device-title">This device</h2>
-              <p class="section-description">Choose this device’s network options.</p>
-              <p id="identity" class="device-identity">Identifying your device…</p>
-              <div id="sets" class="set-list"></div>
-            </section>
+          <section class="card" aria-labelledby="device-title">
+            <h2 id="device-title">This Device</h2>
+            <p class="section-description">Choose this device’s network options.</p>
+            <p id="identity" class="device-identity code-block">Identifying your device…</p>
+            <div id="sets" class="set-list"></div>
+          </section>
 
-            <section class="card" aria-labelledby="https-title">
-              <h2 id="https-title">HTTPS modules</h2>
-              <div id="mitm" class="mitm-state"><p class="muted">Loading device settings…</p></div>
-              <div id="certificate-panel" class="certificate-panel" hidden>
-                <h3>Trust certificate</h3>
-                <p>Verify the CA fingerprint on your router, then install and trust the certificate before enabling modules.</p>
-                <div id="certificate" class="fingerprint"></div>
-                <div class="download-links"><a href="/ca.mobileconfig">iOS profile</a><a href="/ca.cer">DER</a><a href="/ca.pem">PEM</a></div>
-              </div>
-            </section>
-          </div>
+          <section class="card" aria-labelledby="https-title">
+            <h2 id="https-title">HTTPS Modules</h2>
+            <p class="section-description">Manage HTTPS modules for this device.</p>
+            <div id="mitm" class="mitm-state"><p class="muted">Loading device settings…</p></div>
+            <div id="certificate-panel" class="certificate-panel" hidden>
+              <h3>Trust Certificate</h3>
+              <p>Verify the CA fingerprint on your router, then install and trust the certificate before enabling modules.</p>
+              <div id="certificate" class="code-block"></div>
+              <div class="download-links"><a href="/ca.mobileconfig">iOS Profile</a><a href="/ca.cer">DER Certificate</a><a href="/ca.pem">PEM Certificate</a></div>
+            </div>
+          </section>
         </div>
       </fieldset>
     </main>
@@ -82,29 +81,29 @@
   </template>
   <template id="selector-template">
     <section class="selector-row">
-      <div class="selector-heading"><h3 class="selector-name"></h3><span class="node-count"></span><span class="selection-source badge"></span></div>
+      <div class="selector-heading"><h3 class="selector-name"></h3><span class="node-count count"></span><span class="selection-source badge"></span></div>
       <div class="selector-control">
         <button class="node-picker" type="button" aria-haspopup="dialog" aria-expanded="false"><span class="selected-name"></span><span class="picker-arrow" aria-hidden="true"></span></button>
         <button class="test-selected" type="button">Test</button>
         <div class="node-popover" popover="auto" role="dialog">
-          <input class="node-search" type="search" placeholder="Find a node…" autocomplete="off" spellcheck="false" autofocus>
+          <input class="node-search" type="search" placeholder="Search nodes…" autocomplete="off" spellcheck="false" autofocus>
           <p class="node-results" role="status"></p>
           <div class="node-list"></div>
           <p class="no-nodes muted" hidden>No matching nodes.</p>
         </div>
       </div>
-      <div class="selected-status"><span class="node-health"></span><span class="node-latency"></span><span class="node-checked"></span></div>
-      <div class="selector-actions"><span class="tracking-status badge" title="All nodes are monitored automatically" hidden>Tracking all nodes</span><div class="selector-buttons"><button class="test-all" type="button">Test all</button><button class="reset" type="button" hidden>Reset to default</button></div></div>
+      <div class="selected-status status-row"><span class="node-health badge"></span><span class="node-latency"></span><span class="node-monitoring badge"></span><span class="node-checked"></span></div>
+      <div class="selector-actions"><span class="tracking-status badge" title="All nodes are monitored automatically" hidden>Monitoring all nodes</span><div class="selector-buttons button-row"><button class="test-all" type="button">Test All</button><button class="reset" type="button" hidden>Reset Default</button></div></div>
     </section>
   </template>
   <template id="selector-node-template">
     <div class="selector-node">
-      <button class="select-node" type="button"><span class="node-name"></span><span class="node-check" aria-hidden="true"></span><span class="node-status"><span class="node-health"></span><span class="node-latency"></span></span></button>
+      <button class="select-node" type="button"><span class="node-name"></span><span class="node-check" aria-hidden="true"></span><span class="node-status status-row"><span class="node-health badge"></span><span class="node-latency"></span></span></button>
       <button class="test-node" type="button">Test</button>
     </div>
   </template>
   <template id="mitm-template">
-    <div><div class="mitm-summary"><span class="badge"></span><small class="muted"></small></div><div class="button-row"><button class="toggle" type="button"></button><button class="reset" type="button">Reset to default</button></div></div>
+    <div><div class="mitm-summary status-row"><span class="mitm-enabled badge"></span><span class="settings-source badge"></span></div><div class="button-row"><button class="toggle" type="button"></button><button class="reset" type="button">Reset Default</button></div></div>
   </template>
 </body>
 </html>

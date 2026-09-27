@@ -16,15 +16,15 @@ function renderHealth(element, node) {
   const state = healthState(node);
   const health = element.querySelector(".node-health");
   health.textContent = healthLabels[state];
-  health.dataset.health = state;
+  health.dataset.tone = state === "unavailable" ? "error" : "neutral";
   element.querySelector(".node-latency").textContent = latencyLabel(node);
 }
 
 function checkedLabel(node) {
-  if (!node) return "";
-  const checked = node.checked_at ? ` · Last check ${new Date(node.checked_at).toLocaleString()}` : "";
-  return `${node.tracking ? "Monitoring" : "On demand"}${checked}`;
+  return node?.checked_at ? `Last tested ${new Date(node.checked_at).toLocaleString()}` : "";
 }
+
+const monitoringLabel = (node) => node.tracking ? "Monitoring" : "On demand";
 
 // Fit the popup around its control, using the visible viewport when a mobile
 // keyboard is open. The candidate list supplies its own bounded scroll area.
@@ -68,10 +68,10 @@ export function selectorRow(selector, { run, request, refresh }) {
   const nodes = new Map();
   const isOpen = () => menu.matches(":popover-open");
   menu.id = `${heading.id}-nodes`;
-  menu.setAttribute("aria-label", `Choose a node in ${selector.name}`);
+  menu.setAttribute("aria-label", `Select a node in ${selector.name}`);
   picker.setAttribute("popovertarget", menu.id);
   picker.setAttribute("aria-controls", menu.id);
-  search.setAttribute("aria-label", `Find a node in ${selector.name}`);
+  search.setAttribute("aria-label", `Search nodes in ${selector.name}`);
 
   async function save(method, body, success) {
     const saved = await run(async () => {
@@ -145,7 +145,7 @@ export function selectorRow(selector, { run, request, refresh }) {
       test.setAttribute("aria-label", `Test ${node.name}`);
       const select = element.querySelector(".select-node");
       select.setAttribute("aria-pressed", String(selected));
-      select.title = `${node.name}${node.id === selector.default_node_id ? " · Default" : ""}\n${checkedLabel(node)}`;
+      select.title = `${node.name}${node.id === selector.default_node_id ? " · Default" : ""}\n${monitoringLabel(node)}${node.checked_at ? ` · ${checkedLabel(node)}` : ""}`;
       select.setAttribute("aria-label", `${selected ? "Selected" : "Select"} ${node.name}, ${healthLabels[healthState(node)]} ${latencyLabel(node)}`.trim());
       // Update in place, but also follow configuration reordering. Unchanged
       // elements are never detached, preserving focus and search while polling.
@@ -198,11 +198,10 @@ export function selectorRow(selector, { run, request, refresh }) {
     row.classList.toggle("tracking-all", selector.track_all);
     const source = row.querySelector(".selection-source");
     source.hidden = !selector.default_node_id;
-    source.textContent = selector.overridden ? "Manual" : "Default";
-    source.classList.toggle("active", selector.overridden);
+    source.textContent = selector.overridden ? "Custom" : "Default";
     row.querySelector(".node-count").textContent = `${selector.nodes.length} node${selector.nodes.length === 1 ? "" : "s"}`;
     const node = selector.nodes.find((candidate) => candidate.id === selector.node_id);
-    const name = node ? node.name : "Choose a node";
+    const name = node ? node.name : "Select a node";
     row.querySelector(".selected-name").textContent = name;
     picker.title = name;
     picker.setAttribute("aria-label", `${selector.name}: ${name}`);
@@ -211,6 +210,9 @@ export function selectorRow(selector, { run, request, refresh }) {
     testSelected.hidden = selector.track_all;
     const summary = row.querySelector(".selected-status");
     renderHealth(summary, node);
+    const monitoring = summary.querySelector(".node-monitoring");
+    monitoring.hidden = !node || selector.track_all;
+    monitoring.textContent = node ? monitoringLabel(node) : "";
     summary.querySelector(".node-checked").textContent = checkedLabel(node);
     row.querySelector(".tracking-status").hidden = !selector.track_all;
     reset.hidden = !selector.default_node_id;

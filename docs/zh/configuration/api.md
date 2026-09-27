@@ -32,9 +32,9 @@ routing {
 
 `selector` 默认只持续检测当前选中的节点，启动屏障也只等待该节点。切换后立即检测新节点，旧节点停止周期检测，正在进行的检测可完成。其他选择策略保持原有检测范围。
 
-选择器页面使用可搜索的下拉框，收起时只展示当前节点，展开后在限定高度内滚动候选列表，支持大量节点与长名称。默认提供当前节点或候选旁的 **Test** 和整组 **Test all**；测试只触发一轮组配置的 DNS 连通性探测，不改变选择或持续检测范围。已授权且可见的页面每两秒更新结果，未检测节点显示 **Not tested**。
+选择器页面使用可搜索的下拉框，收起时只展示当前节点，展开后在限定高度内滚动候选列表，支持大量节点与长名称。默认提供当前节点或候选旁的 **Test** 和整组 **Test All**；测试只触发一轮组配置的 DNS 连通性探测，不改变选择或持续检测范围。已授权且可见的页面每两秒更新结果，未检测节点显示 **Not tested**。
 
-在 selector 的 group 块中设置 `track_all: true` 并重载，即可持续检测全部候选；默认是 `false`。这是配置文件功能，不提供修改它的 API，也不保存在运行时状态中。开启后，页面显示 **Tracking all nodes**，替代所有 **Test / Test all** 按钮。检测间隔沿用组的 `check_interval` 等配置，启动屏障仍只等待选中节点。此项仅适用于 `selector`，不通过 `group(name)` 继承。
+在 selector 的 group 块中设置 `track_all: true` 并重载，即可持续检测全部候选；默认是 `false`。这是配置文件功能，不提供修改它的 API，也不保存在运行时状态中。开启后，页面显示 **Monitoring all nodes**，替代所有 **Test / Test All** 按钮。检测间隔沿用组的 `check_interval` 等配置，启动屏障仍只等待选中节点。此项仅适用于 `selector`，不通过 `group(name)` 继承。
 
 `dae status`（包括 verbose/JSON）中，selector 只列出选中、持续追踪、正在检测或仍有活动连接的节点。已测试但空闲且未追踪的候选只在 `/api/selectors` 和页面中保留最后结果；组及全局累计流量仍包含这些路径。
 
@@ -52,7 +52,7 @@ routing {
 
 `client` 块的纯文本简介用作页面显示名称：配置了简介时只显示简介，未配置时显示集合名称。按钮的无障碍标签和操作提示也使用同一显示名称；API 请求仍以配置中的集合名称标识目标。展示路由引用或配置了内核导出的集合，重复定义报错。简介随 `dae reload` 更新，不影响成员。
 
-**Reset to default** 仅在 selector 显式配置了 `selector(n)` 时提供；它清除保存的选择并恢复该路径。MITM 的重置仍清除设备覆盖。设置保存在 `$DAE_LOCATION_CACHE/runtime-state.json`（默认 `/var/lib/dae/runtime-state.json`，权限 `0600`），重载、重启或关闭 API 后保留，不改写主配置。已有连接和 UDP 会话保持原路径。
+**Reset Default** 仅在 selector 显式配置了 `selector(n)` 时提供；它清除保存的选择并恢复该路径。选择器和 HTTPS 模块的设置来源统一显示为 **Default** 或 **Custom**。MITM 的重置仍清除设备覆盖。设置保存在 `$DAE_LOCATION_CACHE/runtime-state.json`（默认 `/var/lib/dae/runtime-state.json`，权限 `0600`），重载、重启或关闭 API 后保留，不改写主配置。已有连接和 UDP 会话保持原路径。
 
 也可直接编辑该文件，文件系统事件触发热重载，支持原子替换。无效内容、未知节点 ID、应用失败或文件暂时缺失时保留当前状态。例如：
 

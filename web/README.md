@@ -42,12 +42,12 @@ request revalidates LAN identity. The selectors response's `auth_mode` identifie
 identification. Public certificate downloads are available without login.
 
 Selectors use compact searchable dropdowns with per-node connectivity tests,
-a selected-node **Test** button and a one-shot **Test all** action. The group's
+a selected-node **Test** button and a one-shot **Test All** action. The group's
 configuration-only `track_all: true` replaces these buttons with a read-only
-**Tracking all nodes** indicator. Dropdowns have a bounded, scrollable list, truncate
+**Monitoring all nodes** indicator. Dropdowns have a bounded, scrollable list, truncate
 long names, and support arrow keys, Home/End and Escape. Candidate controls are
 created only while the dropdown is open. All action buttons have visible borders,
-including **Reset to default** and disabled buttons. The reset control and default
+including **Reset Default** and disabled buttons. The reset control and default
 labels appear only when `default_node_id` is present (explicit `selector(n)`).
 Only the selected node is monitored by default. The page shows untested,
 testing, healthy and unavailable states separately, with last-test times.
@@ -63,6 +63,21 @@ and reports recovery after a failed refresh. A current authorization failure
 clears protected state and stops polling; it is not reported as a retryable error.
 Keyboard focus returns to the relevant control after an action. Requests time out after 15 seconds;
 mutations are never retried automatically.
+
+## UI conventions
+
+Keep shared styles in `style.css`: 44px action controls with the same padding,
+type and neutral outline; a single 4px radius; 14px body text and 12px metadata.
+Node options can grow to fit their two-line content. Light/dark colors come from
+the root palette; errors share one foreground, background and border treatment.
+Use `.badge` for states and settings sources, `.count` for quantities, and
+`.status-row` / `.button-row` for consistent alignment and spacing.
+
+Use H1 for the page (24px), H2 for sections (18px), and H3 for selector groups
+and certificate details (14px). Status messages are not headings. Headings and
+action labels use title case; status text and explanations use sentence case.
+Keep **Default / Custom**, **Reset Default**, and **Monitoring** consistent
+across selectors and device settings; preserve configured names/descriptions.
 
 ## Browser checks
 

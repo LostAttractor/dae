@@ -4,7 +4,7 @@ import { selectorRow } from "./selectors.js";
 
 const accessDenied = (error) => error.status === 401 || error.status === 403;
 const accessLabels = {
-  api_key: { title: "Administrator", description: "Signed in · Remembered for 7 days" },
+  api_key: { title: "Administrator", description: "Logged in · Remembered for 7 days" },
   lan: { title: "LAN access", description: "Verified LAN device · No API key configured" },
   unix: { title: "Local access", description: "Authorized by local socket permissions" },
 };
@@ -61,8 +61,10 @@ function setAccess(mode, error) {
   byId("logout").hidden = mode !== "api_key";
   byId("selectors-locked").hidden = authorized;
   byId("selectors").hidden = !authorized;
+  byId("selector-count").hidden = !authorized;
   byId("access-required").textContent = denied ? "Access denied" : "Login required";
-  byId("login-hint").textContent = error?.message ?? "Enter your API key above to view selector status and switch nodes.";
+  byId("access-required").dataset.tone = denied ? "error" : "neutral";
+  byId("login-hint").textContent = denied ? error.message : "Enter your API key above to view selector status and switch nodes.";
   if (!authorized) {
     byId("selectors").replaceChildren();
     byId("selector-count").textContent = denied ? "Access denied" : "Login required";
@@ -87,7 +89,6 @@ function renderDevice(device) {
     row.querySelector("strong").textContent = label;
     const button = row.querySelector("button");
     button.textContent = set.joined ? "Leave" : "Join";
-    button.classList.toggle("primary", !set.joined);
     button.setAttribute("aria-label", `${set.joined ? "Leave" : "Join"} ${label}`);
     button.onclick = () => run(async () => renderDevice(await request(
       `/api/device/sets/${encodeURIComponent(set.name)}`, set.joined ? "DELETE" : "PUT")),
@@ -106,10 +107,8 @@ function renderMITM(mitm) {
     return;
   }
   const row = template("mitm-template");
-  const badge = row.querySelector(".badge");
-  badge.textContent = mitm.enabled ? "Enabled" : "Disabled";
-  badge.classList.toggle("active", mitm.enabled);
-  row.querySelector("small").textContent = mitm.override === null ? "Default" : "Device override";
+  row.querySelector(".mitm-enabled").textContent = mitm.enabled ? "Enabled" : "Disabled";
+  row.querySelector(".settings-source").textContent = mitm.override === null ? "Default" : "Custom";
   const toggle = row.querySelector(".toggle");
   const reset = row.querySelector(".reset");
   const save = async (method, body, success) => {
@@ -120,7 +119,7 @@ function renderMITM(mitm) {
   toggle.textContent = mitm.enabled ? "Disable" : "Enable";
   toggle.onclick = () => save("PUT", { enabled: !mitm.enabled }, `HTTPS modules ${mitm.enabled ? "disabled" : "enabled"} for this device.`);
   reset.disabled = mitm.override === null;
-  reset.onclick = () => save("DELETE", undefined, "HTTPS modules reset to defaults.");
+  reset.onclick = () => save("DELETE", undefined, "HTTPS modules reset to default.");
   byId("mitm").append(row);
 }
 
@@ -168,6 +167,7 @@ async function loadSelectors({ allowGuest = false, background = false } = {}) {
       return;
     } else {
       byId("selector-count").textContent = "Unavailable";
+      byId("selector-count").hidden = true;
       empty("selectors", "Could not load selectors. Try refreshing.");
     }
     throw error;
