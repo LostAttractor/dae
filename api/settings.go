@@ -5,14 +5,15 @@ package api
 import "time"
 
 type SelectorNode struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Healthy   bool      `json:"healthy"`
-	Checking  bool      `json:"checking"`
-	Tested    bool      `json:"tested"`
-	Tracking  bool      `json:"tracking"`
-	CheckedAt time.Time `json:"checked_at,omitzero"`
-	LatencyMS *float64  `json:"latency_ms,omitempty"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Egress    *NodeEgress `json:"egress,omitempty"`
+	Healthy   bool        `json:"healthy"`
+	Checking  bool        `json:"checking"`
+	Tested    bool        `json:"tested"`
+	Tracking  bool        `json:"tracking"`
+	CheckedAt time.Time   `json:"checked_at,omitzero"`
+	LatencyMS *float64    `json:"latency_ms,omitempty"`
 }
 
 type SelectorState struct {

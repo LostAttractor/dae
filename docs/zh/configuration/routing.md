@@ -74,6 +74,35 @@ routing { fallback: foo }
 
 为限制连通性检查和 runtime 的资源增长，每条路径最多包含 16 跳；单个路由目标最多展开 4096 条路径；一份配置最多物化 16384 条路径。
 
+### 入口 mark、接口和地址族
+
+```shell
+group {
+    proxy {
+        filter: subtag(my_sub) [mark: 0x20, interface: wan0]
+        policy: min_moving_avg
+    }
+    ipv4_only {
+        filter: subtag(my_sub) && ipversion(4) [interface: wan1]
+        policy: min_moving_avg
+    }
+    chain {
+        filter: name(entry) && ipversion(6) [mark: 0x30, interface: wan0] -> node(exit)
+        policy: min_moving_avg
+    }
+}
+```
+
+- `mark` 设置入口 socket 的 `SO_MARK`，支持十进制、十六进制 uint32，禁止包含保留的 TPROXY 位 `0x08000000`。省略时继承 `global.so_mark_from_dae` 的有效值；显式 `mark: 0` 使用零。它与 routing 规则的 `mark` 参数相互独立。
+- `interface` 使用 `SO_BINDTODEVICE` 绑定接口。入口 TCP、UDP、QUIC、测速、重连和 bootstrap DNS（包括 TCP DNS 重试）使用相同 mark/interface。创建候选前检查接口能力；已有候选若绑定失败，则本次操作失败并沿用健康检查重试。
+- 回环 DNS（如 `127.0.0.1`、`127.0.0.53`、`::1`）通过本机连接访问，不绑定代理出口接口，但保留入口 mark。系统 DNS 和 `global.dns_resolver` 均遵循此规则；本地 DNS 服务自行决定上游出口。外部 DNS 和所有代理连接仍使用配置的接口。
+- `ipversion(4)` / `ipversion(6)` 严格限制连接入口代理的地址族；`ipversion(4, 6)` 允许双栈，支持通常的取反和交集语义。DNS 传输自身可独立使用任一地址族。它不限制代理访问目标的地址族，也不改变 TLS SNI / HTTP Host。
+- 三项设置只允许出现在第一物理 stage，嵌套 `group(name)` 展开后同样检查。`mark`、`interface` 注解也可写在入口 `node(name)`、`group(name)` 引用上。嵌套注解冲突、后续 stage 配置这些选项都会报错。
+
+启动/reload 时，先通过入口配置的 bootstrap DNS 出口解析节点。只有该地址族存在解析地址，且内核能够按配置的 mark 在本机/指定接口上选出可用路由和源地址，才创建对应候选。两个地址族均满足条件时，域名节点才拆成 IPv4、IPv6 两个候选（IPv4 在前）。仅 A 记录的节点、本机/接口仅支持 IPv4、接口仅有链路本地 IPv6 地址等情况，不会生成 IPv6 占位节点。IP 字面量同样检查本地条件。候选分别维护健康、延迟、统计和连接池；同一地址族中的多个地址属于同一个候选。名称和订阅过滤仍匹配原始节点定义。DNS 或本地网络地址族能力变化后，通过 reload 重新发现候选；已有候选的连通性变化仍由健康检查处理。
+
+地址族展开在逻辑路径展开之后进行，并计入路径数量限制。`fixed(n)`、`selector(n)` 索引展开后的列表；需要固定地址族时使用 `ipversion()`。routing 直接引用节点、或无 policy 的单逻辑路径，在双栈变体之间默认使用 `min_moving_avg`；显式 policy 始终优先。状态和 selector API 提供 `egress`（`ipversion`、有效 `mark`、可选 `interface`）；显示名称仅在双栈拆分时标注 IPv4/IPv6，单栈不标注。候选 ID 包含地址族和入口选项，DNS 变化及重新排序不改变 ID。升级会改变旧候选 ID，因此已保存的 selector 选择可能一次性回退到配置的默认/首个候选。
+
 ## 规则片段、路由策略与接口绑定
 
 `rule_set` 定义可复用的规则片段，`policy` 定义包含 fallback 的完整路由策略，`default` 和 `interface` 选择策略：

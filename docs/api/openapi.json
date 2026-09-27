@@ -564,8 +564,19 @@
         "required": null,
         "type": "object"
       },
+      "NodeEgress": {
+        "description": "Local connection to the first proxy, independent of destination network support.",
+        "properties": {
+          "ipversion": { "type": "integer", "enum": [0, 4, 6] },
+          "mark": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+          "interface": { "type": "string" }
+        },
+        "required": ["ipversion", "mark"],
+        "type": "object"
+      },
       "NodeStatus": {
         "properties": {
+          "egress": { "$ref": "#/components/schemas/NodeEgress" },
           "address": {
             "type": "string"
           },
@@ -714,6 +725,7 @@
       },
       "SelectorNode": {
         "properties": {
+          "egress": { "$ref": "#/components/schemas/NodeEgress" },
           "checked_at": {
             "type": "string",
             "format": "date-time",

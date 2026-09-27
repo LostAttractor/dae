@@ -203,6 +203,9 @@ type RuntimeSnapshot struct {
 
 type GlobalOption struct {
 	D.ExtraOption
+	SoMarkFromDae     uint32
+	Mptcp             bool
+	DNSResolver       string
 	CheckDnsOptionRaw CheckDnsOptionRaw
 	CheckInterval     time.Duration
 	CheckIntervalMax  time.Duration
@@ -213,6 +216,7 @@ type Property struct {
 	D.Property
 	SubscriptionTag string
 	Hops            []Hop
+	Egress          *api.NodeEgress
 }
 
 type Hop struct {
@@ -225,6 +229,9 @@ type Hop struct {
 
 func NewGlobalOption(global *config.Global) *GlobalOption {
 	return &GlobalOption{
+		SoMarkFromDae:       common.EffectiveSoMarkFromDae(global.SoMarkFromDae),
+		Mptcp:               global.Mptcp,
+		DNSResolver:         global.DNSResolver,
 		AllowInsecure:       global.AllowInsecure,
 		TlsImplementation:   global.TlsImplementation,
 		UtlsImitate:         global.UtlsImitate,

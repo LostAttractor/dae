@@ -27,7 +27,7 @@ routing {
  policy { inactive { dport(22) -> unused
                      fallback: unused } }
 }`)
-	built, err := new(controlPlaneCore).buildOutbounds(outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundDirect)
+	built, err := new(controlPlaneCore).buildOutbounds(t.Context(), outboundUsageNodes(conf), conf.Group, &conf.Routing, &conf.Global, consts.OutboundDirect)
 	if err != nil {
 		t.Fatal(err)
 	}

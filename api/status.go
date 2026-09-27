@@ -68,6 +68,7 @@ type NodeStatus struct {
 	Protocol           string                             `json:"protocol"`
 	Address            string                             `json:"address"`
 	Annotation         *NodeAnnotationStatus              `json:"annotation,omitempty"`
+	Egress             *NodeEgress                        `json:"egress,omitempty"`
 	ChecksConnectivity bool                               `json:"checks_connectivity"`
 	InitialCheckDone   bool                               `json:"-"` // Current runtime only, for startup logs.
 	Healthy            bool                               `json:"healthy"`
@@ -93,4 +94,12 @@ type NodeAnnotationStatus struct {
 	AddLatency          string `json:"add_latency,omitempty"`
 	Priority            *int   `json:"priority,omitempty"`
 	PriorityConditional bool   `json:"priority_conditional,omitempty"`
+}
+
+// NodeEgress describes the local socket to the first proxy. IPVersion is
+// independent of Support, which describes the proxy's destination capabilities.
+type NodeEgress struct {
+	IPVersion int    `json:"ipversion"`
+	Mark      uint32 `json:"mark"`
+	Interface string `json:"interface,omitempty"`
 }

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -21,7 +22,6 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/protocol/direct"
 	"github.com/daeuniverse/outbound/transport/smux"
 	"github.com/dlclark/regexp2"
 	log "github.com/sirupsen/logrus"
@@ -58,8 +58,11 @@ type NodeInfo struct {
 }
 
 type PathSpec struct {
-	Nodes      []*NodeInfo // Physical order: first proxy to final proxy.
-	Annotation *dialer.Annotation
+	Nodes         []*NodeInfo // Physical order: first proxy to final proxy.
+	Annotation    *dialer.Annotation
+	Entry         EntryOptions
+	IPVersion     int  // Physical entrance family; 0 before variant expansion.
+	showIPVersion bool // Display a family suffix only for a split dual-stack path.
 }
 
 type DialerSet struct {
@@ -375,9 +378,9 @@ func nodeKey(node *NodeInfo) string {
 	return builder.String()
 }
 
-func runtimePathKey(nodes []*NodeInfo, option *dialer.GlobalOption) string {
+func runtimePathKey(spec *PathSpec, option *dialer.GlobalOption) string {
 	var builder strings.Builder
-	builder.WriteString(pathIdentity(nodes))
+	builder.WriteString(spec.Identity())
 	builder.WriteString("|runtime-options|")
 	values := []string{
 		fmt.Sprintf("%t", option.AllowInsecure),
@@ -389,6 +392,9 @@ func runtimePathKey(nodes []*NodeInfo, option *dialer.GlobalOption) string {
 		option.TlsFragmentLength,
 		option.TlsFragmentInterval,
 		option.UDPHopInterval.String(),
+		strconv.FormatUint(uint64(spec.effectiveMark(option)), 10),
+		strconv.FormatBool(option.Mptcp),
+		option.DNSResolver,
 	}
 	for _, value := range values {
 		fmt.Fprintf(&builder, "%d:%s", len(value), value)
@@ -404,7 +410,17 @@ func pathIdentity(nodes []*NodeInfo) string {
 	return builder.String()
 }
 
-func (p *PathSpec) Identity() string { return pathIdentity(p.Nodes) }
+func (p *PathSpec) Identity() string {
+	identity := pathIdentity(p.Nodes)
+	if p.IPVersion == 0 && !p.Entry.configured() {
+		return identity
+	}
+	mark := "inherit"
+	if p.Entry.Mark != nil {
+		mark = strconv.FormatUint(uint64(*p.Entry.Mark), 10)
+	}
+	return fmt.Sprintf("%s|entry|%d|%s|%d:%s", identity, p.IPVersion, mark, len(p.Entry.Interface), p.Entry.Interface)
+}
 
 type PathBuildError struct {
 	Node *NodeInfo
@@ -440,7 +456,11 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 			builders = append(builders, pathNodeBuilder{node: node, builder: builder})
 		}
 	}
-	runtime, err := D.BuildRuntime(netproxy.Layer{Data: direct.Bootstrap}, &option.ExtraOption, builders...)
+	base, err := spec.entryDialer(option)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := D.BuildRuntime(netproxy.Layer{Data: base}, &option.ExtraOption, builders...)
 	if err != nil {
 		return nil, err
 	}
@@ -449,9 +469,13 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 	protocols := make([]string, 0, len(spec.Nodes))
 	addresses := make([]string, 0, len(spec.Nodes))
 	hops := make([]dialer.Hop, 0, len(spec.Nodes))
-	for _, node := range spec.Nodes {
+	for index, node := range spec.Nodes {
 		protocol := nodeDisplayProtocol(node)
-		names = append(names, node.Property.Name)
+		name := node.Property.Name
+		if index == 0 {
+			name += spec.entryLabel()
+		}
+		names = append(names, name)
 		protocols = append(protocols, protocol)
 		addresses = append(addresses, node.Property.Address)
 		hops = append(hops, dialer.Hop{
@@ -467,9 +491,10 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		Name:            strings.Join(names, " -> "),
 		Protocol:        strings.Join(protocols, " -> "),
 		Address:         strings.Join(addresses, " -> "),
-		Link:            runtimePathKey(spec.Nodes, option),
+		Link:            runtimePathKey(spec, option),
 		SubscriptionTag: terminal.Property.SubscriptionTag,
 		Hops:            hops,
+		Egress:          &api.NodeEgress{IPVersion: spec.IPVersion, Mark: spec.effectiveMark(option), Interface: spec.Entry.Interface},
 	}
 	return dialer.NewDialer(runtime, option, property, true, statsScope), nil
 }

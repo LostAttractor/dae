@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -26,6 +27,7 @@ import (
 // outboundBuilder exists only during preparation. Definitions are validated
 // without constructing transports; only reachable targets receive runtime IDs.
 type outboundBuilder struct {
+	ctx                    context.Context
 	core                   *controlPlaneCore
 	set                    *outbound.DialerSet
 	compiler               *outbound.GroupCompiler
@@ -41,7 +43,7 @@ type outboundBuilder struct {
 // buildOutbounds owns partially built groups until construction succeeds.
 // The caller then owns their connectivity checks, transports and cleanup,
 // including targets appended later by plugin rules.
-func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, groups []config.Group, routingConfig *config.Routing, global *config.Global, noConnectivityOutbound consts.OutboundIndex) (_ *outboundBuilder, err error) {
+func (core *controlPlaneCore) buildOutbounds(ctx context.Context, nodes []outbound.NodeDescriptor, groups []config.Group, routingConfig *config.Routing, global *config.Global, noConnectivityOutbound consts.OutboundIndex) (_ *outboundBuilder, err error) {
 	if err := routingConfig.Validate(); err != nil {
 		return nil, err
 	}
@@ -55,6 +57,7 @@ func (core *controlPlaneCore) buildOutbounds(nodes []outbound.NodeDescriptor, gr
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
 	block := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _block}), option, &dialer.Property{Property: *blockProperty}, false, "")
 	b := &outboundBuilder{
+		ctx:  ctx,
 		core: core, global: global, option: option, noConnectivityOutbound: noConnectivityOutbound,
 		nameToID: map[string]uint8{consts.OutboundDirect.String(): uint8(consts.OutboundDirect), consts.OutboundBlock.String(): uint8(consts.OutboundBlock)},
 	}
@@ -194,6 +197,18 @@ func (b *outboundBuilder) materializeTarget(target *outbound.ResolvedTarget) err
 	}
 	if len(b.outbounds) >= int(consts.OutboundUserDefinedMax)+1 {
 		return fmt.Errorf("too many outbounds: cannot materialize target %q", name)
+	}
+	logicalPaths := len(paths)
+	var err error
+	paths, err = outbound.ExpandIPVariants(b.ctx, paths, finalOption)
+	if err != nil {
+		return fmt.Errorf("expand target %q address families: %w", name, err)
+	}
+	if logicalPaths == 1 && len(paths) > 1 && selectionPolicy.Policy == "" {
+		selectionPolicy = dialer.DialerSelectionPolicy{
+			Policy:   consts.DialerSelectionPolicy_MinMovingAverageLatencies,
+			EmaAlpha: dialer.DefaultEmaAlpha, TimeoutPenalty: dialer.DefaultTimeoutPenalty,
+		}
 	}
 	if len(paths) > outbound.MaxMaterializedPaths-b.materializedPathCount {
 		return fmt.Errorf("materializing target %q would exceed the global proxy path limit %d", name, outbound.MaxMaterializedPaths)

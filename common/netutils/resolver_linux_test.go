@@ -114,3 +114,46 @@ func TestInstallDefaultResolver(t *testing.T) {
 		t.Fatal("proxy bootstrap did not get its own resolver")
 	}
 }
+
+func TestEntryBootstrapDNSUsesSocketOptionsForUDPAndTCP(t *testing.T) {
+	const mark = 0x20
+	socket := direct.NewDirectDialer(direct.Option{Mark: mark, Interface: "lo"})
+	probe, err := socket.ListenPacket(t.Context(), "")
+	checkResolverSocketMark(t, probe, err, mark)
+	server := resolverTestServer(t, true)
+	networks := make(chan string, 4)
+	resolver, err := NewBootstrapResolver(server.String(), func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := socket.DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := conn.(syscall.Conn).SyscallConn()
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		err = raw.Control(func(fd uintptr) {
+			gotMark, err := unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK)
+			if err != nil || gotMark != mark {
+				t.Errorf("DNS %s mark = %d, %v", network, gotMark, err)
+			}
+			device, err := unix.GetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE)
+			if err != nil || device != "lo" {
+				t.Errorf("DNS %s interface = %q, %v", network, device, err)
+			}
+		})
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		networks <- network
+		return conn, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupResolverTest(t, resolver)
+	if len(networks) != 2 || <-networks != "udp" || <-networks != "tcp" {
+		t.Fatal("bootstrap lookup did not retry over the marked/bound TCP transport")
+	}
+}

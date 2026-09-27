@@ -275,6 +275,16 @@ group {
         # Filter nodes from the global node pool defined by tag.
         #filter: name(node1, node2)
 
+        # Bind the local connection to the first proxy, including its bootstrap DNS.
+        # Omitted mark inherits global.so_mark_from_dae; explicit mark: 0 uses zero.
+        #filter: subtag(my_sub) [mark: 0x20, interface: wan0]
+
+        # Split only when DNS and the local/bound interface support both families.
+        # Rediscover families on reload; IPv4 candidates precede IPv6 candidates.
+        # Restrict the entry connection's family; this is not the destination family.
+        #filter: subtag(my_sub) && ipversion(4) [mark: 0x20, interface: wan0]
+        # mark/interface/ipversion are valid only on the first stage of a chain.
+
         # Filter nodes and give a fixed latency offset to archive latency-based failover.
         # In this example, there is bigger possibility to choose US node even if original latency of US node is higher.
         group(entry_path) -> filter: name(HK_node)

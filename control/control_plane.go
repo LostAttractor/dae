@@ -180,7 +180,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("invalid no_connectivity_behavior: %v", global.NoConnectivityBehavior)
 	}
 
-	outboundBuilder, err := core.buildOutbounds(nodes, groups, preparedRules.routing, global, noConnectivityOutbound)
+	outboundBuilder, err := core.buildOutbounds(startupCtx, nodes, groups, preparedRules.routing, global, noConnectivityOutbound)
 	if err != nil {
 		return nil, err
 	}

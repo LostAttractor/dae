@@ -42,6 +42,7 @@ type compiledStage struct {
 	nodes      []*NodeInfo
 	group      *groupDefinition
 	annotation *dialer.Annotation
+	entry      EntryOptions
 }
 
 type groupDefinition struct {
@@ -157,6 +158,9 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 	if err := compiler.validateCycles(); err != nil {
 		return nil, err
 	}
+	if err := compiler.validateEntryPositions(); err != nil {
+		return nil, err
+	}
 	return compiler, nil
 }
 
@@ -164,16 +168,26 @@ func (c *GroupCompiler) compileStage(owner *groupDefinition, stage *config_parse
 	if stage == nil {
 		return nil, fmt.Errorf("nil proxy stage")
 	}
-	annotation, err := dialer.NewAnnotation(stage.Annotation)
+	annotation, entry, err := parseStageAnnotations(stage.Annotation)
 	if err != nil {
 		return nil, fmt.Errorf("apply stage annotation: %w", err)
 	}
 	if stage.Key == "filter" {
-		nodes, err := c.set.Filter(stage.AndFunctions)
+		filters, families, err := splitEntryFilters(stage.AndFunctions)
 		if err != nil {
 			return nil, err
 		}
-		return &compiledStage{nodes: nodes, annotation: annotation}, nil
+		entry.Families = families
+		nodes, err := c.set.Filter(filters)
+		if err != nil {
+			return nil, err
+		}
+		if families != nil {
+			nodes = slices.DeleteFunc(nodes, func(node *NodeInfo) bool {
+				return entryAddressFamilies(node.Property.Address)&*families == 0
+			})
+		}
+		return &compiledStage{nodes: nodes, annotation: annotation, entry: entry}, nil
 	}
 	if stage.Key != "" || len(stage.AndFunctions) != 1 {
 		return nil, fmt.Errorf("path reference must be node(name) or group(name)")
@@ -190,7 +204,7 @@ func (c *GroupCompiler) compileStage(owner *groupDefinition, stage *config_parse
 		case 0:
 			return nil, fmt.Errorf("node(%q): node not found", name)
 		case 1:
-			return &compiledStage{nodes: nodes, annotation: annotation}, nil
+			return &compiledStage{nodes: nodes, annotation: annotation, entry: entry}, nil
 		default:
 			return nil, fmt.Errorf("node(%q): node is ambiguous (%d matching definitions)", name, len(nodes))
 		}
@@ -203,7 +217,7 @@ func (c *GroupCompiler) compileStage(owner *groupDefinition, stage *config_parse
 			return nil, fmt.Errorf("group(%q): a selector group cannot be used as a path stage", name)
 		}
 		owner.dependencies = append(owner.dependencies, group)
-		return &compiledStage{group: group, annotation: annotation}, nil
+		return &compiledStage{group: group, annotation: annotation, entry: entry}, nil
 	default:
 		return nil, fmt.Errorf("path reference must be node(name) or group(name)")
 	}
@@ -297,16 +311,21 @@ func (c *GroupCompiler) expandStage(stage *compiledStage) ([]*PathSpec, error) {
 			if err != nil {
 				return nil, fmt.Errorf("merge group stage annotation: %w", err)
 			}
+			entry, err := mergeEntryOptions(fragment.Entry, stage.entry)
+			if err != nil {
+				return nil, err
+			}
 			paths = append(paths, &PathSpec{
 				Nodes:      fragment.Nodes,
 				Annotation: merged,
+				Entry:      entry,
 			})
 		}
 		return paths, nil
 	}
 	paths := make([]*PathSpec, 0, len(stage.nodes))
 	for _, node := range stage.nodes {
-		paths = append(paths, &PathSpec{Nodes: []*NodeInfo{node}, Annotation: stage.annotation})
+		paths = append(paths, &PathSpec{Nodes: []*NodeInfo{node}, Annotation: stage.annotation, Entry: stage.entry})
 	}
 	return paths, nil
 }
@@ -338,7 +357,11 @@ func (c *GroupCompiler) expand(group *groupDefinition) ([]*PathSpec, error) {
 					if err != nil {
 						return nil, fmt.Errorf("group %q: merge path annotation: %w", group.config.Name, err)
 					}
-					next = append(next, &PathSpec{Nodes: nodes, Annotation: annotation})
+					entry := prefix.Entry
+					if stageIndex == 0 {
+						entry = fragment.Entry
+					}
+					next = append(next, &PathSpec{Nodes: nodes, Annotation: annotation, Entry: entry})
 				}
 			}
 			current = next

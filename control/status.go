@@ -147,6 +147,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		Protocol:           node.Property.Protocol,
 		Address:            node.Property.Address,
 		Annotation:         nodeAnnotationStatus(group, node),
+		Egress:             node.Egress,
 		ChecksConnectivity: node.ChecksConnectivity(),
 		InitialCheckDone:   runtime.InitialCheckDone,
 		Healthy:            runtime.Healthy,

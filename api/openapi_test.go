@@ -133,7 +133,7 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 			want = "boolean"
 		case typ.Kind() == reflect.Float64:
 			want = "number"
-		case typ.Kind() == reflect.Int || typ.Kind() == reflect.Int64 || typ.Kind() == reflect.Uint64:
+		case typ.Kind() == reflect.Int || typ.Kind() == reflect.Int64 || typ.Kind() == reflect.Uint32 || typ.Kind() == reflect.Uint64:
 			want = "integer"
 		default:
 			t.Fatalf("undocumented wire type %s", typ)

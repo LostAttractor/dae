@@ -75,6 +75,31 @@ struct {
 	},
 };
 
+/* Populate the cookie and classify the same skb: separate test-run calls can
+ * receive different socket cookies, even without a userspace socket.
+ */
+static __always_inline int test_entry_mark_owner(struct __sk_buff *skb, bool daemon)
+{
+	__u64 cookie = bpf_get_socket_cookie(skb);
+	struct pid_pname value = { .pid = PARAM.control_plane_pid + !daemon };
+
+	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
+	bpf_tail_call(skb, &entry_call_map, 0);
+	return TC_ACT_SHOT;
+}
+
+SEC("tc/test_entry_mark_daemon")
+int test_entry_mark_daemon(struct __sk_buff *skb)
+{
+	return test_entry_mark_owner(skb, true);
+}
+
+SEC("tc/test_entry_mark_other")
+int test_entry_mark_other(struct __sk_buff *skb)
+{
+	return test_entry_mark_owner(skb, false);
+}
+
 SEC("tc/benchmark/parser")
 int test_parser_benchmark(struct __sk_buff *skb)
 {

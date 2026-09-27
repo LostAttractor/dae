@@ -37,6 +37,7 @@ func (c *ControlPlane) selectorState(group *outbound.DialerGroup) api.SelectorSt
 		status := d.RuntimeStatus()
 		node := api.SelectorNode{
 			ID: d.StatsID(), Name: d.Name, Healthy: status.Healthy,
+			Egress:   d.Egress,
 			Checking: status.Checking, Tested: !status.CheckedAt.IsZero(),
 			Tracking: status.CheckEnabled, CheckedAt: status.CheckedAt,
 		}

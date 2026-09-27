@@ -60,6 +60,24 @@ func newInternalResolver(server netip.AddrPort, direct func(context.Context, str
 	return r
 }
 
+// NewBootstrapResolver gives an entry path its own direct DNS transport. The
+// supplied dial function applies its mark/interface, independently of the
+// address family used to connect to the proxy server.
+func NewBootstrapResolver(server string, dial func(context.Context, string, string) (net.Conn, error)) (*net.Resolver, error) {
+	address, err := ParseDNSServer(server)
+	if err != nil {
+		return nil, err
+	}
+	resolver := &net.Resolver{PreferGo: true, Dial: dial}
+	if address.IsValid() {
+		server = address.String()
+		resolver.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dial(ctx, network, server)
+		}
+	}
+	return resolver, nil
+}
+
 // InstallDefaultResolver is called once during single-threaded process startup,
 // before libraries can read the process-global resolver pointers. Runtime
 // changes use Configure/SetRoute, never replace these pointers.

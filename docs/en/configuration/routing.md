@@ -74,6 +74,35 @@ Quote a real node or group name that is `must` or begins with `must_` (for examp
 
 To bound health-check and runtime growth, a path may contain at most 16 hops, one routed target may expand to at most 4096 paths, and one configuration may materialize at most 16384 paths.
 
+### Entry mark, interface and address family
+
+```shell
+group {
+    proxy {
+        filter: subtag(my_sub) [mark: 0x20, interface: wan0]
+        policy: min_moving_avg
+    }
+    ipv4_only {
+        filter: subtag(my_sub) && ipversion(4) [interface: wan1]
+        policy: min_moving_avg
+    }
+    chain {
+        filter: name(entry) && ipversion(6) [mark: 0x30, interface: wan0] -> node(exit)
+        policy: min_moving_avg
+    }
+}
+```
+
+- `mark` sets the entry socket's `SO_MARK`, accepting decimal or hexadecimal uint32 values except those containing the reserved TPROXY bit `0x08000000`. Omission inherits the effective `global.so_mark_from_dae`; explicit `mark: 0` uses zero. It is independent of routing-rule `mark` parameters.
+- `interface` binds sockets with `SO_BINDTODEVICE`. The same mark/interface apply to entry TCP, UDP, QUIC, health checks, reconnects and bootstrap DNS (including TCP DNS retry). Interface capabilities are checked before creating candidates; a failed bind on an existing candidate fails that operation and normal health checks retry it.
+- Loopback DNS servers (such as `127.0.0.1`, `127.0.0.53` and `::1`) are reached locally without binding the proxy interface, while retaining its mark. This applies to both system DNS and `global.dns_resolver`; the local resolver controls its own upstream egress. External DNS still uses the configured interface, as do all proxy connections.
+- `ipversion(4)` / `ipversion(6)` strictly restrict the connection to the entry proxy. `ipversion(4, 6)` allows both; negation and conjunction follow normal filter semantics. DNS transport may use either family independently. These filters do not restrict the proxy's destination-family capabilities or change TLS SNI / HTTP Host.
+- All three settings belong to the first physical stage, also after `group(name)` expansion. `mark` and `interface` annotations may also be attached to an entry `node(name)` or `group(name)` reference. Conflicting nested annotations and settings on later stages are errors.
+
+At startup/reload, each entry is resolved through its configured bootstrap DNS transport. A family is created only when it has an address and the kernel can select a usable route and source address on the local/configured interface, including its policy-routing mark. Only when both checks succeed for both families does a hostname entry produce two candidates (IPv4 first). A-only nodes, IPv4-only hosts/interfaces, and interfaces with only link-local IPv6 do not gain an IPv6 placeholder. Literal IP entries are checked in the same way. Candidates own independent health, latency, statistics and connection pools. Multiple addresses in one family belong to the same candidate. Names and subscription filters still match original node definitions. Reload to rediscover families after DNS or local network capabilities change; health checks handle connectivity changes for existing candidates.
+
+Family expansion happens after logical path expansion and counts toward the path limits. `fixed(n)` and `selector(n)` index this expanded list; pin a family with `ipversion()` when needed. A directly routed node or policyless single logical path automatically uses `min_moving_avg` between its family variants. An explicit policy always wins. Status and selector APIs expose `egress` (`ipversion`, effective `mark`, optional `interface`); displayed names show IPv4/IPv6 labels only for split dual-stack paths, omitting them for single-stack paths. Candidate IDs include family and entry options and remain stable across DNS changes and reordering. Upgrading changes old candidate IDs, so a saved selector choice may fall back to its configured default/first candidate once.
+
 ## Rule sets, routing policies and interface bindings
 
 `rule_set` declares reusable rule fragments, `policy` declares complete policies with a fallback, and `default` and `interface` select policies:
