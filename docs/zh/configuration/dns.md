@@ -144,7 +144,7 @@ JSON 按域名分组，结构为 `domain → IP → retain_until`。每个域名
 }
 ```
 
-没有版本外壳或迁移层。重复的域名键或同一域名下重复的 IP 会被拒绝。恢复时先验证完整数据流，包括 gzip 校验和及尾部，全部通过后才发布证据。
+重复的域名键或同一域名下重复的 IP 会被拒绝。恢复时先验证完整数据流，包括 gzip 校验和及尾部，全部通过后才发布证据。
 
 冷启动在接口挂载前直接加载校验后的记录，保留原截止时间，回收过期记录，并按当前规则重算 bitmap。快照不设条目数/大小上限，但会检查格式、地址、域名、重复项和尾随数据。
 
@@ -199,7 +199,7 @@ plugins {
 
 Router 提供策略、IP 版本偏好、UDP/TCP、DoT/DoH/DoQ/HTTP3 和传输回退。`asis` 调用后续处理器；Surge 显式服务器选择优先于后续通用策略。Cache 是独立有界 LRU，保存完整应答并递减 TTL，支持 SOA 负缓存及固定 TTL；签名/事务专属应答保守跳过缓存。
 
-迁移旧配置：旧 `global.fallback_resolver` 和顶层 `dns {}` 已移除。需要指定内部解析服务器时使用 `global.dns_resolver`，它直接覆盖服务器，不沿用旧失败回退语义。将 `dns.upstream`、`dns.routing`、`dns.ipversion_prefer` 移入 router，`fixed_domain_ttl` 移入 cache，`mitm.<实例>` 移入 `plugins {}`。查看插件使用 `dae plugins status`。更多见[插件配置](mitm-plugins.md)和[Surge Host](surge-module.md#dns-host-与-ip-目标重写)。
+`global.dns_resolver` 从首次查询起指定内部解析服务器。上游、路由和 IP 版本偏好配置在 router 插件中，`fixed_domain_ttl` 配置在 cache 插件中。查看插件使用 `dae plugins status`。更多见[插件配置](mitm-plugins.md)和[Surge Host](surge-module.md#dns-host-与-ip-目标重写)。
 
 ## TODO
 

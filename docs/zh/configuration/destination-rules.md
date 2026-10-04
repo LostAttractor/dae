@@ -25,7 +25,7 @@ routing {
 
 三个动作可以同时命中。`must` 不代表强制直连，也不会取消 `bump`、MITM 或 DNAT。API 精确直通规则最先判断；随后依次处理目的地址、流量控制和普通路由。内核命中 DNAT/Host 候选后立即交给用户态，不能先用旧地址提交出站、mark、must 或 block。用户态精确匹配目标后，flow 和 routing 使用新目的 IP 和地址族，域名仍表示原 Host/SNI。未命中目的地址候选的流量沿用普通内核流程；must 和 bump 的书写顺序不影响组合，控制段结束时统一处理域名歧义。
 
-旧 `routing` 中的 `must_rules` 改写为 `rules` 中的 `must`，`bump` 移入 `rules`；`must_direct`、`must_<outbound>` 和 `outbound(must)` 拆成控制条件及出站规则。旧写法（包括 fallback）会报迁移错误。新控制项在普通路由之前判断，迁移时须显式保留适用范围，不能依赖它在旧 routing 中的位置。例如：
+流量控制和出站选择分别配置，控制条件在全部普通路由之前判断。例如，让指定进程跳过自动 DNS 接管并直连：
 
 ```text
 rules {
@@ -55,6 +55,6 @@ DNAT 规则按原生配置顺序在前、插件及其内部顺序在后排列，
 
 仅覆盖现有 TCP/UDP 转发路径；不提供 ICMP NAT、HTTP/3 解密或额外的 IP 分片转发。涉及 ECH 或无法嗅探的协议时，可以使用 IP、端口、来源等不依赖域名的规则。内核加载目的地址捕获、流量控制和出站规则；目的地址精确匹配由独立的 DestinationProgram 在用户态执行，不占内核指令槽位。相同域名条件和静态 IP 集合跨阶段共享。内核指令、用户态目的地址指令和域名条件分别检查容量，规则过大在准备阶段报错。
 
-Surge `[Host]` 的字面 IP → IP 条目转换成同一目的地址计划，对 direct 和 proxy 都生效。域名和通配符条目已改为 DNS 处理，不生成自动 DNAT。显式 IP 重写优先于 `dial_target_override`，Host/SNI 保持原有语义。
+Surge `[Host]` 的字面 IP → IP 条目转换成同一目的地址计划，对 direct 和 proxy 都生效。域名和通配符条目由 DNS 处理，不生成自动 DNAT。显式 IP 重写优先于 `dial_target_override`，Host/SNI 保持原有语义。
 
 `use-local-host-item-for-proxy` 控制已截获代理连接是否保留域名静态 Host 的 DNS IP，见 [Surge 支持范围](surge-module-support.md)。

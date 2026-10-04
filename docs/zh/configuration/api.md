@@ -66,7 +66,7 @@ routing {
 
 保留三个对象，删除对象内条目可清除覆盖或成员。`selectors` 使用 `/api/selectors` 返回的节点 ID，MAC 使用小写冒号格式。避免同时编辑文件和操作 API。
 
-旧版本写入的 `selector_tracking` 字段在读取时忽略，后续写入时移除；请在主配置的 group 块中设置 `track_all`。运行时状态文件不能覆盖该配置。
+`track_all` 在主配置的 group 块中设置，运行时状态文件不能覆盖该配置。状态文件中的未知字段会被拒绝。
 
 ## 导出 MAC 集合
 

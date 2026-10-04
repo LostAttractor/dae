@@ -48,12 +48,9 @@ func TestRoutingControlsRequireRulesSection(t *testing.T) {
 					t.Fatal(err)
 				}
 				_, err = New(sections)
-				want := "rules { <filter> -> must }"
-				if action == "bump" {
-					want = "rules { <filter> -> bump }"
-				}
+				want := "flow controls belong in rules {}"
 				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Fatalf("expected migration instruction %q, got %v", want, err)
+					t.Fatalf("expected control validation %q, got %v", want, err)
 				}
 			})
 		}

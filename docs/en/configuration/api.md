@@ -67,7 +67,7 @@ Manual file edits trigger reloads through filesystem events, including atomic re
 
 Keep all three objects; remove entries to clear overrides or memberships. Use node IDs from `/api/selectors` and lowercase colon-separated MACs. Avoid concurrent file edits and API writes.
 
-Legacy `selector_tracking` entries are ignored on read and removed on subsequent writes. Configure `track_all` in the group block instead; runtime state cannot override it.
+`track_all` is configured in the group block; runtime state cannot override it. Unknown fields in the runtime settings file are rejected.
 
 ## Exporting MAC Sets
 

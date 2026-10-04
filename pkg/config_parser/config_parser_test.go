@@ -249,19 +249,14 @@ func TestParseRejectsInvalidContextualExpressions(t *testing.T) {
 			message: "proxy path reference outside a group definition",
 		},
 		{
-			name:    "legacy via",
-			config:  `group { target { filter: name(exit) [via: node(entry)] } }`,
-			message: "via annotations are no longer supported",
+			name:    "function-valued annotation",
+			config:  `group { target { filter: name(exit) [priority: node(entry)] } }`,
+			message: "function-valued annotations are not supported",
 		},
 		{
-			name:    "legacy bare via",
-			config:  `group { target { filter: name(exit) [via: entry] } }`,
-			message: "via annotations are no longer supported",
-		},
-		{
-			name:    "legacy via among annotations",
-			config:  `group { target { filter: name(exit) [priority: 1, via: node(entry)] } }`,
-			message: "via annotations are no longer supported",
+			name:    "function among annotations",
+			config:  `group { target { filter: name(exit) [priority: 1, multiplex: node(entry)] } }`,
+			message: "function-valued annotations are not supported",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -2,7 +2,7 @@
 
 > **Note**: dae 目前支持以下代理协议
 
-每个 `node` 条目只能包含一个分享链接。旧的节点级 `linkA -> linkB` 语法不再接受；代理路径请使用[路由配置](configuration/routing.md)中的 group path expression 组合。
+每个 `node` 条目只能包含一个分享链接。代理路径请使用[路由配置](configuration/routing.md)中的 group path expression 组合。
 
 - [x] HTTP(S), naiveproxy
 
@@ -66,7 +66,7 @@
   }
   ```
 
-  `multiplex: smux` 为 TCP 和 UDP 启用兼容 sing-box 的 smux；`multiplex: smux-udp-passthrough` 仅复用 TCP，UDP 继续使用底层代理协议；`multiplex: off` 显式禁用复用。启用 smux 后，每个节点默认按需建立最多 4 个 session（即 4 条独立的外层 TCP）；可通过 `multiplex_max_connections` 设置为 1 到 16。多 session 可以让多个并发连接分散到不同的 TCP 拥塞窗口，但不会提高单个内层 TCP 连接的吞吐量。URL 中的非标准 `?multiplex=1` 不再生效。
+  `multiplex: smux` 为 TCP 和 UDP 启用兼容 sing-box 的 smux；`multiplex: smux-udp-passthrough` 仅复用 TCP，UDP 继续使用底层代理协议；`multiplex: off` 显式禁用复用。启用 smux 后，每个节点默认按需建立最多 4 个 session（即 4 条独立的外层 TCP）；可通过 `multiplex_max_connections` 设置为 1 到 16。多 session 可以让多个并发连接分散到不同的 TCP 拥塞窗口，但不会提高单个内层 TCP 连接的吞吐量。
 
 - [x] ShadowsocksR
 
@@ -94,7 +94,7 @@
 
 - [x] Group 级代理路径
 
-  使用 group path expression 组合不同协议；不再支持分享链接链 URI。
+  使用 group path expression 组合不同协议。
 
 有其他需求的，一种方式是通过外接其他代理程序来扩展协议支持。下面给出外接 naiveproxy 的例子。
 

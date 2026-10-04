@@ -78,16 +78,9 @@ func readState(path string) (Snapshot, error) {
 		}
 		return json.Unmarshal(data, value)
 	})
-	// Older builds saved tracking as an API preference. Accept and discard that
-	// field on read; only the group configuration now controls monitoring scope.
-	var stored struct {
-		Snapshot
-		LegacySelectorTracking map[string]bool `json:"selector_tracking,omitempty"`
-	}
-	if err := json.Unmarshal(data, &stored, json.RejectUnknownMembers(true), json.WithUnmarshalers(booleans)); err != nil {
+	if err := json.Unmarshal(data, &value, json.RejectUnknownMembers(true), json.WithUnmarshalers(booleans)); err != nil {
 		return Snapshot{}, fmt.Errorf("decode runtime settings: %w", err)
 	}
-	value = stored.Snapshot
 	if err := value.validate(); err != nil {
 		return Snapshot{}, err
 	}

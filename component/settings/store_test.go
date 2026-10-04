@@ -134,6 +134,7 @@ func TestStoreRejectsInvalidState(t *testing.T) {
 	}
 	tests := map[string]string{
 		"missing objects":   `{}`,
+		"unknown field":     `{"selectors":{},"clients":{},"mitm":{},"selector_tracking":{"proxy":true}}`,
 		"empty selection":   document(`{"proxy":""}`, `{}`, `{}`),
 		"null members":      document(`{}`, `{"gaming":null}`, `{}`),
 		"empty set name":    document(`{}`, `{"":[]}`, `{}`),

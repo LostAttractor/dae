@@ -161,7 +161,7 @@ func TestProbeAPIUsesCheckedOutboundsBeyondSelectors(t *testing.T) {
 
 func TestSelectorTrackingComesOnlyFromGroupConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
-	if err := os.WriteFile(path, []byte(`{"selectors":{},"clients":{},"mitm":{},"selector_tracking":{"proxy":true}}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"selectors":{},"clients":{},"mitm":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	store, err := settings.Open(path)
@@ -186,12 +186,5 @@ routing { fallback: proxy }`)
 		if plane.Selectors()[0].TrackAll != want {
 			t.Fatal("runtime restore changed config tracking")
 		}
-	}
-	if err := store.SetSelection("proxy", "chosen"); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || strings.Contains(string(data), "selector_tracking") {
-		t.Fatalf("legacy tracking was persisted: %s, %v", data, err)
 	}
 }

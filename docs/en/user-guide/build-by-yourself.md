@@ -233,7 +233,7 @@ GOWORK="$PWD/go.work" make -C ../dae-mitm-bilijump test TEST_ARGS=-race
 `make plugins` only refreshes that table; run it before direct `go build` after
 editing the cfg. The generated file is kept in source control for direct builds.
 See [instance configuration](../../zh/configuration/mitm-plugins.md) and the
-[plugin API](../../../component/plugin/README.md). DNS plugin examples and migration are in [DNS configuration](../configuration/dns.md).
+[plugin API](../../../component/plugin/README.md). DNS plugin examples are in [DNS configuration](../configuration/dns.md).
 
 ## Run
 

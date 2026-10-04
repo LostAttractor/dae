@@ -740,7 +740,7 @@ func TestNewRoutingValidation(t *testing.T) {
 	}
 }
 
-func TestNewRoutingRejectsLegacyActionsInPoliciesAndFragments(t *testing.T) {
+func TestRoutingRejectsControlsInPoliciesAndFragments(t *testing.T) {
 	for _, action := range []string{"must_rules", "must_direct", "must_proxy", "direct(must)", "bump"} {
 		for _, body := range []string{
 			"rule_set { base { dport(53) -> " + action + " } } fallback: direct",
@@ -751,7 +751,7 @@ func TestNewRoutingRejectsLegacyActionsInPoliciesAndFragments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = New(sections); err == nil || !strings.Contains(err.Error(), "moved") {
+			if _, err = New(sections); err == nil || !strings.Contains(err.Error(), "flow controls belong in rules {}") {
 				t.Fatalf("accepted %s: %v", body, err)
 			}
 		}

@@ -261,8 +261,7 @@ IPv4 and IPv6 deadlines. An empty snapshot is `{}`.
 }
 ```
 
-There is no version envelope or migration layer. Duplicate domain keys and
-duplicate IPs within a domain are rejected. The whole stream, including the gzip
+Duplicate domain keys and duplicate IPs within a domain are rejected. The whole stream, including the gzip
 checksum and trailer, is validated before any evidence is published.
 
 Cold restore loads the validated records directly, preserves their deadlines,
@@ -303,7 +302,7 @@ for the supported rule-scale and traffic-state parameters. Rebuild and restart t
 sizes; configuration reload does not resize them. `MAX_MATCH_SET_LEN` changes
 bitmap width and therefore per-IP memory cost.
 
-## Optional plugins and migration
+## Optional plugins
 
 Use sibling modules through `go.work` and add their entries to `plugins.cfg`:
 
@@ -339,12 +338,10 @@ assignments take precedence over later general routing. Cache is a separate
 bounded LRU for full, aged responses, SOA negative caching and fixed TTLs;
 signed and transaction-specific replies are conservatively excluded.
 
-The former `global.fallback_resolver` and top-level `dns {}` are removed. Use
-`global.dns_resolver` to override the internal server from the first lookup;
-the old failure-fallback behavior is not retained. Move
-`dns.upstream`, `dns.routing` and `dns.ipversion_prefer` into router,
-`fixed_domain_ttl` into cache, and `mitm.<instance>` into `plugins {}`. Use
-`dae plugins status` and the generic `plugins` status field.
+`global.dns_resolver` selects the internal resolver from the first lookup.
+Configure upstreams, routing and family preference in the router plugin and
+`fixed_domain_ttl` in the cache plugin. Inspect instances with `dae plugins status`
+or the API's `plugins` status field.
 
 ## TODO
 

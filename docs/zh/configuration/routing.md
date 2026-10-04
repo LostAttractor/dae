@@ -68,7 +68,7 @@ routing { fallback: foo }
 
 只有默认策略、接口绑定策略、它们递归 `use` 的 `rule_set` 或插件路由引用的 group 和直接路由节点才会创建运行时出站。仅被未启用定义引用的目标仍会校验，但不会创建运行时出站、启动健康检查，也不会出现在状态和 selector API 中。模板依赖展开到生效目标的完整路径中。是否使用按配置引用判定，与当前流量或连通性无关；reload 时重新计算，并保留手动 selector 选择，以便重新启用时恢复。
 
-旧的 `[via: ...]` annotation 会被拒绝。每个 node 仍只能包含一个分享链接；代理链统一使用 group path expression 组合。
+每个 node 只能包含一个分享链接；代理链使用 group path expression 组合。
 
 如果真实节点或 group 名称为 `must` 或以 `must_` 开头，请使用引号（例如 `'must_edge'`）按字面名称引用。流量控制配置在 `rules {}` 中。
 
@@ -101,7 +101,7 @@ group {
 
 启动/reload 时，先通过入口配置的 bootstrap DNS 出口解析节点。只有该地址族存在解析地址，且内核能够按配置的 mark 在本机/指定接口上选出可用路由和源地址，才创建对应候选。两个地址族均满足条件时，域名节点才拆成 IPv4、IPv6 两个候选（IPv4 在前）。仅 A 记录的节点、本机/接口仅支持 IPv4、接口仅有链路本地 IPv6 地址等情况，不会生成 IPv6 占位节点。IP 字面量同样检查本地条件。候选分别维护健康、延迟、统计和连接池；同一地址族中的多个地址属于同一个候选。名称和订阅过滤仍匹配原始节点定义。DNS 或本地网络地址族能力变化后，通过 reload 重新发现候选；已有候选的连通性变化仍由健康检查处理。
 
-地址族展开在逻辑路径展开之后进行，并计入路径数量限制。`fixed(n)`、`selector(n)` 索引展开后的列表；需要固定地址族时使用 `ipversion()`。routing 直接引用节点、或无 policy 的单逻辑路径，在双栈变体之间默认使用 `min_moving_avg`；显式 policy 始终优先。状态和 selector API 提供 `egress`（`ipversion`、有效 `mark`、可选 `interface`）；显示名称仅在双栈拆分时标注 IPv4/IPv6，单栈不标注。候选 ID 包含地址族和入口选项，DNS 变化及重新排序不改变 ID。升级会改变旧候选 ID，因此已保存的 selector 选择可能一次性回退到配置的默认/首个候选。
+地址族展开在逻辑路径展开之后进行，并计入路径数量限制。`fixed(n)`、`selector(n)` 索引展开后的列表；需要固定地址族时使用 `ipversion()`。routing 直接引用节点、或无 policy 的单逻辑路径，在双栈变体之间默认使用 `min_moving_avg`；显式 policy 始终优先。状态和 selector API 提供 `egress`（`ipversion`、有效 `mark`、可选 `interface`）；显示名称仅在双栈拆分时标注 IPv4/IPv6，单栈不标注。候选 ID 包含地址族和入口选项，DNS 变化及重新排序不改变 ID。
 
 ## 规则片段、路由策略与接口绑定
 
@@ -156,7 +156,7 @@ routing {
 }
 ```
 
-这种写法是匿名默认策略，可与 `rule_set`、命名 `policy` 和 `interface` 声明共存，但不能同时设置 `default: 策略名`。匿名默认策略也必须显式声明 fallback。旧的 `default { ... }` 和在接口块内定义规则的写法不再支持。
+这种写法是匿名默认策略，可与 `rule_set`、命名 `policy` 和 `interface` 声明共存，但不能同时设置 `default: 策略名`。匿名默认策略也必须显式声明 fallback。
 
 ### 为规则片段添加公共条件
 
@@ -366,4 +366,4 @@ routing {
 
 正向域名规则需要已有 DNS 映射才能选中原本的内核直连；未命中的 direct 流量保持 eBPF 直通，不为取得主机名增加全流量捕获。共享 IP 歧义和取反条件沿用原有域名匹配语义。
 
-旧的 `routing` 动作 `must_rules`、`must_direct`、`must_<outbound>`、`direct(must)` 等出站参数以及 `bump`（包括 fallback 中的写法）会报迁移错误。将控制条件移入 `rules {}`，出站选择保留在 `routing {}`。新 `must` 在全部普通路由之前判断；迁移原来夹在路由规则中的 `must_rules` 时，应收窄条件，排除此前被更早路由规则拦截的流量。原先只在 fallback 生效的控制同样需要显式写出适用条件。DNAT 与控制动作的组合见 [rules 配置](destination-rules.md)。
+流量控制配置在 `rules {}` 中，并显式写出适用条件；`routing {}`（包括 `fallback`）选择出站及其参数。控制条件在全部普通路由之前判断。DNAT 与控制动作的组合见 [rules 配置](destination-rules.md)。

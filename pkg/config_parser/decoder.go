@@ -68,18 +68,10 @@ func (d *decoder) parseOptAnnotation(ctx dae_config.IOptAnnotationContext) []*Pa
 	for _, item := range annotation.AllAnnotationParameter() {
 		item := item.(*dae_config.AnnotationParameterContext)
 		if item.FunctionPrototype() != nil {
-			message := "function-valued annotations are not supported"
-			if item.ID().GetText() == "via" {
-				message = "via annotations are no longer supported; compose proxy paths with ->"
-			}
-			d.reportError(item, message)
+			d.reportError(item, "function-valued annotations are not supported")
 			continue
 		}
 		param := parseParam(item.Parameter().(*dae_config.ParameterContext))
-		if param.Key == "via" {
-			d.reportError(item, "via annotations are no longer supported; compose proxy paths with ->")
-			continue
-		}
 		params = append(params, param)
 	}
 	return params

@@ -161,14 +161,14 @@ func validateRoutingActions(params *Config) error {
 
 func validateRoutingAction(f *config_parser.Function) error {
 	if !f.Quoted && (f.Name == "must" || strings.HasPrefix(f.Name, "must_")) {
-		return fmt.Errorf("must control moved to rules { <filter> -> must }; select the outbound separately in routing")
+		return fmt.Errorf("routing target %q is reserved for must control; flow controls belong in rules {}", f.Name)
 	}
 	if f.Name == consts.OutboundControlPlaneRouting.String() {
-		return fmt.Errorf("control-plane routing moved to rules { <filter> -> bump }; select the outbound separately in routing")
+		return fmt.Errorf("routing target %q is a flow control; flow controls belong in rules {}", f.Name)
 	}
 	for _, p := range f.Params {
 		if p != nil && p.Key == "" && p.Val == "must" {
-			return fmt.Errorf("the must outbound parameter moved to rules { <filter> -> must }; remove must from the routing outbound")
+			return fmt.Errorf("must is not a routing outbound parameter; flow controls belong in rules {}")
 		}
 	}
 	return nil

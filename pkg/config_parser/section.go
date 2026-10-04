@@ -143,7 +143,7 @@ type Function struct {
 	Name   string
 	Not    bool
 	Params []*Param
-	// Quoted distinguishes literal target names from legacy name shorthands.
+	// Quoted distinguishes literal target names from reserved control names.
 	Quoted bool
 }
 

@@ -68,7 +68,7 @@ Latency selection ignores `check_tolerance` until startup completes and once for
 
 Groups and directly routed nodes are instantiated only when referenced by the default policy, an interface-bound policy, their recursively included `rule_set`s, or plugin routes. Targets referenced only by inactive definitions are validated but have no runtime outbound, connectivity checks, or status/selector API entry. Template dependencies are expanded into the active target's paths. Usage is determined from configuration, regardless of current traffic or availability, and is recalculated on reload; saved manual selector choices are retained for reactivation.
 
-The former `[via: ...]` annotation is rejected. Node entries still contain exactly one share link; compose links only with group path expressions.
+Each node entry contains exactly one share link; compose links with group path expressions.
 
 Quote a real node or group name that is `must` or begins with `must_` (for example, `'must_edge'`) to reference it literally. Flow controls belong in `rules {}`.
 
@@ -101,7 +101,7 @@ group {
 
 At startup/reload, each entry is resolved through its configured bootstrap DNS transport. A family is created only when it has an address and the kernel can select a usable route and source address on the local/configured interface, including its policy-routing mark. Only when both checks succeed for both families does a hostname entry produce two candidates (IPv4 first). A-only nodes, IPv4-only hosts/interfaces, and interfaces with only link-local IPv6 do not gain an IPv6 placeholder. Literal IP entries are checked in the same way. Candidates own independent health, latency, statistics and connection pools. Multiple addresses in one family belong to the same candidate. Names and subscription filters still match original node definitions. Reload to rediscover families after DNS or local network capabilities change; health checks handle connectivity changes for existing candidates.
 
-Family expansion happens after logical path expansion and counts toward the path limits. `fixed(n)` and `selector(n)` index this expanded list; pin a family with `ipversion()` when needed. A directly routed node or policyless single logical path automatically uses `min_moving_avg` between its family variants. An explicit policy always wins. Status and selector APIs expose `egress` (`ipversion`, effective `mark`, optional `interface`); displayed names show IPv4/IPv6 labels only for split dual-stack paths, omitting them for single-stack paths. Candidate IDs include family and entry options and remain stable across DNS changes and reordering. Upgrading changes old candidate IDs, so a saved selector choice may fall back to its configured default/first candidate once.
+Family expansion happens after logical path expansion and counts toward the path limits. `fixed(n)` and `selector(n)` index this expanded list; pin a family with `ipversion()` when needed. A directly routed node or policyless single logical path automatically uses `min_moving_avg` between its family variants. An explicit policy always wins. Status and selector APIs expose `egress` (`ipversion`, effective `mark`, optional `interface`); displayed names show IPv4/IPv6 labels only for split dual-stack paths, omitting them for single-stack paths. Candidate IDs include family and entry options and remain stable across DNS changes and reordering.
 
 ## Rule sets, routing policies and interface bindings
 
@@ -156,7 +156,7 @@ routing {
 }
 ```
 
-This anonymous default policy can coexist with `rule_set`, named `policy` and `interface` declarations, but cannot be combined with `default: policy_name`. Its fallback is also required. The old `default { ... }` form and policies defined inside interface blocks are no longer supported.
+This anonymous default policy can coexist with `rule_set`, named `policy` and `interface` declarations, but cannot be combined with `default: policy_name`. Its fallback is also required.
 
 ### Shared conditions on rule fragments
 
@@ -370,4 +370,4 @@ routing {
 
 Positive domain filters require an existing DNS mapping to select kernel-direct connections. Unmatched direct traffic stays in eBPF; no broad capture is added to obtain a hostname. Shared-IP ambiguity and negation retain the existing domain matching semantics.
 
-Legacy `routing` actions `must_rules`, `must_direct`, `must_<outbound>`, outbound parameters such as `direct(must)`, and `bump` now produce a migration error, including in `fallback`. Move the control predicate into `rules {}`, and keep the outbound selection in `routing {}`. Unlike an interleaved `must_rules`, the new `must` is evaluated before all ordinary routing rules; narrow its filter if earlier routing rules used to exclude traffic. A fallback-wide control likewise needs an explicit filter with the intended scope.
+Flow controls belong in `rules {}`, with an explicit filter for their scope. `routing {}`, including `fallback`, selects outbounds and their parameters. Flow controls are evaluated before all ordinary routing rules.
