@@ -92,6 +92,68 @@ func TestReloadKeepsFallbackPolicyOwnership(t *testing.T) {
 	}
 }
 
+func TestReloadOwnsLateSetupPolicyLeases(t *testing.T) {
+	network := common.NetworkTCP4.NetworkType()
+	old := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
+	next := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
+	last := newSelectorTestGroup(t, nil, nil, dialer.DialerSelectionPolicy{}, nil)
+	for _, g := range []*DialerGroup{old, next, last} {
+		g.SetConnectionPolicy(true, true)
+	}
+	old.connections.networks[network.Index()].selected = "original"
+	next.InheritConnections(old)
+	last.InheritConnections(next)
+	late := old.connectionLease(network, false)
+	fallback := old.connectionLease(network, true)
+	if late != last.connectionLease(network, false) || !late.Valid() {
+		t.Fatal("late setup escaped current policy ownership")
+	}
+	last.closeReselectedConnections(network)
+	last.connections.networks[network.Index()].selected = "replacement"
+	if late.AbortCause() == nil || old.connectionLease(network, false).AbortCause() == nil {
+		t.Fatal("reselection missed a predecessor's late setup")
+	}
+	if err := last.publishNetworkAvailable(network, true); err != nil {
+		t.Fatal(err)
+	}
+	last.closeRecoveredConnections()
+	if fallback.AbortCause() == nil || old.connectionLease(network, true).AbortCause() == nil {
+		t.Fatal("recovery missed a predecessor's fallback")
+	}
+}
+
+func TestReloadRetainsUnavailableManualChoice(t *testing.T) {
+	for _, closeOld := range []bool{false, true} {
+		t.Run(map[bool]string{false: "keep", true: "close"}[closeOld], func(t *testing.T) {
+			policy := dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector}
+			old := newSelectorTestGroup(t, []*dialer.Dialer{newUncheckedDialer(t, "a")}, emptyAnnotations(1), policy, nil)
+			old.SetConnectionPolicy(closeOld, false)
+			network := common.NetworkTCP4.NetworkType()
+			previous, err := old.SelectConnection(*network, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := newSelectorTestGroup(t, []*dialer.Dialer{newCheckedDialer(t, "a"), newCheckedDialer(t, "b")}, emptyAnnotations(2), policy, nil)
+			next.SetConnectionPolicy(closeOld, false)
+			selected := next.Dialers[1].StatsID()
+			if err := next.SetSelection(selected); err != nil {
+				t.Fatal(err)
+			}
+			next.InheritConnections(old)
+			if next.Selection() != selected || next.connections.networks[network.Index()].selected != selected {
+				t.Fatal("reload lost the unavailable manual choice")
+			}
+			if (previous.Lease.AbortCause() != nil) != closeOld || (old.connectionLease(network, false).AbortCause() != nil) != closeOld {
+				t.Fatal("manual reload policy missed established or late predecessor connections")
+			}
+			fallback, err := next.SelectConnection(*network, true)
+			if !errors.Is(err, ErrNoAliveDialer) || !fallback.Lease.Valid() {
+				t.Fatalf("current unavailable selection lost its fallback lease: %v", err)
+			}
+		})
+	}
+}
+
 func TestManualSelectionClosesPreviousGeneration(t *testing.T) {
 	for _, closeOld := range []bool{false, true} {
 		t.Run(map[bool]string{false: "keep", true: "close"}[closeOld], func(t *testing.T) {

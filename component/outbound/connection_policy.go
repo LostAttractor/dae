@@ -13,6 +13,7 @@ import (
 // Each relay holds the generation selected before dialing, so a policy change
 // also reaches connections whose setup has not finished yet.
 type connectionPolicy struct {
+	successor       *DialerGroup
 	closeOnReselect bool
 	closeOnRecovery bool
 	networks        [common.NetworkTypeCount]connectionGeneration
@@ -35,6 +36,9 @@ func (g *DialerGroup) connectionLease(network *common.NetworkType, fallback bool
 	if g.Kind != GroupKindSelector {
 		return nil
 	}
+	if p.successor != nil {
+		return p.successor.inheritedConnectionLease(network, fallback, p.networks[network.Index()].selected)
+	}
 	generation := &p.networks[network.Index()]
 	lease := &generation.regular
 	if fallback {
@@ -46,19 +50,49 @@ func (g *DialerGroup) connectionLease(network *common.NetworkType, fallback bool
 	return *lease
 }
 
-// InheritConnections transfers relay generations after old stops. Reload must
-// preserve fallback ownership, including recovery completed during preparation.
-func (g *DialerGroup) InheritConnections(old *DialerGroup) {
+// A retired configuration may still finish an admitted setup or MITM request.
+// Its route stays pinned, but the current group owns subsequent close policies.
+// Locks follow publication order (predecessor -> successor), never backwards.
+func (g *DialerGroup) inheritedConnectionLease(network *common.NetworkType, fallback bool, selected string) *netproxy.Lease {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	p := &g.connections
+	if p.successor != nil {
+		return p.successor.inheritedConnectionLease(network, fallback, selected)
+	}
+	current := p.networks[network.Index()].selected
+	if p.closeOnReselect && selected != "" && current != "" && current != selected ||
+		fallback && p.closeOnRecovery && g.networkAvailable[network.Index()] {
+		lease := netproxy.NewLease(netproxy.NewResourceRef())
+		lease.Abort(netproxy.WrapFailure(errors.New("retired route no longer satisfies current connection policy"), netproxy.Failure{Origin: netproxy.OriginLocalCleanup}))
+		return lease
+	}
+	return g.connectionLease(network, fallback)
+}
+
+// InheritConnections transfers relay ownership before the new plane admits
+// traffic. Later acquisitions by old follow the successor's connection policy.
+func (g *DialerGroup) InheritConnections(old *DialerGroup) {
 	old.mu.Lock()
+	defer old.mu.Unlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.connections.networks = old.connections.networks
-	old.connections.networks = [common.NetworkTypeCount]connectionGeneration{}
-	old.mu.Unlock()
-	// Preparation may already have selected a different path. If no path is
-	// ready yet, retain the old identity until the next successful selection.
+	old.connections.successor = g
+	for i := range old.connections.networks {
+		old.connections.networks[i].regular, old.connections.networks[i].fallback = nil, nil
+	}
+	// Manual choices carry policy identity even while unavailable. Automatic
+	// policies retain the old identity until a replacement is ready.
 	for i := range common.NetworkTypeCount {
-		_, _ = g.selectLocked(common.NetworkIndex(i).NetworkType())
+		network := common.NetworkIndex(i).NetworkType()
+		if g.IsSelector() {
+			if selected := g.fixedDialer(); selected != nil {
+				g.updateConnectionSelection(network, selected)
+			}
+		} else {
+			_, _ = g.selectLocked(network)
+		}
 	}
 	g.closeRecoveredConnections()
 }
