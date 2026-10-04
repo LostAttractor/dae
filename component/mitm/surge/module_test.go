@@ -89,12 +89,13 @@ func TestModuleScriptParameterDiagnostics(t *testing.T) {
 		ignored  int
 		warnings int
 		invalid  bool
+		disabled bool
 	}{
 		{option: "script-update-interval=not-a-duration", ignored: 1},
 		{option: "debug=not-a-boolean", ignored: 1},
-		{option: "enable=false", ignored: 1},
-		{option: "enable=not-a-boolean", ignored: 1},
-		{option: "full-header-mode=not-a-boolean", ignored: 1},
+		{option: "enable=false", disabled: true},
+		{option: "enable=not-a-boolean", invalid: true},
+		{option: "full-header-mode=not-a-boolean", invalid: true},
 		{option: "unknown-option=true", warnings: 1},
 		{option: "requires-body=maybe", invalid: true},
 	} {
@@ -109,7 +110,11 @@ func TestModuleScriptParameterDiagnostics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(module.Scripts) != 1 || len(module.Ignored) != test.ignored || len(module.Warnings) != test.warnings {
+			wantScripts := 1
+			if test.disabled {
+				wantScripts = 0
+			}
+			if len(module.Scripts) != wantScripts || len(module.Ignored) != test.ignored || len(module.Warnings) != test.warnings {
 				t.Fatalf("unexpected script or diagnostics: %+v", module)
 			}
 		})
@@ -133,8 +138,8 @@ skip-server-cert-verify = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Scripts) != 3 || len(m.Rules) != 2 || len(m.Warnings) != 5 || len(m.Ignored) != 1 {
-		t.Fatalf("expected three scripts, two domain rules, five deduplicated warnings and one ignored parameter, got %+v", m)
+	if len(m.Scripts) != 3 || len(m.Rules) != 2 || len(m.Warnings) != 5 || len(m.Ignored) != 0 {
+		t.Fatalf("expected three scripts, two domain rules, five deduplicated warnings and no ignored parameters, got %+v", m)
 	}
 }
 

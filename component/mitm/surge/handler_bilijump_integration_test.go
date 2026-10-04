@@ -106,7 +106,7 @@ func TestProxyIntegrationSyntheticGRPCTrailers(t *testing.T) {
 
 func TestScriptTrailersRejectFraming(t *testing.T) {
 	for _, key := range []string{"Content-Length", "Transfer-Encoding", "Host", "Trailer"} {
-		if _, err := resultTrailers(map[string]string{key: "value"}); err == nil {
+		if _, err := resultTrailers(http.Header{key: {"value"}}); err == nil {
 			t.Errorf("accepted forbidden trailer %s", key)
 		}
 	}

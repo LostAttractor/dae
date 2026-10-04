@@ -149,6 +149,16 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 		return nil, err
 	}
 	s := &Script{Name: strings.TrimSpace(name), Type: params["type"], Path: params["script-path"], Pattern: params["pattern"], Argument: params["argument"], MaxSize: DefaultScriptMaxSize}
+	_, s.ArgumentSet = params["argument"]
+	if value, exists := params["enable"]; exists {
+		enabled, err := parseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("script %q parameter enable: %w", s.Name, err)
+		}
+		if !enabled {
+			return nil, nil
+		}
+	}
 	if s.Type != "http-request" && s.Type != "http-response" && s.Type != "dns" {
 		*warnings = append(*warnings, fmt.Sprintf("script %q: unsupported type %q; script is ignored", s.Name, s.Type))
 		return nil, nil
@@ -164,8 +174,8 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 	}
 	for key, value := range params {
 		switch key {
-		case "type", "script-path", "pattern", "argument":
-		case "script-update-interval", "debug", "enable", "full-header-mode":
+		case "type", "script-path", "pattern", "argument", "enable":
+		case "script-update-interval", "debug", "img-url", "wake-system":
 			*ignored = append(*ignored, fmt.Sprintf("script %q: unsupported parameter %q is ignored", s.Name, key))
 		case "engine":
 			switch strings.ToLower(value) {
@@ -179,6 +189,8 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 			s.RequiresBody, err = parseBool(value)
 		case "binary-body-mode":
 			s.BinaryBodyMode, err = parseBool(value)
+		case "full-header-mode":
+			s.FullHeaderMode, err = parseBool(value)
 		case "max-size":
 			s.MaxSize, err = strconv.ParseInt(value, 10, 64)
 			if err == nil && s.MaxSize < -1 {

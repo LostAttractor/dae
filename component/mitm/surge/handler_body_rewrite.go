@@ -61,7 +61,7 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 	stop := context.AfterFunc(ctx, func() { _ = original.Close() })
 	raw, err := plugin.SnapshotBody(&r.Body, limit, e.options.BodyMemory)
 	stop()
-	if (err != nil && !errors.Is(err, membuffer.ErrTooLarge) && !errors.Is(err, membuffer.ErrBudgetExhausted)) || ctx.Err() != nil {
+	if err != nil && ((!errors.Is(err, membuffer.ErrTooLarge) && !errors.Is(err, membuffer.ErrBudgetExhausted)) || ctx.Err() != nil) {
 		e.metrics.skip("body_rewrite", "read_failed")
 		e.traceRequest(r.Request, "body_rewrite_skip", "reason", "read_failed")
 		raw.Close()
@@ -77,10 +77,13 @@ func (e *Engine) rewriteResponseBody(r *http.Response) error {
 		e.logRequest(r.Request, "Surge Body Rewrite skipped; forwarding original response", err)
 		return nil
 	}
-	body, err := decodeBodyView(raw, r.Header.Get("Content-Encoding"), limit, e.options.BodyMemory)
+	body, err := decodeBodyView(ctx, raw, r.Header.Get("Content-Encoding"), limit, e.options.BodyMemory)
 	if err != nil {
+		if err := r.Request.Context().Err(); err != nil {
+			return err
+		}
 		reason := "decode_failed"
-		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
+		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) || errors.Is(err, context.DeadlineExceeded) {
 			reason = traceErrorReason(err)
 		}
 		e.metrics.skip("body_rewrite", reason)

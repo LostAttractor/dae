@@ -90,7 +90,7 @@ func TestLoadSurgeTraceParametersAndFailureSummary(t *testing.T) {
 		"module.sgmodule": `[MITM]
 hostname=example.test
 [Script]
-test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,debug=bad,enable=false,full-header-mode=bad,unknown-option=true
+test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,debug=bad,enable=true,full-header-mode=true,unknown-option=true
 `,
 		"test.js": `$done({});`,
 	} {
@@ -119,7 +119,7 @@ test=type=http-request,pattern=.,script-path=test.js,script-update-interval=bad,
 		if status := engine.Status(); len(status.Modules) != 1 || status.Modules[0].Scripts != 1 || len(status.Modules[0].Warnings) != 1 {
 			t.Fatalf("ignored options changed loading or warnings: %+v", status)
 		}
-		for _, parameter := range []string{"script-update-interval", "debug", "enable", "full-header-mode"} {
+		for _, parameter := range []string{"script-update-interval", "debug"} {
 			if got := strings.Contains(output.String(), `parameter "`+parameter+`"`); got != (level == log.TraceLevel) {
 				t.Errorf("%s diagnostic at %s: %s", parameter, level, output.String())
 			}

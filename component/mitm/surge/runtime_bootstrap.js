@@ -60,8 +60,8 @@
   };
   function message(value) {
     if (!value) return undefined;
-    value.headers = headerObject(value.headers);
-    if (value.h2_trailers != null) value.h2_trailers = headerObject(value.h2_trailers);
+    value.headers = input.fullHeaders ? value.headers : headerObject(value.headers);
+    if (value.h2_trailers != null && !input.fullHeaders) value.h2_trailers = headerObject(value.h2_trailers);
     if (Object.prototype.hasOwnProperty.call(value, "bodyBase64")) {
       value.body = input.binary ? fromBase64(value.bodyBase64) : host("decode", value.bodyBase64, "", "");
       delete value.bodyBase64;
@@ -70,13 +70,23 @@
   }
   if (input.request) globalThis.$request = message(input.request);
   if (input.response) globalThis.$response = message(input.response);
-  if (input.argument) globalThis.$argument = input.argument;
+  if (input.argumentSet) globalThis.$argument = input.argument;
   if (input.type === "dns") globalThis.$domain = input.domain;
-  globalThis.$script = { name: input.name, type: input.type, startTime: Date.now(), binaryBodyMode: input.binary };
-  globalThis.$environment = { "surge-version": "5.0", "surge-build": "0", "dae-runtime": "quickjs" };
+  if (input.type === "cron") globalThis.$cronexp = input.cronexp;
+  if (input.trigger) globalThis.$trigger = input.trigger;
+  globalThis.$script = { name: input.name, type: input.type, startTime: input.startTime, sessionID: input.sessionID, binaryBodyMode: input.binary };
+  globalThis.$environment = input.environment;
+  function storeKey(key) {
+    if (key === undefined) return input.storeKey;
+    if (typeof key !== "string" || !key || /[\\/\0]/.test(key)) throw new TypeError("Store key must be a plain name");
+    return key;
+  }
   globalThis.$persistentStore = {
-    read: key => host("read", String(key)),
-    write: (value, key) => host("write", String(key), value == null ? "" : String(value), value == null ? "delete" : "")
+    read: key => host("read", storeKey(key)),
+    write: (value, key) => {
+      if (value !== null && typeof value !== "string") throw new TypeError("Store value must be a string or null");
+      return host("write", storeKey(key), value === null ? "" : value, value === null ? "delete" : "");
+    }
   };
   function log(level, ...args) {
     host("log", level, args.map(v => typeof v === "string" ? v : JSON.stringify(v)).join(" "));
@@ -89,7 +99,10 @@
     debug: (...args) => log("debug", ...args)
   };
   globalThis.$notification = { post: (title, subtitle, body) => log("info", title, subtitle, body) };
-  globalThis.$utils = { ungzip: data => fromBase64(host("ungzip", toBase64(bytes(data)))) };
+  globalThis.$utils = { ungzip: data => {
+    const result = host("ungzip", toBase64(bytes(data)));
+    return result === null ? null : fromBase64(result);
+  } };
   function headerObject(value) {
     const keyFor = (object, key) => typeof key === "string"
       ? Object.keys(object).find(name => name.toLowerCase() === key.toLowerCase()) ?? key : key;
@@ -103,8 +116,17 @@
   }
   function headers(value) {
     if (value == null) return undefined;
-    const out = {};
-    for (const [key, val] of Object.entries(value)) out[key] = Array.isArray(val) ? val.join(", ") : String(val);
+    const out = Object.create(null);
+    const entries = Array.isArray(value) ? value.map(item => {
+      if (!item || typeof item.field !== "string" || typeof item.value !== "string")
+        throw new TypeError("Header array requires {field, value} strings");
+      return [item.field, item.value];
+    }) : Object.entries(value).map(([key, val]) => [key,
+      Array.isArray(val) ? val.join(key.toLowerCase() === "cookie" ? "; " : ", ") : String(val)]);
+    for (const [key, val] of entries) {
+      const name = Object.keys(out).find(name => name.toLowerCase() === key.toLowerCase()) ?? key;
+      (out[name] ??= []).push(...(Array.isArray(val) ? val.map(String) : [String(val)]));
+    }
     return out;
   }
   function normalize(value) {
@@ -126,7 +148,7 @@
   let completed = false;
   globalThis.$done = value => {
     if (completed) return;
-    host("done", JSON.stringify(input.type === "dns" ? value ?? {} : normalize(value)));
+    host("done", JSON.stringify(input.type === "cron" || input.type === "generic" ? {} : input.type === "dns" ? value ?? {} : normalize(value)));
     completed = true;
   };
   let sequence = 0;
@@ -150,13 +172,25 @@
     $httpClient[method] = (options, callback) => {
       if (typeof callback !== "function") throw new TypeError("$httpClient expects a callback");
       options = typeof options === "string" ? { url: options } : options;
-      const payload = normalize(options);
+      let request = options;
+      if (options.body !== null && typeof options.body === "object" &&
+          !(options.body instanceof ArrayBuffer) && !ArrayBuffer.isView(options.body)) {
+        const fields = headers(options.headers) ?? {};
+        for (const key of Object.keys(fields)) if (key.toLowerCase() === "content-type") delete fields[key];
+        fields["Content-Type"] = ["application/json"];
+        request = {...options, headers: fields, body: JSON.stringify(options.body)};
+      }
+      const payload = normalize(request);
       payload.method = method.toUpperCase(); payload.timeout = options.timeout;
+      for (const key of ["auto-redirect", "auto-cookie", "full-header-mode"]) {
+        if (options[key] !== undefined && typeof options[key] !== "boolean") throw new TypeError(key + " must be a boolean");
+        payload[key] = options[key];
+      }
       const id = ++sequence;
       callbacks.set(id, event => {
         const body = event.bodyBase64 == null ? null : options["binary-mode"]
           ? fromBase64(event.bodyBase64) : host("decode", event.bodyBase64, "", "");
-        if (event.response) {
+        if (event.response && !options["full-header-mode"]) {
           event.response.headers = headerObject(event.response.headers);
           if (event.response.h2_trailers != null) event.response.h2_trailers = headerObject(event.response.h2_trailers);
         }

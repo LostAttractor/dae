@@ -12,7 +12,7 @@ func TestHostDNSAndLiteralDestinationPlans(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		engine := &Engine{options: EngineOptions{Modules: []*Module{module}}}
+		engine := newTestEngine(t, EngineOptions{Modules: []*Module{module}})
 		plan := engine.Plan()
 		if len(plan.Destinations) != 1 || len(plan.DNS) != 1 || len(module.DNSHosts) != 1 || len(module.Warnings) != 0 {
 			t.Fatalf("domain Host must be DNS-only: module=%+v plan=%+v", module, plan)

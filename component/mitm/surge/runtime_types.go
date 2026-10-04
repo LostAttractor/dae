@@ -1,8 +1,9 @@
 package surge
 
 import (
-	"errors"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -10,14 +11,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var ErrMissingDone = errors.New("script completed without calling $done")
-
-// Message is the request or response exposed to a Surge script. A nil Body
-// omits the body property, as required when requires-body is disabled.
+// Message is the request or response exposed to a Surge script. Empty bodies
+// omit the body property; nil also represents requires-body being disabled.
 type Message struct {
 	URL, Method, ID string
-	Headers         map[string]string
-	Trailers        map[string]string
+	Headers         http.Header
+	Trailers        http.Header
 	Body            []byte
 	Status          int
 }
@@ -25,16 +24,44 @@ type Message struct {
 func messageHeaders(header http.Header) map[string]string {
 	result := make(map[string]string, len(header))
 	for key, values := range header {
-		result[key] = strings.Join(values, ", ")
+		separator := ", "
+		if strings.EqualFold(key, "Cookie") {
+			separator = "; "
+		}
+		result[key] = strings.Join(values, separator)
 	}
 	return result
 }
 
+// net/http preserves duplicate values, but not wire order across field names.
+func runtimeHeaders(header http.Header, full bool) any {
+	if !full {
+		return messageHeaders(header)
+	}
+	type field struct {
+		Field string `json:"field"`
+		Value string `json:"value"`
+	}
+	fields := make([]field, 0, len(header))
+	for _, name := range slices.Sorted(maps.Keys(header)) {
+		for _, value := range header[name] {
+			fields = append(fields, field{name, value})
+		}
+	}
+	return fields
+}
+
 type Invocation struct {
 	Domain                           string
+	CronExp                          string
+	Trigger                          string
 	Request, Response                *Message
 	ScriptName, ScriptType, Argument string
+	ScriptPath                       string
+	ArgumentSet                      bool
+	ModuleName                       string
 	BinaryBodyMode                   bool
+	FullHeaderMode                   bool
 	Timeout                          time.Duration
 	HTTPClient                       *http.Client
 	BodyMemory                       *membuffer.Budget
@@ -45,8 +72,8 @@ type Invocation struct {
 type Result struct {
 	DNS      DNSResult
 	URL      *string
-	Headers  map[string]string
-	Trailers map[string]string
+	Headers  http.Header
+	Trailers http.Header
 	Body     *membuffer.View
 	Status   int
 	Response *Result

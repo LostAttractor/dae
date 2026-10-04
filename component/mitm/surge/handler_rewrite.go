@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,12 +22,18 @@ import (
 
 var errScriptAbort = errors.New("request aborted by script")
 
+// Only raised after SnapshotBody has captured a complete replay. A script's
+// processing deadline can then skip the script without losing upstream bytes.
+var errBufferedBodyTimeout = errors.New("buffered script body processing timed out")
+
+func replayableBodyTimeout(err error, parent context.Context) bool {
+	return errors.Is(err, errBufferedBodyTimeout) && parent.Err() == nil
+}
+
 func (e *Engine) acquire(ctx context.Context, kind string) (func(), error) {
-	if e.metrics != nil {
-		defer func(started time.Time) {
-			e.metrics.wait.WithLabelValues(kind).Observe(time.Since(started).Seconds())
-		}(time.Now())
-	}
+	defer func(started time.Time) {
+		e.metrics.wait.WithLabelValues(kind).Observe(time.Since(started).Seconds())
+	}(time.Now())
 	select {
 	case e.slots <- struct{}{}:
 		return func() { <-e.slots }, nil
@@ -35,16 +42,35 @@ func (e *Engine) acquire(ctx context.Context, kind string) (func(), error) {
 	}
 }
 
-func (e *Engine) matchScript(kind, rawURL string) *Script {
+func (e *Engine) matchScript(kind string, request *http.Request) (*Module, *Script) {
+	urls := []string{request.URL.String()}
+	if request.Host != "" && request.Host != request.URL.Host {
+		alias := request.URL.Clone()
+		alias.Host = request.Host
+		urls = append(urls, alias.String())
+	}
+	if request.TLS != nil && request.TLS.ServerName != "" {
+		alias := request.URL.Clone()
+		alias.Host = request.TLS.ServerName
+		if port := request.URL.Port(); port != "" {
+			alias.Host = net.JoinHostPort(alias.Host, port)
+		}
+		urls = append(urls, alias.String())
+	}
 	for _, m := range e.options.Modules {
 		for i := range m.Scripts {
 			s := &m.Scripts[i]
-			if s.Type == kind && s.Match(rawURL) {
-				return s
+			if s.Type != kind {
+				continue
+			}
+			for _, rawURL := range urls {
+				if s.Match(rawURL) {
+					return m, s
+				}
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func (e *Engine) scriptTimeout(s *Script) time.Duration {
@@ -54,10 +80,12 @@ func (e *Engine) scriptTimeout(s *Script) time.Duration {
 	return e.options.ScriptTimeout
 }
 
-func (e *Engine) runScript(ctx context.Context, s *Script, req, resp *Message, client *http.Client) (*Result, error) {
+func (e *Engine) runScript(ctx context.Context, module *Module, s *Script, req, resp *Message, client *http.Client) (*Result, error) {
 	return e.runInvocation(ctx, s.Source, Invocation{
-		Request: req, Response: resp, ScriptName: s.Name, ScriptType: s.Type,
+		ModuleName: module.Name,
+		Request:    req, Response: resp, ScriptName: s.Name, ScriptType: s.Type,
 		Argument: s.Argument, BinaryBodyMode: s.BinaryBodyMode,
+		ArgumentSet: s.ArgumentSet, ScriptPath: s.Path, FullHeaderMode: s.FullHeaderMode,
 		Timeout: e.scriptTimeout(s), HTTPClient: client,
 		BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize,
 	})
@@ -79,7 +107,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	if response, err := e.mapLocal(r); response != nil || err != nil {
 		return response, err
 	}
-	s := e.matchScript("http-request", r.URL.String())
+	module, s := e.matchScript("http-request", r)
 	if s == nil {
 		e.traceRequest(r, "script_skip", "phase", "http-request", "reason", "no_match")
 		return nil, nil
@@ -100,10 +128,11 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	}
 	defer release()
 	message := requestMessage(r)
+	canReplaceBody := len(r.TransferEncoding) == 0 && !strings.EqualFold(r.Header.Get("Expect"), "100-continue")
 	if s.RequiresBody && r.Body != nil {
 		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
-		if errors.Is(err, membuffer.ErrBudgetExhausted) {
-			execution.outcome, execution.reason = "skipped", "buffer_memory_limit"
+		if errors.Is(err, membuffer.ErrBudgetExhausted) || replayableBodyTimeout(err, r.Context()) {
+			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r, fmt.Sprintf("Surge script %q skipped; forwarding original request", s.Name), err)
 			return nil, nil
 		}
@@ -114,7 +143,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		message.Body = body.Bytes()
 	}
 	execution.start()
-	result, err := e.runScript(ctx, s, message, nil, client)
+	result, err := e.runScript(ctx, module, s, message, nil, client)
 	if err != nil {
 		execution.failed(err)
 		e.logRequest(r, fmt.Sprintf("Surge script %q failed; forwarding original request", s.Name), err)
@@ -149,7 +178,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		r.Header.Del("Transfer-Encoding")
 		execution.outcome = "success"
 	}
-	if s.RequiresBody && result.Body != nil {
+	if s.RequiresBody && canReplaceBody && result.Body != nil {
 		plugin.SetRequestBody(exchange.Request, result.Body)
 		execution.outcome = "success"
 	}
@@ -163,7 +192,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	if err := e.rewriteResponseBody(r); err != nil {
 		return err
 	}
-	s := e.matchScript("http-response", r.Request.URL.String())
+	module, s := e.matchScript("http-response", r.Request)
 	if s == nil || r.StatusCode == http.StatusSwitchingProtocols {
 		reason := "no_match"
 		if r.StatusCode == http.StatusSwitchingProtocols {
@@ -181,11 +210,11 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		return err
 	}
 	defer release()
-	message := &Message{Status: r.StatusCode, Headers: messageHeaders(r.Header)}
+	message := &Message{Status: r.StatusCode, Headers: r.Header}
 	hasBody := responseHasBody(r.Request.Method, r.StatusCode)
 	if s.RequiresBody && hasBody && r.Body != nil {
 		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
-		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
+		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) || replayableBodyTimeout(err, r.Request.Context()) {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r.Request, fmt.Sprintf("Surge script %q skipped; forwarding original response", s.Name), err)
 			return nil
@@ -198,17 +227,17 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 	}
 	// net/http populates trailers after the response body reaches EOF.
 	if len(r.Trailer) != 0 {
-		message.Trailers = messageHeaders(r.Trailer)
+		message.Trailers = r.Trailer
 	}
 	execution.start()
-	result, err := e.runScript(ctx, s, requestMessage(r.Request), message, client)
+	result, err := e.runScript(ctx, module, s, requestMessage(r.Request), message, client)
 	if err != nil {
 		execution.failed(err)
 		e.logRequest(r.Request, fmt.Sprintf("Surge script %q failed; forwarding original response", s.Name), err)
 		return nil
 	}
 	defer result.Close()
-	if result.Abort {
+	if result.Abort || !s.RequiresBody && result.Body != nil {
 		return errScriptAbort
 	}
 	if result.Headers != nil {
@@ -318,35 +347,43 @@ func (e *Engine) bufferBody(ctx context.Context, body *io.ReadCloser, header htt
 	// the exchange until the body is forwarded or replaced.
 	raw, err := plugin.SnapshotBody(body, limit, e.options.BodyMemory)
 	stop()
-	if ctx.Err() != nil {
-		raw.Close()
-		return nil, ctx.Err()
-	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
-	return decodeBodyView(raw, header.Get("Content-Encoding"), limit, e.options.BodyMemory)
+	decoded, err := decodeBodyView(ctx, raw, header.Get("Content-Encoding"), limit, e.options.BodyMemory)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("%w: %w", errBufferedBodyTimeout, err)
+	}
+	return decoded, err
 }
 
 func requestMessage(r *http.Request) *Message {
-	headers := messageHeaders(r.Header)
-	headers["Host"] = r.Host
+	headers := r.Header.Clone()
+	headers.Set("Host", r.Host)
 	_, id := plugin.IDs(r.Context())
 	return &Message{URL: r.URL.String(), Method: r.Method, Headers: headers, ID: id}
 }
 
-func resultHeaders(values map[string]string) (http.Header, error) {
+func resultHeaders(values http.Header) (http.Header, error) {
 	headers := make(http.Header, len(values))
-	for k, v := range values {
-		if !httpguts.ValidHeaderFieldName(k) || !httpguts.ValidHeaderFieldValue(v) {
+	for k, entries := range values {
+		if !httpguts.ValidHeaderFieldName(k) {
 			return nil, fmt.Errorf("invalid script header %q", k)
 		}
-		headers.Set(k, v)
+		for _, v := range entries {
+			if !httpguts.ValidHeaderFieldValue(v) {
+				return nil, fmt.Errorf("invalid script header %q", k)
+			}
+			headers.Add(k, v)
+		}
 	}
 	return headers, nil
 }
 
-func resultTrailers(values map[string]string) (http.Header, error) {
+func resultTrailers(values http.Header) (http.Header, error) {
 	headers, err := resultHeaders(values)
 	if err != nil {
 		return nil, err

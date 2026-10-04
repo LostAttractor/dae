@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/netutils"
@@ -145,6 +146,9 @@ func hostAddressResponse(request *plugin.DNSExchange, addresses []netip.Addr, tt
 }
 
 func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, servers []string, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
+	if len(servers) > 16 {
+		return nil, errors.New("Host permits at most 16 DNS servers")
+	}
 	if len(servers) == 1 {
 		switch servers[0] {
 		case "system", "syslib", "force-syslib":
@@ -183,9 +187,72 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, server
 		}
 	}
 	if request.Resolve == nil {
+		if len(servers) > 1 {
+			targets := make([]netip.AddrPort, 0, len(servers))
+			for _, server := range servers {
+				target, err := netip.ParseAddrPort(server)
+				if ip, ipErr := netip.ParseAddr(server); ipErr == nil {
+					target, err = netip.AddrPortFrom(ip, 53), nil
+				}
+				if err != nil {
+					return nil, fmt.Errorf("Host server assignment requires a DNS resolver plugin")
+				}
+				targets = append(targets, target)
+			}
+			return resolvePlainDNSServers(ctx, request, targets, next)
+		}
 		return nil, fmt.Errorf("Host server assignment requires a DNS resolver plugin")
 	}
 	return request.Resolve(ctx, request, servers)
+}
+
+func resolvePlainDNSServers(ctx context.Context, request *plugin.DNSExchange, targets []netip.AddrPort, next plugin.DNSHandler) (*plugin.DNSResponse, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	type result struct {
+		response *plugin.DNSResponse
+		err      error
+	}
+	results := make(chan result, len(targets))
+	var workers sync.WaitGroup
+	defer func() { cancel(); workers.Wait() }()
+	for _, target := range targets {
+		workers.Go(func() {
+			query := request.Fork()
+			query.Destination, query.ServerAssigned = target, true
+			query.ContextKey += "/surge-server/" + target.String()
+			response, err := next(ctx, query)
+			if err == nil {
+				if response == nil || response.MessageCopy() == nil {
+					err = errors.New("DNS server returned an empty response")
+				} else {
+					err = netutils.ValidateDnsResponseAllowEmptyQuestion(query.MessageCopy(), response.MessageCopy(), query.MessageCopy().Id)
+				}
+			}
+			results <- result{response, err}
+		})
+	}
+	var failure error
+	var negative *plugin.DNSResponse
+	for range targets {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-results:
+			if result.err != nil {
+				failure = errors.Join(failure, result.err)
+			} else if result.response.MessageCopy().Rcode == dns.RcodeSuccess {
+				return result.response, nil
+			} else if negative == nil || result.response.MessageCopy().Rcode == dns.RcodeNameError {
+				// A definitive negative answer outranks transient server failures,
+				// regardless of which concurrent query finishes last.
+				negative = result.response
+			}
+		}
+	}
+	if negative != nil {
+		return negative, nil
+	}
+	return nil, failure
 }
 
 // Go's system resolver handles address lookups (including /etc/hosts). Other
@@ -217,6 +284,9 @@ func resolveSystemDNS(ctx context.Context, request *plugin.DNSExchange) (*plugin
 }
 
 func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, request *plugin.DNSExchange, next plugin.DNSHandler) (_ *plugin.DNSResponse, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var script *Script
 	for i := range module.Scripts {
 		if module.Scripts[i].Name == name && module.Scripts[i].Type == "dns" {
@@ -226,6 +296,10 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 	}
 	if script == nil {
 		return nil, fmt.Errorf("missing DNS script %q", name)
+	}
+	key := dnsScriptKey(script, request)
+	if cached := e.dnsCache.get(key, request); cached != nil {
+		return cached, nil
 	}
 	execution := e.traceScript(nil, script)
 	defer func() { execution.finish(err) }()
@@ -238,7 +312,8 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 	defer release()
 	execution.start()
 	result, err := e.runInvocation(ctx, script.Source, Invocation{Domain: strings.TrimSuffix(request.MessageCopy().Question[0].Name, "."),
-		ScriptName: script.Name, ScriptType: "dns", Argument: script.Argument, Timeout: e.scriptTimeout(script),
+		ModuleName: module.Name, ScriptName: script.Name, ScriptType: "dns", Argument: script.Argument, Timeout: e.scriptTimeout(script),
+		ArgumentSet: script.ArgumentSet, ScriptPath: script.Path, FullHeaderMode: script.FullHeaderMode, BinaryBodyMode: script.BinaryBodyMode,
 		HTTPClient: request.Client, BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize})
 	if err != nil {
 		return nil, err
@@ -297,5 +372,7 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 		ttl = *value.TTL
 	}
 	execution.outcome = "synthetic"
-	return hostAddressResponse(request, addresses, ttl), nil
+	response := hostAddressResponse(request, addresses, ttl)
+	e.dnsCache.put(key, addresses, ttl, response.ReceivedAt)
+	return response, nil
 }

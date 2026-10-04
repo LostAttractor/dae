@@ -4,17 +4,21 @@ package surge
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"runtime"
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"golang.org/x/net/publicsuffix"
 )
 
 //go:embed runtime_bootstrap.js
@@ -26,8 +30,9 @@ var runtimeWebBootstrap string
 // Runtime shares only its persistent key/value store. Every Run creates a fresh
 // QuickJS VM, so globals and callbacks never leak between concurrent requests.
 type Runtime struct {
-	opts RuntimeOptions
-	data *runtimeStore
+	opts        RuntimeOptions
+	data        *runtimeStore
+	environment map[string]string
 }
 
 func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
@@ -47,7 +52,7 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{opts: opts, data: data}, nil
+	return &Runtime{opts: opts, data: data, environment: scriptEnvironment()}, nil
 }
 
 // Run executes source with a wall-clock budget shared by synchronous code,
@@ -55,6 +60,8 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 // loaders are installed: scripts receive only the explicit Surge host bridge.
 // The caller supplies a body budget and limit, and closes the returned Result.
 func (r *Runtime) Run(parent context.Context, source string, in Invocation) (result *Result, err error) {
+	started := time.Now()
+	sessionID := rand.Text()[:12]
 	timeout := r.opts.Timeout
 	if in.Timeout > 0 {
 		timeout = in.Timeout
@@ -92,8 +99,13 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	if client == nil {
 		client = http.DefaultClient
 	}
+	// Cookie state belongs to this invocation, never to another intercepted client.
+	sessionClient := *client
+	sessionClient.Jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	execution := &scriptExecution{
-		runtime: r, ctx: ctx, client: client, timeout: timeout,
+		runtime: r, ctx: ctx, client: &sessionClient, timeout: timeout,
+		sessionID:  sessionID,
+		moduleName: in.ModuleName, scriptName: in.ScriptName, scriptType: in.ScriptType,
 		bodyMemory: in.BodyMemory, bodyLimit: in.BodyLimit,
 		dom:    newRuntimeDOM(ctx, min(r.opts.MemoryLimit/4, 8<<20)),
 		events: make(chan runtimeEvent),
@@ -116,11 +128,19 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	if err := vm.SetHostFunc(execution.hostCall); err != nil {
 		return nil, err
 	}
+	path := in.ScriptPath
+	if path == "" {
+		path = source
+	}
 	input, err := json.Marshal(map[string]any{
-		"domain":  in.Domain,
-		"request": runtimeMessage(in.Request), "response": runtimeMessage(in.Response),
+		"domain": in.Domain, "cronexp": in.CronExp, "trigger": in.Trigger,
+		"request": runtimeMessage(in.Request, in.FullHeaderMode), "response": runtimeMessage(in.Response, in.FullHeaderMode),
 		"name": in.ScriptName, "type": in.ScriptType, "argument": in.Argument,
-		"binary": in.BinaryBodyMode,
+		"argumentSet": in.ArgumentSet || in.Argument != "",
+		"binary":      in.BinaryBodyMode, "fullHeaders": in.FullHeaderMode,
+		"storeKey":  fmt.Sprintf("/script/%x", sha256.Sum256([]byte(path))),
+		"startTime": float64(started.UnixMilli()) / 1000, "sessionID": sessionID,
+		"environment": r.environment,
 	})
 	if err != nil {
 		return nil, err
@@ -137,16 +157,16 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	return execution.waitResult(vm)
 }
 
-func runtimeMessage(m *Message) any {
+func runtimeMessage(m *Message, fullHeaders bool) any {
 	if m == nil {
 		return nil
 	}
-	v := map[string]any{"url": m.URL, "method": m.Method, "id": m.ID, "headers": m.Headers, "status": m.Status}
-	if m.Body != nil {
+	v := map[string]any{"url": m.URL, "method": m.Method, "id": m.ID, "headers": runtimeHeaders(m.Headers, fullHeaders), "status": m.Status}
+	if len(m.Body) != 0 {
 		v["bodyBase64"] = base64.StdEncoding.EncodeToString(m.Body)
 	}
 	if m.Trailers != nil {
-		v["h2_trailers"] = m.Trailers
+		v["h2_trailers"] = runtimeHeaders(m.Trailers, fullHeaders)
 	}
 	return v
 }

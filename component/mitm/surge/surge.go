@@ -28,9 +28,10 @@ type EngineOptions struct {
 // Engine applies module rules to intercepted HTTP connections. Client selection
 // and outbound routing are decided by the caller before invoking the plugin.
 type Engine struct {
-	options EngineOptions
-	slots   chan struct{}
-	metrics *engineMetrics
+	options  EngineOptions
+	slots    chan struct{}
+	metrics  *engineMetrics
+	dnsCache *dnsScriptCache
 }
 
 func NewEngine(o EngineOptions) (*Engine, error) {
@@ -48,7 +49,7 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 	if o.BodyMemory == nil {
 		return nil, errors.New("surge: body memory budget is required")
 	}
-	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts)}
+	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts), dnsCache: &dnsScriptCache{}}
 	e.metrics = newEngineMetrics(e)
 	return e, nil
 }

@@ -85,11 +85,11 @@ func TestRuntimeRewrite(t *testing.T) {
       $done({body: JSON.stringify(body), headers: {...$response.headers, "X-Script": $script.name}});
     `, Invocation{ScriptName: "demo", ScriptType: "http-response", Argument: `{"name":"测试"}`,
 		Request:  &Message{URL: "https://example.test/a"},
-		Response: &Message{Status: 200, Headers: map[string]string{"Content-Type": "application/json"}, Body: []byte(`{"name":"old"}`)}})
+		Response: &Message{Status: 200, Headers: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"name":"old"}`)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Body == nil || string(result.Body.Bytes()) != `{"name":"测试"}` || result.Headers["X-Script"] != "demo" {
+	if result.Body == nil || string(result.Body.Bytes()) != `{"name":"测试"}` || result.Headers.Get("X-Script") != "demo" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 }
@@ -158,7 +158,7 @@ func TestRuntimeMessageBodyEncoding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if body == nil {
+			if len(body) == 0 {
 				if result.Body != nil {
 					t.Fatal("absent body became an empty body")
 				}
@@ -263,10 +263,10 @@ func TestRuntimeMaaseaCompatibility(t *testing.T) {
 	r := testRuntime(t, RuntimeOptions{Logger: testSurgeLogger(func(e *log.Entry) { logs = append(logs, e.Message) })})
 	request := &Message{
 		URL: "https://youtubei.googleapis.com/youtubei/v1/log_event", Method: "POST", Body: []byte{},
-		Headers: map[string]string{"User-Agent": "com.google.ios.youtube/20.0", "Content-Encoding": "gzip", "X-Youtube-Hot-Hash-Data": "stale"},
+		Headers: http.Header{"User-Agent": {"com.google.ios.youtube/20.0"}, "Content-Encoding": {"gzip"}, "X-Youtube-Hot-Hash-Data": {"stale"}},
 	}
 	result, err := r.Run(context.Background(), string(requestSource), Invocation{Request: request, BinaryBodyMode: true, ScriptType: "http-request"})
-	if err != nil || result.Headers == nil || result.Headers["Content-Encoding"] != "" || result.Headers["X-Youtube-Hot-Hash-Data"] != "" {
+	if err != nil || result.Headers == nil || result.Headers.Get("Content-Encoding") != "" || result.Headers.Get("X-Youtube-Hot-Hash-Data") != "" {
 		t.Fatalf("Maasea log_event header rewrite failed: %v %#v logs %v", err, result, logs)
 	}
 	request.URL = "https://rr1.googlevideo.com/initplayback?foo=bar&ack=1"
@@ -307,9 +307,10 @@ func TestRuntimeExecutionLimits(t *testing.T) {
 }
 
 func TestRuntimeErrors(t *testing.T) {
-	r := testRuntime(t, RuntimeOptions{})
-	_, err := r.Run(context.Background(), `42`, Invocation{})
-	if !errors.Is(err, ErrMissingDone) {
+	r := testRuntime(t, RuntimeOptions{Timeout: 20 * time.Millisecond})
+	started := time.Now()
+	_, err := r.Run(t.Context(), `42`, Invocation{})
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) < 20*time.Millisecond {
 		t.Fatalf("missing done: %v", err)
 	}
 	_, err = r.Run(context.Background(), `throw Error("test failure")`, Invocation{})

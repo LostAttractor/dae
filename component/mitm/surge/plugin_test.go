@@ -68,7 +68,7 @@ func TestHostOnlyPlanAndDNS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := &Engine{options: EngineOptions{BodyMemory: testBodyMemory, Modules: []*Module{module}}}
+	engine := newTestEngine(t, EngineOptions{Modules: []*Module{module}})
 	host, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "hosts", Plugin: engine})
 	if err != nil {
 		t.Fatal(err)

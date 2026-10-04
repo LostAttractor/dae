@@ -73,22 +73,16 @@ func (m *engineMetrics) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (m *engineMetrics) match(kind string) {
-	if m != nil {
-		m.matches.WithLabelValues(kind).Inc()
-	}
+	m.matches.WithLabelValues(kind).Inc()
 }
 
 func (m *engineMetrics) skip(stage, reason string) {
-	if m != nil {
-		m.skips.WithLabelValues(stage, reason).Inc()
-	}
+	m.skips.WithLabelValues(stage, reason).Inc()
 }
 
 func (e *Engine) runInvocation(ctx context.Context, source string, invocation Invocation) (*Result, error) {
-	if e.metrics != nil {
-		defer func(started time.Time) {
-			e.metrics.duration.WithLabelValues(invocation.ScriptType).Observe(time.Since(started).Seconds())
-		}(time.Now())
-	}
+	defer func(started time.Time) {
+		e.metrics.duration.WithLabelValues(invocation.ScriptType).Observe(time.Since(started).Seconds())
+	}(time.Now())
 	return e.options.Runtime.Run(ctx, source, invocation)
 }

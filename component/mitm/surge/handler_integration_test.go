@@ -217,6 +217,7 @@ $httpClient.get("https://example.com/script", (error, response, body) => {
 			if err != nil {
 				t.Fatal(err)
 			}
+			req.ContentLength = int64(len("request"))
 			response, err := client.Do(req)
 			if err != nil {
 				t.Fatal(err)

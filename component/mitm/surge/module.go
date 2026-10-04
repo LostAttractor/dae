@@ -45,6 +45,8 @@ type Module struct {
 
 type Script struct {
 	Name, Type, Pattern, Path, Source, Argument string
+	ArgumentSet                                 bool
+	FullHeaderMode                              bool
 	RequiresBody, BinaryBodyMode                bool
 	MaxSize                                     int64
 	Timeout                                     time.Duration // Zero inherits the engine's default.

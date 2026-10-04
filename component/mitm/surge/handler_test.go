@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -47,7 +48,7 @@ func testProxyEngine(t *testing.T, module, source string) *Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Engine{options: EngineOptions{BodyMemory: testBodyMemory, Modules: []*Module{m}, Runtime: rt, MaxBodySize: 1 << 20, ScriptTimeout: time.Second}, slots: make(chan struct{}, 2)}
+	return newTestEngine(t, EngineOptions{Modules: []*Module{m}, Runtime: rt})
 }
 
 func TestSurgeProxyRequestRewriteAndFirstMatch(t *testing.T) {
@@ -75,6 +76,46 @@ second = type=http-request,pattern=^http://example.com/,requires-body=1,script-p
 	handler.ServeHTTP(w, req)
 	if w.Code != 200 || w.Body.String() != "ok" {
 		t.Fatalf("%d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestSurgeProxyRepeatedCookieHeaders(t *testing.T) {
+	for _, name := range []string{"Cookie", "cookie", "cOoKiE"} {
+		for _, rewrite := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/rewrite=%t", name, rewrite), func(t *testing.T) {
+				engine := testProxyEngine(t, "[Script]\ncookie = type=http-request,pattern=.,requires-body=false,script-path=a.js", fmt.Sprintf(`
+                  const cookie = $request.headers.cookie;
+                  const token = cookie.split(";").map(s => s.trim()).find(s => s.startsWith("serviceToken="));
+                  $persistentStore.write(token, "captured");
+                  if (%t) {
+                    $request.headers.cookie = [cookie, "extra=ok"];
+                    $done({headers:$request.headers});
+                  } else $done();
+                `, rewrite))
+				req := httptest.NewRequest("POST", "https://example.com/", strings.NewReader("unchanged"))
+				req.Header[name] = []string{"mjclient=YouPin", "serviceToken=abc=123", "youpin_sessionid=session"}
+				original := req.Header.Clone()
+				_, err := engine.processRequest(&plugin.Exchange{Request: req})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, err := engine.options.Runtime.data.read(t.Context(), "captured"); err != nil || got != "serviceToken=abc=123" {
+					t.Fatalf("captured token=%v error=%v", got, err)
+				}
+				if rewrite {
+					if got := req.Header.Get("Cookie"); got != "mjclient=YouPin; serviceToken=abc=123; youpin_sessionid=session; extra=ok" {
+						t.Fatalf("rewritten cookie=%q", got)
+					}
+				} else if !reflect.DeepEqual(req.Header, original) {
+					t.Fatalf("capture changed original headers: %v", req.Header)
+				}
+				body, err := io.ReadAll(req.Body)
+				_ = req.Body.Close()
+				if err != nil || string(body) != "unchanged" {
+					t.Fatalf("capture changed body: %q %v", body, err)
+				}
+			})
+		}
 	}
 }
 
@@ -138,7 +179,7 @@ bounded = type=http-request,pattern=.,requires-body=1,max-size=16,script-path=a.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeBodyView(view, "gzip", 16, testBodyMemory); err != membuffer.ErrTooLarge {
+	if _, err := decodeBodyView(t.Context(), view, "gzip", 16, testBodyMemory); err != membuffer.ErrTooLarge {
 		t.Fatalf("decode error=%v", err)
 	}
 }

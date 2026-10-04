@@ -40,11 +40,11 @@ func TestRuntimeWebCompatibilityAPIs(t *testing.T) {
       if(typeof onlyInClient!=="undefined") throw Error("HTML parser executed script");
       $done({body:doc.documentElement.outerHTML, headers, h2_trailers:{"grpc-status":"0"}});
     `
-	result, err := r.Run(context.Background(), source, Invocation{Request: &Message{Headers: map[string]string{"X-Bili-Moss-Engine-Type": "1", "Content-Type": "text/plain"}}})
+	result, err := r.Run(context.Background(), source, Invocation{Request: &Message{Headers: http.Header{"X-Bili-Moss-Engine-Type": {"1"}, "Content-Type": {"text/plain"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Body == nil || !strings.Contains(string(result.Body.Bytes()), "<head><title>test</title><script>globalThis.onlyInClient=true</script></head>") || result.Trailers["grpc-status"] != "0" {
+	if result.Body == nil || !strings.Contains(string(result.Body.Bytes()), "<head><title>test</title><script>globalThis.onlyInClient=true</script></head>") || result.Trailers.Get("Grpc-Status") != "0" {
 		t.Fatalf("unexpected compatibility result: %#v", result)
 	}
 }
@@ -162,11 +162,11 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 		payload := append([]byte{8, 7}, wireBytes(18, []byte("promotion"))...)
 		payload = append(payload, wireBytes(25, []byte("qoe-data"))...)
 		out := run(t, "bilibili.protobuf.response.js", Invocation{
-			Request:        &Message{URL: "https://grpc.biliapi.net/bilibili.community.service.dm.v1.DM/DmView", Method: "POST", Headers: map[string]string{"X-Bili-Moss-Engine-Type": "1"}},
-			Response:       &Message{Status: 200, Body: grpcFixture(gzipFixture(t, payload), true), Headers: map[string]string{"Content-Type": "application/grpc"}},
+			Request:        &Message{URL: "https://grpc.biliapi.net/bilibili.community.service.dm.v1.DM/DmView", Method: "POST", Headers: http.Header{"X-Bili-Moss-Engine-Type": {"1"}}},
+			Response:       &Message{Status: 200, Body: grpcFixture(gzipFixture(t, payload), true), Headers: http.Header{"Content-Type": {"application/grpc"}}},
 			BinaryBodyMode: true,
 		})
-		if !bytes.Equal(out.Body.Bytes(), grpcFixture([]byte{8, 7}, false)) || out.Headers["grpc-status"] != "0" {
+		if !bytes.Equal(out.Body.Bytes(), grpcFixture([]byte{8, 7}, false)) || out.Headers.Get("Grpc-Status") != "0" {
 			t.Fatalf("gRPC rewrite failed: %#v %x", out, out.Body.Bytes())
 		}
 	})
@@ -184,10 +184,10 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			return fixtureHTTPResponse(grpcFixture(gzipFixture(t, payload), true), true), nil
 		})}
 		out := run(t, "bilijump.protobuf.request.js", Invocation{
-			Request:        &Message{URL: "https://grpc.biliapi.net/bilibili.main.community.reply.v1.Reply/MainList", Method: "POST", Headers: map[string]string{"Content-Type": "application/grpc"}, Body: grpcFixture([]byte{8, 1}, false)},
+			Request:        &Message{URL: "https://grpc.biliapi.net/bilibili.main.community.reply.v1.Reply/MainList", Method: "POST", Headers: http.Header{"Content-Type": {"application/grpc"}}, Body: grpcFixture([]byte{8, 1}, false)},
 			BinaryBodyMode: true, HTTPClient: client, Argument: `{"purifyComment":true,"logLevel":4}`,
 		})
-		if calls.Load() != 1 || out.Response == nil || out.Response.Body == nil || !bytes.Equal(out.Response.Body.Bytes(), grpcFixture(good, false)) || out.Response.Trailers["Grpc-Status"] != "0" {
+		if calls.Load() != 1 || out.Response == nil || out.Response.Body == nil || !bytes.Equal(out.Response.Body.Bytes(), grpcFixture(good, false)) || out.Response.Trailers.Get("Grpc-Status") != "0" {
 			t.Fatalf("request rewrite failed: %#v", out)
 		}
 	})
@@ -218,7 +218,7 @@ func TestRuntimeBilijumpCompatibility(t *testing.T) {
 			}
 		})}
 		out := run(t, "bilijump.protobuf.request.js", Invocation{
-			Request:    &Message{URL: "https://grpc.biliapi.net/bilibili.community.service.dm.v1.DM/DmSegMobile", Method: "POST", Body: requestBody, Headers: map[string]string{"Content-Type": "application/grpc"}},
+			Request:    &Message{URL: "https://grpc.biliapi.net/bilibili.community.service.dm.v1.DM/DmSegMobile", Method: "POST", Body: requestBody, Headers: http.Header{"Content-Type": {"application/grpc"}}},
 			HTTPClient: client, BinaryBodyMode: true, Argument: `{"logLevel":4}`,
 		})
 		if calls.Load() != 2 || out.Response == nil || out.Response.Body == nil {

@@ -22,11 +22,11 @@ import (
 
 func bodyRewriteEngine(t *testing.T, limit int64, expressions ...string) *Engine {
 	t.Helper()
-	e := &Engine{options: EngineOptions{BodyMemory: testBodyMemory, MaxBodySize: limit, ScriptTimeout: 200 * time.Millisecond}, slots: make(chan struct{}, 1)}
+	options := EngineOptions{MaxBodySize: limit, ScriptTimeout: 200 * time.Millisecond, MaxConcurrentScripts: 1}
 	for _, expression := range expressions {
-		e.options.Modules = append(e.options.Modules, &Module{BodyRewrites: []BodyRewrite{testBodyRewrite(t, expression)}})
+		options.Modules = append(options.Modules, &Module{BodyRewrites: []BodyRewrite{testBodyRewrite(t, expression)}})
 	}
-	return e
+	return newTestEngine(t, options)
 }
 
 func bodyRewriteResponse(data []byte, encoding string) *http.Response {

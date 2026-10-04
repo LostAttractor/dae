@@ -61,8 +61,6 @@ func traceErrorReason(err error) string {
 		return "buffer_memory_limit"
 	case errors.Is(err, membuffer.ErrTooLarge):
 		return "body_limit"
-	case errors.Is(err, ErrMissingDone):
-		return "missing_done"
 	case errors.Is(err, errScriptAbort), errors.Is(err, plugin.ErrAbort):
 		return "aborted"
 	default:
@@ -109,11 +107,9 @@ func (l *scriptExecutionLog) finish(err error) {
 			l.outcome = "skipped"
 		}
 	}
-	if l.engine.metrics != nil {
-		l.engine.metrics.scripts.WithLabelValues(l.script.Type, l.outcome).Inc()
-		if l.outcome == "skipped" {
-			l.engine.metrics.skip(l.script.Type, l.reason)
-		}
+	l.engine.metrics.scripts.WithLabelValues(l.script.Type, l.outcome).Inc()
+	if l.outcome == "skipped" {
+		l.engine.metrics.skip(l.script.Type, l.reason)
 	}
 	if !l.engine.tracing() {
 		return

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -16,17 +17,25 @@ import (
 func decodeScriptResult(data []byte, budget *membuffer.Budget, limit int64) (_ *Result, err error) {
 	var raw struct {
 		DNSResult
-		URL      *string           `json:"url"`
-		Headers  map[string]string `json:"headers"`
-		Trailers map[string]string `json:"h2_trailers"`
-		Body     *string           `json:"body"`
-		Binary   *string           `json:"bodyBase64"`
-		Status   *int              `json:"status"`
-		Response json.RawMessage   `json:"response"`
-		Abort    bool              `json:"abort"`
+		URL      *string         `json:"url"`
+		Headers  http.Header     `json:"headers"`
+		Trailers http.Header     `json:"h2_trailers"`
+		Body     *string         `json:"body"`
+		Binary   *string         `json:"bodyBase64"`
+		Status   *int            `json:"status"`
+		Response json.RawMessage `json:"response"`
+		Abort    bool            `json:"abort"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("invalid $done result: %w", err)
+	}
+	for _, header := range []http.Header{raw.Headers, raw.Trailers} {
+		for name, values := range header {
+			if canonical := http.CanonicalHeaderKey(name); canonical != name {
+				header[canonical] = append(header[canonical], values...)
+				delete(header, name)
+			}
+		}
 	}
 	r := &Result{DNS: raw.DNSResult, URL: raw.URL, Headers: raw.Headers, Trailers: raw.Trailers, Abort: raw.Abort}
 	defer func() {
