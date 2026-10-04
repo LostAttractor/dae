@@ -130,8 +130,8 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		}
 		run(syn, next)
 		run(ack, next)
-		var saved bpftestRoutingResult
-		if err := obj.RoutingTuplesMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 1 {
+		var saved bpftestTcpFlowState
+		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 1 || saved.Proxy != 0 {
 			t.Fatalf("new direct flow %+v: %v", saved, err)
 		}
 		epoch(2, 0)
@@ -139,7 +139,7 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		route(2)
 		run(syn, redirect)
 		run(ack, redirect)
-		if err := obj.RoutingTuplesMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 2 || saved.Outbound != 2 {
+		if err := obj.TcpFlowMap.Lookup(key, &saved); err != nil || saved.RouteEpoch != 2 || saved.Proxy != 1 {
 			t.Fatalf("new proxy flow %+v: %v", saved, err)
 		}
 

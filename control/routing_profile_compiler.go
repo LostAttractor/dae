@@ -97,23 +97,15 @@ func (c *routingCompiler) compile(routingConfig *config.Routing) error {
 		bindings[binding.Policy] = append(bindings[binding.Policy], binding.Name)
 	}
 
-	allocator := routingProfileIDAllocator{}
-	if c.builder.bpf != nil {
-		allocator = c.builder.bpf.routingProfileIDs
-	}
-	profileIDPlan, err := allocator.plan(profileNames)
-	if err != nil {
-		return err
-	}
-	c.builder.profileIDPlan = &profileIDPlan
-
-	c.builder.defaultProfileID = profileIDPlan.ids[routingConfig.Default]
+	// A handoff's generation selects the interpreter, so IDs need only be
+	// unique within this configuration. Zero means userspace default routing.
+	c.builder.defaultProfileID = 1
 	policies := make(map[string]config.RoutingPolicy, len(routingConfig.Policies))
 	for _, policy := range routingConfig.Policies {
 		policies[policy.Name] = policy
 	}
-	for _, name := range profileNames {
-		if err := c.addProfile(profileIDPlan.ids[name], bindings[name], policies[name]); err != nil {
+	for i, name := range profileNames {
+		if err := c.addProfile(uint32(i+1), bindings[name], policies[name]); err != nil {
 			return err
 		}
 	}

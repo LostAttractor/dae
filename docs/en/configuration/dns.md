@@ -165,13 +165,13 @@ deadline changes and capacity promotions become visible when a batch is applied.
 Synchronous operations may apply it earlier, while a busy worker can delay it
 beyond the next one-second check.
 
-Surviving connections use a shared activity handle redirected on reload. Closing
-the old Registry atomically detaches its final activity batch, applies the old
-window and saves it. Handoff activity accepted after retirement uses the new
-window and is applied before the successor's GC. Taking the maximum deadline is
-order-independent, so replay needs no sorting. Reload preserves existing
-deadlines and rebuilds bitmaps with current rules. Ordinary shutdown rejects
-further activity.
+Surviving connections use a shared activity handle redirected when a new
+configuration is published. Reload joins the old periodic writer, applies its
+pending activity, and copies evidence into an independent kernel projection.
+Activity after the handoff uses the new window; pending events are applied
+before GC. Delivered DNS observations reach both configurations while the old
+one drains, using each configuration's own rules. Reload preserves existing
+deadlines; ordinary shutdown rejects further activity.
 
 ## Kernel AND/OR projection
 

@@ -162,7 +162,7 @@ capacities in `control/kern/tproxy.c`:
 | --- | ---: | --- |
 | `MAX_MATCH_SET_LEN` | 1024 | Existing rule-scale setting: routing instruction capacity and domain bitmap width |
 | `MAX_DOMAIN_ROUTING_NUM` | 65536 | Complete IP states resident in the kernel domain projection |
-| `MAX_DST_MAPPING_NUM` | 262144 | Per-flow routing results in `routing_tuples_map` |
+| `MAX_DST_MAPPING_NUM` | 262144 | Long-lived TCP forwarding state in `tcp_flow_map` |
 | `MAX_DST_MAPPING_NUM_UDP` | 131072 | UDP flow-direction state in `udp_conn_state_map` |
 | `MAX_UDP_ROUTING_CACHE_NUM` | 65536 | Capacity of each UDP source-routing cache and userspace binding map |
 
@@ -177,6 +177,7 @@ Domain capacity is counted in IPs and read from the loaded map; a larger bitmap
 also costs more per IP. Adjust the traffic-state capacities for the expected
 concurrent flow/source count and available memory.
 
+The setup handoff LRU has 16384 entries, separate from long-lived TCP state.
 Interface capacity, the per-trie LPM limit, process metadata and API observation
 tables remain internal constants. `MAX_LPM_NUM` is derived from
 `MAX_MATCH_SET_LEN + 8`. These are not independent make configuration parameters.

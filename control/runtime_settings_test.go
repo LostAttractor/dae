@@ -3,6 +3,7 @@
 package control
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -98,7 +99,7 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 	}
 	plane := newAPITestPlane(t, store)
 	plane.closeOnRouteChange, plane.deviceRoutes = true, newTestDeviceRoutes(t)
-	deviceLease, err := plane.deviceRoutes.acquire(&bpfRoutingResult{Mac: [6]byte{2, 0, 0, 0, 0, 10}})
+	deviceLease, err := plane.deviceRoutes.acquire(&routingResult{Mac: [6]byte{2, 0, 0, 0, 0, 10}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +130,60 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 	requireClientRoute(t, plane.routingMatcher, mac, 443, consts.OutboundDirect)
 	if onDisk, err := os.ReadFile(path); err != nil || string(onDisk) != data {
 		t.Fatal("failed reload overwrote the edited file", err)
+	}
+}
+
+func TestRuntimePublishRejectsSettingsFailureBeforeHandoff(t *testing.T) {
+	for _, failWrite := range []bool{false, true} {
+		t.Run(fmt.Sprint(failWrite), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "runtime-state.json")
+			store, err := settings.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := newAPITestPlane(t, store)
+			next := newAPITestPlane(t, store)
+			selected := old.outbounds[0].Dialers[1].StatsID()
+			if err := store.SetSelection("proxy", selected); err != nil {
+				t.Fatal(err)
+			}
+			if err := old.restoreRuntimeSettings(false); err != nil {
+				t.Fatal(err)
+			}
+			// The first saved path disappears. Neither a later projection failure nor
+			// a failure saving the complete prune may change shared preferences.
+			next.outbounds[0].Dialers = next.outbounds[0].Dialers[:1]
+			if failWrite {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				other := newAPITestPlane(t, store).outbounds[0]
+				other.Name = "second"
+				_ = other.Close()
+				next.outbounds = append(next.outbounds, other)
+			}
+			r := NewRuntime()
+			r.current = old
+			r.planes[1] = old
+			next.routingGeneration = 2
+			t.Cleanup(func() { clear(r.planes); _ = r.Close() })
+			if err := r.Publish(next, false); !errors.Is(err, ErrPublicationRejected) {
+				t.Fatalf("publication failure was not recoverable: %v", err)
+			}
+			if r.current != old || len(r.planes) != 1 || r.planes[1] != old || old.outbounds[0].Selection() != selected || store.Selection("proxy") != selected {
+				t.Fatal("rejected candidate changed active ownership or selection")
+			}
+			if !failWrite {
+				reopened, err := settings.Open(path)
+				if err != nil || reopened.Selection("proxy") != selected {
+					t.Fatalf("rejected candidate changed persisted selection: %v", err)
+				}
+			}
+		})
 	}
 }
 

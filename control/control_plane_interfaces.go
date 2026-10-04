@@ -64,6 +64,9 @@ func (c *ControlPlane) bindHostInterfaces() error {
 				return err
 			}
 		}
+		if c.autoWan {
+			core.seedAutoWanBindings()
+		}
 		retryHost = c.reconcileWan()
 	}
 	if hostEnabled {
@@ -186,6 +189,8 @@ func (c *ControlPlane) runHostReconciler() {
 	for {
 		select {
 		case <-c.ctx.Done():
+			return
+		case <-c.core.closed.Done():
 			return
 		case <-c.hostReconcileCh:
 			reconcile()

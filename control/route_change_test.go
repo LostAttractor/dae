@@ -55,12 +55,12 @@ func TestClientMembershipConnectionPolicy(t *testing.T) {
 			c := newAPITestPlane(t, store)
 			c.closeOnRouteChange, c.deviceRoutes = closeOld, newTestDeviceRoutes(t)
 			mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
-			result := &bpfRoutingResult{Mac: mac}
+			result := &routingResult{Mac: mac}
 			old, err := c.deviceRoutes.acquire(result)
 			if err != nil {
 				t.Fatal(err)
 			}
-			other, err := c.deviceRoutes.acquire(&bpfRoutingResult{Mac: [6]byte{2, 0, 0, 0, 0, 11}})
+			other, err := c.deviceRoutes.acquire(&routingResult{Mac: [6]byte{2, 0, 0, 0, 0, 11}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestDeviceRouteCommitAndRollback(t *testing.T) {
 	d := newTestDeviceRoutes(t)
 	outer := d.outer
 	a, b := [6]byte{2, 0, 0, 0, 0, 1}, [6]byte{2, 0, 0, 0, 0, 2}
-	lease, err := d.acquire(&bpfRoutingResult{Mac: a})
+	lease, err := d.acquire(&routingResult{Mac: a})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,13 +161,13 @@ func TestDeviceRouteCommitAndRollback(t *testing.T) {
 	if lease.AbortCause() == nil {
 		t.Fatal("committed change did not abort old flows")
 	}
-	if _, err := d.acquire(&bpfRoutingResult{Mac: b, RouteEpoch: 1}); err != nil {
+	if _, err := d.acquire(&routingResult{Mac: b, RouteEpoch: 1}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestDeviceRouteChangeInterruptsTCPSniffing(t *testing.T) {
-	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Hash, KeySize: uint32(unsafe.Sizeof(bpfTuplesKey{})), ValueSize: uint32(unsafe.Sizeof(bpfRoutingResult{})), MaxEntries: 8})
+	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Hash, KeySize: uint32(unsafe.Sizeof(bpfTuplesKey{})), ValueSize: uint32(unsafe.Sizeof(bpfRoutingHandoff{})), MaxEntries: 8})
 	if errors.Is(err, unix.EPERM) {
 		t.Skip("creating a BPF map requires privileges")
 	}
@@ -180,12 +180,16 @@ func TestDeviceRouteChangeInterruptsTCPSniffing(t *testing.T) {
 	key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_TCP}
 	key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
-	if err := m.Update(key, bpfRoutingResult{Mac: mac}, ebpf.UpdateAny); err != nil {
+	if err := m.Update(key, testRoutingHandoff(t, bpfRoutingResult{Mac: mac}), ebpf.UpdateAny); err != nil {
 		t.Fatal(err)
 	}
 	c := &ControlPlane{deviceRoutes: newTestDeviceRoutes(t), sniffingTimeout: time.Minute, core: &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{RoutingTuplesMap: m}}}}}
 	finished := make(chan *tcpRelay, 1)
-	go func() { relay, _ := c.prepareTCPRelay(context.Background(), left); finished <- relay }()
+	result, err := retrieveRoutingResult(m, src, dst, unix.IPPROTO_TCP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { relay, _ := c.prepareTCPRelay(context.Background(), left, result); finished <- relay }()
 	deadline := time.Now().Add(time.Second)
 	for {
 		c.deviceRoutes.mu.Lock()

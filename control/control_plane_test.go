@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
@@ -75,7 +74,7 @@ routing {
 	}
 	// Reload preparation borrows the map; construction only reads its capacity.
 	preparation := &ControlPlanePreparation{
-		bpf:      &BPFState{bpfObjects: &bpfObjects{DomainRoutingMap: &ebpf.Map{}}},
+		bpf:      &BPFState{bpfObjects: new(bpfObjects), Runtime: NewRuntime()},
 		rules:    preparedRules{routing: &conf.Routing},
 		isReload: true,
 	}
@@ -122,7 +121,9 @@ func TestSplitWanInterfacesPreservesAutoIntent(t *testing.T) {
 }
 
 func TestPrepareBPFRejectsChangedSoMark(t *testing.T) {
-	state := &BPFState{soMarkFromDae: 0x100}
+	state := NewRuntime()
+	state.soMarkFromDae = 0x100
+	state.shared["initialized"] = nil
 	if _, err := prepareBPF(context.Background(), state, 0x101); err == nil {
 		t.Fatal("changed so_mark_from_dae was accepted")
 	}
@@ -190,7 +191,7 @@ func TestPrepareWanAcceptRA(t *testing.T) {
 
 func TestReconcileWanPreparesOnlyRequiredInterfaces(t *testing.T) {
 	closed := t.Context()
-	core := &controlPlaneCore{closed: closed, wanBindings: make(map[int]*wanBinding)}
+	core := &controlPlaneCore{kernelLinks: new(kernelLinks), closed: closed, wanBindings: make(map[int]*wanBinding)}
 	snapshot := network.HostNetworkSnapshot{Interfaces: []network.DefaultRouteInterface{
 		{Index: consts.LoopbackIfIndex, Name: "lo", IPv4Default: true},
 		{Index: 2, Name: "eth0", IPv4Default: true},
@@ -223,7 +224,8 @@ func TestReconcileWanRetriesManualPreparation(t *testing.T) {
 	closed := t.Context()
 	const index = 2
 	core := &controlPlaneCore{
-		closed: closed,
+		kernelLinks: new(kernelLinks),
+		closed:      closed,
 		wanBindings: map[int]*wanBinding{index: {
 			ifname:         "eth0",
 			manualPatterns: map[string]struct{}{"eth0": {}},
@@ -303,10 +305,10 @@ func TestRemoveWanOwnerPreservesTCXForOtherOwners(t *testing.T) {
 			automatic:      true,
 			manualPatterns: map[string]struct{}{"eth*": {}, "*0": {}},
 		}},
-		hostTCXLinks: []hostTCXLink{
+		kernelLinks: &kernelLinks{hostTCXLinks: []hostTCXLink{
 			{linkIndex: index, role: hostTCXWanIngress, close: func() error { closes++; return nil }},
 			{linkIndex: index, role: hostTCXWanEgress, close: func() error { closes++; return nil }},
-		},
+		}},
 	}
 
 	core.removeWanLink(&netlink.Dummy{Index: index, Name: "eth0"}, "eth*")
@@ -333,10 +335,10 @@ func TestInvalidateAutoWanLinkClearsTCXOwnership(t *testing.T) {
 			automatic:      true,
 			manualPatterns: make(map[string]struct{}),
 		}},
-		hostTCXLinks: []hostTCXLink{
+		kernelLinks: &kernelLinks{hostTCXLinks: []hostTCXLink{
 			{linkIndex: index, role: hostTCXWanIngress, close: func() error { closes++; return nil }},
 			{linkIndex: index, role: hostTCXWanEgress, close: func() error { closes++; return nil }},
-		},
+		}},
 	}
 
 	core.invalidateWanLink(&netlink.Dummy{Index: index, Name: "eth0"})
@@ -542,7 +544,7 @@ func TestRouteDialOptionUsesActualFallbackOutbound(t *testing.T) {
 	}
 	networkType := common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4}
 	got, err := c.RouteDialOption(context.Background(), &RouteParam{
-		routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundUserDefinedMin)},
+		routingResult: &routingResult{Outbound: uint8(consts.OutboundUserDefinedMin)},
 		networkType:   networkType,
 		Dest:          netip.MustParseAddrPort("192.0.2.1:443"),
 	})
@@ -602,11 +604,11 @@ func TestDNSRelayDialPreservesNetworkAndMark(t *testing.T) {
 			}},
 		},
 	}
-	request, _, err := c.dnsRequest(nil, "udp", netip.MustParseAddrPort("192.0.2.2:12345"), netip.MustParseAddrPort("192.0.2.1:53"), bpfRoutingResult{})
+	request, _, err := c.dnsRequest(nil, "udp", netip.MustParseAddrPort("192.0.2.2:12345"), netip.MustParseAddrPort("192.0.2.1:53"), routingResult{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.dnsDialOption(context.Background(), "udp", "192.0.2.1:53", "", request, bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)})
+	got, err := c.dnsDialOption(context.Background(), "udp", "192.0.2.1:53", "", request, routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)})
 	if err != nil {
 		t.Fatalf("chooseBestDnsDialer: %v", err)
 	}
@@ -626,7 +628,7 @@ func newLifecycleTestControlPlane(udpEndpoints *UdpEndpointPool) *ControlPlane {
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	return &ControlPlane{
 		dnsRelay:        newDNSRelay(),
-		tcpConnections:  new(tcpConnectionTracker),
+		tcpConnections:  &tcpConnectionTracker{connections: new(tcpConnectionSet)},
 		udpTaskPool:     newUdpTaskPool[netip.AddrPort](),
 		udpEndpoints:    udpEndpoints,
 		ctx:             ctx,
@@ -636,20 +638,8 @@ func newLifecycleTestControlPlane(udpEndpoints *UdpEndpointPool) *ControlPlane {
 	}
 }
 
-func TestControlPlaneRetireClosesIngressBeforeWaitAndDrainsUDPWithLiveContext(t *testing.T) {
+func TestControlPlaneRetireClosesAdmissionBeforeWaitAndDrainsUDPWithLiveContext(t *testing.T) {
 	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
-	tcpIngressClosed := make(chan struct{})
-	udpIngressClosed := make(chan struct{})
-	plane.ingress = &controlPlaneIngress{
-		tcp: ingressSockets{closeFuncs: []func() error{func() error {
-			close(tcpIngressClosed)
-			return nil
-		}}},
-		udp: ingressSockets{closeFuncs: []func() error{func() error {
-			close(udpIngressClosed)
-			return nil
-		}}},
-	}
 
 	conn := newCloseTrackingConn()
 	if !plane.tcpConnections.beginSetup(conn) {
@@ -678,16 +668,6 @@ func TestControlPlaneRetireClosesIngressBeforeWaitAndDrainsUDPWithLiveContext(t 
 
 	retireDone := make(chan error, 1)
 	go func() { retireDone <- plane.retireTraffic() }()
-	for name, closed := range map[string]<-chan struct{}{
-		"TCP": tcpIngressClosed,
-		"UDP": udpIngressClosed,
-	} {
-		select {
-		case <-closed:
-		case <-time.After(time.Second):
-			t.Fatalf("%s ingress was not closed before retirement wait", name)
-		}
-	}
 	select {
 	case <-plane.tcpSetupCtx.Done():
 	case <-time.After(time.Second):
@@ -791,9 +771,7 @@ func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 	}
 	<-taskStarted
 
-	if err := plane.StopAndAbortConnections(); err != nil {
-		t.Fatal(err)
-	}
+	plane.StopAndAbortConnections()
 	select {
 	case <-oldConn.closed:
 	case <-time.After(time.Second):

@@ -8,10 +8,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"golang.org/x/sys/unix"
 )
 
@@ -43,14 +46,52 @@ func TestRoutingTupleMapLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	var result bpfRoutingResult
-	if size := unsafe.Sizeof(result); size != 56 || spec.Maps["routing_tuples_map"].ValueSize != uint32(size) ||
-		unsafe.Offsetof(result.Protocol) != 42 || unsafe.Offsetof(result.NoSniff) != 43 || unsafe.Offsetof(result.Physinif) != 44 || unsafe.Offsetof(result.RouteEpoch) != 48 {
-		t.Fatalf("routing result layout: size=%d protocol=%d no_sniff=%d physinif=%d route_epoch=%d", size, unsafe.Offsetof(result.Protocol), unsafe.Offsetof(result.NoSniff), unsafe.Offsetof(result.Physinif), unsafe.Offsetof(result.RouteEpoch))
+	if size := unsafe.Sizeof(result); size != 40 || spec.Maps["routing_tuples_map"].ValueSize != 48 || spec.Maps["tcp_flow_map"].ValueSize != 16 {
+		t.Fatalf("routing layouts: result=%d handoff=%d flow=%d", size, spec.Maps["routing_tuples_map"].ValueSize, spec.Maps["tcp_flow_map"].ValueSize)
 	}
 	cache := spec.Maps["udp_routing_cache_map"]
 	var value bpfUdpRoutingCacheValue
 	if cache.KeySize != uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})) || cache.ValueSize != uint32(unsafe.Sizeof(value)) || unsafe.Offsetof(value.CachedUntil) != 40 || unsafe.Sizeof(value) != 72 || unsafe.Sizeof(value.Result) != 40 {
 		t.Fatalf("UDP cache layout: key=%d value=%d cached_until=%d", cache.KeySize, cache.ValueSize, unsafe.Offsetof(value.CachedUntil))
+	}
+	// Validate every member against compiled C BTF, including tail padding.
+	// Equal sizeof alone would miss reordered fields or generated padding bytes.
+	for name, typ := range map[string]reflect.Type{
+		"routing_result":          reflect.TypeFor[bpfRoutingResult](),
+		"routing_handoff":         reflect.TypeFor[bpfRoutingHandoff](),
+		"tcp_flow_state":          reflect.TypeFor[bpfTcpFlowState](),
+		"udp_routing_cache_value": reflect.TypeFor[bpfUdpRoutingCacheValue](),
+		"udp_routing_scratch":     reflect.TypeFor[bpfUdpRoutingScratch](),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var layout *btf.Struct
+			if err := spec.Types.TypeByName(name, &layout); err != nil {
+				t.Fatal(err)
+			}
+			var offset uintptr
+			member := 0
+			for i := range typ.NumField() {
+				field := typ.Field(i)
+				if field.Type.Size() == 0 {
+					continue // structs.HostLayout
+				}
+				if field.Name == "_" || member >= len(layout.Members) {
+					t.Fatalf("unexpected Go field/padding: %+v", field)
+				}
+				c := layout.Members[member]
+				size, err := btf.Sizeof(c.Type)
+				if err != nil || c.BitfieldSize != 0 || !strings.EqualFold(field.Name, strings.ReplaceAll(c.Name, "_", "")) ||
+					field.Type.Size() != uintptr(size) || field.Offset != offset || uintptr(c.Offset) != offset*8 {
+					t.Fatalf("member %s: Go=%+v C=%+v size=%d err=%v, want contiguous offset %d", field.Name, field, c, size, err, offset)
+				}
+				offset += field.Type.Size()
+				member++
+			}
+			if member != len(layout.Members) || offset != typ.Size() || offset != uintptr(layout.Size) {
+				t.Fatalf("tail padding or missing member: fields=%d/%d bytes=%d Go=%d C=%d", member, len(layout.Members), offset, typ.Size(), layout.Size)
+			}
+			t.Logf("C/Go size=%d bytes, no alignment holes", offset)
+		})
 	}
 }
 
@@ -74,100 +115,6 @@ func TestDomainRoutingMapSpec(t *testing.T) {
 	}
 	if m.KeySize != 16 || m.ValueSize != uint32(unsafe.Sizeof(bpfDomainRouting{})) {
 		t.Fatalf("domain_routing_map layout = key %d, value %d; want 16, %d", m.KeySize, m.ValueSize, unsafe.Sizeof(bpfDomainRouting{}))
-	}
-}
-
-func TestDeleteUDPRoutingTuplesPreservesTCP(t *testing.T) {
-	m, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name:       "routing_tuple_test",
-		Type:       ebpf.LRUHash,
-		KeySize:    uint32(unsafe.Sizeof(bpfTuplesKey{})),
-		ValueSize:  uint32(unsafe.Sizeof(bpfRoutingResult{})),
-		MaxEntries: 8,
-	})
-	if err != nil {
-		if errors.Is(err, unix.EPERM) {
-			t.Skip("creating an eBPF map requires privileges")
-		}
-		t.Fatal(err)
-	}
-	defer m.Close()
-
-	udpKey := bpfTuplesKey{Sport: 1, L4proto: unix.IPPROTO_UDP}
-	tcpProxyKey := bpfTuplesKey{Sport: 2, L4proto: unix.IPPROTO_TCP}
-	tcpDirectKey := bpfTuplesKey{Sport: 3, L4proto: unix.IPPROTO_TCP}
-	proxy := bpfRoutingResult{Outbound: 2}
-	direct := bpfRoutingResult{Outbound: 0, Mark: 42}
-	for key, value := range map[bpfTuplesKey]bpfRoutingResult{
-		udpKey:       proxy,
-		tcpProxyKey:  proxy,
-		tcpDirectKey: direct,
-	} {
-		if err := m.Update(&key, &value, ebpf.UpdateAny); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := deleteUDPRoutingTuples(m); err != nil {
-		t.Fatal(err)
-	}
-	var got bpfRoutingResult
-	if err := m.Lookup(&udpKey, &got); !errors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Fatalf("UDP lookup error = %v, want key not found", err)
-	}
-	if err := m.Lookup(&tcpProxyKey, &got); err != nil || got.Outbound != proxy.Outbound {
-		t.Fatalf("TCP proxy tuple = %+v, %v; want preserved", got, err)
-	}
-	if err := m.Lookup(&tcpDirectKey, &got); err != nil || got.Mark != direct.Mark {
-		t.Fatalf("TCP direct tuple = %+v, %v; want preserved", got, err)
-	}
-}
-
-func TestDeleteUDPRoutingCache(t *testing.T) {
-	m, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name:       "udp_route_cache_test",
-		Type:       ebpf.LRUHash,
-		KeySize:    uint32(unsafe.Sizeof(bpfUdpRoutingCacheKey{})),
-		ValueSize:  uint32(unsafe.Sizeof(bpfUdpRoutingCacheValue{})),
-		MaxEntries: 8,
-	})
-	if err != nil {
-		if errors.Is(err, unix.EPERM) {
-			t.Skip("creating an eBPF map requires privileges")
-		}
-		t.Fatal(err)
-	}
-	defer m.Close()
-
-	value := bpfUdpRoutingCacheValue{CachedUntil: 1}
-	for i := uint16(1); i <= 2; i++ {
-		key := bpfUdpRoutingCacheKey{Sport: i}
-		if err := m.Update(&key, &value, ebpf.UpdateAny); err != nil {
-			t.Fatal(err)
-		}
-	}
-	proxyKey := bpfUdpRoutingCacheKey{Sport: 3}
-	value.Result.Outbound = 2
-	if err := m.Update(&proxyKey, &value, ebpf.UpdateAny); err != nil {
-		t.Fatal(err)
-	}
-	if err := deleteUDPRoutingCache(m, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.Lookup(&proxyKey, &value); !errors.Is(err, ebpf.ErrKeyNotExist) {
-		t.Fatalf("pending route survived reload: %v", err)
-	}
-	directKey := bpfUdpRoutingCacheKey{Sport: 1}
-	if err := m.Lookup(&directKey, &value); err != nil {
-		t.Fatalf("reload removed a direct lifetime: %v", err)
-	}
-	if err := deleteUDPRoutingCache(m, false); err != nil {
-		t.Fatal(err)
-	}
-	var key bpfUdpRoutingCacheKey
-	var got bpfUdpRoutingCacheValue
-	if m.Iterate().Next(&key, &got) {
-		t.Fatalf("UDP routing cache still contains key %+v", key)
 	}
 }
 

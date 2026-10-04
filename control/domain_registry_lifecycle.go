@@ -3,7 +3,6 @@
 package control
 
 import (
-	"maps"
 	"net/netip"
 	"slices"
 	"time"
@@ -53,6 +52,13 @@ func (g *DomainRegistry) EnablePersistence(path string) {
 	g.mu.Unlock()
 }
 
+func (g *DomainRegistry) stopWorker() {
+	g.stopOnce.Do(func() { close(g.stopCh) })
+	if g.workerDone != nil {
+		<-g.workerDone
+	}
+}
+
 func (g *DomainRegistry) Close() error {
 	g.mu.Lock()
 	if g.closed {
@@ -63,22 +69,19 @@ func (g *DomainRegistry) Close() error {
 	a := g.activity
 	a.mu.Lock()
 	g.closed = true
-	a.pending, g.activityBatch = g.activityBatch, a.pending
-	if !a.handoff {
+	if a.registry == g {
+		a.pending, g.activityBatch = g.activityBatch, a.pending
 		a.registry = nil
 	}
 	a.mu.Unlock()
-	// This batch precedes retirement and uses this registry's window. The
-	// detached queue now accepts only handoff events for the successor.
+	// Only the queue's current owner takes a final batch. Closing a predecessor
+	// must not drain activity destined for its successor.
 	reconsider := g.applyActivity()
 	g.syncProjection(g.gc(g.evaluatedAt), reconsider, g.evaluatedAt)
-	done, path := g.workerDone, g.diskPath
+	path := g.diskPath
 	g.mu.Unlock()
 	defer close(g.closeDone)
-	close(g.stopCh)
-	if done != nil {
-		<-done
-	}
+	g.stopWorker()
 	if path != "" {
 		// Disk durability is best-effort, just like periodic saves. All writers
 		// are stopped, so a save failure must not prevent in-memory reload adoption.
@@ -102,14 +105,18 @@ func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchB
 	g.byName = records
 }
 
-// AdoptFrom is called on the fresh successor after its predecessor has fully
-// closed. The retired records are immutable; the activity lock owns the handoff.
-func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(string) []uint32, now time.Time) {
-	a := old.activity
+// ForkFrom publishes an independent projection without stopping old request
+// handlers. Runtime serializes DNS delivery with this snapshot and fans later
+// observations out to every serving generation using its own domain matcher.
+func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) []uint32, now time.Time) {
+	// Join the old periodic writer before the new registry can persist a snapshot.
+	old.stopWorker()
+	old.mu.Lock()
+	defer old.mu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.clock(old.evaluatedAt)
-	now = g.clock(now)
+	reconsider := old.drainActivity()
+	old.syncProjection(old.gc(old.evaluatedAt), reconsider, old.evaluatedAt)
 	g.gcCount = old.gcCount
 	records := make(map[string]*domainRecord, len(old.byName))
 	for name, r := range old.byName {
@@ -120,24 +127,17 @@ func (g *DomainRegistry) AdoptFrom(old *DomainRegistry, matchBitmap func(string)
 		records[name] = &domainRecord{addresses: addresses}
 	}
 	g.installRecords(records, matchBitmap)
+	g.clock(old.evaluatedAt)
+	a := old.activity
 	a.mu.Lock()
 	g.activity = a
-	a.registry, a.handoff = g, false
+	a.registry = g
 	a.pending, g.activityBatch = g.activityBatch, a.pending
 	a.mu.Unlock()
-	// max(existing deadline, event time + window) is order-independent. Apply
-	// all queued activity before GC; collected evidence cannot be recreated.
 	g.applyActivity()
 	now = g.clock(now)
 	g.gc(now)
-	g.kernel.resident = maps.Clone(old.kernel.resident)
 	g.rebuildProjection(now)
-	g.adopted = true
+	old.diskPath = ""
 	g.generation++
-}
-
-func (g *DomainRegistry) Adopted() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.adopted
 }

@@ -45,7 +45,7 @@ func Mac2String(mac []uint8) string {
 	return string(b)
 }
 
-func routingLogFields(routingResult *bpfRoutingResult, interfaceName string) log.Fields {
+func routingLogFields(routingResult *routingResult, interfaceName string) log.Fields {
 	fields := make(log.Fields)
 	if routingResult.Pid != 0 {
 		fields["pid"] = routingResult.Pid
@@ -65,7 +65,7 @@ func routingLogFields(routingResult *bpfRoutingResult, interfaceName string) log
 	return fields
 }
 
-func routeLogFields(routingResult *bpfRoutingResult, interfaceName, network, source, destination string) log.Fields {
+func routeLogFields(routingResult *routingResult, interfaceName, network, source, destination string) log.Fields {
 	fields := routingLogFields(routingResult, interfaceName)
 	fields["action"] = "forward"
 	fields["network"] = network
@@ -81,7 +81,7 @@ func (c *ControlPlane) interfaceName(ifindex uint32) string {
 	return c.core.ifmgr.NameByIndex(int(ifindex))
 }
 
-func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, network string, routingResult *bpfRoutingResult) {
+func (c *ControlPlane) logDial(src, dst netip.AddrPort, domain string, dialOption *DialOption, network string, routingResult *routingResult) {
 	if log.IsLevelEnabled(log.InfoLevel) {
 		destinationIP := RefineAddrPortToShow(dst)
 		fields := routeLogFields(

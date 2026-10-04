@@ -6,7 +6,6 @@
 package control
 
 import (
-	"errors"
 	"fmt"
 	"net/netip"
 
@@ -78,10 +77,8 @@ func encodeRoutingProfiles(profiles []routingProfile) (ids []uint32, values []bp
 }
 
 func (b *RoutingMatcherBuilder) BuildKernspace() error {
-	// Retire and drain callbacks from the previous routing generation before
-	// writing new map contents, otherwise an in-flight callback could restore
-	// an old rule or profile binding after the upload.
-	b.bpf.clearRoutingRegistrations()
+	// Each configuration uploads once into fresh private maps. Mutable client
+	// sets and interface bindings update their own slots after preparation.
 	if err := b.uploadLPMTries(); err != nil {
 		return err
 	}
@@ -100,19 +97,10 @@ func (b *RoutingMatcherBuilder) BuildKernspace() error {
 	if err := b.bpf.DefaultRoutingProfile.Set(b.defaultProfileID); err != nil {
 		return fmt.Errorf("select default routing policy: %w", err)
 	}
-	b.bpf.activeLpmTrieCount = uint32(b.kernelLpmLen)
-	if b.profileIDPlan != nil {
-		b.bpf.routingProfileIDs = *b.profileIDPlan
-	}
 	return nil
 }
 
 func (b *RoutingMatcherBuilder) uploadLPMTries() error {
-	if err := b.forEachStaleLpmSlot(func(i uint32) error {
-		return b.bpf.LpmArrayMap.Update(i, b.bpf.UnusedLpmType, ebpf.UpdateAny)
-	}); err != nil {
-		return err
-	}
 	for i, cidrs := range b.simulatedLpmTries[:b.kernelLpmLen] {
 		m, err := b.bpf.newLpmMap(cidrs)
 		if err != nil {
@@ -139,58 +127,10 @@ func (b *RoutingMatcherBuilder) uploadRoutingPool() error {
 }
 
 func (b *RoutingMatcherBuilder) uploadRoutingProfiles() error {
-	if err := pruneRoutingHashMap(b.bpf.RoutingInterfaceMap, nil); err != nil {
-		return fmt.Errorf("clear routing interface profiles: %w", err)
-	}
 	ids, values := encodeRoutingProfiles(b.profiles)
-	liveIDs := make(map[uint32]struct{}, len(ids))
-	for _, id := range ids {
-		liveIDs[id] = struct{}{}
-	}
-	// Retire obsolete IDs before uploading: a full old generation must not
-	// prevent a new generation from fitting in this bounded hash map. Keep
-	// surviving IDs (including default) present until atomically replaced.
-	if err := pruneRoutingHashMap(b.bpf.RoutingProfileMap, liveIDs); err != nil {
-		return fmt.Errorf("remove stale routing profiles: %w", err)
-	}
 	options := &ebpf.BatchOptions{ElemFlags: uint64(ebpf.UpdateAny)}
 	if _, err := b.bpf.RoutingProfileMap.BatchUpdate(ids, values, options); err != nil {
 		return fmt.Errorf("batch update routing profiles: %w", err)
-	}
-	return nil
-}
-
-// Routing callbacks have been drained before activation. Iterate keys only:
-// profile values contain the full execution sequence and need not be copied.
-func pruneRoutingHashMap(m *ebpf.Map, keep map[uint32]struct{}) error {
-	var previous any
-	var stale []uint32
-	for {
-		var key uint32
-		if err := m.NextKey(previous, &key); err != nil {
-			if errors.Is(err, ebpf.ErrKeyNotExist) {
-				break
-			}
-			return err
-		}
-		if _, retained := keep[key]; !retained {
-			stale = append(stale, key)
-		}
-		previous = key
-	}
-	for _, key := range stale {
-		if err := m.Delete(key); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (b *RoutingMatcherBuilder) forEachStaleLpmSlot(fn func(uint32) error) error {
-	for i := uint32(b.kernelLpmLen); i < b.bpf.activeLpmTrieCount; i++ {
-		if err := fn(i); err != nil {
-			return fmt.Errorf("process stale LPM slot at index %d: %w", i, err)
-		}
 	}
 	return nil
 }

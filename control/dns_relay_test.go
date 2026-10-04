@@ -79,7 +79,7 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 			defer host.Close()
 			c := &ControlPlane{routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: registry}, mitmHost: host}
 			query := dnsTestRequest(t, "test.example.", 1)
-			request, bypass, err := c.dnsRequest(dnsTestWire(t, query), "udp", netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: captureDestination})
+			request, bypass, err := c.dnsRequest(dnsTestWire(t, query), "udp", netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDestination})
 			if err != nil || bypass != tc.must {
 				t.Fatalf("must decision: %v %v", bypass, err)
 			}
@@ -90,7 +90,7 @@ func TestDNSDeliveryAndMustAfterDNAT(t *testing.T) {
 				wire = append(wire, 0xff)
 			}
 			delivered := false
-			err = c.processDNS(t.Context(), request, bpfRoutingResult{CaptureFlags: captureDestination}, bypass, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+			err = c.processDNS(t.Context(), request, routingResult{CaptureFlags: captureDestination}, bypass, func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
 				return &plugin.DNSResponse{DNSPacket: plugin.DNSWire(wire)}, nil
 			}, func(got []byte) error {
 				if p.observations != 0 || registry.Usage().UserUsed != 0 {
@@ -121,7 +121,7 @@ func TestDNSDNATBlockPreventsPluginAdmission(t *testing.T) {
 	c := &ControlPlane{routingMatcher: matcher}
 	query := dnsTestRequest(t, "local.example.", 1)
 	for _, network := range []string{"tcp", "udp"} {
-		request, _, err := c.dnsRequest(dnsTestWire(t, query), network, netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: captureDestination})
+		request, _, err := c.dnsRequest(dnsTestWire(t, query), network, netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDestination})
 		if err == nil || request != nil {
 			t.Fatalf("%s admitted a blocked DNS destination: %+v %v", network, request, err)
 		}
@@ -259,7 +259,7 @@ func TestDNSUDPReplyRestoresOriginalDestination(t *testing.T) {
 		}
 		_, _ = upstream.WriteToUDPAddrPort(answer, from)
 	}()
-	c.handleDNSUDP(wire, src, dst, bpfRoutingResult{CaptureFlags: captureDestination})
+	c.handleDNSUDP(wire, src, dst, routingResult{CaptureFlags: captureDestination})
 	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
 	buffer := make([]byte, 1024)
 	n, from, err := client.ReadFromUDPAddrPort(buffer)
@@ -369,7 +369,7 @@ func TestDNSRelayTCPPipeline(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		defer accepted.Close()
-		done <- plane.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:1000"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: 8})
+		done <- plane.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:1000"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: 8})
 	}()
 	for i := range count {
 		if err := writeDNSFrame(client, dnsTestWire(t, dnsTestRequest(t, fmt.Sprintf("q%d.example.", i), uint16(i)))); err != nil {
@@ -478,7 +478,7 @@ func TestDNSDialPreservesIngressAndReroutesAssignedServer(t *testing.T) {
 	matcher, _ := routingMatcherForTest(t, prepared)
 	c := &ControlPlane{routingMatcher: matcher, outbounds: groups}
 	src, dst := netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53")
-	identity := bpfRoutingResult{CaptureFlags: captureDestination, Mark: 37}
+	identity := routingResult{CaptureFlags: captureDestination, Mark: 37}
 	request, _, err := c.dnsRequest([]byte{0, 1, 2}, "udp", src, dst, identity)
 	if err != nil {
 		t.Fatal(err)
@@ -495,7 +495,7 @@ func TestDNSDialPreservesIngressAndReroutesAssignedServer(t *testing.T) {
 			t.Fatalf("server route: %+v %v", option, err)
 		}
 	}
-	identity = bpfRoutingResult{CaptureFlags: 8, Mark: 37, Outbound: uint8(consts.OutboundDirect)}
+	identity = routingResult{CaptureFlags: 8, Mark: 37, Outbound: uint8(consts.OutboundDirect)}
 	request.OriginalDestination, request.Destination = netip.MustParseAddrPort("203.0.113.53:53"), netip.MustParseAddrPort("203.0.113.53:53")
 	option, err := c.dnsDialOption(context.Background(), "udp", request.Destination.String(), "", request, identity)
 	if err != nil || option.Mark != 37 || option.Outbound.Name != "direct" {

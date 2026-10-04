@@ -34,19 +34,6 @@ const (
 	StatusSocketPath = "/var/run/dae.sock"
 )
 
-type reloadControlPlaneRetirer interface {
-	StopAndAbortConnections() error
-	Close() error
-}
-
-func retireControlPlaneForReload(c reloadControlPlaneRetirer, abortConnections bool) error {
-	var abortErr error
-	if abortConnections {
-		abortErr = c.StopAndAbortConnections()
-	}
-	return errors.Join(abortErr, c.Close())
-}
-
 // Run starts dae after command startup has configured process-wide name
 // resolution. Embedders install and pass the resolver before concurrent work.
 // Run starts the daemon with the binary's complete set of plugin types.
@@ -80,7 +67,9 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 
 	// New ControlPlane.
 	startupStarted := time.Now()
-	c, err := newControlPlane(shutdownCtx, nil, conf, externGeoDataDirs, runtimeSettings, plugins)
+	datapath := control.NewRuntime()
+	defer datapath.Close()
+	c, err := newControlPlane(shutdownCtx, datapath, conf, externGeoDataDirs, runtimeSettings, plugins)
 	startupErr := shutdownCtx.Err()
 	if err == nil && startupErr != nil {
 		err = errors.Join(startupErr, cleanupStartup(c))
@@ -102,7 +91,7 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 		managementAPI.Close()
 		return errors.Join(fmt.Errorf("local API: %w", err), cleanupStartup(c))
 	}
-	if err = c.Activate(); err != nil {
+	if err = datapath.Publish(c, false); err != nil {
 		localAPI.Close()
 		managementAPI.Close()
 		return errors.Join(err, cleanupStartup(c))
@@ -112,7 +101,6 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 	startMetricsServer(conf.Global.MetricsPort)
 
 	// Serve tproxy TCP/UDP server util signals.
-	var listener *control.Listener
 	sigs := make(chan os.Signal, 1)
 	errCh := make(chan error, 1)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGILL, syscall.SIGUSR1, syscall.SIGUSR2)
@@ -121,14 +109,13 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 	startupPort := conf.Global.TproxyPort
 	readyChan := make(chan bool, 1)
 	go func() {
-		startedListener, err := control.GetDaeNetns().With(func() (*control.Listener, error) {
-			startedListener, err := startupPlane.ListenAndServe(readyChan, startupPort)
+		_, err := control.GetDaeNetns().With(func() (*control.Listener, error) {
+			startedListener, err := datapath.ListenAndServe(readyChan, startupPort)
 			if err != nil {
 				return nil, fmt.Errorf("ListenAndServe: %w", err)
 			}
 			return startedListener, nil
 		})
-		listener = startedListener
 		if err != nil {
 			errCh <- err
 		} else {
@@ -172,7 +159,6 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 	}
 	writeReloadState(consts.ReloadDone, "")
 
-	pendingReload := false
 	isSuspend := false
 	abortConnections := false
 loop:
@@ -192,52 +178,11 @@ loop:
 		case sig := <-sigs:
 			switch sig {
 			case nil:
-				if listener == nil {
-					// Failed to listen. Exit.
-					return errors.New("control plane stopped without a reusable listener")
-				}
-				// Serve.
-				log.Debug("Starting replacement control plane listener")
-				readyChan := make(chan bool, 1)
-				go func() {
-					if err := c.Serve(readyChan, listener); err != nil {
-						errCh <- fmt.Errorf("Serve: %w", err)
-					} else {
-						sigs <- nil
-					}
-				}()
-				if ready := <-readyChan; !ready {
-					serveErr := <-errCh
-					writeReloadState(consts.ReloadError, serveErr.Error())
-					return serveErr
-				}
-				if pendingReload {
-					resolver.SetRoute(c.DNSResolverDialer())
-					reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
-					stats.DefaultStore.RecordReload()
-					handler := c.APIHandler(Version)
-					localAPI.SetHandler(handler)
-					managementAPI.SetHandler(daemonAPIHandler(handler))
-					if managementAPI != nil {
-						log.Infof("Configuration page and API listening on port %d", conf.Global.APIPort)
-					}
-					pendingReload = false
-				}
-				sdnotify.Ready()
-				writeReloadState(consts.ReloadDone, "OK")
-				log.Info("Reload completed")
+				return errors.New("datapath ingress stopped")
 			case syscall.SIGUSR2:
-				if pendingReload {
-					log.Debug("Ignoring suspend signal while reload is in progress")
-					continue
-				}
 				isSuspend = true
 				fallthrough
 			case syscall.SIGUSR1:
-				if pendingReload {
-					log.Debug("Ignoring reload signal while reload is in progress")
-					continue
-				}
 				// Reload signal.
 				if isSuspend {
 					log.Info("Suspending traffic interception")
@@ -299,15 +244,12 @@ loop:
 				// fails.
 				log.Debug("Building replacement control plane")
 				writeReloadProgress("Building new control plane...")
-				obj := c.EjectBpf()
-				newC, err := newControlPlane(shutdownCtx, obj, newConf, externGeoDataDirs, runtimeSettings, plugins)
+				newC, err := newControlPlane(shutdownCtx, datapath, newConf, externGeoDataDirs, runtimeSettings, plugins)
 				reloadErr := shutdownCtx.Err()
 				if err == nil && reloadErr != nil {
 					err = errors.Join(reloadErr, newC.Close())
 				}
 				if err != nil {
-					// Restore BPF ownership on the old plane and keep it running.
-					c.InjectBpf()
 					if reloadErr != nil {
 						return nil // The terminating signal also cancels candidate preparation.
 					}
@@ -317,61 +259,56 @@ loop:
 				nextAPI, err := prepareAPIServer(managementAPI, newConf.Global.APIPort)
 				if err != nil {
 					_ = newC.Close()
-					c.InjectBpf()
 					reloadFailed("Failed to bind HTTP API port", err)
 					continue
 				}
 
-				// Phase 2a: retire the old plane BEFORE the new plane pushes
-				// rules into the kernel. Once BuildKernspace runs, the shared
-				// routing maps carry the new config's outbound ids; the old
-				// plane must not accept connections in that window, or it
-				// would route them through the wrong outbounds. New
-				// connections just queue in the kernel until the new plane
-				// serves the same listener, and the old plane's dialers stop
-				// writing connectivity state into the shared maps.
-				log.Debug("Retiring previous control plane")
+				// Drain API writers before taking the final settings snapshot.
 				writeReloadProgress("Switching to the new control plane...")
 				localAPI.SetHandler(nil)
 				managementAPI.SetHandler(nil)
-				if managementAPI != nextAPI {
-					managementAPI.Close()
-				}
-				managementAPI = nextAPI
-				resolver.Configure(resolverServer, nil)
-				if closeErr := retireControlPlaneForReload(c, abortConnections); closeErr != nil {
-					// The old filters may still interpret shared maps with the old
-					// rule layout. Do not install new rules or adopt bitmaps into
-					// that state; assign cleanup ownership to the candidate only so
-					// its teardown closes the otherwise unowned BPF objects.
-					newC.InjectBpf()
-					return errors.Join(fmt.Errorf("reload: could not retire previous control plane safely: %w", closeErr), newC.Close())
-				}
-				log.Debug("Retired previous control plane")
 
-				// Phase 2b: commit. Assign BPF cleanup ownership to the new plane,
-				// then push its state into the kernel. Failures past this point are
-				// terminal, so we tear everything down.
+				// Publish programs referencing complete private routing maps.
+				// Failures during attachment replacement are terminal.
 				log.Debug("Activating replacement control plane")
 				writeReloadProgress("Activating new control plane...")
-				newC.InjectBpf()
-				// Hand over the retired plane's domain registry (recomputing
-				// match bitmaps against the new rules) so domain routing and
-				// sniff verification survive the reload; Activate then skips
-				// wiping the kernel domain maps.
-				newC.InheritDomainRegistry(c)
-				newC.InheritConnections(c)
-				if err = newC.Activate(); err != nil {
+				if err = datapath.Publish(newC, abortConnections); err != nil {
+					if errors.Is(err, control.ErrPublicationRejected) {
+						err = errors.Join(err, newC.Close())
+						if nextAPI != managementAPI {
+							nextAPI.Close()
+						}
+						handler := c.APIHandler(Version)
+						localAPI.SetHandler(handler)
+						managementAPI.SetHandler(daemonAPIHandler(handler))
+						reloadFailed("Failed to refresh replacement settings", err)
+						continue
+					}
+					if nextAPI != managementAPI {
+						nextAPI.Close()
+					}
 					sdnotify.Stopping()
-					return errors.Join(fmt.Errorf("reload: could not activate replacement control plane: %w", err), newC.Close())
+					return fmt.Errorf("reload: could not activate replacement control plane: %w", err)
 				}
 				logStartupNodeStatus(newC.GroupsStatus())
 
 				// Swap in the new plane.
 				c = newC
+				if managementAPI != nextAPI {
+					managementAPI.Close()
+				}
+				managementAPI = nextAPI
 				conf = newConf
 				logger.SetLogger(conf.Global.LogLevel, disableTimestamp, nil)
-				pendingReload = true
+				resolver.Configure(resolverServer, c.DNSResolverDialer())
+				reconfigureObservabilityServers(conf.Global.PprofPort, conf.Global.MetricsPort)
+				stats.DefaultStore.RecordReload()
+				handler := c.APIHandler(Version)
+				localAPI.SetHandler(handler)
+				managementAPI.SetHandler(daemonAPIHandler(handler))
+				sdnotify.Ready()
+				writeReloadState(consts.ReloadDone, "OK")
+				log.Info("Reload completed")
 			case syscall.SIGHUP:
 				// Ignore.
 				continue
@@ -415,7 +352,7 @@ func exit(c *control.ControlPlane, servers ...*apiserver.Server) {
 	for _, server := range servers {
 		server.Stop()
 	}
-	if err := c.StopAndAbortConnections(); err != nil {
+	if err := c.Runtime().Close(); err != nil {
 		log.WithError(err).Error("Could not stop control plane ingress")
 	}
 	for _, server := range servers {

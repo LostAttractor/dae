@@ -102,7 +102,7 @@ func TestConditionalUseSharesOnlyIdenticalConditions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"main", "same", "other", "plain"} {
+	for i, name := range []string{"main", "same", "other", "plain"} {
 		for _, source := range []string{"192.0.2.1", "198.51.100.1", "203.0.113.1"} {
 			want := uint32(0)
 			if name == "plain" || name == "other" && source == "198.51.100.1" || (name == "main" || name == "same") && source == "192.0.2.1" {
@@ -110,7 +110,7 @@ func TestConditionalUseSharesOnlyIdenticalConditions(t *testing.T) {
 			}
 			_, mark, _, err := m.match(routingInput{
 				src: netip.AddrPortFrom(netip.MustParseAddr(source), 12345), dst: netip.MustParseAddrPort("203.0.113.2:443"),
-				l4proto: consts.L4ProtoType_TCP, profileID: b.profileIDPlan.ids[name],
+				l4proto: consts.L4ProtoType_TCP, profileID: b.profiles[i].ID,
 			})
 			if err != nil || mark != want {
 				t.Fatalf("profile=%s source=%s: mark=%d err=%v, want=%d", name, source, mark, err, want)

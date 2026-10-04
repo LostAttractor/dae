@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
@@ -53,7 +52,7 @@ func outboundUsagePlane(t *testing.T, conf *config.Config, store *settings.Store
 		}
 	}
 	preparation := &ControlPlanePreparation{
-		bpf:      &BPFState{bpfObjects: &bpfObjects{DomainRoutingMap: &ebpf.Map{}}},
+		bpf:      &BPFState{bpfObjects: new(bpfObjects), Runtime: NewRuntime()},
 		rules:    preparedRules{routing: &conf.Routing},
 		isReload: true,
 	}

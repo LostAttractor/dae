@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -24,25 +23,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var exitHandlerClose func() error
-
 type controlPlaneCore struct {
+	*kernelLinks
 	mu          sync.Mutex
 	lifecycleMu sync.Mutex
 	closeOnce   sync.Once
 	closeErr    error
+	quiesceOnce sync.Once
+	quiesceErr  error
 
-	cleanupMu    sync.Mutex
-	deferFuncs   []func() error
-	hostTCXLinks []hostTCXLink
-	bpf          *BPFState
-	wanBindings  map[int]*wanBinding
+	cleanupMu   sync.Mutex
+	deferFuncs  []func() error
+	bpf         *BPFState
+	wanBindings map[int]*wanBinding
 
 	isReload bool
-	// bpfOwned reports whether this core currently owns the bpf objects and
-	// closes them on Close. At most one core owns them; during reload neither
-	// core owns them between the old core's EjectBpf and the new core's InjectBpf.
-	bpfOwned bool
 
 	// domainRegistry tracks every domain -> IP registration learned
 	// from DNS. It is the single source of truth for domain_routing_map in
@@ -61,8 +56,8 @@ type controlPlaneCore struct {
 	outboundConnectivityMap [consts.OutboundUserDefinedMax + 1][common.NetworkTypeCount]atomic.Bool
 	outboundCallbackMu      sync.Mutex
 	outboundRecovery        func()
-	// Candidate checks update userspace immediately, but shared BPF state is
-	// published only after the old control plane has retired.
+	// Candidate checks update userspace immediately; PrepareKernel enables the
+	// private BPF projection before its programs can be published.
 	outboundConnectivityPublished bool
 	pendingOutboundConnectivity   map[bpfOutboundConnectivityQuery]uint32
 }
@@ -77,10 +72,12 @@ const (
 )
 
 type hostTCXLink struct {
-	linkIndex int
-	role      hostTCXRole
-	link      ciliumLink.Link
-	close     func() error
+	linkIndex  int
+	role       hostTCXRole
+	link       ciliumLink.Link
+	program    *ebpf.Program
+	close      func() error
+	generation uint64
 }
 
 type hostTCXProgram struct {
@@ -106,12 +103,9 @@ func newControlPlaneCore(
 	}
 	netmon := network.NewHostNetworkMonitor()
 	core := &controlPlaneCore{
-		bpf:      bpf,
-		isReload: isReload,
-		// A reload candidate starts without BPF cleanup ownership. The caller
-		// released it from the old core before construction and assigns it to
-		// this core via InjectBpf only after the old core is retired.
-		bpfOwned:                    !isReload,
+		kernelLinks:                 &bpf.kernelLinks,
+		bpf:                         bpf,
+		isReload:                    isReload,
 		ifmgr:                       ifmgr,
 		netmon:                      netmon,
 		closed:                      closed,
@@ -121,8 +115,12 @@ func newControlPlaneCore(
 	}
 	// The kernel-side capacity is read back from the map itself so it can
 	// never drift from MAX_DOMAIN_ROUTING_NUM in control/kern/tproxy.c.
+	capacity := 0
+	if bpf.DomainRoutingMap != nil {
+		capacity = int(bpf.DomainRoutingMap.MaxEntries())
+	}
 	core.domainRegistry = newDomainRegistry(
-		int(bpf.DomainRoutingMap.MaxEntries()),
+		capacity,
 		consts.DefaultDNSRetentionWindow,
 		core.writeDomainBitmaps, core.deleteDomainBitmaps,
 	)
@@ -138,57 +136,13 @@ func (c *controlPlaneCore) addCleanup(cleanup func() error) {
 	c.cleanupMu.Unlock()
 }
 
-func (c *controlPlaneCore) ownHostTCXLink(owned hostTCXLink) bool {
-	c.cleanupMu.Lock()
-	defer c.cleanupMu.Unlock()
-	for _, existing := range c.hostTCXLinks {
-		if existing.linkIndex == owned.linkIndex && existing.role == owned.role {
-			return false
-		}
-	}
-	c.hostTCXLinks = append(c.hostTCXLinks, owned)
-	return true
-}
-
-func (c *controlPlaneCore) hostTCXLink(linkIndex int, role hostTCXRole) (ciliumLink.Link, bool) {
-	c.cleanupMu.Lock()
-	defer c.cleanupMu.Unlock()
-	for _, owned := range c.hostTCXLinks {
-		if owned.linkIndex == linkIndex && owned.role == role {
-			return owned.link, true
-		}
-	}
-	return nil, false
-}
-
-func (c *controlPlaneCore) closeHostTCXLinks(linkIndex int, roles ...hostTCXRole) error {
-	c.cleanupMu.Lock()
-	links := make([]hostTCXLink, 0, len(c.hostTCXLinks))
-	kept := make([]hostTCXLink, 0, len(c.hostTCXLinks))
-	for _, owned := range c.hostTCXLinks {
-		if owned.linkIndex != linkIndex || (len(roles) > 0 && !slices.Contains(roles, owned.role)) {
-			kept = append(kept, owned)
-			continue
-		}
-		links = append(links, owned)
-	}
-	c.hostTCXLinks = kept
-	c.cleanupMu.Unlock()
-
-	var err error
-	for i := len(links) - 1; i >= 0; i-- {
-		err = errors.Join(err, links[i].close())
-	}
-	return err
-}
-
 func (c *controlPlaneCore) resetHostTCXLinks() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cleanupMu.Lock()
+	c.kernelLinks.mu.Lock()
 	links := c.hostTCXLinks
 	c.hostTCXLinks = nil
-	c.cleanupMu.Unlock()
+	c.kernelLinks.mu.Unlock()
 	for i := len(links) - 1; i >= 0; i-- {
 		if err := links[i].close(); err != nil {
 			log.WithError(err).WithFields(log.Fields{"interface_index": links[i].linkIndex, "role": links[i].role}).Error("Could not close stale TCX link")
@@ -200,26 +154,34 @@ func (c *controlPlaneCore) takeCleanups() []func() error {
 	c.cleanupMu.Lock()
 	defer c.cleanupMu.Unlock()
 
-	cleanups := make([]func() error, 0, len(c.hostTCXLinks)+len(c.deferFuncs))
-	for i := len(c.hostTCXLinks) - 1; i >= 0; i-- {
-		cleanups = append(cleanups, c.hostTCXLinks[i].close)
-	}
+	cleanups := make([]func() error, 0, len(c.deferFuncs))
 	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
 		cleanups = append(cleanups, c.deferFuncs[i])
 	}
-	c.hostTCXLinks = nil
 	c.deferFuncs = nil
 	return cleanups
 }
 
-// closeBpf closes the bpf objects if this core still owns them (see bpfOwned).
+// closeBpf releases only this generation's descriptors.
 func (c *controlPlaneCore) closeBpf() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.bpfOwned {
-		return nil
-	}
 	return c.bpf.Close()
+}
+
+func (c *controlPlaneCore) quiesce() error {
+	c.quiesceOnce.Do(func() {
+		c.close()
+		c.outboundCallbackMu.Lock()
+		c.outboundCallbackMu.Unlock()
+		if c.netmon != nil {
+			c.quiesceErr = c.netmon.Close()
+		}
+		if c.ifmgr != nil {
+			c.quiesceErr = errors.Join(c.quiesceErr, c.ifmgr.Close())
+		}
+	})
+	return c.quiesceErr
 }
 
 func (c *controlPlaneCore) Close() (err error) {
@@ -232,15 +194,7 @@ func (c *controlPlaneCore) closeLocked() (err error) {
 	c.closeOnce.Do(func() {
 		// Cancel before joining InterfaceManager callbacks. A callback waiting
 		// for c.mu can then acquire it and return without touching shared maps.
-		c.close()
-		// Wait for callbacks that passed the closed check before cancellation.
-		// Later callbacks acquire the mutex, observe closed, and return.
-		c.outboundCallbackMu.Lock()
-		c.outboundCallbackMu.Unlock()
-		if c.netmon != nil {
-			c.closeErr = c.netmon.Close()
-		}
-		c.closeErr = errors.Join(c.closeErr, c.ifmgr.Close())
+		c.closeErr = c.quiesce()
 		// Interface callbacks can register TCX link ownership. Waiting for the
 		// monitor first freezes dynamic registration before cleanup is drained.
 		for _, cleanup := range c.takeCleanups() {
@@ -289,8 +243,8 @@ func (role hostTCXRole) String() string {
 }
 
 func (c *controlPlaneCore) attachHostTCXProgram(linkIndex int, spec hostTCXProgram) (bool, error) {
-	if _, exists := c.hostTCXLink(linkIndex, spec.role); exists {
-		return false, nil
+	if found, err := c.updateHostTCXLink(linkIndex, spec); found || err != nil {
+		return false, err
 	}
 
 	var companionRole hostTCXRole
@@ -330,6 +284,7 @@ func (c *controlPlaneCore) attachHostTCXProgram(linkIndex int, spec hostTCXProgr
 		linkIndex: linkIndex,
 		role:      spec.role,
 		link:      attached,
+		program:   spec.program,
 		close:     attached.Close,
 	}) {
 		return false, attached.Close()
@@ -484,6 +439,11 @@ func (c *controlPlaneCore) bindLanLink(linkSnapshot netlink.Link) error {
 }
 
 func (c *controlPlaneCore) setupSkPidMonitor() error {
+	c.kernelLinks.mu.Lock()
+	defer c.kernelLinks.mu.Unlock()
+	if len(c.pidLinks) != 0 {
+		return nil
+	}
 	/// Set-up SrcPidMapper to support pname routing.
 	cgroupPath, err := detectCgroupPath()
 	if err != nil {
@@ -510,20 +470,22 @@ func (c *controlPlaneCore) setupSkPidMonitor() error {
 		if err != nil {
 			return fmt.Errorf("AttachCgroup: %v: %w", prog.Prog.String(), err)
 		}
-		c.addCleanup(attached.Close)
+		c.pidLinks = append(c.pidLinks, attached)
 	}
 	return nil
 }
 
 func (c *controlPlaneCore) setupExitHandler() (err error) {
-	if exitHandlerClose != nil {
-		exitHandlerClose()
+	c.kernelLinks.mu.Lock()
+	defer c.kernelLinks.mu.Unlock()
+	if c.exitLink != nil {
+		return nil
 	}
 	link, err := ciliumLink.Tracepoint("sched", "sched_process_exit", c.bpf.HandleExit, nil)
 	if err != nil {
 		return fmt.Errorf("Tracepoint: %w", err)
 	}
-	exitHandlerClose = link.Close
+	c.exitLink = link
 	return nil
 }
 
@@ -710,6 +672,10 @@ func (c *controlPlaneCore) reconcileWanWith(
 	for index, binding := range c.wanBindings {
 		_, provisionalAuto := desired[index]
 		if binding.automatic || len(binding.manualPatterns) > 0 || !autoReady && provisionalAuto {
+			// Preserve these owners across reload too, including the old
+			// automatic path while its replacement is not ready yet.
+			c.useHostTCXLink(index, hostTCXWanIngress)
+			c.useHostTCXLink(index, hostTCXWanEgress)
 			continue
 		}
 		if err := c.detachWanLocked(index, binding); err != nil {
@@ -761,6 +727,11 @@ func (c *controlPlaneCore) attachWanLocked(link netlink.Link, binding *wanBindin
 }
 
 func (c *controlPlaneCore) bindDaens() (err error) {
+	c.kernelLinks.mu.Lock()
+	defer c.kernelLinks.mu.Unlock()
+	if len(c.netnsLinks) != 0 {
+		return nil
+	}
 	daens := GetDaeNetns()
 	links := make([]ciliumLink.Link, 0, 3)
 	defer func() {
@@ -768,7 +739,7 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 			err = errors.Join(err, closeBpfLinks(links))
 			return
 		}
-		c.addCleanup(func() error { return closeBpfLinks(links) })
+		c.netnsLinks = links
 	}()
 
 	skLookupLink, err := ciliumLink.AttachNetNs(int(daens.daeNs), c.bpf.bpfPrograms.TproxySkLookup)
@@ -848,20 +819,4 @@ func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
 	if err := c.bpf.DomainRoutingMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		panicDomainMapWrite("DomainRoutingMap.Delete", ip, err)
 	}
-}
-
-// EjectBpf releases this core's cleanup ownership so Close will not destroy the
-// BPF objects. They remain unowned until a core later calls InjectBpf.
-func (c *controlPlaneCore) EjectBpf() *BPFState {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.bpfOwned = false
-	return c.bpf
-}
-
-// InjectBpf makes this core responsible for closing the BPF objects.
-func (c *controlPlaneCore) InjectBpf() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.bpfOwned = true
 }

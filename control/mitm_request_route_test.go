@@ -49,7 +49,7 @@ func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing string, extensio
 		plane.outbounds = append(plane.outbounds, downloadTestGroup(t, name, dial))
 	}
 	param := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: netip.MustParseAddrPort("192.0.2.20:80"), Domain: "original.example", networkType: *common.NetworkTCP4.NetworkType(),
-		routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureHTTP | captureHTTPRequest, Mac: [6]byte{2, 0, 0, 0, 0, 1}}}
+		routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureHTTP | captureHTTPRequest, Mac: [6]byte{2, 0, 0, 0, 0, 1}}}
 	return plane, builder, param
 }
 

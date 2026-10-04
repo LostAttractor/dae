@@ -58,10 +58,10 @@ func TestCompiledRoutingJumpsSurviveFragmentReuseAndInterfaceUpdates(t *testing.
 		mark     uint32
 	}{
 		{b.defaultProfileID, 445, 2, 0x1234},
-		{b.profileIDPlan.ids["lan"], 445, 2, 0x1234},
+		{b.profiles[1].ID, 445, 2, 0x1234},
 		{b.defaultProfileID, 443, 0, 11},
-		{b.profileIDPlan.ids["lan"], 443, 0, 22},
-		{b.profileIDPlan.ids["lan"], 22, 1, 0},
+		{b.profiles[1].ID, 443, 0, 22},
+		{b.profiles[1].ID, 22, 1, 0},
 	} {
 		outbound, mark, _, err := m.match(routingInput{
 			src:     netip.MustParseAddrPort("192.0.2.1:12345"),

@@ -294,7 +294,6 @@ func TestDomainRegistrySaveFailureDoesNotPreventRetirement(t *testing.T) {
 	now, ip := time.Now(), netip.MustParseAddr("192.0.2.1")
 	g.Upsert("retained.example.", ip, testBitmap(0), 60, now)
 	activity := g.activity
-	activity.prepareHandoff()
 	ifmgr, err := network.NewInterfaceManager()
 	if err != nil {
 		t.Fatal(err)
@@ -318,8 +317,8 @@ func TestDomainRegistrySaveFailureDoesNotPreventRetirement(t *testing.T) {
 	successor, _ := newTestRegistry(4, time.Hour)
 	defer successor.Close()
 	matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, "", ""))
-	next := &ControlPlane{core: &controlPlaneCore{domainRegistry: successor}, routingMatcher: matcher}
-	next.InheritDomainRegistry(old)
+	successor.ForkFrom(old.core.domainRegistry, matcher.domainMatcher.MatchDomainBitmap, time.Now())
+	activity.observe(ip, "retained.example.", now.Add(time.Minute))
 	if !successor.retention("retained.example.", ip).Equal(now.Add(61 * time.Minute)) {
 		t.Fatal("save failure lost in-memory evidence or queued activity")
 	}

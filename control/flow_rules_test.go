@@ -13,7 +13,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
-func prepareFlowRulesForTest(t *testing.T, controls, routes string) preparedRules {
+func prepareFlowRulesForTest(t testing.TB, controls, routes string) preparedRules {
 	t.Helper()
 	sections, err := config_parser.Parse("global {}\nrules {\n" + controls + "\n}\nrouting {\n" + routes + "\nfallback: direct\n}")
 	if err != nil {

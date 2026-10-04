@@ -10,6 +10,7 @@ package control
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"slices"
 	"testing"
@@ -202,7 +203,7 @@ func TestHostTCXAttachOrderAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = foreignEgressLink.Close() })
-	core := &controlPlaneCore{}
+	core := &controlPlaneCore{kernelLinks: new(kernelLinks)}
 	t.Cleanup(func() { _ = core.closeHostTCXLinks(linkIndex) })
 
 	if err := core.migrateHostTCXPrograms(dummy,
@@ -228,6 +229,36 @@ func TestHostTCXAttachOrderAndCleanup(t *testing.T) {
 	assertTCXOrder(t, linkIndex, ebpf.AttachTCXIngress, foreignIngress, wanIngress, lanIngress)
 	assertTCXOrder(t, linkIndex, ebpf.AttachTCXEgress, foreignEgress, lanEgress, wanEgress)
 	assertNoClsact(t, dummy)
+
+	// Retiring a plane must not detach the shared programs even temporarily.
+	// Query revisions and link identities, not only program IDs: reattaching
+	// the same program would otherwise conceal an interception gap.
+	before, err := link.QueryPrograms(link.QueryOptions{Target: linkIndex, Attach: ebpf.AttachTCXIngress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := newShutdownTestPlane(t)
+	old.core.kernelLinks = core.kernelLinks
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	next := &controlPlaneCore{kernelLinks: core.kernelLinks}
+	next.beginRebind()
+	if err := next.migrateHostTCXPrograms(dummy,
+		hostTCXProgram{role: hostTCXLanIngress, program: lanIngress},
+		hostTCXProgram{role: hostTCXWanIngress, program: wanIngress},
+		hostTCXProgram{role: hostTCXLanEgress, program: lanEgress},
+		hostTCXProgram{role: hostTCXWanEgress, program: wanEgress},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := next.finishRebind(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := link.QueryPrograms(link.QueryOptions{Target: linkIndex, Attach: ebpf.AttachTCXIngress})
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("reload replaced live TCX attachments: before=%+v after=%+v err=%v", before, after, err)
+	}
 
 	if err := core.closeHostTCXLinks(linkIndex); err != nil {
 		t.Fatal(err)

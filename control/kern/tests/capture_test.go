@@ -60,6 +60,14 @@ func TestCaptureRouting(t *testing.T) {
 				{"HTTP", false, false, true}, {"IP and HTTP hit", true, true, true}, {"IP miss and HTTP", true, false, true},
 			} {
 				t.Run(test.name, func(t *testing.T) {
+					if network.tcp {
+						// Each policy case is a new connection, not a retransmit.
+						tcpOffset := 34
+						if packet[14]>>4 == 6 {
+							tcpOffset = 54
+						}
+						packet[tcpOffset+7]++
+					}
 					var rules []bpftestMatchSet
 					if test.ips {
 						rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_IpSet), Flags: (2) << 3, Action: uint8(consts.MatchActionCapture)})

@@ -4,7 +4,6 @@ package control
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -31,7 +30,7 @@ func newShutdownTestPlane(t *testing.T) *ControlPlane {
 	plane.core = &controlPlaneCore{closed: coreCtx, close: cancelCore, ifmgr: ifmgr}
 	plane.deferFuncs = append(plane.deferFuncs, plane.dnsRelay.Close)
 	t.Cleanup(func() {
-		_ = plane.StopAndAbortConnections()
+		plane.StopAndAbortConnections()
 		_ = plane.Close()
 	})
 	return plane
@@ -54,7 +53,7 @@ func TestShutdownCancelsUDPBeforeDraining(t *testing.T) {
 	}
 	plane.enqueueUDPPacket([]byte("queued"), src, dst, nil)
 	closed := make(chan error, 1)
-	go func() { closed <- errors.Join(plane.StopAndAbortConnections(), plane.Close()) }()
+	go func() { plane.StopAndAbortConnections(); closed <- plane.Close() }()
 	select {
 	case err := <-closed:
 		if err != nil {
@@ -81,11 +80,12 @@ func (c *shutdownTCPConn) Close() error { return c.close() }
 func TestShutdownInterruptsTrafficBeforeJoiningStateUsers(t *testing.T) {
 	plane := newShutdownTestPlane(t)
 	tcpStarted, tcpRelease := make(chan struct{}), make(chan struct{})
-	t.Cleanup(func() { close(tcpRelease) })
+	finishTCP := sync.OnceFunc(func() { close(tcpRelease) })
+	t.Cleanup(finishTCP)
 	startTCP := sync.OnceFunc(func() { close(tcpStarted) })
 	tcp := &shutdownTCPConn{Conn: newCloseTrackingConn(), close: func() error {
 		startTCP()
-		<-tcpRelease // A retired relay's Close must not hold up process teardown.
+		<-tcpRelease // Accepted sockets must close before losing the return path.
 		return nil
 	}}
 	if !plane.tcpConnections.beginSetup(tcp) {
@@ -126,13 +126,10 @@ func TestShutdownInterruptsTrafficBeforeJoiningStateUsers(t *testing.T) {
 	<-mitmStarted
 	kernelReleased := make(chan struct{})
 	plane.core.addCleanup(func() error { close(kernelReleased); return nil })
-	stopped := make(chan error, 1)
-	go func() { stopped <- plane.StopAndAbortConnections() }()
+	stopped := make(chan struct{})
+	go func() { plane.StopAndAbortConnections(); close(stopped) }()
 	select {
-	case err := <-stopped:
-		if err != nil {
-			t.Fatal(err)
-		}
+	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("aborting traffic waited for connection cleanup")
 	}
@@ -154,12 +151,18 @@ func TestShutdownInterruptsTrafficBeforeJoiningStateUsers(t *testing.T) {
 	}
 	finishDNS()
 	select {
+	case <-kernelReleased:
+		t.Fatal("kernel state released before accepted TCP socket closed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	finishTCP()
+	select {
 	case err := <-closed:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("shutdown waited for a retired TCP connection or MITM grace period")
+		t.Fatal("shutdown did not finish after accepted sockets and state users closed")
 	}
 	select {
 	case <-kernelReleased:
@@ -168,32 +171,66 @@ func TestShutdownInterruptsTrafficBeforeJoiningStateUsers(t *testing.T) {
 	}
 }
 
-func TestRetireJoinsIngressAfterClosingAdmission(t *testing.T) {
+func TestRuntimeCloseJoinsIngress(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
-		plane.ingress = new(controlPlaneIngress)
+		plane := NewRuntime()
 		release := make(chan struct{})
 		finish := sync.OnceFunc(func() { close(release) })
 		t.Cleanup(finish)
 		// A final socket read still owns plane state, but cannot admit new work.
-		plane.ingress.loops.Go(func() { <-release })
+		plane.ingress.Go(func() { <-release })
 		closed := make(chan error, 1)
-		go func() { closed <- plane.retireTraffic() }()
+		go func() { closed <- plane.Close() }()
 		synctest.Wait()
 		select {
 		case <-closed:
 			t.Fatal("retirement returned while ingress still owned shared state")
 		default:
 		}
-		if emitUDPTask(plane.udpTaskPool, testUdpKey(12009), func() {}) {
-			t.Fatal("retiring ingress admitted a late UDP task")
-		}
-		if plane.tcpConnections.beginSetup(newCloseTrackingConn()) {
-			t.Fatal("retiring ingress admitted a late TCP setup")
+		select {
+		case <-plane.done:
+		default:
+			t.Fatal("runtime admission remained open")
 		}
 		finish()
 		if err := <-closed; err != nil {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestRuntimeShutdownCancelsAllUDPGenerationsBeforeSweeping(t *testing.T) {
+	r := NewRuntime()
+	for i := range 2 {
+		plane := newLifecycleTestControlPlane(r.udpEndpoints)
+		closed, cancel := context.WithCancel(t.Context())
+		plane.core = &controlPlaneCore{closed: closed, close: cancel}
+		plane.routingGeneration = uint32(i + 1)
+		plane.tcpConnections.connections = &r.tcpConnections
+		r.planes[plane.routingGeneration] = plane
+		t.Cleanup(plane.udpTaskPool.cancel)
+		src := netip.MustParseAddrPort("192.0.2.1:5000")
+		src = netip.AddrPortFrom(src.Addr(), src.Port()+uint16(i))
+		r.udpEndpoints.pool.Store(src, new(UdpEndpoint))
+		locked := make(chan struct{})
+		if !emitUDPTask(plane.udpTaskPool, src, func() {
+			lock, _ := r.udpEndpoints.UdpEndpointKeyLocker.Lock(src)
+			defer r.udpEndpoints.UdpEndpointKeyLocker.Unlock(src, lock)
+			close(locked)
+			<-plane.udpTaskPool.ctx.Done() // an in-flight dial holds the source lock
+		}) {
+			t.Fatal("task rejected")
+		}
+		<-locked
+	}
+	done := make(chan error, 1)
+	go func() { done <- r.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown swept endpoint locks before canceling their setup owners")
+	}
 }

@@ -16,7 +16,7 @@ import (
 type RouteParam struct {
 	explicitTarget bool           // An explicit URL supplies a known name, or a literal IP with no name.
 	destination    netip.AddrPort // Selected IP target; invalid until a rewrite or retained UDP target exists.
-	routingResult  *bpfRoutingResult
+	routingResult  *routingResult
 	networkType    common.NetworkType
 	Domain         string
 	Src            netip.AddrPort
@@ -91,7 +91,7 @@ func (c *ControlPlane) routeDestination(p *RouteParam, domain string) (*DialOpti
 	return c.selectDialOption(p, outbound, mark, c.dialTargetOverride && domain != "")
 }
 
-func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *bpfRoutingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
+func (c *ControlPlane) Route(src, dst netip.AddrPort, domain string, l4proto consts.L4ProtoType, routingResult *routingResult) (outboundIndex consts.OutboundIndex, mark uint32, must bool, err error) {
 	return c.routingMatcher.match(routingResult.routingInput(src, dst, domain, l4proto))
 }
 
@@ -103,14 +103,14 @@ type routeDecision struct {
 	must     bool
 }
 
-func (d routeDecision) apply(result *bpfRoutingResult) {
+func (d routeDecision) apply(result *routingResult) {
 	result.Outbound, result.Mark, result.Must = uint8(d.outbound), d.mark, 0
 	if d.must {
 		result.Must = 1
 	}
 }
 
-func kernelRoute(result *bpfRoutingResult) (routeDecision, bool) {
+func kernelRoute(result *routingResult) (routeDecision, bool) {
 	d := routeDecision{outbound: consts.OutboundIndex(result.Outbound), mark: result.Mark, must: result.Must != 0}
 	// Reserved outbound IDs are handoff instructions, never a usable decision.
 	return d, d.outbound < consts.OutboundMustRules

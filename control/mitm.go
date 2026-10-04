@@ -24,7 +24,7 @@ func (c *ControlPlane) MITMStatus() []plugin.InstanceStatus {
 
 // Pure inspection can use an existing route. Request transformations are
 // admitted separately, before any terminal route for the old target.
-func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *bpfRoutingResult) mitm.HTTPMode {
+func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *routingResult) mitm.HTTPMode {
 	if c.mitmHost == nil {
 		return mitm.HTTPBypass
 	}

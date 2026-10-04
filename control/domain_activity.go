@@ -21,14 +21,7 @@ type domainActivityKey struct {
 type domainActivity struct {
 	mu       sync.Mutex
 	registry *DomainRegistry
-	handoff  bool
 	pending  map[domainActivityKey]time.Time
-}
-
-func (a *domainActivity) prepareHandoff() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.handoff = true
 }
 
 func newDomainActivityKey(ip netip.Addr, domain string) domainActivityKey {
@@ -55,8 +48,8 @@ func (a *domainActivity) enqueue(key domainActivityKey, at time.Time) *DomainReg
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	g := a.registry
-	// Ordinary retirement clears the queue's owner. Handoff retains the old
-	// owner until adoption; its flush is inert while the successor is prepared.
+	// Runtime redirects the owner before retiring a generation. Only terminal
+	// closure clears it, so a retained connection has no observation gap.
 	if g == nil {
 		return nil
 	}
@@ -67,7 +60,7 @@ func (a *domainActivity) enqueue(key domainActivityKey, at time.Time) *DomainReg
 }
 
 // Initial attempts remain synchronous, after their first routing decision.
-// A close racing this call either drains it or queues it for reload adoption.
+// A concurrent reload drains this event into the old or the new registry.
 func (a *domainActivity) observe(ip netip.Addr, domain string, at time.Time) {
 	if g := a.enqueue(newDomainActivityKey(ip, domain), at); g != nil {
 		g.flushActivity()
@@ -89,6 +82,10 @@ func (g *DomainRegistry) flushActivity() {
 func (g *DomainRegistry) drainActivity() bool {
 	a := g.activity
 	a.mu.Lock()
+	if a.registry != g {
+		a.mu.Unlock()
+		return false
+	}
 	a.pending, g.activityBatch = g.activityBatch, a.pending
 	a.mu.Unlock()
 	return g.applyActivity()

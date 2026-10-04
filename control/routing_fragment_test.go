@@ -113,7 +113,7 @@ wg0: tunnel }`)
 			if err != nil || got != want || mark != wantMark {
 				t.Fatalf("profile %d member %v = %v/%d, %v", id, member, got, mark, err)
 			}
-			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:1234"), Dest: netip.MustParseAddrPort("203.0.113.1:443"), Domain: "service42.example", routingResult: &bpfRoutingResult{Ifindex: 7, ProfileId: id, Mac: mac}, networkType: *common.NetworkTCP4.NetworkType()}
+			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:1234"), Dest: netip.MustParseAddrPort("203.0.113.1:443"), Domain: "service42.example", routingResult: &routingResult{Ifindex: 7, ProfileId: id, Mac: mac}, networkType: *common.NetworkTCP4.NetworkType()}
 			decision, err := m.matchDestination(p)
 			if err != nil || !decision.IsValid() || decision.String() != "198.51.100.10:443" {
 				t.Fatalf("profile %d destination = %+v, %v", id, decision, err)
@@ -164,7 +164,8 @@ func TestStructuredSharedDomainUsesSharedBitmapID(t *testing.T) {
 	}
 	addr := netip.IPv4Unspecified()
 	bitmap := m.domainMatcher.MatchDomainBitmap("service.example")
-	for _, id := range []uint32{b.defaultProfileID, b.profileIDPlan.ids["lan"]} {
+	for _, profile := range b.profiles {
+		id := profile.ID
 		for _, trusted := range []bool{false, true} {
 			var trustedBitmap []uint32
 			domain := "service.example"
@@ -241,45 +242,14 @@ func TestRoutingModulePriorityInEveryProfile(t *testing.T) {
 	}
 }
 
-func TestFailedStructuredCandidateDoesNotConsumeProfileIDs(t *testing.T) {
-	conf := parseStructuredTestConfig(t, ` fallback: direct  policy { lan {
- fallback: direct } }
- interface { br-lan: lan }`)
-	state := &BPFState{}
-	first, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, state, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state.routingProfileIDs = *first.profileIDPlan // Commit the first successful generation.
-	conf.Routing.Interfaces[0].Policy = "failed"
-	conf.Routing.Policies[1].Name = "failed"
-	conf.Routing.Policies[1].Fallback.Name = "missing"
-	if _, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, state, nil); err == nil {
-		t.Fatal("invalid candidate accepted")
-	}
-	if _, ok := state.routingProfileIDs.ids["failed"]; ok {
-		t.Fatal("failed candidate consumed identity")
-	}
-	conf.Routing.Interfaces[0].Policy = "next"
-	conf.Routing.Policies[1].Name = "next"
-	conf.Routing.Policies[1].Fallback.Name = "direct"
-	next, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, state, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next.profileIDPlan.ids["next"] != 3 {
-		t.Fatalf("next identity = %d", next.profileIDPlan.ids["next"])
-	}
-}
-
 func TestProfileSeparatesDNSReroutes(t *testing.T) {
 	source := netip.MustParseAddrPort("192.0.2.1:1234")
 	c := &ControlPlane{}
-	a, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{Ifindex: 7, ProfileId: 1})
+	a, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{Ifindex: 7, ProfileId: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{Ifindex: 7, ProfileId: 2})
+	b, _, err := c.dnsRequest(nil, "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{Ifindex: 7, ProfileId: 2})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,7 @@ func TestDNSUpstreamHostnamePolicy(t *testing.T) {
 	c := &ControlPlane{outbounds: groups, routingMatcher: matcher, dialTargetOverride: true}
 	for _, network := range []string{"udp", "tcp"} {
 		for _, original := range []string{"192.0.2.53:53", "192.0.2.54:53"} {
-			identity := bpfRoutingResult{CaptureFlags: 8, Mark: 11}
+			identity := routingResult{CaptureFlags: 8, Mark: 11}
 			q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "client-question.example.", 1)), network, netip.MustParseAddrPort("192.0.2.1:2345"), netip.MustParseAddrPort(original), identity)
 			if err != nil {
 				t.Fatal(err)

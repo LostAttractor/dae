@@ -31,11 +31,15 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 		t.Fatalf("generate packet: status=%d err=%v", status, err)
 	}
 	const (
-		profileID = uint32(70001)
-		directID  = uint32(70002)
-		mark      = uint32(0xaabbccdd)
-		dscp      = uint8(46)
+		profileID  = uint32(70001)
+		directID   = uint32(70002)
+		mark       = uint32(0xaabbccdd)
+		dscp       = uint8(46)
+		generation = uint32(18)
 	)
+	if err := obj.RoutingGeneration.Set(generation); err != nil {
+		t.Fatal(err)
+	}
 	mac := [6]byte{2, 0, 0, 0, 0, 37}
 	copy(packet[6:12], mac[:])
 	packet[15] = dscp << 2
@@ -124,13 +128,13 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 					checkHandoff := func(t *testing.T) {
 						t.Helper()
 						var result bpftestRoutingResult
-						if err := obj.RoutingTuplesMap.Lookup(key, &result); err != nil {
+						if err := lookupHandoff(obj.RoutingTuplesMap, key, &result); err != nil {
 							t.Fatal(err)
 						}
 						if result.Outbound != wantOutbound || result.Mark != wantMark || result.Must != wantMust || result.CaptureFlags != test.capture {
 							t.Fatalf("lost cached routing decision: %+v", result)
 						}
-						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.Protocol != 2 || result.RouteEpoch != 0 || result.NoSniff != 0 || result.Pid != 0 || result.Pname != ([16]byte{}) {
+						if result.Ifindex != ifindex || result.ProfileId != profileID || result.Mac != mac || result.Dscp != dscp || result.Protocol != 2 || result.RouteEpoch != 0 || result.NoSniff != 0 || result.Generation != generation {
 							t.Fatalf("lost initial source metadata: %+v", result)
 						}
 					}
@@ -199,7 +203,7 @@ func TestUDPRoutingCachePreservesSourceMetadata(t *testing.T) {
 						t.Fatalf("new direct lifetime did not stay in the kernel: status=%d err=%v", status, err)
 					}
 					var result bpftestRoutingResult
-					if err := obj.RoutingTuplesMap.Lookup(key, &result); !errors.Is(err, ebpf.ErrKeyNotExist) {
+					if err := lookupHandoff(obj.RoutingTuplesMap, key, &result); !errors.Is(err, ebpf.ErrKeyNotExist) {
 						t.Fatalf("direct policy created a proxy handoff: %+v, err=%v", result, err)
 					}
 				})

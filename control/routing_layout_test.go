@@ -59,13 +59,12 @@ func newRoutingLayoutTestMap(t *testing.T, name string, maxEntries uint32) *ebpf
 	return m
 }
 
-func TestRoutingProfilesReplaceFullGeneration(t *testing.T) {
-	profiles := newRoutingLayoutTestMap(t, "routing_profile_map", maxRoutingInterfaces+1)
-	interfaces := newRoutingLayoutTestMap(t, "routing_interface_map", maxRoutingInterfaces)
-	b := &RoutingMatcherBuilder{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		RoutingProfileMap: profiles, RoutingInterfaceMap: interfaces,
-	}}}}
+func TestRoutingProfilesUsePrivateGenerations(t *testing.T) {
+	var previous *ebpf.Map
 	for generation := uint32(1); generation <= 3; generation++ {
+		profiles := newRoutingLayoutTestMap(t, "routing_profile_map", maxRoutingInterfaces+1)
+		interfaces := newRoutingLayoutTestMap(t, "routing_interface_map", maxRoutingInterfaces)
+		b := &RoutingMatcherBuilder{bpf: &BPFState{bpfObjects: &bpfObjects{RoutingProfileMap: profiles, RoutingInterfaceMap: interfaces}}}
 		b.profiles = []routingProfile{{ID: 0, Spans: []routingSpan{{Start: 0, End: 1}}}}
 		for i := uint32(1); i <= maxRoutingInterfaces; i++ {
 			b.profiles = append(b.profiles, routingProfile{ID: generation*70000 + i,
@@ -88,9 +87,13 @@ func TestRoutingProfilesReplaceFullGeneration(t *testing.T) {
 			if err := profiles.Lookup((generation-1)*70000+1, &value); !errors.Is(err, ebpf.ErrKeyNotExist) {
 				t.Fatalf("retired profile still exists: %v", err)
 			}
+			if err := previous.Lookup((generation-1)*70000+1, &value); err != nil {
+				t.Fatalf("candidate changed old projection: %v", err)
+			}
 		}
 		if err := interfaces.Update(uint32(7), generation*70000+1, ebpf.UpdateAny); err != nil {
 			t.Fatal(err)
 		}
+		previous = profiles
 	}
 }

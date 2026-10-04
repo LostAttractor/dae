@@ -27,11 +27,11 @@ func TestDirectDialerForMarkCachesOverrides(t *testing.T) {
 }
 
 func TestRoutingLogFieldsOmitUnavailableMetadata(t *testing.T) {
-	if fields := routingLogFields(new(bpfRoutingResult), ""); len(fields) != 0 {
+	if fields := routingLogFields(new(routingResult), ""); len(fields) != 0 {
 		t.Fatalf("zero routing metadata = %#v, want empty", fields)
 	}
 
-	result := &bpfRoutingResult{
+	result := &routingResult{
 		Pid:  42,
 		Dscp: 4,
 		Mac:  [6]uint8{0x02, 0x42, 0xac, 0x11, 0x00, 0x02},

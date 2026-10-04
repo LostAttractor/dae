@@ -122,7 +122,7 @@ func TestMITMQUICUsesSelectedOutboundAndOriginalTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	param := &RouteParam{Src: source, Dest: destination, Domain: "video.example", routingResult: &bpfRoutingResult{}}
+	param := &RouteParam{Src: source, Dest: destination, Domain: "video.example", routingResult: &routingResult{}}
 	bridge := plane.newMITMQUIC(param, plane.mitmUpstreamPlanner("udp", param.Domain, source, destination, *param.routingResult, option), release, nil)
 	defer bridge.Close()
 	clientQUIC := &quic.Transport{Conn: bridge}
@@ -173,7 +173,7 @@ func TestMITMQUICAbortEndsSourceLifetime(t *testing.T) {
 			var endpoints UdpEndpointPool
 			defer endpoints.closeAll()
 			plane := &ControlPlane{mitmHost: host, udpEndpoints: &endpoints}
-			param := &RouteParam{Src: src, Dest: dst, Domain: "video.example", routingResult: &bpfRoutingResult{}}
+			param := &RouteParam{Src: src, Dest: dst, Domain: "video.example", routingResult: &routingResult{}}
 			planner := plane.mitmUpstreamPlanner("udp", param.Domain, src, dst, *param.routingResult, option)
 			bridge := plane.newMITMQUIC(param, planner, nil, route)
 			lease := netproxy.DependencyOf(bridge)

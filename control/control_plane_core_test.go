@@ -47,7 +47,7 @@ func TestLinkSnapshotDisappeared(t *testing.T) {
 }
 
 func TestControlPlaneCoreCleanupOwnership(t *testing.T) {
-	core := &controlPlaneCore{}
+	core := &controlPlaneCore{kernelLinks: new(kernelLinks)}
 	var cleaned []string
 	record := func(name string) func() error {
 		return func() error {
@@ -78,28 +78,33 @@ func TestControlPlaneCoreCleanupOwnership(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := []string{"released-link", "recreated-link", "owned-link", "static-last", "static-first"}
+	want := []string{"released-link", "static-last", "static-first"}
 	if !slices.Equal(cleaned, want) {
 		t.Fatalf("cleanup order = %v, want %v", cleaned, want)
 	}
 	if cleanups := core.takeCleanups(); len(cleanups) != 0 {
 		t.Fatalf("cleanup ownership was not drained: %d entries", len(cleanups))
 	}
+	if err := core.kernelLinks.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, "recreated-link", "owned-link")
+	if !slices.Equal(cleaned, want) {
+		t.Fatalf("shared datapath cleanup = %v, want %v", cleaned, want)
+	}
 }
 
 func TestControlPlaneCoreCleanupRegistrationConcurrent(t *testing.T) {
-	core := &controlPlaneCore{}
+	core := &controlPlaneCore{kernelLinks: new(kernelLinks)}
 	var workers sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		workers.Add(1)
-		go func(i int) {
-			defer workers.Done()
+	for i := range 100 {
+		workers.Go(func() {
 			core.addCleanup(func() error { return nil })
 			core.ownHostTCXLink(hostTCXLink{linkIndex: i, close: func() error { return nil }})
-		}(i)
+		})
 	}
 	workers.Wait()
-	if cleanups := core.takeCleanups(); len(cleanups) != 200 {
-		t.Fatalf("cleanup count = %d, want 200", len(cleanups))
+	if cleanups := core.takeCleanups(); len(cleanups) != 100 || len(core.hostTCXLinks) != 100 {
+		t.Fatalf("cleanup count = %d, shared attachments = %d; want 100 each", len(cleanups), len(core.hostTCXLinks))
 	}
 }

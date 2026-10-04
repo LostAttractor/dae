@@ -50,7 +50,7 @@ func TestDNSHTTPPreservesClientPolicyAndInvocationLifetime(t *testing.T) {
 	defer host.Close()
 	c.mitmHost = host
 	for _, source := range []string{"192.0.2.11:1234", "192.0.2.10:1234"} {
-		identity := bpfRoutingResult{CaptureFlags: 8}
+		identity := routingResult{CaptureFlags: 8}
 		q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "script.example.", 1)), "udp", netip.MustParseAddrPort(source), netip.MustParseAddrPort("192.0.2.53:53"), identity)
 		if err != nil {
 			t.Fatal(err)

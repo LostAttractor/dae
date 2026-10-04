@@ -67,7 +67,7 @@ func (r *dnsRelay) Close() error {
 	return nil
 }
 
-func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.AddrPort, identity bpfRoutingResult) (*plugin.DNSExchange, bool, error) {
+func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.AddrPort, identity routingResult) (*plugin.DNSExchange, bool, error) {
 	proto := consts.L4ProtoStr_TCP
 	if network == "udp" {
 		proto = consts.L4ProtoStr_UDP
@@ -115,7 +115,7 @@ func (c *ControlPlane) dnsRequest(wire []byte, network string, src, dst netip.Ad
 	return request, bypass, nil
 }
 
-func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity bpfRoutingResult) (*DialOption, error) {
+func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, hostname string, request *plugin.DNSExchange, identity routingResult) (*DialOption, error) {
 	if network != "tcp" && network != "udp" {
 		return nil, fmt.Errorf("unsupported DNS dial network %q", network)
 	}
@@ -156,7 +156,7 @@ func (c *ControlPlane) dnsDialOption(ctx context.Context, network, address, host
 	return option, err
 }
 
-func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchange, identity bpfRoutingResult, bypass bool, terminal plugin.DNSHandler, deliver func([]byte) error) error {
+func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchange, identity routingResult, bypass bool, terminal plugin.DNSHandler, deliver func([]byte) error) error {
 	if bypass {
 		response, err := terminal(ctx, request)
 		if err != nil {
@@ -224,7 +224,7 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 				response.ReceivedAt = deliveredAt
 			}
 			if c.core != nil && c.routingMatcher != nil {
-				observeDNSRegistryAt(c.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, request, response, deliveredAt)
+				c.observeDNS(request, response, deliveredAt)
 			}
 			c.mitmHost.ObserveDNS(ctx, request, response)
 		}
@@ -233,7 +233,7 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 	return err
 }
 
-func (c *ControlPlane) handleDNSUDP(wire []byte, src, dst netip.AddrPort, identity bpfRoutingResult) {
+func (c *ControlPlane) handleDNSUDP(wire []byte, src, dst netip.AddrPort, identity routingResult) {
 	r := c.dnsRelay
 	if r == nil || !r.admit() {
 		return
@@ -324,7 +324,7 @@ func writeDNSFrame(conn io.Writer, wire []byte) error {
 	return nil
 }
 
-func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, identity bpfRoutingResult) error {
+func (c *ControlPlane) serveDNSTCP(conn net.Conn, src, dst netip.AddrPort, identity routingResult) error {
 	r := c.dnsRelay
 	if r == nil || !r.admit() {
 		return net.ErrClosed

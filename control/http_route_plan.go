@@ -25,11 +25,11 @@ type httpRoutePlanner struct {
 	original    httpTarget
 	source      netip.AddrPort
 	destination netip.AddrPort
-	identity    bpfRoutingResult
+	identity    routingResult
 	retained    *DialOption
 }
 
-func (c *ControlPlane) mitmUpstreamPlanner(network, host string, source, destination netip.AddrPort, identity bpfRoutingResult, retained *DialOption) mitm.UpstreamPlanner {
+func (c *ControlPlane) mitmUpstreamPlanner(network, host string, source, destination netip.AddrPort, identity routingResult, retained *DialOption) mitm.UpstreamPlanner {
 	original, _ := parseHTTPTarget(net.JoinHostPort(host, fmt.Sprint(destination.Port())))
 	planner := &httpRoutePlanner{
 		plane: c, network: network, original: original,

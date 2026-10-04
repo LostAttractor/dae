@@ -104,7 +104,7 @@ func TestMITMClientGateUsesRoutingMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			plane := &ControlPlane{mitmHost: mitmClientTestHost(t, &mitmca.Authority{}, nil, nil), settings: store, mitmClients: clients}
-			result := &bpfRoutingResult{Mac: test.mac, Mark: 37, Must: 1}
+			result := &routingResult{Mac: test.mac, Mark: 37, Must: 1}
 			beforeResult := *result
 			source := netip.MustParseAddrPort(test.source)
 			destination := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.1"), test.port)
@@ -273,7 +273,7 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 					}
 					src := netip.MustParseAddrPort(test.source)
 					dst := netip.MustParseAddrPort("198.51.100.1:443")
-					result := &bpfRoutingResult{Outbound: uint8(test.outbound), Mark: 37, Mac: test.mac}
+					result := &routingResult{Outbound: uint8(test.outbound), Mark: 37, Mac: test.mac}
 					option, planner, release, err := plane.prepareHTTPRoute(context.Background(), domain, &RouteParam{
 						routingResult: result, Domain: domain, Src: src, Dest: dst,
 						networkType: common.NetworkType{L4Proto: consts.L4ProtoStr_TCP, IpVersion: consts.IpVersionStr_4},

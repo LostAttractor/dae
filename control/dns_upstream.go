@@ -15,7 +15,7 @@ import (
 
 // DNS transports share the data plane's accounting and resource/policy leases.
 // The plugin owns the connection and must close it before its invocation ends.
-func (c *ControlPlane) dnsDialLifetime(parent context.Context, option *DialOption, identity bpfRoutingResult) (context.Context, context.CancelFunc, *netproxy.Lease, func(), error) {
+func (c *ControlPlane) dnsDialLifetime(parent context.Context, option *DialOption, identity routingResult) (context.Context, context.CancelFunc, *netproxy.Lease, func(), error) {
 	route, err := c.deviceRoutes.acquire(&identity)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -35,7 +35,7 @@ func (c *ControlPlane) dnsDialLifetime(parent context.Context, option *DialOptio
 	return ctx, cleanup, route, release, nil
 }
 
-func (c *ControlPlane) dialDNSUpstream(parent context.Context, network string, option *DialOption, identity bpfRoutingResult) (net.Conn, error) {
+func (c *ControlPlane) dialDNSUpstream(parent context.Context, network string, option *DialOption, identity routingResult) (net.Conn, error) {
 	ctx, cleanup, route, release, err := c.dnsDialLifetime(parent, option, identity)
 	if err != nil {
 		return nil, err
@@ -60,7 +60,7 @@ func (c *ControlPlane) dialDNSUpstream(parent context.Context, network string, o
 	return &dnsUpstreamConn{Conn: tracked, release: func() { stop(); release() }}, nil
 }
 
-func (c *ControlPlane) listenDNSUpstream(parent context.Context, option *DialOption, identity bpfRoutingResult) (net.PacketConn, error) {
+func (c *ControlPlane) listenDNSUpstream(parent context.Context, option *DialOption, identity routingResult) (net.PacketConn, error) {
 	ctx, cleanup, route, release, err := c.dnsDialLifetime(parent, option, identity)
 	if err != nil {
 		return nil, err

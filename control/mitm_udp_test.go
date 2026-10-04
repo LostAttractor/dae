@@ -34,7 +34,7 @@ func TestMITMUDPSourceKeepsSeparateDestinations(t *testing.T) {
 	// Existing sources do not reselect, even if a later packet carries a
 	// different kernel route. Only the proven destination enters the bridge.
 	for _, dst := range []netip.AddrPort{destination, other, destination} {
-		if err := plane.handlePkt(t.Context(), []byte(dst.String()), source, dst, &bpfRoutingResult{Outbound: uint8(consts.OutboundBlock)}); err != nil {
+		if err := plane.handlePkt(t.Context(), []byte(dst.String()), source, dst, &routingResult{Outbound: uint8(consts.OutboundBlock)}); err != nil {
 			t.Fatal(err)
 		}
 	}

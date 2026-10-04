@@ -6,7 +6,6 @@
 package cmd
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,47 +37,6 @@ func TestSuspendUsesAcceptedConfigAfterFailedReload(t *testing.T) {
 	}
 	if current.Global.LanInterface[0] != "lan0" || current.Global.WanInterface[0] != "wan0" || current.Global.LogLevel != "debug" {
 		t.Fatal("preparing suspend mutated the active configuration")
-	}
-}
-
-type testReloadControlPlaneRetirer struct {
-	abortErr  error
-	closeErr  error
-	abortCall int
-	closeCall int
-}
-
-func (r *testReloadControlPlaneRetirer) StopAndAbortConnections() error {
-	r.abortCall++
-	return r.abortErr
-}
-
-func (r *testReloadControlPlaneRetirer) Close() error {
-	r.closeCall++
-	return r.closeErr
-}
-
-func TestRetireControlPlaneForReloadPropagatesAbortAndCloseErrors(t *testing.T) {
-	abortErr := errors.New("abort failed")
-	closeErr := errors.New("close failed")
-	retirer := &testReloadControlPlaneRetirer{abortErr: abortErr, closeErr: closeErr}
-
-	err := retireControlPlaneForReload(retirer, true)
-	if !errors.Is(err, abortErr) || !errors.Is(err, closeErr) {
-		t.Fatalf("retirement error = %v, want abort and close errors", err)
-	}
-	if retirer.abortCall != 1 || retirer.closeCall != 1 {
-		t.Fatalf("abort/close calls = %d/%d, want 1/1", retirer.abortCall, retirer.closeCall)
-	}
-}
-
-func TestRetireControlPlaneForReloadWithoutAbort(t *testing.T) {
-	retirer := new(testReloadControlPlaneRetirer)
-	if err := retireControlPlaneForReload(retirer, false); err != nil {
-		t.Fatal(err)
-	}
-	if retirer.abortCall != 0 || retirer.closeCall != 1 {
-		t.Fatalf("abort/close calls = %d/%d, want 0/1", retirer.abortCall, retirer.closeCall)
 	}
 }
 

@@ -34,10 +34,12 @@ func addrPortOf(addr net.Addr) netip.AddrPort {
 }
 
 type UdpEndpoint struct {
-	conn     net.PacketConn
-	mitm     bool // The first destination is served by the HTTP/3 packet bridge.
-	activity *domainActivity
-	domain   string
+	setupOwner atomic.Pointer[ControlPlane]
+	generation uint32
+	conn       net.PacketConn
+	mitm       bool // The first destination is served by the HTTP/3 packet bridge.
+	activity   *domainActivity
+	domain     string
 	// mu protects timer state, observed destinations and cleanup snapshots.
 	mu              sync.Mutex
 	activityTargets map[netip.AddrPort]domainActivityKey
@@ -74,7 +76,7 @@ type UdpEndpoint struct {
 // udpSetup exists only while collecting the first destination's packets.
 // An established endpoint retains its decisions, not its sniffing machinery.
 type udpSetup struct {
-	routingResult *bpfRoutingResult
+	routingResult *routingResult
 	sniffer       *sniffing.Sniffer
 	observedAt    time.Time // incomplete sniff activity, applied on setup or retirement
 }
@@ -210,8 +212,6 @@ type UdpEndpointOptions struct {
 	Path   stats.Path
 }
 
-var DefaultUdpEndpointPool = UdpEndpointPool{}
-
 // deliverMITM admits only the established first-destination bridge during
 // retirement. Other sockets keep the source's route, but cannot accept new work.
 func (p *UdpEndpointPool) deliverMITM(src, dst netip.AddrPort, ifindex uint32, data []byte) {
@@ -270,14 +270,24 @@ func (p *UdpEndpointPool) closeAll() {
 }
 
 // Pending sniffers have no connection to preserve across routing-table reloads.
-func (p *UdpEndpointPool) removePending() {
+func (p *UdpEndpointPool) removePending(owner *ControlPlane) {
 	p.pool.Range(func(key, value any) bool {
 		src, ue := key.(netip.AddrPort), value.(*UdpEndpoint)
 		lock, _ := p.UdpEndpointKeyLocker.Lock(src)
-		if ue.conn == nil {
+		if ue.conn == nil && ue.setupOwner.Load() == owner {
 			p.removeInBackgroundLocked(src, ue)
 		}
 		p.UdpEndpointKeyLocker.Unlock(src, lock)
+		return true
+	})
+}
+
+func (p *UdpEndpointPool) closeGeneration(generation uint32) {
+	p.pool.Range(func(key, value any) bool {
+		ue := value.(*UdpEndpoint)
+		if ue.generation == generation {
+			p.removeInBackground(key.(netip.AddrPort), ue)
+		}
 		return true
 	})
 }

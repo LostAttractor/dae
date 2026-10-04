@@ -1043,7 +1043,7 @@ set_ipv4_udp_routing_handoff(__u32 saddr, __u32 daddr,
 			     __u16 sport, __u16 dport, __u8 outbound)
 {
 	struct tuples_key key;
-	struct routing_result result = { .outbound = outbound };
+	struct routing_handoff result = { .result.outbound = outbound };
 
 	make_ipv4_udp_routing_key(&key, saddr, daddr, sport, dport);
 	bpf_map_update_elem(&routing_tuples_map, &key, &result, BPF_ANY);

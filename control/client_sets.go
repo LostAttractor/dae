@@ -38,10 +38,10 @@ func (c *ControlPlane) syncClientExports() error {
 // The caller holds settingsMu. Keep the routing matcher and external sets on
 // the same accepted snapshot; persistence failures use this path to undo updates.
 func (c *ControlPlane) setClientMembers(name string, previous, next [][6]byte) error {
-	if err := c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, next, c.kernelActive); err != nil {
+	if err := c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, next, c.kernelReady); err != nil {
 		return err
 	}
-	if !c.kernelActive {
+	if !c.kernelReady {
 		return nil
 	}
 	client := c.clients[name]

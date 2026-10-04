@@ -16,12 +16,12 @@ import (
 )
 
 // Internal requests have the daemon's process identity and no client/interface.
-func daemonProcessIdentity() bpfRoutingResult {
+func daemonProcessIdentity() routingResult {
 	name, err := os.ReadFile("/proc/self/comm")
 	if err != nil {
 		name = []byte(filepath.Base(os.Args[0]))
 	}
-	identity := bpfRoutingResult{Pid: uint32(os.Getpid())}
+	identity := routingResult{Pid: uint32(os.Getpid())}
 	copy(identity.Pname[:], strings.TrimSpace(string(name)))
 	return identity
 }

@@ -390,7 +390,7 @@ func TestMITMDownloadDNSDoesNotPublishBeforeActivation(t *testing.T) {
 		message.Response = true
 		message.Answer = []dnsmessage.RR{testARecord(message.Question[0].Name, "198.51.100.4")}
 	})
-	addresses, err := c.resolveHTTPAddresses(context.Background(), "raw.example", dnsmessage.TypeA, netip.AddrPort{}, bpfRoutingResult{})
+	addresses, err := c.resolveHTTPAddresses(context.Background(), "raw.example", dnsmessage.TypeA, netip.AddrPort{}, routingResult{})
 	if err != nil || !reflect.DeepEqual(addresses, []netip.Addr{netip.MustParseAddr("198.51.100.4")}) || queries != 1 {
 		t.Fatalf("bootstrap DNS addresses = %v, queries = %d, error = %v", addresses, queries, err)
 	}

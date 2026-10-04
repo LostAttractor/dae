@@ -41,10 +41,10 @@ type DomainRegistry struct {
 	generation    uint64
 	activity      *domainActivity
 	activityBatch map[domainActivityKey]time.Time // reusable drain buffer, owned by mu
-	adopted       bool
 
 	closed     bool
 	stopCh     chan struct{}
+	stopOnce   sync.Once
 	workerDone chan struct{}
 	closeDone  chan struct{}
 

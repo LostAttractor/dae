@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,9 +22,7 @@ func TestServeReportsIngressFailure(t *testing.T) {
 		{name: "retirement"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			// Only publication and descriptor ownership matter here; no BPF
-			// program uses the descriptors in this serving-loop test.
-			m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Hash, KeySize: 4, ValueSize: 8, MaxEntries: 2})
+			m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.SockMap, KeySize: 4, ValueSize: 8, MaxEntries: 2})
 			if errors.Is(err, unix.EPERM) {
 				t.Skip("creating a BPF map requires privileges")
 			}
@@ -31,7 +30,9 @@ func TestServeReportsIngressFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer m.Close()
-			tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+			lc := net.ListenConfig{}
+			lc.SetMultipathTCP(false)
+			tcp, err := lc.Listen(t.Context(), "tcp4", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -41,9 +42,12 @@ func TestServeReportsIngressFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer udp.Close()
-			c := newLifecycleTestControlPlane(new(UdpEndpointPool))
-			c.core = &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{ListenSocketMap: m}}}}
-			defer c.retireTraffic()
+			c := NewRuntime()
+			c.shared["listen_socket_map"], err = m.Clone()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
 			ready, done := make(chan bool, 1), make(chan error, 1)
 			go func() { done <- c.Serve(ready, &Listener{tcpListener: tcp, packetConn: udp}) }()
 			select {
@@ -56,14 +60,14 @@ func TestServeReportsIngressFailure(t *testing.T) {
 			}
 			if test.failure != "" {
 				// Simulate a failed serving descriptor while the plane is active.
-				sockets := &c.ingress.tcp
+				closeSocket := tcp.Close
 				if test.name == "UDP" {
-					sockets = &c.ingress.udp
+					closeSocket = udp.Close
 				}
-				if err := sockets.closeFuncs[1](); err != nil {
+				if err := closeSocket(); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := c.retireTraffic(); err != nil {
+			} else if err := c.Close(); err != nil {
 				t.Fatal(err)
 			}
 			select {
@@ -75,12 +79,53 @@ func TestServeReportsIngressFailure(t *testing.T) {
 				} else if err == nil || !strings.Contains(err.Error(), test.failure) {
 					t.Fatalf("ingress failure = %v, want %q", err, test.failure)
 				}
-				if c.ctx.Err() == nil {
-					t.Fatal("failed serving plane retained an active context")
-				}
 			case <-time.After(time.Second):
 				t.Fatal("Serve did not return after ingress stopped")
 			}
 		})
+	}
+}
+
+func TestRuntimeListenerUsesSockmapCompatibleTCP(t *testing.T) {
+	t.Setenv("GODEBUG", "multipathtcp=1")
+	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.SockMap, KeySize: 4, ValueSize: 8, MaxEntries: 2})
+	if errors.Is(err, unix.EPERM) {
+		t.Skip("BPF privileges required")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime()
+	r.shared["listen_socket_map"] = m
+	t.Cleanup(func() { _ = r.Close() })
+	ready, done := make(chan bool, 1), make(chan error, 1)
+	go func() { _, err := r.ListenAndServe(ready, 0); done <- err }()
+	select {
+	case ok := <-ready:
+		if !ok {
+			t.Fatal(<-done)
+		}
+	case err := <-done:
+		t.Fatalf("listen failed: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("listener did not start")
+	}
+	raw, err := r.listener.tcpListener.(syscall.Conn).SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Control(func(fd uintptr) {
+		protocol, err := unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_PROTOCOL)
+		if err != nil || protocol != unix.IPPROTO_TCP {
+			t.Errorf("transparent listener protocol=%d, %v", protocol, err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

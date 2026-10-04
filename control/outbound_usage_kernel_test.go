@@ -89,7 +89,7 @@ routing {
 							key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
 							key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 							var result bpfRoutingResult
-							if err := collection.Maps["routing_tuples_map"].Lookup(key, &result); err != nil || result.Outbound != built.nameToID["proxy"] || result.Mark != 37 {
+							if err := lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result); err != nil || result.Outbound != built.nameToID["proxy"] || result.Mark != 37 {
 								t.Fatalf("compacted target lost its routing result: %+v, %v", result, err)
 							}
 						}

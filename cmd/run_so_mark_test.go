@@ -15,7 +15,7 @@ import (
 func TestNewControlPlaneHonorsCanceledContext(t *testing.T) {
 	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
 	t.Cleanup(func() { direct.Direct, direct.Bootstrap = previousDirect, previousBootstrap })
-	for name, bpf := range map[string]*control.BPFState{"startup": nil, "reload": {}} {
+	for name, bpf := range map[string]*control.Runtime{"startup": nil, "existing runtime": control.NewRuntime()} {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()

@@ -89,16 +89,21 @@ func TestDomainCapturePreservesEBPFDirect(t *testing.T) {
 								want = 7 // TC_ACT_REDIRECT
 							}
 							for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
+								// The previous case's accepted SYN has consumed its mailbox.
+								if err := obj.RoutingTuplesMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+									t.Fatal(err)
+								}
 								status, _, _, err := runBpfProgram(program, packet, ctx)
 								if err != nil || status != want {
 									t.Fatalf("%s: status=%d err=%v, want=%d", program, status, err, want)
 								}
 								var route bpftestRoutingResult
-								err = obj.RoutingTuplesMap.Lookup(key, &route)
-								if !captured && mark == 0 {
+								err = lookupHandoff(obj.RoutingTuplesMap, key, &route)
+								if !captured {
 									if !errors.Is(err, ebpf.ErrKeyNotExist) {
 										t.Fatalf("eBPF direct retained proxy state: %+v, %v", route, err)
 									}
+									assertDirectTCPFlow(t, obj, key, mark)
 									continue
 								}
 								var wantCapture uint8

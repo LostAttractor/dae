@@ -56,7 +56,7 @@ func requestHTTPTarget(request *http.Request) (httpTarget, error) {
 // One candidate stream serves intercepted requests and daemon downloads.
 // Requests collect the plan before pool lookup; downloads consume it lazily
 // and stop after a successful dial. A block always terminates the stream.
-func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, target httpTarget, source netip.AddrPort, identity bpfRoutingResult) iter.Seq2[*DialOption, error] {
+func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, target httpTarget, source netip.AddrPort, identity routingResult) iter.Seq2[*DialOption, error] {
 	return func(yield func(*DialOption, error) bool) {
 		if network != "tcp" && network != "tcp4" && network != "tcp6" && network != "udp" {
 			yield(nil, fmt.Errorf("unsupported HTTP network %q", network))
@@ -112,7 +112,7 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 
 // Daemon-originated lookups use the internal resolver installed at startup.
 // They do not depend on the availability or configuration of DNS plugins.
-func (c *ControlPlane) resolveHTTPAddresses(parent context.Context, host string, qtype uint16, source netip.AddrPort, process bpfRoutingResult) ([]netip.Addr, error) {
+func (c *ControlPlane) resolveHTTPAddresses(parent context.Context, host string, qtype uint16, source netip.AddrPort, process routingResult) ([]netip.Addr, error) {
 	ctx, cancel := context.WithTimeout(parent, consts.DefaultDNSTimeout)
 	defer cancel()
 	if c.ctx != nil {

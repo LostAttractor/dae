@@ -75,6 +75,7 @@ func (c *ControlPlane) ReloadRuntimeSettings() (bool, error) {
 // Restore before checks/downloads, and once more after draining the old API on
 // reload. Building a candidate must not erase the active plane's saved choices.
 func (c *ControlPlane) restoreRuntimeSettings(prune bool) error {
+	stale := make(map[string]string)
 	for _, group := range c.outbounds {
 		if !group.IsSelector() {
 			continue
@@ -84,9 +85,7 @@ func (c *ControlPlane) restoreRuntimeSettings(prune bool) error {
 		if missing {
 			if prune {
 				log.WithFields(log.Fields{"group": group.Name, "node_id": id}).Warn("Saved selector path disappeared; using the startup choice")
-				if err := c.settings.SetSelection(group.Name, ""); err != nil {
-					return fmt.Errorf("reset selector %q: %w", group.Name, err)
-				}
+				stale[group.Name] = id
 			}
 			id = ""
 		}
@@ -94,13 +93,23 @@ func (c *ControlPlane) restoreRuntimeSettings(prune bool) error {
 			return fmt.Errorf("restore selector %q: %w", group.Name, err)
 		}
 	}
-	return c.restoreClientSets()
+	if err := c.restoreClientSets(); err != nil {
+		return err
+	}
+	// Shared preferences change only after all candidate projections succeed.
+	// A failed save leaves both disk and the active plane's store unchanged.
+	if len(stale) != 0 {
+		if err := c.settings.PruneSelections(stale); err != nil {
+			return fmt.Errorf("prune disappeared selector paths: %w", err)
+		}
+	}
+	return nil
 }
 
 func (c *ControlPlane) restoreClientSets() error {
 	for _, name := range c.routingMatcherBuilder.ClientSets() {
 		members := c.settings.Members(name)
-		if err := c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, members, false); err != nil {
+		if err := c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, members, c.kernelReady); err != nil {
 			return err
 		}
 	}

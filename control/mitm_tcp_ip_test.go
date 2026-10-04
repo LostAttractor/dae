@@ -77,7 +77,11 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 			src, dst := param.Src, netip.MustParseAddrPort(test.destination)
 			key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_TCP}
 			key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
-			if err := tuples.Update(key, bpfRoutingResult{Outbound: uint8(consts.OutboundDirect), CaptureFlags: captureHTTP, Mark: 37}, ebpf.UpdateAny); err != nil {
+			if err := tuples.Update(key, testRoutingHandoff(t, bpfRoutingResult{Outbound: uint8(consts.OutboundDirect), CaptureFlags: captureHTTP, Mark: 37}), ebpf.UpdateAny); err != nil {
+				t.Fatal(err)
+			}
+			result, err := retrieveRoutingResult(tuples, src, dst, unix.IPPROTO_TCP)
+			if err != nil {
 				t.Fatal(err)
 			}
 			server, client := net.Pipe()
@@ -85,7 +89,7 @@ func TestMITMTCPIPScopeKernelIntegration(t *testing.T) {
 			defer client.Close()
 			served := make(chan error, 1)
 			go func() {
-				relay, err := plane.prepareTCPRelay(context.Background(), &mitmTupleConn{Conn: server, source: src, destination: dst})
+				relay, err := plane.prepareTCPRelay(context.Background(), &mitmTupleConn{Conn: server, source: src, destination: dst}, result)
 				if relay != nil {
 					err = relay.run()
 				}

@@ -49,7 +49,11 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 		{name: "proxy to unavailable selector direct fallback", previous: bpftestRoutingResult{Outbound: proxy}, unavailable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := obj.RoutingTuplesMap.Update(key, test.previous, ebpf.UpdateAny); err != nil {
+			previous := bpftestTcpFlowState{Mark: test.previous.Mark}
+			if test.previous.Outbound == proxy {
+				previous.Proxy = 1
+			}
+			if err := obj.TcpFlowMap.Update(key, previous, ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 			fallback := bpftestMatchSet{Type: fallbackType, Outbound: direct, Mark: test.mark}
@@ -87,17 +91,24 @@ func TestDirectTCPSynReplacesPreviousRoute(t *testing.T) {
 				}
 			}
 			var result bpftestRoutingResult
-			err := obj.RoutingTuplesMap.Lookup(key, &result)
+			err := lookupHandoff(obj.RoutingTuplesMap, key, &result)
 			if test.unavailable {
 				if err != nil || result.Outbound != proxy || result.NoSniff != 1 {
 					t.Fatalf("fallback lost group ownership: %+v, %v", result, err)
 				}
-			} else if test.mark == 0 {
+			} else {
 				if !errors.Is(err, ebpf.ErrKeyNotExist) {
-					t.Fatalf("plain direct retained previous routing tuple: %+v, %v", result, err)
+					t.Fatalf("direct retained a setup handoff: %+v, %v", result, err)
 				}
-			} else if err != nil || result.Outbound != direct || result.Mark != test.mark {
-				t.Fatalf("marked direct tuple = %+v, %v", result, err)
+				var flow bpftestTcpFlowState
+				err := obj.TcpFlowMap.Lookup(key, &flow)
+				if test.mark == 0 {
+					if !errors.Is(err, ebpf.ErrKeyNotExist) {
+						t.Fatalf("plain direct retained state: %+v, %v", flow, err)
+					}
+				} else if err != nil || flow.Proxy != 0 || flow.Mark != test.mark {
+					t.Fatalf("marked direct flow = %+v, %v", flow, err)
+				}
 			}
 		})
 	}

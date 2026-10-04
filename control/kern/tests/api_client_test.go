@@ -99,7 +99,7 @@ func TestAPIClientIngressObservation(t *testing.T) {
 						t.Fatalf("LAN observation = %+v, error = %v", client, err)
 					}
 					var result bpftestRoutingResult
-					if err := obj.RoutingTuplesMap.Lookup(&key, &result); !errors.Is(err, ebpf.ErrKeyNotExist) {
+					if err := lookupHandoff(obj.RoutingTuplesMap, &key, &result); !errors.Is(err, ebpf.ErrKeyNotExist) {
 						t.Fatalf("API observation polluted proxy handoff: %+v, error = %v", result, err)
 					}
 					// A later HTTP request must refresh an old entry even without SYN.

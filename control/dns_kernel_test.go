@@ -13,7 +13,18 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 )
 
+func lookupKernelHandoff(m *ebpf.Map, key any, result *bpfRoutingResult) error {
+	var value bpfRoutingHandoff
+	err := m.Lookup(key, &value)
+	*result = value.Result
+	return err
+}
+
 func dnsKernelCollection(t *testing.T) (*ebpf.Collection, *BPFState) {
+	return dnsKernelGeneration(t, nil, 0)
+}
+
+func dnsKernelGeneration(t *testing.T, shared map[string]*ebpf.Map, generation uint32) (*ebpf.Collection, *BPFState) {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("root is required for isolated BPF program tests")
@@ -30,11 +41,14 @@ func dnsKernelCollection(t *testing.T) (*ebpf.Collection, *BPFState) {
 	for _, m := range spec.Maps {
 		m.Pinning = ebpf.PinNone
 	}
-	collection, err := ebpf.NewCollection(spec)
+	collection, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{MapReplacements: shared})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(collection.Close)
+	if err := collection.Variables["routing_generation"].Set(generation); err != nil {
+		t.Fatal(err)
+	}
 	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 		RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
 	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
@@ -95,7 +109,7 @@ func TestDNSRelayKernelCapture(t *testing.T) {
 						key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: ipProto}
 						key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 						var result bpfRoutingResult
-						err := collection.Maps["routing_tuples_map"].Lookup(key, &result)
+						err := lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result)
 						outbound := uint8(consts.OutboundDirect)
 						if flags == captureDestination {
 							outbound = uint8(consts.OutboundControlPlaneRouting)
@@ -144,7 +158,7 @@ func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 				key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: proto}
 				key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
 				var result bpfRoutingResult
-				if err := collection.Maps["routing_tuples_map"].Lookup(key, &result); err != nil {
+				if err := lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result); err != nil {
 					t.Fatal(err)
 				}
 				if result.Must != test.must || result.Mark != test.mark || result.CaptureFlags != test.capture || result.Outbound != uint8(consts.OutboundUserDefinedMin) {

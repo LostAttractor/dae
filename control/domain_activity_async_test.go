@@ -145,13 +145,14 @@ func TestDomainActivityCloseSeparatesReloadWindows(t *testing.T) {
 	now := time.Now()
 	ip := netip.MustParseAddr("192.0.2.1")
 	key := newDomainActivityKey(ip, "a.example.")
-	old, fake := newTestRegistry(1, 10*time.Second)
+	old, _ := newTestRegistry(1, 10*time.Second)
 	old.Upsert(key.domain, ip, testBitmap(0), 10, now)
 	activity := old.activity
 	activity.enqueue(key, now.Add(9*time.Second))
-	activity.prepareHandoff()
 	path := filepath.Join(t.TempDir(), "registry.json.gz")
 	old.EnablePersistence(path)
+	next, fake := newTestRegistry(1, 30*time.Second)
+	next.ForkFrom(old, func(string) []uint32 { return testBitmap(1) }, now.Add(10*time.Second))
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -163,9 +164,7 @@ func TestDomainActivityCloseSeparatesReloadWindows(t *testing.T) {
 	if !old.retention(key.domain, ip).Equal(now.Add(19 * time.Second)) {
 		t.Fatal("pre-close activity used the successor window")
 	}
-	next, _ := newTestRegistry(1, 30*time.Second)
-	next.kernel.update, next.kernel.remove = fake.update, fake.remove
-	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(1) }, now.Add(20*time.Second))
+	next.Sweep(now.Add(20 * time.Second))
 	if !next.retention(key.domain, ip).Equal(now.Add(45*time.Second)) || !bitmapHas(fake.routing[ip], 1) {
 		t.Fatal("handoff activity was collected or used the retired window")
 	}
@@ -185,7 +184,7 @@ func TestDomainActivityCloseSeparatesReloadWindows(t *testing.T) {
 
 func TestDomainActivityManyTargetsAcrossBatchAndReload(t *testing.T) {
 	now := time.Now()
-	old, fake := newTestRegistry(64, 10*time.Second)
+	old, _ := newTestRegistry(64, 10*time.Second)
 	keys := make([]domainActivityKey, 64)
 	for i := range keys {
 		ip := netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)})
@@ -206,16 +205,15 @@ func TestDomainActivityManyTargetsAcrossBatchAndReload(t *testing.T) {
 		}
 		old.activity.enqueue(key, now.Add(21*time.Second))
 	}
-	old.activity.prepareHandoff()
+	next, fake := newTestRegistry(64, 30*time.Second)
+	next.ForkFrom(old, func(string) []uint32 { return testBitmap(1) }, now.Add(21*time.Second))
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range keys {
 		old.activity.enqueue(key, now.Add(22*time.Second))
 	}
-	next, _ := newTestRegistry(64, 30*time.Second)
-	next.kernel.update, next.kernel.remove = fake.update, fake.remove
-	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(1) }, now.Add(40*time.Second))
+	next.Sweep(now.Add(40 * time.Second))
 	for _, key := range keys {
 		if !old.retention(key.domain, key.ip).Equal(now.Add(31*time.Second)) || !next.retention(key.domain, key.ip).Equal(now.Add(52*time.Second)) {
 			t.Fatal("batch/reload did not use one observation boundary for all targets")
@@ -226,14 +224,13 @@ func TestDomainActivityManyTargetsAcrossBatchAndReload(t *testing.T) {
 
 func TestDomainActivityConcurrentTargetsDuringReload(t *testing.T) {
 	now := time.Now()
-	old, fake := newTestRegistry(32, time.Minute)
+	old, _ := newTestRegistry(32, time.Minute)
 	keys := make([]domainActivityKey, 32)
 	for i := range keys {
 		keys[i] = newDomainActivityKey(netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)}), fmt.Sprintf("d%d.example.", i))
 		old.Upsert(keys[i].domain, keys[i].ip, testBitmap(0), 1, now)
 	}
 	activity := old.activity
-	activity.prepareHandoff()
 	var workers sync.WaitGroup
 	for _, key := range keys {
 		workers.Go(func() {
@@ -245,12 +242,11 @@ func TestDomainActivityConcurrentTargetsDuringReload(t *testing.T) {
 			}
 		})
 	}
+	next, fake := newTestRegistry(32, time.Minute)
+	next.ForkFrom(old, func(string) []uint32 { return testBitmap(1) }, now)
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	next, _ := newTestRegistry(32, time.Minute)
-	next.kernel.update, next.kernel.remove = fake.update, fake.remove
-	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(1) }, now)
 	workers.Wait()
 	next.flushActivity()
 	for _, key := range keys {
@@ -263,12 +259,11 @@ func TestDomainActivityConcurrentTargetsDuringReload(t *testing.T) {
 
 func TestDomainActivityConcurrentReloadAndDrains(t *testing.T) {
 	now := time.Now()
-	old, fake := newTestRegistry(1, time.Minute)
+	old, _ := newTestRegistry(1, time.Minute)
 	ip := netip.MustParseAddr("192.0.2.1")
 	key := newDomainActivityKey(ip, "a.example.")
 	old.Upsert(key.domain, ip, testBitmap(0), 1, now)
 	activity := old.activity
-	activity.prepareHandoff()
 	var sequence atomic.Uint64
 	var workers sync.WaitGroup
 	for range 8 {
@@ -282,12 +277,11 @@ func TestDomainActivityConcurrentReloadAndDrains(t *testing.T) {
 			}
 		})
 	}
+	next, fake := newTestRegistry(1, time.Minute)
+	next.ForkFrom(old, func(string) []uint32 { return testBitmap(1) }, now)
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	next, _ := newTestRegistry(1, time.Minute)
-	next.kernel.update, next.kernel.remove = fake.update, fake.remove
-	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(1) }, now)
 	workers.Wait()
 	next.flushActivity()
 	if !next.retention(key.domain, ip).Equal(now.Add(time.Minute + time.Duration(sequence.Load()))) {

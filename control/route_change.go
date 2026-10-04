@@ -35,7 +35,7 @@ func (d *deviceRoutes) device(mac [6]byte) *deviceRoute {
 	return d.devices[mac]
 }
 
-func (d *deviceRoutes) acquire(result *bpfRoutingResult) (*netproxy.Lease, error) {
+func (d *deviceRoutes) acquire(result *routingResult) (*netproxy.Lease, error) {
 	if result.Mac == [6]byte{} {
 		return nil, nil
 	}

@@ -146,7 +146,7 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 							t.Fatalf("%s: verdict=%d err=%v, want=%d", name, status, err, want)
 						}
 						var result bpfRoutingResult
-						err = collection.Maps["routing_tuples_map"].Lookup(key, &result)
+						err = lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result)
 						if !capture {
 							if !errors.Is(err, ebpf.ErrKeyNotExist) {
 								t.Fatalf("kernel direct retained proxy state: %+v, %v", result, err)

@@ -186,6 +186,24 @@ func (s *Store) SetSelection(group, id string) error {
 	return s.save(next)
 }
 
+// PruneSelections removes stale choices in one atomic save. A choice changed
+// since the caller observed it is retained instead of pruning the newer value.
+func (s *Store) PruneSelections(stale map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.state
+	next.Selectors = maps.Clone(next.Selectors)
+	for group, id := range stale {
+		if next.Selectors[group] == id {
+			delete(next.Selectors, group)
+		}
+	}
+	if len(next.Selectors) == len(s.state.Selectors) {
+		return nil
+	}
+	return s.save(next)
+}
+
 func (s *Store) Members(name string) [][6]byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -13,6 +13,45 @@ import (
 	"testing"
 )
 
+func TestPruneSelectionsIsAtomicAndKeepsNewerChoices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime-state.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one", "two"} {
+		if err := store.SetSelection(name, "old"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	stale := map[string]string{"one": "old", "two": "old"}
+	if err := store.PruneSelections(stale); err == nil {
+		t.Fatal("pruned through an unwritable destination")
+	}
+	if store.Selection("one") != "old" || store.Selection("two") != "old" {
+		t.Fatal("failed prune partially changed accepted preferences")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSelection("two", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PruneSelections(stale); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil || reopened.Selection("one") != "" || reopened.Selection("two") != "new" {
+		t.Fatalf("prune discarded a newer selection or failed to persist: %v", err)
+	}
+}
+
 func TestStorePersistence(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cache")
 	path := filepath.Join(dir, "runtime-state.json")

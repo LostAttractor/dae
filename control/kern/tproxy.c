@@ -177,31 +177,6 @@ struct ip_port {
 	__be16 port;
 };
 
-struct routing_result {
-	__u32 mark;
-	__u8 must;
-	__u8 mac[6];
-	__u8 outbound;
-	__u8 pname[TASK_COMM_LEN];
-	__u32 pid;
-	__u32 ifindex;
-	__u32 profile_id;
-	__u8 dscp;
-	__u8 capture_flags;
-	__u8 protocol;
-	__u8 no_sniff;
-	/* Use the former padding before route_epoch to retain the pinned ABI. */
-	__u32 physinif;
-	__u64 route_epoch;
-};
-
-_Static_assert(sizeof(struct routing_result) == 56,
-	       "routing_result pinned-map ABI changed unexpectedly");
-_Static_assert(__builtin_offsetof(struct routing_result, capture_flags) == 41,
-	       "routing_result capture flags ABI offset");
-_Static_assert(__builtin_offsetof(struct routing_result, physinif) == 44,
-	       "routing_result bridge member ABI offset");
-
 struct tuples_key {
 	union ip6 sip;
 	union ip6 dip;
@@ -222,12 +197,13 @@ struct udp_routing_cache_key {
 	__u16 padding;
 };
 
-/* Preserve all metadata produced by ingress for the first source decision.
- * pid/pname are not populated in routing_result by ingress; process-name
- * predicates use the socket cookie map separately. Do not restore identity
- * from later packets: interfaces, DSCP and policies can change mid-lifetime.
+/* Shared by TCP tuples and UDP source decisions, with no alignment holes.
+ * Process-name predicates use the socket cookie map, not this result.
+ * Preserve first-packet metadata: interfaces, DSCP and policies can change
+ * mid-lifetime. generation identifies the published rules; route_epoch is
+ * the independent per-device connection policy epoch.
  */
-struct routing_decision {
+struct routing_result {
 	__u64 route_epoch;
 	__u32 mark;
 	__u32 ifindex;
@@ -240,10 +216,30 @@ struct routing_decision {
 	__u8 no_sniff;
 	__u8 dscp;
 	__u32 physinif;
+	__u32 generation;
 };
 
+/* Long-lived TCP forwarding state is independent of rule generations. */
+struct tcp_flow_state {
+	__u64 route_epoch;
+	__u32 mark;
+	__u32 proxy;
+};
+
+/* Bounded setup mailbox. TCP consumes its entry at accept; UDP snapshots it.
+ * Unconsumed entries expire logically and are reclaimed by the LRU. */
+#define HANDOFF_LIFETIME_SECONDS 30U
+struct routing_handoff {
+	struct routing_result result;
+	__u32 expires;
+	__be32 syn_seq;
+};
+
+_Static_assert(sizeof(struct tcp_flow_state) == 16, "TCP flow ABI size");
+_Static_assert(sizeof(struct routing_handoff) == 48, "routing handoff ABI size");
+
 struct udp_routing_cache_value {
-	struct routing_decision result;
+	struct routing_result result;
 	__u64 cached_until;
 	struct bpf_timer timer;
 	struct bpf_spin_lock lock;
@@ -252,12 +248,14 @@ struct udp_routing_cache_value {
 
 /* Zeroed timer/lock bytes for insertion, without a timer in a per-CPU map. */
 struct udp_routing_scratch {
-	struct routing_decision result;
+	struct routing_result result;
 	__u64 cached_until;
 	__u64 zero[3];
 };
 
-_Static_assert(sizeof(struct routing_decision) == 40, "UDP decision ABI size");
+_Static_assert(sizeof(struct routing_result) == 40, "routing result ABI size");
+_Static_assert(__builtin_offsetof(struct routing_result, generation) == 36,
+	       "routing generation ABI offset");
 _Static_assert(sizeof(struct udp_routing_cache_key) == 24, "UDP source key ABI size");
 _Static_assert(sizeof(struct udp_routing_cache_value) == 72, "UDP cache value ABI size");
 _Static_assert(__builtin_offsetof(struct udp_routing_cache_value, cached_until) == 40,
@@ -342,6 +340,8 @@ volatile const struct dae_param PARAM = {};
 /* Updated only when publishing a control plane; zero disables observation. */
 volatile __be16 api_port;
 volatile __u32 default_routing_profile;
+/* Fixed before this generation's programs are attached. */
+volatile __u32 routing_generation;
 
 struct api_client {
 	__u64 observed_at;
@@ -358,11 +358,17 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__type(key, struct tuples_key);
-	__type(value, struct routing_result); // outbound
-	__uint(max_entries, MAX_DST_MAPPING_NUM);
-	/// NOTICE: It MUST be pinned.
-	__uint(pinning, LIBBPF_PIN_BY_NAME);
+	__type(value, struct routing_handoff);
+	__uint(max_entries, 16384);
 } routing_tuples_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, struct tuples_key);
+	__type(value, struct tcp_flow_state);
+	__uint(max_entries, MAX_DST_MAPPING_NUM);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+} tcp_flow_map SEC(".maps");
 
 /* Kernel owns direct and pending decisions. Timers reclaim idle entries;
  * LRU eviction must never silently change the route of an active source. */
@@ -886,44 +892,9 @@ static int expire_udp_route(void *map, struct udp_routing_cache_key *key,
 	return 0;
 }
 
-static __always_inline void expand_udp_decision(struct routing_result *result,
-					       const struct routing_decision *decision)
-{
-	__builtin_memset(result, 0, sizeof(*result));
-	result->route_epoch = decision->route_epoch;
-	result->mark = decision->mark;
-	result->ifindex = decision->ifindex;
-	result->physinif = decision->physinif;
-	result->profile_id = decision->profile_id;
-	result->outbound = decision->outbound;
-	result->must = decision->must;
-	result->capture_flags = decision->capture_flags;
-	result->protocol = decision->protocol;
-	result->no_sniff = decision->no_sniff;
-	result->dscp = decision->dscp;
-	__builtin_memcpy(result->mac, decision->mac, sizeof(result->mac));
-}
-
-static __always_inline void compact_udp_decision(struct routing_decision *decision,
-					        const struct routing_result *result)
-{
-	decision->route_epoch = result->route_epoch;
-	decision->mark = result->mark;
-	decision->ifindex = result->ifindex;
-	decision->physinif = result->physinif;
-	decision->profile_id = result->profile_id;
-	decision->outbound = result->outbound;
-	decision->must = result->must;
-	decision->capture_flags = result->capture_flags;
-	decision->protocol = result->protocol;
-	decision->no_sniff = result->no_sniff;
-	decision->dscp = result->dscp;
-	__builtin_memcpy(decision->mac, result->mac, sizeof(decision->mac));
-}
-
 /* 1 = hit, 0 = new lifetime, -1 = another packet/timer is ending it. */
 static __noinline int read_udp_route(struct udp_routing_cache_key *key,
-					 struct routing_result *result)
+					 struct routing_result *result, bool check_generation)
 {
 	struct udp_routing_cache_value *value =
 		bpf_map_lookup_elem(&udp_routing_cache_map, key);
@@ -936,7 +907,8 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 
 	if (device && device->updating)
 		return -1;
-	bool stale = device && device->epoch != value->result.route_epoch;
+	bool stale = (device && device->epoch != value->result.route_epoch) ||
+		(check_generation && value->result.generation != routing_generation);
 
 	bpf_spin_lock(&value->lock);
 	if (value->closing) {
@@ -948,7 +920,7 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 		value->closing = 1;
 	} else {
 		value->cached_until = now + UDP_ROUTING_CACHE_TTL_NS;
-		expand_udp_decision(result, &value->result);
+		*result = value->result;
 	}
 	bpf_spin_unlock(&value->lock);
 	if (expired) {
@@ -967,7 +939,7 @@ static __noinline int save_udp_route(struct udp_routing_cache_key *key,
 	if (!value)
 		return -1;
 	__builtin_memset(value, 0, sizeof(*value));
-	compact_udp_decision(&value->result, result);
+	value->result = *result;
 	value->cached_until = bpf_ktime_get_ns() + UDP_ROUTING_CACHE_TTL_NS;
 	int ret = bpf_map_update_elem(&udp_routing_cache_map, key, value, BPF_NOEXIST);
 
@@ -987,7 +959,7 @@ static __noinline int save_udp_route(struct udp_routing_cache_key *key,
 		}
 	}
 	/* Concurrent first packets must all adopt the winning decision. */
-	return read_udp_route(key, result) == 1 ? 0 : -1;
+	return read_udp_route(key, result, true) == 1 ? 0 : -1;
 }
 
 static __always_inline int prep_redirect_to_control_plane(
@@ -1104,11 +1076,41 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 	return (*pid_pname)->pid == PARAM.control_plane_pid;
 }
 
+static __always_inline int save_tcp_flow(struct tuples_key *key,
+					const struct routing_result *result)
+{
+	struct tcp_flow_state flow = {
+		.route_epoch = result->route_epoch,
+		.mark = result->mark,
+		.proxy = result->outbound != OUTBOUND_DIRECT || result->capture_flags,
+	};
+
+	if (!flow.proxy && !flow.mark && !flow.route_epoch) {
+		bpf_map_delete_elem(&tcp_flow_map, key);
+		return 0;
+	}
+	return bpf_map_update_elem(&tcp_flow_map, key, &flow, BPF_ANY);
+}
+
+static __always_inline int publish_handoff(struct tuples_key *key,
+					  const struct routing_result *result, __be32 syn_seq)
+{
+	struct routing_handoff handoff = {
+		.result = *result,
+		.expires = bpf_ktime_get_ns() / 1000000000ULL + HANDOFF_LIFETIME_SECONDS,
+		.syn_seq = syn_seq,
+	};
+
+	return bpf_map_update_elem(&routing_tuples_map, key, &handoff, BPF_ANY);
+}
+
 static __always_inline int do_tproxy_first_fragment(
 	struct __sk_buff *skb, bool is_wan, struct ethhdr *ethh,
 	struct l3_hdr *l3h, struct l4_hdr *l4h, __u8 l4proto,
 	__u32 payload_offset, __u32 packet_end, int parse_ret)
 {
+	__u32 generation = routing_generation;
+
 	if (l4proto != IPPROTO_TCP && l4proto != IPPROTO_UDP)
 		return l4proto && !is_extension_header(l4proto) ? TCX_NEXT : TCX_DROP;
 	if (parse_ret)
@@ -1141,12 +1143,12 @@ static __always_inline int do_tproxy_first_fragment(
 	}
 
 	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
-		struct routing_result *saved = bpf_map_lookup_elem(&routing_tuples_map, &tuples->five);
+		struct tcp_flow_state *saved = bpf_map_lookup_elem(&tcp_flow_map, &tuples->five);
 
 		/* An invalid first fragment must not complete the old TCP segment. */
 		if (route_epoch && (!saved || saved->route_epoch != route_epoch))
 			return TCX_DROP;
-		if (saved && (saved->outbound != OUTBOUND_DIRECT || saved->mark || saved->capture_flags))
+		if (saved && (saved->proxy || saved->mark))
 			return TCX_DROP;
 		goto direct;
 	}
@@ -1157,7 +1159,7 @@ static __always_inline int do_tproxy_first_fragment(
 		fill_udp_routing_cache_key(&udp_key, tuples);
 		if (bpf_map_lookup_elem(&udp_bindings_map, &udp_key))
 			return TCX_DROP;
-		int hit = read_udp_route(&udp_key, saved);
+		int hit = read_udp_route(&udp_key, saved, true);
 
 		if (hit < 0 || (hit && (saved->outbound != OUTBOUND_DIRECT || saved->mark || saved->capture_flags)))
 			return TCX_DROP;
@@ -1192,7 +1194,8 @@ static __always_inline int do_tproxy_first_fragment(
 		return TCX_DROP;
 	__s64 route_result = route(&params);
 
-	if (route_result < 0 || (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
+	if (route_result < 0 ||
+	    (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
 		return TCX_DROP;
 	__u8 outbound = route_result;
 	__u32 mark = route_result >> 8;
@@ -1205,6 +1208,7 @@ static __always_inline int do_tproxy_first_fragment(
 		__builtin_memset(result, 0, sizeof(*result));
 		result->outbound = OUTBOUND_DIRECT;
 		result->route_epoch = route_epoch;
+		result->generation = generation;
 		result->profile_id = params.profile_id;
 		result->ifindex = params.ifindex;
 		result->physinif = params.physinif;
@@ -1213,7 +1217,7 @@ static __always_inline int do_tproxy_first_fragment(
 		if (l4proto == IPPROTO_UDP) {
 			if (save_udp_route(&udp_key, result) || result->outbound != OUTBOUND_DIRECT)
 				return TCX_DROP;
-		} else if (route_epoch && bpf_map_update_elem(&routing_tuples_map, &tuples->five, result, BPF_ANY)) {
+		} else if (save_tcp_flow(&tuples->five, result)) {
 			return TCX_DROP;
 		}
 		goto direct;
@@ -1254,6 +1258,8 @@ static __always_inline int do_tproxy_unfragmented(
 	struct ethhdr *ethh, struct l3_hdr *l3h, struct l4_hdr *l4h,
 	__u8 l4proto, __u32 offset, __u32 packet_end, int parse_ret)
 {
+	__u32 generation = routing_generation;
+
 	if (parse_ret)
 		return TCX_NEXT;
 	if (l4proto == IPPROTO_ICMPV6)
@@ -1303,8 +1309,8 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (l4proto == IPPROTO_TCP && !(l4h->tcph.syn && !l4h->tcph.ack)) {
 		// Established TCP Connection.
-		struct routing_result *routing_result =
-			bpf_map_lookup_elem(&routing_tuples_map,
+		struct tcp_flow_state *routing_result =
+			bpf_map_lookup_elem(&tcp_flow_map,
 					    &routing_tuples_key);
 
 		if (route_epoch && (!routing_result || routing_result->route_epoch != route_epoch)) {
@@ -1317,8 +1323,7 @@ static __always_inline int do_tproxy_unfragmented(
 		}
 
 		if (routing_result) {
-			if (routing_result->outbound == OUTBOUND_DIRECT &&
-			    !routing_result->capture_flags) {
+			if (!routing_result->proxy) {
 				// Restore the policy-routing mark for the rest of a
 				// direct(mark:N) TCP flow.
 				skb->mark = routing_result->mark;
@@ -1329,6 +1334,21 @@ static __always_inline int do_tproxy_unfragmented(
 
 		// Non-proxy connections or previous connections.
 		return TCX_NEXT;
+	}
+	if (l4proto == IPPROTO_TCP) {
+		struct routing_handoff *pending =
+			bpf_map_lookup_elem(&routing_tuples_map, &routing_tuples_key);
+		__u32 now = bpf_ktime_get_ns() / 1000000000ULL;
+
+		/* A retransmitted SYN belongs to the same admitted setup, including
+		 * while interfaces switch generations. Never extend its grace period. */
+		if (pending && pending->syn_seq == l4h->tcph.seq &&
+		    (__s32)(pending->expires - now) > 0 &&
+		    pending->result.route_epoch == route_epoch) {
+			if (save_tcp_flow(&routing_tuples_key, &pending->result))
+				return TCX_DROP;
+			goto control_plane;
+		}
 	}
 
 	if (l4proto == IPPROTO_UDP) {
@@ -1362,7 +1382,7 @@ static __always_inline int do_tproxy_unfragmented(
 				return TCX_DROP;
 			goto control_plane;
 		}
-		int hit = read_udp_route(&udp_key, routing_result);
+		int hit = read_udp_route(&udp_key, routing_result, true);
 
 		if (hit < 0)
 			return TCX_DROP;
@@ -1393,6 +1413,7 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (route_ret < 0)
 		return TCX_DROP;
+	routing_result->generation = generation;
 	routing_result->route_epoch = route_epoch;
 	routing_result->profile_id = params.profile_id;
 	routing_result->outbound = route_ret;
@@ -1442,14 +1463,16 @@ selected:
 	    !(l4proto == IPPROTO_TCP && bpf_map_lookup_elem(&route_exempt_map, &destination)))
 		return TCX_DROP;
 	if (routing_result->outbound == OUTBOUND_DIRECT && !routing_result->capture_flags) {
-		if (l4proto == IPPROTO_TCP && (routing_result->mark || route_epoch) &&
-		    bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
-				routing_result, BPF_ANY))
+		if (l4proto == IPPROTO_TCP && save_tcp_flow(&routing_tuples_key, routing_result))
 			return TCX_DROP;
+		if (l4proto == IPPROTO_TCP)
+			bpf_map_delete_elem(&routing_tuples_map, &routing_tuples_key);
 		goto direct;
 	}
-	if (bpf_map_update_elem(&routing_tuples_map, &routing_tuples_key,
-				routing_result, BPF_ANY))
+	if (publish_handoff(&routing_tuples_key, routing_result,
+			    l4proto == IPPROTO_TCP ? l4h->tcph.seq : 0))
+		return TCX_DROP;
+	if (l4proto == IPPROTO_TCP && save_tcp_flow(&routing_tuples_key, routing_result))
 		return TCX_DROP;
 
 control_plane:
@@ -1460,10 +1483,6 @@ control_plane:
 	return bpf_redirect(PARAM.dae0_ifindex, 0);
 
 direct:
-	// A new SYN can reuse a formerly proxied or marked tuple, including
-	// when an unavailable selector falls back to plain direct.
-	if (l4proto == IPPROTO_TCP && !routing_result->mark && !route_epoch)
-		bpf_map_delete_elem(&routing_tuples_map, &routing_tuples_key);
 	skb->mark = routing_result->mark;
 	return TCX_NEXT;
 
@@ -1549,7 +1568,7 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 		struct routing_result ignored;
 
 		/* Replies also keep a kernel-direct source lifetime alive. */
-		read_udp_route(&source, &ignored);
+		read_udp_route(&source, &ignored, false);
 
 
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))

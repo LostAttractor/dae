@@ -131,12 +131,16 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, plugins *mitm.Configuration) (c *control.ControlPlane, err error) {
+func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, plugins *mitm.Configuration) (c *control.ControlPlane, err error) {
+	if datapath == nil {
+		datapath = control.NewRuntime()
+	}
+	isReload := datapath.IsReload()
 	defer func() {
-		if err == nil || bpf != nil {
+		if err == nil || isReload {
 			return
 		}
-		err = errors.Join(err, cleanupStartup(nil))
+		err = errors.Join(err, datapath.Close(), cleanupStartup(nil))
 	}()
 	conf = deepcopy.Copy(conf).(*config.Config)
 	var autoSelected bool
@@ -163,12 +167,12 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		var prepareErr error
-		preparation, prepareErr = control.PrepareControlPlane(groupCtx, bpf, &conf.Routing, &conf.Global, externGeoDataDirs, conf.Rules)
+		preparation, prepareErr = control.PrepareControlPlane(groupCtx, datapath, &conf.Routing, &conf.Global, externGeoDataDirs, conf.Rules)
 		return prepareErr
 	})
 	group.Go(func() error {
 		var resolveErr error
-		nodeDescriptors, resolveErr = resolveNodeDescriptors(groupCtx, conf, bpf != nil, filepath.Dir(cfgFile), subscription.ResolveSubscriptionContext)
+		nodeDescriptors, resolveErr = resolveNodeDescriptors(groupCtx, conf, isReload, filepath.Dir(cfgFile), subscription.ResolveSubscriptionContext)
 		return resolveErr
 	})
 	if err = group.Wait(); err != nil {
@@ -181,7 +185,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	var mitmLoader func(*http.Client, *http.Client) (*mitm.Host, error)
 	if len(conf.Plugins) != 0 {
 		mitmLoader = func(client, background *http.Client) (*mitm.Host, error) {
-			if bpf != nil {
+			if isReload {
 				writeReloadProgress("Preparing plugins using routing rules...")
 			}
 			return loadMITM(ctx, conf, client, background, plugins)
@@ -200,6 +204,9 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	}
 	runtime.GC()
 	c.SetDomainRegistryPath(filepath.Join(cacheDirectory(), "domain-registry.json.gz"))
+	if err := c.PrepareKernel(); err != nil {
+		return nil, errors.Join(err, c.Close())
+	}
 	log.WithField("duration", time.Since(assemblyStarted)).Debug("Assembled control plane")
 	logStartupMITMStatus(c.MITMStatus())
 	return c, nil
@@ -221,7 +228,7 @@ func logStartupNodeStatus(groups []api.GroupStatus) {
 func cleanupStartup(c *control.ControlPlane) error {
 	var err error
 	if c != nil {
-		err = c.Close()
+		err = errors.Join(c.Runtime().Close(), c.Close())
 	}
 	if netns := control.GetDaeNetns(); netns != nil {
 		err = errors.Join(err, netns.Close())

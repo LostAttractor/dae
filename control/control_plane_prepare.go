@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,9 +26,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// ControlPlanePreparation owns startup resources until NewControlPlane
-// consumes them. A reload preparation borrows its BPF state and never closes
-// it, allowing the caller to restore ownership to the running plane on error.
+// ControlPlanePreparation owns a candidate generation until NewControlPlane
+// consumes it. Its cloned Runtime map descriptors can be discarded independently.
 type ControlPlanePreparation struct {
 	bpf      *BPFState
 	rules    preparedRules
@@ -39,7 +39,7 @@ type ControlPlanePreparation struct {
 // interfaces, so it is safe while the previous control plane serves a reload.
 func PrepareControlPlane(
 	ctx context.Context,
-	reusableBpf *BPFState,
+	runtime *Runtime,
 	routingConfig *config.Routing,
 	global *config.Global,
 	externGeoDataDirs []string,
@@ -49,11 +49,11 @@ func PrepareControlPlane(
 	if err := common.ValidateSoMarkFromDae(soMarkFromDae); err != nil {
 		return nil, err
 	}
-	preparation := &ControlPlanePreparation{isReload: reusableBpf != nil}
+	preparation := &ControlPlanePreparation{isReload: runtime.IsReload()}
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		phaseStarted := time.Now()
-		bpf, err := prepareBPF(groupCtx, reusableBpf, soMarkFromDae)
+		bpf, err := prepareBPF(groupCtx, runtime, soMarkFromDae)
 		if err == nil {
 			preparation.bpf = bpf
 			log.WithField("duration", time.Since(phaseStarted)).Debug("Prepared eBPF resources")
@@ -85,12 +85,22 @@ func PrepareControlPlane(
 	return preparation, nil
 }
 
-func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) (_ *BPFState, err error) {
+func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ *BPFState, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if reusedBpf != nil && reusedBpf.soMarkFromDae != soMarkFromDae {
-		return nil, fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot change on reload; restart dae to apply it", reusedBpf.soMarkFromDae, soMarkFromDae)
+	if err := runtime.waitForRetirement(ctx); err != nil {
+		return nil, err
+	}
+	runtime.lifecycle.Lock()
+	defer runtime.lifecycle.Unlock()
+	select {
+	case <-runtime.done:
+		return nil, net.ErrClosed
+	default:
+	}
+	if len(runtime.shared) != 0 && runtime.soMarkFromDae != soMarkFromDae {
+		return nil, fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot change on reload; restart dae to apply it", runtime.soMarkFromDae, soMarkFromDae)
 	}
 	kernelVersion, err := internal.KernelVersion()
 	if err != nil {
@@ -119,10 +129,6 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 	if err = os.MkdirAll(pinPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to prepare BPF pin directory %s: %w; verify bpffs is mounted read-write at %s and is writable by this process", pinPath, err, consts.BpfPinRoot)
 	}
-	if reusedBpf != nil {
-		log.Debug("Reusing eBPF programs and maps")
-		return reusedBpf, nil
-	}
 
 	log.Debug("Loading eBPF programs and maps")
 	var programOptions ebpf.ProgramOptions
@@ -130,22 +136,38 @@ func prepareBPF(ctx context.Context, reusedBpf *BPFState, soMarkFromDae uint32) 
 		programOptions.LogLevel = ebpf.LogLevelBranch | ebpf.LogLevelStats
 	}
 	collectionOpts := &ebpf.CollectionOptions{
-		Cache:    btf.NewCache(),
-		Maps:     ebpf.MapOptions{PinPath: pinPath},
-		Programs: programOptions,
+		MapReplacements: runtime.shared,
+		Cache:           btf.NewCache(),
+		Maps:            ebpf.MapOptions{PinPath: pinPath},
+		Programs:        programOptions,
 	}
-	bpf := &BPFState{bpfObjects: new(bpfObjects), soMarkFromDae: soMarkFromDae}
+	if runtime.nextGeneration == ^uint32(0) {
+		return nil, errors.New("routing generation exhausted")
+	}
+	runtime.nextGeneration++
+	bpf := &BPFState{bpfObjects: new(bpfObjects), Runtime: runtime, routingGeneration: runtime.nextGeneration}
 	if err = fullLoadBpfObjects(bpf.bpfObjects, soMarkFromDae, collectionOpts); err != nil {
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
+	}
+	if err := bpf.RoutingGeneration.Set(bpf.routingGeneration); err != nil {
+		return nil, errors.Join(err, bpf.Close())
+	}
+	if len(runtime.shared) != 0 {
+		return bpf, nil
 	}
 	if err := bpf.DeviceRoutesMap.Update(uint32(0), bpf.UnusedDeviceRoutes, ebpf.UpdateAny); err != nil {
 		return nil, errors.Join(err, bpf.Close())
 	}
-	bpf.deviceRoutes = &deviceRoutes{outer: bpf.DeviceRoutesMap}
+	if err := runtime.retainMaps(bpf.bpfObjects); err != nil {
+		return nil, errors.Join(err, bpf.Close())
+	}
+	runtime.soMarkFromDae = soMarkFromDae
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, errors.Join(contextErr, bpf.Close())
 	}
-	spliceRuntime, spliceErr := splice.New(collectionOpts, DefaultNatTimeoutTCPEstablished)
+	spliceOptions := *collectionOpts
+	spliceOptions.MapReplacements = nil
+	spliceRuntime, spliceErr := splice.New(&spliceOptions, DefaultNatTimeoutTCPEstablished)
 	if spliceErr != nil {
 		log.WithError(spliceErr).Warn("TCP splice unavailable; using userspace relay")
 	} else if spliceRuntime != nil {
@@ -177,7 +199,7 @@ func (p *ControlPlanePreparation) Close() error {
 	if p == nil {
 		return nil
 	}
-	if p.bpf == nil || p.isReload {
+	if p.bpf == nil {
 		return nil
 	}
 	bpf := p.bpf

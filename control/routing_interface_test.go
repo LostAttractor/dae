@@ -38,7 +38,7 @@ func TestRoutingInterfaceBridgeMember(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			identity := bpfRoutingResult{Ifindex: test.ifindex, Physinif: test.member}
+			identity := routingResult{Ifindex: test.ifindex, Physinif: test.member}
 			input := identity.routingInput(netip.MustParseAddrPort("192.0.2.2:40001"), netip.AddrPortFrom(netip.MustParseAddr("198.51.100.1"), test.port), "", consts.L4ProtoType_TCP)
 			outbound, mark, _, err := matcher.match(input)
 			want, wantMark := consts.OutboundDirect, uint32(0)

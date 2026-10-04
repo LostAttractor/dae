@@ -42,7 +42,6 @@ type RoutingMatcherBuilder struct {
 	defaultProfileID     uint32
 	profiles             []routingProfile
 	fallbackSpans        map[bpfMatchSet]routingSpan
-	profileIDPlan        *routingProfileIDAllocator
 	interfaceRulePatches []routingInterfaceRulePatch
 }
 
@@ -202,21 +201,27 @@ func (b *RoutingMatcherBuilder) ClientSets() []string {
 }
 
 // SetClientMembers updates both matchers for a routing-referenced set; other
-// sets need no routing update. During preparation, active must be false and
-// BuildKernspace publishes the prepared members on activation. Active updates
-// replace the kernel map before publishing the userspace trie.
-func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name string, members [][6]byte, active bool) error {
+// sets need no routing update. Before BuildKernspace, kernelReady is false.
+// After the initial upload, updates replace the kernel map before publishing
+// the userspace trie, including the final refresh before activation.
+func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name string, members [][6]byte, kernelReady bool) error {
 	slot, exists := b.clientSetSlots[name]
 	if !exists {
 		return nil
 	}
 	prefixes := sourceMacPrefixes(members)
+	b.rulesMu.RLock()
+	unchanged := slices.Equal(b.simulatedLpmTries[slot], prefixes)
+	b.rulesMu.RUnlock()
+	if unchanged {
+		return nil
+	}
 	next, err := trie.NewTrieFromPrefixes(prefixes)
 	if err != nil {
 		return fmt.Errorf("build client set %q: %w", name, err)
 	}
 	var kernelMap *ebpf.Map
-	if active && slot < b.kernelLpmLen {
+	if kernelReady && slot < b.kernelLpmLen {
 		kernelMap, err = b.bpf.newLpmMap(prefixes)
 		if err != nil {
 			return fmt.Errorf("build kernel client set %q: %w", name, err)
@@ -225,7 +230,7 @@ func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name s
 	}
 	b.rulesMu.Lock()
 	defer b.rulesMu.Unlock()
-	if active && slot < b.kernelLpmLen {
+	if kernelReady && slot < b.kernelLpmLen {
 		if err := b.bpf.LpmArrayMap.Update(uint32(slot), kernelMap, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("update kernel client set %q: %w", name, err)
 		}

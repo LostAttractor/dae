@@ -59,7 +59,7 @@ func TestStructuredRoutingSharesRuleSetAcrossProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(builder.profiles) != 2 || builder.defaultProfileID != builder.profileIDPlan.ids["main"] || !slices.Equal(builder.profiles[0].InterfaceNames, []string{"wg0"}) || !slices.Equal(builder.profiles[1].InterfaceNames, []string{"eth0", "eth1"}) {
+	if len(builder.profiles) != 2 || builder.defaultProfileID != builder.profiles[0].ID || !slices.Equal(builder.profiles[0].InterfaceNames, []string{"wg0"}) || !slices.Equal(builder.profiles[1].InterfaceNames, []string{"eth0", "eth1"}) {
 		t.Fatalf("selected policies were not deduplicated: %+v", builder.profiles)
 	}
 
@@ -90,10 +90,10 @@ func TestStructuredRoutingSharesRuleSetAcrossProfiles(t *testing.T) {
 	if got := match(0, 0, 81); got != consts.OutboundDirect {
 		t.Fatalf("default fallback = %v, want direct", got)
 	}
-	if got := match(7, builder.profileIDPlan.ids["lan"], 81); got != consts.OutboundBlock {
+	if got := match(7, builder.profiles[1].ID, 81); got != consts.OutboundBlock {
 		t.Fatalf("lan fallback = %v, want block", got)
 	}
-	if got := match(7, builder.profileIDPlan.ids["lan"], 80); got != consts.OutboundDirect {
+	if got := match(7, builder.profiles[1].ID, 80); got != consts.OutboundDirect {
 		t.Fatalf("shared rule = %v, want direct", got)
 	}
 }
@@ -145,7 +145,7 @@ func TestRoutingPolicyFallbackIdentity(t *testing.T) {
 	if got := matchMark(0, 0); got != 2 {
 		t.Fatalf("default fallback mark = %d, want mark 2", got)
 	}
-	if got := matchMark(7, builder.profileIDPlan.ids["lan"]); got != 3 {
+	if got := matchMark(7, builder.profiles[1].ID); got != 3 {
 		t.Fatalf("interface fallback mark = %d, want 3", got)
 	}
 }
@@ -187,54 +187,6 @@ func TestStructuredRoutingStopsDAGExpansionAtLimit(t *testing.T) {
 	}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "executes too many match sets") {
 		t.Fatalf("error = %v, want execution length limit", err)
-	}
-}
-
-func TestRoutingProfileIDsRemainStableAcrossReloadOrder(t *testing.T) {
-	allocator := routingProfileIDAllocator{}
-	first, err := allocator.plan([]string{"lan", "wan"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	allocator = first
-
-	second, err := allocator.plan([]string{"guest", "wan", "lan"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.ids["lan"] != first.ids["lan"] || second.ids["wan"] != first.ids["wan"] {
-		t.Fatalf("existing profile IDs changed: first=%v second=%v", first, second)
-	}
-	if second.ids["guest"] == first.ids["lan"] || second.ids["guest"] == first.ids["wan"] {
-		t.Fatalf("new profile reused an existing ID: first=%v second=%v", first, second)
-	}
-	allocator = second
-
-	third, err := allocator.plan([]string{"lan", "guest"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if third.ids["lan"] != first.ids["lan"] || third.ids["guest"] != second.ids["guest"] {
-		t.Fatalf("profile IDs changed after removal: second=%v third=%v", second, third)
-	}
-}
-
-func TestRoutingProfileIDsRejectExhaustion(t *testing.T) {
-	allocator := routingProfileIDAllocator{next: uint64(^uint32(0))}
-	last, err := allocator.plan([]string{"last"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if last.ids["last"] != ^uint32(0) {
-		t.Fatalf("last profile ID = %d", last.ids["last"])
-	}
-	allocator = last
-	known, err := allocator.plan([]string{"last"})
-	if err != nil || known.ids["last"] != ^uint32(0) {
-		t.Fatalf("existing profile after exhaustion = %v, %v", known.ids, err)
-	}
-	if _, err := allocator.plan([]string{"new"}); err == nil {
-		t.Fatal("expected profile ID exhaustion error")
 	}
 }
 
@@ -329,34 +281,39 @@ func TestPolicySelectionAcrossDefaultSwitchAndRebinding(t *testing.T) {
  default: main
  interface { eth0: main
  eth1: other }`)
-	state := &BPFState{}
-	first, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, state, nil)
+	first, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.routingProfileIDs = *first.profileIDPlan
-	mainID, otherID := first.defaultProfileID, first.profileIDPlan.ids["other"]
-	if mainID == 0 || mainID == otherID {
-		t.Fatalf("invalid identities: %v", first.profileIDPlan.ids)
-	}
-	if _, exists := first.profileIDPlan.ids["unused"]; exists {
-		t.Fatal("unused policy consumed an ID")
+	if len(first.profiles) != 2 || first.defaultProfileID == 0 || first.defaultProfileID == first.profiles[1].ID {
+		t.Fatalf("invalid identities: %+v", first.profiles)
 	}
 	conf.Routing.Default = "other"
 	conf.Routing.Interfaces = []config.RoutingInterface{{Name: "wg0", Policy: "main"}, {Name: "eth0", Policy: "other"}}
 	slices.Reverse(conf.Routing.Policies)
-	second, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, state, nil)
+	second, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.defaultProfileID != otherID || second.profileIDPlan.ids["main"] != mainID || len(second.profiles) != 2 {
-		t.Fatalf("identities changed: %v", second.profileIDPlan.ids)
+	if second.defaultProfileID != 1 || len(second.profiles) != 2 {
+		t.Fatalf("invalid private identities: %+v", second.profiles)
+	}
+	// Both generations can reuse ID 1 without reinterpreting an old handoff.
+	for i, generation := range []*RoutingMatcherBuilder{first, second} {
+		matcher, err := generation.BuildUserspace()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, mark, _, err := matcher.match(routingInput{src: netip.MustParseAddrPort("192.0.2.1:1234"), dst: netip.MustParseAddrPort("198.51.100.1:443"), l4proto: consts.L4ProtoType_TCP, profileID: 1})
+		if err != nil || mark != uint32(10+i*10) {
+			t.Fatalf("generation %d reinterpreted private ID 1: mark=%d, %v", i, mark, err)
+		}
 	}
 	matcher, err := second.BuildUserspace()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for id, want := range map[uint32]uint32{0: 20, mainID: 10, otherID: 20} {
+	for id, want := range map[uint32]uint32{0: 20, second.profiles[1].ID: 10, second.profiles[0].ID: 20} {
 		_, mark, _, err := matcher.match(routingInput{src: netip.MustParseAddrPort("192.0.2.1:1234"), dst: netip.MustParseAddrPort("198.51.100.1:443"), l4proto: consts.L4ProtoType_TCP, profileID: id})
 		if err != nil || mark != want {
 			t.Fatalf("profile %d: mark=%d err=%v", id, mark, err)

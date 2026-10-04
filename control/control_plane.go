@@ -50,7 +50,8 @@ type ControlPlane struct {
 	settingsMu         sync.Mutex
 	apiKey             string
 	apiPort            uint16
-	kernelActive       bool
+	kernelReady        bool
+	routingGeneration  uint32
 	clients            map[string]config.Client
 	deviceRoutes       *deviceRoutes
 	closeOnRouteChange bool
@@ -64,10 +65,7 @@ type ControlPlane struct {
 	tcpSetupCtx     context.Context
 	cancelTCPSetups context.CancelFunc
 
-	ingressMu      sync.Mutex
-	ingress        *controlPlaneIngress
-	ingressRetired bool
-	udpDraining    atomic.Bool
+	udpDraining atomic.Bool
 
 	abortConnections atomic.Bool
 
@@ -81,7 +79,7 @@ type ControlPlane struct {
 	hostReconcileCh   chan struct{}
 	hostReconcileDone chan struct{}
 
-	// Fields below are saved at NewControlPlane and consumed by Activate.
+	// Fields below are saved at NewControlPlane and consumed at publication.
 	autoConfigKernelParameter bool
 
 	dialTargetOverride  bool
@@ -92,9 +90,9 @@ type ControlPlane struct {
 	mptcp               bool
 	markedDirectDialers sync.Map
 
-	// closedDone is set after Close completes successfully. InheritDomainRegistry
-	// checks it before rewriting the shared kernel domain map.
+	// Close is serialized by core.lifecycleMu, including asynchronous retirement.
 	closedDone atomic.Bool
+	closeErr   error
 }
 
 // TODO: 统一 Outbound 中的DNS解析器
@@ -103,7 +101,7 @@ type ControlPlane struct {
 //
 // NewControlPlane consumes prepared kernel and rule resources and builds the
 // userspace control plane. It does not modify shared BPF maps or bind programs
-// to traffic interfaces. Call Activate to commit it to the kernel.
+// to traffic interfaces. Call PrepareKernel and Runtime.Publish to activate it.
 // loadMITM runs after initial connectivity checks, using the configured DNS
 // and routing policies. Module rules are compiled after downloads finish.
 func NewControlPlane(
@@ -139,10 +137,8 @@ func NewControlPlane(
 		isReload,
 	)
 	if err != nil {
-		if !isReload {
-			if closeErr := bpf.Close(); closeErr != nil {
-				err = errors.Join(err, fmt.Errorf("close eBPF objects: %w", closeErr))
-			}
+		if closeErr := bpf.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close eBPF objects: %w", closeErr))
 		}
 		return nil, err
 	}
@@ -215,7 +211,7 @@ func NewControlPlane(
 
 	/// Routing.
 	// Parse rules and build. BuildUserspace is in-memory only and is safe to
-	// run during the validation phase; BuildKernspace is deferred to Activate.
+	// run during validation; PrepareKernel populates the private kernel maps.
 	builder, err := preparedRules.compileRouting(outboundName2Id, bpf, core.ifmgr)
 	if err != nil {
 		return nil, fmt.Errorf("compile routing: %w", err)
@@ -245,6 +241,7 @@ func NewControlPlane(
 	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
 	plane = &ControlPlane{
 		core:                      core,
+		routingGeneration:         bpf.routingGeneration,
 		dnsRelay:                  newDNSRelay(),
 		settings:                  runtimeSettings,
 		mitmClients:               mitmClients,
@@ -256,9 +253,9 @@ func NewControlPlane(
 		outbounds:                 outbounds,
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
-		tcpConnections:            new(tcpConnectionTracker),
+		tcpConnections:            &tcpConnectionTracker{connections: &core.bpf.tcpConnections},
 		udpTaskPool:               newUdpTaskPool[netip.AddrPort](),
-		udpEndpoints:              &DefaultUdpEndpointPool,
+		udpEndpoints:              core.bpf.udpEndpoints,
 		hostReconcileCh:           make(chan struct{}, 1),
 		routingMatcher:            routingMatcher,
 		routingMatcherBuilder:     builder,

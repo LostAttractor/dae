@@ -96,8 +96,8 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 	}
 }
 
-// publishOutboundConnectivity runs during activation, after committing routing
-// rules and before attaching interfaces. Later checks publish directly to BPF.
+// publishOutboundConnectivity initializes the candidate's private map after
+// uploading routing rules. Later checks publish directly to that map.
 func (c *controlPlaneCore) publishOutboundConnectivity() error {
 	c.outboundCallbackMu.Lock()
 	defer c.outboundCallbackMu.Unlock()

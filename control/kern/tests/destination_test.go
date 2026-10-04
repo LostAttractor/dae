@@ -39,7 +39,7 @@ func TestDestinationCaptureDefersRoute(t *testing.T) {
 		}
 		{
 			var result bpftestRoutingResult
-			if err := obj.RoutingTuplesMap.Lookup(key, &result); err != nil {
+			if err := lookupHandoff(obj.RoutingTuplesMap, key, &result); err != nil {
 				t.Fatal(err)
 			}
 			if result.Outbound != uint8(consts.OutboundControlPlaneRouting) || result.Mark != 0 || result.Must != 0 || result.CaptureFlags != 2 {

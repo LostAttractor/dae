@@ -60,13 +60,13 @@ func TestStopAndAbortConnectionsClosesConcurrentSetups(t *testing.T) {
 			<-start
 			if plane.tcpConnections.beginSetup(conn) {
 				plane.tcpConnections.finishSetup()
+			} else {
+				_ = conn.Close() // rejected sockets remain with the admission caller
 			}
 		})
 		wg.Go(func() {
 			<-start
-			if err := plane.StopAndAbortConnections(); err != nil {
-				t.Errorf("StopAndAbortConnections: %v", err)
-			}
+			plane.StopAndAbortConnections()
 		})
 		close(start)
 		wg.Wait()
@@ -82,25 +82,24 @@ func TestStopAndAbortConnectionsClosesConcurrentSetups(t *testing.T) {
 	}
 }
 
-func TestBeginTCPSetupAfterStopClosesConnection(t *testing.T) {
+func TestBeginTCPSetupAfterStopRejectsAdmission(t *testing.T) {
 	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
 	t.Cleanup(func() { _ = plane.retireTraffic() })
-	if err := plane.StopAndAbortConnections(); err != nil {
-		t.Fatal(err)
-	}
+	plane.StopAndAbortConnections()
 	conn := newCloseTrackingConn()
 	if plane.tcpConnections.beginSetup(conn) {
 		t.Fatal("registration succeeded after abort")
 	}
 	select {
 	case <-conn.closed:
+		t.Fatal("tracker took ownership of a rejected connection")
 	default:
-		t.Fatal("rejected connection was not closed")
 	}
+	_ = conn.Close()
 }
 
 func TestTCPConnectionTrackerWaitsForSetups(t *testing.T) {
-	tracker := new(tcpConnectionTracker)
+	tracker := &tcpConnectionTracker{connections: new(tcpConnectionSet)}
 	conn := newCloseTrackingConn()
 	if !tracker.beginSetup(conn) {
 		t.Fatal("registration failed")

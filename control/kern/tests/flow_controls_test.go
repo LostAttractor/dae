@@ -101,7 +101,7 @@ func TestFlowControlsDNSAndCapture(t *testing.T) {
 							t.Fatalf("%s: status=%d err=%v, want=%d", program, status, err, want)
 						}
 						var result bpftestRoutingResult
-						err = obj.RoutingTuplesMap.Lookup(key, &result)
+						err = lookupHandoff(obj.RoutingTuplesMap, key, &result)
 						if !redirect {
 							if !errors.Is(err, ebpf.ErrKeyNotExist) {
 								t.Fatalf("kernel direct retained proxy state: %+v, %v", result, err)

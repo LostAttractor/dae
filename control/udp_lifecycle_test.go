@@ -81,7 +81,7 @@ func TestUDPSourceKeepsRouteUntilFailureAndReusesPort(t *testing.T) {
 			var epoch uint64
 			send := func(dst netip.AddrPort, group uint8) {
 				t.Helper()
-				if err := c.handlePkt(context.Background(), []byte("datagram"), src, dst, &bpfRoutingResult{Outbound: group, Mac: mac, RouteEpoch: epoch}); err != nil {
+				if err := c.handlePkt(context.Background(), []byte("datagram"), src, dst, &routingResult{Outbound: group, Mac: mac, RouteEpoch: epoch}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -173,7 +173,7 @@ func TestUDPDirectFallbackRetainsOriginalGroupPolicy(t *testing.T) {
 	original.SetConnectionPolicy(false, true)
 	c := &ControlPlane{outbounds: []*outbound.DialerGroup{direct, block, original}, noConnectivityOutbound: consts.OutboundDirect}
 	network := *common.NetworkUDP4.NetworkType()
-	route, err := c.RouteDialOption(context.Background(), &RouteParam{routingResult: &bpfRoutingResult{Outbound: 2}, networkType: network, Dest: netip.MustParseAddrPort("192.0.2.1:443")})
+	route, err := c.RouteDialOption(context.Background(), &RouteParam{routingResult: &routingResult{Outbound: 2}, networkType: network, Dest: netip.MustParseAddrPort("192.0.2.1:443")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestUDPDirectFallbackRetainsOriginalGroupPolicy(t *testing.T) {
 		t.Fatalf("fallback policy is not owned by original group")
 	}
 	c.noConnectivityOutbound = consts.OutboundBlock
-	route, err = c.RouteDialOption(context.Background(), &RouteParam{routingResult: &bpfRoutingResult{Outbound: 2}, networkType: network, Dest: netip.MustParseAddrPort("192.0.2.1:443")})
+	route, err = c.RouteDialOption(context.Background(), &RouteParam{routingResult: &routingResult{Outbound: 2}, networkType: network, Dest: netip.MustParseAddrPort("192.0.2.1:443")})
 	if err != nil || route.Outbound != block {
 		t.Fatalf("block fallback = %+v, %v", route, err)
 	}

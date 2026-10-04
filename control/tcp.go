@@ -18,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -28,15 +27,9 @@ const (
 
 // prepareTCPRelay owns connection setup through sniffing, routing, and dialing.
 // A non-nil result transfers connection ownership to tcpRelay.run.
-func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn) (relay *tcpRelay, err error) {
-	// Recover the kernel's routing decision before normalizing the tuple.
-	src := lConn.RemoteAddr().(*net.TCPAddr).AddrPort()
-	dst := lConn.LocalAddr().(*net.TCPAddr).AddrPort()
-	routingResult, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_TCP)
-	if err != nil {
-		_ = lConn.Close()
-		return nil, fmt.Errorf("failed to retrieve target info %v: %w", dst.String(), err)
-	}
+func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn, routingResult *routingResult) (relay *tcpRelay, err error) {
+	// Runtime has consumed the handoff and selected its owning generation.
+	src, dst := lConn.RemoteAddr().(*net.TCPAddr).AddrPort(), lConn.LocalAddr().(*net.TCPAddr).AddrPort()
 	src = common.ConvergeAddrPort(src)
 	dst = common.ConvergeAddrPort(dst)
 	if dst.Port() == 53 && routingResult.Must == 0 {
@@ -188,7 +181,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn)
 	}
 	// Splice only accelerates an already-captured direct connection. Connections
 	// governed by policy or route leases need the userspace abort watcher.
-	if dialOption.Direct && dialOption.PolicyLease == nil && routeLease == nil && c.core.bpf.splice != nil {
+	if dialOption.Direct && dialOption.PolicyLease == nil && routeLease == nil && c.core.bpf.Runtime != nil && c.core.bpf.splice != nil {
 		if _, ok := rConn.(splice.TCPConn); ok {
 			relay.directSplice = c.core.bpf.splice
 		}

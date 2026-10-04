@@ -169,7 +169,7 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 	plane := newAPITestPlane(t, store)
 	plane.closeOnRouteChange, plane.deviceRoutes = true, newTestDeviceRoutes(t)
 	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
-	lease, err := plane.deviceRoutes.acquire(&bpfRoutingResult{Mac: mac})
+	lease, err := plane.deviceRoutes.acquire(&routingResult{Mac: mac})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 	if candidate.outbounds[0].Selection() == selected {
 		t.Fatal("active API mutated an unpublished candidate")
 	}
-	// Activate performs this refresh after the old API's requests are drained.
+	// Runtime.Publish refreshes settings after the old API's requests drain.
 	if err := candidate.restoreRuntimeSettings(true); err != nil {
 		t.Fatal(err)
 	}

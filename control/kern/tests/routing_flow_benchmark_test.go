@@ -73,7 +73,7 @@ func BenchmarkRoutingFlow(b *testing.B) {
 				}
 				b.ReportMetric(float64(runtimeTotal.Nanoseconds())/float64(max(b.N, 1)), "bpf-ns/op")
 				var route bpftestRoutingResult
-				if err := obj.RoutingTuplesMap.Lookup(key, &route); !errors.Is(err, ebpf.ErrKeyNotExist) {
+				if err := lookupHandoff(obj.RoutingTuplesMap, key, &route); !errors.Is(err, ebpf.ErrKeyNotExist) {
 					b.Fatalf("direct benchmark created proxy state: %+v, %v", route, err)
 				}
 			})

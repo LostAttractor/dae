@@ -40,7 +40,7 @@ dip(192.0.2.20) -> block`)
 			plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{
 				downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused),
 			}, core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}, sniffVerifyMode: consts.SniffVerifyMode_None}
-			result := bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, ProfileId: 42, Ifindex: 7, Physinif: 8, Dscp: 46, Mac: [6]byte{2, 0, 0, 0, 0, 1}}
+			result := routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, ProfileId: 42, Ifindex: 7, Physinif: 8, Dscp: 46, Mac: [6]byte{2, 0, 0, 0, 0, 1}}
 			copy(result.Pname[:], "app")
 			original := netip.MustParseAddrPort("192.0.2.20:443")
 			param := &RouteParam{Dest: original, Src: netip.MustParseAddrPort("192.0.2.10:5000"), Domain: "original.example", routingResult: &result,
@@ -96,7 +96,7 @@ dip('2001:db8::20') -> dnat(203.0.113.40)`, "").destinations
 			}
 			original := netip.MustParseAddrPort("192.0.2.20:53")
 			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: original, Domain: test.domain, networkType: common.NetworkType{L4Proto: test.proto, IpVersion: consts.IpVersionStr_4},
-				routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination}}
+				routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination}}
 			option, err := plane.RouteDialOption(context.Background(), p)
 			if err != nil {
 				t.Fatal(err)
@@ -130,7 +130,7 @@ func TestPluginDestinationHTTPPlansKeepRewrittenTarget(t *testing.T) {
 					downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused), downloadTestGroup(t, "proxy", unused),
 				}}
 				original := netip.MustParseAddrPort("192.0.2.20:443")
-				identity := bpfRoutingResult{Mark: 37, Must: 1}
+				identity := routingResult{Mark: 37, Must: 1}
 				option, err := plane.selectRoutedAddress(network, netip.MustParseAddrPort("192.0.2.10:5000"), identity, "original.example", original)
 				if err != nil {
 					t.Fatal(err)
@@ -157,7 +157,7 @@ func TestDestinationCandidateMissStillRoutesOriginalTarget(t *testing.T) {
 	unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })
 	plane := &ControlPlane{routingMatcher: matcher, outbounds: []*outbound.DialerGroup{downloadTestGroup(t, "direct", unused), downloadTestGroup(t, "block", unused)}}
 	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:5000"), Dest: netip.MustParseAddrPort("192.0.2.1:443"), networkType: *common.NetworkTCP4.NetworkType(),
-		routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination}}
+		routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination}}
 	option, err := plane.RouteDialOption(context.Background(), p)
 	if err != nil || option.Outbound.Name != "block" || p.routingResult.Mark != 19 || p.destination.IsValid() {
 		t.Fatalf("candidate miss bypassed routing: option=%+v err=%v", option, err)
@@ -178,13 +178,13 @@ func TestRewrittenTargetDoesNotReenterAPIBypass(t *testing.T) {
 	source, destination := netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort("192.0.2.20:8081")
 	for _, network := range []string{"tcp", "udp"} {
 		t.Run(network, func(t *testing.T) {
-			param := &RouteParam{Src: source, Dest: destination, routingResult: &bpfRoutingResult{CaptureFlags: captureDestination},
+			param := &RouteParam{Src: source, Dest: destination, routingResult: &routingResult{CaptureFlags: captureDestination},
 				networkType: common.NetworkType{L4Proto: consts.L4ProtoStr(network), IpVersion: consts.IpVersionStr_4}}
 			option, err := plane.RouteDialOption(t.Context(), param)
 			if err != nil || option.Outbound.Name != "block" || option.Mark != 73 {
 				t.Fatalf("DNAT target reused API ingress bypass: %+v, %v", option, err)
 			}
-			option, err = plane.selectRoutedAddress(network, source, bpfRoutingResult{}, "", netip.MustParseAddrPort("10.0.0.1:8081"))
+			option, err = plane.selectRoutedAddress(network, source, routingResult{}, "", netip.MustParseAddrPort("10.0.0.1:8081"))
 			if err != nil || option.Outbound.Name != "block" || option.Mark != 73 {
 				t.Fatalf("HTTP target reused API ingress bypass: %+v, %v", option, err)
 			}
@@ -207,7 +207,7 @@ l4proto(udp) && dip(192.0.2.20) -> dnat(198.51.100.2)`, "dip(192.0.2.20) -> bloc
 		{"tcp", consts.L4ProtoType_UDP, "198.51.100.1:443"},
 		{"udp", consts.L4ProtoType_TCP, "198.51.100.2:443"},
 	} {
-		identity := bpfRoutingResult{Protocol: uint8(test.ingress)}
+		identity := routingResult{Protocol: uint8(test.ingress)}
 		option, err := plane.selectRoutedAddress(test.network, netip.MustParseAddrPort("192.0.2.10:5000"), identity, "example.com", netip.MustParseAddrPort("192.0.2.20:443"))
 		if err != nil || option.DialTarget != test.target || identity.Protocol != uint8(test.ingress) {
 			t.Fatalf("%s destination predicate used ingress protocol: %+v, %v", test.network, option, err)

@@ -33,7 +33,7 @@ type DialOption struct {
 // selectRoutedAddress is shared by HTTP targets and internal DNS transports.
 // Match destination transformations once, then flow/routing with the caller's
 // original identity. Daemon requests supply an unspecified source address.
-func (c *ControlPlane) selectRoutedAddress(network string, source netip.AddrPort, identity bpfRoutingResult, domain string, address netip.AddrPort) (*DialOption, error) {
+func (c *ControlPlane) selectRoutedAddress(network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort) (*DialOption, error) {
 	if !source.IsValid() {
 		ip := netip.IPv6Unspecified()
 		if address.Addr().Is4() {

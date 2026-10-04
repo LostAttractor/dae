@@ -74,7 +74,7 @@ domain(full: original.example) -> block`)
 				t.Fatal(err)
 			}
 			option := &DialOption{Outbound: groups[0], Dialer: selected, Direct: true, DialTarget: "192.0.2.20:80", NetworkType: *common.NetworkTCP4.NetworkType()}
-			identity := bpfRoutingResult{ProfileId: 42, Ifindex: 7, Dscp: 46, CaptureFlags: captureHTTP, Mark: 37, Must: 1}
+			identity := routingResult{ProfileId: 42, Ifindex: 7, Dscp: 46, CaptureFlags: captureHTTP, Mark: 37, Must: 1}
 			copy(identity.Pname[:], "app")
 			planner := plane.mitmUpstreamPlanner("tcp", "original.example", netip.MustParseAddrPort("192.0.2.10:5000"), netip.MustParseAddrPort(option.DialTarget), identity, option)
 			if test.deferred {

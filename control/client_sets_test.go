@@ -48,7 +48,7 @@ func TestClientExportAPIAndReload(t *testing.T) {
 	if err := plane.syncClientExports(); err != nil {
 		t.Fatal(err)
 	}
-	plane.kernelActive = true
+	plane.kernelReady = true
 	handler := plane.apiHandler("test", testClientMAC)
 	check := func(want [][6]byte) {
 		t.Helper()
@@ -133,7 +133,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	plane.kernelActive = true
+	plane.kernelReady = true
 
 	check := func() {
 		t.Helper()

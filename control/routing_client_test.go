@@ -178,6 +178,10 @@ func attachClientKernelMaps(t *testing.T, b *RoutingMatcherBuilder) *ebpf.Map {
 	}
 	t.Cleanup(func() { _ = outer.Close() })
 	b.bpf = &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{UnusedLpmType: template, LpmArrayMap: outer}}}
+	// kernelReady updates require the initial private projection to exist.
+	if err := b.uploadLPMTries(); err != nil {
+		t.Fatal(err)
+	}
 	return outer
 }
 
@@ -212,7 +216,7 @@ func TestClientMembershipSwapsKernelMap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plane := &ControlPlane{settings: store, routingMatcherBuilder: b, routingMatcher: m, kernelActive: true}
+	plane := &ControlPlane{settings: store, routingMatcherBuilder: b, routingMatcher: m, kernelReady: true}
 	if err := os.WriteFile(path, []byte(`{"selectors":{},"clients":{"gaming":["02:01:02:03:04:05"]},"mitm":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}

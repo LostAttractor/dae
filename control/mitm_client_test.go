@@ -93,7 +93,7 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	}
 	selected := func(plane *ControlPlane, sourceMAC [6]byte) bool {
 		return plane.mitmMode("example.test", netip.AddrPortFrom(ip, 44300), netip.MustParseAddrPort("198.51.100.1:443"),
-			&bpfRoutingResult{Mac: sourceMAC}) != mitm.HTTPBypass
+			&routingResult{Mac: sourceMAC}) != mitm.HTTPBypass
 	}
 	// The production resolver must reject every device endpoint when no LAN is
 	// configured, even if the caller knows the CA fingerprint.

@@ -67,7 +67,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			send := func() {
 				t.Helper()
-				result := &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: profileID}
+				result := &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureDestination, Ifindex: 7, ProfileId: profileID}
 				if err := plane.handlePkt(t.Context(), []byte("payload"), source, original, result); err != nil {
 					t.Fatal(err)
 				}

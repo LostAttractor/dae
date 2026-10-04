@@ -23,7 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../headers -I.
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../headers -I.
 
 type testDaeParam struct {
 	ControlPlanePid      uint32
@@ -86,7 +86,7 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 		return nil, err
 	}
 	// Kernel tests must not reuse or replace the daemon's persistent routing state.
-	spec.Maps["routing_tuples_map"].Pinning = ebpf.PinNone
+	spec.Maps["tcp_flow_map"].Pinning = ebpf.PinNone
 	if err := spec.LoadAndAssign(obj,
 		&ebpf.CollectionOptions{
 			Maps: ebpf.MapOptions{

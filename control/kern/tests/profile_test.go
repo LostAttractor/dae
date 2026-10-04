@@ -137,6 +137,11 @@ func TestNamedDefaultPolicySwitch(t *testing.T) {
 				{"missing default fails closed", 99999, 0, 0, 0},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
+					if network.protocol == 6 {
+						if err := obj.RoutingTuplesMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+							t.Fatal(err)
+						}
+					}
 					if err := obj.DefaultRoutingProfile.Set(tc.defaultID); err != nil {
 						t.Fatal(err)
 					}
@@ -168,7 +173,7 @@ func TestNamedDefaultPolicySwitch(t *testing.T) {
 						return
 					}
 					var result bpftestRoutingResult
-					if err := obj.RoutingTuplesMap.Lookup(key, &result); err != nil {
+					if err := lookupHandoff(obj.RoutingTuplesMap, key, &result); err != nil {
 						t.Fatal(err)
 					}
 					if result.ProfileId != wantID || result.Mark != 0 || result.Outbound != uint8(consts.OutboundControlPlaneRouting) {

@@ -191,13 +191,16 @@ func TestBigTCPRouting(t *testing.T) {
 						}
 					}
 					var route bpftestRoutingResult
-					err := obj.RoutingTuplesMap.Lookup(key, &route)
-					if tc.capture || tc.mark != 0 {
+					err := lookupHandoff(obj.RoutingTuplesMap, key, &route)
+					if tc.capture {
 						if err != nil || route.Outbound != tc.outbound || route.Mark != tc.mark || route.Must != tc.must || (route.CaptureFlags != 0) != tc.capture {
 							t.Fatalf("lost routing metadata: %+v, %v", route, err)
 						}
 					} else if !errors.Is(err, ebpf.ErrKeyNotExist) {
 						t.Fatalf("direct traffic created handoff state: %+v, %v", route, err)
+					}
+					if !tc.capture {
+						assertDirectTCPFlow(t, obj, key, tc.mark)
 					}
 				}
 				if tc.port == 9080 {

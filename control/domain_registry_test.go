@@ -370,14 +370,18 @@ func TestDomainRegistryUnboundedUserspace(t *testing.T) {
 	checkInvariants(t, g, fake)
 }
 
-func TestDomainRegistryAdoptionAndActivityHandoff(t *testing.T) {
+func TestDomainRegistryForkAndActivityHandoff(t *testing.T) {
 	now := time.Now()
-	old, fake := newTestRegistry(1, time.Minute)
+	old, oldFake := newTestRegistry(1, time.Minute)
 	ip := netip.MustParseAddr("192.0.2.1")
 	name := "example.com."
 	old.Upsert(name, ip, testBitmap(0), 1, now)
 	activity := old.activity
-	activity.prepareHandoff()
+	next, fake := newTestRegistry(1, time.Minute)
+	next.ForkFrom(old, func(string) []uint32 { return testBitmap(2) }, now)
+	if !bitmapHas(oldFake.routing[ip], 0) || bitmapHas(oldFake.routing[ip], 2) {
+		t.Fatal("fork rewrote the old kernel projection")
+	}
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -386,9 +390,7 @@ func TestDomainRegistryAdoptionAndActivityHandoff(t *testing.T) {
 	if !old.retention(name, ip).Equal(now.Add(time.Minute)) {
 		t.Fatal("retired registry was mutated")
 	}
-	next, _ := newTestRegistry(1, time.Minute)
-	next.kernel.update, next.kernel.remove = fake.update, fake.remove
-	next.AdoptFrom(old, func(string) []uint32 { return testBitmap(2) }, now.Add(120*time.Second))
+	next.Sweep(now.Add(120 * time.Second))
 	if !next.retention(name, ip).Equal(now.Add(160*time.Second)) || !bitmapHas(fake.routing[ip], 2) || bitmapHas(fake.bump[ip], 0) {
 		t.Fatal("handoff lost evidence, deadlines or bitmap recomputation")
 	}
@@ -595,10 +597,6 @@ func TestDomainIndexesAndProjectionUnderChurn(t *testing.T) {
 					// New rule bitmaps and a new window, with queued observations
 					// replayed into fresh pair objects before collection.
 					activity := g.activity
-					activity.prepareHandoff()
-					if err := g.Close(); err != nil {
-						t.Fatal(err)
-					}
 					activity.observe(ip, "", now)
 					for i, name := range names {
 						bitmaps[name] = testBitmap((i + step/128) % 8)
@@ -606,10 +604,12 @@ func TestDomainIndexesAndProjectionUnderChurn(t *testing.T) {
 							bitmaps[name] = testBitmap()
 						}
 					}
-					next, _ := newTestRegistry(capacity, time.Duration(2+step/128)*time.Second)
-					next.kernel.update, next.kernel.remove = fake.update, fake.remove
-					next.AdoptFrom(g, match, now)
-					g = next
+					next, nextFake := newTestRegistry(capacity, time.Duration(2+step/128)*time.Second)
+					next.ForkFrom(g, match, now)
+					if err := g.Close(); err != nil {
+						t.Fatal(err)
+					}
+					g, fake = next, nextFake
 					checkInvariants(t, g, fake)
 				}
 			}

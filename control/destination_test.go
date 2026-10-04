@@ -52,7 +52,7 @@ func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 			param := &RouteParam{
 				Src: src, Dest: dst,
 				networkType:   common.NetworkType{L4Proto: test.proto, IpVersion: consts.IpVersionStr_4},
-				routingResult: &bpfRoutingResult{Outbound: map[string]uint8{"direct": 0, "block": 1, "proxy": 2}[test.route], Mark: 37, Must: 1, CaptureFlags: captureDestination},
+				routingResult: &routingResult{Outbound: map[string]uint8{"direct": 0, "block": 1, "proxy": 2}[test.route], Mark: 37, Must: 1, CaptureFlags: captureDestination},
 			}
 			option, err := plane.RouteDialOption(context.Background(), param)
 			if err != nil {
@@ -78,7 +78,7 @@ func TestDestinationRewriteUsesFallbackPolicy(t *testing.T) {
 
 	for _, fallback := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
 		plane.noConnectivityOutbound = fallback
-		option, err := plane.RouteDialOption(context.Background(), &RouteParam{Src: netip.MustParseAddrPort("192.0.2.5:12345"), Dest: dst, routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundUserDefinedMin)}, networkType: *common.NetworkTCP4.NetworkType()})
+		option, err := plane.RouteDialOption(context.Background(), &RouteParam{Src: netip.MustParseAddrPort("192.0.2.5:12345"), Dest: dst, routingResult: &routingResult{Outbound: uint8(consts.OutboundUserDefinedMin)}, networkType: *common.NetworkTCP4.NetworkType()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +104,7 @@ dip(192.0.2.1) -> block`)
 	for _, retained := range []bool{false, true} {
 		src, dst := netip.MustParseAddrPort("192.0.2.10:12345"), netip.MustParseAddrPort("192.0.2.1:443")
 		want := netip.MustParseAddrPort("[2001:db8::1]:443")
-		p := &RouteParam{Src: src, Dest: dst, routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)}, networkType: *common.NetworkTCP4.NetworkType()}
+		p := &RouteParam{Src: src, Dest: dst, routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting)}, networkType: *common.NetworkTCP4.NetworkType()}
 		if retained {
 			want = netip.MustParseAddrPort("[2001:db8::2]:443")
 			p.destination = want
@@ -194,7 +194,7 @@ func TestDestinationUDPReplyIsolation(t *testing.T) {
 	}
 	matcher, _ := destinationTestMatcher(t, "dip(91.108.56.100, 91.108.56.101) -> dnat("+target.Addr().String()+")")
 	endpoint.destinationMatcher = matcher.snapshotDestinations()
-	endpoint.destinationParam = RouteParam{Src: source, routingResult: &bpfRoutingResult{}, networkType: *common.NetworkUDP4.NetworkType()}
+	endpoint.destinationParam = RouteParam{Src: source, routingResult: &routingResult{}, networkType: *common.NetworkUDP4.NetworkType()}
 	endpoint.destinations = make(map[netip.AddrPort]netip.AddrPort)
 
 	pool.add(source, endpoint)

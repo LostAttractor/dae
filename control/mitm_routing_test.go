@@ -84,7 +84,7 @@ func TestMITMKernelRoutingReconstruction(t *testing.T) {
 	}
 }
 
-func routingMatcherForTest(t *testing.T, rules preparedRules) (*RoutingMatcher, *RoutingMatcherBuilder) {
+func routingMatcherForTest(t testing.TB, rules preparedRules) (*RoutingMatcher, *RoutingMatcherBuilder) {
 	t.Helper()
 	builder, err := compileTestRouting(rules, map[string]uint8{
 		"direct": uint8(consts.OutboundDirect), "block": uint8(consts.OutboundBlock),
@@ -277,7 +277,7 @@ func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
 	plane.markedDirectDialers.Store(uint32(37), unused)
 	for _, out := range []consts.OutboundIndex{consts.OutboundDirect, consts.OutboundBlock} {
 		for _, host := range []string{"", "different.example"} {
-			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), Domain: host, networkType: *common.NetworkTCP4.NetworkType(), routingResult: &bpfRoutingResult{Outbound: uint8(out), Mark: 37, Must: 1, CaptureFlags: captureHTTP}}
+			p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), Domain: host, networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{Outbound: uint8(out), Mark: 37, Must: 1, CaptureFlags: captureHTTP}}
 			got, err := plane.RouteDialOption(context.Background(), p)
 			if err != nil {
 				t.Fatal(err)
@@ -288,7 +288,7 @@ func TestMITMCaptureRetainsKernelRoute(t *testing.T) {
 		}
 	}
 	plane.sniffVerifyMode = consts.SniffVerifyMode_Strict
-	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), networkType: *common.NetworkTCP4.NetworkType(), routingResult: &bpfRoutingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureHTTP}}
+	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.1:12345"), Dest: netip.MustParseAddrPort("192.0.2.2:443"), networkType: *common.NetworkTCP4.NetworkType(), routingResult: &routingResult{Outbound: uint8(consts.OutboundControlPlaneRouting), CaptureFlags: captureHTTP}}
 	if _, err := plane.RouteDialOption(context.Background(), p); err == nil {
 		t.Fatal("ambiguous kernel route accepted without a trusted domain")
 	}
@@ -385,7 +385,7 @@ func TestMITMDialPreservesTargetForEquivalentAuthorities(t *testing.T) {
 				return
 			} // New authorities are covered by request-routing tests.
 			option := &DialOption{Dialer: d, DialTarget: target, Outbound: &outbound.DialerGroup{Name: "proxy"}, NetworkType: *common.NetworkTCP6.NetworkType()}
-			planner := (&ControlPlane{}).mitmUpstreamPlanner("tcp", test.host, netip.AddrPort{}, netip.MustParseAddrPort("[2001:db8::1]:443"), bpfRoutingResult{}, option)
+			planner := (&ControlPlane{}).mitmUpstreamPlanner("tcp", test.host, netip.AddrPort{}, netip.MustParseAddrPort("[2001:db8::1]:443"), routingResult{}, option)
 			request, err := http.NewRequestWithContext(t.Context(), "GET", "https://"+test.requested+"/", nil)
 			if err != nil {
 				t.Fatal(err)

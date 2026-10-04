@@ -13,14 +13,12 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-	"sync"
 	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/outbound/pool"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
@@ -48,153 +46,87 @@ type Listener struct {
 	packetConn  net.PacketConn
 }
 
-// controlPlaneIngress owns only the duplicated descriptors used by one plane.
-// The original Listener remains open across reloads so packets can queue for
-// the successor after these descriptors are closed.
-type controlPlaneIngress struct {
-	tcp, udp ingressSockets
-	loops    sync.WaitGroup
+func registerListener(m *ebpf.Map, key uint32, conn syscall.Conn) error {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var updateErr error
+	err = raw.Control(func(fd uintptr) { updateErr = m.Update(key, uint64(fd), ebpf.UpdateAny) })
+	return errors.Join(err, updateErr)
 }
 
-type ingressSockets struct {
-	closeOnce  sync.Once
-	closeErr   error
-	closeFuncs []func() error
-}
-
-func (i *controlPlaneIngress) close() error {
-	return errors.Join(i.tcp.close(), i.udp.close())
-}
-
-func (i *ingressSockets) close() error {
-	i.closeOnce.Do(func() {
-		var errs []error
-		for j := len(i.closeFuncs) - 1; j >= 0; j-- {
-			if err := i.closeFuncs[j](); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		i.closeErr = errors.Join(errs...)
-	})
-	return i.closeErr
-}
-
-func (c *ControlPlane) openIngress(listener *Listener) (tcpListener net.Listener, serveUdpConn *net.UDPConn, ingress *controlPlaneIngress, err error) {
-	c.ingressMu.Lock()
-	defer c.ingressMu.Unlock()
-	if c.ingressRetired {
-		return nil, nil, nil, net.ErrClosed
+func (r *Runtime) openIngress(listener *Listener) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	select {
+	case <-r.done:
+		return net.ErrClosed
+	default:
 	}
-	if c.ingress != nil {
-		return nil, nil, nil, errors.New("control plane ingress is already open")
+	if r.listener != nil {
+		return errors.New("runtime ingress is already open")
 	}
-
-	ingress = new(controlPlaneIngress)
-	ownedIngress := ingress
-	defer func() {
-		if err != nil {
-			_ = ownedIngress.close()
-		}
-	}()
-
-	tcpFile, err := listener.tcpListener.(*net.TCPListener).File()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to retrieve copy of the underlying TCP connection file")
+	if err := registerListener(r.shared["listen_socket_map"], 0, listener.tcpListener.(syscall.Conn)); err != nil {
+		return fmt.Errorf("register TCP listener: %w", err)
 	}
-	ingress.tcp.closeFuncs = append(ingress.tcp.closeFuncs, tcpFile.Close)
-	if err = c.core.bpf.ListenSocketMap.Update(uint32(0), uint64(tcpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to register the TCP listener: %w", err)
+	if err := registerListener(r.shared["listen_socket_map"], 1, listener.packetConn.(syscall.Conn)); err != nil {
+		return fmt.Errorf("register UDP listener: %w", err)
 	}
-	tcpListener, err = net.FileListener(tcpFile)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to duplicate the TCP listener: %w", err)
-	}
-	ingress.tcp.closeFuncs = append(ingress.tcp.closeFuncs, tcpListener.Close)
-
-	udpFile, err := listener.packetConn.(*net.UDPConn).File()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to retrieve copy of the underlying UDP connection file")
-	}
-	ingress.udp.closeFuncs = append(ingress.udp.closeFuncs, udpFile.Close)
-	if err = c.core.bpf.ListenSocketMap.Update(uint32(1), uint64(udpFile.Fd()), ebpf.UpdateAny); err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to register the UDP listener: %w", err)
-	}
-	udpPacketConn, err := net.FilePacketConn(udpFile)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to duplicate the UDP socket: %w", err)
-	}
-	ingress.udp.closeFuncs = append(ingress.udp.closeFuncs, udpPacketConn.Close)
-	serveUdpConn = udpPacketConn.(*net.UDPConn)
 
 	// Register both loops before publishing ingress. Close may run as soon as
 	// this function unlocks and must not race a zero-count Wait with Add.
-	ingress.loops.Add(2)
-	c.ingress = ingress
-	return tcpListener, serveUdpConn, ingress, nil
-}
-
-func (c *ControlPlane) closeIngress() (*controlPlaneIngress, error) {
-	return c.retireIngress(false)
-}
-
-func (c *ControlPlane) retireIngress(keepUDP bool) (*controlPlaneIngress, error) {
-	c.ingressMu.Lock()
-	c.ingressRetired = true
-	c.udpDraining.Store(true)
-	ingress := c.ingress
-	c.ingressMu.Unlock()
-	if ingress == nil {
-		return nil, nil
-	}
-	if keepUDP {
-		return ingress, ingress.tcp.close()
-	}
-	return ingress, ingress.close()
+	r.ingress.Add(2)
+	r.listener = listener
+	return nil
 }
 
 func (l *Listener) Close() error {
-	var (
-		err  error
-		err2 error
-	)
-	if err, err2 = l.tcpListener.Close(), l.packetConn.Close(); err2 != nil {
-		if err == nil {
-			err = err2
-		} else {
-			err = fmt.Errorf("%w: %v", err, err2)
-		}
-	}
-	return err
+	return errors.Join(l.tcpListener.Close(), l.packetConn.Close())
 }
 
-func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err error) {
+// Admission and retirement share mu. The handoff is consumed exactly once;
+// its outbound IDs are interpreted only by the configuration that produced it.
+func (r *Runtime) admitTCP(conn net.Conn) (*ControlPlane, *routingResult) {
+	src, dst := conn.RemoteAddr().(*net.TCPAddr).AddrPort(), conn.LocalAddr().(*net.TCPAddr).AddrPort()
+	result, err := retrieveRoutingResult(r.shared["routing_tuples_map"], src, dst, unix.IPPROTO_TCP)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		if c := r.planes[result.Generation]; c != nil && c.tcpConnections.beginSetup(conn) {
+			return c, result
+		}
+	}
+	setTCPResetOnClose(conn)
+	_ = conn.Close()
+	return nil, nil
+}
+
+func (r *Runtime) Serve(readyChan chan<- bool, listener *Listener) (err error) {
 	sentReady := false
 	defer func() {
 		if !sentReady {
 			readyChan <- false
 		}
 	}()
-	// Serve on duplicates of the shared listener sockets. Retirement stops TCP
-	// acceptance first; UDP delivery remains available for QUIC shutdown.
-	tcpListener, serveUdpConn, ingress, err := c.openIngress(listener)
-	if err != nil {
+	if err := r.openIngress(listener); err != nil {
 		return err
 	}
+	tcpListener, serveUdpConn := listener.tcpListener, listener.packetConn.(*net.UDPConn)
 
 	ingressErrors := make(chan error, 2)
 	reportIngressError := func(err error) {
-		c.ingressMu.Lock()
-		retired := c.ingressRetired
-		c.ingressMu.Unlock()
-		if !retired && c.ctx.Err() == nil {
+		select {
+		case <-r.done:
+		default:
 			ingressErrors <- err
 		}
 	}
 	go func() {
-		defer ingress.loops.Done()
+		defer r.ingress.Done()
 		for {
 			select {
-			case <-c.ctx.Done():
+			case <-r.done:
 				return
 			default:
 			}
@@ -203,21 +135,22 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 				reportIngressError(fmt.Errorf("accept TCP connection: %w", err))
 				return
 			}
-			if !c.tcpConnections.beginSetup(lconn) {
+			c, result := r.admitTCP(lconn)
+			if c == nil {
 				continue
 			}
-			go serveTCPConnection(c, lconn, c.tcpSetupCtx, c.tcpConnections)
+			go serveTCPConnection(c, lconn, c.tcpSetupCtx, c.tcpConnections, result)
 		}
 	}()
 	go func() {
-		defer ingress.loops.Done()
+		defer r.ingress.Done()
 		buf := pool.GetBuffer(udpReceiveBufferSize)
 		oob := pool.GetBuffer(120)
 		defer pool.PutBuffer(buf)
 		defer pool.PutBuffer(oob)
 		for {
 			select {
-			case <-c.ctx.Done():
+			case <-r.done:
 				return
 			default:
 			}
@@ -230,41 +163,52 @@ func (c *ControlPlane) Serve(readyChan chan<- bool, listener *Listener) (err err
 
 			src = common.ConvergeAddrPort(src)
 			dst = common.ConvergeAddrPort(dst)
-			if c.udpDraining.Load() {
-				// No DNS work, sniffing, routing decisions or new associations
-				// during retirement. Existing QUIC sessions still need client
-				// ACKs and stream data to complete graceful shutdown.
-				if result, err := c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP); err == nil {
-					c.udpEndpoints.deliverMITM(src, dst, result.Ifindex, buf[:n])
-				}
-				continue
-			}
-
 			// Snapshot the first packet before another packet replaces the handoff.
 			// Existing sources already own their route.
-			var routingResult *bpfRoutingResult
-			if _, exists := c.udpEndpoints.pool.Load(src); !exists || dst.Port() == 53 {
-				routingResult, err = c.core.RetrieveRoutingResult(src, dst, unix.IPPROTO_UDP)
+			var routingResult *routingResult
+			endpoint, exists := r.udpEndpoints.pool.Load(src)
+			var owner *ControlPlane
+			if exists {
+				owner = endpoint.(*UdpEndpoint).setupOwner.Load()
+			}
+			if !exists || dst.Port() == 53 {
+				routingResult, err = retrieveRoutingResult(r.shared["routing_tuples_map"], src, dst, unix.IPPROTO_UDP)
 				if err != nil {
-					log.WithError(err).WithFields(log.Fields{"source": src, "destination": dst}).Debug("UDP routing handoff failed")
 					continue
 				}
 			}
-
-			c.enqueueUDPPacket(buf[:n], src, dst, routingResult)
+			r.mu.Lock()
+			c := r.current
+			if owner != nil {
+				c = r.planes[owner.routingGeneration]
+			}
+			if routingResult != nil {
+				c = r.planes[routingResult.Generation]
+			}
+			if c != nil && c.udpDraining.Load() && exists {
+				r.mu.Unlock()
+				r.udpEndpoints.deliverMITM(src, dst, endpoint.(*UdpEndpoint).firstIfindex, buf[:n])
+				continue
+			}
+			if c != nil {
+				c.enqueueUDPPacket(buf[:n], src, dst, routingResult)
+			}
+			r.mu.Unlock()
 		}
 	}()
 	sentReady = true
 	readyChan <- true
 	select {
 	case err := <-ingressErrors:
-		return errors.Join(err, c.retireTraffic())
-	case <-c.ctx.Done():
+		return err
+	case err := <-r.errors:
+		return err
+	case <-r.done:
 		return nil
 	}
 }
 
-func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
+func (r *Runtime) ListenAndServe(readyChan chan<- bool, port uint16) (listener *Listener, err error) {
 	// Listen.
 	var listenConfig = net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
@@ -292,7 +236,7 @@ func (c *ControlPlane) ListenAndServe(readyChan chan<- bool, port uint16) (liste
 	}()
 
 	// Serve
-	if err = c.Serve(readyChan, listener); err != nil {
+	if err = r.Serve(readyChan, listener); err != nil {
 		return nil, fmt.Errorf("failed to serve: %w", err)
 	}
 

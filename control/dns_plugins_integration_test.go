@@ -83,7 +83,7 @@ func TestDNSCacheEvidenceBoundary(t *testing.T) {
 				message := q.MessageCopy()
 				message.Id++
 				q.DNSPacket = plugin.DNSMessage(message)
-				if err := c.processDNS(t.Context(), q, bpfRoutingResult{}, false, terminal, func([]byte) error { return nil }); err != nil {
+				if err := c.processDNS(t.Context(), q, routingResult{}, false, terminal, func([]byte) error { return nil }); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -135,7 +135,7 @@ func TestDNSPreferenceProbeLeavesDeliveryBudget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
 	defer cancel()
 	delivered := false
-	err := c.processDNS(ctx, q, bpfRoutingResult{}, false, relayDNSUDP, func(wire []byte) error {
+	err := c.processDNS(ctx, q, routingResult{}, false, relayDNSUDP, func(wire []byte) error {
 		m := unpackDNSMessage(wire)
 		if !dnsResponseMatches(q.MessageCopy(), m) || len(m.Answer) != 1 {
 			t.Fatal("requested answer changed")
@@ -164,12 +164,12 @@ func TestDNSRouterEndpointHostnameEnforcesBlock(t *testing.T) {
 		}
 		c := &ControlPlane{outbounds: []*outbound.DialerGroup{direct, block}, routingMatcher: matcher, core: &controlPlaneCore{domainRegistry: registry}}
 		source := netip.MustParseAddrPort("192.0.2.1:2345")
-		outbound, _, _, err := c.Route(source, target, "dns.example", consts.L4ProtoType_UDP, &bpfRoutingResult{})
+		outbound, _, _, err := c.Route(source, target, "dns.example", consts.L4ProtoType_UDP, &routingResult{})
 		if err != nil || outbound != consts.OutboundBlock {
 			t.Fatalf("fixture route: %v %v", outbound, err)
 		}
 		for _, scheme := range []policy.UpstreamScheme{policy.UpstreamScheme_UDP, policy.UpstreamScheme_TCP} {
-			q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "test.example.", 1)), "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: 8})
+			q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "test.example.", 1)), "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: 8})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -228,7 +228,7 @@ func TestDNSPreferenceTCPCancellationPreservesClientStream(t *testing.T) {
 	go func() {
 		defer close(done)
 		defer accepted.Close()
-		_ = c.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:2345"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: 8})
+		_ = c.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:2345"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: 8})
 	}()
 	t.Cleanup(func() { client.Close(); c.dnsRelay.Close(); <-done })
 	_ = client.SetDeadline(time.Now().Add(3 * time.Second))

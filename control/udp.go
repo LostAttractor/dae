@@ -124,7 +124,7 @@ func writePacket(ctx context.Context, conn net.PacketConn, data []byte, dst net.
 
 // enqueueUDPPacket borrows data only until emit returns. Queued packets retain
 // an absolute deadline, but allocate their context/timer only when dispatched.
-func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, routingResult *bpfRoutingResult) {
+func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, routingResult *routingResult) {
 	deadline := time.Now().Add(consts.DefaultDialTimeout)
 	c.udpTaskPool.emit(src, data, func(owned []byte) udpTask {
 		return func() {
@@ -142,7 +142,7 @@ func (c *ControlPlane) enqueueUDPPacket(data []byte, src, dst netip.AddrPort, ro
 
 // handlePkt serializes the complete source lifetime, including sniffing and
 // setup. An endpoint's first routing result never changes while it is in the pool.
-func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, routingResult *bpfRoutingResult) (err error) {
+func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst netip.AddrPort, routingResult *routingResult) (err error) {
 	if dst.Port() == 53 && routingResult != nil && routingResult.Must == 0 {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -158,6 +158,14 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		return err
 	}
 	ue, exists := p.Get(src)
+	if exists && ue.conn == nil {
+		if owner := ue.setupOwner.Load(); owner != nil && owner != c {
+			// A packet can queue before a predecessor publishes its endpoint.
+			// Keep initialization (and the worker drain) in the owning generation.
+			owner.enqueueUDPPacket(data, src, dst, nil)
+			return nil
+		}
+	}
 	if !exists || ue.conn == nil {
 		if c.udpSetups.Add(1) > maxConcurrentUDPSetups {
 			c.udpSetups.Add(-1)
@@ -182,6 +190,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		}
 		mark := c.soMarkFromDae
 		ue = &UdpEndpoint{
+			generation:   c.routingGeneration,
 			activity:     c.domainActivity(),
 			routeLease:   routeLease,
 			pending:      &udpSetup{routingResult: routingResult, sniffer: sniffing.NewPacketSniffer(nil)},
@@ -193,6 +202,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 				return sendPktWithMark(data, from, src, mark)
 			},
 		}
+		ue.setupOwner.Store(c)
 		p.addLocked(src, ue)
 		ue.stopWatching = append(ue.stopWatching, watchAbort(nil, nil, routeLease, func() {
 			p.removeInBackground(src, ue)
@@ -203,6 +213,7 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		return cause
 	}
 	if ue.conn != nil {
+		ue.setupOwner.Store(nil)
 		return c.writeUDP(ctx, ue, src, dst, data)
 	}
 
@@ -212,6 +223,11 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 // initializeUDP runs under the source lock until the first route is installed.
 // Later packets enter writeUDP directly, without routing or sniffing again.
 func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, dst netip.AddrPort, data []byte) (err error) {
+	defer func() {
+		if ue.conn != nil {
+			ue.setupOwner.Store(nil)
+		}
+	}()
 	p := c.udpEndpoints
 	pending := ue.pending
 	observedAt := time.Now()

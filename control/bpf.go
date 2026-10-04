@@ -12,39 +12,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/features"
-	"github.com/daeuniverse/dae/control/internal/splice"
 	log "github.com/sirupsen/logrus"
 )
 
-// BPFState keeps reload-persistent process metadata with the shared BPF
-// objects. During reload, cleanup ownership is released by the old core and
-// acquired later by the successor while this state remains alive.
+// BPFState is one configuration generation. Its programs reference private
+// routing maps and Runtime-owned connection maps. Closing it never closes traffic.
 type BPFState struct {
 	*bpfObjects
-	deviceRoutes               *deviceRoutes
-	splice                     *splice.Runtime
-	soMarkFromDae              uint32
-	routingProfileIDs          routingProfileIDAllocator
+	*Runtime
+	routingGeneration          uint32
+	closeOnce                  sync.Once
+	closeErr                   error
 	routingRegistrationCancels []func()
-
-	// activeLpmTrieCount is the LPM trie count from the last BuildKernspace
-	// that committed successfully. BuildKernspace advances it only after its
-	// writes complete; any activation failure is terminal because kernel state
-	// may be partially written.
-	activeLpmTrieCount uint32
 }
 
 func (b *BPFState) Close() error {
-	b.clearRoutingRegistrations()
-	var spliceErr error
-	if b.splice != nil {
-		spliceErr = b.splice.Close()
-	}
-	return errors.Join(spliceErr, b.bpfObjects.Close())
+	b.closeOnce.Do(func() {
+		b.clearRoutingRegistrations()
+		b.closeErr = b.bpfObjects.Close()
+	})
+	return b.closeErr
 }
 
 // detectCgroupPath returns the first-found cgroup2 mount point.

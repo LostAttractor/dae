@@ -124,15 +124,29 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 							if capture || bump {
 								want = 7 // TC_ACT_REDIRECT
 							}
-							status, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), Repeat: 1})
+							output := make([]byte, 256)
+							status, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: output, Repeat: 1})
 							if err != nil || status != want {
 								t.Fatalf("%s laterMust=%v: verdict=%d err=%v, want=%d", name, laterMust, status, err, want)
 							}
-							var result bpfRoutingResult
-							err = collection.Maps["routing_tuples_map"].Lookup(key, &result)
-							if destination.Port() == 22 || apiBypass || proto == consts.L4ProtoType_UDP && !capture && !bump {
+							var result routingResult
+							err = lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result.bpfRoutingResult)
+							if !capture && !bump {
 								if !errors.Is(err, ebpf.ErrKeyNotExist) {
 									t.Fatalf("kernel direct retained proxy state: %+v, %v", result, err)
+								}
+								mark := uint32(37)
+								if destination.Port() == 22 || apiBypass {
+									mark = 0
+								}
+								if got := binary.NativeEndian.Uint32(output[8:12]); got != mark {
+									t.Fatalf("kernel-direct mark=%d, want %d", got, mark)
+								}
+								if proto == consts.L4ProtoType_TCP && mark != 0 {
+									var flow bpfTcpFlowState
+									if err := collection.Maps["tcp_flow_map"].Lookup(key, &flow); err != nil || flow.Proxy != 0 || flow.Mark != mark {
+										t.Fatalf("direct flow=%+v, %v", flow, err)
+									}
 								}
 								continue
 							}

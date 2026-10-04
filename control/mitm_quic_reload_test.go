@@ -134,7 +134,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			option := &DialOption{Dialer: d, DialTarget: upstreamPackets.LocalAddr().String(), Outbound: &outbound.DialerGroup{Name: "direct"}, NetworkType: *common.NetworkUDP4.NetworkType()}
-			param := &RouteParam{Src: src, Dest: dst, Domain: "video.example", routingResult: &bpfRoutingResult{}}
+			param := &RouteParam{Src: src, Dest: dst, Domain: "video.example", routingResult: &routingResult{}}
 			bridge := plane.newMITMQUIC(param, plane.mitmUpstreamPlanner("udp", param.Domain, src, dst, *param.routingResult, option), retained, nil)
 			key := src
 			endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute, Handler: func(data []byte, _ netip.AddrPort) error {
@@ -150,11 +150,21 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			t.Cleanup(func() { _ = endpoint.Close(); <-endpointDone })
 			routeKey := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_UDP}
 			routeKey.Sip.U6Addr8, routeKey.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
-			if err := maps["routing_tuples_map"].Update(routeKey, bpfRoutingResult{Ifindex: 7, CaptureFlags: captureHTTP}, ebpf.UpdateAny); err != nil {
+			if err := maps["routing_tuples_map"].Update(routeKey, testRoutingHandoff(t, bpfRoutingResult{Ifindex: 7, CaptureFlags: captureHTTP}), ebpf.UpdateAny); err != nil {
 				t.Fatal(err)
 			}
 			ready, served := make(chan bool, 1), make(chan error, 1)
-			go func() { served <- plane.Serve(ready, &Listener{tcpListener: tcp, packetConn: packets}) }()
+			datapath := NewRuntime()
+			datapath.current, datapath.planes[0], datapath.udpEndpoints = plane, plane, plane.udpEndpoints
+			plane.core.bpf.Runtime = datapath
+			for _, name := range []string{"listen_socket_map", "routing_tuples_map"} {
+				datapath.shared[name], err = maps[name].Clone()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { _ = datapath.Close() })
+			go func() { served <- datapath.Serve(ready, &Listener{tcpListener: tcp, packetConn: packets}) }()
 			if !<-ready {
 				t.Fatalf("ingress failed: %v", <-served)
 			}
@@ -201,9 +211,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 				}
 			}
 			if scenario == "abort" {
-				if err := plane.StopAndAbortConnections(); err != nil {
-					t.Fatal(err)
-				}
+				plane.StopAndAbortConnections()
 			}
 			closed := make(chan error, 1)
 			go func() { closed <- plane.Close() }()
@@ -245,6 +253,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 					t.Fatal("forced retirement left the client waiting")
 				}
 			}
+			_ = datapath.Close()
 			if err := <-served; err != nil {
 				t.Fatal(err)
 			}

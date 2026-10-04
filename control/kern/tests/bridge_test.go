@@ -209,8 +209,10 @@ func TestBridgePhysinif(t *testing.T) {
 							if cached.Result.Physinif != member || cached.Result.Ifindex != uint32(bridge.Index) || cached.Result.Must != 1 || cached.Result.Mark != mark || cached.Result.Outbound != 0 || cached.Result.CaptureFlags != 0 {
 								t.Fatalf("%s: lost cached identity: %+v", name, cached.Result)
 							}
+						} else if !tc.capture {
+							assertDirectTCPFlow(t, obj, key, mark)
 						} else {
-							must(obj.RoutingTuplesMap.Lookup(key, &result))
+							must(lookupHandoff(obj.RoutingTuplesMap, key, &result))
 							wantOutbound, wantMust, wantCapture := uint8(consts.OutboundDirect), uint8(1), uint8(0)
 							if tc.capture {
 								wantOutbound, wantMust, wantCapture = uint8(consts.OutboundControlPlaneRouting), 0, 2
@@ -230,7 +232,7 @@ func TestBridgePhysinif(t *testing.T) {
 						status, _, _, err := runBpfProgram(obj.LanIngressL2, packet, ctx)
 						must(err)
 						var result bpftestRoutingResult
-						must(obj.RoutingTuplesMap.Lookup(key, &result))
+						must(lookupHandoff(obj.RoutingTuplesMap, key, &result))
 						if status != 7 || result.Physinif != member || result.Ifindex != uint32(bridge.Index) || result.CaptureFlags != 2 {
 							t.Fatalf("%s: cache hit changed identity/decision: status=%d result=%+v", name, status, result)
 						}

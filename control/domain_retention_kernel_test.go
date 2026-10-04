@@ -92,7 +92,7 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 				key := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(port), L4proto: ipProto}
 				key.Sip.U6Addr8, key.Dip.U6Addr8 = src.Addr().As16(), ip.As16()
 				var result bpfRoutingResult
-				err = collection.Maps["routing_tuples_map"].Lookup(key, &result)
+				err = lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result)
 				if !capture {
 					if !errors.Is(err, ebpf.ErrKeyNotExist) {
 						t.Fatalf("%s created userspace state for direct: %+v %v", label, result, err)

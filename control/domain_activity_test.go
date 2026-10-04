@@ -15,7 +15,7 @@ import (
 func TestTCPDomainActivityPreservesDataAndHalfClose(t *testing.T) {
 	accepted, peer := relayTestTCPPair(t)
 	now := time.Now()
-	g, fake := newTestRegistry(1, time.Minute)
+	g, _ := newTestRegistry(1, time.Minute)
 	ip := netip.MustParseAddr("192.0.2.1")
 	domain, unrelated := "a.example.", "b.example."
 	g.Upsert(domain, ip, testBitmap(0), 1, now)
@@ -44,18 +44,16 @@ func TestTCPDomainActivityPreservesDataAndHalfClose(t *testing.T) {
 	}
 	// Keep the actual accepted connection and its original callback across the
 	// same handoff used by reload. The new window applies only to later I/O.
-	activity.prepareHandoff()
-	if err := g.Close(); err != nil {
-		t.Fatal(err)
-	}
 	next, _ := newTestRegistry(1, 2*time.Minute)
-	next.kernel.update, next.kernel.remove = fake.update, fake.remove
-	next.AdoptFrom(g, func(name string) []uint32 {
+	next.ForkFrom(g, func(name string) []uint32 {
 		if name == domain {
 			return testBitmap(1)
 		}
 		return testBitmap()
 	}, now.Add(55*time.Second))
+	if err := g.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if !next.retention(domain, ip).Equal(now.Add(110 * time.Second)) {
 		t.Fatal("reload changed an existing deadline")
 	}

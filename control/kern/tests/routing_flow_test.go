@@ -40,7 +40,7 @@ func TestRoutingDomainShortCircuit(t *testing.T) {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, tc.want, err)
 				}
 				var route bpftestRoutingResult
-				if err := obj.RoutingTuplesMap.Lookup(key, &route); !errors.Is(err, ebpf.ErrKeyNotExist) {
+				if err := lookupHandoff(obj.RoutingTuplesMap, key, &route); !errors.Is(err, ebpf.ErrKeyNotExist) {
 					t.Fatalf("direct or rejected packet created proxy state: %+v, %v", route, err)
 				}
 			}
@@ -194,11 +194,12 @@ func TestRoutingShortCircuitActionBoundaries(t *testing.T) {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, want, err)
 				}
 				var route bpftestRoutingResult
-				err = obj.RoutingTuplesMap.Lookup(key, &route)
-				if tc.mark == 0 && tc.capture == 0 && !tc.bump {
+				err = lookupHandoff(obj.RoutingTuplesMap, key, &route)
+				if tc.capture == 0 && !tc.bump {
 					if !errors.Is(err, ebpf.ErrKeyNotExist) {
 						t.Fatalf("kernel direct created proxy state: %+v, %v", route, err)
 					}
+					assertDirectTCPFlow(t, obj, key, tc.mark)
 					continue
 				}
 				outbound := uint8(consts.OutboundDirect)
@@ -311,7 +312,7 @@ func TestRoutingShortCircuitTailLookup(t *testing.T) {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, tc.want, err)
 				}
 				var route bpftestRoutingResult
-				if err := obj.RoutingTuplesMap.Lookup(key, &route); !errors.Is(err, ebpf.ErrKeyNotExist) {
+				if err := lookupHandoff(obj.RoutingTuplesMap, key, &route); !errors.Is(err, ebpf.ErrKeyNotExist) {
 					t.Fatalf("direct or rejected packet created proxy state: %+v, %v", route, err)
 				}
 			}
@@ -373,13 +374,12 @@ func TestRoutingDomainLookupLifetime(t *testing.T) {
 					t.Fatalf("%s: status=%d want=%d err=%v", program, status, tc.want, err)
 				}
 				var route bpftestRoutingResult
-				err = obj.RoutingTuplesMap.Lookup(key, &route)
-				if tc.mark == 0 {
-					if !errors.Is(err, ebpf.ErrKeyNotExist) {
-						t.Fatalf("unexpected proxy state: %+v, %v", route, err)
-					}
-				} else if err != nil || route.Outbound != uint8(consts.OutboundDirect) || route.Mark != tc.mark || route.Must != 1 || route.CaptureFlags != 0 {
-					t.Fatalf("domain selection lost direct/mark/must semantics: %+v, %v", route, err)
+				err = lookupHandoff(obj.RoutingTuplesMap, key, &route)
+				if !errors.Is(err, ebpf.ErrKeyNotExist) {
+					t.Fatalf("unexpected proxy state: %+v, %v", route, err)
+				}
+				if tc.want == ^uint32(0) {
+					assertDirectTCPFlow(t, obj, key, tc.mark)
 				}
 			}
 		})

@@ -84,7 +84,7 @@ func TestConditionalUseKernelIntegration(t *testing.T) {
 						t.Fatalf("%s proto=%d: verdict=%d err=%v, want=%d", program, proto, verdict, err, want)
 					}
 					var result bpfRoutingResult
-					err = collection.Maps["routing_tuples_map"].Lookup(key, &result)
+					err = lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result)
 					if !proxy && !http {
 						if !errors.Is(err, ebpf.ErrKeyNotExist) {
 							t.Fatalf("kernel direct retained proxy state: %+v, %v", result, err)

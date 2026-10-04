@@ -124,7 +124,7 @@ func dnsTCPTestClient(t *testing.T, server func(net.Conn)) net.Conn {
 	go func() {
 		defer close(done)
 		defer accepted.Close()
-		_ = c.serveDNSTCP(shortDNSIdleConn{accepted}, netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), bpfRoutingResult{CaptureFlags: 8})
+		_ = c.serveDNSTCP(shortDNSIdleConn{accepted}, netip.MustParseAddrPort("192.0.2.1:1234"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: 8})
 	}()
 	t.Cleanup(func() { client.Close(); c.dnsRelay.Close(); <-done })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
@@ -221,7 +221,7 @@ func TestDNSUDPDeviceRouteAdmissionAndCancellation(t *testing.T) {
 			defer host.Close()
 			mac := [6]byte{1, 2, 3, 4, 5, 6}
 			routes := &deviceRoutes{devices: map[[6]byte]*deviceRoute{mac: {epoch: 2}}}
-			identity := bpfRoutingResult{Mac: mac, RouteEpoch: 2, CaptureFlags: 8}
+			identity := routingResult{Mac: mac, RouteEpoch: 2, CaptureFlags: 8}
 			lease, err := routes.acquire(&identity)
 			if err != nil {
 				t.Fatal(err)

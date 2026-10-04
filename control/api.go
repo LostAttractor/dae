@@ -69,8 +69,8 @@ func (c *ControlPlane) resolveAPIClient(source, destination netip.AddrPort) ([6]
 	return client.Mac, nil
 }
 
-// Called after retiring the old plane and before attaching the new LAN hooks.
-// Never retain observations across a configuration reload.
+// Initialize this generation's private observation map and port. Old API
+// requests keep their own observations until Runtime publishes the successor.
 func (c *ControlPlane) publishAPIObservation() error {
 	var key bpfTuplesKey
 	for {
