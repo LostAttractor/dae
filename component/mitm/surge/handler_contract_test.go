@@ -96,7 +96,7 @@ func TestDisabledScriptsDoNotLoadOrSchedule(t *testing.T) {
 http=type=http-request,pattern=.,script-path=missing.js,enable=false
 cron=type=cron,cronexp="* * * * *",script-path=missing.js,enable=false
 dns=type=dns,script-path=missing.js,enable=false`, "/module", nil, nil)
-	if err != nil || len(module.Scripts) != 0 {
+	if err != nil || len(module.Scripts)+len(module.TaskScripts) != 0 {
 		t.Fatalf("disabled scripts: %+v %v", module, err)
 	}
 }

@@ -98,7 +98,10 @@
     error: (...args) => log("error", ...args),
     debug: (...args) => log("debug", ...args)
   };
-  globalThis.$notification = { post: (title, subtitle, body) => log("info", title, subtitle, body) };
+  globalThis.$notification = { post: (title, subtitle, body) => {
+    const values = [title, subtitle, body].map(v => typeof v === "string" ? v : JSON.stringify(v) ?? "");
+    host("notify", ...values);
+  } };
   globalThis.$utils = { ungzip: data => {
     const result = host("ungzip", toBase64(bytes(data)));
     return result === null ? null : fromBase64(result);

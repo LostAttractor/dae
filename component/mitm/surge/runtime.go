@@ -27,12 +27,13 @@ var runtimeBootstrap string
 //go:embed runtime_web.js
 var runtimeWebBootstrap string
 
-// Runtime shares only its persistent key/value store. Every Run creates a fresh
+// Runtime shares its persistent store and recent notifications. Every Run creates a fresh
 // QuickJS VM, so globals and callbacks never leak between concurrent requests.
 type Runtime struct {
-	opts        RuntimeOptions
-	data        *runtimeStore
-	environment map[string]string
+	opts          RuntimeOptions
+	data          *runtimeStore
+	environment   map[string]string
+	notifications notificationHistory
 }
 
 func NewRuntime(opts RuntimeOptions) (*Runtime, error) {

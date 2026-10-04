@@ -87,13 +87,18 @@ pressure count as `capacity`. Replacing the same key is not an eviction.
 | `surge_rule_matches_total` | Counter | `kind`: `url_rewrite`, `header_rewrite`, `body_rewrite`, `map_local`, `dns_host` |
 | `surge_processing_skips_total` | Counter | `stage`, `reason` |
 
-Script `phase` is `http-request`, `http-response` or `dns`; slot-wait `kind`
+Script `phase` is `http-request`, `http-response`, `dns`, `cron` or `generic`; slot-wait `kind`
 also includes `body_rewrite`. Script results are `unchanged`, `success`,
 `synthetic`, `abort`, `failed`, `skipped`. A matched script can be skipped before
 execution. Runtime histograms exclude those skips, slot waits, body buffering
 and result application. HTTP script failures followed by transparent forwarding
 still count as failed scripts. DNS resolver failures after a valid script result
 do not retroactively count as script failures.
+
+Cron and generic use the same execution slots. A task that cannot acquire a slot
+within its budget counts as skipped; overlapping timer ticks increment
+`surge_processing_skips_total{stage="cron",reason="overlap"}` without starting
+another invocation. Task success means runtime completion, not business success.
 
 Rule matches count actual HTTP/DNS processing, with DNS alias hops counted
 separately. A match need not modify the request or response. Skip stages are the
@@ -126,7 +131,7 @@ histogram_quantile(0.95,
 )
 ```
 
-HTTP/DNS script failure rate, including HTTP failures followed by forwarding:
+HTTP/DNS/cron/generic script failure rate, including HTTP failures followed by forwarding:
 
 ```promql
 sum by (instance, plugin_instance, phase) (

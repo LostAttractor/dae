@@ -43,3 +43,12 @@ func (c *Connection) MITM(ctx context.Context) ([]api.PluginInstanceStatus, erro
 	}
 	return snapshot.Plugins, nil
 }
+
+func (c *Connection) TriggerScript(ctx context.Context, instance string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
+	remote, err := client.New(client.Options{Endpoint: c.endpoint, APIKey: os.Getenv("DAE_API_KEY"), Timeout: c.timeout})
+	if err != nil {
+		return nil, err
+	}
+	defer remote.Close()
+	return remote.TriggerScript(ctx, instance, request)
+}

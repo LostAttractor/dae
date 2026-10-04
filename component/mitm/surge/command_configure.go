@@ -63,7 +63,7 @@ use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.
 		},
 	}
 	configure.Flags().StringVar(&name, "name", "module", "Module name in the generated configuration")
-	return []*cobra.Command{cli.NewSurgeStatusCommand(services.Status), configure}
+	return []*cobra.Command{cli.NewSurgeStatusCommand(services.Status), cli.NewSurgeListCommand(services.Status), cli.NewSurgeRunCommand(services.Status, services.TriggerScript), configure}
 }
 
 func promptModuleArguments(input io.Reader, output io.Writer, metadata Metadata) (map[string]string, error) {

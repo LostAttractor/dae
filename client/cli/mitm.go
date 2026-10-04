@@ -9,6 +9,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -64,6 +65,8 @@ func NewMITMCommand() *cobra.Command {
 	}))
 	surge := &cobra.Command{Use: "surge", Short: "Inspect Surge module reports."}
 	surge.AddCommand(NewSurgeStatusCommand(SelectMITM(connection.MITM, "surge", &instance)))
+	surge.AddCommand(NewSurgeListCommand(SelectMITM(connection.MITM, "surge", &instance)))
+	surge.AddCommand(NewSurgeRunCommand(SelectMITM(connection.MITM, "surge", &instance), connection.TriggerScript))
 	command.AddCommand(surge)
 	return command
 }
@@ -84,14 +87,17 @@ func NewMITMStatusCommand(fetch MITMSource, commands MITMCommandFactory) *cobra.
 }
 
 func NewSurgeStatusCommand(fetch MITMSource) *cobra.Command {
-	return newReportCommand(fetch, func(cmd *cobra.Command, instances []api.PluginInstanceStatus) error {
+	var verbose bool
+	command := newReportCommand(fetch, func(cmd *cobra.Command, instances []api.PluginInstanceStatus) error {
 		report, err := status.Surge(instances)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), status.RenderSurge(report, true))
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), status.RenderSurge(report, verbose))
 		return err
 	})
+	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show all retained notifications instead of the latest 3 per script")
+	return command
 }
 
 func newReportCommand(fetch MITMSource, render func(*cobra.Command, []api.PluginInstanceStatus) error) *cobra.Command {
@@ -120,13 +126,8 @@ func renderMITMReports(cmd *cobra.Command, commands MITMCommandFactory, statuses
 	for _, status := range statuses {
 		byType[status.Type] = append(byType[status.Type], status)
 	}
-	names := make([]string, 0, len(byType))
-	for name := range byType {
-		names = append(names, name)
-	}
-	slices.Sort(names)
 	var failures error
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(byType)) {
 		if err := cmd.Context().Err(); err != nil {
 			return errors.Join(failures, err)
 		}
@@ -146,6 +147,11 @@ func renderMITMReports(cmd *cobra.Command, commands MITMCommandFactory, statuses
 			group.SetOut(&output)
 			group.SetErr(&output)
 			args := []string{"status"}
+			if statusCommand, _, err := group.Find(args); err == nil {
+				if flag := statusCommand.Flags().Lookup("verbose"); flag != nil && flag.Value.Type() == "bool" {
+					args = append(args, "--verbose")
+				}
+			}
 			if instance, _ := cmd.Flags().GetString("instance"); instance != "" {
 				args = append(args, "--instance", instance)
 			}

@@ -138,8 +138,8 @@ skip-server-cert-verify = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Scripts) != 3 || len(m.Rules) != 2 || len(m.Warnings) != 5 || len(m.Ignored) != 0 {
-		t.Fatalf("expected three scripts, two domain rules, five deduplicated warnings and no ignored parameters, got %+v", m)
+	if len(m.Scripts) != 3 || len(m.TaskScripts) != 1 || len(m.Rules) != 2 || len(m.Warnings) != 4 || len(m.Ignored) != 0 {
+		t.Fatalf("expected three HTTP scripts, one cron, two domain rules, four deduplicated warnings and no ignored parameters, got %+v", m)
 	}
 }
 

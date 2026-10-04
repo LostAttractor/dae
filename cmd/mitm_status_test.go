@@ -104,7 +104,7 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 	statuses := []plugin.InstanceStatus{
 		{ID: "personal", Type: "custom", State: "active"},
 		{ID: "work", Type: "custom", State: "active"},
-		{ID: "modules", Type: "surge", State: "active", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"bilihelper","state":"loaded","warnings":["unsupported rule"]}]}`)},
+		{ID: "modules", Type: "surge", State: "active", Details: json.RawMessage(`{"enabled":true,"modules":[{"name":"bilihelper","state":"loaded","warnings":["unsupported rule"]}],"notifications":[{"module":"bilihelper","script":"job","title":"notice-4"},{"module":"bilihelper","script":"job","title":"notice-3"},{"module":"bilihelper","script":"job","title":"notice-2"},{"module":"bilihelper","script":"job","title":"oldest-notice"}]}`)},
 		{ID: "fallback", Type: "raw", State: "active", Details: json.RawMessage(`{"jobs":[{"phase":"nested detail"}]}`)},
 		{ID: "remote", Type: "uncompiled", State: "active", Details: json.RawMessage(`{"result":{"message":"unknown plugin detail"}}`)},
 	}
@@ -116,7 +116,9 @@ func TestMITMVerboseStatusUsesOneSnapshotAndPluginCommands(t *testing.T) {
 		json           bool
 	}{
 		{name: "overview", args: []string{"status"}, absent: []string{"model=k3", "Surge modules:", "nested detail"}},
-		{name: "verbose", args: []string{"status", "--verbose"}, renders: 1, want: []string{"INSTANCE", "Custom personal: model=k3", "Custom work: model=k3", "Surge modules:", "modules/bilihelper: unsupported rule", "nested detail", "unknown plugin detail"}},
+		{name: "verbose", args: []string{"status", "--verbose"}, renders: 1, want: []string{"INSTANCE", "Custom personal: model=k3", "Custom work: model=k3", "Surge modules:", "modules/bilihelper: unsupported rule", "nested detail", "unknown plugin detail", "oldest-notice"}, absent: []string{"older notifications hidden"}},
+		{name: "Surge default", args: []string{"surge", "status"}, want: []string{"notice-4", "1 older notifications hidden"}, absent: []string{"oldest-notice"}},
+		{name: "Surge verbose", args: []string{"surge", "status", "-v"}, want: []string{"notice-4", "oldest-notice"}, absent: []string{"older notifications hidden"}},
 		{name: "instance", instance: "work", args: []string{"status", "-v", "--instance", "work"}, renders: 1, want: []string{"Custom work: model=k3"}, absent: []string{"personal", "bilihelper", "nested detail", "unknown plugin detail"}},
 		{name: "generic plugin", args: []string{"raw", "status", "-v"}, want: []string{"nested detail"}, absent: []string{"personal", "bilihelper", "unknown plugin detail"}},
 		{name: "json takes precedence", args: []string{"status", "--json", "-v"}, json: true},

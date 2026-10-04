@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -92,6 +93,15 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		}
 		if s.runtime.opts.Logger != nil {
 			s.runtime.opts.Logger.WithFields(log.Fields{"script": s.scriptName, "module": s.moduleName, "session_id": s.sessionID}).Log(level, arg(2))
+		}
+		return nil, nil
+	case "notify":
+		s.runtime.notifications.add(api.SurgeNotification{
+			Module: s.moduleName, Script: s.scriptName, ScriptType: s.scriptType,
+			Title: arg(1), Subtitle: arg(2), Body: arg(3),
+		})
+		if s.runtime.opts.Logger != nil {
+			s.runtime.opts.Logger.Info(strings.Join([]string{arg(1), arg(2), arg(3)}, " "))
 		}
 		return nil, nil
 	case "read":

@@ -51,8 +51,9 @@ func init() {
 func Execute() error {
 	definitions := compiledPlugins()
 	var connection cli.Connection
-	mitm := newMITMCommand(definitions, plugin.CommandServices{BaseDir: cacheDirectory(), Status: connection.MITM})
-	plugins := newPluginsCommand(definitions, plugin.CommandServices{BaseDir: cacheDirectory(), Status: connection.MITM})
+	services := plugin.CommandServices{BaseDir: cacheDirectory(), Status: connection.MITM, TriggerScript: connection.TriggerScript}
+	mitm := newMITMCommand(definitions, services)
+	plugins := newPluginsCommand(definitions, services)
 	connection.Bind(plugins.PersistentFlags())
 	rootCmd.AddCommand(newRunCommand(definitions), mitm, plugins)
 	return rootCmd.Execute()

@@ -44,6 +44,9 @@ order with instance-local services, without parsing again; failure closes alread
 prepared instances. Configuration objects own no runtime resources. Direct plugin
 callers use `Configure(spec)` followed by the returned factory.
 
+[`Configuration.Load`](../mitm/host.go) supplies instance-scoped logging, storage
+and metrics. The daemon owns plugin activation and cleanup.
+
 ## DNS contract
 
 `Plugin` requires only `Plan() Plan`. `HTTPPlugin` adds `Wrap`; `DNSPlugin`
@@ -259,8 +262,9 @@ The configured factory prepares a non-nil plugin using the instance logger, base
 - `Run(ctx, client)`: background work after activation. Set task deadlines, honor
   cancellation and join goroutines before returning. Errors are logged.
 - `Close()`: release resources after execution exits, or during setup rollback.
-- `Report()`: a concurrent, JSON-serializable snapshot without credentials for
-  the status API's `details`.
+- `Report()`: a concurrent, JSON-serializable snapshot for the status API's `details`.
+  Exclude configuration credentials. Explicit script output (such as Surge
+  notifications) is documented by the plugin and uses status API access controls.
 
 HTTP handlers may run concurrently. Workers run once; queues, retries, caches and
 waiting belong to the plugin. Copy needed exchange data for background work.
@@ -329,7 +333,7 @@ and files with `0600`, sync the temporary file, rename it, then sync the directo
 Values are stored unencrypted. Storage has no open resources between calls and
 requires no `Close`.
 
-Plugins own schemas, validation, migrations, TTLs, limits and error policy.
+Plugins own schemas, validation, TTLs, limits and error policy.
 Retain original timestamps when restoring expiring state. Coalesce frequent
 writes in a worker and flush in `Close` after requests/workers have drained;
 `Report` must not perform storage I/O. Preparation may overlap the active old
@@ -400,6 +404,13 @@ a renderer failure also shows its raw reports and does not hide other types.
 `--json` prints the complete snapshot directly, including when combined with `-v`.
 These commands use the local Unix status socket and do not require `api_port`.
 See Surge's [command implementation](../mitm/surge/command_configure.go).
+
+`services.TriggerScript(ctx, instance, request)` requests an existing task through
+the daemon API. A plugin implementing `ScriptTrigger` must return promptly, reject
+inactive/overlapping work and attach accepted tasks to its worker lifetime, so
+shutdown/reload cancels and joins them. Execution requests never carry script
+source or arbitrary arguments. The CLI returns an acceptance snapshot; execution
+results are available through the plugin's status report.
 
 Create human-readable tables with [`clitable.New()`](../../pkg/clitable/table.go)
 from `github.com/daeuniverse/dae/pkg/clitable` to share the host CLI style:

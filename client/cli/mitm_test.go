@@ -8,6 +8,7 @@ import (
 	jsonv1 "encoding/json"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,7 +23,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 	t.Setenv("DAE_API_ENDPOINT", "http://127.0.0.1:1")
 	t.Setenv("DAE_API_KEY", "report-secret")
 	instances := []api.PluginInstanceStatus{
-		{ID: "personal", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"cached","warnings":["offline"]}]}`)},
+		{ID: "personal", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"cached","warnings":["offline"],"tasks":[{"name":"有品签到","type":"cron","cronexp":"5 9 * * *","state":"scheduled","timeout_seconds":60,"next_run":"2026-09-29T09:05:00+08:00","last_result":"success","runs":1}]}],"notifications":[{"id":1,"created_at":"2026-09-29T09:05:00+08:00","module":"shared","script":"有品签到","script_type":"cron","title":"签到成功","subtitle":"账户一","body":"余额 1.2"}]}`)},
 		{ID: "work", Type: "surge", State: "active", Details: jsonv1.RawMessage(`{"enabled":true,"modules":[{"name":"shared","state":"loaded"}]}`)},
 		{ID: "native", Type: "demo", State: "active", Details: jsonv1.RawMessage(`{"running":7,"tasks":[{"name":"hidden-in-summary"}]}`)},
 	}
@@ -53,6 +54,17 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 		{name: "instance JSON", args: []string{"surge", "status", "--json", "--instance", "personal"}, count: 1, absent: "work"},
 		{name: "native summary", args: []string{"status", "--instance", "native"}, want: "running=7", absent: "hidden-in-summary"},
 		{name: "Surge table", args: []string{"surge", "status"}, want: "personal/shared: offline", absent: "native"},
+		{name: "cron details", args: []string{"surge", "status", "--instance", "personal"}, want: "有品签到", absent: "work"},
+		{name: "cron in verbose plugins", args: []string{"status", "-v", "--instance", "personal"}, want: "Surge script tasks:", absent: "work"},
+		{name: "cron JSON", args: []string{"surge", "status", "--json", "--instance", "personal"}, count: 1, want: `"cronexp":"5 9 * * *"`, absent: "work"},
+		{name: "list cron tasks", args: []string{"surge", "list"}, want: "有品签到", absent: "native"},
+		{name: "list selected module JSON", args: []string{"surge", "list", "--instance", "personal", "--module", "shared", "--json"}, want: `"name":"有品签到"`, absent: "notifications"},
+		{name: "list empty instance", args: []string{"surge", "list", "--instance", "work"}, want: "No configured Surge script tasks", absent: "有品签到"},
+		{name: "list empty selection JSON", args: []string{"surge", "list", "--module", "missing", "--json"}, want: "[]", absent: "null"},
+		{name: "recent notifications", args: []string{"surge", "status", "--instance", "personal"}, want: "Recent Surge notifications:", absent: "work"},
+		{name: "notifications in verbose plugins", args: []string{"status", "-v", "--instance", "personal"}, want: "Body: 余额 1.2", absent: "work"},
+		{name: "notifications JSON", args: []string{"surge", "status", "--json", "--instance", "personal"}, count: 1, want: `"title":"签到成功"`, absent: "work"},
+		{name: "other instance excludes notifications", args: []string{"surge", "status", "--instance", "work"}, want: "work", absent: "签到成功"},
 		{name: "wrong type", args: []string{"surge", "status", "--instance", "native"}, wantError: true},
 		{name: "missing instance", args: []string{"status", "--instance", "absent"}, wantError: true},
 	} {
@@ -100,7 +112,7 @@ func TestReportCommandsPreserveCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	fetch := func(ctx context.Context) ([]api.PluginInstanceStatus, error) { return nil, ctx.Err() }
-	for _, command := range []*cobra.Command{NewMITMStatusCommand(fetch, nil), NewSurgeStatusCommand(fetch)} {
+	for _, command := range []*cobra.Command{NewMITMStatusCommand(fetch, nil), NewSurgeStatusCommand(fetch), NewSurgeListCommand(fetch)} {
 		command.SetContext(ctx)
 		command.SetArgs(nil)
 		command.SetOut(&bytes.Buffer{})
@@ -108,5 +120,60 @@ func TestReportCommandsPreserveCancellation(t *testing.T) {
 		if err := command.Execute(); !errors.Is(err, context.Canceled) {
 			t.Fatalf("lost cancellation: %v", err)
 		}
+	}
+}
+
+func TestSurgeNotificationVerbosity(t *testing.T) {
+	report := api.SurgeStatus{Enabled: true, Modules: []api.ModuleStatus{{Name: "account", State: "loaded"}}}
+	for i := 5; i >= 0; i-- {
+		report.Notifications = append(report.Notifications, api.SurgeNotification{
+			Module: "account", Script: "busy", ScriptType: "cron", Title: fmt.Sprintf("notification-%d", i),
+		})
+	}
+	report.Notifications = append(report.Notifications, api.SurgeNotification{Module: "account", Script: "quiet", ScriptType: "cron", Title: "quiet-notification"})
+	details, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		args     []string
+		all, raw bool
+	}{
+		{name: "default"},
+		{name: "verbose", args: []string{"--verbose"}, all: true},
+		{name: "short flag", args: []string{"-v"}, all: true},
+		{name: "JSON is complete", args: []string{"--json"}, all: true, raw: true},
+		{name: "verbose JSON", args: []string{"-v", "--json"}, all: true, raw: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			queries := 0
+			command := NewSurgeStatusCommand(func(ctx context.Context) ([]api.PluginInstanceStatus, error) {
+				queries++
+				return []api.PluginInstanceStatus{{ID: "personal", Type: "surge", Details: details}}, ctx.Err()
+			})
+			var output bytes.Buffer
+			command.SetOut(&output)
+			command.SetErr(&output)
+			command.SetArgs(test.args)
+			if err := command.ExecuteContext(t.Context()); err != nil || queries != 1 {
+				t.Fatalf("queries=%d err=%v output=%s", queries, err, &output)
+			}
+			if !strings.Contains(output.String(), "quiet-notification") || !strings.Contains(output.String(), "notification-5") || strings.Contains(output.String(), "notification-0") != test.all {
+				t.Fatalf("wrong notification selection: %s", &output)
+			}
+			if test.raw {
+				var instances []api.PluginInstanceStatus
+				if err := json.Unmarshal(output.Bytes(), &instances); err != nil || len(instances) != 1 {
+					t.Fatalf("invalid JSON report: %s %v", &output, err)
+				}
+				var detail api.SurgeStatus
+				if err := json.Unmarshal(instances[0].Details, &detail); err != nil || len(detail.Notifications) != 7 {
+					t.Fatalf("JSON lost retained notifications: %+v %v", detail, err)
+				}
+			} else if strings.Contains(output.String(), "3 older notifications hidden") == test.all {
+				t.Fatalf("incorrect omission hint: %s", &output)
+			}
+		})
 	}
 }

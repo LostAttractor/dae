@@ -18,6 +18,10 @@ type ProbeStore interface {
 	Probe(contract.ProbeRequest, string) (contract.ProbeResponse, error)
 }
 
+type ScriptStore interface {
+	TriggerScript(string, contract.ScriptRunRequest) (contract.ScriptRunResponse, error)
+}
+
 // DeviceStore owns membership, MITM overrides, and atomic persistence.
 type DeviceStore interface {
 	HasClientSet(string) bool

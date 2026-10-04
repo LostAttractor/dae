@@ -431,7 +431,7 @@
             "type": "string"
           },
           "details": {
-            "description": "Plugin-defined JSON report. Surge uses the SurgeStatus schema; reports must not contain credentials."
+            "description": "Plugin-defined JSON report. Surge uses the SurgeStatus schema, including explicit script notification text. Reports exclude configuration credentials."
           }
         },
         "required": [
@@ -469,8 +469,54 @@
         ],
         "type": "object"
       },
+      "ScriptRunRequest": {
+        "type": "object",
+        "properties": {
+          "module": { "type": "string", "description": "Required when the script name is not unique within the instance." },
+          "script": { "type": "string", "minLength": 1 }
+        },
+        "required": ["script"],
+        "additionalProperties": false
+      },
+      "ScriptRunResponse": {
+        "type": "object",
+        "properties": {
+          "instance": { "type": "string" },
+          "module": { "type": "string" },
+          "run": { "type": "integer", "minimum": 1 },
+          "status": { "$ref": "#/components/schemas/ScriptTaskStatus" }
+        },
+        "required": ["instance", "module", "run", "status"]
+      },
+      "ScriptTaskStatus": {
+        "description": "A Surge cron or generic task. Times describe the latest scheduled or manual attempt, including execution-slot waits. Only cron has a schedule and timezone; generic is ready when idle and active. Runtime success does not imply application-level success; errors are credential-free categories. Counters and history reset on reload.",
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string", "enum": ["cron", "generic"] },
+          "cronexp": { "type": "string" },
+          "timezone": { "type": "string" },
+          "timeout_seconds": { "type": "number" },
+          "state": { "type": "string", "enum": ["pending", "ready", "scheduled", "waiting", "running", "unscheduled", "stopped"] },
+          "next_run": { "type": "string", "format": "date-time" },
+          "last_started_at": { "type": "string", "format": "date-time" },
+          "last_finished_at": { "type": "string", "format": "date-time" },
+          "last_duration_ms": { "type": "integer", "format": "int64" },
+          "last_result": { "type": "string", "enum": ["success", "failed"] },
+          "last_trigger": { "type": "string", "enum": ["cron", "http-api"] },
+          "last_error": { "type": "string", "description": "Stable failure category, such as timeout, canceled, error or http_client_unavailable. No raw script exceptions or response bodies." },
+          "runs": { "type": "integer", "minimum": 0 },
+          "failures": { "type": "integer", "minimum": 0 },
+          "skipped": { "type": "integer", "minimum": 0, "description": "Schedule ticks skipped because this task was still waiting or running." }
+        },
+        "required": ["name", "type", "timeout_seconds", "state", "last_duration_ms", "runs", "failures", "skipped"],
+        "type": "object"
+      },
       "ModuleStatus": {
         "properties": {
+          "tasks": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ScriptTaskStatus" }
+          },
           "body_rewrites": {
             "format": "int64",
             "type": "integer"
@@ -931,6 +977,11 @@
       },
       "SurgeStatus": {
         "properties": {
+          "notifications": {
+            "type": "array",
+            "description": "All retained explicit script notifications for this instance, newest first. Each script (module, script name and script type) retains up to 50 messages within a shared conservative 1 MiB JSON budget. The longest histories lose their oldest entries first; ties remove the oldest entry, so fewer than 50 messages may remain per script. CLI text defaults to 3 per script; --verbose and JSON show all retained messages. In-memory history resets on reload and is independent of the log level and script success.",
+            "items": { "$ref": "#/components/schemas/SurgeNotification" }
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -946,6 +997,23 @@
           "modules"
         ],
         "type": "object"
+      },
+      "SurgeNotification": {
+        "type": "object",
+        "description": "Text supplied by $notification.post. Module, script, title and subtitle are capped at 1024 UTF-8 bytes each; body at 4096 bytes. Original line breaks are retained. Extra notification options are ignored.",
+        "properties": {
+          "instance": { "type": "string", "description": "Added by clients when combining plugin reports." },
+          "id": { "type": "integer", "minimum": 1, "description": "Per-instance arrival sequence, reset on reload." },
+          "created_at": { "type": "string", "format": "date-time" },
+          "module": { "type": "string" },
+          "script": { "type": "string" },
+          "script_type": { "type": "string", "enum": ["http-request", "http-response", "dns", "cron", "generic"] },
+          "title": { "type": "string" },
+          "subtitle": { "type": "string" },
+          "body": { "type": "string" },
+          "truncated": { "type": "boolean", "description": "True when any text field was shortened to its byte limit." }
+        },
+        "required": ["id", "created_at", "module", "script", "script_type", "title", "subtitle", "body"]
       },
       "TableUsage": {
         "properties": {
@@ -1589,6 +1657,26 @@
           {}
         ],
         "summary": "Override a selector"
+      }
+    },
+    "/api/plugins/{instance}/scripts/run": {
+      "post": {
+        "operationId": "triggerScript",
+        "summary": "Trigger an existing cron or generic task",
+        "description": "Requires administration. Returns 202 with an acceptance snapshot and per-task run number; execution belongs to the daemon and continues after the HTTP response. Inspect the plugin status for completion. Concurrent triggers for a waiting/running task return 409. Does not change its timer schedule. Unknown task/instance: 404; ambiguous name: 400; inactive worker: 503. No inline scripts, source URLs, argument overrides or automatic retries.",
+        "parameters": [
+          { "name": "instance", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptRunRequest" } } }
+        },
+        "responses": {
+          "202": { "description": "Script execution accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScriptRunResponse" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        },
+        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
       }
     },
     "/api/probes": {

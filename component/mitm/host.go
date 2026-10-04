@@ -43,6 +43,9 @@ func (c *Configuration) Load(ctx context.Context, options Options, services plug
 		}
 	}()
 	for _, configured := range c.instances {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		spec := plugin.Spec{ID: configured.id, Type: configured.typ}
 		local := services
 		if local.Logger == nil {

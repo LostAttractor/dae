@@ -35,14 +35,14 @@ func newEngineMetrics(e *Engine) *engineMetrics {
 	}
 	for _, module := range e.options.Modules {
 		for kind, count := range map[string]int{
-			"script": len(module.Scripts), "url_rewrite": len(module.URLRewrites), "header_rewrite": len(module.HeaderRewrites),
+			"script": len(module.Scripts) + len(module.TaskScripts), "url_rewrite": len(module.URLRewrites), "header_rewrite": len(module.HeaderRewrites),
 			"body_rewrite": len(module.BodyRewrites), "map_local": len(module.MapLocals), "dns_host": len(module.DNSHosts),
 			"destination": len(module.Hosts), "route": len(module.Rules),
 		} {
 			rules.WithLabelValues(kind).Add(float64(count))
 		}
 	}
-	for _, phase := range []string{"http-request", "http-response", "dns"} {
+	for _, phase := range []string{"http-request", "http-response", "dns", "cron", "generic"} {
 		for _, result := range []string{"unchanged", "success", "synthetic", "abort", "failed", "skipped"} {
 			m.scripts.WithLabelValues(phase, result)
 		}

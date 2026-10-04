@@ -25,12 +25,14 @@ type EngineOptions struct {
 	Logger               *log.Entry
 }
 
-// Engine applies module rules to intercepted HTTP connections. Client selection
-// and outbound routing are decided by the caller before invoking the plugin.
+// Engine applies module rules to intercepted traffic and runs background script tasks.
+// Client selection and outbound routing are supplied by the host.
+// Engines must be initialized with NewEngine.
 type Engine struct {
 	options  EngineOptions
 	slots    chan struct{}
 	metrics  *engineMetrics
+	tasks    *taskRunner
 	dnsCache *dnsScriptCache
 }
 
@@ -39,8 +41,8 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 		if _, err := moduleScope(module.Hostnames); err != nil {
 			return nil, err
 		}
-		if len(module.Scripts) != 0 && o.Runtime == nil {
-			return nil, errors.New("surge: HTTP scripts require a QuickJS runtime")
+		if len(module.Scripts)+len(module.TaskScripts) != 0 && o.Runtime == nil {
+			return nil, errors.New("surge: scripts require a QuickJS runtime")
 		}
 	}
 	if o.MaxBodySize <= 0 || o.MaxConcurrentScripts <= 0 || o.ScriptTimeout <= 0 {
@@ -50,6 +52,11 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 		return nil, errors.New("surge: body memory budget is required")
 	}
 	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts), dnsCache: &dnsScriptCache{}}
+	var err error
+	e.tasks, err = newTaskRunner(e)
+	if err != nil {
+		return nil, err
+	}
 	e.metrics = newEngineMetrics(e)
 	return e, nil
 }

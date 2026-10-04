@@ -116,24 +116,26 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 		cache[path.Location] = contents
 		return contents, nil
 	}
-	for i := range m.Scripts {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	for _, scripts := range [][]Script{m.Scripts, m.TaskScripts} {
+		for i := range scripts {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			script := &scripts[i]
+			path, err := resource.Resolve(location, script.Path)
+			if err != nil {
+				return nil, fmt.Errorf("script %q: %w", script.Name, err)
+			}
+			contents, err := loadResource(path)
+			if err != nil {
+				return nil, fmt.Errorf("load script %q: %w", script.Name, err)
+			}
+			if path.Remote() && moduleLooksLikeHTML(contents) {
+				return nil, fmt.Errorf("load script %q: remote source returned an HTML document instead of JavaScript", script.Name)
+			}
+			script.Source = contents
+			script.Path = path.Location
 		}
-		script := &m.Scripts[i]
-		path, err := resource.Resolve(location, script.Path)
-		if err != nil {
-			return nil, fmt.Errorf("script %q: %w", script.Name, err)
-		}
-		contents, err := loadResource(path)
-		if err != nil {
-			return nil, fmt.Errorf("load script %q: %w", script.Name, err)
-		}
-		if path.Remote() && moduleLooksLikeHTML(contents) {
-			return nil, fmt.Errorf("load script %q: remote source returned an HTML document instead of JavaScript", script.Name)
-		}
-		script.Source = contents
-		script.Path = path.Location
 	}
 	for i := range m.DNSHosts {
 		host := &m.DNSHosts[i]

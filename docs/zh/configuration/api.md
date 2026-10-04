@@ -109,15 +109,24 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `PUT /api/selectors/{name}` | `{"node_id":"状态返回的 ID"}` 选择节点 |
 | `DELETE /api/selectors/{name}` | 恢复显式 `selector(n)`；未配置默认时返回 `409` |
 | `POST /api/probes` | `{"outbound":"manual","node_id":"节点 ID"}` 探测单节点；省略或留空 `node_id` 探测整个出站；返回 `202` 和接受的节点 ID |
+| `POST /api/plugins/{instance}/scripts/run` | 需要管理权限；`{"module":"tools","script":"demo.tool"}` 触发已有 cron/generic 任务；返回 `202`、本任务运行编号及受理状态 |
 | `GET /api/certificate` | CA 名称与 SHA-256 指纹；不可用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
 
 MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。
 
-`POST /api/probes` 是统一的主动连通性探测入口，适用于已实例化且启用连通性检测的出站（包括 selector、自动选择组和直接引用的节点）。使用已配置的 DNS 探测、超时和并发限制，不接受任意测试 URL 或请求级配置覆盖。`202` 仅表示已受理，排队或进行中的重复请求会合并；不创建持久化任务，也不改变节点选择或 `track_all`。selector 通过 `GET /api/selectors` 查询 `checking`、`tested`、`checked_at`、`healthy`、`latency_ms`，其他出站通过 `/api/status` 查看运行时健康和延迟。未知出站为 `404`、不属于该出站的节点为 `400`、无需检测的内置出站为 `409`。旧的 `/api/selectors/{name}/test` 和 `/tracking` 已移除。
+`POST /api/probes` 是统一的主动连通性探测入口，适用于已实例化且启用连通性检测的出站（包括 selector、自动选择组和直接引用的节点）。使用已配置的 DNS 探测、超时和并发限制，不接受任意测试 URL 或请求级配置覆盖。`202` 仅表示已受理，排队或进行中的重复请求会合并；不创建持久化任务，也不改变节点选择或 `track_all`。selector 通过 `GET /api/selectors` 查询 `checking`、`tested`、`checked_at`、`healthy`、`latency_ms`，其他出站通过 `/api/status` 查看运行时健康和延迟。未知出站为 `404`、不属于该出站的节点为 `400`、无需检测的内置出站为 `409`。
 
 `SelectorState.track_all` 是配置的只读值。仅显式 `selector(n)` 返回 `default_node_id`；裸 selector 省略此字段，客户端应据此隐藏默认标记与重置操作。
 
+脚本执行的 `202` 仅表示受理，任务使用 daemon 后台路由客户端，HTTP 响应结束后继续执行。通过 `/api/status` 的 `plugins[].details.modules[].tasks` 查询完成情况，`type` 为 `cron` 或 `generic`，`runs` 标识最新尝试，`last_trigger` 为 `cron` 或 `http-api`。generic 没有定时计划，空闲时为 `ready`。仅保留最近一次尝试，计数与历史随重载重置。手动执行不改变 cron 的下次定时时间。实例/任务不存在 `404`，省略 module 导致同名歧义 `400`，已在等待/运行 `409`，worker 未激活或已停止 `503`。不接受脚本文本或参数覆盖，API 客户端不自动重试执行请求。
+
+先用 `dae plugins surge list` 查看可手动执行的 cron/generic 脚本，可用 `--instance`、`--module` 筛选或 `--json` 获取任务数组。再用 `dae plugins surge run demo.tool --instance surge --module tools` 触发，需要 daemon 已运行。`run --json` 返回受理快照，执行结果通过插件状态查询；CLI/API 手动触发的 `last_trigger` 为 `http-api`。详见[手动触发](surge-module.md#手动触发)。
+
+Surge 的 `plugins[].details.notifications` 包含每个实例按脚本各保留的最近 50 条 `$notification.post` 通知，最新在前，没有通知时省略。脚本身份由 `module`、`script` 和 `script_type` 共同确定。字段为 `id`、`created_at`、`module`、`script`、`script_type`、`title`、`subtitle`、`body`，超长文本带 `truncated: true`。记录独立于日志级别和脚本成功与否，重载后清空。`dae plugins surge status` 默认每脚本显示 3 条；`surge status -v`、`plugins status -v` 和 JSON 返回全部保留记录。详见[近期通知](surge-module.md#近期通知)。
+
 daemon 的状态 schema 为 11，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且成功建立的连接；路径、组和节点统计不含 fallback 字段。域名表报告时间 GC 和内核候选数量，用户态 `limit: 0` 表示无容量上限。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。CLI 与 daemon 应使用同一版本。
 
-`dae plugins status --json` 输出完整 `plugins`；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件的任务详情可能包含视频 BV/CID、标题等上下文，但不得包含 Cookie 或 API 密钥。
+`dae plugins status --json` 输出完整 `plugins`；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本，使用相同的管理访问权限。
+
+通知另受每实例 1 MiB 保守 JSON 编码预算限制，文本按最坏转义长度计费。超限时先从记录最多的脚本删除最旧记录，数量相同时删除最旧的一条，因此每脚本实际保留数量可能少于 50 条。verbose/JSON 返回预算内全部记录。

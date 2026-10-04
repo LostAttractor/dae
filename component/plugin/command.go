@@ -18,12 +18,13 @@ type Definition struct {
 	Commands  func(CommandServices) []*cobra.Command
 }
 
-// CommandServices queries the running daemon, scoped to the plugin type and
-// optional --instance selection. BaseDir resolves local CLI resources.
+// CommandServices supports daemon queries/actions and configuration helpers.
+// Status is scoped by type and --instance. BaseDir resolves local resources.
 type CommandServices struct {
-	BaseDir string
-	Status  func(context.Context) ([]InstanceStatus, error)
+	BaseDir       string
+	Status        func(context.Context) ([]InstanceStatus, error)
+	TriggerScript func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error)
 }
 
-// InstanceStatus carries host state and the plugin's credential-free Report.
+// InstanceStatus carries host state and the plugin's Report.
 type InstanceStatus = api.PluginInstanceStatus

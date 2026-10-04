@@ -74,13 +74,21 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 		case "host":
 			err = parseHost(line, m)
 		case "script":
-			if len(m.Scripts) >= 256 {
-				return nil, fmt.Errorf("module contains more than 256 HTTP scripts")
+			if len(m.Scripts)+len(m.TaskScripts) >= 256 {
+				return nil, fmt.Errorf("module contains more than 256 scripts")
 			}
 			var script *Script
 			script, err = parseScript(line, &m.Warnings, &m.Ignored)
 			if script != nil {
-				m.Scripts = append(m.Scripts, *script)
+				if script.Type == "cron" || script.Type == "generic" {
+					if slices.ContainsFunc(m.TaskScripts, func(existing Script) bool { return existing.Name == script.Name }) {
+						err = fmt.Errorf("duplicate task name %q", script.Name)
+					} else {
+						m.TaskScripts = append(m.TaskScripts, *script)
+					}
+				} else {
+					m.Scripts = append(m.Scripts, *script)
+				}
 			}
 		case "mitm":
 			err = parseMITM(line, m)
@@ -159,22 +167,39 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 			return nil, nil
 		}
 	}
-	if s.Type != "http-request" && s.Type != "http-response" && s.Type != "dns" {
+	if s.Type == "" {
+		s.Type = "generic"
+	}
+	if s.Type != "http-request" && s.Type != "http-response" && s.Type != "dns" && s.Type != "cron" && s.Type != "generic" {
 		*warnings = append(*warnings, fmt.Sprintf("script %q: unsupported type %q; script is ignored", s.Name, s.Type))
 		return nil, nil
 	}
-	if s.Path == "" || s.Type != "dns" && s.Pattern == "" {
-		return nil, fmt.Errorf("script %q requires script-path and pattern", s.Name)
+	if s.Path == "" {
+		return nil, fmt.Errorf("script %q requires script-path", s.Name)
 	}
-	if s.Type != "dns" {
+	if s.Type == "http-request" || s.Type == "http-response" {
+		if s.Pattern == "" {
+			return nil, fmt.Errorf("script %q requires pattern", s.Name)
+		}
 		s.pattern, err = compilePattern(s.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("script %q pattern: %w", s.Name, err)
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("script %q pattern: %w", s.Name, err)
+	if s.Type == "cron" {
+		s.CronExp = params["cronexp"]
+		s.schedule, err = parseCronSchedule(s.CronExp)
+		if err != nil {
+			return nil, fmt.Errorf("script %q cronexp: %w", s.Name, err)
+		}
 	}
 	for key, value := range params {
 		switch key {
 		case "type", "script-path", "pattern", "argument", "enable":
+		case "cronexp":
+			if s.Type != "cron" {
+				*warnings = append(*warnings, fmt.Sprintf("script %q: cronexp is only used by cron scripts", s.Name))
+			}
 		case "script-update-interval", "debug", "img-url", "wake-system":
 			*ignored = append(*ignored, fmt.Sprintf("script %q: unsupported parameter %q is ignored", s.Name, key))
 		case "engine":

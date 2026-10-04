@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package surge implements Surge HTTP processing and selected routing features.
+// Package surge implements Surge HTTP processing, background scripts and selected routing features.
 package surge
 
 import (
@@ -14,6 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/dlclark/regexp2"
+	"github.com/robfig/cron/v3"
 )
 
 const (
@@ -22,13 +23,14 @@ const (
 	regexTimeout               = 50 * time.Millisecond
 )
 
-// Module is an ordered collection of HTTP scripts and rewrite rules. Warnings
+// Module is an ordered collection of scripts and rewrite rules. Warnings
 // report unexpected or behavior-changing limitations; Ignored lists documented
 // unsupported options for trace logging.
 type Module struct {
 	Name             string
 	Hostnames        []string
-	Scripts          []Script
+	Scripts          []Script // HTTP and DNS scripts invoked by intercepted traffic.
+	TaskScripts      []Script // Cron and generic scripts owned by the background worker.
 	URLRewrites      []URLRewrite
 	HeaderRewrites   []HeaderRewrite
 	MapLocals        []MapLocal
@@ -47,10 +49,12 @@ type Script struct {
 	Name, Type, Pattern, Path, Source, Argument string
 	ArgumentSet                                 bool
 	FullHeaderMode                              bool
+	CronExp                                     string
 	RequiresBody, BinaryBodyMode                bool
 	MaxSize                                     int64
 	Timeout                                     time.Duration // Zero inherits the engine's default.
 	pattern                                     *regexp2.Regexp
+	schedule                                    cron.Schedule
 }
 
 func (s Script) Match(rawURL string) bool { return matchPattern(s.pattern, rawURL) }

@@ -201,6 +201,12 @@ func (c *Client) Probe(ctx context.Context, request api.ProbeRequest) (*api.Prob
 	return c.requestStatus[api.ProbeResponse](ctx, "POST", "/api/probes", request, "", http.StatusAccepted)
 }
 
+// TriggerScript accepts one execution. A 202 response is not the script's result;
+// the plugin's status report tracks the returned run number and outcome.
+func (c *Client) TriggerScript(ctx context.Context, instance string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
+	return c.requestStatus[api.ScriptRunResponse](ctx, "POST", "/api/plugins/"+url.PathEscape(instance)+"/scripts/run", request, "", http.StatusAccepted)
+}
+
 func (c *Client) Device(ctx context.Context) (*api.DeviceState, error) {
 	return c.request[api.DeviceState](ctx, "GET", "/api/device", nil, "")
 }

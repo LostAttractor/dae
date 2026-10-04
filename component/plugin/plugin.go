@@ -104,5 +104,6 @@ type Services struct {
 // its own partial state; on success the host takes ownership of the plugin.
 type Factory func(context.Context, Services) (Plugin, error)
 
-// Reporter returns a JSON-serializable, credential-free status snapshot.
+// Reporter returns a JSON-serializable status snapshot, excluding configuration
+// credentials. Explicit script output may be included as documented by the plugin.
 type Reporter interface{ Report() any }
