@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -20,6 +21,81 @@ import (
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 )
+
+func TestMITMUpstreamCleanupPreservesAbort(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	for _, policyFailure := range []bool{false, true} {
+		t.Run(map[bool]string{false: "resource", true: "policy"}[policyFailure], func(t *testing.T) {
+			resource := netproxy.NewLease(netproxy.NewResourceRef())
+			policy := netproxy.NewLease(netproxy.NewResourceRef())
+			group := downloadTestGroup(t, t.Name(), func(context.Context, string, string) (net.Conn, error) {
+				return nil, net.ErrClosed
+			})
+			option := &DialOption{Dialer: group.Dialers[0], Outbound: group, NetworkType: *common.NetworkTCP4.NetworkType(), PolicyLease: policy}
+			raw := &relayTestLeasedConn{Conn: relayTestNewConn(), lease: resource}
+			upstream := &mitmUpstreamConn{Conn: raw, httpUpstream: newHTTPUpstream(option, raw)}
+			cause := errors.New("upstream aborted before HTTP transport cleanup")
+			if policyFailure {
+				// A draining resource must not mask a later policy abort.
+				resource.Invalidate(net.ErrClosed)
+				policy.Abort(cause)
+			} else {
+				resource.Abort(cause)
+			}
+			_ = upstream.Close()
+			if !errors.Is(upstream.DependencyLease().AbortCause(), cause) {
+				t.Fatalf("cleanup erased abort: %v", upstream.DependencyLease().Cause())
+			}
+		})
+	}
+}
+
+func TestMITMResourceReadFailureResetsClient(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	resource := netproxy.NewLease(netproxy.NewResourceRef())
+	cause := errors.New("shared upstream session failed")
+	group := downloadTestGroup(t, "failed", func(context.Context, string, string) (net.Conn, error) {
+		raw := relayTestNewConn()
+		raw.read = func([]byte) (int, error) {
+			resource.Abort(cause)
+			return 0, cause
+		}
+		return &relayTestLeasedConn{Conn: raw, lease: resource}, nil
+	})
+	option := &DialOption{Dialer: group.Dialers[0], Outbound: group, DialTarget: "192.0.2.1:80", NetworkType: *common.NetworkTCP4.NetworkType()}
+	host, err := mitm.New(mitm.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	accepted, client := relayTestTCPPair(t)
+	defer client.Close()
+	plane := new(ControlPlane)
+	relay := &tcpRelay{lConn: sniffing.NewConnSniffer(accepted, time.Second), domain: "service.example", dst: netip.MustParseAddrPort(option.DialTarget), mitmHost: host,
+		mitmPlanner: func(*http.Request) (mitm.UpstreamPlan, error) {
+			return mitm.UpstreamPlan{Key: "selected", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return plane.dialHTTPUpstream(ctx, option)
+			}}, nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, _ = relay.lConn.SniffTcp()
+		done <- relay.run()
+	}()
+	if _, err := io.WriteString(client, "GET / HTTP/1.1\r\nHost: service.example\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	// A 502 may be written before the asynchronous RST, but the underlying
+	// accepted TCP connection must still terminate, rather than stay reusable.
+	_, err = io.Copy(io.Discard, client)
+	if !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatalf("client read = %v, want RST", err)
+	}
+	_ = waitTCPRelayTest(t, done)
+}
 
 func TestMITMHTTPPolicyResetsClientAfterResourceRetires(t *testing.T) {
 	accepted, client := relayTestTCPPair(t)

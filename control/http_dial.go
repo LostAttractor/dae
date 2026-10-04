@@ -149,25 +149,26 @@ func (c *mitmUpstreamPacketConn) Close() error {
 // Both HTTP transports account at the selected upstream and expose its actual
 // resource and group-policy lifetime to the accepted TCP/QUIC connection.
 type httpUpstream struct {
-	traffic *stats.Connection
-	dialer  *dialer.Dialer
-	path    stats.Path
-	origin  netproxy.FailureOrigin
-	lease   *netproxy.Lease
-	stop    func()
-	closed  atomic.Bool
+	traffic  *stats.Connection
+	dialer   *dialer.Dialer
+	path     stats.Path
+	origin   netproxy.FailureOrigin
+	lease    *netproxy.Lease
+	resource *netproxy.Lease
+	policy   *netproxy.Lease
+	stop     func()
+	closed   atomic.Bool
 }
 
 func newHTTPUpstream(option *DialOption, conn io.Closer) *httpUpstream {
 	path, fallback := option.trafficAttribution()
 	u := &httpUpstream{traffic: stats.DefaultStore.OpenConnection(path, fallback), dialer: option.Dialer, path: path,
-		lease: netproxy.NewLease(netproxy.NewResourceRef())}
+		lease: netproxy.NewLease(netproxy.NewResourceRef()), resource: netproxy.DependencyOf(conn), policy: option.PolicyLease}
 	if option.Direct {
 		u.origin = netproxy.OriginTarget
 	}
-	resource := netproxy.DependencyOf(conn)
-	u.stop = watchAbort(resource, option.PolicyLease, nil, func() {
-		u.lease.Abort(connectionAbortCause(resource, option.PolicyLease))
+	u.stop = watchAbort(u.resource, u.policy, nil, func() {
+		u.lease.Abort(connectionAbortCause(u.resource, u.policy))
 		_ = u.traffic.Close()
 		closeInBackground(conn)
 	})
@@ -180,7 +181,13 @@ func (u *httpUpstream) retire() {
 		return
 	}
 	u.stop()
-	u.lease.Invalidate(net.ErrClosed)
+	// Transport cleanup can outrun the watcher after a failed Read. Preserve
+	// the owner's already-published abort before fixing this lease's outcome.
+	if cause := connectionAbortCause(u.resource, u.policy); cause != nil {
+		u.lease.Abort(cause)
+	} else {
+		u.lease.Invalidate(net.ErrClosed)
+	}
 	_ = u.traffic.Close()
 }
 func (u *httpUpstream) failure(err error, phase netproxy.Operation) error {
