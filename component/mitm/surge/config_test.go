@@ -172,7 +172,7 @@ plugins {
         'line=one
 two'
       }
-      link: 'https-file://example.com/youtube.sgmodule?token=a=b,c'
+      link: 'https://example.com/youtube.sgmodule?token=a=b,c'
     }
     expanded { link: 'file:expanded' }
     empty_arguments { link: 'file:empty' arguments {} }
@@ -187,7 +187,7 @@ routing { fallback: direct }
 	want := []ModuleSource{
 		{
 			Name: "youtube",
-			Link: "https-file://example.com/youtube.sgmodule?token=a=b,c",
+			Link: "https://example.com/youtube.sgmodule?token=a=b,c",
 			Arguments: map[string]string{
 				"屏蔽上传按钮":           "false",
 				"字幕翻译语言":           "zh-CN",

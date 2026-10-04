@@ -51,7 +51,10 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	// Bound remote refreshes across the module list, while allowing remaining
 	// modules to use their complete snapshots after the network budget expires.
 	refreshDeadline := time.Now().Add(2 * time.Minute)
-	moduleCache := filepath.Join(baseDir, "plugins", instanceID, "surge-cache")
+	var moduleCache string
+	if services.ResourceCacheDir != "" {
+		moduleCache = filepath.Join(services.ResourceCacheDir, "surge")
+	}
 	modules := make([]*Module, 0, len(conf.Modules))
 	for i, source := range conf.Modules {
 		module, err := Load(ctx, source.Link, client, LoadOptions{

@@ -9,9 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/resource"
@@ -54,25 +52,6 @@ const (
 	maxRemoteSubscriptionSize int64 = 10 * 1024 * 1024
 	maxSubscriptionNodes            = 4096
 )
-
-func fetchRemoteSubscription(client *http.Client, subscription string) ([]byte, error) {
-	return fetchRemoteSubscriptionContext(context.Background(), client, subscription)
-}
-
-func fetchRemoteSubscriptionContext(ctx context.Context, client *http.Client, subscription string) ([]byte, error) {
-	source, err := resource.Parse(subscription, "")
-	if err != nil {
-		return nil, err
-	}
-	if !source.Remote() {
-		return nil, fmt.Errorf("remote subscription requires an HTTP or HTTPS URL")
-	}
-	result, err := resource.Read(ctx, client, source, resource.ReadOptions{
-		MaxBytes:  maxRemoteSubscriptionSize,
-		UserAgent: fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version),
-	})
-	return result.Data, err
-}
 
 // RedactURL hides credentials, query parameters, fragments and remote path
 // tokens. Local file paths remain visible so filesystem failures are actionable.
@@ -423,22 +402,15 @@ func validateNodeSafely(validateNode func(string) error, node string) (err error
 	return validateNode(node)
 }
 
-func validatePersistDir(path string, info os.FileInfo) error {
-	return validateManagedDir(path, info, true)
-}
-
-func validateManagedDir(path string, info os.FileInfo, requireOwner bool) error {
+func validateManagedDir(path string, info os.FileInfo) error {
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("persist directory %q cannot be a symbolic link", path)
+		return fmt.Errorf("subscription directory %q cannot be a symbolic link", path)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("persist path %q is not a directory", path)
+		return fmt.Errorf("subscription path %q is not a directory", path)
 	}
 	if info.Mode().Perm()&0022 != 0 {
-		return fmt.Errorf("permissions %04o for persist directory %q are unsafe; group and others must not have write access", info.Mode().Perm(), path)
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); requireOwner && (!ok || stat.Uid != uint32(os.Geteuid())) {
-		return fmt.Errorf("persist directory %q is not owned by effective uid %d", path, os.Geteuid())
+		return fmt.Errorf("permissions %04o for subscription directory %q are unsafe; group and others must not have write access", info.Mode().Perm(), path)
 	}
 	return nil
 }
@@ -453,7 +425,7 @@ func openManagedDir(path string, create bool) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspect directory %q: %w", path, err)
 	}
-	if err := validateManagedDir(path, before, false); err != nil {
+	if err := validateManagedDir(path, before); err != nil {
 		return nil, err
 	}
 
@@ -467,7 +439,7 @@ func openManagedDir(path string, create bool) (*os.File, error) {
 		_ = dir.Close()
 		return nil, fmt.Errorf("inspect opened directory %q: %w", path, err)
 	}
-	if err := validateManagedDir(path, after, false); err != nil {
+	if err := validateManagedDir(path, after); err != nil {
 		_ = dir.Close()
 		return nil, err
 	}
@@ -478,206 +450,13 @@ func openManagedDir(path string, create bool) (*os.File, error) {
 	return dir, nil
 }
 
-func openPersistDir(subscriptionDir string, create bool) (*os.File, error) {
-	path := filepath.Join(subscriptionDir, "persist.d")
-	var before os.FileInfo
-	if !create {
-		var err error
-		before, err = os.Lstat(path)
-		if err != nil {
-			return nil, fmt.Errorf("inspect persist directory %q: %w", path, err)
-		}
-	}
-	parent, err := openManagedDir(subscriptionDir, create)
-	if err != nil {
-		return nil, err
-	}
-	defer parent.Close()
-
-	created := false
-	if create {
-		if err := unix.Mkdirat(int(parent.Fd()), "persist.d", 0700); err == nil {
-			created = true
-		} else if !errors.Is(err, unix.EEXIST) {
-			return nil, fmt.Errorf("create persist directory: %w", err)
-		}
-	}
-	if before == nil {
-		before, err = os.Lstat(path)
-		if err != nil {
-			return nil, fmt.Errorf("inspect persist directory %q: %w", path, err)
-		}
-	}
-	if err := validatePersistDir(path, before); err != nil {
-		return nil, err
-	}
-	fd, err := unix.Openat(int(parent.Fd()), "persist.d", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open persist directory %q securely: %w", path, err)
-	}
-	dir := os.NewFile(uintptr(fd), path)
-	after, err := dir.Stat()
-	if err != nil {
-		_ = dir.Close()
-		return nil, fmt.Errorf("inspect opened persist directory %q: %w", path, err)
-	}
-	if err := validatePersistDir(path, after); err != nil {
-		_ = dir.Close()
-		return nil, err
-	}
-	if !os.SameFile(before, after) {
-		_ = dir.Close()
-		return nil, fmt.Errorf("persist directory %q was replaced while opening it", path)
-	}
-	if created {
-		if err := parent.Sync(); err != nil {
-			_ = dir.Close()
-			return nil, fmt.Errorf("sync subscription directory: %w", err)
-		}
-	}
-	return dir, nil
+type ResolveOptions struct {
+	BaseDir         string
+	CacheDir        string
+	RefreshDeadline time.Time
 }
 
-func readPersistedSubscription(dir *os.File, name string) ([]byte, error) {
-	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open cached subscription %q: %w", name, err)
-	}
-	file := os.NewFile(uintptr(fd), name)
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Geteuid()) {
-		return nil, fmt.Errorf("cached subscription %q is not owned by effective uid %d", name, os.Geteuid())
-	}
-	return readSubscriptionFile(file, filepath.Join(dir.Name(), name))
-}
-
-func persistSubscription(dir *os.File, name string, b []byte) error {
-	var (
-		file    *os.File
-		tmpName string
-	)
-	for range 100 {
-		var suffix [16]byte
-		if _, err := rand.Read(suffix[:]); err != nil {
-			return fmt.Errorf("generate temporary subscription name: %w", err)
-		}
-		tmpName = "." + name + ".tmp-" + hex.EncodeToString(suffix[:])
-		fd, err := unix.Openat(int(dir.Fd()), tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
-		if errors.Is(err, unix.EEXIST) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("create temporary subscription: %w", err)
-		}
-		file = os.NewFile(uintptr(fd), tmpName)
-		break
-	}
-	if file == nil {
-		return fmt.Errorf("create temporary subscription: too many name collisions")
-	}
-
-	closed := false
-	defer func() {
-		if !closed {
-			_ = file.Close()
-		}
-		_ = unix.Unlinkat(int(dir.Fd()), tmpName, 0)
-	}()
-	if err := file.Chmod(0600); err != nil {
-		return err
-	}
-	if _, err := file.Write(b); err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	closed = true
-	if err := unix.Renameat(int(dir.Fd()), tmpName, int(dir.Fd()), name); err != nil {
-		return err
-	}
-	if err := dir.Sync(); err != nil {
-		return fmt.Errorf("sync persist directory: %w", err)
-	}
-	return nil
-}
-
-// PrunePersistedSubscriptions removes cache entries whose tags are not active.
-func PrunePersistedSubscriptions(subscriptionDir string, activeTags map[string]struct{}) error {
-	dir, err := openPersistDir(subscriptionDir, false)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	defer dir.Close()
-
-	entries, err := dir.ReadDir(-1)
-	if err != nil {
-		return err
-	}
-	removed := false
-	var stale []string
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".sub") {
-			continue
-		}
-		if entry.IsDir() {
-			return fmt.Errorf("persisted subscription %q is a directory", entry.Name())
-		}
-		tag := strings.TrimSuffix(entry.Name(), ".sub")
-		if _, ok := activeTags[tag]; ok {
-			continue
-		}
-		stale = append(stale, entry.Name())
-	}
-	for _, name := range stale {
-		if err := unix.Unlinkat(int(dir.Fd()), name, 0); err != nil {
-			if removed {
-				_ = dir.Sync()
-			}
-			return fmt.Errorf("remove stale persisted subscription %q: %w", name, err)
-		}
-		removed = true
-	}
-	if removed {
-		return dir.Sync()
-	}
-	return nil
-}
-
-func validPersistenceTag(tag string) bool {
-	return tag != "" && tag != "." && tag != ".." && filepath.Base(tag) == tag &&
-		!strings.ContainsAny(tag, `/\`) && !strings.ContainsRune(tag, 0)
-}
-
-// PersistentTag returns the cache tag for a configured persistent remote
-// subscription. It does not retain tags from ordinary HTTP or local sources.
-func PersistentTag(subscription string) (string, bool) {
-	tag, raw := resource.Split(subscription)
-	if !validPersistenceTag(tag) {
-		return "", false
-	}
-	source, err := resource.Parse(raw, "")
-	if err != nil || !source.Remote() || !source.Persistent {
-		return "", false
-	}
-	return tag, true
-}
-
-func ResolveSubscription(client *http.Client, subscriptionDir string, subscription string, validateNode func(string) error) (tag string, nodes []string, err error) {
-	return ResolveSubscriptionContext(context.Background(), client, subscriptionDir, subscription, validateNode)
-}
-
-func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscriptionDir string, subscription string, validateNode func(string) error) (tag string, nodes []string, err error) {
+func ResolveSubscriptionContext(ctx context.Context, client *http.Client, options ResolveOptions, subscription string, validateNode func(string) error) (tag string, nodes []string, err error) {
 	defer func() { err = resource.RedactError(err) }()
 	if validateNode == nil {
 		return "", nil, fmt.Errorf("node validator is required")
@@ -688,7 +467,7 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 
 	tag, subscription = resource.Split(subscription)
 
-	source, err := resource.Parse(subscription, subscriptionDir)
+	source, err := resource.Parse(subscription, options.BaseDir)
 	if err != nil {
 		return tag, nil, fmt.Errorf("failed to parse subscription %q: %w", RedactURL(subscription), resource.RedactError(err))
 	}
@@ -700,7 +479,7 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 		if parseErr != nil {
 			return tag, nil, resource.RedactError(parseErr)
 		}
-		b, err = ResolveFile(u, subscriptionDir)
+		b, err = ResolveFile(u, options.BaseDir)
 		if err != nil {
 			return "", nil, err
 		}
@@ -710,63 +489,26 @@ func ResolveSubscriptionContext(ctx context.Context, client *http.Client, subscr
 		}
 		return tag, nodes, nil
 	}
-	persistToFile := source.Persistent
-	if persistToFile {
-		if len(tag) == 0 {
-			return "", nil, fmt.Errorf("tag is required for http-file/https-file subscription")
-		}
-		if !validPersistenceTag(tag) {
-			return "", nil, fmt.Errorf("invalid persistence tag %q: must be a safe basename without path separators", tag)
-		}
-	}
-	b, err = fetchRemoteSubscriptionContext(ctx, client, source.Location)
-	if err == nil {
-		nodes, err = resolveSubscriptionContent(ctx, b, validateNode)
-		if err == nil {
-			if !persistToFile {
-				return tag, nodes, nil
-			}
-			if err := ctx.Err(); err != nil {
-				return "", nil, err
-			}
-			persistDir, openErr := openPersistDir(subscriptionDir, true)
-			if openErr != nil {
-				return "", nil, openErr
-			}
-			defer persistDir.Close()
-			if err := persistSubscription(persistDir, tag+".sub", b); err != nil {
-				return "", nil, err
-			}
-			if err := ctx.Err(); err != nil {
-				return "", nil, err
-			}
-			return tag, nodes, nil
-		}
-	}
-	if !persistToFile {
+	cache := resource.Cache{Dir: options.CacheDir}
+	nodes, status, err := cache.Load(ctx, client, resource.LoadOptions{
+		Key: source.Location, MaxBytes: maxRemoteSubscriptionSize, RefreshDeadline: options.RefreshDeadline,
+	}, func(read resource.ReadFunc) ([]string, error) {
+		result, err := read(source, resource.ReadOptions{MaxBytes: maxRemoteSubscriptionSize,
+			UserAgent: fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version)})
 		if err != nil {
-			return "", nil, fmt.Errorf("remote subscription is unusable: %w", err)
+			return nil, err
 		}
-		return "", nil, fmt.Errorf("remote subscription is unusable")
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return "", nil, ctxErr
-	}
-
-	freshErr := err
-	persistDir, openErr := openPersistDir(subscriptionDir, false)
-	if openErr != nil {
-		return "", nil, fmt.Errorf("fresh subscription is unusable (%v); cached fallback is unavailable: %w", freshErr, openErr)
-	}
-	defer persistDir.Close()
-	b, err = readPersistedSubscription(persistDir, tag+".sub")
+		return resolveSubscriptionContent(ctx, bytes.TrimSpace(result.Data), validateNode)
+	})
 	if err != nil {
-		return "", nil, fmt.Errorf("fresh subscription is unusable (%v); cached fallback is unavailable: %w", freshErr, err)
+		return tag, nil, err
 	}
-	nodes, err = resolveSubscriptionContent(ctx, b, validateNode)
-	if err != nil {
-		return "", nil, fmt.Errorf("fresh subscription is unusable (%v); cached fallback is unusable: %w", freshErr, err)
+	logger := log.WithFields(log.Fields{"subscription": tag, "source": RedactURL(subscription), "nodes": len(nodes)})
+	if status.RefreshError != nil {
+		logger.WithError(status.RefreshError).Warn("Subscription update failed; using cached nodes")
 	}
-	log.WithFields(log.Fields{"subscription": tag, "source": RedactURL(subscription), "nodes": len(nodes)}).WithError(resource.RedactError(freshErr)).Warn("Subscription update failed; using cached nodes")
+	if status.WriteError != nil {
+		logger.WithError(status.WriteError).Warn("Subscription loaded, but its resource cache could not be updated")
+	}
 	return tag, nodes, nil
 }

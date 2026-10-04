@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,855 +27,314 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func TestSubscriptionCacheLogsConfirmedOutcome(t *testing.T) {
-	logger := log.StandardLogger()
-	previousOutput, previousLevel, previousFormatter := logger.Out, logger.Level, logger.Formatter
-	var output bytes.Buffer
-	logger.SetOutput(&output)
-	logger.SetLevel(log.InfoLevel)
-	logger.SetFormatter(new(log.JSONFormatter))
-	t.Cleanup(func() {
-		logger.SetOutput(previousOutput)
-		logger.SetLevel(previousLevel)
-		logger.SetFormatter(previousFormatter)
-	})
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("upstream unavailable")
-	})}
-	for _, cache := range []string{"usable", "missing", "invalid"} {
-		t.Run(cache, func(t *testing.T) {
-			dir := t.TempDir()
-			if cache != "missing" {
-				data := encodedSubscription(testSSNode("cached.example"))
-				if cache == "invalid" {
-					data = []byte("invalid subscription")
-				}
-				writePersistedSubscription(t, dir, "test", data)
-			}
-			output.Reset()
-			_, nodes, err := ResolveSubscription(client, dir,
-				"test:https-file://account:password-secret@example.com/path-secret?token-secret",
-				componentoutbound.ValidateNodeLink)
-			if cache == "usable" {
-				if err != nil || len(nodes) != 1 || strings.Count(output.String(), `"level":"warning"`) != 1 {
-					t.Fatalf("usable cache result = %v, %v; logs: %s", nodes, err, output.String())
-				}
-				if !strings.Contains(output.String(), "using cached nodes") || !strings.Contains(output.String(), "upstream unavailable") {
-					t.Fatalf("cache warning lacks result or cause: %s", output.String())
-				}
-			} else if err == nil || output.Len() != 0 {
-				t.Fatalf("failed cache must return its error without warning first: %v; logs: %s", err, output.String())
-			}
-			diagnostic := output.String()
-			if err != nil {
-				diagnostic += err.Error()
-			}
-			if strings.Contains(diagnostic, "secret") || strings.Contains(diagnostic, "account") {
-				t.Fatalf("subscription diagnostic leaked credentials: %s", diagnostic)
-			}
-		})
-	}
-}
-
 func TestResolveSubscriptionAsSIP008EncodesUserinfo(t *testing.T) {
-	tests := []struct {
-		name          string
-		method        string
-		password      string
-		wantUnencoded bool
+	for _, tt := range []struct {
+		method, password string
+		unencoded        bool
 	}{
-		{name: "legacy Stream", method: "aes-256-cfb", password: "stream-password"},
-		{name: "legacy AEAD", method: "aes-256-gcm", password: "legacy:/password"},
-		{name: "AEAD 2022", method: "2022-blake3-aes-256-gcm", password: "RCF/0OOYmo6crue3LwlEyD8izLAbuUuyPic/vasJH/o=", wantUnencoded: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			payload, err := json.Marshal(sip008{
-				Version: 1,
-				Servers: []sip008Server{{
-					Remarks:    "test",
-					Server:     "127.0.0.1",
-					ServerPort: 443,
-					Password:   tt.password,
-					Method:     tt.method,
-				}},
-			})
+		{"aes-256-cfb", "stream-password", false},
+		{"aes-256-gcm", "legacy:/password", false},
+		{"2022-blake3-aes-256-gcm", "RCF/0OOYmo6crue3LwlEyD8izLAbuUuyPic/vasJH/o=", true},
+	} {
+		t.Run(tt.method, func(t *testing.T) {
+			payload, err := json.Marshal(sip008{Version: 1, Servers: []sip008Server{{Remarks: "test", Server: "127.0.0.1", ServerPort: 443, Password: tt.password, Method: tt.method}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-
 			nodes, err := ResolveSubscriptionAsSIP008(payload)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(nodes) != 1 {
-				t.Fatalf("got %d nodes, want 1", len(nodes))
+			if err != nil || len(nodes) != 1 {
+				t.Fatalf("nodes=%v err=%v", nodes, err)
 			}
 			u, err := url.Parse(nodes[0])
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tt.wantUnencoded {
-				password, ok := u.User.Password()
-				if !ok || u.User.Username() != tt.method || password != tt.password {
-					t.Fatalf("userinfo = %q, want %q", u.User.String(), url.UserPassword(tt.method, tt.password))
+			if tt.unencoded {
+				if u.User.String() != url.UserPassword(tt.method, tt.password).String() {
+					t.Fatalf("userinfo=%s", u.User)
 				}
-				if got, want := u.User.String(), url.UserPassword(tt.method, tt.password).String(); got != want {
-					t.Fatalf("escaped userinfo = %q, want %q", got, want)
+			} else {
+				if _, ok := u.User.Password(); ok {
+					t.Fatal("legacy userinfo is not Base64URL")
 				}
-				return
-			}
-
-			if _, hasPassword := u.User.Password(); hasPassword {
-				t.Fatalf("legacy userinfo %q is not Base64URL", u.User.String())
-			}
-			decoded, err := base64.RawURLEncoding.DecodeString(u.User.Username())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got, want := string(decoded), tt.method+":"+tt.password; got != want {
-				t.Fatalf("decoded userinfo = %q, want %q", got, want)
+				decoded, err := base64.RawURLEncoding.DecodeString(u.User.Username())
+				if err != nil || string(decoded) != tt.method+":"+tt.password {
+					t.Fatalf("userinfo=%q %v", decoded, err)
+				}
 			}
 		})
 	}
 }
 
 func TestResolveSubscriptionAsSIP008EncodesPlugin(t *testing.T) {
-	tests := []struct {
-		name       string
-		plugin     string
-		pluginOpts string
-		wantPlugin string
-		wantPath   string
-	}{
-		{name: "no plugin"},
-		{name: "options without plugin are ignored", pluginOpts: "obfs=http"},
-		{name: "plugin without options", plugin: "v2ray-plugin", wantPlugin: "v2ray-plugin", wantPath: "/"},
-		{name: "plugin with options", plugin: "obfs-local", pluginOpts: "obfs=http;obfs-host=example.com", wantPlugin: "obfs-local;obfs=http;obfs-host=example.com", wantPath: "/"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			payload, err := json.Marshal(sip008{
-				Version: 1,
-				Servers: []sip008Server{{
-					Remarks:    "test",
-					Server:     "127.0.0.1",
-					ServerPort: 443,
-					Password:   "password",
-					Method:     "aes-256-gcm",
-					Plugin:     tt.plugin,
-					PluginOpts: tt.pluginOpts,
-				}},
-			})
-			if err != nil {
+	for _, tt := range []struct{ plugin, options, want, path string }{
+		{}, {options: "obfs=http"},
+		{"v2ray-plugin", "", "v2ray-plugin", "/"},
+		{"obfs-local", "obfs=http;obfs-host=example.com", "obfs-local;obfs=http;obfs-host=example.com", "/"},
+	} {
+		payload, err := json.Marshal(sip008{Version: 1, Servers: []sip008Server{{Remarks: "test", Server: "127.0.0.1", ServerPort: 443, Password: "password", Method: "aes-256-gcm", Plugin: tt.plugin, PluginOpts: tt.options}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes, err := ResolveSubscriptionAsSIP008(payload)
+		if err != nil || len(nodes) != 1 {
+			t.Fatalf("nodes=%v err=%v", nodes, err)
+		}
+		u, err := url.Parse(nodes[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Query().Get("plugin") != tt.want || u.Path != tt.path || tt.want == "" && u.RawQuery != "" {
+			t.Fatalf("plugin URL=%s", u)
+		}
+		if tt.plugin != "" {
+			if err := componentoutbound.ValidateNodeLink(nodes[0]); err != nil {
 				t.Fatal(err)
 			}
-
-			nodes, err := ResolveSubscriptionAsSIP008(payload)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(nodes) != 1 {
-				t.Fatalf("got %d nodes, want 1", len(nodes))
-			}
-			u, err := url.Parse(nodes[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := u.Query().Get("plugin"); got != tt.wantPlugin {
-				t.Fatalf("plugin = %q, want %q", got, tt.wantPlugin)
-			}
-			if got := u.Path; got != tt.wantPath {
-				t.Fatalf("path = %q, want %q", got, tt.wantPath)
-			}
-			if tt.wantPlugin == "" && u.RawQuery != "" {
-				t.Fatalf("empty plugin produced query %q", u.RawQuery)
-			}
-			if tt.plugin != "" {
-				if err := componentoutbound.ValidateNodeLink(nodes[0]); err != nil {
-					t.Fatalf("downstream rejected generated SIP002 link: %v", err)
-				}
-			}
-		})
+		}
 	}
 }
 
 func TestResolveSubscriptionRejectsTooManyNodes(t *testing.T) {
-	servers := make([]sip008Server, maxSubscriptionNodes+1)
-	payload, err := json.Marshal(sip008{Version: 1, Servers: servers})
+	payload, err := json.Marshal(sip008{Version: 1, Servers: make([]sip008Server, maxSubscriptionNodes+1)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ResolveSubscriptionAsSIP008(payload); err == nil {
-		t.Fatal("oversized SIP008 node list was accepted")
+		t.Fatal("oversized SIP008 accepted")
 	}
-
-	var raw strings.Builder
-	for range maxSubscriptionNodes + 1 {
-		raw.WriteString("ss://node\n")
-	}
-	encoded := base64.StdEncoding.EncodeToString([]byte(raw.String()))
+	encoded := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("ss://node\n", maxSubscriptionNodes+1)))
 	if nodes, err := resolveSubscriptionAsBase64([]byte(encoded)); err == nil || nodes != nil {
-		t.Fatalf("oversized base64 node list = %d nodes, %v; want error", len(nodes), err)
+		t.Fatal("oversized Base64 accepted")
 	}
 }
 
 func TestResolveSIP008FieldCompatibility(t *testing.T) {
-	capitalized := []byte(`{"Version":1,"Servers":[]}`)
-	if nodes, err := ResolveSubscriptionAsSIP008(capitalized); err != nil || len(nodes) != 0 {
-		t.Fatalf("capitalized fields = %v, %v; want accepted empty list", nodes, err)
+	if nodes, err := ResolveSubscriptionAsSIP008([]byte(`{"Version":1,"Servers":[]}`)); err != nil || len(nodes) != 0 {
+		t.Fatalf("capitalized fields: %v %v", nodes, err)
 	}
-	duplicate := []byte(`{"version":1,"servers":[],"Servers":[]}`)
-	if _, err := ResolveSubscriptionAsSIP008(duplicate); err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("duplicate fields error = %v, want duplicate rejection", err)
-	}
-}
-
-func TestRedactURL(t *testing.T) {
-	const raw = "office:https://user:password@example.com:8443/private/token?key=secret#fragment"
-	if got, want := RedactURL(raw), "office:https://example.com:8443"; got != want {
-		t.Fatalf("RedactURL() = %q, want %q", got, want)
+	if _, err := ResolveSubscriptionAsSIP008([]byte(`{"version":1,"servers":[],"Servers":[]}`)); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicates: %v", err)
 	}
 }
 
 func TestResolveSubscriptionRedactsTransportErrorURL(t *testing.T) {
+	const raw = "office:https://user:password@example.com:8443/private/token?key=secret#fragment"
+	if got := RedactURL(raw); got != "office:https://example.com:8443" {
+		t.Fatal(got)
+	}
 	sentinel := errors.New("transport failed")
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, sentinel
-	})}
-	rawURL := "https://account:password@example.com/private/token?key=query-secret#fragment-secret"
-	_, _, err := ResolveSubscription(client, t.TempDir(), rawURL, componentoutbound.ValidateNodeLink)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("ResolveSubscription() error = %v, want wrapped transport error", err)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, sentinel })}
+	_, _, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{}, raw, componentoutbound.ValidateNodeLink)
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "https://example.com:8443") {
+		t.Fatalf("transport error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "https://example.com") {
-		t.Fatalf("redacted error does not identify the endpoint: %v", err)
-	}
-	for _, secret := range []string{"account", "password", "private", "token", "query-secret", "fragment-secret"} {
+	for _, secret := range []string{"user", "password", "private", "token", "secret", "fragment"} {
 		if strings.Contains(err.Error(), secret) {
-			t.Errorf("transport error contains %q: %v", secret, err)
+			t.Fatalf("URL leaked: %v", err)
 		}
 	}
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 type closeTrackingBody struct {
 	io.Reader
 	closed bool
 }
 
-func (b *closeTrackingBody) Close() error {
-	b.closed = true
-	return nil
-}
+func (b *closeTrackingBody) Close() error { b.closed = true; return nil }
 
-func TestFetchRemoteSubscription(t *testing.T) {
-	tests := []struct {
-		name          string
-		statusCode    int
-		contentLength int64
-		bodySize      int64
-		wantErr       bool
+func TestResolveSubscriptionRemoteLimitsAndUserAgent(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		status int
+		length int64
+		data   []byte
 	}{
-		{name: "within limit", statusCode: http.StatusOK, contentLength: maxRemoteSubscriptionSize, bodySize: maxRemoteSubscriptionSize},
-		{name: "non-2xx status", statusCode: http.StatusTeapot, contentLength: 4, bodySize: 4, wantErr: true},
-		{name: "content length exceeds limit", statusCode: http.StatusOK, contentLength: maxRemoteSubscriptionSize + 1, wantErr: true},
-		{name: "chunked body exceeds limit", statusCode: http.StatusOK, contentLength: -1, bodySize: maxRemoteSubscriptionSize + 1, wantErr: true},
-	}
-
-	for _, tt := range tests {
+		{"valid", 200, -1, encodedSubscription(testSSNode("valid.example"))},
+		{"status", 418, 4, []byte("oops")},
+		{"length", 200, maxRemoteSubscriptionSize + 1, nil},
+		{"chunked", 200, -1, make([]byte, maxRemoteSubscriptionSize+1)},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			body := &closeTrackingBody{Reader: io.LimitReader(
-				bytes.NewReader(make([]byte, maxRemoteSubscriptionSize+1)),
-				tt.bodySize,
-			)}
+			body := &closeTrackingBody{Reader: bytes.NewReader(tt.data)}
 			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				if req.Method != http.MethodGet {
-					t.Fatalf("method = %q, want GET", req.Method)
+				if req.Method != "GET" || req.Header.Get("User-Agent") != "dae/"+config.Version+" (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)" {
+					t.Fatalf("request=%v", req)
 				}
-				if got, want := req.Header.Get("User-Agent"), "dae/"+config.Version+" (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)"; got != want {
-					t.Fatalf("User-Agent = %q, want %q", got, want)
-				}
-				return &http.Response{
-					StatusCode:    tt.statusCode,
-					ContentLength: tt.contentLength,
-					Body:          body,
-				}, nil
+				return &http.Response{StatusCode: tt.status, ContentLength: tt.length, Body: body}, nil
 			})}
-
-			got, err := fetchRemoteSubscription(client, "https://example.com/subscription")
-			if !body.closed {
-				t.Fatal("response body was not closed")
-			}
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if err == nil && int64(len(got)) != tt.bodySize {
-				t.Fatalf("read %d bytes, want %d", len(got), tt.bodySize)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{}, "https://example.com/sub", componentoutbound.ValidateNodeLink)
+			if !body.closed || (err == nil) != (tt.name == "valid") || err != nil && nodes != nil {
+				t.Fatalf("closed=%t nodes=%v err=%v", body.closed, nodes, err)
 			}
 		})
 	}
-}
-
-func TestResolveSubscriptionContextCancelsFetch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, _, err := ResolveSubscriptionContext(ctx, server.Client(), t.TempDir(), server.URL, componentoutbound.ValidateNodeLink)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ResolveSubscriptionContext error = %v, want deadline exceeded", err)
-	}
-}
-
-func TestPersistentSubscriptionContextDoesNotFallbackAfterCancellation(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	link := "cached:" + strings.Replace(server.URL, "http://", "http-file://", 1)
-	_, _, err := ResolveSubscriptionContext(ctx, server.Client(), t.TempDir(), link, componentoutbound.ValidateNodeLink)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("ResolveSubscriptionContext error = %v, want deadline exceeded", err)
-	}
-}
-
-func TestValidateSubscriptionNodesHonorsContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	calls := 0
-	_, err := validateSubscriptionNodes(ctx, []string{"first", "second"}, func(string) error {
-		calls++
-		cancel()
-		return nil
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("validation error = %v, want context cancellation", err)
-	}
-	if calls != 1 {
-		t.Fatalf("validator calls = %d, want 1", calls)
-	}
-}
-
-func TestValidateSubscriptionNodesObservesFinalCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	_, err := validateSubscriptionNodes(ctx, []string{"only"}, func(string) error {
-		cancel()
-		return nil
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("validation error = %v, want context cancellation", err)
-	}
-}
-
-func encodedSubscription(nodes ...string) []byte {
-	return []byte(base64.StdEncoding.EncodeToString([]byte(strings.Join(nodes, "\n") + "\n")))
-}
-
-func testSSNode(host string) string {
-	userinfo := base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:test-password"))
-	return "ss://" + userinfo + "@" + host + ":443"
-}
-
-func writePersistedSubscription(t *testing.T, dir, tag string, content []byte) string {
-	t.Helper()
-	persistDir := filepath.Join(dir, "persist.d")
-	if err := os.MkdirAll(persistDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(persistDir, tag+".sub")
-	if err := os.WriteFile(path, content, 0600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func TestValidateSubscriptionNodesRejectsPanickingValidator(t *testing.T) {
-	nodes, err := validateSubscriptionNodes(context.Background(), []string{"ss://invalid"}, func(string) error {
-		panic("bad validator")
-	})
-	if err == nil || nodes != nil {
-		t.Fatalf("panicking validator returned nodes %v, error %v", nodes, err)
-	}
-}
-
-func persistentURL(tag, rawURL string) string {
-	return tag + ":" + strings.Replace(rawURL, "://", "-file://", 1)
 }
 
 func TestResolveSubscriptionInvalidResponsePreservesCache(t *testing.T) {
-	tests := []struct {
-		name   string
-		status int
-		body   string
-	}{
-		{name: "non-2xx status", status: http.StatusBadGateway, body: "upstream unavailable"},
-		{name: "malformed 2xx", status: http.StatusOK, body: "not a subscription"},
-		{name: "HTML URL error page", status: http.StatusOK, body: "<!doctype html>\n<a href=\"https://example.com/help\">service unavailable</a>"},
-		{name: "timeout text", status: http.StatusOK, body: "Subscription request timed out. Please try again later."},
-		{name: "rate limit text", status: http.StatusOK, body: "订阅请求过于频繁，请稍后重试"},
-		{name: "timeout JSON", status: http.StatusOK, body: `{"status":"error","message":"subscription request timed out"}`},
-		{name: "encoded timeout", status: http.StatusOK, body: string(encodedSubscription("Subscription request timed out"))},
-		{name: "empty response", status: http.StatusOK},
-		{name: "malformed SIP008", status: http.StatusOK, body: `{"version":1,"servers":[`},
-		{name: "empty SIP008", status: http.StatusOK, body: `{"version":1,"servers":[]}`},
-		{name: "unusable nodes", status: http.StatusOK, body: string(encodedSubscription("unsupported://invalid"))},
-	}
-
-	for _, transport := range []struct {
-		name  string
-		serve func(http.Handler) *httptest.Server
-	}{
-		{"http", httptest.NewServer},
-		{"https", httptest.NewTLSServer},
-	} {
-		for _, tt := range tests {
-			t.Run(transport.name+"/"+tt.name, func(t *testing.T) {
-				dir := t.TempDir()
-				cachedNode := testSSNode("cached.example")
-				cached := encodedSubscription("unsupported://cached", cachedNode)
-				path := writePersistedSubscription(t, dir, "test", cached)
-				server := transport.serve(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.WriteHeader(tt.status)
-					_, _ = w.Write([]byte(tt.body))
-				}))
-				defer server.Close()
-
-				tag, nodes, err := ResolveSubscription(server.Client(), dir, persistentURL("test", server.URL), componentoutbound.ValidateNodeLink)
-				if err != nil {
-					t.Fatal(err)
+	for _, serve := range []func(http.Handler) *httptest.Server{httptest.NewServer, httptest.NewTLSServer} {
+		for _, invalid := range []string{
+			"not a subscription", "<!doctype html><a href=\"https://example.com/help\">error</a>",
+			"Subscription request timed out. Please try again later.", "订阅请求过于频繁，请稍后重试",
+			`{"status":"error","message":"subscription request timed out"}`, "", `{"version":1,"servers":[`,
+			`{"version":1,"servers":[]}`, string(encodedSubscription("unsupported://invalid")),
+			string(encodedSubscription("Subscription request timed out")),
+		} {
+			var failed atomic.Bool
+			node := testSSNode("cached.example")
+			server := serve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if failed.Load() {
+					io.WriteString(w, invalid)
+					return
 				}
-				if tag != "test" || len(nodes) != 1 || nodes[0] != cachedNode {
-					t.Fatalf("fallback result = %q, %v", tag, nodes)
-				}
-				got, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(got, cached) {
-					t.Fatal("invalid response replaced persisted subscription")
-				}
-			})
-		}
-	}
-}
-
-func TestResolveSubscriptionRejectsUnsafePersistenceTag(t *testing.T) {
-	tests := []string{"../escape", "nested/name", `nested\name`, ".", ".."}
-	for _, tag := range tests {
-		t.Run(tag, func(t *testing.T) {
-			dir := t.TempDir()
-			requested := false
-			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				requested = true
+				w.Write(encodedSubscription("unsupported://discard", node))
 			}))
-			defer server.Close()
-
-			_, _, err := ResolveSubscription(server.Client(), dir, persistentURL(tag, server.URL), componentoutbound.ValidateNodeLink)
-			if err == nil || !strings.Contains(err.Error(), "safe basename") {
-				t.Fatalf("error = %v, want unsafe tag error", err)
+			opts := ResolveOptions{CacheDir: t.TempDir()}
+			load := func() (string, []string, error) {
+				return ResolveSubscriptionContext(t.Context(), server.Client(), opts, "test:"+server.URL, componentoutbound.ValidateNodeLink)
 			}
-			if requested {
-				t.Fatal("unsafe persistence tag was fetched")
+			if _, _, err := load(); err != nil {
+				t.Fatal(err)
 			}
-			if _, err := os.Stat(filepath.Join(dir, "persist.d")); !os.IsNotExist(err) {
-				t.Fatalf("persist directory created for unsafe tag: %v", err)
+			files, _ := filepath.Glob(filepath.Join(opts.CacheDir, "*.json"))
+			if len(files) != 1 {
+				t.Fatalf("files=%v", files)
 			}
-		})
+			before, _ := os.ReadFile(files[0])
+			failed.Store(true)
+			for _, offline := range []bool{false, true} {
+				if offline {
+					server.Close()
+				}
+				tag, nodes, err := load()
+				if err != nil || tag != "test" || len(nodes) != 1 || nodes[0] != node {
+					t.Fatalf("fallback=%q %v %v", tag, nodes, err)
+				}
+				after, _ := os.ReadFile(files[0])
+				if !bytes.Equal(before, after) {
+					t.Fatal("failed refresh changed cache")
+				}
+			}
+		}
 	}
 }
 
-func TestResolveSubscriptionFiltersEverySource(t *testing.T) {
-	validNode := testSSNode("valid.example")
-	mixed := encodedSubscription("unsupported://invalid", validNode)
-	invalid := encodedSubscription("unsupported://invalid")
-
-	t.Run("fresh remote", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write(mixed)
-		}))
-		defer server.Close()
-
-		_, nodes, err := ResolveSubscription(server.Client(), t.TempDir(), server.URL, componentoutbound.ValidateNodeLink)
+func TestSubscriptionCacheLogsConfirmedOutcome(t *testing.T) {
+	logger := log.StandardLogger()
+	output, level, formatter := logger.Out, logger.Level, logger.Formatter
+	var logs bytes.Buffer
+	logger.SetOutput(&logs)
+	logger.SetLevel(log.InfoLevel)
+	logger.SetFormatter(new(log.JSONFormatter))
+	t.Cleanup(func() { logger.SetOutput(output); logger.SetLevel(level); logger.SetFormatter(formatter) })
+	const source = "https://account:password-secret@example.com/path-secret?token-secret"
+	for _, state := range []string{"usable", "missing", "invalid"} {
+		opts := ResolveOptions{CacheDir: t.TempDir()}
+		var offline bool
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			if offline {
+				return nil, errors.New("upstream unavailable")
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(encodedSubscription(testSSNode("cached.example"))))}, nil
+		})}
+		if state != "missing" {
+			if _, _, err := ResolveSubscriptionContext(t.Context(), client, opts, source, componentoutbound.ValidateNodeLink); err != nil {
+				t.Fatal(err)
+			}
+			if state == "invalid" {
+				files, _ := filepath.Glob(filepath.Join(opts.CacheDir, "*.json"))
+				if err := os.WriteFile(files[0], []byte("invalid"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		offline = true
+		logs.Reset()
+		_, nodes, err := ResolveSubscriptionContext(t.Context(), client, opts, source, componentoutbound.ValidateNodeLink)
+		if state == "usable" {
+			if err != nil || len(nodes) != 1 || strings.Count(logs.String(), `"level":"warning"`) != 1 || !strings.Contains(logs.String(), "using cached nodes") {
+				t.Fatalf("logs=%s err=%v", &logs, err)
+			}
+		} else if err == nil || logs.Len() != 0 {
+			t.Fatalf("false fallback warning: %s %v", &logs, err)
+		}
+		diagnostic := logs.String()
 		if err != nil {
-			t.Fatal(err)
+			diagnostic += err.Error()
 		}
-		if len(nodes) != 1 || nodes[0] != validNode {
-			t.Fatalf("nodes = %v, want only %q", nodes, validNode)
+		if strings.Contains(diagnostic, "secret") || strings.Contains(diagnostic, "account") {
+			t.Fatalf("leak: %s", diagnostic)
 		}
-	})
-
-	t.Run("direct file", func(t *testing.T) {
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "nodes.sub"), mixed, 0600); err != nil {
-			t.Fatal(err)
-		}
-
-		_, nodes, err := ResolveSubscription(http.DefaultClient, dir, "file:nodes.sub", componentoutbound.ValidateNodeLink)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(nodes) != 1 || nodes[0] != validNode {
-			t.Fatalf("nodes = %v, want only %q", nodes, validNode)
-		}
-	})
-
-	t.Run("cached fallback", func(t *testing.T) {
-		dir := t.TempDir()
-		writePersistedSubscription(t, dir, "test", mixed)
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "unavailable", http.StatusBadGateway)
-		}))
-		defer server.Close()
-
-		_, nodes, err := ResolveSubscription(server.Client(), dir, persistentURL("test", server.URL), componentoutbound.ValidateNodeLink)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(nodes) != 1 || nodes[0] != validNode {
-			t.Fatalf("nodes = %v, want only %q", nodes, validNode)
-		}
-	})
-
-	tests := []struct {
-		name         string
-		subscription func(t *testing.T, dir string) (*http.Client, string)
-		wantErr      string
-	}{
-		{
-			name: "fresh remote",
-			subscription: func(t *testing.T, _ string) (*http.Client, string) {
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					_, _ = w.Write(invalid)
-				}))
-				t.Cleanup(server.Close)
-				return server.Client(), server.URL
-			},
-			wantErr: "remote subscription is unusable",
-		},
-		{
-			name: "direct file",
-			subscription: func(t *testing.T, dir string) (*http.Client, string) {
-				if err := os.WriteFile(filepath.Join(dir, "invalid.sub"), invalid, 0600); err != nil {
-					t.Fatal(err)
-				}
-				return http.DefaultClient, "file:invalid.sub"
-			},
-			wantErr: "direct subscription file is unusable",
-		},
-		{
-			name: "cached fallback",
-			subscription: func(t *testing.T, dir string) (*http.Client, string) {
-				writePersistedSubscription(t, dir, "test", invalid)
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					http.Error(w, "unavailable", http.StatusBadGateway)
-				}))
-				t.Cleanup(server.Close)
-				return server.Client(), persistentURL("test", server.URL)
-			},
-			wantErr: "cached fallback is unusable",
-		},
-	}
-	for _, tt := range tests {
-		t.Run("rejects unusable "+tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			client, subscription := tt.subscription(t, dir)
-			_, nodes, err := ResolveSubscription(client, dir, subscription, componentoutbound.ValidateNodeLink)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
-			}
-			if nodes != nil {
-				t.Fatalf("unusable nodes returned: %v", nodes)
-			}
-		})
 	}
 }
 
-func TestResolveSubscriptionRequiresValidator(t *testing.T) {
-	_, _, err := ResolveSubscription(http.DefaultClient, t.TempDir(), "https://example.com/subscription", nil)
-	if err == nil || !strings.Contains(err.Error(), "validator is required") {
-		t.Fatalf("error = %v, want validator error", err)
-	}
-}
-
-func TestResolveSubscriptionRejectsUnsafePersistDirectory(t *testing.T) {
-	tests := []struct {
-		name    string
-		prepare func(t *testing.T, dir string)
-		wantErr string
-	}{
-		{
-			name: "symlink",
-			prepare: func(t *testing.T, dir string) {
-				target := t.TempDir()
-				if err := os.Symlink(target, filepath.Join(dir, "persist.d")); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantErr: "symbolic link",
-		},
-		{
-			name: "non-directory",
-			prepare: func(t *testing.T, dir string) {
-				if err := os.WriteFile(filepath.Join(dir, "persist.d"), []byte("not a directory"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantErr: "not a directory",
-		},
-		{
-			name: "group writable",
-			prepare: func(t *testing.T, dir string) {
-				path := filepath.Join(dir, "persist.d")
-				if err := os.Mkdir(path, 0770); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(path, 0770); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantErr: "are unsafe",
-		},
-		{
-			name: "world writable",
-			prepare: func(t *testing.T, dir string) {
-				path := filepath.Join(dir, "persist.d")
-				if err := os.Mkdir(path, 0702); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(path, 0702); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantErr: "are unsafe",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			tt.prepare(t, dir)
-			fresh := encodedSubscription(testSSNode("fresh.example"))
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = w.Write(fresh)
-			}))
-			defer server.Close()
-
-			_, nodes, err := ResolveSubscription(server.Client(), dir, persistentURL("test", server.URL), componentoutbound.ValidateNodeLink)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
-			}
-			if nodes != nil {
-				t.Fatalf("nodes returned despite unsafe persist directory: %v", nodes)
-			}
-		})
-	}
-}
-
-func TestPersistSubscriptionUsesOpenedDirectory(t *testing.T) {
-	dir := t.TempDir()
-	persistDir, err := openPersistDir(dir, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer persistDir.Close()
-
-	openedPath := filepath.Join(dir, "opened-persist.d")
-	if err := os.Rename(filepath.Join(dir, "persist.d"), openedPath); err != nil {
-		t.Fatal(err)
-	}
-	replacementTarget := t.TempDir()
-	if err := os.Symlink(replacementTarget, filepath.Join(dir, "persist.d")); err != nil {
-		t.Fatal(err)
-	}
-	content := encodedSubscription(testSSNode("fresh.example"))
-	if err := persistSubscription(persistDir, "test.sub", content); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(openedPath, "test.sub"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Fatal("persisted content differs")
-	}
-	if _, err := os.Stat(filepath.Join(replacementTarget, "test.sub")); !os.IsNotExist(err) {
-		t.Fatalf("replacement directory was modified: %v", err)
-	}
-}
-
-func TestPrunePersistedSubscriptions(t *testing.T) {
-	dir := t.TempDir()
-	activePath := writePersistedSubscription(t, dir, "active", []byte("active"))
-	stalePath := writePersistedSubscription(t, dir, "stale", []byte("stale"))
-
-	if err := PrunePersistedSubscriptions(dir, map[string]struct{}{"active": {}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(activePath); err != nil {
-		t.Fatalf("active cache was removed: %v", err)
-	}
-	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
-		t.Fatalf("stale cache was not removed: %v", err)
-	}
-}
-
-func TestPersistentTagUsesConfiguredPersistenceMode(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		link string
-		tag  string
-		ok   bool
-	}{
-		{name: "persistent HTTP", link: "keep:http-file://example.com/sub", tag: "keep", ok: true},
-		{name: "persistent HTTPS", link: "keep:https-file://example.com/sub", tag: "keep", ok: true},
-		{name: "ordinary HTTP", link: "keep:http://example.com/sub"},
-		{name: "local file", link: "keep:file:nodes.sub"},
-		{name: "untagged local file", link: "file:nodes.sub"},
-		{name: "persistent without tag", link: "http-file://example.com/sub"},
-		{name: "persistent without host", link: "keep:https-file:///sub"},
-		{name: "unsafe tag", link: "../keep:http-file://example.com/sub"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			tag, ok := PersistentTag(test.link)
-			if tag != test.tag || ok != test.ok {
-				t.Fatalf("PersistentTag() = %q, %v; want %q, %v", tag, ok, test.tag, test.ok)
-			}
-		})
-	}
-}
-
-func TestResolveFileRejectsFinalSymlink(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(t.TempDir(), "nodes.sub")
-	if err := os.WriteFile(target, encodedSubscription(testSSNode("outside.example")), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, filepath.Join(dir, "nodes.sub")); err != nil {
-		t.Fatal(err)
-	}
-	u, err := url.Parse("file:nodes.sub")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ResolveFile(u, dir); err == nil {
-		t.Fatal("ResolveFile followed a final symlink")
-	}
-}
-
-func TestResolveFileRejectsIntermediateSymlink(t *testing.T) {
-	dir := t.TempDir()
-	targetDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(targetDir, "nodes.sub"), encodedSubscription(testSSNode("outside.example")), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(targetDir, filepath.Join(dir, "links")); err != nil {
-		t.Fatal(err)
-	}
-	u, err := url.Parse("file:links/nodes.sub")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ResolveFile(u, dir); err == nil {
-		t.Fatal("ResolveFile followed an intermediate symlink")
-	}
-}
-
-func TestOpenPersistDirCreatesMissingSubscriptionDirectory(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "missing", "subscriptions")
-	persistDir, err := openPersistDir(dir, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer persistDir.Close()
-	if info, err := persistDir.Stat(); err != nil || !info.IsDir() {
-		t.Fatalf("persist directory stat = %v, %v", info, err)
-	}
-}
-
-func TestPrunePersistedSubscriptionsRejectsSymlinkDirectory(t *testing.T) {
-	dir := t.TempDir()
-	target := t.TempDir()
-	if err := os.Symlink(target, filepath.Join(dir, "persist.d")); err != nil {
-		t.Fatal(err)
-	}
-
-	err := PrunePersistedSubscriptions(dir, nil)
-	if err == nil || !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("error = %v, want symbolic link error", err)
-	}
-}
-
-func TestResolveSubscriptionAtomicallyPersistsValidResponse(t *testing.T) {
-	dir := t.TempDir()
-	cachedNode := testSSNode("cached.example")
-	freshNode := testSSNode("fresh.example")
-	cached := encodedSubscription(cachedNode)
-	fresh := encodedSubscription(freshNode)
-	path := writePersistedSubscription(t, dir, "test", cached)
-	oldFile, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer oldFile.Close()
-	oldInfo, err := oldFile.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(fresh)
-	}))
+func TestResolveSubscriptionCancellationAndValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if _, _, err := ResolveSubscriptionContext(ctx, server.Client(), ResolveOptions{CacheDir: t.TempDir()}, server.URL, componentoutbound.ValidateNodeLink); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(encodedSubscription(testSSNode("first.example"), testSSNode("second.example"))))}, nil
+	})}
+	ctx, cancelValidation := context.WithCancel(t.Context())
+	defer cancelValidation()
+	_, nodes, err := ResolveSubscriptionContext(ctx, client, ResolveOptions{CacheDir: t.TempDir()}, "http://example.com/sub", func(string) error { cancelValidation(); return nil })
+	if !errors.Is(err, context.Canceled) || nodes != nil {
+		t.Fatalf("validation cancellation: %v %v", nodes, err)
+	}
+	if _, _, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{}, "http://example.com/sub", nil); err == nil {
+		t.Fatal("nil validator accepted")
+	}
+	if nodes, err := validateSubscriptionNodes(t.Context(), []string{"ss://invalid"}, func(string) error { panic("bad validator") }); err == nil || nodes != nil {
+		t.Fatal("panic accepted")
+	}
+}
 
-	_, nodes, err := ResolveSubscription(server.Client(), dir, persistentURL("test", server.URL), componentoutbound.ValidateNodeLink)
-	if err != nil {
-		t.Fatal(err)
+func TestValidateSubscriptionNodesFiltersMixedContent(t *testing.T) {
+	valid := testSSNode("valid.example")
+	for _, content := range [][]string{{valid, "unsupported://invalid"}, {valid, "ss://%%%"}} {
+		nodes, err := resolveSubscriptionContent(t.Context(), encodedSubscription(content...), componentoutbound.ValidateNodeLink)
+		if err != nil || len(nodes) != 1 || nodes[0] != valid {
+			t.Fatalf("nodes=%v err=%v", nodes, err)
+		}
 	}
-	if len(nodes) != 1 || nodes[0] != freshNode {
-		t.Fatalf("nodes = %v", nodes)
+}
+
+func TestResolveFileRejectsSymlinks(t *testing.T) {
+	for _, intermediate := range []bool{false, true} {
+		dir, target := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(target, "nodes.sub"), encodedSubscription(testSSNode("outside.example")), 0600); err != nil {
+			t.Fatal(err)
+		}
+		link, destination := "nodes.sub", filepath.Join(target, "nodes.sub")
+		if intermediate {
+			link, destination = "links", target
+		}
+		if err := os.Symlink(destination, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+		raw := "file:nodes.sub"
+		if intermediate {
+			raw = "file:links/nodes.sub"
+		}
+		u, _ := url.Parse(raw)
+		if _, err := ResolveFile(u, dir); err == nil {
+			t.Fatal("relative file followed symlink")
+		}
 	}
-	newInfo, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(oldInfo, newInfo) {
-		t.Fatal("persisted subscription was updated in place instead of replaced")
-	}
-	if got := newInfo.Mode().Perm(); got != 0600 {
-		t.Fatalf("persisted subscription mode = %04o, want 0600", got)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, fresh) {
-		t.Fatal("persisted subscription differs from valid response")
-	}
-	oldContent, err := io.ReadAll(oldFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(oldContent, cached) {
-		t.Fatal("open handle to previous subscription was modified")
-	}
-	tmpFiles, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".test.sub.tmp-*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tmpFiles) != 0 {
-		t.Fatalf("temporary subscription files remain: %v", tmpFiles)
-	}
+}
+
+func testSSNode(host string) string {
+	return "ss://" + base64.RawURLEncoding.EncodeToString([]byte("aes-256-gcm:test-password")) + "@" + host + ":443"
+}
+
+func encodedSubscription(nodes ...string) []byte {
+	return []byte(base64.StdEncoding.EncodeToString([]byte(strings.Join(nodes, "\n"))))
 }

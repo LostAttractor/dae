@@ -3,7 +3,6 @@
 package subscription
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -40,7 +39,7 @@ func TestResolveSubscriptionAbsoluteFileOutsideConfigDirectory(t *testing.T) {
 				t.Fatal(err)
 			}
 			link := "absolute:" + (&url.URL{Scheme: "file", Path: path}).String()
-			tag, nodes, err := ResolveSubscriptionContext(context.Background(), http.DefaultClient, configDir, link, componentoutbound.ValidateNodeLink)
+			tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: configDir}, link, componentoutbound.ValidateNodeLink)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +80,7 @@ func TestResolveSubscriptionAbsoluteFileFollowsSymlinks(t *testing.T) {
 				t.Fatal(err)
 			}
 			link := (&url.URL{Scheme: "file", Path: readPath}).String()
-			_, nodes, err := ResolveSubscriptionContext(context.Background(), http.DefaultClient, filepath.Join(root, "missing-config"), link, componentoutbound.ValidateNodeLink)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: filepath.Join(root, "missing-config")}, link, componentoutbound.ValidateNodeLink)
 			if err != nil || len(nodes) != 1 || nodes[0] != node {
 				t.Fatalf("absolute symlink returned nodes=%v error=%v, want %q", nodes, err, node)
 			}
@@ -111,7 +110,7 @@ func TestResolveSubscriptionAbsoluteFileReadsRotatedSecrets(t *testing.T) {
 		if err := os.Rename(nextLink, secretsLink); err != nil {
 			t.Fatal(err)
 		}
-		tag, nodes, err := ResolveSubscriptionContext(context.Background(), http.DefaultClient, configDir, link, componentoutbound.ValidateNodeLink)
+		tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: configDir}, link, componentoutbound.ValidateNodeLink)
 		if err != nil || tag != "flowercloud" || len(nodes) != 1 || nodes[0] != node {
 			t.Fatalf("secret version %s returned tag=%q nodes=%v error=%v, want %q", version, tag, nodes, err, node)
 		}
@@ -135,7 +134,7 @@ func TestResolveSubscriptionAbsoluteFileChecksSymlinkTargetPermissions(t *testin
 		t.Fatal(err)
 	}
 	link := (&url.URL{Scheme: "file", Path: linkPath}).String()
-	_, nodes, err := ResolveSubscriptionContext(context.Background(), http.DefaultClient, filepath.Join(root, "missing-config"), link, componentoutbound.ValidateNodeLink)
+	_, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: filepath.Join(root, "missing-config")}, link, componentoutbound.ValidateNodeLink)
 	if err == nil || len(nodes) != 0 || !strings.Contains(err.Error(), "permissions") {
 		t.Fatalf("unsafe symlink target returned nodes=%v error=%v, want permission rejection", nodes, err)
 	}
@@ -160,7 +159,7 @@ func TestResolveSubscriptionAbsoluteFileRejectsBrokenAndCircularSymlinks(t *test
 				}
 			}
 			link := (&url.URL{Scheme: "file", Path: linkPath}).String()
-			_, nodes, err := ResolveSubscriptionContext(context.Background(), http.DefaultClient, filepath.Join(root, "missing-config"), link, componentoutbound.ValidateNodeLink)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: filepath.Join(root, "missing-config")}, link, componentoutbound.ValidateNodeLink)
 			if err == nil || len(nodes) != 0 {
 				t.Fatalf("%s symlink returned nodes=%v error=%v, want rejection", name, nodes, err)
 			}
@@ -194,7 +193,7 @@ func TestResolveSubscriptionAbsoluteFileRejectsDirectoryAndUnsafePermissions(t *
 				}
 			}
 			link := (&url.URL{Scheme: "file", Path: path}).String()
-			_, nodes, err := ResolveSubscriptionContext(context.Background(), http.DefaultClient, filepath.Join(root, "missing-config"), link, componentoutbound.ValidateNodeLink)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: filepath.Join(root, "missing-config")}, link, componentoutbound.ValidateNodeLink)
 			if err == nil || len(nodes) != 0 || !strings.Contains(err.Error(), test.reason) {
 				t.Fatalf("absolute %s returned nodes=%v error=%v, want %q rejection", test.name, nodes, err, test.reason)
 			}
@@ -217,7 +216,7 @@ func TestResolveSubscriptionRelativeFileCannotEscapeConfigDirectory(t *testing.T
 		"file:nested/%2e%2e/%2e%2e/outside.sub",
 	} {
 		t.Run(link, func(t *testing.T) {
-			_, nodes, err := ResolveSubscriptionContext(context.Background(), http.DefaultClient, configDir, link, componentoutbound.ValidateNodeLink)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: configDir}, link, componentoutbound.ValidateNodeLink)
 			if err == nil || len(nodes) != 0 {
 				t.Fatalf("relative traversal returned nodes=%v error=%v, want rejection", nodes, err)
 			}

@@ -41,6 +41,7 @@ const (
 	reloadSubscriptionTimeout       = 10 * time.Second
 	reloadSubscriptionPhaseTimeout  = 30 * time.Second
 	startupSubscriptionPhaseTimeout = 2 * time.Minute
+	subscriptionFallbackTimeout     = 5 * time.Second
 	maxConcurrentSubscriptions      = 4
 )
 
@@ -62,7 +63,7 @@ type subscriptionResolution struct {
 	err   error
 }
 
-type subscriptionResolver func(context.Context, *http.Client, string, string, func(string) error) (string, []string, error)
+type subscriptionResolver func(context.Context, *http.Client, subscription.ResolveOptions, string, func(string) error) (string, []string, error)
 
 func waitForNetworkOnline(ctx context.Context, isReload bool) error {
 	timeout := startupNetworkWaitTimeout
@@ -146,10 +147,6 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	if autoSelected {
 		log.WithField("so_mark_from_dae", "0x100").Debug("Using default internal socket mark")
 	}
-	activeSubscriptionTags, err := persistentSubscriptionTags(conf.Subscription)
-	if err != nil {
-		return nil, err
-	}
 	direct.InitDirectDialers(conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
 
 	var nodeDescriptors []outbound.NodeDescriptor
@@ -171,7 +168,7 @@ func newControlPlane(ctx context.Context, bpf *control.BPFState, conf *config.Co
 	})
 	group.Go(func() error {
 		var resolveErr error
-		nodeDescriptors, resolveErr = resolveNodeDescriptors(groupCtx, conf, activeSubscriptionTags, bpf != nil, filepath.Dir(cfgFile), subscription.ResolveSubscriptionContext)
+		nodeDescriptors, resolveErr = resolveNodeDescriptors(groupCtx, conf, bpf != nil, filepath.Dir(cfgFile), subscription.ResolveSubscriptionContext)
 		return resolveErr
 	})
 	if err = group.Wait(); err != nil {
@@ -236,7 +233,6 @@ func cleanupStartup(c *control.ControlPlane) error {
 func resolveNodeDescriptors(
 	ctx context.Context,
 	conf *config.Config,
-	activeTags map[string]struct{},
 	isReload bool,
 	configDir string,
 	resolve subscriptionResolver,
@@ -257,7 +253,17 @@ func resolveNodeDescriptors(
 		return nil, err
 	}
 
-	subscriptionDir := cacheDirectory()
+	cache := resource.Cache{}
+	if conf.Global.ResourceCache {
+		cache.Dir = filepath.Join(cacheDirectory(), "resources", "subscriptions")
+	}
+	var cacheKeys []string
+	for _, sub := range conf.Subscription {
+		_, raw := resource.Split(sub.String())
+		if source, err := resource.Parse(raw, configDir); err == nil && source.Remote() {
+			cacheKeys = append(cacheKeys, source.Location)
+		}
+	}
 	if len(conf.Subscription) > 0 {
 		if isReload {
 			writeReloadProgress("Fetching subscriptions...")
@@ -276,20 +282,27 @@ func resolveNodeDescriptors(
 		client.Timeout = reloadSubscriptionTimeout
 		phaseTimeout = reloadSubscriptionPhaseTimeout
 	}
-	subCtx, cancel := context.WithTimeout(ctx, phaseTimeout)
+	refreshDeadline := time.Now().Add(phaseTimeout)
+	// Keep parsing/dialer validation bounded too, with a small separate budget
+	// for cached resources after the network refresh budget is exhausted.
+	loadDeadline := refreshDeadline
+	if cache.Dir != "" {
+		loadDeadline = loadDeadline.Add(subscriptionFallbackTimeout)
+	}
+	loadCtx, cancel := context.WithDeadline(ctx, loadDeadline)
 	defer cancel()
-	validateNode := outbound.NewNodeValidator(subCtx, &conf.Global)
+	validateNode := outbound.NewNodeValidator(loadCtx, &conf.Global)
 	results := make([]subscriptionResolution, len(conf.Subscription))
 	var resolveGroup errgroup.Group
 	resolveGroup.SetLimit(maxConcurrentSubscriptions)
 	for i, sub := range conf.Subscription {
-		if subCtx.Err() != nil {
+		if loadCtx.Err() != nil {
 			break
 		}
 		resolveGroup.Go(func() error {
 			link := sub.String()
-			dir := subscriptionSourceDirectory(link, configDir)
-			results[i].tag, results[i].nodes, results[i].err = resolve(subCtx, &client, dir, link, validateNode)
+			options := subscription.ResolveOptions{BaseDir: configDir, CacheDir: cache.Dir, RefreshDeadline: refreshDeadline}
+			results[i].tag, results[i].nodes, results[i].err = resolve(loadCtx, &client, options, link, validateNode)
 			return nil
 		})
 	}
@@ -297,17 +310,14 @@ func resolveNodeDescriptors(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if errors.Is(subCtx.Err(), context.DeadlineExceeded) {
-		log.Warnf("Subscription resolution exceeded %v; skipping unfinished subscriptions", phaseTimeout)
+	if errors.Is(loadCtx.Err(), context.DeadlineExceeded) {
+		log.Warn("Subscription loading budget exhausted; skipping unfinished subscriptions")
 	}
 
 	for i, result := range results {
 		sub := conf.Subscription[i]
 		if result.err != nil {
-			phaseCanceled := subCtx.Err() != nil && (errors.Is(result.err, context.Canceled) || errors.Is(result.err, context.DeadlineExceeded))
-			if !phaseCanceled {
-				log.WithError(resource.RedactError(result.err)).WithField("subscription", subscription.RedactURL(sub.String())).Warn("Subscription unavailable; skipping its nodes")
-			}
+			log.WithError(resource.RedactError(result.err)).WithField("subscription", subscription.RedactURL(sub.String())).Warn("Subscription unavailable; skipping its nodes")
 			continue
 		}
 		for _, link := range result.nodes {
@@ -317,8 +327,8 @@ func resolveNodeDescriptors(
 			})
 		}
 	}
-	if err := subscription.PrunePersistedSubscriptions(subscriptionDir, activeTags); err != nil {
-		return nil, err
+	if err := cache.Prune(cacheKeys); err != nil {
+		log.WithError(err).Warn("Could not prune subscription resource cache")
 	}
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
 		log.Debug("No interfaces configured for traffic interception")
@@ -328,32 +338,6 @@ func resolveNodeDescriptors(
 		"nodes":    len(descriptors),
 	}).Debug("Prepared nodes")
 	return descriptors, nil
-}
-
-// Local subscription sources are configuration inputs; only downloaded
-// subscription state belongs in the unified cache directory.
-func subscriptionSourceDirectory(link, configDir string) string {
-	_, raw := resource.Split(link)
-	source, err := resource.Parse(raw, configDir)
-	if err == nil && !source.Remote() {
-		return configDir
-	}
-	return cacheDirectory()
-}
-
-func persistentSubscriptionTags(subscriptions []config.Subscription) (map[string]struct{}, error) {
-	tags := make(map[string]struct{}, len(subscriptions))
-	for _, sub := range subscriptions {
-		tag, ok := subscription.PersistentTag(sub.String())
-		if !ok {
-			continue
-		}
-		if _, exists := tags[tag]; exists {
-			return nil, fmt.Errorf("duplicate persistent subscription tag %q", tag)
-		}
-		tags[tag] = struct{}{}
-	}
-	return tags, nil
 }
 
 func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {

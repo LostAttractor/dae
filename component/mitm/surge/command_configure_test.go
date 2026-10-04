@@ -132,7 +132,7 @@ func TestSurgeConfigureWithoutArgumentsUsesAbsoluteSource(t *testing.T) {
 }
 
 func TestSurgeConfigureFetchesOnlyModuleWithoutCaching(t *testing.T) {
-	for _, scheme := range []string{"http", "http-file"} {
+	for _, scheme := range []string{"http"} {
 		t.Run(scheme, func(t *testing.T) {
 			cacheDir := filepath.Join(t.TempDir(), "absent-cache")
 			t.Setenv("DAE_LOCATION_CACHE", cacheDir)

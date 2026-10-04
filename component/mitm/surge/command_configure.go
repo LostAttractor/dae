@@ -23,8 +23,8 @@ func Commands(services plugin.CommandServices) []*cobra.Command {
 		Use: "configure <source>", Short: "Choose module arguments and print a configuration fragment.",
 		Long: `Read a Surge module URL or file: source and prompt for its declared arguments.
 Only the module text is downloaded; scripts are not downloaded or executed.
-Prompts go to stderr. Place the generated module section inside mitm.surge in your config.
-Remote sources also accept http-file:// and https-file://; relative file: paths
+Prompts go to stderr. Place the generated module section inside plugins.surge in your config.
+Daemon resource caching follows global.resource_cache; relative file: paths
 use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.`,
 		Args: cobra.ExactArgs(1), SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -57,7 +57,7 @@ use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.ErrOrStderr(), "Place this module section inside mitm.surge (or another Surge plugin instance) in your configuration:")
+			fmt.Fprintln(cmd.ErrOrStderr(), "Place this module section inside plugins.surge (or another Surge plugin instance) in your configuration:")
 			_, err = fmt.Fprint(cmd.OutOrStdout(), output)
 			return err
 		},

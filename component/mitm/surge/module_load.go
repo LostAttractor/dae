@@ -4,11 +4,11 @@ package surge
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,164 +33,61 @@ const (
 	moduleLoadTimeout    = 2 * time.Minute
 )
 
-// Load applies the source's explicit persistence policy. A persistent remote
-// module refreshes and falls back as one complete snapshot. Other modules always
-// use their current contents; only dependencies marked http(s)-file may fall back.
+// Load validates a module and its dependencies as one resource cache group.
+// Local modules always use current contents, including during cache fallback.
 func Load(ctx context.Context, raw string, client *http.Client, options LoadOptions) (*Module, error) {
 	source, err := resource.Parse(raw, options.BaseDir)
 	if err != nil {
 		return nil, err
 	}
-	m, snapshot, refreshErr := refreshModule(ctx, source, client, options)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if refreshErr != nil {
-		if !source.Persistent {
-			return nil, fmt.Errorf("load module: %w", refreshErr)
-		}
-		// A persistent module rolls back as a whole. Never mix the old module
-		// text with dependencies from an incomplete refresh.
-		previous, err := readFallbackCache(ctx, source, options, refreshErr)
-		if err != nil {
-			return nil, err
-		}
-		m, err = loadModuleContents(ctx, string(previous.Module.Data), previous.Module.Location, options.Arguments, func(dependency resource.Source, _ bool) (string, error) {
-			cached, ok := previous.Resources[dependency.Location]
-			if !ok {
-				return "", errors.New("dependency is not present in the last complete module cache")
-			}
-			return string(cached.Data), nil
-		})
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if err != nil {
-			return nil, fmt.Errorf("module refresh failed: %w; cached module could not be loaded: %v", refreshErr, err)
-		}
-		moduleCacheWarning(m, fmt.Sprintf("module refresh failed; using the last complete local cache: %v", refreshErr))
-		m.cacheState = "cached"
-	} else if options.CacheDir != "" && (snapshot.Module != nil || len(snapshot.Resources) != 0) {
-		if err := writeModuleCache(ctx, options.CacheDir, snapshot); err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			moduleCacheWarning(m, fmt.Sprintf("module loaded successfully, but its local cache could not be updated: %v", err))
-		}
-	}
-	m.source = resource.RedactURL(raw)
-	return m, nil
-}
-
-// refreshModule builds a complete candidate without changing the saved cache.
-// Nonpersistent modules may reuse only explicitly persistent dependencies.
-func refreshModule(ctx context.Context, source resource.Source, client *http.Client, options LoadOptions) (*Module, *moduleCacheSnapshot, error) {
 	deadline := time.Now().Add(moduleLoadTimeout)
 	if !options.RefreshDeadline.IsZero() && options.RefreshDeadline.Before(deadline) {
 		deadline = options.RefreshDeadline
 	}
-	refreshCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	readCurrent := func(source resource.Source, limit int64) (resource.Result, error) {
-		resourceCtx := ctx
-		if source.Remote() {
-			resourceCtx = refreshCtx
-		}
-		resourceCtx, cancel := context.WithTimeout(resourceCtx, resourceTimeout)
-		defer cancel()
-		return resource.Read(resourceCtx, client, source, resource.ReadOptions{MaxBytes: limit})
-	}
-	current, err := readCurrent(source, MaxModuleBytes)
+	// Deterministic map encoding makes equivalent overrides share a snapshot.
+	key, err := json.Marshal(struct {
+		Source    string
+		Arguments map[string]string `json:",omitempty"`
+	}{source.Location, options.Arguments}, json.Deterministic(true))
 	if err != nil {
-		return nil, nil, err
-	}
-	snapshot := &moduleCacheSnapshot{
-		Version: moduleCacheVersion, Source: source.Location, Arguments: options.Arguments,
-		Resources: make(map[string]moduleCachedResource),
-	}
-	if source.Persistent {
-		snapshot.Module = &moduleCachedResource{Location: current.Location, Data: current.Data}
-	}
-	// Deduplicate downloads by location. Keep errors too: a later ordinary
-	// HTTP reference must not reuse an explicitly persistent reference's cache.
-	type download struct {
-		result resource.Result
-		err    error
-	}
-	downloads := make(map[string]download)
-	var previous *moduleCacheSnapshot
-	var warnings []string
-	readDependency := func(dependency resource.Source, script bool) (string, error) {
-		fetched, ok := downloads[dependency.Location]
-		if !ok {
-			fetched.result, fetched.err = readCurrent(dependency, MaxScriptBytes)
-			if fetched.err == nil && script && dependency.Remote() && moduleLooksLikeHTML(string(fetched.result.Data)) {
-				fetched.err = errors.New("remote source returned an HTML document instead of JavaScript")
-			}
-			downloads[dependency.Location] = fetched
-		}
-		current, err := fetched.result, fetched.err
-		if err != nil && !source.Persistent && dependency.Persistent {
-			if previous == nil {
-				var cacheErr error
-				previous, cacheErr = readFallbackCache(ctx, source, options, err)
-				if cacheErr != nil {
-					return "", cacheErr
-				}
-			}
-			cached, ok := previous.Resources[dependency.Location]
-			if !ok {
-				return "", fmt.Errorf("dependency refresh failed: %w; dependency is not present in the local cache", err)
-			}
-			warnings = append(warnings, fmt.Sprintf("dependency %s refresh failed; using its local cache: %v", dependency.Location, err))
-			current, err = resource.Result{Data: cached.Data, Location: cached.Location}, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if dependency.Remote() && (source.Persistent || dependency.Persistent) {
-			snapshot.Resources[dependency.Location] = moduleCachedResource{Location: current.Location, Data: current.Data}
-		}
-		return string(current.Data), nil
-	}
-	m, err := loadModuleContents(ctx, string(current.Data), current.Location, options.Arguments, readDependency)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(warnings) != 0 {
-		m.cacheState = "cached dependencies"
-		for _, warning := range warnings {
-			moduleCacheWarning(m, warning)
-		}
-	}
-	return m, snapshot, nil
-}
-
-func readFallbackCache(ctx context.Context, source resource.Source, options LoadOptions, refreshErr error) (*moduleCacheSnapshot, error) {
-	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if options.CacheDir == "" {
-		return nil, refreshErr
-	}
-	snapshot, err := readModuleCache(ctx, options.CacheDir, source.Location, options.Arguments, source.Persistent)
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, refreshErr
-	}
+	cache := resource.Cache{Dir: options.CacheDir}
+	m, status, err := cache.Load(ctx, client, resource.LoadOptions{
+		Key: string(key), MaxBytes: MaxModuleBytes + MaxModuleScriptBytes,
+		RefreshDeadline: deadline, Timeout: resourceTimeout,
+	}, func(read resource.ReadFunc) (*Module, error) {
+		current, err := read(source, resource.ReadOptions{MaxBytes: MaxModuleBytes})
+		if err != nil {
+			return nil, err
+		}
+		return loadModuleContents(ctx, string(current.Data), current.Location, options.Arguments, func(dependency resource.Source) (string, error) {
+			result, err := read(dependency, resource.ReadOptions{MaxBytes: MaxScriptBytes})
+			return string(result.Data), err
+		})
+	})
 	if err != nil {
-		return nil, fmt.Errorf("module refresh failed: %w; local cache unavailable: %v", refreshErr, err)
+		return nil, fmt.Errorf("load module: %w", err)
 	}
-	return snapshot, nil
+	if status.RefreshError != nil {
+		m.cacheState = "cached"
+		if !source.Remote() {
+			m.cacheState = "cached dependencies"
+		}
+		moduleCacheWarning(m, fmt.Sprintf("module refresh failed; using the last complete resource cache: %v", status.RefreshError))
+	}
+	if status.WriteError != nil {
+		moduleCacheWarning(m, fmt.Sprintf("module loaded successfully, but its resource cache could not be updated: %v", status.WriteError))
+	}
+	m.source = resource.RedactURL(raw)
+	return m, nil
 }
 
 func moduleCacheWarning(m *Module, warning string) {
 	m.Warnings = append(m.Warnings, resource.RedactText(warning))
 }
 
-func loadModuleContents(ctx context.Context, contents, location string, arguments map[string]string, read func(resource.Source, bool) (string, error)) (*Module, error) {
+func loadModuleContents(ctx context.Context, contents, location string, arguments map[string]string, read func(resource.Source) (string, error)) (*Module, error) {
 	m, err := Parse(contents, arguments)
 	if err != nil {
 		return nil, err
@@ -202,25 +99,21 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 			m.Name = filepath.Base(location)
 		}
 	}
-	cache := make(map[resource.Source]string)
+	cache := make(map[string]string)
 	var loadedBytes int
-	counted := make(map[string]bool)
-	loadResource := func(path resource.Source, script bool) (string, error) {
-		if contents, ok := cache[path]; ok {
+	loadResource := func(path resource.Source) (string, error) {
+		if contents, ok := cache[path.Location]; ok {
 			return contents, nil
 		}
-		contents, err := read(path, script)
+		contents, err := read(path)
 		if err != nil {
 			return "", err
 		}
-		if !counted[path.Location] {
-			loadedBytes += len(contents)
-			counted[path.Location] = true
-		}
+		loadedBytes += len(contents)
 		if loadedBytes > MaxModuleScriptBytes {
 			return "", fmt.Errorf("module dependencies exceed %d total bytes", MaxModuleScriptBytes)
 		}
-		cache[path] = contents
+		cache[path.Location] = contents
 		return contents, nil
 	}
 	for i := range m.Scripts {
@@ -232,7 +125,7 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 		if err != nil {
 			return nil, fmt.Errorf("script %q: %w", script.Name, err)
 		}
-		contents, err := loadResource(path, true)
+		contents, err := loadResource(path)
 		if err != nil {
 			return nil, fmt.Errorf("load script %q: %w", script.Name, err)
 		}
@@ -240,6 +133,7 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 			return nil, fmt.Errorf("load script %q: remote source returned an HTML document instead of JavaScript", script.Name)
 		}
 		script.Source = contents
+		script.Path = path.Location
 	}
 	for i := range m.DNSHosts {
 		host := &m.DNSHosts[i]
@@ -250,7 +144,7 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 		if err != nil {
 			return nil, err
 		}
-		contents, err := loadResource(path, false)
+		contents, err := loadResource(path)
 		if err != nil {
 			return nil, fmt.Errorf("load Host %s: %w", host.SetKind, err)
 		}
@@ -282,7 +176,7 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 			host.Rules = append(host.Rules, ModuleRule{clauses: clauses})
 		}
 	}
-	mapBodies := make(map[resource.Source][]byte)
+	mapBodies := make(map[string][]byte)
 	for i := range m.MapLocals {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -295,16 +189,16 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 		if err != nil {
 			return nil, fmt.Errorf("Map Local data: %w", err)
 		}
-		if body, ok := mapBodies[path]; ok {
+		if body, ok := mapBodies[path.Location]; ok {
 			rule.Body = body
 			continue
 		}
-		contents, err := loadResource(path, false)
+		contents, err := loadResource(path)
 		if err != nil {
 			return nil, fmt.Errorf("load Map Local data: %w", err)
 		}
 		rule.Body = []byte(contents)
-		mapBodies[path] = rule.Body
+		mapBodies[path.Location] = rule.Body
 	}
 	return m, nil
 }

@@ -67,13 +67,13 @@ test = type=http-request,pattern=^https://target\.test/script,script-path=../scr
 		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
 	}
 	conf := Config{
-		Modules:       []ModuleSource{{Name: "cached", Link: "https-file://127.0.0.1:1/entry"}},
+		Modules:       []ModuleSource{{Name: "cached", Link: "https://127.0.0.1:1/entry"}},
 		ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 	}
 	for _, cached := range []bool{false, true} {
 		offline.Store(cached)
-		engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}, "test")
+		engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, ResourceCacheDir: filepath.Join(dir, "resources"), PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}, "test")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -7,10 +7,14 @@
 # Each routing fragment file needs a routing { ... } wrapper. Declare each rule_set, default and interface
 # profile once, then compose them with ordered use statements. See docs/en/configuration/separate-config.md.
 # DAE_LOCATION_CACHE sets the writable state directory (default: /var/lib/dae) for CA files,
-# explicit remote caches, relative Surge file: module sources and MITM certificate/plugin store paths.
+# explicit remote caches, relative Surge file: module sources, MITM certificate paths and plugin state.
 # The configuration directory may remain read-only. See docs/zh/configuration/cache-directory.md.
 
 global {
+    # Network-first cache for HTTP/HTTPS subscriptions, Surge modules and dependencies.
+    # Failed downloads/validation reuse the last complete validated snapshot.
+    # false disables cache reads, writes and cleanup; existing files are retained.
+    resource_cache: true
     ##### Software options.
 
     # Internal transparent-proxy listener port. It is not an HTTP/SOCKS port and normally does not need to be changed.
@@ -201,13 +205,9 @@ subscription {
     'file:relative/path/to/mysub.sub' # Resolved from the entry configuration directory, independent of DAE_LOCATION_CACHE.
     # local_sub: 'file:///var/lib/dae/nodes.sub' # Absolute local file; use file:/// with three slashes.
 
-    # Ordinary HTTP(S) sources do not fall back to cache. Sources with '-file' require a tag
-    # and will be saved to 'DAE_LOCATION_CACHE/persist.d/your_sub_tag.sub'
-    # (default: /var/lib/dae/persist.d/your_sub_tag.sub).
-    # Fall back to this file if downloading or parsing fails, or no usable nodes are found,
-    # including HTTP 200 responses containing timeout or rate-limit messages.
-    # Update the file only after parsing and node validation succeed.
-    persist_sub: 'https-file://www.example.com/persist_sub/link'
+    # global.resource_cache defaults to true for all HTTP(S) sources, named or anonymous.
+    # Validated snapshots live in DAE_LOCATION_CACHE/resources/subscriptions/.
+    # Invalid responses (including HTTP 200 timeout/error pages) never replace the cache.
 }
 
 # Nodes defined here will be merged as a part of the global node pool.
@@ -350,8 +350,8 @@ plugins {
         enabled: false
         module {
             demo: 'file:modules/demo.sgmodule'
-            # Remote modules only fall back to cache with explicit http-file:// or https-file://.
-            #remote: 'https-file://example.com/module.sgmodule'
+            # global.resource_cache controls module/dependency snapshots as one group.
+            #remote: 'https://example.com/module.sgmodule'
         }
         # Empty store means instance-local memory. Explicitly sharing a path shares persistent data.
         store: 'mitm/surge/store.json'

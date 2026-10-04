@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package resource resolves and reads configured HTTP and local file sources.
-// Content validation and persistent cache management belong to its callers.
+// Cache groups validated resources into atomic, network-first snapshots.
 package resource
 
 import (
@@ -17,8 +17,6 @@ import (
 type Source struct {
 	// Location is an HTTP(S) URL without a fragment, or an absolute file path.
 	Location string
-	// Persistent records the -file suffix; it does not change how Read works.
-	Persistent bool
 	// Relative records whether a local source was declared with a relative path.
 	Relative bool
 }
@@ -29,7 +27,7 @@ func (s Source) Remote() bool {
 
 func supportedScheme(scheme string) bool {
 	switch strings.ToLower(scheme) {
-	case "http", "https", "http-file", "https-file", "file":
+	case "http", "https", "file":
 		return true
 	default:
 		return false
@@ -53,7 +51,7 @@ func Split(raw string) (name, link string) {
 	return before, after
 }
 
-// Parse accepts explicit HTTP(S), HTTP(S)-file and file: sources. Relative file
+// Parse accepts explicit HTTP(S) and file: sources. Relative file
 // paths use baseDir; bare paths and file URLs with an authority are rejected.
 func Parse(raw, baseDir string) (Source, error) {
 	u, err := url.Parse(raw)
@@ -62,14 +60,12 @@ func Parse(raw, baseDir string) (Source, error) {
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
 	switch u.Scheme {
-	case "http", "https", "http-file", "https-file":
+	case "http", "https":
 		if u.Opaque != "" || u.Hostname() == "" {
 			return Source{}, errors.New("HTTP resource URL requires // and a host")
 		}
-		persistent := strings.HasSuffix(u.Scheme, "-file")
-		u.Scheme = strings.TrimSuffix(u.Scheme, "-file")
 		u.Fragment, u.RawFragment = "", ""
-		return Source{Location: u.String(), Persistent: persistent}, nil
+		return Source{Location: u.String()}, nil
 	case "file":
 		if u.Host != "" || u.User != nil {
 			return Source{}, errors.New("file resource URL cannot have a host or user information; use file:relative/path or file:///absolute/path")
@@ -97,7 +93,7 @@ func Parse(raw, baseDir string) (Source, error) {
 		}
 		return Source{Location: path, Relative: relative}, nil
 	default:
-		return Source{}, errors.New("resource source must use http://, https://, http-file://, https-file://, file:relative/path or file:///absolute/path")
+		return Source{}, errors.New("resource source must use http://, https://, file:relative/path or file:///absolute/path")
 	}
 }
 
@@ -158,7 +154,7 @@ func RedactURL(raw string) string {
 	redacted := "<invalid>"
 	if err == nil {
 		switch strings.ToLower(u.Scheme) {
-		case "http", "https", "http-file", "https-file":
+		case "http", "https":
 			redacted = u.Scheme + "://" + u.Host
 		case "file":
 			u.User, u.RawQuery, u.Fragment, u.RawFragment, u.ForceQuery = nil, "", "", "", false
@@ -171,7 +167,7 @@ func RedactURL(raw string) string {
 	return redacted
 }
 
-var remoteURLPattern = regexp.MustCompile(`(?i)https?(?:-file)?://(?:\\.|[^\s"<>])+`)
+var remoteURLPattern = regexp.MustCompile(`(?i)https?://(?:\\.|[^\s"<>])+`)
 
 // RedactText removes remote URL secrets from a diagnostic message.
 func RedactText(message string) string {

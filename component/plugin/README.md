@@ -272,6 +272,14 @@ See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
 
 ## Persistent storage
 
+`Services.ResourceCacheDir` is the shared configuration-resource cache root, or
+empty when `global.resource_cache` is disabled. Use `common/resource.Cache` in a
+plugin-specific subdirectory with `PrepareClient` to load and validate HTTP/HTTPS
+resource groups. It publishes complete snapshots atomically and falls back only
+after a failed refresh. Local files always use current contents. Include source
+URLs and interpretation options in the cache key; report cache warnings after a
+successful load. This cache is separate from plugin execution state.
+
 `Services.Storage` provides instance-scoped `Get(key)`, `Put(key, []byte)` and
 `Delete(key)` operations for small persistent state. The daemon supplies it
 automatically through `Configuration.Load` when `Services.BaseDir` is nonempty. Direct

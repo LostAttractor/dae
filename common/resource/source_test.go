@@ -15,28 +15,25 @@ import (
 func TestParseSourceSyntax(t *testing.T) {
 	dir := t.TempDir()
 	for _, test := range []struct {
-		raw        string
-		location   string
-		persistent bool
-		relative   bool
+		raw      string
+		location string
+		relative bool
 	}{
-		{"http://example.com/source#fragment", "http://example.com/source", false, false},
-		{"https://user:password@example.com/source?token=value#fragment", "https://user:password@example.com/source?token=value", false, false},
-		{"http-file://example.com/source", "http://example.com/source", true, false},
-		{"https-file://example.com/source", "https://example.com/source", true, false},
-		{"HTTPS://example.com/source", "https://example.com/source", false, false},
-		{"file:nodes.sub", filepath.Join(dir, "nodes.sub"), false, true},
-		{"file:sub/nodes%20with%20spaces%252F.sub", filepath.Join(dir, "sub/nodes with spaces%2F.sub"), false, true},
-		{"file:../nodes.sub", filepath.Join(filepath.Dir(dir), "nodes.sub"), false, true},
-		{"file:///var/lib/dae/nodes%20with%20spaces.sub", "/var/lib/dae/nodes with spaces.sub", false, false},
-		{"file:/var/lib/dae/nodes.sub", "/var/lib/dae/nodes.sub", false, false},
+		{"http://example.com/source#fragment", "http://example.com/source", false},
+		{"https://user:password@example.com/source?token=value#fragment", "https://user:password@example.com/source?token=value", false},
+		{"HTTPS://example.com/source", "https://example.com/source", false},
+		{"file:nodes.sub", filepath.Join(dir, "nodes.sub"), true},
+		{"file:sub/nodes%20with%20spaces%252F.sub", filepath.Join(dir, "sub/nodes with spaces%2F.sub"), true},
+		{"file:../nodes.sub", filepath.Join(filepath.Dir(dir), "nodes.sub"), true},
+		{"file:///var/lib/dae/nodes%20with%20spaces.sub", "/var/lib/dae/nodes with spaces.sub", false},
+		{"file:/var/lib/dae/nodes.sub", "/var/lib/dae/nodes.sub", false},
 	} {
 		t.Run(test.raw, func(t *testing.T) {
 			got, err := Parse(test.raw, dir)
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := Source{Location: test.location, Persistent: test.persistent, Relative: test.relative}
+			want := Source{Location: test.location, Relative: test.relative}
 			if got != want {
 				t.Fatalf("Parse() = %#v, want %#v", got, want)
 			}
@@ -68,8 +65,8 @@ func TestSplitRecognizesOpaqueFileSources(t *testing.T) {
 		{"file:http%3Anotes.sub", "", "file:http%3Anotes.sub"},
 		{"local:file:local.sub", "local", "file:local.sub"},
 		{"local:file:///absolute.sub", "local", "file:///absolute.sub"},
-		{"https-file://example.com/sub", "", "https-file://example.com/sub"},
-		{"office:https-file://example.com/sub", "office", "https-file://example.com/sub"},
+		{"https://example.com/sub", "", "https://example.com/sub"},
+		{"office:https://example.com/sub", "office", "https://example.com/sub"},
 		{"ss://node", "", "ss://node"},
 	} {
 		name, link := Split(test.raw)
@@ -80,10 +77,9 @@ func TestSplitRecognizesOpaqueFileSources(t *testing.T) {
 }
 
 func TestSplitAllowsSourceSchemesAsNames(t *testing.T) {
-	for _, wantName := range []string{"file", "http", "https", "http-file", "https-file"} {
+	for _, wantName := range []string{"file", "http", "https"} {
 		for _, wantLink := range []string{
 			"http://example.com/sub", "https://example.com/sub",
-			"http-file://example.com/sub", "https-file://example.com/sub",
 			"file:nodes.sub", "file:///etc/dae/nodes.sub",
 			"https:invalid-opaque", "HTTP://example.com/sub",
 		} {
@@ -99,26 +95,24 @@ func TestSplitAllowsSourceSchemesAsNames(t *testing.T) {
 func TestResolveDependencies(t *testing.T) {
 	for _, test := range []struct {
 		base, reference, want string
-		persistent            bool
 	}{
-		{"https://example.com/final/module.sgmodule", "../script.js#name", "https://example.com/script.js", false},
-		{"https://example.com/final/module.sgmodule", "/script.js", "https://example.com/script.js", false},
-		{"https://example.com/final/module.sgmodule", "//cdn.example/script.js", "https://cdn.example/script.js", false},
-		{"http://example.com/module", "https-file://cdn.example/script.js", "https://cdn.example/script.js", true},
-		{"http://example.com/module", "http://cdn.example/script.js", "http://cdn.example/script.js", false},
-		{"/etc/dae/modules/module.sgmodule", "../script.js", "/etc/dae/script.js", false},
-		{"/etc/dae/modules/module.sgmodule", "file:script%20name.js", "/etc/dae/modules/script name.js", false},
-		{"/etc/dae/modules/module.sgmodule", "file:///run/dae/script.js", "/run/dae/script.js", false},
-		{"/etc/dae/modules/module.sgmodule", "http-file://example.com/script.js", "http://example.com/script.js", true},
+		{"https://example.com/final/module.sgmodule", "../script.js#name", "https://example.com/script.js"},
+		{"https://example.com/final/module.sgmodule", "/script.js", "https://example.com/script.js"},
+		{"https://example.com/final/module.sgmodule", "//cdn.example/script.js", "https://cdn.example/script.js"},
+		{"http://example.com/module", "https://cdn.example/script.js", "https://cdn.example/script.js"},
+		{"http://example.com/module", "http://cdn.example/script.js", "http://cdn.example/script.js"},
+		{"/etc/dae/modules/module.sgmodule", "../script.js", "/etc/dae/script.js"},
+		{"/etc/dae/modules/module.sgmodule", "file:script%20name.js", "/etc/dae/modules/script name.js"},
+		{"/etc/dae/modules/module.sgmodule", "file:///run/dae/script.js", "/run/dae/script.js"},
+		{"/etc/dae/modules/module.sgmodule", "http://example.com/script.js", "http://example.com/script.js"},
 	} {
 		got, err := Resolve(test.base, test.reference)
-		if err != nil || got.Location != test.want || got.Persistent != test.persistent {
-			t.Errorf("Resolve(%q, %q) = %#v, %v; want %q persistent=%v", test.base, test.reference, got, err, test.want, test.persistent)
+		if err != nil || got.Location != test.want {
+			t.Errorf("Resolve(%q, %q) = %#v, %v; want %q", test.base, test.reference, got, err, test.want)
 		}
 	}
 	for _, test := range []struct{ base, reference string }{
 		{"https://example.com/module", "http://example.com/script.js"},
-		{"https://example.com/module", "http-file://example.com/script.js"},
 		{"http://example.com/module", "file:script.js"},
 		{"https://example.com/module", "file:///etc/passwd"},
 		{"http://example.com/module", `sub\script.js`},
@@ -135,9 +129,9 @@ func TestResolveDependencies(t *testing.T) {
 
 func TestResourceDiagnosticsRedactRemoteSecrets(t *testing.T) {
 	for _, test := range []struct{ raw, want string }{
-		{"office:https-file://user:password@example.com:8443/path-token?query-token#fragment", "office:https-file://example.com:8443"},
+		{"office:https://user:password@example.com:8443/path-token?query-token#fragment", "office:https://example.com:8443"},
 		{"file:https://user:password@example.com/path-token?query-token#fragment", "file:https://example.com"},
-		{"http:https-file://user:password@example.com/path-token?query-token#fragment", "http:https-file://example.com"},
+		{"http:https://user:password@example.com/path-token?query-token#fragment", "http:https://example.com"},
 		{"file:file:nodes.sub", "file:file:nodes.sub"},
 		{"file:local%20nodes.sub", "file:local%20nodes.sub"},
 		{"local:file:///etc/dae/nodes.sub?secret#fragment", "local:file:///etc/dae/nodes.sub"},

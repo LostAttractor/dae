@@ -124,7 +124,7 @@ func TestReadHTTPRedirectBoundaries(t *testing.T) {
 	}{
 		{"HTTPS downgrade", "https://example.com/source", "http://example.com/target"},
 		{"local file", "http://example.com/source", "file:///etc/passwd"},
-		{"persistent scheme", "http://example.com/source", "https-file://example.com/target"},
+		{"unsupported scheme", "http://example.com/source", "ftp://example.com/target"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requests := 0
@@ -154,5 +154,26 @@ func TestReadPreservesTransportErrorsAndCancellation(t *testing.T) {
 		if strings.Contains(err.Error(), secret) {
 			t.Fatalf("diagnostic leaked %q: %v", secret, err)
 		}
+	}
+}
+
+func TestReadRedirectCallbackCannotChangeTransportBoundary(t *testing.T) {
+	requests := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests++
+			if requests == 1 {
+				return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {"https://example.com/next"}}, Body: http.NoBody, Request: req}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
+		}),
+		CheckRedirect: func(next *http.Request, _ []*http.Request) error {
+			next.URL.Scheme = "http"
+			return nil
+		},
+	}
+	_, err := Read(t.Context(), client, Source{Location: "https://example.com/source"}, ReadOptions{MaxBytes: 128})
+	if err == nil || requests != 1 {
+		t.Fatalf("callback sent a downgraded request: requests=%d err=%v", requests, err)
 	}
 }

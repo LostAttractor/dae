@@ -63,6 +63,7 @@ var MITMDesc = Desc{
 }
 
 var GlobalDesc = Desc{
+	"resource_cache":        "Cache validated HTTP/HTTPS configuration resources (subscriptions, Surge modules and dependencies). Network-first with fallback on download or validation failure. Defaults to true; false disables cache reads, writes and cleanup.",
 	"dns_resolver":          "Optional DNS server for dae's internal lookups: IP or IP:port (default port 53). Empty uses Go's system resolver. Bootstrap is direct; once ready, DNS transports follow routing rules. Proxy-server names use direct bootstrap to avoid circular dependencies. Supports reload.",
 	"dns_retention_window":  "Sliding retention policy for observed domain-IP evidence, not a measured client cache lifetime. Defaults to 168h (seven days); must be positive. Delivered DNS uses max(TTL, window); observed traffic refreshes existing pairs by this window. Uncaptured kernel-direct traffic is not observed.",
 	"api_port":              "HTTP port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",

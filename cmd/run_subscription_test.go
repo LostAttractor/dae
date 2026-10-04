@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,16 +19,6 @@ import (
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/outbound/protocol/direct"
 )
-
-func TestPersistentSubscriptionTagsRejectDuplicates(t *testing.T) {
-	_, err := persistentSubscriptionTags([]config.Subscription{
-		{Name: "shared", Link: "http-file://example.com/one"},
-		{Name: "shared", Link: "https-file://example.com/two"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "duplicate persistent subscription tag") {
-		t.Fatalf("persistentSubscriptionTags error = %v, want duplicate tag error", err)
-	}
-}
 
 func TestResolveNodeDescriptorsRunsSubscriptionsConcurrentlyInOrder(t *testing.T) {
 	conf := &config.Config{Global: config.Global{DisableWaitingNetwork: true}}
@@ -41,7 +30,7 @@ func TestResolveNodeDescriptorsRunsSubscriptionsConcurrentlyInOrder(t *testing.T
 	release := make(chan struct{})
 	var current atomic.Int32
 	var maximum atomic.Int32
-	resolve := func(_ context.Context, _ *http.Client, _, link string, _ func(string) error) (string, []string, error) {
+	resolve := func(_ context.Context, _ *http.Client, _ subscription.ResolveOptions, link string, _ func(string) error) (string, []string, error) {
 		running := current.Add(1)
 		defer current.Add(-1)
 		for {
@@ -63,7 +52,7 @@ func TestResolveNodeDescriptorsRunsSubscriptionsConcurrentlyInOrder(t *testing.T
 	t.Setenv("DAE_LOCATION_CACHE", subscriptionDir)
 	done := make(chan result, 1)
 	go func() {
-		descriptors, err := resolveNodeDescriptors(context.Background(), conf, nil, false, subscriptionDir, resolve)
+		descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, subscriptionDir, resolve)
 		links := make([]string, 0, len(descriptors))
 		for _, descriptor := range descriptors {
 			links = append(links, descriptor.Link)
@@ -129,27 +118,24 @@ func TestWaitForNetworkOnlineCanBeCanceled(t *testing.T) {
 	}
 }
 
-func TestSubscriptionSourceDirectory(t *testing.T) {
-	configDir := filepath.Join(t.TempDir(), "config")
-	for _, test := range []struct {
-		name, cache, source, want string
-	}{
-		{"default cache", "", "https://example.com/nodes", "/var/lib/dae"},
-		{"default persistent cache", "", "tag:https-file://example.com/nodes", "/var/lib/dae"},
-		{"configured cache", "/custom/cache", "tag:http-file://example.com/nodes", "/custom/cache"},
-		{"ordinary local file", "", "file:nodes.sub", configDir},
-		{"tagged local file with cache", "/custom/cache", "tag:file:nodes.sub", configDir},
-		{"absolute local file", "/custom/cache", "file:///run/secrets/nodes.sub", configDir},
-		{"tagged absolute local file", "/custom/cache", "tag:file:/run/secrets/nodes.sub", configDir},
-		{"file tag with remote source", "/custom/cache", (config.Subscription{Name: "file", Link: "https-file://example.com/nodes"}).String(), "/custom/cache"},
-		{"http tag with local source", "/custom/cache", (config.Subscription{Name: "http", Link: "file:nodes.sub"}).String(), configDir},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("DAE_LOCATION_CACHE", test.cache)
-			if got := subscriptionSourceDirectory(test.source, configDir); got != test.want {
-				t.Fatalf("subscriptionSourceDirectory = %q, want %q", got, test.want)
+func TestSubscriptionResourceCacheOptions(t *testing.T) {
+	configDir, cacheDir := t.TempDir(), t.TempDir()
+	t.Setenv("DAE_LOCATION_CACHE", cacheDir)
+	for _, enabled := range []bool{false, true} {
+		conf := &config.Config{Global: config.Global{DisableWaitingNetwork: true, ResourceCache: enabled}, Subscription: []config.Subscription{{Link: "https://example.com/nodes"}}}
+		resolve := func(_ context.Context, _ *http.Client, opts subscription.ResolveOptions, _ string, _ func(string) error) (string, []string, error) {
+			want := ""
+			if enabled {
+				want = filepath.Join(cacheDir, "resources", "subscriptions")
 			}
-		})
+			if opts.BaseDir != configDir || opts.CacheDir != want || opts.RefreshDeadline.IsZero() {
+				t.Fatalf("options=%+v", opts)
+			}
+			return "", nil, nil
+		}
+		if _, err := resolveNodeDescriptors(t.Context(), conf, false, configDir, resolve); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -159,7 +145,7 @@ func TestResolveNodeDescriptorsDoesNotCreateDirectoriesWithoutPersistentDownload
 	cacheDir := filepath.Join(root, "missing-cache")
 	t.Setenv("DAE_LOCATION_CACHE", cacheDir)
 	conf := &config.Config{Global: config.Global{DisableWaitingNetwork: true}}
-	if _, err := resolveNodeDescriptors(context.Background(), conf, nil, false, configDir, nil); err != nil {
+	if _, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, dir := range []string{configDir, cacheDir} {
@@ -192,7 +178,7 @@ func TestResolveNodeDescriptorsLocalFileUsesConfigurationDirectory(t *testing.T)
 		Global:       config.Global{DisableWaitingNetwork: true},
 		Subscription: []config.Subscription{{Name: "local", Link: "file:nodes.sub"}},
 	}
-	descriptors, err := resolveNodeDescriptors(context.Background(), conf, nil, false, configDir, subscription.ResolveSubscriptionContext)
+	descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, subscription.ResolveSubscriptionContext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +210,7 @@ func TestResolveNodeDescriptorsAbsoluteSecretSymlink(t *testing.T) {
 		Global:       config.Global{DisableWaitingNetwork: true},
 		Subscription: []config.Subscription{{Name: "flowercloud", Link: source}},
 	}
-	descriptors, err := resolveNodeDescriptors(context.Background(), conf, nil, false, configDir, subscription.ResolveSubscriptionContext)
+	descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, subscription.ResolveSubscriptionContext)
 	if err != nil || len(descriptors) != 1 || descriptors[0].SubscriptionTag != "flowercloud" || descriptors[0].Link != node {
 		t.Fatalf("secret subscription was not included in the node pool: descriptors=%+v err=%v", descriptors, err)
 	}
@@ -253,19 +239,18 @@ func TestResolveNodeDescriptorsPersistsAndFallsBackInCacheDirectory(t *testing.T
 	direct.InitDirectDialers(false, 0)
 	t.Cleanup(func() { direct.Direct, direct.Bootstrap = previousDirect, previousBootstrap })
 	conf := &config.Config{
-		Global: config.Global{DisableWaitingNetwork: true},
+		Global: config.Global{DisableWaitingNetwork: true, ResourceCache: true},
 		Subscription: []config.Subscription{{
-			Name: "cached", Link: strings.Replace(server.URL, "http://", "http-file://", 1),
+			Name: "cached", Link: server.URL,
 		}},
 	}
-	activeTags := map[string]struct{}{"cached": {}}
 	for _, state := range []string{"fresh", "timeout response", "offline"} {
 		timedOut.Store(state == "timeout response")
 		if state == "offline" {
 			server.Close()
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		descriptors, err := resolveNodeDescriptors(ctx, conf, activeTags, false, configDir, subscription.ResolveSubscriptionContext)
+		descriptors, err := resolveNodeDescriptors(ctx, conf, false, configDir, subscription.ResolveSubscriptionContext)
 		cancel()
 		if err != nil {
 			t.Fatalf("%s: %v", state, err)
@@ -274,10 +259,16 @@ func TestResolveNodeDescriptorsPersistsAndFallsBackInCacheDirectory(t *testing.T
 			t.Fatalf("%s: descriptors = %+v, want cached node %q", state, descriptors, node)
 		}
 	}
-	cacheFile := filepath.Join(cacheDir, "persist.d", "cached.sub")
-	got, err := os.ReadFile(cacheFile)
-	if err != nil || string(got) != string(content) {
-		t.Fatalf("cache %q = %q, %v; want downloaded content", cacheFile, got, err)
+	files, err := filepath.Glob(filepath.Join(cacheDir, "resources", "subscriptions", "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("cache files=%v %v", files, err)
+	}
+	conf.Global.ResourceCache = false
+	if descriptors, err := resolveNodeDescriptors(t.Context(), conf, false, configDir, subscription.ResolveSubscriptionContext); err != nil || len(descriptors) != 0 {
+		t.Fatalf("disabled cache returned nodes: %v %v", descriptors, err)
+	}
+	if _, err := os.Stat(files[0]); err != nil {
+		t.Fatalf("disabled cache removed file: %v", err)
 	}
 	if _, err := os.Stat(configDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("persistent subscription created missing configuration directory: %v", err)
@@ -288,22 +279,22 @@ func TestResolveNodeDescriptorsPrunesOnlyCacheDirectory(t *testing.T) {
 	configDir, cacheDir := t.TempDir(), t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", cacheDir)
 	for _, dir := range []string{configDir, cacheDir} {
-		persistDir := filepath.Join(dir, "persist.d")
-		if err := os.Mkdir(persistDir, 0700); err != nil {
+		persistDir := filepath.Join(dir, "resources", "subscriptions")
+		if err := os.MkdirAll(persistDir, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(persistDir, "stale.sub"), []byte("stale"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(persistDir, "0000000000000000000000000000000000000000000000000000000000000000.json"), []byte("stale"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	conf := &config.Config{Global: config.Global{DisableWaitingNetwork: true}}
-	if _, err := resolveNodeDescriptors(context.Background(), conf, nil, false, configDir, nil); err != nil {
+	conf := &config.Config{Global: config.Global{DisableWaitingNetwork: true, ResourceCache: true}}
+	if _, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "persist.d", "stale.sub")); !errors.Is(err, os.ErrNotExist) {
+	if files, err := filepath.Glob(filepath.Join(cacheDir, "resources", "subscriptions", "*.json")); err != nil || len(files) != 0 {
 		t.Fatalf("stale cache subscription was not removed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(configDir, "persist.d", "stale.sub")); err != nil {
+	if files, err := filepath.Glob(filepath.Join(configDir, "resources", "subscriptions", "*.json")); err != nil || len(files) != 1 {
 		t.Fatalf("prune touched the configuration directory: %v", err)
 	}
 }

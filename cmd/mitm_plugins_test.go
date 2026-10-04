@@ -123,3 +123,49 @@ plugins {
 		}
 	}
 }
+
+func TestMITMGlobalResourceCache(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DAE_LOCATION_CACHE", dir)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "[Host]\napi.example.com = 198.51.100.1\n")
+	}))
+	defer server.Close()
+	conf := mitmConfigForTest(t, fmt.Sprintf("plugins { surge { module { '%s' } } }", server.URL))
+	if !conf.Global.ResourceCache {
+		t.Fatal("resource cache must default to enabled")
+	}
+	load := func(wantSuccess bool) {
+		t.Helper()
+		host, err := loadTestMITM(t.Context(), conf, server.Client(), http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
+		if host != nil {
+			host.Close()
+		}
+		if (err == nil) != wantSuccess {
+			t.Fatalf("resource_cache=%t: %v", conf.Global.ResourceCache, err)
+		}
+	}
+	conf.Global.ResourceCache = false
+	load(true)
+	if _, err := os.Stat(filepath.Join(dir, "resources")); !os.IsNotExist(err) {
+		t.Fatalf("disabled resource cache created directory: %v", err)
+	}
+	conf.Global.ResourceCache = true
+	load(true)
+	files, err := filepath.Glob(filepath.Join(dir, "resources", "surge", "*.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("resource cache files: %v %v", files, err)
+	}
+	before, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Close()
+	load(true)
+	conf.Global.ResourceCache = false
+	load(false)
+	after, err := os.ReadFile(files[0])
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("disabled resource cache modified existing snapshot: %v", err)
+	}
+}

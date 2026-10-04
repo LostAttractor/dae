@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	componentoutbound "github.com/daeuniverse/dae/component/outbound"
@@ -24,22 +23,15 @@ func TestResolveSubscriptionWithSchemeNamedTags(t *testing.T) {
 			_, _ = w.Write(content)
 		}))
 		defer server.Close()
-		sub := config.Subscription{Name: "file", Link: strings.Replace(server.URL, "https://", "https-file://", 1)}
-		if tag, persistent := PersistentTag(sub.String()); tag != sub.Name || !persistent {
-			t.Fatalf("persistent tag = %q, %t, want file, true", tag, persistent)
-		}
+		sub := config.Subscription{Name: "file", Link: server.URL}
 		for _, offline := range []bool{false, true} {
 			if offline {
 				server.Close()
 			}
-			tag, nodes, err := ResolveSubscription(server.Client(), dir, sub.String(), componentoutbound.ValidateNodeLink)
+			tag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{CacheDir: dir}, sub.String(), componentoutbound.ValidateNodeLink)
 			if err != nil || tag != sub.Name || len(nodes) != 1 || nodes[0] != node {
 				t.Fatalf("offline=%t: tag=%q nodes=%v err=%v", offline, tag, nodes, err)
 			}
-		}
-		cached, err := os.ReadFile(filepath.Join(dir, "persist.d", "file.sub"))
-		if err != nil || !bytes.Equal(cached, content) {
-			t.Fatalf("scheme-named tag did not preserve its cache: %v", err)
 		}
 	})
 	t.Run("http tag with relative file", func(t *testing.T) {
@@ -49,7 +41,7 @@ func TestResolveSubscriptionWithSchemeNamedTags(t *testing.T) {
 			t.Fatal(err)
 		}
 		sub := config.Subscription{Name: "http", Link: "file:nodes.sub"}
-		tag, nodes, err := ResolveSubscription(http.DefaultClient, dir, sub.String(), componentoutbound.ValidateNodeLink)
+		tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: dir}, sub.String(), componentoutbound.ValidateNodeLink)
 		if err != nil || tag != sub.Name || len(nodes) != 1 || nodes[0] != node {
 			t.Fatalf("scheme-named local tag returned tag=%q nodes=%v err=%v", tag, nodes, err)
 		}
@@ -76,7 +68,7 @@ func TestResolveSubscriptionRelativeFileSources(t *testing.T) {
 			{"local:file:nodes%20100%25.sub", "local"},
 		} {
 			t.Run(configDir+"/"+test.tag, func(t *testing.T) {
-				tag, nodes, err := ResolveSubscription(http.DefaultClient, configDir, test.link, componentoutbound.ValidateNodeLink)
+				tag, nodes, err := ResolveSubscriptionContext(t.Context(), http.DefaultClient, ResolveOptions{BaseDir: configDir}, test.link, componentoutbound.ValidateNodeLink)
 				if err != nil || tag != test.tag || len(nodes) != 1 || nodes[0] != node {
 					t.Fatalf("relative source returned tag=%q nodes=%v err=%v", tag, nodes, err)
 				}
@@ -85,7 +77,7 @@ func TestResolveSubscriptionRelativeFileSources(t *testing.T) {
 	}
 }
 
-func TestResolveSubscriptionRejectsLegacyAndBareSources(t *testing.T) {
+func TestResolveSubscriptionRejectsInvalidSources(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nodes.sub")
 	if err := os.WriteFile(path, encodedSubscription(testSSNode("local.example")), 0600); err != nil {
@@ -100,7 +92,7 @@ func TestResolveSubscriptionRejectsLegacyAndBareSources(t *testing.T) {
 		"ftp://example.com/nodes.sub", "file:nodes.sub?token=secret", "file:nodes.sub#fragment",
 	} {
 		t.Run(link, func(t *testing.T) {
-			_, nodes, err := ResolveSubscription(client, dir, link, componentoutbound.ValidateNodeLink)
+			_, nodes, err := ResolveSubscriptionContext(t.Context(), client, ResolveOptions{BaseDir: dir}, link, componentoutbound.ValidateNodeLink)
 			if err == nil || len(nodes) != 0 {
 				t.Fatalf("invalid source returned nodes=%v err=%v", nodes, err)
 			}
@@ -108,7 +100,33 @@ func TestResolveSubscriptionRejectsLegacyAndBareSources(t *testing.T) {
 	}
 }
 
-func TestOrdinaryRemoteSubscriptionDoesNotPersistOrFallback(t *testing.T) {
+func TestSubscriptionCacheIdentityUsesURLRatherThanTag(t *testing.T) {
+	node := testSSNode("cached.example")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(encodedSubscription(node))
+	}))
+	defer server.Close()
+	opts := ResolveOptions{CacheDir: t.TempDir()}
+	if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, "same:"+server.URL+"/one", componentoutbound.ValidateNodeLink); err != nil {
+		t.Fatal(err)
+	}
+	server.Close()
+	for _, tag := range []string{"", "renamed", "../name"} {
+		link := server.URL + "/one"
+		if tag != "" {
+			link = tag + ":" + link
+		}
+		gotTag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, link, componentoutbound.ValidateNodeLink)
+		if err != nil || gotTag != tag || len(nodes) != 1 || nodes[0] != node {
+			t.Fatalf("tag affected cache identity: tag=%q nodes=%v err=%v", gotTag, nodes, err)
+		}
+	}
+	if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), opts, "same:"+server.URL+"/two", componentoutbound.ValidateNodeLink); err == nil {
+		t.Fatal("same tag reused another URL's cache")
+	}
+}
+
+func TestDisabledRemoteSubscriptionCacheDoesNotReadOrWrite(t *testing.T) {
 	for _, tls := range []bool{false, true} {
 		name := "HTTP"
 		if tls {
@@ -128,17 +146,24 @@ func TestOrdinaryRemoteSubscriptionDoesNotPersistOrFallback(t *testing.T) {
 			}
 			defer server.Close()
 			link := "ordinary:" + server.URL
-			tag, nodes, err := ResolveSubscription(server.Client(), dir, link, componentoutbound.ValidateNodeLink)
+			tag, nodes, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{BaseDir: dir}, link, componentoutbound.ValidateNodeLink)
 			if err != nil || tag != "ordinary" || len(nodes) != 1 || nodes[0] != node {
 				t.Fatalf("ordinary download returned tag=%q nodes=%v err=%v", tag, nodes, err)
 			}
-			if _, err := os.Stat(filepath.Join(dir, "persist.d")); !os.IsNotExist(err) {
-				t.Fatalf("ordinary download created persistence directory: %v", err)
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+				t.Fatalf("disabled cache wrote files: %v %v", entries, err)
 			}
-			cached := encodedSubscription(testSSNode("cached.example"))
-			cachePath := writePersistedSubscription(t, dir, "ordinary", cached)
+			if _, _, err := ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{CacheDir: dir}, link, componentoutbound.ValidateNodeLink); err != nil {
+				t.Fatal(err)
+			}
+			files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+			if len(files) != 1 {
+				t.Fatalf("files=%v", files)
+			}
+			cachePath := files[0]
+			cached, _ := os.ReadFile(cachePath)
 			server.Close()
-			_, nodes, err = ResolveSubscription(server.Client(), dir, link, componentoutbound.ValidateNodeLink)
+			_, nodes, err = ResolveSubscriptionContext(t.Context(), server.Client(), ResolveOptions{BaseDir: dir}, link, componentoutbound.ValidateNodeLink)
 			if err == nil || len(nodes) != 0 {
 				t.Fatalf("ordinary download fell back to cached nodes=%v err=%v", nodes, err)
 			}

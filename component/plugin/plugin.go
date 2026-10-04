@@ -81,9 +81,11 @@ type Spec struct {
 // Services is provided by the host to factories. Logger is non-nil and includes
 // the instance ID; PrepareClient is for preparation only, never background work.
 type Services struct {
-	BaseDir       string
-	Logger        *logrus.Entry
-	PrepareClient *http.Client
+	// ResourceCacheDir is empty when global resource caching is disabled.
+	ResourceCacheDir string
+	BaseDir          string
+	Logger           *logrus.Entry
+	PrepareClient    *http.Client
 	// BodyMemory is the host-owned process budget, shared across reloads.
 	BodyMemory *membuffer.Budget
 	// Storage persists opaque values in this type/instance's namespace. The host

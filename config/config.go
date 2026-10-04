@@ -19,6 +19,7 @@ var (
 )
 
 type Global struct {
+	ResourceCache         bool                   `mapstructure:"resource_cache" default:"true"`
 	APIPort               uint16                 `mapstructure:"api_port" default:"0"`
 	APIKey                string                 `mapstructure:"api_key"`
 	TproxyPort            uint16                 `mapstructure:"tproxy_port" default:"12345"`

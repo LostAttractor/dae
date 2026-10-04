@@ -53,6 +53,22 @@ routing { client('游戏 加速') && l4proto(udp) -> proxy
 	}
 }
 
+func TestGlobalResourceCacheRoundTrip(t *testing.T) {
+	for _, setting := range []string{"", "resource_cache: true", "resource_cache: false"} {
+		conf := parseConfig(t, "global { "+setting+" }\nrouting { fallback: direct }")
+		if conf.Global.ResourceCache != (setting != "resource_cache: false") {
+			t.Fatalf("unexpected resource_cache default/value for %q", setting)
+		}
+		encoded, err := conf.Marshal(2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if restored := parseConfig(t, string(encoded)); restored.Global.ResourceCache != conf.Global.ResourceCache {
+			t.Fatal("resource_cache changed after round trip")
+		}
+	}
+}
+
 func TestClientExportsRejectInvalidConfiguration(t *testing.T) {
 	for _, entries := range []string{
 		`work { nftset: 'filter/work' }`,

@@ -23,8 +23,8 @@ type ReadOptions struct {
 }
 
 type Result struct {
-	Data     []byte
-	Location string
+	Data     []byte `json:"data"`
+	Location string `json:"location"`
 }
 
 // Read reads one bounded resource without validating its content or caching it.
