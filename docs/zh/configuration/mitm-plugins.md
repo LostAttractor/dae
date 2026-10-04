@@ -12,22 +12,20 @@ mitm {
 plugins {
   surge {
     module { personal: 'file:modules/personal.sgmodule' }
-    store: 'personal-store.json'
     script_timeout: 5s
   }
   work {
     type: surge
     module { work: 'file:modules/work.sgmodule' }
-    store: 'work-store.json'
   }
 }
 ```
 
-子段名是实例 ID，也是默认的类型。`type` 用于多个同类实例。空 `store` 为实例独立的内存存储；显式指定相同路径则共享持久数据，读写由同一个存储对象串行执行。实例默认启用，可用 `enabled: false` 关闭；HTTP 总开关默认关闭，不影响 DNS 插件。未知的活动类型、重复 ID 或未知插件字段会报错。显式关闭的插件不加载。
+子段名是实例 ID，也是默认的类型。`type` 用于多个同类实例。Surge 的 `store` 默认为 `true`，按实例 ID 自动保存在 `DAE_LOCATION_CACHE/plugins/<ID>/surge-store.json`；不同实例的数据独立，设置 `store: false` 改为实例内存存储。实例默认启用，可用 `enabled: false` 关闭；HTTP 总开关默认关闭，不影响 DNS 插件。未知的活动类型、重复 ID 或未知插件字段会报错。显式关闭的插件不加载。
 
 启动和重载会先检查全部启用实例的类型是否已编译，再调用 `Configure` 一次性解析并校验各实例配置，得到准备运行资源的工厂，之后才准备订阅、eBPF、连通性检查及远程模块。例如，后面的 bilijump 未编译时会立即报错，不必等前面的 Surge 模块下载。静态预检失败的重载会保持当前控制平面；依赖证书、远程模块内容等资源的错误在工厂准备阶段报告。加载阶段直接使用已解析的配置，见[插件 API](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
 
-`ca_cert`、`ca_key`、`client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。仅贡献 DNS、IP Host 或路由的实例无需 CA；启用 HTTP scope 时要求 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；新实例缓存位于 `plugins/<ID>/surge-cache`。
+`ca_cert`、`ca_key`、`client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。仅贡献 DNS、IP Host 或路由的实例无需 CA；启用 HTTP scope 时要求 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；模块及依赖缓存位于 `resources/surge`，由 `global.resource_cache` 统一控制。
 
 `buffer_memory_limit` 放在宿主，默认 `268435456`（256 MiB），按进程共享受管理的正文缓冲额度。它覆盖正文快照、Surge 解压和改写输出，以及脚本 HTTP 响应和待交付的回调数据；转发未完成、只读借用或请求重试仍需保留的数据继续计入额度。分配前申请，扩容同时计算新旧两份容量；额度不足立即返回，不持有部分额度等待其他请求。Surge 跳过当前处理并转发原文，已成功应用的前序规则保留；脚本 HTTP 请求通过回调报告失败。
 

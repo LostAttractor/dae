@@ -42,11 +42,12 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	}
 	logger.WithField("modules", len(conf.Modules)).Debug("Loading Surge modules")
 	baseDir := services.BaseDir
-	resolve := func(path string) string {
-		if path == "" || filepath.IsAbs(path) {
-			return path
+	var storePath string
+	if conf.Store {
+		if baseDir == "" || instanceID == "" || instanceID == "." || instanceID == ".." || filepath.Base(instanceID) != instanceID {
+			return nil, fmt.Errorf("surge: persistent store requires a base directory and a valid plugin instance ID")
 		}
-		return filepath.Join(baseDir, path)
+		storePath = filepath.Join(baseDir, "plugins", instanceID, "surge-store.json")
 	}
 	// Bound remote refreshes across the module list, while allowing remaining
 	// modules to use their complete snapshots after the network budget expires.
@@ -81,7 +82,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	}
 	runtime, err := NewRuntime(RuntimeOptions{
 		MemoryLimit: conf.MemoryLimit, Timeout: conf.ScriptTimeout,
-		StorePath: resolve(conf.Store),
+		StorePath: storePath,
 		Logger:    logger,
 	})
 	if err != nil {

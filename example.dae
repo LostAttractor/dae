@@ -353,8 +353,9 @@ plugins {
             # global.resource_cache controls module/dependency snapshots as one group.
             #remote: 'https://example.com/module.sgmodule'
         }
-        # Empty store means instance-local memory. Explicitly sharing a path shares persistent data.
-        store: 'mitm/surge/store.json'
+        # Default: persist scripts' data in plugins/<instance ID>/surge-store.json.
+        # Set false for instance-local memory only.
+        store: true
         script_timeout: 5s
         memory_limit: 134217728
         max_body_size: 33554432
@@ -366,7 +367,6 @@ plugins {
     #    type: surge
     #    enabled: false
     #    module { work: 'file:modules/work.sgmodule' }
-    #    store: 'mitm/work/store.json'
     #}
 }
 

@@ -88,7 +88,7 @@ func TestLoadMITMRejectsUnknownSettings(t *testing.T) {
 	}
 }
 
-func TestMITMInstancesCanExplicitlyShareStore(t *testing.T) {
+func TestMITMInstancesDefaultStoreIsolation(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
 	if err := mitmca.Generate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"), "store test", time.Hour); err != nil {
@@ -105,8 +105,8 @@ func TestMITMInstancesCanExplicitlyShareStore(t *testing.T) {
 	}
 	conf := mitmConfigForTest(t, `mitm { enabled: true ca_cert: 'ca.pem' ca_key: 'ca.key' }
 plugins {
- first {type:surge store:'shared.json' module {'file:first.sgmodule'}}
- second {type:surge store:'shared.json' module {'file:second.sgmodule'}}
+ first {type:surge module {'file:first.sgmodule'}}
+ second {type:surge module {'file:second.sgmodule'}}
  }`)
 	host, err := loadTestMITM(t.Context(), conf, http.DefaultClient, http.DefaultClient, map[string]plugin.Definition{"surge": surge.Plugin})
 	if err != nil {
@@ -118,8 +118,13 @@ plugins {
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, httptest.NewRequest("GET", "http://"+id+".test/", nil))
 		closeTransport()
-		if w.Code != 200 || w.Body.String() != fmt.Sprint(i+1) {
-			t.Fatalf("store not shared: code=%d body=%s", w.Code, w.Body.String())
+		if w.Code != 200 || w.Body.String() != fmt.Sprint(i/2+1) {
+			t.Fatalf("store crossed instance boundary: instance=%s code=%d body=%s", id, w.Code, w.Body.String())
+		}
+	}
+	for _, id := range []string{"first", "second"} {
+		if _, err := os.Stat(filepath.Join(dir, "plugins", id, "surge-store.json")); err != nil {
+			t.Fatalf("default store was not persisted for %s: %v", id, err)
 		}
 	}
 }

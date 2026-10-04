@@ -111,7 +111,7 @@ func TestLoadSurgeLocationLoadsScriptsAndPersistsStore(t *testing.T) {
 		absolute bool
 	}{
 		{name: "cache directory"},
-		{name: "absolute paths ignore cache directory", absolute: true},
+		{name: "absolute module path keeps state in cache directory", absolute: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			configDir, envDir := t.TempDir(), t.TempDir()
@@ -134,7 +134,7 @@ func TestLoadSurgeLocationLoadsScriptsAndPersistsStore(t *testing.T) {
 			keyPath := filepath.Join(resourceDir, "ca", "root.key")
 			modulePath := filepath.Join(resourceDir, "modules", "example.sgmodule")
 			scriptPath := filepath.Join(resourceDir, "modules", "scripts", "persist.js")
-			storePath := filepath.Join(resourceDir, "state", "persistent.json")
+			storePath := filepath.Join(envDir, "plugins", "test", "surge-store.json")
 			if err := mitmca.Generate(certPath, keyPath, "Surge location test", time.Hour); err != nil {
 				t.Fatal(err)
 			}
@@ -164,13 +164,12 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 			}
 			conf := Config{
 				Modules:       []ModuleSource{{Link: "file:modules/example.sgmodule"}},
-				Store:         "state/persistent.json",
+				Store:         true,
 				ScriptTimeout: time.Second, MemoryLimit: 16 << 20,
 				MaxBodySize: 1 << 20, MaxConcurrentScripts: 1,
 			}
 			if test.absolute {
 				conf.Modules = []ModuleSource{{Link: "file://" + modulePath}}
-				conf.Store = storePath
 			}
 			engine, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: envDir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test")
 			if err != nil {
@@ -201,14 +200,9 @@ $done({response:{status:201,body:"from-module-script:"+$persistentStore.read("se
 			if stored["counter"] != "6" || stored["seed"] != "on-disk" {
 				t.Fatalf("persistent store was not updated at %s: %s", storePath, data)
 			}
-			for _, dir := range []string{configDir, envDir} {
-				if dir == resourceDir {
-					continue
-				}
-				entries, err := os.ReadDir(dir)
-				if err != nil || len(entries) != 0 {
-					t.Fatalf("unexpected files outside resource directory %s: %v, err=%v", dir, entries, err)
-				}
+			entries, err := os.ReadDir(configDir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("unexpected files in configuration directory: %v, err=%v", entries, err)
 			}
 		})
 	}

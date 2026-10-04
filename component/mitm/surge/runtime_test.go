@@ -355,7 +355,7 @@ func TestRuntimeRetiredStoreIsReleased(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.json")
 	previous := func() weak.Pointer[runtimeStore] {
 		r := testRuntime(t, RuntimeOptions{StorePath: path})
-		if !r.data.write("value", "initial", false) {
+		if !r.data.write(t.Context(), "value", "initial", false) {
 			t.Fatal("could not write store")
 		}
 		return weak.Make(r.data)
@@ -374,7 +374,7 @@ func TestRuntimeRetiredStoreIsReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := testRuntime(t, RuntimeOptions{StorePath: path})
-	if got := next.data.read("value"); got != "updated" {
-		t.Fatalf("fresh runtime read stale data: %v", got)
+	if got, err := next.data.read(t.Context(), "value"); err != nil || got != "updated" {
+		t.Fatalf("fresh runtime read stale data: %v, %v", got, err)
 	}
 }

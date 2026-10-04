@@ -88,9 +88,9 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		}
 		return nil, nil
 	case "read":
-		return s.runtime.data.read(arg(1)), nil
+		return s.runtime.data.read(s.ctx, arg(1))
 	case "write":
-		return s.runtime.data.write(arg(1), arg(2), arg(3) == "delete"), nil
+		return s.runtime.data.write(s.ctx, arg(1), arg(2), arg(3) == "delete"), nil
 	case "encode":
 		return base64.StdEncoding.EncodeToString([]byte(arg(1))), nil
 	case "decode":

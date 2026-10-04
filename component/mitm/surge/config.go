@@ -25,7 +25,7 @@ type ModuleSource struct {
 // Config configures modules for HTTP processing, routing and IP rewrites. Sizes are bytes.
 type Config struct {
 	Modules              []ModuleSource
-	Store                string
+	Store                bool
 	ScriptTimeout        time.Duration
 	MemoryLimit          int64
 	MaxBodySize          int64
@@ -34,7 +34,7 @@ type Config struct {
 
 // ParseConfig interprets only the settings owned by a Surge instance.
 func ParseConfig(section *config_parser.Section) (Config, error) {
-	c := Config{ScriptTimeout: 5 * time.Second, MemoryLimit: 128 << 20, MaxBodySize: 32 << 20, MaxConcurrentScripts: 16}
+	c := Config{Store: true, ScriptTimeout: 5 * time.Second, MemoryLimit: 128 << 20, MaxBodySize: 32 << 20, MaxConcurrentScripts: 16}
 	if section == nil {
 		return c, fmt.Errorf("surge configuration is required")
 	}

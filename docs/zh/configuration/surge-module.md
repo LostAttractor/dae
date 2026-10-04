@@ -9,6 +9,7 @@
 ```text
 global {
   api_port: 9080
+  resource_cache: true # 默认开启，统一缓存订阅、模块及远程依赖
 }
 
 mitm {
@@ -23,14 +24,13 @@ plugins {
     module {
       demo: 'file:modules/demo.sgmodule'
       # 名称可省略，声明顺序决定匹配优先级：
-      # 'https-file://example.com/module.sgmodule'
+      # 'https://example.com/module.sgmodule'
     }
-    store: 'surge-store.json'
   }
 }
 ```
 
-插件实例统一放在 `plugins {}` 中，旧顶层 `surge {}` 和 `mitm.surge {}` 不再接受。多个实例的配置见[插件配置](mitm-plugins.md)。
+插件实例放在 `plugins {}` 中。多个实例的配置见[插件配置](mitm-plugins.md)。
 
 模块使用 `名称: '来源'` 或匿名 `'来源'`，参数配置见下节。名称不可重复；显示名优先使用配置名称，其次 `#!name`、文件名。
 
@@ -38,10 +38,9 @@ plugins {
 | --- | --- |
 | `file:modules/demo.sgmodule` | 相对 `DAE_LOCATION_CACHE`，默认 `/var/lib/dae` |
 | `file:///opt/dae/demo.sgmodule` | 绝对路径 |
-| `http://`、`https://` | 联网读取，不缓存模块 |
-| `http-file://`、`https-file://` | 保存完整模块及依赖快照，刷新失败时整体回退 |
+| `http://`、`https://` | 优先联网；`global.resource_cache` 开启时保存完整模块及依赖快照，失败时整体回退 |
 
-`ca_cert`、`ca_key`、`store` 的相对路径也使用 `DAE_LOCATION_CACHE`。模块内相对脚本及 Map Local 文件相对模块目录或重定向后的最终 URL；远程模块不能读本地文件，HTTPS 下载不能降级 HTTP。本地及普通远程模块只允许显式 `-file` 依赖使用缓存。缓存按来源和显式参数区分，与名称无关；写入和目录规则见[缓存目录](cache-directory.md)。
+`ca_cert`、`ca_key` 的相对路径也使用 `DAE_LOCATION_CACHE`。脚本持久存储默认开启，自动保存到该目录下的 `plugins/<实例ID>/surge-store.json`。模块内相对脚本及 Map Local 文件相对模块目录或重定向后的最终 URL；远程模块不能读本地文件，HTTPS 下载不能降级 HTTP。`global.resource_cache` 默认开启，适用于所有 HTTP(S) 模块和依赖；本地文件始终读取当前内容。缓存按来源和显式参数区分，与名称无关；写入和目录规则见[缓存目录](cache-directory.md#全局资源缓存)。
 
 启动或重载时，先等待节点的初始连通性检查阶段结束，再用系统解析器解析模块主机，按普通路由下载模块，加载完成后接管流量。初始检查最多等待 60 秒；超时按现有断网策略继续。模块列表共用两分钟刷新预算，模块自身规则在加载后才生效。没有可用来源或缓存时加载失败，重载保留旧实例。重载会停止旧实例的新请求并在 5 秒预算内排空请求；普通 TCP/UDP 连接按各自生命周期处理；不按 `script-update-interval` 定时刷新。
 
@@ -51,9 +50,11 @@ plugins {
 | `memory_limit` | `134217728` | 单次 QuickJS 堆上限，字节 |
 | `max_body_size` | `33554432` | 正文缓冲上限，字节；脚本可进一步缩小 |
 | `max_concurrent_scripts` | `16` | 同时执行脚本或 jq 正文处理的名额 |
-| `store` | 空 | `$persistentStore` 文件；空值仅保存在内存 |
+| `store` | `true` | 是否持久化 `$persistentStore`；`false` 仅保存在实例内存中，文件名自动确定 |
 
 每次脚本调用创建独立 VM。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。QuickJS 堆限制不等于进程内存限制，也不约束 jq 中间对象。
+
+同一实例的脚本共享存储，不同实例按 ID 隔离。`store: false` 不读取或修改已有文件，重载后内存数据丢失；重新开启会恢复文件内的数据。写入通过同目录的 `surge-store.json.lock` 跨进程锁保护，合并最新数据后原子替换。进程内及跨进程锁等待受脚本超时约束。
 
 ## 模块参数与交互配置
 
