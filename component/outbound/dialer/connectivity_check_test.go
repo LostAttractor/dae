@@ -136,7 +136,7 @@ func performCheck(c *connectivityChecker, ctx context.Context, kind checkKind) c
 func TestConnectivityCheckerWaitsForStartGate(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	probed := make(chan struct{}, 1)
-	checker := newConnectivityChecker(d, func(_ context.Context, network *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) (bool, error) {
 		if network.Index() == common.NetworkTCP4 {
 			select {
 			case probed <- struct{}{}:
@@ -237,7 +237,7 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 			return false, errors.New("network is unreachable")
 		},
 	}
-	checker := newConnectivityChecker(d, checkProbe(probes))
+	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	result := performCheck(checker, context.Background(), checkInitial)
 	applied, accepted := d.applyCheck(result)
 	if !accepted || !applied.success {
@@ -275,7 +275,7 @@ func TestUnsupportedInitialCheckIsComplete(t *testing.T) {
 			return false, netproxy.UnsupportedTunnelTypeError
 		}
 	}
-	checker := newConnectivityChecker(d, checkProbe(probes))
+	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	result := performCheck(checker, context.Background(), checkInitial)
 	applied, accepted := d.applyCheck(result)
 	if !accepted || applied.success {
@@ -315,7 +315,7 @@ func TestInitialCheckLogsEveryModeAndSupportDiscovery(t *testing.T) {
 			return false, errors.New("probe failed")
 		}
 	}
-	checker := newConnectivityChecker(d, checkProbe(probes))
+	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	result := performCheck(checker, context.Background(), checkInitial)
 	if _, accepted := d.applyCheck(result); !accepted {
 		t.Fatal("initial result was rejected")
@@ -398,7 +398,7 @@ func TestInitialCheckPublishesOnlyAfterFullSweep(t *testing.T) {
 		<-blocked
 		return true, nil
 	}
-	checker := newConnectivityChecker(d, checkProbe(probes))
+	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	resultCh := make(chan checkResult, 1)
 	go func() { resultCh <- performCheck(checker, context.Background(), checkInitial) }()
 	<-started
@@ -462,7 +462,7 @@ func TestHealthRetryBackoff(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.CheckInterval = 3 * time.Minute
 	d.CheckIntervalMax = time.Hour
-	checker := newConnectivityChecker(d, nil)
+	checker := newConnectivityChecker(d.pathRuntime, nil)
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
@@ -494,7 +494,7 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 	d.mu.Unlock()
 	probed := make(chan struct{}, 1)
 	release := make(chan struct{})
-	checker := newConnectivityChecker(d, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
 		select {
 		case probed <- struct{}{}:
 		default:
@@ -585,7 +585,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	if !availability.Alive || availability.ChecksTotal != 1 || availability.LastCheckAt.IsZero() {
 		t.Fatalf("support canonical availability = %+v", availability)
 	}
-	checker := newConnectivityChecker(d, nil)
+	checker := newConnectivityChecker(d.pathRuntime, nil)
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
@@ -632,7 +632,7 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	d.networks[common.NetworkTCP4] = networkUnknown
 	d.health = healthHealthy
 	d.mu.Unlock()
-	checker := newConnectivityChecker(d, nil)
+	checker := newConnectivityChecker(d.pathRuntime, nil)
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
@@ -680,7 +680,7 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	if got := group.forces.Load(); got != 0 {
 		t.Fatalf("unhealthy support forced selection: %d", got)
 	}
-	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
@@ -743,7 +743,7 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 		alternativeCalls.Add(1)
 		return true, nil
 	}
-	checker := newConnectivityChecker(d, checkProbe(probes))
+	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	result := performCheck(checker, context.Background(), checkHealth)
 	applied, _ := d.applyCheck(result)
 	if applied.success {
@@ -802,7 +802,7 @@ func TestSupportCheckReconnectsWithoutCanonicalMode(t *testing.T) {
 	probes[common.NetworkTCP4] = func(context.Context, *common.NetworkType) (bool, error) {
 		return true, nil
 	}
-	checker := newConnectivityChecker(d, checkProbe(probes))
+	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	result := performCheck(checker, context.Background(), checkSupport)
 	applied, accepted := d.applyCheck(result)
 	if !accepted || !applied.success || !applied.healthApplied {
@@ -958,7 +958,7 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 
-	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
 		return true, nil
 	})
 	checker.backingOff = true
@@ -1107,7 +1107,7 @@ func TestEnvironmentChangeRejectsOlderCheck(t *testing.T) {
 
 func TestDataPlaneRequestDoesNotResetSupportBackoff(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
-	checker := newConnectivityChecker(d, nil)
+	checker := newConnectivityChecker(d.pathRuntime, nil)
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
@@ -1142,7 +1142,7 @@ func TestConnectivityProbeConcurrencyIsLimited(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
-	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
 		entered <- struct{}{}
 		<-release
 		return true, nil

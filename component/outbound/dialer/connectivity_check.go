@@ -21,7 +21,7 @@ const (
 	supportRetryMultiplier      = 4
 )
 
-func (d *Dialer) ActivateCheck(start <-chan struct{}) {
+func (d *pathRuntime) activateCheck(start <-chan struct{}) {
 	d.mu.Lock()
 	if d.checkActivated || d.ctx.Err() != nil {
 		d.mu.Unlock()
@@ -31,10 +31,6 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 		d.checkActivated = true
 		d.mu.Unlock()
 		d.recordAvailability(true, false, time.Time{})
-		return
-	}
-	if d.group == nil && d.checksConnectivity {
-		d.mu.Unlock()
 		return
 	}
 	d.checkActivated = true
@@ -50,7 +46,7 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 
 // RequestConnectivityCheck asks an automatically monitored checker to run soon.
 // Requests that arrive during a check are coalesced into one follow-up round.
-func (d *Dialer) RequestConnectivityCheck() {
+func (d *pathRuntime) RequestConnectivityCheck() {
 	d.mu.Lock()
 	if d.ctx.Err() != nil || d.checkPaused || !d.checksConnectivity && d.session == nil {
 		d.mu.Unlock()
@@ -66,16 +62,12 @@ func (d *Dialer) RequestConnectivityCheck() {
 // can still run once while automatic checking is paused.
 func (d *Dialer) SetCheckEnabled(enabled bool) {
 	d.mu.Lock()
-	if d.ctx.Err() != nil || d.checkPaused == !enabled {
+	if d.closed || d.ctx.Err() != nil || d.checkEnabled == enabled {
 		d.mu.Unlock()
 		return
 	}
-	d.checkPaused = !enabled
-	if enabled {
-		d.pendingCheck |= checkRequestEnvironment
-	} else {
-		d.pendingCheck &^= checkRequestEnvironment
-	}
+	d.checkEnabled = enabled
+	d.updateCheckDemandLocked()
 	d.statusRevision++
 	d.mu.Unlock()
 	d.signalConnectivityCheck()
@@ -83,7 +75,7 @@ func (d *Dialer) SetCheckEnabled(enabled bool) {
 
 // RequestManualCheck preserves explicit demand when automatic work is canceled.
 // Only an actual probe can satisfy it; capacity replenishment cannot.
-func (d *Dialer) RequestManualCheck() {
+func (d *pathRuntime) RequestManualCheck() {
 	d.mu.Lock()
 	if d.ctx.Err() != nil || !d.checksConnectivity || d.checkProbing || d.pendingCheck&checkRequestManual != 0 {
 		d.mu.Unlock()
@@ -95,7 +87,7 @@ func (d *Dialer) RequestManualCheck() {
 	d.signalConnectivityCheck()
 }
 
-func (d *Dialer) signalConnectivityCheck() {
+func (d *pathRuntime) signalConnectivityCheck() {
 	select {
 	case <-d.ctx.Done():
 	case d.checkCh <- struct{}{}:
@@ -103,14 +95,14 @@ func (d *Dialer) signalConnectivityCheck() {
 	}
 }
 
-func (d *Dialer) connectivityCheckRequested() bool {
+func (d *pathRuntime) connectivityCheckRequested() bool {
 	d.mu.RLock()
 	requested := d.pendingCheck != 0
 	d.mu.RUnlock()
 	return requested
 }
 
-func (d *Dialer) beginConnectivityCheck(kind checkKind) checkAttempt {
+func (d *pathRuntime) beginConnectivityCheck(kind checkKind) checkAttempt {
 	d.mu.Lock()
 	attempt := checkAttempt{
 		kind:       kind,
@@ -156,7 +148,7 @@ type appliedCheck struct {
 }
 
 type connectivityChecker struct {
-	d       *Dialer
+	d       *pathRuntime
 	probe   func(context.Context, *common.NetworkType) (bool, error)
 	results chan checkResult
 
@@ -181,7 +173,7 @@ type connectivityChecker struct {
 	capacityActive      bool
 }
 
-func newConnectivityChecker(d *Dialer, probe func(context.Context, *common.NetworkType) (bool, error)) *connectivityChecker {
+func newConnectivityChecker(d *pathRuntime, probe func(context.Context, *common.NetworkType) (bool, error)) *connectivityChecker {
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
 	healthInterval := d.CheckInterval
@@ -457,7 +449,7 @@ func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 		return
 	}
 	if result.connectErr != nil {
-		log.WithField("node", c.d.Name).WithError(result.connectErr).Debug("Outbound capacity replenishment failed; existing capacity remains usable")
+		log.WithField("node", c.d.name).WithError(result.connectErr).Debug("Outbound capacity replenishment failed; existing capacity remains usable")
 	}
 	maximum := c.d.CheckIntervalMax
 	if maximum <= 0 {
@@ -549,7 +541,7 @@ func (c *connectivityChecker) dispatch() {
 	if c.cancel != nil || c.d.ctx.Err() != nil {
 		return
 	}
-	status := c.d.RuntimeStatus()
+	status := c.d.runtimeStatus()
 	if c.d.session != nil && status.Session.State == netproxy.SessionClosed {
 		c.stopRetries()
 		c.d.setRecovery(RecoveryStopped, time.Time{}, "")

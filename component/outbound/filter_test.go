@@ -365,7 +365,7 @@ func TestBuildPathIdentityIncludesRuntimeOptions(t *testing.T) {
 	}
 }
 
-func TestBuildPathCreatesOwnerScopedRuntime(t *testing.T) {
+func TestBuildPathSharesRuntimeWithOwnerScopedStatistics(t *testing.T) {
 	node := &NodeInfo{
 		Link:     "test://node",
 		Property: &dialer.Property{Name: "node", Link: "test://node"},
@@ -386,6 +386,9 @@ func TestBuildPathCreatesOwnerScopedRuntime(t *testing.T) {
 	})
 	if first.StatsKey() == second.StatsKey() {
 		t.Fatal("different owners shared one stats identity")
+	}
+	if first.Dialer != second.Dialer {
+		t.Fatal("equivalent paths did not share their runtime")
 	}
 }
 

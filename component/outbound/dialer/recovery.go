@@ -33,7 +33,7 @@ type recoveryProgress struct {
 }
 
 // Caller holds d.mu. This is the single composition point for public status.
-func (d *Dialer) recoverySnapshotLocked(session netproxy.StateEvent, healthy bool) RecoverySnapshot {
+func (d *pathRuntime) recoverySnapshotLocked(session netproxy.StateEvent, healthy bool) RecoverySnapshot {
 	progress := d.recovery
 	recovery := RecoverySnapshot{
 		Executor: session.RecoveryExecutor,
@@ -101,7 +101,7 @@ type resourceFailureProgress struct {
 // facts. A newer aggregate Seq can revisit an older child accident, so Seq alone
 // cannot deduplicate it. Resource generations are only compared within the same
 // publisher; pool member identities in Cause must never become map keys.
-func (d *Dialer) observeResourceFailureLocked(event netproxy.StateEvent, failed bool) bool {
+func (d *pathRuntime) observeResourceFailureLocked(event netproxy.StateEvent, failed bool) bool {
 	owner := event.PublisherID
 	if d.resourceFailures == nil {
 		d.resourceFailures = make(map[uint64]resourceFailureProgress)
@@ -196,11 +196,11 @@ func (d *Dialer) ReportDataPlaneError(err error) {
 	}
 }
 
-func (d *Dialer) setRecovery(phase RecoveryPhase, retryAt time.Time, blockedBy string) {
+func (d *pathRuntime) setRecovery(phase RecoveryPhase, retryAt time.Time, blockedBy string) {
 	d.updateRecovery(phase, retryAt, blockedBy, "")
 }
 
-func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedBy, action string) {
+func (d *pathRuntime) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedBy, action string) {
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
 		d.mu.Unlock()
@@ -239,7 +239,7 @@ func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedB
 	session := d.sessionSnapshot()
 	nextStatus := d.recoverySnapshotLocked(session, d.healthyLocked(session))
 	d.mu.Unlock()
-	fields := log.Fields{"node": d.Name, "phase": next.Phase, "executor": nextStatus.Executor, "attempt": next.Attempt, "revision": revision}
+	fields := log.Fields{"node": d.name, "phase": next.Phase, "executor": nextStatus.Executor, "attempt": next.Attempt, "revision": revision}
 	if !next.RetryAt.IsZero() {
 		fields["retry_at"] = retryAt
 		fields["retry_in"] = max(time.Until(retryAt), 0).Round(time.Millisecond)
@@ -259,7 +259,7 @@ func (d *Dialer) updateRecovery(phase RecoveryPhase, retryAt time.Time, blockedB
 	}
 }
 
-func (d *Dialer) startConnection(event netproxy.StateEvent, action string) {
+func (d *pathRuntime) startConnection(event netproxy.StateEvent, action string) {
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
 		d.mu.Unlock()
@@ -272,10 +272,12 @@ func (d *Dialer) startConnection(event netproxy.StateEvent, action string) {
 	d.recovery.BlockedBy = ""
 	d.statusRevision++
 	d.mu.Unlock()
-	stats.DefaultStore.RecordReconnectAttempt(d.StatsKey(), string(event.RecoveryExecutor))
+	for _, member := range d.membersSnapshot() {
+		stats.DefaultStore.RecordReconnectAttempt(member.StatsKey(), string(event.RecoveryExecutor))
+	}
 }
 
-func (d *Dialer) probeQueued() {
+func (d *pathRuntime) probeQueued() {
 	d.mu.Lock()
 	if d.ctx.Err() == nil && d.activeProbes == 0 {
 		d.recovery.Phase = RecoveryQueued
@@ -287,7 +289,7 @@ func (d *Dialer) probeQueued() {
 	d.mu.Unlock()
 }
 
-func (d *Dialer) probeStarted() {
+func (d *pathRuntime) probeStarted() {
 	d.mu.Lock()
 	d.activeProbes++
 	if d.ctx.Err() == nil {
@@ -299,7 +301,7 @@ func (d *Dialer) probeStarted() {
 	d.mu.Unlock()
 }
 
-func (d *Dialer) probeFinished() {
+func (d *pathRuntime) probeFinished() {
 	d.mu.Lock()
 	d.activeProbes--
 	d.mu.Unlock()

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
@@ -67,6 +68,9 @@ type PathSpec struct {
 
 type DialerSet struct {
 	nodeInfos []*NodeInfo
+	// Runtime reuse is scoped to one control plane, including late plugin targets.
+	pathMu sync.Mutex
+	paths  map[string]*dialer.Dialer
 }
 
 func applyNodeOptions(builder D.Builder, options config.NodeOptions) ([]D.Builder, error) {
@@ -381,6 +385,11 @@ func nodeKey(node *NodeInfo) string {
 func runtimePathKey(spec *PathSpec, option *dialer.GlobalOption) string {
 	var builder strings.Builder
 	builder.WriteString(spec.Identity())
+	writeRuntimeOptions(&builder, spec, option)
+	return builder.String()
+}
+
+func writeRuntimeOptions(builder *strings.Builder, spec *PathSpec, option *dialer.GlobalOption) {
 	builder.WriteString("|runtime-options|")
 	values := []string{
 		fmt.Sprintf("%t", option.AllowInsecure),
@@ -397,6 +406,33 @@ func runtimePathKey(spec *PathSpec, option *dialer.GlobalOption) string {
 		option.DNSResolver,
 	}
 	for _, value := range values {
+		fmt.Fprintf(builder, "%d:%s", len(value), value)
+	}
+}
+
+// Presentation, group policy and selection annotations do not configure the
+// physical path. Probe settings do: different checks need independent workers.
+func sharedPathKey(spec *PathSpec, option *dialer.GlobalOption) string {
+	var builder strings.Builder
+	for _, node := range spec.Nodes {
+		link, annotations, _ := strings.Cut(node.Property.Link, "\x1e")
+		if link == "" {
+			link = node.Link
+		}
+		if annotations == "multiplex=off" {
+			annotations = ""
+		}
+		if parsed, err := url.Parse(link); err == nil {
+			parsed.Fragment, parsed.RawFragment = "", ""
+			parsed.RawQuery = parsed.Query().Encode()
+			link = parsed.String()
+		}
+		fmt.Fprintf(&builder, "%d:%s%d:%s", len(link), link, len(annotations), annotations)
+	}
+	fmt.Fprintf(&builder, "|entry|%d|%d:%s", spec.IPVersion, len(spec.Entry.Interface), spec.Entry.Interface)
+	writeRuntimeOptions(&builder, spec, option)
+	fmt.Fprintf(&builder, "|checks|%d|%d|", option.CheckInterval, option.CheckIntervalMax)
+	for _, value := range option.CheckDnsOptionRaw.Raw {
 		fmt.Fprintf(&builder, "%d:%s", len(value), value)
 	}
 	return builder.String()
@@ -450,21 +486,6 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 	if len(spec.Nodes) == 0 {
 		return nil, errors.New("cannot build an empty proxy path")
 	}
-	builders := make([]D.Builder, 0)
-	for _, node := range spec.Nodes {
-		for _, builder := range node.Dialers {
-			builders = append(builders, pathNodeBuilder{node: node, builder: builder})
-		}
-	}
-	base, err := spec.entryDialer(option)
-	if err != nil {
-		return nil, err
-	}
-	runtime, err := D.BuildRuntime(netproxy.Layer{Data: base}, &option.ExtraOption, builders...)
-	if err != nil {
-		return nil, err
-	}
-
 	names := make([]string, 0, len(spec.Nodes))
 	protocols := make([]string, 0, len(spec.Nodes))
 	addresses := make([]string, 0, len(spec.Nodes))
@@ -496,5 +517,32 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		Hops:            hops,
 		Egress:          &api.NodeEgress{IPVersion: spec.IPVersion, Mark: spec.effectiveMark(option), Interface: spec.Entry.Interface},
 	}
-	return dialer.NewDialer(runtime, option, property, true, statsScope), nil
+	s.pathMu.Lock()
+	defer s.pathMu.Unlock()
+	key := sharedPathKey(spec, option)
+	if existing := s.paths[key]; existing != nil {
+		if member, ok := existing.Share(property, statsScope); ok {
+			return member, nil
+		}
+	}
+	builders := make([]D.Builder, 0)
+	for _, node := range spec.Nodes {
+		for _, builder := range node.Dialers {
+			builders = append(builders, pathNodeBuilder{node: node, builder: builder})
+		}
+	}
+	base, err := spec.entryDialer(option)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := D.BuildRuntime(netproxy.Layer{Data: base}, &option.ExtraOption, builders...)
+	if err != nil {
+		return nil, err
+	}
+	d := dialer.NewDialer(runtime, option, property, true, statsScope)
+	if s.paths == nil {
+		s.paths = make(map[string]*dialer.Dialer)
+	}
+	s.paths[key] = d
+	return d, nil
 }

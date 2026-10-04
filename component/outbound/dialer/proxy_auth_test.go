@@ -38,7 +38,7 @@ func TestProxyAuthFailureBlocksRetry(t *testing.T) {
 	}
 	defer layer.Close()
 	d := newTestDialer(t, layer.Data)
-	c := newConnectivityChecker(d, func(ctx context.Context, n *common.NetworkType) (bool, error) {
+	c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, n *common.NetworkType) (bool, error) {
 		if n.Index() != common.NetworkTCP4 {
 			return false, netproxy.UnsupportedTunnelTypeError
 		}
@@ -72,7 +72,7 @@ func TestStreamAuthenticationDistinguishesProxyAndTarget(t *testing.T) {
 				t.Fatalf("data-plane confirmation requested = %v", requested)
 			}
 			calls := 0
-			c := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+			c := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
 				calls++
 				return false, failure
 			})

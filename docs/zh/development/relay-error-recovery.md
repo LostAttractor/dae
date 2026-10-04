@@ -4,6 +4,8 @@
 
 - outbound 的 Session 管理共享连接；owner 通过 `Lease.Abort(cause)` 禁止新分配并终止依赖它的 relay，通过 `StateEvent` 通知 DAE 更新状态和安排恢复。
 - `Runtime` 拥有整条协议链。`Dialer()` 提供数据操作，`Session()` 返回可选控制器；`Retire()` 停止新操作，等待已保留的连接释放资源。
+- 一个控制平面内，`DialerSet` 按完整路径的传输、入口和探测配置复用 `pathRuntime`。后者拥有唯一的连通性 worker、Session 状态和恢复调度；`Dialer` 是组内成员，持有独立的统计身份、延迟计算及组回调。
+- 成员的监测需求取并集，手动探测按运行时合并。通知在运行时锁外发送，组关闭只释放自己的成员；最后一个成员才停止 worker，保留调用者与已有连接继续按租约排空。新增组激活前不接收共享回调或发布统计，激活时继承已观测状态。
 - `Failure` 描述协议、范围、来源和操作，用于日志、统计与确认探测。错误标签本身不授权关闭整个节点；只有 owner 的 Abort 才执行关联连接终止。
 
 正常 EOF 优先 `CloseWrite`，保留反向传输；不支持半关时最多排空 10 秒。Abort 立即使用户态 TCP 对客户端 RST，UDP 释放 endpoint。`Invalidate` 仅停止新分配，不能掩盖后来收到的设备或组策略 Abort。

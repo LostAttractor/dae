@@ -183,7 +183,7 @@ func TestRecoverySerializesDueHealthCapacityAndSupport(t *testing.T) {
 	d.networks[common.NetworkUDP4] = networkUnknown
 
 	started, release := make(chan struct{}), make(chan struct{})
-	c := newConnectivityChecker(d, func(ctx context.Context, network *common.NetworkType) (bool, error) {
+	c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) (bool, error) {
 		if network.Index() == common.NetworkTCP4 {
 			close(started)
 			select {

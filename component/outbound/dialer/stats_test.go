@@ -33,7 +33,7 @@ func TestCandidateStatsPublishLatestCheckAndSessionState(t *testing.T) {
 			}
 			previous := stats.DefaultStore.GetNode(d.StatsKey())
 			d.DeferStats()
-			checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+			checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
 				return true, nil
 			})
 			result := performCheck(checker, context.Background(), checkInitial)

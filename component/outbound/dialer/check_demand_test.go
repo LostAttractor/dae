@@ -24,7 +24,7 @@ func TestOnDemandCheckerDoesNotConnectOrRetryUntilRequested(t *testing.T) {
 				d.SetCheckEnabled(false)
 				var probes atomic.Int32
 				release := make(chan struct{})
-				checker := newConnectivityChecker(d, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+				checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
 					probes.Add(1)
 					select {
 					case <-release:
@@ -93,7 +93,7 @@ func TestFailedConnectCompletesTestBeforeCapabilityDiscovery(t *testing.T) {
 	transport := newTestSessionTransport(netproxy.SessionDisconnected)
 	transport.connectErr = errors.New("offline")
 	d := newTestDialer(t, transport)
-	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
 		t.Error("failed connection reached the probe")
 		return false, nil
 	})
@@ -136,7 +136,7 @@ func TestManualCheckDuringCapacityReplenishment(t *testing.T) {
 	d := newTestDialer(t, transport)
 	prepareRecoveryDialer(d)
 	var probes atomic.Int32
-	checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
 		probes.Add(1)
 		return true, nil
 	})
@@ -181,7 +181,7 @@ func TestPausedRetainedDialerRecoversUntilReleased(t *testing.T) {
 				prepareRecoveryDialer(d)
 				d.SetCheckEnabled(false)
 				var probes atomic.Int32
-				checker := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) {
+				checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
 					probes.Add(1)
 					return true, nil
 				})

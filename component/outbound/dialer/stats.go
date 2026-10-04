@@ -53,7 +53,13 @@ func (d *Dialer) PublishStats() {
 	d.stats.deferred = false
 }
 
-func (d *Dialer) recordAvailability(alive, checked bool, failureStarted time.Time) {
+func (d *pathRuntime) recordAvailability(alive, checked bool, failureStarted time.Time) {
+	for _, member := range d.membersSnapshot() {
+		member.recordMemberAvailability(alive, checked, failureStarted)
+	}
+}
+
+func (d *Dialer) recordMemberAvailability(alive, checked bool, failureStarted time.Time) {
 	d.stats.Lock()
 	defer d.stats.Unlock()
 	if d.stats.deferred {
@@ -73,7 +79,13 @@ func (d *Dialer) recordAvailability(alive, checked bool, failureStarted time.Tim
 	}
 }
 
-func (d *Dialer) recordConnectionFailure() {
+func (d *pathRuntime) recordConnectionFailure() {
+	for _, member := range d.membersSnapshot() {
+		member.recordMemberConnectionFailure()
+	}
+}
+
+func (d *Dialer) recordMemberConnectionFailure() {
 	d.stats.Lock()
 	defer d.stats.Unlock()
 	if d.stats.deferred {
@@ -81,4 +93,10 @@ func (d *Dialer) recordConnectionFailure() {
 		return
 	}
 	stats.DefaultStore.RecordNodeConnFail(d.StatsKey())
+}
+
+func (d *pathRuntime) recordResourceFailure() {
+	for _, member := range d.membersSnapshot() {
+		stats.DefaultStore.RecordResourceFailure(member.StatsKey())
+	}
 }

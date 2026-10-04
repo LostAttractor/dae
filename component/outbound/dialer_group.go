@@ -171,7 +171,7 @@ func (g *DialerGroup) releaseStartupReady(available bool) {
 	})
 }
 
-// Close retires all dialers owned by the group.
+// Close releases the group's members of their shared path runtimes.
 func (g *DialerGroup) Close() error {
 	g.closeOnce.Do(func() {
 		g.closed.Store(true)
@@ -225,6 +225,8 @@ func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan str
 	}
 	for _, d := range g.Dialers {
 		d.ActivateCheck(start)
+		// Another group may already have checked this shared runtime.
+		g.DialerChanged(d, dialer.SelectionForceNone)
 	}
 	return g.startupReady, nil
 }

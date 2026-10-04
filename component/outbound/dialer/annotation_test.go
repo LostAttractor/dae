@@ -104,7 +104,9 @@ func TestNewAnnotation_Priority_Invalid(t *testing.T) {
 }
 
 func TestNewAnnotation_UnknownKey(t *testing.T) {
-	if _, err := NewAnnotation([]*config_parser.Param{{Key: "unknown_annotation", Val: "1"}}); err == nil {
-		t.Errorf("unknown annotation key should return an error")
+	for _, key := range []string{"unknown_annotation", "via"} {
+		if _, err := NewAnnotation([]*config_parser.Param{{Key: key, Val: "1"}}); err == nil {
+			t.Errorf("unknown annotation %q should return an error", key)
+		}
 	}
 }

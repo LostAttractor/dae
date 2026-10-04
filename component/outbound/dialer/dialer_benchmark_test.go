@@ -26,7 +26,7 @@ func BenchmarkDialerUsable(b *testing.B) {
 }
 
 func benchmarkDialerWithLatency() *Dialer {
-	d := &Dialer{ctx: context.Background(), health: healthHealthy}
+	d := &Dialer{pathRuntime: &pathRuntime{ctx: context.Background(), health: healthHealthy}}
 	d.RegisterDialerGroup(nil, 0.5, time.Second)
 	for i := range d.networks {
 		d.networks[i] = networkSupported

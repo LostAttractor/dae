@@ -10,12 +10,11 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 
-func (d *Dialer) reportDataPlaneFailure(failure netproxy.Failure) {
+func (d *pathRuntime) reportDataPlaneFailure(failure netproxy.Failure) {
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
 		d.mu.Unlock()
@@ -32,16 +31,15 @@ func (d *Dialer) reportDataPlaneFailure(failure netproxy.Failure) {
 		d.pendingCheck |= checkRequestDataPlane
 		startedConfirmation = true
 	}
-	group := d.group
-	d.recordConnectionFailure()
 	d.mu.Unlock()
+	d.recordConnectionFailure()
 	if startedConfirmation {
-		d.notifyGroup(group, SelectionForceNone)
+		d.notifyGroups(SelectionForceNone)
 		d.signalConnectivityCheck()
 	}
 }
 
-func (d *Dialer) networkStates() [common.NetworkTypeCount]networkState {
+func (d *pathRuntime) networkStates() [common.NetworkTypeCount]networkState {
 	d.mu.RLock()
 	states := d.networks
 	d.mu.RUnlock()
@@ -54,7 +52,7 @@ type probeTransition struct {
 	current  networkState
 }
 
-func (d *Dialer) applyCapabilityResultsLocked(result checkResult) []probeTransition {
+func (d *pathRuntime) applyCapabilityResultsLocked(result checkResult) []probeTransition {
 	transitions := make([]probeTransition, 0, len(result.probes))
 	for _, probe := range result.probes {
 		index := probe.network
@@ -107,7 +105,7 @@ func firstSupportConfirmed(transition probeTransition) bool {
 	return (transition.previous == networkUntested || transition.previous == networkUnknown) && transition.current == networkSupported
 }
 
-func (d *Dialer) takePendingForceLocked() SelectionForceMask {
+func (d *pathRuntime) takePendingForceLocked() SelectionForceMask {
 	if !d.health.usable() {
 		return SelectionForceNone
 	}
@@ -116,7 +114,7 @@ func (d *Dialer) takePendingForceLocked() SelectionForceMask {
 	return force
 }
 
-func (d *Dialer) applyCheck(result checkResult) (appliedCheck, bool) {
+func (d *pathRuntime) applyCheck(result checkResult) (appliedCheck, bool) {
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
 		d.mu.Unlock()
@@ -151,10 +149,9 @@ func (d *Dialer) applyCheck(result checkResult) (appliedCheck, bool) {
 		d.health = healthHealthy
 		d.healthSeq = observedReadiness
 		d.statusRevision++
-		group := d.group
 		d.mu.Unlock()
 		d.recordAvailability(true, false, time.Time{})
-		d.notifyGroup(group, SelectionForceNone)
+		d.notifyGroups(SelectionForceNone)
 		return appliedCheck{success: true, healthApplied: true}, true
 	}
 
@@ -169,7 +166,7 @@ func (d *Dialer) applyCheck(result checkResult) (appliedCheck, bool) {
 	}
 }
 
-func (d *Dialer) applyConnectErrorLocked(result checkResult, session netproxy.StateEvent) appliedCheck {
+func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netproxy.StateEvent) appliedCheck {
 	failureReportedAt := d.failureReportedAt
 	previousHealthy := d.healthyLocked(session)
 	if result.kind != checkSupport {
@@ -182,7 +179,6 @@ func (d *Dialer) applyConnectErrorLocked(result checkResult, session netproxy.St
 			d.lastFailure = failureSnapshot(primaryNodeFailure(result.connectErr), d.failureGeneration)
 		}
 	}
-	group := d.group
 	d.mu.Unlock()
 	if result.kind != checkSupport {
 		d.logCheckOutcome(previousHealthy, false, nil, nil, result)
@@ -191,12 +187,12 @@ func (d *Dialer) applyConnectErrorLocked(result checkResult, session netproxy.St
 		} else {
 			d.recordAvailability(false, false, failureReportedAt)
 		}
-		d.notifyGroup(group, SelectionForceNone)
+		d.notifyGroups(SelectionForceNone)
 	}
 	return appliedCheck{}
 }
 
-func (d *Dialer) applyHealthResultLocked(result checkResult, success bool) time.Time {
+func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) time.Time {
 	failureReportedAt := d.failureReportedAt
 	d.healthSeq = result.readiness
 	d.statusRevision++
@@ -220,7 +216,7 @@ func (d *Dialer) applyHealthResultLocked(result checkResult, success bool) time.
 	return failureReportedAt
 }
 
-func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
+func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 	initial := result.kind == checkInitial
 	transitions := d.applyCapabilityResultsLocked(result)
 	discovered := SelectionForceNone
@@ -241,8 +237,8 @@ func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 	failureReportedAt := d.failureReportedAt
 	if healthApplied {
 		failureReportedAt = d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
-		if d.group != nil && canonicalResult != nil {
-			d.group.recordLatency(canonicalResult.latency, true)
+		if canonicalResult != nil {
+			d.recordLatencyLocked(canonicalResult.latency, true)
 		}
 	}
 
@@ -250,7 +246,6 @@ func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 	forceSelection := d.takePendingForceLocked()
 	currentHealthy := d.health.usable()
 	phaseChanged := previousPhase != d.health
-	group := d.group
 	d.mu.Unlock()
 
 	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, transitions, result)
@@ -258,7 +253,7 @@ func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 		d.recordAvailability(currentHealthy, true, failureReportedAt)
 	}
 	if initial || phaseChanged || forceSelection != SelectionForceNone {
-		d.notifyGroup(group, forceSelection)
+		d.notifyGroups(forceSelection)
 	}
 	return appliedCheck{
 		success:       currentHealthy,
@@ -266,35 +261,34 @@ func (d *Dialer) applyCapabilityCheckLocked(result checkResult) appliedCheck {
 	}
 }
 
-func (d *Dialer) applyHealthCheckLocked(result checkResult) appliedCheck {
+func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 	previousHealthy := d.health.usable()
 	var canonicalResult *probeResult
 	if len(result.probes) > 0 {
 		canonicalResult = &result.probes[0]
 	}
 	failureReportedAt := d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
-	if d.group != nil && canonicalResult != nil {
-		d.group.recordLatency(canonicalResult.latency, canonicalResult.err == nil)
+	if canonicalResult != nil {
+		d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
 	}
 	forceSelection := d.takePendingForceLocked()
-	group := d.group
 	currentHealthy := d.health.usable()
 	d.mu.Unlock()
 
 	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, nil, result)
 	d.recordAvailability(currentHealthy, true, failureReportedAt)
-	d.notifyGroup(group, forceSelection)
+	d.notifyGroups(forceSelection)
 	return appliedCheck{success: currentHealthy}
 }
 
-func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, transitions []probeTransition, result checkResult) {
+func (d *pathRuntime) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, transitions []probeTransition, result checkResult) {
 	if result.kind == checkInitial {
 		if result.connectErr != nil {
-			log.WithField("node", d.Name).WithError(result.connectErr).Debug("Connectivity initial check failed")
+			log.WithField("node", d.name).WithError(result.connectErr).Debug("Connectivity initial check failed")
 		}
 		for _, transition := range transitions {
 			fields := log.Fields{
-				"node":    d.Name,
+				"node":    d.name,
 				"network": transition.probe.network.String(),
 			}
 			entry := log.WithFields(fields)
@@ -318,19 +312,19 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 		log.WithFields(log.Fields{
 			"cause":    checkKindName[result.kind],
 			"networks": supported,
-			"node":     d.Name,
+			"node":     d.name,
 		}).Debug("Connectivity modes supported")
 	}
 	if len(unsupported) > 0 {
 		log.WithFields(log.Fields{
 			"cause":    checkKindName[result.kind],
 			"networks": unsupported,
-			"node":     d.Name,
+			"node":     d.name,
 		}).Debug("Connectivity modes unsupported")
 	}
 
 	if result.kind == checkSupport && !previousHealthy && success {
-		fields := log.Fields{"node": d.Name}
+		fields := log.Fields{"node": d.name}
 		if canonical != nil {
 			fields["network"] = canonical.network.String()
 		}
@@ -339,15 +333,11 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 	if result.kind != checkHealth {
 		return
 	}
-	fields := log.Fields{"node": d.Name}
+	fields := log.Fields{"node": d.name}
 	if canonical != nil {
 		fields["network"] = canonical.network.String()
 		if canonical.err == nil {
 			fields["last"] = canonical.latency.Truncate(time.Millisecond).String()
-			if latencyStats, ok := d.latencyStats(); ok {
-				fields["avg_10"] = latencyStats.Avg10.Truncate(time.Millisecond).String()
-				fields["mov_avg"] = latencyStats.MovingAvg.Truncate(time.Millisecond).String()
-			}
 			log.WithFields(fields).Trace("Connectivity probe succeeded")
 		} else {
 			log.WithFields(fields).WithError(canonical.err).Debug("Connectivity probe failed")
@@ -366,7 +356,7 @@ func (d *Dialer) logCheckOutcome(previousHealthy, success bool, canonical *probe
 	}
 }
 
-func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
+func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 	d.mu.Lock()
 	if d.ctx.Err() != nil || event.Seq <= d.observedSessionSeq {
 		d.mu.Unlock()
@@ -406,15 +396,14 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 		} else if d.health.usable() && d.healthSeq == event.ReadinessVersion && event.Cause == nil && !event.RecoveryRequired {
 			d.lastFailure = nil
 		}
-		group := d.group
 		d.mu.Unlock()
 		if resourceFailure {
-			stats.DefaultStore.RecordResourceFailure(d.StatsKey())
+			d.recordResourceFailure()
 			d.recordConnectionFailure()
 		}
 		if unchecked {
 			d.recordAvailability(true, false, time.Time{})
-			d.notifyGroup(group, SelectionForceNone)
+			d.notifyGroups(SelectionForceNone)
 		}
 		return false
 	}
@@ -428,15 +417,14 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 	d.healthSeq = event.ReadinessVersion
 	d.failureReportedAt = time.Time{}
 	d.pendingCheck &^= checkRequestDataPlane
-	group := d.group
 	diagnostic := d.lastFailure
 	d.mu.Unlock()
 	if resourceFailure {
-		stats.DefaultStore.RecordResourceFailure(d.StatsKey())
+		d.recordResourceFailure()
 		d.recordConnectionFailure()
 	}
 	if wasHealthy {
-		fields := log.Fields{"node": d.Name, "state": event.State}
+		fields := log.Fields{"node": d.name, "state": event.State}
 		if diagnostic != nil {
 			fields["scope"] = diagnostic.Scope
 			fields["layer"] = diagnostic.Layer
@@ -456,12 +444,12 @@ func (d *Dialer) applySessionState(event netproxy.StateEvent) bool {
 			entry.Warn("Outbound session unavailable")
 		}
 		d.recordAvailability(false, false, failureReportedAt)
-		d.notifyGroup(group, SelectionForceNone)
+		d.notifyGroups(SelectionForceNone)
 	}
 	return readinessChanged
 }
 
-func (d *Dialer) healthyAt(seq uint64) bool {
+func (d *pathRuntime) healthyAt(seq uint64) bool {
 	d.mu.RLock()
 	healthy := d.health.usable() && d.healthSeq == seq
 	d.mu.RUnlock()

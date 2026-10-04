@@ -31,7 +31,7 @@ func prepareRecoveryDialer(d *Dialer) {
 
 func testRecoveryChecker(t *testing.T, d *Dialer) *connectivityChecker {
 	t.Helper()
-	c := newConnectivityChecker(d, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
+	c := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
 	t.Cleanup(func() { c.stopRetries() })
 	return c
 }
@@ -109,7 +109,7 @@ func TestUpstreamTimeoutConfirmationCoalescesAndAppliesProbe(t *testing.T) {
 			prepareRecoveryDialer(d)
 			started, release := make(chan struct{}, 2), make(chan struct{})
 			var calls atomic.Int32
-			c := newConnectivityChecker(d, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+			c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
 				calls.Add(1)
 				started <- struct{}{}
 				select {

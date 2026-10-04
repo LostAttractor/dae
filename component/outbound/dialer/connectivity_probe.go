@@ -101,7 +101,7 @@ func (c *CheckDnsOptionRaw) Option(ctx context.Context) (*checkDNSOption, error)
 	return c.opt, nil
 }
 
-func (d *Dialer) checkDNSConnectivity(ctx context.Context, networkType *common.NetworkType) (bool, error) {
+func (d *pathRuntime) checkDNSConnectivity(ctx context.Context, networkType *common.NetworkType) (bool, error) {
 	opt, err := d.CheckDnsOptionRaw.Option(ctx)
 	if err != nil {
 		return false, err
@@ -117,7 +117,7 @@ func (d *Dialer) checkDNSConnectivity(ctx context.Context, networkType *common.N
 	if !ip.IsValid() {
 		log.WithFields(log.Fields{
 			"resolver": d.CheckDnsOptionRaw.Raw[0],
-			"node":     d.Name,
+			"node":     d.name,
 			"network":  networkType.String(),
 		}).Trace("Skipping connectivity check: resolver has no address for this IP family")
 		return false, nil
@@ -279,7 +279,7 @@ func releaseConnectivityCheckSlot() {
 	<-connectivityCheckSlots
 }
 
-func (d *Dialer) dnsCheck(ctx context.Context, dns netip.AddrPort, network string) (bool, error) {
+func (d *pathRuntime) dnsCheck(ctx context.Context, dns netip.AddrPort, network string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
 	addrs, err := netutils.ResolveNetipContext(ctx, d.Dialer, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA, network)

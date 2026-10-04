@@ -110,14 +110,29 @@ const (
 )
 
 type Dialer struct {
-	*GlobalOption
-	netproxy.Dialer
+	*pathRuntime
 	*Property
 	statsKey string
 	statsID  string
 	stats    dialerStats
-	runtime  *netproxy.Runtime
-	session  netproxy.Session
+	// Member state is protected by the shared runtime's mu.
+	group        *groupBinding
+	checkEnabled bool
+	active       bool
+	closed       bool
+	closeOnce    sync.Once
+}
+
+// pathRuntime owns a complete physical path and its connectivity worker.
+// Dialers are group-local members; the last member stops this runtime.
+type pathRuntime struct {
+	*GlobalOption
+	netproxy.Dialer
+	name        string
+	runtime     *netproxy.Runtime
+	session     netproxy.Session
+	members     map[*Dialer]struct{}
+	lastLatency *latencySample
 
 	checksConnectivity bool
 	health             healthPhase
@@ -133,7 +148,6 @@ type Dialer struct {
 	pendingCheck       checkRequestReason
 	networks           [common.NetworkTypeCount]networkState
 	pendingForce       SelectionForceMask
-	group              *groupBinding
 
 	mu sync.RWMutex
 
@@ -147,7 +161,7 @@ type Dialer struct {
 	checkProbing   bool // The running operation includes a connectivity probe.
 	checkedAt      time.Time
 	checkWG        sync.WaitGroup
-	closeOnce      sync.Once
+	retireOnce     sync.Once
 	// Protected by mu. Retains keep an existing intercepted client connection
 	// able to open further upstream requests after its control plane closes.
 	retains       int
@@ -252,17 +266,22 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	ctx, cancel := context.WithCancel(context.Background())
 	session := runtime.Session()
 	d := &Dialer{
-		GlobalOption:       option,
-		Dialer:             runtime.Dialer(),
-		Property:           property,
-		runtime:            runtime,
-		session:            session,
-		checksConnectivity: checksConnectivity,
-		checkCh:            make(chan struct{}, 1),
-		statusRevision:     1,
-		recovery:           recoveryProgress{Phase: RecoveryQueued},
-		ctx:                ctx,
-		cancel:             cancel,
+		pathRuntime: &pathRuntime{
+			GlobalOption:       option,
+			Dialer:             runtime.Dialer(),
+			name:               property.Name,
+			runtime:            runtime,
+			session:            session,
+			checksConnectivity: checksConnectivity,
+			checkCh:            make(chan struct{}, 1),
+			statusRevision:     1,
+			recovery:           recoveryProgress{Phase: RecoveryQueued},
+			ctx:                ctx,
+			cancel:             cancel,
+		},
+		Property:     property,
+		checkEnabled: true,
+		active:       true,
 	}
 	if !checksConnectivity {
 		if session == nil {
@@ -285,6 +304,7 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	}
 	d.statsKey = makeStatsKey(property, statsScope)
 	d.statsID = stats.NodeID(d.statsKey)
+	d.members = map[*Dialer]struct{}{d: {}}
 	return d
 }
 
@@ -320,25 +340,25 @@ func (d *Dialer) StatsPath(outbound string, networkType *common.NetworkType) sta
 	}
 }
 
-func (d *Dialer) ChecksConnectivity() bool {
+func (d *pathRuntime) ChecksConnectivity() bool {
 	return d.checksConnectivity
 }
 
-func (d *Dialer) sessionSnapshot() netproxy.StateEvent {
+func (d *pathRuntime) sessionSnapshot() netproxy.StateEvent {
 	if d.session == nil {
 		return netproxy.StateEvent{}
 	}
 	return d.session.Snapshot()
 }
 
-func (d *Dialer) healthyLocked(session netproxy.StateEvent) bool {
+func (d *pathRuntime) healthyLocked(session netproxy.StateEvent) bool {
 	return d.ctx.Err() == nil && d.health.usable() && (d.session == nil || session.Accepting && d.healthSeq == session.ReadinessVersion)
 }
 
 func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.healthyLocked(d.sessionSnapshot()) && d.networks[networkType.Index()] == networkSupported
+	return !d.closed && d.healthyLocked(d.sessionSnapshot()) && d.networks[networkType.Index()] == networkSupported
 }
 
 func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSnapshot {
@@ -346,7 +366,7 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 	session := d.sessionSnapshot()
 	state := d.networks[networkType.Index()]
 	snapshot := SelectionSnapshot{
-		Usable:  d.healthyLocked(session) && state == networkSupported,
+		Usable:  !d.closed && d.healthyLocked(session) && state == networkSupported,
 		Support: supportState(state),
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
@@ -357,7 +377,7 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 func (d *Dialer) ConnectivitySnapshot() ConnectivitySnapshot {
 	d.mu.RLock()
 	session := d.sessionSnapshot()
-	healthy := d.healthyLocked(session)
+	healthy := !d.closed && d.healthyLocked(session)
 	snapshot := ConnectivitySnapshot{
 		InitialCheckDone:  d.initialCheckCompletedLocked(),
 		ConfirmingFailure: healthy && d.health == healthConfirming,
@@ -369,26 +389,20 @@ func (d *Dialer) ConnectivitySnapshot() ConnectivitySnapshot {
 	return snapshot
 }
 
-func (d *Dialer) initialCheckCompleted() bool {
+func (d *pathRuntime) initialCheckCompleted() bool {
 	d.mu.RLock()
 	done := d.initialCheckCompletedLocked()
 	d.mu.RUnlock()
 	return done
 }
 
-func (d *Dialer) initialCheckCompletedLocked() bool {
+func (d *pathRuntime) initialCheckCompletedLocked() bool {
 	for _, state := range d.networks {
 		if state == networkUntested {
 			return false
 		}
 	}
 	return true
-}
-
-func (d *Dialer) notifyGroup(group *groupBinding, forceSelection SelectionForceMask) {
-	if group != nil {
-		group.observer.DialerChanged(d, forceSelection)
-	}
 }
 
 func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, timeoutPenalty time.Duration) {
@@ -424,6 +438,22 @@ func (d *Dialer) latencyStatsLocked() (lat api.LatencyStats, ok bool) {
 
 func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	d.mu.RLock()
+	snapshot := d.runtimeStatusLocked()
+	snapshot.Healthy = snapshot.Healthy && !d.closed
+	snapshot.CheckEnabled = d.checkEnabled && !d.closed
+	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
+	d.mu.RUnlock()
+	snapshot.Availability = stats.DefaultStore.GetNode(d.StatsKey())
+	return snapshot
+}
+
+func (d *pathRuntime) runtimeStatus() RuntimeSnapshot {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.runtimeStatusLocked()
+}
+
+func (d *pathRuntime) runtimeStatusLocked() RuntimeSnapshot {
 	session := d.sessionSnapshot()
 	healthy := d.healthyLocked(session)
 	snapshot := RuntimeSnapshot{
@@ -443,19 +473,16 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	for i, state := range d.networks {
 		snapshot.SupportState[i] = supportState(state)
 	}
-	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
-	d.mu.RUnlock()
-	snapshot.Availability = stats.DefaultStore.GetNode(d.StatsKey())
 	return snapshot
 }
 
-// Retain keeps the outbound runtime accepting new operations for one existing
-// caller's lifetime. The caller must release it when that lifetime ends. Close
-// stops health checks immediately, but waits for all retains before retiring
-// the runtime. New retains are rejected once Close starts. Release is idempotent.
+// Retain keeps the shared runtime accepting operations for an existing caller,
+// even after its member closes. The final member stops checks; the final retain
+// then retires the transport. Closed members reject new retains. Release is
+// idempotent.
 func (d *Dialer) Retain() (release func(), err error) {
 	d.mu.Lock()
-	if d.ctx.Err() != nil {
+	if d.closed || d.ctx.Err() != nil {
 		d.mu.Unlock()
 		return nil, net.ErrClosed
 	}
@@ -474,12 +501,19 @@ func (d *Dialer) Retain() (release func(), err error) {
 	}), nil
 }
 
-// Close stops health checking and prevents new retains. The outbound runtime
-// retires immediately unless retained callers still need to open connections.
-// Its own leases keep established upstream connections alive while they drain.
+// Close releases this member. The final member stops health checks; retained
+// callers and established connection leases keep the transport alive to drain.
 func (d *Dialer) Close() error {
 	d.closeOnce.Do(func() {
 		d.mu.Lock()
+		d.closed = true
+		delete(d.members, d)
+		if len(d.members) != 0 {
+			d.updateCheckDemandLocked()
+			d.mu.Unlock()
+			d.signalConnectivityCheck()
+			return
+		}
 		d.cancel()
 		d.recovery.Phase = RecoveryStopped
 		d.recovery.RetryAt = time.Time{}
@@ -497,11 +531,13 @@ func (d *Dialer) Close() error {
 	return nil
 }
 
-func (d *Dialer) retireRuntime() {
-	d.runtime.Retire()
-	go func() {
-		if err := d.runtime.Wait(context.Background()); err != nil {
-			log.WithField("node", d.Name).WithError(err).Debug("Outbound cleanup completed with an error")
-		}
-	}()
+func (d *pathRuntime) retireRuntime() {
+	d.retireOnce.Do(func() {
+		d.runtime.Retire()
+		go func() {
+			if err := d.runtime.Wait(context.Background()); err != nil {
+				log.WithField("node", d.name).WithError(err).Debug("Outbound cleanup completed with an error")
+			}
+		}()
+	})
 }
