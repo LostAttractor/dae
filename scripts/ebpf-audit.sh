@@ -172,7 +172,7 @@ git submodule update --init --recursive
 if ! "${CLANG_BIN}" -O2 -g -target "${BPF_ENDIAN_TARGET}" -mcpu=v1 -Wall -Werror \
   -Wno-unused-command-line-argument \
   "${capacity_flags[@]}" \
-  -c control/kern/tproxy.c -o "${OBJECT_PATH}" \
+  -Ikern -c control/kern/tproxy.c -o "${OBJECT_PATH}" \
   > "${OUT_DIR}/static/compile.stdout.txt" 2> "${OUT_DIR}/static/compile.stderr.txt"; then
   exit 1
 fi

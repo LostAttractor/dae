@@ -11,7 +11,7 @@ on:
       - "Makefile"
       - "control/kern/tests/*.go"
       - ".github/workflows/bpf-test.yml"
-      - "control/kern/headers"
+      - "kern/headers"
   push:
     branches:
       - next
@@ -24,7 +24,7 @@ on:
       - "Makefile"
       - "control/kern/tests/*.go"
       - ".github/workflows/bpf-test.yml"
-      - "control/kern/headers"
+      - "kern/headers"
 
 permissions: read-all
 

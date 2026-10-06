@@ -31,8 +31,7 @@ on:
       - "install/geodata.env"
       - ".github/workflows/pr-build.yml"
       - ".github/workflows/seed-build.yml"
-      - "control/kern/headers"
-      - "trace/kern/headers"
+      - "kern/headers"
 
 jobs:
   pre-actions:

@@ -31,8 +31,7 @@ on:
       - ".github/workflows/build.yml"
       - ".github/workflows/seed-build.yml"
       - "Makefile"
-      - "control/kern/headers"
-      - "trace/kern/headers"
+      - "kern/headers"
 
 jobs:
   pre-actions:

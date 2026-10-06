@@ -12,8 +12,7 @@ on:
       - "go.sum"
       - ".gitmodules"
       - ".github/workflows/kernel-test.yml"
-      - "control/kern/headers"
-      - "trace/kern/headers"
+      - "kern/headers"
   push:
     branches:
       - next
@@ -27,8 +26,7 @@ on:
       - "go.sum"
       - ".gitmodules"
       - ".github/workflows/kernel-test.yml"
-      - "control/kern/headers"
-      - "trace/kern/headers"
+      - "kern/headers"
 
 jobs:
 

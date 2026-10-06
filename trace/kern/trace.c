@@ -1,5 +1,5 @@
 #include "headers/if_ether_defs.h"
-#include "headers/vmlinux.h"
+#include "vmlinux_include.h"
 
 #include "headers/bpf_core_read.h"
 #include "headers/bpf_endian.h"
@@ -10,6 +10,28 @@
 #define PNAME_LEN 32
 #define IPV4_FRAGMENT_OFFSET_MASK 0x1fff
 #define EEXIST 17
+
+// possible_net_t is empty in headers generated without CONFIG_NET_NS.
+// CO-RE resolves these field declarations against the running kernel's BTF.
+struct net_device___netns {
+	struct {
+		struct net *net;
+	} nd_net;
+} __attribute__((preserve_access_index));
+
+struct sock___netns {
+	struct {
+		struct {
+			struct net *net;
+		} skc_net;
+	} __sk_common;
+} __attribute__((preserve_access_index));
+
+// All supported trace targets are 64-bit and store tail as an offset.
+// The generated powerpc header describes a 32-bit kernel with a pointer tail.
+struct sk_buff___tail_offset {
+	__u32 tail;
+} __attribute__((preserve_access_index));
 
 enum event_flags {
 	EVENT_F_TERMINAL = 1 << 0,
@@ -216,12 +238,16 @@ skip_ipv6_exthdr(void *skb_head, __u32 *off, __u32 end, __u8 *nexthdr)
 static __always_inline u32
 get_netns(struct sk_buff *skb)
 {
-	u32 netns = BPF_CORE_READ(skb, dev, nd_net.net, ns.inum);
+	struct net_device___netns *dev = (void *)BPF_CORE_READ(skb, dev);
+	u32 netns = 0;
+
+	if (bpf_core_field_exists(dev->nd_net.net))
+		netns = BPF_CORE_READ(dev, nd_net.net, ns.inum);
 
 	// if skb->dev is not initialized, try to get ns from sk->__sk_common.skc_net.net->ns.inum
 	if (netns == 0) {
-		struct sock *sk = BPF_CORE_READ(skb, sk);
-		if (sk != NULL)
+		struct sock___netns *sk = (void *)BPF_CORE_READ(skb, sk);
+		if (sk != NULL && bpf_core_field_exists(sk->__sk_common.skc_net.net))
 			netns = BPF_CORE_READ(sk, __sk_common.skc_net.net, ns.inum);
 	}
 
@@ -232,7 +258,7 @@ static __always_inline bool
 set_tuple(struct tuple *tpl, struct sk_buff *skb)
 {
 	void *skb_head = BPF_CORE_READ(skb, head);
-	__u32 linear_end = BPF_CORE_READ(skb, tail);
+	__u32 linear_end = BPF_CORE_READ((struct sk_buff___tail_offset *)skb, tail);
 	__u32 l3_off = BPF_CORE_READ(skb, network_header);
 	__u32 l4_off;
 	__u32 packet_end;

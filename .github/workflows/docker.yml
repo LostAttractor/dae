@@ -19,8 +19,7 @@ on:
       - "install/geodata.env"
       - "Makefile"
       - ".github/workflows/docker.yml"
-      - "control/kern/headers"
-      - "trace/kern/headers"
+      - "kern/headers"
   release:
     types: [ prereleased ]
 

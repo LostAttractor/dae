@@ -23,7 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../headers -I.
+//go:generate go run -mod=mod github.com/cilium/ebpf/cmd/bpf2go -type routing_result -cc "$BPF_CLANG" "$BPF_STRIP_FLAG" -cflags "$BPF_CFLAGS" -tags "linux,dae_bpf_tests" -target "$BPF_TARGET" bpftest ./bpf_test.c -- -I../../../kern -I.
 
 type testDaeParam struct {
 	ControlPlanePid      uint32

@@ -17,10 +17,7 @@
 #include "headers/pkt_cls_defs.h"
 #include "headers/socket_defs.h"
 #include "headers/upai_in6_defs.h"
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-declarations"
-#include "headers/vmlinux.h"
-#pragma clang diagnostic pop
+#include "vmlinux_include.h"
 
 #include "headers/bpf_core_read.h"
 #include "headers/bpf_endian.h"

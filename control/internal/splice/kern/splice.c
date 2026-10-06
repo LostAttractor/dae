@@ -5,14 +5,11 @@
 
 #define BPF_NO_PRESERVE_ACCESS_INDEX 1
 
-#include "errno-base.h"
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmissing-declarations"
-#include "vmlinux.h"
-#pragma clang diagnostic pop
+#include "headers/errno-base.h"
+#include "vmlinux_include.h"
 
-#include "bpf_helpers.h"
-#include "bpf_tracing.h"
+#include "headers/bpf_helpers.h"
+#include "headers/bpf_tracing.h"
 
 #define MAX_SPLICE_ENDPOINTS (65536 * 2)
 #define SPLICE_FAULT_TARGET 1ULL
