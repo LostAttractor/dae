@@ -58,16 +58,15 @@ func (d *pathRuntime) notifyGroups(force SelectionForceMask) {
 	}
 }
 
-type latencySample struct {
-	latency time.Duration
-	success bool
-}
-
 func (d *pathRuntime) recordLatencyLocked(latency time.Duration, success bool) {
-	d.lastLatency = &latencySample{latency, success}
+	if !success {
+		return
+	}
+	d.measuredAt = time.Now()
+	d.lastLatency = latency
 	for member := range d.members {
 		if member.active && member.group != nil {
-			member.group.recordLatency(latency, success)
+			member.group.recordLatency(latency)
 		}
 	}
 }
@@ -101,8 +100,8 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 	}
 	if !d.active {
 		d.active = true
-		if sample := d.lastLatency; sample != nil && d.group != nil {
-			d.group.recordLatency(sample.latency, sample.success)
+		if !d.measuredAt.IsZero() && d.group != nil {
+			d.group.recordLatency(d.lastLatency)
 		}
 		if d.initialCheckCompletedLocked() || !d.checkedAt.IsZero() {
 			d.recordMemberAvailability(d.healthyLocked(d.sessionSnapshot()), false, time.Time{})

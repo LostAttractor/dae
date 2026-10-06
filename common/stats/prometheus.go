@@ -16,6 +16,7 @@ import (
 type storeMetrics struct {
 	checkLatency     *prometheus.GaugeVec
 	selectionRank    *prometheus.GaugeVec
+	selectionScore   *prometheus.GaugeVec
 	dialDuration     *prometheus.HistogramVec
 	errors           *prometheus.CounterVec
 	relayFailures    *prometheus.CounterVec
@@ -38,6 +39,10 @@ func newStoreMetrics() storeMetrics {
 			Name: "dae_selection_rank",
 			Help: "Current selection rank of an outbound path.",
 		}, pathLabels),
+		selectionScore: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "dae_selection_score_seconds",
+			Help: "Policy latency plus configured offset; may be negative and is not measured latency.",
+		}, pathLabels),
 		dialDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "dae_dial_duration_seconds",
 			Help:    "Duration of outbound dial attempts in seconds.",
@@ -54,6 +59,7 @@ func (m *storeMetrics) describe(ch chan<- *prometheus.Desc) {
 	for _, collector := range []prometheus.Collector{
 		m.checkLatency,
 		m.selectionRank,
+		m.selectionScore,
 		m.dialDuration,
 		m.errors,
 		m.relayFailures, m.resourceFailures, m.reconnects, m.nodeUnavailable,
@@ -65,6 +71,7 @@ func (m *storeMetrics) describe(ch chan<- *prometheus.Desc) {
 func (m *storeMetrics) collect(ch chan<- prometheus.Metric) {
 	m.checkLatency.Collect(ch)
 	m.selectionRank.Collect(ch)
+	m.selectionScore.Collect(ch)
 	m.dialDuration.Collect(ch)
 	m.errors.Collect(ch)
 	m.relayFailures.Collect(ch)
@@ -116,6 +123,7 @@ func (s *Store) RecordReconnectAttempt(key, executor string) {
 func (m *storeMetrics) resetCurrent() {
 	m.checkLatency.Reset()
 	m.selectionRank.Reset()
+	m.selectionScore.Reset()
 }
 
 var (
@@ -227,12 +235,8 @@ func pathLabelValues(path Path) []string {
 func (s *Store) RecordCheckMetrics(path Path, check, moving, selection time.Duration) {
 	labels := pathLabelValues(path)
 	s.metrics.checkLatency.WithLabelValues(append(labels, "last")...).Set(check.Seconds())
-	if moving > 0 {
-		s.metrics.checkLatency.WithLabelValues(append(labels, "moving")...).Set(moving.Seconds())
-	}
-	if selection > 0 {
-		s.metrics.checkLatency.WithLabelValues(append(labels, "selection")...).Set(selection.Seconds())
-	}
+	s.metrics.checkLatency.WithLabelValues(append(labels, "moving")...).Set(moving.Seconds())
+	s.metrics.selectionScore.WithLabelValues(labels...).Set(selection.Seconds())
 }
 
 func (s *Store) RecordSelectionIndex(path Path, index int) {

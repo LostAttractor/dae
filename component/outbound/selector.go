@@ -51,7 +51,7 @@ func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkTyp
 		dialer:         d,
 		latency:        latency,
 		sortingLatency: sortingLatency,
-		priority:       g.dialerToAnnotation[d].PriorityAt(sortingLatency),
+		priority:       g.dialerToAnnotation[d].PriorityAt(latency),
 	}, true
 }
 

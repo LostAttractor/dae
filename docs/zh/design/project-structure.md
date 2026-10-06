@@ -105,7 +105,7 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 
 控制面的职责按文件划分：`route.go` 决定复用或重算路由并提交纯策略结果，`routing_input.go` 统一输入构造，`route_dial.go` 选择节点与带 mark 的拨号器，`route_log.go` 记录路由。`destination_matcher.go` 选择 IP 目标；`udp_destination.go` 管理目标 socket 与回包地址还原，`udp_binding.go` 管理源生命周期的内核绑定。`mitm.go` 负责插件接入和连接准入；`http_target.go` 共用目标解析、DNS 候选与 DestinationRule 求值，`http_route_plan.go` 构建逐请求计划，`http_dial.go` 负责实际上游拨号与统计。`mitm_download.go` 管理后台客户端生命周期和 daemon 身份。HTTP Host 接受 planner，由计划确定目标、路由及传输资源。
 
-节点的 `groupBinding` 直接保存最近十次连通性检查的延迟与失败标记，由 `Dialer.mu` 统一保护。失败检查按配置罚时入窗，读取快照时从这十个样本计算平均值和窗口失败状态；移动平均在记录样本时更新。可用性查询只检查健康、当前 Session 和网络支持状态。用户态 Trie 构造时的未压缩 rank/select 数组为局部临时数据，对象只保留查询所需的紧凑索引。
+节点的 `groupBinding` 保存最近十次成功检查的延迟，由共享路径的锁保护。失败不写入延迟窗口；读取快照时计算平均值，移动平均在记录样本时更新。条件优先级使用未加偏移的实测值，选择评分与测量值分别展示和导出。可用性查询只检查健康、当前 Session 和网络支持状态。用户态 Trie 构造时的未压缩 rank/select 数组为局部临时数据，对象只保留查询所需的紧凑索引。
 
 HTTP 的最终请求和脚本子请求通过同一计划构建逻辑，在连接池查找前选择目标及路由。HTTP/3 转发匹配 UDP 规则，脚本子请求独立匹配 TCP 规则；二者都在改写后匹配 DestinationRule，保留原来源与接口策略。原 authority 使用被截获的 IP，其他 authority 经系统解析器形成候选 IP，再执行 DestinationRule、flow 和 routing。请求型范围即使只改路径，也要在 HTTP 处理后首次确定路由；纯检查才复用已有决定。每个原始连接拥有独立的池，池键包含 URL/TLS authority、候选拨号地址、出站、节点、mark 和回退状态；最多缓存 32 个可复用池；`planned_transport.go` 保留被淘汰池的在途响应，响应结束后关闭池，避免中断 HTTP/3 并发流。连接关闭时统一释放所有池。HTTP 请求在查池前收集完整候选计划，后台下载从同一个候选迭代器按需取地址、连接成功即停止。block 终止候选序列，不会因重试绕过。TCP 候选连接的失败重试发生在发送 HTTP 数据之前；HTTP/3 不因握手失败隐式回退 TCP；字节统计归属实际上游连接。未知主机名沿用有效 IP 的 DNS 映射，歧义无法消除时拒绝；显式 IP URL 不借用其他逻辑域名的映射。
 

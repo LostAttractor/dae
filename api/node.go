@@ -6,10 +6,9 @@ import "time"
 
 // LatencyStats is a coherent view of the latency samples of a dialer.
 type LatencyStats struct {
-	Last            time.Duration `json:"last"`
-	Avg10           time.Duration `json:"average_10"`
-	MovingAvg       time.Duration `json:"moving_average"`
-	Avg10HasFailure bool          `json:"average_10_failed"`
+	Last      time.Duration `json:"last"`
+	Avg10     time.Duration `json:"average_10"`
+	MovingAvg time.Duration `json:"moving_average"`
 }
 
 // NetworkSupportState describes protocol/remote capability, not current

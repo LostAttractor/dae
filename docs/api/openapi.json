@@ -347,14 +347,12 @@
         "type": "object"
       },
       "LatencyStats": {
+        "description": "Successful probe durations only. Failures and selection offsets are excluded; average_10 uses the last ten successful samples.",
         "properties": {
           "average_10": {
             "description": "Duration in nanoseconds.",
             "format": "int64",
             "type": "integer"
-          },
-          "average_10_failed": {
-            "type": "boolean"
           },
           "last": {
             "description": "Duration in nanoseconds.",
@@ -370,8 +368,7 @@
         "required": [
           "last",
           "average_10",
-          "moving_average",
-          "average_10_failed"
+          "moving_average"
         ],
         "type": "object"
       },

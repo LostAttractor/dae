@@ -57,9 +57,8 @@ func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 	registry.MustRegister(store)
 
 	for sample, want := range map[string]float64{
-		"last":      0.042,
-		"moving":    0.050,
-		"selection": 0.060,
+		"last":   0.042,
+		"moving": 0.050,
 	} {
 		metric, ok := gatheredPathMetric(t, registry, "dae_check_latency_seconds", path, map[string]string{"sample": sample})
 		if !ok {
@@ -71,6 +70,13 @@ func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 	}
 	if metric, ok := gatheredPathMetric(t, registry, "dae_selection_rank", path, nil); !ok || metric.GetGauge().GetValue() != 2 {
 		t.Fatalf("selection rank = %+v, present=%v", metric, ok)
+	}
+	store.RecordCheckMetrics(path, 0, 0, -time.Second)
+	if metric, ok := gatheredPathMetric(t, registry, "dae_check_latency_seconds", path, map[string]string{"sample": "moving"}); !ok || metric.GetGauge().GetValue() != 0 {
+		t.Fatalf("zero measured latency = %+v, present=%v", metric, ok)
+	}
+	if metric, ok := gatheredPathMetric(t, registry, "dae_selection_score_seconds", path, nil); !ok || metric.GetGauge().GetValue() != -1 {
+		t.Fatalf("signed selection score = %+v, present=%v", metric, ok)
 	}
 	if metric, ok := gatheredPathMetric(t, registry, "dae_path_errors_total", path, nil); !ok || metric.GetCounter().GetValue() != 1 {
 		t.Fatalf("path error counter = %+v, present=%v", metric, ok)
@@ -85,6 +91,9 @@ func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 	}
 	if _, ok := gatheredPathMetric(t, registry, "dae_selection_rank", path, nil); ok {
 		t.Fatal("current selection rank survived reset")
+	}
+	if _, ok := gatheredPathMetric(t, registry, "dae_selection_score_seconds", path, nil); ok {
+		t.Fatal("current selection score survived reset")
 	}
 	if metric, ok := gatheredPathMetric(t, registry, "dae_path_errors_total", path, nil); !ok || metric.GetCounter().GetValue() != 1 {
 		t.Fatalf("lifetime error counter after reset = %+v, present=%v", metric, ok)

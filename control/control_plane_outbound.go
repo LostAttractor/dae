@@ -207,7 +207,7 @@ func (b *outboundBuilder) materializeTarget(target *outbound.ResolvedTarget) err
 	if logicalPaths == 1 && len(paths) > 1 && selectionPolicy.Policy == "" {
 		selectionPolicy = dialer.DialerSelectionPolicy{
 			Policy:   consts.DialerSelectionPolicy_MinMovingAverageLatencies,
-			EmaAlpha: dialer.DefaultEmaAlpha, TimeoutPenalty: dialer.DefaultTimeoutPenalty,
+			EmaAlpha: dialer.DefaultEmaAlpha,
 		}
 	}
 	if len(paths) > outbound.MaxMaterializedPaths-b.materializedPathCount {

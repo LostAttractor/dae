@@ -108,7 +108,7 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
 	}, true, "")
-	d.RegisterDialerGroup(new(testGroup), 0.5, time.Minute)
+	d.RegisterDialerGroup(new(testGroup), 0.5)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
@@ -769,8 +769,8 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 		t.Fatalf("canonical mode migrated to %v, want tcp6", got)
 	}
 	latency, ok := d.latencyStats()
-	if !ok || latency.Last != time.Minute || !latency.Avg10HasFailure {
-		t.Fatalf("canonical failure latency = %+v, %v; want timeout penalty", latency, ok)
+	if ok {
+		t.Fatalf("failed probe fabricated a latency = %+v", latency)
 	}
 	d.applyCheck(checkResult{
 		kind: checkHealth,

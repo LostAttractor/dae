@@ -106,7 +106,9 @@ func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 	}
 	if newDialer != nil {
 		if candidate, ok := s.dialerGroup.candidate(newDialer, networkType); ok {
-			fields["latency"] = common.LatencyString(candidate.latency, s.dialerGroup.dialerToAnnotation[newDialer].AddLatency)
+			fields["latency"] = candidate.latency.String()
+			fields["selection_score"] = candidate.sortingLatency.String()
+			fields["priority"] = candidate.priority
 		}
 	}
 	if oldDialer == nil {

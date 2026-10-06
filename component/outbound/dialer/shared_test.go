@@ -23,7 +23,7 @@ func shareTestDialer(t *testing.T, first *Dialer) *Dialer {
 	if !ok {
 		t.Fatal("could not share active runtime")
 	}
-	member.RegisterDialerGroup(new(testGroup), 0.25, 2*time.Second)
+	member.RegisterDialerGroup(new(testGroup), 0.25)
 	t.Cleanup(func() { _ = member.Close() })
 	return member
 }
@@ -57,8 +57,8 @@ func TestSharedHealthAndGroupLocalLatency(t *testing.T) {
 		{network: common.NetworkTCP4, err: errors.New("offline")},
 	}})
 	a, b = d.RuntimeStatus(), other.RuntimeStatus()
-	if a.Healthy || b.Healthy || a.Latency.Last != time.Minute || b.Latency.Last != 2*time.Second {
-		t.Fatalf("failure state or independent timeout penalties lost: first=%+v second=%+v", a, b)
+	if a.Healthy || b.Healthy || a.Latency.Last != 300*time.Millisecond || b.Latency.Last != 300*time.Millisecond {
+		t.Fatalf("failure polluted latency: first=%+v second=%+v", a, b)
 	}
 	for _, member := range []*Dialer{d, other} {
 		if member.group.observer.(*testGroup).changes.Load() != 3 {

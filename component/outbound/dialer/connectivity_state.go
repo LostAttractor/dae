@@ -238,7 +238,7 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 	if healthApplied {
 		failureReportedAt = d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
 		if canonicalResult != nil {
-			d.recordLatencyLocked(canonicalResult.latency, true)
+			d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
 		}
 	}
 

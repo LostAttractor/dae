@@ -213,9 +213,6 @@ func nodeLatency(status api.NodeStatus) any {
 	average := latency.Avg10.Seconds() * 1000
 	moving := latency.MovingAvg.Seconds() * 1000
 	formatted := clitable.Parts(fmt.Sprintf("%.0f", last), "/", fmt.Sprintf("%.0f", average), "/", fmt.Sprintf("%.0f", moving))
-	if latency.Avg10HasFailure {
-		return formatted.Decorate(func(value string) string { return colorize(value, text.FgHiRed, text.Bold) })
-	}
 	return formatted.Decorate(func(value string) string { return colorLatency(moving, value) })
 }
 

@@ -54,26 +54,20 @@ func (m SelectionForceMask) Contains(index common.NetworkIndex) bool {
 
 type groupBinding struct {
 	observer DialerGroup
-	// The fixed ten-check history is owned by Dialer.mu.
-	latencies      [10]time.Duration
-	failed         [10]bool
-	next, count    int
-	movingAverage  time.Duration
-	emaAlpha       float64
-	timeoutPenalty time.Duration
+	// Successful samples only; failures are tracked by the shared path.
+	latencies     [10]time.Duration
+	next, count   int
+	movingAverage time.Duration
+	emaAlpha      float64
 }
 
-func (g *groupBinding) recordLatency(latency time.Duration, success bool) {
-	sample := latency
-	if !success {
-		sample = g.timeoutPenalty
-	}
-	if g.movingAverage == 0 {
-		g.movingAverage = sample
+func (g *groupBinding) recordLatency(latency time.Duration) {
+	if g.count == 0 {
+		g.movingAverage = latency
 	} else {
-		g.movingAverage = time.Duration(float64(g.movingAverage)*(1-g.emaAlpha) + float64(sample)*g.emaAlpha)
+		g.movingAverage = time.Duration(float64(g.movingAverage)*(1-g.emaAlpha) + float64(latency)*g.emaAlpha)
 	}
-	g.latencies[g.next], g.failed[g.next] = sample, !success
+	g.latencies[g.next] = latency
 	g.next = (g.next + 1) % len(g.latencies)
 	g.count = min(g.count+1, len(g.latencies))
 }
@@ -132,7 +126,8 @@ type pathRuntime struct {
 	runtime     *netproxy.Runtime
 	session     netproxy.Session
 	members     map[*Dialer]struct{}
-	lastLatency *latencySample
+	lastLatency time.Duration
+	measuredAt  time.Time
 
 	checksConnectivity bool
 	health             healthPhase
@@ -405,12 +400,14 @@ func (d *pathRuntime) initialCheckCompletedLocked() bool {
 	return true
 }
 
-func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, timeoutPenalty time.Duration) {
+func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64) {
 	d.mu.Lock()
+	if emaAlpha == 0 {
+		emaAlpha = DefaultEmaAlpha
+	}
 	d.group = &groupBinding{
-		observer:       group,
-		emaAlpha:       emaAlpha,
-		timeoutPenalty: timeoutPenalty,
+		observer: group,
+		emaAlpha: emaAlpha,
 	}
 	d.mu.Unlock()
 }
@@ -427,11 +424,13 @@ func (d *Dialer) latencyStatsLocked() (lat api.LatencyStats, ok bool) {
 		return api.LatencyStats{}, false
 	}
 	lat.Last = g.latencies[(g.next+len(g.latencies)-1)%len(g.latencies)]
-	for i, sample := range g.latencies[:g.count] {
-		lat.Avg10 += sample
-		lat.Avg10HasFailure = lat.Avg10HasFailure || g.failed[i]
+	// Quotients and remainders avoid overflowing on large successful samples.
+	var remainder time.Duration
+	for _, sample := range g.latencies[:g.count] {
+		lat.Avg10 += sample / time.Duration(g.count)
+		remainder += sample % time.Duration(g.count)
 	}
-	lat.Avg10 /= time.Duration(g.count)
+	lat.Avg10 += remainder / time.Duration(g.count)
 	lat.MovingAvg = g.movingAverage
 	return lat, true
 }
