@@ -367,8 +367,10 @@ func TestRelayTCPDrainTimeout(t *testing.T) {
 				go func() { _, _ = io.Copy(io.Discard, client) }()
 			}
 			err := waitTCPRelayTest(t, done)
-			if !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("relay error = %v, want drain timeout", err)
+			// Raw pipes supply no protocol-owned cleanup evidence, so retain
+			// their close errors, but do not invent an upstream timeout on EOF.
+			if !errors.Is(err, io.ErrClosedPipe) || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("relay error = %v, want pipe closure without a drain timeout failure", err)
 			}
 			select {
 			case <-writesDone:

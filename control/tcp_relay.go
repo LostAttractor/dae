@@ -1,7 +1,6 @@
 package control
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net"
@@ -188,7 +187,8 @@ func relayTCP(lConn, rConn net.Conn, traffic *stats.Connection, drainTimeout tim
 				timeout = timer.C
 			}
 		case <-timeout:
-			causes = append(causes, netproxy.WrapFailure(context.DeadlineExceeded, netproxy.Failure{Scope: netproxy.ScopeOperation, Reason: netproxy.ReasonDeadline}))
+			// This is our bounded EOF drain, not a failed upstream operation.
+			// Keep independent I/O and owner failures collected during cleanup.
 			stop()
 		}
 	}
