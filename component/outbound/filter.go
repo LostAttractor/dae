@@ -531,15 +531,16 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 			builders = append(builders, pathNodeBuilder{node: node, builder: builder})
 		}
 	}
-	base, err := spec.entryDialer(option)
+	d, err := dialer.NewRecreatableDialer(func() (*netproxy.Runtime, error) {
+		base, err := spec.entryDialer(option)
+		if err != nil {
+			return nil, err
+		}
+		return D.BuildRuntime(netproxy.Layer{Data: base}, &option.ExtraOption, builders...)
+	}, option, property, statsScope)
 	if err != nil {
 		return nil, err
 	}
-	runtime, err := D.BuildRuntime(netproxy.Layer{Data: base}, &option.ExtraOption, builders...)
-	if err != nil {
-		return nil, err
-	}
-	d := dialer.NewDialer(runtime, option, property, true, statsScope)
 	if s.paths == nil {
 		s.paths = make(map[string]*dialer.Dialer)
 	}

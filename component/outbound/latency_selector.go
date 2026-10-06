@@ -22,70 +22,18 @@ type latencyBasedSelector struct {
 
 func (s *latencyBasedSelector) sortedCandidates(networkType *common.NetworkType) []selectorCandidate {
 	candidates := s.dialerGroup.candidates(networkType)
-	slices.SortStableFunc(candidates, func(a, b selectorCandidate) int {
-		return cmp.Or(cmp.Compare(b.priority, a.priority), cmp.Compare(a.sortingLatency, b.sortingLatency))
-	})
+	slices.SortStableFunc(candidates, compareCandidates)
 	return candidates
 }
 
-func findCandidate(candidates []selectorCandidate, d *dialer.Dialer) (selectorCandidate, bool) {
-	for _, candidate := range candidates {
-		if candidate.dialer == d {
-			return candidate, true
+func compareCandidates(a, b selectorCandidate) int {
+	if a.degraded != b.degraded {
+		if a.degraded {
+			return 1
 		}
+		return -1
 	}
-	return selectorCandidate{}, false
-}
-
-func (s *latencyBasedSelector) refreshNetwork(index common.NetworkIndex, changed *dialer.Dialer, force bool) {
-	networkType := index.NetworkType()
-	candidates := s.sortedCandidates(networkType)
-	oldDialer := s.selected[index]
-	var best *dialer.Dialer
-	if len(candidates) > 0 {
-		best = candidates[0].dialer
-	}
-	newDialer := oldDialer
-	if oldDialer != best {
-		oldCandidate, oldUsable := findCandidate(candidates, oldDialer)
-		switch {
-		case !oldUsable:
-			// Retain the last choice while unavailable. If a different node
-			// later recovers, that is still a reselection of this group.
-			if best != nil {
-				newDialer = best
-			}
-		default:
-			bestCandidate := candidates[0]
-			tolerance := time.Duration(0)
-			if s.toleranceActive && !force {
-				tolerance = s.tolerance
-			}
-			if bestCandidate.priority > oldCandidate.priority ||
-				bestCandidate.priority == oldCandidate.priority &&
-					saturatingDurationAdd(bestCandidate.sortingLatency, tolerance) < oldCandidate.sortingLatency {
-				newDialer = best
-			}
-		}
-	}
-	if newDialer != oldDialer {
-		s.selected[index] = newDialer
-		s.logSelection(oldDialer, newDialer, networkType)
-	}
-	if changed != nil {
-		s.recordMetrics(candidates, changed, networkType)
-	}
-}
-
-// The group's mutex protects all selection state and policy generations.
-func (s *latencyBasedSelector) refresh(changed *dialer.Dialer, force dialer.SelectionForceMask) {
-	for i := range common.NetworkIndex(common.NetworkTypeCount) {
-		s.refreshNetwork(i, changed, force.Contains(i))
-		network := i.NetworkType()
-		if selected := s.selected[i]; selected != nil && selected.Usable(network) {
-			s.dialerGroup.updateConnectionSelection(network, selected)
-		}
-	}
+	return cmp.Or(cmp.Compare(b.priority, a.priority), cmp.Compare(a.sortingLatency, b.sortingLatency))
 }
 
 func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer, networkType *common.NetworkType) {
@@ -109,6 +57,7 @@ func (s *latencyBasedSelector) logSelection(oldDialer, newDialer *dialer.Dialer,
 			fields["latency"] = candidate.latency.String()
 			fields["selection_score"] = candidate.sortingLatency.String()
 			fields["priority"] = candidate.priority
+			fields["degraded"] = candidate.degraded
 		}
 	}
 	if oldDialer == nil {

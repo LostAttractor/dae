@@ -292,6 +292,13 @@ group {
 
         # Select the node with min average of the last 10 latencies from the group for every connection.
         policy: min_avg10
+        # Event-driven replacement with priority promotion:
+        #policy: failover
+        #failure_recovery: 30s
+        #probe_timeout: 3s
+        #selection_timeout: 15s
+        #upgrade_interval: 3m
+        #upgrade_interval_max: 1h
 
         # group(entry_path) expands every path declared by the policyless group.
         # Physical order: client -> entry_path -> selected group2 node -> destination.

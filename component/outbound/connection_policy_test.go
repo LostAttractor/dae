@@ -20,6 +20,8 @@ func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
 			g := newSelectorTestGroup(t, []*dialer.Dialer{a, b}, annotations,
 				dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}, nil)
 			g.SetConnectionPolicy(closeOld, false)
+			g.selector.selected[common.NetworkTCP4] = a
+			g.selector.selected[common.NetworkUDP4] = a
 			old, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
 			if err != nil || old.Dialer != a {
 				t.Fatalf("first selection = %v, %v", old.Dialer, err)
@@ -29,6 +31,7 @@ func TestReselectionClosesOnlyPreviousNetworkGeneration(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = a.Close()
+			g.selector.selected[common.NetworkTCP4] = b
 			current, err := g.SelectConnection(*common.NetworkTCP4.NetworkType(), true)
 			if err != nil || current.Dialer != b {
 				t.Fatalf("new selection = %v, %v", current.Dialer, err)
@@ -270,6 +273,11 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 				}
 				g := newSelectorTestGroup(t, dials, annotations, policy, nil)
 				g.selectionIndex = policy.FixedIndex
+				if g.selector != nil {
+					for network := range g.selector.selected {
+						g.selector.selected[network] = dials[policy.FixedIndex]
+					}
+				}
 				g.SetConnectionPolicy(tc.closeOld, false)
 				return g
 			}
@@ -280,9 +288,6 @@ func TestReloadReselectionConnectionPolicy(t *testing.T) {
 			}
 			_ = old.Close()
 			next := makeGroup(tc.change)
-			if next.selector != nil {
-				next.selector.refresh(nil, dialer.SelectionForceNone)
-			}
 			if tc.delayed {
 				// No replacement exists yet; ownership must survive another
 				// reload before a different ready path appears.

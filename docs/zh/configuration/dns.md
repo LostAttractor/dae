@@ -150,7 +150,7 @@ JSON 按域名分组，结构为 `domain → IP → retain_until`。每个域名
 
 保存失败会记录警告，最终保存也相同。磁盘错误不阻止已经停止写入的旧平面安全退役，reload 仍可继承内存中的证据与活动。
 
-`dae status` / `/api/status` 使用 schema **11**：
+`dae status` / `/api/status` 使用 schema **12**：
 
 - `domain-registry`：`used` 是用户态域名–IP 配对数，`limit: 0` 表示无容量上限。`breakdown.domains` 是域名数，`breakdown.ips` 是跨域名去重后的 IP 总数，`breakdown.ipv4` / `ipv6` 是去重地址的类型分布，二者之和等于 `ips`。同一 IP 对应多个域名会增加配对数，但 IP 只计一次。
 - `breakdown.gc` 是累计按时间回收的配对数，跨 reload 延续，冷启动重新统计。查询状态只统计当前保留的记录，不触发 GC 或续期。

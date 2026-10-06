@@ -13,13 +13,22 @@ import (
 )
 
 func TestOutboundPruningKernelIntegration(t *testing.T) {
+	testOutboundPolicyKernelCapture(t, "random")
+}
+
+func TestFailoverKernelCapture(t *testing.T) {
+	testOutboundPolicyKernelCapture(t, "failover")
+}
+
+func testOutboundPolicyKernelCapture(t *testing.T, policy string) {
+	t.Helper()
 	collection, state := dnsKernelCollection(t)
 	conf := outboundUsageConfig(t, `
 global {}
 node { node: 'socks5://127.0.0.1:1' }
 group {
  unused { policy: random }
- proxy { policy: random }
+ proxy { policy: `+policy+` }
 }
 routing {
  domain(full: target.example) && dport(443) -> proxy(mark:37, skip_while_noalive)

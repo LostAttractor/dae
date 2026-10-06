@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"math"
+	"slices"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -10,13 +11,23 @@ import (
 
 func (g *DialerGroup) preferredRandomCandidates(networkType *common.NetworkType) []selectorCandidate {
 	candidates := g.candidates(networkType)
+	candidates = slices.DeleteFunc(candidates, func(candidate selectorCandidate) bool {
+		return !g.selectionUsable(candidate.dialer, networkType)
+	})
 	highestPriority := math.MinInt
+	hasNormal := false
 	for _, candidate := range candidates {
+		hasNormal = hasNormal || !candidate.degraded
+	}
+	for _, candidate := range candidates {
+		if hasNormal && candidate.degraded {
+			continue
+		}
 		highestPriority = max(highestPriority, candidate.priority)
 	}
 	preferred := candidates[:0]
 	for _, candidate := range candidates {
-		if candidate.priority == highestPriority {
+		if (!hasNormal || !candidate.degraded) && candidate.priority == highestPriority {
 			preferred = append(preferred, candidate)
 		}
 	}

@@ -24,6 +24,7 @@ type selectorCandidate struct {
 	latency        time.Duration
 	sortingLatency time.Duration
 	priority       int
+	degraded       bool
 }
 
 func candidateLatency(policy consts.DialerSelectionPolicy, snapshot dialer.SelectionSnapshot) time.Duration {
@@ -41,10 +42,17 @@ func candidateLatency(policy consts.DialerSelectionPolicy, snapshot dialer.Selec
 }
 
 func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkType) (selectorCandidate, bool) {
+	if d == nil {
+		return selectorCandidate{}, false
+	}
 	snapshot := d.SelectionSnapshot(networkType)
 	if !snapshot.Usable {
 		return selectorCandidate{}, false
 	}
+	return g.scoreCandidate(d, snapshot), true
+}
+
+func (g *DialerGroup) scoreCandidate(d *dialer.Dialer, snapshot dialer.SelectionSnapshot) selectorCandidate {
 	latency := candidateLatency(g.selectionPolicy.Policy, snapshot)
 	sortingLatency := saturatingDurationAdd(latency, g.dialerToAnnotation[d].AddLatency)
 	return selectorCandidate{
@@ -52,7 +60,8 @@ func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkTyp
 		latency:        latency,
 		sortingLatency: sortingLatency,
 		priority:       g.dialerToAnnotation[d].PriorityAt(latency),
-	}, true
+		degraded:       snapshot.Degraded,
+	}
 }
 
 func (g *DialerGroup) candidates(networkType *common.NetworkType) []selectorCandidate {

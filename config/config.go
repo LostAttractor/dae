@@ -134,13 +134,18 @@ type Group struct {
 	Paths  []*config_parser.ProxyPath `mapstructure:"path"`
 	Policy FunctionListOrString       `mapstructure:"policy"`
 
-	UdpCheckDns      []string      `mapstructure:"udp_check_dns"`
-	CheckInterval    time.Duration `mapstructure:"check_interval"`
-	CheckIntervalMax time.Duration `mapstructure:"check_interval_max"`
-	CheckTolerance   time.Duration `mapstructure:"check_tolerance"`
-	CheckAsync       bool          `mapstructure:"check_async"`
-	TrackAll         bool          `mapstructure:"track_all"`
-	ReselectBehavior string        `mapstructure:"reselect_behavior"`
+	UdpCheckDns        []string      `mapstructure:"udp_check_dns"`
+	CheckInterval      time.Duration `mapstructure:"check_interval"`
+	CheckIntervalMax   time.Duration `mapstructure:"check_interval_max"`
+	CheckTolerance     time.Duration `mapstructure:"check_tolerance"`
+	CheckAsync         bool          `mapstructure:"check_async"`
+	TrackAll           bool          `mapstructure:"track_all"`
+	ReselectBehavior   string        `mapstructure:"reselect_behavior"`
+	FailureRecovery    time.Duration `mapstructure:"failure_recovery"`
+	ProbeTimeout       time.Duration `mapstructure:"probe_timeout"`
+	SelectionTimeout   time.Duration `mapstructure:"selection_timeout"`
+	UpgradeInterval    time.Duration `mapstructure:"upgrade_interval"`
+	UpgradeIntervalMax time.Duration `mapstructure:"upgrade_interval_max"`
 }
 
 func ValidateConnectionBehavior(name, value string) error {

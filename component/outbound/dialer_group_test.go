@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -167,88 +168,41 @@ func TestRandomSelectorUsesHighestPriorityTier(t *testing.T) {
 }
 
 func TestLatencySelectorFallsBackWhenSelectedDialerCloses(t *testing.T) {
-	dialers := []*dialer.Dialer{
-		newUncheckedDialer(t, "slower"),
-		newUncheckedDialer(t, "preferred"),
-	}
-	annotations := emptyAnnotations(2)
-	annotations[0].AddLatency = time.Second
-	g := newSelectorTestGroup(t, dialers, annotations, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}, nil)
-	selected, err := g.Select(testNetworkType)
-	if err != nil || selected != dialers[1] {
-		t.Fatalf("initial Select = %v, %v; want preferred", selected, err)
-	}
-	_ = dialers[1].Close()
-	selected, err = g.Select(testNetworkType)
-	if err != nil || selected != dialers[0] {
-		t.Fatalf("fallback Select = %v, %v; want slower", selected, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		a, b := new(failoverTransport), new(failoverTransport)
+		a.delay.Store(int64(time.Millisecond))
+		b.delay.Store(int64(10 * time.Millisecond))
+		policy := testFailoverPolicy()
+		policy.Policy = consts.DialerSelectionPolicy_MinLastLatency
+		g := failoverGroup(t, policy, nil, a, b)
+		if selected, err := g.Select(testNetworkType); err != nil || selected != g.Dialers[0] {
+			t.Fatalf("initial selection = %v, %v", selected, err)
+		}
+		_ = g.Dialers[0].Close()
+		if selected, err := g.Select(testNetworkType); err != nil || selected != g.Dialers[1] {
+			t.Fatalf("replacement = %v, %v", selected, err)
+		}
+	})
 }
 
-func TestLatencySelectorIgnoresToleranceUntilEnabled(t *testing.T) {
-	dialers := []*dialer.Dialer{
-		newUncheckedDialer(t, "first"),
-		newUncheckedDialer(t, "second"),
-	}
-	annotations := emptyAnnotations(2)
-	annotations[0].AddLatency = 100 * time.Millisecond
-	annotations[1].AddLatency = 200 * time.Millisecond
-	g := newSelectorTestGroup(t, dialers, annotations, dialer.DialerSelectionPolicy{
-		Policy: consts.DialerSelectionPolicy_MinLastLatency,
-	}, nil)
-	selector := g.selector
-	selector.tolerance = 20 * time.Millisecond
-
-	if selected, err := g.Select(testNetworkType); err != nil || selected != dialers[0] {
-		t.Fatalf("initial Select = %v, %v; want first", selected, err)
-	}
-	annotations[1].AddLatency = 90 * time.Millisecond
-	selector.refresh(dialers[1], dialer.SelectionForceNone)
-	if selected := g.SelectedDialer(testNetworkType); selected != dialers[1] {
-		t.Fatalf("startup selection = %v, want second", selected)
-	}
-	if selected := g.SelectedDialer(common.NetworkTCP6.NetworkType()); selected != dialers[1] {
-		t.Fatalf("startup tcp6 selection = %v, want second", selected)
-	}
-
-	g.EnableSelectionTolerance()
-	annotations[0].AddLatency = 80 * time.Millisecond
-	selector.refresh(dialers[0], dialer.SelectionForceNone)
-	if selected := g.SelectedDialer(testNetworkType); selected != dialers[1] {
-		t.Fatalf("steady-state selection = %v, want second", selected)
-	}
-	selector.refresh(dialers[0], dialer.SelectionForceFor(testNetworkType.Index()))
-	if selected := g.SelectedDialer(testNetworkType); selected != dialers[0] {
-		t.Fatalf("forced selection = %v, want first", selected)
-	}
-	if selected := g.SelectedDialer(common.NetworkTCP6.NetworkType()); selected != dialers[1] {
-		t.Fatalf("unforced tcp6 selection = %v, want second", selected)
-	}
-}
-
-func TestLatencySelectorToleranceDoesNotOverflow(t *testing.T) {
-	dialers := []*dialer.Dialer{
-		newUncheckedDialer(t, "first"),
-		newUncheckedDialer(t, "second"),
-	}
-	minimum := time.Duration(-1 << 63)
-	annotations := emptyAnnotations(2)
-	annotations[0].AddLatency = minimum + 10
-	annotations[1].AddLatency = minimum + 20
-	g := newSelectorTestGroup(t, dialers, annotations, dialer.DialerSelectionPolicy{
-		Policy: consts.DialerSelectionPolicy_MinLastLatency,
-	}, nil)
-	selector := g.selector
-	selector.tolerance = 20
-
-	if selected, err := g.Select(testNetworkType); err != nil || selected != dialers[0] {
-		t.Fatalf("initial Select = %v, %v; want first", selected, err)
+func TestAutomaticSelectionTolerance(t *testing.T) {
+	g := &DialerGroup{selectionPolicy: dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_MinLastLatency}}
+	g.selector = &latencyBasedSelector{dialerGroup: g, tolerance: 20 * time.Millisecond}
+	s := newAutomaticSelection(g)
+	defer s.cancel()
+	current := selectorCandidate{sortingLatency: 100 * time.Millisecond}
+	faster := selectorCandidate{sortingLatency: 90 * time.Millisecond}
+	if !s.prefer(faster, current, false) {
+		t.Fatal("startup incorrectly applied tolerance")
 	}
 	g.EnableSelectionTolerance()
-	annotations[1].AddLatency = minimum
-	selector.refresh(dialers[1], dialer.SelectionForceNone)
-	if selected := g.SelectedDialer(testNetworkType); selected != dialers[0] {
-		t.Fatalf("overflowing tolerance switched to %v", selected)
+	if s.prefer(faster, current, false) || !s.prefer(faster, current, true) {
+		t.Fatal("steady-state or forced tolerance is incorrect")
+	}
+	for _, extreme := range []time.Duration{-1 << 63, 1<<63 - 1 - 10} {
+		if s.prefer(selectorCandidate{sortingLatency: extreme}, selectorCandidate{sortingLatency: extreme + 10}, false) {
+			t.Fatal("duration overflow bypassed tolerance")
+		}
 	}
 }
 
@@ -463,7 +417,14 @@ func TestDialerGroupWaitsForAllUnavailableCandidates(t *testing.T) {
 	start := make(chan struct{})
 	close(start)
 	first.ActivateCheck(start)
-	waitForInitialCheck(t, first)
+	g.automatic.start(start)
+	deadline := time.Now().Add(time.Second)
+	for first.RuntimeStatus().CheckedAt.IsZero() {
+		if time.Now().After(deadline) {
+			t.Fatal("first candidate was not tested")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	g.DialerChanged(first, dialer.SelectionForceNone)
 	select {
 	case <-g.startupReady:

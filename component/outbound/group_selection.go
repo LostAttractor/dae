@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -23,6 +24,14 @@ type ConnectionSelection struct {
 // SelectConnection returns the policy termination signal with the selection.
 // On ErrNoAliveDialer the signal belongs to this group's fallback connections.
 func (g *DialerGroup) SelectConnection(network common.NetworkType, strictIP bool) (ConnectionSelection, error) {
+	if g.automatic != nil {
+		deadline := time.Now().Add(g.selectionPolicy.SelectionTimeout)
+		if !g.automatic.wait(network.Index(), deadline) && !strictIP {
+			other := network
+			other.IpVersion = (consts.IpVersion_X - network.IpVersion.ToIpVersionType()).ToIpVersionStr()
+			g.automatic.wait(other.Index(), deadline)
+		}
+	}
 	// Serialize fallback registration with availability publication. A recovery
 	// that races a failed selection must also terminate that fallback setup.
 	g.mu.Lock()
@@ -126,9 +135,12 @@ func (g *DialerGroup) TrackAll() bool {
 	return g.IsSelector() && g.selectionPolicy.TrackAll
 }
 
-// Caller holds mu or is constructing an unpublished group. Fixed and automatic
-// policies retain their existing check scheduling; only API selectors are lazy.
+// Caller holds mu or is constructing an unpublished group.
 func (g *DialerGroup) updateCheckTracking() {
+	if g.automatic != nil {
+		g.automatic.refreshDemandLocked()
+		return
+	}
 	if !g.IsSelector() {
 		return
 	}
@@ -188,16 +200,29 @@ func (g *DialerGroup) SelectedDialer(networkType *common.NetworkType) *dialer.Di
 			selected = g.selector.selected[networkType.Index()]
 		}
 	}
-	if selected == nil || !selected.Usable(networkType) {
+	if !g.selectionUsable(selected, networkType) {
 		return nil
 	}
 	return selected
 }
 
 func (g *DialerGroup) Select(networkType *common.NetworkType) (*dialer.Dialer, error) {
+	if g.automatic != nil {
+		g.automatic.wait(networkType.Index(), time.Now().Add(g.selectionPolicy.SelectionTimeout))
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.selectLocked(networkType)
+}
+
+func (g *DialerGroup) selectionUsable(d *dialer.Dialer, network *common.NetworkType) bool {
+	if d == nil {
+		return false
+	}
+	if g.automatic != nil {
+		return d.VerifiedUsable(network)
+	}
+	return d.Usable(network)
 }
 
 // Caller holds mu, which also protects the matching connection generation.
@@ -222,10 +247,9 @@ func (g *DialerGroup) selectLocked(networkType *common.NetworkType) (*dialer.Dia
 	case consts.DialerSelectionPolicy_Random:
 		selected = g.selectRandom(networkType)
 	default:
-		g.selector.refreshNetwork(networkType.Index(), nil, false)
 		selected = g.selector.selected[networkType.Index()]
 	}
-	if selected == nil || !selected.Usable(networkType) {
+	if !g.selectionUsable(selected, networkType) {
 		return nil, ErrNoAliveDialer
 	}
 	g.updateConnectionSelection(networkType, selected)

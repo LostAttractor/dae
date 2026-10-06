@@ -102,18 +102,25 @@ Available keys in name, link and protocol functions: keyword, regex. No key indi
 Available keys in subtag function: regex. No key indicates full match.`,
 	"policy": `Optional dialer selection policy. It selects one complete expanded proxy path for each new connection.
 	If omitted, the group can be referenced by group(name) as a reusable path stage. It may also be used as a routing target when it expands to exactly one path.
-Available values: random, fixed, selector, min, min_avg10, min_moving_avg.
+Available values: random, fixed, selector, min, min_avg10, min_moving_avg, failover.
 random: Select a complete path randomly.
 fixed: Select the complete path at the stable expanded index.
 selector: Select a path through the global API. Without an index, the initial choice is the first path and there is no configured default or reset operation. selector(n) explicitly sets a zero-based default index. Saved choices are restored first. Only the selected path is checked unless track_all is enabled; the probe API supports one-shot checks.
-min: Select a path by its last successful check latency.
-min_avg10: Select a path by the average of its last 10 successful check latencies.
-min_moving_avg: Select a path by its moving average of successful check latencies, which gives recent checks more weight. Accepts alpha: value (default 0.18).
+min: Select a path by the latency of its last check.
+min_avg10: Select a path by the average of its last 10 check latencies.
+min_moving_avg: Select a path by its moving average of check latencies, which gives recent checks more weight.
+failover: Disable periodic latency checks on the healthy current path and same-tier peers. Real test results still trigger reselection by degradation, priority and last successful latency plus add_latency, respecting check_tolerance. Replacement candidates require a successful connectivity proof; candidates are tested concurrently within each tier with bounded timeouts. Higher-priority candidates are checked separately for promotion.
+Automatic policies prefer non-degraded paths before priority and latency score. Only successful probes enter latency statistics. min_moving_avg accepts alpha: value (default 0.18).
 `,
-	"udp_check_dns":      "Override global config.",
-	"check_interval":     "Override global config when non-zero.",
-	"check_interval_max": "Override global config when non-zero.",
-	"check_tolerance":    "Override global config.",
-	"check_async":        "Skip startup waiting for this group. Defaults to true when all active routing uses specify skip_while_noalive; fallback defaults to false. Unused targets are not instantiated. Explicit values override this default. Not inherited through group(name).",
-	"track_all":          "For selector policy only: continuously check all nodes instead of only the current selection. Defaults to false. Config-only; reload to apply. The startup barrier still waits only for the selected node. Not inherited through group(name).",
+	"failure_recovery":     "Continuously monitored recovery window after the first successful probe (default 30s). Checks run at min(check_interval, 5s), with a final successful probe at the window boundary. Failure or paused observation restarts an incomplete window; verified degraded paths remain eligible for fallback.",
+	"probe_timeout":        "Deadline for one selection test, including queueing, session connection and verification (default 3s).",
+	"selection_timeout":    "Deadline for each selection round and each request's total selection wait (default 15s).",
+	"upgrade_interval":     "Initial interval for discovering higher-priority or recovered candidates (default 3m).",
+	"upgrade_interval_max": "Maximum backoff for unsuccessful promotion and group recovery checks (default 1h).",
+	"udp_check_dns":        "Override global config.",
+	"check_interval":       "Override global config when non-zero.",
+	"check_interval_max":   "Override global config when non-zero.",
+	"check_tolerance":      "Override global config.",
+	"check_async":          "Skip startup waiting for this group. Defaults to true when all active routing uses specify skip_while_noalive; fallback defaults to false. Unused targets are not instantiated. Explicit values override this default. Not inherited through group(name).",
+	"track_all":            "For selector policy only: continuously check all nodes instead of only the current selection. Defaults to false. Config-only; reload to apply. The startup barrier still waits only for the selected node. Not inherited through group(name).",
 }

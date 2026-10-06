@@ -134,6 +134,26 @@ func (a *Annotation) PriorityAt(latency time.Duration) int {
 	return priority
 }
 
+// MaxPriority bounds discovery demand without trusting a stale latency sample.
+func (a *Annotation) MaxPriority() int {
+	if len(a.PriorityTerms) == 0 {
+		priority := a.Priority
+		for _, conditional := range a.ConditionalPriority {
+			priority = max(priority, conditional.Pri)
+		}
+		return priority
+	}
+	priority := 0
+	for _, term := range a.PriorityTerms {
+		value := term.Default
+		for _, conditional := range term.Conditional {
+			value = max(value, conditional.Pri)
+		}
+		priority += value
+	}
+	return priority
+}
+
 // MergeAnnotations combines scoring annotations from all path stages.
 func MergeAnnotations(annotations ...*Annotation) (*Annotation, error) {
 	merged := new(Annotation)

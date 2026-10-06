@@ -144,6 +144,15 @@ func NewGroupCompiler(set *DialerSet, groups []config.Group, routingTargets []st
 			continue
 		}
 		group := definition.config
+		for name, value := range map[string]int64{
+			"failure_recovery": int64(group.FailureRecovery),
+			"probe_timeout":    int64(group.ProbeTimeout), "selection_timeout": int64(group.SelectionTimeout),
+			"upgrade_interval": int64(group.UpgradeInterval), "upgrade_interval_max": int64(group.UpgradeIntervalMax),
+		} {
+			if value != 0 || group.Present[name] {
+				return nil, fmt.Errorf("group %q: %s requires an automatic selection policy", group.Name, name)
+			}
+		}
 		if group.CheckTolerance != 0 || group.Present["check_tolerance"] {
 			return nil, fmt.Errorf("group %q: check_tolerance requires a selection policy", group.Name)
 		}

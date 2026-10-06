@@ -4,11 +4,6 @@ package dialer
 
 import "time"
 
-const (
-	DefaultFailureRecovery = 30 * time.Second
-	DefaultProbeTimeout    = 3 * time.Second
-)
-
 func (d *pathRuntime) resetRecoveryObservationLocked() {
 	d.recoverySince, d.recoveryVerifiedAt = time.Time{}, time.Time{}
 }
