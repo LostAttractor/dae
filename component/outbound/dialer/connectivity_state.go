@@ -160,6 +160,8 @@ func (d *pathRuntime) applyCheck(result checkResult) (appliedCheck, bool) {
 		return d.applyCapabilityCheckLocked(result), true
 	case checkHealth:
 		return d.applyHealthCheckLocked(result), true
+	case checkSelection:
+		return d.applySelectionCheckLocked(result), true
 	default:
 		d.mu.Unlock()
 		return appliedCheck{}, false
@@ -170,6 +172,7 @@ func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netpro
 	failureReportedAt := d.failureReportedAt
 	previousHealthy := d.healthyLocked(session)
 	if result.kind != checkSupport {
+		d.confirmFailureLocked()
 		d.health = healthUnhealthy
 		d.healthSeq = result.readiness
 		d.failureReportedAt = time.Time{}
@@ -197,6 +200,7 @@ func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) 
 	d.healthSeq = result.readiness
 	d.statusRevision++
 	if !success {
+		d.confirmFailureLocked()
 		if err := result.failure(); err != nil && d.lastFailure == nil {
 			d.lastFailure = failureSnapshot(primaryNodeFailure(err), d.failureGeneration)
 		}
@@ -206,6 +210,7 @@ func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) 
 		return failureReportedAt
 	}
 	if d.health != healthConfirming || result.generation >= d.failureGeneration {
+		d.recordRecoverySuccessLocked()
 		d.health = healthHealthy
 		d.failureReportedAt = time.Time{}
 		session := d.sessionSnapshot()
@@ -233,7 +238,9 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 	if !initial && !discovered.Contains(canonicalIndex) {
 		canonicalResult = nil
 	}
-	healthApplied := initial || canonicalResult != nil
+	// Selection checks may already have established health before the remaining
+	// capabilities are discovered. Missing modes cannot invalidate that proof.
+	healthApplied := canonicalResult != nil || initial && !canonicalIndex.Valid()
 	failureReportedAt := d.failureReportedAt
 	if healthApplied {
 		failureReportedAt = d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
@@ -241,6 +248,7 @@ func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedChec
 			d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
 		}
 	}
+	d.recordHealthProofsLocked(result)
 
 	d.pendingForce |= discovered
 	forceSelection := d.takePendingForceLocked()
@@ -271,6 +279,7 @@ func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 	if canonicalResult != nil {
 		d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
 	}
+	d.recordHealthProofsLocked(result)
 	forceSelection := d.takePendingForceLocked()
 	currentHealthy := d.health.usable()
 	d.mu.Unlock()
@@ -364,6 +373,17 @@ func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 	}
 	d.observedSessionSeq = event.Seq
 	d.statusRevision++
+	if event.Cause != nil {
+		failure := primaryNodeFailure(event.Cause)
+		if failure.Origin == netproxy.OriginLocalCleanup && failure.Code == "idle" {
+			clear(d.resourceFailures)
+			// Sleep invalidates readiness, not the last health observation or
+			// availability history. The next generation requires a fresh proof.
+			d.mu.Unlock()
+			d.notifyGroups(SelectionForceNone)
+			return false
+		}
+	}
 	resourceFailure := false
 	if event.Cause != nil {
 		failure := primaryNodeFailure(event.Cause)
@@ -412,6 +432,9 @@ func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 		d.recovery.Attempt = 0
 	}
 	readinessChanged := d.healthSeq != event.ReadinessVersion
+	if event.Cause != nil && primaryNodeFailure(event.Cause).Origin != netproxy.OriginLocalCleanup {
+		d.confirmFailureLocked()
+	}
 	failureReportedAt := d.failureReportedAt
 	d.health = healthUnhealthy
 	d.healthSeq = event.ReadinessVersion

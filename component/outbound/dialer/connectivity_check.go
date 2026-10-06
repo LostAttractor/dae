@@ -61,13 +61,27 @@ func (d *pathRuntime) RequestConnectivityCheck() {
 // interrupting an in-flight check. Explicit tests and data-plane confirmations
 // can still run once while automatic checking is paused.
 func (d *Dialer) SetCheckEnabled(enabled bool) {
+	d.setCheckEnabled(enabled, true)
+}
+
+// SetMonitoring adopts an already verified candidate without scheduling a
+// redundant immediate probe or invalidating an in-flight capability check.
+func (d *Dialer) SetMonitoring(enabled bool) {
+	d.setCheckEnabled(enabled, false)
+}
+
+func (d *Dialer) setCheckEnabled(enabled, immediate bool) {
 	d.mu.Lock()
 	if d.closed || d.ctx.Err() != nil || d.checkEnabled == enabled {
 		d.mu.Unlock()
 		return
 	}
 	d.checkEnabled = enabled
+	pending := d.pendingCheck
 	d.updateCheckDemandLocked()
+	if !immediate && enabled && d.healthyLocked(d.sessionSnapshot()) {
+		d.pendingCheck = d.pendingCheck&^checkRequestEnvironment | pending
+	}
 	d.statusRevision++
 	d.mu.Unlock()
 	d.signalConnectivityCheck()
@@ -113,6 +127,7 @@ func (d *pathRuntime) beginConnectivityCheck(kind checkKind) checkAttempt {
 	d.checkRunning = true
 	// Explicit demand promotes capacity work to a probe in start.
 	d.checkProbing = kind != checkCapacity || attempt.reasons != 0
+	d.updateTransportDemandLocked()
 	d.mu.Unlock()
 	return attempt
 }
@@ -132,9 +147,10 @@ const (
 	checkHealth
 	checkSupport
 	checkCapacity
+	checkSelection
 )
 
-var checkKindName = [...]string{"initial", "health", "support_retry", "capacity"}
+var checkKindName = [...]string{"initial", "health", "support_retry", "capacity", "selection"}
 
 type checkAttempt struct {
 	kind       checkKind
@@ -151,6 +167,7 @@ type connectivityChecker struct {
 	d       *pathRuntime
 	probe   func(context.Context, *common.NetworkType) (bool, error)
 	results chan checkResult
+	flight  *selectionCheck
 
 	runningKind      checkKind
 	cancel           context.CancelFunc
@@ -276,9 +293,13 @@ func (c *connectivityChecker) handleSessionEvent(event netproxy.StateEvent) {
 		}
 		if !event.RecoveryRequired {
 			c.capacityActive = false
-			c.capacityAt = time.Time{}
-			c.capacityInterval = 0
-			c.capacityBlockReason = ""
+			// A replacement can disappear before Connect's result is consumed.
+			// Let finishCapacity validate the final capacity before clearing retry state.
+			if c.cancel == nil || c.runningKind != checkCapacity {
+				c.capacityAt = time.Time{}
+				c.capacityInterval = 0
+				c.capacityBlockReason = ""
+			}
 		}
 	}
 	if c.cancel != nil {
@@ -381,12 +402,22 @@ func (c *connectivityChecker) finish(result checkResult) bool {
 		c.d.mu.Lock()
 		c.d.checkRunning = false
 		c.d.checkProbing = false
+		if c.d.checkPaused {
+			c.d.resetRecoveryObservationLocked()
+		}
+		c.d.updateTransportDemandLocked()
 		if result.kind != checkCapacity {
 			c.d.checkedAt = time.Now()
 		}
 		c.d.statusRevision++
 		c.d.mu.Unlock()
 	}()
+	if result.kind == checkSelection {
+		c.finishSelectionCheck(result)
+		c.cancel()
+		c.cancel = nil
+		return c.d.ctx.Err() == nil
+	}
 	c.cancel()
 	c.cancel = nil
 	if c.d.ctx.Err() != nil {
@@ -444,12 +475,22 @@ func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 		c.capacityBlockReason = reason
 		return
 	}
-	if result.connectErr == nil && !snapshot.RecoveryRequired {
+	if result.connectErr == nil && (!snapshot.RecoveryRequired || snapshot.UsableCapacity > result.capacityBefore) {
 		c.capacityInterval = 0
+		c.capacityAt = time.Time{}
+		// Pooled transports may repair one slot per Connect. Continue only when
+		// capacity actually survives; a nil error alone need not mean progress.
+		// A new slot still needs an end-to-end proof before restoring health.
+		if !c.d.healthyAt(snapshot.ReadinessVersion) {
+			c.resetHealthRetry()
+			c.healthAt = time.Now()
+		}
 		return
 	}
 	if result.connectErr != nil {
 		log.WithField("node", c.d.name).WithError(result.connectErr).Debug("Outbound capacity replenishment failed; existing capacity remains usable")
+	} else {
+		log.WithField("node", c.d.name).Debug("Outbound capacity replenishment made no observable progress; retrying with backoff")
 	}
 	maximum := c.d.CheckIntervalMax
 	if maximum <= 0 {
@@ -551,18 +592,27 @@ func (c *connectivityChecker) dispatch() {
 		c.start(c.requestedCheckKind())
 		return
 	}
+	if c.startSelectionCheck() {
+		return
+	}
 	if !status.CheckEnabled {
 		c.d.mu.RLock()
-		recoverRetained := c.d.retains > 0 && status.HasSession && !status.Healthy
+		demand := c.d.retains > 0
+		for member := range c.d.members {
+			demand = demand || member.selected && !member.closed
+		}
 		c.d.mu.RUnlock()
-		if !recoverRetained {
+		if !demand || !status.HasSession || status.Healthy && !status.Session.RecoveryRequired {
 			c.stopRetries()
 			c.d.setRecovery(RecoveryReady, time.Time{}, "")
 			return
 		}
-		// Retained HTTP clients may still open upstream connections. Recover
-		// their session with the existing backoff, then return to paused checks.
-		if c.healthAt.IsZero() {
+		// Selected failover paths and retained callers still need capacity.
+		// Repair it without enabling periodic latency or capability discovery.
+		c.supportAt = time.Time{}
+		if status.Healthy {
+			c.healthAt = time.Time{}
+		} else if c.healthAt.IsZero() {
 			c.healthAt = time.Now()
 		}
 	}
@@ -576,7 +626,19 @@ func (c *connectivityChecker) dispatch() {
 	}
 
 	now := time.Now()
-	needsCapacity := status.Healthy && status.Session.RecoveryRequired &&
+	recoveryAt, recoveryTimeout := c.d.recoveryCheckPlan()
+	if recoveryTimeout > 0 {
+		if recoveryAt.IsZero() {
+			recoveryAt = now.Add(c.d.recoveryCheckInterval())
+		}
+		if c.healthAt.IsZero() || recoveryAt.Before(c.healthAt) {
+			c.healthAt = recoveryAt
+		}
+	}
+	if status.CheckEnabled && status.Healthy && c.healthAt.IsZero() {
+		c.healthAt = now.Add(max(c.d.CheckInterval, time.Millisecond))
+	}
+	needsCapacity := status.Session.Accepting && status.Session.RecoveryRequired &&
 		status.Session.RecoveryExecutor != netproxy.RecoveryLibraryManaged
 	capacityAt := c.capacityAt
 	if !needsCapacity || c.capacityBlockReason != "" {
@@ -588,7 +650,11 @@ func (c *connectivityChecker) dispatch() {
 	// Due health work takes priority over replenishment and capability discovery.
 	if !c.healthAt.IsZero() && !c.healthAt.After(now) {
 		c.healthAt = time.Time{}
-		c.start(c.requestedCheckKind())
+		if recoveryTimeout > 0 {
+			c.startRecoveryCheck(recoveryTimeout)
+		} else {
+			c.start(c.requestedCheckKind())
+		}
 		return
 	}
 	if !capacityAt.IsZero() && !capacityAt.After(now) {
@@ -613,6 +679,8 @@ func (c *connectivityChecker) dispatch() {
 	// Publish waiting status from the same deadlines that drive the timer.
 	// In-flight status is published by connect/probe operations themselves.
 	switch {
+	case !status.Healthy && !c.healthAt.IsZero() && (capacityAt.IsZero() || !capacityAt.Before(c.healthAt)):
+		c.d.setRecovery(RecoveryBackoff, c.healthAt, "")
 	case needsCapacity && c.capacityBlockReason != "":
 		c.d.updateRecovery(RecoveryBlocked, time.Time{}, c.capacityBlockReason, "replenish")
 	case needsCapacity && !capacityAt.IsZero():

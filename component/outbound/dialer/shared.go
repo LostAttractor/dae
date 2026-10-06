@@ -8,6 +8,11 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 )
 
+// SharesRuntime identifies aliases that cannot provide independent failover.
+func (d *Dialer) SharesRuntime(other *Dialer) bool {
+	return d.pathRuntime == other.pathRuntime
+}
+
 // Share creates another group-local member of the same configured path.
 // A retired runtime cannot be resurrected, even while retained callers drain.
 func (d *Dialer) Share(property *Property, statsScope string) (*Dialer, bool) {
@@ -74,9 +79,13 @@ func (d *pathRuntime) recordLatencyLocked(latency time.Duration, success bool) {
 // Any selected/tracked member keeps the shared worker enabled. Explicit checks
 // and recovery for retained callers retain their separate one-shot demand.
 func (d *pathRuntime) updateCheckDemandLocked() {
+	defer d.updateTransportDemandLocked()
 	enabled := false
 	for member := range d.members {
 		enabled = enabled || member.active && member.checkEnabled
+	}
+	if !enabled {
+		d.resetRecoveryObservationLocked()
 	}
 	if d.checkPaused == !enabled {
 		return

@@ -18,7 +18,7 @@ func TestDialerLatencyWindow(t *testing.T) {
 	if _, ok := d.latencyStats(); ok {
 		t.Fatal("unbound dialer has latency")
 	}
-	d.RegisterDialerGroup(nil, 0.5)
+	d.RegisterDialerGroup(nil, 0.5, 0, 0)
 	if _, ok := d.latencyStats(); ok {
 		t.Fatal("new binding has latency")
 	}
@@ -50,7 +50,7 @@ func TestDialerLatencyWindow(t *testing.T) {
 			t.Fatalf("sample %d: got %+v, %v; want %+v", i, got, ok, want)
 		}
 	}
-	d.RegisterDialerGroup(nil, 0.5)
+	d.RegisterDialerGroup(nil, 0.5, 0, 0)
 	if _, ok := d.latencyStats(); ok {
 		t.Fatal("replacement binding inherited old latency samples")
 	}
@@ -58,7 +58,7 @@ func TestDialerLatencyWindow(t *testing.T) {
 
 func TestDialerLatencyConcurrentSnapshots(t *testing.T) {
 	d := &Dialer{pathRuntime: &pathRuntime{ctx: context.Background(), health: healthHealthy}}
-	d.RegisterDialerGroup(nil, 0.5)
+	d.RegisterDialerGroup(nil, 0.5, 0, 0)
 	network := common.NetworkIndex(0).NetworkType()
 	d.networks[network.Index()] = networkSupported
 	var workers sync.WaitGroup

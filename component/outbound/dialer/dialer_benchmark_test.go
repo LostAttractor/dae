@@ -27,7 +27,7 @@ func BenchmarkDialerUsable(b *testing.B) {
 
 func benchmarkDialerWithLatency() *Dialer {
 	d := &Dialer{pathRuntime: &pathRuntime{ctx: context.Background(), health: healthHealthy}}
-	d.RegisterDialerGroup(nil, 0.5)
+	d.RegisterDialerGroup(nil, 0.5, 0, 0)
 	for i := range d.networks {
 		d.networks[i] = networkSupported
 	}
@@ -68,7 +68,7 @@ func BenchmarkDialerLatencyUpdateAndSnapshot(b *testing.B) {
 func BenchmarkSharedSuccessfulLatency(b *testing.B) {
 	d := &Dialer{pathRuntime: new(pathRuntime), active: true}
 	d.members = map[*Dialer]struct{}{d: {}}
-	d.RegisterDialerGroup(nil, 0.5)
+	d.RegisterDialerGroup(nil, 0.5, 0, 0)
 	b.ReportAllocs()
 	for b.Loop() {
 		d.mu.Lock()

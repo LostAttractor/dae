@@ -120,7 +120,7 @@ func NewDialerGroup(
 
 	if g.ChecksConnectivity() {
 		for _, d := range dialers {
-			d.RegisterDialerGroup(g, selectionPolicy.EmaAlpha)
+			d.RegisterDialerGroup(g, selectionPolicy.EmaAlpha, 0, 0)
 		}
 		g.updateCheckTracking()
 	}

@@ -129,7 +129,7 @@ func TestManualCheckSurvivesDeselection(t *testing.T) {
 }
 
 func TestManualCheckDuringCapacityReplenishment(t *testing.T) {
-	transport := &testCapacityTransport{newTestSessionTransport(netproxy.SessionConnected)}
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
 	event := transport.Snapshot()
 	event.RecoveryRequired = true
 	transport.state.Publish(event)

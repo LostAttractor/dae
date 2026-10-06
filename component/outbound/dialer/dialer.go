@@ -55,10 +55,13 @@ func (m SelectionForceMask) Contains(index common.NetworkIndex) bool {
 type groupBinding struct {
 	observer DialerGroup
 	// Successful samples only; failures are tracked by the shared path.
-	latencies     [10]time.Duration
-	next, count   int
-	movingAverage time.Duration
-	emaAlpha      float64
+	latencies       [10]time.Duration
+	next, count     int
+	movingAverage   time.Duration
+	emaAlpha        float64
+	failureRecovery time.Duration
+	probeTimeout    time.Duration
+	recovered       bool
 }
 
 func (g *groupBinding) recordLatency(latency time.Duration) {
@@ -112,6 +115,7 @@ type Dialer struct {
 	// Member state is protected by the shared runtime's mu.
 	group        *groupBinding
 	checkEnabled bool
+	selected     bool
 	active       bool
 	closed       bool
 	closeOnce    sync.Once
@@ -122,12 +126,19 @@ type Dialer struct {
 type pathRuntime struct {
 	*GlobalOption
 	netproxy.Dialer
-	name        string
-	runtime     *netproxy.Runtime
-	session     netproxy.Session
-	members     map[*Dialer]struct{}
-	lastLatency time.Duration
-	measuredAt  time.Time
+	name               string
+	runtime            *netproxy.Runtime
+	session            netproxy.Session
+	members            map[*Dialer]struct{}
+	lastLatency        time.Duration
+	dormant            *dormantTransport
+	proofHolds         int
+	failedBefore       bool
+	recoverySince      time.Time
+	recoveryVerifiedAt time.Time
+	measuredAt         time.Time
+	proofSequence      uint64
+	healthProofs       [common.NetworkTypeCount]HealthProof
 
 	checksConnectivity bool
 	health             healthPhase
@@ -143,6 +154,7 @@ type pathRuntime struct {
 	pendingCheck       checkRequestReason
 	networks           [common.NetworkTypeCount]networkState
 	pendingForce       SelectionForceMask
+	selectionChecks    [common.NetworkTypeCount]*selectionCheck
 
 	mu sync.RWMutex
 
@@ -164,10 +176,18 @@ type pathRuntime struct {
 }
 
 type SelectionSnapshot struct {
-	Usable     bool
-	Support    api.NetworkSupportState
-	HasLatency bool
-	Latency    api.LatencyStats
+	Usable          bool
+	Dormant         bool
+	ObservedHealthy bool
+	Support         api.NetworkSupportState
+	HasLatency      bool
+	Latency         api.LatencyStats
+	Degraded        bool
+	Monitoring      bool // Shared worker demand, including other groups.
+	RecoveryElapsed time.Duration
+	FailureRecovery time.Duration
+	MeasuredAt      time.Time
+	Proof           HealthProof
 }
 
 // ConnectivitySnapshot is the state needed to aggregate a dialer into its
@@ -192,11 +212,13 @@ func supportState(state networkState) api.NetworkSupportState {
 // RuntimeSnapshot is a coherent view of a dialer's current connectivity state.
 // Process-lifetime availability statistics are sampled after releasing its lock.
 type RuntimeSnapshot struct {
+	ObservedHealthy    bool
 	Revision           uint64
 	ObservedSessionSeq uint64
 	Recovery           RecoverySnapshot
 	Failure            *FailureSnapshot
 	Healthy            bool
+	Dormant            bool // Physical transport released, not a group's probe policy.
 	InitialCheckDone   bool
 	CheckEnabled       bool
 	Checking           bool
@@ -208,6 +230,10 @@ type RuntimeSnapshot struct {
 	HasLatency         bool
 	Latency            api.LatencyStats
 	Availability       api.Availability
+	Degraded           bool
+	RecoveryElapsed    time.Duration
+	FailureRecovery    time.Duration
+	MeasuredAt         time.Time
 }
 
 type GlobalOption struct {
@@ -359,12 +385,22 @@ func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSnapshot {
 	d.mu.RLock()
 	session := d.sessionSnapshot()
+	dormant := false
+	if d.dormant != nil {
+		session, dormant = d.dormant.status()
+	}
 	state := d.networks[networkType.Index()]
 	snapshot := SelectionSnapshot{
-		Usable:  !d.closed && d.healthyLocked(session) && state == networkSupported,
-		Support: supportState(state),
+		Usable:          !d.closed && d.healthyLocked(session) && state == networkSupported,
+		Dormant:         dormant,
+		ObservedHealthy: !d.closed && d.health == healthHealthy,
+		Support:         supportState(state),
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
+	snapshot.Degraded, snapshot.RecoveryElapsed, snapshot.FailureRecovery = d.degradationLocked()
+	snapshot.Monitoring = !d.checkPaused
+	snapshot.MeasuredAt = d.measuredAt
+	snapshot.Proof = d.healthProofLocked(networkType.Index())
 	d.mu.RUnlock()
 	return snapshot
 }
@@ -400,14 +436,22 @@ func (d *pathRuntime) initialCheckCompletedLocked() bool {
 	return true
 }
 
-func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64) {
+func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, failureRecovery, probeTimeout time.Duration) {
 	d.mu.Lock()
 	if emaAlpha == 0 {
 		emaAlpha = DefaultEmaAlpha
 	}
+	if failureRecovery == 0 {
+		failureRecovery = DefaultFailureRecovery
+	}
+	if probeTimeout == 0 {
+		probeTimeout = DefaultProbeTimeout
+	}
 	d.group = &groupBinding{
-		observer: group,
-		emaAlpha: emaAlpha,
+		observer:        group,
+		emaAlpha:        emaAlpha,
+		failureRecovery: failureRecovery,
+		probeTimeout:    probeTimeout,
 	}
 	d.mu.Unlock()
 }
@@ -441,6 +485,8 @@ func (d *Dialer) RuntimeStatus() RuntimeSnapshot {
 	snapshot.Healthy = snapshot.Healthy && !d.closed
 	snapshot.CheckEnabled = d.checkEnabled && !d.closed
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
+	snapshot.Degraded, snapshot.RecoveryElapsed, snapshot.FailureRecovery = d.degradationLocked()
+	snapshot.MeasuredAt = d.measuredAt
 	d.mu.RUnlock()
 	snapshot.Availability = stats.DefaultStore.GetNode(d.StatsKey())
 	return snapshot
@@ -454,13 +500,21 @@ func (d *pathRuntime) runtimeStatus() RuntimeSnapshot {
 
 func (d *pathRuntime) runtimeStatusLocked() RuntimeSnapshot {
 	session := d.sessionSnapshot()
+	dormant := false
+	if d.dormant != nil {
+		// Sample readiness and physical sleep together while connections may
+		// independently release the last transport reference.
+		session, dormant = d.dormant.status()
+	}
 	healthy := d.healthyLocked(session)
 	snapshot := RuntimeSnapshot{
+		ObservedHealthy:    d.health.usable(),
 		Revision:           d.statusRevision,
 		ObservedSessionSeq: d.observedSessionSeq,
 		Recovery:           d.recoverySnapshotLocked(session, healthy),
 		Failure:            d.lastFailure,
 		Healthy:            healthy,
+		Dormant:            dormant,
 		InitialCheckDone:   d.initialCheckCompletedLocked(),
 		CheckEnabled:       !d.checkPaused,
 		Checking:           d.checkRunning || d.pendingCheck != 0 || (!d.checkPaused && d.checkedAt.IsZero()),
@@ -486,11 +540,13 @@ func (d *Dialer) Retain() (release func(), err error) {
 		return nil, net.ErrClosed
 	}
 	d.retains++
+	d.updateTransportDemandLocked()
 	d.mu.Unlock()
 	d.signalConnectivityCheck()
 	return sync.OnceFunc(func() {
 		d.mu.Lock()
 		d.retains--
+		d.updateTransportDemandLocked()
 		retire := d.checksStopped && d.retains == 0
 		d.mu.Unlock()
 		d.signalConnectivityCheck()

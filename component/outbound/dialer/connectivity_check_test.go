@@ -108,7 +108,7 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
 	}, true, "")
-	d.RegisterDialerGroup(new(testGroup), 0.5)
+	d.RegisterDialerGroup(new(testGroup), 0.5, 0, 0)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }

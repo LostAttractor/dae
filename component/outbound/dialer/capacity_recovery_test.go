@@ -11,7 +11,10 @@ import (
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-type testCapacityTransport struct{ *testSessionTransport }
+type testCapacityTransport struct {
+	*testSessionTransport
+	targetCapacity int
+}
 
 func (t *testCapacityTransport) Connect(context.Context) error {
 	t.connects.Add(1)
@@ -19,16 +22,16 @@ func (t *testCapacityTransport) Connect(context.Context) error {
 		return t.connectErr
 	}
 	event := t.Snapshot()
-	event.RecoveryRequired = false
 	event.RecoveryPhase = "ready"
 	event.Cause = nil
 	event.UsableCapacity++
+	event.RecoveryRequired = event.UsableCapacity < t.targetCapacity
 	t.state.Publish(event)
 	return nil
 }
 
 func TestHealthyCapacityRecoveryKeepsHealthAndDeduplicatesDemand(t *testing.T) {
-	transport := &testCapacityTransport{newTestSessionTransport(netproxy.SessionConnected)}
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
 	event := transport.Snapshot()
 	event.RecoveryExecutor = netproxy.RecoveryDaemon
 	event.RecoveryRequired = true
@@ -92,7 +95,7 @@ func TestHealthyCapacityRecoveryKeepsHealthAndDeduplicatesDemand(t *testing.T) {
 }
 
 func TestCapacityAuthFailureKeepsServingUntilEnvironmentRequest(t *testing.T) {
-	transport := &testCapacityTransport{newTestSessionTransport(netproxy.SessionConnected)}
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
 	event := transport.Snapshot()
 	event.RecoveryRequired = true
 	transport.state.Publish(event)
@@ -152,7 +155,7 @@ func TestCapacityAuthFailureKeepsServingUntilEnvironmentRequest(t *testing.T) {
 }
 
 func TestCapacityBackoffDeadlineMatchesItsTimer(t *testing.T) {
-	transport := &testCapacityTransport{newTestSessionTransport(netproxy.SessionConnected)}
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
 	event := transport.Snapshot()
 	event.RecoveryRequired = true
 	transport.state.Publish(event)
@@ -174,7 +177,7 @@ func TestCapacityBackoffDeadlineMatchesItsTimer(t *testing.T) {
 }
 
 func TestRecoverySerializesDueHealthCapacityAndSupport(t *testing.T) {
-	transport := &testCapacityTransport{newTestSessionTransport(netproxy.SessionConnected)}
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
 	event := transport.Snapshot()
 	event.RecoveryRequired = true
 	transport.state.Publish(event)
@@ -225,5 +228,122 @@ func TestRecoverySerializesDueHealthCapacityAndSupport(t *testing.T) {
 	if c.cancel != nil || transport.connects.Load() != 1 || !d.RuntimeStatus().Healthy ||
 		d.networkStates()[common.NetworkUDP4] != networkUnsupported {
 		t.Fatal("scheduled work was duplicated or changed serving health")
+	}
+}
+
+func TestCapacityProgressDoesNotBackOff(t *testing.T) {
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected), targetCapacity: 4}
+	event := transport.Snapshot()
+	event.RecoveryRequired = true
+	transport.state.Publish(event)
+	d := newTestDialer(t, transport)
+	prepareRecoveryDialer(d)
+	c := testRecoveryChecker(t, d)
+	c.capacityInterval = time.Minute
+	c.dispatch()
+	for range 3 {
+		if c.cancel == nil || c.runningKind != checkCapacity {
+			t.Fatal("successful partial replenishment entered backoff instead of filling the pool")
+		}
+		finishCheck(c, <-c.results)
+	}
+	if c.cancel != nil || c.capacityInterval != 0 || transport.Snapshot().RecoveryRequired || transport.connects.Load() != 3 {
+		t.Fatal("pool did not finish replenishing with one operation per missing slot")
+	}
+}
+
+func TestCapacityReplacementLostBeforeCompletionBacksOff(t *testing.T) {
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
+	event := transport.Snapshot()
+	event.RecoveryRequired = true
+	transport.state.Publish(event)
+	d := newTestDialer(t, transport)
+	prepareRecoveryDialer(d)
+	c := testRecoveryChecker(t, d)
+	c.healthAt = time.Now().Add(time.Hour)
+	for i := range 3 {
+		c.dispatch()
+		if c.cancel == nil || c.runningKind != checkCapacity {
+			t.Fatal("missing capacity did not start a replacement")
+		}
+		result := <-c.results
+		// A slot may become ready, then immediately close or receive GOAWAY.
+		// The worker consumes both events before the completed operation.
+		c.handleSessionEvent(transport.Snapshot())
+		event = transport.Snapshot()
+		event.UsableCapacity--
+		event.RecoveryRequired = true
+		event.EpisodeID++
+		transport.state.Publish(event)
+		c.handleSessionEvent(transport.Snapshot())
+		finishCheck(c, result)
+		if c.cancel != nil || !c.capacityAt.After(time.Now()) || c.capacityInterval != time.Second<<i {
+			t.Fatalf("replacement loss bypassed backoff: running=%v retry=%v interval=%s", c.cancel != nil, c.capacityAt, c.capacityInterval)
+		}
+		if !d.RuntimeStatus().Healthy {
+			t.Fatal("failed replenishment invalidated healthy sibling slots")
+		}
+		c.capacityAt = time.Time{} // Advance just the capacity deadline.
+	}
+	c.dispatch()
+	finishCheck(c, <-c.results)
+	if c.cancel != nil || c.capacityInterval != 0 || transport.Snapshot().RecoveryRequired {
+		t.Fatal("a surviving replacement did not clear the retry backoff")
+	}
+}
+
+func TestUnhealthyPartialPoolReplenishesBeforeReverification(t *testing.T) {
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
+	event := transport.Snapshot()
+	event.RecoveryRequired = true
+	transport.state.Publish(event)
+	d := newTestDialer(t, transport)
+	prepareRecoveryDialer(d)
+	d.mu.Lock()
+	d.confirmFailureLocked()
+	d.health = healthUnhealthy
+	d.mu.Unlock()
+	c := testRecoveryChecker(t, d)
+	c.healthAt = time.Now().Add(time.Hour)
+	c.dispatch()
+	if c.cancel == nil || c.runningKind != checkCapacity {
+		t.Fatal("failed health prevented repair of an accepting partial pool")
+	}
+	c.finish(<-c.results)
+	if d.RuntimeStatus().Healthy {
+		t.Fatal("capacity repair fabricated a successful health proof")
+	}
+	c.dispatch()
+	if c.cancel == nil || c.runningKind != checkHealth {
+		t.Fatal("capacity repair left verification behind the old health backoff")
+	}
+	finishCheck(c, <-c.results)
+	if status := d.RuntimeStatus(); !status.Healthy || !status.Degraded || status.RecoveryElapsed != 0 {
+		t.Fatalf("first verified repair did not start a degraded recovery window: %+v", status)
+	}
+}
+
+func TestSelectedPausedPathRepairsCapacityWithoutPeriodicProbes(t *testing.T) {
+	transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
+	event := transport.Snapshot()
+	event.RecoveryRequired = true
+	transport.state.Publish(event)
+	d := newTestDialer(t, transport)
+	prepareRecoveryDialer(d)
+	d.SetSelected(true)
+	d.SetMonitoring(false)
+	c := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+		t.Error("capacity repair enabled periodic probes on a paused path")
+		return true, nil
+	})
+	t.Cleanup(c.stopRetries)
+	c.healthAt = time.Now()
+	c.dispatch()
+	if c.cancel == nil || c.runningKind != checkCapacity {
+		t.Fatal("a selected path's paused latency checks prevented capacity repair")
+	}
+	finishCheck(c, <-c.results)
+	if c.cancel != nil || transport.connects.Load() != 1 || !c.healthAt.IsZero() {
+		t.Fatal("capacity completion restarted periodic health checks")
 	}
 }

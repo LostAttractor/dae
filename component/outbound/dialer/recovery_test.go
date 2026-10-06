@@ -402,7 +402,7 @@ func TestHealthyPoolLossKeepsSiblingCapacityUsable(t *testing.T) {
 func TestInterleavedResourceEpisodesPreserveCurrentFailureAndBackoff(t *testing.T) {
 	for _, separatePublishers := range []bool{false, true} {
 		t.Run(fmt.Sprintf("separate_publishers=%t", separatePublishers), func(t *testing.T) {
-			transport := &testCapacityTransport{newTestSessionTransport(netproxy.SessionConnected)}
+			transport := &testCapacityTransport{testSessionTransport: newTestSessionTransport(netproxy.SessionConnected)}
 			event := transport.Snapshot()
 			event.PublisherID = 100
 			event.RecoveryExecutor = netproxy.RecoveryDaemon

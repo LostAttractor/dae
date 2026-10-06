@@ -132,12 +132,14 @@ type probeResult struct {
 }
 
 type checkResult struct {
-	kind       checkKind
-	generation uint64
-	seq        uint64
-	readiness  uint64
-	connectErr error
-	probes     []probeResult
+	attempted      bool
+	kind           checkKind
+	generation     uint64
+	seq            uint64
+	readiness      uint64
+	capacityBefore int
+	connectErr     error
+	probes         []probeResult
 }
 
 // Failures can arise while establishing a session or while opening a probe
@@ -156,6 +158,9 @@ func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkA
 	result := checkResult{
 		kind:       attempt.kind,
 		generation: attempt.generation,
+	}
+	if attempt.kind == checkCapacity {
+		result.capacityBefore = c.d.session.Snapshot().UsableCapacity
 	}
 	snapshot, err := c.connectFor(ctx, attempt.kind == checkCapacity)
 	result.seq = snapshot.Seq
@@ -267,8 +272,15 @@ func (c *connectivityChecker) runProbe(ctx context.Context, network common.Netwo
 }
 
 func acquireConnectivityCheckSlot(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case connectivityCheckSlots <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			releaseConnectivityCheckSlot()
+			return err
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
