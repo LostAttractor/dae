@@ -372,6 +372,19 @@
         ],
         "type": "object"
       },
+      "SelectionStatus": {
+        "type": "object",
+        "properties": {
+          "tracking": {"type": "string", "enum": ["selected", "monitoring", "standby"], "description": "Group-local scheduling role. Standby paths may still be monitored by another group; active operations are reported by recovery."},
+          "degraded": {"type": "boolean"},
+          "recovery_elapsed": {"type": "integer", "format": "int64", "description": "Successfully verified observation time, in nanoseconds."},
+          "failure_recovery": {"type": "integer", "format": "int64", "description": "Required recovery observation duration, in nanoseconds."},
+          "priority": {"type": "integer"},
+          "score": {"type": "integer", "format": "int64", "description": "Selection score in nanoseconds; may be negative."},
+          "measured_at": {"type": "string", "format": "date-time"}
+        },
+        "required": ["tracking", "degraded", "recovery_elapsed", "failure_recovery", "priority", "score"]
+      },
       "BufferMemoryStatus": {
         "description": "Process-wide MITM body buffer budget. Byte counters measure reserved buffer storage; denied counts rejected reservations.",
         "properties": {
@@ -619,6 +632,13 @@
       },
       "NodeStatus": {
         "properties": {
+          "dormant": {
+            "type": "boolean",
+            "description": "The physical transport has been released and is not being recreated. Omitted when false; independent of group-local selection tracking."
+          },
+          "selection": {
+            "$ref": "#/components/schemas/SelectionStatus"
+          },
           "egress": { "$ref": "#/components/schemas/NodeEgress" },
           "address": {
             "type": "string"
@@ -938,7 +958,7 @@
             "type": "array"
           },
           "schema": {
-            "const": 11,
+            "const": 12,
             "format": "int64",
             "type": "integer"
           },
@@ -1301,7 +1321,7 @@
     }
   },
   "info": {
-    "description": "Status schema 11. Direct fallback connections are a single process-lifetime counter outside path statistics. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 12. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests only; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },

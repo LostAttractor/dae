@@ -47,11 +47,11 @@ func TestDormantTransportDrainsAndRecreates(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.SetCheckEnabled(false)
-	if !d.session.Snapshot().Accepting {
+	if status := d.RuntimeStatus(); !status.Session.Accepting || status.Dormant {
 		t.Fatal("live connection was retired by sleep")
 	}
 	_ = conn.Close()
-	if d.session.Snapshot().Accepting {
+	if status := d.RuntimeStatus(); status.Session.Accepting || !status.Dormant || status.Healthy {
 		t.Fatal("idle transport remained accepting")
 	}
 	if err := generations[0].Wait(t.Context()); err != nil {
@@ -62,7 +62,7 @@ func TestDormantTransportDrainsAndRecreates(t *testing.T) {
 	if err := d.session.Connect(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if len(generations) != 2 || !d.session.Snapshot().Accepting || d.session.Snapshot().ReadinessVersion <= firstReadiness {
+	if status := d.RuntimeStatus(); len(generations) != 2 || !status.Session.Accepting || status.Dormant || status.Session.ReadinessVersion <= firstReadiness {
 		t.Fatal("wake did not establish a new physical generation")
 	}
 	d.SetSelected(false)

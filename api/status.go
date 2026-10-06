@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 11
+const StatusSchemaVersion = 12
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -72,9 +72,11 @@ type NodeStatus struct {
 	ChecksConnectivity bool                               `json:"checks_connectivity"`
 	InitialCheckDone   bool                               `json:"-"` // Current runtime only, for startup logs.
 	Healthy            bool                               `json:"healthy"`
+	Dormant            bool                               `json:"dormant,omitzero"`
 	ConfirmingFailure  bool                               `json:"confirming_failure"`
 	Availability       Availability                       `json:"availability"`
 	Latency            *LatencyStats                      `json:"latency,omitempty"`
+	Selection          *SelectionStatus                   `json:"selection,omitempty"`
 	Support            NetworkValues[NetworkSupportState] `json:"support"`
 	Stats              PathStats                          `json:"stats"`
 }

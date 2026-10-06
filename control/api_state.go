@@ -41,7 +41,10 @@ func (c *ControlPlane) selectorState(group *outbound.DialerGroup) api.SelectorSt
 			Checking: status.Checking, Tested: !status.CheckedAt.IsZero(),
 			Tracking: status.CheckEnabled, CheckedAt: status.CheckedAt,
 		}
-		if status.Healthy && status.HasLatency {
+		if status.Dormant {
+			node.Healthy = status.ObservedHealthy
+		}
+		if node.Healthy && status.HasLatency {
 			ms := float64(status.Latency.Last) / float64(time.Millisecond)
 			node.LatencyMS = &ms
 		}

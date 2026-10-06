@@ -59,10 +59,14 @@ With a usable current path, background verification leaves traffic on it. Only s
 - **Shared path worker**: serializes one-shot verification, continuous monitoring and recovery observation, coalescing same-path/network requests. Groups share results but compute their own latency statistics, priorities and recovery durations.
 - **Transport lifetime**: combines monitoring, selection, connection and proof demand. Successful proofs retain resources through handoff; new failures or Session generations invalidate old proofs.
 
-## Dormancy
+## Dormancy and status
 
 Shared paths combine group and traffic demand. Sessions without monitoring, selection, probe or retained-caller/connection demand are released and recreated on demand. Sleep preserves measurements and degradation. Stopping dae checks does not stop protocol heartbeats on sessions still in use.
 
 An accepting pool with missing capacity can replenish even when path verification fails. Successful repair prompts fresh verification; connecting a slot is not a health proof. Increased usable capacity prompts further replenishment; failures or no observable capacity progress back off. A successful connection whose new slot is immediately lost does not clear backoff. Selected paths and retained callers can repair capacity with periodic latency checks paused.
+
+Status Last/Avg10/EMA contain successful latencies. Failed paths show `[degraded]`; `[recover 5s/30s]` appears only after successful verification starts recovery observation. `STATE` preserves actual health and check/retry progress. Only a released physical transport shows `dormant`, once, with historical sample age beside latency.
+
+API `selection.tracking` is the group-local role: `selected`, `monitoring` or `standby`. Standby does not mean physical sleep or abandoned recovery: other groups may share monitoring, and unmonitored higher-priority candidates still receive discovery checks. `recovery` reports the shared worker's action and retry time; node `dormant` separately reports physical sleep. `selection` also reports `recovery_elapsed`, `failure_recovery`, effective priority, score and `measured_at`.
 
 `dae_check_latency_seconds` exports measured `last` and `moving` samples. `dae_selection_score_seconds` separately exports the offset-adjusted score, including negative values.

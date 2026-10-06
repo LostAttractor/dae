@@ -72,12 +72,24 @@ func nodeLabel(status api.NodeStatus, index int) string {
 
 func annotatedNodeLabel(status api.NodeStatus, index int) string {
 	label := nodeLabel(status, index)
+	if selection := status.Selection; selection != nil {
+		if selection.Degraded {
+			if status.Healthy && !status.ConfirmingFailure {
+				label += fmt.Sprintf(" [recover %s/%s]", selection.RecoveryElapsed.Round(time.Millisecond), selection.FailureRecovery)
+			} else {
+				label += " [degraded]"
+			}
+		}
+	}
 	if status.Annotation == nil {
 		return label
 	}
 	parts := make([]string, 0, 2)
 	if status.Annotation.Priority != nil {
 		priority := fmt.Sprintf("p=%d", *status.Annotation.Priority)
+		if status.Selection != nil {
+			priority = fmt.Sprintf("p=%d", status.Selection.Priority)
+		}
 		if status.Annotation.PriorityConditional {
 			priority += "*"
 		}
@@ -172,6 +184,9 @@ func verboseNodeHealth(status api.NodeStatus) verboseNodeHealthCells {
 	if status.ChecksConnectivity {
 		availability := status.Availability
 		cells.state = colorNodeState(nodeHealth(status), "")
+		if status.Dormant {
+			cells.state = "dormant"
+		}
 		cells.upRatio = availabilityCell(availability.UpRatio, availability.ChecksFailed, availability.ChecksTotal).Decorate(func(value string) string { return colorRatio(availability.UpRatio, value) })
 		cells.upRatio24h = availabilityCell(availability.Recent24h.UpRatio, availability.Recent24h.ChecksFailed, availability.Recent24h.ChecksTotal).Decorate(func(value string) string { return colorRatio(availability.Recent24h.UpRatio, value) })
 		cells.healthySince = formatAgoWithChecks(availability.AliveSince, availability.ChecksSinceAlive)
@@ -205,7 +220,7 @@ func nodeStatusRow(status api.NodeStatus, index int, selected api.NetworkValues[
 }
 
 func nodeLatency(status api.NodeStatus) any {
-	if status.Latency == nil || nodeHealth(status) != nodeHealthHealthy {
+	if status.Latency == nil || nodeHealth(status) != nodeHealthHealthy && !status.Dormant {
 		return "-"
 	}
 	latency := status.Latency
@@ -213,10 +228,16 @@ func nodeLatency(status api.NodeStatus) any {
 	average := latency.Avg10.Seconds() * 1000
 	moving := latency.MovingAvg.Seconds() * 1000
 	formatted := clitable.Parts(fmt.Sprintf("%.0f", last), "/", fmt.Sprintf("%.0f", average), "/", fmt.Sprintf("%.0f", moving))
+	if status.Dormant && status.Selection != nil {
+		return formatted.Decorate(func(value string) string { return value + " @" + formatAgo(status.Selection.MeasuredAt) })
+	}
 	return formatted.Decorate(func(value string) string { return colorLatency(moving, value) })
 }
 
 func compactNodeState(status api.NodeStatus, now time.Time) string {
+	if status.Dormant {
+		return "dormant"
+	}
 	state := nodeHealth(status)
 	if !status.ChecksConnectivity {
 		state = nodeSessionState(status)
