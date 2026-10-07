@@ -732,42 +732,8 @@ func (c *controlPlaneCore) bindDaens() (err error) {
 	if len(c.netnsLinks) != 0 {
 		return nil
 	}
-	daens := GetDaeNetns()
-	links := make([]ciliumLink.Link, 0, 3)
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, closeBpfLinks(links))
-			return
-		}
-		c.netnsLinks = links
-	}()
-
-	skLookupLink, err := ciliumLink.AttachNetNs(int(daens.daeNs), c.bpf.bpfPrograms.TproxySkLookup)
-	if err != nil {
-		return fmt.Errorf("attach SK_LOOKUP program to dae netns: %w", err)
-	}
-	links = append(links, skLookupLink)
-
-	primaryLink, err := ciliumLink.AttachNetkit(ciliumLink.NetkitOptions{
-		Interface: daens.Dae0().Attrs().Index,
-		Program:   c.bpf.bpfPrograms.TproxyDae0peerIngress,
-		Attach:    ebpf.AttachNetkitPrimary,
-	})
-	if err != nil {
-		return fmt.Errorf("attach primary Netkit program: %w", err)
-	}
-	links = append(links, primaryLink)
-
-	peerLink, err := ciliumLink.AttachNetkit(ciliumLink.NetkitOptions{
-		Interface: daens.Dae0().Attrs().Index,
-		Program:   c.bpf.bpfPrograms.TproxyDae0Ingress,
-		Attach:    ebpf.AttachNetkitPeer,
-	})
-	if err != nil {
-		return fmt.Errorf("attach peer Netkit program: %w", err)
-	}
-	links = append(links, peerLink)
-	return nil
+	c.netnsLinks, err = GetDaeNetns().attachPrograms(c.bpf.bpfPrograms)
+	return err
 }
 
 func closeBpfLinks(links []ciliumLink.Link) error {

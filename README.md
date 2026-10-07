@@ -24,7 +24,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support to split traffic with invert match rules.
 - [x] Support [interface routing policies and reusable rule sets](./docs/en/configuration/routing.md), composed across [separate configuration files](./docs/en/configuration/separate-config.md).
 - [x] Support to automatically switch nodes according to policy. That is to say, support to automatically test independent TCP/UDP/IPv4/IPv6 latencies, and then use the best nodes for corresponding traffic according to user-defined policy.
-- [x] Support advanced DNS resolution process.
+- [x] Support advanced DNS resolution and caching through optional [DNS plugins](./docs/en/configuration/dns.md).
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
 - [x] Support various trending proxy protocols, seen in [proxy-protocols.md](./docs/en/proxy-protocols.md).
 - [x] Filter-based [destination IP overrides](./docs/zh/configuration/destination-rules.md) without modifying DNS responses.
@@ -34,7 +34,9 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 
 Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` right away!
 
-Source builds require cgo and a target C compiler; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
+The daemon requires Linux 6.13+ with the [kernel features and runtime environment](./docs/en/README.md#kernel-configurations) used by dae. Run `sudo dae check-kernel` to probe support before startup. Geo data files are required only by rules that reference them.
+
+Source builds require Go 1.27+, cgo, a target C compiler, and Clang/LLVM for eBPF; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
 
 The [configuration example](./example.dae) includes ordered `plugins` instances and `rules` flow controls / DNAT. Core [DNS](./docs/en/configuration/dns.md) is a transparent relay with persistent domain evidence; advanced resolver/cache features are independent plugins. The default build includes Surge. Add external Go plugins to [plugins.cfg](./plugins.cfg) and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-plugins).
 

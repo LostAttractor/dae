@@ -6,7 +6,7 @@ The [full configuration example](../../example.dae) includes the [management API
 
 ## Linux Kernel Requirement
 
-## Kernel Version
+### Kernel Version
 
 Use `uname -r` to check the kernel version on your machine.
 
@@ -29,59 +29,112 @@ This feature requires Linux 6.13 or newer.
 
 Note that if you bind dae to WAN only, dae only provide network service for local programs and not impact traffic coming in from other interfaces.
 
-`Use trace command`
-
-The `dae trace` command also requires Linux 6.13 or newer.
+The daemon runs on Linux with a supported little-endian target architecture.
+Containers use the host kernel. The standalone [API client](configuration/api-client.md)
+can run on other operating systems without these kernel features.
 
 ## Kernel Configurations
 
-Usually, mainstream desktop distributions have these items turned on. But in order to reduce kernel size, some items are turned off by default on embedded device distributions like OpenWRT, Armbian, etc.
-
-Use following command to show kernel configuration items on your machine.
+`dae run` checks kernel support before waiting for the network, loading rule
+resources or downloading subscriptions. To check independently without a config:
 
 ```shell
-zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
+sudo dae check-kernel
 ```
 
-dae needs:
+Checks cover the Linux version, BTF, production eBPF programs/maps/helpers,
+writable bpffs, cgroup v2 hooks, Netkit/veth, TCX, SK_LOOKUP, the process-exit tracepoint,
+IPv4/IPv6 policy routing and transparent sockets. Network attachment probes use a
+temporary network namespace; cgroup probes only allow traffic. Probe resources
+are released on completion. Missing required support or privileges stops startup;
+optional TCP splice and the long-process-name helper retain their fallback paths,
+and unavailable IPv6 policy routing produces a warning.
+Interface state, sysctls and configuration-specific requirements are checked during
+normal startup.
 
-```
+### Core kernel configuration
+
+For a custom kernel, check the following configuration. Kconfig selects some of
+these symbols through dependencies; a version number alone does not establish
+support. `check-kernel` probes the running kernel even when its config file is
+unavailable.
+
+```text
 CONFIG_BPF=y
 CONFIG_BPF_SYSCALL=y
 CONFIG_BPF_JIT=y
+CONFIG_DEBUG_INFO_BTF=y
 CONFIG_CGROUPS=y
-CONFIG_KPROBES=y
+CONFIG_CGROUP_BPF=y
+CONFIG_NAMESPACES=y
+CONFIG_NET_NS=y
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+CONFIG_IP_MULTIPLE_TABLES=y
+CONFIG_NET_XGRESS=y
 CONFIG_NET_INGRESS=y
 CONFIG_NET_EGRESS=y
-CONFIG_NET_SCH_INGRESS=m
-CONFIG_NET_CLS_BPF=m
-CONFIG_NET_CLS_ACT=y
-CONFIG_NETKIT=y
-CONFIG_BPF_STREAM_PARSER=y
-CONFIG_DEBUG_INFO=y
-# CONFIG_DEBUG_INFO_REDUCED is not set
-CONFIG_DEBUG_INFO_BTF=y
+CONFIG_PERF_EVENTS=y
+CONFIG_KPROBES=y
 CONFIG_KPROBE_EVENTS=y
 CONFIG_BPF_EVENTS=y
 ```
 
-Check them using command like:
+`CONFIG_BPF_SYSCALL` selects `NET_XGRESS`, which selects `NET_INGRESS` and
+`NET_EGRESS`. The internal link requires either `CONFIG_NETKIT=y` or
+`CONFIG_VETH=y`/`m` with the veth module available. dae prefers a Netkit L2 pair;
+when the kernel reports Netkit unsupported, it automatically uses a veth pair
+with TCX ingress programs on both ends. Permission, name-conflict and resource
+errors are reported rather than interpreted as missing Netkit support.
 
-for bash and other POSIX compliant shell:
+Host interfaces use TCX links. Internal interfaces use native Netkit hooks or
+veth TCX links; dae does not require the TC classifier/qdisc options `CONFIG_NET_CLS_BPF`,
+`CONFIG_NET_SCH_INGRESS` or `CONFIG_NET_CLS_ACT`. `CONFIG_BPF_STREAM_PARSER` is not
+required merely to use SOCKMAP/SOCKHASH or the current stream-verdict relay.
 
-```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+Enable the debug-info options required by your kernel's `DEBUG_INFO_BTF` Kconfig
+dependencies. The KPROBES/KPROBE_EVENTS settings above provide the usual path to
+`BPF_EVENTS`; the daemon uses BPF helpers and a process-exit tracepoint, while
+`dae trace` also attaches kprobes.
+
+To inspect the installed kernel configuration in a POSIX shell:
+
+```sh
+zcat /proc/config.gz 2>/dev/null || cat "/boot/config-$(uname -r)" /boot/config 2>/dev/null
 ```
 
-for fish shell:
+### Runtime environment
 
-```fish
-begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
-```
+- Mount bpffs read-write at `/sys/fs/bpf` and make it writable by dae.
+- Mount cgroup v2 and permit BPF attachment to it.
+- Expose kernel BTF (normally `/sys/kernel/btf/vmlinux`) and tracefs tracepoint
+  metadata (normally `/sys/kernel/tracing` or `/sys/kernel/debug/tracing`).
+- Run with the privileges needed for BPF, network namespace/device creation,
+  network administration, sockets and perf events; the supplied service runs as
+  root. Container capabilities, mounts and syscall policy must allow these operations.
+- Keep IPv4 and IPv6 kernel networking available for the internal namespace;
+  this does not require an IPv6 Internet connection. Interface forwarding and
+  related sysctls are described in [kernel parameters](user-guide/kernel-parameters.md).
 
-> **Note**: `Armbian` users can follow the [**Upgrade Guide**](user-guide/kernel-upgrade.md) to upgrade the kernel to meet the kernel configuration requirement.
->
-> `Arch Linux ARM` users can use [`linux-aarch64-7ji`](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) which meets the kernel configuration requirement of dae.
+### Optional and configuration-specific features
+
+| Feature | Requirement and behavior |
+| --- | --- |
+| IPv6 interception policy routing | `CONFIG_IPV6_MULTIPLE_TABLES`; missing support produces a warning and prevents the corresponding IPv6 interception route/rule from being installed. |
+| Long process names | `bpf_get_current_task` in cgroup socket-address programs; otherwise process-name routing uses truncated task names. |
+| TCP splice acceleration | Linux 6.18+, a build with `dae_splice`, SOCKHASH/stream-verdict links and the required fexit targets; unavailable support falls back to userspace relay for captured TCP. `make` includes the build tag. |
+| `dae trace` | Linux 6.13+, kprobes and accessible kernel symbols/BTF. `make` includes it on `amd64`, `arm64`, `riscv64`, `loong64` and `ppc64le`; other supported daemon targets omit the command. Trace targets are checked by `dae trace`, not by `check-kernel`. |
+| Bridge-member matching | [Routing](configuration/routing.md) describes `CONFIG_BRIDGE_NETFILTER` and the bridge netfilter settings needed for member metadata. |
+| Client-set export | Configured [ipset/nftset exports](configuration/api.md) require their kernel facilities and network-administration privileges. |
+
+### Geo data files
+
+`geoip.dat` and `geosite.dat` are needed only when rules reference them. They are
+loaded independently, including references in rule sets, policies and plugin
+rules. With no references, neither file is read or needs to be installed. See
+[routing](configuration/routing.md#examples) for `geoip:`, `geosite:`, `ext:` and
+`mmdb:` usage.
 
 ## Installation
 
@@ -193,10 +246,13 @@ For minimal bootable config:
 
 ```shell
 global{}
-routing{}
+routing { fallback: direct }
 ```
 
-However, this config leaves dae no-load state. If you want dae to be in working state, following is a best practice for small config:
+This config binds no interfaces. The following example proxies local traffic
+through an existing SOCKS5 server; replace the node URL with your own server.
+It needs no Geo data files or DNS plugins. For subscription-backed groups, see
+[routing](configuration/routing.md).
 
 ```shell
 global {
@@ -209,34 +265,8 @@ global {
   auto_config_kernel_parameter: true
 }
 
-subscription {
-  # Fill in your subscription links here.
-}
-
-# See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md for full examples.
-dns {
-  upstream {
-    googledns: 'tcp+udp://dns.google:53'
-    alidns: 'udp://dns.alidns.com:53'
-  }
-  routing {
-    request {
-      qtype(https) -> reject
-      fallback: alidns
-    }
-    response {
-      upstream(googledns) -> accept
-      ip(geoip:private) && !qname(geosite:cn) -> googledns
-      fallback: accept
-    }
-  }
-}
-
-group {
-  proxy {
-    #filter: name(keyword: HK, keyword: SG)
-    policy: min_moving_avg
-  }
+node {
+  proxy: 'socks5://127.0.0.1:1080'
 }
 
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
@@ -244,17 +274,14 @@ routing {
   pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
 
-  ### Write your rules below.
-
-  # Disable h3 because it usually consumes too much cpu/mem resources.
-  l4proto(udp) && dport(443) -> block
-  dip(geoip:private) -> direct
-  dip(geoip:cn) -> direct
-  domain(geosite:cn) -> direct
+  dip(127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, '::1/128', 'fc00::/7') -> direct
 
   fallback: proxy
 }
 ```
+
+Core transparently relays captured DNS on TCP/UDP port 53 using ordinary routing.
+Advanced upstream selection and response caching use optional [DNS plugins](configuration/dns.md).
 
 Compose `rule_set` fragments with ordered `use` statements. Each `policy` declares one fallback; `default: policy_name` and interface bindings can select the same policy. See [routing](configuration/routing.md) and [separate configuration files](configuration/separate-config.md) for complete examples.
 

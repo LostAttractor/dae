@@ -2,9 +2,9 @@
 
 **Note:**
 
-1. dae requires Linux 6.13 or newer with `CONFIG_NETKIT=y`; check the actual kernel rather than the Alpine release version.
-2. From version 3.20, Alpine Linux has officially disabled some features dae needed beacuse of Alpine Linux's cross CPU architectures compatibility, so only a suitably configured `linux-virt` kernel can run dae. For `linux-lts` or `linux-edge`, you may need to build the kernel yourself.
-3. This tutorial is for Alpine Linux 3.20 and newer with a supported kernel.
+1. dae requires Linux 6.13+ and the [kernel features and mounts](../README.md#kernel-configurations) used by the daemon, including BTF, cgroup BPF and either Netkit or veth. Missing Netkit support automatically selects veth with TCX.
+2. Kernel package names such as `linux-virt`, `linux-lts` and `linux-edge` do not establish compatibility. Check the running kernel with `dae check-kernel` after installation; select or build a kernel with the required features if necessary.
+3. This guide uses OpenRC. When running Alpine in a container, the host supplies the kernel and must permit the required operations.
 
 ## Enable Community Repo
 
@@ -21,36 +21,39 @@ Run `setup-apkrepos` command, then you'll get a menu list like this:
 
 Then input `c` to enable community repo.
 
-## Enable CGroups
+## Enable cgroup v2
 
-Enable `cgroups` service:
+Set unified cgroup mode in `/etc/rc.conf`:
+
+```sh
+rc_cgroup_mode="unified"
+```
+
+Enable and start the `cgroups` service. If the system already booted with a
+different cgroup layout, reboot to apply the mode change.
 
 ```sh
 rc-update add cgroups boot
+rc-service cgroups start
 ```
 
-## Mount bpf
+## Mount bpffs
 
-Edit `/etc/init.d/sysfs`:
+If bpffs is not already mounted at `/sys/fs/bpf`, add this entry to `/etc/fstab`:
+
+```text
+bpffs /sys/fs/bpf bpf defaults 0 0
+```
+
+Then mount it as root:
 
 ```sh
-vi /etc/init.d/sysfs
+mkdir -p /sys/fs/bpf
+mount /sys/fs/bpf
 ```
 
-Add the following to the `mount_misc` section:
-
-```sh
-        # Setup Kernel Support for bpf file system
-        if [ -d /sys/fs/bpf ] && ! mountinfo -q /sys/fs/bpf; then
-                if grep -qs bpf /proc/filesystems; then
-                ebegin "Mounting eBPF filesystem"
-                mount -n -t bpf -o ${sysfs_opts} bpffs /sys/fs/bpf
-                eend $?
-                fi
-        fi
-```
-
-Be careful that the format of the script `/etc/init.d/sysfs` must be correct, or `sysfs` service will be failed.
+It must be writable by dae. The preflight also checks BTF and access to tracepoint
+metadata; use the errors to identify missing mounts or kernel features.
 
 ## Install dae
 
@@ -62,9 +65,11 @@ This installer offered an OpenRC service script of dae, after installation, you 
 chmod 640 /usr/local/etc/dae/config.dae
 ```
 
-If your config file is ready to work, then you can start dae service:
+Validate kernel support and the configuration as root, then start dae:
 
 ```sh
+dae check-kernel
+dae validate -c /usr/local/etc/dae/config.dae
 rc-service dae start
 ```
 

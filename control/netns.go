@@ -77,7 +77,7 @@ func (ns *DaeNetns) Setup() (err error) {
 		return errors.Join(err, ns.closeHandles())
 	}
 	ns.setupDone.Store(true)
-	log.WithField("link_type", "netkit").Info("Dae network namespace ready")
+	log.WithField("link_type", ns.dae0.Type()).Info("Dae network namespace ready")
 	return nil
 }
 
@@ -249,7 +249,7 @@ func (ns *DaeNetns) setupRoutingPolicy() (err error) {
 	return nil
 }
 
-func createNetkitPair(name, peerName string) error {
+func newNetkitPair(name, peerName string) *netlink.Netkit {
 	attrs := netlink.NewLinkAttrs()
 	attrs.Name = name
 	peerAttrs := netlink.NewLinkAttrs()
@@ -264,15 +264,34 @@ func createNetkitPair(name, peerName string) error {
 		PeerScrub:  netlink.NETKIT_SCRUB_DEFAULT,
 	}
 	link.SetPeerAttrs(&peerAttrs)
-	if err := netlink.LinkAdd(link); err != nil {
-		return fmt.Errorf("create netkit pair (Linux 6.13+ with CONFIG_NETKIT is required): %w", err)
+	return link
+}
+
+// Prefer native Netkit hooks; a kernel without the device uses veth with TCX.
+// Permission, resource and name-conflict errors must retain their real cause.
+func createDaeLinkPair(name, peerName string, add func(netlink.Link) error) error {
+	device := newNetkitPair(name, peerName)
+	netkitErr := add(device)
+	if netkitErr == nil {
+		return nil
 	}
+	if !errors.Is(netkitErr, unix.EOPNOTSUPP) && !errors.Is(netkitErr, unix.ENODEV) {
+		return fmt.Errorf("create Netkit pair: %w", netkitErr)
+	}
+	veth := &netlink.Veth{Name: name, TxQLen: 1000, PeerName: peerName}
+	if err := add(veth); err != nil {
+		return errors.Join(
+			fmt.Errorf("create Netkit pair (CONFIG_NETKIT): %w", netkitErr),
+			fmt.Errorf("create veth pair (CONFIG_VETH): %w", err),
+		)
+	}
+	log.WithError(netkitErr).Info("Netkit unavailable; using veth with TCX")
 	return nil
 }
 
 func (ns *DaeNetns) setupLinkPair() (err error) {
 	DeleteLink(hostLinkName)
-	if err = createNetkitPair(hostLinkName, peerLinkName); err != nil {
+	if err = createDaeLinkPair(hostLinkName, peerLinkName, netlink.LinkAdd); err != nil {
 		return err
 	}
 	defer func() {

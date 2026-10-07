@@ -21,7 +21,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control/internal/splice"
-	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -102,13 +101,8 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	if len(runtime.shared) != 0 && runtime.soMarkFromDae != soMarkFromDae {
 		return nil, fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot change on reload; restart dae to apply it", runtime.soMarkFromDae, soMarkFromDae)
 	}
-	kernelVersion, err := internal.KernelVersion()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get kernel version: %w", err)
-	}
-	if kernelVersion.Less(consts.MinimumKernelVersion) {
-		return nil, fmt.Errorf("your kernel version %v does not satisfy the minimum requirement; expect >=%v",
-			kernelVersion.String(), consts.MinimumKernelVersion.String())
+	if err := checkKernelVersion(); err != nil {
+		return nil, err
 	}
 	if err = rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit.RemoveMemlock:%v", err)

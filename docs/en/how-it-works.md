@@ -29,11 +29,11 @@ Hence, if DNS requests cannot pass through dae, domain-based splitting will not 
 >
 > Additionally, advanced users who have used alternative splitting solutions and don't wish to route DNS requests through dae but still want certain traffic to be split based on domain (e.g., splitting traffic to Netflix nodes and download nodes based on the target domain, with some directly connecting via the core) can enforce the use of sniffed domains for splitting by setting `dial_mode: domain++`.
 
-dae performs traffic splitting in the interface BPF programs. On an interface configured for both roles, TCX runs WAN before LAN on ingress and LAN before WAN on egress. Programs already attached through TCX retain precedence and must return `TCX_NEXT` for dae's programs on the same hook to run. Depending on the result, traffic is either redirected into dae's private Netkit path for proxying or allowed to bypass dae and go directly.
+dae performs traffic splitting in the interface BPF programs. On an interface configured for both roles, TCX runs WAN before LAN on ingress and LAN before WAN on egress. Programs already attached through TCX retain precedence and must return `TCX_NEXT` for dae's programs on the same hook to run. Depending on the result, traffic is either redirected into dae's private Netkit/veth path for proxying or allowed to bypass dae and go directly.
 
 ### Proxy Mechanism
 
-The proxy mechanism of dae is akin to other programs. The LAN/WAN programs redirect selected packets into a private L2 Netkit pair. Native Netkit hooks prepare those packets for local delivery in dae's network namespace, where a BPF SK_LOOKUP program assigns the TCP or UDP listener from dae's socket map. This keeps the original destination intact without relying on a tc hook on the private link.
+The LAN/WAN programs redirect selected packets into a private L2 link pair. dae prefers Netkit with native hooks; when the kernel does not support Netkit, it uses veth with TCX ingress hooks on both ends. Both paths prepare packets for local delivery in dae's network namespace, where a BPF SK_LOOKUP program assigns the TCP or UDP listener from dae's socket map. Both preserve the original destination and return path. The backend does not change capture predicates or send unrelated direct traffic through userspace.
 
 In terms of benchmarking, dae's proxy performance slightly surpasses that of other proxy programs, but the difference is not significant.
 

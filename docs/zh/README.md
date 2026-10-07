@@ -34,57 +34,98 @@
 
 如果你只在 `wan_interface` 中填写了接口或 `auto`，而未在 `lan_interface` 中填写内容，那么从局域网中传来的流量将无法被代理。如果你想同时代理本机和局域网流量，请同时填写 `wan_interface` 和 `lan_interface`。
 
-`使用 trace 命令`
-
-`dae trace` 命令同样要求 Linux 6.13 或更新版本。
+守护进程运行于 Linux，目标架构必须是受支持的小端架构。容器使用宿主机内核。
+独立 [API 客户端](configuration/api-client.md) 可在其他操作系统运行，不依赖这些内核特性。
 
 ## 内核配置选项
 
-通常，主流桌面发行版都会打开这些选项。但是为了减小内核大小，在嵌入式设备发行版（如 OpenWRT、Armbian 等）上这些选项可能处于关闭状态。使用以下命令在你的设备上显示内核配置选项：
+`dae run` 会在等待网络、加载规则资源和下载订阅之前自动检查内核能力。
+也可以在启动前独立执行（无需配置文件）：
 
 ```shell
-zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}
+sudo dae check-kernel
 ```
 
-dae 需要以下内核选项：
+检查包括 Linux 版本、BTF、实际 eBPF 程序/映射/helper 加载、bpffs 写入、cgroup v2 hooks、
+Netkit/veth、TCX、SK_LOOKUP、进程退出 tracepoint、IPv4/IPv6 策略路由和透明套接字。
+网络挂载探测在临时网络命名空间中执行；cgroup 探测程序仅放行，探测结束即释放资源。
+缺少必需能力或权限会直接报错；可选 TCP splice 和长进程名 helper 缺失时使用现有降级路径，
+IPv6 策略路由不可用时给出警告。
+接口状态、sysctl 和具体配置仍会在正式启动时检查。
 
-```
+### 核心内核配置
+
+自定义内核应核对以下配置，其中部分选项由 Kconfig 依赖自动选中。
+内核版本号本身不能证明能力完整；即使系统未提供内核配置文件，`check-kernel` 也能实际探测运行中的内核。
+
+```text
 CONFIG_BPF=y
 CONFIG_BPF_SYSCALL=y
 CONFIG_BPF_JIT=y
+CONFIG_DEBUG_INFO_BTF=y
 CONFIG_CGROUPS=y
-CONFIG_KPROBES=y
+CONFIG_CGROUP_BPF=y
+CONFIG_NAMESPACES=y
+CONFIG_NET_NS=y
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_IPV6=y
+CONFIG_IP_MULTIPLE_TABLES=y
+CONFIG_NET_XGRESS=y
 CONFIG_NET_INGRESS=y
 CONFIG_NET_EGRESS=y
-CONFIG_NET_SCH_INGRESS=m
-CONFIG_NET_CLS_BPF=m
-CONFIG_NET_CLS_ACT=y
-CONFIG_NETKIT=y
-CONFIG_BPF_STREAM_PARSER=y
-CONFIG_DEBUG_INFO=y
-# CONFIG_DEBUG_INFO_REDUCED is not set
-CONFIG_DEBUG_INFO_BTF=y
+CONFIG_PERF_EVENTS=y
+CONFIG_KPROBES=y
 CONFIG_KPROBE_EVENTS=y
 CONFIG_BPF_EVENTS=y
 ```
 
-你可以通过以下命令检查他们：
+`CONFIG_BPF_SYSCALL` 会选中 `NET_XGRESS`，后者选中 `NET_INGRESS` 和 `NET_EGRESS`。
+内部链路需要 `CONFIG_NETKIT=y` 或 `CONFIG_VETH=y`/`m`（模块须可加载）之一。
+dae 优先创建 Netkit L2 设备；内核报告不支持 Netkit 时，自动使用 veth，并在两端挂载 TCX ingress 程序。
+权限不足、名称冲突和资源不足等错误会直接报告，不会被当成缺少 Netkit 支持。
 
-bash和其他POSIX兼容的shell:
+宿主接口使用 TCX link，内部接口使用 Netkit 原生 hook 或 veth TCX link；dae 不要求 TC classifier/qdisc 的
+`CONFIG_NET_CLS_BPF`、`CONFIG_NET_SCH_INGRESS` 或 `CONFIG_NET_CLS_ACT`。
+仅使用 SOCKMAP/SOCKHASH 或当前的 stream-verdict relay 也不要求 `CONFIG_BPF_STREAM_PARSER`。
 
-```shell
-(zcat /proc/config.gz || cat /boot/{config,config-$(uname -r)}) | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
+生成 BTF 所需的调试信息选项应遵循所用内核的 `DEBUG_INFO_BTF` Kconfig 依赖。
+上面的 KPROBES/KPROBE_EVENTS 是启用 `BPF_EVENTS` 的常用配置路径；守护进程使用 BPF helper
+和进程退出 tracepoint，`dae trace` 还会挂载 kprobe。
+
+可以在 POSIX shell 中查看已安装内核的配置：
+
+```sh
+zcat /proc/config.gz 2>/dev/null || cat "/boot/config-$(uname -r)" /boot/config 2>/dev/null
 ```
 
-fish shell:
+### 运行环境
 
-```fish
-begin; zcat /proc/config.gz || bat /boot/config "/boot/config-"(uname -r); end | grep -E 'CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|BPF|BPF_SYSCALL|BPF_JIT|BPF_STREAM_PARSER|NET_CLS_ACT|NET_SCH_INGRESS|NET_INGRESS|NET_EGRESS|NET_CLS_BPF|NETKIT|BPF_EVENTS|CGROUPS)=|# CONFIG_DEBUG_INFO_REDUCED is not set'
-```
+- `/sys/fs/bpf` 必须挂载为可读写的 bpffs，并允许 dae 写入。
+- 必须挂载 cgroup v2，并允许挂载 BPF 程序。
+- 内核 BTF（通常为 `/sys/kernel/btf/vmlinux`）和 tracefs 的 tracepoint 信息必须可访问；
+  后者通常位于 `/sys/kernel/tracing` 或 `/sys/kernel/debug/tracing`。
+- 进程需要 BPF、网络命名空间/设备创建、网络管理、套接字和 perf event 等操作权限；
+  自带服务以 root 运行。容器的 capabilities、挂载和系统调用策略也必须允许这些操作。
+- 内部网络命名空间需要内核 IPv4/IPv6 网络支持，但不要求外网具备 IPv6 连通性。
+  接口转发及相关 sysctl 见[内核参数](../en/user-guide/kernel-parameters.md)。
 
-> **注意**: `Armbian` 用户可以参考 [**Upgrade Guide**](../en/user-guide/kernel-upgrade.md) 升级到支持的内核。
->
-> `Arch Linux ARM` 用户可以使用支持 dae 的 [`linux-aarch64-7ji`](https://github.com/7Ji-PKGBUILDs/linux-aarch64-7ji) 内核。
+### 可选及配置相关能力
+
+| 功能 | 要求与行为 |
+| --- | --- |
+| IPv6 捕获策略路由 | `CONFIG_IPV6_MULTIPLE_TABLES`；不可用时警告，对应 IPv6 捕获路由/规则无法安装。 |
+| 长进程名 | cgroup socket-address 程序支持 `bpf_get_current_task`；否则进程名路由使用截断的 task 名称。 |
+| TCP splice 加速 | Linux 6.18+、编译启用 `dae_splice`，并支持 SOCKHASH/stream-verdict link 及所需 fexit 目标；不可用时，已捕获 TCP 使用用户态 relay。`make` 默认包含该构建标签。 |
+| `dae trace` | Linux 6.13+、kprobe 及可访问的内核符号/BTF。`make` 在 `amd64`、`arm64`、`riscv64`、`loong64`、`ppc64le` 上包含该命令；其他受支持的守护进程架构不包含。具体追踪目标由 `dae trace` 检查，`check-kernel` 不检查这些目标。 |
+| 网桥成员匹配 | 成员信息所需的 `CONFIG_BRIDGE_NETFILTER` 和 bridge netfilter 配置见[路由文档](configuration/routing.md)。 |
+| 设备集合导出 | 配置 [ipset/nftset 导出](configuration/api.md) 时，需要相应内核能力和网络管理权限。 |
+
+### Geo 数据文件
+
+仅在规则引用时才需要 `geoip.dat` 或 `geosite.dat`，两个文件分别按需加载。
+具名规则片段、策略及插件规则中的引用同样需要对应文件；完全没有引用时无需安装，也不会读取。
+`geoip:`、`geosite:`、`ext:` 和 `mmdb:` 的用法见[路由文档](configuration/routing.md#例子)。
 
 ## 安装
 
@@ -194,10 +235,11 @@ dae 可以以守护进程（systemd）的形式运行，见 [run as daemon](../e
 
 ```shell
 global{}
-routing{}
+routing { fallback: direct }
 ```
 
-然而，此配置使 dae 处于空载状态。如果你希望 dae 能正常工作，以下是较小配置下的最佳实践：
+此配置没有绑定接口。以下示例通过已有的 SOCKS5 服务代理本机流量，请将节点 URL 换成自己的服务。
+它不依赖 Geo 数据文件或 DNS 插件；使用订阅和出站组的配置见[路由文档](configuration/routing.md)。
 
 ```shell
 global {
@@ -210,34 +252,8 @@ global {
   auto_config_kernel_parameter: true
 }
 
-subscription {
-  # 在下面填入你的订阅链接。
-}
-
-# 更多的 DNS 样例见 https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/dns.md
-dns {
-  upstream {
-    googledns: 'tcp+udp://dns.google:53'
-    alidns: 'udp://dns.alidns.com:53'
-  }
-  routing {
-    request {
-      qtype(https) -> reject
-      fallback: alidns
-    }
-    response {
-      upstream(googledns) -> accept
-      ip(geoip:private) && !qname(geosite:cn) -> googledns
-      fallback: accept
-    }
-  }
-}
-
-group {
-  proxy {
-    #filter: name(keyword: HK, keyword: SG)
-    policy: min_moving_avg
-  }
+node {
+  proxy: 'socks5://127.0.0.1:1080'
 }
 
 # 更多的 Routing 样例见 https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md
@@ -245,34 +261,14 @@ routing {
   pname(NetworkManager) -> direct
   dip(224.0.0.0/3, 'ff00::/8') -> direct
 
-  ### 以下为自定义规则
-
-  # 禁用 h3，因为它通常消耗很多 CPU 和内存资源
-  l4proto(udp) && dport(443) -> block
-  dip(geoip:private) -> direct
-  dip(geoip:cn) -> direct
-  domain(geosite:cn) -> direct
+  dip(127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, '::1/128', 'fc00::/7') -> direct
 
   fallback: proxy
 }
 ```
 
-如果你不在乎极致速度，而是更注重隐私和 DNS 泄露，使用以下配置替换上述的 dns 部分：
-
-```shell
-dns {
-  upstream {
-    googledns: 'tcp+udp://dns.google:53'
-    alidns: 'udp://dns.alidns.com:53'
-  }
-  routing {
-    request {
-      qname(geosite:cn) -> alidns
-      fallback: googledns
-    }
-  }
-}
-```
+核心按普通路由透明转发捕获到的 TCP/UDP 53 端口 DNS。
+高级上游选择和应答缓存通过可选 [DNS 插件](configuration/dns.md) 提供。
 
 通过有序的 `use` 组合 `rule_set` 片段，每个 `policy` 独立声明一个 fallback。`default: 策略名` 和接口绑定可选择同一个策略。完整说明见[路由配置](configuration/routing.md)和[拆分配置文件](configuration/separate-config.md)。
 

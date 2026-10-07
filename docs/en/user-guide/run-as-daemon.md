@@ -8,9 +8,21 @@ dae can run as a daemon (systemd) service so that it can run at boot.
 
 ## Prerequisites
 
+### Kernel and runtime environment
+
+Use a kernel and mounts that meet the [runtime requirements](../README.md#kernel-configurations).
+After installing the binary, run `sudo dae check-kernel`. `dae run` also performs
+this check before waiting for the network or preparing external resources.
+
 ### Optional Geo Data Files
 
-For more convenient traffic split, dae relies on the following data sources, [geoip.dat](https://github.com/v2fly/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
+Rules using `geoip:` require [geoip.dat](https://github.com/v2fly/geoip/releases/latest);
+rules using `geosite:` require [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
+This includes references in named rule sets, policies and plugin rules. Each file
+is loaded independently; install neither when neither is referenced. `ext:` and
+`mmdb:` require their referenced data files instead.
+
+For a configuration that uses both standard datasets:
 
 ```shell
 mkdir -p /usr/local/share/dae/
@@ -44,10 +56,13 @@ Nightly builds are available in <https://github.com/daeuniverse/dae/actions/work
 sudo chmod +x ./dae
 sudo install -Dm755 dae /usr/bin/
 
-# helper
-dae [-h,--help]
+# help
+dae --help
 # check version
-dae version
+dae --version
+# check kernel support and configuration
+sudo dae check-kernel
+dae validate -c /etc/dae/config.dae
 ```
 
 ## Setup

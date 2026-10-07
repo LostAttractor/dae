@@ -82,14 +82,26 @@ If does, stop the service process or change its listening port from 53 to others
 
 ## Fail to load eBPF objects
 
-> FATA[0022] load eBPF objects: field TproxyWanEgress: program tproxy_wan_egress: load program: argument list too long: 1617: (bf) r2 = r6: 1618: (85) call bpf_map_loo (truncated, 992 line(s) omitted)
+Run the kernel preflight with the same privileges and container environment as
+the daemon:
 
-If you use `clang-13` to compile dae, you may encounter this problem.
+```sh
+sudo dae check-kernel
+```
 
-There are ways to resolve it:
+The [kernel requirements](README.md#kernel-configurations) describe the supported
+version, configuration and mounts. A recent kernel can still lack BTF,
+cgroup BPF or the required tracing support. Missing Netkit support selects veth
+with TCX; at least one of Netkit or veth must be available. Permission errors can also come from
+capabilities, mount permissions or a container's syscall policy.
 
-1. Method 1: Use `clang-15` or higher versions to compile dae. Or just download dae from [releases](https://github.com/daeuniverse/dae/releases).
-2. Method 2: Add CFLAGS `-D__UNROLL_ROUTE_LOOP` while compiling. However, it will increse memory occupation (or swap space) at the eBPF loading stage (about 180MB). For example, compile dae to ARM64 using `GOARCH=arm64 make STATIC=y CC="$PWD/scripts/zig-cc.sh" CFLAGS="-D__UNROLL_ROUTE_LOOP"` (after setting up the cross-compiler as described in the [build guide](user-guide/build-by-yourself.md)).
+For verifier failures, set `global.log_level: trace` in the configuration and
+rerun `dae run -c <config>` to include the verifier log. Rebuild using the
+[documented toolchain](user-guide/build-by-yourself.md#build-dependencies);
+CI uses Clang/LLVM 15. Map allocation errors also depend on available memory and
+the configured [BPF map capacities](user-guide/build-by-yourself.md#bpf-map-capacities).
+Optional TCP splice failures fall back to userspace relay for captured TCP;
+failures in the core production collection prevent startup.
 
 ## Native QuickJS build or executable does not start
 
@@ -97,4 +109,4 @@ There are ways to resolve it:
 - Missing `stdlib.h`, unsupported machine instructions, or incompatible object files during cross-compilation usually indicate that `CC` or its sysroot targets the build host instead of `GOARCH`. eBPF's `CLANG` is a separate host tool.
 - An existing executable that reports `No such file or directory` may reference an unavailable ELF interpreter. Check `readelf -lW ./dae` and `readelf -dW ./dae`. A Nix-built dynamic executable can depend on `/nix/store`; a glibc executable cannot be assumed to run on Alpine.
 
-For a portable executable, follow the [static musl build instructions](user-guide/build-by-yourself.md#portable-static-musl-build) and run `scripts/check-static.sh dae`. No separate QuickJS shared library is required.
+For a portable executable, follow the [static musl build instructions](user-guide/build-by-yourself.md#musl) and run `scripts/check-static.sh dae`. No separate QuickJS shared library is required.

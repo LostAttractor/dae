@@ -90,12 +90,9 @@ func fullLoadBpfObjects(
 	soMarkFromDae uint32,
 	opts *ebpf.CollectionOptions,
 ) (err error) {
-	hasBpfGetCurrentTask := uint8(0)
-	if err := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask); err == nil {
-		hasBpfGetCurrentTask = 1
-		log.Debugf("bpf_get_current_task is supported")
-	} else {
-		log.WithError(err).Warn("Kernel lacks bpf_get_current_task; process name routing uses truncated task names")
+	hasBpfGetCurrentTask, err := probeBPFCurrentTask()
+	if err != nil {
+		return err
 	}
 	constants := map[string]any{
 		"PARAM": struct {
@@ -116,21 +113,37 @@ func fullLoadBpfObjects(
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts, constants); err != nil {
-		if log.IsLevelEnabled(log.TraceLevel) {
-			if verifierErr, ok := errors.AsType[*ebpf.VerifierError](err); ok {
-				log.WithField("verifier", fmt.Sprintf("%+v", verifierErr)).Trace("eBPF verifier rejected program")
-			}
-		}
-		if strings.Contains(err.Error(), "no BTF found for kernel version") {
-			err = fmt.Errorf("%w: you should re-compile linux kernel with BTF configurations; see docs for more information", err)
-		} else if strings.Contains(err.Error(), "unknown func bpf_trace_printk") {
-			err = fmt.Errorf("%w: compile dae without bpf_printk", err)
-		} else if strings.Contains(err.Error(), "unknown func bpf_probe_read") {
-			err = fmt.Errorf("%w: compile the kernel with CONFIG_BPF_EVENTS=y and CONFIG_KPROBE_EVENTS=y", err)
-		}
-		return err
+		return explainBPFLoadError(err)
 	}
 	return nil
+}
+
+func probeBPFCurrentTask() (uint8, error) {
+	err := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask)
+	if err == nil {
+		return 1, nil
+	}
+	if !errors.Is(err, ebpf.ErrNotSupported) {
+		return 0, fmt.Errorf("probe bpf_get_current_task (requires BPF privileges): %w", err)
+	}
+	log.Warn("Kernel lacks bpf_get_current_task; process name routing uses truncated task names")
+	return 0, nil
+}
+
+func explainBPFLoadError(err error) error {
+	if log.IsLevelEnabled(log.TraceLevel) {
+		if verifierErr, ok := errors.AsType[*ebpf.VerifierError](err); ok {
+			log.WithField("verifier", fmt.Sprintf("%+v", verifierErr)).Trace("eBPF verifier rejected program")
+		}
+	}
+	if strings.Contains(err.Error(), "no BTF found for kernel version") {
+		return fmt.Errorf("%w: compile the kernel with CONFIG_DEBUG_INFO_BTF=y", err)
+	} else if strings.Contains(err.Error(), "unknown func bpf_trace_printk") {
+		return fmt.Errorf("%w: compile dae without bpf_printk", err)
+	} else if strings.Contains(err.Error(), "unknown func bpf_probe_read") {
+		return fmt.Errorf("%w: compile the kernel with CONFIG_BPF_EVENTS=y and CONFIG_KPROBE_EVENTS=y", err)
+	}
+	return err
 }
 
 func (b *BPFState) clearRoutingRegistrations() {

@@ -101,7 +101,7 @@ jobs:
             apt install -y unzip
 
             DAE_NETKIT_TEST=1 /host/dae/control.test \
-              -test.run '^(TestBPFStartupVerifierLoad|TestCreateNetkitPairIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
+              -test.run '^(TestBPFStartupVerifierLoad|TestCreateNetkitPairIntegration|TestInternalLinkDatapathIntegration|TestKernelFeaturePreflightVethIntegration|TestVethAttachmentFailureCleanupIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
               -test.count=1
 
             /host/dae/splice.test -test.count=1
@@ -218,7 +218,7 @@ jobs:
               cat dae.log
               exit 1
             fi
-            grep -q 'Using netkit for the dae network namespace' dae.log
+            grep 'Dae network namespace ready' dae.log | grep -Eq 'link_type=(netkit|veth)'
             grep -q 'Loaded optional TCP splice programs' dae.log
             cat dae.log
 

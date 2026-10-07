@@ -1634,7 +1634,7 @@ int tproxy_wan_egress_l3(struct __sk_buff *skb)
 	return do_tproxy_wan_egress(skb, 0);
 }
 
-// Proxy traffic.
+// Proxy traffic. Attached at Netkit primary or veth peer TCX ingress.
 SEC("netkit/primary")
 int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 {
@@ -1661,7 +1661,7 @@ int tproxy_dae0peer_ingress(struct __sk_buff *skb)
 	return TC_ACT_OK;
 }
 
-// Reply traffic.
+// Reply traffic. Attached at Netkit peer or veth host TCX ingress.
 SEC("netkit/peer")
 int tproxy_dae0_ingress(struct __sk_buff *skb)
 {

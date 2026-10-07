@@ -44,6 +44,9 @@ func Run(conf *config.Config, externGeoDataDirs []string, definitions map[string
 	}
 	shutdownCtx, stopShutdownSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stopShutdownSignals()
+	if err := control.CheckKernelFeatures(shutdownCtx); err != nil {
+		return err
+	}
 	stopWatchdog := watchShutdown(shutdownCtx, shutdownTimeout, func() {
 		log.WithField("timeout", shutdownTimeout).Error("Shutdown timed out; forcing process exit")
 		os.Exit(1)

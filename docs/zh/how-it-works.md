@@ -27,11 +27,11 @@ dae 支持以域名、源 IP、目的 IP、源端口、目的端口、TCP/UDP、
 >
 > 同时，当高级用户已经使用了其他的分流方案，且不希望将 DNS 请求通过 dae，但希望被代理的那部分流量可以基于域名进行分流（例如基于目标域名，一部分分流到奈飞节点，一部分分流到下载节点，当然，也可以一部分通过 core 直连），可以通过 `dial_mode: domain++` 来强制使用嗅探的域名重新分流。
 
-dae 通过接口上的 BPF 程序进行流量分流。同一接口同时作为 WAN 和 LAN 时，TCX 在 ingress 按 WAN、LAN 顺序执行，在 egress 按 LAN、WAN 顺序执行。已经挂载的 TCX 程序保留优先级，并且必须返回 `TCX_NEXT`，dae 在同一 hook 上的程序才会继续执行。程序根据分流结果决定将流量重定向到私有 Netkit 代理路径或直接放行。
+dae 通过接口上的 BPF 程序进行流量分流。同一接口同时作为 WAN 和 LAN 时，TCX 在 ingress 按 WAN、LAN 顺序执行，在 egress 按 LAN、WAN 顺序执行。已经挂载的 TCX 程序保留优先级，并且必须返回 `TCX_NEXT`，dae 在同一 hook 上的程序才会继续执行。程序根据分流结果决定将流量重定向到私有 Netkit/veth 代理路径或直接放行。
 
 ### 代理原理
 
-dae 的代理原理和其他程序近似。LAN/WAN 程序会把需要代理的流量重定向到私有 L2 Netkit 设备，Netkit 原生 hook 在 dae 的网络命名空间中为本地投递准备数据包，再由 BPF SK_LOOKUP 程序从 socket map 中选择 TCP 或 UDP 监听 socket。该路径无需在私有链路上挂载 tc，并保留原始目的地址。
+LAN/WAN 程序会把需要代理的流量重定向到私有 L2 设备对。dae 优先使用 Netkit 原生 hook；内核不支持 Netkit 时使用 veth，并在两端挂载 TCX ingress hook。两条路径都为 dae 网络命名空间内的本地投递准备数据包，再由 BPF SK_LOOKUP 程序从 socket map 中选择 TCP 或 UDP 监听 socket，保留原始目的地址和回包路径。设备类型不改变捕获条件，无关 direct 流量仍在内核直通。
 
 以 benchmark 来看，dae 的代理性能比其他代理程序好一些，但不多。
 

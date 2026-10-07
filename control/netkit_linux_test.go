@@ -75,7 +75,7 @@ func TestCreateNetkitPairIntegration(t *testing.T) {
 
 	name := fmt.Sprintf("dnk%d", os.Getpid())
 	peerName := fmt.Sprintf("dnp%d", os.Getpid())
-	if err := createNetkitPair(name, peerName); err != nil {
+	if err := netlink.LinkAdd(newNetkitPair(name, peerName)); err != nil {
 		t.Fatal(err)
 	}
 	primary, err := netlink.LinkByName(name)

@@ -23,7 +23,10 @@ the pinned dependencies. `make` initializes missing submodules automatically.
 Initialize them before running Go commands directly or building a Docker image;
 the Docker build context must contain their source files.
 
-On NixOS, `nix-shell --run make` supplies the development tools. A regular build may link to the host's libc; it is intended for that system or an appropriately packaged Nix closure.
+On NixOS, load the development tools with direnv (`direnv allow`), then run `make`.
+Without direnv, `nix-shell --run make` supplies the same environment. A regular
+build may link to the host's libc; it is intended for that system or an
+appropriately packaged Nix closure.
 
 `CC` selects the compiler for QuickJS/cgo. `CLANG` selects the host Clang used for eBPF. The Makefile's `CFLAGS` belong to eBPF; use `CGO_CFLAGS` for additional cgo compiler options. Keep these toolchains separate when cross-compiling.
 
@@ -215,7 +218,6 @@ dependencies. For local examples beside dae, prepare a Go workspace from the dae
 directory (use `go work use` instead of `init` if one already exists):
 
 ```sh
-nix-shell
 go work init . ../dae-mitm-bilijump ../dae-mitm-demo
 go work edit "-replace=github.com/daeuniverse/dae@v0.0.0=$PWD"
 make
@@ -238,9 +240,24 @@ See [instance configuration](../../zh/configuration/mitm-plugins.md) and the
 
 ## Run
 
-### Runtime Dependencies
+### Runtime requirements
 
-For traffic splitting, dae relies on the following data sources, [geoip.dat](https://github.com/v2fly/geoip/releases/latest) and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest).
+The runtime kernel and mounts must meet the [kernel requirements](../README.md#kernel-configurations).
+Check the newly built executable before starting the daemon:
+
+```sh
+sudo ./dae check-kernel
+```
+
+### Optional Geo data files
+
+Install [geoip.dat](https://github.com/v2fly/geoip/releases/latest) only for rules
+using `geoip:`, and [geosite.dat](https://github.com/v2fly/domain-list-community/releases/latest)
+only for rules using `geosite:`. References in named rule sets, policies and plugin
+rules also count. Unreferenced files are not loaded; plain IP/CIDR and domain rules
+need neither file. `ext:` and `mmdb:` require their referenced data files instead.
+
+If your configuration references both standard datasets, install them with:
 
 ```shell
 mkdir -p /usr/local/share/dae/
@@ -260,9 +277,10 @@ curl -L -o example.dae https://github.com/daeuniverse/dae/raw/main/example.dae
 
 See [example.dae](https://github.com/daeuniverse/dae/blob/main/example.dae).
 
-After fine tuning, run dae:
+After fine tuning, validate the configuration and run dae:
 
 ```shell
+./dae validate -c example.dae
 ./dae run -c example.dae
 ```
 
