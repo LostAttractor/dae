@@ -3,14 +3,25 @@
 (function (host) {
   "use strict";
   const decode = text => {
-    try { return decodeURIComponent(text.replace(/\+/g, " ")); }
-    catch { throw new TypeError("Invalid URL query encoding"); }
+    const input = new TextEncoder().encode(text.replace(/\+/g, " "));
+    const bytes = new Uint8Array(input.length);
+    let length = 0;
+    const hex = byte => byte >= 48 && byte <= 57 ? byte - 48 :
+      byte >= 65 && byte <= 70 ? byte - 55 : byte >= 97 && byte <= 102 ? byte - 87 : -1;
+    for (let i = 0; i < input.length; i++) {
+      if (input[i] === 37 && i + 2 < input.length && hex(input[i + 1]) >= 0 && hex(input[i + 2]) >= 0) {
+        bytes[length++] = hex(input[i + 1]) * 16 + hex(input[i + 2]); i += 2;
+      } else bytes[length++] = input[i];
+    }
+    return new TextDecoder("utf-8", {ignoreBOM:true}).decode(bytes.subarray(0, length));
   };
-  const encode = value => encodeURIComponent(String(value)).replace(/%20/g, "+")
+  const string = value => `${value}`.toWellFormed();
+  const encode = value => encodeURIComponent(string(value)).replace(/%20/g, "+")
     .replace(/[!'()~]/g, char => "%" + char.charCodeAt(0).toString(16).toUpperCase());
   class URLSearchParams {
     constructor(init = "") {
       this._pairs = [];
+      if (init == null) return;
       if (typeof init === "string") {
         for (const part of init.replace(/^\?/, "").split("&")) {
           if (!part) continue;
@@ -21,20 +32,27 @@
         for (const pair of init) {
           const values = Array.from(pair);
           if (values.length !== 2) throw new TypeError("URLSearchParams entries must contain two values");
-          this._pairs.push(values.map(String));
+          this._pairs.push(values.map(string));
         }
       } else {
-        this._pairs = Object.entries(init).map(([key, value]) => [key, String(value)]);
+        this._pairs = Object.entries(init).map(([key, value]) => [string(key), string(value)]);
       }
     }
     get size() { return this._pairs.length; }
-    get(name) { return this._pairs.find(pair => pair[0] === String(name))?.[1] ?? null; }
-    getAll(name) { return this._pairs.filter(pair => pair[0] === String(name)).map(pair => pair[1]); }
-    has(name) { return this._pairs.some(pair => pair[0] === String(name)); }
-    append(name, value) { this._pairs.push([String(name), String(value)]); this._changed?.(); }
-    delete(name) { this._pairs = this._pairs.filter(pair => pair[0] !== String(name)); this._changed?.(); }
+    get(name) { name = string(name); return this._pairs.find(pair => pair[0] === name)?.[1] ?? null; }
+    getAll(name) { name = string(name); return this._pairs.filter(pair => pair[0] === name).map(pair => pair[1]); }
+    has(name, value) {
+      name = string(name); if (value !== undefined) value = string(value);
+      return this._pairs.some(pair => pair[0] === name && (value === undefined || pair[1] === value));
+    }
+    append(name, value) { this._pairs.push([string(name), string(value)]); this._changed?.(); }
+    delete(name, value) {
+      name = string(name); if (value !== undefined) value = string(value);
+      this._pairs = this._pairs.filter(pair => pair[0] !== name || value !== undefined && pair[1] !== value);
+      this._changed?.();
+    }
     set(name, value) {
-      name = String(name); value = String(value);
+      name = string(name); value = string(value);
       const index = this._pairs.findIndex(pair => pair[0] === name);
       this._pairs = this._pairs.filter((pair, i) => pair[0] !== name || i === index);
       if (index < 0) this._pairs.push([name, value]); else this._pairs[index][1] = value;
@@ -42,11 +60,11 @@
     }
     sort() { this._pairs.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0); this._changed?.(); }
     toString() { return this._pairs.map(([key, value]) => encode(key) + "=" + encode(value)).join("&"); }
-    *entries() { yield* this._pairs.map(pair => [...pair]); }
-    *keys() { for (const [key] of this._pairs) yield key; }
-    *values() { for (const [, value] of this._pairs) yield value; }
+    *entries() { for (let i = 0; i < this._pairs.length; i++) yield [...this._pairs[i]]; }
+    *keys() { for (const [key] of this) yield key; }
+    *values() { for (const [, value] of this) yield value; }
     [Symbol.iterator]() { return this.entries(); }
-    forEach(callback, thisArg) { for (const [key, value] of this._pairs) callback.call(thisArg, value, key, this); }
+    forEach(callback, thisArg) { for (const [key, value] of this) callback.call(thisArg, value, key, this); }
   }
   class URL {
     constructor(value, base) {
@@ -63,6 +81,8 @@
       this.searchParams._pairs = new URLSearchParams(this._parts.search)._pairs;
     }
     get origin() { return this._parts.origin; }
+    get username() { return this._parts.username; }
+    get password() { return this._parts.password; }
     get protocol() { return this._parts.protocol; }
     get host() { return this._parts.host; }
     get hostname() { return this._parts.hostname; }

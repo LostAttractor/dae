@@ -127,8 +127,7 @@
     }) : Object.entries(value).map(([key, val]) => [key,
       Array.isArray(val) ? val.join(key.toLowerCase() === "cookie" ? "; " : ", ") : String(val)]);
     for (const [key, val] of entries) {
-      const name = Object.keys(out).find(name => name.toLowerCase() === key.toLowerCase()) ?? key;
-      (out[name] ??= []).push(...(Array.isArray(val) ? val.map(String) : [String(val)]));
+      (out[key.toLowerCase()] ??= []).push(val);
     }
     return out;
   }
@@ -170,37 +169,47 @@
     return id;
   };
   globalThis.clearTimeout = id => { callbacks.delete(id); host("clear-timer", String(id)); };
+  function httpRequest(method, options, callback, fetch = false) {
+    if (typeof callback !== "function") throw new TypeError("$httpClient expects a callback");
+    options = typeof options === "string" ? { url: options } : options;
+    let request = options;
+    if (options.body !== null && typeof options.body === "object" &&
+        !(options.body instanceof ArrayBuffer) && !ArrayBuffer.isView(options.body)) {
+      const fields = headers(options.headers) ?? {};
+      for (const key of Object.keys(fields)) if (key.toLowerCase() === "content-type") delete fields[key];
+      fields["Content-Type"] = ["application/json"];
+      request = {...options, headers: fields, body: JSON.stringify(options.body)};
+    }
+    const payload = normalize(request);
+    payload.method = method; payload.timeout = options.timeout; payload.fetch = fetch;
+    if (options.policy !== undefined && typeof options.policy !== "string") throw new TypeError("policy must be a string");
+    if (options["policy-descriptor"] !== undefined) throw new TypeError("policy-descriptor is not supported");
+    if (options.insecure !== undefined && typeof options.insecure !== "boolean") throw new TypeError("insecure must be a boolean");
+    if (options.insecure) throw new TypeError("insecure is not supported");
+    payload.policy = options.policy;
+    for (const key of ["auto-redirect", "auto-cookie", "full-header-mode"]) {
+      if (options[key] !== undefined && typeof options[key] !== "boolean") throw new TypeError(key + " must be a boolean");
+      payload[key] = options[key];
+    }
+    const id = ++sequence;
+    callbacks.set(id, event => {
+      const body = event.bodyBase64 == null ? null : options["binary-mode"]
+        ? fromBase64(event.bodyBase64) : host("decode", event.bodyBase64, "", "");
+      if (event.response && !options["full-header-mode"]) {
+        event.response.headers = headerObject(event.response.headers);
+        if (event.response.h2_trailers != null) event.response.h2_trailers = headerObject(event.response.h2_trailers);
+      }
+      callback(event.error || null, event.response || null, body);
+    });
+    try { host("http", String(id), JSON.stringify(payload)); }
+    catch (error) { callbacks.delete(id); throw error; }
+    return () => host("cancel-http", String(id));
+  }
   globalThis.$httpClient = {};
   for (const method of ["get", "post", "put", "delete", "head", "options", "patch"]) {
-    $httpClient[method] = (options, callback) => {
-      if (typeof callback !== "function") throw new TypeError("$httpClient expects a callback");
-      options = typeof options === "string" ? { url: options } : options;
-      let request = options;
-      if (options.body !== null && typeof options.body === "object" &&
-          !(options.body instanceof ArrayBuffer) && !ArrayBuffer.isView(options.body)) {
-        const fields = headers(options.headers) ?? {};
-        for (const key of Object.keys(fields)) if (key.toLowerCase() === "content-type") delete fields[key];
-        fields["Content-Type"] = ["application/json"];
-        request = {...options, headers: fields, body: JSON.stringify(options.body)};
-      }
-      const payload = normalize(request);
-      payload.method = method.toUpperCase(); payload.timeout = options.timeout;
-      for (const key of ["auto-redirect", "auto-cookie", "full-header-mode"]) {
-        if (options[key] !== undefined && typeof options[key] !== "boolean") throw new TypeError(key + " must be a boolean");
-        payload[key] = options[key];
-      }
-      const id = ++sequence;
-      callbacks.set(id, event => {
-        const body = event.bodyBase64 == null ? null : options["binary-mode"]
-          ? fromBase64(event.bodyBase64) : host("decode", event.bodyBase64, "", "");
-        if (event.response && !options["full-header-mode"]) {
-          event.response.headers = headerObject(event.response.headers);
-          if (event.response.h2_trailers != null) event.response.h2_trailers = headerObject(event.response.h2_trailers);
-        }
-        callback(event.error || null, event.response || null, body);
-      });
-      try { host("http", String(id), JSON.stringify(payload)); }
-      catch (error) { callbacks.delete(id); throw error; }
-    };
+    $httpClient[method] = (options, callback) => { httpRequest(method.toUpperCase(), options, callback); };
   }
+  const installFetch = globalThis.__daeInstallFetch;
+  delete globalThis.__daeInstallFetch;
+  installFetch((method, options, callback) => httpRequest(method, options, callback, true));
 })(globalThis.__daeHost, globalThis.__daeInput);

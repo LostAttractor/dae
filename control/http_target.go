@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/internal/pluginctx"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -101,13 +102,32 @@ func (c *ControlPlane) httpRouteCandidates(ctx context.Context, network string, 
 					}
 					continue
 				}
-				option, err := c.selectRoutedAddress(network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
+				option, err := c.selectHTTPAddress(ctx, network, source, identity, domain, netip.AddrPortFrom(ip, target.port))
 				if !yield(option, err) || (err == nil && option.Outbound.Name == consts.OutboundBlock.String()) {
 					return
 				}
 			}
 		}
 	}
+}
+
+func (c *ControlPlane) selectHTTPAddress(ctx context.Context, network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort) (*DialOption, error) {
+	policy := pluginctx.HTTPPolicy(ctx)
+	if policy == "" {
+		return c.selectRoutedAddress(network, source, identity, domain, address)
+	}
+	switch strings.ToUpper(policy) {
+	case "DIRECT":
+		policy = consts.OutboundDirect.String()
+	case "REJECT":
+		policy = consts.OutboundBlock.String()
+	}
+	for index, group := range c.outbounds {
+		if group.Name == policy {
+			return c.selectAddress(network, source, identity, domain, address, new(consts.OutboundIndex(index)))
+		}
+	}
+	return nil, fmt.Errorf("HTTP policy %q is not an active outbound", policy)
 }
 
 // Daemon-originated lookups use the internal resolver installed at startup.

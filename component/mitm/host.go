@@ -188,6 +188,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 			instance.plan.Scopes = nil
 		}
 		h.plan.DNS = append(h.plan.DNS, instance.plan.DNS...)
+		h.plan.RequiredOutbounds = append(h.plan.RequiredOutbounds, instance.plan.RequiredOutbounds...)
 		h.plan.Scopes = append(h.plan.Scopes, instance.plan.Scopes...)
 		h.plan.Destinations = append(h.plan.Destinations, instance.plan.Destinations...)
 		h.plan.EarlyRoutes = append(h.plan.EarlyRoutes, instance.plan.EarlyRoutes...)

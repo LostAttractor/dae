@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/internal/pluginctx"
 )
 
 func newMITMClient(c *ControlPlane, timeout time.Duration) (*http.Client, func()) {
@@ -72,6 +73,10 @@ type workerPlaneKey struct{}
 type workerTransport struct {
 	runtime *Runtime
 	next    http.RoundTripper
+}
+
+func (t *workerTransport) RoundTripPolicy(request *http.Request, policy string) (*http.Response, error) {
+	return t.RoundTrip(request.WithContext(pluginctx.WithHTTPPolicy(request.Context(), policy)))
 }
 
 func (t *workerTransport) RoundTrip(request *http.Request) (*http.Response, error) {

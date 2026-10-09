@@ -218,6 +218,7 @@ group {
  plugin_only { policy: random }
  plugin_sync { policy: random }
 }
+
 routing { dport(80) -> base(skip_while_noalive)
           fallback: direct }
 `)
@@ -243,5 +244,41 @@ routing { dport(80) -> base(skip_while_noalive)
 		if slices.Contains([]string{"base", "plugin_sync"}, group.Name) && !group.Dialers[0].ConnectivitySnapshot().InitialCheckDone {
 			t.Errorf("%s: critical plugin target did not finish its check", group.Name)
 		}
+	}
+}
+
+func TestPluginHTTPPoliciesLoadWithoutAddingCapture(t *testing.T) {
+	conf := outboundUsageConfig(t, `
+global {}
+node { base: 'socks5://127.0.0.1:1' }
+group {
+ unused { policy: selector }
+ script_only { policy: selector }
+}
+routing { fallback: direct }
+`)
+	load := func(*http.Client) (PreparedMITM, error) {
+		host, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "test", Plugin: &controlTestPlugin{plan: plugin.Plan{RequiredOutbounds: []string{"script_only"}}}})
+		if err != nil {
+			return PreparedMITM{}, err
+		}
+		return PrepareMITM(t.Context(), host, nil)
+	}
+	plane := outboundUsagePlane(t, conf, nil, load)
+	if len(plane.outbounds) != 3 || len(plane.Selectors()) != 1 || plane.Selectors()[0].Name != "script_only" {
+		t.Fatalf("required HTTP policy not available: %+v", plane.routingMatcherBuilder.outboundName2Id)
+	}
+	index := plane.routingMatcherBuilder.outboundName2Id["script_only"]
+	if !plane.criticalOutbounds[index] || plane.outbounds[index].CheckAsync {
+		t.Fatal("required policy skipped initial connectivity checks")
+	}
+	plan := plane.MITMHost().Plan()
+	if len(plan.Scopes)+len(plan.DNS)+len(plan.EarlyRoutes)+len(plan.Routes)+len(plan.Destinations) != 0 {
+		t.Fatal("HTTP policy dependency expanded ingress capture or routing")
+	}
+	changed := plane.mitmPlan
+	changed.RequiredOutbounds = []string{"unused"}
+	if plane.CanReplaceMITM(PreparedMITM{plan: changed}) {
+		t.Fatal("new outbound dependency reused an incomplete plane")
 	}
 }

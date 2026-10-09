@@ -129,9 +129,14 @@ func TestRuntimeHTTPOptionsAndSessionCookies(t *testing.T) {
 	r := testRuntime(t, RuntimeOptions{})
 	source := fmt.Sprintf(`
       const base = %q;
+      for (const insecure of [true, "false"]) {
+        let rejected = false;
+        try { $httpClient.get({url:base, insecure}, () => {}); } catch (e) { rejected = e instanceof TypeError; }
+        if (!rejected) throw Error("unsupported insecure option accepted");
+      }
       function get(path, options = {}) { return new Promise((resolve, reject) => $httpClient.get({url:base+path, ...options}, (e,r,d) => e ? reject(Error(e)) : resolve({r,d}))); }
       (async () => {
-        if ((await get("/echo")).d !== "") throw Error("cookies leaked across invocations");
+        if ((await get("/echo", {insecure:false})).d !== "") throw Error("cookies leaked across invocations");
         let x = await get("/set", {"auto-redirect":false,"auto-cookie":false,"full-header-mode":true});
         if (x.r.status !== 302 || !Array.isArray(x.r.headers)) throw Error("redirect/header options");
         const cookies = x.r.headers.filter(h => h.field.toLowerCase() === "set-cookie");

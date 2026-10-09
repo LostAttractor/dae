@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/internal/pluginctx"
 )
 
 // httpRoutePlanner retains ingress identity and an optional inspection route.
@@ -56,7 +57,7 @@ func (p *httpRoutePlanner) plan(request *http.Request) (mitm.UpstreamPlan, error
 
 func (p *httpRoutePlanner) routeOptions(ctx context.Context, target httpTarget) ([]*DialOption, error) {
 	if target == p.original {
-		if p.retained != nil {
+		if p.retained != nil && pluginctx.HTTPPolicy(ctx) == "" {
 			return []*DialOption{p.retained}, nil
 		}
 		// Keep the intercepted IP for the original authority instead of
@@ -65,7 +66,7 @@ func (p *httpRoutePlanner) routeOptions(ctx context.Context, target httpTarget) 
 		if _, err := netip.ParseAddr(domain); err == nil {
 			domain = ""
 		}
-		option, err := p.plane.selectRoutedAddress(p.network, p.source, p.identity, domain, p.destination)
+		option, err := p.plane.selectHTTPAddress(ctx, p.network, p.source, p.identity, domain, p.destination)
 		if err != nil {
 			return nil, err
 		}

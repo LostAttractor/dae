@@ -34,6 +34,10 @@ type DialOption struct {
 // Match destination transformations once, then flow/routing with the caller's
 // original identity. Daemon requests supply an unspecified source address.
 func (c *ControlPlane) selectRoutedAddress(network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort) (*DialOption, error) {
+	return c.selectAddress(network, source, identity, domain, address, nil)
+}
+
+func (c *ControlPlane) selectAddress(network string, source netip.AddrPort, identity routingResult, domain string, address netip.AddrPort, outboundOverride *consts.OutboundIndex) (*DialOption, error) {
 	if !source.IsValid() {
 		ip := netip.IPv6Unspecified()
 		if address.Addr().Is4() {
@@ -46,6 +50,7 @@ func (c *ControlPlane) selectRoutedAddress(network string, source netip.AddrPort
 		proto = consts.L4ProtoStr_UDP
 	}
 	param := &RouteParam{Src: source, Dest: address, Domain: domain, explicitTarget: true, routingResult: &identity, networkType: common.NetworkType{L4Proto: proto, IpVersion: consts.IpVersionStrFromAddr(address.Addr())}}
+	param.outboundOverride = outboundOverride
 	var err error
 	param.destination, err = c.routingMatcher.matchDestination(param)
 	if err != nil {
@@ -94,6 +99,9 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 	selectedOutboundIndex := outboundIndex
 	var originalOutbound *outbound.DialerGroup
 	if err != nil {
+		if p.outboundOverride != nil {
+			return nil, fmt.Errorf("select HTTP policy %q: %w", selectedOutbound.Name, err)
+		}
 		if !errors.Is(err, outbound.ErrNoAliveDialer) {
 			return nil, err
 		}

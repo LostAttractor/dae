@@ -14,13 +14,14 @@ import (
 )
 
 type RouteParam struct {
-	explicitTarget bool           // An explicit URL supplies a known name, or a literal IP with no name.
-	destination    netip.AddrPort // Selected IP target; invalid until a rewrite or retained UDP target exists.
-	routingResult  *routingResult
-	networkType    common.NetworkType
-	Domain         string
-	Src            netip.AddrPort
-	Dest           netip.AddrPort // Input target of this attempt; destination matching never mutates it.
+	outboundOverride *consts.OutboundIndex // Explicit auxiliary HTTP policy; retains destination, mark and identity.
+	explicitTarget   bool                  // An explicit URL supplies a known name, or a literal IP with no name.
+	destination      netip.AddrPort        // Selected IP target; invalid until a rewrite or retained UDP target exists.
+	routingResult    *routingResult
+	networkType      common.NetworkType
+	Domain           string
+	Src              netip.AddrPort
+	Dest             netip.AddrPort // Input target of this attempt; destination matching never mutates it.
 }
 
 func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*DialOption, error) {
@@ -86,6 +87,9 @@ func (c *ControlPlane) routeDestination(p *RouteParam, domain string) (*DialOpti
 	}
 	if outbound >= consts.OutboundMustRules {
 		return nil, fmt.Errorf("cannot resolve routing for %s without a trusted hostname", input.dst)
+	}
+	if p.outboundOverride != nil {
+		outbound = *p.outboundOverride
 	}
 	routeDecision{outbound: outbound, mark: mark, must: must}.apply(p.routingResult)
 	return c.selectDialOption(p, outbound, mark, c.dialTargetOverride && domain != "")

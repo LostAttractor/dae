@@ -10,6 +10,17 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
+func TestSurgeHTTPPolicyDependencies(t *testing.T) {
+	sections, err := config_parser.Parse("surge { http_policies: 'proxy, DIRECT, REJECT' module { 'file:module' } }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := ParseConfig(sections[0])
+	if err != nil || !reflect.DeepEqual(conf.HTTPPolicies, []string{"proxy", "direct", "block"}) {
+		t.Fatalf("HTTP policy dependencies: %v %v", conf.HTTPPolicies, err)
+	}
+}
+
 func TestSurgeModuleSourcesRejectInvalidDeclarations(t *testing.T) {
 	for _, test := range []struct {
 		name, body, errorText string

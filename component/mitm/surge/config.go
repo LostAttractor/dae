@@ -30,6 +30,7 @@ type Config struct {
 	MemoryLimit          int64
 	MaxBodySize          int64
 	MaxConcurrentScripts int
+	HTTPPolicies         []string
 }
 
 // ParseConfig interprets only the settings owned by a Surge instance.
@@ -54,9 +55,23 @@ func ParseConfig(section *config_parser.Section) (Config, error) {
 		"store": &c.Store, "script_timeout": &c.ScriptTimeout,
 		"memory_limit": &c.MemoryLimit, "max_body_size": &c.MaxBodySize,
 		"max_concurrent_scripts": &c.MaxConcurrentScripts,
+		"http_policies":          &c.HTTPPolicies,
 	})
 	if err != nil {
 		return c, err
+	}
+	for i, name := range c.HTTPPolicies {
+		name = strings.TrimSpace(name)
+		switch strings.ToUpper(name) {
+		case "DIRECT":
+			name = "direct"
+		case "REJECT":
+			name = "block"
+		}
+		if name == "" {
+			return c, fmt.Errorf("surge: http_policies requires non-empty outbound names")
+		}
+		c.HTTPPolicies[i] = name
 	}
 	return c, c.Validate()
 }

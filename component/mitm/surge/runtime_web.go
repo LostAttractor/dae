@@ -115,9 +115,11 @@ func runtimeURL(operation, raw, key, value string) (string, error) {
 	if strings.Contains(hostname, ":") {
 		hostname = "[" + hostname + "]"
 	}
+	password, _ := u.User.Password()
 	data, err := json.Marshal(map[string]string{
 		"href": u.String(), "protocol": u.Scheme + ":", "host": u.Host, "hostname": hostname,
 		"port": u.Port(), "pathname": u.EscapedPath(), "search": search, "hash": fragment, "origin": origin,
+		"username": u.User.Username(), "password": password,
 	})
 	return string(data), err
 }

@@ -119,8 +119,9 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	}
 	return NewEngine(EngineOptions{
 		Modules: modules, Runtime: runtime,
-		BodyMemory:  services.BodyMemory,
-		MaxBodySize: conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,
+		HTTPPolicies: conf.HTTPPolicies,
+		BodyMemory:   services.BodyMemory,
+		MaxBodySize:  conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,
 		ScriptTimeout: conf.ScriptTimeout, Logger: services.Logger,
 	})
 }

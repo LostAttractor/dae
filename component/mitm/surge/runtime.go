@@ -27,6 +27,9 @@ var runtimeBootstrap string
 //go:embed runtime_web.js
 var runtimeWebBootstrap string
 
+//go:embed runtime_fetch.js
+var runtimeFetchBootstrap string
+
 // Runtime shares its persistent store and recent notifications. Every Run creates a fresh
 // QuickJS VM, so globals and callbacks never leak between concurrent requests.
 type Runtime struct {
@@ -108,8 +111,9 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 		sessionID:  sessionID,
 		moduleName: in.ModuleName, scriptName: in.ScriptName, scriptType: in.ScriptType,
 		bodyMemory: in.BodyMemory, bodyLimit: in.BodyLimit,
-		dom:    newRuntimeDOM(ctx, min(r.opts.MemoryLimit/4, 8<<20)),
-		events: make(chan runtimeEvent),
+		httpCancels: make(map[int]context.CancelFunc),
+		dom:         newRuntimeDOM(ctx, min(r.opts.MemoryLimit/4, 8<<20)),
+		events:      make(chan runtimeEvent),
 	}
 	defer func() {
 		contextErr := ctx.Err()
@@ -149,7 +153,7 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	if err := vm.SetInputJSON(input); err != nil {
 		return nil, fmt.Errorf("initialize Surge script input: %w", err)
 	}
-	if err := vm.Eval(runtimeWebBootstrap + "\n" + runtimeBootstrap); err != nil {
+	if err := vm.Eval(runtimeWebBootstrap + "\n" + runtimeFetchBootstrap + "\n" + runtimeBootstrap); err != nil {
 		return nil, fmt.Errorf("initialize Surge script: %w", err)
 	}
 	if err := vm.Eval(source); err != nil {

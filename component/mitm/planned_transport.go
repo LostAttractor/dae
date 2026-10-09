@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"sync"
+
+	"github.com/daeuniverse/dae/internal/pluginctx"
 )
 
 // UpstreamPlanner runs before connection-pool lookup. The URL identifies the
@@ -80,6 +82,10 @@ func (h *Host) RoutedHTTPClient(plan UpstreamPlanner) (*http.Client, func()) {
 // interception host. Its owner closes it after all background work finishes.
 func NewRoutedHTTPClient(plan UpstreamPlanner) (*http.Client, func()) {
 	return new(Host).RoutedHTTPClient(plan)
+}
+
+func (p *plannedTransport) RoundTripPolicy(request *http.Request, policy string) (*http.Response, error) {
+	return p.RoundTrip(request.WithContext(pluginctx.WithHTTPPolicy(request.Context(), policy)))
 }
 
 func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {

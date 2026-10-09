@@ -3,11 +3,9 @@
 package surge
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,7 +16,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	log "github.com/sirupsen/logrus"
@@ -35,7 +32,7 @@ type scriptExecution struct {
 	dom                                *runtimeDOM
 	events                             chan runtimeEvent
 	timers                             []runtimeTimer
-	pendingHTTP                        int
+	httpCancels                        map[int]context.CancelFunc
 	result                             *Result
 	bodyMemory                         *membuffer.Budget
 	bodyLimit                          int64
@@ -144,15 +141,23 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 			}
 		}
 		return nil, nil
+	case "cancel-http":
+		id, _ := strconv.Atoi(arg(1))
+		if cancel := s.httpCancels[id]; cancel != nil {
+			cancel()
+		}
+		return nil, nil
 	case "http":
-		if s.pendingHTTP >= 20 {
+		if len(s.httpCancels) >= 20 {
 			return nil, errors.New("script HTTP request limit exceeded")
 		}
 		id, _ := strconv.Atoi(arg(1))
 		spec := arg(2)
-		s.pendingHTTP++
+		ctx, cancel := context.WithCancel(s.ctx)
+		s.httpCancels[id] = cancel
 		s.httpWorkers.Go(func() {
-			data, memory, err := scriptHTTP(s.ctx, s.client, spec, min(s.runtime.opts.MemoryLimit/4, 32<<20), s.bodyMemory)
+			defer cancel()
+			data, memory, err := scriptHTTP(ctx, s.client, spec, min(s.runtime.opts.MemoryLimit/4, 32<<20), s.bodyMemory)
 			if err != nil {
 				failure, _ := json.Marshal(map[string]any{"error": err.Error()})
 				data = string(failure)
@@ -200,7 +205,7 @@ func (s *scriptExecution) waitResult(vm *quickjs.VM) (*Result, error) {
 			event = runtimeEvent{id: s.timers[next].id, data: "null"}
 			s.timers = append(s.timers[:next], s.timers[next+1:]...)
 		case event = <-s.events:
-			s.pendingHTTP--
+			delete(s.httpCancels, event.id)
 		}
 		if timer != nil {
 			timer.Stop()
@@ -211,119 +216,4 @@ func (s *scriptExecution) waitResult(vm *quickjs.VM) (*Result, error) {
 			return nil, fmt.Errorf("execute Surge script callback: %w", err)
 		}
 	}
-}
-
-func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody int64, budget *membuffer.Budget) (string, membuffer.Reservation, error) {
-	var options struct {
-		URL          string      `json:"url"`
-		Method       string      `json:"method"`
-		Headers      http.Header `json:"headers"`
-		Body         *string     `json:"body"`
-		Binary       *string     `json:"bodyBase64"`
-		Timeout      float64     `json:"timeout"`
-		AutoRedirect *bool       `json:"auto-redirect"`
-		AutoCookie   *bool       `json:"auto-cookie"`
-		FullHeaders  bool        `json:"full-header-mode"`
-	}
-	if err := json.Unmarshal([]byte(spec), &options); err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	timeout := 5 * time.Second
-	if options.Timeout > 0 && options.Timeout < 86400 {
-		timeout = time.Duration(options.Timeout * float64(time.Second))
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var body []byte
-	if options.Body != nil {
-		body = []byte(*options.Body)
-	}
-	if options.Binary != nil {
-		var err error
-		body, err = base64.StdEncoding.DecodeString(*options.Binary)
-		if err != nil {
-			return "", membuffer.Reservation{}, err
-		}
-	}
-	if int64(len(body)) > maxBody {
-		return "", membuffer.Reservation{}, membuffer.ErrTooLarge
-	}
-	requestMemory, err := budget.Reserve(int64(len(body)))
-	if err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	defer requestMemory.Close()
-	req, err := http.NewRequestWithContext(ctx, options.Method, options.URL, bytes.NewReader(body))
-	if err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
-		return "", membuffer.Reservation{}, errors.New("$httpClient only supports http and https")
-	}
-	req.Header, err = resultHeaders(options.Headers)
-	if err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	if host := req.Header.Get("Host"); host != "" {
-		req.Host = host
-		req.Header.Del("Host")
-	}
-	requestClient := *client
-	if options.AutoCookie != nil && !*options.AutoCookie {
-		requestClient.Jar = nil
-	}
-	if options.AutoRedirect != nil && !*options.AutoRedirect {
-		requestClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	}
-	resp, err := requestClient.Do(req)
-	if err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	defer resp.Body.Close()
-	raw, err := membuffer.Read(common.NewContextReader(ctx, resp.Body), maxBody, budget)
-	defer raw.Close()
-	if err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	data := raw
-	encoding := strings.Join(resp.Header.Values("Content-Encoding"), ",")
-	if encoding != "" && responseHasBody(req.Method, resp.StatusCode) && len(raw.Bytes()) != 0 {
-		// Routed transports preserve wire bytes. Decode before text/binary
-		// delivery, applying the same size and shared-memory limits to each layer.
-		data, err = decodeBodyView(ctx, raw, encoding, maxBody, budget)
-		defer data.Close()
-		if err != nil {
-			return "", membuffer.Reservation{}, fmt.Errorf("decode $httpClient response: %w", err)
-		}
-		resp.Header.Del("Content-Encoding")
-		resp.Header.Del("Content-Length")
-	}
-	if err := ctx.Err(); err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	message := map[string]any{"status": resp.StatusCode, "headers": runtimeHeaders(resp.Header, options.FullHeaders)}
-	if len(resp.Trailer) > 0 {
-		message["h2_trailers"] = runtimeHeaders(resp.Trailer, options.FullHeaders)
-	}
-	// []byte is serialized as base64 by JSON without a separately retained
-	// base64 string. Charge the event until Dispatch consumes it or cancellation.
-	writer := &membuffer.Buffer{Budget: budget, Limit: 2*maxBody + 1<<20}
-	defer writer.Close()
-	if err := jsonv2.MarshalWrite(writer, map[string]any{"response": message, "bodyBase64": data.Bytes()}); err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	view := writer.View()
-	defer view.Close()
-	memory, err := budget.Reserve(int64(len(view.Bytes())))
-	if err != nil {
-		return "", membuffer.Reservation{}, err
-	}
-	event := string(view.Bytes())
-	// Serialization and the event copy also belong to the request's timeout.
-	// Do not deliver a successful callback after that deadline or cancellation.
-	if err := ctx.Err(); err != nil {
-		memory.Close()
-		return "", membuffer.Reservation{}, err
-	}
-	return event, memory, nil
 }

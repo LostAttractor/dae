@@ -14,7 +14,8 @@ import (
 )
 
 type EngineOptions struct {
-	Modules []*Module
+	Modules      []*Module
+	HTTPPolicies []string
 
 	// BodyMemory is supplied by the host, shared across instances and reloads.
 	BodyMemory           *membuffer.Budget
@@ -78,7 +79,7 @@ func (e *Engine) forConnection(host string, port uint16) *Engine {
 // Plan exports one complete compatibility engine as one host plugin. Modules
 // remain inside this engine, preserving their per-direction first-script rule.
 func (e *Engine) Plan() plugin.Plan {
-	var plan plugin.Plan
+	plan := plugin.Plan{RequiredOutbounds: e.options.HTTPPolicies}
 	for _, module := range e.options.Modules {
 		if len(module.DNSHosts) != 0 {
 			plan.DNS = append(plan.DNS, plugin.DNSScope{})

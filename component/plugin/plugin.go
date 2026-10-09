@@ -43,6 +43,8 @@ type Handler func(*Exchange) (*http.Response, error)
 
 // Plan is immutable after preparation; the host takes ownership without copying it.
 type Plan struct {
+	// RequiredOutbounds keeps auxiliary-request policies loaded without adding routing or capture rules.
+	RequiredOutbounds   []string
 	DNS                 []DNSScope
 	Scopes              []HTTPScope
 	Destinations        routing.DestinationRewrites

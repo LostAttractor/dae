@@ -79,6 +79,9 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 		wasAsync[i] = group.CheckAsync
 	}
 	err = outbounds.buildRuleTargets(rules.earlyRoutes, rules.lateRoutes)
+	if err == nil {
+		err = outbounds.buildTargets(plan.RequiredOutbounds)
+	}
 	// Transfer partial construction too, so plane cleanup owns every transport.
 	c.outbounds = outbounds.outbounds
 	c.outboundReleases = outbounds.releases
@@ -101,6 +104,13 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	c.routingMatcherBuilder = builder
 	c.routingState = builder.routingState
 	c.criticalOutbounds = builder.criticalOutbounds(len(c.outbounds))
+	for _, name := range plan.RequiredOutbounds {
+		index, ok := outbounds.nameToID[name]
+		if !ok {
+			return fmt.Errorf("plugin requires unknown outbound %q", name)
+		}
+		c.criticalOutbounds[index] = true
+	}
 	configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds, outbounds.borrowed)
 	if err := c.restoreRuntimeSettings(false); err != nil {
 		return err
