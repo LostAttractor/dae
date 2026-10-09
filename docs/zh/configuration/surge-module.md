@@ -1,6 +1,6 @@
 # Surge Module
 
-内置 `surge` 插件使用 [buke/quickjs-go](https://github.com/buke/quickjs-go) 的 cgo 绑定运行 QuickJS-NG，在透明转发中处理 Surge HTTP 模块，并支持 cron 定时脚本、generic 手动脚本、部分路由与 IP 目标重写。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[静态 musl 构建](../../en/user-guide/build-by-yourself.md#musl)。
+内置 `surge` 插件使用 [buke/quickjs-go](https://github.com/buke/quickjs-go) 运行 QuickJS-NG，重点兼容 MITM 中的 Surge 请求/响应脚本，并提供模块重写、存储、DNS、cron 和 generic 等配套能力。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[静态 musl 构建](../../en/user-guide/build-by-yourself.md#musl)。
 
 ## 配置与运行
 
@@ -42,14 +42,15 @@ plugins {
 
 `ca_cert`、`ca_key` 的相对路径也使用 `DAE_LOCATION_CACHE`。脚本持久存储默认开启，自动保存到该目录下的 `plugins/<实例ID>/surge-store.json`。模块内相对脚本及 Map Local 文件相对模块目录或重定向后的最终 URL；远程模块不能读本地文件，HTTPS 下载不能降级 HTTP。`global.resource_cache` 默认开启，适用于所有 HTTP(S) 模块和依赖；本地文件始终读取当前内容。缓存按来源和显式参数区分，与名称无关；写入和目录规则见[缓存目录](cache-directory.md#全局资源缓存)。
 
-启动或重载时，先等待节点的初始连通性检查阶段结束，再用系统解析器解析模块主机，按普通路由下载模块，加载完成后接管流量。初始检查最多等待 60 秒；超时按现有断网策略继续。模块列表共用两分钟刷新预算，模块自身规则在加载后才生效。没有可用来源或缓存时加载失败，重载保留旧实例。重载会停止旧实例的新请求并在 5 秒预算内排空请求；普通 TCP/UDP 连接按各自生命周期处理；不按 `script-update-interval` 定时刷新。
+启动或重载时，先等待节点的初始连通性检查阶段结束，再用系统解析器解析模块主机，按普通路由下载模块，加载完成后接管流量。初始检查最多等待 60 秒；超时按现有断网策略继续。模块列表共用两分钟刷新预算，模块自身规则在加载后才生效。没有可用来源或缓存时加载失败，重载保留旧实例。重载会停止旧实例的新请求并在 5 秒预算内排空请求；普通 TCP/UDP 连接按各自生命周期处理。远程脚本按 `script-update-interval`（秒，默认 `86400`，`0` 关闭）自动检查；模块、订阅及普通依赖使用 `global.resource_update_interval`。reload 和[资源刷新 API](api.md#资源刷新)会立即尝试刷新。
 
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
 | `script_timeout` | `5s` | 默认单阶段预算，含等待名额、正文准备和脚本内 HTTP 请求；脚本显式配置的 `timeout`（秒）优先，可延长或缩短 |
 | `memory_limit` | `134217728` | 单次 QuickJS 堆上限，字节 |
 | `max_body_size` | `33554432` | 正文缓冲上限，字节；脚本可进一步缩小 |
-| `max_concurrent_scripts` | `16` | 同时执行脚本或 jq 正文处理的名额 |
+| `max_concurrent_scripts` | `16` | 同时执行脚本或 Body Rewrite 的名额 |
+| `http_policies` | 空 | 预加载脚本主动请求使用的出站组，逗号分隔，如 `proxy,api`；不增加捕获或路由规则 |
 | `store` | `true` | 是否持久化 `$persistentStore`；`false` 仅保存在实例内存中，文件名自动确定 |
 
 每次脚本调用创建独立 VM。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。QuickJS 堆限制不等于进程内存限制，也不约束 jq 中间对象。
@@ -84,6 +85,21 @@ module {
 ```
 
 也可手工填写 `'名称=值'`，`'名称='` 表示空值。命令只读取模块文本，不下载依赖或写缓存；使用主机网络及 `HTTP_PROXY` / `HTTPS_PROXY`，来源语法与上表一致。
+
+## 模块条件与注释
+
+支持 `#!system`、`#!requirement`，以及行首 `#!REQUIREMENT 表达式 指令`、行尾 `#!REQUIREMENT 表达式` / `//!REQUIREMENT 表达式`。含空格的行首表达式用双引号包裹。比较、AND/OR/NOT、括号及 BEGINSWITH/ENDSWITH/CONTAINS/LIKE/MATCHES 可用。
+
+条件中的 SYSTEM 为 `linux`，SYSTEM_VERSION 为内核版本，DEVICE_MODEL、DEVICE_NAME、LANGUAGE 来自宿主。iOS/macOS/tvOS ONLY 条件不启用；CORE_VERSION 比较项被忽略，不模拟 Surge 版本；组合表达式只保留其余条件，全部为版本条件时视为满足。例如 `CORE_VERSION>=20 OR SYSTEM='iOS'` 仍只由 SYSTEM 条件决定。其它未知变量会警告并跳过对应行或模块。模块条件不满足时状态为 `disabled`，不加载依赖或注册捕获规则。
+
+各段支持 `#`、`;`、`//` 注释；行尾标记须在引号外并由空白分隔。例如：
+
+```ini
+[MITM]
+hostname = example.com # 主机范围
+[Rule]
+DOMAIN,example.com,DIRECT #!REQUIREMENT SYSTEM='linux'
+```
 
 ## 主机与模块作用域
 
@@ -141,6 +157,19 @@ client_source_address: '-02:00:00:00:00:10,all'
 
 只启用已信任 CA 的设备；dae 不探测信任状态，也不在 TLS 失败后重试透传。未启用的客户端沿原路由透传。未知 MAC 可在配置中用 IP/CIDR 匹配。
 
+## 正文重写
+
+`[Body Rewrite]` 支持请求/响应正则替换和 jq；同一行的替换对、各规则依次执行，结果交给该方向的脚本。
+
+```ini
+[Body Rewrite]
+http-request ^https://api\.example\.com/ "old" "new"
+http-response ^https://api\.example\.com/ "(item)-([0-9]+)" "$1:$2"
+http-response-jq ^https://api\.example\.com/ ".enabled = true"
+```
+
+请求 jq 使用 `http-request-jq`。正则正文须为有效 UTF-8，`^` / `$` 按行匹配，替换可为空；jq 处理单个 JSON 文档，空输出或执行失败保留前一步正文。请求 chunked / `Expect: 100-continue` 跳过正文重写。读取或解压超限时，请求返回 413，响应回放原文；本地合成响应不进入响应重写链。
+
 ## 转发与协议
 
 启用 HTTP scope 后，仅按模块的正向 hostname 和对应端口捕获 TCP/UDP 候选连接，再按实际主机名、排除项和客户端开关决定是否解密。无关 direct 流量保留 eBPF 内核直通。含脚本、URL Rewrite 或 Map Local 的模块先执行 HTTP 处理，随后按最终目标执行目的地址规则 → flow → 模块 pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。原目标的 block 不会抢先阻止这些已准入的请求；新目标命中 block 则拒绝。未准入客户端仍按普通连接路由处理。
@@ -157,6 +186,21 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 
 内核的域名捕获依赖已有 DNS 域名—IP 映射；缺少映射时不会通过捕获全部 TCP/UDP 或仅按 HTTPS 端口捕获来兜底，原本的 direct 流量继续在内核转发。已因其他规则进入用户态的连接仍可使用 SNI/Host。共享 IP 可能带入额外候选，最终匹配和普通出站路由仍受各自的 scope、域名验证策略约束；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 和 HTTP/3 不允许跨原主机复用；HTTP/3 暂不支持跨地址迁移、0-RTT、WebTransport/CONNECT-UDP。仅保留上游同主机、同端口的 H3 Alt-Svc 广告。WebSocket 只处理 HTTP/1 握手。
 
+## 脚本 HTTP 请求
+
+`$httpClient` 和基础 `fetch` 使用宿主路由、正常 TLS 校验及共享正文预算。`policy` 可填 `DIRECT`、`REJECT` 或当前已加载的 dae 出站组名；仅由脚本使用的组须在插件设置中写 `http_policies: proxy,api`，否则未被路由引用的组不会加载。它仅覆盖主动请求的出站，保留目的地址规则、客户端身份及 mark，并在重定向时沿用。未知或不可用的组返回错误。`policy-descriptor` 和 `insecure: true` 会明确报错；`insecure: false` 保持正常 TLS 校验。
+
+```javascript
+(async () => {
+  const response = await fetch("https://api.example.com/data", { policy: "DIRECT" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const data = await response.json();
+  $persistentStore.write(JSON.stringify(data), "data");
+})().catch(console.error).finally(() => $done());
+```
+
+fetch 提供 Headers、Request、Response 和 `text()` / `json()` / `arrayBuffer()` / `bytes()`，支持复制及一次性正文消费。响应完整缓冲后交付；`timeout` 单位为秒，可进一步限制脚本剩余预算。默认不自动发送 Cookie，`credentials: "include"` 使用本次脚本的 CookieJar。`redirect: "manual"` 返回实际 30x，`"error"` 拒绝跟随。支持 `AbortController`、`AbortSignal.abort()` / `timeout()`；取消只终止对应请求。未指定 fetch `timeout` 时使用脚本剩余预算。无流式正文、Blob/FormData、浏览器 CORS 或缓存/来源控制；不支持的选项会报错。
+
 ## 执行与调试日志
 
 初始化完成后，以 `info` 记录各模块的加载结果。详细模块状态按需查询，不在日志中重复打印表格。
@@ -167,7 +211,7 @@ domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 ./dae plugins surge status
 ```
 
-查询复用 daemon 的状态服务，无需开启 `global.api_port`。`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败时报告具体原因，`debug` 可查看各模块已加载、失败或尚未加载的进度；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。
+查询复用 daemon 的状态服务，无需开启 `global.api_port`。`disabled` 表示模块条件不满足；`loaded` 表示资源已加载；`cached` 表示整模块使用上次完整缓存；`cached dependencies` 表示部分依赖使用缓存。加载失败时报告具体原因，`debug` 可查看各模块已加载、失败或尚未加载的进度；失败重载后的查询仍显示运行中的旧实例。加载状态不代表脚本已匹配或执行。
 
 `IP MAPS` 显示 IP 映射条目数。实际重写可查看 `debug` 路由日志：`destination_ip` 是原目标，`destination` 是拨号目标，`outbound` 是出站。
 
@@ -183,7 +227,7 @@ journalctl -u dae -f -o cat
 
 下载选路、客户端旁路和单请求失败为 `debug`，自动执行步骤为 `trace`。脚本失败后转发原始内容、处理上限导致跳过等行为退化为 `warn`；正常取消和脚本主动中断不告警。`console.log/info/debug/warn/error` 保留脚本选择的级别（log 为 info），`$notification.post` 写 info；日志受 `global.log_level` 过滤，近期通知的状态记录不受影响。
 
-脚本参数 `enable=false` 禁止该脚本加载和执行；`full-header-mode=true` 使用字段数组传递头，保留重复值。已知不支持的 `script-update-interval`、`debug`、`img-url`、`wake-system` 忽略，仅在 `trace` 记录。未知参数与影响行为的警告仍为 `warning`，支持参数的非法值仍会导致加载失败。
+脚本参数 `enable=false` 禁止该脚本加载和执行；`full-header-mode=true` 使用字段数组传递头，保留重复值。`debug=true` 使本地脚本每次运行前重读，读取失败沿用该类脚本的失败处理；不提供 Surge 请求备注界面。`img-url`、`wake-system` 忽略，仅在 `trace` 记录。未知参数与影响行为的警告仍为 `warning`，支持参数的非法值仍会导致加载失败。
 
 | 日志事件 | 含义 |
 | --- | --- |
@@ -278,7 +322,7 @@ $done();
 
 在实例的 `module` 段加入 `tools: 'file:modules/tools.sgmodule'`，重载后使用 `dae plugins surge run demo.tool --instance surge --module tools` 执行。
 
-运行时提供 `$script.type = "generic"`、`$trigger = "http-api"` 和配置的 `$argument`，没有 `$cronexp`、HTTP/DNS 输入或面板/Shortcuts 上下文。必须调用 `$done()`，手动执行忽略其返回值，未调用则等待超时。每次执行使用独立 VM。
+运行时提供 `$script.type = "generic"`、`$trigger = "http-api"` 和配置的 `$argument`，没有类型专用输入。必须调用 `$done()`，手动执行忽略其返回值，未调用则等待超时。每次执行使用独立 VM。
 
 generic 与 cron 共用后台任务执行器、实例存储、通知、路由 HTTP 客户端及 `max_concurrent_scripts` 名额；超时包含排队时间。同一任务等待/运行时拒绝重复触发。插件激活后为 `ready`，完成后回到 `ready`；停止/重载取消并等待执行清理。纯 generic 模块无需 MITM hostname 或 CA，也不产生流量捕获规则。
 

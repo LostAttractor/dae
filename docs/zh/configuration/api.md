@@ -110,6 +110,8 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `DELETE /api/selectors/{name}` | 恢复显式 `selector(n)`；未配置默认时返回 `409` |
 | `POST /api/probes` | `{"outbound":"manual","node_id":"节点 ID"}` 探测单节点；省略或留空 `node_id` 探测整个出站；返回 `202` 和接受的节点 ID |
 | `POST /api/plugins/{instance}/scripts/run` | 需要管理权限；`{"module":"tools","script":"demo.tool"}` 触发已有 cron/generic 任务；返回 `202`、本任务运行编号及受理状态 |
+| `POST /api/resources/refresh` | 需要管理权限；空正文，立即尝试刷新当前配置的订阅、模块与依赖；返回 `202` 和受理状态 |
+| `GET /api/resources` | 需要管理权限；最近一次 API/自动刷新状态和下次自动检查时间 |
 | `GET /api/certificate` | CA 名称与 SHA-256 指纹；不可用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
 
@@ -130,3 +132,12 @@ daemon 的状态 schema 为 12，通过 Unix socket `/var/run/dae.sock` 的 `/ap
 `dae plugins status --json` 输出完整 `plugins`；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本，使用相同的管理访问权限。
 
 通知另受每实例 1 MiB 保守 JSON 编码预算限制，文本按最坏转义长度计费。超限时先从记录最多的脚本删除最旧记录，数量相同时删除最旧的一条，因此每脚本实际保留数量可能少于 50 条。verbose/JSON 返回预算内全部记录。
+
+### 资源刷新
+
+```bash
+sudo curl --unix-socket /var/run/dae.sock -X POST -H 'X-Dae-API: 1' http://localhost/api/resources/refresh
+sudo curl --unix-socket /var/run/dae.sock http://localhost/api/resources
+```
+
+刷新使用已接受的配置；配置文件修改仍需 `dae reload`。`202` 表示受理，任务在 HTTP 响应后继续执行，与 reload 串行发布。等待或运行中重复触发返回 `409`。状态含 `run`、`state`（idle/queued/running/completed/failed）、`trigger`（api/automatic）、开始/完成时间、`next_check`、`result` 或 `error`；只保留最近一次，daemon 重启后重置。`result` 会说明因下载或校验失败而保留旧内容的资源组数量。自动检查间隔和回退规则见[资源缓存](cache-directory.md#全局资源缓存)。

@@ -154,12 +154,16 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `PUT /api/selectors/{group}` | `SelectorState` | 管理权限；`{"node_id":"..."}` |
 | `DELETE /api/selectors/{group}` | `SelectorState` | 管理权限；空正文，恢复显式 `selector(n)`；没有默认时 `409` |
 | `POST /api/probes` | `202` + `ProbeResponse` | 管理权限；`{"outbound":"group","node_id":"..."}` 探测单路径；省略或留空 `node_id` 探测整个出站 |
+| `POST /api/resources/refresh` | `202` + `ResourceRefreshStatus` | 管理权限；空正文，刷新当前配置的资源，等待/运行中返回 `409` |
+| `GET /api/resources` | `ResourceRefreshStatus` | 管理权限；查询最近一次 API/自动刷新结果和下次检查时间 |
 | `GET /api/device` | `DeviceState` | 仅 TCP，需识别直连 LAN 设备 |
 | `PUT` / `DELETE /api/device/sets/{name}` | `DeviceState` | 加入 / 退出集合，空正文 |
 | `PUT /api/device/mitm` | `DeviceState` | `{"enabled":true}` 或 `{"enabled":false}` |
 | `DELETE /api/device/mitm` | `DeviceState` | 空正文，恢复配置 |
 | `GET /api/certificate` | `Certificate` | 公开 CA 名称与指纹；未启用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
+
+资源刷新 SDK 为 `RefreshResources(ctx)`，通过 `ResourceRefreshStatus(ctx)` 查询完成情况。只刷新已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
 
 统一探测接口使用 `ProbeRequest`，SDK 为 `Probe(ctx, api.ProbeRequest{Outbound: "group", NodeID: "..."})`。响应 `ProbeResponse` 包含 `outbound`、`node_ids`，`202` 表示已受理；排队或进行中的重复请求会合并。使用出站配置的 DNS 探测、超时和并发限制，支持所有已实例化的受检测出站，不接受任意 URL 或请求级配置覆盖。selector 的结果继续从 `/api/selectors` 获取，其他出站从 `/api/status` 查看健康与延迟。
 

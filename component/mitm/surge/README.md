@@ -1,18 +1,25 @@
 # Surge
 
-One plugin instance runs an ordered collection of sgmodules. It owns configuration
-parsing, resource downloads, module rewrites and the QuickJS bridge. HTTP/TLS
-serving and connection lifetime belong to `component/mitm`.
+This plugin runs Surge scripts, focusing on HTTP request/response scripts in MITM
+flows. Each instance owns an ordered collection of sgmodules, resource downloads,
+module rewrites and the QuickJS bridge. HTTP/TLS serving and connection lifetime
+belong to `component/mitm`.
 
 Start with [`setup.go`](setup.go), [`config.go`](config.go) and
 [`surge.go`](surge.go). `module_*` files interpret sgmodule declarations;
 `handler_*` files process HTTP contents; `runtime_*` files implement script APIs.
+[`runtime_bridge.go`](runtime_bridge.go) dispatches VM host calls and asynchronous
+events; [`runtime_http.go`](runtime_http.go) owns script HTTP requests, Fetch
+redirects and bounded response decoding.
 [`tasks.go`](tasks.go) runs cron and generic scripts through the host's Worker
 lifecycle and routed HTTP client, sharing execution slots and persistent storage.
 Generic tasks run only on demand; cron tasks also have a timer schedule.
 [`module_load.go`](module_load.go) uses [`resource.Cache`](../../../common/resource/cache.go)
-for network-first, validated module/dependency snapshots. `global.resource_cache`
-controls reads and writes; standard HTTP/HTTPS URLs carry no cache policy.
+for validated module/dependency snapshots. [`module_dependencies.go`](module_dependencies.go)
+resolves scripts, Host sets and Map Local files through one bounded dependency reader.
+Automatic refreshes reuse remote resources until their next check; explicit reloads
+and refresh requests read them again. `global.resource_cache` controls disk snapshots;
+the active resource set and its refresh schedule remain in memory independently.
 The shared CLI [`list` and `run` commands](../../../client/cli/scripts.go) discover
 configured cron/generic tasks and request manual execution through the daemon API.
 `list` supports instance/module filtering and JSON; `run` returns an acceptance snapshot. Manual and
@@ -39,5 +46,5 @@ processing skips. Collection is independent of trace logging. See the
 See [configuration](../../../docs/zh/configuration/surge-module.md),
 [supported features](../../../docs/zh/configuration/surge-module-support.md), and
 [the common plugin contract](../../plugin/plugin.go).
-The [semantic mapping and adapter design](../../../docs/zh/development/surge-compatibility.md)
-explains rule/event and the host APIs that require an explicit dae mapping.
+The [script compatibility boundaries](../../../docs/zh/development/surge-compatibility.md)
+describe execution ownership, kernel passthrough and rule/event limitations.
