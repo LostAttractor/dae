@@ -183,7 +183,7 @@ func TestRecoverySerializesDueHealthCapacityAndSupport(t *testing.T) {
 	transport.state.Publish(event)
 	d := newTestDialer(t, transport)
 	prepareRecoveryDialer(d)
-	d.networks[common.NetworkUDP4] = networkUnknown
+	d.health.networks[common.NetworkUDP4] = networkUnknown
 
 	started, release := make(chan struct{}), make(chan struct{})
 	c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) (bool, error) {
@@ -301,7 +301,7 @@ func TestUnhealthyPartialPoolReplenishesBeforeReverification(t *testing.T) {
 	prepareRecoveryDialer(d)
 	d.mu.Lock()
 	d.confirmFailureLocked()
-	d.health = healthUnhealthy
+	d.health.phase = healthUnhealthy
 	d.mu.Unlock()
 	c := testRecoveryChecker(t, d)
 	c.healthAt = time.Now().Add(time.Hour)

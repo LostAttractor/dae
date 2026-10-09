@@ -5,22 +5,22 @@ package dialer
 import "time"
 
 func (d *pathRuntime) resetRecoveryObservationLocked() {
-	d.recoverySince, d.recoveryVerifiedAt = time.Time{}, time.Time{}
+	d.failures.recoverySince, d.failures.recoveryVerifiedAt = time.Time{}, time.Time{}
 }
 
 // Only completed health checks advance the observation window. Merely reaching
 // a deadline never restores priority. Completed group windows survive sleep.
 func (d *pathRuntime) recordRecoverySuccessLocked() {
-	if !d.failedBefore {
+	if !d.failures.failedBefore {
 		return
 	}
 	now := time.Now()
-	if d.recoverySince.IsZero() {
-		d.recoverySince = now
+	if d.failures.recoverySince.IsZero() {
+		d.failures.recoverySince = now
 	}
-	d.recoveryVerifiedAt = now
+	d.failures.recoveryVerifiedAt = now
 	for member := range d.members {
-		if group := member.group; group != nil && now.Sub(d.recoverySince) >= group.failureRecovery {
+		if group := member.group; group != nil && now.Sub(d.failures.recoverySince) >= group.failureRecovery {
 			group.recovered = true
 		}
 	}
@@ -39,7 +39,7 @@ func (d *pathRuntime) recoveryCheckInterval() time.Duration {
 func (d *pathRuntime) recoveryCheckPlan() (at time.Time, timeout time.Duration) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	if !d.failedBefore || d.health != healthHealthy || !d.healthyLocked(d.sessionSnapshot()) {
+	if !d.failures.failedBefore || d.health.phase != healthHealthy || !d.healthyLocked(d.sessionSnapshot()) {
 		return
 	}
 	for member := range d.members {
@@ -50,15 +50,15 @@ func (d *pathRuntime) recoveryCheckPlan() (at time.Time, timeout time.Duration) 
 		if timeout == 0 || group.probeTimeout < timeout {
 			timeout = group.probeTimeout
 		}
-		if !d.recoverySince.IsZero() {
-			deadline := d.recoverySince.Add(group.failureRecovery)
+		if !d.failures.recoverySince.IsZero() {
+			deadline := d.failures.recoverySince.Add(group.failureRecovery)
 			if at.IsZero() || deadline.Before(at) {
 				at = deadline
 			}
 		}
 	}
-	if timeout > 0 && !d.recoveryVerifiedAt.IsZero() {
-		next := d.recoveryVerifiedAt.Add(d.recoveryCheckInterval())
+	if timeout > 0 && !d.failures.recoveryVerifiedAt.IsZero() {
+		next := d.failures.recoveryVerifiedAt.Add(d.recoveryCheckInterval())
 		if at.IsZero() || next.Before(at) {
 			at = next
 		}
@@ -70,8 +70,30 @@ func (d *pathRuntime) recoveryCheckPlan() (at time.Time, timeout time.Duration) 
 // join it and consume the same verified result through Check.
 func (c *connectivityChecker) startRecoveryCheck(timeout time.Duration) {
 	c.d.mu.Lock()
-	network := firstSupportedNetwork(c.d.networks)
+	network := firstSupportedNetwork(c.d.health.networks)
 	c.d.queueSelectionCheckLocked(network, time.Now().Add(timeout)).waiters++
 	c.d.mu.Unlock()
 	c.startSelectionCheck()
+}
+
+func (d *Dialer) degradationLocked() (bool, time.Duration, time.Duration) {
+	required := DefaultFailureRecovery
+	if d.group != nil {
+		required = d.group.failureRecovery
+		if d.group.recovered {
+			return false, required, required
+		}
+	}
+	return d.failures.failedBefore, min(d.failures.recoveryVerifiedAt.Sub(d.failures.recoverySince), required), required
+}
+
+func (d *pathRuntime) confirmFailureLocked() {
+	d.failures.failedBefore = true
+	d.resetRecoveryObservationLocked()
+	for member := range d.members {
+		if member.group != nil {
+			member.group.recovered = false
+		}
+	}
+	d.failures.generation++
 }

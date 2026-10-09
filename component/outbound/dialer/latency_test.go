@@ -57,16 +57,16 @@ func TestDialerLatencyWindow(t *testing.T) {
 }
 
 func TestDialerLatencyConcurrentSnapshots(t *testing.T) {
-	d := &Dialer{pathRuntime: &pathRuntime{ctx: context.Background(), health: healthHealthy}}
+	d := &Dialer{pathRuntime: &pathRuntime{ctx: context.Background(), health: pathHealth{phase: healthHealthy}}}
 	d.RegisterDialerGroup(nil, 0.5, 0, 0)
 	network := common.NetworkIndex(0).NetworkType()
-	d.networks[network.Index()] = networkSupported
+	d.health.networks[network.Index()] = networkSupported
 	var workers sync.WaitGroup
 	for range 4 {
 		workers.Go(func() {
 			for range 100 {
 				d.mu.Lock()
-				d.group.recordLatency(time.Millisecond)
+				d.group.latency.record(time.Millisecond)
 				d.mu.Unlock()
 			}
 		})

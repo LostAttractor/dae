@@ -127,7 +127,7 @@ func performCheck(c *connectivityChecker, ctx context.Context, kind checkKind) c
 	c.d.mu.RLock()
 	attempt := checkAttempt{
 		kind:       kind,
-		generation: c.d.failureGeneration,
+		generation: c.d.failures.generation,
 	}
 	c.d.mu.RUnlock()
 	return c.performAttempt(ctx, attempt)
@@ -349,10 +349,10 @@ func TestSupportRetryLogsTransitionsTogether(t *testing.T) {
 
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	for i := range d.networks {
-		d.networks[i] = networkUnknown
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnknown
 	}
-	d.health = healthUnhealthy
+	d.health.phase = healthUnhealthy
 	d.mu.Unlock()
 	result := checkResult{
 		kind: checkSupport,
@@ -488,8 +488,8 @@ func TestHealthRetryBackoff(t *testing.T) {
 func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	for i := range d.networks {
-		d.networks[i] = networkUnknown
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnknown
 	}
 	d.mu.Unlock()
 	probed := make(chan struct{}, 1)
@@ -550,12 +550,12 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	for i := range d.networks {
-		d.networks[i] = networkUnsupported
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnsupported
 	}
-	d.networks[common.NetworkTCP6] = networkUnknown
-	d.networks[common.NetworkTCP4] = networkSupported
-	d.health = healthUnhealthy
+	d.health.networks[common.NetworkTCP6] = networkUnknown
+	d.health.networks[common.NetworkTCP4] = networkSupported
+	d.health.phase = healthUnhealthy
 	d.mu.Unlock()
 	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
 		d.StatsKey(): {Subtag: d.SubscriptionTag, Name: d.Name},
@@ -614,7 +614,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 		t.Fatalf("duplicate support result changed latency to %v", latency.Last)
 	}
 	d.mu.Lock()
-	d.networks[common.NetworkTCP4] = networkUnsupported
+	d.health.networks[common.NetworkTCP4] = networkUnsupported
 	d.mu.Unlock()
 	d.applyCheck(checkResult{kind: checkSupport, probes: []probeResult{{network: common.NetworkTCP4}}})
 	if state := d.networkStates()[common.NetworkTCP4]; state != networkUnsupported {
@@ -625,12 +625,12 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	for i := range d.networks {
-		d.networks[i] = networkUnsupported
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnsupported
 	}
-	d.networks[common.NetworkTCP6] = networkSupported
-	d.networks[common.NetworkTCP4] = networkUnknown
-	d.health = healthHealthy
+	d.health.networks[common.NetworkTCP6] = networkSupported
+	d.health.networks[common.NetworkTCP4] = networkUnknown
+	d.health.phase = healthHealthy
 	d.mu.Unlock()
 	checker := newConnectivityChecker(d.pathRuntime, nil)
 	t.Cleanup(func() {
@@ -657,13 +657,13 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	for i := range d.networks {
-		d.networks[i] = networkUnsupported
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnsupported
 	}
-	d.networks[common.NetworkTCP6] = networkSupported
-	d.networks[common.NetworkTCP4] = networkUnknown
-	d.networks[common.NetworkUDP4] = networkUnknown
-	d.health = healthUnhealthy
+	d.health.networks[common.NetworkTCP6] = networkSupported
+	d.health.networks[common.NetworkTCP4] = networkUnknown
+	d.health.networks[common.NetworkUDP4] = networkUnknown
+	d.health.phase = healthUnhealthy
 	d.mu.Unlock()
 	group := d.group.observer.(*testGroup)
 	support, accepted := d.applyCheck(checkResult{
@@ -674,7 +674,7 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 		},
 	})
 	wantForce := SelectionForceFor(common.NetworkTCP4) | SelectionForceFor(common.NetworkUDP4)
-	if !accepted || support.success || d.pendingForce != wantForce {
+	if !accepted || support.success || d.health.pendingForce != wantForce {
 		t.Fatalf("support result while unhealthy = %+v, accepted=%v", support, accepted)
 	}
 	if got := group.forces.Load(); got != 0 {
@@ -688,16 +688,16 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	if failed, accepted := d.applyCheck(checkResult{
 		kind:   checkHealth,
 		probes: []probeResult{{network: common.NetworkTCP6, err: errors.New("still down")}},
-	}); !accepted || failed.success || d.pendingForce != wantForce {
+	}); !accepted || failed.success || d.health.pendingForce != wantForce {
 		t.Fatalf("failed canonical retry changed pending force: %+v, accepted=%v", failed, accepted)
 	}
 	d.applySessionState(netproxy.StateEvent{Seq: 1, State: netproxy.SessionDisconnected})
-	if d.pendingForce != wantForce {
-		t.Fatalf("session loss changed pending force to %04b", d.pendingForce)
+	if d.health.pendingForce != wantForce {
+		t.Fatalf("session loss changed pending force to %04b", d.health.pendingForce)
 	}
 	healthResult := performCheck(checker, context.Background(), checkHealth)
 	health, accepted := d.applyCheck(healthResult)
-	if !accepted || !health.success || d.pendingForce != SelectionForceNone {
+	if !accepted || !health.success || d.health.pendingForce != SelectionForceNone {
 		t.Fatalf("canonical recovery = %+v, accepted=%v", health, accepted)
 	}
 	if !d.Usable(common.NetworkTCP6.NetworkType()) || !d.Usable(common.NetworkTCP4.NetworkType()) || !d.Usable(common.NetworkUDP4.NetworkType()) {
@@ -729,9 +729,9 @@ func TestInitialCheckRecordsOnlyCanonicalLatency(t *testing.T) {
 func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	d.health = healthHealthy
-	d.networks[common.NetworkTCP6] = networkSupported
-	d.networks[common.NetworkTCP4] = networkSupported
+	d.health.phase = healthHealthy
+	d.health.networks[common.NetworkTCP6] = networkSupported
+	d.health.networks[common.NetworkTCP4] = networkSupported
 	d.mu.Unlock()
 	var canonicalCalls, alternativeCalls atomic.Int32
 	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)
@@ -788,8 +788,8 @@ func TestSupportCheckReconnectsWithoutCanonicalMode(t *testing.T) {
 	transport := newTestSessionTransport(netproxy.SessionDisconnected)
 	d := newTestDialer(t, transport)
 	d.mu.Lock()
-	for index := range d.networks {
-		d.networks[index] = networkUnknown
+	for index := range d.health.networks {
+		d.health.networks[index] = networkUnknown
 	}
 	d.mu.Unlock()
 
@@ -833,11 +833,11 @@ func TestHealthLoggingUsesStateTransitions(t *testing.T) {
 
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
-	for i := range d.networks {
-		d.networks[i] = networkUnsupported
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnsupported
 	}
-	d.networks[common.NetworkTCP6] = networkSupported
-	d.health = healthHealthy
+	d.health.networks[common.NetworkTCP6] = networkSupported
+	d.health.phase = healthHealthy
 	d.mu.Unlock()
 	failed := checkResult{
 		kind:   checkHealth,
@@ -924,9 +924,9 @@ func TestSessionLossInvalidatesHealthImmediately(t *testing.T) {
 	d := newTestDialer(t, transport)
 	snapshot := transport.Snapshot()
 	d.mu.Lock()
-	d.health = healthHealthy
-	d.healthSeq = snapshot.Seq
-	d.networks[0] = networkSupported
+	d.health.phase = healthHealthy
+	d.health.readiness = snapshot.Seq
+	d.health.networks[0] = networkSupported
 	d.mu.Unlock()
 	if !d.RuntimeStatus().Healthy {
 		t.Fatal("prepared dialer is not healthy")
@@ -946,12 +946,12 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	d := newTestDialer(t, transport)
 	initial := transport.Snapshot()
 	d.mu.Lock()
-	d.health = healthHealthy
-	d.healthSeq = initial.Seq
-	for i := range d.networks {
-		d.networks[i] = networkUnsupported
+	d.health.phase = healthHealthy
+	d.health.readiness = initial.Seq
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnsupported
 	}
-	d.networks[common.NetworkTCP4] = networkSupported
+	d.health.networks[common.NetworkTCP4] = networkSupported
 	d.mu.Unlock()
 	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{
 		d.StatsKey(): {Name: d.Name},
@@ -1020,7 +1020,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	group := d.group.observer.(*testGroup)
 	changesBeforeReport := group.changes.Load()
 	d.ReportDataPlaneError(errors.New("upstream relay failed"))
-	firstReport := d.failureReportedAt
+	firstReport := d.failures.reportedAt
 	if firstReport.IsZero() || !d.RuntimeStatus().ConfirmingFailure {
 		t.Fatal("data-plane failure did not enter confirmation")
 	}
@@ -1028,7 +1028,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 		t.Fatalf("group changes after first report = %d, want %d", got, changesBeforeReport+1)
 	}
 	d.ReportDataPlaneError(errors.New("upstream relay failed"))
-	if !d.failureReportedAt.Equal(firstReport) {
+	if !d.failures.reportedAt.Equal(firstReport) {
 		t.Fatal("repeated report replaced the first failure time")
 	}
 	if got := group.changes.Load(); got != changesBeforeReport+1 {
@@ -1045,9 +1045,9 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 	if got := stats.DefaultStore.GetNode(d.StatsKey()).LastFailureStartedAt; got.Unix() != firstReport.Unix() {
 		t.Fatalf("failure started at %v, want %v", got, firstReport)
 	}
-	generation := d.failureGeneration
+	generation := d.failures.generation
 	d.ReportDataPlaneError(errors.New("upstream relay failed"))
-	if d.connectivityCheckRequested() || d.failureGeneration != generation {
+	if d.connectivityCheckRequested() || d.failures.generation != generation {
 		t.Fatal("data-plane failure requested another check while the node was already unhealthy")
 	}
 }

@@ -8,6 +8,18 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// pathFailures retains shared failure episodes and verified recovery observations.
+// All fields are protected by pathRuntime.mu.
+type pathFailures struct {
+	generation         uint64
+	reportedAt         time.Time
+	last               *FailureSnapshot
+	resources          map[uint64]resourceFailureProgress
+	failedBefore       bool
+	recoverySince      time.Time
+	recoveryVerifiedAt time.Time
+}
+
 type RecoveryPhase string
 
 const (
@@ -43,13 +55,13 @@ func (d *pathRuntime) recoverySnapshotLocked(session netproxy.StateEvent, health
 	}
 	if !d.checksConnectivity {
 		recovery.Verification = "disabled"
-	} else if healthy && d.health != healthConfirming && progress.Phase != RecoveryVerifying {
+	} else if healthy && d.health.phase != healthConfirming && progress.Phase != RecoveryVerifying {
 		recovery.Verification = "verified"
 	}
 	if recovery.Phase == RecoveryStopped || recovery.Phase == RecoveryBlocked {
 		return recovery
 	}
-	if recovery.Phase == RecoveryReady && d.health == healthConfirming {
+	if recovery.Phase == RecoveryReady && d.health.phase == healthConfirming {
 		recovery.Phase, recovery.Action, recovery.BlockedBy = RecoveryQueued, "verify", "failure_confirmation"
 	}
 	switch RecoveryPhase(session.RecoveryPhase) {
@@ -103,10 +115,10 @@ type resourceFailureProgress struct {
 // publisher; pool member identities in Cause must never become map keys.
 func (d *pathRuntime) observeResourceFailureLocked(event netproxy.StateEvent, failed bool) bool {
 	owner := event.PublisherID
-	if d.resourceFailures == nil {
-		d.resourceFailures = make(map[uint64]resourceFailureProgress)
+	if d.failures.resources == nil {
+		d.failures.resources = make(map[uint64]resourceFailureProgress)
 	}
-	progress := d.resourceFailures[owner]
+	progress := d.failures.resources[owner]
 	if event.Resource.Generation < progress.Generation || event.EpisodeID < progress.Episode {
 		return false
 	}
@@ -123,7 +135,7 @@ func (d *pathRuntime) observeResourceFailureLocked(event netproxy.StateEvent, fa
 		// becomes the aggregate's selected diagnostic source.
 		progress.Consumed = true
 	}
-	d.resourceFailures[owner] = progress
+	d.failures.resources[owner] = progress
 	return fresh
 }
 
@@ -235,7 +247,7 @@ func (d *pathRuntime) updateRecovery(phase RecoveryPhase, retryAt time.Time, blo
 	d.recovery = next
 	d.statusRevision++
 	revision := d.statusRevision
-	diagnostic := d.lastFailure
+	diagnostic := d.failures.last
 	session := d.sessionSnapshot()
 	nextStatus := d.recoverySnapshotLocked(session, d.healthyLocked(session))
 	d.mu.Unlock()
@@ -279,7 +291,7 @@ func (d *pathRuntime) startConnection(event netproxy.StateEvent, action string) 
 
 func (d *pathRuntime) probeQueued() {
 	d.mu.Lock()
-	if d.ctx.Err() == nil && d.activeProbes == 0 {
+	if d.ctx.Err() == nil && d.checks.activeProbes == 0 {
 		d.recovery.Phase = RecoveryQueued
 		d.recovery.Action = "verify"
 		d.recovery.RetryAt = time.Time{}
@@ -291,7 +303,7 @@ func (d *pathRuntime) probeQueued() {
 
 func (d *pathRuntime) probeStarted() {
 	d.mu.Lock()
-	d.activeProbes++
+	d.checks.activeProbes++
 	if d.ctx.Err() == nil {
 		d.recovery.Phase = RecoveryVerifying
 		d.recovery.Action = "verify"
@@ -303,7 +315,7 @@ func (d *pathRuntime) probeStarted() {
 
 func (d *pathRuntime) probeFinished() {
 	d.mu.Lock()
-	d.activeProbes--
+	d.checks.activeProbes--
 	d.mu.Unlock()
 }
 

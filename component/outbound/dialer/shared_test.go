@@ -89,7 +89,7 @@ func TestSharedCheckDemandAndRecoverySurviveMemberClose(t *testing.T) {
 			return true, nil
 		})
 		// Use the injected probe with the same shared activation/lifetime gate.
-		d.checkActivated = true
+		d.checks.activated = true
 		start := make(chan struct{})
 		d.checkWG.Go(func() { checker.run(start) })
 		d.ActivateCheck(start)
@@ -113,7 +113,7 @@ func TestSharedCheckDemandAndRecoverySurviveMemberClose(t *testing.T) {
 		d.SetCheckEnabled(true)
 		other.SetCheckEnabled(false)
 		synctest.Wait()
-		if d.checkPaused {
+		if d.checks.paused {
 			t.Fatal("one member canceled another member's check demand")
 		}
 		other.SetCheckEnabled(true)
@@ -157,7 +157,7 @@ func TestSharedLateMemberWaitsForPreparation(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	prepareRecoveryDialer(d)
 	d.recordLatencyLocked(25*time.Millisecond, true)
-	d.checkedAt = time.Now()
+	d.checks.checkedAt = time.Now()
 	other := shareTestDialer(t, d)
 	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{other.StatsKey(): {Name: other.Name}}, nil)
 	d.recordAvailability(true, true, time.Time{})

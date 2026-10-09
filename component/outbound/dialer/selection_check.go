@@ -6,127 +6,11 @@ import (
 	"context"
 	"errors"
 	"net/netip"
-	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/outbound/netproxy"
 )
-
-// HealthProof is invalidated by a new failure or a changed transport generation.
-// It is evidence for one destination capability, not a promise about the target.
-type HealthProof struct {
-	path      *pathRuntime
-	failure   uint64
-	readiness uint64
-	sequence  uint64
-	Network   common.NetworkIndex
-	CheckedAt time.Time
-	release   func()
-}
-
-func (p HealthProof) Release() {
-	if p.release != nil {
-		p.release()
-	}
-}
-
-func (d *pathRuntime) healthProofLocked(network common.NetworkIndex) HealthProof {
-	return d.healthProofs[network]
-}
-
-// SameObservation distinguishes a new successful test from unrelated status
-// notifications, including notifications for another destination network.
-func (p HealthProof) SameObservation(other HealthProof) bool {
-	return p.path == other.path && p.sequence == other.sequence && p.Network == other.Network
-}
-
-func (d *pathRuntime) recordHealthProofsLocked(result checkResult) {
-	if d.health != healthHealthy || result.generation != d.failureGeneration {
-		return
-	}
-	for _, probe := range result.probes {
-		if probe.err != nil || d.networks[probe.network] != networkSupported {
-			continue
-		}
-		d.proofSequence++
-		d.healthProofs[probe.network] = HealthProof{
-			path: d, failure: result.generation, readiness: result.readiness,
-			sequence: d.proofSequence, Network: probe.network, CheckedAt: time.Now(),
-		}
-	}
-}
-
-func (d *Dialer) ProofValid(proof HealthProof) bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.proofValidLocked(proof)
-}
-
-// VerifiedUsable keeps an admitted path available during failure confirmation,
-// but a confirmed failure requires a new proof for this network before reuse.
-func (d *Dialer) VerifiedUsable(network *common.NetworkType) bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if d.closed || !d.healthyLocked(d.sessionSnapshot()) || d.networks[network.Index()] != networkSupported {
-		return false
-	}
-	proof := d.healthProofLocked(network.Index())
-	return !proof.CheckedAt.IsZero() && proof.readiness == d.healthSeq &&
-		(proof.failure == d.failureGeneration || d.health == healthConfirming && proof.failure+1 == d.failureGeneration)
-}
-
-func (d *Dialer) proofValidLocked(proof HealthProof) bool {
-	return !d.closed && d.health == healthHealthy && proof.path == d.pathRuntime && !proof.CheckedAt.IsZero() &&
-		proof.failure == d.failureGeneration &&
-		proof.readiness == d.healthSeq && proof.Network.Valid() &&
-		d.networks[proof.Network] == networkSupported && d.healthyLocked(d.sessionSnapshot())
-}
-
-// RetainProof keeps a completed background test's Session alive until the
-// selector has consumed its result, just as Check does for a waiting caller.
-func (d *Dialer) RetainProof(proof HealthProof) (HealthProof, bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if !d.proofValidLocked(proof) {
-		return HealthProof{}, false
-	}
-	proof.release = d.holdProofLocked()
-	d.updateTransportDemandLocked()
-	return proof, true
-}
-
-func (d *pathRuntime) holdProofLocked() func() {
-	d.proofHolds++
-	return sync.OnceFunc(func() {
-		d.mu.Lock()
-		d.proofHolds--
-		d.updateTransportDemandLocked()
-		d.mu.Unlock()
-	})
-}
-
-func (d *Dialer) degradationLocked() (bool, time.Duration, time.Duration) {
-	required := DefaultFailureRecovery
-	if d.group != nil {
-		required = d.group.failureRecovery
-		if d.group.recovered {
-			return false, required, required
-		}
-	}
-	return d.failedBefore, min(d.recoveryVerifiedAt.Sub(d.recoverySince), required), required
-}
-
-func (d *pathRuntime) confirmFailureLocked() {
-	d.failedBefore = true
-	d.resetRecoveryObservationLocked()
-	for member := range d.members {
-		if member.group != nil {
-			member.group.recovered = false
-		}
-	}
-	d.failureGeneration++
-}
 
 type selectionCheck struct {
 	requestedAt time.Time
@@ -264,11 +148,11 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) (He
 }
 
 func (d *pathRuntime) queueSelectionCheckLocked(network common.NetworkIndex, deadline time.Time) *selectionCheck {
-	flight := d.selectionChecks[network]
+	flight := d.checks.selection[network]
 	if flight == nil || flight.ctx.Err() != nil {
 		ctx, cancel := context.WithDeadline(d.ctx, deadline)
 		flight = &selectionCheck{ctx: ctx, cancel: cancel, network: network, done: make(chan struct{}), requestedAt: time.Now()}
-		d.selectionChecks[network] = flight
+		d.checks.selection[network] = flight
 	}
 	return flight
 }
@@ -277,23 +161,23 @@ func (d *pathRuntime) queueSelectionCheckLocked(network common.NetworkIndex, dea
 func (c *connectivityChecker) startSelectionCheck() bool {
 	c.d.mu.Lock()
 	var flight *selectionCheck
-	for i, queued := range c.d.selectionChecks {
+	for i, queued := range c.d.checks.selection {
 		if queued == nil {
 			continue
 		}
 		if err := queued.ctx.Err(); err != nil {
 			queued.err = err
 			close(queued.done)
-			c.d.selectionChecks[i] = nil
+			c.d.checks.selection[i] = nil
 			continue
 		}
 		proof := c.d.healthProofLocked(queued.network)
-		if !proof.CheckedAt.Before(queued.requestedAt) && proof.failure == c.d.failureGeneration &&
-			proof.readiness == c.d.healthSeq && c.d.networks[queued.network] == networkSupported &&
-			c.d.health == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot()) {
+		if !proof.CheckedAt.Before(queued.requestedAt) && proof.failure == c.d.failures.generation &&
+			proof.readiness == c.d.health.readiness && c.d.health.networks[queued.network] == networkSupported &&
+			c.d.health.phase == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot()) {
 			queued.proof = proof
 			close(queued.done)
-			c.d.selectionChecks[i] = nil
+			c.d.checks.selection[i] = nil
 			continue
 		}
 		flight = queued
@@ -303,8 +187,8 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 		c.d.mu.Unlock()
 		return false
 	}
-	generation := c.d.failureGeneration
-	c.d.checkRunning, c.d.checkProbing = true, true
+	generation := c.d.failures.generation
+	c.d.checks.running, c.d.checks.probing = true, true
 	c.d.updateTransportDemandLocked()
 	c.d.mu.Unlock()
 	c.flight = flight
@@ -385,16 +269,16 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		c.d.resetRecoveryObservationLocked()
 	}
 	c.healthAt = time.Now().Add(c.d.recoveryCheckInterval())
-	if err == nil && (c.d.failureGeneration != result.generation ||
-		c.d.healthSeq != result.readiness || !c.d.healthyLocked(c.d.sessionSnapshot())) {
+	if err == nil && (c.d.failures.generation != result.generation ||
+		c.d.health.readiness != result.readiness || !c.d.healthyLocked(c.d.sessionSnapshot())) {
 		err = ErrCheckSuperseded
 	}
 	if err == nil {
 		flight.proof = c.d.healthProofLocked(flight.network)
 	}
 	flight.err = err
-	if c.d.selectionChecks[flight.network] == flight {
-		c.d.selectionChecks[flight.network] = nil
+	if c.d.checks.selection[flight.network] == flight {
+		c.d.checks.selection[flight.network] = nil
 	}
 	close(flight.done)
 	c.d.mu.Unlock()
@@ -402,13 +286,13 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 
 func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck {
 	probe := result.probes[0]
-	previous := d.networks[probe.network]
+	previous := d.health.networks[probe.network]
 	d.applyCapabilityResultsLocked(result)
 	if previous != networkSupported && probe.err == nil {
-		d.pendingForce |= SelectionForceFor(probe.network)
+		d.health.pendingForce |= SelectionForceFor(probe.network)
 	}
 	if probe.err != nil && (errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) ||
-		previous != networkSupported && d.health.usable()) {
+		previous != networkSupported && d.health.phase.usable()) {
 		d.statusRevision++
 		d.mu.Unlock()
 		d.notifyGroups(SelectionForceNone)

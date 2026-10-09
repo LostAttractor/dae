@@ -3,9 +3,12 @@
 package dialer
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 )
 
@@ -17,6 +20,7 @@ type availabilityObservation struct {
 // Candidate checks must not modify the running plane's statistics. Retain the
 // latest check and any subsequent state change, rather than a startup history.
 type dialerStats struct {
+	key, id string // Immutable group-local identity.
 	sync.Mutex
 	deferred         bool
 	check, state     *availabilityObservation
@@ -98,5 +102,37 @@ func (d *Dialer) recordMemberConnectionFailure() {
 func (d *pathRuntime) recordResourceFailure() {
 	for _, member := range d.membersSnapshot() {
 		stats.DefaultStore.RecordResourceFailure(member.StatsKey())
+	}
+}
+
+func composeStatsIdentity(parts ...string) string {
+	var builder strings.Builder
+	for _, part := range parts {
+		builder.WriteString(strconv.Itoa(len(part)))
+		builder.WriteByte(':')
+		builder.WriteString(part)
+	}
+	return builder.String()
+}
+
+func makeStatsKey(property *Property, scope string) string {
+	id := property.Link
+	if id == "" {
+		id = property.Protocol + "://" + property.Address
+	}
+	return composeStatsIdentity(property.SubscriptionTag, id, scope)
+}
+
+func (d *Dialer) StatsKey() string { return d.stats.key }
+
+func (d *Dialer) StatsID() string { return d.stats.id }
+
+func (d *Dialer) StatsPath(outbound string, networkType *common.NetworkType) stats.Path {
+	return stats.Path{
+		NodeID:   d.StatsID(),
+		Outbound: outbound,
+		Subtag:   d.Property.SubscriptionTag,
+		Dialer:   d.Name,
+		Network:  networkType.Index(),
 	}
 }

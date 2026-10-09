@@ -19,13 +19,13 @@ import (
 
 func prepareRecoveryDialer(d *Dialer) {
 	d.mu.Lock()
-	d.health = healthHealthy
+	d.health.phase = healthHealthy
 	snapshot := d.sessionSnapshot()
-	d.healthSeq = snapshot.ReadinessVersion
-	for i := range d.networks {
-		d.networks[i] = networkUnsupported
+	d.health.readiness = snapshot.ReadinessVersion
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnsupported
 	}
-	d.networks[common.NetworkTCP4] = networkSupported
+	d.health.networks[common.NetworkTCP4] = networkSupported
 	d.mu.Unlock()
 }
 
@@ -124,7 +124,7 @@ func TestUpstreamTimeoutConfirmationCoalescesAndAppliesProbe(t *testing.T) {
 			})
 			defer c.stopRetries()
 			d.ReportDataPlaneError(os.ErrDeadlineExceeded)
-			generation, reported := d.failureGeneration, d.failureReportedAt
+			generation, reported := d.failures.generation, d.failures.reportedAt
 			c.dispatch()
 			select {
 			case <-started:
@@ -134,7 +134,7 @@ func TestUpstreamTimeoutConfirmationCoalescesAndAppliesProbe(t *testing.T) {
 			for range 50 {
 				d.ReportDataPlaneError(os.ErrDeadlineExceeded)
 			}
-			if d.connectivityCheckRequested() || d.failureGeneration != generation || d.failureReportedAt != reported {
+			if d.connectivityCheckRequested() || d.failures.generation != generation || d.failures.reportedAt != reported {
 				t.Fatal("concurrent errors restarted confirmation")
 			}
 			close(release)
@@ -522,8 +522,8 @@ func TestResourceEpisodeWatermarksBoundedByPublisher(t *testing.T) {
 			d.applySessionState(transport.Snapshot())
 		}
 	}
-	if len(d.resourceFailures) != 2 {
-		t.Fatalf("reconnect history grew beyond configured publishers: %d", len(d.resourceFailures))
+	if len(d.failures.resources) != 2 {
+		t.Fatalf("reconnect history grew beyond configured publishers: %d", len(d.failures.resources))
 	}
 	current := *d.RuntimeStatus().Failure
 	event := transport.Snapshot()
@@ -542,8 +542,8 @@ func TestUncheckedSessionStillRecoversWithoutProbing(t *testing.T) {
 	transport := newTestSessionTransport(netproxy.SessionDisconnected)
 	d := newTestDialer(t, transport)
 	d.checksConnectivity = false
-	for i := range d.networks {
-		d.networks[i] = networkSupported
+	for i := range d.health.networks {
+		d.health.networks[i] = networkSupported
 	}
 	stats.DefaultStore.Reconcile(map[string]stats.NodeIdentity{d.StatsKey(): {Name: d.Name}}, nil)
 	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })

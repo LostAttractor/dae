@@ -143,7 +143,7 @@ func TestHealthProofKeepsItsNetworkAndFailureGeneration(t *testing.T) {
 	if !d.VerifiedUsable(common.NetworkTCP6.NetworkType()) {
 		t.Fatal("failure confirmation prematurely withdrew an admitted path")
 	}
-	d.applyCheck(checkResult{kind: checkSelection, generation: d.failureGeneration, probes: []probeResult{{network: common.NetworkTCP4}}})
+	d.applyCheck(checkResult{kind: checkSelection, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4}}})
 	if !d.ProofValid(d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Proof) ||
 		d.ProofValid(d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof) {
 		t.Fatal("TCP4 recovery revived an unverified TCP6 proof from before the failure")

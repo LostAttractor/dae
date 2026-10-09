@@ -54,7 +54,7 @@ func TestRecoverySharesObservationButKeepsGroupDurations(t *testing.T) {
 		d.group.failureRecovery = time.Second
 		other.group.failureRecovery = 3 * time.Second
 		check := func(err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: d.failureGeneration, probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
+			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
 		}
 		check(errors.New("offline"))
 		check(nil)
@@ -86,15 +86,15 @@ func TestRecoverySharesObservationButKeepsGroupDurations(t *testing.T) {
 func TestUnconfirmedSampleDoesNotAdvanceRecovery(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
-		d.networks[common.NetworkTCP4] = networkSupported
+		d.health.networks[common.NetworkTCP4] = networkSupported
 		check := func(generation uint64, err error) {
 			d.applyCheck(checkResult{kind: checkHealth, generation: generation,
 				probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond, err: err}}})
 		}
-		check(d.failureGeneration, errors.New("offline"))
-		check(d.failureGeneration, nil)
+		check(d.failures.generation, errors.New("offline"))
+		check(d.failures.generation, nil)
 		before := d.RuntimeStatus()
-		generation := d.failureGeneration
+		generation := d.failures.generation
 		d.ReportDataPlaneError(errors.New("new upstream failure"))
 		time.Sleep(time.Second)
 		check(generation, nil) // A sample from a check started before the report.
