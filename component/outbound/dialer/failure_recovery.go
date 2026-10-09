@@ -35,7 +35,7 @@ func (d *pathRuntime) recoveryCheckInterval() time.Duration {
 func (d *pathRuntime) recoveryCheckPlan() (at time.Time, timeout time.Duration) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	if !d.failures.failedBefore || d.health.phase != healthHealthy || !d.healthyLocked(d.sessionSnapshot()) {
+	if !d.checksConnectivity || !d.failures.failedBefore || d.health.phase != healthHealthy || !d.healthyLocked(d.sessionSnapshot()) {
 		return
 	}
 	for member := range d.members {

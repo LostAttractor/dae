@@ -66,7 +66,9 @@ group {
 
 仍有可接收会话但缺少池容量时，即使路径健康检查失败，也可补建缺失会话；成功补建后及时重新验证，不能用建连成功代替健康证明。补建使可用容量增加时继续补齐，失败或没有可见容量进展时退避；建连返回成功但新会话立即丢失也不能清除退避。选中或保留调用者的路径可在暂停周期测速时修复容量。
 
-`status` 的 Last/Avg10/EMA 是成功延迟。故障期间显示 `[degraded]`，首次恢复成功后才显示 `[recover 5s/30s]` 观察进度。`STATE` 保留真实健康与检查/重试状态；只有物理会话实际释放时才显示一次 `dormant`，历史延迟附带样本年龄。
+`status` 的 Last/Avg10/EMA 是成功延迟。故障期间显示 `[degraded]`，首次恢复成功后显示 `[recover 5s/30s verified]`。分子是成功探测已验证的恢复时长，不是实时计时：首次成功为 `0s`，只有后续成功探测才推进，等待或探测超时时可以停在 `0s`；`30s` 是解除降级所需的观察窗口，不是故障确认超时。
+
+`STATE` 同时显示健康状态和 worker 当前动作，包括 `healthy (verifying connectivity)`、`healthy (recheck in 5.0s)` 和 `confirming (queued for check slot)`。恢复观察期间的 recheck 倒计时来自实际调度时间；探测失败后显示 `fail`。只有物理会话实际释放时才显示一次 `dormant`，历史延迟附带样本年龄。
 
 API `selection.tracking` 只表示本组角色：`selected`、`monitoring` 或 `standby`。`standby` 不代表物理休眠或停止恢复：其他组可以共享监测结果，尚无监测的高优先级候选仍由升级调度发现。`recovery` 提供共享 worker 的动作及重试时间，节点的 `dormant` 单独表示物理休眠。`selection` 还提供 `recovery_elapsed`、`failure_recovery`、有效优先级、评分和 `measured_at`。
 

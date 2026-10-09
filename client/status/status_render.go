@@ -75,7 +75,7 @@ func annotatedNodeLabel(status api.NodeStatus, index int) string {
 	if selection := status.Selection; selection != nil {
 		if selection.Degraded {
 			if status.Healthy && !status.ConfirmingFailure {
-				label += fmt.Sprintf(" [recover %s/%s]", selection.RecoveryElapsed.Round(time.Millisecond), selection.FailureRecovery)
+				label += fmt.Sprintf(" [recover %s/%s verified]", selection.RecoveryElapsed.Round(time.Millisecond), selection.FailureRecovery)
 			} else {
 				label += " [degraded]"
 			}
@@ -244,8 +244,7 @@ func compactNodeState(status api.NodeStatus, now time.Time) string {
 	}
 	var detail string
 	recovery := status.Recovery
-	if recovery.Phase != "" && recovery.Phase != api.RecoveryReady &&
-		(!status.Healthy || recovery.Phase == api.RecoveryBlocked || recovery.Action == "replenish") {
+	if recovery.Phase != "" && recovery.Phase != api.RecoveryReady {
 		detail = formatRecovery(recovery, now)
 	}
 	return colorNodeState(state, detail)

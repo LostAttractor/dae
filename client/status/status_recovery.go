@@ -35,6 +35,9 @@ func formatRecovery(r api.RecoverySnapshot, now time.Time) string {
 		}
 		return fmt.Sprintf("connecting #%d", r.Attempt)
 	case api.RecoveryQueued:
+		if r.BlockedBy == "failure_confirmation" {
+			return "recheck queued"
+		}
 		if r.BlockedBy == "connectivity_slot" {
 			if r.Action == "verify" {
 				return "queued for check slot"

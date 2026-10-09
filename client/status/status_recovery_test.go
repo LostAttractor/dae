@@ -42,7 +42,8 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 		{true, true, "replenish", api.RecoveryBackoff, "healthy (replenish capacity in 1.7s)", "\x1b[32m"},
 		{true, true, "replenish", api.RecoveryConnecting, "healthy (replenishing capacity #2)", "\x1b[32m"},
 		{true, true, "", api.RecoveryReady, "healthy", "\x1b[32m"},
-		{true, true, "verify", api.RecoveryVerifying, "healthy", "\x1b[32m"},
+		{true, true, "verify", api.RecoveryVerifying, "healthy (verifying connectivity)", "\x1b[32m"},
+		{true, true, "verify", api.RecoveryBackoff, "healthy (recheck in 1.7s)", "\x1b[32m"},
 		{false, true, "connect", api.RecoveryBackoff, "fail (retry #3 in 1.7s)", "\x1b[31m"},
 		{false, false, "connect", api.RecoveryConnecting, "unknown (connecting #2)", "\x1b[33m"},
 	} {
@@ -78,5 +79,19 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryQueued, Action: "replenish", BlockedBy: "connectivity_slot"}
 	if got := formatRecovery(node.Recovery, now); got != "queued for connection slot" {
 		t.Fatalf("capacity queue = %q", got)
+	}
+	node.Healthy = true
+	node.ConfirmingFailure = true
+	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryQueued, Action: "verify", BlockedBy: "failure_confirmation"}
+	if got := compactNodeState(node, now); got != "confirming (recheck queued)" {
+		t.Fatalf("pending failure confirmation was hidden: %q", got)
+	}
+	node.Recovery.BlockedBy = "connectivity_slot"
+	if got := compactNodeState(node, now); got != "confirming (queued for check slot)" {
+		t.Fatalf("failure confirmation waiting for a slot was hidden: %q", got)
+	}
+	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryVerifying, Action: "verify"}
+	if got := compactNodeState(node, now); got != "confirming (verifying connectivity)" {
+		t.Fatalf("active failure confirmation was hidden: %q", got)
 	}
 }

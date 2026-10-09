@@ -42,7 +42,7 @@ func TestDormantStatusPreservesMeasuredLatency(t *testing.T) {
 	}
 	node.Healthy = true
 	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryReady}
-	if label := annotatedNodeLabel(node, 0); !strings.Contains(label, "[recover 5s/30s]") || strings.Contains(label, "[degraded]") {
+	if label := annotatedNodeLabel(node, 0); !strings.Contains(label, "[recover 5s/30s verified]") || strings.Contains(label, "[degraded]") {
 		t.Fatalf("verified recovery did not display the observation window: %s", label)
 	}
 	if got := fmt.Sprint(nodeLatency(node)); got != "10/20/30" {

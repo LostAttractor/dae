@@ -76,8 +76,8 @@ func TestGRPCInitialFailureRetriesUntilServerRecovers(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		status := d.RuntimeStatus()
-		if status.Healthy && status.InitialCheckDone && status.Recovery.Phase == RecoveryReady {
-			if transport.connects.Load() < 2 || status.Session.RecoveryExecutor != netproxy.RecoveryLibraryManaged || !status.Recovery.RetryAt.IsZero() {
+		if status.Healthy && status.InitialCheckDone && status.Recovery.Phase == RecoveryBackoff && status.Recovery.Action == "verify" {
+			if transport.connects.Load() < 2 || status.Session.RecoveryExecutor != netproxy.RecoveryLibraryManaged || !status.Recovery.RetryAt.After(time.Now()) || !status.Degraded {
 				t.Fatalf("recovered channel: %+v", status)
 			}
 			return

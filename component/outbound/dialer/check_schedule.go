@@ -250,6 +250,8 @@ func (c *connectivityChecker) dispatch() {
 		c.d.updateRecovery(RecoveryBackoff, capacityAt, "capacity", "replenish")
 	case !status.Healthy && !next.IsZero():
 		c.d.setRecovery(RecoveryBackoff, next, "")
+	case recoveryTimeout > 0 && !c.healthAt.IsZero():
+		c.d.setRecovery(RecoveryBackoff, c.healthAt, "")
 	default:
 		c.d.setRecovery(RecoveryReady, time.Time{}, "")
 	}
