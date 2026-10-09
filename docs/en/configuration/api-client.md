@@ -40,6 +40,21 @@ watch --color -n 2 'dae status --recent --color always'
 The standalone client also supports this, for example
 `watch --color -n 2 'dae-client status --recent --color always'`.
 
+### Manage selectors
+
+Both `dae` and `dae-client` provide:
+
+```sh
+dae selector                         # All selectors and candidates; * marks the actual choice
+dae selector proxy                   # One group, including candidate IDs
+dae selector set proxy 'Hong Kong'    # Exact display name
+dae selector set proxy NODE_ID       # ID, including namesakes or different entrances
+dae selector reset proxy             # Restore the explicit selector(n) default
+dae selector proxy --json
+```
+
+Duplicate names require an ID rather than guessing by list order. Connection flags and environment variables are the same as for status. The daemon applies and persists changes; the CLI never edits the state file directly. Missing or ambiguous preferences remain visible alongside the temporary actual choice and can be restored on a later reload. Reset requires a configured default.
+
 The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing filesystem permission for the local socket.
 
 Enable the [TCP API](api.md) and set `DAE_API_KEY` if the daemon has a configured key. Without one, a verified direct LAN client can request status without credentials; WAN and unidentifiable callers are rejected. Clients bypass environment proxies and reject redirects. The daemon serves HTTP; HTTPS support in the Go client does not add TLS or reverse-proxy support to the daemon.

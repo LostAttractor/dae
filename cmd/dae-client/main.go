@@ -14,6 +14,7 @@ import (
 func main() {
 	root := &cobra.Command{Use: "dae-client", Short: "Independent clients for the dae API", SilenceErrors: true}
 	root.AddCommand(cli.NewStatusCommand())
+	root.AddCommand(cli.NewSelectorCommand())
 	root.AddCommand(cli.NewMITMCommand())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

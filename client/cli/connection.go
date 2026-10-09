@@ -28,7 +28,7 @@ func (c *Connection) Bind(flags *pflag.FlagSet) {
 }
 
 func (c *Connection) Status(ctx context.Context) (*api.StatusSnapshot, error) {
-	remote, err := client.New(client.Options{Endpoint: c.endpoint, APIKey: os.Getenv("DAE_API_KEY"), Timeout: c.timeout})
+	remote, err := c.open()
 	if err != nil {
 		return nil, err
 	}
@@ -45,10 +45,14 @@ func (c *Connection) MITM(ctx context.Context) ([]api.PluginInstanceStatus, erro
 }
 
 func (c *Connection) TriggerScript(ctx context.Context, instance string, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
-	remote, err := client.New(client.Options{Endpoint: c.endpoint, APIKey: os.Getenv("DAE_API_KEY"), Timeout: c.timeout})
+	remote, err := c.open()
 	if err != nil {
 		return nil, err
 	}
 	defer remote.Close()
 	return remote.TriggerScript(ctx, instance, request)
+}
+
+func (c *Connection) open() (*client.Client, error) {
+	return client.New(client.Options{Endpoint: c.endpoint, APIKey: os.Getenv("DAE_API_KEY"), Timeout: c.timeout})
 }

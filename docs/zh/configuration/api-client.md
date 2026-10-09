@@ -36,6 +36,21 @@ watch --color -n 2 'dae status --recent --color always'
 
 独立客户端同样支持，例如 `watch --color -n 2 'dae-client status --recent --color always'`。
 
+### 管理 selector
+
+`dae` 和 `dae-client` 均提供以下命令：
+
+```sh
+dae selector                         # 列出所有 selector 及候选，* 表示实际选择
+dae selector proxy                   # 查看单个组和候选 ID
+dae selector set proxy '香港 01'      # 按完整显示名称选择
+dae selector set proxy NODE_ID       # 按候选 ID 选择，可区分重名或不同入口
+dae selector reset proxy             # 清除保存偏好，恢复显式 selector(n) 默认
+dae selector proxy --json
+```
+
+节点名必须精确匹配；重名时要求使用 ID，不按列表顺序猜测。`--api`、`--timeout`、`DAE_API_ENDPOINT` 和 `DAE_API_KEY` 与 status 相同。选择与持久化由守护进程负责，CLI 不直接修改状态文件。保存路径缺失或有歧义时，文本输出同时显示保存偏好和临时实际选择；后续 reload 可恢复返回的路径。没有显式默认的 selector 不支持 `reset`。
+
 本地 socket 权限仍为 `0600`，不依赖 `global.api_port`。两种命令入口均不自动提权；访问默认 socket 时使用 `sudo` 或已有的文件系统权限。
 
 TCP 需要启用 [API 配置](api.md)。daemon 配置密钥时需设置 `DAE_API_KEY`；未配置时，已验证的直连 LAN 客户端可以无凭据查询状态，WAN 或无法识别的客户端会被拒绝。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。守护进程直接提供 HTTP；客户端支持 HTTPS 传输，但这不会给守护进程增加 TLS 或反向代理支持。

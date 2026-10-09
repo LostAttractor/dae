@@ -4,4 +4,4 @@ package cmd
 
 import "github.com/daeuniverse/dae/client/cli"
 
-func init() { rootCmd.AddCommand(cli.NewStatusCommand()) }
+func init() { rootCmd.AddCommand(cli.NewStatusCommand(), cli.NewSelectorCommand()) }
