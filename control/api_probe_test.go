@@ -119,7 +119,7 @@ func TestProbeAPIAndSelectorWithoutDefault(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	w = apiTestRequest(handler, "DELETE", "/api/selectors/proxy", "", "test-secret")
-	if w.Code != 409 || group.Selection() != second || store.Selection("proxy") != second {
+	if w.Code != 409 || group.Selection() != second || !group.Dialers[1].SelectionReference().Matches(store.Selection("proxy"), true) {
 		t.Fatal("selector without default allowed a reset")
 	}
 	candidate := newAPITestPlaneWithPolicy(t, store, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector})

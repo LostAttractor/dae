@@ -39,7 +39,7 @@ Set `track_all: true` in a selector's group block and reload to continuously mon
 
 For selector groups, `dae status` (including verbose/JSON) includes only selected, monitored, currently testing, or actively connected nodes. Idle untracked candidates retain their last result in `/api/selectors` and the page. Group/global traffic totals still include those paths.
 
-- **Selectors**: When `api_key` is configured, enter it in the top toolbar and click **Login** to view selector status or change nodes. Without a key, verified direct LAN clients can use selectors immediately; the toolbar shows **LAN access**. Plain `selector` has no configured default: restore a saved choice, otherwise initially select the first candidate, without a default badge or reset button. Only explicit `selector(n)`, including `selector(0)`, declares a default path index. Changes affect everyone using the group. Saved node IDs survive reordering; a missing saved node uses the explicit default, or the first candidate if no default exists.
+- **Selectors**: When `api_key` is configured, enter it in the top toolbar and click **Login** to view selector status or change nodes. Without a key, verified direct LAN clients can use selectors immediately; the toolbar shows **LAN access**. Plain `selector` has no configured default: restore a saved choice, otherwise initially select the first candidate, without a default badge or reset button. Only explicit `selector(n)`, including `selector(0)`, declares a default path index. Changes affect everyone using the group. Choices persist as independent logical path references; reordering, priority, TLS, multiplex, global mark and probe settings do not change them.
 - **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. The API connection must traverse `global.lan_interface` ingress, and its observed source MAC must match a direct ARP/NDP neighbor. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; authenticated selector access and public certificate downloads remain available.
 - **HTTPS Modules**: Device settings override `mitm.client_source_address`, including explicit disabling. Install and trust the CA before enabling; the page cannot detect trust.
 
@@ -55,7 +55,11 @@ The `client` block supplies the plain-text description used as the set's display
 
 **Reset Default** is available for selectors only when `selector(n)` explicitly configures a default; it clears the saved selection and restores that path. Both selectors and HTTPS modules label their settings source **Default** or **Custom**. MITM reset still clears the device override. Settings persist in `$DAE_LOCATION_CACHE/runtime-state.json` (default `/var/lib/dae/runtime-state.json`, mode `0600`) across reloads, restarts, and API disabling. The main configuration is untouched. Existing connections and UDP sessions keep their paths.
 
-Manual file edits trigger reloads through filesystem events, including atomic replacements. Invalid contents, unknown node IDs, application failures, or a temporarily missing file preserve current state. For example:
+References contain every hop's source and name, plus the entrance address family and explicit interface/mark. An omitted mark retains inheritance. Local nodes use configured names; subscription nodes use subscription tags and names, with a subscription-address fingerprint for untagged sources. Unique named nodes can follow address or credential updates. Link fingerprints disambiguate duplicates without storing links or credentials; a node chosen from duplicate source names must continue matching its fingerprint.
+
+If a filter excludes the saved path, its entrance family temporarily disappears, or matching is ambiguous, the reference is retained while the explicit default or first candidate is used temporarily. The page displays **Temporary fallback**. A later reload restores a returning path. Choosing another node, including the current fallback, replaces the preference. Health-check failure alone does not clear or change the selection.
+
+Manual file edits trigger reloads through filesystem events, including atomic replacements. Invalid contents, application failures, or a temporarily missing file preserve current state. For example:
 
 ```json
 {
@@ -65,7 +69,7 @@ Manual file edits trigger reloads through filesystem events, including atomic re
 }
 ```
 
-Keep all three objects; remove entries to clear overrides or memberships. Use node IDs from `/api/selectors` and lowercase colon-separated MACs. Avoid concurrent file edits and API writes.
+Keep all three objects; remove entries to clear overrides or memberships. Selector values are path objects with `nodes`, `ipversion`, `interface` and optional `mark`, not API runtime node IDs; use the page or `dae selector set` to save them. Use lowercase colon-separated MACs. Avoid concurrent file edits and API writes.
 
 `track_all` is configured in the group block; runtime state cannot override it. Unknown fields in the runtime settings file are rejected.
 
@@ -119,6 +123,8 @@ A `null` MITM `override` inherits the configuration. Fetch the corresponding sta
 `POST /api/probes` is the shared manual probe API for instantiated, checked outbounds, including selectors, automatic policies and direct node references. It uses configured DNS probes, timeouts and concurrency bounds; arbitrary URLs and per-request probe configuration are not accepted. `202` acknowledges acceptance, including coalescing with queued/running work; it is not a health result or persistent job, and changes neither selection nor `track_all`. Poll `/api/selectors` for selector `checking`, `tested`, `checked_at`, `healthy` and `latency_ms`; other outbounds publish runtime health and latency through `/api/status`. Unknown outbound: `404`; node outside that outbound: `400`; unchecked builtin: `409`.
 
 `SelectorState.track_all` is read-only configuration. `default_node_id` is present only for explicit `selector(n)`; clients should hide default labels and reset controls when it is absent.
+
+`node_id` identifies the actual runtime choice. A saved preference sets `overridden` to true and adds `saved_selection` with `name` and `status` (`matched`, `missing`, or `ambiguous`). Missing or ambiguous preferences remain saved while the startup choice is used temporarily; clients must not overwrite the preference with that actual `node_id`.
 
 Script acceptance is asynchronous: execution uses the daemon's background routing client and continues after the response. Poll `plugins[].details.modules[].tasks` in `/api/status` for completion; `type` is `cron` or `generic`, `runs` identifies the latest attempt, and `last_trigger` is `cron` or `http-api`. Generic tasks have no schedule and are `ready` when idle. Only the latest attempt is retained, and counters/history reset on reload. Manual execution preserves cron's next scheduled time. Missing instance/task: `404`; ambiguous name without `module`: `400`; already waiting/running: `409`; inactive worker: `503`. No inline source or argument overrides are accepted. The API client does not retry execution requests.
 

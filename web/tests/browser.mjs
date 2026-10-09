@@ -85,6 +85,7 @@ const server = createServer(async (req, res) => {
       const selector = fixture.selectors.find((entry) => entry.name === decodeURIComponent(req.url.slice("/api/selectors/".length)));
       selector.node_id = req.method === "DELETE" ? selector.default_node_id : body.node_id;
       selector.overridden = req.method !== "DELETE";
+      selector.saved_selection = selector.overridden ? { name: selector.nodes.find((node) => node.id === selector.node_id).name, status: "matched" } : undefined;
       return json(selector);
     }
     if (req.url === "/api/selectors") {
@@ -256,6 +257,34 @@ try {
     await js('document.querySelectorAll(".selector-row")[1].querySelector(".reset").click()');
     await ready();
     assert.equal(await js('document.querySelectorAll(".selector-row")[1].querySelector(".reset").disabled'), true);
+  });
+
+  await test("a missing saved choice is visible and the current fallback can be saved explicitly", async () => {
+    fixture.selectors[0].overridden = true;
+    fixture.selectors[0].saved_selection = { name: "Missing Hong Kong [IPv6]", status: "missing" };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js(`${row}.querySelector('.selection-source').hidden`), false);
+    assert.match(await js(`${row}.querySelector('.selection-source').textContent`), /Temporary fallback/);
+    assert.match(await js(`${row}.querySelector('.selection-source').title`), /Missing Hong Kong/);
+    await openPicker();
+    await js('document.querySelector(".select-node").click()');
+    await ready();
+    assert.deepEqual(fixture.requests.at(-1), { method: "PUT", path: "/api/selectors/On%20demand", body: { node_id: "node-0" } });
+    assert.equal(fixture.selectors[0].saved_selection.status, "matched");
+    assert.equal(await js(`${row}.querySelector('.selection-source').textContent`), "Custom");
+  });
+
+  await test("the initial selected node can be pinned without first selecting another node", async () => {
+    await openPicker();
+    await js('document.querySelector(".select-node").click()');
+    await ready();
+    assert.equal(fixture.selectors[0].saved_selection.status, "matched");
+    assert.equal(fixture.requests.at(-1).method, "PUT");
+    const count = fixture.requests.length;
+    await openPicker();
+    await js('document.querySelector(".select-node").click()');
+    assert.equal(fixture.requests.length, count);
   });
 
   await test("keyboard navigation skips disabled probe controls and preserves search editing", async () => {

@@ -3,6 +3,7 @@
 package control
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -14,8 +15,18 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/settings"
 )
+
+func selectorJSON(t *testing.T, path *selector.Path) string {
+	t.Helper()
+	data, err := json.Marshal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
 
 func TestRuntimeSettingsReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
@@ -27,7 +38,7 @@ func TestRuntimeSettingsReload(t *testing.T) {
 	group := plane.outbounds[0]
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
 	selected := group.Dialers[1].StatsID()
-	document := fmt.Sprintf(`{"selectors":{"proxy":%q},"clients":{"gaming":["02:00:00:00:00:0a"]},"mitm":{"02:00:00:00:00:0a":true}}`, selected)
+	document := fmt.Sprintf(`{"selectors":{"proxy":%s},"clients":{"gaming":["02:00:00:00:00:0a"]},"mitm":{"02:00:00:00:00:0a":true}}`, selectorJSON(t, group.Dialers[1].SelectionReference()))
 	write := func(data string) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
@@ -62,7 +73,7 @@ func TestRuntimeSettingsReload(t *testing.T) {
 	if changed, err := plane.ReloadRuntimeSettings(); changed || err != nil {
 		t.Fatal(changed, err)
 	}
-	for _, invalid := range []string{`{"selectors":`, strings.Replace(document, selected, "missing-node", 1)} {
+	for _, invalid := range []string{`{"selectors":`, strings.Replace(document, `"name":"two"`, `"name":""`, 1)} {
 		write(invalid)
 		if changed, err := plane.ReloadRuntimeSettings(); changed || err == nil {
 			t.Fatal(changed, err)
@@ -108,7 +119,8 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 	other := newAPITestPlane(t, store).outbounds[0]
 	other.Name = "other"
 	plane.outbounds = append(plane.outbounds, other)
-	data := fmt.Sprintf(`{"selectors":{"proxy":%q,"other":"missing-node"},"clients":{"gaming":["02:00:00:00:00:0a"]},"mitm":{"02:00:00:00:00:0a":true}}`, plane.outbounds[0].Dialers[1].StatsID())
+	_ = other.Close()
+	data := fmt.Sprintf(`{"selectors":{"proxy":%s,"other":%s},"clients":{"gaming":["02:00:00:00:00:0a"]},"mitm":{"02:00:00:00:00:0a":true}}`, selectorJSON(t, plane.outbounds[0].Dialers[1].SelectionReference()), selectorJSON(t, other.Dialers[1].SelectionReference()))
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +131,7 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 		t.Fatal("rolled-back reload aborted existing connections")
 	}
 	for _, group := range plane.outbounds {
-		if group.Selection() != group.DefaultSelection() || store.Selection(group.Name) != "" {
+		if group.Selection() != group.DefaultSelection() || store.Selection(group.Name) != nil {
 			t.Fatalf("failed reload changed selector %s", group.Name)
 		}
 	}
@@ -134,56 +146,40 @@ func TestRuntimeSettingsReloadRollsBackEarlierSelections(t *testing.T) {
 }
 
 func TestRuntimePublishRejectsSettingsFailureBeforeHandoff(t *testing.T) {
-	for _, failWrite := range []bool{false, true} {
-		t.Run(fmt.Sprint(failWrite), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "runtime-state.json")
-			store, err := settings.Open(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			old := newAPITestPlane(t, store)
-			next := newAPITestPlane(t, store)
-			selected := old.outbounds[0].Dialers[1].StatsID()
-			if err := store.SetSelection("proxy", selected); err != nil {
-				t.Fatal(err)
-			}
-			if err := old.restoreRuntimeSettings(false); err != nil {
-				t.Fatal(err)
-			}
-			// The first saved path disappears. Neither a later projection failure nor
-			// a failure saving the complete prune may change shared preferences.
-			next.outbounds[0].Dialers = next.outbounds[0].Dialers[:1]
-			if failWrite {
-				if err := os.Remove(path); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Mkdir(path, 0700); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				other := newAPITestPlane(t, store).outbounds[0]
-				other.Name = "second"
-				_ = other.Close()
-				next.outbounds = append(next.outbounds, other)
-			}
-			r := NewRuntime()
-			r.current = old
-			r.planes[1] = old
-			next.routingGeneration = 2
-			t.Cleanup(func() { clear(r.planes); _ = r.Close() })
-			if err := r.Publish(next, false); !errors.Is(err, ErrPublicationRejected) {
-				t.Fatalf("publication failure was not recoverable: %v", err)
-			}
-			if r.current != old || len(r.planes) != 1 || r.planes[1] != old || old.outbounds[0].Selection() != selected || store.Selection("proxy") != selected {
-				t.Fatal("rejected candidate changed active ownership or selection")
-			}
-			if !failWrite {
-				reopened, err := settings.Open(path)
-				if err != nil || reopened.Selection("proxy") != selected {
-					t.Fatalf("rejected candidate changed persisted selection: %v", err)
-				}
-			}
-		})
+	path := filepath.Join(t.TempDir(), "runtime-state.json")
+	store, err := settings.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := newAPITestPlane(t, store)
+	next := newAPITestPlane(t, store)
+	selected := old.outbounds[0].Dialers[1]
+	if err := store.SetSelection("proxy", selected.SelectionReference()); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.restoreRuntimeSettings(false); err != nil {
+		t.Fatal(err)
+	}
+	// A missing saved path and a later projection failure cannot erase preferences.
+	next.outbounds[0].Dialers = next.outbounds[0].Dialers[:1]
+	other := newAPITestPlane(t, store).outbounds[0]
+	other.Name = "second"
+	_ = other.Close()
+	next.outbounds = append(next.outbounds, other)
+	r := NewRuntime()
+	r.current = old
+	r.planes[1] = old
+	next.routingGeneration = 2
+	t.Cleanup(func() { clear(r.planes); _ = r.Close() })
+	if err := r.Publish(next, false); !errors.Is(err, ErrPublicationRejected) {
+		t.Fatalf("publication failure was not recoverable: %v", err)
+	}
+	if r.current != old || len(r.planes) != 1 || r.planes[1] != old || old.outbounds[0].Selection() != selected.StatsID() || !selected.SelectionReference().Matches(store.Selection("proxy"), true) {
+		t.Fatal("rejected candidate changed active ownership or selection")
+	}
+	reopened, err := settings.Open(path)
+	if err != nil || !selected.SelectionReference().Matches(reopened.Selection("proxy"), true) {
+		t.Fatalf("rejected candidate changed persisted selection: %v", err)
 	}
 }
 

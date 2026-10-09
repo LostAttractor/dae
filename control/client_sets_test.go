@@ -182,7 +182,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	group := plane.outbounds[0]
-	document := fmt.Sprintf(`{"selectors":{"proxy":%q},"clients":{"gaming":["02:00:00:00:00:0a"],"streaming":["02:00:00:00:00:0a"]},"mitm":{}}`, group.Dialers[1].StatsID())
+	document := fmt.Sprintf(`{"selectors":{"proxy":%s},"clients":{"gaming":["02:00:00:00:00:0a"],"streaming":["02:00:00:00:00:0a"]},"mitm":{}}`, selectorJSON(t, group.Dialers[1].SelectionReference()))
 	if err := os.WriteFile(path, []byte(document), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 		t.Fatal("reload with an incompatible nft set succeeded", changed, err)
 	}
 	check()
-	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != "" {
+	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != nil {
 		t.Fatal("failed reload changed the selector")
 	}
 	// Fail persistence after all three membership targets accepted a change.

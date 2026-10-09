@@ -126,7 +126,7 @@ export function selectorRow(selector, { run, request, refresh }) {
         element = template("selector-node-template");
         element.querySelector(".test-node").onclick = () => probe(node.id);
         element.querySelector(".select-node").onclick = () => {
-          if (node.id === selector.node_id) {
+          if (node.id === selector.node_id && selector.saved_selection?.status === "matched") {
             menu.hidePopover();
             picker.focus();
           } else {
@@ -197,8 +197,11 @@ export function selectorRow(selector, { run, request, refresh }) {
     selector = updated;
     row.classList.toggle("tracking-all", selector.track_all);
     const source = row.querySelector(".selection-source");
-    source.hidden = !selector.default_node_id;
-    source.textContent = selector.overridden ? "Custom" : "Default";
+    const saved = selector.saved_selection;
+    const fallback = saved && saved.status !== "matched";
+    source.hidden = !selector.default_node_id && !saved;
+    source.textContent = fallback ? `Saved choice ${saved.status} · Temporary fallback` : selector.overridden ? "Custom" : "Default";
+    source.title = saved ? `Saved: ${saved.name}` : "";
     row.querySelector(".node-count").textContent = `${selector.nodes.length} node${selector.nodes.length === 1 ? "" : "s"}`;
     const node = selector.nodes.find((candidate) => candidate.id === selector.node_id);
     const name = node ? node.name : "Select a node";

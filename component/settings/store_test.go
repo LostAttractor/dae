@@ -12,7 +12,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/daeuniverse/dae/common/selector"
 )
+
+func savedPath(name string) *selector.Path {
+	return &selector.Path{Nodes: []selector.Node{{Source: "local", Name: name, Fingerprint: selector.Fingerprint(name)}}}
+}
 
 func TestUpdateRestoresPersistedStateAfterApplyFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
@@ -53,42 +59,36 @@ func TestUpdateRestoresPersistedStateAfterApplyFailure(t *testing.T) {
 	}
 }
 
-func TestPruneSelectionsIsAtomicAndKeepsNewerChoices(t *testing.T) {
+func TestSelectionCopiesAndFailedEdits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
 	store, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"one", "two"} {
-		if err := store.SetSelection(name, "old"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Remove(path); err != nil {
+	ref := savedPath("old")
+	ref.Mark = new(uint32(32))
+	if err := store.SetSelection("proxy", ref); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	stale := map[string]string{"one": "old", "two": "old"}
-	if err := store.PruneSelections(stale); err == nil {
-		t.Fatal("pruned through an unwritable destination")
-	}
-	if store.Selection("one") != "old" || store.Selection("two") != "old" {
-		t.Fatal("failed prune partially changed accepted preferences")
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetSelection("two", "new"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PruneSelections(stale); err != nil {
-		t.Fatal(err)
+	ref.Nodes[0].Name, *ref.Mark = "caller edit", 64
+	returned := store.Selection("proxy")
+	returned.Nodes[0].Name, *returned.Mark = "reader edit", 96
+	if err := store.Update(func(next *Snapshot) error {
+		next.Selectors["proxy"].Nodes[0].Name = "failed edit"
+		*next.Selectors["proxy"].Mark = 128
+		return errors.New("reject edit")
+	}, nil); err == nil {
+		t.Fatal("edit unexpectedly succeeded")
 	}
 	reopened, err := Open(path)
-	if err != nil || reopened.Selection("one") != "" || reopened.Selection("two") != "new" {
-		t.Fatalf("prune discarded a newer selection or failed to persist: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []*Store{store, reopened} {
+		got := s.Selection("proxy")
+		if got.Nodes[0].Name != "old" || *got.Mark != 32 {
+			t.Fatalf("external mutation changed saved reference: %+v", got)
+		}
 	}
 }
 
@@ -100,7 +100,7 @@ func TestStorePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	mac := [6]byte{2, 1, 2, 3, 4, 5}
-	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", ""), s.SetMembers("gaming", nil)} {
+	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", nil), s.SetMembers("gaming", nil)} {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,7 +111,7 @@ func TestStorePersistence(t *testing.T) {
 
 	disabled := false
 	for _, err := range []error{
-		s.SetMITM(mac, &disabled), s.SetSelection("proxy", "node-id"),
+		s.SetMITM(mac, &disabled), s.SetSelection("proxy", savedPath("node")),
 		s.SetMembers("gaming", [][6]byte{mac}), s.SetMembers("streaming", [][6]byte{mac}),
 	} {
 		if err != nil {
@@ -125,7 +125,7 @@ func TestStorePersistence(t *testing.T) {
 	if enabled, exists := s.MITM(mac); enabled || !exists {
 		t.Fatal("explicit false MITM preference was lost")
 	}
-	if s.Selection("proxy") != "node-id" {
+	if !savedPath("node").Matches(s.Selection("proxy"), true) {
 		t.Fatal("selector choice was lost")
 	}
 	if !slices.Equal(s.Members("gaming"), [][6]byte{mac}) || !slices.Equal(s.Members("streaming"), [][6]byte{mac}) {
@@ -140,7 +140,7 @@ func TestStorePersistence(t *testing.T) {
 			t.Errorf("%s permissions = %o, want %o", path, info.Mode().Perm(), want)
 		}
 	}
-	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", ""), s.SetMembers("gaming", nil)} {
+	for _, err := range []error{s.SetMITM(mac, nil), s.SetSelection("proxy", nil), s.SetMembers("gaming", nil)} {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -149,7 +149,7 @@ func TestStorePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if enabled, exists := s.MITM(mac); enabled || exists || s.Selection("proxy") != "" {
+	if enabled, exists := s.MITM(mac); enabled || exists || s.Selection("proxy") != nil {
 		t.Fatal("reset MITM or selector override survived reopening")
 	}
 	if len(s.Members("gaming")) != 0 || !slices.Equal(s.Members("streaming"), [][6]byte{mac}) {
@@ -165,7 +165,7 @@ func TestStoreSaveFailurePreservesState(t *testing.T) {
 	}
 	mac := [6]byte{2, 1, 2, 3, 4, 5}
 	enabled, disabled := true, false
-	for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection("proxy", "original"), s.SetMembers("gaming", [][6]byte{mac})} {
+	for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection("proxy", savedPath("original")), s.SetMembers("gaming", [][6]byte{mac})} {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -182,13 +182,13 @@ func TestStoreSaveFailurePreservesState(t *testing.T) {
 		if got, exists := store.MITM(mac); !got || !exists {
 			t.Fatal("failed save changed the MITM preference")
 		}
-		if store.Selection("proxy") != "original" || !slices.Equal(store.Members("gaming"), [][6]byte{mac}) {
+		if !savedPath("original").Matches(store.Selection("proxy"), true) || !slices.Equal(store.Members("gaming"), [][6]byte{mac}) {
 			t.Fatal("failed save changed the selection or membership")
 		}
 	}
 	for _, change := range []func() error{
 		func() error { return s.SetMITM(mac, &disabled) },
-		func() error { return s.SetSelection("proxy", "replacement") },
+		func() error { return s.SetSelection("proxy", savedPath("replacement")) },
 		func() error { return s.SetMembers("gaming", nil) },
 	} {
 		if err := change(); err == nil {
@@ -212,18 +212,21 @@ func TestStoreRejectsInvalidState(t *testing.T) {
 		return fmt.Sprintf(`{"selectors":%s,"clients":%s,"mitm":%s}`, selectors, clients, mitm)
 	}
 	tests := map[string]string{
-		"missing objects":   `{}`,
-		"unknown field":     `{"selectors":{},"clients":{},"mitm":{},"selector_tracking":{"proxy":true}}`,
-		"empty selection":   document(`{"proxy":""}`, `{}`, `{}`),
-		"null members":      document(`{}`, `{"gaming":null}`, `{}`),
-		"empty set name":    document(`{}`, `{"":[]}`, `{}`),
-		"duplicate members": document(`{}`, `{"gaming":["02:00:00:00:00:01","02:00:00:00:00:01"]}`, `{}`),
-		"null preference":   document(`{}`, `{}`, `{"02:00:00:00:00:01":null}`),
-		"zero MAC":          document(`{}`, `{}`, `{"00:00:00:00:00:00":true}`),
-		"multicast MAC":     document(`{}`, `{"gaming":["01:00:00:00:00:01"]}`, `{}`),
-		"noncanonical MAC":  document(`{}`, `{}`, `{"02:AA:BB:CC:DD:EE":true}`),
-		"long MAC":          document(`{}`, `{"gaming":["02:aa:bb:cc:dd:ee:ff:01"]}`, `{}`),
-		"oversize":          strings.Repeat(" ", maxFileSize+1),
+		"missing objects":     `{}`,
+		"unknown field":       `{"selectors":{},"clients":{},"mitm":{},"selector_tracking":{"proxy":true}}`,
+		"empty selection":     document(`{"proxy":""}`, `{}`, `{}`),
+		"null selection":      document(`{"proxy":null}`, `{}`, `{}`),
+		"empty path":          document(`{"proxy":{"nodes":[]}}`, `{}`, `{}`),
+		"invalid fingerprint": document(`{"proxy":{"nodes":[{"source":"local","name":"node","fingerprint":"invalid"}]}}`, `{}`, `{}`),
+		"null members":        document(`{}`, `{"gaming":null}`, `{}`),
+		"empty set name":      document(`{}`, `{"":[]}`, `{}`),
+		"duplicate members":   document(`{}`, `{"gaming":["02:00:00:00:00:01","02:00:00:00:00:01"]}`, `{}`),
+		"null preference":     document(`{}`, `{}`, `{"02:00:00:00:00:01":null}`),
+		"zero MAC":            document(`{}`, `{}`, `{"00:00:00:00:00:00":true}`),
+		"multicast MAC":       document(`{}`, `{"gaming":["01:00:00:00:00:01"]}`, `{}`),
+		"noncanonical MAC":    document(`{}`, `{}`, `{"02:AA:BB:CC:DD:EE":true}`),
+		"long MAC":            document(`{}`, `{"gaming":["02:aa:bb:cc:dd:ee:ff:01"]}`, `{}`),
+		"oversize":            strings.Repeat(" ", maxFileSize+1),
 	}
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
 	for name, data := range tests {
@@ -254,8 +257,8 @@ func TestStoreRejectsInvalidUpdates(t *testing.T) {
 		}
 	}
 	for _, err := range []error{
-		s.SetSelection("", ""), s.SetMembers("", nil),
-		s.SetSelection("oversize", strings.Repeat("x", maxFileSize)),
+		s.SetSelection("", nil), s.SetMembers("", nil),
+		s.SetSelection("oversize", savedPath(strings.Repeat("x", maxFileSize))),
 		s.SetMembers("duplicate", [][6]byte{{2}, {2}}),
 	} {
 		if err == nil {
@@ -269,7 +272,7 @@ func TestStoreRejectsInvalidUpdates(t *testing.T) {
 
 func TestStoreDeviceLimits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
-	initial := Snapshot{Selectors: map[string]string{}, Clients: map[string][]string{"gaming": {}}, MITM: map[string]bool{}}
+	initial := Snapshot{Selectors: map[string]*selector.Path{}, Clients: map[string][]string{"gaming": {}}, MITM: map[string]bool{}}
 	for i := range maxClients {
 		mac := fmt.Sprintf("02:00:00:00:%02x:%02x", i>>8, i&255)
 		initial.MITM[mac] = true
@@ -331,7 +334,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		workers.Go(func() {
 			mac := [6]byte{2, 0, 0, 0, 0, byte(i)}
 			enabled := i%2 == 1
-			for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection(fmt.Sprintf("group-%d", i), fmt.Sprintf("node-%d", i)), s.SetMembers(fmt.Sprintf("set-%d", i), [][6]byte{mac})} {
+			for _, err := range []error{s.SetMITM(mac, &enabled), s.SetSelection(fmt.Sprintf("group-%d", i), savedPath(fmt.Sprintf("node-%d", i))), s.SetMembers(fmt.Sprintf("set-%d", i), [][6]byte{mac})} {
 				if err != nil {
 					t.Error(err)
 					return
@@ -352,7 +355,7 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		if enabled, exists := s.MITM(mac); enabled != (i%2 == 1) || !exists {
 			t.Errorf("concurrent writer %d lost its MITM preference", i)
 		}
-		if s.Selection(fmt.Sprintf("group-%d", i)) != fmt.Sprintf("node-%d", i) || !slices.Equal(s.Members(fmt.Sprintf("set-%d", i)), [][6]byte{mac}) {
+		if !savedPath(fmt.Sprintf("node-%d", i)).Matches(s.Selection(fmt.Sprintf("group-%d", i)), true) || !slices.Equal(s.Members(fmt.Sprintf("set-%d", i)), [][6]byte{mac}) {
 			t.Errorf("concurrent writer %d lost its selector or membership", i)
 		}
 	}

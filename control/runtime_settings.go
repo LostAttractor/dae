@@ -5,9 +5,9 @@ package control
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 
-	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
 	log "github.com/sirupsen/logrus"
 )
@@ -71,20 +71,20 @@ func (c *ControlPlane) applyRuntimeSettings(current, next settings.Snapshot, per
 		// Each group holds its selection until later changes have committed;
 		// errors unwind all tentative choices without issuing close signals.
 		for _, group := range slices.Backward(c.outbounds) {
-			if !group.IsSelector() || current.Selectors[group.Name] == next.Selectors[group.Name] {
+			if !group.IsSelector() || reflect.DeepEqual(current.Selectors[group.Name], next.Selectors[group.Name]) {
 				continue
 			}
 			rest := apply
-			apply = func() error { return group.ChangeSelection(next.Selectors[group.Name], rest) }
+			id, _ := group.ResolveSelection(next.Selectors[group.Name])
+			apply = func() error { return group.ChangeSelection(id, rest) }
 		}
 		return apply()
 	})
 }
 
 // Restore before checks/downloads, and once more after draining the old API on
-// reload. Building a candidate must not erase the active plane's saved choices.
-func (c *ControlPlane) restoreRuntimeSettings(prune bool) error {
-	stale := make(map[string]string)
+// reload. Missing references remain saved so a later reload can restore them.
+func (c *ControlPlane) restoreRuntimeSettings(reportMissing bool) error {
 	for _, group := range c.outbounds {
 		if c.borrowedOutbounds[group] {
 			continue
@@ -92,30 +92,16 @@ func (c *ControlPlane) restoreRuntimeSettings(prune bool) error {
 		if !group.IsSelector() {
 			continue
 		}
-		id := c.settings.Selection(group.Name)
-		missing := id != "" && !slices.ContainsFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id })
-		if missing {
-			if prune {
-				log.WithFields(log.Fields{"group": group.Name, "node_id": id}).Warn("Saved selector path disappeared; using the startup choice")
-				stale[group.Name] = id
-			}
-			id = ""
+		saved := c.settings.Selection(group.Name)
+		id, status := group.ResolveSelection(saved)
+		if reportMissing && saved != nil && status != "matched" {
+			log.WithFields(log.Fields{"group": group.Name, "path": saved.String(), "status": status}).Warn("Saved selector path unavailable; retaining preference and temporarily using the startup choice")
 		}
 		if err := group.SetSelection(id); err != nil {
 			return fmt.Errorf("restore selector %q: %w", group.Name, err)
 		}
 	}
-	if err := c.restoreClientSets(); err != nil {
-		return err
-	}
-	// Shared preferences change only after all candidate projections succeed.
-	// A failed save leaves both disk and the active plane's store unchanged.
-	if len(stale) != 0 {
-		if err := c.settings.PruneSelections(stale); err != nil {
-			return fmt.Errorf("prune disappeared selector paths: %w", err)
-		}
-	}
-	return nil
+	return c.restoreClientSets()
 }
 
 func (c *ControlPlane) restoreClientSets() error {

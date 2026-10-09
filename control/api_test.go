@@ -128,7 +128,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.Selection("proxy") != selected || len(reopened.Members("gaming")) != 1 || len(reopened.Members("streaming")) != 1 {
+	if !group.Dialers[1].SelectionReference().Matches(reopened.Selection("proxy"), true) || len(reopened.Members("gaming")) != 1 || len(reopened.Members("streaming")) != 1 {
 		t.Fatal("API state did not survive reopening")
 	}
 	if w := apiTestRequest(handler, "DELETE", "/api/device/sets/gaming", "", ""); w.Code != 200 {
@@ -142,7 +142,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	if w := apiTestRequest(handler, "DELETE", "/api/selectors/proxy", "", "test-secret"); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != "" {
+	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != nil {
 		t.Fatal("selector reset failed")
 	}
 	plane.apiKey = ""
@@ -192,7 +192,7 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 		t.Fatal("failed save aborted existing connections")
 	}
 	requireClientRoute(t, plane.routingMatcher, mac, 443, consts.OutboundDirect)
-	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != "" || len(store.Members("gaming")) != 0 {
+	if group.Selection() != group.DefaultSelection() || store.Selection("proxy") != nil || len(store.Members("gaming")) != 0 {
 		t.Fatal("failed persistence changed effective state")
 	}
 }
@@ -246,20 +246,22 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 			t.Fatalf("client metadata reload changed membership or exposed unused sets: got %+v, want %+v", state.Sets, want)
 		}
 	}
-	if err := store.SetSelection("proxy", "removed-node"); err != nil {
+	removed := active.outbounds[0].Dialers[1].SelectionReference()
+	removed.Nodes[0].Name = "removed-node"
+	if err := store.SetSelection("proxy", removed); err != nil {
 		t.Fatal(err)
 	}
 	if err := candidate.restoreRuntimeSettings(false); err != nil {
 		t.Fatal(err)
 	}
-	if store.Selection("proxy") != "removed-node" {
+	if !removed.Matches(store.Selection("proxy"), true) {
 		t.Fatal("candidate erased active persisted choice")
 	}
 	if err := candidate.restoreRuntimeSettings(true); err != nil {
 		t.Fatal(err)
 	}
-	if store.Selection("proxy") != "" || candidate.outbounds[0].Selection() != candidate.outbounds[0].DefaultSelection() {
-		t.Fatal("stale selection did not restore default")
+	if !removed.Matches(store.Selection("proxy"), true) || candidate.outbounds[0].Selection() != candidate.outbounds[0].DefaultSelection() {
+		t.Fatal("missing selection was erased or did not temporarily use the startup choice")
 	}
 }
 
@@ -307,7 +309,7 @@ func TestGlobalAPIRequiresMutationHeader(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	if len(store.Members("gaming")) != 0 || store.Selection("proxy") != "" {
+	if len(store.Members("gaming")) != 0 || store.Selection("proxy") != nil {
 		t.Fatal("forbidden request changed saved state")
 	}
 }
@@ -321,7 +323,7 @@ func TestSelectorAPIUsesEscapedGroupName(t *testing.T) {
 	plane.outbounds[0].Name = "proxy/香港"
 	id := plane.outbounds[0].Dialers[1].StatsID()
 	w := apiTestRequest(plane.apiHandler("test", testClientMAC, nil), "PUT", "/api/selectors/proxy%2F%E9%A6%99%E6%B8%AF", `{"node_id":"`+id+`"}`, "test-secret")
-	if w.Code != 200 || store.Selection("proxy/香港") != id {
+	if w.Code != 200 || !plane.outbounds[0].Dialers[1].SelectionReference().Matches(store.Selection("proxy/香港"), true) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 }

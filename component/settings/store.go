@@ -16,6 +16,8 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+
+	"github.com/daeuniverse/dae/common/selector"
 )
 
 const (
@@ -25,9 +27,9 @@ const (
 
 // Snapshot contains validated file contents. Reload callbacks must treat it as read-only.
 type Snapshot struct {
-	Selectors map[string]string   `json:"selectors"`
-	Clients   map[string][]string `json:"clients"`
-	MITM      map[string]bool     `json:"mitm"`
+	Selectors map[string]*selector.Path `json:"selectors"`
+	Clients   map[string][]string       `json:"clients"`
+	MITM      map[string]bool           `json:"mitm"`
 }
 
 // Store is shared by active and candidate control planes. Opening an absent
@@ -44,7 +46,7 @@ func Open(path string) (*Store, error) {
 	}
 	value, err := readState(path)
 	if os.IsNotExist(err) {
-		value = Snapshot{Selectors: map[string]string{}, Clients: map[string][]string{}, MITM: map[string]bool{}}
+		value = Snapshot{Selectors: map[string]*selector.Path{}, Clients: map[string][]string{}, MITM: map[string]bool{}}
 	} else if err != nil {
 		return nil, err
 	}
@@ -119,6 +121,9 @@ func (s *Store) Update(edit func(*Snapshot) error, apply func(previous, next Sna
 	defer s.mu.Unlock()
 	previous := s.state
 	next := Snapshot{Selectors: maps.Clone(previous.Selectors), Clients: maps.Clone(previous.Clients), MITM: maps.Clone(previous.MITM)}
+	for name, path := range next.Selectors {
+		next.Selectors[name] = path.Clone()
+	}
 	for name, members := range next.Clients {
 		next.Clients[name] = slices.Clone(members)
 	}
@@ -175,9 +180,12 @@ func (s Snapshot) validate() error {
 			return err
 		}
 	}
-	for group, id := range s.Selectors {
-		if group == "" || id == "" {
-			return fmt.Errorf("selector name and node ID must not be empty")
+	for group, path := range s.Selectors {
+		if group == "" {
+			return fmt.Errorf("selector name must not be empty")
+		}
+		if err := path.Validate(); err != nil {
+			return fmt.Errorf("selector %q: %w", group, err)
 		}
 	}
 	for name, members := range s.Clients {
@@ -204,42 +212,24 @@ func (s Snapshot) validate() error {
 	return nil
 }
 
-func (s *Store) Selection(group string) string {
+func (s *Store) Selection(group string) *selector.Path {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state.Selectors[group]
+	return s.state.Selectors[group].Clone()
 }
 
-func (s *Store) SetSelection(group, id string) error {
+func (s *Store) SetSelection(group string, path *selector.Path) error {
 	if group == "" {
 		return fmt.Errorf("selector name must not be empty")
 	}
 	return s.Update(func(next *Snapshot) error {
-		if id == "" {
+		if path == nil {
 			delete(next.Selectors, group)
 		} else {
-			next.Selectors[group] = id
+			next.Selectors[group] = path.Clone()
 		}
 		return nil
 	}, nil)
-}
-
-// PruneSelections removes stale choices in one atomic save. A choice changed
-// since the caller observed it is retained instead of pruning the newer value.
-func (s *Store) PruneSelections(stale map[string]string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	next := s.state
-	next.Selectors = maps.Clone(next.Selectors)
-	for group, id := range stale {
-		if next.Selectors[group] == id {
-			delete(next.Selectors, group)
-		}
-	}
-	if len(next.Selectors) == len(s.state.Selectors) {
-		return nil
-	}
-	return s.save(next)
 }
 
 func (s *Store) Members(name string) [][6]byte {

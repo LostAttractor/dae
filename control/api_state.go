@@ -32,7 +32,11 @@ func (c *ControlPlane) deviceState(ip netip.Addr, mac [6]byte) api.DeviceState {
 
 func (c *ControlPlane) selectorState(group *outbound.DialerGroup) api.SelectorState {
 	state := api.SelectorState{Name: group.Name, DefaultNodeID: group.DefaultSelection(), NodeID: group.Selection(), TrackAll: group.TrackAll(), Nodes: make([]api.SelectorNode, 0, len(group.Dialers))}
-	state.Overridden = c.settings.Selection(group.Name) != ""
+	if saved := c.settings.Selection(group.Name); saved != nil {
+		_, status := group.ResolveSelection(saved)
+		state.Overridden = true
+		state.SavedSelection = &api.SavedSelectorSelection{Name: saved.String(), Status: status}
+	}
 	for _, d := range group.Dialers {
 		status := d.RuntimeStatus()
 		node := api.SelectorNode{
@@ -73,7 +77,8 @@ func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error
 	if id == "" && group.DefaultSelection() == "" {
 		return api.SelectorState{}, apiserver.ErrSelectorNoDefault
 	}
-	if id != "" && !slices.ContainsFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id }) {
+	index := slices.IndexFunc(group.Dialers, func(d *dialer.Dialer) bool { return d.StatsID() == id })
+	if id != "" && index == -1 {
 		return api.SelectorState{}, apiserver.ErrSelectorNode
 	}
 	// Keep the live choice and its saved override together, including rollback.
@@ -83,7 +88,7 @@ func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error
 		if id == "" {
 			delete(next.Selectors, group.Name)
 		} else {
-			next.Selectors[group.Name] = id
+			next.Selectors[group.Name] = group.Dialers[index].SelectionReference()
 		}
 		return nil
 	}, c.applyRuntimeSettings); err != nil {

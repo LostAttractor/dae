@@ -17,12 +17,19 @@ type SelectorNode struct {
 }
 
 type SelectorState struct {
-	Name          string         `json:"name"`
-	DefaultNodeID string         `json:"default_node_id,omitempty"`
-	NodeID        string         `json:"node_id"`
-	Overridden    bool           `json:"overridden"`
-	TrackAll      bool           `json:"track_all"`
-	Nodes         []SelectorNode `json:"nodes"`
+	Name           string                  `json:"name"`
+	DefaultNodeID  string                  `json:"default_node_id,omitempty"`
+	NodeID         string                  `json:"node_id"`
+	Overridden     bool                    `json:"overridden"`
+	SavedSelection *SavedSelectorSelection `json:"saved_selection,omitempty"`
+	TrackAll       bool                    `json:"track_all"`
+	Nodes          []SelectorNode          `json:"nodes"`
+}
+
+// SavedSelectorSelection remains visible while the actual node uses a fallback.
+type SavedSelectorSelection struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // matched, missing or ambiguous
 }
 
 type ClientSetState struct {

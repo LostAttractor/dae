@@ -19,6 +19,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -45,6 +46,7 @@ type NodeDescriptor struct {
 	Name            string
 	Link            string
 	SubscriptionTag string
+	SelectionSource string
 	Defaults        config.NodeOptions
 	Rules           []config.NodeOptionRule
 	Options         config.NodeOptions
@@ -53,10 +55,11 @@ type NodeDescriptor struct {
 
 // NodeInfo is one original node. It never represents an expanded chain.
 type NodeInfo struct {
-	Link     string
-	Property *dialer.Property
-	Dialers  []D.Builder
-	Required bool
+	Link      string
+	Property  *dialer.Property
+	Dialers   []D.Builder
+	Required  bool
+	Selection selector.Node
 }
 
 type PathSpec struct {
@@ -98,7 +101,8 @@ func GroupPathKey(spec *PathSpec, option *dialer.GlobalOption) string {
 	annotation, _ := json.Marshal(spec.Annotation, json.WithMarshalers(json.MarshalFunc(func(value time.Duration) ([]byte, error) {
 		return []byte(strconv.FormatInt(int64(value), 10)), nil
 	})))
-	return fmt.Sprintf("%q/%q/%s", spec.Identity(), sharedPathKey(spec, option), annotation)
+	selection, _ := json.Marshal(spec.selectionReference())
+	return fmt.Sprintf("%q/%q/%s/%s", spec.Identity(), sharedPathKey(spec, option), annotation, selection)
 }
 
 func applyNodeOptions(builder D.Builder, options config.NodeOptions) ([]D.Builder, error) {
@@ -199,8 +203,24 @@ func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 			return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
 		}
 		nodeInfo.Property.Link = nodeIdentity(property.Link, effectiveOptions)
+		source := node.SelectionSource
+		if source == "" {
+			source = "local"
+			if node.SubscriptionTag != "" {
+				source = selector.SubscriptionSource(node.SubscriptionTag, "")
+			}
+		}
+		nodeInfo.Selection = selector.Node{Source: source, Name: property.Name, Fingerprint: selector.Fingerprint(node.Link)}
 		nodeInfo.Dialers = builders
 		set.nodeInfos = append(set.nodeInfos, nodeInfo)
+	}
+	// Record ambiguity in the full source, not just the current filter results.
+	counts := make(map[[2]string]int)
+	for _, node := range set.nodeInfos {
+		counts[[2]string{node.Selection.Source, node.Selection.Name}]++
+	}
+	for _, node := range set.nodeInfos {
+		node.Selection.Exact = node.Selection.Name == "" || counts[[2]string{node.Selection.Source, node.Selection.Name}] > 1
 	}
 	return set, nil
 }
@@ -510,6 +530,18 @@ func (b pathNodeBuilder) Build(option *D.ExtraOption, upstream D.Upstream) (netp
 	return layer, nil
 }
 
+func (spec *PathSpec) selectionReference() *selector.Path {
+	selection := &selector.Path{IPVersion: spec.IPVersion, Interface: spec.Entry.Interface, Mark: spec.Entry.Mark}
+	for _, node := range spec.Nodes {
+		ref := node.Selection
+		if ref.Source == "" {
+			ref = selector.Node{Source: "local", Name: node.Property.Name, Fingerprint: selector.Fingerprint(node.Link), Exact: node.Property.Name == ""}
+		}
+		selection.Nodes = append(selection.Nodes, ref)
+	}
+	return selection.Clone()
+}
+
 func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, statsScope string) (*dialer.Dialer, error) {
 	if len(spec.Nodes) == 0 {
 		return nil, errors.New("cannot build an empty proxy path")
@@ -536,6 +568,7 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		Link:            runtimePathKey(spec, option),
 		SubscriptionTag: terminal.Property.SubscriptionTag,
 		Egress:          &api.NodeEgress{IPVersion: spec.IPVersion, Mark: spec.effectiveMark(option), Interface: spec.Entry.Interface},
+		Selection:       spec.selectionReference(),
 	}
 	pool := s.shared
 	if pool == nil {

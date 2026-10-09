@@ -38,7 +38,7 @@ routing {
 
 `dae status`（包括 verbose/JSON）中，selector 只列出选中、持续追踪、正在检测或仍有活动连接的节点。已测试但空闲且未追踪的候选只在 `/api/selectors` 和页面中保留最后结果；组及全局累计流量仍包含这些路径。
 
-- **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过直连 LAN 身份校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按节点 ID 保存，重排不变；保存的节点消失时回到显式默认，未配置默认时使用首个候选。
+- **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过直连 LAN 身份校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
 - **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)，页面不会探测信任状态。
 
@@ -54,7 +54,11 @@ routing {
 
 **Reset Default** 仅在 selector 显式配置了 `selector(n)` 时提供；它清除保存的选择并恢复该路径。选择器和 HTTPS 模块的设置来源统一显示为 **Default** 或 **Custom**。MITM 的重置仍清除设备覆盖。设置保存在 `$DAE_LOCATION_CACHE/runtime-state.json`（默认 `/var/lib/dae/runtime-state.json`，权限 `0600`），重载、重启或关闭 API 后保留，不改写主配置。已有连接和 UDP 会话保持原路径。
 
-也可直接编辑该文件，文件系统事件触发热重载，支持原子替换。无效内容、未知节点 ID、应用失败或文件暂时缺失时保留当前状态。例如：
+保存引用包含完整代理链、各跳的来源和名称，以及入口地址族、显式 interface/mark；未显式配置 mark 时保存继承关系。本地节点按配置名称识别；订阅节点按订阅标签与名称识别，未命名订阅使用订阅地址指纹区分来源。唯一同名节点可跟随地址或凭据更新。链接指纹用于重名消歧，不保存链接或凭据原文；选择时同源重名的节点必须继续匹配指纹，不会因另一节点消失而误认剩余的同名节点。
+
+保存路径被 filter 排除、入口地址族暂时缺失或无法唯一匹配时，保留引用并临时使用显式默认／首个候选，页面显示 **Temporary fallback**。后续 reload 中路径重新出现会自动恢复。临时回退期间重新选择节点（包括当前正在使用的节点）会替换保存的偏好。健康检查失败本身不会清除选择或改选其他节点。
+
+也可直接编辑该文件，文件系统事件触发热重载，支持原子替换。无效内容、应用失败或文件暂时缺失时保留当前状态。例如：
 
 ```json
 {
@@ -64,7 +68,7 @@ routing {
 }
 ```
 
-保留三个对象，删除对象内条目可清除覆盖或成员。`selectors` 使用 `/api/selectors` 返回的节点 ID，MAC 使用小写冒号格式。避免同时编辑文件和操作 API。
+保留三个对象，删除对象内条目可清除覆盖或成员。`selectors` 的值是包含 `nodes`、`ipversion`、`interface` 和可选 `mark` 的路径对象，不是 API 的运行时节点 ID；建议通过页面或 `dae selector set` 保存。MAC 使用小写冒号格式。避免同时编辑文件和操作 API。
 
 `track_all` 在主配置的 group 块中设置，运行时状态文件不能覆盖该配置。状态文件中的未知字段会被拒绝。
 
@@ -120,6 +124,8 @@ MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状�
 `POST /api/probes` 是统一的主动连通性探测入口，适用于已实例化且启用连通性检测的出站（包括 selector、自动选择组和直接引用的节点）。使用已配置的 DNS 探测、超时和并发限制，不接受任意测试 URL 或请求级配置覆盖。`202` 仅表示已受理，排队或进行中的重复请求会合并；不创建持久化任务，也不改变节点选择或 `track_all`。selector 通过 `GET /api/selectors` 查询 `checking`、`tested`、`checked_at`、`healthy`、`latency_ms`，其他出站通过 `/api/status` 查看运行时健康和延迟。未知出站为 `404`、不属于该出站的节点为 `400`、无需检测的内置出站为 `409`。
 
 `SelectorState.track_all` 是配置的只读值。仅显式 `selector(n)` 返回 `default_node_id`；裸 selector 省略此字段，客户端应据此隐藏默认标记与重置操作。
+
+`node_id` 是当前实际使用的运行时节点 ID。有保存偏好时，`overridden` 为 `true`，并返回 `saved_selection` 的 `name` 和 `status`（`matched`、`missing`、`ambiguous`）。后两种状态表示保留偏好并使用临时初始选择；客户端不能把当前 `node_id` 误当作新的保存偏好。
 
 脚本执行的 `202` 仅表示受理，任务使用 daemon 后台路由客户端，HTTP 响应结束后继续执行。通过 `/api/status` 的 `plugins[].details.modules[].tasks` 查询完成情况，`type` 为 `cron` 或 `generic`，`runs` 标识最新尝试，`last_trigger` 为 `cron` 或 `http-api`。generic 没有定时计划，空闲时为 `ready`。仅保留最近一次尝试，计数与历史随重载重置。手动执行不改变 cron 的下次定时时间。实例/任务不存在 `404`，省略 module 导致同名歧义 `400`，已在等待/运行 `409`，worker 未激活或已停止 `503`。不接受脚本文本或参数覆盖，API 客户端不自动重试执行请求。
 

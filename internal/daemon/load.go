@@ -22,6 +22,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
+	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -340,7 +341,7 @@ func resolveNodeDescriptors(
 		}
 		for _, link := range result.nodes {
 			descriptors = append(descriptors, outbound.NodeDescriptor{
-				Link: link, SubscriptionTag: result.tag,
+				Link: link, SubscriptionTag: result.tag, SelectionSource: selector.SubscriptionSource(result.tag, sub.Link),
 				Defaults: sub.Option.Defaults, Rules: sub.Option.Rules,
 			})
 		}
