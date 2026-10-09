@@ -26,6 +26,37 @@ func (p *preparedRules) bypassLocalAPI(port uint16) error {
 	return nil
 }
 
+// APIRoutingCurrent checks the host-address input to the installed API bypass.
+// Reload must replace routing when this input changes, even with identical config.
+func (c *ControlPlane) APIRoutingCurrent() (bool, error) {
+	var current preparedRules
+	if err := current.bypassLocalAPI(c.apiPort); err != nil {
+		return false, err
+	}
+	return c.matchesAPIBypass(current.apiBypass), nil
+}
+
+func (c *ControlPlane) matchesAPIBypass(current []bpfIpPort) bool {
+	// Interface order, duplicate addresses and repeated plugin preparation do
+	// not change the exact address/port set installed in the kernel.
+	seen := make(map[bpfIpPort]bool, len(current))
+	for _, key := range current {
+		seen[key] = false
+	}
+	for _, key := range c.apiBypass {
+		if _, exists := seen[key]; !exists {
+			return false
+		}
+		seen[key] = true
+	}
+	for _, exists := range seen {
+		if !exists {
+			return false
+		}
+	}
+	return true
+}
+
 // Preserve the original LAN peer for the daemon's HTTP API, including when the
 // configured fallback is a proxy. Only exact host addresses and this TCP port
 // bypass routing; changes to interface addresses are picked up on reload.
