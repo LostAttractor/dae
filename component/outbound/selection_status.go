@@ -15,7 +15,7 @@ func (g *DialerGroup) NodeSelectionStatus(d *dialer.Dialer, runtime dialer.Runti
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	latency := candidateLatency(g.selectionPolicy.Policy, dialer.SelectionSnapshot{HasLatency: runtime.HasLatency, Latency: runtime.Latency})
+	latency := candidateLatency(g.selectionPolicy.Policy, runtime.Latency)
 	annotation := g.dialerToAnnotation[d]
 	status := &api.SelectionStatus{
 		Tracking: "standby", Degraded: runtime.Degraded, RecoveryElapsed: runtime.RecoveryElapsed, FailureRecovery: runtime.FailureRecovery,

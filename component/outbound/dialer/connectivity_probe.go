@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -101,10 +100,10 @@ func (c *CheckDnsOptionRaw) Option(ctx context.Context) (*checkDNSOption, error)
 	return c.opt, nil
 }
 
-func (d *pathRuntime) checkDNSConnectivity(ctx context.Context, networkType *common.NetworkType) (bool, error) {
+func (d *pathRuntime) checkDNSConnectivity(ctx context.Context, networkType *common.NetworkType) error {
 	opt, err := d.CheckDnsOptionRaw.Option(ctx)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	var ip netip.Addr
@@ -120,7 +119,7 @@ func (d *pathRuntime) checkDNSConnectivity(ctx context.Context, networkType *com
 			"node":     d.name,
 			"network":  networkType.String(),
 		}).Trace("Skipping connectivity check: resolver has no address for this IP family")
-		return false, nil
+		return fmt.Errorf("connectivity resolver has no IPv%s address", networkType.IpVersion)
 	}
 	return d.dnsCheck(ctx, netip.AddrPortFrom(ip, opt.DnsPort), string(networkType.L4Proto))
 }
@@ -179,15 +178,15 @@ func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkA
 	states := c.d.networkStates()
 	switch attempt.kind {
 	case checkInitial:
-		result.probes = c.probeMany(ctx, states, networkUntested, 1)
+		result.probes = c.probeMany(ctx, states, networkUntested)
 	case checkSupport:
-		result.probes = c.probeMany(ctx, states, networkUnknown, 1)
+		result.probes = c.probeMany(ctx, states, networkUnknown)
 	case checkHealth:
 		first := firstSupportedNetwork(states)
 		if !first.Valid() {
 			return result
 		}
-		firstResult := c.probeNetwork(ctx, first, 2)
+		firstResult := c.probeHealth(ctx, first)
 		result.probes = append(result.probes, firstResult)
 	}
 	return result
@@ -220,7 +219,7 @@ func (c *connectivityChecker) connectFor(ctx context.Context, replenish bool) (n
 	return snapshot, nil
 }
 
-func (c *connectivityChecker) probeMany(ctx context.Context, states [common.NetworkTypeCount]networkState, wanted networkState, attempts int) []probeResult {
+func (c *connectivityChecker) probeMany(ctx context.Context, states [common.NetworkTypeCount]networkState, wanted networkState) []probeResult {
 	results := make([]probeResult, 0, common.NetworkTypeCount)
 	for _, network := range canonicalNetworkOrder {
 		if states[network] == wanted {
@@ -231,16 +230,16 @@ func (c *connectivityChecker) probeMany(ctx context.Context, states [common.Netw
 	for i := range results {
 		network := results[i].network
 		wg.Go(func() {
-			results[i] = c.probeNetwork(ctx, network, attempts)
+			results[i] = c.runProbe(ctx, network)
 		})
 	}
 	wg.Wait()
 	return results
 }
 
-func (c *connectivityChecker) probeNetwork(ctx context.Context, network common.NetworkIndex, attempts int) probeResult {
+func (c *connectivityChecker) probeHealth(ctx context.Context, network common.NetworkIndex) probeResult {
 	first := c.runProbe(ctx, network)
-	if first.err == nil || attempts == 1 || ctx.Err() != nil || recoveryBlockedReason(first.err) != "" {
+	if first.err == nil || ctx.Err() != nil || recoveryBlockedReason(first.err) != "" {
 		return first
 	}
 	retry := c.runProbe(ctx, network)
@@ -258,17 +257,13 @@ func (c *connectivityChecker) runProbe(ctx context.Context, network common.Netwo
 	defer releaseConnectivityCheckSlot()
 	c.d.probeStarted()
 	defer c.d.probeFinished()
+	return c.measureProbe(ctx, network)
+}
+
+func (c *connectivityChecker) measureProbe(ctx context.Context, network common.NetworkIndex) probeResult {
 	start := time.Now()
-	ok, err := c.probe(ctx, network.NetworkType())
-	if ok {
-		return probeResult{network: network, latency: time.Since(start)}
-	}
-	if err == nil {
-		err = fmt.Errorf("check func not working")
-	} else if strings.HasSuffix(err.Error(), "network is unreachable") {
-		err = fmt.Errorf("network is unreachable")
-	}
-	return probeResult{network: network, err: err}
+	err := c.probe(ctx, network.NetworkType())
+	return probeResult{network: network, latency: time.Since(start), err: err}
 }
 
 func acquireConnectivityCheckSlot(ctx context.Context) error {
@@ -291,15 +286,15 @@ func releaseConnectivityCheckSlot() {
 	<-connectivityCheckSlots
 }
 
-func (d *pathRuntime) dnsCheck(ctx context.Context, dns netip.AddrPort, network string) (bool, error) {
+func (d *pathRuntime) dnsCheck(ctx context.Context, dns netip.AddrPort, network string) error {
 	ctx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 	defer cancel()
 	addrs, err := netutils.ResolveNetipContext(ctx, d.Dialer, dns, consts.UdpCheckLookupHost, dnsmessage.TypeA, network)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if len(addrs) == 0 {
-		return false, fmt.Errorf("bad DNS response: no record")
+		return fmt.Errorf("bad DNS response: no record")
 	}
-	return true, nil
+	return nil
 }

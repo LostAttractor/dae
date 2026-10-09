@@ -24,17 +24,17 @@ func TestOnDemandCheckerDoesNotConnectOrRetryUntilRequested(t *testing.T) {
 				d.SetCheckEnabled(false)
 				var probes atomic.Int32
 				release := make(chan struct{})
-				checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+				checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
 					probes.Add(1)
 					select {
 					case <-release:
 					case <-ctx.Done():
-						return false, ctx.Err()
+						return ctx.Err()
 					}
 					if !healthy {
-						return false, errors.New("offline")
+						return errors.New("offline")
 					}
-					return true, nil
+					return nil
 				})
 				start := make(chan struct{})
 				close(start)
@@ -93,9 +93,9 @@ func TestFailedConnectCompletesTestBeforeCapabilityDiscovery(t *testing.T) {
 	transport := newTestSessionTransport(netproxy.SessionDisconnected)
 	transport.connectErr = errors.New("offline")
 	d := newTestDialer(t, transport)
-	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 		t.Error("failed connection reached the probe")
-		return false, nil
+		return errors.New("unexpected probe after failed connect")
 	})
 	defer checker.stopRetries()
 	checker.start(checkInitial)
@@ -136,9 +136,9 @@ func TestManualCheckDuringCapacityReplenishment(t *testing.T) {
 	d := newTestDialer(t, transport)
 	prepareRecoveryDialer(d)
 	var probes atomic.Int32
-	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 		probes.Add(1)
-		return true, nil
+		return nil
 	})
 	t.Cleanup(checker.stopRetries)
 	checker.start(checkCapacity)
@@ -181,9 +181,9 @@ func TestPausedRetainedDialerRecoversUntilReleased(t *testing.T) {
 				prepareRecoveryDialer(d)
 				d.SetCheckEnabled(false)
 				var probes atomic.Int32
-				checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+				checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 					probes.Add(1)
-					return true, nil
+					return nil
 				})
 				start := make(chan struct{})
 				close(start)

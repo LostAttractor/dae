@@ -14,18 +14,38 @@ import (
 	"github.com/daeuniverse/dae/common"
 )
 
+func TestSelectionCheckExpiredBudgetDoesNotStartWork(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newTestDialer(t, testTransport{})
+				d.SetCheckEnabled(false)
+				began := time.Now()
+				proof, err := d.Check(t.Context(), common.NetworkTCP4, timeout)
+				defer proof.Release()
+				if !errors.Is(err, context.DeadlineExceeded) || time.Since(began) != 0 {
+					t.Fatalf("expired budget was extended: err=%v elapsed=%v", err, time.Since(began))
+				}
+				if status := d.RuntimeStatus(); status.Checking || !status.CheckedAt.IsZero() || d.connectivityCheckRequested() {
+					t.Fatalf("expired budget requested a check: %+v", status)
+				}
+			})
+		})
+	}
+}
+
 func TestSelectionChecksCoalesceAndBoundQueueing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.SetCheckEnabled(false)
 		var probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
 			probes.Add(1)
 			select {
 			case <-time.After(10 * time.Millisecond):
-				return true, nil
+				return nil
 			case <-ctx.Done():
-				return false, ctx.Err()
+				return ctx.Err()
 			}
 		})
 		start := make(chan struct{})
@@ -54,9 +74,9 @@ func TestSelectionCheckQueueTimeout(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.SetCheckEnabled(false)
 	d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}}})
-	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 		t.Error("queued check reached the network")
-		return true, nil
+		return nil
 	})
 	start := make(chan struct{})
 	close(start)
@@ -87,13 +107,13 @@ func TestSharedCheckHonorsEachCallersDeadline(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.SetCheckEnabled(false)
 		var probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
 			probes.Add(1)
 			select {
 			case <-time.After(50 * time.Millisecond):
-				return true, nil
+				return nil
 			case <-ctx.Done():
-				return false, ctx.Err()
+				return ctx.Err()
 			}
 		})
 		start := make(chan struct{})

@@ -7,15 +7,9 @@ package dialer
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/daeuniverse/outbound/netproxy"
-)
-
-var (
-	UnexpectedFieldErr  = fmt.Errorf("unexpected field")
-	InvalidParameterErr = fmt.Errorf("invalid parameters")
 )
 
 // Dialer is a group-local member of a shared physical path. Properties and
@@ -52,23 +46,21 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	}
 	d := path.newMember(property, statsScope)
 	d.active = true
-	if !checksConnectivity {
-		if session == nil {
-			d.recovery.Phase = RecoveryReady
-		}
-		d.health.phase = healthHealthy
-		for i := range d.health.networks {
-			d.health.networks[i] = networkSupported
-		}
+	if checksConnectivity {
+		return d
 	}
-	if session != nil {
+	d.health.phase = healthHealthy
+	for i := range d.health.networks {
+		d.health.networks[i] = networkSupported
+	}
+	if session == nil {
+		d.recovery.Phase = RecoveryReady
+	} else {
 		snapshot := session.Snapshot()
-		if !checksConnectivity {
-			if snapshot.Accepting {
-				d.health.readiness = snapshot.ReadinessVersion
-			} else {
-				d.health.phase = healthUnhealthy
-			}
+		if snapshot.Accepting {
+			d.health.readiness = snapshot.ReadinessVersion
+		} else {
+			d.health.phase = healthUnhealthy
 		}
 	}
 	return d

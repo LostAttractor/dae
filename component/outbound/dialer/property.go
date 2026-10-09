@@ -13,14 +13,5 @@ import (
 type Property struct {
 	D.Property
 	SubscriptionTag string
-	Hops            []Hop
 	Egress          *api.NodeEgress
-}
-
-type Hop struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Subtag   string `json:"subtag"`
-	Protocol string `json:"protocol"`
-	Address  string `json:"address"`
 }

@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -27,17 +28,14 @@ type selectorCandidate struct {
 	degraded       bool
 }
 
-func candidateLatency(policy consts.DialerSelectionPolicy, snapshot dialer.SelectionSnapshot) time.Duration {
-	if !snapshot.HasLatency {
-		return 0
-	}
+func candidateLatency(policy consts.DialerSelectionPolicy, latency api.LatencyStats) time.Duration {
 	switch policy {
 	case consts.DialerSelectionPolicy_MinAverage10Latencies:
-		return snapshot.Latency.Avg10
+		return latency.Avg10
 	case consts.DialerSelectionPolicy_MinMovingAverageLatencies:
-		return snapshot.Latency.MovingAvg
+		return latency.MovingAvg
 	default:
-		return snapshot.Latency.Last
+		return latency.Last
 	}
 }
 
@@ -53,7 +51,7 @@ func (g *DialerGroup) candidate(d *dialer.Dialer, networkType *common.NetworkTyp
 }
 
 func (g *DialerGroup) scoreCandidate(d *dialer.Dialer, snapshot dialer.SelectionSnapshot) selectorCandidate {
-	latency := candidateLatency(g.selectionPolicy.Policy, snapshot)
+	latency := candidateLatency(g.selectionPolicy.Policy, snapshot.Latency)
 	sortingLatency := saturatingDurationAdd(latency, g.dialerToAnnotation[d].AddLatency)
 	return selectorCandidate{
 		dialer:         d,

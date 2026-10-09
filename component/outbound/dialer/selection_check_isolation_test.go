@@ -24,16 +24,16 @@ func TestQueuedProofVerifiesItsOwnNetwork(t *testing.T) {
 		}})
 		time.Sleep(time.Second)
 		var ipv6Probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) (bool, error) {
+		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) error {
 			if network.Index() == common.NetworkTCP6 {
 				ipv6Probes.Add(1)
-				return false, errors.New("IPv6 egress became unreachable")
+				return errors.New("IPv6 egress became unreachable")
 			}
 			select {
 			case <-time.After(50 * time.Millisecond):
-				return true, nil
+				return nil
 			case <-ctx.Done():
-				return false, ctx.Err()
+				return ctx.Err()
 			}
 		})
 		start := make(chan struct{})
@@ -67,12 +67,12 @@ func TestFirstShortWaiterDoesNotTruncateLongWaiter(t *testing.T) {
 				d.SetCheckEnabled(false)
 				d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}}})
 				time.Sleep(time.Second)
-				checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+				checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
 					select {
 					case <-time.After(response):
-						return true, nil
+						return nil
 					case <-ctx.Done():
-						return false, ctx.Err()
+						return ctx.Err()
 					}
 				})
 				start := make(chan struct{})
@@ -110,10 +110,10 @@ func TestSelectionCheckDoesNotRetryTargetTimeout(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.SetCheckEnabled(false)
 		var probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 			probes.Add(1)
 			time.Sleep(time.Millisecond)
-			return false, context.DeadlineExceeded
+			return context.DeadlineExceeded
 		})
 		start := make(chan struct{})
 		close(start)

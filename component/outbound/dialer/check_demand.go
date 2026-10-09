@@ -19,14 +19,21 @@ const (
 	checkRequestManual
 )
 
+type checkOperation uint8
+
+const (
+	checkIdle checkOperation = iota
+	checkProbing
+	checkReplenishing
+)
+
 // pathChecks holds shared work demand and progress, protected by pathRuntime.mu.
 // Pausing periodic checks does not discard manual or data-plane requests.
 type pathChecks struct {
 	wake         chan struct{}
 	activated    bool
 	paused       bool
-	running      bool
-	probing      bool
+	operation    checkOperation
 	checkedAt    time.Time
 	pending      checkRequestReason
 	activeProbes int
@@ -81,7 +88,7 @@ func (d *Dialer) SetMonitoring(enabled bool) {
 
 func (d *Dialer) setCheckEnabled(enabled, immediate bool) {
 	d.mu.Lock()
-	if d.closed || d.ctx.Err() != nil || d.checkEnabled == enabled {
+	if d.closed || d.checkEnabled == enabled {
 		d.mu.Unlock()
 		return
 	}
@@ -100,7 +107,7 @@ func (d *Dialer) setCheckEnabled(enabled, immediate bool) {
 // Only an actual probe can satisfy it; capacity replenishment cannot.
 func (d *pathRuntime) RequestManualCheck() {
 	d.mu.Lock()
-	if d.ctx.Err() != nil || !d.checksConnectivity || d.checks.probing || d.checks.pending&checkRequestManual != 0 {
+	if d.ctx.Err() != nil || !d.checksConnectivity || d.checks.operation == checkProbing || d.checks.pending&checkRequestManual != 0 {
 		d.mu.Unlock()
 		return
 	}
@@ -133,9 +140,11 @@ func (d *pathRuntime) beginConnectivityCheck(kind checkKind) checkAttempt {
 		reasons:    d.checks.pending,
 	}
 	d.checks.pending = 0
-	d.checks.running = true
+	d.checks.operation = checkProbing
 	// Explicit demand promotes capacity work to a probe in start.
-	d.checks.probing = kind != checkCapacity || attempt.reasons != 0
+	if kind == checkCapacity && attempt.reasons == 0 {
+		d.checks.operation = checkReplenishing
+	}
 	d.updateTransportDemandLocked()
 	d.mu.Unlock()
 	return attempt

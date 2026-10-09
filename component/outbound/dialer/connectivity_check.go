@@ -42,7 +42,7 @@ type appliedCheck struct {
 // Shared demand and published progress live in pathRuntime.checks under mu.
 type connectivityChecker struct {
 	d       *pathRuntime
-	probe   func(context.Context, *common.NetworkType) (bool, error)
+	probe   func(context.Context, *common.NetworkType) error
 	results chan checkResult
 	flight  *selectionCheck
 
@@ -67,13 +67,10 @@ type connectivityChecker struct {
 	capacityActive      bool
 }
 
-func newConnectivityChecker(d *pathRuntime, probe func(context.Context, *common.NetworkType) (bool, error)) *connectivityChecker {
+func newConnectivityChecker(d *pathRuntime, probe func(context.Context, *common.NetworkType) error) *connectivityChecker {
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
-	healthInterval := d.CheckInterval
-	if healthInterval > 0 {
-		healthInterval = time.Duration(fastrand.Int63n(int64(healthInterval)))
-	}
+	healthInterval := time.Duration(fastrand.Int63n(int64(d.CheckInterval)))
 	retryInterval := initialRetryInterval(d.CheckIntervalMax)
 	return &connectivityChecker{
 		d:              d,
@@ -229,8 +226,7 @@ func (c *connectivityChecker) run(start <-chan struct{}) {
 func (c *connectivityChecker) finish(result checkResult) bool {
 	defer func() {
 		c.d.mu.Lock()
-		c.d.checks.running = false
-		c.d.checks.probing = false
+		c.d.checks.operation = checkIdle
 		if c.d.checks.paused {
 			c.d.resetRecoveryObservationLocked()
 		}
@@ -322,9 +318,6 @@ func (c *connectivityChecker) finishCapacity(result checkResult, applied bool) {
 		log.WithField("node", c.d.name).Debug("Outbound capacity replenishment made no observable progress; retrying with backoff")
 	}
 	maximum := c.d.CheckIntervalMax
-	if maximum <= 0 {
-		maximum = time.Hour
-	}
 	if c.capacityInterval == 0 {
 		c.capacityInterval = checkBackoffInitialInterval
 	} else {

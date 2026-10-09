@@ -23,9 +23,6 @@ type SelectionSnapshot struct {
 	Latency         api.LatencyStats
 	Degraded        bool
 	Monitoring      bool // Shared worker demand, including other groups.
-	RecoveryElapsed time.Duration
-	FailureRecovery time.Duration
-	MeasuredAt      time.Time
 	Proof           HealthProof
 }
 
@@ -90,10 +87,9 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 		Support:         supportState(state),
 	}
 	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
-	snapshot.Degraded, snapshot.RecoveryElapsed, snapshot.FailureRecovery = d.degradationLocked()
+	snapshot.Degraded, _, _ = d.degradationLocked()
 	snapshot.Monitoring = !d.checks.paused
-	snapshot.MeasuredAt = d.health.measuredAt
-	snapshot.Proof = d.healthProofLocked(networkType.Index())
+	snapshot.Proof = d.health.proofs[networkType.Index()]
 	d.mu.RUnlock()
 	return snapshot
 }
@@ -151,7 +147,7 @@ func (d *pathRuntime) runtimeStatusLocked() RuntimeSnapshot {
 		Dormant:            dormant,
 		InitialCheckDone:   d.initialCheckCompletedLocked(),
 		CheckEnabled:       !d.checks.paused,
-		Checking:           d.checks.running || d.checks.pending != 0 || (!d.checks.paused && d.checks.checkedAt.IsZero()),
+		Checking:           d.checks.operation != checkIdle || d.checks.pending != 0 || (!d.checks.paused && d.checks.checkedAt.IsZero()),
 		CheckedAt:          d.checks.checkedAt,
 		ConfirmingFailure:  healthy && d.health.phase == healthConfirming,
 		Session:            session,

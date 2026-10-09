@@ -54,16 +54,13 @@ func (d *Dialer) Check(ctx context.Context, network common.NetworkIndex, timeout
 	if !network.Valid() {
 		return HealthProof{}, errors.New("invalid check network")
 	}
+	ctx, cancelWait := context.WithTimeout(ctx, timeout)
+	defer cancelWait()
 	if err := ctx.Err(); err != nil {
 		return HealthProof{}, err
 	}
-	if timeout <= 0 {
-		timeout = DefaultProbeTimeout
-	}
-	ctx, cancelWait := context.WithTimeout(ctx, timeout)
-	defer cancelWait()
 	d.mu.Lock()
-	if d.closed || d.ctx.Err() != nil {
+	if d.closed {
 		d.mu.Unlock()
 		return HealthProof{}, context.Canceled
 	}
@@ -87,9 +84,6 @@ func (d *Dialer) Check(ctx context.Context, network common.NetworkIndex, timeout
 			}
 			return proof, err
 		}
-		if err := ctx.Err(); err != nil {
-			return HealthProof{}, err
-		}
 	}
 }
 
@@ -99,7 +93,7 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) (He
 	}
 	deadline, _ := ctx.Deadline()
 	d.mu.Lock()
-	if d.closed || d.ctx.Err() != nil {
+	if d.closed {
 		d.mu.Unlock()
 		return HealthProof{}, context.Canceled
 	}
@@ -121,7 +115,8 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) (He
 		if flight.waiters == 0 {
 			// Let an elapsed probe deadline report a timeout. Turning it into
 			// caller cancellation here would discard actual failure evidence.
-			if end, ok := flight.ctx.Deadline(); !ok || time.Now().Before(end) {
+			end, _ := flight.ctx.Deadline()
+			if time.Now().Before(end) {
 				flight.cancel()
 			}
 		}
@@ -171,7 +166,7 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 			c.d.checks.selection[i] = nil
 			continue
 		}
-		proof := c.d.healthProofLocked(queued.network)
+		proof := c.d.health.proofs[queued.network]
 		if !proof.CheckedAt.Before(queued.requestedAt) && proof.failure == c.d.failures.generation &&
 			proof.readiness == c.d.health.readiness && c.d.health.networks[queued.network] == networkSupported &&
 			c.d.health.phase == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot()) {
@@ -188,7 +183,7 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 		return false
 	}
 	generation := c.d.failures.generation
-	c.d.checks.running, c.d.checks.probing = true, true
+	c.d.checks.operation = checkProbing
 	c.d.updateTransportDemandLocked()
 	c.d.mu.Unlock()
 	c.flight = flight
@@ -231,12 +226,7 @@ func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, gene
 	c.d.probeQueued()
 	c.d.probeStarted()
 	defer c.d.probeFinished()
-	start := time.Now()
-	ok, err := c.probe(ctx, flight.network.NetworkType())
-	if !ok && err == nil {
-		err = errors.New("connectivity probe produced no response")
-	}
-	result.probes = []probeResult{{network: flight.network, latency: time.Since(start), err: err}}
+	result.probes = []probeResult{c.measureProbe(ctx, flight.network)}
 	return result
 }
 
@@ -274,7 +264,7 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		err = ErrCheckSuperseded
 	}
 	if err == nil {
-		flight.proof = c.d.healthProofLocked(flight.network)
+		flight.proof = c.d.health.proofs[flight.network]
 	}
 	flight.err = err
 	if c.d.checks.selection[flight.network] == flight {

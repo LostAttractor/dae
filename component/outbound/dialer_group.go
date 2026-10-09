@@ -166,7 +166,7 @@ func NewDialerGroup(
 			g.automatic = newAutomaticSelection(g)
 		}
 		for _, d := range dialers {
-			d.RegisterDialerGroup(g, selectionPolicy.EmaAlpha, selectionPolicy.FailureRecovery, selectionPolicy.ProbeTimeout)
+			d.RegisterDialerGroup(g, selectionPolicy)
 		}
 		g.updateCheckTracking()
 	}

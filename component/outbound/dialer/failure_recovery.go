@@ -27,11 +27,7 @@ func (d *pathRuntime) recordRecoverySuccessLocked() {
 }
 
 func (d *pathRuntime) recoveryCheckInterval() time.Duration {
-	interval := 5 * time.Second
-	if d.CheckInterval > 0 {
-		interval = min(interval, d.CheckInterval)
-	}
-	return interval
+	return min(5*time.Second, d.CheckInterval)
 }
 
 // Share observation probes across groups, including groups with different

@@ -19,7 +19,6 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -518,7 +517,6 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 	names := make([]string, 0, len(spec.Nodes))
 	protocols := make([]string, 0, len(spec.Nodes))
 	addresses := make([]string, 0, len(spec.Nodes))
-	hops := make([]dialer.Hop, 0, len(spec.Nodes))
 	for index, node := range spec.Nodes {
 		protocol := nodeDisplayProtocol(node)
 		name := node.Property.Name
@@ -528,13 +526,7 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		names = append(names, name)
 		protocols = append(protocols, protocol)
 		addresses = append(addresses, node.Property.Address)
-		hops = append(hops, dialer.Hop{
-			ID:       stats.NodeID(nodeKey(node)),
-			Name:     node.Property.Name,
-			Subtag:   node.Property.SubscriptionTag,
-			Protocol: protocol,
-			Address:  node.Property.Address,
-		})
+
 	}
 	terminal := spec.Nodes[len(spec.Nodes)-1]
 	property := &dialer.Property{
@@ -543,7 +535,6 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		Address:         strings.Join(addresses, " -> "),
 		Link:            runtimePathKey(spec, option),
 		SubscriptionTag: terminal.Property.SubscriptionTag,
-		Hops:            hops,
 		Egress:          &api.NodeEgress{IPVersion: spec.IPVersion, Mark: spec.effectiveMark(option), Interface: spec.Entry.Interface},
 	}
 	pool := s.shared

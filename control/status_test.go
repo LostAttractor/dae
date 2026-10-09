@@ -257,10 +257,6 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 	option := &dialer.GlobalOption{}
 	property := &dialer.Property{
 		Name: "entry -> exit", Protocol: "socks -> ss", Address: "entry -> exit", Link: "path",
-		Hops: []dialer.Hop{
-			{ID: "entry-id", Name: "entry", Subtag: "a", Protocol: "socks", Address: "entry.example:1080"},
-			{ID: "exit-id", Name: "exit", Subtag: "b", Protocol: "ss", Address: "exit.example:443"},
-		},
 	}
 	node := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: statusTestDialer{}}), option, property, true, "")
 	group := outbound.NewDialerGroup(

@@ -3,7 +3,6 @@
 package dialer
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -13,13 +12,13 @@ import (
 )
 
 func TestDialerLatencyWindow(t *testing.T) {
-	d := &Dialer{pathRuntime: new(pathRuntime), active: true}
+	d := &Dialer{pathRuntime: &pathRuntime{ctx: t.Context()}, active: true}
 	d.members = map[*Dialer]struct{}{d: {}}
-	if _, ok := d.latencyStats(); ok {
+	if d.RuntimeStatus().HasLatency {
 		t.Fatal("unbound dialer has latency")
 	}
-	d.RegisterDialerGroup(nil, 0.5, 0, 0)
-	if _, ok := d.latencyStats(); ok {
+	d.RegisterDialerGroup(nil, DialerSelectionPolicy{EmaAlpha: 0.5}.WithDefaults())
+	if d.RuntimeStatus().HasLatency {
 		t.Fatal("new binding has latency")
 	}
 	var history []time.Duration
@@ -45,20 +44,20 @@ func TestDialerLatencyWindow(t *testing.T) {
 			movingAverage = time.Duration(float64(movingAverage)*0.5 + float64(sample)*0.5)
 		}
 		want.MovingAvg = movingAverage
-		got, ok := d.latencyStats()
-		if !ok || got != want {
-			t.Fatalf("sample %d: got %+v, %v; want %+v", i, got, ok, want)
+		got := d.RuntimeStatus()
+		if !got.HasLatency || got.Latency != want {
+			t.Fatalf("sample %d: got %+v, %v; want %+v", i, got.Latency, got.HasLatency, want)
 		}
 	}
-	d.RegisterDialerGroup(nil, 0.5, 0, 0)
-	if _, ok := d.latencyStats(); ok {
+	d.RegisterDialerGroup(nil, DialerSelectionPolicy{EmaAlpha: 0.5}.WithDefaults())
+	if d.RuntimeStatus().HasLatency {
 		t.Fatal("replacement binding inherited old latency samples")
 	}
 }
 
 func TestDialerLatencyConcurrentSnapshots(t *testing.T) {
-	d := &Dialer{pathRuntime: &pathRuntime{ctx: context.Background(), health: pathHealth{phase: healthHealthy}}}
-	d.RegisterDialerGroup(nil, 0.5, 0, 0)
+	d := &Dialer{pathRuntime: &pathRuntime{ctx: t.Context(), health: pathHealth{phase: healthHealthy}}}
+	d.RegisterDialerGroup(nil, DialerSelectionPolicy{EmaAlpha: 0.5}.WithDefaults())
 	network := common.NetworkIndex(0).NetworkType()
 	d.health.networks[network.Index()] = networkSupported
 	var workers sync.WaitGroup
@@ -83,8 +82,8 @@ func TestDialerLatencyConcurrentSnapshots(t *testing.T) {
 		})
 	}
 	workers.Wait()
-	latency, ok := d.latencyStats()
-	if !ok || latency.Avg10 != time.Millisecond {
-		t.Fatalf("final latency: %+v, %v", latency, ok)
+	status := d.RuntimeStatus()
+	if !status.HasLatency || status.Latency.Avg10 != time.Millisecond {
+		t.Fatalf("final latency: %+v, %v", status.Latency, status.HasLatency)
 	}
 }

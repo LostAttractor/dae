@@ -23,7 +23,7 @@ func shareTestDialer(t *testing.T, first *Dialer) *Dialer {
 	if !ok {
 		t.Fatal("could not share active runtime")
 	}
-	member.RegisterDialerGroup(new(testGroup), 0.25, 0, 0)
+	member.RegisterDialerGroup(new(testGroup), DialerSelectionPolicy{EmaAlpha: 0.25}.WithDefaults())
 	t.Cleanup(func() { _ = member.Close() })
 	return member
 }
@@ -84,9 +84,9 @@ func TestSharedCheckDemandAndRecoverySurviveMemberClose(t *testing.T) {
 		d.SetCheckEnabled(false)
 		other.SetCheckEnabled(false)
 		var probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 			probes.Add(1)
-			return true, nil
+			return nil
 		})
 		// Use the injected probe with the same shared activation/lifetime gate.
 		d.checks.activated = true

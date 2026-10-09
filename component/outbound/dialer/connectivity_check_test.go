@@ -108,16 +108,16 @@ func newTestDialer(t *testing.T, transport netproxy.Dialer) *Dialer {
 		Name: t.Name(),
 		Link: fmt.Sprintf("test://%s/%d", t.Name(), id),
 	}, true, "")
-	d.RegisterDialerGroup(new(testGroup), 0.5, 0, 0)
+	d.RegisterDialerGroup(new(testGroup), DialerSelectionPolicy{EmaAlpha: 0.5}.WithDefaults())
 	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
-func checkProbe(probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)) func(context.Context, *common.NetworkType) (bool, error) {
-	return func(ctx context.Context, network *common.NetworkType) (bool, error) {
+func checkProbe(probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) error) func(context.Context, *common.NetworkType) error {
+	return func(ctx context.Context, network *common.NetworkType) error {
 		probe := probes[network.Index()]
 		if probe == nil {
-			return false, errors.New("probe not configured")
+			return errors.New("probe not configured")
 		}
 		return probe(ctx, network)
 	}
@@ -136,15 +136,15 @@ func performCheck(c *connectivityChecker, ctx context.Context, kind checkKind) c
 func TestConnectivityCheckerWaitsForStartGate(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	probed := make(chan struct{}, 1)
-	checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) error {
 		if network.Index() == common.NetworkTCP4 {
 			select {
 			case probed <- struct{}{}:
 			default:
 			}
-			return true, nil
+			return nil
 		}
-		return false, errors.New("probe not configured")
+		return errors.New("probe not configured")
 	})
 	start := make(chan struct{})
 	done := make(chan struct{})
@@ -227,14 +227,14 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 	if d.RuntimeStatus().InitialCheckDone {
 		t.Fatal("new dialer reports a completed initial check")
 	}
-	probes := [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error){
-		func(context.Context, *common.NetworkType) (bool, error) { return true, nil },
-		func(context.Context, *common.NetworkType) (bool, error) { return false, context.DeadlineExceeded },
-		func(context.Context, *common.NetworkType) (bool, error) {
-			return false, fmt.Errorf("wrapped: %w", netproxy.UnsupportedTunnelTypeError)
+	probes := [common.NetworkTypeCount]func(context.Context, *common.NetworkType) error{
+		func(context.Context, *common.NetworkType) error { return nil },
+		func(context.Context, *common.NetworkType) error { return context.DeadlineExceeded },
+		func(context.Context, *common.NetworkType) error {
+			return fmt.Errorf("wrapped: %w", netproxy.UnsupportedTunnelTypeError)
 		},
-		func(context.Context, *common.NetworkType) (bool, error) {
-			return false, errors.New("network is unreachable")
+		func(context.Context, *common.NetworkType) error {
+			return errors.New("network is unreachable")
 		},
 	}
 	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
@@ -269,10 +269,10 @@ func TestInitialCheckClassifiesOnlyExplicitUnsupported(t *testing.T) {
 
 func TestUnsupportedInitialCheckIsComplete(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
-	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)
+	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) error
 	for i := range probes {
-		probes[i] = func(context.Context, *common.NetworkType) (bool, error) {
-			return false, netproxy.UnsupportedTunnelTypeError
+		probes[i] = func(context.Context, *common.NetworkType) error {
+			return netproxy.UnsupportedTunnelTypeError
 		}
 	}
 	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
@@ -305,14 +305,14 @@ func TestInitialCheckLogsEveryModeAndSupportDiscovery(t *testing.T) {
 	})
 
 	d := newTestDialer(t, testTransport{})
-	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)
+	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) error
 	for i := range probes {
 		index := common.NetworkIndex(i)
-		probes[i] = func(context.Context, *common.NetworkType) (bool, error) {
+		probes[i] = func(context.Context, *common.NetworkType) error {
 			if index == common.NetworkTCP6 || index == common.NetworkTCP4 {
-				return true, nil
+				return nil
 			}
-			return false, errors.New("probe failed")
+			return errors.New("probe failed")
 		}
 	}
 	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
@@ -389,14 +389,14 @@ func TestInitialCheckPublishesOnlyAfterFullSweep(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	blocked := make(chan struct{})
 	started := make(chan struct{})
-	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)
+	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) error
 	for i := range probes {
-		probes[i] = func(context.Context, *common.NetworkType) (bool, error) { return true, nil }
+		probes[i] = func(context.Context, *common.NetworkType) error { return nil }
 	}
-	probes[common.NetworkUDP4] = func(context.Context, *common.NetworkType) (bool, error) {
+	probes[common.NetworkUDP4] = func(context.Context, *common.NetworkType) error {
 		close(started)
 		<-blocked
-		return true, nil
+		return nil
 	}
 	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	resultCh := make(chan checkResult, 1)
@@ -425,6 +425,14 @@ func TestInitialCheckPublishesOnlyAfterFullSweep(t *testing.T) {
 }
 
 func TestSupportRetryBackoffAndJitter(t *testing.T) {
+	for interval := time.Nanosecond; interval < 5*time.Nanosecond; interval++ {
+		if got := jitterCheckInterval(interval); got != interval {
+			t.Fatalf("sub-jitter check interval = %v, want %v", got, interval)
+		}
+		if got := jitterRetryInterval(interval, time.Second); got != interval {
+			t.Fatalf("sub-jitter retry interval = %v, want %v", got, interval)
+		}
+	}
 	interval := supportRetryInitialInterval
 	want := []time.Duration{
 		4 * time.Second,
@@ -494,16 +502,16 @@ func TestExplicitRequestResetsSupportRetryWithoutCanonicalMode(t *testing.T) {
 	d.mu.Unlock()
 	probed := make(chan struct{}, 1)
 	release := make(chan struct{})
-	checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
 		select {
 		case probed <- struct{}{}:
 		default:
 		}
 		select {
 		case <-release:
-			return false, errors.New("still unsupported")
+			return errors.New("still unsupported")
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return ctx.Err()
 		}
 	})
 	t.Cleanup(func() {
@@ -578,8 +586,8 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	if got := strings.Count(output.String(), `"msg":"Connectivity modes supported"`); got != 1 {
 		t.Fatalf("support discovery logs = %d, want 1\n%s", got, output.String())
 	}
-	if latency, ok := d.latencyStats(); !ok || latency.Last != time.Millisecond {
-		t.Fatalf("support canonical latency = %+v, %v; want 1ms", latency, ok)
+	if status := d.RuntimeStatus(); !status.HasLatency || status.Latency.Last != time.Millisecond {
+		t.Fatalf("support canonical latency = %+v, %v; want 1ms", status.Latency, status.HasLatency)
 	}
 	availability := stats.DefaultStore.GetNode(d.StatsKey())
 	if !availability.Alive || availability.ChecksTotal != 1 || availability.LastCheckAt.IsZero() {
@@ -610,7 +618,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	if state := d.networkStates()[common.NetworkTCP6]; state != networkSupported {
 		t.Fatalf("duplicate support result changed terminal state to %v", state)
 	}
-	if latency, _ := d.latencyStats(); latency.Last != time.Millisecond {
+	if latency := d.RuntimeStatus().Latency; latency.Last != time.Millisecond {
 		t.Fatalf("duplicate support result changed latency to %v", latency.Last)
 	}
 	d.mu.Lock()
@@ -680,7 +688,7 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	if got := group.forces.Load(); got != 0 {
 		t.Fatalf("unhealthy support forced selection: %d", got)
 	}
-	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error { return nil })
 	t.Cleanup(func() {
 		checker.stopRetries()
 	})
@@ -720,9 +728,9 @@ func TestInitialCheckRecordsOnlyCanonicalLatency(t *testing.T) {
 	if !accepted {
 		t.Fatal("initial result was rejected")
 	}
-	latency, ok := d.latencyStats()
-	if !ok || latency.Last != 50*time.Millisecond {
-		t.Fatalf("canonical latency = %+v, %v; want 50ms", latency, ok)
+	status := d.RuntimeStatus()
+	if !status.HasLatency || status.Latency.Last != 50*time.Millisecond {
+		t.Fatalf("canonical latency = %+v, %v; want 50ms", status.Latency, status.HasLatency)
 	}
 }
 
@@ -734,14 +742,14 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 	d.health.networks[common.NetworkTCP4] = networkSupported
 	d.mu.Unlock()
 	var canonicalCalls, alternativeCalls atomic.Int32
-	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error)
-	probes[common.NetworkTCP6] = func(context.Context, *common.NetworkType) (bool, error) {
+	var probes [common.NetworkTypeCount]func(context.Context, *common.NetworkType) error
+	probes[common.NetworkTCP6] = func(context.Context, *common.NetworkType) error {
 		canonicalCalls.Add(1)
-		return false, errors.New("canonical probe failed")
+		return errors.New("canonical probe failed")
 	}
-	probes[common.NetworkTCP4] = func(context.Context, *common.NetworkType) (bool, error) {
+	probes[common.NetworkTCP4] = func(context.Context, *common.NetworkType) error {
 		alternativeCalls.Add(1)
-		return true, nil
+		return nil
 	}
 	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	result := performCheck(checker, context.Background(), checkHealth)
@@ -768,9 +776,8 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 	if got := firstSupportedNetwork(d.networkStates()); got != common.NetworkTCP6 {
 		t.Fatalf("canonical mode migrated to %v, want tcp6", got)
 	}
-	latency, ok := d.latencyStats()
-	if ok {
-		t.Fatalf("failed probe fabricated a latency = %+v", latency)
+	if status.HasLatency {
+		t.Fatalf("failed probe fabricated a latency = %+v", status.Latency)
 	}
 	d.applyCheck(checkResult{
 		kind: checkHealth,
@@ -793,14 +800,14 @@ func TestSupportCheckReconnectsWithoutCanonicalMode(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	probes := [common.NetworkTypeCount]func(context.Context, *common.NetworkType) (bool, error){}
+	probes := [common.NetworkTypeCount]func(context.Context, *common.NetworkType) error{}
 	for index := range probes {
-		probes[index] = func(context.Context, *common.NetworkType) (bool, error) {
-			return false, errors.New("unsupported for now")
+		probes[index] = func(context.Context, *common.NetworkType) error {
+			return errors.New("unsupported for now")
 		}
 	}
-	probes[common.NetworkTCP4] = func(context.Context, *common.NetworkType) (bool, error) {
-		return true, nil
+	probes[common.NetworkTCP4] = func(context.Context, *common.NetworkType) error {
+		return nil
 	}
 	checker := newConnectivityChecker(d.pathRuntime, checkProbe(probes))
 	result := performCheck(checker, context.Background(), checkSupport)
@@ -958,8 +965,8 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 
-	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
-		return true, nil
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
+		return nil
 	})
 	checker.backingOff = true
 	checker.healthInterval = time.Minute
@@ -1142,10 +1149,10 @@ func TestConnectivityProbeConcurrencyIsLimited(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
-	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 		entered <- struct{}{}
 		<-release
-		return true, nil
+		return nil
 	})
 	t.Cleanup(func() {
 		checker.stopRetries()

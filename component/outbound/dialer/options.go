@@ -13,6 +13,8 @@ import (
 	D "github.com/daeuniverse/outbound/dialer"
 )
 
+// GlobalOption contains validated configuration. Connectivity workers require
+// positive CheckInterval and CheckIntervalMax; config validation owns those bounds.
 type GlobalOption struct {
 	D.ExtraOption
 	SoMarkFromDae     uint32

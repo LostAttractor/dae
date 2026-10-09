@@ -55,7 +55,7 @@ func newUncheckedDialer(t *testing.T, name string) *dialer.Dialer {
 func newCheckedDialer(t *testing.T, name string) *dialer.Dialer {
 	t.Helper()
 	id := selectorDialerSequence.Add(1)
-	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{}, &dialer.Property{
+	return dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: fakeDialer{}}), &dialer.GlobalOption{CheckInterval: time.Hour, CheckIntervalMax: time.Hour}, &dialer.Property{
 		Name: name,
 		Link: fmt.Sprintf("test://%s/%d", name, id),
 	}, true, "")

@@ -38,15 +38,15 @@ func TestProxyAuthFailureBlocksRetry(t *testing.T) {
 	}
 	defer layer.Close()
 	d := newTestDialer(t, layer.Data)
-	c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, n *common.NetworkType) (bool, error) {
+	c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, n *common.NetworkType) error {
 		if n.Index() != common.NetworkTCP4 {
-			return false, netproxy.UnsupportedTunnelTypeError
+			return netproxy.UnsupportedTunnelTypeError
 		}
 		conn, err := d.DialContext(ctx, "tcp", "192.0.2.1:53")
 		if conn != nil {
 			conn.Close()
 		}
-		return false, err
+		return err
 	})
 	defer c.stopRetries()
 	result := c.performAttempt(context.Background(), checkAttempt{kind: checkInitial})
@@ -72,9 +72,9 @@ func TestStreamAuthenticationDistinguishesProxyAndTarget(t *testing.T) {
 				t.Fatalf("data-plane confirmation requested = %v", requested)
 			}
 			calls := 0
-			c := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+			c := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 				calls++
-				return false, failure
+				return failure
 			})
 			defer c.stopRetries()
 			result := c.performAttempt(context.Background(), d.beginConnectivityCheck(checkHealth))

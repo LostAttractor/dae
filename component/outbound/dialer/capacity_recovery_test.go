@@ -186,17 +186,17 @@ func TestRecoverySerializesDueHealthCapacityAndSupport(t *testing.T) {
 	d.health.networks[common.NetworkUDP4] = networkUnknown
 
 	started, release := make(chan struct{}), make(chan struct{})
-	c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) (bool, error) {
+	c := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) error {
 		if network.Index() == common.NetworkTCP4 {
 			close(started)
 			select {
 			case <-release:
-				return true, nil
+				return nil
 			case <-ctx.Done():
-				return false, ctx.Err()
+				return ctx.Err()
 			}
 		}
-		return false, netproxy.UnsupportedTunnelTypeError
+		return netproxy.UnsupportedTunnelTypeError
 	})
 	t.Cleanup(c.stopRetries)
 	c.healthAt = time.Now().Add(-time.Second)
@@ -332,9 +332,9 @@ func TestSelectedPausedPathRepairsCapacityWithoutPeriodicProbes(t *testing.T) {
 	prepareRecoveryDialer(d)
 	d.SetSelected(true)
 	d.SetMonitoring(false)
-	c := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+	c := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 		t.Error("capacity repair enabled periodic probes on a paused path")
-		return true, nil
+		return nil
 	})
 	t.Cleanup(c.stopRetries)
 	c.healthAt = time.Now()

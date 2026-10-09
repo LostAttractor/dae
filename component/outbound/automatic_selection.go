@@ -156,7 +156,7 @@ func (s *automaticSelection) hasUpgrade(network common.NetworkIndex, current sel
 		upper := s.g.dialerToAnnotation[d].MaxPriority()
 		if current.degraded || upper > current.priority ||
 			!s.failover() && upper == current.priority && (!snapshot.Usable || snapshot.Degraded ||
-				s.g.dialerToAnnotation[d].PriorityAt(candidateLatency(s.g.selectionPolicy.Policy, snapshot)) < current.priority) {
+				s.g.dialerToAnnotation[d].PriorityAt(candidateLatency(s.g.selectionPolicy.Policy, snapshot.Latency)) < current.priority) {
 			return true
 		}
 	}

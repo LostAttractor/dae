@@ -471,7 +471,7 @@ func TestRecoveryEndpointProofPromotesWithoutAnotherProbe(t *testing.T) {
 		release := sync.OnceFunc(func() { close(gate) })
 		defer release()
 		observer := &delayedSelectionObserver{group: g, gate: gate, entered: make(chan struct{}, 1)}
-		g.Dialers[0].RegisterDialerGroup(observer, policy.WithDefaults().EmaAlpha, policy.FailureRecovery, policy.ProbeTimeout)
+		g.Dialers[0].RegisterDialerGroup(observer, policy.WithDefaults())
 		time.Sleep(100 * time.Millisecond)
 		synctest.Wait()
 		high.offline.Store(false)

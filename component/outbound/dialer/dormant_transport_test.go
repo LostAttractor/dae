@@ -118,12 +118,12 @@ func TestSelectionProofHoldsTransportUntilCommit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d, err := NewRecreatableDialer(func() (*netproxy.Runtime, error) {
 			return netproxy.NewRuntime(netproxy.Layer{Data: new(sleepingTestTransport)}), nil
-		}, &GlobalOption{}, &Property{Name: t.Name()}, "")
+		}, &GlobalOption{CheckInterval: time.Hour, CheckIntervalMax: time.Hour}, &Property{Name: t.Name()}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		d.SetCheckEnabled(false)
-		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) { return true, nil })
+		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error { return nil })
 		start := make(chan struct{})
 		close(start)
 		var worker sync.WaitGroup

@@ -47,12 +47,6 @@ func (g *latencyWindow) snapshot() (lat api.LatencyStats, ok bool) {
 	return lat, true
 }
 
-func (d *Dialer) latencyStats() (lat api.LatencyStats, ok bool) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.latencyStatsLocked()
-}
-
 func (d *Dialer) latencyStatsLocked() (api.LatencyStats, bool) {
 	if d.group == nil {
 		return api.LatencyStats{}, false

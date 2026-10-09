@@ -27,10 +27,6 @@ func (p HealthProof) Release() {
 	}
 }
 
-func (d *pathRuntime) healthProofLocked(network common.NetworkIndex) HealthProof {
-	return d.health.proofs[network]
-}
-
 // SameObservation distinguishes a new successful test from unrelated status
 // notifications, including notifications for another destination network.
 func (p HealthProof) SameObservation(other HealthProof) bool {
@@ -67,7 +63,7 @@ func (d *Dialer) VerifiedUsable(network *common.NetworkType) bool {
 	if d.closed || !d.healthyLocked(d.sessionSnapshot()) || d.health.networks[network.Index()] != networkSupported {
 		return false
 	}
-	proof := d.healthProofLocked(network.Index())
+	proof := d.health.proofs[network.Index()]
 	return !proof.CheckedAt.IsZero() && proof.readiness == d.health.readiness &&
 		(proof.failure == d.failures.generation || d.health.phase == healthConfirming && proof.failure+1 == d.failures.generation)
 }

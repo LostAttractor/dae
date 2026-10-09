@@ -20,9 +20,6 @@ const (
 
 func jitterCheckInterval(interval time.Duration) time.Duration {
 	spread := interval / 5
-	if spread <= 0 {
-		return interval
-	}
 	return interval - spread + time.Duration(fastrand.Int63n(int64(2*spread+1)))
 }
 
@@ -122,9 +119,6 @@ func (c *connectivityChecker) updateInitialSchedule(success bool) {
 
 func (c *connectivityChecker) updateHealthSchedule(success bool) {
 	maximum := c.d.CheckIntervalMax
-	if maximum <= 0 {
-		maximum = time.Hour
-	}
 	if success {
 		c.healthInterval = c.d.CheckInterval
 		c.backingOff = false
@@ -262,9 +256,6 @@ func (c *connectivityChecker) dispatch() {
 }
 
 func nextRetryInterval(interval, maximum time.Duration) time.Duration {
-	if maximum <= 0 {
-		maximum = supportRetryInitialInterval
-	}
 	if interval >= maximum/time.Duration(supportRetryMultiplier) {
 		return maximum
 	}
@@ -272,30 +263,19 @@ func nextRetryInterval(interval, maximum time.Duration) time.Duration {
 }
 
 func initialRetryInterval(maximum time.Duration) time.Duration {
-	if maximum > 0 {
-		return min(supportRetryInitialInterval, maximum)
-	}
-	return supportRetryInitialInterval
+	return min(supportRetryInitialInterval, maximum)
 }
 
 func jitterRetryInterval(interval, maximum time.Duration) time.Duration {
 	low, high := retryJitterRange(interval, maximum)
-	if low == high {
-		return low
-	}
 	return low + time.Duration(fastrand.Int63n(int64(high-low+1)))
 }
 
 func retryJitterRange(interval, maximum time.Duration) (low, high time.Duration) {
 	spread := interval / 5
-	if spread <= 0 {
-		return interval, interval
-	}
 	low = interval - spread
 	high = interval + spread
-	if maximum > 0 {
-		high = min(high, maximum)
-	}
+	high = min(high, maximum)
 	return low, high
 }
 

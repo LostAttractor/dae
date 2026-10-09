@@ -73,7 +73,7 @@ func (s *latencyBasedSelector) recordMetrics(candidates []selectorCandidate, d *
 	if snapshot.Support != api.NetworkSupportConfirmed || !snapshot.HasLatency {
 		return
 	}
-	selectionLatency := candidateLatency(s.dialerGroup.selectionPolicy.Policy, snapshot)
+	selectionLatency := candidateLatency(s.dialerGroup.selectionPolicy.Policy, snapshot.Latency)
 	selectionLatency = saturatingDurationAdd(selectionLatency, s.dialerGroup.dialerToAnnotation[d].AddLatency)
 	stats.DefaultStore.RecordCheckMetrics(
 		d.StatsPath(s.dialerGroup.Name, networkType),

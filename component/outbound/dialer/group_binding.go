@@ -45,22 +45,14 @@ type groupBinding struct {
 	recovered       bool
 }
 
-func (d *Dialer) RegisterDialerGroup(group DialerGroup, emaAlpha float64, failureRecovery, probeTimeout time.Duration) {
+// RegisterDialerGroup binds a member to its group's normalized selection policy.
+func (d *Dialer) RegisterDialerGroup(group DialerGroup, policy DialerSelectionPolicy) {
 	d.mu.Lock()
-	if emaAlpha == 0 {
-		emaAlpha = DefaultEmaAlpha
-	}
-	if failureRecovery == 0 {
-		failureRecovery = DefaultFailureRecovery
-	}
-	if probeTimeout == 0 {
-		probeTimeout = DefaultProbeTimeout
-	}
 	d.group = &groupBinding{
 		observer:        group,
-		latency:         latencyWindow{alpha: emaAlpha},
-		failureRecovery: failureRecovery,
-		probeTimeout:    probeTimeout,
+		latency:         latencyWindow{alpha: policy.EmaAlpha},
+		failureRecovery: policy.FailureRecovery,
+		probeTimeout:    policy.ProbeTimeout,
 	}
 	d.mu.Unlock()
 }

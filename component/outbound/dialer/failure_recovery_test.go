@@ -21,9 +21,9 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		prepareRecoveryDialer(d)
 		d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP4, err: errors.New("offline")}}})
 		var probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) (bool, error) {
+		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
 			probes.Add(1)
-			return true, nil
+			return nil
 		})
 		start := make(chan struct{})
 		close(start)

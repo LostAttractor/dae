@@ -50,7 +50,7 @@ type pathRuntime struct {
 // idempotent.
 func (d *Dialer) Retain() (release func(), err error) {
 	d.mu.Lock()
-	if d.closed || d.ctx.Err() != nil {
+	if d.closed {
 		d.mu.Unlock()
 		return nil, net.ErrClosed
 	}

@@ -643,8 +643,8 @@ func TestNodeIdentityIncludesConfiguredName(t *testing.T) {
 	if first.StatsKey() == second.StatsKey() {
 		t.Fatalf("node aliases share stats identity %q", first.StatsKey())
 	}
-	if first.Hops[0].ID == second.Hops[0].ID {
-		t.Fatalf("node aliases share hop identity %q", first.Hops[0].ID)
+	if first.StatsID() == second.StatsID() {
+		t.Fatalf("node aliases share metric identity %q", first.StatsID())
 	}
 }
 
