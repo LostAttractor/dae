@@ -4,6 +4,7 @@ package surge
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -57,14 +58,27 @@ func Load(ctx context.Context, raw string, client *http.Client, options LoadOpti
 		Key: string(key), MaxBytes: MaxModuleBytes + MaxModuleScriptBytes,
 		RefreshDeadline: deadline, Timeout: resourceTimeout,
 	}, func(read resource.ReadFunc) (*Module, error) {
-		current, err := read(source, resource.ReadOptions{MaxBytes: MaxModuleBytes})
+		digest := sha256.New()
+		readResource := func(source resource.Source, options resource.ReadOptions) (resource.Result, error) {
+			result, err := read(source, options)
+			if err == nil {
+				fmt.Fprintf(digest, "%d:%s%d:%s%d:", len(source.Location), source.Location, len(result.Location), result.Location, len(result.Data))
+				digest.Write(result.Data)
+			}
+			return result, err
+		}
+		current, err := readResource(source, resource.ReadOptions{MaxBytes: MaxModuleBytes})
 		if err != nil {
 			return nil, err
 		}
-		return loadModuleContents(ctx, string(current.Data), current.Location, options.Arguments, func(dependency resource.Source) (string, error) {
-			result, err := read(dependency, resource.ReadOptions{MaxBytes: MaxScriptBytes})
+		module, err := loadModuleContents(ctx, string(current.Data), current.Location, options.Arguments, func(dependency resource.Source) (string, error) {
+			result, err := readResource(dependency, resource.ReadOptions{MaxBytes: MaxScriptBytes})
 			return string(result.Data), err
 		})
+		if err == nil {
+			module.contentKey = fmt.Sprintf("%x", digest.Sum(nil))
+		}
+		return module, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("load module: %w", err)

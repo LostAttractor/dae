@@ -24,6 +24,7 @@ import (
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
@@ -131,7 +132,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, plugins *mitm.Configuration) (c *control.ControlPlane, err error) {
+func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, plugins *pluginhost.Configuration) (c *control.ControlPlane, err error) {
 	if datapath == nil {
 		datapath = control.NewRuntime()
 	}

@@ -12,7 +12,7 @@ import (
 func (h *Host) Status() []plugin.InstanceStatus {
 	h.mu.Lock()
 	state := "prepared"
-	if h.cancel != nil {
+	if h.started {
 		state = "active"
 	}
 	if h.closed {

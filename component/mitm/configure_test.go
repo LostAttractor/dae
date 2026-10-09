@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
@@ -21,11 +22,11 @@ func testDefinition(prepare func(context.Context, plugin.Spec, plugin.Services) 
 }
 
 func loadTestPlugins(ctx context.Context, definitions map[string]plugin.Definition, specs []plugin.Spec, options Options, services plugin.Services) (*Host, error) {
-	configured, err := Configure(definitions, specs)
+	configured, err := pluginhost.Configure(definitions, specs)
 	if err != nil {
 		return nil, err
 	}
-	return configured.Load(ctx, options, services)
+	return Load(ctx, configured, options, services, nil)
 }
 
 func TestConfigureChecksAllTypesBeforeParsing(t *testing.T) {
@@ -34,7 +35,7 @@ func TestConfigureChecksAllTypesBeforeParsing(t *testing.T) {
 		called = true
 		return nil, nil
 	}}, "incomplete": {}}
-	_, err := Configure(definitions, []plugin.Spec{{ID: "first", Type: "known"}, {ID: "missing", Type: "unavailable"}, {ID: "nil_configure", Type: "incomplete"}})
+	_, err := pluginhost.Configure(definitions, []plugin.Spec{{ID: "first", Type: "known"}, {ID: "missing", Type: "unavailable"}, {ID: "nil_configure", Type: "incomplete"}})
 	if err == nil || called || !strings.Contains(err.Error(), "plugins.missing") || !strings.Contains(err.Error(), "plugins.nil_configure") {
 		t.Fatalf("type preflight: called=%v error=%v", called, err)
 	}
@@ -50,7 +51,7 @@ func TestConfigureAggregatesErrorsWithoutPreparing(t *testing.T) {
 		t.Fatal("preflight prepared resources")
 		return nil, nil
 	})}
-	configured, err := Configure(definitions, []plugin.Spec{{ID: "first", Type: "checked"}, {ID: "middle", Type: "valid"}, {ID: "last", Type: "checked"}})
+	configured, err := pluginhost.Configure(definitions, []plugin.Spec{{ID: "first", Type: "checked"}, {ID: "middle", Type: "valid"}, {ID: "last", Type: "checked"}})
 	if configured != nil || !errors.Is(err, invalid) || strings.Join(order, ",") != "first,last" || !strings.Contains(err.Error(), "plugins.first") || !strings.Contains(err.Error(), "plugins.last") {
 		t.Fatalf("configuration: order=%v error=%v", order, err)
 	}
@@ -65,11 +66,11 @@ func TestConfigureParsesOnceAndDefersResources(t *testing.T) {
 			return &testPlugin{}, nil
 		}, nil
 	}}}
-	configured, err := Configure(definitions, []plugin.Spec{{ID: "one", Type: "fixture"}})
+	configured, err := pluginhost.Configure(definitions, []plugin.Spec{{ID: "one", Type: "fixture"}})
 	if err != nil || parsed != 1 || prepared != 0 {
 		t.Fatalf("configure: parsed=%d prepared=%d error=%v", parsed, prepared, err)
 	}
-	host, err := configured.Load(t.Context(), Options{}, plugin.Services{})
+	host, err := Load(t.Context(), configured, Options{}, plugin.Services{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,17 @@ func TestHostInjectsSharedBodyBudgetAcrossReload(t *testing.T) {
 		t.Cleanup(func() { _ = h.Close() })
 		return h
 	}
-	old, next := load(4096), load(1024)
+	old := load(4096)
+	if err := old.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	next := load(1024)
+	if budget.Status().Limit != 4096 {
+		t.Fatal("candidate changed the active memory budget")
+	}
+	if err := next.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if budget.Status().Limit != 1024 {
 		t.Fatal("overlapping hosts did not share the tighter budget")
 	}

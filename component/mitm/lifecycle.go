@@ -46,9 +46,7 @@ func (h *Host) untrack(conn io.Closer) {
 func (h *Host) Abort() {
 	h.forceCancel()
 	h.mu.Lock()
-	if h.cancel != nil {
-		h.cancel()
-	}
+	h.stopWorkersLocked()
 	h.mu.Unlock()
 }
 
@@ -65,9 +63,7 @@ func (h *Host) Close() error {
 		return h.closeErr
 	}
 	h.closed = true
-	if h.cancel != nil {
-		h.cancel()
-	}
+	h.stopWorkersLocked()
 	ctx, cancel := context.WithTimeout(h.forceContext, h.options.DrainTimeout)
 	defer cancel()
 	var shutdowns sync.WaitGroup
@@ -77,7 +73,6 @@ func (h *Host) Close() error {
 	h.mu.Unlock()
 	finished := make(chan struct{})
 	go func() {
-		h.workers.Wait()
 		shutdowns.Wait()
 		h.serving.Wait()
 		h.requests.Wait()
@@ -104,9 +99,7 @@ func (h *Host) Close() error {
 	<-finished
 	h.options.Metrics.retire(h.metrics)
 	for i := len(h.instances) - 1; i >= 0; i-- {
-		if c, ok := h.instances[i].Plugin.(io.Closer); ok {
-			h.closeErr = errors.Join(h.closeErr, c.Close())
-		}
+		h.closeErr = errors.Join(h.closeErr, h.instances[i].owner.Release())
 	}
 	h.memoryLimit.Close()
 	close(h.closeDone)

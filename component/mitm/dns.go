@@ -77,6 +77,14 @@ func (h *Host) UseDNSAddress(host string, proxy bool) bool {
 	if h == nil {
 		return false
 	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return false
+	}
+	h.requests.Add(1)
+	h.mu.Unlock()
+	defer h.requests.Done()
 	for _, instance := range h.instances {
 		if policy, ok := instance.Plugin.(plugin.DNSAddressPolicy); ok {
 			if use, applicable := policy.UseDNSAddress(host, proxy); applicable {

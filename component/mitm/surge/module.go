@@ -27,6 +27,7 @@ const (
 // report unexpected or behavior-changing limitations; Ignored lists documented
 // unsupported options for trace logging.
 type Module struct {
+	contentKey       string
 	Name             string
 	Hostnames        []string
 	Scripts          []Script // HTTP and DNS scripts invoked by intercepted traffic.

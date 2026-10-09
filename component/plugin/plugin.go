@@ -81,6 +81,8 @@ type Spec struct {
 // Services is provided by the host to factories. Logger is non-nil and includes
 // the instance ID; PrepareClient is for preparation only, never background work.
 type Services struct {
+	// Prepared contains the immutable value returned by Definition.Resources.
+	Prepared any
 	// ResourceCacheDir is empty when global resource caching is disabled.
 	ResourceCacheDir string
 	BaseDir          string
@@ -103,6 +105,17 @@ type Services struct {
 // Factory prepares resources without starting workers. On error it must release
 // its own partial state; on success the host takes ownership of the plugin.
 type Factory func(context.Context, Services) (Plugin, error)
+
+// Resources identifies a complete, validated set of external inputs. Key must
+// include every input affecting the instance; Value is passed to its factory.
+// It owns no workers, connections or other resources requiring cleanup.
+type Resources struct {
+	// Config optionally supplies the parsed, defaulted configuration used for
+	// equality. When nil, the host compares Spec.Config conservatively.
+	Config any
+	Key    string
+	Value  any
+}
 
 // Reporter returns a JSON-serializable status snapshot, excluding configuration
 // credentials. Explicit script output may be included as documented by the plugin.

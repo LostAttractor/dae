@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package mitm hosts compiled Go HTTP plugins. Transport and
-// connection ownership belong to the host; plugins contribute immutable plans.
+// Package mitm hosts HTTP and DNS execution for plugin instances. The host owns
+// protocol connections; instances contribute immutable plans and middleware.
 package mitm
 
 import (
@@ -12,12 +12,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/prometheus/client_golang/prometheus"
 	logrus "github.com/sirupsen/logrus"
@@ -25,58 +26,64 @@ import (
 
 type DialContext func(context.Context, string, string) (net.Conn, error)
 
-// Load prepares the configured instances. Failed preparation releases all
-// instances created by this call. The configuration itself owns no resources.
-func (c *Configuration) Load(ctx context.Context, options Options, services plugin.Services) (_ *Host, err error) {
-	if c == nil || len(c.instances) == 0 {
+// Load prepares plugin instances independently of the protocol host. The prior
+// host is read-only during preparation; unchanged instances retain their state.
+func Load(ctx context.Context, configuration *pluginhost.Configuration, options Options, services plugin.Services, previous *Host) (*Host, error) {
+	if previous != nil && options.Authority != nil && previous.Authority() != nil && options.Authority.Fingerprint() == previous.Authority().Fingerprint() {
+		options.Authority = previous.Authority()
+	}
+	services.BodyMemory = options.bodyMemory()
+	instances, err := configuration.Prepare(ctx, services, previous.Instances())
+	if err != nil {
+		return nil, err
+	}
+	if len(instances) == 0 {
 		return nil, nil
 	}
-	var instances []Instance
-	registry := prometheus.NewRegistry()
-	defer func() {
-		if err != nil {
-			for i := len(instances) - 1; i >= 0; i-- {
-				if c, ok := instances[i].Plugin.(io.Closer); ok {
-					_ = c.Close()
-				}
-			}
-		}
-	}()
-	for _, configured := range c.instances {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		spec := plugin.Spec{ID: configured.id, Type: configured.typ}
-		local := services
-		if local.Logger == nil {
-			local.Logger = logrus.NewEntry(logrus.StandardLogger())
-		}
-		local.Logger = local.Logger.WithField("plugin_instance", spec.ID)
-		local.BodyMemory = options.bodyMemory()
-		local.Storage, err = newPluginStorage(local.BaseDir, spec)
-		if err != nil {
-			return nil, fmt.Errorf("plugins.%s storage: %w", spec.ID, err)
-		}
-		local.Metrics = prometheus.WrapRegistererWithPrefix("dae_plugin_", prometheus.WrapRegistererWith(prometheus.Labels{
-			"plugin_type": spec.Type, "plugin_instance": spec.ID,
-		}, registry))
-		implementation, err := configured.factory(ctx, local)
-		if err != nil {
-			return nil, fmt.Errorf("plugins.%s: %w", spec.ID, err)
-		}
-		if implementation == nil {
-			return nil, fmt.Errorf("plugins.%s: factory returned a nil plugin", spec.ID)
-		}
-		instances = append(instances, Instance{ID: spec.ID, Type: spec.Type, Plugin: implementation})
+	local := make([]Instance, 0, len(instances))
+	for _, instance := range instances {
+		local = append(local, Instance{ID: instance.ID, Type: instance.Type, Plugin: instance.Plugin, owner: instance})
 	}
-	return newHost(options, registry, instances...)
+	host, err := New(options, local...)
+	if err != nil {
+		for _, instance := range instances {
+			err = errors.Join(err, instance.Release())
+		}
+	}
+	return host, err
 }
 
 type Instance struct {
 	ID, Type string
 	Plugin   plugin.Plugin
 	plan     plugin.Plan
+	owner    *pluginhost.Instance
 }
+
+// PrepareSuccessor retains accepted instances and certificate state for suspend,
+// which changes interception without refreshing external configuration inputs.
+func (h *Host) PrepareSuccessor() (*Host, error) {
+	if h == nil {
+		return nil, nil
+	}
+	instances := slices.Clone(h.instances)
+	for n, instance := range instances {
+		if !instance.owner.Retain() {
+			for _, retained := range instances[:n] {
+				_ = retained.owner.Release()
+			}
+			return nil, net.ErrClosed
+		}
+	}
+	next, err := New(h.options, instances...)
+	if err != nil {
+		for _, instance := range instances {
+			err = errors.Join(err, instance.owner.Release())
+		}
+	}
+	return next, err
+}
+
 type Options struct {
 	DisableHTTP       bool
 	BufferMemoryLimit int64
@@ -91,32 +98,72 @@ type Options struct {
 	Metrics *Metrics
 }
 type Host struct {
-	options      Options
-	instances    []Instance
-	plan         plugin.Plan
-	mu           sync.Mutex
-	cancel       context.CancelFunc
-	closed       bool
-	workers      sync.WaitGroup
-	requests     sync.WaitGroup
-	serving      sync.WaitGroup
-	connections  map[io.Closer]func(context.Context) error
-	forceContext context.Context
-	forceCancel  context.CancelFunc
-	closeDone    chan struct{}
-	closeErr     error
-	memoryLimit  *membuffer.Limit
-	metrics      *prometheus.Registry
-	startedAt    *prometheus.GaugeVec
+	options        Options
+	instances      []Instance
+	plan           plugin.Plan
+	mu             sync.Mutex
+	started        bool
+	closed         bool
+	workersStopped bool
+	requests       sync.WaitGroup
+	serving        sync.WaitGroup
+	connections    map[io.Closer]func(context.Context) error
+	forceContext   context.Context
+	forceCancel    context.CancelFunc
+	closeDone      chan struct{}
+	closeErr       error
+	memoryLimit    *membuffer.Limit
+	metrics        *prometheus.Registry
+	startedAt      *prometheus.GaugeVec
+}
+
+func (h *Host) Instances() []*pluginhost.Instance {
+	if h == nil {
+		return nil
+	}
+	instances := make([]*pluginhost.Instance, 0, len(h.instances))
+	for _, instance := range h.instances {
+		instances = append(instances, instance.owner)
+	}
+	return instances
+}
+
+// SameInstances compares runtime identities, not merely plugin declarations.
+func (h *Host) SameInstances(other *Host) bool {
+	if h == nil || other == nil {
+		return h == other
+	}
+	if len(h.instances) != len(other.instances) {
+		return false
+	}
+	for i := range h.instances {
+		if h.instances[i].owner != other.instances[i].owner {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Host) SameRuntime(other *Host) bool {
+	if h == nil || other == nil {
+		return h == other
+	}
+	if !h.SameInstances(other) {
+		return false
+	}
+	if h.options.DisableHTTP != other.options.DisableHTTP || h.options.BufferMemoryLimit != other.options.BufferMemoryLimit {
+		return false
+	}
+	first, second := h.Authority(), other.Authority()
+	if first == nil || second == nil {
+		return first == second
+	}
+	return first.Fingerprint() == second.Fingerprint()
 }
 
 // New takes ownership of the instances and their plans on success. Plans remain read-only
 // for the lifetime of the host; construction is the only mutation phase.
 func New(options Options, instances ...Instance) (*Host, error) {
-	return newHost(options, prometheus.NewRegistry(), instances...)
-}
-
-func newHost(options Options, registry *prometheus.Registry, instances ...Instance) (*Host, error) {
 	if options.BufferMemoryLimit < 0 {
 		return nil, errors.New("mitm: buffer memory limit must be positive")
 	}
@@ -133,7 +180,10 @@ func newHost(options Options, registry *prometheus.Registry, instances ...Instan
 	h := &Host{options: options, instances: instances, connections: make(map[io.Closer]func(context.Context) error), closeDone: make(chan struct{})}
 	for i := range h.instances {
 		instance := &h.instances[i]
-		instance.plan = instance.Plugin.Plan()
+		if instance.owner == nil {
+			instance.owner = pluginhost.Adopt(instance.ID, instance.Type, instance.Plugin)
+		}
+		instance.plan = instance.owner.Plan
 		if options.DisableHTTP {
 			instance.plan.Scopes = nil
 		}
@@ -146,16 +196,22 @@ func newHost(options Options, registry *prometheus.Registry, instances ...Instan
 	if len(h.plan.Scopes) > 0 && options.Authority == nil {
 		return nil, errors.New("mitm: HTTPS scopes require ca_cert and ca_key")
 	}
+	registry := prometheus.NewRegistry()
 	h.metrics = registry
 	h.startedAt = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "dae_plugin_instance_start_time_seconds",
 		Help: "Activation time of the current plugin instance as Unix seconds. Instance counters reset on reconstruction.",
 	}, []string{"plugin_type", "plugin_instance"})
-	if err := registry.Register(h.startedAt); err != nil {
-		return nil, fmt.Errorf("plugin metrics: %w", err)
+	registry.MustRegister(h.startedAt)
+	for i := range h.instances {
+		instance := &h.instances[i]
+		if instance.owner.Metrics != nil {
+			if err := registry.Register(instance.owner.Metrics); err != nil {
+				return nil, fmt.Errorf("plugin metrics: %w", err)
+			}
+		}
 	}
 	h.forceContext, h.forceCancel = context.WithCancel(context.Background())
-	h.memoryLimit = options.bodyMemory().UseLimit(options.BufferMemoryLimit)
 	return h, nil
 }
 
@@ -193,27 +249,49 @@ func (h *Host) Start(parent context.Context) error {
 	if h.closed {
 		return net.ErrClosed
 	}
-	if h.cancel != nil {
+	if h.started {
 		return nil
 	}
-	ctx, cancel := context.WithCancel(parent)
-	h.cancel = cancel
-	for _, instance := range h.instances {
-		h.startedAt.WithLabelValues(instance.Type, instance.ID).SetToCurrentTime()
+	if err := parent.Err(); err != nil {
+		return err
 	}
-	h.options.Metrics.publish(h.metrics)
-	for _, instance := range h.instances {
-		worker, ok := instance.Plugin.(plugin.Worker)
-		if !ok {
-			continue
-		}
-		h.workers.Go(func() {
-			if err := worker.Run(ctx, h.options.HTTPClient); err != nil && ctx.Err() == nil {
-				h.options.Logger.WithField("plugin_instance", instance.ID).WithError(resource.RedactError(err)).Error("Plugin worker stopped")
+	h.memoryLimit = h.options.bodyMemory().UseLimit(h.options.BufferMemoryLimit)
+	for i, instance := range h.instances {
+		started, err := instance.owner.Activate(h.options.HTTPClient)
+		if err != nil {
+			for _, activated := range h.instances[:i] {
+				activated.owner.Deactivate()
 			}
-		})
+			h.memoryLimit.Close()
+			h.memoryLimit = nil
+			return err
+		}
+		h.startedAt.WithLabelValues(instance.Type, instance.ID).Set(float64(started.UnixNano()) / 1e9)
 	}
+	h.started = true
+	h.options.Metrics.publish(h.metrics)
 	return nil
+}
+
+// StopWorkers retires this host's worker ownership without interrupting its
+// protocol requests. Shared instances remain active through their successor.
+func (h *Host) StopWorkers() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stopWorkersLocked()
+}
+
+func (h *Host) stopWorkersLocked() {
+	if !h.started || h.workersStopped {
+		return
+	}
+	h.workersStopped = true
+	for _, instance := range h.instances {
+		instance.owner.Deactivate()
+	}
 }
 func (h *Host) chain(flow plugin.Flow, terminal plugin.Handler) plugin.Handler {
 	instances := h.instances

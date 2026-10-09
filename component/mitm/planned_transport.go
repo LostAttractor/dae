@@ -76,6 +76,12 @@ func (h *Host) RoutedHTTPClient(plan UpstreamPlanner) (*http.Client, func()) {
 	return &http.Client{Transport: transport}, transport.close
 }
 
+// NewRoutedHTTPClient provides policy-keyed HTTP pools without a plugin or
+// interception host. Its owner closes it after all background work finishes.
+func NewRoutedHTTPClient(plan UpstreamPlanner) (*http.Client, func()) {
+	return new(Host).RoutedHTTPClient(plan)
+}
+
 func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	pool, err := p.acquire(request)
 	if err != nil {

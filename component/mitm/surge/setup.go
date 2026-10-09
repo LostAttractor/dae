@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -14,9 +15,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var Plugin = plugin.Definition{Configure: Configure, Commands: Commands}
+var Plugin = plugin.Definition{Configure: Configure, Resources: prepareResources, Commands: Commands}
 
-func prepare(ctx context.Context, conf Config, services plugin.Services, instanceID string) (engine *Engine, err error) {
+func prepareModules(ctx context.Context, conf Config, services plugin.Services) (modules []*Module, err error) {
 	logger := services.Logger
 	client := services.PrepareClient
 	status := api.SurgeStatus{Enabled: true, Modules: make([]api.ModuleStatus, len(conf.Modules))}
@@ -42,13 +43,6 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	}
 	logger.WithField("modules", len(conf.Modules)).Debug("Loading Surge modules")
 	baseDir := services.BaseDir
-	var storePath string
-	if conf.Store {
-		if baseDir == "" || instanceID == "" || instanceID == "." || instanceID == ".." || filepath.Base(instanceID) != instanceID {
-			return nil, fmt.Errorf("surge: persistent store requires a base directory and a valid plugin instance ID")
-		}
-		storePath = filepath.Join(baseDir, "plugins", instanceID, "surge-store.json")
-	}
 	// Bound remote refreshes across the module list, while allowing remaining
 	// modules to use their complete snapshots after the network budget expires.
 	refreshDeadline := time.Now().Add(2 * time.Minute)
@@ -56,7 +50,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	if services.ResourceCacheDir != "" {
 		moduleCache = filepath.Join(services.ResourceCacheDir, "surge")
 	}
-	modules := make([]*Module, 0, len(conf.Modules))
+	modules = make([]*Module, 0, len(conf.Modules))
 	for i, source := range conf.Modules {
 		module, err := Load(ctx, source.Link, client, LoadOptions{
 			BaseDir:         baseDir,
@@ -80,10 +74,45 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 		status.Modules[i] = module.Status()
 		modules = append(modules, module)
 	}
+	return modules, nil
+}
+
+func prepareResources(ctx context.Context, spec plugin.Spec, services plugin.Services) (plugin.Resources, error) {
+	conf, err := ParseConfig(spec.Config)
+	if err != nil {
+		return plugin.Resources{}, err
+	}
+	modules, err := prepareModules(ctx, conf, services)
+	if err != nil {
+		return plugin.Resources{}, err
+	}
+	var key strings.Builder
+	for _, module := range modules {
+		key.WriteString(module.contentKey)
+	}
+	return plugin.Resources{Config: conf, Key: key.String(), Value: modules}, nil
+}
+
+func prepare(ctx context.Context, conf Config, services plugin.Services, instanceID string) (*Engine, error) {
+	modules, ok := services.Prepared.([]*Module)
+	if !ok {
+		var err error
+		modules, err = prepareModules(ctx, conf, services)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var storePath string
+	if conf.Store {
+		if services.BaseDir == "" || instanceID == "" || instanceID == "." || instanceID == ".." || filepath.Base(instanceID) != instanceID {
+			return nil, fmt.Errorf("surge: persistent store requires a base directory and a valid plugin instance ID")
+		}
+		storePath = filepath.Join(services.BaseDir, "plugins", instanceID, "surge-store.json")
+	}
 	runtime, err := NewRuntime(RuntimeOptions{
 		MemoryLimit: conf.MemoryLimit, Timeout: conf.ScriptTimeout,
 		StorePath: storePath,
-		Logger:    logger,
+		Logger:    services.Logger,
 	})
 	if err != nil {
 		return nil, err
@@ -92,7 +121,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 		Modules: modules, Runtime: runtime,
 		BodyMemory:  services.BodyMemory,
 		MaxBodySize: conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,
-		ScriptTimeout: conf.ScriptTimeout, Logger: logger,
+		ScriptTimeout: conf.ScriptTimeout, Logger: services.Logger,
 	})
 }
 

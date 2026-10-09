@@ -11,6 +11,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/config"
 	log "github.com/sirupsen/logrus"
 )
@@ -25,11 +26,11 @@ func configuredPluginSpecs(conf *config.Config) []plugin.Spec {
 	return specs
 }
 
-func configurePlugins(conf *config.Config, definitions map[string]plugin.Definition) (*mitm.Configuration, error) {
-	return mitm.Configure(definitions, configuredPluginSpecs(conf))
+func configurePlugins(conf *config.Config, definitions map[string]plugin.Definition) (*pluginhost.Configuration, error) {
+	return pluginhost.Configure(definitions, configuredPluginSpecs(conf))
 }
 
-func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *mitm.Configuration) (host *mitm.Host, err error) {
+func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *pluginhost.Configuration) (host *mitm.Host, err error) {
 	m := conf.MITM
 	if len(conf.Plugins) == 0 {
 		return nil, nil
@@ -58,5 +59,5 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 	if conf.Global.ResourceCache {
 		services.ResourceCacheDir = filepath.Join(base, "resources")
 	}
-	return plugins.Load(ctx, options, services)
+	return mitm.Load(ctx, plugins, options, services, nil)
 }

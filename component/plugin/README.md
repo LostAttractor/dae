@@ -25,27 +25,28 @@ for dependencies and multiple plugins.
 
 ## Configuration preflight and preparation
 
-`Configure` is required; `Commands` is optional. `mitm.Configure(definitions, specs)`
-first checks that **all enabled plugin types are compiled in**, then parses every
-instance once, collecting configuration errors without preparing resources.
-The daemon calls it before subscriptions, eBPF preparation, connectivity checks
-or module downloads, and before ejecting BPF ownership on reload. Disabled
-instances are skipped.
+`pluginhost.Configure` checks all enabled types before any I/O, then calls each
+required `Definition.Configure`. It must leave `Spec.Config` unchanged and return
+a factory capturing validated configuration. Disabled instances are skipped;
+`Commands` is optional.
 
-`Configure` must be deterministic, perform no I/O, start no workers and leave
-`Spec.Config` unchanged. Return a factory capturing the validated configuration.
-Remote module contents, certificates and other resource-dependent errors belong
-to the factory. It releases partial resources on error and returns a non-nil
-plugin on success. Factories must not mutate their captured configuration.
+Plugins reading files or remote resources implement `Definition.Resources`:
 
-Pass the returned `*mitm.Configuration` through preparation, then call
-`configured.Load(ctx, options, services)`. Load invokes factories in declaration
-order with instance-local services, without parsing again; failure closes already
-prepared instances. Configuration objects own no runtime resources. Direct plugin
-callers use `Configure(spec)` followed by the returned factory.
+| Result | Meaning |
+| --- | --- |
+| `Key` | Identity of all validated external contents, including dependencies |
+| `Value` | Immutable prepared data passed to the factory as `Services.Prepared` |
+| `Config` | Optional parsed/defaulted configuration; otherwise compare `Spec.Config` |
 
-[`Configuration.Load`](../mitm/host.go) supplies instance-scoped logging, storage
-and metrics. The daemon owns plugin activation and cleanup.
+Resource preparation starts no workers, owns no closable handles and does not
+publish storage or metrics changes. Refresh errors reject the candidate unless a
+complete validated cache fallback is available.
+
+Pass the configuration and previous host to `mitm.Load`. Equal type, ID and inputs
+retain the instance; only replacements invoke factories. Factories return a
+non-nil plugin, release partial resources on error and keep captured inputs
+immutable. [`Configuration.Prepare`](../pluginhost/configure.go) injects scoped
+logging, storage and metrics. The daemon owns activation and cleanup.
 
 ## DNS contract
 
@@ -268,8 +269,11 @@ The configured factory prepares a non-nil plugin using the instance logger, base
 
 HTTP handlers may run concurrently. Workers run once; queues, retries, caches and
 waiting belong to the plugin. Copy needed exchange data for background work.
-Reload cancels workers and drains requests; after 5 seconds it cancels requests
-and closes connections, then closes plugins after execution exits.
+Unchanged instances keep their workers across reload. The daemon-provided worker
+HTTP client selects current routing on each request. Replacing the last active
+owner cancels that instance's worker. Retired protocol hosts drain requests; after
+5 seconds of draining they cancel requests and close connections. An instance is
+closed only after its last protocol host releases it and its worker exits.
 
 See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
 [status fields](../../docs/en/configuration/api.md).
@@ -286,10 +290,10 @@ successful load. This cache is separate from plugin execution state.
 
 `Services.Storage` provides instance-scoped `Get(key)`, `Put(key, []byte)` and
 `Delete(key)` operations for small persistent state. The daemon supplies it
-automatically through `Configuration.Load` when `Services.BaseDir` is nonempty. Direct
+automatically through `Configuration.Prepare` when `Services.BaseDir` is nonempty. Direct
 factory callers can leave it nil for memory-only operation or inject a store
 implementing the same contract. Backend construction and lifetime belong to the
-host; `Configuration.Load` derives each instance's store from its base directory, type and
+host; `Configuration.Prepare` derives each instance's store from its base directory, type and
 ID rather than sharing an incoming `Services.Storage` across instances.
 
 ```go

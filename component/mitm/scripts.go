@@ -10,7 +10,7 @@ import (
 func (h *Host) TriggerScript(instance string, request api.ScriptRunRequest) (api.ScriptRunResponse, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.closed || h.cancel == nil {
+	if h.closed || !h.started {
 		return api.ScriptRunResponse{}, plugin.ErrScriptInactive
 	}
 	for _, p := range h.instances {
