@@ -23,7 +23,6 @@ type preparedRules struct {
 	validationOutbounds map[string]uint8
 	apiBypass           []bpfIpPort
 	destinations        routing.DestinationRewrites
-	geoDirs             []string
 	routing             *config.Routing
 	bypass              []*config_parser.RoutingRule
 	earlyRoutes         []*config_parser.RoutingRule
@@ -88,7 +87,6 @@ func prepareDestinationRules(ctx context.Context, rules routing.DestinationRewri
 
 func prepareRoutingRules(ctx context.Context, routingConfig *config.Routing, externGeoDataDirs []string) (preparedRules, error) {
 	var prepared preparedRules
-	prepared.geoDirs = append([]string(nil), externGeoDataDirs...)
 	locationFinder := assets.NewLocationFinder(externGeoDataDirs)
 	datReader := routing.NewDatReaderOptimizer(ctx, locationFinder)
 	if err := ctx.Err(); err != nil {

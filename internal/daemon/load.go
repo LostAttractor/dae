@@ -3,7 +3,7 @@
  * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
-package cmd
+package daemon
 
 import (
 	"context"
@@ -13,23 +13,23 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
-	"runtime"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/client/status"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/subscription"
-	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
-	"github.com/daeuniverse/dae/component/pluginhost"
+	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
+	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol/direct"
-	"github.com/mohae/deepcopy"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -38,7 +38,6 @@ const (
 	// Network checks must be bounded on initial startup too: a disconnected
 	// host can still start with configured nodes and persisted subscriptions.
 	startupNetworkWaitTimeout       = 15 * time.Second
-	reloadNetworkWaitTimeout        = 15 * time.Second
 	reloadSubscriptionTimeout       = 10 * time.Second
 	reloadSubscriptionPhaseTimeout  = 30 * time.Second
 	startupSubscriptionPhaseTimeout = 2 * time.Minute
@@ -66,16 +65,7 @@ type subscriptionResolution struct {
 
 type subscriptionResolver func(context.Context, *http.Client, subscription.ResolveOptions, string, func(string) error) (string, []string, error)
 
-func waitForNetworkOnline(ctx context.Context, isReload bool) error {
-	timeout := startupNetworkWaitTimeout
-	if isReload {
-		timeout = reloadNetworkWaitTimeout
-		writeReloadProgress("Checking network...")
-	}
-	return waitForNetworkOnlineWithTimeout(ctx, timeout)
-}
-
-func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration) error {
+func waitForNetworkOnline(ctx context.Context, timeout time.Duration, dialer netproxy.Dialer) error {
 	const retryInterval = 5 * time.Second
 	if len(CheckNetworkLinks) == 0 {
 		return errors.New("network check has no endpoints")
@@ -84,7 +74,7 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	defer cancel()
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return direct.Direct.DialContext(ctx, "tcp", addr)
+			return dialer.DialContext(ctx, "tcp", addr)
 		},
 	}
 	defer transport.CloseIdleConnections()
@@ -132,79 +122,80 @@ func waitForNetworkOnlineWithTimeout(ctx context.Context, timeout time.Duration)
 	}
 }
 
-func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *config.Config, externGeoDataDirs []string, runtimeSettings *settings.Store, plugins *pluginhost.Configuration) (c *control.ControlPlane, err error) {
-	if datapath == nil {
-		datapath = control.NewRuntime()
+type controlInputs struct {
+	nodes  []outbound.NodeDescriptor
+	rules  *control.PreparedRules
+	global config.Global
+}
+
+func loadControlInputs(ctx context.Context, conf *config.Config, isReload bool, dirs []string, configFile string, previous *controlInputs) (*controlInputs, error) {
+	input := &controlInputs{global: conf.Global}
+	preparation := nodePreparation{}
+	if previous != nil && reflect.DeepEqual(dialer.NewGlobalOption(&previous.global), dialer.NewGlobalOption(&conf.Global)) {
+		preparation.known = previous.nodes
 	}
-	isReload := datapath.IsReload()
-	defer func() {
-		if err == nil || isReload {
-			return
-		}
-		err = errors.Join(err, datapath.Close(), cleanupStartup(nil))
-	}()
-	conf = deepcopy.Copy(conf).(*config.Config)
-	var autoSelected bool
-	conf.Global.SoMarkFromDae, autoSelected = common.ResolveSoMarkFromDae(conf.Global.SoMarkFromDae, conf.Global.SoMarkFromDaeSet)
-	if err = common.ValidateSoMarkFromDae(conf.Global.SoMarkFromDae); err != nil {
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		var err error
+		input.rules, err = control.PrepareRules(groupCtx, &conf.Routing, conf.Rules, dirs)
+		return err
+	})
+	group.Go(func() error {
+		var err error
+		input.nodes, err = resolveNodeDescriptors(groupCtx, conf, isReload, filepath.Dir(configFile), subscription.ResolveSubscriptionContext, preparation)
+		return err
+	})
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return input, ctx.Err()
+}
+
+func (input *controlInputs) equal(other *controlInputs) bool {
+	return input != nil && other != nil && reflect.DeepEqual(input.nodes, other.nodes) && input.rules.Equal(other.rules)
+}
+
+// management-independent inputs are compared after expanding external resources.
+func sameControlConfig(previous, next *config.Config) bool {
+	project := func(conf *config.Config) config.Config {
+		value := *conf
+		value.Plugins, value.Subscription, value.Node = nil, nil, nil
+		value.Routing, value.Rules = config.Routing{}, config.Rules{}
+		value.MITM.CACert, value.MITM.CAKey = "", ""
+		value.MITM.BufferMemoryLimit = 0
+		value.Global.LogLevel, value.Global.APIKey = "", ""
+		value.Global.PprofPort, value.Global.MetricsPort = 0, 0
+		value.Global.ResourceCache, value.Global.DisableWaitingNetwork = false, false
+		value.Global.SoMarkFromDae = common.EffectiveSoMarkFromDae(value.Global.SoMarkFromDae)
+		value.Global.SoMarkFromDaeSet = false
+		return value
+	}
+	return reflect.DeepEqual(project(previous), project(next))
+}
+
+func newControlPlane(ctx context.Context, datapath *control.Runtime, conf *config.Config, inputs *controlInputs, runtimeSettings *settings.Store, loadMITM func(*http.Client) (control.PreparedMITM, error)) (*control.ControlPlane, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	mark, autoSelected := common.ResolveSoMarkFromDae(conf.Global.SoMarkFromDae, conf.Global.SoMarkFromDaeSet)
+	if err := common.ValidateSoMarkFromDae(mark); err != nil {
 		return nil, err
 	}
 	if autoSelected {
 		log.WithField("so_mark_from_dae", "0x100").Debug("Using default internal socket mark")
 	}
-	direct.InitDirectDialers(conf.Global.Mptcp, int(conf.Global.SoMarkFromDae))
-
-	var nodeDescriptors []outbound.NodeDescriptor
-	var preparation *control.ControlPlanePreparation
-	defer func() {
-		if err == nil {
-			return
-		}
-		if closeErr := preparation.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close control plane preparation: %w", closeErr))
-		}
-	}()
-	log.Debug("Preparing nodes, routing rules, and eBPF resources")
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		var prepareErr error
-		preparation, prepareErr = control.PrepareControlPlane(groupCtx, datapath, &conf.Routing, &conf.Global, externGeoDataDirs, conf.Rules)
-		return prepareErr
-	})
-	group.Go(func() error {
-		var resolveErr error
-		nodeDescriptors, resolveErr = resolveNodeDescriptors(groupCtx, conf, isReload, filepath.Dir(cfgFile), subscription.ResolveSubscriptionContext)
-		return resolveErr
-	})
-	if err = group.Wait(); err != nil {
-		return nil, err
-	}
-	if err = ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	var mitmLoader func(*http.Client, *http.Client) (*mitm.Host, error)
-	if len(conf.Plugins) != 0 {
-		mitmLoader = func(client, background *http.Client) (*mitm.Host, error) {
-			if isReload {
-				writeReloadProgress("Preparing plugins using routing rules...")
-			}
-			return loadMITM(ctx, conf, client, background, plugins)
-		}
-	}
-	assemblyStarted := time.Now()
-	c, err = control.NewControlPlane(ctx, preparation, nodeDescriptors, conf,
-		runtimeSettings, mitmLoader)
+	preparation, err := control.PrepareControlPlane(ctx, datapath, mark, inputs.rules)
 	if err != nil {
 		return nil, err
 	}
-	if contextErr := ctx.Err(); contextErr != nil {
-		err = errors.Join(contextErr, c.Close())
-		c = nil
+	defer preparation.Close()
+
+	assemblyStarted := time.Now()
+	c, err := control.NewControlPlane(ctx, preparation, inputs.nodes, conf, runtimeSettings, loadMITM)
+	if err != nil {
 		return nil, err
 	}
-	runtime.GC()
-	c.SetDomainRegistryPath(filepath.Join(cacheDirectory(), "domain-registry.json.gz"))
+	c.SetDomainRegistryPath(filepath.Join(common.CacheDirectory(), "domain-registry.json.gz"))
 	if err := c.PrepareKernel(); err != nil {
 		return nil, errors.Join(err, c.Close())
 	}
@@ -226,16 +217,18 @@ func logStartupNodeStatus(groups []api.GroupStatus) {
 	}
 }
 
-func cleanupStartup(c *control.ControlPlane) error {
+func cleanupKernelResources() error {
 	var err error
-	if c != nil {
-		err = errors.Join(c.Runtime().Close(), c.Close())
-	}
 	if netns := control.GetDaeNetns(); netns != nil {
-		err = errors.Join(err, netns.Close())
+		err = netns.Close()
 	}
 	control.CloseSysctlManager()
 	return err
+}
+
+type nodePreparation struct {
+	dialer netproxy.Dialer
+	known  []outbound.NodeDescriptor
 }
 
 func resolveNodeDescriptors(
@@ -244,16 +237,24 @@ func resolveNodeDescriptors(
 	isReload bool,
 	configDir string,
 	resolve subscriptionResolver,
+	preparation nodePreparation,
 ) ([]outbound.NodeDescriptor, error) {
 	started := time.Now()
+	dialer, err := bootstrapDialer(conf.Global)
+	if err != nil {
+		return nil, err
+	}
+	if preparation.dialer != nil {
+		dialer = preparation.dialer
+	}
 	descriptors := make([]outbound.NodeDescriptor, 0, len(conf.Node))
 	for _, node := range conf.Node {
 		descriptors = append(descriptors, outbound.NodeDescriptor{
 			Name: node.Name, Link: node.Link, Options: node.Options, Required: true,
 		})
 	}
-	if !conf.Global.DisableWaitingNetwork {
-		if err := waitForNetworkOnline(ctx, isReload); err != nil {
+	if !isReload && !conf.Global.DisableWaitingNetwork {
+		if err := waitForNetworkOnline(ctx, startupNetworkWaitTimeout, dialer); err != nil {
 			return nil, err
 		}
 	}
@@ -263,24 +264,14 @@ func resolveNodeDescriptors(
 
 	cache := resource.Cache{}
 	if conf.Global.ResourceCache {
-		cache.Dir = filepath.Join(cacheDirectory(), "resources", "subscriptions")
-	}
-	var cacheKeys []string
-	for _, sub := range conf.Subscription {
-		_, raw := resource.Split(sub.String())
-		if source, err := resource.Parse(raw, configDir); err == nil && source.Remote() {
-			cacheKeys = append(cacheKeys, source.Location)
-		}
+		cache.Dir = filepath.Join(common.CacheDirectory(), "resources", "subscriptions")
 	}
 	if len(conf.Subscription) > 0 {
-		if isReload {
-			writeReloadProgress("Fetching subscriptions...")
-		}
 		log.WithField("subscriptions", len(conf.Subscription)).Debug("Fetching subscriptions")
 	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return direct.Direct.DialContext(ctx, "tcp", addr)
+			return dialer.DialContext(ctx, "tcp", addr)
 		},
 	}
 	defer transport.CloseIdleConnections()
@@ -300,6 +291,18 @@ func resolveNodeDescriptors(
 	loadCtx, cancel := context.WithDeadline(ctx, loadDeadline)
 	defer cancel()
 	validateNode := outbound.NewNodeValidator(loadCtx, &conf.Global)
+	known := make(map[string]bool, len(preparation.known))
+	for _, node := range preparation.known {
+		if !node.Required {
+			known[node.Link] = true
+		}
+	}
+	validate := func(link string) error {
+		if known[link] {
+			return loadCtx.Err()
+		}
+		return validateNode(link)
+	}
 	results := make([]subscriptionResolution, len(conf.Subscription))
 	var resolveGroup errgroup.Group
 	resolveGroup.SetLimit(maxConcurrentSubscriptions)
@@ -310,11 +313,14 @@ func resolveNodeDescriptors(
 		resolveGroup.Go(func() error {
 			link := sub.String()
 			options := subscription.ResolveOptions{BaseDir: configDir, CacheDir: cache.Dir, RefreshDeadline: refreshDeadline}
-			results[i].tag, results[i].nodes, results[i].err = resolve(loadCtx, &client, options, link, validateNode)
+			results[i].tag, results[i].nodes, results[i].err = resolve(loadCtx, &client, options, link, validate)
 			return nil
 		})
 	}
 	resolveGroup.Wait()
+	if isReload && loadCtx.Err() != nil {
+		return nil, loadCtx.Err()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -325,6 +331,9 @@ func resolveNodeDescriptors(
 	for i, result := range results {
 		sub := conf.Subscription[i]
 		if result.err != nil {
+			if isReload {
+				return nil, fmt.Errorf("subscription %s: %w", subscription.RedactURL(sub.String()), result.err)
+			}
 			log.WithError(resource.RedactError(result.err)).WithField("subscription", subscription.RedactURL(sub.String())).Warn("Subscription unavailable; skipping its nodes")
 			continue
 		}
@@ -334,9 +343,6 @@ func resolveNodeDescriptors(
 				Defaults: sub.Option.Defaults, Rules: sub.Option.Rules,
 			})
 		}
-	}
-	if err := cache.Prune(cacheKeys); err != nil {
-		log.WithError(err).Warn("Could not prune subscription resource cache")
 	}
 	if len(conf.Global.LanInterface) == 0 && len(conf.Global.WanInterface) == 0 {
 		log.Debug("No interfaces configured for traffic interception")
@@ -348,14 +354,30 @@ func resolveNodeDescriptors(
 	return descriptors, nil
 }
 
-func readConfig(cfgFile string) (conf *config.Config, includes []string, err error) {
-	merger := config.NewMerger(cfgFile)
-	sections, includes, err := merger.Merge()
+func pruneSubscriptions(conf *config.Config, configDir string) {
+	if !conf.Global.ResourceCache {
+		return
+	}
+	cache := resource.Cache{Dir: filepath.Join(common.CacheDirectory(), "resources", "subscriptions")}
+	var keys []string
+	for _, sub := range conf.Subscription {
+		_, raw := resource.Split(sub.String())
+		if source, err := resource.Parse(raw, configDir); err == nil && source.Remote() {
+			keys = append(keys, source.Location)
+		}
+	}
+	if err := cache.Prune(keys); err != nil {
+		log.WithError(err).Warn("Could not prune subscription resource cache")
+	}
+}
+
+func bootstrapDialer(global config.Global) (netproxy.Dialer, error) {
+	option := direct.Option{Mptcp: global.Mptcp, Mark: int(common.EffectiveSoMarkFromDae(global.SoMarkFromDae)), Resolver: &net.Resolver{PreferGo: true}}
+	physical := direct.NewDirectDialer(option)
+	resolver, err := netutils.NewBootstrapResolver(global.DNSResolver, physical.DialContext)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if conf, err = config.New(sections); err != nil {
-		return nil, nil, err
-	}
-	return conf, includes, nil
+	option.Resolver = resolver
+	return direct.NewDirectDialer(option), nil
 }

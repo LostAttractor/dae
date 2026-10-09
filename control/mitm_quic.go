@@ -22,7 +22,7 @@ func (c *ControlPlane) newMITMQUIC(p *RouteParam, packetPlan mitm.UpstreamPlanne
 		_ = server.Close()
 	})
 	packetPlan = mitmPlannerWithLease(packetPlan, lease)
-	host := c.mitmHost
+	host := c.MITMHost()
 	plan := c.mitmUpstreamPlanner("tcp", p.Domain, p.Src, p.Dest, *p.routingResult, nil)
 	plan = mitmPlannerWithLease(plan, lease)
 	flow := plugin.Flow{Host: p.Domain, Port: p.Dest.Port(), Source: p.Src, Destination: p.Dest}

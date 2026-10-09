@@ -14,6 +14,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/internal/daemon"
 )
 
 func TestSuspendUsesAcceptedConfigAfterFailedReload(t *testing.T) {
@@ -25,10 +26,10 @@ func TestSuspendUsesAcceptedConfigAfterFailedReload(t *testing.T) {
 		LanInterface: []string{"lan0"}, WanInterface: []string{"wan0"},
 		TproxyPort: 12345, LogLevel: "debug",
 	}}
-	if _, _, err := loadReloadConfig(path, current, false); err == nil {
+	if _, _, err := daemon.LoadReloadConfig(path, current, false); err == nil {
 		t.Fatal("invalid reload succeeded")
 	}
-	next, _, err := loadReloadConfig(path, current, true)
+	next, _, err := daemon.LoadReloadConfig(path, current, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func writeTestReloadState(t *testing.T, path string, code byte, content string) 
 	if content != "" {
 		data = append(data, []byte("\n"+content)...)
 	}
-	if err := writeFileAtomic(path, data, 0600); err != nil {
+	if err := daemon.WriteFileAtomic(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -75,7 +76,7 @@ func TestWaitForReloadReportsProgressAndCompletion(t *testing.T) {
 	writeErr := make(chan error, 1)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		writeErr <- writeFileAtomic(path, []byte{consts.ReloadDone, '\n', 'O', 'K'}, 0600)
+		writeErr <- daemon.WriteFileAtomic(path, []byte{consts.ReloadDone, '\n', 'O', 'K'}, 0600)
 	}()
 
 	var progress []string

@@ -221,6 +221,12 @@ dae supports fragmented TCP and UDP only on an unmarked direct, unmarked pass-th
 
 ## Examples
 
+`geoip.dat` and `geosite.dat` are loaded independently when referenced by rules.
+Unreferenced files need not be installed and are not read. Plain IP/CIDR, domain
+and port rules do not depend on them. References in named rule sets, policies and
+plugin rules also require the corresponding files; `ext:` and `mmdb:` read their
+specified data files. Missing or invalid referenced files fail rule preparation.
+
 ```shell
 ### Built-in outbounds: block, direct
 # Flow controls must and bump are configured in rules {}, outside routing {}.

@@ -117,7 +117,7 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 		return &tcpRelay{
 			lConn: sniffer, dst: dst, domain: host,
 			activity:    observe,
-			mitmHost:    c.mitmHost,
+			mitmHost:    c.MITMHost(),
 			mitmPlanner: mitmPlanner,
 			mitmRelease: release,
 			routeLease:  routeLease,

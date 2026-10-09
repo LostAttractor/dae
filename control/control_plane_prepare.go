@@ -17,12 +17,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/rlimit"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/errgroup"
 )
 
 // ControlPlanePreparation owns a candidate generation until NewControlPlane
@@ -33,55 +30,21 @@ type ControlPlanePreparation struct {
 	isReload bool
 }
 
-// PrepareControlPlane loads kernel resources and expands external rule data in
-// parallel. It does not update shared routing maps or bind programs to traffic
-// interfaces, so it is safe while the previous control plane serves a reload.
+// PrepareControlPlane pairs loaded rules with private kernel resources. External
+// inputs have already been refreshed before deciding whether routing must change.
 func PrepareControlPlane(
 	ctx context.Context,
 	runtime *Runtime,
-	routingConfig *config.Routing,
-	global *config.Global,
-	externGeoDataDirs []string,
-	flowRules config.Rules,
-) (_ *ControlPlanePreparation, err error) {
-	soMarkFromDae := common.EffectiveSoMarkFromDae(global.SoMarkFromDae)
-	if err := common.ValidateSoMarkFromDae(soMarkFromDae); err != nil {
-		return nil, err
-	}
-	preparation := &ControlPlanePreparation{isReload: runtime.IsReload()}
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error {
-		phaseStarted := time.Now()
-		bpf, err := prepareBPF(groupCtx, runtime, soMarkFromDae)
-		if err == nil {
-			preparation.bpf = bpf
-			log.WithField("duration", time.Since(phaseStarted)).Debug("Prepared eBPF resources")
-		}
-		return err
-	})
-	group.Go(func() error {
-		phaseStarted := time.Now()
-		rules, err := prepareRoutingRules(groupCtx, routingConfig, externGeoDataDirs)
-		if err == nil {
-			err = rules.enableFlowRules(groupCtx, flowRules, externGeoDataDirs)
-		}
-		if err == nil {
-			preparation.rules = rules
-			log.WithField("duration", time.Since(phaseStarted)).Debug("Prepared routing rules")
-		}
-		return err
-	})
-	err = group.Wait()
-	if err == nil {
-		err = ctx.Err()
-	}
+	soMarkFromDae uint32,
+	loaded *PreparedRules,
+) (*ControlPlanePreparation, error) {
+	started := time.Now()
+	bpf, err := prepareBPF(ctx, runtime, soMarkFromDae)
 	if err != nil {
-		if closeErr := preparation.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close control plane preparation: %w", closeErr))
-		}
 		return nil, err
 	}
-	return preparation, nil
+	log.WithField("duration", time.Since(started)).Debug("Prepared eBPF resources")
+	return &ControlPlanePreparation{bpf: bpf, rules: loaded.copy(), isReload: runtime.IsReload()}, nil
 }
 
 func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ *BPFState, err error) {

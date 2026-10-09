@@ -40,7 +40,7 @@ func (c *ControlPlane) observeDNS(request *plugin.DNSExchange, response *plugin.
 }
 
 // Runtime owns resources whose lifetime is independent of configuration reload.
-// Configuration generations own only their programs, projections and workers.
+// Generations own private programs/projections and references to shared services.
 type Runtime struct {
 	lifecycle      sync.Mutex
 	mu             sync.Mutex // generation admission and retirement
@@ -144,14 +144,6 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) error {
 			<-old.hostReconcileDone
 		}
 		c.InheritConnections(old)
-		if abort {
-			old.StopAndAbortConnections()
-		}
-	}
-	if c.mitmHost != nil {
-		if err := c.mitmHost.Start(c.ctx); err != nil {
-			return err
-		}
 	}
 	if old != nil {
 		if err := r.kernelLinks.updatePrograms(old.core.bpf.bpfObjects, c.core.bpf.bpfObjects); err != nil {
@@ -164,6 +156,19 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) error {
 	r.mu.Lock()
 	r.current = c
 	r.mu.Unlock()
+	// New workers can use routing immediately. Acquire shared worker ownership
+	// before stopping the predecessor, including an explicit connection abort.
+	if c.mitmHost != nil {
+		if err := c.mitmHost.Start(c.ctx); err != nil {
+			return err
+		}
+	}
+	if old != nil {
+		old.MITMHost().StopWorkers()
+		if abort {
+			old.StopAndAbortConnections()
+		}
+	}
 	if old != nil {
 		finished := make(chan struct{})
 		r.mu.Lock()

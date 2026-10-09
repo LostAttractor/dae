@@ -97,7 +97,7 @@ Surge 定义四种事件；“节点切换”“配置文件写入”“外网�
 | `network-changed` | daemon 所在宿主网络快照发生真实变化 | 接口、地址、默认路由和策略路由变化，包括断网；DNS 配置变化需要独立数据源。初始快照是基线。无 `$event.data`，脚本读取同次事件的 `$network` 快照 |
 | `notification` | 当前 Surge 实例接受一条 `$notification.post` 通知后 | `$event.data` 包含 title/subtitle/body；有 identifier、script-options 时才带入。范围是实例通知，不是所有 logrus 日志、其他实例或 Linux 桌面通知 |
 
-当前 [`ControlPlane.Activate`](../../../control/control_plane_lifecycle.go) 在 `resumeRouting` 前启动插件 Worker；[`Host.Start`](../../../component/mitm/host.go) 也只负责启动 goroutine。它们都不是 `engine-started` 的正确发射点。初次与重载的成功边界由 [`cmd/daemon.go`](../../../cmd/daemon.go) 持有，应从这些提交点传递带控制面代际的事件，并在 Worker 尚未就绪时暂存投递。脚本执行不能反过来阻塞提交点。
+[`Runtime.Publish`](../../../control/runtime.go) 与 [`Host.Start`](../../../component/mitm/host.go) 负责资源激活，未变化的实例复用已有 Worker；它们都不是 `engine-started` 的正确发射点。初次与重载的成功边界由 [`internal/daemon`](../../../internal/daemon) 持有，重载可能不创建新控制面。事件应从这些提交点传递，并在 Worker 尚未就绪时暂存投递。脚本执行不能反过来阻塞提交点。
 
 提交事件需要携带初次启动、配置重载、挂起/恢复等来源，不能仅凭新建了 ControlPlane 判断事件类型。网络快照就绪表示完成一次有界采集，采集失败可报告未知字段；不要求外网连通，也不因脚本等待网络而延迟 daemon 启动。
 

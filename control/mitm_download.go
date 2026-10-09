@@ -50,6 +50,53 @@ func newMITMClient(c *ControlPlane, timeout time.Duration) (*http.Client, func()
 	}
 }
 
+// NewPreparationClient routes bounded resource downloads through this plane.
+func (c *ControlPlane) NewPreparationClient() (*http.Client, func()) {
+	return newMITMClient(c, 30*time.Second)
+}
+
+// NewWorkerClient belongs to the daemon. Every request selects the
+// current plane, so unchanged plugin workers do not capture a retired plane.
+func (r *Runtime) NewWorkerClient() (*http.Client, func()) {
+	client, closeClient := mitm.NewRoutedHTTPClient(func(request *http.Request) (mitm.UpstreamPlan, error) {
+		plane := request.Context().Value(workerPlaneKey{}).(*ControlPlane)
+		planner := &httpRoutePlanner{plane: plane, network: "tcp", identity: daemonProcessIdentity()}
+		return planner.plan(request)
+	})
+	client.Transport = &workerTransport{runtime: r, next: client.Transport}
+	return client, closeClient
+}
+
+type workerPlaneKey struct{}
+
+type workerTransport struct {
+	runtime *Runtime
+	next    http.RoundTripper
+}
+
+func (t *workerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.runtime.mu.Lock()
+	plane := t.runtime.current
+	if plane != nil {
+		plane.workerRoundTrips.Add(1)
+	}
+	t.runtime.mu.Unlock()
+	if plane == nil {
+		if request.Body != nil {
+			_ = request.Body.Close()
+		}
+		if err := request.Context().Err(); err != nil {
+			return nil, err
+		}
+		return nil, net.ErrClosed
+	}
+	// Routing and connection establishment need the plane. After headers, the
+	// response owns its transport connection and its existing resource leases.
+	defer plane.workerRoundTrips.Done()
+	request = request.WithContext(context.WithValue(request.Context(), workerPlaneKey{}, plane))
+	return t.next.RoundTrip(request)
+}
+
 // Downloads originate in the daemon, before any client socket exists. Match
 // its process name and an unspecified source, never a fabricated LAN device.
 func mitmClientDialContext(c *ControlPlane) mitm.DialContext {
@@ -65,7 +112,7 @@ func mitmClientDialContext(c *ControlPlane) mitm.DialContext {
 				failures = append(failures, err)
 				continue
 			}
-			conn, err := c.dialHTTPUpstream(ctx, option)
+			conn, err := dialHTTPUpstream(ctx, option)
 			logHTTPDial(netip.AddrPort{}, target.host, option, err)
 			if err == nil {
 				return conn, nil

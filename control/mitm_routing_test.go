@@ -332,7 +332,7 @@ func TestMITMDialReportsConnectivityFailures(t *testing.T) {
 			stats.DefaultStore.RecordNodeState(d.StatsKey(), false, time.Time{})
 			t.Cleanup(func() { stats.DefaultStore.Reconcile(nil, nil) })
 			option := &DialOption{Dialer: d, DialTarget: "198.51.100.1:443", Outbound: &outbound.DialerGroup{Name: "proxy"}, NetworkType: *common.NetworkTCP4.NetworkType(), Direct: test.unchecked}
-			conn, err := (&ControlPlane{}).dialHTTPUpstream(ctx, option)
+			conn, err := dialHTTPUpstream(ctx, option)
 			if conn != nil {
 				_ = conn.Close()
 			}

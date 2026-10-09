@@ -72,11 +72,10 @@ func TestMITMResourceReadFailureResetsClient(t *testing.T) {
 	defer host.Close()
 	accepted, client := relayTestTCPPair(t)
 	defer client.Close()
-	plane := new(ControlPlane)
 	relay := &tcpRelay{lConn: sniffing.NewConnSniffer(accepted, time.Second), domain: "service.example", dst: netip.MustParseAddrPort(option.DialTarget), mitmHost: host,
 		mitmPlanner: func(*http.Request) (mitm.UpstreamPlan, error) {
 			return mitm.UpstreamPlan{Key: "selected", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return plane.dialHTTPUpstream(ctx, option)
+				return dialHTTPUpstream(ctx, option)
 			}}, nil
 		},
 	}
@@ -111,7 +110,6 @@ func TestMITMHTTPPolicyResetsClientAfterResourceRetires(t *testing.T) {
 	d := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: data}), new(dialer.GlobalOption), &dialer.Property{Name: t.Name()}, false, "")
 	defer d.Close()
 	option := &DialOption{Dialer: d, PolicyLease: policy, Outbound: &outbound.DialerGroup{Name: "proxy"}, DialTarget: "192.0.2.1:80", NetworkType: *common.NetworkTCP4.NetworkType()}
-	plane := new(ControlPlane)
 	host, err := mitm.New(mitm.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +117,7 @@ func TestMITMHTTPPolicyResetsClientAfterResourceRetires(t *testing.T) {
 	defer host.Close()
 	relay := &tcpRelay{lConn: sniffing.NewConnSniffer(accepted, time.Second), domain: "service.example", dst: netip.MustParseAddrPort("192.0.2.1:80"), mitmHost: host,
 		mitmPlanner: func(*http.Request) (mitm.UpstreamPlan, error) {
-			return mitm.UpstreamPlan{Key: "selected", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) { return plane.dialHTTPUpstream(ctx, option) }}, nil
+			return mitm.UpstreamPlan{Key: "selected", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) { return dialHTTPUpstream(ctx, option) }}, nil
 		},
 	}
 	done := make(chan error, 1)

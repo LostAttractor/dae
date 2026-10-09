@@ -66,7 +66,7 @@ func (c *ControlPlane) listenDNSUpstream(parent context.Context, option *DialOpt
 		return nil, err
 	}
 	defer cleanup()
-	conn, _, err := c.dialHTTPPacketUpstream(ctx, option)
+	conn, _, err := dialHTTPPacketUpstream(ctx, option)
 	if cause := connectionAbortCause(option.PolicyLease, route); cause != nil {
 		err = cause
 	}

@@ -16,19 +16,21 @@ import (
 )
 
 func (c *ControlPlane) MITMStatus() []plugin.InstanceStatus {
-	if c.mitmHost == nil {
+	host := c.MITMHost()
+	if host == nil {
 		return nil
 	}
-	return c.mitmHost.Status()
+	return host.Status()
 }
 
 // Pure inspection can use an existing route. Request transformations are
 // admitted separately, before any terminal route for the old target.
 func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *routingResult) mitm.HTTPMode {
-	if c.mitmHost == nil {
+	host := c.MITMHost()
+	if host == nil {
 		return mitm.HTTPBypass
 	}
-	mode := c.mitmHost.Match(domain, dst.Port())
+	mode := host.Match(domain, dst.Port())
 	if mode == mitm.HTTPBypass {
 		return mode
 	}
@@ -51,8 +53,8 @@ func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *
 }
 
 func (c *ControlPlane) mitmAuthority() *mitmca.Authority {
-	if c.mitmHost != nil {
-		return c.mitmHost.Authority()
+	if host := c.MITMHost(); host != nil {
+		return host.Authority()
 	}
 	return nil
 }

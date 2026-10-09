@@ -1,4 +1,4 @@
-package cmd
+package daemon
 
 import (
 	"context"
@@ -14,16 +14,16 @@ import (
 
 func TestNewControlPlaneHonorsCanceledContext(t *testing.T) {
 	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
-	t.Cleanup(func() { direct.Direct, direct.Bootstrap = previousDirect, previousBootstrap })
-	for name, bpf := range map[string]*control.Runtime{"startup": nil, "existing runtime": control.NewRuntime()} {
-		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			_, err := newControlPlane(ctx, bpf, &config.Config{}, nil, nil, nil)
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("newControlPlane error = %v, want context cancellation", err)
-			}
-		})
+	bpf := control.NewRuntime()
+	t.Cleanup(func() { _ = bpf.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := newControlPlane(ctx, bpf, &config.Config{}, nil, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("newControlPlane error = %v, want context cancellation", err)
+	}
+	if direct.Direct != previousDirect || direct.Bootstrap != previousBootstrap {
+		t.Fatal("candidate replaced process dialers")
 	}
 }
 

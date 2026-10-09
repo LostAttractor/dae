@@ -12,6 +12,8 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/internal/daemon"
 	"github.com/daeuniverse/dae/pkg/logger"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -53,7 +55,7 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			}
 
 			// Read config from --config cfgFile.
-			conf, includes, err := readConfig(cfgFile)
+			conf, includes, err := config.Load(cfgFile)
 			if err != nil {
 				return fmt.Errorf("read config: %w", err)
 			}
@@ -77,7 +79,9 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 			logger.SetLogger(conf.Global.LogLevel, disableTimestamp, logOpts)
 
 			log.WithField("files", includes).Debug("Loaded configuration files")
-			err = Run(conf, []string{filepath.Dir(cfgFile)}, definitions, resolver)
+			err = daemon.Run(conf, []string{filepath.Dir(cfgFile)}, definitions, resolver, daemon.Options{
+				ConfigFile: cfgFile, Version: Version, DisableTimestamp: disableTimestamp, DisablePidFile: disablePidFile,
+			})
 			if err != nil {
 				// Own the terminal error here so Cobra does not print it again.
 				cmd.SilenceErrors = true

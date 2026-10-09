@@ -2,12 +2,13 @@
 
 | 目录 | 职责 |
 | --- | --- |
-| `cmd` | 命令、启动、重载和生成的插件表 |
+| `cmd` | 命令参数、信号客户端和生成的插件表 |
+| `internal/daemon` | 启动、资源加载、差异重载、服务发布与关闭 |
 | `config` | 用户配置解析与校验 |
 | `control` | 控制面、TCP/UDP 转发、内核资源交接；eBPF 位于 `kern` |
 | `component/routing`、`outbound` | 路由规则、目的地址计划、出站选择 |
 | `component/network`、`sniffing` | 接口管理与协议嗅探 |
-| `component/mitm`、`component/plugin` | HTTP/TLS、通用插件生命周期与公开 API；`mitm/surge` 实现 sgmodule，`mitm/ca` 管理证书 |
+| `component/mitm`、`component/pluginhost`、`component/plugin` | 协议连接宿主、独立插件实例/后台任务/存储/指标所有权、公开 API；`mitm/surge` 实现 sgmodule，`mitm/ca` 管理证书 |
 | `api`、`api/client` | 公开数据契约与独立 HTTP/Unix 客户端 |
 | `client/cli`、`client/status` | 终端命令与 API 状态展示 |
 | `web`、`internal/webui` | 独立前端源码与构建、产物嵌入及静态托管 |
@@ -19,7 +20,7 @@
 
 MITM 是可选组件，业务插件的实现、测试和文档在独立仓库维护。
 [plugins.cfg](../../../plugins.cfg) 经 `make` 生成
-`cmd/plugins_generated.go`，完整 Definition 表（静态校验、Setup 和命令）随启动和重载传递。
+`cmd/plugins_generated.go`，完整 Definition 表（静态校验、资源准备、工厂和命令）随启动和重载传递。
 插件依赖[公开 API](../../../component/plugin/README.md)，宿主持有传输资源。
 
 原生 [rules / DNAT](../configuration/destination-rules.md) 与 Surge `[Host]` 的字面 IP 条目共用拨号目标重写；域名条目通过 DNS 插件应答。
@@ -67,7 +68,7 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 
 ### 内部解析
 
-`common/netutils/resolver.go` 封装 dae 内部解析：稳定的标准库解析器指针、可原子替换的服务器/路由策略，以及独立的节点引导解析器。`global.dns_resolver` 可覆盖内部服务器；未配置则使用系统 DNS。`cmd/daemon.go` 在监听器就绪和重载提交时切换策略，`control/daemon_dial.go` 提供 dae 进程身份及路由 DNS 拨号，复用 `route_dial.go` 的地址选择和 `dns_upstream.go` 的传输生命周期。代理链底层使用独立 bootstrap direct dialer，避免解析节点依赖尚未建立的代理。
+`common/netutils/resolver.go` 封装 dae 内部解析：稳定的标准库解析器指针、可原子替换的服务器/路由策略，以及独立的节点引导解析器。`global.dns_resolver` 可覆盖内部服务器；未配置则使用系统 DNS。`internal/daemon` 在监听器就绪和重载提交时切换策略，`control/daemon_dial.go` 提供 dae 进程身份及路由 DNS 拨号，复用 `route_dial.go` 的地址选择和 `dns_upstream.go` 的传输生命周期。代理链和订阅加载使用各自注入的 bootstrap direct dialer，候选准备不替换活动全局拨号器。
 
 解析器安装统一由 `InstallDefaultResolver` 完成校验、构造和发布，底层创建带 mark 的 socket dialer，复用 outbound 的 `SoMarkControl`。direct 使用调用方注入的解析策略，省略时使用 `net.DefaultResolver`。每个 direct 实例持有一个 `net.Dialer`，TCP、连接型 UDP 和无连接 UDP 共用它的 resolver 与 socket Control；无连接 UDP 由 `net.ListenConfig` 创建。独立引导解析器、原子策略快照和 UDP `net.PacketConn` 适配分别负责避免循环依赖、保证重载一致性和保留标准库所需的报文语义。
 
@@ -78,6 +79,7 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 | 文件 | 职责 |
 | --- | --- |
 | `control/routing_profile_compiler.go`、`routing_matcher_builder.go` | 展开片段与策略，收集和共享谓词资源，校验完整程序 |
+| `control/routing_state.go` | 编译后规则、动态 client/interface 更新及用户态/内核同步；发布后不保留 Builder |
 | `control/routing_instruction.go` | 指令标志、动作生成和相对跳距编码 |
 | `control/routing_predicate.go` | 用户态谓词求值，按需准备域名位图和 LPM 查询键 |
 | `control/routing_matcher_userspace.go`、`routing_matcher_kernspace.go` | 构建与执行用户态匹配器，或向内核发布已编译程序 |

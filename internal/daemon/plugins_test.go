@@ -1,4 +1,4 @@
-package cmd
+package daemon
 
 import (
 	"context"
@@ -24,7 +24,8 @@ func loadTestMITM(ctx context.Context, conf *config.Config, client, background *
 	if err != nil {
 		return nil, err
 	}
-	return loadMITM(ctx, conf, client, background, plugins)
+	prepared, err := loadMITM(ctx, conf, client, background, plugins, nil, nil)
+	return prepared.Host, err
 }
 
 func mitmConfigForTest(t *testing.T, body string) *config.Config {

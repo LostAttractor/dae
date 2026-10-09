@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package cmd
+package daemon
 
 import (
 	"context"
@@ -30,7 +30,7 @@ plugins { surge { module { 'https://invalid.example/module' } } `+last+` }`)
 				}, err
 			}
 			definitions := map[string]plugin.Definition{"surge": definition}
-			if err := Run(conf, nil, definitions, nil); err == nil || !strings.Contains(err.Error(), "plugins.") || strings.Contains(err.Error(), "secret") {
+			if err := Run(conf, nil, definitions, nil, Options{}); err == nil || !strings.Contains(err.Error(), "plugins.") || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("startup preflight: error=%v", err)
 			}
 			// Direct host loading must also reject before attempting the CA.

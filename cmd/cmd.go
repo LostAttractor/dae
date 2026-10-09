@@ -13,13 +13,10 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/client/cli"
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
 	"github.com/spf13/cobra"
-)
-
-const (
-	AbortFile = "/var/run/dae.abort"
 )
 
 var (
@@ -51,7 +48,7 @@ func init() {
 func Execute() error {
 	definitions := compiledPlugins()
 	var connection cli.Connection
-	services := plugin.CommandServices{BaseDir: cacheDirectory(), Status: connection.MITM, TriggerScript: connection.TriggerScript}
+	services := plugin.CommandServices{BaseDir: common.CacheDirectory(), Status: connection.MITM, TriggerScript: connection.TriggerScript}
 	mitm := newMITMCommand(definitions, services)
 	plugins := newPluginsCommand(definitions, services)
 	connection.Bind(plugins.PersistentFlags())

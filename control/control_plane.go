@@ -21,6 +21,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	log "github.com/sirupsen/logrus"
@@ -47,6 +48,10 @@ type ControlPlane struct {
 	dnsRelay           *dnsRelay
 	domainRegistryPath string
 	mitmHost           *mitm.Host
+	mitmPlan           plugin.Plan // Accepted, expanded routing inputs; immutable.
+	mitmMu             sync.RWMutex
+	retiredHosts       sync.WaitGroup
+	workerRoundTrips   sync.WaitGroup
 	mitmClients        clientmatch.Matcher
 	settings           *settings.Store
 	settingsMu         sync.Mutex
@@ -113,9 +118,9 @@ func NewControlPlane(
 	nodes []outbound.NodeDescriptor,
 	conf *config.Config,
 	runtimeSettings *settings.Store,
-	loadMITM func(*http.Client, *http.Client) (*mitm.Host, error),
+	loadMITM func(*http.Client) (PreparedMITM, error),
 ) (c *ControlPlane, err error) {
-	groups, global := conf.Group, &conf.Global
+	groups, global := conf.Group, new(conf.Global)
 	var mitmClients clientmatch.Matcher
 	if conf.MITM.Enabled {
 		clients := conf.MITM.ClientSourceAddress
@@ -206,10 +211,8 @@ func NewControlPlane(
 	outbounds, outboundName2Id := outboundBuilder.outbounds, outboundBuilder.nameToID
 	preparedRules.validationOutbounds = outboundBuilder.validationOutbounds
 
-	if loadMITM == nil {
-		if err := preparedRules.bypassLocalAPI(global.APIPort); err != nil {
-			return nil, err
-		}
+	if err := preparedRules.bypassLocalAPI(global.APIPort); err != nil {
+		return nil, err
 	}
 
 	/// Routing.

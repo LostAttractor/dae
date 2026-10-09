@@ -7,7 +7,6 @@ import (
 
 	"github.com/daeuniverse/dae/client/cli"
 	"github.com/daeuniverse/dae/component/plugin"
-	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -46,12 +45,4 @@ func newMITMPluginCommand(name string, definition plugin.Definition, services pl
 	}
 	group.AddCommand(cli.NewMITMStatusCommand(services.Status, nil))
 	return group, false
-}
-
-func logStartupMITMStatus(instances []plugin.InstanceStatus) {
-	for _, instance := range instances {
-		log.WithFields(log.Fields{"plugin_instance": instance.ID, "type": instance.Type,
-			"state": instance.State, "scopes": instance.Scopes, "destination_rules": instance.DestinationRules,
-		}).Debug("Plugin prepared")
-	}
 }

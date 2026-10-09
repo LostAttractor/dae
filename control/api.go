@@ -23,8 +23,8 @@ func (c *ControlPlane) APIHandler(version string) http.Handler {
 func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver) http.Handler {
 	options := apiserver.Options{Selectors: c, Probes: c, Devices: c, ResolveClient: resolve, APIKey: c.apiKey}
 	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
-	if c.mitmHost != nil {
-		options.Scripts = c.mitmHost
+	if host := c.MITMHost(); host != nil {
+		options.Scripts = host
 	}
 	if authority := c.mitmAuthority(); authority != nil {
 		options.Certificates = &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()}

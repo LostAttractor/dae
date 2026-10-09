@@ -117,8 +117,8 @@ func (c *ControlPlane) interruptTraffic() {
 	c.cancelTCPSetups()
 	c.udpTaskPool.cancel()
 	c.dnsRelay.stop()
-	if c.mitmHost != nil {
-		c.mitmHost.Abort()
+	if host := c.MITMHost(); host != nil {
+		host.Abort()
 	}
 }
 
@@ -138,9 +138,14 @@ func (c *ControlPlane) retireTraffic() error {
 	} else {
 		c.udpEndpoints.removePending(c)
 	}
-	if c.mitmHost != nil {
-		ingressErr = errors.Join(ingressErr, c.mitmHost.Close())
+	if host := c.MITMHost(); host != nil {
+		host.StopWorkers()
 	}
+	c.workerRoundTrips.Wait()
+	if host := c.MITMHost(); host != nil {
+		ingressErr = errors.Join(ingressErr, host.Close())
+	}
+	c.retiredHosts.Wait()
 	c.tcpConnections.waitForAbort()
 	c.cancel()
 	return ingressErr

@@ -1,4 +1,4 @@
-package cmd
+package daemon
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func TestResolveNodeDescriptorsRunsSubscriptionsConcurrentlyInOrder(t *testing.T
 	t.Setenv("DAE_LOCATION_CACHE", subscriptionDir)
 	done := make(chan result, 1)
 	go func() {
-		descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, subscriptionDir, resolve)
+		descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, subscriptionDir, resolve, nodePreparation{})
 		links := make([]string, 0, len(descriptors))
 		for _, descriptor := range descriptors {
 			links = append(links, descriptor.Link)
@@ -94,18 +94,16 @@ func TestWaitForNetworkOnlineCanBeCanceled(t *testing.T) {
 	defer server.Close()
 
 	previousLinks := CheckNetworkLinks
-	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
 	CheckNetworkLinks = []string{server.URL}
-	direct.InitDirectDialers(false, 0)
 	t.Cleanup(func() {
 		CheckNetworkLinks = previousLinks
-		direct.Direct = previousDirect
-		direct.Bootstrap = previousBootstrap
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- waitForNetworkOnline(ctx, false) }()
+	go func() {
+		done <- waitForNetworkOnline(ctx, startupNetworkWaitTimeout, direct.NewDirectDialer(direct.Option{}))
+	}()
 	<-requestStarted
 	cancel()
 	select {
@@ -133,7 +131,7 @@ func TestSubscriptionResourceCacheOptions(t *testing.T) {
 			}
 			return "", nil, nil
 		}
-		if _, err := resolveNodeDescriptors(t.Context(), conf, false, configDir, resolve); err != nil {
+		if _, err := resolveNodeDescriptors(t.Context(), conf, false, configDir, resolve, nodePreparation{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -145,9 +143,10 @@ func TestResolveNodeDescriptorsDoesNotCreateDirectoriesWithoutPersistentDownload
 	cacheDir := filepath.Join(root, "missing-cache")
 	t.Setenv("DAE_LOCATION_CACHE", cacheDir)
 	conf := &config.Config{Global: config.Global{DisableWaitingNetwork: true}}
-	if _, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, nil); err != nil {
+	if _, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, nil, nodePreparation{}); err != nil {
 		t.Fatal(err)
 	}
+	pruneSubscriptions(conf, configDir)
 	for _, dir := range []string{configDir, cacheDir} {
 		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("directory %q was created without a persistent download: %v", dir, err)
@@ -164,9 +163,6 @@ func subscriptionTestContent(host string) (string, []byte) {
 func TestResolveNodeDescriptorsLocalFileUsesConfigurationDirectory(t *testing.T) {
 	configDir, cacheDir := t.TempDir(), t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", cacheDir)
-	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
-	direct.InitDirectDialers(false, 0)
-	t.Cleanup(func() { direct.Direct, direct.Bootstrap = previousDirect, previousBootstrap })
 	node, content := subscriptionTestContent("configured.example")
 	_, otherContent := subscriptionTestContent("cached.example")
 	for dir, data := range map[string][]byte{configDir: content, cacheDir: otherContent} {
@@ -178,7 +174,7 @@ func TestResolveNodeDescriptorsLocalFileUsesConfigurationDirectory(t *testing.T)
 		Global:       config.Global{DisableWaitingNetwork: true},
 		Subscription: []config.Subscription{{Name: "local", Link: "file:nodes.sub"}},
 	}
-	descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, subscription.ResolveSubscriptionContext)
+	descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, subscription.ResolveSubscriptionContext, nodePreparation{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,9 +187,6 @@ func TestResolveNodeDescriptorsAbsoluteSecretSymlink(t *testing.T) {
 	root := t.TempDir()
 	configDir, cacheDir := filepath.Join(root, "missing-config"), filepath.Join(root, "missing-cache")
 	t.Setenv("DAE_LOCATION_CACHE", cacheDir)
-	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
-	direct.InitDirectDialers(false, 0)
-	t.Cleanup(func() { direct.Direct, direct.Bootstrap = previousDirect, previousBootstrap })
 	secretDir := filepath.Join(root, "run", "secrets.d", "1", "dae", "subscription")
 	if err := os.MkdirAll(secretDir, 0700); err != nil {
 		t.Fatal(err)
@@ -210,7 +203,7 @@ func TestResolveNodeDescriptorsAbsoluteSecretSymlink(t *testing.T) {
 		Global:       config.Global{DisableWaitingNetwork: true},
 		Subscription: []config.Subscription{{Name: "flowercloud", Link: source}},
 	}
-	descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, subscription.ResolveSubscriptionContext)
+	descriptors, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, subscription.ResolveSubscriptionContext, nodePreparation{})
 	if err != nil || len(descriptors) != 1 || descriptors[0].SubscriptionTag != "flowercloud" || descriptors[0].Link != node {
 		t.Fatalf("secret subscription was not included in the node pool: descriptors=%+v err=%v", descriptors, err)
 	}
@@ -235,9 +228,6 @@ func TestResolveNodeDescriptorsPersistsAndFallsBackInCacheDirectory(t *testing.T
 		_, _ = w.Write(content)
 	}))
 	defer server.Close()
-	previousDirect, previousBootstrap := direct.Direct, direct.Bootstrap
-	direct.InitDirectDialers(false, 0)
-	t.Cleanup(func() { direct.Direct, direct.Bootstrap = previousDirect, previousBootstrap })
 	conf := &config.Config{
 		Global: config.Global{DisableWaitingNetwork: true, ResourceCache: true},
 		Subscription: []config.Subscription{{
@@ -250,7 +240,7 @@ func TestResolveNodeDescriptorsPersistsAndFallsBackInCacheDirectory(t *testing.T
 			server.Close()
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		descriptors, err := resolveNodeDescriptors(ctx, conf, false, configDir, subscription.ResolveSubscriptionContext)
+		descriptors, err := resolveNodeDescriptors(ctx, conf, false, configDir, subscription.ResolveSubscriptionContext, nodePreparation{dialer: direct.NewDirectDialer(direct.Option{})})
 		cancel()
 		if err != nil {
 			t.Fatalf("%s: %v", state, err)
@@ -264,7 +254,7 @@ func TestResolveNodeDescriptorsPersistsAndFallsBackInCacheDirectory(t *testing.T
 		t.Fatalf("cache files=%v %v", files, err)
 	}
 	conf.Global.ResourceCache = false
-	if descriptors, err := resolveNodeDescriptors(t.Context(), conf, false, configDir, subscription.ResolveSubscriptionContext); err != nil || len(descriptors) != 0 {
+	if descriptors, err := resolveNodeDescriptors(t.Context(), conf, false, configDir, subscription.ResolveSubscriptionContext, nodePreparation{}); err != nil || len(descriptors) != 0 {
 		t.Fatalf("disabled cache returned nodes: %v %v", descriptors, err)
 	}
 	if _, err := os.Stat(files[0]); err != nil {
@@ -288,9 +278,13 @@ func TestResolveNodeDescriptorsPrunesOnlyCacheDirectory(t *testing.T) {
 		}
 	}
 	conf := &config.Config{Global: config.Global{DisableWaitingNetwork: true, ResourceCache: true}}
-	if _, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, nil); err != nil {
+	if _, err := resolveNodeDescriptors(context.Background(), conf, false, configDir, nil, nodePreparation{}); err != nil {
 		t.Fatal(err)
 	}
+	if files, err := filepath.Glob(filepath.Join(cacheDir, "resources", "subscriptions", "*.json")); err != nil || len(files) != 1 {
+		t.Fatalf("preparation pruned the accepted resource cache: %v", err)
+	}
+	pruneSubscriptions(conf, configDir)
 	if files, err := filepath.Glob(filepath.Join(cacheDir, "resources", "subscriptions", "*.json")); err != nil || len(files) != 0 {
 		t.Fatalf("stale cache subscription was not removed: %v", err)
 	}
@@ -304,16 +298,13 @@ func TestWaitForNetworkOnlineTimeoutAllowsOfflinePreparation(t *testing.T) {
 		<-request.Context().Done()
 	}))
 	defer server.Close()
-	previousLinks, previousDirect, previousBootstrap := CheckNetworkLinks, direct.Direct, direct.Bootstrap
+	previousLinks := CheckNetworkLinks
 	CheckNetworkLinks = []string{server.URL}
-	direct.InitDirectDialers(false, 0)
 	t.Cleanup(func() {
 		CheckNetworkLinks = previousLinks
-		direct.Direct = previousDirect
-		direct.Bootstrap = previousBootstrap
 	})
 	started := time.Now()
-	if err := waitForNetworkOnlineWithTimeout(context.Background(), 20*time.Millisecond); err != nil {
+	if err := waitForNetworkOnline(context.Background(), 20*time.Millisecond, direct.NewDirectDialer(direct.Option{})); err != nil {
 		t.Fatalf("offline network check prevented preparation: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
@@ -321,7 +312,7 @@ func TestWaitForNetworkOnlineTimeoutAllowsOfflinePreparation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := waitForNetworkOnlineWithTimeout(ctx, time.Second); !errors.Is(err, context.DeadlineExceeded) {
+	if err := waitForNetworkOnline(ctx, time.Second, direct.NewDirectDialer(direct.Option{})); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("parent deadline error = %v, want context deadline exceeded", err)
 	}
 }

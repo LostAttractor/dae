@@ -174,16 +174,17 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 		}
 		return nil
 	}
-	if c.mitmHost != nil {
+	host := c.MITMHost()
+	if host != nil {
 		// Auxiliary HTTP always selects its own target using the original DNS
 		// client's identity, before looking up a policy-keyed connection pool.
 		planner := &httpRoutePlanner{plane: c, network: "tcp", source: request.Source, identity: identity}
-		client, closeClient := c.mitmHost.RoutedHTTPClient(planner.plan)
+		client, closeClient := host.RoutedHTTPClient(planner.plan)
 		client.Timeout = consts.DefaultDNSTimeout
 		request.Client = client
 		defer closeClient()
 	}
-	_, err := c.mitmHost.HandleDNS(ctx, request, terminal, func(response *plugin.DNSResponse) error {
+	_, err := host.HandleDNS(ctx, request, terminal, func(response *plugin.DNSResponse) error {
 		query := request.MessageCopy()
 		var wire []byte
 		var err error
@@ -226,7 +227,7 @@ func (c *ControlPlane) processDNS(ctx context.Context, request *plugin.DNSExchan
 			if c.core != nil && c.routingMatcher != nil {
 				c.observeDNS(request, response, deliveredAt)
 			}
-			c.mitmHost.ObserveDNS(ctx, request, response)
+			host.ObserveDNS(ctx, request, response)
 		}
 		return nil
 	})

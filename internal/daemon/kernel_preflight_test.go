@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package cmd
+package daemon
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,7 +24,7 @@ func TestKernelPreflightBeforeStartupResources(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
 	conf := mitmConfigForTest(t, "")
-	err := Run(conf, nil, nil, &netutils.InternalResolver{})
+	err := Run(conf, nil, nil, &netutils.InternalResolver{}, Options{ConfigFile: filepath.Join(dir, "config.dae")})
 	if err == nil || !strings.Contains(err.Error(), "kernel preflight") {
 		t.Fatalf("startup did not reject kernel prerequisites first: %v", err)
 	}

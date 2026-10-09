@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/daeuniverse/dae/cmd/internal"
+	"github.com/daeuniverse/dae/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			if len(args) == 0 {
-				_pid, err := os.ReadFile(PidFilePath)
+				_pid, err := os.ReadFile(daemon.PidFilePath)
 				if err != nil {
 					return fmt.Errorf("failed to read pid file: %w", err)
 				}
@@ -41,11 +42,11 @@ var (
 			abortMarkerCreated := false
 			cleanupAbortMarker := func() {
 				if abortMarkerCreated {
-					_ = os.Remove(AbortFile)
+					_ = os.Remove(daemon.AbortFile)
 				}
 			}
 			if abort {
-				f, err := os.OpenFile(AbortFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+				f, err := os.OpenFile(daemon.AbortFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 				if err != nil {
 					return fmt.Errorf("failed to create abort marker: %w", err)
 				}

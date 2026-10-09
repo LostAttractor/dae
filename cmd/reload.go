@@ -15,8 +15,7 @@ import (
 
 	"github.com/daeuniverse/dae/cmd/internal"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/config"
-	"github.com/mohae/deepcopy"
+	"github.com/daeuniverse/dae/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -24,18 +23,6 @@ const (
 	reloadCommandTimeout = 3 * time.Minute
 	reloadPollInterval   = 200 * time.Millisecond
 )
-
-// Suspend uses the accepted configuration, even if the file on disk is invalid.
-func loadReloadConfig(path string, current *config.Config, suspend bool) (*config.Config, []string, error) {
-	if !suspend {
-		return readConfig(path)
-	}
-	next := deepcopy.Copy(current).(*config.Config)
-	next.Global.WanInterface = nil
-	next.Global.LanInterface = nil
-	next.Global.LogLevel = "warning"
-	return next, nil, nil
-}
 
 func readSignalProgressFile(path string) (code byte, content string, err error) {
 	b, err := os.ReadFile(path)
@@ -122,7 +109,7 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 			if len(args) == 0 {
-				_pid, err := os.ReadFile(PidFilePath)
+				_pid, err := os.ReadFile(daemon.PidFilePath)
 				if err != nil {
 					return fmt.Errorf("failed to read pid file: %w", err)
 				}
@@ -136,9 +123,9 @@ var (
 				return err
 			}
 			// Read the first line of SignalProgressFilePath.
-			code, _, err := readSignalProgressFile(SignalProgressFilePath)
+			code, _, err := readSignalProgressFile(daemon.SignalProgressFilePath)
 			if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
-				return fmt.Errorf("%v shows another reload operation is in progress", SignalProgressFilePath)
+				return fmt.Errorf("%v shows another reload operation is in progress", daemon.SignalProgressFilePath)
 			}
 			if err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("failed to inspect reload progress: %w", err)
@@ -146,11 +133,11 @@ var (
 			abortMarkerCreated := false
 			cleanupAbortMarker := func() {
 				if abortMarkerCreated {
-					_ = os.Remove(AbortFile)
+					_ = os.Remove(daemon.AbortFile)
 				}
 			}
 			if abort {
-				f, err := os.OpenFile(AbortFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+				f, err := os.OpenFile(daemon.AbortFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 				if err != nil {
 					return fmt.Errorf("failed to create abort marker: %w", err)
 				}
@@ -161,19 +148,19 @@ var (
 				}
 			}
 			// Set the progress as ReloadSend.
-			if err = writeFileAtomic(SignalProgressFilePath, []byte{consts.ReloadSend}, 0600); err != nil {
+			if err = daemon.WriteFileAtomic(daemon.SignalProgressFilePath, []byte{consts.ReloadSend}, 0600); err != nil {
 				cleanupAbortMarker()
 				return fmt.Errorf("failed to initialize reload progress: %w", err)
 			}
 			// Send signal.
 			if err = syscall.Kill(pid, syscall.SIGUSR1); err != nil {
 				cleanupAbortMarker()
-				writeReloadState(consts.ReloadError, err.Error())
+				daemon.WriteReloadState(consts.ReloadError, err.Error())
 				return fmt.Errorf("failed to signal dae: %w", err)
 			}
 
 			result, err := waitForReload(reloadWaitOptions{
-				progressPath: SignalProgressFilePath,
+				progressPath: daemon.SignalProgressFilePath,
 				timeout:      reloadCommandTimeout,
 				pollInterval: reloadPollInterval,
 				processAlive: func() error { return syscall.Kill(pid, 0) },

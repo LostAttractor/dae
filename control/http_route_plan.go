@@ -102,14 +102,14 @@ func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, option
 		}
 		fmt.Fprintf(&key, "/%q/%p/%d/%q/%s/%t/%p", option.Outbound.Name, option.Dialer, option.Mark, option.DialTarget, option.NetworkType.String(), option.OriginalOutbound != nil, option.PolicyLease)
 	}
-	c, source := p.plane, p.source
+	source := p.source
 	plan := mitm.UpstreamPlan{Key: key.String(), Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var failures []error
 		for _, option := range options {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			conn, err := c.dialHTTPUpstream(ctx, option)
+			conn, err := dialHTTPUpstream(ctx, option)
 			logHTTPDial(source, target.host, option, err)
 			if err == nil {
 				return conn, nil
@@ -134,7 +134,7 @@ func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, option
 				if option.Outbound.Name == consts.OutboundBlock.String() {
 					return nil, nil, fmt.Errorf("HTTP upstream blocked by routing")
 				}
-				conn, peer, err := c.dialHTTPPacketUpstream(ctx, option)
+				conn, peer, err := dialHTTPPacketUpstream(ctx, option)
 				logHTTPDial(source, target.host, option, err)
 				if err == nil {
 					return conn, peer, nil

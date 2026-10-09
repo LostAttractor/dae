@@ -4,34 +4,67 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/config_parser"
 )
+
+// PreparedMITM pairs a protocol host with its expanded routing inputs. The plan
+// is immutable and contains no external references requiring I/O at compilation.
+type PreparedMITM struct {
+	Host *mitm.Host
+	plan plugin.Plan
+}
+
+// PrepareMITM consumes host, closing it on error. Refresh resources even when
+// the host reuses every plugin instance: their declarations may refer to geodata.
+func PrepareMITM(ctx context.Context, host *mitm.Host, dirs []string) (PreparedMITM, error) {
+	if host == nil {
+		return PreparedMITM{}, nil
+	}
+	plan := host.Plan()
+	plan.DNS = nil // DNS middleware does not contribute kernel routing rules.
+	var err error
+	if len(plan.Destinations) != 0 {
+		plan.Destinations, err = prepareDestinationRules(ctx, plan.Destinations, dirs)
+	}
+	reader := routing.NewDatReaderOptimizer(ctx, assets.NewLocationFinder(dirs))
+	for _, rules := range []*[]*config_parser.RoutingRule{&plan.EarlyRoutes, &plan.Routes} {
+		if err != nil {
+			break
+		}
+		*rules, err = routing.ApplyRulesOptimizers(*rules, &routing.AliasOptimizer{}, reader, &routing.DeduplicateParamsOptimizer{})
+	}
+	if err != nil {
+		return PreparedMITM{}, errors.Join(err, host.Close())
+	}
+	return PreparedMITM{Host: host, plan: plan}, nil
+}
 
 // prepareMITM loads plugins through the base routing policy, then rebuilds the
 // userspace matcher with their declared routes and capture scopes. Shared BPF
 // maps remain untouched until the control plane is activated.
-func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rules *preparedRules, outbounds *outboundBuilder, load func(*http.Client, *http.Client) (*mitm.Host, error)) error {
-	host, err := c.loadMITMHost(load)
+func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rules *preparedRules, outbounds *outboundBuilder, load func(*http.Client) (PreparedMITM, error)) error {
+	prepared, err := c.loadMITMHost(load)
 	if err != nil {
 		return err
 	}
-	c.mitmHost = host
-	if host == nil {
+	c.mitmHost, c.mitmPlan = prepared.Host, prepared.plan
+	if prepared.Host == nil {
 		return nil
 	}
-	plan := host.Plan()
-	pluginDestinations, err := prepareDestinationRules(ctx, plan.Destinations, rules.geoDirs)
-	if err != nil {
-		return err
-	}
-	rules.destinations = append(rules.destinations, pluginDestinations...)
+	plan := prepared.plan
+	rules.destinations = append(rules.destinations, plan.Destinations...)
 	needsSniff := len(plan.Scopes) != 0
-	for _, rule := range pluginDestinations {
+	for _, rule := range plan.Destinations {
 		for _, f := range rule.Filter {
 			needsSniff = needsSniff || f.Name == "domain"
 		}
@@ -57,9 +90,6 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 		group.DeferStats()
 	}
 	c.connectivityOutbounds.Store(new(c.outbounds))
-	if err := rules.bypassLocalAPI(conf.Global.APIPort); err != nil {
-		return err
-	}
 	builder, err := rules.compileRouting(outbounds.nameToID, c.core.bpf, c.core.ifmgr)
 	if err != nil {
 		return err
@@ -97,16 +127,12 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	return waitForStartupConnectivity(waiters, max(initialConnectivityTimeout-time.Since(started), 0), ctx.Done())
 }
 
-func (c *ControlPlane) loadMITMHost(load func(*http.Client, *http.Client) (*mitm.Host, error)) (*mitm.Host, error) {
+func (c *ControlPlane) loadMITMHost(load func(*http.Client) (PreparedMITM, error)) (PreparedMITM, error) {
 	client, closeDownloads := newMITMClient(c, 30*time.Second)
 	defer closeDownloads()
-	background, closeBackground := newMITMClient(c, 0)
-	// Background requests belong to the plane, not this preparation call.
-	// Close them before DNS relays and outbounds during plane cleanup.
-	c.deferFuncs = append(c.deferFuncs, func() error { closeBackground(); return nil })
-	host, err := load(client, background)
+	host, err := load(client)
 	if err != nil {
-		return nil, fmt.Errorf("prepare plugins: %w", err)
+		return PreparedMITM{}, fmt.Errorf("prepare plugins: %w", err)
 	}
 	return host, nil
 }

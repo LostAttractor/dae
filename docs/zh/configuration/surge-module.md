@@ -1,6 +1,6 @@
 # Surge Module
 
-内置 `surge` 插件使用 [buke/quickjs-go](https://github.com/buke/quickjs-go) 的 cgo 绑定运行 QuickJS-NG，在透明转发中处理 Surge HTTP 模块，并支持 cron 定时脚本、generic 手动脚本、部分路由与 IP 目标重写。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[静态 musl 构建](../../en/user-guide/build-by-yourself.md#portable-static-musl-build)。
+内置 `surge` 插件使用 [buke/quickjs-go](https://github.com/buke/quickjs-go) 的 cgo 绑定运行 QuickJS-NG，在透明转发中处理 Surge HTTP 模块，并支持 cron 定时脚本、generic 手动脚本、部分路由与 IP 目标重写。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[静态 musl 构建](../../en/user-guide/build-by-yourself.md#musl)。
 
 ## 配置与运行
 

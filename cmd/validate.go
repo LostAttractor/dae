@@ -8,6 +8,8 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/daeuniverse/dae/config"
+
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +23,7 @@ var (
 				return fmt.Errorf("argument --config or -c is required")
 			}
 			// Read config from --config cfgFile.
-			_, _, err := readConfig(cfgFile)
+			_, _, err := config.Load(cfgFile)
 			return err
 		},
 	}

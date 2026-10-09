@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package cmd
+package daemon
 
 import (
 	"context"
@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"path/filepath"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/control"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -26,16 +28,24 @@ func configuredPluginSpecs(conf *config.Config) []plugin.Spec {
 	return specs
 }
 
+func logStartupMITMStatus(instances []plugin.InstanceStatus) {
+	for _, instance := range instances {
+		log.WithFields(log.Fields{"plugin_instance": instance.ID, "type": instance.Type,
+			"state": instance.State, "scopes": instance.Scopes, "destination_rules": instance.DestinationRules,
+		}).Debug("Plugin prepared")
+	}
+}
+
 func configurePlugins(conf *config.Config, definitions map[string]plugin.Definition) (*pluginhost.Configuration, error) {
 	return pluginhost.Configure(definitions, configuredPluginSpecs(conf))
 }
 
-func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *pluginhost.Configuration) (host *mitm.Host, err error) {
+func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *pluginhost.Configuration, previous *mitm.Host, geoDirs []string) (control.PreparedMITM, error) {
 	m := conf.MITM
 	if len(conf.Plugins) == 0 {
-		return nil, nil
+		return control.PreparedMITM{}, nil
 	}
-	base := cacheDirectory()
+	base := common.CacheDirectory()
 	resolve := func(path string) string {
 		if path == "" || filepath.IsAbs(path) {
 			return path
@@ -43,10 +53,11 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 		return filepath.Join(base, path)
 	}
 	var authority *mitmca.Authority
+	var err error
 	if m.Enabled && m.CACert != "" {
 		authority, err = mitmca.Load(resolve(m.CACert), resolve(m.CAKey))
 		if err != nil {
-			return nil, fmt.Errorf("mitm CA: %w", err)
+			return control.PreparedMITM{}, fmt.Errorf("mitm CA: %w", err)
 		}
 	}
 	if authority != nil {
@@ -59,5 +70,9 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 	if conf.Global.ResourceCache {
 		services.ResourceCacheDir = filepath.Join(base, "resources")
 	}
-	return mitm.Load(ctx, plugins, options, services, nil)
+	host, err := mitm.Load(ctx, plugins, options, services, previous)
+	if err != nil {
+		return control.PreparedMITM{}, err
+	}
+	return control.PrepareMITM(ctx, host, geoDirs)
 }

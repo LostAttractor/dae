@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package cmd
+package common
 
 import "testing"
 
@@ -13,7 +13,7 @@ func TestCacheDirectoryDefaults(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("DAE_LOCATION_CACHE", test.cache)
-			if got := cacheDirectory(); got != test.want {
+			if got := CacheDirectory(); got != test.want {
 				t.Fatalf("cache directory = %q, want %q", got, test.want)
 			}
 		})

@@ -37,8 +37,8 @@ func (c *ControlPlane) APIRoutingCurrent() (bool, error) {
 }
 
 func (c *ControlPlane) matchesAPIBypass(current []bpfIpPort) bool {
-	// Interface order, duplicate addresses and repeated plugin preparation do
-	// not change the exact address/port set installed in the kernel.
+	// Interface order and duplicate addresses do not change the exact
+	// address/port set installed in the kernel.
 	seen := make(map[bpfIpPort]bool, len(current))
 	for _, key := range current {
 		seen[key] = false

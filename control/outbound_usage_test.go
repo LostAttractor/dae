@@ -42,7 +42,7 @@ func outboundUsageNodes(conf *config.Config) []outbound.NodeDescriptor {
 	return nodes
 }
 
-func outboundUsagePlane(t *testing.T, conf *config.Config, store *settings.Store, load func(*http.Client, *http.Client) (*mitm.Host, error)) *ControlPlane {
+func outboundUsagePlane(t *testing.T, conf *config.Config, store *settings.Store, load func(*http.Client) (PreparedMITM, error)) *ControlPlane {
 	t.Helper()
 	if store == nil {
 		var err error
@@ -222,8 +222,12 @@ routing { dport(80) -> base(skip_while_noalive)
           fallback: direct }
 `)
 	routes := planRulesForTest(t, "dport(81) -> plugin_only(skip_while_noalive)\ndport(82) -> plugin_sync\ndport(83) -> base")
-	load := func(*http.Client, *http.Client) (*mitm.Host, error) {
-		return mitm.New(mitm.Options{}, mitm.Instance{ID: "test", Plugin: &controlTestPlugin{plan: plugin.Plan{Routes: routes}}})
+	load := func(*http.Client) (PreparedMITM, error) {
+		host, err := mitm.New(mitm.Options{}, mitm.Instance{ID: "test", Plugin: &controlTestPlugin{plan: plugin.Plan{Routes: routes}}})
+		if err != nil {
+			return PreparedMITM{}, err
+		}
+		return PrepareMITM(t.Context(), host, nil)
 	}
 	plane := outboundUsagePlane(t, conf, nil, load)
 	if len(plane.outbounds) != 5 {

@@ -44,7 +44,7 @@ func logHTTPDial(source netip.AddrPort, domain string, option *DialOption, err e
 
 // Attribute HTTP traffic to its actual upstream route. A client connection may
 // visit several outbounds, and local responses must not open a fictitious route.
-func (c *ControlPlane) dialHTTPUpstream(parent context.Context, option *DialOption) (net.Conn, error) {
+func dialHTTPUpstream(parent context.Context, option *DialOption) (net.Conn, error) {
 	if option.Outbound.Name == consts.OutboundBlock.String() {
 		return nil, fmt.Errorf("HTTP upstream blocked by routing")
 	}
@@ -98,7 +98,7 @@ func (c *mitmUpstreamConn) Close() error {
 	return c.Conn.Close()
 }
 
-func (c *ControlPlane) dialHTTPPacketUpstream(parent context.Context, option *DialOption) (net.PacketConn, net.Addr, error) {
+func dialHTTPPacketUpstream(parent context.Context, option *DialOption) (net.PacketConn, net.Addr, error) {
 	ctx, cancel := context.WithTimeout(parent, consts.DefaultDialTimeout)
 	defer cancel()
 	stop := watchAbort(nil, option.PolicyLease, nil, cancel)

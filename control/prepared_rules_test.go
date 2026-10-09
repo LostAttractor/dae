@@ -24,14 +24,12 @@ func TestPrepareRulesWithoutGeodata(t *testing.T) {
 dip(192.168.0.0/16) -> direct
 domain(suffix:example.com) -> direct
 fallback: direct`)
-	rules, err := prepareRoutingRules(t.Context(), &conf.Routing, []string{dir})
+	prepared, err := PrepareRules(t.Context(), &conf.Routing, config.Rules{}, []string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rules.enableFlowRules(t.Context(), config.Rules{}, []string{dir}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := compileTestRouting(rules, map[string]uint8{"direct": 0}, nil, nil); err != nil {
+	rules := prepared.copy()
+	if _, err := rules.compileRouting(map[string]uint8{"direct": 0}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 }
