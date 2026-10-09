@@ -107,6 +107,9 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	if response, err := e.mapLocal(r); response != nil || err != nil {
 		return response, err
 	}
+	if err := e.rewriteRequestBody(exchange); err != nil {
+		return nil, err
+	}
 	module, s := e.matchScript("http-request", r)
 	if s == nil {
 		e.traceRequest(r, "script_skip", "phase", "http-request", "reason", "no_match")

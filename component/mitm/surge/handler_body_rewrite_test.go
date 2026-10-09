@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +19,87 @@ import (
 	"time"
 
 	"github.com/andybalholm/brotli"
+	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
+
+func TestRequestBodyRewriteBeforeScript(t *testing.T) {
+	e := testProxyEngine(t, `[Body Rewrite]
+http-request-jq . '.value += 1'
+http-request . '3' '4'
+http-response . '.' 'wrong direction'
+[Script]
+request = type=http-request, pattern=., requires-body=true, script-path=test.js
+`, `$done({body: JSON.stringify({seen: JSON.parse($request.body).value})});`)
+	for _, encoding := range []string{"", "gzip", "br"} {
+		t.Run(encoding, func(t *testing.T) {
+			request := httptest.NewRequest("POST", "http://example.com/", bytes.NewReader(encodeBodyRewriteTest(t, []byte(`{"value":2}`), encoding)))
+			request.Header.Set("Content-Encoding", encoding)
+			if _, err := e.processRequest(&plugin.Exchange{Request: request}); err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(request.Body)
+			request.Body.Close()
+			if err != nil || string(body) != `{"seen":4}` || request.ContentLength != int64(len(body)) || request.Header.Get("Content-Encoding") != "" {
+				t.Fatalf("rewritten request: %q, headers=%v, error=%v", body, request.Header, err)
+			}
+		})
+	}
+}
+
+func TestBodyRewriteEmptyAndFraming(t *testing.T) {
+	e := testProxyEngine(t, `[Body Rewrite]
+http-request . '^$' 'created'
+http-request . '^erase$' ''
+http-response . '^erase$' ''`, "")
+	for _, input := range []string{"", "erase"} {
+		r := httptest.NewRequest("POST", "http://example.com/", strings.NewReader(input))
+		if err := e.rewriteRequestBody(&plugin.Exchange{Request: r}); err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		want := ""
+		if input == "" {
+			want = "created"
+		}
+		if string(body) != want || r.ContentLength != int64(len(want)) {
+			t.Fatalf("input %q: body=%q length=%d", input, body, r.ContentLength)
+		}
+	}
+	response := bodyRewriteResponse([]byte("erase"), "")
+	if err := e.rewriteResponseBody(response); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if len(body) != 0 || response.ContentLength != 0 {
+		t.Fatalf("empty response replacement: %q, length=%d", body, response.ContentLength)
+	}
+	for _, framing := range []string{"chunked", "expect"} {
+		r := httptest.NewRequest("POST", "http://example.com/", nil)
+		reader := &bodyRewriteTrackedReader{Reader: strings.NewReader("erase")}
+		r.Body = reader
+		if framing == "chunked" {
+			r.TransferEncoding = []string{"chunked"}
+		} else {
+			r.Header.Set("Expect", "100-continue")
+		}
+		if err := e.rewriteRequestBody(&plugin.Exchange{Request: r}); err != nil || reader.readBytes != 0 {
+			t.Fatalf("%s body was consumed: %v", framing, err)
+		}
+	}
+	e.options.MaxBodySize = 2
+	for _, length := range []int64{-1, 5} {
+		r := httptest.NewRequest("POST", "http://example.com/", strings.NewReader("erase"))
+		r.ContentLength = length
+		err := e.rewriteRequestBody(&plugin.Exchange{Request: r})
+		r.Body.Close()
+		if !errors.Is(err, membuffer.ErrTooLarge) {
+			t.Fatalf("oversized request with length %d: %v", length, err)
+		}
+	}
+}
 
 func bodyRewriteEngine(t *testing.T, limit int64, expressions ...string) *Engine {
 	t.Helper()

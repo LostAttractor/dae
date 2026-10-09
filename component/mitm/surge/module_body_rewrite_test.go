@@ -104,9 +104,7 @@ func TestBodyRewriteBilijumpFilters(t *testing.T) {
 
 func TestBodyRewriteWarnsForUnsupportedAndInvalidFilters(t *testing.T) {
 	for _, line := range []string{
-		`http-request-jq . '.x=1'`,
-		`http-response . regex replacement`,
-		`http-request . regex replacement`,
+		`unknown . regex replacement`,
 		`http-response-jq . '.data = '`,
 		`http-response-jq . 'include "filesystem-module"; .'`,
 		`http-response-jq . 'input'`,
@@ -147,7 +145,7 @@ func TestBodyRewriteExecutionLimitsAndEmptyOutput(t *testing.T) {
 			if test.wantError != errors.Is(err, membuffer.ErrTooLarge) {
 				t.Fatalf("size limit: output=%v err=%v", output, err)
 			}
-			if test.expression == "empty" && len(output.Bytes()) != 0 {
+			if test.expression == "empty" && output != nil {
 				t.Fatalf("empty filter returned a replacement: %v", output)
 			}
 		})
