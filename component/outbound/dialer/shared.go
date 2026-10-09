@@ -13,6 +13,10 @@ func (d *Dialer) SharesRuntime(other *Dialer) bool {
 	return d.pathRuntime == other.pathRuntime
 }
 
+// CanShare reports whether the path still has live group members. Existing
+// connection leases may outlive this admission state.
+func (d *Dialer) CanShare() bool { return d.ctx.Err() == nil }
+
 // Share creates another group-local member of the same configured path.
 // A retired runtime cannot be resurrected, even while retained callers drain.
 func (d *Dialer) Share(property *Property, statsScope string) (*Dialer, bool) {

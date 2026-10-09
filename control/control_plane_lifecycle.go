@@ -171,7 +171,7 @@ func (c *ControlPlane) InheritConnections(old *ControlPlane) {
 		previous[group.Name] = group
 	}
 	for _, group := range c.outbounds {
-		if predecessor := previous[group.Name]; predecessor != nil {
+		if predecessor := previous[group.Name]; predecessor != nil && predecessor != group {
 			group.InheritConnections(predecessor)
 		}
 	}

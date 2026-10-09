@@ -69,7 +69,9 @@ func newSelectorTestGroup(t *testing.T, dialers []*dialer.Dialer, annotations []
 		Dialers:            dialers,
 		selectionPolicy:    policy,
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation, len(dialers)),
-		publishNetwork:     callback,
+	}
+	if callback != nil {
+		g.observers = map[*connectivityObserver]struct{}{{publish: callback}: {}}
 	}
 	g.selectionIndex = policy.FixedIndex
 	for i, d := range dialers {

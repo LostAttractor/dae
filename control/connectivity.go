@@ -51,7 +51,7 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 	return func(available bool, networkType *common.NetworkType) error {
 		c.outboundCallbackMu.Lock()
 		defer c.outboundCallbackMu.Unlock()
-		if c.closed.Err() != nil {
+		if c.closed != nil && c.closed.Err() != nil {
 			return c.closed.Err()
 		}
 		if log.IsLevelEnabled(log.TraceLevel) {
@@ -73,6 +73,9 @@ func (c *controlPlaneCore) outboundAliveChangeCallback(outbound uint8, outboundN
 		network := networkType.Index()
 		value := encodeOutboundConnectivity(available, noConnectivityTrySniff, noConnectivityOutbound)
 		if !c.outboundConnectivityPublished {
+			if c.pendingOutboundConnectivity == nil {
+				c.pendingOutboundConnectivity = make(map[bpfOutboundConnectivityQuery]uint32)
+			}
 			c.pendingOutboundConnectivity[key] = value
 		} else {
 			updateKernel := func(value uint32) error {

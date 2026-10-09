@@ -8,12 +8,14 @@ package outbound
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
@@ -68,9 +70,36 @@ type PathSpec struct {
 
 type DialerSet struct {
 	nodeInfos []*NodeInfo
-	// Runtime reuse is scoped to one control plane, including late plugin targets.
-	pathMu sync.Mutex
-	paths  map[string]*dialer.Dialer
+	local     PathPool
+	shared    *PathPool
+}
+
+// PathPool reuses complete physical paths across groups and reloads. The pool
+// indexes runtimes; their existing member ownership controls actual retirement.
+type PathPool struct {
+	mu    sync.Mutex
+	paths map[string]*dialer.Dialer
+}
+
+func (p *PathPool) prune() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, path := range p.paths {
+		if !path.CanShare() {
+			delete(p.paths, key)
+		}
+	}
+}
+
+func (s *DialerSet) UsePaths(pool *PathPool) { s.shared = pool }
+
+// GroupPathKey includes presentation and selection annotations as well as the
+// physical path. Equivalent transport alone is insufficient to reuse a group.
+func GroupPathKey(spec *PathSpec, option *dialer.GlobalOption) string {
+	annotation, _ := json.Marshal(spec.Annotation, json.WithMarshalers(json.MarshalFunc(func(value time.Duration) ([]byte, error) {
+		return []byte(strconv.FormatInt(int64(value), 10)), nil
+	})))
+	return fmt.Sprintf("%q/%q/%s", spec.Identity(), sharedPathKey(spec, option), annotation)
 }
 
 func applyNodeOptions(builder D.Builder, options config.NodeOptions) ([]D.Builder, error) {
@@ -517,10 +546,14 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 		Hops:            hops,
 		Egress:          &api.NodeEgress{IPVersion: spec.IPVersion, Mark: spec.effectiveMark(option), Interface: spec.Entry.Interface},
 	}
-	s.pathMu.Lock()
-	defer s.pathMu.Unlock()
+	pool := s.shared
+	if pool == nil {
+		pool = &s.local
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
 	key := sharedPathKey(spec, option)
-	if existing := s.paths[key]; existing != nil {
+	if existing := pool.paths[key]; existing != nil {
 		if member, ok := existing.Share(property, statsScope); ok {
 			return member, nil
 		}
@@ -541,9 +574,9 @@ func (s *DialerSet) BuildPath(spec *PathSpec, option *dialer.GlobalOption, stats
 	if err != nil {
 		return nil, err
 	}
-	if s.paths == nil {
-		s.paths = make(map[string]*dialer.Dialer)
+	if pool.paths == nil {
+		pool.paths = make(map[string]*dialer.Dialer)
 	}
-	s.paths[key] = d
+	pool.paths[key] = d
 	return d, nil
 }

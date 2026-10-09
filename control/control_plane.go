@@ -33,6 +33,8 @@ type ControlPlane struct {
 	// Outbounds are immutable after preparation. Connectivity callbacks use a
 	// snapshot while plugin preparation can still append targets.
 	outbounds              []*outbound.DialerGroup
+	outboundReleases       []func() error
+	borrowedOutbounds      map[*outbound.DialerGroup]bool
 	connectivityOutbounds  atomic.Pointer[[]*outbound.DialerGroup]
 	criticalOutbounds      []bool
 	noConnectivityOutbound consts.OutboundIndex
@@ -185,7 +187,7 @@ func NewControlPlane(
 	defer func() {
 		if err != nil {
 			if plane == nil {
-				_ = closeDialerGroups(outboundBuilder.outbounds)
+				_ = outboundBuilder.close()
 			} else {
 				cancel()
 				if plane.mitmHost != nil {
@@ -217,7 +219,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("compile routing: %w", err)
 	}
 	criticalOutbounds := builder.criticalOutbounds(len(outbounds))
-	configureOutboundChecks(outbounds, groups, criticalOutbounds)
+	configureOutboundChecks(outbounds, groups, criticalOutbounds, outboundBuilder.borrowed)
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
@@ -251,6 +253,8 @@ func NewControlPlane(
 		apiPort:                   global.APIPort,
 		clients:                   clients,
 		outbounds:                 outbounds,
+		outboundReleases:          outboundBuilder.releases,
+		borrowedOutbounds:         outboundBuilder.borrowed,
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
 		tcpConnections:            &tcpConnectionTracker{connections: &core.bpf.tcpConnections},

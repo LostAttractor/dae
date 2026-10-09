@@ -58,9 +58,45 @@ type DialerGroup struct {
 	statsDeferred     bool
 	startupReady      chan struct{}
 	startupReadyOnce  sync.Once
-	publishNetwork    func(available bool, networkType *common.NetworkType) error
+	observers         map[*connectivityObserver]struct{}
+	checksStarted     bool
 	closed            atomic.Bool
 	closeOnce         sync.Once
+}
+
+type connectivityObserver struct {
+	publish func(bool, *common.NetworkType) error
+}
+
+// ObserveConnectivity immediately initializes one routing projection and keeps
+// it current until detached. A group is independent of any particular BPF map.
+func (g *DialerGroup) ObserveConnectivity(publish func(bool, *common.NetworkType) error) (func(), error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, available := range g.networkAvailable {
+		if err := publish(available, common.NetworkIndex(i).NetworkType()); err != nil {
+			return nil, err
+		}
+	}
+	observer := &connectivityObserver{publish}
+	if g.observers == nil {
+		g.observers = make(map[*connectivityObserver]struct{})
+	}
+	g.observers[observer] = struct{}{}
+	return sync.OnceFunc(func() { g.mu.Lock(); delete(g.observers, observer); g.mu.Unlock() }), nil
+}
+
+func (g *DialerGroup) publishConnectivity(available bool, network *common.NetworkType) (err error) {
+	for observer := range g.observers {
+		err = errors.Join(err, observer.publish(available, network))
+	}
+	return err
+}
+
+func (g *DialerGroup) ConfigureStartup(async bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.CheckAsync = async
 }
 
 func NewDialerGroup(
@@ -101,7 +137,9 @@ func NewDialerGroup(
 		Dialers:            dialers,
 		selectionPolicy:    selectionPolicy,
 		dialerToAnnotation: make(map[*dialer.Dialer]*dialer.Annotation),
-		publishNetwork:     publishNetwork,
+	}
+	if publishNetwork != nil {
+		g.observers = map[*connectivityObserver]struct{}{{publish: publishNetwork}: {}}
 	}
 	g.selectionIndex = selectionPolicy.FixedIndex
 
@@ -216,11 +254,7 @@ func (g *DialerGroup) initializeConnectivity() error {
 	var err error
 	for i := range g.networkAvailable {
 		networkType := common.NetworkIndex(i).NetworkType()
-		if g.publishNetwork != nil {
-			if callbackErr := g.publishNetwork(false, networkType); callbackErr != nil {
-				err = errors.Join(err, callbackErr)
-			}
-		}
+		err = errors.Join(err, g.publishConnectivity(false, networkType))
 	}
 	if err != nil {
 		return err
@@ -235,6 +269,13 @@ func (g *DialerGroup) initializeConnectivity() error {
 // StartConnectivityChecks registers the group's checkers with the shared start
 // gate. The returned channel is nil when the group does not block startup.
 func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan struct{}, error) {
+	g.mu.Lock()
+	if g.checksStarted {
+		g.mu.Unlock()
+		return nil, nil
+	}
+	g.checksStarted = true
+	g.mu.Unlock()
 	if err := g.initializeConnectivity(); err != nil {
 		return nil, err
 	}
@@ -274,6 +315,9 @@ func (g *DialerGroup) StartupReady() (<-chan struct{}, error) {
 func (g *DialerGroup) DeferStats() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.checksStarted {
+		return
+	}
 	g.statsDeferred = true
 	for _, d := range g.Dialers {
 		d.DeferStats()
@@ -333,10 +377,8 @@ func (g *DialerGroup) publishNetworkAvailable(networkType *common.NetworkType, a
 	if g.networkAvailable[index] == available {
 		return nil
 	}
-	if g.publishNetwork != nil {
-		if err := g.publishNetwork(available, networkType); err != nil {
-			return err
-		}
+	if err := g.publishConnectivity(available, networkType); err != nil {
+		return err
 	}
 	g.networkAvailable[index] = available
 	return nil

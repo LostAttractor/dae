@@ -7,11 +7,14 @@ package control
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
 	"strconv"
+	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
@@ -21,6 +24,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	D "github.com/daeuniverse/outbound/dialer"
 	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/outbound/protocol/direct"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -38,6 +42,16 @@ type outboundBuilder struct {
 	nameToID               map[string]uint8
 	validationOutbounds    map[string]uint8
 	materializedPathCount  int
+	resources              *outbound.Resources
+	releases               []func() error
+	borrowed               map[*outbound.DialerGroup]bool
+}
+
+func (b *outboundBuilder) close() (err error) {
+	for _, release := range b.releases {
+		err = errors.Join(err, release())
+	}
+	return err
 }
 
 // buildOutbounds owns partially built groups until construction succeeds.
@@ -52,8 +66,8 @@ func (core *controlPlaneCore) buildOutbounds(ctx context.Context, nodes []outbou
 	}
 	option := dialer.NewGlobalOption(global)
 
-	_direct, directProperty := D.NewDirectDialer(&option.ExtraOption)
-	direct := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _direct}), option, &dialer.Property{Property: *directProperty}, false, "")
+	_direct := direct.NewDirectDialer(direct.Option{Mptcp: option.Mptcp, Mark: int(option.SoMarkFromDae)})
+	direct := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _direct}), option, &dialer.Property{Name: "direct"}, false, "")
 	_block, blockProperty := D.NewBlockDialer(&option.ExtraOption, func() { /*Dialer Outbound*/ })
 	block := dialer.NewDialer(netproxy.NewRuntime(netproxy.Layer{Data: _block}), option, &dialer.Property{Property: *blockProperty}, false, "")
 	b := &outboundBuilder{
@@ -71,9 +85,17 @@ func (core *controlPlaneCore) buildOutbounds(ctx context.Context, nodes []outbou
 	}
 	defer func() {
 		if err != nil {
-			_ = closeDialerGroups(b.outbounds)
+			_ = b.close()
 		}
 	}()
+	for _, group := range b.outbounds {
+		b.releases = append(b.releases, group.Close)
+	}
+	if core.bpf != nil && core.bpf.Runtime != nil {
+		b.resources = &core.bpf.outboundResources
+	} else {
+		b.resources = &outbound.Resources{}
+	}
 	// Compile groups and all routing target references before assigning outbound
 	// IDs. Policyless groups remain compile-time templates unless routing uses
 	// them as an exact-one target.
@@ -81,6 +103,7 @@ func (core *controlPlaneCore) buildOutbounds(ctx context.Context, nodes []outbou
 	if err != nil {
 		return nil, fmt.Errorf("build node descriptors: %w", err)
 	}
+	b.set.UsePaths(&b.resources.Paths)
 	routingTargets := collectRoutingTargetNames(routingConfig)
 	b.compiler, err = outbound.NewGroupCompiler(b.set, groups, routingTargets)
 	if err != nil {
@@ -152,7 +175,7 @@ func (b *outboundBuilder) buildRuleTargets(batches ...[]*config_parser.RoutingRu
 	return b.buildTargets(names)
 }
 
-func configureOutboundChecks(outbounds []*outbound.DialerGroup, groups []config.Group, critical []bool) {
+func configureOutboundChecks(outbounds []*outbound.DialerGroup, groups []config.Group, critical []bool, borrowed map[*outbound.DialerGroup]bool) {
 	overrides := make(map[string]bool)
 	for _, group := range groups {
 		if group.CheckAsync || group.Present["check_async"] {
@@ -160,10 +183,14 @@ func configureOutboundChecks(outbounds []*outbound.DialerGroup, groups []config.
 		}
 	}
 	for i, group := range outbounds {
-		group.CheckAsync = group.ChecksConnectivity() && !critical[i]
-		if value, exists := overrides[group.Name]; exists {
-			group.CheckAsync = value
+		if borrowed[group] {
+			continue
 		}
+		async := group.ChecksConnectivity() && !critical[i]
+		if value, exists := overrides[group.Name]; exists {
+			async = value
+		}
+		group.ConfigureStartup(async)
 	}
 }
 
@@ -214,38 +241,81 @@ func (b *outboundBuilder) materializeTarget(target *outbound.ResolvedTarget) err
 		return fmt.Errorf("materializing target %q would exceed the global proxy path limit %d", name, outbound.MaxMaterializedPaths)
 	}
 
-	dialers := make([]*dialer.Dialer, 0, len(paths))
-	annotations := make([]*dialer.Annotation, 0, len(paths))
-	pathOccurrences := make(map[string]int, len(paths))
+	pathKeys := make([]string, 0, len(paths))
 	for _, path := range paths {
-		d, buildErr := b.set.BuildPath(path, finalOption, candidateStatsScope(name, path, pathOccurrences))
-		if buildErr != nil {
-			pathBuildErr, isPathBuildErr := errors.AsType[*outbound.PathBuildError](buildErr)
-			if isPathBuildErr && !pathBuildErr.Node.Required {
-				log.WithFields(log.Fields{"node": pathBuildErr.Node.Property.Name, "target": name}).
-					WithError(resource.RedactError(pathBuildErr.Err)).Warn("Could not build subscription path; skipping node")
-				continue
-			}
-			for _, d := range dialers {
-				_ = d.Close()
-			}
-			return fmt.Errorf("failed to build target %v path: %w", name, buildErr)
-		}
-		dialers = append(dialers, d)
-		annotations = append(annotations, path.Annotation)
+		pathKeys = append(pathKeys, outbound.GroupPathKey(path, finalOption))
 	}
+	key, err := json.Marshal(struct {
+		Name               string
+		Kind               outbound.TargetKind
+		Policy             dialer.DialerSelectionPolicy
+		Paths              []string
+		Tolerance          int64
+		CloseOnReselect    bool
+		CloseOnRouteChange bool
+	}{name, target.Kind, selectionPolicy, pathKeys, int64(finalOption.CheckTolerance), target.Group != nil && target.Group.ReselectBehavior == "close", b.global.RouteChangeBehavior == "close"}, json.Deterministic(true),
+		json.WithMarshalers(json.MarshalFunc(func(value time.Duration) ([]byte, error) { return []byte(strconv.FormatInt(int64(value), 10)), nil })))
+	if err != nil {
+		return err
+	}
+	created := false
+	group, release, err := b.resources.Acquire(string(key), func() (*outbound.DialerGroup, error) {
+		created = true
+		dialers := make([]*dialer.Dialer, 0, len(paths))
+		annotations := make([]*dialer.Annotation, 0, len(paths))
+		pathOccurrences := make(map[string]int, len(paths))
+		for _, path := range paths {
+			d, buildErr := b.set.BuildPath(path, finalOption, candidateStatsScope(name, path, pathOccurrences))
+			if buildErr != nil {
+				pathBuildErr, isPathBuildErr := errors.AsType[*outbound.PathBuildError](buildErr)
+				if isPathBuildErr && !pathBuildErr.Node.Required {
+					log.WithFields(log.Fields{"node": pathBuildErr.Node.Property.Name, "target": name}).
+						WithError(resource.RedactError(pathBuildErr.Err)).Warn("Could not build subscription path; skipping node")
+					continue
+				}
+				for _, d := range dialers {
+					_ = d.Close()
+				}
+				return nil, fmt.Errorf("failed to build target %v path: %w", name, buildErr)
+			}
+			dialers = append(dialers, d)
+			annotations = append(annotations, path.Annotation)
+		}
 
-	if len(dialers) == 0 {
-		return fmt.Errorf("target %q has no usable paths", name)
+		if len(dialers) == 0 {
+			return nil, fmt.Errorf("target %q has no usable paths", name)
+		}
+		group := outbound.NewDialerGroup(finalOption, name, outbound.GroupKindSelector, dialers, annotations, selectionPolicy,
+			nil).SetTargetMetadata(target.Kind)
+		closeOnReselect := target.Group != nil && target.Group.ReselectBehavior == "close"
+		group.SetConnectionPolicy(closeOnReselect, b.global.RouteChangeBehavior == "close")
+		return group, nil
+	})
+	if err != nil {
+		return err
+	}
+	if !created {
+		if b.borrowed == nil {
+			b.borrowed = make(map[*outbound.DialerGroup]bool)
+		}
+		b.borrowed[group] = true
 	}
 	id := uint8(len(b.outbounds))
-	group := outbound.NewDialerGroup(finalOption, name, outbound.GroupKindSelector, dialers, annotations, selectionPolicy,
-		b.core.outboundAliveChangeCallback(id, name, b.global.NoConnectivityTrySniff, b.noConnectivityOutbound)).SetTargetMetadata(target.Kind)
-	closeOnReselect := target.Group != nil && target.Group.ReselectBehavior == "close"
-	group.SetConnectionPolicy(closeOnReselect, b.global.RouteChangeBehavior == "close")
+	callback := b.core.outboundAliveChangeCallback(id, name, b.global.NoConnectivityTrySniff, b.noConnectivityOutbound)
+	detach, err := group.ObserveConnectivity(func(available bool, network *common.NetworkType) error {
+		err := callback(available, network)
+		if errors.Is(err, context.Canceled) {
+			return nil
+		} // The group outlives retired projections.
+		return err
+	})
+	if err != nil {
+		return errors.Join(err, release())
+	}
+	b.releases = append(b.releases, func() error { detach(); return release() })
 	b.outbounds = append(b.outbounds, group)
 	b.nameToID[name] = id
-	b.materializedPathCount += len(dialers)
+	b.materializedPathCount += len(group.Dialers)
 	return nil
 }
 
@@ -377,6 +447,12 @@ func parseGroupOverrideOption(group config.Group, global config.Global) *dialer.
 
 // closeOutbounds stops the connectivity checks of all outbound groups.
 func (c *ControlPlane) closeOutbounds() (err error) {
+	if c.outboundReleases != nil {
+		for _, release := range c.outboundReleases {
+			err = errors.Join(err, release())
+		}
+		return err
+	}
 	return closeDialerGroups(c.outbounds)
 }
 

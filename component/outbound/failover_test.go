@@ -422,14 +422,16 @@ func TestFailoverKeepsPublishedRouteDuringBoundedReplacement(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
 		var down atomic.Int32
-		g.mu.Lock()
-		g.publishNetwork = func(available bool, network *common.NetworkType) error {
+		detach, err := g.ObserveConnectivity(func(available bool, network *common.NetworkType) error {
 			if !available && network.Index() == common.NetworkTCP4 {
 				down.Add(1)
 			}
 			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		g.mu.Unlock()
+		defer detach()
 		a.offline.Store(true)
 		g.Dialers[0].ReportDataPlaneError(errors.New("upstream lost"))
 		time.Sleep(5 * time.Millisecond)

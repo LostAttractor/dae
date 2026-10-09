@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/control/internal/splice"
 )
@@ -53,14 +54,15 @@ type Runtime struct {
 	closeOnce      sync.Once
 	closeErr       error
 
-	kernelLinks    kernelLinks
-	tcpConnections tcpConnectionSet
-	udpEndpoints   *UdpEndpointPool
-	deviceRoutes   *deviceRoutes
-	splice         *splice.Runtime
-	listener       *Listener
-	ingress        sync.WaitGroup
-	soMarkFromDae  uint32
+	kernelLinks       kernelLinks
+	tcpConnections    tcpConnectionSet
+	udpEndpoints      *UdpEndpointPool
+	deviceRoutes      *deviceRoutes
+	splice            *splice.Runtime
+	listener          *Listener
+	ingress           sync.WaitGroup
+	soMarkFromDae     uint32
+	outboundResources outbound.Resources
 }
 
 func NewRuntime() *Runtime {

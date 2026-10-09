@@ -77,6 +77,9 @@ func (c *ControlPlane) ReloadRuntimeSettings() (bool, error) {
 func (c *ControlPlane) restoreRuntimeSettings(prune bool) error {
 	stale := make(map[string]string)
 	for _, group := range c.outbounds {
+		if c.borrowedOutbounds[group] {
+			continue
+		}
 		if !group.IsSelector() {
 			continue
 		}

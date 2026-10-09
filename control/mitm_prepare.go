@@ -48,6 +48,8 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	err = outbounds.buildRuleTargets(rules.earlyRoutes, rules.lateRoutes)
 	// Transfer partial construction too, so plane cleanup owns every transport.
 	c.outbounds = outbounds.outbounds
+	c.outboundReleases = outbounds.releases
+	c.borrowedOutbounds = outbounds.borrowed
 	if err != nil {
 		return err
 	}
@@ -68,7 +70,7 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	c.routingMatcher.outboundUsable = c.core.outboundUsable
 	c.routingMatcherBuilder = builder
 	c.criticalOutbounds = builder.criticalOutbounds(len(c.outbounds))
-	configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds)
+	configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds, outbounds.borrowed)
 	if err := c.restoreRuntimeSettings(false); err != nil {
 		return err
 	}
