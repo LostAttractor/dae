@@ -52,7 +52,7 @@ func TestDaemonReloadRefreshesAPIAddressesKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 	datapath := control.NewRuntime()
-	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store}
+	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, refreshes: newResourceRefresher()}
 	t.Cleanup(func() {
 		app.managementAPI.Close()
 		resolver.SetRoute(nil)

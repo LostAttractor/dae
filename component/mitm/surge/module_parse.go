@@ -168,7 +168,7 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Script{Name: strings.TrimSpace(name), Type: params["type"], Path: params["script-path"], Pattern: params["pattern"], Argument: params["argument"], MaxSize: DefaultScriptMaxSize}
+	s := &Script{Name: strings.TrimSpace(name), Type: params["type"], Path: params["script-path"], Pattern: params["pattern"], Argument: params["argument"], MaxSize: DefaultScriptMaxSize, UpdateInterval: 24 * time.Hour}
 	_, s.ArgumentSet = params["argument"]
 	if value, exists := params["enable"]; exists {
 		enabled, err := parseBool(value)
@@ -212,7 +212,16 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 			if s.Type != "cron" {
 				*warnings = append(*warnings, fmt.Sprintf("script %q: cronexp is only used by cron scripts", s.Name))
 			}
-		case "script-update-interval", "debug", "img-url", "wake-system":
+		case "script-update-interval":
+			var seconds int64
+			seconds, err = strconv.ParseInt(value, 10, 64)
+			if err == nil && (seconds < 0 || seconds > math.MaxInt64/int64(time.Second)) {
+				err = fmt.Errorf("must be a non-negative number of seconds")
+			}
+			s.UpdateInterval = time.Duration(seconds) * time.Second
+		case "debug":
+			s.Debug, err = parseBool(value)
+		case "img-url", "wake-system":
 			*ignored = append(*ignored, fmt.Sprintf("script %q: unsupported parameter %q is ignored", s.Name, key))
 		case "engine":
 			switch strings.ToLower(value) {

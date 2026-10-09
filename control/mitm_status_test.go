@@ -48,7 +48,7 @@ func TestAPIPluginsFollowPublishedPlane(t *testing.T) {
 		if test.plane == nil {
 			server.SetHandler(nil)
 		} else {
-			server.SetHandler(test.plane.APIHandler("test"))
+			server.SetHandler(test.plane.APIHandler("test", nil))
 		}
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "http://unix/api/status", nil)

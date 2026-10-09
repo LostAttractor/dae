@@ -69,6 +69,19 @@ func TestGlobalResourceCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestResourceUpdateInterval(t *testing.T) {
+	for _, value := range []string{"0", "1s", "2h"} {
+		conf := parseConfig(t, "global { resource_update_interval: "+value+" }\nrouting { fallback: direct }")
+		encoded, err := conf.Marshal(2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if restored := parseConfig(t, string(encoded)); restored.Global.ResourceUpdateInterval != conf.Global.ResourceUpdateInterval {
+			t.Fatal("resource update interval lost in round trip")
+		}
+	}
+}
+
 func TestClientExportsRejectInvalidConfiguration(t *testing.T) {
 	for _, entries := range []string{
 		`work { nftset: 'filter/work' }`,

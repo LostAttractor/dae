@@ -25,6 +25,7 @@ type Options struct {
 	Selectors     SelectorStore
 	Probes        ProbeStore
 	Scripts       ScriptStore
+	Resources     ResourceStore
 	Devices       DeviceStore
 	ResolveClient ClientResolver
 	Certificates  *Certificates
@@ -61,6 +62,8 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("DELETE /api/selectors/{group}", s.serveSelector)
 	mux.HandleFunc("POST /api/probes", s.serveProbe)
 	mux.HandleFunc("POST /api/plugins/{instance}/scripts/run", s.serveScript)
+	mux.HandleFunc("POST /api/resources/refresh", s.serveResources)
+	mux.HandleFunc("GET /api/resources", s.serveResources)
 	mux.HandleFunc("GET /api/device", s.serveDevice)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		mux.HandleFunc(method+" /api/device/sets/{name}", s.serveClientSet)

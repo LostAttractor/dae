@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"golang.org/x/sys/unix"
@@ -20,6 +21,8 @@ import (
 type ReadOptions struct {
 	MaxBytes  int64
 	UserAgent string
+	// Nil uses the refresh session's default. Zero disables automatic checks.
+	RefreshInterval *time.Duration
 }
 
 type Result struct {

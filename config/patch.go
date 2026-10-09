@@ -54,6 +54,9 @@ func validateSoMarkFromDae(params *Config) error {
 }
 
 func validateControlModes(params *Config) error {
+	if interval := params.Global.ResourceUpdateInterval; interval < 0 || interval > 0 && interval < time.Second {
+		return fmt.Errorf("resource_update_interval must be zero or at least 1s")
+	}
 	if _, err := netutils.ParseDNSServer(params.Global.DNSResolver); err != nil {
 		return err
 	}

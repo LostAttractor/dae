@@ -29,7 +29,7 @@ func TestProbeAPIAndSelectorWithoutDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlaneWithPolicy(t, store, dialer.DialerSelectionPolicy{Policy: consts.DialerSelectionPolicy_Selector})
-	handler := plane.apiHandler("test", testClientMAC)
+	handler := plane.apiHandler("test", testClientMAC, nil)
 	group := plane.outbounds[0]
 	first, second := group.Dialers[0].StatsID(), group.Dialers[1].StatsID()
 	if node := plane.Selectors()[0].Nodes[1]; node.Checking || node.Tested || node.Tracking || !node.CheckedAt.IsZero() {
@@ -133,7 +133,7 @@ func TestProbeAPIAndSelectorWithoutDefault(t *testing.T) {
 	if err := explicit.restoreRuntimeSettings(false); err != nil {
 		t.Fatal(err)
 	}
-	w = apiTestRequest(explicit.apiHandler("test", testClientMAC), "DELETE", "/api/selectors/proxy", "", "test-secret")
+	w = apiTestRequest(explicit.apiHandler("test", testClientMAC, nil), "DELETE", "/api/selectors/proxy", "", "test-secret")
 	if w.Code != 200 || explicit.Selectors()[0].DefaultNodeID != first || explicit.outbounds[0].Selection() != first {
 		t.Fatal("explicit default could not be restored")
 	}
@@ -150,7 +150,7 @@ func TestProbeAPIUsesCheckedOutboundsBeyondSelectors(t *testing.T) {
 	builtin := outbound.NewDialerGroup(option, "direct", outbound.GroupKindSingleAlwaysAlive, []*dialer.Dialer{direct}, []*dialer.Annotation{{}}, dialer.DialerSelectionPolicy{}, nil)
 	t.Cleanup(func() { _ = builtin.Close() })
 	plane.outbounds = append(plane.outbounds, builtin)
-	handler := plane.apiHandler("test", testClientMAC)
+	handler := plane.apiHandler("test", testClientMAC, nil)
 	if w := apiTestRequest(handler, "POST", "/api/probes", `{"outbound":"proxy"}`, "test-secret"); w.Code != 202 {
 		t.Fatalf("random probe = %d %s", w.Code, w.Body.String())
 	}

@@ -38,8 +38,8 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("socket permissions", info, err)
 	}
-	local.SetHandler(plane.APIHandler("integration-test"))
-	server := httptest.NewServer(plane.apiHandler("integration-test", testClientMAC))
+	local.SetHandler(plane.APIHandler("integration-test", nil))
+	server := httptest.NewServer(plane.apiHandler("integration-test", testClientMAC, nil))
 	defer server.Close()
 	for _, endpoint := range []string{server.URL, "unix://" + socket} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -88,7 +88,7 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 				if unavailable, ok := errors.AsType[*apiclient.Error](err); !ok || unavailable.StatusCode != 503 {
 					t.Fatalf("reload: %v", err)
 				}
-				local.SetHandler(plane.APIHandler("integration-test"))
+				local.SetHandler(plane.APIHandler("integration-test", nil))
 				if _, err := client.Status(ctx); err != nil {
 					t.Fatal("client did not recover after reload", err)
 				}
@@ -117,7 +117,7 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler("test", testClientMAC)
+	handler := plane.apiHandler("test", testClientMAC, nil)
 	for _, test := range []struct {
 		token string
 		want  int
@@ -128,11 +128,11 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 		}
 	}
 	plane.apiKey = ""
-	handler = plane.apiHandler("test", testClientMAC)
+	handler = plane.apiHandler("test", testClientMAC, nil)
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 200 {
 		t.Fatal("verified LAN client could not read status without an API key", w.Code, w.Body.String())
 	}
-	handler = plane.APIHandler("test")
+	handler = plane.APIHandler("test", nil)
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 403 {
 		t.Fatal("status exposed without configured API key or LAN identity")
 	}
@@ -169,7 +169,7 @@ func TestCertificateAPI(t *testing.T) {
 	}
 	defer host.Close()
 	plane := &ControlPlane{mitmHost: host}
-	handler := plane.APIHandler("test")
+	handler := plane.APIHandler("test", nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	client, err := apiclient.New(apiclient.Options{Endpoint: server.URL})

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -71,8 +70,8 @@ func Load(ctx context.Context, raw string, client *http.Client, options LoadOpti
 		if err != nil {
 			return nil, err
 		}
-		module, err := loadModuleContents(ctx, string(current.Data), current.Location, options.Arguments, func(dependency resource.Source) (string, error) {
-			result, err := readResource(dependency, resource.ReadOptions{MaxBytes: MaxScriptBytes})
+		module, err := loadModuleContents(ctx, string(current.Data), current.Location, options.Arguments, func(dependency resource.Source, interval *time.Duration) (string, error) {
+			result, err := readResource(dependency, resource.ReadOptions{MaxBytes: MaxScriptBytes, RefreshInterval: interval})
 			return string(result.Data), err
 		})
 		if err == nil {
@@ -102,7 +101,7 @@ func moduleCacheWarning(m *Module, warning string) {
 	m.Warnings = append(m.Warnings, resource.RedactText(warning))
 }
 
-func loadModuleContents(ctx context.Context, contents, location string, arguments map[string]string, read func(resource.Source) (string, error)) (*Module, error) {
+func loadModuleContents(ctx context.Context, contents, location string, arguments map[string]string, read moduleResourceReader) (*Module, error) {
 	m, err := Parse(contents, arguments)
 	if err != nil {
 		return nil, err
@@ -114,108 +113,15 @@ func loadModuleContents(ctx context.Context, contents, location string, argument
 			m.Name = filepath.Base(location)
 		}
 	}
-	cache := make(map[string]string)
-	var loadedBytes int
-	loadResource := func(path resource.Source) (string, error) {
-		if contents, ok := cache[path.Location]; ok {
-			return contents, nil
-		}
-		contents, err := read(path)
-		if err != nil {
-			return "", err
-		}
-		loadedBytes += len(contents)
-		if loadedBytes > MaxModuleScriptBytes {
-			return "", fmt.Errorf("module dependencies exceed %d total bytes", MaxModuleScriptBytes)
-		}
-		cache[path.Location] = contents
-		return contents, nil
+	read = cacheModuleResources(ctx, read)
+	if err := m.loadScriptSources(location, read); err != nil {
+		return nil, err
 	}
-	for _, scripts := range [][]Script{m.Scripts, m.TaskScripts} {
-		for i := range scripts {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			script := &scripts[i]
-			path, err := resource.Resolve(location, script.Path)
-			if err != nil {
-				return nil, fmt.Errorf("script %q: %w", script.Name, err)
-			}
-			contents, err := loadResource(path)
-			if err != nil {
-				return nil, fmt.Errorf("load script %q: %w", script.Name, err)
-			}
-			if path.Remote() && moduleLooksLikeHTML(contents) {
-				return nil, fmt.Errorf("load script %q: remote source returned an HTML document instead of JavaScript", script.Name)
-			}
-			script.Source = contents
-			script.Path = path.Location
-		}
+	if err := m.loadHostSets(location, read); err != nil {
+		return nil, err
 	}
-	for i := range m.DNSHosts {
-		host := &m.DNSHosts[i]
-		if host.SetKind == "" {
-			continue
-		}
-		path, err := resource.Resolve(location, host.SetSource)
-		if err != nil {
-			return nil, err
-		}
-		contents, err := loadResource(path)
-		if err != nil {
-			return nil, fmt.Errorf("load Host %s: %w", host.SetKind, err)
-		}
-		for line := range strings.SplitSeq(contents, "\n") {
-			line = strings.TrimSpace(trimModuleRuleComment(line))
-			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-				continue
-			}
-			var fields []string
-			if host.SetKind == "DOMAIN-SET" {
-				kind := "DOMAIN"
-				if after, ok := strings.CutPrefix(line, "."); ok {
-					kind, line = "DOMAIN-SUFFIX", after
-				}
-				fields = []string{kind, line}
-			} else {
-				fields, err = splitModuleRuleFields(line)
-				if err != nil {
-					return nil, err
-				}
-			}
-			clauses, _, err := parseModuleRuleExpression(fields, 0, false)
-			if errors.Is(err, errUnsupportedModuleRule) {
-				continue
-			}
-			if err != nil {
-				return nil, fmt.Errorf("Host set: %w", err)
-			}
-			host.Rules = append(host.Rules, ModuleRule{clauses: clauses})
-		}
-	}
-	mapBodies := make(map[string][]byte)
-	for i := range m.MapLocals {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		rule := &m.MapLocals[i]
-		if rule.DataType != "file" {
-			continue
-		}
-		path, err := resource.Resolve(location, rule.Data)
-		if err != nil {
-			return nil, fmt.Errorf("Map Local data: %w", err)
-		}
-		if body, ok := mapBodies[path.Location]; ok {
-			rule.Body = body
-			continue
-		}
-		contents, err := loadResource(path)
-		if err != nil {
-			return nil, fmt.Errorf("load Map Local data: %w", err)
-		}
-		rule.Body = []byte(contents)
-		mapBodies[path.Location] = rule.Body
+	if err := m.loadMapLocalFiles(location, read); err != nil {
+		return nil, err
 	}
 	return m, nil
 }

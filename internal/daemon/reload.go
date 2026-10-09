@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/netutils"
+	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
@@ -38,6 +39,8 @@ type application struct {
 	geoDirs                 []string
 	localAPI, managementAPI *apiserver.Server
 	progress                func(string)
+	resources               resource.RefreshStore
+	refreshes               *resourceRefresher
 }
 
 // A failed attachment replacement is distinct from a rejected candidate.
@@ -50,7 +53,7 @@ func (a *application) report(message string) {
 }
 
 func (a *application) publishAPI() {
-	handler := a.plane.APIHandler(a.options.Version)
+	handler := a.plane.APIHandler(a.options.Version, a.refreshes)
 	a.localAPI.SetHandler(handler)
 	a.managementAPI.SetHandler(daemonAPIHandler(handler))
 }
@@ -77,6 +80,18 @@ func (a *application) reload(ctx context.Context, suspend, abort bool) (string, 
 		return "", fmt.Errorf("load configuration: %w", err)
 	}
 	log.WithField("files", includes).Debug("Loaded configuration files")
+	return a.apply(ctx, next, suspend, abort, false)
+}
+
+// Automatic and API refreshes use the accepted configuration. Only reload reads
+// configuration edits from disk. All publication paths share this transaction.
+func (a *application) apply(ctx context.Context, next *config.Config, suspend, abort, dueOnly bool) (result string, err error) {
+	ctx, refresh := a.resources.Begin(ctx, next.Global.ResourceUpdateInterval, dueOnly)
+	defer func() {
+		if count := refresh.Fallbacks(); err == nil && count > 0 {
+			result += fmt.Sprintf("; %d resource groups kept previous contents", count)
+		}
+	}()
 	plugins, err := configurePlugins(next, a.definitions)
 	if err != nil {
 		return "", fmt.Errorf("configure plugins: %w", err)
@@ -163,6 +178,7 @@ func (a *application) reload(ctx context.Context, suspend, abort bool) (string, 
 				result = "No changes"
 			}
 			a.accept(next, inputs, server, false)
+			refresh.Commit()
 			return result, nil
 		}
 		load = takePrepared
@@ -198,6 +214,9 @@ func (a *application) reload(ctx context.Context, suspend, abort bool) (string, 
 	}
 	a.managementAPI = api
 	a.accept(next, inputs, server, true)
+	if !suspend {
+		refresh.Commit()
+	}
 	logStartupNodeStatus(candidate.GroupsStatus())
 	return "Updated routing and affected services", nil
 }

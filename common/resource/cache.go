@@ -17,8 +17,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Cache stores complete validated resource groups. An empty Dir disables all
-// cache access. Callers supply their routed HTTP client and content validation.
+// Cache persists complete validated resource groups. An empty Dir disables disk
+// access; RefreshStore independently retains the accepted groups in memory.
+// Callers supply their routed HTTP client and content validation.
 type Cache struct{ Dir string }
 
 type LoadOptions struct {
@@ -43,9 +44,9 @@ type cacheSnapshot struct {
 	Resources map[string]Result `json:"resources"`
 }
 
-// Load first executes load using fresh resources. Only a successfully validated
-// group is published. On failure it reruns load using the previous remote group
-// exclusively; local files are always current. It never mixes remote revisions.
+// Load validates a group using fresh reads or the refresh session's scheduled
+// resources. On failure it reruns load using the previous remote group exclusively;
+// local files are always current. A failed attempt never publishes a partial group.
 // load must be safe to retry and must not modify the returned byte slices.
 func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOptions, load func(ReadFunc) (T, error)) (value T, status CacheStatus, err error) {
 	defer func() { err = RedactError(err) }()
@@ -74,13 +75,47 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 		return Read(readCtx, client, source, options)
 	}
 	candidate := cacheSnapshot{Version: 1, Key: opts.Key, Resources: make(map[string]Result)}
+	session := refreshSession(ctx)
+	groupKey := c.Dir + "\x00" + opts.Key
+	previous := session.previous[groupKey]
+	checks := make(map[string]refreshCheck)
+	defer func() {
+		// Startup may skip an unavailable subscription. Keep its retry scheduled
+		// even when there has never been a usable snapshot.
+		if err != nil {
+			for location, check := range checks {
+				checks[location] = check.reschedule(true)
+			}
+			session.stage(groupKey, nil, checks, false)
+		}
+	}()
 	var total int64
 	value, freshErr := load(func(source Source, options ReadOptions) (Result, error) {
+		if !source.Remote() {
+			return read(source, options)
+		}
 		if previous, ok := candidate.Resources[source.Location]; ok {
 			return boundedCachedResult(previous, options)
 		}
-		result, err := read(source, options)
-		if err == nil && source.Remote() {
+		check := refreshCheck{interval: session.readInterval(options)}
+		var result Result
+		var err error
+		reused := false
+		if session.dueOnly && previous.snapshot != nil && previous.checks[source.Location].interval == check.interval {
+			if cached, ok := previous.snapshot.Resources[source.Location]; ok {
+				next := previous.checks[source.Location].due
+				if next.IsZero() || time.Now().Before(next) {
+					result, err = boundedCachedResult(cached, options)
+					check.due, reused = next, true
+				}
+			}
+		}
+		if !reused {
+			result, err = read(source, options)
+			check = check.reschedule(false)
+		}
+		checks[source.Location] = check
+		if err == nil {
 			total += int64(len(result.Data))
 			if total > opts.MaxBytes || len(candidate.Resources) >= 4096 {
 				return Result{}, errors.New("resource group exceeds its size or count limit")
@@ -93,21 +128,31 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 		return value, status, ctx.Err()
 	}
 	if freshErr == nil {
+		session.stage(groupKey, &candidate, checks, false)
 		if c.Dir != "" && len(candidate.Resources) != 0 {
 			status.WriteError = RedactError(c.write(ctx, opts, &candidate))
 		}
 		return value, status, ctx.Err()
 	}
-	if c.Dir == "" {
+	if c.Dir == "" && previous.snapshot == nil {
 		return value, status, freshErr
 	}
-	previous, cacheErr := c.read(ctx, opts)
+	var snapshot *cacheSnapshot
+	var cacheErr error
+	if previous.snapshot != nil {
+		snapshot = previous.snapshot
+	} else {
+		snapshot, cacheErr = c.read(ctx, opts)
+	}
 	if ctx.Err() != nil {
 		return value, status, ctx.Err()
 	}
 	if cacheErr != nil {
 		return value, status, fmt.Errorf("resource refresh failed: %w; cached fallback unavailable: %v", freshErr, cacheErr)
 	}
+	clear(checks)
+	total = 0
+	fallback := &cacheSnapshot{Version: 1, Key: opts.Key, Resources: make(map[string]Result)}
 	value, cacheErr = load(func(source Source, options ReadOptions) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -115,10 +160,18 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 		if !source.Remote() {
 			return read(source, options)
 		}
-		result, ok := previous.Resources[source.Location]
+		checks[source.Location] = (refreshCheck{interval: session.readInterval(options)}).reschedule(true)
+		result, ok := snapshot.Resources[source.Location]
 		if !ok {
 			return Result{}, errors.New("resource is not present in the last complete cache")
 		}
+		if _, exists := fallback.Resources[source.Location]; !exists {
+			total += int64(len(result.Data))
+			if total > opts.MaxBytes {
+				return Result{}, errors.New("cached resource group exceeds its size limit")
+			}
+		}
+		fallback.Resources[source.Location] = result
 		return boundedCachedResult(result, options)
 	})
 	if ctx.Err() != nil {
@@ -128,6 +181,7 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 		return value, status, fmt.Errorf("resource refresh failed: %w; cached fallback unusable: %v", freshErr, cacheErr)
 	}
 	status.RefreshError = RedactError(freshErr)
+	session.stage(groupKey, fallback, checks, true)
 	return value, status, nil
 }
 

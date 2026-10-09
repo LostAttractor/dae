@@ -311,7 +311,7 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 	}
 	defer release()
 	execution.start()
-	result, err := e.runInvocation(ctx, script.Source, Invocation{Domain: strings.TrimSuffix(request.MessageCopy().Question[0].Name, "."),
+	result, err := e.runInvocation(ctx, script, Invocation{Domain: strings.TrimSuffix(request.MessageCopy().Question[0].Name, "."),
 		ModuleName: module.Name, ScriptName: script.Name, ScriptType: "dns", Argument: script.Argument, Timeout: e.scriptTimeout(script),
 		ArgumentSet: script.ArgumentSet, ScriptPath: script.Path, FullHeaderMode: script.FullHeaderMode, BinaryBodyMode: script.BinaryBodyMode,
 		HTTPClient: request.Client, BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize})

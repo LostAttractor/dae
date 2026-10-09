@@ -91,8 +91,12 @@ func TestModuleScriptParameterDiagnostics(t *testing.T) {
 		invalid  bool
 		disabled bool
 	}{
-		{option: "script-update-interval=not-a-duration", ignored: 1},
-		{option: "debug=not-a-boolean", ignored: 1},
+		{option: "script-update-interval=not-a-duration", invalid: true},
+		{option: "script-update-interval=-1", invalid: true},
+		{option: "script-update-interval=0"},
+		{option: "script-update-interval=60"},
+		{option: "debug=not-a-boolean", invalid: true},
+		{option: "debug=true"},
 		{option: "enable=false", disabled: true},
 		{option: "enable=not-a-boolean", invalid: true},
 		{option: "full-header-mode=not-a-boolean", invalid: true},

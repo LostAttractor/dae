@@ -82,11 +82,13 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	defer datapath.Close()
 	worker, closeWorker := datapath.NewWorkerClient()
 	defer closeWorker()
-	inputs, err := loadControlInputs(ctx, conf, false, geoDirs, options.ConfigFile, nil)
+	var resources resource.RefreshStore
+	loadCtx, refresh := resources.Begin(ctx, conf.Global.ResourceUpdateInterval, false)
+	inputs, err := loadControlInputs(loadCtx, conf, false, geoDirs, options.ConfigFile, nil)
 	var plane *control.ControlPlane
 	if err == nil {
-		plane, err = newControlPlane(ctx, datapath, conf, inputs, runtimeSettings, func(client *http.Client) (control.PreparedMITM, error) {
-			return loadMITM(ctx, conf, client, worker, plugins, nil, geoDirs)
+		plane, err = newControlPlane(loadCtx, datapath, conf, inputs, runtimeSettings, func(client *http.Client) (control.PreparedMITM, error) {
+			return loadMITM(loadCtx, conf, client, worker, plugins, nil, geoDirs)
 		})
 	}
 	if err == nil && ctx.Err() != nil {
@@ -113,10 +115,12 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		management.Close()
 		return errors.Join(err, datapath.Close(), plane.Close())
 	}
+	refresh.Commit()
 	app := &application{
 		options: options, conf: conf, inputs: inputs, plane: plane, datapath: datapath,
 		settings: runtimeSettings, definitions: definitions, resolver: resolver, workerClient: worker,
 		geoDirs: geoDirs, localAPI: local, managementAPI: management,
+		resources: resources, refreshes: newResourceRefresher(),
 		progress: func(message string) { WriteReloadState(consts.ReloadProcessing, message) },
 	}
 	defer func() {
@@ -163,12 +167,57 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 	}
 	WriteReloadState(consts.ReloadDone, "")
+	refreshTimer := time.NewTimer(time.Hour)
+	defer refreshTimer.Stop()
+	var retryAfter time.Time
+	refreshResources := func(automatic bool) error {
+		if !app.refreshes.start(automatic) {
+			return nil
+		}
+		sdnotify.Reloading()
+		WriteReloadState(consts.ReloadProcessing, "Refreshing configuration resources...")
+		result, err := app.apply(ctx, app.conf, false, false, automatic)
+		app.refreshes.finish(result, err)
+		if err != nil {
+			WriteReloadState(consts.ReloadError, resource.RedactError(err).Error())
+			retryAfter = time.Now().Add(5 * time.Minute)
+			log.WithError(resource.RedactError(err)).Warn("Resource refresh rejected; current configuration remains active")
+		} else {
+			WriteReloadState(consts.ReloadDone, result)
+			retryAfter = time.Time{}
+			log.WithField("result", result).Info("Resource refresh completed")
+		}
+		if _, fatal := errors.AsType[*activationError](err); fatal {
+			sdnotify.Stopping()
+			return err
+		}
+		sdnotify.Ready()
+		return nil
+	}
 	for {
+		var refreshC <-chan time.Time
+		next := app.resources.Next()
+		if !next.IsZero() {
+			if next.Before(retryAfter) {
+				next = retryAfter
+			}
+			refreshTimer.Reset(max(time.Until(next), 0))
+			refreshC = refreshTimer.C
+		}
+		app.refreshes.setNext(next)
 		select {
 		case <-ctx.Done():
 			return nil
 		case err := <-ingressErrors:
 			return err
+		case <-refreshC:
+			if err := refreshResources(true); err != nil {
+				return err
+			}
+		case <-app.refreshes.requests:
+			if err := refreshResources(false); err != nil {
+				return err
+			}
 		case err := <-watcher.Errors:
 			log.WithError(err).Warn("Runtime settings watcher error")
 		case <-watcher.Changes:
@@ -207,6 +256,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 				}
 				sdnotify.Ready()
 				WriteReloadState(consts.ReloadDone, result)
+				retryAfter = time.Time{}
 				log.WithField("result", result).Info("Reload completed")
 			case syscall.SIGHUP:
 				continue

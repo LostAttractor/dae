@@ -137,7 +137,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 			t.Fatalf("API packet left kernel direct: verdict %d", status)
 		}
 	}
-	handler := plane.APIHandler("identity-test")
+	handler := plane.APIHandler("identity-test", nil)
 	checkKeylessAdmin := func(source, destination netip.AddrPort, allowed bool) {
 		t.Helper()
 		r := httptest.NewRequestWithContext(t.Context(), "GET", "http://192.0.2.1:9080/api/selectors", nil)

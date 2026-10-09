@@ -81,7 +81,7 @@ func (e *Engine) scriptTimeout(s *Script) time.Duration {
 }
 
 func (e *Engine) runScript(ctx context.Context, module *Module, s *Script, req, resp *Message, client *http.Client) (*Result, error) {
-	return e.runInvocation(ctx, s.Source, Invocation{
+	return e.runInvocation(ctx, s, Invocation{
 		ModuleName: module.Name,
 		Request:    req, Response: resp, ScriptName: s.Name, ScriptType: s.Type,
 		Argument: s.Argument, BinaryBodyMode: s.BinaryBodyMode,

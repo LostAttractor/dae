@@ -207,6 +207,14 @@ func (c *Client) TriggerScript(ctx context.Context, instance string, request api
 	return c.requestStatus[api.ScriptRunResponse](ctx, "POST", "/api/plugins/"+url.PathEscape(instance)+"/scripts/run", request, "", http.StatusAccepted)
 }
 
+func (c *Client) RefreshResources(ctx context.Context) (*api.ResourceRefreshStatus, error) {
+	return c.requestStatus[api.ResourceRefreshStatus](ctx, "POST", "/api/resources/refresh", nil, "", http.StatusAccepted)
+}
+
+func (c *Client) ResourceRefreshStatus(ctx context.Context) (*api.ResourceRefreshStatus, error) {
+	return c.request[api.ResourceRefreshStatus](ctx, "GET", "/api/resources", nil, "")
+}
+
 func (c *Client) Device(ctx context.Context) (*api.DeviceState, error) {
 	return c.request[api.DeviceState](ctx, "GET", "/api/device", nil, "")
 }

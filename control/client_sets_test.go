@@ -49,7 +49,7 @@ func TestClientExportAPIAndReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane.kernelReady = true
-	handler := plane.apiHandler("test", testClientMAC)
+	handler := plane.apiHandler("test", testClientMAC, nil)
 	check := func(want [][6]byte) {
 		t.Helper()
 		set, err := conn.GetSetByName(table, "devices")
@@ -200,7 +200,7 @@ func TestClientExportFailureRestoresAllMembers(t *testing.T) {
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if w := apiTestRequest(plane.apiHandler("test", testClientMAC), "PUT", "/api/device/sets/gaming", "", ""); w.Code != 500 {
+	if w := apiTestRequest(plane.apiHandler("test", testClientMAC, nil), "PUT", "/api/device/sets/gaming", "", ""); w.Code != 500 {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	check()

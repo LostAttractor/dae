@@ -5,6 +5,7 @@ package surge
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/common/resource"
 )
@@ -91,7 +92,7 @@ func TestDisabledModuleDoesNotLoadDependencies(t *testing.T) {
 hostname = {{{required}}}
 [Script]
 script=type=generic,script-path=missing.js
-`, "/module.sgmodule", nil, func(resource.Source) (string, error) {
+`, "/module.sgmodule", nil, func(resource.Source, *time.Duration) (string, error) {
 			t.Fatal("disabled module loaded a dependency")
 			return "", nil
 		})

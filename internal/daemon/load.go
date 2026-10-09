@@ -166,6 +166,7 @@ func sameControlConfig(previous, next *config.Config) bool {
 		value.Global.LogLevel, value.Global.APIKey = "", ""
 		value.Global.PprofPort, value.Global.MetricsPort = 0, 0
 		value.Global.ResourceCache, value.Global.DisableWaitingNetwork = false, false
+		value.Global.ResourceUpdateInterval = 0
 		value.Global.SoMarkFromDae = common.EffectiveSoMarkFromDae(value.Global.SoMarkFromDae)
 		value.Global.SoMarkFromDaeSet = false
 		return value

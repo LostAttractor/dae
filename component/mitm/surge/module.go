@@ -56,6 +56,8 @@ type Script struct {
 	RequiresBody, BinaryBodyMode                bool
 	MaxSize                                     int64
 	Timeout                                     time.Duration // Zero inherits the engine's default.
+	UpdateInterval                              time.Duration
+	Debug                                       bool
 	pattern                                     *regexp2.Regexp
 	schedule                                    cron.Schedule
 }

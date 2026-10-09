@@ -66,7 +66,7 @@ func TestClientMembershipConnectionPolicy(t *testing.T) {
 			}
 			request := func(method string) {
 				t.Helper()
-				w := apiTestRequest(c.apiHandler("test", testClientMAC), method, "/api/device/sets/gaming", "", "")
+				w := apiTestRequest(c.apiHandler("test", testClientMAC, nil), method, "/api/device/sets/gaming", "", "")
 				if w.Code != 200 {
 					t.Fatal(w.Code, w.Body.String())
 				}

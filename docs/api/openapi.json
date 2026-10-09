@@ -479,6 +479,20 @@
         ],
         "type": "object"
       },
+      "ResourceRefreshStatus": {
+        "type": "object",
+        "properties": {
+          "run": { "type": "integer" },
+          "state": { "type": "string", "enum": ["idle", "queued", "running", "completed", "failed"] },
+          "trigger": { "type": "string", "enum": ["api", "automatic"] },
+          "started_at": { "type": "string", "format": "date-time" },
+          "finished_at": { "type": "string", "format": "date-time" },
+          "next_check": { "type": "string", "format": "date-time" },
+          "result": { "type": "string", "description": "Publication result, including the number of groups using previous contents after a failed refresh." },
+          "error": { "type": "string" }
+        },
+        "required": ["run", "state"]
+      },
       "ScriptRunRequest": {
         "type": "object",
         "properties": {
@@ -1710,6 +1724,33 @@
         },
         "responses": {
           "202": { "description": "Probe targets accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProbeResponse" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        },
+        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+      }
+    },
+    "/api/resources": {
+      "get": {
+        "operationId": "resourceRefreshStatus",
+        "summary": "Read the latest resource refresh and next automatic check",
+        "description": "Requires administration. Reports the latest API or automatic refresh. History is reset on daemon restart. Empty request body.",
+        "responses": {
+          "200": { "description": "Resource refresh status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceRefreshStatus" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        },
+        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+      }
+    },
+    "/api/resources/refresh": {
+      "post": {
+        "operationId": "refreshResources",
+        "summary": "Refresh subscriptions, modules and dependencies",
+        "description": "Requires administration and an empty request body. Uses the accepted configuration and attempts all downloads regardless of update intervals; does not read configuration edits from disk. Returns 202 immediately; check GET /api/resources for completion. Concurrent queued/running refreshes return 409. Refreshes and reloads publish serially. Invalid candidates leave the current runtime active; available validated snapshots can be used on download failure.",
+        "parameters": [
+          { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
+        ],
+        "responses": {
+          "202": { "description": "Resource refresh queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceRefreshStatus" } } } },
           "default": { "$ref": "#/components/responses/Error" }
         },
         "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]

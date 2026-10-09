@@ -110,7 +110,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	}
 	datapath := control.NewRuntime()
 	client, closeClient := datapath.NewWorkerClient()
-	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, definitions: definitions, workerClient: client}
+	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, definitions: definitions, workerClient: client, refreshes: newResourceRefresher()}
 	t.Cleanup(func() { resolver.SetRoute(nil); _ = datapath.Close(); closeClient(); _ = cleanupKernelResources() })
 	plugins, err := configurePlugins(conf, definitions)
 	if err != nil {
@@ -146,8 +146,19 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	if err := os.WriteFile(resourcePath, []byte("second"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.reload(t.Context(), false, false); err != nil {
+	// Resource refresh uses accepted configuration even while disk edits are invalid.
+	acceptedFile, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("invalid configuration"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.apply(t.Context(), app.conf, false, false, true); err != nil {
 		t.Fatalf("resource change: %v", err)
+	}
+	if err := os.WriteFile(path, acceptedFile, 0600); err != nil {
+		t.Fatal(err)
 	}
 	if app.plane != original || app.plane.MITMHost().SameInstances(host) || built.Load() != 2 {
 		t.Fatal("resource change did not replace only the plugin")
