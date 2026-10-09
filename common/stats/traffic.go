@@ -59,54 +59,6 @@ type Connection struct {
 	externalInvalid      bool
 }
 
-// Store owns process-lifetime runtime statistics. Its zero value is not usable.
-type Store struct {
-	startedAt time.Time
-
-	pathsMu        sync.RWMutex
-	paths          map[Path]*pathCounters
-	directFallback atomic.Int64
-
-	externalMu          sync.RWMutex
-	externalConnections map[*Connection]struct{}
-	externalReadErrors  atomic.Uint64
-
-	samplingMu       sync.RWMutex
-	windowStartedAt  time.Time
-	history          [api.TrafficHistorySampleCount]map[Path]trafficRate
-	completedSamples uint64
-
-	availabilityMu sync.Mutex
-	nodes          map[string]*nodeStats
-	groups         map[string]*groupStats
-	lastReload     atomic.Int64
-	metrics        storeMetrics
-}
-
-var DefaultStore = newStoreAt(time.Now())
-
-func init() { go DefaultStore.run() }
-
-func newStoreAt(windowStartedAt time.Time) *Store {
-	return &Store{
-		startedAt:           windowStartedAt,
-		paths:               make(map[Path]*pathCounters),
-		externalConnections: make(map[*Connection]struct{}),
-		windowStartedAt:     windowStartedAt,
-		nodes:               make(map[string]*nodeStats),
-		groups:              make(map[string]*groupStats),
-		metrics:             newStoreMetrics(),
-	}
-}
-
-func (s *Store) run() {
-	ticker := time.NewTicker(api.TrafficHistoryInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		s.sampleAt(time.Now())
-	}
-}
-
 func (s *Store) pathCounters(path Path) *pathCounters {
 	s.pathsMu.RLock()
 	counters := s.paths[path]

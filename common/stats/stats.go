@@ -8,12 +8,60 @@
 package stats
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
 )
+
+// Store owns process-lifetime runtime statistics. Its zero value is not usable.
+type Store struct {
+	startedAt time.Time
+
+	pathsMu        sync.RWMutex
+	paths          map[Path]*pathCounters
+	directFallback atomic.Int64
+
+	externalMu          sync.RWMutex
+	externalConnections map[*Connection]struct{}
+	externalReadErrors  atomic.Uint64
+
+	samplingMu       sync.RWMutex
+	windowStartedAt  time.Time
+	history          [api.TrafficHistorySampleCount]map[Path]trafficRate
+	completedSamples uint64
+
+	availabilityMu sync.Mutex
+	nodes          map[string]*nodeStats
+	groups         map[string]*groupStats
+	lastReload     atomic.Int64
+	metrics        storeMetrics
+}
+
+var DefaultStore = newStoreAt(time.Now())
+
+func init() { go DefaultStore.run() }
+
+func newStoreAt(windowStartedAt time.Time) *Store {
+	return &Store{
+		startedAt:           windowStartedAt,
+		paths:               make(map[Path]*pathCounters),
+		externalConnections: make(map[*Connection]struct{}),
+		windowStartedAt:     windowStartedAt,
+		nodes:               make(map[string]*nodeStats),
+		groups:              make(map[string]*groupStats),
+		metrics:             newStoreMetrics(),
+	}
+}
+
+func (s *Store) run() {
+	ticker := time.NewTicker(api.TrafficHistoryInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.sampleAt(time.Now())
+	}
+}
 
 func (s *Store) RecordReload() {
 	s.lastReload.Store(time.Now().Unix())
@@ -31,192 +79,6 @@ func (s *Store) LastReload() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(seconds, 0)
-}
-
-// NodeIdentity describes an availability identity retained by the currently
-// committed control plane.
-type NodeIdentity struct {
-	Subtag string
-	Name   string
-}
-
-type availability struct {
-	firstSeen                time.Time
-	totalUp                  time.Duration
-	lastAcc                  time.Time
-	failureStartedAt         time.Time
-	completedFailureDuration time.Duration
-	alive                    bool
-	aliveSince               time.Time
-	lastCheck                time.Time
-	lastConnFail             time.Time
-	checksTotal              int64
-	checksFailed             int64
-	checksSinceAlive         int64
-	recent                   recentAvailability
-}
-
-type nodeStats struct {
-	NodeIdentity
-	availability
-}
-
-func (a *availability) record(alive, checked bool, now, failureStartedAt time.Time) {
-	previouslyAlive := a.alive
-	firstObservation := a.firstSeen.IsZero()
-	transitionAt := now
-	if !alive && !failureStartedAt.IsZero() {
-		transitionAt = failureStartedAt
-	}
-	if transitionAt.After(now) {
-		transitionAt = now
-	}
-	if !a.lastAcc.IsZero() && transitionAt.Before(a.lastAcc) {
-		transitionAt = a.lastAcc
-	}
-	if firstObservation {
-		a.firstSeen = transitionAt
-	} else if previouslyAlive {
-		a.totalUp += transitionAt.Sub(a.lastAcc)
-	}
-	a.lastAcc = now
-	if alive != previouslyAlive {
-		if alive {
-			a.aliveSince = now
-			if !a.failureStartedAt.IsZero() {
-				a.completedFailureDuration = max(now.Sub(a.failureStartedAt), 0)
-			}
-		}
-		a.alive = alive
-	}
-	if !alive && (firstObservation || previouslyAlive) {
-		a.failureStartedAt = transitionAt
-		a.completedFailureDuration = 0
-	}
-	if checked {
-		a.lastCheck = now
-		a.checksTotal++
-		if !alive {
-			a.checksFailed++
-		} else if alive != previouslyAlive {
-			a.checksSinceAlive = 1
-		} else {
-			a.checksSinceAlive++
-		}
-	}
-	a.recent.record(now, transitionAt, alive, checked)
-}
-
-func (a *availability) snapshot(now time.Time) api.Availability {
-	if a.firstSeen.IsZero() {
-		return api.Availability{}
-	}
-	snapshot := api.Availability{
-		Seen:                 true,
-		Alive:                a.alive,
-		LastFailureStartedAt: a.failureStartedAt,
-		LastCheckAt:          a.lastCheck,
-		LastConnFailAt:       a.lastConnFail,
-		ChecksTotal:          a.checksTotal,
-		ChecksFailed:         a.checksFailed,
-		ChecksSinceAlive:     a.checksSinceAlive,
-		Recent24h:            a.recent.snapshot(a.firstSeen, now),
-	}
-	totalUp := a.totalUp
-	if snapshot.Alive {
-		snapshot.AliveSince = a.aliveSince
-		totalUp += now.Sub(a.lastAcc)
-	}
-	if !snapshot.LastFailureStartedAt.IsZero() {
-		snapshot.LastFailureDuration = a.completedFailureDuration
-		if !snapshot.Alive {
-			snapshot.LastFailureDuration = max(now.Sub(a.failureStartedAt), 0)
-		}
-	}
-	if total := now.Sub(a.firstSeen); total > 0 {
-		snapshot.UpRatio = float64(totalUp) / float64(total)
-	}
-	return snapshot
-}
-
-// NodeID is the value of the "id" label of node-level series. A 128-bit
-// prefix keeps labels compact while making accidental collisions negligible.
-func NodeID(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:16])
-}
-
-func (s *Store) recordNode(key string, alive, checked bool, failureStartedAt time.Time) {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
-	if state := s.nodes[key]; state != nil {
-		if state.alive && !alive {
-			s.metrics.nodeUnavailable.WithLabelValues(NodeID(key), state.Subtag, state.Name).Inc()
-		}
-		state.record(alive, checked, time.Now(), failureStartedAt)
-	}
-}
-
-func (s *Store) RecordNodeCheck(key string, alive bool, failureStartedAt time.Time) {
-	s.recordNode(key, alive, true, failureStartedAt)
-}
-
-func (s *Store) RecordNodeState(key string, alive bool, failureStartedAt time.Time) {
-	s.recordNode(key, alive, false, failureStartedAt)
-}
-
-// RecordNodeConnFail records a data-plane connection failure. It is a no-op
-// for nodes that have never been recorded.
-func (s *Store) RecordNodeConnFail(key string) {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
-	state := s.nodes[key]
-	if state == nil {
-		return
-	}
-	state.lastConnFail = time.Now()
-}
-
-func (s *Store) GetNode(key string) api.Availability {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
-	state := s.nodes[key]
-	if state == nil {
-		return api.Availability{}
-	}
-	return state.snapshot(time.Now())
-}
-
-type groupStats struct {
-	availability
-	states recentGroupStates
-}
-
-func (s *Store) RecordGroup(name string, available bool) {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
-	group := s.groups[name]
-	if group == nil {
-		return
-	}
-	now := time.Now()
-	group.record(available, false, now, time.Time{})
-	group.states.record(now, available)
-}
-
-func (s *Store) GetGroup(name string) api.GroupAvailability {
-	s.availabilityMu.Lock()
-	defer s.availabilityMu.Unlock()
-	group := s.groups[name]
-	if group == nil {
-		return api.GroupAvailability{Recent: emptyGroupStateWindow()}
-	}
-	now := time.Now()
-	recent := group.states.snapshot(now)
-	return api.GroupAvailability{
-		Availability: group.snapshot(now),
-		Recent:       recent,
-	}
 }
 
 // Reconcile removes availability state that does not belong to the newly
