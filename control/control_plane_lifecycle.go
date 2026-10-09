@@ -18,6 +18,9 @@ import (
 // PrepareKernel populates only this generation's private routing environment.
 // It is safe to discard a failed candidate while Runtime keeps serving traffic.
 func (c *ControlPlane) PrepareKernel() error {
+	if c.kernelReady {
+		return nil
+	}
 	if err := c.restoreRuntimeSettings(false); err != nil {
 		return err
 	}
@@ -27,6 +30,7 @@ func (c *ControlPlane) PrepareKernel() error {
 	if err := c.core.publishOutboundConnectivity(); err != nil {
 		return err
 	}
+	c.routingMatcherBuilder = nil
 	c.kernelReady = true
 	return nil
 }

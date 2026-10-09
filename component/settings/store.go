@@ -6,6 +6,7 @@ package settings
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -109,6 +110,48 @@ func (s *Store) Reload(apply func(previous, next Snapshot) error) (bool, error) 
 	return true, nil
 }
 
+// Update serializes an API edit with file reloads and persistence. apply uses
+// persist after preparing the live changes and rolls them back on any error.
+// If a later kernel commit fails, Update also restores the saved preferences.
+// Neither callback may call Store methods while this lock is held.
+func (s *Store) Update(edit func(*Snapshot) error, apply func(previous, next Snapshot, persist func() error) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous := s.state
+	next := Snapshot{Selectors: maps.Clone(previous.Selectors), Clients: maps.Clone(previous.Clients), MITM: maps.Clone(previous.MITM)}
+	for name, members := range next.Clients {
+		next.Clients[name] = slices.Clone(members)
+	}
+	if err := edit(&next); err != nil {
+		return err
+	}
+	if err := next.validate(); err != nil {
+		return err
+	}
+	if reflect.DeepEqual(previous, next) {
+		return nil
+	}
+	if apply == nil {
+		return s.save(next)
+	}
+	written := false
+	persist := func() error {
+		if err := s.save(next); err != nil {
+			return err
+		}
+		written = true
+		return nil
+	}
+	if err := apply(previous, next, persist); err != nil {
+		if written {
+			err = errors.Join(err, s.save(previous))
+		}
+		s.state = previous
+		return err
+	}
+	return nil
+}
+
 func validMAC(mac [6]byte) bool    { return mac != [6]byte{} && mac[0]&1 == 0 }
 func macString(mac [6]byte) string { return net.HardwareAddr(mac[:]).String() }
 func validateMAC(text string) error {
@@ -119,7 +162,7 @@ func validateMAC(text string) error {
 	return nil
 }
 
-// File contents need full validation. Setters only validate the changed input.
+// Both file and API edits validate a complete proposed state before publication.
 func (s Snapshot) validate() error {
 	if s.Selectors == nil || s.Clients == nil || s.MITM == nil {
 		return fmt.Errorf("runtime settings require selectors, clients and mitm objects")
@@ -171,19 +214,14 @@ func (s *Store) SetSelection(group, id string) error {
 	if group == "" {
 		return fmt.Errorf("selector name must not be empty")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.state.Selectors[group] == id {
+	return s.Update(func(next *Snapshot) error {
+		if id == "" {
+			delete(next.Selectors, group)
+		} else {
+			next.Selectors[group] = id
+		}
 		return nil
-	}
-	next := s.state
-	next.Selectors = maps.Clone(next.Selectors)
-	if id == "" {
-		delete(next.Selectors, group)
-	} else {
-		next.Selectors[group] = id
-	}
-	return s.save(next)
+	}, nil)
 }
 
 // PruneSelections removes stale choices in one atomic save. A choice changed
@@ -240,19 +278,14 @@ func (s *Store) SetMembers(name string, macs [][6]byte) error {
 			return fmt.Errorf("duplicate client MAC %q", members[i])
 		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if slices.Equal(s.state.Clients[name], members) {
+	return s.Update(func(next *Snapshot) error {
+		if len(members) == 0 {
+			delete(next.Clients, name)
+		} else {
+			next.Clients[name] = members
+		}
 		return nil
-	}
-	next := s.state
-	next.Clients = maps.Clone(next.Clients)
-	if len(members) == 0 {
-		delete(next.Clients, name)
-	} else {
-		next.Clients[name] = members
-	}
-	return s.save(next)
+	}, nil)
 }
 
 func (s *Store) MITM(mac [6]byte) (enabled, exists bool) {
@@ -267,24 +300,15 @@ func (s *Store) SetMITM(mac [6]byte, enabled *bool) error {
 	if !validMAC(mac) {
 		return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := macString(mac)
-	old, exists := s.state.MITM[key]
-	if enabled == nil && !exists || enabled != nil && exists && old == *enabled {
+	return s.Update(func(next *Snapshot) error {
+		key := macString(mac)
+		if enabled == nil {
+			delete(next.MITM, key)
+		} else {
+			next.MITM[key] = *enabled
+		}
 		return nil
-	}
-	if enabled != nil && !exists && len(s.state.MITM) >= maxClients {
-		return fmt.Errorf("MITM preferences exceed %d devices", maxClients)
-	}
-	next := s.state
-	next.MITM = maps.Clone(next.MITM)
-	if enabled == nil {
-		delete(next.MITM, key)
-	} else {
-		next.MITM[key] = *enabled
-	}
-	return s.save(next)
+	}, nil)
 }
 
 // The caller holds mu. Readers only see the next state after atomic replacement.

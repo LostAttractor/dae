@@ -64,7 +64,7 @@ func TestRoutingProfilesUsePrivateGenerations(t *testing.T) {
 	for generation := uint32(1); generation <= 3; generation++ {
 		profiles := newRoutingLayoutTestMap(t, "routing_profile_map", maxRoutingInterfaces+1)
 		interfaces := newRoutingLayoutTestMap(t, "routing_interface_map", maxRoutingInterfaces)
-		b := &RoutingMatcherBuilder{bpf: &BPFState{bpfObjects: &bpfObjects{RoutingProfileMap: profiles, RoutingInterfaceMap: interfaces}}}
+		b := &RoutingMatcherBuilder{routingState: &routingState{bpf: &BPFState{bpfObjects: &bpfObjects{RoutingProfileMap: profiles, RoutingInterfaceMap: interfaces}}}}
 		b.profiles = []routingProfile{{ID: 0, Spans: []routingSpan{{Start: 0, End: 1}}}}
 		for i := uint32(1); i <= maxRoutingInterfaces; i++ {
 			b.profiles = append(b.profiles, routingProfile{ID: generation*70000 + i,

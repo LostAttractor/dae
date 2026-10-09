@@ -8,15 +8,11 @@ package control
 import (
 	"encoding/binary"
 	"fmt"
-	"maps"
 	"net/netip"
 	"slices"
-	"sync"
 
 	"github.com/daeuniverse/dae/component/network"
-	"github.com/daeuniverse/dae/pkg/trie"
 
-	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
@@ -24,17 +20,11 @@ import (
 )
 
 type RoutingMatcherBuilder struct {
+	*routingState
 	outboundName2Id      map[string]uint8
 	ifmgr                *network.InterfaceManager
-	bpf                  *BPFState
-	rules                []bpfMatchSet
-	rulesMu              sync.RWMutex
-	simulatedLpmTries    [][]netip.Prefix
-	clientSetSlots       map[string]int
 	destination          DestinationProgram
 	flow                 FlowProgram
-	routing              RoutingProgram
-	kernelLpmLen         int
 	domainSetIDs         map[string]uint32
 	staticLpmIDs         map[string]int
 	simulatedDomainSet   []routing.DomainSet
@@ -47,10 +37,9 @@ type RoutingMatcherBuilder struct {
 
 func newRoutingMatcherBuilder(outboundName2Id map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceManager) *RoutingMatcherBuilder {
 	b := &RoutingMatcherBuilder{
+		routingState:    &routingState{bpf: bpf, clientSetSlots: make(map[string]int)},
 		outboundName2Id: outboundName2Id,
 		ifmgr:           ifmgr,
-		bpf:             bpf,
-		clientSetSlots:  make(map[string]int),
 		domainSetIDs:    make(map[string]uint32),
 		staticLpmIDs:    make(map[string]int),
 		fallbackSpans:   make(map[bpfMatchSet]routingSpan),
@@ -195,51 +184,6 @@ func (b *RoutingMatcherBuilder) addMacMatch(f *config_parser.Function, lpmTrieIn
 	return b.addMatch(f, consts.MatchType_Mac, value, outbound)
 }
 
-// ClientSets lists the named client sets referenced by routing rules.
-func (b *RoutingMatcherBuilder) ClientSets() []string {
-	return slices.Sorted(maps.Keys(b.clientSetSlots))
-}
-
-// SetClientMembers updates both matchers for a routing-referenced set; other
-// sets need no routing update. Before BuildKernspace, kernelReady is false.
-// After the initial upload, updates replace the kernel map before publishing
-// the userspace trie, including the final refresh before activation.
-func (b *RoutingMatcherBuilder) SetClientMembers(matcher *RoutingMatcher, name string, members [][6]byte, kernelReady bool) error {
-	slot, exists := b.clientSetSlots[name]
-	if !exists {
-		return nil
-	}
-	prefixes := sourceMacPrefixes(members)
-	b.rulesMu.RLock()
-	unchanged := slices.Equal(b.simulatedLpmTries[slot], prefixes)
-	b.rulesMu.RUnlock()
-	if unchanged {
-		return nil
-	}
-	next, err := trie.NewTrieFromPrefixes(prefixes)
-	if err != nil {
-		return fmt.Errorf("build client set %q: %w", name, err)
-	}
-	var kernelMap *ebpf.Map
-	if kernelReady && slot < b.kernelLpmLen {
-		kernelMap, err = b.bpf.newLpmMap(prefixes)
-		if err != nil {
-			return fmt.Errorf("build kernel client set %q: %w", name, err)
-		}
-		defer kernelMap.Close()
-	}
-	b.rulesMu.Lock()
-	defer b.rulesMu.Unlock()
-	if kernelReady && slot < b.kernelLpmLen {
-		if err := b.bpf.LpmArrayMap.Update(uint32(slot), kernelMap, ebpf.UpdateAny); err != nil {
-			return fmt.Errorf("update kernel client set %q: %w", name, err)
-		}
-	}
-	b.simulatedLpmTries[slot] = prefixes
-	matcher.lpmMatcher[slot] = next
-	return nil
-}
-
 func (b *RoutingMatcherBuilder) addIp(f *config_parser.Function, values []netip.Prefix, outbound *routing.Outbound) (err error) {
 	lpmTrieIndex := b.internLPM(values)
 	var value [16]byte
@@ -279,20 +223,6 @@ func (b *RoutingMatcherBuilder) addProcessName(f *config_parser.Function, values
 		copy(encoded[:], value[:])
 		return encoded
 	})
-}
-
-func (b *RoutingMatcherBuilder) updateIfindex(index int, ifindex uint32, active bool) error {
-	b.rulesMu.Lock()
-	defer b.rulesMu.Unlock()
-	current := b.rules[index]
-	binary.LittleEndian.PutUint32(current.Value[:], ifindex)
-	if active && index < b.routing.end {
-		if err := b.bpf.RoutingMap.Update(uint32(index), current, ebpf.UpdateAny); err != nil {
-			return err
-		}
-	}
-	b.rules[index] = current
-	return nil
 }
 
 func (b *RoutingMatcherBuilder) addInterface(f *config_parser.Function, values []string, outbound *routing.Outbound) (err error) {

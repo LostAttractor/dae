@@ -2,7 +2,6 @@
 package control
 
 import (
-	"errors"
 	"net"
 	"net/netip"
 	"slices"
@@ -11,6 +10,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/internal/apiserver"
 	log "github.com/sirupsen/logrus"
 )
@@ -79,7 +79,14 @@ func (c *ControlPlane) Select(name, id, source string) (api.SelectorState, error
 	// Keep the live choice and its saved override together, including rollback.
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
-	if err := group.ChangeSelection(id, func() error { return c.settings.SetSelection(group.Name, id) }); err != nil {
+	if err := c.settings.Update(func(next *settings.Snapshot) error {
+		if id == "" {
+			delete(next.Selectors, group.Name)
+		} else {
+			next.Selectors[group.Name] = id
+		}
+		return nil
+	}, c.applyRuntimeSettings); err != nil {
 		return api.SelectorState{}, err
 	}
 	log.WithFields(log.Fields{"event": "selector_update", "group": group.Name, "node_id": group.Selection(), "source_ip": source, "overridden": id != ""}).Info("API settings changed")
@@ -132,34 +139,32 @@ func (c *ControlPlane) DeviceState(ip netip.Addr, mac [6]byte) api.DeviceState {
 func (c *ControlPlane) UpdateClientSet(name string, ip netip.Addr, mac [6]byte, joined bool) (api.DeviceState, error) {
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
-	previous := c.settings.Members(name)
-	index := slices.Index(previous, mac)
-	if (index >= 0) != joined {
-		next := slices.Clone(previous)
-		if joined {
-			next = append(next, mac)
-		} else {
-			next = slices.Delete(next, index, index+1)
-		}
-		changed := make(map[[6]byte]bool)
-		if slices.Contains(c.routingMatcherBuilder.ClientSets(), name) {
-			changed[mac] = true
-		}
-		err := c.changeDeviceRoutes(changed, func(commit func() error) error {
-			if err := c.setClientMembers(name, previous, next); err != nil {
-				return err
-			}
-			if err := c.settings.SetMembers(name, next); err != nil {
-				return errors.Join(err, c.setClientMembers(name, next, previous))
-			}
-			if err := commit(); err != nil {
-				return errors.Join(err, c.settings.SetMembers(name, previous), c.setClientMembers(name, next, previous))
-			}
+	changed := false
+	err := c.settings.Update(func(next *settings.Snapshot) error {
+		members := next.Clients[name]
+		text := net.HardwareAddr(mac[:]).String()
+		index := slices.Index(members, text)
+		if (index >= 0) == joined {
 			return nil
-		})
-		if err != nil {
-			return api.DeviceState{}, err
 		}
+		changed = true
+		if joined {
+			members = append(members, text)
+		} else {
+			members = slices.Delete(members, index, index+1)
+		}
+		slices.Sort(members)
+		if len(members) == 0 {
+			delete(next.Clients, name)
+		} else {
+			next.Clients[name] = members
+		}
+		return nil
+	}, c.applyRuntimeSettings)
+	if err != nil {
+		return api.DeviceState{}, err
+	}
+	if changed {
 		log.WithFields(log.Fields{"event": "client_set_update", "set": name, "mac": net.HardwareAddr(mac[:]).String(), "source_ip": ip.String(), "joined": joined}).Info("API settings changed")
 	}
 	return c.deviceState(ip, mac), nil

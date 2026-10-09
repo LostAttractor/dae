@@ -69,6 +69,7 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	}
 	c.routingMatcher.outboundUsable = c.core.outboundUsable
 	c.routingMatcherBuilder = builder
+	c.routingState = builder.routingState
 	c.criticalOutbounds = builder.criticalOutbounds(len(c.outbounds))
 	configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds, outbounds.borrowed)
 	if err := c.restoreRuntimeSettings(false); err != nil {

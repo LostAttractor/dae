@@ -24,7 +24,8 @@ func (b *RoutingMatcherBuilder) activateInterfaceRulePatches() error {
 		if b.ifmgr == nil {
 			return fmt.Errorf("interface manager is required for routing rule interface %q", patch.ifname)
 		}
-		update := func(ifindex uint32) error { return b.updateIfindex(patch.matchIndex, ifindex, true) }
+		state := b.routingState
+		update := func(ifindex uint32) error { return state.updateIfindex(patch.matchIndex, ifindex, true) }
 		cancel, err := b.ifmgr.RegisterSyncCancelable(patch.ifname,
 			func(link netlink.Link) error { return update(uint32(link.Attrs().Index)) },
 			func(link netlink.Link) {

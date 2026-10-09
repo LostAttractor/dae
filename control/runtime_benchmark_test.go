@@ -63,7 +63,7 @@ func runtimeRefreshFixture(t testing.TB) (*ControlPlane, *ebpf.Collection) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &ControlPlane{core: &controlPlaneCore{bpf: state, closed: t.Context()}, settings: store, routingMatcher: matcher, routingMatcherBuilder: builder}
+	c := &ControlPlane{core: &controlPlaneCore{bpf: state, closed: t.Context()}, settings: store, routingMatcher: matcher, routingMatcherBuilder: builder, routingState: builder.routingState}
 	if err := c.PrepareKernel(); err != nil {
 		t.Fatal(err)
 	}

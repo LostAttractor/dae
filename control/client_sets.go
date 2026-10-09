@@ -13,7 +13,7 @@ import (
 // Exported sets are usable without a dae routing rule. Description-only entries
 // still require a routing reference before exposing a device self-service toggle.
 func (c *ControlPlane) clientSets() []string {
-	names := c.routingMatcherBuilder.ClientSets()
+	names := c.routingState.ClientSets()
 	for name, client := range c.clients {
 		if client.IPSet != "" || client.NFTSet != "" {
 			names = append(names, name)
@@ -38,7 +38,7 @@ func (c *ControlPlane) syncClientExports() error {
 // The caller holds settingsMu. Keep the routing matcher and external sets on
 // the same accepted snapshot; persistence failures use this path to undo updates.
 func (c *ControlPlane) setClientMembers(name string, previous, next [][6]byte) error {
-	if err := c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, next, c.kernelReady); err != nil {
+	if err := c.routingState.SetClientMembers(c.routingMatcher, name, next, c.kernelReady); err != nil {
 		return err
 	}
 	if !c.kernelReady {
@@ -46,7 +46,7 @@ func (c *ControlPlane) setClientMembers(name string, previous, next [][6]byte) e
 	}
 	client := c.clients[name]
 	if err := clientset.Replace(client.IPSet, client.NFTSet, next); err != nil {
-		err = errors.Join(err, c.routingMatcherBuilder.SetClientMembers(c.routingMatcher, name, previous, true))
+		err = errors.Join(err, c.routingState.SetClientMembers(c.routingMatcher, name, previous, true))
 		return fmt.Errorf("sync client %q: %w", name, err)
 	}
 	return nil

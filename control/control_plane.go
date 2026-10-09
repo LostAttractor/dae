@@ -60,6 +60,7 @@ type ControlPlane struct {
 	apiBypass          []bpfIpPort
 
 	routingMatcher        *RoutingMatcher
+	routingState          *routingState
 	routingMatcherBuilder *RoutingMatcherBuilder
 
 	ctx             context.Context
@@ -262,6 +263,7 @@ func NewControlPlane(
 		udpEndpoints:              core.bpf.udpEndpoints,
 		hostReconcileCh:           make(chan struct{}, 1),
 		routingMatcher:            routingMatcher,
+		routingState:              builder.routingState,
 		routingMatcherBuilder:     builder,
 		ctx:                       ctx,
 		cancel:                    cancel,

@@ -4,6 +4,7 @@ package settings
 
 import (
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,45 @@ import (
 	"sync"
 	"testing"
 )
+
+func TestUpdateRestoresPersistedStateAfterApplyFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime-state.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := [6]byte{2, 1, 2, 3, 4, 5}
+	if err := store.SetMembers("gaming", [][6]byte{before}); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("kernel commit failed")
+	err = store.Update(func(next *Snapshot) error {
+		next.Clients["gaming"][0] = "02:01:02:03:04:06"
+		return nil
+	}, func(_, _ Snapshot, persist func() error) error {
+		if err := persist(); err != nil {
+			return err
+		}
+		written, err := Open(path)
+		if err != nil {
+			return err
+		}
+		if slices.Equal(written.Members("gaming"), [][6]byte{before}) {
+			t.Fatal("candidate was not persisted before failure")
+		}
+		return failure
+	})
+	if !errors.Is(err, failure) {
+		t.Fatalf("update error = %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(store.Members("gaming"), [][6]byte{before}) || !slices.Equal(reopened.Members("gaming"), [][6]byte{before}) {
+		t.Fatal("failed application changed accepted or persisted membership")
+	}
+}
 
 func TestPruneSelectionsIsAtomicAndKeepsNewerChoices(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
