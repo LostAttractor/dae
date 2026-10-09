@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/http/httpguts"
@@ -25,18 +26,29 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	m := &Module{Name: metadata.Name}
+	env := sync.OnceValue(func() map[string]string {
+		values := requirementEnvironment()
+		m.requirementKey = fmt.Sprint(values)
+		return values
+	})
+	if metadata.System != "" && !strings.EqualFold(metadata.System, env()["SYSTEM"]) ||
+		metadata.Requirement != "" && !checkRequirement(metadata.Requirement, env(), &m.Warnings) {
+		m.disabled = true
+		return m, nil
+	}
 	arguments, err := metadata.resolveArguments(overrides)
 	if err != nil {
 		return nil, err
 	}
 	lines := strings.Split(strings.TrimPrefix(source, "\ufeff"), "\n")
-	m := &Module{Name: metadata.Name}
 	section := ""
 	warnedSections := make(map[string]bool)
 	for i, line := range lines {
 		lineNumber := i + 1
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		_, conditional := lineRequirement(line, "#!REQUIREMENT")
+		if line == "" || strings.HasPrefix(line, "#") && !conditional || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "//") {
 			continue
 		}
 		var unknownArgument string
@@ -51,8 +63,8 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 		if unknownArgument != "" {
 			return nil, fmt.Errorf("module line %d: undefined argument %q", lineNumber, unknownArgument)
 		}
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		line = moduleLine(strings.TrimSpace(line), env, &m.Warnings)
+		if line == "" {
 			continue
 		}
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {

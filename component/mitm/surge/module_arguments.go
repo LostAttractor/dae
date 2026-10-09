@@ -15,6 +15,8 @@ type Metadata struct {
 	Description          string
 	ArgumentsDescription string
 	Arguments            []Argument
+	System               string
+	Requirement          string
 }
 
 // Argument declares a text parameter. An empty default and an omitted default
@@ -25,9 +27,8 @@ type Argument struct {
 	HasDefault bool
 }
 
-// ReadMetadata reads the module's #!name, #!desc, #!arguments, and
-// #!arguments-desc fields. The argument description is a single piece of display
-// text; it does not declare per-argument types or choices.
+// ReadMetadata reads module identity, requirements and argument declarations.
+// The argument description is display text, not per-argument types or choices.
 func ReadMetadata(contents string) (Metadata, error) {
 	if len(contents) > MaxModuleBytes {
 		return Metadata{}, fmt.Errorf("module exceeds %d bytes", MaxModuleBytes)
@@ -54,6 +55,10 @@ func ReadMetadata(contents string) (Metadata, error) {
 			metadata.Description = strings.ReplaceAll(value, `\n`, "\n")
 		case "#!arguments-desc":
 			metadata.ArgumentsDescription = strings.ReplaceAll(value, `\n`, "\n")
+		case "#!system":
+			metadata.System = value
+		case "#!requirement":
+			metadata.Requirement = value
 		case "#!arguments":
 			if value == "" {
 				continue

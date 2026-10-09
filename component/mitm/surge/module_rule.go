@@ -267,6 +267,11 @@ func splitModuleRuleFields(source string) ([]string, error) {
 }
 
 func trimModuleRuleComment(line string) string {
+	line, _ = splitModuleComment(line)
+	return line
+}
+
+func splitModuleComment(line string) (string, string) {
 	var quote byte
 	for i := 0; i < len(line); i++ {
 		if line[i] == '\\' && quote != 0 {
@@ -282,8 +287,8 @@ func trimModuleRuleComment(line string) string {
 			continue
 		}
 		if quote == 0 && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') && (line[i] == '#' || line[i] == ';' || strings.HasPrefix(line[i:], "//")) {
-			return strings.TrimSpace(line[:i])
+			return strings.TrimSpace(line[:i]), strings.TrimSpace(line[i:])
 		}
 	}
-	return strings.TrimSpace(line)
+	return strings.TrimSpace(line), ""
 }

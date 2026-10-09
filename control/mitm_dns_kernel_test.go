@@ -13,7 +13,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -55,7 +57,27 @@ func testHTTPKernelCapture(t *testing.T, requestRouting bool) {
 		UnusedLpmType: collection.Maps["unused_lpm_type"], DomainRoutingMap: collection.Maps["domain_routing_map"],
 	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
 	prepared := prepareFlowRulesForTest(t, "", "")
-	plan := mitmRoutingPlugin("grpc.biliapi.net", "app.bilibili.com", "api.bilibili.com", "www.bilibili.com").Plan()
+	module, err := surge.Parse(`#!requirement=CORE_VERSION>=999
+[MITM]
+#!REQUIREMENT SYSTEM='linux' hostname = grpc.biliapi.net, app.bilibili.com, api.bilibili.com, www.bilibili.com
+hostname = %APPEND% outside.example, 10.0.0.1:22 #!MACOS-ONLY
+hostname = %APPEND% * #!REQUIREMENT CORE_VERSION>=20 OR SYSTEM='iOS'
+[Body Rewrite]
+http-request . old new // request body rewriting keeps the declared capture scope
+`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := surge.Parse("#!system=ios\n[MITM]\nhostname = *", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := surge.NewEngine(surge.EngineOptions{Modules: []*surge.Module{module, disabled}, BodyMemory: membuffer.NewBudget(1 << 20),
+		MaxBodySize: 1 << 20, MaxConcurrentScripts: 1, ScriptTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := engine.Plan()
 	if requestRouting {
 		// An old-target block/must/mark cannot precede request transformations.
 		prepared = prepareFlowRulesForTest(t, "dport(80,443) -> must", "domain(full: grpc.biliapi.net, full: app.bilibili.com, full: api.bilibili.com, full: www.bilibili.com) && dport(80,443) -> block(mark:37)")

@@ -76,6 +76,7 @@ func Load(ctx context.Context, raw string, client *http.Client, options LoadOpti
 			return string(result.Data), err
 		})
 		if err == nil {
+			digest.Write([]byte(module.requirementKey))
 			module.contentKey = fmt.Sprintf("%x", digest.Sum(nil))
 		}
 		return module, err

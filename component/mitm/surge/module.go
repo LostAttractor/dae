@@ -28,6 +28,8 @@ const (
 // unsupported options for trace logging.
 type Module struct {
 	contentKey       string
+	requirementKey   string
+	disabled         bool
 	Name             string
 	Hostnames        []string
 	Scripts          []Script // HTTP and DNS scripts invoked by intercepted traffic.

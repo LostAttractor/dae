@@ -13,6 +13,9 @@ func (m *Module) Status() api.ModuleStatus {
 	if state == "" {
 		state = "loaded"
 	}
+	if m.disabled {
+		state = "disabled"
+	}
 	return api.ModuleStatus{
 		Name: m.Name, Source: m.source, State: state,
 		Scripts: len(m.Scripts) + len(m.TaskScripts), Hostnames: len(m.Hostnames), HostMappings: len(m.Hosts) + len(m.DNSHosts),
