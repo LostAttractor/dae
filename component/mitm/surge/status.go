@@ -28,6 +28,7 @@ func (m *Module) Status() api.ModuleStatus {
 func (e *Engine) Status() api.SurgeStatus {
 	status := api.SurgeStatus{Enabled: true, Modules: make([]api.ModuleStatus, 0, len(e.options.Modules))}
 	if e.options.Runtime != nil {
+		status.Runtimes = []api.SurgeRuntimeStatus{e.options.Runtime.backend.status()}
 		status.Notifications = e.options.Runtime.notifications.snapshot()
 	}
 	indices := make(map[*Module]int, len(e.options.Modules))

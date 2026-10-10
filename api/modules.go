@@ -7,12 +7,41 @@ import (
 	"time"
 )
 
-// SurgeStatus describes the modules of one initialized engine. It does not probe
-// traffic or execute scripts; a loaded module may not have matched any request.
+// SurgeStatus describes the modules and cached runtime state of one initialized
+// engine. It does not probe traffic or execute scripts; a loaded module may not
+// have matched any request.
 type SurgeStatus struct {
-	Enabled       bool                `json:"enabled"`
-	Modules       []ModuleStatus      `json:"modules"`
-	Notifications []SurgeNotification `json:"notifications,omitempty"`
+	Enabled       bool                 `json:"enabled"`
+	Modules       []ModuleStatus       `json:"modules"`
+	Runtimes      []SurgeRuntimeStatus `json:"runtimes,omitempty"`
+	Notifications []SurgeNotification  `json:"notifications,omitempty"`
+}
+
+// Each Surge instance reports its selected backend. Clients add Instance when
+// combining reports, as they do for modules and notifications.
+type SurgeRuntimeStatus struct {
+	Instance string               `json:"instance,omitempty"`
+	Backend  string               `json:"backend"`
+	NodeJS   *NodeJSRuntimeStatus `json:"nodejs,omitempty"`
+}
+
+// NodeJSRuntimeStatus contains pool-lifetime counters and cached process memory.
+// Memory sums cover MemorySampledWorkers; MemorySampledAt is the oldest included
+// sample. A missing sample is not evidence of zero memory usage.
+type NodeJSRuntimeStatus struct {
+	Active               int       `json:"active"`
+	Idle                 int       `json:"idle"`
+	Limit                int       `json:"limit"`
+	Started              uint64    `json:"started"`
+	Reused               uint64    `json:"reused"`
+	StartFailures        uint64    `json:"start_failures"`
+	IdleReaped           uint64    `json:"idle_reaped"`
+	Discarded            uint64    `json:"discarded"`
+	RSSBytes             uint64    `json:"rss_bytes"`
+	PSSBytes             uint64    `json:"pss_bytes"`
+	MemorySampledWorkers int       `json:"memory_sampled_workers"`
+	MemorySampledAt      time.Time `json:"memory_sampled_at,omitzero"`
+	IdleTimeoutSeconds   float64   `json:"idle_timeout_seconds"`
 }
 
 // SurgeNotification is explicit script output, independent of runtime success.

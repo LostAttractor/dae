@@ -75,6 +75,8 @@ Node.js 通过外部进程运行，无需 npm 包或额外脚本文件。启动�
 
 每个实例按需启动并复用工作进程，最多 `max_concurrent_scripts` 个。多余进程空闲 60 秒后，在每 5 秒一次的维护中回收，保留最近使用的 1 个空闲进程；正在执行或等待脚本 HTTP、定时器的进程不会被空闲回收。每次脚本执行使用独立的新上下文。实例关闭会终止并回收进程。脚本超时、取消、执行异常或进程崩溃时丢弃该进程，后续调用重新创建。冷启动、正文跨进程复制及同步宿主调用有额外开销；计算密集的脚本可受益于 V8，短脚本不保证更快。Node.js 工作进程通常比 QuickJS 占用更多内存。
 
+`dae status`、`dae status --recent`、`dae plugins status` 和 `dae plugins surge status` 显示进程池忙碌/空闲数量、容量、启动/复用/回收/失败计数及 RSS/PSS。内存每 5 秒后台采样，查询只读取缓存；输出同时显示采样覆盖的进程数和最旧样本年龄，未采样不代表零占用。PSS 按比例分摊共享页，比直接相加 RSS 更适合观察进程池内存。Prometheus 提供同口径的 `dae_plugin_surge_nodejs_*` 指标，详见[指标说明](../../en/configuration/metrics.md#surge)。启动探测不计入业务进程计数，实例关闭也不计入失败或空闲回收。
+
 两个后端使用同一套 Surge API、存储、定时器与 Go HTTP 客户端；脚本主动请求仍受 dae 出站策略和正文预算约束。脚本可通过 `$environment['dae-runtime']` 读取 `quickjs` 或 `nodejs`。Node.js 后端不暴露 `process`、`require`、原生模块、文件或直接网络 API，也不继承 `NODE_OPTIONS`、`NODE_PATH` 等进程环境配置。它使用独立上下文与 Node 权限模式，但 [node:vm 不构成安全沙箱](https://nodejs.org/api/vm.html)，应只加载可信脚本。
 
 ### 持久存储

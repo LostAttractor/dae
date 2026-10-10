@@ -20,7 +20,7 @@ func RenderSurge(status api.SurgeStatus, verbose bool) string {
 		return "Surge modules: disabled"
 	}
 	if len(status.Modules) == 0 && len(status.Notifications) == 0 {
-		return "Surge modules: no modules configured"
+		return strings.TrimSpace("Surge modules: no modules configured\n\n" + renderSurgeRuntimes(status.Runtimes))
 	}
 	rows := make([]table.Row, 0, len(status.Modules))
 	var taskRows, runRows []table.Row
@@ -74,6 +74,9 @@ func RenderSurge(status api.SurgeStatus, verbose bool) string {
 	}
 	if len(status.Notifications) > 0 {
 		sections = append(sections, renderSurgeNotifications(status.Notifications, verbose))
+	}
+	if runtime := renderSurgeRuntimes(status.Runtimes); runtime != "" {
+		sections = append(sections, runtime)
 	}
 	return strings.Join(sections, "\n\n")
 }
@@ -154,6 +157,10 @@ func Surge(instances []api.PluginInstanceStatus) (api.SurgeStatus, error) {
 			return status, fmt.Errorf("plugins.%s: missing Surge status", instance.ID)
 		}
 		status.Enabled = status.Enabled || detail.Enabled
+		for _, runtime := range detail.Runtimes {
+			runtime.Instance = instance.ID
+			status.Runtimes = append(status.Runtimes, runtime)
+		}
 		for _, module := range detail.Modules {
 			module.Instance = instance.ID
 			status.Modules = append(status.Modules, module)

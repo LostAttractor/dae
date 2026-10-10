@@ -517,6 +517,7 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 		mode = trafficVerbose
 	}
 	printTraffic(out, snapshot, mode)
+	printSurgeRuntimes(out, snapshot.Plugins)
 }
 
 // Clip complete status lines at display width, preserving ANSI color sequences.

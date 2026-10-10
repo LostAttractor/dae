@@ -86,6 +86,37 @@ pressure count as `capacity`. Replacing the same key is not an eviction.
 | `surge_execution_slots_limit` | Gauge | Shared execution-slot capacity |
 | `surge_rule_matches_total` | Counter | `kind`: `url_rewrite`, `header_rewrite`, `body_rewrite`, `map_local`, `dns_host` |
 | `surge_processing_skips_total` | Counter | `stage`, `reason` |
+| `surge_runtime_info` | Gauge | `backend`: `quickjs` or `nodejs`; value 1 |
+| `surge_nodejs_workers` | Gauge | `state`: `active`, `idle` |
+| `surge_nodejs_worker_limit` | Gauge | Maximum workers for this instance |
+| `surge_nodejs_worker_starts_total` | Counter | Successfully spawned application workers |
+| `surge_nodejs_worker_start_failures_total` | Counter | Failed application worker spawns |
+| `surge_nodejs_worker_reuses_total` | Counter | Leases acquired from idle workers |
+| `surge_nodejs_worker_retirements_total` | Counter | `reason`: `idle`, `failed` (including cancellation) |
+| `surge_nodejs_idle_timeout_seconds` | Gauge | Excess idle worker timeout |
+| `surge_nodejs_rss_bytes` | Gauge | Sum of sampled worker RSS; shared pages can be counted more than once |
+| `surge_nodejs_pss_bytes` | Gauge | Sum of sampled worker PSS, proportionally accounting for shared pages |
+| `surge_nodejs_memory_sampled_workers` | Gauge | Current workers included in the memory sums |
+| `surge_nodejs_memory_sample_timestamp_seconds` | Gauge | Oldest included memory sample, or 0 when none |
+
+Node.js metrics exist only for the Node.js build. One active worker belongs to
+one invocation, including while it waits for host HTTP or timers. Workers start
+on demand; excess workers idle for 60 seconds are reclaimed by maintenance every
+5 seconds, keeping the most recently returned idle worker warm. Active leases
+are never reclaimed by idle maintenance. Startup probes and instance shutdown
+do not count as application starts or retirements.
+
+Memory is sampled from Linux `smaps_rollup` in the background every 5 seconds;
+scrapes and status queries read cached values. Check sampled-worker coverage
+against active plus idle workers, and use the sample timestamp to assess age.
+New or unreadable workers are excluded from the sums. Zero samples does not
+mean live workers use zero memory. RSS/PSS include more than the V8 old-generation
+heap limited by `memory_limit`.
+
+`dae status`, `dae status --recent`, `dae plugins status` and
+`dae plugins surge status` show the same pool counters, memory sums, coverage
+and age. The API and `--json` retain these values in each Surge report's
+`runtimes` field. QuickJS reports its backend without Node.js process metrics.
 
 Script `phase` is `http-request`, `http-response`, `dns`, `cron` or `generic`; slot-wait `kind`
 also includes `body_rewrite`. Script results are `unchanged`, `success`,

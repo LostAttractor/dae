@@ -31,6 +31,13 @@ func RenderMITM(instances []api.PluginInstanceStatus, withSummary bool) string {
 			}
 		}
 	}
+	if withSummary {
+		if report, err := Surge(instances); err == nil {
+			if runtime := renderSurgeRuntimes(report.Runtimes); runtime != "" {
+				fmt.Fprintf(&details, "\n\n%s", runtime)
+			}
+		}
+	}
 	return memorySummary + renderLogTable(table.Row{"INSTANCE", "TYPE", "STATE", "SCOPES", "DNAT"}, rows) + details.String()
 }
 

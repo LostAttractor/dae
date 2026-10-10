@@ -1090,6 +1090,11 @@
       },
       "SurgeStatus": {
         "properties": {
+          "runtimes": {
+            "type": "array",
+            "description": "Selected JavaScript runtime for this instance. Clients preserve instance identity when combining reports.",
+            "items": { "$ref": "#/components/schemas/SurgeRuntimeStatus" }
+          },
           "notifications": {
             "type": "array",
             "description": "All retained explicit script notifications for this instance, newest first. Each script (module, script name and script type) retains up to 50 messages within a shared conservative 1 MiB JSON budget. The longest histories lose their oldest entries first; ties remove the oldest entry, so fewer than 50 messages may remain per script. CLI text defaults to 3 per script; --verbose and JSON show all retained messages. In-memory history resets on reload and is independent of the log level and script success.",
@@ -1110,6 +1115,35 @@
           "modules"
         ],
         "type": "object"
+      },
+      "SurgeRuntimeStatus": {
+        "type": "object",
+        "properties": {
+          "instance": { "type": "string", "description": "Added by clients when combining plugin reports." },
+          "backend": { "type": "string", "enum": ["quickjs", "nodejs"] },
+          "nodejs": { "$ref": "#/components/schemas/NodeJSRuntimeStatus" }
+        },
+        "required": ["backend"]
+      },
+      "NodeJSRuntimeStatus": {
+        "type": "object",
+        "description": "Live pool counts and pool-lifetime counters excluding startup probes and shutdown. RSS/PSS are cached sums for memory_sampled_workers; failed or pending samples are excluded. Status collection performs no process I/O.",
+        "properties": {
+          "active": { "type": "integer", "description": "Leased workers, including startup and waiting for host I/O." },
+          "idle": { "type": "integer" },
+          "limit": { "type": "integer" },
+          "started": { "type": "integer" },
+          "reused": { "type": "integer" },
+          "start_failures": { "type": "integer" },
+          "idle_reaped": { "type": "integer" },
+          "discarded": { "type": "integer", "description": "Workers discarded after errors or cancellation." },
+          "rss_bytes": { "type": "integer", "description": "Sum of sampled RSS; shared pages can be counted more than once." },
+          "pss_bytes": { "type": "integer", "description": "Sum of sampled PSS, proportionally accounting for shared pages." },
+          "memory_sampled_workers": { "type": "integer" },
+          "memory_sampled_at": { "type": "string", "format": "date-time", "description": "Oldest memory sample included in the sums; omitted when no workers are sampled." },
+          "idle_timeout_seconds": { "type": "number" }
+        },
+        "required": ["active", "idle", "limit", "started", "reused", "start_failures", "idle_reaped", "discarded", "rss_bytes", "pss_bytes", "memory_sampled_workers", "idle_timeout_seconds"]
       },
       "SurgeNotification": {
         "type": "object",

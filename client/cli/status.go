@@ -41,7 +41,7 @@ func NewStatusCommand() *cobra.Command {
 	command.Flags().StringVar(&colorMode, "color", "auto", "when to use colors: auto, always, or never")
 	command.Flags().BoolVar(&raw, "json", false, "print the API snapshot as JSON")
 	command.Flags().BoolVar(&verbose, "verbose", false, "show detailed network and path health")
-	command.Flags().BoolVar(&recent, "recent", false, "show group selections, recent connectivity and traffic")
+	command.Flags().BoolVar(&recent, "recent", false, "show group selections, recent connectivity, traffic and script runtimes")
 	command.MarkFlagsMutuallyExclusive("verbose", "recent", "json")
 	return command
 }

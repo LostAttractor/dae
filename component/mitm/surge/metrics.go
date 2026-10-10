@@ -52,6 +52,9 @@ func newEngineMetrics(e *Engine) *engineMetrics {
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "surge_execution_slots_in_use", Help: "Occupied execution slots, including body processing and DNS script continuations."}, func() float64 { return float64(len(e.slots)) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "surge_execution_slots_limit", Help: "Maximum concurrent execution slots shared by scripts and body rewrites."}, func() float64 { return float64(cap(e.slots)) }),
 	}
+	if e.options.Runtime != nil {
+		m.all = append(m.all, newRuntimeMetrics(e.options.Runtime))
+	}
 	return m
 }
 
