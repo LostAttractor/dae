@@ -100,7 +100,7 @@ func (ue *UdpEndpoint) socket(ctx context.Context, p *UdpEndpointPool, src, dst 
 		conn = &destinationPacketConn{PacketConn: conn, original: dst, target: target}
 	}
 	if ue.mitm && ue.traffic == nil {
-		ue.traffic = stats.DefaultStore.OpenConnection(ue.statsPath, ue.fallback)
+		ue.traffic = stats.DefaultStore.OpenDeviceConnection(ue.statsPath, ue.fallback, ue.destinationParam.routingResult.Mac)
 	}
 	ue.startSocket(p, src, dst, key, conn)
 	return conn, nil

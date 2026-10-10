@@ -128,6 +128,31 @@
         ],
         "type": "object"
       },
+      "DeviceStatus": {
+        "type": "object",
+        "description": "The requesting device's MAC-attributed upstream paths. IPv4 and IPv6 share the MAC identity. Counters survive reload and reset on daemon restart. Kernel passthrough, local HTTP/DNS responses and daemon-originated work are excluded; splice deltas are included.",
+        "properties": {
+          "device": { "$ref": "#/components/schemas/DeviceState" },
+          "scope": { "type": "string", "enum": ["userspace_upstream"] },
+          "started_at": { "type": "string", "format": "date-time" },
+          "stats": { "$ref": "#/components/schemas/PathStats" },
+          "networks": {
+            "type": "array", "minItems": 4, "maxItems": 4,
+            "items": { "$ref": "#/components/schemas/PathStats" }
+          },
+          "direct_fallback_connections": { "type": "integer", "format": "int64" },
+          "outbounds": { "type": "array", "items": { "$ref": "#/components/schemas/DeviceOutboundStatus" } }
+        },
+        "required": ["device", "scope", "started_at", "stats", "networks", "direct_fallback_connections", "outbounds"]
+      },
+      "DeviceOutboundStatus": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "stats": { "$ref": "#/components/schemas/PathStats" }
+        },
+        "required": ["name", "stats"]
+      },
       "ClientSetState": {
         "properties": {
           "description": {
@@ -1400,6 +1425,16 @@
           }
         },
         "summary": "Read the direct LAN caller's device state (TCP only)"
+      }
+    },
+    "/api/device/status": {
+      "get": {
+        "operationId": "getDeviceStatus",
+        "summary": "Read the direct LAN caller's identity and upstream runtime statistics",
+        "responses": {
+          "200": { "description": "Success", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceStatus" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
       }
     },
     "/api/device/mitm": {

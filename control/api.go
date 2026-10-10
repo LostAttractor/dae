@@ -23,6 +23,7 @@ func (c *ControlPlane) APIHandler(version string, resources apiserver.ResourceSt
 func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver, resources apiserver.ResourceStore) http.Handler {
 	options := apiserver.Options{Selectors: c, Probes: c, Devices: c, ResolveClient: resolve, APIKey: c.apiKey, Resources: resources}
 	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
+	options.DeviceStatus = c.DeviceStatus
 	if host := c.MITMHost(); host != nil {
 		options.Scripts = host
 	}

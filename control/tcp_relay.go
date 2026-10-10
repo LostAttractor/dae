@@ -26,6 +26,7 @@ type tcpRelay struct {
 	dialer         *dialer.Dialer
 	outboundOrigin netproxy.FailureOrigin
 	statsPath      stats.Path
+	deviceMAC      [6]byte
 	fallback       bool
 	routeLease     *netproxy.Lease
 	policyLease    *netproxy.Lease
@@ -52,7 +53,7 @@ func (r *tcpRelay) run() (err error) {
 	if r.mitmHost != nil {
 		return r.runMITM()
 	}
-	traffic := stats.DefaultStore.OpenConnection(r.statsPath, r.fallback)
+	traffic := stats.DefaultStore.OpenDeviceConnection(r.statsPath, r.fallback, r.deviceMAC)
 	defer func() { err = errors.Join(err, traffic.Close()) }()
 
 	handled, err := r.trySplice(traffic)

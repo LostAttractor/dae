@@ -18,6 +18,7 @@ import (
 )
 
 type DialOption struct {
+	DeviceMAC         [6]byte
 	Mark              uint32
 	DialTarget        string
 	Dialer            *dialer.Dialer
@@ -115,6 +116,7 @@ func (c *ControlPlane) selectDialOption(p *RouteParam, outboundIndex consts.Outb
 		}
 	}
 	return &DialOption{
+		DeviceMAC:         p.routingResult.Mac,
 		Mark:              mark,
 		DialTarget:        dialTarget,
 		Dialer:            selection.Dialer,

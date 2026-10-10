@@ -19,6 +19,17 @@ func (s *handler) serveDevice(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, s.options.Devices.DeviceState(ip, mac))
 }
 
+func (s *handler) serveDeviceStatus(w http.ResponseWriter, r *http.Request) {
+	if !apiBody(w, r, nil) {
+		return
+	}
+	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
+	if !ok {
+		return
+	}
+	writeAPI(w, s.options.DeviceStatus(ip, mac))
+}
+
 func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request) {
 	if !apiBody(w, r, nil) {
 		return

@@ -310,7 +310,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		}
 		path, fallback := option.trafficAttribution()
 		ue.policyLease = option.PolicyLease
-		ue.traffic = stats.DefaultStore.OpenConnection(path, fallback)
+		ue.traffic = stats.DefaultStore.OpenDeviceConnection(path, fallback, pending.routingResult.Mac)
 		ue.dialer, ue.statsPath = option.Dialer, path
 		if option.Direct {
 			ue.origin = netproxy.OriginTarget

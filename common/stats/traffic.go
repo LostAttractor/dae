@@ -49,8 +49,9 @@ type pathCounters struct {
 // records update exact process-lifetime path totals immediately; the sampler is
 // responsible only for rates and external counter refreshes.
 type Connection struct {
-	store *Store
-	stats *pathCounters
+	store  *Store
+	stats  *pathCounters
+	device *Connection
 
 	stateMu              sync.Mutex
 	closed               bool
@@ -94,10 +95,23 @@ func (s *Store) DirectFallbackConnections() int64 {
 
 func (c *Connection) RecordUpload(bytes uint64) {
 	c.stats.upload.Add(bytes)
+	if c.device != nil {
+		c.device.RecordUpload(bytes)
+	}
 }
 
 func (c *Connection) RecordDownload(bytes uint64) {
 	c.stats.download.Add(bytes)
+	if c.device != nil {
+		c.device.RecordDownload(bytes)
+	}
+}
+
+func (c *Connection) invalidateRate() {
+	c.stats.rateInvalid.Store(true)
+	if c.device != nil {
+		c.device.invalidateRate()
+	}
 }
 
 func (c *Connection) AttachExternalCounters(source func() (api.TrafficCounters, error)) error {
@@ -126,21 +140,21 @@ func (c *Connection) refreshExternalCountersLocked() error {
 	counters, err := c.externalSource()
 	if err != nil {
 		c.externalInvalid = true
-		c.stats.rateInvalid.Store(true)
+		c.invalidateRate()
 		return err
 	}
 	if counters.UploadBytes < c.lastExternalCounters.UploadBytes ||
 		counters.DownloadBytes < c.lastExternalCounters.DownloadBytes {
 		c.externalInvalid = true
-		c.stats.rateInvalid.Store(true)
+		c.invalidateRate()
 		return errors.New("external counters moved backwards")
 	}
 	if c.externalInvalid {
-		c.stats.rateInvalid.Store(true)
+		c.invalidateRate()
 		c.externalInvalid = false
 	}
-	c.stats.upload.Add(counters.UploadBytes - c.lastExternalCounters.UploadBytes)
-	c.stats.download.Add(counters.DownloadBytes - c.lastExternalCounters.DownloadBytes)
+	c.RecordUpload(counters.UploadBytes - c.lastExternalCounters.UploadBytes)
+	c.RecordDownload(counters.DownloadBytes - c.lastExternalCounters.DownloadBytes)
 	c.lastExternalCounters = counters
 	return nil
 }
@@ -212,6 +226,11 @@ func (s *Store) sampleAt(now time.Time) {
 	s.pathsMu.RUnlock()
 	s.history[s.completedSamples%api.TrafficHistorySampleCount] = historySample
 	s.completedSamples++
+	s.devicesMu.RLock()
+	defer s.devicesMu.RUnlock()
+	for _, device := range s.devices {
+		device.sampleAt(now)
+	}
 }
 
 func (c *Connection) Close() error {
@@ -234,6 +253,9 @@ func (c *Connection) Close() error {
 	}
 	c.stateMu.Unlock()
 	c.stats.active.Add(-1)
+	if c.device != nil {
+		err = errors.Join(err, c.device.Close())
+	}
 	return err
 }
 

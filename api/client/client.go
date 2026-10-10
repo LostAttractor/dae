@@ -158,6 +158,10 @@ func (c *Client) requestStatus[T any](ctx context.Context, method, path string, 
 	return result, nil
 }
 
+func (c *Client) DeviceStatus(ctx context.Context) (*api.DeviceStatus, error) {
+	return c.request[api.DeviceStatus](ctx, "GET", "/api/device/status", nil, "")
+}
+
 func (c *Client) Status(ctx context.Context) (*api.StatusSnapshot, error) {
 	snapshot, err := c.request[api.StatusSnapshot](ctx, "GET", "/api/status", nil, "")
 	if err != nil {

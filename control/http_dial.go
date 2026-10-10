@@ -162,7 +162,7 @@ type httpUpstream struct {
 
 func newHTTPUpstream(option *DialOption, conn io.Closer) *httpUpstream {
 	path, fallback := option.trafficAttribution()
-	u := &httpUpstream{traffic: stats.DefaultStore.OpenConnection(path, fallback), dialer: option.Dialer, path: path,
+	u := &httpUpstream{traffic: stats.DefaultStore.OpenDeviceConnection(path, fallback, option.DeviceMAC), dialer: option.Dialer, path: path,
 		lease: netproxy.NewLease(netproxy.NewResourceRef()), resource: netproxy.DependencyOf(conn), policy: option.PolicyLease}
 	if option.Direct {
 		u.origin = netproxy.OriginTarget

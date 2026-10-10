@@ -23,6 +23,9 @@ type Store struct {
 	paths          map[Path]*pathCounters
 	directFallback atomic.Int64
 
+	devicesMu sync.RWMutex
+	devices   map[[6]byte]*Store
+
 	externalMu          sync.RWMutex
 	externalConnections map[*Connection]struct{}
 	externalReadErrors  atomic.Uint64

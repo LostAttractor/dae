@@ -27,6 +27,7 @@ type Options struct {
 	Scripts       ScriptStore
 	Resources     ResourceStore
 	Devices       DeviceStore
+	DeviceStatus  func(netip.Addr, [6]byte) contract.DeviceStatus
 	ResolveClient ClientResolver
 	Certificates  *Certificates
 	APIKey        string
@@ -65,6 +66,7 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("POST /api/resources/refresh", s.serveResources)
 	mux.HandleFunc("GET /api/resources", s.serveResources)
 	mux.HandleFunc("GET /api/device", s.serveDevice)
+	mux.HandleFunc("GET /api/device/status", s.serveDeviceStatus)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		mux.HandleFunc(method+" /api/device/sets/{name}", s.serveClientSet)
 		mux.HandleFunc(method+" /api/device/mitm", s.serveMITM)

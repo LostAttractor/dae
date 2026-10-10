@@ -8,7 +8,9 @@ package control
 import (
 	"math"
 	"math/bits"
+	"net/netip"
 	"slices"
+	"strings"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
@@ -239,6 +241,22 @@ func (c *ControlPlane) StatusSnapshot(version string) *api.StatusSnapshot {
 	}
 	snapshot.Plugins = c.MITMStatus()
 	return snapshot
+}
+
+func (c *ControlPlane) DeviceStatus(ip netip.Addr, mac [6]byte) api.DeviceStatus {
+	snapshot, fallback := stats.DefaultStore.DeviceSnapshot(mac)
+	paths := indexPathStats(snapshot)
+	outbounds := make([]api.DeviceOutboundStatus, 0, len(paths.groups))
+	for name, group := range paths.groups {
+		outbounds = append(outbounds, api.DeviceOutboundStatus{Name: name, Stats: group.total})
+	}
+	slices.SortFunc(outbounds, func(a, b api.DeviceOutboundStatus) int { return strings.Compare(a.Name, b.Name) })
+	return api.DeviceStatus{
+		Device: c.DeviceState(ip, mac), Scope: "userspace_upstream",
+		StartedAt: stats.DefaultStore.StartedAt(), Stats: paths.total,
+		Networks:                  api.NetworkValues[api.PathStats](paths.networks),
+		DirectFallbackConnections: fallback, Outbounds: outbounds,
+	}
 }
 
 // GroupsStatus reads the current paths and their last observed connectivity.
