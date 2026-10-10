@@ -8,7 +8,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -66,7 +65,7 @@ func TestMarshal(t *testing.T) {
 			return a == b
 		}
 		return a.String(true, true) == b.String(true, true)
-	})); diff != "" {
+	}), ignoreRuleSources); diff != "" {
 		t.Fatalf("config changed after marshal (-before +after):\n%s", diff)
 	}
 }
@@ -143,7 +142,7 @@ routing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(conf1, conf2) {
+	if !sameConfiguration(conf1, conf2) {
 		t.Fatalf("round trip differs:\nfirst: %#v\nsecond: %#v", conf1, conf2)
 	}
 }
@@ -172,7 +171,7 @@ routing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(conf1, conf2) {
+	if !sameConfiguration(conf1, conf2) {
 		t.Fatalf("round trip differs:\nfirst: %#v\nsecond: %#v", conf1, conf2)
 	}
 }
@@ -207,7 +206,7 @@ routing {
 		t.Fatalf("marshal collapsed ordered use statements: %s", b)
 	}
 	reparsed := parseConfig(t, string(b))
-	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+	if !sameConfiguration(conf.Routing, reparsed.Routing) {
 		t.Fatalf("structured routing changed after round trip:\n%s", b)
 	}
 }
@@ -231,7 +230,7 @@ routing {
 		t.Fatal(err)
 	}
 	reparsed := parseConfig(t, string(b))
-	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+	if !sameConfiguration(conf.Routing, reparsed.Routing) {
 		t.Fatalf("quoted comma interface name changed after round trip:\n%s", b)
 	}
 }
@@ -261,7 +260,7 @@ routing {
 		t.Fatalf("marshal truncated routing parameters: %s", b)
 	}
 	reparsed := parseConfig(t, string(b))
-	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+	if !sameConfiguration(conf.Routing, reparsed.Routing) {
 		t.Fatalf("structured routing values changed after round trip:\n%s", b)
 	}
 }
@@ -279,7 +278,7 @@ routing {
 		t.Fatal(err)
 	}
 	reparsed := parseConfig(t, string(raw))
-	if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+	if !sameConfiguration(conf.Routing, reparsed.Routing) {
 		t.Fatalf("trailing backslash changed: %s", raw)
 	}
 
@@ -294,7 +293,7 @@ func TestMarshalLegacyLiteralFallbackRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			reparsed := parseConfig(t, string(b))
-			if !reflect.DeepEqual(conf.Routing, reparsed.Routing) {
+			if !sameConfiguration(conf.Routing, reparsed.Routing) {
 				t.Fatalf("legacy literal fallback changed after round trip:\n%s", b)
 			}
 		})

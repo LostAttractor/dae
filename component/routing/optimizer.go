@@ -97,6 +97,7 @@ func (o *MergeAndSortRulesOptimizer) Optimize(rules []*config_parser.RoutingRule
 			mergingRule.AndFunctions[0].Not == rules[i].AndFunctions[0].Not &&
 			rules[i].Outbound.String(true, false, true) == mergingRule.Outbound.String(true, false, true) {
 			mergingRule.AndFunctions[0].Params = append(mergingRule.AndFunctions[0].Params, rules[i].AndFunctions[0].Params...)
+			mergingRule.Sources = append(mergingRule.Sources, rules[i].Sources...)
 		} else {
 			newRules = append(newRules, mergingRule)
 			mergingRule = rules[i]

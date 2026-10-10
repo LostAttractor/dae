@@ -4,7 +4,6 @@ package config
 
 import (
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -39,7 +38,7 @@ routing { client('游戏 加速') && l4proto(udp) -> proxy
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored := parseConfig(t, string(encoded)); !reflect.DeepEqual(conf, restored) {
+	if restored := parseConfig(t, string(encoded)); !sameConfiguration(conf, restored) {
 		t.Fatal("dynamic configuration changed after round trip")
 	}
 	for _, port := range []string{"-1", "65536"} {

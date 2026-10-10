@@ -43,7 +43,7 @@ func TestConditionalUseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := parseConfig(t, string(raw))
-	if !reflect.DeepEqual(conf.Routing, got.Routing) {
+	if !sameConfiguration(conf.Routing, got.Routing) {
 		t.Fatalf("conditional use changed after round trip:\n%s", raw)
 	}
 }

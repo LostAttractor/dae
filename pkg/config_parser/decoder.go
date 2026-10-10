@@ -188,7 +188,10 @@ func (d *decoder) parseRoutingRule(ctx dae_config.IArrowExpressionContext) *Rout
 		}
 		outbound = outbounds[0]
 	}
-	return &RoutingRule{AndFunctions: functions, Outbound: *outbound}
+	rule := &RoutingRule{AndFunctions: functions, Outbound: *outbound}
+	token := ctx.GetStart()
+	rule.Sources = []RuleSource{{Expression: rule.String(false, false, true), Line: token.GetLine(), Column: token.GetColumn() + 1}}
+	return rule
 }
 
 func (d *decoder) parseProxyReference(function *Function, annotation []*Param, ctx antlr.ParserRuleContext) *Param {

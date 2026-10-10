@@ -4,7 +4,6 @@ package config
 import (
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -55,7 +54,7 @@ func TestRoutingRuleSetsSplitAcrossIncludes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(conf.Routing, again.Routing) {
+	if !sameConfiguration(conf.Routing, again.Routing) {
 		t.Fatalf("routing changed on round trip:\n%s", encoded)
 	}
 }

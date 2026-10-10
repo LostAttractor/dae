@@ -186,6 +186,29 @@ func (f *Function) String(compact bool, quoteVal bool, omitEmpty bool) string {
 type RoutingRule struct {
 	AndFunctions []*Function
 	Outbound     Function
+	// Sources survives normalization and merging; it never affects execution.
+	Sources []RuleSource
+}
+
+type RuleSource struct {
+	File, Expression string
+	Line, Column     int
+}
+
+// SetSourceFile annotates parsed rules before include sections are merged.
+func SetSourceFile(sections []*Section, file string) {
+	for _, section := range sections {
+		for _, item := range section.Items {
+			switch value := item.Value.(type) {
+			case *Section:
+				SetSourceFile([]*Section{value}, file)
+			case *RoutingRule:
+				for i := range value.Sources {
+					value.Sources[i].File = file
+				}
+			}
+		}
+	}
 }
 
 type ProxyPath struct {

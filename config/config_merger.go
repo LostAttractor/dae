@@ -141,6 +141,7 @@ func (m *Merger) readEntry(opener *secureFileOpener, entry string) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to parse config file %v:\n%w", entry, err)
 	}
+	config_parser.SetSourceFile(entrySections, entry)
 	m.entryToSectionMap[entry] = m.convertSectionsToMap(entrySections)
 	return nil
 }
