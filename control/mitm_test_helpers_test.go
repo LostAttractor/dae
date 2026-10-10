@@ -9,6 +9,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/mitm/certtest"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -66,7 +67,11 @@ func controlTestHost(t *testing.T, extension plugin.Plugin, authority *mitmca.Au
 	if authority == nil && len(extension.Plan().Scopes) > 0 {
 		authority = &mitmca.Authority{}
 	}
-	host, err := mitm.New(mitm.Options{Authority: authority}, mitm.Instance{ID: "test", Type: "test", Plugin: extension})
+	options := mitm.Options{Authority: authority}
+	if diagnostic, ok := extension.(*certtest.Service); ok {
+		options.Diagnostic = diagnostic
+	}
+	host, err := mitm.New(options, mitm.Instance{ID: "test", Type: "test", Plugin: extension})
 	if err != nil {
 		t.Fatal(err)
 	}

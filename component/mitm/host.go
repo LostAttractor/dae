@@ -37,12 +37,15 @@ func Load(ctx context.Context, configuration *pluginhost.Configuration, options 
 	if err != nil {
 		return nil, err
 	}
-	if len(instances) == 0 {
+	if len(instances) == 0 && options.Diagnostic == nil {
 		return nil, nil
 	}
 	local := make([]Instance, 0, len(instances))
 	for _, instance := range instances {
 		local = append(local, Instance{ID: instance.ID, Type: instance.Type, Plugin: instance.Plugin, owner: instance})
+	}
+	if options.Diagnostic != nil {
+		local = append([]Instance{{ID: "dae-certificate-test", Type: "certificate-test", Plugin: options.Diagnostic}}, local...)
 	}
 	host, err := New(options, local...)
 	if err != nil {
@@ -85,6 +88,7 @@ func (h *Host) PrepareSuccessor() (*Host, error) {
 }
 
 type Options struct {
+	Diagnostic        plugin.Plugin
 	DisableHTTP       bool
 	BufferMemoryLimit int64
 	BodyMemory        *membuffer.Budget
@@ -98,23 +102,24 @@ type Options struct {
 	Metrics *Metrics
 }
 type Host struct {
-	options        Options
-	instances      []Instance
-	plan           plugin.Plan
-	mu             sync.Mutex
-	started        bool
-	closed         bool
-	workersStopped bool
-	requests       sync.WaitGroup
-	serving        sync.WaitGroup
-	connections    map[io.Closer]func(context.Context) error
-	forceContext   context.Context
-	forceCancel    context.CancelFunc
-	closeDone      chan struct{}
-	closeErr       error
-	memoryLimit    *membuffer.Limit
-	metrics        *prometheus.Registry
-	startedAt      *prometheus.GaugeVec
+	options          Options
+	instances        []Instance
+	plan             plugin.Plan
+	diagnosticScopes []plugin.HTTPScope
+	mu               sync.Mutex
+	started          bool
+	closed           bool
+	workersStopped   bool
+	requests         sync.WaitGroup
+	serving          sync.WaitGroup
+	connections      map[io.Closer]func(context.Context) error
+	forceContext     context.Context
+	forceCancel      context.CancelFunc
+	closeDone        chan struct{}
+	closeErr         error
+	memoryLimit      *membuffer.Limit
+	metrics          *prometheus.Registry
+	startedAt        *prometheus.GaugeVec
 }
 
 func (h *Host) Instances() []*pluginhost.Instance {
@@ -178,6 +183,9 @@ func New(options Options, instances ...Instance) (*Host, error) {
 		options.DrainTimeout = 5 * time.Second
 	}
 	h := &Host{options: options, instances: instances, connections: make(map[io.Closer]func(context.Context) error), closeDone: make(chan struct{})}
+	if options.Diagnostic != nil {
+		h.diagnosticScopes = options.Diagnostic.Plan().Scopes
+	}
 	for i := range h.instances {
 		instance := &h.instances[i]
 		if instance.owner == nil {

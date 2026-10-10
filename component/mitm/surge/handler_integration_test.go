@@ -23,6 +23,7 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/sirupsen/logrus"
 )
 
@@ -105,7 +106,7 @@ func integrationClient(t *testing.T, engine *integrationFixture, roots *x509.Cer
 			connections.Store(conn, struct{}{})
 			handlers.Go(func() {
 				defer connections.Delete(conn)
-				_ = host.ServeConn(conn, "example.com", 443, testUpstream(mitm.DialContext(dial)))
+				_ = host.ServeConn(conn, plugin.Flow{Host: "example.com", Port: 443}, testUpstream(mitm.DialContext(dial)))
 			})
 		}
 	}()

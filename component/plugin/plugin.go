@@ -23,6 +23,9 @@ type Flow struct {
 	Host                string
 	Port                uint16
 	Source, Destination netip.AddrPort
+	// SourceMAC is the original kernel ingress identity, or zero for callers
+	// without LAN metadata. It is independent of per-destination IP selection.
+	SourceMAC [6]byte
 }
 
 // Exchange belongs to one synchronous invocation. Background work must copy

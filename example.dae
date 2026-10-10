@@ -32,6 +32,11 @@ global {
 
     # Device settings, selectors and certificate downloads. Zero disables the HTTP page/API.
     api_port: 0
+    # CA tests share api_port's TLS branch. MITM tests answer virtual IP:443 locally.
+    # Choose unused addresses routed through dae, outside local subnets and other Fake IP pools.
+    # No extra listening ports, interface addresses, or upstream services are needed.
+    #api_mitm_test_ipv4: '203.0.113.254'
+    #api_mitm_test_ipv6: '2001:db8:ffff::254'
     # Optional: when unset, verified direct LAN clients can view status and change selectors without login.
     # When set, administration requires this key. Device settings always require direct LAN identification.
     #api_key: 'replace-with-a-private-key'

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 
@@ -30,12 +31,12 @@ func prepareAPIServer(current *apiserver.Server, port uint16) (*apiserver.Server
 
 // The same api_port serves the API and Web application. Reserve API and
 // certificate routes before the static file handler, including external bundles.
-func daemonAPIHandler(api http.Handler) http.Handler {
+func daemonAPIHandler(api http.Handler, testTargets ...netip.AddrPort) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api)
 	for _, path := range []string{"/ca.pem", "/ca.cer", "/ca.mobileconfig"} {
 		mux.Handle(path, api)
 	}
-	mux.Handle("/", webui.Handler(os.Getenv("DAE_WEB_ROOT")))
+	mux.Handle("/", webui.Handler(os.Getenv("DAE_WEB_ROOT"), testTargets...))
 	return mux
 }

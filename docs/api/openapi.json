@@ -120,13 +120,51 @@
           },
           "name": {
             "type": "string"
+          },
+          "test_available": {
+            "type": "boolean"
+          },
+          "test_generation": {
+            "type": "string",
+            "description": "Current diagnostic generation. Discard browser test results when this changes."
+          },
+          "test_mitm_origins": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Exact virtual HTTPS origins allowed for MITM challenges. CA challenges use HTTPS on the current API socket."
           }
         },
         "required": [
           "name",
-          "fingerprint"
+          "fingerprint",
+          "test_available"
         ],
         "type": "object"
+      },
+      "CertificateTest": {
+        "type": "object",
+        "description": "A one-minute browser challenge bound to the verified caller and current configuration. Observations are not a device-wide CA trust verdict; the browser must receive and validate the matching proof over HTTPS with normal certificate verification.",
+        "properties": {
+          "id": { "type": "string" },
+          "ca_fingerprint": { "type": "string" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "trust_url": { "type": "string" },
+          "mitm_url": { "type": "string" },
+          "mitm_enabled": { "type": "boolean" },
+          "trust_observed": { "type": "boolean" },
+          "mitm_observed": { "type": "boolean" }
+        },
+        "required": ["id", "ca_fingerprint", "started_at", "expires_at", "trust_url", "mitm_url", "mitm_enabled", "trust_observed", "mitm_observed"]
+      },
+      "CertificateTestProof": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "stage": { "type": "string", "enum": ["trust", "mitm"] },
+          "ca_fingerprint": { "type": "string" }
+        },
+        "required": ["id", "stage", "ca_fingerprint"]
       },
       "DeviceStatus": {
         "type": "object",
@@ -1433,6 +1471,29 @@
         "summary": "Read the direct LAN caller's identity and upstream runtime statistics",
         "responses": {
           "200": { "description": "Success", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceStatus" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/device/certificate-tests": {
+      "post": {
+        "operationId": "startCertificateTest",
+        "summary": "Create a current-browser CA and transparent MITM challenge (direct LAN only)",
+        "description": "Empty body. Does not change the device's MITM setting. GET trust_url and, when enabled, mitm_url from the browser with credentials omitted and redirects rejected. Dedicated HTTPS endpoints accept only the original page's Origin and return CertificateTestProof. The ordinary MITM-port TLS listener reports bypass; only the interception plugin reports mitm. These exact-origin diagnostics are the only cross-origin browser endpoints.",
+        "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
+        "responses": {
+          "201": { "description": "Challenge created, expires in one minute", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/device/certificate-tests/{id}": {
+      "get": {
+        "operationId": "getCertificateTest",
+        "summary": "Read this device's challenge observations",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Current observation; 404 for expired, replaced or foreign challenges", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },
           "default": { "$ref": "#/components/responses/Error" }
         }
       }

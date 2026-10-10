@@ -18,6 +18,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/component/plugin"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -124,7 +125,7 @@ func TestHTTP2CoalescedAuthorityRoutes(t *testing.T) {
 	go func() {
 		conn, err := listener.Accept()
 		if err == nil {
-			err = host.ServeConn(conn, param.Domain, 443, plan)
+			err = host.ServeConn(conn, plugin.Flow{Host: param.Domain, Port: 443}, plan)
 		}
 		served <- err
 	}()

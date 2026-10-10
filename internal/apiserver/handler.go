@@ -21,16 +21,17 @@ type ClientResolver func(source, destination netip.AddrPort) ([6]byte, error)
 // configuration changes; stores continue to provide live runtime state.
 // Status, Selectors, Probes, Devices and ResolveClient are required dependencies.
 type Options struct {
-	Status        func() *contract.StatusSnapshot
-	Selectors     SelectorStore
-	Probes        ProbeStore
-	Scripts       ScriptStore
-	Resources     ResourceStore
-	Devices       DeviceStore
-	DeviceStatus  func(netip.Addr, [6]byte) contract.DeviceStatus
-	ResolveClient ClientResolver
-	Certificates  *Certificates
-	APIKey        string
+	Status           func() *contract.StatusSnapshot
+	Selectors        SelectorStore
+	Probes           ProbeStore
+	Scripts          ScriptStore
+	Resources        ResourceStore
+	Devices          DeviceStore
+	DeviceStatus     func(netip.Addr, [6]byte) contract.DeviceStatus
+	ResolveClient    ClientResolver
+	Certificates     *Certificates
+	CertificateTests CertificateTestStore
+	APIKey           string
 }
 
 type handler struct{ options Options }
@@ -67,6 +68,8 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /api/resources", s.serveResources)
 	mux.HandleFunc("GET /api/device", s.serveDevice)
 	mux.HandleFunc("GET /api/device/status", s.serveDeviceStatus)
+	mux.HandleFunc("POST /api/device/certificate-tests", s.serveCertificateTest)
+	mux.HandleFunc("GET /api/device/certificate-tests/{id}", s.serveCertificateTest)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		mux.HandleFunc(method+" /api/device/sets/{name}", s.serveClientSet)
 		mux.HandleFunc(method+" /api/device/mitm", s.serveMITM)

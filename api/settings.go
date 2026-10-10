@@ -65,6 +65,9 @@ type SetMITMRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 type Certificate struct {
-	Name        string `json:"name"`
-	Fingerprint string `json:"fingerprint"`
+	Name            string   `json:"name"`
+	Fingerprint     string   `json:"fingerprint"`
+	TestAvailable   bool     `json:"test_available"`
+	TestGeneration  string   `json:"test_generation,omitempty"`
+	TestMITMOrigins []string `json:"test_mitm_origins,omitempty"`
 }

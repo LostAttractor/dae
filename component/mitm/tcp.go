@@ -23,16 +23,23 @@ import (
 	"golang.org/x/net/http2"
 )
 
-func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamPlanner) (err error) {
+func (h *Host) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) (err error) {
+	host, port := flow.Host, flow.Port
 	original := conn
 	if err := h.track(original); err != nil {
 		_ = conn.Close()
 		return err
 	}
 	defer h.untrack(original)
-	flow := plugin.Flow{Host: host, Port: port}
 	flow.Source, _ = netip.ParseAddrPort(conn.RemoteAddr().String())
 	flow.Destination, _ = netip.ParseAddrPort(conn.LocalAddr().String())
+	diagnostic := false
+	for _, scope := range h.diagnosticScopes {
+		if scope.Match(host, port) {
+			diagnostic = true
+			break
+		}
+	}
 	ctx, cancel := context.WithCancel(pluginctx.WithIDs(context.Background(), strconv.FormatUint(serial.Add(1), 10), ""))
 	defer cancel()
 	connection, _ := plugin.IDs(ctx)
@@ -65,6 +72,11 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 		scheme = "https"
 		cfg := h.interceptionTLSConfig(flow)
 		cfg.NextProtos = []string{"h2", "http/1.1"}
+		// Diagnostic replies close HTTP/1 connections so each browser test
+		// exercises a fresh handshake and kernel admission after reload.
+		if diagnostic {
+			cfg.NextProtos = []string{"http/1.1"}
+		}
 		tlsConn := tls.Server(conn, cfg)
 		handshake, stop := context.WithTimeout(ctx, 10*time.Second)
 		err = tlsConn.HandshakeContext(handshake)
@@ -87,6 +99,11 @@ func (h *Host) ServeConn(conn net.Conn, host string, port uint16, plan UpstreamP
 		MaxHeaderBytes:    1 << 20,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 		ErrorLog:          log.New(logWriter{logger, logrus.DebugLevel}, "", 0),
+	}
+	if diagnostic {
+		// ReverseProxy removes hop-by-hop Connection headers from plugin replies.
+		// Enforce fresh diagnostic connections at the actual downstream server.
+		base.SetKeepAlivesEnabled(false)
 	}
 	h2 := &http2.Server{MaxConcurrentStreams: 64, IdleTimeout: 90 * time.Second, MaxReadFrameSize: 1 << 20}
 	h2.CountError = func(kind string) {

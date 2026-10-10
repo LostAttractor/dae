@@ -49,7 +49,7 @@ func tcpDrainClient(t *testing.T, h *Host, roots *x509.CertPool, protocol string
 			if protocol == "http" {
 				port = 80
 			}
-			err = h.ServeConn(conn, "example.com", port, plan)
+			err = h.ServeConn(conn, plugin.Flow{Host: "example.com", Port: port}, plan)
 		}
 		served <- err
 	}()
@@ -283,7 +283,7 @@ func TestMITMCloseBeforeHandshake(t *testing.T) {
 			if protocol == "tcp" {
 				server, client := net.Pipe()
 				defer client.Close()
-				go func() { served <- host.ServeConn(server, "example.com", 443, nil) }()
+				go func() { served <- host.ServeConn(server, plugin.Flow{Host: "example.com", Port: 443}, nil) }()
 			} else {
 				server, client := http3TestPacketConn(t), http3TestPacketConn(t)
 				flow := plugin.Flow{Host: "example.com", Port: 443,

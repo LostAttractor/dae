@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	"github.com/daeuniverse/dae/component/mitm/certtest"
 	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -92,6 +93,20 @@ http-request . old new // request body rewriting keeps the declared capture scop
 		{Host: "2001:db8::10", Ports: []uint16{443}},
 	}, PreserveRoute: !requestRouting}}})
 	prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
+	addresses := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("fd00::1"), Mask: net.CIDRMask(64, 128)},
+	}
+	targets, err := certtest.ParseTargets("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := certtest.New(nil, 9080, targets, addresses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.enableMITMPlan(diagnostics.Plan())
+	prepared.bypassAPI(9080, addresses)
 	matcher, builder := routingMatcherForTest(t, prepared)
 	builder.bpf = state
 	if err := builder.BuildKernspace(); err != nil {
@@ -122,6 +137,15 @@ http-request . old new // request body rewriting keeps the declared capture scop
 		{"literal IPv4 wrong port", "192.0.2.10:443", "", false, false},
 		{"literal IPv6", "[2001:db8::10]:443", "", false, true},
 		{"literal IPv6 wrong port", "[2001:db8::10]:8443", "", false, false},
+		{"certificate MITM IPv4", "203.0.113.254:443", "", false, true},
+		{"certificate MITM IPv6", "[2001:db8:ffff::254]:443", "", false, true},
+		{"certificate trust IPv4", "10.0.0.1:9080", "", false, false},
+		{"certificate trust IPv6", "[fd00::1]:9080", "", false, false},
+		{"certificate wrong IP", "203.0.113.253:443", "", false, false},
+		{"certificate wrong IPv6", "[2001:db8:ffff::253]:443", "", false, false},
+		{"certificate wrong port", "203.0.113.254:80", "", false, false},
+		{"certificate wrong IPv6 port", "[2001:db8:ffff::254]:8443", "", false, false},
+		{"certificate API", "10.0.0.1:9080", "", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, network := range []consts.L4ProtoStr{consts.L4ProtoStr_TCP, consts.L4ProtoStr_UDP} {
@@ -176,7 +200,7 @@ http-request . old new // request body rewriting keeps the declared capture scop
 							continue
 						}
 						flags, outbound := captureHTTP, uint8(consts.OutboundDirect)
-						if requestRouting {
+						if requestRouting || destination.Addr() == targets[0] || destination.Addr() == targets[1] {
 							flags, outbound = captureHTTP|captureHTTPRequest, uint8(consts.OutboundControlPlaneRouting)
 						}
 						if err != nil || result.CaptureFlags != flags || result.Outbound != outbound || result.Mark != 0 || result.Must != 0 {

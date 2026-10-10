@@ -22,6 +22,8 @@ type Global struct {
 	ResourceCache          bool                   `mapstructure:"resource_cache" default:"true"`
 	ResourceUpdateInterval time.Duration          `mapstructure:"resource_update_interval" default:"24h"`
 	APIPort                uint16                 `mapstructure:"api_port" default:"0"`
+	APIMITMTestIPv4        string                 `mapstructure:"api_mitm_test_ipv4" default:"203.0.113.254"`
+	APIMITMTestIPv6        string                 `mapstructure:"api_mitm_test_ipv6" default:"2001:db8:ffff::254"`
 	APIKey                 string                 `mapstructure:"api_key"`
 	TproxyPort             uint16                 `mapstructure:"tproxy_port" default:"12345"`
 	TproxyPortProtect      bool                   `mapstructure:"tproxy_port_protect" default:"true"`

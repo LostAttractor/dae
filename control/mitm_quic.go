@@ -25,7 +25,7 @@ func (c *ControlPlane) newMITMQUIC(p *RouteParam, packetPlan mitm.UpstreamPlanne
 	host := c.MITMHost()
 	plan := c.mitmUpstreamPlanner("tcp", p.Domain, p.Src, p.Dest, *p.routingResult, nil)
 	plan = mitmPlannerWithLease(plan, lease)
-	flow := plugin.Flow{Host: p.Domain, Port: p.Dest.Port(), Source: p.Src, Destination: p.Dest}
+	flow := plugin.Flow{Host: p.Domain, Port: p.Dest.Port(), Source: p.Src, Destination: p.Dest, SourceMAC: p.routingResult.Mac}
 	go func() {
 		defer stop()
 		if release != nil {

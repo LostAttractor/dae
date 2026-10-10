@@ -15,6 +15,7 @@ import (
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/common/stats"
+	"github.com/daeuniverse/dae/component/mitm/certtest"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
@@ -53,9 +54,18 @@ func (a *application) report(message string) {
 }
 
 func (a *application) publishAPI() {
+	if tests := a.plane.CertificateTests(); tests != nil {
+		tests.Invalidate()
+	}
 	handler := a.plane.APIHandler(a.options.Version, a.refreshes)
 	a.localAPI.SetHandler(handler)
-	a.managementAPI.SetHandler(daemonAPIHandler(handler))
+	var targets []netip.AddrPort
+	var secure apiserver.TLSHandler
+	if tests := a.plane.CertificateTests(); tests != nil {
+		targets = tests.Targets()
+		secure = certtest.Endpoint{Service: tests}
+	}
+	a.managementAPI.SetHandlers(daemonAPIHandler(handler, targets...), secure)
 }
 
 func (a *application) accept(conf *config.Config, inputs *controlInputs, server netip.AddrPort, routingChanged bool) {
@@ -144,7 +154,11 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 			a.publishAPI()
 		}
 	}()
-	pauseAPI := func() { a.localAPI.SetHandler(nil); a.managementAPI.SetHandler(nil); paused = true }
+	pauseAPI := func() {
+		a.localAPI.SetHandler(nil)
+		a.managementAPI.SetHandler(nil)
+		paused = true
+	}
 	routingUnchanged := !suspend && !abort && sameControlConfig(a.conf, next) && a.inputs.equal(inputs)
 	if routingUnchanged {
 		routingUnchanged, err = a.plane.APIRoutingCurrent()

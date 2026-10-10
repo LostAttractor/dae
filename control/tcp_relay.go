@@ -10,6 +10,7 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
@@ -77,7 +78,7 @@ func (r *tcpRelay) runMITM() error {
 		_ = r.lConn.Close()
 	})
 	defer stop()
-	return r.mitmHost.ServeConn(r.lConn, r.domain, r.dst.Port(), mitmPlannerWithLease(r.mitmPlanner, lease))
+	return r.mitmHost.ServeConn(r.lConn, plugin.Flow{Host: r.domain, Port: r.dst.Port(), SourceMAC: r.deviceMAC}, mitmPlannerWithLease(r.mitmPlanner, lease))
 }
 
 type trafficWriter struct {

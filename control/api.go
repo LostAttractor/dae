@@ -29,6 +29,12 @@ func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolv
 	}
 	if authority := c.mitmAuthority(); authority != nil {
 		options.Certificates = &apiserver.Certificates{Identity: authority.Identity(), Handler: authority.Handler()}
+		if tests := c.CertificateTests(); tests != nil {
+			options.CertificateTests = tests
+			options.Certificates.Identity.TestAvailable = true
+			options.Certificates.Identity.TestGeneration = tests.Generation()
+			options.Certificates.Identity.TestMITMOrigins = tests.Origins()
+		}
 	}
 	return apiserver.NewHandler(options)
 }
