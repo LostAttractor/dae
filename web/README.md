@@ -26,18 +26,55 @@ The API contract is documented in the dae repository at `docs/api/openapi.json`
 and `docs/en/configuration/api-client.md`. Keep API requests in `src/api.js` and
 presentation in the frontend; this directory does not import daemon code.
 
-`app.js` coordinates access, device actions and refreshes; `selectors.js` owns
-the searchable node picker, keyboard navigation and connectivity-test controls.
-`dom.js` contains the shared element/template lookups. esbuild bundles these browser modules into local static assets. The page requires a browser with native
+`app.js` coordinates access, device actions and refreshes. React components own
+the interactive panels: `selectors.jsx` renders searchable node pickers and
+connectivity tests, `clients.jsx` renders device memberships, and `status.jsx`
+renders traffic scopes and connection details. `traffic.jsx` supplies the
+Recharts chart. Login and certificate controls use native DOM modules;
+`dom.js` contains their element/template lookups.
+
+`react-view.js` provides the boundary between native controllers and React.
+Controllers update a panel through its view API and can hide its host; only
+React creates or updates descendants of that host. Commits finish before native
+action completion restores focus. Popover positioning, focus and scrolling use
+component refs; resize/scroll listeners exist only while the picker is open.
+New interactive panels follow these component boundaries.
+
+esbuild bundles all JavaScript, including React and Recharts, into local static
+assets without a runtime CDN dependency. The page requires a browser with native
 Popover API support.
 
-`status.js` renders MAC-attributed device and administrative global status;
 `certificate.js` runs the current browser's CA and interception challenges.
+
+**Routing Rules** presents independent On/Off switches for this device's client
+memberships; multiple memberships can be active.
+
+The access toolbar shows the visiting device's IP beside its access badge;
+expanding the IP reveals its MAC. The daemon version appears in the footer when
+administrator status is available.
+
+On desktop, Settings places routing rules, selectors and HTTPS settings in the
+main column, with traffic in a sidebar. Smaller screens put all settings before
+traffic. Below 1024px, traffic starts collapsed; wider screens start expanded.
+Show/Hide overrides this default until a page reload, including across polling.
+Collapsed traffic does not mount charts.
+Certificate installation and browser verification expand inside **HTTPS Modules**.
+The **Traffic** panel switches between **This Device** and **All Devices**, with
+only the active scope's chart mounted. Arrow keys and Home/End navigate the tabs.
+Connection details, uptime, domain tables and plugins are collapsed by default.
 Device status continues polling without administrator access. Global status uses
 the same authorization as selectors and is cleared on logout or expiry. Visible
 pages refresh every two seconds; traffic rates use five-second samples for up to
 one minute. Counters cover userspace upstream paths, including splice, rather
 than kernel passthrough or locally answered requests.
+
+Traffic charts share a byte-per-second scale for upload (dashed purple) and
+download (solid teal). The horizontal axis is relative to the latest completed
+sample. Missing samples remain blank; a measured zero is plotted at zero.
+Hover, touch or focus the chart and use the left/right arrow keys to inspect
+samples. Polling updates the existing chart without replaying animations or
+replacing keyboard focus. Empty histories show a waiting state. Logout and
+device access loss unmount the corresponding chart.
 
 Outbound summaries show aggregate counters and node counts. Each outbound's
 node list expands independently inside a height-limited, scrollable region.
@@ -64,13 +101,13 @@ request revalidates LAN identity. The selectors response's `auth_mode` identifie
 `api_key`, `lan` or `unix` access. Device self-service always requires direct LAN
 identification. Public certificate downloads are available without login.
 
-Selectors use compact searchable dropdowns with per-node connectivity tests,
+**Outbound Nodes** uses searchable dropdowns with per-node connectivity tests,
 a selected-node **Test** button and a one-shot **Test All** action. The group's
 configuration-only `track_all: true` replaces these buttons with a read-only
 **Monitoring all nodes** indicator. Dropdowns have a bounded, scrollable list, truncate
 long names, and support arrow keys, Home/End and Escape. Candidate controls are
 created only while the dropdown is open. All action buttons have visible borders,
-including **Reset Default** and disabled buttons. The reset control and default
+including **Use default** and disabled buttons. The reset control and default
 labels appear only when `default_node_id` is present (explicit `selector(n)`).
 Only the selected node is monitored by default. The page shows untested,
 testing, healthy and unavailable states separately, with last-test times.
@@ -89,23 +126,36 @@ mutations are never retried automatically.
 
 ## UI conventions
 
-The page expands up to 1920px. At 1024px and above, global and device traffic
-stack in the wider left column; selectors, device settings and HTTPS modules
-stack independently on the right. Narrower screens stack both columns vertically,
-with traffic before settings. Selector groups
+Settings expands up to 1600px. At 1024px and above, it uses a wider left
+column for controls and a right column for traffic. Narrower screens stack
+settings before traffic.
+Refresh indicators show elapsed time since the last successful read: just now,
+then seconds, minutes, hours or days ago. They update while the document is visible;
+hovering shows the full local date and time. Refresh errors and access messages
+remain visible until the next successful read.
+Selector groups
 wrap into columns as space permits, and traffic charts fill their panels.
+Traffic metrics use two columns on small screens and narrow desktop sidebars,
+and three where space permits;
+chart headings and legends wrap on narrow screens. Light and dark themes
+apply to chart axes, series and tooltips as well as the surrounding controls.
 
-Keep shared styles in `style.css`: 44px action controls with the same padding,
-type and neutral outline; a single 4px radius; 14px body text and 12px metadata.
+Keep shared styles in `style.css`: action controls at least 2.75rem tall with the same padding,
+type and neutral outline; a single 4px radius; 1rem body text and .875rem metadata
+(16px and 14px at the browser's default size). Text and controls follow the user's
+preferred font size. Paragraphs use a 1.55 line height; section descriptions and
+result summaries have bounded line lengths. Selector columns require enough
+space for readable names and actions, and wrap before they become cramped.
 Node options can grow to fit their two-line content. Light/dark colors come from
 the root palette; errors share one foreground, background and border treatment.
 Use `.badge` for states and settings sources, `.count` for quantities, and
 `.status-row` / `.button-row` for consistent alignment and spacing.
 
-Use H1 for the page (24px), H2 for sections (18px), and H3 for selector groups
-and certificate details (14px). Status messages are not headings. Headings and
-action labels use title case; status text and explanations use sentence case.
-Keep **Default / Custom**, **Reset Default**, and **Monitoring** consistent
+Use H1 for the page (1.75rem), H2 for sections (1.25rem), and H3 for selector groups
+and certificate details (1rem). Status messages are not headings. Use short action
+labels and sentences for explanations. Outbound traffic details pair each value
+with its label instead of joining multiple metrics into a sentence.
+Keep **Default / Custom**, **Use default**, and **Monitoring** consistent
 across selectors and device settings; preserve configured names/descriptions.
 
 ## Browser checks
@@ -118,10 +168,16 @@ make test
 CHROMIUM=/path/to/chromium make test
 ```
 
-The test uses Node's built-ins, a local API fixture, and a temporary browser
-profile using the production bundle; no running daemon is needed. It covers stale responses,
+The test builds the production bundle, then uses Node's built-ins, a local API
+fixture, and a temporary browser profile; no additional test packages or running
+daemon are needed. It covers stale responses,
 login/logout, live ordering and focus, a 1,000-node picker, probe/selection actions,
-configuration defaults, description labels, timeouts, and mobile/dark layouts.
+configuration defaults, description labels, timeouts, chart samples and keyboard
+tooltips, access-loss recovery, and light/dark layouts from 320px to 2560px.
+Text-only zoom checks settings at twice the default size, including control
+containment in narrow panels.
+It also checks mobile traffic expansion, keyboard traffic-scope switching and
+independent membership switches.
 Fixture state and browser processes are cleaned up when the test exits. These
 checks validate frontend behavior; daemon authorization has its own Go tests.
 

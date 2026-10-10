@@ -248,8 +248,11 @@ try {
     }
   };
   const ready = () => until('document.querySelector("#controls")?.getAttribute("aria-busy") === "false"');
-  const page = async () => {
-    await call("Page.navigate", { url: origin });
+  const page = async (hash = "") => {
+    // Each visit starts with a fresh document.
+    await call("Page.navigate", { url: "about:blank" });
+    await until('location.href === "about:blank"');
+    await call("Page.navigate", { url: origin + hash });
     await ready();
   };
   const row = 'document.querySelector(".selector-row")';
@@ -263,11 +266,11 @@ try {
     resetFixture();
     await call("Network.clearBrowserCookies");
     await call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await page();
     exceptions.length = 0;
     browserLogs.length = 0;
+    await page();
     try { await action(); assert.deepEqual(exceptions, []); console.log(`PASS ${name}`); }
-    catch (error) { failures++; console.error(`FAIL ${name}: ${error.stack}\n${browserLogs.slice(-8).join("\n")}`); }
+    catch (error) { failures++; console.error(`FAIL ${name}: ${error.stack || JSON.stringify(error)}\n${browserLogs.slice(-8).join("\n")}`); }
   };
   await call("Page.enable");
   await call("Runtime.enable");
@@ -307,21 +310,109 @@ try {
   });
   else console.log("SKIP real browser CA trust-store checks (set CERTUTIL to an NSS certutil executable)");
 
+  await test("Recharts shows rate history, keyboard tooltips and stable live updates", async () => {
+    const chart = 'document.querySelector("#device-traffic .recharts-surface")';
+    await until(`${chart} !== null`);
+    await until('document.querySelectorAll(".traffic-chart .recharts-line-curve").length === 2');
+    assert.match(await js('document.querySelector("#device-traffic").textContent'), /800 B\/s/);
+    await js(`window.trafficChart = ${chart}; trafficChart.focus()`);
+    for (let i = 0; i < 12; i++) await key("ArrowRight", 39);
+    await until('document.querySelector("#device-traffic .traffic-tooltip")?.textContent.includes("Latest sample")');
+    assert.match(await js('document.querySelector("#device-traffic .traffic-tooltip").textContent'), /Upload200 B\/sDownload800 B\/s/);
+    fixture.stats.history.download_bytes_per_second = [400, 1600];
+    await until('document.querySelector("#device-traffic .traffic-tooltip")?.textContent.includes("1.6 KiB/s")');
+    assert.equal(await js(`${chart} === trafficChart && document.activeElement === trafficChart`), true);
+    await key("ArrowLeft", 37);
+    await until('document.querySelector("#device-traffic .traffic-tooltip")?.textContent.includes("5s before latest")');
+    assert.match(await js('document.querySelector("#device-traffic .traffic-tooltip").textContent'), /Upload100 B\/sDownload400 B\/s/);
+    assert.equal(browserLogs.some((entry) => /Content Security Policy|Refused to|violates/i.test(entry)), false);
+  });
+
+  await test("small screens start with settings and keep traffic collapsed until requested", async () => {
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page();
+    assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "false");
+    assert.equal(await js('document.querySelector(".traffic-chart")'), null);
+    assert.equal(await js('document.querySelector("#device-title").getBoundingClientRect().top < innerHeight'), true);
+    await js('document.querySelector("#status-toggle").click()');
+    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    fixture.stats.upload_bytes = 65536;
+    await until('document.querySelector("#device-traffic").textContent.includes("64 KiB")');
+    assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "true");
+    await js('document.querySelector("#status-toggle").click(); document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "false");
+    await page();
+    await call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await until('document.querySelector("#status-toggle").getAttribute("aria-expanded") === "false"');
+  });
+
+  await test("Recharts distinguishes empty, single and zero samples and recovers after access loss", async () => {
+    fixture.stats.history = {};
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await until('document.querySelector("#device-traffic .traffic-empty") !== null');
+    assert.match(await js('document.querySelector("#device-traffic .traffic-metrics").textContent'), /Upload rate—Download rate—/);
+    fixture.stats.history = { upload_bytes_per_second: [0], download_bytes_per_second: [0] };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await until('document.querySelectorAll("#device-traffic .recharts-line-dot").length === 2');
+    assert.match(await js('document.querySelector("#device-traffic .traffic-metrics").textContent'), /Upload rate0 B\/sDownload rate0 B\/s/);
+    fixture.nextDeviceRead = { status: 403, started: deferred() };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#device-traffic .recharts-surface") === null'), true);
+    assert.match(await js('document.querySelector("#device-traffic").textContent'), /Device unavailable/);
+    fixture.stats.history = { upload_bytes_per_second: [1024], download_bytes_per_second: [2048] };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await until('document.querySelectorAll("#device-traffic .recharts-line-dot").length === 2');
+    assert.match(await js('document.querySelector("#device-traffic .traffic-metrics").textContent'), /2 KiB\/s/);
+  });
+
   await test("device statistics remain live without global administration access", async () => {
     fixture.mode = "api_key";
     await page();
-    assert.equal(await js('document.querySelector("#global-status-content").hidden'), true);
+    assert.equal(await js('document.querySelector("#global-tab").disabled'), true);
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /2 KiB/);
     fixture.stats.upload_bytes = 4096;
     await until('document.querySelector("#device-traffic").textContent.includes("4 KiB")');
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();
-    assert.equal(await js('document.querySelector("#global-status-content").hidden'), false);
-    assert.match(await js('document.querySelector("#global-runtime").textContent'), /test-daemon/);
+    assert.equal(await js('document.querySelector("#global-tab").disabled'), false);
+    assert.match(await js('document.querySelector("#daemon-version").textContent'), /test-daemon/);
+    await js('document.querySelector("#global-tab").click()');
+    await until('document.querySelector("#global-traffic .recharts-surface") !== null');
     await js('document.querySelector("#logout").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#global-traffic").textContent'), "");
+    assert.equal(await js('document.querySelector("#global-traffic .recharts-surface")'), null);
+    assert.equal(await js('document.querySelector("#daemon-version").textContent'), "");
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /4 KiB/);
+    assert.equal(await js('document.querySelector("#device-tab").getAttribute("aria-selected")'), "true");
+  });
+
+  await test("traffic scopes switch by keyboard and device identity appears beside access", async () => {
+    assert.equal(await js('document.querySelector(".access-line #identity").textContent'), fixture.device.source_ip);
+    assert.equal(await js('document.querySelector(".device-identity").open'), false);
+    await js('document.querySelector("#identity").click()');
+    assert.match(await js('document.querySelector("#device-mac").textContent'), /02:00:00:00:00:08/);
+    assert.equal(await js('document.querySelectorAll("#status-view h2, #status-view h3").length'), 1);
+    assert.equal(await js('document.querySelector("#status-view").textContent.includes("test-daemon")'), false);
+    await js('document.querySelector("#device-tab").focus()');
+    await key("ArrowRight", 39);
+    await until('document.querySelector("#global-traffic .recharts-surface") !== null');
+    assert.equal(await js('document.activeElement.id'), "global-tab");
+    assert.equal(await js('document.querySelector("#device-traffic .recharts-surface")'), null);
+    assert.match(await js('document.querySelector("#global-traffic .traffic-metrics").textContent'), /Active connections20/);
+    fixture.stats.upload_bytes = 65536;
+    await until('document.querySelector("#global-traffic").textContent.includes("64 KiB")');
+    assert.equal(await js('document.activeElement.id'), "global-tab");
+    await key("Home", 36);
+    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    assert.match(await js('document.querySelector("#device-traffic").textContent'), /64 KiB/);
+    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 1);
   });
 
   await test("late device and global reads cannot undo a refresh or logout", async () => {
@@ -337,12 +428,13 @@ try {
     device.release.resolve();
     global.release.resolve();
     await delay(200);
-    assert.equal(await js('document.querySelector(".set-row button").textContent'), "Leave");
+    assert.equal(await js('document.querySelector(".client-toggle").getAttribute("aria-checked")'), "true");
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /16 KiB/);
     fixture.mode = "api_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#global-traffic").textContent'), "");
+    assert.equal(await js('document.querySelector("#global-traffic .recharts-surface")'), null);
+    assert.equal(await js('document.querySelector("#daemon-version").textContent'), "");
   });
 
   await test("certificate UI requires both browser proof and interception observation", async () => {
@@ -410,7 +502,7 @@ try {
   await test("live node reordering follows the API and preserves focus", async () => {
     await openPicker();
     await key("ArrowDown", 40);
-    await js("window.focusedNode = document.activeElement");
+    await js("window.focusedNode = document.activeElement; void 0");
     const nodes = fixture.selectors[0].nodes;
     [nodes[0], nodes[1]] = [nodes[1], nodes[0]];
     await until(`${row}.querySelector('.node-list .node-name').textContent === 'Tokyo'`);
@@ -434,7 +526,7 @@ try {
     }
     await openPicker();
     assert.equal(await js('document.querySelectorAll(".selector-node").length'), 1000);
-    await js(`window.searchInput = ${row}.querySelector('.node-search'); searchInput.value = 'Tokyo'; searchInput.dispatchEvent(new Event('input'));`);
+    await js(`window.searchInput = ${row}.querySelector('.node-search'); searchInput.value = 'Tokyo'; searchInput.dispatchEvent(new Event('input', { bubbles: true }));`);
     assert.equal(await js('document.querySelectorAll(".selector-node:not([hidden])").length'), 1);
     await js('document.querySelector(".selector-node:not([hidden]) .test-node").click()');
     await ready();
@@ -495,7 +587,7 @@ try {
     await js('document.querySelector(".node-search").value = "test"; document.querySelector(".node-search").setSelectionRange(4, 4)');
     await key("Home", 36);
     assert.equal(await js('document.activeElement.matches(".node-search")'), true);
-    await js('document.querySelector(".node-search").value = ""; document.querySelector(".node-search").dispatchEvent(new Event("input")); document.querySelector(".test-node").focus()');
+    await js('document.querySelector(".node-search").value = ""; document.querySelector(".node-search").dispatchEvent(new Event("input", { bubbles: true })); document.querySelector(".test-node").focus()');
     await key("ArrowDown", 40);
     assert.equal(await js('document.activeElement.closest(".selector-node").querySelector(".node-name").textContent'), "Tokyo");
     await key("End", 35);
@@ -514,12 +606,12 @@ try {
     fixture.selectors[0].nodes.shift();
     await until(`${row}.querySelector('.node-list .node-name').textContent === 'Tokyo'`);
     assert.equal(await js('document.activeElement.matches(".node-search")'), true);
-    await js('document.querySelector(".node-search").value = "missing node"; document.querySelector(".node-search").dispatchEvent(new Event("input"))');
+    await js('document.querySelector(".node-search").value = "missing node"; document.querySelector(".node-search").dispatchEvent(new Event("input", { bubbles: true }))');
     assert.equal(await js('document.querySelector(".no-nodes").hidden'), false);
     await key("ArrowDown", 40);
     assert.equal(await js('document.activeElement.matches(".node-search")'), true);
     fixture.selectors = [];
-    await until('document.querySelector("#selectors").textContent.includes("No selector")');
+    await until('document.querySelectorAll("#selectors .selector-row").length === 0 && document.querySelector("#selectors").textContent.includes("No outbound groups")');
     assert.equal(await js('document.querySelector("#selector-count").textContent'), "0 groups");
   });
 
@@ -528,8 +620,13 @@ try {
     await js('document.querySelector(".set-row button").click()');
     await ready();
     assert.deepEqual(fixture.requests[0], { method: "PUT", path: "/api/device/sets/internal%2Fwork", body: {} });
-    assert.match(await js('document.querySelector("#message").textContent'), /Joined Work network/);
-    assert.equal(await js('document.querySelector(".set-row button").getAttribute("aria-label")'), "Leave Work network");
+    assert.match(await js('document.querySelector("#message").textContent'), /Work network turned on/);
+    assert.equal(await js('document.querySelector(".set-row button").getAttribute("aria-label")'), "Work network");
+    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.getAttribute("aria-checked"))'), ["true", "true"]);
+    await js('document.querySelector(".client-toggle").click()');
+    await ready();
+    assert.deepEqual(fixture.requests.at(-1), { method: "DELETE", path: "/api/device/sets/internal%2Fwork", body: {} });
+    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.getAttribute("aria-checked"))'), ["false", "true"]);
   });
 
   await test("actions restore keyboard focus after disabling or replacing controls", async () => {
@@ -541,7 +638,7 @@ try {
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await js('document.querySelector(".set-row button").focus(); document.querySelector(".set-row button").click()');
     await ready();
-    assert.equal(await js('document.activeElement.getAttribute("aria-label")'), "Leave Work network");
+    assert.equal(await js('document.activeElement.getAttribute("aria-label")'), "Work network");
     fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: "test-ca" };
     await js('document.querySelector("#refresh").focus(); document.querySelector("#refresh").click()');
     await ready();
@@ -615,12 +712,12 @@ try {
     await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
     await js('document.querySelector("#refresh").click()');
     await ready();
-    await js('document.querySelector("#global-groups").parentElement.open = true');
+    await js('document.querySelector("#global-tab").click(); document.querySelector("#global-groups").parentElement.open = true');
     assert.equal(await js('document.querySelectorAll("#global-groups .status-nodes p").length'), 0);
     await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector("summary").click(); openGroup.querySelector("summary").focus()');
     await until('openGroup.querySelectorAll(".status-nodes p").length === 80');
     assert.equal(await js('(() => { const list = document.querySelector("#global-groups"); return list.scrollHeight > list.clientHeight && list.clientHeight <= 360; })()'), true);
-    assert.equal(await js('(() => { const global = document.querySelector("#global-status-title").closest("section").getBoundingClientRect(); const device = document.querySelector("#device-status-title").closest("section").getBoundingClientRect(); const selectors = document.querySelector(".selectors-card").getBoundingClientRect(); return global.left === device.left && global.right < selectors.left && device.top >= global.bottom; })()'), true);
+    assert.equal(await js('(() => { const traffic = document.querySelector("#status-view").getBoundingClientRect(); const settings = document.querySelector(".dashboard-main").getBoundingClientRect(); return settings.right < traffic.left && traffic.top === settings.top; })()'), true);
     await js('document.querySelector("#global-groups").scrollTop = 120');
     fixture.groups[0].nodes[20].stats.active_connections = 41;
     await until('openGroup.querySelectorAll(".status-nodes p")[20].textContent.includes("41 active")');
@@ -637,17 +734,75 @@ try {
     fixture.mode = "api_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#global-groups").childElementCount'), 0);
+    assert.equal(await js('document.querySelector("#global-groups")'), null);
+  });
+
+  await test("larger text reflows settings and keeps controls readable", async () => {
+    // Text-only zoom exercises user font preferences independently of viewport zoom.
+    for (const width of [320, 768, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
+      await js('document.documentElement.style.fontSize = "200%"');
+      // Let media-query state and chart resize observers complete before measuring.
+      await js("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      {
+        const name = "settings";
+        assert.equal(await js(`document.documentElement.scrollWidth <= ${width}`), true, `${name} reflows at ${width}px with double-size text`);
+        const clipped = await js('[...document.querySelectorAll("button, summary, .section-description")].filter(element => element.checkVisibility() && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
+        assert.deepEqual(clipped, [], `${name} has no clipped labels at ${width}px`);
+        assert.equal(await js(`([...document.querySelectorAll("button, summary")].filter(element => element.checkVisibility()).every(element => { const rect = element.getBoundingClientRect(); const card = element.closest(".card")?.getBoundingClientRect(); return rect.left >= 0 && rect.right <= ${width} && (!card || rect.right <= card.right); }))`), true, `${name} keeps controls inside their panels at ${width}px`);
+        if (process.env.SCREENSHOT_DIR && width === 320) {
+          await js('window.scrollTo(0, 0)');
+          const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+          await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-large-text-${name}.png`), Buffer.from(image.data, "base64"));
+        }
+      }
+    }
+    await js('document.documentElement.style.fontSize = ""');
   });
 
   await test("responsive layouts and dark mode keep the popup usable", async () => {
     fixture.certificate = { name: "Test CA", fingerprint: "12:34:56:78:".repeat(7) + "12:34:56:78", test_available: true, test_generation: "layout" };
     fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: fixture.certificate.fingerprint };
+    fixture.selectors[0].name = "Long outbound group name · " + "subscription ".repeat(6);
+    fixture.stats.history = {
+      upload_bytes_per_second: [300, 500, 420, 1200, 850, 640, 760, 400, 1400, 1100, 900, 700].map(value => value * 1024),
+      download_bytes_per_second: [1600, 2400, 1800, 3800, 2900, 3200, 2500, 4100, 3500, 2400, 3000, 3600].map(value => value * 1024),
+    };
     await js('document.querySelector("#refresh").click()');
     await ready();
-    for (const [width, height, theme] of [[390, 844, "light"], [320, 600, "light"], [390, 220, "dark"], [960, 900, "light"], [1024, 900, "dark"], [1160, 1000, "dark"], [1280, 900, "dark"], [1600, 1000, "light"], [1920, 1080, "dark"], [2560, 1440, "dark"]]) {
+    assert.equal(await js('document.querySelector("#certificate-panel").open'), false);
+    await js('document.querySelector("#global-tab").click()');
+    await until('document.querySelector("#global-tab").getAttribute("aria-selected") === "true"');
+    await js('document.querySelector("#status-toggle").click()');
+    await until('document.querySelector("#status-toggle").getAttribute("aria-expanded") === "false"');
+    for (const [width, height, theme] of [[320, 600, "light"], [390, 844, "light"], [390, 220, "dark"], [768, 1024, "light"], [844, 390, "dark"], [960, 900, "light"], [1024, 900, "dark"], [1160, 1000, "dark"], [1280, 900, "dark"], [1600, 1000, "light"], [1920, 1080, "dark"], [2560, 1440, "dark"]]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+      if (await js('document.querySelector("#status-toggle").getAttribute("aria-expanded") === "false"')) await js('document.querySelector("#status-toggle").click()');
+      await until('document.querySelector("#global-traffic .recharts-surface") !== null');
+      await until('document.querySelectorAll(".traffic-chart").length === 1');
+      await until('[...document.querySelectorAll(".traffic-chart")].every(chart => { const svg = chart.querySelector(".recharts-surface"); return svg && Math.abs(svg.getBoundingClientRect().width - chart.clientWidth) <= 1; })');
+      assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-line-curve")].every(line => !/NaN|Infinity/.test(line.getAttribute("d")))'), true);
+      assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-cartesian-axis-tick")].every(tick => { const rect = tick.getBoundingClientRect(); const chart = tick.closest(".traffic-chart").getBoundingClientRect(); return rect.left >= chart.left - 1 && rect.right <= chart.right + 1 && rect.top >= chart.top - 1 && rect.bottom <= chart.bottom + 1; })'), true, `chart labels fit at ${width}px`);
+      assert.equal(await js('[...document.querySelectorAll(".card, .traffic-metrics, .selector-control")].every(element => element.scrollWidth <= element.clientWidth + 1)'), true, `panels fit at ${width}px`);
+      if (height >= 600 && (width < 500 || width === 1280)) {
+        const point = await js('(() => { const chart = document.querySelector("#global-traffic .traffic-chart"); chart.scrollIntoView({ block: "center" }); const dot = [...chart.querySelectorAll(".recharts-line-dot")].at(-1).getBoundingClientRect(); return { x: dot.x + dot.width / 2, y: dot.y + dot.height / 2 }; })()');
+        if (width < 500) {
+          await call("Emulation.setTouchEmulationEnabled", { enabled: true });
+          await call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+          await call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        } else {
+          await call("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+        }
+        await until('document.querySelector("#global-traffic .traffic-tooltip")?.textContent.includes("3.5 MiB/s")');
+        assert.equal(await js('(() => { const tip = document.querySelector("#global-traffic .traffic-tooltip").getBoundingClientRect(); return tip.left >= 0 && tip.right <= innerWidth; })()'), true, `tooltip fits at ${width}px`);
+        if (process.env.SCREENSHOT_DIR) {
+          const image = await call("Page.captureScreenshot");
+          await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-tooltip-${width}.png`), Buffer.from(image.data, "base64"));
+        }
+        await key("Escape", 27);
+        await call("Emulation.setTouchEmulationEnabled", { enabled: false });
+      }
       await openPicker();
       assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true);
       assert.equal(await js('(() => { const menu = document.querySelector(".node-popover").getBoundingClientRect(); return menu.left >= 0 && menu.top >= 0 && menu.right <= innerWidth && menu.bottom <= innerHeight; })()'), true);
@@ -658,7 +813,23 @@ try {
       }
       await js('document.querySelector(".node-popover").hidePopover()');
       await until('document.querySelectorAll(".selector-node").length === 0');
+      if (width >= 1024) {
+        assert.equal(await js('(() => { const settings = document.querySelector(".dashboard-main").getBoundingClientRect(); const status = document.querySelector("#status-view").getBoundingClientRect(); return settings.right < status.left && settings.top === status.top; })()'), true);
+      } else {
+        await js('document.querySelector("#status-toggle").click()');
+        assert.equal(await js('document.querySelector("#traffic-content").hidden'), true);
+        assert.equal(await js('document.querySelector("#status-view").getBoundingClientRect().top >= document.querySelector(".dashboard-main").getBoundingClientRect().bottom'), true);
+      }
+      if (process.env.SCREENSHOT_DIR && height >= 600) {
+        await js('window.scrollTo(0, 0)');
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-dashboard-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+      await js('document.querySelector("#certificate-panel").open = true');
+      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `expanded settings fit at ${width}px`);
+      await js('document.querySelector("#certificate-panel").open = false');
     }
+    assert.equal(browserLogs.some((entry) => /Content Security Policy|Refused to|violates/i.test(entry)), false);
   });
 
   if (process.env.SCREENSHOT_DIR) {

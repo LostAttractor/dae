@@ -1,8 +1,10 @@
 import { request } from "./api.js";
 import { byId, template } from "./dom.js";
-import { selectorRow } from "./selectors.js";
-import { renderDeviceStatus, renderGlobalStatus, clearGlobalStatus } from "./status.js";
+import { createSelectors } from "./selectors.jsx";
+import { createStatus } from "./status.jsx";
 import { certificateDevice, certificateIdentity, testCertificate } from "./certificate.js";
+import { createClientSets } from "./clients.jsx";
+import { createUpdatedLabel } from "./updated.jsx";
 
 const accessDenied = (error) => error.status === 401 || error.status === 403;
 const accessLabels = {
@@ -18,6 +20,12 @@ let globalRequestVersion = 0;
 let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
+const status = createStatus(byId("status-view"));
+const updatedLabel = createUpdatedLabel(byId("updated"));
+const selectors = createSelectors(byId("selectors"), { run, request: adminRequest, refresh: loadSelectors });
+status.setVisible(true);
+const clientSets = createClientSets(byId("sets"), { run, request, update: renderDevice });
+
 function message(text = "", tone = "success") {
   const element = byId("message");
   element.textContent = text;
@@ -25,8 +33,8 @@ function message(text = "", tone = "success") {
   element.hidden = !text;
 }
 
-function updated(label = "Updated") {
-  byId("updated").textContent = `${label} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+function updated() {
+  updatedLabel.refresh();
 }
 
 // User actions supersede any pending poll, including its errors. Disabling the
@@ -73,11 +81,13 @@ function setAccess(mode, error) {
   byId("selector-count").hidden = !authorized;
   byId("access-required").textContent = denied ? "Access denied" : "Login required";
   byId("access-required").dataset.tone = denied ? "error" : "neutral";
-  byId("login-hint").textContent = denied ? error.message : "Enter your API key above to view selector status and switch nodes.";
+  byId("login-hint").textContent = denied ? error.message : "Enter your API key above to view outbound groups and switch nodes.";
   if (!authorized) {
     globalRequestVersion++;
-    clearGlobalStatus(denied ? "Access denied." : "Login required to view global status.");
-    byId("selectors").replaceChildren();
+    status.clearGlobal(denied ? "Access denied." : "Login required to view all devices.");
+    byId("daemon-version").textContent = "";
+    byId("daemon-version").hidden = true;
+    selectors.clear();
     byId("selector-count").textContent = denied ? "Access denied" : "Login required";
   }
 }
@@ -94,24 +104,9 @@ function renderDevice(device) {
   const key = JSON.stringify(device);
   if (key === deviceStateKey) return;
   deviceStateKey = key;
-  byId("identity").textContent = `${device.source_ip}\n${device.mac}`;
-  const rows = new Map([...byId("sets").children].map((row) => [row.dataset.name, row]));
-  const children = [];
-  for (const set of device.sets) {
-    const label = set.description || set.name;
-    const row = rows.get(set.name) || template("set-template");
-    row.dataset.name = set.name;
-    row.querySelector("strong").textContent = label;
-    const button = row.querySelector("button");
-    button.textContent = set.joined ? "Leave" : "Join";
-    button.setAttribute("aria-label", `${set.joined ? "Leave" : "Join"} ${label}`);
-    button.onclick = () => run(async () => renderDevice(await request(
-      `/api/device/sets/${encodeURIComponent(set.name)}`, set.joined ? "DELETE" : "PUT")),
-    `${set.joined ? "Left" : "Joined"} ${label}.`);
-    children.push(row);
-  }
-  byId("sets").replaceChildren(...children);
-  if (!device.sets.length) empty("sets", "No device options available.");
+  byId("identity").textContent = device.source_ip;
+  byId("device-mac").textContent = `MAC ${device.mac}`;
+  clientSets.show(device);
   renderMITM(device.mitm);
 }
 
@@ -140,9 +135,9 @@ function renderMITM(mitm) {
 
 // Mutations run serially. Reads check their version before applying any state,
 // so a stale 401 cannot clear access granted by a more recent request.
-async function adminRequest(path, method, body) {
+async function adminRequest(path, method, body, headers) {
   try {
-    return await request(path, method, body);
+    return await request(path, method, body, headers);
   } catch (error) {
     if (accessDenied(error)) setAccess(null, error);
     throw error;
@@ -152,15 +147,7 @@ async function adminRequest(path, method, body) {
 function renderSelectors(data) {
   setAccess(data.auth_mode);
   byId("selector-count").textContent = `${data.selectors.length} group${data.selectors.length === 1 ? "" : "s"}`;
-  const rows = [...byId("selectors").querySelectorAll(".selector-row")];
-  const sameGroups = data.selectors.length === rows.length && data.selectors.every((selector, i) => rows[i].dataset.group === selector.name);
-  if (sameGroups) {
-    data.selectors.forEach((selector, i) => rows[i].update(selector));
-  } else {
-    const actions = { run, request: adminRequest, refresh: loadSelectors };
-    byId("selectors").replaceChildren(...data.selectors.map((selector) => selectorRow(selector, actions)));
-  }
-  if (!data.selectors.length) empty("selectors", "No selector policies configured.");
+  selectors.show(data.selectors);
 }
 
 async function loadSelectors({ allowGuest = false, background = false } = {}) {
@@ -169,22 +156,22 @@ async function loadSelectors({ allowGuest = false, background = false } = {}) {
     const data = await request("/api/selectors");
     if (version !== selectorRequestVersion) return;
     renderSelectors(data);
-    updated("Selectors updated");
+    updated();
     return true;
   } catch (error) {
     if (version !== selectorRequestVersion) return;
     if (accessDenied(error)) {
       setAccess(null, error);
-      byId("updated").textContent = error.status === 401 ? "Login required" : "Access denied";
+      updatedLabel.message(error.status === 401 ? "Login required" : "Access denied");
       if (background) message(error.message, "error");
       if (allowGuest || background) return;
     } else if (background) {
-      byId("updated").textContent = "Live update failed · Retrying";
+      updatedLabel.message("Live update failed · Retrying");
       return;
     } else {
       byId("selector-count").textContent = "Unavailable";
       byId("selector-count").hidden = true;
-      empty("selectors", "Could not load selectors. Try refreshing.");
+      selectors.error("Could not load selectors. Try refreshing.");
     }
     throw error;
   }
@@ -196,17 +183,16 @@ async function loadDevice({ background = false } = {}) {
     const snapshot = await request("/api/device/status");
     if (version !== deviceRequestVersion) return;
     renderDevice(snapshot.device);
-    renderDeviceStatus(snapshot);
+    status.setDevice(snapshot);
   } catch (error) {
     if (version !== deviceRequestVersion) return;
-    byId("device-status-updated").textContent = "Device update failed · Retrying";
+    status.deviceError(error.message, error.status === 403 || !background);
     if (error.status === 403 || !background) {
       deviceStateKey = "";
       certificateDevice(null);
       byId("identity").textContent = "Device could not be identified.";
-      empty("sets", error.message);
-      empty("device-traffic", error.message);
-      byId("device-outbounds").replaceChildren();
+      byId("device-mac").textContent = "";
+      clientSets.error(error.message);
       empty("mitm", "Device controls unavailable.");
     }
     if (error.status !== 403 && !background) throw error;
@@ -235,11 +221,13 @@ async function loadGlobalStatus({ background = false } = {}) {
   try {
     const snapshot = await request("/api/status");
     if (version !== globalRequestVersion || authMode === null) return;
-    renderGlobalStatus(snapshot);
+    status.setGlobal(snapshot);
+    byId("daemon-version").textContent = `dae · ${snapshot.version}`;
+    byId("daemon-version").hidden = !snapshot.version;
   } catch (error) {
     if (version !== globalRequestVersion) return;
     if (accessDenied(error)) setAccess(null, error);
-    else byId("global-status-updated").textContent = "Global update failed · Retrying";
+    else status.globalError();
     if (!background) throw error;
   }
 }
@@ -256,7 +244,7 @@ async function refresh() {
   ]);
   const errors = results.filter((result) => result.status === "rejected");
   if (errors.length) {
-    byId("updated").textContent = "Refresh incomplete";
+    updatedLabel.message("Refresh incomplete");
     throw new Error(errors.map((result) => result.reason.message).join("\n"));
   }
   updated();
@@ -268,7 +256,7 @@ byId("login-form").onsubmit = async (event) => {
     await request("/api/session", "PUT", undefined, { Authorization: `Bearer ${byId("api-key").value}` });
     byId("api-key").value = "";
     await loadAdmin();
-  }, "Access verified. Global and selector status are now available.", "Logging in…");
+  }, "Access verified. Outbound groups and traffic for all devices are now available.", "Logging in…");
   byId(signedIn ? "refresh" : "api-key").focus();
 };
 byId("logout").onclick = async () => {
@@ -279,7 +267,7 @@ byId("logout").onclick = async () => {
   }, "Your saved login session has been cleared.", "Logging out…");
   if (signedOut) byId(authMode === null ? "api-key" : "refresh").focus();
 };
-byId("refresh").onclick = () => run(refresh, "Status refreshed.", "Refreshing status…");
+byId("refresh").onclick = () => run(refresh, "Network state refreshed.", "Refreshing network state…");
 byId("test-certificate").onclick = () => run(testCertificate, "Certificate test completed. See the results below.", "Testing this browser’s certificate and MITM connection…");
 setInterval(async () => {
   if (document.hidden || pollingSelectors || byId("controls").disabled) return;

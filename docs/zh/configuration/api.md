@@ -82,7 +82,7 @@ routing {
 
 启用页面及带 CA 的 MITM 后，CA 测试复用 `global.api_port`：HTTP 提供页面/API，TLS 分支只提供 CA 挑战。透明 MITM 测试使用虚拟目标的 443 端口，由 `global.api_mitm_test_ipv4`（默认 `203.0.113.254`）和 `global.api_mitm_test_ipv6`（默认 `2001:db8:ffff::254`）指定。两项测试均不增加监听端口，也不依赖上游服务。
 
-点击 **Test Certificate** 后：
+展开 **HTTPS Modules → Certificate & browser verification**，点击 **Test Certificate** 后：
 
 1. 浏览器访问精确直通的 CA 测试端点，以当前 CA 签发的路由器 IP 证书完成 TLS 并读取随机挑战响应。设备 MITM 尚未开启时也可测试。
 2. 设备已开启 MITM 且第一步通过时，请求与页面地址同族的虚拟 IP，经正常透明捕获、设备开关判断和 TLS 解密，由内置 `dae-certificate-test` 插件校验入口 MAC 并直接响应，不拨号上游。同一设备访问路由器和虚拟目标时选择不同源 IP 也可验证。
@@ -170,4 +170,4 @@ sudo curl --unix-socket /var/run/dae.sock -X POST -H 'X-Dae-API: 1' http://local
 sudo curl --unix-socket /var/run/dae.sock http://localhost/api/resources
 ```
 
-刷新使用已接受的配置；配置文件修改仍需 `dae reload`。`202` 表示受理，任务在 HTTP 响应后继续执行，与 reload 串行发布。等待或运行中重复触发返回 `409`。状态含 `run`、`state`（idle/queued/running/completed/failed）、`trigger`（api/automatic）、开始/完成时间、`next_check`、`result` 或 `error`；只保留最近一次，daemon 重启后重置。`result` 会说明因下载或校验失败而保留旧内容的资源组数量。自动检查间隔和回退规则见[资源缓存](cache-directory.md#全局资源缓存)。
+刷新使用已接受的配置；配置文件修改仍需 `dae reload`。`202` 表示受理，任务在 HTTP 响应后继续执行，与 reload 串行发布。等待或运行中重复触发返回 `409`。状态含 `run`、`state`（idle/queued/running/completed/failed）、`trigger`（`api` / `automatic`）、开始/完成时间、`next_check`、`result` 或 `error`；只保留最近一次，daemon 重启后重置。`result` 会说明因下载或校验失败而保留旧内容的资源组数量。自动检查间隔和回退规则见[资源缓存](cache-directory.md#全局资源缓存)。

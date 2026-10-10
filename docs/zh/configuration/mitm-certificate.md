@@ -28,7 +28,7 @@ sudo dae mitm ca generate --cert /var/lib/dae/home.pem \
 2. 下载 `ca.mobileconfig`。
 3. 在「设置 → 通用 → VPN 与设备管理」中安装描述文件。
 4. 在「设置 → 通用 → 关于本机 → 证书信任设置」中为该 CA 开启完全信任。
-5. 回到下载页面，点击 **Test Certificate**，确认 **CA Acceptance** 显示当前浏览器已接受 CA。
+5. 回到下载页面，展开 **Certificate & browser verification** 并点击 **Test Certificate**，确认 **CA Acceptance** 显示当前浏览器已接受 CA。
 6. 为当前设备开启 MITM，再次测试，确认 **Transparent MITM** 通过。
 
 手动安装不自动获得 TLS 信任，第 4 步不可省略，见 [Apple 官方说明](https://support.apple.com/zh-cn/102390)。停止使用时先关闭该设备的 MITM，再移除描述文件。
