@@ -15,6 +15,10 @@ type Definition struct {
 	// Configure parses and validates configuration without I/O, workers or
 	// mutations to Spec.Config. The factory captures the resulting configuration.
 	Configure func(Spec) (Factory, error)
+	// Preflight checks local runtime dependencies after all configuration is valid,
+	// before kernel setup or resource downloads. It must honor ctx, release any
+	// probe resources and leave persistent state unchanged. Optional.
+	Preflight func(context.Context, Spec) error
 	// Resources refreshes external inputs without creating a runtime instance.
 	// Plugins consuming files or remote resources implement this capability so
 	// reload can compare their contents before constructing a replacement.

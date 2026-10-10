@@ -54,6 +54,9 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stopSignals()
+	if err := plugins.Preflight(ctx); err != nil {
+		return err
+	}
 	if err := control.CheckKernelFeatures(ctx); err != nil {
 		return err
 	}

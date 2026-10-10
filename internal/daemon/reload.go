@@ -117,6 +117,11 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	if oldMark != nextMark {
 		return "", fmt.Errorf("so_mark_from_dae (%#x -> %#x) cannot be changed by reload; restart dae to apply it", oldMark, nextMark)
 	}
+	if !suspend {
+		if err := plugins.Preflight(ctx); err != nil {
+			return "", err
+		}
+	}
 	a.report("Refreshing configuration resources...")
 	inputs := a.inputs
 	if !suspend {

@@ -18,6 +18,7 @@ type Configuration struct{ instances []configuredPlugin }
 type configuredPlugin struct {
 	spec      plugin.Spec
 	factory   plugin.Factory
+	preflight func(context.Context, plugin.Spec) error
 	resources func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error)
 }
 type instanceInput struct {
@@ -49,12 +50,27 @@ func Configure(definitions map[string]plugin.Definition, specs []plugin.Spec) (*
 			errs = append(errs, fmt.Errorf("plugins.%s: %w", spec.ID, err))
 			continue
 		}
-		configuration.instances = append(configuration.instances, configuredPlugin{spec, factory, definition.Resources})
+		configuration.instances = append(configuration.instances, configuredPlugin{spec, factory, definition.Preflight, definition.Resources})
 	}
 	if len(errs) != 0 {
 		return nil, errors.Join(errs...)
 	}
 	return configuration, nil
+}
+
+// Preflight checks local runtime dependencies without preparing plugin resources.
+func (c *Configuration) Preflight(ctx context.Context) error {
+	for _, configured := range c.instances {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if configured.preflight != nil {
+			if err := configured.preflight(ctx, configured.spec); err != nil {
+				return fmt.Errorf("plugins.%s preflight: %w", configured.spec.ID, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Prepare refreshes resources and borrows unchanged instances. On success the

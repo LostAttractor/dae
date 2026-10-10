@@ -30,6 +30,12 @@ required `Definition.Configure`. It must leave `Spec.Config` unchanged and retur
 a factory capturing validated configuration. Disabled instances are skipped;
 `Commands` is optional.
 
+`Definition.Preflight` optionally checks local runtime dependencies with a
+cancelable context. After validating all enabled instances, the daemon runs these
+checks before kernel setup or subscription/module downloads. Reload checks the
+candidate before refreshing resources; suspension reuses the active runtime.
+Probes must release their resources and leave persistent state unchanged.
+
 Plugins reading files or remote resources implement `Definition.Resources`:
 
 | Result | Meaning |
