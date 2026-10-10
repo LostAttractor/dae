@@ -67,7 +67,7 @@ func (p *preparedRules) compileRouting(outbounds map[string]uint8, bpf *BPFState
 		sets[set.Name] = set
 	}
 	compiler := routingCompiler{builder: builder, sets: sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock), preamble: preamble, validationOutbounds: p.validationOutbounds}
-	compiler.epilogue, err = compiler.compileRuleBatch(p.lateRoutes)
+	compiler.epilogue, err = compiler.compileRuleBatch(p.lateRoutes, "plugin_late")
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +123,7 @@ func (c *routingCompiler) compile(routingConfig *config.Routing) error {
 		if _, err := validator.builder.BuildUserspace(); err != nil {
 			return err
 		}
+		c.builder.rememberInactive(validator.builder, "policy/"+policy.Name)
 	}
 	return c.validateUnusedRuleSets(routingConfig.RuleSets)
 }
@@ -155,6 +156,7 @@ func (c *routingCompiler) addProfile(id uint32, interfaceNames []string, policy 
 	}
 	c.builder.profiles = append(c.builder.profiles, routingProfile{
 		ID:             id,
+		Name:           policy.Name,
 		InterfaceNames: slices.Clone(interfaceNames),
 		Spans:          block.spans,
 	})
@@ -202,7 +204,7 @@ func (c *routingCompiler) resolveStatements(name string, statements []config.Rou
 		if len(localRules) == 0 {
 			return nil
 		}
-		span, err := c.compileRuleBatch(localRules)
+		span, err := c.compileRuleBatch(localRules, name)
 		if err != nil {
 			return fmt.Errorf("compile routing block %q: %w", name, err)
 		}
@@ -221,6 +223,7 @@ func (c *routingCompiler) resolveStatements(name string, statements []config.Rou
 				rule = &config_parser.RoutingRule{
 					AndFunctions: slices.Concat(condition, rule.AndFunctions),
 					Outbound:     rule.Outbound,
+					Sources:      cloneSources(rule.Sources),
 				}
 			}
 			localRules = append(localRules, rule)
@@ -260,9 +263,9 @@ func validateEmptyRoutingUse(condition []*config_parser.Function) error {
 	return err
 }
 
-func (c *routingCompiler) compileRuleBatch(rules []*config_parser.RoutingRule) (routingSpan, error) {
+func (c *routingCompiler) compileRuleBatch(rules []*config_parser.RoutingRule, owner string) (routingSpan, error) {
 	start := uint32(len(c.builder.rules))
-	if err := c.builder.rulesBuilder.Apply(rules); err != nil {
+	if err := c.builder.applyRules(rules, owner); err != nil {
 		return routingSpan{}, err
 	}
 	if len(c.builder.rules) > consts.MaxMatchSetLen {
@@ -292,6 +295,7 @@ func (c *routingCompiler) validateUnusedRuleSets(ruleSets []config.RoutingRuleSe
 		if _, err := validator.builder.BuildUserspace(); err != nil {
 			return err
 		}
+		c.builder.rememberInactive(validator.builder, "rule_set/"+set.Name)
 	}
 	return nil
 }

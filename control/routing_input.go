@@ -70,6 +70,7 @@ type routingInput struct {
 	// The destination has already been selected. Start at FlowProgram, keeping
 	// API bypass and destination capture tied to the original ingress tuple.
 	stage routingStage
+	trace *routingExecution
 }
 
 type routingStage uint8

@@ -33,6 +33,9 @@ type RoutingMatcherBuilder struct {
 	profiles             []routingProfile
 	fallbackSpans        map[bpfMatchSet]routingSpan
 	interfaceRulePatches []routingInterfaceRulePatch
+	ruleMetadata         map[uint32]routingRuleMetadata
+	matchMetadata        map[uint32]routingMatchMetadata
+	inactiveRules        []routingRuleMetadata
 }
 
 func newRoutingMatcherBuilder(outboundName2Id map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceManager) *RoutingMatcherBuilder {
@@ -266,6 +269,7 @@ func (b *RoutingMatcherBuilder) addFallback(fallback bpfMatchSet) (span routingS
 	}
 	start := uint32(len(b.rules))
 	b.rules = append(b.rules, fallback)
+	b.rememberRule(start, &config_parser.RoutingRule{Outbound: config_parser.Function{Name: "fallback"}}, "fallback")
 	span = routingSpan{Start: start, End: start + 1}
 	b.fallbackSpans[fallback] = span
 	return span, nil

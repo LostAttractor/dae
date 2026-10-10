@@ -39,6 +39,7 @@ type ControlPlane struct {
 	connectivityOutbounds  atomic.Pointer[[]*outbound.DialerGroup]
 	criticalOutbounds      []bool
 	noConnectivityOutbound consts.OutboundIndex
+	noConnectivityTrySniff bool
 	tcpConnections         *tcpConnectionTracker
 	udpTaskPool            *udpTaskPool[netip.AddrPort]
 	udpSetups              atomic.Int32
@@ -261,6 +262,7 @@ func NewControlPlane(
 		borrowedOutbounds:         outboundBuilder.borrowed,
 		criticalOutbounds:         criticalOutbounds,
 		noConnectivityOutbound:    noConnectivityOutbound,
+		noConnectivityTrySniff:    global.NoConnectivityTrySniff,
 		tcpConnections:            &tcpConnectionTracker{connections: &core.bpf.tcpConnections},
 		udpTaskPool:               newUdpTaskPool[netip.AddrPort](),
 		udpEndpoints:              core.bpf.udpEndpoints,

@@ -19,6 +19,7 @@ func (s routingSpan) len() int {
 
 type routingProfile struct {
 	ID             uint32
+	Name           string
 	InterfaceNames []string
 	Spans          []routingSpan
 }

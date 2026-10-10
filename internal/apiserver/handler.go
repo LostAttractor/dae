@@ -31,6 +31,8 @@ type Options struct {
 	ResolveClient    ClientResolver
 	Certificates     *Certificates
 	CertificateTests CertificateTestStore
+	Diagnostics      DiagnosticStore
+	ResolveContext   func(netip.AddrPort, netip.AddrPort) (contract.DiagnosticContext, error)
 	APIKey           string
 }
 
@@ -68,6 +70,18 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("GET /api/resources", s.serveResources)
 	mux.HandleFunc("GET /api/device", s.serveDevice)
 	mux.HandleFunc("GET /api/device/status", s.serveDeviceStatus)
+	mux.HandleFunc("GET /api/device/context", s.serveDiagnosticContext)
+	mux.HandleFunc("POST /api/device/diagnostics/explain", s.serveExplain)
+	mux.HandleFunc("POST /api/diagnostics/explain", s.serveExplain)
+	mux.HandleFunc("POST /api/device/sets/{name}/impact", s.serveClientImpact)
+	mux.HandleFunc("POST /api/clients/{name}/impact", s.serveClientImpact)
+	mux.HandleFunc("GET /api/clients", s.serveClients)
+	mux.HandleFunc("GET /api/clients/{name}", s.serveClients)
+	mux.HandleFunc("GET /api/devices/{mac}", s.serveManagedDevice)
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		mux.HandleFunc(method+" /api/clients/{name}/members/{mac}", s.serveManagedMembership)
+		mux.HandleFunc(method+" /api/devices/{mac}/mitm", s.serveManagedMITM)
+	}
 	mux.HandleFunc("POST /api/device/certificate-tests", s.serveCertificateTest)
 	mux.HandleFunc("GET /api/device/certificate-tests/{id}", s.serveCertificateTest)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {

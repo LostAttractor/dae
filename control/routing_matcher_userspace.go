@@ -32,6 +32,10 @@ type RoutingMatcher struct {
 	// network type; it backs skip_while_noalive rule evaluation. It may be
 	// nil (e.g. in tests), in which case every group is considered usable.
 	outboundUsable func(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool
+	ruleMetadata   map[uint32]routingRuleMetadata
+	matchMetadata  map[uint32]routingMatchMetadata
+	profileInfo    []routingProfile
+	inactiveRules  []routingRuleMetadata
 }
 
 // match executes the same bytecode as kern/routing.h. Captures preserve userspace routing decisions.
@@ -91,6 +95,10 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 		domainMatcher:    domainMatcher,
 		matches:          b.rules,
 		rulesMu:          &b.rulesMu,
+		ruleMetadata:     b.ruleMetadata,
+		matchMetadata:    b.matchMetadata,
+		profileInfo:      b.profiles,
+		inactiveRules:    b.inactiveRules,
 	}, nil
 }
 
@@ -105,17 +113,24 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 	var subrule, must predicateResult
 	var ruleUnknown, flowBump bool
 	var captureFlags uint8
-	for _, span := range spans {
+	for spanIndex, span := range spans {
 		start := span.Start
 		if p.stage == routeAfterTarget {
 			start = max(start, uint32(m.flow.start))
 		}
 		for i := start; i < span.End; {
+			if p.trace != nil {
+				p.trace.visited[routingTracePosition{spanIndex, i}] = true
+				p.trace.last = routingTracePosition{spanIndex, i}
+			}
 			match := &m.matches[i]
 			action := consts.MatchAction(match.Action)
 			distance := uint32(1)
 			var clause predicateResult
 			if subrule != predicateMatch {
+				if p.trace != nil {
+					p.trace.evaluated[routingTracePosition{spanIndex, i}] = true
+				}
 				result, err := predicates.match(m, match)
 				if err != nil {
 					return routingEvaluation{}, err
@@ -166,6 +181,9 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 				return routingEvaluation{}, nil
 			case consts.MatchActionRoute:
 				if match.Flags&matchFlagSkipNoalive != 0 && m.outboundUsable != nil && !m.outboundUsable(match.Outbound, p.l4proto, predicates.ipVersion) {
+					if p.trace != nil {
+						p.trace.noalive[routingTracePosition{spanIndex, i}] = true
+					}
 					goto nextRule
 				}
 				if ruleUnknown {

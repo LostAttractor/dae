@@ -343,6 +343,8 @@ volatile __u32 routing_generation;
 struct api_client {
 	__u64 observed_at;
 	__u8 mac[6];
+	__u32 ifindex;
+	__u32 physinif;
 };
 
 struct {
@@ -1238,10 +1240,12 @@ direct:
 }
 
 static __always_inline void observe_api_client(
-	const struct tuples_key *key, const struct ethhdr *ethh)
+	struct __sk_buff *skb, const struct tuples_key *key, const struct ethhdr *ethh)
 {
 	struct api_client client = {
 		.observed_at = bpf_ktime_get_ns(),
+		.ifindex = skb->ifindex,
+		.physinif = skb_bridge_physinif(skb),
 	};
 
 	__builtin_memcpy(client.mac, ethh->h_source, sizeof(client.mac));
@@ -1282,7 +1286,7 @@ static __always_inline int do_tproxy_unfragmented(
 	 */
 	if (!is_wan && link_h_len == ETH_HLEN && l4proto == IPPROTO_TCP &&
 	    api_port && tuples->five.dport == api_port)
-		observe_api_client(&tuples->five, ethh);
+		observe_api_client(skb, &tuples->five, ethh);
 
 	struct pid_pname *pid_pname = NULL;
 

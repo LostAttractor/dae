@@ -112,6 +112,12 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 							t.Fatal(err)
 						}
 						packet, ipProto := routingKernelPacket(source, destination, proto)
+						explained, explanation, needed, _, explainErr := matcher.explainSpans(t.Context(), matcher.profiles[matcher.defaultProfileID], routingInput{
+							src: source, dst: destination, l4proto: proto, kernel: true, domainBitmap: domains.Routing[:], domainBumpBitmap: domains.Bump[:],
+						}, nil, map[uint8]string{0: "direct", 1: "block", 2: "proxy"}, "kernel")
+						if explainErr != nil || len(needed) != 0 || len(explanation) == 0 {
+							t.Fatalf("explanation failed: %+v %v %v", explanation, needed, explainErr)
+						}
 						key := bpfTuplesKey{Sport: common.Htons(source.Port()), Dport: common.Htons(destination.Port()), L4proto: ipProto}
 						key.Sip.U6Addr8, key.Dip.U6Addr8 = source.Addr().As16(), destination.Addr().As16()
 						capture, bump, ambiguous := test.capture, test.bump, test.ambiguous
@@ -128,6 +134,15 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 							status, err := collection.Programs[name].Run(&ebpf.RunOptions{Data: packet, Context: make([]byte, 256), ContextOut: output, Repeat: 1})
 							if err != nil || status != want {
 								t.Fatalf("%s laterMust=%v: verdict=%d err=%v, want=%d", name, laterMust, status, err, want)
+							}
+							explainedVerdict := ^uint32(0)
+							if explained.outbound == consts.OutboundBlock {
+								explainedVerdict = 2
+							} else if explained.outbound != consts.OutboundDirect || explained.captureFlags != 0 {
+								explainedVerdict = 7
+							}
+							if status != explainedVerdict {
+								t.Fatalf("%s: explanation predicts verdict %d, classifier returned %d: %+v", name, explainedVerdict, status, explained)
 							}
 							var result routingResult
 							err = lookupKernelHandoff(collection.Maps["routing_tuples_map"], key, &result.bpfRoutingResult)
@@ -163,6 +178,9 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 							}
 							if err != nil || result.CaptureFlags != flags || result.Must != must || result.Mark != mark || result.Outbound != uint8(outbound) {
 								t.Fatalf("%s laterMust=%v: result=%+v err=%v, want=(%v,%d,%d,%d)", name, laterMust, result, err, outbound, mark, must, flags)
+							}
+							if result.CaptureFlags != explained.captureFlags || result.Mark != explained.mark || result.Outbound != uint8(explained.outbound) || (result.Must != 0) != explained.must {
+								t.Fatalf("%s: kernel handoff and explanation differ: %+v / %+v", name, result, explained)
 							}
 							if capture {
 								domain, wantMust := "one.example", uint8(1)

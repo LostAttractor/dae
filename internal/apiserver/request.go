@@ -75,9 +75,13 @@ func apiError(w http.ResponseWriter, status int, message string) {
 
 // A nil destination requires an empty body (membership changes and deletes).
 func apiBody(w http.ResponseWriter, r *http.Request, dst any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024))
+	return apiBodyLimit(w, r, dst, 1024)
+}
+
+func apiBodyLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
-		apiError(w, 413, "request body exceeds 1 KiB or cannot be read")
+		apiError(w, 413, "request body exceeds endpoint limit or cannot be read")
 		return false
 	}
 	if dst == nil {

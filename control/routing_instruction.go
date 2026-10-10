@@ -90,6 +90,7 @@ func (b *RoutingMatcherBuilder) addMatch(f *config_parser.Function, kind consts.
 		return err
 	}
 	set.Value = value
+	b.rememberMatch(len(b.rules), f)
 	b.rules = append(b.rules, set)
 	return nil
 }
@@ -105,6 +106,7 @@ func (b *RoutingMatcherBuilder) addMatches[T any](f *config_parser.Function, kin
 			set = tail
 		}
 		set.Value = encode(value)
+		b.rememberMatch(len(b.rules), f)
 		b.rules = append(b.rules, set)
 	}
 	return nil

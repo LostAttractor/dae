@@ -101,7 +101,7 @@ func mitmCapturePredicates(scopes []plugin.Scope) [][]*config_parser.Function {
 // Compile generated capture and flow controls once, before every policy body.
 func (b *RoutingMatcherBuilder) addControlPlaneFragment(p *preparedRules) (routingSpan, error) {
 	start := uint32(len(b.rules))
-	if err := b.rulesBuilder.Apply(p.bypass); err != nil {
+	if err := b.applyRules(p.bypass, "api_bypass"); err != nil {
 		return routingSpan{}, err
 	}
 	for i := int(start); i < len(b.rules); i++ {
@@ -110,12 +110,14 @@ func (b *RoutingMatcherBuilder) addControlPlaneFragment(p *preparedRules) (routi
 		}
 	}
 	applyEffect := func(filter []*config_parser.Function, action consts.MatchAction, flags uint8) error {
+		start := uint32(len(b.rules))
 		if err := b.rulesBuilder.ApplyPredicate(filter, &routing.Outbound{Name: "direct"}); err != nil {
 			return err
 		}
 		tail := &b.rules[len(b.rules)-1]
 		tail.Action = uint8(action)
 		tail.Flags |= flags << matchCaptureShift
+		b.rememberRule(start, &config_parser.RoutingRule{AndFunctions: filter, Outbound: config_parser.Function{Name: fmt.Sprint(action)}}, "flow_control")
 		return nil
 	}
 	b.destination.start = len(b.rules)
@@ -155,7 +157,7 @@ func (b *RoutingMatcherBuilder) addControlPlaneFragment(p *preparedRules) (routi
 	b.flow.end = len(b.rules)
 	b.routing.start = b.flow.end
 
-	if err := b.rulesBuilder.Apply(p.earlyRoutes); err != nil {
+	if err := b.applyRules(p.earlyRoutes, "plugin_early"); err != nil {
 		return routingSpan{}, err
 	}
 	return routingSpan{Start: start, End: uint32(len(b.rules))}, nil
@@ -170,6 +172,7 @@ func (b *RoutingMatcherBuilder) addDestinationPredicates(destinations routing.De
 		if err := b.rulesBuilder.ApplyPredicate(rule.Filter, &routing.Outbound{Name: "direct"}); err != nil {
 			return fmt.Errorf("destination predicate: %w", err)
 		}
+		b.rememberRule(entry.span.Start, &config_parser.RoutingRule{AndFunctions: rule.Filter, Outbound: config_parser.Function{Name: "dnat"}}, "destination")
 		b.rules[len(b.rules)-1].Action = uint8(consts.MatchActionMatch)
 		b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionMiss)})
 		entry.span.End = uint32(len(b.rules))

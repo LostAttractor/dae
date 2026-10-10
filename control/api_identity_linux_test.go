@@ -178,6 +178,12 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		if (err == nil) != test.want || test.want && got != mac {
 			t.Errorf("%s: want accepted = %v", test.name, test.want)
 		}
+		if test.want {
+			inherited, err := plane.resolveDiagnosticContext(source, destination)
+			if err != nil || inherited.IfIndex == nil || *inherited.IfIndex != uint32(test.ingress.Attrs().Index) || inherited.SourcePort != nil || inherited.DSCP != nil || inherited.ProcessName != nil || inherited.SourceIP != source.Addr().Unmap().WithZone("").String() {
+				t.Fatalf("%s: diagnostic context did not retain verified ingress: %+v %v", test.name, inherited, err)
+			}
+		}
 		checkKeylessAdmin(source, destination, test.want)
 	}
 	source, destination := netip.MustParseAddrPort("192.0.2.23:40001"), netip.MustParseAddrPort("192.0.2.1:9080")
