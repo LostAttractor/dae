@@ -22,16 +22,22 @@ such as `/api/device`; `/api/`, `/ca.pem`, `/ca.cer` and `/ca.mobileconfig` belo
 to the daemon. Assets can use subdirectories. Missing paths return `404`; the
 server does not provide a single-page application routing fallback.
 
+Navigation uses `/#settings`, `/#testing` and `/#devices`, so each page can be
+bookmarked or refreshed through the root document. Browser Back and Forward
+switch pages. Settings is the default page; unknown fragments return to Settings.
+
 The API contract is documented in the dae repository at `docs/api/openapi.json`
 and `docs/en/configuration/api-client.md`. Keep API requests in `src/api.js` and
 presentation in the frontend; this directory does not import daemon code.
 
-`app.js` coordinates access, device actions and refreshes. React components own
+`app.js` coordinates access, device actions and refreshes. `navigation.js` owns
+page visibility, document titles and history. React components own
 the interactive panels: `selectors.jsx` renders searchable node pickers and
-connectivity tests, `clients.jsx` renders device memberships, and `status.jsx`
-renders traffic scopes and connection details. `traffic.jsx` supplies the
-Recharts chart. Login and certificate controls use native DOM modules;
-`dom.js` contains their element/template lookups.
+connectivity tests, `diagnostics.jsx` renders the diagnostic form, `trace.jsx`
+renders explanation results, and `clients.jsx` renders device memberships,
+routing impact and administrator device management. `status.jsx` renders traffic
+scopes and connection details; `traffic.jsx` supplies the Recharts chart. Login and certificate controls use
+native DOM modules; `dom.js` contains their element/template lookups.
 
 `react-view.js` provides the boundary between native controllers and React.
 Controllers update a panel through its view API and can hide its host; only
@@ -46,8 +52,35 @@ Popover API support.
 
 `certificate.js` runs the current browser's CA and interception challenges.
 
-**Routing Rules** presents independent On/Off switches for this device's client
-memberships; multiple memberships can be active.
+The **Testing** page checks connection routing, DNS policy, cached domain records,
+outbound nodes and HTTP plugins. Results start with a plain-language conclusion,
+the outbound and destination, followed by any missing information and actions to
+complete it. Kernel direct and userspace direct are distinct outcomes; incomplete
+results never present a provisional outbound as a confirmed route. A hostname
+does not resolve itself during a check. Retained candidate IPs can be selected
+and checked individually, using the verified source address family. This does not
+create a kernel domain mapping. Rule traces, cached records, technical fields and
+raw responses are collapsed by default; the trace can be filtered by rule status.
+Membership comparisons show current and proposed results side by side on wide
+screens and stacked on smaller screens. **Routing
+Rules** presents independent On/Off switches for this device's client memberships;
+multiple memberships can be active. **Preview Routing Changes** loads impact
+for one selected option when expanded. **Compare a target** opens Testing with
+that proposed change and focuses the target field. Inputs and results are
+preserved when switching pages.
+The **Devices** page groups device lookup, routing membership and HTTPS module
+settings into separate sections. Saved settings show membership and HTTPS states
+as labels; the configuration default is distinct from an enabled/disabled override.
+Changing the MAC address clears the previous device's result. Client groups load when this page is active and authorized;
+without access, it shows a login prompt. The diagnostics contract lives in
+`docs/api/diagnostics.json`; explanations never send target traffic or execute scripts.
+
+`use-request.js` associates asynchronous results and errors with their initiating
+request. A new request, invalidation or component removal discards late replies.
+Context reads and explanations have independent request state. Editing test inputs,
+the analysis, identity scope or comparison invalidates the previous explanation;
+device-context changes clear inherited evidence and comparisons. Losing
+administrator access clears manual explanations and managed-device results.
 
 The access toolbar shows the visiting device's IP beside its access badge;
 expanding the IP reveals its MAC. The daemon version appears in the footer when
@@ -56,9 +89,11 @@ administrator status is available.
 On desktop, Settings places routing rules, selectors and HTTPS settings in the
 main column, with traffic in a sidebar. Smaller screens put all settings before
 traffic. Below 1024px, traffic starts collapsed; wider screens start expanded.
-Show/Hide overrides this default until a page reload, including across polling.
-Collapsed traffic does not mount charts.
+Show/Hide overrides this default until a page reload, including across internal
+navigation and polling. Collapsed traffic and inactive pages do not mount charts.
 Certificate installation and browser verification expand inside **HTTPS Modules**.
+Testing and Devices have their own content areas. Diagnostic fields are grouped
+into short rows and adapt to the selected analysis; narrow screens use a single column.
 The **Traffic** panel switches between **This Device** and **All Devices**, with
 only the active scope's chart mounted. Arrow keys and Home/End navigate the tabs.
 Connection details, uptime, domain tables and plugins are collapsed by default.
@@ -128,11 +163,13 @@ mutations are never retried automatically.
 
 Settings expands up to 1600px. At 1024px and above, it uses a wider left
 column for controls and a right column for traffic. Narrower screens stack
-settings before traffic.
+settings before traffic. Testing and Devices use a centered shell up to 1200px;
+their header, access toolbar, content and footer share the same edges.
 Refresh indicators show elapsed time since the last successful read: just now,
 then seconds, minutes, hours or days ago. They update while the document is visible;
 hovering shows the full local date and time. Refresh errors and access messages
-remain visible until the next successful read.
+remain visible until the next successful read. Testing's footer describes
+read-only analysis; Settings and Devices describe when changes take effect.
 Selector groups
 wrap into columns as space permits, and traffic charts fill their panels.
 Traffic metrics use two columns on small screens and narrow desktop sidebars,
@@ -153,8 +190,15 @@ Use `.badge` for states and settings sources, `.count` for quantities, and
 
 Use H1 for the page (1.75rem), H2 for sections (1.25rem), and H3 for selector groups
 and certificate details (1rem). Status messages are not headings. Use short action
-labels and sentences for explanations. Outbound traffic details pair each value
-with its label instead of joining multiple metrics into a sentence.
+labels and sentences for explanations. Optional TLS hostname and identity inputs
+belong in Advanced context. Outbound traffic details pair each value with its
+label instead of joining multiple metrics into a sentence.
+Testing's expandable groups use bordered panels with shaded headers. Their
+contents are inset; individual rules use status badges, and expanded rule details
+and nested data lists use a vertical guide. Nested disclosures use lighter headings
+inside the parent panel. Chevrons indicate whether each group is open; native
+summary controls support keyboard navigation. The rule filter wraps as a whole
+on narrow screens, and rule expressions occupy a separate line on phones.
 Keep **Default / Custom**, **Use default**, and **Monitoring** consistent
 across selectors and device settings; preserve configured names/descriptions.
 
@@ -174,10 +218,12 @@ daemon are needed. It covers stale responses,
 login/logout, live ordering and focus, a 1,000-node picker, probe/selection actions,
 configuration defaults, description labels, timeouts, chart samples and keyboard
 tooltips, access-loss recovery, and light/dark layouts from 320px to 2560px.
-Text-only zoom checks settings at twice the default size, including control
+Text-only zoom checks all pages at twice the default size, including control
 containment in narrow panels.
-It also checks mobile traffic expansion, keyboard traffic-scope switching and
-independent membership switches.
+It also checks direct page links, browser history, mobile traffic expansion,
+keyboard traffic-scope switching, independent membership switches,
+context/explanation requests, invalidation of late diagnostic and routing-preview
+replies, membership-context changes and protected-result cleanup.
 Fixture state and browser processes are cleaned up when the test exits. These
 checks validate frontend behavior; daemon authorization has its own Go tests.
 

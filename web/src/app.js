@@ -3,7 +3,9 @@ import { byId, template } from "./dom.js";
 import { createSelectors } from "./selectors.jsx";
 import { createStatus } from "./status.jsx";
 import { certificateDevice, certificateIdentity, testCertificate } from "./certificate.js";
-import { createClientSets } from "./clients.jsx";
+import { createDiagnostics } from "./diagnostics.jsx";
+import { createClientSets, createManagedClients } from "./clients.jsx";
+import { createNavigation } from "./navigation.js";
 import { createUpdatedLabel } from "./updated.jsx";
 
 const accessDenied = (error) => error.status === 401 || error.status === 403;
@@ -20,11 +22,19 @@ let globalRequestVersion = 0;
 let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
+const diagnostics = createDiagnostics(byId("diagnostic-view"));
 const status = createStatus(byId("status-view"));
 const updatedLabel = createUpdatedLabel(byId("updated"));
+const managedClients = createManagedClients(byId("managed-clients-view"), request);
 const selectors = createSelectors(byId("selectors"), { run, request: adminRequest, refresh: loadSelectors });
-status.setVisible(true);
-const clientSets = createClientSets(byId("sets"), { run, request, update: renderDevice });
+const navigation = createNavigation((page) => {
+  status.setVisible(page === "settings");
+  managedClients.setActive(page === "devices");
+});
+const clientSets = createClientSets(byId("sets"), { run, request, update: renderDevice, onCompare: (set) => {
+  navigation.show("testing");
+  diagnostics.compare(set);
+} });
 
 function message(text = "", tone = "success") {
   const element = byId("message");
@@ -71,6 +81,11 @@ function setAccess(mode, error) {
   const { title, description } = authorized ? accessLabels[mode] : { title: "Guest", description: "" };
   const denied = error?.status === 403;
   authMode = mode;
+  diagnostics.setAccess(authorized);
+  managedClients.setAccess(authorized);
+  byId("managed-clients-view").hidden = !authorized;
+  byId("devices-locked").hidden = authorized;
+  byId("devices-login-hint").textContent = denied ? error.message : "Log in above to manage other devices.";
   byId("login-form").hidden = authorized;
   byId("session-info").hidden = !authorized;
   byId("access-title").textContent = title;
@@ -104,6 +119,7 @@ function renderDevice(device) {
   const key = JSON.stringify(device);
   if (key === deviceStateKey) return;
   deviceStateKey = key;
+  diagnostics.setDevice(JSON.stringify([device.mac, device.source_ip, device.sets]));
   byId("identity").textContent = device.source_ip;
   byId("device-mac").textContent = `MAC ${device.mac}`;
   clientSets.show(device);
@@ -189,6 +205,7 @@ async function loadDevice({ background = false } = {}) {
     status.deviceError(error.message, error.status === 403 || !background);
     if (error.status === 403 || !background) {
       deviceStateKey = "";
+      diagnostics.setDevice("");
       certificateDevice(null);
       byId("identity").textContent = "Device could not be identified.";
       byId("device-mac").textContent = "";

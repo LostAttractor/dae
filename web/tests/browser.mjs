@@ -68,7 +68,7 @@ function resetFixture() {
     ...(i === 0 ? { latency_ms: 28.5, checked_at: "2026-09-22T00:00:00Z" } : {}),
   }));
   fixture = {
-    mode: "lan", requests: [], nextRead: null,
+    mode: "lan", requests: [], nextRead: null, clientReads: 0,
     nextDeviceRead: null, nextGlobalRead: null, certificate: null, groups: [],
     stats: { active_connections: 2, total_connections: 7, upload_bytes: 2048, download_bytes: 8192, history: { upload_bytes_per_second: [100, 200], download_bytes_per_second: [400, 800] } },
     selectors: [
@@ -88,6 +88,14 @@ const httpServer = createServer(async (req, res) => {
   const json = (data, status = 200) => {
     res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify(data));
+  };
+  const delayedJSON = async (key, data) => {
+    const override = fixture[key];
+    fixture[key] = null;
+    const snapshot = structuredClone(data);
+    override?.started.resolve();
+    if (override?.release) await override.release.promise;
+    return json(override?.status ? { error: "Deferred fixture error" } : snapshot, override?.status || 200);
   };
   try {
     if (!req.url.startsWith("/api/")) {
@@ -119,6 +127,20 @@ const httpServer = createServer(async (req, res) => {
           if (!body.node_id || node.id === body.node_id) node.checking = true;
         }
         return json({ outbound: body.outbound, node_ids: selector.nodes.map((node) => node.id) }, 202);
+      }
+      if (req.url.endsWith("/impact")) {
+        const name = decodeURIComponent(req.url.slice("/api/device/sets/".length, -"/impact".length));
+        const set = fixture.device.sets.find((entry) => entry.name === name);
+        return delayedJSON("nextImpact", { generation: 7, name, joined_before: set.joined, joined_after: body.joined, connection_behavior: "retain", exports: [], rules: [{ id: "work/1", parent: "main", stage: "client_impact", expression: 'client(work) && domain(suffix: example.com) -> proxy', status: "conditional", match: "unknown", reason: "remaining_predicates_and_rule_order", conditions: [{ expression: "client(work)", actual: String(set.joined), expected: String(body.joined), match: "match", status: "supplementary", reason: "membership_change" }] }] });
+      }
+      if (req.url.endsWith("/diagnostics/explain")) {
+        const result = (verdict, outbound) => ({ decision: { complete: true, verdict, outbound, rule_id: "rule/1", policy: "main", targets: ["198.51.100.10:443"], mark: 0, must: false }, steps: [{ id: "rule/1", stage: "kernel", expression: '<img src=x onerror="throw 1">', status: "selected", match: "match", reason: "terminal_decision" }], domains: [], outbounds: [], notes: [`Analysis: ${body.kind}`] });
+        return delayedJSON("nextExplanation", fixture.explanation || { schema: 1, generation: 7, observed_at: "2026-10-09T00:00:00Z", context: [{ name: "mac", value: fixture.device.mac, source: "request" }], current: result("kernel_direct", "direct"), ...(body.compare ? { compared: result("userspace", "proxy") } : {}) });
+      }
+      if (req.url.startsWith("/api/clients/") && req.url.includes("/members/")) {
+        const [group, mac] = req.url.slice("/api/clients/".length).split("/members/").map(decodeURIComponent);
+        fixture.managed = { mac, sets: [{ name: group, description: "Managed group", joined: req.method === "PUT" }], mitm_override: null };
+        return json({ name: group, description: "Managed group", members: req.method === "PUT" ? [mac] : [] });
       }
       if (req.url.startsWith("/api/device/sets/")) {
         const set = fixture.device.sets.find((entry) => entry.name === decodeURIComponent(req.url.slice("/api/device/sets/".length)));
@@ -172,6 +194,12 @@ const httpServer = createServer(async (req, res) => {
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
     }
     if (req.url === "/api/device") return json(fixture.device);
+    if (req.url === "/api/device/context") return json({ generation: 7, context: {}, device: fixture.device, fields: [{ name: "mac", value: fixture.device.mac, source: "request" }] });
+    if (req.url === "/api/clients") {
+      fixture.clientReads++;
+      return json({ groups: [{ name: "internal/work", description: "Managed group", members: [] }] });
+    }
+    if (req.url.startsWith("/api/devices/")) return delayedJSON("nextManagedDevice", fixture.managed || { mac: decodeURIComponent(req.url.slice("/api/devices/".length)), sets: [], mitm_override: null });
     if (req.url === "/api/certificate") return fixture.certificate ? json(fixture.certificate) : json({ error: "No certificate" }, 404);
     json({ error: "Not found" }, 404);
   } catch (error) {
@@ -249,11 +277,16 @@ try {
   };
   const ready = () => until('document.querySelector("#controls")?.getAttribute("aria-busy") === "false"');
   const page = async (hash = "") => {
-    // Each visit starts with a fresh document.
+    // Force a new document even when only the fragment changes. visit() and
+    // Back/Forward exercise same-document navigation separately.
     await call("Page.navigate", { url: "about:blank" });
     await until('location.href === "about:blank"');
     await call("Page.navigate", { url: origin + hash });
     await ready();
+  };
+  const visit = async (name) => {
+    await js(`document.querySelector('.page-nav a[href="#${name}"]').click()`);
+    await until(`document.querySelector('#${name}-page').checkVisibility()`);
   };
   const row = 'document.querySelector(".selector-row")';
   const openPicker = async () => {
@@ -328,16 +361,58 @@ try {
     assert.equal(browserLogs.some((entry) => /Content Security Policy|Refused to|violates/i.test(entry)), false);
   });
 
+  await test("Settings, Testing and Devices have direct links and preserve browser navigation", async () => {
+    assert.equal(await js('document.querySelector("#settings-page").checkVisibility()'), true);
+    assert.equal(await js('document.querySelector("#diagnostics").checkVisibility()'), false);
+    assert.equal(fixture.clientReads, 0);
+    await openPicker();
+    await visit("testing");
+    assert.equal(await js('document.querySelector(".node-popover:popover-open")'), null);
+    assert.equal(await js('document.activeElement.id'), "page-title");
+    assert.equal(await js('document.querySelector(".page-nav [aria-current=page]").textContent'), "Testing");
+    assert.equal(await js('document.querySelector(".traffic-chart")'), null);
+    await js('document.querySelector("#diagnostic-target").value = "example.com:443"');
+    await visit("devices");
+    await until('document.querySelector("#managed-client-group").options.length === 1');
+    assert.equal(fixture.clientReads, 1);
+    await js('history.back()');
+    await until('document.querySelector("#testing-page").checkVisibility()');
+    assert.equal(await js('document.querySelector("#diagnostic-target").value'), "example.com:443");
+    await js('history.forward()');
+    await until('document.querySelector("#devices-page").checkVisibility()');
+    await page("#testing");
+    assert.equal(await js('document.querySelector("#diagnostic-form").checkVisibility()'), true);
+    assert.equal(await js('document.title'), "dae · Testing");
+    assert.match(await js('document.querySelector("#page-note").textContent'), /Read-only analysis/);
+    assert.match(await js('document.querySelector("#updated").textContent'), /^Updated /);
+    fixture.mode = "api_key";
+    await page("#devices");
+    assert.equal(await js('document.querySelector("#devices-locked").checkVisibility()'), true);
+    assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), false);
+    await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+    await ready();
+    assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), true);
+    assert.equal(await js('location.hash'), "#devices");
+    assert.match(await js('document.querySelector("#page-note").textContent'), /Changes apply to new connections/);
+    await page("#unknown");
+    assert.equal(await js('location.hash'), "#settings");
+    assert.equal(await js('document.querySelector("#sets").checkVisibility()'), true);
+  });
+
   await test("small screens start with settings and keep traffic collapsed until requested", async () => {
     await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await page();
     assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "false");
     assert.equal(await js('document.querySelector(".traffic-chart")'), null);
     assert.equal(await js('document.querySelector("#device-title").getBoundingClientRect().top < innerHeight'), true);
+    assert.equal(await js('document.querySelector("#diagnostics").checkVisibility()'), false);
     await js('document.querySelector("#status-toggle").click()');
     await until('document.querySelector("#device-traffic .recharts-surface") !== null');
     fixture.stats.upload_bytes = 65536;
     await until('document.querySelector("#device-traffic").textContent.includes("64 KiB")');
+    await visit("testing");
+    assert.equal(await js('document.querySelector(".traffic-chart")'), null);
+    await visit("settings");
     assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "true");
     await js('document.querySelector("#status-toggle").click(); document.querySelector("#refresh").click()');
     await ready();
@@ -629,6 +704,257 @@ try {
     assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.getAttribute("aria-checked"))'), ["false", "true"]);
   });
 
+  await test("client routing impact is lazy and feeds a read-only target comparison", async () => {
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(await js('document.querySelectorAll(".client-impact").length'), 1);
+    await js('document.querySelector(".client-impact").open = true');
+    await until('document.querySelector(".impact-content").textContent.includes("Compare a target")');
+    assert.deepEqual(fixture.requests[0], { method: "POST", path: "/api/device/sets/internal%2Fwork/impact", body: { joined: true, context: {} } });
+    assert.equal(fixture.device.sets[0].joined, false);
+    await js('document.querySelector(".impact-content button").click(); document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+    assert.equal(await js('location.hash'), "#testing");
+    assert.equal(await js('document.activeElement.id'), "diagnostic-target");
+    await until('document.querySelector("#diagnostic-result").textContent.includes("With proposed changes")');
+    const sent = fixture.requests.at(-1);
+    assert.equal(sent.path, "/api/device/diagnostics/explain");
+    assert.deepEqual(sent.body.context, {});
+    assert.deepEqual(sent.body.compare.client_sets, { "internal/work": true });
+    assert.match(await js('document.querySelector("#diagnostic-result").textContent'), /kernel_direct/);
+    assert.equal(await js('document.querySelectorAll("#diagnostic-result img").length'), 0);
+    assert.equal(fixture.device.sets[0].joined, false);
+    for (const width of [320, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
+      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, "comparison fits the viewport");
+      assert.equal(await js('(() => { const [before, after] = [...document.querySelectorAll(".trace-result")].map(element => element.getBoundingClientRect()); return innerWidth >= 960 ? before.right < after.left : before.bottom < after.top; })()'), true);
+      if (process.env.SCREENSHOT_DIR) {
+        await js('window.scrollTo(0, 0)');
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-explanation-comparison-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+    }
+    await js('document.querySelector("#diagnostic-clear-comparison").click()');
+    assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Current settings");
+  });
+
+  await test("routing preview discards a late reply when another option is selected", async () => {
+    const held = { started: deferred(), release: deferred() };
+    fixture.nextImpact = held;
+    try {
+      await js('document.querySelector(".client-impact").open = true');
+      await held.started.promise;
+      await js('document.querySelector(".impact-option select").value = "gaming"; document.querySelector(".impact-option select").dispatchEvent(new Event("change", { bubbles: true }))');
+      await until('document.querySelector(".impact-content").textContent.includes("Change: On → Off")');
+      assert.equal(fixture.requests.at(-1).path, "/api/device/sets/gaming/impact");
+      held.release.resolve();
+      await delay(100);
+      assert.match(await js('document.querySelector(".impact-content").textContent'), /Change: On → Off/);
+      await js('document.querySelector(".impact-content button").click()');
+      assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Leave gaming");
+      await js('document.querySelector(".client-impact").open = false');
+      await until('document.querySelector(".impact-content") === null');
+    } finally { held.release.resolve(); }
+  });
+
+  await test("diagnostics summarize missing context and make cached IPs actionable without a rule wall", async () => {
+    fixture.explanation = {
+      schema: 1, generation: 7, observed_at: "2026-10-09T00:00:00Z",
+      context: [{ name: "source_ip", value: fixture.device.source_ip, source: "device" }],
+      current: {
+        decision: { complete: false, verdict: "unknown", policy: "main", original_target: "example.com:443", targets: [...Array.from({ length: 90 }, (_, i) => `198.51.100.${i + 1}:443`), "[2001:db8::1]:443"], mark: 0, must: false, missing: ["destination.ip", "domain_mapping"] },
+        steps: Array.from({ length: 120 }, (_, i) => ({ id: `rule/${i}`, stage: "kernel", expression: `dip(${"198.51.100.0/24, ".repeat(40)}) -> proxy`, status: i < 60 ? "conditional" : "inactive", match: "unknown", reason: i < 60 ? "missing_context" : "different_ingress_policy" })),
+        domains: [], outbounds: [], notes: [],
+      },
+    };
+    await visit("testing");
+    await js('document.querySelector("#diagnostic-target").value = "https://example.com"; document.querySelector("#diagnostic-form").requestSubmit()');
+    await until('document.querySelector(".trace-missing") !== null');
+    assert.equal(await js('document.querySelector(".trace-outcome h3").textContent'), "Destination IP needed");
+    assert.match(await js('document.querySelector(".trace-missing").textContent'), /Entering a hostname or SNI does not create a mapping/);
+    assert.equal(await js('document.querySelector(".trace-candidates select").options.length'), 91, "exclude IPv6 candidates for the inherited IPv4 identity");
+    assert.equal(await js('document.querySelector(".trace-candidates button").disabled'), true);
+    assert.equal(await js('[...document.querySelectorAll(".explanation details")].every(element => !element.open)'), true);
+    assert.equal(await js('document.querySelector(".trace-outcome").textContent.includes("198.51.100.89")'), false, "large candidate lists are summarized");
+    for (const [width, theme] of [[320, "light"], [390, "dark"], [768, "light"], [1280, "dark"], [1920, "dark"]]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
+      await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `explanation fits ${width}px`);
+      if (width === 320) {
+        const longHeight = await js('document.querySelector(".explanation").getBoundingClientRect().height');
+        const allSteps = fixture.explanation.current.steps;
+        fixture.explanation.current.steps = allSteps.slice(0, 1);
+        await js('document.querySelector("#diagnostic-form").requestSubmit()');
+        await until('document.querySelector(".trace-rule-list .count")?.textContent === "1 rule"');
+        const shortHeight = await js('document.querySelector(".explanation").getBoundingClientRect().height');
+        assert.ok(Math.abs(longHeight - shortHeight) < 2, "120 rules take no more default reading space than one rule");
+        fixture.explanation.current.steps = allSteps;
+        await js('document.querySelector("#diagnostic-form").requestSubmit()');
+        await until('document.querySelector(".trace-rule-list .count")?.textContent === "120 rules"');
+      }
+      if (process.env.SCREENSHOT_DIR) {
+        await js('window.scrollTo(0, 0)');
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-explanation-missing-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+    }
+    await js('document.querySelector(".trace-rule-list").open = true; document.querySelector(".trace-filter select").value = "uncertain"; document.querySelector(".trace-filter select").dispatchEvent(new Event("change", { bubbles: true }))');
+    assert.equal(await js('document.querySelectorAll(".trace-steps > details").length'), 60);
+    await js('document.querySelector(".trace-steps details").open = true');
+    assert.match(await js('document.querySelector(".trace-steps details p").textContent'), /More information/);
+    assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true);
+    await js('document.querySelector(".trace-missing button").click()');
+    assert.equal(await js('document.activeElement.id'), "diagnostic-ip");
+    fixture.explanation = null;
+    await js('document.querySelector(".trace-candidates select").value = "198.51.100.8"; document.querySelector(".trace-candidates select").dispatchEvent(new Event("change", { bubbles: true }))');
+    await js('document.querySelector(".trace-candidates button").click()');
+    await until('document.querySelector(".trace-outcome h3")?.textContent === "Direct in the kernel"');
+    assert.equal(fixture.requests.at(-1).body.flow.destination.ip, "198.51.100.8");
+    assert.equal(fixture.requests.at(-1).body.flow.http.url, "https://example.com");
+    assert.equal(await js('document.querySelector("#diagnostic-ip").value'), "198.51.100.8");
+    assert.equal(await js('document.querySelectorAll("#diagnostic-result img").length'), 0);
+    await js('document.querySelector("#diagnostic-target").value = "other.example:443"; document.querySelector("#diagnostic-target").dispatchEvent(new Event("input", { bubbles: true }))');
+    assert.equal(await js('document.querySelector("#diagnostic-result").textContent'), "", "editing inputs invalidates the previous conclusion");
+    assert.equal(await js('document.querySelector("#diagnostic-ip").value'), "", "a cached IP for one hostname must not carry over to another target");
+  });
+
+  await test("diagnostics distinguish kernel direct, userspace direct, blocked and incomplete decisions", async () => {
+    await visit("testing");
+    await js('document.querySelector("#diagnostic-target").value = "https://198.51.100.10/"');
+    for (const [verdict, outbound, complete, headline] of [
+      ["kernel_direct", "direct", true, "Direct in the kernel"],
+      ["userspace", "direct", true, "Direct through userspace"],
+      ["userspace", "proxy", true, "Routed via proxy"],
+      ["drop", "block", true, "Connection blocked"],
+      ["local_response", "", true, "Answered locally"],
+      ["userspace", "direct", false, "Cannot determine the result yet"],
+    ]) {
+      fixture.explanation = { schema: 1, generation: 7, observed_at: "2026-10-09T00:00:00Z", context: [], current: {
+        decision: { verdict, outbound, complete, policy: "main", rule_id: "kernel/1", targets: ["198.51.100.10:443"], capture: verdict === "userspace" ? ["http"] : [], mark: 42, must: true },
+        steps: [{ id: "kernel/1", stage: "kernel", expression: `dip(198.51.100.10) -> ${outbound || "direct"}`, status: "selected", match: "match", reason: "terminal_decision" }], domains: [], outbounds: [], notes: complete ? [] : ["A plugin requires runtime execution or additional context; subsequent routing is undetermined."],
+      } };
+      await js('document.querySelector("#diagnostic-form").requestSubmit()');
+      await until('document.querySelector(".trace-outcome h3") !== null');
+      assert.equal(await js('document.querySelector(".trace-outcome h3").textContent'), headline);
+      assert.equal(fixture.requests.at(-1).body.flow.destination.ip, "198.51.100.10", "IP URLs keep the destination address");
+      assert.match(await js('document.querySelector(".trace-technical").textContent'), /Mark42Musttrue/);
+      if (!complete) {
+        assert.match(await js('document.querySelector(".trace-facts").textContent'), /provisional/);
+        assert.equal(await js('document.querySelector(".trace-selected")'), null);
+      }
+      if (process.env.SCREENSHOT_DIR && verdict === "userspace" && outbound === "proxy") {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, "dae-web-explanation-route-1280.png"), Buffer.from(image.data, "base64"));
+      }
+    }
+  });
+
+  await test("diagnostics use analysis-specific summaries for domain, outbound and plugin checks", async () => {
+    await visit("testing");
+    for (const [kind, value, extra, headline] of [
+      ["domain", "example.com", { domains: [{ domain: "example.com", ip: "198.51.100.10", resident: true, source: "dns" }, { domain: "example.com", ip: "198.51.100.11", resident: false, source: "dns" }] }, "2 cached domain records"],
+      ["outbound", "proxy", { outbounds: [{ name: "proxy", policy: "fixed", network: "tcp4", available: true, random: false, nodes: [{ name: "Tokyo", selected: true, usable: true, reason: "selected" }] }] }, "Selected node: Tokyo"],
+      ["plugins", "https://example.com", { steps: [{ id: "http/disabled", stage: "mitm", expression: "HTTP interception", status: "inactive", match: "miss", reason: "http_disabled" }] }, "HTTP interception is disabled."],
+      ["dns", "example.com", {}, "DNS policy evaluated"],
+    ]) {
+      fixture.explanation = { schema: 1, generation: 7, observed_at: "2026-10-09T00:00:00Z", context: [], current: {
+        decision: { complete: true, verdict: "analysis", mark: 0, must: false }, steps: [], domains: [], outbounds: [], notes: [], ...extra,
+      } };
+      await js(`document.querySelector("#diagnostic-kind").value = ${JSON.stringify(kind)}; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true })); document.querySelector("#diagnostic-target").value = ${JSON.stringify(value)}; document.querySelector("#diagnostic-form").requestSubmit()`);
+      await until('document.querySelector(".trace-outcome h3") !== null');
+      assert.equal(await js('document.querySelector(".trace-outcome h3").textContent'), headline);
+      if (kind === "domain") assert.match(await js('document.querySelector(".trace-facts").textContent'), /Present in kernel1/);
+      if (kind === "outbound") assert.match(await js('document.querySelector(".trace-facts").textContent'), /Groupproxy/);
+    }
+  });
+
+  await test("React diagnostics keep context reads independent and reject outdated explanations", async () => {
+    await visit("testing");
+    const held = { started: deferred(), release: deferred() };
+    fixture.nextExplanation = held;
+    try {
+      await js('document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+      await held.started.promise;
+      await js('document.querySelector(".diagnostic-advanced").open = true; document.querySelector("#diagnostic-context").click()');
+      await until('document.querySelector("#diagnostic-context-view").textContent.includes("[request]")');
+      assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), true);
+      await js('document.querySelector("#diagnostic-kind").value = "dns"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
+      await until('!document.querySelector("#diagnostic-run").disabled');
+      await js('document.querySelector("#diagnostic-target").value = "example.com"; document.querySelector("#diagnostic-form").requestSubmit()');
+      await until('document.querySelector("#diagnostic-result").textContent.includes("Analysis: dns")');
+      held.release.resolve();
+      await delay(100);
+      assert.equal(await js('document.querySelector("#diagnostic-result").textContent.includes("Analysis: flow")'), false);
+      assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), false);
+      assert.equal(await js('document.querySelector("#diagnostic-target").value'), "example.com");
+    } finally { held.release.resolve(); }
+  });
+
+  await test("React diagnostics clear manual work and ignore late errors after access loss", async () => {
+    await visit("testing");
+    await js('document.querySelector("#diagnostic-scope").value = "manual"; document.querySelector("#diagnostic-scope").dispatchEvent(new Event("change", { bubbles: true }))');
+    const held = { status: 500, started: deferred(), release: deferred() };
+    fixture.nextExplanation = held;
+    try {
+      await js('document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+      await held.started.promise;
+      assert.equal(fixture.requests.at(-1).path, "/api/diagnostics/explain");
+      fixture.mode = "denied";
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#diagnostic-scope").value'), "self");
+      assert.equal(await js('document.querySelector("#diagnostic-result").textContent'), "");
+      assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), false);
+      held.release.resolve();
+      await delay(100);
+      assert.equal(await js('document.querySelector("#diagnostic-result").textContent'), "");
+    } finally { held.release.resolve(); }
+  });
+
+  await test("React client impact reloads changed membership and discards the old response", async () => {
+    const held = { started: deferred(), release: deferred() };
+    fixture.nextImpact = held;
+    try {
+      await js('document.querySelector(".client-impact").open = true');
+      await held.started.promise;
+      fixture.device.sets[0].joined = true;
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      await until('document.querySelector(".impact-content").textContent.includes("Change: On → Off")');
+      held.release.resolve();
+      await delay(100);
+      assert.match(await js('document.querySelector(".impact-content").textContent'), /Change: On → Off/);
+      await js('document.querySelector(".impact-content button").click()');
+      assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Leave Work network");
+      fixture.device.mac = "02:00:00:00:00:09";
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      assert.equal(await js('document.querySelector(".client-impact").open'), false);
+      assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Current settings");
+    } finally { held.release.resolve(); }
+  });
+
+  await test("React managed devices cannot restore data after access is revoked", async () => {
+    await visit("devices");
+    await until('document.querySelector("#managed-client-group").options.length === 1');
+    const held = { started: deferred(), release: deferred() };
+    fixture.nextManagedDevice = held;
+    try {
+      await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=show]").click()');
+      await held.started.promise;
+      fixture.mode = "denied";
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#managed-clients").hidden'), true);
+      held.release.resolve();
+      await delay(100);
+      assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "");
+      fixture.mode = "lan";
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "");
+      assert.equal(await js('document.querySelector("#managed-clients").checkVisibility()'), true);
+    } finally { held.release.resolve(); }
+  });
+
   await test("actions restore keyboard focus after disabling or replacing controls", async () => {
     await openPicker();
     await js('document.querySelector(".test-node").focus(); document.querySelector(".test-node").click()');
@@ -649,6 +975,25 @@ try {
     await js('document.querySelector("#mitm .reset").focus(); document.querySelector("#mitm .reset").click()');
     await ready();
     assert.equal(await js('document.activeElement.matches(".toggle")'), true);
+  });
+
+  await test("administrator device management uses the specified MAC", async () => {
+    await visit("devices");
+    await until('document.querySelector("#managed-client-group").options.length === 1');
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=join]").click()');
+    await until('document.querySelector("#managed-client-result .badge")?.textContent === "Joined"');
+    assert.deepEqual(fixture.requests.at(-1), { method: "PUT", path: "/api/clients/internal%2Fwork/members/02%3A00%3A00%3A00%3A00%3A99", body: {} });
+    assert.equal(fixture.device.sets[0].joined, false);
+    await js('document.querySelector("#managed-client-form button[value=leave]").click()');
+    await until('document.querySelector("#managed-client-result .badge")?.textContent === "Not joined"');
+    assert.match(await js('document.querySelector(".managed-device-settings").textContent'), /HTTPS modulesUse default/);
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:98"; document.querySelector("#managed-client-mac").dispatchEvent(new Event("input", { bubbles: true }))');
+    assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "", "editing the MAC cannot leave another device's settings visible");
+    fixture.mode = "denied";
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#managed-clients").hidden'), true);
+    assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "");
   });
 
   await test("cookie login, expired session and delayed reads after logout", async () => {
@@ -737,17 +1082,15 @@ try {
     assert.equal(await js('document.querySelector("#global-groups")'), null);
   });
 
-  await test("larger text reflows settings and keeps controls readable", async () => {
+  await test("larger text reflows every page and keeps controls readable", async () => {
     // Text-only zoom exercises user font preferences independently of viewport zoom.
     for (const width of [320, 768, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
       await js('document.documentElement.style.fontSize = "200%"');
-      // Let media-query state and chart resize observers complete before measuring.
-      await js("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-      {
-        const name = "settings";
+      for (const name of ["settings", "testing", "devices"]) {
+        await visit(name);
         assert.equal(await js(`document.documentElement.scrollWidth <= ${width}`), true, `${name} reflows at ${width}px with double-size text`);
-        const clipped = await js('[...document.querySelectorAll("button, summary, .section-description")].filter(element => element.checkVisibility() && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
+        const clipped = await js('[...document.querySelectorAll("button, summary, .section-description, .managed-section p")].filter(element => element.checkVisibility() && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
         assert.deepEqual(clipped, [], `${name} has no clipped labels at ${width}px`);
         assert.equal(await js(`([...document.querySelectorAll("button, summary")].filter(element => element.checkVisibility()).every(element => { const rect = element.getBoundingClientRect(); const card = element.closest(".card")?.getBoundingClientRect(); return rect.left >= 0 && rect.right <= ${width} && (!card || rect.right <= card.right); }))`), true, `${name} keeps controls inside their panels at ${width}px`);
         if (process.env.SCREENSHOT_DIR && width === 320) {
@@ -784,7 +1127,7 @@ try {
       await until('[...document.querySelectorAll(".traffic-chart")].every(chart => { const svg = chart.querySelector(".recharts-surface"); return svg && Math.abs(svg.getBoundingClientRect().width - chart.clientWidth) <= 1; })');
       assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-line-curve")].every(line => !/NaN|Infinity/.test(line.getAttribute("d")))'), true);
       assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-cartesian-axis-tick")].every(tick => { const rect = tick.getBoundingClientRect(); const chart = tick.closest(".traffic-chart").getBoundingClientRect(); return rect.left >= chart.left - 1 && rect.right <= chart.right + 1 && rect.top >= chart.top - 1 && rect.bottom <= chart.bottom + 1; })'), true, `chart labels fit at ${width}px`);
-      assert.equal(await js('[...document.querySelectorAll(".card, .traffic-metrics, .selector-control")].every(element => element.scrollWidth <= element.clientWidth + 1)'), true, `panels fit at ${width}px`);
+      assert.equal(await js('[...document.querySelectorAll(".card, .traffic-metrics, .diagnostic-fields, .selector-control")].every(element => element.scrollWidth <= element.clientWidth + 1)'), true, `panels fit at ${width}px`);
       if (height >= 600 && (width < 500 || width === 1280)) {
         const point = await js('(() => { const chart = document.querySelector("#global-traffic .traffic-chart"); chart.scrollIntoView({ block: "center" }); const dot = [...chart.querySelectorAll(".recharts-line-dot")].at(-1).getBoundingClientRect(); return { x: dot.x + dot.width / 2, y: dot.y + dot.height / 2 }; })()');
         if (width < 500) {
@@ -828,7 +1171,32 @@ try {
       await js('document.querySelector("#certificate-panel").open = true');
       assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `expanded settings fit at ${width}px`);
       await js('document.querySelector("#certificate-panel").open = false');
+      await visit("testing");
+      const fieldSizes = await js('(() => { const input = document.querySelector("#diagnostic-target").getBoundingClientRect(); const select = document.querySelector("#diagnostic-protocol").getBoundingClientRect(); return { inputHeight: input.height, selectHeight: select.height, inputWidth: input.width }; })()');
+      assert.equal(fieldSizes.inputHeight === fieldSizes.selectHeight && fieldSizes.inputWidth >= 240, true, `aligned diagnostic inputs at ${width}px: ${JSON.stringify(fieldSizes)}`);
+      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `testing fits at ${width}px`);
+      assert.equal(await js('(() => { const toolbar = document.querySelector(".toolbar").getBoundingClientRect(); return [...document.querySelectorAll(".page-header, #diagnostics, footer")].every(element => { const rect = element.getBoundingClientRect(); return Math.abs(rect.left - toolbar.left) < 1 && Math.abs(rect.right - toolbar.right) < 1; }); })()'), true, `testing content aligns with the page at ${width}px`);
+      if (process.env.SCREENSHOT_DIR && [390, 1280, 1920].includes(width) && height >= 600) {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-testing-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+      await visit("devices");
+      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `devices fit at ${width}px`);
+      assert.equal(await js('(() => { const toolbar = document.querySelector(".toolbar").getBoundingClientRect(); return [...document.querySelectorAll(".page-header, #managed-clients, footer")].every(element => { const rect = element.getBoundingClientRect(); return Math.abs(rect.left - toolbar.left) < 1 && Math.abs(rect.right - toolbar.right) < 1; }); })()'), true, `device controls align with the page at ${width}px`);
+      assert.equal(await js('[...document.querySelectorAll(".managed-client-fields input, .managed-client-fields select, #managed-client-form button")].every(element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth; })'), true);
+      if (process.env.SCREENSHOT_DIR && [390, 1280, 1920].includes(width) && height >= 600) {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-devices-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+      await visit("settings");
     }
+    await visit("testing");
+    await js('document.querySelector("#diagnostic-kind").value = "dns"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
+    assert.equal(await js('document.querySelector("#diagnostic-qtype").checkVisibility() && !document.querySelector("#diagnostic-sni").checkVisibility()'), true);
+    await js('document.querySelector("#diagnostic-kind").value = "flow"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
+    assert.equal(await js('!document.querySelector("#diagnostic-sni").checkVisibility() && !document.querySelector("#diagnostic-qtype").checkVisibility()'), true);
+    await js('document.querySelector(".diagnostic-advanced").open = true');
+    assert.equal(await js('document.querySelector("#diagnostic-sni").checkVisibility()'), true);
     assert.equal(browserLogs.some((entry) => /Content Security Policy|Refused to|violates/i.test(entry)), false);
   });
 

@@ -12,6 +12,11 @@
   <div class="shell">
     <header class="page-header">
       <h1 id="page-title" tabindex="-1">Network Settings</h1>
+      <nav class="page-nav" aria-label="Pages">
+        <a href="#settings" aria-current="page">Settings</a>
+        <a href="#testing">Testing</a>
+        <a href="#devices">Devices</a>
+      </nav>
     </header>
 
     <main>
@@ -92,6 +97,21 @@
           </div>
         </div>
 
+        <div id="testing-page" data-page="testing" hidden>
+          <section id="diagnostics" class="card diagnostics-card" aria-labelledby="diagnostics-title">
+            <h2 id="diagnostics-title">Test a destination</h2>
+            <p class="section-description">See how dae would handle a request from this device. Read-only: no test traffic is sent and no settings are changed.</p>
+            <div id="diagnostic-view"></div>
+          </section>
+        </div>
+
+        <div id="devices-page" data-page="devices" hidden>
+          <div id="devices-locked" class="card">
+            <p class="badge">Administrator access required</p>
+            <p id="devices-login-hint" class="muted">Log in above to manage other devices.</p>
+          </div>
+          <div id="managed-clients-view" hidden></div>
+        </div>
       </fieldset>
     </main>
 
