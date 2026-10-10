@@ -105,7 +105,7 @@ failures in the core production collection prevent startup.
 
 ## Native QuickJS build or executable does not start
 
-- `CGO_ENABLED=0` is unsupported. Use `make`, or enable cgo explicitly for direct Go commands.
+- The Surge QuickJS backend requires `CGO_ENABLED=1`. Use `make SURGE_RUNTIME=quickjs`, or select the cgo-free Node backend with `make SURGE_RUNTIME=nodejs` (direct Go commands use `-tags=surge_nodejs`).
 - Missing `stdlib.h`, unsupported machine instructions, or incompatible object files during cross-compilation usually indicate that `CC` or its sysroot targets the build host instead of `GOARCH`. eBPF's `CLANG` is a separate host tool.
 - An existing executable that reports `No such file or directory` may reference an unavailable ELF interpreter. Check `readelf -lW ./dae` and `readelf -dW ./dae`. A Nix-built dynamic executable can depend on `/nix/store`; a glibc executable cannot be assumed to run on Alpine.
 

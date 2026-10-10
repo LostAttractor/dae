@@ -1,6 +1,6 @@
 # Surge Module
 
-内置 `surge` 插件使用 [buke/quickjs-go](https://github.com/buke/quickjs-go) 运行 QuickJS-NG，重点兼容 MITM 中的 Surge 请求/响应脚本，并提供模块重写、存储、DNS、cron 和 generic 等配套能力。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[静态 musl 构建](../../en/user-guide/build-by-yourself.md#musl)。
+内置 `surge` 插件在编译时选择 JavaScript 后端：默认通过 [buke/quickjs-go](https://github.com/buke/quickjs-go) 运行 QuickJS-NG，也可编译为 Node.js 后端。插件重点兼容 MITM 中的 Surge 请求/响应脚本，并提供模块重写、存储、DNS、cron 和 generic 等配套能力。HTTPS 使用本地 CA，功能默认关闭。参见[支持范围](surge-module-support.md)与[构建指南](../../en/user-guide/build-by-yourself.md#surge-javascript-runtime)。
 
 ## 配置与运行
 
@@ -46,14 +46,38 @@ plugins {
 
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
+| `node_path` | `node` | 仅 Node.js 构建接受：可执行文件路径或 PATH 中的名称；不接受命令行参数 |
 | `script_timeout` | `5s` | 默认单阶段预算，含等待名额、正文准备和脚本内 HTTP 请求；脚本显式配置的 `timeout`（秒）优先，可延长或缩短 |
-| `memory_limit` | `134217728` | 单次 QuickJS 堆上限，字节 |
+| `memory_limit` | `134217728` | QuickJS 单次堆上限；Node.js 每个工作进程的 V8 老生代上限，向下取整为 MiB；字节 |
 | `max_body_size` | `33554432` | 正文缓冲上限，字节；脚本可进一步缩小 |
 | `max_concurrent_scripts` | `16` | 同时执行脚本或 Body Rewrite 的名额 |
 | `http_policies` | 空 | 预加载脚本主动请求使用的出站组，逗号分隔，如 `proxy,api`；不增加捕获或路由规则 |
 | `store` | `true` | 是否持久化 `$persistentStore`；`false` 仅保存在实例内存中，文件名自动确定 |
 
-每次脚本调用创建独立 VM。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。QuickJS 堆限制不等于进程内存限制，也不约束 jq 中间对象。
+每次脚本调用创建独立执行上下文。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。堆限制不等于进程内存限制，也不约束 jq 中间对象；Node.js 的限制还不覆盖 ArrayBuffer 等外部内存和 V8 新生代。
+
+### Node.js 后端
+
+使用 `make SURGE_RUNTIME=nodejs` 编译 dae，并在运行 dae 的系统中安装 Node.js 22.13 或更新版本。此构建默认 `CGO_ENABLED=0`，不编译或链接 QuickJS。需要指定 Node.js 路径时，在插件实例中设置：
+
+```text
+plugins {
+  surge {
+    node_path: '/usr/bin/node' # 按实际安装路径填写；省略时从 dae 的 PATH 查找 node
+    module {
+      demo: 'file:modules/demo.sgmodule'
+    }
+  }
+}
+```
+
+Node.js 通过外部进程运行，无需 npm 包或额外脚本文件。启动或重载会检查可执行文件；不可用时配置加载失败。每个二进制只包含一种脚本后端，所有 Surge 实例使用该后端，配置文件不提供运行时切换。`make SURGE_RUNTIME=quickjs` 编译 QuickJS 后端，运行脚本不需要安装 Node.js。
+
+每个实例按需启动并复用工作进程，最多 `max_concurrent_scripts` 个。多余进程空闲 60 秒后，在每 5 秒一次的维护中回收，保留最近使用的 1 个空闲进程；正在执行或等待脚本 HTTP、定时器的进程不会被空闲回收。每次脚本执行使用独立的新上下文。实例关闭会终止并回收进程。脚本超时、取消、执行异常或进程崩溃时丢弃该进程，后续调用重新创建。冷启动、正文跨进程复制及同步宿主调用有额外开销；计算密集的脚本可受益于 V8，短脚本不保证更快。Node.js 工作进程通常比 QuickJS 占用更多内存。
+
+两个后端使用同一套 Surge API、存储、定时器与 Go HTTP 客户端；脚本主动请求仍受 dae 出站策略和正文预算约束。脚本可通过 `$environment['dae-runtime']` 读取 `quickjs` 或 `nodejs`。Node.js 后端不暴露 `process`、`require`、原生模块、文件或直接网络 API，也不继承 `NODE_OPTIONS`、`NODE_PATH` 等进程环境配置。它使用独立上下文与 Node 权限模式，但 [node:vm 不构成安全沙箱](https://nodejs.org/api/vm.html)，应只加载可信脚本。
+
+### 持久存储
 
 同一实例的 HTTP、DNS、cron 和 generic 脚本共享存储，不同实例按 ID 隔离。默认文件例如 `/var/lib/dae/plugins/surge/surge-store.json`；改名会使用新的存储，旧文件保留。`store: false` 不读取或修改已有文件，重载后内存数据丢失；重新开启会恢复文件内的数据。
 
@@ -349,6 +373,6 @@ dae plugins surge status --instance surge
 
 ## 示例
 
-将 [`demo.sgmodule`](../../../examples/surge/demo.sgmodule)、[`request.js`](../../../examples/surge/request.js)、[`response.js`](../../../examples/surge/response.js) 放入 `/var/lib/dae/modules/`，使用首个配置示例。从已信任 CA 的客户端访问 `https://httpbin.org/get`，请求增加 `X-Dae-Runtime`，响应增加 `dae.runtime = "quickjs"`；`/dae-redirect` 测试 302。
+将 [`demo.sgmodule`](../../../examples/surge/demo.sgmodule)、[`request.js`](../../../examples/surge/request.js)、[`response.js`](../../../examples/surge/response.js) 放入 `/var/lib/dae/modules/`，使用首个配置示例。从已信任 CA 的客户端访问 `https://httpbin.org/get`，请求增加 `X-Dae-Runtime`，响应增加 `dae.runtime`，其值为编译时选定的 `quickjs` 或 `nodejs`；`/dae-redirect` 测试 302。
 
 API 支持范围、行为差异和限制见[支持范围](surge-module-support.md)。

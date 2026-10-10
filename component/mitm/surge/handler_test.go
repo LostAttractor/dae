@@ -44,10 +44,11 @@ func testProxyEngine(t *testing.T, module, source string) *Engine {
 	if len(m.Hostnames) == 0 {
 		m.Hostnames = []string{"example.com"}
 	}
-	rt, err := NewRuntime(RuntimeOptions{Timeout: time.Second})
+	rt, err := NewRuntime(t.Context(), RuntimeOptions{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(rt.backend.Close)
 	return newTestEngine(t, EngineOptions{Modules: []*Module{m}, Runtime: rt})
 }
 

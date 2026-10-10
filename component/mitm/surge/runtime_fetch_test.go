@@ -12,12 +12,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 )
 
 func TestRuntimeFetchUsesInvocationBudget(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		client := &http.Client{Transport: runtimeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			select {
 			case <-req.Context().Done():

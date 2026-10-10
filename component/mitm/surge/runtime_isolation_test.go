@@ -1,5 +1,3 @@
-//go:build cgo
-
 // SPDX-License-Identifier: AGPL-3.0-only
 
 package surge
@@ -20,7 +18,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func TestRuntimeCGOConcurrentGlobalsAndCallbacksStayIsolated(t *testing.T) {
+func TestRuntimeConcurrentGlobalsAndCallbacksStayIsolated(t *testing.T) {
 	const count = 8
 	ready := make(chan string, count)
 	release := make(chan struct{})
@@ -85,7 +83,7 @@ $done();
 	}
 }
 
-func TestRuntimeCGORepeatedCancellationAndClose(t *testing.T) {
+func TestRuntimeRepeatedCancellationAndClose(t *testing.T) {
 	// Each signal originates inside executing JS (including jobs/callbacks).
 	// Cancellation races both native execution and the finite $done/VM-close
 	// path, without depending on a goroutine moving between OS threads.
@@ -155,7 +153,7 @@ func TestRuntimeCGORepeatedCancellationAndClose(t *testing.T) {
 	}
 }
 
-func TestRuntimeCGOCancelPendingHTTPRequest(t *testing.T) {
+func TestRuntimeCancelPendingHTTPRequest(t *testing.T) {
 	started, stopped := make(chan struct{}), make(chan struct{})
 	client := &http.Client{Transport: runtimeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		close(started)
@@ -194,7 +192,7 @@ func TestRuntimeCGOCancelPendingHTTPRequest(t *testing.T) {
 	}
 }
 
-func TestRuntimeCGONativeModulesAndFilesystemUnavailable(t *testing.T) {
+func TestRuntimeNativeModulesAndFilesystemUnavailable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "native-loader-probe.mjs")
 	if err := os.WriteFile(path, []byte(`globalThis.nativeFileModuleLoaded = true; export default "filesystem access";`), 0600); err != nil {
 		t.Fatal(err)
@@ -218,7 +216,10 @@ func TestRuntimeCGONativeModulesAndFilesystemUnavailable(t *testing.T) {
 	}
 }
 
-func TestRuntimeCGORecoversAfterMemoryFailure(t *testing.T) {
+func TestRuntimeQuickJSRecoversAfterMemoryFailure(t *testing.T) {
+	if compiledJSRuntime != "quickjs" {
+		t.Skip("QuickJS bounds ArrayBuffer storage within its heap limit")
+	}
 	r := testRuntime(t, RuntimeOptions{MemoryLimit: 2 << 20})
 	for range 8 {
 		result, err := r.Run(context.Background(), `globalThis.beforeOOM = true; const huge = new Uint8Array(16*1024*1024); $done()`, Invocation{})
@@ -236,7 +237,7 @@ $done({body:String(buffer[65535])});
 	}
 }
 
-func TestRuntimeCGONonblockingAtomics(t *testing.T) {
+func TestRuntimeNonblockingAtomics(t *testing.T) {
 	r := testRuntime(t, RuntimeOptions{Timeout: 250 * time.Millisecond})
 	started := time.Now()
 	result, err := r.Run(context.Background(), `
@@ -258,7 +259,7 @@ $done({body:"nonblocking"});
 	}
 }
 
-func TestRuntimeCGOWorkerStackLimit(t *testing.T) {
+func TestRuntimeWorkerStackLimit(t *testing.T) {
 	// C execution on Go-created pthreads must respect their actual available
 	// stack, including musl's smaller default worker stack.
 	r := testRuntime(t, RuntimeOptions{})
@@ -295,7 +296,7 @@ $done({body:"stack failure recovered"});
 	}
 }
 
-func TestRuntimeCGOAtomics64(t *testing.T) {
+func TestRuntimeAtomics64(t *testing.T) {
 	// 32-bit targets can require compiler runtime helpers for 64-bit atomics.
 	// Exercise them with high bits set so a wrong ABI cannot pass by truncating.
 	r := testRuntime(t, RuntimeOptions{})

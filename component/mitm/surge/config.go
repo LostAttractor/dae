@@ -26,6 +26,7 @@ type ModuleSource struct {
 type Config struct {
 	Modules              []ModuleSource
 	Store                bool
+	NodePath             string
 	ScriptTimeout        time.Duration
 	MemoryLimit          int64
 	MaxBodySize          int64
@@ -35,7 +36,7 @@ type Config struct {
 
 // ParseConfig interprets only the settings owned by a Surge instance.
 func ParseConfig(section *config_parser.Section) (Config, error) {
-	c := Config{Store: true, ScriptTimeout: 5 * time.Second, MemoryLimit: 128 << 20, MaxBodySize: 32 << 20, MaxConcurrentScripts: 16}
+	c := Config{Store: true, NodePath: "node", ScriptTimeout: 5 * time.Second, MemoryLimit: 128 << 20, MaxBodySize: 32 << 20, MaxConcurrentScripts: 16}
 	if section == nil {
 		return c, fmt.Errorf("surge configuration is required")
 	}
@@ -51,12 +52,16 @@ func ParseConfig(section *config_parser.Section) (Config, error) {
 			settings.Items = append(settings.Items, item)
 		}
 	}
-	err := plugin.DecodeSettings(settings, map[string]any{
+	fields := map[string]any{
 		"store": &c.Store, "script_timeout": &c.ScriptTimeout,
 		"memory_limit": &c.MemoryLimit, "max_body_size": &c.MaxBodySize,
 		"max_concurrent_scripts": &c.MaxConcurrentScripts,
 		"http_policies":          &c.HTTPPolicies,
-	})
+	}
+	if compiledJSRuntime == "nodejs" {
+		fields["node_path"] = &c.NodePath
+	}
+	err := plugin.DecodeSettings(settings, fields)
 	if err != nil {
 		return c, err
 	}
@@ -175,6 +180,9 @@ func parseModuleArguments(section *config_parser.Section) (map[string]string, er
 }
 
 func (s Config) Validate() error {
+	if compiledJSRuntime == "nodejs" && strings.TrimSpace(s.NodePath) == "" {
+		return fmt.Errorf("surge: node_path must be non-empty")
+	}
 	if len(s.Modules) == 0 {
 		return fmt.Errorf("surge: at least one module is required when enabled")
 	}

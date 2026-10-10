@@ -1,6 +1,6 @@
 # 插件配置
 
-`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 证书、客户端开关和正文额度。默认构建包含 `surge`，支持 HTTP/DNS sgmodule 与 QuickJS；其他插件在独立仓库维护，通过 [plugins.cfg](../../../plugins.cfg) 加入 dae 编译。高级 DNS 路由和缓存已拆成两个可选插件，见 [DNS](dns.md)。
+`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 证书、客户端开关和正文额度。默认构建包含 `surge`，支持 HTTP/DNS sgmodule；JavaScript 后端在编译时选择，默认为 QuickJS，也可用 `make SURGE_RUNTIME=nodejs` 选择 Node.js。其他插件在独立仓库维护，通过 [plugins.cfg](../../../plugins.cfg) 加入 dae 编译。高级 DNS 路由和缓存已拆成两个可选插件，见 [DNS](dns.md)。
 
 ```text
 mitm {
@@ -29,7 +29,7 @@ plugins {
 
 `buffer_memory_limit` 放在宿主，默认 `268435456`（256 MiB），按进程共享受管理的正文缓冲额度。它覆盖正文快照、Surge 解压和改写输出，以及脚本 HTTP 响应和待交付的回调数据；转发未完成、只读借用或请求重试仍需保留的数据继续计入额度。分配前申请，扩容同时计算新旧两份容量；额度不足立即返回，不持有部分额度等待其他请求。Surge 跳过当前处理并转发原文，已成功应用的前序规则保留；脚本 HTTP 请求通过回调报告失败。
 
-重载发布后新旧宿主共用额度，采用两者中较小的限制，旧宿主退出后使用新限制；候选准备不改变活动额度，调低上限不会丢弃已有正文。`dae plugins status` 显示当前用量、有效上限、进程峰值和申请被拒次数。这个额度不是 RSS 上限，不覆盖 QuickJS 堆、jq 中间对象、插件自行分配的数据、缓存或网络协议缓冲；单脚本 `memory_limit`、正文大小和并发限制仍然生效。
+重载发布后新旧宿主共用额度，采用两者中较小的限制，旧宿主退出后使用新限制；候选准备不改变活动额度，调低上限不会丢弃已有正文。`dae plugins status` 显示当前用量、有效上限、进程峰值和申请被拒次数。这个额度不是 RSS 上限，不覆盖 JavaScript 引擎内存、jq 中间对象、插件自行分配的数据、缓存或网络协议缓冲；单脚本 `memory_limit`、正文大小和并发限制仍然生效。
 
 `dae plugins surge configure` 输出的 module 段可放入所选 Surge 实例。
 

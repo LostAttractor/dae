@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 )
 
@@ -159,8 +158,8 @@ func TestRuntimeHTTPOptionsAndSessionCookies(t *testing.T) {
 	}
 }
 
-func TestRuntimeHTTPDefaultTimeoutAndRequestLimits(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+func TestRuntimeHTTPDefaultTimeout(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		client := &http.Client{Transport: runtimeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			<-req.Context().Done()
 			return nil, req.Context().Err()
@@ -172,6 +171,9 @@ func TestRuntimeHTTPDefaultTimeoutAndRequestLimits(t *testing.T) {
 			t.Fatalf("default HTTP deadline: %v elapsed=%s", err, time.Since(started))
 		}
 	})
+}
+
+func TestRuntimeHTTPRequestLimits(t *testing.T) {
 	var calls atomic.Int32
 	gate := make(chan struct{})
 	client := &http.Client{Transport: runtimeRoundTripFunc(func(*http.Request) (*http.Response, error) {

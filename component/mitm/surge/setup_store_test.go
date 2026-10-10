@@ -46,7 +46,7 @@ $done();`,
 			t.Fatal(err)
 		}
 		e := p.(*Engine)
-		synctest.Test(t, func(t *testing.T) {
+		runtimeFakeClockTest(t, func(t *testing.T) {
 			host := startCronTestHost(t, e, http.DefaultClient)
 			if _, err := host.TriggerScript("test", api.ScriptRunRequest{Script: script}); err != nil {
 				t.Fatal(err)

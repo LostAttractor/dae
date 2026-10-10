@@ -3,7 +3,7 @@
   "use strict";
   delete globalThis.__daeHost;
   delete globalThis.__daeInput;
-  // Capture the bundled QuickJS intrinsics before running user scripts. Native
+  // Capture the backend's base64 intrinsics before running user scripts. Native
   // encoding avoids building one temporary JS string for every three bytes.
   const toBase64 = Function.prototype.call.bind(Uint8Array.prototype.toBase64);
   const decodeBase64 = Uint8Array.fromBase64;
@@ -39,10 +39,20 @@
     encodeInto(text, dest) {
       if (!(dest instanceof Uint8Array)) throw new TypeError("Expected Uint8Array");
       let read = 0, written = 0;
+      // Write complete code points directly. Encoding each character through
+      // the host bridge would require an IPC round trip per character on Node.
       for (const char of String(text)) {
-        const encoded = this.encode(char);
-        if (written + encoded.length > dest.length) break;
-        dest.set(encoded, written); written += encoded.length; read += char.length;
+        let code = char.codePointAt(0);
+        if (code >= 0xd800 && code <= 0xdfff) code = 0xfffd;
+        const size = code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+        if (written + size > dest.length) break;
+        if (size === 1) dest[written++] = code;
+        else {
+          dest[written++] = (size === 2 ? 0xc0 : size === 3 ? 0xe0 : 0xf0) | (code >> (6 * (size - 1)));
+          for (let shift = 6 * (size - 2); shift >= 0; shift -= 6)
+            dest[written++] = 0x80 | ((code >> shift) & 0x3f);
+        }
+        read += char.length;
       }
       return { read, written };
     }
@@ -155,6 +165,13 @@
   };
   let sequence = 0;
   const callbacks = new Map();
+  function registerCallback(callback, operation, payload) {
+    const id = ++sequence;
+    callbacks.set(id, callback);
+    try { host(operation, String(id), payload); }
+    catch (error) { callbacks.delete(id); throw error; }
+    return id;
+  }
   globalThis.__daeDispatch = (id, json) => {
     const callback = callbacks.get(id);
     if (!callback || completed) return;
@@ -163,10 +180,7 @@
   };
   globalThis.setTimeout = (fn, ms = 0, ...args) => {
     if (typeof fn !== "function") throw new TypeError("setTimeout expects a function");
-    const id = ++sequence;
-    callbacks.set(id, () => fn(...args));
-    host("timer", String(id), String(Math.max(0, Math.floor(Number(ms) || 0))));
-    return id;
+    return registerCallback(() => fn(...args), "timer", String(Math.max(0, Math.floor(Number(ms) || 0))));
   };
   globalThis.clearTimeout = id => { callbacks.delete(id); host("clear-timer", String(id)); };
   function httpRequest(method, options, callback, fetch = false) {
@@ -191,8 +205,7 @@
       if (options[key] !== undefined && typeof options[key] !== "boolean") throw new TypeError(key + " must be a boolean");
       payload[key] = options[key];
     }
-    const id = ++sequence;
-    callbacks.set(id, event => {
+    const id = registerCallback(event => {
       const body = event.bodyBase64 == null ? null : options["binary-mode"]
         ? fromBase64(event.bodyBase64) : host("decode", event.bodyBase64, "", "");
       if (event.response && !options["full-header-mode"]) {
@@ -200,9 +213,7 @@
         if (event.response.h2_trailers != null) event.response.h2_trailers = headerObject(event.response.h2_trailers);
       }
       callback(event.error || null, event.response || null, body);
-    });
-    try { host("http", String(id), JSON.stringify(payload)); }
-    catch (error) { callbacks.delete(id); throw error; }
+    }, "http", JSON.stringify(payload));
     return () => host("cancel-http", String(id));
   }
   globalThis.$httpClient = {};

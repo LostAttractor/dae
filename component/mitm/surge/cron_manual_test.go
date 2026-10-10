@@ -16,7 +16,7 @@ import (
 )
 
 func TestCronManualLifecycle(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		m := cronModule(t, `[Script]
 sign=type=cron,cronexp="* * * * * *",timeout=10,script-path=sign.js`)
 		m.Name = "account"
@@ -88,7 +88,7 @@ $httpClient.get("https://cron.test/", (error) => { if(error) throw Error(error);
 }
 
 func TestTaskManualSelection(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		modules := make([]*Module, 2)
 		for i, name := range []string{"first", "second"} {
 			declaration := "type=cron,cronexp=0 0 31 2 *,"

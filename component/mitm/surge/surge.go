@@ -43,7 +43,7 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 			return nil, err
 		}
 		if len(module.Scripts)+len(module.TaskScripts) != 0 && o.Runtime == nil {
-			return nil, errors.New("surge: scripts require a QuickJS runtime")
+			return nil, errors.New("surge: scripts require a JavaScript runtime")
 		}
 	}
 	if o.MaxBodySize <= 0 || o.MaxConcurrentScripts <= 0 || o.ScriptTimeout <= 0 {
@@ -60,6 +60,11 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 	}
 	e.metrics = newEngineMetrics(e)
 	return e, nil
+}
+
+// Close releases the runtime after the host has drained scripts and workers.
+func (e *Engine) Close() error {
+	return e.options.Runtime.Close()
 }
 
 // forConnection fixes HTTP processing to modules that allow the intercepted

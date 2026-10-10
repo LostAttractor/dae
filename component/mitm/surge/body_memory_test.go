@@ -95,10 +95,11 @@ func TestBodyMemoryPressurePreservesCompressedAndJQResponse(t *testing.T) {
 func TestScriptHTTPMemoryReleasedAfterDispatchAndCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "hello") }))
 	defer server.Close()
-	r, err := NewRuntime(RuntimeOptions{Timeout: time.Second})
+	r, err := NewRuntime(t.Context(), RuntimeOptions{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(r.backend.Close)
 	for _, wait := range []bool{true, false} {
 		budget := membuffer.NewBudget(1 << 20)
 		source := fmt.Sprintf(`$httpClient.get(%q, (error, response, data) => { if(error) throw Error(error); $done({body:data}); });`, server.URL)
@@ -120,10 +121,11 @@ func TestScriptHTTPMemoryReleasedAfterDispatchAndCancellation(t *testing.T) {
 }
 
 func TestScriptResultMemoryReleasedOnFailure(t *testing.T) {
-	r, err := NewRuntime(RuntimeOptions{Timeout: time.Second})
+	r, err := NewRuntime(t.Context(), RuntimeOptions{Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(r.backend.Close)
 	for _, source := range []string{
 		`$done({body:"allocated"}); throw Error("after done");`,
 		`$done({body:"allocated", response:{body:"nested", status:999}});`,

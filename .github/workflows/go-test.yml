@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "**/*.go"
+      - "component/mitm/surge/**/*.js"
       - "client/**"
       - "web/**"
       - "docs/api/openapi.json"
@@ -21,6 +22,7 @@ on:
       - next
     paths:
       - "**/*.go"
+      - "component/mitm/surge/**/*.js"
       - "client/**"
       - "web/**"
       - "docs/api/openapi.json"
@@ -38,8 +40,14 @@ permissions: read-all
 
 jobs:
   go-test:
-    name: Go Unit Test
+    name: Go Unit Test (${{ matrix.surge-runtime }})
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        surge-runtime: [quickjs, nodejs]
+    env:
+      SURGE_RUNTIME: ${{ matrix.surge-runtime }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -77,3 +85,19 @@ jobs:
 
       - name: Run tests
         run: make test CLANG=clang-15 STRIP=llvm-strip-15
+
+      - name: Check runtime dependency isolation
+        shell: bash
+        run: |
+          if [[ "$SURGE_RUNTIME" == nodejs ]]; then
+            rm -rf third_party/quickjs-go
+            CGO_ENABLED=0 go build -tags=surge_nodejs -o /tmp/dae-nodejs .
+            deps=$(CGO_ENABLED=0 go list -tags=surge_nodejs -deps -f '{{if or .CgoFiles (eq .ImportPath "github.com/buke/quickjs-go")}}{{.ImportPath}}{{end}}' .)
+            test -z "$deps"
+          else
+            deps=$(go list -deps ./component/mitm/surge)
+            if [[ "$deps" == *'/internal/nodejs'* ]]; then
+              echo 'QuickJS build includes the Node.js adapter' >&2
+              exit 1
+            fi
+          fi

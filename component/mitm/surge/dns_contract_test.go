@@ -16,7 +16,7 @@ import (
 )
 
 func TestDNSScriptCachesTTLWithRoutingIsolation(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		module := moduleScopeModule(t, "dns", "", "[Host]\nscript.test=script:answer\n[Script]\nanswer=type=dns,script-path=answer.js", map[string]string{"answer": `
           const count = Number($persistentStore.read("count") || "0") + 1;
           $persistentStore.write(String(count), "count");

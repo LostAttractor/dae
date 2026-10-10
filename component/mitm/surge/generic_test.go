@@ -40,7 +40,7 @@ disabled=type=generic,enable=false,script-path=missing.js`)
 }
 
 func TestGenericManualRuntime(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		m := cronModule(t, "[Script]\ntool=script-path=tool.js,argument=demo")
 		m.Name = "utilities"
 		e := cronTestEngine(t, m, map[string]string{"tool": `
@@ -117,7 +117,7 @@ $httpClient.get("https://generic.test/", (error, response, body) => {
 }
 
 func TestGenericAndCronShareAdmissionAndCancellation(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		m := cronModule(t, `[Script]
 manual=type=generic,timeout=10,script-path=manual.js
 timer=type=cron,cronexp="* * * * * *",timeout=10,script-path=timer.js`)
@@ -182,7 +182,7 @@ timer=type=cron,cronexp="* * * * * *",timeout=10,script-path=timer.js`)
 }
 
 func TestGenericTimeoutAndRecovery(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		m := cronModule(t, "[Script]\ntool=type=generic,timeout=0.1,script-path=tool.js")
 		e := cronTestEngine(t, m, map[string]string{"tool": `if ($persistentStore.read("done")) $done();`}, 1)
 		host := startCronTestHost(t, e, http.DefaultClient)

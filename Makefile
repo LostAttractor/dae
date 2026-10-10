@@ -26,9 +26,19 @@ DEBUG_FLAGS ?= n
 NOSTRIP ?= n
 STATIC ?= n
 GRPC_TRACE ?= n
+SURGE_RUNTIME ?= quickjs
+ifeq ($(SURGE_RUNTIME),nodejs)
+CGO_ENABLED ?= 0
+else ifeq ($(SURGE_RUNTIME),quickjs)
 CGO_ENABLED ?= 1
+else
+$(error SURGE_RUNTIME must be quickjs or nodejs)
+endif
 export CGO_ENABLED
 GO_BUILD_TAGS := netgo,osusergo
+ifeq ($(SURGE_RUNTIME),nodejs)
+GO_BUILD_TAGS := $(GO_BUILD_TAGS),surge_nodejs
+endif
 ifneq ($(GRPC_TRACE),y)
 GO_BUILD_TAGS := $(GO_BUILD_TAGS),grpcnotrace
 endif
@@ -71,11 +81,13 @@ else
 endif
 
 ifeq ($(STATIC),y)
+ifeq ($(CGO_ENABLED),1)
 STATIC_LDFLAGS := -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'
+endif
 endif
 BUILD_ARGS := $(GO_TRIMPATH_FLAG) $(GO_DEBUG_FLAGS) -ldflags "$(GO_STRIP_FLAGS) -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) $(BPF_GO_LDFLAGS) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
 
-.PHONY: check-go-arch check-go-version check-cgo check-bpf-capacities clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt plugins submodule submodules test
+.PHONY: check-go-arch check-go-version check-bpf-capacities clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt plugins submodule submodules test
 
 check-bpf-capacities:
 	@for entry in $(foreach name,$(BPF_CAPACITIES),'$(name)=$($(name))'); do \
@@ -85,12 +97,6 @@ check-bpf-capacities:
 	done
 	@if [ "$(MAX_MATCH_SET_LEN)" -lt 32 ] || [ "$(MAX_MATCH_SET_LEN)" -gt 65536 ] || [ $$(( $(MAX_MATCH_SET_LEN) % 32 )) -ne 0 ]; then \
 		echo "ERROR: MAX_MATCH_SET_LEN must be a multiple of 32 in [32, 65536]" >&2; exit 1; \
-	fi
-
-check-cgo:
-	@if [ "$(CGO_ENABLED)" != "1" ]; then \
-		echo "ERROR: dae requires CGO_ENABLED=1 for its native QuickJS runtime." >&2; \
-		exit 1; \
 	fi
 
 check-go-arch:
@@ -137,7 +143,7 @@ check-go-version:
 
 ## Begin Dae Build
 dae: export GOOS=linux
-dae: check-cgo check-go-arch check-go-version plugins ebpf web-assets
+dae: check-go-arch check-go-version plugins ebpf web-assets
 	@echo $(CFLAGS)
 	go build -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) -o $(OUTPUT) $(BUILD_ARGS) .
 ## End Dae Build
@@ -149,6 +155,9 @@ plugins: check-go-version submodule
 
 ## Begin Git Submodules
 SUBMODULE_PATHS := $(shell sed -n 's/^[[:space:]]*path[[:space:]]*=[[:space:]]*//p' .gitmodules)
+ifeq ($(SURGE_RUNTIME),nodejs)
+SUBMODULE_PATHS := $(filter-out third_party/quickjs-go,$(SUBMODULE_PATHS))
+endif
 MISSING_SUBMODULE_PATHS := $(foreach path,$(SUBMODULE_PATHS),$(if $(wildcard $(path)/*),,$(path)))
 
 submodule submodules:
@@ -195,7 +204,7 @@ ebpf: check-go-version check-bpf-capacities submodule clean-ebpf
 	if [ -n "$$tags" ]; then tags="$$tags,dae_splice"; else tags=dae_splice; fi && \
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
-test: check-cgo plugins ebpf web-assets
+test: plugins ebpf web-assets
 	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:

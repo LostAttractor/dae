@@ -215,7 +215,7 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}, HTTPClient: http.DefaultClient}, mitm.Instance{ID: "personal", Type: "surge", Plugin: e})
 		if err != nil {
 			t.Fatal(err)

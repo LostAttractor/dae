@@ -26,7 +26,7 @@ func scriptEnvironment() map[string]string {
 	}
 	env := map[string]string{
 		"system": runtime.GOOS, "language": strings.ReplaceAll(language, "_", "-"), "device-model": model,
-		"surge-version": "", "surge-build": "", "dae-runtime": "quickjs",
+		"surge-version": "", "surge-build": "", "dae-runtime": compiledJSRuntime,
 	}
 	if build, ok := debug.ReadBuildInfo(); ok {
 		env["dae-version"] = build.Main.Version

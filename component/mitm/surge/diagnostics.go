@@ -143,6 +143,14 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 			}
 		}
 	}
+	urls := []string{value.URL}
+	if target, err := url.Parse(value.URL); err == nil {
+		var sni string
+		if input.Flow.SNI != nil {
+			sni = *input.Flow.SNI
+		}
+		urls = scriptMatchURLs(target, value.Host, sni)
+	}
 	selected := make(map[string]bool)
 	for _, module := range scoped.options.Modules {
 		for i, script := range module.Scripts {
@@ -150,21 +158,7 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 				result.Complete = false
 				return result
 			}
-			hit := script.Match(value.URL)
-			for _, alias := range []string{value.Host, func() string {
-				if input.Flow.SNI != nil {
-					return *input.Flow.SNI
-				}
-				return ""
-			}()} {
-				if alias != "" {
-					parsed, err := url.Parse(value.URL)
-					if err == nil {
-						parsed.Host = alias
-						hit = hit || script.Match(parsed.String())
-					}
-				}
-			}
+			hit := slices.ContainsFunc(urls, script.Match)
 			step := appendStep(module, script.Type, i, script.Name+": "+script.Pattern, hit)
 			if selected[script.Type] {
 				step.Status, step.Reason = "not_reached", "earlier_script"

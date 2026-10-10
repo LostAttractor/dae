@@ -19,5 +19,5 @@ runs:
           -o "$test_binary" ./component/mitm/surge
         scripts/check-static.sh "$test_binary"
         timeout 180s scripts/run-target.sh "$test_binary" \
-          -test.run '^(TestRuntimeRewrite|TestRuntimeBinaryAndText|TestRuntimeResultPresenceAndSyntheticResponse|TestRuntimePromisesAndTimers|TestRuntimeCGOAtomics64)$' \
+          -test.run '^(TestRuntimeRewrite|TestRuntimeBinaryAndText|TestRuntimeResultPresenceAndSyntheticResponse|TestRuntimePromisesAndTimers|TestRuntimeAtomics64)$' \
           -test.timeout 2m

@@ -13,10 +13,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
-	"runtime"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"golang.org/x/net/publicsuffix"
 )
@@ -30,16 +28,24 @@ var runtimeWebBootstrap string
 //go:embed runtime_fetch.js
 var runtimeFetchBootstrap string
 
+var runtimeBootstrapSource = runtimeWebBootstrap + "\n" + runtimeFetchBootstrap + "\n" + runtimeBootstrap
+
 // Runtime shares its persistent store and recent notifications. Every Run creates a fresh
-// QuickJS VM, so globals and callbacks never leak between concurrent requests.
+// JavaScript context, so globals and callbacks never leak between requests.
 type Runtime struct {
 	opts          RuntimeOptions
 	data          *runtimeStore
 	environment   map[string]string
 	notifications notificationHistory
+	backend       *runtimeBackend
 }
 
-func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
+// NewRuntime uses ctx for preparation, including the external runtime probe.
+// Invocation lifetimes are owned by the contexts passed to Run.
+func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultScriptTimeout
 	}
@@ -56,12 +62,23 @@ func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{opts: opts, data: data, environment: scriptEnvironment()}, nil
+	backend, err := newRuntimeBackend(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &Runtime{opts: opts, data: data, environment: scriptEnvironment(), backend: backend}, nil
+}
+
+func (r *Runtime) Close() error {
+	if r != nil && r.backend != nil {
+		r.backend.Close()
+	}
+	return nil
 }
 
 // Run executes source with a wall-clock budget shared by synchronous code,
-// promise jobs, timers, and HTTP requests. No QuickJS std/os helpers or module
-// loaders are installed: scripts receive only the explicit Surge host bridge.
+// promise jobs, timers, and HTTP requests. Scripts receive the Surge host bridge
+// without Node globals, QuickJS std/os helpers, or native module loaders.
 // The caller supplies a body budget and limit, and closes the returned Result.
 func (r *Runtime) Run(parent context.Context, source string, in Invocation) (result *Result, err error) {
 	started := time.Now()
@@ -75,30 +92,10 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// QuickJS tracks the native C stack. Keep creation, execution, callbacks,
-	// and destruction on the same OS thread; other goroutines only send events
-	// or set the engine's atomic interrupt flag.
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	vm, err := quickjs.NewVM(uint64(r.opts.MemoryLimit), 1<<20)
+	vm, err := r.backend.newVM(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer vm.Close()
-	// The deadline covers the entire invocation, including all later
-	// promise jobs and callbacks. It does not need rearming between phases.
-	deadline, _ := ctx.Deadline()
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return nil, context.DeadlineExceeded
-	}
-	if err := vm.SetEvalTimeout(remaining); err != nil {
-		return nil, err
-	}
-	// Interrupt only sets a Go atomic, so cancellation can safely race Close.
-	// Stop the callback on return; no watcher goroutine or native-state join is needed.
-	stopInterrupt := context.AfterFunc(ctx, vm.Interrupt)
-	defer stopInterrupt()
 	client := in.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -130,6 +127,8 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 			}
 		}
 	}()
+	// Release the VM before cancellation so a healthy Node worker can be reused.
+	defer vm.Close()
 	if err := vm.SetHostFunc(execution.hostCall); err != nil {
 		return nil, err
 	}
@@ -153,7 +152,7 @@ func (r *Runtime) Run(parent context.Context, source string, in Invocation) (res
 	if err := vm.SetInputJSON(input); err != nil {
 		return nil, fmt.Errorf("initialize Surge script input: %w", err)
 	}
-	if err := vm.Eval(runtimeWebBootstrap + "\n" + runtimeFetchBootstrap + "\n" + runtimeBootstrap); err != nil {
+	if err := vm.Bootstrap(); err != nil {
 		return nil, fmt.Errorf("initialize Surge script: %w", err)
 	}
 	if err := vm.Eval(source); err != nil {

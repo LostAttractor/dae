@@ -44,10 +44,11 @@ func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls
 	}
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
-	runtime, err := NewRuntime(RuntimeOptions{})
+	runtime, err := NewRuntime(t.Context(), RuntimeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(runtime.backend.Close)
 	moduleText := "[MITM]\nhostname=example.com\n[Script]\n"
 	for _, kind := range []string{"http-request", "http-response"} {
 		if _, ok := scripts[kind]; ok {

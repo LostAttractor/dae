@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -30,33 +29,12 @@ func replayableBodyTimeout(err error, parent context.Context) bool {
 	return errors.Is(err, errBufferedBodyTimeout) && parent.Err() == nil
 }
 
-func (e *Engine) acquire(ctx context.Context, kind string) (func(), error) {
-	defer func(started time.Time) {
-		e.metrics.wait.WithLabelValues(kind).Observe(time.Since(started).Seconds())
-	}(time.Now())
-	select {
-	case e.slots <- struct{}{}:
-		return func() { <-e.slots }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
 func (e *Engine) matchScript(kind string, request *http.Request) (*Module, *Script) {
-	urls := []string{request.URL.String()}
-	if request.Host != "" && request.Host != request.URL.Host {
-		alias := request.URL.Clone()
-		alias.Host = request.Host
-		urls = append(urls, alias.String())
+	var sni string
+	if request.TLS != nil {
+		sni = request.TLS.ServerName
 	}
-	if request.TLS != nil && request.TLS.ServerName != "" {
-		alias := request.URL.Clone()
-		alias.Host = request.TLS.ServerName
-		if port := request.URL.Port(); port != "" {
-			alias.Host = net.JoinHostPort(alias.Host, port)
-		}
-		urls = append(urls, alias.String())
-	}
+	urls := scriptMatchURLs(request.URL, request.Host, sni)
 	for _, m := range e.options.Modules {
 		for i := range m.Scripts {
 			s := &m.Scripts[i]
@@ -73,22 +51,24 @@ func (e *Engine) matchScript(kind string, request *http.Request) (*Module, *Scri
 	return nil, nil
 }
 
-func (e *Engine) scriptTimeout(s *Script) time.Duration {
-	if s.Timeout > 0 {
-		return s.Timeout
+// Runtime matching and diagnostics use the same URL aliases. SNI carries no
+// port, so its alias retains the request URL's explicit destination port.
+func scriptMatchURLs(target *url.URL, host, sni string) []string {
+	urls := []string{target.String()}
+	if host != "" && host != target.Host {
+		alias := target.Clone()
+		alias.Host = host
+		urls = append(urls, alias.String())
 	}
-	return e.options.ScriptTimeout
-}
-
-func (e *Engine) runScript(ctx context.Context, module *Module, s *Script, req, resp *Message, client *http.Client) (*Result, error) {
-	return e.runInvocation(ctx, s, Invocation{
-		ModuleName: module.Name,
-		Request:    req, Response: resp, ScriptName: s.Name, ScriptType: s.Type,
-		Argument: s.Argument, BinaryBodyMode: s.BinaryBodyMode,
-		ArgumentSet: s.ArgumentSet, ScriptPath: s.Path, FullHeaderMode: s.FullHeaderMode,
-		Timeout: e.scriptTimeout(s), HTTPClient: client,
-		BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize,
-	})
+	if sni != "" {
+		alias := target.Clone()
+		alias.Host = sni
+		if port := target.Port(); port != "" {
+			alias.Host = net.JoinHostPort(sni, port)
+		}
+		urls = append(urls, alias.String())
+	}
+	return urls
 }
 
 func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Response, err error) {
@@ -146,7 +126,7 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		message.Body = body.Bytes()
 	}
 	execution.start()
-	result, err := e.runScript(ctx, module, s, message, nil, client)
+	result, err := e.runInvocation(ctx, module, s, Invocation{Request: message, HTTPClient: client})
 	if err != nil {
 		execution.failed(err)
 		e.logRequest(r, fmt.Sprintf("Surge script %q failed; forwarding original request", s.Name), err)
@@ -233,7 +213,7 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		message.Trailers = r.Trailer
 	}
 	execution.start()
-	result, err := e.runScript(ctx, module, s, requestMessage(r.Request), message, client)
+	result, err := e.runInvocation(ctx, module, s, Invocation{Request: requestMessage(r.Request), Response: message, HTTPClient: client})
 	if err != nil {
 		execution.failed(err)
 		e.logRequest(r.Request, fmt.Sprintf("Surge script %q failed; forwarding original response", s.Name), err)

@@ -109,7 +109,8 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 		}
 		storePath = filepath.Join(services.BaseDir, "plugins", instanceID, "surge-store.json")
 	}
-	runtime, err := NewRuntime(RuntimeOptions{
+	runtime, err := NewRuntime(ctx, RuntimeOptions{
+		NodePath: conf.NodePath, NodeWorkers: conf.MaxConcurrentScripts,
 		MemoryLimit: conf.MemoryLimit, Timeout: conf.ScriptTimeout,
 		StorePath: storePath,
 		Logger:    services.Logger,
@@ -117,13 +118,17 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	if err != nil {
 		return nil, err
 	}
-	return NewEngine(EngineOptions{
+	engine, err := NewEngine(EngineOptions{
 		Modules: modules, Runtime: runtime,
 		HTTPPolicies: conf.HTTPPolicies,
 		BodyMemory:   services.BodyMemory,
 		MaxBodySize:  conf.MaxBodySize, MaxConcurrentScripts: conf.MaxConcurrentScripts,
 		ScriptTimeout: conf.ScriptTimeout, Logger: services.Logger,
 	})
+	if err != nil {
+		_ = runtime.Close()
+	}
+	return engine, err
 }
 
 func Configure(spec plugin.Spec) (plugin.Factory, error) {
@@ -138,6 +143,7 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 		}
 		if services.Metrics != nil {
 			if err := services.Metrics.Register(engine.metrics); err != nil {
+				_ = engine.Close()
 				return nil, fmt.Errorf("surge metrics: %w", err)
 			}
 		}

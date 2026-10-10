@@ -2,14 +2,7 @@
 
 package surge
 
-import (
-	"context"
-	"time"
-
-	"github.com/daeuniverse/dae/common/resource"
-
-	"github.com/prometheus/client_golang/prometheus"
-)
+import "github.com/prometheus/client_golang/prometheus"
 
 // All authority-scoped engine copies share these instance-owned collectors.
 type engineMetrics struct {
@@ -80,22 +73,4 @@ func (m *engineMetrics) match(kind string) {
 
 func (m *engineMetrics) skip(stage, reason string) {
 	m.skips.WithLabelValues(stage, reason).Inc()
-}
-
-func (e *Engine) runInvocation(ctx context.Context, script *Script, invocation Invocation) (*Result, error) {
-	defer func(started time.Time) {
-		e.metrics.duration.WithLabelValues(invocation.ScriptType).Observe(time.Since(started).Seconds())
-	}(time.Now())
-	source := script.Source
-	if script.Debug {
-		path := resource.Source{Location: script.Path}
-		if !path.Remote() {
-			result, err := resource.Read(ctx, nil, path, resource.ReadOptions{MaxBytes: MaxScriptBytes})
-			if err != nil {
-				return nil, err
-			}
-			source = string(result.Data)
-		}
-	}
-	return e.options.Runtime.Run(ctx, source, invocation)
 }

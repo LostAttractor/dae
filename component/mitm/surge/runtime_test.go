@@ -35,10 +35,12 @@ func (r *runtimeHarness) Run(ctx context.Context, source string, in Invocation) 
 }
 func testRuntime(t *testing.T, opts RuntimeOptions) *runtimeHarness {
 	t.Helper()
-	r, err := NewRuntime(opts)
+	r, err := NewRuntime(t.Context(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Keep only the backend alive, so store collection tests can release Runtime.
+	t.Cleanup(r.backend.Close)
 	budget := membuffer.NewBudget(256 << 20)
 	t.Cleanup(func() {
 		if used := budget.Status().Used; used != 0 {
@@ -150,23 +152,31 @@ func TestRuntimeBase64Bridge(t *testing.T) {
 
 func TestRuntimeMessageBodyEncoding(t *testing.T) {
 	r := testRuntime(t, RuntimeOptions{})
-	for _, body := range [][]byte{nil, {}, []byte("\xef\xbb\xbfhello\x00你好🚀"), {0xff, 0xfe, 'x'}} {
+	for _, test := range []struct {
+		body []byte
+		text string
+	}{
+		{body: nil},
+		{body: []byte{}},
+		{body: []byte("\xef\xbb\xbfhello\x00你好🚀"), text: "hello\x00你好🚀"},
+		{body: []byte{0xff, 0xfe, 'x'}, text: "\ufffd\ufffdx"},
+	} {
 		for _, binaryMode := range []bool{false, true} {
-			result, err := r.Run(context.Background(), `$done({body: $response.body});`, Invocation{
-				BinaryBodyMode: binaryMode, Response: &Message{Body: body},
+			result, err := r.Run(t.Context(), `$done({body: $response.body});`, Invocation{
+				BinaryBodyMode: binaryMode, Response: &Message{Body: test.body},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(body) == 0 {
+			if len(test.body) == 0 {
 				if result.Body != nil {
 					t.Fatal("absent body became an empty body")
 				}
 				continue
 			}
-			want := body
+			want := test.body
 			if !binaryMode {
-				want = []byte(strings.TrimPrefix(strings.ToValidUTF8(string(body), "\ufffd"), "\ufeff"))
+				want = []byte(test.text)
 			}
 			if result.Body == nil || !bytes.Equal(result.Body.Bytes(), want) {
 				t.Fatalf("body=%v, binary=%v, want %v", result.Body, binaryMode, want)
@@ -313,7 +323,7 @@ func TestRuntimeErrors(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) < 20*time.Millisecond {
 		t.Fatalf("missing done: %v", err)
 	}
-	_, err = r.Run(context.Background(), `throw Error("test failure")`, Invocation{})
+	_, err = r.Run(t.Context(), `throw Error("test failure")`, Invocation{Timeout: time.Second})
 	if err == nil || !strings.Contains(err.Error(), "test failure") {
 		t.Fatalf("exception: %v", err)
 	}

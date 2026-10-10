@@ -231,11 +231,8 @@ func (e *Engine) runTask(job *scriptTask, started time.Time, trigger string) {
 	}
 	executed = true
 	var result *Result
-	result, err = e.runInvocation(ctx, script, Invocation{
-		ModuleName: job.module.Name, ScriptName: script.Name, ScriptType: script.Type, CronExp: script.CronExp, Trigger: trigger,
-		Argument: script.Argument, Timeout: e.scriptTimeout(script), BinaryBodyMode: script.BinaryBodyMode,
-		ArgumentSet: script.ArgumentSet, ScriptPath: script.Path, FullHeaderMode: script.FullHeaderMode,
-		HTTPClient: e.tasks.client, BodyMemory: e.options.BodyMemory, BodyLimit: e.options.MaxBodySize,
+	result, err = e.runInvocation(ctx, job.module, script, Invocation{
+		Trigger: trigger, HTTPClient: e.tasks.client,
 	})
 	result.Close()
 }

@@ -3,8 +3,8 @@ try {
   const body = JSON.parse($response.body);
   const options = JSON.parse($argument || "{}");
   body.dae = {
-    runtime: "quickjs",
-    marker: options.marker || "dae-quickjs",
+    runtime: $environment["dae-runtime"],
+    marker: options.marker || "dae-" + $environment["dae-runtime"],
   };
   $done({ body: JSON.stringify(body) });
 } catch (error) {

@@ -227,7 +227,7 @@ func parseScript(line string, warnings, ignored *[]string) (*Script, error) {
 			switch strings.ToLower(value) {
 			case "auto", "jsc":
 			case "webview":
-				appendModuleWarning(warnings, "engine=webview scripts run in QuickJS with supported compatibility APIs; a browser WebView is not provided")
+				appendModuleWarning(warnings, "engine=webview scripts use the compiled JavaScript runtime with supported compatibility APIs; a browser WebView is not provided")
 			default:
 				err = fmt.Errorf("unknown JavaScript engine %q", value)
 			}

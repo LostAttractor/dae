@@ -205,12 +205,12 @@ http-response-jq . '.`+name+` = true'
 			"response": `$done({headers:{...$response.headers,"X-Script-` + name + `":"yes"}});`,
 		})
 	}
-	engine := moduleScopeEngine(t, module("a", "-excluded.test:0,*.test:0"), module("b", "excluded.test:0"))
 	for _, test := range []struct{ host, allowed, excluded string }{
 		{"excluded.test", "b", "a"},
 		{"ordinary.test", "a", "b"},
 	} {
 		t.Run(test.host, func(t *testing.T) {
+			engine := moduleScopeEngine(t, module("a", "-excluded.test:0,*.test:0"), module("b", "excluded.test:0"))
 			if proxyTestHost(t, engine).Match(test.host, 80) == mitm.HTTPBypass {
 				t.Fatal("one module's exclusion suppressed another module's allowlist")
 			}

@@ -17,7 +17,7 @@ import (
 )
 
 // BodyRewrite applies a jq filter or consecutive text replacements before scripts.
-// QuickJS's heap limit does not govern these evaluators.
+// The JavaScript heap limit does not govern these Go evaluators.
 type BodyRewrite struct {
 	Type         string
 	Pattern      string

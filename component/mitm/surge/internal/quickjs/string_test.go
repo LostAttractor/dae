@@ -1,3 +1,5 @@
+//go:build cgo && linux && !surge_nodejs
+
 // SPDX-License-Identifier: AGPL-3.0-only
 
 package quickjs

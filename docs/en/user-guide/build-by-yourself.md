@@ -2,16 +2,16 @@
 
 ## Build dependencies
 
-- Go 1.27 or later, Make, Git, and a C compiler with libc development headers.
+- Go 1.27 or later, Make, and Git. QuickJS builds also need a C compiler with libc development headers.
 - Clang and LLVM for eBPF generation (CI uses version 15).
 - Node.js 22+ and npm to bundle the embedded Web interface and Recharts charts.
-- A target C compiler and sysroot when cross-compiling.
+- A target C compiler and sysroot when cross-compiling with cgo.
 
 Go dependencies are pinned as Git submodules under `third_party/`: `outbound`,
 `quic-go`, `dae-config-dist`, and `quickjs-go`. `go.mod` resolves these local
 copies; the config module lives at `third_party/dae-config-dist/go/dae_config`.
 
-The QuickJS-NG runtime is compiled from C sources in the `third_party/quickjs-go` Git submodule, a fork of [buke/quickjs-go](https://github.com/buke/quickjs-go) containing the binding integration fixes. All daemon builds require `CGO_ENABLED=1`, including builds where Surge is disabled in configuration. `make` enables cgo automatically. `netgo` and `osusergo` keep Go's DNS and user lookup implementations.
+The Surge plugin's default QuickJS-NG backend is compiled from C sources in `third_party/quickjs-go`, a fork of [buke/quickjs-go](https://github.com/buke/quickjs-go) containing the binding integration fixes. This backend requires `CGO_ENABLED=1`, including when Surge is compiled in but disabled in configuration. The Node.js backend builds without cgo. `netgo` and `osusergo` keep Go's DNS and user lookup implementations.
 
 ```sh
 git clone --recurse-submodules https://github.com/daeuniverse/dae.git
@@ -31,11 +31,39 @@ appropriately packaged Nix closure.
 
 `CC` selects the compiler for QuickJS/cgo. `CLANG` selects the host Clang used for eBPF. The Makefile's `CFLAGS` belong to eBPF; use `CGO_CFLAGS` for additional cgo compiler options. Keep these toolchains separate when cross-compiling.
 
+## Surge JavaScript runtime
+
+`SURGE_RUNTIME` selects one backend at compile time for all Surge instances:
+
+```sh
+make SURGE_RUNTIME=quickjs # Default; CGO_ENABLED defaults to 1
+make SURGE_RUNTIME=nodejs  # CGO_ENABLED defaults to 0
+```
+
+The Node build adds the `surge_nodejs` Go build tag and excludes the QuickJS
+adapter and C sources. It skips initialization of the QuickJS submodule and
+requires Node.js 22.13+ on the deployment host. The QuickJS build excludes the
+Node adapter and needs no Node.js installation to run scripts. Node.js and npm
+are still used to bundle the Web interface during either build.
+
+There is no runtime configuration switch. Node builds accept `node_path` to
+locate the executable. Scripts can inspect `$environment['dae-runtime']`.
+See the [Surge configuration](../../zh/configuration/surge-module.md#nodejs-后端)
+for process lifetime, API scope and memory limits.
+
+Root `go.mod` records dependencies for both build variants; the selected build
+only compiles its own dependency graph. The daemon core has no QuickJS import
+and does not impose a cgo requirement when plugins do not use it. Other external
+plugins may impose their own native dependencies.
+
 ## Static builds
 
-`STATIC=y` selects external static linking and requests a 2 MiB thread stack.
+With cgo enabled, `STATIC=y` selects external static linking and requests a 2 MiB thread stack.
 The libc is selected by `CC`, whose target sysroot must supply static archives.
 `STATIC=y` does not switch the compiler or libc.
+
+With `CGO_ENABLED=0`, including the default Node build, Go links the daemon
+without an external C linker; `STATIC=y` does not add cgo linker flags.
 
 ### glibc
 
@@ -103,6 +131,9 @@ The Makefile supplies these settings. When invoking Go yourself, set them explic
 ```sh
 export CGO_ENABLED=1
 go test -tags=netgo,osusergo,grpcnotrace ./component/mitm/surge
+
+# Node backend, without QuickJS or cgo:
+CGO_ENABLED=0 go test -tags=surge_nodejs,netgo,osusergo,grpcnotrace ./component/mitm/surge/...
 ```
 
 ## Debug builds

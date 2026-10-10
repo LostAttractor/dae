@@ -34,10 +34,11 @@ func cronTestEngine(t *testing.T, module *Module, sources map[string]string, slo
 			scripts[i].Source = sources[scripts[i].Name]
 		}
 	}
-	rt, err := NewRuntime(RuntimeOptions{})
+	rt, err := NewRuntime(t.Context(), RuntimeOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(rt.backend.Close)
 	budget := membuffer.NewBudget(128 << 20)
 	e, err := NewEngine(EngineOptions{Modules: []*Module{module}, Runtime: rt, BodyMemory: budget,
 		MaxBodySize: 1 << 20, MaxConcurrentScripts: slots, ScriptTimeout: 5 * time.Second})
@@ -157,7 +158,7 @@ func TestTasksLoadSharedScriptDependency(t *testing.T) {
 }
 
 func TestCronActivationStatusAndSharedStore(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		m := cronModule(t, `[Script]
 tick=type=cron,cronexp="* * * * * *",script-path=tick.js,argument=example`)
 		e := cronTestEngine(t, m, map[string]string{"tick": `
@@ -207,7 +208,7 @@ const ignored = {}; ignored.self = ignored; $done(ignored); $done({body:"ignored
 }
 
 func TestCronSkipsOverlapAndCancelsRunningRequests(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		m := cronModule(t, `[Script]
 slow=type=cron,cronexp="* * * * * *",timeout=10,script-path=slow.js`)
 		e := cronTestEngine(t, m, map[string]string{"slow": `$httpClient.get("https://cron.test/", (error) => { if(error) throw Error(error); $done(); });`}, 1)
@@ -237,7 +238,7 @@ slow=type=cron,cronexp="* * * * * *",timeout=10,script-path=slow.js`)
 }
 
 func TestCronTimeoutIncludesSharedSlotWait(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		m := cronModule(t, `[Script]
 a=type=cron,cronexp="*/10 * * * * *",timeout=1.5,script-path=a.js
 b=type=cron,cronexp="*/10 * * * * *",timeout=1.5,script-path=b.js`)
@@ -279,7 +280,7 @@ func TestCronFailureStatusDoesNotExposeScriptData(t *testing.T) {
 		{"timeout", `setTimeout(() => $done(), 10000);`, "timeout"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
+			runtimeFakeClockTest(t, func(t *testing.T) {
 				m := cronModule(t, `[Script]
 job=type=cron,cronexp="*/10 * * * * *",timeout=0.1,script-path=job.js`)
 				e := cronTestEngine(t, m, map[string]string{"job": test.source}, 1)
@@ -306,7 +307,7 @@ func TestCronRequiresBackgroundClientAndHandlesImpossibleDates(t *testing.T) {
 	if err := e.Run(t.Context(), nil); err == nil || cronStatus(t, e, 0).LastError != "http_client_unavailable" {
 		t.Fatalf("missing routed client silently used default transport: %v", err)
 	}
-	synctest.Test(t, func(t *testing.T) {
+	runtimeFakeClockTest(t, func(t *testing.T) {
 		e := cronTestEngine(t, m, map[string]string{"x": "$done();"}, 1)
 		host := startCronTestHost(t, e, http.DefaultClient)
 		if status := cronStatus(t, e, 0); status.State != "unscheduled" || !status.NextRun.IsZero() {
@@ -385,7 +386,7 @@ func TestYoupinCronCompatibility(t *testing.T) {
 				if data, err := e.options.Runtime.data.read(t.Context(), "youpin_data"); err != nil || data == nil {
 					t.Fatalf("capture did not populate persistent store: %v", err)
 				}
-				synctest.Test(t, func(t *testing.T) {
+				runtimeFakeClockTest(t, func(t *testing.T) {
 					host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}, HTTPClient: client}, mitm.Instance{ID: "youpin", Type: "surge", Plugin: e})
 					if err != nil {
 						t.Fatal(err)

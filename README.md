@@ -28,7 +28,7 @@ As a successor of [v2rayA](https://github.com/v2rayA/v2rayA), dae abandoned v2ra
 - [x] Support full-cone NAT for shadowsocks, trojan(-go) and socks5 (no test).
 - [x] Support various trending proxy protocols, seen in [proxy-protocols.md](./docs/en/proxy-protocols.md).
 - [x] Filter-based [destination IP overrides](./docs/zh/configuration/destination-rules.md) without modifying DNS responses.
-- [x] Opt-in [Surge Module HTTP/HTTPS scripts](./docs/zh/configuration/surge-module.md) with native QuickJS-NG, [CA management](./docs/zh/configuration/mitm-certificate.md), and a documented [compatibility subset](./docs/zh/configuration/surge-module-support.md).
+- [x] Opt-in [Surge Module HTTP/HTTPS scripts](./docs/zh/configuration/surge-module.md) with a build-time choice of QuickJS-NG or Node.js, [CA management](./docs/zh/configuration/mitm-certificate.md), and a documented [compatibility subset](./docs/zh/configuration/surge-module-support.md).
 
 ## Getting Started
 

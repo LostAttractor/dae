@@ -33,7 +33,7 @@
 | 其他脚本类型与参数 | 无 rule/event。声明须包含名称；省略 type 默认为 generic。dns 脚本通过 Host 引用且无需 HTTP pattern。script-update-interval 控制远程脚本自动检查（默认 86400 秒，0 关闭）；debug=true 在每次执行前重读本地脚本。无 Surge 请求备注界面；img-url、wake-system 忽略，仅在 trace 级别记录。`enable=false` 的脚本不加载或执行。未知参数仍警告，已支持参数的非法值仍报错 |
 | cron 边界 | 按 daemon 本地时区，支持通配、列表、范围、步长及英文月/星期名（星期 0–6）；无 TZ/CRON_TZ、@every 或系统唤醒。支持 CLI/API 手动触发，任务统一由运行中的 daemon 执行；实例 store 默认持久化（`store: false` 关闭）。上次仍在等待/运行时定时触发跳过、手动触发返回冲突；启动不补跑历史任务，运行中延迟/休眠恢复时每个到期任务至多触发一次，不逐次补跑积压。状态历史与计数随重载重置。success 表示运行时完成，不保证业务签到成功 |
 | generic 边界 | 无自动触发；只执行 daemon 已加载的命名脚本，不提供任意脚本文本 evaluate 或界面启动上下文。手动执行忽略 `$done` 返回值，仍须调用 `$done`；每次独立 VM，超时包含共享名额等待。同一任务等待/运行时手动触发返回冲突；重载/停止取消并等待清理，状态计数重置 |
-| 引擎 | auto/jsc/webview 都用 QuickJS，webview 会提示；无真实 WebView/JSC/JIT |
+| 引擎 | auto/jsc/webview 都使用编译时选定的 QuickJS 或 Node.js 后端，webview 会提示；无真实 WebView/JSC；Node.js 使用 V8 JIT |
 | URL/Host 匹配 | 脚本 pattern 匹配当前 URL 及替换为 Host/SNI 的 URL，仍按脚本声明顺序首个命中；仅在连接已准入的模块内匹配，不扩大捕获或模块作用域。URL Rewrite 仅 HTTP(S)，非法目标返回 502。无内置 `{{{GATEWAY_ADDRESS}}}` |
 | Body Rewrite | `http-request` / `http-response` 按顺序执行 regex/replacement 对，支持捕获组替换和多行锚点，仅处理有效 UTF-8；对应 `-jq` 类型处理 JSON。gojq 不保证支持 Surge 全部 jq 扩展；无效 jq 表达式跳过，非 JSON、空 jq 输出或执行失败保留前一步正文。chunked / Expect 请求跳过正文重写 |
 | 处理顺序 | 请求 Header → URL → Map Local → Body Rewrite → script；响应 Header → Body Rewrite → script。本地响应不进入响应重写链 |
@@ -50,9 +50,10 @@
 | 元数据 | `$script` 包含每次执行独立的 sessionID，startTime 为 Unix 秒；console 日志带 module/script/session_id。`$environment` 提供 Linux 系统、进程 locale、硬件型号（不可用时为架构）及 dae 构建信息；surge-version/surge-build 为空字符串。显式空 argument 仍注入 `$argument`；cron/generic 手动执行的 `$trigger` 为 `http-api`（包括 CLI 调用），定时执行不注入 |
 | 存储与工具 | 省略键按解析后的 script-path 区分，同一实例内相同路径共享默认条目；显式键须为不含路径分隔符的非空字符串。值只接受字符串，null 删除。通知在每个实例内按脚本各保留最近 50 条，文本默认每脚本显示 3 条，`-v` / JSON 返回全部保留记录，重载清空；标题等各限 1024 UTF-8 字节，正文 4096 字节，截断会标记；额外选项忽略，不产生系统通知。ungzip 解压失败返回 null |
 | HTTP 客户端 | 原主机和端口沿用当前路由；新主机或端口经系统解析器、目的地址规则和 routing 重新选择出站，保留客户端身份。文本与二进制响应均自动解压 gzip/deflate/br（含叠加编码），解压后移除 Content-Encoding/Content-Length；压缩正文及各层解压结果均受大小和内存预算限制，解码失败通过回调 error 返回。请求默认 timeout 为 5 秒，并受脚本剩余预算约束，覆盖响应读取、解压及回调数据生成。对象 body 自动编码 JSON 并设置 Content-Type。支持 full-header-mode、auto-redirect 和 auto-cookie；后两者默认 true，CookieJar 仅在本次脚本执行内共享。policy 可选 DIRECT、REJECT 或当前已加载的 dae 出站组；保留目的地址规则与 mark，仅覆盖该主动请求的出站，重定向沿用。未知组或组不可用时报错，不切换备用出站。脚本专用组通过 http_policies 预加载，不增加捕获。policy-descriptor 和 insecure=true 明确报错，insecure=false 使用正常 TLS 校验 |
-| Web API | fetch 支持合法 HTTP 方法（禁用 CONNECT/TRACE/TRACK）、Headers/Request/Response、text/json/arrayBuffer/bytes、clone/bodyUsed、字符串/URLSearchParams/二进制正文及其它值的字符串转换；网络响应头不可修改，元数据只读。完整缓冲，共用正文和并发限制，扩展支持 policy/timeout；默认使用脚本剩余预算。AbortController/AbortSignal 支持单请求取消及 abort()/timeout()。无浏览器源或 CORS：默认不自动带 Cookie，credentials=include 使用本次执行的 CookieJar；manual 返回实际 30x，error 不跟随。无流、Blob/FormData、缓存/完整性/来源控制或 crypto；不支持的请求选项报错。编解码仅 UTF-8；URL/DOM 为有限实现，不执行页面脚本或加载资源 |
-| 宿主接口 | 无 geoip/ipasn/ipaso、`$network`、`$httpAPI`、`$surge`；不提供 Node.js、QuickJS std/os 或任意文件访问 |
-| 共享内存 | 固定大小 SharedArrayBuffer 受堆限制；无可增长共享缓冲，Atomics.wait 不能阻塞线程 |
+| Web API | fetch 支持合法 HTTP 方法（禁用 CONNECT/TRACE/TRACK）、Headers/Request/Response、text/json/arrayBuffer/bytes、clone/bodyUsed、字符串/URLSearchParams/二进制正文及其它值的字符串转换；网络响应头不可修改，元数据只读。完整缓冲，共用正文和并发限制，扩展支持 policy/timeout；默认使用脚本剩余预算。AbortController/AbortSignal 支持单请求取消及 abort()/timeout()。无浏览器源或 CORS：默认不自动带 Cookie，credentials=include 使用本次执行的 CookieJar；manual 返回实际 30x，error 不跟随。无流、Blob/FormData、缓存/完整性/来源控制或 crypto；不支持的请求选项报错。URL/DOM 为有限实现，不执行页面脚本或加载资源 |
+| 宿主接口 | 无 geoip/ipasn/ipaso、`$network`、`$httpAPI`、`$surge`；编译时选择 QuickJS 或 Node.js 执行后端，均不暴露 Node.js 原生 API、QuickJS std/os 或任意文件访问；`$environment['dae-runtime']` 标识所选后端 |
+| 文本编码 | TextEncoder/TextDecoder 仅支持 UTF-8，不支持流式解码。非法字节序列分别替换为 U+FFFD，fatal 模式报错；默认移除开头的 BOM，ignoreBOM 保留它。encodeInto 只写入完整码点，read 按 UTF-16 代码单元计数，written 按字节计数 |
+| 共享内存 | 支持 SharedArrayBuffer 和非阻塞 Atomics 操作；可增长缓冲等扩展能力取决于后端。QuickJS 缓冲存储受堆限制，Node.js 缓冲属于老生代限制之外的外部内存；两种后端均禁止阻塞 Atomics.wait |
 
 ### MITM 与路由
 
@@ -70,4 +71,4 @@
 
 近期通知每脚本最多 50 条，并共享每实例 1 MiB 保守 JSON 编码预算；超限时优先淘汰较长历史中的最旧记录，数量相同则淘汰最旧的一条。详见[近期通知](surge-module.md#近期通知)。
 
-[配置指南](surge-module.md#配置与运行)列出主要限制。脚本 HTTP 并发上限 20，不设累计次数上限；请求/响应正文与 ungzip 输出限 min(memory_limit/4, 32 MiB)，HTML 限 min(memory_limit/4, 8 MiB)，持久存储单值 4 MiB、实例 JSON 总计 64 MiB。同时待处理定时器最多 64 个；另有 DOM 节点、规则展开和声明数上限。QuickJS 堆限制不覆盖 Go 缓冲、进程 RSS 或 jq 中间对象。
+[配置指南](surge-module.md#配置与运行)列出主要限制。脚本 HTTP 并发上限 20，不设累计次数上限；请求/响应正文与 ungzip 输出限 min(memory_limit/4, 32 MiB)，HTML 限 min(memory_limit/4, 8 MiB)，持久存储单值 4 MiB、实例 JSON 总计 64 MiB。同时待处理定时器最多 64 个；另有 DOM 节点、规则展开和声明数上限。堆限制不覆盖 Go 缓冲、进程 RSS 或 jq 中间对象；Node.js 的 `memory_limit` 仅限制每个工作进程的 V8 老生代，不覆盖 ArrayBuffer 等外部内存。Node.js 不提供恶意脚本的安全隔离保证，执行与部署边界见[Node.js 后端](surge-module.md#nodejs-后端)。

@@ -16,13 +16,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/text/encoding/unicode"
 )
 
-// scriptExecution belongs to one VM on one OS thread. HTTP goroutines only
-// send events; host calls and callbacks update this state on the VM thread.
+// scriptExecution belongs to one invocation. HTTP goroutines only send events;
+// host calls and callbacks update this state on the invocation's goroutine.
 type scriptExecution struct {
 	httpWorkers                        sync.WaitGroup
 	runtime                            *Runtime
@@ -112,10 +112,18 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !utf8.Valid(data) && arg(2) == "fatal" {
-			return nil, errors.New("invalid UTF-8 data")
+		text := string(data)
+		if !utf8.Valid(data) {
+			if arg(2) == "fatal" {
+				return nil, errors.New("invalid UTF-8 data")
+			}
+			// Web decoding replaces each ill-formed subsequence separately.
+			// ToValidUTF8 collapses adjacent invalid bytes into one replacement.
+			text, err = unicode.UTF8.NewDecoder().String(text)
+			if err != nil {
+				return nil, err
+			}
 		}
-		text := strings.ToValidUTF8(string(data), "\ufffd")
 		if arg(3) != "keep-bom" {
 			text = strings.TrimPrefix(text, "\ufeff")
 		}
@@ -174,7 +182,7 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 	}
 }
 
-func (s *scriptExecution) waitResult(vm *quickjs.VM) (*Result, error) {
+func (s *scriptExecution) waitResult(vm scriptVM) (*Result, error) {
 	for {
 		if err := vm.ExecutePendingJobs(); err != nil {
 			return nil, fmt.Errorf("execute Surge script promise: %w", err)

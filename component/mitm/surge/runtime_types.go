@@ -89,6 +89,8 @@ type DNSResult struct {
 }
 
 type RuntimeOptions struct {
+	NodePath    string
+	NodeWorkers int
 	MemoryLimit int64
 	Timeout     time.Duration
 	StorePath   string
