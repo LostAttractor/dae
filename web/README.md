@@ -32,6 +32,30 @@ the searchable node picker, keyboard navigation and connectivity-test controls.
 modules, with no framework or bundler. The page requires a browser with native
 Popover API support.
 
+`status.js` renders MAC-attributed device and administrative global status;
+`certificate.js` runs the current browser's CA and interception challenges.
+Device status continues polling without administrator access. Global status uses
+the same authorization as selectors and is cleared on logout or expiry. Visible
+pages refresh every two seconds; traffic rates use five-second samples for up to
+one minute. Counters cover userspace upstream paths, including splice, rather
+than kernel passthrough or locally answered requests.
+
+Outbound summaries show aggregate counters and node counts. Each outbound's
+node list expands independently inside a height-limited, scrollable region.
+Polling preserves expanded groups, keyboard focus and the list's scroll position;
+collapsed groups do not retain their node rows.
+
+CA challenges use HTTPS on the API port; MITM challenges use virtual IP:443
+origins advertised by the API. The page's CSP permits the test endpoints and paths, with exact IPv4 hosts. IPv6
+uses a CSP host wildcard because Chromium rejects literal IPv6 host sources;
+the request helper and daemon still require the exact advertised endpoint. Requests omit credentials, reject
+redirects, disable caching and use ordinary browser TLS verification. A positive
+MITM result requires both a matching browser proof and the daemon's interception
+observation. Virtual targets have no upstream service; incomplete verification
+cannot distinguish bypass from unreachable traffic. Results apply only to
+this browser and reset on changes to device identity, MITM setting, CA or test
+generation. Verification failures are not assumed to mean the CA is uninstalled.
+
 With `global.api_key` configured, the top toolbar exchanges the key for an
 HttpOnly, SameSite=Strict session cookie lasting seven days; the page never stores
 the key in browser storage. Logout clears the cookie. Without a configured key,
@@ -66,6 +90,12 @@ mutations are never retried automatically.
 
 ## UI conventions
 
+The page expands up to 1920px. At 1024px and above, global and device traffic
+stack in the wider left column; selectors, device settings and HTTPS modules
+stack independently on the right. Narrower screens stack both columns vertically,
+with traffic before settings. Selector groups
+wrap into columns as space permits, and traffic charts fill their panels.
+
 Keep shared styles in `style.css`: 44px action controls with the same padding,
 type and neutral outline; a single 4px radius; 14px body text and 12px metadata.
 Node options can grow to fit their two-line content. Light/dark colors come from
@@ -95,3 +125,9 @@ login/logout, live ordering and focus, a 1,000-node picker, probe/selection acti
 configuration defaults, description labels, timeouts, and mobile/dark layouts.
 Fixture state and browser processes are cleaned up when the test exits. These
 checks validate frontend behavior; daemon authorization has its own Go tests.
+
+To additionally exercise real browser TLS acceptance/rejection, install OpenSSL
+and NSS tools and supply `CERTUTIL=/path/to/certutil make test`. The test creates
+an isolated HOME/NSS database, trusts a temporary CA there, and checks trusted
+and untrusted HTTPS endpoints without certificate-error bypass flags. All trust
+data is removed with the temporary browser profile.

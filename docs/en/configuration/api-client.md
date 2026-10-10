@@ -211,10 +211,13 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `DELETE /api/selectors/{group}` | Restore explicit `selector(n)`; admin, empty body; `409` without a default |
 | `POST /api/probes` | `202` + `ProbeResponse`; admin, `{"outbound":"group","node_id":"..."}`; omit or leave `node_id` empty for the entire outbound |
 | `GET /api/device` | `DeviceState`; direct identifiable LAN caller, TCP only |
+| `GET /api/device/status` | `DeviceStatus`; MAC-attributed upstream traffic, connections and used outbounds for the direct LAN caller |
+| `POST /api/device/certificate-tests` | `201` + `CertificateTest`; empty body, creates a short-lived browser challenge |
+| `GET /api/device/certificate-tests/{id}` | This device's observations; `404` after expiry or configuration replacement |
 | `PUT` / `DELETE /api/device/sets/{name}` | Join / leave a set; empty body |
 | `PUT /api/device/mitm` | Explicit override, `{"enabled":true}` or `{"enabled":false}` |
 | `DELETE /api/device/mitm` | Restore configuration; empty body |
-| `GET /api/certificate` | Public CA name and SHA-256 fingerprint |
+| `GET /api/certificate` | Public CA name, SHA-256 fingerprint, `test_available` and optional `test_generation` |
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Public certificate downloads, `404` when unavailable |
 
 All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. If `global.api_key` is configured, TCP administration (including LAN selector reads) requires `Authorization: Bearer <api_key>` or a valid session; missing/incorrect credentials return `401`. The Go SDK accepts `client.Options.APIKey`. Without a configured key, each TCP administration request must pass the direct LAN ingress and neighbor checks, otherwise it returns `403`; credentials are not required. Browsers in key mode may use the seven-day session cookie issued by `PUT /api/session`; `DELETE /api/session` clears it. Both session operations use empty bodies and return `204` on success; keyless access never issues a session. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
@@ -222,6 +225,8 @@ All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM ch
 URL-encode names as path segments. Bodies are limited to 1 KiB; JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browsers must use the same origin; TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
 
 Successful state operations return `200`; probes return `202` with accepted targets; session operations return `204` without a body. POST also requires `X-Dae-API: 1`, supplied by the SDK. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA, absent selector default, or unsupported probe target; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
+
+The device SDK exposes `DeviceStatus(ctx)`, `StartCertificateTest(ctx)` and `CertificateTest(ctx, id)`. The last two create/read a challenge; its HTTPS requests must originate in the browser being tested. Validate the returned `CertificateTestProof` ID, fingerprint and stage together with same-origin observations. Discard results when `test_generation` changes. A server observation alone is not a device-wide trust verdict.
 
 ## Snapshot semantics and TUI integration
 

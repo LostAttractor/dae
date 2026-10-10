@@ -172,13 +172,18 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `POST /api/resources/refresh` | `202` + `ResourceRefreshStatus` | 管理权限；空正文，刷新当前配置的资源，等待/运行中返回 `409` |
 | `GET /api/resources` | `ResourceRefreshStatus` | 管理权限；查询最近一次 API/自动刷新结果和下次检查时间 |
 | `GET /api/device` | `DeviceState` | 仅 TCP，需识别直连 LAN 设备 |
+| `GET /api/device/status` | `DeviceStatus` | 当前设备设置、用户态上游流量与连接、按网络/出站汇总；仅直连 LAN |
+| `POST /api/device/certificate-tests` | `201` + `CertificateTest` | 空正文；创建当前浏览器的短期证书测试挑战 |
+| `GET /api/device/certificate-tests/{id}` | `CertificateTest` | 查询本设备的测试观测；过期或配置更新后 `404` |
 | `PUT` / `DELETE /api/device/sets/{name}` | `DeviceState` | 加入 / 退出集合，空正文 |
 | `PUT /api/device/mitm` | `DeviceState` | `{"enabled":true}` 或 `{"enabled":false}` |
 | `DELETE /api/device/mitm` | `DeviceState` | 空正文，恢复配置 |
-| `GET /api/certificate` | `Certificate` | 公开 CA 名称与指纹；未启用时 `404` |
+| `GET /api/certificate` | `Certificate` | 公开 CA 名称、指纹、`test_available`、可选 `test_generation`；未启用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
 
 资源刷新 SDK 为 `RefreshResources(ctx)`，通过 `ResourceRefreshStatus(ctx)` 查询完成情况。只刷新已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
+
+设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。证书测试 SDK 为 `StartCertificateTest(ctx)` 和 `CertificateTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `CertificateTestProof`，校验 `id`、`ca_fingerprint`、`stage`，同时确认同源查询的服务端观测。`test_generation` 变化时清除旧结果，不能把服务端观测直接解释为整个设备信任 CA。
 
 统一探测接口使用 `ProbeRequest`，SDK 为 `Probe(ctx, api.ProbeRequest{Outbound: "group", NodeID: "..."})`。响应 `ProbeResponse` 包含 `outbound`、`node_ids`，`202` 表示已受理；排队或进行中的重复请求会合并。使用出站配置的 DNS 探测、超时和并发限制，支持所有已实例化的受检测出站，不接受任意 URL 或请求级配置覆盖。selector 的结果继续从 `/api/selectors` 获取，其他出站从 `/api/status` 查看健康与延迟。
 

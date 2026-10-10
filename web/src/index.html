@@ -38,37 +38,70 @@
         <p id="message" class="notice" role="status" aria-live="polite" hidden></p>
 
         <div class="dashboard">
-          <section class="card selectors-card" aria-labelledby="selectors-title">
-            <div class="card-heading">
-              <h2 id="selectors-title">Selectors</h2>
-              <span id="selector-count" class="count" hidden>Login required</span>
-            </div>
-            <p class="section-description">Select a node or test connectivity. Selections apply to devices using the group.</p>
-            <div id="selectors-locked" class="empty-state">
-              <p id="access-required" class="badge">Login required</p>
-              <p id="login-hint">Enter your API key above to view selector status and switch nodes.</p>
-            </div>
-            <div id="selectors" class="selector-list" hidden></div>
-          </section>
+          <div class="dashboard-column">
+            <section class="card status-card" aria-labelledby="global-status-title">
+              <h2 id="global-status-title">Global Status</h2>
+              <p class="section-description">Daemon runtime and userspace upstream traffic.</p>
+              <p id="global-status-locked" class="muted">Login required to view global status.</p>
+              <div id="global-status-content" hidden>
+                <p id="global-runtime" class="muted"></p>
+                <div id="global-traffic"></div>
+                <details><summary>Outbounds and Nodes</summary><div id="global-groups" class="status-details" tabindex="0" role="region" aria-label="Outbounds and nodes"></div></details>
+                <details><summary>Domain Tables</summary><div id="global-tables"></div></details>
+                <details><summary>Plugins</summary><div id="global-plugins"></div></details>
+              </div>
+              <p id="global-status-updated" class="muted chart-caption"></p>
+            </section>
+            <section class="card status-card" aria-labelledby="device-status-title">
+              <h2 id="device-status-title">This Device Status</h2>
+              <p id="device-stats-note" class="section-description">Userspace upstream traffic for the device visiting this page.</p>
+              <div id="device-traffic"></div>
+              <details><summary>Used Outbounds</summary><div id="device-outbounds"></div></details>
+              <p id="device-status-updated" class="muted chart-caption"></p>
+            </section>
+          </div>
 
-          <section class="card" aria-labelledby="device-title">
-            <h2 id="device-title">This Device</h2>
-            <p class="section-description">Choose this device’s network options.</p>
-            <p id="identity" class="device-identity code-block">Identifying your device…</p>
-            <div id="sets" class="set-list"></div>
-          </section>
+          <div class="dashboard-column">
+            <section class="card selectors-card" aria-labelledby="selectors-title">
+              <div class="card-heading">
+                <h2 id="selectors-title">Selectors</h2>
+                <span id="selector-count" class="count" hidden>Login required</span>
+              </div>
+              <p class="section-description">Select a node or test connectivity. Selections apply to devices using the group.</p>
+              <div id="selectors-locked" class="empty-state">
+                <p id="access-required" class="badge">Login required</p>
+                <p id="login-hint">Enter your API key above to view selector status and switch nodes.</p>
+              </div>
+              <div id="selectors" class="selector-list" hidden></div>
+            </section>
 
-          <section class="card" aria-labelledby="https-title">
-            <h2 id="https-title">HTTPS Modules</h2>
-            <p class="section-description">Manage HTTPS modules for this device.</p>
-            <div id="mitm" class="mitm-state"><p class="muted">Loading device settings…</p></div>
-            <div id="certificate-panel" class="certificate-panel" hidden>
-              <h3>Trust Certificate</h3>
-              <p>Verify the CA fingerprint on your router, then install and trust the certificate before enabling modules.</p>
-              <div id="certificate" class="code-block"></div>
-              <div class="download-links"><a href="/ca.mobileconfig">iOS Profile</a><a href="/ca.cer">DER Certificate</a><a href="/ca.pem">PEM Certificate</a></div>
-            </div>
-          </section>
+            <section class="card" aria-labelledby="device-title">
+              <h2 id="device-title">This Device</h2>
+              <p class="section-description">Choose this device’s network options.</p>
+              <p id="identity" class="device-identity code-block">Identifying your device…</p>
+              <div id="sets" class="set-list"></div>
+            </section>
+
+            <section class="card" aria-labelledby="https-title">
+              <h2 id="https-title">HTTPS Modules</h2>
+              <p class="section-description">Manage HTTPS modules for this device.</p>
+              <div id="mitm" class="mitm-state"><p class="muted">Loading device settings…</p></div>
+              <div id="certificate-panel" class="certificate-panel" hidden>
+                <h3>Trust Certificate</h3>
+                <p>Verify the CA fingerprint on your router, then install and trust the certificate before enabling modules.</p>
+                <div id="certificate" class="code-block"></div>
+                <div class="download-links"><a href="/ca.mobileconfig">iOS Profile</a><a href="/ca.cer">DER Certificate</a><a href="/ca.pem">PEM Certificate</a></div>
+                <div id="certificate-test-panel" hidden>
+                  <button id="test-certificate" type="button" disabled>Test Certificate</button>
+                  <dl class="certificate-results">
+                    <dt>CA Acceptance</dt><dd><span id="certificate-trust-result" class="badge">Not tested</span></dd>
+                    <dt>Transparent MITM</dt><dd><span id="certificate-mitm-result" class="badge">Not tested</span></dd>
+                  </dl>
+                  <p id="certificate-test-info" class="code-block">Results apply to this browser only.</p>
+                </div>
+              </div>
+            </section>
+          </div>
         </div>
       </fieldset>
     </main>

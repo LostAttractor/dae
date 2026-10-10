@@ -40,7 +40,11 @@ routing {
 
 - **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过直连 LAN 身份校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
-- **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)，页面不会探测信任状态。
+- **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留，进程重启归零。
+- **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，沿用管理权限。配置密钥时登录后可见，退出或会话失效时清除展示的数据。
+- **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)。**Test Certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
+
+设备与已授权的全局状态在页面可见时每两秒刷新，速率沿用五秒采样、最多一分钟的历史。后台标签页暂停轮询；请求失败会显示更新时间和重试状态。
 
 登录后使用 `HttpOnly`、`SameSite=Strict` Cookie 保存有效期为 7 天的签名会话，Cookie 不包含 API key 原文。刷新页面或重载 daemon 后保留登录状态；**Logout** 清除浏览器 Cookie，修改 `api_key` 会使已有会话失效。**Refresh** 更新状态和刷新时间。设备自助设置无需管理员登录。
 
@@ -71,6 +75,21 @@ routing {
 保留三个对象，删除对象内条目可清除覆盖或成员。`selectors` 的值是包含 `nodes`、`ipversion`、`interface` 和可选 `mark` 的路径对象，不是 API 的运行时节点 ID；建议通过页面或 `dae selector set` 保存。MAC 使用小写冒号格式。避免同时编辑文件和操作 API。
 
 `track_all` 在主配置的 group 块中设置，运行时状态文件不能覆盖该配置。状态文件中的未知字段会被拒绝。
+
+## 证书与 MITM 测试
+
+启用页面及带 CA 的 MITM 后，CA 测试复用 `global.api_port`：HTTP 提供页面/API，TLS 分支只提供 CA 挑战。透明 MITM 测试使用虚拟目标的 443 端口，由 `global.api_mitm_test_ipv4`（默认 `203.0.113.254`）和 `global.api_mitm_test_ipv6`（默认 `2001:db8:ffff::254`）指定。两项测试均不增加监听端口，也不依赖上游服务。
+
+点击 **Test Certificate** 后：
+
+1. 浏览器访问精确直通的 CA 测试端点，以当前 CA 签发的路由器 IP 证书完成 TLS 并读取随机挑战响应。设备 MITM 尚未开启时也可测试。
+2. 设备已开启 MITM 且第一步通过时，请求与页面地址同族的虚拟 IP，经正常透明捕获、设备开关判断和 TLS 解密，由内置 `dae-certificate-test` 插件校验入口 MAC 并直接响应，不拨号上游。同一设备访问路由器和虚拟目标时选择不同源 IP 也可验证。
+
+虚拟地址须未被占用、流量能够到达 dae，且位于本地子网和其他软件的 Fake IP 池之外；与本地子网重叠的配置会被拒绝。不要将虚拟地址配置到路由器网卡上。如果网络在流量到达 dae 前丢弃默认文档保留地址段，须调整目标地址或路由。捕获严格限定为两个 IP 的 443 端口，API 流量仍由内核直通，无关流量沿用普通路由语义。
+
+测试不修改设备开关。挑战一分钟过期，配置发布后旧挑战失效；页面在 CA、测试代次、设备身份或开关变化时清除旧结果。结果附有测试时间和 CA 指纹，不代表设备所有应用的信任状态。浏览器不能区分证书拒绝、网络不通和部分浏览器策略限制时显示 **Verification incomplete**。
+
+请通过路由器的 IPv4 或非链路本地 IPv6 字面地址访问页面，无需外部网站或 DNS 映射。测试端点只接受发起页面的精确 Origin；普通 `/api/` 继续要求同源。浏览器根据 `/api/certificate` 的 `test_mitm_origins` 校验虚拟目标。新挑战使用新的 TLS 连接，不能由缓存响应或普通 HTTPS 可达性替代 MITM 验证。虚拟目标没有上游服务，因此 MITM 验证未完成时不能区分绕过和网络不通。
 
 ## 导出 MAC 集合
 
@@ -106,6 +125,9 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `DELETE /api/session` | 清除浏览器会话 Cookie；空正文，成功返回 `204` |
 | `GET /api/status` | 运行时完整状态；TCP 配置密钥时需要 API key/会话，未配置时校验直连 LAN 身份；Unix socket 使用文件系统权限 |
 | `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
+| `GET /api/device/status` | 当前设备设置及按 MAC 归属的用户态上游运行统计；仅已识别的直连 LAN 设备 |
+| `POST /api/device/certificate-tests` | 空正文，创建浏览器证书测试挑战；返回 `201`，不改变 MITM 设置 |
+| `GET /api/device/certificate-tests/{id}` | 当前设备的测试观测；过期、配置已更新或其他设备的挑战返回 `404` |
 | `PUT` / `DELETE /api/device/sets/{name}` | 加入 / 退出集合 |
 | `PUT /api/device/mitm` | `{"enabled":true}` 开启，`false` 关闭 |
 | `DELETE /api/device/mitm` | 恢复配置 |
@@ -116,7 +138,7 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `POST /api/plugins/{instance}/scripts/run` | 需要管理权限；`{"module":"tools","script":"demo.tool"}` 触发已有 cron/generic 任务；返回 `202`、本任务运行编号及受理状态 |
 | `POST /api/resources/refresh` | 需要管理权限；空正文，立即尝试刷新当前配置的订阅、模块与依赖；返回 `202` 和受理状态 |
 | `GET /api/resources` | 需要管理权限；最近一次 API/自动刷新状态和下次自动检查时间 |
-| `GET /api/certificate` | CA 名称与 SHA-256 指纹；不可用时 `404` |
+| `GET /api/certificate` | CA 名称、SHA-256 指纹、`test_available` 和可选 `test_generation`；不可用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
 
 MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。

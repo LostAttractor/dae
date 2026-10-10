@@ -41,7 +41,11 @@ For selector groups, `dae status` (including verbose/JSON) includes only selecte
 
 - **Selectors**: When `api_key` is configured, enter it in the top toolbar and click **Login** to view selector status or change nodes. Without a key, verified direct LAN clients can use selectors immediately; the toolbar shows **LAN access**. Plain `selector` has no configured default: restore a saved choice, otherwise initially select the first candidate, without a default badge or reset button. Only explicit `selector(n)`, including `selector(0)`, declares a default path index. Changes affect everyone using the group. Choices persist as independent logical path references; reordering, priority, TLS, multiplex, global mark and probe settings do not change them.
 - **This Device**: Devices can join several `client(name)` MAC sets; routing order still applies. The API connection must traverse `global.lan_interface` ingress, and its observed source MAC must match a direct ARP/NDP neighbor. Interface patterns are supported; changing MAC requires joining again. Failed identification returns `403`; authenticated selector access and public certificate downloads remain available.
-- **HTTPS Modules**: Device settings override `mitm.client_source_address`, including explicit disabling. Install and trust the CA before enabling; the page cannot detect trust.
+- **This Device Status**: Active/total connections, upload/download totals, recent rates and used outbounds for the visiting device. IPv4/IPv6 share the ingress MAC identity; administrator login is unnecessary. These are userspace upstream counters, including splice acceleration, excluding kernel passthrough, local HTTP/DNS responses and daemon-originated work. Totals survive reload and reset on process restart.
+- **Global Status**: Version, uptime, global connections/traffic, outbound/node state, domain tables and plugins. Existing administrative authorization applies; logout or session expiry clears protected data.
+- **HTTPS Modules**: Device settings override `mitm.client_source_address`, including explicit disabling. Install and trust the CA before enabling. **Test Certificate** separately checks CA acceptance by this browser and the transparent MITM path.
+
+Visible pages refresh device and authorized global state every two seconds. Rates use five-second samples covering up to one minute. Hidden pages pause polling; failed reads display their retry state.
 
 Login stores a signed session in an `HttpOnly`, `SameSite=Strict` cookie for seven days; the API key itself is not stored in the cookie. Reloading the page or daemon preserves the session. **Logout** clears the browser cookie; changing `api_key` invalidates existing sessions. **Refresh** updates the displayed state and timestamp. Device self-service remains available without administrator login.
 
@@ -95,6 +99,18 @@ Use dedicated sets, never shared between clients. dae creates missing tables/set
 
 Inspect with `ipset list dae_work` or `nft list set inet filter dae_work`. Match with iptables `-m set --match-set dae_work src`, or `ether saddr @dae_work` within the same nft table.
 
+## Certificate and MITM tests
+
+With the page and CA-backed MITM enabled, CA testing shares `global.api_port`: HTTP serves the page/API and TLS serves only CA challenges. Transparent-MITM testing uses virtual destinations on port 443, configured by `global.api_mitm_test_ipv4` (default `203.0.113.254`) and `global.api_mitm_test_ipv6` (default `2001:db8:ffff::254`). Neither test needs an extra listening port or an upstream service.
+
+**Test Certificate** first reads a random challenge over verified TLS from the direct CA-test endpoint, using a router-IP certificate signed by the current CA. This step works before enabling the device's MITM setting. If accepted and MITM is enabled, the browser visits the virtual IP of the same address family through normal kernel capture, device admission and TLS decryption. The built-in `dae-certificate-test` plugin checks the ingress MAC and answers locally, without dialing an upstream. Different source IPs selected by the same device for the router and virtual destination are supported.
+
+Choose unused virtual addresses whose traffic reaches dae. They must be outside local subnets and other software's Fake IP pools; local subnet overlap is rejected. Do not assign these addresses to a router interface. Networks that discard the default documentation ranges before reaching dae need different configured addresses or routing. Capture is limited to the two exact IPs on port 443; API traffic remains kernel-direct, and unrelated traffic keeps its normal routing behavior.
+
+Tests do not change device settings. Challenges expire after one minute and are invalidated on configuration publication. The page clears results when the CA, test generation, device identity or MITM setting changes. Results include a time and fingerprint and apply only to the current browser. **Verification incomplete** means the browser could not complete verification; certificate rejection, network failures and some browser-policy failures are indistinguishable to page JavaScript.
+
+Access the page using a router IPv4 or non-link-local IPv6 literal; tests need no external websites or DNS mappings. Only the original page's exact Origin is allowed on diagnostic endpoints; `/api/` remains same-origin. The browser validates virtual origins against `/api/certificate`'s `test_mitm_origins`. Challenges use fresh TLS connections, and ordinary HTTPS reachability cannot prove MITM interception. Because virtual targets have no upstream service, an incomplete MITM test cannot distinguish bypass from unreachable traffic.
+
 ## API
 
 POST, PUT and DELETE requests require `X-Dae-API: 1`. JSON bodies require `Content-Type: application/json`; other requests use empty bodies. With a configured key, status and selector reads/writes require `Authorization: Bearer <api_key>` or a valid browser session cookie; without a key they require verified direct LAN identity. MITM writes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. In key mode, an explicit Authorization header takes precedence over the cookie. URL-encode names in paths. Command-line clients may omit `Origin`.
@@ -107,6 +123,9 @@ Keyless TCP administration returns `403` if LAN identification fails. With a con
 | `DELETE /api/session` | Clear the browser session cookie; empty body, `204` on success |
 | `GET /api/status` | Full runtime snapshot; TCP uses the configured API key/session, or verified direct LAN identity when no key is configured; Unix uses filesystem permissions |
 | `GET /api/device` | Caller IP, MAC, sets (`name`, `description`, `joined`), and MITM state (`enabled`, `override`, `ca_fingerprint`); `403` for an unknown MAC |
+| `GET /api/device/status` | Caller device state and MAC-attributed userspace upstream statistics; verified direct LAN only |
+| `POST /api/device/certificate-tests` | Empty body; `201` with browser challenge URLs; does not change MITM settings |
+| `GET /api/device/certificate-tests/{id}` | This device's observations; `404` for expired, replaced or foreign challenges |
 | `PUT` / `DELETE /api/device/sets/{name}` | Join / leave a set |
 | `PUT /api/device/mitm` | Enable with `{"enabled":true}`, or disable with `false` |
 | `DELETE /api/device/mitm` | Restore configuration |
@@ -115,7 +134,7 @@ Keyless TCP administration returns `403` if LAN identification fails. With a con
 | `DELETE /api/selectors/{name}` | Restore explicit `selector(n)`; `409` if no default exists |
 | `POST /api/probes` | `{"outbound":"manual","node_id":"node ID"}` probes one node; omit or leave `node_id` empty for the whole outbound; returns `202` with accepted node IDs |
 | `POST /api/plugins/{instance}/scripts/run` | Requires administration; `{"module":"tools","script":"demo.tool"}` triggers a configured cron/generic task; returns `202` with its per-task run number and acceptance status |
-| `GET /api/certificate` | CA name and SHA-256 fingerprint; `404` when unavailable |
+| `GET /api/certificate` | CA name, SHA-256 fingerprint, `test_available` and optional `test_generation`; `404` when unavailable |
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Download the public certificate without MAC identification |
 
 A `null` MITM `override` inherits the configuration. Fetch the corresponding status after changes. A changed CA causes MITM writes to return `409`; refresh the page, verify the fingerprint, and install and trust the current certificate.

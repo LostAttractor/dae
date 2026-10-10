@@ -1,6 +1,8 @@
 import { request } from "./api.js";
 import { byId, template } from "./dom.js";
 import { selectorRow } from "./selectors.js";
+import { renderDeviceStatus, renderGlobalStatus, clearGlobalStatus } from "./status.js";
+import { certificateDevice, certificateIdentity, testCertificate } from "./certificate.js";
 
 const accessDenied = (error) => error.status === 401 || error.status === 403;
 const accessLabels = {
@@ -11,6 +13,10 @@ const accessLabels = {
 let authMode = null;
 let selectorRequestVersion = 0;
 let pollingSelectors = false;
+let deviceRequestVersion = 0;
+let globalRequestVersion = 0;
+let certificateRequestVersion = 0;
+let deviceStateKey = "";
 
 function message(text = "", tone = "success") {
   const element = byId("message");
@@ -32,6 +38,9 @@ async function run(action, success = "", pending = "Saving changes…") {
   controls.disabled = true;
   controls.setAttribute("aria-busy", "true");
   selectorRequestVersion++;
+  deviceRequestVersion++;
+  globalRequestVersion++;
+  certificateRequestVersion++;
   message(pending, "pending");
   try {
     await action();
@@ -66,6 +75,8 @@ function setAccess(mode, error) {
   byId("access-required").dataset.tone = denied ? "error" : "neutral";
   byId("login-hint").textContent = denied ? error.message : "Enter your API key above to view selector status and switch nodes.";
   if (!authorized) {
+    globalRequestVersion++;
+    clearGlobalStatus(denied ? "Access denied." : "Login required to view global status.");
     byId("selectors").replaceChildren();
     byId("selector-count").textContent = denied ? "Access denied" : "Login required";
   }
@@ -79,6 +90,10 @@ function empty(container, text) {
 }
 
 function renderDevice(device) {
+  certificateDevice(device);
+  const key = JSON.stringify(device);
+  if (key === deviceStateKey) return;
+  deviceStateKey = key;
   byId("identity").textContent = `${device.source_ip}\n${device.mac}`;
   const rows = new Map([...byId("sets").children].map((row) => [row.dataset.name, row]));
   const children = [];
@@ -155,6 +170,7 @@ async function loadSelectors({ allowGuest = false, background = false } = {}) {
     if (version !== selectorRequestVersion) return;
     renderSelectors(data);
     updated("Selectors updated");
+    return true;
   } catch (error) {
     if (version !== selectorRequestVersion) return;
     if (accessDenied(error)) {
@@ -174,34 +190,68 @@ async function loadSelectors({ allowGuest = false, background = false } = {}) {
   }
 }
 
-async function loadDevice() {
-  byId("identity").textContent = "Identifying your device…";
-  byId("sets").replaceChildren();
-  empty("mitm", "Device controls unavailable.");
+async function loadDevice({ background = false } = {}) {
+  const version = ++deviceRequestVersion;
   try {
-    renderDevice(await request("/api/device"));
+    const snapshot = await request("/api/device/status");
+    if (version !== deviceRequestVersion) return;
+    renderDevice(snapshot.device);
+    renderDeviceStatus(snapshot);
   } catch (error) {
-    byId("identity").textContent = "Device could not be identified.";
-    empty("sets", error.message);
-    if (error.status !== 403) throw error;
+    if (version !== deviceRequestVersion) return;
+    byId("device-status-updated").textContent = "Device update failed · Retrying";
+    if (error.status === 403 || !background) {
+      deviceStateKey = "";
+      certificateDevice(null);
+      byId("identity").textContent = "Device could not be identified.";
+      empty("sets", error.message);
+      empty("device-traffic", error.message);
+      byId("device-outbounds").replaceChildren();
+      empty("mitm", "Device controls unavailable.");
+    }
+    if (error.status !== 403 && !background) throw error;
   }
 }
 
-async function loadCertificate() {
-  byId("certificate-panel").hidden = true;
+async function loadCertificate({ background = false } = {}) {
+  const version = ++certificateRequestVersion;
   try {
     const certificate = await request("/api/certificate");
+    if (version !== certificateRequestVersion) return;
+    certificateIdentity(certificate);
     byId("certificate").textContent = `${certificate.name}\nSHA-256: ${certificate.fingerprint}`;
     byId("certificate-panel").hidden = false;
   } catch (error) {
-    if (error.status !== 404) throw error;
+    if (version !== certificateRequestVersion) return;
+    if (error.status === 404) {
+      certificateIdentity(null);
+      byId("certificate-panel").hidden = true;
+    } else if (!background) throw error;
   }
+}
+
+async function loadGlobalStatus({ background = false } = {}) {
+  const version = ++globalRequestVersion;
+  try {
+    const snapshot = await request("/api/status");
+    if (version !== globalRequestVersion || authMode === null) return;
+    renderGlobalStatus(snapshot);
+  } catch (error) {
+    if (version !== globalRequestVersion) return;
+    if (accessDenied(error)) setAccess(null, error);
+    else byId("global-status-updated").textContent = "Global update failed · Retrying";
+    if (!background) throw error;
+  }
+}
+
+async function loadAdmin(options = {}) {
+  if (await loadSelectors(options)) await loadGlobalStatus(options);
 }
 
 async function refresh() {
   const results = await Promise.allSettled([
     loadDevice(),
-    loadSelectors({ allowGuest: authMode === null }),
+    loadAdmin({ allowGuest: authMode === null }),
     loadCertificate(),
   ]);
   const errors = results.filter((result) => result.status === "rejected");
@@ -217,24 +267,28 @@ byId("login-form").onsubmit = async (event) => {
   const signedIn = await run(async () => {
     await request("/api/session", "PUT", undefined, { Authorization: `Bearer ${byId("api-key").value}` });
     byId("api-key").value = "";
-    await loadSelectors();
-  }, "Access verified. Selector status is now available.", "Logging in…");
+    await loadAdmin();
+  }, "Access verified. Global and selector status are now available.", "Logging in…");
   byId(signedIn ? "refresh" : "api-key").focus();
 };
 byId("logout").onclick = async () => {
   const signedOut = await run(async () => {
     await request("/api/session", "DELETE");
     setAccess(null);
-    await loadSelectors({ allowGuest: true });
+    await loadAdmin({ allowGuest: true });
   }, "Your saved login session has been cleared.", "Logging out…");
   if (signedOut) byId(authMode === null ? "api-key" : "refresh").focus();
 };
 byId("refresh").onclick = () => run(refresh, "Status refreshed.", "Refreshing status…");
+byId("test-certificate").onclick = () => run(testCertificate, "Certificate test completed. See the results below.", "Testing this browser’s certificate and MITM connection…");
 setInterval(async () => {
-  if (authMode === null || document.hidden || pollingSelectors || byId("controls").disabled) return;
+  if (document.hidden || pollingSelectors || byId("controls").disabled) return;
   pollingSelectors = true;
   try {
-    await loadSelectors({ background: true });
+    await Promise.allSettled([
+      loadDevice({ background: true }), loadCertificate({ background: true }),
+      ...(authMode === null ? [] : [loadAdmin({ background: true })]),
+    ]);
   } finally {
     pollingSelectors = false;
   }

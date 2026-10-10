@@ -1479,7 +1479,7 @@
       "post": {
         "operationId": "startCertificateTest",
         "summary": "Create a current-browser CA and transparent MITM challenge (direct LAN only)",
-        "description": "Empty body. Does not change the device's MITM setting. GET trust_url and, when enabled, mitm_url from the browser with credentials omitted and redirects rejected. Dedicated HTTPS endpoints accept only the original page's Origin and return CertificateTestProof. The ordinary MITM-port TLS listener reports bypass; only the interception plugin reports mitm. These exact-origin diagnostics are the only cross-origin browser endpoints.",
+        "description": "Empty body. Does not change the device's MITM setting. GET trust_url and, when enabled, mitm_url from the browser with credentials omitted and redirects rejected. CA challenges share the API listener's TLS branch; virtual IP:443 targets are answered locally by the interception plugin without an upstream service. Both accept only the original page's Origin and return CertificateTestProof. A failed virtual-target request cannot distinguish bypass from unreachable traffic. These exact-origin diagnostics are the only cross-origin browser endpoints.",
         "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
         "responses": {
           "201": { "description": "Challenge created, expires in one minute", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CertificateTest" } } } },

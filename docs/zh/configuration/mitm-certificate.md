@@ -28,11 +28,14 @@ sudo dae mitm ca generate --cert /var/lib/dae/home.pem \
 2. 下载 `ca.mobileconfig`。
 3. 在「设置 → 通用 → VPN 与设备管理」中安装描述文件。
 4. 在「设置 → 通用 → 关于本机 → 证书信任设置」中为该 CA 开启完全信任。
-5. 回到下载页面，为当前设备开启 MITM。
+5. 回到下载页面，点击 **Test Certificate**，确认 **CA Acceptance** 显示当前浏览器已接受 CA。
+6. 为当前设备开启 MITM，再次测试，确认 **Transparent MITM** 通过。
 
 手动安装不自动获得 TLS 信任，第 4 步不可省略，见 [Apple 官方说明](https://support.apple.com/zh-cn/102390)。停止使用时先关闭该设备的 MITM，再移除描述文件。
 
 设备开关、状态来源、证书下载路径与 API 请求格式统一见[页面/API](api.md)。未知 MAC 的客户端仍可下载证书。
+
+CA 测试复用页面的 `api_port`，MITM 测试使用虚拟 IP 的 443 端口，不增加监听端口。虚拟目标由 `global.api_mitm_test_ipv4` 和 `global.api_mitm_test_ipv6` 指定，其流量须能到达 dae。结果只代表当前浏览器；**Verification incomplete** 表示未能完成验证，需检查安装与完全信任设置，以及流量路径。未开启设备 MITM 时，只验证 CA 接受情况。详见[证书与 MITM 测试](api.md#证书与-mitm-测试)。
 
 ## 导出和更换
 

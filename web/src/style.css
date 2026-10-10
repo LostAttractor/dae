@@ -19,7 +19,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink); overflow-wrap: anywhere; }
-.shell { max-width: 1120px; margin: auto; padding: 0 28px; }
+.shell { max-width: 1920px; margin: auto; padding: 0 28px; }
 .page-header { padding: 28px 0 20px; }
 h1, h2, h3, p { margin-top: 0; }
 h1, h2, h3 { font-weight: 600; }
@@ -48,7 +48,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .session-info button { margin-left: auto; }
 .notice { margin: -8px 0 24px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--soft); white-space: pre-line; }
 .notice[data-tone="error"], .badge[data-tone="error"] { color: var(--error); background: var(--error-bg); border-color: var(--error); }
-.dashboard { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.dashboard { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 24px; }
+.dashboard-column { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 24px; }
 .selectors-card { grid-column: 1 / -1; }
 .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .section-description { margin: 8px 0 20px; color: var(--muted); }
@@ -57,7 +58,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .empty-state { padding: 20px; background: var(--soft); border-radius: var(--radius); }
 .empty-state > p:last-child { margin: 8px 0 0; color: var(--muted); }
 .empty-state .badge { margin: 0; }
-.selector-list { display: grid; gap: 20px; }
+.selector-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; gap: 20px; }
 .selector-row { min-width: 0; padding-top: 16px; border-top: 1px solid var(--line); }
 .selector-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .selector-name { flex: 1; min-width: 0; margin: 0; }
@@ -101,6 +102,30 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .download-links a { display: inline-flex; align-items: center; min-height: var(--control-height); color: var(--ink); text-underline-offset: 3px; }
 .download-links a:hover { color: var(--muted); }
 footer { padding: 20px 0; color: var(--muted); font-size: var(--meta-size); }
+.traffic-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; font-variant-numeric: tabular-nums; }
+.traffic-metrics dt, .chart-caption { color: var(--muted); font-size: var(--meta-size); }
+.traffic-metrics dd { margin: 2px 0 0; font-weight: 600; }
+.traffic-chart { display: block; width: 100%; height: 64px; }
+.traffic-chart polyline { fill: none; stroke: var(--ink); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.traffic-chart .upload-line { stroke: var(--muted); stroke-dasharray: 4 3; }
+.chart-caption { margin: 8px 0; }
+details { margin-top: 12px; }
+summary { cursor: pointer; min-height: var(--control-height); padding: 10px 0; }
+.status-details { max-height: min(50vh, 360px); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 8px; }
+.status-details:focus-visible, summary:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+.status-entry { margin: 0; border-bottom: 1px solid var(--line); }
+.status-entry:last-child { border-bottom: 0; }
+.status-entry .count { margin-left: 8px; }
+.status-entry-metrics { display: block; margin-top: 4px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.status-nodes { padding-left: 16px; }
+.status-nodes p { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); }
+.certificate-results dd { margin: 4px 0 12px; }
+
+@media (min-width: 1024px) {
+  .dashboard { grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); }
+  .traffic-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, auto); grid-auto-flow: column; }
+  .status-card .traffic-chart { height: 112px; }
+}
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -123,7 +148,7 @@ footer { padding: 20px 0; color: var(--muted); font-size: var(--meta-size); }
 @media (max-width: 760px) {
   .shell { padding: 0 16px; }
   .page-header { padding-top: 20px; }
-  .dashboard { grid-template-columns: 1fr; gap: 16px; }
+  .dashboard, .dashboard-column { gap: 16px; }
   .card { padding: 16px; }
   .toolbar { flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
   .login-form { flex-basis: 100%; max-width: none; }

@@ -1,18 +1,64 @@
 // Browser regressions use Node's built-ins and an installed Chromium; no npm dependencies.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createServer as createTLSServer } from "node:https";
+import { createServer as createTCPServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const source = fileURLToPath(new URL("../src/", import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), "dae-web-"));
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const deferred = () => Promise.withResolvers();
 let fixture;
+const tlsServers = {};
+const mitmOrigins = ["https://203.0.113.254", "https://[2001:db8:ffff::254]"];
+let proxy;
+
+// Optional real browser trust-store checks. HOME and the NSS database belong to
+// this temporary profile; no system/browser certificate store is modified.
+if (process.env.CERTUTIL) {
+  const exec = promisify(execFile);
+  const root = join(profile, "root.pem"), rootKey = join(profile, "root.key");
+  const leaf = join(profile, "leaf.pem"), leafKey = join(profile, "leaf.key"), csr = join(profile, "leaf.csr");
+  const extensions = join(profile, "leaf.ext");
+  await writeFile(extensions, "subjectAltName=IP:127.0.0.1,IP:::1,IP:203.0.113.254,IP:2001:db8:ffff::254\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature,keyEncipherment\n");
+  await exec("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", rootKey, "-out", root, "-subj", "/CN=dae Browser Test CA", "-days", "1", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
+  await exec("openssl", ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", leafKey, "-out", csr, "-subj", "/CN=127.0.0.1"]);
+  await exec("openssl", ["x509", "-req", "-in", csr, "-CA", root, "-CAkey", rootKey, "-CAcreateserial", "-out", leaf, "-days", "1", "-extfile", extensions]);
+  const untrusted = join(profile, "untrusted.pem"), untrustedKey = join(profile, "untrusted.key");
+  await exec("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", untrustedKey, "-out", untrusted, "-subj", "/CN=Untrusted Test", "-days", "1", "-addext", "subjectAltName=IP:127.0.0.1"]);
+  const database = join(profile, ".pki", "nssdb");
+  await mkdir(database, { recursive: true });
+  await exec(process.env.CERTUTIL, ["-N", "--empty-password", "-d", `sql:${database}`]);
+  await exec(process.env.CERTUTIL, ["-A", "-d", `sql:${database}`, "-n", "dae-browser-test", "-t", "C,,", "-i", root]);
+  for (const kind of ["trust", "mitm", "untrusted"]) {
+    const server = createTLSServer({ cert: await readFile(kind === "untrusted" ? untrusted : leaf), key: await readFile(kind === "untrusted" ? untrustedKey : leafKey) }, (req, res) => {
+      if (req.headers.origin !== origin || req.url !== "/test/browser-proof") return res.writeHead(403).end();
+      const stage = kind === "mitm" ? "mitm" : "trust";
+      fixture.testData[`${stage}_observed`] = true;
+      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": origin, "Cache-Control": "no-store", Connection: "close" });
+      res.end(JSON.stringify({ id: "browser-proof", ca_fingerprint: "browser-ca", stage }));
+    });
+    tlsServers[kind] = server;
+  }
+  // A minimal local tunnel carries the virtual origins in this browser fixture.
+  // Production transparent admission and zero-upstream replies are tested in Go.
+  proxy = createServer();
+  proxy.on("connect", (req, socket, head) => {
+    if (!fixture || fixture.bypass || !["203.0.113.254:443", "[2001:db8:ffff::254]:443"].includes(req.url)) return socket.destroy();
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (head.length) socket.unshift(head);
+    tlsServers.mitm.emit("connection", socket);
+  });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+}
 
 function resetFixture() {
   const nodes = Array.from({ length: 1000 }, (_, i) => ({
@@ -22,6 +68,8 @@ function resetFixture() {
   }));
   fixture = {
     mode: "lan", requests: [], nextRead: null,
+    nextDeviceRead: null, nextGlobalRead: null, certificate: null, groups: [],
+    stats: { active_connections: 2, total_connections: 7, upload_bytes: 2048, download_bytes: 8192, history: { upload_bytes_per_second: [100, 200], download_bytes_per_second: [400, 800] } },
     selectors: [
       { name: "On demand", node_id: "node-0", track_all: false, overridden: false, nodes },
       { name: "With default", node_id: "node-1", default_node_id: "node-0", track_all: false, overridden: true, nodes: structuredClone(nodes.slice(0, 3)) },
@@ -35,7 +83,7 @@ function resetFixture() {
   };
 }
 
-const server = createServer(async (req, res) => {
+const httpServer = createServer(async (req, res) => {
   const json = (data, status = 200) => {
     res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify(data));
@@ -47,7 +95,7 @@ const server = createServer(async (req, res) => {
       const types = { html: "text/html", js: "text/javascript", css: "text/css" };
       res.writeHead(200, {
         "Content-Type": types[path.split(".").at(-1)], "Cache-Control": "no-store",
-        "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+        "Content-Security-Policy": `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://${new URL(origin).hostname.includes(":") ? "*" : new URL(origin).hostname}:${server.address().port}/test/ https://203.0.113.254:443/test/ https://*:443/test/; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
       });
       res.end(await readFile(join(source, path)));
       return;
@@ -82,6 +130,12 @@ const server = createServer(async (req, res) => {
         fixture.device.mitm.enabled = fixture.device.mitm.override ?? false;
         return json(fixture.device);
       }
+      if (req.url === "/api/device/certificate-tests") {
+        fixture.testData = { id: "browser-proof", ca_fingerprint: "browser-ca", mitm_enabled: fixture.device.mitm.enabled,
+          trust_url: `${origin.replace("http:", "https:")}/test/browser-proof`,
+          mitm_url: `${mitmOrigins[new URL(origin).hostname.includes(":") ? 1 : 0]}/test/browser-proof`, trust_observed: false, mitm_observed: false };
+        return json(fixture.testData, 201);
+      }
       const selector = fixture.selectors.find((entry) => entry.name === decodeURIComponent(req.url.slice("/api/selectors/".length)));
       selector.node_id = req.method === "DELETE" ? selector.default_node_id : body.node_id;
       selector.overridden = req.method !== "DELETE";
@@ -98,20 +152,52 @@ const server = createServer(async (req, res) => {
       if (override?.release) await override.release.promise;
       return json(snapshot, status);
     }
+    if (req.url === "/api/device/status") {
+      const override = fixture.nextDeviceRead;
+      fixture.nextDeviceRead = null;
+      const snapshot = structuredClone({ device: fixture.device, scope: "userspace_upstream", started_at: "2026-10-01T00:00:00Z", stats: fixture.stats, outbounds: [{ name: "device-outbound", stats: fixture.stats }] });
+      override?.started.resolve();
+      if (override?.release) await override.release.promise;
+      return json(override?.status ? { error: "Device unavailable" } : snapshot, override?.status || 200);
+    }
+    if (req.url === "/api/device/certificate-tests/browser-proof") return json(fixture.testData);
+    if (req.url === "/api/status") {
+      const override = fixture.nextGlobalRead;
+      fixture.nextGlobalRead = null;
+      const status = override?.status || (fixture.mode === "denied" ? 403 : fixture.mode === "api_key" && !req.headers.cookie?.includes("session=valid") ? 401 : 200);
+      const snapshot = { version: "test-daemon", started_at: "2026-10-01T00:00:00Z", stats: { ...fixture.stats, active_connections: 20 }, direct_fallback_connections: 3, groups: structuredClone(fixture.groups), tables: [], plugins: [] };
+      override?.started.resolve();
+      if (override?.release) await override.release.promise;
+      return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
+    }
     if (req.url === "/api/device") return json(fixture.device);
-    if (req.url === "/api/certificate") return json({ error: "No certificate" }, 404);
+    if (req.url === "/api/certificate") return fixture.certificate ? json(fixture.certificate) : json({ error: "No certificate" }, 404);
     json({ error: "Not found" }, 404);
   } catch (error) {
     console.error(error);
     res.writeHead(500).end();
   }
 });
-server.listen(0, "127.0.0.1");
+const sockets = new Set();
+const server = createTCPServer(socket => {
+  sockets.add(socket);
+  socket.on("close", () => sockets.delete(socket));
+  socket.once("readable", () => {
+    const data = socket.read(1);
+    if (!data) return socket.destroy();
+    socket.unshift(data);
+    const branch = data[0] === 0x16 ? tlsServers[fixture.untrusted ? "untrusted" : "trust"] : httpServer;
+    if (!branch) return socket.destroy();
+    branch.emit("connection", socket);
+  });
+});
+server.listen(0);
 await once(server, "listening");
-const origin = `http://127.0.0.1:${server.address().port}`;
+let origin = `http://127.0.0.1:${server.address().port}`;
 const chromium = spawn(process.env.CHROMIUM || "chromium", [
   "--headless", "--disable-gpu", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank",
-], { stdio: ["ignore", "ignore", "pipe"] });
+  ...(proxy ? [`--proxy-server=http://127.0.0.1:${proxy.address().port}`] : []),
+], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: profile, XDG_CONFIG_HOME: join(profile, "config"), XDG_CACHE_HOME: join(profile, "cache") } });
 const stopped = new Promise((resolve) => chromium.once("close", resolve));
 
 let socket;
@@ -132,9 +218,12 @@ try {
   let sequence = 0;
   const pending = new Map();
   const exceptions = [];
+  const browserLogs = [];
   socket.onmessage = ({ data }) => {
     const message = JSON.parse(data);
     if (message.method === "Runtime.exceptionThrown") exceptions.push(message.params.exceptionDetails);
+    if (message.method === "Log.entryAdded") browserLogs.push(message.params.entry.text);
+    if (message.method === "Network.loadingFailed") browserLogs.push(JSON.stringify(message.params));
     if (!message.id) return;
     const call = pending.get(message.id);
     pending.delete(message.id);
@@ -175,12 +264,122 @@ try {
     await call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
     await page();
     exceptions.length = 0;
+    browserLogs.length = 0;
     try { await action(); assert.deepEqual(exceptions, []); console.log(`PASS ${name}`); }
-    catch (error) { failures++; console.error(`FAIL ${name}: ${error.stack}`); }
+    catch (error) { failures++; console.error(`FAIL ${name}: ${error.stack}\n${browserLogs.slice(-8).join("\n")}`); }
   };
   await call("Page.enable");
   await call("Runtime.enable");
   await call("Network.enable");
+  await call("Log.enable");
+
+  if (process.env.CERTUTIL) await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
+    fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", test_available: true, test_generation: "browser-one", test_mitm_origins: mitmOrigins };
+    fixture.device.mitm = { enabled: true, override: null, ca_fingerprint: "browser-ca" };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await js('document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser");
+    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+    fixture.bypass = true;
+    await js('document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification incomplete");
+    fixture.untrusted = true;
+    await js('document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
+    assert.equal(fixture.testData.trust_observed, false);
+    assert.equal(fixture.testData.mitm_observed, false);
+    const ipv4Origin = origin;
+    try {
+      origin = `http://[::1]:${server.address().port}`;
+      fixture.untrusted = false;
+      fixture.bypass = false;
+      await page();
+      await js('document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser", "IPv6 browser CA test");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified", "IPv6 virtual target test");
+    } finally { origin = ipv4Origin; }
+  });
+  else console.log("SKIP real browser CA trust-store checks (set CERTUTIL to an NSS certutil executable)");
+
+  await test("device statistics remain live without global administration access", async () => {
+    fixture.mode = "api_key";
+    await page();
+    assert.equal(await js('document.querySelector("#global-status-content").hidden'), true);
+    assert.match(await js('document.querySelector("#device-traffic").textContent'), /2 KiB/);
+    fixture.stats.upload_bytes = 4096;
+    await until('document.querySelector("#device-traffic").textContent.includes("4 KiB")');
+    await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
+    await ready();
+    assert.equal(await js('document.querySelector("#global-status-content").hidden'), false);
+    assert.match(await js('document.querySelector("#global-runtime").textContent'), /test-daemon/);
+    await js('document.querySelector("#logout").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#global-traffic").textContent'), "");
+    assert.match(await js('document.querySelector("#device-traffic").textContent'), /4 KiB/);
+  });
+
+  await test("late device and global reads cannot undo a refresh or logout", async () => {
+    const device = { started: deferred(), release: deferred() };
+    const global = { started: deferred(), release: deferred() };
+    fixture.nextDeviceRead = device;
+    fixture.nextGlobalRead = global;
+    await Promise.all([device.started.promise, global.started.promise]);
+    fixture.device.sets[0].joined = true;
+    fixture.stats.upload_bytes = 16384;
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    device.release.resolve();
+    global.release.resolve();
+    await delay(200);
+    assert.equal(await js('document.querySelector(".set-row button").textContent'), "Leave");
+    assert.match(await js('document.querySelector("#device-traffic").textContent'), /16 KiB/);
+    fixture.mode = "api_key";
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#global-traffic").textContent'), "");
+  });
+
+  await test("certificate UI requires both browser proof and interception observation", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca", test_available: true, test_generation: "one", test_mitm_origins: mitmOrigins };
+    fixture.device.mitm = { enabled: true, override: null, ca_fingerprint: "test-ca" };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await js(`
+      window.testMode = "mitm";
+      const originalFetch = window.fetch;
+      window.fetch = async (url, options) => {
+        const address = String(url);
+        const reply = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
+        if (address === "/api/device/certificate-tests") return reply({ id: "challenge", ca_fingerprint: "test-ca", mitm_enabled: true, trust_url: location.origin.replace("http:", "https:") + "/test/challenge", mitm_url: "https://203.0.113.254/test/challenge" });
+        if (address === "/api/device/certificate-tests/challenge") return reply({ trust_observed: true, mitm_observed: testMode === "mitm" });
+        if (address.startsWith("https://")) {
+          if (options.credentials !== "omit" || options.redirect !== "error" || options.mode !== "cors") throw Error("unsafe challenge request");
+          if (testMode === "tls-error") throw new TypeError("Failed to fetch");
+          if (testMode === "bypass" && address.includes("203.0.113.254")) throw new TypeError("Failed to fetch");
+          return reply({ id: "challenge", ca_fingerprint: "test-ca", stage: address.includes("203.0.113.254") ? "mitm" : "trust" });
+        }
+        return originalFetch(url, options);
+      };
+    `);
+    await js('document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser");
+    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+    await js('testMode = "bypass"; document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification incomplete");
+    await js('testMode = "tls-error"; document.querySelector("#test-certificate").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
+    assert.notEqual(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+    fixture.certificate.test_generation = "two";
+    await until('document.querySelector("#certificate-trust-result").textContent === "Not tested"');
+  });
 
   await test("late unauthorized poll cannot erase a successful refresh", async () => {
     const read = { status: 401, started: deferred(), release: deferred() };
@@ -404,8 +603,48 @@ try {
     read.release.resolve();
   });
 
-  await test("mobile, short viewport and dark mode keep the popup usable", async () => {
-    for (const [width, height, theme] of [[390, 844, "light"], [320, 600, "light"], [390, 220, "dark"], [1280, 900, "dark"]]) {
+  await test("expanded outbound details preserve focus and scrolling across polls", async () => {
+    fixture.groups = [
+      { name: "proxy_jp", policy: "min_moving_avg", connectivity: "available", stats: fixture.stats, nodes: Array.from({ length: 80 }, (_, index) => ({
+        name: `Japan premium dedicated connection ${index + 1} → lightsail [IPv6]`, checks_connectivity: true, healthy: true, stats: { active_connections: 0 },
+      })) },
+      { name: "direct", target_kind: "builtin", stats: fixture.stats, nodes: [] },
+    ];
+    await call("Emulation.setDeviceMetricsOverride", { width: 1160, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await js('document.querySelector("#global-groups").parentElement.open = true');
+    assert.equal(await js('document.querySelectorAll("#global-groups .status-nodes p").length'), 0);
+    await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector("summary").click(); openGroup.querySelector("summary").focus()');
+    await until('openGroup.querySelectorAll(".status-nodes p").length === 80');
+    assert.equal(await js('(() => { const list = document.querySelector("#global-groups"); return list.scrollHeight > list.clientHeight && list.clientHeight <= 360; })()'), true);
+    assert.equal(await js('(() => { const global = document.querySelector("#global-status-title").closest("section").getBoundingClientRect(); const device = document.querySelector("#device-status-title").closest("section").getBoundingClientRect(); const selectors = document.querySelector(".selectors-card").getBoundingClientRect(); return global.left === device.left && global.right < selectors.left && device.top >= global.bottom; })()'), true);
+    await js('document.querySelector("#global-groups").scrollTop = 120');
+    fixture.groups[0].nodes[20].stats.active_connections = 41;
+    await until('openGroup.querySelectorAll(".status-nodes p")[20].textContent.includes("41 active")');
+    assert.equal(await js('openGroup.open && document.activeElement === openGroup.querySelector("summary")'), true);
+    assert.equal(await js('document.querySelector("#global-groups").scrollTop'), 120);
+    if (process.env.SCREENSHOT_DIR) {
+      await js('document.querySelector("#global-groups").scrollTop = 0; window.scrollTo(0, 0)');
+      const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+      await writeFile(join(process.env.SCREENSHOT_DIR, "dae-web-expanded-status.png"), Buffer.from(image.data, "base64"));
+    }
+    fixture.groups.reverse();
+    await until('document.querySelector("#global-groups").firstElementChild.dataset.name === "direct"');
+    assert.equal(await js('openGroup.isConnected && openGroup.open && document.activeElement === openGroup.querySelector("summary")'), true);
+    fixture.mode = "api_key";
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#global-groups").childElementCount'), 0);
+  });
+
+  await test("responsive layouts and dark mode keep the popup usable", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "12:34:56:78:".repeat(7) + "12:34:56:78", test_available: true, test_generation: "layout" };
+    fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: fixture.certificate.fingerprint };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    for (const [width, height, theme] of [[390, 844, "light"], [320, 600, "light"], [390, 220, "dark"], [960, 900, "light"], [1024, 900, "dark"], [1160, 1000, "dark"], [1280, 900, "dark"], [1600, 1000, "light"], [1920, 1080, "dark"], [2560, 1440, "dark"]]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
       await openPicker();
@@ -429,8 +668,13 @@ try {
   socket?.close();
   chromium.kill();
   await stopped;
-  server.closeAllConnections();
+  for (const socket of sockets) socket.destroy();
+  httpServer.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
+  for (const server of Object.values(tlsServers)) {
+    server.closeAllConnections();
+  }
+  if (proxy) await new Promise(resolve => proxy.close(resolve));
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 if (failures) process.exitCode = 1;
