@@ -8,7 +8,6 @@ package dns
 import (
 	"fmt"
 	"net/netip"
-	"slices"
 	"strconv"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -24,6 +23,7 @@ type ResponseMatcherBuilder struct {
 	simulatedDomainSet []routing.DomainSet
 	ipSet              []*trie.Trie
 	rules              []responseMatchSet
+	sources            map[int]*config_parser.RoutingRule
 }
 
 func NewResponseMatcherBuilder(rules []*config_parser.RoutingRule, upstreamName2Id map[string]uint8, fallback config.FunctionOrString) (b *ResponseMatcherBuilder, err error) {
@@ -33,8 +33,12 @@ func NewResponseMatcherBuilder(rules []*config_parser.RoutingRule, upstreamName2
 	rulesBuilder.RegisterFunctionParser(consts.Function_QType, TypeParserFactory(b.addQType))
 	rulesBuilder.RegisterFunctionParser(consts.Function_ResponseIp, routing.IpParserFactory(b.addIp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Upstream, routing.EmptyKeyPlainParserFactory(b.addUpstream))
-	if err = rulesBuilder.Apply(rules); err != nil {
-		return nil, err
+	b.sources = make(map[int]*config_parser.RoutingRule)
+	for _, rule := range rules {
+		b.sources[len(b.rules)] = rule
+		if err = rulesBuilder.Apply([]*config_parser.RoutingRule{rule}); err != nil {
+			return nil, err
+		}
 	}
 
 	if err = b.addFallback(fallback); err != nil {
@@ -183,6 +187,7 @@ func (b *ResponseMatcherBuilder) Build() (matcher *ResponseMatcher, err error) {
 		return nil, fmt.Errorf("fallback rule MUST be the last")
 	}
 	m.matches = b.rules
+	m.sources = b.sources
 
 	return &m, nil
 }
@@ -192,6 +197,7 @@ type ResponseMatcher struct {
 	ipSet         []*trie.Trie
 
 	matches []responseMatchSet
+	sources map[int]*config_parser.RoutingRule
 }
 
 type responseMatchSet struct {
@@ -222,25 +228,9 @@ func (m *ResponseMatcher) Match(
 		if badRule || goodSubrule {
 			goto beforeNextLoop
 		}
-		switch match.Type {
-		case consts.MatchType_DomainSet:
-			if domainMatchBitmap != nil && (domainMatchBitmap[i/32]>>(i%32))&1 > 0 {
-				goodSubrule = true
-			}
-		case consts.MatchType_IpSet:
-			goodSubrule = slices.ContainsFunc(bin128, m.ipSet[match.Value].HasPrefix)
-		case consts.MatchType_QType:
-			if qType == uint16(match.Value) {
-				goodSubrule = true
-			}
-		case consts.MatchType_Upstream:
-			if upstream == DnsRequestOutboundIndex(match.Value) {
-				goodSubrule = true
-			}
-		case consts.MatchType_Fallback:
-			goodSubrule = true
-		default:
-			return 0, fmt.Errorf("unknown match type: %v", match.Type)
+		goodSubrule, err = m.matchValue(i, qType, upstream, bin128, domainMatchBitmap)
+		if err != nil {
+			return 0, err
 		}
 	beforeNextLoop:
 		upstream := DnsResponseOutboundIndex(match.Upstream)

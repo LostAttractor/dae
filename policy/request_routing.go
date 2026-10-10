@@ -33,6 +33,7 @@ type RequestMatcherBuilder struct {
 	ipSet              []*trie.Trie
 	interfaceRegs      []interfaceReg
 	ifmgr              *network.InterfaceManager
+	sources            map[int]*config_parser.RoutingRule
 }
 
 func NewRequestMatcherBuilder(
@@ -48,8 +49,12 @@ func NewRequestMatcherBuilder(
 	rulesBuilder.RegisterFunctionParser(consts.Function_DestIp, routing.IpParserFactory(b.addDestIp))
 	rulesBuilder.RegisterFunctionParser(consts.Function_SourceIp, routing.IpParserFactory(b.addSip))
 	rulesBuilder.RegisterFunctionParser(consts.Function_Interface, routing.EmptyKeyPlainParserFactory(b.addInterface))
-	if err = rulesBuilder.Apply(rules); err != nil {
-		return nil, err
+	b.sources = make(map[int]*config_parser.RoutingRule)
+	for _, rule := range rules {
+		b.sources[len(b.rules)] = rule
+		if err = rulesBuilder.Apply([]*config_parser.RoutingRule{rule}); err != nil {
+			return nil, err
+		}
 	}
 
 	if err = b.addFallback(fallback); err != nil {
@@ -203,6 +208,7 @@ func (b *RequestMatcherBuilder) Build() (matcher *RequestMatcher, err error) {
 		return nil, fmt.Errorf("fallback rule MUST be the last")
 	}
 	m.matches = b.rules
+	m.sources = b.sources
 
 	if b.ifmgr != nil {
 		for _, reg := range b.interfaceRegs {
@@ -227,6 +233,7 @@ type RequestMatcher struct {
 	ipSet         []*trie.Trie
 
 	matches []requestMatchSet
+	sources map[int]*config_parser.RoutingRule
 }
 
 type requestMatchSet struct {
@@ -274,31 +281,9 @@ func (m *RequestMatcher) Match(
 		if badRule || goodSubrule {
 			goto beforeNextLoop
 		}
-		switch match.Type {
-		case consts.MatchType_DomainSet:
-			if domainMatchBitmap != nil && (domainMatchBitmap[i/32]>>(i%32))&1 > 0 {
-				goodSubrule = true
-			}
-		case consts.MatchType_QType:
-			if qType == match.Value {
-				goodSubrule = true
-			}
-		case consts.MatchType_IpSet:
-			if m.ipSet[match.Value].HasPrefix(dipBin) {
-				goodSubrule = true
-			}
-		case consts.MatchType_SourceIpSet:
-			if m.ipSet[match.Value].HasPrefix(sipBin) {
-				goodSubrule = true
-			}
-		case consts.MatchType_IfIndex:
-			if ifindex != 0 && ifindex == match.loadIfindex() {
-				goodSubrule = true
-			}
-		case consts.MatchType_Fallback:
-			goodSubrule = true
-		default:
-			return 0, fmt.Errorf("unknown match type: %v", match.Type)
+		goodSubrule, err = m.matchValue(i, qType, ifindex, dipBin, sipBin, domainMatchBitmap)
+		if err != nil {
+			return 0, err
 		}
 	beforeNextLoop:
 		upstream := DnsRequestOutboundIndex(match.Upstream)

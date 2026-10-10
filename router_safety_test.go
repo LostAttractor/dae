@@ -14,8 +14,8 @@ import (
 	"time"
 
 	policy "github.com/daeuniverse/dae-plugin-dns-router/policy"
-	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	dns "github.com/miekg/dns"
 )
@@ -216,7 +216,7 @@ func TestPreflightStaticRoutingAndDeferredResources(t *testing.T) {
 						return nil, nil
 					}, nil
 				}}}
-				_, err := mitm.Configure(definitions, []plugin.Spec{{ID: "first", Type: "first"}, spec})
+				_, err := pluginhost.Configure(definitions, []plugin.Spec{{ID: "first", Type: "first"}, spec})
 				if err == nil || started {
 					t.Fatal("invalid router started plugin preparation")
 				}
