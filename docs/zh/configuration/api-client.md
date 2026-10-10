@@ -159,6 +159,8 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 ## API 参考
 
+规则解释、设备成员管理与影响预览见 [规则解释与设备管理](explain.md)。这些命令同样通过独立 API 客户端提供。
+
 完整字段与操作定义见 [OpenAPI 3.1 文档](../../api/openapi.json)，可导入支持 OpenAPI 的工具。直接编辑 OpenAPI 文档；`make client-test` 检查其字段、必填项、类型和数组长度与 Go 契约是否一致。配置与持久化语义见 [页面与运行时 API](api.md)。
 
 | 方法与路径 | 响应 | 权限与请求 |
@@ -191,7 +193,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过直连 LAN 入口和邻居校验，否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
 
-名称按 URL 路径段编码；正文限制为 1 KiB，有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
+名称按 URL 路径段编码；正文默认限制为 1 KiB，规则解释和成员影响预览为 64 KiB。有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
 
 状态操作成功返回 `200`；探测受理返回 `202`；会话操作成功返回 `204`，无响应正文。POST 同样需要 `X-Dae-API: 1`，SDK 自动携带。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
 

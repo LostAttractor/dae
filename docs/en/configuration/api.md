@@ -2,6 +2,7 @@
 
 See [API and independent clients](api-client.md) for standalone builds, TUI integration and wire semantics, and the [OpenAPI document](../../api/openapi.json) for machine-readable definitions.
 
+See [Decision explanations and client management](explain.md) for read-only routing/subsystem analysis, membership previews and administrative MAC management.
 
 ```text
 global {

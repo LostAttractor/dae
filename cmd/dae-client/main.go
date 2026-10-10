@@ -16,6 +16,8 @@ func main() {
 	root.AddCommand(cli.NewStatusCommand())
 	root.AddCommand(cli.NewSelectorCommand())
 	root.AddCommand(cli.NewMITMCommand())
+	root.AddCommand(cli.NewExplainCommand())
+	root.AddCommand(cli.NewClientCommand())
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

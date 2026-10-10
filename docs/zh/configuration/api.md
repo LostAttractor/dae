@@ -2,6 +2,8 @@
 
 独立构建、连接参数、TUI 开发与完整字段说明见 [API 与独立客户端开发](api-client.md)，机器可读定义见 [OpenAPI 文档](../../api/openapi.json)。
 
+只读路由/子系统分析、设备集合影响预览和管理员 MAC 管理见 [规则解释与设备管理](explain.md)。
+
 ```text
 global {
   lan_interface: br-lan

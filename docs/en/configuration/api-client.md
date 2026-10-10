@@ -200,6 +200,8 @@ The frontend boundary consists of its public build output and the HTTP API contr
 
 ## API reference
 
+See [Decision explanations and client management](explain.md) for read-only explanations, membership previews and device administration through the same independent API client.
+
 The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and fields. Edit it directly; `make client-test` checks fields, required properties, types and array lengths against the Go contract. See [API configuration](api.md) for persistence and routing semantics, and the [detailed Chinese reference](../../zh/configuration/api-client.md) for field explanations and a complete Go example.
 
 | Operation | Response / requirement |
@@ -222,7 +224,7 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 
 All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. If `global.api_key` is configured, TCP administration (including LAN selector reads) requires `Authorization: Bearer <api_key>` or a valid session; missing/incorrect credentials return `401`. The Go SDK accepts `client.Options.APIKey`. Without a configured key, each TCP administration request must pass the direct LAN ingress and neighbor checks, otherwise it returns `403`; credentials are not required. Browsers in key mode may use the seven-day session cookie issued by `PUT /api/session`; `DELETE /api/session` clears it. Both session operations use empty bodies and return `204` on success; keyless access never issues a session. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
 
-URL-encode names as path segments. Bodies are limited to 1 KiB; JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browsers must use the same origin; TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
+URL-encode names as path segments. Bodies are limited to 1 KiB, or 64 KiB for explanations and membership previews. JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browsers must use the same origin; TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
 
 Successful state operations return `200`; probes return `202` with accepted targets; session operations return `204` without a body. POST also requires `X-Dae-API: 1`, supplied by the SDK. Application errors have `{"error":"message"}`; route/method errors and some certificate errors may be plain text. Treat the HTTP status as the contract, rather than matching error text: `400` invalid input; `401`/`403` authorization; `404`/`405` resource/method; `409` changed CA, absent selector default, or unsupported probe target; `413`/`415` body size/media type; `500` application or persistence failure; `503` startup/reload.
 
