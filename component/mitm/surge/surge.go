@@ -105,8 +105,10 @@ func (e *Engine) Plan() plugin.Plan {
 					r.AndFunctions = append(r.AndFunctions, &config_parser.Function{Name: "domain", Not: predicate.Not, Params: []*config_parser.Param{{Key: key, Val: value}}})
 				}
 				if rule.PreMatching {
+					r.Sources = []config_parser.RuleSource{{File: module.source, Expression: module.Name + ": " + r.String(false, false, true)}}
 					plan.EarlyRoutes = append(plan.EarlyRoutes, r)
 				} else {
+					r.Sources = []config_parser.RuleSource{{File: module.source, Expression: module.Name + ": " + r.String(false, false, true)}}
 					plan.Routes = append(plan.Routes, r)
 				}
 			}

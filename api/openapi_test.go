@@ -20,6 +20,7 @@ type documentedSchema struct {
 	Properties map[string]documentedSchema `json:"properties"`
 	Required   []string                    `json:"required"`
 	Items      *documentedSchema           `json:"items"`
+	Additional json.RawMessage             `json:"additionalProperties"`
 	AnyOf      []documentedSchema          `json:"anyOf"`
 	MinItems   int                         `json:"minItems"`
 	MaxItems   int                         `json:"maxItems"`
@@ -44,6 +45,21 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 	if document.OpenAPI != "3.1.0" {
 		t.Fatal("unexpected OpenAPI version")
 	}
+	var diagnostics struct {
+		Components struct {
+			Schemas map[string]documentedSchema `json:"schemas"`
+		} `json:"components"`
+	}
+	data, err = os.ReadFile("../docs/api/diagnostics.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &diagnostics); err != nil {
+		t.Fatal(err)
+	}
+	for name, schema := range diagnostics.Components.Schemas {
+		document.Components.Schemas[name] = schema
+	}
 	version := document.Components.Schemas["StatusSnapshot"].Properties["schema"].Const
 	if version == nil || *version != StatusSchemaVersion {
 		t.Fatal("documented status schema version does not match the wire contract")
@@ -52,7 +68,8 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 	check = func(typ reflect.Type, schema documentedSchema) {
 		t.Helper()
 		if schema.Ref != "" {
-			name, ok := strings.CutPrefix(schema.Ref, "#/components/schemas/")
+			ref := strings.TrimPrefix(schema.Ref, "./openapi.json")
+			name, ok := strings.CutPrefix(ref, "#/components/schemas/")
 			if !ok {
 				t.Fatalf("unexpected schema reference %s", schema.Ref)
 			}
@@ -129,6 +146,16 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 			check(typ.Elem(), *schema.Items)
 		case typ.Kind() == reflect.String:
 			want = "string"
+		case typ.Kind() == reflect.Map:
+			want = "object"
+			if typ.Key().Kind() != reflect.String {
+				t.Fatal("non-string JSON map key")
+			}
+			var value documentedSchema
+			if err := json.Unmarshal(schema.Additional, &value); err != nil {
+				t.Fatalf("%s: missing map value schema: %v", typ, err)
+			}
+			check(typ.Elem(), value)
 		case typ.Kind() == reflect.Bool:
 			want = "boolean"
 		case typ.Kind() == reflect.Float64:
@@ -143,6 +170,9 @@ func TestOpenAPIMatchesWireTypes(t *testing.T) {
 		}
 	}
 	for _, typ := range []reflect.Type{reflect.TypeFor[StatusSnapshot](), reflect.TypeFor[SurgeStatus](), reflect.TypeFor[ScriptRunRequest](), reflect.TypeFor[ScriptRunResponse](), reflect.TypeFor[ResourceRefreshStatus](), reflect.TypeFor[SelectorsResponse](), reflect.TypeFor[DeviceState](), reflect.TypeFor[DeviceStatus](), reflect.TypeFor[CertificateTest](), reflect.TypeFor[CertificateTestProof](), reflect.TypeFor[Certificate](), reflect.TypeFor[SelectNodeRequest](), reflect.TypeFor[ProbeRequest](), reflect.TypeFor[ProbeResponse](), reflect.TypeFor[SetMITMRequest]()} {
+		check(typ, document.Components.Schemas[typ.Name()])
+	}
+	for _, typ := range []reflect.Type{reflect.TypeFor[ExplainRequest](), reflect.TypeFor[ExplainResponse](), reflect.TypeFor[DeviceContext](), reflect.TypeFor[ClientGroups](), reflect.TypeFor[ManagedDevice](), reflect.TypeFor[ClientImpactRequest](), reflect.TypeFor[ClientImpact]()} {
 		check(typ, document.Components.Schemas[typ.Name()])
 	}
 }

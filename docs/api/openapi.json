@@ -22,7 +22,7 @@
             }
           }
         },
-        "description": "400 invalid request; 401 missing/incorrect configured API key or invalid/expired session; 403 forbidden or unverified LAN identity when no API key is configured; 404 absent resource; 405 unsupported method; 409 CA changed; 413 body over 1 KiB; 415 wrong media type; 500 persistence failure; 503 starting/reloading. Route/method errors and missing certificates may be plain text."
+        "description": "400 invalid request; 401 missing/incorrect configured API key or invalid/expired session; 403 forbidden or unverified LAN identity when no API key is configured; 404 absent resource; 405 unsupported method; 409 CA changed; 413 body over endpoint limit (1 KiB, or 64 KiB for diagnostics); 415 wrong media type; 500 persistence failure; 503 starting/reloading. Route/method errors and missing certificates may be plain text."
       }
     },
     "schemas": {
@@ -1423,6 +1423,16 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/device/context": {"$ref": "./diagnostics.json#/paths/~1api~1device~1context"},
+    "/api/device/diagnostics/explain": {"$ref": "./diagnostics.json#/paths/~1api~1device~1diagnostics~1explain"},
+    "/api/diagnostics/explain": {"$ref": "./diagnostics.json#/paths/~1api~1diagnostics~1explain"},
+    "/api/device/sets/{name}/impact": {"$ref": "./diagnostics.json#/paths/~1api~1device~1sets~1{name}~1impact"},
+    "/api/clients/{name}/impact": {"$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}~1impact"},
+    "/api/clients": {"$ref": "./diagnostics.json#/paths/~1api~1clients"},
+    "/api/clients/{name}": {"$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}"},
+    "/api/clients/{name}/members/{mac}": {"$ref": "./diagnostics.json#/paths/~1api~1clients~1{name}~1members~1{mac}"},
+    "/api/devices/{mac}": {"$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}"},
+    "/api/devices/{mac}/mitm": {"$ref": "./diagnostics.json#/paths/~1api~1devices~1{mac}~1mitm"},
     "/api/certificate": {
       "get": {
         "operationId": "getCertificate",
