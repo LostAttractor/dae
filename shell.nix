@@ -19,6 +19,7 @@ in pkgs.mkShell ({
   nativeBuildInputs = with pkgs; [
     git
     gnumake
+    nodejs_22
     binutils
     bpftools
     go_1_27

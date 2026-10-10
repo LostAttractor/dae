@@ -1,0 +1,19 @@
+{
+  "name": "dae-web",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node tests/browser.mjs"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-is": "19.3.0",
+    "recharts": "3.10.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

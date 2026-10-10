@@ -1,5 +1,5 @@
 FROM golang:1.27.0-alpine AS builder
-RUN apk add --no-cache clang llvm git make build-base musl-dev linux-headers
+RUN apk add --no-cache clang llvm git make build-base musl-dev linux-headers nodejs npm
 ENV CLANG=clang CGO_ENABLED=1
 WORKDIR /build/
 ADD go.mod go.sum ./

@@ -109,9 +109,9 @@ make web
 make -C web
 ```
 
-`web/` 包含前端源码与自己的构建入口。`make web` 输出到 `build/web/`（可通过 `WEB_OUTPUT` 修改）；`make -C web` 输出到 `web/dist/`。两者只需要 Make 和常规文件工具，不需要 Go 或 Node.js。`dae-client` 只包含终端命令，不再携带 Web 资源。
+`web/` 包含前端源码与自己的构建入口。`make web` 输出到 `build/web/`（可通过 `WEB_OUTPUT` 修改）；`make -C web` 输出到 `web/dist/`。两者需要 Make、Node.js 22+ 和 npm，不需要 Go；Make 会按需安装锁定版本的前端依赖。`dae-client` 只包含终端命令，不携带 Web 资源。
 
-产物包含 `index.html`、`style.css`、`app.js`、`api.js`。内嵌页面使用原生表单，提供设备集合、节点选择、HTTPS 开关和证书下载；复杂展示和交互可通过外部前端扩展。要独立更新页面，将产物部署到目录，并给 dae 进程设置环境变量：
+产物包含 `index.html`、`style.css`、打包后的 `app.js` 及所用依赖的许可声明（如有）。内嵌页面使用原生表单，提供设备集合、节点选择、HTTPS 开关和证书下载；复杂展示和交互可通过外部前端扩展。要独立更新页面，将产物部署到目录，并给 dae 进程设置环境变量：
 
 ```sh
 DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae

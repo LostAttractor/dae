@@ -1,15 +1,15 @@
 # dae Web
 
 The browser application uses dae's HTTP API. This directory builds independently
-of the daemon and Go toolchain; it currently needs only Make and standard file
-utilities.
+of the daemon and Go toolchain. It requires Node.js 22+, npm and Make.
 
 ```sh
 make
 ```
 
-`src/` contains the frontend source. The build replaces `dist/` with the public
-bundle, including `index.html`. Set `DIST=/absolute/output/path` to choose another
+`src/` contains the frontend source. Make installs the dependencies pinned in
+`package-lock.json` with `npm ci` when they change. The build replaces `dist/`
+with the public bundle, including `index.html`. Set `DIST=/absolute/output/path` to choose another
 build directory. Only deploy build output; development files stay outside it.
 
 In the dae repository, `make web` writes the bundle to `build/web/` by default.
@@ -28,8 +28,7 @@ presentation in the frontend; this directory does not import daemon code.
 
 `app.js` coordinates access, device actions and refreshes; `selectors.js` owns
 the searchable node picker, keyboard navigation and connectivity-test controls.
-`dom.js` contains the shared element/template lookups. These are native browser
-modules, with no framework or bundler. The page requires a browser with native
+`dom.js` contains the shared element/template lookups. esbuild bundles these browser modules into local static assets. The page requires a browser with native
 Popover API support.
 
 `status.js` renders MAC-attributed device and administrative global status;
@@ -120,7 +119,7 @@ CHROMIUM=/path/to/chromium make test
 ```
 
 The test uses Node's built-ins, a local API fixture, and a temporary browser
-profile; no npm packages or running daemon are needed. It covers stale responses,
+profile using the production bundle; no running daemon is needed. It covers stale responses,
 login/logout, live ordering and focus, a 1,000-node picker, probe/selection actions,
 configuration defaults, description labels, timeouts, and mobile/dark layouts.
 Fixture state and browser processes are cleaned up when the test exits. These

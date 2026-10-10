@@ -160,9 +160,9 @@ make web
 make -C web
 ```
 
-`web/` owns the frontend source and build entry point. `make web` writes to `build/web/` (configurable with `WEB_OUTPUT`); `make -C web` writes to `web/dist/`. Both need only Make and standard file utilities, without Go or Node.js. `dae-client` contains only terminal commands and does not include Web assets.
+`web/` owns the frontend source and build entry point. `make web` writes to `build/web/` (configurable with `WEB_OUTPUT`); `make -C web` writes to `web/dist/`. Both require Make, Node.js 22+ and npm, without Go. Make installs the pinned frontend dependencies as needed. `dae-client` contains only terminal commands and does not include Web assets.
 
-The bundle contains `index.html`, `style.css`, `app.js` and `api.js`. The default embedded page uses native form controls for client sets, selectors, HTTPS settings and certificate downloads. More complex presentation and interaction can live in an external frontend. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
+The bundle contains `index.html`, `style.css`, bundled `app.js` and dependency license notices when present. The default embedded page uses native form controls for client sets, selectors, HTTPS settings and certificate downloads. More complex presentation and interaction can live in an external frontend. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
 
 ```sh
 DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae

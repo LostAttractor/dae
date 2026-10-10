@@ -4,12 +4,15 @@
 DIST ?= dist
 
 .PHONY: all clean test
-all: clean
-	mkdir -p "$(DIST)"
-	cp -R src/. "$(DIST)/"
+all: node_modules/.installed clean
+	node build.mjs "$(DIST)"
+
+node_modules/.installed: package.json package-lock.json
+	npm ci --no-audit --no-fund
+	touch $@
 
 clean:
 	rm -rf "$(DIST)"
 
-test:
+test: node_modules/.installed
 	node tests/browser.mjs

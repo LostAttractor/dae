@@ -1,4 +1,4 @@
-// Browser regressions use Node's built-ins and an installed Chromium; no npm dependencies.
+// Browser regressions use Node's built-ins, the production bundle and installed Chromium.
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
@@ -11,8 +11,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-const source = fileURLToPath(new URL("../src/", import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), "dae-web-"));
+const source = join(profile, "public");
+await promisify(execFile)(process.execPath, [fileURLToPath(new URL("../build.mjs", import.meta.url)), source]);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const deferred = () => Promise.withResolvers();
 let fixture;

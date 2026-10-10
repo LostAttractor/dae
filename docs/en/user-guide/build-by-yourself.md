@@ -4,6 +4,7 @@
 
 - Go 1.27 or later, Make, Git, and a C compiler with libc development headers.
 - Clang and LLVM for eBPF generation (CI uses version 15).
+- Node.js 22+ and npm to bundle the embedded Web interface and Recharts charts.
 - A target C compiler and sysroot when cross-compiling.
 
 Go dependencies are pinned as Git submodules under `third_party/`: `outbound`,
