@@ -73,10 +73,19 @@ func (c *ControlPlane) resolveAPIObservation(source, destination netip.AddrPort)
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
 		return bpfApiClient{}, fmt.Errorf("read device API observation clock: %w", err)
 	}
-	// Only LAN hooks write this map, and reload clears it before the new
-	// hooks attach. Re-resolving interface names would duplicate that boundary.
+	// Only LAN hooks write this generation's map. An attachment removed since
+	// observation must no longer authorize requests, even within the TTL.
 	if uint64(now.Nano())-client.ObservedAt > uint64(apiClientTTL) {
 		return bpfApiClient{}, fmt.Errorf("device API LAN ingress observation expired; retry the request")
+	}
+	if c.core.kernelLinks == nil {
+		return bpfApiClient{}, fmt.Errorf("LAN ingress attachment unavailable")
+	}
+	if _, attached := c.core.hostTCXLink(int(client.Ifindex), hostTCXLanIngress); !attached {
+		return bpfApiClient{}, fmt.Errorf("observed LAN ingress is no longer attached")
+	}
+	if err := netutils.ValidateClientScope(source.Addr(), destination.Addr(), int(client.Ifindex)); err != nil {
+		return bpfApiClient{}, err
 	}
 	if err := netutils.ValidateClientMAC(source.Addr(), client.Mac); err != nil {
 		return bpfApiClient{}, err

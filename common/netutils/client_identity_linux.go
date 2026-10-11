@@ -13,6 +13,76 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// ValidateClientScope binds scoped TCP endpoints to the observed LAN ingress.
+// A tuple's numeric IPv6 addresses alone cannot distinguish different links.
+func ValidateClientScope(source, destination netip.Addr, ingress int) error {
+	for _, address := range []netip.Addr{source, destination} {
+		if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() || address.IsLoopback() {
+			return fmt.Errorf("invalid LAN connection address")
+		}
+		if !address.Is6() || !address.IsLinkLocalUnicast() {
+			continue
+		}
+		scope, err := clientZone(address.Zone())
+		if err != nil || scope == 0 {
+			return fmt.Errorf("link-local connection requires a valid interface zone")
+		}
+		links, err := netlink.LinkList()
+		if err != nil {
+			return fmt.Errorf("resolve LAN scope topology: %w", err)
+		}
+		if !clientScopeReachable(links, ingress, scope) {
+			return fmt.Errorf("connection scope does not belong to the observed LAN ingress")
+		}
+	}
+	return nil
+}
+
+// Traverse only the receive direction: port -> master and lower -> VLAN.
+// Walking back down to a common parent would incorrectly trust sibling links.
+func clientScopeReachable(links []netlink.Link, ingress, scope int) bool {
+	byIndex := make(map[int]netlink.Link, len(links))
+	for _, link := range links {
+		byIndex[link.Attrs().Index] = link
+	}
+	pending := []int{ingress}
+	seen := make(map[int]bool)
+	for len(pending) > 0 {
+		index := pending[0]
+		pending = pending[1:]
+		link := byIndex[index]
+		if link == nil || seen[index] {
+			continue
+		}
+		if index == scope {
+			return true
+		}
+		seen[index] = true
+		if master := link.Attrs().MasterIndex; master != 0 {
+			pending = append(pending, master)
+		}
+		for _, upper := range links {
+			if vlan, ok := upper.(*netlink.Vlan); ok && vlan.ParentIndex == index {
+				pending = append(pending, vlan.Index)
+			}
+		}
+	}
+	return false
+}
+
+func clientZone(zone string) (int, error) {
+	if zone == "" {
+		return 0, nil
+	}
+	if iface, err := net.InterfaceByName(zone); err == nil {
+		return iface.Index, nil
+	}
+	if scope, err := strconv.Atoi(zone); err == nil && scope > 0 {
+		return scope, nil
+	}
+	return 0, fmt.Errorf("unknown client interface zone %q", zone)
+}
+
 // ValidateClientMAC checks a connection's observed source MAC against its direct
 // L3 neighbor. LAN authorization belongs to the ingress hook; the route device
 // may instead be a bridge or bond. Other interfaces' neighbors are irrelevant.
@@ -26,14 +96,9 @@ func ValidateClientMAC(source netip.Addr, mac [6]byte) error {
 	if source.Is6() && source.IsLinkLocalUnicast() && source.Zone() == "" {
 		return fmt.Errorf("link-local client address requires an interface zone")
 	}
-	var scope int
-	if zone := source.Zone(); zone != "" {
-		iface, err := net.InterfaceByName(zone)
-		if err == nil {
-			scope = iface.Index
-		} else if scope, err = strconv.Atoi(zone); err != nil || scope <= 0 {
-			return fmt.Errorf("unknown client interface zone %q", zone)
-		}
+	scope, err := clientZone(source.Zone())
+	if err != nil {
+		return err
 	}
 	routes, err := netlink.RouteGetWithOptions(source.AsSlice(), &netlink.RouteGetOptions{OifIndex: scope})
 	if err != nil {

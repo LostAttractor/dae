@@ -95,7 +95,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	neighbor(bridge, "fe80::23", mac)
 	neighbor(bond, "198.51.100.23", mac)
 	neighbor(wan, "203.0.113.23", mac)
-	neighbor(wan, "fe80::23", other)
+	neighbor(wan, "fe80::23", mac)
 	_, routed, err := net.ParseCIDR("10.0.0.0/24")
 	must(err)
 	must(netlink.RouteAdd(&netlink.Route{Dst: routed, Gw: net.ParseIP("192.0.2.23"), LinkIndex: bridge.Attrs().Index}))
@@ -116,7 +116,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	must(collection.Maps["routing_map"].Update(uint32(0), &bpfMatchSet{Type: uint8(consts.MatchType_Fallback)}, ebpf.UpdateAny))
 	plane := &ControlPlane{
 		apiPort: 9080, lanInterface: []string{"lan", "bond-port"},
-		core: &controlPlaneCore{bpf: &BPFState{bpfObjects: &bpfObjects{
+		core: &controlPlaneCore{kernelLinks: &kernelLinks{hostTCXLinks: []hostTCXLink{{linkIndex: lan.Attrs().Index, role: hostTCXLanIngress}, {linkIndex: bondPort.Attrs().Index, role: hostTCXLanIngress}}}, bpf: &BPFState{bpfObjects: &bpfObjects{
 			bpfMaps:      bpfMaps{ApiClientMap: collection.Maps["api_client_map"]},
 			bpfVariables: bpfVariables{ApiPort: collection.Variables["api_port"]},
 		}}},

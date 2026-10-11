@@ -11,6 +11,31 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestClientScopeFollowsOnlyReceiveTopology(t *testing.T) {
+	links := []netlink.Link{
+		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1}},
+		&netlink.Vlan{LinkAttrs: netlink.LinkAttrs{Index: 2, ParentIndex: 1, MasterIndex: 4}},
+		&netlink.Vlan{LinkAttrs: netlink.LinkAttrs{Index: 3, ParentIndex: 1, MasterIndex: 5}},
+		&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Index: 4}},
+		&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Index: 5}},
+		&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 6, MasterIndex: 7}},
+		&netlink.Bond{LinkAttrs: netlink.LinkAttrs{Index: 7}},
+		&netlink.Iptun{LinkAttrs: netlink.LinkAttrs{Index: 8, ParentIndex: 1}},
+	}
+	for _, test := range []struct {
+		from, to int
+		want     bool
+	}{
+		{1, 4, true}, {2, 4, true}, {6, 7, true}, {8, 8, true},
+		{2, 3, false}, {2, 5, false}, {4, 2, false}, {1, 8, false},
+		{8, 1, false}, {9, 9, false}, {0, 0, false},
+	} {
+		if got := clientScopeReachable(links, test.from, test.to); got != test.want {
+			t.Errorf("scope %d -> %d = %v, want %v", test.from, test.to, got, test.want)
+		}
+	}
+}
+
 func TestValidateClientMACRejectsInvalidPeers(t *testing.T) {
 	mac := [6]byte{2, 0, 0, 0, 0, 1}
 	for _, source := range []string{"", "127.0.0.1", "::1", "0.0.0.0", "::", "224.0.0.1", "ff02::1%lo", "255.255.255.255", "fe80::1", "fe80::1%missing-dae-test-interface", "fe80::1%0", "fe80::1%2147483647"} {
