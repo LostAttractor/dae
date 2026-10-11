@@ -77,6 +77,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .session-info button { margin-left: auto; }
 .notice { margin: -8px 0 24px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--soft); white-space: pre-line; }
 .notice[data-tone="error"], .badge[data-tone="error"] { color: var(--error); background: var(--error-bg); border-color: var(--error); }
+#message { white-space: pre-line; }
 .dashboard { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 20px; }
 #manage-navigation { margin-bottom: 20px; }
 .astryx-tab-list { min-width: 0; }

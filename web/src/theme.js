@@ -34,6 +34,10 @@ export const theme = defineTheme({
     "--size-element-md": "2.5rem",
   },
   components: {
+    toast: {
+      base: { backgroundColor: "var(--bgColor-default)", color: "var(--fgColor-default)", border: "1px solid var(--borderColor-default)", fontSize: "1rem" },
+      "type:error": { backgroundColor: "var(--bgColor-danger-muted)", color: "var(--fgColor-danger)", borderColor: "var(--borderColor-danger-emphasis)" },
+    },
     "switch-label": { base: { fontSize: "1rem", color: "var(--fgColor-default)" } },
     switch: { base: { backgroundColor: "var(--borderColor-emphasis)" }, checked: { backgroundColor: "var(--bgColor-accent-emphasis)" } },
     "switch-thumb": { base: { backgroundColor: "var(--fgColor-onEmphasis)" } },

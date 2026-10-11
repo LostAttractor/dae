@@ -233,7 +233,11 @@ Advanced context. Diagnostic disclosures use shaded headers, state badges and
 nested guides; rules can be filtered by status. Outbound metrics pair values with
 labels. Light/dark colors also apply to chart axes, series and tooltips.
 
-Action feedback appears above the page content. Navigation has no branding block.
+Action feedback uses an Astryx toast at the bottom right without shifting page
+content. Each new action replaces the previous notification. Success messages
+close after five seconds, pausing on hover or focus; pending and error messages
+remain until dismissed or replaced. Notifications have a close button and can be
+reached with F6. Navigation has no branding block.
 
 Refresh indicators show time since the last successful read and update while the
 document is visible; hovering shows the local date and time. Errors remain visible

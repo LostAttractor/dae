@@ -50,8 +50,6 @@ function Shell() {
               </div>
             </div>
 
-            <p id="message" className="notice" role="status" aria-live="polite" hidden></p>
-
             <div id="overview-page" className="dashboard" data-page="overview">
               <div className="dashboard-column dashboard-main">
                 <section className="card" aria-labelledby="device-title">
@@ -123,6 +121,7 @@ function Shell() {
 
         <footer><span id="page-note">Changes apply to new connections.</span><span id="daemon-version" hidden></span></footer>
       </div>
+      <div id="notifications"></div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { request } from "./api.js";
 import { byId } from "./dom.js";
 import { mountShell } from "./shell.jsx";
+import { createNotifications } from "./notifications.jsx";
 import { createMITM } from "./mitm.jsx";
 import { createManageNavigation } from "./manage.jsx";
 import { createSelectors } from "./selectors.jsx";
@@ -26,6 +27,7 @@ let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
 mountShell(byId("app"));
+const message = createNotifications(byId("notifications"));
 byId("test-certificate").disabled = true;
 const diagnostics = createDiagnostics(byId("diagnostic-view"));
 const status = createStatus(byId("status-view"), byId("global-status-view"));
@@ -50,13 +52,6 @@ const clientSets = createClientSets(byId("sets"), { run, request, update: render
   navigation.show("tracing");
   diagnostics.compare(set);
 } });
-
-function message(text = "", tone = "success") {
-  const element = byId("message");
-  element.textContent = text;
-  element.dataset.tone = tone;
-  element.hidden = !text;
-}
 
 function updated() {
   updatedLabel.refresh();

@@ -411,6 +411,52 @@ try {
     assert.equal(await js('document.querySelector("#sets").checkVisibility()'), true);
   });
 
+  await test("action notifications float, replace feedback and dismiss without moving content", async () => {
+    await until('document.querySelector("#message") === null');
+    const contentTop = await js('document.querySelector("#overview-page").getBoundingClientRect().top');
+    await js('document.querySelector("#refresh").focus(); document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#overview-page").getBoundingClientRect().top'), contentTop);
+    assert.equal(await js('document.activeElement.id'), "refresh");
+    assert.equal(await js('getComputedStyle(document.querySelector("#message").closest("[popover]")).position'), "fixed");
+    assert.equal(await js('document.querySelector("#message").closest(".astryx-toast").getAttribute("role")'), "status");
+    for (const [width, height, theme] of [[1280, 1000, "dark"], [390, 844, "light"]]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
+      await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      assert.equal(await js('document.querySelectorAll(".astryx-toast").length'), 1);
+      await delay(250);
+      const toast = await js('document.querySelector(".astryx-toast").getBoundingClientRect().toJSON()');
+      assert.equal(toast.left >= 0 && toast.right <= width && toast.top >= 0 && toast.bottom <= height, true, `notification fits at ${width}px: ${JSON.stringify(toast)}`);
+      if (process.env.SCREENSHOT_DIR) {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-notification-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+    }
+    await key("F6", 117);
+    assert.equal(await js('document.activeElement.closest(".astryx-toast") !== null'), true);
+    await js('document.activeElement.click()');
+    await until('document.querySelector("#message") === null');
+    assert.equal(await js('document.activeElement.id'), "refresh");
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await until('document.querySelector("#message") === null');
+
+    fixture.mode = "api_key";
+    await page();
+    await js('document.querySelector("#api-key").value = "wrong"; document.querySelector("#login-form").requestSubmit()');
+    await ready();
+    assert.equal(await js('document.querySelector("#message").closest(".astryx-toast").getAttribute("role")'), "alert");
+    await delay(5500);
+    assert.match(await js('document.querySelector("#message").textContent'), /Incorrect API key/);
+    await key("F6", 117);
+    await js('document.activeElement.click()');
+    await until('document.querySelector("#message") === null');
+    assert.equal(await js('document.activeElement.id'), "api-key");
+    assert.equal(browserLogs.some((entry) => /Content Security Policy|Refused to|violates/i.test(entry)), false);
+  });
+
   await test("small screens show live status below settings across navigation and resizing", async () => {
     await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await page();
@@ -1188,6 +1234,9 @@ try {
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.querySelector("#certificate-panel").open'), false);
+    await delay(250);
+    await js('document.querySelector(".astryx-toast button")?.click()');
+    await until('document.querySelector("#message") === null');
     const viewports = [
       // Phones, including a short viewport while a keyboard is open.
       [320, 568, "light"], [360, 800, "dark"], [390, 844, "light"], [430, 932, "dark"], [390, 220, "dark"], [844, 390, "dark"],
