@@ -75,3 +75,12 @@ See [configuration](../../../docs/zh/configuration/surge-module.md),
 [the common plugin contract](../../plugin/plugin.go).
 The [script compatibility boundaries](../../../docs/zh/development/surge-compatibility.md)
 describe execution ownership, kernel passthrough and rule/event limitations.
+
+## Reports and clients
+
+[`api`](api) owns the plugin report types and [OpenAPI schemas](api/openapi.json).
+[`client`](client) decodes and renders those reports and provides API commands
+without importing the engine or a JavaScript runtime. The daemon's `Commands`
+and the standalone client's entry point register this package explicitly.
+Runtime details are displayed by `plugins surge status` and
+`plugins status --verbose`; core status views consume only daemon fields.

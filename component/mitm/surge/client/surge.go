@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package status
+package client
 
 import (
 	"encoding/json/v2"
@@ -11,11 +11,13 @@ import (
 	"unicode"
 
 	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
+	"github.com/daeuniverse/dae/pkg/clitable"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
 
-func RenderSurge(status api.SurgeStatus, verbose bool) string {
+func RenderSurge(status surgeapi.SurgeStatus, verbose bool) string {
 	if !status.Enabled {
 		return "Surge modules: disabled"
 	}
@@ -90,7 +92,7 @@ func surgeTimestamp(timestamp time.Time) string {
 
 const displayedNotificationsPerScript = 3
 
-func renderSurgeNotifications(notifications []api.SurgeNotification, verbose bool) string {
+func renderSurgeNotifications(notifications []surgeapi.SurgeNotification, verbose bool) string {
 	var output strings.Builder
 	output.WriteString("Recent Surge notifications:")
 	counts := make(map[[4]string]int)
@@ -143,13 +145,13 @@ func notificationDisplayText(value string) string {
 }
 
 // Surge combines the plugin reports carried by a status snapshot.
-func Surge(instances []api.PluginInstanceStatus) (api.SurgeStatus, error) {
-	var status api.SurgeStatus
+func Surge(instances []api.PluginInstanceStatus) (surgeapi.SurgeStatus, error) {
+	var status surgeapi.SurgeStatus
 	for _, instance := range instances {
 		if instance.Type != "surge" {
 			continue
 		}
-		var detail *api.SurgeStatus
+		var detail *surgeapi.SurgeStatus
 		if err := json.Unmarshal(instance.Details, &detail); err != nil {
 			return status, fmt.Errorf("plugins.%s: invalid Surge status: %w", instance.ID, err)
 		}
@@ -170,8 +172,15 @@ func Surge(instances []api.PluginInstanceStatus) (api.SurgeStatus, error) {
 			status.Notifications = append(status.Notifications, notification)
 		}
 	}
-	slices.SortStableFunc(status.Notifications, func(a, b api.SurgeNotification) int {
+	slices.SortStableFunc(status.Notifications, func(a, b surgeapi.SurgeNotification) int {
 		return b.CreatedAt.Compare(a.CreatedAt)
 	})
 	return status, nil
+}
+
+func renderLogTable(header table.Row, rows []table.Row) string {
+	writer := clitable.New()
+	writer.AppendHeader(header)
+	writer.AppendRows(rows)
+	return text.StripEscape(writer.Render())
 }

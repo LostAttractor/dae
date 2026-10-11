@@ -31,18 +31,11 @@ func addMITMCommands(command *cobra.Command, definitions map[string]plugin.Defin
 }
 
 func newMITMPluginCommand(name string, definition plugin.Definition, services plugin.CommandServices) (*cobra.Command, bool) {
-	group := &cobra.Command{Use: name, Short: "Manage " + name + " plugins."}
-	var id string
-	group.PersistentFlags().StringVar(&id, "instance", "", "Query only this plugin instance")
-	services.Status = cli.SelectMITM(services.Status, name, &id)
-	if definition.Commands != nil {
-		group.AddCommand(definition.Commands(services)...)
-	}
-	for _, child := range group.Commands() {
-		if child.Name() == "status" {
-			return group, child.Runnable()
+	return cli.NewMITMPluginCommand(name, services.Status, func(fetch cli.MITMSource) []*cobra.Command {
+		if definition.Commands == nil {
+			return nil
 		}
-	}
-	group.AddCommand(cli.NewMITMStatusCommand(services.Status, nil))
-	return group, false
+		services.Status = fetch
+		return definition.Commands(services)
+	})
 }

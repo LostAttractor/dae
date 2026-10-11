@@ -252,7 +252,10 @@ web-assets: web
 	cp -R "$(WEB_OUTPUT)/." internal/webui/assets/
 
 client-test: check-go-version
-	CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) ./api/... ./client/... ./cmd/dae-client
-	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/... ./cmd/dae-client) && \
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/...) && \
 		printf '%s\n' "$$dependencies" | \
-		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/(api|client)\// && $$0 != "github.com/daeuniverse/dae/api" && $$0 != "github.com/daeuniverse/dae/cmd/dae-client" && $$0 != "github.com/daeuniverse/dae/pkg/clitable" { print "Forbidden client dependency: " $$0; bad=1 } END { exit bad }'
+		awk '/^github.com\/daeuniverse\/dae\/component\// { print "Forbidden core client dependency: " $$0; bad=1 } END { exit bad }'
+	CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) ./api/... ./client/... ./component/mitm/surge/api ./component/mitm/surge/client ./cmd/dae-client
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/... ./component/mitm/surge/api ./component/mitm/surge/client ./cmd/dae-client) && \
+		printf '%s\n' "$$dependencies" | \
+		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/(api|client)\// && $$0 != "github.com/daeuniverse/dae/api" && $$0 != "github.com/daeuniverse/dae/cmd/dae-client" && $$0 != "github.com/daeuniverse/dae/pkg/clitable" && $$0 != "github.com/daeuniverse/dae/component/mitm/surge/api" && $$0 != "github.com/daeuniverse/dae/component/mitm/surge/client" { print "Forbidden client dependency: " $$0; bad=1 } END { exit bad }'

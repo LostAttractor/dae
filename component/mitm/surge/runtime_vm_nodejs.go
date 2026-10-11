@@ -7,7 +7,7 @@ package surge
 import (
 	"context"
 
-	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/nodejs"
 )
 
@@ -26,9 +26,9 @@ func newRuntimeBackend(ctx context.Context, opts RuntimeOptions) (*runtimeBacken
 func (b *runtimeBackend) newVM(ctx context.Context) (scriptVM, error) { return b.pool.Acquire(ctx) }
 func (b *runtimeBackend) Close()                                      { b.pool.Close() }
 
-func (b *runtimeBackend) status() api.SurgeRuntimeStatus {
+func (b *runtimeBackend) status() surgeapi.SurgeRuntimeStatus {
 	s := b.pool.Stats()
-	return api.SurgeRuntimeStatus{Backend: compiledJSRuntime, NodeJS: &api.NodeJSRuntimeStatus{
+	return surgeapi.SurgeRuntimeStatus{Backend: compiledJSRuntime, NodeJS: &surgeapi.NodeJSRuntimeStatus{
 		Active: s.Active, Idle: s.Idle, Limit: s.Limit,
 		Started: s.Started, Reused: s.Reused, StartFailures: s.StartFailures,
 		IdleReaped: s.IdleReaped, Discarded: s.Discarded,

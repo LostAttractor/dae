@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 )
 
 const (
@@ -34,16 +34,16 @@ type notificationScript struct {
 }
 
 type scriptNotifications struct {
-	entries []api.SurgeNotification
+	entries []surgeapi.SurgeNotification
 }
 
-func notificationBytes(n api.SurgeNotification) int {
+func notificationBytes(n surgeapi.SurgeNotification) int {
 	// JSON can expand each text byte to a six-byte escape. Leave room for
 	// field names, timestamps, IDs and separators without allocating JSON here.
 	return 512 + 6*(len(n.Module)+len(n.Script)+len(n.ScriptType)+len(n.Title)+len(n.Subtitle)+len(n.Body))
 }
 
-func (h *notificationHistory) add(notification api.SurgeNotification) {
+func (h *notificationHistory) add(notification surgeapi.SurgeNotification) {
 	// Key by the original, host-provided identity before truncating report text.
 	key := notificationScript{notification.Module, notification.Script, notification.ScriptType}
 	for _, field := range []*string{&notification.Module, &notification.Script, &notification.Title, &notification.Subtitle, &notification.Body} {
@@ -92,7 +92,7 @@ func (h *notificationHistory) add(notification api.SurgeNotification) {
 			}
 		}
 		h.bytes -= notificationBytes(longest.entries[0])
-		longest.entries[0] = api.SurgeNotification{}
+		longest.entries[0] = surgeapi.SurgeNotification{}
 		longest.entries = longest.entries[1:]
 		if len(longest.entries) == 0 {
 			delete(h.scripts, victim)
@@ -100,14 +100,14 @@ func (h *notificationHistory) add(notification api.SurgeNotification) {
 	}
 }
 
-func (h *notificationHistory) snapshot() []api.SurgeNotification {
+func (h *notificationHistory) snapshot() []surgeapi.SurgeNotification {
 	h.mu.Lock()
-	var notifications []api.SurgeNotification
+	var notifications []surgeapi.SurgeNotification
 	for _, history := range h.scripts {
 		notifications = append(notifications, history.entries...)
 	}
 	h.mu.Unlock()
-	slices.SortFunc(notifications, func(a, b api.SurgeNotification) int {
+	slices.SortFunc(notifications, func(a, b surgeapi.SurgeNotification) int {
 		return cmp.Compare(b.ID, a.ID)
 	})
 	return notifications

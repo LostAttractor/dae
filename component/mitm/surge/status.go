@@ -5,10 +5,10 @@ package surge
 import (
 	"slices"
 
-	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 )
 
-func (m *Module) Status() api.ModuleStatus {
+func (m *Module) Status() surgeapi.ModuleStatus {
 	state := m.cacheState
 	if state == "" {
 		state = "loaded"
@@ -16,7 +16,7 @@ func (m *Module) Status() api.ModuleStatus {
 	if m.disabled {
 		state = "disabled"
 	}
-	return api.ModuleStatus{
+	return surgeapi.ModuleStatus{
 		Name: m.Name, Source: m.source, State: state,
 		Scripts: len(m.Scripts) + len(m.TaskScripts), Hostnames: len(m.Hostnames), HostMappings: len(m.Hosts) + len(m.DNSHosts),
 		URLRewrites: len(m.URLRewrites), HeaderRewrites: len(m.HeaderRewrites),
@@ -25,10 +25,10 @@ func (m *Module) Status() api.ModuleStatus {
 	}
 }
 
-func (e *Engine) Status() api.SurgeStatus {
-	status := api.SurgeStatus{Enabled: true, Modules: make([]api.ModuleStatus, 0, len(e.options.Modules))}
+func (e *Engine) Status() surgeapi.SurgeStatus {
+	status := surgeapi.SurgeStatus{Enabled: true, Modules: make([]surgeapi.ModuleStatus, 0, len(e.options.Modules))}
 	if e.options.Runtime != nil {
-		status.Runtimes = []api.SurgeRuntimeStatus{e.options.Runtime.backend.status()}
+		status.Runtimes = []surgeapi.SurgeRuntimeStatus{e.options.Runtime.backend.status()}
 		status.Notifications = e.options.Runtime.notifications.snapshot()
 	}
 	indices := make(map[*Module]int, len(e.options.Modules))

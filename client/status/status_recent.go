@@ -134,5 +134,4 @@ func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
 		fmt.Fprintf(out, "\n%s\n", groups)
 	}
 	printTraffic(out, snapshot, trafficRecent)
-	printSurgeRuntimes(out, snapshot.Plugins)
 }

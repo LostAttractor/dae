@@ -46,34 +46,56 @@ func SelectMITM(fetch MITMSource, kind string, instance *string) MITMSource {
 	}
 }
 
-// NewMITMCommand exposes plugin reports without compiling runtime plugins.
-func NewMITMCommand() *cobra.Command {
+// ScriptTrigger invokes the host's optional task execution capability.
+type ScriptTrigger func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error)
+
+// MITMCommands registers a plugin's client commands without runtime resources.
+type MITMCommands func(MITMSource, ScriptTrigger) []*cobra.Command
+
+// NewMITMCommand exposes opaque reports and explicitly registered client commands.
+func NewMITMCommand(commands map[string]MITMCommands) *cobra.Command {
 	command := &cobra.Command{Use: "plugins", Short: "Inspect plugin reports through the dae API."}
 	var connection Connection
 	connection.Bind(command.PersistentFlags())
 	var instance string
 	command.PersistentFlags().StringVar(&instance, "instance", "", "Query only this plugin instance")
-	command.AddCommand(NewMITMStatusCommand(SelectMITM(connection.MITM, "", &instance), func(kind string, fetch MITMSource) (*cobra.Command, bool) {
-		if kind != "surge" {
-			return nil, false
+	factory := func(kind string, fetch MITMSource) (*cobra.Command, bool) {
+		var register func(MITMSource) []*cobra.Command
+		if create := commands[kind]; create != nil {
+			register = func(scoped MITMSource) []*cobra.Command { return create(scoped, connection.TriggerScript) }
 		}
-		group := &cobra.Command{Use: kind}
-		var id string
-		group.PersistentFlags().StringVar(&id, "instance", "", "Query only this plugin instance")
-		group.AddCommand(NewSurgeStatusCommand(SelectMITM(fetch, kind, &id)))
-		return group, true
-	}))
-	surge := &cobra.Command{Use: "surge", Short: "Inspect Surge module reports."}
-	surge.AddCommand(NewSurgeStatusCommand(SelectMITM(connection.MITM, "surge", &instance)))
-	surge.AddCommand(NewSurgeListCommand(SelectMITM(connection.MITM, "surge", &instance)))
-	surge.AddCommand(NewSurgeRunCommand(SelectMITM(connection.MITM, "surge", &instance), connection.TriggerScript))
-	command.AddCommand(surge)
+		return NewMITMPluginCommand(kind, fetch, register)
+	}
+	command.AddCommand(NewMITMStatusCommand(SelectMITM(connection.MITM, "", &instance), factory))
+	for _, kind := range slices.Sorted(maps.Keys(commands)) {
+		group, _ := factory(kind, connection.MITM)
+		command.AddCommand(group)
+	}
 	return command
+}
+
+// NewMITMPluginCommand scopes a fresh command group and supplies a generic
+// status command when the plugin has no custom renderer.
+func NewMITMPluginCommand(name string, fetch MITMSource, commands func(MITMSource) []*cobra.Command) (*cobra.Command, bool) {
+	group := &cobra.Command{Use: name, Short: "Manage " + name + " plugins."}
+	var id string
+	group.PersistentFlags().StringVar(&id, "instance", "", "Query only this plugin instance")
+	scoped := SelectMITM(fetch, name, &id)
+	if commands != nil {
+		group.AddCommand(commands(scoped)...)
+	}
+	for _, child := range group.Commands() {
+		if child.Name() == "status" {
+			return group, child.Runnable()
+		}
+	}
+	group.AddCommand(NewMITMStatusCommand(scoped, nil))
+	return group, false
 }
 
 func NewMITMStatusCommand(fetch MITMSource, commands MITMCommandFactory) *cobra.Command {
 	var verbose bool
-	command := newReportCommand(fetch, func(cmd *cobra.Command, instances []api.PluginInstanceStatus) error {
+	command := NewReportCommand(fetch, func(cmd *cobra.Command, instances []api.PluginInstanceStatus) error {
 		if _, err := fmt.Fprintln(cmd.OutOrStdout(), status.RenderMITM(instances, !verbose)); err != nil {
 			return err
 		}
@@ -86,21 +108,8 @@ func NewMITMStatusCommand(fetch MITMSource, commands MITMCommandFactory) *cobra.
 	return command
 }
 
-func NewSurgeStatusCommand(fetch MITMSource) *cobra.Command {
-	var verbose bool
-	command := newReportCommand(fetch, func(cmd *cobra.Command, instances []api.PluginInstanceStatus) error {
-		report, err := status.Surge(instances)
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(cmd.OutOrStdout(), status.RenderSurge(report, verbose))
-		return err
-	})
-	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show all retained notifications instead of the latest 3 per script")
-	return command
-}
-
-func newReportCommand(fetch MITMSource, render func(*cobra.Command, []api.PluginInstanceStatus) error) *cobra.Command {
+// NewReportCommand preserves the opaque instance array for JSON output.
+func NewReportCommand(fetch MITMSource, render func(*cobra.Command, []api.PluginInstanceStatus) error) *cobra.Command {
 	var raw bool
 	command := &cobra.Command{
 		Use: "status", Short: "Show plugin instances and their reports.", Args: cobra.NoArgs, SilenceUsage: true,

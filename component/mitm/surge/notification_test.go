@@ -17,6 +17,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	"github.com/daeuniverse/dae/component/plugin"
 	dns "github.com/miekg/dns"
 	log "github.com/sirupsen/logrus"
@@ -147,15 +148,15 @@ func TestRuntimeNotificationRetentionIsPerScript(t *testing.T) {
 
 func TestNotificationInstanceBudgetKeepsStatusBounded(t *testing.T) {
 	var history notificationHistory
-	history.add(api.SurgeNotification{Script: "quiet", Body: "keep me"})
+	history.add(surgeapi.SurgeNotification{Script: "quiet", Body: "keep me"})
 	for i := range 180 {
 		for range maxScriptNotifications {
-			history.add(api.SurgeNotification{Module: "module", Script: fmt.Sprint(i), ScriptType: "generic",
+			history.add(surgeapi.SurgeNotification{Module: "module", Script: fmt.Sprint(i), ScriptType: "generic",
 				Title: strings.Repeat("\x00", maxNotificationText), Body: strings.Repeat("\x00", maxNotificationBody)})
 		}
 	}
 	notifications := history.snapshot()
-	encoded, err := json.Marshal(api.SurgeStatus{Enabled: true, Notifications: notifications})
+	encoded, err := json.Marshal(surgeapi.SurgeStatus{Enabled: true, Notifications: notifications})
 	if err != nil || len(encoded) > maxNotificationHistory {
 		t.Fatalf("notification status exceeds instance budget: bytes=%d err=%v", len(encoded), err)
 	}
@@ -167,9 +168,9 @@ func TestNotificationInstanceBudgetKeepsStatusBounded(t *testing.T) {
 	// An instance with more single-entry histories than its byte budget may
 	// evict quiet entries too; a busy script alone must not do so.
 	var isolated notificationHistory
-	isolated.add(api.SurgeNotification{Script: "quiet", Body: "keep me"})
+	isolated.add(surgeapi.SurgeNotification{Script: "quiet", Body: "keep me"})
 	for range maxScriptNotifications * 2 {
-		isolated.add(api.SurgeNotification{Script: "busy", Body: strings.Repeat("x", maxNotificationBody)})
+		isolated.add(surgeapi.SurgeNotification{Script: "busy", Body: strings.Repeat("x", maxNotificationBody)})
 	}
 	quiet := false
 	for _, n := range isolated.snapshot() {
@@ -229,7 +230,7 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 			t.Fatal(err)
 		}
 		synctest.Wait()
-		var status api.SurgeStatus
+		var status surgeapi.SurgeStatus
 		if err := json.Unmarshal(host.Status()[0].Details, &status); err != nil {
 			t.Fatal(err)
 		}

@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/text/encoding/unicode"
@@ -93,7 +93,7 @@ func (s *scriptExecution) hostCall(args []string) (any, error) {
 		}
 		return nil, nil
 	case "notify":
-		s.runtime.notifications.add(api.SurgeNotification{
+		s.runtime.notifications.add(surgeapi.SurgeNotification{
 			Module: s.moduleName, Script: s.scriptName, ScriptType: s.scriptType,
 			Title: arg(1), Subtitle: arg(2), Body: arg(3),
 		})

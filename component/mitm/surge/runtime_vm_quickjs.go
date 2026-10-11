@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/quickjs"
 )
 
@@ -22,8 +22,8 @@ func newRuntimeBackend(_ context.Context, opts RuntimeOptions) (*runtimeBackend,
 }
 func (*runtimeBackend) Close() {}
 
-func (*runtimeBackend) status() api.SurgeRuntimeStatus {
-	return api.SurgeRuntimeStatus{Backend: compiledJSRuntime}
+func (*runtimeBackend) status() surgeapi.SurgeRuntimeStatus {
+	return surgeapi.SurgeRuntimeStatus{Backend: compiledJSRuntime}
 }
 
 type quickJSVM struct {

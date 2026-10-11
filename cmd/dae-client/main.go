@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/daeuniverse/dae/client/cli"
+	surgeclient "github.com/daeuniverse/dae/component/mitm/surge/client"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +16,7 @@ func main() {
 	root := &cobra.Command{Use: "dae-client", Short: "Independent clients for the dae API", SilenceErrors: true}
 	root.AddCommand(cli.NewStatusCommand())
 	root.AddCommand(cli.NewSelectorCommand())
-	root.AddCommand(cli.NewMITMCommand())
+	root.AddCommand(cli.NewMITMCommand(map[string]cli.MITMCommands{"surge": surgeclient.Commands}))
 	root.AddCommand(cli.NewExplainCommand())
 	root.AddCommand(cli.NewClientCommand())
 	if err := root.Execute(); err != nil {

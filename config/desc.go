@@ -54,7 +54,7 @@ var ClientDesc = Desc{
 }
 
 var MITMDesc = Desc{
-	"buffer_memory_limit":   "Process-wide managed body buffer budget in bytes, shared across plugin instances and reloads. Defaults to 256 MiB. Exhaustion skips Surge body processing and preserves the original stream. Does not limit RSS, native script heaps or arbitrary plugin allocations.",
+	"buffer_memory_limit":   "Process-wide managed body buffer budget in bytes, shared across plugin instances and reloads. Defaults to 256 MiB. Plugins handle denied reservations according to their body processing policy. Does not limit RSS, native script heaps or arbitrary plugin allocations.",
 	"enabled":               "Enable HTTP/TLS interception. DNS plugins, routing contributions and background tasks are configured independently in plugins{}.",
 	"ca_cert":               "Shared PEM CA certificate path; required by HTTPS plugins. Destination-only plugins need no CA.",
 	"ca_key":                "Shared PEM CA private key path.",
@@ -63,8 +63,8 @@ var MITMDesc = Desc{
 }
 
 var GlobalDesc = Desc{
-	"resource_cache":           "Cache validated HTTP/HTTPS configuration resources (subscriptions, Surge modules and dependencies). Network-first with fallback on download or validation failure. Defaults to true; false disables disk cache reads, writes and cleanup. Accepted resources remain available in memory while running.",
-	"resource_update_interval": "Automatic refresh interval for remote subscriptions, modules and dependencies. Defaults to 24h; 0 disables these automatic checks. Surge script-update-interval controls individual remote scripts. Reload and the resource refresh API always attempt downloads.",
+	"resource_cache":           "Cache validated HTTP/HTTPS configuration resources (subscriptions and plugin resources). Network-first with fallback on download or validation failure. Defaults to true; false disables disk cache reads, writes and cleanup. Accepted resources remain available in memory while running.",
+	"resource_update_interval": "Automatic refresh interval for remote subscriptions, modules and dependencies. Defaults to 24h; 0 disables these automatic checks. Plugins may refresh individual resources on their own schedules. Reload and the resource refresh API always attempt downloads.",
 	"dns_resolver":             "Optional DNS server for dae's internal lookups: IP or IP:port (default port 53). Empty uses Go's system resolver. Bootstrap is direct; once ready, DNS transports follow routing rules. Proxy-server names use direct bootstrap to avoid circular dependencies. Supports reload.",
 	"dns_retention_window":     "Sliding retention policy for observed domain-IP evidence, not a measured client cache lifetime. Defaults to 168h (seven days); must be positive. Delivered DNS uses max(TTL, window); observed traffic refreshes existing pairs by this window. Uncaptured kernel-direct traffic is not observed.",
 	"api_port":                 "HTTP port for the global configuration page, device API and certificate downloads. Zero disables the listener. Use the router IP address directly.",

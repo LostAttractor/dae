@@ -453,3 +453,16 @@ For runtime logs, use the instance logger supplied to the factory in
 `plugin.Services.Logger`; it carries `plugin_instance` so messages do not need a
 repeated plugin-name prefix. In plain-text logs the instance appears first after
 the optional timestamp, before severity and message.
+
+## Client reports and commands
+
+The host transports `Report()` as opaque JSON in `api.PluginInstanceStatus.Details`.
+A plugin owns its report types, schema, decoding and rendering. Core status views
+show daemon state; detailed plugin reports are available through `plugins status
+--verbose`, `plugins <type> status` and JSON output.
+
+`Definition.Commands` receives scoped host services. A plugin may expose a
+separate lightweight client package for API commands, registered explicitly by a
+standalone client through `cli.NewMITMCommand`. That package must not import its
+runtime implementation. Surge's [`api`](../mitm/surge/api) and
+[`client`](../mitm/surge/client) packages follow this boundary.

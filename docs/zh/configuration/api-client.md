@@ -123,7 +123,7 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 `make` 和 `make test` 会通过 `make web-assets` 构建前端，并以产物替换 `internal/webui/assets/`，随后编译 Go。构建产物由 Git 忽略，只编辑 `web/src/`。直接执行 `go build` 或 `internal/webui`、`cmd` 的测试时，除了守护进程原有的构建前置步骤，还需先运行 `make web-assets`。仅构建或测试独立客户端时无需此步骤。
 
-`dae plugins status`、`dae plugins <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_KEY` 选择连接，`--instance` 按实例过滤。独立客户端提供 `plugins status` 和 `plugins surge status`，不加载运行时插件；前者可查看任意插件报告。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
+`dae plugins status`、`dae plugins <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_KEY` 选择连接，`--instance` 按实例过滤。独立客户端提供 `plugins status` 和 `plugins surge status`，不加载运行时插件；前者可查看任意插件报告。`status` 和 `status --recent` 展示本体状态；脚本运行时和进程池统计通过 `plugins surge status` 或 `plugins status --verbose` 查看。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
 
 端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`cmd/api_server.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
 
@@ -144,8 +144,9 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 - `api`：普通 Go 数据结构与网络数组顺序，只依赖 Go 标准库；不包含运行时聚合或展示逻辑。
 - `api/client`：可并发复用的 Go 客户端，封装传输、鉴权、JSON 和错误，不导入 `control`、`common`、`config` 或 `component`。
-- `client/status`：状态快照、MITM 摘要与 Surge 报告的唯一解析/展示实现，不访问运行时；终端输出可写入任意 `io.Writer`。
-- `client/cli`：两种程序与插件共用的连接参数、实例筛选和状态命令实现；`cmd/dae-client` 是独立入口。
+- `client/status`：本体状态快照和通用插件摘要的展示实现，不访问运行时；终端输出可写入任意 `io.Writer`。
+- `client/cli`：两种程序与插件共用的连接参数、实例筛选和命令注册接口；`cmd/dae-client` 是独立入口。
+- `component/mitm/surge/api`、`component/mitm/surge/client`：插件自己的报告类型、Schema、解析和展示；独立客户端入口显式注册其轻量命令包，不导入脚本运行时。
 - `web`：前端源码、浏览器请求层与独立构建入口，不读取父目录中的代码或文件。
 - `internal/webui`：只嵌入和托管前端构建产物；`cmd` 负责将静态资源与 API 挂载到现有端口，`control` 不导入 Web 或终端展示代码。
 - `internal/apiserver`：TCP/Unix 监听、HTTP 路由、鉴权、请求校验与重载等待；使用公开契约，通过存储接口访问运行时。

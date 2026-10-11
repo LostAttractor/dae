@@ -3,11 +3,11 @@
 package surge
 
 import (
-	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	log "github.com/sirupsen/logrus"
 )
 
-func logModuleStatus(status api.SurgeStatus, logger *log.Entry, instanceID string) {
+func logModuleStatus(status surgeapi.SurgeStatus, logger *log.Entry, instanceID string) {
 	for _, module := range status.Modules {
 		logger.WithFields(log.Fields{
 			"plugin_instance": instanceID, "module": module.Name,

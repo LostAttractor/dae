@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package cli
+package client
 
 import (
 	"context"
@@ -9,14 +9,12 @@ import (
 	"strings"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/client/status"
+	"github.com/daeuniverse/dae/client/cli"
 	"github.com/spf13/cobra"
 )
 
-type ScriptTrigger func(context.Context, string, api.ScriptRunRequest) (*api.ScriptRunResponse, error)
-
 // NewSurgeListCommand requires a non-nil daemon status source.
-func NewSurgeListCommand(fetch MITMSource) *cobra.Command {
+func NewSurgeListCommand(fetch cli.MITMSource) *cobra.Command {
 	var module string
 	var raw bool
 	command := &cobra.Command{
@@ -32,7 +30,7 @@ Use --instance and --module to narrow the list, then run a script by its SCRIPT 
 			if raw {
 				return json.MarshalWrite(cmd.OutOrStdout(), tasks)
 			}
-			if _, err := fmt.Fprintln(cmd.OutOrStdout(), status.RenderSurgeScriptTasks(tasks)); err != nil {
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), RenderSurgeScriptTasks(tasks)); err != nil {
 				return err
 			}
 			if len(tasks) != 0 {
@@ -48,7 +46,7 @@ Use --instance and --module to narrow the list, then run a script by its SCRIPT 
 }
 
 // NewSurgeRunCommand requires non-nil daemon status and trigger callbacks.
-func NewSurgeRunCommand(fetch MITMSource, trigger ScriptTrigger) *cobra.Command {
+func NewSurgeRunCommand(fetch cli.MITMSource, trigger cli.ScriptTrigger) *cobra.Command {
 	var module string
 	var raw bool
 	command := &cobra.Command{
@@ -81,12 +79,12 @@ Use list to discover script names and status to inspect completion.
 }
 
 // triggerSurgeScript resolves a unique task from reports before issuing one API mutation.
-func triggerSurgeScript(ctx context.Context, fetch MITMSource, trigger ScriptTrigger, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
+func triggerSurgeScript(ctx context.Context, fetch cli.MITMSource, trigger cli.ScriptTrigger, request api.ScriptRunRequest) (*api.ScriptRunResponse, error) {
 	tasks, err := surgeScriptTasks(ctx, fetch, request.Module)
 	if err != nil {
 		return nil, err
 	}
-	var selected *status.SurgeScriptTask
+	var selected *SurgeScriptTask
 	for i := range tasks {
 		task := &tasks[i]
 		if task.Name != request.Script {
@@ -105,22 +103,22 @@ func triggerSurgeScript(ctx context.Context, fetch MITMSource, trigger ScriptTri
 }
 
 // Both list and run discover tasks from the same scoped daemon snapshot.
-func surgeScriptTasks(ctx context.Context, fetch MITMSource, module string) ([]status.SurgeScriptTask, error) {
+func surgeScriptTasks(ctx context.Context, fetch cli.MITMSource, module string) ([]SurgeScriptTask, error) {
 	instances, err := fetch(ctx)
 	if err != nil {
 		return nil, err
 	}
-	report, err := status.Surge(instances)
+	report, err := Surge(instances)
 	if err != nil {
 		return nil, err
 	}
-	tasks := make([]status.SurgeScriptTask, 0)
+	tasks := make([]SurgeScriptTask, 0)
 	for _, m := range report.Modules {
 		if module != "" && module != m.Name {
 			continue
 		}
 		for _, job := range m.Tasks {
-			tasks = append(tasks, status.SurgeScriptTask{Instance: m.Instance, Module: m.Name, ScriptTaskStatus: job})
+			tasks = append(tasks, SurgeScriptTask{Instance: m.Instance, Module: m.Name, ScriptTaskStatus: job})
 		}
 	}
 	return tasks, nil

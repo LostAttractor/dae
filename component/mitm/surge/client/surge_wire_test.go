@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package status
+package client
 
 import (
 	jsonv1 "encoding/json"
@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 )
 
 func TestSurgeStatusWireAndTable(t *testing.T) {
-	for _, status := range []api.SurgeStatus{
+	for _, status := range []surgeapi.SurgeStatus{
 		{},
 		{Enabled: true},
-		{Enabled: true, Modules: []api.ModuleStatus{
+		{Enabled: true, Modules: []surgeapi.ModuleStatus{
 			{Name: "online", State: "loaded", Scripts: 2, Hostnames: 3},
 			{Name: "offline", State: "cached", Error: "download failed", Warnings: []string{"refresh failed", "using cached module"}},
 			{Name: "partial", State: "cached dependencies", Scripts: 1},
@@ -92,7 +93,7 @@ func TestSurgeStatusSelectsAndLabelsInstances(t *testing.T) {
 
 func TestSurgeTaskStatusWireAndTable(t *testing.T) {
 	next := time.Date(2026, time.September, 29, 9, 5, 0, 0, time.FixedZone("CST", 8*60*60))
-	status := api.SurgeStatus{Enabled: true, Modules: []api.ModuleStatus{{Name: "youpin", State: "loaded", Scripts: 2, Tasks: []api.ScriptTaskStatus{{
+	status := surgeapi.SurgeStatus{Enabled: true, Modules: []surgeapi.ModuleStatus{{Name: "youpin", State: "loaded", Scripts: 2, Tasks: []api.ScriptTaskStatus{{
 		Name: "有品签到", Type: "cron", CronExp: "5 9 * * *", Timezone: "Asia/Shanghai", TimeoutSeconds: 60,
 		State: "scheduled", NextRun: next, LastStartedAt: next.Add(-24 * time.Hour),
 		LastFinishedAt: next.Add(-24*time.Hour + time.Minute), LastDurationMS: 60000,
@@ -131,7 +132,7 @@ func TestSurgeNotificationStatusWireAndDisplay(t *testing.T) {
 	now := time.Date(2026, time.September, 29, 9, 5, 0, 0, time.UTC)
 	var instances []api.PluginInstanceStatus
 	for i, instance := range []string{"personal", "work"} {
-		detail, err := json.Marshal(api.SurgeStatus{Enabled: true, Modules: []api.ModuleStatus{{Name: "account", State: "loaded"}}, Notifications: []api.SurgeNotification{{
+		detail, err := json.Marshal(surgeapi.SurgeStatus{Enabled: true, Modules: []surgeapi.ModuleStatus{{Name: "account", State: "loaded"}}, Notifications: []surgeapi.SurgeNotification{{
 			Instance: "untrusted", ID: 1, CreatedAt: now.Add(time.Duration(i) * time.Second), Module: "account", Script: "sign", ScriptType: "cron",
 			Title: "签到成功", Subtitle: "账户一", Body: "余额 1.2\n\x1b[31m明日继续\x1b[0m\r\x00", Truncated: i == 1,
 		}}})
@@ -160,21 +161,21 @@ func TestSurgeNotificationStatusWireAndDisplay(t *testing.T) {
 }
 
 func TestSurgeNotificationsDisplayLimitAndVerbose(t *testing.T) {
-	scripts := []api.SurgeNotification{
+	scripts := []surgeapi.SurgeNotification{
 		{Instance: "personal", Module: "account", Script: "sign", ScriptType: "cron"},
 		{Instance: "work", Module: "account", Script: "sign", ScriptType: "cron"},
 		{Instance: "personal", Module: "other", Script: "sign", ScriptType: "cron"},
 		{Instance: "personal", Module: "account", Script: "other", ScriptType: "cron"},
 		{Instance: "personal", Module: "account", Script: "sign", ScriptType: "http-request"},
 	}
-	report := api.SurgeStatus{Enabled: true}
+	report := surgeapi.SurgeStatus{Enabled: true}
 	for revision := 4; revision >= 0; revision-- {
 		for i, item := range scripts {
 			item.Title = fmt.Sprintf("notice-%d-%d", i, revision)
 			report.Notifications = append(report.Notifications, item)
 		}
 	}
-	report.Notifications = append(report.Notifications, api.SurgeNotification{Instance: "personal", Module: "account", Script: "quiet", ScriptType: "cron", Title: "quiet-notice"})
+	report.Notifications = append(report.Notifications, surgeapi.SurgeNotification{Instance: "personal", Module: "account", Script: "quiet", ScriptType: "cron", Title: "quiet-notice"})
 	before := slices.Clone(report.Notifications)
 	for _, verbose := range []bool{false, true} {
 		output := RenderSurge(report, verbose)

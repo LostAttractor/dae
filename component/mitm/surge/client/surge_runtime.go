@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package status
+package client
 
 import (
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/api"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 )
 
-func renderSurgeRuntimes(runtimes []api.SurgeRuntimeStatus) string {
+func renderSurgeRuntimes(runtimes []surgeapi.SurgeRuntimeStatus) string {
 	var lines []string
 	for _, runtime := range runtimes {
 		lines = append(lines, fmt.Sprintf("Surge runtime %s: %s", runtime.Instance, runtime.Backend))
@@ -34,19 +33,4 @@ func renderSurgeRuntimes(runtimes []api.SurgeRuntimeStatus) string {
 			fmt.Sprintf("  Retired: idle=%d failed/canceled=%d", n.IdleReaped, n.Discarded))
 	}
 	return strings.Join(lines, "\n")
-}
-
-func printSurgeRuntimes(out io.Writer, instances []api.PluginInstanceStatus) {
-	report, err := Surge(instances)
-	if err != nil {
-		writeStatusLine(out, "Surge runtime: "+err.Error(), getStatusTerminalWidth())
-		return
-	}
-	if len(report.Runtimes) == 0 {
-		return
-	}
-	fmt.Fprintln(out)
-	for line := range strings.SplitSeq(renderSurgeRuntimes(report.Runtimes), "\n") {
-		writeStatusLine(out, line, getStatusTerminalWidth())
-	}
 }

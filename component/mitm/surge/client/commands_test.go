@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package cli
+package client
 
 import (
 	"bytes"
@@ -16,6 +16,8 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/client/cli"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	"github.com/spf13/cobra"
 )
 
@@ -70,7 +72,7 @@ func TestMITMCommandsUseAPIAndScopeReports(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			before := queries.Load()
-			command := NewMITMCommand()
+			command := cli.NewMITMCommand(map[string]cli.MITMCommands{"surge": Commands})
 			var output bytes.Buffer
 			command.SetOut(&output)
 			command.SetErr(&output)
@@ -112,7 +114,7 @@ func TestReportCommandsPreserveCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	fetch := func(ctx context.Context) ([]api.PluginInstanceStatus, error) { return nil, ctx.Err() }
-	for _, command := range []*cobra.Command{NewMITMStatusCommand(fetch, nil), NewSurgeStatusCommand(fetch), NewSurgeListCommand(fetch)} {
+	for _, command := range []*cobra.Command{cli.NewMITMStatusCommand(fetch, nil), NewSurgeStatusCommand(fetch), NewSurgeListCommand(fetch)} {
 		command.SetContext(ctx)
 		command.SetArgs(nil)
 		command.SetOut(&bytes.Buffer{})
@@ -124,13 +126,13 @@ func TestReportCommandsPreserveCancellation(t *testing.T) {
 }
 
 func TestSurgeNotificationVerbosity(t *testing.T) {
-	report := api.SurgeStatus{Enabled: true, Modules: []api.ModuleStatus{{Name: "account", State: "loaded"}}}
+	report := surgeapi.SurgeStatus{Enabled: true, Modules: []surgeapi.ModuleStatus{{Name: "account", State: "loaded"}}}
 	for i := 5; i >= 0; i-- {
-		report.Notifications = append(report.Notifications, api.SurgeNotification{
+		report.Notifications = append(report.Notifications, surgeapi.SurgeNotification{
 			Module: "account", Script: "busy", ScriptType: "cron", Title: fmt.Sprintf("notification-%d", i),
 		})
 	}
-	report.Notifications = append(report.Notifications, api.SurgeNotification{Module: "account", Script: "quiet", ScriptType: "cron", Title: "quiet-notification"})
+	report.Notifications = append(report.Notifications, surgeapi.SurgeNotification{Module: "account", Script: "quiet", ScriptType: "cron", Title: "quiet-notification"})
 	details, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +169,7 @@ func TestSurgeNotificationVerbosity(t *testing.T) {
 				if err := json.Unmarshal(output.Bytes(), &instances); err != nil || len(instances) != 1 {
 					t.Fatalf("invalid JSON report: %s %v", &output, err)
 				}
-				var detail api.SurgeStatus
+				var detail surgeapi.SurgeStatus
 				if err := json.Unmarshal(instances[0].Details, &detail); err != nil || len(detail.Notifications) != 7 {
 					t.Fatalf("JSON lost retained notifications: %+v %v", detail, err)
 				}

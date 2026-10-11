@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/resource"
+	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
@@ -33,13 +33,13 @@ func preflightRuntime(ctx context.Context, spec plugin.Spec) error {
 func prepareModules(ctx context.Context, conf Config, services plugin.Services) (modules []*Module, err error) {
 	logger := services.Logger
 	client := services.PrepareClient
-	status := api.SurgeStatus{Enabled: true, Modules: make([]api.ModuleStatus, len(conf.Modules))}
+	status := surgeapi.SurgeStatus{Enabled: true, Modules: make([]surgeapi.ModuleStatus, len(conf.Modules))}
 	for i, source := range conf.Modules {
 		name := source.Name
 		if name == "" {
 			name = resource.RedactURL(source.Link)
 		}
-		status.Modules[i] = api.ModuleStatus{Name: name, Source: resource.RedactURL(source.Link), State: "not loaded"}
+		status.Modules[i] = surgeapi.ModuleStatus{Name: name, Source: resource.RedactURL(source.Link), State: "not loaded"}
 	}
 	defer func() {
 		if err != nil {
