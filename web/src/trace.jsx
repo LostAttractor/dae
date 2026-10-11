@@ -1,3 +1,4 @@
+import { Button } from "@astryxdesign/core/Button";
 import { useId, useState } from "react";
 import { Disclosure } from "./disclosure.jsx";
 
@@ -100,15 +101,15 @@ function MissingContext({ decision, context, onEdit, onUseIP }) {
     <h4>Complete the missing information</h4>
     <ul>{missing.map(field => <li key={field}><strong>{missingFields[field]?.[0] || words(field)}</strong><span>{missingFields[field]?.[1] || "Supply this field in Advanced context if it is known. Omitted values remain unknown."}</span></li>)}</ul>
     <div className="button-row">
-      {missing.includes("destination.ip") && <button type="button" onClick={() => onEdit("ip")}>Enter destination IP</button>}
-      {missing.includes("hostname") && <button type="button" onClick={() => onEdit("sni")}>Enter hostname</button>}
-      {missing.some(field => !["destination.ip", "domain_mapping", "hostname"].includes(field)) && <button type="button" onClick={() => onEdit(missing.includes("destination.port") ? "target" : "overrides")}>Edit test context</button>}
+      {missing.includes("destination.ip") && <Button label="Enter destination IP" type="button" onClick={() => onEdit("ip")} />}
+      {missing.includes("hostname") && <Button label="Enter hostname" type="button" onClick={() => onEdit("sni")} />}
+      {missing.some(field => !["destination.ip", "domain_mapping", "hostname"].includes(field)) && <Button label="Edit test context" type="button" onClick={() => onEdit(missing.includes("destination.port") ? "target" : "overrides")} />}
     </div>
     {missing.includes("destination.ip") && candidates.length > 0 && <div className="trace-candidates">
       <label htmlFor={id}>Check one cached IP <span className="field-hint">{candidates.length} candidates{source ? ` · ${source.includes(":") ? "IPv6" : "IPv4"}` : ""} · no DNS query</span></label>
       <div className="trace-candidate-controls"><select id={id} value={candidate} onChange={event => setCandidate(event.target.value)}>
         <option value="">Choose an IP…</option>{candidates.map(ip => <option key={ip}>{ip}</option>)}
-      </select><button type="button" disabled={!candidate} onClick={() => onUseIP(candidate)}>Check this IP</button></div>
+      </select><Button label="Check this IP" type="button" isDisabled={!candidate} onClick={() => onUseIP(candidate)} /></div>
       <p className="field-hint">The result applies to the selected IP only. Your client may use another address.</p>
     </div>}
   </div>;

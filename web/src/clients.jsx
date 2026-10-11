@@ -1,3 +1,5 @@
+import { Button } from "@astryxdesign/core/Button";
+import { Switch } from "@astryxdesign/core/Switch";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { createView } from "./react-view.js";
 import { useRequest } from "./use-request.js";
@@ -15,7 +17,7 @@ function ClientImpact({ set, contextKey, request, onCompare }) {
   const impact = result.value;
   return <div className="impact-content" aria-busy={result.pending}>
     {result.pending && <p>Loading routing effects…</p>}
-    {result.error && <><p className="notice">{result.error}</p><button type="button" onClick={() => setRetry(value => value + 1)}>Retry</button></>}
+    {result.error && <><p className="notice">{result.error}</p><Button label="Retry" type="button" onClick={() => setRetry(value => value + 1)} /></>}
     {impact && <>
       <p>Change: {impact.joined_before ? "On" : "Off"} → {impact.joined_after ? "On" : "Off"}.</p>
       <p className="muted">{impact.connection_behavior === "retain" ? "Existing connections keep their current route." : `Existing connections: ${impact.connection_behavior}.`}</p>
@@ -23,7 +25,7 @@ function ClientImpact({ set, contextKey, request, onCompare }) {
       {!impact.rules.length && <p className="muted">No active dae routing references.</p>}
       {impact.exports.map((exported, index) => <p key={index} className="muted">{exported} · external firewall rules are not evaluated.</p>)}
       <p className="muted">Other predicates and earlier rules still determine the final route.</p>
-      <button type="button" onClick={() => onCompare(set)}>Compare a target</button>
+      <Button label="Compare a target" type="button" onClick={() => onCompare(set)} />
     </>}
   </div>;
 }
@@ -38,12 +40,9 @@ function ClientSets({ device, actions }) {
     <div className="client-options">{device.sets.map(set => {
       const label = set.description || set.name;
       return <div key={set.name} className="set-row" data-name={set.name}>
-        <strong>{label}</strong>
-        <button type="button" className="client-toggle" role="switch" aria-checked={set.joined} aria-label={label} onClick={() => actions.run(async () => {
+        <Switch className="client-toggle" label={label} value={set.joined} labelPosition="start" labelSpacing="spread" width="100%" onChange={() => actions.run(async () => {
           actions.update(await actions.request(`/api/device/sets/${encodeURIComponent(set.name)}`, set.joined ? "DELETE" : "PUT"));
-        }, `${label} turned ${set.joined ? "off" : "on"} for this device.`)}>
-          <span className="switch-track" aria-hidden="true" /><span aria-hidden="true">{set.joined ? "On" : "Off"}</span>
-        </button>
+        }, `${label} turned ${set.joined ? "off" : "on"} for this device.`)} />
       </div>;
     })}</div>
     <details className="client-impact" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
@@ -112,7 +111,7 @@ function ManagedClients({ allowed, active, request }) {
           <p>Enter the device's MAC address. All actions below apply to this device.</p>
           <div className="managed-device-lookup">
             <div className="managed-client-fields"><label>MAC address<input id="managed-client-mac" name="mac" placeholder="02:00:00:00:00:10" autoCapitalize="none" spellCheck={false} required /></label></div>
-            <button type="submit" value="show">Show settings</button>
+            <Button label="Show settings" type="submit" value="show" />
           </div>
         </fieldset>
         <fieldset className="managed-section">
@@ -121,12 +120,12 @@ function ManagedClients({ allowed, active, request }) {
           <div className="managed-client-fields"><label>Group<select id="managed-client-group" name="group" disabled={groups.pending}>
               {(groups.value?.groups || []).map(group => <option key={group.name} value={group.name}>{group.description || group.name} ({group.members.length} members)</option>)}
           </select></label></div>
-          <div className="button-row"><button type="submit" value="join">Join group</button><button type="submit" value="leave">Leave group</button></div>
+          <div className="button-row"><Button label="Join group" type="submit" value="join" /><Button label="Leave group" type="submit" value="leave" /></div>
         </fieldset>
         <fieldset className="managed-section">
           <legend>HTTPS modules</legend>
           <p>The device must trust the router's certificate before using HTTPS modules.</p>
-          <div className="button-row"><button type="submit" value="mitm-enable">Enable modules</button><button type="submit" value="mitm-disable">Disable modules</button><button type="submit" value="mitm-reset">Use default</button></div>
+          <div className="button-row"><Button label="Enable modules" type="submit" value="mitm-enable" /><Button label="Disable modules" type="submit" value="mitm-disable" /><Button label="Use default" type="submit" value="mitm-reset" /></div>
         </fieldset>
       </fieldset>
     </form>

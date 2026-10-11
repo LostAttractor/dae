@@ -22,37 +22,72 @@ such as `/api/device`; `/api/`, `/ca.pem`, `/ca.cer` and `/ca.mobileconfig` belo
 to the daemon. Assets can use subdirectories. Missing paths return `404`; the
 server does not provide a single-page application routing fallback.
 
-Navigation uses `/#settings`, `/#testing` and `/#devices`, so each page can be
-bookmarked or refreshed through the root document. Browser Back and Forward
-switch pages. Settings is the default page; unknown fragments return to Settings.
+Navigation uses `/#overview`, `/#tracing` and `/#manage`. Overview is the
+default; unknown fragments return to Overview. Direct links, refresh and browser
+Back/Forward work through the root document. Inputs and results survive internal
+navigation.
+
+- **Overview** contains the visiting device's routing memberships and HTTPS module
+  settings in separate, vertically stacked cards. At viewport widths of 1024px
+  and above, settings occupy the left column and status occupies the right. Device
+  and authorized global status appear one above the other within the right column.
+  On narrower screens, status follows the settings and uses scope tabs. Status
+  stays visible; inactive pages and scopes do not mount charts.
+- **Tracing** checks connection routing, DNS policy, cached domain records,
+  outbound nodes and HTTP plugins. It includes rule explanations and comparisons
+  against a proposed device membership change. Checks are read-only: they send no
+  target traffic and execute no scripts.
+- **Manage** separates **Devices**, **Outbound nodes** and **Global status** into
+  tabs. Only the selected section is displayed. Devices manages another MAC's
+  memberships and HTTPS settings. Outbound node choices affect every device using
+  that group. Global status uses the same snapshots as Overview. Client groups
+  load only while the authorized Devices section is active. Global configuration
+  is limited to the controls supported by the current HTTP API.
 
 The API contract is documented in the dae repository at `docs/api/openapi.json`
 and `docs/en/configuration/api-client.md`. Keep API requests in `src/api.js` and
 presentation in the frontend; this directory does not import daemon code.
 
-`app.js` coordinates access, device actions and refreshes. `navigation.js` owns
-page visibility, document titles and history. React components own
-the interactive panels: `selectors.jsx` renders searchable node pickers and
-connectivity tests, `diagnostics.jsx` renders the diagnostic form, `trace.jsx`
-renders explanation results, and `clients.jsx` renders device memberships,
-routing impact and administrator device management. `status.jsx` renders traffic
-scopes and connection details; `traffic.jsx` supplies the Recharts chart. Login and certificate controls use
-native DOM modules; `dom.js` contains their element/template lookups.
+`shell.jsx` mounts the page structure once. `app.js` coordinates access, device
+actions and refreshes; `navigation.js` owns page visibility, titles and history;
+`manage.jsx` owns management section navigation. React owns each interactive panel:
+`selectors.jsx`, `diagnostics.jsx`, `trace.jsx`, `clients.jsx`, `mitm.jsx`, and
+`status.jsx`. `traffic.jsx` supplies the Recharts chart.
 
-`react-view.js` provides the boundary between native controllers and React.
-Controllers update a panel through its view API and can hide its host; only
-React creates or updates descendants of that host. Commits finish before native
-action completion restores focus. Popover positioning, focus and scrolling use
+`react-view.js` applies the shared Astryx Theme and provides the boundary between
+controllers and React. Controllers update panels through their view APIs and may
+hide their hosts; only React updates the descendants. Commits finish before
+native action completion restores focus. Login and certificate challenge state
+remain in the existing controllers. Picker positioning, focus and scrolling use
 component refs; resize/scroll listeners exist only while the picker is open.
-New interactive panels follow these component boundaries.
 
-esbuild bundles all JavaScript, including React and Recharts, into local static
-assets without a runtime CDN dependency. The page requires a browser with native
-Popover API support.
+## Components and theme
+
+The frontend uses [Astryx](https://astryx.atmeta.com/docs/getting-started) for
+buttons, membership switches and tab navigation. Colors come from GitHub's
+[Primer Primitives](https://github.com/primer/primitives) Light and Dark themes,
+following the system preference. `theme.js` maps Primer's semantic color tokens
+to Astryx, including surfaces, controls, borders and interaction states. Existing
+native fields, application layouts and charts use the same palette in `style.css`.
+Fonts use the system stack; no fonts or scripts load from a CDN.
+
+esbuild generates the theme CSS and built theme object together. Astryx's static
+Layer positioning rules are emitted as `astryx-layers.css` and linked using its
+stylesheet ID, so its runtime can reuse them under the daemon's `style-src 'self'`
+CSP. This build adapter follows the pinned Astryx version. Deploy every generated
+asset together. The frontend requires modern browser support for native popovers,
+CSS scope and light/dark color values.
+
+The pinned CLI provides component references:
+
+```sh
+npm run astryx -- component Button
+npm run astryx -- component TabList
+```
 
 `certificate.js` runs the current browser's CA and interception challenges.
 
-The **Testing** page checks connection routing, DNS policy, cached domain records,
+The **Tracing** page checks connection routing, DNS policy, cached domain records,
 outbound nodes and HTTP plugins. Results start with a plain-language conclusion,
 the outbound and destination, followed by any missing information and actions to
 complete it. Kernel direct and userspace direct are distinct outcomes; incomplete
@@ -65,13 +100,13 @@ Membership comparisons show current and proposed results side by side on wide
 screens and stacked on smaller screens. **Routing
 Rules** presents independent On/Off switches for this device's client memberships;
 multiple memberships can be active. **Preview Routing Changes** loads impact
-for one selected option when expanded. **Compare a target** opens Testing with
+for one selected option when expanded. **Compare a target** opens Tracing with
 that proposed change and focuses the target field. Inputs and results are
 preserved when switching pages.
-The **Devices** page groups device lookup, routing membership and HTTPS module
+The **Devices** section groups device lookup, routing membership and HTTPS module
 settings into separate sections. Saved settings show membership and HTTPS states
 as labels; the configuration default is distinct from an enabled/disabled override.
-Changing the MAC address clears the previous device's result. Client groups load when this page is active and authorized;
+Changing the MAC address clears the previous device's result. Client groups load when this section is active and authorized;
 without access, it shows a login prompt. The diagnostics contract lives in
 `docs/api/diagnostics.json`; explanations never send target traffic or execute scripts.
 
@@ -86,25 +121,21 @@ The access toolbar shows the visiting device's IP beside its access badge;
 expanding the IP reveals its MAC. The daemon version appears in the footer when
 administrator status is available.
 
-On desktop, Settings places routing rules, selectors and HTTPS settings in the
-main column, with traffic in a sidebar. Smaller screens put all settings before
-traffic. Below 1024px, traffic starts collapsed; wider screens start expanded.
-Show/Hide overrides this default until a page reload, including across internal
-navigation and polling. Collapsed traffic and inactive pages do not mount charts.
 Certificate installation and browser verification expand inside **HTTPS Modules**.
-Testing and Devices have their own content areas. Diagnostic fields are grouped
-into short rows and adapt to the selected analysis; narrow screens use a single column.
-The **Traffic** panel switches between **This Device** and **All Devices**, with
-only the active scope's chart mounted. Arrow keys and Home/End navigate the tabs.
-Connection details, uptime, domain tables and plugins are collapsed by default.
+Status emphasizes active connections and current upload/download rates. Cumulative
+traffic, total connections, uptime, domain tables and plugins are available in
+the initially collapsed connection details.
 Device status continues polling without administrator access. Global status uses
-the same authorization as selectors and is cleared on logout or expiry. Visible
-pages refresh every two seconds; traffic rates use five-second samples for up to
-one minute. Counters cover userspace upstream paths, including splice, rather
-than kernel passthrough or locally answered requests.
+the same authorization as selectors and is cleared on logout or expiry. The
+visible document refreshes every two seconds; traffic rates use five-second
+samples for up to one minute. Both status presentations consume the same reads,
+without additional counters or polling. Counters cover userspace upstream paths,
+including splice, rather than kernel passthrough or locally answered requests.
+Scope tabs and management tabs support arrow keys and Home/End, selecting the
+focused tab. Losing global access returns the narrow Overview to device traffic.
 
 Traffic charts share a byte-per-second scale for upload (dashed purple) and
-download (solid teal). The horizontal axis is relative to the latest completed
+download (solid blue). The horizontal axis is relative to the latest completed
 sample. Missing samples remain blank; a measured zero is plotted at zero.
 Hover, touch or focus the chart and use the left/right arrow keys to inspect
 samples. Polling updates the existing chart without replaying animations or
@@ -161,46 +192,53 @@ mutations are never retried automatically.
 
 ## UI conventions
 
-Settings expands up to 1600px. At 1024px and above, it uses a wider left
-column for controls and a right column for traffic. Narrower screens stack
-settings before traffic. Testing and Devices use a centered shell up to 1200px;
-their header, access toolbar, content and footer share the same edges.
-Refresh indicators show elapsed time since the last successful read: just now,
-then seconds, minutes, hours or days ago. They update while the document is visible;
-hovering shows the full local date and time. Refresh errors and access messages
-remain visible until the next successful read. Testing's footer describes
-read-only analysis; Settings and Devices describe when changes take effect.
-Selector groups
-wrap into columns as space permits, and traffic charts fill their panels.
-Traffic metrics use two columns on small screens and narrow desktop sidebars,
-and three where space permits;
-chart headings and legends wrap on narrow screens. Light and dark themes
-apply to chart axes, series and tooltips as well as the surrounding controls.
+The shared “Network Settings” heading and navigation share a header: the title
+and current page description sit on the left, and navigation aligns to the right.
+On screens up to 760px wide, navigation occupies a full row below the heading,
+with three equal-width touch targets. A horizontal divider separates this header from the access
+toolbar. The current page uses a stronger label and a short underline. Overview
+and Manage use a centered workspace up to 1440px; Tracing uses up to 1200px.
+The header, access toolbar, content and footer align within that workspace.
+The access card groups device identity, access state and session information, with
+refresh actions on the right or a separate row on smaller screens. Settings
+precede status in reading order. Management tabs avoid stacking
+unrelated controls; node groups fill a responsive grid within their section.
+Panels and labels wrap at larger preferred text sizes. Keep core behavior
+independent of layout width.
 
-Keep shared styles in `style.css`: action controls at least 2.75rem tall with the same padding,
-type and neutral outline; a single 4px radius; 1rem body text and .875rem metadata
-(16px and 14px at the browser's default size). Text and controls follow the user's
-preferred font size. Paragraphs use a 1.55 line height; section descriptions and
-result summaries have bounded line lengths. Selector columns require enough
-space for readable names and actions, and wrap before they become cramped.
-Node options can grow to fit their two-line content. Light/dark colors come from
-the root palette; errors share one foreground, background and border treatment.
-Use `.badge` for states and settings sources, `.count` for quantities, and
-`.status-row` / `.button-row` for consistent alignment and spacing.
+Overview uses separate bordered cards for routing and HTTPS settings. The cards
+stack vertically within the settings column. From 1024px, the settings and status
+columns share a row, with more width allocated to settings. The status card uses
+a muted background and stacks device status above global status with a divider.
+Smaller screens stack status below settings and use scope tabs. Status metrics
+wrap according to the panel width and preferred text size. Status stays visible
+on every screen size. Content scrolls vertically
+when the viewport is short. A stable scrollbar gutter keeps the content width
+steady while panels expand and charts resize.
 
-Use H1 for the page (1.75rem), H2 for sections (1.25rem), and H3 for selector groups
-and certificate details (1rem). Status messages are not headings. Use short action
-labels and sentences for explanations. Optional TLS hostname and identity inputs
-belong in Advanced context. Outbound traffic details pair each value with its
-label instead of joining multiple metrics into a sentence.
-Testing's expandable groups use bordered panels with shaded headers. Their
-contents are inset; individual rules use status badges, and expanded rule details
-and nested data lists use a vertical guide. Nested disclosures use lighter headings
-inside the parent panel. Chevrons indicate whether each group is open; native
-summary controls support keyboard navigation. The rule filter wraps as a whole
-on narrow screens, and rule expressions occupy a separate line on phones.
-Keep **Default / Custom**, **Use default**, and **Monitoring** consistent
-across selectors and device settings; preserve configured names/descriptions.
+Use Astryx controls for actions and tabs, and native semantic sections and forms
+for application structure. Shared styles use the theme's 2px corner radius,
+1rem body text and .875rem metadata. Error foregrounds, backgrounds and borders
+share the Primer danger palette. Use `.badge` for states and settings sources,
+`.count` for quantities, and `.status-row` / `.button-row` for consistent alignment.
+Only node names deliberately truncate; full names remain accessible.
+
+The selected navigation link identifies the page. The shared “Network Settings”
+H1 receives focus after page navigation. The access toolbar follows it;
+use H2 for settings and H3 for groups. Status has less visual
+emphasis than settings. Keep **Default / Custom**, **Use default**, and
+**Monitoring** consistent across selectors and device settings; preserve configured
+names and descriptions. Optional TLS hostname and identity inputs belong in
+Advanced context. Diagnostic disclosures use shaded headers, state badges and
+nested guides; rules can be filtered by status. Outbound metrics pair values with
+labels. Light/dark colors also apply to chart axes, series and tooltips.
+
+Action feedback appears above the page content. Navigation has no branding block.
+
+Refresh indicators show time since the last successful read and update while the
+document is visible; hovering shows the local date and time. Errors remain visible
+until a successful read. Tracing's footer describes read-only analysis; Overview
+and Manage describe when changes take effect.
 
 ## Browser checks
 
@@ -220,8 +258,9 @@ configuration defaults, description labels, timeouts, chart samples and keyboard
 tooltips, access-loss recovery, and light/dark layouts from 320px to 2560px.
 Text-only zoom checks all pages at twice the default size, including control
 containment in narrow panels.
-It also checks direct page links, browser history, mobile traffic expansion,
-keyboard traffic-scope switching, independent membership switches,
+It also checks direct page links, browser history, mobile status,
+simultaneous desktop traffic scopes, management tabs, keyboard traffic-scope
+switching, independent membership switches,
 context/explanation requests, invalidation of late diagnostic and routing-preview
 replies, membership-context changes and protected-result cleanup.
 Fixture state and browser processes are cleaned up when the test exits. These

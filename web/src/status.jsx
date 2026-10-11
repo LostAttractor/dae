@@ -1,3 +1,4 @@
+import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { createView } from "./react-view.js";
 import { bytes, TrafficPanel } from "./traffic.jsx";
@@ -22,15 +23,20 @@ function GroupEntry({ group }) {
   </details>;
 }
 
-function ConnectionDetails({ snapshot, global }) {
+function ConnectionDetails({ snapshot, global, prefix }) {
   const uptime = Math.max(0, Math.floor((Date.now() - Date.parse(snapshot.started_at)) / 60000));
   return <details className="connection-details">
     <summary>Connection Details</summary>
+    <dl className="traffic-totals">
+      <div><dt>Total connections</dt><dd>{(snapshot.stats.total_connections ?? 0).toLocaleString()}</dd></div>
+      <div><dt>Uploaded</dt><dd>{bytes(snapshot.stats.upload_bytes)}</dd></div>
+      <div><dt>Downloaded</dt><dd>{bytes(snapshot.stats.download_bytes)}</dd></div>
+    </dl>
     <p className="muted">{global
       ? `Uptime ${Math.floor(uptime / 1440)}d ${Math.floor(uptime / 60) % 24}h ${uptime % 60}m · ${snapshot.direct_fallback_connections} direct fallback connections`
       : `Since daemon start ${new Date(snapshot.started_at).toLocaleString()}`}</p>
     {global ? <>
-      <div id="global-groups" className="status-details" tabIndex="0" role="region" aria-label="Outbounds and nodes">
+      <div id={`${prefix}-groups`} className="status-details" tabIndex="0" role="region" aria-label="Outbounds and nodes">
         {snapshot.groups.map(group => <GroupEntry key={group.name} group={group} />)}
         {!snapshot.groups.length && <p className="muted">No outbounds available.</p>}
       </div>
@@ -53,68 +59,86 @@ function ConnectionDetails({ snapshot, global }) {
   </details>;
 }
 
-function Status({ device, global, visible }) {
-  const [scope, setScope] = useState("device");
-  const [media] = useState(() => matchMedia("(min-width: 1024px)"));
+function useWide(query) {
+  const [media] = useState(() => matchMedia(query));
   const [wide, setWide] = useState(media.matches);
-  const [expanded, setExpanded] = useState(null);
-  const open = expanded ?? wide;
   useEffect(() => {
     const update = () => setWide(media.matches);
     media.addEventListener("change", update);
     update();
     return () => media.removeEventListener("change", update);
   }, [media]);
+  return wide;
+}
+
+function ScopeStatus({ state, scope, prefix = scope, visible, labelledBy }) {
+  return <div id={`${prefix}-status`} className="status-scope-panel" role={labelledBy ? "tabpanel" : "region"}
+    aria-labelledby={labelledBy || `${prefix}-heading`}>
+    <h3 id={`${prefix}-heading`}>{scope === "global" ? "All devices" : "This device"}</h3>
+    <div id={`${prefix}-traffic`}>
+      {state.snapshot && visible ? <TrafficPanel stats={state.snapshot.stats} /> : !state.snapshot && <p className="muted">{state.message}</p>}
+      {state.snapshot && <ConnectionDetails snapshot={state.snapshot} global={scope === "global"} prefix={prefix} />}
+    </div>
+    <p className="status-updated">{state.error || (state.updatedAt != null && <UpdatedAt timestamp={state.updatedAt} />)}</p>
+  </div>;
+}
+
+function Status({ device, global, visible }) {
+  const wide = useWide("(min-width: 1024px)");
+  const [scope, setScope] = useState("device");
   const hasGlobal = Boolean(global.snapshot);
   useLayoutEffect(() => { if (!hasGlobal) setScope("device"); }, [hasGlobal]);
-  function navigate(event) {
-    if (!hasGlobal || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const next = event.key === "Home" ? "device" : event.key === "End" ? "global" : scope === "device" ? "global" : "device";
-    setScope(next);
-    event.currentTarget.querySelector(`#${next}-tab`).focus();
-  }
   return <>
-    <div className="card-heading">
-      <h2 id="traffic-title">Traffic</h2>
-      <button id="status-toggle" type="button" aria-expanded={open} aria-controls="traffic-content" onClick={() => setExpanded(!open)}>{open ? "Hide" : "Show"}</button>
-    </div>
-    <div id="traffic-content" hidden={!open}>
-      <div className="scope-tabs" role="tablist" aria-label="Traffic scope" onKeyDown={navigate}>
-        {[["device", "This Device"], ["global", "All Devices"]].map(([key, label]) => <button key={key} id={`${key}-tab`} type="button" role="tab"
-          aria-selected={scope === key} aria-controls={`${key}-status`} tabIndex={scope === key ? 0 : -1}
-          disabled={key === "global" && !hasGlobal} title={key === "global" && !hasGlobal ? global.message : undefined}
-          onClick={() => setScope(key)}>{label}</button>)}
-      </div>
-      {Object.entries({ device, global }).map(([key, state]) => <div key={key} id={`${key}-status`} role="tabpanel" aria-labelledby={`${key}-tab`} hidden={scope !== key} tabIndex="0">
-        <div id={`${key}-traffic`}>
-          {state.snapshot && scope === key && open && visible ? <TrafficPanel stats={state.snapshot.stats} /> : !state.snapshot && <p className="muted">{state.message}</p>}
+    <h2 id="traffic-title">Status</h2>
+    <div id="traffic-content">
+      {!wide && <TabList className="scope-tabs" value={scope} onChange={setScope} role="tablist" aria-label="Traffic scope" hasDivider>
+        <Tab id="device-tab" value="device" label="This device" panelId="device-status" onFocus={() => setScope("device")} />
+        <Tab id="global-tab" value="global" label="All devices" panelId="global-status" aria-disabled={!hasGlobal}
+          onFocus={() => { if (hasGlobal) setScope("global"); }} title={!hasGlobal ? global.message : undefined} />
+      </TabList>}
+      <div className={`status-grid${wide && hasGlobal ? " status-grid-both" : ""}`}>
+        <div hidden={!wide && scope !== "device"}>
+          <ScopeStatus state={device} scope="device" visible={visible && (wide || scope === "device")} labelledBy={!wide ? "device-tab" : undefined} />
         </div>
-        {state.snapshot && <ConnectionDetails snapshot={state.snapshot} global={key === "global"} />}
-        {state.snapshot && <p className="traffic-note">Shows upstream connections handled by dae in userspace. Kernel-direct traffic and local responses are not counted.</p>}
-        <p className="status-updated">{state.error || (state.updatedAt != null && <UpdatedAt timestamp={state.updatedAt} />)}</p>
-      </div>)}
+        <div hidden={!hasGlobal || (!wide && scope !== "global")}>
+          <ScopeStatus state={global} scope="global" visible={visible && hasGlobal && (wide || scope === "global")} labelledBy={!wide ? "global-tab" : undefined} />
+        </div>
+      </div>
+      <p className="traffic-note">Userspace upstream traffic only. Kernel-direct traffic and local responses are not counted.</p>
     </div>
   </>;
 }
 
-export function createStatus(container) {
-  const render = createView(container);
+function GlobalStatus({ state, visible }) {
+  return <>
+    <h2 id="managed-global-traffic-title">Global status</h2>
+    <ScopeStatus state={state} scope="global" prefix="managed-global" visible={visible} />
+    <p className="traffic-note">Userspace upstream traffic only. Kernel-direct traffic and local responses are not counted.</p>
+  </>;
+}
+
+// Both presentations consume the existing snapshots. No additional polling or
+// counters are introduced by showing both scopes or switching Manage sections.
+export function createStatus(overviewContainer, globalContainer) {
+  const renderOverview = createView(overviewContainer), renderGlobal = createView(globalContainer);
   let device = { snapshot: null, message: "Loading traffic…" };
   let global = { snapshot: null, message: "Login required to view all devices." };
-  let visible = false;
-  const update = () => render(<Status device={device} global={global} visible={visible} />);
+  let page, section;
+  const updateOverview = () => renderOverview(<Status device={device} global={global} visible={page === "overview"} />);
+  const updateGlobal = () => renderGlobal(<GlobalStatus state={global} visible={page === "manage" && section === "status"} />);
   const snapshotState = (snapshot) => ({ snapshot, updatedAt: Date.now() });
-  update();
   return {
-    setVisible: (next) => { if (visible !== next) { visible = next; update(); } },
-    setDevice: (snapshot) => { device = snapshotState(snapshot); update(); },
-    setGlobal: (snapshot) => { global = snapshotState(snapshot); update(); },
-    clearGlobal: (message) => { global = { snapshot: null, message }; update(); },
+    setView: (nextPage, nextSection) => {
+      if (page === nextPage && section === nextSection) return;
+      page = nextPage; section = nextSection; updateOverview(); updateGlobal();
+    },
+    setDevice: (snapshot) => { device = snapshotState(snapshot); updateOverview(); },
+    setGlobal: (snapshot) => { global = snapshotState(snapshot); updateOverview(); updateGlobal(); },
+    clearGlobal: (message) => { global = { snapshot: null, message }; updateOverview(); updateGlobal(); },
     deviceError: (message, clear) => {
       device = { ...device, ...(clear ? { snapshot: null, message } : {}), error: "Device update failed · Retrying" };
-      update();
+      updateOverview();
     },
-    globalError: () => { global = { ...global, error: "Global update failed · Retrying" }; update(); },
+    globalError: () => { global = { ...global, error: "Global update failed · Retrying" }; updateOverview(); updateGlobal(); },
   };
 }

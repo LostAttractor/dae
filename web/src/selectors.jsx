@@ -1,3 +1,4 @@
+import { Button } from "@astryxdesign/core/Button";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createView } from "./react-view.js";
@@ -122,12 +123,12 @@ function Selector({ selector, actions }) {
       </span>
     </div>
     <div className="selector-control">
-      <button ref={picker} className="node-picker" type="button" aria-haspopup="dialog" aria-expanded={open}
-        aria-controls={`${id}-nodes`} popoverTarget={`${id}-nodes`} disabled={!selector.nodes.length} title={name} aria-label={`${selector.name}: ${name}`}>
+      <Button label={name} ref={picker} className="node-picker" type="button" aria-haspopup="dialog" aria-expanded={open}
+        aria-controls={`${id}-nodes`} popoverTarget={`${id}-nodes`} isDisabled={!selector.nodes.length} title={name} aria-label={`${selector.name}: ${name}`}>
         <span className="selected-name">{name}</span><span className="picker-arrow" aria-hidden="true" />
-      </button>
-      <button className="test-selected" type="button" hidden={selector.track_all} disabled={!selected || selected.checking}
-        aria-label={`Test selected node in ${selector.name}`} onClick={() => probe(selector.node_id)}>Test</button>
+      </Button>
+      <Button label="Test" className="test-selected" type="button" hidden={selector.track_all} isDisabled={!selected || selected.checking}
+        aria-label={`Test selected node in ${selector.name}`} onClick={() => probe(selector.node_id)} />
       <div ref={menu} id={`${id}-nodes`} className="node-popover" popover="auto" role="dialog" aria-label={`Select a node in ${selector.name}`}
         onBeforeToggle={(event) => {
           if (event.newState === "open") {
@@ -162,10 +163,10 @@ function Selector({ selector, actions }) {
     <div className="selector-actions">
       <span className="tracking-status badge" title="All nodes are monitored automatically" hidden={!selector.track_all}>Monitoring all nodes</span>
       <div className="selector-buttons button-row" hidden={selector.track_all && !selector.default_node_id}>
-        <button className="test-all" type="button" hidden={selector.track_all} disabled={!selector.nodes.length || selector.nodes.every(node => node.checking)}
-          aria-label={`Test all nodes in ${selector.name}`} onClick={() => probe()}>Test All</button>
-        <button className="reset" type="button" hidden={!selector.default_node_id} disabled={!selector.overridden}
-          onClick={() => save("DELETE", undefined, `${selector.name}: reset to default.`)}>Use default</button>
+        <Button label="Test All" className="test-all" type="button" hidden={selector.track_all} isDisabled={!selector.nodes.length || selector.nodes.every(node => node.checking)}
+          aria-label={`Test all nodes in ${selector.name}`} onClick={() => probe()} />
+        <Button label="Use default" className="reset" type="button" hidden={!selector.default_node_id} isDisabled={!selector.overridden}
+          onClick={() => save("DELETE", undefined, `${selector.name}: reset to default.`)} />
       </div>
     </div>
   </section>;
@@ -174,13 +175,13 @@ function Selector({ selector, actions }) {
 function NodeOption({ node, selector, hidden, onProbe, onSelect }) {
   const selected = node.id === selector.node_id;
   return <div className="selector-node" data-node={node.id} hidden={hidden}>
-    <button className="select-node" type="button" aria-pressed={selected} onClick={onSelect}
+    <Button label={node.name} className="select-node" type="button" aria-pressed={selected} onClick={onSelect}
       title={`${node.name}${node.id === selector.default_node_id ? " · Default" : ""}\n${monitoringLabel(node)}${node.checked_at ? ` · ${checkedLabel(node)}` : ""}`}
       aria-label={`${selected ? "Selected" : "Select"} ${node.name}, ${healthLabels[healthState(node)]} ${latencyLabel(node)}`.trim()}>
       <span className="node-name">{node.name}</span><span className="node-check" aria-hidden="true">{selected ? "✓" : ""}</span>
       <span className="node-status status-row"><Health node={node} /></span>
-    </button>
-    <button className="test-node" type="button" hidden={selector.track_all} disabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe}>Test</button>
+    </Button>
+    <Button label="Test" className="test-node" type="button" hidden={selector.track_all} isDisabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe} />
   </div>;
 }
 

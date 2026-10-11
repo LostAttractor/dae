@@ -41,8 +41,6 @@ export function TrafficPanel({ stats }) {
   const hasSamples = upload.length > 0 || download.length > 0;
   const metrics = [
     ["Active connections", (stats.active_connections ?? 0).toLocaleString()],
-    ["Total connections", (stats.total_connections ?? 0).toLocaleString()],
-    ["Uploaded", bytes(stats.upload_bytes)], ["Downloaded", bytes(stats.download_bytes)],
     ["Upload rate", upload.length ? rate(upload.at(-1)) : "—"],
     ["Download rate", download.length ? rate(download.at(-1)) : "—"],
   ];

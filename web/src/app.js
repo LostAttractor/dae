@@ -1,5 +1,8 @@
 import { request } from "./api.js";
-import { byId, template } from "./dom.js";
+import { byId } from "./dom.js";
+import { mountShell } from "./shell.jsx";
+import { createMITM } from "./mitm.jsx";
+import { createManageNavigation } from "./manage.jsx";
 import { createSelectors } from "./selectors.jsx";
 import { createStatus } from "./status.jsx";
 import { certificateDevice, certificateIdentity, testCertificate } from "./certificate.js";
@@ -22,17 +25,29 @@ let globalRequestVersion = 0;
 let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
+mountShell(byId("app"));
+byId("test-certificate").disabled = true;
 const diagnostics = createDiagnostics(byId("diagnostic-view"));
-const status = createStatus(byId("status-view"));
+const status = createStatus(byId("status-view"), byId("global-status-view"));
+const mitm = createMITM(byId("mitm"), { run, request, update: renderDevice });
 const updatedLabel = createUpdatedLabel(byId("updated"));
 const managedClients = createManagedClients(byId("managed-clients-view"), request);
 const selectors = createSelectors(byId("selectors"), { run, request: adminRequest, refresh: loadSelectors });
+let activePage = "overview", manageSection = "devices";
+function updateVisibility() {
+  status.setView(activePage, manageSection);
+  managedClients.setActive(activePage === "manage" && manageSection === "devices");
+}
+createManageNavigation(byId("manage-navigation"), (section) => {
+  manageSection = section;
+  updateVisibility();
+});
 const navigation = createNavigation((page) => {
-  status.setVisible(page === "settings");
-  managedClients.setActive(page === "devices");
+  activePage = page;
+  updateVisibility();
 });
 const clientSets = createClientSets(byId("sets"), { run, request, update: renderDevice, onCompare: (set) => {
-  navigation.show("testing");
+  navigation.show("tracing");
   diagnostics.compare(set);
 } });
 
@@ -107,13 +122,6 @@ function setAccess(mode, error) {
   }
 }
 
-function empty(container, text) {
-  const paragraph = document.createElement("p");
-  paragraph.className = "muted";
-  paragraph.textContent = text;
-  byId(container).replaceChildren(paragraph);
-}
-
 function renderDevice(device) {
   certificateDevice(device);
   const key = JSON.stringify(device);
@@ -123,30 +131,7 @@ function renderDevice(device) {
   byId("identity").textContent = device.source_ip;
   byId("device-mac").textContent = `MAC ${device.mac}`;
   clientSets.show(device);
-  renderMITM(device.mitm);
-}
-
-function renderMITM(mitm) {
-  byId("mitm").replaceChildren();
-  if (!mitm) {
-    empty("mitm", "HTTPS modules are not enabled on this router.");
-    return;
-  }
-  const row = template("mitm-template");
-  row.querySelector(".mitm-enabled").textContent = mitm.enabled ? "Enabled" : "Disabled";
-  row.querySelector(".settings-source").textContent = mitm.override === null ? "Default" : "Custom";
-  const toggle = row.querySelector(".toggle");
-  const reset = row.querySelector(".reset");
-  const save = async (method, body, success) => {
-    const saved = await run(async () => renderDevice(await request(
-      "/api/device/mitm", method, body, { "X-Dae-MITM": mitm.ca_fingerprint })), success);
-    if (saved) byId("mitm").querySelector(".toggle").focus();
-  };
-  toggle.textContent = mitm.enabled ? "Disable" : "Enable";
-  toggle.onclick = () => save("PUT", { enabled: !mitm.enabled }, `HTTPS modules ${mitm.enabled ? "disabled" : "enabled"} for this device.`);
-  reset.disabled = mitm.override === null;
-  reset.onclick = () => save("DELETE", undefined, "HTTPS modules reset to default.");
-  byId("mitm").append(row);
+  mitm.show(device.mitm);
 }
 
 // Mutations run serially. Reads check their version before applying any state,
@@ -210,7 +195,7 @@ async function loadDevice({ background = false } = {}) {
       byId("identity").textContent = "Device could not be identified.";
       byId("device-mac").textContent = "";
       clientSets.error(error.message);
-      empty("mitm", "Device controls unavailable.");
+      mitm.unavailable();
     }
     if (error.status !== 403 && !background) throw error;
   }

@@ -290,6 +290,8 @@ try {
   };
   const row = 'document.querySelector(".selector-row")';
   const openPicker = async () => {
+    if (!await js('document.querySelector("#manage-page").checkVisibility()')) await visit("manage");
+    await js('document.querySelector("#manage-outbounds-tab").click()');
     await js(`${row}.querySelector('.node-picker').focus(); ${row}.querySelector('.node-picker').click()`);
     await until(`${row}.querySelector('.node-popover').matches(':popover-open') && document.activeElement.matches('.node-search')`);
   };
@@ -303,7 +305,16 @@ try {
     browserLogs.length = 0;
     await page();
     try { await action(); assert.deepEqual(exceptions, []); console.log(`PASS ${name}`); }
-    catch (error) { failures++; console.error(`FAIL ${name}: ${error.stack || JSON.stringify(error)}\n${browserLogs.slice(-8).join("\n")}`); }
+    catch (error) {
+      failures++;
+      console.error(`FAIL ${name}: ${error.stack || JSON.stringify(error)}\n${browserLogs.slice(-8).join("\n")}`);
+      console.error("Viewport:", await js('({ width: innerWidth, scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth })'));
+      console.error("Overflow:", await js('[...document.querySelectorAll("body *")].filter(el => el.checkVisibility() && (el.getBoundingClientRect().right > innerWidth + 1 || el.clientWidth && el.scrollWidth > el.clientWidth + 1)).slice(0, 12).map(el => ({ tag: el.tagName, id: el.id, class: el.className, width: el.getBoundingClientRect().width }))'));
+      if (process.env.SCREENSHOT_DIR) {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `failure-${name.replaceAll(/[^a-z0-9]+/gi, "-")}.png`), Buffer.from(image.data, "base64"));
+      }
+    }
   };
   await call("Page.enable");
   await call("Runtime.enable");
@@ -346,7 +357,7 @@ try {
   await test("Recharts shows rate history, keyboard tooltips and stable live updates", async () => {
     const chart = 'document.querySelector("#device-traffic .recharts-surface")';
     await until(`${chart} !== null`);
-    await until('document.querySelectorAll(".traffic-chart .recharts-line-curve").length === 2');
+    await until('document.querySelectorAll("#device-traffic .recharts-line-curve").length === 2');
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /800 B\/s/);
     await js(`window.trafficChart = ${chart}; trafficChart.focus()`);
     for (let i = 0; i < 12; i++) await key("ArrowRight", 39);
@@ -361,67 +372,72 @@ try {
     assert.equal(browserLogs.some((entry) => /Content Security Policy|Refused to|violates/i.test(entry)), false);
   });
 
-  await test("Settings, Testing and Devices have direct links and preserve browser navigation", async () => {
-    assert.equal(await js('document.querySelector("#settings-page").checkVisibility()'), true);
+  await test("Overview, Tracing and Manage have direct links and preserve browser navigation", async () => {
+    assert.equal(await js('document.querySelector("#overview-page").checkVisibility()'), true);
     assert.equal(await js('document.querySelector("#diagnostics").checkVisibility()'), false);
     assert.equal(fixture.clientReads, 0);
     await openPicker();
-    await visit("testing");
+    await visit("tracing");
     assert.equal(await js('document.querySelector(".node-popover:popover-open")'), null);
     assert.equal(await js('document.activeElement.id'), "page-title");
-    assert.equal(await js('document.querySelector(".page-nav [aria-current=page]").textContent'), "Testing");
+    assert.equal(await js('document.querySelector(".page-nav [aria-current=page]").textContent'), "Tracing");
     assert.equal(await js('document.querySelector(".traffic-chart")'), null);
     await js('document.querySelector("#diagnostic-target").value = "example.com:443"');
-    await visit("devices");
+    await visit("manage");
+    await js('document.querySelector("#manage-devices-tab").click()');
     await until('document.querySelector("#managed-client-group").options.length === 1');
-    assert.equal(fixture.clientReads, 1);
+    assert.ok(fixture.clientReads >= 1);
     await js('history.back()');
-    await until('document.querySelector("#testing-page").checkVisibility()');
+    await until('document.querySelector("#tracing-page").checkVisibility()');
     assert.equal(await js('document.querySelector("#diagnostic-target").value'), "example.com:443");
     await js('history.forward()');
-    await until('document.querySelector("#devices-page").checkVisibility()');
-    await page("#testing");
+    await until('document.querySelector("#manage-page").checkVisibility()');
+    await page("#tracing");
     assert.equal(await js('document.querySelector("#diagnostic-form").checkVisibility()'), true);
-    assert.equal(await js('document.title'), "dae · Testing");
+    assert.equal(await js('document.title'), "Network Settings · Tracing");
     assert.match(await js('document.querySelector("#page-note").textContent'), /Read-only analysis/);
     assert.match(await js('document.querySelector("#updated").textContent'), /^Updated /);
     fixture.mode = "api_key";
-    await page("#devices");
+    await page("#manage");
     assert.equal(await js('document.querySelector("#devices-locked").checkVisibility()'), true);
     assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), false);
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();
     assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), true);
-    assert.equal(await js('location.hash'), "#devices");
+    assert.equal(await js('location.hash'), "#manage");
     assert.match(await js('document.querySelector("#page-note").textContent'), /Changes apply to new connections/);
     await page("#unknown");
-    assert.equal(await js('location.hash'), "#settings");
+    assert.equal(await js('location.hash'), "#overview");
     assert.equal(await js('document.querySelector("#sets").checkVisibility()'), true);
   });
 
-  await test("small screens start with settings and keep traffic collapsed until requested", async () => {
+  await test("small screens show live status below settings across navigation and resizing", async () => {
     await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await page();
-    assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "false");
-    assert.equal(await js('document.querySelector(".traffic-chart")'), null);
+    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    assert.equal(await js('document.querySelector("#status-toggle")'), null);
+    assert.equal(await js('document.querySelector("#traffic-content").checkVisibility()'), true);
+    assert.equal(await js('document.querySelector("#status-view").getBoundingClientRect().top >= document.querySelector(".dashboard-main").getBoundingClientRect().bottom'), true);
     assert.equal(await js('document.querySelector("#device-title").getBoundingClientRect().top < innerHeight'), true);
     assert.equal(await js('document.querySelector("#diagnostics").checkVisibility()'), false);
-    await js('document.querySelector("#status-toggle").click()');
-    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    if (process.env.SCREENSHOT_DIR) {
+      const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
+      await writeFile(join(process.env.SCREENSHOT_DIR, "dae-web-overview-mobile-default.png"), Buffer.from(image.data, "base64"));
+    }
     fixture.stats.upload_bytes = 65536;
     await until('document.querySelector("#device-traffic").textContent.includes("64 KiB")');
-    await visit("testing");
+    await visit("tracing");
     assert.equal(await js('document.querySelector(".traffic-chart")'), null);
-    await visit("settings");
-    assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "true");
-    await js('document.querySelector("#status-toggle").click(); document.querySelector("#refresh").click()');
+    await visit("overview");
+    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    await js('document.querySelector("#refresh").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#status-toggle").getAttribute("aria-expanded")'), "false");
+    assert.equal(await js('document.querySelector("#traffic-content").checkVisibility()'), true);
     await page();
     await call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    await until('document.querySelectorAll(".traffic-chart").length === 2');
     await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
-    await until('document.querySelector("#status-toggle").getAttribute("aria-expanded") === "false"');
+    await until('document.querySelectorAll(".traffic-chart").length === 1 && document.querySelector("#device-traffic .recharts-surface") !== null');
   });
 
   await test("Recharts distinguishes empty, single and zero samples and recovers after access loss", async () => {
@@ -448,15 +464,16 @@ try {
   });
 
   await test("device statistics remain live without global administration access", async () => {
+    await call("Emulation.setDeviceMetricsOverride", { width: 960, height: 1000, deviceScaleFactor: 1, mobile: false });
     fixture.mode = "api_key";
     await page();
-    assert.equal(await js('document.querySelector("#global-tab").disabled'), true);
+    assert.equal(await js('document.querySelector("#global-tab").getAttribute("aria-disabled") === "true"'), true);
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /2 KiB/);
     fixture.stats.upload_bytes = 4096;
     await until('document.querySelector("#device-traffic").textContent.includes("4 KiB")');
     await js('document.querySelector("#api-key").value = "test-key"; document.querySelector("#login-form").requestSubmit()');
     await ready();
-    assert.equal(await js('document.querySelector("#global-tab").disabled'), false);
+    assert.equal(await js('document.querySelector("#global-tab").getAttribute("aria-disabled") === "true"'), false);
     assert.match(await js('document.querySelector("#daemon-version").textContent'), /test-daemon/);
     await js('document.querySelector("#global-tab").click()');
     await until('document.querySelector("#global-traffic .recharts-surface") !== null');
@@ -469,11 +486,13 @@ try {
   });
 
   await test("traffic scopes switch by keyboard and device identity appears beside access", async () => {
+    await call("Emulation.setDeviceMetricsOverride", { width: 960, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await until('document.querySelector("#device-tab") !== null');
     assert.equal(await js('document.querySelector(".access-line #identity").textContent'), fixture.device.source_ip);
     assert.equal(await js('document.querySelector(".device-identity").open'), false);
     await js('document.querySelector("#identity").click()');
     assert.match(await js('document.querySelector("#device-mac").textContent'), /02:00:00:00:00:08/);
-    assert.equal(await js('document.querySelectorAll("#status-view h2, #status-view h3").length'), 1);
+    assert.equal(await js('document.querySelectorAll("#status-view h2").length'), 1);
     assert.equal(await js('document.querySelector("#status-view").textContent.includes("test-daemon")'), false);
     await js('document.querySelector("#device-tab").focus()');
     await key("ArrowRight", 39);
@@ -503,13 +522,51 @@ try {
     device.release.resolve();
     global.release.resolve();
     await delay(200);
-    assert.equal(await js('document.querySelector(".client-toggle").getAttribute("aria-checked")'), "true");
+    assert.equal(await js('document.querySelector(".client-toggle input").checked'), true);
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /16 KiB/);
     fixture.mode = "api_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.querySelector("#global-traffic .recharts-surface")'), null);
     assert.equal(await js('document.querySelector("#daemon-version").textContent'), "");
+  });
+
+  await test("Overview stacks both status scopes and Manage mounts only its selected section", async () => {
+    await until('document.querySelectorAll(".traffic-chart").length === 2');
+    assert.equal(await js('document.querySelector("#selectors").checkVisibility()'), false);
+    assert.equal(await js('document.querySelector("#device-tab")'), null, "wide screens show both scopes without tabs");
+    assert.match(await js('document.querySelector("#device-traffic .traffic-metrics").textContent'), /Active connections2/);
+    assert.match(await js('document.querySelector("#global-traffic .traffic-metrics").textContent'), /Active connections20/);
+    assert.equal(await js('document.querySelector("#device-traffic").getBoundingClientRect().bottom < document.querySelector("#global-traffic").getBoundingClientRect().top'), true);
+    await visit("manage");
+    await until('document.querySelector("#managed-client-group").options.length === 1');
+    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 0);
+    assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), true);
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:44"; document.querySelector("#manage-devices-tab").focus()');
+    await key("ArrowRight", 39);
+    await until('document.querySelector("#selectors").checkVisibility()');
+    assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), false);
+    await key("End", 35);
+    await until('document.querySelector("#managed-global-traffic .recharts-surface") !== null');
+    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 1);
+    assert.equal(await js('document.querySelector("#selectors").checkVisibility()'), false);
+    await visit("tracing");
+    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 0);
+    await visit("manage");
+    assert.equal(await js('document.querySelector("#manage-status-tab").getAttribute("aria-selected")'), "true");
+    await js('document.querySelector("#manage-devices-tab").click()');
+    assert.equal(await js('document.querySelector("#managed-client-mac").value'), "02:00:00:00:00:44");
+    await visit("overview");
+    await until('document.querySelectorAll(".traffic-chart").length === 2');
+    fixture.mode = "api_key";
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 1);
+    assert.equal(await js('document.querySelector("#global-status").checkVisibility()'), false);
+    await visit("manage");
+    await js('document.querySelector("#manage-status-tab").click()');
+    assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 0);
+    assert.match(await js('document.querySelector("#managed-global-traffic").textContent'), /Login required/);
   });
 
   await test("certificate UI requires both browser proof and interception observation", async () => {
@@ -585,8 +642,11 @@ try {
   });
 
   await test("poll failure indicator clears after recovery", async () => {
+    await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    await page();
     fixture.nextRead = { status: 503, started: deferred() };
     await until('document.querySelector("#updated").textContent.includes("failed")');
+    assert.equal(await js('document.querySelector("#updated").checkVisibility()'), true, "refresh errors remain visible on small screens");
     await until('!document.querySelector("#updated").textContent.includes("failed")');
   });
 
@@ -691,17 +751,17 @@ try {
   });
 
   await test("device descriptions hide configuration names but mutations use the name", async () => {
-    assert.deepEqual(await js('[...document.querySelectorAll(".set-row strong")].map((entry) => entry.textContent)'), ["Work network", "gaming"]);
-    await js('document.querySelector(".set-row button").click()');
+    assert.deepEqual(await js('[...document.querySelectorAll(".set-row label")].map((entry) => entry.textContent)'), ["Work network", "gaming"]);
+    await js('document.querySelector(".set-row input[role=switch]").click()');
     await ready();
     assert.deepEqual(fixture.requests[0], { method: "PUT", path: "/api/device/sets/internal%2Fwork", body: {} });
     assert.match(await js('document.querySelector("#message").textContent'), /Work network turned on/);
-    assert.equal(await js('document.querySelector(".set-row button").getAttribute("aria-label")'), "Work network");
-    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.getAttribute("aria-checked"))'), ["true", "true"]);
-    await js('document.querySelector(".client-toggle").click()');
+    assert.equal(await js('document.querySelector(".set-row input[role=switch]").labels[0].textContent'), "Work network");
+    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.checked)'), [true, true]);
+    await js('document.querySelector(".client-toggle input").click()');
     await ready();
     assert.deepEqual(fixture.requests.at(-1), { method: "DELETE", path: "/api/device/sets/internal%2Fwork", body: {} });
-    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.getAttribute("aria-checked"))'), ["false", "true"]);
+    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.checked)'), [false, true]);
   });
 
   await test("client routing impact is lazy and feeds a read-only target comparison", async () => {
@@ -712,7 +772,7 @@ try {
     assert.deepEqual(fixture.requests[0], { method: "POST", path: "/api/device/sets/internal%2Fwork/impact", body: { joined: true, context: {} } });
     assert.equal(fixture.device.sets[0].joined, false);
     await js('document.querySelector(".impact-content button").click(); document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
-    assert.equal(await js('location.hash'), "#testing");
+    assert.equal(await js('location.hash'), "#tracing");
     assert.equal(await js('document.activeElement.id'), "diagnostic-target");
     await until('document.querySelector("#diagnostic-result").textContent.includes("With proposed changes")');
     const sent = fixture.requests.at(-1);
@@ -765,7 +825,7 @@ try {
         domains: [], outbounds: [], notes: [],
       },
     };
-    await visit("testing");
+    await visit("tracing");
     await js('document.querySelector("#diagnostic-target").value = "https://example.com"; document.querySelector("#diagnostic-form").requestSubmit()');
     await until('document.querySelector(".trace-missing") !== null');
     assert.equal(await js('document.querySelector(".trace-outcome h3").textContent'), "Destination IP needed");
@@ -817,7 +877,7 @@ try {
   });
 
   await test("diagnostics distinguish kernel direct, userspace direct, blocked and incomplete decisions", async () => {
-    await visit("testing");
+    await visit("tracing");
     await js('document.querySelector("#diagnostic-target").value = "https://198.51.100.10/"');
     for (const [verdict, outbound, complete, headline] of [
       ["kernel_direct", "direct", true, "Direct in the kernel"],
@@ -848,7 +908,7 @@ try {
   });
 
   await test("diagnostics use analysis-specific summaries for domain, outbound and plugin checks", async () => {
-    await visit("testing");
+    await visit("tracing");
     for (const [kind, value, extra, headline] of [
       ["domain", "example.com", { domains: [{ domain: "example.com", ip: "198.51.100.10", resident: true, source: "dns" }, { domain: "example.com", ip: "198.51.100.11", resident: false, source: "dns" }] }, "2 cached domain records"],
       ["outbound", "proxy", { outbounds: [{ name: "proxy", policy: "fixed", network: "tcp4", available: true, random: false, nodes: [{ name: "Tokyo", selected: true, usable: true, reason: "selected" }] }] }, "Selected node: Tokyo"],
@@ -867,7 +927,7 @@ try {
   });
 
   await test("React diagnostics keep context reads independent and reject outdated explanations", async () => {
-    await visit("testing");
+    await visit("tracing");
     const held = { started: deferred(), release: deferred() };
     fixture.nextExplanation = held;
     try {
@@ -889,7 +949,7 @@ try {
   });
 
   await test("React diagnostics clear manual work and ignore late errors after access loss", async () => {
-    await visit("testing");
+    await visit("tracing");
     await js('document.querySelector("#diagnostic-scope").value = "manual"; document.querySelector("#diagnostic-scope").dispatchEvent(new Event("change", { bubbles: true }))');
     const held = { status: 500, started: deferred(), release: deferred() };
     fixture.nextExplanation = held;
@@ -933,7 +993,8 @@ try {
   });
 
   await test("React managed devices cannot restore data after access is revoked", async () => {
-    await visit("devices");
+    await visit("manage");
+    await js('document.querySelector("#manage-devices-tab").click()');
     await until('document.querySelector("#managed-client-group").options.length === 1');
     const held = { started: deferred(), release: deferred() };
     fixture.nextManagedDevice = held;
@@ -962,9 +1023,10 @@ try {
     assert.equal(await js('document.querySelector(".node-popover").contains(document.activeElement)'), true, "Probe lost focus outside the popup");
     await key("Escape", 27);
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-    await js('document.querySelector(".set-row button").focus(); document.querySelector(".set-row button").click()');
+    await visit("overview");
+    await js('document.querySelector(".set-row input[role=switch]").focus(); document.querySelector(".set-row input[role=switch]").click()');
     await ready();
-    assert.equal(await js('document.activeElement.getAttribute("aria-label")'), "Work network");
+    assert.equal(await js('document.activeElement.labels[0].textContent'), "Work network");
     fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: "test-ca" };
     await js('document.querySelector("#refresh").focus(); document.querySelector("#refresh").click()');
     await ready();
@@ -978,7 +1040,8 @@ try {
   });
 
   await test("administrator device management uses the specified MAC", async () => {
-    await visit("devices");
+    await visit("manage");
+    await js('document.querySelector("#manage-devices-tab").click()');
     await until('document.querySelector("#managed-client-group").options.length === 1');
     await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=join]").click()');
     await until('document.querySelector("#managed-client-result .badge")?.textContent === "Joined"');
@@ -1000,6 +1063,16 @@ try {
     fixture.mode = "api_key";
     await page();
     assert.equal(await js('document.querySelector("#login-form").hidden'), false);
+    for (const width of [320, 1280]) {
+      await call("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: width < 500 });
+      await page();
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `guest controls fit at ${width}px`);
+      assert.equal(await js('[...document.querySelectorAll("#login-form input, #login-form button")].every(element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= document.documentElement.clientWidth; })'), true);
+      if (process.env.SCREENSHOT_DIR) {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-login-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+    }
     await js('document.querySelector("#api-key").value = "wrong"; document.querySelector("#login-form").requestSubmit()');
     await ready();
     assert.equal(await js('document.querySelector("#message").dataset.tone'), "error");
@@ -1053,16 +1126,16 @@ try {
       })) },
       { name: "direct", target_kind: "builtin", stats: fixture.stats, nodes: [] },
     ];
-    await call("Emulation.setDeviceMetricsOverride", { width: 1160, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await call("Emulation.setDeviceMetricsOverride", { width: 1366, height: 1000, deviceScaleFactor: 1, mobile: false });
     await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
     await js('document.querySelector("#refresh").click()');
     await ready();
-    await js('document.querySelector("#global-tab").click(); document.querySelector("#global-groups").parentElement.open = true');
+    await js('document.querySelector("#global-groups").parentElement.open = true');
     assert.equal(await js('document.querySelectorAll("#global-groups .status-nodes p").length'), 0);
     await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector("summary").click(); openGroup.querySelector("summary").focus()');
     await until('openGroup.querySelectorAll(".status-nodes p").length === 80');
     assert.equal(await js('(() => { const list = document.querySelector("#global-groups"); return list.scrollHeight > list.clientHeight && list.clientHeight <= 360; })()'), true);
-    assert.equal(await js('(() => { const traffic = document.querySelector("#status-view").getBoundingClientRect(); const settings = document.querySelector(".dashboard-main").getBoundingClientRect(); return settings.right < traffic.left && traffic.top === settings.top; })()'), true);
+    assert.equal(await js('(() => { const device = document.querySelector("#device-status").getBoundingClientRect(); const global = document.querySelector("#global-status").getBoundingClientRect(); return device.bottom < global.top && device.left === global.left; })()'), true);
     await js('document.querySelector("#global-groups").scrollTop = 120');
     fixture.groups[0].nodes[20].stats.active_connections = 41;
     await until('openGroup.querySelectorAll(".status-nodes p")[20].textContent.includes("41 active")');
@@ -1087,12 +1160,13 @@ try {
     for (const width of [320, 768, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
       await js('document.documentElement.style.fontSize = "200%"');
-      for (const name of ["settings", "testing", "devices"]) {
+      for (const name of ["overview", "tracing", "manage"]) {
         await visit(name);
+        await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
         assert.equal(await js(`document.documentElement.scrollWidth <= ${width}`), true, `${name} reflows at ${width}px with double-size text`);
-        const clipped = await js('[...document.querySelectorAll("button, summary, .section-description, .managed-section p")].filter(element => element.checkVisibility() && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
+        const clipped = await js('[...document.querySelectorAll("button, summary, .page-nav a, .download-links a, .section-description, .managed-section p")].filter(element => element.checkVisibility() && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
         assert.deepEqual(clipped, [], `${name} has no clipped labels at ${width}px`);
-        assert.equal(await js(`([...document.querySelectorAll("button, summary")].filter(element => element.checkVisibility()).every(element => { const rect = element.getBoundingClientRect(); const card = element.closest(".card")?.getBoundingClientRect(); return rect.left >= 0 && rect.right <= ${width} && (!card || rect.right <= card.right); }))`), true, `${name} keeps controls inside their panels at ${width}px`);
+        assert.equal(await js(`([...document.querySelectorAll("button, summary")].filter(element => element.checkVisibility()).every(element => { const rect = element.getBoundingClientRect(); const card = element.closest(".card")?.getBoundingClientRect(); const strip = element.closest(".astryx-tab-strip")?.getBoundingClientRect(); if (strip) return strip.left >= 0 && strip.right <= ${width} && rect.width <= strip.width; return rect.left >= 0 && rect.right <= ${width} && (!card || rect.right <= card.right); }))`), true, `${name} keeps controls inside their panels at ${width}px`);
         if (process.env.SCREENSHOT_DIR && width === 320) {
           await js('window.scrollTo(0, 0)');
           const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
@@ -1114,16 +1188,29 @@ try {
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.querySelector("#certificate-panel").open'), false);
-    await js('document.querySelector("#global-tab").click()');
-    await until('document.querySelector("#global-tab").getAttribute("aria-selected") === "true"');
-    await js('document.querySelector("#status-toggle").click()');
-    await until('document.querySelector("#status-toggle").getAttribute("aria-expanded") === "false"');
-    for (const [width, height, theme] of [[320, 600, "light"], [390, 844, "light"], [390, 220, "dark"], [768, 1024, "light"], [844, 390, "dark"], [960, 900, "light"], [1024, 900, "dark"], [1160, 1000, "dark"], [1280, 900, "dark"], [1600, 1000, "light"], [1920, 1080, "dark"], [2560, 1440, "dark"]]) {
+    const viewports = [
+      // Phones, including a short viewport while a keyboard is open.
+      [320, 568, "light"], [360, 800, "dark"], [390, 844, "light"], [430, 932, "dark"], [390, 220, "dark"], [844, 390, "dark"],
+      // Square windows, foldable screens and portrait tablets.
+      [600, 600, "light"], [768, 768, "dark"], [960, 900, "light"], [1024, 1024, "dark"], [1200, 1200, "light"], [768, 1024, "light"],
+      // Both sides of the settings/status column boundary.
+      [1023, 900, "light"], [1024, 900, "dark"],
+      // 4:3 desktop windows and displays.
+      [1024, 768, "light"], [1280, 960, "dark"], [1600, 1200, "light"], [1920, 1440, "dark"],
+      // 16:9 laptops and desktop displays.
+      [1280, 720, "light"], [1366, 768, "dark"], [1600, 900, "light"], [1920, 1080, "dark"], [2560, 1440, "dark"],
+    ];
+    for (const [width, height, theme] of viewports) {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
-      if (await js('document.querySelector("#status-toggle").getAttribute("aria-expanded") === "false"')) await js('document.querySelector("#status-toggle").click()');
+      const dualScope = width >= 1024;
+      await until(`(document.querySelector("#global-tab") === null) === ${dualScope}`);
+      if (!dualScope) {
+        await until('document.querySelector("#global-tab") !== null');
+        await js('document.querySelector("#global-tab").click()');
+      }
       await until('document.querySelector("#global-traffic .recharts-surface") !== null');
-      await until('document.querySelectorAll(".traffic-chart").length === 1');
+      await until(`document.querySelectorAll(".traffic-chart").length === ${dualScope ? 2 : 1}`);
       await until('[...document.querySelectorAll(".traffic-chart")].every(chart => { const svg = chart.querySelector(".recharts-surface"); return svg && Math.abs(svg.getBoundingClientRect().width - chart.clientWidth) <= 1; })');
       assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-line-curve")].every(line => !/NaN|Infinity/.test(line.getAttribute("d")))'), true);
       assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-cartesian-axis-tick")].every(tick => { const rect = tick.getBoundingClientRect(); const chart = tick.closest(".traffic-chart").getBoundingClientRect(); return rect.left >= chart.left - 1 && rect.right <= chart.right + 1 && rect.top >= chart.top - 1 && rect.bottom <= chart.bottom + 1; })'), true, `chart labels fit at ${width}px`);
@@ -1141,13 +1228,13 @@ try {
         assert.equal(await js('(() => { const tip = document.querySelector("#global-traffic .traffic-tooltip").getBoundingClientRect(); return tip.left >= 0 && tip.right <= innerWidth; })()'), true, `tooltip fits at ${width}px`);
         if (process.env.SCREENSHOT_DIR) {
           const image = await call("Page.captureScreenshot");
-          await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-tooltip-${width}.png`), Buffer.from(image.data, "base64"));
+          await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-tooltip-${width}x${height}.png`), Buffer.from(image.data, "base64"));
         }
         await key("Escape", 27);
         await call("Emulation.setTouchEmulationEnabled", { enabled: false });
       }
       await openPicker();
-      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true);
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `outbounds fit the content viewport at ${width}x${height}`);
       assert.equal(await js('(() => { const menu = document.querySelector(".node-popover").getBoundingClientRect(); return menu.left >= 0 && menu.top >= 0 && menu.right <= innerWidth && menu.bottom <= innerHeight; })()'), true);
       assert.equal(await js('document.querySelector(".node-list").clientHeight > 20'), true);
       if (process.env.SCREENSHOT_DIR && width === 390 && height === 844) {
@@ -1156,41 +1243,55 @@ try {
       }
       await js('document.querySelector(".node-popover").hidePopover()');
       await until('document.querySelectorAll(".selector-node").length === 0');
-      if (width >= 1024) {
-        assert.equal(await js('(() => { const settings = document.querySelector(".dashboard-main").getBoundingClientRect(); const status = document.querySelector("#status-view").getBoundingClientRect(); return settings.right < status.left && settings.top === status.top; })()'), true);
-      } else {
-        await js('document.querySelector("#status-toggle").click()');
-        assert.equal(await js('document.querySelector("#traffic-content").hidden'), true);
-        assert.equal(await js('document.querySelector("#status-view").getBoundingClientRect().top >= document.querySelector(".dashboard-main").getBoundingClientRect().bottom'), true);
+      await visit("overview");
+      assert.equal(await js('document.querySelector("#https-title").closest("section").getBoundingClientRect().top > document.querySelector("#device-title").closest("section").getBoundingClientRect().bottom'), true, "settings stack within their column");
+      assert.equal(await js(`(() => { const settings = document.querySelector(".dashboard-main").getBoundingClientRect(); const status = document.querySelector("#status-view").getBoundingClientRect(); return ${dualScope} ? settings.right < status.left && settings.top === status.top : settings.bottom < status.top; })()`), true, `settings and status form separate columns or stacked sections at ${width}px`);
+      if (dualScope) {
+        assert.equal(await js('(() => { const device = document.querySelector("#device-status").getBoundingClientRect(); const global = document.querySelector("#global-status").getBoundingClientRect(); return device.bottom < global.top && device.left === global.left; })()'), true, "device and global status stack within the status column");
       }
       if (process.env.SCREENSHOT_DIR && height >= 600) {
         await js('window.scrollTo(0, 0)');
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
-        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-dashboard-${width}.png`), Buffer.from(image.data, "base64"));
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-overview-${width}x${height}.png`), Buffer.from(image.data, "base64"));
+        const viewportImage = await call("Page.captureScreenshot", { captureBeyondViewport: false });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-overview-viewport-${width}x${height}.png`), Buffer.from(viewportImage.data, "base64"));
       }
       await js('document.querySelector("#certificate-panel").open = true');
-      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `expanded settings fit at ${width}px`);
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `expanded settings fit at ${width}px`);
       await js('document.querySelector("#certificate-panel").open = false');
-      await visit("testing");
+      await visit("tracing");
       const fieldSizes = await js('(() => { const input = document.querySelector("#diagnostic-target").getBoundingClientRect(); const select = document.querySelector("#diagnostic-protocol").getBoundingClientRect(); return { inputHeight: input.height, selectHeight: select.height, inputWidth: input.width }; })()');
       assert.equal(fieldSizes.inputHeight === fieldSizes.selectHeight && fieldSizes.inputWidth >= 240, true, `aligned diagnostic inputs at ${width}px: ${JSON.stringify(fieldSizes)}`);
-      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `testing fits at ${width}px`);
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `testing fits at ${width}px`);
       assert.equal(await js('(() => { const toolbar = document.querySelector(".toolbar").getBoundingClientRect(); return [...document.querySelectorAll(".page-header, #diagnostics, footer")].every(element => { const rect = element.getBoundingClientRect(); return Math.abs(rect.left - toolbar.left) < 1 && Math.abs(rect.right - toolbar.right) < 1; }); })()'), true, `testing content aligns with the page at ${width}px`);
-      if (process.env.SCREENSHOT_DIR && [390, 1280, 1920].includes(width) && height >= 600) {
-        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
-        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-testing-${width}.png`), Buffer.from(image.data, "base64"));
+      assert.equal(await js(`(() => { const nav = document.querySelector(".page-nav").getBoundingClientRect(); const header = document.querySelector(".page-header").getBoundingClientRect(); const heading = document.querySelector(".page-heading").getBoundingClientRect(); const contained = nav.top >= header.top && nav.bottom <= header.bottom && Math.abs(nav.right - header.right) <= 1; if (${width} > 760) return contained && heading.right < nav.left && nav.top < heading.bottom; const links = [...document.querySelectorAll(".page-nav a")].map(link => link.getBoundingClientRect()); return contained && nav.top > heading.bottom && Math.abs(nav.left - header.left) <= 1 && links.every(link => link.top === links[0].top && link.height >= 44 && Math.abs(link.width - nav.width / 3) <= 1); })()`), true, `navigation uses equal-width mobile tabs or sits beside the heading at ${width}px`);
+      if (process.env.SCREENSHOT_DIR && height >= 600) {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-tracing-${width}x${height}.png`), Buffer.from(image.data, "base64"));
       }
-      await visit("devices");
-      assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true, `devices fit at ${width}px`);
+      await visit("manage");
+      await js('document.querySelector("#manage-devices-tab").click()');
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `devices fit at ${width}px`);
       assert.equal(await js('(() => { const toolbar = document.querySelector(".toolbar").getBoundingClientRect(); return [...document.querySelectorAll(".page-header, #managed-clients, footer")].every(element => { const rect = element.getBoundingClientRect(); return Math.abs(rect.left - toolbar.left) < 1 && Math.abs(rect.right - toolbar.right) < 1; }); })()'), true, `device controls align with the page at ${width}px`);
       assert.equal(await js('[...document.querySelectorAll(".managed-client-fields input, .managed-client-fields select, #managed-client-form button")].every(element => { const rect = element.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth; })'), true);
-      if (process.env.SCREENSHOT_DIR && [390, 1280, 1920].includes(width) && height >= 600) {
-        const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
-        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-devices-${width}.png`), Buffer.from(image.data, "base64"));
+      if (process.env.SCREENSHOT_DIR && height >= 600) {
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-devices-${width}x${height}.png`), Buffer.from(image.data, "base64"));
       }
-      await visit("settings");
+      await js('document.querySelector("#manage-status-tab").click()');
+      await until('document.querySelector("#managed-global-traffic .recharts-surface") !== null');
+      await js('document.querySelector("#managed-global-traffic .connection-details").open = true');
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `global status fits at ${width}x${height}`);
+      assert.equal(await js('document.querySelector("#managed-global-groups").clientHeight > 0'), true);
+      if (process.env.SCREENSHOT_DIR && height >= 600) {
+        await js('window.scrollTo(0, 0)');
+        const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-global-status-${width}x${height}.png`), Buffer.from(image.data, "base64"));
+      }
+      await js('document.querySelector("#managed-global-traffic .connection-details").open = false');
+      await visit("overview");
     }
-    await visit("testing");
+    await visit("tracing");
     await js('document.querySelector("#diagnostic-kind").value = "dns"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
     assert.equal(await js('document.querySelector("#diagnostic-qtype").checkVisibility() && !document.querySelector("#diagnostic-sni").checkVisibility()'), true);
     await js('document.querySelector("#diagnostic-kind").value = "flow"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');

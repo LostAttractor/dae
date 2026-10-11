@@ -1,6 +1,10 @@
 import { byId } from "./dom.js";
 
-const titles = { settings: "Network Settings", testing: "Testing", devices: "Devices" };
+const pages = {
+  overview: { title: "Overview", description: "Routing and HTTPS preferences." },
+  tracing: { title: "Tracing", description: "Inspect how your network handles a request." },
+  manage: { title: "Manage", description: "Manage devices and shared configuration." },
+};
 
 export function createNavigation(onChange) {
   let current;
@@ -14,11 +18,11 @@ export function createNavigation(onChange) {
       if (link.hash === `#${page}`) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
     }
-    byId("page-title").textContent = titles[page];
-    byId("page-note").textContent = page === "testing"
+    byId("page-description").textContent = pages[page].description;
+    byId("page-note").textContent = page === "tracing"
       ? "Read-only analysis · No test traffic is sent."
       : "Changes apply to new connections.";
-    document.title = `dae · ${titles[page]}`;
+    document.title = `Network Settings · ${pages[page].title}`;
     onChange(page);
     if (changed && focus) {
       window.scrollTo(0, 0);
@@ -26,13 +30,13 @@ export function createNavigation(onChange) {
     }
   }
   function fromLocation(focus) {
-    const page = location.hash.slice(1) || "settings";
-    const valid = Object.hasOwn(titles, page);
-    if (!valid) history.replaceState(null, "", "#settings");
-    activate(valid ? page : "settings", focus);
+    const page = location.hash.slice(1) || "overview";
+    const valid = Object.hasOwn(pages, page);
+    if (!valid) history.replaceState(null, "", "#overview");
+    activate(valid ? page : "overview", focus);
   }
   function show(page) {
-    if (!Object.hasOwn(titles, page)) return;
+    if (!Object.hasOwn(pages, page)) return;
     if (current !== page) history.pushState(null, "", `#${page}`);
     activate(page, true);
   }

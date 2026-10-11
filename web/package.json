@@ -2,18 +2,25 @@
   "name": "dae-web",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node tests/browser.mjs"
+    "test": "node tests/browser.mjs",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.6.8",
+    "@primer/primitives": "11.10.0",
+    "@stylexjs/stylex": "0.19.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-is": "19.3.0",
     "recharts": "3.10.1"
   },
   "devDependencies": {
+    "@astryxdesign/cli": "0.6.8",
     "esbuild": "0.28.2"
   }
 }

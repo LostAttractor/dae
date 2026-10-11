@@ -1,3 +1,4 @@
+import { Button } from "@astryxdesign/core/Button";
 import { useLayoutEffect, useRef, useState } from "react";
 import { request } from "./api.js";
 import { createView } from "./react-view.js";
@@ -129,15 +130,15 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
         </select></label>
         <p className="muted">{'JSON fields override the request. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
         <textarea id="diagnostic-overrides" name="overrides" rows="6" spellCheck={false} aria-label="Advanced diagnostic request JSON" defaultValue="{}" />
-        <button id="diagnostic-context" type="button" onClick={showContext} disabled={context.pending}>Show inherited context</button>
+        <Button label="Show inherited context" id="diagnostic-context" type="button" onClick={showContext} isDisabled={context.pending} />
         <pre id="diagnostic-context-view" className="code-block">{context.pending ? "Loading context…" : context.error || context.value?.fields.map(field => `${field.name}: ${field.value} [${field.source}]`).join("\n")}</pre>
       </Disclosure>
       <div className="diagnostic-actions">
         <div className="diagnostic-comparison"><span id="diagnostic-comparison" className="muted">{comparison?.label || "Current settings"}</span>
           <span className="field-hint">· {scope === "self" ? "This device" : "Custom identity"}</span>
-          <button id="diagnostic-clear-comparison" type="button" hidden={!comparison} onClick={() => { setComparison(null); explanation.reset(); }}>Clear comparison</button>
+          <Button label="Clear comparison" id="diagnostic-clear-comparison" type="button" hidden={!comparison} onClick={() => { setComparison(null); explanation.reset(); }} />
         </div>
-        <button id="diagnostic-run" type="submit" disabled={explanation.pending}>{explanation.pending ? "Checking…" : "Run check"}</button>
+        <Button label={explanation.pending ? "Checking…" : "Run check"} variant="primary" id="diagnostic-run" type="submit" isDisabled={explanation.pending} />
       </div>
     </form>
     <div id="diagnostic-result" aria-live="polite" aria-busy={explanation.pending}>
