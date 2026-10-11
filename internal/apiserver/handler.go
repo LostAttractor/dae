@@ -15,7 +15,15 @@ type Certificates struct {
 }
 
 // ClientResolver receives the actual TCP endpoints, including IPv6 zones.
-type ClientResolver func(source, destination netip.AddrPort) ([6]byte, error)
+type ClientResolver func(source, destination netip.AddrPort) (ClientIdentity, error)
+
+// ClientIdentity is verified ingress evidence. IP links have no device MAC.
+type ClientIdentity struct {
+	LinkType        string
+	MAC             [6]byte
+	IfIndex         uint32
+	PhysicalIfIndex uint32
+}
 
 // Options captures one plane's configuration. Publish a new handler when
 // configuration changes; stores continue to provide live runtime state.
@@ -32,7 +40,6 @@ type Options struct {
 	Certificates     *Certificates
 	CertificateTests CertificateTestStore
 	Diagnostics      DiagnosticStore
-	ResolveContext   func(netip.AddrPort, netip.AddrPort) (contract.DiagnosticContext, error)
 	APIKey           string
 }
 

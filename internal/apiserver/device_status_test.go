@@ -17,11 +17,11 @@ import (
 func TestDeviceStatusRequiresLANIdentityEvenWithAdminKey(t *testing.T) {
 	for _, verified := range []bool{false, true} {
 		called := false
-		handler := NewHandler(Options{APIKey: "secret", ResolveClient: func(source, destination netip.AddrPort) ([6]byte, error) {
+		handler := NewHandler(Options{APIKey: "secret", ResolveClient: func(source, destination netip.AddrPort) (ClientIdentity, error) {
 			if !verified {
-				return [6]byte{}, errors.New("not a LAN peer")
+				return ClientIdentity{}, errors.New("not a LAN peer")
 			}
-			return [6]byte{2, 1}, nil
+			return ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 1}}, nil
 		}, DeviceStatus: func(ip netip.Addr, mac [6]byte) api.DeviceStatus {
 			called = true
 			if ip.String() != "192.0.2.2" || mac != [6]byte{2, 1} {

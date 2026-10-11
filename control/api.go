@@ -22,9 +22,6 @@ func (c *ControlPlane) APIHandler(version string, resources apiserver.ResourceSt
 
 func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver, resources apiserver.ResourceStore) http.Handler {
 	options := apiserver.Options{Selectors: c, Probes: c, Devices: c, ResolveClient: resolve, APIKey: c.apiKey, Resources: resources, Diagnostics: c}
-	if c.core != nil && c.core.bpf != nil && c.core.bpf.ApiClientMap != nil {
-		options.ResolveContext = c.resolveDiagnosticContext
-	}
 	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
 	options.DeviceStatus = c.DeviceStatus
 	if host := c.MITMHost(); host != nil {
@@ -52,9 +49,16 @@ func apiClientKey(source, destination netip.AddrPort) bpfTuplesKey {
 	return key
 }
 
-func (c *ControlPlane) resolveAPIClient(source, destination netip.AddrPort) ([6]byte, error) {
+func (c *ControlPlane) resolveAPIClient(source, destination netip.AddrPort) (apiserver.ClientIdentity, error) {
 	client, err := c.resolveAPIObservation(source, destination)
-	return client.Mac, err
+	if err != nil {
+		return apiserver.ClientIdentity{}, err
+	}
+	linkType := "ethernet"
+	if client.LinkType == 2 {
+		linkType = "ip"
+	}
+	return apiserver.ClientIdentity{LinkType: linkType, MAC: client.Mac, IfIndex: client.Ifindex, PhysicalIfIndex: client.Physinif}, nil
 }
 
 func (c *ControlPlane) resolveAPIObservation(source, destination netip.AddrPort) (bpfApiClient, error) {
@@ -87,19 +91,19 @@ func (c *ControlPlane) resolveAPIObservation(source, destination netip.AddrPort)
 	if err := netutils.ValidateClientScope(source.Addr(), destination.Addr(), int(client.Ifindex)); err != nil {
 		return bpfApiClient{}, err
 	}
-	if err := netutils.ValidateClientMAC(source.Addr(), client.Mac); err != nil {
-		return bpfApiClient{}, err
+	switch client.LinkType {
+	case 1:
+		if err := netutils.ValidateClientMAC(source.Addr(), client.Mac); err != nil {
+			return bpfApiClient{}, err
+		}
+	case 2:
+		if client.Mac != [6]byte{} {
+			return bpfApiClient{}, fmt.Errorf("IP ingress cannot supply an Ethernet MAC")
+		}
+	default:
+		return bpfApiClient{}, fmt.Errorf("unknown LAN ingress link type")
 	}
 	return client, nil
-}
-
-func (c *ControlPlane) resolveDiagnosticContext(source, destination netip.AddrPort) (contract.DiagnosticContext, error) {
-	client, err := c.resolveAPIObservation(source, destination)
-	if err != nil {
-		return contract.DiagnosticContext{}, err
-	}
-	mac := client.Mac
-	return contract.DiagnosticContext{Origin: "lan", SourceIP: source.Addr().Unmap().WithZone("").String(), MAC: fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]), IfIndex: new(client.Ifindex), PhysicalIfIndex: new(client.Physinif)}, nil
 }
 
 // Initialize this generation's private observation map and port. Old API

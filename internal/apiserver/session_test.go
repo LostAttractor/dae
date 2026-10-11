@@ -32,8 +32,8 @@ func (s *sessionSelectors) Select(group, node, _ string) (api.SelectorState, err
 	return s.state, nil
 }
 
-func rejectLANClient(netip.AddrPort, netip.AddrPort) ([6]byte, error) {
-	return [6]byte{}, net.ErrClosed
+func rejectLANClient(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) {
+	return ClientIdentity{}, net.ErrClosed
 }
 
 func TestBrowserSessionLoginPersistenceAndLogout(t *testing.T) {
@@ -160,15 +160,15 @@ func TestKeylessAdministrationRequiresCurrentLANIdentity(t *testing.T) {
 	options := Options{
 		Selectors: store,
 		Status:    func() *api.StatusSnapshot { return &api.StatusSnapshot{Version: "private-status"} },
-		ResolveClient: func(source, destination netip.AddrPort) ([6]byte, error) {
+		ResolveClient: func(source, destination netip.AddrPort) (ClientIdentity, error) {
 			if source != netip.MustParseAddrPort("192.0.2.10:45000") || netip.AddrPortFrom(destination.Addr().Unmap(), destination.Port()) != netip.MustParseAddrPort("192.0.2.1:9080") {
 				t.Errorf("used untrusted connection identity: %v -> %v", source, destination)
-				return [6]byte{}, net.ErrClosed
+				return ClientIdentity{}, net.ErrClosed
 			}
 			if !allowed {
-				return [6]byte{}, net.ErrClosed
+				return ClientIdentity{}, net.ErrClosed
 			}
-			return [6]byte{2, 0, 0, 0, 0, 10}, nil
+			return ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 0, 0, 0, 0, 10}}, nil
 		},
 	}
 	handler := NewHandler(options)
@@ -242,9 +242,9 @@ func TestKeylessAdministrationRejectsBrowserRequestBypasses(t *testing.T) {
 		{"Sec-Fetch-Site": "cross-site", "X-Dae-API": "1"},
 		{},
 	} {
-		options := Options{ResolveClient: func(netip.AddrPort, netip.AddrPort) ([6]byte, error) {
+		options := Options{ResolveClient: func(netip.AddrPort, netip.AddrPort) (ClientIdentity, error) {
 			t.Fatal("invalid browser request reached LAN identity resolution")
-			return [6]byte{}, nil
+			return ClientIdentity{}, nil
 		}}
 		w := sessionRequest(t, NewHandler(options), "PUT", "/api/selectors/private-group", `{"node_id":"second"}`, headers)
 		if w.Code != 403 {

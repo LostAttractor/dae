@@ -897,7 +897,7 @@
           "auth_mode": {
             "type": "string",
             "enum": ["api_key", "lan", "unix"],
-            "description": "The request's administrative access mode: configured API key/session, verified direct LAN identity with no configured key, or filesystem-authorized Unix socket. LAN access is revalidated for every request and creates no browser session."
+            "description": "The request's administrative access mode: configured API key/session, verified LAN ingress with no configured key, or filesystem-authorized Unix socket. LAN access is revalidated for every request and creates no browser session."
           },
           "selectors": {
             "items": {
@@ -1564,7 +1564,7 @@
     },
     "/api/selectors": {
       "get": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "getSelectors",
         "responses": {
           "200": {
@@ -1591,7 +1591,7 @@
     },
     "/api/selectors/{group}": {
       "delete": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "resetSelector",
         "parameters": [
           {
@@ -1640,7 +1640,7 @@
         "summary": "Restore an explicitly configured selector(n) default; 409 when none exists"
       },
       "put": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "selectNode",
         "parameters": [
           {
@@ -1769,7 +1769,7 @@
       "put": {
         "operationId": "login",
         "summary": "Create a browser session",
-        "description": "With a configured global.api_key, requires Authorization: Bearer <api_key>, including on Unix, and issues a signed seven-day session cookie without the API key. Missing/incorrect credentials return 401. Without a configured key, requires a verified direct LAN connection or filesystem-authorized Unix access, returns 204 and clears stale cookies without issuing a session; failed LAN identification returns 403. Empty request body.",
+        "description": "With a configured global.api_key, requires Authorization: Bearer <api_key>, including on Unix, and issues a signed seven-day session cookie without the API key. Missing/incorrect credentials return 401. Without a configured key, requires verified LAN ingress or filesystem-authorized Unix access, returns 204 and clears stale cookies without issuing a session; failed LAN identification returns 403. Empty request body.",
         "parameters": [
           {
             "name": "X-Dae-API",
@@ -1820,7 +1820,7 @@
     },
     "/api/status": {
       "get": {
-        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified direct LAN connection is administrative, without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
+        "description": "On TCP, a configured global.api_key requires a Bearer credential or valid browser session. When the key is empty, only a verified LAN connection is administrative (direct Ethernet peer or IP ingress on global.lan_interface), without credentials; failed LAN identification returns 403. A filesystem-authorized Unix socket connection is already administrative.",
         "operationId": "getStatus",
         "responses": {
           "200": {

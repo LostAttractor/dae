@@ -15,7 +15,7 @@ import (
 func TestDiagnosticsAPIAndClientAdministration(t *testing.T) {
 	c := diagnosticPlane(t, "client(work) -> block", "")
 	c.apiKey = "secret"
-	server := httptest.NewServer(c.apiHandler("test", testClientMAC, nil))
+	server := httptest.NewServer(c.apiHandler("test", testClientIngress, nil))
 	defer server.Close()
 	admin, err := apiclient.New(apiclient.Options{Endpoint: server.URL, APIKey: "secret"})
 	if err != nil {

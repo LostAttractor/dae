@@ -343,6 +343,7 @@ volatile __u32 routing_generation;
 struct api_client {
 	__u64 observed_at;
 	__u8 mac[6];
+	__u8 link_type; /* 1: Ethernet, 2: IP without an Ethernet identity. */
 	__u32 ifindex;
 	__u32 physinif;
 };
@@ -1240,15 +1241,18 @@ direct:
 }
 
 static __always_inline void observe_api_client(
-	struct __sk_buff *skb, const struct tuples_key *key, const struct ethhdr *ethh)
+	struct __sk_buff *skb, const struct tuples_key *key, const struct ethhdr *ethh,
+	u32 link_h_len)
 {
 	struct api_client client = {
 		.observed_at = bpf_ktime_get_ns(),
 		.ifindex = skb->ifindex,
 		.physinif = skb_bridge_physinif(skb),
+		.link_type = link_h_len == ETH_HLEN ? 1 : 2,
 	};
 
-	__builtin_memcpy(client.mac, ethh->h_source, sizeof(client.mac));
+	if (link_h_len == ETH_HLEN)
+		__builtin_memcpy(client.mac, ethh->h_source, sizeof(client.mac));
 	/* Userspace verifies this packet's MAC against its scoped L3 neighbor. */
 	bpf_map_update_elem(&api_client_map, key, &client, BPF_ANY);
 }
@@ -1284,9 +1288,9 @@ static __always_inline int do_tproxy_unfragmented(
 	 * shortcut. This keeps HTTP keep-alive requests fresh without depending
 	 * on the L3 route device, ARP device, or bridge/bond topology.
 	 */
-	if (!is_wan && link_h_len == ETH_HLEN && l4proto == IPPROTO_TCP &&
+	if (!is_wan && l4proto == IPPROTO_TCP &&
 	    api_port && tuples->five.dport == api_port)
-		observe_api_client(skb, &tuples->five, ethh);
+		observe_api_client(skb, &tuples->five, ethh, link_h_len);
 
 	struct pid_pname *pid_pname = NULL;
 

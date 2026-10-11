@@ -35,6 +35,24 @@ func diagnosticRequest() api.ExplainRequest {
 	return api.ExplainRequest{Context: api.DiagnosticContext{Origin: "lan", SourceIP: "192.0.2.10", SourcePort: new(40000), MAC: "02:00:00:00:00:10", IfIndex: new(uint32(0)), PhysicalIfIndex: new(uint32(0)), DSCP: new(0)}, Flow: api.DiagnosticFlow{Protocol: "tcp", Destination: api.DiagnosticTarget{IP: "198.51.100.10", Port: 443}}, Detail: "predicates"}
 }
 
+func TestDiagnosticsIPIngressHasNoMACMembership(t *testing.T) {
+	c := diagnosticPlane(t, "client(work) -> block\nmac('02:00:00:00:00:10') -> block", "")
+	request := diagnosticRequest()
+	request.Context.LinkType, request.Context.MAC = "ip", ""
+	result, err := c.Explain(t.Context(), request, true)
+	if err != nil || !result.Current.Decision.Complete || result.Current.Decision.Outbound != "direct" {
+		t.Fatalf("known IP ingress treated as an unknown device: %+v %v", result, err)
+	}
+	request.Compare = &api.DiagnosticAssumptions{ClientSets: map[string]bool{"work": true}}
+	if _, err := c.Explain(t.Context(), request, true); err == nil {
+		t.Fatal("IP ingress accepted a hypothetical MAC membership")
+	}
+	request.Context.MAC = "02:00:00:00:00:10"
+	if _, err := c.Explain(t.Context(), request, false); err == nil {
+		t.Fatal("IP ingress accepted an Ethernet identity")
+	}
+}
+
 func TestDiagnosticsKernelEvidenceDoesNotBorrowSNI(t *testing.T) {
 	c := diagnosticPlane(t, "domain(full: target.example) -> block", "")
 	request := diagnosticRequest()

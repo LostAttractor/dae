@@ -20,6 +20,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/settings"
+	"github.com/daeuniverse/dae/internal/apiserver"
 )
 
 func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
@@ -50,12 +51,12 @@ func TestMITMClientAPIControlsNewConnectionsAndSurvivesReload(t *testing.T) {
 	mac := [6]byte{2, 0, 0, 0, 0, 10}
 	other := [6]byte{2, 0, 0, 0, 0, 11}
 	var resolveError error
-	resolve := func(peer, _ netip.AddrPort) ([6]byte, error) {
+	resolve := func(peer, _ netip.AddrPort) (apiserver.ClientIdentity, error) {
 		source := peer.Addr()
 		if source != ip {
 			t.Fatalf("unexpected source: %s", source)
 		}
-		return mac, resolveError
+		return apiserver.ClientIdentity{LinkType: "ethernet", MAC: mac}, resolveError
 	}
 	handler := plane.apiHandler("test", resolve, nil)
 	endpoint := "http://192.0.2.1:8081/api/device/mitm"

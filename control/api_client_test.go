@@ -39,7 +39,7 @@ func TestPublicClientWithTCPAndUnixAPI(t *testing.T) {
 		t.Fatal("socket permissions", info, err)
 	}
 	local.SetHandler(plane.APIHandler("integration-test", nil))
-	server := httptest.NewServer(plane.apiHandler("integration-test", testClientMAC, nil))
+	server := httptest.NewServer(plane.apiHandler("integration-test", testClientIngress, nil))
 	defer server.Close()
 	for _, endpoint := range []string{server.URL, "unix://" + socket} {
 		t.Run(endpoint, func(t *testing.T) {
@@ -117,7 +117,7 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler("test", testClientMAC, nil)
+	handler := plane.apiHandler("test", testClientIngress, nil)
 	for _, test := range []struct {
 		token string
 		want  int
@@ -128,7 +128,7 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 		}
 	}
 	plane.apiKey = ""
-	handler = plane.apiHandler("test", testClientMAC, nil)
+	handler = plane.apiHandler("test", testClientIngress, nil)
 	if w := apiTestRequest(handler, "GET", "/api/status", "", ""); w.Code != 200 {
 		t.Fatal("verified LAN client could not read status without an API key", w.Code, w.Body.String())
 	}

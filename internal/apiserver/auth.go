@@ -16,7 +16,7 @@ func (s *handler) requireAdmin(w http.ResponseWriter, r *http.Request) (string, 
 		return "unix", true
 	}
 	if s.options.APIKey == "" {
-		_, _, ok := apiDevice(w, r, s.options.ResolveClient)
+		_, _, ok := apiClient(w, r, s.options.ResolveClient)
 		return "lan", ok
 	}
 	// An explicit Authorization header takes precedence over a saved session.

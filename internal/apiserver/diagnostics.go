@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"strings"
 	"time"
 
@@ -33,24 +32,17 @@ func (s *handler) diagnosticsAvailable(w http.ResponseWriter) bool {
 }
 
 func (s *handler) inheritDiagnosticContext(w http.ResponseWriter, r *http.Request, target *api.DiagnosticContext) bool {
-	if target.SourceIP != "" || target.MAC != "" || target.IfIndex != nil || target.PhysicalIfIndex != nil || target.Interface != "" || target.Policy != "" || target.ProcessName != nil || target.Origin != "" && target.Origin != "lan" {
+	if target.SourceIP != "" || target.MAC != "" || target.LinkType != "" || target.IfIndex != nil || target.PhysicalIfIndex != nil || target.Interface != "" || target.Policy != "" || target.ProcessName != nil || target.Origin != "" && target.Origin != "lan" {
 		apiError(w, 400, "device diagnostics inherit identity; use the administrator endpoint to override it")
 		return false
 	}
-	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
+	ip, client, ok := apiClient(w, r, s.options.ResolveClient)
 	if !ok {
 		return false
 	}
-	inherited := api.DiagnosticContext{Origin: "lan", SourceIP: ip.WithZone("").String(), MAC: net.HardwareAddr(mac[:]).String()}
-	if s.options.ResolveContext != nil {
-		source, _ := netip.ParseAddrPort(r.RemoteAddr)
-		local := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr).AddrPort()
-		var err error
-		inherited, err = s.options.ResolveContext(source, local)
-		if err != nil {
-			apiError(w, 403, "cannot inherit verified ingress: "+err.Error())
-			return false
-		}
+	inherited := api.DiagnosticContext{Origin: "lan", SourceIP: ip.WithZone("").String(), LinkType: client.LinkType, IfIndex: new(client.IfIndex), PhysicalIfIndex: new(client.PhysicalIfIndex)}
+	if client.LinkType == "ethernet" {
+		inherited.MAC = net.HardwareAddr(client.MAC[:]).String()
 	}
 	inherited.SourcePort, inherited.DSCP, inherited.Mark = target.SourcePort, target.DSCP, target.Mark
 	*target = inherited
@@ -227,6 +219,10 @@ func (s *handler) serveClientImpact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if self && !s.inheritDiagnosticContext(w, r, &request.Context) {
+		return
+	}
+	if self && request.Context.MAC == "" {
+		apiError(w, 403, "client membership comparison requires a verified Ethernet MAC")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)

@@ -13,6 +13,7 @@ type DiagnosticContext struct {
 	SourceIP        string  `json:"source_ip,omitempty"`
 	SourcePort      *int    `json:"source_port,omitempty"`
 	MAC             string  `json:"mac,omitempty"`
+	LinkType        string  `json:"link_type,omitempty"` // ethernet, ip; empty means unknown
 	Interface       string  `json:"interface,omitempty"`
 	IfIndex         *uint32 `json:"ifindex,omitempty"`
 	PhysicalIfIndex *uint32 `json:"physical_ifindex,omitempty"`
@@ -185,7 +186,7 @@ type ExplainResponse struct {
 type DeviceContext struct {
 	Generation uint32            `json:"generation"`
 	Context    DiagnosticContext `json:"context"`
-	Device     DeviceState       `json:"device"`
+	Device     *DeviceState      `json:"device,omitempty"`
 	Fields     []DiagnosticField `json:"fields"`
 }
 

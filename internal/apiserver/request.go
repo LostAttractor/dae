@@ -103,24 +103,40 @@ func apiBodyLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) 
 	return true
 }
 
-func apiDevice(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (netip.Addr, [6]byte, bool) {
+func apiClient(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (netip.Addr, ClientIdentity, bool) {
 	peer, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		apiError(w, 400, "cannot read the connection source address")
-		return netip.Addr{}, [6]byte{}, false
+		return netip.Addr{}, ClientIdentity{}, false
 	}
 	ip := peer.Addr().Unmap()
 	local, ok := r.Context().Value(http.LocalAddrContextKey).(*net.TCPAddr)
 	if !ok {
 		apiError(w, 400, "cannot read the connection destination address")
+		return ip, ClientIdentity{}, false
+	}
+	if resolve == nil {
+		apiError(w, 403, "LAN ingress verification unavailable")
+		return ip, ClientIdentity{}, false
+	}
+	client, err := resolve(netip.AddrPortFrom(ip, peer.Port()), local.AddrPort())
+	if err != nil {
+		apiError(w, 403, "cannot verify LAN ingress: "+err.Error())
+		return ip, client, false
+	}
+	return ip, client, true
+}
+
+func apiDevice(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (netip.Addr, [6]byte, bool) {
+	ip, client, ok := apiClient(w, r, resolve)
+	if !ok {
 		return ip, [6]byte{}, false
 	}
-	mac, err := resolve(netip.AddrPortFrom(ip, peer.Port()), local.AddrPort())
-	if err != nil {
-		apiError(w, 403, "cannot identify this device: "+err.Error())
-		return ip, mac, false
+	if client.LinkType != "ethernet" || client.MAC == [6]byte{} || client.MAC[0]&1 != 0 {
+		apiError(w, 403, "device self-service requires a verified Ethernet MAC; this connection has no device identity")
+		return ip, [6]byte{}, false
 	}
-	return ip, mac, true
+	return ip, client.MAC, true
 }
 
 func writeAPI(w http.ResponseWriter, value any) {

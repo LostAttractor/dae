@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -68,7 +69,10 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	bondPort := addLink(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "bond-port"}})
 	must(netlink.LinkSetMaster(bondPort, bond))
 	wan := addLink(&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: "wan"}})
-	for _, link := range []netlink.Link{physical, lan, bridge, bond, bondPort, wan} {
+	tun := &netlink.Tuntap{LinkAttrs: netlink.LinkAttrs{Name: "tun-lan"}, Mode: netlink.TUNTAP_MODE_TUN, Flags: netlink.TUNTAP_NO_PI, Queues: 1}
+	addLink(tun)
+	defer tun.Fds[0].Close()
+	for _, link := range []netlink.Link{physical, lan, bridge, bond, bondPort, wan, tun} {
 		must(netlink.LinkSetUp(link))
 	}
 	address := func(link netlink.Link, cidr string) {
@@ -84,6 +88,9 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	address(bond, "198.51.100.1/24")
 	address(wan, "203.0.113.1/24")
 	address(wan, "fe80::1/64")
+	address(tun, "100.64.0.1/32")
+	address(tun, "fd00::1/128")
+	address(tun, "fe80::1/64")
 	mac := [6]byte{2, 0, 0, 0, 0, 23}
 	other := [6]byte{2, 0, 0, 0, 0, 24}
 	neighbor := func(link netlink.Link, ip string, hardware [6]byte) {
@@ -103,7 +110,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 	spec, err := loadBpf()
 	must(err)
 	for name := range spec.Programs {
-		if name != "lan_ingress_l2" && name != "tproxy_wan_ingress_l2" {
+		if name != "lan_ingress_l2" && name != "tproxy_wan_ingress_l2" && name != "lan_ingress_l3" && name != "tproxy_wan_ingress_l3" {
 			delete(spec.Programs, name)
 		}
 	}
@@ -121,6 +128,7 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 			bpfVariables: bpfVariables{ApiPort: collection.Variables["api_port"]},
 		}}},
 	}
+	plane.core.hostTCXLinks = append(plane.core.hostTCXLinks, hostTCXLink{linkIndex: tun.Attrs().Index, role: hostTCXLanIngress})
 	observe := func(source, destination netip.AddrPort, ingress netlink.Link, hardware [6]byte, lanHook bool) {
 		t.Helper()
 		packet := apiIdentityPacket(source, destination, hardware)
@@ -130,6 +138,20 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		program := "tproxy_wan_ingress_l2"
 		if lanHook {
 			program = "lan_ingress_l2"
+		}
+		if ingress == tun {
+			program = "tproxy_wan_ingress_l3"
+			if lanHook {
+				program = "lan_ingress_l3"
+			}
+			// BPF_PROG_TEST_RUN supplies Ethernet skb framing. Exercise the
+			// real IP-only ingress instead by writing our packet into a TUN.
+			hook, err := link.AttachTCX(link.TCXOptions{Interface: tun.Index, Program: collection.Programs[program], Attach: ebpf.AttachTCXIngress})
+			must(err)
+			defer hook.Close()
+			_, err = tun.Fds[0].Write(packet[14:])
+			must(err)
+			return
 		}
 		status, err := collection.Programs[program].Run(&ebpf.RunOptions{Data: packet, Context: ctx, Repeat: 1})
 		must(err)
@@ -169,22 +191,41 @@ func TestAPIClientIdentityIntegration(t *testing.T) {
 		{"neighbor MAC mismatch", "192.0.2.23:40001", "192.0.2.1:9080", lan, other, true, false},
 		{"router address", "192.0.2.1:40001", "192.0.2.1:9080", lan, mac, true, false},
 		{"IPv6 scope collision from WAN", "[fe80::23%wan]:40001", "[fe80::1%wan]:9080", lan, mac, true, false},
+		{"TUN IPv4", "100.64.0.23:40001", "100.64.0.1:9080", tun, [6]byte{}, true, true},
+		{"TUN IPv6", "[fd00::23]:40001", "[fd00::1]:9080", tun, [6]byte{}, true, true},
+		{"TUN routed subnet", "10.0.0.23:40001", "100.64.0.1:9080", tun, [6]byte{}, true, true},
+		{"TUN link-local", "[fe80::23%tun-lan]:40001", "[fe80::1%tun-lan]:9080", tun, [6]byte{}, true, true},
+		{"TUN scope collision", "[fe80::23%wan]:40001", "[fe80::1%wan]:9080", tun, [6]byte{}, true, false},
+		{"L3 WAN ingress", "100.64.0.23:40001", "100.64.0.1:9080", tun, [6]byte{}, false, false},
+		{"TUN different destination port", "100.64.0.23:40001", "100.64.0.1:9081", tun, [6]byte{}, true, false},
 	} {
 		must(plane.publishAPIObservation())
 		source, destination := netip.MustParseAddrPort(test.source), netip.MustParseAddrPort(test.destination)
 		observe(source, destination, test.ingress, test.hardware, test.lanHook)
 		got, err := plane.resolveAPIClient(source, destination)
 		t.Logf("%s: MAC = %v, error = %v", test.name, got, err)
-		if (err == nil) != test.want || test.want && got != mac {
+		if (err == nil) != test.want || test.want && (got.MAC != test.hardware || got.IfIndex != uint32(test.ingress.Attrs().Index)) {
 			t.Errorf("%s: want accepted = %v", test.name, test.want)
 		}
-		if test.want {
-			inherited, err := plane.resolveDiagnosticContext(source, destination)
-			if err != nil || inherited.IfIndex == nil || *inherited.IfIndex != uint32(test.ingress.Attrs().Index) || inherited.SourcePort != nil || inherited.DSCP != nil || inherited.ProcessName != nil || inherited.SourceIP != source.Addr().Unmap().WithZone("").String() {
-				t.Fatalf("%s: diagnostic context did not retain verified ingress: %+v %v", test.name, inherited, err)
-			}
+		if test.want && (got.LinkType == "ip") != (test.ingress == tun) {
+			t.Errorf("%s: wrong link type: %s", test.name, got.LinkType)
 		}
 		checkKeylessAdmin(source, destination, test.want)
+	}
+	{ // Disabled APIs must not observe L3 traffic.
+		source, destination := netip.MustParseAddrPort("100.64.0.23:40001"), netip.MustParseAddrPort("100.64.0.1:9080")
+		plane.apiPort = 0
+		must(plane.publishAPIObservation())
+		observe(source, destination, tun, [6]byte{}, true)
+		checkKeylessAdmin(source, destination, false)
+		plane.apiPort = 9080
+		must(plane.publishAPIObservation())
+	}
+	{ // Removed attachments immediately revoke still-fresh evidence.
+		source, destination := netip.MustParseAddrPort("100.64.0.23:40001"), netip.MustParseAddrPort("100.64.0.1:9080")
+		observe(source, destination, tun, [6]byte{}, true)
+		plane.core.hostTCXLinks = plane.core.hostTCXLinks[:len(plane.core.hostTCXLinks)-1]
+		checkKeylessAdmin(source, destination, false)
 	}
 	source, destination := netip.MustParseAddrPort("192.0.2.23:40001"), netip.MustParseAddrPort("192.0.2.1:9080")
 	{ // A tuple and observed MAC identify the peer despite another link's IP.

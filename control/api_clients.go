@@ -72,7 +72,11 @@ func (c *ControlPlane) UpdateManagedMITM(mac [6]byte, enabled *bool) (api.Manage
 func (c *ControlPlane) DiagnosticDeviceContext(input api.DiagnosticContext) api.DeviceContext {
 	ip, _ := diagnosticAddress(input.SourceIP)
 	mac, _ := diagnosticMAC(input.MAC)
-	result := api.DeviceContext{Generation: c.routingGeneration, Context: input, Device: c.DeviceState(ip, mac), Fields: []api.DiagnosticField{{Name: "source_ip", Value: input.SourceIP, Source: "request"}, {Name: "mac", Value: input.MAC, Source: "request"}}}
+	result := api.DeviceContext{Generation: c.routingGeneration, Context: input, Fields: []api.DiagnosticField{{Name: "source_ip", Value: input.SourceIP, Source: "request"}, {Name: "link_type", Value: input.LinkType, Source: "request"}}}
+	if input.MAC != "" {
+		result.Device = new(c.DeviceState(ip, mac))
+		result.Fields = append(result.Fields, api.DiagnosticField{Name: "mac", Value: input.MAC, Source: "request"})
+	}
 	if input.IfIndex != nil {
 		result.Fields = append(result.Fields, api.DiagnosticField{Name: "ifindex", Value: fmt.Sprint(*input.IfIndex), Source: "request"})
 	}

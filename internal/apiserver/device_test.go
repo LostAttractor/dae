@@ -71,13 +71,13 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			called := false
-			options.ResolveClient = func(peer, _ netip.AddrPort) ([6]byte, error) {
+			options.ResolveClient = func(peer, _ netip.AddrPort) (ClientIdentity, error) {
 				ip := peer.Addr()
 				called = true
 				if ip != netip.MustParseAddr("192.0.2.10") {
 					t.Fatalf("untrusted peer identity: %s", ip)
 				}
-				return [6]byte{2, 0, 0, 0, 0, 10}, nil
+				return ClientIdentity{LinkType: "ethernet", MAC: [6]byte{2, 0, 0, 0, 0, 10}}, nil
 			}
 			handler := NewHandler(options)
 			path := "http://192.0.2.1:8081/api/device"

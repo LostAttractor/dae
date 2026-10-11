@@ -22,6 +22,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/internal/apiserver"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -60,6 +61,59 @@ func testClientMAC(netip.AddrPort, netip.AddrPort) ([6]byte, error) {
 	return [6]byte{2, 0, 0, 0, 0, 10}, nil
 }
 
+func testClientIngress(source, destination netip.AddrPort) (apiserver.ClientIdentity, error) {
+	mac, err := testClientMAC(source, destination)
+	return apiserver.ClientIdentity{LinkType: "ethernet", MAC: mac}, err
+}
+
+func TestAPIIPIngressCapabilities(t *testing.T) {
+	plane := diagnosticPlane(t, "client(gaming) -> block\nsip(192.0.2.10) -> direct", "")
+	resolve := func(netip.AddrPort, netip.AddrPort) (apiserver.ClientIdentity, error) {
+		return apiserver.ClientIdentity{LinkType: "ip", IfIndex: 8}, nil
+	}
+	handler := plane.apiHandler("test", resolve, nil)
+	for _, path := range []string{"/api/selectors", "/api/device/context"} {
+		w := apiTestRequest(handler, "GET", path, "", "")
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+		}
+		if path == "/api/device/context" {
+			var value api.DeviceContext
+			if err := json.Unmarshal(w.Body.Bytes(), &value); err != nil || value.Device != nil || value.Context.MAC != "" || value.Context.LinkType != "ip" || value.Context.IfIndex == nil || *value.Context.IfIndex != 8 {
+				t.Fatalf("IP ingress fabricated a device or lost ingress: %s (%v)", w.Body.String(), err)
+			}
+		}
+	}
+	for _, body := range []string{
+		`{"context":{},"flow":{"destination":{"ip":"198.51.100.10","port":443}}}`,
+		`{"kind":"dns","context":{},"flow":{"destination":{}},"dns":{"name":"example.test"}}`,
+	} {
+		if w := apiTestRequest(handler, "POST", "/api/device/diagnostics/explain", body, ""); w.Code != 200 {
+			t.Fatalf("IP explanation: %d %s", w.Code, w.Body.String())
+		}
+	}
+	for _, test := range []struct{ method, path, body string }{
+		{"GET", "/api/device", ""}, {"GET", "/api/device/status", ""},
+		{"PUT", "/api/device/sets/gaming", ""},
+		{"POST", "/api/device/sets/gaming/impact", `{"joined":true,"context":{}}`},
+	} {
+		if w := apiTestRequest(handler, test.method, test.path, test.body, ""); w.Code != 403 {
+			t.Fatalf("MAC-only %s: %d %s", test.path, w.Code, w.Body.String())
+		}
+	}
+	if w := apiTestRequest(handler, "POST", "/api/device/diagnostics/explain", `{"context":{"link_type":"ethernet"},"flow":{"destination":{}}}`, ""); w.Code != 400 {
+		t.Fatalf("caller changed link identity: %d %s", w.Code, w.Body.String())
+	}
+	plane.apiKey = "test-secret"
+	handler = plane.apiHandler("test", resolve, nil)
+	if w := apiTestRequest(handler, "GET", "/api/selectors", "", ""); w.Code != 401 {
+		t.Fatalf("IP ingress bypassed API key: %d %s", w.Code, w.Body.String())
+	}
+	if w := apiTestRequest(handler, "GET", "/api/selectors", "", "test-secret"); w.Code != 200 {
+		t.Fatalf("API key did not authorize IP ingress: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime-state.json")
 	store, err := settings.Open(path)
@@ -67,7 +121,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler("test", testClientMAC, nil)
+	handler := plane.apiHandler("test", testClientIngress, nil)
 	group := plane.outbounds[0]
 	selected := group.Dialers[1].StatsID()
 	body := `{"node_id":"` + selected + `"}`
@@ -147,7 +201,7 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 	}
 	plane.apiKey = ""
 	// Configuration changes publish a new handler, as on daemon reload.
-	handler = plane.apiHandler("test", testClientMAC, nil)
+	handler = plane.apiHandler("test", testClientIngress, nil)
 	if w := apiTestRequest(handler, "PUT", "/api/selectors/proxy", body, ""); w.Code != 200 || group.Selection() != selected {
 		t.Fatal("keyless LAN selector mutation failed", w.Code, w.Body.String())
 	}
@@ -175,7 +229,7 @@ func TestAPIWriteFailureRestoresRoutingAndSelection(t *testing.T) {
 	}
 	plane.outbounds[0].SetConnectionPolicy(true, true)
 	groupSelection, _ := plane.outbounds[0].SelectConnection(*common.NetworkUDP4.NetworkType(), true)
-	handler := plane.apiHandler("test", testClientMAC, nil)
+	handler := plane.apiHandler("test", testClientIngress, nil)
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +267,7 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected := active.outbounds[0].Dialers[1].StatsID()
-	handler := active.apiHandler("test", testClientMAC, nil)
+	handler := active.apiHandler("test", testClientIngress, nil)
 	if w := apiTestRequest(handler, "PUT", "/api/selectors/proxy", `{"node_id":"`+selected+`"}`, "test-secret"); w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
@@ -233,7 +287,7 @@ func TestCandidateRestoresLatestRuntimeSettingsAtActivation(t *testing.T) {
 	mac, _ := testClientMAC(netip.AddrPort{}, netip.AddrPort{})
 	requireClientRoute(t, candidate.routingMatcher, mac, 443, consts.OutboundUserDefinedMin)
 	for _, plane := range []*ControlPlane{active, candidate} {
-		w := apiTestRequest(plane.apiHandler("test", testClientMAC, nil), "GET", "/api/device", "", "")
+		w := apiTestRequest(plane.apiHandler("test", testClientIngress, nil), "GET", "/api/device", "", "")
 		var state api.DeviceState
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &state) != nil {
 			t.Fatal(w.Code, w.Body.String())
@@ -271,7 +325,9 @@ func TestDeviceAPIReportsIdentityFailureWithoutHidingSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler("test", func(netip.AddrPort, netip.AddrPort) ([6]byte, error) { return [6]byte{}, net.ErrClosed }, nil)
+	handler := plane.apiHandler("test", func(netip.AddrPort, netip.AddrPort) (apiserver.ClientIdentity, error) {
+		return apiserver.ClientIdentity{}, net.ErrClosed
+	}, nil)
 	for _, path := range []string{"/api/device", "/api/device/sets/gaming"} {
 		method := "GET"
 		if path != "/api/device" {
@@ -297,7 +353,7 @@ func TestGlobalAPIRequiresMutationHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	plane := newAPITestPlane(t, store)
-	handler := plane.apiHandler("test", testClientMAC, nil)
+	handler := plane.apiHandler("test", testClientIngress, nil)
 	for _, path := range []string{"/api/device/sets/gaming", "/api/selectors/proxy"} {
 		r := httptest.NewRequest("PUT", "http://192.0.2.1:9080"+path, nil)
 		r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 9080}))
@@ -322,7 +378,7 @@ func TestSelectorAPIUsesEscapedGroupName(t *testing.T) {
 	plane := newAPITestPlane(t, store)
 	plane.outbounds[0].Name = "proxy/香港"
 	id := plane.outbounds[0].Dialers[1].StatsID()
-	w := apiTestRequest(plane.apiHandler("test", testClientMAC, nil), "PUT", "/api/selectors/proxy%2F%E9%A6%99%E6%B8%AF", `{"node_id":"`+id+`"}`, "test-secret")
+	w := apiTestRequest(plane.apiHandler("test", testClientIngress, nil), "PUT", "/api/selectors/proxy%2F%E9%A6%99%E6%B8%AF", `{"node_id":"`+id+`"}`, "test-secret")
 	if w.Code != 200 || !plane.outbounds[0].Dialers[1].SelectionReference().Matches(store.Selection("proxy/香港"), true) {
 		t.Fatal(w.Code, w.Body.String())
 	}
@@ -330,7 +386,7 @@ func TestSelectorAPIUsesEscapedGroupName(t *testing.T) {
 
 func TestHostOnlyAPIDisablesCertificateAndMITM(t *testing.T) {
 	plane := &ControlPlane{mitmHost: controlTestHost(t, &controlTestPlugin{}, nil), routingMatcherBuilder: &RoutingMatcherBuilder{}}
-	handler := plane.apiHandler("test", testClientMAC, nil)
+	handler := plane.apiHandler("test", testClientIngress, nil)
 	if w := apiTestRequest(handler, "GET", "/ca.cer", "", ""); w.Code != 404 {
 		t.Fatalf("certificate without CA: %d", w.Code)
 	}

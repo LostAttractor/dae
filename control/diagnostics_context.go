@@ -41,6 +41,12 @@ func prepareDiagnosticRequest(request *api.ExplainRequest) error {
 	if request.Context.Origin != "lan" && request.Context.Origin != "local" && request.Context.Origin != "daemon" {
 		return fmt.Errorf("origin must be lan, local or daemon")
 	}
+	if request.Context.LinkType != "" && request.Context.LinkType != "ethernet" && request.Context.LinkType != "ip" {
+		return fmt.Errorf("link_type must be ethernet or ip")
+	}
+	if request.Context.LinkType == "ip" && request.Context.MAC != "" {
+		return fmt.Errorf("IP ingress has no Ethernet MAC")
+	}
 	if request.Context.Origin == "lan" && request.Context.ProcessName != nil && *request.Context.ProcessName != "" {
 		return fmt.Errorf("LAN ingress does not supply process identity")
 	}
@@ -231,7 +237,8 @@ func diagnosticInput(request api.ExplainRequest, matcher *RoutingMatcher) (routi
 	add("origin", request.Context.Origin, "input", true)
 	add("source_ip", src.String(), "input", request.Context.SourceIP != "" || request.Context.Origin == "daemon")
 	add("source_port", strconv.Itoa(int(input.src.Port())), "input", request.Context.SourcePort != nil || request.Context.Origin == "daemon")
-	add("mac", request.Context.MAC, "input", request.Context.MAC != "" || request.Context.Origin == "daemon")
+	add("mac", request.Context.MAC, "input", request.Context.MAC != "" || request.Context.LinkType == "ip" || request.Context.Origin == "daemon")
+	add("link_type", request.Context.LinkType, "input", request.Context.LinkType != "")
 	add("ifindex", strconv.Itoa(int(input.ifindex)), "input", request.Context.IfIndex != nil || request.Context.Origin == "daemon")
 	add("physical_ifindex", strconv.Itoa(int(input.physinif)), "input", request.Context.PhysicalIfIndex != nil || request.Context.Origin == "daemon")
 	add("process_name", strings.TrimRight(string(input.processName[:]), "\x00"), "input", request.Context.ProcessName != nil || request.Context.Origin != "local")

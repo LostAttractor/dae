@@ -96,7 +96,7 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 		joined := c.settings != nil && slices.Contains(c.settings.Members(name), input.mac)
 		s.clientSets[name] = joined
 		s.fields = append(s.fields, api.DiagnosticField{Name: "client." + name, Value: fmt.Sprint(joined), Source: "runtime"})
-		if input.mac == [6]byte{} && request.Context.Origin != "daemon" {
+		if input.mac == [6]byte{} && request.Context.LinkType != "ip" && request.Context.Origin != "daemon" {
 			s.fields[len(s.fields)-1].Value, s.fields[len(s.fields)-1].Source = "", "unknown"
 		}
 	}
@@ -115,7 +115,7 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 	if c.settings != nil {
 		if enabled, exists := c.settings.MITM(input.mac); exists {
 			s.mitmEnabled, s.mitmKnown = enabled, true
-		} else if request.Context.SourceIP != "" && request.Context.MAC != "" {
+		} else if request.Context.SourceIP != "" && (request.Context.MAC != "" || request.Context.LinkType == "ip") {
 			s.mitmEnabled, _ = c.mitmSelection(input.src.Addr(), input.mac)
 			s.mitmKnown = true
 		}
@@ -312,7 +312,7 @@ func (c *ControlPlane) Explain(ctx context.Context, request api.ExplainRequest, 
 	if inherited {
 		for i := range response.Context {
 			field := &response.Context[i]
-			if slices.Contains([]string{"source_ip", "mac", "ifindex", "physical_ifindex", "origin"}, field.Name) && field.Source != "unknown" {
+			if slices.Contains([]string{"source_ip", "mac", "link_type", "ifindex", "physical_ifindex", "origin"}, field.Name) && field.Source != "unknown" {
 				field.Source = "request"
 			}
 		}
