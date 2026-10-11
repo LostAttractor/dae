@@ -47,13 +47,18 @@ export const theme = defineTheme({
     "field-label": { base: { fontSize: "1rem", lineHeight: "1.5", fontWeight: "500" } },
     "collapsible-trigger": { base: { minHeight: "44px", fontSize: "1rem", lineHeight: "1.5" } },
     "collapsible-content": { base: { fontSize: "1rem", lineHeight: "1.55" } },
+    switch: {
+      base: { position: "relative", width: "48px", height: "24px", padding: "2px", borderRadius: "var(--radius)", backgroundColor: "var(--bgColor-default)", boxShadow: "inset 0 0 0 1px var(--borderColor-emphasis)" },
+      checked: { backgroundColor: "var(--bgColor-accent-emphasis)", boxShadow: "none" },
+    },
+    "switch-thumb": {
+      base: { width: "20px", height: "20px", borderRadius: "var(--radius)", backgroundColor: "var(--button-default-bgColor-rest)", boxShadow: "inset 0 0 0 1px var(--borderColor-default)", transform: "translateX(0)" },
+      checked: { backgroundColor: "var(--fgColor-white)", boxShadow: "none", transform: "translateX(24px)", ":dir(rtl)": { transform: "translateX(-24px)" } },
+    },
     toast: {
       base: { backgroundColor: "var(--bgColor-default)", color: "var(--fgColor-default)", border: "1px solid var(--borderColor-default)", fontSize: "1rem" },
       "type:error": { backgroundColor: "var(--bgColor-danger-muted)", color: "var(--fgColor-danger)", borderColor: "var(--borderColor-danger-emphasis)" },
     },
-    "switch-label": { base: { fontSize: "1rem", color: "var(--fgColor-default)" } },
-    switch: { base: { backgroundColor: "var(--borderColor-emphasis)" }, checked: { backgroundColor: "var(--bgColor-accent-emphasis)" } },
-    "switch-thumb": { base: { backgroundColor: "var(--fgColor-onEmphasis)" } },
     button: {
       base: { minHeight: "2.5rem", height: "auto", padding: "6px 12px", fontSize: "1rem", lineHeight: "1.5", fontWeight: "500", whiteSpace: "normal" },
       "variant:secondary": { backgroundColor: "var(--button-default-bgColor-rest)", border: "1px solid var(--button-default-borderColor-rest)", color: "var(--button-default-fgColor-rest)", ":hover": { backgroundColor: "var(--button-default-bgColor-hover)" } },

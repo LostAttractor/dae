@@ -52,7 +52,7 @@ function Shell() {
               <div className="dashboard-column dashboard-main">
                 <section className="card" aria-labelledby="device-title">
                   <h2 id="device-title">Routing Rules</h2>
-                  <p className="section-description">Apply to this device. Multiple options can be enabled.</p>
+                  <p id="routing-change-note" className="section-description">Apply to this device. Multiple options can be enabled. Changes may interrupt active connections.</p>
                   <div id="sets" className="set-list"></div>
                 </section>
 
@@ -136,7 +136,7 @@ function Shell() {
           </fieldset>
         </main>
 
-        <footer><span id="page-note">Changes apply to new connections.</span><span id="daemon-version" hidden></span></footer>
+        <footer><span id="page-note">Routing changes may interrupt active connections.</span><span id="daemon-version" hidden></span></footer>
       </div>
       <div id="notifications"></div>
     </div>

@@ -101,8 +101,16 @@ create a kernel domain mapping. Rule traces, cached records, technical fields an
 raw responses are collapsed by default; the trace can be filtered by rule status.
 Membership comparisons show current and proposed results side by side on wide
 screens and stacked on smaller screens. **Routing
-Rules** presents independent On/Off switches for this device's client memberships;
-multiple memberships can be active. **Preview Routing Changes** loads impact
+Rules** shows each membership's On/Off state beside an Astryx `Switch` on the
+right. The rectangular track is blue with a white thumb when on; when off it
+has a neutral outline, a gray thumb and a muted circle. The input target is
+48px by 44px. State labels are centered in equal-width slots, with a small
+letter-spacing adjustment for On to balance the two words. Labels and switches
+occupy shared columns so each row stays aligned. When space is limited, the rule name moves
+above the state and switch. Changes disable controls until the request finishes;
+the displayed state updates from the saved API response.
+Multiple memberships can be active. Changes may interrupt active
+connections, as indicated beside these actions. **Preview Routing Changes** loads impact
 for one selected option when expanded. **Compare a target** opens Tracing with
 that proposed change and focuses the target field. Inputs and results are
 preserved when switching pages.
@@ -236,7 +244,7 @@ native validation, form submission and platform select menus. Node search uses
 Inline request errors use `Banner`; unconfigured routing and outbound sections
 use compact `EmptyState` messages. Native sections and forms provide the page
 structure. Rectangular controls, cards, navigation items, badges and popovers
-share the 2px `--radius` value through the component theme. Typography uses 1rem body text and
+share the 4px `--radius` value through the component theme. Typography uses 1rem body text and
 .875rem metadata. Error foregrounds, backgrounds and borders share the Primer
 danger palette. Use Astryx `Badge` for short states and settings sources; longer
 verification results and monitoring descriptions remain wrapping text. Keep
@@ -287,7 +295,7 @@ Text-only zoom checks all pages at twice the default size, including control
 containment in narrow panels.
 It also checks direct page links, browser history, mobile status,
 simultaneous desktop traffic scopes, management tabs, keyboard traffic-scope
-switching, independent membership switches,
+switching, independent membership switches and keyboard activation,
 context/explanation requests, invalidation of late diagnostic and routing-preview
 replies, membership-context changes and protected-result cleanup.
 Fixture state and browser processes are cleaned up when the test exits. These

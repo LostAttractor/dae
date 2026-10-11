@@ -418,7 +418,7 @@ try {
     await ready();
     assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), true);
     assert.equal(await js('location.hash'), "#manage");
-    assert.match(await js('document.querySelector("#page-note").textContent'), /Changes apply to new connections/);
+    assert.match(await js('document.querySelector("#page-note").textContent'), /Routing changes may interrupt active connections/);
     await page("#unknown");
     assert.equal(await js('location.hash'), "#overview");
     assert.equal(await js('document.querySelector("#sets").checkVisibility()'), true);
@@ -581,6 +581,7 @@ try {
     device.release.resolve();
     global.release.resolve();
     await delay(200);
+    assert.equal(await js('document.querySelector(".set-state").textContent'), "On");
     assert.equal(await js('document.querySelector(".client-toggle input").checked'), true);
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /16 KiB/);
     fixture.mode = "api_key";
@@ -854,17 +855,22 @@ try {
   });
 
   await test("device descriptions hide configuration names but mutations use the name", async () => {
-    assert.deepEqual(await js('[...document.querySelectorAll(".set-row label")].map((entry) => entry.textContent)'), ["Work network", "gaming"]);
-    await js('document.querySelector(".set-row input[role=switch]").click()');
+    assert.deepEqual(await js('[...document.querySelectorAll(".set-name")].map((entry) => entry.textContent)'), ["Work network", "gaming"]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".set-state")].map(state => state.textContent)'), ["Off", "On"]);
+    await js('document.querySelector(".client-toggle input").focus()');
+    await call("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+    await call("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
     await ready();
     assert.deepEqual(fixture.requests[0], { method: "PUT", path: "/api/device/sets/internal%2Fwork", body: {} });
     assert.match(await js('document.querySelector("#message").textContent'), /Work network turned on/);
-    assert.equal(await js('document.querySelector(".set-row input[role=switch]").labels[0].textContent'), "Work network");
-    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.checked)'), [true, true]);
+    assert.equal(await js('document.querySelector(".client-toggle input").labels[0].textContent'), "Work network");
+    assert.deepEqual(await js('[...document.querySelectorAll(".client-toggle input")].map(toggle => toggle.checked)'), [true, true]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".set-state")].map(state => state.textContent)'), ["On", "On"]);
     await js('document.querySelector(".client-toggle input").click()');
     await ready();
     assert.deepEqual(fixture.requests.at(-1), { method: "DELETE", path: "/api/device/sets/internal%2Fwork", body: {} });
-    assert.deepEqual(await js('[...document.querySelectorAll("#sets [role=switch]")].map(toggle => toggle.checked)'), [false, true]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".set-state")].map(state => state.textContent)'), ["Off", "On"]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".client-toggle input")].map(toggle => toggle.checked)'), [false, true]);
   });
 
   await test("client routing impact is lazy and feeds a read-only target comparison", async () => {
@@ -1129,7 +1135,7 @@ try {
     await key("Escape", 27);
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await visit("overview");
-    await js('document.querySelector(".set-row input[role=switch]").focus(); document.querySelector(".set-row input[role=switch]").click()');
+    await js('document.querySelector(".client-toggle input").focus(); document.querySelector(".client-toggle input").click()');
     await ready();
     assert.equal(await js('document.activeElement.labels[0].textContent'), "Work network");
     fixture.device.mitm = { enabled: false, override: null, ca_fingerprint: "test-ca" };

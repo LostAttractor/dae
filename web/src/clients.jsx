@@ -26,7 +26,7 @@ function ClientImpact({ set, contextKey, request, onCompare }) {
       endContent={<Button label="Retry" type="button" onClick={() => setRetry(value => value + 1)} />} />}
     {impact && <>
       <p>Change: {impact.joined_before ? "On" : "Off"} → {impact.joined_after ? "On" : "Off"}.</p>
-      <p className="muted">{impact.connection_behavior === "retain" ? "Existing connections keep their current route." : `Existing connections: ${impact.connection_behavior}.`}</p>
+      <p className="muted">{impact.connection_behavior === "retain" ? "Existing connections keep their current route." : impact.connection_behavior === "close" ? "This router closes existing connections when routing changes." : `Existing connections: ${impact.connection_behavior}.`}</p>
       <TraceSteps steps={impact.rules} />
       {!impact.rules.length && <p className="muted">No active dae routing references.</p>}
       {impact.exports.map((exported, index) => <p key={index} className="muted">{exported} · external firewall rules are not evaluated.</p>)}
@@ -46,7 +46,9 @@ function ClientSets({ device, actions }) {
     <div className="client-options">{device.sets.map(set => {
       const label = set.description || set.name;
       return <div key={set.name} className="set-row" data-name={set.name}>
-        <Switch className="client-toggle" label={label} value={set.joined} labelPosition="start" labelSpacing="spread" width="100%" onChange={() => actions.run(async () => {
+        <strong className="set-name">{label}</strong>
+        <span className="set-state" aria-hidden="true">{set.joined ? "On" : "Off"}</span>
+        <Switch className="client-toggle" label={label} isLabelHidden value={set.joined} onChange={() => actions.run(async () => {
           actions.update(await actions.request(`/api/device/sets/${encodeURIComponent(set.name)}`, set.joined ? "DELETE" : "PUT"));
         }, `${label} turned ${set.joined ? "off" : "on"} for this device.`)} />
       </div>;

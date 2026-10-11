@@ -25,7 +25,7 @@ export function createNavigation(onChange) {
     byId("page-description").textContent = pages[page].description;
     byId("page-note").textContent = page === "tracing"
       ? "Read-only analysis · No test traffic is sent."
-      : "Changes apply to new connections.";
+      : "Routing changes may interrupt active connections.";
     document.title = `Network Settings · ${pages[page].title}`;
     onChange(page);
     if (changed && focus) {

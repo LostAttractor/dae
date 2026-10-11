@@ -20,7 +20,7 @@
   --chart-download: var(--fgColor-accent);
   --warning: var(--fgColor-attention);
   --warning-bg: var(--bgColor-attention-muted);
-  --radius: 2px;
+  --radius: 4px;
   --control-height: 2.5rem;
   --text-size: 1rem;
   --meta-size: .875rem;
@@ -126,10 +126,22 @@ button:not([class*="astryx-"]):focus-visible, input:not(.astryx-text-input input
 .node-latency:empty, .node-checked:empty { display: none; }
 .no-nodes { padding: 12px 0; margin: 0; }
 .code-block { padding: 12px; border-radius: var(--radius); background: var(--soft); color: var(--muted); font: var(--meta-size)/1.75 ui-monospace, Consolas, monospace; white-space: pre-line; overflow-wrap: anywhere; }
-.set-row { min-width: 0; padding: 16px 0; border-top: 1px solid var(--line); }
+.set-list { container-type: inline-size; }
+.client-options { display: grid; grid-template-columns: minmax(0, 1fr) max-content max-content; column-gap: 12px; }
+.set-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; min-width: 0; padding: 16px 0; border-top: 1px solid var(--line); }
 .set-row:first-child { border-top: 0; padding-top: 0; }
-.client-toggle { min-width: 0; }
-.client-toggle label { font-weight: 500; overflow-wrap: anywhere; }
+.set-name { min-width: 0; font-weight: 500; }
+.set-state { width: 3ch; text-align: center; white-space: nowrap; }
+.set-row:has(input:checked) .set-state { letter-spacing: .04em; }
+.client-toggle :has(> input[role="switch"]), .client-toggle input[role="switch"] { width: 48px; height: 44px; }
+.client-toggle .astryx-switch::before { content: ""; position: absolute; inset-inline-end: 8px; width: 8px; height: 8px; border: 1px solid var(--fgColor-muted); border-radius: 50%; }
+.client-toggle .astryx-switch[data-checked]::before { inset-inline-start: 11px; inset-inline-end: auto; width: 1px; height: 8px; border: 0; border-radius: 0; background: var(--fgColor-white); }
+.client-toggle:has(input:disabled) .astryx-switch { opacity: .5; }
+@container (max-width: 16rem) {
+  .set-row { row-gap: 12px; }
+  .set-name { grid-column: 1 / -1; }
+  .set-state { grid-column: 2; }
+}
 .muted { color: var(--muted); }
 .mitm-state > p:last-child { margin-bottom: 0; }
 .mitm-summary { margin-bottom: 16px; }
