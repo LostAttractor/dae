@@ -22,7 +22,7 @@ sudo ./dae-client status
 | --- | --- |
 | `--api` | Defaults to `DAE_API_ENDPOINT`, then `unix:///var/run/dae.sock` |
 | `--timeout` | Request timeout, default `10s` |
-| `DAE_API_KEY` | Configured API key for TCP administration, sent as a Bearer credential; unnecessary for verified direct LAN clients when the daemon has no key |
+| `DAE_API_KEY` | Configured API key for TCP administration, sent as a Bearer credential; unnecessary for clients with verified LAN ingress when the daemon has no key |
 | `--json` | `status`: full snapshot, mutually exclusive with `--verbose` and `--recent`; MITM report commands: filtered instance array |
 | `--color` | `status` text colors: `auto` (default), `always`, or `never` |
 
@@ -57,7 +57,7 @@ Duplicate names require an ID rather than guessing by list order. Connection fla
 
 The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing filesystem permission for the local socket.
 
-Enable the [TCP API](api.md) and set `DAE_API_KEY` if the daemon has a configured key. Without one, a verified direct LAN client can request status without credentials; WAN and unidentifiable callers are rejected. Clients bypass environment proxies and reject redirects. The daemon serves HTTP; HTTPS support in the Go client does not add TLS or reverse-proxy support to the daemon.
+Enable the [TCP API](api.md) and set `DAE_API_KEY` if the daemon has a configured key. Without one, a client with verified LAN ingress can request status without credentials; WAN and unidentifiable callers are rejected. Clients bypass environment proxies and reject redirects. The daemon serves HTTP; HTTPS support in the Go client does not add TLS or reverse-proxy support to the daemon.
 
 The Go SDK owns its transport and does not depend on application changes to `http.DefaultTransport`. Successful responses are limited to 32 MiB and error bodies to 8 KiB. Oversized error bodies still preserve the HTTP status in `client.Error.StatusCode`.
 
@@ -207,7 +207,7 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 
 | Operation | Response / requirement |
 | --- | --- |
-| `GET /api/status` | `StatusSnapshot`; TCP uses the configured key/session or verified direct LAN identity when no key is configured; Unix uses filesystem permissions |
+| `GET /api/status` | `StatusSnapshot`; TCP uses the configured key/session or verified LAN ingress when no key is configured; Unix uses filesystem permissions |
 | `GET /api/selectors` | `SelectorsResponse`; administration required; `auth_mode` is `api_key`, `lan` or `unix` |
 | `PUT` / `DELETE /api/session` | Browser login / clear cookie; `204`, empty body; keyless login verifies LAN/Unix access and clears stale cookies without issuing a session |
 | `PUT /api/selectors/{group}` | `SelectorState`; admin, `{"node_id":"..."}` |
@@ -223,7 +223,7 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 | `GET /api/certificate` | Public CA name, SHA-256 fingerprint, `test_available` and optional `test_generation` |
 | `GET /ca.pem`, `/ca.cer`, `/ca.mobileconfig` | Public certificate downloads, `404` when unavailable |
 
-All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. If `global.api_key` is configured, TCP administration (including LAN selector reads) requires `Authorization: Bearer <api_key>` or a valid session; missing/incorrect credentials return `401`. The Go SDK accepts `client.Options.APIKey`. Without a configured key, each TCP administration request must pass the direct LAN ingress and neighbor checks, otherwise it returns `403`; credentials are not required. Browsers in key mode may use the seven-day session cookie issued by `PUT /api/session`; `DELETE /api/session` clears it. Both session operations use empty bodies and return `204` on success; keyless access never issues a session. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
+All PUT and DELETE requests require `X-Dae-API: 1`; the SDK supplies it. MITM changes require `X-Dae-MITM: <current CA SHA-256 fingerprint>`. If `global.api_key` is configured, TCP administration (including LAN selector reads) requires `Authorization: Bearer <api_key>` or a valid session; missing/incorrect credentials return `401`. The Go SDK accepts `client.Options.APIKey`. Without a configured key, each TCP administration request must pass LAN ingress verification (direct neighbor validation for Ethernet; interface evidence for IP-only links, including routed subnets), otherwise it returns `403`; credentials are not required. Browsers in key mode may use the seven-day session cookie issued by `PUT /api/session`; `DELETE /api/session` clears it. Both session operations use empty bodies and return `204` on success; keyless access never issues a session. Filesystem-authorized Unix clients have administrative access but cannot perform LAN device self-service.
 
 URL-encode names as path segments. Bodies are limited to 1 KiB, or 64 KiB for explanations and membership previews. JSON requires `Content-Type: application/json`, and other requests must have empty bodies. API query parameters are rejected. Browsers must use the same origin; TCP Host must match the literal router address and listener port. GET routes also accept HEAD.
 

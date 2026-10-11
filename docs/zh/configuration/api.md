@@ -40,7 +40,7 @@ routing {
 
 `dae status`（包括 verbose/JSON）中，selector 只列出选中、持续追踪、正在检测或仍有活动连接的节点。已测试但空闲且未追踪的候选只在 `/api/selectors` 和页面中保留最后结果；组及全局累计流量仍包含这些路径。
 
-- **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过直连 LAN 身份校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
+- **Selectors**：配置 `api_key` 后，在页面顶部输入密钥并点击 **Login** 即可查看状态、切换节点；未配置密钥时，通过 LAN 入口校验的客户端可直接使用，顶部显示 **LAN access**。裸 `selector` 没有默认节点概念：优先恢复保存的选择，否则以首个候选作为初始选择，页面不显示默认标记或重置按钮。只有显式 `selector(n)`（包括 `selector(0)`）才声明默认路径索引。选择影响使用该组的所有设备。选择按独立的逻辑路径引用保存；候选重排、priority、TLS、multiplex、全局 mark 和探测参数变化不改变保存的选择。
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
 - **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留，进程重启归零。
 - **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，沿用管理权限。配置密钥时登录后可见，退出或会话失效时清除展示的数据。
@@ -50,11 +50,13 @@ routing {
 
 登录后使用 `HttpOnly`、`SameSite=Strict` Cookie 保存有效期为 7 天的签名会话，Cookie 不包含 API key 原文。刷新页面或重载 daemon 后保留登录状态；**Logout** 清除浏览器 Cookie，修改 `api_key` 会使已有会话失效。**Refresh** 更新状态和刷新时间。设备自助设置无需管理员登录。
 
-`global.api_key` 为可选项。未配置或留空时，状态查询和 selector 管理沿用设备自助接口的直连 LAN 校验：连接必须有 `global.lan_interface` 的有效 eBPF 入口记录，源 MAC 与直连 ARP/NDP 邻居一致。每个请求都会校验，私网源 IP、转发头或旧会话 Cookie 均不能代替此身份；WAN、经路由转发或无法识别的客户端返回 `403`。此模式无需登录，也不签发会话 Cookie。配置密钥后，TCP 管理请求（包括 LAN 客户端）必须通过密钥/会话认证。两种模式下 Unix socket 均使用文件系统权限。
+`global.api_key` 为可选项。留空时，已验证的 LAN 连接获得完整管理权限，包括 selector、全局状态、其他设备设置、探测、已配置的脚本任务和资源刷新。以太网入口要求源 MAC 与直连 ARP/NDP 邻居一致；`tailscale0`、TUN 等纯 IP 接口要求当前连接有 `global.lan_interface` 的有效入口记录，无需 MAC 或直连邻居。此边界信任从该接口进入的所有来源，包括其他 VPN 节点和隧道后方的路由子网；`lan_interface` 本身不提供加密或用户认证。
 
-配置项已由 `global.api_token` 更名为 `global.api_key`，升级时需同步修改已有配置；CLI 环境变量使用 `DAE_API_KEY`，Go SDK 使用 `client.Options.APIKey`。
+每个请求都会验证入口，私网源 IP、转发头或旧 Cookie 不能代替入口记录。无法验证时返回 `403`，无密钥模式不签发会话。配置密钥后，所有 TCP 管理请求必须通过密钥/会话认证，此认证独立于 LAN 身份。Unix socket 使用文件系统权限。HTTP 会向传输路径上的观察者暴露密钥和可复用会话，应通过可信网络或独立加密隧道访问；证书测试的 TLS 分支不提供 HTTPS 管理接口。
 
-设备识别使用 eBPF 在 LAN 入口记录的 TCP 连接信息，不要求路由或邻居表中的接口名匹配 `lan_interface`。例如 `enp1s0f0np0 → lan（VLAN）→ br-lan` 可保留 `lan_interface: lan`；bond 或其他分层以太网接口使用相同的识别流程。每个请求更新入口 MAC 和时间戳，配置重载时清除记录。无入口记录、记录超过 30 秒、回程路由非直连，或入口 MAC 与该路由接口上的 ARP/NDP 邻居不一致时拒绝设备操作；其他接口上的同名 IP 不影响识别。
+没有以太网身份时，页面显示当前 IP 连接和入口接口，可读取连接上下文并执行只读诊断。设备流量、MAC 集合成员变更与比较、设备 MITM 设置和证书测试仍要求可验证的以太网 MAC；管理员登录不能补充该身份。
+
+入口记录包含 TCP 端点、链路类型、时间戳和接口索引，必须在 30 秒内且对应 LAN 钩子仍已挂载。新的数据路径代次使用空记录表，保留数据路径的重载保留入口记录。IPv6 链路本地端点的 zone 必须沿接收方向经 VLAN、网桥或 bond 对应到观测入口。例如 `enp1s0f0np0 → lan（VLAN）→ br-lan` 可保留 `lan_interface: lan`。以太网设备身份还要求回程路由直连，且入口 MAC 与该路由接口的 ARP/NDP 邻居一致。
 
 `client` 块的纯文本简介用作页面显示名称：配置了简介时只显示简介，未配置时显示集合名称。按钮的无障碍标签和操作提示也使用同一显示名称；API 请求仍以配置中的集合名称标识目标。展示路由引用或配置了内核导出的集合，重复定义报错。简介随 `dae reload` 更新，不影响成员。
 
@@ -117,7 +119,7 @@ client {
 
 ## API
 
-POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: application/json`，无 JSON 的请求使用空正文。配置密钥时，状态查询及 selector 读写需要 `Authorization: Bearer <api_key>` 或有效的浏览器会话 Cookie；未配置时要求通过直连 LAN 身份校验。MITM 修改需要 `X-Dae-MITM: <当前 CA 的 SHA-256 指纹>`。密钥模式下显式 Authorization 头优先于 Cookie。名称须 URL 编码；命令行可省略 `Origin`。
+POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: application/json`，无 JSON 的请求使用空正文。配置密钥时，状态查询及 selector 读写需要 `Authorization: Bearer <api_key>` 或有效的浏览器会话 Cookie；未配置时要求通过 LAN 入口校验。MITM 修改需要 `X-Dae-MITM: <当前 CA 的 SHA-256 指纹>`。密钥模式下显式 Authorization 头优先于 Cookie。名称须 URL 编码；命令行可省略 `Origin`。
 
 未配置 `global.api_key` 时，TCP 管理请求未通过 LAN 身份校验返回 `403`；已配置但请求密钥/会话缺失、错误或过期时返回 `401`。设备自助设置始终要求直连 LAN 身份，不需要该密钥。
 
@@ -125,7 +127,7 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | --- | --- |
 | `PUT /api/session` | 配置密钥时使用 `Authorization: Bearer <api_key>` 登录并设置会话 Cookie；未配置时校验 LAN/Unix 权限并清除旧 Cookie。空正文，成功返回 `204` |
 | `DELETE /api/session` | 清除浏览器会话 Cookie；空正文，成功返回 `204` |
-| `GET /api/status` | 运行时完整状态；TCP 配置密钥时需要 API key/会话，未配置时校验直连 LAN 身份；Unix socket 使用文件系统权限 |
+| `GET /api/status` | 运行时完整状态；TCP 配置密钥时需要 API key/会话，未配置时校验 LAN 入口；Unix socket 使用文件系统权限 |
 | `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
 | `GET /api/device/status` | 当前设备设置及按 MAC 归属的用户态上游运行统计；仅已识别的直连 LAN 设备 |
 | `POST /api/device/certificate-tests` | 空正文，创建浏览器证书测试挑战；返回 `201`，不改变 MITM 设置 |

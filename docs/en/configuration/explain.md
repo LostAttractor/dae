@@ -22,7 +22,7 @@ dae explain route --input request.json --json
 
 `--input -` reads a full JSON request from stdin, replacing other input fields; `--self` still chooses the device endpoint. `--join` and `--leave` compare hypothetical memberships. `explain` is separate from privileged kernel packet tracing with `trace`.
 
-Self-service requires a verified direct LAN TCP connection. It inherits IP, MAC, memberships, MITM preferences and observed ingress/physical bridge interfaces, rather than the browser connection's ephemeral source port, DSCP, SNI, Host or process identity. Unix-socket administrators use explicit MAC/context instead of `--self`.
+Current-connection diagnostics require verified LAN TCP ingress. IP-only interfaces are supported with `link_type: ip` and no MAC. Device state is omitted from `/api/device/context` for these connections; membership changes and comparisons still require an Ethernet MAC. It inherits IP, MAC, memberships, MITM preferences and observed ingress/physical bridge interfaces, rather than the browser connection's ephemeral source port, DSCP, SNI, Host or process identity. Unix-socket administrators use explicit MAC/context instead of `--self`.
 
 Omitted packet fields remain unknown. If they can affect the result, `complete` is false and `missing` identifies required inputs. `origin` accepts `lan`, `local`, and `daemon`; the last represents userspace explicit-target routing. Nonzero input marks require hook-specific local semantics and are rejected; rule-generated mark/must results are explained.
 

@@ -24,7 +24,7 @@ sudo ./dae-client status
 | --- | --- |
 | `--api` | `DAE_API_ENDPOINT`，未设置时为 `unix:///var/run/dae.sock` |
 | `--timeout` | `10s`，单次请求超时；取消命令上下文也会取消请求 |
-| `DAE_API_KEY` | TCP 管理接口配置的 API key，以 Bearer 凭据发送；daemon 未配置密钥时，已验证的直连 LAN 客户端无需设置 |
+| `DAE_API_KEY` | TCP 管理接口配置的 API key，以 Bearer 凭据发送；daemon 未配置密钥时，已验证 LAN 入口的客户端无需设置 |
 | `--json` | `status` 输出完整 API 快照，与 `--verbose`、`--recent` 互斥；MITM 报告命令输出筛选后的实例数组 |
 | `--color` | `status` 文本输出的颜色模式：`auto`（默认）、`always` 或 `never` |
 
@@ -53,7 +53,7 @@ dae selector proxy --json
 
 本地 socket 权限仍为 `0600`，不依赖 `global.api_port`。两种命令入口均不自动提权；访问默认 socket 时使用 `sudo` 或已有的文件系统权限。
 
-TCP 需要启用 [API 配置](api.md)。daemon 配置密钥时需设置 `DAE_API_KEY`；未配置时，已验证的直连 LAN 客户端可以无凭据查询状态，WAN 或无法识别的客户端会被拒绝。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。守护进程直接提供 HTTP；客户端支持 HTTPS 传输，但这不会给守护进程增加 TLS 或反向代理支持。
+TCP 需要启用 [API 配置](api.md)。daemon 配置密钥时需设置 `DAE_API_KEY`；未配置时，已验证 LAN 入口的客户端可以无凭据查询状态，WAN 或无法识别的客户端会被拒绝。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。守护进程直接提供 HTTP；客户端支持 HTTPS 传输，但这不会给守护进程增加 TLS 或反向代理支持。
 
 Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改。成功响应上限为 32 MiB，错误正文上限为 8 KiB；错误正文过长时仍可通过 `client.Error.StatusCode` 判断 HTTP 状态。
 
@@ -166,7 +166,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 | 方法与路径 | 响应 | 权限与请求 |
 | --- | --- | --- |
-| `GET /api/status` | `StatusSnapshot` | TCP 配置密钥时需要 API key/会话，未配置时校验直连 LAN 身份；Unix 使用 socket 权限 |
+| `GET /api/status` | `StatusSnapshot` | TCP 配置密钥时需要 API key/会话，未配置时校验 LAN 入口；Unix 使用 socket 权限 |
 | `GET /api/selectors` | `SelectorsResponse` | 管理权限；授权成功后 `admin_enabled` 为 true，`auth_mode` 为 `api_key`、`lan` 或 `unix` |
 | `PUT` / `DELETE /api/session` | `204`，无响应正文 | 浏览器登录 / 清除 Cookie；空请求正文。无密钥时验证 LAN/Unix 权限并清除旧 Cookie，不签发会话 |
 | `PUT /api/selectors/{group}` | `SelectorState` | 管理权限；`{"node_id":"..."}` |
@@ -192,7 +192,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 `SelectorState.track_all` 是 group 配置的只读值，开启时前端用持续检测状态替代 Test 按钮；没有对应的修改 API。`default_node_id` 仅在显式 `selector(n)` 时存在，省略时隐藏所有默认标记和重置操作。候选的 `tested` 区分未测试与失败，`checking` 表示排队/检测中，`tracking` 表示持续监测，`checked_at` 是最近完成测试时间（RFC 3339，首次完成前省略）。未追踪节点的结果是历史结果，不代表持续健康保证。
 
-所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过直连 LAN 入口和邻居校验，否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
+所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过 LAN 入口校验（以太网还需直连邻居校验，纯 IP 接口使用入口记录并允许隧道后方子网），否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
 
 名称按 URL 路径段编码；正文默认限制为 1 KiB，规则解释和成员影响预览为 64 KiB。有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
 

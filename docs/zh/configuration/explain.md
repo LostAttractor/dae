@@ -22,7 +22,7 @@ dae explain route --input request.json --json
 
 `--input -` 从标准输入读取完整 JSON 请求，替代其他输入字段；`--self` 仍决定使用设备接口。`--join`、`--leave` 只比较假设成员关系。连接参数与 [API 客户端](api-client.md) 相同。`explain` 与需要内核权限的包追踪 `trace` 是独立命令。
 
-`--self` 需要可验证的直连 LAN TCP 请求，不能通过 Unix socket 继承 LAN 设备。管理员可通过 Unix socket 或已授权的 TCP 接口指定 MAC。设备接口继承源 IP、MAC、成员关系、MITM 设置以及观测到的入口和桥物理接口；浏览器连接的临时源端口、DSCP、SNI、HTTP Host 和进程名不用于新连接。
+`--self` 需要可验证的 LAN TCP 入口，不能通过 Unix socket 继承 LAN 连接。纯 IP 接口使用 `link_type: ip`，不提供 MAC；此时 `/api/device/context` 省略 `device`。成员关系变更和比较仍要求以太网 MAC。管理员可通过 Unix socket 或已授权的 TCP 接口指定 MAC。设备接口继承源 IP、MAC、成员关系、MITM 设置以及观测到的入口和桥物理接口；浏览器连接的临时源端口、DSCP、SNI、HTTP Host 和进程名不用于新连接。
 
 省略的包字段保持未知。仅在未知字段可能改变结果时，`complete` 才为 false，并列出需要补充的字段。`origin` 可为 `lan`、`local` 或 `daemon`；`daemon` 表示用户态显式目标路由。非零输入 mark 需要特定本机钩子语义，当前接口拒绝该输入；规则生成的 mark 和 must 会正常解释。
 
