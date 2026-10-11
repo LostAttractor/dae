@@ -52,7 +52,7 @@ func TestBuiltinStatusHasDedicatedConnectionSummary(t *testing.T) {
 		withStatusTerminalWidth(t, width)
 		var out strings.Builder
 		printBuiltinStatus(&out, snapshot, false)
-		if len(strings.Split(strings.TrimSuffix(out.String(), "\n\n"), "\n")) != 1 || text.LongestLineLen(out.String()) > width {
+		if len(strings.Split(strings.TrimSpace(out.String()), "\n")) != 1 || text.LongestLineLen(out.String()) > width {
 			t.Fatalf("builtin summary wrapped or exceeded %d columns: %q", width, out.String())
 		}
 	}
@@ -66,7 +66,7 @@ func TestBuiltinStatusOmitsZeroFallbackAndBlockHealth(t *testing.T) {
 	}}
 	var out strings.Builder
 	printBuiltinStatus(&out, snapshot, false)
-	if got := out.String(); got != "direct: 0 active · 0 total\n\nblock: 0 active · 0 total\n\n" {
+	if got := out.String(); got != "\ndirect: 0 active · 0 total\n\nblock: 0 active · 0 total\n" {
 		t.Fatalf("unexpected builtin summary: %q", got)
 	}
 	if got := renderRecentGroups(snapshot.Groups); got != "" {

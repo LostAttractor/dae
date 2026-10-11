@@ -128,11 +128,10 @@ func PrintRecent(out io.Writer, snapshot *api.StatusSnapshot) {
 		fmt.Sprintf("%d active", snapshot.Stats.ActiveConnections),
 	}
 	writeStatusLine(out, strings.Join(summary, "  "), width)
-	fmt.Fprintln(out)
 
 	printBuiltinStatus(out, snapshot, false)
 	if groups := renderRecentGroups(snapshot.Groups); groups != "" {
-		fmt.Fprintln(out, groups)
+		fmt.Fprintf(out, "\n%s\n", groups)
 	}
 	printTraffic(out, snapshot, trafficRecent)
 	printSurgeRuntimes(out, snapshot.Plugins)

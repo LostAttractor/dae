@@ -534,6 +534,7 @@ func printBuiltinStatus(out io.Writer, snapshot *api.StatusSnapshot, verbose boo
 		if group.TargetKind != "builtin" {
 			continue
 		}
+		fmt.Fprintln(out)
 		line := fmt.Sprintf("%s: %d active · %d total", colorize(group.Name, text.Bold),
 			group.Stats.ActiveConnections, group.Stats.TotalConnections)
 		if group.Name == "direct" && snapshot.DirectFallbackConnections > 0 {
@@ -543,7 +544,6 @@ func printBuiltinStatus(out io.Writer, snapshot *api.StatusSnapshot, verbose boo
 		if verbose {
 			printTable(out, table.Row{"NETWORK", "CONNS(A/T)"}, uncheckedNetworkRows(group))
 		}
-		fmt.Fprintln(out)
 	}
 }
 
