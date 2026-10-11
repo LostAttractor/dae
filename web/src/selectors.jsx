@@ -1,4 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Badge } from "@astryxdesign/core/Badge";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createView } from "./react-view.js";
@@ -17,7 +20,7 @@ const nodeCount = (count) => `${count} node${count === 1 ? "" : "s"}`;
 
 function Health({ node }) {
   const state = healthState(node);
-  return <><span className="node-health badge" data-tone={state === "unavailable" ? "error" : "neutral"}>{healthLabels[state]}</span>
+  return <><Badge className="node-health" variant={state === "unavailable" ? "error" : "neutral"} label={healthLabels[state]} />
     <span className="node-latency">{latencyLabel(node)}</span></>;
 }
 
@@ -118,9 +121,8 @@ function Selector({ selector, actions }) {
     <div className="selector-heading">
       <h3 id={id} className="selector-name">{selector.name}</h3>
       <span className="node-count count">{nodeCount(selector.nodes.length)}</span>
-      <span className="selection-source badge" hidden={!selector.default_node_id && !saved} title={saved ? `Saved: ${saved.name}` : ""}>
-        {fallback ? `Saved choice ${saved.status} · Temporary fallback` : selector.overridden ? "Custom" : "Default"}
-      </span>
+      {fallback ? <span className="selection-source selection-warning" title={`Saved: ${saved.name}`}>Saved choice {saved.status} · Temporary fallback</span>
+        : <Badge className="selection-source" hidden={!selector.default_node_id && !saved} title={saved ? `Saved: ${saved.name}` : ""} label={selector.overridden ? "Custom" : "Default"} />}
     </div>
     <div className="selector-control">
       <Button label={name} ref={picker} className="node-picker" type="button" aria-haspopup="dialog" aria-expanded={open}
@@ -144,8 +146,9 @@ function Selector({ selector, actions }) {
           if (row) row.scrollIntoView({ block: "nearest" });
           else list.current.scrollTop = 0;
         }} onKeyDown={navigate} onFocusCapture={(event) => { focused.current = event.target; }}>
-        <input ref={search} className="node-search" type="search" placeholder="Search nodes…" autoComplete="off" spellCheck={false}
-          aria-label={`Search nodes in ${selector.name}`} value={query} onInput={(event) => { setQuery(event.currentTarget.value); list.current.scrollTop = 0; }} />
+        <TextInput ref={search} className="node-search" label={`Search nodes in ${selector.name}`} isLabelHidden startIcon="search" hasClear
+          role="searchbox" placeholder="Search nodes…" autoComplete="off" spellCheck={false} width="100%"
+          value={query} onChange={(value) => { setQuery(value); list.current.scrollTop = 0; }} />
         <p className="node-results" role="status">{filter ? `${visible.length} of ${selector.nodes.length} nodes` : nodeCount(visible.length)}</p>
         <div ref={list} className="node-list">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector}
           hidden={!node.name.toLocaleLowerCase().includes(filter)} onProbe={() => probe(node.id)} onSelect={() => {
@@ -157,11 +160,11 @@ function Selector({ selector, actions }) {
       </div>
     </div>
     <div className="selected-status status-row"><Health node={selected} />
-      <span className="node-monitoring badge" hidden={!selected || selector.track_all}>{selected ? monitoringLabel(selected) : ""}</span>
+      <Badge className="node-monitoring" hidden={!selected || selector.track_all} label={selected ? monitoringLabel(selected) : ""} />
       <span className="node-checked">{checkedLabel(selected)}</span>
     </div>
     <div className="selector-actions">
-      <span className="tracking-status badge" title="All nodes are monitored automatically" hidden={!selector.track_all}>Monitoring all nodes</span>
+      <span className="tracking-status muted" title="All nodes are monitored automatically" hidden={!selector.track_all}>Monitoring all nodes</span>
       <div className="selector-buttons button-row" hidden={selector.track_all && !selector.default_node_id}>
         <Button label="Test All" className="test-all" type="button" hidden={selector.track_all} isDisabled={!selector.nodes.length || selector.nodes.every(node => node.checking)}
           aria-label={`Test all nodes in ${selector.name}`} onClick={() => probe()} />
@@ -191,7 +194,8 @@ export function createSelectors(container, actions) {
   const controls = { ...actions, update: (updated) => show(selectors.map(selector => selector.name === updated.name ? updated : selector)) };
   function show(next) {
     selectors = next;
-    render(next.length ? next.map(selector => <Selector key={selector.name} selector={selector} actions={controls} />) : <p className="muted">No outbound groups with node selection are configured.</p>);
+    render(next.length ? next.map(selector => <Selector key={selector.name} selector={selector} actions={controls} />)
+      : <EmptyState isCompact title="No outbound groups" description="No outbound groups with node selection are configured." />);
   }
   return {
     show,

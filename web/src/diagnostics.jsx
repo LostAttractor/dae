@@ -1,5 +1,8 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Field } from "@astryxdesign/core/Field";
 import { useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { request } from "./api.js";
 import { createView } from "./react-view.js";
 import { useRequest } from "./use-request.js";
@@ -32,6 +35,7 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
   const [kind, setKind] = useState("flow");
   const [scope, setScope] = useState("self");
   const [comparison, setComparison] = useState(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const target = useRef(null), formRef = useRef(null), cachedIP = useRef(null);
   const explanation = useRequest(), context = useRequest();
   const flow = kind === "flow" || kind === "plugins", dns = kind === "dns";
@@ -61,8 +65,7 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
 
   function editField(name) {
     const input = formRef.current.elements[name];
-    const details = input.closest("details");
-    if (details) details.open = true;
+    if (input.closest(".diagnostic-advanced")) flushSync(() => setAdvancedOpen(true));
     input.focus();
     input.scrollIntoView({ block: "center" });
   }
@@ -109,27 +112,35 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
   return <>
     <form id="diagnostic-form" ref={formRef} onSubmit={explain} onInput={changeInput}>
       <div className="diagnostic-mode">
-        <label>What to check<select id="diagnostic-kind" value={kind} onChange={(event) => { setKind(event.target.value); explanation.reset(); }}>
+        <Field label="What to check" inputID="diagnostic-kind"><select id="diagnostic-kind" value={kind} onChange={(event) => { setKind(event.target.value); explanation.reset(); }}>
           <option value="flow">Connection routing</option><option value="dns">DNS policy</option><option value="domain">Cached domain records</option><option value="outbound">Outbound nodes</option><option value="plugins">HTTP plugins</option>
-        </select></label>
+        </select></Field>
         <p className="muted">{question}</p>
       </div>
       <div className={`diagnostic-target-row${!flow && !dns ? " single-field" : ""}`}>
-        <label><span id="diagnostic-target-label">{label}</span><input ref={target} id="diagnostic-target" name="target" placeholder={placeholder} aria-describedby="diagnostic-target-hint" autoCapitalize="none" spellCheck={false} required /></label>
-        <label id="diagnostic-protocol-field" hidden={!flow}>Transport<select id="diagnostic-protocol" name="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
-        <label id="diagnostic-qtype-field" hidden={!dns}>Question type<select id="diagnostic-qtype" name="qtype"><option>A</option><option>AAAA</option><option>CNAME</option><option>HTTPS</option><option>TXT</option></select></label>
+        <Field label={label} labelID="diagnostic-target-label" inputID="diagnostic-target"><input ref={target} id="diagnostic-target" name="target" placeholder={placeholder} aria-describedby="diagnostic-target-hint" autoCapitalize="none" spellCheck={false} required /></Field>
+        <Field id="diagnostic-protocol-field" hidden={!flow} label="Transport" inputID="diagnostic-protocol"><select id="diagnostic-protocol" name="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></Field>
+        <Field id="diagnostic-qtype-field" hidden={!dns} label="Question type" inputID="diagnostic-qtype"><select id="diagnostic-qtype" name="qtype"><option>A</option><option>AAAA</option><option>CNAME</option><option>HTTPS</option><option>TXT</option></select></Field>
       </div>
       <p id="diagnostic-target-hint" className="field-hint">{kind === "flow" ? "Enter an IP:port, hostname:port or URL. For a hostname, supply the destination IP below to check its kernel route; this check does not resolve DNS." : kind === "dns" ? "Evaluates DNS policy without sending a DNS query." : kind === "plugins" ? "Checks plugin rules without fetching the URL or running scripts." : kind === "domain" ? "Reads existing records without refreshing DNS." : "Reads the current node selection and health without probing nodes."}</p>
       <div className="diagnostic-fields diagnostic-address" id="diagnostic-flow-fields" hidden={dns || kind === "outbound"}>
-        <label id="diagnostic-ip-field">Destination IP <span className="field-hint">{kind === "flow" ? "Needed to check routing for a hostname" : "Optional · filter by IP"}</span><input id="diagnostic-ip" name="ip" placeholder="203.0.113.10" autoCapitalize="none" spellCheck={false} /></label>
+        <Field id="diagnostic-ip-field" label="Destination IP" inputID="diagnostic-ip" descriptionID="diagnostic-ip-hint"
+          description={kind === "flow" ? "Needed to check routing for a hostname" : "Optional · filter by IP"}>
+          <input id="diagnostic-ip" name="ip" placeholder="203.0.113.10" autoCapitalize="none" spellCheck={false} aria-describedby="diagnostic-ip-hint" />
+        </Field>
       </div>
-      <Disclosure className="diagnostic-advanced" title="Advanced context" meta="Optional">
-        <label className="diagnostic-identity" id="diagnostic-sni-field" hidden={!flow}>TLS hostname (SNI)<span className="field-hint">Optional · override the hostname supplied by the URL</span><input id="diagnostic-sni" name="sni" placeholder="example.com" autoCapitalize="none" spellCheck={false} /></label>
-        <label className="diagnostic-identity">Test as<select id="diagnostic-scope" value={scope} onChange={(event) => { setScope(event.target.value); explanation.reset(); }}>
+      <Disclosure className="diagnostic-advanced" title="Advanced context" meta="Optional" isOpen={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <Field className="diagnostic-identity" id="diagnostic-sni-field" hidden={!flow} label="TLS hostname (SNI)" inputID="diagnostic-sni"
+          description="Optional · override the hostname supplied by the URL" descriptionID="diagnostic-sni-hint">
+          <input id="diagnostic-sni" name="sni" placeholder="example.com" autoCapitalize="none" spellCheck={false} aria-describedby="diagnostic-sni-hint" />
+        </Field>
+        <Field className="diagnostic-identity" label="Test as" inputID="diagnostic-scope"><select id="diagnostic-scope" value={scope} onChange={(event) => { setScope(event.target.value); explanation.reset(); }}>
           <option value="self">This device</option><option id="diagnostic-manual" value="manual" disabled={!allowed}>Custom identity (administrator)</option>
-        </select></label>
+        </select></Field>
         <p className="muted">{'JSON fields override the request. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
-        <textarea id="diagnostic-overrides" name="overrides" rows="6" spellCheck={false} aria-label="Advanced diagnostic request JSON" defaultValue="{}" />
+        <Field label="Advanced diagnostic request JSON" inputID="diagnostic-overrides">
+          <textarea id="diagnostic-overrides" name="overrides" rows="6" spellCheck={false} defaultValue="{}" />
+        </Field>
         <Button label="Show inherited context" id="diagnostic-context" type="button" onClick={showContext} isDisabled={context.pending} />
         <pre id="diagnostic-context-view" className="code-block">{context.pending ? "Loading context…" : context.error || context.value?.fields.map(field => `${field.name}: ${field.value} [${field.source}]`).join("\n")}</pre>
       </Disclosure>
@@ -143,7 +154,7 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
     </form>
     <div id="diagnostic-result" aria-live="polite" aria-busy={explanation.pending}>
       {explanation.pending && <p className="diagnostic-progress">Checking the current rules…</p>}
-      {explanation.error && <p className="notice">{explanation.error}</p>}
+      {explanation.error && <Banner status="error" title="Could not complete the check" description={explanation.error} />}
       {explanation.value && <Explanation {...explanation.value} onEdit={editField} onUseIP={useIP} />}
     </div>
   </>;

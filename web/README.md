@@ -52,19 +52,22 @@ presentation in the frontend; this directory does not import daemon code.
 actions and refreshes; `navigation.jsx` owns page links, visibility, titles and history;
 `manage.jsx` owns management section navigation. React owns each interactive panel:
 `selectors.jsx`, `diagnostics.jsx`, `trace.jsx`, `clients.jsx`, `mitm.jsx`, and
-`status.jsx`. `traffic.jsx` supplies the Recharts chart.
+`status.jsx`. `traffic.jsx` supplies the Recharts chart, and `certificate-panel.jsx`
+owns the certificate section's responsive disclosure state.
 
 `react-view.js` applies the shared Astryx Theme and provides the boundary between
-controllers and React. Controllers update panels through their view APIs and may
-hide their hosts; only React updates the descendants. Commits finish before
-native action completion restores focus. Login and certificate challenge state
-remain in the existing controllers. Picker positioning, focus and scrolling use
+controllers and React. Controllers update interactive panels through their view
+APIs and may hide their hosts; React owns those panel descendants. The shell's
+stable identity, login and certificate result fields are updated by their native
+controllers. Disclosure state belongs to React. Commits finish before native
+action completion restores focus. Picker positioning, focus and scrolling use
 component refs; resize/scroll listeners exist only while the picker is open.
 
 ## Components and theme
 
 The frontend uses [Astryx](https://astryx.atmeta.com/docs/getting-started) for
-buttons, membership switches and tab navigation. Colors come from GitHub's
+navigation, buttons, switches, fields, search, badges, feedback and disclosures.
+Colors come from GitHub's
 [Primer Primitives](https://github.com/primer/primitives) Light and Dark themes,
 following the system preference. `theme.js` maps Primer's semantic color tokens
 to Astryx, including surfaces, controls, borders and interaction states. Existing
@@ -226,12 +229,19 @@ on every screen size. Content scrolls vertically
 when the viewport is short. A stable scrollbar gutter keeps the content width
 steady while panels expand and charts resize.
 
-Use Astryx controls for actions and tabs, and native semantic sections and forms
-for application structure. Shared styles use the theme's 2px corner radius,
-1rem body text and .875rem metadata. Error foregrounds, backgrounds and borders
-share the Primer danger palette. Use `.badge` for states and settings sources,
-`.count` for quantities, and `.status-row` / `.button-row` for consistent alignment.
-Only node names deliberately truncate; full names remain accessible.
+Use Astryx `Button`, `Switch` and `TabList` for actions and view selection.
+`Field` supplies labels and descriptions for native form controls, retaining
+native validation, form submission and platform select menus. Node search uses
+`TextInput` with a search icon and a clear button that restores input focus.
+Inline request errors use `Banner`; unconfigured routing and outbound sections
+use compact `EmptyState` messages. Native sections and forms provide the page
+structure. Rectangular controls, cards, navigation items, badges and popovers
+share the 2px `--radius` value through the component theme. Typography uses 1rem body text and
+.875rem metadata. Error foregrounds, backgrounds and borders share the Primer
+danger palette. Use Astryx `Badge` for short states and settings sources; longer
+verification results and monitoring descriptions remain wrapping text. Keep
+quantities in `.count` and align related controls with `.status-row` / `.button-row`.
+Node names deliberately truncate; full names remain accessible.
 
 The selected navigation link identifies the page. The shared “Network Settings”
 H1 receives focus after page navigation. The access toolbar follows it;
@@ -239,8 +249,11 @@ use H2 for settings and H3 for groups. Status has less visual
 emphasis than settings. Keep **Default / Custom**, **Use default**, and
 **Monitoring** consistent across selectors and device settings; preserve configured
 names and descriptions. Optional TLS hostname and identity inputs belong in
-Advanced context. Diagnostic disclosures use shaded headers, state badges and
-nested guides; rules can be filtered by status. Outbound metrics pair values with
+Advanced context. Expandable identity, certificate, traffic, routing preview and
+diagnostic sections use Astryx `Collapsible` with leading chevrons. Section
+dividers distinguish related groups, and rules can be filtered by status.
+Preview requests and outbound node lists are created only while expanded.
+Outbound metrics pair values with
 labels. Light/dark colors also apply to chart axes, series and tooltips.
 
 Action feedback uses an Astryx toast at the bottom right without shifting page

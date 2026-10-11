@@ -1,4 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { Field } from "@astryxdesign/core/Field";
 import { useId, useState } from "react";
 import { Disclosure } from "./disclosure.jsx";
 
@@ -20,8 +23,8 @@ const reasonText = (reason) => reasons[reason] || words(reason);
 const statusText = (step) => ({ selected: "Selected", conditional: "Uncertain", not_reached: "Not reached", inactive: "Inactive", skipped: "Skipped", unknown: "Unknown", error: "Error" }[step.status] || (step.match === "miss" ? "No match" : step.match === "match" ? "Matched" : "Unknown"));
 
 export function TraceSteps({ steps = [] }) {
-  return <div className="trace-steps">{steps.map((step, index) => <details key={`${step.id || step.expression}:${index}`}>
-    <summary className="trace-step-summary"><span className="trace-status" data-status={step.status}>{statusText(step)}</span><span className="trace-expression">{step.expression}</span></summary>
+  return <div className="trace-steps">{steps.map((step, index) => <Collapsible className="trace-step" key={`${step.id || step.expression}:${index}`} defaultIsOpen={false} chevronPosition="start"
+    trigger={<span className="trace-step-label"><Badge label={statusText(step)} variant={step.status === "error" ? "error" : ["conditional", "unknown"].includes(step.status) ? "warning" : "neutral"} /><span className="trace-expression">{step.expression}</span></span>}>
     <div className="trace-step-content">
       <p>{reasonText(step.reason)}</p>
       <p className="muted">Stage: {words(step.stage)}{step.parent ? ` · Policy: ${step.parent}` : ""}</p>
@@ -35,11 +38,12 @@ export function TraceSteps({ steps = [] }) {
         <p className="code-block">{`Actual: ${condition.actual || "—"}\nExpected: ${condition.expected || "—"}`}</p>
       </div>)}
     </div>
-  </details>)}</div>;
+  </Collapsible>)}</div>;
 }
 
 function RuleTrace({ steps }) {
   const [filter, setFilter] = useState("all");
+  const id = useId();
   const filters = {
     all: ["All rules", () => true],
     selected: ["Selected", step => step.status === "selected"],
@@ -49,9 +53,9 @@ function RuleTrace({ steps }) {
   };
   const filtered = steps.filter(filters[filter][1]);
   return <Disclosure className="trace-disclosure trace-rule-list" title="Rule trace" meta={`${steps.length} rule${steps.length === 1 ? "" : "s"}`}>
-    <label className="trace-filter"><span>Show</span><select value={filter} onChange={event => setFilter(event.target.value)}>
+    <Field className="trace-filter" label="Show" inputID={id}><select id={id} value={filter} onChange={event => setFilter(event.target.value)}>
       {Object.entries(filters).map(([key, [label, match]]) => <option key={key} value={key}>{label} ({steps.filter(match).length})</option>)}
-    </select></label>
+    </select></Field>
     <div className="trace-scroll" tabIndex={0} role="region" aria-label="Rule trace"><TraceSteps steps={filtered} />{!filtered.length && <p className="muted">No rules in this category.</p>}</div>
   </Disclosure>;
 }

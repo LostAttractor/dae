@@ -1,4 +1,5 @@
 import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { createView } from "./react-view.js";
 import { bytes, TrafficPanel } from "./traffic.jsx";
@@ -6,27 +7,26 @@ import { UpdatedAt } from "./updated.jsx";
 
 function GroupEntry({ group }) {
   const [open, setOpen] = useState(false);
-  return <details className="status-entry" data-name={group.name} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary><strong>{group.name}</strong><span className="count">{group.nodes.length} node{group.nodes.length === 1 ? "" : "s"}</span>
+  return <Collapsible className="status-entry" data-name={group.name} isOpen={open} onOpenChange={setOpen} chevronPosition="start"
+    trigger={<><strong>{group.name}</strong><span className="count">{group.nodes.length} node{group.nodes.length === 1 ? "" : "s"}</span>
       <span className="status-entry-description">{group.policy || group.target_kind} · {group.connectivity || "No connectivity checks"}</span>
       <span className="status-entry-metrics">
         <span><small>Active</small><strong>{group.stats.active_connections}</strong></span>
         <span><small>Uploaded</small><strong>{bytes(group.stats.upload_bytes)}</strong></span>
         <span><small>Downloaded</small><strong>{bytes(group.stats.download_bytes)}</strong></span>
       </span>
-    </summary>
+    </>}>
     <div className="status-nodes">{open && group.nodes.map((node, index) => <p className="muted" key={index}>
       <span className="status-node-name">{node.name}</span>
       <span>{node.checks_connectivity ? node.healthy ? "Healthy" : "Unavailable" : "Not monitored"}</span>
       <span>{node.stats.active_connections} active</span>
     </p>)}</div>
-  </details>;
+  </Collapsible>;
 }
 
 function ConnectionDetails({ snapshot, global, prefix }) {
   const uptime = Math.max(0, Math.floor((Date.now() - Date.parse(snapshot.started_at)) / 60000));
-  return <details className="connection-details">
-    <summary>Connection Details</summary>
+  return <Collapsible className="connection-details" trigger="Connection Details" defaultIsOpen={false} chevronPosition="start">
     <dl className="traffic-totals">
       <div><dt>Total connections</dt><dd>{(snapshot.stats.total_connections ?? 0).toLocaleString()}</dd></div>
       <div><dt>Uploaded</dt><dd>{bytes(snapshot.stats.upload_bytes)}</dd></div>
@@ -40,12 +40,12 @@ function ConnectionDetails({ snapshot, global, prefix }) {
         {snapshot.groups.map(group => <GroupEntry key={group.name} group={group} />)}
         {!snapshot.groups.length && <p className="muted">No outbounds available.</p>}
       </div>
-      {snapshot.tables.length > 0 && <details><summary>Domain Tables</summary>
+      {snapshot.tables.length > 0 && <Collapsible trigger="Domain Tables" defaultIsOpen={false} chevronPosition="start">
         {snapshot.tables.map(table => <p key={table.name}>{table.name}: {table.used.toLocaleString()} / {table.limit ? table.limit.toLocaleString() : "unbounded"}</p>)}
-      </details>}
-      {snapshot.plugins?.length > 0 && <details><summary>Plugins</summary>
+      </Collapsible>}
+      {snapshot.plugins?.length > 0 && <Collapsible trigger="Plugins" defaultIsOpen={false} chevronPosition="start">
         {snapshot.plugins.map(plugin => <p key={plugin.id}>{plugin.id} · {plugin.type} · {plugin.state}</p>)}
-      </details>}
+      </Collapsible>}
     </> : <div id="device-outbounds">
       {snapshot.outbounds.map(outbound => <div className="outbound-entry" key={outbound.name}><strong>{outbound.name}</strong>
         <dl className="outbound-stats">
@@ -56,7 +56,7 @@ function ConnectionDetails({ snapshot, global, prefix }) {
       </div>)}
       {!snapshot.outbounds.length && <p className="muted">No attributed upstream connections yet.</p>}
     </div>}
-  </details>;
+  </Collapsible>;
 }
 
 function useWide(query) {

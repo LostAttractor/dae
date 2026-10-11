@@ -288,12 +288,25 @@ try {
     await js(`document.querySelector('.page-nav a[href="#${name}"]').click()`);
     await until(`document.querySelector('#${name}-page').checkVisibility()`);
   };
+  const setDisclosure = async (selector, open = true) => {
+    const trigger = JSON.stringify(`${selector} > .astryx-collapsible-trigger`);
+    await js(`(() => { const button = document.querySelector(${trigger}); if (button.getAttribute('aria-expanded') !== '${open}') button.click(); })()`);
+    await until(`document.querySelector(${trigger}).getAttribute('aria-expanded') === '${open}'`);
+  };
+  const fillSearch = async (value) => {
+    await js('document.querySelector(".node-search input").focus(); document.querySelector(".node-search input").select()');
+    if (value) await call("Input.insertText", { text: value });
+    else {
+      await key("Backspace", 8);
+      await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 });
+    }
+  };
   const row = 'document.querySelector(".selector-row")';
   const openPicker = async () => {
     if (!await js('document.querySelector("#manage-page").checkVisibility()')) await visit("manage");
     await js('document.querySelector("#manage-outbounds-tab").click()');
     await js(`${row}.querySelector('.node-picker').focus(); ${row}.querySelector('.node-picker').click()`);
-    await until(`${row}.querySelector('.node-popover').matches(':popover-open') && document.activeElement.matches('.node-search')`);
+    await until(`${row}.querySelector('.node-popover').matches(':popover-open') && document.activeElement.matches('.node-search input')`);
   };
   const key = (name, code) => call("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: code });
   const test = async (name, action) => {
@@ -535,7 +548,7 @@ try {
     await call("Emulation.setDeviceMetricsOverride", { width: 960, height: 1000, deviceScaleFactor: 1, mobile: false });
     await until('document.querySelector("#device-tab") !== null');
     assert.equal(await js('document.querySelector(".access-line #identity").textContent'), fixture.device.source_ip);
-    assert.equal(await js('document.querySelector(".device-identity").open'), false);
+    assert.equal(await js('(document.querySelector(".device-identity > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), false);
     await js('document.querySelector("#identity").click()');
     assert.match(await js('document.querySelector("#device-mac").textContent'), /02:00:00:00:00:08/);
     assert.equal(await js('document.querySelectorAll("#status-view h2").length'), 1);
@@ -660,36 +673,36 @@ try {
     assert.equal(await js('document.querySelector("#certificate-fingerprint").textContent'), "test-ca");
     const resize = async (width, height, expanded) => {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
-      await until(`document.querySelector("#certificate-panel").open === ${expanded}`);
+      await until(`(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") === ${expanded}`);
     };
     await resize(390, 844, false);
     await resize(844, 390, false);
     await resize(1280, 900, true);
-    await js('document.querySelector("#certificate-panel summary").click()');
+    await js('document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").click()');
     await resize(390, 844, false);
     await resize(1280, 900, false);
     await js('document.querySelector("#refresh").click()');
     await ready();
     await visit("tracing");
     await visit("overview");
-    assert.equal(await js('document.querySelector("#certificate-panel").open'), false, "manual collapse survives refresh and navigation");
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), false, "manual collapse survives refresh and navigation");
     await page();
-    assert.equal(await js('document.querySelector("#certificate-panel").open'), true, "reload restores the desktop default");
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), true, "reload restores the desktop default");
     await resize(390, 844, false);
     await page();
-    assert.equal(await js('document.querySelector("#certificate-panel").open'), false, "a phone starts collapsed");
-    await js('document.querySelector("#certificate-panel summary").focus()');
-    assert.equal(await js('document.activeElement.matches("#certificate-panel summary")'), true);
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), false, "a phone starts collapsed");
+    await js('document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").focus()');
+    assert.equal(await js('document.activeElement.matches(".certificate-disclosure > .astryx-collapsible-trigger")'), true);
     await call("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
-    await until('document.querySelector("#certificate-panel").open');
+    await until('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")');
     await resize(1280, 900, true);
     await resize(390, 844, true);
     await js('document.querySelector("#refresh").click()');
     await ready();
     await visit("tracing");
     await visit("overview");
-    assert.equal(await js('document.querySelector("#certificate-panel").open'), true, "manual expansion survives resize, refresh and navigation");
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), true, "manual expansion survives resize, refresh and navigation");
   });
 
   await test("late unauthorized poll cannot erase a successful refresh", async () => {
@@ -747,12 +760,13 @@ try {
     }
     await openPicker();
     assert.equal(await js('document.querySelectorAll(".selector-node").length'), 1000);
-    await js(`window.searchInput = ${row}.querySelector('.node-search'); searchInput.value = 'Tokyo'; searchInput.dispatchEvent(new Event('input', { bubbles: true }));`);
+    await js(`window.searchInput = ${row}.querySelector('.node-search input'); true`);
+    await fillSearch("Tokyo");
     assert.equal(await js('document.querySelectorAll(".selector-node:not([hidden])").length'), 1);
     await js('document.querySelector(".selector-node:not([hidden]) .test-node").click()');
     await ready();
     assert.equal(await js('document.querySelector(".selector-node:not([hidden]) .node-health").textContent'), "Testing…");
-    assert.equal(await js('document.querySelector(".node-search") === searchInput && searchInput.value === "Tokyo"'), true);
+    assert.equal(await js('document.querySelector(".node-search input") === searchInput && searchInput.value === "Tokyo"'), true);
     fixture.selectors[0].nodes[1].checking = false;
     fixture.selectors[0].nodes[1].tested = true;
     fixture.selectors[0].nodes[1].healthy = true;
@@ -805,10 +819,13 @@ try {
     await js('document.querySelector("#refresh").click()');
     await ready();
     await openPicker();
-    await js('document.querySelector(".node-search").value = "test"; document.querySelector(".node-search").setSelectionRange(4, 4)');
+    await fillSearch("test");
     await key("Home", 36);
-    assert.equal(await js('document.activeElement.matches(".node-search")'), true);
-    await js('document.querySelector(".node-search").value = ""; document.querySelector(".node-search").dispatchEvent(new Event("input", { bubbles: true })); document.querySelector(".test-node").focus()');
+    assert.equal(await js('document.activeElement.matches(".node-search input")'), true);
+    await js('document.querySelector(".node-search button").click()');
+    assert.equal(await js('document.activeElement.matches(".node-search input") && document.activeElement.value === ""'), true);
+    assert.equal(await js('document.querySelectorAll(".selector-node:not([hidden])").length'), 1000);
+    await js('document.querySelector(".test-node").focus()');
     await key("ArrowDown", 40);
     assert.equal(await js('document.activeElement.closest(".selector-node").querySelector(".node-name").textContent'), "Tokyo");
     await key("End", 35);
@@ -826,11 +843,11 @@ try {
     await key("ArrowDown", 40);
     fixture.selectors[0].nodes.shift();
     await until(`${row}.querySelector('.node-list .node-name').textContent === 'Tokyo'`);
-    assert.equal(await js('document.activeElement.matches(".node-search")'), true);
-    await js('document.querySelector(".node-search").value = "missing node"; document.querySelector(".node-search").dispatchEvent(new Event("input", { bubbles: true }))');
+    assert.equal(await js('document.activeElement.matches(".node-search input")'), true);
+    await fillSearch("missing node");
     assert.equal(await js('document.querySelector(".no-nodes").hidden'), false);
     await key("ArrowDown", 40);
-    assert.equal(await js('document.activeElement.matches(".node-search")'), true);
+    assert.equal(await js('document.activeElement.matches(".node-search input")'), true);
     fixture.selectors = [];
     await until('document.querySelectorAll("#selectors .selector-row").length === 0 && document.querySelector("#selectors").textContent.includes("No outbound groups")');
     assert.equal(await js('document.querySelector("#selector-count").textContent'), "0 groups");
@@ -853,11 +870,11 @@ try {
   await test("client routing impact is lazy and feeds a read-only target comparison", async () => {
     assert.equal(fixture.requests.length, 0);
     assert.equal(await js('document.querySelectorAll(".client-impact").length'), 1);
-    await js('document.querySelector(".client-impact").open = true');
+    await setDisclosure(".client-impact", true);
     await until('document.querySelector(".impact-content").textContent.includes("Compare a target")');
     assert.deepEqual(fixture.requests[0], { method: "POST", path: "/api/device/sets/internal%2Fwork/impact", body: { joined: true, context: {} } });
     assert.equal(fixture.device.sets[0].joined, false);
-    await js('document.querySelector(".impact-content button").click(); document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+    await js('document.querySelector(".impact-content .astryx-button").click(); document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
     assert.equal(await js('location.hash'), "#tracing");
     assert.equal(await js('document.activeElement.id'), "diagnostic-target");
     await until('document.querySelector("#diagnostic-result").textContent.includes("With proposed changes")');
@@ -886,7 +903,7 @@ try {
     const held = { started: deferred(), release: deferred() };
     fixture.nextImpact = held;
     try {
-      await js('document.querySelector(".client-impact").open = true');
+      await setDisclosure(".client-impact", true);
       await held.started.promise;
       await js('document.querySelector(".impact-option select").value = "gaming"; document.querySelector(".impact-option select").dispatchEvent(new Event("change", { bubbles: true }))');
       await until('document.querySelector(".impact-content").textContent.includes("Change: On → Off")');
@@ -894,9 +911,9 @@ try {
       held.release.resolve();
       await delay(100);
       assert.match(await js('document.querySelector(".impact-content").textContent'), /Change: On → Off/);
-      await js('document.querySelector(".impact-content button").click()');
+      await js('document.querySelector(".impact-content .astryx-button").click()');
       assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Leave gaming");
-      await js('document.querySelector(".client-impact").open = false');
+      await setDisclosure(".client-impact", false);
       await until('document.querySelector(".impact-content") === null');
     } finally { held.release.resolve(); }
   });
@@ -918,7 +935,7 @@ try {
     assert.match(await js('document.querySelector(".trace-missing").textContent'), /Entering a hostname or SNI does not create a mapping/);
     assert.equal(await js('document.querySelector(".trace-candidates select").options.length'), 91, "exclude IPv6 candidates for the inherited IPv4 identity");
     assert.equal(await js('document.querySelector(".trace-candidates button").disabled'), true);
-    assert.equal(await js('[...document.querySelectorAll(".explanation details")].every(element => !element.open)'), true);
+    assert.equal(await js('document.querySelectorAll(".explanation .astryx-collapsible-trigger[aria-expanded=true]").length === 0'), true);
     assert.equal(await js('document.querySelector(".trace-outcome").textContent.includes("198.51.100.89")'), false, "large candidate lists are summarized");
     for (const [width, theme] of [[320, "light"], [390, "dark"], [768, "light"], [1280, "dark"], [1920, "dark"]]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
@@ -942,10 +959,11 @@ try {
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-explanation-missing-${width}.png`), Buffer.from(image.data, "base64"));
       }
     }
-    await js('document.querySelector(".trace-rule-list").open = true; document.querySelector(".trace-filter select").value = "uncertain"; document.querySelector(".trace-filter select").dispatchEvent(new Event("change", { bubbles: true }))');
-    assert.equal(await js('document.querySelectorAll(".trace-steps > details").length'), 60);
-    await js('document.querySelector(".trace-steps details").open = true');
-    assert.match(await js('document.querySelector(".trace-steps details p").textContent'), /More information/);
+    await setDisclosure(".trace-rule-list");
+    await js('document.querySelector(".trace-filter select").value = "uncertain"; document.querySelector(".trace-filter select").dispatchEvent(new Event("change", { bubbles: true }))');
+    assert.equal(await js('document.querySelectorAll(".trace-steps > .trace-step").length'), 60);
+    await setDisclosure(".trace-steps .trace-step");
+    assert.match(await js('document.querySelector(".trace-step p").textContent'), /More information/);
     assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'), true);
     await js('document.querySelector(".trace-missing button").click()');
     assert.equal(await js('document.activeElement.id'), "diagnostic-ip");
@@ -1019,7 +1037,8 @@ try {
     try {
       await js('document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
       await held.started.promise;
-      await js('document.querySelector(".diagnostic-advanced").open = true; document.querySelector("#diagnostic-context").click()');
+      await setDisclosure(".diagnostic-advanced");
+      await js('document.querySelector("#diagnostic-context").click()');
       await until('document.querySelector("#diagnostic-context-view").textContent.includes("[request]")');
       assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), true);
       await js('document.querySelector("#diagnostic-kind").value = "dns"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
@@ -1059,7 +1078,7 @@ try {
     const held = { started: deferred(), release: deferred() };
     fixture.nextImpact = held;
     try {
-      await js('document.querySelector(".client-impact").open = true');
+      await setDisclosure(".client-impact", true);
       await held.started.promise;
       fixture.device.sets[0].joined = true;
       await js('document.querySelector("#refresh").click()');
@@ -1068,12 +1087,12 @@ try {
       held.release.resolve();
       await delay(100);
       assert.match(await js('document.querySelector(".impact-content").textContent'), /Change: On → Off/);
-      await js('document.querySelector(".impact-content button").click()');
+      await js('document.querySelector(".impact-content .astryx-button").click()');
       assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Leave Work network");
       fixture.device.mac = "02:00:00:00:00:09";
       await js('document.querySelector("#refresh").click()');
       await ready();
-      assert.equal(await js('document.querySelector(".client-impact").open'), false);
+      assert.equal(await js('document.querySelector(".client-impact > .astryx-collapsible-trigger").getAttribute("aria-expanded")'), "false");
       assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Current settings");
     } finally { held.release.resolve(); }
   });
@@ -1130,11 +1149,11 @@ try {
     await js('document.querySelector("#manage-devices-tab").click()');
     await until('document.querySelector("#managed-client-group").options.length === 1');
     await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=join]").click()');
-    await until('document.querySelector("#managed-client-result .badge")?.textContent === "Joined"');
+    await until('document.querySelector("#managed-client-result .astryx-badge")?.textContent === "Joined"');
     assert.deepEqual(fixture.requests.at(-1), { method: "PUT", path: "/api/clients/internal%2Fwork/members/02%3A00%3A00%3A00%3A00%3A99", body: {} });
     assert.equal(fixture.device.sets[0].joined, false);
     await js('document.querySelector("#managed-client-form button[value=leave]").click()');
-    await until('document.querySelector("#managed-client-result .badge")?.textContent === "Not joined"');
+    await until('document.querySelector("#managed-client-result .astryx-badge")?.textContent === "Not joined"');
     assert.match(await js('document.querySelector(".managed-device-settings").textContent'), /HTTPS modulesUse default/);
     await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:98"; document.querySelector("#managed-client-mac").dispatchEvent(new Event("input", { bubbles: true }))');
     assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "", "editing the MAC cannot leave another device's settings visible");
@@ -1216,16 +1235,16 @@ try {
     await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
     await js('document.querySelector("#refresh").click()');
     await ready();
-    await js('document.querySelector("#global-groups").parentElement.open = true');
+    await setDisclosure("#global-traffic .connection-details");
     assert.equal(await js('document.querySelectorAll("#global-groups .status-nodes p").length'), 0);
-    await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector("summary").click(); openGroup.querySelector("summary").focus()');
+    await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector(".astryx-collapsible-trigger").click(); openGroup.querySelector(".astryx-collapsible-trigger").focus()');
     await until('openGroup.querySelectorAll(".status-nodes p").length === 80');
     assert.equal(await js('(() => { const list = document.querySelector("#global-groups"); return list.scrollHeight > list.clientHeight && list.clientHeight <= 360; })()'), true);
     assert.equal(await js('(() => { const device = document.querySelector("#device-status").getBoundingClientRect(); const global = document.querySelector("#global-status").getBoundingClientRect(); return device.bottom < global.top && device.left === global.left; })()'), true);
     await js('document.querySelector("#global-groups").scrollTop = 120');
     fixture.groups[0].nodes[20].stats.active_connections = 41;
     await until('openGroup.querySelectorAll(".status-nodes p")[20].textContent.includes("41 active")');
-    assert.equal(await js('openGroup.open && document.activeElement === openGroup.querySelector("summary")'), true);
+    assert.equal(await js('(openGroup.querySelector(".astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".astryx-collapsible-trigger")'), true);
     assert.equal(await js('document.querySelector("#global-groups").scrollTop'), 120);
     if (process.env.SCREENSHOT_DIR) {
       await js('document.querySelector("#global-groups").scrollTop = 0; window.scrollTo(0, 0)');
@@ -1234,7 +1253,7 @@ try {
     }
     fixture.groups.reverse();
     await until('document.querySelector("#global-groups").firstElementChild.dataset.name === "direct"');
-    assert.equal(await js('openGroup.isConnected && openGroup.open && document.activeElement === openGroup.querySelector("summary")'), true);
+    assert.equal(await js('openGroup.isConnected && (openGroup.querySelector(".astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".astryx-collapsible-trigger")'), true);
     fixture.mode = "api_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
@@ -1248,16 +1267,24 @@ try {
     // Text-only zoom exercises user font preferences independently of viewport zoom.
     for (const width of [320, 768, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
-      await until(`document.querySelector("#certificate-panel").open === ${width >= 768}`);
-      await js('document.querySelector("#certificate-panel").open = true');
+      await page();
+      await until(`(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") === ${width >= 768}`);
+      await setDisclosure(".certificate-disclosure");
       await js('document.documentElement.style.fontSize = "200%"');
       for (const name of ["overview", "tracing", "manage"]) {
         await visit(name);
+        if (name === "tracing") {
+          await setDisclosure(".diagnostic-advanced");
+          await js('document.querySelector("#diagnostic-target").value = "missing-port"; document.querySelector("#diagnostic-form").requestSubmit()');
+          await until('document.querySelector("#diagnostic-result [role=alert]") !== null');
+          assert.match(await js('document.querySelector("#diagnostic-result [role=alert]").textContent'), /Enter an IP:port/);
+        }
         await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
         assert.equal(await js(`document.documentElement.scrollWidth <= ${width}`), true, `${name} reflows at ${width}px with double-size text`);
-        const clipped = await js('[...document.querySelectorAll("button, summary, .page-nav a, .download-links a, .section-description, .managed-section p")].filter(element => element.checkVisibility() && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
+        // Screen-reader-only labels deliberately clip their text to a 1px box.
+        const clipped = await js('[...document.querySelectorAll("button, .page-nav a, .download-links a, .section-description, .managed-section p, .astryx-field-label, .astryx-banner-description")].filter(element => element.checkVisibility() && getComputedStyle(element).clip !== "rect(0px, 0px, 0px, 0px)" && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
         assert.deepEqual(clipped, [], `${name} has no clipped labels at ${width}px`);
-        assert.equal(await js(`([...document.querySelectorAll("button, summary")].filter(element => element.checkVisibility()).every(element => { const rect = element.getBoundingClientRect(); const card = element.closest(".card")?.getBoundingClientRect(); const strip = element.closest(".astryx-tab-strip")?.getBoundingClientRect(); if (strip) return strip.left >= 0 && strip.right <= ${width} && rect.width <= strip.width; return rect.left >= 0 && rect.right <= ${width} && (!card || rect.right <= card.right); }))`), true, `${name} keeps controls inside their panels at ${width}px`);
+        assert.equal(await js(`([...document.querySelectorAll("button")].filter(element => element.checkVisibility()).every(element => { const rect = element.getBoundingClientRect(); const card = element.closest(".card")?.getBoundingClientRect(); const strip = element.closest(".astryx-tab-strip")?.getBoundingClientRect(); if (strip) return strip.left >= 0 && strip.right <= ${width} && rect.width <= strip.width; return rect.left >= 0 && rect.right <= ${width} && (!card || rect.right <= card.right); }))`), true, `${name} keeps controls inside their panels at ${width}px`);
         if (process.env.SCREENSHOT_DIR && width === 320) {
           await js('window.scrollTo(0, 0)');
           const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
@@ -1278,7 +1305,7 @@ try {
     };
     await js('document.querySelector("#refresh").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#certificate-panel").open'), true);
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), true);
     await delay(250);
     await js('document.querySelector(".astryx-toast button")?.click()');
     await until('document.querySelector("#message") === null');
@@ -1296,9 +1323,10 @@ try {
     ];
     for (const [width, height, theme] of viewports) {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
+      await page();
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
       const certificateExpanded = width >= 768 && height >= 600;
-      await until(`document.querySelector("#certificate-panel").open === ${certificateExpanded}`);
+      await until(`(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") === ${certificateExpanded}`);
       const dualScope = width >= 1024;
       await until(`(document.querySelector("#global-tab") === null) === ${dualScope}`);
       if (!dualScope) {
@@ -1356,14 +1384,14 @@ try {
         const viewportImage = await call("Page.captureScreenshot", { captureBeyondViewport: false });
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-overview-viewport-${width}x${height}.png`), Buffer.from(viewportImage.data, "base64"));
       }
-      await js('document.querySelector("#certificate-panel").open = true');
+      await setDisclosure(".certificate-disclosure");
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `expanded settings fit at ${width}px`);
       if (process.env.SCREENSHOT_DIR && (width === 390 && height === 844 || width === 1280 && height === 960)) {
         const clip = await js('(() => { const rect = document.querySelector("#https-title").closest("section").getBoundingClientRect(); return { x: rect.x + scrollX, y: rect.y + scrollY, width: rect.width, height: rect.height, scale: 1 }; })()');
         const certificateImage = await call("Page.captureScreenshot", { captureBeyondViewport: true, clip });
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-certificate-${width}.png`), Buffer.from(certificateImage.data, "base64"));
       }
-      await js(`document.querySelector("#certificate-panel").open = ${certificateExpanded}`);
+      await setDisclosure(".certificate-disclosure", certificateExpanded);
       await visit("tracing");
       assert.deepEqual(await js('(() => { const rect = document.querySelector(".workspace").getBoundingClientRect(); return { left: rect.left, width: rect.width, navWidth: document.querySelector(".page-nav").getBoundingClientRect().width }; })()'), overviewBounds, `Tracing keeps Overview width and alignment at ${width}px`);
       const fieldSizes = await js('(() => { const input = document.querySelector("#diagnostic-target").getBoundingClientRect(); const select = document.querySelector("#diagnostic-protocol").getBoundingClientRect(); return { inputHeight: input.height, selectHeight: select.height, inputWidth: input.width }; })()');
@@ -1387,7 +1415,7 @@ try {
       }
       await js('document.querySelector("#manage-status-tab").click()');
       await until('document.querySelector("#managed-global-traffic .recharts-surface") !== null');
-      await js('document.querySelector("#managed-global-traffic .connection-details").open = true');
+      await setDisclosure("#managed-global-traffic .connection-details", true);
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `global status fits at ${width}x${height}`);
       assert.equal(await js('document.querySelector("#managed-global-groups").clientHeight > 0'), true);
       if (process.env.SCREENSHOT_DIR && height >= 600) {
@@ -1395,7 +1423,7 @@ try {
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-global-status-${width}x${height}.png`), Buffer.from(image.data, "base64"));
       }
-      await js('document.querySelector("#managed-global-traffic .connection-details").open = false');
+      await setDisclosure("#managed-global-traffic .connection-details", false);
       await visit("overview");
     }
     await visit("tracing");
@@ -1403,7 +1431,7 @@ try {
     assert.equal(await js('document.querySelector("#diagnostic-qtype").checkVisibility() && !document.querySelector("#diagnostic-sni").checkVisibility()'), true);
     await js('document.querySelector("#diagnostic-kind").value = "flow"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
     assert.equal(await js('!document.querySelector("#diagnostic-sni").checkVisibility() && !document.querySelector("#diagnostic-qtype").checkVisibility()'), true);
-    await js('document.querySelector(".diagnostic-advanced").open = true');
+    await setDisclosure(".diagnostic-advanced", true);
     assert.equal(await js('document.querySelector("#diagnostic-sni").checkVisibility()'), true);
     assert.equal(browserLogs.some((entry) => /Content Security Policy|Refused to|violates/i.test(entry)), false);
   });

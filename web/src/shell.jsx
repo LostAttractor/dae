@@ -1,5 +1,9 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Field } from "@astryxdesign/core/Field";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { createView } from "./react-view.js";
+import { CertificatePanel } from "./certificate-panel.jsx";
 
 export function mountShell(container) {
   createView(container)(<Shell />);
@@ -22,17 +26,15 @@ function Shell() {
             <div className="toolbar card">
               <div className="access-context">
                 <div className="access-line">
-                  <span id="access-title" className="badge" aria-describedby="access-description">Guest</span>
-                  <details className="device-identity">
-                    <summary id="identity">Identifying your device…</summary>
+                  <Badge label={<span id="access-title">Guest</span>} aria-describedby="access-description" />
+                  <Collapsible className="device-identity" defaultIsOpen={false} chevronPosition="start" trigger={<span id="identity">Identifying your device…</span>}>
                     <span id="device-mac" className="muted"></span>
-                  </details>
+                  </Collapsible>
                 </div>
                 <form id="login-form" className="login-form">
-                  <div className="key-field">
-                    <label htmlFor="api-key">API Key</label>
+                  <Field className="key-field" label="API Key" inputID="api-key">
                     <input id="api-key" name="api-key" type="password" autoComplete="current-password" spellCheck={false} placeholder="Enter your API key" required />
-                  </div>
+                  </Field>
                   <Button label="Login" id="login" type="submit" />
                 </form>
                 <div id="session-info" className="session-info" hidden>
@@ -58,38 +60,39 @@ function Shell() {
                   <h2 id="https-title">HTTPS Modules</h2>
                   <p className="section-description">Manage HTTPS modules for this device.</p>
                   <div id="mitm" className="mitm-state"></div>
-                  <details id="certificate-panel" className="certificate-panel" hidden>
-                    <summary>Certificate &amp; browser verification</summary>
-                    <div className="certificate-content">
-                      <section className="certificate-install" aria-label="Certificate installation">
-                        <div id="certificate" className="certificate-identity">
-                          <strong id="certificate-name"></strong>
-                          <span className="certificate-fingerprint-label">SHA-256 fingerprint</span>
-                          <code id="certificate-fingerprint"></code>
-                        </div>
-                        <p>Verify this fingerprint on your router, then install and trust the certificate.</p>
-                        <div className="certificate-downloads">
-                          <span id="certificate-download-title">Download</span>
-                          <div className="download-links" role="group" aria-labelledby="certificate-download-title">
-                            <Button label="iOS Profile" href="/ca.mobileconfig" aria-label="Download iOS certificate profile" />
-                            <Button label="DER" href="/ca.cer" aria-label="Download DER certificate" />
-                            <Button label="PEM" href="/ca.pem" aria-label="Download PEM certificate" />
+                  <div id="certificate-panel" className="certificate-panel" hidden>
+                    <CertificatePanel>
+                      <div className="certificate-content">
+                        <section className="certificate-install" aria-label="Certificate installation">
+                          <div id="certificate" className="certificate-identity">
+                            <strong id="certificate-name"></strong>
+                            <span className="certificate-fingerprint-label">SHA-256 fingerprint</span>
+                            <code id="certificate-fingerprint"></code>
                           </div>
-                        </div>
-                      </section>
-                      <section id="certificate-test-panel" aria-labelledby="certificate-test-title" hidden>
-                        <div className="certificate-test-heading">
-                          <h3 id="certificate-test-title">Browser verification</h3>
-                          <Button label="Test Certificate" id="test-certificate" type="button" />
-                        </div>
-                        <dl className="certificate-results">
-                          <div><dt>Certificate trust</dt><dd><span id="certificate-trust-result" className="badge">Not tested</span></dd></div>
-                          <div><dt>HTTPS interception</dt><dd><span id="certificate-mitm-result" className="badge">Not tested</span></dd></div>
-                        </dl>
-                        <p id="certificate-test-info">Results apply to this browser only.</p>
-                      </section>
-                    </div>
-                  </details>
+                          <p>Verify this fingerprint on your router, then install and trust the certificate.</p>
+                          <div className="certificate-downloads">
+                            <span id="certificate-download-title">Download</span>
+                            <div className="download-links" role="group" aria-labelledby="certificate-download-title">
+                              <Button label="iOS Profile" href="/ca.mobileconfig" aria-label="Download iOS certificate profile" />
+                              <Button label="DER" href="/ca.cer" aria-label="Download DER certificate" />
+                              <Button label="PEM" href="/ca.pem" aria-label="Download PEM certificate" />
+                            </div>
+                          </div>
+                        </section>
+                        <section id="certificate-test-panel" aria-labelledby="certificate-test-title" hidden>
+                          <div className="certificate-test-heading">
+                            <h3 id="certificate-test-title">Browser verification</h3>
+                            <Button label="Test Certificate" id="test-certificate" type="button" />
+                          </div>
+                          <dl className="certificate-results">
+                            <div><dt>Certificate trust</dt><dd><span id="certificate-trust-result" className="verification-result">Not tested</span></dd></div>
+                            <div><dt>HTTPS interception</dt><dd><span id="certificate-mitm-result" className="verification-result">Not tested</span></dd></div>
+                          </dl>
+                          <p id="certificate-test-info">Results apply to this browser only.</p>
+                        </section>
+                      </div>
+                    </CertificatePanel>
+                  </div>
                 </section>
               </div>
               <section id="status-view" className="card status-card" aria-labelledby="traffic-title"></section>
@@ -107,7 +110,7 @@ function Shell() {
               <div id="manage-navigation"></div>
               <div id="manage-devices" role="tabpanel" aria-labelledby="manage-devices-tab" data-manage-section="devices">
                 <div id="devices-locked" className="card">
-                  <p className="badge">Administrator access required</p>
+                  <p className="access-required">Administrator access required</p>
                   <p id="devices-login-hint" className="muted">Log in above to manage other devices.</p>
                 </div>
                 <div id="managed-clients-view" hidden></div>
@@ -120,7 +123,7 @@ function Shell() {
                   </div>
                   <p className="section-description">Choose a node for each outbound group. Changes affect all devices using that group.</p>
                   <div id="selectors-locked" className="empty-state">
-                    <p id="access-required" className="badge">Login required</p>
+                    <p id="access-required" className="access-required">Login required</p>
                     <p id="login-hint">Enter your API key above to view outbound groups and switch nodes.</p>
                   </div>
                   <div id="selectors" className="selector-list" hidden></div>

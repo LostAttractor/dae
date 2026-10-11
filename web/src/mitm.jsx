@@ -1,4 +1,5 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Badge } from "@astryxdesign/core/Badge";
 import { createView } from "./react-view.js";
 
 function MITM({ mitm, actions }) {
@@ -10,8 +11,8 @@ function MITM({ mitm, actions }) {
   }
   return <>
     <div className="mitm-summary status-row">
-      <span className="mitm-enabled badge">{mitm.enabled ? "Enabled" : "Disabled"}</span>
-      <span className="settings-source badge">{mitm.override === null ? "Default" : "Custom"}</span>
+      <Badge className="mitm-enabled" label={mitm.enabled ? "Enabled" : "Disabled"} />
+      <Badge className="settings-source" label={mitm.override === null ? "Default" : "Custom"} />
     </div>
     <div className="button-row">
       <Button className="toggle" label={mitm.enabled ? "Disable" : "Enable"}

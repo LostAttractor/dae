@@ -1,4 +1,9 @@
 import { Button } from "@astryxdesign/core/Button";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Field } from "@astryxdesign/core/Field";
 import { Switch } from "@astryxdesign/core/Switch";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { createView } from "./react-view.js";
@@ -17,7 +22,8 @@ function ClientImpact({ set, contextKey, request, onCompare }) {
   const impact = result.value;
   return <div className="impact-content" aria-busy={result.pending}>
     {result.pending && <p>Loading routing effects…</p>}
-    {result.error && <><p className="notice">{result.error}</p><Button label="Retry" type="button" onClick={() => setRetry(value => value + 1)} /></>}
+    {result.error && <Banner status="error" title="Could not load routing effects" description={result.error}
+      endContent={<Button label="Retry" type="button" onClick={() => setRetry(value => value + 1)} />} />}
     {impact && <>
       <p>Change: {impact.joined_before ? "On" : "Off"} → {impact.joined_after ? "On" : "Off"}.</p>
       <p className="muted">{impact.connection_behavior === "retain" ? "Existing connections keep their current route." : `Existing connections: ${impact.connection_behavior}.`}</p>
@@ -35,7 +41,7 @@ function ClientSets({ device, actions }) {
   const [selected, setSelected] = useState("");
   const contextKey = JSON.stringify([device.mac, device.source_ip, device.sets]);
   const selectedSet = device.sets.find(set => set.name === selected) || device.sets[0];
-  if (!device.sets.length) return <p className="muted">No routing options available for this device.</p>;
+  if (!device.sets.length) return <EmptyState isCompact title="No routing options" description="No routing options available for this device." />;
   return <>
     <div className="client-options">{device.sets.map(set => {
       const label = set.description || set.name;
@@ -45,17 +51,16 @@ function ClientSets({ device, actions }) {
         }, `${label} turned ${set.joined ? "off" : "on"} for this device.`)} />
       </div>;
     })}</div>
-    <details className="client-impact" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>Preview Routing Changes</summary>
+    <Collapsible className="client-impact" trigger="Preview Routing Changes" isOpen={open} onOpenChange={setOpen} chevronPosition="start">
       {open && <>
-        <label className="impact-option">Option to preview
-          <select value={selectedSet.name} onChange={(event) => setSelected(event.target.value)}>
+        <Field className="impact-option" label="Option to preview" inputID="impact-option">
+          <select id="impact-option" value={selectedSet.name} onChange={(event) => setSelected(event.target.value)}>
             {device.sets.map(set => <option key={set.name} value={set.name}>{set.description || set.name}</option>)}
           </select>
-        </label>
+        </Field>
         <ClientImpact key={`${contextKey}/${selectedSet.name}`} set={selectedSet} contextKey={contextKey} request={actions.request} onCompare={actions.onCompare} />
       </>}
-    </details>
+    </Collapsible>
   </>;
 }
 
@@ -110,16 +115,16 @@ function ManagedClients({ allowed, active, request }) {
           <legend>Device</legend>
           <p>Enter the device's MAC address. All actions below apply to this device.</p>
           <div className="managed-device-lookup">
-            <div className="managed-client-fields"><label>MAC address<input id="managed-client-mac" name="mac" placeholder="02:00:00:00:00:10" autoCapitalize="none" spellCheck={false} required /></label></div>
+            <div className="managed-client-fields"><Field label="MAC address" inputID="managed-client-mac"><input id="managed-client-mac" name="mac" placeholder="02:00:00:00:00:10" autoCapitalize="none" spellCheck={false} required /></Field></div>
             <Button label="Show settings" type="submit" value="show" />
           </div>
         </fieldset>
         <fieldset className="managed-section">
           <legend>Routing group</legend>
           <p>Membership affects routing rules that refer to this group.</p>
-          <div className="managed-client-fields"><label>Group<select id="managed-client-group" name="group" disabled={groups.pending}>
+          <div className="managed-client-fields"><Field label="Group" inputID="managed-client-group" isDisabled={groups.pending}><select id="managed-client-group" name="group" disabled={groups.pending}>
               {(groups.value?.groups || []).map(group => <option key={group.name} value={group.name}>{group.description || group.name} ({group.members.length} members)</option>)}
-          </select></label></div>
+          </select></Field></div>
           <div className="button-row"><Button label="Join group" type="submit" value="join" /><Button label="Leave group" type="submit" value="leave" /></div>
         </fieldset>
         <fieldset className="managed-section">
@@ -130,13 +135,13 @@ function ManagedClients({ allowed, active, request }) {
       </fieldset>
     </form>
     <div id="managed-client-result" aria-live="polite" aria-busy={action.pending || groups.pending}>
-      {groups.error && <p className="notice">{groups.error}</p>}
+      {groups.error && <Banner status="error" title="Could not load groups" description={groups.error} />}
       {action.pending && <p>Loading device settings…</p>}
-      {action.error && <p className="notice">{action.error}</p>}
+      {action.error && <Banner status="error" title="Device action failed" description={action.error} />}
       {device && <><div className="managed-result-heading"><h3>Saved settings</h3><span>{device.mac}</span></div>
         <dl className="managed-device-settings">
-          {device.sets.map(set => <div key={set.name}><dt>{set.description || set.name}</dt><dd><span className="badge">{set.joined ? "Joined" : "Not joined"}</span></dd></div>)}
-          <div><dt>HTTPS modules</dt><dd><span className="badge">{device.mitm_override === null ? "Use default" : device.mitm_override ? "Enabled" : "Disabled"}</span></dd>
+          {device.sets.map(set => <div key={set.name}><dt>{set.description || set.name}</dt><dd><Badge label={set.joined ? "Joined" : "Not joined"} /></dd></div>)}
+          <div><dt>HTTPS modules</dt><dd><Badge label={device.mitm_override === null ? "Use default" : device.mitm_override ? "Enabled" : "Disabled"} /></dd>
             {device.mitm_override === null && <span className="field-hint">The effective default can depend on the device's source IP.</span>}
           </div>
         </dl>

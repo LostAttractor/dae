@@ -6,7 +6,7 @@ import { createMITM } from "./mitm.jsx";
 import { createManageNavigation } from "./manage.jsx";
 import { createSelectors } from "./selectors.jsx";
 import { createStatus } from "./status.jsx";
-import { certificateDevice, certificateIdentity, initializeCertificatePanel, testCertificate } from "./certificate.js";
+import { certificateDevice, certificateIdentity, testCertificate } from "./certificate.js";
 import { createDiagnostics } from "./diagnostics.jsx";
 import { createClientSets, createManagedClients } from "./clients.jsx";
 import { createNavigation } from "./navigation.jsx";
@@ -27,7 +27,6 @@ let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
 mountShell(byId("app"));
-initializeCertificatePanel();
 const message = createNotifications(byId("notifications"));
 byId("test-certificate").disabled = true;
 const diagnostics = createDiagnostics(byId("diagnostic-view"));
