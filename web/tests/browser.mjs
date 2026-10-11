@@ -176,6 +176,8 @@ const httpServer = createServer(async (req, res) => {
       return json(snapshot, status);
     }
     if (req.url === "/api/device/status") {
+      fixture.deviceStatusReads = (fixture.deviceStatusReads || 0) + 1;
+      if (fixture.l3) return json({ error: "Ethernet MAC required" }, 403);
       const override = fixture.nextDeviceRead;
       fixture.nextDeviceRead = null;
       const snapshot = structuredClone({ device: fixture.device, scope: "userspace_upstream", started_at: "2026-10-01T00:00:00Z", stats: fixture.stats, outbounds: [{ name: "device-outbound", stats: fixture.stats }] });
@@ -194,7 +196,9 @@ const httpServer = createServer(async (req, res) => {
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
     }
     if (req.url === "/api/device") return json(fixture.device);
-    if (req.url === "/api/device/context") return json({ generation: 7, context: {}, device: fixture.device, fields: [{ name: "mac", value: fixture.device.mac, source: "request" }] });
+    if (req.url === "/api/device/context") return fixture.l3
+      ? json({ generation: 7, context: { source_ip: "100.64.0.23", link_type: "ip", ifindex: 8 }, fields: [{ name: "link_type", value: "ip", source: "request" }] })
+      : json({ generation: 7, context: { source_ip: fixture.device.source_ip, mac: fixture.device.mac, link_type: "ethernet" }, device: fixture.device, fields: [{ name: "mac", value: fixture.device.mac, source: "request" }] });
     if (req.url === "/api/clients") {
       fixture.clientReads++;
       return json({ groups: [{ name: "internal/work", description: "Managed group", members: [] }] });
@@ -333,6 +337,26 @@ try {
   await call("Runtime.enable");
   await call("Network.enable");
   await call("Log.enable");
+
+  await test("L3 LAN retains management and diagnostics without device controls", async () => {
+    fixture.l3 = true;
+    fixture.requests = [];
+    fixture.deviceStatusReads = 0;
+    await page();
+    assert.equal(await js('document.querySelector("#access-title").textContent'), "LAN access");
+    assert.equal(await js('document.querySelector("#identity").textContent'), "100.64.0.23");
+    assert.match(await js('document.querySelector("#device-mac").textContent'), /IP connection/);
+    assert.match(await js('document.querySelector("#sets").textContent'), /no Ethernet MAC/);
+    assert.equal(await js('document.querySelector("#test-certificate").disabled'), true);
+    await delay(2200);
+    assert.equal(fixture.deviceStatusReads, 0);
+    await visit("tracing");
+    assert.equal(await js('document.querySelector("#diagnostic-view").checkVisibility()'), true);
+    fixture.l3 = false;
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.match(await js('document.querySelector("#device-mac").textContent'), /02:00:00:00:00:08/);
+  });
 
   if (process.env.CERTUTIL) await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
     fixture.certificate = { name: "Browser CA", fingerprint: "browser-ca", test_available: true, test_generation: "browser-one", test_mitm_origins: mitmOrigins };

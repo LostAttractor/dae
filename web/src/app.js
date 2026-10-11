@@ -15,7 +15,7 @@ import { createUpdatedLabel } from "./updated.jsx";
 const accessDenied = (error) => error.status === 401 || error.status === 403;
 const accessLabels = {
   api_key: { title: "Administrator", description: "Logged in · Remembered for 7 days" },
-  lan: { title: "LAN access", description: "Verified LAN device · No API key configured" },
+  lan: { title: "LAN access", description: "Verified LAN ingress · No API key configured" },
   unix: { title: "Local access", description: "Authorized by local socket permissions" },
 };
 let authMode = null;
@@ -176,6 +176,23 @@ async function loadSelectors({ allowGuest = false, background = false } = {}) {
 async function loadDevice({ background = false } = {}) {
   const version = ++deviceRequestVersion;
   try {
+    const connection = await request("/api/device/context");
+    if (version !== deviceRequestVersion) return;
+    if (!connection.device) {
+      const key = JSON.stringify(connection.context);
+      if (deviceStateKey !== key) {
+        deviceStateKey = key;
+        diagnostics.setDevice(key);
+        certificateDevice(null);
+        byId("identity").textContent = connection.context.source_ip;
+        byId("device-mac").textContent = `IP connection · Interface ${connection.context.ifindex}`;
+        const reason = "This connection has no Ethernet MAC. Device traffic, client sets and HTTPS module preferences are unavailable.";
+        status.deviceError(reason, true);
+        clientSets.error(reason);
+        mitm.unavailable();
+      }
+      return;
+    }
     const snapshot = await request("/api/device/status");
     if (version !== deviceRequestVersion) return;
     renderDevice(snapshot.device);
