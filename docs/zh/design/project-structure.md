@@ -2,7 +2,8 @@
 
 | 目录 | 职责 |
 | --- | --- |
-| `cmd` | 命令参数、信号客户端和生成的插件表 |
+| `cmd` | 命令参数、信号客户端和程序入口组装 |
+| `internal/compiledplugins` | 由本地构建配置生成的插件注册表 |
 | `internal/daemon` | 启动、资源加载、差异重载、服务发布与关闭 |
 | `config` | 用户配置解析与校验 |
 | `control` | 控制面、TCP/UDP 转发、内核资源交接；eBPF 位于 `kern` |
@@ -19,8 +20,9 @@
 ## 插件
 
 MITM 是可选组件，业务插件的实现、测试和文档在独立仓库维护。
-[plugins.cfg](../../../plugins.cfg) 经 `make` 生成
-`cmd/plugins_generated.go`，完整 Definition 表（静态校验、资源准备、工厂和命令）随启动和重载传递。
+复制 [plugins.cfg.example](../../../plugins.cfg.example) 为本地 `plugins.cfg` 选择插件；没有本地配置时使用示例。
+`make` 生成 `internal/compiledplugins/plugins_generated.go`，完整 Definition 表（静态校验、资源准备、工厂和命令）随启动和重载传递。
+本地选择和生成的注册表不纳入版本控制。插件报告类型、Schema 和客户端展示属于插件自己的 `api` / `client` 包，本体仅传递通用报告与服务。
 插件依赖[公开 API](../../../component/plugin/README.md)，宿主持有传输资源。
 
 原生 [rules / DNAT](../configuration/destination-rules.md) 与 Surge `[Host]` 的字面 IP 条目共用拨号目标重写；域名条目通过 DNS 插件应答。

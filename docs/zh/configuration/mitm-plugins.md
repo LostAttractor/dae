@@ -1,6 +1,6 @@
 # 插件配置
 
-`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 证书、客户端开关和正文额度。默认构建包含 `surge`，支持 HTTP/DNS sgmodule；JavaScript 后端在编译时选择，默认为 QuickJS，也可用 `make SURGE_RUNTIME=nodejs` 选择 Node.js。其他插件在独立仓库维护，通过 [plugins.cfg](../../../plugins.cfg) 加入 dae 编译。高级 DNS 路由和缓存已拆成两个可选插件，见 [DNS](dns.md)。
+`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 证书、客户端开关和正文额度。默认构建包含 `surge`，支持 HTTP/DNS sgmodule；JavaScript 后端在编译时选择，默认为 QuickJS，也可用 `make SURGE_RUNTIME=nodejs` 选择 Node.js。其他插件在独立仓库维护，复制 [plugins.cfg.example](../../../plugins.cfg.example) 为本地 `plugins.cfg` 后加入 dae 编译。本地配置与生成的注册表由 Git 忽略；没有本地配置时使用示例中的选择。高级 DNS 路由和缓存已拆成两个可选插件，见 [DNS](dns.md)。
 
 ```text
 mitm {

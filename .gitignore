@@ -23,3 +23,7 @@ venv
 /build/web/
 /dae-web/
 /internal/webui/assets/
+
+# Local plugin build selection and generated registries.
+/plugins.cfg
+plugins_generated.go

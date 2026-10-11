@@ -357,7 +357,7 @@ mitm {
 
 plugins {
     # A section name is the instance ID and defaults to its plugin type.
-    # plugins.cfg selects surge by default; add external Go plugins there and run make.
+    # Copy plugins.cfg.example to local plugins.cfg to select external Go plugins, then run make.
     surge {
         enabled: false
         module {

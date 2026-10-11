@@ -38,7 +38,7 @@ The daemon requires Linux 6.13+ with the [kernel features and runtime environmen
 
 Source builds require Go 1.27+, cgo, a target C compiler, and Clang/LLVM for eBPF; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
 
-The [configuration example](./example.dae) includes ordered `plugins` instances and `rules` flow controls / DNAT. Core [DNS](./docs/en/configuration/dns.md) is a transparent relay with persistent domain evidence; advanced resolver/cache features are independent plugins. The default build includes Surge. Add external Go plugins to [plugins.cfg](./plugins.cfg) and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-plugins).
+The [configuration example](./example.dae) includes ordered `plugins` instances and `rules` flow controls / DNAT. Core [DNS](./docs/en/configuration/dns.md) is a transparent relay with persistent domain evidence; advanced resolver/cache features are independent plugins. The default build includes Surge. Copy [plugins.cfg.example](./plugins.cfg.example) to local `plugins.cfg`, add external Go plugins, and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-plugins).
 
 `DAE_LOCATION_CACHE` selects the [writable state directory](./docs/zh/configuration/cache-directory.md) for certificates, subscription caches and Surge resources (default `/var/lib/dae`).
 

@@ -232,8 +232,9 @@ candidate selection and the effect of omitted IPs on domain capture.
 
 ## External plugins
 
-Add one `type:Go/import/path` line per plugin to
-[`plugins.cfg`](../../../plugins.cfg), then run `make` in dae.
+Copy [`plugins.cfg.example`](../../../plugins.cfg.example) to `plugins.cfg`,
+add one `type:Go/import/path` line per plugin, then run `make` in dae.
+Without a local `plugins.cfg`, the build uses the example selection.
 Each package exports `Plugin` (`plugin.Definition` with `Configure` and optional `Commands`); the output binary is `./dae`. `Configure` parses and validates settings once before network and resource preparation, returning a factory that prepares the runtime instance. For example:
 
 ```text
@@ -264,9 +265,14 @@ GOWORK="$PWD/go.work" make -C ../dae-mitm-demo test
 GOWORK="$PWD/go.work" make -C ../dae-mitm-bilijump test TEST_ARGS=-race
 ```
 
-`make` and `make test` regenerate `cmd/plugins_generated.go` automatically.
-`make plugins` only refreshes that table; run it before direct `go build` after
-editing the cfg. The generated file is kept in source control for direct builds.
+`make` and `make test` regenerate
+`internal/compiledplugins/plugins_generated.go` automatically.
+`make plugins` only refreshes that registry; run it before direct `go build` or
+daemon tests, including on a fresh checkout. The registry belongs to the build
+composition package; command and daemon code receive its definitions.
+`plugins.cfg` and generated registries are ignored by Git; only the example
+configuration and generator are tracked. An existing local selection is never
+overwritten by generation.
 See [instance configuration](../../zh/configuration/mitm-plugins.md) and the
 [plugin API](../../../component/plugin/README.md). DNS plugin examples are in [DNS configuration](../configuration/dns.md).
 

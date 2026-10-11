@@ -149,7 +149,7 @@ dae: check-go-arch check-go-version plugins ebpf web-assets
 ## End Dae Build
 
 # Refresh even after removing a plugin; run the generator on the build host.
-plugins: check-go-version submodule
+plugins: check-go-version
 	@unset GOOS GOARCH GOARM GOARM64 GOAMD64 GO386 GOMIPS GOMIPS64 GOPPC64 GORISCV64; \
 	GOWORK=off CGO_ENABLED=0 go run ./cmd/dae-plugin-gen
 

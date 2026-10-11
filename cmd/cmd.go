@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/internal/compiledplugins"
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +47,7 @@ func init() {
 // Execute runs the process CLI. Plugin selection is captured by its run command
 // and carried through startup and reload, without a global plugin registry.
 func Execute() error {
-	definitions := compiledPlugins()
+	definitions := compiledplugins.Definitions()
 	var connection cli.Connection
 	services := plugin.CommandServices{BaseDir: common.CacheDirectory(), Status: connection.MITM, TriggerScript: connection.TriggerScript}
 	mitm := newMITMCommand(definitions, services)

@@ -1,4 +1,5 @@
 # Compiled plugins: <type>:<Go import path>. Each package exports Plugin (plugin.Definition).
+# Copy to plugins.cfg to customize this build; plugins.cfg is ignored by Git.
 # Add dependencies through go.mod or go.work, then run make.
 surge:github.com/daeuniverse/dae/component/mitm/surge
 # dns-cache:github.com/daeuniverse/dae-plugin-dns-cache

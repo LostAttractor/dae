@@ -18,8 +18,10 @@ func Configure(spec plugin.Spec) (plugin.Factory, error) {
 ```
 
 Decode settings in `Configure` (`DecodeSettings` handles scalar fields), implement
-`Plan` and optional protocol interfaces, add `type:Go/import/path` to
-[plugins.cfg](../../plugins.cfg), then run `make`.
+`Plan` and optional protocol interfaces. Copy
+[plugins.cfg.example](../../plugins.cfg.example) to local `plugins.cfg`, add
+`type:Go/import/path`, then run `make`. The local selection and generated registry
+are ignored by Git.
 See the [build guide](../../docs/en/user-guide/build-by-yourself.md#external-plugins)
 for dependencies and multiple plugins.
 
