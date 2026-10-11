@@ -1340,6 +1340,10 @@ try {
       await js('document.querySelector(".node-popover").hidePopover()');
       await until('document.querySelectorAll(".selector-node").length === 0');
       await visit("overview");
+      const overviewBounds = await js('(() => { const rect = document.querySelector(".workspace").getBoundingClientRect(); return { left: rect.left, width: rect.width, navWidth: document.querySelector(".page-nav").getBoundingClientRect().width }; })()');
+      if (width > 760) {
+        assert.equal(await js('(() => { const toolbar = document.querySelector(".toolbar").getBoundingClientRect(); const refresh = document.querySelector(".refresh-controls").getBoundingClientRect(); return Math.abs((toolbar.top + toolbar.bottom - refresh.top - refresh.bottom) / 2) <= 1; })()'), true, `refresh controls are vertically centered at ${width}px`);
+      }
       assert.equal(await js('document.querySelector("#https-title").closest("section").getBoundingClientRect().top > document.querySelector("#device-title").closest("section").getBoundingClientRect().bottom'), true, "settings stack within their column");
       assert.equal(await js(`(() => { const settings = document.querySelector(".dashboard-main").getBoundingClientRect(); const status = document.querySelector("#status-view").getBoundingClientRect(); return ${dualScope} ? settings.right < status.left && settings.top === status.top : settings.bottom < status.top; })()`), true, `settings and status form separate columns or stacked sections at ${width}px`);
       if (dualScope) {
@@ -1361,16 +1365,18 @@ try {
       }
       await js(`document.querySelector("#certificate-panel").open = ${certificateExpanded}`);
       await visit("tracing");
+      assert.deepEqual(await js('(() => { const rect = document.querySelector(".workspace").getBoundingClientRect(); return { left: rect.left, width: rect.width, navWidth: document.querySelector(".page-nav").getBoundingClientRect().width }; })()'), overviewBounds, `Tracing keeps Overview width and alignment at ${width}px`);
       const fieldSizes = await js('(() => { const input = document.querySelector("#diagnostic-target").getBoundingClientRect(); const select = document.querySelector("#diagnostic-protocol").getBoundingClientRect(); return { inputHeight: input.height, selectHeight: select.height, inputWidth: input.width }; })()');
       assert.equal(fieldSizes.inputHeight === fieldSizes.selectHeight && fieldSizes.inputWidth >= 240, true, `aligned diagnostic inputs at ${width}px: ${JSON.stringify(fieldSizes)}`);
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `testing fits at ${width}px`);
       assert.equal(await js('(() => { const toolbar = document.querySelector(".toolbar").getBoundingClientRect(); return [...document.querySelectorAll(".page-header, #diagnostics, footer")].every(element => { const rect = element.getBoundingClientRect(); return Math.abs(rect.left - toolbar.left) < 1 && Math.abs(rect.right - toolbar.right) < 1; }); })()'), true, `testing content aligns with the page at ${width}px`);
-      assert.equal(await js(`(() => { const nav = document.querySelector(".page-nav").getBoundingClientRect(); const header = document.querySelector(".page-header").getBoundingClientRect(); const heading = document.querySelector(".page-heading").getBoundingClientRect(); const contained = nav.top >= header.top && nav.bottom <= header.bottom && Math.abs(nav.right - header.right) <= 1; if (${width} > 760) return contained && heading.right < nav.left && nav.top < heading.bottom; const links = [...document.querySelectorAll(".page-nav a")].map(link => link.getBoundingClientRect()); return contained && nav.top > heading.bottom && Math.abs(nav.left - header.left) <= 1 && links.every(link => link.top === links[0].top && link.height >= 44 && Math.abs(link.width - nav.width / 3) <= 1); })()`), true, `navigation uses equal-width mobile tabs or sits beside the heading at ${width}px`);
+      assert.equal(await js(`(() => { const nav = document.querySelector(".page-nav").getBoundingClientRect(); const header = document.querySelector(".page-header").getBoundingClientRect(); const heading = document.querySelector(".page-heading").getBoundingClientRect(); const contained = nav.top >= header.top && nav.bottom <= header.bottom && Math.abs(nav.right - header.right) <= 1; if (${width} > 760) return contained && heading.right < nav.left && nav.top < heading.bottom; const links = [...document.querySelectorAll(".page-nav a")].map(link => link.getBoundingClientRect()); return contained && nav.top > heading.bottom && Math.abs(nav.left - header.left) <= 1 && links.every(link => link.top === links[0].top && link.height >= 44 && Math.abs(link.width - links[0].width) <= 1); })()`), true, `navigation uses equal-width mobile tabs or sits beside the heading at ${width}px`);
       if (process.env.SCREENSHOT_DIR && height >= 600) {
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-tracing-${width}x${height}.png`), Buffer.from(image.data, "base64"));
       }
       await visit("manage");
+      assert.deepEqual(await js('(() => { const rect = document.querySelector(".workspace").getBoundingClientRect(); return { left: rect.left, width: rect.width, navWidth: document.querySelector(".page-nav").getBoundingClientRect().width }; })()'), overviewBounds, `Manage keeps Overview width and alignment at ${width}px`);
       await js('document.querySelector("#manage-devices-tab").click()');
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `devices fit at ${width}px`);
       assert.equal(await js('(() => { const toolbar = document.querySelector(".toolbar").getBoundingClientRect(); return [...document.querySelectorAll(".page-header, #managed-clients, footer")].every(element => { const rect = element.getBoundingClientRect(); return Math.abs(rect.left - toolbar.left) < 1 && Math.abs(rect.right - toolbar.right) < 1; }); })()'), true, `device controls align with the page at ${width}px`);

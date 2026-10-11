@@ -1,4 +1,6 @@
+import { TopNav, TopNavItem } from "@astryxdesign/core/TopNav";
 import { byId } from "./dom.js";
+import { createView } from "./react-view.js";
 
 const pages = {
   overview: { title: "Overview", description: "Routing and HTTPS preferences." },
@@ -7,6 +9,8 @@ const pages = {
 };
 
 export function createNavigation(onChange) {
+  const container = byId("page-navigation");
+  const render = createView(container);
   let current;
   function activate(page, focus) {
     const changed = current !== page;
@@ -14,10 +18,10 @@ export function createNavigation(onChange) {
     document.querySelector(".shell").dataset.view = page;
     for (const popup of document.querySelectorAll(".node-popover:popover-open")) popup.hidePopover();
     for (const panel of document.querySelectorAll("[data-page]")) panel.hidden = panel.dataset.page !== page;
-    for (const link of document.querySelectorAll(".page-nav a")) {
-      if (link.hash === `#${page}`) link.setAttribute("aria-current", "page");
-      else link.removeAttribute("aria-current");
-    }
+    render(<TopNav className="page-nav" label="Pages" centerContent={
+      Object.entries(pages).map(([key, { title }]) =>
+        <TopNavItem key={key} href={`#${key}`} label={title} isSelected={key === page} />)
+    } />);
     byId("page-description").textContent = pages[page].description;
     byId("page-note").textContent = page === "tracing"
       ? "Read-only analysis · No test traffic is sent."
@@ -40,7 +44,7 @@ export function createNavigation(onChange) {
     if (current !== page) history.pushState(null, "", `#${page}`);
     activate(page, true);
   }
-  document.querySelector(".page-nav").addEventListener("click", (event) => {
+  container.addEventListener("click", (event) => {
     const link = event.target.closest("a");
     if (!link || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
     event.preventDefault();

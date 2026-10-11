@@ -14,11 +14,7 @@ function Shell() {
             <h1 id="page-title" tabIndex="-1">Network Settings</h1>
             <p id="page-description">Routing and HTTPS preferences.</p>
           </div>
-          <nav className="page-nav" aria-label="Pages">
-            <a href="#overview" aria-current="page">Overview</a>
-            <a href="#tracing">Tracing</a>
-            <a href="#manage">Manage</a>
-          </nav>
+          <div id="page-navigation"></div>
         </header>
 
         <main className="page-content" aria-labelledby="page-title">

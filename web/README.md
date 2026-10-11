@@ -49,7 +49,7 @@ and `docs/en/configuration/api-client.md`. Keep API requests in `src/api.js` and
 presentation in the frontend; this directory does not import daemon code.
 
 `shell.jsx` mounts the page structure once. `app.js` coordinates access, device
-actions and refreshes; `navigation.js` owns page visibility, titles and history;
+actions and refreshes; `navigation.jsx` owns page links, visibility, titles and history;
 `manage.jsx` owns management section navigation. React owns each interactive panel:
 `selectors.jsx`, `diagnostics.jsx`, `trace.jsx`, `clients.jsx`, `mitm.jsx`, and
 `status.jsx`. `traffic.jsx` supplies the Recharts chart.
@@ -202,9 +202,12 @@ mutations are never retried automatically.
 The shared “Network Settings” heading and navigation share a header: the title
 and current page description sit on the left, and navigation aligns to the right.
 On screens up to 760px wide, navigation occupies a full row below the heading,
-with three equal-width touch targets. A horizontal divider separates this header from the access
-toolbar. The current page uses a stronger label and a short underline. Overview
-and Manage use a centered workspace up to 1440px; Tracing uses up to 1200px.
+with three equal-width touch targets. Page navigation uses Astryx `TopNav` and
+`TopNavItem`, including their selected, hover, touch and keyboard-focus states.
+The current page has a muted fill and stronger label, without an outer frame.
+Spacing separates this header from the access toolbar. All three pages use the
+same centered workspace up to 1440px; switching pages preserves
+the workspace and navigation width.
 The header, access toolbar, content and footer align within that workspace.
 The access card groups device identity, access state and session information, with
 refresh actions on the right or a separate row on smaller screens. Settings

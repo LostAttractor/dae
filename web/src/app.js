@@ -9,7 +9,7 @@ import { createStatus } from "./status.jsx";
 import { certificateDevice, certificateIdentity, initializeCertificatePanel, testCertificate } from "./certificate.js";
 import { createDiagnostics } from "./diagnostics.jsx";
 import { createClientSets, createManagedClients } from "./clients.jsx";
-import { createNavigation } from "./navigation.js";
+import { createNavigation } from "./navigation.jsx";
 import { createUpdatedLabel } from "./updated.jsx";
 
 const accessDenied = (error) => error.status === 401 || error.status === 403;
