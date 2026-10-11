@@ -64,16 +64,34 @@ function Shell() {
                   <div id="mitm" className="mitm-state"></div>
                   <details id="certificate-panel" className="certificate-panel" hidden>
                     <summary>Certificate &amp; browser verification</summary>
-                    <p>Verify the CA fingerprint on your router, then install and trust the certificate before enabling modules.</p>
-                    <div id="certificate" className="code-block"></div>
-                    <div className="download-links"><a href="/ca.mobileconfig">iOS Profile</a><a href="/ca.cer">DER Certificate</a><a href="/ca.pem">PEM Certificate</a></div>
-                    <div id="certificate-test-panel" hidden>
-                      <Button label="Test Certificate" id="test-certificate" type="button" />
-                      <dl className="certificate-results">
-                        <dt>Browser trusts the certificate</dt><dd><span id="certificate-trust-result" className="badge">Not tested</span></dd>
-                        <dt>HTTPS interception works</dt><dd><span id="certificate-mitm-result" className="badge">Not tested</span></dd>
-                      </dl>
-                      <p id="certificate-test-info" className="code-block">Results apply to this browser only.</p>
+                    <div className="certificate-content">
+                      <section className="certificate-install" aria-label="Certificate installation">
+                        <div id="certificate" className="certificate-identity">
+                          <strong id="certificate-name"></strong>
+                          <span className="certificate-fingerprint-label">SHA-256 fingerprint</span>
+                          <code id="certificate-fingerprint"></code>
+                        </div>
+                        <p>Verify this fingerprint on your router, then install and trust the certificate.</p>
+                        <div className="certificate-downloads">
+                          <span id="certificate-download-title">Download</span>
+                          <div className="download-links" role="group" aria-labelledby="certificate-download-title">
+                            <Button label="iOS Profile" href="/ca.mobileconfig" aria-label="Download iOS certificate profile" />
+                            <Button label="DER" href="/ca.cer" aria-label="Download DER certificate" />
+                            <Button label="PEM" href="/ca.pem" aria-label="Download PEM certificate" />
+                          </div>
+                        </div>
+                      </section>
+                      <section id="certificate-test-panel" aria-labelledby="certificate-test-title" hidden>
+                        <div className="certificate-test-heading">
+                          <h3 id="certificate-test-title">Browser verification</h3>
+                          <Button label="Test Certificate" id="test-certificate" type="button" />
+                        </div>
+                        <dl className="certificate-results">
+                          <div><dt>Certificate trust</dt><dd><span id="certificate-trust-result" className="badge">Not tested</span></dd></div>
+                          <div><dt>HTTPS interception</dt><dd><span id="certificate-mitm-result" className="badge">Not tested</span></dd></div>
+                        </dl>
+                        <p id="certificate-test-info">Results apply to this browser only.</p>
+                      </section>
                     </div>
                   </details>
                 </section>

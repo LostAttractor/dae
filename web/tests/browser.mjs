@@ -652,6 +652,46 @@ try {
     await until('document.querySelector("#certificate-trust-result").textContent === "Not tested"');
   });
 
+  await test("certificate disclosure adapts to available space and preserves manual choices", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca", test_available: true, test_generation: "disclosure" };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#certificate-name").textContent'), "Test CA");
+    assert.equal(await js('document.querySelector("#certificate-fingerprint").textContent'), "test-ca");
+    const resize = async (width, height, expanded) => {
+      await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
+      await until(`document.querySelector("#certificate-panel").open === ${expanded}`);
+    };
+    await resize(390, 844, false);
+    await resize(844, 390, false);
+    await resize(1280, 900, true);
+    await js('document.querySelector("#certificate-panel summary").click()');
+    await resize(390, 844, false);
+    await resize(1280, 900, false);
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await visit("tracing");
+    await visit("overview");
+    assert.equal(await js('document.querySelector("#certificate-panel").open'), false, "manual collapse survives refresh and navigation");
+    await page();
+    assert.equal(await js('document.querySelector("#certificate-panel").open'), true, "reload restores the desktop default");
+    await resize(390, 844, false);
+    await page();
+    assert.equal(await js('document.querySelector("#certificate-panel").open'), false, "a phone starts collapsed");
+    await js('document.querySelector("#certificate-panel summary").focus()');
+    assert.equal(await js('document.activeElement.matches("#certificate-panel summary")'), true);
+    await call("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+    await call("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+    await until('document.querySelector("#certificate-panel").open');
+    await resize(1280, 900, true);
+    await resize(390, 844, true);
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await visit("tracing");
+    await visit("overview");
+    assert.equal(await js('document.querySelector("#certificate-panel").open'), true, "manual expansion survives resize, refresh and navigation");
+  });
+
   await test("late unauthorized poll cannot erase a successful refresh", async () => {
     const read = { status: 401, started: deferred(), release: deferred() };
     fixture.nextRead = read;
@@ -1202,9 +1242,14 @@ try {
   });
 
   await test("larger text reflows every page and keeps controls readable", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "12:34:".repeat(16), test_available: true, test_generation: "large-text" };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
     // Text-only zoom exercises user font preferences independently of viewport zoom.
     for (const width of [320, 768, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
+      await until(`document.querySelector("#certificate-panel").open === ${width >= 768}`);
+      await js('document.querySelector("#certificate-panel").open = true');
       await js('document.documentElement.style.fontSize = "200%"');
       for (const name of ["overview", "tracing", "manage"]) {
         await visit(name);
@@ -1233,7 +1278,7 @@ try {
     };
     await js('document.querySelector("#refresh").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#certificate-panel").open'), false);
+    assert.equal(await js('document.querySelector("#certificate-panel").open'), true);
     await delay(250);
     await js('document.querySelector(".astryx-toast button")?.click()');
     await until('document.querySelector("#message") === null');
@@ -1252,6 +1297,8 @@ try {
     for (const [width, height, theme] of viewports) {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+      const certificateExpanded = width >= 768 && height >= 600;
+      await until(`document.querySelector("#certificate-panel").open === ${certificateExpanded}`);
       const dualScope = width >= 1024;
       await until(`(document.querySelector("#global-tab") === null) === ${dualScope}`);
       if (!dualScope) {
@@ -1307,7 +1354,12 @@ try {
       }
       await js('document.querySelector("#certificate-panel").open = true');
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `expanded settings fit at ${width}px`);
-      await js('document.querySelector("#certificate-panel").open = false');
+      if (process.env.SCREENSHOT_DIR && (width === 390 && height === 844 || width === 1280 && height === 960)) {
+        const clip = await js('(() => { const rect = document.querySelector("#https-title").closest("section").getBoundingClientRect(); return { x: rect.x + scrollX, y: rect.y + scrollY, width: rect.width, height: rect.height, scale: 1 }; })()');
+        const certificateImage = await call("Page.captureScreenshot", { captureBeyondViewport: true, clip });
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-certificate-${width}.png`), Buffer.from(certificateImage.data, "base64"));
+      }
+      await js(`document.querySelector("#certificate-panel").open = ${certificateExpanded}`);
       await visit("tracing");
       const fieldSizes = await js('(() => { const input = document.querySelector("#diagnostic-target").getBoundingClientRect(); const select = document.querySelector("#diagnostic-protocol").getBoundingClientRect(); return { inputHeight: input.height, selectHeight: select.height, inputWidth: input.width }; })()');
       assert.equal(fieldSizes.inputHeight === fieldSizes.selectHeight && fieldSizes.inputWidth >= 240, true, `aligned diagnostic inputs at ${width}px: ${JSON.stringify(fieldSizes)}`);

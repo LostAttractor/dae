@@ -6,7 +6,7 @@ import { createMITM } from "./mitm.jsx";
 import { createManageNavigation } from "./manage.jsx";
 import { createSelectors } from "./selectors.jsx";
 import { createStatus } from "./status.jsx";
-import { certificateDevice, certificateIdentity, testCertificate } from "./certificate.js";
+import { certificateDevice, certificateIdentity, initializeCertificatePanel, testCertificate } from "./certificate.js";
 import { createDiagnostics } from "./diagnostics.jsx";
 import { createClientSets, createManagedClients } from "./clients.jsx";
 import { createNavigation } from "./navigation.js";
@@ -27,6 +27,7 @@ let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
 mountShell(byId("app"));
+initializeCertificatePanel();
 const message = createNotifications(byId("notifications"));
 byId("test-certificate").disabled = true;
 const diagnostics = createDiagnostics(byId("diagnostic-view"));
@@ -202,7 +203,8 @@ async function loadCertificate({ background = false } = {}) {
     const certificate = await request("/api/certificate");
     if (version !== certificateRequestVersion) return;
     certificateIdentity(certificate);
-    byId("certificate").textContent = `${certificate.name}\nSHA-256: ${certificate.fingerprint}`;
+    byId("certificate-name").textContent = certificate.name;
+    byId("certificate-fingerprint").textContent = certificate.fingerprint;
     byId("certificate-panel").hidden = false;
   } catch (error) {
     if (version !== certificateRequestVersion) return;

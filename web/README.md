@@ -121,7 +121,14 @@ The access toolbar shows the visiting device's IP beside its access badge;
 expanding the IP reveals its MAC. The daemon version appears in the footer when
 administrator status is available.
 
-Certificate installation and browser verification expand inside **HTTPS Modules**.
+Certificate installation and browser verification sit inside **HTTPS Modules**.
+They default to expanded in windows at least 768px wide and 600px tall, and
+collapsed on smaller screens. Until the user toggles the section, this default
+adapts to viewport changes. A manual choice is retained until the page is reloaded;
+polling and navigation do not reset it.
+The certificate name and fingerprint share an information block, followed by
+compact download buttons for the iOS profile, DER and PEM formats. Browser
+verification forms a separate group, with results in individual rows.
 Status emphasizes active connections and current upload/download rates. Cumulative
 traffic, total connections, uptime, domain tables and plugins are available in
 the initially collapsed connection details.

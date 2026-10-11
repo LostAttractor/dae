@@ -9,6 +9,20 @@ let generation = 0;
 let serverGeneration = "";
 let mitmOrigins = [];
 
+export function initializeCertificatePanel() {
+  const panel = byId("certificate-panel");
+  const roomy = matchMedia("(min-width: 768px) and (min-height: 600px)");
+  let manuallyToggled = false;
+  const applyDefault = () => {
+    if (!manuallyToggled) panel.open = roomy.matches;
+  };
+  // Native summary activation covers both pointer and keyboard input. Polling
+  // and viewport changes must not undo a choice made by the user.
+  panel.querySelector("summary").addEventListener("click", () => { manuallyToggled = true; });
+  roomy.addEventListener("change", applyDefault);
+  applyDefault();
+}
+
 function state(id, text, tone = "neutral") {
   const node = byId(id);
   node.textContent = text;
