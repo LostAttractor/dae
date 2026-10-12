@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { ExplainStep, ExplainResult, ExplainDecision, ExplainResponse, DiagnosticField, DiagnosticKind } from "./types.ts";
 interface TraceActions { onEdit: (name: string) => void; onUseIP: (ip: string) => void }
 import { Button } from "@astryxdesign/core/Button";
-import { Badge } from "@astryxdesign/core/Badge";
+import { Badge } from "./native-controls.tsx";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { Field } from "@astryxdesign/core/Field";
 import { useId, useState } from "react";
@@ -17,6 +17,7 @@ const reasons: Record<string, string> = {
   outbound_unavailable: "Skipped because the outbound is unavailable.",
   not_bound_to_active_policy: "This rule is not part of the active policy.",
   different_ingress_policy: "This rule belongs to another ingress policy.",
+  missing_policy_context: "The ingress policy is unknown; this rule has not been evaluated.",
   remaining_predicates_and_rule_order: "Other conditions and earlier rules still affect the outcome.",
   client_reference: "This rule references the client group. Its full match and routing effect have not been evaluated.",
   membership_change: "Client predicate before and after the proposed membership change.",
@@ -27,15 +28,38 @@ const reasons: Record<string, string> = {
 const reasonText = (reason?: string) => (reason ? reasons[reason] : undefined) || words(reason);
 const statusText = (step: ExplainStep) => ({ referenced: "Referenced", selected: "Selected", conditional: "Uncertain", not_reached: "Not reached", inactive: "Inactive", skipped: "Skipped", unknown: "Unknown", error: "Error" } as Record<string, string>)[step.status] || (step.match === "miss" ? "No match" : step.match === "match" ? "Matched" : "Unknown");
 
+const policyStates = {
+  match: { label: "Applies", variant: "success", description: "This policy is selected for the current context. The rule still depends on its conditions and earlier decisions." },
+  miss: { label: "Does not apply", variant: "neutral", description: "This policy is not selected for the current context, so this rule cannot apply." },
+  unknown: { label: "Unknown", variant: "warning", description: "The ingress interface is unknown, so policy applicability cannot be determined." },
+} as const;
+
+function PolicyBadge({ step }: { step: ExplainStep }) {
+  if (!step.policy) return null;
+  const state = policyStates[step.policy_match || "unknown"];
+  return <Badge className="trace-policy" label={`Policy: ${step.policy} · ${state.label}`} variant={state.variant} title={state.description} />;
+}
+
+function PolicyIndicator({ step }: { step: ExplainStep }) {
+  if (!step.policy) return null;
+  const state = policyStates[step.policy_match || "unknown"];
+  const label = `Policy: ${step.policy} · ${state.label}`;
+  return <span className="trace-policy-indicator" data-state={step.policy_match || "unknown"} role="img" aria-label={label} title={label} />;
+}
+
 export function TraceSteps({ steps = [] }: { steps?: ExplainStep[] }) {
   return <div className="trace-steps">{steps.map((step, index) => <Collapsible className="trace-step" key={`${step.id || step.expression}:${index}`} defaultIsOpen={false} chevronPosition="start"
     trigger={<span className="trace-step-label"><span className="trace-step-badges">
       <Badge label={statusText(step)} variant={step.status === "error" ? "error" : ["conditional", "unknown"].includes(step.status) ? "warning" : "neutral"} />
-      {step.section === "rules" && <Badge label="Rules" />}
-      {step.policy && <Badge label={`Policy: ${step.policy}`} />}
+      <PolicyIndicator step={step} />
     </span><span className="trace-expression">{step.expression}</span></span>}>
     <div className="trace-step-content">
+      {(step.section === "rules" || step.policy) && <div className="trace-step-meta">
+        {step.section === "rules" && <Badge label="Rules" />}
+        <PolicyBadge step={step} />
+      </div>}
       <p>{reasonText(step.reason)}</p>
+      {step.policy && <p className="muted">{policyStates[step.policy_match || "unknown"].description}</p>}
       <p className="muted">Stage: {words(step.stage)}{step.parent && step.parent !== step.policy ? ` · Context: ${step.parent}` : ""}</p>
       <p className="code-block">{step.expression}</p>
       {step.outbound && <p>Outbound: {step.outbound} · mark {step.mark || 0} · must {String(Boolean(step.must))}</p>}

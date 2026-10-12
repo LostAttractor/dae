@@ -175,10 +175,15 @@ connections, as indicated beside these actions. Routing effects load only for
 expanded rules and refresh when the device context changes. Closing a rule discards
 its pending response. Expanded details separate the proposed change, referenced
 rules and explanatory notes with spacing and dividers. **Referenced** identifies
-a client-group reference, not an evaluated match or routing result. Policy flow
-rules show both **Rules** and **Policy** badges, including while collapsed.
+a client-group reference, not an evaluated match or routing result. A small policy
+indicator beside the rule status is green for **Applies**, gray for **Does not
+apply** and amber for **Unknown**. Its accessible label and hover text identify
+the policy and state. Expanded details show **Rules** and the full **Policy**
+badge in a separate row. An applicable policy does not establish a rule match; conditions
+and earlier decisions still matter. Missing ingress with multiple active policies
+leaves applicability unknown.
 Shared fragments retain their policy occurrences; global system/plugin references
-appear once. Outbound rules also show their **Policy** badge. DNAT expressions include their
+appear once. DNAT expressions include their
 target IP and optional port. Membership predicates show before/after values.
 Rule expressions use a single-line summary while collapsed and wrap in full
 when expanded. Labels and expressions keep the same first-line alignment in

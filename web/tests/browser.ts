@@ -1012,16 +1012,20 @@ try {
     assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Current settings");
   });
 
-  await test("routing reference labels stay visible and expanding rules preserves text alignment", async () => {
+  await test("routing reference labels show policy applicability and preserve text alignment", async () => {
     const reference = { stage: "client_impact", status: "referenced", match: "unknown", reason: "client_reference" };
     fixture.impactRules = [
-      { ...reference, id: "main/rules/0", section: "rules", policy: "main", parent: "main", expression: 'client("work") && dport("53") -> dnat("127.0.0.54:53")' },
-      { ...reference, id: "main/0", section: "routing", policy: "main", parent: "main", expression: 'client("work") -> direct', conditions: [{ expression: 'client("work")', actual: "false", expected: "true", match: "match", status: "supplementary", reason: "membership_change" }] },
-      { ...reference, id: "tor/0", section: "routing", policy: "tor", parent: "tor", expression: `client("work") && domain(${Array.from({ length: 24 }, (_, i) => `"service-${i}.example.com"`).join(", ")}) -> proxy` },
+      { ...reference, id: "main/rules/0", section: "rules", policy: "main", policy_match: "match", parent: "main", expression: 'client("work") && dport("53") -> dnat("127.0.0.54:53")' },
+      { ...reference, id: "main/0", section: "routing", policy: "main", policy_match: "match", parent: "main", expression: 'client("work") -> direct', conditions: [{ expression: 'client("work")', actual: "false", expected: "true", match: "match", status: "supplementary", reason: "membership_change" }] },
+      { ...reference, id: "tor/0", section: "routing", policy: "tor", policy_match: "miss", parent: "tor", expression: `client("work") && domain(${Array.from({ length: 24 }, (_, i) => `"service-${i}.example.com"`).join(", ")}) -> proxy` },
     ];
     await setDisclosure('.set-row[data-name="internal/work"] .set-details', true);
     await until('document.querySelectorAll(".impact-content .trace-step").length === 3');
-    assert.deepEqual(await js('[...document.querySelectorAll(".trace-step-badges")].map(group => [...group.querySelectorAll(".astryx-badge")].map(badge => badge.textContent))'), [["Referenced", "Rules", "Policy: main"], ["Referenced", "Policy: main"], ["Referenced", "Policy: tor"]]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".trace-step-badges")].map(group => [...group.querySelectorAll(".astryx-badge")].map(badge => badge.textContent))'), [["Referenced"], ["Referenced"], ["Referenced"]]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".trace-policy-indicator")].map(dot => dot.getAttribute("aria-label"))'), ["Policy: main · Applies", "Policy: main · Applies", "Policy: tor · Does not apply"]);
+    await setDisclosure('.impact-content .trace-step:first-child', true);
+    assert.deepEqual(await js('[...document.querySelectorAll(".impact-content .trace-step:first-child .trace-step-meta .astryx-badge")].map(badge => badge.textContent)'), ["Rules", "Policy: main · Applies"]);
+    await setDisclosure('.impact-content .trace-step:first-child', false);
     assert.equal(await js('document.querySelector(".impact-content").textContent.includes("Uncertain")'), false);
     const shortRule = '.impact-content .trace-step:nth-child(2)';
     const longRule = '.impact-content .trace-step:nth-child(3)';
@@ -1033,8 +1037,10 @@ try {
       return { height: rect.height, offset: text.top - rect.top, textHeight: text.height, lineHeight: parseFloat(getComputedStyle(expression).lineHeight), glyphTop: glyph.top - text.top, glyphBottom: text.bottom - glyph.bottom };
     })()`);
     for (const width of [1280, 320]) {
+      await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
       await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      if (width === 1280) assert.equal(await js('(() => { const el = document.querySelector(".impact-content .trace-step:first-child .trace-expression"); return el.scrollWidth <= el.clientWidth; })()'), true, "compact metadata leaves room for the full DNAT rule");
       const before = await geometry();
       await setDisclosure(shortRule, true);
       const after = await geometry();
@@ -1042,8 +1048,9 @@ try {
       assert.ok(Math.abs(after.offset - before.offset) < 1, "a short expression does not move upward");
       assert.ok(after.textHeight < after.lineHeight * 2, "the short expression still occupies one line");
       assert.ok(after.glyphTop >= 0 && after.glyphBottom >= 0, "the text box contains the entire font height");
-      assert.match(await js(`document.querySelector(${JSON.stringify(shortRule)}).textContent`), /Before: false\s+After: true/);
+      assert.match(await js(`document.querySelector(${JSON.stringify(shortRule + ' .trace-step-content')}).innerText`), /rule still depends on its conditions[\s\S]*Before: false\s+After: true/);
       await setDisclosure(longRule, true);
+      assert.match(await js(`document.querySelector(${JSON.stringify(longRule + ' .trace-step-content')}).innerText`), /policy is not selected.*rule cannot apply/);
       assert.equal(await js(`(() => { const el = document.querySelector(${JSON.stringify(longRule + ' .trace-expression')}); return el.scrollWidth <= el.clientWidth && el.getBoundingClientRect().height > parseFloat(getComputedStyle(el).lineHeight) * 2; })()`), true, "the long expression wraps in full");
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, "rule labels and expanded expressions fit the viewport");
       if (process.env.SCREENSHOT_DIR) {
@@ -1054,6 +1061,13 @@ try {
       await setDisclosure(shortRule, false);
       await setDisclosure(longRule, false);
     }
+    await setDisclosure('.set-row[data-name="internal/work"] .set-details', false);
+    fixture.impactRules = fixture.impactRules.map(rule => ({ ...rule, policy_match: "unknown" }));
+    await setDisclosure('.set-row[data-name="internal/work"] .set-details', true);
+    await until('document.querySelectorAll(".impact-content .trace-policy-indicator").length === 3');
+    assert.deepEqual(await js('[...document.querySelectorAll(".trace-policy-indicator")].map(dot => dot.getAttribute("aria-label"))'), ["Policy: main · Unknown", "Policy: main · Unknown", "Policy: tor · Unknown"]);
+    await setDisclosure(shortRule, true);
+    assert.match(await js(`document.querySelector(${JSON.stringify(shortRule + ' .trace-step-content')}).innerText`), /ingress interface is unknown/);
   });
 
   await test("routing rows expand independently and retain the matching details after reordering", async () => {

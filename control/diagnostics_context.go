@@ -255,6 +255,6 @@ func diagnosticInput(request api.ExplainRequest, matcher *RoutingMatcher) (routi
 		add("http.host", request.Flow.HTTP.Host, "input", request.Flow.HTTP.Host != "")
 		add("http.url", request.Flow.HTTP.URL, "input", true)
 	}
-	add("policy", matcher.diagnosticPolicy(input), "runtime", true)
+	add("policy", matcher.diagnosticPolicy(input), "runtime", request.Context.IfIndex != nil || request.Context.Origin == "daemon" || request.Context.Policy != "" || len(matcher.profileInfo) == 1)
 	return input, missing, fields, nil
 }

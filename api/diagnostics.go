@@ -107,24 +107,26 @@ type ExplainCondition struct {
 // Steps are ordered. Parent identifies a policy, plugin or an earlier step;
 // clients can render a tree without parsing human-readable expressions.
 // Policy identifies an execution policy separately from the parent hierarchy.
+// PolicyMatch reports policy selection only, independently of the rule's Match.
 // Section identifies the source configuration block when one is known.
 type ExplainStep struct {
-	ID         string             `json:"id"`
-	Parent     string             `json:"parent,omitempty"`
-	Policy     string             `json:"policy,omitempty"`
-	Section    string             `json:"section,omitempty"`
-	Stage      string             `json:"stage"`
-	Expression string             `json:"expression"`
-	Sources    []DiagnosticSource `json:"sources,omitempty"`
-	Status     string             `json:"status"`
-	Match      string             `json:"match"`
-	Reason     string             `json:"reason"`
-	Conditions []ExplainCondition `json:"conditions,omitempty"`
-	Action     string             `json:"action,omitempty"`
-	Outbound   string             `json:"outbound,omitempty"`
-	Mark       uint32             `json:"mark,omitzero"`
-	Must       bool               `json:"must,omitzero"`
-	Targets    []string           `json:"targets,omitempty"`
+	ID          string             `json:"id"`
+	Parent      string             `json:"parent,omitempty"`
+	Policy      string             `json:"policy,omitempty"`
+	PolicyMatch string             `json:"policy_match,omitempty"` // match, miss, unknown
+	Section     string             `json:"section,omitempty"`
+	Stage       string             `json:"stage"`
+	Expression  string             `json:"expression"`
+	Sources     []DiagnosticSource `json:"sources,omitempty"`
+	Status      string             `json:"status"`
+	Match       string             `json:"match"`
+	Reason      string             `json:"reason"`
+	Conditions  []ExplainCondition `json:"conditions,omitempty"`
+	Action      string             `json:"action,omitempty"`
+	Outbound    string             `json:"outbound,omitempty"`
+	Mark        uint32             `json:"mark,omitzero"`
+	Must        bool               `json:"must,omitzero"`
+	Targets     []string           `json:"targets,omitempty"`
 }
 
 type ExplainDecision struct {

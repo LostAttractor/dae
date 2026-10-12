@@ -314,6 +314,10 @@ footer { display: flex; justify-content: end; padding: 16px 0; color: var(--mute
 .trace-step > .astryx-collapsible-trigger > span { text-box-trim: none; }
 .trace-step-label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: first baseline; gap: 8px; }
 .trace-step-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.trace-policy-indicator { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.trace-policy-indicator[data-state="match"] { background: var(--fgColor-success); }
+.trace-policy-indicator[data-state="unknown"] { background: var(--warning); }
+.trace-step-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .trace-expression { min-width: 0; padding-block: 2px; margin-block: -2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; font-size: var(--meta-size); line-height: 1.5; }
 .trace-step > .astryx-collapsible-trigger[aria-expanded="true"] .trace-expression { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; }
 .trace-step-content { margin: 4px 4px 16px 8px; border-left: 2px solid var(--line); padding: 8px 0 0 16px; }

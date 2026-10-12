@@ -340,6 +340,10 @@ func (c *ControlPlane) Explain(ctx context.Context, request api.ExplainRequest, 
 			response.Compared.Steps = append(response.Compared.Steps, inactive...)
 		}
 	}
+	matcher.annotatePolicyMatches(response.Current.Steps, input.profileID, !missing["policy"])
+	if response.Compared != nil {
+		matcher.annotatePolicyMatches(response.Compared.Steps, input.profileID, !missing["policy"])
+	}
 	if request.Detail == "rules" {
 		for i := range response.Current.Steps {
 			response.Current.Steps[i].Conditions = nil
@@ -355,6 +359,9 @@ func (c *ControlPlane) Explain(ctx context.Context, request api.ExplainRequest, 
 
 func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequest, s *diagnosticState, input routingInput, missing map[string]bool) (api.ExplainResult, error) {
 	result := api.ExplainResult{Decision: api.ExplainDecision{Complete: true, Verdict: "analysis", Policy: s.matcher.diagnosticPolicy(input)}, Steps: []api.ExplainStep{}, Domains: slices.Clone(s.evidence), Outbounds: []api.ExplainOutbound{}, Notes: []string{}}
+	if missing["policy"] {
+		result.Decision.Policy = ""
+	}
 	if request.Kind == "domain" {
 		if len(result.Domains) == 0 {
 			result.Notes = append(result.Notes, "No retained evidence; no DNS query was sent.")
@@ -427,7 +434,7 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 			required = append(required, field)
 		}
 	}
-	if missing["ifindex"] && request.Context.Policy == "" && len(s.matcher.profileInfo) > 1 {
+	if missing["policy"] {
 		required = append(required, "ifindex")
 	}
 	if len(required) != 0 {

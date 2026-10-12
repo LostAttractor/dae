@@ -104,6 +104,27 @@ func (m *RoutingMatcher) diagnosticPolicy(input routingInput) string {
 	return "default"
 }
 
+// Policy selection is independent of destination predicates and rule order.
+// Without ingress context, the evaluator's provisional default is not evidence
+// that another active policy is inapplicable.
+func (m *RoutingMatcher) annotatePolicyMatches(steps []api.ExplainStep, profileID uint32, known bool) {
+	selected := m.diagnosticPolicy(routingInput{profileID: profileID})
+	for i := range steps {
+		step := &steps[i]
+		if step.Policy == "" {
+			continue
+		}
+		step.PolicyMatch = "unknown"
+		if step.Reason == "not_bound_to_active_policy" || known && step.Policy != selected {
+			step.PolicyMatch = "miss"
+		} else if known {
+			step.PolicyMatch = "match"
+		} else if step.Reason == "different_ingress_policy" {
+			step.Status, step.Reason = "unknown", "missing_policy_context"
+		}
+	}
+}
+
 // unknownFields is diagnostic uncertainty, distinct from the kernel's MAYBE
 // (shared-IP ambiguity). A known empty domain bitmap is a definite kernel miss.
 func diagnosticField(kind consts.MatchType, input routingInput, metadata routingMatchMetadata) (field, actual string) {

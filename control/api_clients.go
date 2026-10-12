@@ -97,6 +97,14 @@ func (c *ControlPlane) ClientImpact(ctx context.Context, name string, request ap
 	if !c.HasClientSet(name) {
 		return nil, fmt.Errorf("client set not found")
 	}
+	contextRequest := api.ExplainRequest{Context: request.Context}
+	if err := prepareDiagnosticRequest(&contextRequest); err != nil {
+		return nil, err
+	}
+	request.Context = contextRequest.Context
+	if c.routingMatcher == nil {
+		return nil, fmt.Errorf("routing is unavailable")
+	}
 	result := &api.ClientImpact{Generation: c.routingGeneration, Name: name, JoinedAfter: *request.Joined, ConnectionBehavior: "retain", Exports: []string{}, Rules: []api.ExplainStep{}}
 	if c.closeOnRouteChange {
 		result.ConnectionBehavior = "close"
@@ -112,6 +120,10 @@ func (c *ControlPlane) ClientImpact(ctx context.Context, name string, request ap
 	result.JoinedBefore = slices.Contains(c.settings.Members(name), mac)
 	m := c.routingMatcher.diagnosticSnapshot()
 	c.settingsMu.Unlock()
+	input, missing, _, err := diagnosticInput(contextRequest, m)
+	if err != nil {
+		return nil, err
+	}
 	if request.Flow != nil {
 		result.Trace, err = c.Explain(ctx, api.ExplainRequest{Context: request.Context, Flow: *request.Flow, Compare: &api.DiagnosticAssumptions{ClientSets: map[string]bool{name: *request.Joined}}, Detail: "predicates"}, inherited)
 		if err != nil {
@@ -165,5 +177,6 @@ func (c *ControlPlane) ClientImpact(ctx context.Context, name string, request ap
 			}
 		}
 	}
+	m.annotatePolicyMatches(result.Rules, input.profileID, !missing["policy"])
 	return result, err
 }

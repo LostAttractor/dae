@@ -37,7 +37,7 @@ function ClientImpact({ set, contextKey, request, onCompare }: { set: ClientSetS
       {impact.rules.length ? <TraceSteps steps={impact.rules} /> : <p className="muted">No active dae routing references.</p>}
       <div className="impact-actions">
         {impact.exports.map((exported, index) => <p key={index} className="muted">{exported} · external firewall rules are not evaluated.</p>)}
-        <p className="muted">Referenced rules are not a routing result. Compare a target to evaluate the full conditions and rule order.</p>
+        <p className="muted">Policy applicability uses this device's ingress. Referenced rules still depend on their conditions and order. Compare a target to evaluate the route.</p>
         <Button label="Compare a target" type="button" onClick={() => onCompare(set)} />
       </div>
     </>}
