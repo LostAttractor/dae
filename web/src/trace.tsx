@@ -1,12 +1,15 @@
+import type { ReactNode } from "react";
+import type { ExplainStep, ExplainResult, ExplainDecision, ExplainResponse, DiagnosticField, DiagnosticKind } from "./types.ts";
+interface TraceActions { onEdit: (name: string) => void; onUseIP: (ip: string) => void }
 import { Button } from "@astryxdesign/core/Button";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { Field } from "@astryxdesign/core/Field";
 import { useId, useState } from "react";
-import { Disclosure } from "./disclosure.jsx";
+import { Disclosure } from "./disclosure.tsx";
 
-const words = (value = "") => value.replaceAll("_", " ");
-const reasons = {
+const words = (value: string = "") => value.replaceAll("_", " ");
+const reasons: Record<string, string> = {
   terminal_decision: "This rule determines the route at this stage.",
   predicate_match: "The conditions match.", predicate_miss: "The conditions do not match.",
   missing_context: "More information is needed to evaluate this rule.",
@@ -15,36 +18,44 @@ const reasons = {
   not_bound_to_active_policy: "This rule is not part of the active policy.",
   different_ingress_policy: "This rule belongs to another ingress policy.",
   remaining_predicates_and_rule_order: "Other conditions and earlier rules still affect the outcome.",
+  client_reference: "This rule references the client group. Its full match and routing effect have not been evaluated.",
+  membership_change: "Client predicate before and after the proposed membership change.",
   no_active_plugins: "No plugins are active.", http_disabled: "HTTP interception is disabled.",
   client_not_allowed: "HTTPS modules are disabled for this device.",
   script_execution_required: "The script must run before its effect can be known. This check does not run scripts.",
 };
-const reasonText = (reason) => reasons[reason] || words(reason);
-const statusText = (step) => ({ selected: "Selected", conditional: "Uncertain", not_reached: "Not reached", inactive: "Inactive", skipped: "Skipped", unknown: "Unknown", error: "Error" }[step.status] || (step.match === "miss" ? "No match" : step.match === "match" ? "Matched" : "Unknown"));
+const reasonText = (reason?: string) => (reason ? reasons[reason] : undefined) || words(reason);
+const statusText = (step: ExplainStep) => ({ referenced: "Referenced", selected: "Selected", conditional: "Uncertain", not_reached: "Not reached", inactive: "Inactive", skipped: "Skipped", unknown: "Unknown", error: "Error" } as Record<string, string>)[step.status] || (step.match === "miss" ? "No match" : step.match === "match" ? "Matched" : "Unknown");
 
-export function TraceSteps({ steps = [] }) {
+export function TraceSteps({ steps = [] }: { steps?: ExplainStep[] }) {
   return <div className="trace-steps">{steps.map((step, index) => <Collapsible className="trace-step" key={`${step.id || step.expression}:${index}`} defaultIsOpen={false} chevronPosition="start"
-    trigger={<span className="trace-step-label"><Badge label={statusText(step)} variant={step.status === "error" ? "error" : ["conditional", "unknown"].includes(step.status) ? "warning" : "neutral"} /><span className="trace-expression">{step.expression}</span></span>}>
+    trigger={<span className="trace-step-label"><span className="trace-step-badges">
+      <Badge label={statusText(step)} variant={step.status === "error" ? "error" : ["conditional", "unknown"].includes(step.status) ? "warning" : "neutral"} />
+      {step.section === "rules" && <Badge label="Rules" />}
+      {step.policy && <Badge label={`Policy: ${step.policy}`} />}
+    </span><span className="trace-expression">{step.expression}</span></span>}>
     <div className="trace-step-content">
       <p>{reasonText(step.reason)}</p>
-      <p className="muted">Stage: {words(step.stage)}{step.parent ? ` · Policy: ${step.parent}` : ""}</p>
+      <p className="muted">Stage: {words(step.stage)}{step.parent && step.parent !== step.policy ? ` · Context: ${step.parent}` : ""}</p>
       <p className="code-block">{step.expression}</p>
       {step.outbound && <p>Outbound: {step.outbound} · mark {step.mark || 0} · must {String(Boolean(step.must))}</p>}
-      {step.targets?.length > 0 && <p>Targets: {step.targets.join(", ")}</p>}
+      {!!step.targets?.length && <p>Targets: {step.targets.join(", ")}</p>}
       {(step.sources || []).map((source, index) => <p key={index} className="code-block">{source.file || "configuration"}:{source.line || 0}:{source.column || 0} {source.expression}</p>)}
       {(step.conditions || []).map((condition, index) => <div key={index} className="trace-condition">
-        <strong>{condition.expression}: {words(condition.match)}</strong>
-        <p className="muted">{words(condition.status)} · {reasonText(condition.reason)}</p>
-        <p className="code-block">{`Actual: ${condition.actual || "—"}\nExpected: ${condition.expected || "—"}`}</p>
+        <strong>{condition.expression}{condition.reason !== "membership_change" && `: ${words(condition.match)}`}</strong>
+        <p className="muted">{condition.reason === "membership_change" ? reasonText(condition.reason) : `${words(condition.status)} · ${reasonText(condition.reason)}`}</p>
+        <p className="code-block">{condition.reason === "membership_change"
+          ? `Before: ${condition.actual || "—"}\nAfter: ${condition.expected || "—"}`
+          : `Actual: ${condition.actual || "—"}\nExpected: ${condition.expected || "—"}`}</p>
       </div>)}
     </div>
   </Collapsible>)}</div>;
 }
 
-function RuleTrace({ steps }) {
+function RuleTrace({ steps }: { steps: ExplainStep[] }) {
   const [filter, setFilter] = useState("all");
   const id = useId();
-  const filters = {
+  const filters: Record<string, [string, (step: ExplainStep) => boolean]> = {
     all: ["All rules", () => true],
     selected: ["Selected", step => step.status === "selected"],
     matched: ["Matched", step => ["evaluated", "selected"].includes(step.status) && step.match === "match"],
@@ -60,7 +71,7 @@ function RuleTrace({ steps }) {
   </Disclosure>;
 }
 
-function outcome(result, kind) {
+function outcome(result: ExplainResult, kind: DiagnosticKind) {
   const decision = result.decision;
   if (!decision.complete) return [decision.missing?.includes("destination.ip") ? "Destination IP needed" : "Cannot determine the result yet", decision.missing?.length ? "Some information needed by the rules is missing. Complete it below and run the check again." : "The result depends on runtime behavior or a choice that this read-only check cannot make."];
   switch (decision.verdict) {
@@ -81,7 +92,7 @@ function outcome(result, kind) {
   }
 }
 
-const missingFields = {
+const missingFields: Record<string, [string, string]> = {
   "destination.ip": ["Destination IP", "A URL or hostname does not identify one destination IP. Enter the actual IP, or check a cached candidate below."],
   "destination.port": ["Destination port", "Include a port in the target, such as example.com:443."],
   domain_mapping: ["Kernel domain mapping", "Kernel domain rules use existing DNS-to-IP mappings. Entering a hostname or SNI does not create a mapping."],
@@ -92,7 +103,7 @@ const missingFields = {
   mitm_client_identity: ["Device identity", "A known device is needed to evaluate its HTTPS module settings."],
 };
 
-function MissingContext({ decision, context, onEdit, onUseIP }) {
+function MissingContext({ decision, context, onEdit, onUseIP }: TraceActions & { decision: ExplainDecision; context: DiagnosticField[] }) {
   const missing = decision.missing || [];
   const id = useId();
   const [candidate, setCandidate] = useState("");
@@ -119,13 +130,13 @@ function MissingContext({ decision, context, onEdit, onUseIP }) {
   </div>;
 }
 
-function TraceResult({ title, result, kind, context, onEdit, onUseIP }) {
+function TraceResult({ title, result, kind, context, onEdit, onUseIP }: TraceActions & { title: string; result: ExplainResult; kind: DiagnosticKind; context: DiagnosticField[] }) {
   const decision = result.decision, steps = result.steps || [];
   const [headline, description] = outcome(result, kind);
   const selected = decision.complete && steps.find(step => step.id === decision.rule_id);
   const targets = decision.targets || [];
   const domains = result.domains || [], group = result.outbounds?.[0];
-  const facts = kind === "domain" ? [
+  const facts: [string, ReactNode][] = kind === "domain" ? [
     ["Cached records", domains.length], ["Present in kernel", domains.filter(entry => entry.resident).length], ["DNS lookup", "Not sent"],
   ] : kind === "outbound" ? [
     ["Group", group?.name || "—"], ["Selection policy", group?.policy || "builtin"], ["Network", group?.network || "—"],
@@ -163,7 +174,7 @@ function TraceResult({ title, result, kind, context, onEdit, onUseIP }) {
   </section>;
 }
 
-export function Explanation({ response, kind = "flow", target, onEdit, onUseIP }) {
+export function Explanation({ response, kind = "flow", target, onEdit, onUseIP }: TraceActions & { response: ExplainResponse; kind?: DiagnosticKind; target: string }) {
   return <div className="explanation">
     <div className="trace-heading"><h2>Result</h2>{target && <span className="muted">{target}</span>}</div>
     {response.compared && <p className="muted">Compare the same target and context. Proposed changes have not been applied.</p>}

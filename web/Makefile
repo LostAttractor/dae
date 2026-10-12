@@ -3,9 +3,9 @@
 # This directory builds independently of the dae source tree and Go toolchain.
 DIST ?= dist
 
-.PHONY: all clean test
+.PHONY: all clean dev test typecheck
 all: node_modules/.installed clean
-	node build.mjs "$(DIST)"
+	npm run build -- "$(DIST)"
 
 node_modules/.installed: package.json package-lock.json
 	npm ci --no-audit --no-fund
@@ -14,5 +14,14 @@ node_modules/.installed: package.json package-lock.json
 clean:
 	rm -rf "$(DIST)"
 
+dev: node_modules/.installed
+	npm run dev
+
 test: node_modules/.installed
-	node tests/browser.mjs
+	npm run types:check
+	npm run typecheck
+	npm run test:dev
+	npm test
+
+typecheck: node_modules/.installed
+	npm run typecheck

@@ -106,9 +106,13 @@ type ExplainCondition struct {
 
 // Steps are ordered. Parent identifies a policy, plugin or an earlier step;
 // clients can render a tree without parsing human-readable expressions.
+// Policy identifies an execution policy separately from the parent hierarchy.
+// Section identifies the source configuration block when one is known.
 type ExplainStep struct {
 	ID         string             `json:"id"`
 	Parent     string             `json:"parent,omitempty"`
+	Policy     string             `json:"policy,omitempty"`
+	Section    string             `json:"section,omitempty"`
 	Stage      string             `json:"stage"`
 	Expression string             `json:"expression"`
 	Sources    []DiagnosticSource `json:"sources,omitempty"`

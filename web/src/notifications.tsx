@@ -1,10 +1,13 @@
+import type { ShowToastFn, ToastDismissFn } from "@astryxdesign/core/Toast";
 import { useLayoutEffect } from "react";
 import { flushSync } from "react-dom";
 import { ToastViewport, useToast } from "@astryxdesign/core/Toast";
-import { createView } from "./react-view.js";
+import { Icon } from "@astryxdesign/core/Icon";
+import { createView } from "./react-view.ts";
 
-export function createNotifications(container) {
-  let show, dismiss;
+export function createNotifications(container: HTMLElement) {
+  let show: ShowToastFn;
+  let dismiss: ToastDismissFn | null = null;
   createView(container)(
     <ToastViewport position="bottomEnd" maxVisible={1}>
       <NotificationController connect={(notify) => { show = notify; }} />
@@ -18,7 +21,7 @@ export function createNotifications(container) {
         return;
       }
       dismiss = show({
-        body: <span id="message" data-tone={tone}>{text}</span>,
+        body: <span id="message" className="inline-notice" data-tone={tone}>{tone === "error" && <Icon icon="error" size="sm" />}<span>{text}</span></span>,
         type: tone === "error" ? "error" : "info",
         isAutoHide: tone === "success",
         autoHideDuration: 5000,
@@ -29,7 +32,7 @@ export function createNotifications(container) {
   };
 }
 
-function NotificationController({ connect }) {
+function NotificationController({ connect }: { connect: (notify: ShowToastFn) => void }) {
   const notify = useToast();
   useLayoutEffect(() => connect(notify), [connect, notify]);
   return null;

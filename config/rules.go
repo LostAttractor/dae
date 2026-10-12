@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
@@ -40,7 +41,7 @@ func (r Rules) Plan() (RulePlan, error) {
 			if len(a.Params) != 0 {
 				return RulePlan{}, fmt.Errorf("rules rule %d: %s takes no arguments", i+1, a.Name)
 			}
-			control := routing.FlowRule{Filter: rule.AndFunctions, Action: consts.MatchActionBump}
+			control := routing.FlowRule{Filter: rule.AndFunctions, Action: consts.MatchActionBump, Sources: slices.Clone(rule.Sources)}
 			if a.Name == "must" {
 				control.Action = consts.MatchActionMust
 			}
@@ -68,7 +69,7 @@ func (r Rules) Plan() (RulePlan, error) {
 		if err != nil || ip.Zone() != "" {
 			return RulePlan{}, fmt.Errorf("rules rule %d: dnat target must be an IP or IP:port without a zone", i+1)
 		}
-		result.Destinations = append(result.Destinations, routing.DestinationRewrite{Filter: rule.AndFunctions, To: []netip.Addr{ip.Unmap()}, Port: port})
+		result.Destinations = append(result.Destinations, routing.DestinationRewrite{Filter: rule.AndFunctions, To: []netip.Addr{ip.Unmap()}, Port: port, Sources: slices.Clone(rule.Sources)})
 	}
 	return result, nil
 }

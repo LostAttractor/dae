@@ -9,6 +9,7 @@ import (
 
 // FlowRule adds a control effect without selecting a routing outbound.
 type FlowRule struct {
-	Filter []*config_parser.Function
-	Action consts.MatchAction
+	Filter  []*config_parser.Function
+	Action  consts.MatchAction
+	Sources []config_parser.RuleSource
 }

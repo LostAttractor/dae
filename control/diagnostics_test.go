@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,11 @@ import (
 func diagnosticPlane(t *testing.T, rules, controls string) *ControlPlane {
 	t.Helper()
 	prepared := prepareFlowRulesForTest(t, controls, rules)
+	return diagnosticPreparedPlane(t, prepared)
+}
+
+func diagnosticPreparedPlane(t *testing.T, prepared preparedRules) *ControlPlane {
+	t.Helper()
 	matcher, builder := routingMatcherForTest(t, prepared)
 	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.json"))
 	if err != nil {
@@ -86,6 +92,106 @@ func TestDiagnosticsMembershipComparisonIsPrivate(t *testing.T) {
 	impact, err := c.ClientImpact(t.Context(), "work", api.ClientImpactRequest{Context: request.Context, Joined: new(true), Flow: &request.Flow}, false)
 	if err != nil || len(impact.Rules) != 2 || impact.Rules[0].Conditions[0].Expected != "true" || impact.Rules[1].Conditions[0].Expected != "false" {
 		t.Fatalf("impact: %+v, %v", impact, err)
+	}
+}
+
+func TestDiagnosticsClientReferencesPreserveRulesAndPolicies(t *testing.T) {
+	prepared := prepareFlowRulesForTest(t, `client(work) && dport(53) -> dnat('127.0.0.54:53')
+client(work) && dport(443) -> must
+!client(work) && dport(80) -> bump`, "")
+	prepared.routing = &parseStructuredTestConfig(t, `rule_set {
+  shared { client(work) -> direct }
+}
+policy {
+  main {
+    use: shared, shared
+    fallback: proxy
+  }
+  tor {
+    use: shared
+    fallback: block
+  }
+}
+default: main
+interface { diag_tor: tor }`).Routing
+	c := diagnosticPreparedPlane(t, prepared)
+	before := slices.Clone(c.routingMatcher.matches)
+	impact, err := c.ClientImpact(t.Context(), "work", api.ClientImpactRequest{Context: diagnosticRequest().Context, Joined: new(true)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(impact.Rules) != 6 || impact.Trace != nil {
+		t.Fatalf("expected three shared rules and three policy occurrences: %+v", impact)
+	}
+	ids := make(map[string]bool)
+	counts := make(map[string]int)
+	for _, step := range impact.Rules {
+		if ids[step.ID] {
+			t.Fatalf("duplicate reference ID: %s", step.ID)
+		}
+		ids[step.ID] = true
+		if step.Status != "referenced" || step.Match != "unknown" || step.Reason != "client_reference" {
+			t.Fatalf("reference presented as an evaluated rule: %+v", step)
+		}
+		if len(step.Sources) == 0 || step.Sources[0].Line == 0 || len(step.Conditions) != 1 {
+			t.Fatalf("source or membership evidence lost: %+v", step)
+		}
+		if step.Section == "rules" {
+			if step.Policy != "" || step.Parent != "" {
+				t.Fatalf("shared rule attributed to one policy: %+v", step)
+			}
+			counts["rules"]++
+			if step.Action == "capture" && step.Expression != `client("work") && dport("53") -> dnat("127.0.0.54:53")` {
+				t.Fatalf("DNAT target replaced by an internal action: %+v", step)
+			}
+			if step.Action != "capture" && !strings.HasSuffix(step.Expression, " -> "+step.Action) {
+				t.Fatalf("flow action is not readable: %+v", step)
+			}
+		} else {
+			if step.Section != "routing" || step.Parent != step.Policy {
+				t.Fatalf("routing policy missing: %+v", step)
+			}
+			counts[step.Policy]++
+		}
+		condition := step.Conditions[0]
+		wantBefore, wantAfter := "false", "true"
+		if strings.HasPrefix(condition.Expression, "!") {
+			wantBefore, wantAfter = "true", "false"
+		}
+		if condition.Actual != wantBefore || condition.Expected != wantAfter {
+			t.Fatalf("membership predicate change: %+v", condition)
+		}
+	}
+	if !reflect.DeepEqual(counts, map[string]int{"rules": 3, "main": 2, "tor": 1}) {
+		t.Fatalf("shared or repeated policy references collapsed incorrectly: %v", counts)
+	}
+	if len(c.settings.Members("work")) != 0 || !reflect.DeepEqual(before, c.routingMatcher.matches) {
+		t.Fatal("reference listing changed live routing or membership")
+	}
+}
+
+func TestDiagnosticsDNATMetadataPreservesTargets(t *testing.T) {
+	for _, target := range []string{"127.0.0.54:53", "[2001:db8::53]:1053", "198.51.100.53"} {
+		t.Run(target, func(t *testing.T) {
+			c := diagnosticPlane(t, "", "dport(443) -> dnat('"+target+"')")
+			result, err := c.Explain(t.Context(), diagnosticRequest(), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stages := make(map[string]bool)
+			for _, step := range result.Current.Steps {
+				if step.Action != "capture" && step.Action != "destination" {
+					continue
+				}
+				if step.Section != "rules" || step.Policy != "default" || !strings.HasSuffix(step.Expression, ` -> dnat("`+target+`")`) || len(step.Sources) != 1 {
+					t.Fatalf("DNAT metadata incomplete at %s: %+v", step.Stage, step)
+				}
+				stages[step.Action] = true
+			}
+			if !stages["capture"] || !stages["destination"] {
+				t.Fatalf("missing DNAT stages: %+v", result.Current.Steps)
+			}
+		})
 	}
 }
 

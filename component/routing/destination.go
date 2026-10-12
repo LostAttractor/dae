@@ -11,9 +11,10 @@ import (
 // keeping the original port unless Port is nonzero. Applies to direct and proxy.
 // Filter uses ordinary routing predicates; To contains at least one target IP.
 type DestinationRewrite struct {
-	Filter []*config_parser.Function
-	To     []netip.Addr
-	Port   uint16
+	Filter  []*config_parser.Function
+	To      []netip.Addr
+	Port    uint16
+	Sources []config_parser.RuleSource
 }
 
 // DestinationRewrites is ordered: the first matching predicate wins.

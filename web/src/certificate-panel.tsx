@@ -1,7 +1,8 @@
+import type { ReactNode } from "react";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { useEffect, useRef, useState } from "react";
 
-export function CertificatePanel({ children }) {
+export function CertificatePanel({ children }: { children: ReactNode }) {
   const [roomy] = useState(() => matchMedia("(min-width: 768px) and (min-height: 600px)"));
   const [open, setOpen] = useState(roomy.matches);
   const manuallyToggled = useRef(false);

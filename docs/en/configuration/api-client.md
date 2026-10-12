@@ -160,9 +160,9 @@ make web
 make -C web
 ```
 
-`web/` owns the frontend source and build entry point. `make web` writes to `build/web/` (configurable with `WEB_OUTPUT`); `make -C web` writes to `web/dist/`. Both require Make, Node.js 22+ and npm, without Go. Make installs the pinned frontend dependencies as needed. `dae-client` contains only terminal commands and does not include Web assets.
+`web/` owns the TypeScript frontend source, build configuration and tests. `make web` writes to `build/web/` (configurable with `WEB_OUTPUT`); `make -C web` writes to `web/dist/`. Both require Make, Node.js 22.12+ and npm, without Go. Make installs the pinned frontend dependencies as needed and runs strict type checks before building. `dae-client` contains only terminal commands and does not include Web assets.
 
-The bundle contains `index.html`, `style.css`, `astryx-layers.css`, bundled `app.js` and its dependency license notices. The React interface uses Astryx controls with GitHub Primer Light/Dark colors and responsive Recharts traffic charts. Overview shows this device's settings and secondary status; Tracing provides diagnostics; Manage separates device management, shared outbound choices and global status into tabs. All frontend dependencies are bundled locally. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
+The bundle contains `index.html`, `astryx-layers.css`, JavaScript and CSS under `assets/`, and dependency license notices. The React interface uses Astryx controls with GitHub Primer Light/Dark colors and responsive Recharts traffic charts. Overview shows quick selectors, this device's settings and status; Setting separates device management, shared outbound choices and diagnostics into sections. All frontend dependencies are bundled locally. To update the UI without rebuilding dae, deploy the bundle and set `DAE_WEB_ROOT` in the daemon's service environment:
 
 ```sh
 DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae

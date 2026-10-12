@@ -1,3 +1,5 @@
+import type { TooltipContentProps } from "recharts";
+import type { PathStats } from "./types.ts";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 const sampleCount = 12;
@@ -14,21 +16,21 @@ export function bytes(value = 0) {
   return `${value.toLocaleString(undefined, { maximumFractionDigits: unit ? 1 : 0 })} ${units[unit]}`;
 }
 
-const rate = (value) => `${bytes(value)}/s`;
-const age = (value) => value === 0 ? "Latest" : `${value}s`;
+const rate = (value = 0) => `${bytes(value)}/s`;
+const age = (value: number) => value === 0 ? "Latest" : `${value}s`;
 
-function RateTooltip({ active, payload, label }) {
+function RateTooltip({ active, payload, label }: TooltipContentProps) {
   if (!active || !payload?.length) return null;
   return <div className="traffic-tooltip">
-    <p>{label === 0 ? "Latest sample" : `${Math.abs(label)}s before latest`}</p>
-    <dl>{payload.map((entry) => <div key={entry.dataKey}>
+    <p>{label === 0 ? "Latest sample" : `${Math.abs(Number(label))}s before latest`}</p>
+    <dl>{payload.map((entry) => <div key={String(entry.dataKey)}>
       <dt><span className={`traffic-swatch ${entry.dataKey}`} aria-hidden="true" />{entry.name}</dt>
-      <dd>{rate(entry.value)}</dd>
+      <dd>{rate(typeof entry.value === "number" ? entry.value : 0)}</dd>
     </div>)}</dl>
   </div>;
 }
 
-export function TrafficPanel({ stats }) {
+export function TrafficPanel({ stats }: { stats: PathStats }) {
   const history = stats.history || {};
   const upload = (history.upload_bytes_per_second || []).slice(-sampleCount);
   const download = (history.download_bytes_per_second || []).slice(-sampleCount);
@@ -63,7 +65,7 @@ export function TrafficPanel({ stats }) {
             <XAxis type="number" dataKey="seconds" domain={[-55, 0]} ticks={[-55, -30, 0]}
               tickFormatter={age} tickLine={false} axisLine={false} tickMargin={10} height={32}
               tick={{ fill: "var(--muted)", fontSize: 13 }} />
-            <YAxis domain={[0, (maximum) => Math.max(1, maximum)]} width={84} tickCount={4} allowDecimals={false}
+            <YAxis domain={[0, (maximum: number) => Math.max(1, maximum)]} width={84} tickCount={4} allowDecimals={false}
               tickFormatter={rate} tickLine={false} axisLine={false} tickMargin={8}
               tick={{ fill: "var(--muted)", fontSize: 13 }} />
             <Tooltip content={RateTooltip} isAnimationActive={false} cursor={{ stroke: "var(--control-line)", strokeDasharray: "3 3" }} />

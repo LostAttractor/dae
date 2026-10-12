@@ -3,12 +3,17 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
-    "build": "node build.mjs",
-    "test": "node tests/browser.mjs",
-    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs"
+    "dev": "vite",
+    "build": "npm run typecheck && node --import tsx build.ts",
+    "test:dev": "node --import tsx --test tests/dev-server.ts",
+    "test": "node --import tsx tests/browser.ts",
+    "astryx": "node node_modules/@astryxdesign/cli/clients/cli/bin/astryx.mjs",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
+    "types:api": "node --import tsx tooling/generate-api-types.ts",
+    "types:check": "node --import tsx tooling/generate-api-types.ts --check"
   },
   "dependencies": {
     "@astryxdesign/core": "0.6.8",
@@ -21,6 +26,14 @@
   },
   "devDependencies": {
     "@astryxdesign/cli": "0.6.8",
-    "esbuild": "0.28.2"
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "devtools-protocol": "0.0.1716261",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vite": "8.3.4"
   }
 }

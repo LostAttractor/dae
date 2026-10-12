@@ -18,6 +18,7 @@ type routingRuleMetadata struct {
 	expression string
 	sources    []api.DiagnosticSource
 	owner      string
+	section    string
 }
 
 type routingMatchMetadata struct {
@@ -41,11 +42,11 @@ func (b *RoutingMatcherBuilder) rememberMatch(index int, f *config_parser.Functi
 	b.matchMetadata[uint32(index)] = meta
 }
 
-func (b *RoutingMatcherBuilder) rememberRule(start uint32, rule *config_parser.RoutingRule, owner string) {
+func (b *RoutingMatcherBuilder) rememberRule(start uint32, rule *config_parser.RoutingRule, owner, section string) {
 	if b.ruleMetadata == nil {
 		b.ruleMetadata = make(map[uint32]routingRuleMetadata)
 	}
-	meta := routingRuleMetadata{start: start, end: uint32(len(b.rules)), owner: owner}
+	meta := routingRuleMetadata{start: start, end: uint32(len(b.rules)), owner: owner, section: section}
 	for _, source := range rule.Sources {
 		meta.sources = append(meta.sources, api.DiagnosticSource{File: source.File, Line: source.Line, Column: source.Column, Expression: source.Expression})
 	}
@@ -67,7 +68,7 @@ func (b *RoutingMatcherBuilder) rememberInactive(other *RoutingMatcherBuilder, o
 func (m *RoutingMatcher) inactiveSteps(profile uint32, names map[uint8]string) []api.ExplainStep {
 	var steps []api.ExplainStep
 	for _, metadata := range m.inactiveRules {
-		steps = append(steps, api.ExplainStep{ID: fmt.Sprintf("inactive/%d", len(steps)), Parent: metadata.owner, Stage: "configuration", Expression: metadata.expression, Sources: metadata.sources, Status: "inactive", Match: "unknown", Reason: "not_bound_to_active_policy"})
+		steps = append(steps, api.ExplainStep{ID: fmt.Sprintf("inactive/%d", len(steps)), Parent: metadata.owner, Section: metadata.section, Stage: "configuration", Expression: metadata.expression, Sources: metadata.sources, Status: "inactive", Match: "unknown", Reason: "not_bound_to_active_policy"})
 	}
 	for _, other := range m.profileInfo {
 		if other.ID == profile {
@@ -79,7 +80,7 @@ func (m *RoutingMatcher) inactiveSteps(profile uint32, names map[uint8]string) [
 				if !exists {
 					continue
 				}
-				step := api.ExplainStep{ID: fmt.Sprintf("inactive/%d", len(steps)), Parent: profileName(other), Stage: "configuration", Expression: metadata.expression, Sources: metadata.sources, Status: "inactive", Match: "unknown", Reason: "different_ingress_policy"}
+				step := api.ExplainStep{ID: fmt.Sprintf("inactive/%d", len(steps)), Parent: profileName(other), Policy: profileName(other), Section: metadata.section, Stage: "configuration", Expression: metadata.expression, Sources: metadata.sources, Status: "inactive", Match: "unknown", Reason: "different_ingress_policy"}
 				if metadata.end > i {
 					step.Outbound = names[m.matches[metadata.end-1].Outbound]
 				}
@@ -96,7 +97,7 @@ func (b *RoutingMatcherBuilder) applyRules(rules []*config_parser.RoutingRule, o
 		if err := b.rulesBuilder.Apply([]*config_parser.RoutingRule{rule}); err != nil {
 			return err
 		}
-		b.rememberRule(start, rule, owner)
+		b.rememberRule(start, rule, owner, "routing")
 	}
 	return nil
 }

@@ -1,5 +1,6 @@
-import { request, challengeRequest } from "./api.js";
-import { byId } from "./dom.js";
+import type { DeviceState, CertificateMetadata, CertificateTest } from "./types.ts";
+import { request, challengeRequest, errorMessage } from "./api.ts";
+import { byId } from "./dom.ts";
 
 let identity = "";
 let fingerprint = "";
@@ -7,9 +8,9 @@ let available = false;
 let enabled = false;
 let generation = 0;
 let serverGeneration = "";
-let mitmOrigins = [];
+let mitmOrigins: string[] = [];
 
-function state(id, text, tone = "neutral") {
+function state(id: string, text: string, tone = "neutral") {
   const node = byId(id);
   node.textContent = text;
   node.dataset.tone = tone;
@@ -22,16 +23,16 @@ function invalidate() {
   byId("certificate-test-info").textContent = "Results apply to this browser only.";
 }
 
-export function certificateDevice(device) {
+export function certificateDevice(device: DeviceState | null) {
   const next = device ? `${device.source_ip}/${device.mac}` : "";
   const nextEnabled = device?.mitm?.enabled || false;
   if (identity !== next || enabled !== nextEnabled || device?.mitm && device.mitm.ca_fingerprint !== fingerprint) invalidate();
   identity = next;
   enabled = nextEnabled;
-  byId("test-certificate").disabled = !identity || !available;
+  byId<HTMLButtonElement>("test-certificate").disabled = !identity || !available;
 }
 
-export function certificateIdentity(certificate) {
+export function certificateIdentity(certificate: CertificateMetadata | null) {
   const next = certificate?.fingerprint || "";
   const nextGeneration = certificate?.test_generation || "";
   if (next !== fingerprint || nextGeneration !== serverGeneration) invalidate();
@@ -40,15 +41,15 @@ export function certificateIdentity(certificate) {
   fingerprint = next;
   available = Boolean(certificate?.test_available);
   byId("certificate-test-panel").hidden = !available;
-  byId("test-certificate").disabled = !identity || !available;
+  byId<HTMLButtonElement>("test-certificate").disabled = !identity || !available;
 }
 
 export async function testCertificate() {
   const version = ++generation;
   state("certificate-trust-result", "Testing…");
   state("certificate-mitm-result", "Waiting for CA test");
-  let test;
-  try { test = await request("/api/device/certificate-tests", "POST"); }
+  let test: CertificateTest;
+  try { test = await request<CertificateTest>("/api/device/certificate-tests", "POST"); }
   catch (error) {
     state("certificate-trust-result", "Test unavailable", "error");
     state("certificate-mitm-result", "Not tested");
@@ -59,7 +60,7 @@ export async function testCertificate() {
     invalidate();
     throw new Error("The CA changed. Refresh the page and test the current certificate.");
   }
-  const proof = async (url, stage) => {
+  const proof = async (url: string, stage: "trust" | "mitm") => {
     const result = await challengeRequest(url, stage === "mitm" ? mitmOrigins : undefined);
     if (result.id !== test.id || result.ca_fingerprint !== test.ca_fingerprint) throw new Error("Unexpected challenge response");
     return result.stage === stage;
@@ -74,11 +75,11 @@ export async function testCertificate() {
     try { intercepted = await proof(test.mitm_url, "mitm"); } catch { /* Confirm observations using the same-origin API below. */ }
   }
   if (version !== generation) return;
-  let observation;
-  try { observation = await request(`/api/device/certificate-tests/${encodeURIComponent(test.id)}`); }
+  let observation: CertificateTest;
+  try { observation = await request<CertificateTest>(`/api/device/certificate-tests/${encodeURIComponent(test.id)}`); }
   catch (error) {
     invalidate();
-    throw new Error(`Test is no longer current: ${error.message}`);
+    throw new Error(`Test is no longer current: ${errorMessage(error)}`);
   }
   if (version !== generation) return;
   trust = trust && observation.trust_observed;

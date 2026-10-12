@@ -269,7 +269,7 @@ func (b *RoutingMatcherBuilder) addFallback(fallback bpfMatchSet) (span routingS
 	}
 	start := uint32(len(b.rules))
 	b.rules = append(b.rules, fallback)
-	b.rememberRule(start, &config_parser.RoutingRule{Outbound: config_parser.Function{Name: "fallback"}}, "fallback")
+	b.rememberRule(start, &config_parser.RoutingRule{Outbound: config_parser.Function{Name: "fallback"}}, "fallback", "routing")
 	span = routingSpan{Start: start, End: start + 1}
 	b.fallbackSpans[fallback] = span
 	return span, nil

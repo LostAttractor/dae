@@ -1,23 +1,28 @@
+import type { FormEvent } from "react";
+import type { ClientSetState, DeviceContext, DiagnosticFlow, DiagnosticKind, ExplainRequest, ExplainResponse } from "./types.ts";
+import { formControl, formValue } from "./dom.ts";
+interface Comparison { sets: Record<string, boolean>; label: string }
+interface ExplanationView { response: ExplainResponse; kind?: DiagnosticKind; target: string }
 import { Button } from "@astryxdesign/core/Button";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Field } from "@astryxdesign/core/Field";
 import { useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { request } from "./api.js";
-import { createView } from "./react-view.js";
-import { useRequest } from "./use-request.js";
-import { Explanation } from "./trace.jsx";
-import { Disclosure } from "./disclosure.jsx";
+import { request } from "./api.ts";
+import { createView } from "./react-view.ts";
+import { useRequest } from "./use-request.ts";
+import { Explanation } from "./trace.tsx";
+import { Disclosure } from "./disclosure.tsx";
 
 const fields = {
-  flow: ["Destination", "https://example.com or 203.0.113.10:443", "Where would this connection go?"],
-  dns: ["DNS name", "example.com", "How would DNS plugins handle this question?"],
-  domain: ["Domain", "example.com", "Which domain-to-IP records does dae already know?"],
-  outbound: ["Outbound group", "proxy", "Which nodes are available in this outbound group?"],
-  plugins: ["Request URL", "https://example.com/path", "Which HTTP plugins would handle this request?"],
+  flow: ["Destination", "https://example.com or 203.0.113.10:443"],
+  dns: ["DNS name", "example.com"],
+  domain: ["Domain", "example.com"],
+  outbound: ["Outbound group", "proxy"],
+  plugins: ["Request URL", "https://example.com/path"],
 };
 
-function parseTarget(value) {
+function parseTarget(value: string): DiagnosticFlow {
   if (/^https?:\/\//i.test(value)) {
     const url = new URL(value), host = url.hostname.replace(/^\[|\]$/g, "");
     const ip = host.includes(":") || /^\d+\.\d+\.\d+\.\d+$/.test(host);
@@ -31,15 +36,15 @@ function parseTarget(value) {
   return { destination: { ...address, port } };
 }
 
-function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
-  const [kind, setKind] = useState("flow");
-  const [scope, setScope] = useState("self");
-  const [comparison, setComparison] = useState(null);
+function Diagnostics({ allowed, comparisonRequest, deviceKey }: { allowed: boolean; comparisonRequest: Comparison | null; deviceKey: string }) {
+  const [kind, setKind] = useState<DiagnosticKind>("flow");
+  const [scope, setScope] = useState<"self" | "manual">("self");
+  const [comparison, setComparison] = useState<Comparison | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const target = useRef(null), formRef = useRef(null), cachedIP = useRef(null);
-  const explanation = useRequest(), context = useRequest();
+  const target = useRef<HTMLInputElement>(null), formRef = useRef<HTMLFormElement>(null), cachedIP = useRef<string | null>(null);
+  const explanation = useRequest<ExplanationView>(), context = useRequest<DeviceContext>();
   const flow = kind === "flow" || kind === "plugins", dns = kind === "dns";
-  const [label, placeholder, question] = fields[kind];
+  const [label, placeholder] = fields[kind];
 
   useLayoutEffect(() => {
     if (!allowed && scope === "manual") { setScope("self"); explanation.reset(); }
@@ -53,58 +58,59 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
     if (!comparisonRequest) return;
     setComparison(comparisonRequest);
     setKind("flow"); setScope("self"); explanation.reset();
-    target.current.closest("section").scrollIntoView({ block: "start" });
-    target.current.focus({ preventScroll: true });
+    target.current!.closest("section")!.scrollIntoView({ block: "start" });
+    target.current!.focus({ preventScroll: true });
   }, [comparisonRequest, explanation.reset]);
 
   async function showContext() {
     const operation = context.start();
-    try { operation.resolve(await request("/api/device/context")); }
+    try { operation.resolve(await request<DeviceContext>("/api/device/context")); }
     catch (error) { operation.reject(error); }
   }
 
-  function editField(name) {
-    const input = formRef.current.elements[name];
+  function editField(name: string) {
+    const input = formControl(formRef.current!, name);
     if (input.closest(".diagnostic-advanced")) flushSync(() => setAdvancedOpen(true));
     input.focus();
     input.scrollIntoView({ block: "center" });
   }
 
-  function useIP(ip) {
-    formRef.current.elements.ip.value = ip;
+  function useIP(ip: string) {
+    formControl(formRef.current!, "ip").value = ip;
     cachedIP.current = ip;
-    formRef.current.requestSubmit();
+    formRef.current!.requestSubmit();
   }
 
-  function changeInput(event) {
+  function changeInput(event: FormEvent<HTMLFormElement>) {
+    if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement)) return;
     if (event.target.name === "target" && cachedIP.current) {
-      if (formRef.current.elements.ip.value === cachedIP.current) formRef.current.elements.ip.value = "";
+      if (formControl(formRef.current!, "ip").value === cachedIP.current) formControl(formRef.current!, "ip").value = "";
       cachedIP.current = null;
     }
     if (event.target.name === "ip") cachedIP.current = null;
     explanation.reset();
   }
 
-  async function explain(event) {
+  async function explain(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const operation = explanation.start();
     try {
       if (scope === "manual" && !allowed) throw new Error("Administrator access is required for manual identity.");
-      const value = form.get("target").trim();
-      const payload = { kind, context: {}, flow: { destination: {}, protocol: dns ? "udp" : form.get("protocol") }, detail: "predicates" };
+      const value = formValue(form, "target").trim();
+      const payload: ExplainRequest = { kind, context: {}, flow: { destination: {}, protocol: dns || formValue(form, "protocol") === "udp" ? "udp" : "tcp" }, detail: "predicates" };
       if (kind === "outbound") payload.outbound = value;
-      else if (dns) payload.dns = { name: value, type: form.get("qtype") };
+      else if (dns) payload.dns = { name: value, type: formValue(form, "qtype") };
       else if (kind === "domain") payload.flow.destination.domain = value;
       else Object.assign(payload.flow, parseTarget(value));
-      const ip = form.get("ip").trim(), sni = form.get("sni").trim();
+      const ip = formValue(form, "ip").trim(), sni = formValue(form, "sni").trim();
       if (ip && !dns && kind !== "outbound") payload.flow.destination.ip = ip;
       if (sni && flow) payload.flow.sni = sni;
-      const overrides = JSON.parse(form.get("overrides") || "{}");
+      const overrides: unknown = JSON.parse(formValue(form, "overrides") || "{}");
       if (typeof overrides !== "object" || overrides === null || Array.isArray(overrides)) throw new Error("Advanced request must be a JSON object.");
       Object.assign(payload, overrides);
       if (comparison) payload.compare = { ...payload.compare, client_sets: { ...payload.compare?.client_sets, ...comparison.sets } };
-      const response = await request(scope === "self" ? "/api/device/diagnostics/explain" : "/api/diagnostics/explain", "POST", payload);
+      const response = await request<ExplainResponse>(scope === "self" ? "/api/device/diagnostics/explain" : "/api/diagnostics/explain", "POST", payload);
       operation.resolve({ response, kind: payload.kind, target: value });
     } catch (error) { operation.reject(error); }
   }
@@ -112,10 +118,9 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
   return <>
     <form id="diagnostic-form" ref={formRef} onSubmit={explain} onInput={changeInput}>
       <div className="diagnostic-mode">
-        <Field label="What to check" inputID="diagnostic-kind"><select id="diagnostic-kind" value={kind} onChange={(event) => { setKind(event.target.value); explanation.reset(); }}>
+        <Field label="What to check" inputID="diagnostic-kind"><select id="diagnostic-kind" value={kind} onChange={(event) => { if (Object.hasOwn(fields, event.target.value)) setKind(event.target.value as DiagnosticKind); explanation.reset(); }}>
           <option value="flow">Connection routing</option><option value="dns">DNS policy</option><option value="domain">Cached domain records</option><option value="outbound">Outbound nodes</option><option value="plugins">HTTP plugins</option>
         </select></Field>
-        <p className="muted">{question}</p>
       </div>
       <div className={`diagnostic-target-row${!flow && !dns ? " single-field" : ""}`}>
         <Field label={label} labelID="diagnostic-target-label" inputID="diagnostic-target"><input ref={target} id="diagnostic-target" name="target" placeholder={placeholder} aria-describedby="diagnostic-target-hint" autoCapitalize="none" spellCheck={false} required /></Field>
@@ -134,12 +139,12 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
           description="Optional · override the hostname supplied by the URL" descriptionID="diagnostic-sni-hint">
           <input id="diagnostic-sni" name="sni" placeholder="example.com" autoCapitalize="none" spellCheck={false} aria-describedby="diagnostic-sni-hint" />
         </Field>
-        <Field className="diagnostic-identity" label="Test as" inputID="diagnostic-scope"><select id="diagnostic-scope" value={scope} onChange={(event) => { setScope(event.target.value); explanation.reset(); }}>
+        <Field className="diagnostic-identity" label="Test as" inputID="diagnostic-scope"><select id="diagnostic-scope" value={scope} onChange={(event) => { setScope(event.target.value === "manual" ? "manual" : "self"); explanation.reset(); }}>
           <option value="self">This device</option><option id="diagnostic-manual" value="manual" disabled={!allowed}>Custom identity (administrator)</option>
         </select></Field>
         <p className="muted">{'JSON fields override the request. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
         <Field label="Advanced diagnostic request JSON" inputID="diagnostic-overrides">
-          <textarea id="diagnostic-overrides" name="overrides" rows="6" spellCheck={false} defaultValue="{}" />
+          <textarea id="diagnostic-overrides" name="overrides" rows={6} spellCheck={false} defaultValue="{}" />
         </Field>
         <Button label="Show inherited context" id="diagnostic-context" type="button" onClick={showContext} isDisabled={context.pending} />
         <pre id="diagnostic-context-view" className="code-block">{context.pending ? "Loading context…" : context.error || context.value?.fields.map(field => `${field.name}: ${field.value} [${field.source}]`).join("\n")}</pre>
@@ -160,15 +165,16 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }) {
   </>;
 }
 
-export function createDiagnostics(container) {
+export function createDiagnostics(container: HTMLElement) {
   const render = createView(container);
-  let allowed = false, comparisonRequest = null, deviceKey = "";
+  let allowed = false, deviceKey = "";
+  let comparisonRequest: Comparison | null = null;
   const update = () => render(<Diagnostics allowed={allowed} comparisonRequest={comparisonRequest} deviceKey={deviceKey} />);
   update();
   return {
-    setAccess: (next) => { if (allowed !== next) { allowed = next; update(); } },
-    setDevice: (next) => { if (deviceKey !== next) { deviceKey = next; update(); } },
-    compare: (set) => {
+    setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; update(); } },
+    setDevice: (next: string) => { if (deviceKey !== next) { deviceKey = next; update(); } },
+    compare: (set: ClientSetState) => {
       comparisonRequest = { sets: { [set.name]: !set.joined }, label: `${set.joined ? "Leave" : "Join"} ${set.description || set.name}` };
       update();
     },

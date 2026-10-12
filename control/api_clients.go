@@ -123,6 +123,7 @@ func (c *ControlPlane) ClientImpact(ctx context.Context, name string, request ap
 			}
 		}
 	}
+	sharedRules := make(map[uint32]bool)
 	for _, profile := range m.profileInfo {
 		occurrence := 0
 		for _, span := range profile.Spans {
@@ -146,7 +147,18 @@ func (c *ControlPlane) ClientImpact(ctx context.Context, name string, request ap
 				}
 				if related {
 					meta := m.ruleMetadata[start]
-					result.Rules = append(result.Rules, api.ExplainStep{ID: fmt.Sprintf("%s/%d/%d", profileName(profile), occurrence, start), Parent: profileName(profile), Stage: "client_impact", Expression: meta.expression, Sources: meta.sources, Conditions: conditions, Status: "conditional", Match: "unknown", Reason: "remaining_predicates_and_rule_order", Action: diagnosticAction(m.matches[end].Action)})
+					step := api.ExplainStep{ID: fmt.Sprintf("%s/%d/%d", profileName(profile), occurrence, start), Parent: profileName(profile), Policy: profileName(profile), Section: meta.section, Stage: "client_impact", Expression: meta.expression, Sources: meta.sources, Conditions: conditions, Status: "referenced", Match: "unknown", Reason: "client_reference", Action: diagnosticAction(m.matches[end].Action)}
+					if start < uint32(m.routing.start) {
+						// The shared prelude is compiled once and used by every
+						// policy. Its reference is independent of policy selection.
+						step.ID, step.Parent, step.Policy = fmt.Sprintf("shared/%d", start), "", ""
+						if !sharedRules[start] {
+							result.Rules = append(result.Rules, step)
+							sharedRules[start] = true
+						}
+					} else {
+						result.Rules = append(result.Rules, step)
+					}
 				}
 				occurrence++
 				start = end + 1

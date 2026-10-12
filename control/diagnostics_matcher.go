@@ -248,7 +248,7 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 			}
 			metadata := m.ruleMetadata[start]
 			tail := m.matches[end]
-			step := api.ExplainStep{ID: fmt.Sprintf("%s/%d/%d", stage, occurrence, start), Parent: m.diagnosticPolicy(input), Stage: stage,
+			step := api.ExplainStep{ID: fmt.Sprintf("%s/%d/%d", stage, occurrence, start), Parent: m.diagnosticPolicy(input), Policy: m.diagnosticPolicy(input), Section: metadata.section, Stage: stage,
 				Expression: metadata.expression, Sources: metadata.sources, Action: diagnosticAction(tail.Action), Status: "not_reached", Match: "match", Reason: "earlier_terminal_rule"}
 			occurrence++
 			if metadata.owner != "" && metadata.owner != step.Parent {

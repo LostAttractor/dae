@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { createView } from "./react-view.js";
+import { createView } from "./react-view.ts";
 
-function age(timestamp, now) {
+function age(timestamp: number, now: number) {
   const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
   if (seconds < 5) return "just now";
   if (seconds < 60) return `${seconds}s ago`;
@@ -10,10 +10,10 @@ function age(timestamp, now) {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-export function UpdatedAt({ timestamp }) {
+export function UpdatedAt({ timestamp, compact = false }: { timestamp: number; compact?: boolean }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    let timer;
+    let timer: ReturnType<typeof setInterval> | undefined;
     const sync = () => {
       clearInterval(timer);
       if (document.hidden) return;
@@ -28,13 +28,16 @@ export function UpdatedAt({ timestamp }) {
     };
   }, []);
   const date = new Date(timestamp);
-  return <time dateTime={date.toISOString()} title={date.toLocaleString()}>Updated {age(timestamp, now)}</time>;
+  const elapsed = age(timestamp, now);
+  const shortAge = elapsed === "just now" ? "now" : elapsed.replace(" ago", "");
+  return <time dateTime={date.toISOString()} title={date.toLocaleString()} aria-label={compact ? `Updated ${elapsed}` : undefined}>{compact ? shortAge : `Updated ${elapsed}`}</time>;
 }
 
-export function createUpdatedLabel(container) {
+export function createUpdatedLabel(container: HTMLElement) {
   const render = createView(container);
+  render("Not refreshed yet");
   return {
-    refresh: () => render(<UpdatedAt timestamp={Date.now()} />),
-    message: (text) => render(text),
+    refresh: () => render(<UpdatedAt timestamp={Date.now()} compact />),
+    message: (text: string) => render(text),
   };
 }

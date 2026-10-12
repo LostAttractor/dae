@@ -1,32 +1,37 @@
-import { Button } from "@astryxdesign/core/Button";
-import { Badge } from "@astryxdesign/core/Badge";
+import type { KeyboardEvent } from "react";
+import type { APIRequest, RunAction, SelectorNode, SelectorState, Page, SettingSection } from "./types.ts";
+
+interface SelectorActions { run: RunAction; request: APIRequest; refresh: () => Promise<unknown> }
+interface SelectorControls extends SelectorActions { update: (selector: SelectorState) => void }
+import { Button, Badge, TextInput } from "./native-controls.tsx";
+import { Banner } from "@astryxdesign/core/Banner";
+import { Icon } from "@astryxdesign/core/Icon";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
-import { TextInput } from "@astryxdesign/core/TextInput";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { createView } from "./react-view.js";
+import { createView } from "./react-view.ts";
 
 const healthLabels = { empty: "No selected node", checking: "Testing…", unknown: "Not tested", healthy: "Available", unavailable: "Unavailable" };
-function healthState(node) {
+function healthState(node?: SelectorNode) {
   if (!node) return "empty";
   if (node.checking) return "checking";
   if (!node.tested) return "unknown";
   return node.healthy ? "healthy" : "unavailable";
 }
-const latencyLabel = (node) => Number.isFinite(node?.latency_ms) ? `${Math.round(node.latency_ms)} ms` : "";
-const checkedLabel = (node) => node?.checked_at ? `Last tested ${new Date(node.checked_at).toLocaleString()}` : "";
-const monitoringLabel = (node) => node.tracking ? "Monitoring" : "On demand";
-const nodeCount = (count) => `${count} node${count === 1 ? "" : "s"}`;
+const latencyLabel = (node?: SelectorNode) => typeof node?.latency_ms === "number" && Number.isFinite(node.latency_ms) ? `${Math.round(node.latency_ms)} ms` : "";
+const checkedLabel = (node?: SelectorNode) => node?.checked_at ? `Last tested ${new Date(node.checked_at).toLocaleString()}` : "";
+const monitoringLabel = (node: SelectorNode) => node.tracking ? "Monitoring" : "On demand";
+const nodeCount = (count: number) => `${count} node${count === 1 ? "" : "s"}`;
 
-function Health({ node }) {
+function Health({ node }: { node?: SelectorNode }) {
   const state = healthState(node);
   return <><Badge className="node-health" variant={state === "unavailable" ? "error" : "neutral"} label={healthLabels[state]} />
     <span className="node-latency">{latencyLabel(node)}</span></>;
 }
 
 // Popover geometry follows the visible viewport, including a mobile keyboard.
-function positionPopover(menu) {
-  const rect = menu.parentElement.getBoundingClientRect();
+function positionPopover(menu: HTMLDivElement) {
+  const rect = menu.parentElement!.getBoundingClientRect();
   const viewport = window.visualViewport;
   const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
   const width = viewport?.width ?? window.innerWidth, height = viewport?.height ?? window.innerHeight;
@@ -43,15 +48,16 @@ function positionPopover(menu) {
   menu.style.top = `${Math.max(top + 12, Math.min(desiredTop, top + height - menuHeight - 12))}px`;
 }
 
-function Selector({ selector, actions }) {
+function Selector({ selector, actions, compact = false }: { selector: SelectorState; actions: SelectorControls; compact?: boolean }) {
   const id = useId();
-  const picker = useRef(null), menu = useRef(null), search = useRef(null), list = useRef(null);
-  const focused = useRef(null);
+  const picker = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null), search = useRef<HTMLInputElement>(null), list = useRef<HTMLDivElement>(null);
+  const focused = useRef<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const filter = query.trim().toLocaleLowerCase();
   const visible = open ? selector.nodes.filter(node => node.name.toLocaleLowerCase().includes(filter)) : [];
   const selected = selector.nodes.find(node => node.id === selector.node_id);
+  const Heading = compact ? "h4" : "h3";
   const name = selected?.name || "Select a node";
   const saved = selector.saved_selection;
   const fallback = saved && saved.status !== "matched";
@@ -59,17 +65,17 @@ function Selector({ selector, actions }) {
 
   useLayoutEffect(() => {
     if (!isOpen()) return;
-    positionPopover(menu.current);
+    positionPopover(menu.current!);
     if (focused.current && document.activeElement === document.body &&
       (!focused.current.isConnected || focused.current.matches(":disabled") || !focused.current.checkVisibility())) {
-      search.current.focus({ preventScroll: true });
+      search.current!.focus({ preventScroll: true });
     }
   }, [selector, open, query]);
 
   useEffect(() => {
     if (!open) return;
-    const reposition = (event) => {
-      if (isOpen() && !(event?.type === "scroll" && event.target instanceof Node && menu.current.contains(event.target))) positionPopover(menu.current);
+    const reposition = (event: Event) => {
+      if (isOpen() && !(event?.type === "scroll" && event.target instanceof Node && menu.current!.contains(event.target))) positionPopover(menu.current!);
     };
     window.addEventListener("resize", reposition);
     window.visualViewport?.addEventListener("resize", reposition);
@@ -83,53 +89,59 @@ function Selector({ selector, actions }) {
     };
   }, [open]);
 
-  async function save(method, body, success) {
+  async function save(method: "PUT" | "DELETE", body: { node_id: string } | undefined, success: string) {
     const saved = await actions.run(async () => {
-      actions.update(await actions.request(`/api/selectors/${encodeURIComponent(selector.name)}`, method, body));
-      if (isOpen()) menu.current.hidePopover();
+      actions.update(await actions.request<SelectorState>(`/api/selectors/${encodeURIComponent(selector.name)}`, method, body));
+      if (isOpen()) menu.current!.hidePopover();
     }, success);
     if (saved) picker.current?.focus();
   }
 
-  async function probe(nodeID) {
+  async function probe(nodeID?: string) {
     const queued = await actions.run(async () => {
       await actions.request("/api/probes", "POST", { outbound: selector.name, node_id: nodeID });
       await actions.refresh();
     }, `${selector.name}: tests queued. Results update automatically.`, "Queuing connectivity tests…");
     if (queued) {
-      const candidate = [...(list.current?.children || [])].find(node => node.dataset.node === nodeID);
-      const target = isOpen() ? candidate?.querySelector(".select-node") ?? search.current : picker.current;
+      const candidate = [...(list.current?.querySelectorAll<HTMLElement>(":scope > .selector-node") || [])].find(node => node.dataset.node === nodeID);
+      const target = isOpen() ? candidate?.querySelector<HTMLButtonElement>(".select-node") ?? search.current : picker.current;
       target?.focus({ preventScroll: true });
     }
   }
 
-  function navigate(event) {
+  function navigate(event: KeyboardEvent<HTMLDivElement>) {
+    if (!(event.target instanceof HTMLElement)) return;
     const fromSearch = event.target === search.current;
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     if (fromSearch && (event.key === "Home" || event.key === "End")) return;
-    const rows = [...list.current.querySelectorAll(".selector-node:not([hidden])")];
+    const rows = [...list.current!.querySelectorAll<HTMLElement>(".selector-node:not([hidden])")];
     if (!rows.length) return;
-    const index = rows.indexOf(event.target.closest(".selector-node"));
+    const index = rows.indexOf(event.target.closest<HTMLElement>(".selector-node")!);
     let next = index + (event.key === "ArrowDown" ? 1 : -1);
     if (event.key === "Home") next = 0;
     if (event.key === "End" || (fromSearch && event.key === "ArrowUp")) next = rows.length - 1;
     event.preventDefault();
-    rows[Math.max(0, Math.min(rows.length - 1, next))].querySelector(".select-node").focus();
+    rows[Math.max(0, Math.min(rows.length - 1, next))].querySelector<HTMLButtonElement>(".select-node")!.focus();
   }
 
-  return <section className={`selector-row${selector.track_all ? " tracking-all" : ""}`} data-group={selector.name} aria-labelledby={id}>
+  return <section className={`selector-row${selector.track_all ? " tracking-all" : ""}${compact ? " selector-compact" : ""}`} data-group={selector.name} aria-labelledby={id}>
     <div className="selector-heading">
-      <h3 id={id} className="selector-name">{selector.name}</h3>
-      <span className="node-count count">{nodeCount(selector.nodes.length)}</span>
-      {fallback ? <span className="selection-source selection-warning" title={`Saved: ${saved.name}`}>Saved choice {saved.status} · Temporary fallback</span>
-        : <Badge className="selection-source" hidden={!selector.default_node_id && !saved} title={saved ? `Saved: ${saved.name}` : ""} label={selector.overridden ? "Custom" : "Default"} />}
+      <div className="selector-identity">
+        <Heading id={id} className="selector-name">{selector.name}</Heading>
+        <div className="selected-status status-row"><Health node={selected} /></div>
+      </div>
+      <div className="selector-meta status-row">
+        <span className="node-count count">{nodeCount(selector.nodes.length)}</span>
+        {fallback ? <span className="selection-source selection-warning inline-notice" data-tone="warning" title={`Saved: ${saved.name}`}><Icon icon="warning" size="sm" /><span>Saved choice {saved.status} · Temporary fallback</span></span>
+          : <Badge className="selection-source" hidden={!selector.default_node_id && !saved} title={saved ? `Saved: ${saved.name}` : ""} label={selector.overridden ? "Custom" : "Default"} />}
+      </div>
     </div>
     <div className="selector-control">
       <Button label={name} ref={picker} className="node-picker" type="button" aria-haspopup="dialog" aria-expanded={open}
         aria-controls={`${id}-nodes`} popoverTarget={`${id}-nodes`} isDisabled={!selector.nodes.length} title={name} aria-label={`${selector.name}: ${name}`}>
         <span className="selected-name">{name}</span><span className="picker-arrow" aria-hidden="true" />
       </Button>
-      <Button label="Test" className="test-selected" type="button" hidden={selector.track_all} isDisabled={!selected || selected.checking}
+      <Button label="Test" className="test-selected" type="button" hidden={compact || selector.track_all} isDisabled={!selected || selected.checking}
         aria-label={`Test selected node in ${selector.name}`} onClick={() => probe(selector.node_id)} />
       <div ref={menu} id={`${id}-nodes`} className="node-popover" popover="auto" role="dialog" aria-label={`Select a node in ${selector.name}`}
         onBeforeToggle={(event) => {
@@ -140,30 +152,30 @@ function Selector({ selector, actions }) {
         }}
         onToggle={() => {
           if (!isOpen()) return;
-          positionPopover(menu.current);
-          search.current.focus({ preventScroll: true });
-          const row = [...list.current.children].find(node => node.dataset.node === selector.node_id);
+          positionPopover(menu.current!);
+          search.current!.focus({ preventScroll: true });
+          const row = [...list.current!.querySelectorAll<HTMLElement>(":scope > .selector-node")].find(node => node.dataset.node === selector.node_id);
           if (row) row.scrollIntoView({ block: "nearest" });
-          else list.current.scrollTop = 0;
-        }} onKeyDown={navigate} onFocusCapture={(event) => { focused.current = event.target; }}>
+          else list.current!.scrollTop = 0;
+        }} onKeyDown={navigate} onFocusCapture={(event) => { focused.current = event.target instanceof HTMLElement ? event.target : null; }}>
         <TextInput ref={search} className="node-search" label={`Search nodes in ${selector.name}`} isLabelHidden startIcon="search" hasClear
           role="searchbox" placeholder="Search nodes…" autoComplete="off" spellCheck={false} width="100%"
-          value={query} onChange={(value) => { setQuery(value); list.current.scrollTop = 0; }} />
+          value={query} onChange={(value) => { setQuery(value); list.current!.scrollTop = 0; }} />
         <p className="node-results" role="status">{filter ? `${visible.length} of ${selector.nodes.length} nodes` : nodeCount(visible.length)}</p>
-        <div ref={list} className="node-list">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector}
+        <div ref={list} className="node-list">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector} compact={compact}
           hidden={!node.name.toLocaleLowerCase().includes(filter)} onProbe={() => probe(node.id)} onSelect={() => {
             if (node.id === selector.node_id && selector.saved_selection?.status === "matched") {
-              menu.current.hidePopover(); picker.current.focus();
+              menu.current!.hidePopover(); picker.current!.focus();
             } else save("PUT", { node_id: node.id }, `${selector.name}: selection saved.`);
           }} />)}</div>
         <p className="no-nodes muted" hidden={visible.length !== 0}>No matching nodes.</p>
       </div>
     </div>
-    <div className="selected-status status-row"><Health node={selected} />
-      <Badge className="node-monitoring" hidden={!selected || selector.track_all} label={selected ? monitoringLabel(selected) : ""} />
+    {!compact && selected && (!selector.track_all || selected.checked_at) && <div className="selector-monitoring status-row">
+      <Badge className="node-monitoring" hidden={selector.track_all} label={monitoringLabel(selected)} />
       <span className="node-checked">{checkedLabel(selected)}</span>
-    </div>
-    <div className="selector-actions">
+    </div>}
+    {!compact && <div className="selector-actions">
       <span className="tracking-status muted" title="All nodes are monitored automatically" hidden={!selector.track_all}>Monitoring all nodes</span>
       <div className="selector-buttons button-row" hidden={selector.track_all && !selector.default_node_id}>
         <Button label="Test All" className="test-all" type="button" hidden={selector.track_all} isDisabled={!selector.nodes.length || selector.nodes.every(node => node.checking)}
@@ -171,11 +183,11 @@ function Selector({ selector, actions }) {
         <Button label="Use default" className="reset" type="button" hidden={!selector.default_node_id} isDisabled={!selector.overridden}
           onClick={() => save("DELETE", undefined, `${selector.name}: reset to default.`)} />
       </div>
-    </div>
+    </div>}
   </section>;
 }
 
-function NodeOption({ node, selector, hidden, onProbe, onSelect }) {
+function NodeOption({ node, selector, hidden, compact, onProbe, onSelect }: { node: SelectorNode; selector: SelectorState; hidden: boolean; compact: boolean; onProbe: () => void; onSelect: () => void }) {
   const selected = node.id === selector.node_id;
   return <div className="selector-node" data-node={node.id} hidden={hidden}>
     <Button label={node.name} className="select-node" type="button" aria-pressed={selected} onClick={onSelect}
@@ -184,22 +196,37 @@ function NodeOption({ node, selector, hidden, onProbe, onSelect }) {
       <span className="node-name">{node.name}</span><span className="node-check" aria-hidden="true">{selected ? "✓" : ""}</span>
       <span className="node-status status-row"><Health node={node} /></span>
     </Button>
-    <Button label="Test" className="test-node" type="button" hidden={selector.track_all} isDisabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe} />
+    <Button label="Test" className="test-node" type="button" hidden={compact || selector.track_all} isDisabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe} />
   </div>;
 }
 
-export function createSelectors(container, actions) {
-  const render = createView(container);
-  let selectors = [];
-  const controls = { ...actions, update: (updated) => show(selectors.map(selector => selector.name === updated.name ? updated : selector)) };
-  function show(next) {
+export function createSelectors(overviewContainer: HTMLElement, settingContainer: HTMLElement, actions: SelectorActions) {
+  const renderOverview = createView(overviewContainer), renderSetting = createView(settingContainer);
+  let selectors: SelectorState[] | null = null, message: string | null = null;
+  let view: "overview" | "selector" | null = "overview";
+  const controls = { ...actions, update: (updated: SelectorState) => show((selectors || []).map(selector => selector.name === updated.name ? updated : selector)) };
+  function render() {
+    const content = selectors ? selectors.length
+      ? selectors.map(selector => <Selector key={selector.name} selector={selector} actions={controls} compact={view === "overview"} />)
+      : <EmptyState isCompact title="No outbound groups" />
+      : message && <Banner status="error" title={message} />;
+    renderOverview(view === "overview" ? content : null);
+    renderSetting(view === "selector" ? content : null);
+  }
+  function show(next: SelectorState[]) {
     selectors = next;
-    render(next.length ? next.map(selector => <Selector key={selector.name} selector={selector} actions={controls} />)
-      : <EmptyState isCompact title="No outbound groups" description="No outbound groups with node selection are configured." />);
+    message = null;
+    render();
   }
   return {
     show,
-    clear: () => { selectors = []; render(null); },
-    error: (text) => { selectors = []; render(<p className="muted">{text}</p>); },
+    setView: (page: Page, section?: SettingSection) => {
+      const next = page === "overview" ? "overview" : page === "setting" && section === "selector" ? "selector" : null;
+      if (view === next) return;
+      view = next;
+      render();
+    },
+    clear: () => { selectors = null; message = null; render(); },
+    error: (text: string) => { selectors = null; message = text; render(); },
   };
 }

@@ -38,11 +38,19 @@ export const theme = defineTheme({
     "--size-element-md": "2.5rem",
   },
   components: {
+    "side-nav": { base: { width: "100%", height: "auto", backgroundColor: "transparent" } },
+    "side-nav-item": { base: { minHeight: "44px", fontSize: "1rem", lineHeight: "1.5" } },
+    banner: {
+      "status:warning": { color: "var(--fgColor-attention)", "--color-text-primary": "var(--fgColor-attention)" },
+      "status:error": { color: "var(--fgColor-danger)", "--color-text-primary": "var(--fgColor-danger)" },
+    },
+    "banner-description": { base: { color: "inherit" } },
     badge: {
-      base: { borderRadius: "var(--radius)", height: "auto", minHeight: "1.5rem", padding: "2px 8px", fontSize: ".875rem", lineHeight: "1.4" },
-      "variant:error": { backgroundColor: "var(--bgColor-danger-emphasis)", color: "var(--fgColor-onEmphasis)" },
-      "variant:warning": { backgroundColor: "var(--bgColor-attention-emphasis)", color: "var(--fgColor-onEmphasis)" },
-      "variant:success": { backgroundColor: "var(--bgColor-success-emphasis)", color: "var(--fgColor-onEmphasis)" },
+      base: { border: "1px solid var(--borderColor-default)", borderRadius: "var(--radius)", height: "auto", minHeight: "1.5rem", padding: "2px 8px", fontSize: ".875rem", lineHeight: "1.4" },
+      "variant:neutral": { backgroundColor: "transparent", color: "var(--fgColor-muted)" },
+      "variant:error": { borderColor: "var(--borderColor-danger-emphasis)", backgroundColor: "var(--bgColor-danger-muted)", color: "var(--fgColor-danger)" },
+      "variant:warning": { borderColor: "var(--borderColor-attention-emphasis)", backgroundColor: "var(--bgColor-attention-muted)", color: "var(--fgColor-attention)" },
+      "variant:success": { borderColor: "var(--borderColor-success-emphasis)", backgroundColor: "var(--bgColor-success-muted)", color: "var(--fgColor-success)" },
     },
     "field-label": { base: { fontSize: "1rem", lineHeight: "1.5", fontWeight: "500" } },
     "collapsible-trigger": { base: { minHeight: "44px", fontSize: "1rem", lineHeight: "1.5" } },
