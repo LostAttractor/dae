@@ -107,7 +107,12 @@ with musl and verifies the executable before copying it into Alpine.
 
 ## Cross-compilation
 
-The release workflows use checksum-pinned [Zig 0.15.2](https://ziglang.org/download/0.15.2) as the C compiler and musl sysroot. The installation helper currently runs on Linux x86_64; on other hosts install the same Zig version and set `DAE_ZIG` to its executable.
+Release cgo builds use the Zig development snapshot
+`0.18.0-dev.146+35accc06e`, which supplies Clang 23.1.2 and target musl headers,
+startup objects and libraries. Its version and archive SHA256 are fixed in
+`scripts/setup-zig.sh`. The installer runs on Linux x86_64 and aarch64;
+other hosts can install the same snapshot and set `DAE_ZIG` to its executable.
+Zig is a build-time tool, not a daemon runtime dependency.
 
 ```sh
 export DAE_ZIG=$(scripts/setup-zig.sh /tmp/dae-zig)
@@ -116,13 +121,22 @@ scripts/check-static.sh dae
 
 GOARCH=arm GOARM=7 make STATIC=y CC="$PWD/scripts/zig-cc.sh"
 GOARCH=mipsle GOMIPS=hardfloat make STATIC=y CC="$PWD/scripts/zig-cc.sh"
+GOARCH=mips64le make STATIC=y CC="$PWD/scripts/zig-cc.sh"
 ```
 
-The wrapper covers `amd64`, `386`, `arm64`, ARM 5/6/7, `mipsle`, `mips64le`, `riscv64`, `loong64` and `ppc64le`. Set the correct ARM/MIPS floating-point ABI for the target CPU; big-endian targets are unsupported.
+The wrapper covers `amd64`, `386`, `arm64`, ARM 5/6/7, `mipsle`, `mips64le`,
+`riscv64`, `loong64` and `ppc64le`. Set the correct ARM/MIPS floating-point ABI
+for the target CPU; big-endian targets are unsupported.
 
-ARMv5 also needs `gcc-arm-linux-gnueabi` (Debian/Ubuntu), or a target `libgcc.a` supplied through `DAE_ARM_LIBGCC`, for static atomic support. The wrapper retains musl as libc. Keep `-w` when linking MIPS test executables with LLD to avoid incompatible Go/C DWARF sections.
+ARMv5 also needs `gcc-arm-linux-gnueabi` (Debian/Ubuntu), or a target `libgcc.a`
+supplied through `DAE_ARM_LIBGCC`, for static atomic support. The wrapper retains
+musl as libc. Keep `-w` when linking MIPS test executables with LLD to avoid
+incompatible Go/C DWARF sections.
 
-You can instead pass an existing target musl compiler as `CC`. Setting only `GOARCH` is insufficient for cgo: the compiler, libc, ABI and headers must all target that architecture. The eBPF generators run as host Go tools independently of that compiler.
+You can instead pass an existing target musl compiler as `CC`. Setting only
+`GOARCH` is insufficient for cgo: the compiler, libc, ABI and headers must all
+target that architecture. The eBPF generators run as host Go tools independently
+of that compiler.
 
 ## Running Go commands directly
 

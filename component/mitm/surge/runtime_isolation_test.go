@@ -300,22 +300,30 @@ func TestRuntimeAtomics64(t *testing.T) {
 	// 32-bit targets can require compiler runtime helpers for 64-bit atomics.
 	// Exercise them with high bits set so a wrong ABI cannot pass by truncating.
 	r := testRuntime(t, RuntimeOptions{})
-	result, err := r.Run(context.Background(), `
+	result, err := r.Run(t.Context(), `
 const words = new BigInt64Array(new SharedArrayBuffer(8));
 const base = 0x1234567800000000n;
-function equal(actual, expected) {
-  if (actual !== expected) throw Error("64-bit atomic value mismatch: " + actual + " != " + expected);
+function equal(name, actual, expected) {
+  if (actual !== expected) throw Error(name + ": " + actual + " != " + expected);
 }
-equal(Atomics.store(words, 0, base), base);
-equal(Atomics.load(words, 0), base);
-equal(Atomics.add(words, 0, 3n), base);
-equal(Atomics.sub(words, 0, 1n), base + 3n);
-equal(Atomics.or(words, 0, 4n), base + 2n);
-equal(Atomics.xor(words, 0, 1n), base + 6n);
-equal(Atomics.and(words, 0, ~2n), base + 7n);
-equal(Atomics.compareExchange(words, 0, base + 5n, base + 9n), base + 5n);
-equal(Atomics.exchange(words, 0, -base), base + 9n);
-equal(Atomics.load(words, 0), -base);
+function check(name, operation, returned, stored) {
+  equal(name + " return", operation(), returned);
+  equal(name + " stored", Atomics.load(words, 0), stored);
+}
+check("store", () => Atomics.store(words, 0, base), base, base);
+check("add", () => Atomics.add(words, 0, 3n), base, base + 3n);
+check("sub", () => Atomics.sub(words, 0, 1n), base + 3n, base + 2n);
+check("or", () => Atomics.or(words, 0, 4n), base + 2n, base + 6n);
+check("xor", () => Atomics.xor(words, 0, 1n), base + 6n, base + 7n);
+check("and", () => Atomics.and(words, 0, ~2n), base + 7n, base + 5n);
+check("compareExchange", () => Atomics.compareExchange(words, 0, base + 5n, base + 9n), base + 5n, base + 9n);
+check("exchange", () => Atomics.exchange(words, 0, -base), base + 9n, -base);
+// Small negative BigInts use a different representation and must be sign-extended.
+check("exchange negative", () => Atomics.exchange(words, 0, -3n), -base, -3n);
+check("compareExchange negative", () => Atomics.compareExchange(words, 0, -3n, -1n), -3n, -1n);
+check("compareExchange mismatch", () => Atomics.compareExchange(words, 0, -3n, 0n), -1n, -1n);
+check("add negative", () => Atomics.add(words, 0, -1n), -1n, -2n);
+check("sub negative", () => Atomics.sub(words, 0, -1n), -2n, -1n);
 $done({body:"64-bit atomics work"});
 `, Invocation{})
 	if err != nil || result == nil || result.Body == nil || string(result.Body.Bytes()) != "64-bit atomics work" {

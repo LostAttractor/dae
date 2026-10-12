@@ -23,9 +23,9 @@ case "$arch" in
             *,*) echo "ERROR: unsupported GOARM=$arm" >&2; exit 1 ;;
         esac
         if [ "$float" = softfloat ]; then
-            target=arm-linux-musleabi
+            target="arm-linux-musleabi"
         else
-            target=arm-linux-musleabihf
+            target="arm-linux-musleabihf"
             # ARMv5 hard-float is an explicit opt-in, like GOARM=5,hardfloat.
             [ "${arm%%,*}" != 5 ] || cpu=generic+v5te+vfp2
         fi
@@ -53,7 +53,7 @@ case "$arch" in
     *) echo "ERROR: no release musl toolchain mapping for GOARCH=$arch" >&2; exit 1 ;;
 esac
 
-# Go supplies GCC's MIPS float switches. Zig 0.15.2 does not accept
+# Go supplies GCC's MIPS float switches. Zig does not accept
 # -mhard-float there; the target ABI/CPU above already selects the same mode.
 if [ "$arch" = mipsle ] || [ "$arch" = mips64le ]; then
     remaining=$#

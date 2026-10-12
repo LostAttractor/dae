@@ -1,11 +1,12 @@
 name: Set up release musl cross-compiler
-description: Install a checksum-pinned Zig compiler and configure the target CC
+description: Install checksum-pinned Zig and configure CC for static musl builds
 runs:
   using: composite
   steps:
     - shell: bash
       run: |
         zig=$(scripts/setup-zig.sh "$RUNNER_TEMP/dae-zig")
+        "$zig" cc --version
         echo "DAE_ZIG=$zig" >> "$GITHUB_ENV"
         echo "CC=$GITHUB_WORKSPACE/scripts/zig-cc.sh" >> "$GITHUB_ENV"
         echo "CGO_ENABLED=1" >> "$GITHUB_ENV"
