@@ -2,6 +2,13 @@
 # shellcheck disable=SC2329 # Cleanup functions are invoked by signal traps.
 set -euo pipefail
 
+# CI builds on the host and loads the result in a supported-kernel VM.
+AUDIT_PHASE="${EBPF_AUDIT_PHASE:-all}"
+case "${AUDIT_PHASE}" in
+  all|build|run) ;;
+  *) echo "invalid EBPF_AUDIT_PHASE: ${AUDIT_PHASE}" >&2; exit 1 ;;
+esac
+
 OUT_DIR="${1:-build/ebpf-audit}"
 CLANG_BIN="${CLANG:-clang}"
 OBJDUMP_BIN="${LLVM_OBJDUMP:-llvm-objdump}"
@@ -52,7 +59,7 @@ refuse_nested_mounts() {
   done <<< "${encoded_targets}"
 }
 
-if [[ "${EUID}" -eq 0 ]]; then
+if [[ "${AUDIT_PHASE}" == build || "${EUID}" -eq 0 ]]; then
   SUDO=()
 elif command -v sudo >/dev/null 2>&1; then
   SUDO=(sudo)
@@ -61,30 +68,34 @@ else
   exit 1
 fi
 
-for command_name in "${CLANG_BIN}" "${OBJDUMP_BIN}" go; do
-  if ! command -v "${command_name}" >/dev/null 2>&1; then
-    echo "required command is unavailable: ${command_name}" >&2
-    exit 1
-  fi
-done
-
-if resolved_bpftool=$(command -v "${BPFTOOL_BIN}" 2>/dev/null) && "${resolved_bpftool}" version >/dev/null 2>&1; then
-  BPFTOOL_BIN="${resolved_bpftool}"
-else
-  for candidate in /usr/lib/linux-tools/*/bpftool; do
-    if [[ -x "${candidate}" ]] && "${candidate}" version >/dev/null 2>&1; then
-      BPFTOOL_BIN="${candidate}"
-      break
+if [[ "${AUDIT_PHASE}" != run ]]; then
+  for command_name in "${CLANG_BIN}" "${OBJDUMP_BIN}" go; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+      echo "required command is unavailable: ${command_name}" >&2
+      exit 1
     fi
   done
 fi
-if ! "${BPFTOOL_BIN}" version >/dev/null 2>&1; then
-  echo "a working bpftool is required" >&2
-  exit 1
-fi
-if [[ ! -f /sys/kernel/btf/vmlinux ]]; then
-  echo "kernel BTF is required at /sys/kernel/btf/vmlinux" >&2
-  exit 1
+
+if [[ "${AUDIT_PHASE}" != build ]]; then
+  if resolved_bpftool=$(command -v "${BPFTOOL_BIN}" 2>/dev/null) && "${resolved_bpftool}" version >/dev/null 2>&1; then
+    BPFTOOL_BIN="${resolved_bpftool}"
+  else
+    for candidate in /usr/lib/linux-tools/*/bpftool; do
+      if [[ -x "${candidate}" ]] && "${candidate}" version >/dev/null 2>&1; then
+        BPFTOOL_BIN="${candidate}"
+        break
+      fi
+    done
+  fi
+  if ! "${BPFTOOL_BIN}" version >/dev/null 2>&1; then
+    echo "a working bpftool is required" >&2
+    exit 1
+  fi
+  if [[ ! -f /sys/kernel/btf/vmlinux ]]; then
+    echo "kernel BTF is required at /sys/kernel/btf/vmlinux" >&2
+    exit 1
+  fi
 fi
 
 if [[ -e "${OUT_DIR}" || -L "${OUT_DIR}" ]]; then
@@ -98,10 +109,54 @@ if [[ -e "${OUT_DIR}" || -L "${OUT_DIR}" ]]; then
     echo "refusing unmarked output directory: ${OUT_DIR}" >&2
     exit 1
   fi
-  rm -rf --one-file-system --preserve-root=all -- "${OUT_DIR}"
+  if [[ "${AUDIT_PHASE}" != run ]]; then
+    rm -rf --one-file-system --preserve-root=all -- "${OUT_DIR}"
+  fi
+elif [[ "${AUDIT_PHASE}" == run ]]; then
+  echo "run phase requires an existing audit build: ${OUT_DIR}" >&2
+  exit 1
 fi
-mkdir -p "${OUT_DIR}/static" "${OUT_DIR}/bpftool/programs" "${OUT_DIR}/bpftool/maps"
-printf '%s\n' 'dae-ebpf-audit-output-v1' > "${OUTPUT_MARKER}"
+
+if [[ "${AUDIT_PHASE}" != run ]]; then
+  mkdir -p "${OUT_DIR}/static"
+  printf '%s\n' 'dae-ebpf-audit-output-v1' > "${OUTPUT_MARKER}"
+  {
+    echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "uname=$(uname -a)"
+    echo "clang=$(${CLANG_BIN} --version | head -n1)"
+    echo "llvm-objdump=$(${OBJDUMP_BIN} --version | head -n1)"
+    echo "go=$(go version)"
+  } > "${OUT_DIR}/build-environment.txt"
+
+  git submodule update --init --recursive
+  if ! "${CLANG_BIN}" -O2 -g -target "${BPF_ENDIAN_TARGET}" -mcpu=v1 -Wall -Werror \
+    -Wno-unused-command-line-argument \
+    "${capacity_flags[@]}" \
+    -Ikern -c control/kern/tproxy.c -o "${OBJECT_PATH}" \
+    > "${OUT_DIR}/static/compile.stdout.txt" 2> "${OUT_DIR}/static/compile.stderr.txt"; then
+    cat "${OUT_DIR}/static/compile.stderr.txt" >&2
+    exit 1
+  fi
+
+  "${OBJDUMP_BIN}" -h "${OBJECT_PATH}" > "${OUT_DIR}/static/object-sections.txt"
+  "${OBJDUMP_BIN}" -t "${OBJECT_PATH}" > "${OUT_DIR}/static/object-symbols.txt"
+  "${OBJDUMP_BIN}" -d --no-show-raw-insn "${OBJECT_PATH}" > "${OUT_DIR}/static/object-disasm.txt"
+  CGO_ENABLED=0 go build -o "${AUDIT_BIN}" ./cmd/dae-ebpf-audit
+fi
+if [[ "${AUDIT_PHASE}" == build ]]; then
+  exit 0
+fi
+if [[ ! -f "${OBJECT_PATH}" || ! -x "${AUDIT_BIN}" ]]; then
+  echo "audit build is incomplete: ${OUT_DIR}" >&2
+  exit 1
+fi
+
+# Keep build artifacts, but do not let a previous load's readiness or logs
+# affect a new run. The marked directory and mount checks above apply here.
+rm -rf --one-file-system --preserve-root=all -- "${OUT_DIR}/bpftool" "${OUT_DIR}/spec" "${OUT_DIR}/verifier"
+rm -f -- "${OUT_DIR}/audit.pid" "${OUT_DIR}/audit.ready" "${OUT_DIR}/load-error.txt" \
+  "${OUT_DIR}/manifest.tsv" "${OUT_DIR}/scenarios.txt" "${OUT_DIR}/active-scenario.txt"
+mkdir -p "${OUT_DIR}/bpftool/programs" "${OUT_DIR}/bpftool/maps"
 
 audit_pid=""
 audit_process_pid=""
@@ -161,26 +216,8 @@ trap 'handle_signal 143' TERM
   echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "uname=$(uname -a)"
   echo "bpftool=$(${BPFTOOL_BIN} version 2>&1 | tr '\n' ' ')"
-  echo "clang=$(${CLANG_BIN} --version | head -n1)"
-  echo "llvm-objdump=$(${OBJDUMP_BIN} --version | head -n1)"
-  echo "go=$(go version)"
   echo "kernel_btf=/sys/kernel/btf/vmlinux"
 } > "${OUT_DIR}/environment.txt"
-
-git submodule update --init --recursive
-
-if ! "${CLANG_BIN}" -O2 -g -target "${BPF_ENDIAN_TARGET}" -mcpu=v1 -Wall -Werror \
-  -Wno-unused-command-line-argument \
-  "${capacity_flags[@]}" \
-  -Ikern -c control/kern/tproxy.c -o "${OBJECT_PATH}" \
-  > "${OUT_DIR}/static/compile.stdout.txt" 2> "${OUT_DIR}/static/compile.stderr.txt"; then
-  exit 1
-fi
-
-"${OBJDUMP_BIN}" -h "${OBJECT_PATH}" > "${OUT_DIR}/static/object-sections.txt"
-"${OBJDUMP_BIN}" -t "${OBJECT_PATH}" > "${OUT_DIR}/static/object-symbols.txt"
-"${OBJDUMP_BIN}" -d --no-show-raw-insn "${OBJECT_PATH}" > "${OUT_DIR}/static/object-disasm.txt"
-go build -o "${AUDIT_BIN}" ./cmd/dae-ebpf-audit
 
 "${SUDO[@]}" "${BPFTOOL_BIN}" feature probe kernel > "${OUT_DIR}/bpftool/feature-probe.txt" 2>&1
 
@@ -236,6 +273,12 @@ if [[ "${ready}" -eq 1 && "${loader_status}" -eq 143 ]]; then
 fi
 if [[ "${loader_status}" -ne 0 ]]; then
   audit_status="${loader_status}"
+fi
+if [[ "${audit_status}" -ne 0 ]]; then
+  cat "${OUT_DIR}/audit.stderr.txt" >&2
+  if [[ -f "${OUT_DIR}/bpftool/dump-error.txt" ]]; then
+    cat "${OUT_DIR}/bpftool/dump-error.txt" >&2
+  fi
 fi
 
 restore_ownership

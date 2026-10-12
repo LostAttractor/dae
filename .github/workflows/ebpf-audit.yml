@@ -54,10 +54,26 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15 linux-tools-common linux-tools-generic
+          sudo apt-get install -y clang-15 llvm-15
 
-      - name: Run eBPF audit
+      - name: Build eBPF audit
+        env:
+          EBPF_AUDIT_PHASE: build
         run: make ebpf-audit CLANG=clang-15 LLVM_OBJDUMP=llvm-objdump-15
+
+      - name: Run eBPF audit on a supported kernel
+        uses: cilium/little-vm-helper@v0.0.28
+        with:
+          test-name: dae-ebpf-audit
+          image-version: '6.18-20260810.013220'
+          host-mount: ./
+          install-dependencies: 'true'
+          cmd: |
+            apt-get update
+            apt-get install -y bpftool
+            git config --global --add safe.directory /host
+            cd /host
+            EBPF_AUDIT_PHASE=run ./scripts/ebpf-audit.sh
 
       - name: Upload eBPF audit artifacts
         if: always()

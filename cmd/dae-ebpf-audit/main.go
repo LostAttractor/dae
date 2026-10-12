@@ -23,6 +23,8 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/features"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/daeuniverse/dae/common/consts"
+	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	"golang.org/x/sys/unix"
 )
 
@@ -79,6 +81,13 @@ func run(objectPath string, outputDir string, hold bool) error {
 	}
 	if err := os.WriteFile(filepath.Join(outputDir, "audit.pid"), fmt.Appendf(nil, "%d\n", os.Getpid()), 0o644); err != nil {
 		return fmt.Errorf("write pid marker: %w", err)
+	}
+	kernelVersion, err := internal.KernelVersion()
+	if err != nil {
+		return fmt.Errorf("get kernel version: %w", err)
+	}
+	if kernelVersion.Less(consts.MinimumKernelVersion) {
+		return fmt.Errorf("kernel %s requires an upgrade to Linux %s or newer", kernelVersion, consts.MinimumKernelVersion)
 	}
 
 	spec, err := ebpf.LoadCollectionSpec(objectPath)
@@ -289,7 +298,9 @@ func loadCollection(spec *ebpf.CollectionSpec, scenario auditScenario, outputDir
 	coll, err := ebpf.NewCollectionWithOptions(scenarioSpec, ebpf.CollectionOptions{
 		Cache: cache,
 		Programs: ebpf.ProgramOptions{
-			LogLevel:     ebpf.LogLevelInstruction,
+			// Instruction logs can exhaust memory when verification hits the
+			// complexity limit. Keep statistics; bpftool dumps the instructions.
+			LogLevel:     ebpf.LogLevelStats,
 			LogSizeStart: 1 << 20,
 		},
 	})
