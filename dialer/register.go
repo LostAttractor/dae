@@ -6,7 +6,6 @@
 package dialer
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -28,12 +27,9 @@ func NewFromLink(link string) (Builder, *Property, error) {
 	linklike = strings.TrimSpace(linklike)
 	u, err := url.Parse(linklike)
 	if err != nil {
-		// URL errors include the original link, which can contain credentials.
-		var parseErr *url.Error
-		if errors.As(err, &parseErr) {
-			err = parseErr.Err
-		}
-		return nil, nil, fmt.Errorf("parse proxy URL: %w", err)
+		// Both the outer URL error and its cause can contain credentials:
+		// malformed delimiters can make a password look like an invalid port.
+		return nil, nil, fmt.Errorf("parse proxy URL: %w", InvalidParameterErr)
 	}
 	creator, ok := fromLinkCreators[strings.ToLower(u.Scheme)]
 	if !ok {

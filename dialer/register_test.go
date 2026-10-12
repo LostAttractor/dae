@@ -27,6 +27,24 @@ func TestNewFromLinkErrorsDoNotExposeCredentials(t *testing.T) {
 	}
 }
 
+func TestNewFromLinkErrorsDoNotExposeMalformedCredentials(t *testing.T) {
+	for _, userinfo := range []string{
+		"user:secret%xY", "secret%xY:password", "secret%xY",
+		"user:secret?%xY", "user:secret/%xY", "user:secret#%xY",
+	} {
+		_, _, err := NewFromLink("https://" + userinfo + "@example.com")
+		if err == nil {
+			t.Fatalf("malformed userinfo %q was accepted", userinfo)
+		}
+		if strings.Contains(err.Error(), "%xY") || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("credential bytes in diagnostic: %v", err)
+		}
+		if !errors.Is(err, InvalidParameterErr) {
+			t.Fatalf("malformed URL was not classified as invalid parameters: %v", err)
+		}
+	}
+}
+
 type registerTestDialer struct{}
 
 func (*registerTestDialer) Build(_ *ExtraOption, upstream Upstream) (netproxy.Layer, error) {
