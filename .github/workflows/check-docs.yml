@@ -7,12 +7,13 @@ on:
     branches: [next]
     types: [ opened, synchronize, reopened ]
     paths:
-      - 'README.md'
+      - 'README*.md'
       - 'docs/**'
+      - 'hack/docs/**'
       - 'package.json'
       - 'package-lock.json'
       - '.autocorrectrc'
-      - '.markdownlint-cli2.jsonc'
+      - '.markdownlint.jsonc'
       - '.github/workflows/check-docs.yml'
 
 permissions:
@@ -33,6 +34,8 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
+      - name: Test documentation tools
+        run: npm run test-doc-tools
       - name: Lint Markdown files (markdownlint)
         run: |
           npm run markdown-lint

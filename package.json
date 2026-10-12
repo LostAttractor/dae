@@ -5,21 +5,23 @@
   "license": "Apache",
   "repository": "github:daeuniverse/dae",
   "scripts": {
-    "check-broken-link": "./node_modules/.bin/remark --quiet --frail ./docs/ README*.md",
-    "markdown-lint": "./node_modules/.bin/markdownlint-cli2 './docs/**/*.md' README*.md",
-    "markdown-lint-fix": "npm run markdown-lint -- --fix"
+    "check-broken-link": "node hack/docs/check-links.mjs ./docs/ 'README*.md'",
+    "markdown-lint": "markdownlint --config .markdownlint.jsonc --rules ./node_modules/markdownlint-rule-enhanced-proper-names/src/enhanced-proper-names.js --rules ./node_modules/markdownlint-rule-no-trailing-slash-in-links/src/no-trailing-slash-in-links.js './docs/**/*.md' 'README*.md'",
+    "markdown-lint-fix": "npm run markdown-lint -- --fix",
+    "test-doc-tools": "node --test hack/docs/docs.test.mjs"
   },
   "dependencies": {
-    "markdownlint-cli2": "^0.23.3",
+    "markdownlint-cli": "^0.49.1",
     "markdownlint-rule-enhanced-proper-names": "^0.0.1",
     "markdownlint-rule-no-trailing-slash-in-links": "^0.0.1",
-    "remark-cli": "^11.0.0",
+    "remark": "^14.0.3",
     "remark-validate-links": "^12.1.0",
-    "remark-validate-links-heading-id": "^0.0.3"
+    "unified-engine": "^10.1.0",
+    "unist-util-visit": "^4.1.2"
   },
   "remarkConfig": {
     "plugins": [
-      "remark-validate-links-heading-id",
+      "./hack/docs/heading-ids.mjs",
       "remark-validate-links"
     ]
   },
@@ -27,6 +29,9 @@
     "node": ">=22"
   },
   "overrides": {
+    "markdownlint-cli": {
+      "js-yaml": "^5.4.1"
+    },
     "smol-toml": "^1.9.0",
     "katex": "^0.18.2"
   }
