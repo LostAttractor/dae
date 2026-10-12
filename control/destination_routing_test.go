@@ -32,6 +32,7 @@ dip(192.0.2.20) -> block`)
 			}
 			// A separate selected profile must survive destination reevaluation.
 			matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
+			matcher.destinations[42] = matcher.destinations[matcher.defaultProfileID]
 			matcher.defaultProfileID = 99
 			unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
 				t.Fatal("routing selection must not dial")
@@ -79,9 +80,9 @@ func TestPluginDestinationRoutingUsesRewrittenTarget(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			prepared := prepareFlowRulesForTest(t, "ipversion(6) -> must", fmt.Sprintf("dip('2001:db8::20') -> %s(mark:91)\ndip(192.0.2.20) -> %s(mark:19)\ndip(203.0.113.0/24) -> block", test.candidate, test.original))
-			prepared.destinations = prepareFlowRulesForTest(t, `dip(192.0.2.20) -> dnat('2001:db8::20')
+			prepared.destinations = destinationRulesForTest(t, `dip(192.0.2.20) -> dnat('2001:db8::20')
 dip(192.0.2.20) -> dnat(203.0.113.30)
-dip('2001:db8::20') -> dnat(203.0.113.40)`, "").destinations
+dip('2001:db8::20') -> dnat(203.0.113.40)`)
 			matcher, _ := routingMatcherForTest(t, prepared)
 			unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
 				t.Fatal("route selection must not dial")
@@ -120,7 +121,7 @@ func TestPluginDestinationHTTPPlansKeepRewrittenTarget(t *testing.T) {
 		for _, override := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/override=%t", network, override), func(t *testing.T) {
 				prepared := prepareFlowRulesForTest(t, "", "dip(198.51.100.20) -> proxy(mark:91)\ndip(192.0.2.20) -> proxy(mark:19)")
-				prepared.destinations = prepareFlowRulesForTest(t, "dip(192.0.2.20) -> dnat(198.51.100.20)", "").destinations
+				prepared.destinations = destinationRulesForTest(t, "dip(192.0.2.20) -> dnat(198.51.100.20)")
 				matcher, _ := routingMatcherForTest(t, prepared)
 				unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {
 					t.Fatal("planning must not dial")

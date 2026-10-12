@@ -1,6 +1,6 @@
 # 路由
 
-`routing` 选择出站；按相同过滤语法覆盖拨号 IP 时，使用独立的 [`rules` / DNAT](destination-rules.md) 段，不能将 `dnat` 写作 routing 的出站。
+`routing` 选择出站；按相同过滤语法覆盖拨号 IP 时，使用所属 policy 内的 [`rules` / DNAT](destination-rules.md) 段，不能将 `dnat` 写作 routing 的出站。
 
 ## 出站目标与代理路径
 
@@ -74,7 +74,7 @@ routing { fallback: foo }
 
 每个 node 只能包含一个分享链接；代理链使用 group path expression 组合。
 
-如果真实节点或 group 名称为 `must` 或以 `must_` 开头，请使用引号（例如 `'must_edge'`）按字面名称引用。流量控制配置在 `rules {}` 中。
+如果真实节点或 group 名称为 `must` 或以 `must_` 开头，请使用引号（例如 `'must_edge'`）按字面名称引用。流量控制配置在所属 policy 的 `rules {}` 中。
 
 为限制连通性检查和 runtime 的资源增长，每条路径最多包含 16 跳；单个路由目标最多展开 4096 条路径；一份配置最多物化 16384 条路径。
 
@@ -142,10 +142,10 @@ routing {
 ```
 
 - `use: local, china` 按顺序插入两个片段，等价于连续两条 `use`。`use` 可以与普通规则交错，片段还可以引用其他片段；不能引用策略，也不能循环引用。
-- 片段只包含规则和 `use`，不能包含 `fallback`。每个策略必须且只能声明一个 `fallback`。它在所有规则均未命中后执行，与该字段在策略内的书写位置无关。
+- 片段只包含规则和 `use`，不能包含 `fallback`。每个片段只包含一种动作族：流量片段包含 DNAT、must、bump，供 policy 的 `rules` 引用；出站片段供策略正文引用。混合动作或跨阶段引用会报错。每个策略必须且只能声明一个 `fallback`。它在所有规则均未命中后执行，与该字段在策略内的书写位置无关。
 - `default: main` 为没有接口绑定的流量选择 `main`；`interface` 中每行将一个精确设备名绑定到命名策略。多个接口及默认路由可以选择同一个策略，它只编译一次。
 - 每个接口名只能绑定一次，即使重复选择同一策略也会报错。含特殊字符的接口名可以加引号，例如 `"foo,bar": lan`；不支持通配符匹配。接口重建后会自动更新 ifindex。
-- 策略彼此独立，不继承默认策略。绑定只选择路由规则，接管流量仍需配置 `global.lan_interface` / `global.wan_interface`。单条规则内仍可使用 `interface(name)` 条件。
+- 策略彼此独立，不继承默认策略。绑定同时选择手写 DNAT、must/bump 和出站规则；接管流量仍需配置 `global.lan_interface` / `global.wan_interface`。单条规则内仍可使用 `interface(name)` 条件。
 - 策略名和片段名属于不同的命名空间；未定义引用、重复声明或循环引用都会报错。
 
 只需要一个默认策略时，可以直接在 `routing` 中写规则、`use` 和一个 `fallback`：
@@ -160,7 +160,7 @@ routing {
 }
 ```
 
-这种写法是匿名默认策略，可与 `rule_set`、命名 `policy` 和 `interface` 声明共存，但不能同时设置 `default: 策略名`。匿名默认策略也必须显式声明 fallback。
+这种写法是匿名默认策略，也可以包含一个 `rules {}`；该段只属于匿名策略，可与 `rule_set`、命名 `policy` 和 `interface` 声明共存，但不能同时设置 `default: 策略名`。匿名默认策略也必须显式声明 fallback。
 
 ### 为规则片段添加公共条件
 
@@ -188,7 +188,7 @@ routing {
 
 - 支持现有 routing 条件，包括 `client()`、`interface()`、`domain()`、`!`、`&&` 和函数内的多值匹配。例如 `client(work) && !l4proto(udp) -> use(office)`。
 - `条件 -> use(a, b)` 按顺序引用 a 和 b，条件对两者都生效。仍可使用 `use: a, b` 无条件引用。
-- 条件可写在匿名默认策略、命名策略或规则片段内；嵌套引用时，各层条件与最终规则条件取 AND。同名函数的条件也取交集，例如外层 `dport(80,443)` 与内层 `dport(443,853)` 只匹配 443。
+- 条件可写在匿名默认策略、命名策略、policy 的 `rules` 或规则片段内；嵌套引用时，各层条件与最终规则条件取 AND。同名函数的条件也取交集，例如外层 `dport(80,443)` 与内层 `dport(443,853)` 只匹配 443。
 - 片段内部的出站、mark 和 `skip_while_noalive` 保留原有语义；fallback 仍由所属策略在所有规则未命中后执行。条件引用不能作为 fallback。
 - `use(...)` 的参数只能是规则片段名称。若出站本身名为 `use` 且需要参数，写作 `'use'(mark: 0x800)`；不带参数的 `-> use` 仍表示同名出站。
 - 导出配置保留条件和引用，多个片段可以导出为连续的条件引用。相同片段与相同已规范化条件序列共享编译结果；不同条件生成不同版本，其指令计入规则容量限制。每次编译的片段与条件组合数也受 `MaxMatchSetLen` 限制。
@@ -201,11 +201,11 @@ routing {
 
 配置最多包含 1024 个片段及策略、65536 条原始规则及 use 语句、256 个接口绑定，引用深度最多 64 层。共享物理规则池和每套策略的执行长度分别受 `MaxMatchSetLen` 限制（默认 1024）。未使用的片段和策略也会校验，但不占用活动策略的内核规则池，也不会注册接口监听。
 
-### MITM、DNAT 与 Host 的共享捕获片段
+### 策略流量规则与全局插件捕获
 
-启用 MITM 插件、原生 `rules { ... -> dnat(ip) }` 或 Surge Host 后，dae 自动生成内部捕获与流量控制片段，供所有策略共享，无需手动添加规则或 `use`。
+手写 DNAT、must、bump 配置在 policy 的 `rules {}` 中，只属于该策略。可通过 `rules { use: name }` 显式复用流量片段。相同片段和条件共享编译结果，但不会因此作用于未引用它的策略。MITM、Surge Host 和插件路由继续按全局作用域生效；自动 DNS 接管不因策略省略 `rules` 而关闭。
 
-执行顺序为：API 本机访问直连 → DNAT/Host 与请求型 HTTP 捕获 → `rules` 中的 must/bump 与纯 MITM 捕获 → 模块 `pre-matching` 规则 → 用户策略规则 → 普通模块规则 → 策略 fallback。所有策略共享同一段捕获与流量控制指令，策略继续决定出站、mark 和 block。MITM 保留插件声明的域名/IP 与对应端口；DNAT/Host 保留完整过滤条件，包括域名。缺少 DNS 映射不会隐式扩大捕获范围，无关 direct 流量保持内核直通。目的地址的用户态精确匹配不占用内核指令槽位，相同域名和静态 IP 条件跨阶段共享。
+执行顺序为：API 本机访问直连 → 选中 policy 的 DNAT、插件 Host 与请求型 HTTP 捕获 → 该 policy 的 must/bump 与纯 MITM 捕获 → 模块 `pre-matching` 规则 → 用户策略规则 → 普通模块规则 → 策略 fallback。各策略保存自己的阶段引用和目的地址计划，插件生成的公共片段共享指令。DNAT 使用原目标；must/bump、出站、mark 和 block 使用改写后的目标。`rules` 的书写位置不改变阶段顺序。MITM 保留插件声明的域名/IP 与对应端口；DNAT/Host 保留完整过滤条件，包括域名。缺少 DNS 映射不会隐式扩大捕获范围，无关 direct 流量保持内核直通。目的地址的用户态精确匹配不占用内核指令槽位，相同域名和静态 IP 条件跨阶段共享。
 
 DNAT/Host 候选命中后，内核在执行 flow/routing 前交接用户态。目标规则按输入目标选定新 IP，后续 flow/routing 使用重写后的目的地址和地址族，保留来源、接口、进程及策略身份；候选未精确命中则继续使用原目标。纯 MITM 检查保留已确定的路由。需要请求路由的范围（Surge 的脚本、URL Rewrite、Map Local）同样提前交接：客户端准入后先执行 HTTP 处理，再按最终目标执行目标规则、flow 和 routing，原目标 block 不抢先终止请求。每个请求在连接池查找前确定路由，池按实际目标、节点、出站和 mark 隔离。详见 [DNAT 行为](destination-rules.md#dnat-行为)与 [MITM 插件](mitm-plugins.md)。
 
@@ -227,7 +227,7 @@ dae 仅在无 mark 的直连、无 mark 的直通或可信控制平面路径上�
 
 ```shell
 ### 内置出站: block, direct
-# 流量控制 must 和 bump 配置在独立的 rules {} 中。
+# 流量控制 must 和 bump 配置在当前 policy 的 rules {} 中。
 
 ### fallback 出站
 # 如果没有规则匹配，流量将通过fallback出站.
@@ -356,16 +356,16 @@ routing {
 
 入口成员身份会随路由结果保留到 UDP 缓存及用户态重路由。策略的接口绑定仍按捕获接口选择策略，`interface()` 在选中的策略内匹配。
 
-## `rules {}` 中的流量控制
+## policy 内 `rules {}` 的流量控制
 
 `must` 跳过自动 DNS 接管，继续由普通路由选择出站。`bump` 要求用户态重新路由，出站和 mark 仍由 `routing {}` 决定。它们独立于 MITM，可同时命中，不依赖书写顺序。`must` 不会取消显式的 `bump`、MITM 或 DNAT 捕获。 整个控制段执行完后才决定是否进入用户态；域名歧义不会遮蔽后续确定性 must 或捕获动作。
 
 ```text
-rules {
-    pname(mosdns) -> must
-    domain(full: api.example.com) && l4proto(tcp) -> bump
-}
 routing {
+    rules {
+        pname(mosdns) -> must
+        domain(full: api.example.com) && l4proto(tcp) -> bump
+    }
     ip(geoip:cn) -> direct
     domain(geosite:cn) -> direct
     fallback: my_group
@@ -374,4 +374,4 @@ routing {
 
 正向域名规则需要已有 DNS 映射才能选中原本的内核直连；未命中的 direct 流量保持 eBPF 直通，不为取得主机名增加全流量捕获。共享 IP 歧义和取反条件沿用原有域名匹配语义。
 
-流量控制配置在 `rules {}` 中，并显式写出适用条件；`routing {}`（包括 `fallback`）选择出站及其参数。控制条件在全部普通路由之前判断。DNAT 与控制动作的组合见 [rules 配置](destination-rules.md)。
+流量控制配置在所属 policy 的 `rules {}` 中，并显式写出适用条件；策略正文（包括 `fallback`）选择出站及其参数。`rules` 可以引用流量片段，引用条件与规则条件在各自阶段求值。控制条件在该策略的普通路由之前判断。DNAT 与控制动作的组合见 [rules 配置](destination-rules.md)。

@@ -19,9 +19,7 @@ import (
 type RoutingMatcher struct {
 	defaultProfileID uint32
 	profiles         map[uint32][]routingSpan
-	destination      DestinationProgram
-	flow             FlowProgram
-	routing          RoutingProgram
+	destinations     map[uint32]DestinationProgram
 	lpmMatcher       []*trie.Trie
 	domainMatcher    routing.DomainMatcher // All domain matchSets use one DomainMatcher.
 
@@ -81,15 +79,15 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	}
 
 	profiles := make(map[uint32][]routingSpan, len(b.profiles))
+	destinations := make(map[uint32]DestinationProgram, len(b.profiles))
 	for _, profile := range b.profiles {
 		profiles[profile.ID] = append([]routingSpan(nil), profile.Spans...)
+		destinations[profile.ID] = profile.Destination
 	}
 
 	return &RoutingMatcher{
 		defaultProfileID: b.defaultProfileID,
-		destination:      b.destination,
-		flow:             b.flow,
-		routing:          b.routing,
+		destinations:     destinations,
 		profiles:         profiles,
 		lpmMatcher:       lpmMatcher,
 		domainMatcher:    domainMatcher,
@@ -114,10 +112,10 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 	var ruleUnknown, flowBump bool
 	var captureFlags uint8
 	for spanIndex, span := range spans {
-		start := span.Start
-		if p.stage == routeAfterTarget {
-			start = max(start, uint32(m.flow.start))
+		if p.stage == routeAfterTarget && span.Phase == routingPhaseIngress {
+			continue
 		}
+		start := span.Start
 		for i := start; i < span.End; {
 			if p.trace != nil {
 				p.trace.visited[routingTracePosition{spanIndex, i}] = true

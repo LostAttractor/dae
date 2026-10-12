@@ -41,7 +41,7 @@ func TestMITMKernelRoutingReconstruction(t *testing.T) {
 		{"earlier definite must survives", "domain(full: one.example) -> block(mark:37)", "dport(443) -> must", consts.OutboundControlPlaneRouting, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			sections, err := config_parser.Parse("global {}\nrouting {\n" + test.rules + "\nfallback: direct\n}\nrules {\n" + test.controls + "\n}")
+			sections, err := config_parser.Parse("global {}\nrouting {\nrules {\n" + test.controls + "\n}\n" + test.rules + "\nfallback: direct\n}")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -50,9 +50,6 @@ func TestMITMKernelRoutingReconstruction(t *testing.T) {
 				t.Fatal(err)
 			}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: &configuration.Routing}}
-			if err := preparation.rules.enableFlowRules(context.Background(), configuration.Rules, nil); err != nil {
-				t.Fatal(err)
-			}
 			// Only one of the IP's hostnames belongs to the plugin: uncertainty
 			// in the injected capture rule itself must be skipped in simulation.
 			preparation.rules.enableMITMPlan(mitmRoutingPlugin("one.example").Plan())
@@ -127,11 +124,14 @@ func TestMITMCapturePreservesUserspaceRoute(t *testing.T) {
 		{"direct", config_parser.Function{Name: "direct"}, consts.OutboundDirect, 0, false},
 		{"block", config_parser.Function{Name: "block"}, consts.OutboundBlock, 0, false},
 		{"proxy", config_parser.Function{Name: "proxy"}, consts.OutboundUserDefinedMin, 0, false},
-		{"must_direct", config_parser.Function{Name: "direct", Params: []*config_parser.Param{{Val: "must"}, {Key: "mark", Val: "37"}}}, consts.OutboundDirect, 37, true},
+		{"must_direct", config_parser.Function{Name: "direct", Params: []*config_parser.Param{{Key: "mark", Val: "37"}}}, consts.OutboundDirect, 37, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			original := &config_parser.RoutingRule{AndFunctions: []*config_parser.Function{{Name: "domain", Params: []*config_parser.Param{{Key: "full", Val: "service.example"}}}}, Outbound: test.outbound}
 			preparation := &ControlPlanePreparation{rules: preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{original}, "direct")}}
+			if test.must {
+				preparation.rules.routing.Policies[0].Rules = prepareFlowRulesForTest(t, "domain(full: service.example) -> must", "").routing.Policies[0].Rules
+			}
 			preparation.rules.enableMITMPlan(extension.Plan())
 			if len(preparation.rules.routing.Policies[0].Statements) != 1 || preparation.rules.routing.Policies[0].Statements[0].Rule != original || len(preparation.rules.capture.http) == 0 {
 				t.Fatalf("overlay replaced original routing: %+v", preparation.rules.routing)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -59,6 +60,9 @@ func (b *RoutingMatcherBuilder) rememberRule(start uint32, rule *config_parser.R
 
 func (b *RoutingMatcherBuilder) rememberInactive(other *RoutingMatcherBuilder, owner string) {
 	for _, start := range slices.Sorted(maps.Keys(other.ruleMetadata)) {
+		if int(start) >= other.routing.end {
+			continue
+		}
 		metadata := other.ruleMetadata[start]
 		metadata.owner = owner
 		b.inactiveRules = append(b.inactiveRules, metadata)
@@ -68,13 +72,20 @@ func (b *RoutingMatcherBuilder) rememberInactive(other *RoutingMatcherBuilder, o
 func (m *RoutingMatcher) inactiveSteps(profile uint32, names map[uint8]string) []api.ExplainStep {
 	var steps []api.ExplainStep
 	for _, metadata := range m.inactiveRules {
-		steps = append(steps, api.ExplainStep{ID: fmt.Sprintf("inactive/%d", len(steps)), Parent: metadata.owner, Section: metadata.section, Stage: "configuration", Expression: metadata.expression, Sources: metadata.sources, Status: "inactive", Match: "unknown", Reason: "not_bound_to_active_policy"})
+		policy, _ := strings.CutPrefix(metadata.owner, "policy/")
+		if policy == metadata.owner {
+			policy = ""
+		}
+		steps = append(steps, api.ExplainStep{ID: fmt.Sprintf("inactive/%d", len(steps)), Parent: metadata.owner, Policy: policy, Section: metadata.section, Stage: "configuration", Expression: metadata.expression, Sources: metadata.sources, Status: "inactive", Match: "unknown", Reason: "not_bound_to_active_policy"})
 	}
 	for _, other := range m.profileInfo {
 		if other.ID == profile {
 			continue
 		}
 		for _, span := range other.Spans {
+			if span.Global {
+				continue
+			}
 			for i := span.Start; i < span.End; i++ {
 				metadata, exists := m.ruleMetadata[i]
 				if !exists {

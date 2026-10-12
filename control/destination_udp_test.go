@@ -47,6 +47,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			matcher, _ := routingMatcherForTest(t, prepareFlowRulesForTest(t, filter+" -> dnat(198.51.100.20)", "dip(192.0.2.20,198.51.100.20) -> proxy(mark:37)"))
 			matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
+			matcher.destinations[42] = matcher.destinations[matcher.defaultProfileID]
 			matcher.defaultProfileID = 99
 			profileID := uint32(42)
 			unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) {

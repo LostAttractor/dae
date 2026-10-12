@@ -24,8 +24,11 @@ Native DNAT runs once before plugins. An original port-53 flow remains DNS even
 after changing its destination port:
 
 ```dae
-rules {
-    dip(192.0.2.53) && dport(53) -> dnat('198.51.100.53:1053')
+routing {
+    rules {
+        dip(192.0.2.53) && dport(53) -> dnat('198.51.100.53:1053')
+    }
+    fallback: direct
 }
 ```
 

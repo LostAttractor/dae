@@ -26,13 +26,14 @@ plugins {
  }
  surge { module { 'file:personal.sgmodule' } }
 }
+routing {
 rules {
  pname(mosdns) -> must
  domain(full: api.example.com) && dport(443) -> dnat('2001:db8::20')
  domain(full: api.example.com) -> bump
  dip(192.0.2.1) -> dnat(198.51.100.2)
 }
-routing { fallback: direct }`)
+fallback: direct }`)
 	if c.MITM.BufferMemoryLimit != 67108864 {
 		t.Fatal(c.MITM.BufferMemoryLimit)
 	}
@@ -61,16 +62,16 @@ routing { fallback: direct }`)
 			t.Fatal("instance order changed")
 		}
 	}
-	a, _ := c.Rules.Destinations()
-	z, _ := round.Rules.Destinations()
+	a, _ := inlineFlowRules(t, c).Destinations()
+	z, _ := inlineFlowRules(t, round).Destinations()
 	if len(a) != 2 || !reflect.DeepEqual(a[0].To, z[0].To) || a[0].To[0].String() != "2001:db8::20" {
 		t.Fatal("DNAT target changed")
 	}
-	plan, err := round.Rules.Plan()
+	plan, err := inlineFlowRules(t, round).Plan()
 	if err != nil || len(plan.Controls) != 2 || plan.Controls[0].Action != consts.MatchActionMust || plan.Controls[1].Action != consts.MatchActionBump {
 		t.Fatalf("flow controls changed: %+v, %v", plan, err)
 	}
-	if round.Rules.Rules[0].Outbound.Name != "must" || strings.Contains(string(b), "must_rules") {
+	if round.Routing.Policies[0].Rules[0].Rule.Outbound.Name != "must" || strings.Contains(string(b), "must_rules") {
 		t.Fatal("internal action name leaked into configuration")
 	}
 	if strings.Contains(string(b), "\nsurge {") {
@@ -103,7 +104,11 @@ func TestMITMConfigRejectsInvalid(t *testing.T) {
 		`rules { dip(192.0.2.1) -> dnat(192.0.2.0/24) }`,
 	} {
 		t.Run(body, func(t *testing.T) {
-			sections, err := config_parser.Parse("global {}\n" + body + "\nrouting { fallback: direct }")
+			text := "global {}\n" + body + "\nrouting { fallback: direct }"
+			if strings.HasPrefix(body, "rules {") {
+				text = "global {}\nrouting {\n" + body + "\nfallback: direct }"
+			}
+			sections, err := config_parser.Parse(text)
 			if err == nil {
 				_, err = New(sections)
 			}

@@ -382,39 +382,9 @@ plugins {
     #}
 }
 
-# Flow controls and destination IP/port overrides, independent of MITM.
-# Filters use the routing syntax. must, bump and DNAT can apply to the same connection.
-# Destination matching runs before flow controls, followed by outbound routing.
-# Flow controls accumulate; a bump does not hide later must/capture effects.
-# Destination candidates hand off before flow controls; routing uses the rewritten IP and port.
-# Source, interface, process and Host/SNI identity remain available after rewriting.
-# Domain conditions use existing DNS mappings in the kernel; no implicit all-traffic capture.
-# See docs/zh/configuration/destination-rules.md.
-rules {
-    # Skip automatic DNS interception; routing still selects direct/proxy/block.
-    #pname(mosdns) -> must
-
-    # Require userspace routing for matching traffic.
-    #domain(full: api.example.com) && l4proto(tcp) -> bump
-
-    # First matching DNAT wins; Host/SNI are preserved.
-    # Native DNAT applies before routing to direct/proxy/block, before Surge [Host].
-    # In userspace, DNAT domain filters (including negation) need a sniffed hostname.
-
-    # Rewrite both destination IP and port. Quote the entire target because ':' separates named parameters.
-    # IPv6 targets with a port use '[IP]:port'; keep the brackets inside the quotes.
-    #dip(192.0.2.53) && dport(53) -> dnat('198.51.100.53:1053')
-    #dip('2001:db8::53') && dport(53) -> dnat('[2001:db8::54]:1053')
-
-    # Omit the target port to keep the original port. IPv6 literals still need quotes.
-    #domain(full: api.example.com) && dport(443) -> dnat(198.51.100.20)
-    #sip(192.168.10.0/24) && dip(192.0.2.0/24) -> dnat(198.51.100.30)
-    #ipversion(6) && domain(suffix: example.net) -> dnat('2001:db8::20')
-}
-
 # See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
 routing {
-    # Reusable fragments contain rules and nested use statements, without a fallback.
+    # Reusable fragments contain one action family (flow or outbound) and nested uses, without a fallback.
     # use: a, b inserts both rule sets at that position, in order.
     # condition -> use(a, b) adds the condition to every referenced rule; nested conditions are ANDed.
     rule_set {
@@ -438,6 +408,37 @@ routing {
 
     policy {
         main {
+            # Flow controls and destination overrides apply only to this policy.
+            # Reuse flow fragments with use inside rules; other policies do not inherit them.
+            # Filters use the routing syntax. must, bump and DNAT can apply to the same connection.
+            # Destination matching runs before flow controls, followed by outbound routing.
+            # Flow controls accumulate; a bump does not hide later must/capture effects.
+            # Destination candidates hand off before flow controls; routing uses the rewritten IP and port.
+            # Source, interface, process and Host/SNI identity remain available after rewriting.
+            # Domain conditions use existing DNS mappings in the kernel; no implicit all-traffic capture.
+            # See docs/zh/configuration/destination-rules.md.
+            rules {
+                # Skip automatic DNS interception; routing still selects direct/proxy/block.
+                #pname(mosdns) -> must
+
+                # Require userspace routing for matching traffic.
+                #domain(full: api.example.com) && l4proto(tcp) -> bump
+
+                # First matching DNAT wins; Host/SNI are preserved.
+                # Native DNAT applies before routing to direct/proxy/block, before Surge [Host].
+                # In userspace, DNAT domain filters (including negation) need a sniffed hostname.
+
+                # Rewrite both destination IP and port. Quote the entire target because ':' separates named parameters.
+                # IPv6 targets with a port use '[IP]:port'; keep the brackets inside the quotes.
+                #dip(192.0.2.53) && dport(53) -> dnat('198.51.100.53:1053')
+                #dip('2001:db8::53') && dport(53) -> dnat('[2001:db8::54]:1053')
+
+                # Omit the target port to keep the original port. IPv6 literals still need quotes.
+                #domain(full: api.example.com) && dport(443) -> dnat(198.51.100.20)
+                #sip(192.168.10.0/24) && dip(192.0.2.0/24) -> dnat(198.51.100.30)
+                #ipversion(6) && domain(suffix: example.net) -> dnat('2001:db8::20')
+            }
+
             use: base
 
             ### Write your rules below. Rules are evaluated in statement order.
@@ -476,6 +477,6 @@ routing {
     # Every policy declares exactly one fallback, used only after its rules.
     # For a single default policy, rules/use/fallback may be written directly under routing
     # alongside declarations; this anonymous form cannot be combined with default: name.
-    # MITM plugins, native DNAT rules and Surge Host mappings automatically share a capture fragment
-    # before every policy. Do not duplicate control_plane_routing rules or add a use for that fragment.
+    # Handwritten DNAT/must/bump belong in each policy's rules block; policies do not inherit them.
+    # MITM, Surge Host and plugin routes keep their global scope.
 }

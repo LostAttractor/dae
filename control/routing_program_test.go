@@ -62,21 +62,33 @@ domain(full: one.example, full: two.example) && dip(192.0.2.0/24) -> dnat(198.51
 			t.Fatal("instruction/control action leaked into outbound ID")
 		}
 	}
-	if len(b.destination.predicates) != 2 || int(b.destination.predicates[0].span.Start) < b.routing.end || b.rules[b.flow.end-1].Action != uint8(consts.MatchActionFlowEnd) {
-		t.Fatal("invalid flow/routing/destination boundaries")
+	profile := b.profiles[0]
+	if len(profile.Destination.predicates) != 2 || int(profile.Destination.predicates[0].span.Start) < b.routing.end {
+		t.Fatal("exact destinations entered the kernel instruction pool")
 	}
-	if b.destination.start != 0 || b.destination.end != b.flow.start || b.flow.end != b.routing.start {
-		t.Fatal("program order must be destination -> flow -> routing")
-	}
-	for i, rule := range b.rules[:b.routing.end] {
-		if ((rule.Flags>>3)&3)&captureDestination != 0 && (i < b.destination.start || i >= b.destination.end) {
-			t.Fatal("destination capture must precede flow controls")
-		}
-		if rule.Action == uint8(consts.MatchActionMust) || rule.Action == uint8(consts.MatchActionBump) || ((rule.Flags>>3)&3)&captureHTTP != 0 {
-			if i < b.flow.start || i >= b.flow.end {
-				t.Fatal("flow control escaped its program")
+	flowEnded, routeStarted := false, false
+	for _, span := range profile.Spans {
+		for _, rule := range b.rules[span.Start:span.End] {
+			switch span.Phase {
+			case routingPhaseIngress:
+				if flowEnded || routeStarted {
+					t.Fatal("destination capture followed flow or routing")
+				}
+			case routingPhaseFlow:
+				if routeStarted || flowEnded {
+					t.Fatal("flow controls followed flow end or routing")
+				}
+				flowEnded = rule.Action == uint8(consts.MatchActionFlowEnd)
+			case routingPhaseRoute:
+				if !flowEnded {
+					t.Fatal("routing preceded flow end")
+				}
+				routeStarted = true
 			}
 		}
+	}
+	if !flowEnded || !routeStarted {
+		t.Fatal("missing flow or routing program")
 	}
 }
 
@@ -89,8 +101,8 @@ func TestDestinationPredicatesDoNotConsumeKernelInstructions(t *testing.T) {
 		fmt.Fprintf(&rules, "dport(%d) -> dnat(198.51.100.20)\n", i+1)
 	}
 	_, b := destinationTestMatcher(t, rules.String())
-	if b.routing.end != count+1 || len(b.rules) <= consts.MaxMatchSetLen || len(b.destination.predicates) != count || b.flow.start != b.flow.end {
-		t.Fatalf("unexpected program sizes: kernel=%d all=%d destinations=%d", b.routing.end, len(b.rules), len(b.destination.predicates))
+	if b.routing.end != count+1 || len(b.rules) <= consts.MaxMatchSetLen || len(b.profiles[0].Destination.predicates) != count {
+		t.Fatalf("unexpected program sizes: kernel=%d all=%d destinations=%d", b.routing.end, len(b.rules), len(b.profiles[0].Destination.predicates))
 	}
 }
 
@@ -98,7 +110,7 @@ func TestDestinationInterfaceUpdateStaysInUserspace(t *testing.T) {
 	_, b := destinationTestMatcher(t, "interface(lan0) -> dnat(198.51.100.20)")
 	// No BPF handles exist in this test. Updating the destination half of an
 	// interface predicate must neither access nor publish a kernel table slot.
-	i := int(b.destination.predicates[0].span.Start)
+	i := int(b.profiles[0].Destination.predicates[0].span.Start)
 	if err := b.updateIfindex(i, 42, true); err != nil {
 		t.Fatal(err)
 	}

@@ -80,7 +80,7 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 
 | 文件 | 职责 |
 | --- | --- |
-| `control/routing_profile_compiler.go`、`routing_matcher_builder.go` | 展开片段与策略，收集和共享谓词资源，校验完整程序 |
+| `control/routing_profile_compiler.go`、`routing_flow_compiler.go`、`routing_matcher_builder.go` | 展开片段与策略，收集和共享谓词资源，校验完整程序 |
 | `control/routing_state.go` | 编译后规则、动态 client/interface 更新及用户态/内核同步；发布后不保留 Builder |
 | `control/routing_instruction.go` | 指令标志、动作生成和相对跳距编码 |
 | `control/routing_predicate.go` | 用户态谓词求值，按需准备域名位图和 LPM 查询键 |
@@ -89,13 +89,13 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 | `control/kern/routing.h` | 内核策略选择、三态求值和控制动作执行 |
 | `control/kern/tproxy.c` | 报文解析、连接归属、路由缓存与转发 |
 
-`rules {}` 和 `routing {}` 共享过滤条件解析、别名和数据集展开，编译成三个独立的逻辑程序，依次执行：
+policy 内的 `rules {}` 与出站规则共享过滤条件解析、别名和数据集展开。入口接口或默认绑定先选 policy，再执行该策略的三个阶段：
 
-- `DestinationProgram`：内核按完整过滤条件捕获候选，命中后立即交接，避免用旧地址提交路由。用户态匹配原始连接并选定首个 DNAT/Host 目标；原始五元组保留用于身份和回包，新目的地址成为后续程序的输入。不在内核直接修改报文地址。
-- `FlowProgram`：累积 `must`、`bump` 和 HTTP 捕获标志。动作使用独立字段，不占用出站编号；控制段末尾统一处理用户态路由要求。共享 IP 导致的 must 歧义不会提前终止控制段，后续确定性 must 和捕获仍然生效。
-- `RoutingProgram`：使用重写后的目的地址、地址族和原始来源/接口/进程/策略选择出站及 mark；`must` 同样由新上下文计算。DNAT 与 Surge Host 都在选路前确定目标，不因出站选择撤销映射；新目标上的 block 保持拒绝。
+- 目的地址阶段（`DestinationProgram`）：内核按完整过滤条件捕获候选，命中后立即交接，避免用旧地址提交路由。用户态匹配原始连接并选定首个 DNAT/Host 目标；原始五元组保留用于身份和回包，新目的地址成为后续程序的输入。不在内核直接修改报文地址。
+- 流量控制阶段：累积 `must`、`bump` 和 HTTP 捕获标志。动作使用独立字段，不占用出站编号；控制段末尾统一处理用户态路由要求。共享 IP 导致的 must 歧义不会提前终止控制段，后续确定性 must 和捕获仍然生效。
+- 出站选择阶段：使用重写后的目的地址、地址族和原始来源/接口/进程/策略选择出站及 mark；`must` 同样由新上下文计算。DNAT 与 Surge Host 都在选路前确定目标，不因出站选择撤销映射；新目标上的 block 保持拒绝。
 
-内核仍使用一张 `routing_map`，顺序为 API 精确直通前缀 → DestinationProgram 捕获段 → FlowProgram（包含结束指令）→ RoutingProgram。Go 编译结果记录各段边界，`BuildKernspace` 只上传内核段。DestinationProgram 的精确匹配指令存放在 Go 指令表的用户态后缀，运行时在 FlowProgram 之前单独求值；TCP 连接和活动 UDP 会话复用已经选定的目标。内核段沿用 `MAX_MATCH_SET_LEN` 上限，用户态目的地址段独立检查容量，上限为它的两倍。
+内核使用一张共享物理指令表 `routing_map`，每个 policy 的 spans 单独组织执行顺序：API 精确直通 → 策略 DNAT 与全局插件捕获 → 策略 must/bump 和纯 MITM 捕获（包含控制结束指令）→ 插件前置路由、策略正文、插件普通路由和 fallback。共享片段只编译一次；物理存储位置不决定阶段顺序。Go 的 span 保留阶段，目标选定后跳过入口阶段，不再依赖全局下标分界。每个 policy 的 DestinationProgram 引用该策略的 DNAT 和全局插件目标规则；精确谓词存放在用户态后缀，`BuildKernspace` 只上传内核池。TCP 连接和活动 UDP 会话复用已经选定的目标。内核段沿用 `MAX_MATCH_SET_LEN` 上限，用户态目的地址段独立检查容量，上限为它的两倍。
 
 内核以 `control_plane_routing` 表示未决路由。交接和 UDP 缓存共用无对齐空洞的 40 字节 `routing_result`：`route_epoch` 位于偏移 0，`profile_id` 位于偏移 16，`no_sniff` 位于偏移 30，`physinif` 位于偏移 32，`generation` 位于偏移 36。`generation` 标识配置代，`route_epoch` 独立标识设备连接策略版本。用户态 `routingResult` 嵌入该结果并保存内部请求的 PID/进程名。TCP 长期转发使用独立的 16 字节 `tcp_flow_state`，只保留设备版本、mark 和是否重定向；普通无 mark、无设备版本的内核直通无需记录。`routing_tuples_map` 是 16384 项的交接 LRU：48 字节值包含完整结果、单调秒数过期时间和 TCP 初始序列号，字段无空洞。TCP accept 原子取出并删除交接；相同 SYN 的重传在 30 秒内复用它且不续期；UDP 读取快照。交接容量和过期都不影响已建立 TCP 的转发状态。
 
@@ -103,7 +103,7 @@ Registry 以最早可能到期时间作为 GC 扫描门槛。续期可以留下�
 
 `routingInput` 是目的地址谓词和后续路由共用的输入，统一从原始来源、接口、进程、MAC、DSCP 和策略构造；调用方传入本次目标和实际请求协议，无需中间 context 或改写内核记录的协议字段。`RouteParam.Dest` 保留本次匹配的原目标，`destination` 只保存已选定的有效地址，`effectiveDestination()` 提供后续路由和拨号的目标。UDP 建立源生命周期时保存首次 profile 和目的地址匹配器；后续目的地址复用这套规则，已匹配的目的地址（包括未命中改写的原地址）保持不变。只有生命周期结束后，新报文才按当前接口策略和配置重新选路。
 
-`routeDestination` 从 FlowProgram 开始求值一次，生成纯 `routeDecision` 后再选择拨号器。出站、block 和连通性回退都不改变已选定目标；block 由转发入口阻止拨号。IP 重写保留逻辑域名与 Host/SNI，不递归执行 DNAT，也不重新触发 API 入口直通。Surge 字面 IP Host 与原生 DNAT 使用相同语义；域名 Host 不自动产生 DNAT 或扩大捕获。`use-local-host-item-for-proxy` 控制已捕获代理连接是否保留 Host 静态 DNS 地址。
+`routeDestination` 跳过所选 policy 的入口阶段，从流量控制阶段开始求值一次，生成纯 `routeDecision` 后再选择拨号器。出站、block 和连通性回退都不改变已选定目标；block 由转发入口阻止拨号。IP 重写保留逻辑域名与 Host/SNI，不递归执行 DNAT，也不重新触发 API 入口直通。Surge 字面 IP Host 与原生 DNAT 使用相同语义；域名 Host 不自动产生 DNAT 或扩大捕获。`use-local-host-item-for-proxy` 控制已捕获代理连接是否保留 Host 静态 DNS 地址。
 
 插件用 `HTTPScope{Scope, PreserveRoute}` 声明捕获范围与路由属性；默认在 HTTP 处理后选路，纯检查显式声明 `PreserveRoute: true`。Surge 按模块将脚本、URL Rewrite 和 Map Local 归入请求路由，域名、端口与排除条件保持原样。内核在目标处理前缀捕获这些候选，以 `control_plane_routing` 表示需要用户态决定出站。普通 MITM 保留有效内核路由。客户端准入独立于最终上游路由，已准入的请求先执行 rewrite，再根据最终目标决定 block/direct/proxy；未准入或精确范围未命中时执行普通连接路由。
 

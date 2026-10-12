@@ -23,10 +23,10 @@ You should configure dae as follows:
 2. Add a `must` control in `rules` and put the corresponding `direct` rule before other rules in `routing` to avoid loops.
 
    ```text
-   rules {
-       pname(AdGuardHome) && l4proto(udp) && dport(53) -> must
-   }
    routing {
+       rules {
+           pname(AdGuardHome) && l4proto(udp) && dport(53) -> must
+       }
        pname(AdGuardHome) && l4proto(udp) && dport(53) -> direct
        # Other routes and fallback ...
    }
@@ -75,10 +75,10 @@ You should configure dae as follows:
 2. Add a `must` control in `rules` and put the corresponding `direct` rule before other rules in `routing` to avoid loops.
 
    ```text
-   rules {
-       sip(192.168.30.3) && l4proto(udp) && dport(53) -> must
-   }
    routing {
+       rules {
+           sip(192.168.30.3) && l4proto(udp) && dport(53) -> must
+       }
        sip(192.168.30.3) && l4proto(udp) && dport(53) -> direct
        # Other routes and fallback ...
    }

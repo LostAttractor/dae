@@ -138,7 +138,7 @@ func loadControlInputs(ctx context.Context, conf *config.Config, isReload bool, 
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		var err error
-		input.rules, err = control.PrepareRules(groupCtx, &conf.Routing, conf.Rules, dirs)
+		input.rules, err = control.PrepareRules(groupCtx, &conf.Routing, dirs)
 		return err
 	})
 	group.Go(func() error {
@@ -161,7 +161,7 @@ func sameControlConfig(previous, next *config.Config) bool {
 	project := func(conf *config.Config) config.Config {
 		value := *conf
 		value.Plugins, value.Subscription, value.Node = nil, nil, nil
-		value.Routing, value.Rules = config.Routing{}, config.Rules{}
+		value.Routing = config.Routing{}
 		value.MITM.CACert, value.MITM.CAKey = "", ""
 		value.MITM.BufferMemoryLimit = 0
 		value.Global.LogLevel, value.Global.APIKey = "", ""

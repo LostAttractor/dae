@@ -175,9 +175,10 @@ connections, as indicated beside these actions. Routing effects load only for
 expanded rules and refresh when the device context changes. Closing a rule discards
 its pending response. Expanded details separate the proposed change, referenced
 rules and explanatory notes with spacing and dividers. **Referenced** identifies
-a client-group reference, not an evaluated match or routing result. Shared
-`rules` entries appear once with a **Rules** badge; routing occurrences show
-their **Policy** badge even while collapsed. DNAT expressions include their
+a client-group reference, not an evaluated match or routing result. Policy flow
+rules show both **Rules** and **Policy** badges, including while collapsed.
+Shared fragments retain their policy occurrences; global system/plugin references
+appear once. Outbound rules also show their **Policy** badge. DNAT expressions include their
 target IP and optional port. Membership predicates show before/after values.
 Rule expressions use a single-line summary while collapsed and wrap in full
 when expanded. Labels and expressions keep the same first-line alignment in

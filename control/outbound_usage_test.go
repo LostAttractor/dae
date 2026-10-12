@@ -86,9 +86,12 @@ routing {
   shared { dport(80) -> chain(skip_while_noalive) }
   nested { use: shared }
   unused { dport(90) -> unused_node }
+  flow { dport(53) -> must
+ dport(443) -> dnat(198.51.100.20) }
  }
  policy {
-  main { use: nested
+  main { rules { use: flow }
+ use: nested
          fallback: direct }
   bound { use: shared
           dport(81) -> exit(skip_while_noalive)

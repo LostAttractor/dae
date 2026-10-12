@@ -88,6 +88,7 @@ dip(192.0.2.20) -> block`, addrPortOf(packets.LocalAddr()).Port(), addrPortOf(pa
 	prepared.enableMITMPlan(host.Plan())
 	matcher, builder := routingMatcherForTest(t, prepared)
 	matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
+	matcher.destinations[42] = matcher.destinations[matcher.defaultProfileID]
 	matcher.defaultProfileID = 99
 	plane.routingMatcher = matcher
 	plane.outbounds[2] = downloadTestGroup(t, "proxy", func(ctx context.Context, network, address string) (net.Conn, error) {

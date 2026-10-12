@@ -29,7 +29,6 @@ var patches = []patch{
 	validateCheckIntervals,
 	validateCheckDNS,
 	validateFallbacks,
-	validateRoutingActions,
 }
 
 func validateGroupNames(params *Config) error {
@@ -135,38 +134,11 @@ func validateFallbacks(params *Config) error {
 	return params.Routing.Validate()
 }
 
-func validateRoutingActions(params *Config) error {
-	validate := func(statements []RoutingStatement) error {
-		for _, s := range statements {
-			if s.Kind == RoutingStatementRule {
-				if err := validateRoutingAction(&s.Rule.Outbound); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-	for _, s := range params.Routing.RuleSets {
-		if err := validate(s.Statements); err != nil {
-			return fmt.Errorf("rule_set %q: %w", s.Name, err)
-		}
-	}
-	for _, s := range params.Routing.Policies {
-		if err := validate(s.Statements); err != nil {
-			return fmt.Errorf("policy %q: %w", s.Name, err)
-		}
-		if err := validateRoutingAction(s.Fallback); err != nil {
-			return fmt.Errorf("policy %q fallback: %w", s.Name, err)
-		}
-	}
-	return nil
-}
-
 func validateRoutingAction(f *config_parser.Function) error {
 	if !f.Quoted && (f.Name == "must" || strings.HasPrefix(f.Name, "must_")) {
 		return fmt.Errorf("routing target %q is reserved for must control; flow controls belong in rules {}", f.Name)
 	}
-	if f.Name == consts.OutboundControlPlaneRouting.String() {
+	if f.Name == consts.OutboundControlPlaneRouting.String() || !f.Quoted && f.Name == "dnat" {
 		return fmt.Errorf("routing target %q is a flow control; flow controls belong in rules {}", f.Name)
 	}
 	for _, p := range f.Params {

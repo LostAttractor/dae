@@ -30,33 +30,6 @@ type preparedRules struct {
 	capture             *routingCapture
 }
 
-func (p *preparedRules) enableFlowRules(ctx context.Context, rules config.Rules, dirs []string) error {
-	plan, err := rules.Plan()
-	if err != nil {
-		return err
-	}
-	p.destinations, err = prepareDestinationRules(ctx, plan.Destinations, dirs)
-	if err != nil {
-		return err
-	}
-	if len(plan.Controls) != 0 {
-		reader := routing.NewDatReaderOptimizer(ctx, assets.NewLocationFinder(dirs))
-		for i := range plan.Controls {
-			rule := &plan.Controls[i]
-			normalized, err := routing.ApplyRulesOptimizers([]*config_parser.RoutingRule{{AndFunctions: rule.Filter}}, &routing.AliasOptimizer{}, reader, &routing.DeduplicateParamsOptimizer{})
-			if err != nil {
-				return fmt.Errorf("rules control %d: %w", i+1, err)
-			}
-			rule.Filter = normalized[0].AndFunctions
-		}
-		if p.capture == nil {
-			p.capture = &routingCapture{}
-		}
-		p.capture.controls = plan.Controls
-	}
-	return nil
-}
-
 func prepareDestinationRules(ctx context.Context, rules routing.DestinationRewrites, dirs []string) (routing.DestinationRewrites, error) {
 	reader := routing.NewDatReaderOptimizer(ctx, assets.NewLocationFinder(dirs))
 	result := make(routing.DestinationRewrites, 0, len(rules))

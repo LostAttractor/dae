@@ -40,12 +40,13 @@ func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {
 			rules := routing.DestinationRewrites{{Filter: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}}, To: []netip.Addr{netip.MustParseAddr(test.target)}}}
 			prepared := preparedRules{routing: testRoutingConfig([]*config_parser.RoutingRule{{
 				AndFunctions: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: test.target}}}},
-				Outbound:     config_parser.Function{Name: test.route, Params: []*config_parser.Param{{Val: "must"}, {Key: "mark", Val: "37"}}},
+				Outbound:     config_parser.Function{Name: test.route, Params: []*config_parser.Param{{Key: "mark", Val: "37"}}},
 			}, {
 				AndFunctions: []*config_parser.Function{{Name: "dip", Params: []*config_parser.Param{{Val: dst.Addr().String()}}}},
 				Outbound:     config_parser.Function{Name: "block"},
 			}}, "direct")}
 			prepared.destinations = rules
+			prepared.routing.Policies[0].Rules = prepareFlowRulesForTest(t, "dip('"+test.target+"') -> must", "").routing.Policies[0].Rules
 			matcher, _ := routingMatcherForTest(t, prepared)
 			plane := &ControlPlane{routingMatcher: matcher, outbounds: groups}
 			plane.markedDirectDialers.Store(uint32(37), unused)

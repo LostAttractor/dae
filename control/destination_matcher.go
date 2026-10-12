@@ -3,6 +3,7 @@
 package control
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -24,22 +25,38 @@ func (m *RoutingMatcher) snapshotDestinations() *RoutingMatcher {
 	m.rulesMu.RLock()
 	defer m.rulesMu.RUnlock()
 	return &RoutingMatcher{
-		destination:   m.destination,
-		matches:       m.matches,
-		lpmMatcher:    slices.Clone(m.lpmMatcher),
-		domainMatcher: m.domainMatcher,
-		rulesMu:       new(sync.RWMutex),
+		defaultProfileID: m.defaultProfileID,
+		profiles:         m.profiles,
+		destinations:     m.destinations,
+		matches:          m.matches,
+		lpmMatcher:       slices.Clone(m.lpmMatcher),
+		domainMatcher:    m.domainMatcher,
+		rulesMu:          new(sync.RWMutex),
 	}
 }
 
+func (m *RoutingMatcher) destinationProgram(profileID uint32) DestinationProgram {
+	if profileID == 0 {
+		profileID = m.defaultProfileID
+	}
+	return m.destinations[profileID]
+}
+
 func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error) {
-	if m == nil || len(m.destination.predicates) == 0 {
+	if m == nil {
 		return netip.AddrPort{}, nil
+	}
+	profileID := p.routingResult.ProfileId
+	if profileID == 0 {
+		profileID = m.defaultProfileID
+	}
+	if _, ok := m.profiles[profileID]; !ok {
+		return netip.AddrPort{}, fmt.Errorf("unknown routing profile %d", profileID)
 	}
 	m.rulesMu.RLock()
 	defer m.rulesMu.RUnlock()
 	input := p.routingInput(p.Domain, p.Dest)
-	for _, entry := range m.destination.predicates {
+	for _, entry := range m.destinationProgram(profileID).predicates {
 		// In an AND-only predicate, an unknown domain (including !domain)
 		// can never prove the rule true once bounded sniffing has completed.
 		if entry.domain && p.Domain == "" {

@@ -348,7 +348,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		}
 	}
 	var socketKey netip.AddrPort
-	if option != nil && (ue.mitm || c.routingMatcher != nil && len(c.routingMatcher.destination.predicates) != 0) {
+	if option != nil && (ue.mitm || c.routingMatcher != nil && len(c.routingMatcher.destinationProgram(param.routingResult.ProfileId).predicates) != 0) {
 		ue.releaseDialer, err = option.Dialer.Retain()
 		if err != nil {
 			closeInBackground(conn)

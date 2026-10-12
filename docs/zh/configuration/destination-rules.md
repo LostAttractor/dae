@@ -1,16 +1,16 @@
-# rules：流量控制与 DNAT
+# policy.rules：流量控制与 DNAT
 
-`rules` 先匹配原始连接并选择 DNAT 目标，再基于重写后的目的地址执行 must/bump 和 `routing`。`routing` 选择出站及 mark；来源、接口、进程和策略身份保持不变。`rules` 独立于 MITM、JS 和 Surge 开关，不修改 DNS 请求或应答内容。
+`rules` 配置在所属 routing policy 内，也可写在匿名默认策略的 `routing` 内。入口接口或 `default` 先选定 policy，仅执行该策略的手写规则；策略之间不继承 `rules`。先匹配原始连接并选择 DNAT 目标，再基于重写后的目的地址执行 must/bump，最后由策略正文选择出站及 mark。来源、接口、进程和策略身份保持不变。`rules` 独立于 MITM、JS 和 Surge 开关，不修改 DNS 请求或应答内容。
 
 ```text
-rules {
-  pname(mosdns) -> must
-  domain(full: api.example.com) && l4proto(tcp) -> bump
-  domain(full: api.example.com) && dport(443) -> dnat(198.51.100.20)
-  sip(192.168.10.0/24) && dip(192.0.2.0/24) -> dnat(198.51.100.30)
-  ipversion(6) && domain(suffix: example.net) -> dnat('2001:db8::20')
-}
 routing {
+  rules {
+    pname(mosdns) -> must
+    domain(full: api.example.com) && l4proto(tcp) -> bump
+    domain(full: api.example.com) && dport(443) -> dnat(198.51.100.20)
+    sip(192.168.10.0/24) && dip(192.0.2.0/24) -> dnat(198.51.100.30)
+    ipversion(6) && domain(suffix: example.net) -> dnat('2001:db8::20')
+  }
   fallback: direct
 }
 ```
@@ -28,20 +28,42 @@ routing {
 流量控制和出站选择分别配置，控制条件在全部普通路由之前判断。例如，让指定进程跳过自动 DNS 接管并直连：
 
 ```text
-rules {
-  pname(naiveproxy) -> must
-}
 routing {
+  rules {
+    pname(naiveproxy) -> must
+  }
   pname(naiveproxy) -> direct
   # 其余路由和 fallback ...
 }
 ```
 
-MITM、原生 DNAT 和 Surge Host 的捕获条件自动编译为所有策略共享的片段，用户无需重复添加。自定义片段见[路由规则集](routing.md)。
+`rules` 支持 `use: name` 和 `条件 -> use(name)`，复用同一个 `routing.rule_set` 命名空间。流量片段只包含 DNAT、must、bump 和其他流量片段的引用；出站片段只能在策略正文引用，混合动作或引用到错误阶段会报错。DNAT 保留展开后的规则顺序；各阶段分别求值引用条件，DNAT 看原始目标，must/bump 看改写后的目标。`rules` 在策略中的书写位置不改变阶段顺序。
+
+```text
+routing {
+  rule_set {
+    dns_controls {
+      pname(mosdns) -> must
+      client(direct) && dport(53) -> dnat('127.0.0.54:53')
+    }
+  }
+  policy {
+    main {
+      rules { use: dns_controls }
+      fallback: direct
+    }
+    tor { fallback: tor }
+  }
+  default: main
+  interface { tor: tor }
+}
+```
+
+此例的 `tor` 不执行 `main.rules`。MITM、Surge Host 和插件生成的路由仍按全局作用域生效，自动 DNS 接管也保持其独立语义。插件定义位于顶层 `plugins`，HTTP/TLS 设置位于顶层 `mitm`。规则片段与接口绑定见[路由规则集](routing.md)。
 
 ## DNAT 行为
 
-DNAT 规则按原生配置顺序在前、插件及其内部顺序在后排列，首个匹配决定目标；省略端口时保留原端口。用户态在 must/bump 和普通路由求值前选定目标，命中不会阻止独立的 must/bump 控制。TCP 每连接决策一次；被捕获的普通 UDP association 固定实际目标并还原回包来源。DNS 按请求透传，原端口 53 经 DNAT 改到其它端口后仍是 DNS。A → B 和 B → C 不会递归重写。
+DNAT 规则按选中 policy 的手写规则展开顺序在前、全局插件及其内部顺序在后排列，首个匹配决定目标；省略端口时保留原端口。用户态在 must/bump 和普通路由求值前选定目标，命中不会阻止独立的 must/bump 控制。TCP 每连接决策一次；被捕获的普通 UDP association 固定实际目标并还原回包来源。DNS 按请求透传，原端口 53 经 DNAT 改到其它端口后仍是 DNS。A → B 和 B → C 不会递归重写。
 
 普通 routing 查看重写后的目的 IP、端口和地址族，并保留原始来源、接口、进程、MAC、DSCP、策略及 Host/SNI。新目标上的 direct/proxy/block、mark、must 和 skip_while_noalive 均重新求值；旧目标上的路由结果不会沿用。原生 DNAT 对 direct 和 proxy 都有效。应用层 Host、TLS SNI 和证书验证名称保持原有语义。选中目标失败会使连接失败，不静默换回原 IP。
 

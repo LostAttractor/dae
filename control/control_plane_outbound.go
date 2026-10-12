@@ -371,7 +371,11 @@ func collectRoutingTargetNames(routingConfig *config.Routing) []string {
 	appendStatements := func(statements []config.RoutingStatement) {
 		for _, statement := range statements {
 			if statement.Kind == config.RoutingStatementRule {
-				appendTarget(statement.Rule.Outbound.Name)
+				action := statement.Rule.Outbound
+				if !action.Quoted && (action.Name == "must" || action.Name == "bump" || action.Name == "dnat") {
+					continue
+				}
+				appendTarget(action.Name)
 			}
 		}
 	}

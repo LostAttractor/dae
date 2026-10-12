@@ -53,7 +53,7 @@ domain(full: one.example) && dport(443) -> dnat(198.51.100.20)`
 		}
 		prepared := prepareFlowRulesForTest(t, controls, "dip(198.51.100.20) -> proxy(mark:91)\ndomain(full: one.example) && dport(443) -> block\ndport(443) -> direct(mark:37)")
 		prepared.enableMITMPlan(mitmRoutingPlugin("one.example").Plan())
-		prepared.destinations = append(prepared.destinations, prepareFlowRulesForTest(t, "dip(192.0.2.20) -> dnat(198.51.100.20)", "").destinations...)
+		prepared.destinations = append(prepared.destinations, destinationRulesForTest(t, "dip(192.0.2.20) -> dnat(198.51.100.20)")...)
 		prepared.bypassAPI(443, []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.1"), Mask: net.CIDRMask(24, 32)}})
 		matcher, builder := routingMatcherForTest(t, prepared)
 		unused := downloadTestDialer(func(context.Context, string, string) (net.Conn, error) { return nil, net.ErrClosed })

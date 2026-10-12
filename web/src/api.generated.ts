@@ -1022,7 +1022,7 @@ export interface components {
         ClientGroups: {
             groups: components["schemas"]["ClientGroup"][];
         };
-        /** @description References to the client group in active rules, not a flow evaluation. Rules have status referenced; shared flow rules appear once without a policy, while routing occurrences retain their policy. Conditions report membership predicate values before and after the proposal. Supply flow for a separate before/after trace. */
+        /** @description References to the client group in active rules, not a flow evaluation. Rules have status referenced; policy flow and outbound rules retain each policy occurrence, while global system or plugin references appear once without a policy. Conditions report membership predicate values before and after the proposal. Supply flow for a separate before/after trace. */
         ClientImpact: {
             connection_behavior: string;
             exports: string[];
@@ -1240,7 +1240,7 @@ export interface components {
             must?: boolean;
             outbound?: string;
             parent?: string;
-            /** @description Named routing policy for this occurrence; absent for a shared membership reference. */
+            /** @description Routing policy for this occurrence; absent for a global system or plugin membership reference. */
             policy?: string;
             reason: string;
             /** @description Source configuration section, such as rules or routing. */

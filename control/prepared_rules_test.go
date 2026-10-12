@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/daeuniverse/dae/config"
 )
 
 func TestPrepareRulesWithoutGeodata(t *testing.T) {
@@ -24,7 +22,7 @@ func TestPrepareRulesWithoutGeodata(t *testing.T) {
 dip(192.168.0.0/16) -> direct
 domain(suffix:example.com) -> direct
 fallback: direct`)
-	prepared, err := PrepareRules(t.Context(), &conf.Routing, config.Rules{}, []string{dir})
+	prepared, err := PrepareRules(t.Context(), &conf.Routing, []string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}

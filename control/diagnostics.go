@@ -138,7 +138,7 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 				wanted[ip] = true
 			}
 		}
-		for _, entry := range matcher.destination.predicates {
+		for _, entry := range matcher.destinationProgram(input.profileID).predicates {
 			for _, ip := range entry.targets {
 				wanted[ip.Unmap()] = true
 			}
@@ -482,7 +482,7 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 	}
 	targetRoute := evaluation.captureFlags&(captureDestination|captureHTTPRequest) != 0 || !input.kernel
 	if targetRoute {
-		for i, entry := range s.matcher.destination.predicates {
+		for i, entry := range s.matcher.destinationProgram(input.profileID).predicates {
 			p := input
 			p.kernel, p.domain, p.domainBitmap, p.domainBumpBitmap, p.stage = false, hostname, nil, nil, routeFromIngress
 			matched, trace, needs, _, err := s.matcher.explainSpans(ctx, []routingSpan{entry.span}, p, missing, s.names, fmt.Sprintf("destination/%d", i))

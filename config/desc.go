@@ -10,20 +10,19 @@ type Desc map[string]string
 var SectionSummaryDesc = Desc{
 	"mitm":         "Shared HTTP/TLS certificates, client selection and body memory settings.",
 	"plugins":      "Ordered, statically compiled Go plugin instances, including HTTP and DNS processing.",
-	"rules":        "Flow rules: filter() -> must, bump or dnat(ip). must skips automatic DNS interception; bump requires userspace routing; first matching DNAT overrides the dial IP. Outbound selection remains in routing.",
 	"subscription": "Subscriptions defined here will be resolved as nodes and merged as a part of the global node pool. Expanded subscription descriptors can set default or filtered node options such as multiplex.\nSupport to give the subscription a tag, and filter nodes from a given subscription in the group section.",
 	"node":         "Nodes defined here will be merged as a part of the global node pool. A uniquely named node can also be used directly as a routing target. Inline annotations configure node options such as multiplex.",
 	"group":        "Proxy path groups. Declare ordered stages with ->. Groups with a policy select complete paths; policyless groups can be referenced as reusable path stages.",
 	"client":       "Dynamic MAC sets: name { description: 'text' ipset: kernel_name nftset: 'family/table/set' }. All fields are optional. The device page shows sets referenced by client(name) routing rules or configured for kernel export. Configuration reloads update descriptions and exports; membership is stored separately.",
 	"routing": `Traffic follows this routing. See https://github.com/daeuniverse/dae/blob/main/docs/en/configuration/routing.md for full examples.
-rule_set contains reusable rules and ordered uses; use: a, b inserts both fragments in order.
+rule_set contains reusable rules and ordered uses; use: a, b inserts both fragments in order. A fragment contains either flow actions or outbound rules.
 filter() -> use(a, b) ANDs the filter with every referenced rule; nested use conditions accumulate.
-policy declares complete policies with exactly one fallback each. Fragments cannot contain fallback.
+policy declares complete policies with exactly one fallback each. Its rules {} contains must, bump, dnat(ip) and flow-fragment uses. Fragments cannot contain fallback.
 default: policy_name and interface { device: policy_name } select policies; configure global capture bindings separately.
 Inline rules/use/fallback define an anonymous default policy and cannot be combined with default: policy_name.
-Declare each routing block once across included files. MITM and DNAT/Host capture is shared automatically across policies.
+Declare each routing block once across included files. Handwritten rules belong only to their policy. Plugin MITM/Host capture and plugin routing remain global.
 Notice: domain traffic split will fail if DNS traffic is not taken over by dae.
-Built-in outbounds: direct, block. Flow controls must and bump belong in rules {}.
+Built-in outbounds: direct, block. Policy execution order: first-match DNAT on the original target, must/bump on the effective target, then outbound selection. must skips automatic DNS interception; bump requires userspace routing.
 Available functions: domain, sip, dip, sport, dport, ipversion, l4proto, pname, mac, client, dscp, interface.
 Available keys in domain function: suffix, keyword, regex, full. No key indicates suffix.
 domain: Match domain.

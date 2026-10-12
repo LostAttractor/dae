@@ -163,7 +163,7 @@ routing {
 - Interface names are exact and cannot be bound twice. Configure traffic capture with `global.lan_interface` / `global.wan_interface`; routing bindings alone do not attach dae to devices.
 - A single default policy may instead write rules, uses and fallback directly inside `routing`, alongside fragment and named policy declarations. In that form, omit `default: policy_name`.
 
-HTTP plugins, native DNAT rules and literal-IP Surge Host mappings automatically share their internal capture fragment across all policies. No repeated `control_plane_routing` rules or explicit `use` are needed. Keep `rules { ... -> dnat(ip) }`, `plugins { ... }` and the HTTP/TLS settings in `mitm { ... }` at the top level. Domain Host entries handle DNS without creating DNAT rules.
+Handwritten DNAT, must and bump belong in the selected policy's `rules {}`. Reuse flow fragments with `rules { use: name }`; declaring or compiling a fragment does not apply it to other policies. MITM, literal-IP Surge Host mappings and plugin routes retain global scope. `plugins { ... }` and HTTP/TLS settings in `mitm { ... }` remain top-level definitions. Domain Host entries handle DNS without creating DNAT rules.
 
 See [routing](routing.md) for matching and module precedence. After replacing the sample nodes, subscription URL and interface names, start dae with:
 

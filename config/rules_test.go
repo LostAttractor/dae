@@ -20,13 +20,13 @@ func TestDNATPortRoundTrip(t *testing.T) {
 		{"[2001:db8::53]:1053", "2001:db8::53", 1053},
 	} {
 		t.Run(tc.target, func(t *testing.T) {
-			conf := parseConfig(t, fmt.Sprintf("global {} rules { dport(53) -> dnat('%s') } routing { fallback: direct }", tc.target))
+			conf := parseConfig(t, fmt.Sprintf("global {} routing { rules { dport(53) -> dnat('%s') } fallback: direct }", tc.target))
 			wire, err := conf.Marshal(2)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, c := range []*Config{conf, parseConfig(t, string(wire))} {
-				rules, err := c.Rules.Destinations()
+				rules, err := inlineFlowRules(t, c).Destinations()
 				if err != nil || len(rules) != 1 || len(rules[0].To) != 1 || rules[0].To[0].String() != tc.ip || rules[0].Port != tc.port {
 					t.Fatalf("DNAT target: %+v %v", rules, err)
 				}
@@ -55,4 +55,16 @@ func TestRoutingControlsRequireRulesSection(t *testing.T) {
 			})
 		}
 	}
+}
+
+func inlineFlowRules(t *testing.T, c *Config) Rules {
+	t.Helper()
+	var rules Rules
+	for _, statement := range c.Routing.Policies[0].Rules {
+		if statement.Kind != RoutingStatementRule {
+			t.Fatal("expected inline flow rule")
+		}
+		rules.Rules = append(rules.Rules, statement.Rule)
+	}
+	return rules
 }

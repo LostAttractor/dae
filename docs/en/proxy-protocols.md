@@ -113,10 +113,10 @@ Although dae and other proxy programs support the HTTPS protocol, using them doe
 3. If you have bound the WAN interface, meaning you have filled in the `global.wan_interface` field, add the following control in `rules` and put the `direct` rule near the top of `routing` to prevent traffic from flowing back to dae after passing through naiveproxy, causing a loop:
 
    ```shell
-   rules {
-       pname(naiveproxy) -> must
-   }
    routing {
+       rules {
+           pname(naiveproxy) -> must
+       }
        pname(naiveproxy) -> direct
        # Other routes and fallback ...
    }

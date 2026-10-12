@@ -40,16 +40,22 @@ func parseRouting(to *Routing, section *config_parser.Section) error {
 					if !ok {
 						return fmt.Errorf("%s only accepts named sections", child.Name)
 					}
-					statements, fallback, err := parseRoutingBlock(block, child.Name == "policy")
-					if err != nil {
-						return fmt.Errorf("%s %q: %w", child.Name, block.Name, err)
-					}
 					if child.Name == "rule_set" {
+						statements, _, err := parseRoutingBlock(block, false)
+						if err != nil {
+							return fmt.Errorf("rule_set %q: %w", block.Name, err)
+						}
 						to.RuleSets = append(to.RuleSets, RoutingRuleSet{Name: block.Name, Statements: statements})
 					} else {
-						to.Policies = append(to.Policies, RoutingPolicy{Name: block.Name, Statements: statements, Fallback: fallback})
+						policy, err := parseRoutingPolicy(block)
+						if err != nil {
+							return fmt.Errorf("policy %q: %w", block.Name, err)
+						}
+						to.Policies = append(to.Policies, policy)
 					}
 				}
+			case "rules":
+				inline.Items = append(inline.Items, item)
 			case "interface":
 				for _, binding := range child.Items {
 					param, ok := binding.Value.(*config_parser.Param)
@@ -83,14 +89,38 @@ func parseRouting(to *Routing, section *config_parser.Section) error {
 			return fmt.Errorf("routing default cannot be combined with inline rules, use or fallback")
 		}
 	} else {
-		statements, fallback, err := parseRoutingBlock(&inline, true)
+		policy, err := parseRoutingPolicy(&inline)
 		if err != nil {
 			return fmt.Errorf("routing inline policy: %w", err)
 		}
 		// Normalize both forms to policies; the anonymous default is first.
-		to.Policies = append([]RoutingPolicy{{Statements: statements, Fallback: fallback}}, to.Policies...)
+		to.Policies = append([]RoutingPolicy{policy}, to.Policies...)
 	}
 	return to.Validate()
+}
+
+func parseRoutingPolicy(section *config_parser.Section) (RoutingPolicy, error) {
+	policy := RoutingPolicy{Name: section.Name}
+	var body config_parser.Section
+	seenRules := false
+	for _, item := range section.Items {
+		if child, ok := item.Value.(*config_parser.Section); ok && child.Name == "rules" {
+			if seenRules {
+				return RoutingPolicy{}, fmt.Errorf("duplicate policy rules section")
+			}
+			seenRules = true
+			var err error
+			policy.Rules, _, err = parseRoutingBlock(child, false)
+			if err != nil {
+				return RoutingPolicy{}, fmt.Errorf("rules: %w", err)
+			}
+		} else {
+			body.Items = append(body.Items, item)
+		}
+	}
+	var err error
+	policy.Statements, policy.Fallback, err = parseRoutingBlock(&body, true)
+	return policy, err
 }
 
 func routingReference(param *config_parser.Param) (string, error) {
@@ -276,6 +306,9 @@ func (routing *Routing) Validate() error {
 		if err := validateBlock(policy.Name, policy.Statements); err != nil {
 			return err
 		}
+		if err := validateBlock(policy.Name+".rules", policy.Rules); err != nil {
+			return err
+		}
 	}
 	if _, exists := policies[routing.Default]; !exists {
 		return fmt.Errorf("routing default selects undefined policy %q", routing.Default)
@@ -346,6 +379,10 @@ func (routing *Routing) Validate() error {
 		if _, err := resolve(policy.Name, policy.Statements); err != nil {
 			return err
 		}
+		if _, err := resolve(policy.Name+".rules", policy.Rules); err != nil {
+			return err
+		}
 	}
-	return nil
+	_, err := routing.RuleSetKinds()
+	return err
 }

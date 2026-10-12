@@ -62,6 +62,7 @@ dip(198.51.100.4,198.51.100.40) && sip(192.0.2.10) && sport(5000) && pname(app) 
 domain(full: original.example) -> block`)
 			matcher, _ := routingMatcherForTest(t, prepared)
 			matcher.profiles[42] = matcher.profiles[matcher.defaultProfileID]
+			matcher.destinations[42] = matcher.destinations[matcher.defaultProfileID]
 			plane := &ControlPlane{core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}, routingMatcher: matcher, outbounds: groups, sniffVerifyMode: consts.SniffVerifyMode_None}
 			attachDownloadTestDNS(t, plane, "test", "accept", func(message *dnsmessage.Msg) {
 				message.Response = true

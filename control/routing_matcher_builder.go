@@ -23,8 +23,6 @@ type RoutingMatcherBuilder struct {
 	*routingState
 	outboundName2Id      map[string]uint8
 	ifmgr                *network.InterfaceManager
-	destination          DestinationProgram
-	flow                 FlowProgram
 	domainSetIDs         map[string]uint32
 	staticLpmIDs         map[string]int
 	simulatedDomainSet   []routing.DomainSet
@@ -89,7 +87,7 @@ func (b *RoutingMatcherBuilder) validate() error {
 // when the group is unavailable. Skip-only and unreferenced groups are not.
 func (b *RoutingMatcherBuilder) criticalOutbounds(outboundCount int) []bool {
 	critical := make([]bool, outboundCount)
-	for _, rule := range b.rules[b.routing.start:b.routing.end] {
+	for _, rule := range b.rules[:b.routing.end] {
 		if rule.Action != uint8(consts.MatchActionRoute) {
 			continue
 		}

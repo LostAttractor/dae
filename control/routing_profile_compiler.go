@@ -22,6 +22,9 @@ type resolvedRoutingBlock struct {
 }
 
 func (b *resolvedRoutingBlock) appendSpan(span routingSpan) error {
+	if span.len() == 0 {
+		return nil
+	}
 	length := span.len()
 	if spanExecutionLen(b.spans) > consts.MaxMatchSetLen-length {
 		return fmt.Errorf("executes too many match sets: more than %d", consts.MaxMatchSetLen)
@@ -46,40 +49,44 @@ type routingRuleSetKey struct {
 }
 
 type routingCompiler struct {
-	validationOutbounds map[string]uint8
-	builder             *RoutingMatcherBuilder
-	sets                map[string]config.RoutingRuleSet
-	resolved            map[routingRuleSetKey]resolvedRoutingBlock
-	preamble            routingSpan
-	epilogue            routingSpan
+	validationOutbounds  map[string]uint8
+	builder              *RoutingMatcherBuilder
+	sets                 map[string]config.RoutingRuleSet
+	setKinds             map[string]config.RoutingRuleSetKind
+	resolved             map[routingRuleSetKey]resolvedRoutingBlock
+	flows                map[routingRuleSetKey]resolvedFlowBlock
+	shared               sharedRoutingPrograms
+	destinationFragments []*destinationFragment
+	profileDestinations  map[uint32][]*destinationFragment
+	flowEnd              routingSpan
 }
 
 // compileRouting consumes prepared rules only: external data and optimizer
 // passes finish before construction, and BPF writes remain deferred to activation.
 func (p *preparedRules) compileRouting(outbounds map[string]uint8, bpf *BPFState, ifmgr *network.InterfaceManager) (*RoutingMatcherBuilder, error) {
 	builder := newRoutingMatcherBuilder(outbounds, bpf, ifmgr)
-	preamble, err := builder.addControlPlaneFragment(p)
-	if err != nil {
-		return nil, err
-	}
 	sets := make(map[string]config.RoutingRuleSet, len(p.routing.RuleSets))
 	for _, set := range p.routing.RuleSets {
 		sets[set.Name] = set
 	}
-	compiler := routingCompiler{builder: builder, sets: sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock), preamble: preamble, validationOutbounds: p.validationOutbounds}
-	compiler.epilogue, err = compiler.compileRuleBatch(p.lateRoutes, "plugin_late")
+	kinds, err := p.routing.RuleSetKinds()
 	if err != nil {
+		return nil, err
+	}
+	compiler := routingCompiler{
+		builder: builder, sets: sets, setKinds: kinds,
+		resolved:            make(map[routingRuleSetKey]resolvedRoutingBlock),
+		flows:               make(map[routingRuleSetKey]resolvedFlowBlock),
+		profileDestinations: make(map[uint32][]*destinationFragment),
+		validationOutbounds: p.validationOutbounds,
+	}
+	if err := compiler.compileShared(p); err != nil {
 		return nil, err
 	}
 	if err := compiler.compile(p.routing); err != nil {
 		return nil, err
 	}
-	builder.routing.end = len(builder.rules)
-	builder.kernelLpmLen = len(builder.simulatedLpmTries)
-	if err := builder.addDestinationPredicates(p.destinations); err != nil {
-		return nil, err
-	}
-	if err := builder.validate(); err != nil {
+	if err := compiler.finish(); err != nil {
 		return nil, err
 	}
 	return builder, nil
@@ -117,7 +124,7 @@ func (c *routingCompiler) compile(routingConfig *config.Routing) error {
 		if err := validator.addProfile(0, nil, policy); err != nil {
 			return err
 		}
-		if err := validator.builder.validate(); err != nil {
+		if err := validator.finish(); err != nil {
 			return err
 		}
 		if _, err := validator.builder.BuildUserspace(); err != nil {
@@ -129,19 +136,47 @@ func (c *routingCompiler) compile(routingConfig *config.Routing) error {
 }
 
 func (c *routingCompiler) addProfile(id uint32, interfaceNames []string, policy config.RoutingPolicy) error {
+	flow, err := c.resolveFlowStatements(policy.Name, policy.Rules, nil)
+	if err != nil {
+		return fmt.Errorf("routing policy %q rules: %w", policy.Name, err)
+	}
 	body, err := c.resolveStatements(policy.Name, policy.Statements, nil)
 	if err != nil {
 		return err
 	}
-	block := resolvedRoutingBlock{}
-	if err := block.appendSpan(c.preamble); err != nil {
-		return err
+	var block resolvedRoutingBlock
+	appendBlock := func(next resolvedRoutingBlock) error {
+		if err := block.appendBlock(next); err != nil {
+			return fmt.Errorf("routing policy %q: %w", policy.Name, err)
+		}
+		return nil
 	}
-	if err := block.appendBlock(body); err != nil {
-		return fmt.Errorf("routing policy %q: %w", policy.Name, err)
+	for _, next := range []resolvedRoutingBlock{
+		{spans: []routingSpan{c.shared.bypass}},
+		flow.capture,
+		c.shared.destinations.capture,
+		{spans: []routingSpan{c.shared.request}},
+		flow.controls,
+		{spans: []routingSpan{c.shared.http}},
+	} {
+		if err := appendBlock(next); err != nil {
+			return err
+		}
 	}
-	if err := block.appendSpan(c.epilogue); err != nil {
-		return fmt.Errorf("routing policy %q: %w", policy.Name, err)
+	if len(flow.controls.spans) != 0 || c.shared.http.len() != 0 {
+		if c.flowEnd.len() == 0 {
+			start := uint32(len(c.builder.rules))
+			c.builder.rules = append(c.builder.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionFlowEnd)})
+			c.flowEnd = routingSpan{Start: start, End: start + 1, Phase: routingPhaseFlow}
+		}
+		if err := block.appendSpan(c.flowEnd); err != nil {
+			return err
+		}
+	}
+	for _, next := range []resolvedRoutingBlock{{spans: []routingSpan{c.shared.early}}, body, {spans: []routingSpan{c.shared.late}}} {
+		if err := appendBlock(next); err != nil {
+			return err
+		}
 	}
 	fallback, err := c.builder.parseFallback(policy.Fallback)
 	if err != nil {
@@ -154,24 +189,22 @@ func (c *routingCompiler) addProfile(id uint32, interfaceNames []string, policy 
 	if err := block.appendSpan(fallbackSpan); err != nil {
 		return fmt.Errorf("routing policy %q: %w", policy.Name, err)
 	}
-	c.builder.profiles = append(c.builder.profiles, routingProfile{
-		ID:             id,
-		Name:           policy.Name,
-		InterfaceNames: slices.Clone(interfaceNames),
-		Spans:          block.spans,
-	})
+	c.builder.profiles = append(c.builder.profiles, routingProfile{ID: id, Name: policy.Name, InterfaceNames: slices.Clone(interfaceNames), Spans: block.spans})
+	c.profileDestinations[id] = slices.Concat(flow.destinations, c.shared.destinations.destinations)
 	return nil
 }
 
-func (c *routingCompiler) resolveSet(name string, condition []*config_parser.Function) (resolvedRoutingBlock, error) {
-	// Quote values in the key so regexes and other literals cannot collide with
-	// function/parameter separators. Prepared predicates are immutable.
+func routingSetKey(name string, condition []*config_parser.Function) routingRuleSetKey {
 	var signature strings.Builder
 	for _, f := range condition {
 		signature.WriteString(f.String(true, true, false))
 		signature.WriteString("&&")
 	}
-	key := routingRuleSetKey{name: name, condition: signature.String()}
+	return routingRuleSetKey{name: name, condition: signature.String()}
+}
+
+func (c *routingCompiler) resolveSet(name string, condition []*config_parser.Function) (resolvedRoutingBlock, error) {
+	key := routingSetKey(name, condition)
 	if block, ok := c.resolved[key]; ok {
 		return block, nil
 	}
@@ -190,7 +223,7 @@ func (c *routingCompiler) resolveSet(name string, condition []*config_parser.Fun
 	}
 	// Empty fragments consume no instructions, but conditional DAGs can still
 	// create exponentially many distinct specializations. Bound those too.
-	if len(c.resolved) >= consts.MaxMatchSetLen {
+	if len(c.resolved)+len(c.flows) >= consts.MaxMatchSetLen {
 		return resolvedRoutingBlock{}, fmt.Errorf("too many routing rule_set condition variants: limit %d", consts.MaxMatchSetLen)
 	}
 	c.resolved[key] = block
@@ -281,15 +314,24 @@ func (c *routingCompiler) validateUnusedRuleSets(ruleSets []config.RoutingRuleSe
 	for key := range c.resolved {
 		reachable[key.name] = true
 	}
+	for key := range c.flows {
+		reachable[key.name] = true
+	}
 	for _, set := range ruleSets {
 		if reachable[set.Name] {
 			continue
 		}
 		validator := c.newValidator()
-		if _, err := validator.resolveSet(set.Name, nil); err != nil {
+		var err error
+		if c.setKinds[set.Name] == config.RoutingRuleSetFlow {
+			_, err = validator.resolveFlowSet(set.Name, nil)
+		} else {
+			_, err = validator.resolveSet(set.Name, nil)
+		}
+		if err != nil {
 			return err
 		}
-		if err := validator.builder.validate(); err != nil {
+		if err := validator.finish(); err != nil {
 			return err
 		}
 		if _, err := validator.builder.BuildUserspace(); err != nil {
@@ -307,7 +349,8 @@ func (c *routingCompiler) newValidator() *routingCompiler {
 	}
 	return &routingCompiler{
 		builder: newRoutingMatcherBuilder(outbounds, nil, c.builder.ifmgr),
-		sets:    c.sets, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock),
+		sets:    c.sets, setKinds: c.setKinds, resolved: make(map[routingRuleSetKey]resolvedRoutingBlock),
+		flows: make(map[routingRuleSetKey]resolvedFlowBlock), profileDestinations: make(map[uint32][]*destinationFragment),
 	}
 }
 
@@ -318,10 +361,14 @@ func prepareRoutingConfig(source *config.Routing, reader *routing.DatReaderOptim
 	if err := source.Validate(); err != nil {
 		return nil, err
 	}
+	kinds, err := source.RuleSetKinds()
+	if err != nil {
+		return nil, err
+	}
 	result := *source
 	result.RuleSets = slices.Clone(source.RuleSets)
 	result.Policies = slices.Clone(source.Policies)
-	prepare := func(name string, statements []config.RoutingStatement) ([]config.RoutingStatement, error) {
+	prepare := func(name string, statements []config.RoutingStatement, flow bool) ([]config.RoutingStatement, error) {
 		var result []config.RoutingStatement
 		for i := 0; i < len(statements); {
 			if statements[i].Kind != config.RoutingStatementRule {
@@ -343,8 +390,12 @@ func prepareRoutingConfig(source *config.Routing, reader *routing.DatReaderOptim
 				rules = append(rules, statements[i].Rule)
 				i++
 			}
-			optimized, err := routing.ApplyRulesOptimizers(rules, &routing.AliasOptimizer{}, reader,
-				&routing.MergeAndSortRulesOptimizer{}, &routing.DeduplicateParamsOptimizer{})
+			optimizers := []routing.RulesOptimizer{&routing.AliasOptimizer{}, reader}
+			if !flow {
+				optimizers = append(optimizers, &routing.MergeAndSortRulesOptimizer{})
+			}
+			optimizers = append(optimizers, &routing.DeduplicateParamsOptimizer{})
+			optimized, err := routing.ApplyRulesOptimizers(rules, optimizers...)
 			if err != nil {
 				return nil, fmt.Errorf("prepare routing block %q: %w", name, err)
 			}
@@ -354,16 +405,18 @@ func prepareRoutingConfig(source *config.Routing, reader *routing.DatReaderOptim
 		}
 		return result, nil
 	}
-	var err error
 	for i := range result.RuleSets {
 		set := &result.RuleSets[i]
-		if set.Statements, err = prepare(set.Name, set.Statements); err != nil {
+		if set.Statements, err = prepare(set.Name, set.Statements, kinds[set.Name] == config.RoutingRuleSetFlow); err != nil {
 			return nil, err
 		}
 	}
 	for i := range result.Policies {
 		policy := &result.Policies[i]
-		if policy.Statements, err = prepare(policy.Name, policy.Statements); err != nil {
+		if policy.Rules, err = prepare(policy.Name+".rules", policy.Rules, true); err != nil {
+			return nil, err
+		}
+		if policy.Statements, err = prepare(policy.Name, policy.Statements, false); err != nil {
 			return nil, err
 		}
 	}

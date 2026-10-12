@@ -231,10 +231,10 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 	selectedID := ""
 	occurrence := 0
 	for spanIndex, span := range spans {
-		start := span.Start
-		if input.stage == routeAfterTarget {
-			start = max(start, uint32(m.flow.start))
+		if input.stage == routeAfterTarget && span.Phase == routingPhaseIngress {
+			continue
 		}
+		start := span.Start
 		for start < span.End {
 			if err := ctx.Err(); err != nil {
 				return result, nil, nil, "", err

@@ -3,7 +3,6 @@
 package control
 
 import (
-	"context"
 	"net"
 	"net/netip"
 	"testing"
@@ -15,7 +14,7 @@ import (
 
 func prepareFlowRulesForTest(t testing.TB, controls, routes string) preparedRules {
 	t.Helper()
-	sections, err := config_parser.Parse("global {}\nrules {\n" + controls + "\n}\nrouting {\n" + routes + "\nfallback: direct\n}")
+	sections, err := config_parser.Parse("global {}\nrouting {\nrules {\n" + controls + "\n}\n" + routes + "\nfallback: direct\n}")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,11 +22,8 @@ func prepareFlowRulesForTest(t testing.TB, controls, routes string) preparedRule
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := prepareRoutingRules(context.Background(), &c.Routing, nil)
+	p, err := prepareRoutingRules(t.Context(), &c.Routing, nil)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := p.enableFlowRules(context.Background(), c.Rules, nil); err != nil {
 		t.Fatal(err)
 	}
 	return p

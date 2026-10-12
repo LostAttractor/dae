@@ -67,7 +67,7 @@ type routingInput struct {
 	// Tests can model the kernel's uncertain domain matches explicitly.
 	domainBumpBitmap []uint32
 	kernel           bool
-	// The destination has already been selected. Start at FlowProgram, keeping
+	// The destination has already been selected. Skip ingress spans, keeping
 	// API bypass and destination capture tied to the original ingress tuple.
 	stage routingStage
 	trace *routingExecution

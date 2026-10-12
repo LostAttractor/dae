@@ -1,38 +1,18 @@
 package control
 
 import (
-	"context"
 	"net/netip"
 	"testing"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/config"
-	"github.com/daeuniverse/dae/pkg/config_parser"
 	"slices"
 )
 
 func destinationTestMatcher(t *testing.T, text string) (*RoutingMatcher, *RoutingMatcherBuilder) {
 	t.Helper()
-	sections, err := config_parser.Parse("rules {\n" + text + "\n}")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rules config.Rules
-	for _, s := range sections {
-		for _, i := range s.Items {
-			rules.Rules = append(rules.Rules, i.Value.(*config_parser.RoutingRule))
-		}
-	}
-	r, err := rules.Destinations()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err = prepareDestinationRules(context.Background(), r, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := compileTestRouting(preparedRules{routing: testRoutingConfig(nil, "direct"), destinations: r}, map[string]uint8{"direct": 0, "block": 1}, nil, nil)
+	prepared := prepareFlowRulesForTest(t, text, "")
+	b, err := compileTestRouting(prepared, map[string]uint8{"direct": 0, "block": 1}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +114,7 @@ func TestDestinationDynamicClientAndCandidate(t *testing.T) {
 func TestDestinationFirstMatchAndTargetSelection(t *testing.T) {
 	m, _ := destinationTestMatcher(t, "dip(192.0.2.1) -> dnat(198.51.100.1)\ndip(192.0.2.1) -> dnat(203.0.113.1)\ndip(198.51.100.1) -> dnat(203.0.113.2)")
 	targets := []netip.Addr{netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("2001:db8::1")}
-	m.destination.predicates[0].targets = targets
+	m.destinationProgram(m.defaultProfileID).predicates[0].targets = targets
 	p := &RouteParam{Src: netip.MustParseAddrPort("192.0.2.8:12345"), Dest: netip.MustParseAddrPort("[::ffff:192.0.2.1]:8443"), routingResult: &routingResult{}, networkType: *common.NetworkTCP4.NetworkType()}
 	d, err := m.matchDestination(p)
 	if err != nil || !d.IsValid() || d.Port() != 8443 || !slices.Contains(targets, d.Addr()) {
@@ -144,7 +124,7 @@ func TestDestinationFirstMatchAndTargetSelection(t *testing.T) {
 	if p.effectiveDestination() != d {
 		t.Fatal("routing must use the rewritten target")
 	}
-	m.destination.predicates[0].targets = targets[:1]
+	m.destinationProgram(m.defaultProfileID).predicates[0].targets = targets[:1]
 	d, err = m.matchDestination(p)
 	if err != nil || d.Addr() != targets[0] {
 		t.Fatalf("recursive rewrite: %+v %v", d, err)

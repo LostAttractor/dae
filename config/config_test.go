@@ -743,7 +743,7 @@ func TestNewRoutingValidation(t *testing.T) {
 func TestRoutingRejectsControlsInPoliciesAndFragments(t *testing.T) {
 	for _, action := range []string{"must_rules", "must_direct", "must_proxy", "direct(must)", "bump"} {
 		for _, body := range []string{
-			"rule_set { base { dport(53) -> " + action + " } } fallback: direct",
+			"rule_set { base { dport(53) -> " + action + " } } use: base\nfallback: direct",
 			"policy { main {dport(53) -> " + action + "\nfallback:direct} } default:main",
 			"policy { main {fallback:" + action + "} } default:main",
 		} {

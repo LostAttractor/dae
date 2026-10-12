@@ -62,6 +62,13 @@ func (m *Marshaller) marshalRouting(routing Routing, depth int) error {
 }
 
 func (m *Marshaller) marshalRoutingPolicy(policy RoutingPolicy, depth int) error {
+	if len(policy.Rules) != 0 {
+		m.writeLine(depth, "rules {")
+		if err := m.marshalRoutingStatements(policy.Rules, depth+1); err != nil {
+			return err
+		}
+		m.writeLine(depth, "}")
+	}
 	if err := m.marshalRoutingStatements(policy.Statements, depth); err != nil {
 		return err
 	}

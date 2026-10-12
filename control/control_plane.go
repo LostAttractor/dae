@@ -286,10 +286,12 @@ func NewControlPlane(
 		soMarkFromDae:             global.SoMarkFromDae,
 		mptcp:                     global.Mptcp,
 	}
-	for _, predicate := range builder.destination.predicates {
-		if predicate.domain && plane.sniffingTimeout <= 0 {
-			plane.sniffingTimeout = time.Second
-			break
+	for _, profile := range builder.profiles {
+		for _, predicate := range profile.Destination.predicates {
+			if predicate.domain && plane.sniffingTimeout <= 0 {
+				plane.sniffingTimeout = time.Second
+				break
+			}
 		}
 	}
 	// Retire DNS work before closing its outbound resources and checks.

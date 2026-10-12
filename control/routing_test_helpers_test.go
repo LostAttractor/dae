@@ -62,3 +62,18 @@ func planRulesForTest(t *testing.T, text string) []*config_parser.RoutingRule {
 	}
 	return rules
 }
+
+// Plugins declare already prepared destination plans, independently of policy rules.
+func destinationRulesForTest(t testing.TB, text string) routing.DestinationRewrites {
+	t.Helper()
+	prepared := prepareFlowRulesForTest(t, text, "")
+	var rules config.Rules
+	for _, statement := range prepared.routing.Policies[0].Rules {
+		rules.Rules = append(rules.Rules, statement.Rule)
+	}
+	plan, err := rules.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan.Destinations
+}

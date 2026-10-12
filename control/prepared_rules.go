@@ -14,11 +14,8 @@ import (
 // does not require a BPF generation or any running business instance.
 type PreparedRules struct{ rules preparedRules }
 
-func PrepareRules(ctx context.Context, routing *config.Routing, rules config.Rules, dirs []string) (*PreparedRules, error) {
+func PrepareRules(ctx context.Context, routing *config.Routing, dirs []string) (*PreparedRules, error) {
 	prepared, err := prepareRoutingRules(ctx, routing, dirs)
-	if err == nil {
-		err = prepared.enableFlowRules(ctx, rules, dirs)
-	}
 	if err != nil {
 		return nil, err
 	}

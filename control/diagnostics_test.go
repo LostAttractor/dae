@@ -99,6 +99,7 @@ func TestDiagnosticsClientReferencesPreserveRulesAndPolicies(t *testing.T) {
 	prepared := prepareFlowRulesForTest(t, `client(work) && dport(53) -> dnat('127.0.0.54:53')
 client(work) && dport(443) -> must
 !client(work) && dport(80) -> bump`, "")
+	controls := prepared.routing.Policies[0].Rules
 	prepared.routing = &parseStructuredTestConfig(t, `rule_set {
   shared { client(work) -> direct }
 }
@@ -114,6 +115,7 @@ policy {
 }
 default: main
 interface { diag_tor: tor }`).Routing
+	prepared.routing.Policies[0].Rules = controls
 	c := diagnosticPreparedPlane(t, prepared)
 	before := slices.Clone(c.routingMatcher.matches)
 	impact, err := c.ClientImpact(t.Context(), "work", api.ClientImpactRequest{Context: diagnosticRequest().Context, Joined: new(true)}, false)
@@ -121,7 +123,7 @@ interface { diag_tor: tor }`).Routing
 		t.Fatal(err)
 	}
 	if len(impact.Rules) != 6 || impact.Trace != nil {
-		t.Fatalf("expected three shared rules and three policy occurrences: %+v", impact)
+		t.Fatalf("expected three main flow rules and three routing occurrences: %+v", impact)
 	}
 	ids := make(map[string]bool)
 	counts := make(map[string]int)
@@ -137,8 +139,8 @@ interface { diag_tor: tor }`).Routing
 			t.Fatalf("source or membership evidence lost: %+v", step)
 		}
 		if step.Section == "rules" {
-			if step.Policy != "" || step.Parent != "" {
-				t.Fatalf("shared rule attributed to one policy: %+v", step)
+			if step.Policy != "main" || step.Parent != "main" {
+				t.Fatalf("flow rule missing its policy: %+v", step)
 			}
 			counts["rules"]++
 			if step.Action == "capture" && step.Expression != `client("work") && dport("53") -> dnat("127.0.0.54:53")` {

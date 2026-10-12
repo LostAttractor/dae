@@ -24,7 +24,6 @@ import (
 type routingCapture struct {
 	http           []plugin.Scope
 	requestRouting []plugin.Scope
-	controls       []routing.FlowRule
 }
 
 // Group positive hosts by their port set, preserving each host/port pairing.
@@ -98,98 +97,23 @@ func mitmCapturePredicates(scopes []plugin.Scope) [][]*config_parser.Function {
 	return predicates
 }
 
-// Compile generated capture and flow controls once, before every policy body.
-func (b *RoutingMatcherBuilder) addControlPlaneFragment(p *preparedRules) (routingSpan, error) {
-	start := uint32(len(b.rules))
-	if err := b.applyRules(p.bypass, "api_bypass"); err != nil {
-		return routingSpan{}, err
-	}
-	for i := int(start); i < len(b.rules); i++ {
-		if b.rules[i].Action == uint8(consts.MatchActionRoute) {
-			b.rules[i].Flags |= matchFlagBypass
-		}
-	}
-	applyEffect := func(rule *config_parser.RoutingRule, action consts.MatchAction, flags uint8, section string) error {
-		start := uint32(len(b.rules))
-		if err := b.rulesBuilder.ApplyPredicate(rule.AndFunctions, &routing.Outbound{Name: "direct"}); err != nil {
-			return err
-		}
-		tail := &b.rules[len(b.rules)-1]
-		tail.Action = uint8(action)
-		tail.Flags |= flags << matchCaptureShift
-		b.rememberRule(start, rule, "flow_control", section)
-		return nil
-	}
-	b.destination.start = len(b.rules)
-	for _, rule := range p.destinations {
-		// Capture retains the complete predicate, including DNS-backed domains.
-		section := ""
-		if len(rule.Sources) != 0 {
-			section = "rules"
-		}
-		if err := applyEffect(destinationDiagnosticRule(rule), consts.MatchActionCapture, captureDestination, section); err != nil {
-			return routingSpan{}, fmt.Errorf("destination capture: %w", err)
-		}
-	}
-	if p.capture != nil {
-		for _, predicate := range mitmCapturePredicates(p.capture.requestRouting) {
-			rule := &config_parser.RoutingRule{AndFunctions: predicate, Outbound: config_parser.Function{Name: "capture", Params: []*config_parser.Param{{Val: "http_request"}}}}
-			if err := applyEffect(rule, consts.MatchActionCapture, captureHTTP|captureHTTPRequest, ""); err != nil {
-				return routingSpan{}, fmt.Errorf("HTTP request routing capture: %w", err)
-			}
-		}
-	}
-	b.destination.end = len(b.rules)
-	b.flow.start = b.destination.end
-	if p.capture != nil {
-		for _, rule := range p.capture.controls {
-			if rule.Action != consts.MatchActionMust && rule.Action != consts.MatchActionBump {
-				return routingSpan{}, fmt.Errorf("invalid flow action %d", rule.Action)
-			}
-			metadata := &config_parser.RoutingRule{AndFunctions: rule.Filter, Outbound: config_parser.Function{Name: diagnosticAction(uint8(rule.Action))}, Sources: rule.Sources}
-			if err := applyEffect(metadata, rule.Action, 0, "rules"); err != nil {
-				return routingSpan{}, fmt.Errorf("flow control: %w", err)
-			}
-		}
-		for _, predicate := range mitmCapturePredicates(p.capture.http) {
-			rule := &config_parser.RoutingRule{AndFunctions: predicate, Outbound: config_parser.Function{Name: "capture", Params: []*config_parser.Param{{Val: "http"}}}}
-			if err := applyEffect(rule, consts.MatchActionCapture, captureHTTP, ""); err != nil {
-				return routingSpan{}, fmt.Errorf("HTTP capture: %w", err)
-			}
-		}
-	}
-	if len(b.rules) != b.flow.start {
-		b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionFlowEnd)})
-	}
-	b.flow.end = len(b.rules)
-	b.routing.start = b.flow.end
-
-	if err := b.applyRules(p.earlyRoutes, "plugin_early"); err != nil {
-		return routingSpan{}, err
-	}
-	return routingSpan{Start: start, End: uint32(len(b.rules))}, nil
-}
-
-func (b *RoutingMatcherBuilder) addDestinationPredicates(destinations routing.DestinationRewrites) error {
+func (b *RoutingMatcherBuilder) addDestinationPredicates(destinations routing.DestinationRewrites, owner, section string) ([]destinationPredicate, error) {
+	var predicates []destinationPredicate
 	for _, rule := range destinations {
 		entry := destinationPredicate{span: routingSpan{Start: uint32(len(b.rules))}, targets: rule.To, port: rule.Port}
 		for _, f := range rule.Filter {
 			entry.domain = entry.domain || f.Name == consts.Function_Domain
 		}
 		if err := b.rulesBuilder.ApplyPredicate(rule.Filter, &routing.Outbound{Name: "direct"}); err != nil {
-			return fmt.Errorf("destination predicate: %w", err)
+			return nil, fmt.Errorf("destination predicate: %w", err)
 		}
-		section := ""
-		if len(rule.Sources) != 0 {
-			section = "rules"
-		}
-		b.rememberRule(entry.span.Start, destinationDiagnosticRule(rule), "destination", section)
+		b.rememberRule(entry.span.Start, destinationDiagnosticRule(rule), owner, section)
 		b.rules[len(b.rules)-1].Action = uint8(consts.MatchActionMatch)
 		b.rules = append(b.rules, bpfMatchSet{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionMiss)})
 		entry.span.End = uint32(len(b.rules))
-		b.destination.predicates = append(b.destination.predicates, entry)
+		predicates = append(predicates, entry)
 	}
-	return nil
+	return predicates, nil
 }
 
 // Keep the DNAT action and target in diagnostics for both the generated kernel

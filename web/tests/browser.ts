@@ -1015,13 +1015,13 @@ try {
   await test("routing reference labels stay visible and expanding rules preserves text alignment", async () => {
     const reference = { stage: "client_impact", status: "referenced", match: "unknown", reason: "client_reference" };
     fixture.impactRules = [
-      { ...reference, id: "shared/0", section: "rules", expression: 'client("work") && dport("53") -> dnat("127.0.0.54:53")' },
+      { ...reference, id: "main/rules/0", section: "rules", policy: "main", parent: "main", expression: 'client("work") && dport("53") -> dnat("127.0.0.54:53")' },
       { ...reference, id: "main/0", section: "routing", policy: "main", parent: "main", expression: 'client("work") -> direct', conditions: [{ expression: 'client("work")', actual: "false", expected: "true", match: "match", status: "supplementary", reason: "membership_change" }] },
       { ...reference, id: "tor/0", section: "routing", policy: "tor", parent: "tor", expression: `client("work") && domain(${Array.from({ length: 24 }, (_, i) => `"service-${i}.example.com"`).join(", ")}) -> proxy` },
     ];
     await setDisclosure('.set-row[data-name="internal/work"] .set-details', true);
     await until('document.querySelectorAll(".impact-content .trace-step").length === 3');
-    assert.deepEqual(await js('[...document.querySelectorAll(".trace-step-badges")].map(group => [...group.querySelectorAll(".astryx-badge")].map(badge => badge.textContent))'), [["Referenced", "Rules"], ["Referenced", "Policy: main"], ["Referenced", "Policy: tor"]]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".trace-step-badges")].map(group => [...group.querySelectorAll(".astryx-badge")].map(badge => badge.textContent))'), [["Referenced", "Rules", "Policy: main"], ["Referenced", "Policy: main"], ["Referenced", "Policy: tor"]]);
     assert.equal(await js('document.querySelector(".impact-content").textContent.includes("Uncertain")'), false);
     const shortRule = '.impact-content .trace-step:nth-child(2)';
     const longRule = '.impact-content .trace-step:nth-child(3)';

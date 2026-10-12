@@ -163,7 +163,7 @@ routing {
 - 接口名必须精确且不能重复绑定。通过 `global.lan_interface` / `global.wan_interface` 配置流量接管，接口路由绑定不会自动接管设备。
 - 单一默认策略也可直接在 `routing` 中写规则、use 和 fallback，并与片段及命名策略声明共存；此时省略 `default: 策略名`。
 
-MITM 插件、原生 DNAT 和 Surge Host 所需的内部捕获片段由所有策略自动共享，无需重复写 `control_plane_routing` 或添加 `use`。`rules { ... -> dnat(ip) }` 和 `mitm { ... }` 仍是顶层配置。
+手写 DNAT、must、bump 位于所属 policy 的 `rules {}`，通过 `rules { use: name }` 显式复用流量片段。声明或共享编译片段不会让其他策略执行它。MITM、Surge Host 和插件路由仍按全局作用域生效；`plugins { ... }` 与 HTTP/TLS 设置 `mitm { ... }` 保持顶层定义。
 
 规则与模块优先级见[路由配置](routing.md)。替换示例节点、订阅地址和接口名后启动：
 

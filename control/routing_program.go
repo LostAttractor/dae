@@ -12,23 +12,15 @@ type destinationPredicate struct {
 	port    uint16
 }
 
-// DestinationProgram prepares targets before FlowProgram. Its kernel range
-// captures DNAT/Host and deferred HTTP candidates before old-target routing.
-// Its userspace predicates select the first exact IP target; HTTP middleware
-// determines request targets separately. Later programs see the effective target.
+// DestinationProgram belongs to one policy. Its userspace predicates select
+// the first exact IP target, with policy rules before shared plugin rules.
+// The policy's ingress spans capture candidates before old-target routing.
 type DestinationProgram struct {
-	start, end int
 	predicates []destinationPredicate
 }
 
-// FlowProgram accumulates controls after destination matching and before
-// ordinary routing. end includes FlowEnd, which resolves the controls.
-type FlowProgram struct {
-	start, end int
-}
-
-// RoutingProgram selects outbound and mark using the effective destination and
-// the original source, interface, process and policy identity.
+// RoutingProgram bounds the physical kernel instruction pool. Policy spans
+// determine execution order and phases; userspace destination predicates follow.
 type RoutingProgram struct {
-	start, end int
+	end int
 }

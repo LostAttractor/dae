@@ -194,6 +194,7 @@ type RoutingRuleSet struct {
 
 type RoutingPolicy struct {
 	Name       string
+	Rules      []RoutingStatement
 	Statements []RoutingStatement
 	Fallback   *config_parser.Function
 }
@@ -212,7 +213,6 @@ type Config struct {
 	Group        []Group        `mapstructure:"group" desc:"GroupDesc"`
 	Client       []Client       `mapstructure:"client" desc:"ClientDesc"`
 	Routing      Routing        `mapstructure:"routing" required:""`
-	Rules        Rules          `mapstructure:"rules"`
 }
 
 func sectionHasParam(section *config_parser.Section, key string) bool {
@@ -286,10 +286,6 @@ func New(sections []*config_parser.Section) (conf *Config, err error) {
 	}
 
 	// Apply config patches.
-	if _, err = conf.Rules.Plan(); err != nil {
-		return nil, err
-	}
-
 	for _, patch := range patches {
 		if err = patch(conf); err != nil {
 			return nil, err

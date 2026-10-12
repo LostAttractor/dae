@@ -9,8 +9,11 @@ dae 核心负责 **TCP/UDP 目标端口 53 的透明中继**，从成功交付�
 显式 `block` 仍阻断 DNS；`must` 跳过自动 DNS 处理。管理 API 的精确 TCP 地址/端口保持内核直通。DNAT 在插件前执行一次，原目标端口为 53 的连接改到其他端口后仍作为 DNS：
 
 ```dae
-rules {
-    dip(192.0.2.53) && dport(53) -> dnat('198.51.100.53:1053')
+routing {
+    rules {
+        dip(192.0.2.53) && dport(53) -> dnat('198.51.100.53:1053')
+    }
+    fallback: direct
 }
 ```
 
