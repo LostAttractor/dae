@@ -11,6 +11,8 @@ on:
       - "Makefile"
       - "control/kern/tests/*.go"
       - ".github/workflows/bpf-test.yml"
+      - ".github/actions/setup-llvm/**"
+      - "scripts/setup-llvm.sh"
       - "kern/headers"
   push:
     branches:
@@ -24,22 +26,20 @@ on:
       - "Makefile"
       - "control/kern/tests/*.go"
       - ".github/workflows/bpf-test.yml"
+      - ".github/actions/setup-llvm/**"
+      - "scripts/setup-llvm.sh"
       - "kern/headers"
 
 permissions: read-all
 
 jobs:
   bpf_tests:
-    name: BPF Unit Test
-    runs-on: ubuntu-latest
+    name: BPF Unit Test (Clang ${{ matrix.llvm }})
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
-        env:
-        - VERSION: 15
-        - VERSION: 16
-        - VERSION: 17
-        - VERSION: 18
-        - VERSION: 19
+        llvm: [15, 16, 17, 18, 19, 20, 21, 22, 23]
 
     steps:
       - name: Checkout code
@@ -56,12 +56,10 @@ jobs:
             go.sum
           go-version: '>=1.27.0'
 
-      - name: Install Dependencies
-        env: ${{ matrix.env }}
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y clang-$VERSION llvm-$VERSION
+      - name: Install host LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ matrix.llvm }}
 
       - name: Run BPF tests
-        env: ${{ matrix.env }}
-        run: sudo env "PATH=$PATH" CLANG=clang-$VERSION make ebpf-test || (echo "Run 'make ebpf-test' locally to investigate failures"; exit 1)
+        run: sudo env "PATH=$PATH" "CLANG=$CLANG" "STRIP=$STRIP" make ebpf-test

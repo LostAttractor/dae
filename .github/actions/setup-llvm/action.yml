@@ -1,0 +1,20 @@
+name: Set up host LLVM
+description: Install host LLVM and export matching eBPF tools without changing CC
+inputs:
+  version:
+    description: Clang/LLVM major version (15 through 23)
+    default: '23'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        LLVM_VERSION: ${{ inputs.version }}
+      run: |
+        sudo scripts/setup-llvm.sh "$LLVM_VERSION"
+        {
+          echo "LLVM_VERSION=$LLVM_VERSION"
+          echo "CLANG=clang-$LLVM_VERSION"
+          echo "STRIP=llvm-strip-$LLVM_VERSION"
+          echo "LLVM_OBJDUMP=llvm-objdump-$LLVM_VERSION"
+        } >> "$GITHUB_ENV"

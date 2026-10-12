@@ -3,7 +3,7 @@
 ## Build dependencies
 
 - Go 1.27 or later, Make, and Git. QuickJS builds also need a C compiler with libc development headers.
-- Clang and LLVM for eBPF generation (CI uses version 15).
+- Clang with the BPF backend and matching LLVM tools for eBPF generation. Clang 15+ is recommended; older versions emit a warning. CI tests Clang majors 15–23; release builds use Clang 23.
 - Node.js 22+ and npm to bundle the embedded Web interface and Recharts charts.
 - A target C compiler and sysroot when cross-compiling with cgo.
 
@@ -30,6 +30,51 @@ build may link to the host's libc; it is intended for that system or an
 appropriately packaged Nix closure.
 
 `CC` selects the compiler for QuickJS/cgo. `CLANG` selects the host Clang used for eBPF. The Makefile's `CFLAGS` belong to eBPF; use `CGO_CFLAGS` for additional cgo compiler options. Keep these toolchains separate when cross-compiling.
+
+## Compiler requirements and CI coverage
+
+The eBPF and cgo compilers have separate version and target requirements:
+
+| Component | Compiler selection | Requirement |
+| --- | --- | --- |
+| eBPF programs, tracing and splice | `CLANG`, `STRIP`, `LLVM_OBJDUMP` | Host Clang with the BPF backend and matching LLVM tools; 15+ recommended |
+| QuickJS/cgo | `CC` | Target C compiler, libc headers and libraries; static builds need target static archives |
+| QuickJS/cgo on MIPS64 | `CC` | Clang 23+ when using a Clang-based compiler; older backends can miscompile BigInt atomic operations |
+| Node.js backend | `SURGE_RUNTIME=nodejs` | No C compiler for this backend; eBPF still needs host Clang |
+
+The common kernel header warns when eBPF is compiled with Clang older than 15,
+including direct `go generate` builds. This warning remains non-fatal under
+the default `-Werror`; older compilers may still fail on unsupported code.
+The MIPS64 minimum is enforced in the QuickJS binding,
+including direct `go build` and `go test` commands. Selecting a newer eBPF
+`CLANG` does not update the compiler behind `CC` or `zig cc`.
+
+CI's `setup-llvm` action installs Clang 23 by default and exports matching
+`CLANG`, `STRIP` and `LLVM_OBJDUMP` tools. Native Go and AddressSanitizer tests
+select that compiler through `CC`; `setup-musl` instead configures the pinned
+Zig cross-compiler for static builds.
+
+CI checks these separate scopes:
+
+| Workflow | Execution scope |
+| --- | --- |
+| Go Test | Native Linux x86_64: `make test` (`go test ./...`) for both QuickJS and Node, standalone API client tests, the API server without cgo, and backend dependency isolation. |
+| BPF Test | Linux x86_64 runner kernel: generated BPF unit tests with Clang 15–23. This is a compiler matrix, not a target-CPU or kernel-version matrix. |
+| eBPF Audit | Clang 23 objects are loaded and inspected in a Linux 6.18 VM; verifier and dump artifacts are retained. |
+| Kernel Test | Linux x86_64, Linux 6.18 VM: startup/verifier, netkit/veth and TCX integration, splice, and LAN/WAN IPv4/IPv6 TCP/UDP proxy paths. |
+| Musl Static Test | Native x86_64: QuickJS AddressSanitizer tests; musl-linked daemon and full Surge/QuickJS package tests execute in Alpine without host shared libraries. |
+| PR/Next/daily/release builds | Each release target: static ELF checks, daemon `--version`, and five QuickJS smoke tests, executed natively or through QEMU user mode. |
+| Docker | Build and static-link verification for `arm/v7`, `arm64`, `amd64` and `386`; this does not run the daemon's network integration suite on those architectures. |
+
+The release matrix covers `amd64` v1/v2/v3, `386`, `arm64`, ARM 5/6/7,
+`mipsle`, `mips64le`, `ppc64le`, `loong64`, and the default RISC-V profile plus
+RVA20/RVA22/RVA23. The five target smoke tests exercise request rewrite,
+binary/text conversion, result presence and synthetic responses,
+Promises/timers, and 64-bit Atomics (including negative BigInt operands).
+QEMU user-mode success does not establish eBPF verifier or network behavior
+on a target device's kernel. Full Go tests and kernel integration do not run
+on every release architecture, and the compiler matrix does not cover every
+Clang patch release or every possible `CC` implementation.
 
 ## Surge JavaScript runtime
 

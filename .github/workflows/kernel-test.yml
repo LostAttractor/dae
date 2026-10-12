@@ -7,7 +7,13 @@ on:
       - "**/*.c"
       - "**/*.h"
       - "Makefile"
+      - ".github/actions/**"
+      - "scripts/setup-zig.sh"
+      - "scripts/zig-cc.sh"
+      - "scripts/setup-llvm.sh"
+      - "scripts/check-static.sh"
       - "third_party/**"
+      - "plugins.cfg.example"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
@@ -21,7 +27,13 @@ on:
       - "**/*.c"
       - "**/*.h"
       - "Makefile"
+      - ".github/actions/**"
+      - "scripts/setup-zig.sh"
+      - "scripts/zig-cc.sh"
+      - "scripts/setup-llvm.sh"
+      - "scripts/check-static.sh"
       - "third_party/**"
+      - "plugins.cfg.example"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
@@ -34,7 +46,7 @@ permissions:
 jobs:
 
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v5
 
@@ -53,18 +65,22 @@ jobs:
           go.sum
         go-version: '>=1.27.0'
 
-    - name: Install native musl toolchain
-      run: |
-        sudo apt-get update -y
-        sudo apt-get install -y musl-tools clang-15 llvm-15 binutils
+    - name: Install host LLVM
+      uses: ./.github/actions/setup-llvm
+
+    - name: Install ELF inspection tools
+      run: sudo apt-get install -y binutils
+
+    - name: Set up static musl toolchain
+      uses: ./.github/actions/setup-musl
 
     - name: Generate and build
       run: |
-        make GOFLAGS="-buildvcs=false" CC=musl-gcc STATIC=y CLANG=clang-15 STRIP=llvm-strip-15
+        make GOFLAGS="-buildvcs=false"
         tags=$(cat .build_tags)
-        CGO_ENABLED=1 CC=musl-gcc go test -c -tags="netgo,osusergo,$tags" \
+        go test -c -tags="netgo,osusergo,$tags" \
           -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" ./control -o control.test
-        CGO_ENABLED=1 CC=musl-gcc go test -c -tags="netgo,osusergo,$tags,dae_splice_tests" \
+        go test -c -tags="netgo,osusergo,$tags,dae_splice_tests" \
           -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" ./control/internal/splice -o splice.test
         scripts/check-static.sh dae control.test splice.test
 
@@ -78,7 +94,7 @@ jobs:
           splice.test
 
   test:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     name: Test
     needs: build
     strategy:

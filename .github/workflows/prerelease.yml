@@ -102,10 +102,11 @@ jobs:
             go.sum          
           go-version: '>=1.27.0'
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15 binutils qemu-user
+      - name: Install host LLVM
+        uses: ./.github/actions/setup-llvm
+
+      - name: Install ELF tools and target emulators
+        run: sudo apt-get install -y binutils qemu-user
 
       - name: Set up musl cross-compiler
         uses: ./.github/actions/setup-musl
@@ -130,8 +131,6 @@ jobs:
           export GOFLAGS="-trimpath -modcacherw"
           export OUTPUT=pkgdir/usr/bin/dae
           export VERSION=${{ env.VERSION }}
-          export CLANG=clang-15
-          export STRIP=llvm-strip-15
           make
           install -Dm644 ./install/dae.service -t ./pkgdir/usr/lib/systemd/system/
           install -Dm640 ./example.dae -t ./pkgdir/etc/dae/

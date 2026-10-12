@@ -3,9 +3,8 @@
 #  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
 #
 
-# The development version of clang is distributed as the 'clang' binary,
-# while stable/released versions have a version number attached.
-# Pin the default clang to a stable version.
+# Host eBPF compiler: Clang 15+ recommended. CC selects the target cgo
+# compiler; QuickJS on MIPS64 requires Clang 23+ when CC is Clang-based.
 CLANG ?= clang
 STRIP ?= llvm-strip
 LLVM_OBJDUMP ?= llvm-objdump

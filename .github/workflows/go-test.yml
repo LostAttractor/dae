@@ -7,6 +7,7 @@ on:
       - "component/mitm/surge/**/*.js"
       - "client/**"
       - "web/**"
+      - "plugins.cfg.example"
       - "docs/api/openapi.json"
       - "**/*.c"
       - "**/*.h"
@@ -17,6 +18,8 @@ on:
       - "go.sum"
       - ".github/workflows/go-test.yml"
       - "Makefile"
+      - ".github/actions/setup-llvm/**"
+      - "scripts/setup-llvm.sh"
   push:
     branches:
       - next
@@ -25,6 +28,7 @@ on:
       - "component/mitm/surge/**/*.js"
       - "client/**"
       - "web/**"
+      - "plugins.cfg.example"
       - "docs/api/openapi.json"
       - "**/*.c"
       - "**/*.h"
@@ -35,13 +39,15 @@ on:
       - "go.sum"
       - ".github/workflows/go-test.yml"
       - "Makefile"
+      - ".github/actions/setup-llvm/**"
+      - "scripts/setup-llvm.sh"
 
 permissions: read-all
 
 jobs:
   go-test:
     name: Go Unit Test (${{ matrix.surge-runtime }})
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -78,13 +84,11 @@ jobs:
       - name: Test API server without daemon dependencies
         run: CGO_ENABLED=0 go test ./internal/apiserver
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15
+      - name: Install host LLVM
+        uses: ./.github/actions/setup-llvm
 
       - name: Run tests
-        run: make test CLANG=clang-15 STRIP=llvm-strip-15
+        run: CC="$CLANG" make test
 
       - name: Check runtime dependency isolation
         shell: bash

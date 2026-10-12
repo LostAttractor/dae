@@ -11,6 +11,8 @@ on:
       - "go.mod"
       - "go.sum"
       - "Makefile"
+      - ".github/actions/setup-llvm/**"
+      - "scripts/setup-llvm.sh"
       - "scripts/ebpf-audit.sh"
       - ".github/workflows/ebpf-audit.yml"
       - "kern/headers"
@@ -25,6 +27,8 @@ on:
       - "go.mod"
       - "go.sum"
       - "Makefile"
+      - ".github/actions/setup-llvm/**"
+      - "scripts/setup-llvm.sh"
       - "scripts/ebpf-audit.sh"
       - ".github/workflows/ebpf-audit.yml"
       - "kern/headers"
@@ -34,7 +38,7 @@ permissions: read-all
 jobs:
   ebpf-audit:
     name: Load, Verifier, and Dump Audit
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -51,15 +55,13 @@ jobs:
             go.sum
           go-version: '>=1.27.0'
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y clang-15 llvm-15
+      - name: Install host LLVM
+        uses: ./.github/actions/setup-llvm
 
       - name: Build eBPF audit
         env:
           EBPF_AUDIT_PHASE: build
-        run: make ebpf-audit CLANG=clang-15 LLVM_OBJDUMP=llvm-objdump-15
+        run: make ebpf-audit
 
       - name: Run eBPF audit on a supported kernel
         uses: cilium/little-vm-helper@v0.0.28

@@ -20,6 +20,8 @@ on:
       - "**/*.c"
       - "**/*.h"
       - "third_party/**"
+      - "web/**"
+      - "plugins.cfg.example"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
@@ -31,6 +33,11 @@ on:
       - ".github/workflows/build.yml"
       - ".github/workflows/seed-build.yml"
       - "Makefile"
+      - "scripts/setup-*.sh"
+      - "scripts/*-cc.sh"
+      - "scripts/check-static.sh"
+      - "scripts/run-target.sh"
+      - ".github/actions/**"
       - "kern/headers"
 
 permissions:
