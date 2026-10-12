@@ -42,6 +42,10 @@ func TestInvalidNodeDiagnosticsDoNotExposeLink(t *testing.T) {
 		"http://user:secret-password@example.com:1-2?token=secret-token",
 		"vless://secret-password@example.com:1-2?token=secret-token",
 		"anytls://secret-password@example.com:1-2?token=secret-token",
+		"http://user:secret-password%xY@example.com",
+		"http://user:secret-password?%xY@example.com",
+		"http://user:secret-password/%xY@example.com",
+		"http://user:secret-password#%xY@example.com",
 	} {
 		for _, required := range []bool{false, true} {
 			output.Reset()
@@ -52,7 +56,7 @@ func TestInvalidNodeDiagnosticsDoNotExposeLink(t *testing.T) {
 			if err != nil {
 				diagnostic += err.Error()
 			}
-			if diagnostic == "" || strings.Contains(diagnostic, "secret-password") || strings.Contains(diagnostic, "secret-token") {
+			if diagnostic == "" || strings.Contains(diagnostic, "secret-password") || strings.Contains(diagnostic, "secret-token") || strings.Contains(diagnostic, "%xY") {
 				t.Fatalf("unsafe node diagnostic: %s", diagnostic)
 			}
 			if !strings.Contains(diagnostic, "test node") {
