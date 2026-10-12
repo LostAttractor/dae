@@ -9,8 +9,6 @@ import (
 	"crypto/rc4"
 	"encoding/base64"
 	"encoding/binary"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/daeuniverse/outbound/ciphers"
@@ -57,30 +55,28 @@ func NewAuthChainA() IProtocol {
 	return a
 }
 
-func (a *authChainA) initUser() {
-	params := strings.Split(a.ServerInfo.Param, ":")
-	if len(params) >= 2 {
-		if userID, err := strconv.Atoi(params[0]); err == nil {
-			binary.LittleEndian.PutUint32(a.uid[:], uint32(userID))
-			a.userKeyLen = len(params[1])
-			a.userKey = []byte(params[1])
-		}
+func (a *authChainA) initUser() error {
+	userID, password, err := parseUserParam(a.Param)
+	if err != nil {
+		return err
 	}
-	if a.userKey == nil {
+	if a.Param != "" {
+		binary.LittleEndian.PutUint32(a.uid[:], userID)
+		a.userKey = []byte(password)
+	} else {
 		rand.Read(a.uid[:])
-
-		a.userKeyLen = len(a.Key)
-		a.userKey = make([]byte, len(a.Key))
-		copy(a.userKey, a.Key)
+		a.userKey = bytes.Clone(a.Key)
 	}
+	a.userKeyLen = len(a.userKey)
+	return nil
 }
 
-func (a *authChainA) InitWithServerInfo(s *ServerInfo) {
+func (a *authChainA) InitWithServerInfo(s *ServerInfo) error {
 	a.ServerInfo = s
 	if a.salt == "auth_chain_b" {
 		a.authChainBInitDataSize()
 	}
-	a.initUser()
+	return a.initUser()
 }
 
 func authChainAGetRandLen(dataLength int, random *crypto.Shift128plusContext, lastHash []byte, dataSizeList, dataSizeList2 []int, overhead int) int {

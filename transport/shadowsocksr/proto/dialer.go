@@ -27,6 +27,12 @@ func NewDialer(parent netproxy.Dialer, name, param string, overhead int) (*Diale
 	if NewProtocol(name) == nil {
 		return nil, fmt.Errorf("unsupported SSR protocol %q", name)
 	}
+	switch name {
+	case "auth_chain_a", "auth_chain_b", "auth_aes128_md5", "auth_aes128_sha1":
+		if _, _, err := parseUserParam(param); err != nil {
+			return nil, err
+		}
+	}
 	return &Dialer{parent: stream, name: name, param: param, overhead: overhead}, nil
 }
 
@@ -36,7 +42,9 @@ func (d *Dialer) newProtocol(cipher *ciphers.StreamCipher, addrLen int) (IProtoc
 		return nil, err
 	}
 	codec := NewProtocol(d.name)
-	codec.InitWithServerInfo(&ServerInfo{Param: d.param, TcpMss: 1460, IV: iv, Key: cipher.Key(), AddrLen: addrLen, Overhead: codec.GetOverhead() + d.overhead})
+	if err := codec.InitWithServerInfo(&ServerInfo{Param: d.param, TcpMss: 1460, IV: iv, Key: cipher.Key(), AddrLen: addrLen, Overhead: codec.GetOverhead() + d.overhead}); err != nil {
+		return nil, err
+	}
 	return codec, nil
 }
 

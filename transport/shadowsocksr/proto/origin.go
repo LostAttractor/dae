@@ -13,8 +13,9 @@ func NewOrigin() IProtocol {
 	return a
 }
 
-func (o *origin) InitWithServerInfo(s *ServerInfo) {
+func (o *origin) InitWithServerInfo(s *ServerInfo) error {
 	o.ServerInfo = *s
+	return nil
 }
 
 func (a *origin) EncodePkt(buf *bytes.Buffer) (err error) {

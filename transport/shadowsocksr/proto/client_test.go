@@ -25,7 +25,9 @@ func TestClientPacketAuthenticationAndOwnership(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			codec := NewProtocol(tc.name)
 			key := []byte("stream cipher key")
-			codec.InitWithServerInfo(&ServerInfo{Param: "1234:secret", Key: key})
+			if err := codec.InitWithServerInfo(&ServerInfo{Param: "1234:secret", Key: key}); err != nil {
+				t.Fatal(err)
+			}
 			buf := bytes.NewBufferString("payload")
 			if err := codec.EncodePkt(buf); err != nil {
 				t.Fatal(err)
@@ -61,7 +63,9 @@ func TestClientStreamFragmentationAndTruncation(t *testing.T) {
 	for _, truncated := range []bool{false, true} {
 		conn, peer := net.Pipe()
 		codec := NewProtocol("auth_sha1_v4")
-		codec.InitWithServerInfo(&ServerInfo{Key: []byte("key"), AddrLen: 7})
+		if err := codec.InitWithServerInfo(&ServerInfo{Key: []byte("key"), AddrLen: 7}); err != nil {
+			t.Fatal(err)
+		}
 		client := &Conn{Conn: conn, codec: codec}
 		payload := []byte("fragmented response")
 		frame := make([]byte, 5+len(payload)+4)

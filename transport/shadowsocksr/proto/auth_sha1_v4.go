@@ -21,8 +21,9 @@ func NewAuthSHA1v4() IProtocol {
 	return a
 }
 
-func (a *authSHA1v4) InitWithServerInfo(s *ServerInfo) {
+func (a *authSHA1v4) InitWithServerInfo(s *ServerInfo) error {
 	a.ServerInfo = s
+	return nil
 }
 
 func (a *authSHA1v4) packData(data []byte) (outData []byte) {

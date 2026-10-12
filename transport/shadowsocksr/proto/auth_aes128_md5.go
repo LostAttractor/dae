@@ -6,8 +6,6 @@ import (
 	"crypto/cipher"
 	"encoding/base64"
 	"encoding/binary"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/daeuniverse/outbound/common"
@@ -44,9 +42,9 @@ type authAES128 struct {
 	hashDigest    hashDigestMethod
 }
 
-func (a *authAES128) InitWithServerInfo(s *ServerInfo) {
+func (a *authAES128) InitWithServerInfo(s *ServerInfo) error {
 	a.ServerInfo = s
-	a.initUser()
+	return a.initUser()
 }
 
 func (a *authAES128) packData(data []byte) (outData []byte) {
@@ -96,20 +94,19 @@ func (a *authAES128) packData(data []byte) (outData []byte) {
 	return
 }
 
-func (a *authAES128) initUser() {
-	params := strings.Split(a.Param, ":")
-	if len(params) >= 2 {
-		if userID, err := strconv.ParseUint(params[0], 10, 32); err == nil {
-			binary.LittleEndian.PutUint32(a.uid[:], uint32(userID))
-			a.userKey = a.hashDigest([]byte(params[1]))
-		}
+func (a *authAES128) initUser() error {
+	userID, password, err := parseUserParam(a.Param)
+	if err != nil {
+		return err
 	}
-
-	if a.userKey == nil {
+	if a.Param != "" {
+		binary.LittleEndian.PutUint32(a.uid[:], userID)
+		a.userKey = a.hashDigest([]byte(password))
+	} else {
 		rand.Read(a.uid[:])
-		a.userKey = make([]byte, len(a.Key))
-		copy(a.userKey, a.Key)
+		a.userKey = bytes.Clone(a.Key)
 	}
+	return nil
 }
 func (a *authAES128) packAuthData(data []byte) (outData []byte) {
 	dataLength := len(data)
