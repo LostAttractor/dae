@@ -16,6 +16,9 @@ on:
     # At (UTC+8 0:00 | UTC+0 16:00) every day
     - cron: "0 16 * * *"
 
+permissions:
+  contents: read
+
 jobs:
   pre-actions:
     uses: daeuniverse/ci-seed-jobs/.github/workflows/pre-actions.yml@master

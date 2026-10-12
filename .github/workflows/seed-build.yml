@@ -24,6 +24,9 @@ on:
         type: string
         description: "[pr-build,main-build,daily-build,release-build]"
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:

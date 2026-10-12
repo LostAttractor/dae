@@ -28,6 +28,9 @@ on:
       - ".github/workflows/kernel-test.yml"
       - "kern/headers"
 
+permissions:
+  contents: read
+
 jobs:
 
   build:

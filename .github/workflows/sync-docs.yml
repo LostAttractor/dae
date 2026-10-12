@@ -20,6 +20,9 @@ on:
       - ".markdownlint-cli2.jsonc"
       - '.github/workflows/sync-docs.yml'
 
+permissions:
+  contents: read
+
 jobs:
   check-docs:
     name: Check document

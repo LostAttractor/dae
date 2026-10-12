@@ -14,6 +14,9 @@ on:
       - '.markdownlint-cli2.jsonc'
       - '.github/workflows/check-docs.yml'
 
+permissions:
+  contents: read
+
 jobs:
   check-doc:
     name: Check document
