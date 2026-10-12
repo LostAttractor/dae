@@ -158,7 +158,8 @@ lookup_lpm:
 	return MATCH_MISS;
 }
 
-static int route_step(struct route_ctx *ctx)
+/* Preserve the call boundary so iterator states converge on older compilers. */
+static __noinline int route_step(struct route_ctx *ctx)
 {
 	const struct routing_profile *profile = ctx->params->profile;
 	__u32 position = ctx->position;
