@@ -55,8 +55,24 @@ dae 作为 TLS 客户端验证的是**实际接入点**。`*.biliapi.net` 可以
 - dae 到真实上游继续执行 TLS 名称、有效期和信任链验证；验证失败由 dae 中止并返回上游错误，不能交给源站替客户端检查。
 - 任意 authority 不会令 dae 拨号到另一个网络目标；改变网络目标必须来自插件显式 URL 改写或插件主动 HTTP 请求。
 - 插件看到的 `Flow.Host` / `Request.Host` 是请求声明的业务主机，不是独立认证证明；`Flow.Source/Destination` 保留捕获元组。
-- HTTPS/H2/H3 跨主机仍须同端口；不支持的 HTTP/1 跨主机、scheme 不一致、端口不一致或非法 authority 仍被本地拒绝。
+- HTTPS/H2/H3 跨主机仍须同端口；不支持的 HTTP/1 跨主机、可见的 URL scheme 不一致、端口不一致或非法 authority 仍被本地拒绝。HTTP/2 的 scheme 限制见下文。
 - 单主机证书使遵循 SAN 复用规则的客户端可能多建几条连接；已经自行采用统一接入身份的客户端可继续复用。
+
+### HTTP/2 scheme 限制
+
+MITM 使用上游 Go HTTP/2 实现。Go 1.27 的请求接口不保留原始 `:scheme`，
+`Request.TLS` 也不能用于还原它，因此 **TLS HTTP/2 按连接的 HTTPS scheme 处理**。
+客户端即使在 TLS 连接中发送 `:scheme=http`，插件看到的 URL、转发使用的 scheme
+以及日志中的 `request_scheme` 仍为 `https`，不会仅因这个差异返回 421。
+日志反映的是处理时采用的 scheme，不能证明客户端发送了哪个 `:scheme`。
+
+authority 未写端口时按 HTTPS 默认端口 443 解释；显式携带不同于接入端口的端口仍返回 421。
+例如接入 443 时，`:scheme=http` 配合 `:authority=example.com` 按 HTTPS 处理，
+而 `:authority=example.com:80` 被拒绝。普通转发继续使用原目标、路由和上游 TLS 身份，
+插件 scope 仍按准入后的 authority 匹配，不会因此自动改为明文 HTTP 或另行拨号。
+
+HTTP/1 absolute-form 和 HTTP/3 的显式 scheme 仍参与检查，不一致时返回 421；
+HTTP/1 origin-form 按接入连接判断 scheme。h2c 不受支持。
 
 ## 实现与职责
 

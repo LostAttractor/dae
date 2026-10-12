@@ -20,7 +20,7 @@ import (
 	"golang.org/x/net/http2"
 )
 
-func TestHTTPSRejectsMismatchedScheme(t *testing.T) {
+func TestHTTPSRequestSchemeHandling(t *testing.T) {
 	for _, protocol := range []string{"h1", "h2", "h3"} {
 		t.Run(protocol, func(t *testing.T) {
 			ca, roots := http3TestAuthority(t)
@@ -83,11 +83,26 @@ func TestHTTPSRejectsMismatchedScheme(t *testing.T) {
 					}
 				}
 			}
-			// A rejection must not poison the connection or reach middleware.
-			for _, scheme := range []string{"http", "https"} {
-				r, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://example.com:443/resource", nil)
+			// HTTP/2 uses the intercepted HTTPS scheme, including its default
+			// port. Explicit port changes must still be rejected, and later
+			// requests on the same connection must remain usable.
+			for _, target := range []string{
+				"http://example.com:443/resource",
+				"https://example.com:443/resource",
+				"http://example.com/resource",
+				"http://example.com:80/resource",
+				"https://example.com:443/after",
+			} {
+				r, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 				if err != nil {
 					t.Fatal(err)
+				}
+				before := calls.Load()
+				wantReason := ""
+				if r.URL.Scheme == "http" && protocol != "h2" {
+					wantReason = "scheme_mismatch"
+				} else if r.URL.Port() == "80" {
+					wantReason = "authority_port_mismatch"
 				}
 				resp, err := send(r)
 				if err != nil {
@@ -99,12 +114,12 @@ func TestHTTPSRejectsMismatchedScheme(t *testing.T) {
 					t.Fatal(err)
 				}
 				entry := ended.next(t)
-				if scheme == "http" {
-					if resp.StatusCode != 421 || calls.Load() != 0 || entry.Data["reason"] != "scheme_mismatch" {
-						t.Fatalf("scheme mismatch: status=%d calls=%d log=%v", resp.StatusCode, calls.Load(), entry.Data)
+				if wantReason != "" {
+					if resp.StatusCode != 421 || calls.Load() != before || entry.Data["reason"] != wantReason {
+						t.Fatalf("%s: status=%d calls=%d log=%v, want rejection %s", target, resp.StatusCode, calls.Load(), entry.Data, wantReason)
 					}
-				} else if resp.StatusCode != 200 || calls.Load() != 1 || string(body) != "https" {
-					t.Fatalf("matched scheme: status=%d calls=%d body=%q", resp.StatusCode, calls.Load(), body)
+				} else if resp.StatusCode != 200 || calls.Load() != before+1 || string(body) != "https" || entry.Data["request_scheme"] != "https" {
+					t.Fatalf("%s: status=%d calls=%d body=%q log=%v", target, resp.StatusCode, calls.Load(), body, entry.Data)
 				}
 			}
 		})
@@ -126,6 +141,21 @@ func TestHTTPRequestSchemeAdmission(t *testing.T) {
 					t.Fatalf("admission reason = %q, want %q", reason, want)
 				}
 			})
+		}
+	}
+}
+
+func TestHTTP2SchemeUsesInterceptedConnection(t *testing.T) {
+	// Go releases differ in whether :scheme=http over TLS leaves Request.TLS
+	// nil. Admission uses the intercepted connection, not that incidental field.
+	for _, state := range []*tls.ConnectionState{nil, {HandshakeComplete: true}} {
+		r := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
+		r.ProtoMajor = 2
+		r.URL.Scheme = ""
+		r.TLS = state
+		_, reason := admitRequestAuthority(r, "https", plugin.Flow{Host: "example.com", Port: 443})
+		if reason != "" {
+			t.Fatalf("TLS=%v: admission reason = %q", state, reason)
 		}
 	}
 }

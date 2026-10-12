@@ -183,9 +183,16 @@ tuple. The original middleware chain is retained; up to 32 additional authority
 chains are cached per connection, with further names built per invocation.
 The business authority does not trigger DNS or route selection. Only an explicit
 URL scheme/host/port rewrite changes the network target; path/query and Host-only
-changes retain the original ingress. Scheme mismatch, invalid authority,
+changes retain the original ingress. An explicit URL scheme mismatch, invalid authority,
 port changes, and cross-host HTTP/1 requests receive 421. Kernel capture and client
 admission continue to use the declared host/port predicates.
+
+Go's HTTP/2 server does not expose the original `:scheme` in the request URL.
+TLS HTTP/2 therefore uses `https` for plugin URLs, forwarding and request logs,
+even if the client sent `:scheme=http`. An authority without a port uses 443;
+an explicit port different from the intercepted port is still rejected.
+This normalization retains the original route and upstream TLS identity.
+HTTP/1 absolute-form and HTTP/3 schemes remain subject to the mismatch check.
 
 The host issues a local single-host leaf for the intercepted TLS/QUIC ingress,
 independently of scope and routing effects. The signing cache has 256 LRU entries;
