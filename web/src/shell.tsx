@@ -99,7 +99,7 @@ function Shell() {
                               <Button label="Test Certificate" id="test-certificate" type="button" hidden={import.meta.env.DEV} />
                               {import.meta.env.DEV && <Button label="Open dae to verify" href={`${__DAE_DEV_API_URL__}/#overview`} target="_blank" rel="noreferrer" />}
                             </div>
-                            <dl className="certificate-results" hidden={import.meta.env.DEV}>
+                            <dl className="certificate-results" hidden={import.meta.env.DEV} aria-live="polite">
                               <div><dt>Certificate trust</dt><dd><span id="certificate-trust-result" className="verification-result">Not tested</span></dd></div>
                               <div><dt>HTTPS interception</dt><dd><span id="certificate-mitm-result" className="verification-result">Not tested</span></dd></div>
                             </dl>

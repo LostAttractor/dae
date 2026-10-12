@@ -77,11 +77,18 @@ button:not([class*="astryx-"]):focus-visible, input:not(.astryx-text-input input
 .inline-notice { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; }
 .inline-notice > .astryx-icon { flex-shrink: 0; margin-top: .2em; }
 .inline-notice > span:last-child { min-width: 0; }
-.inline-notice[data-tone="warning"] { color: var(--warning); }
-.inline-notice[data-tone="error"] { color: var(--error); }
+.inline-notice[data-tone="success"], .verification-result[data-tone="success"] { color: var(--fgColor-success); }
+.inline-notice[data-tone="warning"], .verification-result[data-tone="warning"] { color: var(--warning); }
+.inline-notice[data-tone="error"], .verification-result[data-tone="error"] { color: var(--error); }
 .access-required { font-weight: 600; margin-bottom: 8px; }
-.access-required[data-tone="error"], .verification-result[data-tone="error"] { color: var(--error); }
-.verification-result { font-size: var(--meta-size); }
+.access-required[data-tone="error"] { color: var(--error); }
+.verification-result { display: inline-block; padding: 3px 8px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--muted); font-size: var(--meta-size); }
+.verification-result[data-tone="pending"] { color: var(--fgColor-accent); background: var(--bgColor-accent-muted); border-color: var(--borderColor-accent-emphasis); }
+.verification-result[data-tone="success"] { background: var(--bgColor-success-muted); border-color: var(--borderColor-success-emphasis); }
+.verification-result[data-tone="warning"] { background: var(--warning-bg); border-color: var(--borderColor-attention-emphasis); }
+.verification-result[data-tone="error"] { background: var(--error-bg); border-color: var(--borderColor-danger-emphasis); }
+.astryx-toast:has(#message[data-tone="success"]) { background: var(--bgColor-success-muted); border-color: var(--borderColor-success-emphasis); }
+.astryx-toast:has(#message[data-tone="warning"]) { background: var(--warning-bg); border-color: var(--borderColor-attention-emphasis); }
 #message { white-space: pre-line; margin: 0; }
 .dashboard { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 20px; }
 #setting-navigation { margin-bottom: 20px; }

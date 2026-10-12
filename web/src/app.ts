@@ -289,7 +289,11 @@ byId("logout").onclick = async () => {
   if (signedOut) byId(authMode === null ? "api-key" : "refresh").focus();
 };
 byId("refresh").onclick = () => run(refresh, "Network state refreshed.", "Refreshing network state…");
-byId<HTMLButtonElement>("test-certificate").onclick = () => run(testCertificate, "Certificate test completed. See the results below.", "Testing this browser’s certificate and MITM connection…");
+byId<HTMLButtonElement>("test-certificate").onclick = async () => {
+  let result: Awaited<ReturnType<typeof testCertificate>>;
+  await run(async () => { result = await testCertificate(); }, "", "Testing this browser’s certificate and MITM connection…");
+  if (result) message(result.text, result.tone);
+};
 setInterval(async () => {
   if (document.hidden || pollingSelectors || byId<HTMLFieldSetElement>("controls").disabled) return;
   pollingSelectors = true;

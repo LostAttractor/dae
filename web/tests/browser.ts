@@ -825,7 +825,10 @@ try {
       window.fetch = async (url, options) => {
         const address = String(url);
         const reply = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-        if (address === "/api/device/certificate-tests") return reply({ id: "challenge", ca_fingerprint: "test-ca", mitm_enabled: true, trust_url: location.origin.replace("http:", "https:") + "/test/challenge", mitm_url: "https://203.0.113.254/test/challenge" });
+        if (address === "/api/device/certificate-tests") {
+          if (testMode === "unavailable") return new Response(JSON.stringify({ error: "Certificate testing unavailable" }), { status: 503 });
+          return reply({ id: "challenge", ca_fingerprint: "test-ca", mitm_enabled: testMode !== "disabled", trust_url: location.origin.replace("http:", "https:") + "/test/challenge", mitm_url: "https://203.0.113.254/test/challenge" });
+        }
         if (address === "/api/device/certificate-tests/challenge") return reply({ trust_observed: true, mitm_observed: testMode === "mitm" });
         if (address.startsWith("https://")) {
           if (options.credentials !== "omit" || options.redirect !== "error" || options.mode !== "cors") throw Error("unsafe challenge request");
@@ -836,17 +839,72 @@ try {
         return originalFetch(url, options);
       };
     `);
-    await js('document.querySelector("#test-certificate").click()');
-    await ready();
-    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser");
-    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+    const feedback = async (tone: string, trust: string, mitm: string) => {
+      assert.deepEqual(await js('["message", "certificate-trust-result", "certificate-mitm-result"].map(id => document.getElementById(id).dataset.tone)'), [tone, trust, mitm]);
+      assert.equal(await js(`(() => {
+        const colors = { success: '--fgColor-success', warning: '--fgColor-attention', error: '--fgColor-danger', neutral: '--fgColor-muted' };
+        return ['message', 'certificate-trust-result', 'certificate-mitm-result'].every(id => {
+          const node = document.getElementById(id), probe = document.createElement('span');
+          probe.style.color = 'var(' + colors[node.dataset.tone] + ')';
+          document.body.append(probe);
+          const matches = getComputedStyle(node).color === getComputedStyle(probe).color;
+          probe.remove(); return matches;
+        });
+      })()`), true, "result text uses the semantic theme colors");
+      assert.equal(await js('document.querySelectorAll("#message svg").length'), 1, "feedback includes a status icon");
+      assert.equal(await js('getComputedStyle(document.querySelector(".astryx-toast")).backgroundColor !== getComputedStyle(document.body).backgroundColor'), true, "feedback has a tinted surface");
+    };
+    for (const theme of ["light", "dark"] as const) {
+      await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
+      await js('testMode = "mitm"; document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Accepted by this browser");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+      assert.equal(await js('document.querySelector("#message").textContent'), "Certificate trusted and HTTPS interception verified.");
+      await feedback("success", "success", "success");
+      if (process.env.SCREENSHOT_DIR) {
+        await js('document.querySelector("#certificate-test-panel").scrollIntoView({ block: "center" })');
+        await delay(250);
+        const image = await call("Page.captureScreenshot");
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-certificate-success-${theme}.png`), Buffer.from(image.data, "base64"));
+      }
+      await js('testMode = "bypass"; document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification incomplete");
+      assert.match(await js('document.querySelector("#message").textContent'), /HTTPS interception could not be verified/);
+      await feedback("warning", "success", "warning");
+      if (process.env.SCREENSHOT_DIR) {
+        await delay(250);
+        const image = await call("Page.captureScreenshot");
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-certificate-warning-${theme}.png`), Buffer.from(image.data, "base64"));
+      }
+      await js('testMode = "tls-error"; document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "CA test required");
+      await feedback("warning", "warning", "warning");
+      await js('testMode = "disabled"; document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "MITM is disabled");
+      assert.match(await js('document.querySelector("#message").textContent'), /HTTPS interception is disabled/);
+      await feedback("success", "success", "neutral");
+      await js('testMode = "unavailable"; document.querySelector("#test-certificate").click()');
+      await ready();
+      assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Test unavailable");
+      await feedback("error", "error", "neutral");
+    }
+    await call("Emulation.setDeviceMetricsOverride", { width: 320, height: 568, deviceScaleFactor: 1, mobile: true });
+    await setDisclosure(".certificate-disclosure");
     await js('testMode = "bypass"; document.querySelector("#test-certificate").click()');
     await ready();
-    assert.equal(await js('document.querySelector("#certificate-mitm-result").textContent'), "Verification incomplete");
-    await js('testMode = "tls-error"; document.querySelector("#test-certificate").click()');
-    await ready();
-    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "Verification incomplete");
-    assert.notEqual(await js('document.querySelector("#certificate-mitm-result").textContent'), "Transparent MITM verified");
+    await feedback("warning", "success", "warning");
+    assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, "certificate results fit a narrow screen");
+    if (process.env.SCREENSHOT_DIR) {
+      await js('document.querySelector("#certificate-test-panel").scrollIntoView({ block: "center" })');
+      await delay(250);
+      const image = await call("Page.captureScreenshot");
+      await writeFile(join(process.env.SCREENSHOT_DIR, "dae-certificate-warning-mobile.png"), Buffer.from(image.data, "base64"));
+    }
     fixture.certificate.test_generation = "two";
     await until('document.querySelector("#certificate-trust-result").textContent === "Not tested"');
   });

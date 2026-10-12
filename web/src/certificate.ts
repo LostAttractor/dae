@@ -10,7 +10,9 @@ let generation = 0;
 let serverGeneration = "";
 let mitmOrigins: string[] = [];
 
-function state(id: string, text: string, tone = "neutral") {
+interface TestFeedback { text: string; tone: "success" | "warning" }
+
+function state(id: string, text: string, tone: "neutral" | "pending" | "success" | "warning" | "error" = "neutral") {
   const node = byId(id);
   node.textContent = text;
   node.dataset.tone = tone;
@@ -44,9 +46,9 @@ export function certificateIdentity(certificate: CertificateMetadata | null) {
   byId<HTMLButtonElement>("test-certificate").disabled = !identity || !available;
 }
 
-export async function testCertificate() {
+export async function testCertificate(): Promise<TestFeedback | undefined> {
   const version = ++generation;
-  state("certificate-trust-result", "Testing…");
+  state("certificate-trust-result", "Testing…", "pending");
   state("certificate-mitm-result", "Waiting for CA test");
   let test: CertificateTest;
   try { test = await request<CertificateTest>("/api/device/certificate-tests", "POST"); }
@@ -69,9 +71,9 @@ export async function testCertificate() {
   let intercepted = false;
   try { trust = await proof(test.trust_url, "trust"); } catch { /* The browser does not expose the TLS/network failure reason. */ }
   if (version !== generation) return;
-  state("certificate-trust-result", trust ? "Accepted by this browser" : "Verification incomplete", trust ? "success" : "error");
+  state("certificate-trust-result", trust ? "Accepted by this browser" : "Verification incomplete", trust ? "success" : "warning");
   if (trust && test.mitm_enabled) {
-    state("certificate-mitm-result", "Testing…");
+    state("certificate-mitm-result", "Testing…", "pending");
     try { intercepted = await proof(test.mitm_url, "mitm"); } catch { /* Confirm observations using the same-origin API below. */ }
   }
   if (version !== generation) return;
@@ -84,10 +86,14 @@ export async function testCertificate() {
   if (version !== generation) return;
   trust = trust && observation.trust_observed;
   intercepted = intercepted && observation.mitm_observed;
-  state("certificate-trust-result", trust ? "Accepted by this browser" : "Verification incomplete", trust ? "success" : "error");
-  state("certificate-mitm-result", !test.mitm_enabled ? "MITM is disabled" : !trust ? "CA test required" : intercepted ? "Transparent MITM verified" : "Verification incomplete", intercepted ? "success" : trust && test.mitm_enabled ? "error" : "neutral");
+  state("certificate-trust-result", trust ? "Accepted by this browser" : "Verification incomplete", trust ? "success" : "warning");
+  state("certificate-mitm-result", !test.mitm_enabled ? "MITM is disabled" : !trust ? "CA test required" : intercepted ? "Transparent MITM verified" : "Verification incomplete", !test.mitm_enabled ? "neutral" : intercepted ? "success" : "warning");
   let detail = "";
   if (!trust) detail = "\nCheck certificate installation and full trust. Browsers do not distinguish certificate rejection from network or browser-policy failures here.";
   else if (test.mitm_enabled && !intercepted) detail = "\nThe virtual target did not complete a verified MITM challenge. Check that its traffic reaches dae; it has no upstream service.";
   byId("certificate-test-info").textContent = `${new Date().toLocaleString()} · This browser only · SHA-256: ${test.ca_fingerprint}${detail}`;
+  if (!trust) return { tone: "warning", text: "Certificate trust could not be verified. See the results below." };
+  if (!test.mitm_enabled) return { tone: "success", text: "Certificate trusted by this browser. HTTPS interception is disabled." };
+  if (!intercepted) return { tone: "warning", text: "Certificate trusted, but HTTPS interception could not be verified. See the results below." };
+  return { tone: "success", text: "Certificate trusted and HTTPS interception verified." };
 }

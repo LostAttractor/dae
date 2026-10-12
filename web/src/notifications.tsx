@@ -14,6 +14,7 @@ export function createNotifications(container: HTMLElement) {
     </ToastViewport>,
   );
   return (text = "", tone = "success") => {
+    const icon = tone === "error" ? "error" : tone === "warning" ? "warning" : tone === "success" ? "check" : null;
     flushSync(() => {
       if (!text) {
         dismiss?.();
@@ -21,7 +22,7 @@ export function createNotifications(container: HTMLElement) {
         return;
       }
       dismiss = show({
-        body: <span id="message" className="inline-notice" data-tone={tone}>{tone === "error" && <Icon icon="error" size="sm" />}<span>{text}</span></span>,
+        body: <span id="message" className="inline-notice" data-tone={tone}>{icon && <Icon icon={icon} size="sm" />}<span>{text}</span></span>,
         type: tone === "error" ? "error" : "info",
         isAutoHide: tone === "success",
         autoHideDuration: 5000,
