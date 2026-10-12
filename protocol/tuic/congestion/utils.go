@@ -13,6 +13,11 @@ func UseBBR(conn *quic.Conn) {
 	))
 }
 
-func UseBrutal(conn *quic.Conn, tx uint64) {
-	conn.SetCongestionControl(brutal.NewBrutalSender(tx))
+func UseBrutal(conn *quic.Conn, tx uint64) error {
+	sender, err := brutal.NewBrutalSender(tx)
+	if err != nil {
+		return err
+	}
+	conn.SetCongestionControl(sender)
+	return nil
 }

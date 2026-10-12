@@ -2,6 +2,7 @@ package common
 
 import (
 	"math"
+	"math/bits"
 	"time"
 
 	"github.com/daeuniverse/quic-go/congestion"
@@ -42,18 +43,35 @@ func (p *Pacer) Budget(now time.Time) congestion.ByteCount {
 	if p.lastSentTime.IsZero() {
 		return p.maxBurstSize()
 	}
-	budget := p.budgetAtLastSent + (p.getBandwidth()*congestion.ByteCount(now.Sub(p.lastSentTime).Nanoseconds()))/1e9
-	if budget < 0 { // protect against overflows
-		budget = congestion.ByteCount(1<<62 - 1)
+	limit := p.maxBurstSize()
+	added := bytesForInterval(p.getBandwidth(), now.Sub(p.lastSentTime))
+	if p.budgetAtLastSent >= limit || added >= limit-p.budgetAtLastSent {
+		return limit
 	}
-	return minByteCount(p.maxBurstSize(), budget)
+	return p.budgetAtLastSent + added
 }
 
 func (p *Pacer) maxBurstSize() congestion.ByteCount {
-	return maxByteCount(
-		congestion.ByteCount((congestion.MinPacingDelay+time.Millisecond).Nanoseconds())*p.getBandwidth()/1e9,
+	return max(
+		bytesForInterval(p.getBandwidth(), congestion.MinPacingDelay+time.Millisecond),
 		maxBurstPackets*p.maxDatagramSize,
 	)
+}
+
+func bytesForInterval(bandwidth congestion.ByteCount, interval time.Duration) congestion.ByteCount {
+	if bandwidth <= 0 || interval <= 0 {
+		return 0
+	}
+	// Multiply before dividing without overflowing at high rates or after idle.
+	hi, lo := bits.Mul64(uint64(bandwidth), uint64(interval))
+	if hi >= uint64(time.Second) {
+		return math.MaxInt64
+	}
+	value, _ := bits.Div64(hi, lo, uint64(time.Second))
+	if value > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return congestion.ByteCount(value)
 }
 
 // TimeUntilSend returns when the next packet should be sent.

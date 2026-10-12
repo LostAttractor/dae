@@ -10,6 +10,7 @@ package bandwidth
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -43,20 +44,25 @@ func Parse(s string) (uint64, error) {
 		return 0, err
 	}
 
+	var multiplier uint64
 	switch strings.TrimSpace(s[spl:]) {
 	case "b", "bps":
 		return v * Byte / 8, nil
 	case "k", "kb", "kbps":
-		return v * Kilobyte / 8, nil
+		multiplier = Kilobyte / 8
 	case "m", "mb", "mbps":
-		return v * Megabyte / 8, nil
+		multiplier = Megabyte / 8
 	case "g", "gb", "gbps":
-		return v * Gigabyte / 8, nil
+		multiplier = Gigabyte / 8
 	case "t", "tb", "tbps":
-		return v * Terabyte / 8, nil
+		multiplier = Terabyte / 8
 	default:
 		return 0, errors.New("unsupported unit")
 	}
+	if v > math.MaxUint64/multiplier {
+		return 0, errors.New("bandwidth value overflows uint64")
+	}
+	return v * multiplier, nil
 }
 
 // /////// reference end

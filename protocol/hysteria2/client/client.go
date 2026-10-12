@@ -291,7 +291,13 @@ func (c *Client) establish(ctx context.Context) (resource *clientResource, err e
 		return nil, fmt.Errorf("HTTP3 handshake: %w", err)
 	}
 	// Auth OK
-	authResp := protocol.AuthResponseFromHeader(resp.Header)
+	authResp, err := protocol.AuthResponseFromHeader(resp.Header)
+	if err != nil {
+		return nil, netproxy.WrapFailure(err, netproxy.Failure{
+			Scope: netproxy.ScopeOperation, Layer: netproxy.LayerH3, Phase: netproxy.OpHandshake,
+			Origin: netproxy.OriginPeer, Reason: netproxy.ReasonProtocol,
+		})
+	}
 	var actualTx uint64
 	if authResp.RxAuto {
 		// Server asks client to use bandwidth detection,
@@ -305,7 +311,9 @@ func (c *Client) establish(ctx context.Context) (resource *clientResource, err e
 			actualTx = c.config.BandwidthConfig.MaxTx
 		}
 		if actualTx > 0 {
-			congestion.UseBrutal(resource.conn, actualTx)
+			if err := congestion.UseBrutal(resource.conn, actualTx); err != nil {
+				return nil, err
+			}
 		} else {
 			// We don't know our own bandwidth either, use BBR
 			congestion.UseBBR(resource.conn)

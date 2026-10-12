@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"math"
 	"net"
 	"time"
 
@@ -41,6 +42,9 @@ func (c *Config) verifyAndFill() error {
 	}
 	if c.NextDialer == nil {
 		return errors.New("Hysteria2 config: NextDialer must be set")
+	}
+	if c.BandwidthConfig.MaxTx > math.MaxInt64 || c.BandwidthConfig.MaxRx > math.MaxInt64 {
+		return errors.New("Hysteria2 bandwidth must not exceed MaxInt64 bytes per second")
 	}
 	if c.QUICConfig.InitialStreamReceiveWindow == 0 {
 		c.QUICConfig.InitialStreamReceiveWindow = defaultStreamReceiveWindow

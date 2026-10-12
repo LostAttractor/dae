@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 )
@@ -36,15 +37,19 @@ func AuthRequestToHeader(h http.Header, req AuthRequest) {
 	h.Set(CommonHeaderPadding, authRequestPadding.String())
 }
 
-func AuthResponseFromHeader(h http.Header) AuthResponse {
+func AuthResponseFromHeader(h http.Header) (AuthResponse, error) {
 	resp := AuthResponse{}
 	resp.UDPEnabled, _ = strconv.ParseBool(h.Get(ResponseHeaderUDPEnabled))
 	rxStr := h.Get(CommonHeaderCCRX)
 	if rxStr == "auto" {
 		// Special case for server requesting client to use bandwidth detection
 		resp.RxAuto = true
-	} else {
-		resp.Rx, _ = strconv.ParseUint(rxStr, 10, 64)
+	} else if rxStr != "" {
+		rx, err := strconv.ParseUint(rxStr, 10, 64)
+		if err != nil {
+			return AuthResponse{}, errors.New("invalid Hysteria-CC-RX response header")
+		}
+		resp.Rx = rx
 	}
-	return resp
+	return resp, nil
 }

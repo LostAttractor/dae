@@ -29,6 +29,10 @@ func TestParse(t *testing.T) {
 		{"invalid 2", args{"5.4 mbps"}, 0, true},
 		{"invalid 3", args{"kbps"}, 0, true},
 		{"invalid 4", args{"1234 5678 gbps"}, 0, true},
+		{"large exact kbps", args{"18446744073709551 kbps"}, 2_305_843_009_213_693_875, false},
+		{"overflow kbps", args{"147573952589676413 kbps"}, 0, true},
+		{"overflow gbps", args{"18446744073709551615 gbps"}, 0, true},
+		{"overflow tbps", args{"18446744073709551615 tbps"}, 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,6 +1,8 @@
 package brutal
 
 import (
+	"errors"
+	"math"
 	"time"
 
 	"github.com/daeuniverse/outbound/protocol/tuic/congestion/common"
@@ -38,16 +40,28 @@ type pktInfo struct {
 	LossCount uint64
 }
 
-func NewBrutalSender(bps uint64) *BrutalSender {
+func NewBrutalSender(bps uint64) (*BrutalSender, error) {
+	if bps == 0 || bps > math.MaxInt64 {
+		return nil, errors.New("Brutal bandwidth must be in [1, MaxInt64] bytes per second")
+	}
 	bs := &BrutalSender{
 		bps:             congestion.ByteCount(bps),
 		maxDatagramSize: congestion.InitialPacketSizeIPv4,
 		ackRate:         1,
 	}
 	bs.pacer = common.NewPacer(func() congestion.ByteCount {
-		return congestion.ByteCount(float64(bs.bps) / bs.ackRate)
+		return boundedByteCount(float64(bs.bps) / bs.ackRate)
 	})
-	return bs
+	return bs, nil
+}
+
+// Congestion budgets may saturate at the largest representable byte count;
+// converting an out-of-range float directly would instead make them negative.
+func boundedByteCount(value float64) congestion.ByteCount {
+	if value >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return congestion.ByteCount(value)
 }
 
 func (b *BrutalSender) SetRTTStatsProvider(rttStats congestion.RTTStatsProvider) {
@@ -71,7 +85,7 @@ func (b *BrutalSender) GetCongestionWindow() congestion.ByteCount {
 	if rtt <= 0 {
 		return 10240
 	}
-	cwnd := congestion.ByteCount(float64(b.bps) * rtt.Seconds() * congestionWindowMultiplier / b.ackRate)
+	cwnd := boundedByteCount(float64(b.bps) * rtt.Seconds() * congestionWindowMultiplier / b.ackRate)
 	if cwnd < b.maxDatagramSize {
 		cwnd = b.maxDatagramSize
 	}
