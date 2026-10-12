@@ -159,7 +159,9 @@ func NewExplainCommand() *cobra.Command {
 				return err
 			}
 			defer remote.Close()
-			response, err := remote.Explain(cmd.Context(), request, flags.self)
+			response, err := WithProgress(cmd, "Explaining "+command.name+"...", func() (*api.ExplainResponse, error) {
+				return remote.Explain(cmd.Context(), request, flags.self)
+			})
 			if err != nil {
 				return err
 			}

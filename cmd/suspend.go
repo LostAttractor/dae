@@ -7,13 +7,8 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strconv"
-	"strings"
-	"syscall"
 
-	"github.com/daeuniverse/dae/cmd/internal"
-	"github.com/daeuniverse/dae/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -23,45 +18,7 @@ var (
 		Short: "To suspend dae. This command puts dae into no-load state. Recover it by 'dae reload'.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cmd.SilenceUsage = true
-			if len(args) == 0 {
-				_pid, err := os.ReadFile(daemon.PidFilePath)
-				if err != nil {
-					return fmt.Errorf("failed to read pid file: %w", err)
-				}
-				args = []string{strings.TrimSpace(string(_pid))}
-			}
-			pid, err := parsePositivePID(args[0])
-			if err != nil {
-				return err
-			}
-			if err := internal.AutoSu(); err != nil {
-				return err
-			}
-
-			abortMarkerCreated := false
-			cleanupAbortMarker := func() {
-				if abortMarkerCreated {
-					_ = os.Remove(daemon.AbortFile)
-				}
-			}
-			if abort {
-				f, err := os.OpenFile(daemon.AbortFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-				if err != nil {
-					return fmt.Errorf("failed to create abort marker: %w", err)
-				}
-				abortMarkerCreated = true
-				if err = f.Close(); err != nil {
-					cleanupAbortMarker()
-					return fmt.Errorf("failed to close abort marker: %w", err)
-				}
-			}
-			if err = syscall.Kill(pid, syscall.SIGUSR2); err != nil {
-				cleanupAbortMarker()
-				return fmt.Errorf("failed to signal dae: %w", err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "OK")
-			return nil
+			return runReloadCommand(cmd, args, true)
 		},
 	}
 )

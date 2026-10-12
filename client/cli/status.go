@@ -7,6 +7,7 @@ import (
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/client/status"
 	"github.com/spf13/cobra"
 )
@@ -22,7 +23,9 @@ func NewStatusCommand() *cobra.Command {
 			if err := status.SetColorMode(colorMode); err != nil {
 				return err
 			}
-			snapshot, err := connection.Status(cmd.Context())
+			snapshot, err := WithProgress(cmd, "Fetching status...", func() (*api.StatusSnapshot, error) {
+				return connection.Status(cmd.Context())
+			})
 			if err != nil {
 				return err
 			}

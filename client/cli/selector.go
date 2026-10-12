@@ -27,7 +27,9 @@ func NewSelectorCommand() *cobra.Command {
 				return err
 			}
 			defer remote.Close()
-			response, err := remote.Selectors(cmd.Context())
+			response, err := WithProgress(cmd, "Fetching selectors...", func() (*api.SelectorsResponse, error) {
+				return remote.Selectors(cmd.Context())
+			})
 			if err != nil {
 				return err
 			}
@@ -62,6 +64,8 @@ func NewSelectorCommand() *cobra.Command {
 				return err
 			}
 			defer remote.Close()
+			spinner := startProgress(cmd, "Selecting node...")
+			defer spinner.Stop()
 			response, err := remote.Selectors(cmd.Context())
 			if err != nil {
 				return err
@@ -89,6 +93,7 @@ func NewSelectorCommand() *cobra.Command {
 				return fmt.Errorf("node %q not found in selector %q", args[1], args[0])
 			}
 			state, err := remote.SelectNode(cmd.Context(), args[0], id)
+			spinner.Stop()
 			if err != nil {
 				return err
 			}
@@ -103,7 +108,9 @@ func NewSelectorCommand() *cobra.Command {
 				return err
 			}
 			defer remote.Close()
-			state, err := remote.ResetSelector(cmd.Context(), args[0])
+			state, err := WithProgress(cmd, "Resetting selector...", func() (*api.SelectorState, error) {
+				return remote.ResetSelector(cmd.Context(), args[0])
+			})
 			if err != nil {
 				return err
 			}

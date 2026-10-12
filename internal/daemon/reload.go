@@ -122,9 +122,9 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 			return "", err
 		}
 	}
-	a.report("Refreshing configuration resources...")
 	inputs := a.inputs
 	if !suspend {
+		a.report("Refreshing configuration resources...")
 		inputs, err = loadControlInputs(ctx, next, true, a.geoDirs, a.options.ConfigFile, a.inputs)
 		if err != nil {
 			return "", fmt.Errorf("refresh resources: %w", err)
@@ -148,6 +148,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 
 	paused := false
 	if suspend {
+		a.report("Preparing to suspend traffic interception...")
 		prepared, err = a.plane.PrepareMITMSuccessor()
 		if err != nil {
 			return "", err
@@ -237,5 +238,8 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 		refresh.Commit()
 	}
 	logStartupNodeStatus(candidate.GroupsStatus())
+	if suspend {
+		return "Suspended traffic interception", nil
+	}
 	return "Updated routing and affected services", nil
 }

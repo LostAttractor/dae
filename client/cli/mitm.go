@@ -114,7 +114,9 @@ func NewReportCommand(fetch MITMSource, render func(*cobra.Command, []api.Plugin
 	command := &cobra.Command{
 		Use: "status", Short: "Show plugin instances and their reports.", Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			instances, err := fetch(cmd.Context())
+			instances, err := WithProgress(cmd, "Fetching plugin status...", func() ([]api.PluginInstanceStatus, error) {
+				return fetch(cmd.Context())
+			})
 			if err != nil {
 				return err
 			}

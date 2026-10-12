@@ -40,6 +40,12 @@ Usage:
 dae reload
 ```
 
+The command waits for the daemon to confirm completion, with a three-minute
+timeout. After 150 ms, terminal stderr shows a spinner with the current stage;
+it clears before the result or error is printed. Redirected stderr and
+`TERM=dumb` disable animation and retain ordinary progress lines on stdout.
+Another active reload or suspend causes the command to fail without sending a signal.
+
 To abort established connections, including connections retained by earlier reloads:
 
 ```shell
@@ -52,6 +58,11 @@ dae reload --abort
 
 Suspend removes traffic interception using the accepted configuration and resources,
 even if the configuration file or an external resource is currently unavailable.
+It does not download resources, but may wait for earlier control-plane retirement
+and active API requests before publishing the replacement routing. The command
+uses the same completion checks, timeout and progress display as reload, and
+returns success only after the daemon confirms suspension. Existing connections
+are retained unless `--abort` is specified.
 
 ```shell
 dae suspend

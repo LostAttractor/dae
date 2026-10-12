@@ -40,6 +40,22 @@ func NewClientCommand() *cobra.Command {
 			if len(args) != 0 {
 				name = args[0]
 			}
+			var impact api.ClientImpactRequest
+			if operation == "impact" {
+				if !flags.self && flags.mac == "" {
+					return fmt.Errorf("specify --self or --mac")
+				}
+				request, err := flags.request(cmd, "flow", flags.target)
+				if err != nil {
+					return err
+				}
+				impact = api.ClientImpactRequest{Joined: new(joined), Context: request.Context}
+				if flags.target != "" || flags.input != "" {
+					impact.Flow = &request.Flow
+				}
+			}
+			spinner := startProgress(cmd, "Waiting for client "+operation+"...")
+			defer spinner.Stop()
 			var response any
 			switch operation {
 			case "list":
@@ -86,19 +102,9 @@ func NewClientCommand() *cobra.Command {
 					return fmt.Errorf("specify --self or --mac")
 				}
 			case "impact":
-				if !flags.self && flags.mac == "" {
-					return fmt.Errorf("specify --self or --mac")
-				}
-				request, buildErr := flags.request(cmd, "flow", flags.target)
-				if buildErr != nil {
-					return buildErr
-				}
-				impact := api.ClientImpactRequest{Joined: new(joined), Context: request.Context}
-				if flags.target != "" || flags.input != "" {
-					impact.Flow = &request.Flow
-				}
 				response, err = remote.ClientImpact(cmd.Context(), name, impact, flags.self)
 			}
+			spinner.Stop()
 			if err != nil {
 				return err
 			}
@@ -117,6 +123,8 @@ func NewClientCommand() *cobra.Command {
 				return err
 			}
 			defer remote.Close()
+			spinner := startProgress(cmd, "Updating client MITM settings...")
+			defer spinner.Stop()
 			certificate, err := remote.Certificate(cmd.Context())
 			if err != nil {
 				return err
@@ -135,6 +143,7 @@ func NewClientCommand() *cobra.Command {
 			} else {
 				response, err = remote.SetManagedMITM(cmd.Context(), flags.mac, enabled, certificate.Fingerprint)
 			}
+			spinner.Stop()
 			if err != nil {
 				return err
 			}

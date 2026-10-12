@@ -40,6 +40,12 @@ watch --color -n 2 'dae status --recent --color always'
 The standalone client also supports this, for example
 `watch --color -n 2 'dae-client status --recent --color always'`.
 
+Commands that wait for API responses (`status`, `selector`, `client`, `explain`,
+and plugin status/list/run commands) show a spinner on terminal stderr after
+150 ms. It clears before results or errors are printed. Animation is disabled
+for `--json`, redirected stderr, and `TERM=dumb`; stdout remains available for
+pipes and redirection. Script run commands wait for acceptance, not script completion.
+
 ### Manage selectors
 
 Both `dae` and `dae-client` provide:

@@ -36,6 +36,8 @@ watch --color -n 2 'dae status --recent --color always'
 
 独立客户端同样支持，例如 `watch --color -n 2 'dae-client status --recent --color always'`。
 
+等待 API 响应的命令（`status`、`selector`、`client`、`explain` 及插件的 status/list/run 命令）在等待超过 150 ms 后，通过终端 stderr 显示加载动画，并在输出结果或错误前清除。`--json`、stderr 重定向或 `TERM=dumb` 时禁用动画，stdout 可正常用于管道和重定向。脚本 run 命令只等待请求被接受，不等待脚本执行结束。
+
 ### 管理 selector
 
 `dae` 和 `dae-client` 均提供以下命令：

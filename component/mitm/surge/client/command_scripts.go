@@ -23,7 +23,9 @@ func NewSurgeListCommand(fetch cli.MITMSource) *cobra.Command {
 Use --instance and --module to narrow the list, then run a script by its SCRIPT name.`,
 		Args: cobra.NoArgs, SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			tasks, err := surgeScriptTasks(cmd.Context(), fetch, module)
+			tasks, err := cli.WithProgress(cmd, "Fetching script tasks...", func() ([]SurgeScriptTask, error) {
+				return surgeScriptTasks(cmd.Context(), fetch, module)
+			})
 			if err != nil {
 				return err
 			}
@@ -62,7 +64,9 @@ Use list to discover script names and status to inspect completion.
 		},
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			response, err := triggerSurgeScript(cmd.Context(), fetch, trigger, api.ScriptRunRequest{Module: module, Script: args[0]})
+			response, err := cli.WithProgress(cmd, "Submitting script run...", func() (*api.ScriptRunResponse, error) {
+				return triggerSurgeScript(cmd.Context(), fetch, trigger, api.ScriptRunRequest{Module: module, Script: args[0]})
+			})
 			if err != nil {
 				return err
 			}
