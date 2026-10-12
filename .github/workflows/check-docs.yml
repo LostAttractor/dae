@@ -10,6 +10,7 @@ on:
       - 'README.md'
       - 'docs/**'
       - 'package.json'
+      - 'package-lock.json'
       - '.autocorrectrc'
       - '.markdownlint-cli2.jsonc'
       - '.github/workflows/check-docs.yml'
@@ -27,7 +28,7 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '16.x'
+          node-version: '24.x'
           cache: 'npm'
       - name: Install dependencies
         run: |

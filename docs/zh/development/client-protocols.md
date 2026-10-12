@@ -14,7 +14,7 @@ outbound 仅提供客户端，使用 `net.Conn`、`net.PacketConn`、`DialContex
 ## 配置与边界
 
 | 协议 | 当前约束 |
-|---|---|
+| --- | --- |
 | HTTP / WS | HTTP 代理使用 CONNECT，传输模式使用 PUT；WS 使用 HTTP/1.1 Upgrade |
 | VMess | 请求头仅 AEAD（`alterId=0`）；正文支持 `aes-128-gcm`、`chacha20-poly1305`，空值或 `auto` 按硬件选择；nonce 用尽终止流 |
 | VMess UDP | 普通模式按目标复用子流；packet-address 模式只接受 IP，固定域名目标在 DialContext 内按调用者 context 解析 |

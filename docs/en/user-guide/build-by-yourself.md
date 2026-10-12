@@ -322,4 +322,4 @@ After fine tuning, validate the configuration and run dae:
 ./dae run -c example.dae
 ```
 
-> **Note**: Alternatively, you may run dae as a daemon (systemd) service. Check out more details [HERE](run-as-daemon.md).
+> **Note**: Alternatively, you may run dae as a daemon (systemd) service. See [Run as a daemon](run-as-daemon.md) for details.

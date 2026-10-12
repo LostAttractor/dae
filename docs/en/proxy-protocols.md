@@ -66,7 +66,7 @@ Each `node` entry must contain one share link. Compose proxy paths with group pa
   }
   ```
 
-  `multiplex: smux` enables sing-box-compatible smux for both TCP and UDP. `multiplex: smux-udp-passthrough` multiplexes TCP while keeping UDP on the underlying proxy protocol, and `multiplex: off` explicitly disables multiplexing. With smux enabled, each node creates up to 4 sessions (independent outer TCP connections) on demand by default; `multiplex_max_connections` can set the limit from 1 to 16. Multiple sessions distribute concurrent connections across separate TCP congestion windows, but do not increase the throughput of one inner TCP connection.
+  `multiplex: smux` enables sing-box-compatible smux for both TCP and UDP. `multiplex: smux-udp-passthrough` multiplexes TCP while keeping UDP on the underlying proxy protocol, and `multiplex: off` explicitly disables multiplexing. With smux enabled, each node creates up to 4 sessions (independent outer TCP connections) on demand by default; `multiplex_max_connections` can set the limit from 1 to 16. Multiple sessions give concurrent connections separate TCP congestion control, but do not increase the throughput of one inner TCP connection.
 
 - [x] ShadowsocksR
 

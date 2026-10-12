@@ -25,7 +25,7 @@ HTTP/3 仅接管首目标经完整 ClientHello 确认的 `h3`。纯检查保留�
 `no_connectivity_behavior: direct` 建立并固定 direct fallback，保留原组归属；`block` 丢弃且不建立转发会话。以下策略均默认 `keep`，可配置为 `close`：
 
 | 配置 | 关闭范围 |
-|---|---|
+| --- | --- |
 | group `reselect_behavior` | 选择从 A 变为 B 时，该组对应网络类型的旧连接，包括 fallback；手动 selector 同样生效，`random` 不支持 close |
 | global `route_change_behavior` | 设备加入/退出被路由引用的 client set 时，该 MAC 的全部旧转发连接；fallback 恢复时，仅原组对应网络类型的 fallback 连接 |
 

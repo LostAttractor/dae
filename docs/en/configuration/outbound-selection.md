@@ -31,7 +31,7 @@ group {
 
 These are defaults and require an explicit automatic policy. Durations must be positive.
 
-Failover does not maintain periodic latency checks on a healthy current path or its same-tier peers. Real results from manual tests, failure confirmation, shared-group monitoring or recovery verification still trigger selection by degradation, priority and last successful latency plus `add_latency`, respecting `check_tolerance`. A better same-tier peer can replace the current path. Usable recovering same-tier candidates complete their observation windows, then stop continuous checking. Silent failures are discovered on subsequent use.
+Failover does not maintain periodic latency checks on a healthy current path or its same-tier peers. Real results from manual tests, failure confirmation, shared-group monitoring or recovery verification still trigger selection by degradation, priority and last successful latency plus `add_latency`, respecting `check_tolerance`. A better same-tier peer can replace the current path. Usable recovering same-tier candidates complete their observation periods, then stop continuous checking. Silent failures are discovered on subsequent use.
 
 A real test updating the current path's score also triggers bounded verification of dormant peers with better historical scores and no confirmed outage. Releasing physical resources does not exclude same-tier candidates. If verification finds a candidate no longer better, selection considers the others without enabling periodic standby checks.
 

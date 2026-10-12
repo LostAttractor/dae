@@ -16,6 +16,7 @@ on:
       - "hack/ci/config-doc-generator.py"
       - "hack/templates/example-config.md"
       - "package.json"
+      - "package-lock.json"
       - ".autocorrectrc"
       - ".markdownlint-cli2.jsonc"
       - '.github/workflows/sync-docs.yml'
