@@ -226,11 +226,11 @@ dae 仅在无 mark 的直连、无 mark 的直通或可信控制平面路径上�
 `ext:` 和 `mmdb:` 只读取指定的数据文件。被引用的文件缺失或损坏会导致规则准备失败。
 
 ```shell
-### 内置出站: block, direct
+### 内置出站：block, direct
 # 流量控制 must 和 bump 配置在当前 policy 的 rules {} 中。
 
 ### fallback 出站
-# 如果没有规则匹配，流量将通过fallback出站.
+# 如果没有规则匹配，流量将通过 fallback 出站。
 # fallback: my_group
 
 ### 域名规则
@@ -258,21 +258,21 @@ dport(10080-30000) -> direct
 sport(38563) -> direct
 sport(10080-30000) -> direct
 
-### 四层协议规则:
+### 四层协议规则：
 l4proto(tcp) -> my_group
 l4proto(udp) -> direct
 
-### IP版本规则:
+### IP 版本规则：
 ipversion(4) -> block
 ipversion(6) -> ipv6_group
 
-### 源MAC地址规则
+### 源 MAC 地址规则
 mac('02:42:ac:11:00:02') -> direct
 
-### 进程名称规则（绑定WAN时仅支持本机进程）
+### 进程名称规则（绑定 WAN 时仅支持本机进程）
 pname(curl) -> direct
 
-### DSCP规则（匹配 DSCP，可用于绕过 BT），见 https://github.com/daeuniverse/dae/discussions/295
+### DSCP 规则（匹配 DSCP，可用于绕过 BT），见 https://github.com/daeuniverse/dae/discussions/295
 dscp(0x4) -> direct
 
 ### 入站接口规则
@@ -280,7 +280,7 @@ interface(br-lan) -> direct
 
 ### 多个域名规则
 domain(keyword: google, suffix: www.twitter.com, suffix: v2raya.org) -> my_group
-### 多个IP规则
+### 多个 IP 规则
 dip(geoip:cn, geoip:private) -> direct
 dip(9.9.9.9, 223.5.5.5) -> direct
 sip(192.168.0.6, 192.168.0.10, 192.168.0.15) -> direct
@@ -303,22 +303,22 @@ domain(geosite:geolocation-!cn) &&
             geosite:category-scholar-cn
         ) -> my_group
 
-### 个性化DAT文件
+### 个性化 DAT 文件
 domain(ext:"yourdatfile.dat:yourtag")->direct
 dip(ext:"yourdatfile.dat:yourtag")->direct
 
 ### 设置防火墙标记
-# 当您想要将流量重定向到特定接口（例如wireguard）或用于其他高级用途时，标记非常有用。
+# 当您想要将流量重定向到特定接口（例如 wireguard）或用于其他高级用途时，标记非常有用。
 # 这里给出了将 Disney 流量重定向到 wg0 的示例。
 # 您需要像这样设置 ip 规则和 ip 路由表：
 # 1. 将所有标记为 0x800/0x800 的流量设置为使用路由表 1145：
 # >> ip rule add fwmark 0x800/0x800 table 1145
 # >> ip -6 rule add fwmark 0x800/0x800 table 1145
-# 2. 设置路由表1145的默认路由：
+# 2. 设置路由表 1145 的默认路由：
 # >> ip route add default dev wg0 scope global table 1145
 # >> ip -6 route add default dev wg0 scope global table 1145
-# 注意：接口wg0，标记0x800，表1145可以通过首选项设置，但不能冲突。
-# 3. 在dae配置文件中设置路由规则。
+# 注意：接口 wg0，标记 0x800，表 1145 可以通过首选项设置，但不能冲突。
+# 3. 在 dae 配置文件中设置路由规则。
 domain(geosite:disney) -> direct(mark: 0x800)
 
 ### 目标 group 不存活时跳过规则
@@ -358,7 +358,7 @@ routing {
 
 ## policy 内 `rules {}` 的流量控制
 
-`must` 跳过自动 DNS 接管，继续由普通路由选择出站。`bump` 要求用户态重新路由，出站和 mark 仍由 `routing {}` 决定。它们独立于 MITM，可同时命中，不依赖书写顺序。`must` 不会取消显式的 `bump`、MITM 或 DNAT 捕获。 整个控制段执行完后才决定是否进入用户态；域名歧义不会遮蔽后续确定性 must 或捕获动作。
+`must` 跳过自动 DNS 接管，继续由普通路由选择出站。`bump` 要求用户态重新路由，出站和 mark 仍由 `routing {}` 决定。它们独立于 MITM，可同时命中，不依赖书写顺序。`must` 不会取消显式的 `bump`、MITM 或 DNAT 捕获。整个控制段执行完后才决定是否进入用户态；域名歧义不会遮蔽后续确定性 must 或捕获动作。
 
 ```text
 routing {

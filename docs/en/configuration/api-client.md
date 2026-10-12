@@ -61,7 +61,7 @@ dae selector proxy --json
 
 Duplicate names require an ID rather than guessing by list order. Connection flags and environment variables are the same as for status. The daemon applies and persists changes; the CLI never edits the state file directly. Missing or ambiguous preferences remain visible alongside the temporary actual choice and can be restored on a later reload. Reset requires a configured default.
 
-The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing filesystem permission for the local socket.
+The Unix socket remains mode `0600` and is available regardless of `global.api_port`. Neither command entry point elevates privileges automatically; use `sudo` or existing file system permission for the local socket.
 
 Enable the [TCP API](api.md) and set `DAE_API_KEY` if the daemon has a configured key. Without one, a client with verified LAN ingress can request status without credentials; WAN and unidentifiable callers are rejected. Clients bypass environment proxies and reject redirects. The daemon serves HTTP; HTTPS support in the Go client does not add TLS or reverse-proxy support to the daemon.
 
@@ -215,7 +215,7 @@ The [OpenAPI 3.1 document](../../api/openapi.json) describes all operations and 
 
 | Operation | Response / requirement |
 | --- | --- |
-| `GET /api/status` | `StatusSnapshot`; TCP uses the configured key/session or verified LAN ingress when no key is configured; Unix uses filesystem permissions |
+| `GET /api/status` | `StatusSnapshot`; TCP uses the configured key/session or verified LAN ingress when no key is configured; Unix uses file system permissions |
 | `GET /api/selectors` | `SelectorsResponse`; administration required; `auth_mode` is `api_key`, `lan` or `unix` |
 | `PUT` / `DELETE /api/session` | Browser login / clear cookie; `204`, empty body; keyless login verifies LAN/Unix access and clears stale cookies without issuing a session |
 | `PUT /api/selectors/{group}` | `SelectorState`; admin, `{"node_id":"..."}` |

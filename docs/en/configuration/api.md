@@ -52,7 +52,7 @@ Login stores a signed session in an `HttpOnly`, `SameSite=Strict` cookie for sev
 
 `global.api_key` is optional. When empty, verified LAN connections receive full management access, including selectors, global status, other-device settings, probes, configured script tasks and resource refresh. Ethernet ingress requires a matching direct ARP/NDP neighbor. IP-only interfaces such as `tailscale0` or a TUN interface require a current observation on `global.lan_interface`, without inventing a MAC or requiring a direct neighbor. This trusts every source arriving through that interface, including other VPN nodes and routed subnets; `lan_interface` itself supplies no encryption or per-user authentication.
 
-Each request is verified. A private source IP, forwarded header or saved cookie cannot establish LAN access. Unverified ingress returns `403`. Keyless access creates no session. Configuring a key requires key/session authentication for all TCP management requests, independently of LAN identity. Unix administration uses filesystem permissions. HTTP exposes keys and reusable sessions to observers of its network path; use a trusted network or an independently encrypted tunnel. The certificate-test TLS branch does not provide HTTPS management.
+Each request is verified. A private source IP, forwarded header or saved cookie cannot establish LAN access. Unverified ingress returns `403`. Keyless access creates no session. Configuring a key requires key/session authentication for all TCP management requests, independently of LAN identity. Unix administration uses file system permissions. HTTP exposes keys and reusable sessions to observers of its network path; use a trusted network or an independently encrypted tunnel. The certificate-test TLS branch does not provide HTTPS management.
 
 The Web UI displays an IP connection and its ingress interface when no Ethernet identity exists. Current-connection context and read-only explanations remain available. Device traffic, MAC-set membership changes and comparisons, per-device MITM preferences and certificate tests require a verified Ethernet MAC; administrator login does not supply one.
 
@@ -68,7 +68,7 @@ References contain every hop's source and name, plus the entrance address family
 
 If a filter excludes the saved path, its entrance family temporarily disappears, or matching is ambiguous, the reference is retained while the explicit default or first candidate is used temporarily. The page displays **Temporary fallback**. A later reload restores a returning path. Choosing another node, including the current fallback, replaces the preference. Health-check failure alone does not clear or change the selection.
 
-Manual file edits trigger reloads through filesystem events, including atomic replacements. Invalid contents, application failures, or a temporarily missing file preserve current state. For example:
+Manual file edits trigger reloads through file system events, including atomic replacements. Invalid contents, application failures, or a temporarily missing file preserve current state. For example:
 
 ```json
 {
@@ -126,7 +126,7 @@ Keyless TCP administration returns `403` if LAN identification fails. With a con
 | --- | --- |
 | `PUT /api/session` | With a configured key, login using `Authorization: Bearer <api_key>` and receive a session cookie; without a key, verify LAN/Unix access and clear stale cookies. Empty body, `204` on success |
 | `DELETE /api/session` | Clear the browser session cookie; empty body, `204` on success |
-| `GET /api/status` | Full runtime snapshot; TCP uses the configured API key/session, or verified LAN ingress when no key is configured; Unix uses filesystem permissions |
+| `GET /api/status` | Full runtime snapshot; TCP uses the configured API key/session, or verified LAN ingress when no key is configured; Unix uses file system permissions |
 | `GET /api/device` | Caller IP, MAC, sets (`name`, `description`, `joined`), and MITM state (`enabled`, `override`, `ca_fingerprint`); `403` for an unknown MAC |
 | `GET /api/device/status` | Caller device state and MAC-attributed userspace upstream statistics; verified direct LAN only |
 | `POST /api/device/certificate-tests` | Empty body; `201` with browser challenge URLs; does not change MITM settings |

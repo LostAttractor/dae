@@ -278,7 +278,7 @@ routing {
 
 ## PPPoE
 
-如果希望代理 pppoe 接口, 请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口, 对于 wan 接口是 pppoe 的情况, 使用 auto 即可。
+如果希望代理 pppoe 接口，请将 wan/lan_interface 设置为 pppd 生成的接口 (即 ppp0 / pppoe-wan) 而不是物理接口，对于 wan 接口是 pppoe 的情况，使用 auto 即可。
 
 ## 热重载和暂停
 
