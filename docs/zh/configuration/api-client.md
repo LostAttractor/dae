@@ -119,6 +119,8 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 也可在服务管理器中设置 `DAE_WEB_ROOT`。该目录替代内嵌静态资源；资源按请求读取，替换完整目录即可更新前端，无需重新编译 dae。目录中的文件及子目录均为公开静态资源，只应存放前端产物；缺失资源返回 `404`。新增 JS、CSS 或嵌套资源无需修改 dae 路由。`/api/` 与证书下载路径由 API handler 优先处理。
 
+流量图表在 Overview 有采样数据时按需加载。构建产物包含 gzip 文件，dae 根据客户端支持情况直接提供，无需运行时压缩。`assets/` 下文件名含内容哈希的 JS/CSS 使用一年期不可变缓存，HTML 与其他文件使用 `no-store`。发布时应一并部署所有分块及 gzip 文件，不得修改已有哈希文件名对应的内容；需要支持已打开页面在更新后继续加载图表时，应保留旧的哈希资源。
+
 页面仍通过 `http://路由器IP:<api_port>/` 访问，由 dae 的 API 端口提供，浏览器直接连接路由器，因此现有的同源校验与设备 MAC 识别继续有效。独立构建不意味着可通过 `file://`、任意跨源静态站点或普通反向代理访问设备接口。`X-Forwarded-For` 等头不会改变设备身份。
 
 `make` 和 `make test` 会通过 `make web-assets` 构建前端，并以产物替换 `internal/webui/assets/`，随后编译 Go。构建产物由 Git 忽略，只编辑 `web/src/`。直接执行 `go build` 或 `internal/webui`、`cmd` 的测试时，除了守护进程原有的构建前置步骤，还需先运行 `make web-assets`。仅构建或测试独立客户端时无需此步骤。

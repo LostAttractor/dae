@@ -75,6 +75,11 @@ such as `/api/device`; `/api/`, `/ca.pem`, `/ca.cer` and `/ca.mobileconfig` belo
 to the daemon. Assets can use subdirectories. Missing paths return `404`; the
 server does not provide a single-page application routing fallback.
 
+Deploy all generated chunks and `.gz` sidecars together. Content-hashed JS/CSS
+under `assets/` are cached for one year; HTML and unhashed files are not cached.
+Never change the contents of an existing hashed asset name. Charts load on demand,
+so retain older hashed assets if open pages must continue working across updates.
+
 Network Panel has two primary pages: **Overview** and **Setting**. Navigation
 uses `/#overview`, `/#setting/devices`, `/#setting/selector` and
 `/#setting/explain`. Overview is the default; unknown fragments return to

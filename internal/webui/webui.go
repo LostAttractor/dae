@@ -52,6 +52,8 @@ func Handler(directory string, testTargets ...netip.AddrPort) http.Handler {
 			http.Error(w, "method not allowed", 405)
 			return
 		}
-		handler.ServeHTTP(w, r)
+		if !serveAsset(files, w, r) {
+			handler.ServeHTTP(w, r)
+		}
 	})
 }

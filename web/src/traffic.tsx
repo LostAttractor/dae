@@ -1,33 +1,20 @@
-import type { TooltipContentProps } from "recharts";
+import { Component, lazy, Suspense } from "react";
+import type { ReactNode } from "react";
 import type { PathStats } from "./types.ts";
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { rate, series } from "./traffic-data.ts";
 
+const TrafficChart = lazy(() => import("./traffic-chart.tsx"));
 const sampleCount = 12;
 const sampleSeconds = 5;
-const series = [
-  { key: "upload", name: "Upload", color: "var(--chart-upload)", dash: "5 4" },
-  { key: "download", name: "Download", color: "var(--chart-download)" },
-];
 
-export function bytes(value = 0) {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
-  return `${value.toLocaleString(undefined, { maximumFractionDigits: unit ? 1 : 0 })} ${units[unit]}`;
-}
-
-const rate = (value = 0) => `${bytes(value)}/s`;
-const age = (value: number) => value === 0 ? "Latest" : `${value}s`;
-
-function RateTooltip({ active, payload, label }: TooltipContentProps) {
-  if (!active || !payload?.length) return null;
-  return <div className="traffic-tooltip">
-    <p>{label === 0 ? "Latest sample" : `${Math.abs(Number(label))}s before latest`}</p>
-    <dl>{payload.map((entry) => <div key={String(entry.dataKey)}>
-      <dt><span className={`traffic-swatch ${entry.dataKey}`} aria-hidden="true" />{entry.name}</dt>
-      <dd>{rate(typeof entry.value === "number" ? entry.value : 0)}</dd>
-    </div>)}</dl>
-  </div>;
+class ChartBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    return this.state.failed
+      ? <p className="traffic-empty" role="status">Traffic chart unavailable. <a href="">Reload page</a></p>
+      : this.props.children;
+  }
 }
 
 export function TrafficPanel({ stats }: { stats: PathStats }) {
@@ -58,23 +45,11 @@ export function TrafficPanel({ stats }: { stats: PathStats }) {
         </span>)}</span>
       </figcaption>
       <div className="traffic-chart">
-        {hasSamples ? <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-          <LineChart data={data} margin={{ top: 12, right: 24, bottom: 0, left: 0 }}
-            accessibilityLayer aria-label="Upload and download rates in bytes per second. Use left and right arrow keys to explore five-second samples.">
-            <CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="3 3" />
-            <XAxis type="number" dataKey="seconds" domain={[-55, 0]} ticks={[-55, -30, 0]}
-              tickFormatter={age} tickLine={false} axisLine={false} tickMargin={10} height={32}
-              tick={{ fill: "var(--muted)", fontSize: 13 }} />
-            <YAxis domain={[0, (maximum: number) => Math.max(1, maximum)]} width={84} tickCount={4} allowDecimals={false}
-              tickFormatter={rate} tickLine={false} axisLine={false} tickMargin={8}
-              tick={{ fill: "var(--muted)", fontSize: 13 }} />
-            <Tooltip content={RateTooltip} isAnimationActive={false} cursor={{ stroke: "var(--control-line)", strokeDasharray: "3 3" }} />
-            {series.map((item) => <Line key={item.key} type="linear" dataKey={item.key} name={item.name}
-              stroke={item.color} strokeWidth={2} strokeDasharray={item.dash}
-              dot={{ r: 2, strokeWidth: 0, fill: item.color }} activeDot={{ r: 4, strokeWidth: 2, stroke: "var(--surface)" }}
-              isAnimationActive={false} connectNulls={false} />)}
-          </LineChart>
-        </ResponsiveContainer> : <p className="traffic-empty" role="status">Waiting for the first traffic sample…</p>}
+        {hasSamples ? <ChartBoundary>
+          <Suspense fallback={<p className="traffic-empty" role="status">Loading traffic chart…</p>}>
+            <TrafficChart data={data} />
+          </Suspense>
+        </ChartBoundary> : <p className="traffic-empty" role="status">Waiting for the first traffic sample…</p>}
       </div>
       <p className="chart-caption">Recent minute · 5-second samples</p>
     </figure>

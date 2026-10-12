@@ -8,7 +8,8 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Icon } from "@astryxdesign/core/Icon";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { createView } from "./react-view.ts";
-import { bytes, TrafficPanel } from "./traffic.tsx";
+import { bytes } from "./traffic-data.ts";
+import { TrafficPanel } from "./traffic.tsx";
 import { UpdatedAt } from "./updated.tsx";
 
 function ConnectionMetrics({ stats, total = false }: { stats: PathStats; total?: boolean }) {

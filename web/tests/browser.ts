@@ -7,7 +7,7 @@ import { deferred, type Fixture, type FixtureStats, type FixtureGroup, type Fixt
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createTLSServer } from "node:https";
 import { createServer as createTCPServer } from "node:net";
@@ -15,12 +15,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { gunzipSync } from "node:zlib";
 
 const profile = await mkdtemp(join(tmpdir(), "dae-web-"));
 const source = join(profile, "public");
 await promisify(execFile)(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../build.ts", import.meta.url)), source]);
+for (const entry of await readdir(source, { recursive: true, withFileTypes: true })) {
+  if (!entry.isFile()) continue;
+  const path = join(entry.parentPath, entry.name);
+  const data = await readFile(path);
+  if (entry.name.endsWith(".js")) assert.ok(data.length <= 500_000, `${entry.name} stays within the JS chunk budget`);
+  if (!entry.name.endsWith(".gz")) continue;
+  const original = await readFile(path.slice(0, -3));
+  assert.deepEqual(gunzipSync(data), original, `${entry.name} precompressed contents`);
+  assert.ok(data.length < original.length, `${entry.name} compression saves bytes`);
+}
+const html = await readFile(join(source, "index.html"), "utf8");
+const entryScript = html.match(/<script\b[^>]*\bsrc="([^"]+)"/)?.[1];
+assert.ok(entryScript, "production HTML references its entry script");
+await readFile(join(source, "index.html.gz"));
+await readFile(join(source, `${entryScript}.gz`));
+console.log("PASS production asset sizes and gzip round trips");
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let fixture: Fixture;
+const chartRequests: string[] = [];
+let chartResponse: { release: ReturnType<typeof deferred>; fail?: boolean } | null = null;
 const tlsServers: Partial<Record<"trust" | "mitm" | "untrusted", ReturnType<typeof createTLSServer>>> = {};
 const mitmOrigins = ["https://203.0.113.254", "https://[2001:db8:ffff::254]"];
 let proxy: ReturnType<typeof createServer> | undefined;
@@ -123,6 +142,12 @@ const httpServer = createServer(async (req, res) => {
     if (!url.startsWith("/api/")) {
       const path = url === "/" ? "index.html" : url.slice(1);
       if (!/^(?:assets\/)?[\w-]+\.(html|js|css)$/.test(path)) { res.writeHead(404).end(); return; }
+      if (path.startsWith("assets/traffic-chart-")) {
+        chartRequests.push(path);
+        const response = chartResponse;
+        if (response) await response.release.promise;
+        if (response?.fail) { res.writeHead(503, { "Cache-Control": "no-store" }).end(); return; }
+      }
       const types: Record<string, string> = { html: "text/html", js: "text/javascript", css: "text/css" };
       res.writeHead(200, {
         "Content-Type": types[path.split(".").at(-1)!], "Cache-Control": "no-store",
@@ -336,6 +361,7 @@ try {
     catch (error) {
       failures++;
       console.error(`FAIL ${name}: ${error instanceof Error ? error.stack : JSON.stringify(error)}\n${browserLogs.slice(-8).join("\n")}`);
+      console.error("Page state:", await js('({ message: document.querySelector("#message")?.textContent, tone: document.querySelector("#message")?.dataset.tone, busy: document.querySelector("#controls")?.getAttribute("aria-busy"), focused: document.activeElement?.id })'));
       console.error("Viewport:", await js('({ width: innerWidth, scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth })'));
       console.error("Overflow:", await js('[...document.querySelectorAll("body *")].filter(el => el.checkVisibility() && (el.getBoundingClientRect().right > innerWidth + 1 || el.clientWidth && el.scrollWidth > el.clientWidth + 1)).slice(0, 12).map(el => ({ tag: el.tagName, id: el.id, class: el.className, width: el.getBoundingClientRect().width }))'));
       if (process.env.SCREENSHOT_DIR) {
@@ -348,6 +374,63 @@ try {
   await call("Runtime.enable");
   await call("Network.enable");
   await call("Log.enable");
+
+  await test("traffic chart loads only on demand and leaves controls usable while pending", async () => {
+    await page("#setting/explain");
+    chartRequests.length = 0;
+    await page("#setting/explain");
+    assert.deepEqual(chartRequests, [], "Setting does not request chart code");
+    const response = { release: deferred() };
+    chartResponse = response;
+    try {
+      await visit("overview");
+      await until('document.querySelector(".traffic-empty")?.textContent === "Loading traffic chart…"');
+      assert.match(await js('document.querySelector("#device-traffic .traffic-metrics").textContent'), /200 B\/s/);
+      await js('document.querySelector("#refresh").click()');
+      await ready();
+      await visit("explain");
+      assert.equal(await js('document.querySelector("#diagnostic-form").checkVisibility()'), true);
+      response.release.resolve();
+      await visit("overview");
+      await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+      await visit("explain");
+      await visit("overview");
+      await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+      assert.equal(chartRequests.length, 1, "both scopes and repeat navigation share the chart module");
+    } finally { response.release.resolve(); chartResponse = null; }
+  });
+
+  await test("traffic chart waits for samples before downloading", async () => {
+    fixture.stats.history = {};
+    chartRequests.length = 0;
+    await page();
+    assert.deepEqual(chartRequests, []);
+    assert.match(await js('document.querySelector(".traffic-empty").textContent'), /Waiting for the first traffic sample/);
+    fixture.stats.history = { upload_bytes_per_second: [321] };
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    assert.equal(chartRequests.length, 1);
+  });
+
+  await test("traffic chart download failure preserves statistics and navigation", async () => {
+    await page("#setting/explain");
+    const response = { release: deferred(), fail: true };
+    chartResponse = response;
+    try {
+      await visit("overview");
+      response.release.resolve();
+      await until('document.querySelector(".traffic-empty")?.textContent.includes("Traffic chart unavailable")');
+      assert.match(await js('document.querySelector("#device-traffic .traffic-metrics").textContent'), /200 B\/s/);
+      await visit("explain");
+      assert.equal(await js('document.querySelector("#diagnostic-form").checkVisibility()'), true);
+      await visit("overview");
+      chartResponse = null;
+      await js('document.querySelector(".traffic-empty a").click()');
+      await ready();
+      await until('document.querySelector("#device-traffic .recharts-surface") !== null');
+    } finally { response.release.resolve(); chartResponse = null; }
+  });
 
   await test("L3 LAN retains management and diagnostics without device controls", async () => {
     fixture.l3 = true;

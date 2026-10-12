@@ -302,4 +302,6 @@ setInterval(async () => {
     pollingSelectors = false;
   }
 }, 2000);
-run(refresh, "", "Loading your network…");
+// Initial loading is already shown by the page's placeholders and busy state.
+// A fast cached startup can finish before a transient toast's first paint.
+run(refresh, "", "");

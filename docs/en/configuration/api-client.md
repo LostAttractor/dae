@@ -170,6 +170,8 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 Assets are read on each request. Replace the complete bundle directory when updating; missing files return `404`. The entire directory and its subdirectories are public; put only frontend assets there. New JS, CSS and nested assets require no daemon routing changes. The API handler takes precedence for `/api/` and certificate download paths.
 
+Charts load on demand when Overview has traffic samples. The build includes gzip sidecars, which dae serves to clients accepting gzip without runtime compression. Content-hashed JS/CSS under `assets/` use a one-year immutable cache; HTML and unhashed files use `no-store`. Deploy all chunks and sidecars together. Keep existing hashed filenames immutable, and retain older hashed assets if open pages must continue loading charts across an update.
+
 The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these files on the API origin, preserving browser origin checks and the caller's direct LAN identity. Building the bundle separately does not enable `file://`, arbitrary cross-origin hosting or ordinary reverse proxies for device self-service. Forwarding headers cannot impersonate a device.
 
 `make` and `make test` run `make web-assets` to build the frontend and replace `internal/webui/assets/` with its output before compiling Go. Generated bundles are ignored by Git; only `web/src/` is edited. When invoking `go build` or tests of `internal/webui` or `cmd` directly, first run `make web-assets` alongside the usual daemon build prerequisites. Client-only builds and tests do not need this step.

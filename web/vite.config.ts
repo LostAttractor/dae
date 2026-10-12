@@ -29,7 +29,11 @@ export default defineConfig(async ({ command, mode }): Promise<UserConfig> => {
       emptyOutDir: true,
       target: "es2022",
       license: { fileName: "licenses.txt" },
-      rolldownOptions: { output: { postBanner: "/* Bundled dependency licenses: /licenses.txt */" } },
+      rolldownOptions: { output: {
+        postBanner: "/* Bundled dependency licenses: /licenses.txt */",
+        // Keep the shared runtime cached across application and chart updates.
+        codeSplitting: { groups: [{ name: "react", test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/ }] },
+      } },
     },
   };
 });
