@@ -41,6 +41,8 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y musl-tools clang-15 llvm-15 binutils
+      - name: Generate eBPF bindings
+        run: make ebpf CLANG=clang-15 STRIP=llvm-strip-15
       - name: Check native script memory management
         env:
           CGO_ENABLED: 1
