@@ -802,7 +802,15 @@ try {
 
   await test("quick and full selectors share saved choices and clear both views after access loss", async () => {
     await openPicker("overview");
-    assert.equal(await js('[...document.querySelectorAll(".test-node, .test-selected, .test-all")].some(button => button.checkVisibility())'), false);
+    assert.equal(await js('document.querySelector("#quick-selectors .test-node").checkVisibility()'), true);
+    assert.equal(await js('[...document.querySelectorAll(".test-selected, .test-all")].some(button => button.checkVisibility())'), false);
+    await js('document.querySelector("#quick-selectors .test-node").focus(); document.querySelector("#quick-selectors .test-node").click()');
+    await ready();
+    assert.deepEqual(lastRequest(), { method: "POST", path: "/api/probes", body: { outbound: "On demand", node_id: "node-0" } });
+    assert.equal(fixture.requests.some(entry => entry.path.startsWith("/api/selectors/")), false, "testing a node does not change the saved choice");
+    assert.equal(await js('document.querySelector("#quick-selectors .node-popover").matches(":popover-open")'), true);
+    assert.equal(await js('document.activeElement.matches(".select-node")'), true);
+    assert.equal(await js('document.querySelector("#quick-selectors .test-node").disabled'), true, "a running test cannot be queued again");
     await js('document.querySelectorAll(".select-node")[1].click()');
     await ready();
     assert.equal(await js('document.querySelector("#quick-selectors .selected-name").textContent'), "Tokyo");
@@ -1084,6 +1092,12 @@ try {
     await js('document.querySelector(".test-node").focus()');
     await key("ArrowDown", 40);
     assert.equal(await js('document.activeElement.closest(".selector-node").querySelector(".node-name").textContent'), "Tokyo");
+    assert.equal(await js('getComputedStyle(document.activeElement).outlineStyle'), "none", "node focus does not draw a separate frame around the text");
+    assert.equal(await js('(() => { const row = document.activeElement.closest(".selector-node"); const style = getComputedStyle(row); const card = row.getBoundingClientRect(); const test = row.querySelector(".test-node").getBoundingClientRect(); return style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0 && test.left > card.left && test.right < card.right && test.top > card.top && test.bottom < card.bottom; })()'), true, "the focused node frame also encloses its Test button");
+    if (process.env.SCREENSHOT_DIR) {
+      const image = await call("Page.captureScreenshot");
+      await writeFile(join(process.env.SCREENSHOT_DIR, "dae-node-focus-frame.png"), Buffer.from(image.data, "base64"));
+    }
     await key("End", 35);
     assert.match(await js('document.activeElement.querySelector(".node-name").textContent'), /^Node 999/);
     await key("Escape", 27);
@@ -1696,6 +1710,24 @@ try {
   });
 
   await test("responsive layouts and dark mode keep the popup usable", async () => {
+    const checkNodeActions = async (view: string, width: number, height: number) => {
+      assert.equal(await js('document.querySelector(".test-node").checkVisibility()'), true, `${view} exposes node testing`);
+      assert.equal(await js('(() => { const row = document.querySelector(".selector-node"); const card = row.getBoundingClientRect(); const choice = row.querySelector(".select-node").getBoundingClientRect(); const test = row.querySelector(".test-node").getBoundingClientRect(); return Math.abs((card.top + card.bottom) / 2 - (test.top + test.bottom) / 2) <= 1 && test.top > card.top && test.bottom < card.bottom && test.right < card.right && choice.right <= test.left; })()'), true, `${view} centers the inset Test button without overlapping node selection at ${width}px`);
+      assert.equal(await js('(() => { const test = document.querySelector(".test-node").getBoundingClientRect(); return test.width >= 64 && test.height >= 40; })()'), true, `${view} provides a larger Test target at ${width}px`);
+      if (width === 1280 && height === 960) {
+        await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
+        const resting = await js('getComputedStyle(document.querySelector(".selector-node[data-node=node-1]")).backgroundColor');
+        const point = await js<{ x: number; y: number }>('(() => { const choice = document.querySelector(".selector-node[data-node=node-1] .select-node"); choice.scrollIntoView({ block: "nearest" }); const rect = choice.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; })()');
+        await call("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+        await until('document.querySelector(".selector-node[data-node=node-1] .select-node").matches(":hover")');
+        assert.notEqual(await js('getComputedStyle(document.querySelector(".selector-node[data-node=node-1]")).backgroundColor'), resting, `${view} highlights the whole hovered row`);
+        assert.deepEqual(await js('(() => { const style = getComputedStyle(document.querySelector(".selector-node[data-node=node-1] .select-node")); return [style.backgroundColor, style.backgroundImage]; })()'), ["rgba(0, 0, 0, 0)", "none"], `${view} has no separate partial highlight over the row`);
+      }
+      if (process.env.SCREENSHOT_DIR && (width === 320 && height === 568 || width === 1280 && height === 960)) {
+        const image = await call("Page.captureScreenshot");
+        await writeFile(join(process.env.SCREENSHOT_DIR, `dae-node-actions-${view}-${width}.png`), Buffer.from(image.data, "base64"));
+      }
+    };
     fixture.groups = statusGroups(fixture.stats);
     fixture.tables = [{ name: "resolved_domains", used: 128, limit: 4096 }];
     fixture.plugins = [{ id: "request_rules", type: "http", state: "ready" }];
@@ -1764,6 +1796,7 @@ try {
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `outbounds fit the content viewport at ${width}x${height}`);
       assert.equal(await js('(() => { const menu = document.querySelector(".node-popover").getBoundingClientRect(); return menu.left >= 0 && menu.top >= 0 && menu.right <= innerWidth && menu.bottom <= innerHeight; })()'), true);
       assert.equal(await js('document.querySelector(".node-list").clientHeight > 20'), true);
+      await checkNodeActions("setting", width, height);
       if (process.env.SCREENSHOT_DIR && width === 390 && height === 844) {
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
         await writeFile(join(process.env.SCREENSHOT_DIR, "dae-web-mobile-open.png"), Buffer.from(image.data, "base64"));
@@ -1776,6 +1809,11 @@ try {
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-selector-${width}x${height}.png`), Buffer.from(image.data, "base64"));
       }
       await visit("overview");
+      await openPicker("overview");
+      assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `quick selector actions fit at ${width}px`);
+      await checkNodeActions("overview", width, height);
+      await js('document.querySelector(".node-popover").hidePopover()');
+      await until('document.querySelectorAll(".selector-node").length === 0');
       const overviewBounds = await js('(() => { const rect = document.querySelector(".workspace").getBoundingClientRect(); return { left: rect.left, width: rect.width, navWidth: document.querySelector(".page-nav").getBoundingClientRect().width }; })()');
       assert.equal(await js('(() => { const box = document.querySelector(".device-identity").getBoundingClientRect(); const refresh = document.querySelector("#refresh").getBoundingClientRect(); return refresh.width >= 44 && refresh.height >= 36 && (innerWidth <= 760 ? refresh.bottom < box.top : box.right < refresh.left || box.bottom < refresh.top); })()'), true, `identity and refresh remain separate and readable at ${width}px`);
       assert.equal(await js('document.querySelector("#identity").checkVisibility() && document.querySelector("#device-mac").checkVisibility()'), true, `IP and MAC stay visible at ${width}px`);

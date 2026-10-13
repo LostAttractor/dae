@@ -141,7 +141,7 @@ function Selector({ selector, actions, compact = false }: { selector: SelectorSt
         aria-controls={`${id}-nodes`} popoverTarget={`${id}-nodes`} isDisabled={!selector.nodes.length} title={name} aria-label={`${selector.name}: ${name}`}>
         <span className="selected-name">{name}</span><span className="picker-arrow" aria-hidden="true" />
       </Button>
-      <Button label="Test" className="test-selected" type="button" hidden={compact || selector.track_all} isDisabled={!selected || selected.checking}
+      <Button label="Test selected" className="test-selected" type="button" hidden={compact || selector.track_all} isDisabled={!selected || selected.checking}
         aria-label={`Test selected node in ${selector.name}`} onClick={() => probe(selector.node_id)} />
       <div ref={menu} id={`${id}-nodes`} className="node-popover" popover="auto" role="dialog" aria-label={`Select a node in ${selector.name}`}
         onBeforeToggle={(event) => {
@@ -162,7 +162,7 @@ function Selector({ selector, actions, compact = false }: { selector: SelectorSt
           role="searchbox" placeholder="Search nodes…" autoComplete="off" spellCheck={false} width="100%"
           value={query} onChange={(value) => { setQuery(value); list.current!.scrollTop = 0; }} />
         <p className="node-results" role="status">{filter ? `${visible.length} of ${selector.nodes.length} nodes` : nodeCount(visible.length)}</p>
-        <div ref={list} className="node-list">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector} compact={compact}
+        <div ref={list} className="node-list">{open && selector.nodes.map(node => <NodeOption key={node.id} node={node} selector={selector}
           hidden={!node.name.toLocaleLowerCase().includes(filter)} onProbe={() => probe(node.id)} onSelect={() => {
             if (node.id === selector.node_id && selector.saved_selection?.status === "matched") {
               menu.current!.hidePopover(); picker.current!.focus();
@@ -187,16 +187,16 @@ function Selector({ selector, actions, compact = false }: { selector: SelectorSt
   </section>;
 }
 
-function NodeOption({ node, selector, hidden, compact, onProbe, onSelect }: { node: SelectorNode; selector: SelectorState; hidden: boolean; compact: boolean; onProbe: () => void; onSelect: () => void }) {
+function NodeOption({ node, selector, hidden, onProbe, onSelect }: { node: SelectorNode; selector: SelectorState; hidden: boolean; onProbe: () => void; onSelect: () => void }) {
   const selected = node.id === selector.node_id;
   return <div className="selector-node" data-node={node.id} hidden={hidden}>
-    <Button label={node.name} className="select-node" type="button" aria-pressed={selected} onClick={onSelect}
+    <Button label={node.name} variant="ghost" className="select-node" type="button" aria-pressed={selected} onClick={onSelect}
       title={`${node.name}${node.id === selector.default_node_id ? " · Default" : ""}\n${monitoringLabel(node)}${node.checked_at ? ` · ${checkedLabel(node)}` : ""}`}
       aria-label={`${selected ? "Selected" : "Select"} ${node.name}, ${healthLabels[healthState(node)]} ${latencyLabel(node)}`.trim()}>
       <span className="node-name">{node.name}</span><span className="node-check" aria-hidden="true">{selected ? "✓" : ""}</span>
       <span className="node-status status-row"><Health node={node} /></span>
     </Button>
-    <Button label="Test" className="test-node" type="button" hidden={compact || selector.track_all} isDisabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe} />
+    <Button label="Test" className="test-node" type="button" hidden={selector.track_all} isDisabled={node.checking} aria-label={`Test ${node.name}`} onClick={onProbe} />
   </div>;
 }
 
