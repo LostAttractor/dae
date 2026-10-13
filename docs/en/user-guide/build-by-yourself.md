@@ -76,6 +76,29 @@ on a target device's kernel. Full Go tests and kernel integration do not run
 on every release architecture, and the compiler matrix does not cover every
 Clang patch release or every possible `CC` implementation.
 
+### Distribution pipeline
+
+Preview, Next, daily, release and prerelease builds share `seed-build.yml`.
+`install/release-targets.json` defines both the compiler settings and unique
+artifact name for each target. The three explicit RISC-V profiles use
+`linux-riscv64_rva20u64`, `linux-riscv64_rva22u64` and `linux-riscv64_rva23u64`.
+
+The workflow resolves the source commit and version once. Each target compiles
+the daemon and runs static ELF checks and target smoke tests. Preview, Next and
+daily builds upload a `binary-<target>` artifact containing only its
+`dae-<target>` executable; they do not assemble distribution packages or download
+runtime data.
+
+Release and prerelease builds add a `.dgst` file alongside each executable,
+containing its MD5, SHA1, SHA256 and SHA512 checksums. Their `release-*` artifacts
+contain only the bare binary and its checksum file. Publishing uploads those
+files directly as release assets after all target builds succeed.
+
+Download the binary for your target and make it executable, for example
+`chmod +x dae-linux-x86_64`. Provide your own configuration and, if needed,
+service definition. Install Geo data separately
+[when the configuration references it](#optional-geo-data-files).
+
 ## Surge JavaScript runtime
 
 `SURGE_RUNTIME` selects one backend at compile time for all Surge instances:

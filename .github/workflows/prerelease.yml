@@ -1,5 +1,5 @@
 name: Publish Pre-release
-run-name: Publish prerelease ${{ inputs.tag }} by @${{ github.actor }}
+run-name: Publish Pre-release tag ${{ inputs.tag }} by @${{ github.actor }}
 
 on:
   workflow_dispatch:
@@ -13,256 +13,27 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        goos: [ linux ]
-        goarch: [ arm64, 386, riscv64, loong64, mips64le, mipsle, ppc64le ]
-        include:
-          # BEGIN Linux ARM 5 6 7
-          - goos: linux
-            goarch: arm
-            goarm: 7
-          - goos: linux
-            goarch: arm
-            goarm: 6
-          - goos: linux
-            goarch: arm
-            goarm: 5
-          # END Linux ARM 5 6 7
-          # BEGIN Linux AMD64 v1 v2 v3
-          - goos: linux
-            goarch: amd64
-            goamd64: v1
-          - goos: linux
-            goarch: amd64
-            goamd64: v2
-          - goos: linux
-            goarch: amd64
-            goamd64: v3
-          # END Linux AMD64 v1 v2 v3
-          # BEGIN Linux RISCV64 rva20u64 rva22u64 rva23u64
-          - goos: linux
-            goarch: riscv64
-            goriscv64: rva20u64
-          - goos: linux
-            goarch: riscv64
-            goriscv64: rva22u64
-          - goos: linux
-            goarch: riscv64
-            goriscv64: rva23u64
-          # END Linux RISCV64 rva20u64 rva22u64 rva23u64
-      fail-fast: false
-
-    runs-on: ubuntu-24.04
-    env:
-      GOOS: ${{ matrix.goos }}
-      GOARCH: ${{ matrix.goarch }}
-      GOARM: ${{ matrix.goarm }}
-      GOAMD64: ${{ matrix.goamd64 }}
-      GORISCV64: ${{ matrix.goriscv64 }}
-      CGO_ENABLED: 1
-
-    steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v5
-        with:
-          submodules: recursive
-          fetch-depth: 0
-          ref: ${{ inputs.tag }}
-
-      - name: Get the version
-        id: get_version
-        env:
-          REF: ${{ inputs.tag }}
-        run: |
-          version=${REF}
-          echo "VERSION=$version" >> $GITHUB_OUTPUT
-          echo "VERSION=$version" >> $GITHUB_ENV
-
-      - name: Show workflow information
-        id: get_filename
-        run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          cache-dependency-path: |
-            go.mod
-            go.sum          
-          go-version: '>=1.27.0'
-
-      - name: Install host LLVM
-        uses: ./.github/actions/setup-llvm
-
-      - name: Install ELF tools and target emulators
-        run: sudo apt-get install -y binutils qemu-user
-
-      - name: Set up musl cross-compiler
-        uses: ./.github/actions/setup-musl
-
-      - name: Get project dependencies
-        run: |
-          GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
-          find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
-          sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
-
-      - name: Create directory for placing archives & packages temporarily
-        run: mkdir -p ./bundled/
-
-      - name: Create full source archive
-        if: matrix.goarch == 'arm64'
-        run: |
-          zip -9vr ./bundled/dae-full-src.zip . -x .git/\* bundled/\*
-          tar -I 'xz -9' -cvf ./bundled/dae-full-src.tar.xz --exclude .git --exclude bundled .
-
-      - name: Build dae
-        run: |
-          export GOFLAGS="-trimpath -modcacherw"
-          export OUTPUT=pkgdir/usr/bin/dae
-          export VERSION=${{ env.VERSION }}
-          make
-          install -Dm644 ./install/dae.service -t ./pkgdir/usr/lib/systemd/system/
-          install -Dm640 ./example.dae -t ./pkgdir/etc/dae/
-          install -d ./pkgdir/usr/share/dae/
-          source ./install/geodata.env
-          curl --fail --show-error --location --retry 3 -o ./pkgdir/usr/share/dae/geoip.dat "https://github.com/v2fly/geoip/releases/download/${GEOIP_VERSION}/geoip.dat"
-          curl --fail --show-error --location --retry 3 -o ./pkgdir/usr/share/dae/geosite.dat "https://github.com/v2fly/domain-list-community/releases/download/${GEOSITE_VERSION}/dlc.dat"
-          echo "${GEOIP_SHA256}  ./pkgdir/usr/share/dae/geoip.dat" | sha256sum -c -
-          echo "${GEOSITE_SHA256}  ./pkgdir/usr/share/dae/geosite.dat" | sha256sum -c -
-          install -D pkgdir/usr/share/dae/geo{ip,site}.dat install/{dae.service,empty.dae} example.dae -t ./zip/
-          install -D pkgdir/usr/bin/dae ./zip/dae-$ASSET_NAME
-
-      - name: Validate static binary and QuickJS on target
-        uses: ./.github/actions/smoke-musl
-        with:
-          executable: ./pkgdir/usr/bin/dae
-
-      - name: Create binary archive
-        run: |
-          tar -I 'xz -9' -cvf ./bundled/dae-$ASSET_NAME.tar.xz -C pkgdir .
-          cd zip
-          zip -9vr ../bundled/dae-$ASSET_NAME.zip .
-
-      - name: Build Linux packages
-        if: ${{ env.GOARM == '7' || env.GOARM == '' }}
-        run: |
-          sudo apt install -y libarchive-tools
-          sudo gem install fpm
-
-          case $GOARCH in
-            'amd64' | 'i386' | 'arm64' | 'arm' | 'riscv64' | 'loong64' | 'ppc64' | 'ppc64le') archlinux_pacman='pacman' ;;
-            *) echo "Skip unsupported architecture for Arch Linux" ;;
-          esac
-
-          for pkg_mgr in deb rpm $archlinux_pacman; do
-            case $GOARCH in
-              'amd64')
-                if [ $pkg_mgr == 'deb' ]; then
-                  pkg_arch='amd64'
-                else
-                  pkg_arch='x86_64'
-                fi ;;
-              '386')
-                case $pkg_mgr in
-                  'deb') pkg_arch='i386' ;;
-                  'rpm') pkg_arch='x86' ;;
-                  'pacman') pkg_arch'i486' ;;
-                esac ;;
-              'arm64')
-                if [ $pkg_mgr == 'deb' ]; then
-                  pkg_arch='arm64'
-                else
-                  pkg_arch='aarch64'
-                fi ;;
-              'arm')
-                case $pkg_mgr in
-                  'deb') pkg_arch='armhf' ;;
-                  'rpm') pkg_arch='armhfp' ;;
-                  'pacman') pkg_arch='armv7h' ;;
-                esac ;;
-              'loong64')
-                if [ $pkg_mgr != 'rpm' ]; then
-                  pkg_arch='loong64'
-                else
-                  pkg_arch='loongarch64'
-                fi ;;
-              'mips64le') pkg_arch='mips64el' ;;
-              'mipsle') pkg_arch='mipsel' ;;
-              'ppc64le')
-                if [ $pkg_mgr == 'deb' ]; then
-                  pkg_arch='ppc64el'
-                else
-                  pkg_arch='ppc64le'
-                fi ;;
-              *) pkg_arch=$GOARCH ;;
-            esac
-
-            fpm -s dir -t $pkg_mgr -a $pkg_arch -v ${VERSION/v/} -n dae \
-                  --url "https://github.com/daeuniverse/dae" \
-                  --description "eBPF-based Linux high-performance transparent proxy solution" \
-                  --maintainer "daeuniverse <dae@v2raya.org>" \
-                  --license 'AGPL-3.0' \
-                  --package ./bundled/dae-$ASSET_NAME.$pkg_mgr \
-                  --after-install ./install/package_after_install.sh \
-                  --after-remove ./install/package_after_remove.sh \
-                  --deb-compression xz \
-                  --deb-compression-level 9 \
-                  --rpm-compression xz \
-                  --verbose \
-                  -C pkgdir .
-          done
-
-          if [ $archlinux_pacman == 'pacman' ]; then
-            mv ./bundled/dae-$ASSET_NAME.pacman ./bundled/dae-$ASSET_NAME.pkg.tar.zst
-          fi
-
-      - name: Create signature
-        run: |
-          cd bundled
-          for FILE in *; do
-            echo "$(md5sum $FILE)""  md5" >> $FILE.dgst
-            echo "$(shasum -a 1 $FILE)""  sha1" >> $FILE.dgst
-            echo "$(shasum -a 256 $FILE)""  sha256" >> $FILE.dgst
-            echo "$(shasum -a 512 $FILE)""  sha512" >> $FILE.dgst
-          done
-
-      - name: Upload files to Artifacts
-        uses: nanoufo/action-upload-artifacts-and-release-assets@v2
-        with:
-          if-no-files-found: ignore
-          path: ./bundled/*
+    uses: ./.github/workflows/seed-build.yml
+    with:
+      ref: ${{ inputs.tag }}
+      build-type: release-build
 
   upload-release:
-    needs: [build]
-    runs-on: ubuntu-latest
+    needs: build
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download release binaries and checksums
         uses: actions/download-artifact@v7
         with:
+          pattern: release-*
+          merge-multiple: true
           path: release/
-
-      - name: Prepare files for upload
-        run: |
-          echo "Show files are going to upload..."
-          cd release
-          ls -lh */*
-
-      - name: Upload full source and artifacts to GitHub release
+      - name: Publish release files
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          files: release/*/*
+          files: release/*
+          fail_on_unmatched_files: true
           prerelease: true

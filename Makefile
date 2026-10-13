@@ -66,9 +66,6 @@ GO_VERSION ?= $(shell go env GOVERSION 2>/dev/null)
 
 BIG_ENDIAN_GOARCHES := mips mips64 mips64p32 ppc64 s390 s390x sparc sparc64
 
-# Do NOT remove the line below. This line is for CI.
-#export GOMODCACHE=$(PWD)/go-mod
-
 # Get version from Git, including linked worktrees where .git is a file.
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
 count=$(shell git rev-list --count HEAD)

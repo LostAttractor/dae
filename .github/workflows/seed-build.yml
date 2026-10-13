@@ -1,15 +1,4 @@
-#      _
-#   __| | __ _  ___
-#  / _` |/ _` |/ _ \
-# | (_| | (_| |  __/
-#  \__,_|\__,_|\___|
-#
-# Copyright (C) 2023 @daeuniverse <https://github.com/daeuniverse>
-#
-# This is a open-source software, liscensed under the AGPL-3.0 License.
-# See /License for more information.
-
-name: Build
+name: Build binaries
 
 on:
   workflow_call:
@@ -19,157 +8,134 @@ on:
         required: true
       pr-number:
         type: number
-        required: false
+        default: 0
       build-type:
         type: string
-        description: "[pr-build,main-build,daily-build,release-build]"
+        description: "pr-build, main-build, daily-build, or release-build"
+        required: true
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        goos: [ linux ]
-        goarch: [ arm64, 386, riscv64, loong64, mips64le, mipsle, ppc64le ]
-        include:
-          # BEGIN Linux ARM 5 6 7
-          - goos: linux
-            goarch: arm
-            goarm: 7
-          - goos: linux
-            goarch: arm
-            goarm: 6
-          - goos: linux
-            goarch: arm
-            goarm: 5
-          # END Linux ARM 5 6 7
-          # BEGIN Linux AMD64 v1 v2 v3
-          - goos: linux
-            goarch: amd64
-            goamd64: v1
-          - goos: linux
-            goarch: amd64
-            goamd64: v2
-          - goos: linux
-            goarch: amd64
-            goamd64: v3
-          # END Linux AMD64 v1 v2 v3
-          # BEGIN Linux RISCV64 rva20u64 rva22u64 rva23u64
-          - goos: linux
-            goarch: riscv64
-            goriscv64: rva20u64
-          - goos: linux
-            goarch: riscv64
-            goriscv64: rva22u64
-          - goos: linux
-            goarch: riscv64
-            goriscv64: rva23u64
-          # END Linux RISCV64 rva20u64 rva22u64 rva23u64
-      fail-fast: false
-
+  prepare:
+    name: Resolve source and build targets
     runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.metadata.outputs.commit }}
+      version: ${{ steps.metadata.outputs.version }}
+      matrix: ${{ steps.metadata.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Test release checksums
+        run: python3 scripts/tests/test_release_pipeline.py
+      - name: Resolve build metadata
+        id: metadata
+        env:
+          BUILD_REF: ${{ inputs.ref }}
+          BUILD_TYPE: ${{ inputs.build-type }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          date=$(git log -1 --format=%cd --date=format:%Y%m%d)
+          case "$BUILD_TYPE" in
+            release-build) version=$BUILD_REF ;;
+            pr-build)
+              count=$(git rev-list --count origin/next..HEAD)
+              version="unstable-${date}.pr-${PR_NUMBER}.r${count}.${commit:0:6}"
+              ;;
+            main-build|daily-build)
+              count=$(git rev-list --count HEAD)
+              version="unstable-${date}.r${count}.${commit:0:6}"
+              ;;
+            *) echo "Unknown build type: $BUILD_TYPE" >&2; exit 1 ;;
+          esac
+          matrix=$(jq -ce '
+            if length > 0 and ([.[].name] | length == (unique | length))
+            then {include: .} else error("release target names must be unique") end
+          ' install/release-targets.json)
+          {
+            echo "commit=$commit"
+            echo "version=$version"
+            echo "matrix=$matrix"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and validate (${{ matrix.name }})
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
-      GOOS: ${{ matrix.goos }}
+      GOOS: linux
       GOARCH: ${{ matrix.goarch }}
       GOARM: ${{ matrix.goarm }}
       GOAMD64: ${{ matrix.goamd64 }}
       GORISCV64: ${{ matrix.goriscv64 }}
-      CGO_ENABLED: 1
-
+      GOFLAGS: -trimpath -modcacherw
+      VERSION: ${{ needs.prepare.outputs.version }}
+      OUTPUT: build/dae-${{ matrix.name }}
     steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-
-      - name: Get the version
-        id: get_version
-        env:
-          REF: ${{ inputs.ref }}
-        run: |
-          date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
-          commit=$(echo ${REF} | cut -c1-6)
-          if [[ "${{ inputs.build-type }}" == "pr-build" ]]; then
-            count=$(git rev-list --count origin/next..HEAD)
-            version="unstable-${date}.pr-${{ inputs.pr-number }}.r${count}.${commit}"
-          else
-            count=$(git rev-list --count HEAD)
-            version="unstable-${date}.r${count}.${commit}"
-          fi
-          echo "VERSION=${version}" >> $GITHUB_OUTPUT
-          echo "VERSION=${version}" >> $GITHUB_ENV
-
-      - name: Show workflow information
-        id: get_filename
-        run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM$GOAMD64\"].friendlyName" -r < install/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_OUTPUT
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@v6
         with:
           cache-dependency-path: |
             go.mod
-            go.sum          
+            go.sum
           go-version: '>=1.27.0'
-
       - name: Install host LLVM
         uses: ./.github/actions/setup-llvm
-
       - name: Install ELF tools and target emulators
         run: sudo apt-get install -y binutils qemu-user
-
       - name: Set up musl cross-compiler
         uses: ./.github/actions/setup-musl
-
-      - name: Get project dependencies
-        run: |
-          GOMODCACHE="${PWD}"/go-mod go mod download -modcacherw
-          find ./go-mod/ -maxdepth 1 ! -name "cache" ! -name "go-mod" -exec rm -rf {} \;
-          sed -i 's/#export GOMODCACHE=$(PWD)\/go-mod/export GOMODCACHE=$(PWD)\/go-mod/' Makefile
-
+      - name: Download Go dependencies
+        run: go mod download
       - name: Build dae
-        run: |
-          mkdir -p ./build/
-          export GOFLAGS="-trimpath -modcacherw"
-          export OUTPUT=build/dae-$ASSET_NAME
-          export VERSION=${{ steps.get_version.outputs.VERSION }}
-          make
-          cp ./install/dae.service ./build/
-          cp ./example.dae ./build/
-          source ./install/geodata.env
-          curl --fail --show-error --location --retry 3 -o ./build/geoip.dat "https://github.com/v2fly/geoip/releases/download/${GEOIP_VERSION}/geoip.dat"
-          curl --fail --show-error --location --retry 3 -o ./build/geosite.dat "https://github.com/v2fly/domain-list-community/releases/download/${GEOSITE_VERSION}/dlc.dat"
-          echo "${GEOIP_SHA256}  ./build/geoip.dat" | sha256sum -c -
-          echo "${GEOSITE_SHA256}  ./build/geosite.dat" | sha256sum -c -
-
+        run: make
       - name: Validate static binary and QuickJS on target
         uses: ./.github/actions/smoke-musl
         with:
-          executable: build/dae-${{ steps.get_filename.outputs.ASSET_NAME }}
-
-      - name: Upload files to Artifacts
+          executable: ${{ env.OUTPUT }}
+      - name: Create release checksums
+        if: inputs.build-type == 'release-build'
+        run: scripts/release-checksums.sh "$OUTPUT"
+      - name: Save validated binary
         uses: actions/upload-artifact@v6
         with:
-          name: dae-${{ steps.get_filename.outputs.ASSET_NAME }}
-          path: build/*
+          name: ${{ inputs.build-type == 'release-build' && 'release' || 'binary' }}-${{ matrix.name }}
+          path: ${{ env.OUTPUT }}*
+          if-no-files-found: error
+          overwrite: true
 
+  report:
+    name: Report preview result
+    if: always() && inputs.build-type == 'pr-build' && startsWith(github.event.pull_request.head.repo.full_name, github.repository_owner)
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check phase results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            [[ "$result" == success ]] || exit 1
+          done
       - name: Report result
+        if: always()
         uses: daeuniverse/ci-seed-jobs/common/report-check-run@master
-        if: always() && inputs.build-type == 'pr-build' && startsWith(github.event.pull_request.head.repo.full_name, github.repository_owner)
         with:
           app_id: ${{ secrets.GH_APP_ID }}
           private_key: ${{ secrets.GH_APP_PRIVATE_KEY }}

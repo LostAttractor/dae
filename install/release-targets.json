@@ -1,0 +1,18 @@
+[
+  { "goarch": "arm64", "name": "linux-arm64" },
+  { "goarch": "386", "name": "linux-x86_32" },
+  { "goarch": "riscv64", "name": "linux-riscv64" },
+  { "goarch": "loong64", "name": "linux-loongarch64" },
+  { "goarch": "mips64le", "name": "linux-mips64le" },
+  { "goarch": "mipsle", "name": "linux-mips32le" },
+  { "goarch": "ppc64le", "name": "linux-powerpc64le" },
+  { "goarch": "arm", "goarm": "7", "name": "linux-armv7" },
+  { "goarch": "arm", "goarm": "6", "name": "linux-armv6" },
+  { "goarch": "arm", "goarm": "5", "name": "linux-armv5" },
+  { "goarch": "amd64", "goamd64": "v1", "name": "linux-x86_64" },
+  { "goarch": "amd64", "goamd64": "v2", "name": "linux-x86_64_v2_sse" },
+  { "goarch": "amd64", "goamd64": "v3", "name": "linux-x86_64_v3_avx2" },
+  { "goarch": "riscv64", "goriscv64": "rva20u64", "name": "linux-riscv64_rva20u64" },
+  { "goarch": "riscv64", "goriscv64": "rva22u64", "name": "linux-riscv64_rva22u64" },
+  { "goarch": "riscv64", "goriscv64": "rva23u64", "name": "linux-riscv64_rva23u64" }
+]
