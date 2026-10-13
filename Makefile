@@ -83,7 +83,7 @@ endif
 endif
 BUILD_ARGS := $(GO_TRIMPATH_FLAG) $(GO_DEBUG_FLAGS) -ldflags "$(GO_STRIP_FLAGS) -X github.com/daeuniverse/dae/cmd.Version=$(VERSION) $(BPF_GO_LDFLAGS) $(STATIC_LDFLAGS)" $(BUILD_ARGS)
 
-.PHONY: check-go-arch check-go-version check-bpf-capacities clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test fmt plugins submodule submodules test
+.PHONY: check-go-arch check-go-version check-bpf-capacities clean-ebpf dae ebpf ebpf-audit ebpf-lint ebpf-test ebpf-test-build fmt plugins submodule submodules test
 
 check-bpf-capacities:
 	@for entry in $(foreach name,$(BPF_CAPACITIES),'$(name)=$($(name))'); do \
@@ -207,12 +207,12 @@ ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/kern/tproxy.c $(wildcard control/kern/*.h kern/*.h) --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
 
-ebpf-test: export BPF_CLANG := $(CLANG)
-ebpf-test: export BPF_STRIP_FLAG := $(STRIP_FLAG)
-ebpf-test: export BPF_CFLAGS := $(BPF_CAPACITY_FLAGS) $(CFLAGS)
-ebpf-test: export BPF_TARGET := $(TARGET)
-ebpf-test: export BPF_TRACE_TARGET = $(GOARCH)
-ebpf-test: check-go-version check-bpf-capacities submodule clean-ebpf
+ebpf-test-build: export BPF_CLANG := $(CLANG)
+ebpf-test-build: export BPF_STRIP_FLAG := $(STRIP_FLAG)
+ebpf-test-build: export BPF_CFLAGS := $(BPF_CAPACITY_FLAGS) $(CFLAGS)
+ebpf-test-build: export BPF_TARGET := $(TARGET)
+ebpf-test-build: export BPF_TRACE_TARGET = $(GOARCH)
+ebpf-test-build: check-go-version check-bpf-capacities submodule clean-ebpf
 	@goos=$$(go env GOOS); \
 	if [ "$$goos" != "linux" ]; then \
 		echo "ERROR: eBPF tests require Linux (found $$goos)." >&2; \
@@ -223,8 +223,11 @@ ebpf-test: check-go-version check-bpf-capacities submodule clean-ebpf
     unset GOARM && \
     echo $(STRIP_FLAG) && \
     GOWORK=off go generate ./control/kern/tests/bpf_test.go && \
-    go clean -testcache && \
-    go test $(GO_DEBUG_FLAGS) -v -ldflags "$(BPF_GO_LDFLAGS)" -tags dae_bpf_tests ./control/kern/tests/...
+    mkdir -p build/ebpf-test && \
+    CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) -c -ldflags "$(BPF_GO_LDFLAGS)" -tags dae_bpf_tests -o build/ebpf-test/kernel.test ./control/kern/tests
+
+ebpf-test: ebpf-test-build
+	./build/ebpf-test/kernel.test -test.v -test.timeout=10m
 
 ebpf-audit: check-go-version check-bpf-capacities
 	CLANG="$(CLANG)" LLVM_OBJDUMP="$(LLVM_OBJDUMP)" BPF_CAPACITY_FLAGS="$(BPF_CAPACITY_FLAGS)" MAX_MATCH_SET_LEN="$(MAX_MATCH_SET_LEN)" ./scripts/ebpf-audit.sh

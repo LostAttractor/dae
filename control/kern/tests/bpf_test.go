@@ -53,9 +53,36 @@ func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dat
 	return ret, opts.DataOut, ctxOut, err
 }
 
-func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
+func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, error) {
 	t.Helper()
 	obj := &bpftestObjects{}
+	// LoadAndAssign only loads requested programs and their dependencies. Keep
+	// fresh maps for each fixture without verifying every other fixture again.
+	programType := reflect.TypeFor[bpftestPrograms]()
+	if len(programNames) == 0 {
+		// Go tests use entry points and packet generators. C fixtures request
+		// their setup and check programs explicitly.
+		for i := range programType.NumField() {
+			name := programType.Field(i).Name
+			if !strings.HasPrefix(name, "Testsetup") && !strings.HasPrefix(name, "Testcheck") {
+				programNames = append(programNames, name)
+			}
+		}
+	}
+	fields := []reflect.StructField{
+		{Name: "Maps", Type: reflect.TypeFor[*bpftestMaps]()},
+		{Name: "Variables", Type: reflect.TypeFor[*bpftestVariables]()},
+	}
+	for _, name := range programNames {
+		field, ok := programType.FieldByName(name)
+		if !ok {
+			return nil, fmt.Errorf("unknown test program %q", name)
+		}
+		fields = append(fields, field)
+	}
+	selected := reflect.New(reflect.StructOf(fields))
+	selected.Elem().Field(0).Set(reflect.ValueOf(&obj.bpftestMaps))
+	selected.Elem().Field(1).Set(reflect.ValueOf(&obj.bpftestVariables))
 	pinPath := fmt.Sprintf("/sys/fs/bpf/dae-tests-%d", os.Getpid())
 	if err := os.MkdirAll(pinPath, 0755); err != nil && !os.IsExist(err) {
 		return nil, err
@@ -87,7 +114,7 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 	}
 	// Kernel tests must not reuse or replace the daemon's persistent routing state.
 	spec.Maps["tcp_flow_map"].Pinning = ebpf.PinNone
-	if err := spec.LoadAndAssign(obj,
+	if err := spec.LoadAndAssign(selected.Interface(),
 		&ebpf.CollectionOptions{
 			Maps: ebpf.MapOptions{
 				PinPath: pinPath,
@@ -100,6 +127,10 @@ func loadTestObjects(t testing.TB) (*bpftestObjects, error) {
 			verifierLog = fmt.Sprintf("Verifier error: %+v\n", ve)
 		}
 		return nil, fmt.Errorf("failed to load objects: %s%w", verifierLog, err)
+	}
+	programs := reflect.ValueOf(&obj.bpftestPrograms).Elem()
+	for _, name := range programNames {
+		programs.FieldByName(name).Set(selected.Elem().FieldByName(name))
 	}
 
 	if err := obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
@@ -355,7 +386,7 @@ func Test(t *testing.T) {
 			// Fixtures must not inherit routing, connectivity or connection
 			// state. These subtests run sequentially, so t.Run completes all
 			// object and pin cleanup before the next fixture loads.
-			obj, err := loadTestObjects(t)
+			obj, err := loadTestObjects(t, "Testpktgen"+id, "Testsetup"+id, "Testcheck"+id)
 			if err != nil {
 				t.Fatalf("error while loading fixture objects: %s", err)
 			}
@@ -398,6 +429,28 @@ func Test(t *testing.T) {
 			}
 
 			consumeBpfDebugLog(t)
+		})
+	}
+}
+
+func TestFixtureObjectsIsolated(t *testing.T) {
+	key := bpftestOutboundConnectivityQuery{Outbound: 2, L4proto: unix.IPPROTO_TCP, Ipversion: 4}
+	for i := range 2 {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			obj, err := loadTestObjects(t, "TestpktgenAndMatch1", "TestsetupAndMatch1", "TestcheckAndMatch1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if obj.TestBridgeIngress != nil {
+				t.Fatal("loaded an unrelated fixture program")
+			}
+			var value uint32
+			if err := obj.OutboundConnectivityMap.Lookup(key, &value); !errors.Is(err, ebpf.ErrKeyNotExist) {
+				t.Fatalf("fixture inherited connectivity state: value=%d err=%v", value, err)
+			}
+			if err := obj.OutboundConnectivityMap.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 }

@@ -59,7 +59,7 @@ CI checks these separate scopes:
 | Workflow | Execution scope |
 | --- | --- |
 | Go Test | Native Linux x86_64: `make test` (`go test ./...`) for both QuickJS and Node, standalone API client tests, the API server without cgo, and backend dependency isolation. |
-| BPF Test | Linux x86_64 runner kernel: generated BPF unit tests with Clang 15–23. This is a compiler matrix, not a target-CPU or kernel-version matrix. |
+| BPF Test | Linux x86_64, Linux 7.2 VM: generated BPF unit tests with Clang 15–23, including BIG TCP and live bridge metadata. This is a compiler matrix, not a target-CPU or kernel-version matrix. |
 | eBPF Audit | Clang 23 objects are loaded and inspected in a Linux 6.18 VM; verifier and dump artifacts are retained. |
 | Kernel Test | Linux x86_64, Linux 6.18 VM: startup/verifier, netkit/veth and TCX integration, splice, and LAN/WAN IPv4/IPv6 TCP/UDP proxy paths. |
 | Musl Static Test | Native x86_64: QuickJS AddressSanitizer tests; musl-linked daemon and full Surge/QuickJS package tests execute in Alpine without host shared libraries. |
@@ -67,14 +67,21 @@ CI checks these separate scopes:
 | Docker | Build and static-link verification for `arm/v7`, `arm64`, `amd64` and `386`; this does not run the daemon's network integration suite on those architectures. |
 
 The release matrix covers `amd64` v1/v2/v3, `386`, `arm64`, ARM 5/6/7,
-`mipsle`, `mips64le`, `ppc64le`, `loong64`, and the default RISC-V profile plus
-RVA20/RVA22/RVA23. The five target smoke tests exercise request rewrite,
+`mipsle`, `mips64le`, `ppc64le`, `loong64`, and RISC-V RVA20/RVA22/RVA23.
+The five target smoke tests exercise request rewrite,
 binary/text conversion, result presence and synthetic responses,
 Promises/timers, and 64-bit Atomics (including negative BigInt operands).
 QEMU user-mode success does not establish eBPF verifier or network behavior
 on a target device's kernel. Full Go tests and kernel integration do not run
 on every release architecture, and the compiler matrix does not cover every
 Clang patch release or every possible `CC` implementation.
+
+`make ebpf-test-build` generates BPF objects and builds the static test executable
+at `build/ebpf-test/kernel.test` without requiring root. `sudo make ebpf-test`
+builds and runs it on the local kernel. The full suite needs an SKB test-run
+interface that accepts BIG TCP packets and a configurable linear data boundary;
+CI uses a pinned Linux 7.2 VM. C fixtures load only their programs and dependencies
+with fresh maps for each case.
 
 ### Distribution pipeline
 

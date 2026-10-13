@@ -18,6 +18,7 @@ node_modules/
 .checkpatch-camelcase.git.
 venv
 /build/ebpf-audit/
+/build/ebpf-test/
 
 /dae-client
 /build/web/

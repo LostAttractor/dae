@@ -61,5 +61,19 @@ jobs:
         with:
           version: ${{ matrix.llvm }}
 
-      - name: Run BPF tests
-        run: sudo env "PATH=$PATH" "CLANG=$CLANG" "STRIP=$STRIP" make ebpf-test
+      - name: Build BPF tests
+        run: make ebpf-test-build
+
+      - name: Run BPF tests on a supported kernel
+        uses: cilium/little-vm-helper@v0.0.28
+        with:
+          test-name: dae-bpf-tests-clang-${{ matrix.llvm }}
+          image-version: '7.2-20261012.013942'
+          host-mount: ./
+          install-dependencies: 'true'
+          cmd: |
+            mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
+            mountpoint -q /sys/kernel/tracing || mount -t tracefs tracefs /sys/kernel/tracing
+            modprobe br_netfilter
+            cd /host
+            ./build/ebpf-test/kernel.test -test.v -test.timeout=10m
