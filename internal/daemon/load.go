@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -52,12 +51,6 @@ var CheckNetworkLinks = []string{
 	"http://www.qualcomm.cn/generate_204",
 }
 
-func init() {
-	rand.Shuffle(len(CheckNetworkLinks), func(i, j int) {
-		CheckNetworkLinks[i], CheckNetworkLinks[j] = CheckNetworkLinks[j], CheckNetworkLinks[i]
-	})
-}
-
 type subscriptionResolution struct {
 	tag   string
 	nodes []string
@@ -73,6 +66,7 @@ func waitForNetworkOnline(ctx context.Context, timeout time.Duration, dialer net
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	checks, checkCtx := errgroup.WithContext(waitCtx)
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "tcp", addr)
@@ -85,42 +79,56 @@ func waitForNetworkOnline(ctx context.Context, timeout time.Duration, dialer net
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-		case <-waitCtx.Done():
+		case <-checkCtx.Done():
 		}
 	}
 	log.Debug("Checking startup network reachability")
-	for i := 0; ; i++ {
-		if contextErr := waitCtx.Err(); contextErr != nil {
-			if errors.Is(contextErr, context.DeadlineExceeded) && ctx.Err() == nil {
-				log.WithField("timeout", timeout).Warn("Startup network check timed out; continuing with configured nodes and subscriptions")
-				return nil
+	// Any reachable endpoint is sufficient. The sentinel cancels the other
+	// probes through errgroup, which joins them before the transport is closed.
+	online := errors.New("startup network is reachable")
+	for _, endpoint := range CheckNetworkLinks {
+		checks.Go(func() error {
+			for {
+				if err := checkCtx.Err(); err != nil {
+					return err
+				}
+				req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, endpoint, nil)
+				if err != nil {
+					return err
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					if checkCtx.Err() != nil {
+						return checkCtx.Err()
+					}
+					log.WithError(resource.RedactError(err)).WithField("endpoint", resource.RedactURL(req.URL.String())).Debug("Startup network check failed")
+					if neterr, ok := errors.AsType[net.Error](err); ok && neterr.Timeout() {
+						continue
+					}
+				} else {
+					_ = resp.Body.Close()
+					if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+						return online
+					}
+					log.WithFields(log.Fields{"endpoint": resource.RedactURL(req.URL.String()), "status": resp.StatusCode}).Debug("Startup network check returned an unexpected HTTP status")
+				}
+				waitRetry()
 			}
-			return contextErr
-		}
-		req, err := http.NewRequestWithContext(waitCtx, http.MethodGet, CheckNetworkLinks[i%len(CheckNetworkLinks)], nil)
-		if err != nil {
-			return err
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			if waitCtx.Err() != nil {
-				continue
-			}
-			log.WithError(resource.RedactError(err)).WithField("endpoint", resource.RedactURL(req.URL.String())).Debug("Startup network check failed")
-			if neterr, ok := errors.AsType[net.Error](err); ok && neterr.Timeout() {
-				continue
-			}
-			waitRetry()
-			continue
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-			log.Debug("Startup network check passed")
-			return nil
-		}
-		log.WithFields(log.Fields{"endpoint": resource.RedactURL(req.URL.String()), "status": resp.StatusCode}).Debug("Startup network check returned an unexpected HTTP status")
-		waitRetry()
+		})
 	}
+	err := checks.Wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, online) {
+		log.Debug("Startup network check passed")
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		log.WithField("timeout", timeout).Warn("Startup network check timed out; continuing with configured nodes and subscriptions")
+		return nil
+	}
+	return err
 }
 
 type controlInputs struct {
