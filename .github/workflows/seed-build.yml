@@ -114,10 +114,20 @@ jobs:
         if: inputs.build-type == 'release-build'
         run: scripts/release-checksums.sh "$OUTPUT"
       - name: Save validated binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
-          name: ${{ inputs.build-type == 'release-build' && 'release' || 'binary' }}-${{ matrix.name }}
-          path: ${{ env.OUTPUT }}*
+          name: dae-${{ matrix.name }}
+          path: ${{ env.OUTPUT }}
+          archive: false
+          if-no-files-found: error
+          overwrite: true
+      - name: Save release checksums
+        if: inputs.build-type == 'release-build'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dae-${{ matrix.name }}.dgst
+          path: ${{ env.OUTPUT }}.dgst
+          archive: false
           if-no-files-found: error
           overwrite: true
 

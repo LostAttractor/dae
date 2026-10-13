@@ -25,9 +25,9 @@ jobs:
       contents: write
     steps:
       - name: Download release binaries and checksums
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
-          pattern: release-*
+          pattern: dae-*
           merge-multiple: true
           path: release/
       - name: Publish release files
