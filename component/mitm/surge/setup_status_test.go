@@ -142,9 +142,13 @@ test=type=http-request,pattern=.,script-path=test.js,img-url=icon,wake-system=tr
 	if _, err := prepare(context.Background(), conf, plugin.Services{BodyMemory: testBodyMemory, BaseDir: dir, PrepareClient: http.DefaultClient, Logger: log.NewEntry(log.StandardLogger())}, "test"); err == nil {
 		t.Fatal("missing module did not fail loading")
 	}
-	for _, want := range []string{"Surge module load status", "ready", "loaded", "broken", "failed", "later", "not loaded"} {
+	// Other modules may load or be canceled by the failure, but never fail.
+	for _, want := range []string{"Surge module load status", "module=ready state=", "module=broken state=failed", "module=later state="} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("failure summary missing %q:\n%s", want, output.String())
 		}
+	}
+	if strings.Count(output.String(), "state=failed") != 1 {
+		t.Errorf("canceled modules reported as failed:\n%s", output.String())
 	}
 }

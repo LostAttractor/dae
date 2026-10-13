@@ -4,8 +4,10 @@ package surge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,7 +16,10 @@ import (
 	"github.com/daeuniverse/dae/component/mitm/surge/internal/jq"
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 )
+
+const maxConcurrentModuleLoads = 4
 
 var Plugin = plugin.Definition{Configure: Configure, Preflight: preflightRuntime, Resources: prepareResources, Commands: Commands}
 
@@ -32,6 +37,7 @@ func preflightRuntime(ctx context.Context, spec plugin.Spec) error {
 }
 
 func prepareModules(ctx context.Context, conf Config, services plugin.Services) (modules []*Module, err error) {
+	started := time.Now()
 	logger := services.Logger
 	client := services.PrepareClient
 	status := surgeapi.SurgeStatus{Enabled: true, Modules: make([]surgeapi.ModuleStatus, len(conf.Modules))}
@@ -64,7 +70,43 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 	if services.ResourceCacheDir != "" {
 		moduleCache = filepath.Join(services.ResourceCacheDir, "surge")
 	}
-	modules = make([]*Module, 0, len(conf.Modules))
+	// Downloads are independent, but module order determines rule priority.
+	// Keep each complete module in its declaration slot and cancel outstanding
+	// work on failure; the resource session is only committed by the caller.
+	modules = make([]*Module, len(conf.Modules))
+	group, loadCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxConcurrentModuleLoads)
+	for i, source := range conf.Modules {
+		group.Go(func() error {
+			if err := loadCtx.Err(); err != nil {
+				return err
+			}
+			moduleStarted := time.Now()
+			module, err := Load(loadCtx, source.Link, client, LoadOptions{
+				BaseDir:         baseDir,
+				CacheDir:        moduleCache,
+				Arguments:       source.Arguments,
+				RefreshDeadline: refreshDeadline,
+			})
+			if err != nil {
+				// Modules canceled by another failure remain "not loaded".
+				if loadCtx.Err() == nil || !errors.Is(err, context.Canceled) {
+					status.Modules[i].State = "failed"
+				}
+				return fmt.Errorf("surge module %q (%s): %w", source.Name, resource.RedactURL(source.Link), err)
+			}
+			if source.Name != "" {
+				module.Name = source.Name
+			}
+			status.Modules[i] = module.Status()
+			modules[i] = module
+			logger.WithFields(log.Fields{"module": module.Name, "duration": time.Since(moduleStarted)}).Debug("Loaded Surge module")
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
 	var jqPool *jq.Pool
 	var releaseJQ func() error
 	defer func() {
@@ -72,24 +114,8 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 			_ = releaseJQ()
 		}
 	}()
-	for i, source := range conf.Modules {
-		module, err := Load(ctx, source.Link, client, LoadOptions{
-			BaseDir:         baseDir,
-			CacheDir:        moduleCache,
-			Arguments:       source.Arguments,
-			RefreshDeadline: refreshDeadline,
-		})
-		if err != nil {
-			status.Modules[i].State = "failed"
-			return nil, fmt.Errorf("surge module %q (%s): %w", source.Name, resource.RedactURL(source.Link), err)
-		}
-		if source.Name != "" {
-			module.Name = source.Name
-		}
-		for _, rule := range module.BodyRewrites {
-			if rule.expression == "" {
-				continue
-			}
+	for i, module := range modules {
+		if slices.ContainsFunc(module.BodyRewrites, func(rule BodyRewrite) bool { return rule.expression != "" }) {
 			if jqPool == nil {
 				jqPool, releaseJQ, err = jq.Acquire()
 				if err != nil {
@@ -103,10 +129,10 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 			module = prepared[0]
 			// Prepared resources own immutable expressions; the runtime binds a
 			// live pool after it acquires its own lifetime reference.
-			for i := range module.BodyRewrites {
-				module.BodyRewrites[i].jq = nil
+			for j := range module.BodyRewrites {
+				module.BodyRewrites[j].jq = nil
 			}
-			break
+			modules[i] = module
 		}
 		for _, warning := range module.Warnings {
 			logger.WithField("module", module.Name).Warn(resource.RedactText(warning))
@@ -115,8 +141,8 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 			logger.WithField("module", module.Name).Trace(ignored)
 		}
 		status.Modules[i] = module.Status()
-		modules = append(modules, module)
 	}
+	logger.WithFields(log.Fields{"modules": len(modules), "duration": time.Since(started)}).Debug("Loaded Surge modules")
 	return modules, nil
 }
 
