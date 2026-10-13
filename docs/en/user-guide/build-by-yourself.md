@@ -89,6 +89,18 @@ daily builds upload a `binary-<target>` artifact containing only its
 `dae-<target>` executable; they do not assemble distribution packages or download
 runtime data.
 
+To start a binary build manually, open **Actions → Build binaries → Run workflow**
+and select a branch, or use the GitHub CLI:
+
+```shell
+gh workflow run seed-build.yml --ref next
+```
+
+Manual runs build the selected commit for every target with ordinary build
+versioning and upload `binary-<target>` artifacts. The workflow must be present
+on the repository's default branch to enable
+[manual runs](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+
 Release and prerelease builds add a `.dgst` file alongside each executable,
 containing its MD5, SHA1, SHA256 and SHA512 checksums. Their `release-*` artifacts
 contain only the bare binary and its checksum file. Publishing uploads those

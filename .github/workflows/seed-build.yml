@@ -1,6 +1,7 @@
 name: Build binaries
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       ref:
@@ -28,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
       - name: Test release checksums
         run: python3 scripts/tests/test_release_pipeline.py
@@ -36,7 +37,7 @@ jobs:
         id: metadata
         env:
           BUILD_REF: ${{ inputs.ref }}
-          BUILD_TYPE: ${{ inputs.build-type }}
+          BUILD_TYPE: ${{ inputs.build-type || 'main-build' }}
           PR_NUMBER: ${{ inputs.pr-number }}
         run: |
           commit=$(git rev-parse HEAD)
