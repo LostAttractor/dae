@@ -157,15 +157,34 @@ func (o *DeduplicateParamsOptimizer) Optimize(rules []*config_parser.RoutingRule
 
 type DatReaderOptimizer struct {
 	LocationFinder *assets.LocationFinder
-	mmdbCaches     map[string]map[string]map[string][]string // filename -> field -> value -> subnets
+	mmdbCaches     map[string]map[string]map[string]*mmdbNetworks // filename -> field -> value -> networks
 	ctx            context.Context
+}
+
+type mmdbNetworks struct {
+	prefixes []netip.Prefix
+	subnets  []string
+}
+
+func (n *mmdbNetworks) params() []*config_parser.Param {
+	if n == nil {
+		return nil
+	}
+	if n.subnets == nil {
+		n.subnets = make([]string, len(n.prefixes))
+		for i, prefix := range n.prefixes {
+			n.subnets[i] = prefix.String()
+		}
+		n.prefixes = nil
+	}
+	return paramsFromSubnets(n.subnets)
 }
 
 // NewDatReaderOptimizer creates an optimizer with a per-preparation MMDB cache.
 func NewDatReaderOptimizer(ctx context.Context, locationFinder *assets.LocationFinder) *DatReaderOptimizer {
 	return &DatReaderOptimizer{
 		LocationFinder: locationFinder,
-		mmdbCaches:     make(map[string]map[string]map[string][]string),
+		mmdbCaches:     make(map[string]map[string]map[string]*mmdbNetworks),
 		ctx:            ctx,
 	}
 }
@@ -300,11 +319,11 @@ func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value strin
 		return nil, err
 	}
 	if o.mmdbCaches == nil {
-		o.mmdbCaches = make(map[string]map[string]map[string][]string)
+		o.mmdbCaches = make(map[string]map[string]map[string]*mmdbNetworks)
 	}
 	if fileCache, ok := o.mmdbCaches[filePath]; ok {
 		if fieldCache, ok := fileCache[field]; ok {
-			return paramsFromSubnets(fieldCache[value]), nil
+			return fieldCache[value].params(), nil
 		}
 	}
 
@@ -314,30 +333,42 @@ func (o *DatReaderOptimizer) loadMMDB(filename string, field string, value strin
 	}
 	defer db.Close()
 
-	fieldCache := make(map[string][]string)
+	fieldCache := make(map[string]*mmdbNetworks)
+	// Many networks share the same data record. Decode each offset once, and
+	// only format prefixes for values actually referenced by the configuration.
+	records := make(map[uintptr]*mmdbNetworks)
 	for result := range db.Networks() {
 		if err := o.contextErr(); err != nil {
 			return nil, err
 		}
-		var v string
-		err := result.DecodePath(&v, field)
-
-		if err != nil {
+		if err := result.Err(); err != nil {
 			return nil, err
 		}
-
-		subnet := result.Prefix().String()
-		v = strings.ToLower(v)
-		fieldCache[v] = append(fieldCache[v], subnet)
+		offset := result.Offset()
+		networks, ok := records[offset]
+		if !ok {
+			var decoded string
+			if err := result.DecodePath(&decoded, field); err != nil {
+				return nil, err
+			}
+			value := strings.ToLower(decoded)
+			networks = fieldCache[value]
+			if networks == nil {
+				networks = new(mmdbNetworks)
+				fieldCache[value] = networks
+			}
+			records[offset] = networks
+		}
+		networks.prefixes = append(networks.prefixes, result.Prefix())
 	}
 
 	fileCache := o.mmdbCaches[filePath]
 	if fileCache == nil {
-		fileCache = make(map[string]map[string][]string)
+		fileCache = make(map[string]map[string]*mmdbNetworks)
 	}
 	fileCache[field] = fieldCache
 	o.mmdbCaches[filePath] = fileCache
-	return paramsFromSubnets(fieldCache[value]), nil
+	return fieldCache[value].params(), nil
 }
 
 func (o *DatReaderOptimizer) Optimize(rules []*config_parser.RoutingRule) ([]*config_parser.RoutingRule, error) {
