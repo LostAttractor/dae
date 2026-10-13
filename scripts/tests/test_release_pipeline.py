@@ -30,7 +30,12 @@ class ReleasePipelineTest(unittest.TestCase):
                        for algorithm in ['md5', 'sha1', 'sha256', 'sha512'])
 
     def test_release_contains_only_binaries_and_checksums_for_every_target(self):
-        self.assertEqual(len(TARGETS), 16)
+        compiler_settings = [
+            (t['goarch'], t.get('goarm', '7'), t.get('goamd64', 'v1'),
+             t.get('goriscv64', 'rva20u64'))
+            for t in TARGETS
+        ]
+        self.assertEqual(len(set(compiler_settings)), len(TARGETS))
         self.assertEqual(len({t['name'] for t in TARGETS}), len(TARGETS))
         expected_files = set()
         for target in TARGETS:

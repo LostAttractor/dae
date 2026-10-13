@@ -80,8 +80,8 @@ Clang patch release or every possible `CC` implementation.
 
 Preview, Next, daily, release and prerelease builds share `seed-build.yml`.
 `install/release-targets.json` defines both the compiler settings and unique
-artifact name for each target. The three explicit RISC-V profiles use
-`linux-riscv64_rva20u64`, `linux-riscv64_rva22u64` and `linux-riscv64_rva23u64`.
+artifact name for each target. RISC-V builds use `linux-riscv64` for `rva20u64`,
+`linux-riscv64_rva22u64` for `rva22u64`, and `linux-riscv64_rva23u64` for `rva23u64`.
 
 The workflow resolves the source commit and version once. Each target compiles
 the daemon and runs static ELF checks and target smoke tests. Preview, Next and
