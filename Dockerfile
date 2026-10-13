@@ -1,28 +1,37 @@
-FROM golang:1.27.0-alpine AS builder
-RUN apk add --no-cache clang llvm git make build-base musl-dev linux-headers nodejs npm
-ENV CLANG=clang CGO_ENABLED=1
+FROM --platform=$BUILDPLATFORM golang:1.27.0 AS go-toolchain
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS node-toolchain
+
+FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS builder
+COPY --from=go-toolchain /usr/local/go /usr/local/go
+COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-toolchain /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+ARG LLVM_VERSION=23
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    CLANG=clang-${LLVM_VERSION} STRIP=llvm-strip-${LLVM_VERSION} LLVM_OBJDUMP=llvm-objdump-${LLVM_VERSION} \
+    CC=/build/scripts/zig-cc.sh CGO_ENABLED=1
 WORKDIR /build/
-ADD go.mod go.sum ./
+COPY scripts/setup-llvm.sh scripts/setup-zig.sh scripts/
+RUN scripts/setup-llvm.sh "$LLVM_VERSION" \
+    && apt-get install -y git make xz-utils binutils libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN zig=$(scripts/setup-zig.sh /opt/dae-zig) \
+    && ln -s "$zig" /usr/local/bin/zig
+COPY go.mod go.sum ./
 # Initialize submodules in the build context before running docker build.
 COPY third_party ./third_party
 RUN go mod download
-ADD . .
-RUN make OUTPUT=dae GOFLAGS="-buildvcs=false" CC=cc STATIC=y \
+COPY . .
+ARG TARGETARCH
+ARG TARGETVARIANT
+ARG VERSION=unstable-0.nogit
+RUN export GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" \
+    && make OUTPUT=dae VERSION="$VERSION" GOFLAGS="-buildvcs=false" STATIC=y \
     && scripts/check-static.sh dae
 
 FROM alpine
-RUN mkdir -p /usr/local/share/dae/
-RUN mkdir -p /etc/dae/
-COPY install/geodata.env /tmp/geodata.env
-RUN . /tmp/geodata.env \
-    && wget -O /usr/local/share/dae/geoip.dat "https://github.com/v2fly/geoip/releases/download/${GEOIP_VERSION}/geoip.dat" \
-    && echo "${GEOIP_SHA256}  /usr/local/share/dae/geoip.dat" | sha256sum -c - \
-    && wget -O /usr/local/share/dae/geosite.dat "https://github.com/v2fly/domain-list-community/releases/download/${GEOSITE_VERSION}/dlc.dat" \
-    && echo "${GEOSITE_SHA256}  /usr/local/share/dae/geosite.dat" | sha256sum -c - \
-    && rm /tmp/geodata.env
-COPY --from=builder /build/dae /usr/local/bin
-COPY --from=builder /build/install/empty.dae /etc/dae/config.dae
-RUN chmod 0600 /etc/dae/config.dae
+COPY --from=builder /build/dae /usr/local/bin/dae
 
-CMD ["dae"]
-ENTRYPOINT ["dae", "run", "-c", "/etc/dae/config.dae"]
+ENTRYPOINT ["dae"]
+CMD ["run", "-c", "/etc/dae/config.dae"]

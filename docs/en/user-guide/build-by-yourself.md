@@ -206,6 +206,64 @@ You can instead pass an existing target musl compiler as `CC`. Setting only
 target that architecture. The eBPF generators run as host Go tools independently
 of that compiler.
 
+### Docker
+
+Docker uses a host Ubuntu/Clang 23 build stage and the same Zig cross-compiler
+to produce static binaries for its target platforms. Toolchain installation
+is cached independently of application sources.
+The final Alpine image adds only the daemon executable. Configuration files,
+service files and Geo data are not included. CI publishes `linux/amd64`,
+`linux/arm64`, `linux/arm/v7` and `linux/386` variants under the same image tags.
+The Docker context excludes local `go.work` and `plugins.cfg` files, so it uses
+the repository's default plugin selection. Pass `--build-arg VERSION=...` to
+`docker build` to set the binary version; CI supplies the release tag or a
+commit build version containing the commit date and SHA.
+
+The Docker workflow publishes to `ghcr.io/<owner>/<repository>`, using the
+lowercase repository name. For this fork the image is `ghcr.io/lostattractor/dae`.
+It authenticates with the workflow's `GITHUB_TOKEN` and `packages: write`
+permission. OCI labels identify the source repository, commit and binary version.
+
+The workflow resolves the source commit, version and tags once, then builds each
+platform in a separate matrix job with its own cache scope. All jobs check out
+the same commit and push their images by digest without updating public tags.
+After every build succeeds, the publication job combines those immutable
+digests, verifies that all four platforms are present, and publishes the shared
+multi-platform tags. A failed platform build prevents tag publication; successful
+jobs retain their digest artifacts so failed jobs can be rerun independently.
+
+The default command is `dae run -c /etc/dae/config.dae`. Create your configuration
+on the host and mount it into the container; the repository's Compose file mounts
+the host `/etc/dae` directory. For rules that need Geo data, you can additionally
+mount the host data directory read-only:
+
+```yaml
+volumes:
+  - /etc/dae:/etc/dae
+  - /usr/local/share/dae:/usr/local/share/dae:ro
+```
+
+Omit the data mount when your rules do not need external data files. Arguments
+after the image name are passed to `dae`; for example,
+`docker run --rm ghcr.io/lostattractor/dae:next --version` prints the version.
+
+| Build | Image tags |
+| --- | --- |
+| Push to the main branch `next`, or manual build of `next` | `next`, `sha-<12-character commit>` |
+| Stable release | Version without the leading `v`, `latest`, `sha-<12-character commit>` |
+| Prerelease | Version without the leading `v`, `sha-<12-character commit>` |
+| Manual build of a `v*` tag | Version without the leading `v`, `sha-<12-character commit>`; does not update `latest` |
+| Manual build of another branch | `sha-<12-character commit>` |
+
+Release workflows call the image workflow after publishing their release assets.
+The image workflow also handles releases published directly on GitHub. A release
+created with `GITHUB_TOKEN` does not trigger another `release` event workflow,
+so the explicit call is required. See [GitHub workflow trigger behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+
+GHCR package visibility is configured separately from repository visibility.
+After the first publication, set the package to **Public** to allow anonymous
+pulls; newly published packages are private by default. See [GitHub Container registry permissions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
 ## Running Go commands directly
 
 The Makefile supplies these settings. When invoking Go yourself, set them explicitly:

@@ -136,6 +136,9 @@ rules. With no references, neither file is read or needs to be installed. See
 [routing](configuration/routing.md#examples) for `geoip:`, `geosite:`, `ext:` and
 `mmdb:` usage.
 
+CI artifacts, Release binaries and Docker images do not bundle Geo data files;
+install or mount them separately when needed.
+
 ## Installation
 
 ### Arch Linux / Manjaro
@@ -217,12 +220,23 @@ See [run on alpine](tutorials/run-on-alpine.md).
 
 ### Docker
 
-Pre-built image and related docs can be found at <https://hub.docker.com/r/daeuniverse/dae>.
+This fork publishes images to `ghcr.io/lostattractor/dae`.
+Use `:next` for the main branch, `:latest` for the latest stable release,
+or a release version without the leading `v` (for example, `:1.2.3`).
+Prereleases do not update `latest`. See the [container build and publication guide](user-guide/build-by-yourself.md#docker).
+
+```shell
+docker pull ghcr.io/lostattractor/dae:next
+```
+
+The image contains the daemon without a configuration or Geo data. Provide
+`/etc/dae/config.dae` through a host mount; mount any required Geo data separately.
 
 Alternatively, you can use `docker compose`:
 
 ```shell
-git clone --depth=1 https://github.com/daeuniverse/dae
+git clone --depth=1 https://github.com/LostAttractor/dae
+cd dae
 docker compose up -d --build
 ```
 

@@ -37,3 +37,13 @@ jobs:
           files: release/*
           fail_on_unmatched_files: true
           prerelease: false
+
+  publish-image:
+    needs: upload-release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      tag: ${{ inputs.tag }}
+      prerelease: false

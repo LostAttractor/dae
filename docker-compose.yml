@@ -9,3 +9,5 @@ services:
     volumes:
       - /sys:/sys
       - /etc/dae:/etc/dae
+      # Optional, only when rules reference Geo data files:
+      # - /usr/local/share/dae:/usr/local/share/dae:ro

@@ -127,6 +127,8 @@ zcat /proc/config.gz 2>/dev/null || cat "/boot/config-$(uname -r)" /boot/config 
 具名规则片段、策略及插件规则中的引用同样需要对应文件；完全没有引用时无需安装，也不会读取。
 `geoip:`、`geosite:`、`ext:` 和 `mmdb:` 的用法见[路由文档](configuration/routing.md#例子)。
 
+CI 产物、Release 二进制和 Docker 镜像均不附带 Geo 数据文件，需要时单独安装或挂载。
+
 ## 安装
 
 ### Arch Linux / Manjaro
@@ -206,12 +208,21 @@ sudo dnf install dae
 
 ### Docker
 
-预编译镜像可相关文档请查阅：<https://hub.docker.com/r/daeuniverse/dae>。
+本分叉将镜像发布到 `ghcr.io/lostattractor/dae`。
+主分支使用 `:next`，最新正式版使用 `:latest`，也可使用去掉开头 `v` 的版本号（如 `:1.2.3`）。
+预发布不会更新 `latest`。构建与发布规则见[容器构建文档](../en/user-guide/build-by-yourself.md#docker)。
+
+```shell
+docker pull ghcr.io/lostattractor/dae:next
+```
+
+镜像仅包含程序，不附带配置或 Geo 数据。请从宿主机挂载 `/etc/dae/config.dae`，并按需挂载 Geo 数据。
 
 作为替代，你也可以使用 `docker compose`:
 
 ```shell
-git clone --depth=1 https://github.com/daeuniverse/dae
+git clone --depth=1 https://github.com/LostAttractor/dae
+cd dae
 docker compose up -d --build
 ```
 

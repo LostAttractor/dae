@@ -1,0 +1,16 @@
+.git
+**/.git
+.direnv
+.envrc
+go.work
+go.work.sum
+plugins.cfg
+node_modules
+**/node_modules
+build
+dae
+*.test
+internal/webui/assets
+.agents
+.codex
+.aws
