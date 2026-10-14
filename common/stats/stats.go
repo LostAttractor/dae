@@ -22,6 +22,9 @@ type Store struct {
 	pathsMu        sync.RWMutex
 	paths          map[Path]*pathCounters
 	directFallback atomic.Int64
+	samplePathsMu  sync.Mutex
+	samplePaths    map[*pathCounters]struct{}
+	samplePeak     int
 
 	devicesMu sync.RWMutex
 	devices   map[[6]byte]*Store
@@ -50,6 +53,7 @@ func newStoreAt(windowStartedAt time.Time) *Store {
 	return &Store{
 		startedAt:           windowStartedAt,
 		paths:               make(map[Path]*pathCounters),
+		samplePaths:         make(map[*pathCounters]struct{}),
 		externalConnections: make(map[*Connection]struct{}),
 		windowStartedAt:     windowStartedAt,
 		nodes:               make(map[string]*nodeStats),

@@ -6,7 +6,7 @@ interface ExplanationView { response: ExplainResponse; kind?: DiagnosticKind; ta
 import { Button } from "@astryxdesign/core/Button";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Field } from "@astryxdesign/core/Field";
-import { useLayoutEffect, useRef, useState } from "react";
+import { createRef, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { flushSync } from "react-dom";
 import { request } from "./api.ts";
 import { createView } from "./react-view.ts";
@@ -36,7 +36,9 @@ function parseTarget(value: string): DiagnosticFlow {
   return { destination: { ...address, port } };
 }
 
-function Diagnostics({ allowed, comparisonRequest, deviceKey }: { allowed: boolean; comparisonRequest: Comparison | null; deviceKey: string }) {
+interface DiagnosticActions { invalidate: () => void }
+
+function Diagnostics({ allowed, comparisonRequest, deviceKey, ref }: { allowed: boolean; comparisonRequest: Comparison | null; deviceKey: string; ref: Ref<DiagnosticActions> }) {
   const [kind, setKind] = useState<DiagnosticKind>("flow");
   const [scope, setScope] = useState<"self" | "manual">("self");
   const [comparison, setComparison] = useState<Comparison | null>(null);
@@ -45,6 +47,10 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }: { allowed: boole
   const explanation = useRequest<ExplanationView>(), context = useRequest<DeviceContext>();
   const flow = kind === "flow" || kind === "plugins", dns = kind === "dns";
   const [label, placeholder] = fields[kind];
+
+  useImperativeHandle(ref, () => ({ invalidate() {
+    explanation.reset(); context.reset(); setComparison(null);
+  } }), [explanation.reset, context.reset]);
 
   useLayoutEffect(() => {
     if (!allowed && scope === "manual") { setScope("self"); explanation.reset(); }
@@ -167,13 +173,17 @@ function Diagnostics({ allowed, comparisonRequest, deviceKey }: { allowed: boole
 
 export function createDiagnostics(container: HTMLElement) {
   const render = createView(container);
+  const actions = createRef<DiagnosticActions>();
   let allowed = false, deviceKey = "";
+  let generation = 0;
   let comparisonRequest: Comparison | null = null;
-  const update = () => render(<Diagnostics allowed={allowed} comparisonRequest={comparisonRequest} deviceKey={deviceKey} />);
+  const update = () => render(<Diagnostics ref={actions} allowed={allowed} comparisonRequest={comparisonRequest} deviceKey={JSON.stringify([generation, deviceKey])} />);
   update();
   return {
     setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; update(); } },
     setDevice: (next: string) => { if (deviceKey !== next) { deviceKey = next; update(); } },
+    setGeneration: (next: number) => { if (generation !== next) { generation = next; update(); } },
+    invalidate: () => actions.current?.invalidate(),
     compare: (set: ClientSetState) => {
       comparisonRequest = { sets: { [set.name]: !set.joined }, label: `${set.joined ? "Leave" : "Join"} ${set.description || set.name}` };
       update();

@@ -130,7 +130,7 @@ const httpServer = createServer(async (req, res) => {
     res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify(data));
   };
-  const delayedJSON = async (key: "nextImpact" | "nextExplanation" | "nextManagedDevice", data: unknown) => {
+  const delayedJSON = async (key: "nextImpact" | "nextExplanation" | "nextManagedDevice" | "nextContextRead", data: unknown) => {
     const override = fixture[key];
     fixture[key] = null;
     const snapshot = structuredClone(data);
@@ -252,9 +252,9 @@ const httpServer = createServer(async (req, res) => {
       return json(status === 200 ? snapshot : { error: "Global status unavailable" }, status);
     }
     if (url === "/api/device") return json(fixture.device);
-    if (url === "/api/device/context") return fixture.l3
-      ? json({ generation: 7, context: { source_ip: "100.64.0.23", link_type: "ip", ifindex: 8 }, fields: [{ name: "link_type", value: "ip", source: "request" }] })
-      : json({ generation: 7, context: { source_ip: fixture.device.source_ip, mac: fixture.device.mac, link_type: "ethernet" }, device: fixture.device, fields: [{ name: "mac", value: fixture.device.mac, source: "request" }] });
+    if (url === "/api/device/context") return delayedJSON("nextContextRead", fixture.l3
+      ? { generation: fixture.generation ?? 7, context: { source_ip: "100.64.0.23", link_type: "ip", ifindex: 8 }, fields: [{ name: "link_type", value: "ip", source: "request" }] }
+      : { generation: fixture.generation ?? 7, context: { source_ip: fixture.device.source_ip, mac: fixture.device.mac, link_type: "ethernet" }, device: fixture.device, fields: [{ name: "mac", value: fixture.device.mac, source: "request" }] });
     if (url === "/api/clients") {
       fixture.clientReads++;
       return json({ groups: [{ name: "internal/work", description: "Managed group", members: [] }] });
@@ -463,6 +463,17 @@ try {
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.match(await js('document.querySelector("#device-mac").textContent'), /02:00:00:00:00:08/);
+  });
+
+  await test("L3 context recovery clears a transient error with unchanged identity", async () => {
+    fixture.l3 = true;
+    await page();
+    fixture.nextContextRead = { started: deferred(), status: 500 };
+    // Let the background poll retain the unchanged identity through the failure.
+    await until('document.querySelector("#device-status").textContent.includes("Device update failed")');
+    await until('!document.querySelector("#device-status").textContent.includes("Device update failed")');
+    assert.equal(await js('document.querySelector("#identity").textContent'), "100.64.0.23");
+    assert.doesNotMatch(await js('document.querySelector("#device-status").textContent'), /failed|Retrying/);
   });
 
   if (process.env.CERTUTIL) await test("real browser TLS accepts the installed CA and rejects an untrusted certificate", async () => {
@@ -1393,6 +1404,41 @@ try {
       assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), false);
       assert.equal(await js('document.querySelector("#diagnostic-target").value'), "example.com");
     } finally { held.release.resolve(); }
+  });
+
+  await test("React diagnostics invalidate completed and pending results after runtime changes", async () => {
+    await visit("explain");
+    for (const change of ["mitm", "generation", "managed"] as const) {
+      await js('document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+      await until('document.querySelector("#diagnostic-result").textContent.includes("Analysis: flow")');
+      const apply = async () => {
+        if (change === "mitm") fixture.device.mitm = { enabled: !fixture.device.mitm?.enabled, override: null, ca_fingerprint: "test-ca" };
+        else if (change === "generation") fixture.generation = (fixture.generation ?? 7) + 1;
+        else {
+          await visit("devices");
+          await until('document.querySelector("#managed-client-group").options.length === 1');
+          await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=join]").click()');
+          await until('document.querySelector("#managed-client-result .astryx-badge")?.textContent === "Joined"');
+          await visit("explain");
+          return;
+        }
+        await js('document.querySelector("#refresh").click()');
+        await ready();
+      };
+      await apply();
+      await until('document.querySelector("#diagnostic-result").textContent === ""');
+      const held = { started: deferred(), release: deferred() };
+      fixture.nextExplanation = held;
+      try {
+        await js('document.querySelector("#diagnostic-form").requestSubmit()');
+        await held.started.promise;
+        await apply();
+        held.release.resolve();
+        await delay(100);
+        assert.equal(await js('document.querySelector("#diagnostic-result").textContent'), "");
+        assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), false);
+      } finally { held.release.resolve(); }
+    }
   });
 
   await test("React diagnostics clear manual work and ignore late errors after access loss", async () => {

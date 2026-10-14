@@ -47,6 +47,7 @@ func (f *diagnosticFlags) bind(flags *pflag.FlagSet) {
 func (f *diagnosticFlags) request(cmd *cobra.Command, kind, target string) (api.ExplainRequest, error) {
 	request := api.ExplainRequest{Kind: kind, Context: api.DiagnosticContext{MAC: f.mac, SourceIP: f.source, Interface: f.iface, Policy: f.policy, Origin: f.origin}, Flow: api.DiagnosticFlow{Protocol: f.protocol}, Network: f.network, Detail: "predicates"}
 	if f.input != "" {
+		request = api.ExplainRequest{}
 		var reader io.Reader = cmd.InOrStdin()
 		if f.input != "-" {
 			file, err := os.Open(f.input)

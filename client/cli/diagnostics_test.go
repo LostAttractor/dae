@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/spf13/cobra"
 )
 
 func TestExplainCLIContextAndComparison(t *testing.T) {
@@ -37,6 +38,23 @@ func TestExplainCLIContextAndComparison(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "kernel_direct") {
 		t.Fatal(output.String())
+	}
+}
+
+func TestExplainJSONReplacesFlagDefaults(t *testing.T) {
+	command := &cobra.Command{}
+	var flags diagnosticFlags
+	flags.bind(command.Flags())
+	if err := command.ParseFlags([]string{"--input", "-", "--mac", "02:00:00:00:00:01", "--origin", "local", "--network", "udp6"}); err != nil {
+		t.Fatal(err)
+	}
+	command.SetIn(strings.NewReader(`{"kind":"dns","dns":{"name":"example.test"}}`))
+	request, err := flags.request(command, "flow", "198.51.100.10:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Context != (api.DiagnosticContext{}) || request.Flow.Protocol != "" || request.Detail != "" || request.Network != "" || request.Kind != "dns" {
+		t.Fatalf("JSON inherited CLI input: %+v", request)
 	}
 }
 

@@ -37,6 +37,8 @@ type trafficRate struct {
 }
 
 type pathCounters struct {
+	path        Path
+	sampling    atomic.Bool
 	active      atomic.Int64
 	total       atomic.Int64
 	upload      atomic.Uint64
@@ -71,7 +73,7 @@ func (s *Store) pathCounters(path Path) *pathCounters {
 	s.pathsMu.Lock()
 	defer s.pathsMu.Unlock()
 	if counters = s.paths[path]; counters == nil {
-		counters = new(pathCounters)
+		counters = &pathCounters{path: path}
 		s.paths[path] = counters
 	}
 	return counters
@@ -84,6 +86,7 @@ func (s *Store) OpenConnection(path Path, directFallback bool) *Connection {
 		s.directFallback.Add(1)
 	}
 	counters.active.Add(1)
+	s.track(counters)
 	return &Connection{store: s, stats: counters}
 }
 
@@ -94,14 +97,22 @@ func (s *Store) DirectFallbackConnections() int64 {
 }
 
 func (c *Connection) RecordUpload(bytes uint64) {
+	if bytes == 0 {
+		return
+	}
 	c.stats.upload.Add(bytes)
+	c.store.track(c.stats)
 	if c.device != nil {
 		c.device.RecordUpload(bytes)
 	}
 }
 
 func (c *Connection) RecordDownload(bytes uint64) {
+	if bytes == 0 {
+		return
+	}
 	c.stats.download.Add(bytes)
+	c.store.track(c.stats)
 	if c.device != nil {
 		c.device.RecordDownload(bytes)
 	}
@@ -109,9 +120,22 @@ func (c *Connection) RecordDownload(bytes uint64) {
 
 func (c *Connection) invalidateRate() {
 	c.stats.rateInvalid.Store(true)
+	c.store.track(c.stats)
 	if c.device != nil {
 		c.device.invalidateRate()
 	}
+}
+
+// A sampled path stays enrolled while it has live connections. Packet updates
+// then touch only atomics; a late update re-enrolls an idle path once.
+func (s *Store) track(counters *pathCounters) {
+	if counters.sampling.Load() || !counters.sampling.CompareAndSwap(false, true) {
+		return
+	}
+	s.samplePathsMu.Lock()
+	s.samplePaths[counters] = struct{}{}
+	s.samplePeak = max(s.samplePeak, len(s.samplePaths))
+	s.samplePathsMu.Unlock()
 }
 
 func (c *Connection) AttachExternalCounters(source func() (api.TrafficCounters, error)) error {
@@ -201,29 +225,48 @@ func (s *Store) sampleAt(now time.Time) {
 	s.windowStartedAt = now
 
 	var historySample map[Path]trafficRate
-	s.pathsMu.RLock()
-	for path, counters := range s.paths {
+	s.samplePathsMu.Lock()
+	for counters := range s.samplePaths {
 		current := api.TrafficCounters{
 			UploadBytes:   counters.upload.Load(),
 			DownloadBytes: counters.download.Load(),
 		}
-		if counters.rateInvalid.Swap(false) {
-			counters.lastSample = current
-			continue
-		}
-		rate := trafficRate{
-			UploadBytesPerSecond:   bytesPerSecond(current.UploadBytes-counters.lastSample.UploadBytes, elapsed),
-			DownloadBytesPerSecond: bytesPerSecond(current.DownloadBytes-counters.lastSample.DownloadBytes, elapsed),
+		var rate trafficRate
+		if !counters.rateInvalid.Swap(false) {
+			rate = trafficRate{
+				UploadBytesPerSecond:   bytesPerSecond(current.UploadBytes-counters.lastSample.UploadBytes, elapsed),
+				DownloadBytesPerSecond: bytesPerSecond(current.DownloadBytes-counters.lastSample.DownloadBytes, elapsed),
+			}
 		}
 		if rate != (trafficRate{}) {
 			if historySample == nil {
 				historySample = make(map[Path]trafficRate)
 			}
-			historySample[path] = rate
+			historySample[counters.path] = rate
 		}
 		counters.lastSample = current
+		if counters.active.Load() == 0 {
+			counters.sampling.Store(false)
+			// A writer may have observed sampling=true just before retirement.
+			// Either this recheck retains its increment, or the writer observes
+			// false and queues the path after we release samplePathsMu.
+			if counters.active.Load() != 0 || counters.upload.Load() != current.UploadBytes || counters.download.Load() != current.DownloadBytes || counters.rateInvalid.Load() {
+				counters.sampling.Store(true)
+			} else {
+				delete(s.samplePaths, counters)
+			}
+		}
 	}
-	s.pathsMu.RUnlock()
+	// Go maps retain their table after deletion. Compact after a large batch
+	// retires so future iterations scale with current work, not a past peak.
+	if s.samplePeak > 4*max(len(s.samplePaths), 32) {
+		active := make(map[*pathCounters]struct{}, len(s.samplePaths))
+		for counters := range s.samplePaths {
+			active[counters] = struct{}{}
+		}
+		s.samplePaths, s.samplePeak = active, len(active)
+	}
+	s.samplePathsMu.Unlock()
 	s.history[s.completedSamples%api.TrafficHistorySampleCount] = historySample
 	s.completedSamples++
 	s.devicesMu.RLock()
@@ -253,6 +296,7 @@ func (c *Connection) Close() error {
 	}
 	c.stateMu.Unlock()
 	c.stats.active.Add(-1)
+	c.store.track(c.stats)
 	if c.device != nil {
 		err = errors.Join(err, c.device.Close())
 	}

@@ -1,7 +1,7 @@
 import type { AuthMode, Page, SettingSection, DeviceState, DeviceStatus, DeviceContext, SelectorsResponse, CertificateMetadata, GlobalStatus } from "./types.ts";
 import "./style.css";
 import "dae-theme.css";
-import { request, errorMessage, errorStatus, type HTTPMethod } from "./api.ts";
+import { request as apiRequest, errorMessage, errorStatus, type HTTPMethod } from "./api.ts";
 import { byId } from "./dom.ts";
 import { mountShell } from "./shell.tsx";
 import { createNotifications } from "./notifications.tsx";
@@ -38,6 +38,12 @@ const mitm = createMITM(byId("mitm"), byId("mitm-summary"), { run, request, upda
 const updatedLabel = createUpdatedLabel(byId("updated"));
 const managedClients = createManagedClients(byId("managed-clients-view"), request);
 const selectors = createSelectors(byId("quick-selectors"), byId("selectors"), { run, request: adminRequest, refresh: loadSelectors });
+
+async function request<T = unknown>(path: string, method?: HTTPMethod, body?: unknown, headers?: Record<string, string>): Promise<T> {
+  const value = await apiRequest<T>(path, method, body, headers);
+  if (method === "PUT" || method === "DELETE") diagnostics.invalidate();
+  return value;
+}
 let activePage: Page = "overview", settingSection: SettingSection = "devices";
 function updateVisibility() {
   status.setView(activePage);
@@ -126,7 +132,7 @@ function renderDevice(device: DeviceState) {
   const key = JSON.stringify(device);
   if (key === deviceStateKey) return;
   deviceStateKey = key;
-  diagnostics.setDevice(JSON.stringify([device.mac, device.source_ip, device.sets]));
+  diagnostics.setDevice(JSON.stringify([device.mac, device.source_ip, device.sets, device.mitm]));
   byId("identity").textContent = device.source_ip;
   byId("device-mac").textContent = device.mac;
   clientSets.show(device);
@@ -184,7 +190,10 @@ async function loadDevice({ background = false } = {}) {
   try {
     const connection = await request<DeviceContext>("/api/device/context");
     if (version !== deviceRequestVersion) return;
+    diagnostics.setGeneration(connection.generation);
     if (!connection.device) {
+      const reason = "This connection has no Ethernet MAC. Device traffic, client sets and HTTPS module preferences are unavailable.";
+      status.deviceUnavailable(reason);
       const key = JSON.stringify(connection.context);
       if (deviceStateKey !== key) {
         deviceStateKey = key;
@@ -192,8 +201,6 @@ async function loadDevice({ background = false } = {}) {
         certificateDevice(null);
         byId("identity").textContent = connection.context.source_ip || "Unavailable";
         byId("device-mac").textContent = "Unavailable (IP-only connection)";
-        const reason = "This connection has no Ethernet MAC. Device traffic, client sets and HTTPS module preferences are unavailable.";
-        status.deviceUnavailable(reason);
         clientSets.unavailable(reason, "warning");
         mitm.unavailable();
       }

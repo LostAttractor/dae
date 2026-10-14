@@ -44,6 +44,8 @@ export interface Fixture {
   nextRead: DeferredRead | null;
   nextDeviceRead: DeferredRead | null;
   nextGlobalRead: DeferredRead | null;
+  nextContextRead?: DeferredRead | null;
+  generation?: number;
   nextImpact?: DeferredRead | null;
   impactRules?: Schema<"ExplainStep">[];
   nextExplanation?: DeferredRead | null;
