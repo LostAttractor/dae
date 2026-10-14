@@ -94,17 +94,40 @@ func TestStreamAuthenticationDistinguishesProxyAndTarget(t *testing.T) {
 
 func TestSelectionAuthenticationBlocksBackgroundRetries(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
-	d.applyCheck(modeCheckResult(d, checkInitial, allModeProbes()...))
+	d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP4}}})
 	c := newConnectivityChecker(d.pathRuntime, nil)
 	defer c.stopRetries()
 	flight := d.queueSelectionCheckLocked(common.NetworkTCP4, time.Now().Add(time.Second))
 	defer flight.cancel()
 	c.flight = flight
-	result := modeCheckResult(d, checkSelection, probeResult{network: common.NetworkTCP4, err: netproxy.WrapFailure(errors.New("credentials"), netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonAuth})})
+	result := checkResult{kind: checkSelection, probes: []probeResult{{network: common.NetworkTCP4, err: netproxy.WrapFailure(errors.New("credentials"), netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonAuth})}}}
 	result.attempted = true
 	c.finishSelectionCheck(result)
 	c.dispatch()
 	if c.blockedBy != "auth" || !c.healthAt.IsZero() || !c.supportAt.IsZero() || c.cancel != nil || d.RuntimeStatus().Recovery.Phase != RecoveryBlocked {
 		t.Fatalf("selected auth failure retried: %+v", d.RuntimeStatus())
+	}
+}
+
+func TestCapabilityAuthenticationFailureInvalidatesSharedHealth(t *testing.T) {
+	for _, kind := range []checkKind{checkInitial, checkSupport} {
+		t.Run(checkKindName[kind], func(t *testing.T) {
+			d := newTestDialer(t, testTransport{})
+			d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP6}}})
+			before := d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof
+			result := checkResult{kind: kind, probes: []probeResult{{network: common.NetworkTCP4, err: netproxy.WrapFailure(errors.New("credentials"), netproxy.Failure{
+				Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonAuth,
+			})}}}
+			if kind == checkInitial {
+				result.probes = append(result.probes, probeResult{network: common.NetworkTCP6})
+			}
+			checker := newConnectivityChecker(d.pathRuntime, nil)
+			defer checker.stopRetries()
+			checker.cancel = func() {}
+			finishCheck(checker, result)
+			if checker.blockedBy != "auth" || d.RuntimeStatus().Healthy || d.ProofValid(before) {
+				t.Fatalf("capability authentication failure did not block the shared path: blocked=%q status=%+v", checker.blockedBy, d.RuntimeStatus())
+			}
+		})
 	}
 }

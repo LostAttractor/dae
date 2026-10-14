@@ -60,14 +60,12 @@ func TestDialerLatencyConcurrentSnapshots(t *testing.T) {
 	d.RegisterDialerGroup(nil, DialerSelectionPolicy{EmaAlpha: 0.5}.WithDefaults())
 	network := common.NetworkIndex(0).NetworkType()
 	d.health.networks[network.Index()] = networkSupported
-	d.health.modes[network.Index()].phase = healthHealthy
 	var workers sync.WaitGroup
 	for range 4 {
 		workers.Go(func() {
 			for range 100 {
 				d.mu.Lock()
 				d.group.latency.record(time.Millisecond)
-				d.group.modeLatency[network.Index()].record(time.Millisecond)
 				d.mu.Unlock()
 			}
 		})

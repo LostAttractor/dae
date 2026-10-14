@@ -23,7 +23,7 @@ type SelectionStatus struct {
 }
 
 // NetworkSupportState describes protocol/remote capability, not current
-// reachability. Each confirmed mode has its own health observation.
+// reachability. Confirmed modes share the dialer's canonical health result.
 type NetworkSupportState string
 
 const (

@@ -415,8 +415,8 @@ func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
 		for i, available := range snapshot.Usable {
 			aggregate.networks[i] = aggregate.networks[i] || available
 			usable = usable || available
-			aggregate.stable = aggregate.stable || available && !snapshot.Confirming[i]
 		}
+		aggregate.stable = aggregate.stable || usable && !snapshot.ConfirmingFailure
 		if !snapshot.InitialCheckDone {
 			aggregate.pending = true
 			aggregate.initialDone = false

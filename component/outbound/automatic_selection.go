@@ -163,8 +163,8 @@ func (s *automaticSelection) hasUpgrade(network common.NetworkIndex, current sel
 	return false
 }
 
-// A peer needs a current proof for this mode before it can serve as a backup.
-// Verification in another mode does not satisfy this requirement.
+// A peer needs a current shared path proof and the requested capability before
+// it can serve as a backup and let lower tiers sleep.
 func (s *automaticSelection) unverifiedPeer(network common.NetworkIndex, current selectorCandidate) *dialer.Dialer {
 	var target *dialer.Dialer
 	for _, d := range s.g.Dialers {

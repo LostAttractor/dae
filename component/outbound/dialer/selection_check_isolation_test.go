@@ -5,6 +5,8 @@ package dialer
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,49 +16,69 @@ import (
 	"github.com/daeuniverse/dae/common"
 )
 
-func TestQueuedProofVerifiesItsOwnNetwork(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		d := newTestDialer(t, testTransport{})
-		d.SetCheckEnabled(false)
-		d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{
-			{network: common.NetworkTCP4, latency: time.Millisecond},
-			{network: common.NetworkTCP6, latency: time.Millisecond},
-		}})
-		time.Sleep(time.Second)
-		var ipv6Probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) error {
-			if network.Index() == common.NetworkTCP6 {
-				ipv6Probes.Add(1)
-				return errors.New("IPv6 egress became unreachable")
-			}
-			select {
-			case <-time.After(50 * time.Millisecond):
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
+func TestKnownCapabilitiesShareSelectionProbe(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprint("failed=", failed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newTestDialer(t, testTransport{})
+				d.SetCheckEnabled(false)
+				var initial []probeResult
+				for network := range common.NetworkIndex(common.NetworkTypeCount) {
+					initial = append(initial, probeResult{network: network})
+				}
+				d.applyCheck(checkResult{kind: checkInitial, probes: initial})
+				time.Sleep(time.Second)
+				var probes [common.NetworkTypeCount]atomic.Int32
+				probeErr := errors.New("representative probe failed")
+				checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, network *common.NetworkType) error {
+					probes[network.Index()].Add(1)
+					select {
+					case <-time.After(50 * time.Millisecond):
+						if failed {
+							return probeErr
+						}
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				})
+				start := make(chan struct{})
+				close(start)
+				var worker sync.WaitGroup
+				worker.Go(func() { checker.run(start) })
+				defer func() { _ = d.Close(); worker.Wait() }()
+				var clients sync.WaitGroup
+				var proofs [common.NetworkTypeCount]HealthProof
+				for network := range common.NetworkIndex(common.NetworkTypeCount) {
+					clients.Go(func() {
+						proof, err := d.Check(t.Context(), network, time.Second)
+						defer proof.Release()
+						proofs[network] = proof
+						if failed {
+							if !errors.Is(err, probeErr) {
+								t.Errorf("%v: %v", network, err)
+							}
+						} else if err != nil || proof.Network != network || !d.ProofValid(proof) {
+							t.Errorf("%v: proof=%+v err=%v", network, proof, err)
+						}
+					})
+				}
+				clients.Wait()
+				for network := range common.NetworkIndex(common.NetworkTypeCount) {
+					want := int32(0)
+					if network == common.NetworkTCP6 {
+						want = 1
+					}
+					if probes[network].Load() != want {
+						t.Errorf("%v probes=%d want=%d", network, probes[network].Load(), want)
+					}
+					if !failed && !proofs[network].SameObservation(proofs[common.NetworkTCP6]) {
+						t.Errorf("%v has a separate observation", network)
+					}
+				}
+			})
 		})
-		start := make(chan struct{})
-		close(start)
-		var worker sync.WaitGroup
-		worker.Go(func() { checker.run(start) })
-		defer func() { _ = d.Close(); worker.Wait() }()
-		ipv4 := make(chan error, 1)
-		go func() {
-			proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
-			proof.Release()
-			ipv4 <- err
-		}()
-		synctest.Wait()
-		proof, err := d.Check(t.Context(), common.NetworkTCP6, time.Second)
-		defer proof.Release()
-		if first := <-ipv4; first != nil {
-			t.Fatalf("healthy IPv4 check failed: %v", first)
-		}
-		if err == nil || ipv6Probes.Load() == 0 {
-			t.Fatalf("unverified broken IPv6 returned a proof: err=%v valid=%v IPv6 probes=%d", err, d.ProofValid(proof), ipv6Probes.Load())
-		}
-	})
+	}
 }
 
 func TestFirstShortWaiterDoesNotTruncateLongWaiter(t *testing.T) {
@@ -65,7 +87,10 @@ func TestFirstShortWaiterDoesNotTruncateLongWaiter(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				d := newTestDialer(t, testTransport{})
 				d.SetCheckEnabled(false)
-				d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}}})
+				d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{
+					{network: common.NetworkTCP4, latency: time.Millisecond},
+					{network: common.NetworkTCP6, latency: time.Millisecond},
+				}})
 				time.Sleep(time.Second)
 				checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
 					select {
@@ -88,7 +113,7 @@ func TestFirstShortWaiterDoesNotTruncateLongWaiter(t *testing.T) {
 				}()
 				synctest.Wait()
 				began := time.Now()
-				proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
+				proof, err := d.Check(t.Context(), common.NetworkTCP6, time.Second)
 				defer proof.Release()
 				if shortErr := <-short; !errors.Is(shortErr, context.DeadlineExceeded) {
 					t.Fatalf("short waiter did not respect its own budget: %v", shortErr)
@@ -128,27 +153,70 @@ func TestSelectionCheckDoesNotRetryTargetTimeout(t *testing.T) {
 	})
 }
 
-func TestHealthProofKeepsItsNetworkAndFailureGeneration(t *testing.T) {
+func TestSharedHealthProofInvalidatedAcrossCapabilities(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{
 		{network: common.NetworkTCP4}, {network: common.NetworkTCP6},
 	}})
-	before6 := d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof
-	d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP4}}})
-	after6 := d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof
-	if !before6.SameObservation(after6) {
-		t.Fatal("a TCP4 result refreshed the TCP6 observation")
+	before := d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Proof
+	d.ReportDataPlaneError(errors.New("path failed"))
+	for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
+		if !d.VerifiedUsable(network.NetworkType()) || d.ProofValid(d.SelectionSnapshot(network.NetworkType()).Proof) {
+			t.Fatalf("%v: confirmation must retain admission while invalidating proofs for new selections", network)
+		}
 	}
-	d.ReportNetworkError(common.NetworkTCP4, errors.New("TCP4 failed"))
-	if !d.VerifiedUsable(common.NetworkTCP6.NetworkType()) {
-		t.Fatal("failure confirmation prematurely withdrew an admitted path")
+	d.applyCheck(checkResult{kind: checkSelection, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP6}}})
+	if d.ProofValid(before) {
+		t.Fatal("old proof revived after recovery")
 	}
-	d.applyCheck(checkResult{kind: checkSelection, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(), probes: []probeResult{{network: common.NetworkTCP4}}})
-	if !d.ProofValid(d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Proof) ||
-		!d.ProofValid(d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof) {
-		t.Fatal("TCP4 recovery invalidated an independent TCP6 proof")
+	for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
+		proof := d.SelectionSnapshot(network.NetworkType()).Proof
+		if !d.ProofValid(proof) || !d.VerifiedUsable(network.NetworkType()) || before.SameObservation(proof) {
+			t.Fatalf("%v did not receive the new shared observation", network)
+		}
 	}
-	if !d.VerifiedUsable(common.NetworkTCP4.NetworkType()) || !d.VerifiedUsable(common.NetworkTCP6.NetworkType()) {
-		t.Fatal("mode recovery withdrew independently verified TCP6")
+	if d.ProofValid(d.SelectionSnapshot(common.NetworkUDP4.NetworkType()).Proof) {
+		t.Fatal("shared health fabricated an unknown capability")
+	}
+}
+
+func TestSelectionDiscoveryReusesOnlyFreshRepresentativeProof(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		known, requested common.NetworkIndex
+		fresh            bool
+		want             []common.NetworkIndex
+		latency          time.Duration
+	}{
+		{"fresh", common.NetworkTCP6, common.NetworkTCP4, true, []common.NetworkIndex{common.NetworkTCP4}, 5 * time.Millisecond},
+		{"stale", common.NetworkTCP6, common.NetworkTCP4, false, []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6}, 2 * time.Millisecond},
+		{"new representative", common.NetworkTCP4, common.NetworkTCP6, false, []common.NetworkIndex{common.NetworkTCP6}, time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d := newTestDialer(t, testTransport{})
+				d.applyCheck(checkResult{kind: checkInitial, probes: []probeResult{{network: tc.known, latency: 5 * time.Millisecond}}})
+				before := d.SelectionSnapshot(tc.known.NetworkType()).Proof
+				if !tc.fresh {
+					time.Sleep(time.Second)
+				}
+				var probes []common.NetworkIndex
+				checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) error {
+					probes = append(probes, network.Index())
+					time.Sleep(time.Duration(len(probes)) * time.Millisecond)
+					return nil
+				})
+				defer checker.stopRetries()
+				result := checker.performSelectionCheck(&selectionCheck{ctx: t.Context(), network: tc.requested, requestedAt: time.Now()}, d.failures.generation)
+				applied, ok := d.applyCheck(result)
+				proof := d.SelectionSnapshot(tc.requested.NetworkType()).Proof
+				if !ok || !applied.success || !d.ProofValid(proof) || !slices.Equal(probes, tc.want) {
+					t.Fatalf("discovery probes=%v want=%v applied=%+v proof=%+v", probes, tc.want, applied, proof)
+				}
+				if proof.SameObservation(before) != tc.fresh || d.RuntimeStatus().Latency.Last != tc.latency {
+					t.Fatalf("capability discovery changed the wrong health observation: proof=%+v latency=%v", proof, d.RuntimeStatus().Latency.Last)
+				}
+			})
+		})
 	}
 }

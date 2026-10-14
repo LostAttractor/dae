@@ -121,7 +121,7 @@ func TestSharedCheckDemandAndRecoverySurviveMemberClose(t *testing.T) {
 		d.RequestManualCheck()
 		other.RequestManualCheck()
 		synctest.Wait()
-		if probes.Load() != 2*common.NetworkTypeCount {
+		if probes.Load() != common.NetworkTypeCount+1 {
 			t.Fatal("cross-group manual requests were not coalesced")
 		}
 		_ = d.Close()
@@ -147,7 +147,7 @@ func TestSharedCheckDemandAndRecoverySurviveMemberClose(t *testing.T) {
 		other.RequestManualCheck()
 		other.RequestManualCheck()
 		synctest.Wait()
-		if probes.Load() != count+common.NetworkTypeCount || other.RuntimeStatus().CheckEnabled {
+		if probes.Load() != count+1 || other.RuntimeStatus().CheckEnabled {
 			t.Fatal("manual requests were not coalesced into one untracked check")
 		}
 	})

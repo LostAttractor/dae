@@ -30,6 +30,13 @@ var errSharedCheckTimeout = errors.New("shared connectivity check exhausted anot
 // A pinned check resolver with no address for this family cannot produce a
 // proof. Do not wake proxy sessions just to rediscover this local fact.
 func (d *Dialer) CanProbe(network common.NetworkIndex) bool {
+	d.mu.RLock()
+	state := d.health.networks[network]
+	network = d.selectionProbeNetworkLocked(network)
+	d.mu.RUnlock()
+	if state == networkUnsupported {
+		return false
+	}
 	raw := d.CheckDnsOptionRaw.Raw
 	if len(raw) <= 1 {
 		return true
@@ -47,7 +54,8 @@ func (d *Dialer) CanProbe(network common.NetworkIndex) bool {
 	return false
 }
 
-// Check joins a bounded, one-shot check of this physical path and network.
+// Check joins a bounded, one-shot check of this physical path. Known capabilities
+// share the representative probe; unknown capabilities require discovery first.
 // Queueing, connection establishment and verification share the same deadline.
 // A caller can stop waiting without canceling checks needed by other groups.
 func (d *Dialer) Check(ctx context.Context, network common.NetworkIndex, timeout time.Duration) (HealthProof, error) {
@@ -139,10 +147,20 @@ func (d *Dialer) checkOnce(ctx context.Context, network common.NetworkIndex) (He
 	if flight.err != nil {
 		return HealthProof{}, checkError(flight.err)
 	}
-	return flight.proof, nil
+	proof := flight.proof
+	proof.Network = network
+	return proof, nil
+}
+
+func (d *pathRuntime) selectionProbeNetworkLocked(network common.NetworkIndex) common.NetworkIndex {
+	if d.health.networks[network] == networkSupported {
+		return firstSupportedNetwork(d.health.networks)
+	}
+	return network
 }
 
 func (d *pathRuntime) queueSelectionCheckLocked(network common.NetworkIndex, deadline time.Time) *selectionCheck {
+	network = d.selectionProbeNetworkLocked(network)
 	flight := d.checks.selection[network]
 	if flight == nil || flight.ctx.Err() != nil {
 		ctx, cancel := context.WithDeadline(d.ctx, deadline)
@@ -166,8 +184,10 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 			c.d.checks.selection[i] = nil
 			continue
 		}
-		proof := c.d.health.proofs[queued.network]
-		if !proof.CheckedAt.Before(queued.requestedAt) && c.d.proofCurrentLocked(proof) {
+		proof := c.d.healthProofLocked(queued.network)
+		if !proof.CheckedAt.Before(queued.requestedAt) && proof.failure == c.d.failures.generation &&
+			proof.readiness == c.d.health.readiness && c.d.health.networks[queued.network] == networkSupported &&
+			c.d.health.phase == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot()) {
 			queued.proof = proof
 			close(queued.done)
 			c.d.checks.selection[i] = nil
@@ -181,7 +201,6 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 		return false
 	}
 	generation := c.d.failures.generation
-	modeGenerations := c.d.modeGenerationsLocked()
 	c.d.checks.operation = checkProbing
 	c.d.updateTransportDemandLocked()
 	c.d.mu.Unlock()
@@ -191,13 +210,13 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 	c.runningKind = checkSelection
 	c.cancel = flight.cancel
 	go func() {
-		c.results <- c.performSelectionCheck(flight, generation, modeGenerations)
+		c.results <- c.performSelectionCheck(flight, generation)
 	}()
 	return true
 }
 
-func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, generation uint64, modeGenerations [common.NetworkTypeCount]uint64) checkResult {
-	result := checkResult{kind: checkSelection, generation: generation, modeGenerations: modeGenerations}
+func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, generation uint64) checkResult {
+	result := checkResult{kind: checkSelection, generation: generation}
 	ctx := flight.ctx
 	c.d.setRecovery(RecoveryQueued, time.Time{}, "connectivity_slot")
 	if err := acquireConnectivityCheckSlot(ctx); err != nil {
@@ -222,10 +241,30 @@ func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, gene
 			return result
 		}
 	}
-	c.d.probeQueued()
-	c.d.probeStarted()
-	defer c.d.probeFinished()
-	result.probes = []probeResult{c.measureProbe(ctx, flight.network)}
+	c.d.mu.RLock()
+	network := c.d.selectionProbeNetworkLocked(flight.network)
+	states := c.d.health.networks
+	c.d.mu.RUnlock()
+	probe := func(network common.NetworkIndex) probeResult {
+		c.d.probeQueued()
+		c.d.probeStarted()
+		defer c.d.probeFinished()
+		return c.measureProbe(ctx, network)
+	}
+	result.probes = []probeResult{probe(network)}
+	states[network] = networkSupported
+	canonical := firstSupportedNetwork(states)
+	// Discovering another capability cannot replace a fresh representative check.
+	if result.probes[0].err == nil && canonical.Valid() && canonical != network {
+		c.d.mu.RLock()
+		proof := c.d.healthProofLocked(canonical)
+		fresh := !proof.CheckedAt.Before(flight.requestedAt) && proof.failure == generation &&
+			proof.readiness == result.readiness && c.d.health.phase == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot())
+		c.d.mu.RUnlock()
+		if !fresh {
+			result.probes = append(result.probes, probe(canonical))
+		}
+	}
 	return result
 }
 
@@ -267,11 +306,11 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		c.stopRetries()
 	}
 	if err == nil && (c.d.failures.generation != result.generation ||
-		c.d.health.readiness != result.readiness || !c.d.proofCurrentLocked(c.d.health.proofs[flight.network])) {
+		c.d.health.readiness != result.readiness || !c.d.healthyLocked(c.d.sessionSnapshot())) {
 		err = ErrCheckSuperseded
 	}
 	if err == nil {
-		flight.proof = c.d.health.proofs[flight.network]
+		flight.proof = c.d.healthProofLocked(flight.network)
 	}
 	flight.err = err
 	if c.d.checks.selection[flight.network] == flight {
@@ -282,5 +321,32 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 }
 
 func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck {
-	return d.applyCapabilityCheckLocked(result)
+	probe := result.probes[0]
+	previous := d.health.networks[probe.network]
+	d.applyCapabilityResultsLocked(result)
+	if previous != networkSupported && probe.err == nil {
+		d.health.pendingForce |= SelectionForceFor(probe.network)
+	}
+	if probe.err != nil && recoveryBlockedReason(probe.err) == "" && (errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) ||
+		previous != networkSupported && d.health.phase.usable()) {
+		d.statusRevision++
+		d.mu.Unlock()
+		d.notifyGroups(SelectionForceNone)
+		return appliedCheck{}
+	}
+	if probe.err == nil {
+		canonical := resultProbe(result, firstSupportedNetwork(d.health.networks))
+		if canonical == nil {
+			// This request discovered a capability and reused a shared proof.
+			// Keep that observation's timestamp and latency unchanged.
+			force := d.takePendingForceLocked()
+			success := d.health.phase == healthHealthy && d.healthyLocked(d.sessionSnapshot())
+			d.statusRevision++
+			d.mu.Unlock()
+			d.notifyGroups(force)
+			return appliedCheck{success: success}
+		}
+		result.probes = []probeResult{*canonical}
+	}
+	return d.applyHealthCheckLocked(result)
 }

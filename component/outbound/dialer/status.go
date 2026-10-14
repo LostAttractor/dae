@@ -22,9 +22,6 @@ type SelectionSnapshot struct {
 	HasLatency      bool
 	Latency         api.LatencyStats
 	Degraded        bool
-	RecoveryElapsed time.Duration
-	FailureRecovery time.Duration
-	MeasuredAt      time.Time
 	Monitoring      bool // Shared worker demand, including other groups.
 	Proof           HealthProof
 }
@@ -35,7 +32,6 @@ type ConnectivitySnapshot struct {
 	Usable            [common.NetworkTypeCount]bool
 	InitialCheckDone  bool
 	ConfirmingFailure bool
-	Confirming        [common.NetworkTypeCount]bool
 }
 
 func supportState(state networkState) api.NetworkSupportState {
@@ -65,7 +61,6 @@ type RuntimeSnapshot struct {
 	CheckedAt          time.Time
 	ConfirmingFailure  bool
 	SupportState       [common.NetworkTypeCount]api.NetworkSupportState
-	Usable             [common.NetworkTypeCount]bool
 	Session            netproxy.StateEvent
 	HasSession         bool
 	HasLatency         bool
@@ -86,18 +81,15 @@ func (d *Dialer) SelectionSnapshot(networkType *common.NetworkType) SelectionSna
 	}
 	state := d.health.networks[networkType.Index()]
 	snapshot := SelectionSnapshot{
-		Usable:          !d.closed && d.modeUsableLocked(networkType.Index(), session),
+		Usable:          !d.closed && d.healthyLocked(session) && state == networkSupported,
 		Dormant:         dormant,
-		ObservedHealthy: !d.closed && !d.health.blocked && d.health.modes[networkType.Index()].phase == healthHealthy,
+		ObservedHealthy: !d.closed && d.health.phase == healthHealthy,
 		Support:         supportState(state),
 	}
-	if d.group != nil {
-		snapshot.Latency, snapshot.HasLatency = d.group.modeLatency[networkType.Index()].snapshot()
-	}
-	snapshot.Degraded, snapshot.RecoveryElapsed, snapshot.FailureRecovery = d.modeDegradationLocked(networkType.Index())
-	snapshot.MeasuredAt = d.health.modes[networkType.Index()].measuredAt
+	snapshot.Latency, snapshot.HasLatency = d.latencyStatsLocked()
+	snapshot.Degraded, _, _ = d.degradationLocked()
 	snapshot.Monitoring = !d.checks.paused
-	snapshot.Proof = d.health.proofs[networkType.Index()]
+	snapshot.Proof = d.healthProofLocked(networkType.Index())
 	d.mu.RUnlock()
 	return snapshot
 }
@@ -110,9 +102,8 @@ func (d *Dialer) ConnectivitySnapshot() ConnectivitySnapshot {
 		InitialCheckDone:  d.initialCheckCompletedLocked(),
 		ConfirmingFailure: healthy && d.health.phase == healthConfirming,
 	}
-	for i := range d.health.networks {
-		snapshot.Usable[i] = !d.closed && d.modeUsableLocked(common.NetworkIndex(i), session)
-		snapshot.Confirming[i] = snapshot.Usable[i] && d.health.modes[i].phase == healthConfirming
+	for i, state := range d.health.networks {
+		snapshot.Usable[i] = healthy && state == networkSupported
 	}
 	d.mu.RUnlock()
 	return snapshot
@@ -164,7 +155,6 @@ func (d *pathRuntime) runtimeStatusLocked() RuntimeSnapshot {
 	}
 	for i, state := range d.health.networks {
 		snapshot.SupportState[i] = supportState(state)
-		snapshot.Usable[i] = d.modeUsableLocked(common.NetworkIndex(i), session)
 	}
 	return snapshot
 }

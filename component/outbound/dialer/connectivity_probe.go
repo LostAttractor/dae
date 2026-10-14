@@ -131,15 +131,14 @@ type probeResult struct {
 }
 
 type checkResult struct {
-	attempted       bool
-	kind            checkKind
-	generation      uint64
-	modeGenerations [common.NetworkTypeCount]uint64
-	seq             uint64
-	readiness       uint64
-	capacityBefore  int
-	connectErr      error
-	probes          []probeResult
+	attempted      bool
+	kind           checkKind
+	generation     uint64
+	seq            uint64
+	readiness      uint64
+	capacityBefore int
+	connectErr     error
+	probes         []probeResult
 }
 
 // Failures can arise while establishing a session or while opening a probe
@@ -156,9 +155,8 @@ func (r checkResult) failure() error {
 
 func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkAttempt) checkResult {
 	result := checkResult{
-		kind:            attempt.kind,
-		generation:      attempt.generation,
-		modeGenerations: attempt.modeGenerations,
+		kind:       attempt.kind,
+		generation: attempt.generation,
 	}
 	if attempt.kind == checkCapacity {
 		result.capacityBefore = c.d.session.Snapshot().UsableCapacity
@@ -184,7 +182,12 @@ func (c *connectivityChecker) performAttempt(ctx context.Context, attempt checkA
 	case checkSupport:
 		result.probes = c.probeMany(ctx, states, networkUnknown)
 	case checkHealth:
-		result.probes = c.probeMany(ctx, states, networkSupported)
+		first := firstSupportedNetwork(states)
+		if !first.Valid() {
+			return result
+		}
+		firstResult := c.probeHealth(ctx, first)
+		result.probes = append(result.probes, firstResult)
 	}
 	return result
 }
@@ -227,11 +230,7 @@ func (c *connectivityChecker) probeMany(ctx context.Context, states [common.Netw
 	for i := range results {
 		network := results[i].network
 		wg.Go(func() {
-			if wanted == networkSupported {
-				results[i] = c.probeHealth(ctx, network)
-			} else {
-				results[i] = c.runProbe(ctx, network)
-			}
+			results[i] = c.runProbe(ctx, network)
 		})
 	}
 	wg.Wait()
@@ -245,8 +244,7 @@ func (c *connectivityChecker) probeHealth(ctx context.Context, network common.Ne
 	}
 	retry := c.runProbe(ctx, network)
 	if retry.err != nil {
-		// The second attempt may reveal authentication/configuration failure.
-		// Preserve it when deciding whether retrying must stop.
+		// Preserve authentication/configuration failures from either attempt.
 		retry.err = errors.Join(retry.err, first.err)
 	}
 	return retry

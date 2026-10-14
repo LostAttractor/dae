@@ -19,9 +19,15 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.CheckInterval = 3 * time.Minute
 		prepareRecoveryDialer(d)
+		for network := range common.NetworkIndex(common.NetworkTypeCount) {
+			d.health.networks[network] = networkSupported
+		}
 		d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP4, err: errors.New("offline")}}})
 		var probes atomic.Int32
-		checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error {
+		checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) error {
+			if network.Index() != common.NetworkTCP6 {
+				t.Errorf("recovery used non-representative probe %v", network)
+			}
 			probes.Add(1)
 			return nil
 		})
@@ -46,6 +52,12 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		synctest.Wait()
 		if probes.Load() != 7 || d.RuntimeStatus().Degraded {
 			t.Fatalf("30-second endpoint verification did not complete recovery: probes=%d", probes.Load())
+		}
+		for network := range common.NetworkIndex(common.NetworkTypeCount) {
+			snapshot := d.SelectionSnapshot(network.NetworkType())
+			if snapshot.Degraded || !snapshot.Usable || !d.ProofValid(snapshot.Proof) {
+				t.Errorf("%v did not share the completed recovery: %+v", network, snapshot)
+			}
 		}
 		if recovery := d.RuntimeStatus().Recovery; recovery.Phase != RecoveryReady || !recovery.RetryAt.IsZero() {
 			t.Fatalf("completed observation still advertised a recovery check: %+v", recovery)
@@ -97,9 +109,8 @@ func TestRecoverySharesObservationButKeepsGroupDurations(t *testing.T) {
 		other := shareTestDialer(t, d)
 		d.group.failureRecovery = time.Second
 		other.group.failureRecovery = 3 * time.Second
-		d.health.networks[common.NetworkTCP4] = networkSupported
 		check := func(err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(), probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
+			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
 		}
 		check(errors.New("offline"))
 		check(nil)
@@ -133,7 +144,7 @@ func TestUnconfirmedSampleDoesNotAdvanceRecovery(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.health.networks[common.NetworkTCP4] = networkSupported
 		check := func(generation uint64, err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: generation, modeGenerations: d.modeGenerationsLocked(),
+			d.applyCheck(checkResult{kind: checkHealth, generation: generation,
 				probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond, err: err}}})
 		}
 		check(d.failures.generation, errors.New("offline"))

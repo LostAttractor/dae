@@ -12,7 +12,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 )
 
-func TestSelectedNetworkDoesNotResumeFromAnotherNetworksProof(t *testing.T) {
+func TestSelectedNetworksShareRepresentativeRecovery(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		transport := new(failoverTransport)
 		transport.delay.Store(int64(time.Millisecond))
@@ -20,7 +20,7 @@ func TestSelectedNetworkDoesNotResumeFromAnotherNetworksProof(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		synctest.Wait()
 		// Freeze elections to observe admission of the existing selections while
-		// independent real checks update the shared worker's health and proofs.
+		// real checks update the shared worker's health proof.
 		g.automatic.cancel()
 		g.automatic.wg.Wait()
 		transport.ipv6Offline.Store(true)
@@ -30,16 +30,25 @@ func TestSelectedNetworkDoesNotResumeFromAnotherNetworksProof(t *testing.T) {
 		if err == nil {
 			t.Fatal("IPv6 failure was not observed")
 		}
+		for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
+			if selected, err := g.Select(network.NetworkType()); selected != nil || !errors.Is(err, ErrNoAliveDialer) {
+				t.Fatalf("%v remained selected after representative failure", network)
+			}
+		}
+		transport.ipv6Offline.Store(false)
+		before4, before6 := transport.tcp4Attempts.Load(), transport.tcp6Attempts.Load()
 		proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
 		defer proof.Release()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if selected, err := g.Select(common.NetworkTCP4.NetworkType()); err != nil || selected != d {
-			t.Fatalf("verified IPv4 did not resume: %v", err)
+		if transport.tcp4Attempts.Load() != before4 || transport.tcp6Attempts.Load()-before6 != 1 {
+			t.Fatal("IPv4 selection did not use the representative TCP6 probe")
 		}
-		if selected, err := g.Select(common.NetworkTCP6.NetworkType()); selected != nil || !errors.Is(err, ErrNoAliveDialer) {
-			t.Fatal("old IPv6 selection resumed using only IPv4 recovery")
+		for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
+			if selected, err := g.Select(network.NetworkType()); err != nil || selected != d {
+				t.Fatalf("%v did not resume from the shared recovery proof: %v", network, err)
+			}
 		}
 	})
 }

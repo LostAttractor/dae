@@ -64,7 +64,7 @@ Automatic monitoring continues while any group needs the shared path. Deselectin
 
 `priority` and `add_latency` annotations add across path stages. Automatic policies test candidates in degradation/priority tiers, releasing startup waiting when a verified path is selected or the bounded selection round is exhausted. `fixed(n)` only waits for index `n`. The global startup fallback deadline is 60 seconds. Use `policy: failover` for event-driven replacement; see [automatic outbound selection](outbound-selection.md) for monitoring scope, promotion, degradation and status semantics.
 
-Once a connectivity mode is confirmed, dae retains that capability. A node uses one supported mode for regular health checks, and all of its supported modes share the resulting health state.
+Once a connectivity mode is confirmed, dae retains that capability. A path uses one supported mode for regular health checks, recovery and pre-selection verification. All confirmed modes share the resulting health state, successful latency and proof. The representative is the first supported mode in `tcp6 → tcp4 → udp6 → udp4` order.
 
 Latency selection ignores `check_tolerance` until startup completes and once for each newly confirmed mode, so late support can correct selection for new connections. Existing connections remain on their original outbound.
 
@@ -393,10 +393,6 @@ Flow controls belong in the selected policy’s `rules {}`, with an explicit fil
 
 ### Connectivity observations
 
-`tcp4`, `tcp6`, `udp4`, and `udp6` keep separate reachability, latency samples,
-health proofs, and recovery windows. A failed mode leaves other verified modes
-available. Transient failures do not revoke confirmed protocol capability.
-Shared session failure or proxy authentication failure blocks every dependent
-mode; each mode needs a fresh proof after session replacement. Node `healthy`
-means at least one mode is available. The API's `usable` array reports current
-admission in `tcp4`, `tcp6`, `udp4`, `udp6` order.
+Failover detects failures in the connection between dae and the proxy node. The design assumes nodes usually do not suffer an isolated failure in just one network stack. Continuously maintaining independent health for every mode on every node would require many additional connections, so dae deliberately uses one representative probe. Failure of that probe makes the whole path unavailable; an isolated failure in another mode may go undetected.
+
+Capability discovery still tests unknown modes individually. A confirmed capability is retained across transient failures. Periodic checks, recovery observation and pre-selection verification share the representative probe and its proof across all supported modes. A new failure or Session generation invalidates the shared proof; a successful representative check restores it. This health proof does not establish an unknown capability or guarantee reachability of every destination.

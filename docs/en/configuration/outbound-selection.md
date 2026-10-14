@@ -4,7 +4,7 @@
 
 ## Measurements and degradation
 
-`min` uses the last successful probe, `min_avg10` the last ten successful samples, and `min_moving_avg` their EMA (configurable as `min_moving_avg(alpha: 0.18)`). Failures never enter latency statistics; latency is unknown until a successful sample.
+`min` uses the last successful probe, `min_avg10` the last ten successful samples, and `min_moving_avg` their EMA (configurable as `min_moving_avg(alpha: 0.18)`). All confirmed modes of a path share the representative probe samples, with each group applying its own statistics settings. Failures never enter latency statistics; latency is unknown until a successful sample.
 
 Within a degradation/priority tier, latency policies compare the measured statistic plus `add_latency`. Conditional priority uses the measurement before offsets. Negative offsets cannot override degradation or priority; `check_tolerance` only applies within a tier.
 
@@ -37,13 +37,13 @@ A real test updating the current path's score also triggers bounded verification
 
 Startup and replacement test tiers in order, concurrently within a tier. Equal static priorities and offsets permit first-success selection. Otherwise, selection waits within its deadline only for possible winners. Conditional priority uses its maximum possible value for discovery and its measured value for selection.
 
-`probe_timeout` covers queueing, connection and verification; `selection_timeout` bounds the round. Same-path/network checks coalesce. A successful result triggering reselection, including the recovery endpoint check, supplies the proof directly. Proofs bind path, network capability and Session generation; new failures invalidate them.
+`probe_timeout` covers queueing, connection and verification; `selection_timeout` bounds the round. Checks for confirmed modes of the same path coalesce into one representative probe. A successful result triggering reselection, including the recovery endpoint check, supplies the proof directly. Proofs bind path, network capability and Session generation; new failures invalidate them.
 
-Proofs are recorded per destination network: success on one network cannot refresh another network's proof, and historical capability support cannot replace verification. Once a failure invalidates a proof, even the previously selected path needs a new proof for that network before resuming service. If a shared check expires on an earlier caller's shorter budget, a longer-budget caller can retry within its remaining time while retaining the transport. Retries never reset the caller's deadline.
+One health proof is shared across all confirmed capabilities of a path; historical capability support alone cannot replace verification. Once a failure invalidates the proof, even the previously selected path needs a new representative proof before resuming service. If a shared check expires on an earlier caller's shorter budget, a longer-budget caller can retry within its remaining time while retaining the transport. Retries never reset the caller's deadline.
 
-Every replacement candidate must pass connectivity verification for the destination network. Historical latency and health guide ranking; without a reusable successful proof for the round, the candidate is verified again, and failure or timeout moves selection to other candidates. A switch triggered by a successful test reuses its proof and revalidates it at commit; session establishment alone is insufficient. Verification runs in the background while the current path remains usable; otherwise requests wait for a verified replacement within their total selection budget.
+Every replacement candidate must have confirmed support for the destination network and pass the shared representative connectivity check. Unknown capabilities require actual discovery; success in another mode cannot establish support. Historical latency and health guide ranking; without a reusable successful proof for the round, the candidate is verified again, and failure or timeout moves selection to other candidates. A switch triggered by a successful test reuses its proof and revalidates it at commit; session establishment alone is insufficient. Verification runs in the background while the current path remains usable; otherwise requests wait for a verified replacement within their total selection budget.
 
-Potential improvements receive checks at `upgrade_interval`, backing off exponentially with jitter up to `upgrade_interval_max`. Higher-priority paths return after recovering from degradation. Paths under continuous monitoring or recovery observation supply results for the networks they verify; replacement or independent warm-backup admission still requires separate verification for other networks without valid proofs. Unavailable groups use backoff recovery rounds.
+Potential improvements receive checks at `upgrade_interval`, backing off exponentially with jitter up to `upgrade_interval_max`. Higher-priority paths return after recovering from degradation. Paths under continuous monitoring or recovery observation supply a shared representative result; replacement and independent warm-backup admission reuse that proof across all confirmed modes without separate checks. Unavailable groups use backoff recovery rounds.
 
 Tiered discovery retains attempted candidates across bounded rounds and continues with unvisited candidates before starting another sweep. Slow failing upper tiers cannot indefinitely starve a lower fallback. New successful proofs can re-admit candidates to selection; requests still share their original total waiting budget.
 
@@ -56,7 +56,7 @@ With a usable current path, background verification leaves traffic on it. Only s
 ## Scheduling responsibilities
 
 - **Group scheduler**: owns elections and probe demand per destination network. It rechecks successful results' validity and current ranking before committing; an expired winner does not discard verified runners-up.
-- **Shared path worker**: serializes one-shot verification, continuous monitoring and recovery observation, coalescing same-path/network requests. Groups share results but compute their own latency statistics, priorities and recovery durations.
+- **Shared path worker**: serializes one-shot verification, continuous monitoring and recovery observation, coalescing requests for confirmed modes of the same path. Groups share results but compute their own latency statistics, priorities and recovery durations.
 - **Transport lifetime**: combines monitoring, selection, connection and proof demand. Successful proofs retain resources through handoff; new failures or Session generations invalidate old proofs.
 
 ## Dormancy and status

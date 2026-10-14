@@ -31,7 +31,6 @@ type failoverTransport struct {
 	created      atomic.Int32
 	closed       atomic.Int32
 	ipv6Only     bool
-	ipv4Only     bool
 }
 
 func (d *failoverTransport) Close() error { d.closed.Add(1); return nil }
@@ -40,7 +39,7 @@ func (d *failoverTransport) DialContext(ctx context.Context, network, address st
 	if network != "tcp" {
 		return nil, netproxy.UnsupportedTunnelTypeError
 	}
-	if d.ipv6Only && !strings.HasPrefix(address, "[") || d.ipv4Only && strings.HasPrefix(address, "[") {
+	if d.ipv6Only && !strings.HasPrefix(address, "[") {
 		return nil, netproxy.UnsupportedTunnelTypeError
 	}
 	d.attempts.Add(1)
@@ -171,7 +170,6 @@ func TestFailoverHonorsOffsetsAndConditionalPriority(t *testing.T) {
 func TestFailoverTimeoutFallsThroughAndUpgradeWaitsForRecovery(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		high, low := new(failoverTransport), new(failoverTransport)
-		high.ipv4Only, low.ipv4Only = true, true
 		high.delay.Store(int64(time.Second))
 		low.delay.Store(int64(time.Millisecond))
 		annotations := emptyAnnotations(2)
@@ -483,8 +481,7 @@ func TestRecoveryEndpointProofPromotesWithoutAnotherProbe(t *testing.T) {
 		if !status.Degraded || !status.CheckEnabled || !status.Healthy {
 			t.Fatalf("observation did not start: %+v", status)
 		}
-		mode := g.Dialers[0].SelectionSnapshot(testNetworkType)
-		deadline := mode.MeasuredAt.Add(policy.FailureRecovery - mode.RecoveryElapsed)
+		deadline := status.MeasuredAt.Add(policy.FailureRecovery - status.RecoveryElapsed)
 		before := high.attempts.Load()
 		before6 := high.tcp6Attempts.Load()
 		time.Sleep(time.Until(deadline) - 20*time.Millisecond)
@@ -514,8 +511,8 @@ func TestRecoveryEndpointProofPromotesWithoutAnotherProbe(t *testing.T) {
 		if g.SelectedDialer(testNetworkType) != g.Dialers[0] || g.Dialers[0].RuntimeStatus().Degraded {
 			t.Fatal("endpoint success did not restore priority")
 		}
-		if got, got6 := high.attempts.Load()-before, high.tcp6Attempts.Load()-before6; got != 6 || got6 != 3 {
-			t.Fatalf("recovery probes = %d (TCP6=%d), want two interval probes and one endpoint verification per mode", got, got6)
+		if got, got6 := high.attempts.Load()-before, high.tcp6Attempts.Load()-before6; got != 3 || got6 != 3 {
+			t.Fatalf("recovery probes = %d (TCP6=%d), want two interval probes and one shared endpoint verification", got, got6)
 		}
 		before = high.attempts.Load()
 		time.Sleep(time.Minute)
@@ -571,10 +568,9 @@ func TestElectionDoesNotWaitForDominatedOffset(t *testing.T) {
 	})
 }
 
-func TestRecoveryFailureRestartsAffectedModeWindow(t *testing.T) {
+func TestRecoveryFailureRestartsTheWholeWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		high, low := new(failoverTransport), new(failoverTransport)
-		high.ipv4Only, low.ipv4Only = true, true
 		high.offline.Store(true)
 		high.delay.Store(int64(time.Millisecond))
 		annotations := emptyAnnotations(2)
@@ -587,8 +583,7 @@ func TestRecoveryFailureRestartsAffectedModeWindow(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		synctest.Wait()
 		status := g.Dialers[0].RuntimeStatus()
-		mode := g.Dialers[0].SelectionSnapshot(testNetworkType)
-		deadline := mode.MeasuredAt.Add(policy.FailureRecovery - mode.RecoveryElapsed)
+		deadline := status.MeasuredAt.Add(policy.FailureRecovery - status.RecoveryElapsed)
 		time.Sleep(time.Until(deadline) - 20*time.Millisecond)
 		high.offline.Store(true)
 		time.Sleep(50 * time.Millisecond)
@@ -603,8 +598,7 @@ func TestRecoveryFailureRestartsAffectedModeWindow(t *testing.T) {
 		if !status.Healthy || !status.Degraded {
 			t.Fatalf("new observation did not start degraded: %+v", status)
 		}
-		mode = g.Dialers[0].SelectionSnapshot(testNetworkType)
-		deadline = mode.MeasuredAt.Add(policy.FailureRecovery - mode.RecoveryElapsed)
+		deadline = status.MeasuredAt.Add(policy.FailureRecovery - status.RecoveryElapsed)
 		time.Sleep(time.Until(deadline) - time.Millisecond)
 		if g.SelectedDialer(testNetworkType) != g.Dialers[1] {
 			t.Fatal("failure did not require a complete new window")

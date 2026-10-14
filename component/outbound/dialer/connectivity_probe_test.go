@@ -29,7 +29,7 @@ func TestConnectivityProbesPreserveFailureCause(t *testing.T) {
 			defer checker.stopRetries()
 			var result checkResult
 			if selection {
-				result = checker.performSelectionCheck(&selectionCheck{ctx: t.Context(), network: common.NetworkTCP4}, 0, [common.NetworkTypeCount]uint64{})
+				result = checker.performSelectionCheck(&selectionCheck{ctx: t.Context(), network: common.NetworkTCP4}, 0)
 			} else {
 				result = checkResult{probes: []probeResult{checker.runProbe(t.Context(), common.NetworkTCP4)}}
 			}
