@@ -47,7 +47,7 @@ writable bpffs, cgroup v2 hooks, Netkit/veth, TCX, SK_LOOKUP, the process-exit t
 IPv4/IPv6 policy routing and transparent sockets. Network attachment probes use a
 temporary network namespace; cgroup probes only allow traffic. Probe resources
 are released on completion. Missing required support or privileges stops startup;
-optional TCP splice and the long-process-name helper retain their fallback paths,
+the optional long-process-name helper retains its fallback path,
 and unavailable IPv6 policy routing produces a warning.
 Interface state, sysctls and configuration-specific requirements are checked during
 normal startup.
@@ -91,7 +91,7 @@ errors are reported rather than interpreted as missing Netkit support.
 Host interfaces use TCX links. Internal interfaces use native Netkit hooks or
 veth TCX links; dae does not require the TC classifier/qdisc options `CONFIG_NET_CLS_BPF`,
 `CONFIG_NET_SCH_INGRESS` or `CONFIG_NET_CLS_ACT`. `CONFIG_BPF_STREAM_PARSER` is not
-required merely to use SOCKMAP/SOCKHASH or the current stream-verdict relay.
+required by the listener SOCKMAP and SK_LOOKUP ingress path.
 
 Enable the debug-info options required by your kernel's `DEBUG_INFO_BTF` Kconfig
 dependencies. The KPROBES/KPROBE_EVENTS settings above provide the usual path to
@@ -123,7 +123,7 @@ zcat /proc/config.gz 2>/dev/null || cat "/boot/config-$(uname -r)" /boot/config 
 | --- | --- |
 | IPv6 interception policy routing | `CONFIG_IPV6_MULTIPLE_TABLES`; missing support produces a warning and prevents the corresponding IPv6 interception route/rule from being installed. |
 | Long process names | `bpf_get_current_task` in cgroup socket-address programs; otherwise process-name routing uses truncated task names. |
-| TCP splice acceleration | Linux 6.18+, a build with `dae_splice`, SOCKHASH/stream-verdict links and the required fexit targets; unavailable support falls back to userspace relay for captured TCP. `make` includes the build tag. |
+| TCP splice acceleration | Native TCP direct relay uses Go `io.Copy` and Linux `splice(2)`. Unsupported sockets or kernel counters use buffered copying; no additional BPF program or build tag is required. |
 | `dae trace` | Linux 6.13+, kprobes and accessible kernel symbols/BTF. `make` includes it on `amd64`, `arm64`, `riscv64`, `loong64` and `ppc64le`; other supported daemon targets omit the command. Trace targets are checked by `dae trace`, not by `check-kernel`. |
 | Bridge-member matching | [Routing](configuration/routing.md) describes `CONFIG_BRIDGE_NETFILTER` and the bridge netfilter settings needed for member metadata. |
 | Client-set export | Configured [ipset/nftset exports](configuration/api.md) require their kernel facilities and network-administration privileges. |

@@ -45,7 +45,7 @@ def main():
             raise RuntimeError(f"mutation did not fail the expected assertion: {name}: {result.stdout}")
         return result.stdout
 
-    def build(name, sources, package="./control", tags="trace,dae_splice"):
+    def build(name, sources, package="./control", tags="trace"):
         directory = output / name
         directory.mkdir()
         overlay = {}

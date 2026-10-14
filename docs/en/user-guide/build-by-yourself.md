@@ -37,7 +37,7 @@ The eBPF and cgo compilers have separate version and target requirements:
 
 | Component | Compiler selection | Requirement |
 | --- | --- | --- |
-| eBPF programs, tracing and splice | `CLANG`, `STRIP`, `LLVM_OBJDUMP` | Host Clang with the BPF backend and matching LLVM tools; 15+ recommended |
+| eBPF programs and tracing | `CLANG`, `STRIP`, `LLVM_OBJDUMP` | Host Clang with the BPF backend and matching LLVM tools; 15+ recommended |
 | QuickJS/cgo | `CC` | Target C compiler, libc headers and libraries; static builds need target static archives |
 | QuickJS/cgo on MIPS64 | `CC` | Clang 23+ when using a Clang-based compiler; older backends can miscompile BigInt atomic operations |
 | Node.js backend | `SURGE_RUNTIME=nodejs` | No C compiler for this backend; eBPF still needs host Clang |

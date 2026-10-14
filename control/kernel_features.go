@@ -20,7 +20,6 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/control/internal/splice"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -126,17 +125,6 @@ func checkKernelFeaturesForLink(ctx context.Context, ns *DaeNetns) error {
 		}},
 	); err != nil {
 		return fmt.Errorf("kernel preflight failed (check kernel support, mounts and process capabilities): %w", err)
-	}
-	// Splice is an acceleration, not a requirement for the core datapath.
-	optional, err := splice.New(nil, DefaultNatTimeoutTCPEstablished)
-	if err != nil {
-		log.WithError(err).Warn("Kernel preflight: optional TCP splice unavailable; using userspace relay")
-	} else if optional != nil {
-		if err := optional.Close(); err != nil {
-			return fmt.Errorf("kernel preflight: close optional TCP splice probe: %w", err)
-		}
-	} else {
-		log.Debug("Kernel preflight: optional TCP splice unavailable")
 	}
 	return ctx.Err()
 }

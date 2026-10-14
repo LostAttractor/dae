@@ -21,7 +21,7 @@ import (
 	quic "github.com/daeuniverse/quic-go"
 )
 
-func relayTestTCPPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
+func relayTestTCPPair(t testing.TB) (*net.TCPConn, *net.TCPConn) {
 	t.Helper()
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -330,7 +330,10 @@ func TestRelayTCPPolicyResetsClientWithoutAbortingNode(t *testing.T) {
 			finished := make(chan error, 1)
 			traffic := stats.DefaultStore.OpenConnection(stats.Path{Dialer: t.Name()}, false)
 			defer traffic.Close()
-			go func() { finished <- relayTCP(left, upstream, traffic, time.Second, "", group, route) }()
+			go func() {
+				relay := &tcpRelay{lConn: left, rConn: upstream, policyLease: group, routeLease: route}
+				finished <- relay.copyTCP(traffic, time.Second)
+			}()
 			policy.Abort(netproxy.WrapFailure(errors.New("group reselected node"), netproxy.Failure{Origin: netproxy.OriginLocalCleanup}))
 			_, err := client.Read(make([]byte, 1))
 			if !errors.Is(err, syscall.ECONNRESET) {

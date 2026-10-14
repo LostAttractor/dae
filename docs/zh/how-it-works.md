@@ -33,6 +33,12 @@ dae 通过接口上的 BPF 程序进行流量分流。同一接口同时作为 W
 
 LAN/WAN 程序会把需要代理的流量重定向到私有 L2 设备对。dae 优先使用 Netkit 原生 hook；内核不支持 Netkit 时使用 veth，并在两端挂载 TCX ingress hook。两条路径都为 dae 网络命名空间内的本地投递准备数据包，再由 BPF SK_LOOKUP 程序从 socket map 中选择 TCP 或 UDP 监听 socket，保留原始目的地址和回包路径。设备类型不改变捕获条件，无关 direct 流量仍在内核直通。
 
+已捕获且最终选择原生 TCP 直连的连接使用两个并行的 Go `io.Copy`，由标准库启用 Linux `splice(2)`。上传方向先写出嗅探缓冲，此时下载方向已在运行。EOF 半关闭目标连接；错误、连接所有者中止或策略变更会关闭两端。MPTCP、协议包装和内核计数不可用的连接使用普通缓冲复制。入口继续通过监听 socket 的 SOCKMAP 和 SK_LOOKUP 投递；已建立的转发连接不加入 SOCKHASH。
+
+Runtime 共用一个监控器，利用 `TCP_INFO.bytes_acked` 和 `SIOCOUTQ` 统计目标 socket 已接纳的有效载荷，排除握手和 FIN。运行中的采样保留单调下界，每个复制方向结束后用实际复制量精确结算，再发送 FIN。全局、设备、status 和 Prometheus 共用这些计数。采样失败时保留已有计数，并暂停该连接的空闲判断；状态查询不会触发采样或关闭连接。
+
+对端不可达由两侧 socket 的 TCP keepalive 和重传超时发现。对端仍可达但连接不再结束时（例如远端静默的代理流，或半关闭后对端不再关闭），普通与原生 TCP 转发共用双向有效载荷空闲回收，超时沿用启动网络命名空间的 conntrack 策略：双向打开时使用 `net.netfilter.nf_conntrack_tcp_timeout_established`，任一方向半关闭后使用 `net.netfilter.nf_conntrack_tcp_timeout_close_wait`；缺失、非法或溢出时分别使用 7440 秒和 60 秒。启动和成功 reload 时重新读取，并同时作用于存量连接。监控器每五秒检查一次，关闭前再次确认。有效载荷和半关闭续期，纯 ACK、keepalive 和重传不续期。DNS、MITM 保留各自的协议生命周期。
+
 以 benchmark 来看，dae 的代理性能比其他代理程序好一些，但不多。
 
 ### 直连原理

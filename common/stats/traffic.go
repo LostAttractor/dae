@@ -49,7 +49,7 @@ type pathCounters struct {
 
 // Connection accounts for one logical TCP, smux, or UDP connection. Payload
 // records update exact process-lifetime path totals immediately; the sampler is
-// responsible only for rates and external counter refreshes.
+// responsible only for rates. Connection owners publish external counter samples.
 type Connection struct {
 	store  *Store
 	stats  *pathCounters
@@ -57,7 +57,6 @@ type Connection struct {
 
 	stateMu              sync.Mutex
 	closed               bool
-	externalSource       func() (api.TrafficCounters, error)
 	lastExternalCounters api.TrafficCounters
 	externalInvalid      bool
 }
@@ -138,40 +137,24 @@ func (s *Store) track(counters *pathCounters) {
 	s.samplePathsMu.Unlock()
 }
 
-func (c *Connection) AttachExternalCounters(source func() (api.TrafficCounters, error)) error {
-	if source == nil {
-		return errors.New("external counter source is nil")
-	}
+// UpdateCounters publishes cumulative externally observed payload totals. The
+// owner settles its final sample before Close. Queries never invoke an external
+// source or affect connection lifetime. Do not also record these bytes as deltas.
+func (c *Connection) UpdateCounters(counters api.TrafficCounters, sampleErr error) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	if c.closed {
 		return errors.New("connection is closed")
 	}
-	if c.externalSource != nil {
-		return errors.New("external counter source is already attached")
+	if sampleErr == nil && (counters.UploadBytes < c.lastExternalCounters.UploadBytes ||
+		counters.DownloadBytes < c.lastExternalCounters.DownloadBytes) {
+		sampleErr = errors.New("external counters moved backwards")
 	}
-	c.externalSource = source
-	c.store.externalMu.Lock()
-	c.store.externalConnections[c] = struct{}{}
-	c.store.externalMu.Unlock()
-	return nil
-}
-
-func (c *Connection) refreshExternalCountersLocked() error {
-	if c.externalSource == nil {
-		return nil
-	}
-	counters, err := c.externalSource()
-	if err != nil {
+	if sampleErr != nil {
+		c.store.externalReadErrors.Add(1)
 		c.externalInvalid = true
 		c.invalidateRate()
-		return err
-	}
-	if counters.UploadBytes < c.lastExternalCounters.UploadBytes ||
-		counters.DownloadBytes < c.lastExternalCounters.DownloadBytes {
-		c.externalInvalid = true
-		c.invalidateRate()
-		return errors.New("external counters moved backwards")
+		return sampleErr
 	}
 	if c.externalInvalid {
 		c.invalidateRate()
@@ -196,24 +179,6 @@ func bytesPerSecond(bytes uint64, elapsed time.Duration) uint64 {
 	return rate
 }
 
-func (s *Store) refreshExternalCounters() {
-	s.externalMu.RLock()
-	connections := make([]*Connection, 0, len(s.externalConnections))
-	for connection := range s.externalConnections {
-		connections = append(connections, connection)
-	}
-	s.externalMu.RUnlock()
-
-	for _, connection := range connections {
-		connection.stateMu.Lock()
-		refreshErr := connection.refreshExternalCountersLocked()
-		connection.stateMu.Unlock()
-		if refreshErr != nil {
-			s.externalReadErrors.Add(1)
-		}
-	}
-}
-
 func (s *Store) sampleAt(now time.Time) {
 	s.samplingMu.Lock()
 	defer s.samplingMu.Unlock()
@@ -221,7 +186,6 @@ func (s *Store) sampleAt(now time.Time) {
 	if elapsed <= 0 {
 		return
 	}
-	s.refreshExternalCounters()
 	s.windowStartedAt = now
 
 	var historySample map[Path]trafficRate
@@ -283,24 +247,13 @@ func (c *Connection) Close() error {
 		return nil
 	}
 	c.closed = true
-	var err error
-	if c.externalSource != nil {
-		err = c.refreshExternalCountersLocked()
-		if err != nil {
-			c.store.externalReadErrors.Add(1)
-		}
-		c.externalSource = nil
-		c.store.externalMu.Lock()
-		delete(c.store.externalConnections, c)
-		c.store.externalMu.Unlock()
-	}
 	c.stateMu.Unlock()
 	c.stats.active.Add(-1)
 	c.store.track(c.stats)
 	if c.device != nil {
-		err = errors.Join(err, c.device.Close())
+		return c.device.Close()
 	}
-	return err
+	return nil
 }
 
 func (s *Store) pathHistoryLocked(path Path) api.TrafficHistory {
@@ -320,7 +273,6 @@ func (s *Store) pathHistoryLocked(path Path) api.TrafficHistory {
 
 func (s *Store) snapshot(includeHistory bool) map[Path]api.PathStats {
 	s.samplingMu.RLock()
-	s.refreshExternalCounters()
 	snapshot := make(map[Path]api.PathStats)
 	s.pathsMu.RLock()
 	for path, counters := range s.paths {
@@ -344,7 +296,7 @@ func (s *Store) snapshot(includeHistory bool) map[Path]api.PathStats {
 	return snapshot
 }
 
-// Snapshot refreshes active external sources and returns the latest known totals.
+// Snapshot returns the latest published totals without sampling connections.
 func (s *Store) Snapshot() map[Path]api.PathStats {
 	return s.snapshot(false)
 }

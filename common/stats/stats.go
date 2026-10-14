@@ -29,9 +29,7 @@ type Store struct {
 	devicesMu sync.RWMutex
 	devices   map[[6]byte]*Store
 
-	externalMu          sync.RWMutex
-	externalConnections map[*Connection]struct{}
-	externalReadErrors  atomic.Uint64
+	externalReadErrors atomic.Uint64
 
 	samplingMu       sync.RWMutex
 	windowStartedAt  time.Time
@@ -51,14 +49,13 @@ func init() { go DefaultStore.run() }
 
 func newStoreAt(windowStartedAt time.Time) *Store {
 	return &Store{
-		startedAt:           windowStartedAt,
-		paths:               make(map[Path]*pathCounters),
-		samplePaths:         make(map[*pathCounters]struct{}),
-		externalConnections: make(map[*Connection]struct{}),
-		windowStartedAt:     windowStartedAt,
-		nodes:               make(map[string]*nodeStats),
-		groups:              make(map[string]*groupStats),
-		metrics:             newStoreMetrics(),
+		startedAt:       windowStartedAt,
+		paths:           make(map[Path]*pathCounters),
+		samplePaths:     make(map[*pathCounters]struct{}),
+		windowStartedAt: windowStartedAt,
+		nodes:           make(map[string]*nodeStats),
+		groups:          make(map[string]*groupStats),
+		metrics:         newStoreMetrics(),
 	}
 }
 

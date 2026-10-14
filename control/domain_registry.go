@@ -35,6 +35,7 @@ type DomainRegistry struct {
 	byIP          map[netip.Addr]*ipRecord
 	kernel        domainProjection
 	window        time.Duration
+	activityLag   time.Duration // longest delay before connection activity is observed
 	evaluatedAt   time.Time
 	nextGC        time.Time // lower bound on pair deadlines; zero when empty
 	gcCount       uint64
@@ -199,8 +200,11 @@ func (g *DomainRegistry) Verify(name string, ip netip.Addr) (result DomainVerifi
 	return result
 }
 
+// gc keeps a pair for activityLag past its deadline, so activity that happened
+// before the deadline but is observed late can still renew it.
 func (g *DomainRegistry) gc(now time.Time) map[netip.Addr]struct{} {
-	if g.nextGC.IsZero() || now.Before(g.nextGC) {
+	cutoff := now.Add(-g.activityLag)
+	if g.nextGC.IsZero() || cutoff.Before(g.nextGC) {
 		return nil
 	}
 	var changed map[netip.Addr]struct{}
@@ -208,7 +212,7 @@ func (g *DomainRegistry) gc(now time.Time) map[netip.Addr]struct{} {
 	for name, r := range g.byName {
 		for ip, pair := range r.addresses {
 			deadline := pair.retainUntil
-			if !deadline.After(now) {
+			if !deadline.After(cutoff) {
 				g.removePair(r, ip)
 				g.gcCount++
 				g.generation++

@@ -32,10 +32,9 @@ func (s *Store) OpenDeviceConnection(path Path, fallback bool, mac [6]byte) *Con
 }
 
 // DeviceSnapshot returns only the specified MAC's established upstream paths.
-// External (splice) deltas are refreshed by their owning global connections.
+// External deltas are published by their owning global connections.
 // Reading an unseen device does not allocate counters.
 func (s *Store) DeviceSnapshot(mac [6]byte) (map[Path]api.PathStats, int64) {
-	s.refreshExternalCounters()
 	s.devicesMu.RLock()
 	device := s.devices[mac]
 	s.devicesMu.RUnlock()

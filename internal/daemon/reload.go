@@ -69,6 +69,7 @@ func (a *application) publishAPI() {
 }
 
 func (a *application) accept(conf *config.Config, inputs *controlInputs, server netip.AddrPort, routingChanged bool) {
+	a.datapath.RefreshTCPIdleTimeouts()
 	if routingChanged || a.conf.Global.DNSResolver != conf.Global.DNSResolver {
 		a.resolver.Configure(server, a.plane.DNSResolverDialer())
 	}

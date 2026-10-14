@@ -16,13 +16,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
-)
-
-const (
-	// Value from OpenWRT default sysctl config
-	DefaultNatTimeoutTCPEstablished = 7440 * time.Second
 )
 
 // prepareTCPRelay owns connection setup through sniffing, routing, and dialing.
@@ -181,12 +175,9 @@ func (c *ControlPlane) prepareTCPRelay(setupCtx context.Context, lConn net.Conn,
 	if dialOption.Direct {
 		relay.outboundOrigin = netproxy.OriginTarget
 	}
-	// Splice only accelerates an already-captured direct connection. Connections
-	// governed by policy or route leases need the userspace abort watcher.
-	if dialOption.Direct && dialOption.PolicyLease == nil && routeLease == nil && c.core.bpf.Runtime != nil && c.core.bpf.splice != nil {
-		if _, ok := rConn.(splice.TCPConn); ok {
-			relay.directSplice = c.core.bpf.splice
-		}
+	relay.direct = dialOption.Direct
+	if c.core.bpf.Runtime != nil {
+		relay.monitor = &c.core.bpf.tcpMonitor
 	}
 	return relay, nil
 }

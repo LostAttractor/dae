@@ -143,8 +143,10 @@ Keeping a mapping does not claim its signature is still valid.
   or dae's own background hostname resolution.
 
 Observe TCP/UDP ingress and continued userspace I/O, including MITM. Captured TCP
-connections subsequently using sockmap/splice reuse existing byte-counter growth
-for refresh, with approximately one-second polling granularity. Idle connections
+connections using standard-library splice reuse kernel byte-counter growth
+for refresh, with approximately five-second polling granularity. Collection waits
+one more polling interval, so activity before a deadline that is sampled later
+still renews the evidence. Idle connections
 do not refresh. Observed client attempts count even if upstream dialing fails.
 
 Connection entry, the first activity for a new UDP destination, and DNS evidence

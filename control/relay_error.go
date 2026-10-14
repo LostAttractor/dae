@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"sync/atomic"
-	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
@@ -29,9 +28,6 @@ type relayEndpoint struct {
 }
 
 func (e *relayEndpoint) Read(p []byte) (int, error) {
-	if err := e.conn.SetReadDeadline(time.Now().Add(DefaultNatTimeoutTCPEstablished)); err != nil && !plainClosedError(err) {
-		return 0, e.failure(err, netproxy.OpRead)
-	}
 	n, err := e.conn.Read(p)
 	if err == io.EOF {
 		return n, err // The copy loop recognizes the exact sentinel as normal EOF.
@@ -105,6 +101,9 @@ func unwrapSniffer(conn any) any {
 
 // Only native sockets supply evidence that a closed error came from our Close.
 func nativeSocket(conn any) bool {
+	if c, ok := conn.(net.Conn); ok && netproxy.NativeTCPConn(c) != nil {
+		return true
+	}
 	switch unwrapSniffer(conn).(type) {
 	case *net.TCPConn, *net.UDPConn, *net.UnixConn:
 		return true

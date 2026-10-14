@@ -116,6 +116,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		management.Close()
 		return errors.Join(err, datapath.Close(), plane.Close())
 	}
+	datapath.RefreshTCPIdleTimeouts()
 	refresh.Commit()
 	app := &application{
 		options: options, conf: conf, inputs: inputs, plane: plane, datapath: datapath,

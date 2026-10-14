@@ -27,7 +27,7 @@ go test ./control -run '^$' -bench '^BenchmarkRoutingMatcher$' -benchmem -bencht
 go test ./pkg/trie -run '^$' -bench '^BenchmarkTrieHasPrefix$' -benchmem -cpu=1 -count=5
 go test ./component/outbound/dialer -run '^$' -bench '^BenchmarkDialer(Usable|SelectionSnapshot)$' -benchmem -cpu=1,8,32 -count=5
 go test ./component/outbound/dialer -run '^$' -bench '^BenchmarkDialerLatencyUpdateAndSnapshot$' -benchmem -cpu=1 -count=5
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^Benchmark(DNSUDPBuffer|UDPIdleRefresh)$' -benchmem -cpu=1 -count=5
 ```
 
@@ -40,41 +40,41 @@ go test ./component/mitm -run '^$' -bench '^BenchmarkHTTPScopes$' -benchmem -ben
 `BenchmarkDomainRegistry` 测量有名和无名活动续期、gzip 冷恢复的耗时及分配。内核写入回调为空操作，因此该基准只衡量用户态 Registry：
 
 ```sh
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistry$' -benchmem -benchtime=200ms -count=3
 ```
 
 `BenchmarkDomainRegistryActivity` 使用包含共享 IP 和全零 bitmap 的 28,042 个 pair，分别测量同步入口的未知目标、期限未变、有效续期和到期前检查。`BenchmarkDomainRegistryContention` 的混合负载中四分之一同步观察延长期限，其余为期限未变或未知目标；用 `-cpu` 改变并发度，`p95-ns` 和 `p99-ns` 包含等待队列锁与 Registry 锁的时间。并发基准的分配量包含延迟采样开销，单次观察的分配量使用 Activity 基准：
 
 ```sh
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistryActivity$' -benchmem -benchtime=300ms -count=5
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistryContention$' -benchmem -benchtime=1024x -cpu=1,8,32 -count=3
 ```
 
 `BenchmarkDomainRegistryCapacity` 使用一个内核槽位，分别测量已驻留 IP 续期和两个 IP 交替竞争槽位；固定操作数便于比较同一换入换出序列。`BenchmarkDomainRegistryFootprint` 测量上述夹具数据在临时构造对象回收后的常驻 Go 堆，单独以 `-benchtime=1x` 运行，读取 `retained-bytes`、`retained-objects`：
 
 ```sh
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistryCapacity$' -benchmem -benchtime=1024x -count=3
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainRegistryFootprint$' -benchtime=1x -count=5
 ```
 
 `BenchmarkDomainActivityBatch` 使用同一夹具数据，模拟 64 个连接对共享 IP 的重复 I/O；每 1,024 次观察应用一次批次，计时包含应用成本。`BenchmarkDomainActivityIOContention` 运行真实后台循环，并在计时结束前通过关闭应用最后一批；`p95-ns` / `p99-ns` 衡量前台观察回调耗时，状态实际可见时间还取决于批次应用。它是饱和负载，吞吐更高的实现也会产生更多排队竞争，不能直接把尾延迟当作固定流量下的网络延迟：
 
 ```sh
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainActivityBatch$' -benchmem -benchtime=500ms -count=5
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainActivityIOContention$' -benchmem -benchtime=1s -cpu=1,8,32 -count=3
 ```
 
 `BenchmarkDomainActivityQueue` 为每个 worker 分配稳定的观察目标，分别测试多个独立目标和所有 worker 共用一个 IP。每 64 次回调采样一次耗时，以减少采样对短入队路径的干扰；后台工作和关闭时的最终批次应用均计入总耗时。评估队列竞争时，应同时测量同步入口和空批次成本：
 
 ```sh
-go test -tags=netgo,osusergo,trace,dae_splice ./control \
+go test -tags=netgo,osusergo,trace ./control \
   -run '^$' -bench '^BenchmarkDomainActivityQueue$' -benchmem -benchtime=1s -cpu=1,8,32 -count=3
 ```
 

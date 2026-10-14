@@ -98,11 +98,7 @@ func TestMetricsServerContinuesAfterExternalCounterFailure(t *testing.T) {
 		Outbound: t.Name(),
 		Network:  common.NetworkTCP4,
 	}, false)
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{}, errors.New("counter source failed")
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = connection.UpdateCounters(api.TrafficCounters{}, errors.New("counter source failed"))
 	t.Cleanup(func() { _ = connection.Close() })
 
 	port := freeLocalPort(t)

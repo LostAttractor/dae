@@ -173,14 +173,8 @@ func TestExternalRefreshFailureOnlySkipsAffectedPath(t *testing.T) {
 	healthy := store.OpenConnection(healthyPath, false)
 	defer healthy.Close()
 
-	readFails := true
-	if err := failed.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		if readFails {
-			return api.TrafficCounters{}, errors.New("read failed")
-		}
-		return api.TrafficCounters{UploadBytes: 100}, nil
-	}); err != nil {
-		t.Fatal(err)
+	if err := failed.UpdateCounters(api.TrafficCounters{}, errors.New("read failed")); err == nil {
+		t.Fatal("missing read failure")
 	}
 	healthy.RecordUpload(5000)
 	store.sampleAt(windowStart.Add(api.TrafficHistoryInterval))
@@ -191,7 +185,9 @@ func TestExternalRefreshFailureOnlySkipsAffectedPath(t *testing.T) {
 		t.Fatalf("healthy path history = %v, want [1000]", got)
 	}
 
-	readFails = false
+	if err := failed.UpdateCounters(api.TrafficCounters{UploadBytes: 100}, nil); err != nil {
+		t.Fatal(err)
+	}
 	healthy.RecordUpload(5000)
 	store.sampleAt(windowStart.Add(2 * api.TrafficHistoryInterval))
 	if got := pathStatsWithHistory(t, store, failedPath).History.UploadBytesPerSecond; !reflect.DeepEqual(got, []uint64{0, 0}) {
@@ -229,16 +225,14 @@ func TestConnectionCloseKeepsShortConnectionTotals(t *testing.T) {
 	}
 }
 
-func TestSnapshotRefreshesActiveExternalCounters(t *testing.T) {
+func TestSnapshotReadsPublishedCounters(t *testing.T) {
 	path := trafficTestPath(t.Name())
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(path, false)
 	defer connection.Close()
 	connection.RecordUpload(77)
 	connection.RecordDownload(88)
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{UploadBytes: 23, DownloadBytes: 12}, nil
-	}); err != nil {
+	if err := connection.UpdateCounters(api.TrafficCounters{UploadBytes: 23, DownloadBytes: 12}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -266,30 +260,12 @@ func TestConnectionRecordsAfterClose(t *testing.T) {
 	}
 }
 
-func TestConnectionRejectsInvalidExternalSources(t *testing.T) {
+func TestConnectionRejectsCountersAfterClose(t *testing.T) {
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
-	if err := connection.AttachExternalCounters(nil); err == nil {
-		t.Fatal("nil external source was accepted")
-	}
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{}, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{}, nil
-	}); err == nil {
-		t.Fatal("second external source was accepted")
-	}
 	connection.Close()
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{}, nil
-	}); err == nil {
-		t.Fatal("closed connection accepted an external source")
-	}
-	if len(store.externalConnections) != 0 {
-		t.Fatalf("closed connection remains registered: %d", len(store.externalConnections))
+	if err := connection.UpdateCounters(api.TrafficCounters{UploadBytes: 10}, nil); err == nil {
+		t.Fatal("closed connection accepted external counters")
 	}
 }
 
@@ -297,14 +273,13 @@ func TestExternalCounterRollbackIsReported(t *testing.T) {
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
 	counters := api.TrafficCounters{UploadBytes: 10, DownloadBytes: 20}
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return counters, nil
-	}); err != nil {
+	if err := connection.UpdateCounters(counters, nil); err != nil {
 		t.Fatal(err)
 	}
 	store.Snapshot()
 	counters.UploadBytes = 9
-	if err := connection.Close(); err == nil {
+	defer connection.Close()
+	if err := connection.UpdateCounters(counters, nil); err == nil {
 		t.Fatal("external counter rollback was not reported")
 	}
 	if got := pathStats(t, store, trafficTestPath(t.Name())).TrafficCounters; got != (api.TrafficCounters{UploadBytes: 10, DownloadBytes: 20}) {
@@ -333,9 +308,7 @@ func TestSnapshotSurvivesExternalReadFailure(t *testing.T) {
 	path := trafficTestPath(t.Name())
 	connection := store.OpenConnection(path, false)
 	wantErr := errors.New("counter source failed")
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{}, wantErr
-	}); err != nil {
+	if err := connection.UpdateCounters(api.TrafficCounters{}, wantErr); !errors.Is(err, wantErr) {
 		t.Fatal(err)
 	}
 
@@ -349,18 +322,19 @@ func TestSnapshotSurvivesExternalReadFailure(t *testing.T) {
 	_ = connection.Close()
 }
 
-func TestConnectionCloseReportsFinalReadFailure(t *testing.T) {
+func TestConnectionCloseDoesNotResample(t *testing.T) {
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
 	wantErr := errors.New("counter source failed")
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{}, wantErr
-	}); err != nil {
+	if err := connection.UpdateCounters(api.TrafficCounters{}, wantErr); !errors.Is(err, wantErr) {
 		t.Fatal(err)
 	}
 
-	if err := connection.Close(); !errors.Is(err, wantErr) {
-		t.Fatalf("close error = %v, want %v", err, wantErr)
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.externalReadErrors.Load(); got != 1 {
+		t.Fatalf("close sampled counters: errors=%d", got)
 	}
 }
 
@@ -494,12 +468,10 @@ func BenchmarkTrafficExternalCounters(b *testing.B) {
 		b.Run(fmt.Sprintf("connections=%d", connectionCount), func(b *testing.B) {
 			store := newStoreAt(time.Now())
 			connections := make([]*Connection, 0, connectionCount)
-			source := func() (api.TrafficCounters, error) {
-				return api.TrafficCounters{UploadBytes: 1, DownloadBytes: 1}, nil
-			}
+			counters := api.TrafficCounters{UploadBytes: 1, DownloadBytes: 1}
 			for i := range connectionCount {
 				connection := store.OpenConnection(trafficTestPath(fmt.Sprintf("path-%d", i)), false)
-				if err := connection.AttachExternalCounters(source); err != nil {
+				if err := connection.UpdateCounters(counters, nil); err != nil {
 					b.Fatal(err)
 				}
 				connections = append(connections, connection)
@@ -511,7 +483,9 @@ func BenchmarkTrafficExternalCounters(b *testing.B) {
 			})
 			b.ReportAllocs()
 			for b.Loop() {
-				store.refreshExternalCounters()
+				for _, connection := range connections {
+					_ = connection.UpdateCounters(counters, nil)
+				}
 			}
 		})
 	}

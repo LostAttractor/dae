@@ -80,9 +80,7 @@ jobs:
         tags=$(cat .build_tags)
         go test -c -tags="netgo,osusergo,$tags" \
           -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" ./control -o control.test
-        go test -c -tags="netgo,osusergo,$tags,dae_splice_tests" \
-          -ldflags="-s -w -linkmode=external -extldflags '-static -Wl,-z,stack-size=2097152'" ./control/internal/splice -o splice.test
-        scripts/check-static.sh dae control.test splice.test
+        scripts/check-static.sh dae control.test
 
     - name: Store executable
       uses: actions/upload-artifact@v6
@@ -91,7 +89,6 @@ jobs:
         path: |
           dae
           control.test
-          splice.test
 
   test:
     runs-on: ubuntu-24.04
@@ -119,9 +116,9 @@ jobs:
           host-mount: ./
           install-dependencies: 'true'
           cmd: |
+            set -e
             chmod +x /host/dae/dae
             chmod +x /host/dae/control.test
-            chmod +x /host/dae/splice.test
 
             apt update
             apt install -y unzip
@@ -130,7 +127,7 @@ jobs:
               -test.run '^(TestBPFStartupVerifierLoad|TestCreateNetkitPairIntegration|TestInternalLinkDatapathIntegration|TestKernelFeaturePreflightVethIntegration|TestVethAttachmentFailureCleanupIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
               -test.count=1
 
-            /host/dae/splice.test -test.count=1
+            /host/dae/control.test -test.run '^(TestNativeTCP|TestTCPMonitor|TestTCPWriteCounter|TestTCPIdleTimeout)' -test.count=1
 
       - name: Setup network
         uses: cilium/little-vm-helper@v0.0.28
@@ -245,7 +242,6 @@ jobs:
               exit 1
             fi
             grep 'Dae network namespace ready' dae.log | grep -Eq 'link_type=(netkit|veth)'
-            grep -q 'Loaded optional TCP splice programs' dae.log
             cat dae.log
 
       - name: Check WAN IPv4 TCP

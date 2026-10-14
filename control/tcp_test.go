@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/control/internal/splice"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
@@ -154,7 +153,7 @@ func TestRuntimeConnectionRetainsDirectSpliceCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := conn.(splice.TCPConn); !ok {
+	if netproxy.NativeTCPConn(conn) == nil {
 		t.Fatal("runtime connection hid direct splice capability")
 	}
 	if err := conn.Close(); err != nil {
@@ -172,7 +171,8 @@ func startTCPRelayTest(t *testing.T, left, right net.Conn, drainTimeout time.Dur
 	traffic := stats.DefaultStore.OpenConnection(stats.Path{Dialer: t.Name()}, false)
 	done := make(chan error, 1)
 	go func() {
-		err := relayTCP(left, right, traffic, drainTimeout, "", nil, nil)
+		relay := &tcpRelay{lConn: left, rConn: right}
+		err := relay.copyTCP(traffic, drainTimeout)
 		_ = traffic.Close()
 		done <- err
 	}()

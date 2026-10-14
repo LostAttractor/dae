@@ -15,7 +15,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/control/internal/splice"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -59,7 +58,7 @@ type Runtime struct {
 	tcpConnections    tcpConnectionSet
 	udpEndpoints      *UdpEndpointPool
 	deviceRoutes      *deviceRoutes
-	splice            *splice.Runtime
+	tcpMonitor        tcpRelayMonitor
 	listener          *Listener
 	ingress           sync.WaitGroup
 	soMarkFromDae     uint32
@@ -254,9 +253,7 @@ func (r *Runtime) Close() error {
 		}
 		<-aborted
 		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close())
-		if r.splice != nil {
-			r.closeErr = errors.Join(r.closeErr, r.splice.Close())
-		}
+		r.tcpMonitor.close()
 		for _, m := range r.shared {
 			r.closeErr = errors.Join(r.closeErr, m.Close())
 		}

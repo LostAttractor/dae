@@ -167,8 +167,6 @@ clean-ebpf:
 	@rm -f $(BUILD_TAGS_FILE)
 	@rm -f control/bpf_*bpf*.go && \
 		rm -f control/bpf_*bpf*.o control/bpf_*bpf*.o.gz
-	@rm -f control/internal/splice/bpf_*bpf*.go && \
-		rm -f control/internal/splice/bpf_*bpf*.o control/internal/splice/bpf_*bpf*.o.gz
 	@rm -f trace/bpf_*bpf*.go && \
 		rm -f trace/bpf_*bpf*.o trace/bpf_*bpf*.o.gz
 	@rm -f control/kern/tests/bpftest_*bpf*.go && \
@@ -196,15 +194,12 @@ ebpf: check-go-version check-bpf-capacities submodule clean-ebpf
 			GOWORK=off CGO_ENABLED=0 go generate ./trace/trace.go && tags=trace ;; \
 		*) echo "trace disabled on $(GOARCH): BPF probe argument ABI is unsupported" ;; \
 	esac && \
-		GOWORK=off CGO_ENABLED=0 go generate ./control/internal/splice/generate.go && \
-	if [ -n "$$tags" ]; then tags="$$tags,dae_splice"; else tags=dae_splice; fi && \
 	printf '%s\n' "$$tags" > $(BUILD_TAGS_FILE)
 
 test: plugins ebpf web-assets
 	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
 
 ebpf-lint:
-	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/internal/splice/kern/splice.c --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/kern/tproxy.c $(wildcard control/kern/*.h kern/*.h) --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
 
 ebpf-test-build: export BPF_CLANG := $(CLANG)

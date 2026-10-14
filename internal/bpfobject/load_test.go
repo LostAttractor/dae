@@ -19,7 +19,6 @@ func TestLoadGeneratedObjects(t *testing.T) {
 	var tested int
 	for _, pattern := range []string{
 		"../../control/bpf_bpf*.o",
-		"../../control/internal/splice/bpf_splice_bpf*.o",
 		"../../trace/bpf_*_bpf*.o",
 	} {
 		paths, err := filepath.Glob(pattern)

@@ -100,8 +100,8 @@ rerun `dae run -c <config>` to include the verifier log. Rebuild using the
 [documented toolchain](user-guide/build-by-yourself.md#build-dependencies);
 CI uses Clang/LLVM 15. Map allocation errors also depend on available memory and
 the configured [BPF map capacities](user-guide/build-by-yourself.md#bpf-map-capacities).
-Optional TCP splice failures fall back to userspace relay for captured TCP;
-failures in the core production collection prevent startup.
+Unsupported TCP sockets or kernel counters select buffered relay before forwarding
+starts. Failures in the core production BPF collection prevent startup.
 
 ## Native QuickJS build or executable does not start
 

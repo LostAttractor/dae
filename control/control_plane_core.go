@@ -126,6 +126,9 @@ func newControlPlaneCore(
 		consts.DefaultDNSRetentionWindow,
 		core.writeDomainBitmaps, core.deleteDomainBitmaps,
 	)
+	if bpf.Runtime != nil {
+		core.domainRegistry.activityLag = tcpMonitorInterval
+	}
 	core.domainRegistry.Start()
 	core.addCleanup(core.closeBpf)
 	core.addCleanup(core.domainRegistry.Close)

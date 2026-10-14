@@ -18,7 +18,6 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/control/internal/splice"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -119,18 +118,6 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 		return nil, errors.Join(err, bpf.Close())
 	}
 	runtime.soMarkFromDae = soMarkFromDae
-	if contextErr := ctx.Err(); contextErr != nil {
-		return nil, errors.Join(contextErr, bpf.Close())
-	}
-	spliceOptions := *collectionOpts
-	spliceOptions.MapReplacements = nil
-	spliceRuntime, spliceErr := splice.New(&spliceOptions, DefaultNatTimeoutTCPEstablished)
-	if spliceErr != nil {
-		log.WithError(spliceErr).Warn("TCP splice unavailable; using userspace relay")
-	} else if spliceRuntime != nil {
-		bpf.splice = spliceRuntime
-		log.Debug("Loaded optional TCP splice programs")
-	}
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, errors.Join(contextErr, bpf.Close())
 	}

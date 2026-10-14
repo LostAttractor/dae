@@ -31,6 +31,21 @@ MITM 是可选组件，业务插件的实现、测试和文档在独立仓库维
 
 原生 [rules / DNAT](../configuration/destination-rules.md) 与 Surge `[Host]` 的字面 IP 条目共用拨号目标重写；域名条目通过 DNS 插件应答。
 
+## TCP 转发
+
+连接准备与持续转发分离。DNS、MITM 接管连接并使用各自的协议生命周期；普通转发由同一个协调循环管理双向复制、半关闭、排空、中止与空闲关闭。
+
+| 文件 | 职责 |
+| --- | --- |
+| `control/tcp.go` | 嗅探、路由、协议接管选择和上游拨号 |
+| `control/tcp_relay.go` | 接管分派、统计生命周期及双向复制协调 |
+| `control/tcp_copy.go` | 连接对的端点、依赖与进度；统一复制结果、计数结算和半关闭 |
+| `control/tcp_splice.go` | 原生 TCP 能力检查、嗅探前缀写出及标准库 `io.Copy` |
+| `control/tcp_counters_linux.go`、`tcp_monitor.go` | 内核写入计数及 Runtime 共用的活动采样、空闲策略 |
+| `control/tcp_lifecycle.go` | 配置代际的连接准备跟踪、共享连接所有权与中止 |
+
+复制前检查两端 socket 和计数能力，再一次性选择原生或缓冲复制。原始连接包装始终负责关闭和释放资源；原生 socket 仅用于复制和采样。两个方向各自结算计数后发送 FIN，协调循环等待双方结束。复制实现不持有路由配置，也不决定连接何时中止。
+
 ## DNS
 
 核心的 `dns_relay.go` / `dns_stream.go` 透明转发 TCP/UDP 53，`dns_observer.go` 观察成功交付的应答（包括缓存回放）。报文通过 `netutils.UnpackDnsMessage` 严格解析后才能进入插件和证据观察。域名证据按职责组织：

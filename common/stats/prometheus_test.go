@@ -106,11 +106,7 @@ func TestStoreMetricsKeepLifetimeValuesAcrossCurrentReset(t *testing.T) {
 func TestStoreCollectorSurvivesExternalReadFailure(t *testing.T) {
 	store := newStoreAt(time.Now())
 	connection := store.OpenConnection(trafficTestPath(t.Name()), false)
-	if err := connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		return api.TrafficCounters{}, errors.New("counter source failed")
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_ = connection.UpdateCounters(api.TrafficCounters{}, errors.New("counter source failed"))
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(store)
 

@@ -1,70 +1,63 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright (c) 2026, daeuniverse Organization <dae@v2raya.org>
 
 package control
 
 import (
+	"fmt"
 	"io"
-	"time"
+	"net"
 
-	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/dae/control/internal/splice"
+	"github.com/daeuniverse/dae/component/sniffing"
 	"github.com/daeuniverse/outbound/netproxy"
 )
 
-// trySplice hands eligible connections to the optional kernel relay. Only
-// (false, nil) permits the caller to continue with the ordinary userspace relay.
-func (r *tcpRelay) trySplice(traffic *stats.Connection) (handled bool, err error) {
-	if r.directSplice == nil {
-		return false, nil
+// nativeTCPPair probes both sockets before consuming any data. Only Runtime
+// lifetime and accepted-sniffer wrappers can be bypassed; protocol adapters,
+// MPTCP and unavailable counters stay on the ordinary copy path.
+func nativeTCPPair(lConn, rConn net.Conn) (conns [2]*net.TCPConn, counters [2]func() (uint64, error)) {
+	left, ok := unwrapSniffer(lConn).(*net.TCPConn)
+	right := netproxy.NativeTCPConn(rConn)
+	if !ok || right == nil {
+		return conns, counters
 	}
-	left, right := unwrapSniffer(r.lConn).(splice.TCPConn), r.rConn.(splice.TCPConn)
-	accepted := &relayEndpoint{conn: left, origin: netproxy.OriginCaller}
-	remote := &relayEndpoint{conn: right, origin: netproxy.OriginTarget}
-	// Flush sniffed bytes before bypassing the sniffer. If splice declines the
-	// connection, the ordinary relay resumes with only the remaining bytes.
-	if err := r.lConn.WriteBufferedTo(&trafficWriter{Writer: remote, add: traffic.RecordUpload}); err != nil {
-		return false, err
+	upload, err := tcpWriteCounter(right)
+	if err != nil {
+		return conns, counters
 	}
-	return r.directSplice.Relay(
-		&spliceEndpoint{TCPConn: left, endpoint: accepted},
-		&spliceEndpoint{TCPConn: right, endpoint: remote}, traffic, r.activity)
-}
-
-// spliceEndpoint preserves the raw TCP capabilities used by the direct path
-// while giving its userspace operations the same provenance as relayTCP.
-type spliceEndpoint struct {
-	splice.TCPConn
-	endpoint *relayEndpoint
-}
-
-func (c *spliceEndpoint) Read(p []byte) (int, error) {
-	n, err := c.TCPConn.Read(p)
-	if err == io.EOF {
-		return n, err // Only an exact read EOF is a graceful half-close.
+	download, err := tcpWriteCounter(left)
+	if err != nil {
+		return conns, counters
 	}
-	return n, c.endpoint.failure(err, netproxy.OpRead)
+	return [2]*net.TCPConn{left, right}, [2]func() (uint64, error){upload, download}
 }
 
-func (c *spliceEndpoint) Write(p []byte) (int, error) {
-	n, err := c.TCPConn.Write(p)
-	return n, c.endpoint.failure(err, netproxy.OpWrite)
+func copyNativeTCP(dst, src *net.TCPConn, original net.Conn) (uint64, error) {
+	var prefix uint64
+	if sniffer, ok := original.(sniffing.ConnSnifferInterface); ok {
+		// Both workers already run while this potentially blocking write flushes
+		// sniffed data. Count partial writes even when flushing fails.
+		err := sniffer.WriteBufferedTo(&trafficWriter{Writer: dst, add: func(n uint64) { prefix += n }})
+		if err != nil {
+			return prefix, err
+		}
+	}
+	n, err := io.Copy(dst, src)
+	return prefix + uint64(n), err
 }
 
-func (c *spliceEndpoint) CloseWrite() error {
-	return c.endpoint.failure(c.TCPConn.CloseWrite(), netproxy.OpCloseWrite)
-}
-
-func (c *spliceEndpoint) Close() error { return c.endpoint.close() }
-
-func (c *spliceEndpoint) WrapFailure(err error, phase netproxy.Operation) error {
-	return c.endpoint.failure(err, phase)
-}
-
-func (c *spliceEndpoint) SetReadDeadline(deadline time.Time) error {
-	return c.endpoint.failure(c.TCPConn.SetReadDeadline(deadline), netproxy.Operation("set_read_deadline"))
-}
-
-func (c *spliceEndpoint) SetWriteDeadline(deadline time.Time) error {
-	return c.endpoint.failure(c.TCPConn.SetWriteDeadline(deadline), netproxy.Operation("set_write_deadline"))
+// nativeCopyFailure attributes a plain closed-socket error to local cleanup when
+// an owner abort or our own close caused it.
+func nativeCopyFailure(err error, index int, local bool) error {
+	if err == nil {
+		return nil
+	}
+	origin := netproxy.FailureOrigin("")
+	if local && plainClosedError(err) {
+		origin = netproxy.OriginLocalCleanup
+	}
+	direction := "upload"
+	if index == 1 {
+		direction = "download"
+	}
+	return netproxy.WrapFailure(fmt.Errorf("TCP %s: %w", direction, err), netproxy.Failure{Origin: origin, Scope: netproxy.ScopeOperation})
 }

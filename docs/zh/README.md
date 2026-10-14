@@ -49,7 +49,7 @@ sudo dae check-kernel
 检查包括 Linux 版本、BTF、实际 eBPF 程序/映射/helper 加载、bpffs 写入、cgroup v2 hooks、
 Netkit/veth、TCX、SK_LOOKUP、进程退出 tracepoint、IPv4/IPv6 策略路由和透明套接字。
 网络挂载探测在临时网络命名空间中执行；cgroup 探测程序仅放行，探测结束即释放资源。
-缺少必需能力或权限会直接报错；可选 TCP splice 和长进程名 helper 缺失时使用现有降级路径，
+缺少必需能力或权限会直接报错；可选长进程名 helper 缺失时使用截断的进程名，
 IPv6 策略路由不可用时给出警告。
 接口状态、sysctl 和具体配置仍会在正式启动时检查。
 
@@ -87,7 +87,7 @@ dae 优先创建 Netkit L2 设备；内核报告不支持 Netkit 时，自动使
 
 宿主接口使用 TCX link，内部接口使用 Netkit 原生 hook 或 veth TCX link；dae 不要求 TC classifier/qdisc 的
 `CONFIG_NET_CLS_BPF`、`CONFIG_NET_SCH_INGRESS` 或 `CONFIG_NET_CLS_ACT`。
-仅使用 SOCKMAP/SOCKHASH 或当前的 stream-verdict relay 也不要求 `CONFIG_BPF_STREAM_PARSER`。
+监听 socket 的 SOCKMAP 与 SK_LOOKUP 入口不要求 `CONFIG_BPF_STREAM_PARSER`。
 
 生成 BTF 所需的调试信息选项应遵循所用内核的 `DEBUG_INFO_BTF` Kconfig 依赖。
 上面的 KPROBES/KPROBE_EVENTS 是启用 `BPF_EVENTS` 的常用配置路径；守护进程使用 BPF helper
@@ -116,7 +116,7 @@ zcat /proc/config.gz 2>/dev/null || cat "/boot/config-$(uname -r)" /boot/config 
 | --- | --- |
 | IPv6 捕获策略路由 | `CONFIG_IPV6_MULTIPLE_TABLES`；不可用时警告，对应 IPv6 捕获路由/规则无法安装。 |
 | 长进程名 | cgroup socket-address 程序支持 `bpf_get_current_task`；否则进程名路由使用截断的 task 名称。 |
-| TCP splice 加速 | Linux 6.18+、编译启用 `dae_splice`，并支持 SOCKHASH/stream-verdict link 及所需 fexit 目标；不可用时，已捕获 TCP 使用用户态 relay。`make` 默认包含该构建标签。 |
+| TCP splice 加速 | 原生 TCP 直连转发使用 Go `io.Copy` 与 Linux `splice(2)`。socket 或内核计数不满足条件时使用缓冲复制；无需额外 BPF 程序或构建标签。 |
 | `dae trace` | Linux 6.13+、kprobe 及可访问的内核符号/BTF。`make` 在 `amd64`、`arm64`、`riscv64`、`loong64`、`ppc64le` 上包含该命令；其他受支持的守护进程架构不包含。具体追踪目标由 `dae trace` 检查，`check-kernel` 不检查这些目标。 |
 | 网桥成员匹配 | 成员信息所需的 `CONFIG_BRIDGE_NETFILTER` 和 bridge netfilter 配置见[路由文档](configuration/routing.md)。 |
 | 设备集合导出 | 配置 [ipset/nftset 导出](configuration/api.md) 时，需要相应内核能力和网络管理权限。 |

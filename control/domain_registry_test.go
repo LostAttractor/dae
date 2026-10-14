@@ -622,3 +622,25 @@ func TestDomainIndexesAndProjectionUnderChurn(t *testing.T) {
 		})
 	}
 }
+
+func TestDomainRegistryKeepsEvidenceForLateActivity(t *testing.T) {
+	g, _ := newTestRegistry(4, time.Second)
+	g.activityLag = time.Second
+	ip := netip.MustParseAddr("192.0.2.1")
+	name := "late.example."
+	start := time.Now()
+	g.Upsert(name, ip, testBitmap(0), 1, start)
+	g.Sweep(start.Add(1500 * time.Millisecond))
+	if !g.Verify(name, ip).Paired {
+		t.Fatal("collected evidence before late activity could renew it")
+	}
+	g.activity.observe(ip, name, start.Add(1500*time.Millisecond))
+	g.Sweep(start.Add(3 * time.Second))
+	if !g.Verify(name, ip).Paired {
+		t.Fatal("late activity did not renew evidence")
+	}
+	g.Sweep(start.Add(4 * time.Second))
+	if g.Verify(name, ip).Paired {
+		t.Fatal("evidence outlived its deadline and the activity lag")
+	}
+}

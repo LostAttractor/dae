@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -17,16 +18,22 @@ import (
 // them. Ordinary reload retires admission while keeping this set reachable.
 type tcpConnectionSet struct {
 	mu          sync.Mutex
-	connections map[net.Conn]struct{}
+	connections map[net.Conn]*netproxy.Lease
 }
 
 func (s *tcpConnectionSet) add(conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.connections == nil {
-		s.connections = make(map[net.Conn]struct{})
+		s.connections = make(map[net.Conn]*netproxy.Lease)
 	}
-	s.connections[conn] = struct{}{}
+	s.connections[conn] = netproxy.NewLease(netproxy.NewResourceRef())
+}
+
+func (s *tcpConnectionSet) lease(conn net.Conn) *netproxy.Lease {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.connections[conn]
 }
 
 func (s *tcpConnectionSet) remove(conn net.Conn) {
@@ -41,7 +48,8 @@ func (s *tcpConnectionSet) abort() <-chan struct{} {
 	done := make(chan struct{})
 	var closes sync.WaitGroup
 	s.mu.Lock()
-	for conn := range s.connections {
+	for conn, lease := range s.connections {
+		lease.Abort(netproxy.WrapFailure(net.ErrClosed, netproxy.Failure{Origin: netproxy.OriginLocalCleanup, Scope: netproxy.ScopeOperation}))
 		setTCPResetOnClose(conn)
 		closes.Go(func() {
 			_ = conn.Close()
@@ -121,6 +129,7 @@ func serveTCPConnection(c *ControlPlane, lConn net.Conn, ctx context.Context, tr
 	c = nil
 	tracker.finishSetup()
 	if relay != nil {
+		relay.ownerLease = tracker.connections.lease(lConn)
 		err = relay.run()
 	}
 	if err == nil || ctx.Err() != nil || !log.IsLevelEnabled(log.DebugLevel) {

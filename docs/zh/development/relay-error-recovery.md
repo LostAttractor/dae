@@ -72,7 +72,7 @@ MITM 上游清理同步检查资源和组策略的 Abort 原因，再结束客�
 ```sh
 make
 go test ./...
-go test -race -tags dae_splice ./component/outbound/... ./control ./cmd
+go test -race ./component/outbound/... ./control ./cmd
 go test -race github.com/daeuniverse/outbound/...
 ```
 

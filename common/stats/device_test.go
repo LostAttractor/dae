@@ -22,7 +22,7 @@ func TestDeviceTrafficIsolationExternalCountersAndReload(t *testing.T) {
 	second.RecordUpload(200)
 	daemon.RecordUpload(400)
 	external := api.TrafficCounters{UploadBytes: 300, DownloadBytes: 500}
-	if err := first.AttachExternalCounters(func() (api.TrafficCounters, error) { return external, nil }); err != nil {
+	if err := first.UpdateCounters(external, nil); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -40,6 +40,9 @@ func TestDeviceTrafficIsolationExternalCountersAndReload(t *testing.T) {
 	}
 	store.RecordReload()
 	external.UploadBytes += 50
+	if err := first.UpdateCounters(external, nil); err != nil {
+		t.Fatal(err)
+	}
 	first.Close()
 	first.Close()
 	second.Close()
@@ -61,15 +64,9 @@ func TestDeviceExternalFailureInvalidatesOnlyItsRate(t *testing.T) {
 	connection := store.OpenDeviceConnection(path, false, mac)
 	defer connection.Close()
 	store.devices[mac].windowStartedAt = start
-	fail := true
-	connection.AttachExternalCounters(func() (api.TrafficCounters, error) {
-		if fail {
-			return api.TrafficCounters{}, errors.New("unavailable")
-		}
-		return api.TrafficCounters{UploadBytes: 1000}, nil
-	})
+	_ = connection.UpdateCounters(api.TrafficCounters{}, errors.New("unavailable"))
 	store.sampleAt(start.Add(5 * time.Second))
-	fail = false
+	_ = connection.UpdateCounters(api.TrafficCounters{UploadBytes: 1000}, nil)
 	store.sampleAt(start.Add(10 * time.Second))
 	connection.RecordUpload(500)
 	store.sampleAt(start.Add(15 * time.Second))
