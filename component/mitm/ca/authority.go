@@ -28,11 +28,13 @@ import (
 // Authority holds a root CA and a bounded signing cache of short-lived leaves.
 // TLS identity validation is in tls.go; issuance and its cache are in certificate.go.
 type Authority struct {
-	certificate *x509.Certificate
-	key         any
-	mu          sync.Mutex
-	cache       map[string]*list.Element
-	lru         list.List
+	certificate     *x509.Certificate
+	key             any
+	mu              sync.Mutex
+	cache           map[string]*list.Element
+	lru             list.List
+	issuing         map[string]*certificateIssue
+	issuanceChanged chan struct{}
 }
 
 // Generate creates an ECDSA root certificate and unencrypted PKCS#8 private key.

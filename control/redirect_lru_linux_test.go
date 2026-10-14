@@ -388,6 +388,7 @@ func benchmarkRedirectLRU(b *testing.B, flags uint32, workers int, churn bool) {
 	b.ReportMetric(float64(misses.Load())/float64(max(b.N, 1)), "reply-miss/op")
 	if churn {
 		const retentionWindow = 32768
+		const retentionInserts = 4 * 65536
 		retentionMap := newRedirectLRUMap(b, flags)
 		retentionProg := newRedirectLRUProgram(b, retentionMap)
 		runners := make([]*redirectLRUCPURunner, workers)
@@ -395,13 +396,13 @@ func benchmarkRedirectLRU(b *testing.B, flags uint32, workers int, churn bool) {
 			runners[worker] = newRedirectLRUCPURunner(
 				b, retentionProg, cpus[worker])
 		}
-		sampleCount := min(b.N, retentionWindow)
+		sampleCount := retentionWindow
 		type retentionSample struct {
 			key    redirectLRUKey
 			worker int
 		}
 		samples := make([]retentionSample, 0, sampleCount)
-		for ordinal := 0; ordinal < b.N; ordinal++ {
+		for ordinal := 0; ordinal < retentionInserts; ordinal++ {
 			worker := ordinal % workers
 			key := redirectLRUTestKey(uint64(worker+1), uint64(ordinal+1))
 			status, err := runners[worker].run(redirectLRUOperation{
@@ -410,7 +411,7 @@ func benchmarkRedirectLRU(b *testing.B, flags uint32, workers int, churn bool) {
 			if err != nil || status != 1 {
 				b.Fatalf("retention insert %d: status %d, error %v", ordinal, status, err)
 			}
-			if ordinal >= b.N-sampleCount {
+			if ordinal >= retentionInserts-sampleCount {
 				samples = append(samples, retentionSample{key, worker})
 			}
 		}
@@ -426,6 +427,8 @@ func benchmarkRedirectLRU(b *testing.B, flags uint32, workers int, churn bool) {
 				retentionMisses++
 			}
 		}
+		b.ReportMetric(retentionInserts, "retention-inserts")
+		b.ReportMetric(retentionWindow, "retention-samples")
 		b.ReportMetric(float64(retentionMisses)/float64(max(len(samples), 1)), "retention-miss/op")
 	}
 }

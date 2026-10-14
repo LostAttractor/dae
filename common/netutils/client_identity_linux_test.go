@@ -134,3 +134,20 @@ func TestValidateClientNeighbor(t *testing.T) {
 		})
 	}
 }
+
+func TestClientScopeSharesOneTopologySnapshot(t *testing.T) {
+	calls := 0
+	links := func() ([]netlink.Link, error) {
+		calls++
+		return []netlink.Link{&netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Index: 1, Name: "port", MasterIndex: 2}}, &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Index: 2, Name: "bridge"}}}, nil
+	}
+	if err := validateClientScope(netip.MustParseAddr("fe80::1%port"), netip.MustParseAddr("fe80::2%bridge"), 1, links); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("topology snapshots = %d", calls)
+	}
+	if err := validateClientScope(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), 1, links); err != nil || calls != 1 {
+		t.Fatalf("global endpoints requested topology: %d %v", calls, err)
+	}
+}

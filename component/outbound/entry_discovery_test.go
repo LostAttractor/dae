@@ -108,3 +108,36 @@ func TestEntryVariantLabelsAndIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryDiscoveriesShareOnlyPreparationAndEffectiveEgress(t *testing.T) {
+	var cache EntryDiscoveries
+	option := &dialer.GlobalOption{SoMarkFromDae: 9, DNSResolver: "127.0.0.1:53"}
+	calls := 0
+	discover := func(context.Context, *PathSpec) (uint8, error) { calls++; return family4, nil }
+	path := &PathSpec{Nodes: []*NodeInfo{{Property: &dialer.Property{Address: "entry.test:443"}}}}
+	lookup := func(c *EntryDiscoveries, p *PathSpec, o *dialer.GlobalOption) {
+		t.Helper()
+		if mask, err := c.lookup(t.Context(), p, o, discover); err != nil || mask != family4 {
+			t.Fatalf("lookup: %d %v", mask, err)
+		}
+	}
+	lookup(&cache, path, option)
+	second := *path
+	second.Nodes = []*NodeInfo{{Property: &dialer.Property{Address: "entry.test:8443"}}}
+	second.Entry.Mark = new(uint32(9))
+	second.Entry.Families = new(family4)
+	lookup(&cache, &second, option)
+	if calls != 1 {
+		t.Fatalf("shared egress discovered %d times", calls)
+	}
+	second.Entry.Mark = new(uint32(0))
+	lookup(&cache, &second, option)
+	second.Entry.Interface = "wan0"
+	lookup(&cache, &second, option)
+	otherOption := &dialer.GlobalOption{SoMarkFromDae: option.SoMarkFromDae, DNSResolver: "127.0.0.2:53"}
+	lookup(&cache, &second, otherOption)
+	lookup(new(EntryDiscoveries), path, option)
+	if calls != 5 {
+		t.Fatalf("isolated egress/preparation: %d discoveries", calls)
+	}
+}

@@ -161,6 +161,7 @@ func nodeDisplayProtocol(node *NodeInfo) string {
 
 func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 	set := new(DialerSet)
+	filterCache := make(map[*config_parser.Function]*compiledFilter)
 	for index, node := range nodes {
 		builder, property, err := parseNodeLink(node.Link)
 		if err != nil {
@@ -190,10 +191,11 @@ func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 		}
 		effectiveOptions := node.Defaults
 		for _, rule := range node.Rules {
-			if err := validateFilters(rule.Filter); err != nil {
+			filters, err := compileFilters(rule.Filter, filterCache)
+			if err != nil {
 				return nil, fmt.Errorf("apply options to node %q: %w", property.Name, err)
 			}
-			if filterHit(nodeInfo, rule.Filter) {
+			if filterHit(nodeInfo, filters) {
 				effectiveOptions.Overlay(rule.Options)
 			}
 		}
@@ -348,36 +350,62 @@ func (s *DialerSet) NodesNamed(name string) []*NodeInfo {
 	return nodes
 }
 
-func validateFilters(filters []*config_parser.Function) error {
+type compiledFilter struct {
+	name   string
+	not    bool
+	params []compiledFilterParam
+}
+type compiledFilterParam struct {
+	key, value string
+	regex      *regexp2.Regexp
+}
+
+// Compiled filters belong to one preparation. Nodes from the same subscription
+// share the immutable rule AST, so pointer keys avoid parsing or serializing it.
+func compileFilters(filters []*config_parser.Function, cache map[*config_parser.Function]*compiledFilter) ([]*compiledFilter, error) {
+	compiled := make([]*compiledFilter, 0, len(filters))
 	for _, filter := range filters {
+		if existing := cache[filter]; existing != nil {
+			compiled = append(compiled, existing)
+			continue
+		}
 		switch filter.Name {
 		case FilterInput_Name, FilterInput_SubscriptionTag, FilterInput_Link, FilterInput_Protocol:
 		default:
-			return fmt.Errorf("unsupported filter input type: %q", filter.Name)
+			return nil, fmt.Errorf("unsupported filter input type: %q", filter.Name)
 		}
+		entry := &compiledFilter{name: filter.Name, not: filter.Not}
 		for _, param := range filter.Params {
+			p := compiledFilterParam{key: param.Key, value: param.Val}
 			switch param.Key {
 			case "":
 			case FilterKey_Name_Keyword:
 				if filter.Name == FilterInput_SubscriptionTag {
-					return fmt.Errorf(`unsupported filter key %q in "filter: %v()"`, param.Key, filter.Name)
+					return nil, fmt.Errorf(`unsupported filter key %q in "filter: %v()"`, param.Key, filter.Name)
 				}
 			case FilterKey_Name_Regex:
-				if _, err := regexp2.Compile(param.Val, 0); err != nil {
-					return fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
+				var err error
+				p.regex, err = regexp2.Compile(param.Val, 0)
+				if err != nil {
+					return nil, fmt.Errorf("bad regexp in filter %v: %w", filter.String(false, true, true), err)
 				}
 			default:
-				return fmt.Errorf(`unsupported filter key %q in "filter: %v()"`, param.Key, filter.Name)
+				return nil, fmt.Errorf(`unsupported filter key %q in "filter: %v()"`, param.Key, filter.Name)
 			}
+			entry.params = append(entry.params, p)
 		}
+		if cache != nil {
+			cache[filter] = entry
+		}
+		compiled = append(compiled, entry)
 	}
-	return nil
+	return compiled, nil
 }
 
-func filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) bool {
+func filterHit(nodeInfo *NodeInfo, filters []*compiledFilter) bool {
 	for _, filter := range filters {
 		var value string
-		switch filter.Name {
+		switch filter.name {
 		case FilterInput_Name:
 			value = nodeInfo.Property.Name
 		case FilterInput_SubscriptionTag:
@@ -388,21 +416,20 @@ func filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) bool {
 			value = nodeInfo.Property.Protocol
 		}
 		hit := false
-		for _, param := range filter.Params {
-			switch param.Key {
+		for _, param := range filter.params {
+			switch param.key {
 			case FilterKey_Name_Regex:
-				regex, _ := regexp2.Compile(param.Val, 0)
-				hit, _ = regex.MatchString(value)
+				hit, _ = param.regex.MatchString(value)
 			case FilterKey_Name_Keyword:
-				hit = strings.Contains(value, param.Val)
+				hit = strings.Contains(value, param.value)
 			default:
-				hit = value == param.Val
+				hit = value == param.value
 			}
 			if hit {
 				break
 			}
 		}
-		if hit == filter.Not {
+		if hit == filter.not {
 			return false
 		}
 	}
@@ -410,12 +437,13 @@ func filterHit(nodeInfo *NodeInfo, filters []*config_parser.Function) bool {
 }
 
 func (s *DialerSet) Filter(filters []*config_parser.Function) ([]*NodeInfo, error) {
-	if err := validateFilters(filters); err != nil {
+	compiled, err := compileFilters(filters, nil)
+	if err != nil {
 		return nil, err
 	}
 	filtered := make([]*NodeInfo, 0, len(s.nodeInfos))
 	for _, node := range s.nodeInfos {
-		if filterHit(node, filters) {
+		if filterHit(node, compiled) {
 			filtered = append(filtered, node)
 		}
 	}

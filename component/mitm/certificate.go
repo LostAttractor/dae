@@ -20,8 +20,8 @@ func (h *Host) interceptionTLSConfig(flow plugin.Flow) *tls.Config {
 	selectCertificate := cfg.GetCertificate
 	cfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		cert, err := selectCertificate(hello)
-		if err != nil {
-			return nil, err
+		if err != nil || !h.options.Logger.Logger.IsLevelEnabled(log.TraceLevel) {
+			return cert, err
 		}
 		connection, _ := plugin.IDs(hello.Context())
 		fingerprint := sha256.Sum256(cert.Leaf.Raw)

@@ -3,6 +3,7 @@
 package mitmca
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -16,8 +17,9 @@ import (
 )
 
 const (
-	maxCachedCertificates = 256
-	leafLifetime          = 24 * time.Hour
+	maxCachedCertificates  = 256
+	maxConcurrentIssuances = 4
+	leafLifetime           = 24 * time.Hour
 )
 
 type cachedCertificate struct {
@@ -25,38 +27,88 @@ type cachedCertificate struct {
 	cert *tls.Certificate
 }
 
+type certificateIssue struct {
+	done chan struct{}
+	cert *tls.Certificate
+	err  error
+}
+
 // ServerCertificate issues or reuses a leaf covering only the ingress host.
 func (a *Authority) ServerCertificate(host string) (*tls.Certificate, error) {
+	return a.serverCertificate(context.Background(), host)
+}
+
+func (a *Authority) serverCertificate(ctx context.Context, host string) (*tls.Certificate, error) {
 	host = normalizeHost(host)
 	if err := validateHost(host); err != nil {
 		return nil, err
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := time.Now()
-	if now.Before(a.certificate.NotBefore) || !now.Before(a.certificate.NotAfter) {
-		return nil, fmt.Errorf("MITM CA is outside its validity period")
-	}
-	if entry := a.cache[host]; entry != nil {
-		cert := entry.Value.(cachedCertificate).cert
-		if now.Before(cert.Leaf.NotAfter) {
-			a.lru.MoveToFront(entry)
-			return cert, nil
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		delete(a.cache, host)
-		a.lru.Remove(entry)
+		now := time.Now()
+		if now.Before(a.certificate.NotBefore) || !now.Before(a.certificate.NotAfter) {
+			return nil, fmt.Errorf("MITM CA is outside its validity period")
+		}
+		a.mu.Lock()
+		if entry := a.cache[host]; entry != nil {
+			cert := entry.Value.(cachedCertificate).cert
+			if now.Before(cert.Leaf.NotAfter) {
+				a.lru.MoveToFront(entry)
+				a.mu.Unlock()
+				return cert, nil
+			}
+			delete(a.cache, host)
+			a.lru.Remove(entry)
+		}
+		if issue := a.issuing[host]; issue != nil {
+			a.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-issue.done:
+				return issue.cert, issue.err
+			}
+		}
+		if len(a.issuing) >= maxConcurrentIssuances {
+			changed := a.issuanceChanged
+			a.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-changed:
+				continue
+			}
+		}
+		if a.issuing == nil {
+			a.issuing = make(map[string]*certificateIssue)
+			a.issuanceChanged = make(chan struct{})
+		}
+		issue := &certificateIssue{done: make(chan struct{})}
+		a.issuing[host] = issue
+		a.mu.Unlock()
+
+		// Random-key generation, signing and chain verification hold no cache lock.
+		// Only admitted hosts allocate an issuance record; waiters remain callers.
+		cert, err := a.signCertificate(host, now)
+		a.mu.Lock()
+		if err == nil {
+			a.cache[host] = a.lru.PushFront(cachedCertificate{key: host, cert: cert})
+			if a.lru.Len() > maxCachedCertificates {
+				oldest := a.lru.Back()
+				delete(a.cache, oldest.Value.(cachedCertificate).key)
+				a.lru.Remove(oldest)
+			}
+		}
+		issue.cert, issue.err = cert, err
+		delete(a.issuing, host)
+		close(issue.done)
+		close(a.issuanceChanged)
+		a.issuanceChanged = make(chan struct{})
+		a.mu.Unlock()
+		return cert, err
 	}
-	cert, err := a.signCertificate(host, now)
-	if err != nil {
-		return nil, err
-	}
-	a.cache[host] = a.lru.PushFront(cachedCertificate{key: host, cert: cert})
-	if a.lru.Len() > maxCachedCertificates {
-		oldest := a.lru.Back()
-		delete(a.cache, oldest.Value.(cachedCertificate).key)
-		a.lru.Remove(oldest)
-	}
-	return cert, nil
 }
 
 func (a *Authority) signCertificate(host string, now time.Time) (*tls.Certificate, error) {

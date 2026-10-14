@@ -35,6 +35,7 @@ type outboundBuilder struct {
 	core                   *controlPlaneCore
 	set                    *outbound.DialerSet
 	compiler               *outbound.GroupCompiler
+	entryDiscoveries       outbound.EntryDiscoveries
 	global                 *config.Global
 	option                 *dialer.GlobalOption
 	noConnectivityOutbound consts.OutboundIndex
@@ -229,7 +230,7 @@ func (b *outboundBuilder) materializeTarget(target *outbound.ResolvedTarget) err
 	}
 	logicalPaths := len(paths)
 	var err error
-	paths, err = outbound.ExpandIPVariants(b.ctx, paths, finalOption)
+	paths, err = b.entryDiscoveries.ExpandIPVariants(b.ctx, paths, finalOption)
 	if err != nil {
 		return fmt.Errorf("expand target %q address families: %w", name, err)
 	}

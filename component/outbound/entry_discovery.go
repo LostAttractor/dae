@@ -26,12 +26,58 @@ type entryDiscovery struct {
 	err      error
 }
 
-// ExpandIPVariants runs during materialization. Only families with a resolved
-// address and a usable local route/source on the configured egress are created.
-func ExpandIPVariants(ctx context.Context, paths []*PathSpec, option *dialer.GlobalOption) ([]*PathSpec, error) {
+// EntryDiscoveries is owned by one configuration preparation. It shares DNS
+// and local-route observations across groups, and is discarded before reload.
+// Effective egress settings are part of the key; family masks apply afterward.
+type EntryDiscoveries struct {
+	mu      sync.Mutex
+	entries map[entryPreparationKey]*entryPreparationResult
+}
+type entryPreparationKey struct {
+	host, iface, resolver string
+	mark                  uint32
+}
+type entryPreparationResult struct {
+	ready    chan struct{}
+	families uint8
+	err      error
+}
+
+func (d *EntryDiscoveries) lookup(ctx context.Context, path *PathSpec, option *dialer.GlobalOption, discover func(context.Context, *PathSpec) (uint8, error)) (uint8, error) {
+	key := entryPreparationKey{host: entryHostname(path.Nodes[0].Property.Address), iface: path.Entry.Interface, resolver: option.DNSResolver, mark: path.effectiveMark(option)}
+	d.mu.Lock()
+	if result := d.entries[key]; result != nil {
+		d.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-result.ready:
+			return result.families, result.err
+		}
+	}
+	if d.entries == nil {
+		d.entries = make(map[entryPreparationKey]*entryPreparationResult)
+	}
+	result := &entryPreparationResult{ready: make(chan struct{})}
+	d.entries[key] = result
+	d.mu.Unlock()
+	result.families, result.err = discover(ctx, path)
+	close(result.ready)
+	return result.families, result.err
+}
+
+func (d *EntryDiscoveries) ExpandIPVariants(ctx context.Context, paths []*PathSpec, option *dialer.GlobalOption) ([]*PathSpec, error) {
 	return expandIPVariants(ctx, paths, func(ctx context.Context, path *PathSpec) (uint8, error) {
-		return path.availableEntryFamilies(ctx, option, entryAddressUsable)
+		return d.lookup(ctx, path, option, func(ctx context.Context, path *PathSpec) (uint8, error) {
+			return path.availableEntryFamilies(ctx, option, entryAddressUsable)
+		})
 	})
+}
+
+// ExpandIPVariants discovers families for a single materialization. Preparations
+// with multiple targets share an EntryDiscoveries instance instead.
+func ExpandIPVariants(ctx context.Context, paths []*PathSpec, option *dialer.GlobalOption) ([]*PathSpec, error) {
+	return new(EntryDiscoveries).ExpandIPVariants(ctx, paths, option)
 }
 
 func expandIPVariants(ctx context.Context, paths []*PathSpec, discover func(context.Context, *PathSpec) (uint8, error)) ([]*PathSpec, error) {

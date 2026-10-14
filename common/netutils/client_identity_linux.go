@@ -16,6 +16,12 @@ import (
 // ValidateClientScope binds scoped TCP endpoints to the observed LAN ingress.
 // A tuple's numeric IPv6 addresses alone cannot distinguish different links.
 func ValidateClientScope(source, destination netip.Addr, ingress int) error {
+	return validateClientScope(source, destination, ingress, netlink.LinkList)
+}
+
+func validateClientScope(source, destination netip.Addr, ingress int, listLinks func() ([]netlink.Link, error)) error {
+	var topology map[int]bool
+	var links []netlink.Link
 	for _, address := range []netip.Addr{source, destination} {
 		if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() || address.IsLoopback() {
 			return fmt.Errorf("invalid LAN connection address")
@@ -23,15 +29,29 @@ func ValidateClientScope(source, destination netip.Addr, ingress int) error {
 		if !address.Is6() || !address.IsLinkLocalUnicast() {
 			continue
 		}
-		scope, err := clientZone(address.Zone())
-		if err != nil || scope == 0 {
+		if topology == nil {
+			var err error
+			links, err = listLinks()
+			if err != nil {
+				return fmt.Errorf("resolve LAN scope topology: %w", err)
+			}
+			topology = clientReceiveTopology(links, ingress)
+		}
+		// Both endpoints resolve names and reachability against one link snapshot.
+		scope := 0
+		for _, link := range links {
+			if link.Attrs().Name == address.Zone() {
+				scope = link.Attrs().Index
+				break
+			}
+		}
+		if scope == 0 {
+			scope, _ = strconv.Atoi(address.Zone())
+		}
+		if scope <= 0 {
 			return fmt.Errorf("link-local connection requires a valid interface zone")
 		}
-		links, err := netlink.LinkList()
-		if err != nil {
-			return fmt.Errorf("resolve LAN scope topology: %w", err)
-		}
-		if !clientScopeReachable(links, ingress, scope) {
+		if !topology[scope] {
 			return fmt.Errorf("connection scope does not belong to the observed LAN ingress")
 		}
 	}
@@ -41,6 +61,10 @@ func ValidateClientScope(source, destination netip.Addr, ingress int) error {
 // Traverse only the receive direction: port -> master and lower -> VLAN.
 // Walking back down to a common parent would incorrectly trust sibling links.
 func clientScopeReachable(links []netlink.Link, ingress, scope int) bool {
+	return clientReceiveTopology(links, ingress)[scope]
+}
+
+func clientReceiveTopology(links []netlink.Link, ingress int) map[int]bool {
 	byIndex := make(map[int]netlink.Link, len(links))
 	for _, link := range links {
 		byIndex[link.Attrs().Index] = link
@@ -54,9 +78,6 @@ func clientScopeReachable(links []netlink.Link, ingress, scope int) bool {
 		if link == nil || seen[index] {
 			continue
 		}
-		if index == scope {
-			return true
-		}
 		seen[index] = true
 		if master := link.Attrs().MasterIndex; master != 0 {
 			pending = append(pending, master)
@@ -67,7 +88,7 @@ func clientScopeReachable(links []netlink.Link, ingress, scope int) bool {
 			}
 		}
 	}
-	return false
+	return seen
 }
 
 func clientZone(zone string) (int, error) {

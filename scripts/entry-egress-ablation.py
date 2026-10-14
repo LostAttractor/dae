@@ -30,7 +30,7 @@ def main():
     if args.baseline_source and args.suite != "egress":
         parser.error("--baseline-source is for the egress suite; loopback-dns includes before-cleanup")
     root = Path(__file__).resolve().parent.parent
-    output = args.output or Path(tempfile.mkdtemp(prefix="entry-egress-ablation-", dir="/tmp/opencode"))
+    output = args.output or Path(tempfile.mkdtemp(prefix="entry-egress-ablation-"))
     output.mkdir(parents=True, exist_ok=True)
     output = output.resolve()
     env = dict(os.environ, GOMAXPROCS="4")

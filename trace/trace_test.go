@@ -469,15 +469,20 @@ func TestAccumulatorEvictsOldestDeterministically(t *testing.T) {
 func TestAccumulatorEventCapRetainsDropReason(t *testing.T) {
 	accumulator := newEventAccumulator()
 	accumulator.add(traceEvent{Skb: 1, Generation: 1, Flags: eventFlagDrop | eventFlagDropReason, DropReason: 7})
-	for i := uint32(1); i <= maxEventsPerTrace; i++ {
+	for i := uint32(1); i <= 3*maxEventsPerTrace; i++ {
 		accumulator.add(traceEvent{Skb: 1, Generation: 1, Sequence: i})
 	}
-	completed := accumulator.add(traceEvent{Skb: 1, Generation: 1, Sequence: maxEventsPerTrace + 1, Flags: eventFlagTerminal})
+	completed := accumulator.add(traceEvent{Skb: 1, Generation: 1, Sequence: 3*maxEventsPerTrace + 1, Flags: eventFlagTerminal})
 	if len(completed) != 1 || len(completed[0].events) != maxEventsPerTrace {
 		t.Fatalf("completed capped trace has %d events", len(completed[0].events))
 	}
 	if !completed[0].dropSeen || !completed[0].dropReasonAvailable || completed[0].dropReason != 7 || !completed[0].truncated {
 		t.Fatalf("capped trace metadata was not retained: %#v", completed[0])
+	}
+	for i, event := range completed[0].events {
+		if want := uint32(2*maxEventsPerTrace + 2 + i); event.Sequence != want {
+			t.Fatalf("ring retained sequence %d, want %d", event.Sequence, want)
+		}
 	}
 }
 
@@ -1067,5 +1072,18 @@ func TestLimitLegacyProbeTargetsPrefersNetworkPaths(t *testing.T) {
 	}
 	if !names["ip_rcv"] || !names["kfree_skb_reason"] {
 		t.Fatalf("network targets were not preferred: %v", names)
+	}
+}
+
+func BenchmarkAccumulatorOverflow(b *testing.B) {
+	accumulator := newEventAccumulator()
+	for i := range uint32(maxEventsPerTrace) {
+		accumulator.add(traceEvent{Skb: 1, Generation: 1, Sequence: i})
+	}
+	sequence := uint32(maxEventsPerTrace)
+	b.ReportAllocs()
+	for b.Loop() {
+		accumulator.add(traceEvent{Skb: 1, Generation: 1, Sequence: sequence})
+		sequence++
 	}
 }

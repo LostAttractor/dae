@@ -3,6 +3,7 @@
 package mitmca
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -22,7 +23,11 @@ func (a *Authority) TLSConfig(host string) *tls.Config {
 			if name != host && !(name == "" && net.ParseIP(host) != nil) {
 				return nil, fmt.Errorf("mitm: TLS SNI differs from intercepted destination")
 			}
-			return a.ServerCertificate(host)
+			ctx := hello.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return a.serverCertificate(ctx, host)
 		},
 	}
 }

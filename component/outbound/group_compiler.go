@@ -49,8 +49,8 @@ type groupDefinition struct {
 	config       *config.Group
 	paths        [][]*compiledStage
 	dependencies []*groupDefinition
-	template     []*PathSpec
-	templateDone bool
+	expanded     []*PathSpec
+	expandedDone bool
 }
 
 type GroupCompiler struct {
@@ -310,7 +310,7 @@ func (c *GroupCompiler) validateCycles() error {
 
 func (c *GroupCompiler) expandStage(stage *compiledStage) ([]*PathSpec, error) {
 	if stage.group != nil {
-		fragments, err := c.expandTemplate(stage.group)
+		fragments, err := c.expandedPaths(stage.group)
 		if err != nil {
 			return nil, err
 		}
@@ -383,25 +383,27 @@ func (c *GroupCompiler) expand(group *groupDefinition) ([]*PathSpec, error) {
 	return paths, nil
 }
 
-func (c *GroupCompiler) expandTemplate(group *groupDefinition) ([]*PathSpec, error) {
-	if group.templateDone {
-		return group.template, nil
+func (c *GroupCompiler) expandedPaths(group *groupDefinition) ([]*PathSpec, error) {
+	if group.expandedDone {
+		return group.expanded, nil
 	}
 	paths, err := c.expand(group)
 	if err != nil {
 		return nil, err
 	}
-	group.template = paths
-	group.templateDone = true
+	group.expanded = paths
+	group.expandedDone = true
 	return paths, nil
 }
 
+// ExpandRoutable returns immutable logical paths shared with template expansion.
+// Runtime materialization must copy paths before applying family-specific state.
 func (c *GroupCompiler) ExpandRoutable(group *config.Group) ([]*PathSpec, error) {
 	definition := c.byName[group.Name]
 	if definition == nil {
 		return nil, fmt.Errorf("group %q not found", group.Name)
 	}
-	paths, err := c.expand(definition)
+	paths, err := c.expandedPaths(definition)
 	if err != nil {
 		return nil, err
 	}

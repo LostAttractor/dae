@@ -113,6 +113,7 @@ const (
 
 type pendingTrace struct {
 	events              []traceEvent
+	next                int
 	dropSeen            bool
 	dropReason          uint32
 	dropReasonAvailable bool
@@ -182,8 +183,8 @@ func (a *eventAccumulator) add(event traceEvent) (completed []accumulatedTrace) 
 	}
 
 	if len(trace.events) >= maxEventsPerTrace {
-		copy(trace.events, trace.events[1:])
-		trace.events[len(trace.events)-1] = event
+		trace.events[trace.next] = event
+		trace.next = (trace.next + 1) % maxEventsPerTrace
 		trace.truncated = true
 	} else {
 		trace.events = append(trace.events, event)

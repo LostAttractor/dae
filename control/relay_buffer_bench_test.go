@@ -15,30 +15,50 @@ import (
 )
 
 func BenchmarkRelayIdleMemory(b *testing.B) {
-	ready, release := make(chan int), make(chan struct{})
-	var before, held runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	var workers sync.WaitGroup
-	for range b.N {
-		workers.Go(func() {
-			_ = copyRelay(io.Discard, relayReadFunc(func(p []byte) (int, error) {
-				ready <- len(p)
-				<-release
-				return 0, io.EOF
-			}))
-		})
+	for _, directions := range []int{100, 1000} {
+		for _, bulk := range []bool{false, true} {
+			b.Run(fmt.Sprintf("directions=%d/after_bulk=%t", directions, bulk), func(b *testing.B) {
+				var bufferBytes, heapBytes int64
+				// Each iteration measures a complete fixed-size population. N changes the
+				// number of samples, never the number of simultaneously retained buffers.
+				for b.Loop() {
+					ready, release := make(chan int), make(chan struct{})
+					var before, held runtime.MemStats
+					runtime.GC()
+					runtime.GC() // Clear both generations of sync.Pool.
+					runtime.ReadMemStats(&before)
+					var workers sync.WaitGroup
+					for range directions {
+						workers.Go(func() {
+							reads := 0
+							_ = copyRelay(io.Discard, relayReadFunc(func(p []byte) (int, error) {
+								if bulk && reads < 2 {
+									reads++
+									return len(p), nil
+								}
+								ready <- len(p)
+								<-release
+								return 0, io.EOF
+							}))
+						})
+					}
+					for range directions {
+						bufferBytes += int64(<-ready)
+					}
+					runtime.GC()
+					runtime.GC() // Clear both generations of sync.Pool.
+					runtime.ReadMemStats(&held)
+					heapBytes += int64(held.HeapAlloc) - int64(before.HeapAlloc)
+					close(release)
+					workers.Wait()
+				}
+				b.ReportMetric(0, "ns/op")
+				b.ReportMetric(float64(directions), "directions")
+				b.ReportMetric(float64(bufferBytes)/float64(b.N*directions), "buffer-B/direction")
+				b.ReportMetric(float64(heapBytes)/float64(b.N*directions), "heap-B/direction")
+			})
+		}
 	}
-	var buffers int
-	for range b.N {
-		buffers += <-ready
-	}
-	runtime.GC()
-	runtime.ReadMemStats(&held)
-	close(release)
-	workers.Wait()
-	b.ReportMetric(float64(buffers)/float64(b.N), "buffer-B/direction")
-	b.ReportMetric(float64(int64(held.HeapAlloc)-int64(before.HeapAlloc))/float64(b.N), "heap-B/direction")
 }
 
 func BenchmarkCopyRelay(b *testing.B) {
