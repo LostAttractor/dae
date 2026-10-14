@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common"
 )
 
 // latencyWindow stores successful samples; failed probes do not affect latency.
@@ -63,6 +64,19 @@ func (d *pathRuntime) recordLatencyLocked(latency time.Duration, success bool) {
 	for member := range d.members {
 		if member.active && member.group != nil {
 			member.group.latency.record(latency)
+		}
+	}
+}
+
+func (d *pathRuntime) recordModeLatencyLocked(network common.NetworkIndex, latency time.Duration, success bool) {
+	if !success {
+		return
+	}
+	d.health.modes[network].lastLatency = latency
+	d.health.modes[network].measuredAt = time.Now()
+	for member := range d.members {
+		if member.active && member.group != nil {
+			member.group.modeLatency[network].record(latency)
 		}
 	}
 }

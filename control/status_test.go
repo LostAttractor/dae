@@ -275,11 +275,10 @@ func TestStatusSnapshotReportsSingletonNodeMetadata(t *testing.T) {
 		dialer.DialerSelectionPolicy{},
 		func(bool, *common.NetworkType) error { return nil },
 	).SetTargetMetadata(outbound.TargetKindNode)
-	group.CheckAsync = true
 	t.Cleanup(func() {
 		_ = group.Close()
 	})
-	plane := &ControlPlane{outbounds: []*outbound.DialerGroup{group}}
+	plane := &ControlPlane{outbounds: []*outbound.DialerGroup{group}, outboundCheckAsync: []bool{true}}
 	status := mustStatusSnapshot(t, plane).Groups[0]
 	if status.TargetKind != "node" || status.Policy != "" || !status.CheckAsync {
 		t.Fatalf("target metadata = kind %q, policy %q, check_async %v", status.TargetKind, status.Policy, status.CheckAsync)

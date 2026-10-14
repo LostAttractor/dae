@@ -381,3 +381,13 @@ routing {
 Positive domain filters require an existing DNS mapping to select kernel-direct connections. Unmatched direct traffic stays in eBPF; no broad capture is added to obtain a hostname. Shared-IP ambiguity and negation retain the existing domain matching semantics.
 
 Flow controls belong in the selected policy’s `rules {}`, with an explicit filter for their scope. The policy body, including `fallback`, selects outbounds and their parameters. Flow controls run before that policy’s ordinary routing rules. Named policies do not inherit the default policy’s flow rules; an anonymous default policy can also contain its own rules block.
+
+### Connectivity observations
+
+`tcp4`, `tcp6`, `udp4`, and `udp6` keep separate reachability, latency samples,
+health proofs, and recovery windows. A failed mode leaves other verified modes
+available. Transient failures do not revoke confirmed protocol capability.
+Shared session failure or proxy authentication failure blocks every dependent
+mode; each mode needs a fresh proof after session replacement. Node `healthy`
+means at least one mode is available. The API's `usable` array reports current
+admission in `tcp4`, `tcp6`, `udp4`, `udp6` order.

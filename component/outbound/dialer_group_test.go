@@ -491,7 +491,7 @@ func TestDialerGroupInitialReadyWaitsWhileCandidatesArePending(t *testing.T) {
 	}
 }
 
-func TestDialerGroupCheckAsyncAppliesToAllCandidates(t *testing.T) {
+func TestDialerGroupChecksAllCandidatesWithoutWaiting(t *testing.T) {
 	option := &dialer.GlobalOption{
 		CheckDnsOptionRaw: dialer.CheckDnsOptionRaw{Raw: []string{"dns.test:53", "127.0.0.1"}},
 		CheckInterval:     time.Hour,
@@ -506,14 +506,13 @@ func TestDialerGroupCheckAsyncAppliesToAllCandidates(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { _ = g.Close() })
 	// Routing usage is resolved after construction, before checks start.
-	g.CheckAsync = true
 	start := make(chan struct{})
 	ready, err := g.StartConnectivityChecks(start)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ready != nil {
-		t.Fatal("asynchronous group participated in the startup barrier")
+	if ready == nil {
+		t.Fatal("workers did not expose readiness")
 	}
 	if state, _ := g.Connectivity(); state != api.GroupStateChecking {
 		t.Fatalf("async group state before checks = %q, want checking", state)
@@ -528,7 +527,7 @@ func TestDialerGroupCheckAsyncAppliesToAllCandidates(t *testing.T) {
 	}
 }
 
-func TestDialerGroupAsyncBecomesCritical(t *testing.T) {
+func TestDialerGroupReusedWorkersExposeReadiness(t *testing.T) {
 	for _, completed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("checks completed=%v", completed), func(t *testing.T) {
 			d := newCheckedDialer(t, "node")
@@ -538,17 +537,15 @@ func TestDialerGroupAsyncBecomesCritical(t *testing.T) {
 			}
 			g := NewDialerGroup(d.GlobalOption, t.Name(), GroupKindSelector, []*dialer.Dialer{d}, emptyAnnotations(1), dialer.DialerSelectionPolicy{}, nil)
 			t.Cleanup(func() { _ = g.Close() })
-			g.CheckAsync = true
 			start := make(chan struct{})
-			if ready, err := g.StartConnectivityChecks(start); err != nil || ready != nil {
+			if ready, err := g.StartConnectivityChecks(start); err != nil || ready == nil {
 				t.Fatalf("asynchronous startup = %v, %v", ready, err)
 			}
 			if completed {
 				close(start)
 				waitForInitialCheck(t, d)
 			}
-			g.CheckAsync = false
-			ready, err := g.StartupReady()
+			ready, err := g.StartConnectivityChecks(start)
 			if err != nil || ready == nil {
 				t.Fatalf("critical startup = %v, %v", ready, err)
 			}

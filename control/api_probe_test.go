@@ -42,7 +42,7 @@ func TestProbeAPIAndSelectorWithoutDefault(t *testing.T) {
 	}
 	assertNodes := func(paths pathStatsIndex, count int) {
 		t.Helper()
-		status := newGroupStatus(paths, group, true)
+		status := newGroupStatus(paths, group, true, false)
 		if len(status.Nodes) != count || status.Nodes[0].ID != first {
 			t.Fatalf("status nodes = %+v", status.Nodes)
 		}

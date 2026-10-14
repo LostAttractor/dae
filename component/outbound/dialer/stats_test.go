@@ -43,7 +43,7 @@ func TestCandidateStatsPublishLatestCheckAndSessionState(t *testing.T) {
 			if !d.RuntimeStatus().Healthy {
 				t.Fatal("deferred statistics prevented candidate route selection")
 			}
-			d.reportDataPlaneFailure(netproxy.Failure{Cause: errors.New("candidate dial failed")})
+			d.reportDataPlaneFailure(netproxy.Failure{Cause: errors.New("candidate dial failed")}, common.NetworkInvalid)
 			transport.state.Transition(netproxy.SessionDisconnected, errors.New("session lost before activation"))
 			if !d.applySessionState(transport.Snapshot()) {
 				t.Fatal("candidate session loss was not applied")

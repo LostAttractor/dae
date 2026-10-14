@@ -108,10 +108,10 @@ routing {
 	if len(plane.outbounds) != len(want) {
 		t.Fatalf("materialized %d targets, want %d", len(plane.outbounds), len(want))
 	}
-	for _, group := range plane.outbounds {
+	for index, group := range plane.outbounds {
 		async, ok := want[group.Name]
-		if !ok || group.CheckAsync != async {
-			t.Errorf("target %q: async=%v, expected active=%v async=%v", group.Name, group.CheckAsync, ok, async)
+		if !ok || plane.outboundCheckAsync[index] != async {
+			t.Errorf("target %q: async=%v, expected active=%v async=%v", group.Name, plane.outboundCheckAsync[index], ok, async)
 		}
 		if group.Name == "chain" && (len(group.Dialers) != 1 || group.Dialers[0].Name != "entry -> exit") {
 			t.Fatalf("template chain was not materialized correctly: %+v", group.Dialers)
@@ -237,12 +237,12 @@ routing { dport(80) -> base(skip_while_noalive)
 	if len(plane.outbounds) != 5 {
 		t.Fatalf("plugin targets = %+v", plane.routingMatcherBuilder.outboundName2Id)
 	}
-	for _, group := range plane.outbounds {
+	for index, group := range plane.outbounds {
 		if group.Name == "unused" {
 			t.Fatal("plugin loading instantiated an unused selector")
 		}
-		if group.CheckAsync != (group.Name == "plugin_only") {
-			t.Errorf("%s: async=%v after plugin references", group.Name, group.CheckAsync)
+		if plane.outboundCheckAsync[index] != (group.Name == "plugin_only") {
+			t.Errorf("%s: async=%v after plugin references", group.Name, plane.outboundCheckAsync[index])
 		}
 		if slices.Contains([]string{"base", "plugin_sync"}, group.Name) && !group.Dialers[0].ConnectivitySnapshot().InitialCheckDone {
 			t.Errorf("%s: critical plugin target did not finish its check", group.Name)
@@ -272,7 +272,7 @@ routing { fallback: direct }
 		t.Fatalf("required HTTP policy not available: %+v", plane.routingMatcherBuilder.outboundName2Id)
 	}
 	index := plane.routingMatcherBuilder.outboundName2Id["script_only"]
-	if !plane.criticalOutbounds[index] || plane.outbounds[index].CheckAsync {
+	if !plane.criticalOutbounds[index] || plane.outboundCheckAsync[index] {
 		t.Fatal("required policy skipped initial connectivity checks")
 	}
 	plan := plane.MITMHost().Plan()

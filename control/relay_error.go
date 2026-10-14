@@ -158,7 +158,7 @@ func recordDataPlaneError(reporter *dialer.Dialer, path stats.Path, err error) b
 		return false
 	}
 	if reporter != nil {
-		reporter.ReportDataPlaneError(err)
+		reporter.ReportNetworkError(path.Network, err)
 	}
 	record := false
 	for _, failure := range netproxy.Failures(err) {

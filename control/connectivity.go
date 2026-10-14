@@ -192,15 +192,15 @@ func (c *ControlPlane) watchConnectivity() {
 	core.setOutboundRecoveryCallback(c.requestConnectivityRechecks)
 }
 
-func startConnectivityChecks(groups []*outbound.DialerGroup) ([]startupConnectivityWaiter, error) {
+func startConnectivityChecks(groups []*outbound.DialerGroup, async []bool) ([]startupConnectivityWaiter, error) {
 	checkStart := make(chan struct{})
 	waiters := make([]startupConnectivityWaiter, 0, len(groups))
-	for _, group := range groups {
+	for i, group := range groups {
 		ready, err := group.StartConnectivityChecks(checkStart)
 		if err != nil {
 			return nil, fmt.Errorf("start outbound %q connectivity checks: %w", group.Name, err)
 		}
-		if ready != nil {
+		if ready != nil && !async[i] {
 			waiters = append(waiters, startupConnectivityWaiter{name: group.Name, ready: ready})
 		}
 	}

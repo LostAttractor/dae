@@ -97,8 +97,9 @@ func TestRecoverySharesObservationButKeepsGroupDurations(t *testing.T) {
 		other := shareTestDialer(t, d)
 		d.group.failureRecovery = time.Second
 		other.group.failureRecovery = 3 * time.Second
+		d.health.networks[common.NetworkTCP4] = networkSupported
 		check := func(err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
+			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(), probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
 		}
 		check(errors.New("offline"))
 		check(nil)
@@ -132,7 +133,7 @@ func TestUnconfirmedSampleDoesNotAdvanceRecovery(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.health.networks[common.NetworkTCP4] = networkSupported
 		check := func(generation uint64, err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: generation,
+			d.applyCheck(checkResult{kind: checkHealth, generation: generation, modeGenerations: d.modeGenerationsLocked(),
 				probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond, err: err}}})
 		}
 		check(d.failures.generation, errors.New("offline"))

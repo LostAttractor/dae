@@ -691,6 +691,13 @@
           "subtag": {
             "type": "string"
           },
+          "usable": {
+            "description": "Current admission for each mode, in tcp4, tcp6, udp4, udp6 order. Capability, per-mode health, and shared session readiness must all permit use.",
+            "items": { "type": "boolean" },
+            "minItems": 4,
+            "maxItems": 4,
+            "type": "array"
+          },
           "support": {
             "description": "Network order: tcp4, tcp6, udp4, udp6.",
             "items": {
@@ -734,6 +741,7 @@
           "confirming_failure",
           "availability",
           "support",
+          "usable",
           "stats",
           "revision",
           "observed_session_seq",

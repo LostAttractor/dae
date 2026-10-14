@@ -73,6 +73,7 @@ type NodeStatus struct {
 	InitialCheckDone   bool                               `json:"-"` // Current runtime only, for startup logs.
 	Healthy            bool                               `json:"healthy"`
 	Dormant            bool                               `json:"dormant,omitzero"`
+	Usable             NetworkValues[bool]                `json:"usable"`
 	ConfirmingFailure  bool                               `json:"confirming_failure"`
 	Availability       Availability                       `json:"availability"`
 	Latency            *LatencyStats                      `json:"latency,omitempty"`

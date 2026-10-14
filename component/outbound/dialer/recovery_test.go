@@ -20,6 +20,11 @@ import (
 func prepareRecoveryDialer(d *Dialer) {
 	d.mu.Lock()
 	d.health.phase = healthHealthy
+	d.health.blocked = false
+	for i := range d.health.modes {
+		d.health.modes[i].phase = healthHealthy
+		d.health.modes[i].readiness = d.sessionSnapshot().ReadinessVersion
+	}
 	snapshot := d.sessionSnapshot()
 	d.health.readiness = snapshot.ReadinessVersion
 	for i := range d.health.networks {

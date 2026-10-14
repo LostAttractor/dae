@@ -116,7 +116,6 @@ func TestManualSelectorStartupUsesRestoredSelection(t *testing.T) {
 				g := NewDialerGroup(option, t.Name(), GroupKindSelector, paths, emptyAnnotations(2), dialer.DialerSelectionPolicy{
 					Policy: consts.DialerSelectionPolicy_Selector, FixedIndex: 1 - selected, FixedIndexSet: true, TrackAll: trackAll,
 				}, nil)
-				g.CheckAsync = async
 				t.Cleanup(func() { _ = g.Close() })
 				if err := g.SetSelection(paths[selected].StatsID()); err != nil {
 					t.Fatal(err)
@@ -125,8 +124,8 @@ func TestManualSelectorStartupUsesRestoredSelection(t *testing.T) {
 					t.Fatal(err)
 				}
 				ready := g.startupReady
-				if (ready == nil) != async {
-					t.Fatalf("async=%t restored path %d: startup barrier = %v", async, selected, ready)
+				if ready == nil {
+					t.Fatalf("restored path %d has no readiness notification", selected)
 				}
 				select {
 				case <-ready:

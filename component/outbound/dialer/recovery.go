@@ -3,6 +3,7 @@ package dialer
 import (
 	"time"
 
+	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
@@ -181,6 +182,11 @@ func primaryNodeFailure(err error) netproxy.Failure {
 // ReportDataPlaneError consumes every independent cause. The protocol owner
 // invalidates shared resources; observing an error never closes a Session.
 func (d *Dialer) ReportDataPlaneError(err error) {
+	d.ReportNetworkError(common.NetworkInvalid, err)
+}
+
+// ReportNetworkError confines stream-level confirmation to the request mode.
+func (d *Dialer) ReportNetworkError(network common.NetworkIndex, err error) {
 	if err == nil {
 		return
 	}
@@ -204,7 +210,7 @@ func (d *Dialer) ReportDataPlaneError(err error) {
 		}
 	}
 	if confirmation != nil {
-		d.reportDataPlaneFailure(*confirmation)
+		d.reportDataPlaneFailure(*confirmation, network)
 	}
 }
 

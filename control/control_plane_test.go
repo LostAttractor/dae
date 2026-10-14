@@ -102,10 +102,10 @@ routing {
 	if len(plane.outbounds) != len(want) {
 		t.Fatalf("outbound count = %d, want %d", len(plane.outbounds), len(want))
 	}
-	for _, group := range plane.outbounds {
+	for index, group := range plane.outbounds {
 		expected, ok := want[group.Name]
-		if !ok || group.CheckAsync != expected.async || group.TargetKind != expected.kind {
-			t.Errorf("target %q: check_async=%v, kind=%v; want %+v", group.Name, group.CheckAsync, group.TargetKind, expected)
+		if !ok || plane.outboundCheckAsync[index] != expected.async || group.TargetKind != expected.kind {
+			t.Errorf("target %q: check_async=%v, kind=%v; want %+v", group.Name, plane.outboundCheckAsync[index], group.TargetKind, expected)
 		}
 	}
 }

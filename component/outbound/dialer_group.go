@@ -37,13 +37,10 @@ const (
 )
 
 type DialerGroup struct {
-	Name       string
-	Kind       GroupKind
-	TargetKind TargetKind
-	Dialers    []*dialer.Dialer
-	// CheckAsync skips the startup barrier for every dialer in this group.
-	// Set it during preparation, before starting checks or querying StartupReady.
-	CheckAsync      bool
+	Name            string
+	Kind            GroupKind
+	TargetKind      TargetKind
+	Dialers         []*dialer.Dialer
 	selectionPolicy dialer.DialerSelectionPolicy
 	selector        *latencyBasedSelector
 	automatic       *automaticSelection
@@ -91,12 +88,6 @@ func (g *DialerGroup) publishConnectivity(available bool, network *common.Networ
 		err = errors.Join(err, observer.publish(available, network))
 	}
 	return err
-}
-
-func (g *DialerGroup) ConfigureStartup(async bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.CheckAsync = async
 }
 
 func NewDialerGroup(
@@ -248,7 +239,7 @@ func (g *DialerGroup) initializeConnectivity() error {
 	if !g.ChecksConnectivity() {
 		return nil
 	}
-	if !g.CheckAsync && len(g.policyDialers()) != 0 && g.startupReady == nil {
+	if len(g.policyDialers()) != 0 && g.startupReady == nil {
 		g.startupReady = make(chan struct{})
 	}
 	var err error
@@ -267,12 +258,13 @@ func (g *DialerGroup) initializeConnectivity() error {
 }
 
 // StartConnectivityChecks registers the group's checkers with the shared start
-// gate. The returned channel is nil when the group does not block startup.
+// gate. The returned channel describes readiness, including when the workers
+// already exist. Each preparing control plane decides whether to wait on it.
 func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan struct{}, error) {
 	g.mu.Lock()
 	if g.checksStarted {
 		g.mu.Unlock()
-		return nil, nil
+		return g.StartupReady()
 	}
 	g.checksStarted = true
 	g.mu.Unlock()
@@ -290,16 +282,15 @@ func (g *DialerGroup) StartConnectivityChecks(start <-chan struct{}) (<-chan str
 	return g.startupReady, nil
 }
 
-// StartupReady also supports a previously asynchronous group becoming critical
-// after plugin routes load. Reuse its checks and publish their current results
-// before releasing the new startup barrier.
+// StartupReady exposes the shared workers' current readiness. Waiting policy is
+// owned by the candidate plane, so preparing it cannot change an active plane.
 func (g *DialerGroup) StartupReady() (<-chan struct{}, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed.Load() {
 		return nil, net.ErrClosed
 	}
-	if !g.ChecksConnectivity() || g.CheckAsync || len(g.policyDialers()) == 0 {
+	if !g.ChecksConnectivity() || len(g.policyDialers()) == 0 {
 		return nil, nil
 	}
 	if g.startupReady == nil {
@@ -424,8 +415,8 @@ func (g *DialerGroup) aggregateConnectivity() groupConnectivity {
 		for i, available := range snapshot.Usable {
 			aggregate.networks[i] = aggregate.networks[i] || available
 			usable = usable || available
+			aggregate.stable = aggregate.stable || available && !snapshot.Confirming[i]
 		}
-		aggregate.stable = aggregate.stable || (usable && !snapshot.ConfirmingFailure)
 		if !snapshot.InitialCheckDone {
 			aggregate.pending = true
 			aggregate.initialDone = false

@@ -135,9 +135,10 @@ func (d *pathRuntime) connectivityCheckRequested() bool {
 func (d *pathRuntime) beginConnectivityCheck(kind checkKind) checkAttempt {
 	d.mu.Lock()
 	attempt := checkAttempt{
-		kind:       kind,
-		generation: d.failures.generation,
-		reasons:    d.checks.pending,
+		kind:            kind,
+		generation:      d.failures.generation,
+		modeGenerations: d.modeGenerationsLocked(),
+		reasons:         d.checks.pending,
 	}
 	d.checks.pending = 0
 	d.checks.operation = checkProbing
@@ -185,6 +186,11 @@ func (d *Dialer) ActivateCheck(start <-chan struct{}) {
 		d.active = true
 		if !d.health.measuredAt.IsZero() && d.group != nil {
 			d.group.latency.record(d.health.lastLatency)
+			for i, mode := range d.health.modes {
+				if !mode.measuredAt.IsZero() {
+					d.group.modeLatency[i].record(mode.lastLatency)
+				}
+			}
 		}
 		if d.initialCheckCompletedLocked() || !d.checks.checkedAt.IsZero() {
 			d.recordMemberAvailability(d.healthyLocked(d.sessionSnapshot()), false, time.Time{})

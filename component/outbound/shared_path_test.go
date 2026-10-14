@@ -3,6 +3,8 @@
 package outbound
 
 import (
+	"encoding/base64"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,78 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 )
+
+func TestBuildPathIgnoresEmbeddedVMessDisplayName(t *testing.T) {
+	link := func(name, id, sni string) string {
+		return "vmess://" + base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf(`{"v":"2","ps":%q,"add":"127.0.0.1","port":"443","id":%q,"aid":"0","net":"tcp","type":"none","tls":"tls","sni":%q}`, name, id, sni)))
+	}
+	const id = "00000000-0000-0000-0000-000000000001"
+	set, err := NewDialerSet([]NodeDescriptor{
+		{Link: link("first display", id, "example.test")},
+		{Link: link("second display", id, "example.test")},
+		{Link: link("first display", "00000000-0000-0000-0000-000000000002", "example.test")},
+		{Link: link("first display", id, "different.test")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var members []*dialer.Dialer
+	for _, node := range set.nodeInfos {
+		member, err := set.BuildPath(NodePath(node), new(dialer.GlobalOption), t.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer member.Close()
+		members = append(members, member)
+	}
+	if members[0].Dialer != members[1].Dialer || members[0].Name == members[1].Name {
+		t.Fatal("embedded display metadata prevented sharing or lost presentation")
+	}
+	if members[0].Dialer == members[2].Dialer || members[0].Dialer == members[3].Dialer {
+		t.Fatal("authentication or TLS identity was discarded")
+	}
+}
+
+func TestBuildPathPreservesCredentialBytes(t *testing.T) {
+	for _, field := range []string{"username", "password"} {
+		t.Run(field, func(t *testing.T) {
+			var descriptors []NodeDescriptor
+			for i, value := range []string{"%FF", "%FF", "%FE", "%EF%BF%BD", "%2Fw%3D%3D", "%00", ""} {
+				user, password := "user", "password"
+				if field == "username" {
+					user = value
+				} else {
+					password = value
+				}
+				descriptors = append(descriptors, NodeDescriptor{Link: fmt.Sprintf("socks5://%s:%s@127.0.0.1:1080#node-%d", user, password, i)})
+			}
+			set, err := NewDialerSet(descriptors)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(set.nodeInfos) != len(descriptors) {
+				t.Fatal("credential fixture nodes were dropped")
+			}
+			var members []*dialer.Dialer
+			for _, node := range set.nodeInfos {
+				member, err := set.BuildPath(NodePath(node), new(dialer.GlobalOption), t.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer member.Close()
+				members = append(members, member)
+			}
+			for i, member := range members {
+				for j := range i {
+					wantShared := i == 1 && j == 0
+					if shared := member.Dialer == members[j].Dialer; shared != wantShared {
+						t.Fatalf("nodes %d and %d: shared = %v, want %v", i, j, shared, wantShared)
+					}
+				}
+			}
+		})
+	}
+}
 
 func TestBuildPathSharesEquivalentRuntime(t *testing.T) {
 	set, err := NewDialerSet([]NodeDescriptor{

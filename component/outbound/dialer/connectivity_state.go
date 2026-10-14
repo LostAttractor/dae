@@ -14,8 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// networkState records irreversible mode capability. Reachability is shared
-// by all supported modes through pathHealth.phase.
+// networkState records mode capability; transient reachability has a separate lifecycle.
 type networkState uint8
 
 const (
@@ -37,10 +36,21 @@ func (p healthPhase) usable() bool {
 	return p == healthHealthy || p == healthConfirming
 }
 
-// pathHealth contains shared reachability, capabilities and successful observations.
+type modeHealth struct {
+	phase       healthPhase
+	readiness   uint64
+	lastLatency time.Duration
+	measuredAt  time.Time
+	failures    pathFailures
+}
+
+// pathHealth holds per-mode reachability and the shared session/authentication gate.
+// phase is an aggregate observation for node status, never a mode admission rule.
 // It is protected by pathRuntime.mu; it carries no group monitoring policy.
 type pathHealth struct {
 	phase              healthPhase
+	blocked            bool
+	modes              [common.NetworkTypeCount]modeHealth
 	readiness          uint64
 	observedSessionSeq uint64
 	networks           [common.NetworkTypeCount]networkState
@@ -59,13 +69,43 @@ func (d *pathRuntime) sessionSnapshot() netproxy.StateEvent {
 }
 
 func (d *pathRuntime) healthyLocked(session netproxy.StateEvent) bool {
-	return d.ctx.Err() == nil && d.health.phase.usable() && (d.session == nil || session.Accepting && d.health.readiness == session.ReadinessVersion)
+	return d.ctx.Err() == nil && !d.health.blocked && d.health.phase.usable() && (d.session == nil || session.Accepting && d.health.readiness == session.ReadinessVersion)
+}
+
+func (d *pathRuntime) modeUsableLocked(index common.NetworkIndex, session netproxy.StateEvent) bool {
+	return index.Valid() && d.healthyLocked(session) && d.health.networks[index] == networkSupported && d.health.modes[index].phase.usable() && d.health.modes[index].readiness == d.health.readiness
+}
+
+func (d *pathRuntime) aggregateHealthLocked() {
+	d.health.phase = healthUnhealthy
+	if d.health.blocked {
+		return
+	}
+	for i, mode := range d.health.modes {
+		if d.health.networks[i] != networkSupported || mode.readiness != d.health.readiness {
+			continue
+		}
+		if mode.phase == healthConfirming {
+			d.health.phase = healthConfirming
+			return
+		}
+		if mode.phase == healthHealthy {
+			d.health.phase = healthHealthy
+		}
+	}
+}
+
+func (d *pathRuntime) modeGenerationsLocked() (generations [common.NetworkTypeCount]uint64) {
+	for i := range generations {
+		generations[i] = d.health.modes[i].failures.generation
+	}
+	return
 }
 
 func (d *Dialer) Usable(networkType *common.NetworkType) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return !d.closed && d.healthyLocked(d.sessionSnapshot()) && d.health.networks[networkType.Index()] == networkSupported
+	return !d.closed && d.modeUsableLocked(networkType.Index(), d.sessionSnapshot())
 }
 
 func (d *pathRuntime) initialCheckCompleted() bool {
@@ -84,26 +124,41 @@ func (d *pathRuntime) initialCheckCompletedLocked() bool {
 	return true
 }
 
-func (d *pathRuntime) reportDataPlaneFailure(failure netproxy.Failure) {
+func (d *pathRuntime) reportDataPlaneFailure(failure netproxy.Failure, network common.NetworkIndex) {
 	d.mu.Lock()
 	if d.ctx.Err() != nil {
 		d.mu.Unlock()
 		return
 	}
-	startedConfirmation := false
-	session := d.sessionSnapshot()
-	if d.checksConnectivity && d.health.phase == healthHealthy && d.healthyLocked(session) {
-		d.health.phase = healthConfirming
-		d.failures.reportedAt = time.Now()
-		d.failures.generation++
-		d.failures.last = failureSnapshot(failure, d.failures.generation)
-		d.statusRevision++
-		d.checks.pending |= checkRequestDataPlane
-		startedConfirmation = true
+	started := false
+	if d.checksConnectivity && d.healthyLocked(d.sessionSnapshot()) {
+		for i := range d.health.modes {
+			if network.Valid() && common.NetworkIndex(i) != network {
+				continue
+			}
+			mode := &d.health.modes[i]
+			if mode.phase != healthHealthy {
+				continue
+			}
+			mode.phase = healthConfirming
+			mode.failures.generation++
+			mode.failures.reportedAt = time.Now()
+			started = true
+		}
+		if started {
+			if !network.Valid() {
+				d.failures.generation++
+				d.failures.reportedAt = time.Now()
+			}
+			d.failures.last = failureSnapshot(failure, d.failures.generation)
+			d.aggregateHealthLocked()
+			d.statusRevision++
+			d.checks.pending |= checkRequestDataPlane
+		}
 	}
 	d.mu.Unlock()
 	d.recordConnectionFailure()
-	if startedConfirmation {
+	if started {
 		d.notifyGroups(SelectionForceNone)
 		d.signalConnectivityCheck()
 	}
@@ -176,11 +231,14 @@ func firstSupportConfirmed(transition probeTransition) bool {
 }
 
 func (d *pathRuntime) takePendingForceLocked() SelectionForceMask {
-	if !d.health.phase.usable() {
-		return SelectionForceNone
+	force := SelectionForceNone
+	for i := range d.health.modes {
+		index := common.NetworkIndex(i)
+		if d.health.pendingForce.Contains(index) && d.modeUsableLocked(index, d.sessionSnapshot()) {
+			force |= SelectionForceFor(index)
+		}
 	}
-	force := d.health.pendingForce
-	d.health.pendingForce = SelectionForceNone
+	d.health.pendingForce &^= force
 	return force
 }
 
@@ -202,13 +260,13 @@ func (d *pathRuntime) applyCheck(result checkResult) (appliedCheck, bool) {
 	}
 	if result.kind == checkCapacity {
 		if result.connectErr != nil {
-			d.failures.last = failureSnapshot(primaryNodeFailure(result.connectErr), d.failures.generation)
+			d.failures.last = failureSnapshot(primaryNodeFailure(result.failure()), d.failures.generation)
 			d.statusRevision++
 		}
 		d.mu.Unlock()
 		return appliedCheck{success: result.connectErr == nil}, true
 	}
-	if result.connectErr != nil {
+	if result.connectErr != nil || recoveryBlockedReason(result.failure()) != "" {
 		return d.applyConnectErrorLocked(result, session), true
 	}
 	if d.session != nil && !session.Accepting {
@@ -216,7 +274,12 @@ func (d *pathRuntime) applyCheck(result checkResult) (appliedCheck, bool) {
 		return appliedCheck{}, false
 	}
 	if !d.checksConnectivity {
+		d.health.blocked = false
 		d.health.phase = healthHealthy
+		for i := range d.health.modes {
+			d.health.modes[i].phase = healthHealthy
+			d.health.modes[i].readiness = observedReadiness
+		}
 		d.health.readiness = observedReadiness
 		d.statusRevision++
 		d.mu.Unlock()
@@ -241,19 +304,23 @@ func (d *pathRuntime) applyCheck(result checkResult) (appliedCheck, bool) {
 func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netproxy.StateEvent) appliedCheck {
 	failureReportedAt := d.failures.reportedAt
 	previousHealthy := d.healthyLocked(session)
-	if result.kind != checkSupport {
+	if result.kind != checkSupport || recoveryBlockedReason(result.failure()) != "" {
 		d.confirmFailureLocked()
+		d.health.blocked = true
 		d.health.phase = healthUnhealthy
+		for i := range d.health.modes {
+			d.health.modes[i].phase = healthUnhealthy
+		}
 		d.health.readiness = result.readiness
 		d.failures.reportedAt = time.Time{}
 		d.checks.pending &^= checkRequestDataPlane
 		d.statusRevision++
 		if d.failures.last == nil {
-			d.failures.last = failureSnapshot(primaryNodeFailure(result.connectErr), d.failures.generation)
+			d.failures.last = failureSnapshot(primaryNodeFailure(result.failure()), d.failures.generation)
 		}
 	}
 	d.mu.Unlock()
-	if result.kind != checkSupport {
+	if result.kind != checkSupport || recoveryBlockedReason(result.failure()) != "" {
 		d.logCheckOutcome(previousHealthy, false, nil, nil, result)
 		if d.ChecksConnectivity() {
 			d.recordAvailability(false, true, failureReportedAt)
@@ -265,99 +332,100 @@ func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netpro
 	return appliedCheck{}
 }
 
-func (d *pathRuntime) applyHealthResultLocked(result checkResult, success bool) time.Time {
-	failureReportedAt := d.failures.reportedAt
-	d.health.readiness = result.readiness
-	d.statusRevision++
-	if !success {
-		d.confirmFailureLocked()
-		if err := result.failure(); err != nil && d.failures.last == nil {
-			d.failures.last = failureSnapshot(primaryNodeFailure(err), d.failures.generation)
-		}
-		d.health.phase = healthUnhealthy
-		d.failures.reportedAt = time.Time{}
-		d.checks.pending &^= checkRequestDataPlane
-		return failureReportedAt
-	}
-	if d.health.phase != healthConfirming || result.generation >= d.failures.generation {
-		d.recordRecoverySuccessLocked()
-		d.health.phase = healthHealthy
-		d.failures.reportedAt = time.Time{}
-		session := d.sessionSnapshot()
-		if session.Cause == nil && !session.RecoveryRequired {
-			d.failures.last = nil
-		}
-	}
-	return failureReportedAt
-}
-
 func (d *pathRuntime) applyCapabilityCheckLocked(result checkResult) appliedCheck {
-	initial := result.kind == checkInitial
 	transitions := d.applyCapabilityResultsLocked(result)
-	discovered := SelectionForceNone
 	for _, transition := range transitions {
 		if firstSupportConfirmed(transition) {
-			discovered |= SelectionForceFor(transition.probe.network)
+			d.health.pendingForce |= SelectionForceFor(transition.probe.network)
 		}
 	}
-
-	previousPhase := d.health.phase
-	previousHealthy := previousPhase.usable()
-	canonicalIndex := firstSupportedNetwork(d.health.networks)
-	canonicalResult := resultProbe(result, canonicalIndex)
-	if !initial && !discovered.Contains(canonicalIndex) {
-		canonicalResult = nil
-	}
-	// Selection checks may already have established health before the remaining
-	// capabilities are discovered. Missing modes cannot invalidate that proof.
-	healthApplied := canonicalResult != nil || initial && !canonicalIndex.Valid()
-	failureReportedAt := d.failures.reportedAt
-	if healthApplied {
-		failureReportedAt = d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
-		if canonicalResult != nil {
-			d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
-		}
-	}
-	d.recordHealthProofsLocked(result)
-
-	d.health.pendingForce |= discovered
-	forceSelection := d.takePendingForceLocked()
-	currentHealthy := d.health.phase.usable()
-	phaseChanged := previousPhase != d.health.phase
-	d.mu.Unlock()
-
-	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, transitions, result)
-	if healthApplied {
-		d.recordAvailability(currentHealthy, true, failureReportedAt)
-	}
-	if initial || phaseChanged || forceSelection != SelectionForceNone {
-		d.notifyGroups(forceSelection)
-	}
-	return appliedCheck{
-		success:       currentHealthy,
-		healthApplied: healthApplied,
-	}
+	return d.applyModeResultsLocked(result, transitions)
 }
 
 func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
-	previousHealthy := d.health.phase.usable()
-	var canonicalResult *probeResult
-	if len(result.probes) > 0 {
-		canonicalResult = &result.probes[0]
+	return d.applyModeResultsLocked(result, nil)
+}
+
+func (d *pathRuntime) applyModeResultsLocked(result checkResult, transitions []probeTransition) appliedCheck {
+	previousHealthy := d.healthyLocked(d.sessionSnapshot())
+	failureReportedAt := d.failures.reportedAt
+	fresh := result.generation == d.failures.generation
+	if fresh {
+		d.health.blocked = false
+		d.health.readiness = result.readiness
 	}
-	failureReportedAt := d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
-	if canonicalResult != nil {
-		d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
+	applied := false
+	appliedSuccess := false
+	allSuccess := len(result.probes) > 0
+	var representative *probeResult
+	for i := range result.probes {
+		probe := &result.probes[i]
+		mode := &d.health.modes[probe.network]
+		if probe.err == nil && (representative == nil || representative.err != nil) {
+			representative = probe
+		}
+		if representative == nil {
+			representative = probe
+		}
+		d.recordModeLatencyLocked(probe.network, probe.latency, probe.err == nil)
+		allSuccess = allSuccess && probe.err == nil
+		if !fresh || result.modeGenerations[probe.network] != mode.failures.generation {
+			continue
+		}
+		applied = true
+		if failureReportedAt.IsZero() {
+			failureReportedAt = mode.failures.reportedAt
+		}
+		if probe.err != nil {
+			mode.phase = healthUnhealthy
+			if !errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) {
+				d.confirmModeFailureLocked(probe.network)
+				d.failures.last = failureSnapshot(primaryNodeFailure(probe.err), mode.failures.generation)
+			}
+		} else if d.health.networks[probe.network] == networkSupported {
+			mode.phase = healthHealthy
+			mode.readiness = result.readiness
+			d.recordModeRecoverySuccessLocked(probe.network)
+			appliedSuccess = true
+		}
+		mode.failures.reportedAt = time.Time{}
+	}
+	d.aggregateHealthLocked()
+	if d.health.phase != healthConfirming {
+		d.checks.pending &^= checkRequestDataPlane
+	}
+	currentHealthy := d.healthyLocked(d.sessionSnapshot())
+	if appliedSuccess && currentHealthy && d.health.phase == healthHealthy {
+		d.recordRecoverySuccessLocked()
+		d.failures.reportedAt = time.Time{}
+		if allSuccess && d.sessionSnapshot().Cause == nil && !d.sessionSnapshot().RecoveryRequired {
+			d.failures.last = nil
+		}
+	}
+	for _, network := range canonicalNetworkOrder {
+		if probe := resultProbe(result, network); probe != nil && probe.err == nil {
+			representative = probe
+			break
+		}
+	}
+	if representative != nil {
+		d.recordLatencyLocked(representative.latency, representative.err == nil)
 	}
 	d.recordHealthProofsLocked(result)
-	forceSelection := d.takePendingForceLocked()
-	currentHealthy := d.health.phase.usable()
+	force := d.takePendingForceLocked()
+	d.statusRevision++
 	d.mu.Unlock()
-
-	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, nil, result)
-	d.recordAvailability(currentHealthy, true, failureReportedAt)
-	d.notifyGroups(forceSelection)
-	return appliedCheck{success: currentHealthy}
+	d.logCheckOutcome(previousHealthy, currentHealthy, representative, transitions, result)
+	if applied {
+		d.recordAvailability(currentHealthy, true, failureReportedAt)
+	}
+	d.notifyGroups(force)
+	// Partial failures still schedule retries, without revoking healthy modes.
+	success := allSuccess && fresh
+	if result.kind == checkInitial || result.kind == checkSupport {
+		success = currentHealthy
+	}
+	return appliedCheck{success: success, healthApplied: applied}
 }
 
 func (d *pathRuntime) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, transitions []probeTransition, result checkResult) {
@@ -478,7 +546,12 @@ func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 	if event.Accepting {
 		unchecked := !d.checksConnectivity
 		if unchecked {
+			d.health.blocked = false
 			d.health.phase = healthHealthy
+			for i := range d.health.modes {
+				d.health.modes[i].phase = healthHealthy
+				d.health.modes[i].readiness = event.ReadinessVersion
+			}
 			d.health.readiness = event.ReadinessVersion
 			if event.Cause == nil && !event.RecoveryRequired {
 				d.failures.last = nil
@@ -506,7 +579,11 @@ func (d *pathRuntime) applySessionState(event netproxy.StateEvent) bool {
 		d.confirmFailureLocked()
 	}
 	failureReportedAt := d.failures.reportedAt
+	d.health.blocked = true
 	d.health.phase = healthUnhealthy
+	for i := range d.health.modes {
+		d.health.modes[i].phase = healthUnhealthy
+	}
 	d.health.readiness = event.ReadinessVersion
 	d.failures.reportedAt = time.Time{}
 	d.checks.pending &^= checkRequestDataPlane

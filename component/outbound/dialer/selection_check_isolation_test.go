@@ -139,16 +139,16 @@ func TestHealthProofKeepsItsNetworkAndFailureGeneration(t *testing.T) {
 	if !before6.SameObservation(after6) {
 		t.Fatal("a TCP4 result refreshed the TCP6 observation")
 	}
-	d.ReportDataPlaneError(errors.New("path failed"))
+	d.ReportNetworkError(common.NetworkTCP4, errors.New("TCP4 failed"))
 	if !d.VerifiedUsable(common.NetworkTCP6.NetworkType()) {
 		t.Fatal("failure confirmation prematurely withdrew an admitted path")
 	}
-	d.applyCheck(checkResult{kind: checkSelection, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4}}})
+	d.applyCheck(checkResult{kind: checkSelection, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(), probes: []probeResult{{network: common.NetworkTCP4}}})
 	if !d.ProofValid(d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Proof) ||
-		d.ProofValid(d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof) {
-		t.Fatal("TCP4 recovery revived an unverified TCP6 proof from before the failure")
+		!d.ProofValid(d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Proof) {
+		t.Fatal("TCP4 recovery invalidated an independent TCP6 proof")
 	}
-	if !d.VerifiedUsable(common.NetworkTCP4.NetworkType()) || d.VerifiedUsable(common.NetworkTCP6.NetworkType()) {
-		t.Fatal("an already selected TCP6 path resumed without its own new proof")
+	if !d.VerifiedUsable(common.NetworkTCP4.NetworkType()) || !d.VerifiedUsable(common.NetworkTCP6.NetworkType()) {
+		t.Fatal("mode recovery withdrew independently verified TCP6")
 	}
 }

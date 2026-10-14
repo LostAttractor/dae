@@ -146,8 +146,9 @@ func TestRecoveryRequiresElapsedWindowAndCompletedProbe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.group.failureRecovery = 3 * time.Second
+		d.health.networks[common.NetworkTCP4] = networkSupported
 		check := func(err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond, err: err}}})
+			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(), probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond, err: err}}})
 		}
 		check(errors.New("offline"))
 		for range 10 {
@@ -192,7 +193,7 @@ func TestHealthProofDoesNotReviveAfterRecovery(t *testing.T) {
 			if d.ProofValid(before) {
 				t.Fatal("failure did not invalidate the previous proof")
 			}
-			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, probes: []probeResult{{network: network, latency: time.Millisecond}}})
+			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(), probes: []probeResult{{network: network, latency: time.Millisecond}}})
 			if !d.Usable(network.NetworkType()) {
 				t.Fatal("successful confirmation did not recover the path")
 			}

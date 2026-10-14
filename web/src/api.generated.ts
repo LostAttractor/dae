@@ -1385,6 +1385,8 @@ export interface components {
             subtag: string;
             /** @description Network order: tcp4, tcp6, udp4, udp6. */
             support: ("unknown" | "confirmed" | "unsupported")[];
+            /** @description Current admission for each mode, in tcp4, tcp6, udp4, udp6 order. Capability, per-mode health, and shared session readiness must all permit use. */
+            usable: boolean[];
         };
         PathStats: {
             /** Format: int64 */

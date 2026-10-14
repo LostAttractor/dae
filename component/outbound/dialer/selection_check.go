@@ -167,9 +167,7 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 			continue
 		}
 		proof := c.d.health.proofs[queued.network]
-		if !proof.CheckedAt.Before(queued.requestedAt) && proof.failure == c.d.failures.generation &&
-			proof.readiness == c.d.health.readiness && c.d.health.networks[queued.network] == networkSupported &&
-			c.d.health.phase == healthHealthy && c.d.healthyLocked(c.d.sessionSnapshot()) {
+		if !proof.CheckedAt.Before(queued.requestedAt) && c.d.proofCurrentLocked(proof) {
 			queued.proof = proof
 			close(queued.done)
 			c.d.checks.selection[i] = nil
@@ -183,6 +181,7 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 		return false
 	}
 	generation := c.d.failures.generation
+	modeGenerations := c.d.modeGenerationsLocked()
 	c.d.checks.operation = checkProbing
 	c.d.updateTransportDemandLocked()
 	c.d.mu.Unlock()
@@ -192,13 +191,13 @@ func (c *connectivityChecker) startSelectionCheck() bool {
 	c.runningKind = checkSelection
 	c.cancel = flight.cancel
 	go func() {
-		c.results <- c.performSelectionCheck(flight, generation)
+		c.results <- c.performSelectionCheck(flight, generation, modeGenerations)
 	}()
 	return true
 }
 
-func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, generation uint64) checkResult {
-	result := checkResult{kind: checkSelection, generation: generation}
+func (c *connectivityChecker) performSelectionCheck(flight *selectionCheck, generation uint64, modeGenerations [common.NetworkTypeCount]uint64) checkResult {
+	result := checkResult{kind: checkSelection, generation: generation, modeGenerations: modeGenerations}
 	ctx := flight.ctx
 	c.d.setRecovery(RecoveryQueued, time.Time{}, "connectivity_slot")
 	if err := acquireConnectivityCheckSlot(ctx); err != nil {
@@ -234,6 +233,7 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 	flight := c.flight
 	c.flight = nil
 	err := result.failure()
+	blocked := ""
 	if err == nil && flight.ctx.Err() != nil {
 		err = flight.ctx.Err()
 		if len(result.probes) != 0 {
@@ -248,6 +248,9 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		}
 	} else {
 		applied, ok := c.d.applyCheck(result)
+		if ok && !applied.success {
+			blocked = recoveryBlockedReason(result.failure())
+		}
 		if !ok || !applied.success {
 			if err == nil {
 				err = ErrCheckSuperseded
@@ -259,8 +262,12 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		c.d.resetRecoveryObservationLocked()
 	}
 	c.healthAt = time.Now().Add(c.d.recoveryCheckInterval())
+	if blocked != "" {
+		c.blockedBy = blocked
+		c.stopRetries()
+	}
 	if err == nil && (c.d.failures.generation != result.generation ||
-		c.d.health.readiness != result.readiness || !c.d.healthyLocked(c.d.sessionSnapshot())) {
+		c.d.health.readiness != result.readiness || !c.d.proofCurrentLocked(c.d.health.proofs[flight.network])) {
 		err = ErrCheckSuperseded
 	}
 	if err == nil {
@@ -275,18 +282,5 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 }
 
 func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck {
-	probe := result.probes[0]
-	previous := d.health.networks[probe.network]
-	d.applyCapabilityResultsLocked(result)
-	if previous != networkSupported && probe.err == nil {
-		d.health.pendingForce |= SelectionForceFor(probe.network)
-	}
-	if probe.err != nil && (errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) ||
-		previous != networkSupported && d.health.phase.usable()) {
-		d.statusRevision++
-		d.mu.Unlock()
-		d.notifyGroups(SelectionForceNone)
-		return appliedCheck{}
-	}
-	return d.applyHealthCheckLocked(result)
+	return d.applyCapabilityCheckLocked(result)
 }

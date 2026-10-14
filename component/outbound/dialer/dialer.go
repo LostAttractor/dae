@@ -52,6 +52,7 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 	d.health.phase = healthHealthy
 	for i := range d.health.networks {
 		d.health.networks[i] = networkSupported
+		d.health.modes[i].phase = healthHealthy
 	}
 	if session == nil {
 		d.recovery.Phase = RecoveryReady
@@ -59,6 +60,9 @@ func NewDialer(runtime *netproxy.Runtime, option *GlobalOption, property *Proper
 		snapshot := session.Snapshot()
 		if snapshot.Accepting {
 			d.health.readiness = snapshot.ReadinessVersion
+			for i := range d.health.modes {
+				d.health.modes[i].readiness = snapshot.ReadinessVersion
+			}
 		} else {
 			d.health.phase = healthUnhealthy
 		}

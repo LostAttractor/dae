@@ -57,7 +57,11 @@ func TestFailoverUsesFreshSameTierSamples(t *testing.T) {
 				if g.SelectedDialer(testNetworkType) != g.Dialers[1] {
 					t.Fatal("fresh faster same-tier peer did not replace the primary")
 				}
-				if got := peer.attempts.Load() - before; got != 2 || peer.tcp4Attempts.Load()-before4 != 1 || peer.tcp6Attempts.Load()-before6 != 1 {
+				want, want6 := int32(2), int32(1)
+				if source == "explicit" {
+					want, want6 = 1, 0
+				}
+				if got := peer.attempts.Load() - before; got != want || peer.tcp4Attempts.Load()-before4 != 1 || peer.tcp6Attempts.Load()-before6 != want6 {
 					t.Fatalf("promotion must verify each family once, reusing the triggering result: probes=%d", got)
 				}
 				if owner != nil {

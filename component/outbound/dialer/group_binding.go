@@ -40,9 +40,11 @@ func (m SelectionForceMask) Contains(index common.NetworkIndex) bool {
 type groupBinding struct {
 	observer        DialerGroup
 	latency         latencyWindow
+	modeLatency     [common.NetworkTypeCount]latencyWindow
 	failureRecovery time.Duration
 	probeTimeout    time.Duration
 	recovered       bool
+	modeRecovered   [common.NetworkTypeCount]bool
 }
 
 // RegisterDialerGroup binds a member to its group's normalized selection policy.
@@ -53,6 +55,9 @@ func (d *Dialer) RegisterDialerGroup(group DialerGroup, policy DialerSelectionPo
 		latency:         latencyWindow{alpha: policy.EmaAlpha},
 		failureRecovery: policy.FailureRecovery,
 		probeTimeout:    policy.ProbeTimeout,
+	}
+	for i := range d.group.modeLatency {
+		d.group.modeLatency[i].alpha = policy.EmaAlpha
 	}
 	d.mu.Unlock()
 }

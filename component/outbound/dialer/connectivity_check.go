@@ -28,9 +28,10 @@ const (
 var checkKindName = [...]string{"initial", "health", "support_retry", "capacity", "selection"}
 
 type checkAttempt struct {
-	kind       checkKind
-	generation uint64
-	reasons    checkRequestReason
+	kind            checkKind
+	generation      uint64
+	modeGenerations [common.NetworkTypeCount]uint64
+	reasons         checkRequestReason
 }
 
 type appliedCheck struct {

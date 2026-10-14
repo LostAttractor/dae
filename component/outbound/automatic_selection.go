@@ -163,9 +163,8 @@ func (s *automaticSelection) hasUpgrade(network common.NetworkIndex, current sel
 	return false
 }
 
-// A continuously monitored peer can recover on its canonical network before
-// another known capability is reverified. Fill that proof before sleeping the
-// lower tiers; a canonical success alone cannot certify an independent backup.
+// A peer needs a current proof for this mode before it can serve as a backup.
+// Verification in another mode does not satisfy this requirement.
 func (s *automaticSelection) unverifiedPeer(network common.NetworkIndex, current selectorCandidate) *dialer.Dialer {
 	var target *dialer.Dialer
 	for _, d := range s.g.Dialers {

@@ -463,19 +463,18 @@ func writeRuntimeOptions(builder *strings.Builder, spec *PathSpec, option *diale
 func sharedPathKey(spec *PathSpec, option *dialer.GlobalOption) string {
 	var builder strings.Builder
 	for _, node := range spec.Nodes {
-		link, annotations, _ := strings.Cut(node.Property.Link, "\x1e")
-		if link == "" {
-			link = node.Link
+		for _, layer := range node.Dialers {
+			identity := ""
+			if parsed, ok := layer.(D.ConnectionIdentity); ok {
+				identity = parsed.ConnectionIdentity()
+			} else {
+				// Unknown builders cannot assert transport equivalence. Scope
+				// reuse to this immutable node instead of guessing from its URL.
+				identity = fmt.Sprintf("%T:%p", layer, node)
+			}
+			fmt.Fprintf(&builder, "%d:%s", len(identity), identity)
 		}
-		if annotations == "multiplex=off" {
-			annotations = ""
-		}
-		if parsed, err := url.Parse(link); err == nil {
-			parsed.Fragment, parsed.RawFragment = "", ""
-			parsed.RawQuery = parsed.Query().Encode()
-			link = parsed.String()
-		}
-		fmt.Fprintf(&builder, "%d:%s%d:%s", len(link), link, len(annotations), annotations)
+		builder.WriteByte('|')
 	}
 	fmt.Fprintf(&builder, "|entry|%d|%d:%s", spec.IPVersion, len(spec.Entry.Interface), spec.Entry.Interface)
 	writeRuntimeOptions(&builder, spec, option)

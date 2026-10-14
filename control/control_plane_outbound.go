@@ -175,23 +175,25 @@ func (b *outboundBuilder) buildRuleTargets(batches ...[]*config_parser.RoutingRu
 	return b.buildTargets(names)
 }
 
-func configureOutboundChecks(outbounds []*outbound.DialerGroup, groups []config.Group, critical []bool, borrowed map[*outbound.DialerGroup]bool) {
+// Startup policy belongs to the candidate; shared groups only own workers and
+// readiness. Borrowing a group neither mutates the accepted plane nor skips a
+// newly required barrier.
+func configureOutboundChecks(outbounds []*outbound.DialerGroup, groups []config.Group, critical []bool) []bool {
 	overrides := make(map[string]bool)
 	for _, group := range groups {
 		if group.CheckAsync || group.Present["check_async"] {
 			overrides[group.Name] = group.CheckAsync
 		}
 	}
+	checks := make([]bool, len(outbounds))
 	for i, group := range outbounds {
-		if borrowed[group] {
-			continue
-		}
 		async := group.ChecksConnectivity() && !critical[i]
 		if value, exists := overrides[group.Name]; exists {
 			async = value
 		}
-		group.ConfigureStartup(async)
+		checks[i] = async
 	}
+	return checks
 }
 
 func (b *outboundBuilder) materializeTarget(target *outbound.ResolvedTarget) error {

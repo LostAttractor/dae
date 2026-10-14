@@ -158,6 +158,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 		ConfirmingFailure:  runtime.ConfirmingFailure,
 		Availability:       runtime.Availability,
 		Support:            api.NetworkValues[api.NetworkSupportState](runtime.SupportState),
+		Usable:             api.NetworkValues[bool](runtime.Usable),
 		Stats:              paths.nodes[groupNodeKey{group: group.Name, nodeID: node.StatsID()}],
 	}
 	if failure := runtime.Failure; failure != nil {
@@ -184,7 +185,7 @@ func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dial
 	return status
 }
 
-func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical bool) api.GroupStatus {
+func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical, async bool) api.GroupStatus {
 	pathStats := paths.groups[group.Name]
 	status := api.GroupStatus{
 		Name:               group.Name,
@@ -192,7 +193,7 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical 
 		Policy:             group.DisplayPolicy(),
 		Critical:           critical,
 		ChecksConnectivity: group.ChecksConnectivity(),
-		CheckAsync:         group.CheckAsync,
+		CheckAsync:         async,
 		Stats:              pathStats.total,
 		Networks:           api.NetworkValues[api.PathStats](pathStats.networks),
 		Nodes:              make([]api.NodeStatus, 0, len(group.Dialers)),
@@ -272,7 +273,8 @@ func (c *ControlPlane) groupStatuses(paths pathStatsIndex) []api.GroupStatus {
 			continue
 		}
 		critical := index < len(c.criticalOutbounds) && c.criticalOutbounds[index]
-		groups = append(groups, newGroupStatus(paths, group, critical))
+		async := index < len(c.outboundCheckAsync) && c.outboundCheckAsync[index]
+		groups = append(groups, newGroupStatus(paths, group, critical, async))
 	}
 	return groups
 }

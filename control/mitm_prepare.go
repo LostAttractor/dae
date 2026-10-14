@@ -74,10 +74,7 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 	}
 	rules.enableMITMPlan(plan)
 	previousCount := len(c.outbounds)
-	wasAsync := make([]bool, previousCount)
-	for i, group := range c.outbounds {
-		wasAsync[i] = group.CheckAsync
-	}
+	wasAsync := c.outboundCheckAsync
 	err = outbounds.buildRuleTargets(rules.earlyRoutes, rules.lateRoutes)
 	if err == nil {
 		err = outbounds.buildTargets(plan.RequiredOutbounds)
@@ -111,19 +108,19 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 		}
 		c.criticalOutbounds[index] = true
 	}
-	configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds, outbounds.borrowed)
+	c.outboundCheckAsync = configureOutboundChecks(c.outbounds, conf.Group, c.criticalOutbounds)
 	if err := c.restoreRuntimeSettings(false); err != nil {
 		return err
 	}
 	started := time.Now()
-	waiters, err := startConnectivityChecks(c.outbounds[previousCount:])
+	waiters, err := startConnectivityChecks(c.outbounds[previousCount:], c.outboundCheckAsync[previousCount:])
 	if err != nil {
 		return err
 	}
 	for i, group := range c.outbounds[:previousCount] {
 		// Existing synchronous groups already had their startup deadline. Only
 		// newly critical groups need a barrier after the plugin phase.
-		if !wasAsync[i] || group.CheckAsync {
+		if !wasAsync[i] || c.outboundCheckAsync[i] {
 			continue
 		}
 		ready, err := group.StartupReady()

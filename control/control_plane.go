@@ -38,6 +38,7 @@ type ControlPlane struct {
 	borrowedOutbounds      map[*outbound.DialerGroup]bool
 	connectivityOutbounds  atomic.Pointer[[]*outbound.DialerGroup]
 	criticalOutbounds      []bool
+	outboundCheckAsync     []bool
 	noConnectivityOutbound consts.OutboundIndex
 	noConnectivityTrySniff bool
 	tcpConnections         *tcpConnectionTracker
@@ -224,7 +225,7 @@ func NewControlPlane(
 		return nil, fmt.Errorf("compile routing: %w", err)
 	}
 	criticalOutbounds := builder.criticalOutbounds(len(outbounds))
-	configureOutboundChecks(outbounds, groups, criticalOutbounds, outboundBuilder.borrowed)
+	checkAsync := configureOutboundChecks(outbounds, groups, criticalOutbounds)
 	routingMatcher, err := builder.BuildUserspace()
 	if err != nil {
 		return nil, fmt.Errorf("RoutingMatcherBuilder.BuildUserspace: %w", err)
@@ -261,6 +262,7 @@ func NewControlPlane(
 		outboundReleases:          outboundBuilder.releases,
 		borrowedOutbounds:         outboundBuilder.borrowed,
 		criticalOutbounds:         criticalOutbounds,
+		outboundCheckAsync:        checkAsync,
 		noConnectivityOutbound:    noConnectivityOutbound,
 		noConnectivityTrySniff:    global.NoConnectivityTrySniff,
 		tcpConnections:            &tcpConnectionTracker{connections: &core.bpf.tcpConnections},
@@ -307,7 +309,7 @@ func NewControlPlane(
 	}
 	plane.watchConnectivity()
 	connectivityStarted := time.Now()
-	waiters, err := startConnectivityChecks(outbounds)
+	waiters, err := startConnectivityChecks(outbounds, checkAsync)
 	if err != nil {
 		return nil, err
 	}

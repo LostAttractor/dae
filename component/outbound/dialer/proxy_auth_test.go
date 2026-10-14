@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	D "github.com/daeuniverse/outbound/dialer"
@@ -88,5 +89,22 @@ func TestStreamAuthenticationDistinguishesProxyAndTarget(t *testing.T) {
 				t.Fatalf("target rejection blocked node recovery: calls=%d, state=%+v", calls, d.RuntimeStatus())
 			}
 		})
+	}
+}
+
+func TestSelectionAuthenticationBlocksBackgroundRetries(t *testing.T) {
+	d := newTestDialer(t, testTransport{})
+	d.applyCheck(modeCheckResult(d, checkInitial, allModeProbes()...))
+	c := newConnectivityChecker(d.pathRuntime, nil)
+	defer c.stopRetries()
+	flight := d.queueSelectionCheckLocked(common.NetworkTCP4, time.Now().Add(time.Second))
+	defer flight.cancel()
+	c.flight = flight
+	result := modeCheckResult(d, checkSelection, probeResult{network: common.NetworkTCP4, err: netproxy.WrapFailure(errors.New("credentials"), netproxy.Failure{Scope: netproxy.ScopeStream, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonAuth})})
+	result.attempted = true
+	c.finishSelectionCheck(result)
+	c.dispatch()
+	if c.blockedBy != "auth" || !c.healthAt.IsZero() || !c.supportAt.IsZero() || c.cancel != nil || d.RuntimeStatus().Recovery.Phase != RecoveryBlocked {
+		t.Fatalf("selected auth failure retried: %+v", d.RuntimeStatus())
 	}
 }

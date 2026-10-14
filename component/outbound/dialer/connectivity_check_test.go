@@ -126,8 +126,9 @@ func checkProbe(probes [common.NetworkTypeCount]func(context.Context, *common.Ne
 func performCheck(c *connectivityChecker, ctx context.Context, kind checkKind) checkResult {
 	c.d.mu.RLock()
 	attempt := checkAttempt{
-		kind:       kind,
-		generation: c.d.failures.generation,
+		kind:            kind,
+		generation:      c.d.failures.generation,
+		modeGenerations: c.d.modeGenerationsLocked(),
 	}
 	c.d.mu.RUnlock()
 	return c.performAttempt(ctx, attempt)
@@ -630,7 +631,7 @@ func TestSupportDiscoveryUsesNewCanonicalResult(t *testing.T) {
 	}
 }
 
-func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
+func TestSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
 	for i := range d.health.networks {
@@ -639,6 +640,11 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	d.health.networks[common.NetworkTCP6] = networkSupported
 	d.health.networks[common.NetworkTCP4] = networkUnknown
 	d.health.phase = healthHealthy
+	d.health.blocked = false
+	for i := range d.health.modes {
+		d.health.modes[i].phase = healthHealthy
+		d.health.modes[i].readiness = d.sessionSnapshot().ReadinessVersion
+	}
 	d.mu.Unlock()
 	checker := newConnectivityChecker(d.pathRuntime, nil)
 	t.Cleanup(func() {
@@ -654,7 +660,7 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 			network: common.NetworkTCP4,
 		}},
 	})
-	if !accepted || !applied.success || applied.healthApplied {
+	if !accepted || !applied.success || !applied.healthApplied {
 		t.Fatalf("non-canonical support result = %+v, accepted=%v", applied, accepted)
 	}
 	if got := SelectionForceMask(group.forceMask.Load()); got != SelectionForceFor(common.NetworkTCP4) {
@@ -662,57 +668,23 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	}
 }
 
-func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
+func TestSupportDiscoveryDoesNotWaitForOtherModeRecovery(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
-	d.mu.Lock()
-	for i := range d.health.networks {
-		d.health.networks[i] = networkUnsupported
-	}
 	d.health.networks[common.NetworkTCP6] = networkSupported
 	d.health.networks[common.NetworkTCP4] = networkUnknown
 	d.health.networks[common.NetworkUDP4] = networkUnknown
-	d.health.phase = healthUnhealthy
-	d.mu.Unlock()
-	group := d.group.observer.(*testGroup)
-	support, accepted := d.applyCheck(checkResult{
-		kind: checkSupport,
-		probes: []probeResult{
-			{network: common.NetworkTCP4},
-			{network: common.NetworkUDP4},
-		},
-	})
-	wantForce := SelectionForceFor(common.NetworkTCP4) | SelectionForceFor(common.NetworkUDP4)
-	if !accepted || support.success || d.health.pendingForce != wantForce {
-		t.Fatalf("support result while unhealthy = %+v, accepted=%v", support, accepted)
+	result := checkResult{kind: checkSupport, probes: []probeResult{{network: common.NetworkTCP4}, {network: common.NetworkUDP4}}}
+	applied, accepted := d.applyCheck(result)
+	if !accepted || !applied.success || !d.Usable(common.NetworkTCP4.NetworkType()) || !d.Usable(common.NetworkUDP4.NetworkType()) || d.Usable(common.NetworkTCP6.NetworkType()) {
+		t.Fatalf("mode discovery depended on unavailable TCP6: %+v", d.ConnectivitySnapshot())
 	}
-	if got := group.forces.Load(); got != 0 {
-		t.Fatalf("unhealthy support forced selection: %d", got)
+	want := SelectionForceFor(common.NetworkTCP4) | SelectionForceFor(common.NetworkUDP4)
+	if got := SelectionForceMask(d.group.observer.(*testGroup).forceMask.Load()); got != want {
+		t.Fatalf("force mask = %04b, want %04b", got, want)
 	}
-	checker := newConnectivityChecker(d.pathRuntime, func(context.Context, *common.NetworkType) error { return nil })
-	t.Cleanup(func() {
-		checker.stopRetries()
-	})
-	checker.updateSchedule(checkSupport, support)
-	if failed, accepted := d.applyCheck(checkResult{
-		kind:   checkHealth,
-		probes: []probeResult{{network: common.NetworkTCP6, err: errors.New("still down")}},
-	}); !accepted || failed.success || d.health.pendingForce != wantForce {
-		t.Fatalf("failed canonical retry changed pending force: %+v, accepted=%v", failed, accepted)
-	}
-	d.applySessionState(netproxy.StateEvent{Seq: 1, State: netproxy.SessionDisconnected})
-	if d.health.pendingForce != wantForce {
-		t.Fatalf("session loss changed pending force to %04b", d.health.pendingForce)
-	}
-	healthResult := performCheck(checker, context.Background(), checkHealth)
-	health, accepted := d.applyCheck(healthResult)
-	if !accepted || !health.success || d.health.pendingForce != SelectionForceNone {
-		t.Fatalf("canonical recovery = %+v, accepted=%v", health, accepted)
-	}
-	if !d.Usable(common.NetworkTCP6.NetworkType()) || !d.Usable(common.NetworkTCP4.NetworkType()) || !d.Usable(common.NetworkUDP4.NetworkType()) {
-		t.Fatal("supported modes did not follow canonical recovery")
-	}
-	if got := SelectionForceMask(group.forceMask.Load()); got != wantForce {
-		t.Fatalf("canonical recovery force mask = %04b, want %04b", got, wantForce)
+	d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP6, err: errors.New("still down")}}})
+	if !d.Usable(common.NetworkTCP4.NetworkType()) || !d.Usable(common.NetworkUDP4.NetworkType()) {
+		t.Fatal("TCP6 failure withdrew independently verified modes")
 	}
 }
 
@@ -734,10 +706,15 @@ func TestInitialCheckRecordsOnlyCanonicalLatency(t *testing.T) {
 	}
 }
 
-func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
+func TestHealthCheckKeepsSupportedModesIndependent(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
 	d.health.phase = healthHealthy
+	d.health.blocked = false
+	for i := range d.health.modes {
+		d.health.modes[i].phase = healthHealthy
+		d.health.modes[i].readiness = d.sessionSnapshot().ReadinessVersion
+	}
 	d.health.networks[common.NetworkTCP6] = networkSupported
 	d.health.networks[common.NetworkTCP4] = networkSupported
 	d.mu.Unlock()
@@ -760,14 +737,14 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 	if got := canonicalCalls.Load(); got != 2 {
 		t.Fatalf("canonical probes = %d, want 2", got)
 	}
-	if got := alternativeCalls.Load(); got != 0 {
-		t.Fatalf("alternative probes = %d, want 0", got)
+	if got := alternativeCalls.Load(); got != 1 {
+		t.Fatalf("alternative probes = %d, want 1", got)
 	}
 	if d.SelectionSnapshot(common.NetworkTCP6.NetworkType()).Usable {
 		t.Fatal("failed canonical mode remained usable")
 	}
-	if d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Usable {
-		t.Fatal("supported alternative did not follow canonical health failure")
+	if !d.SelectionSnapshot(common.NetworkTCP4.NetworkType()).Usable {
+		t.Fatal("healthy TCP4 was withdrawn by TCP6 failure")
 	}
 	status := d.RuntimeStatus()
 	if status.SupportState[common.NetworkTCP6] != api.NetworkSupportConfirmed || status.SupportState[common.NetworkTCP4] != api.NetworkSupportConfirmed {
@@ -776,11 +753,11 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 	if got := firstSupportedNetwork(d.networkStates()); got != common.NetworkTCP6 {
 		t.Fatalf("canonical mode migrated to %v, want tcp6", got)
 	}
-	if status.HasLatency {
-		t.Fatalf("failed probe fabricated a latency = %+v", status.Latency)
+	if !status.HasLatency {
+		t.Fatal("successful TCP4 probe did not record latency")
 	}
 	d.applyCheck(checkResult{
-		kind: checkHealth,
+		kind: checkHealth, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(),
 		probes: []probeResult{{
 			network: common.NetworkTCP6,
 			latency: time.Millisecond,
@@ -845,6 +822,11 @@ func TestHealthLoggingUsesStateTransitions(t *testing.T) {
 	}
 	d.health.networks[common.NetworkTCP6] = networkSupported
 	d.health.phase = healthHealthy
+	d.health.blocked = false
+	for i := range d.health.modes {
+		d.health.modes[i].phase = healthHealthy
+		d.health.modes[i].readiness = d.sessionSnapshot().ReadinessVersion
+	}
 	d.mu.Unlock()
 	failed := checkResult{
 		kind:   checkHealth,
@@ -853,7 +835,7 @@ func TestHealthLoggingUsesStateTransitions(t *testing.T) {
 	d.applyCheck(failed)
 	d.applyCheck(failed)
 	d.applyCheck(checkResult{
-		kind:   checkHealth,
+		kind: checkHealth, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(),
 		probes: []probeResult{{network: common.NetworkTCP6, latency: time.Millisecond}},
 	})
 	logs := output.String()
@@ -932,6 +914,11 @@ func TestSessionLossInvalidatesHealthImmediately(t *testing.T) {
 	snapshot := transport.Snapshot()
 	d.mu.Lock()
 	d.health.phase = healthHealthy
+	d.health.blocked = false
+	for i := range d.health.modes {
+		d.health.modes[i].phase = healthHealthy
+		d.health.modes[i].readiness = d.sessionSnapshot().ReadinessVersion
+	}
 	d.health.readiness = snapshot.Seq
 	d.health.networks[0] = networkSupported
 	d.mu.Unlock()
@@ -954,6 +941,11 @@ func TestSessionLossImmediatelyRetriesAndRecordsConnectFailure(t *testing.T) {
 	initial := transport.Snapshot()
 	d.mu.Lock()
 	d.health.phase = healthHealthy
+	d.health.blocked = false
+	for i := range d.health.modes {
+		d.health.modes[i].phase = healthHealthy
+		d.health.modes[i].readiness = d.sessionSnapshot().ReadinessVersion
+	}
 	d.health.readiness = initial.Seq
 	for i := range d.health.networks {
 		d.health.networks[i] = networkUnsupported
@@ -1042,7 +1034,7 @@ func TestDataPlaneFailureIsConfirmedFromReportTime(t *testing.T) {
 		t.Fatalf("repeated report notified group: changes = %d, want %d", got, changesBeforeReport+1)
 	}
 	d.applyCheck(checkResult{
-		kind:   checkHealth,
+		kind: checkHealth, generation: d.failures.generation, modeGenerations: d.modeGenerationsLocked(),
 		probes: []probeResult{{network: common.NetworkTCP4, err: errors.New("probe failed")}},
 	})
 	status := d.RuntimeStatus()
@@ -1070,8 +1062,8 @@ func TestCheckStartedBeforeDataPlaneFailureCannotClearConfirmation(t *testing.T)
 
 	if _, accepted := d.applyCheck(checkResult{
 		kind:       attempt.kind,
-		generation: attempt.generation,
-		probes:     []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+		generation: attempt.generation, modeGenerations: attempt.modeGenerations,
+		probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
 	}); !accepted {
 		t.Fatal("pre-failure check was rejected instead of retained as an older observation")
 	}
@@ -1088,8 +1080,8 @@ func TestCheckStartedBeforeDataPlaneFailureCannotClearConfirmation(t *testing.T)
 	}
 	d.applyCheck(checkResult{
 		kind:       followUp.kind,
-		generation: followUp.generation,
-		probes:     []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+		generation: followUp.generation, modeGenerations: followUp.modeGenerations,
+		probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
 	})
 	if status := d.RuntimeStatus(); !status.Healthy || status.ConfirmingFailure {
 		t.Fatalf("covering success did not clear confirmation: %+v", status)
@@ -1102,8 +1094,8 @@ func TestEnvironmentChangeRejectsOlderCheck(t *testing.T) {
 	d.RequestConnectivityCheck()
 	if _, accepted := d.applyCheck(checkResult{
 		kind:       attempt.kind,
-		generation: attempt.generation,
-		probes:     []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
+		generation: attempt.generation, modeGenerations: attempt.modeGenerations,
+		probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond}},
 	}); accepted {
 		t.Fatal("check from the previous environment was accepted")
 	}
