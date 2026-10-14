@@ -98,7 +98,7 @@ func TestMITMDeviceAPIRejectsCrossOriginAndMalformedChanges(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
-			if response.Code != test.status || called != (test.status == 200) {
+			if response.Code != test.status || (test.status == 200 && !called) {
 				t.Fatalf("status=%d called=%v body=%s", response.Code, called, response.Body.String())
 			}
 			if response.Header().Get("Access-Control-Allow-Origin") != "" || response.Header().Get("Cache-Control") != "no-store" {

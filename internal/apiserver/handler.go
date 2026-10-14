@@ -50,52 +50,54 @@ type handler struct{ options Options }
 func NewHandler(options Options) http.Handler {
 	s := &handler{options: options}
 	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /api/session", s.serveLogin)
-	mux.HandleFunc("DELETE /api/session", serveLogout)
-	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := s.requireAdmin(w, r); ok && apiBody(w, r, nil) {
+	s.route(mux, "PUT /api/session", accessLogin, s.serveLogin)
+	s.route(mux, "DELETE /api/session", accessPublic, serveLogout)
+	s.route(mux, "GET /api/status", accessAdmin, func(w http.ResponseWriter, r *http.Request, _ caller) {
+		if apiBody(w, r, nil) {
 			writeAPI(w, options.Status())
 		}
 	})
 	if options.Certificates != nil {
 		certificates := options.Certificates.Handler
-		mux.HandleFunc("GET /api/certificate", func(w http.ResponseWriter, r *http.Request) {
+		s.route(mux, "GET /api/certificate", accessPublic, func(w http.ResponseWriter, r *http.Request, _ caller) {
 			if apiBody(w, r, nil) {
 				writeAPI(w, options.Certificates.Identity)
 			}
 		})
 		for _, path := range []string{"/ca.pem", "/ca.cer", "/ca.mobileconfig"} {
-			mux.Handle("GET "+path, certificates)
+			s.route(mux, "GET "+path, accessPublic, func(w http.ResponseWriter, r *http.Request, _ caller) {
+				certificates.ServeHTTP(w, r)
+			})
 		}
 	}
-	mux.HandleFunc("GET /api/selectors", s.serveSelectors)
-	mux.HandleFunc("PUT /api/selectors/{group}", s.serveSelector)
-	mux.HandleFunc("DELETE /api/selectors/{group}", s.serveSelector)
-	mux.HandleFunc("POST /api/probes", s.serveProbe)
-	mux.HandleFunc("POST /api/plugins/{instance}/scripts/run", s.serveScript)
-	mux.HandleFunc("POST /api/resources/refresh", s.serveResources)
-	mux.HandleFunc("GET /api/resources", s.serveResources)
-	mux.HandleFunc("POST /api/operations", s.serveOperations)
-	mux.HandleFunc("GET /api/operations/{id}", s.serveOperations)
-	mux.HandleFunc("GET /api/device", s.serveDevice)
-	mux.HandleFunc("GET /api/device/status", s.serveDeviceStatus)
-	mux.HandleFunc("GET /api/device/context", s.serveDiagnosticContext)
-	mux.HandleFunc("POST /api/device/diagnostics/explain", s.serveExplain)
-	mux.HandleFunc("POST /api/diagnostics/explain", s.serveExplain)
-	mux.HandleFunc("POST /api/device/sets/{name}/impact", s.serveClientImpact)
-	mux.HandleFunc("POST /api/clients/{name}/impact", s.serveClientImpact)
-	mux.HandleFunc("GET /api/clients", s.serveClients)
-	mux.HandleFunc("GET /api/clients/{name}", s.serveClients)
-	mux.HandleFunc("GET /api/devices/{mac}", s.serveManagedDevice)
+	s.route(mux, "GET /api/selectors", accessAdmin, s.serveSelectors)
+	s.route(mux, "PUT /api/selectors/{group}", accessAdmin, s.serveSelector)
+	s.route(mux, "DELETE /api/selectors/{group}", accessAdmin, s.serveSelector)
+	s.route(mux, "POST /api/probes", accessAdmin, s.serveProbe)
+	s.route(mux, "POST /api/plugins/{instance}/scripts/run", accessAdmin, s.serveScript)
+	s.route(mux, "POST /api/resources/refresh", accessAdmin, s.serveResources)
+	s.route(mux, "GET /api/resources", accessAdmin, s.serveResources)
+	s.route(mux, "POST /api/operations", accessAdmin, s.serveOperations)
+	s.route(mux, "GET /api/operations/{id}", accessAdmin, s.serveOperations)
+	s.route(mux, "GET /api/device", accessDevice, s.serveDevice)
+	s.route(mux, "GET /api/device/status", accessDevice, s.serveDeviceStatus)
+	s.route(mux, "GET /api/device/context", accessLAN, s.serveDiagnosticContext)
+	s.route(mux, "POST /api/device/diagnostics/explain", accessLAN, s.serveExplain)
+	s.route(mux, "POST /api/diagnostics/explain", accessAdmin, s.serveExplain)
+	s.route(mux, "POST /api/device/sets/{name}/impact", accessDevice, s.serveClientImpact)
+	s.route(mux, "POST /api/clients/{name}/impact", accessAdmin, s.serveClientImpact)
+	s.route(mux, "GET /api/clients", accessAdmin, s.serveClients)
+	s.route(mux, "GET /api/clients/{name}", accessAdmin, s.serveClients)
+	s.route(mux, "GET /api/devices/{mac}", accessAdmin, s.serveManagedDevice)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
-		mux.HandleFunc(method+" /api/clients/{name}/members/{mac}", s.serveManagedMembership)
-		mux.HandleFunc(method+" /api/devices/{mac}/mitm", s.serveManagedMITM)
+		s.route(mux, method+" /api/clients/{name}/members/{mac}", accessAdmin, s.serveManagedMembership)
+		s.route(mux, method+" /api/devices/{mac}/mitm", accessAdmin, s.serveManagedMITM)
 	}
-	mux.HandleFunc("POST /api/device/certificate-tests", s.serveCertificateTest)
-	mux.HandleFunc("GET /api/device/certificate-tests/{id}", s.serveCertificateTest)
+	s.route(mux, "POST /api/device/certificate-tests", accessDevice, s.serveCertificateTest)
+	s.route(mux, "GET /api/device/certificate-tests/{id}", accessDevice, s.serveCertificateTest)
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
-		mux.HandleFunc(method+" /api/device/sets/{name}", s.serveClientSet)
-		mux.HandleFunc(method+" /api/device/mitm", s.serveMITM)
+		s.route(mux, method+" /api/device/sets/{name}", accessDevice, s.serveClientSet)
+		s.route(mux, method+" /api/device/mitm", accessDevice, s.serveMITM)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

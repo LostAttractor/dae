@@ -9,21 +9,17 @@ import (
 	contract "github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveSelectors(w http.ResponseWriter, r *http.Request) {
-	mode, ok := s.requireAdmin(w, r)
-	if !ok || !apiBody(w, r, nil) {
+func (s *handler) serveSelectors(w http.ResponseWriter, r *http.Request, who caller) {
+	if !apiBody(w, r, nil) {
 		return
 	}
 	writeAPI(w, contract.SelectorsResponse{
 		Selectors: s.options.Selectors.Selectors(), AdminEnabled: true,
-		AuthMode: mode,
+		AuthMode: who.mode,
 	})
 }
 
-func (s *handler) serveSelector(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveSelector(w http.ResponseWriter, r *http.Request, who caller) {
 	id := ""
 	if r.Method == http.MethodPut {
 		var request contract.SelectNodeRequest

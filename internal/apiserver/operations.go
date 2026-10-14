@@ -27,10 +27,7 @@ func operationPath(path string) bool {
 	return path == "/api/operations" || strings.HasPrefix(path, "/api/operations/") || path == "/api/resources" || path == "/api/resources/refresh"
 }
 
-func (s *handler) serveOperations(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveOperations(w http.ResponseWriter, r *http.Request, who caller) {
 	if s.options.Operations == nil {
 		apiError(w, http.StatusServiceUnavailable, "daemon operations are unavailable")
 		return

@@ -279,6 +279,11 @@ func TestUnixAdministrationUsesSocketPermissions(t *testing.T) {
 			if w := request("PUT", "/api/session"); w.Code != want {
 				t.Fatal(w.Code, w.Body.String())
 			}
+			for _, path := range []string{"/api/device", "/api/device/context", "/api/device/certificate-tests/unknown"} {
+				if w := request("GET", path); w.Code != http.StatusForbidden {
+					t.Fatalf("Unix self-service %s: %d %s", path, w.Code, w.Body.String())
+				}
+			}
 		})
 	}
 }

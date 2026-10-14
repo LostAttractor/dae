@@ -131,8 +131,10 @@ func TestGlobalAPISelectorAndDeviceRulesWithoutMITM(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	for _, method := range []string{"PUT", "DELETE"} {
-		if w := apiTestRequest(production, method, "/api/device/sets/gaming", "", ""); w.Code != 403 || !strings.Contains(w.Body.String(), "global.lan_interface") {
-			t.Fatal(w.Code, w.Body.String())
+		for _, name := range []string{"gaming", "missing"} {
+			if w := apiTestRequest(production, method, "/api/device/sets/"+name, "", ""); w.Code != 403 || strings.Contains(w.Body.String(), "global.lan_interface") {
+				t.Fatal(w.Code, w.Body.String())
+			}
 		}
 	}
 	for _, test := range []struct {

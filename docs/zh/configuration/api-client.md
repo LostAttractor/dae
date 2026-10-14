@@ -156,7 +156,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 - `internal/apiserver`：TCP/Unix 监听、HTTP 路由、鉴权、请求校验与重载等待；使用公开契约，通过存储接口访问运行时。
 - `control`：读取运行状态、校验 LAN 身份、应用设置并持久化；Unix 与 TCP 使用同一套 API handler。重载先等待旧 handler 的请求结束，再释放旧控制平面。
 
-运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 注册路由，`auth.go` 统一处理 Unix、LAN 和密钥/会话授权，`session.go` 处理登录、退出及签名 Cookie；`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
+运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 为每条路由声明访问策略，`access.go` 统一执行 Unix、LAN、设备及密钥/会话门禁，`auth.go` 校验 Bearer 凭据，`session.go` 处理登录、退出及签名 Cookie；`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
 
 前端与 dae 的边界是公开构建产物和 HTTP API 契约。以后可将整个 `web/` 迁移为独立仓库或 submodule，嵌入、静态托管与端口分发代码继续留在 dae。
 
@@ -200,14 +200,17 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过 LAN 入口校验（以太网还需直连邻居校验，纯 IP 接口使用入口记录并允许隧道后方子网），否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
 
+门禁在读取请求正文、检查功能状态及查询资源之前执行，并将本次请求验证出的身份传给处理函数。管理员凭据不替代设备身份；设备上下文和规则解释只要求已验证 LAN 入口，成员管理、MITM 和证书测试还要求非零单播以太网 MAC。缺失或错误的密钥/会话返回 `401` 并携带 `WWW-Authenticate: Bearer realm="dae"`；LAN 或设备身份不满足要求返回 `403`。已通过门禁的请求才会得到资源不存在的 `404`；其他设备的证书测试也返回 `404`，避免透露其存在。未知路由仍为 `404`，公开证书接口不要求身份。
+
 名称按 URL 路径段编码；正文默认限制为 1 KiB，规则解释和成员影响预览为 64 KiB。有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
 
 状态操作成功返回 `200`；探测受理返回 `202`；会话操作成功返回 `204`，无响应正文。POST 同样需要 `X-Dae-API: 1`，SDK 自动携带。业务错误为 `{"error":"说明"}`；未知路由、错误方法和部分证书下载错误可能为纯文本。客户端应按 HTTP 状态码处理，不能依赖英文错误文案：
 
 | 状态码 | 含义 |
 | --- | --- |
-| `400` | 正文、字段、节点 ID 等不合法；Unix 无法识别设备地址 |
-| `401` / `403` | 密钥/会话鉴权失败、无密钥模式下 LAN 身份校验失败、跨源或设备身份无法确认 |
+| `400` | 正文、字段、节点 ID 或连接地址等不合法 |
+| `401` | 密钥/会话缺失或无效，携带 Bearer 认证挑战 |
+| `403` | LAN 或设备身份无法确认、Unix 请求设备自助接口、跨源或缺少变更标记 |
 | `404` / `405` | 资源不存在 / 方法不支持 |
 | `409` | CA 已变化、selector 没有可重置的默认节点，或目标出站不支持探测 |
 | `413` / `415` | 正文过大 / Content-Type 不正确 |

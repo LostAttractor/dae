@@ -9,23 +9,6 @@ import (
 	"strings"
 )
 
-// requireAdmin returns the access mode along with the authorization decision.
-// LAN access is verified on every request; a saved cookie cannot replace it.
-func (s *handler) requireAdmin(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if localAPISocket(r) {
-		return "unix", true
-	}
-	if s.options.APIKey == "" {
-		_, _, ok := apiClient(w, r, s.options.ResolveClient)
-		return "lan", ok
-	}
-	// An explicit Authorization header takes precedence over a saved session.
-	if r.Header.Get("Authorization") == "" && s.validSession(r) {
-		return "api_key", true
-	}
-	return "api_key", s.requireAPIKey(w, r)
-}
-
 // Callers choose LAN authorization before reaching key/session authentication,
 // so these paths always have a configured, nonempty API key.
 func (s *handler) requireAPIKey(w http.ResponseWriter, r *http.Request) bool {

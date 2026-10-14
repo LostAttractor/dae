@@ -10,10 +10,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-func (s *handler) serveScript(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveScript(w http.ResponseWriter, r *http.Request, who caller) {
 	var request api.ScriptRunRequest
 	if !apiBody(w, r, &request) {
 		return

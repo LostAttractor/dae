@@ -8,29 +8,23 @@ import (
 	contract "github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveDevice(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveDevice(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
-	if !ok {
-		return
-	}
+	ip, mac := who.ip, who.identity.MAC
 	writeAPI(w, s.options.Devices.DeviceState(ip, mac))
 }
 
-func (s *handler) serveDeviceStatus(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveDeviceStatus(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
-	if !ok {
-		return
-	}
+	ip, mac := who.ip, who.identity.MAC
 	writeAPI(w, s.options.DeviceStatus(ip, mac))
 }
 
-func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
@@ -39,10 +33,7 @@ func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 404, "client set not found")
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
-	if !ok {
-		return
-	}
+	ip, mac := who.ip, who.identity.MAC
 	state, err := s.options.Devices.UpdateClientSet(name, ip, mac, r.Method == http.MethodPut)
 	if err != nil {
 		apiSaveError(w, err)
@@ -51,7 +42,7 @@ func (s *handler) serveClientSet(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, state)
 }
 
-func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request, who caller) {
 	if s.options.Certificates == nil {
 		apiError(w, 404, "HTTPS modules are disabled")
 		return
@@ -79,10 +70,7 @@ func (s *handler) serveMITM(w http.ResponseWriter, r *http.Request) {
 	} else if !apiBody(w, r, nil) {
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
-	if !ok {
-		return
-	}
+	ip, mac := who.ip, who.identity.MAC
 	state, err := s.options.Devices.UpdateMITM(ip, mac, enabled)
 	if err != nil {
 		apiSaveError(w, err)

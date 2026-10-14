@@ -21,14 +21,16 @@ func TestAPIDeviceResolvesActualConnectionEndpoints(t *testing.T) {
 			r = r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, net.TCPAddrFromAddrPort(netip.MustParseAddrPort(test.local))))
 			w := httptest.NewRecorder()
 			mac := [6]byte{2, 0, 0, 0, 0, 1}
-			ip, gotMAC, ok := apiDevice(w, r, func(source, destination netip.AddrPort) (ClientIdentity, error) {
+			s := &handler{options: Options{ResolveClient: func(source, destination netip.AddrPort) (ClientIdentity, error) {
 				wantSource := netip.MustParseAddrPort(test.remote)
 				wantSource = netip.AddrPortFrom(wantSource.Addr().Unmap(), wantSource.Port())
 				if source != wantSource || destination != netip.MustParseAddrPort(test.local) {
 					t.Fatalf("resolved %v -> %v, want %v -> %v", source, destination, wantSource, test.local)
 				}
 				return ClientIdentity{LinkType: "ethernet", MAC: mac}, nil
-			})
+			}}}
+			who, ok := s.authorize(w, r, accessDevice)
+			ip, gotMAC := who.ip, who.identity.MAC
 			if !ok || gotMAC != mac || ip != netip.MustParseAddrPort(test.remote).Addr().Unmap() {
 				t.Fatalf("device = %v / %v, ok = %v", ip, gotMAC, ok)
 			}

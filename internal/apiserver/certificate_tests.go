@@ -15,14 +15,11 @@ type CertificateTestStore interface {
 	Get(string, netip.Addr, [6]byte) (api.CertificateTest, bool)
 }
 
-func (s *handler) serveCertificateTest(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveCertificateTest(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}
-	ip, mac, ok := apiDevice(w, r, s.options.ResolveClient)
-	if !ok {
-		return
-	}
+	ip, mac := who.ip, who.identity.MAC
 	if s.options.CertificateTests == nil {
 		apiError(w, http.StatusNotFound, "certificate tests are unavailable")
 		return

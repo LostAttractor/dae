@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/daeuniverse/dae/api"
@@ -31,15 +30,12 @@ func (s *handler) diagnosticsAvailable(w http.ResponseWriter) bool {
 	return true
 }
 
-func (s *handler) inheritDiagnosticContext(w http.ResponseWriter, r *http.Request, target *api.DiagnosticContext) bool {
+func inheritDiagnosticContext(w http.ResponseWriter, who caller, target *api.DiagnosticContext) bool {
 	if target.SourceIP != "" || target.MAC != "" || target.LinkType != "" || target.IfIndex != nil || target.PhysicalIfIndex != nil || target.Interface != "" || target.Policy != "" || target.ProcessName != nil || target.Origin != "" && target.Origin != "lan" {
 		apiError(w, 400, "device diagnostics inherit identity; use the administrator endpoint to override it")
 		return false
 	}
-	ip, client, ok := apiClient(w, r, s.options.ResolveClient)
-	if !ok {
-		return false
-	}
+	ip, client := who.ip, who.identity
 	inherited := api.DiagnosticContext{Origin: "lan", SourceIP: ip.WithZone("").String(), LinkType: client.LinkType, IfIndex: new(client.IfIndex), PhysicalIfIndex: new(client.PhysicalIfIndex)}
 	if client.LinkType == "ethernet" {
 		inherited.MAC = net.HardwareAddr(client.MAC[:]).String()
@@ -49,24 +45,19 @@ func (s *handler) inheritDiagnosticContext(w http.ResponseWriter, r *http.Reques
 	return true
 }
 
-func (s *handler) serveDiagnosticContext(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveDiagnosticContext(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
 	var input api.DiagnosticContext
-	if !s.inheritDiagnosticContext(w, r, &input) {
+	if !inheritDiagnosticContext(w, who, &input) {
 		return
 	}
 	writeAPI(w, s.options.Diagnostics.DiagnosticDeviceContext(input))
 }
 
-func (s *handler) serveExplain(w http.ResponseWriter, r *http.Request) {
-	self := strings.HasPrefix(r.URL.Path, "/api/device/")
-	if !self {
-		if _, ok := s.requireAdmin(w, r); !ok {
-			return
-		}
-	}
+func (s *handler) serveExplain(w http.ResponseWriter, r *http.Request, who caller) {
+	self := who.policy != accessAdmin
 	if !s.diagnosticsAvailable(w) {
 		return
 	}
@@ -74,7 +65,7 @@ func (s *handler) serveExplain(w http.ResponseWriter, r *http.Request) {
 	if !apiBodyLimit(w, r, &request, 64<<10) {
 		return
 	}
-	if self && !s.inheritDiagnosticContext(w, r, &request.Context) {
+	if self && !inheritDiagnosticContext(w, who, &request.Context) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -96,10 +87,7 @@ func managedMAC(w http.ResponseWriter, r *http.Request) ([6]byte, bool) {
 	return [6]byte(parsed), true
 }
 
-func (s *handler) serveClients(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveClients(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
@@ -117,10 +105,7 @@ func (s *handler) serveClients(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, groups)
 }
 
-func (s *handler) serveManagedDevice(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveManagedDevice(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
@@ -131,10 +116,7 @@ func (s *handler) serveManagedDevice(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, s.options.Diagnostics.ManagedDevice(mac))
 }
 
-func (s *handler) serveManagedMembership(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveManagedMembership(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) || !apiBody(w, r, nil) {
 		return
 	}
@@ -154,10 +136,7 @@ func (s *handler) serveManagedMembership(w http.ResponseWriter, r *http.Request)
 	writeAPI(w, state)
 }
 
-func (s *handler) serveManagedMITM(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveManagedMITM(w http.ResponseWriter, r *http.Request, who caller) {
 	if !s.diagnosticsAvailable(w) {
 		return
 	}
@@ -195,13 +174,8 @@ func (s *handler) serveManagedMITM(w http.ResponseWriter, r *http.Request) {
 	writeAPI(w, state)
 }
 
-func (s *handler) serveClientImpact(w http.ResponseWriter, r *http.Request) {
-	self := strings.HasPrefix(r.URL.Path, "/api/device/")
-	if !self {
-		if _, ok := s.requireAdmin(w, r); !ok {
-			return
-		}
-	}
+func (s *handler) serveClientImpact(w http.ResponseWriter, r *http.Request, who caller) {
+	self := who.policy != accessAdmin
 	if !s.diagnosticsAvailable(w) {
 		return
 	}
@@ -218,11 +192,7 @@ func (s *handler) serveClientImpact(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "joined is required")
 		return
 	}
-	if self && !s.inheritDiagnosticContext(w, r, &request.Context) {
-		return
-	}
-	if self && request.Context.MAC == "" {
-		apiError(w, 403, "client membership comparison requires a verified Ethernet MAC")
+	if self && !inheritDiagnosticContext(w, who, &request.Context) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)

@@ -8,8 +8,8 @@ import (
 	"github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveResources(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok || !apiBody(w, r, nil) {
+func (s *handler) serveResources(w http.ResponseWriter, r *http.Request, who caller) {
+	if !apiBody(w, r, nil) {
 		return
 	}
 	if s.options.Operations == nil {

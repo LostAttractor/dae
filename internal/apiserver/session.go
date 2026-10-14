@@ -40,16 +40,13 @@ func (s *handler) validSession(r *http.Request) bool {
 	return ok && err == nil && time.Now().Unix() < expires
 }
 
-func (s *handler) serveLogin(w http.ResponseWriter, r *http.Request) {
+func (s *handler) serveLogin(w http.ResponseWriter, r *http.Request, who caller) {
 	if s.options.APIKey == "" {
-		if _, ok := s.requireAdmin(w, r); !ok {
-			return
-		}
 		// Keyless access clears stale cookies without creating a portable session.
-		serveLogout(w, r)
+		serveLogout(w, r, who)
 		return
 	}
-	if !s.requireAPIKey(w, r) || !apiBody(w, r, nil) {
+	if !apiBody(w, r, nil) {
 		return
 	}
 	cookie := newSessionCookie(r)
@@ -63,7 +60,7 @@ func (s *handler) serveLogin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func serveLogout(w http.ResponseWriter, r *http.Request) {
+func serveLogout(w http.ResponseWriter, r *http.Request, who caller) {
 	if !apiBody(w, r, nil) {
 		return
 	}

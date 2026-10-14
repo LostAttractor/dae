@@ -121,22 +121,10 @@ func apiClient(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (
 	}
 	client, err := resolve(netip.AddrPortFrom(ip, peer.Port()), local.AddrPort())
 	if err != nil {
-		apiError(w, 403, "cannot verify LAN ingress: "+err.Error())
+		apiError(w, 403, "cannot verify LAN ingress")
 		return ip, client, false
 	}
 	return ip, client, true
-}
-
-func apiDevice(w http.ResponseWriter, r *http.Request, resolve ClientResolver) (netip.Addr, [6]byte, bool) {
-	ip, client, ok := apiClient(w, r, resolve)
-	if !ok {
-		return ip, [6]byte{}, false
-	}
-	if client.LinkType != "ethernet" || client.MAC == [6]byte{} || client.MAC[0]&1 != 0 {
-		apiError(w, 403, "device self-service requires a verified Ethernet MAC; this connection has no device identity")
-		return ip, [6]byte{}, false
-	}
-	return ip, client.MAC, true
 }
 
 func writeAPI(w http.ResponseWriter, value any) {

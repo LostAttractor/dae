@@ -9,10 +9,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 )
 
-func (s *handler) serveProbe(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireAdmin(w, r); !ok {
-		return
-	}
+func (s *handler) serveProbe(w http.ResponseWriter, r *http.Request, who caller) {
 	var request api.ProbeRequest
 	if !apiBody(w, r, &request) {
 		return
