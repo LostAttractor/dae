@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/persist"
+	"golang.org/x/sys/unix"
 )
 
 // Authority holds a root CA and a bounded signing cache of short-lived leaves.
@@ -164,10 +165,13 @@ func parseCertificate(data []byte) (*x509.Certificate, error) {
 }
 
 func readFile(path string, private bool) ([]byte, error) {
-	f, err := os.Open(path)
+	// A FIFO must not block open before its type can be checked. Check and read
+	// the same descriptor so a path replacement cannot bypass the regular-file rule.
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
+	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
