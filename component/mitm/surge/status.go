@@ -8,6 +8,22 @@ import (
 	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 )
 
+type resourceStatus struct{ modules []surgeapi.ModuleStatus }
+
+// AcceptResources changes observation metadata only. Runtime modules remain
+// immutable and retain their script state, caches, metrics and task identities.
+func (e *Engine) AcceptResources(value any) {
+	modules, ok := value.([]*Module)
+	if !ok {
+		return
+	}
+	status := &resourceStatus{modules: make([]surgeapi.ModuleStatus, 0, len(modules))}
+	for _, module := range modules {
+		status.modules = append(status.modules, module.Status())
+	}
+	e.resourceStatus.Store(status)
+}
+
 func (m *Module) Status() surgeapi.ModuleStatus {
 	state := m.cacheState
 	if state == "" {
@@ -32,9 +48,15 @@ func (e *Engine) Status() surgeapi.SurgeStatus {
 		status.Notifications = e.options.Runtime.notifications.snapshot()
 	}
 	indices := make(map[*Module]int, len(e.options.Modules))
+	resources := e.resourceStatus.Load()
 	for _, module := range e.options.Modules {
 		indices[module] = len(status.Modules)
-		status.Modules = append(status.Modules, module.Status())
+		entry := module.Status()
+		if resources != nil && len(resources.modules) == len(e.options.Modules) {
+			entry = resources.modules[len(status.Modules)]
+			entry.Warnings = slices.Clone(entry.Warnings)
+		}
+		status.Modules = append(status.Modules, entry)
 	}
 	if e.tasks != nil {
 		e.tasks.mu.Lock()

@@ -5,6 +5,7 @@ package surge
 import (
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/daeuniverse/dae/component/plugin"
@@ -30,11 +31,12 @@ type EngineOptions struct {
 // Client selection and outbound routing are supplied by the host.
 // Engines must be initialized with NewEngine.
 type Engine struct {
-	options  EngineOptions
-	slots    chan struct{}
-	metrics  *engineMetrics
-	tasks    *taskRunner
-	dnsCache *dnsScriptCache
+	options        EngineOptions
+	slots          chan struct{}
+	metrics        *engineMetrics
+	tasks          *taskRunner
+	dnsCache       *dnsScriptCache
+	resourceStatus *atomic.Pointer[resourceStatus]
 }
 
 func NewEngine(o EngineOptions) (*Engine, error) {
@@ -53,6 +55,8 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 		return nil, errors.New("surge: body memory budget is required")
 	}
 	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts), dnsCache: &dnsScriptCache{}}
+	e.resourceStatus = new(atomic.Pointer[resourceStatus])
+	e.AcceptResources(e.options.Modules)
 	var err error
 	e.tasks, err = newTaskRunner(e)
 	if err != nil {

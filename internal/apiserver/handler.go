@@ -33,7 +33,7 @@ type Options struct {
 	Selectors        SelectorStore
 	Probes           ProbeStore
 	Scripts          ScriptStore
-	Resources        ResourceStore
+	Operations       OperationStore
 	Devices          DeviceStore
 	DeviceStatus     func(netip.Addr, [6]byte) contract.DeviceStatus
 	ResolveClient    ClientResolver
@@ -75,6 +75,8 @@ func NewHandler(options Options) http.Handler {
 	mux.HandleFunc("POST /api/plugins/{instance}/scripts/run", s.serveScript)
 	mux.HandleFunc("POST /api/resources/refresh", s.serveResources)
 	mux.HandleFunc("GET /api/resources", s.serveResources)
+	mux.HandleFunc("POST /api/operations", s.serveOperations)
+	mux.HandleFunc("GET /api/operations/{id}", s.serveOperations)
 	mux.HandleFunc("GET /api/device", s.serveDevice)
 	mux.HandleFunc("GET /api/device/status", s.serveDeviceStatus)
 	mux.HandleFunc("GET /api/device/context", s.serveDiagnosticContext)

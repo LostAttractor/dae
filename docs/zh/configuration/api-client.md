@@ -176,8 +176,10 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `PUT /api/selectors/{group}` | `SelectorState` | 管理权限；`{"node_id":"..."}` |
 | `DELETE /api/selectors/{group}` | `SelectorState` | 管理权限；空正文，恢复显式 `selector(n)`；没有默认时 `409` |
 | `POST /api/probes` | `202` + `ProbeResponse` | 管理权限；`{"outbound":"group","node_id":"..."}` 探测单路径；省略或留空 `node_id` 探测整个出站 |
-| `POST /api/resources/refresh` | `202` + `ResourceRefreshStatus` | 管理权限；空正文，刷新当前配置的资源，等待/运行中返回 `409` |
+| `POST /api/resources/refresh` | `202` + `Operation` | 管理权限；空正文，刷新当前配置的资源，等待/运行中返回 `409` |
 | `GET /api/resources` | `ResourceRefreshStatus` | 管理权限；查询最近一次 API/自动刷新结果和下次检查时间 |
+| `POST /api/operations` | `202` + `Operation` | 管理权限；提交 reload、suspend 或 refresh，立即返回唯一 ID |
+| `GET /api/operations/{id}` | `Operation` | 管理权限；按 ID 查询，未知或过期 ID 返回 `404` |
 | `GET /api/device` | `DeviceState` | 仅 TCP，需识别直连 LAN 设备 |
 | `GET /api/device/status` | `DeviceStatus` | 当前设备设置、用户态上游流量与连接、按网络/出站汇总；仅直连 LAN |
 | `POST /api/device/certificate-tests` | `201` + `CertificateTest` | 空正文；创建当前浏览器的短期证书测试挑战 |
@@ -188,7 +190,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `GET /api/certificate` | `Certificate` | 公开 CA 名称、指纹、`test_available`、可选 `test_generation`；未启用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
 
-资源刷新 SDK 为 `RefreshResources(ctx)`，通过 `ResourceRefreshStatus(ctx)` 查询完成情况。只刷新已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
+资源刷新 SDK 为 `RefreshResources(ctx)`，返回 `Operation`，通过 `Operation(ctx, id)` 查询该次请求的完成情况。`ResourceRefreshStatus(ctx)` 返回最近一次刷新的 `operation` 和 `next_check`。通用提交方法为 `SubmitOperation(ctx, api.OperationRequest{Kind: "reload"})`；`Abort` 仅用于 reload/suspend，非零 `ExpectedPID` 要求 daemon PID 匹配。刷新只使用已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
 
 设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。证书测试 SDK 为 `StartCertificateTest(ctx)` 和 `CertificateTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `CertificateTestProof`，校验 `id`、`ca_fingerprint`、`stage`，同时确认同源查询的服务端观测。`test_generation` 变化时清除旧结果，不能把服务端观测直接解释为整个设备信任 CA。
 

@@ -221,8 +221,16 @@ func (c *Client) TriggerScript(ctx context.Context, instance string, request api
 	return c.requestStatus[api.ScriptRunResponse](ctx, "POST", "/api/plugins/"+url.PathEscape(instance)+"/scripts/run", request, "", http.StatusAccepted)
 }
 
-func (c *Client) RefreshResources(ctx context.Context) (*api.ResourceRefreshStatus, error) {
-	return c.requestStatus[api.ResourceRefreshStatus](ctx, "POST", "/api/resources/refresh", nil, "", http.StatusAccepted)
+func (c *Client) RefreshResources(ctx context.Context) (*api.Operation, error) {
+	return c.requestStatus[api.Operation](ctx, "POST", "/api/resources/refresh", nil, "", http.StatusAccepted)
+}
+
+func (c *Client) SubmitOperation(ctx context.Context, request api.OperationRequest) (*api.Operation, error) {
+	return c.requestStatus[api.Operation](ctx, "POST", "/api/operations", request, "", http.StatusAccepted)
+}
+
+func (c *Client) Operation(ctx context.Context, id string) (*api.Operation, error) {
+	return c.request[api.Operation](ctx, "GET", "/api/operations/"+url.PathEscape(id), nil, "")
 }
 
 func (c *Client) ResourceRefreshStatus(ctx context.Context) (*api.ResourceRefreshStatus, error) {

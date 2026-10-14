@@ -41,7 +41,7 @@ type application struct {
 	localAPI, managementAPI *apiserver.Server
 	progress                func(string)
 	resources               resource.RefreshStore
-	refreshes               *resourceRefresher
+	operations              *operations
 }
 
 // A failed attachment replacement is distinct from a rejected candidate.
@@ -57,7 +57,7 @@ func (a *application) publishAPI() {
 	if tests := a.plane.CertificateTests(); tests != nil {
 		tests.Invalidate()
 	}
-	handler := a.plane.APIHandler(a.options.Version, a.refreshes)
+	handler := a.plane.APIHandler(a.options.Version, a.operations)
 	a.localAPI.SetHandler(handler)
 	var targets []netip.AddrPort
 	var secure apiserver.TLSHandler
@@ -198,6 +198,9 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 				result = "No changes"
 			}
 			a.accept(next, inputs, server, false)
+			if unchanged {
+				prepared.Host.CommitResources()
+			}
 			refresh.Commit()
 			return result, nil
 		}

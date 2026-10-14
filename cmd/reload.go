@@ -1,23 +1,18 @@
-/*
- * SPDX-License-Identifier: AGPL-3.0-only
- * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
- */
+// SPDX-License-Identifier: AGPL-3.0-only
 
 package cmd
 
 import (
-	"cmp"
+	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
-	"syscall"
+	"net/http"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/api/client"
 	"github.com/daeuniverse/dae/client/progress"
 	"github.com/daeuniverse/dae/cmd/internal"
-	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -26,82 +21,70 @@ const (
 	reloadPollInterval   = 200 * time.Millisecond
 )
 
-func readSignalProgressFile(path string) (code byte, content string, err error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, "", err
-	}
-	var firstLine string
-	firstLine, content, _ = strings.Cut(string(b), "\n")
-	if len(firstLine) != 1 {
-		return 0, "", fmt.Errorf("unexpected format: %v", string(b))
-	}
-	code = firstLine[0]
-	return code, content, nil
+type operationWaitOptions struct {
+	id, kind              string
+	timeout, pollInterval time.Duration
+	poll                  func(context.Context, string) (*api.Operation, error)
+	onProgress            func(string)
 }
 
-type reloadWaitOptions struct {
-	operation    string
-	progressPath string
-	timeout      time.Duration
-	pollInterval time.Duration
-	processAlive func() error
-	onProgress   func(string)
-}
-
-func waitForReload(opts reloadWaitOptions) (string, error) {
-	operation := cmp.Or(opts.operation, "reload")
-	deadline := time.NewTimer(opts.timeout)
-	defer deadline.Stop()
+// A client timeout stops waiting only. It cannot cancel or overwrite another
+// transaction, and an expired or previous-daemon ID is an explicit failure.
+func waitForOperation(ctx context.Context, opts operationWaitOptions) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
 	ticker := time.NewTicker(opts.pollInterval)
 	defer ticker.Stop()
-	lastContent := ""
-
+	lastProgress := ""
 	for {
-		code, content, err := readSignalProgressFile(opts.progressPath)
+		status, err := opts.poll(ctx, opts.id)
+		if ctx.Err() != nil {
+			break
+		}
 		if err != nil {
-			return "", fmt.Errorf("failed to read %s progress: %w", operation, err)
-		}
-
-		if opts.processAlive != nil {
-			if err := opts.processAlive(); err != nil && !errors.Is(err, syscall.EPERM) {
-				return "", fmt.Errorf("dae stopped during %s: %w", operation, err)
+			if response, ok := errors.AsType[*client.Error](err); !ok || response.StatusCode != http.StatusServiceUnavailable {
+				return "", fmt.Errorf("read %s operation %s: %w", opts.kind, opts.id, err)
 			}
-		}
-
-		switch code {
-		case consts.ReloadSend:
-			// Wait for the daemon to acknowledge the signal.
-		case consts.ReloadProcessing:
-			if content != "" && content != lastContent {
-				lastContent = content
+		} else {
+			if status == nil || status.ID != opts.id || status.Kind != opts.kind {
+				return "", fmt.Errorf("daemon returned a different %s operation", opts.kind)
+			}
+			if status.Progress != "" && status.Progress != lastProgress {
+				lastProgress = status.Progress
 				if opts.onProgress != nil {
-					opts.onProgress(content)
+					opts.onProgress(lastProgress)
 				}
 			}
-		case consts.ReloadDone:
-			if content == "" {
-				content = "OK"
+			switch status.State {
+			case "completed":
+				if status.Result == "" {
+					return "OK", nil
+				}
+				return status.Result, nil
+			case "failed", "canceled":
+				if status.Error == "" {
+					return "", fmt.Errorf("%s %s", opts.kind, status.State)
+				}
+				return "", errors.New(status.Error)
+			case "queued", "running":
+			default:
+				return "", fmt.Errorf("unexpected operation state %q", status.State)
 			}
-			return content, nil
-		case consts.ReloadError:
-			if content == "" {
-				content = "daemon reported that " + operation + " failed"
-			}
-			return "", errors.New(content)
-		default:
-			return "", fmt.Errorf("unexpected %s progress code %q", operation, code)
 		}
-
 		select {
-		case <-deadline.C:
-			if lastContent != "" {
-				return "", fmt.Errorf("%s timed out after %v (last step: %s)", operation, opts.timeout, lastContent)
-			}
-			return "", fmt.Errorf("%s timed out after %v", operation, opts.timeout)
+		case <-ctx.Done():
 		case <-ticker.C:
+			continue
 		}
+		break
 	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if lastProgress != "" {
+			return "", fmt.Errorf("%s timed out after %v (operation %s; last step: %s)", opts.kind, opts.timeout, opts.id, lastProgress)
+		}
+		return "", fmt.Errorf("%s timed out after %v (operation %s)", opts.kind, opts.timeout, opts.id)
+	}
+	return "", ctx.Err()
 }
 
 var (
@@ -110,9 +93,7 @@ var (
 		Use:   "reload [pid]",
 		Short: "To reload config file without interrupt connections.",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runReloadCommand(cmd, args, false)
-		},
+		RunE:  func(cmd *cobra.Command, args []string) error { return runReloadCommand(cmd, args, false) },
 	}
 )
 
@@ -121,72 +102,37 @@ func init() {
 	reloadCmd.PersistentFlags().BoolVarP(&abort, "abort", "a", false, "Abort established connections.")
 }
 
-// Reload and suspend share the daemon acknowledgement and completion protocol.
 func runReloadCommand(cmd *cobra.Command, args []string, suspend bool) error {
-	operation, sig := "reload", syscall.SIGUSR1
+	kind := "reload"
 	if suspend {
-		operation, sig = "suspend", syscall.SIGUSR2
+		kind = "suspend"
 	}
 	cmd.SilenceUsage = true
-	if len(args) == 0 {
-		_pid, err := os.ReadFile(daemon.PidFilePath)
+	request := api.OperationRequest{Kind: kind, Abort: abort}
+	if len(args) != 0 {
+		pid, err := parsePositivePID(args[0])
 		if err != nil {
-			return fmt.Errorf("failed to read pid file: %w", err)
+			return err
 		}
-		args = []string{strings.TrimSpace(string(_pid))}
-	}
-	pid, err := parsePositivePID(args[0])
-	if err != nil {
-		return err
+		request.ExpectedPID = pid
 	}
 	if err := internal.AutoSu(); err != nil {
 		return err
 	}
-	// Read the first line of SignalProgressFilePath.
-	code, _, err := readSignalProgressFile(daemon.SignalProgressFilePath)
-	if err == nil && code != consts.ReloadDone && code != consts.ReloadError {
-		return fmt.Errorf("%v shows another reload or suspend operation is in progress", daemon.SignalProgressFilePath)
+	remote, err := client.New(client.Options{})
+	if err != nil {
+		return err
 	}
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to inspect %s progress: %w", operation, err)
+	defer remote.Close()
+	status, err := remote.SubmitOperation(cmd.Context(), request)
+	if err != nil {
+		return err
 	}
-	abortMarkerCreated := false
-	cleanupAbortMarker := func() {
-		if abortMarkerCreated {
-			_ = os.Remove(daemon.AbortFile)
-		}
-	}
-	if abort {
-		f, err := os.OpenFile(daemon.AbortFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
-			return fmt.Errorf("failed to create abort marker: %w", err)
-		}
-		abortMarkerCreated = true
-		if err = f.Close(); err != nil {
-			cleanupAbortMarker()
-			return fmt.Errorf("failed to close abort marker: %w", err)
-		}
-	}
-	// Set the progress as ReloadSend.
-	if err = daemon.WriteFileAtomic(daemon.SignalProgressFilePath, []byte{consts.ReloadSend}, 0600); err != nil {
-		cleanupAbortMarker()
-		return fmt.Errorf("failed to initialize %s progress: %w", operation, err)
-	}
-	// Send signal.
-	if err = syscall.Kill(pid, sig); err != nil {
-		cleanupAbortMarker()
-		daemon.WriteReloadState(consts.ReloadError, err.Error())
-		return fmt.Errorf("failed to signal dae: %w", err)
-	}
-
-	spinner := progress.Start(cmd.ErrOrStderr(), "Waiting for "+operation+"...")
+	spinner := progress.Start(cmd.ErrOrStderr(), "Waiting for "+kind+"...")
 	defer spinner.Stop()
-	result, err := waitForReload(reloadWaitOptions{
-		operation:    operation,
-		progressPath: daemon.SignalProgressFilePath,
-		timeout:      reloadCommandTimeout,
-		pollInterval: reloadPollInterval,
-		processAlive: func() error { return syscall.Kill(pid, 0) },
+	result, err := waitForOperation(cmd.Context(), operationWaitOptions{
+		id: status.ID, kind: kind, timeout: reloadCommandTimeout, pollInterval: reloadPollInterval,
+		poll: remote.Operation,
 		onProgress: func(content string) {
 			if spinner.Enabled() {
 				spinner.Update(content)

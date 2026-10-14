@@ -19,12 +19,14 @@ import (
 )
 
 type Server struct {
-	listener net.Listener
-	http     *http.Server
-	cancel   context.CancelFunc
-	mu       sync.RWMutex
-	handler  http.Handler
-	secure   TLSHandler
+	listener      net.Listener
+	http          *http.Server
+	cancel        context.CancelFunc
+	mu            sync.RWMutex
+	handler       http.Handler
+	secure        TLSHandler
+	daemonMu      sync.RWMutex
+	daemonHandler http.Handler
 }
 
 // TLSHandler serves only the HTTPS branch of a shared TCP API listener.
@@ -86,6 +88,21 @@ func (s *Server) tlsConfig(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
+// SetOperations installs daemon-owned routes on the local socket. These do not
+// touch a plane and remain available while its handler is drained or replaced.
+// Remote requests continue to use the plane's current authorization policy.
+func (s *Server) SetOperations(store OperationStore) {
+	if s == nil {
+		return
+	}
+	s.daemonMu.Lock()
+	defer s.daemonMu.Unlock()
+	s.daemonHandler = nil
+	if store != nil {
+		s.daemonHandler = NewHandler(Options{Operations: store})
+	}
+}
+
 // SetHandler waits for all requests using the previous handler to finish.
 // Passing nil drains the control plane before the daemon closes it.
 func (s *Server) SetHandler(handler http.Handler) {
@@ -105,6 +122,14 @@ func (s *Server) SetHandlers(handler http.Handler, secure TLSHandler) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if localAPISocket(r) && operationPath(r.URL.Path) {
+		s.daemonMu.RLock()
+		defer s.daemonMu.RUnlock()
+		if s.daemonHandler != nil {
+			s.daemonHandler.ServeHTTP(w, r)
+			return
+		}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if r.TLS != nil {
@@ -146,4 +171,5 @@ func (s *Server) Stop() {
 func (s *Server) Close() {
 	s.Stop()
 	s.SetHandler(nil)
+	s.SetOperations(nil)
 }

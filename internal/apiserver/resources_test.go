@@ -15,12 +15,12 @@ import (
 
 type resourceStoreTest struct{ calls int }
 
-func (s *resourceStoreTest) RefreshResources() (api.ResourceRefreshStatus, error) {
+func (s *resourceStoreTest) SubmitOperation(api.OperationRequest) (api.Operation, error) {
 	s.calls++
-	return api.ResourceRefreshStatus{State: "queued"}, nil
+	return api.Operation{ID: "operation", Kind: "refresh", State: "queued"}, nil
 }
 func (s *resourceStoreTest) ResourceRefreshStatus() api.ResourceRefreshStatus {
-	return api.ResourceRefreshStatus{State: "idle"}
+	return api.ResourceRefreshStatus{}
 }
 
 func TestResourceRefreshAPIValidation(t *testing.T) {
@@ -37,7 +37,7 @@ func TestResourceRefreshAPIValidation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &resourceStoreTest{}
-			handler := NewHandler(Options{APIKey: "secret", Resources: store})
+			handler := NewHandler(Options{APIKey: "secret", Operations: store})
 			path := "/api/resources"
 			if test.method == "POST" {
 				path += "/refresh"
@@ -59,3 +59,5 @@ func TestResourceRefreshAPIValidation(t *testing.T) {
 		})
 	}
 }
+
+func (s *resourceStoreTest) Operation(string) (api.Operation, bool) { return api.Operation{}, false }

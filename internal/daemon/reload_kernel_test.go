@@ -110,7 +110,7 @@ func TestDaemonDifferentialReloadKernel(t *testing.T) {
 	}
 	datapath := control.NewRuntime()
 	client, closeClient := datapath.NewWorkerClient()
-	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, definitions: definitions, workerClient: client, refreshes: newResourceRefresher()}
+	app := &application{options: Options{ConfigFile: path}, conf: conf, datapath: datapath, resolver: resolver, settings: store, definitions: definitions, workerClient: client, operations: newOperations()}
 	t.Cleanup(func() { resolver.SetRoute(nil); _ = datapath.Close(); closeClient(); _ = cleanupKernelResources() })
 	plugins, err := configurePlugins(conf, definitions)
 	if err != nil {

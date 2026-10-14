@@ -42,7 +42,7 @@ func Load(ctx context.Context, configuration *pluginhost.Configuration, options 
 	}
 	local := make([]Instance, 0, len(instances))
 	for _, instance := range instances {
-		local = append(local, Instance{ID: instance.ID, Type: instance.Type, Plugin: instance.Plugin, owner: instance})
+		local = append(local, Instance{ID: instance.ID, Type: instance.Type, Plugin: instance.Plugin, owner: instance.Instance, resources: instance.Resources, resourcesPending: true})
 	}
 	if options.Diagnostic != nil {
 		local = append([]Instance{{ID: "dae-certificate-test", Type: "certificate-test", Plugin: options.Diagnostic}}, local...)
@@ -57,10 +57,27 @@ func Load(ctx context.Context, configuration *pluginhost.Configuration, options 
 }
 
 type Instance struct {
-	ID, Type string
-	Plugin   plugin.Plugin
-	plan     plugin.Plan
-	owner    *pluginhost.Instance
+	ID, Type         string
+	Plugin           plugin.Plugin
+	plan             plugin.Plan
+	owner            *pluginhost.Instance
+	resources        any
+	resourcesPending bool
+}
+
+// CommitResources publishes only metadata of an accepted preparation. The
+// daemon also calls this for an unchanged runtime, which needs no new workers.
+func (h *Host) CommitResources() {
+	if h == nil {
+		return
+	}
+	for i := range h.instances {
+		instance := &h.instances[i]
+		if instance.resourcesPending {
+			(pluginhost.PreparedInstance{Instance: instance.owner, Resources: instance.resources}).CommitResources()
+			instance.resources, instance.resourcesPending = nil, false
+		}
+	}
 }
 
 // PrepareSuccessor retains accepted instances and certificate state for suspend,
@@ -278,6 +295,7 @@ func (h *Host) Start(parent context.Context) error {
 		h.startedAt.WithLabelValues(instance.Type, instance.ID).Set(float64(started.UnixNano()) / 1e9)
 	}
 	h.started = true
+	h.CommitResources()
 	h.options.Metrics.publish(h.metrics)
 	return nil
 }

@@ -122,6 +122,12 @@ type Resources struct {
 	Value  any
 }
 
+// ResourceObserver accepts refreshed metadata after its candidate is published,
+// including when Key is unchanged and the instance is reused. It must be safe
+// alongside requests and reports, and must not fail, perform I/O or replace the
+// instance's runtime inputs. Abandoned preparations never invoke it.
+type ResourceObserver interface{ AcceptResources(any) }
+
 // Reporter returns a JSON-serializable status snapshot, excluding configuration
 // credentials. Explicit script output may be included as documented by the plugin.
 type Reporter interface{ Report() any }

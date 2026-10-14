@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/filewatch"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/common/resource"
@@ -31,7 +31,6 @@ import (
 const (
 	PidFilePath      = "/var/run/dae.pid"
 	StatusSocketPath = "/var/run/dae.sock"
-	AbortFile        = "/var/run/dae.abort"
 	shutdownTimeout  = 15 * time.Second
 )
 
@@ -65,7 +64,6 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		os.Exit(1)
 	})
 	defer stopWatchdog()
-	_ = os.Remove(AbortFile)
 	startPprofServer(conf.Global.PprofPort)
 	defer startPprofServer(0)
 	settingsPath := filepath.Join(common.CacheDirectory(), "runtime-state.json")
@@ -123,10 +121,13 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		options: options, conf: conf, inputs: inputs, plane: plane, datapath: datapath,
 		settings: runtimeSettings, definitions: definitions, resolver: resolver, workerClient: worker,
 		geoDirs: geoDirs, localAPI: local, managementAPI: management,
-		resources: resources, refreshes: newResourceRefresher(),
-		progress: func(message string) { WriteReloadState(consts.ReloadProcessing, message) },
+		resources: resources, operations: newOperations(),
 	}
+	local.SetOperations(app.operations)
+	stopOperations := context.AfterFunc(ctx, app.operations.stop)
+	defer stopOperations()
 	defer func() {
+		app.operations.stop()
 		stopSignals()
 		log.Info("Shutting down")
 		resolver.SetRoute(nil)
@@ -169,56 +170,47 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	if !options.DisablePidFile {
 		_ = os.WriteFile(PidFilePath, []byte(strconv.Itoa(os.Getpid())), 0644)
 	}
-	WriteReloadState(consts.ReloadDone, "")
 	refreshTimer := time.NewTimer(time.Hour)
 	defer refreshTimer.Stop()
 	var retryAfter time.Time
-	refreshResources := func(automatic bool) error {
-		if !app.refreshes.start(automatic) {
-			return nil
-		}
-		sdnotify.Reloading()
-		WriteReloadState(consts.ReloadProcessing, "Refreshing configuration resources...")
-		result, err := app.apply(ctx, app.conf, false, false, automatic)
-		app.refreshes.finish(result, err)
-		if err != nil {
-			WriteReloadState(consts.ReloadError, resource.RedactError(err).Error())
+	runOperation := func(id string) error {
+		err := app.executeOperation(ctx, id)
+		status, _ := app.operations.Operation(id)
+		if status.Kind == "refresh" && err != nil {
 			retryAfter = time.Now().Add(5 * time.Minute)
-			log.WithError(resource.RedactError(err)).Warn("Resource refresh rejected; current configuration remains active")
-		} else {
-			WriteReloadState(consts.ReloadDone, result)
+		} else if err == nil {
 			retryAfter = time.Time{}
-			log.WithField("result", result).Info("Resource refresh completed")
 		}
 		if _, fatal := errors.AsType[*activationError](err); fatal {
 			sdnotify.Stopping()
 			return err
 		}
-		sdnotify.Ready()
 		return nil
 	}
 	for {
 		var refreshC <-chan time.Time
 		next := app.resources.Next()
-		if !next.IsZero() {
+		refreshStatus := app.operations.ResourceRefreshStatus()
+		refreshPending := refreshStatus.Operation != nil && refreshStatus.Operation.FinishedAt.IsZero()
+		if !next.IsZero() && !refreshPending {
 			if next.Before(retryAfter) {
 				next = retryAfter
 			}
 			refreshTimer.Reset(max(time.Until(next), 0))
 			refreshC = refreshTimer.C
 		}
-		app.refreshes.setNext(next)
+		app.operations.setNext(next)
 		select {
 		case <-ctx.Done():
 			return nil
 		case err := <-ingressErrors:
 			return err
 		case <-refreshC:
-			if err := refreshResources(true); err != nil {
-				return err
+			if _, err := app.operations.submit(api.OperationRequest{Kind: "refresh"}, "automatic"); err != nil {
+				retryAfter = time.Now().Add(time.Second)
 			}
-		case <-app.refreshes.requests:
-			if err := refreshResources(false); err != nil {
+		case id := <-app.operations.requests:
+			if err := runOperation(id); err != nil {
 				return err
 			}
 		case err := <-watcher.Errors:
@@ -233,34 +225,13 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 		case sig := <-sigs:
 			switch sig {
 			case syscall.SIGUSR1, syscall.SIGUSR2:
-				suspend := sig == syscall.SIGUSR2
-				if suspend {
-					log.Info("Suspending traffic interception")
-				} else {
-					log.Info("Reload requested")
+				kind := "reload"
+				if sig == syscall.SIGUSR2 {
+					kind = "suspend"
 				}
-				abort := os.Remove(AbortFile) == nil
-				sdnotify.Reloading()
-				WriteReloadState(consts.ReloadProcessing, "")
-				result, err := app.reload(ctx, suspend, abort)
-				if err != nil {
-					if ctx.Err() != nil {
-						return nil
-					}
-					if _, fatal := errors.AsType[*activationError](err); fatal {
-						sdnotify.Stopping()
-						return fmt.Errorf("reload activation: %w", err)
-					}
-					err = resource.RedactError(err)
-					log.WithError(err).Warn("Reload rejected; current configuration remains active")
-					sdnotify.Ready()
-					WriteReloadState(consts.ReloadError, err.Error())
-					continue
+				if _, err := app.operations.submit(api.OperationRequest{Kind: kind}, "signal"); err != nil {
+					log.WithError(err).Warn("Could not enqueue signal operation")
 				}
-				sdnotify.Ready()
-				WriteReloadState(consts.ReloadDone, result)
-				retryAfter = time.Time{}
-				log.WithField("result", result).Info("Reload completed")
 			case syscall.SIGHUP:
 				continue
 			default:
@@ -293,11 +264,11 @@ func exit(datapath *control.Runtime, servers ...*apiserver.Server) {
 	for _, server := range servers {
 		server.Stop()
 	}
-	if err := datapath.Close(); err != nil {
-		log.WithError(err).Error("Could not stop control plane ingress")
-	}
 	for _, server := range servers {
 		server.Close()
+	}
+	if err := datapath.Close(); err != nil {
+		log.WithError(err).Error("Could not stop control plane ingress")
 	}
 	if err := os.Remove(PidFilePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.WithError(err).Warn("Could not remove PID file")

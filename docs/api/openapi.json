@@ -542,19 +542,38 @@
         ],
         "type": "object"
       },
+      "Operation": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["reload", "suspend", "refresh"] },
+          "state": { "type": "string", "enum": ["queued", "running", "completed", "failed", "canceled"] },
+          "trigger": { "type": "string", "enum": ["api", "automatic", "signal"] },
+          "queued_at": { "type": "string", "format": "date-time" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "finished_at": { "type": "string", "format": "date-time" },
+          "progress": { "type": "string" },
+          "result": { "type": "string" },
+          "error": { "type": "string" }
+        },
+        "required": ["id", "kind", "state", "trigger", "queued_at"]
+      },
+      "OperationRequest": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "enum": ["reload", "suspend", "refresh"] },
+          "abort": { "type": "boolean", "description": "Abort established connections during reload or suspend; invalid for refresh." },
+          "expected_pid": { "type": "integer", "minimum": 0, "description": "When nonzero, require the daemon PID to match." }
+        },
+        "required": ["kind"],
+        "additionalProperties": false
+      },
       "ResourceRefreshStatus": {
         "type": "object",
         "properties": {
-          "run": { "type": "integer" },
-          "state": { "type": "string", "enum": ["idle", "queued", "running", "completed", "failed"] },
-          "trigger": { "type": "string", "enum": ["api", "automatic"] },
-          "started_at": { "type": "string", "format": "date-time" },
-          "finished_at": { "type": "string", "format": "date-time" },
-          "next_check": { "type": "string", "format": "date-time" },
-          "result": { "type": "string", "description": "Publication result, including the number of groups using previous contents after a failed refresh." },
-          "error": { "type": "string" }
-        },
-        "required": ["run", "state"]
+          "operation": { "$ref": "#/components/schemas/Operation" },
+          "next_check": { "type": "string", "format": "date-time" }
+        }
       },
       "ScriptRunRequest": {
         "type": "object",
@@ -1763,12 +1782,39 @@
       "post": {
         "operationId": "refreshResources",
         "summary": "Refresh subscriptions, modules and dependencies",
-        "description": "Requires administration and an empty request body. Uses the accepted configuration and attempts all downloads regardless of update intervals; does not read configuration edits from disk. Returns 202 immediately; check GET /api/resources for completion. Concurrent queued/running refreshes return 409. Refreshes and reloads publish serially. Invalid candidates leave the current runtime active; available validated snapshots can be used on download failure.",
+        "description": "Requires administration and an empty request body. Uses the accepted configuration and attempts all downloads regardless of update intervals; does not read configuration edits from disk. Returns 202 immediately; poll GET /api/operations/{id} for this request’s completion. Concurrent queued/running refreshes return 409. Refreshes and reloads publish serially. Invalid candidates leave the current runtime active; available validated snapshots can be used on download failure.",
         "parameters": [
           { "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }
         ],
         "responses": {
-          "202": { "description": "Resource refresh queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResourceRefreshStatus" } } } },
+          "202": { "description": "Resource refresh queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Operation" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        },
+        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+      }
+    },
+    "/api/operations": {
+      "post": {
+        "operationId": "submitOperation",
+        "summary": "Queue a daemon configuration operation",
+        "description": "Requires administration. Returns a unique operation ID immediately; poll GET /api/operations/{id} for the result. Reload reads configuration from disk; suspend disables interception; refresh uses the accepted configuration. Operations execute serially. The queue holds at most 16 pending operations; a full queue or a duplicate pending refresh returns 409. A nonzero expected_pid must match the daemon PID. Local Unix operation routes remain available throughout plane replacement.",
+        "parameters": [{ "name": "X-Dae-API", "in": "header", "required": true, "schema": { "type": "string", "const": "1" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationRequest" } } } },
+        "responses": {
+          "202": { "description": "Operation queued", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Operation" } } } },
+          "default": { "$ref": "#/components/responses/Error" }
+        },
+        "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]
+      }
+    },
+    "/api/operations/{id}": {
+      "get": {
+        "operationId": "operation",
+        "summary": "Read one daemon operation",
+        "description": "Requires administration and an empty body. IDs are unique across restarts. The daemon retains the 64 most recently finished operations plus active and queued work; unknown or expired IDs return 404. A client timeout does not cancel accepted work.",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "Operation status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Operation" } } } },
           "default": { "$ref": "#/components/responses/Error" }
         },
         "security": [{ "bearerAuth": [] }, { "sessionCookie": [] }, {}]

@@ -628,6 +628,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue a daemon configuration operation
+         * @description Requires administration. Returns a unique operation ID immediately; poll GET /api/operations/{id} for the result. Reload reads configuration from disk; suspend disables interception; refresh uses the accepted configuration. Operations execute serially. The queue holds at most 16 pending operations; a full queue or a duplicate pending refresh returns 409. A nonzero expected_pid must match the daemon PID. Local Unix operation routes remain available throughout plane replacement.
+         */
+        post: operations["submitOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/operations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one daemon operation
+         * @description Requires administration and an empty body. IDs are unique across restarts. The daemon retains the 64 most recently finished operations plus active and queued work; unknown or expired IDs return 404. A client timeout does not cancel accepted work.
+         */
+        get: operations["operation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/plugins/{instance}/scripts/run": {
         parameters: {
             query?: never;
@@ -699,7 +739,7 @@ export interface paths {
         put?: never;
         /**
          * Refresh subscriptions, modules and dependencies
-         * @description Requires administration and an empty request body. Uses the accepted configuration and attempts all downloads regardless of update intervals; does not read configuration edits from disk. Returns 202 immediately; check GET /api/resources for completion. Concurrent queued/running refreshes return 409. Refreshes and reloads publish serially. Invalid candidates leave the current runtime active; available validated snapshots can be used on download failure.
+         * @description Requires administration and an empty request body. Uses the accepted configuration and attempts all downloads regardless of update intervals; does not read configuration edits from disk. Returns 202 immediately; poll GET /api/operations/{id} for this request’s completion. Concurrent queued/running refreshes return 409. Refreshes and reloads publish serially. Invalid candidates leave the current runtime active; available validated snapshots can be used on download failure.
          */
         post: operations["refreshResources"];
         delete?: never;
@@ -1388,6 +1428,32 @@ export interface components {
             /** @description Current admission for each mode, in tcp4, tcp6, udp4, udp6 order. Capability, per-mode health, and shared session readiness must all permit use. */
             usable: boolean[];
         };
+        Operation: {
+            error?: string;
+            /** Format: date-time */
+            finished_at?: string;
+            id: string;
+            /** @enum {string} */
+            kind: "reload" | "suspend" | "refresh";
+            progress?: string;
+            /** Format: date-time */
+            queued_at: string;
+            result?: string;
+            /** Format: date-time */
+            started_at?: string;
+            /** @enum {string} */
+            state: "queued" | "running" | "completed" | "failed" | "canceled";
+            /** @enum {string} */
+            trigger: "api" | "automatic" | "signal";
+        };
+        OperationRequest: {
+            /** @description Abort established connections during reload or suspend; invalid for refresh. */
+            abort?: boolean;
+            /** @description When nonzero, require the daemon PID to match. */
+            expected_pid?: number;
+            /** @enum {string} */
+            kind: "reload" | "suspend" | "refresh";
+        };
         PathStats: {
             /** Format: int64 */
             active_connections: number;
@@ -1448,20 +1514,9 @@ export interface components {
             resource_id: number;
         };
         ResourceRefreshStatus: {
-            error?: string;
-            /** Format: date-time */
-            finished_at?: string;
             /** Format: date-time */
             next_check?: string;
-            /** @description Publication result, including the number of groups using previous contents after a failed refresh. */
-            result?: string;
-            run: number;
-            /** Format: date-time */
-            started_at?: string;
-            /** @enum {string} */
-            state: "idle" | "queued" | "running" | "completed" | "failed";
-            /** @enum {string} */
-            trigger?: "api" | "automatic";
+            operation?: components["schemas"]["Operation"];
         };
         SavedSelectorSelection: {
             /** @description Saved logical path name, including its entrance choice. */
@@ -1909,6 +1964,56 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    submitOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Dae-API": "1";
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationRequest"];
+            };
+        };
+        responses: {
+            /** @description Operation queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    operation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Operation status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operation"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     triggerScript: {
         parameters: {
             query?: never;
@@ -2003,7 +2108,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResourceRefreshStatus"];
+                    "application/json": components["schemas"]["Operation"];
                 };
             };
             default: components["responses"]["Error"];

@@ -16,12 +16,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func (c *ControlPlane) APIHandler(version string, resources apiserver.ResourceStore) http.Handler {
-	return c.apiHandler(version, c.resolveAPIClient, resources)
+func (c *ControlPlane) APIHandler(version string, operations apiserver.OperationStore) http.Handler {
+	return c.apiHandler(version, c.resolveAPIClient, operations)
 }
 
-func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver, resources apiserver.ResourceStore) http.Handler {
-	options := apiserver.Options{Selectors: c, Probes: c, Devices: c, ResolveClient: resolve, APIKey: c.apiKey, Resources: resources, Diagnostics: c}
+func (c *ControlPlane) apiHandler(version string, resolve apiserver.ClientResolver, operations apiserver.OperationStore) http.Handler {
+	options := apiserver.Options{Selectors: c, Probes: c, Devices: c, ResolveClient: resolve, APIKey: c.apiKey, Operations: operations, Diagnostics: c}
 	options.Status = func() *contract.StatusSnapshot { return c.StatusSnapshot(version) }
 	options.DeviceStatus = c.DeviceStatus
 	if host := c.MITMHost(); host != nil {

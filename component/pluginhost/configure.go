@@ -28,6 +28,19 @@ type instanceInput struct {
 	bodyMemory *membuffer.Budget
 }
 
+// PreparedInstance owns a reference and candidate-local resource metadata.
+// Sharing a runtime does not publish the candidate's latest check prematurely.
+type PreparedInstance struct {
+	*Instance
+	Resources any
+}
+
+func (p PreparedInstance) CommitResources() {
+	if observer, ok := p.Plugin.(plugin.ResourceObserver); ok {
+		observer.AcceptResources(p.Resources)
+	}
+}
+
 // Configure validates every enabled instance before any external I/O.
 func Configure(definitions map[string]plugin.Definition, specs []plugin.Spec) (*Configuration, error) {
 	var errs []error
@@ -75,7 +88,7 @@ func (c *Configuration) Preflight(ctx context.Context) error {
 
 // Prepare refreshes resources and borrows unchanged instances. On success the
 // caller owns one reference per result; errors release only candidate references.
-func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, previous []*Instance) (instances []*Instance, err error) {
+func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, previous []*Instance) (instances []PreparedInstance, err error) {
 	defer func() {
 		if err != nil {
 			for _, instance := range instances {
@@ -114,7 +127,7 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 		}
 		input := instanceInput{configuration, resources.Key, services.BaseDir, services.BodyMemory}
 		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.bodyMemory == input.bodyMemory && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
-			instances = append(instances, existing)
+			instances = append(instances, PreparedInstance{existing, resources.Value})
 			continue
 		}
 		local.Prepared = resources.Value
@@ -135,7 +148,7 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 		}
 		instance := Adopt(spec.ID, spec.Type, implementation)
 		instance.input, instance.Metrics, instance.logger = input, registry, local.Logger
-		instances = append(instances, instance)
+		instances = append(instances, PreparedInstance{instance, resources.Value})
 	}
 	return instances, nil
 }

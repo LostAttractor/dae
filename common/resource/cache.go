@@ -79,12 +79,15 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 	groupKey := c.Dir + "\x00" + opts.Key
 	previous := session.previous[groupKey]
 	checks := make(map[string]refreshCheck)
+	attempted := make(map[string]bool)
 	defer func() {
 		// Startup may skip an unavailable subscription. Keep its retry scheduled
 		// even when there has never been a usable snapshot.
 		if err != nil {
 			for location, check := range checks {
-				checks[location] = check.reschedule(true)
+				if attempted[location] {
+					checks[location] = check.reschedule(true)
+				}
 			}
 			session.stage(groupKey, nil, checks, false)
 		}
@@ -111,6 +114,7 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 			}
 		}
 		if !reused {
+			attempted[source.Location] = true
 			result, err = read(source, options)
 			check = check.reschedule(false)
 		}
@@ -150,7 +154,14 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 	if cacheErr != nil {
 		return value, status, fmt.Errorf("resource refresh failed: %w; cached fallback unavailable: %v", freshErr, cacheErr)
 	}
-	clear(checks)
+	// A rejected group does not reset the clocks of resources we did not read.
+	// In particular, a short-lived dependency must not continually postpone its
+	// parent module. Retry attempted inputs; retain all other accepted deadlines.
+	for location, check := range checks {
+		if attempted[location] {
+			checks[location] = check.reschedule(true)
+		}
+	}
 	total = 0
 	fallback := &cacheSnapshot{Version: 1, Key: opts.Key, Resources: make(map[string]Result)}
 	value, cacheErr = load(func(source Source, options ReadOptions) (Result, error) {
@@ -160,7 +171,14 @@ func (c Cache) Load[T any](ctx context.Context, client *http.Client, opts LoadOp
 		if !source.Remote() {
 			return read(source, options)
 		}
-		checks[source.Location] = (refreshCheck{interval: session.readInterval(options)}).reschedule(true)
+		if _, checked := checks[source.Location]; !checked {
+			check := previous.checks[source.Location]
+			interval := session.readInterval(options)
+			if check.interval != interval || check.due.IsZero() && interval != 0 {
+				check = (refreshCheck{interval: interval}).reschedule(false)
+			}
+			checks[source.Location] = check
+		}
 		result, ok := snapshot.Resources[source.Location]
 		if !ok {
 			return Result{}, errors.New("resource is not present in the last complete cache")
