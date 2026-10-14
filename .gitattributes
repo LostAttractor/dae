@@ -1,0 +1,2 @@
+# Unified diff context lines preserve the original source indentation.
+scripts/http2/*.patch -whitespace

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ import (
 // response. Admission/local responses and upstream headers must not wait for it.
 func TestEmptyRequestTrailersAllowEarlyResponse(t *testing.T) {
 	for _, protocol := range []string{"h2", "h3"} {
-		for _, destination := range []string{"upstream", "local", "local_unannounced"} {
+		for _, destination := range []string{"upstream", "upstream_unannounced", "local", "local_unannounced"} {
 			t.Run(protocol+"/"+destination, func(t *testing.T) {
 				ca, roots := http3TestAuthority(t)
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +49,7 @@ func TestEmptyRequestTrailersAllowEarlyResponse(t *testing.T) {
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}}
 				p.wrap = func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
 					return func(e *plugin.Exchange) (*http.Response, error) {
-						if destination != "upstream" {
+						if strings.HasPrefix(destination, "local") {
 							return &http.Response{StatusCode: 403, Header: make(http.Header), Body: http.NoBody}, nil
 						}
 						return next(e)
@@ -56,7 +57,7 @@ func TestEmptyRequestTrailersAllowEarlyResponse(t *testing.T) {
 				}
 				host := testHost(t, Options{Authority: ca, UpstreamTLSConfig: &tls.Config{RootCAs: roots}}, Instance{Plugin: p})
 				plan := func(*http.Request) (UpstreamPlan, error) {
-					if destination != "upstream" {
+					if strings.HasPrefix(destination, "local") {
 						t.Error("local response selected an upstream")
 					}
 					return UpstreamPlan{Key: "ingress", Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -69,7 +70,7 @@ func TestEmptyRequestTrailersAllowEarlyResponse(t *testing.T) {
 				client := authorityTestClient(t, host, roots, protocol, plan)
 				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 				defer cancel()
-				announced := destination != "local_unannounced"
+				announced := !strings.HasSuffix(destination, "_unannounced")
 				if protocol == "h3" {
 					transport := client.Transport.(*http3.Transport)
 					conn, err := transport.Dial(ctx, "example.com:443", &tls.Config{RootCAs: roots, ServerName: "example.com", NextProtos: []string{"h3"}}, &quic.Config{})

@@ -55,24 +55,20 @@ dae 作为 TLS 客户端验证的是**实际接入点**。`*.biliapi.net` 可以
 - dae 到真实上游继续执行 TLS 名称、有效期和信任链验证；验证失败由 dae 中止并返回上游错误，不能交给源站替客户端检查。
 - 任意 authority 不会令 dae 拨号到另一个网络目标；改变网络目标必须来自插件显式 URL 改写或插件主动 HTTP 请求。
 - 插件看到的 `Flow.Host` / `Request.Host` 是请求声明的业务主机，不是独立认证证明；`Flow.Source/Destination` 保留捕获元组。
-- HTTPS/H2/H3 跨主机仍须同端口；不支持的 HTTP/1 跨主机、可见的 URL scheme 不一致、端口不一致或非法 authority 仍被本地拒绝。HTTP/2 的 scheme 限制见下文。
+- HTTPS/H2/H3 跨主机仍须同端口；不支持的 HTTP/1 跨主机、URL scheme 不一致、端口不一致或非法 authority 均被本地拒绝。
 - 单主机证书使遵循 SAN 复用规则的客户端可能多建几条连接；已经自行采用统一接入身份的客户端可继续复用。
 
-### HTTP/2 scheme 限制
+### 请求 scheme
 
-MITM 使用上游 Go HTTP/2 实现。Go 1.27 的请求接口不保留原始 `:scheme`，
-`Request.TLS` 也不能用于还原它，因此 **TLS HTTP/2 按连接的 HTTPS scheme 处理**。
-客户端即使在 TLS 连接中发送 `:scheme=http`，插件看到的 URL、转发使用的 scheme
-以及日志中的 `request_scheme` 仍为 `https`，不会仅因这个差异返回 421。
-日志反映的是处理时采用的 scheme，不能证明客户端发送了哪个 `:scheme`。
+HTTP/2 入站使用固定版本的 Go 协议实现，适配层将原始 `:scheme` 保留在 `Request.URL.Scheme`。
+HTTP/2、HTTP/3 和 HTTP/1 absolute-form 的显式 scheme 都参与准入检查；
+与接入连接不一致时，在执行插件或选择上游前返回 421，日志记录 `scheme_mismatch`。
+因此 TLS HTTP/2 中的 `:scheme=http` 不会被归一化为 HTTPS。
+`Request.TLS` 表示连接状态，不用于推断伪首部。
 
-authority 未写端口时按 HTTPS 默认端口 443 解释；显式携带不同于接入端口的端口仍返回 421。
-例如接入 443 时，`:scheme=http` 配合 `:authority=example.com` 按 HTTPS 处理，
-而 `:authority=example.com:80` 被拒绝。普通转发继续使用原目标、路由和上游 TLS 身份，
-插件 scope 仍按准入后的 authority 匹配，不会因此自动改为明文 HTTP 或另行拨号。
-
-HTTP/1 absolute-form 和 HTTP/3 的显式 scheme 仍参与检查，不一致时返回 421；
+authority 的默认端口按通过准入的 scheme 解释，HTTPS 为 443；显式端口必须与接入端口一致。
 HTTP/1 origin-form 按接入连接判断 scheme。h2c 不受支持。
+协议源码来源、维护差异和更新方式见 [HTTP/2 适配说明](../../../internal/http2/README.md)。
 
 ## 实现与职责
 
@@ -146,10 +142,15 @@ ServeConn / ServePacketConn
 入口只安装 trailer 同步 reader，不预读正文或改变 framing。插件处理后，`prepareRequestFraming` 统一选择转发 framing；
 已声明 trailer 的请求直接使用流式 framing，
 即使 `Content-Length: 0` 且结束帧尚未到达，插件和上游仍可先返回响应。
-没有预声明 trailer 的空请求，仅在插件决定转发后读取 EOF，以区分普通空正文与晚到的 trailer，
-保留普通 HTTP/1 API 所需的 `Content-Length: 0`；本地响应或插件替换正文不承担这次读取。
-因此需要在请求流结束前接收上游响应的发送方，应预声明 trailer。
-trailer 只在首次 EOF 同步；插件读完空正文后修改 trailer，后续 transport 再读到 EOF 时不会用原值覆盖它。
+没有预声明 trailer 的零长度请求，在转发时查询协议层的结束状态或插件的完整内存快照，不等待结束帧：
+已确认正常结束且没有 trailer 时保留 `Content-Length: 0`；尚未结束时立即流式转发，允许晚到的 trailer。
+转为 HTTP/1 时，后者使用 chunked；只接受固定长度的上游仍可能拒绝这类未结束请求。
+HTTP/3 的 FIN 尚未到达时也视为未结束，不通过等待或超时猜测请求是否完成。
+
+HTTP/2 和 HTTP/3 的有效 trailer 会在正常 EOF 交付，包括未预声明的字段。
+trailer 只在首次 EOF（读取或非阻塞确认）同步；插件修改后的值不会被后续 EOF 覆盖。
+非零固定长度请求如果未声明 trailer，转为 HTTP/1 后无法追加晚到的 trailer；发送方需要在请求头声明这些字段。
+上游自身对 trailer 的支持范围仍由其 HTTP 实现决定。
 
 ## 运行日志
 

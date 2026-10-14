@@ -3,11 +3,12 @@
 package mitm
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
+
+	"github.com/daeuniverse/dae/pkg/membuffer"
 )
 
 // ReverseProxy clones Trailer but shares Body. Synchronize the server's final
@@ -23,7 +24,7 @@ func forwardRequestTrailers(out, source *http.Request) {
 	}
 	// ReverseProxy drops Body for ContentLength == 0, but H2/H3 can still
 	// carry trailers after zero DATA bytes. Keep reading through their EOF.
-	out.Body = &requestTrailerBody{ReadCloser: source.Body, source: source, trailer: out.Trailer}
+	out.Body = &requestTrailerBody{ReadCloser: source.Body, source: source, trailer: out.Trailer, empty: source.ContentLength == 0}
 }
 
 // Choose framing once, after middleware may have answered locally or changed
@@ -34,20 +35,30 @@ func prepareRequestFraming(out *http.Request) error {
 		return nil
 	}
 	if out.ContentLength == 0 && len(out.Trailer) == 0 {
-		// Without announced trailers we must distinguish an empty H2/H3
-		// stream from late trailers to preserve Content-Length: 0 for HTTP/1.
-		var one [1]byte
-		if n, err := io.ReadFull(out.Body, one[:]); n != 0 {
-			return fmt.Errorf("mitm: request body exceeds zero Content-Length")
-		} else if !errors.Is(err, io.EOF) {
-			return fmt.Errorf("mitm: read empty request trailers: %w", err)
+		// Zero DATA bytes do not imply END_STREAM / FIN. Only normalize an
+		// empty request when its reader can confirm completion immediately.
+		var ended bool
+		if body, ok := out.Body.(interface{ TryReadEOF() (bool, error) }); ok {
+			var err error
+			ended, err = body.TryReadEOF()
+			if err != nil {
+				return fmt.Errorf("mitm: inspect empty request: %w", err)
+			}
+		} else if view := membuffer.Snapshot(out.Body); view != nil {
+			// Plugin snapshots and replacements expose complete immutable
+			// buffers. Partial snapshots cannot confirm EOF and return nil.
+			ended = len(view.Bytes()) == 0
+			view.Close()
 		}
-		if len(out.Trailer) == 0 {
+		if ended && len(out.Trailer) == 0 {
 			_ = out.Body.Close()
 			out.Body = http.NoBody
+			return nil
 		}
-		// With trailers, keep the exhausted reader: HTTP/1 needs a non-NoBody
-		// body to emit the trailer block.
+		// An open stream can carry late trailers. Forward its headers now;
+		// upstream HTTP/1 requires chunked framing to preserve those trailers.
+		out.ContentLength = -1
+		out.Header.Del("Content-Length")
 	}
 	if len(out.Trailer) > 0 {
 		// Declared trailers must survive an upstream HTTP/1 fallback, where
@@ -62,14 +73,36 @@ type requestTrailerBody struct {
 	io.ReadCloser
 	source  *http.Request
 	trailer http.Header
+	empty   bool
 }
 
 func (b *requestTrailerBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
-	if err == io.EOF && b.source != nil {
+	if b.empty && n != 0 {
+		return 0, fmt.Errorf("mitm: request body exceeds zero Content-Length")
+	}
+	if err == io.EOF {
+		b.copyTrailers()
+	}
+	return n, err
+}
+
+func (b *requestTrailerBody) TryReadEOF() (bool, error) {
+	reader, ok := b.ReadCloser.(interface{ TryReadEOF() (bool, error) })
+	if !ok {
+		return false, nil
+	}
+	ended, err := reader.TryReadEOF()
+	if ended && err == nil {
+		b.copyTrailers()
+	}
+	return ended, err
+}
+
+func (b *requestTrailerBody) copyTrailers() {
+	if b.source != nil {
 		maps.Copy(b.trailer, b.source.Trailer)
 		// A later EOF must not overwrite middleware's trailer edits.
 		b.source = nil
 	}
-	return n, err
 }

@@ -1,0 +1,86 @@
+{
+  "version": "go1.27.2",
+  "upstream": "https://go.googlesource.com/go/+/go1.27.2/src/net/http/internal/http2",
+  "files": {
+    "api.go": {
+      "source": "src/net/http/internal/http2/api.go",
+      "sha256": "37118d08b835bc4324cb0963a4135c7af0af17fd6e526c687ea2b138d4863d06"
+    },
+    "ascii.go": {
+      "source": "src/net/http/internal/http2/ascii.go",
+      "sha256": "d8ee0e0a6b2c41a17a18e263b7f9b5701174dbe10e59496daadc9db6a647f708"
+    },
+    "ciphers.go": {
+      "source": "src/net/http/internal/http2/ciphers.go",
+      "sha256": "623262af28491cd81b3570936cd06757f629d2ae4fb6ef087af6762f30d7a5eb"
+    },
+    "client_conn_pool.go": {
+      "source": "src/net/http/internal/http2/client_conn_pool.go",
+      "sha256": "79937eb312fb6cf57d507c1913f183cc6c5d135f86f6cdd2f05ebebce8b3417c"
+    },
+    "config.go": {
+      "source": "src/net/http/internal/http2/config.go",
+      "sha256": "b94f003c337459a06408b30c77b52861133c4f6cbf88da2ca1aa32415b4242cf"
+    },
+    "databuffer.go": {
+      "source": "src/net/http/internal/http2/databuffer.go",
+      "sha256": "ea04623f1b6e444d91a11faaed9e91a207f057d4108d52fdcef602c5effa039d"
+    },
+    "errors.go": {
+      "source": "src/net/http/internal/http2/errors.go",
+      "sha256": "2652c558a999e8104cb1f64ec32b3eec00c4ccda76c29708c54908840fd90aa6"
+    },
+    "flow.go": {
+      "source": "src/net/http/internal/http2/flow.go",
+      "sha256": "fedf89792079bcd134e4c41da64f5ac99a0881a681cf5b642c9e086d4e655250"
+    },
+    "frame.go": {
+      "source": "src/net/http/internal/http2/frame.go",
+      "sha256": "9d9414d6cc7bc482210f9bb7751226c2d864883e93abad22e0e585de669094cf"
+    },
+    "gotrack.go": {
+      "source": "src/net/http/internal/http2/gotrack.go",
+      "sha256": "239e8ae03982809675189ab7755003bbcc1fe29c7b5e66b577593919b998fb14"
+    },
+    "http2.go": {
+      "source": "src/net/http/internal/http2/http2.go",
+      "sha256": "b5fbef76881003cb941b30a85bc45b3535ea4cbb78dcc57de274d3a17398a0ff"
+    },
+    "pipe.go": {
+      "source": "src/net/http/internal/http2/pipe.go",
+      "sha256": "3fbe00025d441802c154549f5bd7562b9937ff43f1ce64c987bda75fcaf7f518"
+    },
+    "server.go": {
+      "source": "src/net/http/internal/http2/server.go",
+      "sha256": "95ec3beab3acaf294bf214113a6a1b668befbcade25a73a70779ce2d975893d7"
+    },
+    "transport.go": {
+      "source": "src/net/http/internal/http2/transport.go",
+      "sha256": "a9159a4e9d269dcd9f2523b6dc115c33a18274fbf0c6031b80f473daa61471cf"
+    },
+    "write.go": {
+      "source": "src/net/http/internal/http2/write.go",
+      "sha256": "810ece152a598a451ddda5557769221e1d1069a037db2fefbcaf452bf2cd88ff"
+    },
+    "writesched.go": {
+      "source": "src/net/http/internal/http2/writesched.go",
+      "sha256": "fe9249d675dc0bcc1cec480f53fbfff69e87a6a490ab780660e1b434a9f4b9a7"
+    },
+    "writesched_priority_rfc9218.go": {
+      "source": "src/net/http/internal/http2/writesched_priority_rfc9218.go",
+      "sha256": "2f9b42f46fbbed54c4fd8e060d34f0526ab055453468432d0beea37cea761213"
+    },
+    "writesched_roundrobin.go": {
+      "source": "src/net/http/internal/http2/writesched_roundrobin.go",
+      "sha256": "15f3db4cefc4b3179b59a2df67c79407cdc573b6008612d8a58d1ffc0c15d758"
+    },
+    "internal/httpcommon/httpcommon.go": {
+      "source": "src/net/http/internal/httpcommon/httpcommon.go",
+      "sha256": "875db0f0226dd2405d7d3e03242d272cda42a6687196d1c6bf5c85caeeecf1ea"
+    },
+    "internal/httpsfv/httpsfv.go": {
+      "source": "src/net/http/internal/httpsfv/httpsfv.go",
+      "sha256": "1826dc95ab20909265c03ec7ef1c05251c4fb56351c9016038210b629dd8bd5c"
+    }
+  }
+}

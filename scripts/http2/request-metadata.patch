@@ -1,0 +1,32 @@
+--- a/server.go
++++ b/server.go
+@@ -1835,10 +1835,7 @@
+ // its Request.Body.Read just before it gets io.EOF.
+ func (st *stream) copyTrailersToHandlerRequest() {
+ 	for k, vv := range st.trailer {
+-		if _, ok := st.reqTrailer[k]; ok {
+-			// Only copy it over it was pre-declared.
+-			st.reqTrailer[k] = vv
+-		}
++		st.reqTrailer[k] = vv
+ 	}
+ }
+ 
+@@ -2184,6 +2181,9 @@
+ 		}
+ 	}
+ 	if bodyOpen {
++		if req.Trailer == nil {
++			req.Trailer = make(Header)
++		}
+ 		if _, ok := rp.Header["Content-Length"]; !ok {
+ 			req.ContentLength = -1
+ 		}
+@@ -2201,6 +2201,7 @@
+ 	if res.InvalidReason != "" {
+ 		return nil, nil, sc.countError(res.InvalidReason, streamError(st.id, ErrCodeProtocol))
+ 	}
++	res.URL.Scheme = rp.Scheme
+ 
+ 	st.reqBody = &requestBody{
+ 		conn:          sc,

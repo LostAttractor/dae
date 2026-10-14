@@ -18,9 +18,9 @@ import (
 
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/internal/http2"
 	"github.com/daeuniverse/dae/internal/pluginctx"
 	logrus "github.com/sirupsen/logrus"
-	"golang.org/x/net/http2"
 )
 
 func (h *Host) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) (err error) {
@@ -105,21 +105,23 @@ func (h *Host) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) 
 		// Enforce fresh diagnostic connections at the actual downstream server.
 		base.SetKeepAlivesEnabled(false)
 	}
-	h2 := &http2.Server{MaxConcurrentStreams: 64, IdleTimeout: 90 * time.Second, MaxReadFrameSize: 1 << 20}
-	h2.CountError = func(kind string) {
-		logger.WithFields(logrus.Fields{"event": "mitm_http2_error", "reason": kind}).Debug("MITM client HTTP/2 error")
-	}
-	if err := http2.ConfigureServer(base, h2); err != nil {
-		return err
+	if state != nil && state.NegotiatedProtocol == "h2" {
+		base.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 64, MaxReadFrameSize: 1 << 20}
+		base.HTTP2.CountError = func(kind string) {
+			logger.WithFields(logrus.Fields{"event": "mitm_http2_error", "reason": kind}).Debug("MITM client HTTP/2 error")
+		}
+		h2, err := http2.NewHTTPServer(base)
+		if err != nil {
+			return err
+		}
+		if err := h.attach(original, h2.Shutdown); err != nil {
+			return err
+		}
+		h2.ServeConn(ctx, conn)
+		return nil
 	}
 	if err := h.attach(original, base.Shutdown); err != nil {
 		return err
-	}
-	if state != nil && state.NegotiatedProtocol == "h2" {
-		// ConfigureServer binds h2 to base. Passing BaseConfig here makes
-		// x/net's Go 1.27 adapter copy it, detaching Shutdown from this conn.
-		h2.ServeConn(conn, &http2.ServeConnOpts{Context: ctx, Handler: handler})
-		return nil
 	}
 	listener := &singleConnListener{Conn: conn, done: make(chan struct{}), finished: make(chan struct{})}
 	err = base.Serve(listener)

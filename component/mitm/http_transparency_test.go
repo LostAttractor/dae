@@ -93,8 +93,9 @@ func TestPassthroughRequestTrailers(t *testing.T) {
 						body, err := io.ReadAll(resp.Body)
 						resp.Body.Close()
 						want := "verified"
-						if !declared && route.protocol == "h2" {
-							// Go's HTTP/2 server only delivers predeclared trailer keys.
+						if !declared && (protocols.upstream == "h2" || route.name == "mitm" && protocols.downstream == "h2" && payload != "") {
+							// The upstream Go HTTP/2 server drops undeclared keys.
+							// Fixed-length HTTP/1 uploads also cannot carry late trailers.
 							want = ""
 						}
 						if err != nil || resp.StatusCode != 200 || string(body) != want {
@@ -123,6 +124,20 @@ func (b *eofCallbackBody) Read(p []byte) (int, error) {
 }
 
 func (*eofCallbackBody) Close() error { return nil }
+
+// This fixture knows whether its in-memory source is exhausted, independently
+// of the protocol implementations tested by the raw frame fixtures.
+func (b *eofCallbackBody) TryReadEOF() (bool, error) {
+	reader, ok := b.Reader.(*strings.Reader)
+	if !ok || reader.Len() != 0 {
+		return false, nil
+	}
+	_, err := b.Read(nil)
+	if err == io.EOF {
+		return true, nil
+	}
+	return false, err
+}
 
 func TestPassthroughEmptyRequestWithoutTrailers(t *testing.T) {
 	for _, downstream := range []string{"h1", "h2"} {

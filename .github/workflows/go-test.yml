@@ -20,6 +20,9 @@ on:
       - "Makefile"
       - ".github/actions/setup-llvm/**"
       - "scripts/setup-llvm.sh"
+      - "scripts/update-http2.py"
+      - "scripts/http2/**"
+      - "internal/http2/**"
   push:
     branches:
       - next
@@ -41,10 +44,42 @@ on:
       - "Makefile"
       - ".github/actions/setup-llvm/**"
       - "scripts/setup-llvm.sh"
+      - "scripts/update-http2.py"
+      - "scripts/http2/**"
+      - "internal/http2/**"
 
 permissions: read-all
 
 jobs:
+  http-protocols:
+    name: HTTP protocol contracts (Go ${{ matrix.go }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.27.0', 'stable']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: |
+            go.sum
+            third_party/quic-go/go.sum
+      - name: Verify pinned HTTP/2 sources
+        shell: bash
+        run: |
+          source_version=$(python3 -c 'import json; print(json.load(open("internal/http2/upstream.json"))["version"])')
+          source_root=$(GOTOOLCHAIN="$source_version" go env GOROOT)
+          python3 scripts/update-http2.py --goroot "$source_root" --check
+      - name: Test HTTP adapters and proxy behavior
+        run: go test -race ./internal/http2/... ./component/mitm -count=1
+      - name: Test QUIC and HTTP/3 completion contracts
+        working-directory: third_party/quic-go
+        run: go test -race . ./http3 -count=1
+
   go-test:
     name: Go Unit Test (${{ matrix.surge-runtime }})
     runs-on: ubuntu-24.04

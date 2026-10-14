@@ -83,9 +83,8 @@ func TestHTTPSRequestSchemeHandling(t *testing.T) {
 					}
 				}
 			}
-			// HTTP/2 uses the intercepted HTTPS scheme, including its default
-			// port. Explicit port changes must still be rejected, and later
-			// requests on the same connection must remain usable.
+			// Every protocol preserves the explicit scheme. A rejected request
+			// must leave later requests on the same connection usable.
 			for _, target := range []string{
 				"http://example.com:443/resource",
 				"https://example.com:443/resource",
@@ -99,7 +98,7 @@ func TestHTTPSRequestSchemeHandling(t *testing.T) {
 				}
 				before := calls.Load()
 				wantReason := ""
-				if r.URL.Scheme == "http" && protocol != "h2" {
+				if r.URL.Scheme == "http" {
 					wantReason = "scheme_mismatch"
 				} else if r.URL.Port() == "80" {
 					wantReason = "authority_port_mismatch"
@@ -145,12 +144,11 @@ func TestHTTPRequestSchemeAdmission(t *testing.T) {
 	}
 }
 
-func TestHTTP2SchemeUsesInterceptedConnection(t *testing.T) {
-	// Go releases differ in whether :scheme=http over TLS leaves Request.TLS
-	// nil. Admission uses the intercepted connection, not that incidental field.
+func TestHTTPOriginFormUsesInterceptedConnection(t *testing.T) {
+	// Origin-form has no explicit scheme. Its source is the intercepted
+	// connection supplied by the owner, independent of Request.TLS.
 	for _, state := range []*tls.ConnectionState{nil, {HandshakeComplete: true}} {
 		r := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
-		r.ProtoMajor = 2
 		r.URL.Scheme = ""
 		r.TLS = state
 		_, reason := admitRequestAuthority(r, "https", plugin.Flow{Host: "example.com", Port: 443})

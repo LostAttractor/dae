@@ -83,10 +83,8 @@ func admitRequestAuthority(r *http.Request, scheme string, flow plugin.Flow) (pl
 	return flow, ""
 }
 
-// Honor an explicit URL scheme (HTTP/1 absolute-form and HTTP/3). Otherwise
-// use the intercepted connection's scheme. Go's HTTP/2 server does not expose
-// :scheme in URL, so TLS HTTP/2 is normalized to HTTPS even for :scheme=http.
-// Request.TLS describes the connection and cannot recover the original scheme.
+// HTTP/2 and HTTP/3 preserve :scheme in URL, as does HTTP/1 absolute-form.
+// HTTP/1 origin-form inherits the intercepted connection's scheme.
 func requestScheme(r *http.Request, connectionScheme string) string {
 	if r.URL.Scheme != "" {
 		return r.URL.Scheme
