@@ -28,9 +28,7 @@ type Pool struct {
 	slots      chan struct{}
 	queue      chan struct{}
 	mu         sync.Mutex
-	closed     bool
 	idle       []*worker
-	workers    map[*worker]struct{}
 	jobs       sync.WaitGroup
 	sequence   atomic.Uint64
 }
@@ -55,7 +53,7 @@ func Acquire() (*Pool, func() error, error) {
 			return nil, nil, err
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		shared.pool = &Pool{group: group, executable: executable, ctx: ctx, cancel: cancel, slots: make(chan struct{}, MaxWorkers), queue: make(chan struct{}, MaxWorkers+16), workers: make(map[*worker]struct{})}
+		shared.pool = &Pool{group: group, executable: executable, ctx: ctx, cancel: cancel, slots: make(chan struct{}, MaxWorkers), queue: make(chan struct{}, MaxWorkers+16)}
 	}
 	shared.references++
 	pool := shared.pool
@@ -75,14 +73,13 @@ func Acquire() (*Pool, func() error, error) {
 
 func (p *Pool) close() error {
 	p.mu.Lock()
-	p.closed = true
 	p.cancel()
 	p.mu.Unlock()
 	p.jobs.Wait()
-	for w := range p.workers {
+	// Each job either returns its worker to idle or closes it before finishing.
+	for _, w := range p.idle {
 		w.close()
 	}
-	clear(p.workers)
 	p.idle = nil
 	return p.group.close()
 }
@@ -114,7 +111,7 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 		return nil, err
 	}
 	p.mu.Lock()
-	if p.closed {
+	if p.ctx.Err() != nil {
 		p.mu.Unlock()
 		return nil, ErrUnavailable
 	}
@@ -148,32 +145,24 @@ func (p *Pool) run(parent context.Context, expression string, body []byte, limit
 		if err != nil {
 			return nil, err
 		}
-		p.mu.Lock()
-		p.workers[w] = struct{}{}
-		p.mu.Unlock()
 	}
-	interrupted := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() { w.close(); close(interrupted) })
+	stop := context.AfterFunc(ctx, w.close)
 	healthy := false
 	defer func() {
-		if !stop() {
-			<-interrupted
-		}
+		stop()
 		if ctx.Err() != nil {
 			result.Close()
 			result, err = nil, ctx.Err()
 			healthy = false
 		}
-		if !healthy {
+		if healthy {
+			p.mu.Lock()
+			p.idle = append(p.idle, w)
+			p.mu.Unlock()
+		} else {
+			// OnceFunc also joins cancellation's close before releasing the slot.
 			w.close()
 		}
-		p.mu.Lock()
-		if healthy {
-			p.idle = append(p.idle, w)
-		} else {
-			delete(p.workers, w)
-		}
-		p.mu.Unlock()
 	}()
 	request := frame{Magic: frameMagic, Generation: w.generation, Job: p.sequence.Add(1), Expression: uint32(len(expression)), Body: uint32(len(body)), Limit: uint32(limit)}
 	if validate {

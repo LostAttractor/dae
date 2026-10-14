@@ -30,7 +30,6 @@ type HTTPServer struct {
 	serving  int
 	conns    map[*serverConn]struct{}
 	done     chan struct{}
-	doneOnce sync.Once
 }
 
 func NewHTTPServer(base *http.Server) (*HTTPServer, error) {
@@ -60,7 +59,7 @@ func (s *HTTPServer) ServeConn(ctx context.Context, conn net.Conn) {
 		delete(s.conns, active)
 		s.serving--
 		if s.closed && s.serving == 0 {
-			s.doneOnce.Do(func() { close(s.done) })
+			close(s.done)
 		}
 		s.mu.Unlock()
 	}()
@@ -84,10 +83,13 @@ func (s *HTTPServer) ServeConn(ctx context.Context, conn net.Conn) {
 
 func (s *HTTPServer) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	s.closed = true
-	connections := slices.Collect(maps.Keys(s.conns))
-	if s.serving == 0 {
-		s.doneOnce.Do(func() { close(s.done) })
+	var connections []*serverConn
+	if !s.closed {
+		s.closed = true
+		connections = slices.Collect(maps.Keys(s.conns))
+		if s.serving == 0 {
+			close(s.done)
+		}
 	}
 	s.mu.Unlock()
 	for _, conn := range connections {

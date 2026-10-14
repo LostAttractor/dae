@@ -35,15 +35,26 @@ func TestSelectedNetworksShareRepresentativeRecovery(t *testing.T) {
 				t.Fatalf("%v remained selected after representative failure", network)
 			}
 		}
-		transport.ipv6Offline.Store(false)
+		// Discovery can recover TCP4 while TCP6 remains unavailable.
+		time.Sleep(10 * time.Millisecond)
+		synctest.Wait()
 		before4, before6 := transport.tcp4Attempts.Load(), transport.tcp6Attempts.Load()
 		proof, err := d.Check(t.Context(), common.NetworkTCP4, time.Second)
 		defer proof.Release()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if transport.tcp4Attempts.Load() != before4 || transport.tcp6Attempts.Load()-before6 != 1 {
-			t.Fatal("IPv4 selection did not use the representative TCP6 probe")
+		if transport.tcp4Attempts.Load()-before4 != 1 || transport.tcp6Attempts.Load() != before6 {
+			t.Fatal("IPv4 selection did not use the new representative TCP4 probe")
+		}
+		if selected, err := g.Select(common.NetworkTCP6.NetworkType()); selected != nil || !errors.Is(err, ErrNoAliveDialer) {
+			t.Fatal("the new representative revived an unconfirmed IPv6 capability")
+		}
+		transport.ipv6Offline.Store(false)
+		ipv6Proof, err := d.Check(t.Context(), common.NetworkTCP6, time.Second)
+		defer ipv6Proof.Release()
+		if err != nil {
+			t.Fatal(err)
 		}
 		for _, network := range []common.NetworkIndex{common.NetworkTCP4, common.NetworkTCP6} {
 			if selected, err := g.Select(network.NetworkType()); err != nil || selected != d {

@@ -44,6 +44,21 @@ func testPool(tb testing.TB) *Pool {
 	return pool
 }
 
+func workerGroups(t *testing.T, pool *Pool) int {
+	t.Helper()
+	entries, err := os.ReadDir(pool.group.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			count++
+		}
+	}
+	return count
+}
+
 func TestPoolIsolationAndRecovery(t *testing.T) {
 	pool := testPool(t)
 	budget := membuffer.NewBudget(1 << 20)
@@ -63,8 +78,8 @@ func TestPoolIsolationAndRecovery(t *testing.T) {
 		}
 		result.Close()
 	}
-	if len(pool.workers) != 1 {
-		t.Fatalf("warm calls did not reuse worker: %d", len(pool.workers))
+	if len(pool.idle) != 1 || workerGroups(t, pool) != 1 {
+		t.Fatal("warm calls did not reuse one worker")
 	}
 	for _, expression := range []string{"def loop: loop; loop", `"x" * 1073741824`} {
 		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
@@ -74,8 +89,8 @@ func TestPoolIsolationAndRecovery(t *testing.T) {
 		if err == nil {
 			t.Fatal("unbounded expression succeeded")
 		}
-		if len(pool.workers) != 0 {
-			t.Fatal("failed worker remained in pool")
+		if len(pool.idle) != 0 || workerGroups(t, pool) != 0 {
+			t.Fatal("failed worker was not removed")
 		}
 		result, err = pool.Apply(t.Context(), ".", []byte(`{}`), 1024, budget)
 		if err != nil {
@@ -125,9 +140,7 @@ func TestPoolConcurrentCapacityAndClose(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		pool.mu.Lock()
-		count := len(pool.workers)
-		pool.mu.Unlock()
+		count := workerGroups(t, pool)
 		if count > MaxWorkers {
 			t.Fatal(count)
 		}
@@ -220,9 +233,8 @@ func BenchmarkPoolCold(b *testing.B) {
 			b.Fatal(err)
 		}
 		output.Close()
-		for w := range pool.workers {
+		for _, w := range pool.idle {
 			w.close()
-			delete(pool.workers, w)
 		}
 		pool.idle = nil
 	}

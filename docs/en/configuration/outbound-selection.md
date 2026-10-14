@@ -10,6 +10,8 @@ Within a degradation/priority tier, latency policies compare the measured statis
 
 A confirmed failure degrades the path. Its first successful test permits degraded fallback and starts `failure_recovery`. Probes repeat at `min(check_interval, 5s)`; an endpoint success lifts degradation. Failure or paused observation restarts an incomplete window. Shared paths reuse probes with group-specific durations. Target errors, cancellation, queue timeout and sleep neither directly penalize a path nor replace successful verification.
 
+A confirmed representative failure makes every mode unknown and starts rediscovery, including previously unsupported modes. Selectors can switch to a verified replacement without waiting for the failed node's discovery sweep. Successful modes can supply a new representative; unconfirmed modes receive no traffic, and further discovery follows backoff and actual demand. Changing the representative does not bypass `failure_recovery`.
+
 `check_interval` controls continuous monitoring of healthy nodes and defaults to `3m`. Recovery temporarily checks about every `5s` with the defaults, including verification at the `30s` window boundary. The window starts at the first recovery success; elapsed time alone never lifts degradation.
 
 ## `policy: failover`

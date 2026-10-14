@@ -102,6 +102,7 @@ func TestFailoverRechecksCachedPeerBeforeLatencySwitch(t *testing.T) {
 				checks := int32(1)
 				if offline {
 					want = g.Dialers[0]
+					checks += 2 // Failed verification starts a TCP4/TCP6 discovery sweep.
 				}
 				if g.SelectedDialer(testNetworkType) != want || peer.attempts.Load()-before != checks {
 					t.Fatalf("cached peer verification: selected=%v checks=%d, want checks=%d", g.SelectedDialer(testNetworkType), peer.attempts.Load()-before, checks)

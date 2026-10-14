@@ -14,8 +14,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// networkState records irreversible mode capability. Reachability is shared
-// by all supported modes through pathHealth.phase.
+// networkState records capability within the current discovery round. A
+// confirmed path failure starts a new round for every mode. Reachability is
+// shared by all supported modes through pathHealth.phase.
 type networkState uint8
 
 const (
@@ -114,6 +115,19 @@ func (d *pathRuntime) networkStates() [common.NetworkTypeCount]networkState {
 	states := d.health.networks
 	d.mu.RUnlock()
 	return states
+}
+
+// Invalidate capabilities before notifying selectors, so an alternate probe
+// cannot revive modes that have not succeeded in the new discovery round.
+func (d *pathRuntime) restartCapabilityDiscoveryLocked() bool {
+	if !d.checksConnectivity || !firstSupportedNetwork(d.health.networks).Valid() {
+		return false
+	}
+	for i := range d.health.networks {
+		d.health.networks[i] = networkUnknown
+	}
+	d.health.pendingForce = SelectionForceNone
+	return true
 }
 
 type probeTransition struct {
@@ -243,6 +257,7 @@ func (d *pathRuntime) applyConnectErrorLocked(result checkResult, session netpro
 	previousHealthy := d.healthyLocked(session)
 	blocksHealth := result.kind != checkSupport || recoveryBlockedReason(result.failure()) != ""
 	if blocksHealth {
+		d.restartCapabilityDiscoveryLocked()
 		d.confirmFailureLocked()
 		d.health.phase = healthUnhealthy
 		d.health.readiness = result.readiness
@@ -349,6 +364,10 @@ func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 		canonicalResult = &result.probes[0]
 	}
 	failureReportedAt := d.applyHealthResultLocked(result, canonicalResult != nil && canonicalResult.err == nil)
+	rediscover := false
+	if !d.health.phase.usable() {
+		rediscover = d.restartCapabilityDiscoveryLocked()
+	}
 	if canonicalResult != nil {
 		d.recordLatencyLocked(canonicalResult.latency, canonicalResult.err == nil)
 	}
@@ -360,7 +379,7 @@ func (d *pathRuntime) applyHealthCheckLocked(result checkResult) appliedCheck {
 	d.logCheckOutcome(previousHealthy, currentHealthy, canonicalResult, nil, result)
 	d.recordAvailability(currentHealthy, true, failureReportedAt)
 	d.notifyGroups(forceSelection)
-	return appliedCheck{success: currentHealthy}
+	return appliedCheck{success: currentHealthy, rediscover: rediscover}
 }
 
 func (d *pathRuntime) logCheckOutcome(previousHealthy, success bool, canonical *probeResult, transitions []probeTransition, result checkResult) {

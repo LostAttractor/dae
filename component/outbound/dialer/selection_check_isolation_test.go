@@ -64,10 +64,14 @@ func TestKnownCapabilitiesShareSelectionProbe(t *testing.T) {
 					})
 				}
 				clients.Wait()
+				synctest.Wait()
 				for network := range common.NetworkIndex(common.NetworkTypeCount) {
 					want := int32(0)
 					if network == common.NetworkTCP6 {
 						want = 1
+					}
+					if failed {
+						want++ // One new discovery sweep after the shared failure.
 					}
 					if probes[network].Load() != want {
 						t.Errorf("%v probes=%d want=%d", network, probes[network].Load(), want)

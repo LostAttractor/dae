@@ -30,6 +30,8 @@ type failoverTransport struct {
 	tcp6Attempts atomic.Int32
 	created      atomic.Int32
 	closed       atomic.Int32
+	blockAfter   atomic.Int32
+	blocked      atomic.Int32
 	ipv6Only     bool
 }
 
@@ -42,11 +44,16 @@ func (d *failoverTransport) DialContext(ctx context.Context, network, address st
 	if d.ipv6Only && !strings.HasPrefix(address, "[") {
 		return nil, netproxy.UnsupportedTunnelTypeError
 	}
-	d.attempts.Add(1)
+	attempt := d.attempts.Add(1)
 	if strings.HasPrefix(address, "[") {
 		d.tcp6Attempts.Add(1)
 	} else {
 		d.tcp4Attempts.Add(1)
+	}
+	if after := d.blockAfter.Load(); after > 0 && attempt > after {
+		d.blocked.Add(1)
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	timer := time.NewTimer(time.Duration(d.delay.Load()))
 	defer timer.Stop()

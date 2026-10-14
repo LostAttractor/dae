@@ -662,7 +662,7 @@ func TestNonCanonicalSupportDiscoveryForcesOnlyDiscoveredMode(t *testing.T) {
 	}
 }
 
-func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
+func TestSupportDiscoveredBeforeFailureMustBeRediscovered(t *testing.T) {
 	d := newTestDialer(t, testTransport{})
 	d.mu.Lock()
 	for i := range d.health.networks {
@@ -696,14 +696,14 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	if failed, accepted := d.applyCheck(checkResult{
 		kind:   checkHealth,
 		probes: []probeResult{{network: common.NetworkTCP6, err: errors.New("still down")}},
-	}); !accepted || failed.success || d.health.pendingForce != wantForce {
-		t.Fatalf("failed canonical retry changed pending force: %+v, accepted=%v", failed, accepted)
+	}); !accepted || failed.success || !failed.rediscover || d.health.pendingForce != SelectionForceNone {
+		t.Fatalf("failed canonical retry retained stale discovery: %+v, accepted=%v", failed, accepted)
 	}
 	d.applySessionState(netproxy.StateEvent{Seq: 1, State: netproxy.SessionDisconnected})
-	if d.health.pendingForce != wantForce {
+	if d.health.pendingForce != SelectionForceNone {
 		t.Fatalf("session loss changed pending force to %04b", d.health.pendingForce)
 	}
-	healthResult := performCheck(checker, context.Background(), checkHealth)
+	healthResult := performCheck(checker, t.Context(), checkSupport)
 	health, accepted := d.applyCheck(healthResult)
 	if !accepted || !health.success || d.health.pendingForce != SelectionForceNone {
 		t.Fatalf("canonical recovery = %+v, accepted=%v", health, accepted)
@@ -711,8 +711,9 @@ func TestNonCanonicalSupportWaitsForCanonicalRecovery(t *testing.T) {
 	if !d.Usable(common.NetworkTCP6.NetworkType()) || !d.Usable(common.NetworkTCP4.NetworkType()) || !d.Usable(common.NetworkUDP4.NetworkType()) {
 		t.Fatal("supported modes did not follow canonical recovery")
 	}
+	wantForce |= SelectionForceFor(common.NetworkTCP6) | SelectionForceFor(common.NetworkUDP6)
 	if got := SelectionForceMask(group.forceMask.Load()); got != wantForce {
-		t.Fatalf("canonical recovery force mask = %04b, want %04b", got, wantForce)
+		t.Fatalf("rediscovery force mask = %04b, want %04b", got, wantForce)
 	}
 }
 
@@ -770,24 +771,20 @@ func TestHealthCheckUsesOnlyCanonicalMode(t *testing.T) {
 		t.Fatal("supported alternative did not follow canonical health failure")
 	}
 	status := d.RuntimeStatus()
-	if status.SupportState[common.NetworkTCP6] != api.NetworkSupportConfirmed || status.SupportState[common.NetworkTCP4] != api.NetworkSupportConfirmed {
-		t.Fatalf("health failure changed confirmed support: %v", status.SupportState)
+	for _, state := range status.SupportState {
+		if state != api.NetworkSupportUnknown {
+			t.Fatalf("failed representative retained capabilities: %v", status.SupportState)
+		}
 	}
-	if got := firstSupportedNetwork(d.networkStates()); got != common.NetworkTCP6 {
-		t.Fatalf("canonical mode migrated to %v, want tcp6", got)
+	if got := firstSupportedNetwork(d.networkStates()); got.Valid() {
+		t.Fatalf("old representative survived failure: %v", got)
 	}
 	if status.HasLatency {
 		t.Fatalf("failed probe fabricated a latency = %+v", status.Latency)
 	}
-	d.applyCheck(checkResult{
-		kind: checkHealth,
-		probes: []probeResult{{
-			network: common.NetworkTCP6,
-			latency: time.Millisecond,
-		}},
-	})
-	if !d.Usable(common.NetworkTCP6.NetworkType()) || !d.Usable(common.NetworkTCP4.NetworkType()) {
-		t.Fatal("supported modes did not follow canonical recovery")
+	d.applyCheck(performCheck(checker, t.Context(), checkSupport))
+	if d.Usable(common.NetworkTCP6.NetworkType()) || !d.Usable(common.NetworkTCP4.NetworkType()) {
+		t.Fatal("rediscovery did not isolate the failed mode and recover through tcp4")
 	}
 }
 

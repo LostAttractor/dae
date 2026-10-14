@@ -72,6 +72,10 @@ func (c *connectivityChecker) stopRetries() {
 }
 
 func (c *connectivityChecker) updateSchedule(kind checkKind, applied appliedCheck) {
+	if applied.rediscover {
+		c.scheduleRediscovery()
+		return
+	}
 	if !c.d.checksConnectivity {
 		if applied.success {
 			c.healthAt = time.Time{}
@@ -89,9 +93,20 @@ func (c *connectivityChecker) updateSchedule(kind checkKind, applied appliedChec
 		if applied.healthApplied {
 			c.healthAt = time.Time{}
 			c.updateHealthSchedule(true)
+		} else if c.d.initialCheckCompleted() && !c.supportPending() && !firstSupportedNetwork(c.d.networkStates()).Valid() {
+			c.blockedBy = "no_supported_network"
+			c.stopRetries()
+			return
 		}
 	}
 	c.scheduleSupport()
+}
+
+func (c *connectivityChecker) scheduleRediscovery() {
+	c.rediscover = true
+	c.retryInterval = initialRetryInterval(c.d.CheckIntervalMax)
+	c.healthAt = time.Time{}
+	c.supportAt = time.Now()
 }
 
 func (c *connectivityChecker) updateInitialSchedule(success bool) {
@@ -158,7 +173,15 @@ func (c *connectivityChecker) dispatch() {
 	if c.startSelectionCheck() {
 		return
 	}
-	if !status.CheckEnabled {
+	if c.blockedBy != "" {
+		c.d.setRecovery(RecoveryBlocked, time.Time{}, c.blockedBy)
+		return
+	}
+	// Selection requests can finish discovery before the background sweep runs.
+	if c.rediscover && !c.supportPending() {
+		c.rediscover = false
+	}
+	if !status.CheckEnabled && !c.rediscover {
 		c.d.mu.RLock()
 		demand := c.d.retains > 0
 		for member := range c.d.members {
@@ -171,17 +194,18 @@ func (c *connectivityChecker) dispatch() {
 			return
 		}
 		// Selected failover paths and retained callers still need capacity.
-		// Repair it without enabling periodic latency or capability discovery.
-		c.supportAt = time.Time{}
+		// Recover it while demand exists, then stop checking once healthy.
 		if status.Healthy {
 			c.healthAt = time.Time{}
 		} else if c.healthAt.IsZero() {
-			c.healthAt = time.Now()
+			// A failed rediscovery still has a retry deadline. Retained callers
+			// need recovery, but must not turn that backoff into a busy loop.
+			c.healthAt = c.supportAt
+			if c.healthAt.IsZero() {
+				c.healthAt = time.Now()
+			}
 		}
-	}
-	if c.blockedBy != "" {
-		c.d.setRecovery(RecoveryBlocked, time.Time{}, c.blockedBy)
-		return
+		c.supportAt = time.Time{}
 	}
 	if c.libraryRequested && status.Session.RecoveryExecutor == netproxy.RecoveryLibraryManaged && !status.Session.Accepting {
 		c.d.setRecovery(RecoveryConnecting, time.Time{}, "protocol_recovery")

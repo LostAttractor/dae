@@ -4,6 +4,8 @@ package http2
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -219,14 +221,69 @@ func TestHTTPServerShutdownBeforeServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := server.Shutdown(t.Context()); err != nil {
-		t.Fatal(err)
+	var shutdowns sync.WaitGroup
+	for range 8 {
+		shutdowns.Go(func() {
+			if err := server.Shutdown(t.Context()); err != nil {
+				t.Error(err)
+			}
+		})
 	}
+	shutdowns.Wait()
 	local, peer := net.Pipe()
 	defer peer.Close()
 	server.ServeConn(t.Context(), local)
 	var data [1]byte
 	if _, err := peer.Read(data[:]); err != io.EOF {
 		t.Fatalf("connection admitted after shutdown: %v", err)
+	}
+}
+
+type delayedAddressConn struct {
+	net.Conn
+	beforeAddress func()
+}
+
+func (c delayedAddressConn) LocalAddr() net.Addr {
+	c.beforeAddress()
+	return c.Conn.LocalAddr()
+}
+
+func TestHTTPServerShutdownDuringAdmission(t *testing.T) {
+	server, err := NewHTTPServer(new(http.Server))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, peer := net.Pipe()
+	entered, resume, served := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	t.Cleanup(func() {
+		release()
+		_ = peer.Close()
+		_ = local.Close()
+		<-served
+	})
+	go func() {
+		defer close(served)
+		server.ServeConn(t.Context(), delayedAddressConn{Conn: local, beforeAddress: sync.OnceFunc(func() {
+			close(entered)
+			<-resume
+		})})
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	// Admission has started, but the protocol connection is not registered yet.
+	if err := server.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown did not wait for the accepted connection: %v", err)
+	}
+	release()
+	_ = peer.Close()
+	<-served
+	// The last connection completes shutdown, including repeated callers.
+	for range 2 {
+		if err := server.Shutdown(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

@@ -25,8 +25,8 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP4, err: errors.New("offline")}}})
 		var probes atomic.Int32
 		checker := newConnectivityChecker(d.pathRuntime, func(_ context.Context, network *common.NetworkType) error {
-			if network.Index() != common.NetworkTCP6 {
-				t.Errorf("recovery used non-representative probe %v", network)
+			if d.RuntimeStatus().Healthy && network.Index() != common.NetworkTCP6 {
+				t.Errorf("recovery observation used non-representative probe %v", network)
 			}
 			probes.Add(1)
 			return nil
@@ -45,12 +45,12 @@ func TestDefaultRecoveryWindowOverridesThreeMinuteChecks(t *testing.T) {
 		}
 		time.Sleep(29 * time.Second)
 		synctest.Wait()
-		if probes.Load() != 6 || !d.RuntimeStatus().Degraded {
-			t.Fatalf("recovery did not check at 0/5/10/15/20/25 seconds: probes=%d", probes.Load())
+		if probes.Load() != 9 || !d.RuntimeStatus().Degraded {
+			t.Fatalf("recovery did not follow four-mode discovery with checks at 5/10/15/20/25 seconds: probes=%d", probes.Load())
 		}
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if probes.Load() != 7 || d.RuntimeStatus().Degraded {
+		if probes.Load() != 10 || d.RuntimeStatus().Degraded {
 			t.Fatalf("30-second endpoint verification did not complete recovery: probes=%d", probes.Load())
 		}
 		for network := range common.NetworkIndex(common.NetworkTypeCount) {
@@ -72,9 +72,11 @@ func TestRecoveryStatusWhileProbeTimesOut(t *testing.T) {
 		d.applyCheck(checkResult{kind: checkHealth, probes: []probeResult{{network: common.NetworkTCP4, err: errors.New("offline")}}})
 		var probes atomic.Int32
 		checker := newConnectivityChecker(d.pathRuntime, func(ctx context.Context, _ *common.NetworkType) error {
-			if probes.Add(1) == 1 {
+			if probes.Add(1) <= common.NetworkTypeCount {
 				return nil
 			}
+			ctx, cancel := context.WithTimeout(ctx, d.group.probeTimeout)
+			defer cancel()
 			<-ctx.Done()
 			return ctx.Err()
 		})
@@ -91,8 +93,13 @@ func TestRecoveryStatusWhileProbeTimesOut(t *testing.T) {
 		time.Sleep(time.Until(first.Recovery.RetryAt))
 		synctest.Wait()
 		checking := d.RuntimeStatus()
-		if probes.Load() != 2 || !checking.Healthy || !checking.Checking || checking.RecoveryElapsed != 0 || checking.Recovery.Phase != RecoveryVerifying || !checking.Recovery.RetryAt.IsZero() {
+		if probes.Load() != 5 || !checking.Healthy || !checking.Checking || checking.RecoveryElapsed != 0 || checking.Recovery.Phase != RecoveryVerifying || !checking.Recovery.RetryAt.IsZero() {
 			t.Fatalf("pending probe was hidden behind zero recovery progress: %+v", checking)
+		}
+		time.Sleep(d.group.probeTimeout)
+		synctest.Wait()
+		if failed := d.RuntimeStatus(); failed.Healthy || !failed.Checking || !failed.Degraded {
+			t.Fatalf("timed-out observation did not invalidate health before rediscovery: %+v", failed)
 		}
 		time.Sleep(d.group.probeTimeout)
 		synctest.Wait()
@@ -110,7 +117,7 @@ func TestRecoverySharesObservationButKeepsGroupDurations(t *testing.T) {
 		d.group.failureRecovery = time.Second
 		other.group.failureRecovery = 3 * time.Second
 		check := func(err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
+			d.applyCheck(checkResult{kind: checkSelection, generation: d.failures.generation, probes: []probeResult{{network: common.NetworkTCP4, err: err}}})
 		}
 		check(errors.New("offline"))
 		check(nil)
@@ -144,7 +151,7 @@ func TestUnconfirmedSampleDoesNotAdvanceRecovery(t *testing.T) {
 		d := newTestDialer(t, testTransport{})
 		d.health.networks[common.NetworkTCP4] = networkSupported
 		check := func(generation uint64, err error) {
-			d.applyCheck(checkResult{kind: checkHealth, generation: generation,
+			d.applyCheck(checkResult{kind: checkSelection, generation: generation,
 				probes: []probeResult{{network: common.NetworkTCP4, latency: time.Millisecond, err: err}}})
 		}
 		check(d.failures.generation, errors.New("offline"))

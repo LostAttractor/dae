@@ -273,6 +273,7 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 	c.flight = nil
 	err := result.failure()
 	blocked := ""
+	rediscover := false
 	if err == nil && flight.ctx.Err() != nil {
 		err = flight.ctx.Err()
 		if len(result.probes) != 0 {
@@ -287,6 +288,7 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		}
 	} else {
 		applied, ok := c.d.applyCheck(result)
+		rediscover = ok && applied.rediscover
 		if ok && !applied.success {
 			blocked = recoveryBlockedReason(result.failure())
 		}
@@ -301,6 +303,9 @@ func (c *connectivityChecker) finishSelectionCheck(result checkResult) {
 		c.d.resetRecoveryObservationLocked()
 	}
 	c.healthAt = time.Now().Add(c.d.recoveryCheckInterval())
+	if rediscover {
+		c.scheduleRediscovery()
+	}
 	if blocked != "" {
 		c.blockedBy = blocked
 		c.stopRetries()
@@ -327,8 +332,8 @@ func (d *pathRuntime) applySelectionCheckLocked(result checkResult) appliedCheck
 	if previous != networkSupported && probe.err == nil {
 		d.health.pendingForce |= SelectionForceFor(probe.network)
 	}
-	if probe.err != nil && recoveryBlockedReason(probe.err) == "" && (errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) ||
-		previous != networkSupported && d.health.phase.usable()) {
+	if probe.err != nil && recoveryBlockedReason(probe.err) == "" && previous != networkSupported &&
+		(errors.Is(probe.err, netproxy.UnsupportedTunnelTypeError) || d.health.phase.usable()) {
 		d.statusRevision++
 		d.mu.Unlock()
 		d.notifyGroups(SelectionForceNone)
