@@ -162,6 +162,7 @@ func TestClientAuthenticatesAndExchangesWithTLSPeer(t *testing.T) {
 	config := certificate.TLS.Clone()
 	certificate.Close()
 	client, peer := net.Pipe()
+	defer client.Close()
 	result := make(chan error, 1)
 	go func() {
 		carrier := tls.Server(peer, config)
@@ -210,6 +211,10 @@ func TestClientAuthenticatesAndExchangesWithTLSPeer(t *testing.T) {
 				frame = append(frame, []byte("reply")...)
 				_, err := carrier.Write(frame)
 				result <- err
+				if err == nil {
+					// Keep the shared session alive until the client closes it.
+					_, _ = io.Copy(io.Discard, carrier)
+				}
 				return
 			}
 		}
@@ -219,7 +224,7 @@ func TestClientAuthenticatesAndExchangesWithTLSPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	if err := d.Connect(ctx); err != nil {
 		t.Fatal(err)
