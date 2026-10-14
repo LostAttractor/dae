@@ -25,6 +25,8 @@ type Conn struct {
 	onceWrite bool
 }
 
+const maxRejectionMessageBytes = 1024
+
 func ReadResponse(conn net.Conn) (err error) {
 	var status uint8
 	err = binary.Read(conn, binary.BigEndian, &status)
@@ -33,11 +35,16 @@ func ReadResponse(conn net.Conn) (err error) {
 	}
 	if status == statusError {
 		var message []byte
-		message, err = io.ReadAll(conn)
+		message, err = io.ReadAll(io.LimitReader(conn, maxRejectionMessageBytes+1))
 		if err != nil {
 			return
 		}
-		return netproxy.WrapFailure(errors.New(fmt.Sprintf("smux target rejected connection: %s", message)), netproxy.Failure{Scope: netproxy.ScopeStream, Layer: netproxy.LayerSMUX, Origin: netproxy.OriginTarget, Reason: netproxy.ReasonRejected, Phase: netproxy.OpDial})
+		suffix := ""
+		if len(message) > maxRejectionMessageBytes {
+			message = message[:maxRejectionMessageBytes]
+			suffix = " (truncated)"
+		}
+		return netproxy.WrapFailure(fmt.Errorf("smux target rejected connection: %s%s", message, suffix), netproxy.Failure{Scope: netproxy.ScopeStream, Layer: netproxy.LayerSMUX, Origin: netproxy.OriginTarget, Reason: netproxy.ReasonRejected, Phase: netproxy.OpDial})
 	}
 	return
 }
