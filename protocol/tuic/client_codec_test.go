@@ -10,7 +10,30 @@ import (
 
 	"github.com/daeuniverse/outbound/netproxy"
 	"github.com/daeuniverse/outbound/protocol"
+	"github.com/daeuniverse/outbound/protocol/tuic/common"
 )
+
+func TestDialerHonorsUDPRelayMode(t *testing.T) {
+	for _, quic := range []bool{false, true} {
+		header := protocol.Header{User: "00000000-0000-0000-0000-000000000001", Feature1: "bbr"}
+		want := common.NATIVE
+		if quic {
+			header.Flags |= protocol.Flags_Tuic_UdpRelayModeQuic
+			want = common.QUIC
+		}
+		dialer, err := NewDialer(nil, header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := dialer.clientRing.newClient(func(int64) {})
+		if client.UdpRelayMode != want {
+			t.Fatalf("relay mode=%v want=%v", client.UdpRelayMode, want)
+		}
+		if err := dialer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestClientFrameWireFormat(t *testing.T) {
 	for _, tc := range []struct{ address, wire string }{

@@ -40,8 +40,7 @@ func NewDialer(nextDialer netproxy.Dialer, header protocol.Header) (*Dialer, err
 	maxDatagramFrameSize := 1400
 	udpRelayMode := common.NATIVE
 	if header.Flags&protocol.Flags_Tuic_UdpRelayModeQuic > 0 {
-		// FIXME: QUIC has severe performance problems.
-		// udpRelayMode = common.QUIC
+		udpRelayMode = common.QUIC
 	}
 	return &Dialer{
 		clientRing: newClientRing(func(capabilityCallback func(n int64)) *clientImpl {
