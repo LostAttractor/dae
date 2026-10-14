@@ -74,7 +74,7 @@ func (d *Dialer) DialContext(ctx context.Context, network, _ string) (net.Conn, 
 	if d.tlsConfig != nil {
 		conn = tls.Client(conn, d.tlsConfig)
 	}
-	c := &clientConn{Conn: conn, reader: bufio.NewReader(conn), lease: lease}
+	c := &clientConn{Conn: conn, lease: lease}
 	err = protocol.Handshake(ctx, c, func() error {
 		req := &http.Request{Method: http.MethodGet, URL: d.path, Host: d.host, Header: make(http.Header)}
 		req.Header.Set("Connection", "Upgrade")
@@ -82,13 +82,14 @@ func (d *Dialer) DialContext(ctx context.Context, network, _ string) (net.Conn, 
 		if err := req.Write(conn); err != nil {
 			return err
 		}
-		resp, err := http.ReadResponse(c.reader, req)
+		resp, reader, err := protocol.ReadHTTPResponse(conn, req)
 		if err != nil {
 			return err
 		}
 		if resp.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") || !hasUpgradeToken(resp.Header.Values("Connection")) {
 			return netproxy.WrapFailure(fmt.Errorf("httpupgrade: rejected response %s", resp.Status), netproxy.Failure{Layer: netproxy.LayerProxy, Scope: netproxy.ScopeOperation, Phase: netproxy.OpHandshake, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonRejected, Code: strconv.Itoa(resp.StatusCode)})
 		}
+		c.reader = reader
 		return nil
 	})
 	if err != nil {

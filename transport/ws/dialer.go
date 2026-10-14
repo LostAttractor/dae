@@ -185,7 +185,7 @@ func (s *Ws) DialContext(ctx context.Context, network, addr string) (c net.Conn,
 			}
 			raw = tls.Client(raw, config)
 		}
-		reader := bufio.NewReader(raw)
+		var reader *bufio.Reader
 		err = protocol.Handshake(ctx, raw, func() error {
 			var nonce [16]byte
 			if _, err := rand.Read(nonce[:]); err != nil {
@@ -203,7 +203,7 @@ func (s *Ws) DialContext(ctx context.Context, network, addr string) (c net.Conn,
 			if err := request.Write(raw); err != nil {
 				return err
 			}
-			response, err := http.ReadResponse(reader, request)
+			response, buffered, err := protocol.ReadHTTPResponse(raw, request)
 			if err != nil {
 				return err
 			}
@@ -211,6 +211,7 @@ func (s *Ws) DialContext(ctx context.Context, network, addr string) (c net.Conn,
 			if response.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(response.Header.Get("Upgrade"), "websocket") || !headerToken(response.Header.Get("Connection"), "upgrade") || response.Header.Get("Sec-WebSocket-Accept") != base64.StdEncoding.EncodeToString(accept[:]) || response.Header.Get("Sec-WebSocket-Extensions") != "" || response.Header.Get("Sec-WebSocket-Protocol") != "" {
 				return netproxy.WrapFailure(fmt.Errorf("websocket upgrade rejected: %s", response.Status), netproxy.Failure{Layer: netproxy.LayerProxy, Scope: netproxy.ScopeOperation, Phase: netproxy.OpHandshake, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonRejected, Code: strconv.Itoa(response.StatusCode)})
 			}
+			reader = buffered
 			return nil
 		})
 		if err != nil {

@@ -45,19 +45,20 @@ func proxyStatus(response *http.Response, scope netproxy.FailureScope) error {
 	return netproxy.WrapFailure(fmt.Errorf("proxy responded with status %s", response.Status), netproxy.Failure{Scope: scope, Layer: netproxy.LayerProxy, Origin: netproxy.OriginPeer, Phase: netproxy.OpHandshake, Reason: reason, Code: fmt.Sprint(response.StatusCode)})
 }
 func (p *HttpProxy) connectHTTP1(ctx context.Context, raw net.Conn, target string) (net.Conn, error) {
-	reader := bufio.NewReader(raw)
+	var reader *bufio.Reader
 	request := p.request(ctx, target)
 	err := protocol.Handshake(ctx, raw, func() error {
 		if err := request.WriteProxy(raw); err != nil {
 			return err
 		}
-		response, err := http.ReadResponse(reader, request)
+		response, buffered, err := protocol.ReadHTTPResponse(raw, request)
 		if err != nil {
 			return err
 		}
 		if response.StatusCode != http.StatusOK {
 			return proxyStatus(response, netproxy.ScopeOperation)
 		}
+		reader = buffered
 		// Successful CONNECT hands all following bytes to the tunnel, including
 		// read-ahead retained by reader. Closing response.Body would drain them.
 		return nil
