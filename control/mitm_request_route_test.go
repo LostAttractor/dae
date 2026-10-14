@@ -122,12 +122,12 @@ func TestHTTPOriginalPoolKeepsRouteAndMark(t *testing.T) {
 		if err != nil {
 			return mitm.UpstreamPlan{}, err
 		}
-		options, err := planner.routeOptions(r.Context(), target)
+		option, err := planner.originalRoute(r.Context())
 		if err != nil {
 			return mitm.UpstreamPlan{}, err
 		}
-		marks = append(marks, options[0].Mark)
-		return planner.upstreamPlan(r.URL.Scheme, target, options)
+		marks = append(marks, option.Mark)
+		return planner.upstreamPlan(r.URL.Scheme, target, option)
 	}
 	handler, closePools := plane.mitmHost.Handler("http", "original.example", 80, observePlan)
 	defer closePools()

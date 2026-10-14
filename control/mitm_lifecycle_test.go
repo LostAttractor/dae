@@ -188,7 +188,7 @@ func TestMITMHTTPFailedDialPlanRevocationResetsClient(t *testing.T) {
 	relay := &tcpRelay{lConn: sniffing.NewConnSniffer(accepted, time.Second), domain: "service.example", dst: netip.MustParseAddrPort(option.DialTarget), mitmHost: host,
 		mitmPlanner: func(*http.Request) (mitm.UpstreamPlan, error) {
 			plans.Add(1)
-			return planner.upstreamPlan("http", planner.original, []*DialOption{option})
+			return planner.upstreamPlan("http", planner.original, option)
 		},
 	}
 	done := make(chan error, 1)

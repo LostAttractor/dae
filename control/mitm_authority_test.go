@@ -100,21 +100,19 @@ func TestHTTP2CoalescedAuthorityRoutes(t *testing.T) {
 		if err != nil {
 			return mitm.UpstreamPlan{}, err
 		}
-		options, err := planner.routeOptions(r.Context(), target)
+		option, err := planner.originalRoute(r.Context())
 		if err != nil {
 			return mitm.UpstreamPlan{}, err
 		}
-		for _, option := range options {
-			switch target.host {
-			case "original.example":
-				if option != retained || option.Mark != 37 || option.Outbound.Name != "direct" {
-					t.Errorf("lost original inspection route: %+v", option)
-				}
-			default:
-				t.Errorf("fronted authority reached routing: %s", target.host)
+		switch target.host {
+		case "original.example":
+			if option != retained || option.Mark != 37 || option.Outbound.Name != "direct" {
+				t.Errorf("lost original inspection route: %+v", option)
 			}
+		default:
+			t.Errorf("fronted authority reached routing: %s", target.host)
 		}
-		return planner.upstreamPlan(r.URL.Scheme, target, options)
+		return planner.upstreamPlan(r.URL.Scheme, target, option)
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {

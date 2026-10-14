@@ -6,10 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"net"
 	"net/http"
 	"net/netip"
-	"strings"
+	"sync"
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
@@ -48,101 +49,80 @@ func (p *httpRoutePlanner) plan(request *http.Request) (mitm.UpstreamPlan, error
 	if err != nil {
 		return mitm.UpstreamPlan{}, err
 	}
-	options, err := p.routeOptions(ctx, target)
-	if err != nil {
-		return mitm.UpstreamPlan{}, err
-	}
-	return p.upstreamPlan(request.URL.Scheme, target, options)
-}
-
-func (p *httpRoutePlanner) routeOptions(ctx context.Context, target httpTarget) ([]*DialOption, error) {
 	if target == p.original {
-		if p.retained != nil && pluginctx.HTTPPolicy(ctx) == "" {
-			return []*DialOption{p.retained}, nil
-		}
-		// Keep the intercepted IP for the original authority instead of
-		// resolving the hostname to a different endpoint.
-		domain := target.host
-		if _, err := netip.ParseAddr(domain); err == nil {
-			domain = ""
-		}
-		option, err := p.plane.selectHTTPAddress(ctx, p.network, p.source, p.identity, domain, p.destination)
+		option, err := p.originalRoute(ctx)
 		if err != nil {
-			return nil, err
+			return mitm.UpstreamPlan{}, err
 		}
-		return []*DialOption{option}, nil
+		return p.upstreamPlan(request.URL.Scheme, target, option)
 	}
-
-	var options []*DialOption
+	ctx, cancel := context.WithCancel(ctx)
+	next, stop := iter.Pull2(p.plane.httpRouteCandidates(ctx, p.network, target, p.source, p.identity))
+	closeCandidates := sync.OnceFunc(func() { cancel(); stop() })
 	var failures []error
-	for option, err := range p.plane.httpRouteCandidates(ctx, p.network, target, p.source, p.identity) {
-		if err != nil {
-			failures = append(failures, err)
-			continue
+	var advance func() (mitm.UpstreamPlan, error)
+	advance = func() (mitm.UpstreamPlan, error) {
+		for {
+			option, err, ok := next()
+			if !ok {
+				return mitm.UpstreamPlan{}, errors.Join(fmt.Errorf("HTTP target %s has no further route", target), errors.Join(failures...))
+			}
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			plan, err := p.upstreamPlan(request.URL.Scheme, target, option)
+			if err != nil {
+				return mitm.UpstreamPlan{}, err
+			}
+			plan.Next, plan.Close = advance, closeCandidates
+			return plan, nil
 		}
-		options = append(options, option)
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	plan, err := advance()
+	if err != nil {
+		closeCandidates()
 	}
-	if len(options) == 0 {
-		return nil, fmt.Errorf("HTTP target %s has no route: %w", target, errors.Join(failures...))
-	}
-	return options, nil
+	return plan, err
 }
 
-func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, options []*DialOption) (mitm.UpstreamPlan, error) {
-	if options[0].Outbound.Name == consts.OutboundBlock.String() {
+func (p *httpRoutePlanner) originalRoute(ctx context.Context) (*DialOption, error) {
+	if p.retained != nil && pluginctx.HTTPPolicy(ctx) == "" {
+		return p.retained, nil
+	}
+	// Keep the intercepted IP for the original authority.
+	domain := p.original.host
+	if _, err := netip.ParseAddr(domain); err == nil {
+		domain = ""
+	}
+	return p.plane.selectHTTPAddress(ctx, p.network, p.source, p.identity, domain, p.destination)
+}
+
+func (p *httpRoutePlanner) upstreamPlan(scheme string, target httpTarget, option *DialOption) (mitm.UpstreamPlan, error) {
+	if option.Outbound.Name == consts.OutboundBlock.String() {
 		return mitm.UpstreamPlan{}, fmt.Errorf("HTTP upstream blocked by routing")
 	}
-	var key strings.Builder
-	fmt.Fprintf(&key, "%q/%q", scheme, target.String())
-	for _, option := range options {
-		if cause := option.PolicyLease.AbortCause(); cause != nil {
-			return mitm.UpstreamPlan{}, cause
-		}
-		fmt.Fprintf(&key, "/%q/%p/%d/%q/%s/%t/%p", option.Outbound.Name, option.Dialer, option.Mark, option.DialTarget, option.NetworkType.String(), option.OriginalOutbound != nil, option.PolicyLease)
+	if cause := option.PolicyLease.AbortCause(); cause != nil {
+		return mitm.UpstreamPlan{}, cause
 	}
+	key := fmt.Sprintf("%q/%q/%q/%p/%d/%q/%s/%t/%p", scheme, target.String(), option.Outbound.Name, option.Dialer, option.Mark, option.DialTarget, option.NetworkType.String(), option.OriginalOutbound != nil, option.PolicyLease)
 	source := p.source
-	plan := mitm.UpstreamPlan{Key: key.String(), Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		var failures []error
-		for _, option := range options {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			conn, err := dialHTTPUpstream(ctx, option)
-			logHTTPDial(source, target.host, option, err)
-			if err == nil {
-				return conn, nil
-			}
-			failures = append(failures, err)
-		}
-		return nil, errors.Join(failures...)
+	plan := mitm.UpstreamPlan{Key: key, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		conn, err := dialHTTPUpstream(ctx, option)
+		logHTTPDial(source, target.host, option, err)
+		return conn, err
 	}}
 	if target == p.original {
 		// The original plan is pinned even if its first dial fails. Keep its
 		// policy revocation observable without requiring a successful socket.
-		plan.Check = options[0].PolicyLease.AbortCause
+		plan.Check = option.PolicyLease.AbortCause
 	}
 	if p.network == "udp" {
 		plan.Dial = nil
 		plan.DialPacket = func(ctx context.Context, _ string) (net.PacketConn, net.Addr, error) {
-			var failures []error
-			for _, option := range options {
-				if err := ctx.Err(); err != nil {
-					return nil, nil, err
-				}
-				if option.Outbound.Name == consts.OutboundBlock.String() {
-					return nil, nil, fmt.Errorf("HTTP upstream blocked by routing")
-				}
-				conn, peer, err := dialHTTPPacketUpstream(ctx, option)
-				logHTTPDial(source, target.host, option, err)
-				if err == nil {
-					return conn, peer, nil
-				}
-				failures = append(failures, err)
-			}
-			return nil, nil, errors.Join(failures...)
+			conn, peer, err := dialHTTPPacketUpstream(ctx, option)
+			logHTTPDial(source, target.host, option, err)
+			return conn, peer, err
 		}
 	}
 	return plan, nil

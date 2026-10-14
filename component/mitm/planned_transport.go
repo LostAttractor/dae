@@ -3,11 +3,14 @@
 package mitm
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/internal/pluginctx"
 )
@@ -27,6 +30,11 @@ type UpstreamPlan struct {
 	// Check validates a connection-bound plan's lifetime without selecting a
 	// new route. The owner may terminate the downstream on revocation.
 	Check func() error
+	// Next advances to another independently keyed route after a dial failure,
+	// before any request body was consumed. Close releases the candidate stream
+	// when this request finishes selecting a connection (also on a pool hit).
+	Next  func() (UpstreamPlan, error)
+	Close func()
 }
 
 // Validate the planner contract before forwarding.
@@ -39,6 +47,9 @@ func planUpstream(planner UpstreamPlanner, request *http.Request, packet bool) (
 		return UpstreamPlan{}, err
 	}
 	if plan.Key == "" || packet && plan.DialPacket == nil || !packet && plan.Dial == nil {
+		if plan.Close != nil {
+			plan.Close()
+		}
 		return UpstreamPlan{}, fmt.Errorf("mitm: incomplete upstream plan")
 	}
 	return plan, nil
@@ -89,36 +100,114 @@ func (p *plannedTransport) RoundTripPolicy(request *http.Request, policy string)
 }
 
 func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	pool, err := p.acquire(request)
+	plan, err := p.plan(request)
 	if err != nil {
 		if request.Body != nil {
 			_ = request.Body.Close()
 		}
 		return nil, err
 	}
-	response, err := pool.transport.RoundTrip(request)
-	if err != nil {
+	if plan.Close != nil {
+		defer plan.Close()
+	}
+	var failures []error
+	for {
+		pool, err := p.acquire(plan)
+		if err != nil {
+			if request.Body != nil {
+				_ = request.Body.Close()
+			}
+			return nil, errors.Join(append(failures, err)...)
+		}
+		attempt := new(*request)
+		var body *routeAttemptBody
+		if request.Body != nil && request.Body != http.NoBody {
+			body = &routeAttemptBody{ReadCloser: request.Body}
+			attempt.Body = body
+		}
+		response, err := pool.transport.RoundTrip(attempt)
+		_, dialFailed := errors.AsType[*upstreamDialError](err)
+		retry := err != nil && response == nil && dialFailed && plan.Next != nil &&
+			request.Context().Err() == nil && (body == nil || !body.read.Load())
+		if !retry && body != nil {
+			body.commit()
+		}
+		if err == nil {
+			wrapped := &plannedResponseBody{ReadCloser: response.Body, release: sync.OnceFunc(func() { p.release(pool) })}
+			if writer, ok := response.Body.(io.Writer); ok {
+				response.Body = &plannedReadWriteBody{plannedResponseBody: wrapped, Writer: writer}
+			} else {
+				response.Body = wrapped
+			}
+			return response, nil
+		}
 		p.release(pool)
-		return response, err
+		failures = append(failures, err)
+		if !retry {
+			return response, errors.Join(failures...)
+		}
+		plan, err = plan.Next()
+		if err == nil && (plan.Key == "" || p.packet && plan.DialPacket == nil || !p.packet && plan.Dial == nil) {
+			err = fmt.Errorf("mitm: incomplete fallback upstream plan")
+		}
+		if err != nil {
+			if body != nil {
+				body.commit()
+				_ = body.Close()
+			}
+			return nil, errors.Join(append(failures, err)...)
+		}
 	}
-	body := &plannedResponseBody{ReadCloser: response.Body, release: sync.OnceFunc(func() { p.release(pool) })}
-	if writer, ok := response.Body.(io.Writer); ok {
-		// HTTP/1 upgrades retain bidirectional body access for ReverseProxy.
-		response.Body = &plannedReadWriteBody{plannedResponseBody: body, Writer: writer}
-	} else {
-		response.Body = body
+}
+
+type upstreamDialError struct{ error }
+
+func (e *upstreamDialError) Unwrap() error { return e.error }
+
+// A transport closes Body even when dialing failed before it could read it.
+// Keep that untouched stream available to the next route, then transfer normal
+// asynchronous body ownership to the transport that actually uses it.
+type routeAttemptBody struct {
+	io.ReadCloser
+	read              atomic.Bool
+	mu                sync.Mutex
+	committed, closed bool
+	closeOnce         sync.Once
+	closeErr          error
+}
+
+func (b *routeAttemptBody) Read(p []byte) (int, error) {
+	b.read.Store(true)
+	b.commit()
+	return b.ReadCloser.Read(p)
+}
+
+func (b *routeAttemptBody) commit() {
+	b.mu.Lock()
+	b.committed = true
+	closed := b.closed
+	b.mu.Unlock()
+	if closed {
+		_ = b.Close()
 	}
-	return response, nil
+}
+
+func (b *routeAttemptBody) Close() error {
+	b.mu.Lock()
+	b.closed = true
+	committed := b.committed
+	b.mu.Unlock()
+	if !committed {
+		return nil
+	}
+	b.closeOnce.Do(func() { b.closeErr = b.ReadCloser.Close() })
+	return b.closeErr
 }
 
 // acquire owns planning and cache lookup. A successful acquisition transfers
 // request-body closure to the underlying transport and leases its pool until
 // the response finishes (or RoundTrip fails).
-func (p *plannedTransport) acquire(request *http.Request) (*routePool, error) {
-	plan, err := p.plan(request)
-	if err != nil {
-		return nil, err
-	}
+func (p *plannedTransport) acquire(plan UpstreamPlan) (*routePool, error) {
 	if plan.Check != nil {
 		if err := plan.Check(); err != nil {
 			return nil, err
@@ -150,10 +239,24 @@ func (p *plannedTransport) acquire(request *http.Request) (*routePool, error) {
 		pool = &routePool{refs: 1} // Cache reference.
 		var closePool func()
 		if p.packet {
-			transport := p.host.http3Transport(plan.DialPacket)
+			dial := plan.DialPacket
+			transport := p.host.http3Transport(func(ctx context.Context, address string) (net.PacketConn, net.Addr, error) {
+				conn, peer, err := dial(ctx, address)
+				if err != nil {
+					err = &upstreamDialError{err}
+				}
+				return conn, peer, err
+			})
 			pool.transport, closePool = transport, func() { _ = transport.Close() }
 		} else {
-			transport := p.host.httpTransport(plan.Dial)
+			dial := plan.Dial
+			transport := p.host.httpTransport(func(ctx context.Context, network, address string) (net.Conn, error) {
+				conn, err := dial(ctx, network, address)
+				if err != nil {
+					err = &upstreamDialError{err}
+				}
+				return conn, err
+			})
 			pool.transport, closePool = transport, transport.CloseIdleConnections
 		}
 		p.pools[plan.Key] = pool

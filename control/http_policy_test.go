@@ -54,15 +54,15 @@ func TestHTTPPolicyOverridesRetainedOutbound(t *testing.T) {
 	defer closeClient()
 	for _, policy := range []string{"", "DIRECT", "proxy", "DIRECT", "missing", "REJECT"} {
 		ctx := pluginctx.WithHTTPPolicy(t.Context(), policy)
-		options, err := planner.routeOptions(ctx, planner.original)
+		option, err := planner.originalRoute(ctx)
 		if policy == "missing" {
 			if err == nil {
 				t.Fatal("unknown policy selected an outbound")
 			}
 			continue
 		}
-		if err != nil || options[0].Mark != 91 || options[0].DialTarget != "192.0.2.20:80" {
-			t.Fatalf("policy=%s changed address or mark: %+v %v", policy, options, err)
+		if err != nil || option.Mark != 91 || option.DialTarget != "192.0.2.20:80" {
+			t.Fatalf("policy=%s changed address or mark: %+v %v", policy, option, err)
 		}
 		request, _ := http.NewRequestWithContext(t.Context(), "GET", "http://original.example/", nil)
 		var response *http.Response
