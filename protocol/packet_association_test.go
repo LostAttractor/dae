@@ -94,6 +94,53 @@ func TestPacketAssociationExpiryDoesNotInterruptWrite(t *testing.T) {
 	}
 }
 
+func TestPacketBudgetIncludesNestedTargetsAndPendingClose(t *testing.T) {
+	budget := netproxy.NewPacketBudget(3) // outer association plus two targets
+	release := make(chan struct{})
+	closing := make(chan struct{})
+	open := func(ctx context.Context, address string) (net.PacketConn, error) {
+		return NewPacketAssociation(ctx, address, func(_ context.Context, target string) (net.PacketConn, error) {
+			conn := newTargetPackets(target)
+			if target == "first:53" {
+				conn.closeWait = release
+				closing = conn.closed
+			}
+			return conn, nil
+		})
+	}
+	conn, err := budget.Open(t.Context(), "first:53", open)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"first:53", "second:53"} {
+		if _, err := conn.WriteTo([]byte("x"), netproxy.NewAddr("udp", target)); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := conn.ReadFrom(make([]byte, 1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := conn.WriteTo([]byte("x"), netproxy.NewAddr("udp", "third:53")); netproxy.ClassifyFailure(err).Reason != netproxy.ReasonCapacity {
+		t.Fatalf("nested admission: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { conn.Close(); close(done) }()
+	<-closing
+	// Both the wrapper and its blocked target still own their permits.
+	if _, err := budget.Open(t.Context(), "replacement:53", open); netproxy.ClassifyFailure(err).Reason != netproxy.ReasonCapacity {
+		t.Fatalf("cleanup bypassed admission: %v", err)
+	}
+	close(release)
+	<-done
+	replacement, err := budget.Open(t.Context(), "replacement:53", open)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPacketAssociationReusesTargetsAndPreservesReplies(t *testing.T) {
 	opened := make(map[string]*targetPackets)
 	conn, err := NewPacketAssociation(context.Background(), "192.0.2.1:53", func(_ context.Context, address string) (net.PacketConn, error) {

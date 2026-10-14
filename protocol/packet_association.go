@@ -22,6 +22,11 @@ const (
 // destination. All targets use the same dialer and share one caller lifetime;
 // neither destination changes nor substream creation select another node.
 func NewPacketAssociation(ctx context.Context, address string, open func(context.Context, string) (net.PacketConn, error)) (net.PacketConn, error) {
+	budget := netproxy.PacketBudgetFromContext(ctx)
+	openTarget := open
+	open = func(ctx context.Context, address string) (net.PacketConn, error) {
+		return budget.Open(ctx, address, openTarget)
+	}
 	first, err := open(ctx, address)
 	if err != nil {
 		return nil, err
