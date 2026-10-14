@@ -25,8 +25,8 @@ func TestMITMUDPSourceKeepsSeparateDestinations(t *testing.T) {
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{PacketConn: bridge, NatTimeout: time.Minute})
 	endpoint.mitm, endpoint.firstDst, endpoint.firstIfindex = true, destination, 7
 	endpoint.packetDialer = selected
-	endpoint.destinations = map[netip.AddrPort]netip.AddrPort{destination: destination}
-	endpoint.sockets = map[netip.AddrPort]net.PacketConn{destination: bridge}
+	endpoint.destinations = map[netip.AddrPort]udpDestination{destination: {target: destination}}
+	endpoint.sockets = map[netip.AddrPort]*udpSocket{destination: {conn: bridge}}
 	endpoint.traffic = stats.DefaultStore.OpenConnection(stats.Path{}, false)
 	endpoints.add(source, endpoint)
 	plane := &ControlPlane{udpEndpoints: &endpoints}
@@ -64,7 +64,7 @@ func TestMITMUDPDrainOnlyDeliversExactAssociation(t *testing.T) {
 	target.mitm, target.firstDst, target.firstIfindex = true, destination, 7
 	target.traffic = stats.DefaultStore.OpenConnection(stats.Path{}, false)
 	ordinary := newTestPacketConn(false)
-	target.sockets = map[netip.AddrPort]net.PacketConn{destination: bridge, {}: ordinary}
+	target.sockets = map[netip.AddrPort]*udpSocket{destination: {conn: bridge}, {}: {conn: ordinary}}
 	endpoints.add(source, target)
 	for _, missing := range []struct {
 		source, destination netip.AddrPort
@@ -120,7 +120,7 @@ func TestMITMUDPEndpointClose(t *testing.T) {
 			pool.add(key, endpoint)
 			t.Cleanup(pool.closeAll)
 			result := make(chan error, 1)
-			go func() { result <- endpoint.run(&pool, key, destination, conn) }()
+			go func() { result <- endpoint.run(&pool, key, destination, conn, nil) }()
 			// Host shutdown closes the bridge without retiring the endpoint;
 			// this is also how a QUIC peer's normal disconnect is propagated.
 			_ = server.Close()

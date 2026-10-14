@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"hash/maphash"
 	"net/netip"
 
 	"github.com/daeuniverse/dae/common"
@@ -14,6 +15,7 @@ import (
 )
 
 type RouteParam struct {
+	destinationSeed  *maphash.Seed         // UDP source lifetime; nil selects a fresh target for this attempt.
 	outboundOverride *consts.OutboundIndex // Explicit auxiliary HTTP policy; retains destination, mark and identity.
 	explicitTarget   bool                  // An explicit URL supplies a known name, or a literal IP with no name.
 	destination      netip.AddrPort        // Selected IP target; invalid until a rewrite or retained UDP target exists.

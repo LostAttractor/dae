@@ -211,6 +211,15 @@ DNAT/Host candidates hand off before flow controls or routing commit the old des
 
 Policy IDs are local to a configuration generation. Default and interface bindings to the same policy share its ID; the handoff generation selects the matching configuration. UDP lifetimes are keyed by source IP and port. An active source retains its initial policy and route when bindings, the default policy or interfaces change. After the lifetime ends, the next packet selects a route using the current bindings. Each generation's DNS relay coalesces requests by policy ID as well, preventing decisions from being shared across policies.
 
+Each retained UDP source allows 64 forwarding sockets, 256 destination-cache
+entries and 256 domain-activity keys. Idle children and cache entries are reclaimed
+after about a minute without changing the source's route or selected node. DNAT
+selection is stable after cache eviction; distinct original destinations retain
+separate reply paths even when rewritten to one target. The daemon admits up to
+4096 source lifetimes and 2048 packet resources, shared with protocol-internal
+fixed-target streams. Closing resources keep their permits until cleanup finishes.
+At capacity, new resources are rejected while existing associations remain usable.
+
 ## Manual Selection and Client Sets
 
 `policy: selector` allows manual node selection, defaulting to the first node; `selector(n)` sets another default index. `client(name)` matches a MAC set that devices can join themselves. See the [page/API configuration](api.md).

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"net"
 	"net/netip"
 	"strings"
@@ -190,20 +191,25 @@ func (c *ControlPlane) handlePkt(ctx context.Context, data []byte, src, dst neti
 		}
 		mark := c.soMarkFromDae
 		ue = &UdpEndpoint{
-			generation:   c.routingGeneration,
-			activity:     c.domainActivity(),
-			routeLease:   routeLease,
-			pending:      &udpSetup{routingResult: routingResult, sniffer: sniffing.NewPacketSniffer(nil)},
-			firstDst:     dst,
-			firstIfindex: routingResult.Ifindex,
-			NatTimeout:   udpSniffingTimeout,
-			unbind:       unbind,
+			destinationSeed: maphash.MakeSeed(),
+			generation:      c.routingGeneration,
+			activity:        c.domainActivity(),
+			routeLease:      routeLease,
+			pending:         &udpSetup{routingResult: routingResult, sniffer: sniffing.NewPacketSniffer(nil)},
+			firstDst:        dst,
+			firstIfindex:    routingResult.Ifindex,
+			NatTimeout:      udpSniffingTimeout,
+			unbind:          unbind,
 			handler: func(data []byte, from netip.AddrPort) error {
 				return sendPktWithMark(data, from, src, mark)
 			},
 		}
 		ue.setupOwner.Store(c)
-		p.addLocked(src, ue)
+		if !p.addLocked(src, ue) {
+			_ = ue.Close()
+			c.udpSetupDrops.report("source capacity")
+			return nil
+		}
 		ue.stopWatching = append(ue.stopWatching, watchAbort(nil, nil, routeLease, func() {
 			p.removeInBackground(src, ue)
 		}))
@@ -231,6 +237,9 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	p := c.udpEndpoints
 	pending := ue.pending
 	observedAt := time.Now()
+	if ue.destinationSeed == (maphash.Seed{}) {
+		ue.destinationSeed = maphash.MakeSeed()
+	}
 
 	ctx, cancelRoute := context.WithCancel(ctx)
 	defer cancelRoute()
@@ -264,7 +273,8 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	ue.domain = domain
 	network := common.NetworkType{L4Proto: consts.L4ProtoStr_UDP, IpVersion: consts.IpVersionStrFromAddr(ue.firstDst.Addr())}
 	param := &RouteParam{
-		routingResult: pending.routingResult, networkType: network,
+		destinationSeed: &ue.destinationSeed,
+		routingResult:   pending.routingResult, networkType: network,
 		Domain: domain, Src: src, Dest: ue.firstDst,
 	}
 	var option *DialOption
@@ -300,7 +310,16 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 				ue.origin = netproxy.OriginTarget
 			}
 		}
-		conn = c.newMITMQUIC(param, planner, release, ue.routeLease)
+		conn, err = p.packetBudget().Open(ctx, "", func(context.Context, string) (net.PacketConn, error) {
+			return c.newMITMQUIC(param, planner, release, ue.routeLease), nil
+		})
+		if err != nil {
+			if release != nil {
+				release()
+			}
+			p.removeInBackgroundLocked(src, ue)
+			return err
+		}
 	} else {
 		// A block fallback has no association to preserve. A later packet can
 		// try again after the group recovers.
@@ -310,7 +329,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		}
 		path, fallback := option.trafficAttribution()
 		ue.policyLease = option.PolicyLease
-		ue.traffic = stats.DefaultStore.OpenDeviceConnection(path, fallback, pending.routingResult.Mac)
+		ue.fallback = fallback
 		ue.dialer, ue.statsPath = option.Dialer, path
 		if option.Direct {
 			ue.origin = netproxy.OriginTarget
@@ -324,7 +343,7 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		dialCtx, cancel := context.WithTimeout(ctx, consts.DefaultDialTimeout)
 		stopSetup := watchAbort(nil, option.PolicyLease, nil, cancel)
 		var dialErr error
-		conn, dialErr = option.dialerForConnection().ListenPacket(dialCtx, option.DialTarget)
+		conn, dialErr = p.packetBudget().Open(dialCtx, option.DialTarget, option.dialerForConnection().ListenPacket)
 		setupErr := dialCtx.Err()
 		stopSetup()
 		cancel()
@@ -361,8 +380,8 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 		}
 		ue.destinationParam = *param
 		target := param.effectiveDestination()
-		ue.destinations = map[netip.AddrPort]netip.AddrPort{ue.firstDst: target}
-		ue.sockets = make(map[netip.AddrPort]net.PacketConn)
+		ue.destinations = map[netip.AddrPort]udpDestination{ue.firstDst: {target, time.Now()}}
+		ue.sockets = make(map[netip.AddrPort]*udpSocket)
 		if ue.mitm {
 			socketKey = ue.firstDst
 		} else if target != ue.firstDst {
@@ -372,7 +391,10 @@ func (c *ControlPlane) initializeUDP(ctx context.Context, ue *UdpEndpoint, src, 
 	}
 
 	ue.conn = conn
-	ue.lease = netproxy.DependencyOf(conn)
+	ue.lease = netproxy.NewLease(netproxy.ResourceRef{})
+	if !ue.mitm {
+		ue.traffic = stats.DefaultStore.OpenDeviceConnection(ue.statsPath, ue.fallback, pending.routingResult.Mac)
+	}
 	ue.NatTimeout = DefaultNatTimeoutUDP
 	p.refreshTimerLocked(src, ue, time.Now())
 	ue.startSocket(p, src, ue.firstDst, socketKey, conn)

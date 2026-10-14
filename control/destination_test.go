@@ -189,14 +189,14 @@ func TestDestinationUDPReplyIsolation(t *testing.T) {
 	policy := netproxy.NewLease(netproxy.NewResourceRef())
 	endpoint := &UdpEndpoint{
 		NatTimeout: time.Hour, packetDialer: destinationTestDialer{},
-		routeLease: policy, sockets: make(map[netip.AddrPort]net.PacketConn),
+		routeLease: policy, sockets: make(map[netip.AddrPort]*udpSocket),
 		traffic: stats.DefaultStore.OpenConnection(stats.Path{Outbound: t.Name()}, false),
 		handler: func(data []byte, from netip.AddrPort) error { replies <- reply{string(data), from}; return nil },
 	}
 	matcher, _ := destinationTestMatcher(t, "dip(91.108.56.100, 91.108.56.101) -> dnat("+target.Addr().String()+")")
 	endpoint.destinationMatcher = matcher.snapshotDestinations()
 	endpoint.destinationParam = RouteParam{Src: source, routingResult: &routingResult{}, networkType: *common.NetworkUDP4.NetworkType()}
-	endpoint.destinations = make(map[netip.AddrPort]netip.AddrPort)
+	endpoint.destinations = make(map[netip.AddrPort]udpDestination)
 
 	pool.add(source, endpoint)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

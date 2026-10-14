@@ -148,7 +148,7 @@ func TestPolicyFlowUDPSnapshotRetainsPolicyAndMembership(t *testing.T) {
 	m.defaultProfileID = ids["tor"]
 	for _, policy := range []string{"main", "tor"} {
 		param := RouteParam{Src: netip.MustParseAddrPort("192.0.2.10:40000"), Dest: netip.MustParseAddrPort("192.0.2.20:443"), routingResult: &routingResult{ProfileId: ids[policy], Mac: mac}, networkType: *common.NetworkUDP4.NetworkType()}
-		endpoint := UdpEndpoint{destinationMatcher: frozen, destinationParam: param, destinations: make(map[netip.AddrPort]netip.AddrPort)}
+		endpoint := UdpEndpoint{destinationMatcher: frozen, destinationParam: param, destinations: make(map[netip.AddrPort]udpDestination)}
 		other := netip.MustParseAddrPort("192.0.2.21:443")
 		target, err := endpoint.socketTarget(other)
 		want := other

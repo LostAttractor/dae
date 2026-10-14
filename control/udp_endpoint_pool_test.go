@@ -41,7 +41,7 @@ func TestUdpEndpointPreservesLargeDatagrams(t *testing.T) {
 	src, dst := addrPortOf(conn.LocalAddr()), addrPortOf(sender.LocalAddr())
 	p.add(src, ue)
 	finished := make(chan error, 1)
-	go func() { finished <- ue.run(p, src, dst, conn) }()
+	go func() { finished <- ue.run(p, src, dst, conn, nil) }()
 	defer func() {
 		p.remove(src, ue)
 		select {

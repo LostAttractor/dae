@@ -90,7 +90,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			plane.udpSetups.Store(0)
 			endpoint, ok := endpoints.Get(source)
-			if !ok || endpoint.destinations[original] != target || endpoint.destinationParam.routingResult.Mark != 37 || endpoint.destinationParam.routingResult.ProfileId != 42 || len(recorder.targets) != 1 || recorder.targets[0] != target.String() {
+			if !ok || endpoint.destinations[original].target != target || endpoint.destinationParam.routingResult.Mark != 37 || endpoint.destinationParam.routingResult.ProfileId != 42 || len(recorder.targets) != 1 || recorder.targets[0] != target.String() {
 				t.Fatalf("initial source lost its target or policy: endpoint=%+v dials=%v", endpoint, recorder.targets)
 			}
 			// A config/node replacement only affects new lifetimes. The original
@@ -103,7 +103,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			plane.outbounds[2] = newGroup()
 			send()
-			if current, ok := endpoints.Get(source); !ok || current != endpoint || current.destinations[original] != target || current.destinationParam.routingResult.Mark != 37 || current.destinationParam.routingResult.ProfileId != 42 || len(recorder.targets) != 1 {
+			if current, ok := endpoints.Get(source); !ok || current != endpoint || current.destinations[original].target != target || current.destinationParam.routingResult.Mark != 37 || current.destinationParam.routingResult.ProfileId != 42 || len(recorder.targets) != 1 {
 				t.Fatal("config replacement changed an existing UDP lifetime")
 			}
 			recorder.opened[0].lease.Abort(errors.New("transport failed"))
@@ -119,7 +119,7 @@ func TestDestinationUDPReplacementKernelIntegration(t *testing.T) {
 			}
 			send()
 			fresh, ok := endpoints.Get(source)
-			if !ok || fresh == endpoint || fresh.destinations[original] != newTarget || fresh.destinationParam.routingResult.Mark != 91 || fresh.destinationParam.routingResult.ProfileId != profileID || len(recorder.targets) != 2 || recorder.targets[1] != newTarget.String() {
+			if !ok || fresh == endpoint || fresh.destinations[original].target != newTarget || fresh.destinationParam.routingResult.Mark != 91 || fresh.destinationParam.routingResult.ProfileId != profileID || len(recorder.targets) != 2 || recorder.targets[1] != newTarget.String() {
 				t.Fatalf("new lifetime did not use current target/policy: endpoint=%+v dials=%v", fresh, recorder.targets)
 			}
 			var epoch uint64

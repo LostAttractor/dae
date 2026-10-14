@@ -4,8 +4,10 @@ package control
 
 import (
 	"context"
+	"hash/maphash"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
@@ -42,25 +44,48 @@ func (c *destinationPacketConn) DependencyLease() *netproxy.Lease {
 }
 
 // Rewritten destinations need separate sockets to distinguish replies when
-// several original addresses map to one server. They share their source's
-// route, node, idle timer and termination; none performs another selection.
+// several original addresses map to one server. Their expiry never changes the
+// source's retained route, node, destination program or random seed.
 func (ue *UdpEndpoint) socketTarget(dst netip.AddrPort) (netip.AddrPort, error) {
-	if target, ok := ue.destinations[dst]; ok {
-		return target, nil
+	now := time.Now()
+	ue.mu.Lock()
+	defer ue.mu.Unlock()
+	if cached, ok := ue.destinations[dst]; ok {
+		cached.lastUsed = now
+		ue.destinations[dst] = cached
+		return cached.target, nil
+	}
+	if ue.destinationSeed == (maphash.Seed{}) {
+		ue.destinationSeed = maphash.MakeSeed()
 	}
 	param := ue.destinationParam
-	param.Dest = dst
-	param.Domain = "" // Only the first destination participates in sniffing.
+	param.destinationSeed = &ue.destinationSeed
+	param.Dest, param.Domain = dst, ""
+	if dst == ue.firstDst {
+		param.Domain = ue.domain
+	}
 	param.networkType.IpVersion = consts.IpVersionStrFromAddr(dst.Addr())
-	decision, err := ue.destinationMatcher.matchDestination(&param)
+	target, err := ue.destinationMatcher.matchDestination(&param)
 	if err != nil {
 		return netip.AddrPort{}, err
 	}
-	target := decision
 	if !target.IsValid() {
 		target = dst
 	}
-	ue.destinations[dst] = target
+	if ue.destinations == nil {
+		ue.destinations = make(map[netip.AddrPort]udpDestination)
+	}
+	if len(ue.destinations) >= maxUDPDestinationsPerSource {
+		var oldest netip.AddrPort
+		var at time.Time
+		for key, cached := range ue.destinations {
+			if !oldest.IsValid() || cached.lastUsed.Before(at) {
+				oldest, at = key, cached.lastUsed
+			}
+		}
+		delete(ue.destinations, oldest)
+	}
+	ue.destinations[dst] = udpDestination{target, now}
 	return target, nil
 }
 
@@ -77,14 +102,29 @@ func (ue *UdpEndpoint) socket(ctx context.Context, p *UdpEndpointPool, src, dst 
 	if target != dst {
 		key = dst
 	}
-	if conn := ue.sockets[key]; conn != nil {
-		return conn, nil
+	ue.mu.Lock()
+	if child := ue.sockets[key]; child != nil {
+		child.lastUsed = time.Now()
+		ue.mu.Unlock()
+		return child.conn, nil
+	}
+	expired, cause := ue.expireChildrenLocked(time.Now())
+	full := len(ue.sockets) >= maxUDPSocketsPerSource
+	ue.mu.Unlock()
+	for _, conn := range expired {
+		closeInBackground(conn)
+	}
+	if cause != nil {
+		return nil, cause
+	}
+	if full {
+		return nil, netproxy.PacketCapacityError()
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := watchAbort(ue.lease, ue.policyLease, ue.routeLease, cancel)
 	defer stop()
-	conn, err := ue.packetDialer.ListenPacket(ctx, target.String())
+	conn, err := p.packetBudget().Open(ctx, target.String(), ue.packetDialer.ListenPacket)
 	if cause := connectionAbortCause(ue.lease, ue.policyLease, ue.routeLease); cause != nil {
 		closeInBackground(conn)
 		return nil, cause
@@ -108,23 +148,76 @@ func (ue *UdpEndpoint) socket(ctx context.Context, p *UdpEndpointPool, src, dst 
 
 func (ue *UdpEndpoint) startSocket(p *UdpEndpointPool, src, dst, key netip.AddrPort, conn net.PacketConn) {
 	ue.mu.Lock()
+	var child *udpSocket
 	if ue.sockets != nil {
-		ue.sockets[key] = conn
+		child = &udpSocket{conn: conn, lastUsed: time.Now()}
+		ue.sockets[key] = child
 	}
-	ue.stopWatching = append(ue.stopWatching, watchAbort(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease, func() {
-		// Interrupt writes before waiting for the source lock.
+	stop := watchAbort(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease, func() {
+		ue.mu.Lock()
+		// An expired target cannot abort a replacement for the same key or
+		// its source. Check membership while publishing the abort instruction.
+		if ue.closed.Load() || child != nil && (child.retired.Load() || ue.sockets[key] != child) {
+			ue.mu.Unlock()
+			return
+		}
+		ue.lease.Abort(connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease))
+		ue.mu.Unlock()
 		ue.interrupt()
 		p.removeInBackground(src, ue)
-	}))
+	})
+	if child != nil {
+		child.stopWatching = stop
+	} else {
+		ue.stopWatching = append(ue.stopWatching, stop)
+	}
 	ue.mu.Unlock()
 	go func() {
-		err := ue.run(p, src, dst, conn)
-		p.remove(src, ue)
-		if !(ue.mitm && conn == ue.conn) && recordDataPlaneError(ue.dialer, ue.statsPath, err) {
+		err := ue.run(p, src, dst, conn, child)
+		lock, _ := p.UdpEndpointKeyLocker.Lock(src)
+		retired := child != nil && child.retired.Load()
+		if !retired {
+			p.removeInBackgroundLocked(src, ue)
+		}
+		p.UdpEndpointKeyLocker.Unlock(src, lock)
+		if !retired && !(ue.mitm && conn == ue.conn) && recordDataPlaneError(ue.dialer, ue.statsPath, err) {
 			log.WithFields(log.Fields{
 				"source": src, "destination": dst,
 				"outbound": ue.statsPath.Outbound, "dialer": ue.statsPath.Dialer,
 			}).WithError(err).Debug("UDP association failed")
 		}
 	}()
+}
+
+// Caller holds the source key and endpoint.mu. A write owns that key until it
+// finishes; replies refresh lastUsed under mu before forwarding the packet.
+func (ue *UdpEndpoint) expireChildrenLocked(now time.Time) (expired []net.PacketConn, cause error) {
+	for key, child := range ue.sockets {
+		if ue.mitm && child.conn == ue.conn || now.Sub(child.lastUsed) < udpChildIdleTimeout {
+			continue
+		}
+		if err := netproxy.DependencyOf(child.conn).AbortCause(); err != nil {
+			ue.lease.Abort(err)
+			cause = err
+			continue
+		}
+		delete(ue.sockets, key)
+		child.retired.Store(true)
+		if child.stopWatching != nil {
+			child.stopWatching()
+			child.stopWatching = nil
+		}
+		expired = append(expired, child.conn)
+	}
+	for key, value := range ue.destinations {
+		if now.Sub(value.lastUsed) >= udpChildIdleTimeout {
+			delete(ue.destinations, key)
+		}
+	}
+	for key, value := range ue.activityTargets {
+		if now.Sub(value.lastUsed) >= udpChildIdleTimeout {
+			delete(ue.activityTargets, key)
+		}
+	}
+	return expired, cause
 }

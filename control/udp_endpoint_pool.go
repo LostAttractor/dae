@@ -8,6 +8,7 @@ package control
 import (
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"net"
 	"net/netip"
 	"sync"
@@ -23,6 +24,31 @@ import (
 )
 
 type UdpHandler func(data []byte, from netip.AddrPort) error
+
+const (
+	maxUDPSources               = 4096
+	maxUDPPacketResources       = 2048
+	maxUDPSocketsPerSource      = 64
+	maxUDPDestinationsPerSource = 256
+	udpChildIdleTimeout         = time.Minute
+)
+
+type udpSocket struct {
+	conn         net.PacketConn
+	lastUsed     time.Time // endpoint.mu; expiry also holds the source key lock.
+	retired      atomic.Bool
+	stopWatching func()
+}
+
+type udpDestination struct {
+	target   netip.AddrPort
+	lastUsed time.Time
+}
+
+type udpActivityTarget struct {
+	key      domainActivityKey
+	lastUsed time.Time
+}
 
 // addrPortOf converts a net.Addr returned by a PacketConn into a netip.AddrPort.
 // It avoids the string round-trip for the common *net.UDPAddr case.
@@ -42,7 +68,7 @@ type UdpEndpoint struct {
 	domain     string
 	// mu protects timer state, observed destinations and cleanup snapshots.
 	mu              sync.Mutex
-	activityTargets map[netip.AddrPort]domainActivityKey
+	activityTargets map[netip.AddrPort]udpActivityTarget
 	deadlineTimer   *time.Timer
 	timerDeadline   time.Time
 	handler         UdpHandler
@@ -62,9 +88,10 @@ type UdpEndpoint struct {
 	packetDialer       netproxy.Dialer
 	destinationMatcher *RoutingMatcher
 	destinationParam   RouteParam
-	destinations       map[netip.AddrPort]netip.AddrPort
+	destinationSeed    maphash.Seed
+	destinations       map[netip.AddrPort]udpDestination
 	// Source lock protects socket selection; mu also protects cleanup snapshots.
-	sockets map[netip.AddrPort]net.PacketConn
+	sockets map[netip.AddrPort]*udpSocket
 	unbind  func()
 
 	// The source key lock serializes initialization and packet delivery.
@@ -81,12 +108,15 @@ type udpSetup struct {
 	observedAt    time.Time // incomplete sniff activity, applied on setup or retirement
 }
 
-func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort, conn net.PacketConn) error {
+func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPort, conn net.PacketConn, child *udpSocket) error {
 	buf := pool.GetBuffer(udpReceiveBufferSize)
 	defer pool.PutBuffer(buf)
 	for {
 		n, from, err := conn.ReadFrom(buf)
 		if err != nil {
+			if child != nil && child.retired.Load() {
+				return nil
+			}
 			if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
 				return cause
 			}
@@ -103,7 +133,7 @@ func (ue *UdpEndpoint) run(endpointPool *UdpEndpointPool, src, dst netip.AddrPor
 		if cause := connectionAbortCause(netproxy.DependencyOf(conn), ue.policyLease, ue.routeLease); cause != nil {
 			return cause
 		}
-		if !endpointPool.refreshTimer(src, ue, time.Now()) {
+		if !endpointPool.refreshSocket(src, ue, child, time.Now()) {
 			break
 		}
 		ue.observeDomain(addrPortOf(from))
@@ -139,6 +169,14 @@ func (ue *UdpEndpoint) retireLocked() {
 		stop()
 	}
 	ue.stopWatching = nil
+	ue.lease.Invalidate(net.ErrClosed)
+	for _, child := range ue.sockets {
+		child.retired.Store(true)
+		if child.stopWatching != nil {
+			child.stopWatching()
+			child.stopWatching = nil
+		}
+	}
 	if ue.releaseDialer != nil {
 		ue.releaseDialer()
 		ue.releaseDialer = nil
@@ -179,8 +217,8 @@ func (ue *UdpEndpoint) packetConnections() []net.PacketConn {
 		return []net.PacketConn{ue.conn}
 	}
 	connections := make([]net.PacketConn, 0, len(ue.sockets))
-	for _, conn := range ue.sockets {
-		connections = append(connections, conn)
+	for _, child := range ue.sockets {
+		connections = append(connections, child.conn)
 	}
 	return connections
 }
@@ -201,6 +239,19 @@ func (ue *UdpEndpoint) closeTrafficAccounting() {
 type UdpEndpointPool struct {
 	pool                 sync.Map
 	UdpEndpointKeyLocker common.KeyLocker[netip.AddrPort]
+	sources              atomic.Int64
+	resourceOnce         sync.Once
+	resources            *netproxy.PacketBudget
+	sourceLimit          int // zero uses the daemon default; immutable once used.
+}
+
+func (p *UdpEndpointPool) packetBudget() *netproxy.PacketBudget {
+	p.resourceOnce.Do(func() {
+		if p.resources == nil {
+			p.resources = netproxy.NewPacketBudget(maxUDPPacketResources)
+		}
+	})
+	return p.resources
 }
 
 type UdpEndpointOptions struct {
@@ -249,7 +300,11 @@ func (p *UdpEndpointPool) removeInBackground(key netip.AddrPort, endpoint *UdpEn
 }
 
 func (p *UdpEndpointPool) removeLocked(key netip.AddrPort, endpoint *UdpEndpoint) bool {
-	return p.pool.CompareAndDelete(key, endpoint)
+	if !p.pool.CompareAndDelete(key, endpoint) {
+		return false
+	}
+	p.sources.Add(-1)
+	return true
 }
 
 func (p *UdpEndpointPool) removeInBackgroundLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
@@ -322,11 +377,27 @@ func (p *UdpEndpointPool) add(key netip.AddrPort, endpoint *UdpEndpoint) {
 	p.addLocked(key, endpoint)
 }
 
-func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
+func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) bool {
 	endpoint.mu.Lock()
 	if endpoint.closed.Load() {
 		endpoint.mu.Unlock()
-		return
+		return false
+	}
+	if _, exists := p.pool.Load(key); !exists {
+		limit := int64(maxUDPSources)
+		if p.sourceLimit > 0 {
+			limit = int64(p.sourceLimit)
+		}
+		for {
+			used := p.sources.Load()
+			if used >= limit {
+				endpoint.mu.Unlock()
+				return false
+			}
+			if p.sources.CompareAndSwap(used, used+1) {
+				break
+			}
+		}
 	}
 	p.refreshTimerStateLocked(key, endpoint, time.Now())
 	previous, replaced := p.pool.Swap(key, endpoint)
@@ -338,6 +409,7 @@ func (p *UdpEndpointPool) addLocked(key netip.AddrPort, endpoint *UdpEndpoint) {
 		oldEndpoint.closeTrafficAccounting()
 		oldEndpoint.interrupt()
 	}
+	return true
 }
 
 func (p *UdpEndpointPool) refreshTimerLocked(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
@@ -351,10 +423,17 @@ func (p *UdpEndpointPool) refreshTimerLocked(key netip.AddrPort, endpoint *UdpEn
 // refreshTimer is also used after a successful inbound read, where taking the
 // key lock would let an already-pending expiry win only due to lock scheduling.
 func (p *UdpEndpointPool) refreshTimer(key netip.AddrPort, endpoint *UdpEndpoint, now time.Time) bool {
+	return p.refreshSocket(key, endpoint, nil, now)
+}
+
+func (p *UdpEndpointPool) refreshSocket(key netip.AddrPort, endpoint *UdpEndpoint, child *udpSocket, now time.Time) bool {
 	endpoint.mu.Lock()
 	defer endpoint.mu.Unlock()
-	if endpoint.closed.Load() {
+	if endpoint.closed.Load() || child != nil && child.retired.Load() {
 		return false
+	}
+	if child != nil {
+		child.lastUsed = now
 	}
 	p.refreshTimerStateLocked(key, endpoint, now)
 	return true
@@ -364,7 +443,7 @@ func (p *UdpEndpointPool) refreshTimerStateLocked(key netip.AddrPort, endpoint *
 	endpoint.timerDeadline = now.Add(endpoint.NatTimeout)
 	// Activity extends the deadline. An early expiry rearms the existing timer.
 	if endpoint.deadlineTimer == nil {
-		endpoint.deadlineTimer = time.AfterFunc(time.Until(endpoint.timerDeadline), func() {
+		endpoint.deadlineTimer = time.AfterFunc(min(time.Until(endpoint.timerDeadline), udpChildIdleTimeout/2), func() {
 			p.expire(key, endpoint)
 		})
 	}
@@ -393,10 +472,14 @@ func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, no
 		return
 	}
 	deadline := endpoint.timerDeadline
-	if now.Before(deadline) {
-		endpoint.deadlineTimer.Reset(deadline.Sub(now))
+	expired, cause := endpoint.expireChildrenLocked(now)
+	if cause == nil && now.Before(deadline) {
+		endpoint.deadlineTimer.Reset(min(deadline.Sub(now), udpChildIdleTimeout/2))
 		endpoint.mu.Unlock()
 		p.UdpEndpointKeyLocker.Unlock(key, l)
+		for _, conn := range expired {
+			closeInBackground(conn)
+		}
 		return
 	}
 	removed := p.removeLocked(key, endpoint)
@@ -405,6 +488,9 @@ func (p *UdpEndpointPool) expireAt(key netip.AddrPort, endpoint *UdpEndpoint, no
 	}
 	endpoint.mu.Unlock()
 	p.UdpEndpointKeyLocker.Unlock(key, l)
+	for _, conn := range expired {
+		closeInBackground(conn)
+	}
 	if removed {
 		endpoint.closeTrafficAccounting()
 		_ = endpoint.Close()

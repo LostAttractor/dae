@@ -76,16 +76,27 @@ func (ue *UdpEndpoint) observeDomain(dst netip.AddrPort) {
 	}
 	at := time.Now()
 	ue.mu.Lock()
-	key, seen := ue.activityTargets[dst]
+	target, seen := ue.activityTargets[dst]
 	if !seen {
 		if ue.activityTargets == nil {
-			ue.activityTargets = make(map[netip.AddrPort]domainActivityKey)
+			ue.activityTargets = make(map[netip.AddrPort]udpActivityTarget)
 		}
-		key = newDomainActivityKey(dst.Addr(), domain)
-		ue.activityTargets[dst] = key
+		if len(ue.activityTargets) >= maxUDPDestinationsPerSource {
+			var oldest netip.AddrPort
+			var used time.Time
+			for key, entry := range ue.activityTargets {
+				if !oldest.IsValid() || entry.lastUsed.Before(used) {
+					oldest, used = key, entry.lastUsed
+				}
+			}
+			delete(ue.activityTargets, oldest)
+		}
+		target.key = newDomainActivityKey(dst.Addr(), domain)
 	}
+	target.lastUsed = at
+	ue.activityTargets[dst] = target
 	ue.mu.Unlock()
-	if g := ue.activity.enqueue(key, at); g != nil && !seen {
+	if g := ue.activity.enqueue(target.key, at); g != nil && !seen {
 		g.flushActivity()
 	}
 }

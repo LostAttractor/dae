@@ -4,6 +4,7 @@ package control
 
 import (
 	"fmt"
+	"hash/maphash"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -56,7 +57,7 @@ func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error)
 	m.rulesMu.RLock()
 	defer m.rulesMu.RUnlock()
 	input := p.routingInput(p.Domain, p.Dest)
-	for _, entry := range m.destinationProgram(profileID).predicates {
+	for index, entry := range m.destinationProgram(profileID).predicates {
 		// In an AND-only predicate, an unknown domain (including !domain)
 		// can never prove the rule true once bounded sniffing has completed.
 		if entry.domain && p.Domain == "" {
@@ -73,7 +74,18 @@ func (m *RoutingMatcher) matchDestination(p *RouteParam) (netip.AddrPort, error)
 		if port == 0 {
 			port = p.Dest.Port()
 		}
-		return netip.AddrPortFrom(entry.targets[rand.IntN(len(entry.targets))], port), nil
+		selected := 0
+		if p.destinationSeed != nil {
+			key := struct {
+				Destination netip.AddrPort
+				Profile     uint32
+				Rule        int
+			}{p.Dest, profileID, index}
+			selected = int(maphash.Comparable(*p.destinationSeed, key) % uint64(len(entry.targets)))
+		} else {
+			selected = rand.IntN(len(entry.targets))
+		}
+		return netip.AddrPortFrom(entry.targets[selected], port), nil
 	}
 	return netip.AddrPort{}, nil
 }

@@ -146,7 +146,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 			endpoint.traffic = stats.DefaultStore.OpenConnection(d.StatsPath("direct", common.NetworkUDP4.NetworkType()), false)
 			plane.udpEndpoints.add(key, endpoint)
 			endpointDone := make(chan error, 1)
-			go func() { endpointDone <- endpoint.run(plane.udpEndpoints, key, dst, bridge) }()
+			go func() { endpointDone <- endpoint.run(plane.udpEndpoints, key, dst, bridge, nil) }()
 			t.Cleanup(func() { _ = endpoint.Close(); <-endpointDone })
 			routeKey := bpfTuplesKey{Sport: common.Htons(src.Port()), Dport: common.Htons(dst.Port()), L4proto: unix.IPPROTO_UDP}
 			routeKey.Sip.U6Addr8, routeKey.Dip.U6Addr8 = src.Addr().As16(), dst.Addr().As16()
