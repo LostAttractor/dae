@@ -72,7 +72,7 @@ func TestBodyMemoryPressureForwardsOriginalRequestAndResponse(t *testing.T) {
 func TestBodyMemoryPressurePreservesCompressedAndJQResponse(t *testing.T) {
 	for _, encoding := range []string{"", "gzip", "br"} {
 		t.Run(encoding, func(t *testing.T) {
-			budget := membuffer.NewBudget(750)
+			budget := membuffer.NewBudget(520)
 			e := bodyRewriteEngine(t, 1024, ".value += 1")
 			e.options.BodyMemory = budget
 			original := encodeBodyRewriteTest(t, []byte(`{"value":2}`), encoding)

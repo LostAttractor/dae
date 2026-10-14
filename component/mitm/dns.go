@@ -40,7 +40,6 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 		}
 		return nil, fmt.Errorf("DNS server assignment requires a resolver plugin (enable dns-router)")
 	}
-	message := request.MessageCopy()
 	for i := len(h.instances) - 1; i >= 0; i-- {
 		instance := h.instances[i]
 		implementation, ok := instance.Plugin.(plugin.DNSPlugin)
@@ -48,7 +47,7 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 			continue
 		}
 		for _, scope := range instance.plan.DNS {
-			if scope.Match(message) {
+			if scope.MatchPacket(request.DNSPacket) {
 				terminal = implementation.WrapDNS(terminal)
 				break
 			}

@@ -253,47 +253,18 @@ func TestRuntimeHTTPCallbacks(t *testing.T) {
 	}
 }
 
-// The downloaded upstream scripts are deliberately not vendored. Set this to a
-// directory containing youtube.request.js and youtube.response.js to repeat the
-// compatibility check against a chosen upstream version.
-func TestRuntimeMaaseaCompatibility(t *testing.T) {
-	dir := os.Getenv("DAE_SURGE_MAASEA_FIXTURES")
-	if dir == "" {
-		t.Skip("set DAE_SURGE_MAASEA_FIXTURES to a directory containing the upstream YouTube scripts")
+// Minimal binary fixtures cover the compatibility contract without loading
+// application-specific parsers or scripts from outside the repository.
+func TestRuntimeBinaryRequestAndResponse(t *testing.T) {
+	r := testRuntime(t, RuntimeOptions{})
+	request := &Message{URL: "https://example.test/message", Method: "POST", Body: []byte{1, 2, 3}, Headers: http.Header{"X-Remove": {"yes"}}}
+	result, err := r.Run(t.Context(), `if (!($request.body instanceof Uint8Array)) throw Error("binary request"); delete $request.headers["x-remove"]; $done({body:$request.body.subarray(1), headers:$request.headers});`, Invocation{Request: request, BinaryBodyMode: true, ScriptType: "http-request"})
+	if err != nil || result.Body == nil || !bytes.Equal(result.Body.Bytes(), []byte{2, 3}) || result.Headers.Get("X-Remove") != "" {
+		t.Fatalf("request transform: %#v %v", result, err)
 	}
-	requestSource, err := os.ReadFile(filepath.Join(dir, "youtube.request.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	responseSource, err := os.ReadFile(filepath.Join(dir, "youtube.response.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var logs []string
-	r := testRuntime(t, RuntimeOptions{Logger: testSurgeLogger(func(e *log.Entry) { logs = append(logs, e.Message) })})
-	request := &Message{
-		URL: "https://youtubei.googleapis.com/youtubei/v1/log_event", Method: "POST", Body: []byte{},
-		Headers: http.Header{"User-Agent": {"com.google.ios.youtube/20.0"}, "Content-Encoding": {"gzip"}, "X-Youtube-Hot-Hash-Data": {"stale"}},
-	}
-	result, err := r.Run(context.Background(), string(requestSource), Invocation{Request: request, BinaryBodyMode: true, ScriptType: "http-request"})
-	if err != nil || result.Headers == nil || result.Headers.Get("Content-Encoding") != "" || result.Headers.Get("X-Youtube-Hot-Hash-Data") != "" {
-		t.Fatalf("Maasea log_event header rewrite failed: %v %#v logs %v", err, result, logs)
-	}
-	request.URL = "https://rr1.googlevideo.com/initplayback?foo=bar&ack=1"
-	result, err = r.Run(context.Background(), string(requestSource), Invocation{Request: request, BinaryBodyMode: true, ScriptType: "http-request", Argument: `{"captionLang":"off"}`})
-	if err != nil || result.Response == nil || result.Response.Status != 200 || result.Response.Body == nil || len(result.Response.Body.Bytes()) != 0 {
-		t.Fatalf("Maasea initplayback synthetic response failed: %v %#v logs %v", err, result, logs)
-	}
-	request.URL = "https://youtubei.googleapis.com/youtubei/v1/player"
-	// Player.playabilityStatus field 2, adPlacements field 7, and adSlots
-	// field 68. The latter two should be removed, while field 2 gains PiP
-	// and background playback settings.
-	result, err = r.Run(context.Background(), string(responseSource), Invocation{
-		Request: request, Response: &Message{Status: 200, Body: []byte{0x12, 0, 0x3a, 0, 0xa2, 4, 0}},
-		BinaryBodyMode: true, ScriptType: "http-response", Argument: `{"captionLang":"off","blockUpload":true,"blockImmersive":true,"blockShorts":false}`,
-	})
-	if err != nil || result.Body == nil || len(result.Body.Bytes()) <= 2 || (result.Body.Bytes())[0] != 0x12 || int((result.Body.Bytes())[1])+2 != len(result.Body.Bytes()) {
-		t.Fatalf("Maasea binary player rewrite failed: %v %#v logs %v", err, result, logs)
+	result, err = r.Run(t.Context(), `$done({body:new Uint8Array([$response.body[2],$response.body[0]]), h2_trailers:{"grpc-status":"0"}});`, Invocation{Request: request, Response: &Message{Status: 200, Body: []byte{4, 5, 6}}, BinaryBodyMode: true, ScriptType: "http-response"})
+	if err != nil || result.Body == nil || !bytes.Equal(result.Body.Bytes(), []byte{6, 4}) || result.Trailers.Get("Grpc-Status") != "0" {
+		t.Fatalf("response transform: %#v %v", result, err)
 	}
 }
 

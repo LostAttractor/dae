@@ -5,6 +5,7 @@ package surge
 import (
 	"context"
 	"github.com/daeuniverse/dae/component/mitm"
+	"github.com/daeuniverse/dae/pkg/membuffer"
 	"io"
 	"net"
 	"net/http"
@@ -330,6 +331,21 @@ func TestProxyModuleScopeSharesRuntimeAndCapacity(t *testing.T) {
 		handlers[i].ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://"+host+"/", nil))
 		if response.Code != http.StatusOK || response.Body.String() != strconv.Itoa(i+1) || len(engine.slots) != 0 {
 			t.Fatalf("connection lost shared runtime or leaked a slot: status=%d body=%q slots=%d", response.Code, response.Body.String(), len(engine.slots))
+		}
+	}
+}
+
+func BenchmarkPreparedModuleScope(b *testing.B) {
+	module := &Module{Hostnames: []string{"-private.example.test:0", "*.example.test:0"}}
+	engine, err := NewEngine(EngineOptions{Modules: []*Module{module}, MaxBodySize: 1024, BodyMemory: membuffer.NewBudget(4096), MaxConcurrentScripts: 1, ScriptTimeout: time.Second})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer engine.Close()
+	b.ReportAllocs()
+	for b.Loop() {
+		if !engine.options.Modules[0].matchConnection("api.example.test", 443) {
+			b.Fatal("scope miss")
 		}
 	}
 }

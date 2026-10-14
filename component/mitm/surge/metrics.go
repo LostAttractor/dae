@@ -49,7 +49,7 @@ func newEngineMetrics(e *Engine) *engineMetrics {
 		m.matches.WithLabelValues(kind)
 	}
 	m.all = []prometheus.Collector{m.scripts, m.duration, m.wait, m.matches, m.skips, modules, rules,
-		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "surge_execution_slots_in_use", Help: "Occupied execution slots, including body processing and DNS script continuations."}, func() float64 { return float64(len(e.slots)) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "surge_execution_slots_in_use", Help: "Occupied execution slots, including body processing; downstream DNS waits do not retain a slot."}, func() float64 { return float64(len(e.slots)) }),
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "surge_execution_slots_limit", Help: "Maximum concurrent execution slots shared by scripts and body rewrites."}, func() float64 { return float64(cap(e.slots)) }),
 	}
 	if e.options.Runtime != nil {

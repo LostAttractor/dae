@@ -7,33 +7,24 @@ import (
 	"testing"
 )
 
-const bilijumpRuleFixture = `[Rule]
-DOMAIN,api.cloudflare.com,DIRECT
-DOMAIN,api.biliapi.com,REJECT,pre-matching,extended-matching
-DOMAIN,app.biliapi.com,REJECT,pre-matching,extended-matching
-DOMAIN,api.biliapi.net,REJECT,pre-matching,extended-matching
-DOMAIN,app.biliapi.net,REJECT,pre-matching,extended-matching
-AND,((DOMAIN-SUFFIX,chat.bilibili.com), (OR,((DOMAIN-KEYWORD,stun), (DOMAIN-KEYWORD,tracker), (DOMAIN-KEYWORD,p2p)))),REJECT,pre-matching
-`
-
-func TestModuleRulesBilijump(t *testing.T) {
-	module, err := Parse(bilijumpRuleFixture, nil)
+func TestModuleRulesOrderedPolicyAndWarnings(t *testing.T) {
+	module, err := Parse(`[Rule]
+DOMAIN,api.example.test,DIRECT
+DOMAIN,blocked.example.test,REJECT,pre-matching,extended-matching
+AND,((DOMAIN-SUFFIX,media.example.test), (OR,((DOMAIN-KEYWORD,ad), (DOMAIN-KEYWORD,tracking)))),REJECT,pre-matching
+`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(module.Rules) != 6 {
-		t.Fatalf("got %d rules, want 6", len(module.Rules))
+	if len(module.Rules) != 3 || len(module.Warnings) != 3 {
+		t.Fatalf("rules=%+v warnings=%v", module.Rules, module.Warnings)
 	}
-	if len(module.Warnings) != 3 {
-		t.Fatalf("want three deduplicated compatibility warnings, got %v", module.Warnings)
+	if module.Rules[0].Policy != "DIRECT" || module.Rules[0].PreMatching {
+		t.Fatal("direct rule changed")
 	}
-	for i, rule := range module.Rules {
-		if i == 0 {
-			if rule.Policy != "DIRECT" || rule.PreMatching {
-				t.Fatal("Cloudflare DIRECT rule changed")
-			}
-		} else if rule.Policy != "REJECT" || !rule.PreMatching {
-			t.Fatalf("reject rule %d changed: %+v", i, rule)
+	for _, rule := range module.Rules[1:] {
+		if rule.Policy != "REJECT" || !rule.PreMatching {
+			t.Fatalf("reject rule changed: %+v", rule)
 		}
 	}
 }

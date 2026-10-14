@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/resource"
 	surgeclient "github.com/daeuniverse/dae/component/mitm/surge/client"
+	"github.com/daeuniverse/dae/component/mitm/surge/internal/jq"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/spf13/cobra"
 )
@@ -63,7 +64,10 @@ use DAE_LOCATION_CACHE or /var/lib/dae. This command does not write cache files.
 		},
 	}
 	configure.Flags().StringVar(&name, "name", "module", "Module name in the generated configuration")
-	return append(surgeclient.Commands(services.Status, services.TriggerScript), configure)
+	worker := &cobra.Command{Use: "__jq-worker", Hidden: true, Args: cobra.NoArgs, SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error { return jq.Run(cmd.InOrStdin(), cmd.OutOrStdout()) },
+	}
+	return append(surgeclient.Commands(services.Status, services.TriggerScript), configure, worker)
 }
 
 func promptModuleArguments(input io.Reader, output io.Writer, metadata Metadata) (map[string]string, error) {

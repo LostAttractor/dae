@@ -176,16 +176,17 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		return err
 	}
 	module, s := e.matchScript("http-response", r.Request)
-	if s == nil || r.StatusCode == http.StatusSwitchingProtocols {
-		reason := "no_match"
-		if r.StatusCode == http.StatusSwitchingProtocols {
-			reason = "protocol_upgrade"
-		}
-		e.traceRequest(r.Request, "script_skip", "phase", "http-response", "reason", reason)
+	if s == nil {
+		e.traceRequest(r.Request, "script_skip", "phase", "http-response", "reason", "no_match")
 		return nil
 	}
 	execution := e.traceScript(r.Request, s)
 	defer func() { execution.finish(err) }()
+	if r.StatusCode == http.StatusSwitchingProtocols {
+		execution.outcome, execution.reason = "skipped", "protocol_upgrade"
+		e.traceRequest(r.Request, "script_skip", "phase", "http-response", "reason", execution.reason)
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(r.Request.Context(), e.scriptTimeout(s))
 	defer cancel()
 	release, err := e.acquire(ctx, "http-response")

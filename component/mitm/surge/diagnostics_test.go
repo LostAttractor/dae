@@ -10,7 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"context"
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/component/plugin"
+	dns "github.com/miekg/dns"
 )
 
 func TestExplainScriptSNIKeepsDestinationPort(t *testing.T) {
@@ -38,6 +41,32 @@ rewrite = type=http-request,pattern=^https://script\.test:8443/path,script-path=
 		}
 	}
 	t.Fatalf("explanation disagreed with runtime matching: %+v", result.Steps)
+}
+
+func TestExplainDNSQuestionApplicabilityMatchesRuntime(t *testing.T) {
+	module, err := Parse("[Host]\nexample.test = 192.0.2.1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, EngineOptions{Modules: []*Module{module}})
+	for _, class := range []uint16{dns.ClassINET, dns.ClassCHAOS} {
+		for _, kind := range []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeTXT, dns.TypeAXFR, dns.TypeIXFR, dns.TypeTKEY} {
+			query := new(dns.Msg).SetQuestion("example.test.", kind)
+			query.Question[0].Qclass = class
+			forwarded := false
+			_, err := engine.WrapDNS(func(context.Context, *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+				forwarded = true
+				return nil, nil
+			})(t.Context(), &plugin.DNSExchange{DNSRequest: plugin.DNSRequest{DNSPacket: plugin.DNSMessage(query)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := engine.Explain(t.Context(), api.ExplainRequest{Kind: "dns", DNS: &api.DiagnosticDNS{Name: "example.test.", Type: dns.TypeToString[kind], Class: dns.ClassToString[class]}})
+			if result.Terminal == forwarded || !result.Complete {
+				t.Fatalf("class=%d type=%d runtime forwarded=%v explanation=%+v", class, kind, forwarded, result)
+			}
+		}
+	}
 }
 
 func TestExplainDeclarativeRewriteAndDynamicBoundary(t *testing.T) {

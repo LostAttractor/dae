@@ -114,6 +114,32 @@ func TestSurgeDNSScriptBudgetIncludesQueue(t *testing.T) {
 	}
 }
 
+func TestSurgeDNSScriptReleasesSlotBeforeDownstream(t *testing.T) {
+	for _, source := range []string{`$done()`, `$done({server:"192.0.2.53"})`} {
+		m := moduleScopeModule(t, "dns", "", "[Host]\nscript.example=script:answer\n[Script]\nanswer=type=dns,script-path=answer.js", map[string]string{"answer": source})
+		e := moduleScopeEngine(t, m)
+		e.slots = make(chan struct{}, 1)
+		next := func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+			if len(e.slots) != 0 {
+				t.Fatal("DNS downstream still owns an execution slot")
+			}
+			if _, ok := ctx.Deadline(); !ok {
+				t.Fatal("downstream lost the overall deadline")
+			}
+			// Another invocation can run while this query waits for its server.
+			release, err := e.acquire(ctx, "dns")
+			if err != nil {
+				t.Fatal(err)
+			}
+			release()
+			return hostAddressResponse(request, nil, 0), nil
+		}
+		if _, err := e.WrapDNS(next)(t.Context(), hostDNSRequest(t, "script.example.", dns.TypeA)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestSurgeHostPolicyFollowsFirstMatchingInstance(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		firstModule := moduleScopeModule(t, "first", "", "[Host]\nexample.com=192.0.2.1", nil)

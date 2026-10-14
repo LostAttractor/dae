@@ -96,7 +96,16 @@ func (s DNSScope) Match(m *dns.Msg) bool {
 	if m == nil || m.Response || m.Opcode != dns.OpcodeQuery || len(m.Question) != 1 {
 		return false
 	}
-	q := m.Question[0]
+	return s.matchQuestion(m.Question[0])
+}
+
+func (s DNSScope) MatchPacket(packet DNSPacket) bool {
+	header, valid := packet.Header()
+	q, single := packet.Question()
+	return valid && !header.Response && header.Opcode == dns.OpcodeQuery && single && s.matchQuestion(q)
+}
+
+func (s DNSScope) matchQuestion(q dns.Question) bool {
 	matched := len(s.Types) == 0
 	for _, t := range s.Types {
 		matched = matched || t == q.Qtype

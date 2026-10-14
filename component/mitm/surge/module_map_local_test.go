@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -114,61 +113,5 @@ func TestMapLocalLoadsRelativeFileAndBoundsBody(t *testing.T) {
 	req, _ := http.NewRequest("GET", "https://example.com/", nil)
 	if _, err := e.mapLocal(req); err != membuffer.ErrTooLarge {
 		t.Fatalf("body cap not enforced: %v", err)
-	}
-}
-
-// Use an unmodified checkout/download so changes to the real module can be
-// checked without vendoring externally maintained scripts or requiring CI I/O.
-func TestBilijumpModuleMapLocalCompatibility(t *testing.T) {
-	dir := os.Getenv("DAE_SURGE_BILIJUMP_FIXTURES")
-	if dir == "" {
-		t.Skip("set DAE_SURGE_BILIJUMP_FIXTURES to a directory containing bilijump.sgmodule")
-	}
-	source, err := os.ReadFile(filepath.Join(dir, "bilijump.sgmodule"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, err := Parse(string(source), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(m.MapLocals) != 7 || len(m.BodyRewrites) != 4 || len(m.Rules) != 6 || len(m.Scripts) != 8 {
-		t.Fatalf("unexpected module counts: map=%d body=%d rules=%d scripts=%d", len(m.MapLocals), len(m.BodyRewrites), len(m.Rules), len(m.Scripts))
-	}
-	for _, warning := range m.Warnings {
-		if strings.Contains(warning, "unsupported section") || strings.Contains(warning, `unsupported parameter "engine"`) {
-			t.Errorf("unhandled Bilijump directive: %s", warning)
-		}
-	}
-	e := newTestEngine(t, EngineOptions{Modules: []*Module{m}, Runtime: testRuntime(t, RuntimeOptions{}).Runtime})
-	for _, test := range []struct{ url, body string }{
-		{"https://api.bilibili.com/x/resource/top/activity?x=1", `{"code":-404,"message":"-404","ttl":1,"data":null}`},
-		{"https://api.bilibili.com/pgc/activity/deliver/material/receive?x=1", `{"code":0,"data":{"closeType":"close_win","container":[],"showTime":""},"message":"success"}`},
-		{"https://api.live.bilibili.com/xlive/e-commerce-interface/v1/ecommerce-user/get_shopping_info?x=1", `{}`},
-		{"https://line3-h5-mobile-api.biligame.com/game/live/large_card_material?x=1", `{"code":0,"message":"success"}`},
-		{"https://grpc.biliapi.net/bilibili.app.interface.v1.Teenagers/ModeStatus", "AAAAABMKEQgCEgl0ZWVuYWdlcnMgAioA"},
-		{"https://grpc.biliapi.net/bilibili.app.interface.v1.Search/DefaultWords", "AAAAACEaHeaQnOe0ouinhumikeOAgeeVquWJp+aIlnVw5Li7KAE="},
-		{"https://grpc.biliapi.net/bilibili.app.viewunite.v1.View/PlayPause", "AAAAAAA="},
-	} {
-		req, _ := http.NewRequest("POST", test.url, nil)
-		resp, err := e.mapLocal(req)
-		if err != nil || resp == nil {
-			t.Fatalf("%s: response=%v err=%v", test.url, resp, err)
-		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		want := []byte(test.body)
-		if strings.Contains(test.url, "grpc.biliapi.net") {
-			want, err = base64.StdEncoding.DecodeString(test.body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if resp.Header.Get("Grpc-Status") != "0" {
-				t.Fatal("missing gRPC success status")
-			}
-		}
-		if !bytes.Equal(body, want) {
-			t.Fatalf("%s: response body %q, want %q", test.url, body, want)
-		}
 	}
 }

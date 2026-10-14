@@ -5,6 +5,7 @@ package plugin
 import (
 	"bytes"
 	"errors"
+	"slices"
 
 	"github.com/daeuniverse/dae/common/netutils"
 	dns "github.com/miekg/dns"
@@ -47,6 +48,48 @@ func (p DNSPacket) MessageCopy() *dns.Msg {
 		return nil
 	}
 	return p.message.Copy()
+}
+
+// Header and Question return scalar copies without cloning resource records.
+// Question succeeds only for a parsed packet containing exactly one question.
+func (p DNSPacket) Header() (dns.MsgHdr, bool) {
+	if p.message == nil {
+		return dns.MsgHdr{}, false
+	}
+	return p.message.MsgHdr, true
+}
+
+func (p DNSPacket) Question() (dns.Question, bool) {
+	if p.message == nil || len(p.message.Question) != 1 {
+		return dns.Question{}, false
+	}
+	return p.message.Question[0], true
+}
+
+func (p DNSPacket) HasAdditional(types ...uint16) bool {
+	if p.message == nil {
+		return false
+	}
+	for _, record := range p.message.Extra {
+		if slices.Contains(types, record.Header().Rrtype) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateResponse reads the immutable packets without allocating message copies.
+func (p DNSPacket) ValidateResponse(response DNSPacket, allowEmptyQuestion bool) error {
+	if p.message == nil || response.message == nil {
+		return errors.New("empty or opaque DNS packet")
+	}
+	if allowEmptyQuestion {
+		// The transport helper fills absent questions on negative replies.
+		// Give it a scalar copy so immutable packet storage stays untouched.
+		message := *response.message
+		return netutils.ValidateDnsResponseAllowEmptyQuestion(p.message, &message, p.message.Id)
+	}
+	return netutils.ValidateDnsResponse(p.message, response.message, p.message.Id)
 }
 
 // IsWire distinguishes exact received bytes from a locally constructed message.

@@ -10,6 +10,7 @@ import (
 	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -51,26 +52,12 @@ func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody i
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	var body []byte
-	if options.Body != nil {
-		body = []byte(*options.Body)
-	}
-	if options.Binary != nil {
-		var err error
-		body, err = base64.StdEncoding.DecodeString(*options.Binary)
-		if err != nil {
-			return "", membuffer.Reservation{}, err
-		}
-	}
-	if int64(len(body)) > maxBody {
-		return "", membuffer.Reservation{}, membuffer.ErrTooLarge
-	}
-	requestMemory, err := budget.Reserve(int64(len(body)))
+	body, err := scriptHTTPRequestBody(options, maxBody, budget)
+	defer body.Close()
 	if err != nil {
 		return "", membuffer.Reservation{}, err
 	}
-	defer requestMemory.Close()
-	req, err := http.NewRequestWithContext(ctx, options.Method, options.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, options.Method, options.URL, bytes.NewReader(body.Bytes()))
 	if err != nil {
 		return "", membuffer.Reservation{}, err
 	}
@@ -106,6 +93,27 @@ func scriptHTTP(ctx context.Context, client *http.Client, spec string, maxBody i
 		return "", membuffer.Reservation{}, err
 	}
 	return scriptHTTPResponse(ctx, req, resp, maxBody, budget, options.FullHeaders)
+}
+
+// Stream into reserved storage. Text conversion and base64 decoding cannot
+// allocate a whole unaccounted request body before the size/budget check.
+func scriptHTTPRequestBody(options scriptHTTPOptions, limit int64, budget *membuffer.Budget) (*membuffer.View, error) {
+	if budget == nil {
+		return nil, membuffer.ErrBudgetRequired
+	}
+	if options.Binary == nil && (options.Body == nil || *options.Body == "") || options.Binary != nil && *options.Binary == "" {
+		return membuffer.Copy(nil, budget)
+	}
+	var reader io.Reader = strings.NewReader("")
+	if options.Binary != nil {
+		reader = base64.NewDecoder(base64.StdEncoding, strings.NewReader(*options.Binary))
+	} else if options.Body != nil {
+		if int64(len(*options.Body)) > limit {
+			return nil, membuffer.ErrTooLarge
+		}
+		reader = strings.NewReader(*options.Body)
+	}
+	return membuffer.Read(reader, limit, budget)
 }
 
 func scriptHTTPResponse(ctx context.Context, req *http.Request, resp *http.Response, maxBody int64, budget *membuffer.Budget, fullHeaders bool) (string, membuffer.Reservation, error) {

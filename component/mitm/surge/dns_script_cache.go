@@ -35,7 +35,8 @@ type dnsScriptCache struct {
 }
 
 func dnsScriptKey(script *Script, request *plugin.DNSExchange) dnsScriptCacheKey {
-	return dnsScriptCacheKey{script: script, domain: dns.CanonicalName(request.MessageCopy().Question[0].Name),
+	question, _ := request.Question()
+	return dnsScriptCacheKey{script: script, domain: dns.CanonicalName(question.Name),
 		context: request.ContextKey, network: request.Network, source: request.Source,
 		destination: request.Destination, original: request.OriginalDestination, iface: request.Interface, assigned: request.ServerAssigned}
 }

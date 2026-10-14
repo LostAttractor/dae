@@ -3,11 +3,15 @@
 package surge
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"time"
 
+	"github.com/daeuniverse/dae/component/mitm/surge/internal/jq"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -37,13 +41,23 @@ type Engine struct {
 	tasks          *taskRunner
 	dnsCache       *dnsScriptCache
 	resourceStatus *atomic.Pointer[resourceStatus]
+	releaseJQ      func() error
 }
 
 func NewEngine(o EngineOptions) (*Engine, error) {
-	for _, module := range o.Modules {
-		if _, err := moduleScope(module.Hostnames); err != nil {
+	return newEngine(context.Background(), o)
+}
+
+func newEngine(ctx context.Context, o EngineOptions) (_ *Engine, err error) {
+	o.Modules = slices.Clone(o.Modules)
+	for i, module := range o.Modules {
+		scope, err := moduleScope(module.Hostnames)
+		if err != nil {
 			return nil, err
 		}
+		prepared := *module
+		prepared.scope = &scope
+		o.Modules[i] = &prepared
 		if len(module.Scripts)+len(module.TaskScripts) != 0 && o.Runtime == nil {
 			return nil, errors.New("surge: scripts require a JavaScript runtime")
 		}
@@ -55,9 +69,27 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 		return nil, errors.New("surge: body memory budget is required")
 	}
 	e := &Engine{options: o, slots: make(chan struct{}, o.MaxConcurrentScripts), dnsCache: &dnsScriptCache{}}
+	defer func() {
+		if err != nil && e.releaseJQ != nil {
+			_ = e.releaseJQ()
+		}
+	}()
+	for _, module := range o.Modules {
+		if slices.ContainsFunc(module.BodyRewrites, func(rule BodyRewrite) bool { return rule.expression != "" }) {
+			pool, release, err := jq.Acquire()
+			if err != nil {
+				return nil, err
+			}
+			e.releaseJQ = release
+			e.options.Modules, err = prepareBodyRewrites(ctx, o.Modules, pool)
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
 	e.resourceStatus = new(atomic.Pointer[resourceStatus])
 	e.AcceptResources(e.options.Modules)
-	var err error
 	e.tasks, err = newTaskRunner(e)
 	if err != nil {
 		return nil, err
@@ -68,7 +100,37 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 
 // Close releases the runtime after the host has drained scripts and workers.
 func (e *Engine) Close() error {
-	return e.options.Runtime.Close()
+	var err error
+	if e.releaseJQ != nil {
+		err = e.releaseJQ()
+	}
+	return errors.Join(err, e.options.Runtime.Close())
+}
+
+func prepareBodyRewrites(parent context.Context, modules []*Module, pool *jq.Pool) ([]*Module, error) {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	prepared := make([]*Module, 0, len(modules))
+	for _, module := range modules {
+		copy := *module
+		copy.BodyRewrites = nil
+		copy.Warnings = slices.Clone(module.Warnings)
+		for _, rule := range module.BodyRewrites {
+			if rule.expression != "" {
+				if err := pool.Validate(ctx, rule.expression); err != nil {
+					if !errors.Is(err, jq.ErrExpression) {
+						return nil, err
+					}
+					copy.Warnings = append(copy.Warnings, fmt.Sprintf("invalid Body Rewrite jq expression for %q is ignored: %v", rule.Pattern, err))
+					continue
+				}
+				rule.jq = pool
+			}
+			copy.BodyRewrites = append(copy.BodyRewrites, rule)
+		}
+		prepared = append(prepared, &copy)
+	}
+	return prepared, nil
 }
 
 // forConnection fixes HTTP processing to modules that allow the intercepted
@@ -94,7 +156,7 @@ func (e *Engine) Plan() plugin.Plan {
 			plan.DNS = append(plan.DNS, plugin.DNSScope{})
 		}
 		if len(module.Hostnames) > 0 {
-			scope, _ := moduleScope(module.Hostnames) // validated by NewEngine
+			scope := *module.scope
 			// Scripts may issue requests or replace URLs; rewrites and Map Local
 			// may finish the request without any upstream connection at all.
 			plan.Scopes = append(plan.Scopes, plugin.HTTPScope{

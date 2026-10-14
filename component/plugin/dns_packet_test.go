@@ -97,3 +97,30 @@ func TestDNSPacketConcurrentEncodingPreservesEDNS(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDNSScalarReadsAndValidationPreservePackets(t *testing.T) {
+	query := new(dns.Msg).SetQuestion("example.test.", dns.TypeA)
+	query.SetEdns0(1232, true)
+	packet := DNSMessage(query)
+	if allocated := testing.AllocsPerRun(100, func() {
+		header, parsed := packet.Header()
+		question, single := packet.Question()
+		if !parsed || !single || header.Id != query.Id || question.Name != "example.test." || !packet.HasAdditional(dns.TypeOPT) {
+			t.Fatal("lost DNS scalars")
+		}
+	}); allocated != 0 {
+		t.Fatal(allocated)
+	}
+	response := new(dns.Msg).SetRcode(query, dns.RcodeServerFailure)
+	response.Question = nil
+	negative := DNSMessage(response)
+	if err := packet.ValidateResponse(negative, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := negative.Question(); present {
+		t.Fatal("validation changed immutable response")
+	}
+	if err := packet.ValidateResponse(negative, false); err == nil {
+		t.Fatal("strict validation accepted missing question")
+	}
+}

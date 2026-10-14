@@ -13,6 +13,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/component/plugin"
+	dns "github.com/miekg/dns"
 )
 
 // Explain only evaluates immutable matchers and edits private header/URL copies.
@@ -185,6 +186,12 @@ func (e *Engine) explainDNS(ctx context.Context, input api.ExplainRequest) plugi
 	}
 	query := *input.DNS
 	query.AnswerIPs = slices.Clone(query.AnswerIPs)
+	question := dns.Question{Name: query.Name, Qclass: dns.StringToClass[strings.ToUpper(cmp.Or(query.Class, "IN"))], Qtype: dns.StringToType[strings.ToUpper(cmp.Or(query.Type, "A"))]}
+	if !hostDNSQuestion(question) {
+		result.DNS = &query
+		result.Steps = append(result.Steps, api.ExplainStep{ID: "question", Stage: "dns_host", Expression: "DNS question", Status: "skipped", Match: "miss", Reason: "unsupported_dns_question"})
+		return result
+	}
 	seen := make(map[string]bool)
 	for range 16 {
 		name := strings.TrimSuffix(strings.ToLower(query.Name), ".")

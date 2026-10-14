@@ -3,26 +3,23 @@
 package surge
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"fmt"
-	"io"
 	"strings"
 
+	"github.com/daeuniverse/dae/component/mitm/surge/internal/jq"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/dlclark/regexp2"
-	"github.com/itchyny/gojq"
 )
 
 // BodyRewrite applies a jq filter or consecutive text replacements before scripts.
-// The JavaScript heap limit does not govern these Go evaluators.
+// jq evaluation belongs to the plugin's memory constrained worker pool.
 type BodyRewrite struct {
 	Type         string
 	Pattern      string
 	pattern      *regexp2.Regexp
-	code         *gojq.Code
+	expression   string
+	jq           *jq.Pool
 	replacements []bodyReplacement
 }
 
@@ -61,21 +58,16 @@ func parseBodyRewrite(line string, warnings *[]string) (*BodyRewrite, error) {
 		return rule, nil
 	}
 	expression := fields[2]
+	if expression == "" {
+		*warnings = append(*warnings, "empty Body Rewrite jq expression is ignored")
+		return nil, nil
+	}
 	// Keep parsing and compilation bounded independently of the module limit.
 	if len(expression) > 64<<10 {
 		*warnings = append(*warnings, "Body Rewrite jq expression exceeds 64 KiB and is ignored")
 		return nil, nil
 	}
-	query, err := gojq.Parse(expression)
-	if err == nil {
-		// The default compiler exposes no environment, filesystem module loader,
-		// or input iterator. Never enable those host capabilities for modules.
-		rule.code, err = gojq.Compile(query)
-	}
-	if err != nil {
-		*warnings = append(*warnings, fmt.Sprintf("invalid Body Rewrite jq expression for %q is ignored: %v", rule.Pattern, err))
-		return nil, nil
-	}
+	rule.expression = expression
 	return rule, nil
 }
 
@@ -91,43 +83,7 @@ func (r BodyRewrite) Apply(ctx context.Context, body []byte, limit int64, budget
 	if len(r.replacements) != 0 {
 		return r.replaceText(ctx, body, limit, budget)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	var input any
-	if err := decoder.Decode(&input); err != nil {
-		return nil, fmt.Errorf("Body Rewrite requires valid JSON: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, fmt.Errorf("Body Rewrite requires one JSON document")
-	}
-	writer := &bodyRewriteWriter{ctx: ctx, Limit: limit, Budget: budget}
-	defer writer.Close()
-	iterator := r.code.RunWithContext(ctx, input)
-	for {
-		value, ok := iterator.Next()
-		if !ok {
-			break
-		}
-		if err, ok := value.(error); ok {
-			return nil, fmt.Errorf("Body Rewrite jq: %w", err)
-		}
-		if writer.Len() != 0 {
-			if _, err := writer.Write([]byte{'\n'}); err != nil {
-				return nil, err
-			}
-		}
-		if err := jsonv2.MarshalWrite(writer, value, jsonv2.Deterministic(true)); err != nil {
-			return nil, fmt.Errorf("Body Rewrite jq output: %w", err)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if writer.Len() == 0 {
-		return nil, nil
-	}
-	return writer.View(), nil
+	return r.jq.Apply(ctx, r.expression, body, limit, budget)
 }
 
 type bodyRewriteWriter struct {

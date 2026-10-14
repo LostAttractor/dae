@@ -15,9 +15,22 @@ func newTestEngine(t *testing.T, options EngineOptions) *Engine {
 	options.MaxBodySize = cmp.Or(options.MaxBodySize, 1<<20)
 	options.MaxConcurrentScripts = cmp.Or(options.MaxConcurrentScripts, 2)
 	options.ScriptTimeout = cmp.Or(options.ScriptTimeout, time.Second)
+	for _, module := range options.Modules {
+		for _, rule := range module.BodyRewrites {
+			if rule.expression != "" {
+				testJQPool(t)
+				break
+			}
+		}
+	}
 	engine, err := NewEngine(options)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := engine.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	return engine
 }

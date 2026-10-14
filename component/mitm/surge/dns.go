@@ -19,21 +19,20 @@ import (
 
 func (e *Engine) WrapDNS(next plugin.DNSHandler) plugin.DNSHandler {
 	return func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
-		message := request.MessageCopy()
-		if message == nil || message.Response || message.Opcode != dns.OpcodeQuery || len(message.Question) != 1 || message.Question[0].Qclass != dns.ClassINET {
+		header, parsed := request.Header()
+		question, single := request.Question()
+		if !parsed || !single || header.Response || header.Opcode != dns.OpcodeQuery || !hostDNSQuestion(question) {
 			return next(ctx, request)
 		}
-		qtype := message.Question[0].Qtype
-		if qtype == dns.TypeAXFR || qtype == dns.TypeIXFR || qtype == dns.TypeTKEY {
+		if request.HasAdditional(dns.TypeTSIG, dns.TypeSIG) {
 			return next(ctx, request)
-		}
-		for _, rr := range message.Extra {
-			if rr.Header().Rrtype == dns.TypeTSIG || rr.Header().Rrtype == dns.TypeSIG {
-				return next(ctx, request)
-			}
 		}
 		return e.resolveHost(ctx, request, next, make(map[string]bool))
 	}
+}
+
+func hostDNSQuestion(question dns.Question) bool {
+	return question.Qclass == dns.ClassINET && question.Qtype != dns.TypeAXFR && question.Qtype != dns.TypeIXFR && question.Qtype != dns.TypeTKEY
 }
 
 func (e *Engine) findDNSHost(name string) (*Module, *HostEntry) {
@@ -72,8 +71,7 @@ func (e *Engine) UseDNSAddress(name string, proxy bool) (use, applicable bool) {
 }
 
 func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSExchange, next plugin.DNSHandler, seen map[string]bool) (*plugin.DNSResponse, error) {
-	query := request.MessageCopy()
-	q := query.Question[0]
+	q, _ := request.Question()
 	name := dns.CanonicalName(q.Name)
 	if seen[name] || len(seen) >= 16 {
 		return nil, fmt.Errorf("Host alias loop or depth limit at %s", name)
@@ -97,6 +95,7 @@ func (e *Engine) resolveHost(ctx context.Context, request *plugin.DNSExchange, n
 			return response, nil
 		}
 		alias := request.Copy()
+		query := request.MessageCopy()
 		aliasQuery := query.Copy()
 		aliasQuery.Question[0].Name = host.Alias
 		alias.DNSPacket = plugin.DNSMessage(aliasQuery)
@@ -152,7 +151,7 @@ func resolveHostServers(ctx context.Context, request *plugin.DNSExchange, server
 	if len(servers) == 1 {
 		switch servers[0] {
 		case "system", "syslib", "force-syslib":
-			q := request.MessageCopy().Question[0]
+			q, _ := request.Question()
 			network := "ip"
 			if q.Qtype == dns.TypeA {
 				network = "ip4"
@@ -222,10 +221,10 @@ func resolvePlainDNSServers(ctx context.Context, request *plugin.DNSExchange, ta
 			query.ContextKey += "/surge-server/" + target.String()
 			response, err := next(ctx, query)
 			if err == nil {
-				if response == nil || response.MessageCopy() == nil {
+				if response == nil {
 					err = errors.New("DNS server returned an empty response")
 				} else {
-					err = netutils.ValidateDnsResponseAllowEmptyQuestion(query.MessageCopy(), response.MessageCopy(), query.MessageCopy().Id)
+					err = query.ValidateResponse(response.DNSPacket, true)
 				}
 			}
 			results <- result{response, err}
@@ -238,11 +237,16 @@ func resolvePlainDNSServers(ctx context.Context, request *plugin.DNSExchange, ta
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case result := <-results:
+			var rcode int
+			if result.response != nil {
+				header, _ := result.response.Header()
+				rcode = header.Rcode
+			}
 			if result.err != nil {
 				failure = errors.Join(failure, result.err)
-			} else if result.response.MessageCopy().Rcode == dns.RcodeSuccess {
+			} else if rcode == dns.RcodeSuccess {
 				return result.response, nil
-			} else if negative == nil || result.response.MessageCopy().Rcode == dns.RcodeNameError {
+			} else if negative == nil || rcode == dns.RcodeNameError {
 				// A definitive negative answer outranks transient server failures,
 				// regardless of which concurrent query finishes last.
 				negative = result.response
@@ -305,20 +309,28 @@ func (e *Engine) runDNSScript(ctx context.Context, module *Module, name string, 
 	defer func() { execution.finish(err) }()
 	ctx, cancel := context.WithTimeout(ctx, e.scriptTimeout(script))
 	defer cancel()
-	release, err := e.acquire(ctx, "dns")
+	value, err := func() (DNSResult, error) {
+		release, err := e.acquire(ctx, "dns")
+		if err != nil {
+			return DNSResult{}, err
+		}
+		defer release()
+		execution.start()
+		question, _ := request.Question()
+		result, err := e.runInvocation(ctx, module, script, Invocation{
+			Domain: strings.TrimSuffix(question.Name, "."), HTTPClient: request.Client,
+		})
+		if err != nil {
+			return DNSResult{}, err
+		}
+		defer result.Close()
+		// DNS scalars and slices are Go-owned. Release the invocation and its
+		// body buffers before waiting on any subsequent DNS handler or server.
+		return result.DNS, nil
+	}()
 	if err != nil {
 		return nil, err
 	}
-	defer release()
-	execution.start()
-	result, err := e.runInvocation(ctx, module, script, Invocation{
-		Domain: strings.TrimSuffix(request.MessageCopy().Question[0].Name, "."), HTTPClient: request.Client,
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer result.Close()
-	value := result.DNS
 	forms := 0
 	if value.Address != "" {
 		forms++

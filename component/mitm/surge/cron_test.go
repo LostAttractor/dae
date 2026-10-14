@@ -10,8 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -113,7 +111,7 @@ func TestCronExpressionsAndParameters(t *testing.T) {
 			}
 		})
 	}
-	// Unquoted expressions, as used by the original Youpin configuration.
+	// Cron expressions may be unquoted.
 	m := cronModule(t, "[Script]\nx=type=cron,cronexp=5 9 * * *,script-path=x.js")
 	if m.TaskScripts[0].CronExp != "5 9 * * *" {
 		t.Fatal(m.TaskScripts)
@@ -329,24 +327,28 @@ func TestTasksDoNotChangeExistingHTTPPlan(t *testing.T) {
 	}
 }
 
-// Set DAE_SURGE_YOUPIN_FIXTURES to the pinned upstream directory to verify the
-// unchanged script's capture -> persistent store -> scheduled sign-in flow.
-func TestYoupinCronCompatibility(t *testing.T) {
-	dir := os.Getenv("DAE_SURGE_YOUPIN_FIXTURES")
-	if dir == "" {
-		t.Skip("set DAE_SURGE_YOUPIN_FIXTURES to a directory containing README.md and youpin.js")
-	}
-	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := os.ReadFile(filepath.Join(dir, "youpin.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, section, _ := strings.Cut(string(readme), "## Surge")
-	_, section, _ = strings.Cut(section, "```ini\n")
-	section, _, _ = strings.Cut(section, "```")
+// The same short script captures a header, then uses it from an activated task.
+func TestCronCaptureStoreAndHTTP(t *testing.T) {
+	const section = `[MITM]
+hostname=example.test
+[Script]
+capture=type=http-request,pattern=.,script-path=job.js
+task=type=cron,cronexp=0 * * * * *,script-path=job.js
+`
+	const source = `
+if (typeof $request !== "undefined") {
+ $persistentStore.write($request.headers["cookie"], "task_cookie");
+ $done();
+} else {
+ const cookie=$persistentStore.read("task_cookie");
+ $httpClient.post({url:"https://example.test/query",headers:{Cookie:cookie}},(error,response,body)=>{
+  if(error || JSON.parse(body).ready !== true) throw Error("query failed");
+  $httpClient.post({url:"https://example.test/submit",headers:{Cookie:cookie}},(error,response,body)=>{
+   if(error || JSON.parse(body).ok !== true) throw Error("submit failed");
+   console.log("task completed"); $done();
+  });
+ });
+}`
 	for _, encoding := range []string{"gzip", "deflate", "br"} {
 		for _, mode := range []string{"scheduled", "manual"} {
 			t.Run(encoding+"/"+mode, func(t *testing.T) {
@@ -356,26 +358,26 @@ func TestYoupinCronCompatibility(t *testing.T) {
 				if len(m.Scripts) != 1 || len(m.TaskScripts) != 1 {
 					t.Fatalf("original module lost a script: %+v", m)
 				}
-				e := cronTestEngine(t, m, map[string]string{m.Scripts[0].Name: string(source), m.TaskScripts[0].Name: string(source)}, 1)
+				e := cronTestEngine(t, m, map[string]string{m.Scripts[0].Name: source, m.TaskScripts[0].Name: source}, 1)
 				var messages []string
 				e.options.Runtime.opts.Logger = testSurgeLogger(func(entry *log.Entry) { messages = append(messages, entry.Message) })
-				query := encodeRuntimeHTTPBody(t, []byte(`{"code":0,"data":{"signUserInfo":{"sign":false}}}`), encoding)
-				signed := encodeRuntimeHTTPBody(t, []byte(`{"code":0,"data":{"amount":"0.15","msg":"签到成功！"}}`), encoding)
+				query := encodeRuntimeHTTPBody(t, []byte(`{"ready":true}`), encoding)
+				signed := encodeRuntimeHTTPBody(t, []byte(`{"ok":true}`), encoding)
 				var requests atomic.Int32
 				client := &http.Client{Transport: runtimeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 					n := requests.Add(1)
-					path, response := "/mtop/act/redPacketSign/getActInfo", query
+					path, response := "/query", query
 					if n == 2 {
-						path, response = "/mtop/act/redPacketSign/clickSign", signed
+						path, response = "/submit", signed
 					}
-					if n > 2 || req.Method != "POST" || req.URL.Host != "m.xiaomiyoupin.com" || req.URL.Path != path || !strings.Contains(req.Header.Get("Cookie"), "serviceToken=fixture-token") {
+					if n > 2 || req.Method != "POST" || req.URL.Host != "example.test" || req.URL.Path != path || !strings.Contains(req.Header.Get("Cookie"), "token=fixture") {
 						return nil, fmt.Errorf("unexpected scheduled request: %s %s", req.Method, req.URL)
 					}
 					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Encoding": {encoding}}, Body: io.NopCloser(strings.NewReader(string(response)))}, nil
 				})}
-				req := httptest.NewRequest("POST", "https://m.xiaomiyoupin.com/mtop/act/redPacketSign/getActInfo", nil)
-				req.Header["Cookie"] = []string{"mjclient=YouPin", "serviceToken=fixture-token", "youpin_sessionid=fixture-session"}
-				chain := e.Wrap(plugin.Flow{Host: "m.xiaomiyoupin.com", Port: 443}, func(exchange *plugin.Exchange) (*http.Response, error) {
+				req := httptest.NewRequest("POST", "https://example.test/query", nil)
+				req.Header["Cookie"] = []string{"token=fixture"}
+				chain := e.Wrap(plugin.Flow{Host: "example.test", Port: 443}, func(exchange *plugin.Exchange) (*http.Response, error) {
 					return &http.Response{StatusCode: 204, Request: exchange.Request, Header: make(http.Header), Body: http.NoBody}, nil
 				})
 				response, err := chain(&plugin.Exchange{Request: req, Client: client})
@@ -383,11 +385,11 @@ func TestYoupinCronCompatibility(t *testing.T) {
 					t.Fatal(err)
 				}
 				response.Body.Close()
-				if data, err := e.options.Runtime.data.read(t.Context(), "youpin_data"); err != nil || data == nil {
+				if data, err := e.options.Runtime.data.read(t.Context(), "task_cookie"); err != nil || data == nil {
 					t.Fatalf("capture did not populate persistent store: %v", err)
 				}
 				runtimeFakeClockTest(t, func(t *testing.T) {
-					host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}, HTTPClient: client}, mitm.Instance{ID: "youpin", Type: "surge", Plugin: e})
+					host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}, HTTPClient: client}, mitm.Instance{ID: "task", Type: "surge", Plugin: e})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -397,7 +399,7 @@ func TestYoupinCronCompatibility(t *testing.T) {
 					}
 					synctest.Wait()
 					if mode == "manual" {
-						if _, err := host.TriggerScript("youpin", api.ScriptRunRequest{Script: m.TaskScripts[0].Name}); err != nil {
+						if _, err := host.TriggerScript("task", api.ScriptRunRequest{Script: m.TaskScripts[0].Name}); err != nil {
 							t.Fatal(err)
 						}
 					} else {
@@ -405,8 +407,8 @@ func TestYoupinCronCompatibility(t *testing.T) {
 					}
 					synctest.Wait()
 					status := cronStatus(t, e, 0)
-					if requests.Load() != 2 || status.Runs != 1 || status.LastResult != "success" || !strings.Contains(strings.Join(messages, "\n"), "✅ 签到成功") {
-						t.Fatalf("scheduled Youpin sign-in failed: requests=%d status=%+v logs=%v", requests.Load(), status, messages)
+					if requests.Load() != 2 || status.Runs != 1 || status.LastResult != "success" || !strings.Contains(strings.Join(messages, "\n"), "task completed") {
+						t.Fatalf("task flow failed: requests=%d status=%+v logs=%v", requests.Load(), status, messages)
 					}
 				})
 			})

@@ -11,6 +11,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/resource"
 	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
+	"github.com/daeuniverse/dae/component/mitm/surge/internal/jq"
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
@@ -64,6 +65,13 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 		moduleCache = filepath.Join(services.ResourceCacheDir, "surge")
 	}
 	modules = make([]*Module, 0, len(conf.Modules))
+	var jqPool *jq.Pool
+	var releaseJQ func() error
+	defer func() {
+		if releaseJQ != nil {
+			_ = releaseJQ()
+		}
+	}()
 	for i, source := range conf.Modules {
 		module, err := Load(ctx, source.Link, client, LoadOptions{
 			BaseDir:         baseDir,
@@ -77,6 +85,28 @@ func prepareModules(ctx context.Context, conf Config, services plugin.Services) 
 		}
 		if source.Name != "" {
 			module.Name = source.Name
+		}
+		for _, rule := range module.BodyRewrites {
+			if rule.expression == "" {
+				continue
+			}
+			if jqPool == nil {
+				jqPool, releaseJQ, err = jq.Acquire()
+				if err != nil {
+					return nil, err
+				}
+			}
+			prepared, err := prepareBodyRewrites(ctx, []*Module{module}, jqPool)
+			if err != nil {
+				return nil, err
+			}
+			module = prepared[0]
+			// Prepared resources own immutable expressions; the runtime binds a
+			// live pool after it acquires its own lifetime reference.
+			for i := range module.BodyRewrites {
+				module.BodyRewrites[i].jq = nil
+			}
+			break
 		}
 		for _, warning := range module.Warnings {
 			logger.WithField("module", module.Name).Warn(resource.RedactText(warning))
@@ -131,7 +161,7 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 	if err != nil {
 		return nil, err
 	}
-	engine, err := NewEngine(EngineOptions{
+	engine, err := newEngine(ctx, EngineOptions{
 		Modules: modules, Runtime: runtime,
 		HTTPPolicies: conf.HTTPPolicies,
 		BodyMemory:   services.BodyMemory,

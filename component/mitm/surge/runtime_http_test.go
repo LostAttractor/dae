@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,34 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
+
+func TestScriptHTTPRequestBodyReservesBeforeDecode(t *testing.T) {
+	large := strings.Repeat("a", 1<<20)
+	for _, options := range []scriptHTTPOptions{{Body: &large}, {Binary: new(base64.StdEncoding.EncodeToString([]byte(large)))}} {
+		budget := membuffer.NewBudget(1024)
+		body, err := scriptHTTPRequestBody(options, 2<<20, budget)
+		body.Close()
+		if !errors.Is(err, membuffer.ErrBudgetExhausted) || budget.Status().Used != 0 || budget.Status().Peak > 1024 {
+			t.Fatalf("body admission: %v %+v", err, budget.Status())
+		}
+	}
+	for _, data := range []string{"", "a", "ab", "abc", "abcd"} {
+		for _, options := range []scriptHTTPOptions{{Body: &data}, {Binary: new(base64.StdEncoding.EncodeToString([]byte(data)))}} {
+			budget := membuffer.NewBudget(1024)
+			body, err := scriptHTTPRequestBody(options, int64(max(1, len(data))), budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(body.Bytes()) != data {
+				t.Fatal("body changed")
+			}
+			body.Close()
+			if budget.Status().Used != 0 {
+				t.Fatal("leaked request body")
+			}
+		}
+	}
+}
 
 func encodeRuntimeHTTPBody(t *testing.T, body []byte, encodings ...string) []byte {
 	t.Helper()

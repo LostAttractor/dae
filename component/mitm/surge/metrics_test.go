@@ -53,6 +53,24 @@ func surgeRegistry(t *testing.T, e *Engine) *prometheus.Registry {
 	return registry
 }
 
+func TestProtocolUpgradeFinishesMatchedScriptOnce(t *testing.T) {
+	e := testProxyEngine(t, "[Script]\nresponse = type=http-response,pattern=.,script-path=response.js", `throw Error("must not execute")`)
+	registry := surgeRegistry(t, e)
+	response := &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: make(http.Header), Body: http.NoBody, Request: httptest.NewRequest("GET", "http://example.test/", nil)}
+	if err := e.processResponse(response, http.DefaultClient); err != nil {
+		t.Fatal(err)
+	}
+	if got := surgeMetric(t, registry, "surge_scripts_total", map[string]string{"phase": "http-response", "result": "skipped"}).GetCounter().GetValue(); got != 1 {
+		t.Fatal(got)
+	}
+	if got := surgeMetric(t, registry, "surge_processing_skips_total", map[string]string{"stage": "http-response", "reason": "protocol_upgrade"}).GetCounter().GetValue(); got != 1 {
+		t.Fatal(got)
+	}
+	if got := surgeMetric(t, registry, "surge_script_duration_seconds", map[string]string{"phase": "http-response"}).GetHistogram().GetSampleCount(); got != 0 {
+		t.Fatal(got)
+	}
+}
+
 func TestScriptMetricsWithoutTraceAndSharedByConnections(t *testing.T) {
 	for _, test := range []struct {
 		name, source, result string

@@ -54,7 +54,7 @@ plugins {
 | `http_policies` | 空 | 预加载脚本主动请求使用的出站组，逗号分隔，如 `proxy,api`；不增加捕获或路由规则 |
 | `store` | `true` | 是否持久化 `$persistentStore`；`false` 仅保存在实例内存中，文件名自动确定 |
 
-每次脚本调用创建独立执行上下文。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。堆限制不等于进程内存限制，也不约束 jq 中间对象；Node.js 的限制还不覆盖 ArrayBuffer 等外部内存和 V8 新生代。
+每次脚本调用创建独立执行上下文。脚本默认 `max-size` 为 1 MiB；模块限 4 MiB，单依赖 16 MiB，总依赖 64 MiB。JavaScript 堆限制不等于进程内存限制；Node.js 的限制还不覆盖 ArrayBuffer 等外部内存和 V8 新生代。jq 使用下面所述的独立进程内存限制。
 
 ### Node.js 后端
 
@@ -195,6 +195,10 @@ http-response-jq ^https://api\.example\.com/ ".enabled = true"
 ```
 
 请求 jq 使用 `http-request-jq`。正则正文须为有效 UTF-8，`^` / `$` 按行匹配，替换可为空；jq 处理单个 JSON 文档，空输出或执行失败保留前一步正文。请求 chunked / `Expect: 100-continue` 跳过正文重写。读取或解压超限时，请求返回 413，响应回放原文；本地合成响应不进入响应重写链。
+
+jq 的解析、编译、JSON 解码与执行由 Surge 插件启动同一 dae 二进制的内部工作进程完成，使用 gojq，不需要外部 jq。所有 Surge 实例及重载期间的新旧实例共享最多 4 个进程，每个进程同时执行一个任务，额外等待任务最多 16 个。任务同时占用实例的 `max_concurrent_scripts` 名额，读取正文、排队和执行共用 `script_timeout`；队列满、超时、进程退出或超限均保留前一步正文。取消时终止并回收对应进程，后续任务按需创建新进程。每个进程缓存最多 32 个已编译表达式，单表达式最多 64 KiB；正文传输受 `max_body_size` 约束，返回正文仍计入宿主共享正文预算。
+
+包含 jq 规则的模块需要可写的 cgroup v2 memory 控制器：每个 worker 的 `memory.max` 为 128 MiB，整个池为 512 MiB，`memory.swap.max` 为 0。加载时验证限额并在受限进程中编译表达式；无法建立限制时报错。未使用 jq 时不创建这些资源。限额涵盖 worker 的解析对象、求值中间对象和进程开销，内核允许某些情况下短暂超限，不能将其视为逐瞬间的 RSS 上限。复杂表达式或大正文即使未超过正文大小限制，也可能因进程内存不足而保留原文。最后一个使用 jq 的实例关闭后，工作进程及其 cgroup 一并回收。
 
 ## 转发与协议
 

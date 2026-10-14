@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/dlclark/regexp2"
 	"github.com/robfig/cron/v3"
@@ -27,6 +28,7 @@ const (
 // report unexpected or behavior-changing limitations; Ignored lists documented
 // unsupported options for trace logging.
 type Module struct {
+	scope            *plugin.Scope
 	contentKey       string
 	requirementKey   string
 	disabled         bool
@@ -143,6 +145,10 @@ func matchPattern(pattern *regexp2.Regexp, value string) bool {
 // matchConnection applies this module's allowlist without borrowing another
 // module's hosts or exclusions. Plain HTTP uses the same host scope as TLS.
 func (m *Module) matchConnection(host string, port uint16) bool {
+	if m.scope != nil {
+		return m.scope.Match(host, port)
+	}
+	// Standalone parsed modules can be inspected before engine preparation.
 	scope, err := moduleScope(m.Hostnames)
 	return err == nil && scope.Match(host, port)
 }
