@@ -87,8 +87,17 @@ func TestSavedSelectionFollowsNamedUpdatesWithoutGuessingDuplicates(t *testing.T
 	if id, status := remaining.ResolveSelection(pinned); id != "" || status != "missing" {
 		t.Fatalf("missing duplicate followed a different server: %s %s", id, status)
 	}
-	if id, status := duplicates.ResolveSelection(updated.Dialers[0].SelectionReference()); id != "" || status != "ambiguous" {
+	if id, status := duplicates.ResolveSelection(updated.Dialers[0].SelectionReference()); id != "" || status != "missing" {
 		t.Fatalf("ambiguous updated name was guessed: %s %s", id, status)
+	}
+	// Filtering the group must not turn one of the subscription's duplicates
+	// into a unique identity or replace the saved preference for the old node.
+	filtered := &DialerGroup{Dialers: duplicates.Dialers[:1]}
+	if id, status := filtered.ResolveSelection(saved); id != "" || status != "missing" {
+		t.Fatalf("filtered namesake replaced the saved node: %s %s", id, status)
+	}
+	if saved.Nodes[0].Fingerprint != old.Dialers[0].SelectionReference().Nodes[0].Fingerprint {
+		t.Fatal("failed restoration changed the saved preference")
 	}
 	other := node("1080")
 	other.SubscriptionTag = "different"

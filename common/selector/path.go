@@ -79,7 +79,7 @@ func (p *Path) Matches(candidate *Path, fingerprints bool) bool {
 	for i, node := range p.Nodes {
 		other := candidate.Nodes[i]
 		if node.Source != other.Source || node.Name != other.Name ||
-			(fingerprints || node.Exact) && node.Fingerprint != other.Fingerprint {
+			(fingerprints || node.Exact || other.Exact) && node.Fingerprint != other.Fingerprint {
 			return false
 		}
 	}
