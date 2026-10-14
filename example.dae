@@ -232,7 +232,7 @@ node {
 
 # TCP/UDP destination port 53 is automatically relayed to its routed destination.
 # Core DNS has no resolver policy/cache. Observed A/AAAA mappings are persisted in
-# $DAE_LOCATION_CACHE/domain-registry.json (default /var/lib/dae).
+# $DAE_LOCATION_CACHE/domain-registry.json.gz (default /var/lib/dae).
 # Optional DNS router/cache configuration: docs/en/configuration/dns.md.
 
 # Node group (outbound).
