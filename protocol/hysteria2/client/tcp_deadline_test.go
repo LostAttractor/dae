@@ -231,3 +231,53 @@ func TestFastOpenRejectionInterruptsConcurrentWrite(t *testing.T) {
 		t.Fatal("response failure left a blocked writer")
 	}
 }
+
+// Interpose only at the read boundary: the real QUIC stream has returned its
+// timeout, then another caller clears/extends the deadline before classification.
+type responseReadFunc func([]byte) (int, error)
+
+func (f responseReadFunc) Read(p []byte) (int, error) { return f(p) }
+
+func TestFastOpenCallerDeadlineSurvivesUpdateAfterReadFailure(t *testing.T) {
+	for _, next := range []time.Time{{}, time.Now().Add(time.Hour)} {
+		c, _, parent := fastOpenTestPair(t)
+		c.responseDeadline = time.Now().Add(netproxy.DialTimeout)
+		if err := c.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		reader := responseDeadlineReader{conn: c, reader: responseReadFunc(func(p []byte) (int, error) {
+			n, err := c.Orig.Read(p)
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Errorf("stream read: %v", err)
+			}
+			if updateErr := c.SetReadDeadline(next); updateErr != nil {
+				t.Error(updateErr)
+			}
+			return n, err
+		})}
+		_, err := reader.Read(make([]byte, 1))
+		if failure := netproxy.ClassifyFailure(err); failure.Origin != netproxy.OriginCaller {
+			t.Fatalf("deadline update lost operation provenance: %+v", failure)
+		}
+		if !parent.Valid() {
+			t.Fatal("caller deadline invalidated the session")
+		}
+	}
+}
+
+func TestFastOpenSuccessfulReadDiscardsExpiredDeadlineEvidence(t *testing.T) {
+	c, _, _ := fastOpenTestPair(t)
+	c.responseDeadline = time.Now().Add(netproxy.DialTimeout)
+	_ = c.SetReadDeadline(time.Now().Add(-time.Millisecond))
+	reader := responseDeadlineReader{conn: c, reader: responseReadFunc(func(p []byte) (int, error) { _ = c.SetReadDeadline(time.Time{}); p[0] = 0; return 1, nil })}
+	if _, err := reader.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	c.responseDeadline = time.Now().Add(-time.Millisecond)
+	reader.reader = responseReadFunc(func([]byte) (int, error) {
+		return 0, netproxy.WrapFailure(os.ErrDeadlineExceeded, netproxy.Failure{Scope: netproxy.ScopeOperation, Reason: netproxy.ReasonDeadline})
+	})
+	if _, err := reader.Read(make([]byte, 1)); netproxy.ClassifyFailure(err).Origin != netproxy.OriginLocalProtocol {
+		t.Fatalf("later timeout inherited stale caller evidence: %v", err)
+	}
+}
