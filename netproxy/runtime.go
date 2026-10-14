@@ -35,6 +35,22 @@ type runtimeConn struct {
 	release func()
 }
 
+// NativeTCPConn exposes only a native TCP socket behind Runtime's lifetime
+// wrapper. Callers must still close the original connection to release its
+// owner. Protocol adapters are deliberately not unwrapped.
+func NativeTCPConn(conn net.Conn) *net.TCPConn {
+	switch c := conn.(type) {
+	case *net.TCPConn:
+		return c
+	case *runtimeSyscallConn:
+		return NativeTCPConn(c.Conn)
+	case *runtimeConn:
+		return NativeTCPConn(c.Conn)
+	default:
+		return nil
+	}
+}
+
 type runtimePacketConn struct {
 	net.PacketConn
 	release func()
