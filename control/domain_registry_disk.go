@@ -121,7 +121,9 @@ func (g *DomainRegistry) Restore(path string, matchBitmap func(string) []uint32,
 	g.installRecords(records, matchBitmap)
 	now = g.clock(now)
 	g.gc(now)
-	g.rebuildProjection(now)
+	if err := g.rebuildProjection(now); err != nil {
+		return err
+	}
 	g.generation++
 	return nil
 }

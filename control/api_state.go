@@ -2,6 +2,7 @@
 package control
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
@@ -178,10 +179,27 @@ func (c *ControlPlane) UpdateClientSet(name string, ip netip.Addr, mac [6]byte, 
 func (c *ControlPlane) UpdateMITM(ip netip.Addr, mac [6]byte, enabled *bool) (api.DeviceState, error) {
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
-	if err := c.settings.SetMITM(mac, enabled); err != nil {
+	if err := c.updateMITMSettings(mac, enabled); err != nil {
 		return api.DeviceState{}, err
 	}
+
 	state := c.deviceState(ip, mac)
 	log.WithFields(log.Fields{"event": "mitm_client_update", "source_ip": ip.String(), "mac": net.HardwareAddr(mac[:]).String(), "enabled": state.MITM.Enabled}).Info("API settings changed")
 	return state, nil
+}
+
+// Caller holds settingsMu; every device API publishes the same runtime policy.
+func (c *ControlPlane) updateMITMSettings(mac [6]byte, enabled *bool) error {
+	if mac == [6]byte{} || mac[0]&1 != 0 {
+		return fmt.Errorf("client MAC must be a nonzero unicast Ethernet address")
+	}
+	return c.settings.Update(func(next *settings.Snapshot) error {
+		key := net.HardwareAddr(mac[:]).String()
+		if enabled == nil {
+			delete(next.MITM, key)
+		} else {
+			next.MITM[key] = *enabled
+		}
+		return nil
+	}, c.applyRuntimeSettings)
 }

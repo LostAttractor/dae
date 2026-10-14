@@ -5,6 +5,7 @@ package control
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/daeuniverse/dae/component/clientset"
@@ -25,14 +26,15 @@ func (c *ControlPlane) clientSets() []string {
 
 // Publish exports only on activation, after the previous API has drained.
 // Candidate preparation must not change the active plane's netfilter sets.
-func (c *ControlPlane) syncClientExports() error {
-	for name, client := range c.clients {
-		members := c.settings.Members(name)
-		if err := clientset.Replace(client.IPSet, client.NFTSet, members); err != nil {
-			return fmt.Errorf("initialize client %q: %w", name, err)
+func (c *ControlPlane) prepareClientExports() (*clientset.Transaction, error) {
+	var targets []clientset.Target
+	for _, name := range slices.Sorted(maps.Keys(c.clients)) {
+		client := c.clients[name]
+		if client.IPSet != "" || client.NFTSet != "" {
+			targets = append(targets, clientset.Target{IPSet: client.IPSet, NFTSet: client.NFTSet, Members: c.settings.Members(name)})
 		}
 	}
-	return nil
+	return clientset.Prepare(targets)
 }
 
 // The caller holds settingsMu. Keep the routing matcher and external sets on

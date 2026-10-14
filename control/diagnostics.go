@@ -127,6 +127,7 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 	if !s.mitmKnown {
 		s.fields[len(s.fields)-1].Source = "unknown"
 	}
+	matcher.httpClientAllowed = func(netip.Addr, [6]byte) bool { return !s.mitmKnown || s.mitmEnabled }
 	if c.core != nil && c.core.domainRegistry != nil {
 		g := c.core.domainRegistry
 		g.mu.Lock()
@@ -162,8 +163,7 @@ func (c *ControlPlane) diagnosticState(request api.ExplainRequest, input routing
 			}
 		}
 		for ip := range wanted {
-			_, resident := g.kernel.resident[ip]
-			if record := g.byIP[ip]; record != nil && resident {
+			if record, resident := g.kernel.resident[ip]; resident {
 				s.domains[ip] = diagnosticDomain{resident: true, bump: slices.Clone(record.bump), routing: slices.Clone(record.routing)}
 			}
 		}
@@ -243,6 +243,7 @@ func (s *diagnosticState) assumed(assumptions api.DiagnosticAssumptions, mac [6]
 	if assumptions.MITM != nil {
 		next.mitmKnown, next.mitmEnabled = true, *assumptions.MITM
 	}
+	next.matcher.httpClientAllowed = func(netip.Addr, [6]byte) bool { return !next.mitmKnown || next.mitmEnabled }
 	for _, binding := range assumptions.Bindings {
 		ip, _ := diagnosticAddress(binding.IP)
 		domain := diagnosticDomain{resident: len(binding.Domains) != 0}
@@ -390,6 +391,7 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 	result.Notes = append(result.Notes, "Fresh unfragmented flow at a configured dae hook; existing connection and UDP-source lifetimes may retain a prior decision.")
 	ingressDestination := input.dst
 	missing = cloneMissing(missing)
+	missing["mitm_client_identity"] = !s.mitmKnown
 	input.domain = "" // A supplied SNI is never kernel DNS evidence.
 	if domain := s.domains[input.dst.Addr()]; domain.resident {
 		input.domainBitmap, input.domainBumpBitmap = domain.routing, domain.bump
@@ -576,11 +578,8 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 			input.domain = ""
 		}
 		if targetRoute {
-			input.stage = routeAfterTarget
-			if input.domain == "" {
-				domain := s.domains[input.dst.Addr()]
-				input.domainBitmap, input.domainBumpBitmap = domain.routing, domain.bump
-			}
+			domain := s.domains[input.dst.Addr()]
+			input = input.targetInput(input.domain, request.Context.Origin == "daemon", domain.bump, domain.routing)
 		}
 		var needs []string
 		evaluation, steps, needs, selected, err = s.matcher.explainSpans(ctx, spans, input, missing, s.names, "userspace")

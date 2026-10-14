@@ -93,7 +93,7 @@ func (c *ControlPlane) tableStatuses() []api.TableUsage {
 
 	usage := c.core.domainRegistry.Usage()
 	return append(tables,
-		api.TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax, Candidates: usage.KernelCandidates},
+		api.TableUsage{Name: "domain-kernel", Used: usage.KernelUsed, Limit: usage.KernelMax, Candidates: usage.KernelCandidates, Pending: usage.KernelPending},
 		api.TableUsage{
 			Name: "domain-registry",
 			Used: usage.UserUsed,

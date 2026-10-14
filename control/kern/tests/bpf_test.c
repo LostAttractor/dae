@@ -170,7 +170,7 @@ int testsetup_so_mark_exact(struct __sk_buff *skb)
 	struct pid_pname *pid_pname = NULL;
 
 	bpf_map_delete_elem(&cookie_pid_map, &cookie);
-	skb->mark = PARAM.so_mark_from_dae;
+	skb->mark = 0x100U;
 	return pid_is_control_plane(skb, &pid_pname);
 }
 
@@ -193,7 +193,7 @@ int testsetup_so_mark_neighbor(struct __sk_buff *skb)
 	struct pid_pname *pid_pname = NULL;
 
 	bpf_map_delete_elem(&cookie_pid_map, &cookie);
-	skb->mark = PARAM.so_mark_from_dae ^ 1;
+	skb->mark = 0x100U ^ 1;
 	return pid_is_control_plane(skb, &pid_pname);
 }
 
@@ -217,7 +217,7 @@ int testsetup_so_mark_pid_precedence(struct __sk_buff *skb)
 	struct pid_pname *pid_pname = NULL;
 
 	bpf_map_update_elem(&cookie_pid_map, &cookie, &value, BPF_ANY);
-	skb->mark = PARAM.so_mark_from_dae;
+	skb->mark = 0x100U;
 	return pid_is_control_plane(skb, &pid_pname);
 }
 

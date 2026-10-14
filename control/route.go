@@ -75,12 +75,13 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 // Outbound selection does not change the destination decision.
 func (c *ControlPlane) routeDestination(p *RouteParam, domain string) (*DialOption, error) {
 	input := p.routingInput(domain, p.effectiveDestination())
-	input.stage = routeAfterTarget
 	// A captured connection with no trusted hostname keeps its DNS-IP evidence.
 	// Explicit IP URLs have a known logical target and do not borrow that identity.
+	var bump, routing []uint32
 	if domain == "" && !p.explicitTarget && c.core != nil && c.core.domainRegistry != nil {
-		input.domainBumpBitmap, input.domainBitmap = c.core.domainRegistry.kernelRoutingBitmaps(input.dst.Addr())
+		bump, routing = c.core.domainRegistry.kernelRoutingBitmaps(input.dst.Addr())
 	}
+	input = input.targetInput(domain, p.explicitTarget, bump, routing)
 	outbound, mark, must, err := c.routingMatcher.match(input)
 	if err != nil {
 		return nil, err

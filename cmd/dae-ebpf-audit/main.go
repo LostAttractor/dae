@@ -28,7 +28,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const daeParamSize = 24
+const daeParamSize = 20
 
 // daeParam must match struct dae_param in control/kern/tproxy.c.
 type daeParam struct {
@@ -38,7 +38,6 @@ type daeParam struct {
 	Dae0peerMac          [6]uint8
 	HasBpfGetCurrentTask uint8
 	Padding              uint8
-	SoMarkFromDae        uint32
 }
 
 type auditScenario struct {
@@ -128,7 +127,6 @@ func run(objectPath string, outputDir string, hold bool) error {
 		Dae0Ifindex:     1,
 		Dae0peerIfindex: 1,
 		Dae0peerMac:     [6]uint8{0x02, 0, 0, 0, 0, 1},
-		SoMarkFromDae:   0x100,
 	}
 	scenarios := []auditScenario{{name: "fallback", param: baseParam}}
 	helperProbeErr := features.HaveProgramHelper(ebpf.CGroupSockAddr, asm.FnGetCurrentTask)
@@ -252,7 +250,6 @@ func validateDaeParamType(typ btf.Type) error {
 		{"dae0peer_mac", unsafe.Offsetof(layout.Dae0peerMac), 1, uint32(len(layout.Dae0peerMac))},
 		{"has_bpf_get_current_task", unsafe.Offsetof(layout.HasBpfGetCurrentTask), 1, 0},
 		{"padding", unsafe.Offsetof(layout.Padding), 1, 0},
-		{"so_mark_from_dae", unsafe.Offsetof(layout.SoMarkFromDae), 4, 0},
 	}
 	if len(strct.Members) != len(expected) {
 		return fmt.Errorf("struct has %d members, want %d", len(strct.Members), len(expected))

@@ -63,10 +63,7 @@ func (c *ControlPlane) applyRuntimeSettings(current, next settings.Snapshot, per
 					return c.setClientMembers(name, members, previous)
 				})
 			}
-			if err := persist(); err != nil {
-				return err
-			}
-			return commit()
+			return c.changeHTTPClients(current, next, persist, commit)
 		}
 		// Each group holds its selection until later changes have committed;
 		// errors unwind all tentative choices without issuing close signals.
@@ -101,7 +98,10 @@ func (c *ControlPlane) restoreRuntimeSettings(reportMissing bool) error {
 			return fmt.Errorf("restore selector %q: %w", group.Name, err)
 		}
 	}
-	return c.restoreClientSets()
+	if err := c.restoreClientSets(); err != nil {
+		return err
+	}
+	return c.restoreHTTPClients()
 }
 
 func (c *ControlPlane) restoreClientSets() error {

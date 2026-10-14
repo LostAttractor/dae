@@ -42,7 +42,6 @@ func TestBPFStartupVerifierLoad(t *testing.T) {
 			if err := spec.Variables["PARAM"].Set(bpfDaeParam{
 				ControlPlanePid:      uint32(os.Getpid()),
 				HasBpfGetCurrentTask: currentTask,
-				SoMarkFromDae:        0x100,
 			}); err != nil {
 				t.Fatal(err)
 			}

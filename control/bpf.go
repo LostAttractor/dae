@@ -87,7 +87,6 @@ func loadBpfObjectsWithConstants(obj any, opts *ebpf.CollectionOptions, constant
 
 func fullLoadBpfObjects(
 	bpf *bpfObjects,
-	soMarkFromDae uint32,
 	opts *ebpf.CollectionOptions,
 ) (err error) {
 	hasBpfGetCurrentTask, err := probeBPFCurrentTask()
@@ -102,14 +101,12 @@ func fullLoadBpfObjects(
 			dae0peerMac          [6]byte
 			hasBpfGetCurrentTask uint8
 			padding              uint8
-			soMarkFromDae        uint32
 		}{
 			controlPlanePid:      uint32(os.Getpid()),
 			dae0Ifindex:          uint32(GetDaeNetns().Dae0().Attrs().Index),
 			dae0peerIfindex:      uint32(GetDaeNetns().Dae0Peer().Attrs().Index),
 			dae0peerMac:          [6]byte(GetDaeNetns().Dae0Peer().Attrs().HardwareAddr),
 			hasBpfGetCurrentTask: hasBpfGetCurrentTask,
-			soMarkFromDae:        soMarkFromDae,
 		},
 	}
 	if err = loadBpfObjectsWithConstants(bpf, opts, constants); err != nil {

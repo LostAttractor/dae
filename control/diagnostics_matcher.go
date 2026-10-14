@@ -306,6 +306,16 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 				}
 				clauseStart = clauseEnd + 1
 			}
+			httpCapture := tail.Action == uint8(consts.MatchActionCapture) && (tail.Flags>>matchCaptureShift)&(captureHTTP|captureHTTPRequest) != 0
+			clientDenied := false
+			if httpCapture && !knownMiss && m.httpClientAllowed != nil {
+				if missing["mitm_client_identity"] {
+					unknown = true
+					ruleMissing = append(ruleMissing, "mitm_client_identity")
+				} else {
+					clientDenied = !m.httpClientAllowed(input.src.Addr(), input.mac)
+				}
+			}
 			switch {
 			case knownMiss:
 				step.Match = "miss"
@@ -321,6 +331,9 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 				} else if execution.last == (routingTracePosition{spanIndex, end}) && step.Match != "miss" {
 					step.Status, step.Reason = "selected", "terminal_decision"
 					selectedID = step.ID
+				}
+				if clientDenied && (tail.Flags>>matchCaptureShift)&captureDestination == 0 {
+					step.Status, step.Reason = "skipped", "client_not_allowed"
 				}
 			}
 			if (visited || uncertain) && !knownMiss && unknown {

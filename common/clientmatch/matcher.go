@@ -12,6 +12,8 @@ import (
 	"strings"
 )
 
+const MaxRules = 4096
+
 // Matcher selects clients using the first matching entry. Its zero value and an
 // empty list deny every client. Clients not matching any entry are also denied.
 // A Matcher is safe for concurrent use.
@@ -36,6 +38,9 @@ type rule struct {
 // IPv6 space. Native IPv6 prefixes match only IPv6 clients; IPv4 clients require
 // an IPv4 selector, so ::/0 and 0.0.0.0/0 select different address families.
 func Parse(entries []string) (Matcher, error) {
+	if len(entries) > MaxRules {
+		return Matcher{}, fmt.Errorf("client selectors exceed %d entries", MaxRules)
+	}
 	if len(entries) == 0 {
 		return Matcher{}, nil
 	}

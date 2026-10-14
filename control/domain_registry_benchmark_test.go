@@ -58,7 +58,7 @@ func BenchmarkDomainRegistry(b *testing.B) {
 				return bitmap
 			}
 			restore := func(b *testing.B) *DomainRegistry {
-				g := newDomainRegistry(4096, time.Hour, func(netip.Addr, []uint32, []uint32) {}, func(netip.Addr) {})
+				g := newDomainRegistry(4096, time.Hour, func(netip.Addr, []uint32, []uint32) error { return nil }, func(netip.Addr) error { return nil })
 				if err := g.Restore(path, match, now); err != nil {
 					b.Fatal(err)
 				}
@@ -97,7 +97,7 @@ func BenchmarkDomainRegistry(b *testing.B) {
 func benchmarkActivityRegistry(b *testing.B) (*DomainRegistry, []domainActivityKey, time.Time) {
 	b.Helper()
 	now := time.Now()
-	g := newDomainRegistry(65536, 168*time.Hour, func(netip.Addr, []uint32, []uint32) {}, func(netip.Addr) {})
+	g := newDomainRegistry(65536, 168*time.Hour, func(netip.Addr, []uint32, []uint32) error { return nil }, func(netip.Addr) error { return nil })
 	names := make([]string, 2553)
 	bitmaps := make(map[string][]uint32, len(names))
 	records := make(map[string]*domainRecord, len(names))

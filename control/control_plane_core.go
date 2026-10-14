@@ -751,8 +751,8 @@ func closeBpfLinks(links []ciliumLink.Link) error {
 //	bump bit i    = any cached domain of this IP matches rule i
 //	routing bit i = all cached domains of this IP match rule i
 //
-// Failures panic (see panicDomainMapWrite).
-func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uint32) {
+// Allocation failures on the non-preallocated map are retried by the registry.
+func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uint32) error {
 	var value bpfDomainRouting
 	if consts.MaxMatchSetLen/32 != len(value.Bump) || len(bump) != len(value.Bump) || len(routing) != len(value.Routing) {
 		panic("domain bitmap length not sync with kern program")
@@ -763,26 +763,19 @@ func (c *controlPlaneCore) writeDomainBitmaps(ip netip.Addr, bump, routing []uin
 	ip6 := ip.As16()
 	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
 	if err := c.bpf.DomainRoutingMap.Update(key, value, ebpf.UpdateAny); err != nil {
-		panicDomainMapWrite("DomainRoutingMap.Update", ip, err)
+		return fmt.Errorf("update domain bitmap %s: %w", ip, err)
 	}
-}
-
-// panicDomainMapWrite panics on a kernel domain-map write failure. Such a
-// failure indicates a logic bug (e.g. bitmap length drift) or bpf state
-// tampered with externally (e.g. another process pinning its maps over
-// ours); neither is recoverable at runtime, and silently degrading domain
-// routing would be far harder to diagnose.
-func panicDomainMapWrite(op string, ip netip.Addr, err error) {
-	panic(fmt.Errorf(op+"(%v): kernel domain map write failed (logic bug, or the bpf maps were tampered with externally): %w", ip, err))
+	return nil
 }
 
 // deleteDomainBitmaps removes ip from the kernel domain map. It is bound
 // to domainRegistry.remove. A missing key is tolerated (the desired end
-// state is already reached); any other failure panics.
-func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) {
+// state is already reached); other failures retain the installed record.
+func (c *controlPlaneCore) deleteDomainBitmaps(ip netip.Addr) error {
 	ip6 := ip.As16()
 	key := common.Ipv6ByteSliceToUint32Array(ip6[:])
 	if err := c.bpf.DomainRoutingMap.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
-		panicDomainMapWrite("DomainRoutingMap.Delete", ip, err)
+		return fmt.Errorf("delete domain bitmap %s: %w", ip, err)
 	}
+	return nil
 }

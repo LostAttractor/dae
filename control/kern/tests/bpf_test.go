@@ -32,7 +32,6 @@ type testDaeParam struct {
 	Dae0peerMac          [6]uint8
 	HasBpfGetCurrentTask uint8
 	Padding              uint8
-	SoMarkFromDae        uint32
 }
 
 func runBpfProgram(prog *ebpf.Program, data, ctx []byte) (statusCode uint32, dataOut, ctxOut []byte, err error) {
@@ -108,7 +107,6 @@ func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, err
 	}
 	if err := param.Set(testDaeParam{
 		ControlPlanePid: uint32(os.Getpid()),
-		SoMarkFromDae:   0x100,
 	}); err != nil {
 		return nil, err
 	}
@@ -133,6 +131,14 @@ func loadTestObjects(t testing.TB, programNames ...string) (*bpftestObjects, err
 		programs.FieldByName(name).Set(selected.Elem().FieldByName(name))
 	}
 
+	if err := obj.UnusedHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: 1}, ebpf.UpdateAny); err != nil {
+		obj.Close()
+		return nil, err
+	}
+	if err := obj.HttpClientsMap.Update(uint32(0), obj.UnusedHttpClients, ebpf.UpdateAny); err != nil {
+		obj.Close()
+		return nil, err
+	}
 	if err := obj.LpmArrayMap.Update(uint32(0), obj.UnusedLpmType, ebpf.UpdateAny); err != nil {
 		obj.Close()
 		return nil, fmt.Errorf("update LpmArrayMap: %w", err)

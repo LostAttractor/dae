@@ -503,6 +503,9 @@ func Print(out io.Writer, snapshot *api.StatusSnapshot, verbose bool) {
 		if usage.Breakdown == nil {
 			fmt.Fprintf(out, "\n%s:\n", usage.Name)
 			printTable(out, table.Row{"USED (IPs)", "LIMIT", "USAGE", "CANDIDATES", "OMITTED"}, []table.Row{tableUsageRow(usage)})
+			if usage.Pending != 0 {
+				fmt.Fprintf(out, "Pending kernel changes: %d (retrying; installed entries shown above)\n", usage.Pending)
+			}
 		}
 	}
 

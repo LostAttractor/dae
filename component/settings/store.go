@@ -290,6 +290,22 @@ func (s *Store) MITM(mac [6]byte) (enabled, exists bool) {
 	return
 }
 
+// MITMOverrides returns a detached policy input for preparation and publication.
+func (s *Store) MITMOverrides() map[[6]byte]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.MITMOverrides()
+}
+
+func (s Snapshot) MITMOverrides() map[[6]byte]bool {
+	values := make(map[[6]byte]bool, len(s.MITM))
+	for text, enabled := range s.MITM {
+		mac, _ := net.ParseMAC(text) // Snapshot validation owns canonical identities.
+		values[[6]byte(mac)] = enabled
+	}
+	return values
+}
+
 // SetMITM saves a per-device override; nil restores the configuration.
 func (s *Store) SetMITM(mac [6]byte, enabled *bool) error {
 	if !validMAC(mac) {

@@ -30,6 +30,7 @@ type TableUsage struct {
 	Used       int                  `json:"used"` // IPs for domain-kernel; domain-IP pairs for domain-registry
 	Limit      int                  `json:"limit"`
 	Candidates int                  `json:"candidates,omitempty"`
+	Pending    int                  `json:"pending,omitzero"` // desired kernel changes awaiting retry
 	Breakdown  *TableUsageBreakdown `json:"breakdown,omitempty"`
 }
 

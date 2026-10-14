@@ -19,6 +19,17 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+func (c *ControlPlane) syncClientExports() error {
+	tx, err := c.prepareClientExports()
+	if err != nil {
+		return err
+	}
+	if err := tx.Apply(); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	return tx.Commit()
+}
+
 func TestClientExportAPIAndReload(t *testing.T) {
 	if os.Getenv("DAE_TEST_NETFILTER") != "1" {
 		t.Skip("requires an isolated network namespace with CAP_NET_ADMIN")

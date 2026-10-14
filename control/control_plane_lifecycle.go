@@ -49,9 +49,6 @@ func (c *ControlPlane) activateLinks() error {
 	for _, group := range c.outbounds {
 		group.PublishStats()
 	}
-	if err := c.syncClientExports(); err != nil {
-		return err
-	}
 	// Keep inherited attachments live, and only prune interfaces no longer used.
 	if err := core.setupExitHandler(); err != nil {
 		return fmt.Errorf("failed to setup exit handler: %w", err)
@@ -86,11 +83,17 @@ func (c *ControlPlane) commitKernelState(builder *RoutingMatcherBuilder) error {
 	if err := c.updateRouteExemptions(); err != nil {
 		return err
 	}
+	if err := c.publishHTTPClients(); err != nil {
+		return err
+	}
 	if err := builder.BuildKernspace(); err != nil {
 		return fmt.Errorf("RoutingMatcherBuilder.BuildKernspace: %w", err)
 	}
 	if !core.isReload && c.domainRegistryPath != "" {
 		if err := core.domainRegistry.Restore(c.domainRegistryPath, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
+			if _, incomplete := errors.AsType[*domainProjectionError](err); incomplete {
+				return err
+			}
 			log.WithError(err).Warn("Restore domain registry; starting without disk observations")
 		}
 	}

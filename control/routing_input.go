@@ -93,3 +93,14 @@ func (r *routingResult) routingInput(src, dst netip.AddrPort, domain string, pro
 func (p *RouteParam) routingInput(domain string, destination netip.AddrPort) routingInput {
 	return p.routingResult.routingInput(p.Src, destination, domain, p.networkType.L4Proto.ToL4ProtoType())
 }
+
+// targetInput is shared by live routing and its explanation. Explicit targets
+// own their logical identity; an IP literal never borrows a retained DNS name.
+func (input routingInput) targetInput(domain string, explicit bool, bump, routing []uint32) routingInput {
+	input.kernel, input.stage, input.domain = false, routeAfterTarget, domain
+	input.domainBitmap, input.domainBumpBitmap = nil, nil
+	if domain == "" && !explicit {
+		input.domainBumpBitmap, input.domainBitmap = bump, routing
+	}
+	return input
+}

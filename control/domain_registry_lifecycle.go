@@ -3,8 +3,10 @@
 package control
 
 import (
+	"maps"
 	"net/netip"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
@@ -14,6 +16,12 @@ import (
 // Start is called once by the owner before publishing the registry. One worker
 // owns activity batches, GC and saving; persistence starts after activation.
 func (g *DomainRegistry) Start() {
+	// A rejected successor may resume its predecessor's joined worker.
+	select {
+	case <-g.stopCh:
+		g.stopCh, g.stopOnce = make(chan struct{}), sync.Once{}
+	default:
+	}
 	g.workerDone = make(chan struct{})
 	go func() {
 		defer close(g.workerDone)
@@ -27,8 +35,9 @@ func (g *DomainRegistry) Start() {
 			select {
 			case <-g.stopCh:
 				return
-			case <-activity.C:
+			case now := <-activity.C:
 				g.flushActivity()
+				g.retryProjection(now)
 			case now := <-sweep.C:
 				g.Sweep(now)
 			case <-save.C:
@@ -108,9 +117,14 @@ func (g *DomainRegistry) installRecords(records map[string]*domainRecord, matchB
 // ForkFrom publishes an independent projection without stopping old request
 // handlers. Runtime serializes DNS delivery with this snapshot and fans later
 // observations out to every serving generation using its own domain matcher.
-func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) []uint32, now time.Time) {
+func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) []uint32, now time.Time) (err error) {
 	// Join the old periodic writer before the new registry can persist a snapshot.
 	old.stopWorker()
+	defer func() {
+		if err != nil && old.workerDone != nil {
+			old.Start()
+		}
+	}()
 	old.mu.Lock()
 	defer old.mu.Unlock()
 	g.mu.Lock()
@@ -129,15 +143,22 @@ func (g *DomainRegistry) ForkFrom(old *DomainRegistry, matchBitmap func(string) 
 	g.installRecords(records, matchBitmap)
 	g.clock(old.evaluatedAt)
 	a := old.activity
+	// Copy queued activity into the candidate without consuming it. On a map
+	// failure the old owner must still be able to process the complete queue.
 	a.mu.Lock()
-	g.activity = a
-	a.registry = g
-	a.pending, g.activityBatch = g.activityBatch, a.pending
-	a.mu.Unlock()
+	maps.Copy(g.activityBatch, a.pending)
 	g.applyActivity()
 	now = g.clock(now)
 	g.gc(now)
-	g.rebuildProjection(now)
+	a.mu.Unlock()
+	if err := g.rebuildProjection(now); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	g.activity = a
+	a.registry = g
+	a.mu.Unlock()
 	old.diskPath = ""
 	g.generation++
+	return nil
 }

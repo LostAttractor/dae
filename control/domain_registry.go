@@ -57,10 +57,10 @@ type DomainRegistry struct {
 // Callers provide the actual map capacity and both kernel writers. Domain
 // bitmaps have the width produced by the current compiled matcher. The
 // constructor does not start background work.
-func newDomainRegistry(kernelMax int, window time.Duration, update domainMapUpdate, remove func(netip.Addr)) *DomainRegistry {
+func newDomainRegistry(kernelMax int, window time.Duration, update domainMapUpdate, remove func(netip.Addr) error) *DomainRegistry {
 	g := &DomainRegistry{
 		byName: make(map[string]*domainRecord), byIP: make(map[netip.Addr]*ipRecord), window: window,
-		kernel: domainProjection{max: kernelMax, resident: make(map[netip.Addr]struct{}), update: update, remove: remove},
+		kernel: domainProjection{max: kernelMax, resident: make(map[netip.Addr]domainBitmaps), desired: make(map[netip.Addr]domainBitmaps), pending: make(map[netip.Addr]domainPublication), update: update, remove: remove},
 		stopCh: make(chan struct{}), closeDone: make(chan struct{}), activityBatch: make(map[domainActivityKey]time.Time),
 	}
 	g.activity = &domainActivity{registry: g, pending: make(map[domainActivityKey]time.Time)}
@@ -182,8 +182,13 @@ func (g *DomainRegistry) Verify(name string, ip netip.Addr) (result DomainVerifi
 		return result
 	}
 	if _, paired := r.addresses[ip]; paired {
-		_, resident := g.kernel.resident[ip]
-		return DomainVerification{true, true, resident || domainBitmapAllZero(r.bitmap)}
+		installed, resident := g.kernel.resident[ip]
+		covered := domainBitmapAllZero(r.bitmap)
+		if resident {
+			s := g.byIP[ip]
+			covered = installed.equal(domainBitmaps{s.bump, s.routing})
+		}
+		return DomainVerification{true, true, covered}
 	}
 	for addr := range r.addresses {
 		if addr.Is4() == ip.Is4() {
@@ -243,6 +248,7 @@ type RegistryUsage struct {
 	KernelUsed       int
 	KernelMax        int
 	KernelCandidates int
+	KernelPending    int
 }
 
 // Usage takes one coherent snapshot without collecting or refreshing evidence.
@@ -252,6 +258,7 @@ func (g *DomainRegistry) Usage() RegistryUsage {
 	usage := RegistryUsage{
 		Domains: len(g.byName), IPs: len(g.byIP), GC: g.gcCount,
 		KernelUsed: len(g.kernel.resident), KernelMax: g.kernel.max,
+		KernelPending: len(g.kernel.pending),
 	}
 	for _, r := range g.byName {
 		usage.UserUsed += len(r.addresses)

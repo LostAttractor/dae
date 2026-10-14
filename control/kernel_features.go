@@ -100,7 +100,6 @@ func checkKernelFeaturesForLink(ctx context.Context, ns *DaeNetns) error {
 	if err := spec.Variables["PARAM"].Set(bpfDaeParam{
 		ControlPlanePid: uint32(os.Getpid()), Dae0Ifindex: uint32(ns.dae0.Attrs().Index), Dae0peerIfindex: uint32(ns.dae0peer.Attrs().Index),
 		Dae0peerMac: [6]uint8(ns.dae0peer.Attrs().HardwareAddr), HasBpfGetCurrentTask: currentTask,
-		SoMarkFromDae: 0x100,
 	}); err != nil {
 		return fmt.Errorf("kernel preflight: set eBPF constants: %w", err)
 	}

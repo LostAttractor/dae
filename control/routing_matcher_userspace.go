@@ -29,11 +29,12 @@ type RoutingMatcher struct {
 	// outboundUsable reports whether an outbound group can serve the given
 	// network type; it backs skip_while_noalive rule evaluation. It may be
 	// nil (e.g. in tests), in which case every group is considered usable.
-	outboundUsable func(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool
-	ruleMetadata   map[uint32]routingRuleMetadata
-	matchMetadata  map[uint32]routingMatchMetadata
-	profileInfo    []routingProfile
-	inactiveRules  []routingRuleMetadata
+	httpClientAllowed func(netip.Addr, [6]byte) bool
+	outboundUsable    func(outbound uint8, l4proto consts.L4ProtoType, ipVersion consts.IpVersionType) bool
+	ruleMetadata      map[uint32]routingRuleMetadata
+	matchMetadata     map[uint32]routingMatchMetadata
+	profileInfo       []routingProfile
+	inactiveRules     []routingRuleMetadata
 }
 
 // match executes the same bytecode as kern/routing.h. Captures preserve userspace routing decisions.
@@ -165,7 +166,11 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 			case consts.MatchActionBump:
 				flowBump = true
 			case consts.MatchActionCapture:
-				captureFlags |= (match.Flags >> matchCaptureShift) & 7
+				flags := (match.Flags >> matchCaptureShift) & 7
+				if flags&(captureHTTP|captureHTTPRequest) != 0 && m.httpClientAllowed != nil && !m.httpClientAllowed(p.src.Addr(), p.mac) {
+					flags &^= captureHTTP | captureHTTPRequest
+				}
+				captureFlags |= flags
 				if simulateKernel && captureFlags&(captureDestination|captureHTTPRequest) != 0 {
 					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureFlags}, nil
 				}

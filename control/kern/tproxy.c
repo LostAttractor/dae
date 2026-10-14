@@ -329,7 +329,6 @@ struct dae_param {
 	__u8 dae0peer_mac[6];
 	__u8 has_bpf_get_current_task;
 	__u8 padding;
-	__u32 so_mark_from_dae;
 };
 
 volatile const struct dae_param PARAM = {};
@@ -337,6 +336,8 @@ volatile const struct dae_param PARAM = {};
 /* Updated only when publishing a control plane; zero disables observation. */
 volatile __be16 api_port;
 volatile __u32 default_routing_profile;
+/* Disabled when the prepared routing program has no HTTP capture actions. */
+volatile __u8 http_capture_enabled = 1;
 /* Fixed before this generation's programs are attached. */
 volatile __u32 routing_generation;
 

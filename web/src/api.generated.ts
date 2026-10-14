@@ -1630,6 +1630,8 @@ export interface components {
             /** Format: int64 */
             limit: number;
             name: string;
+            /** @description Pending kernel projection updates or removals. */
+            pending?: number;
             /**
              * Format: int64
              * @description Resident IP count for domain-kernel; retained domain-IP pair count for domain-registry.

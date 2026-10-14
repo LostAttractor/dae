@@ -3,6 +3,7 @@
 package control
 
 import (
+	"fmt"
 	"net/netip"
 	"slices"
 	"time"
@@ -11,14 +12,37 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type domainMapUpdate func(ip netip.Addr, bump, routing []uint32)
+type domainMapUpdate func(ip netip.Addr, bump, routing []uint32) error
+
+type domainBitmaps struct{ bump, routing []uint32 }
+
+func (b domainBitmaps) equal(other domainBitmaps) bool {
+	return slices.Equal(b.bump, other.bump) && slices.Equal(b.routing, other.routing)
+}
+
+type domainPublication struct {
+	due   time.Time
+	force bool
+}
+
+type domainProjectionError struct{ cause error }
+
+func (e *domainProjectionError) Error() string {
+	return fmt.Sprintf("domain kernel projection is incomplete: %v", e.cause)
+}
+func (e *domainProjectionError) Unwrap() error { return e.cause }
 
 type domainProjection struct {
 	max         int
-	resident    map[netip.Addr]struct{}
+	resident    map[netip.Addr]domainBitmaps     // only successful kernel writes
+	desired     map[netip.Addr]domainBitmaps     // immutable snapshots, at most max entries
+	pending     map[netip.Addr]domainPublication // coalesced desired/installed difference, at most 2*max
 	lastWarning time.Time
+	lastFailure time.Time
+	err         error
+	force       bool
 	update      domainMapUpdate
-	remove      func(netip.Addr)
+	remove      func(netip.Addr) error
 }
 
 func domainBitmapWords() int { return consts.MaxMatchSetLen / 32 }
@@ -36,9 +60,8 @@ func (g *DomainRegistry) kernelRoutingBitmaps(ip netip.Addr) (bump, routing []ui
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	ip = ip.Unmap()
-	if _, resident := g.kernel.resident[ip]; resident {
-		s := g.byIP[ip]
-		return slices.Clone(s.bump), slices.Clone(s.routing)
+	if installed, resident := g.kernel.resident[ip]; resident {
+		return slices.Clone(installed.bump), slices.Clone(installed.routing)
 	}
 	return nil, nil
 }
@@ -72,18 +95,17 @@ func (g *DomainRegistry) syncProjection(changed map[netip.Addr]struct{}, reconsi
 		}
 	}
 	k := &g.kernel
-	if !reconsider && len(k.resident)+len(changed) <= k.max {
+	if !reconsider && len(k.desired)+len(changed) <= k.max {
 		// Every possible new candidate fits. An incompletely filled projection
 		// has no omitted candidates to backfill, so only changed IPs matter.
 		for ip := range changed {
 			if s := g.byIP[ip]; s != nil && !domainBitmapAllZero(s.bump) {
-				k.update(ip, s.bump, s.routing)
-				k.resident[ip] = struct{}{}
-			} else if _, resident := k.resident[ip]; resident {
-				k.remove(ip)
-				delete(k.resident, ip)
+				k.want(ip, s, false)
+			} else {
+				k.want(ip, nil, false)
 			}
 		}
+		k.publish(now)
 		return
 	}
 
@@ -108,32 +130,105 @@ func (g *DomainRegistry) syncProjection(changed map[netip.Addr]struct{}, reconsi
 		desired[ip] = struct{}{}
 	}
 	// Free slots before inserting replacements into the non-LRU map.
-	for ip := range k.resident {
+	for ip := range k.desired {
 		if _, keep := desired[ip]; !keep {
-			k.remove(ip)
+			k.want(ip, nil, false)
 		}
 	}
 	for ip := range desired {
-		_, wasResident := k.resident[ip]
+		_, wasDesired := k.desired[ip]
 		_, modified := changed[ip]
-		if !wasResident || modified {
-			s := g.byIP[ip]
-			k.update(ip, s.bump, s.routing)
+		if !wasDesired || modified {
+			k.want(ip, g.byIP[ip], false)
 		}
 	}
-	k.resident = desired
+	k.publish(now)
 	if len(states) > k.max && (k.lastWarning.IsZero() || now.Sub(k.lastWarning) >= time.Minute) {
 		k.lastWarning = now
 		log.WithFields(log.Fields{"candidates": len(states), "resident": len(desired), "capacity": k.max}).Warn("Domain kernel capacity excludes IPs; domain routing and capture coverage is incomplete")
 	}
 }
 
+func (k *domainProjection) want(ip netip.Addr, s *ipRecord, force bool) {
+	force = force || k.force || k.pending[ip].force
+	if s == nil {
+		delete(k.desired, ip)
+	} else {
+		value := domainBitmaps{s.bump, s.routing}
+		if old, ok := k.desired[ip]; !ok || !old.equal(value) {
+			k.desired[ip] = domainBitmaps{slices.Clone(s.bump), slices.Clone(s.routing)}
+		}
+	}
+	desired, want := k.desired[ip]
+	installed, exists := k.resident[ip]
+	if !want && !exists || !force && want && exists && desired.equal(installed) {
+		delete(k.pending, ip)
+		return
+	}
+	request := k.pending[ip]
+	request.force = request.force || force
+	k.pending[ip] = request
+}
+
+// Caller owns the registry lock. Remove before inserting, and retain old values
+// on failure. The bounded queue holds only selected or actually installed IPs;
+// later changes supersede earlier requests without allocating another job.
+func (k *domainProjection) publish(now time.Time) {
+	for _, removing := range []bool{true, false} {
+		for ip, request := range k.pending {
+			value, wanted := k.desired[ip]
+			if removing == wanted || now.Before(request.due) {
+				continue
+			}
+			var err error
+			if wanted {
+				if _, exists := k.resident[ip]; !exists && len(k.resident) >= k.max {
+					continue // An unsuccessful removal still owns this slot.
+				}
+				err = k.update(ip, value.bump, value.routing)
+			} else {
+				err = k.remove(ip)
+			}
+			if err != nil {
+				k.err = &domainProjectionError{err}
+				request.due = now.Add(time.Second)
+				k.pending[ip] = request
+				if k.lastFailure.IsZero() || now.Sub(k.lastFailure) >= time.Minute {
+					k.lastFailure = now
+					log.WithError(err).WithField("ip", ip).Warn("Domain kernel publication failed; retaining installed state and retrying")
+				}
+				continue
+			}
+			if wanted {
+				k.resident[ip] = value
+			} else {
+				delete(k.resident, ip)
+			}
+			delete(k.pending, ip)
+		}
+	}
+	if len(k.pending) == 0 {
+		k.err = nil
+	}
+}
+
 // Cold restore and reload publish all current-rule summaries, even if an IP was
 // already resident in the predecessor's kernel map.
-func (g *DomainRegistry) rebuildProjection(now time.Time) {
+func (g *DomainRegistry) rebuildProjection(now time.Time) error {
 	changed := make(map[netip.Addr]struct{}, len(g.byIP))
 	for ip := range g.byIP {
 		changed[ip] = struct{}{}
 	}
+	g.kernel.force = true
 	g.syncProjection(changed, true, now)
+	g.kernel.force = false
+	return g.kernel.err
+}
+
+func (g *DomainRegistry) retryProjection(now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.closed {
+		g.kernel.publish(now)
+	}
 }

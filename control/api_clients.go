@@ -63,7 +63,7 @@ func (c *ControlPlane) UpdateManagedMembership(name string, mac [6]byte, joined 
 func (c *ControlPlane) UpdateManagedMITM(mac [6]byte, enabled *bool) (api.ManagedDevice, error) {
 	c.settingsMu.Lock()
 	defer c.settingsMu.Unlock()
-	if err := c.settings.SetMITM(mac, enabled); err != nil {
+	if err := c.updateMITMSettings(mac, enabled); err != nil {
 		return api.ManagedDevice{}, err
 	}
 	return c.managedDevice(mac), nil

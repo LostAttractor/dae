@@ -135,12 +135,13 @@ func TestPassiveDNSBatchPublishesCompleteIPOnce(t *testing.T) {
 	ips := []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")}
 	writes := make(map[netip.Addr]int)
 	wantRouting := testBitmap()
-	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) {
+	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) error {
 		if ip == untouched || !slices.Equal(bump, testBitmap(1)) || !slices.Equal(routing, wantRouting) {
 			t.Fatal("published an unrelated or incomplete shared-IP state")
 		}
 		writes[ip]++
 		fake.update(ip, bump, routing)
+		return nil
 	}
 	request := dnsTestRequest(t, "alias.example.", 1)
 	message := new(dns.Msg).SetReply(request.MessageCopy())

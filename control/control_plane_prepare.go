@@ -103,7 +103,7 @@ func prepareBPF(ctx context.Context, runtime *Runtime, soMarkFromDae uint32) (_ 
 	}
 	runtime.nextGeneration++
 	bpf := &BPFState{bpfObjects: new(bpfObjects), Runtime: runtime, routingGeneration: runtime.nextGeneration}
-	if err = fullLoadBpfObjects(bpf.bpfObjects, soMarkFromDae, collectionOpts); err != nil {
+	if err = fullLoadBpfObjects(bpf.bpfObjects, collectionOpts); err != nil {
 		return nil, fmt.Errorf("load eBPF objects: %w", err)
 	}
 	if err := bpf.RoutingGeneration.Set(bpf.routingGeneration); err != nil {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -74,6 +75,20 @@ func TestDiagnosticsKernelEvidenceDoesNotBorrowSNI(t *testing.T) {
 	}
 	if usage := c.core.domainRegistry.Usage(); usage.UserUsed != 0 || usage.KernelUsed != 0 {
 		t.Fatal("diagnostics published assumed DNS evidence")
+	}
+}
+
+func TestDiagnosticsExplicitIPDoesNotBorrowDNSMapping(t *testing.T) {
+	c := diagnosticPlane(t, "domain(full: unrelated.example) -> block", "")
+	request := diagnosticRequest()
+	request.Context.Origin = "daemon"
+	request.Compare = &api.DiagnosticAssumptions{Bindings: []api.DiagnosticBinding{{IP: request.Flow.Destination.IP, Domains: []string{"unrelated.example"}}}}
+	response, err := c.Explain(t.Context(), request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Current.Decision.Outbound != "direct" || response.Compared.Decision.Outbound != "direct" || !response.Compared.Decision.Complete {
+		t.Fatalf("explicit IP borrowed another flow's identity: %+v", response)
 	}
 }
 
@@ -380,4 +395,32 @@ func TestDiagnosticsConcurrentMembershipSnapshot(t *testing.T) {
 		}
 	})
 	workers.Wait()
+}
+
+func TestDiagnosticsHTTPAdmissionUsesCurrentAndAssumedClientPolicy(t *testing.T) {
+	extension := mitmRoutingPlugin("198.51.100.10")
+	prepared := prepareFlowRulesForTest(t, "", "")
+	prepared.enableMITMPlan(extension.Plan())
+	plane := diagnosticPreparedPlane(t, prepared)
+	plane.mitmHost = controlTestHost(t, extension, nil)
+	plane.mitmClients, _ = clientmatch.Parse([]string{"all"})
+	request := diagnosticRequest()
+	request.Flow.SNI = new("198.51.100.10")
+	request.Compare = &api.DiagnosticAssumptions{MITM: new(false)}
+	result, err := plane.Explain(t.Context(), request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Current.Decision.Capture) == 0 || result.Compared.Decision.Verdict != "kernel_direct" || len(result.Compared.Decision.Capture) != 0 {
+		t.Fatalf("HTTP admission comparison: %+v", result)
+	}
+	if !slices.ContainsFunc(result.Compared.Steps, func(step api.ExplainStep) bool { return step.Reason == "client_not_allowed" }) {
+		t.Fatal("excluded capture lacks client reason")
+	}
+	request.Compare = nil
+	request.Context.SourceIP, request.Context.MAC = "", ""
+	result, err = plane.Explain(t.Context(), request, false)
+	if err != nil || result.Current.Decision.Complete || !slices.Contains(result.Current.Decision.Missing, "mitm_client_identity") {
+		t.Fatalf("unknown identity guessed HTTP admission: %+v %v", result, err)
+	}
 }

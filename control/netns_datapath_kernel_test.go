@@ -150,7 +150,7 @@ func withInternalLinkDatapath(t *testing.T, linkType string, lan bool, run func(
 	must(err)
 	must(spec.Variables["PARAM"].Set(bpfDaeParam{
 		ControlPlanePid: uint32(os.Getpid()), Dae0Ifindex: uint32(primary.Attrs().Index),
-		Dae0peerIfindex: uint32(peer.Attrs().Index), Dae0peerMac: [6]uint8(peer.Attrs().HardwareAddr), SoMarkFromDae: 0x100,
+		Dae0peerIfindex: uint32(peer.Attrs().Index), Dae0peerMac: [6]uint8(peer.Attrs().HardwareAddr),
 	}))
 	for _, m := range spec.Maps {
 		m.Pinning = ebpf.PinNone

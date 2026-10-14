@@ -49,7 +49,7 @@ struct route_ctx {
 	__u16 h_dport;
 	__u16 h_sport;
 	__s64 result;
-	struct lpm_key lpm_key_saddr, lpm_key_daddr, lpm_key_mac;
+	struct lpm_key lpm_key;
 	/* Volatile prevents loop-carried states from being specialized into
 	 * long verifier paths; the two tri-state values stay in packet context.
 	 */
@@ -60,7 +60,10 @@ struct route_ctx {
 	bool flow_bump;
 	bool skipped_noalive;
 	bool domain_loaded;
+	bool http_client_allowed;
 };
+
+#include "http_clients.h"
 
 /* OR accumulates MISS < MAYBE < HIT. A MAYBE means only some of the names
  * mapped to this destination match, so the exact domain is needed.
@@ -74,13 +77,18 @@ static __always_inline int route_predicate(struct route_ctx *ctx,
 
 	switch (match_set->type) {
 	case MatchType_Mac:
-		lpm_key = &ctx->lpm_key_mac;
+		lpm_key = &ctx->lpm_key;
+		__builtin_memset(lpm_key->data, 0, sizeof(lpm_key->data));
+		__builtin_memcpy((__u8 *)lpm_key->data + IPV6_BYTE_LENGTH - ETH_ALEN,
+				 ctx->params->mac, ETH_ALEN);
 		goto lookup_lpm;
 	case MatchType_IpSet:
-		lpm_key = &ctx->lpm_key_daddr;
+		lpm_key = &ctx->lpm_key;
+		__builtin_memcpy(lpm_key->data, ctx->params->daddr, IPV6_BYTE_LENGTH);
 		goto lookup_lpm;
 	case MatchType_SourceIpSet:
-		lpm_key = &ctx->lpm_key_saddr;
+		lpm_key = &ctx->lpm_key;
+		__builtin_memcpy(lpm_key->data, ctx->params->saddr, IPV6_BYTE_LENGTH);
 lookup_lpm:
 		lpm = bpf_map_lookup_elem(&lpm_array_map, &match_set->index);
 		if (unlikely(!lpm))
@@ -220,14 +228,21 @@ static __noinline int route_step(struct route_ctx *ctx)
 	case MatchAction_Bump:
 		ctx->flow_bump = true;
 		goto next_rule;
-	case MatchAction_Capture:
-		ctx->capture_flags |= MATCH_CAPTURE_FLAGS(match);
+	case MatchAction_Capture: {
+		__u8 flags = MATCH_CAPTURE_FLAGS(match);
+
+		if (flags & (CAPTURE_HTTP | CAPTURE_HTTP_REQUEST)) {
+			if (!ctx->http_client_allowed)
+				flags &= ~(CAPTURE_HTTP | CAPTURE_HTTP_REQUEST);
+		}
+		ctx->capture_flags |= flags;
 		/* Destination rules run before flow controls and routing. Their exact
 		 * target is selected in userspace; never commit a route for the old IP.
 		 */
 		if (ctx->capture_flags & (CAPTURE_DESTINATION | CAPTURE_HTTP_REQUEST))
 			goto exact_domain;
 		goto next_rule;
+	}
 	case MatchAction_FlowEnd:
 		if (ctx->flow_bump || ctx->must == MATCH_MAYBE)
 			goto exact_domain;
@@ -302,20 +317,14 @@ static __always_inline __s64 route(struct route_params *params)
 
 	ctx.params = params;
 	ctx.result = -EFAULT;
+	if (http_capture_enabled)
+		ctx.http_client_allowed = http_client_allowed(params);
 
 	/* TCP and UDP share the source/destination port layout. */
 	ctx.h_dport = bpf_ntohs(params->l4hdr->udph.dest);
 	ctx.h_sport = bpf_ntohs(params->l4hdr->udph.source);
 
-	ctx.lpm_key_saddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_daddr.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	ctx.lpm_key_mac.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
-	__builtin_memcpy(ctx.lpm_key_saddr.data, params->saddr,
-			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy(ctx.lpm_key_daddr.data, params->daddr,
-			 IPV6_BYTE_LENGTH);
-	__builtin_memcpy((__u8 *)ctx.lpm_key_mac.data + IPV6_BYTE_LENGTH - ETH_ALEN,
-			 params->mac, ETH_ALEN);
+	ctx.lpm_key.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
 
 	bpf_for(index, 0, MAX_MATCH_SET_LEN) {
 		if (route_step(&ctx))

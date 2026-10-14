@@ -30,6 +30,35 @@ struct {
 	__array(values, struct map_lpm_type);
 } lpm_array_map SEC(".maps");
 
+/* One namespace for each predicate kind keeps IPv4, IPv6 and MAC disjoint. */
+struct http_client_key {
+	__u32 prefixlen;
+	__u32 kind;
+	__u8 address[16];
+};
+
+struct http_client_decision {
+	__u32 order;
+	__u32 allow;
+};
+
+/* 4096 configured selectors plus 4096 dynamic device overrides. */
+#define MAX_HTTP_CLIENT_ENTRIES 8192
+struct http_client_map {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__uint(max_entries, MAX_HTTP_CLIENT_ENTRIES);
+	__type(key, struct http_client_key);
+	__type(value, struct http_client_decision);
+} unused_http_clients SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
+	__uint(key_size, sizeof(__u32));
+	__uint(max_entries, 1);
+	__array(values, struct http_client_map);
+} http_clients_map SEC(".maps");
+
 enum __attribute__((packed)) MatchType {
 	/// WARNING: MUST SYNC WITH common/consts/ebpf.go.
 	MatchType_DomainSet,

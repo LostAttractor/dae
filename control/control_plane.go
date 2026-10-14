@@ -55,6 +55,8 @@ type ControlPlane struct {
 	retiredHosts       sync.WaitGroup
 	workerRoundTrips   sync.WaitGroup
 	mitmClients        clientmatch.Matcher
+	mitmBasePolicy     *clientmatch.Policy
+	httpClients        httpClientAdmission
 	settings           *settings.Store
 	settingsMu         sync.Mutex
 	apiKey             string
@@ -253,6 +255,7 @@ func NewControlPlane(
 		dnsRelay:                  newDNSRelay(),
 		settings:                  runtimeSettings,
 		mitmClients:               mitmClients,
+		mitmBasePolicy:            mitmClients.Compile(nil),
 		deviceRoutes:              core.bpf.deviceRoutes,
 		closeOnRouteChange:        global.RouteChangeBehavior == "close",
 		apiKey:                    global.APIKey,

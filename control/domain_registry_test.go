@@ -24,10 +24,15 @@ type fakeKernelDomainMaps struct {
 func newFakeKernelDomainMaps() *fakeKernelDomainMaps {
 	return &fakeKernelDomainMaps{make(map[netip.Addr][]uint32), make(map[netip.Addr][]uint32)}
 }
-func (f *fakeKernelDomainMaps) update(ip netip.Addr, bump, routing []uint32) {
+func (f *fakeKernelDomainMaps) update(ip netip.Addr, bump, routing []uint32) error {
 	f.bump[ip], f.routing[ip] = slices.Clone(bump), slices.Clone(routing)
+	return nil
 }
-func (f *fakeKernelDomainMaps) remove(ip netip.Addr)   { delete(f.bump, ip); delete(f.routing, ip) }
+func (f *fakeKernelDomainMaps) remove(ip netip.Addr) error {
+	delete(f.bump, ip)
+	delete(f.routing, ip)
+	return nil
+}
 func (f *fakeKernelDomainMaps) has(ip netip.Addr) bool { _, ok := f.bump[ip]; return ok }
 func testBitmap(rules ...int) []uint32 {
 	b := make([]uint32, domainBitmapWords())
@@ -507,14 +512,15 @@ func TestDomainPriorityRefreshAndZeroMembers(t *testing.T) {
 	g.Upsert("zero.example.", a, testBitmap(), 60, now)
 	g.Upsert("b.example.", b, testBitmap(1), 90, now)
 	writes, removes := 0, 0
-	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) {
+	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) error {
 		if !fake.has(ip) && len(fake.bump) == 1 {
 			t.Fatal("replacement was inserted before freeing its kernel slot")
 		}
 		writes++
 		fake.update(ip, bump, routing)
+		return nil
 	}
-	g.kernel.remove = func(ip netip.Addr) { removes++; fake.remove(ip) }
+	g.kernel.remove = func(ip netip.Addr) error { removes++; return fake.remove(ip) }
 	g.activity.observe(a, "a.example.", now.Add(50*time.Second)) // priority 110
 	g.activity.observe(b, "b.example.", now.Add(45*time.Second)) // priority 105
 	if !fake.has(a) || fake.has(b) || writes != 0 || removes != 0 {

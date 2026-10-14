@@ -16,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/control/internal/splice"
+	log "github.com/sirupsen/logrus"
 )
 
 // Matches HANDOFF_LIFETIME_SECONDS. A replaced generation admits queued setups for
@@ -116,7 +117,7 @@ func (r *Runtime) retainMaps(b *bpfObjects) error {
 // Publish refreshes private maps after the old API has drained. Once
 // attachment updates begin, failure is terminal; Runtime still owns every
 // generation and return path needed to abort traffic safely.
-func (r *Runtime) Publish(c *ControlPlane, abort bool) error {
+func (r *Runtime) Publish(c *ControlPlane, abort bool) (err error) {
 	r.lifecycle.Lock()
 	defer r.lifecycle.Unlock()
 	select {
@@ -129,10 +130,24 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) error {
 	if err := c.restoreRuntimeSettings(true); err != nil {
 		return fmt.Errorf("%w: %w", ErrPublicationRejected, err)
 	}
+	exports, err := c.prepareClientExports()
+	if err != nil {
+		return fmt.Errorf("%w: prepare client exports: %w", ErrPublicationRejected, err)
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, exports.Rollback())
+		} else if cleanup := exports.Commit(); cleanup != nil {
+			log.WithError(cleanup).Warn("Remove client export backups after activation")
+		}
+	}()
 	r.mu.Lock()
 	old := r.current
 	if old != nil {
-		c.core.domainRegistry.ForkFrom(old.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now())
+		if err := c.core.domainRegistry.ForkFrom(old.core.domainRegistry, c.routingMatcher.domainMatcher.MatchDomainBitmap, time.Now()); err != nil {
+			r.mu.Unlock()
+			return fmt.Errorf("%w: %w", ErrPublicationRejected, err)
+		}
 	}
 	r.planes[c.routingGeneration] = c
 	r.mu.Unlock()
@@ -149,6 +164,9 @@ func (r *Runtime) Publish(c *ControlPlane, abort bool) error {
 		if err := r.kernelLinks.updatePrograms(old.core.bpf.bpfObjects, c.core.bpf.bpfObjects); err != nil {
 			return err
 		}
+	}
+	if err := exports.Apply(); err != nil {
+		return err
 	}
 	if err := c.activateLinks(); err != nil {
 		return err

@@ -65,6 +65,9 @@ func (c *ControlPlane) mitmSelection(ip netip.Addr, mac [6]byte) (enabled bool, 
 	if enabled, exists := c.settings.MITM(mac); exists {
 		return enabled, &enabled
 	}
+	if c.mitmBasePolicy != nil {
+		return c.mitmBasePolicy.Match(ip, mac)
+	}
 	return c.mitmClients.Match(ip, mac), nil
 }
 

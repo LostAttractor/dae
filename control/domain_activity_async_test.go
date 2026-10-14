@@ -104,12 +104,13 @@ func TestDomainActivityQueueDoesNotWaitForKernelPublication(t *testing.T) {
 	entered, release, flushed := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
-	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) {
+	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) error {
 		if ip == b {
 			close(entered)
 			<-release
 		}
 		fake.update(ip, bump, routing)
+		return nil
 	}
 	g.activity.enqueue(newDomainActivityKey(b, "b.example."), now.Add(15*time.Second))
 	go func() { g.flushActivity(); close(flushed) }()
@@ -297,9 +298,10 @@ func TestDomainActivityWorkerPublishesAndIdleDoesNotRenew(t *testing.T) {
 	g.Upsert("a.example.", a, testBitmap(0), 70, now)
 	g.Upsert("b.example.", b, testBitmap(1), 60, now)
 	updated := make(chan struct{}, 1)
-	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) {
+	g.kernel.update = func(ip netip.Addr, bump, routing []uint32) error {
 		fake.update(ip, bump, routing)
 		updated <- struct{}{}
+		return nil
 	}
 	g.Start()
 	t.Cleanup(func() { _ = g.Close() })

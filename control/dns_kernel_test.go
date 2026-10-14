@@ -10,6 +10,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
+	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
 )
 
@@ -46,11 +47,12 @@ func dnsKernelGeneration(t *testing.T, shared map[string]*ebpf.Map, generation u
 		t.Fatal(err)
 	}
 	t.Cleanup(collection.Close)
+	allowHTTPClientsForTest(t, collection)
 	if err := collection.Variables["routing_generation"].Set(generation); err != nil {
 		t.Fatal(err)
 	}
 	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
-		RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
+		HttpClientsMap: collection.Maps["http_clients_map"], RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"], RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"], UnusedLpmType: collection.Maps["unused_lpm_type"],
 	}, bpfVariables: bpfVariables{DefaultRoutingProfile: collection.Variables["default_routing_profile"]}}}
 	return collection, state
 }
@@ -178,5 +180,23 @@ func TestDNSKernelMustWithCachedUDPSource(t *testing.T) {
 				t.Fatalf("DNS replaced non-DNS source policy: %+v", cached.Result)
 			}
 		}
+	}
+}
+
+// Scope-only fixtures explicitly admit every client; admission fixtures replace
+// this private table with their own ordered policy.
+func allowHTTPClientsForTest(t *testing.T, collection *ebpf.Collection) {
+	t.Helper()
+	matcher, err := clientmatch.Parse([]string{"all"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := httpClientMap(matcher.Compile(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer table.Close()
+	if err := collection.Maps["http_clients_map"].Update(uint32(0), table, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
 	}
 }
