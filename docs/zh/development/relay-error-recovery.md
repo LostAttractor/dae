@@ -12,7 +12,25 @@
 
 仅过滤有来源证据的本地主动清理错误。目标失败、单流 reset 和操作超时不自动判定共享连接死亡；QUIC 连接终止等事实由协议 owner 处理。
 
-健康节点的异常上游错误（包括超时、单流错误）可请求确认探测，已有 `confirming` 状态合并并发报告；明确的调用方取消、目标拒绝和容量限制不请求确认。HY2 FastOpen 在首次 `Read` 中限制应答等待，默认最多 8 秒；应答终结失败 Abort 当前 stream，使 relay 对客户端发送 RST。共享 QUIC 会话仍由资源 owner 回收和恢复。具体规则见 [HY2 recheck 与 FastOpen 失败处理](../design/hy2-recheck-fast-open.md)。
+健康节点的异常上游错误（包括超时、单流错误）可请求确认探测，已有 `confirming` 状态合并并发报告；明确的调用方取消、目标拒绝和容量限制不请求确认。HY2 FastOpen 在首次 `Read` 中限制应答等待，默认最多 8 秒；应答终结失败 Abort 当前 stream，使 relay 对客户端发送 RST。共享 QUIC 会话仍由资源 owner 回收和恢复。路径健康、能力发现和选择凭据的模型见[出站连通性与故障转移](../design/outbound-connectivity.md)。
+
+## HY2 FastOpen
+
+### 应答期限
+
+首次 `Read` 开始解析代理应答时，设置最多 8 秒的内部 read deadline。有效 deadline 始终取内部期限与调用方期限中较早者；调用方延长或清除期限不能延长内部预算。应答成功后恢复最新的调用方 read deadline。
+
+更短的调用方 deadline 中断解析时，关闭当前连接，不恢复读到一半的协议头。该错误保留调用方来源，不触发路径确认。内部预算耗尽属于协议侧错误，会请求确认。
+
+8 秒从实际读取应答开始计算。正常 TCP relay 在连接返回后启动上游读取；从不调用 `Read` 的独立消费者依赖 `Close` 或 QUIC 存活机制结束连接。请求头发送受 DialContext/Handshake 的预算约束。
+
+### 单流终止与共享会话
+
+FastOpen 终结失败保存原始错误，Abort 当前 stream 的 Lease，并取消该 stream 的 I/O。relay 收到 Abort 后关闭连接并向 TCP 客户端发送 RST。后续读写返回保存的错误，`Close` 幂等释放资源。目标拒绝同样终止当前连接，但不触发路径确认；成功后的正常 EOF 继续半关闭。
+
+不可恢复的 HY2 单流错误先执行带来源和资源信息的 stream Abort，再进入通用错误包装。单流失败不关闭共享 QUIC 或兄弟 stream，也不重放业务数据。共享 QUIC 失效由资源 owner 执行 Abort、cleanup 和 Connect。
+
+健康检查不会主动销毁仍显示 connected 的共享 Session。无排队时，FastOpen 内部应答等待最多 8 秒，随后两次确认探测各受现有 8 秒预算约束；排队与共享会话恢复另受各自生命周期控制，不能据此承诺固定的整体恢复时限。
 
 ## UDP 与连接策略
 
@@ -52,9 +70,10 @@ MITM 上游清理同步检查资源和组策略的 Abort 原因，再结束客�
 ## 验证
 
 ```sh
-nix-shell --run 'make && go test ./...'
-nix-shell --run 'go test -race -tags dae_splice ./component/outbound/... ./control ./cmd'
-nix-shell --run 'go test -race github.com/daeuniverse/outbound/...'
+make
+go test ./...
+go test -race -tags dae_splice ./component/outbound/... ./control ./cmd
+go test -race github.com/daeuniverse/outbound/...
 ```
 
 用户态测试不能替代特权 eBPF 测试。协议约束见 [客户端协议](client-protocols.md)。

@@ -7,7 +7,7 @@
 - [CA 与客户端安装](configuration/mitm-certificate.md)、[缓存和持久化目录](configuration/cache-directory.md)。
 - [rules / DNAT](configuration/destination-rules.md)：通过连接过滤条件覆盖拨号 IP，无需修改 DNS 应答。
 
-开发者可参阅[当前项目结构](design/project-structure.md)和[外部插件契约](../../component/plugin/README.md)。
+项目设计见[项目结构](design/project-structure.md)、[出站连通性与故障转移](design/outbound-connectivity.md)和[API 鉴权与访问控制](design/api-access-control.md)。开发参考包括[测试与性能测量](development/testing-and-performance.md)和[外部插件契约](../../component/plugin/README.md)。
 
 ## Linux 内核要求
 
