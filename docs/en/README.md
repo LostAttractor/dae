@@ -235,7 +235,7 @@ The image contains the daemon without a configuration or Geo data. Provide
 Alternatively, you can use `docker compose`:
 
 ```shell
-git clone --depth=1 https://github.com/LostAttractor/dae
+git clone --depth=1 --recurse-submodules https://github.com/LostAttractor/dae
 cd dae
 docker compose up -d --build
 ```

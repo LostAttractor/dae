@@ -221,7 +221,7 @@ docker pull ghcr.io/lostattractor/dae:next
 作为替代，你也可以使用 `docker compose`:
 
 ```shell
-git clone --depth=1 https://github.com/LostAttractor/dae
+git clone --depth=1 --recurse-submodules https://github.com/LostAttractor/dae
 cd dae
 docker compose up -d --build
 ```

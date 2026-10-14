@@ -402,54 +402,6 @@ func validateNodeSafely(validateNode func(string) error, node string) (err error
 	return validateNode(node)
 }
 
-func validateManagedDir(path string, info os.FileInfo) error {
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("subscription directory %q cannot be a symbolic link", path)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("subscription path %q is not a directory", path)
-	}
-	if info.Mode().Perm()&0022 != 0 {
-		return fmt.Errorf("permissions %04o for subscription directory %q are unsafe; group and others must not have write access", info.Mode().Perm(), path)
-	}
-	return nil
-}
-
-func openManagedDir(path string, create bool) (*os.File, error) {
-	if create {
-		if err := os.MkdirAll(path, 0700); err != nil {
-			return nil, fmt.Errorf("create directory %q: %w", path, err)
-		}
-	}
-	before, err := os.Lstat(path)
-	if err != nil {
-		return nil, fmt.Errorf("inspect directory %q: %w", path, err)
-	}
-	if err := validateManagedDir(path, before); err != nil {
-		return nil, err
-	}
-
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open directory %q securely: %w", path, err)
-	}
-	dir := os.NewFile(uintptr(fd), path)
-	after, err := dir.Stat()
-	if err != nil {
-		_ = dir.Close()
-		return nil, fmt.Errorf("inspect opened directory %q: %w", path, err)
-	}
-	if err := validateManagedDir(path, after); err != nil {
-		_ = dir.Close()
-		return nil, err
-	}
-	if !os.SameFile(before, after) {
-		_ = dir.Close()
-		return nil, fmt.Errorf("directory %q was replaced while opening it", path)
-	}
-	return dir, nil
-}
-
 type ResolveOptions struct {
 	BaseDir         string
 	CacheDir        string
