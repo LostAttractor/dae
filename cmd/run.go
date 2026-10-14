@@ -83,8 +83,8 @@ func newRunCommand(definitions map[string]plugin.Definition) *cobra.Command {
 				ConfigFile: cfgFile, Version: Version, DisableTimestamp: disableTimestamp, DisablePidFile: disablePidFile,
 			})
 			if err != nil {
-				// Own the terminal error here so Cobra does not print it again.
-				cmd.SilenceErrors = true
+				// Let Cobra report the error if the configured log level hides it.
+				cmd.SilenceErrors = log.IsLevelEnabled(log.ErrorLevel)
 				err = resource.RedactError(err)
 				log.WithError(err).Error("Daemon stopped with an error")
 			}

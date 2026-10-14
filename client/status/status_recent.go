@@ -67,7 +67,7 @@ func recentSelections(group api.GroupStatus) []string {
 		remaining &^= mask
 		label := emptyDash(id)
 		if index := slices.IndexFunc(group.Nodes, func(node api.NodeStatus) bool { return id != "" && node.ID == id }); index >= 0 {
-			label = nodeLabel(group.Nodes[index], index)
+			label = strings.Join(strings.Fields(nodeLabel(group.Nodes[index], index)), " ")
 		}
 		label = colorSelected(label, id != "")
 		if mask != visible {

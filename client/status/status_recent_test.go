@@ -301,7 +301,7 @@ func TestRecentNarrowLayoutClipsWithoutWrapping(t *testing.T) {
 				colorsEnabled = color
 				group := recentTestGroup()
 				group.Name = strings.Repeat("香港出口", 8)
-				group.Nodes[0].Name = strings.Repeat("香港节点🇭🇰", 12)
+				group.Nodes[0].Name = strings.Repeat("香港节点🇭🇰\n\t", 12)
 				group.SelectedNodeIDs = api.NetworkValues[string]{"hk", "sg", "hk", "sg"}
 				group.Stats.ActiveConnections = 1234567
 				got := renderRecentGroups([]api.GroupStatus{group})
