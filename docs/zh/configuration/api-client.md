@@ -4,7 +4,7 @@
 
 ## 构建与使用
 
-需要 Go 1.27+；可在 `nix-shell` 中运行：
+需要 Go 1.27.2+；可在 `nix-shell` 中运行：
 
 ```sh
 make client

@@ -4,7 +4,7 @@
 
 ## Build and connect
 
-With Go 1.27+ (or inside `nix-shell`):
+With Go 1.27.2+ (or inside `nix-shell`):
 
 ```sh
 make client

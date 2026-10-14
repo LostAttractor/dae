@@ -36,7 +36,7 @@ Please refer to [Quick Start Guide](./docs/en/README.md) to start using `dae` ri
 
 The daemon requires Linux 6.13+ with the [kernel features and runtime environment](./docs/en/README.md#kernel-configurations) used by dae. Run `sudo dae check-kernel` to probe support before startup. Geo data files are required only by rules that reference them.
 
-Source builds require Go 1.27+, cgo, a target C compiler, and Clang/LLVM for eBPF; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
+Source builds require Go 1.27.2+, cgo, a target C compiler, and Clang/LLVM for eBPF; see the [build guide](./docs/en/user-guide/build-by-yourself.md) for static musl and cross-compilation.
 
 The [configuration example](./example.dae) includes ordered `plugins` instances and `rules` flow controls / DNAT. Core [DNS](./docs/en/configuration/dns.md) is a transparent relay with persistent domain evidence; advanced resolver/cache features are independent plugins. The default build includes Surge. Copy [plugins.cfg.example](./plugins.cfg.example) to local `plugins.cfg`, add external Go plugins, and [build them with dae](./docs/en/user-guide/build-by-yourself.md#external-plugins).
 

@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.27.0 AS go-toolchain
+FROM --platform=$BUILDPLATFORM golang:1.27.2 AS go-toolchain
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS node-toolchain
 
 FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS builder

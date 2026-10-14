@@ -128,12 +128,12 @@ check-go-version:
 	if [ "$$major" -gt 1 ]; then \
 		supported=1; \
 	elif [ "$$major" -eq 1 ]; then \
-		if [ "$$minor" -ge 27 ]; then \
+		if [ "$$minor" -gt 27 ] || { [ "$$minor" -eq 27 ] && [ "$$patch" -ge 2 ]; }; then \
 			supported=1; \
 		fi; \
 	fi; \
 	if [ "$$supported" -ne 1 ]; then \
-		echo "ERROR: Go 1.27+ is required (found $(GO_VERSION))." >&2; \
+		echo "ERROR: Go 1.27.2+ is required (found $(GO_VERSION))." >&2; \
 		exit 1; \
 	fi
 
