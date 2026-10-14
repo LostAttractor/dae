@@ -92,3 +92,71 @@ func TestExternalBundleUpdatesWithoutRebuilding(t *testing.T) {
 		t.Fatal("missing external asset did not return 404")
 	}
 }
+
+func TestExternalBundleConfinesSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	for _, file := range []struct{ path, content string }{
+		{filepath.Join(dir, "index.html"), "public asset"},
+		{filepath.Join(outside, "secret"), "private content"},
+	} {
+		if err := os.WriteFile(file.path, []byte(file.content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, target := range map[string]string{
+		"inside.html":   "index.html",
+		"escape":        filepath.Join(outside, "secret"),
+		"directory":     outside,
+		"index.html.gz": filepath.Join(outside, "secret"),
+	} {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := Handler(dir)
+	for _, path := range []string{"/escape", "/directory/secret", "/directory/", "/", "/inside.html"} {
+		t.Run(path, func(t *testing.T) {
+			r := httptest.NewRequest("GET", path, nil)
+			r.Header.Set("Accept-Encoding", "gzip")
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			if strings.Contains(w.Body.String(), "private content") || strings.Contains(w.Body.String(), "secret") {
+				t.Fatalf("external file exposed: %d %s", w.Code, w.Body.String())
+			}
+			if path == "/" || path == "/inside.html" {
+				if w.Code != 200 || w.Body.String() != "public asset" || w.Header().Get("Content-Encoding") != "" {
+					t.Fatalf("in-root asset unavailable: %d %s", w.Code, w.Body.String())
+				}
+			} else if w.Code == 200 {
+				t.Fatal("escaping symlink was served")
+			}
+		})
+	}
+}
+
+func TestExternalBundleDirectoryReplacement(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	handler := Handler(dir)
+	for _, body := range []string{"old bundle", "new bundle"} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		if w.Code != 200 || w.Body.String() != body {
+			t.Fatalf("replacement bundle unavailable: %d %s", w.Code, w.Body.String())
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != 503 {
+		t.Fatalf("missing external root: status %d", w.Code)
+	}
+}

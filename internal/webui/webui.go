@@ -22,11 +22,7 @@ var assets, _ = fs.Sub(embedded, "assets")
 
 // Handler serves an external public directory, or the embedded bundle when empty.
 func Handler(directory string, testTargets ...netip.AddrPort) http.Handler {
-	files := assets
-	if directory != "" {
-		files = os.DirFS(directory)
-	}
-	handler := http.FileServerFS(files)
+	embeddedHandler := http.FileServerFS(assets)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -51,6 +47,21 @@ func Handler(directory string, testTargets ...netip.AddrPort) http.Handler {
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", 405)
 			return
+		}
+		var files fs.FS = assets
+		handler := embeddedHandler
+		if directory != "" {
+			// Reopen for each request so replacing the bundle directory takes
+			// effect immediately. Root also confines sidecars and directory
+			// listings, including symlink resolution during concurrent edits.
+			root, err := os.OpenRoot(directory)
+			if err != nil {
+				http.Error(w, "Web assets unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			defer root.Close()
+			files = root.FS()
+			handler = http.FileServerFS(files)
 		}
 		if !serveAsset(files, w, r) {
 			handler.ServeHTTP(w, r)
