@@ -9,6 +9,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func listenUnix(path string) (net.Listener, error) {
@@ -20,7 +22,45 @@ func listenUnix(path string) (net.Listener, error) {
 		_ = listener.Close()
 		return nil, fmt.Errorf("chmod API socket: %w", err)
 	}
-	return listener, nil
+	return &unixAdminListener{Listener: listener, uid: uint32(os.Geteuid())}, nil
+}
+
+// Socket permissions restrict new connections, but cannot revoke a connection
+// queued between bind and chmod under a permissive umask. Check kernel-supplied
+// credentials before handing any connection to the unauthenticated local API.
+type unixAdminListener struct {
+	net.Listener
+	uid uint32
+}
+
+func (l *unixAdminListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		if l.authorized(conn) {
+			return conn, nil
+		}
+		_ = conn.Close()
+	}
+}
+
+func (l *unixAdminListener) authorized(conn net.Conn) bool {
+	peer, ok := conn.(*net.UnixConn)
+	if !ok {
+		return false
+	}
+	raw, err := peer.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var credentials *unix.Ucred
+	var credentialErr error
+	err = raw.Control(func(fd uintptr) {
+		credentials, credentialErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	})
+	return err == nil && credentialErr == nil && credentials != nil && credentials.Uid == l.uid
 }
 
 // bindUnix only removes an existing socket after proving that no
