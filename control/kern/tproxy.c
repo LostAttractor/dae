@@ -23,6 +23,8 @@
 #include "headers/bpf_endian.h"
 #include "headers/bpf_helpers.h"
 
+extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
+
 #include "bridge.h"
 
 // #define __DEBUG_ROUTING
@@ -265,6 +267,7 @@ struct ingress_scratch {
 	struct tuples tuples;
 	struct routing_result result;
 };
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__type(key, __u32);
@@ -487,7 +490,6 @@ get_tuples(const struct __sk_buff *skb, struct tuples *tuples,
 		tuples->five.dport = l4h->udph.dest;
 	}
 }
-
 
 static __always_inline bool is_extension_header(__u8 nexthdr)
 {
@@ -738,7 +740,7 @@ parse_transport(const struct __sk_buff *skb, __u32 link_h_len,
 		}
 		*fragment_state = ext_ctx.fragment_state;
 		if (big_tcp && (nexthdr != IPPROTO_TCP ||
-			       ext_ctx.seen_fragment || ext_ctx.seen_ah))
+				ext_ctx.seen_fragment || ext_ctx.seen_ah))
 			return -EINVAL;
 		if (ext_ctx.result)
 			return ext_ctx.result;
@@ -895,7 +897,7 @@ static int expire_udp_route(void *map, struct udp_routing_cache_key *key,
 
 /* 1 = hit, 0 = new lifetime, -1 = another packet/timer is ending it. */
 static __noinline int read_udp_route(struct udp_routing_cache_key *key,
-					 struct routing_result *result, bool check_generation)
+				     struct routing_result *result, bool check_generation)
 {
 	struct udp_routing_cache_value *value =
 		bpf_map_lookup_elem(&udp_routing_cache_map, key);
@@ -932,7 +934,7 @@ static __noinline int read_udp_route(struct udp_routing_cache_key *key,
 }
 
 static __noinline int save_udp_route(struct udp_routing_cache_key *key,
-				    struct routing_result *result)
+				     struct routing_result *result)
 {
 	struct udp_routing_scratch *value =
 		bpf_map_lookup_elem(&udp_routing_scratch_map, &zero_key);
@@ -1078,7 +1080,7 @@ static __always_inline bool pid_is_control_plane(struct __sk_buff *skb,
 }
 
 static __always_inline int save_tcp_flow(struct tuples_key *key,
-					const struct routing_result *result)
+					 const struct routing_result *result)
 {
 	struct tcp_flow_state flow = {
 		.route_epoch = result->route_epoch,
@@ -1094,7 +1096,7 @@ static __always_inline int save_tcp_flow(struct tuples_key *key,
 }
 
 static __always_inline int publish_handoff(struct tuples_key *key,
-					  const struct routing_result *result, __be32 syn_seq)
+					   const struct routing_result *result, __be32 syn_seq)
 {
 	struct routing_handoff handoff = {
 		.result = *result,
@@ -1154,6 +1156,7 @@ static __always_inline int do_tproxy_first_fragment(
 		goto direct;
 	}
 	struct udp_routing_cache_key udp_key = {};
+
 	if (l4proto == IPPROTO_UDP) {
 		struct routing_result *saved = &scratch->result;
 
@@ -1162,7 +1165,9 @@ static __always_inline int do_tproxy_first_fragment(
 			return TCX_DROP;
 		int hit = read_udp_route(&udp_key, saved, true);
 
-		if (hit < 0 || (hit && (saved->outbound != OUTBOUND_DIRECT || saved->mark || saved->capture_flags)))
+		if (hit < 0 ||
+		    (hit && (saved->outbound != OUTBOUND_DIRECT ||
+			     saved->mark || saved->capture_flags)))
 			return TCX_DROP;
 		if (hit)
 			goto direct;
@@ -1225,7 +1230,6 @@ static __always_inline int do_tproxy_first_fragment(
 	}
 	if (outbound == OUTBOUND_BLOCK)
 		return TCX_DROP;
-
 
 	/* Proxying only the first fragment would split the datagram across paths. */
 	return TCX_DROP;
@@ -1319,7 +1323,8 @@ static __always_inline int do_tproxy_unfragmented(
 			bpf_map_lookup_elem(&tcp_flow_map,
 					    &routing_tuples_key);
 
-		if (route_epoch && (!routing_result || routing_result->route_epoch != route_epoch)) {
+		if (route_epoch &&
+		    (!routing_result || routing_result->route_epoch != route_epoch)) {
 			/* Never re-route established TCP. The transparent listener rejects
 			 * an ACK without a connection with RST; existing relays also receive
 			 * the userspace Abort. Do not answer an incoming RST. */
@@ -1374,9 +1379,8 @@ static __always_inline int do_tproxy_unfragmented(
 	__builtin_memset(routing_result, 0, sizeof(*routing_result));
 	struct udp_routing_cache_key udp_key = {};
 
-	if (l4proto == IPPROTO_UDP) {
+	if (l4proto == IPPROTO_UDP)
 		fill_udp_routing_cache_key(&udp_key, tuples);
-	}
 	/* DNS is a per-destination observation flow, even if the same UDP source
 	 * already owns a non-DNS association. Explicit must is evaluated below. */
 	if (l4proto == IPPROTO_UDP && !isdns) {
@@ -1392,9 +1396,8 @@ static __always_inline int do_tproxy_unfragmented(
 
 		if (hit < 0)
 			return TCX_DROP;
-		if (hit) {
+		if (hit)
 			goto selected;
-		}
 	}
 
 	struct route_params params;
@@ -1434,7 +1437,8 @@ static __always_inline int do_tproxy_unfragmented(
 
 	if (routing_result->outbound == OUTBOUND_BLOCK)
 		return TCX_DROP;
-	if (!isdns && !routing_result->capture_flags && routing_result->outbound != OUTBOUND_DIRECT &&
+	if (!isdns && !routing_result->capture_flags &&
+	    routing_result->outbound != OUTBOUND_DIRECT &&
 	    routing_result->outbound < OUTBOUND_MUST_RULES) {
 		struct outbound_connectivity_query q = {
 			.outbound = routing_result->outbound,
@@ -1491,7 +1495,6 @@ control_plane:
 direct:
 	skb->mark = routing_result->mark;
 	return TCX_NEXT;
-
 }
 
 static __always_inline int do_tproxy(struct __sk_buff *skb, bool is_wan,
@@ -1575,7 +1578,6 @@ static __always_inline int do_reply_path(struct __sk_buff *skb, u32 link_h_len,
 
 		/* Replies also keep a kernel-direct source lifetime alive. */
 		read_udp_route(&source, &ignored, false);
-
 
 		if (!refresh_udp_conn_state_timer(&reversed_tuples_key, true))
 			return TCX_DROP;

@@ -3,7 +3,7 @@
 
 Run after generating production and kernel-test BPF objects. Requires Go,
 clang and passwordless sudo. --baseline is a source snapshot containing control/
-from before simplification. Results and generated mutations stay in /tmp/opencode;
+from before simplification. Results and generated mutations stay in a temporary directory;
 no experiment switches enter production code.
 """
 
@@ -32,7 +32,7 @@ def main():
     if args.rounds < 0:
         parser.error("--rounds must be nonnegative")
     root = Path(__file__).resolve().parent.parent
-    output = Path(tempfile.mkdtemp(prefix="runtime-ablation-", dir="/tmp/opencode"))
+    output = Path(tempfile.mkdtemp(prefix="runtime-ablation-"))
     print(f"Results: {output}", flush=True)
 
     def run(command, name, failure=None):

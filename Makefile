@@ -70,7 +70,7 @@ BIG_ENDIAN_GOARCHES := mips mips64 mips64p32 ppc64 s390 s390x sparc sparc64
 date=$(shell git log -1 --format="%cd" --date=short | sed s/-//g)
 count=$(shell git rev-list --count HEAD)
 commit=$(shell git rev-parse --short HEAD)
-ifeq ($(shell git rev-parse --is-inside-work-tree 2>/dev/null),true)
+ifeq ($(shell test -e .git && git rev-parse --is-inside-work-tree 2>/dev/null),true)
 	VERSION ?= unstable-$(date).r$(count).$(commit)
 else
 	VERSION ?= unstable-0.nogit
@@ -88,7 +88,7 @@ BUILD_ARGS := $(GO_TRIMPATH_FLAG) $(GO_DEBUG_FLAGS) -ldflags "$(GO_STRIP_FLAGS) 
 check-bpf-capacities:
 	@for entry in $(foreach name,$(BPF_CAPACITIES),'$(name)=$($(name))'); do \
 		value=$${entry#*=}; \
-		case "$$value" in ''|*[!0-9]*) echo "ERROR: $$entry must be a positive integer" >&2; exit 1 ;; esac; \
+		case "$$value" in ''|0*|*[!0-9]*) echo "ERROR: $$entry must be a positive decimal integer without leading zeros" >&2; exit 1 ;; esac; \
 		if [ "$$value" -eq 0 ] || [ "$$value" -gt 4294967294 ]; then echo "ERROR: invalid capacity $$entry" >&2; exit 1; fi; \
 	done
 	@if [ "$(MAX_MATCH_SET_LEN)" -lt 32 ] || [ "$(MAX_MATCH_SET_LEN)" -gt 65536 ] || [ $$(( $(MAX_MATCH_SET_LEN) % 32 )) -ne 0 ]; then \

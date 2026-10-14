@@ -23,8 +23,6 @@ struct nf_bridge_info___dae_bridge {
 	int physinif;
 };
 
-extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
-
 /* br_netfilter saves the bridge member before skb_iif becomes the bridge.
  * Absence (including kernels built without bridge netfilter) is not a match.
  * Keep this out of the classifier's nearly full BPF stack frame.
