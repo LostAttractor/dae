@@ -58,9 +58,18 @@ func Load(ctx context.Context, raw string, client *http.Client, options LoadOpti
 		RefreshDeadline: deadline, Timeout: resourceTimeout,
 	}, func(read resource.ReadFunc) (*Module, error) {
 		digest := sha256.New()
+		var warnings []string
 		readResource := func(source resource.Source, options resource.ReadOptions) (resource.Result, error) {
 			result, err := read(source, options)
 			if err == nil {
+				// Report the original URL as well: an HTTP-to-HTTPS redirect
+				// cannot authenticate the first hop. Rebuild warnings on cached
+				// loads so offline fallback does not hide insecure provenance.
+				for _, location := range []string{source.Location, result.Location} {
+					if strings.HasPrefix(location, "http://") {
+						appendModuleWarning(&warnings, fmt.Sprintf("module resource uses unencrypted HTTP and can be modified in transit; use HTTPS or a trusted local file: %s", resource.RedactURL(location)))
+					}
+				}
 				fmt.Fprintf(digest, "%d:%s%d:%s%d:", len(source.Location), source.Location, len(result.Location), result.Location, len(result.Data))
 				digest.Write(result.Data)
 			}
@@ -75,6 +84,7 @@ func Load(ctx context.Context, raw string, client *http.Client, options LoadOpti
 			return string(result.Data), err
 		})
 		if err == nil {
+			module.Warnings = append(module.Warnings, warnings...)
 			digest.Write([]byte(module.requirementKey))
 			module.contentKey = fmt.Sprintf("%x", digest.Sum(nil))
 		}
