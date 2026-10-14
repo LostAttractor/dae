@@ -82,6 +82,8 @@ type traceObjects struct {
 	consumeSkb  *ebpf.Program
 	kfreeSkb    [2]*ebpf.Program
 	lifetimeEnd *ebpf.Program
+	napiEntry   *ebpf.Program
+	napiExit    *ebpf.Program
 	groEntry    [2]*ebpf.Program
 	groExit     [2]*ebpf.Program
 
@@ -405,6 +407,7 @@ func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons drop
 		Port:             Htons(uint16(port)),
 		L4Proto:          uint16(l4ProtoNo),
 		IpVsn:            uint8(ipVersion),
+		NapiReason:       reasons.napiReason,
 	}); err != nil {
 		return nil, fmt.Errorf("failed to rewrite constants: %+v\n", err)
 	}
@@ -429,6 +432,8 @@ func loadTraceCollection(ipVersion int, l4ProtoNo uint16, port int, reasons drop
 		collection:  collection,
 		consumeSkb:  collection.Programs["raw_tracepoint_consume_skb"],
 		lifetimeEnd: collection.Programs["kprobe_skb_lifetime_termination"],
+		napiEntry:   collection.Programs["kprobe_napi_retire"],
+		napiExit:    collection.Programs["kretprobe_napi_retire"],
 		control:     collection.Maps["control"],
 		events:      collection.Maps["events"],
 		runtime:     collection.Maps["runtime"],
@@ -524,6 +529,7 @@ func legacyProbePriority(name string) int {
 type dropReasonConfig struct {
 	notDropped uint32
 	consumed   uint32
+	napiReason uint8
 }
 
 const unavailableDropReason = ^uint32(0)
@@ -588,6 +594,15 @@ func searchAvailableTargets() (targets []probeTarget, dropReasons map[uint32]str
 	// SKB_NOT_DROPPED_YET sentinel. Reading only the first two arguments is ABI
 	// safe and preserves the legacy behavior of treating kfree_skb as a drop.
 	useKfreeReason = canClassifyKfreeReason(traceType, reasonConfig)
+	if typ, err := btfSpec.AnyTypeByName("__napi_kfree_skb"); err == nil {
+		if fn, ok := typ.(*btf.Func); ok {
+			if proto, ok := fn.Type.(*btf.FuncProto); ok && len(proto.Params) > 1 {
+				if enum, ok := btf.UnderlyingType(proto.Params[1].Type).(*btf.Enum); ok && enum.Name == "skb_drop_reason" {
+					reasonConfig.napiReason = 1
+				}
+			}
+		}
+	}
 
 	for typ, err := range btfSpec.All() {
 		if err != nil {
@@ -599,7 +614,7 @@ func searchAvailableTargets() (targets []probeTarget, dropReasons map[uint32]str
 		}
 
 		target, ok := classifyFunction(fn)
-		if !ok || target.name == "kfree_skbmem" {
+		if !ok || target.name == "kfree_skbmem" || target.name == "__napi_kfree_skb" {
 			continue
 		}
 		if len(kprobeSymbols) != 0 {
@@ -803,6 +818,11 @@ func readTraceEvents(ctx context.Context, runtime traceRuntime, eventsReader tra
 				return err
 			}
 		}
+		if runtimeState.RetirementOverflows != 0 || runtimeState.RetirementActive != 0 {
+			if _, err := fmt.Fprintf(writer, "# trace incomplete: NAPI retirement overflows=%d unfinished=%d\n", runtimeState.RetirementOverflows, runtimeState.RetirementActive); err != nil {
+				return err
+			}
+		}
 		if runtimeState.ActiveProducers != 0 {
 			if _, err := fmt.Fprintf(writer, "# trace incomplete: %d producer(s) still active at shutdown\n", runtimeState.ActiveProducers); err != nil {
 				return err
@@ -813,12 +833,14 @@ func readTraceEvents(ctx context.Context, runtime traceRuntime, eventsReader tra
 				return err
 			}
 		}
-		if runtimeState.RingLost != 0 || runtimeState.AdmissionFailures != 0 || runtimeState.GenerationFailures != 0 || decodeLoss != 0 {
+		if runtimeState.RingLost != 0 || runtimeState.AdmissionFailures != 0 || runtimeState.GenerationFailures != 0 || runtimeState.RetirementOverflows != 0 || runtimeState.RetirementActive != 0 || decodeLoss != 0 {
 			log.WithFields(log.Fields{
-				"ring_events_lost":    runtimeState.RingLost,
-				"admission_failures":  runtimeState.AdmissionFailures,
-				"generation_failures": runtimeState.GenerationFailures,
-				"malformed_events":    decodeLoss,
+				"ring_events_lost":          runtimeState.RingLost,
+				"admission_failures":        runtimeState.AdmissionFailures,
+				"generation_failures":       runtimeState.GenerationFailures,
+				"napi_retirement_overflows": runtimeState.RetirementOverflows,
+				"napi_retirement_active":    runtimeState.RetirementActive,
+				"malformed_events":          decodeLoss,
 			}).Warn("Trace is incomplete; events were lost")
 		}
 		if shutdownErr != nil {

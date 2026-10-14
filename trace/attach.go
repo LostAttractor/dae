@@ -277,14 +277,29 @@ func probeKprobeMultiSupport(objs *traceObjects, targets []probeTarget) bool {
 
 func attachBpfToTargets(objs *traceObjects, targets []probeTarget, useKfreeReason bool, useKprobeMulti bool) (links []link.Link, attachedTargets int, err error) {
 	// kfree_skbmem runs after kfree_skb's raw tracepoint, so it only closes
-	// direct-free paths that did not already report a terminal reason. Do not
-	// hook __napi_kfree_skb at entry: it calls the raw tracepoint later and an
-	// entry hook would delete state before the real drop reason is observed.
+	// direct-free paths that did not already report a terminal reason.
 	lifetime, err := link.Kprobe("kfree_skbmem", objs.lifetimeEnd, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to attach skb lifetime probe to kfree_skbmem: %w", err)
 	}
 	links = append(links, lifetime)
+	if _, exists := kallsymsByName["__napi_kfree_skb"]; exists {
+		// Older kernels lack this deferred NAPI cache path. Where present,
+		// capture its reason before release and suppress cleanup re-admission.
+		// Attach the return before the entry so the guard always has an exit.
+		napiExit, attachErr := attachNapiReturn(objs)
+		if attachErr != nil {
+			_ = closeLinksConcurrently(links, maxDetachWorkers)
+			return nil, 0, fmt.Errorf("attach NAPI retirement return: %w", attachErr)
+		}
+		links = append(links, napiExit)
+		napiEntry, attachErr := link.Kprobe("__napi_kfree_skb", objs.napiEntry, nil)
+		if attachErr != nil {
+			_ = closeLinksConcurrently(links, maxDetachWorkers)
+			return nil, 0, fmt.Errorf("attach NAPI retirement entry: %w", attachErr)
+		}
+		links = append(links, napiEntry)
+	}
 
 	kfreeProgram := objs.kfreeSkb[legacyKfreeProgram]
 	if useKfreeReason {
@@ -350,6 +365,33 @@ func attachBpfToTargets(objs *traceObjects, targets []probeTarget, useKfreeReaso
 		return nil, 0, fmt.Errorf("failed to attach kprobes to any target")
 	}
 	return links, attachedGeneric, nil
+}
+
+// Prefer a trampoline return hook without the kretprobe instance limit. Keep
+// the legacy fallback for architectures that cannot attach BPF trampolines.
+func attachNapiReturn(objs *traceObjects) (link.Link, error) {
+	spec, err := loadBpf()
+	if err == nil {
+		program := spec.Programs["kretprobe_napi_retire"].Copy()
+		program.Type = ebpf.Tracing
+		program.AttachType = ebpf.AttachTraceFExit
+		program.AttachTo = "__napi_kfree_skb"
+		for _, name := range []string{"napi_retiring", "runtime"} {
+			if err = program.Instructions.AssociateMap(name, objs.collection.Maps[name]); err != nil {
+				break
+			}
+		}
+		if err == nil {
+			if loaded, loadErr := ebpf.NewProgram(program); loadErr == nil {
+				attached, attachErr := link.AttachTracing(link.TracingOptions{Program: loaded})
+				_ = loaded.Close()
+				if attachErr == nil {
+					return attached, nil
+				}
+			}
+		}
+	}
+	return link.Kretprobe("__napi_kfree_skb", objs.napiExit, nil)
 }
 
 type probeCoverage struct {

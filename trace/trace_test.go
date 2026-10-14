@@ -109,8 +109,8 @@ func TestTraceBPFSpec(t *testing.T) {
 		}
 	}
 	runtimeState := spec.Maps["runtime"]
-	if runtimeState == nil || runtimeState.Type != ebpf.Array || runtimeState.MaxEntries != 1 || runtimeState.ValueSize != 48 {
-		t.Fatalf("runtime map = %#v, want one-entry 48-byte array", runtimeState)
+	if runtimeState == nil || runtimeState.Type != ebpf.Array || runtimeState.MaxEntries != 1 || runtimeState.ValueSize != 64 {
+		t.Fatalf("runtime map = %#v, want one-entry 64-byte array", runtimeState)
 	}
 	control := spec.Maps["control"]
 	if control == nil || control.Type != ebpf.Array || control.MaxEntries != 1 || control.KeySize != 4 || control.ValueSize != 4 {

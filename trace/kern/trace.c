@@ -10,6 +10,7 @@
 #define PNAME_LEN 32
 #define IPV4_FRAGMENT_OFFSET_MASK 0x1fff
 #define EEXIST 17
+#define MAX_NAPI_RETIRE_DEPTH 16
 
 // possible_net_t is empty in headers generated without CONFIG_NET_NS.
 // CO-RE resolves these field declarations against the running kernel's BTF.
@@ -39,6 +40,7 @@ enum event_flags {
 	EVENT_F_DROP_REASON = 1 << 2,
 	EVENT_F_TUPLE_VALID = 1 << 3,
 	EVENT_F_CONSUME_HOOK = 1 << 4,
+	EVENT_F_EXISTING_ONLY = 1U << 31,
 };
 
 struct trace_raw_args {
@@ -92,6 +94,7 @@ struct tracing_config {
 	u16 port;
 	u16 l4_proto;
 	u8 ip_vsn;
+	u8 napi_reason;
 };
 
 const volatile struct tracing_config tracing_cfg = {};
@@ -131,6 +134,21 @@ struct {
 	__uint(max_entries, 2);
 } gro_pending SEC(".maps");
 
+// NAPI cache recycling runs with bottom halves disabled. Keep the guard on
+// this CPU until the free function returns: users may still be one while its
+// cleanup helpers run, but those helpers must not admit a second incarnation.
+struct napi_retire_stack {
+	u64 skb[MAX_NAPI_RETIRE_DEPTH];
+	u32 depth;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct napi_retire_stack);
+	__uint(max_entries, 1);
+} napi_retiring SEC(".maps");
+
 struct runtime_state {
 	u64 next_generation;
 	u64 ring_lost;
@@ -138,6 +156,8 @@ struct runtime_state {
 	u64 admission_races;
 	u64 generation_failures;
 	u64 active_producers;
+	u64 retirement_overflows;
+	u64 retirement_active;
 };
 
 struct {
@@ -525,8 +545,22 @@ handle_skb(struct sk_buff *skb, __u64 pc, __u32 flags,
 	if (!skb)
 		goto out;
 	skb_addr = (__u64)skb;
+	__u32 key = 0;
+	struct napi_retire_stack *retiring = bpf_map_lookup_elem(&napi_retiring, &key);
+	if (retiring) {
+		if (retiring->depth > MAX_NAPI_RETIRE_DEPTH)
+			goto out;
+#pragma unroll
+		for (int i = 0; i < MAX_NAPI_RETIRE_DEPTH; i++) {
+			if (i < retiring->depth && retiring->skb[i] == skb_addr)
+				goto out;
+		}
+	}
 
 	state = bpf_map_lookup_elem(&trace_states, &skb_addr);
+	if (!state && (flags & EVENT_F_EXISTING_ONLY))
+		goto out;
+	flags &= ~EVENT_F_EXISTING_ONLY;
 	if (!state && !(flags & EVENT_F_TERMINAL) &&
 	    !skb_has_live_reference(skb))
 		goto out;
@@ -657,6 +691,54 @@ int kprobe_skb_lifetime_termination(struct pt_regs *ctx)
 {
 	return handle_skb_lifetime_end(PT_REGS_PARM1(ctx),
 				       bpf_get_func_ip(ctx), 0);
+}
+
+SEC("kprobe/napi_retire")
+int kprobe_napi_retire(struct pt_regs *ctx)
+{
+	__u32 key = 0;
+	struct napi_retire_stack *pending = bpf_map_lookup_elem(&napi_retiring, &key);
+	struct sk_buff *skb = (void *)PT_REGS_PARM1(ctx);
+	__u32 flags = EVENT_F_TERMINAL | EVENT_F_EXISTING_ONLY;
+	__u32 reason = 0;
+	struct runtime_state *rt = get_runtime();
+
+	if (!pending || tracing_stopped())
+		return 0;
+	if (tracing_cfg.napi_reason) {
+		reason = PT_REGS_PARM2(ctx);
+		flags |= EVENT_F_DROP_REASON;
+		if (reason != tracing_cfg.not_dropped_reason &&
+		    reason != tracing_cfg.consumed_reason)
+			flags |= EVENT_F_DROP;
+	}
+	handle_skb(skb, bpf_get_func_ip(ctx), flags, reason);
+	if (pending->depth < MAX_NAPI_RETIRE_DEPTH) {
+		pending->skb[pending->depth] = (__u64)skb;
+	} else {
+		if (rt)
+			__sync_fetch_and_add(&rt->retirement_overflows, 1);
+	}
+	pending->depth++;
+	if (rt)
+		__sync_fetch_and_add(&rt->retirement_active, 1);
+	return 0;
+}
+
+SEC("kretprobe/napi_retire")
+int kretprobe_napi_retire(struct pt_regs *ctx)
+{
+	__u32 key = 0;
+	struct napi_retire_stack *pending = bpf_map_lookup_elem(&napi_retiring, &key);
+
+	if (pending && pending->depth) {
+		struct runtime_state *rt = get_runtime();
+
+		pending->depth--;
+		if (rt)
+			__sync_fetch_and_sub(&rt->retirement_active, 1);
+	}
+	return 0;
 }
 
 SEC("raw_tracepoint/kfree_skb")
