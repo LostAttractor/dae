@@ -9,13 +9,14 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/daeuniverse/dae/common/persist"
 	"golang.org/x/sys/unix"
 )
 
 // The sidecar inode stays stable across atomic replacement of the JSON file.
 // Closing the returned descriptor releases the lock; never unlink the sidecar.
 func lockRuntimeStore(ctx context.Context, path string) (*os.File, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := persist.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)

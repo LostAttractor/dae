@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/daeuniverse/dae/common/persist"
 )
 
 // Authority holds a root CA and a bounded signing cache of short-lived leaves.
@@ -89,7 +92,7 @@ func Generate(certPath, keyPath, commonName string, validity time.Duration) erro
 		return err
 	}
 	for _, path := range []string{certPath, keyPath} {
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		if err := persist.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			return err
 		}
 	}
@@ -97,7 +100,9 @@ func Generate(certPath, keyPath, commonName string, validity time.Duration) erro
 		return err
 	}
 	if err := writeNewFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0644); err != nil {
-		_ = os.Remove(keyPath)
+		if !persist.Published(err) {
+			err = errors.Join(err, os.Remove(keyPath), persist.SyncDir(filepath.Dir(keyPath)))
+		}
 		return err
 	}
 	return nil
@@ -112,14 +117,17 @@ func writeNewFile(path string, data []byte, mode os.FileMode) (err error) {
 		if closeErr := f.Close(); err == nil {
 			err = closeErr
 		}
-		if err != nil {
+		if err != nil && !persist.Published(err) {
 			_ = os.Remove(path)
 		}
 	}()
 	if _, err = f.Write(data); err != nil {
 		return err
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return persist.AfterPublish(persist.SyncDir(filepath.Dir(path)))
 }
 
 // ReadCertificate reads a single self-signed root CA in PEM or DER format.

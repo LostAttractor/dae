@@ -11,6 +11,8 @@ package plugin
 // Operations are concurrency-safe. Put atomically replaces one complete value;
 // readers never see partial writes. Concurrent writes are last-commit-wins, with
 // no read/modify/write or multi-key transactions. Do not mutate value during Put.
+// A successful Put/Delete includes directory durability. A persist.PublishedError
+// reports a visible change whose durability is unconfirmed; retrying is safe.
 // Plugins own encoding, schema versions, expiry and write scheduling. The host
 // owns the backend and its lifetime; plugins do not open or close stores.
 type Storage interface {

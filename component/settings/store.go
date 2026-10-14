@@ -17,6 +17,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/daeuniverse/dae/common/persist"
 	"github.com/daeuniverse/dae/common/selector"
 )
 
@@ -35,9 +36,11 @@ type Snapshot struct {
 // Store is shared by active and candidate control planes. Opening an absent
 // file does not create its directory; only successful changes write state.
 type Store struct {
-	mu    sync.RWMutex
-	path  string
-	state Snapshot
+	mu          sync.RWMutex
+	path        string
+	state       Snapshot
+	syncDir     func(string) error
+	pendingSync bool
 }
 
 func Open(path string) (*Store, error) {
@@ -50,7 +53,7 @@ func Open(path string) (*Store, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	return &Store{path: path, state: value}, nil
+	return &Store{path: path, state: value, syncDir: persist.SyncDir}, nil
 }
 
 func readState(path string) (Snapshot, error) {
@@ -134,24 +137,26 @@ func (s *Store) Update(edit func(*Snapshot) error, apply func(previous, next Sna
 		return err
 	}
 	if reflect.DeepEqual(previous, next) {
+		if s.pendingSync {
+			return s.syncPublished()
+		}
 		return nil
 	}
 	if apply == nil {
 		return s.save(next)
 	}
 	written := false
-	persist := func() error {
-		if err := s.save(next); err != nil {
-			return err
-		}
-		written = true
-		return nil
+	persistNext := func() error {
+		err := s.save(next)
+		written = written || persist.Published(err)
+		return err
 	}
-	if err := apply(previous, next, persist); err != nil {
+	if err := apply(previous, next, persistNext); err != nil {
 		if written {
-			err = errors.Join(err, s.save(previous))
+			if restoreErr := s.save(previous); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore runtime settings: %w", restoreErr))
+			}
 		}
-		s.state = previous
 		return err
 	}
 	return nil
@@ -312,7 +317,7 @@ func (s *Store) save(next Snapshot) error {
 		return fmt.Errorf("runtime settings exceed %d bytes", maxFileSize)
 	}
 	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := persist.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(dir, ".runtime-state-*")
@@ -335,5 +340,12 @@ func (s *Store) save(next Snapshot) error {
 		return err
 	}
 	s.state = next
-	return nil
+	s.pendingSync = true
+	return s.syncPublished()
+}
+
+func (s *Store) syncPublished() error {
+	err := s.syncDir(filepath.Dir(s.path))
+	s.pendingSync = err != nil
+	return persist.AfterPublish(err)
 }

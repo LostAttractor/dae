@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/daeuniverse/dae/common/persist"
 	"github.com/daeuniverse/dae/component/plugin"
 	"golang.org/x/sys/unix"
 )
@@ -74,7 +75,7 @@ func (s *fileStorage) open(key string, create bool) (*os.Root, error) {
 		return nil, fs.ErrInvalid
 	}
 	if create {
-		if err := os.MkdirAll(s.base, 0700); err != nil {
+		if err := persist.MkdirAll(s.base, 0700); err != nil {
 			return nil, err
 		}
 	}
@@ -97,10 +98,9 @@ func openStorageDir(parent *os.Root, name string, create bool) (*os.Root, error)
 	if create {
 		if err := parent.Mkdir(name, 0700); err != nil && !errors.Is(err, fs.ErrExist) {
 			return nil, err
-		} else if err == nil {
-			if err := syncStorageDir(parent); err != nil {
-				return nil, err
-			}
+		}
+		if err := syncStorageDir(parent); err != nil {
+			return nil, err
 		}
 	}
 	info, err := parent.Lstat(name)
@@ -194,7 +194,7 @@ func (s *fileStorage) Put(key string, value []byte) error {
 	if err := root.Rename(tmp, key); err != nil {
 		return err
 	}
-	return syncStorageDir(root)
+	return persist.AfterPublish(syncStorageDir(root))
 }
 
 func (s *fileStorage) Delete(key string) error {
@@ -211,7 +211,7 @@ func (s *fileStorage) Delete(key string) error {
 	}
 	// Also sync a missing key: this may retry a successful removal whose prior
 	// directory sync failed, so absence alone does not confirm durability.
-	return syncStorageDir(root)
+	return persist.AfterPublish(syncStorageDir(root))
 }
 
 func syncStorageDir(root *os.Root) error {

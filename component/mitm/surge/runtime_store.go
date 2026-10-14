@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sync"
 	"weak"
+
+	"github.com/daeuniverse/dae/common/persist"
 )
 
 type runtimeStore struct {
@@ -197,6 +199,10 @@ func (s *runtimeStore) write(ctx context.Context, key, value string, remove bool
 			return false
 		}
 		s.info = info
+		s.values = next
+		if err := persist.SyncDir(filepath.Dir(path)); err != nil {
+			return false
+		}
 	}
 	s.values = next
 	return true

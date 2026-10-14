@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/daeuniverse/dae/common/persist"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -36,7 +37,7 @@ func (g *DomainRegistry) Save(path string) error {
 		entries[name] = deadlines
 	}
 	g.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := persist.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".domain-registry-*")
@@ -58,12 +59,8 @@ func (g *DomainRegistry) Save(path string) error {
 	if err = os.Rename(f.Name(), path); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	if err := errors.Join(dir.Sync(), dir.Close()); err != nil {
-		return err
+	if err := persist.SyncDir(filepath.Dir(path)); err != nil {
+		return persist.AfterPublish(err)
 	}
 	g.mu.Lock()
 	g.savedGeneration = generation

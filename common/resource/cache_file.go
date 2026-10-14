@@ -8,12 +8,13 @@ import (
 	"errors"
 	"os"
 
+	"github.com/daeuniverse/dae/common/persist"
 	"golang.org/x/sys/unix"
 )
 
 func openCacheDir(path string, create bool) (*os.File, error) {
 	if create {
-		if err := os.MkdirAll(path, 0700); err != nil {
+		if err := persist.MkdirAll(path, 0700); err != nil {
 			return nil, err
 		}
 	}
@@ -75,5 +76,5 @@ func writeCacheFile(ctx context.Context, dir *os.File, name string, data []byte)
 	if err := unix.Renameat(int(dir.Fd()), temporary, int(dir.Fd()), name); err != nil {
 		return err
 	}
-	return dir.Sync()
+	return persist.AfterPublish(dir.Sync())
 }
