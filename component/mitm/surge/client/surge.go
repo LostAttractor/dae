@@ -8,13 +8,12 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/daeuniverse/dae/api"
 	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
 	"github.com/daeuniverse/dae/pkg/clitable"
+	"github.com/daeuniverse/dae/pkg/terminaltext"
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/jedib0t/go-pretty/v6/text"
 )
 
 func RenderSurge(status surgeapi.SurgeStatus, verbose bool) string {
@@ -51,11 +50,12 @@ func RenderSurge(status surgeapi.SurgeStatus, verbose bool) string {
 		if module.Instance != "" {
 			identity = module.Instance + "/" + identity
 		}
+		identity = terminaltext.Line(identity)
 		if module.Error != "" {
-			errors = append(errors, identity+": "+module.Error)
+			errors = append(errors, identity+": "+terminaltext.Line(module.Error))
 		}
 		for _, warning := range module.Warnings {
-			warnings = append(warnings, identity+": "+warning)
+			warnings = append(warnings, identity+": "+terminaltext.Line(warning))
 		}
 	}
 	sections := []string{"Surge modules:\n" + renderLogTable(table.Row{
@@ -136,12 +136,7 @@ func renderSurgeNotifications(notifications []surgeapi.SurgeNotification, verbos
 // Keep notification line breaks while preventing script text from controlling
 // the terminal. JSON reports retain the original text.
 func notificationDisplayText(value string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' {
-			return -1
-		}
-		return r
-	}, text.StripEscape(value))
+	return strings.ReplaceAll(terminaltext.Plain(value), "\t", " ")
 }
 
 // Surge combines the plugin reports carried by a status snapshot.
@@ -182,5 +177,5 @@ func renderLogTable(header table.Row, rows []table.Row) string {
 	writer := clitable.New()
 	writer.AppendHeader(header)
 	writer.AppendRows(rows)
-	return text.StripEscape(writer.Render())
+	return terminaltext.Plain(writer.Render())
 }

@@ -8,12 +8,13 @@ import (
 	"time"
 
 	surgeapi "github.com/daeuniverse/dae/component/mitm/surge/api"
+	"github.com/daeuniverse/dae/pkg/terminaltext"
 )
 
 func renderSurgeRuntimes(runtimes []surgeapi.SurgeRuntimeStatus) string {
 	var lines []string
 	for _, runtime := range runtimes {
-		lines = append(lines, fmt.Sprintf("Surge runtime %s: %s", runtime.Instance, runtime.Backend))
+		lines = append(lines, fmt.Sprintf("Surge runtime %s: %s", terminaltext.Line(runtime.Instance), terminaltext.Line(runtime.Backend)))
 		n := runtime.NodeJS
 		if n == nil {
 			continue

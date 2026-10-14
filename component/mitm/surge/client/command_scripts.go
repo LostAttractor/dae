@@ -10,6 +10,7 @@ import (
 
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/client/cli"
+	"github.com/daeuniverse/dae/pkg/terminaltext"
 	"github.com/spf13/cobra"
 )
 
@@ -73,7 +74,7 @@ Use list to discover script names and status to inspect completion.
 			if raw {
 				return json.MarshalWrite(cmd.OutOrStdout(), response)
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Accepted %s %s/%s/%s (run %d).\n", response.Status.Type, response.Instance, response.Module, response.Status.Name, response.Run)
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Accepted %s %s/%s/%s (run %d).\n", terminaltext.Line(response.Status.Type), terminaltext.Line(response.Instance), terminaltext.Line(response.Module), terminaltext.Line(response.Status.Name), response.Run)
 			return err
 		},
 	}

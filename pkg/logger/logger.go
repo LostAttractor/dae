@@ -12,6 +12,7 @@ import (
 	"slices"
 	"unicode/utf8"
 
+	"github.com/daeuniverse/dae/pkg/terminaltext"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -69,9 +70,14 @@ func (f *textFormatter) Format(entry *log.Entry) ([]byte, error) {
 	if entry.Buffer != nil {
 		start = entry.Buffer.Len()
 	}
-	// logrus trims a newline from the message in color mode; keep that local to
-	// formatting rather than mutating the caller's entry.
+	// Sanitize only text output, before logrus adds its own terminal colors.
+	// Keep the original message and typed fields intact for other log consumers.
 	local := *entry
+	local.Message = terminaltext.Plain(entry.Message)
+	local.Data = make(log.Fields, len(entry.Data))
+	for key, value := range entry.Data {
+		local.Data[terminaltext.Line(key)] = terminaltext.Plain(fmt.Sprint(value))
+	}
 	rendered, err := f.base.Format(&local)
 	if err != nil || !bytes.HasPrefix(rendered[start:], []byte("\x1b[")) {
 		return rendered, err
@@ -80,7 +86,7 @@ func (f *textFormatter) Format(entry *log.Entry) ([]byte, error) {
 	// logrus v1.9 formats colored messages with "%-44s ". It offers no switch
 	// for this padding. Locate the message from the fixed header configured
 	// above, never by searching/trimming user text (which may contain spaces,
-	// ANSI escapes, or text identical to a field). Field quoting, ordering,
+	// line breaks, or text identical to a field). Field quoting, ordering,
 	// terminal detection and colors remain the responsibility of logrus.
 	headerEnd := start + bytes.Index(rendered[start:], []byte("\x1b[0m")) + len("\x1b[0m")
 	if !f.base.DisableTimestamp {

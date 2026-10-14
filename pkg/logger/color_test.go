@@ -27,7 +27,8 @@ func TestColoredMessageHasNoFixedPadding(t *testing.T) {
 				if timestamp {
 					want += "[2026-09-12 01:02:03]"
 				}
-				want += " " + strings.TrimSuffix(message, "\n")
+				plain := strings.ReplaceAll(strings.ReplaceAll(message, "\x1b[36m", ""), "\x1b[0m", "")
+				want += " " + strings.TrimSuffix(plain, "\n")
 				if fields {
 					want += " \x1b[36mnetwork\x1b[0m=tcp4 \x1b[36mdetail\x1b[0m=keep  two spaces"
 				}

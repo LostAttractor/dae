@@ -97,3 +97,25 @@ func TestSetLoggerPreservesSpecialCharacters(t *testing.T) {
 		t.Fatalf("rendered log = %q, want %q", rendered, want)
 	}
 }
+
+func TestTextFormatterRemovesExternalTerminalControls(t *testing.T) {
+	const payload = "remote\x1b]52;c;YWJj\a\r\u009b2J"
+	for _, color := range []bool{false, true} {
+		f := NewTextFormatter(true).(*textFormatter)
+		f.base.ForceColors = color
+		entry := &log.Entry{Logger: log.New(), Level: log.InfoLevel, Message: payload,
+			Data: log.Fields{"module": payload, "error": errors.New(payload)}}
+		got, err := f.Format(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Only the formatter's own coloring may survive in TTY output.
+		plain := strings.ReplaceAll(strings.ReplaceAll(string(got), "\x1b[36m", ""), "\x1b[0m", "")
+		if strings.ContainsAny(plain, "\x1b\a\r\u009b") || strings.Count(plain, "remote") != 3 {
+			t.Fatalf("unsafe or missing log text: %q", got)
+		}
+		if entry.Message != payload || entry.Data["module"] != payload {
+			t.Fatal("text formatter mutated structured log data")
+		}
+	}
+}
