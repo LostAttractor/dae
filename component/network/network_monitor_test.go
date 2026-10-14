@@ -49,6 +49,49 @@ func testLookupRule(table int) netlink.Rule {
 	return *rule
 }
 
+func TestIPv6WithoutRPDBRetainsOnlyMainDefault(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"unsupported", fmt.Errorf("dump rules: %w", unix.EAFNOSUPPORT), 1},
+		{"empty supported", nil, 0},
+		{"dump failure", unix.EPERM, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rules, err := normalizeIPv6Rules(nil, test.err)
+			if errors.Is(test.err, unix.EPERM) {
+				if !errors.Is(err, unix.EPERM) {
+					t.Fatalf("lost rule dump failure: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot := buildHostNetworkSnapshot(hostNetworkData{
+				links: []netlink.Link{
+					&netlink.Dummy{Index: 2, Name: "wan0", Flags: net.FlagUp, RawFlags: unix.IFF_LOWER_UP, OperState: netlink.OperUp},
+					&netlink.Dummy{Index: 3, Name: "unused0"},
+				},
+				routes6: []netlink.Route{
+					{LinkIndex: 2, Table: unix.RT_TABLE_MAIN, Type: unix.RTN_UNICAST},
+					{LinkIndex: 3, Table: 100, Type: unix.RTN_UNICAST},
+				},
+				rules6: rules,
+				addrs6: map[int][]netlink.Addr{2: {{IPNet: &net.IPNet{IP: net.ParseIP("2001:db8::2"), Mask: net.CIDRMask(64, 128)}}}},
+			})
+			if len(snapshot.Interfaces) != test.want || snapshot.Ready() != (test.want == 1) {
+				t.Fatalf("IPv6 discovery: %+v", snapshot)
+			}
+			if test.want == 1 && (snapshot.Interfaces[0].Name != "wan0" || !snapshot.Interfaces[0].IPv6Default) {
+				t.Fatalf("incorrect default interface: %+v", snapshot.Interfaces)
+			}
+		})
+	}
+}
+
 func TestBuildHostNetworkSnapshotTracksWlanReadiness(t *testing.T) {
 	link := &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{
 		Index:     2,

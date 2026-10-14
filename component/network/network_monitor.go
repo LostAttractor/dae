@@ -515,11 +515,9 @@ func currentHostNetworkSnapshot() (HostNetworkSnapshot, error) {
 	// case the kernel has no IPv6 RPDB and RTM_GETRULE returns EAFNOSUPPORT;
 	// IPv4 discovery must continue independently.
 	rules6, err := netlink.RuleList(netlink.FAMILY_V6)
+	rules6, err = normalizeIPv6Rules(rules6, err)
 	if err != nil {
-		if !errors.Is(err, unix.EAFNOSUPPORT) {
-			return HostNetworkSnapshot{}, err
-		}
-		rules6 = nil
+		return HostNetworkSnapshot{}, err
 	}
 	data := hostNetworkData{
 		links:   links,
@@ -540,6 +538,17 @@ func currentHostNetworkSnapshot() (HostNetworkSnapshot, error) {
 		}
 	}
 	return buildHostNetworkSnapshot(data), nil
+}
+
+func normalizeIPv6Rules(rules []netlink.Rule, err error) ([]netlink.Rule, error) {
+	if errors.Is(err, unix.EAFNOSUPPORT) {
+		// Without an RPDB, IPv6 looks up the main table directly. An empty
+		// supported RPDB is different: it must not make that table reachable.
+		rule := netlink.NewRule()
+		rule.Family, rule.Table = netlink.FAMILY_V6, unix.RT_TABLE_MAIN
+		return []netlink.Rule{*rule}, nil
+	}
+	return rules, err
 }
 
 func buildHostNetworkSnapshot(data hostNetworkData) HostNetworkSnapshot {

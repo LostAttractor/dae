@@ -9,7 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
+	"path"
 	"sync"
 	"sync/atomic"
 
@@ -570,11 +572,16 @@ func (c *controlPlaneCore) setManualWan(link netlink.Link, pattern string, prese
 		binding = &wanBinding{manualPatterns: make(map[string]struct{})}
 		c.wanBindings[index] = binding
 	}
-	if binding.ifname != "" && binding.ifname != link.Attrs().Name {
-		clear(binding.manualPatterns)
-	}
-	binding.ifname = link.Attrs().Name
+	binding.setName(link.Attrs().Name)
 	binding.manualPatterns[pattern] = struct{}{}
+}
+
+func (b *wanBinding) setName(name string) {
+	b.ifname = name
+	maps.DeleteFunc(b.manualPatterns, func(pattern string, _ struct{}) bool {
+		matched, _ := path.Match(pattern, name)
+		return !matched
+	})
 }
 
 func autoWanTargets(snapshot network.HostNetworkSnapshot) map[int]string {
@@ -641,8 +648,16 @@ func (c *controlPlaneCore) reconcileWanWith(
 			autoReady = false
 			continue
 		}
-		// TC filters are attached by ifindex and remain valid across a rename.
-		binding.ifname = link.Attrs().Name
+		// Reconciliation can observe a rename before interface callbacks do.
+		// Keep TCX only for owners that still match the authoritative name.
+		binding.setName(link.Attrs().Name)
+		required = len(binding.manualPatterns) > 0 || binding.automatic
+		if snapshot != nil {
+			required = len(binding.manualPatterns) > 0 || wantedAutomatically
+		}
+		if !required {
+			continue
+		}
 		if prepare != nil {
 			if err := prepare(binding.ifname); err != nil {
 				log.WithError(err).WithField("interface", binding.ifname).Error("Could not prepare WAN interface")

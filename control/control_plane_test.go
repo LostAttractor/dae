@@ -294,6 +294,40 @@ func TestManualWanRenamePreservesAttachment(t *testing.T) {
 	}
 }
 
+func TestWanRenameBeforeRemovalCallback(t *testing.T) {
+	for _, preserve := range []bool{false, true} {
+		t.Run(fmt.Sprint(preserve), func(t *testing.T) {
+			owners := map[string]struct{}{"eth*": {}}
+			if preserve {
+				owners["*0"] = struct{}{}
+			}
+			var closes, prepares int
+			core := &controlPlaneCore{
+				closed:      t.Context(),
+				wanBindings: map[int]*wanBinding{2: {ifname: "eth0", manualPatterns: owners}},
+				kernelLinks: &kernelLinks{hostTCXLinks: []hostTCXLink{
+					{linkIndex: 2, role: hostTCXWanIngress, close: func() error { closes++; return nil }},
+					{linkIndex: 2, role: hostTCXWanEgress, close: func() error { closes++; return nil }},
+				}},
+			}
+			lookup := func(int) (netlink.Link, error) { return &netlink.Dummy{Index: 2, Name: "lan0"}, nil }
+			prepare := func(string) error { prepares++; return nil }
+			if core.reconcileWanWith(nil, prepare, lookup) {
+				t.Fatal("rename unexpectedly requested a retry")
+			}
+			core.removeWanLink(&netlink.Dummy{Index: 2, Name: "eth0"}, "eth*")
+			core.reconcileWanWith(nil, prepare, lookup)
+			if preserve {
+				if closes != 0 || len(core.wanBindings[2].manualPatterns) != 1 {
+					t.Fatalf("lost matching owner: closes=%d binding=%+v", closes, core.wanBindings[2])
+				}
+			} else if closes != 2 || prepares != 0 || len(core.wanBindings) != 0 {
+				t.Fatalf("kept unmatched interface: closes=%d prepares=%d bindings=%v", closes, prepares, core.wanBindings)
+			}
+		})
+	}
+}
+
 func TestRemoveWanOwnerPreservesTCXForOtherOwners(t *testing.T) {
 	closed := t.Context()
 	const index = 2
