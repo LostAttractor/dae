@@ -59,7 +59,7 @@ CI checks these separate scopes:
 | Workflow | Execution scope |
 | --- | --- |
 | Go Test | Native Linux x86_64: `make test` (`go test ./...`) for both QuickJS and Node, standalone API client tests, the API server without cgo, and backend dependency isolation. |
-| BPF Test | Linux x86_64, Linux 7.2 VM: generated BPF unit tests with Clang 15–23, including BIG TCP and live bridge metadata. This is a compiler matrix, not a target-CPU or kernel-version matrix. |
+| BPF Test | Clang 15–23 test executables are built on Ubuntu 24.04 and run natively on one Ubuntu 26.04 x86_64 runner, including BIG TCP and live bridge metadata. This is a compiler matrix, not a target-CPU or kernel-version matrix. |
 | eBPF Audit | Clang 23 objects are loaded and inspected in a Linux 6.18 VM; verifier and dump artifacts are retained. |
 | Kernel Test | Linux x86_64, Linux 6.18 VM: startup/verifier, netkit/veth and TCX integration, splice, and LAN/WAN IPv4/IPv6 TCP/UDP proxy paths. |
 | Musl Static Test | Native x86_64: QuickJS AddressSanitizer tests; musl-linked daemon and full Surge/QuickJS package tests execute in Alpine without host shared libraries. |
@@ -79,8 +79,10 @@ Clang patch release or every possible `CC` implementation.
 `make ebpf-test-build` generates BPF objects and builds the static test executable
 at `build/ebpf-test/kernel.test` without requiring root. `sudo make ebpf-test`
 builds and runs it on the local kernel. The full suite needs an SKB test-run
-interface that accepts BIG TCP packets and a configurable linear data boundary;
-CI uses a pinned Linux 7.2 VM. C fixtures load only their programs and dependencies
+interface that accepts BIG TCP packets and a configurable linear data boundary.
+CI runs every compiler's executable sequentially on the Ubuntu 26.04 runner's
+kernel, reports each compiler separately, and continues after a test failure
+before failing the job. C fixtures load only their programs and dependencies
 with fresh maps for each case.
 
 ### Distribution pipeline

@@ -33,9 +33,11 @@ on:
 permissions: read-all
 
 jobs:
-  bpf_tests:
-    name: BPF Unit Test (Clang ${{ matrix.llvm }})
+  build:
+    name: Build BPF tests (Clang ${{ matrix.llvm }})
     runs-on: ubuntu-24.04
+    outputs:
+      artifacts: ${{ strategy.job-total }}
     strategy:
       fail-fast: false
       matrix:
@@ -62,18 +64,58 @@ jobs:
           version: ${{ matrix.llvm }}
 
       - name: Build BPF tests
-        run: make ebpf-test-build
+        run: |
+          make ebpf-test-build
+          mv build/ebpf-test/kernel.test build/ebpf-test/bpf-tests-clang-${{ matrix.llvm }}
 
-      - name: Run BPF tests on a supported kernel
-        uses: cilium/little-vm-helper@v0.0.28
+      - name: Save BPF tests
+        uses: actions/upload-artifact@v7
         with:
-          test-name: dae-bpf-tests-clang-${{ matrix.llvm }}
-          image-version: '7.2-20261012.013942'
-          host-mount: ./
-          install-dependencies: 'true'
-          cmd: |
-            mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
-            mountpoint -q /sys/kernel/tracing || mount -t tracefs tracefs /sys/kernel/tracing
-            modprobe br_netfilter
-            cd /host
-            ./build/ebpf-test/kernel.test -test.v -test.timeout=10m
+          name: bpf-tests-clang-${{ matrix.llvm }}
+          path: build/ebpf-test/bpf-tests-clang-${{ matrix.llvm }}
+          archive: false
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  test:
+    name: BPF Unit Test
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - name: Download BPF tests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: bpf-tests-clang-*
+          merge-multiple: true
+          path: build/ebpf-test/
+
+      - name: Prepare kernel tests
+        run: |
+          uname -r
+          mountpoint -q /sys/fs/bpf || sudo mount -t bpf bpf /sys/fs/bpf
+          mountpoint -q /sys/kernel/tracing || sudo mount -t tracefs tracefs /sys/kernel/tracing
+          sudo modprobe br_netfilter
+
+      - name: Run every compiler's BPF tests
+        env:
+          EXPECTED_ARTIFACTS: ${{ needs.build.outputs.artifacts }}
+        run: |
+          shopt -s nullglob
+          tests=(build/ebpf-test/bpf-tests-clang-*)
+          if (( EXPECTED_ARTIFACTS < 1 || ${#tests[@]} != EXPECTED_ARTIFACTS )); then
+            echo "::error::Expected $EXPECTED_ARTIFACTS test binaries, found ${#tests[@]}"
+            exit 1
+          fi
+          status=0
+          for executable in "${tests[@]}"; do
+            echo "::group::${executable##*/}"
+            chmod +x "$executable"
+            if ! sudo "$executable" -test.v -test.timeout=10m; then
+              echo "::error::${executable##*/} failed"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
