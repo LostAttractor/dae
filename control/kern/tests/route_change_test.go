@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -115,7 +116,7 @@ func TestDeviceRouteEpochs(t *testing.T) {
 		epoch(1, 0)
 		run(ack, redirect)
 		run(rst, drop)
-		other := append([]byte(nil), ack...)
+		other := slices.Clone(ack)
 		other[11]++
 		run(other, next)
 		// API TCP traffic survives even with an old/missing tuple.
@@ -125,9 +126,32 @@ func TestDeviceRouteEpochs(t *testing.T) {
 			t.Fatal(err)
 		}
 		run(ack, next)
+		if err := obj.TcpFlowMap.Update(key, bpftestTcpFlowState{RouteEpoch: 0}, ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+		run(ack, next) // an old native flow is also exempt
+		epoch(1, 1)
+		run(ack, next)
+		run(syn, next) // both exemption lookups must survive an in-progress update
+		run(ack, next)
+		// Exemptions apply only to this TCP destination, including during updates.
+		transportOffset := 14 + 20
+		if ipv6 {
+			transportOffset = 14 + 40
+		}
+		otherPort := slices.Clone(ack)
+		otherPort[transportOffset+3]++
+		run(otherPort, drop)
+		otherIP := slices.Clone(ack)
+		otherIP[transportOffset-1]++
+		run(otherIP, drop)
+		udp, _ := devicePacket(ipv6, unix.IPPROTO_UDP, 0)
+		run(udp, drop)
+		epoch(1, 0)
 		if err := obj.RouteExemptMap.Delete(exempt); err != nil {
 			t.Fatal(err)
 		}
+		run(ack, redirect) // removing the exemption restores epoch enforcement
 		run(syn, next)
 		run(ack, next)
 		var saved bpftestTcpFlowState

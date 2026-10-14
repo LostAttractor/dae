@@ -174,6 +174,12 @@ struct {
 struct ip_port {
 	union ip6 ip;
 	__be16 port;
+	/* ip6's 8-byte alignment makes this a 24-byte hash key. Lookups compare
+	 * every byte, but implicit C padding is not guaranteed to be initialized
+	 * and can differ from userspace's zero-filled keys. Keep the tail explicit
+	 * so aggregate initializers that set only ip and port also zero these bytes.
+	 */
+	__u8 pad[6];
 };
 
 struct tuples_key {
