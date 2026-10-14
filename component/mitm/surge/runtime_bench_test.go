@@ -55,6 +55,38 @@ func BenchmarkRuntimeBackend(b *testing.B) {
 	})
 }
 
+// Measures the first invocation with and without a prewarmed worker. Setup and
+// teardown, including prewarming, are outside the timed interval.
+func BenchmarkRuntimeFirstInvocation(b *testing.B) {
+	for _, warmed := range []bool{false, true} {
+		b.Run(fmt.Sprintf("%s/warmed=%t", compiledJSRuntime, warmed), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				b.StopTimer()
+				r, err := NewRuntime(b.Context(), RuntimeOptions{NodeWorkers: 1})
+				if err != nil {
+					b.Fatal(err)
+				}
+				if warmed {
+					if err := r.Warm(b.Context()); err != nil {
+						r.Close()
+						b.Fatal(err)
+					}
+				}
+				b.StartTimer()
+				result, err := r.Run(b.Context(), `$done()`, Invocation{})
+				b.StopTimer()
+				result.Close()
+				r.Close()
+				if err != nil {
+					b.Fatal(err)
+				}
+				b.StartTimer()
+			}
+		})
+	}
+}
+
 func BenchmarkRuntimeResponseBody(b *testing.B) {
 	for _, binaryMode := range []bool{false, true} {
 		for _, size := range []int{16 << 10, 256 << 10} {

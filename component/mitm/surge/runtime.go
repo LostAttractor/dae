@@ -40,8 +40,8 @@ type Runtime struct {
 	backend       *runtimeBackend
 }
 
-// NewRuntime uses ctx for preparation, including the external runtime probe.
-// Invocation lifetimes are owned by the contexts passed to Run.
+// NewRuntime prepares storage and backend settings without starting workers.
+// Warm starts a reusable worker; Run owns each invocation's context and deadline.
 func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -50,7 +50,10 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 		opts.Timeout = DefaultScriptTimeout
 	}
 	if opts.MemoryLimit <= 0 {
-		opts.MemoryLimit = 128 << 20
+		opts.MemoryLimit = defaultMemoryLimit
+	}
+	if opts.NodeWorkers == 0 {
+		opts.NodeWorkers = defaultMaxConcurrentScripts
 	}
 	if opts.MemoryLimit < 1<<20 {
 		return nil, errors.New("script memory limit must be at least 1 MiB")
@@ -68,6 +71,9 @@ func NewRuntime(ctx context.Context, opts RuntimeOptions) (*Runtime, error) {
 	}
 	return &Runtime{opts: opts, data: data, environment: scriptEnvironment(), backend: backend}, nil
 }
+
+// Warm initializes one reusable worker without executing user scripts.
+func (r *Runtime) Warm(ctx context.Context) error { return r.backend.Warm(ctx) }
 
 func (r *Runtime) Close() error {
 	if r != nil && r.backend != nil {

@@ -24,6 +24,7 @@ func newRuntimeBackend(ctx context.Context, opts RuntimeOptions) (*runtimeBacken
 }
 
 func (b *runtimeBackend) newVM(ctx context.Context) (scriptVM, error) { return b.pool.Acquire(ctx) }
+func (b *runtimeBackend) Warm(ctx context.Context) error              { return b.pool.Warm(ctx) }
 func (b *runtimeBackend) Close()                                      { b.pool.Close() }
 
 func (b *runtimeBackend) status() surgeapi.SurgeRuntimeStatus {

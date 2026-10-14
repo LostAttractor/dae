@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// Stats combines live pool counts with cached process memory samples. Counter
-// values exclude startup probes and persist for the lifetime of the pool.
+// Stats combines live pool counts with cached process memory samples. Counters
+// persist for this pool's lifetime; preflight uses a separate disposable pool.
 type Stats struct {
 	Active, Idle, Limit            int
 	Started, Reused, StartFailures uint64
@@ -52,7 +52,7 @@ func (p *Pool) Stats() Stats {
 	return stats
 }
 
-// Maintenance starts with the first application lease, not the startup probe.
+// Maintenance starts with the first worker, including the prewarmed one.
 // Close joins it after terminating children and releasing the pool lock.
 func (p *Pool) monitor() {
 	defer close(p.monitorDone)

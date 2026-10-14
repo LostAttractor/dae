@@ -100,11 +100,14 @@ pressure count as `capacity`. Replacing the same key is not an eviction.
 | `surge_nodejs_memory_sample_timestamp_seconds` | Gauge | Oldest included memory sample, or 0 when none |
 
 Node.js metrics exist only for the Node.js build. One active worker belongs to
-one invocation, including while it waits for host HTTP or timers. Workers start
-on demand; excess workers idle for 60 seconds are reclaimed by maintenance every
-5 seconds, keeping the most recently returned idle worker warm. Active leases
-are never reclaimed by idle maintenance. Startup probes and instance shutdown
-do not count as application starts or retirements.
+one invocation, including while it waits for host HTTP or timers. Instances with
+scripts prewarm one worker during preparation, counted as an application start;
+additional workers start on demand. Excess workers idle for 60 seconds are
+reclaimed by maintenance every 5 seconds, keeping the most recently returned
+idle worker warm. Active leases are never reclaimed by idle maintenance.
+Preflight probes use disposable pools and do not count as application starts or
+retirements. Instance shutdown does not count as a retirement. Instances without
+scripts create no runtime workers.
 
 Memory is sampled from Linux `smaps_rollup` in the background every 5 seconds;
 scrapes and status queries read cached values. Check sampled-worker coverage

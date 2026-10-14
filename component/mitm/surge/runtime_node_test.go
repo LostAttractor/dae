@@ -35,7 +35,7 @@ func TestNodeRuntimePreparationCancellation(t *testing.T) {
 	engine, err := prepare(ctx, Config{
 		NodePath: path, MemoryLimit: 64 << 20, MaxBodySize: 1 << 20,
 		MaxConcurrentScripts: 1, ScriptTimeout: DefaultScriptTimeout,
-	}, plugin.Services{Prepared: []*Module{}, BodyMemory: testBodyMemory}, "test")
+	}, plugin.Services{Prepared: []*Module{{TaskScripts: []Script{{Name: "manual", Type: "generic"}}}}, BodyMemory: testBodyMemory}, "test")
 	if engine != nil {
 		_ = engine.Close()
 	}

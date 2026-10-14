@@ -34,9 +34,15 @@ type Config struct {
 	HTTPPolicies         []string
 }
 
+const (
+	defaultMemoryLimit          = 128 << 20
+	defaultMaxBodySize          = 32 << 20
+	defaultMaxConcurrentScripts = 16
+)
+
 // ParseConfig interprets only the settings owned by a Surge instance.
 func ParseConfig(section *config_parser.Section) (Config, error) {
-	c := Config{Store: true, NodePath: "node", ScriptTimeout: 5 * time.Second, MemoryLimit: 128 << 20, MaxBodySize: 32 << 20, MaxConcurrentScripts: 16}
+	c := Config{Store: true, NodePath: "node", ScriptTimeout: DefaultScriptTimeout, MemoryLimit: defaultMemoryLimit, MaxBodySize: defaultMaxBodySize, MaxConcurrentScripts: defaultMaxConcurrentScripts}
 	if section == nil {
 		return c, fmt.Errorf("surge configuration is required")
 	}

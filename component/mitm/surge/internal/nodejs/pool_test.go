@@ -14,20 +14,49 @@ import (
 	"time"
 )
 
-func TestPoolProbeCancellation(t *testing.T) {
+func TestPoolWarmCancellation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	pool, err := NewPool(ctx, path, 64<<20, 1, "")
-	if pool != nil {
-		pool.Close()
-		t.Fatal("accepted an unresponsive runtime")
+	pool, err := NewPool(t.Context(), path, 64<<20, 1, "")
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(pool.Close)
+	err = pool.Warm(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("probe ignored cancellation: %v", err)
+		t.Fatalf("warmup ignored cancellation: %v", err)
+	}
+	if stats := pool.Stats(); stats.Active != 0 || stats.Idle != 0 {
+		t.Fatalf("canceled warmup retained a worker: %+v", stats)
+	}
+}
+
+func TestPoolPrewarmsWithoutRunningBootstrap(t *testing.T) {
+	p, err := NewPool(t.Context(), "", 64<<20, 3, `throw Error("bootstrap must only be compiled during warmup")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	if stats := p.Stats(); stats.Started != 0 || stats.Idle != 0 || p.monitorDone != nil {
+		t.Fatalf("preparation started a worker: %+v", stats)
+	}
+	if err := p.Warm(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if stats := p.Stats(); stats.Started != 1 || stats.Idle != 1 || stats.Active != 0 || stats.Reused != 0 {
+		t.Fatalf("warmup did not retain one worker: %+v", stats)
+	}
+	vm, err := p.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vm.Close()
+	if stats := p.Stats(); stats.Started != 1 || stats.Reused != 1 {
+		t.Fatalf("first invocation did not reuse the warm worker: %+v", stats)
 	}
 }
 

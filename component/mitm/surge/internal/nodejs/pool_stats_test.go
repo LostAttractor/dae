@@ -36,7 +36,7 @@ func TestPoolReapsOnlyExcessIdleWorkers(t *testing.T) {
 	t.Cleanup(p.Close)
 	p.idleTimeout, p.sampleInterval = 30*time.Millisecond, 5*time.Millisecond
 	if stats := p.Stats(); stats.Started != 0 || stats.Active != 0 || stats.Idle != 0 || p.monitorDone != nil {
-		t.Fatalf("probe retained application state: %+v", stats)
+		t.Fatalf("preparation started application workers: %+v", stats)
 	}
 	first, second, active := acquire(t, p), acquire(t, p), acquire(t, p)
 	retired, warm := first.worker, second.worker

@@ -31,7 +31,13 @@ func TestRuntimeMetricsAndStatus(t *testing.T) {
 		return
 	}
 	if n := e.Status().Runtimes[0].NodeJS; n.Started != 0 || n.Idle != 0 || n.Active != 0 {
-		t.Fatalf("startup probe included in application counters: %+v", n)
+		t.Fatalf("preparation started application workers: %+v", n)
+	}
+	if err := r.Warm(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.Status().Runtimes[0].NodeJS; n.Started != 1 || n.Idle != 1 || n.Reused != 0 {
+		t.Fatalf("prewarmed worker missing from application counters: %+v", n)
 	}
 	for range 2 {
 		if _, err := r.Run(t.Context(), `$done({})`, Invocation{}); err != nil {
@@ -39,7 +45,7 @@ func TestRuntimeMetricsAndStatus(t *testing.T) {
 		}
 	}
 	n := e.Status().Runtimes[0].NodeJS
-	if n.Started != 1 || n.Reused != 1 || n.Active != 0 || n.Idle != 1 || n.Limit != 2 {
+	if n.Started != 1 || n.Reused != 2 || n.Active != 0 || n.Idle != 1 || n.Limit != 2 {
 		t.Fatalf("reuse status = %+v", n)
 	}
 	for name, want := range map[string]float64{

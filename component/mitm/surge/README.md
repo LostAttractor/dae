@@ -47,13 +47,16 @@ for every Surge instance in a binary. Node.js 22.13+ is an external runtime
 dependency only for the Node build.
 Runtime preparation observes the startup/reload context, while each invocation
 uses its own context and deadline.
-The Node.js process pool creates a fresh context
-per invocation. Cancellation kills the leased process; failed workers are
-discarded. `Engine.Close` releases the pool after host draining or setup rollback.
+Instances with scripts create a runtime and prewarm one Node worker during
+preparation, without executing user scripts; failure rejects the candidate before
+publication. Instances containing only rewrites or routing rules need no runtime. The Node.js process
+pool creates a fresh context per invocation. Cancellation kills the leased
+process; failed workers are discarded. `Engine.Close` releases the pool after
+host draining or setup rollback.
 Excess workers idle for 60 seconds are reaped on a 5-second maintenance interval,
 keeping the most recently returned idle worker warm. Active leases are retained
-even while waiting for host I/O. Maintenance starts on the first application
-lease and joins on close; startup probes leave no maintenance worker behind.
+even while waiting for host I/O. Maintenance starts with the first worker,
+including the prewarmed one, and joins on close. Preflight uses a disposable pool.
 The Node worker receives a minimal environment and runs in permission mode;
 `node:vm` is not a security boundary for hostile scripts. Node's memory limit
 applies to each worker's V8 old generation, not ArrayBuffer storage or RSS.

@@ -25,21 +25,20 @@ type Pool struct {
 	closed          bool
 	idle            []*worker
 	workers         map[*worker]struct{}
-	ready           bool
 	monitorDone     chan struct{}
 	idleTimeout     time.Duration
 	sampleInterval  time.Duration
 	stats           Stats
 }
 
-// NewPool probes the executable without retaining a process during preparation.
-// It uses no shell, npm dependencies, temporary scripts, or inherited NODE_OPTIONS.
+// NewPool validates settings and resolves the executable without starting any
+// processes. Warm initializes one reusable worker during preparation or preflight.
 func NewPool(ctx context.Context, path string, memoryLimit int64, size int, bootstrap string) (*Pool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if memoryLimit < 16<<20 || memoryLimit > 1<<30 {
 		return nil, errors.New("nodejs: memory limit must be between 16 MiB and 1 GiB")
-	}
-	if size == 0 {
-		size = 16
 	}
 	if size < 1 || size > 256 {
 		return nil, errors.New("nodejs: worker count must be between 1 and 256")
@@ -49,19 +48,24 @@ func NewPool(ctx context.Context, path string, memoryLimit int64, size int, boot
 		return nil, fmt.Errorf("nodejs: find executable: %w", err)
 	}
 	p := &Pool{path: resolved, memoryLimit: memoryLimit, bootstrap: bootstrap, slots: make(chan struct{}, size), done: make(chan struct{}), workers: make(map[*worker]struct{}), idleTimeout: time.Minute, sampleInterval: 5 * time.Second}
+	return p, nil
+}
+
+// Warm initializes the worker protocol and compiles the shared bootstrap without
+// executing user scripts. Preflight uses a disposable pool; serving pools retain
+// this worker and count it in the same statistics as demand-created workers.
+func (p *Pool) Warm(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	vm, err := p.Acquire(ctx)
 	if err != nil {
-		p.Close()
-		return nil, fmt.Errorf("nodejs: Node.js 22.13+ is required: %w", err)
+		return fmt.Errorf("nodejs: initialize worker (Node.js 22.13+ is required): %w", err)
 	}
-	// Do not retain the probe. Real workers are started lazily after activation.
-	vm.failed = true
 	vm.Close()
-	p.stats = Stats{} // Startup probes are not application worker activity.
-	p.ready = true
-	return p, nil
+	if vm.failed {
+		return errors.New("nodejs: worker initialization failed")
+	}
+	return nil
 }
 
 func (p *Pool) Acquire(ctx context.Context) (*VM, error) {
@@ -96,7 +100,7 @@ func (p *Pool) Acquire(ctx context.Context) (*VM, error) {
 		p.workers[w] = struct{}{}
 		p.stats.Started++
 	}
-	if p.ready && p.monitorDone == nil {
+	if p.monitorDone == nil {
 		p.monitorDone = make(chan struct{})
 		go p.monitor()
 	}

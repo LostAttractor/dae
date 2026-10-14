@@ -32,8 +32,8 @@ func preflightRuntime(ctx context.Context, spec plugin.Spec) error {
 	if err != nil {
 		return err
 	}
-	backend.Close()
-	return nil
+	defer backend.Close()
+	return backend.Warm(ctx)
 }
 
 func prepareModules(ctx context.Context, conf Config, services plugin.Services) (modules []*Module, err error) {
@@ -163,6 +163,9 @@ func prepareResources(ctx context.Context, spec plugin.Spec, services plugin.Ser
 }
 
 func prepare(ctx context.Context, conf Config, services plugin.Services, instanceID string) (*Engine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	modules, ok := services.Prepared.([]*Module)
 	if !ok {
 		var err error
@@ -171,21 +174,34 @@ func prepare(ctx context.Context, conf Config, services plugin.Services, instanc
 			return nil, err
 		}
 	}
-	var storePath string
-	if conf.Store {
-		if services.BaseDir == "" || instanceID == "" || instanceID == "." || instanceID == ".." || filepath.Base(instanceID) != instanceID {
-			return nil, fmt.Errorf("surge: persistent store requires a base directory and a valid plugin instance ID")
-		}
-		storePath = filepath.Join(services.BaseDir, "plugins", instanceID, "surge-store.json")
-	}
-	runtime, err := NewRuntime(ctx, RuntimeOptions{
-		NodePath: conf.NodePath, NodeWorkers: conf.MaxConcurrentScripts,
-		MemoryLimit: conf.MemoryLimit, Timeout: conf.ScriptTimeout,
-		StorePath: storePath,
-		Logger:    services.Logger,
+	var runtime *Runtime
+	needsRuntime := slices.ContainsFunc(modules, func(module *Module) bool {
+		return len(module.Scripts)+len(module.TaskScripts) != 0
 	})
-	if err != nil {
-		return nil, err
+	if needsRuntime {
+		var storePath string
+		if conf.Store {
+			if services.BaseDir == "" || instanceID == "" || instanceID == "." || instanceID == ".." || filepath.Base(instanceID) != instanceID {
+				return nil, fmt.Errorf("surge: persistent store requires a base directory and a valid plugin instance ID")
+			}
+			storePath = filepath.Join(services.BaseDir, "plugins", instanceID, "surge-store.json")
+		}
+		var err error
+		runtime, err = NewRuntime(ctx, RuntimeOptions{
+			NodePath: conf.NodePath, NodeWorkers: conf.MaxConcurrentScripts,
+			MemoryLimit: conf.MemoryLimit, Timeout: conf.ScriptTimeout,
+			StorePath: storePath,
+			Logger:    services.Logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		// Warm before publication: failure rejects this candidate, not the
+		// running generation.
+		if err := runtime.Warm(ctx); err != nil {
+			_ = runtime.Close()
+			return nil, err
+		}
 	}
 	engine, err := newEngine(ctx, EngineOptions{
 		Modules: modules, Runtime: runtime,
