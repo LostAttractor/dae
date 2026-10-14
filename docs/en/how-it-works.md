@@ -25,9 +25,9 @@ Despite these challenges, this approach is already an optimal solution compared 
 
 Hence, if DNS requests cannot pass through dae, domain-based splitting will not succeed.
 
-> To mitigate DNS pollution and achieve improved CDN connection speeds, dae employs domain sniffing in user space. When `dial_mode` is set to "domain" or its variants and proxied traffic needs to be processed, dae sends the sniffed domain to the proxy server instead of sending the IP address. Consequently, the proxy server re-resolves the domain and connects using the optimal IP. This approach addresses DNS pollution and enhances CDN connection speed.
+> dae sniffs domains in traffic already admitted to userspace. `dial_target_override` (default `true`) controls whether a verified sniffed domain replaces the dial target, allowing the proxy server to resolve it again. `sniff_verify_mode` (default `loose`) controls verification against DNS records.
 >
-> Additionally, advanced users who have used alternative splitting solutions and don't wish to route DNS requests through dae but still want certain traffic to be split based on domain (e.g., splitting traffic to Netflix nodes and download nodes based on the target domain, with some directly connecting via the core) can enforce the use of sniffed domains for splitting by setting `dial_mode: domain++`.
+> `reroute_mode` (default `while_needed`) controls whether information obtained in userspace triggers a new routing evaluation. `force` reevaluates traffic already in userspace; `none` preserves valid kernel routing decisions. Domain sniffing and rerouting do not expand kernel capture predicates.
 
 dae performs traffic splitting in the interface BPF programs. On an interface configured for both roles, TCX runs WAN before LAN on ingress and LAN before WAN on egress. Programs already attached through TCX retain precedence and must return `TCX_NEXT` for dae's programs on the same hook to run. Depending on the result, traffic is either redirected into dae's private Netkit/veth path for proxying or allowed to bypass dae and go directly.
 

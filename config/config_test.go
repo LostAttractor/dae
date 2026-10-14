@@ -304,9 +304,6 @@ routing {
 	if g.TproxyPort != 12345 {
 		t.Errorf("TproxyPort: got %v", g.TproxyPort)
 	}
-	if !g.TproxyPortProtect {
-		t.Errorf("TproxyPortProtect should default to true")
-	}
 	if g.LogLevel != "info" {
 		t.Errorf("LogLevel: got %v", g.LogLevel)
 	}
