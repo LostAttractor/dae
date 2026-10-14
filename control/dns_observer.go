@@ -120,15 +120,18 @@ func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32,
 			rrtype = dns.TypeCNAME
 			ttl = min(ttl, links[name].ttl)
 		}
+		hasSignature, validSignature := false, false
 		for _, rr := range m.Answer {
 			sig, ok := rr.(*dns.RRSIG)
-			if !ok || dns.CanonicalName(sig.Hdr.Name) != name || sig.TypeCovered != rrtype {
+			if !ok || sig.Hdr.Class != dns.ClassINET || dns.CanonicalName(sig.Hdr.Name) != name || sig.TypeCovered != rrtype {
 				continue
 			}
+			hasSignature = true
 			remaining, valid := rrsigRemainingTTL(sig, at)
-			if !valid || remaining <= 0 {
-				return
-			}
+			validSignature = validSignature || valid && remaining > 0
+		}
+		if hasSignature && !validSignature {
+			return
 		}
 		observations = append(observations, domainObservation{name: name, ips: ips, ttl: int(ttl)})
 	}

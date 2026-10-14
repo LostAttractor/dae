@@ -4,7 +4,6 @@ package mitm
 
 import (
 	"context"
-	"fmt"
 	"net"
 
 	"github.com/daeuniverse/dae/component/plugin"
@@ -32,13 +31,12 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 	defer cancel()
 	stop := context.AfterFunc(h.forceContext, cancel)
 	defer stop()
-	request.Resolve = func(ctx context.Context, request *plugin.DNSExchange, servers []string) (*plugin.DNSResponse, error) {
-		for _, instance := range h.instances {
-			if resolver, ok := instance.Plugin.(plugin.DNSResolver); ok {
-				return resolver.ResolveDNS(ctx, request, servers)
-			}
+	request.Resolve = nil
+	for _, instance := range h.instances {
+		if resolver, ok := instance.Plugin.(plugin.DNSResolver); ok {
+			request.Resolve = resolver.ResolveDNS
+			break
 		}
-		return nil, fmt.Errorf("DNS server assignment requires a resolver plugin (enable dns-router)")
 	}
 	for i := len(h.instances) - 1; i >= 0; i-- {
 		instance := h.instances[i]

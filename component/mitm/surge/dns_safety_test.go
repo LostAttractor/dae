@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,37 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	dns "github.com/miekg/dns"
 )
+
+func TestSurgeHostMultiplePlainServersWithoutResolver(t *testing.T) {
+	e := moduleScopeEngine(t, moduleScopeModule(t, "dns", "", "[Host]\nexample.com=server:192.0.2.53,192.0.2.54", nil))
+	host, err := mitm.New(mitm.Options{DisableHTTP: true}, mitm.Instance{ID: "surge", Plugin: e})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	var mu sync.Mutex
+	seen := make(map[netip.AddrPort]bool)
+	response, err := host.HandleDNS(t.Context(), hostDNSRequest(t, "example.com.", dns.TypeA), func(ctx context.Context, request *plugin.DNSExchange) (*plugin.DNSResponse, error) {
+		mu.Lock()
+		seen[request.Destination] = true
+		mu.Unlock()
+		if request.Destination.Addr().String() == "192.0.2.53" {
+			return nil, errors.New("first server unavailable")
+		}
+		return hostAddressResponse(request, []netip.Addr{netip.MustParseAddr("198.51.100.1")}, 60), nil
+	}, func(*plugin.DNSResponse) error { return nil })
+	if err != nil || response == nil {
+		t.Fatalf("plain DNS fallback: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !seen[netip.MustParseAddrPort("192.0.2.54:53")] {
+		t.Fatalf("servers: %v", seen)
+	}
+	if got := response.MessageCopy().Answer[0].(*dns.A).A.String(); got != "198.51.100.1" {
+		t.Fatal(got)
+	}
+}
 
 func TestSurgeAliasValidatesDownstreamBeforeRewriting(t *testing.T) {
 	e := moduleScopeEngine(t, moduleScopeModule(t, "dns", "", "[Host]\nalias.example=target.example", nil))

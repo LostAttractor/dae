@@ -93,6 +93,51 @@ func TestPassiveDNSRetentionIsIndependentOfSignatureAndReceipt(t *testing.T) {
 	}
 }
 
+func TestPassiveDNSAcceptsAlternativeSignatures(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	for _, test := range []struct {
+		name                     string
+		validAlias, validAddress bool
+	}{
+		{"both valid alternatives", true, true},
+		{"expired alias only", false, true},
+		{"expired address only", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			g, fake := newTestRegistry(16, time.Hour)
+			request := dnsTestRequest(t, "alias.example.", 1)
+			message := new(dns.Msg).SetReply(request.MessageCopy())
+			ip := netip.MustParseAddr("192.0.2.1")
+			message.Answer = []dns.RR{testCNAMERecord("alias.example.", "target.example."), testARecord("target.example.", ip.String())}
+			for _, rrset := range []struct {
+				name   string
+				rrtype uint16
+				valid  bool
+			}{
+				{"alias.example.", dns.TypeCNAME, test.validAlias},
+				{"target.example.", dns.TypeA, test.validAddress},
+			} {
+				for _, delta := range []time.Duration{-time.Second, time.Hour} {
+					if delta > 0 && !rrset.valid {
+						continue
+					}
+					message.Answer = append(message.Answer, &dns.RRSIG{
+						Hdr:         dns.RR_Header{Name: rrset.name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 60},
+						TypeCovered: rrset.rrtype, Inception: uint32(now.Add(-time.Hour).Unix()), Expiration: uint32(now.Add(delta).Unix()),
+					})
+				}
+			}
+			observeDNSRegistryAt(g, func(string) []uint32 { return testBitmap(0) }, request, &plugin.DNSResponse{DNSPacket: plugin.DNSMessage(message)}, now)
+			for _, name := range []string{"alias.example.", "target.example."} {
+				if g.Verify(name, ip).Paired != (test.validAlias && test.validAddress) {
+					t.Fatalf("wrong acceptance for %s", name)
+				}
+			}
+			checkInvariants(t, g, fake)
+		})
+	}
+}
+
 func TestPassiveDNSHighBitTTLsMeanZero(t *testing.T) {
 	const window = 168 * time.Hour
 	for _, test := range []struct {
