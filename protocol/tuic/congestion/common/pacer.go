@@ -91,20 +91,6 @@ func (p *Pacer) SetMaxDatagramSize(s congestion.ByteCount) {
 	p.maxDatagramSize = s
 }
 
-func maxByteCount(a, b congestion.ByteCount) congestion.ByteCount {
-	if a < b {
-		return b
-	}
-	return a
-}
-
-func minByteCount(a, b congestion.ByteCount) congestion.ByteCount {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func maxDuration(a, b time.Duration) time.Duration {
 	if a > b {
 		return a
