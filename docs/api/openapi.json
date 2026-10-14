@@ -637,7 +637,7 @@
             "type": "boolean"
           }
         },
-        "required": null,
+        "required": [],
         "type": "object"
       },
       "NodeEgress": {

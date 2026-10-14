@@ -5,6 +5,7 @@ package testutil
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -14,17 +15,39 @@ import (
 )
 
 type Schema struct {
-	Const      *int              `json:"const"`
-	Ref        string            `json:"$ref"`
-	Type       string            `json:"type"`
-	Format     string            `json:"format"`
-	Properties map[string]Schema `json:"properties"`
-	Required   []string          `json:"required"`
-	Items      *Schema           `json:"items"`
-	Additional json.RawMessage   `json:"additionalProperties"`
-	AnyOf      []Schema          `json:"anyOf"`
-	MinItems   int               `json:"minItems"`
-	MaxItems   int               `json:"maxItems"`
+	Const      *int               `json:"const"`
+	Ref        string             `json:"$ref"`
+	Type       string             `json:"type"`
+	Format     string             `json:"format"`
+	Properties map[string]Schema  `json:"properties"`
+	Required   requiredProperties `json:"required"`
+	Items      *Schema            `json:"items"`
+	Additional json.RawMessage    `json:"additionalProperties"`
+	AnyOf      []Schema           `json:"anyOf"`
+	MinItems   int                `json:"minItems"`
+	MaxItems   int                `json:"maxItems"`
+}
+
+// An omitted required keyword is valid; an explicit null is not a string array.
+type requiredProperties []string
+
+func (r *requiredProperties) UnmarshalJSON(data []byte) error {
+	var names []string
+	if err := json.Unmarshal(data, &names); err != nil {
+		return err
+	}
+	if names == nil {
+		return fmt.Errorf("schema required must be an array of unique strings")
+	}
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if seen[name] {
+			return fmt.Errorf("schema required repeats %q", name)
+		}
+		seen[name] = true
+	}
+	*r = names
+	return nil
 }
 
 type Schemas map[string]Schema
