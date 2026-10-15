@@ -183,7 +183,7 @@ DNS 脚本的预算包含等待执行名额；`$httpClient` 保留原 DNS 客户
 client_source_address: '-02:00:00:00:00:10,all'
 ```
 
-也可在[全局页面/API](api.md)的 **HTTPS Modules** 区域设置当前设备开关，设备覆盖优先于配置。安装步骤见[证书文档](certificate.md)。
+也可在[全局页面/API](api.md)的 **HTTPS Modules** 区域为当前设备选择 **On** 或 **Off**，设备覆盖优先于配置；选择 **Router default** 清除覆盖。安装步骤见[证书文档](certificate.md)。
 
 只启用已信任 CA 的设备；dae 不探测信任状态，也不在 TLS 失败后重试透传。未启用的客户端沿原路由透传。未知 MAC 可在配置中用 IP/CIDR 匹配。
 

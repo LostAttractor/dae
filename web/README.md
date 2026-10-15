@@ -100,8 +100,8 @@ document. Setting remembers its selected section during internal navigation.
   device and authorized global status stacked in the right column. Narrower
   screens place status below the settings and use scope tabs.
 - **Setting** has three sections: **Devices**, **Selector** and **Explain**.
-  From 960px, a left sidebar selects the page shown on the right. Smaller screens
-  use a horizontal tab bar above the content.
+  From 768px, a sidebar beside the content lists the sections; narrower screens
+  use a tab bar above the content.
   Devices manages another MAC's memberships and HTTPS preferences; client groups
   load only while this authorized section is active. Selector provides node
   selection, connectivity tests and default restoration. Explain checks routing,
@@ -120,13 +120,13 @@ presentation in the frontend; this directory does not import daemon code.
 
 `shell.tsx` mounts the page structure once. `app.ts` coordinates access, device
 actions and refreshes; `navigation.tsx` owns page links, visibility, titles and history;
-`setting.tsx` owns the responsive secondary navigation. React owns each interactive panel:
+`setting.tsx` owns the secondary navigation. React owns each interactive panel:
 `selectors.tsx`, `diagnostics.tsx`, `trace.tsx`, `clients.tsx`, `mitm.tsx`, and
 `status.tsx`. `traffic.tsx` supplies the Recharts chart, and `certificate-panel.tsx`
 owns the certificate section's responsive disclosure state.
 
-`react-view.ts` applies the shared Astryx Theme and provides the boundary between
-controllers and React. Controllers update interactive panels through their view
+`react-view.ts` provides the boundary between controllers and React and disables
+Base UI's inline style elements, which the daemon's CSP rejects. Controllers update interactive panels through their view
 APIs and may hide their hosts; React owns those panel descendants. The shell's
 stable identity, login and certificate result fields are updated by their native
 controllers. Disclosure state belongs to React. Commits finish before native
@@ -135,28 +135,30 @@ component refs; resize/scroll listeners exist only while the picker is open.
 
 ## Components and theme
 
-The frontend uses [Astryx](https://astryx.atmeta.com/docs/getting-started) for
-navigation, buttons, switches, fields, search, badges, feedback and disclosures.
-Colors come from GitHub's
-[Primer Primitives](https://github.com/primer/primitives) Light and Dark themes,
-following the system preference. `theme.ts` maps Primer's semantic color tokens
-to Astryx, including surfaces, controls, borders and interaction states. Existing
-native fields, application layouts and charts use the same palette in `style.css`.
+The interface uses [Kumo](https://kumo-ui.com), the component library and design
+system behind Cloudflare's dashboard, with [Phosphor](https://phosphoricons.com)
+icons. Kumo builds on [Base UI](https://base-ui.com), which supplies keyboard,
+focus and screen-reader behavior. Kumo owns the palette, typography, spacing and
+component appearance; the application does not override its tokens. Layouts use
+[Tailwind CSS](https://tailwindcss.com) utility classes in the components, and
+`style.css` holds only rules that utilities cannot express. Light and dark modes
+follow the system preference: `color-mode.ts` sets the `data-mode` attribute
+that selects Kumo's palette. Traffic charts use Kumo's categorical chart colors.
 Fonts use the system stack; no fonts or scripts load from a CDN.
+[DESIGN.md](DESIGN.md) holds the visual rules: surfaces, lines, spacing and
+alignment, type roles and the choice of controls.
 
-Vite generates the theme CSS and built theme object together. Astryx's static
-Layer positioning rules are emitted as `astryx-layers.css` and linked using its
-stylesheet ID, so its runtime can reuse them under the daemon's `style-src 'self'`
-CSP. This build adapter follows the pinned Astryx version. Deploy every generated
-asset together. The frontend requires modern browser support for native popovers,
-CSS scope and light/dark color values.
+The Tailwind Vite plugin compiles utilities from the application and Kumo's
+published components into one stylesheet. It finds utilities as complete tokens in
+the source, so write each class literally and separate it from template
+expressions: `gap-5 ${extra}`, never `gap-5${extra}`. Base UI normally injects a small
+`<style>` element for popup scroll locking; `react-view.ts` disables it through
+Kumo's `CSPProvider`, and `style.css` carries that rule so the daemon's
+`style-src 'self'` CSP holds. The browser checks fail on any CSP violation.
+Deploy every generated asset together. The frontend requires browsers supported
+by Tailwind CSS v4.
 
-The pinned CLI provides component references:
-
-```sh
-pnpm run astryx component Button
-pnpm run astryx component TabList
-```
+Component references and examples are at <https://kumo-ui.com>.
 
 `certificate.ts` runs the current browser's CA trust and interception challenges.
 
@@ -169,21 +171,25 @@ does not resolve itself during a check. Retained candidate IPs can be selected
 and checked individually, using the verified source address family. This does not
 create a kernel domain mapping. Rule traces, cached records, technical fields and
 raw responses are collapsed by default; the trace can be filtered by rule status.
+Expanded sections grow with the page: rule traces, node lists, cached records and
+raw responses never scroll inside their section. The note that a check applies to
+new connections sits under the Result heading, since it qualifies every result.
+The outcome card stays on the base surface; an amber ring and warning icon mark an
+incomplete result, and a red ring and prohibition icon mark a blocked connection.
 Membership comparisons show current and proposed results side by side on wide
 screens and stacked on smaller screens. **Routing
-Rules** shows each membership's On/Off state beside an Astryx `Switch` on the
-right. The rectangular track is blue with a white thumb when on; when off it
-has a neutral outline, a gray thumb and a muted circle. The input target is
-48px by 44px. State labels are centered in equal-width slots, with a small
-letter-spacing adjustment for On to balance the two words. Labels and switches
+Rules** shows each membership's On/Off state beside a Kumo `Switch` on the
+right; the adjacent label carries the state without relying on color. A label
+around the switch extends its target to 48px by 44px. State labels are centered
+in equal-width slots. Labels and switches
 occupy shared columns so each row stays aligned. A separate arrow at the right
 expands that rule's routing effects without changing its membership. Each arrow
-has a 44px target and supports keyboard activation; multiple rules can stay open.
+has a 36px target and supports keyboard activation; multiple rules can stay open.
 When space is limited, the rule name moves above the state, switch and arrow.
 Changes disable controls until the request finishes;
 the displayed state updates from the saved API response.
 Multiple memberships can be active. Changes may interrupt active
-connections, as indicated beside these actions. Routing effects load only for
+connections, as a warning under the **Routing Rules** label states. Routing effects load only for
 expanded rules and refresh when the device context changes. Closing a rule discards
 its pending response. Expanded details separate the proposed change, referenced
 rules and explanatory notes with spacing and dividers. **Referenced** identifies
@@ -203,11 +209,13 @@ both states, with vertical room for complete glyphs. The comparison button
 occupies its own row. **Compare a target** opens Setting → Explain with
 that proposed change and focuses the target field. Inputs and results are
 preserved when switching pages.
-The **Devices** section groups device lookup, routing membership and HTTPS module
-settings into separate sections. Saved settings show membership and HTTPS states
-as labels; the configuration default is distinct from an enabled/disabled override.
-Changing the MAC address clears the previous device's result. Client groups load when this section is active and authorized;
-without access, it shows a login prompt. The diagnostics contract lives in
+The **Devices** section looks up another device by MAC, then shows its settings
+with the same controls as Overview: a switch row per routing rule and the
+three-way HTTPS module choice. Its router default depends on the source IP the
+device connects from, which the page cannot see, so that choice reads **Router
+default** without a value. Each change saves for the looked-up MAC and reloads its
+settings in place, keeping focus on the changed control. Changing the MAC address
+clears the previous device's result; without access, the section shows a login prompt. The diagnostics contract lives in
 `docs/api/diagnostics.json`; explanations never send target traffic or execute scripts.
 
 `use-request.ts` associates asynchronous results and errors with their initiating
@@ -222,25 +230,36 @@ labels. Device settings address this MAC. An IP-only connection shows its IP and
 an unavailable MAC; MAC-scoped controls remain unavailable. The daemon version
 appears in the footer when administrator status is available.
 
-**HTTPS Modules** shows its combined state in a badge beside the heading, such as
-**Disabled (Default)** or **Enabled (Custom)**. Certificate installation and
+**HTTPS Modules** offers one choice among **Router default (On/Off)**, **On** and
+**Off**; the API reports the router default, and choosing it clears the device
+override. Without a trusted CA, interception breaks the device's HTTPS
+connections, so the section tracks this browser's CA test between its heading and
+the choice: an amber warning banner until the CA is verified, a green line once it
+is, and a red alert with **Test again** in the banner's place when modules are on
+and verification failed. The Devices page shows the same amber banner for the
+looked-up device. While modules are on,
+the page runs the certificate test by itself when it finds them on, when they are
+turned on and when the device or CA changes; these runs report on the page without
+a toast. The development server cannot reach the test endpoints, so it keeps the
+warning. Certificate installation and
 browser verification occupy a separate subsection and remain available without MITM or a device MAC.
-They default to expanded in windows at least 768px wide and 600px tall, and
+They default to expanded in viewports at least 768px wide and 600px tall, and
 collapsed on smaller screens. Until the user toggles the section, this default
 adapts to viewport changes. A manual choice is retained until the page is reloaded;
 polling and navigation do not reset it.
-The certificate name and fingerprint share an information block, followed by
-the installation note and download buttons for the iOS profile, DER and PEM
-formats. Browser verification uses a muted background, a heading and test action,
-and two labelled results without row dividers. The results appear side by side
+The certificate name shares a row with one **Download** menu listing the
+configuration profile, DER and PEM formats with where each is used; the profile
+opens normally so Safari can offer to install it. The fingerprint and installation
+note follow. Browser verification is a framed block with a heading, a test action
+and two labelled results shown as tinted pills. The results appear side by side
 when space permits and stack on narrow screens.
 Status emphasizes active connections and current upload/download rates. Below
 each chart, **Connection statistics** and **Outbounds** are separate, initially
 collapsed sections. Global status also has sibling **Domain Tables** and
 **Plugins** sections, with counts and empty states. Cumulative totals, uptime and
-direct fallback counts belong to Connection statistics. Each outbound group has
-a compact name-and-count trigger; expanding it reveals its metrics and a named
-node list. Long node lists scroll inside the group, leaving group headers and
+direct fallback counts belong to Connection statistics. Outbound groups are rows
+of one framed list, each with a compact name-and-count trigger; expanding a row
+reveals its metrics and a named node list. Long node lists scroll inside the group, leaving group headers and
 the other sections in the normal page flow.
 Device status continues polling without administrator access. Global status uses
 the same authorization as selectors and is cleared on logout or expiry. The
@@ -248,8 +267,10 @@ visible document refreshes every two seconds; traffic rates use five-second
 samples for up to one minute. Both status scopes consume the same reads,
 without additional counters or polling. Counters cover userspace upstream paths,
 including splice, rather than kernel passthrough or locally answered requests.
-Scope tabs and mobile Setting tabs support arrow keys and Home/End, selecting the
-focused tab. The desktop sidebar uses ordinary links with Tab and Enter.
+Scope tabs and the narrow-screen Setting tabs support arrow keys and Home/End,
+selecting the focused tab. Setting sections are links in both forms, so each keeps
+its address; the sidebar is reached with Tab, followed with Enter, and marks the
+current section with `aria-current="page"`.
 Losing global access returns the narrow Overview to device traffic.
 
 Traffic charts share a byte-per-second scale for upload (dashed purple) and
@@ -335,86 +356,84 @@ mutations are never retried automatically.
 
 ## UI conventions
 
-The shared “Network Panel” heading has an outlined access badge on its right,
-with the access explanation and login controls below. On wide screens, the heading,
-navigation, IP/MAC and refresh controls form one horizontal bar. Refresh uses a
-36px minimum height, content width and the same metadata font size as its update time.
+The shared “Network Panel” heading has a neutral access badge on its right,
+with the access explanation and login controls below. The header is a full-width
+surface bar above the page canvas. On wide screens, the heading, navigation,
+IP/MAC and refresh controls form one horizontal row.
 The device identity and refresh controls wrap together when space is limited.
-On screens up to 760px, navigation and refresh share a row below the title,
-followed by the device identity. Values and update errors wrap at larger preferred text sizes.
+Below 768px, navigation and refresh share a row below the title,
+followed by the device identity.
 
-Overview / Setting navigation has a shared thin border and uses a subtle filled background for the active page;
-resting links have no fill. A full-width divider separates the header from content.
-Astryx `TopNav` and `TopNavItem` retain link navigation, touch and keyboard behavior.
-Both pages and all Setting sections share a centered workspace up to 1440px;
-switching pages preserves the workspace and navigation width. The header,
-content and footer align within that workspace.
+Overview / Setting navigation uses Kumo's segmented `Tabs`, rendered as links so
+direct addresses, Back/Forward and keyboard selection keep working. The header
+bar's bottom border separates it from content. Both pages and all Setting
+sections share a centered workspace up to 1440px; switching pages preserves the
+workspace and navigation width. The header, content and footer align within that
+workspace.
 
-Setting uses Astryx `SideNav` / `SideNavItem` on desktop and `TabList` on smaller
-screens. The sidebar occupies 180px, with a 24px gap before the content. Content
-has no enclosing card border. Section headings, spacing and horizontal dividers
-establish its hierarchy; device operations are stacked and node groups fill a
-responsive grid. Borders mark controls, badges and discrete result groups.
-Panels and labels wrap at larger preferred text sizes. Keep core behavior
+From 768px, Setting places a sticky section sidebar beside the content, so the
+section list stays in view beside long results. Its links use the item styles of
+Kumo's dashboard sidebar menu, set directly on the page canvas without a panel or
+border; Kumo's `Sidebar` module itself is not used, since it also bundles tooltips,
+scroll areas and resizing, about 40 KB, for three links. The section card is thus
+the only framed surface beside it. Each section link has a dimmed icon and a
+13px label, and the current section has a filled background (the recessed surface
+in light mode, where Kumo's tint barely differs from the canvas); a focus ring
+marks the keyboard focus on any item, including the current one. Narrower screens use Kumo's
+underline `Tabs` above the content. Each section is a Kumo `LayerCard`, like the
+Overview cards; device operations are stacked and node groups fill a responsive
+grid of framed tiles that share a height within each row. Keep core behavior
 independent of layout width.
 
 Overview stacks Quick Setting and Device Setting cards in the settings column.
-Selectors, Routing Rules and HTTPS Modules use the same subsection hierarchy.
-Each selector pairs its group name with the selected node's health and latency
-above the picker; node counts and Default / Custom state form a separate metadata
-group. Long names and metadata wrap without truncating the heading. Full selector
-tools retain monitoring and last-test details below the picker.
+Selectors, Routing Rules and HTTPS Modules use the same subsection hierarchy,
+separated by hairline dividers. Each selector tile pairs its group name with the
+selected node's health and latency above the picker; node counts and
+Default / Custom state form a separate metadata group. Long names and metadata
+wrap without truncating the heading. Full selector tools retain monitoring and
+last-test details below the picker.
 From 1024px, the settings and status
-columns share a row, with more width allocated to settings. The status card uses
-a muted background and stacks device status above global status with a divider.
+columns share a row, with more width allocated to settings. The status card
+stacks device status above global status with a divider.
 Smaller screens stack status below settings and use scope tabs. Status metrics
-wrap according to the panel width and preferred text size. Status stays visible
-on every screen size. Content scrolls vertically
-when the viewport is short. A stable scrollbar gutter keeps the content width
-steady while panels expand and charts resize.
+wrap according to the panel width. Status stays visible on every screen size.
+Content scrolls vertically when the viewport is short. A stable scrollbar gutter
+keeps the content width steady while panels expand and charts resize.
 
-Use Astryx `Button`, `IconButton`, `Switch` and `TabList` for actions and view selection.
-`Field` supplies labels and descriptions for native form controls, retaining
-native validation, form submission and platform select menus. Node search uses
-`TextInput` with a search icon and a clear button that restores input focus.
-Navigation and ordinary feedback use text labels. Warnings use
-an Astryx warning triangle and the Primer yellow attention palette; request errors
-use a cross icon and the red danger palette. Device controls unavailable on an IP-only
-connection are a warning, without a failed-update or retry message. Inline
-request errors use `Banner`; unconfigured routing and outbound sections
-use compact `EmptyState` messages. Native sections and forms provide the page
-structure. Rectangular controls, cards, navigation items, badges and popovers
-share the 4px `--radius` value through the component theme. Badges share a 1px
-solid border; neutral badges have transparent backgrounds and muted text, while
-semantic badges use matching Primer border, background and text colors.
-Typography uses 1rem body text and .875rem metadata. Error foregrounds, backgrounds and borders share the Primer
-danger palette. Use Astryx `Badge` for short states and settings sources; longer
-verification results and monitoring descriptions remain wrapping text. Keep
-quantities in `.count` and align related controls with `.status-row` / `.button-row`.
-Node choices deliberately truncate; full names remain accessible. Avoid text
-that repeats a heading or describes an obvious control. Retain warnings,
-prerequisites, input constraints and limits needed to interpret results.
+Node search uses `InputGroup` with a search icon and
+a clear button that restores input focus. The node menu is a Kumo `Popover`
+spanning the picker row, lifted like Kumo's menus; its trigger matches `Select`. It renders into a layer at the end of the controls
+fieldset, so it paints above the cards and is disabled with the other controls
+while an action runs. Opening it centers the selected node.
+`notice.tsx` pairs Kumo's warning, error and success colors with Phosphor icons for
+single-line notices, banners and notifications, centering each icon on its text. Device controls unavailable on an IP-only
+connection are a warning, without a failed-update or retry message. Longer verification results and monitoring descriptions remain
+wrapping text. Node choices deliberately truncate; full names remain accessible.
+Avoid text that repeats a heading or describes an obvious control. Retain
+warnings, prerequisites, input constraints and limits needed to interpret
+results.
 
 The selected navigation link identifies the page. The shared “Network Panel”
 H1 receives focus after primary page navigation; secondary navigation retains
-focus on its link or tab. Use H2 for page sections and cards, H3 for their
-subsections, and H4 for selector groups inside Quick Setting. Status has less visual
-emphasis than settings. Keep **Default / Custom**, **Use default**, and
+focus on its tab. Use H2 for page sections and cards, H3 for their
+subsections, and H4 for selector groups inside Quick Setting. Keep **Default / Custom**, **Use default**, and
 **Monitoring** consistent across selectors and device settings; preserve configured
 names and descriptions. Optional TLS hostname and identity inputs belong in
 Advanced context. Expandable certificate, traffic, routing effects and
-diagnostic sections use Astryx `Collapsible`; routing rows place their chevrons
-at the right, while other sections use leading chevrons. Section
-dividers distinguish related groups, and rules can be filtered by status.
-Preview requests and outbound node lists are created only while expanded.
-Outbound metrics pair values with
-labels. Light/dark colors also apply to chart axes, series and tooltips.
+diagnostic sections use Kumo's `Collapsible` with a trailing caret. Sections open
+flush with their heading and grow with their content; nested details, such as the
+destination list and response JSON, use Kumo's indented panel. Collapsed
+content stays in the document; previews and outbound node lists are created only
+while expanded. Section dividers distinguish related groups, and rules can be
+filtered by status. Outbound metrics pair values with labels. Light/dark colors
+also apply to chart axes, series and tooltips.
 
-Action feedback uses an Astryx toast at the bottom right without shifting page
+Action feedback uses a Kumo toast at the bottom right without shifting page
 content. Each new action replaces the previous notification. Success messages
 close after five seconds, pausing on hover or focus; pending and error messages
-remain until dismissed or replaced. Notifications have a close button and can be
-reached with F6. Navigation has no branding block.
+remain until dismissed or replaced. Errors are announced assertively.
+Notifications have a close button and can be reached with F6. Navigation has no
+branding block.
 
 Refresh indicators show time since the last successful read and update while the
 document is visible; hovering shows the local date and time. Errors remain visible
@@ -444,10 +463,11 @@ type declarations; no running daemon or external test data is needed. It covers 
 login/logout, live ordering and focus, a 1,000-node picker, probe/selection actions,
 configuration defaults, description labels, timeouts, chart samples and keyboard
 tooltips, access-loss recovery, and light/dark layouts from 320px to 2560px.
-Text-only zoom checks all pages at twice the default size, including control
-containment in narrow panels.
+Every page is checked for CSP violations. Headless Chromium reports no pointing
+device, so the test launches it with an emulated mouse; touch emulation covers
+coarse pointers.
 It also checks direct page links, browser history, mobile status,
-simultaneous desktop traffic scopes, Setting tabs, shared quick/full selectors, keyboard traffic-scope
+simultaneous desktop traffic scopes, the Setting sidebar and narrow-screen tabs, shared quick/full selectors, keyboard traffic-scope
 switching, independent membership switches and keyboard activation,
 context/explanation requests, invalidation of late diagnostic and routing-preview
 replies, membership-context changes and protected-result cleanup.

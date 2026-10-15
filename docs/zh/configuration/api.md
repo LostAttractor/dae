@@ -44,7 +44,7 @@ routing {
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
 - **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留；设备无活动连接且最近一分钟历史过期后回收统计，重新出现时开始新的观察周期，`started_at` 表示该周期起点。
 - **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，沿用管理权限。配置密钥时登录后可见，退出或会话失效时清除展示的数据。
-- **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](certificate.md)。**Test Certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
+- **HTTPS Modules**：为当前设备选择 **Router default**、**On** 或 **Off**。**Router default** 跟随 `mitm.client_source_address` 并显示当前取值；**On** / **Off** 覆盖该配置，包括显式关闭。开启前须[安装并信任 CA](certificate.md)，否则该设备的 HTTPS 连接会失败。当前浏览器验证 CA 前，该区域持续显示警告；开启期间页面会自动测试 CA，验证失败时显示红色警告。**Test certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
 
 设备与已授权的全局状态在页面可见时每两秒刷新，速率沿用五秒采样、最多一分钟的历史。后台标签页暂停轮询；请求失败会显示更新时间和重试状态。
 
@@ -88,7 +88,7 @@ routing {
 
 启用页面后，HTTP 和 HTTPS 在 `global.api_port` 上共用页面/API，CA 信任测试使用新签发的服务器证书和短期挑战，不要求 MITM 或设备 MAC。daemon 和当前设备均开启 MITM 后可进一步验证透明解密。透明 MITM 测试使用虚拟目标的 443 端口，由 `global.api_mitm_test_ipv4`（默认 `203.0.113.254`）和 `global.api_mitm_test_ipv6`（默认 `2001:db8:ffff::254`）指定。两项测试均不增加监听端口，也不依赖上游服务。
 
-展开 **Certificate & browser verification**，点击 **Test Certificate** 后：
+展开 **Certificate & browser verification** 可使用 **Download** 菜单下载描述文件、DER 和 PEM 格式的证书。点击 **Test certificate** 后执行以下测试；页面发现当前设备已开启 HTTPS Modules、开启 HTTPS Modules，或设备与 CA 变化时，也会自动执行：
 
 1. 浏览器同源请求 `POST /api/certificate/tests`，签发仅存于内存的临时证书和新密钥，再通过同一端口的 HTTPS 读取 `/api/certificate/tests/{id}`。服务端只接受发起源 IP 到该路由器 IP 使用本次或更新挑战证书完成的握手；管理证书或更早挑战的连接返回 `409` 并关闭，由浏览器重试。浏览器核对挑战 ID 和 CA 指纹，成功后 **CA trust** 显示 **CA trusted by this browser**。无需先打开 HTTPS 页面或接受证书警告。
 2. 设备已开启 MITM 且第一步通过时，请求与页面地址同族的虚拟 IP，经正常透明捕获、设备开关判断和 TLS 解密，由内置 `dae-mitm-test` 插件校验入口 MAC 并直接响应，不拨号上游。同一设备访问路由器和虚拟目标时选择不同源 IP 也可验证。

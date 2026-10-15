@@ -59,11 +59,11 @@ sudo dae ca generate --cert /srv/dae/home.pem \
 在已有 `global` 段中设置 `api_port: 9080` 并重载，然后从 Safari 打开 `http://192.168.1.1:9080/`，替换为路由器实际局域网 IP。无需开启 MITM，页面的 **Certificate & browser verification** 区域即可提供下载和 HTTPS 验证。
 
 1. 将页面指纹与 dae 启动日志或 `dae ca info` 的 SHA-256 指纹核对。
-2. 下载 `ca.mobileconfig`。
+2. 在 **Download** 菜单中选择 **Configuration profile**，下载 `ca.mobileconfig`。
 3. 在「设置 → 通用 → VPN 与设备管理」中安装描述文件。
 4. 在「设置 → 通用 → 关于本机 → 证书信任设置」中为该 CA 开启完全信任。
-5. 回到页面点击 **Test Certificate**，确认 **CA trust** 显示 **CA trusted by this browser**，之后可使用 `https://192.168.1.1:9080/`。
-6. 如需透明 MITM，在 daemon 启用 MITM 后为当前设备开启开关，再次测试 **HTTPS interception**。
+5. 回到页面点击 **Test certificate**，确认 **CA trust** 显示 **CA trusted by this browser**，之后可使用 `https://192.168.1.1:9080/`。
+6. 如需透明 MITM，在 daemon 启用 MITM 后将当前设备的 **HTTPS Modules** 设为 **On**，页面会自动再次测试，并显示 **HTTPS interception** 结果。
 
 手动安装不自动获得 TLS 信任，第 4 步不可省略，见 [Apple 官方说明](https://support.apple.com/zh-cn/102390)。停止使用时先关闭该设备的 MITM，再移除描述文件。
 
