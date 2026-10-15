@@ -44,11 +44,7 @@ func moduleScopeEngine(t *testing.T, modules ...*Module) *Engine {
 	base, _ := integrationEngine(t, nil, nil)
 	options := base.options
 	options.Modules = modules
-	engine, err := NewEngine(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return engine
+	return newTestEngine(t, options)
 }
 
 type moduleScopeRequest struct {
