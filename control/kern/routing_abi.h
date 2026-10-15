@@ -73,6 +73,7 @@ enum __attribute__((packed)) MatchType {
 	MatchType_IfIndex,
 	MatchType_Dscp,
 	MatchType_Fallback,
+	MatchType_HTTPClient,
 };
 
 enum L4ProtoType {
@@ -110,6 +111,8 @@ enum __attribute__((packed)) MatchAction {
 	MatchAction_Bump,
 	MatchAction_Capture,
 	MatchAction_FlowEnd,
+	/* On a definite miss, jump past the conditional block. */
+	MatchAction_ConditionalJump,
 	/* Userspace-only boolean terminals; never uploaded to routing_map. */
 	MatchAction_Match,
 	MatchAction_Miss,
@@ -127,7 +130,8 @@ struct match_set {
 		__u32 ifindex;
 		__u8 dscp;
 	};
-	/* OR: distance to clause tail; AND: distance to next rule.
+	/* OR: distance to clause tail; AND: distance to next rule;
+	 * ConditionalJump: distance past the body; AND in its entry skips it too.
 	 * Terminal actions: packet mark. All jumps are strictly forward.
 	 */
 	__u32 mark;

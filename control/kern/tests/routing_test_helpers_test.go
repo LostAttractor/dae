@@ -43,6 +43,9 @@ func installRoutingFlow(t testing.TB, obj *bpftestObjects, rules []bpftestMatchS
 				t.Fatalf("AND fixture at %d has no rule tail", i)
 			}
 			rule.Mark = uint32(ruleEnd - i + 1)
+			if rules[ruleEnd].Action == uint8(consts.MatchActionConditionalJump) {
+				rule.Mark += rules[ruleEnd].Mark - 1
+			}
 			subruleEnd = i
 		default:
 			ruleEnd, subruleEnd = i, i

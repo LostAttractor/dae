@@ -8,7 +8,7 @@
 
 /* Policy selection and evaluation. Packet parsing, connection ownership,
  * caching and forwarding belong to tproxy.c. The caller provides parsed
- * l4_hdr input and the outbound connectivity map.
+ * packet fields and the outbound connectivity map.
  */
 
 static __always_inline bool equal16(const __be32 x[4], const __be32 y[4])
@@ -17,20 +17,24 @@ static __always_inline bool equal16(const __be32 x[4], const __be32 y[4])
 	       x[2] == y[2] && x[3] == y[3];
 }
 
+/* Pointer-free input lets the verifier check route() independently of packet
+ * parsing and connection state. profile_id is filled by policy selection.
+ */
 struct route_params {
-	const struct l4_hdr *l4hdr;
-	const __be32 *saddr;
-	const __be32 *daddr;
-	const __u8 *mac;
-	const __be32 *pname;
+	__be32 saddr[4];
+	__be32 daddr[4];
+	__be32 pname[4];
 	__u32 ifindex;
 	__u32 profile_id;
-	const struct routing_profile *profile;
 	__u32 physinif;
+	__be16 sport;
+	__be16 dport;
+	__u8 mac[6];
 	__u8 l4proto_type;
 	__u8 ipversion_type;
 	__u8 dscp;
-	bool isdns : 1;
+	bool isdns;
+	bool has_pname;
 };
 
 enum match_result {
@@ -39,28 +43,41 @@ enum match_result {
 	MATCH_HIT,
 };
 
-struct route_ctx {
-	const struct route_params *params;
-	const struct domain_routing *domain;
-	/* Keep the PC in callback context so numeric-iterator verification
-	 * converges despite data-dependent forward jumps.
-	 */
-	__u32 position;
-	__u16 h_dport;
-	__u16 h_sport;
+/* Loop control only; the routing decision is stored in route_state.result. */
+enum route_step_result {
+	ROUTE_CONTINUE,
+	ROUTE_STOP,
+};
+
+enum http_client_admission {
+	HTTP_CLIENT_UNCHECKED,
+	HTTP_CLIENT_DENIED,
+	HTTP_CLIENT_ALLOWED,
+};
+
+/* Pointer-free control state is verified independently of predicate caches. */
+struct route_state {
+	/* Packed routing decision; negative until a terminal action succeeds. */
 	__s64 result;
-	struct lpm_key lpm_key;
-	/* Volatile prevents loop-carried states from being specialized into
-	 * long verifier paths; the two tri-state values stay in packet context.
-	 */
-	volatile __u8 subrule;
-	volatile __u8 must;
+	__u32 position;
+	/* Nested forward blocks need one ambiguity boundary, not a scope stack. */
+	__u32 uncertain_until;
+	__u8 clause_result;
+	__u8 must;
 	__u8 capture_flags;
-	volatile bool rule_uncertain;
+	bool rule_uncertain;
 	bool flow_bump;
 	bool skipped_noalive;
+};
+
+struct route_ctx {
+	const struct route_params *params;
+	const struct routing_profile *profile;
+	const struct domain_routing *domain;
+	struct route_state *state;
+	struct lpm_key lpm_key;
 	bool domain_loaded;
-	bool http_client_allowed;
+	__u8 http_client_admission;
 };
 
 #include "http_clients.h"
@@ -76,6 +93,12 @@ static __always_inline int route_predicate(struct route_ctx *ctx,
 	const struct domain_routing *domain;
 
 	switch (match_set->type) {
+	case MatchType_HTTPClient:
+		if (ctx->http_client_admission == HTTP_CLIENT_UNCHECKED)
+			ctx->http_client_admission = http_client_allowed(ctx->params) ?
+				HTTP_CLIENT_ALLOWED : HTTP_CLIENT_DENIED;
+		return ctx->http_client_admission == HTTP_CLIENT_ALLOWED ?
+			MATCH_HIT : MATCH_MISS;
 	case MatchType_Mac:
 		lpm_key = &ctx->lpm_key;
 		__builtin_memset(lpm_key->data, 0, sizeof(lpm_key->data));
@@ -95,14 +118,14 @@ lookup_lpm:
 			return -EFAULT;
 		return bpf_map_lookup_elem(lpm, lpm_key) ? MATCH_HIT : MATCH_MISS;
 	case MatchType_Port:
-		if (match_set->port_range.port_start <= ctx->h_dport &&
-		    ctx->h_dport <= match_set->port_range.port_end) {
+		if (match_set->port_range.port_start <= bpf_ntohs(ctx->params->dport) &&
+		    bpf_ntohs(ctx->params->dport) <= match_set->port_range.port_end) {
 			return MATCH_HIT;
 		}
 		break;
 	case MatchType_SourcePort:
-		if (match_set->port_range.port_start <= ctx->h_sport &&
-		    ctx->h_sport <= match_set->port_range.port_end) {
+		if (match_set->port_range.port_start <= bpf_ntohs(ctx->params->sport) &&
+		    bpf_ntohs(ctx->params->sport) <= match_set->port_range.port_end) {
 			return MATCH_HIT;
 		}
 		break;
@@ -144,7 +167,7 @@ lookup_lpm:
 		}
 		break;
 	case MatchType_ProcessName:
-		if (ctx->params->pname && equal16(match_set->pname, ctx->params->pname))
+		if (ctx->params->has_pname && equal16(match_set->pname, ctx->params->pname))
 			return MATCH_HIT;
 		break;
 	case MatchType_IfIndex:
@@ -166,136 +189,172 @@ lookup_lpm:
 	return MATCH_MISS;
 }
 
-/* Preserve the call boundary so iterator states converge on older compilers. */
-static __noinline int route_step(struct route_ctx *ctx)
+static __always_inline bool route_outbound_alive(const struct route_params *params,
+						 __u8 outbound)
 {
-	const struct routing_profile *profile = ctx->params->profile;
-	__u32 position = ctx->position;
+	struct outbound_connectivity_query query = {
+		.outbound = outbound,
+		.ipversion = (params->ipversion_type & IpVersionType_4) ? 4 : 6,
+		.l4proto = (params->l4proto_type & L4ProtoType_TCP) ? IPPROTO_TCP : IPPROTO_UDP,
+	};
+	__u32 *connectivity = bpf_map_lookup_elem(&outbound_connectivity_map, &query);
 
-	if (unlikely(position >= MAX_MATCH_SET_LEN || position >= profile->length))
-		return 1;
-	__u32 k = profile->steps[position];
+	return connectivity && *connectivity == OUTBOUND_CONNECTIVITY_ALIVE;
+}
 
-	if (unlikely(k >= MAX_MATCH_SET_LEN))
-		return 1;
-	const struct match_set *match = bpf_map_lookup_elem(&routing_map, &k);
+/* Capture flags and connectivity evidence are appended when route() finishes. */
+static __always_inline __s64 route_result_encode(__u8 outbound, __u32 mark, bool must)
+{
+	return (__s64)outbound | ((__s64)mark << 8) | ((__s64)must << 40);
+}
 
-	if (unlikely(!match))
-		return 1;
-
-	if (ctx->subrule != MATCH_HIT) {
-		int result = route_predicate(ctx, match);
-
-		if (result < 0)
-			return 1;
-		if (result > ctx->subrule)
-			ctx->subrule = result;
-	}
-
+/* Keep this global: verify actions once instead of combining every predicate
+ * path with every action and loop-carried control state.
+ */
+__noinline enum route_step_result route_apply(struct route_state *state,
+					      const struct match_set *match,
+					      const struct route_params *params,
+					      __u32 length, int predicate_result)
+{
+	if (!state || !match || !params)
+		return ROUTE_STOP;
+	__u32 position = state->position;
 	__u32 distance = 1;
 
+	if (predicate_result > state->clause_result)
+		state->clause_result = predicate_result;
+
 	if (match->action == MatchAction_Or) {
-		if (ctx->subrule == MATCH_HIT)
+		if (state->clause_result == MATCH_HIT)
 			distance = match->mark;
 		goto advance;
 	}
 
 	/* Only the clause tail applies NOT. MAYBE is unchanged by negation. */
-	__u8 clause = ctx->subrule;
+	__u8 clause = state->clause_result;
 
-	ctx->subrule = MATCH_MISS;
+	state->clause_result = MATCH_MISS;
 	if (match->flags & MATCH_FLAG_NOT)
 		clause = MATCH_HIT - clause;
 	if (clause == MATCH_MISS) {
-		if (match->action == MatchAction_And)
+		if (match->action == MatchAction_And ||
+		    match->action == MatchAction_ConditionalJump)
 			distance = match->mark;
-		goto next_rule;
+		goto finish_rule;
 	}
-	ctx->rule_uncertain |= clause == MATCH_MAYBE;
+	state->rule_uncertain |= clause == MATCH_MAYBE;
 	if (match->action == MatchAction_And)
 		goto advance;
+	if (match->action == MatchAction_ConditionalJump) {
+		if (unlikely(!match->mark || match->mark > length - position))
+			return ROUTE_STOP;
+		/* Keep the outermost ambiguous end. Nested scopes cannot outlive
+		 * their parent; a sibling starts at or beyond the previous end.
+		 */
+		if (state->rule_uncertain && position + match->mark > state->uncertain_until)
+			state->uncertain_until = position + match->mark;
+		goto finish_rule;
+	}
+	state->rule_uncertain |= position < state->uncertain_until;
 
 	/* Controls accumulate until FlowEnd. Ambiguous capture/bump rules are
 	 * candidates; ambiguous must cannot override a later definite must.
 	 */
 	switch (match->action) {
 	case MatchAction_Must:
-		if (!ctx->rule_uncertain)
-			ctx->must = MATCH_HIT;
-		else if (ctx->must == MATCH_MISS)
-			ctx->must = MATCH_MAYBE;
-		goto next_rule;
+		if (!state->rule_uncertain)
+			state->must = MATCH_HIT;
+		else if (state->must == MATCH_MISS)
+			state->must = MATCH_MAYBE;
+		goto finish_rule;
 	case MatchAction_Bump:
-		ctx->flow_bump = true;
-		goto next_rule;
-	case MatchAction_Capture: {
-		__u8 flags = MATCH_CAPTURE_FLAGS(match);
-
-		if (flags & (CAPTURE_HTTP | CAPTURE_HTTP_REQUEST)) {
-			if (!ctx->http_client_allowed)
-				flags &= ~(CAPTURE_HTTP | CAPTURE_HTTP_REQUEST);
-		}
-		ctx->capture_flags |= flags;
+		state->flow_bump = true;
+		goto finish_rule;
+	case MatchAction_Capture:
+		state->capture_flags |= MATCH_CAPTURE_FLAGS(match);
 		/* Destination rules run before flow controls and routing. Their exact
 		 * target is selected in userspace; never commit a route for the old IP.
 		 */
-		if (ctx->capture_flags & (CAPTURE_DESTINATION | CAPTURE_HTTP_REQUEST))
-			goto exact_domain;
-		goto next_rule;
-	}
+		if (state->capture_flags & (CAPTURE_DESTINATION | CAPTURE_HTTP_REQUEST))
+			goto to_userspace;
+		goto finish_rule;
 	case MatchAction_FlowEnd:
-		if (ctx->flow_bump || ctx->must == MATCH_MAYBE)
-			goto exact_domain;
-		goto next_rule;
+		if (state->flow_bump || state->must == MATCH_MAYBE)
+			goto to_userspace;
+		goto finish_rule;
 	case MatchAction_Route:
 		break;
 	default:
-		return 1;
+		return ROUTE_STOP;
 	}
 
-	if (match->flags & MATCH_FLAG_SKIP_NOALIVE) {
-		struct outbound_connectivity_query q = {
-			.outbound = match->outbound,
-			.ipversion = (ctx->params->ipversion_type & IpVersionType_4) ? 4 : 6,
-			.l4proto = (ctx->params->l4proto_type & L4ProtoType_TCP) ?
-				IPPROTO_TCP : IPPROTO_UDP,
-		};
-		__u32 *state = bpf_map_lookup_elem(&outbound_connectivity_map, &q);
-
-		if (!state || *state != OUTBOUND_CONNECTIVITY_ALIVE) {
-			ctx->skipped_noalive = true;
-			goto next_rule;
-		}
+	if ((match->flags & MATCH_FLAG_SKIP_NOALIVE) &&
+	    !route_outbound_alive(params, match->outbound)) {
+		state->skipped_noalive = true;
+		goto finish_rule;
 	}
 
 	/* An ambiguous terminal cannot commit its mark or must bit. */
-	if (ctx->rule_uncertain)
-		goto exact_domain;
-	bool must = ctx->must == MATCH_HIT || (match->flags & MATCH_FLAG_MUST);
-	__u8 outbound = match->outbound;
+	if (state->rule_uncertain)
+		goto to_userspace;
+	bool must = state->must == MATCH_HIT || (match->flags & MATCH_FLAG_MUST);
 
-	if (!must && ctx->params->isdns && !(match->flags & MATCH_FLAG_BYPASS))
-		ctx->capture_flags |= CAPTURE_DNS;
-	ctx->result = (__s64)outbound | ((__s64)match->mark << 8) |
-		      ((__s64)must << 40);
-	return 1;
+	if (!must && params->isdns && !(match->flags & MATCH_FLAG_BYPASS))
+		state->capture_flags |= CAPTURE_DNS;
+	state->result = route_result_encode(match->outbound, match->mark, must);
+	return ROUTE_STOP;
 
-exact_domain:
-	ctx->result = (__s64)OUTBOUND_CONTROL_PLANE_ROUTING |
-		      ((__s64)(ctx->must == MATCH_HIT) << 40);
-	return 1;
-next_rule:
-	ctx->rule_uncertain = false;
+to_userspace:
+	state->result = route_result_encode(OUTBOUND_CONTROL_PLANE_ROUTING, 0,
+					    state->must == MATCH_HIT);
+	return ROUTE_STOP;
+finish_rule:
+	state->rule_uncertain = false;
 advance:
 	/* The compiler checks rule structure; the kernel checks jump bounds. */
-	if (unlikely(!distance || distance > MAX_MATCH_SET_LEN - position))
-		return 1;
-	ctx->position = position + distance;
-	return 0;
+	if (unlikely(!distance || distance > length - position))
+		return ROUTE_STOP;
+	state->position = position + distance;
+	return ROUTE_CONTINUE;
 }
 
-static __always_inline int select_routing_profile(struct route_params *params)
+/* Actions have an independent verification boundary; fetching needs no call. */
+static __always_inline enum route_step_result route_step(struct route_ctx *ctx)
 {
+	const struct routing_profile *profile = ctx->profile;
+	__u32 position = ctx->state->position;
+
+	if (unlikely(position >= MAX_MATCH_SET_LEN || position >= profile->length))
+		return ROUTE_STOP;
+	__u32 k = profile->steps[position];
+
+	if (unlikely(k >= MAX_MATCH_SET_LEN))
+		return ROUTE_STOP;
+	const struct match_set *match = bpf_map_lookup_elem(&routing_map, &k);
+
+	if (unlikely(!match))
+		return ROUTE_STOP;
+
+	int predicate_result = MATCH_HIT;
+
+	if (ctx->state->clause_result != MATCH_HIT) {
+		predicate_result = route_predicate(ctx, match);
+		if (predicate_result < 0)
+			return ROUTE_STOP;
+	}
+	return route_apply(ctx->state, match, ctx->params, profile->length, predicate_result);
+}
+
+/* Keep this global: static subprograms inherit each caller's verifier states,
+ * multiplying the routing iterator's paths by the packet classifier's paths.
+ */
+__noinline __s64 route(struct route_params *params, struct route_state *state)
+{
+	int index;
+	struct route_ctx ctx = {};
+
+	if (!params || !state)
+		return -EFAULT;
 	__u32 *selected_id =
 		bpf_map_lookup_elem(&routing_interface_map, &params->ifindex);
 
@@ -306,35 +365,22 @@ static __always_inline int select_routing_profile(struct route_params *params)
 	if (unlikely(!profile || !profile->length ||
 		     profile->length > MAX_MATCH_SET_LEN))
 		return -EFAULT;
-	params->profile = profile;
-	return 0;
-}
-
-static __always_inline __s64 route(struct route_params *params)
-{
-	int index;
-	struct route_ctx ctx = {};
-
+	ctx.profile = profile;
 	ctx.params = params;
-	ctx.result = -EFAULT;
-	if (http_capture_enabled)
-		ctx.http_client_allowed = http_client_allowed(params);
-
-	/* TCP and UDP share the source/destination port layout. */
-	ctx.h_dport = bpf_ntohs(params->l4hdr->udph.dest);
-	ctx.h_sport = bpf_ntohs(params->l4hdr->udph.source);
-
+	__builtin_memset(state, 0, sizeof(*state));
+	state->result = -EFAULT;
+	ctx.state = state;
 	ctx.lpm_key.trie_key.prefixlen = IPV6_BYTE_LENGTH * 8;
 
 	bpf_for(index, 0, MAX_MATCH_SET_LEN) {
-		if (route_step(&ctx))
+		if (route_step(&ctx) == ROUTE_STOP)
 			break;
 	}
-	if (ctx.result >= 0) {
-		ctx.result |= (__s64)ctx.capture_flags << ROUTE_RESULT_CAPTURE_SHIFT;
-		if (ctx.skipped_noalive)
-			ctx.result |= ROUTE_RESULT_SKIPPED_NOALIVE;
-		return ctx.result;
+	if (state->result >= 0) {
+		state->result |= (__s64)state->capture_flags << ROUTE_RESULT_CAPTURE_SHIFT;
+		if (state->skipped_noalive)
+			state->result |= ROUTE_RESULT_SKIPPED_NOALIVE;
+		return state->result;
 	}
 	bpf_printk(
 		"No match_set hits. Did coder forget to sync common/consts/ebpf.go with enum MatchType?");

@@ -112,7 +112,3 @@ func (b *RoutingMatcherBuilder) applyRules(rules []*config_parser.RoutingRule, o
 	}
 	return nil
 }
-
-func cloneSources(sources []config_parser.RuleSource) []config_parser.RuleSource {
-	return slices.Clone(sources)
-}

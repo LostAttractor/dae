@@ -16,6 +16,63 @@ import (
 	"github.com/daeuniverse/dae/component/settings"
 )
 
+func TestHTTPClientAdmissionSkipsScopesAndSharesResult(t *testing.T) {
+	prepared := prepareFlowRulesForTest(t, "dport(8443) -> dnat('198.51.100.20:9443')\ndport(53) -> must\ndport(9443) -> bump", "dport(443) -> direct(mark:37)")
+	prepared.bypass = planRulesForTest(t, "dport(9000) -> direct")
+	prepared.enableMITMPlan(plugin.Plan{Scopes: []plugin.HTTPScope{
+		{Scope: plugin.Scope{{Host: "198.51.100.9"}}},
+		{Scope: plugin.Scope{{Host: "198.51.100.8"}}, PreserveRoute: true},
+	}})
+	m, _ := routingMatcherForTest(t, prepared)
+	for _, tc := range []struct {
+		name        string
+		allowed     bool
+		destination string
+		queries     int
+		want        routingEvaluation
+	}{
+		{"denied skips both blocks", false, "198.51.100.8:443", 1, routingEvaluation{outbound: consts.OutboundDirect, mark: 37}},
+		{"allowed shares admission", true, "198.51.100.8:443", 1, routingEvaluation{outbound: consts.OutboundDirect, mark: 37, captureFlags: captureHTTP}},
+		{"request capture precedes routing", true, "198.51.100.9:443", 1, routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureHTTP | captureHTTPRequest}},
+		{"denied preserves must", false, "198.51.100.8:53", 1, routingEvaluation{outbound: consts.OutboundDirect, must: true}},
+		{"denied preserves bump", false, "198.51.100.8:9443", 1, routingEvaluation{outbound: consts.OutboundControlPlaneRouting}},
+		{"DNAT needs no HTTP admission", false, "198.51.100.8:8443", 0, routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureDestination}},
+		{"API bypass needs no HTTP admission", false, "198.51.100.8:9000", 0, routingEvaluation{outbound: consts.OutboundDirect}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queries := 0
+			m.httpClientAllowed = func(netip.Addr, [6]byte) bool {
+				queries++
+				return tc.allowed
+			}
+			trace := newRoutingExecution()
+			spans := m.profiles[m.defaultProfileID]
+			got, err := m.evaluateSpans(spans, routingInput{
+				src: netip.MustParseAddrPort("192.0.2.1:41000"), dst: netip.MustParseAddrPort(tc.destination),
+				l4proto: consts.L4ProtoType_TCP, kernel: true, trace: trace,
+			})
+			if err != nil || got != tc.want || queries != tc.queries {
+				t.Fatalf("got %+v, %v, %d admission queries; want %+v, %d queries", got, err, queries, tc.want, tc.queries)
+			}
+			if !tc.allowed {
+				for spanIndex, span := range spans {
+					for i := span.Start; i < span.End; i++ {
+						jump := m.matches[i]
+						if jump.Action != uint8(consts.MatchActionConditionalJump) {
+							continue
+						}
+						for j := i + 1; j < i+jump.Mark; j++ {
+							if trace.visited[routingTracePosition{spanIndex, j}] {
+								t.Fatalf("denied client visited HTTP scope instruction %d", j)
+							}
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHTTPClientAdmissionKernelParity(t *testing.T) {
 	collection, state := dnsKernelCollection(t)
 	mac := [6]byte{2, 0, 0, 0, 0, 1}

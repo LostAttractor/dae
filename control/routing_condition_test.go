@@ -73,7 +73,7 @@ func TestConditionalUseMatching(t *testing.T) {
 	}
 }
 
-func TestConditionalUseSharesOnlyIdenticalConditions(t *testing.T) {
+func TestConditionalUseSharesBodyAcrossConditions(t *testing.T) {
 	conf := parseStructuredTestConfig(t, `rule_set { shared { dport(443) -> direct(mark:7) } }
  policy {
   main { sip(192.0.2.0/24) -> use(shared)
@@ -93,9 +93,9 @@ func TestConditionalUseSharesOnlyIdenticalConditions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Two conditional variants (2 instructions each), an unconditional one,
-	// and one shared fallback. Reusing main's condition costs no extra slots.
-	if len(b.rules) != 6 || !reflect.DeepEqual(b.profiles[0].Spans, b.profiles[1].Spans) {
+	// One body, two entry conditions and one fallback. Different conditions
+	// share the body; identical conditions also share the entry jump.
+	if len(b.rules) != 4 || !reflect.DeepEqual(b.profiles[0].Spans, b.profiles[1].Spans) {
 		t.Fatalf("condition variants not shared correctly: rules=%d profiles=%+v", len(b.rules), b.profiles)
 	}
 	m, err := b.BuildUserspace()
@@ -194,7 +194,7 @@ func TestConditionalUseValidatesEmptyAndUnusedFragments(t *testing.T) {
 	}
 }
 
-func TestConditionalUseBoundsEmptyDAGVariants(t *testing.T) {
+func TestConditionalUseSharesEmptyDAG(t *testing.T) {
 	var text strings.Builder
 	text.WriteString("rule_set { set0 {}\n")
 	for i := 1; i <= 12; i++ {
@@ -202,9 +202,12 @@ func TestConditionalUseBoundsEmptyDAGVariants(t *testing.T) {
 	}
 	text.WriteString("}\nuse: set12\nfallback: direct")
 	conf := parseStructuredTestConfig(t, text.String())
-	_, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "condition variants") {
-		t.Fatalf("error = %v, want bounded conditional DAG expansion", err)
+	b, err := compileTestRouting(preparedRules{routing: &conf.Routing}, map[string]uint8{"direct": 0}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.rules) != 1 {
+		t.Fatalf("empty DAG published %d instructions, want only fallback", len(b.rules))
 	}
 }
 

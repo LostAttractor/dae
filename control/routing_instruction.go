@@ -116,23 +116,32 @@ func (b *RoutingMatcherBuilder) addMatches[T any](f *config_parser.Function, kin
 // Thus relative tail distances remain valid when a fragment is shared, moved
 // or repeated. Logical instructions never commit their Mark field to a packet.
 func encodeRoutingJumps(rules []bpfMatchSet) error {
-	ruleTail, subruleTail := -1, -1
+	// AND misses go to ruleEnd; OR hits go to clauseTail to apply NOT/action.
+	ruleEnd, clauseTail := -1, -1
 	for i := len(rules) - 1; i >= 0; i-- {
 		rule := &rules[i]
 		switch consts.MatchAction(rule.Action) {
 		case consts.MatchActionAnd:
-			if ruleTail <= i {
+			if ruleEnd <= i {
 				return fmt.Errorf("missing routing rule tail at match set %d", i)
 			}
-			rule.Mark = uint32(ruleTail - i + 1)
-			subruleTail = i
+			rule.Mark = uint32(ruleEnd - i)
+			clauseTail = i
 		case consts.MatchActionOr:
-			if subruleTail <= i {
+			if clauseTail <= i {
 				return fmt.Errorf("missing routing clause tail at match set %d", i)
 			}
-			rule.Mark = uint32(subruleTail - i)
+			rule.Mark = uint32(clauseTail - i)
 		default:
-			ruleTail, subruleTail = i, i
+			ruleEnd, clauseTail = i+1, i
+			if rule.Action == uint8(consts.MatchActionConditionalJump) {
+				// Shared bodies need not follow their entry in the physical pool.
+				// Validate the target in each profile's execution order instead.
+				if rule.Mark <= 1 || rule.Mark > uint32(consts.MaxMatchSetLen) {
+					return fmt.Errorf("invalid conditional routing jump at match set %d: %d", i, rule.Mark)
+				}
+				ruleEnd = i + int(rule.Mark)
+			}
 		}
 	}
 	return nil

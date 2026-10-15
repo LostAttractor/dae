@@ -97,18 +97,6 @@ func (b *RoutingMatcherBuilder) BuildKernspace() error {
 	if err := b.bpf.DefaultRoutingProfile.Set(b.defaultProfileID); err != nil {
 		return fmt.Errorf("select default routing policy: %w", err)
 	}
-	if b.bpf.HttpCaptureEnabled != nil {
-		enabled := uint8(0)
-		for _, rule := range b.rules[:b.routing.end] {
-			if rule.Action == uint8(consts.MatchActionCapture) && ((rule.Flags>>matchCaptureShift)&(captureHTTP|captureHTTPRequest)) != 0 {
-				enabled = 1
-				break
-			}
-		}
-		if err := b.bpf.HttpCaptureEnabled.Set(enabled); err != nil {
-			return fmt.Errorf("set HTTP admission demand: %w", err)
-		}
-	}
 	return nil
 }
 

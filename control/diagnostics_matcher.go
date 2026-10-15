@@ -56,6 +56,8 @@ func diagnosticAction(action uint8) string {
 		return "capture"
 	case consts.MatchActionFlowEnd:
 		return "flow_end"
+	case consts.MatchActionConditionalJump:
+		return "use"
 	case consts.MatchActionMatch:
 		return "destination"
 	case consts.MatchActionMiss:
@@ -129,6 +131,8 @@ func (m *RoutingMatcher) annotatePolicyMatches(steps []api.ExplainStep, profileI
 // (shared-IP ambiguity). A known empty domain bitmap is a definite kernel miss.
 func diagnosticField(kind consts.MatchType, input routingInput, metadata routingMatchMetadata) (field, actual string) {
 	switch kind {
+	case consts.MatchType_HTTPClient:
+		return "mitm_client_identity", "HTTP client admission"
 	case consts.MatchType_SourceIpSet:
 		return "source_ip", input.src.Addr().String()
 	case consts.MatchType_IpSet:
@@ -231,8 +235,21 @@ func (m *RoutingMatcher) explainClause(predicates *routingPredicates, spanIndex 
 	clause.condition.Actual = strings.Join(slices.Compact(actual), "; ")
 	if clause.condition.Expression == "" {
 		clause.condition.Expression, clause.condition.Expected = "fallback", "always"
+		if m.matches[end].Type == uint8(consts.MatchType_HTTPClient) {
+			clause.condition.Expression, clause.condition.Expected = "mitm.enabled", "allowed"
+		}
 	}
 	return clause, nil
+}
+
+// Diagnostic scopes retain source context independently of runtime bytecode.
+// The accumulated state lets nested blocks explain missing context and skips.
+type diagnosticBlock struct {
+	end                                   uint32
+	knownMiss, ambiguous, unknown, denied bool
+	reason                                string
+	missing                               []string
+	conditions                            []api.ExplainCondition
 }
 
 // explainSpans executes the production interpreter, then supplements its
@@ -251,7 +268,11 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 	uncertain := false
 	selectedID := ""
 	occurrence := 0
+	var blocks []diagnosticBlock
+	var base uint32
 	for spanIndex, span := range spans {
+		spanBase := base
+		base += span.End - span.Start
 		if input.stage == routeAfterTarget && span.Phase == routingPhaseIngress {
 			continue
 		}
@@ -259,6 +280,14 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 		for start < span.End {
 			if err := ctx.Err(); err != nil {
 				return result, nil, nil, "", err
+			}
+			position := spanBase + start - span.Start
+			for len(blocks) != 0 && position >= blocks[len(blocks)-1].end {
+				blocks = blocks[:len(blocks)-1]
+			}
+			var parent diagnosticBlock
+			if len(blocks) != 0 {
+				parent = blocks[len(blocks)-1]
 			}
 			end := start
 			for end < span.End && (m.matches[end].Action == uint8(consts.MatchActionOr) || m.matches[end].Action == uint8(consts.MatchActionAnd)) {
@@ -281,9 +310,16 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 			if step.Expression == "" {
 				step.Expression = step.Action
 			}
+			if parent.denied && !parent.unknown {
+				step.Status, step.Match, step.Reason = "skipped", "unknown", parent.reason
+				steps = append(steps, step)
+				start = end + 1
+				continue
+			}
 			visited := false
-			var ruleMissing []string
-			knownMiss, ambiguous, unknown := false, false, false
+			ruleMissing := slices.Clone(parent.missing)
+			step.Conditions = slices.Clone(parent.conditions)
+			knownMiss, ambiguous, unknown := parent.knownMiss, parent.ambiguous, parent.unknown
 			for clauseStart := start; clauseStart <= end; {
 				clauseEnd := clauseStart
 				for clauseEnd < end && m.matches[clauseEnd].Action == uint8(consts.MatchActionOr) {
@@ -306,16 +342,6 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 				}
 				clauseStart = clauseEnd + 1
 			}
-			httpCapture := tail.Action == uint8(consts.MatchActionCapture) && (tail.Flags>>matchCaptureShift)&(captureHTTP|captureHTTPRequest) != 0
-			clientDenied := false
-			if httpCapture && !knownMiss && m.httpClientAllowed != nil {
-				if missing["mitm_client_identity"] {
-					unknown = true
-					ruleMissing = append(ruleMissing, "mitm_client_identity")
-				} else {
-					clientDenied = !m.httpClientAllowed(input.src.Addr(), input.mac)
-				}
-			}
 			switch {
 			case knownMiss:
 				step.Match = "miss"
@@ -328,23 +354,35 @@ func (m *RoutingMatcher) explainSpans(ctx context.Context, spans []routingSpan, 
 				step.Status, step.Reason = "evaluated", "predicate_"+step.Match
 				if execution.noalive[routingTracePosition{spanIndex, end}] {
 					step.Status, step.Reason = "skipped", "outbound_unavailable"
-				} else if execution.last == (routingTracePosition{spanIndex, end}) && step.Match != "miss" {
+				} else if tail.Action != uint8(consts.MatchActionConditionalJump) && execution.last == (routingTracePosition{spanIndex, end}) && step.Match != "miss" {
 					step.Status, step.Reason = "selected", "terminal_decision"
 					selectedID = step.ID
 				}
-				if clientDenied && (tail.Flags>>matchCaptureShift)&captureDestination == 0 {
-					step.Status, step.Reason = "skipped", "client_not_allowed"
-				}
 			}
-			if (visited || uncertain) && !knownMiss && unknown {
+			if tail.Action == uint8(consts.MatchActionConditionalJump) {
+				reason := "condition_not_matched"
+				httpAdmission := tail.Type == uint8(consts.MatchType_HTTPClient)
+				if httpAdmission {
+					reason = "client_not_allowed"
+				}
+				blocks = append(blocks, diagnosticBlock{
+					end: position + end - start + tail.Mark, knownMiss: knownMiss, ambiguous: ambiguous, unknown: unknown,
+					denied: parent.denied || visited && (knownMiss || unknown), reason: reason,
+					missing: ruleMissing, conditions: step.Conditions,
+				})
+				if !httpAdmission {
+					steps = append(steps, step)
+				}
+				start = end + 1
+				continue
+			}
+			if (visited || parent.denied || uncertain) && !knownMiss && unknown {
 				if tail.Flags&matchFlagSkipNoalive != 0 && m.outboundUsable != nil && !m.outboundUsable(tail.Outbound, input.l4proto, predicates.ipVersion) {
-					unknown = false
 					step.Status, step.Reason = "skipped", "outbound_unavailable"
+				} else {
+					required = append(required, ruleMissing...)
+					uncertain = true
 				}
-			}
-			if (visited || uncertain) && !knownMiss && unknown {
-				required = append(required, ruleMissing...)
-				uncertain = true
 			}
 			if uncertain {
 				step.Status, step.Reason = "conditional", "missing_context"

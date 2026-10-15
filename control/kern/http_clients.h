@@ -5,6 +5,7 @@
 /* An immutable inner trie is replaced as one unit. Every lookup for a packet
  * uses this one snapshot, preserving override and ordered-rule precedence.
  * Kind and data layout are mirrored by control/http_clients.go.
+ * Keep lookup temporaries in a separate frame to bound route()'s stack usage.
  */
 static __noinline bool http_client_allowed(const struct route_params *params)
 {

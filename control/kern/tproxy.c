@@ -268,19 +268,6 @@ _Static_assert(__builtin_offsetof(struct udp_routing_cache_value, cached_until) 
 _Static_assert(sizeof(struct udp_routing_scratch) == sizeof(struct udp_routing_cache_value),
 	       "UDP insertion layout mismatch");
 
-/* Keep ingress temporaries off the limited BPF stack. */
-struct ingress_scratch {
-	struct tuples tuples;
-	struct routing_result result;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__type(key, __u32);
-	__type(value, struct ingress_scratch);
-	__uint(max_entries, 1);
-} ingress_scratch_map SEC(".maps");
-
 struct device_route_state {
 	__u64 epoch;
 	__u32 updating;
@@ -345,8 +332,6 @@ volatile const struct dae_param PARAM = {};
 /* Updated only when publishing a control plane; zero disables observation. */
 volatile __be16 api_port;
 volatile __u32 default_routing_profile;
-/* Disabled when the prepared routing program has no HTTP capture actions. */
-volatile __u8 http_capture_enabled = 1;
 /* Fixed before this generation's programs are attached. */
 volatile __u32 routing_generation;
 
@@ -870,6 +855,23 @@ is_utp(const struct __sk_buff *skb, __u8 l4proto, __u32 offset,
 
 #include "routing.h"
 
+/* Reuse per-CPU ingress storage for pointer-free routing input and state,
+ * leaving stack space for predicate lookups and independently verified actions.
+ */
+struct ingress_scratch {
+	struct tuples tuples;
+	struct routing_result result;
+	struct route_params params;
+	struct route_state state;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct ingress_scratch);
+	__uint(max_entries, 1);
+} ingress_scratch_map SEC(".maps");
+
 static __always_inline void fill_udp_routing_cache_key(
 	struct udp_routing_cache_key *key, const struct tuples *tuples)
 {
@@ -1179,32 +1181,34 @@ static __always_inline int do_tproxy_first_fragment(
 			goto direct;
 	}
 
-	struct route_params params;
+	struct route_params *params = &scratch->params;
 
-	params.l4hdr = l4h;
+	__builtin_memset(params, 0, sizeof(*params));
+	params->sport = l4h->udph.source;
+	params->dport = l4h->udph.dest;
 	if (l4proto == IPPROTO_TCP) {
-		params.l4proto_type = L4ProtoType_TCP;
+		params->l4proto_type = L4ProtoType_TCP;
 	} else {
-		params.l4proto_type = L4ProtoType_UDP;
+		params->l4proto_type = L4ProtoType_UDP;
 		if (is_utp(skb, l4proto, payload_offset, packet_end))
-			params.l4proto_type |= (1 << 2);
+			params->l4proto_type |= (1 << 2);
 	}
 	if (skb->protocol == bpf_htons(ETH_P_IP))
-		params.ipversion_type = IpVersionType_4;
+		params->ipversion_type = IpVersionType_4;
 	else
-		params.ipversion_type = IpVersionType_6;
-	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
-	params.dscp = tuples->dscp;
-	params.ifindex = skb->ifindex;
-	params.physinif = is_wan ? 0 : skb_bridge_physinif(skb);
-	params.mac = ethh->h_source;
-	params.saddr = tuples->five.sip.u6_addr32;
-	params.daddr = tuples->five.dip.u6_addr32;
-	params.isdns = tuples->five.dport == bpf_htons(53);
+		params->ipversion_type = IpVersionType_6;
+	params->has_pname = !!pid_pname;
+	if (pid_pname)
+		__builtin_memcpy(params->pname, pid_pname->pname, sizeof(params->pname));
+	params->dscp = tuples->dscp;
+	params->ifindex = skb->ifindex;
+	params->physinif = is_wan ? 0 : skb_bridge_physinif(skb);
+	__builtin_memcpy(params->mac, ethh->h_source, sizeof(params->mac));
+	__builtin_memcpy(params->saddr, tuples->five.sip.u6_addr32, sizeof(params->saddr));
+	__builtin_memcpy(params->daddr, tuples->five.dip.u6_addr32, sizeof(params->daddr));
+	params->isdns = tuples->five.dport == bpf_htons(53);
 
-	if (select_routing_profile(&params))
-		return TCX_DROP;
-	__s64 route_result = route(&params);
+	__s64 route_result = route(params, &scratch->state);
 
 	if (route_result < 0 ||
 	    (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
@@ -1221,9 +1225,9 @@ static __always_inline int do_tproxy_first_fragment(
 		result->outbound = OUTBOUND_DIRECT;
 		result->route_epoch = route_epoch;
 		result->generation = generation;
-		result->profile_id = params.profile_id;
-		result->ifindex = params.ifindex;
-		result->physinif = params.physinif;
+		result->profile_id = params->profile_id;
+		result->ifindex = params->ifindex;
+		result->physinif = params->physinif;
 
 		__builtin_memcpy(result->mac, ethh->h_source, sizeof(result->mac));
 		if (l4proto == IPPROTO_UDP) {
@@ -1406,39 +1410,42 @@ static __always_inline int do_tproxy_unfragmented(
 			goto selected;
 	}
 
-	struct route_params params;
+	struct route_params *params = &scratch->params;
 
-	params.l4hdr = l4h;
-	params.l4proto_type = l4proto == IPPROTO_TCP ? L4ProtoType_TCP : L4ProtoType_UDP;
+	__builtin_memset(params, 0, sizeof(*params));
+	params->sport = l4h->udph.source;
+	params->dport = l4h->udph.dest;
+	params->l4proto_type = l4proto == IPPROTO_TCP ? L4ProtoType_TCP : L4ProtoType_UDP;
 	if (l4proto == IPPROTO_UDP && is_utp(skb, l4proto, offset, packet_end))
-		params.l4proto_type |= (1 << 2);
-	params.ipversion_type = protocol == bpf_htons(ETH_P_IP) ? IpVersionType_4 : IpVersionType_6;
-	params.pname = pid_pname ? (const __be32 *)pid_pname->pname : NULL;
-	params.dscp = tuples->dscp;
-	params.ifindex = ifindex;
-	params.physinif = is_wan ? 0 : skb_bridge_physinif(skb);
-	params.mac = ethh->h_source;
-	params.saddr = tuples->five.sip.u6_addr32;
-	params.daddr = tuples->five.dip.u6_addr32;
-	params.isdns = isdns;
+		params->l4proto_type |= (1 << 2);
+	params->ipversion_type =
+		protocol == bpf_htons(ETH_P_IP) ? IpVersionType_4 : IpVersionType_6;
+	params->has_pname = !!pid_pname;
+	if (pid_pname)
+		__builtin_memcpy(params->pname, pid_pname->pname, sizeof(params->pname));
+	params->dscp = tuples->dscp;
+	params->ifindex = ifindex;
+	params->physinif = is_wan ? 0 : skb_bridge_physinif(skb);
+	__builtin_memcpy(params->mac, ethh->h_source, sizeof(params->mac));
+	__builtin_memcpy(params->saddr, tuples->five.sip.u6_addr32, sizeof(params->saddr));
+	__builtin_memcpy(params->daddr, tuples->five.dip.u6_addr32, sizeof(params->daddr));
+	params->isdns = isdns;
 
-	if (select_routing_profile(&params))
-		return TCX_DROP;
-	__s64 route_ret = route(&params);
+	__s64 route_ret = route(params, &scratch->state);
 
 	if (route_ret < 0)
 		return TCX_DROP;
 	routing_result->generation = generation;
 	routing_result->route_epoch = route_epoch;
-	routing_result->profile_id = params.profile_id;
+	routing_result->profile_id = params->profile_id;
 	routing_result->outbound = route_ret;
 	routing_result->mark = route_ret >> 8;
 	routing_result->must = (route_ret >> 40) & 1;
 	routing_result->capture_flags = route_ret >> ROUTE_RESULT_CAPTURE_SHIFT;
-	routing_result->protocol = params.l4proto_type;
+	routing_result->protocol = params->l4proto_type;
 	routing_result->dscp = tuples->dscp;
 	routing_result->ifindex = ifindex;
-	routing_result->physinif = params.physinif;
+	routing_result->physinif = params->physinif;
 	__builtin_memcpy(routing_result->mac, ethh->h_source, sizeof(routing_result->mac));
 
 	if (routing_result->outbound == OUTBOUND_BLOCK)

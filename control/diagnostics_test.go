@@ -417,6 +417,11 @@ func TestDiagnosticsHTTPAdmissionUsesCurrentAndAssumedClientPolicy(t *testing.T)
 	if !slices.ContainsFunc(result.Compared.Steps, func(step api.ExplainStep) bool { return step.Reason == "client_not_allowed" }) {
 		t.Fatal("excluded capture lacks client reason")
 	}
+	for _, step := range result.Compared.Steps {
+		if step.Reason == "client_not_allowed" && (step.Status != "skipped" || len(step.Conditions) != 0) {
+			t.Fatalf("excluded capture evaluated its scope: %+v", step)
+		}
+	}
 	request.Compare = nil
 	request.Context.SourceIP, request.Context.MAC = "", ""
 	result, err = plane.Explain(t.Context(), request, false)

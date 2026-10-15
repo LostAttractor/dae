@@ -13,6 +13,46 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 )
 
+func TestHTTPClientAdmissionSkipsInvalidPredicates(t *testing.T) {
+	obj, err := loadTestObjects(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, ctx, _ := routingFlowPacket(t, obj)
+	// Reading either out-of-range domain ID fails routing. A denied client
+	// must jump over both blocks and continue through flow controls and routing.
+	request := routingDomainRule(obj.RoutingMap.MaxEntries(), consts.MatchActionCapture, 0)
+	request.Flags = 5 << 3
+	http := request
+	http.Flags = 1 << 3
+	jump := bpftestMatchSet{Type: uint8(consts.MatchType_HTTPClient), Action: uint8(consts.MatchActionConditionalJump), Mark: 2}
+	installRoutingFlow(t, obj, []bpftestMatchSet{
+		jump, request,
+		{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionMust)},
+		jump, http,
+		{Type: uint8(consts.MatchType_Fallback), Action: uint8(consts.MatchActionFlowEnd)},
+		{Type: uint8(consts.MatchType_Fallback), Mark: 37},
+	})
+	for _, allowed := range []uint32{0, 1} {
+		if err := obj.UnusedHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: allowed}, ebpf.UpdateAny); err != nil {
+			t.Fatal(err)
+		}
+		want := ^uint32(0)
+		if allowed != 0 {
+			want = 2 // Admitted clients evaluate the deliberately invalid ID.
+		}
+		for _, program := range []*ebpf.Program{obj.LanIngressL2, obj.TproxyWanEgressL2} {
+			status, _, output, err := runBpfProgram(program, packet, ctx)
+			if err != nil || status != want {
+				t.Fatalf("%s allowed=%d: status=%d want=%d err=%v", program, allowed, status, want, err)
+			}
+			if allowed == 0 && binary.NativeEndian.Uint32(output[8:12]) != 37 {
+				t.Fatal("HTTP jump lost the ordinary routing mark")
+			}
+		}
+	}
+}
+
 func TestRoutingDomainShortCircuit(t *testing.T) {
 	obj, err := loadTestObjects(t)
 	if err != nil {

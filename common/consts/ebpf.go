@@ -35,6 +35,7 @@ const (
 	MatchType_IfIndex
 	MatchType_Dscp
 	MatchType_Fallback
+	MatchType_HTTPClient
 	MatchType_MustRules
 
 	MatchType_Upstream
@@ -55,6 +56,9 @@ const (
 	MatchActionBump
 	MatchActionCapture
 	MatchActionFlowEnd
+	// Jump past the block on a definite miss; otherwise enter it.
+	// An ambiguous entry makes matching body rules ambiguous until block end.
+	MatchActionConditionalJump
 	// Boolean terminals used only by DestinationProgram's exact predicates.
 	MatchActionMatch
 	MatchActionMiss

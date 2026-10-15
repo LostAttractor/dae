@@ -61,10 +61,10 @@ wg0: tunnel }`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 3 API matches + 100 destination captures + 4 scoped HTTP conditions
+	// 3 API matches + 100 destination captures + 1 HTTP jump + 4 scope conditions
 	// + FlowEnd + 1 shared client + 3 fallbacks + 200 userspace instructions.
-	if len(b.rules) != 312 {
-		t.Fatalf("physical rules = %d, want 312", len(b.rules))
+	if len(b.rules) != 313 {
+		t.Fatalf("physical rules = %d, want 313", len(b.rules))
 	}
 	captures := 0
 	for _, rule := range b.rules {
@@ -76,7 +76,7 @@ wg0: tunnel }`)
 		t.Fatalf("capture predicates = %d, want 101", captures)
 	}
 	for _, profile := range b.profiles {
-		if profile.Spans[0].Start != 0 || spanExecutionLen(profile.Spans) != 110 {
+		if profile.Spans[0].Start != 0 || spanExecutionLen(profile.Spans) != 111 {
 			t.Fatalf("profile did not share preamble: %+v", profile)
 		}
 	}

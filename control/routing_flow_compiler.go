@@ -18,7 +18,6 @@ import (
 type destinationFragment struct {
 	rules          routing.DestinationRewrites
 	owner, section string
-	predicates     []destinationPredicate
 }
 
 type resolvedFlowBlock struct {
@@ -83,17 +82,26 @@ func (c *routingCompiler) compileShared(p *preparedRules) error {
 
 func (c *routingCompiler) compileHTTPCapture(scopes []plugin.Scope, flags uint8, phase routingPhase) (routingSpan, error) {
 	start := uint32(len(c.builder.rules))
+	predicates := mitmCapturePredicates(scopes)
+	if len(predicates) == 0 {
+		return routingSpan{}, nil
+	}
+	// Each block checks client admission before any scope predicates. The relative
+	// jump remains valid when profiles share or reorder physical fragments.
+	c.builder.rules = append(c.builder.rules, bpfMatchSet{Type: uint8(consts.MatchType_HTTPClient)})
 	name := "http"
 	if flags&captureHTTPRequest != 0 {
 		name = "http_request"
 	}
-	for _, predicate := range mitmCapturePredicates(scopes) {
+	for _, predicate := range predicates {
 		rule := &config_parser.RoutingRule{AndFunctions: predicate, Outbound: config_parser.Function{Name: "capture", Params: []*config_parser.Param{{Val: name}}}}
 		if err := c.builder.applyFlowEffect(rule, consts.MatchActionCapture, flags, "flow_control", ""); err != nil {
 			return routingSpan{}, fmt.Errorf("HTTP capture: %w", err)
 		}
 	}
-	return routingSpan{Start: start, End: uint32(len(c.builder.rules)), Phase: phase, Global: true}, nil
+	end := uint32(len(c.builder.rules))
+	c.builder.setConditionalJump(start, int(end-start-1))
+	return routingSpan{Start: start, End: end, Phase: phase, Global: true}, nil
 }
 
 func (b *RoutingMatcherBuilder) applyFlowEffect(rule *config_parser.RoutingRule, action consts.MatchAction, flags uint8, owner, section string) error {
@@ -123,7 +131,6 @@ func (c *routingCompiler) compileDestinations(rules routing.DestinationRewrites,
 		return block, err
 	}
 	fragment := &destinationFragment{rules: rules, owner: owner, section: section}
-	c.destinationFragments = append(c.destinationFragments, fragment)
 	block.destinations = []*destinationFragment{fragment}
 	return block, nil
 }
@@ -160,14 +167,18 @@ func (c *routingCompiler) resolveFlowSet(name string, condition []*config_parser
 	if !ok {
 		return resolvedFlowBlock{}, fmt.Errorf("undefined routing rule_set %q", name)
 	}
-	block, err := c.resolveFlowStatements(name, set.Statements, condition)
+	var block resolvedFlowBlock
+	var err error
+	if len(condition) == 0 {
+		block, err = c.resolveFlowStatements(name, set.Statements)
+	} else {
+		block, err = c.resolveFlowSet(name, nil)
+		if err == nil {
+			block, err = c.conditionalFlowBlock(block, condition, name)
+		}
+	}
 	if err != nil {
 		return block, err
-	}
-	if len(block.capture.spans)+len(block.controls.spans) == 0 && len(condition) != 0 {
-		if err := validateEmptyRoutingUse(condition); err != nil {
-			return block, fmt.Errorf("routing rule_set %q condition: %w", name, err)
-		}
 	}
 	if len(c.resolved)+len(c.flows) >= consts.MaxMatchSetLen {
 		return block, fmt.Errorf("too many routing rule_set condition variants: limit %d", consts.MaxMatchSetLen)
@@ -176,7 +187,7 @@ func (c *routingCompiler) resolveFlowSet(name string, condition []*config_parser
 	return block, nil
 }
 
-func (c *routingCompiler) resolveFlowStatements(name string, statements []config.RoutingStatement, condition []*config_parser.Function) (resolvedFlowBlock, error) {
+func (c *routingCompiler) resolveFlowStatements(name string, statements []config.RoutingStatement) (resolvedFlowBlock, error) {
 	var block resolvedFlowBlock
 	var local []*config_parser.RoutingRule
 	flush := func() error {
@@ -193,16 +204,12 @@ func (c *routingCompiler) resolveFlowStatements(name string, statements []config
 	for _, statement := range statements {
 		switch statement.Kind {
 		case config.RoutingStatementRule:
-			rule := statement.Rule
-			if len(condition) != 0 {
-				rule = &config_parser.RoutingRule{AndFunctions: slices.Concat(condition, rule.AndFunctions), Outbound: rule.Outbound, Sources: cloneSources(rule.Sources)}
-			}
-			local = append(local, rule)
+			local = append(local, statement.Rule)
 		case config.RoutingStatementUse:
 			if err := flush(); err != nil {
 				return block, err
 			}
-			called, err := c.resolveFlowSet(statement.Use, slices.Concat(condition, statement.Condition))
+			called, err := c.resolveFlowSet(statement.Use, statement.Condition)
 			if err != nil {
 				return block, fmt.Errorf("flow block %q: %w", name, err)
 			}
@@ -225,18 +232,46 @@ func (c *routingCompiler) finish() error {
 	b := c.builder
 	b.routing.end = len(b.rules)
 	b.kernelLpmLen = len(b.simulatedLpmTries)
-	for _, fragment := range c.destinationFragments {
-		var err error
-		fragment.predicates, err = b.addDestinationPredicates(fragment.rules, fragment.owner, fragment.section)
-		if err != nil {
-			return err
-		}
-	}
+	compiled := make(map[*destinationFragment][]destinationPredicate)
 	for i := range b.profiles {
 		profile := &b.profiles[i]
 		for _, fragment := range c.profileDestinations[profile.ID] {
-			profile.Destination.predicates = append(profile.Destination.predicates, fragment.predicates...)
+			predicates, ok := compiled[fragment]
+			if !ok {
+				var err error
+				predicates, err = b.addDestinationPredicates(fragment.rules, fragment.owner, fragment.section)
+				if err != nil {
+					return err
+				}
+				compiled[fragment] = predicates
+			}
+			profile.Destination.predicates = append(profile.Destination.predicates, predicates...)
 		}
 	}
 	return b.validate()
+}
+
+// DNAT capture and controls execute in different phases and need independent
+// entry conditions. Exact destination selection is a separate userspace program
+// that retains the full filter against the original target.
+func (c *routingCompiler) conditionalFlowBlock(body resolvedFlowBlock, condition []*config_parser.Function, name string) (resolvedFlowBlock, error) {
+	var block resolvedFlowBlock
+	var err error
+	block.capture, err = c.builder.conditionalBlock(body.capture, condition, name)
+	if err != nil {
+		return block, err
+	}
+	block.controls, err = c.builder.conditionalBlock(body.controls, condition, name)
+	if err != nil {
+		return block, err
+	}
+	for _, fragment := range body.destinations {
+		conditioned := *fragment
+		conditioned.rules = slices.Clone(fragment.rules)
+		for i := range conditioned.rules {
+			conditioned.rules[i].Filter = slices.Concat(condition, conditioned.rules[i].Filter)
+		}
+		block.destinations = append(block.destinations, &conditioned)
+	}
+	return block, nil
 }

@@ -49,16 +49,15 @@ type routingRuleSetKey struct {
 }
 
 type routingCompiler struct {
-	validationOutbounds  map[string]uint8
-	builder              *RoutingMatcherBuilder
-	sets                 map[string]config.RoutingRuleSet
-	setKinds             map[string]config.RoutingRuleSetKind
-	resolved             map[routingRuleSetKey]resolvedRoutingBlock
-	flows                map[routingRuleSetKey]resolvedFlowBlock
-	shared               sharedRoutingPrograms
-	destinationFragments []*destinationFragment
-	profileDestinations  map[uint32][]*destinationFragment
-	flowEnd              routingSpan
+	validationOutbounds map[string]uint8
+	builder             *RoutingMatcherBuilder
+	sets                map[string]config.RoutingRuleSet
+	setKinds            map[string]config.RoutingRuleSetKind
+	resolved            map[routingRuleSetKey]resolvedRoutingBlock
+	flows               map[routingRuleSetKey]resolvedFlowBlock
+	shared              sharedRoutingPrograms
+	profileDestinations map[uint32][]*destinationFragment
+	flowEnd             routingSpan
 }
 
 // compileRouting consumes prepared rules only: external data and optimizer
@@ -136,11 +135,11 @@ func (c *routingCompiler) compile(routingConfig *config.Routing) error {
 }
 
 func (c *routingCompiler) addProfile(id uint32, interfaceNames []string, policy config.RoutingPolicy) error {
-	flow, err := c.resolveFlowStatements(policy.Name, policy.Rules, nil)
+	flow, err := c.resolveFlowStatements(policy.Name, policy.Rules)
 	if err != nil {
 		return fmt.Errorf("routing policy %q rules: %w", policy.Name, err)
 	}
-	body, err := c.resolveStatements(policy.Name, policy.Statements, nil)
+	body, err := c.resolveStatements(policy.Name, policy.Statements)
 	if err != nil {
 		return err
 	}
@@ -212,17 +211,19 @@ func (c *routingCompiler) resolveSet(name string, condition []*config_parser.Fun
 	if !ok {
 		return resolvedRoutingBlock{}, fmt.Errorf("undefined routing rule_set %q", name)
 	}
-	block, err := c.resolveStatements(set.Name, set.Statements, condition)
+	var block resolvedRoutingBlock
+	var err error
+	if len(condition) == 0 {
+		block, err = c.resolveStatements(set.Name, set.Statements)
+	} else {
+		block, err = c.resolveSet(name, nil)
+		if err == nil {
+			block, err = c.builder.conditionalBlock(block, condition, name)
+		}
+	}
 	if err != nil {
 		return resolvedRoutingBlock{}, err
 	}
-	if len(block.spans) == 0 && len(condition) != 0 {
-		if err := validateEmptyRoutingUse(condition); err != nil {
-			return resolvedRoutingBlock{}, fmt.Errorf("routing rule_set %q condition: %w", name, err)
-		}
-	}
-	// Empty fragments consume no instructions, but conditional DAGs can still
-	// create exponentially many distinct specializations. Bound those too.
 	if len(c.resolved)+len(c.flows) >= consts.MaxMatchSetLen {
 		return resolvedRoutingBlock{}, fmt.Errorf("too many routing rule_set condition variants: limit %d", consts.MaxMatchSetLen)
 	}
@@ -230,7 +231,7 @@ func (c *routingCompiler) resolveSet(name string, condition []*config_parser.Fun
 	return block, nil
 }
 
-func (c *routingCompiler) resolveStatements(name string, statements []config.RoutingStatement, condition []*config_parser.Function) (resolvedRoutingBlock, error) {
+func (c *routingCompiler) resolveStatements(name string, statements []config.RoutingStatement) (resolvedRoutingBlock, error) {
 	var block resolvedRoutingBlock
 	var localRules []*config_parser.RoutingRule
 	flush := func() error {
@@ -251,20 +252,12 @@ func (c *routingCompiler) resolveStatements(name string, statements []config.Rou
 	for _, statement := range statements {
 		switch statement.Kind {
 		case config.RoutingStatementRule:
-			rule := statement.Rule
-			if len(condition) != 0 {
-				rule = &config_parser.RoutingRule{
-					AndFunctions: slices.Concat(condition, rule.AndFunctions),
-					Outbound:     rule.Outbound,
-					Sources:      cloneSources(rule.Sources),
-				}
-			}
-			localRules = append(localRules, rule)
+			localRules = append(localRules, statement.Rule)
 		case config.RoutingStatementUse:
 			if err := flush(); err != nil {
 				return resolvedRoutingBlock{}, err
 			}
-			called, err := c.resolveSet(statement.Use, slices.Concat(condition, statement.Condition))
+			called, err := c.resolveSet(statement.Use, statement.Condition)
 			if err != nil {
 				return resolvedRoutingBlock{}, fmt.Errorf("routing block %q: %w", name, err)
 			}

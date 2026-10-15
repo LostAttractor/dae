@@ -80,7 +80,15 @@ func (b *RoutingMatcherBuilder) validate() error {
 		return fmt.Errorf("too many routing interface bindings: %d > %d", interfaceCount, maxRoutingInterfaces)
 	}
 
-	return encodeRoutingJumps(b.rules)
+	if err := encodeRoutingJumps(b.rules); err != nil {
+		return err
+	}
+	for _, profile := range b.profiles {
+		if err := validateRoutingBlocks(b.rules, profile.Spans); err != nil {
+			return fmt.Errorf("routing policy %q: %w", profile.Name, err)
+		}
+	}
+	return nil
 }
 
 // criticalOutbounds marks groups referenced by any rule that remains active

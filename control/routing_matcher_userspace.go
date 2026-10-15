@@ -101,8 +101,8 @@ func (b *RoutingMatcherBuilder) BuildUserspace() (matcher *RoutingMatcher, err e
 	}, nil
 }
 
-// Caller holds rulesMu. Complete rules never cross a physical span boundary,
-// so the same relative jumps work for profiles and destination predicates.
+// Caller holds rulesMu. Conditional jumps may skip shared fragments; the cursor uses
+// the same logical instruction positions as the kernel profile.
 func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (routingEvaluation, error) {
 	if !p.src.IsValid() || !p.dst.IsValid() {
 		return routingEvaluation{}, fmt.Errorf("invalid routing address")
@@ -111,102 +111,110 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 	simulateKernel := (p.kernel || p.domainBumpBitmap != nil) && p.stage != routeAfterTarget
 	var subrule, must predicateResult
 	var ruleUnknown, flowBump bool
+	var uncertainUntil uint32
 	var captureFlags uint8
-	for spanIndex, span := range spans {
-		if p.stage == routeAfterTarget && span.Phase == routingPhaseIngress {
+	cursor := newRoutingCursor(spans)
+	for cursor.span < len(spans) {
+		spanIndex, i := cursor.span, cursor.instruction
+		if p.stage == routeAfterTarget && spans[spanIndex].Phase == routingPhaseIngress {
+			cursor.advance(spans[spanIndex].End - i)
 			continue
 		}
-		start := span.Start
-		for i := start; i < span.End; {
+		if p.trace != nil {
+			p.trace.visited[routingTracePosition{spanIndex, i}] = true
+			p.trace.last = routingTracePosition{spanIndex, i}
+		}
+		match := &m.matches[i]
+		action := consts.MatchAction(match.Action)
+		distance := uint32(1)
+		var clause predicateResult
+
+		if subrule != predicateMatch {
 			if p.trace != nil {
-				p.trace.visited[routingTracePosition{spanIndex, i}] = true
-				p.trace.last = routingTracePosition{spanIndex, i}
+				p.trace.evaluated[routingTracePosition{spanIndex, i}] = true
 			}
-			match := &m.matches[i]
-			action := consts.MatchAction(match.Action)
-			distance := uint32(1)
-			var clause predicateResult
-			if subrule != predicateMatch {
+			result, err := predicates.match(m, match)
+			if err != nil {
+				return routingEvaluation{}, err
+			}
+			subrule = max(subrule, result)
+		}
+		if action == consts.MatchActionOr {
+			if subrule == predicateMatch {
+				distance = match.Mark
+			}
+			goto advance
+		}
+		clause, subrule = subrule, predicateMiss
+		if match.Flags&matchFlagNot != 0 {
+			clause = predicateMatch - clause
+		}
+		if clause == predicateMiss {
+			if action == consts.MatchActionAnd || action == consts.MatchActionConditionalJump {
+				distance = match.Mark
+			}
+			goto nextRule
+		}
+		ruleUnknown = ruleUnknown || clause == predicateUnknown
+		if action == consts.MatchActionAnd {
+			goto advance
+		}
+		if action == consts.MatchActionConditionalJump {
+			if match.Mark == 0 || match.Mark > cursor.length-cursor.position {
+				return routingEvaluation{}, fmt.Errorf("invalid conditional routing jump at %d: %d", i, match.Mark)
+			}
+			if ruleUnknown {
+				uncertainUntil = max(uncertainUntil, cursor.position+match.Mark)
+			}
+			goto nextRule
+		}
+		ruleUnknown = ruleUnknown || cursor.position < uncertainUntil
+		switch action {
+		case consts.MatchActionMust:
+			if !ruleUnknown {
+				must = predicateMatch
+			} else {
+				must = max(must, predicateUnknown)
+			}
+		case consts.MatchActionBump:
+			flowBump = true
+		case consts.MatchActionCapture:
+			flags := (match.Flags >> matchCaptureShift) & 7
+			captureFlags |= flags
+			if simulateKernel && captureFlags&(captureDestination|captureHTTPRequest) != 0 {
+				return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureFlags}, nil
+			}
+		case consts.MatchActionFlowEnd:
+			if (simulateKernel && flowBump) || must == predicateUnknown {
+				return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
+			}
+		case consts.MatchActionMatch:
+			return routingEvaluation{matched: true}, nil
+		case consts.MatchActionMiss:
+			return routingEvaluation{}, nil
+		case consts.MatchActionRoute:
+			if match.Flags&matchFlagSkipNoalive != 0 && m.outboundUsable != nil && !m.outboundUsable(match.Outbound, p.l4proto, predicates.ipVersion) {
 				if p.trace != nil {
-					p.trace.evaluated[routingTracePosition{spanIndex, i}] = true
-				}
-				result, err := predicates.match(m, match)
-				if err != nil {
-					return routingEvaluation{}, err
-				}
-				subrule = max(subrule, result)
-			}
-			if action == consts.MatchActionOr {
-				if subrule == predicateMatch {
-					distance = match.Mark
-				}
-				goto advance
-			}
-			clause, subrule = subrule, predicateMiss
-			if match.Flags&matchFlagNot != 0 {
-				clause = predicateMatch - clause
-			}
-			if clause == predicateMiss {
-				if action == consts.MatchActionAnd {
-					distance = match.Mark
+					p.trace.noalive[routingTracePosition{spanIndex, i}] = true
 				}
 				goto nextRule
 			}
-			ruleUnknown = ruleUnknown || clause == predicateUnknown
-			if action == consts.MatchActionAnd {
-				goto advance
+			if ruleUnknown {
+				return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
 			}
-			switch action {
-			case consts.MatchActionMust:
-				if !ruleUnknown {
-					must = predicateMatch
-				} else {
-					must = max(must, predicateUnknown)
-				}
-			case consts.MatchActionBump:
-				flowBump = true
-			case consts.MatchActionCapture:
-				flags := (match.Flags >> matchCaptureShift) & 7
-				if flags&(captureHTTP|captureHTTPRequest) != 0 && m.httpClientAllowed != nil && !m.httpClientAllowed(p.src.Addr(), p.mac) {
-					flags &^= captureHTTP | captureHTTPRequest
-				}
-				captureFlags |= flags
-				if simulateKernel && captureFlags&(captureDestination|captureHTTPRequest) != 0 {
-					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, captureFlags: captureFlags}, nil
-				}
-			case consts.MatchActionFlowEnd:
-				if (simulateKernel && flowBump) || must == predicateUnknown {
-					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
-				}
-			case consts.MatchActionMatch:
-				return routingEvaluation{matched: true}, nil
-			case consts.MatchActionMiss:
-				return routingEvaluation{}, nil
-			case consts.MatchActionRoute:
-				if match.Flags&matchFlagSkipNoalive != 0 && m.outboundUsable != nil && !m.outboundUsable(match.Outbound, p.l4proto, predicates.ipVersion) {
-					if p.trace != nil {
-						p.trace.noalive[routingTracePosition{spanIndex, i}] = true
-					}
-					goto nextRule
-				}
-				if ruleUnknown {
-					return routingEvaluation{outbound: consts.OutboundControlPlaneRouting, must: must == predicateMatch, captureFlags: captureFlags}, nil
-				}
-				forced := must == predicateMatch || match.Flags&matchFlagMust != 0
-				if simulateKernel && !forced && p.dst.Port() == 53 && match.Flags&matchFlagBypass == 0 {
-					captureFlags |= 8
-				}
-				return routingEvaluation{outbound: consts.OutboundIndex(match.Outbound), mark: match.Mark, must: forced, captureFlags: captureFlags}, nil
-			default:
-				return routingEvaluation{}, fmt.Errorf("unknown match action: %d", action)
+			forced := must == predicateMatch || match.Flags&matchFlagMust != 0
+			if simulateKernel && !forced && p.dst.Port() == 53 && match.Flags&matchFlagBypass == 0 {
+				captureFlags |= 8
 			}
-		nextRule:
-			ruleUnknown = false
-		advance:
-			if distance == 0 || distance > span.End-i {
-				return routingEvaluation{}, fmt.Errorf("invalid routing jump at %d: %d", i, distance)
-			}
-			i += distance
+			return routingEvaluation{outbound: consts.OutboundIndex(match.Outbound), mark: match.Mark, must: forced, captureFlags: captureFlags}, nil
+		default:
+			return routingEvaluation{}, fmt.Errorf("unknown match action: %d", action)
+		}
+	nextRule:
+		ruleUnknown = false
+	advance:
+		if distance == 0 || !cursor.advance(distance) {
+			return routingEvaluation{}, fmt.Errorf("invalid routing jump at %d: %d", i, distance)
 		}
 	}
 	return routingEvaluation{}, fmt.Errorf("no match set hit")

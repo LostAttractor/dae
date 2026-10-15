@@ -23,10 +23,11 @@ const (
 
 // Per-evaluation input caches: a skipped predicate prepares nothing.
 type routingPredicates struct {
-	input        routingInput
-	ipVersion    consts.IpVersionType
-	lpmKeys      [consts.MatchType_Mac + 1]string
-	domainLoaded bool
+	input                                routingInput
+	ipVersion                            consts.IpVersionType
+	lpmKeys                              [consts.MatchType_Mac + 1]string
+	domainLoaded                         bool
+	httpClientChecked, httpClientAllowed bool
 }
 
 func (p *routingPredicates) lpmKey(kind consts.MatchType) string {
@@ -52,6 +53,12 @@ func (p *routingPredicates) lpmKey(kind consts.MatchType) string {
 func (p *routingPredicates) match(m *RoutingMatcher, match *bpfMatchSet) (predicateResult, error) {
 	var hit bool
 	switch consts.MatchType(match.Type) {
+	case consts.MatchType_HTTPClient:
+		if !p.httpClientChecked {
+			p.httpClientAllowed = m.httpClientAllowed == nil || m.httpClientAllowed(p.input.src.Addr(), p.input.mac)
+			p.httpClientChecked = true
+		}
+		hit = p.httpClientAllowed
 	case consts.MatchType_IpSet, consts.MatchType_SourceIpSet, consts.MatchType_Mac:
 		index := binary.LittleEndian.Uint32(match.Value[:])
 		hit = m.lpmMatcher[index].HasPrefix(p.lpmKey(consts.MatchType(match.Type)))

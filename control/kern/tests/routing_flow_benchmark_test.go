@@ -15,6 +15,95 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 )
 
+func BenchmarkRoutingConditionalBlock(b *testing.B) {
+	for _, count := range []int{16, 128, 500} {
+		for _, useBlock := range []bool{false, true} {
+			for _, admitted := range []bool{false, true} {
+				b.Run(fmt.Sprintf("block=%v/admitted=%v/rules=%d", useBlock, admitted, count), func(b *testing.B) {
+					obj, err := loadTestObjects(b)
+					if err != nil {
+						b.Fatal(err)
+					}
+					packet, _, _ := routingFlowPacket(b, obj)
+					port := uint16(1)
+					if admitted {
+						port = binary.BigEndian.Uint16(packet[36:38])
+					}
+					condition := routingPortRule(port, consts.MatchActionAnd, 0)
+					var rules []bpftestMatchSet
+					if useBlock {
+						condition.Action, condition.Mark = uint8(consts.MatchActionConditionalJump), uint32(count+1)
+						rules = append(rules, condition)
+					}
+					for range count {
+						if !useBlock {
+							rules = append(rules, condition)
+						}
+						rules = append(rules, routingPortRule(2, consts.MatchActionRoute, consts.OutboundBlock))
+					}
+					rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_Fallback)})
+					installRoutingFlow(b, obj, rules)
+					var runtimeTotal time.Duration
+					for b.Loop() {
+						status, duration, err := obj.TproxyWanEgressL2.Benchmark(packet, 1000, b.ResetTimer)
+						if err != nil || status != ^uint32(0) {
+							b.Fatalf("status=%d err=%v", status, err)
+						}
+						runtimeTotal += duration
+					}
+					b.ReportMetric(float64(runtimeTotal.Nanoseconds())/float64(b.N), "bpf-ns/op")
+				})
+			}
+		}
+	}
+}
+
+// The legacy fixture also runs against an object built before HTTP entry conditions.
+// Both blocks miss their domains, so timing excludes userspace handoff and
+// measures the cost of admission plus traversing or skipping capture rules.
+func BenchmarkHTTPClientAdmission(b *testing.B) {
+	for _, count := range []int{16, 128, 1000} {
+		for _, scenario := range []string{"legacy", "denied", "allowed"} {
+			b.Run(fmt.Sprintf("%s/rules=%d", scenario, count), func(b *testing.B) {
+				obj, err := loadTestObjects(b)
+				if err != nil {
+					b.Fatal(err)
+				}
+				packet, _, _ := routingFlowPacket(b, obj)
+				allow := uint32(0)
+				if scenario == "allowed" {
+					allow = 1
+				}
+				if err := obj.UnusedHttpClients.Update(bpftestHttpClientKey{Prefixlen: 32}, bpftestHttpClientDecision{Order: 1, Allow: allow}, ebpf.UpdateAny); err != nil {
+					b.Fatal(err)
+				}
+				var rules []bpftestMatchSet
+				for _, flags := range []uint8{5, 1} {
+					if scenario != "legacy" {
+						rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_HTTPClient), Action: uint8(consts.MatchActionConditionalJump), Mark: uint32(count/2 + 1)})
+					}
+					for i := range count / 2 {
+						rule := routingDomainRule(uint32(i), consts.MatchActionCapture, 0)
+						rule.Flags = flags << 3
+						rules = append(rules, rule)
+					}
+				}
+				rules = append(rules, bpftestMatchSet{Type: uint8(consts.MatchType_Fallback)})
+				installRoutingFlow(b, obj, rules)
+				var runtimeTotal time.Duration
+				for b.Loop() {
+					status, perRun, err := obj.TproxyWanEgressL2.Benchmark(packet, 1000, b.ResetTimer)
+					if err != nil || status != ^uint32(0) {
+						b.Fatalf("expected kernel direct: status=%d err=%v", status, err)
+					}
+					runtimeTotal += perRun
+				}
+				b.ReportMetric(float64(runtimeTotal.Nanoseconds())/float64(b.N), "bpf-ns/op")
+			})
+		}
+	}
+}
+
 // TCP SYNs always evaluate routing and direct does not create a cache entry.
 // This isolates instruction traversal from UDP cache hits and userspace handoff.
 func BenchmarkRoutingFlow(b *testing.B) {

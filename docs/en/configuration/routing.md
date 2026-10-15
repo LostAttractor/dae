@@ -164,7 +164,7 @@ This anonymous default policy may contain its own `rules {}` and can coexist wit
 
 ### Shared conditions on rule fragments
 
-Use `condition -> use(fragment)` to add a common condition to every rule in a referenced fragment:
+Use `condition -> use(fragment)` to set a common entry condition for a referenced fragment:
 
 ```shell
 routing {
@@ -191,9 +191,9 @@ Each `office` rule now requires `sip(192.168.10.0/24)`, `l4proto(tcp)` and its o
 - Conditional uses work in the anonymous default policy, named policies and rule fragments. Nested conditions are ANDed with each other and the final rule. Repeated functions also intersect: an outer `dport(80,443)` and inner `dport(443,853)` match only 443.
 - Outbounds, marks and `skip_while_noalive` keep their existing behavior. The enclosing policy's fallback runs after all rules fail to match. A conditional use cannot be a fallback.
 - `use(...)` accepts only rule-set names. To pass options to an outbound named `use`, quote it: `'use'(mark: 0x800)`. Bare `-> use` still selects that outbound.
-- Export preserves conditions and references; multiple fragments may be exported as consecutive conditional uses. Identical fragments and normalized condition sequences share compiled instructions. Different conditions create separate variants whose instructions count toward the routing limits. Each compilation also limits fragment/condition variants to `MaxMatchSetLen`.
+- Export preserves conditions and references; multiple fragments may be exported as consecutive conditional uses. References share the compiled fragment body; different conditions only add their own entry predicates. Identical normalized conditions also share entry instructions. Bodies, entry conditions and policy execution lengths count toward their respective routing limits; fragment/condition combinations are bounded by `MaxMatchSetLen`.
 
-Common conditions are compiled into both kernel and userspace routing rules. `domain()` retains the existing domain-to-IP mapping and negation semantics: a positive domain condition does not match without a DNS mapping, and no additional traffic is captured to obtain SNI/Host. Existing MITM, DNAT/Host capture and API bypass rules continue to follow their own predicates.
+Both kernel and userspace routing evaluate the common condition on entry and skip the entire fragment on a definite miss. Matching rules do not repeat the entry condition. Nested uses evaluate each level; DNAT capture and must/bump evaluate their entry conditions in their respective phases. `domain()` retains the existing domain-to-IP mapping and negation semantics: a positive domain condition does not match without a DNS mapping, and no additional traffic is captured to obtain SNI/Host. Existing MITM, DNAT/Host capture and API bypass rules continue to follow their own predicates.
 
 ### Splitting policies across files
 
