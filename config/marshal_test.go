@@ -107,6 +107,10 @@ group {
 		node(relay) -> group(entry)
 		policy: fixed(0)
 	}
+	filtered {
+		filter: group(exit) && name('relay -> 香港 01') [priority: 2]
+		policy: min_moving_avg
+	}
 }
 
 routing {

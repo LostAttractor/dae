@@ -41,6 +41,7 @@ type ResolvedTarget struct {
 type compiledStage struct {
 	nodes      []*NodeInfo
 	group      *groupDefinition
+	filters    []*compiledFilter
 	annotation *dialer.Annotation
 	entry      EntryOptions
 }
@@ -182,21 +183,7 @@ func (c *GroupCompiler) compileStage(owner *groupDefinition, stage *config_parse
 		return nil, fmt.Errorf("apply stage annotation: %w", err)
 	}
 	if stage.Key == "filter" {
-		filters, families, err := splitEntryFilters(stage.AndFunctions)
-		if err != nil {
-			return nil, err
-		}
-		entry.Families = families
-		nodes, err := c.set.Filter(filters)
-		if err != nil {
-			return nil, err
-		}
-		if families != nil {
-			nodes = slices.DeleteFunc(nodes, func(node *NodeInfo) bool {
-				return entryAddressFamilies(node.Property.Address)&*families == 0
-			})
-		}
-		return &compiledStage{nodes: nodes, annotation: annotation, entry: entry}, nil
+		return c.compileFilterStage(owner, stage.AndFunctions, annotation, entry)
 	}
 	if stage.Key != "" || len(stage.AndFunctions) != 1 {
 		return nil, fmt.Errorf("path reference must be node(name) or group(name)")
@@ -233,32 +220,19 @@ func (c *GroupCompiler) compileStage(owner *groupDefinition, stage *config_parse
 }
 
 func (c *GroupCompiler) ResolveRoutingTarget(name string) (*ResolvedTarget, error) {
-	group := c.byName[name]
-	nodes := c.set.NodesNamed(name)
-	candidates := len(nodes)
-	if group != nil {
-		candidates++
-	}
-	if group != nil && len(nodes) == 1 {
-		paths, err := c.expand(group)
-		if err != nil {
-			return nil, err
-		}
-		// A group wrapping its unique namesake node supplies group options
-		// without requiring existing routing references to change names.
-		if len(paths) == 1 && len(paths[0].Nodes) == 1 && paths[0].Nodes[0] == nodes[0] {
-			candidates = 1
-		}
-	}
-	switch {
-	case candidates == 0:
-		return nil, fmt.Errorf("target not found")
-	case candidates > 1:
-		return nil, fmt.Errorf("target is ambiguous (%d matching definitions)", candidates)
-	case group != nil:
+	// Groups take precedence for routing. node(name) and filters without a
+	// group source still resolve original nodes from the node pool.
+	if group := c.byName[name]; group != nil {
 		return &ResolvedTarget{Kind: TargetKindGroup, Group: group.config}, nil
-	default:
+	}
+	nodes := c.set.NodesNamed(name)
+	switch len(nodes) {
+	case 0:
+		return nil, fmt.Errorf("target not found")
+	case 1:
 		return &ResolvedTarget{Kind: TargetKindNode, Node: nodes[0]}, nil
+	default:
+		return nil, fmt.Errorf("target is ambiguous (%d matching definitions)", len(nodes))
 	}
 }
 
@@ -316,6 +290,9 @@ func (c *GroupCompiler) expandStage(stage *compiledStage) ([]*PathSpec, error) {
 		}
 		paths := make([]*PathSpec, 0, len(fragments))
 		for _, fragment := range fragments {
+			if !pathFilterHit(fragment, stage.filters) {
+				continue
+			}
 			merged, err := dialer.MergeAnnotations(fragment.Annotation, stage.annotation)
 			if err != nil {
 				return nil, fmt.Errorf("merge group stage annotation: %w", err)
@@ -323,6 +300,9 @@ func (c *GroupCompiler) expandStage(stage *compiledStage) ([]*PathSpec, error) {
 			entry, err := mergeEntryOptions(fragment.Entry, stage.entry)
 			if err != nil {
 				return nil, err
+			}
+			if entry.Families != nil && entryAddressFamilies(fragment.Nodes[0].Property.Address)&*entry.Families == 0 {
+				continue
 			}
 			paths = append(paths, &PathSpec{
 				Nodes:      fragment.Nodes,

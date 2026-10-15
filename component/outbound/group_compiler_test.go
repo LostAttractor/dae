@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -344,23 +345,27 @@ func TestGroupCompilerPrefersMatchingSingletonGroup(t *testing.T) {
 	}
 }
 
-func TestGroupCompilerRejectsNonmatchingGroupNodeCollision(t *testing.T) {
+func TestGroupCompilerPrefersGroupOverNodes(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		nodes []*NodeInfo
 		paths []*config_parser.ProxyPath
+		want  []string
 	}{
 		{
 			name:  "different node",
 			paths: []*config_parser.ProxyPath{proxyPath(referenceStage("node", "other"))},
+			want:  []string{"other"},
 		},
 		{
 			name:  "multiple candidates",
 			paths: []*config_parser.ProxyPath{proxyPath(subtagStage("nodes"))},
+			want:  []string{"target", "other"},
 		},
 		{
 			name:  "multiple hops",
 			paths: []*config_parser.ProxyPath{proxyPath(referenceStage("node", "target"), referenceStage("node", "other"))},
+			want:  []string{"target -> other"},
 		},
 		{
 			name: "duplicate paths",
@@ -368,11 +373,19 @@ func TestGroupCompilerRejectsNonmatchingGroupNodeCollision(t *testing.T) {
 				proxyPath(referenceStage("node", "target")),
 				proxyPath(referenceStage("node", "target")),
 			},
+			want: []string{"target", "target"},
 		},
 		{
 			name:  "duplicate node names",
 			nodes: []*NodeInfo{testNode("target", "first"), testNode("target", "second")},
 			paths: []*config_parser.ProxyPath{proxyPath(subtagStage("first"))},
+			want:  []string{"target"},
+		},
+		{
+			name:  "filter duplicate node names",
+			nodes: []*NodeInfo{testNode("target", "first"), testNode("target", "second")},
+			paths: []*config_parser.ProxyPath{proxyPath(nameStage("target"))},
+			want:  []string{"target", "target"},
 		},
 		{
 			name:  "empty expansion",
@@ -389,10 +402,80 @@ func TestGroupCompilerRejectsNonmatchingGroupNodeCollision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = compiler.ResolveRoutingTarget("target"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
-				t.Fatalf("collision error = %v, want ambiguous", err)
+			target, err := compiler.ResolveRoutingTarget("target")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target.Kind != TargetKindGroup || target.Group != &groups[0] || target.Node != nil {
+				t.Fatalf("target = %+v, want group", target)
+			}
+			if got := expandedNames(t, compiler, target.Group); !slices.Equal(got, tc.want) {
+				t.Fatalf("paths = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestGroupCompilerSameNameGroupWithMixedPaths(t *testing.T) {
+	sections, err := config_parser.Parse(`
+global {}
+group {
+	lightsail {
+		filter: subtag(flowercloud) && name(keyword: '日本') -> filter: name(lightsail)
+		filter: name(lightsail)
+		filter: name(lightsail) [interface: cu, priority: 1]
+		policy: min_moving_avg
+	}
+}
+routing { fallback: lightsail }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := config.New(sections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lightsail := testNode("lightsail", "local")
+	jp1 := testNode("日本 01", "flowercloud")
+	jp2 := testNode("日本 02", "flowercloud")
+	set := &DialerSet{nodeInfos: []*NodeInfo{
+		lightsail, jp1, jp2, testNode("香港", "flowercloud"), testNode("日本 03", "other"),
+	}}
+	compiler, err := NewGroupCompiler(set, conf.Group, []string{"lightsail"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := compiler.ResolveRoutingTarget("lightsail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Kind != TargetKindGroup || target.Group != &conf.Group[0] || target.Node != nil {
+		t.Fatalf("target = %+v, want lightsail group", target)
+	}
+	paths, err := compiler.ExpandRoutable(target.Group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		nodes    []*NodeInfo
+		iface    string
+		priority int
+	}{
+		{[]*NodeInfo{jp1, lightsail}, "", 0},
+		{[]*NodeInfo{jp2, lightsail}, "", 0},
+		{[]*NodeInfo{lightsail}, "", 0},
+		{[]*NodeInfo{lightsail}, "cu", 1},
+	}
+	if len(paths) != len(want) {
+		t.Fatalf("path count = %d, want %d", len(paths), len(want))
+	}
+	for i, path := range paths {
+		if !slices.Equal(path.Nodes, want[i].nodes) || path.Entry.Interface != want[i].iface || path.Annotation.Priority != want[i].priority {
+			t.Errorf("path %d = %v, interface=%q, priority=%d; want %v, interface=%q, priority=%d",
+				i, pathNames(path.Nodes), path.Entry.Interface, path.Annotation.Priority,
+				pathNames(want[i].nodes), want[i].iface, want[i].priority)
+		}
 	}
 }
 

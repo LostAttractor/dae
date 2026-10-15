@@ -44,17 +44,50 @@ group {
 
 每条 path 语句彼此独立，因此直连 `lightsail` 和链式候选会同时存在。每个 filter stage 展开为所有匹配节点；多个 stage 做笛卡尔积；被引用的 group 会贡献其中声明的全部路径。
 
-`filter: name(name)` 是节点属性过滤，可以匹配多个定义。独立的 `node(name)` stage 始终引用原始节点，节点不存在或重名时会报错。`group(name)` 严格引用一个无 `policy` group；selector group 不能嵌套为 path stage。
+`filter: name(name)` 是节点属性过滤，可以匹配多个定义。独立的 `node(name)` stage 始终引用原始节点，节点不存在或重名时会报错。独立的 `group(name)` stage 严格引用一个无 `policy` group。过滤表达式中的 `filter: group(name)` 则可引用有或无 `policy` 的组，导入其全部完整候选路径，并用 `&&` 继续筛选。
 
 group 未声明路径或 filter 时，默认选择唯一的同名节点；没有同名节点时，选择全部节点作为独立的单跳候选路径；多个同名节点会报歧义。显式声明路径或 filter 会覆盖此默认规则。
 
-group 与节点同名时，只有 group 展开为一条经过该唯一节点的单跳路径，路由才会优先选择 group；其他同名情况会报歧义。因此，可以保留路由目标名称并配置 group 属性：
+group 与节点同名时，路由目标名称始终优先解析为 group，与 group 包含的节点和路径数量无关。原始节点仍保留在节点池中，所有 group 内的 `filter: name(name)` 和 `node(name)` 都继续引用原始节点。因此，可以保留路由目标名称并配置 group 属性：
 
 ```shell
 node { foo: 'socks5://proxy.example:1080' }
 group { foo { check_async: true } }
 routing { fallback: foo }
 ```
+
+同名 group 也可以组合链式路径、普通单跳路径和指定出口接口的单跳路径：
+
+```shell
+group {
+    lightsail {
+        filter: subtag(flowercloud) && name(keyword: '日本') -> filter: name(lightsail)
+        filter: name(lightsail)
+        filter: name(lightsail) [interface: cu, priority: 1]
+        policy: min_moving_avg
+    }
+}
+routing { fallback: lightsail }
+```
+
+这里假定节点池中已有 `lightsail` 节点和订阅 `flowercloud` 的节点，且本机存在 `cu` 接口。每个匹配的日本节点分别作为入口连接原始 `lightsail` 节点，另有两条单跳候选，其中一条绑定 `cu` 并设置 `priority: 1`。路由引用 `lightsail` 时由该 group 的 policy 选择完整路径。没有 policy 的 group 作为路由目标时仍不能展开为多条路径；没有同名 group 时，直接引用重名节点仍会报歧义。
+
+可以复用上面的 `lightsail` 组，再筛选包含日本节点名称的完整路径：
+
+```shell
+group {
+    lightsail_jp {
+        filter: group(lightsail) && name(keyword: '日本')
+        policy: min_moving_avg
+    }
+}
+```
+
+- `filter: group(lightsail)` 导入该组的全部候选；附加条件在这些完整路径上匹配。路径顺序、重复候选、代理链和路径注解均保留。引用处的 `priority`、`add_latency` 继续累加；入口选项遵循相同的合并与冲突检查。
+- `name()` 按各跳原始节点名用 ` -> ` 连接后的完整字符串匹配，不包含 interface、mark、IPv4/IPv6 等展示标签。例如 `name('日本 01 -> lightsail')` 精确匹配整条链，`name(lightsail)` 只匹配单跳候选；`keyword`、`regex` 和 `!name(...)` 也作用于完整字符串。
+- `link()`、`protocol()` 同样按各跳原始链接或协议名用 ` -> ` 连接后匹配；`subtag()` 匹配末跳节点的订阅标签。`ipversion()` 仍限制路径入口的地址族，并与源路径的限制取交集。
+- 每条 filter stage 允许一个 `group(name)`，参数为精确组名，不支持 `!group(...)`。合并多个组时分别写多条 filter。可以前向引用、多层引用，也可以继续用 `->` 拼接路径；不存在的组和循环依赖会报错，即使其他过滤条件没有匹配结果。
+- 只导入候选路径，不继承源组的 policy、当前选中项、检查参数或连接切换行为；引用方使用自己的配置。仅被过滤表达式引用的组不会因此创建独立运行时、检查任务或 selector API 条目。
 
 展开顺序首先按 path 声明顺序，然后在每条笛卡尔路径内采用 terminal-major。`entry-1`、`entry-2` 后接 `exit-1`、`exit-2` 时，顺序为 `entry-1 -> exit-1`、`entry-2 -> exit-1`、`entry-1 -> exit-2`、`entry-2 -> exit-2`。`fixed(n)` 按这个稳定的完整路径列表索引。分别声明的相同物理路径仍是不同候选。
 

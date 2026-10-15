@@ -276,6 +276,11 @@ group {
         # Filter nodes from the global node pool defined by tag.
         #filter: name(node1, node2)
 
+        # Import all complete candidate paths from a group, including groups with policy.
+        #filter: group(my_group)
+        # Further match the full logical name; name(HK_node) does not match node1 -> HK_node.
+        #filter: group(my_group) && name(keyword: 'HK')
+
         # Bind the local connection to the first proxy, including its bootstrap DNS.
         # Omitted mark inherits global.so_mark_from_dae; explicit mark: 0 uses zero.
         #filter: subtag(my_sub) [mark: 0x20, interface: wan0]

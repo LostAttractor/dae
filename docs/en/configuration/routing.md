@@ -44,17 +44,50 @@ group {
 
 Every path statement is independent, so the direct `lightsail` candidate and the chained candidates coexist. Each filter stage expands to all matching nodes. Multiple stages form a Cartesian product; a referenced group contributes all paths declared by that group.
 
-`filter: name(name)` is a node-property filter and may match multiple definitions. A standalone `node(name)` stage always references the original node and rejects missing or duplicate node names. `group(name)` strictly references a group without `policy`; selector groups cannot be nested as path stages.
+`filter: name(name)` is a node-property filter and may match multiple definitions. A standalone `node(name)` stage always references the original node and rejects missing or duplicate node names. A standalone `group(name)` stage strictly references a group without `policy`. Within a filter expression, `filter: group(name)` can reference a group with or without `policy`, importing all of its complete candidate paths for further filtering with `&&`.
 
 Without path or filter statements, a group selects the unique same-name node, or all nodes as single-hop candidates if none has that name; duplicate same-name nodes are ambiguous. Explicit statements override this default.
 
-When a group and a node share a name, routing selects the group only if it expands to one single-hop path through that unique node; other collisions are ambiguous. This allows group settings without changing the routing target:
+When a group and a node share a name, routing always selects the group, regardless of its nodes or path count. Original nodes remain in the node pool: `filter: name(name)` and `node(name)` in any group still reference those nodes. This allows group settings without changing the routing target:
 
 ```shell
 node { foo: 'socks5://proxy.example:1080' }
 group { foo { check_async: true } }
 routing { fallback: foo }
 ```
+
+A same-name group can also combine proxy chains, ordinary single-hop paths, and single-hop paths bound to an outbound interface:
+
+```shell
+group {
+    lightsail {
+        filter: subtag(flowercloud) && name(keyword: '日本') -> filter: name(lightsail)
+        filter: name(lightsail)
+        filter: name(lightsail) [interface: cu, priority: 1]
+        policy: min_moving_avg
+    }
+}
+routing { fallback: lightsail }
+```
+
+This assumes the node pool contains `lightsail` and nodes from subscription `flowercloud`, and the host has a `cu` interface. Each matching Japanese node becomes an entry hop to the original `lightsail` node. Two additional single-hop candidates use `lightsail`, one bound to `cu` with `priority: 1`. Routing to `lightsail` uses the group's policy to select a complete path. A policyless routing group still cannot expand to multiple paths; without a same-name group, directly referencing duplicate node names remains ambiguous.
+
+Reuse the `lightsail` group above and select complete paths containing Japanese node names:
+
+```shell
+group {
+    lightsail_jp {
+        filter: group(lightsail) && name(keyword: '日本')
+        policy: min_moving_avg
+    }
+}
+```
+
+- `filter: group(lightsail)` imports every candidate from that group; additional predicates match complete paths. Path order, duplicate candidates, proxy chains and path annotations are preserved. Reference annotations add to `priority` and `add_latency`; entry options follow the same merge and conflict checks.
+- `name()` matches the complete string formed by joining original node names with ` -> `, excluding interface, mark and IPv4/IPv6 display labels. For example, `name('日本 01 -> lightsail')` matches that entire chain, while `name(lightsail)` matches only single-hop candidates. `keyword`, `regex` and `!name(...)` also operate on the complete string.
+- `link()` and `protocol()` similarly match original links or protocol names joined with ` -> `; `subtag()` matches the terminal node's subscription tag. `ipversion()` still constrains the entry hop and intersects the source path's family restrictions.
+- Each filter stage accepts one `group(name)` with an exact group name; `!group(...)` is unsupported. Use separate filter statements to combine groups. Forward references, nested references and further `->` composition are supported. Missing groups and dependency cycles are errors, even when other filters match nothing.
+- Only candidate paths are imported. The receiving group uses its own policy, selected candidate, check settings and connection-switching behavior. A group referenced only by filters does not acquire its own runtime, connectivity checks or selector API entry.
 
 Expansion is statement-major and then terminal-major within each Cartesian path. For `entry-1`, `entry-2` followed by `exit-1`, `exit-2`, the order is `entry-1 -> exit-1`, `entry-2 -> exit-1`, `entry-1 -> exit-2`, then `entry-2 -> exit-2`. `fixed(n)` indexes this stable complete-path order. Separately declared identical physical paths remain separate candidates.
 

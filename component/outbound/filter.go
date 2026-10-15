@@ -402,34 +402,42 @@ func compileFilters(filters []*config_parser.Function, cache map[*config_parser.
 	return compiled, nil
 }
 
+func (node *NodeInfo) filterValue(name string) string {
+	switch name {
+	case FilterInput_Name:
+		return node.Property.Name
+	case FilterInput_SubscriptionTag:
+		return node.Property.SubscriptionTag
+	case FilterInput_Link:
+		return node.Link
+	case FilterInput_Protocol:
+		return node.Property.Protocol
+	default:
+		return ""
+	}
+}
+
+func (filter *compiledFilter) matches(value string) bool {
+	for _, param := range filter.params {
+		var hit bool
+		switch param.key {
+		case FilterKey_Name_Regex:
+			hit, _ = param.regex.MatchString(value)
+		case FilterKey_Name_Keyword:
+			hit = strings.Contains(value, param.value)
+		default:
+			hit = value == param.value
+		}
+		if hit {
+			return !filter.not
+		}
+	}
+	return filter.not
+}
+
 func filterHit(nodeInfo *NodeInfo, filters []*compiledFilter) bool {
 	for _, filter := range filters {
-		var value string
-		switch filter.name {
-		case FilterInput_Name:
-			value = nodeInfo.Property.Name
-		case FilterInput_SubscriptionTag:
-			value = nodeInfo.Property.SubscriptionTag
-		case FilterInput_Link:
-			value = nodeInfo.Link
-		case FilterInput_Protocol:
-			value = nodeInfo.Property.Protocol
-		}
-		hit := false
-		for _, param := range filter.params {
-			switch param.key {
-			case FilterKey_Name_Regex:
-				hit, _ = param.regex.MatchString(value)
-			case FilterKey_Name_Keyword:
-				hit = strings.Contains(value, param.value)
-			default:
-				hit = value == param.value
-			}
-			if hit {
-				break
-			}
-		}
-		if hit == filter.not {
+		if !filter.matches(nodeInfo.filterValue(filter.name)) {
 			return false
 		}
 	}

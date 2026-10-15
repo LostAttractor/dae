@@ -127,6 +127,43 @@ routing {
 	}
 }
 
+func TestOutboundUsageGroupFilterDoesNotActivateSource(t *testing.T) {
+	conf := outboundUsageConfig(t, `
+global {}
+node {
+ entry: 'socks5://127.0.0.1:1'
+ exit: 'socks5://127.0.0.1:2'
+}
+group {
+ filtered {
+  filter: group(source) && name('entry -> exit')
+  policy: min_moving_avg
+ }
+ source {
+  node(entry) -> node(exit)
+  node(exit)
+  policy: selector
+  check_async: false
+ }
+}
+routing {
+ dport(80) -> filtered(skip_while_noalive)
+ fallback: direct
+}`)
+	plane := outboundUsagePlane(t, conf, nil, nil)
+	if len(plane.outbounds) != 3 {
+		t.Fatalf("materialized %d outbounds, want direct, block and filtered", len(plane.outbounds))
+	}
+	group := plane.outbounds[2]
+	if group.Name != "filtered" || group.TargetKind != outbound.TargetKindGroup || !plane.outboundCheckAsync[2] ||
+		len(group.Dialers) != 1 || group.Dialers[0].Name != "entry -> exit" {
+		t.Fatalf("filtered target = %+v, async = %v", group, plane.outboundCheckAsync[2])
+	}
+	if selectors := plane.Selectors(); len(selectors) != 0 {
+		t.Fatalf("source selector was activated by a filter reference: %+v", selectors)
+	}
+}
+
 func TestUnusedOutboundsDoNotConsumeRuntimeCapacity(t *testing.T) {
 	// Empty selectors would fail at transport construction. More validation-only
 	// targets than the runtime ID space must still compile without wrapping IDs.
