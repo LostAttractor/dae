@@ -1,5 +1,5 @@
 import type { Page, Route, SettingSection } from "./types.ts";
-import { TopNav, TopNavItem } from "@astryxdesign/core/TopNav";
+import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { byId } from "./dom.ts";
 import { createView } from "./react-view.ts";
 
@@ -21,12 +21,12 @@ export function createNavigation(onChange: (page: Page, section?: SettingSection
     current = route;
     if (page === "setting") settingRoute = route;
     byId("app").querySelector<HTMLElement>(".shell")!.dataset.view = page;
-    for (const popup of document.querySelectorAll<HTMLElement>(".node-popover:popover-open")) popup.hidePopover();
     for (const panel of document.querySelectorAll<HTMLElement>("[data-page]")) panel.hidden = panel.dataset.page !== page;
-    render(<TopNav className="page-nav" label="Pages" startContent={<>
-      <TopNavItem href="#overview" label="Overview" isSelected={page === "overview"} />
-      <TopNavItem href={`#${settingRoute}`} label="Setting" isSelected={page === "setting"} />
-    </>} />);
+    // Page links render as segmented tabs; the container's click handler navigates.
+    render(<Tabs className="page-nav" variant="segmented" value={page} tabs={[
+      { value: "overview", label: "Overview", nativeButton: false, render: <a href="#overview" /> },
+      { value: "setting", label: "Setting", nativeButton: false, render: <a href={`#${settingRoute}`} /> },
+    ]} />);
     document.title = `Network Panel · ${title}`;
     onChange(page, section);
     if (changed && focus) {

@@ -1,6 +1,6 @@
 import type { AuthMode, Page, SettingSection, DeviceState, DeviceStatus, DeviceContext, SelectorsResponse, CertificateMetadata, GlobalStatus } from "./types.ts";
 import "./style.css";
-import "dae-theme.css";
+import { followColorScheme } from "./color-mode.ts";
 import { request as apiRequest, errorMessage, errorStatus, type HTTPMethod } from "./api.ts";
 import { byId } from "./dom.ts";
 import { mountShell } from "./shell.tsx";
@@ -29,12 +29,13 @@ let globalRequestVersion = 0;
 let certificateRequestVersion = 0;
 let deviceStateKey = "";
 
+followColorScheme();
 mountShell(byId("app"));
-const message = createNotifications(byId("notifications"));
+const message = createNotifications(byId("notifications"), byId("notification-layer"));
 byId<HTMLButtonElement>("test-certificate").disabled = true;
 const diagnostics = createDiagnostics(byId("diagnostic-view"));
 const status = createStatus(byId("status-view"));
-const mitm = createMITM(byId("mitm"), byId("mitm-summary"), { run, request, update: renderDevice });
+const mitm = createMITM(byId("mitm"), { run, request, update: renderDevice, retest: () => byId<HTMLButtonElement>("test-certificate").click() });
 const updatedLabel = createUpdatedLabel(byId("updated"));
 const managedClients = createManagedClients(byId("managed-clients-view"), request);
 const selectors = createSelectors(byId("quick-selectors"), byId("selectors"), { run, request: adminRequest, refresh: loadSelectors });
@@ -48,7 +49,6 @@ let activePage: Page = "overview", settingSection: SettingSection = "devices";
 function updateVisibility() {
   status.setView(activePage);
   selectors.setView(activePage, settingSection);
-  managedClients.setActive(activePage === "setting" && settingSection === "devices");
 }
 const settingNavigation = createSettingNavigation(byId("setting-navigation"), section => navigation.show(`setting/${section}`, false));
 const navigation = createNavigation((page, section) => {

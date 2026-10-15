@@ -7,7 +7,6 @@ export type DeviceStatus = Schema<"DeviceStatus">;
 export type DeviceContext = Schema<"DeviceContext">;
 export type ClientSetState = Schema<"ClientSetState">;
 export type ClientImpactResponse = Schema<"ClientImpact">;
-export type ClientGroups = Schema<"ClientGroups">;
 export type ManagedDevice = Schema<"ManagedDevice">;
 export type MITMState = Schema<"MITMState">;
 export type CertificateMetadata = Schema<"Certificate">;

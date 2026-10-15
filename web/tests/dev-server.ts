@@ -24,7 +24,8 @@ test("Vite serves local assets, proxies dae sessions and reloads changed source"
   const directory = await mkdtemp(join(tmpdir(), "dae-vite-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(join(directory, "index.html"), '<div id="app"></div><script type="module" src="/probe.ts"></script>');
-  await writeFile(join(directory, "probe.ts"), 'import "./probe.css"; import "dae-theme.css"; export const value: number = 1;');
+  const stylesheet = fileURLToPath(new URL("../src/style.css", import.meta.url));
+  await writeFile(join(directory, "probe.ts"), `import "./probe.css"; import ${JSON.stringify(stylesheet)}; export const value: number = 1;`);
   await writeFile(join(directory, "probe.css"), ':root { --probe: 1; }');
   const received: { url?: string; method?: string; headers: IncomingHttpHeaders; body: string }[] = [];
   const api = createHTTPServer(async (req, res) => {
@@ -60,7 +61,7 @@ test("Vite serves local assets, proxies dae sessions and reloads changed source"
       configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)),
       root: directory,
       logLevel: "silent",
-      server: { port: 0 },
+      server: { port: 0, fs: { allow: [directory, fileURLToPath(new URL("..", import.meta.url))] } },
       optimizeDeps: { noDiscovery: true },
     });
   } finally {
@@ -73,17 +74,15 @@ test("Vite serves local assets, proxies dae sessions and reloads changed source"
   const origin = `http://127.0.0.1:${serverPort(vite.httpServer)}`;
   const browserHeaders = { Origin: origin, "Sec-Fetch-Site": "same-origin" };
 
-  await t.test("HTML, theme and component updates use Vite", async () => {
+  await t.test("HTML, Tailwind styles and component updates use Vite", async () => {
     const html = await (await fetch(origin)).text();
     assert.match(html, /\/@vite\/client/);
     assert.match(html, /\/@react-refresh/);
-    assert.match(html, /id="astryx-layer-slide-rules"/);
-    assert.match(await (await fetch(`${origin}/astryx-layers.css`)).text(), /@position-try/);
     const source = await (await fetch(`${origin}/probe.ts`)).text();
-    assert.match(source, /dae-theme\.css/);
-    const theme = await fetch(`${origin}/@id/__x00__dae-theme.css`);
-    assert.equal(theme.status, 200);
-    assert.match(await theme.text(), /dae-primer/);
+    assert.match(source, /style\.css/);
+    const styles = await fetch(`${origin}/@fs${stylesheet}?direct`);
+    assert.equal(styles.status, 200);
+    assert.match(await styles.text(), /--color-kumo-canvas/, "Tailwind compiles Kumo's tokens");
   });
 
   await t.test("login, authenticated reads and logout preserve headers and cookies", async () => {

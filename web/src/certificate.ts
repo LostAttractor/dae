@@ -12,6 +12,24 @@ let mitmOrigins: string[] = [];
 
 interface TestFeedback { text: string; tone: "success" | "warning" }
 
+// Whether this browser accepted the current CA in its latest test. A failure may
+// also come from the network or browser policy, so it is "unverified", not "untrusted".
+export type CertificateTrust = "unknown" | "testing" | "trusted" | "unverified";
+let trust: CertificateTrust = "unknown";
+const trustListeners = new Set<(trust: CertificateTrust) => void>();
+function setTrust(next: CertificateTrust) {
+  if (trust === next) return;
+  trust = next;
+  for (const listener of trustListeners) listener(next);
+}
+export function onCertificateTrust(listener: (trust: CertificateTrust) => void) {
+  trustListeners.add(listener);
+  listener(trust);
+  return () => { trustListeners.delete(listener); };
+}
+// Only a direct connection to dae can run the test, which the development server is not.
+export const certificateTestable = !import.meta.env.DEV;
+
 function state(id: string, text: string, tone: "neutral" | "pending" | "success" | "warning" | "error" = "neutral") {
   const node = byId(id);
   node.textContent = text;
@@ -25,6 +43,7 @@ function invalidateMITM() {
 
 function invalidateCA() {
   caVersion++;
+  setTrust("unknown");
   state("certificate-trust-result", "Not tested");
   invalidateMITM();
   byId("certificate-test-info").textContent = "Results apply to this browser only.";
@@ -37,6 +56,22 @@ export function certificateDevice(device: DeviceState | null) {
   if (identity !== next || enabled !== nextEnabled) invalidateMITM();
   identity = next;
   enabled = nextEnabled;
+  autoTest();
+}
+
+// While HTTPS modules are on, an untrusted CA breaks this device's HTTPS
+// connections. Test once when the page finds them on, and again whenever they are
+// turned on or the device or CA changes. Results stay on the page without a toast.
+let autoTested = "";
+function autoTest() {
+  if (!enabled || !identity || !fingerprint) {
+    if (!enabled) autoTested = "";
+    return;
+  }
+  const key = `${identity}/${fingerprint}`;
+  if (!certificateTestable || autoTested === key) return;
+  autoTested = key;
+  testCertificate().catch(() => { /* The results panel reports the failure. */ });
 }
 
 export function certificateIdentity(certificate: CertificateMetadata | null) {
@@ -49,11 +84,13 @@ export function certificateIdentity(certificate: CertificateMetadata | null) {
   fingerprint = next;
   byId("certificate-test-panel").hidden = !fingerprint;
   byId<HTMLButtonElement>("test-certificate").disabled = !fingerprint;
+  autoTest();
 }
 
 export async function testCertificate(): Promise<TestFeedback | undefined> {
   const caAttempt = ++caVersion, mitmAttempt = ++mitmVersion;
   const currentMITM = () => caAttempt === caVersion && mitmAttempt === mitmVersion;
+  setTrust("testing");
   state("certificate-trust-result", "Testing…", "pending");
   state("certificate-mitm-result", "Waiting for CA trust test");
   byId("certificate-http-setup").hidden = true;
@@ -63,8 +100,9 @@ export async function testCertificate(): Promise<TestFeedback | undefined> {
     accepted = certificate.ca_fingerprint === fingerprint;
   } catch { /* Browsers do not expose the TLS/network failure reason. */ }
   if (caAttempt !== caVersion) return;
+  setTrust(accepted ? "trusted" : "unverified");
   state("certificate-trust-result", accepted ? "CA trusted by this browser" : "Verification incomplete", accepted ? "success" : "warning");
-  byId("certificate-test-info").textContent = `${new Date().toLocaleString()} · This browser only · SHA-256: ${fingerprint}\nThis test does not check other applications or the system trust store.`;
+  byId("certificate-test-info").textContent = `Tested ${new Date().toLocaleString()} in this browser only; other applications and the system trust store are not checked.`;
   if (!currentMITM()) return;
   if (!accepted) {
     state("certificate-mitm-result", "CA trust test required", "warning");

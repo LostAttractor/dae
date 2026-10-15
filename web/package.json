@@ -11,28 +11,27 @@
     "test:dev": "node --import tsx --test tests/dev-server.ts",
     "test": "node --import tsx tests/browser.ts",
     "test:certificate": "node --import tsx tests/certificate.ts",
-    "astryx": "astryx",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
     "types:api": "node --import tsx tooling/generate-api-types.ts",
     "types:check": "node --import tsx tooling/generate-api-types.ts --check"
   },
   "dependencies": {
-    "@astryxdesign/core": "0.6.8",
-    "@primer/primitives": "11.10.0",
-    "@stylexjs/stylex": "0.19.0",
+    "@cloudflare/kumo": "2.14.0",
+    "@phosphor-icons/react": "2.1.10",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-is": "19.3.0",
     "recharts": "3.10.1"
   },
   "devDependencies": {
-    "@astryxdesign/cli": "0.6.8",
+    "@tailwindcss/vite": "4.3.3",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "5.2.0",
     "devtools-protocol": "0.0.1716261",
     "openapi-typescript": "7.13.0",
+    "tailwindcss": "4.3.3",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vite": "8.3.4"

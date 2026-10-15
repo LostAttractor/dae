@@ -1,12 +1,21 @@
 import type { ReactNode } from "react";
 import type { ExplainStep, ExplainResult, ExplainDecision, ExplainResponse, DiagnosticField, DiagnosticKind } from "./types.ts";
 interface TraceActions { onEdit: (name: string) => void; onUseIP: (ip: string) => void }
-import { Button } from "@astryxdesign/core/Button";
-import { Badge } from "./native-controls.tsx";
-import { Collapsible } from "@astryxdesign/core/Collapsible";
-import { Field } from "@astryxdesign/core/Field";
-import { useId, useState } from "react";
+import { Badge } from "@cloudflare/kumo/components/badge";
+import { Button } from "@cloudflare/kumo/components/button";
+import { Collapsible } from "@cloudflare/kumo/components/collapsible";
+import { Select } from "@cloudflare/kumo/components/select";
+import { CaretDownIcon, ProhibitIcon, WarningIcon } from "@phosphor-icons/react";
+import { useState } from "react";
 import { Disclosure } from "./disclosure.tsx";
+import { cardTitle, codeBlock, framed, nested } from "./ui.ts";
+
+const note = "text-sm text-kumo-subtle";
+const code = `code-block ${codeBlock} whitespace-pre-wrap`;
+const section = "trace-disclosure border-t border-kumo-hairline";
+// Long lists grow with the page; they never scroll inside their section.
+const rows = "divide-y divide-kumo-hairline text-sm [&>*]:py-2.5 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0";
+const factList = "grid gap-2.5 [&>div]:grid [&>div]:gap-x-2 [&>div]:sm:grid-cols-[minmax(100px,1fr)_3fr] [&_dt]:text-sm [&_dt]:text-kumo-subtle";
 
 const words = (value: string = "") => value.replaceAll("_", " ");
 const reasons: Record<string, string> = {
@@ -30,55 +39,62 @@ const statusText = (step: ExplainStep) => ({ referenced: "Referenced", selected:
 
 const policyStates = {
   match: { label: "Applies", variant: "success", description: "This policy is selected for the current context. The rule still depends on its conditions and earlier decisions." },
-  miss: { label: "Does not apply", variant: "neutral", description: "This policy is not selected for the current context, so this rule cannot apply." },
+  miss: { label: "Does not apply", variant: "secondary", description: "This policy is not selected for the current context, so this rule cannot apply." },
   unknown: { label: "Unknown", variant: "warning", description: "The ingress interface is unknown, so policy applicability cannot be determined." },
 } as const;
 
 function PolicyBadge({ step }: { step: ExplainStep }) {
   if (!step.policy) return null;
   const state = policyStates[step.policy_match || "unknown"];
-  return <Badge className="trace-policy" label={`Policy: ${step.policy} · ${state.label}`} variant={state.variant} title={state.description} />;
+  return <span className="trace-policy" title={state.description}><Badge variant={state.variant}>{`Policy: ${step.policy} · ${state.label}`}</Badge></span>;
 }
 
 function PolicyIndicator({ step }: { step: ExplainStep }) {
   if (!step.policy) return null;
   const state = policyStates[step.policy_match || "unknown"];
   const label = `Policy: ${step.policy} · ${state.label}`;
-  return <span className="trace-policy-indicator" data-state={step.policy_match || "unknown"} role="img" aria-label={label} title={label} />;
+  const color = step.policy_match === "match" ? "bg-kumo-success" : step.policy_match === "miss" ? "bg-kumo-badge-neutral" : "bg-kumo-badge-orange";
+  return <span className={`trace-policy-indicator inline-block size-2 flex-none rounded-full ${color}`} data-state={step.policy_match || "unknown"} role="img" aria-label={label} title={label} />;
 }
 
+// Collapsed rules keep a one-line expression; expanding wraps it in place.
 export function TraceSteps({ steps = [] }: { steps?: ExplainStep[] }) {
-  return <div className="trace-steps">{steps.map((step, index) => <Collapsible className="trace-step" key={`${step.id || step.expression}:${index}`} defaultIsOpen={false} chevronPosition="start"
-    trigger={<span className="trace-step-label"><span className="trace-step-badges">
-      <Badge label={statusText(step)} variant={step.status === "error" ? "error" : ["conditional", "unknown"].includes(step.status) ? "warning" : "neutral"} />
-      <PolicyIndicator step={step} />
-    </span><span className="trace-expression">{step.expression}</span></span>}>
-    <div className="trace-step-content">
-      {(step.section === "rules" || step.policy) && <div className="trace-step-meta">
-        {step.section === "rules" && <Badge label="Rules" />}
+  return <div className="trace-steps divide-y divide-kumo-hairline">{steps.map((step, index) => <Collapsible.Root className="trace-step" key={`${step.id || step.expression}:${index}`}>
+    <Collapsible.Trigger className="disclosure-trigger group grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-baseline gap-2 py-2.5 text-left text-kumo-default">
+      <span className="trace-step-label grid items-baseline gap-2 sm:grid-cols-[auto_minmax(0,1fr)]">
+        <span className="trace-step-badges flex flex-wrap items-center gap-1.5 justify-self-start">
+          <Badge variant={step.status === "error" ? "error" : ["conditional", "unknown"].includes(step.status) ? "warning" : "secondary"}>{statusText(step)}</Badge>
+          <PolicyIndicator step={step} />
+        </span>
+        <span className="trace-expression -my-0.5 min-w-0 truncate py-0.5 font-mono text-sm group-data-[panel-open]:overflow-visible group-data-[panel-open]:whitespace-pre-wrap group-data-[panel-open]:[text-overflow:clip]">{step.expression}</span>
+      </span>
+      <CaretDownIcon className="text-kumo-subtle group-data-[panel-open]:rotate-180" size={12} weight="bold" aria-hidden />
+    </Collapsible.Trigger>
+    <Collapsible.Panel keepMounted className={`trace-step-content mb-3.5 grid gap-2 pt-1.5 ${nested}`}>
+      {(step.section === "rules" || step.policy) && <div className="trace-step-meta flex flex-wrap items-center gap-1.5">
+        {step.section === "rules" && <Badge variant="secondary">Rules</Badge>}
         <PolicyBadge step={step} />
       </div>}
       <p>{reasonText(step.reason)}</p>
-      {step.policy && <p className="muted">{policyStates[step.policy_match || "unknown"].description}</p>}
-      <p className="muted">Stage: {words(step.stage)}{step.parent && step.parent !== step.policy ? ` · Context: ${step.parent}` : ""}</p>
-      <p className="code-block">{step.expression}</p>
+      {step.policy && <p className={note}>{policyStates[step.policy_match || "unknown"].description}</p>}
+      <p className={note}>Stage: {words(step.stage)}{step.parent && step.parent !== step.policy ? ` · Context: ${step.parent}` : ""}</p>
+      <p className={code}>{step.expression}</p>
       {step.outbound && <p>Outbound: {step.outbound} · mark {step.mark || 0} · must {String(Boolean(step.must))}</p>}
       {!!step.targets?.length && <p>Targets: {step.targets.join(", ")}</p>}
-      {(step.sources || []).map((source, index) => <p key={index} className="code-block">{source.file || "configuration"}:{source.line || 0}:{source.column || 0} {source.expression}</p>)}
-      {(step.conditions || []).map((condition, index) => <div key={index} className="trace-condition">
-        <strong>{condition.expression}{condition.reason !== "membership_change" && `: ${words(condition.match)}`}</strong>
-        <p className="muted">{condition.reason === "membership_change" ? reasonText(condition.reason) : `${words(condition.status)} · ${reasonText(condition.reason)}`}</p>
-        <p className="code-block">{condition.reason === "membership_change"
+      {(step.sources || []).map((source, index) => <p key={index} className={code}>{source.file || "configuration"}:{source.line || 0}:{source.column || 0} {source.expression}</p>)}
+      {(step.conditions || []).map((condition, index) => <div key={index} className="trace-condition mt-1 grid gap-1.5 border-t border-kumo-hairline pt-3">
+        <strong className="font-semibold">{condition.expression}{condition.reason !== "membership_change" && `: ${words(condition.match)}`}</strong>
+        <p className={note}>{condition.reason === "membership_change" ? reasonText(condition.reason) : `${words(condition.status)} · ${reasonText(condition.reason)}`}</p>
+        <p className={code}>{condition.reason === "membership_change"
           ? `Before: ${condition.actual || "—"}\nAfter: ${condition.expected || "—"}`
           : `Actual: ${condition.actual || "—"}\nExpected: ${condition.expected || "—"}`}</p>
       </div>)}
-    </div>
-  </Collapsible>)}</div>;
+    </Collapsible.Panel>
+  </Collapsible.Root>)}</div>;
 }
 
 function RuleTrace({ steps }: { steps: ExplainStep[] }) {
   const [filter, setFilter] = useState("all");
-  const id = useId();
   const filters: Record<string, [string, (step: ExplainStep) => boolean]> = {
     all: ["All rules", () => true],
     selected: ["Selected", step => step.status === "selected"],
@@ -87,11 +103,12 @@ function RuleTrace({ steps }: { steps: ExplainStep[] }) {
     inactive: ["Inactive / not reached", step => ["inactive", "not_reached"].includes(step.status)],
   };
   const filtered = steps.filter(filters[filter][1]);
-  return <Disclosure className="trace-disclosure trace-rule-list" title="Rule trace" meta={`${steps.length} rule${steps.length === 1 ? "" : "s"}`}>
-    <Field className="trace-filter" label="Show" inputID={id}><select id={id} value={filter} onChange={event => setFilter(event.target.value)}>
-      {Object.entries(filters).map(([key, [label, match]]) => <option key={key} value={key}>{label} ({steps.filter(match).length})</option>)}
-    </select></Field>
-    <div className="trace-scroll" tabIndex={0} role="region" aria-label="Rule trace"><TraceSteps steps={filtered} />{!filtered.length && <p className="muted">No rules in this category.</p>}</div>
+  return <Disclosure className={`${section} trace-rule-list`} title="Rule trace" meta={`${steps.length} rule${steps.length === 1 ? "" : "s"}`}>
+    <div className="trace-filter max-w-sm">
+      <Select label="Show" className="w-full" value={filter} onValueChange={value => setFilter(String(value))}
+        items={Object.fromEntries(Object.entries(filters).map(([key, [label, match]]) => [key, `${label} (${steps.filter(match).length})`]))} />
+    </div>
+    <div><TraceSteps steps={filtered} />{!filtered.length && <p className={note}>No rules in this category.</p>}</div>
   </Disclosure>;
 }
 
@@ -129,27 +146,30 @@ const missingFields: Record<string, [string, string]> = {
 
 function MissingContext({ decision, context, onEdit, onUseIP }: TraceActions & { decision: ExplainDecision; context: DiagnosticField[] }) {
   const missing = decision.missing || [];
-  const id = useId();
   const [candidate, setCandidate] = useState("");
   const daemon = context.some(field => field.name === "origin" && field.value === "daemon");
   const source = !daemon && context.find(field => field.name === "source_ip" && field.source !== "unknown")?.value;
   // An inherited IPv4 identity cannot simulate an IPv6 connection (or vice versa).
   const candidates = [...new Set((decision.targets || []).map(target => target.match(/^\[([^\]]+)\]:\d+$/)?.[1] || target.match(/^(\d+\.\d+\.\d+\.\d+):\d+$/)?.[1]).filter(ip => ip && (!source || ip.includes(":") === source.includes(":"))))];
   if (!missing.length) return null;
-  return <div className="trace-missing">
-    <h4>Complete the missing information</h4>
-    <ul>{missing.map(field => <li key={field}><strong>{missingFields[field]?.[0] || words(field)}</strong><span>{missingFields[field]?.[1] || "Supply this field in Advanced context if it is known. Omitted values remain unknown."}</span></li>)}</ul>
-    <div className="button-row">
-      {missing.includes("destination.ip") && <Button label="Enter destination IP" type="button" onClick={() => onEdit("ip")} />}
-      {missing.includes("hostname") && <Button label="Enter hostname" type="button" onClick={() => onEdit("sni")} />}
-      {missing.some(field => !["destination.ip", "domain_mapping", "hostname"].includes(field)) && <Button label="Edit test context" type="button" onClick={() => onEdit(missing.includes("destination.port") ? "target" : "overrides")} />}
+  return <div className="trace-missing my-4">
+    <h4 className="mb-3 text-base font-semibold">Complete the missing information</h4>
+    <ul className="mb-4 grid gap-3">{missing.map(field => <li key={field} className="grid gap-0.5"><strong className="font-medium">{missingFields[field]?.[0] || words(field)}</strong><span className="text-kumo-subtle">{missingFields[field]?.[1] || "Supply this field in Advanced context if it is known. Omitted values remain unknown."}</span></li>)}</ul>
+    <div className="button-row flex flex-wrap gap-2">
+      {missing.includes("destination.ip") && <Button type="button" onClick={() => onEdit("ip")}>Enter destination IP</Button>}
+      {missing.includes("hostname") && <Button type="button" onClick={() => onEdit("sni")}>Enter hostname</Button>}
+      {missing.some(field => !["destination.ip", "domain_mapping", "hostname"].includes(field)) && <Button type="button" onClick={() => onEdit(missing.includes("destination.port") ? "target" : "overrides")}>Edit test context</Button>}
     </div>
-    {missing.includes("destination.ip") && candidates.length > 0 && <div className="trace-candidates">
-      <label htmlFor={id}>Check one cached IP <span className="field-hint">{candidates.length} candidates{source ? ` · ${source.includes(":") ? "IPv6" : "IPv4"}` : ""} · no DNS query</span></label>
-      <div className="trace-candidate-controls"><select id={id} value={candidate} onChange={event => setCandidate(event.target.value)}>
-        <option value="">Choose an IP…</option>{candidates.map(ip => <option key={ip}>{ip}</option>)}
-      </select><Button label="Check this IP" type="button" isDisabled={!candidate} onClick={() => onUseIP(candidate)} /></div>
-      <p className="field-hint">The result applies to the selected IP only. Your client may use another address.</p>
+    {missing.includes("destination.ip") && candidates.length > 0 && <div className="trace-candidates mt-4 grid gap-2">
+      <div className="trace-candidate-controls flex max-w-xl flex-wrap items-end gap-2">
+        <div className="min-w-0 flex-[1_1_14rem]">
+          <Select className="w-full" label={<span className="flex flex-wrap gap-x-3 gap-y-1">Check one cached IP <span className="font-normal text-kumo-subtle">{candidates.length} candidates{source ? ` · ${source.includes(":") ? "IPv6" : "IPv4"}` : ""} · no DNS query</span></span>}
+            placeholder="Choose an IP…" value={candidate || null} onValueChange={value => setCandidate(typeof value === "string" ? value : "")}
+            items={Object.fromEntries(candidates.map(ip => [ip, ip]))} />
+        </div>
+        <Button type="button" className="check-candidate flex-none" disabled={!candidate} onClick={() => onUseIP(candidate)}>Check this IP</Button>
+      </div>
+      <p className={note}>The result applies to the selected IP only. Your client may use another address.</p>
     </div>}
   </div>;
 }
@@ -160,57 +180,71 @@ function TraceResult({ title, result, kind, context, onEdit, onUseIP }: TraceAct
   const selected = decision.complete && steps.find(step => step.id === decision.rule_id);
   const targets = decision.targets || [];
   const domains = result.domains || [], group = result.outbounds?.[0];
+  const state = !decision.complete ? "unknown" : decision.verdict === "drop" ? "blocked" : "complete";
   const facts: [string, ReactNode][] = kind === "domain" ? [
     ["Cached records", domains.length], ["Present in kernel", domains.filter(entry => entry.resident).length], ["DNS lookup", "Not sent"],
   ] : kind === "outbound" ? [
     ["Group", group?.name || "—"], ["Selection policy", group?.policy || "builtin"], ["Network", group?.network || "—"],
   ] : [
-    ["Outbound", decision.outbound ? <>{decision.outbound}{!decision.complete && <span className="field-hint"> · provisional</span>}</> : decision.complete ? "Not applicable" : "Not determined"],
+    ["Outbound", decision.outbound ? <>{decision.outbound}{!decision.complete && <span className="font-normal text-kumo-subtle"> · provisional</span>}</> : decision.complete ? "Not applicable" : "Not determined"],
     ["Policy", decision.policy || "—"],
     [!decision.complete && targets.length > 1 ? "Candidate destinations" : "Destination", targets.length === 1 ? targets[0] : targets.length ? `${targets.length} candidates · see details` : decision.original_target || "—"],
   ];
-  return <section className="trace-result">
-    <div className="trace-outcome" data-state={!decision.complete ? "unknown" : decision.verdict === "drop" ? "blocked" : "complete"}>
-      <p className="trace-label">{title}</p><h3>{headline}</h3><p>{description}</p>
-      <dl className="trace-facts">
-        {facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+  return <section className="trace-result @container grid min-w-0 content-start gap-1">
+    {/* The surface stays neutral so labels keep their contrast; the ring and icon carry the state. */}
+    <div className={`trace-outcome ${framed} data-[state=blocked]:ring-kumo-danger/60 data-[state=unknown]:ring-kumo-warning/70`} data-state={state}>
+      <p className="trace-label mb-1 text-sm text-kumo-subtle">{title}</p>
+      <h3 className="mb-1 flex items-center gap-2 text-xl font-semibold max-sm:text-lg">
+        {state === "unknown" && <WarningIcon className="trace-outcome-icon shrink-0 text-kumo-warning" size={20} weight="fill" aria-hidden />}
+        {state === "blocked" && <ProhibitIcon className="trace-outcome-icon shrink-0 text-kumo-danger" size={20} weight="bold" aria-hidden />}
+        <span>{headline}</span>
+      </h3>
+      <p className="mb-4 max-w-[70ch]">{description}</p>
+      <dl className="trace-facts grid grid-cols-2 gap-3 @xl:grid-cols-[1fr_1fr_2fr] @xl:gap-4 [&>div:last-child]:col-span-full @xl:[&>div:last-child]:col-auto">
+        {facts.map(([label, value]) => <div key={label}><dt className="text-sm text-kumo-subtle">{label}</dt><dd className="mt-0.5 font-medium">{value}</dd></div>)}
       </dl>
-      {decision.original_outbound && decision.original_outbound !== decision.outbound && <p className="trace-fallback">{decision.original_outbound} is unavailable; fallback outbound: {decision.outbound || "undetermined"}.</p>}
-      {selected && <div className="trace-selected"><strong>Deciding rule</strong><code>{selected.expression}</code><span className="field-hint">{reasonText(selected.reason)}</span></div>}
+      {decision.original_outbound && decision.original_outbound !== decision.outbound && <p className="trace-fallback mt-4 border-t border-kumo-hairline pt-4">{decision.original_outbound} is unavailable; fallback outbound: {decision.outbound || "undetermined"}.</p>}
+      {selected && <div className="trace-selected mt-4 grid gap-1 border-t border-kumo-hairline pt-4"><strong className="font-semibold">Deciding rule</strong><code className="truncate font-mono text-sm">{selected.expression}</code><span className="text-sm text-kumo-subtle">{reasonText(selected.reason)}</span></div>}
     </div>
     {!decision.complete && <MissingContext decision={decision} context={context} onEdit={onEdit} onUseIP={onUseIP} />}
-    {!decision.complete && !decision.missing?.length && result.notes?.length > 0 && <p className="trace-runtime-note">{result.notes.filter(note => !note.startsWith("Fresh unfragmented flow")).join(" ")}</p>}
+    {!decision.complete && !decision.missing?.length && result.notes?.length > 0 && <p className="trace-runtime-note my-4">{result.notes.filter(note => !note.startsWith("Fresh unfragmented flow")).join(" ")}</p>}
     {steps.length > 0 && <RuleTrace steps={steps} />}
-    {(result.outbounds || []).map((group, index) => <Disclosure className="trace-disclosure" key={index} title={`Outbound nodes · ${group.name}`} meta={group.available ? "available" : "unavailable"}>
-      <p className="muted">{group.policy || "builtin"} · {group.network}{group.random ? " · random selection at connection time" : ""}</p>
-      <div className="trace-scroll">{group.nodes.map((node, index) => <p key={index}><strong>{node.name}</strong>{node.selected ? " · selected" : ""}: {words(node.reason)}{node.selection ? ` · priority ${node.selection.priority} · score ${node.selection.score}` : ""}</p>)}</div>
+    {(result.outbounds || []).map((group, index) => <Disclosure className={section} key={index} title={`Outbound nodes · ${group.name}`} meta={group.available ? "available" : "unavailable"}>
+      <p className={note}>{group.policy || "builtin"} · {group.network}{group.random ? " · random selection at connection time" : ""}</p>
+      <ul className={rows}>{group.nodes.map((node, index) => <li key={index} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <strong className="font-medium">{node.name}</strong>{node.selected && <Badge variant="info">Selected</Badge>}
+        <span className="text-kumo-subtle">{words(node.reason)}{node.selection ? ` · priority ${node.selection.priority} · score ${node.selection.score}` : ""}</span>
+      </li>)}</ul>
     </Disclosure>)}
-    {result.domains?.length > 0 && <Disclosure className="trace-disclosure" title="Cached domain records" meta={`${result.domains.length} records`}>
-      <div className="trace-scroll">{result.domains.map((entry, index) => <p key={index}>{entry.domain} → {entry.ip} · {entry.resident ? "present in kernel" : "absent from kernel"} · {words(entry.source)}{entry.retain_until ? ` · retained until ${entry.retain_until}` : ""}</p>)}</div>
+    {result.domains?.length > 0 && <Disclosure className={section} title="Cached domain records" meta={`${result.domains.length} records`}>
+      <ul className={rows}>{result.domains.map((entry, index) => <li key={index}>{entry.domain} → <span className="font-mono">{entry.ip}</span> <span className="text-kumo-subtle">· {entry.resident ? "present in kernel" : "absent from kernel"} · {words(entry.source)}{entry.retain_until ? ` · retained until ${entry.retain_until}` : ""}</span></li>)}</ul>
     </Disclosure>}
-    <Disclosure className="trace-disclosure" title="Technical details">
-      <dl className="trace-technical">
+    <Disclosure className={section} title="Technical details">
+      <dl className={`trace-technical ${factList}`}>
         {Object.entries({ Verdict: decision.verdict, Complete: String(decision.complete), "Rule ID": decision.rule_id || "—", "Original target": decision.original_target || "—", "Original outbound": decision.original_outbound || "—", Mark: decision.mark, Must: String(decision.must), Capture: (decision.capture || []).join(", ") || "none" }).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
       </dl>
-      {targets.length > 0 && <Disclosure nested title="Destination list" meta={`${targets.length}`}><div className="trace-scroll">{targets.map((target, index) => <p key={index}>{target}</p>)}</div></Disclosure>}
-      {(result.notes || []).map((note, index) => <p key={index} className="muted">{note}</p>)}
+      {targets.length > 0 && <Disclosure nested title="Destination list" meta={`${targets.length}`}><ul className={`${rows} font-mono`}>{targets.map((target, index) => <li key={index}>{target}</li>)}</ul></Disclosure>}
+      {(result.notes || []).map((text, index) => <p key={index} className={note}>{text}</p>)}
     </Disclosure>
   </section>;
 }
 
 export function Explanation({ response, kind = "flow", target, onEdit, onUseIP }: TraceActions & { response: ExplainResponse; kind?: DiagnosticKind; target: string }) {
-  return <div className="explanation">
-    <div className="trace-heading"><h2>Result</h2>{target && <span className="muted">{target}</span>}</div>
-    {response.compared && <p className="muted">Compare the same target and context. Proposed changes have not been applied.</p>}
-    <div className={`trace-results${response.compared ? " trace-comparison" : ""}`}>
+  return <div className="explanation mt-5 border-t border-kumo-hairline pt-5">
+    {/* The scope qualifies every result below, so it sits under the heading rather than after them. */}
+    <div className="mb-3 grid gap-1">
+      <div className="trace-heading flex flex-wrap items-baseline gap-x-4 gap-y-1"><h2 className={cardTitle}>Result</h2>{target && <span className="text-kumo-subtle">{target}</span>}</div>
+      {response.compared && <p className={note}>Compare the same target and context. Proposed changes have not been applied.</p>}
+      {kind === "flow" && <p className={`trace-scope ${note}`}>For a new connection using the current state. Existing connections may keep their earlier route.</p>}
+    </div>
+    <div className={`trace-results grid gap-4 ${response.compared ? "trace-comparison min-[960px]:grid-cols-2" : ""}`}>
       <TraceResult title="Current settings" result={response.current} kind={kind} context={response.context} onEdit={onEdit} onUseIP={onUseIP} />
       {response.compared && <TraceResult title="With proposed changes" result={response.compared} kind={kind} context={response.context} onEdit={onEdit} onUseIP={onUseIP} />}
     </div>
-    {kind === "flow" && <p className="trace-footnote">For a new connection using the current state. Existing connections may keep their earlier route.</p>}
-    <Disclosure className="trace-disclosure" title="Input context and raw response">
-      <p className="muted">Generation {response.generation} · {response.observed_at}</p>
-      <dl className="trace-technical">{response.context.map((field, index) => <div key={index}><dt>{field.name}</dt><dd>{field.value || "—"} <span className="muted">[{field.source}]</span></dd></div>)}</dl>
-      <Disclosure nested title="Response JSON"><pre className="code-block trace-scroll">{JSON.stringify(response, null, 2)}</pre></Disclosure>
+    <Disclosure className={section} last title="Input context and raw response">
+      <p className={note}>Generation {response.generation} · {response.observed_at}</p>
+      <dl className={`trace-technical ${factList}`}>{response.context.map((field, index) => <div key={index}><dt>{field.name}</dt><dd>{field.value || "—"} <span className="text-kumo-subtle">[{field.source}]</span></dd></div>)}</dl>
+      <Disclosure nested title="Response JSON"><pre className={code}>{JSON.stringify(response, null, 2)}</pre></Disclosure>
     </Disclosure>
   </div>;
 }

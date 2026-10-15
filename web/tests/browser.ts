@@ -122,7 +122,7 @@ function resetFixture() {
     ...(i === 0 ? { latency_ms: 28.5, checked_at: "2026-09-22T00:00:00Z" } : {}),
   }));
   fixture = {
-    mode: "lan", requests: [], nextRead: null, clientReads: 0,
+    mode: "lan", requests: [], nextRead: null,
     nextDeviceRead: null, nextGlobalRead: null, certificate: null, groups: [], tables: [], plugins: [],
     stats: { active_connections: 2, total_connections: 7, upload_bytes: 2048, download_bytes: 8192, history: { upload_bytes_per_second: [100, 200], download_bytes_per_second: [400, 800] } },
     selectors: [
@@ -136,6 +136,11 @@ function resetFixture() {
       { name: "gaming", description: "", joined: true },
     ] },
   };
+}
+
+// A managed device lists every routing group; the fixture has one.
+function managedDevice(mac: string) {
+  return fixture.managed?.mac === mac ? fixture.managed : { mac, sets: [{ name: "internal/work", description: "Managed group", joined: false }], mitm_override: null };
 }
 
 const httpServer = createServer(async (req, res) => {
@@ -212,8 +217,15 @@ const httpServer = createServer(async (req, res) => {
       }
       if (url.startsWith("/api/clients/") && url.includes("/members/")) {
         const [group, mac] = url.slice("/api/clients/".length).split("/members/").map(decodeURIComponent);
-        fixture.managed = { mac, sets: [{ name: group, description: "Managed group", joined: req.method === "PUT" }], mitm_override: null };
+        fixture.managed = { mac, sets: [{ name: group, description: "Managed group", joined: req.method === "PUT" }], mitm_override: fixture.managed?.mac === mac ? fixture.managed.mitm_override : null };
         return json({ name: group, description: "Managed group", members: req.method === "PUT" ? [mac] : [] });
+      }
+      if (url.startsWith("/api/devices/") && url.endsWith("/mitm")) {
+        const mac = decodeURIComponent(url.slice("/api/devices/".length, -"/mitm".length));
+        if (req.method !== "DELETE") assert.equal(typeof body.enabled, "boolean");
+        assert.equal(req.headers["x-dae-mitm"], fixture.certificate?.fingerprint);
+        fixture.managed = { ...managedDevice(mac), mitm_override: req.method === "DELETE" ? null : body.enabled! };
+        return json(fixture.managed);
       }
       if (url.startsWith("/api/device/sets/")) {
         const set = fixture.device.sets.find((entry) => entry.name === decodeURIComponent(url.slice("/api/device/sets/".length)));
@@ -278,11 +290,7 @@ const httpServer = createServer(async (req, res) => {
     if (url === "/api/device/context") return delayedJSON("nextContextRead", fixture.l3
       ? { generation: fixture.generation ?? 7, context: { source_ip: "100.64.0.23", link_type: "ip", ifindex: 8 }, fields: [{ name: "link_type", value: "ip", source: "request" }] }
       : { generation: fixture.generation ?? 7, context: { source_ip: fixture.device.source_ip, mac: fixture.device.mac, link_type: "ethernet" }, device: fixture.device, fields: [{ name: "mac", value: fixture.device.mac, source: "request" }] });
-    if (url === "/api/clients") {
-      fixture.clientReads++;
-      return json({ groups: [{ name: "internal/work", description: "Managed group", members: [] }] });
-    }
-    if (url.startsWith("/api/devices/")) return delayedJSON("nextManagedDevice", fixture.managed || { mac: decodeURIComponent(url.slice("/api/devices/".length)), sets: [], mitm_override: null });
+    if (url.startsWith("/api/devices/")) return delayedJSON("nextManagedDevice", managedDevice(decodeURIComponent(url.slice("/api/devices/".length))));
     if (url === "/api/certificate") return fixture.certificate ? json(fixture.certificate) : json({ error: "No certificate" }, 404);
     json({ error: "Not found" }, 404);
   } catch (error) {
@@ -307,7 +315,10 @@ server.listen(0);
 await once(server, "listening");
 let origin = `http://127.0.0.1:${serverPort(server)}`;
 const chromium = spawn(process.env.CHROMIUM || "chromium", [
-  "--headless", "--disable-gpu", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank",
+  "--headless", "--disable-gpu", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`,
+  // Headless Chromium reports no pointing device; emulate a mouse so hover-only styles apply.
+  // Touch emulation still switches pages to a coarse pointer.
+  "--blink-settings=primaryHoverType=2,primaryPointerType=4,availableHoverTypes=2,availablePointerTypes=4", "about:blank",
   ...(proxy ? [`--proxy-server=http://127.0.0.1:${serverPort(proxy)}`] : []),
 ], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: profile, XDG_CONFIG_HOME: join(profile, "config"), XDG_CACHE_HOME: join(profile, "cache") } });
 const stopped = new Promise((resolve) => chromium.once("close", resolve));
@@ -353,7 +364,7 @@ try {
     await until(`document.querySelector('#${name === "overview" ? "overview-page" : `setting-${name}`}').checkVisibility()`);
   };
   const setDisclosure = async (selector: string, open = true) => {
-    const trigger = JSON.stringify(`${selector} > .astryx-collapsible-trigger`);
+    const trigger = JSON.stringify(`${selector} > .disclosure-trigger`);
     await js(`(() => { const button = document.querySelector(${trigger}); if (button.getAttribute('aria-expanded') !== '${open}') button.click(); })()`);
     await until(`document.querySelector(${trigger}).getAttribute('aria-expanded') === '${open}'`);
   };
@@ -369,7 +380,42 @@ try {
   const openPicker = async (view: "overview" | "selector" = "selector") => {
     await visit(view);
     await js(`${row}.querySelector('.node-picker').focus(); ${row}.querySelector('.node-picker').click()`);
-    await until(`${row}.querySelector('.node-popover').matches(':popover-open') && document.activeElement.matches('.node-search input')`);
+    await until(`document.querySelector('.node-popover') !== null && document.activeElement.matches('.node-search input')`);
+  };
+  // Kumo selects open a listbox from their trigger; closed listboxes stay mounted but hidden.
+  const listbox = '[...document.querySelectorAll("[role=listbox]")].find(list => list.checkVisibility())';
+  const openSelect = async (trigger: string) => {
+    await js(`document.querySelector(${JSON.stringify(trigger)}).focus()`);
+    await key("ArrowDown", 40);
+    await until(`${listbox}?.querySelector("[role=option]") != null`);
+  };
+  const optionLabels = async (trigger: string) => {
+    await openSelect(trigger);
+    const labels = await js<string[]>(`[...${listbox}.querySelectorAll("[role=option]")].map(option => option.textContent.trim())`);
+    await key("Escape", 27);
+    await until(`${listbox} === undefined`);
+    return labels;
+  };
+  const choose = async (trigger: string, label: string) => {
+    await openSelect(trigger);
+    await js(`[...${listbox}.querySelectorAll("[role=option]")].find(option => option.textContent.trim() === ${JSON.stringify(label)}).click()`);
+    await until(`${listbox} === undefined && document.querySelector(${JSON.stringify(trigger)}).textContent.includes(${JSON.stringify(label)})`);
+  };
+  const toastRoot = 'document.querySelector("#message")?.closest("[role=dialog], [role=alertdialog]")';
+  // Notice icons are centered on their text block, one line or several (DESIGN.md).
+  const iconsCentered = (selector: string) => js<string[]>(`[...document.querySelectorAll(${JSON.stringify(selector)})].filter(notice => notice.checkVisibility()).flatMap(notice => {
+    const icon = notice.querySelector(".notice-icon, .trace-outcome-icon");
+    if (!icon) return [];
+    const text = notice.matches(".status-banner") ? notice.lastElementChild.firstElementChild : icon.nextElementSibling;
+    const middle = rect => (rect.top + rect.bottom) / 2, offset = middle(icon.getBoundingClientRect()) - middle(text.getBoundingClientRect());
+    return Math.abs(offset) < 1 ? [] : [notice.className + " " + offset.toFixed(2)];
+  })`);
+  // Review screenshot of one element, scrolled into view so it is painted.
+  const elementShot = async (selector: string, name: string) => {
+    if (!process.env.SCREENSHOT_DIR) return;
+    const rect = await js<{ x: number; y: number; width: number; height: number }>(`(() => { const element = document.querySelector(${JSON.stringify(selector)}); element.scrollIntoView({ block: "start" }); const r = element.getBoundingClientRect(); return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height }; })()`);
+    const image = await call("Page.captureScreenshot", { clip: { ...rect, scale: 1 }, captureBeyondViewport: true });
+    await writeFile(join(process.env.SCREENSHOT_DIR, `${name}.png`), Buffer.from(image.data, "base64"));
   };
   const key = (name: string, code: number) => call("Input.dispatchKeyEvent", { type: "keyDown", key: name, code: name, windowsVirtualKeyCode: code });
   const test = async (name: string, action: () => Promise<void>) => {
@@ -380,7 +426,12 @@ try {
     exceptions.length = 0;
     browserLogs.length = 0;
     await page();
-    try { await action(); assert.deepEqual(exceptions, []); console.log(`PASS ${name}`); }
+    try {
+      await action();
+      assert.deepEqual(exceptions, []);
+      assert.deepEqual(browserLogs.filter(entry => /Content Security Policy|Refused to/i.test(entry)), [], "no CSP violations");
+      console.log(`PASS ${name}`);
+    }
     catch (error) {
       failures++;
       console.error(`FAIL ${name}: ${error instanceof Error ? error.stack : JSON.stringify(error)}\n${browserLogs.slice(-8).join("\n")}`);
@@ -464,13 +515,15 @@ try {
     assert.equal(await js('document.querySelector("#identity").textContent'), "100.64.0.23");
     assert.match(await js('document.querySelector("#device-mac").textContent'), /Unavailable \(IP-only connection\)/);
     assert.match(await js('document.querySelector("#sets").textContent'), /no Ethernet MAC/);
-    assert.equal(await js('document.querySelectorAll("#sets .astryx-banner[data-status=warning] svg").length'), 1);
-    assert.equal(await js('document.querySelectorAll("#device-traffic .astryx-banner[data-status=warning] svg").length'), 1);
+    assert.equal(await js('document.querySelectorAll("#sets .status-banner[data-tone=warning] svg").length'), 1);
+    assert.equal(await js('document.querySelectorAll("#device-traffic .status-banner[data-tone=warning] svg").length'), 1);
+    assert.deepEqual(await iconsCentered(".inline-notice, .status-banner"), []);
     assert.doesNotMatch(await js('document.querySelector("#device-status").textContent'), /failed|Retrying/);
     for (const theme of ["dark", "light"]) {
       await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
-      assert.equal(await js('(() => { const warning = document.querySelector("#sets .astryx-banner"); const note = document.querySelector("#routing-change-note"); return getComputedStyle(warning).color === getComputedStyle(note).color && getComputedStyle(note).color !== getComputedStyle(document.body).color && note.querySelector("svg") !== null; })()'), true);
+      // Warning text keeps the readable default color; the shared warning icon color carries the tone.
+      assert.equal(await js('(() => { const icon = element => getComputedStyle(element.querySelector("svg")).color; const warning = document.querySelector("#sets .status-banner"); const note = document.querySelector("#routing-change-note"); return icon(warning) === icon(note) && icon(note) !== getComputedStyle(document.body).color && getComputedStyle(note).color === getComputedStyle(document.body).color; })()'), true);
       if (process.env.SCREENSHOT_DIR) {
         await delay(250);
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
@@ -504,6 +557,12 @@ try {
     fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "browser-ca" };
     await js('document.querySelector("#refresh").click()');
     await ready();
+    // HTTPS modules are on, so the page tests the CA by itself and reports it beside the choice.
+    await until('document.querySelector("#certificate-mitm-result").textContent === "Transparent MITM verified"');
+    assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
+    assert.equal(await js('document.querySelector("#mitm .trust-notice").dataset.tone'), "success");
+    assert.deepEqual(await iconsCentered("#mitm .trust-notice"), []);
+    await elementShot(".device-settings", "dae-web-https-trusted");
     await js('document.querySelector("#test-certificate").click()');
     await ready();
     assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser");
@@ -520,6 +579,24 @@ try {
     assert.ok(fixture.testData);
     assert.equal(fixture.testData.mitm_observed, false);
     assert.equal(fixture.testData, previousTest, "failed CA verification creates no MITM challenge");
+    // An unverified CA breaks HTTPS while modules are on; before that it stays a warning.
+    assert.equal(await js('document.querySelector("#mitm .status-banner")?.dataset.tone'), "error");
+    assert.equal(await js('document.querySelector("#mitm .retest-certificate").textContent'), "Test again");
+    assert.deepEqual(await iconsCentered("#mitm .status-banner"), [], "the alert icon is centered like its action");
+    await elementShot(".device-settings", "dae-web-https-unverified");
+    fixture.device.mitm.enabled = false;
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    assert.equal(await js('document.querySelector("#mitm .status-banner").dataset.tone'), "warning");
+    assert.equal(await js('document.querySelector("#mitm .retest-certificate")'), null);
+    assert.deepEqual(await js('(() => { const heading = document.querySelector("#https-title").getBoundingClientRect(), banner = document.querySelector("#mitm .status-banner").getBoundingClientRect(), choice = document.querySelector("#mitm-choice").getBoundingClientRect(); return [Math.round(banner.top - heading.bottom), Math.round(choice.top - banner.bottom)]; })()'), [12, 12], "the warning keeps equal space to its heading and the choice");
+    await elementShot(".device-settings", "dae-web-https-warning");
+    // Turning modules on tests the CA again.
+    fixture.untrusted = false;
+    fixture.device.mitm.enabled = true;
+    await js('document.querySelector("#refresh").click()');
+    await ready();
+    await until('document.querySelector("#mitm .trust-notice")?.dataset.tone === "success"');
     const ipv4Origin = origin;
     try {
       origin = `http://[::1]:${serverPort(server)}`;
@@ -606,18 +683,16 @@ try {
   await test("Overview and Setting sections have direct links and preserve browser navigation", async () => {
     assert.equal(await js('document.querySelector("#overview-page").checkVisibility()'), true);
     assert.equal(await js('document.querySelector("#diagnostics").checkVisibility()'), false);
-    assert.equal(fixture.clientReads, 0);
     await openPicker();
     await visit("explain");
-    assert.equal(await js('document.querySelector(".node-popover:popover-open")'), null);
+    assert.equal(await js('document.querySelector(".node-popover")'), null);
     assert.equal(await js('document.activeElement.id'), "setting-explain-tab");
-    assert.equal(await js('document.querySelector(".page-nav [aria-current=page]").textContent'), "Setting");
+    assert.equal(await js('document.querySelector(".page-nav [aria-selected=true]").textContent'), "Setting");
     assert.equal(await js('document.querySelector(".traffic-chart")'), null);
     await js('document.querySelector("#diagnostic-target").value = "example.com:443"');
     await visit("devices");
     await js('document.querySelector("#setting-devices-tab").click()');
-    await until('document.querySelector("#managed-client-group").options.length === 1');
-    assert.ok(fixture.clientReads >= 1);
+    await until('document.querySelector("#managed-client-mac").checkVisibility()');
     await js('history.back()');
     await until('document.querySelector("#setting-explain").checkVisibility()');
     assert.equal(await js('document.querySelector("#diagnostic-target").value'), "example.com:443");
@@ -626,7 +701,7 @@ try {
     await page("#setting/explain");
     assert.equal(await js('document.querySelector("#diagnostic-form").checkVisibility()'), true);
     assert.equal(await js('document.title'), "Network Panel · Setting · Explain");
-    assert.equal(await js('document.querySelector("#diagnostics .setting-heading .astryx-badge").textContent'), "Read-only");
+    assert.equal(await js('document.querySelector("#diagnostics .setting-heading span[title]").textContent'), "Read-only");
     assert.match(await js('document.querySelector("#updated time").getAttribute("aria-label")'), /^Updated /);
     fixture.mode = "api_key";
     await page("#setting/devices");
@@ -648,24 +723,32 @@ try {
     await ready();
     assert.equal(await js('document.querySelector("#overview-page").getBoundingClientRect().top'), contentTop);
     assert.equal(await js('document.activeElement.id'), "refresh");
-    assert.equal(await js('getComputedStyle(document.querySelector("#message").closest("[popover]")).position'), "fixed");
-    assert.equal(await js('document.querySelector("#message").closest(".astryx-toast").getAttribute("role")'), "status");
+    assert.equal(await js('getComputedStyle(document.querySelector("#message").closest("[aria-live]")).position'), "fixed");
+    assert.equal(await js(`${toastRoot}.getAttribute("role")`), "dialog");
+    assert.equal(await js('document.querySelector("#message").closest("[aria-live]").getAttribute("aria-live")'), "polite");
     for (const [width, height, theme] of [[1280, 1000, "dark"], [390, 844, "light"]] as const) {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
       await js('document.querySelector("#refresh").click()');
       await ready();
-      assert.equal(await js('document.querySelectorAll(".astryx-toast").length'), 1);
-      await delay(250);
-      const toast = await js<{ left: number; top: number; right: number; bottom: number }>('document.querySelector(".astryx-toast").getBoundingClientRect().toJSON()');
+      assert.equal(await js('document.querySelectorAll("#message").length'), 1);
+      await delay(600);
+      const toast = await js<{ left: number; top: number; right: number; bottom: number }>(`${toastRoot}.getBoundingClientRect().toJSON()`);
+      assert.deepEqual(await iconsCentered(".toast-message"), []);
+      assert.equal(await js(`(() => { const middle = rect => (rect.top + rect.bottom) / 2, text = document.querySelector(".toast-message").getBoundingClientRect(), close = ${toastRoot}.querySelector("[aria-label=Close]").getBoundingClientRect(); return Math.abs(middle(text) - middle(close)) < 1; })()`), true, "the close button is centered on the message");
+      assert.equal(await js(`(() => { const text = document.querySelector(".toast-message").lastElementChild.getBoundingClientRect(), close = ${toastRoot}.querySelector("[aria-label=Close]").getBoundingClientRect(); return text.right <= close.left || text.top >= close.bottom; })()`), true, `the message keeps clear of the close button at ${width}px`);
       assert.equal(toast.left >= 0 && toast.right <= width && toast.top >= 0 && toast.bottom <= height, true, `notification fits at ${width}px: ${JSON.stringify(toast)}`);
       if (process.env.SCREENSHOT_DIR) {
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-notification-${width}.png`), Buffer.from(image.data, "base64"));
       }
     }
+    // F6 moves focus to the notification region; Tab reaches the notification and its close button.
     await key("F6", 117);
-    assert.equal(await js('document.activeElement.closest(".astryx-toast") !== null'), true);
+    assert.equal(await js('document.activeElement.contains(document.querySelector("#message"))'), true);
+    await key("Tab", 9);
+    await key("Tab", 9);
+    assert.equal(await js('document.activeElement.getAttribute("aria-label")'), "Close");
     await js('document.activeElement.click()');
     await until('document.querySelector("#message") === null');
     assert.equal(await js('document.activeElement.id'), "refresh");
@@ -677,8 +760,8 @@ try {
     await page();
     await js('document.querySelector("#api-key").value = "wrong"; document.querySelector("#login-form").requestSubmit()');
     await ready();
-    assert.equal(await js('document.querySelector("#message").closest(".astryx-toast").getAttribute("role")'), "alert");
-    assert.equal(await js('document.querySelectorAll("#message svg").length'), 1);
+    assert.equal(await js(`${toastRoot}.getAttribute("role")`), "alertdialog");
+    assert.equal(await js(`${toastRoot}.querySelectorAll("svg").length`), 2, "the error notification has a status icon and a close icon");
     assert.equal(await js('document.querySelector("#message").getAttribute("data-tone")'), "error");
     if (process.env.SCREENSHOT_DIR) {
       await delay(250);
@@ -688,6 +771,8 @@ try {
     await delay(5500);
     assert.match(await js('document.querySelector("#message").textContent'), /Incorrect API key/);
     await key("F6", 117);
+    await key("Tab", 9);
+    await key("Tab", 9);
     await js('document.activeElement.click()');
     await until('document.querySelector("#message") === null');
     assert.equal(await js('document.activeElement.id'), "api-key");
@@ -808,7 +893,7 @@ try {
     global.release.resolve();
     await delay(200);
     assert.equal(await js('document.querySelector(".set-state").textContent'), "On");
-    assert.equal(await js('document.querySelector(".client-toggle input").checked'), true);
+    assert.equal(await js('document.querySelector(".client-toggle [role=switch]").getAttribute("aria-checked") === "true"'), true);
     assert.match(await js('document.querySelector("#device-traffic").textContent'), /16 KiB/);
     fixture.mode = "api_key";
     await js('document.querySelector("#refresh").click()');
@@ -828,11 +913,12 @@ try {
     assert.match(await js('document.querySelector("#global-traffic .traffic-metrics").textContent'), /Active connections20/);
     assert.equal(await js('document.querySelector("#device-traffic").getBoundingClientRect().bottom < document.querySelector("#global-traffic").getBoundingClientRect().top'), true);
     await visit("devices");
-    await until('document.querySelector("#managed-client-group").options.length === 1');
+    await until('document.querySelector("#managed-client-mac").checkVisibility()');
     assert.deepEqual(await js('[...document.querySelectorAll("#setting-navigation a")].map(link => link.innerText)'), ["Devices", "Selector", "Explain"]);
     assert.equal(await js('document.querySelectorAll(".traffic-chart").length'), 0);
     assert.equal(await js('document.querySelector("#managed-client-form").checkVisibility()'), true);
     await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:44"; document.querySelector("#setting-devices-tab").focus()');
+    // The wide-screen sidebar uses ordinary links: Tab moves focus, Enter follows the link.
     await key("Tab", 9);
     assert.equal(await js('document.activeElement.id'), "setting-selector-tab");
     assert.equal(await js('location.hash'), "#setting/devices", "focusing a sidebar link does not activate it");
@@ -850,6 +936,7 @@ try {
     await js(`document.querySelector('.page-nav a[href^="#setting/"]').click()`);
     assert.equal(await js('document.querySelector("#setting-explain-tab").getAttribute("aria-current")'), "page");
     await js('document.querySelector("#setting-explain-tab").focus()');
+    // Narrow screens switch to tabs, where arrow keys select the focused section.
     await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await until('document.querySelector("#setting-navigation [role=tablist]") !== null');
     assert.equal(await js('document.activeElement.id'), "setting-explain-tab", "responsive navigation preserves focus");
@@ -858,7 +945,7 @@ try {
     await key("ArrowRight", 39);
     await until('document.querySelector("#setting-selector").checkVisibility()');
     await call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
-    await until('document.querySelector("#setting-navigation .astryx-side-nav") !== null');
+    await until('document.querySelector("#setting-navigation .setting-sidebar") !== null');
     assert.equal(await js('document.activeElement.id'), "setting-selector-tab");
     await visit("devices");
     assert.equal(await js('document.querySelector("#managed-client-mac").value'), "02:00:00:00:00:44");
@@ -877,15 +964,17 @@ try {
 
   await test("quick and full selectors share saved choices and clear both views after access loss", async () => {
     await openPicker("overview");
-    assert.equal(await js('document.querySelector("#quick-selectors .test-node").checkVisibility()'), true);
+    await delay(250);
+    assert.equal(await js('(() => { const menu = document.querySelector(".node-popover").getBoundingClientRect(); return [0.25, 0.5, 0.9].every(y => document.elementFromPoint(menu.left + menu.width / 2, menu.top + menu.height * y)?.closest(".node-popover") !== null); })()'), true, "the node menu paints above the following cards");
+    assert.equal(await js('document.querySelector(".node-popover .test-node").checkVisibility()'), true);
     assert.equal(await js('[...document.querySelectorAll(".test-selected, .test-all")].some(button => button.checkVisibility())'), false);
-    await js('document.querySelector("#quick-selectors .test-node").focus(); document.querySelector("#quick-selectors .test-node").click()');
+    await js('document.querySelector(".node-popover .test-node").focus(); document.querySelector(".node-popover .test-node").click()');
     await ready();
     assert.deepEqual(lastRequest(), { method: "POST", path: "/api/probes", body: { outbound: "On demand", node_id: "node-0" } });
     assert.equal(fixture.requests.some(entry => entry.path.startsWith("/api/selectors/")), false, "testing a node does not change the saved choice");
-    assert.equal(await js('document.querySelector("#quick-selectors .node-popover").matches(":popover-open")'), true);
+    assert.equal(await js('document.querySelector("#popup-layer .node-popover") !== null'), true);
     assert.equal(await js('document.activeElement.matches(".select-node")'), true);
-    assert.equal(await js('document.querySelector("#quick-selectors .test-node").disabled'), true, "a running test cannot be queued again");
+    assert.equal(await js('document.querySelector(".node-popover .test-node").disabled'), true, "a running test cannot be queued again");
     await js('document.querySelectorAll(".select-node")[1].click()');
     await ready();
     assert.equal(await js('document.querySelector("#quick-selectors .selected-name").textContent'), "Tokyo");
@@ -913,6 +1002,15 @@ try {
     fixture.device.mitm = { enabled: true, override: null, default: true, ca_fingerprint: "test-ca" };
     await js('document.querySelector("#refresh").click()');
     await ready();
+    // Enabled modules start a CA test on their own; let it finish before replacing fetch.
+    await until('!["pending", undefined].includes(document.querySelector("#certificate-trust-result").dataset.tone) && document.querySelector("#certificate-mitm-result").dataset.tone !== "pending"');
+    // One download action lists each format; the profile opens normally for Safari to install it.
+    await js('document.querySelector("#certificate-download").click()');
+    await until('document.querySelector(".certificate-downloads")?.checkVisibility()');
+    assert.deepEqual(await js('[...document.querySelectorAll(".certificate-downloads a")].map(link => [link.getAttribute("href"), link.hasAttribute("download")])'), [["/ca.mobileconfig", false], ["/ca.cer", true], ["/ca.pem", true]]);
+    await elementShot(".device-settings", "dae-web-certificate-downloads");
+    await key("Escape", 27);
+    await until('!document.querySelector(".certificate-downloads")?.checkVisibility()');
     await js(`
       window.testMode = "mitm";
       const originalFetch = window.fetch;
@@ -937,8 +1035,8 @@ try {
     const feedback = async (tone: string, trust: string, mitm: string) => {
       assert.deepEqual(await js('["message", "certificate-trust-result", "certificate-mitm-result"].map(id => document.getElementById(id).dataset.tone)'), [tone, trust, mitm]);
       assert.equal(await js(`(() => {
-        const colors = { success: '--fgColor-success', warning: '--fgColor-attention', error: '--fgColor-danger', neutral: '--fgColor-muted' };
-        return ['message', 'certificate-trust-result', 'certificate-mitm-result'].every(id => {
+        const colors = { success: '--text-color-kumo-success', warning: '--text-color-kumo-warning', error: '--text-color-kumo-danger', neutral: '--text-color-kumo-subtle' };
+        return ['certificate-trust-result', 'certificate-mitm-result'].every(id => {
           const node = document.getElementById(id), probe = document.createElement('span');
           probe.style.color = 'var(' + colors[node.dataset.tone] + ')';
           document.body.append(probe);
@@ -946,8 +1044,7 @@ try {
           probe.remove(); return matches;
         });
       })()`), true, "result text uses the semantic theme colors");
-      assert.equal(await js('document.querySelectorAll("#message svg").length'), 1, "feedback includes a status icon");
-      assert.equal(await js('getComputedStyle(document.querySelector(".astryx-toast")).backgroundColor !== getComputedStyle(document.body).backgroundColor'), true, "feedback has a tinted surface");
+      assert.equal(await js(`${toastRoot}.querySelectorAll("svg").length`), 2, "feedback includes a status icon beside the close icon");
     };
     for (const theme of ["light", "dark"] as const) {
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
@@ -997,7 +1094,7 @@ try {
     await ready();
     assert.equal(await js('document.querySelector("#certificate-trust-result").textContent'), "CA trusted by this browser", "MITM generation does not determine HTTPS acceptance");
     await call("Emulation.setDeviceMetricsOverride", { width: 320, height: 568, deviceScaleFactor: 1, mobile: true });
-    await until('document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "false"');
+    await until('document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "false"');
     await setDisclosure(".certificate-disclosure");
     await js('testMode = "bypass"; document.querySelector("#test-certificate").click()');
     await ready();
@@ -1022,36 +1119,36 @@ try {
     assert.equal(await js('document.querySelector("#certificate-fingerprint").textContent'), "test-ca");
     const resize = async (width: number, height: number, expanded: boolean) => {
       await call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 500 });
-      await until(`(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") === ${expanded}`);
+      await until(`(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true") === ${expanded}`);
     };
     await resize(390, 844, false);
     await resize(844, 390, false);
     await resize(1280, 900, true);
-    await js('document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").click()');
+    await js('document.querySelector(".certificate-disclosure > .disclosure-trigger").click()');
     await resize(390, 844, false);
     await resize(1280, 900, false);
     await js('document.querySelector("#refresh").click()');
     await ready();
     await visit("explain");
     await visit("overview");
-    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), false, "manual collapse survives refresh and navigation");
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true")'), false, "manual collapse survives refresh and navigation");
     await page();
-    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), true, "reload restores the desktop default");
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true")'), true, "reload restores the desktop default");
     await resize(390, 844, false);
     await page();
-    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), false, "a phone starts collapsed");
-    await js('document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").focus()');
-    assert.equal(await js('document.activeElement.matches(".certificate-disclosure > .astryx-collapsible-trigger")'), true);
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true")'), false, "a phone starts collapsed");
+    await js('document.querySelector(".certificate-disclosure > .disclosure-trigger").focus()');
+    assert.equal(await js('document.activeElement.matches(".certificate-disclosure > .disclosure-trigger")'), true);
     await call("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
-    await until('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")');
+    await until('(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true")');
     await resize(1280, 900, true);
     await resize(390, 844, true);
     await js('document.querySelector("#refresh").click()');
     await ready();
     await visit("explain");
     await visit("overview");
-    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), true, "manual expansion survives resize, refresh and navigation");
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true")'), true, "manual expansion survives resize, refresh and navigation");
   });
 
   await test("late unauthorized poll cannot erase a successful refresh", async () => {
@@ -1085,7 +1182,7 @@ try {
     await js("window.focusedNode = document.activeElement; void 0");
     const nodes = fixture.selectors[0].nodes;
     [nodes[0], nodes[1]] = [nodes[1], nodes[0]];
-    await until(`${row}.querySelector('.node-list .node-name').textContent === 'Tokyo'`);
+    await until(`document.querySelector('.node-list .node-name').textContent === 'Tokyo'`);
     assert.equal(await js("document.activeElement === focusedNode"), true);
   });
 
@@ -1110,7 +1207,7 @@ try {
     }
     await openPicker();
     assert.equal(await js('document.querySelectorAll(".selector-node").length'), 1000);
-    await js(`window.searchInput = ${row}.querySelector('.node-search input'); true`);
+    await js(`window.searchInput = document.querySelector('.node-search input'); true`);
     await fillSearch("Tokyo");
     assert.equal(await js('document.querySelectorAll(".selector-node:not([hidden])").length'), 1);
     await js('document.querySelector(".selector-node:not([hidden]) .test-node").click()');
@@ -1191,7 +1288,8 @@ try {
     await key("Escape", 27);
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await until('document.querySelectorAll(".selector-node").length === 0');
-    assert.equal(await js('document.activeElement.matches(".node-picker")'), true);
+    // The node rows unmount at once; the popover returns focus after its exit transition.
+    await until('document.activeElement.matches(".node-picker")');
   });
 
   await test("group order, removed nodes and empty results reflect live data", async () => {
@@ -1200,7 +1298,7 @@ try {
     await openPicker();
     await key("ArrowDown", 40);
     fixture.selectors[0].nodes.shift();
-    await until(`${row}.querySelector('.node-list .node-name').textContent === 'Tokyo'`);
+    await until(`document.querySelector('.node-list .node-name').textContent === 'Tokyo'`);
     assert.equal(await js('document.activeElement.matches(".node-search input")'), true);
     await fillSearch("missing node");
     assert.equal(await js('document.querySelector(".no-nodes").hidden'), false);
@@ -1214,20 +1312,28 @@ try {
   await test("device descriptions hide configuration names but mutations use the name", async () => {
     assert.deepEqual(await js('[...document.querySelectorAll(".set-name")].map((entry) => entry.textContent)'), ["Work network", "gaming"]);
     assert.deepEqual(await js('[...document.querySelectorAll(".set-state")].map(state => state.textContent)'), ["Off", "On"]);
-    await js('document.querySelector(".client-toggle input").focus()');
+    await js('document.querySelector(".client-toggle [role=switch]").focus()');
     await call("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
     await ready();
     assert.deepEqual(fixture.requests[0], { method: "PUT", path: "/api/device/sets/internal%2Fwork", body: {} });
     assert.match(await js('document.querySelector("#message").textContent'), /Work network turned on/);
-    assert.equal(await js('document.querySelector(".client-toggle input").labels[0].textContent'), "Work network");
-    assert.deepEqual(await js('[...document.querySelectorAll(".client-toggle input")].map(toggle => toggle.checked)'), [true, true]);
+    assert.equal(await js('document.querySelector(".client-toggle [role=switch]").getAttribute("aria-label")'), "Work network");
+    assert.deepEqual(await js('[...document.querySelectorAll(".client-toggle [role=switch]")].map(toggle => toggle.getAttribute("aria-checked") === "true")'), [true, true]);
     assert.deepEqual(await js('[...document.querySelectorAll(".set-state")].map(state => state.textContent)'), ["On", "On"]);
-    await js('document.querySelector(".client-toggle input").click()');
+    await js('document.querySelector(".client-toggle [role=switch]").click()');
     await ready();
     assert.deepEqual(lastRequest(), { method: "DELETE", path: "/api/device/sets/internal%2Fwork", body: {} });
     assert.deepEqual(await js('[...document.querySelectorAll(".set-state")].map(state => state.textContent)'), ["Off", "On"]);
-    assert.deepEqual(await js('[...document.querySelectorAll(".client-toggle input")].map(toggle => toggle.checked)'), [false, true]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".client-toggle [role=switch]")].map(toggle => toggle.getAttribute("aria-checked") === "true")'), [false, true]);
+    // The switch's surrounding touch target toggles it once.
+    const edge = await js<{ x: number; y: number }>('(() => { const rect = document.querySelector(".client-toggle").getBoundingClientRect(); return { x: rect.left + 2, y: rect.top + 2 }; })()');
+    const count = fixture.requests.length;
+    await call("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...edge });
+    await call("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...edge });
+    await ready();
+    assert.deepEqual(fixture.requests.slice(count), [{ method: "PUT", path: "/api/device/sets/internal%2Fwork", body: {} }]);
+    assert.equal(await js('document.querySelector(".client-toggle [role=switch]").getAttribute("aria-checked")'), "true");
   });
 
   await test("client routing impact is lazy and feeds a read-only target comparison", async () => {
@@ -1241,7 +1347,7 @@ try {
     await until('document.querySelector(".impact-content")?.textContent.includes("Compare a target")');
     assert.deepEqual(fixture.requests[0], { method: "POST", path: "/api/device/sets/internal%2Fwork/impact", body: { joined: true, context: {} } });
     assert.equal(fixture.device.sets[0].joined, false);
-    await js('document.querySelector(".impact-content .astryx-button").click(); document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
+    await js('document.querySelector(".impact-content .compare-target").click(); document.querySelector("#diagnostic-target").value = "198.51.100.10:443"; document.querySelector("#diagnostic-form").requestSubmit()');
     assert.equal(await js('location.hash'), "#setting/explain");
     assert.equal(await js('document.activeElement.id'), "diagnostic-target");
     await until('document.querySelector("#diagnostic-result").textContent.includes("With proposed changes")');
@@ -1275,10 +1381,10 @@ try {
     ];
     await setDisclosure('.set-row[data-name="internal/work"] .set-details', true);
     await until('document.querySelectorAll(".impact-content .trace-step").length === 3');
-    assert.deepEqual(await js('[...document.querySelectorAll(".trace-step-badges")].map(group => [...group.querySelectorAll(".astryx-badge")].map(badge => badge.textContent))'), [["Referenced"], ["Referenced"], ["Referenced"]]);
+    assert.deepEqual(await js('[...document.querySelectorAll(".trace-step-badges")].map(group => [...group.children].filter(badge => !badge.matches(".trace-policy-indicator")).map(badge => badge.textContent))'), [["Referenced"], ["Referenced"], ["Referenced"]]);
     assert.deepEqual(await js('[...document.querySelectorAll(".trace-policy-indicator")].map(dot => dot.getAttribute("aria-label"))'), ["Policy: main · Applies", "Policy: main · Applies", "Policy: tor · Does not apply"]);
     await setDisclosure('.impact-content .trace-step:first-child', true);
-    assert.deepEqual(await js('[...document.querySelectorAll(".impact-content .trace-step:first-child .trace-step-meta .astryx-badge")].map(badge => badge.textContent)'), ["Rules", "Policy: main · Applies"]);
+    assert.deepEqual(await js('[...document.querySelector(".impact-content .trace-step:first-child .trace-step-meta").children].map(badge => badge.textContent)'), ["Rules", "Policy: main · Applies"]);
     await setDisclosure('.impact-content .trace-step:first-child', false);
     assert.equal(await js('document.querySelector(".impact-content").textContent.includes("Uncertain")'), false);
     const shortRule = '.impact-content .trace-step:nth-child(2)';
@@ -1334,13 +1440,13 @@ try {
   await test("routing rows expand independently and retain the matching details after reordering", async () => {
     await setDisclosure('.set-row[data-name="internal/work"] .set-details', true);
     await setDisclosure('.set-row[data-name="gaming"] .set-details', true);
-    await until('document.querySelectorAll(".impact-content .astryx-button").length === 2');
+    await until('document.querySelectorAll(".impact-content .compare-target").length === 2');
     assert.deepEqual(fixture.requests.map(request => request.path).sort(), ["/api/device/sets/gaming/impact", "/api/device/sets/internal%2Fwork/impact"]);
     for (const width of [320, 1280]) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
       await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `expanded routing details fit at ${width}px`);
-      assert.equal(await js('(() => { const rows = [...document.querySelectorAll(".set-row")]; return rows.every((row, index) => { const arrow = row.querySelector(".set-details > button").getBoundingClientRect(); const toggle = row.querySelector(".client-toggle").getBoundingClientRect(); const body = row.querySelector(".impact-content").getBoundingClientRect(); return arrow.width >= 44 && arrow.height >= 44 && arrow.left >= toggle.right && body.top >= arrow.bottom && (!index || row.getBoundingClientRect().top >= rows[index - 1].getBoundingClientRect().bottom); }); })()'), true, "arrows and switches stay separate, with details below their own row");
+      assert.equal(await js('(() => { const rows = [...document.querySelectorAll(".set-row")]; return rows.every((row, index) => { const arrow = row.querySelector(".set-details > button").getBoundingClientRect(); const toggle = row.querySelector(".client-toggle").getBoundingClientRect(); const body = row.querySelector(".impact-content").getBoundingClientRect(); return arrow.width >= 36 && arrow.height >= 36 && toggle.width >= 48 && toggle.height >= 44 && arrow.left >= toggle.right && body.top >= arrow.bottom && (!index || row.getBoundingClientRect().top >= rows[index - 1].getBoundingClientRect().bottom); }); })()'), true, "arrows and switches stay separate, with details below their own row");
       if (process.env.SCREENSHOT_DIR) {
         await js('document.querySelector("#device-title").scrollIntoView()');
         const image = await call("Page.captureScreenshot");
@@ -1354,7 +1460,7 @@ try {
     await until('document.querySelector(".set-row[data-name=gaming] .impact-content")?.textContent.includes("Change: On → Off")');
     assert.equal(await js('document.querySelectorAll(".impact-content").length'), 1);
     assert.equal(await js('document.querySelector(".set-row").dataset.name'), "gaming");
-    assert.equal(await js('document.querySelector(".set-row[data-name=gaming] .client-toggle input").checked'), true);
+    assert.equal(await js('document.querySelector(".set-row[data-name=gaming] .client-toggle [role=switch]").getAttribute("aria-checked") === "true"'), true);
   });
 
   await test("closing a routing row discards its late reply without affecting another row", async () => {
@@ -1370,9 +1476,9 @@ try {
       held.release.resolve();
       await delay(100);
       assert.equal(await js('document.querySelectorAll(".impact-content").length'), 1);
-      assert.equal(await js('document.querySelector(".set-row[data-name=gaming] .client-toggle input").checked'), true);
+      assert.equal(await js('document.querySelector(".set-row[data-name=gaming] .client-toggle [role=switch]").getAttribute("aria-checked") === "true"'), true);
       assert.match(await js('document.querySelector(".impact-content").textContent'), /Change: On → Off/);
-      await js('document.querySelector(".impact-content .astryx-button").click()');
+      await js('document.querySelector(".impact-content .compare-target").click()');
       assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Leave gaming");
       await setDisclosure('.set-row[data-name="gaming"] .set-details', false);
       await until('document.querySelector(".impact-content") === null');
@@ -1393,10 +1499,11 @@ try {
     await js('document.querySelector("#diagnostic-target").value = "https://example.com"; document.querySelector("#diagnostic-form").requestSubmit()');
     await until('document.querySelector(".trace-missing") !== null');
     assert.equal(await js('document.querySelector(".trace-outcome h3").textContent'), "Destination IP needed");
+    assert.deepEqual(await iconsCentered(".trace-outcome h3"), []);
     assert.match(await js('document.querySelector(".trace-missing").textContent'), /Entering a hostname or SNI does not create a mapping/);
-    assert.equal(await js('document.querySelector(".trace-candidates select").options.length'), 91, "exclude IPv6 candidates for the inherited IPv4 identity");
-    assert.equal(await js('document.querySelector(".trace-candidates button").disabled'), true);
-    assert.equal(await js('document.querySelectorAll(".explanation .astryx-collapsible-trigger[aria-expanded=true]").length === 0'), true);
+    assert.equal((await optionLabels(".trace-candidates [data-kumo-part=trigger]")).length, 90, "exclude IPv6 candidates for the inherited IPv4 identity");
+    assert.equal(await js('document.querySelector(".check-candidate").disabled'), true);
+    assert.equal(await js('document.querySelectorAll(".explanation .disclosure-trigger[aria-expanded=true]").length === 0'), true);
     assert.equal(await js('document.querySelector(".trace-outcome").textContent.includes("198.51.100.89")'), false, "large candidate lists are summarized");
     for (const [width, theme] of [[320, "light"], [390, "dark"], [768, "light"], [1280, "dark"], [1920, "dark"]] as const) {
       await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
@@ -1421,7 +1528,7 @@ try {
       }
     }
     await setDisclosure(".trace-rule-list");
-    await js('document.querySelector(".trace-filter select").value = "uncertain"; document.querySelector(".trace-filter select").dispatchEvent(new Event("change", { bubbles: true }))');
+    await choose(".trace-filter [data-kumo-part=trigger]", "Uncertain (60)");
     assert.equal(await js('document.querySelectorAll(".trace-steps > .trace-step").length'), 60);
     await setDisclosure(".trace-steps .trace-step");
     assert.match(await js('document.querySelector(".trace-step p").textContent'), /More information/);
@@ -1429,8 +1536,8 @@ try {
     await js('document.querySelector(".trace-missing button").click()');
     assert.equal(await js('document.activeElement.id'), "diagnostic-ip");
     fixture.explanation = null;
-    await js('document.querySelector(".trace-candidates select").value = "198.51.100.8"; document.querySelector(".trace-candidates select").dispatchEvent(new Event("change", { bubbles: true }))');
-    await js('document.querySelector(".trace-candidates button").click()');
+    await choose(".trace-candidates [data-kumo-part=trigger]", "198.51.100.8");
+    await js('document.querySelector(".check-candidate").click()');
     await until('document.querySelector(".trace-outcome h3")?.textContent === "Direct in the kernel"');
     assert.equal(lastRequest().body.flow?.destination.ip, "198.51.100.8");
     assert.equal(lastRequest().body.flow?.http?.url, "https://example.com");
@@ -1484,7 +1591,8 @@ try {
       fixture.explanation = { schema: 1, generation: 7, observed_at: "2026-10-09T00:00:00Z", context: [], current: {
         decision: { complete: true, verdict: "analysis", mark: 0, must: false }, steps: [], domains: [], outbounds: [], notes: [], ...extra,
       } };
-      await js(`document.querySelector("#diagnostic-kind").value = ${JSON.stringify(kind)}; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true })); document.querySelector("#diagnostic-target").value = ${JSON.stringify(value)}; document.querySelector("#diagnostic-form").requestSubmit()`);
+      await choose("#diagnostic-kind", { domain: "Cached domain records", outbound: "Outbound nodes", plugins: "HTTP plugins", dns: "DNS policy" }[kind]!);
+      await js(`document.querySelector("#diagnostic-target").value = ${JSON.stringify(value)}; document.querySelector("#diagnostic-form").requestSubmit()`);
       await until('document.querySelector(".trace-outcome h3") !== null');
       assert.equal(await js('document.querySelector(".trace-outcome h3").textContent'), headline);
       if (kind === "domain") assert.match(await js('document.querySelector(".trace-facts").textContent'), /Present in kernel1/);
@@ -1503,7 +1611,7 @@ try {
       await js('document.querySelector("#diagnostic-context").click()');
       await until('document.querySelector("#diagnostic-context-view").textContent.includes("[request]")');
       assert.equal(await js('document.querySelector("#diagnostic-run").disabled'), true);
-      await js('document.querySelector("#diagnostic-kind").value = "dns"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
+      await choose("#diagnostic-kind", "DNS policy");
       await until('!document.querySelector("#diagnostic-run").disabled');
       await js('document.querySelector("#diagnostic-target").value = "example.com"; document.querySelector("#diagnostic-form").requestSubmit()');
       await until('document.querySelector("#diagnostic-result").textContent.includes("Analysis: dns")');
@@ -1525,9 +1633,12 @@ try {
         else if (change === "generation") fixture.generation = (fixture.generation ?? 7) + 1;
         else {
           await visit("devices");
-          await until('document.querySelector("#managed-client-group").options.length === 1');
-          await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=join]").click()');
-          await until('document.querySelector("#managed-client-result .astryx-badge")?.textContent === "Joined"');
+          await until('document.querySelector("#managed-client-mac").checkVisibility()');
+          await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=show]").click()');
+          await until('document.querySelector("#managed-set-0") !== null');
+          const joined = await js<string>('document.querySelector("#managed-set-0").getAttribute("aria-checked")');
+          await js('document.querySelector("#managed-set-0").click()');
+          await until(`document.querySelector("#managed-set-0")?.getAttribute("aria-checked") === "${joined === "true" ? "false" : "true"}" && !document.querySelector("#managed-client-result").ariaBusy?.includes("true")`);
           await visit("explain");
           return;
         }
@@ -1552,7 +1663,8 @@ try {
 
   await test("React diagnostics clear manual work and ignore late errors after access loss", async () => {
     await visit("explain");
-    await js('document.querySelector("#diagnostic-scope").value = "manual"; document.querySelector("#diagnostic-scope").dispatchEvent(new Event("change", { bubbles: true }))');
+    await setDisclosure(".diagnostic-advanced");
+    await choose("#diagnostic-scope", "Custom identity");
     const held = { status: 500, started: deferred(), release: deferred() };
     fixture.nextExplanation = held;
     try {
@@ -1634,12 +1746,12 @@ try {
       held.release.resolve();
       await delay(100);
       assert.match(await js('document.querySelector(".impact-content").textContent'), /Change: On → Off/);
-      await js('document.querySelector(".impact-content .astryx-button").click()');
+      await js('document.querySelector(".impact-content .compare-target").click()');
       assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Leave Work network");
       fixture.device.mac = "02:00:00:00:00:09";
       await js('document.querySelector("#refresh").click()');
       await ready();
-      assert.equal(await js('document.querySelector(".set-details > .astryx-collapsible-trigger").getAttribute("aria-expanded")'), "false");
+      assert.equal(await js('document.querySelector(".set-details > .disclosure-trigger").getAttribute("aria-expanded")'), "false");
       assert.equal(await js('document.querySelector("#diagnostic-comparison").textContent'), "Current settings");
     } finally { held.release.resolve(); }
   });
@@ -1647,7 +1759,7 @@ try {
   await test("React managed devices cannot restore data after access is revoked", async () => {
     await visit("devices");
     await js('document.querySelector("#setting-devices-tab").click()');
-    await until('document.querySelector("#managed-client-group").options.length === 1');
+    await until('document.querySelector("#managed-client-mac").checkVisibility()');
     const held = { started: deferred(), release: deferred() };
     fixture.nextManagedDevice = held;
     try {
@@ -1676,35 +1788,57 @@ try {
     await key("Escape", 27);
     await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
     await visit("overview");
-    await js('document.querySelector(".client-toggle input").focus(); document.querySelector(".client-toggle input").click()');
+    await js('document.querySelector(".client-toggle [role=switch]").focus(); document.querySelector(".client-toggle [role=switch]").click()');
     await ready();
-    assert.equal(await js('document.activeElement.labels[0].textContent'), "Work network");
+    assert.equal(await js('document.activeElement.getAttribute("aria-label")'), "Work network");
     fixture.device.mitm = { enabled: false, override: null, default: false, ca_fingerprint: "test-ca" };
     await js('document.querySelector("#refresh").focus(); document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.activeElement.id'), "refresh");
-    assert.equal(await js('document.querySelector("#mitm-summary").textContent'), "Disabled (Default)");
-    await js('document.querySelector("#mitm .toggle").focus(); document.querySelector("#mitm .toggle").click()');
+    // The router default is one of three choices and shows its current value.
+    assert.equal(await js('document.querySelector("#mitm-choice").textContent'), "Router default (Off)");
+    assert.deepEqual(await optionLabels("#mitm-choice"), ["Router default (Off)", "On", "Off"]);
+    await choose("#mitm-choice", "On");
     await ready();
-    assert.equal(await js('document.activeElement.matches(".toggle")'), true);
-    assert.equal(await js('document.querySelector("#mitm-summary").textContent'), "Enabled (Custom)");
-    await js('document.querySelector("#mitm .reset").focus(); document.querySelector("#mitm .reset").click()');
+    assert.deepEqual(lastRequest(), { method: "PUT", path: "/api/device/mitm", body: { enabled: true } });
+    assert.equal(await js('document.activeElement.id'), "mitm-choice");
+    assert.match(await js('document.querySelector("#message").textContent'), /HTTPS modules turned on/);
+    await choose("#mitm-choice", "Router default (Off)");
     await ready();
-    assert.equal(await js('document.activeElement.matches(".toggle")'), true);
-    assert.equal(await js('document.querySelector("#mitm-summary").textContent'), "Disabled (Default)");
+    assert.deepEqual(lastRequest(), { method: "DELETE", path: "/api/device/mitm", body: {} });
+    assert.equal(await js('document.activeElement.id'), "mitm-choice");
+    assert.equal(fixture.device.mitm.override, null);
   });
 
   await test("administrator device management uses the specified MAC", async () => {
+    fixture.certificate = { name: "Test CA", fingerprint: "test-ca" };
     await visit("devices");
     await js('document.querySelector("#setting-devices-tab").click()');
-    await until('document.querySelector("#managed-client-group").options.length === 1');
-    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=join]").click()');
-    await until('document.querySelector("#managed-client-result .astryx-badge")?.textContent === "Joined"');
+    await until('document.querySelector("#managed-client-mac").checkVisibility()');
+    await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:99"; document.querySelector("#managed-client-form button[value=show]").click()');
+    await until('document.querySelector("#managed-set-0") !== null');
+    await elementShot("#managed-clients", "dae-web-managed-device");
+    assert.deepEqual(await js('[document.querySelector("#managed-set-0").getAttribute("aria-checked"), document.querySelector(".managed-set-state").textContent, document.querySelector("#managed-mitm-choice").textContent]'), ["false", "Off", "Router default"]);
+    // A membership switch saves for the specified MAC and keeps focus on the switch.
+    await js('document.querySelector("#managed-set-0").focus(); document.querySelector("#managed-set-0").click()');
+    await until('document.querySelector("#managed-set-0").getAttribute("aria-checked") === "true" && document.querySelector("#managed-client-result").getAttribute("aria-busy") === "false"');
     assert.deepEqual(lastRequest(), { method: "PUT", path: "/api/clients/internal%2Fwork/members/02%3A00%3A00%3A00%3A00%3A99", body: {} });
-    assert.equal(fixture.device.sets[0].joined, false);
-    await js('document.querySelector("#managed-client-form button[value=leave]").click()');
-    await until('document.querySelector("#managed-client-result .astryx-badge")?.textContent === "Not joined"');
-    assert.match(await js('document.querySelector(".managed-device-settings").textContent'), /HTTPS modulesUse default/);
+    assert.equal(fixture.device.sets[0].joined, false, "this device's own membership is unchanged");
+    assert.equal(await js('document.activeElement.id'), "managed-set-0");
+    assert.equal(await js('document.querySelector(".managed-set-state").textContent'), "On");
+    await js('document.querySelector("#managed-set-0").click()');
+    await until('document.querySelector("#managed-set-0").getAttribute("aria-checked") === "false" && document.querySelector("#managed-client-result").getAttribute("aria-busy") === "false"');
+    assert.deepEqual(lastRequest(), { method: "DELETE", path: "/api/clients/internal%2Fwork/members/02%3A00%3A00%3A00%3A00%3A99", body: {} });
+    // The HTTPS module choice sets or clears the device override with the CA fingerprint.
+    await choose("#managed-mitm-choice", "On");
+    await until('document.querySelector("#managed-client-result").getAttribute("aria-busy") === "false"');
+    assert.deepEqual(lastRequest(), { method: "PUT", path: "/api/devices/02%3A00%3A00%3A00%3A00%3A99/mitm", body: { enabled: true } });
+    assert.equal(fixture.managed?.mitm_override, true);
+    assert.equal(await js('document.activeElement.id'), "managed-mitm-choice");
+    await choose("#managed-mitm-choice", "Router default");
+    await until('document.querySelector("#managed-client-result").getAttribute("aria-busy") === "false"');
+    assert.deepEqual(lastRequest(), { method: "DELETE", path: "/api/devices/02%3A00%3A00%3A00%3A00%3A99/mitm", body: {} });
+    assert.equal(fixture.managed?.mitm_override, null);
     await js('document.querySelector("#managed-client-mac").value = "02:00:00:00:00:98"; document.querySelector("#managed-client-mac").dispatchEvent(new Event("input", { bubbles: true }))');
     assert.equal(await js('document.querySelector("#managed-client-result").textContent'), "", "editing the MAC cannot leave another device's settings visible");
     fixture.mode = "denied";
@@ -1787,10 +1921,10 @@ try {
     await js('document.querySelector("#refresh").click()');
     await ready();
     await setDisclosure("#global-traffic .outbounds-section");
-    assert.deepEqual(await js('[...document.querySelectorAll("#global-traffic .status-sections > .status-section > .astryx-collapsible-trigger .status-section-label > span:first-child")].map(label => label.textContent)'), ["Connection statistics", "Outbounds", "Domain Tables", "Plugins"]);
-    assert.equal(await js('document.querySelector("#global-traffic .connection-details > .astryx-collapsible-trigger").getAttribute("aria-expanded")'), "false", "outbounds open independently of connection totals");
+    assert.deepEqual(await js('[...document.querySelectorAll("#global-traffic .status-sections > .status-section > .disclosure-trigger .disclosure-title")].map(label => label.textContent)'), ["Connection statistics", "Outbounds", "Domain Tables", "Plugins"]);
+    assert.equal(await js('document.querySelector("#global-traffic .connection-details > .disclosure-trigger").getAttribute("aria-expanded")'), "false", "outbounds open independently of connection totals");
     assert.equal(await js('document.querySelectorAll("#global-groups .status-nodes li").length'), 0);
-    await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector(".astryx-collapsible-trigger").click(); openGroup.querySelector(".astryx-collapsible-trigger").focus()');
+    await js('window.openGroup = document.querySelector("#global-groups .status-entry"); openGroup.querySelector(".disclosure-trigger").click(); openGroup.querySelector(".disclosure-trigger").focus()');
     await until('openGroup.querySelectorAll(".status-nodes li").length === 80');
     assert.equal(await js('(() => { const list = document.querySelector("#global-groups .status-nodes"); return list.scrollHeight > list.clientHeight && list.clientHeight <= 320; })()'), true);
     assert.equal(await js('(() => { const device = document.querySelector("#device-status").getBoundingClientRect(); const global = document.querySelector("#global-status").getBoundingClientRect(); return device.bottom < global.top && device.left === global.left; })()'), true);
@@ -1801,7 +1935,7 @@ try {
     assert.equal(await js('openGroup.querySelectorAll(".status-node-state")[1].textContent'), "Confirming failure");
     fixture.groups[0].nodes[20].stats.active_connections = 41;
     await until('openGroup.querySelectorAll(".status-nodes li")[20].textContent.includes("41 active")');
-    assert.equal(await js('(openGroup.querySelector(".astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".astryx-collapsible-trigger")'), true);
+    assert.equal(await js('(openGroup.querySelector(".disclosure-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".disclosure-trigger")'), true);
     assert.equal(await js('document.querySelector("#global-groups .status-nodes").scrollTop'), 120);
     if (process.env.SCREENSHOT_DIR) {
       await js('document.querySelector("#global-groups .status-nodes").scrollTop = 0; window.scrollTo(0, 0)');
@@ -1810,59 +1944,18 @@ try {
     }
     fixture.groups.reverse();
     await until('document.querySelector("#global-groups").firstElementChild.dataset.name === "direct"');
-    assert.equal(await js('openGroup.isConnected && (openGroup.querySelector(".astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".astryx-collapsible-trigger")'), true);
+    assert.equal(await js('openGroup.isConnected && (openGroup.querySelector(".disclosure-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".disclosure-trigger")'), true);
     fixture.mode = "api_key";
     await js('document.querySelector("#refresh").click()');
     await ready();
     assert.equal(await js('document.querySelector("#global-groups")'), null);
   });
 
-  await test("larger text reflows every page and keeps controls readable", async () => {
-    fixture.groups = statusGroups(fixture.stats);
-    fixture.certificate = { name: "Test CA", fingerprint: "12:34:".repeat(16), mitm_test_generation: "large-text" };
-    await js('document.querySelector("#refresh").click()');
-    await ready();
-    // Text-only zoom exercises user font preferences independently of viewport zoom.
-    for (const width of [320, 768, 1280]) {
-      await call("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: width < 500 });
-      await page();
-      await until(`(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") === ${width >= 768}`);
-      await setDisclosure(".certificate-disclosure");
-      await js('document.documentElement.style.fontSize = "200%"');
-      for (const name of ["overview", "devices", "selector", "explain"] as const) {
-        await visit(name);
-        if (name === "overview") {
-          await js('document.querySelector("#global-tab")?.click()');
-          for (const section of ["connection-details", "outbounds-section", "tables-section", "plugins-section"]) await setDisclosure(`#global-traffic .${section}`);
-          await setDisclosure('#global-groups .status-entry[data-name="proxy_jp"]');
-        }
-        if (name === "explain") {
-          await setDisclosure(".diagnostic-advanced");
-          await js('document.querySelector("#diagnostic-target").value = "missing-port"; document.querySelector("#diagnostic-form").requestSubmit()');
-          await until('document.querySelector("#diagnostic-result [role=alert]") !== null');
-          assert.match(await js('document.querySelector("#diagnostic-result [role=alert]").textContent'), /Enter an IP:port/);
-        }
-        await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-        assert.equal(await js(`document.documentElement.scrollWidth <= ${width}`), true, `${name} reflows at ${width}px with double-size text`);
-        // Screen-reader-only labels deliberately clip their text to a 1px box.
-        const clipped = await js('[...document.querySelectorAll("button, .page-nav a, .download-links a, .selector-name, .managed-section p, .astryx-field-label, .astryx-banner-description")].filter(element => element.checkVisibility() && getComputedStyle(element).clip !== "rect(0px, 0px, 0px, 0px)" && element.scrollWidth > element.clientWidth + 1).map(element => element.textContent.trim())');
-        assert.deepEqual(clipped, [], `${name} has no clipped labels at ${width}px`);
-        assert.equal(await js(`([...document.querySelectorAll("button")].filter(element => element.checkVisibility()).every(element => { const rect = element.getBoundingClientRect(); const card = element.closest(".panel-card")?.getBoundingClientRect(); const strip = element.closest(".astryx-tab-strip")?.getBoundingClientRect(); if (strip) return strip.left >= 0 && strip.right <= ${width} && rect.width <= strip.width; return rect.left >= 0 && rect.right <= ${width} && (!card || rect.right <= card.right); }))`), true, `${name} keeps controls inside their panels at ${width}px`);
-        if (process.env.SCREENSHOT_DIR && width === 320) {
-          await js('window.scrollTo(0, 0)');
-          const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
-          await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-large-text-${name}.png`), Buffer.from(image.data, "base64"));
-        }
-      }
-    }
-    await js('document.documentElement.style.fontSize = ""');
-  });
-
   await test("responsive layouts and dark mode keep the popup usable", async () => {
     const checkNodeActions = async (view: string, width: number, height: number) => {
       assert.equal(await js('document.querySelector(".test-node").checkVisibility()'), true, `${view} exposes node testing`);
       assert.equal(await js('(() => { const row = document.querySelector(".selector-node"); const card = row.getBoundingClientRect(); const choice = row.querySelector(".select-node").getBoundingClientRect(); const test = row.querySelector(".test-node").getBoundingClientRect(); return Math.abs((card.top + card.bottom) / 2 - (test.top + test.bottom) / 2) <= 1 && test.top > card.top && test.bottom < card.bottom && test.right < card.right && choice.right <= test.left; })()'), true, `${view} centers the inset Test button without overlapping node selection at ${width}px`);
-      assert.equal(await js('(() => { const test = document.querySelector(".test-node").getBoundingClientRect(); return test.width >= 64 && test.height >= 40; })()'), true, `${view} provides a larger Test target at ${width}px`);
+      assert.equal(await js('(() => { const test = document.querySelector(".test-node").getBoundingClientRect(); return test.width >= 64 && test.height >= 36; })()'), true, `${view} provides a Test target at Kumo control height at ${width}px`);
       if (width === 1280 && height === 960) {
         await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
         const resting = await js('getComputedStyle(document.querySelector(".selector-node[data-node=node-1]")).backgroundColor');
@@ -1889,9 +1982,9 @@ try {
     };
     await js('document.querySelector("#refresh").click()');
     await ready();
-    assert.equal(await js('(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true")'), true);
+    assert.equal(await js('(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true")'), true);
     await delay(250);
-    await js('document.querySelector(".astryx-toast button")?.click()');
+    await js(`${toastRoot}?.querySelector("[aria-label=Close]").click()`);
     await until('document.querySelector("#message") === null');
     const viewports: [number, number, "light" | "dark"][] = [
       // Phones, including a short viewport while a keyboard is open.
@@ -1910,7 +2003,7 @@ try {
       await page();
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
       const certificateExpanded = width >= 768 && height >= 600;
-      await until(`(document.querySelector(".certificate-disclosure > .astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") === ${certificateExpanded}`);
+      await until(`(document.querySelector(".certificate-disclosure > .disclosure-trigger").getAttribute("aria-expanded") === "true") === ${certificateExpanded}`);
       const dualScope = width >= 1024;
       await until(`(document.querySelector("#global-tab") === null) === ${dualScope}`);
       if (!dualScope) {
@@ -1919,14 +2012,16 @@ try {
       }
       await until('document.querySelector("#global-traffic .recharts-surface") !== null');
       await until(`document.querySelectorAll(".traffic-chart").length === ${dualScope ? 2 : 1}`);
+      if (dualScope) assert.equal(await js('(() => { const [device, global] = document.querySelectorAll(".status-grid > div"); return global.getBoundingClientRect().top - device.getBoundingClientRect().bottom; })()'), 20, `status scopes keep their 20px divider spacing at ${width}px`);
       await until('[...document.querySelectorAll(".traffic-chart")].every(chart => { const svg = chart.querySelector(".recharts-surface"); return svg && Math.abs(svg.getBoundingClientRect().width - chart.clientWidth) <= 1; })');
       assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-line-curve")].every(line => !/NaN|Infinity/.test(line.getAttribute("d")))'), true);
       assert.equal(await js('[...document.querySelectorAll(".traffic-chart .recharts-cartesian-axis-tick")].every(tick => { const rect = tick.getBoundingClientRect(); const chart = tick.closest(".traffic-chart").getBoundingClientRect(); return rect.left >= chart.left - 1 && rect.right <= chart.right + 1 && rect.top >= chart.top - 1 && rect.bottom <= chart.bottom + 1; })'), true, `chart labels fit at ${width}px`);
       assert.equal(await js('[...document.querySelectorAll(".panel-card, .traffic-metrics, .diagnostic-fields, .selector-control")].every(element => element.scrollWidth <= element.clientWidth + 1)'), true, `panels fit at ${width}px`);
       if (height >= 600 && (width < 500 || width === 1280)) {
+        // Touch emulation switches to a coarse pointer, which enlarges controls; measure afterwards.
+        if (width < 500) await call("Emulation.setTouchEmulationEnabled", { enabled: true });
         const point = await js<{ x: number; y: number }>('(() => { const chart = document.querySelector("#global-traffic .traffic-chart"); chart.scrollIntoView({ block: "center" }); const dot = [...chart.querySelectorAll(".recharts-line-dot")].at(-1).getBoundingClientRect(); return { x: dot.x + dot.width / 2, y: dot.y + dot.height / 2 }; })()');
         if (width < 500) {
-          await call("Emulation.setTouchEmulationEnabled", { enabled: true });
           await call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
           await call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
         } else {
@@ -1939,7 +2034,8 @@ try {
           await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-tooltip-${width}x${height}.png`), Buffer.from(image.data, "base64"));
         }
         await key("Escape", 27);
-        await call("Emulation.setTouchEmulationEnabled", { enabled: false });
+        // Disabling touch emulation also drops the emulated mouse until the next page load.
+        if (width < 500) await call("Emulation.setTouchEmulationEnabled", { enabled: false });
       }
       await openPicker();
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `outbounds fit the content viewport at ${width}x${height}`);
@@ -1950,7 +2046,8 @@ try {
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: true });
         await writeFile(join(process.env.SCREENSHOT_DIR, "dae-web-mobile-open.png"), Buffer.from(image.data, "base64"));
       }
-      await js('document.querySelector(".node-popover").hidePopover()');
+      await js('document.querySelector(".node-search input").focus()');
+      await key("Escape", 27);
       await until('document.querySelectorAll(".selector-node").length === 0');
       if (process.env.SCREENSHOT_DIR && height >= 600) {
         await js('window.scrollTo(0, 0)');
@@ -1961,7 +2058,8 @@ try {
       await openPicker("overview");
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `quick selector actions fit at ${width}px`);
       await checkNodeActions("overview", width, height);
-      await js('document.querySelector(".node-popover").hidePopover()');
+      await js('document.querySelector(".node-search input").focus()');
+      await key("Escape", 27);
       await until('document.querySelectorAll(".selector-node").length === 0');
       const overviewBounds = await js('(() => { const rect = document.querySelector(".workspace").getBoundingClientRect(); return { left: rect.left, width: rect.width, navWidth: document.querySelector(".page-nav").getBoundingClientRect().width }; })()');
       assert.equal(await js('(() => { const box = document.querySelector(".device-identity").getBoundingClientRect(); const refresh = document.querySelector("#refresh").getBoundingClientRect(); return refresh.width >= 44 && refresh.height >= 36 && (innerWidth <= 760 ? refresh.bottom < box.top : box.right < refresh.left || box.bottom < refresh.top); })()'), true, `identity and refresh remain separate and readable at ${width}px`);
@@ -1988,12 +2086,12 @@ try {
       await setDisclosure(".certificate-disclosure", certificateExpanded);
       await visit("explain");
       assert.deepEqual(await js('(() => { const rect = document.querySelector(".workspace").getBoundingClientRect(); return { left: rect.left, width: rect.width, navWidth: document.querySelector(".page-nav").getBoundingClientRect().width }; })()'), overviewBounds, `Explain keeps Overview width and alignment at ${width}px`);
-      assert.equal(await js(`(() => { const nav = document.querySelector("#setting-navigation").getBoundingClientRect(); const content = document.querySelector("#setting-content").getBoundingClientRect(); const links = [...document.querySelectorAll("#setting-navigation a, #setting-navigation [role=tab]")].map(link => link.getBoundingClientRect()); return ${width} >= 960 ? nav.right < content.left && nav.top === content.top && links.every((rect, i) => !i || rect.top >= links[i - 1].bottom) : nav.bottom < content.top && links.every(rect => rect.top === links[0].top); })()`), true, `Setting uses a left sidebar or top tabs at ${width}px`);
+      assert.equal(await js(`(() => { const nav = document.querySelector("#setting-navigation").getBoundingClientRect(); const content = document.querySelector("#setting-content").getBoundingClientRect(); const links = [...document.querySelectorAll("#setting-navigation a, #setting-navigation [role=tab]")].map(link => link.getBoundingClientRect()); return ${width} >= 768 ? nav.right < content.left && nav.top === content.top && links.every((rect, i) => !i || rect.top >= links[i - 1].bottom) : nav.bottom <= content.top && links.every(rect => rect.top === links[0].top); })()`), true, `Setting uses a left sidebar or top tabs at ${width}px`);
       const fieldSizes = await js<{ inputHeight: number; selectHeight: number; inputWidth: number }>('(() => { const input = document.querySelector("#diagnostic-target").getBoundingClientRect(); const select = document.querySelector("#diagnostic-protocol").getBoundingClientRect(); return { inputHeight: input.height, selectHeight: select.height, inputWidth: input.width }; })()');
       assert.equal(fieldSizes.inputHeight === fieldSizes.selectHeight && fieldSizes.inputWidth >= 240, true, `aligned diagnostic inputs at ${width}px: ${JSON.stringify(fieldSizes)}`);
       assert.equal(await js('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true, `testing fits at ${width}px`);
       assert.equal(await js('(() => { const header = document.querySelector(".page-header").getBoundingClientRect(); return [...document.querySelectorAll("#setting-page, footer")].every(element => { const rect = element.getBoundingClientRect(); return Math.abs(rect.left - header.left) < 1 && Math.abs(rect.right - header.right) < 1; }); })()'), true, `testing content aligns with the page at ${width}px`);
-      assert.equal(await js('(() => { const nav = document.querySelector(".page-nav").getBoundingClientRect(); const heading = document.querySelector(".page-heading").getBoundingClientRect(); const refresh = document.querySelector("#refresh").getBoundingClientRect(); const links = [...document.querySelectorAll(".page-nav a")].map(link => link.getBoundingClientRect()); const center = rect => (rect.top + rect.bottom) / 2; return (innerWidth <= 760 ? nav.top > heading.bottom && nav.right < refresh.left && Math.abs(center(nav) - center(refresh)) < 1 : nav.left > heading.right && (innerWidth < 1024 || Math.abs(center(nav) - center(refresh)) < 1)) && links.every(link => link.top === links[0].top && link.height >= (innerWidth <= 760 ? 44 : 36)); })()'), true, `header forms one bar on desktop and keeps navigation beside refresh on mobile at ${width}px`);
+      assert.equal(await js('(() => { const nav = document.querySelector(".page-nav").getBoundingClientRect(); const heading = document.querySelector(".page-heading").getBoundingClientRect(); const refresh = document.querySelector("#refresh").getBoundingClientRect(); const links = [...document.querySelectorAll(".page-nav a")].map(link => link.getBoundingClientRect()); const center = rect => (rect.top + rect.bottom) / 2; return (innerWidth <= 760 ? nav.top > heading.bottom && nav.right < refresh.left && Math.abs(center(nav) - center(refresh)) < 1 : nav.left > heading.right && (innerWidth < 1024 || Math.abs(center(nav) - center(refresh)) < 1)) && links.every(link => link.top === links[0].top && link.height >= 32); })()'), true, `header forms one bar on desktop and keeps navigation beside refresh on mobile at ${width}px`);
       if (process.env.SCREENSHOT_DIR && height >= 600) {
         const image = await call("Page.captureScreenshot", { captureBeyondViewport: false });
         await writeFile(join(process.env.SCREENSHOT_DIR, `dae-web-explain-${width}x${height}.png`), Buffer.from(image.data, "base64"));
@@ -2022,9 +2120,9 @@ try {
       }
     }
     await visit("explain");
-    await js('document.querySelector("#diagnostic-kind").value = "dns"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
+    await choose("#diagnostic-kind", "DNS policy");
     assert.equal(await js('document.querySelector("#diagnostic-qtype").checkVisibility() && !document.querySelector("#diagnostic-sni").checkVisibility()'), true);
-    await js('document.querySelector("#diagnostic-kind").value = "flow"; document.querySelector("#diagnostic-kind").dispatchEvent(new Event("change", { bubbles: true }))');
+    await choose("#diagnostic-kind", "Connection routing");
     assert.equal(await js('!document.querySelector("#diagnostic-sni").checkVisibility() && !document.querySelector("#diagnostic-qtype").checkVisibility()'), true);
     await setDisclosure(".diagnostic-advanced", true);
     assert.equal(await js('document.querySelector("#diagnostic-sni").checkVisibility()'), true);

@@ -3,9 +3,10 @@ import type { ClientSetState, DeviceContext, DiagnosticFlow, DiagnosticKind, Exp
 import { formControl, formValue } from "./dom.ts";
 interface Comparison { sets: Record<string, boolean>; label: string }
 interface ExplanationView { response: ExplainResponse; kind?: DiagnosticKind; target: string }
-import { Button } from "@astryxdesign/core/Button";
-import { Banner } from "@astryxdesign/core/Banner";
-import { Field } from "@astryxdesign/core/Field";
+import { Button } from "@cloudflare/kumo/components/button";
+import { Banner } from "@cloudflare/kumo/components/banner";
+import { Input, InputArea } from "@cloudflare/kumo/components/input";
+import { Select } from "@cloudflare/kumo/components/select";
 import { createRef, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { flushSync } from "react-dom";
 import { request } from "./api.ts";
@@ -13,7 +14,11 @@ import { createView } from "./react-view.ts";
 import { useRequest } from "./use-request.ts";
 import { Explanation } from "./trace.tsx";
 import { Disclosure } from "./disclosure.tsx";
+import { StatusBanner } from "./notice.tsx";
+import { codeBlock } from "./ui.ts";
 
+const kinds: Record<DiagnosticKind, string> = { flow: "Connection routing", dns: "DNS policy", domain: "Cached domain records", outbound: "Outbound nodes", plugins: "HTTP plugins" };
+const hint = "text-sm text-kumo-subtle";
 const fields = {
   flow: ["Destination", "https://example.com or 203.0.113.10:443"],
   dns: ["DNS name", "example.com"],
@@ -118,49 +123,49 @@ function Diagnostics({ comparisonRequest, deviceKey, ref }: { comparisonRequest:
 
   return <>
     <form id="diagnostic-form" ref={formRef} onSubmit={explain} onInput={changeInput}>
-      <div className="diagnostic-mode">
-        <Field label="What to check" inputID="diagnostic-kind"><select id="diagnostic-kind" value={kind} onChange={(event) => { if (Object.hasOwn(fields, event.target.value)) setKind(event.target.value as DiagnosticKind); explanation.reset(); }}>
-          <option value="flow">Connection routing</option><option value="dns">DNS policy</option><option value="domain">Cached domain records</option><option value="outbound">Outbound nodes</option><option value="plugins">HTTP plugins</option>
-        </select></Field>
+      <div className="diagnostic-mode mb-4 max-w-sm">
+        <Select label="What to check" className="w-full" value={kind} items={kinds} render={<button type="button" id="diagnostic-kind" />}
+          onValueChange={(value) => { if (typeof value === "string" && Object.hasOwn(fields, value)) setKind(value as DiagnosticKind); explanation.reset(); }} />
       </div>
-      <div className={`diagnostic-target-row${!flow && !dns ? " single-field" : ""}`}>
-        <Field label={label} labelID="diagnostic-target-label" inputID="diagnostic-target"><input ref={target} id="diagnostic-target" name="target" placeholder={placeholder} aria-describedby="diagnostic-target-hint" autoCapitalize="none" spellCheck={false} required /></Field>
-        <Field id="diagnostic-protocol-field" hidden={!flow} label="Transport" inputID="diagnostic-protocol"><select id="diagnostic-protocol" name="protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select></Field>
-        <Field id="diagnostic-qtype-field" hidden={!dns} label="Question type" inputID="diagnostic-qtype"><select id="diagnostic-qtype" name="qtype"><option>A</option><option>AAAA</option><option>CNAME</option><option>HTTPS</option><option>TXT</option></select></Field>
-      </div>
-      <p id="diagnostic-target-hint" className="field-hint">{kind === "flow" ? "Enter an IP:port, hostname:port or URL. For a hostname, supply the destination IP below to check its kernel route; this check does not resolve DNS." : kind === "dns" ? "Evaluates DNS policy without sending a DNS query." : kind === "plugins" ? "Checks plugin rules without fetching the URL or running scripts." : kind === "domain" ? "Reads existing records without refreshing DNS." : "Reads the current node selection and health without probing nodes."}</p>
-      <div className="diagnostic-fields diagnostic-address" id="diagnostic-flow-fields" hidden={dns || kind === "outbound"}>
-        <Field id="diagnostic-ip-field" label="Destination IP" inputID="diagnostic-ip" descriptionID="diagnostic-ip-hint"
-          description={kind === "flow" ? "Needed to check routing for a hostname" : "Optional · filter by IP"}>
-          <input id="diagnostic-ip" name="ip" placeholder="203.0.113.10" autoCapitalize="none" spellCheck={false} aria-describedby="diagnostic-ip-hint" />
-        </Field>
-      </div>
-      <Disclosure className="diagnostic-advanced" title="Advanced context" meta="Optional" isOpen={advancedOpen} onOpenChange={setAdvancedOpen}>
-        <Field className="diagnostic-identity" id="diagnostic-sni-field" hidden={!flow} label="TLS hostname (SNI)" inputID="diagnostic-sni"
-          description="Optional · override the hostname supplied by the URL" descriptionID="diagnostic-sni-hint">
-          <input id="diagnostic-sni" name="sni" placeholder="example.com" autoCapitalize="none" spellCheck={false} aria-describedby="diagnostic-sni-hint" />
-        </Field>
-        <Field className="diagnostic-identity" label="Test as" inputID="diagnostic-scope"><select id="diagnostic-scope" value={scope} onChange={(event) => { setScope(event.target.value === "manual" ? "manual" : "self"); explanation.reset(); }}>
-          <option value="self">This device</option><option id="diagnostic-manual" value="manual">Custom identity</option>
-        </select></Field>
-        <p className="muted">{'JSON fields override the request. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
-        <Field label="Advanced diagnostic request JSON" inputID="diagnostic-overrides">
-          <textarea id="diagnostic-overrides" name="overrides" rows={6} spellCheck={false} defaultValue="{}" />
-        </Field>
-        <Button label="Show inherited context" id="diagnostic-context" type="button" onClick={showContext} isDisabled={context.pending} />
-        <pre id="diagnostic-context-view" className="code-block">{context.pending ? "Loading context…" : context.error || context.value?.fields.map(field => `${field.name}: ${field.value} [${field.source}]`).join("\n")}</pre>
-      </Disclosure>
-      <div className="diagnostic-actions">
-        <div className="diagnostic-comparison"><span id="diagnostic-comparison" className="muted">{comparison?.label || "Current settings"}</span>
-          <span className="field-hint">· {scope === "self" ? "This device" : "Custom identity"}</span>
-          <Button label="Clear comparison" id="diagnostic-clear-comparison" type="button" hidden={!comparison} onClick={() => { setComparison(null); explanation.reset(); }} />
+      <div className={`diagnostic-target-row mb-4 grid gap-3 sm:gap-4 ${!flow && !dns ? "grid-cols-1" : "sm:grid-cols-[minmax(0,1fr)_9rem]"}`}>
+        <Input ref={target} id="diagnostic-target" name="target" label={label} placeholder={placeholder} aria-describedby="diagnostic-target-hint" autoCapitalize="none" spellCheck={false} required className="w-full" />
+        <div id="diagnostic-protocol-field" hidden={!flow}>
+          <Select label="Transport" name="protocol" className="w-full" defaultValue="tcp" items={{ tcp: "TCP", udp: "UDP" }} onValueChange={() => explanation.reset()} render={<button type="button" id="diagnostic-protocol" />} />
         </div>
-        <Button label={explanation.pending ? "Checking…" : "Run check"} variant="primary" id="diagnostic-run" type="submit" isDisabled={explanation.pending} />
+        <div id="diagnostic-qtype-field" hidden={!dns}>
+          <Select label="Question type" name="qtype" className="w-full" defaultValue="A" items={{ A: "A", AAAA: "AAAA", CNAME: "CNAME", HTTPS: "HTTPS", TXT: "TXT" }} onValueChange={() => explanation.reset()} render={<button type="button" id="diagnostic-qtype" />} />
+        </div>
+      </div>
+      <p id="diagnostic-target-hint" className={`field-hint -mt-2 mb-4 ${hint}`}>{kind === "flow" ? "Enter an IP:port, hostname:port or URL. For a hostname, supply the destination IP below to check its kernel route; this check does not resolve DNS." : kind === "dns" ? "Evaluates DNS policy without sending a DNS query." : kind === "plugins" ? "Checks plugin rules without fetching the URL or running scripts." : kind === "domain" ? "Reads existing records without refreshing DNS." : "Reads the current node selection and health without probing nodes."}</p>
+      <div className="diagnostic-fields diagnostic-address mb-4 max-w-xl" id="diagnostic-flow-fields" hidden={dns || kind === "outbound"}>
+        <Input id="diagnostic-ip" name="ip" label="Destination IP" description={kind === "flow" ? "Needed to check routing for a hostname" : "Optional · filter by IP"}
+          placeholder="203.0.113.10" autoCapitalize="none" spellCheck={false} className="w-full" />
+      </div>
+      <Disclosure className="diagnostic-advanced border-t border-kumo-hairline" title="Advanced context" meta="Optional" isOpen={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <div className="diagnostic-identity max-w-sm" id="diagnostic-sni-field" hidden={!flow}>
+          <Input id="diagnostic-sni" name="sni" label="TLS hostname (SNI)" description="Optional · override the hostname supplied by the URL" placeholder="example.com" autoCapitalize="none" spellCheck={false} className="w-full" />
+        </div>
+        <div className="diagnostic-identity max-w-sm">
+          <Select label="Test as" className="w-full" value={scope} render={<button type="button" id="diagnostic-scope" />}
+            items={{ self: "This device", manual: "Custom identity" }}
+            onValueChange={(value) => { setScope(value === "manual" ? "manual" : "self"); explanation.reset(); }} />
+        </div>
+        <p className={` ${hint}`}>{'JSON fields override the request. For example: {"context":{"source_port":40000,"dscp":0}}. Manual identity also accepts source_ip, mac, interface, origin and policy. Omitted fields remain unknown.'}</p>
+        <InputArea id="diagnostic-overrides" name="overrides" label="Advanced diagnostic request JSON" rows={6} spellCheck={false} defaultValue="{}" className="w-full resize-y font-mono text-sm" />
+        <Button id="diagnostic-context" type="button" onClick={showContext} disabled={context.pending}>Show inherited context</Button>
+        <pre id="diagnostic-context-view" className={`${codeBlock} whitespace-pre-line empty:hidden`}>{context.pending ? "Loading context…" : context.error || context.value?.fields.map(field => `${field.name}: ${field.value} [${field.source}]`).join("\n")}</pre>
+      </Disclosure>
+      <div className="diagnostic-actions flex flex-wrap items-center justify-between gap-3 border-t border-kumo-hairline pt-4">
+        <div className="diagnostic-comparison flex min-w-0 flex-wrap items-center gap-2"><span className={hint}><span id="diagnostic-comparison">{comparison?.label || "Current settings"}</span>
+          {" "}· {scope === "self" ? "This device" : "Custom identity"}</span>
+          <Button id="diagnostic-clear-comparison" type="button" hidden={!comparison} onClick={() => { setComparison(null); explanation.reset(); }}>Clear comparison</Button>
+        </div>
+        <Button variant="primary" id="diagnostic-run" type="submit" className="ml-auto min-w-32 justify-center" disabled={explanation.pending}>{explanation.pending ? "Checking…" : "Run check"}</Button>
       </div>
     </form>
     <div id="diagnostic-result" aria-live="polite" aria-busy={explanation.pending}>
-      {explanation.pending && <p className="diagnostic-progress">Checking the current rules…</p>}
-      {explanation.error && <Banner status="error" title="Could not complete the check" description={explanation.error} />}
+      {explanation.pending && <p className="diagnostic-progress mt-5">Checking the current rules…</p>}
+      {explanation.error && <StatusBanner tone="error" title="Could not complete the check" description={explanation.error} />}
       {explanation.value && <Explanation {...explanation.value} onEdit={editField} onUseIP={useIP} />}
     </div>
   </>;
@@ -174,7 +179,7 @@ export function createDiagnostics(container: HTMLElement) {
   let comparisonRequest: Comparison | null = null;
   const update = () => render(allowed
     ? <Diagnostics ref={actions} comparisonRequest={comparisonRequest} deviceKey={JSON.stringify([generation, deviceKey])} />
-    : <Banner status="info" title="Administrator access required" description="Log in to inspect routing rules, DNS records and outbound nodes." />);
+    : <Banner className="my-3" role="status" title="Administrator access required" description="Log in to inspect routing rules, DNS records and outbound nodes." />);
   update();
   return {
     setAccess: (next: boolean) => { if (allowed !== next) { allowed = next; comparisonRequest = null; update(); } },

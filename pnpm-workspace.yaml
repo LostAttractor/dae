@@ -9,6 +9,3 @@ overrides:
 allowBuilds:
   esbuild: true
   fsevents: true
-  # These postinstall scripts only print setup reminders.
-  '@astryxdesign/cli': false
-  '@astryxdesign/core': false

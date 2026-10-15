@@ -39,7 +39,6 @@ export interface RecordedRequest { method: string; path: string; body: FixtureBo
 export interface Fixture {
   mode: "lan" | "api_key" | "denied";
   requests: RecordedRequest[];
-  clientReads: number;
   deviceStatusReads?: number;
   nextRead: DeferredRead | null;
   nextDeviceRead: DeferredRead | null;
