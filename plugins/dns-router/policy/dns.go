@@ -48,6 +48,13 @@ func New(dns *Config, requestRules, responseRules []*config_parser.RoutingRule, 
 		if tag == "" {
 			return nil, fmt.Errorf("%w: '%v' has no tag", ErrBadUpstreamFormat, upstreamRaw)
 		}
+		switch tag {
+		case "asis", "accept", "reject", "<OR>", "<AND>":
+			return nil, fmt.Errorf("%w: upstream tag %q is reserved", ErrBadUpstreamFormat, tag)
+		}
+		if _, exists := upstreamName2Id[tag]; exists {
+			return nil, fmt.Errorf("%w: duplicate upstream tag %q", ErrBadUpstreamFormat, tag)
+		}
 		var u *url.URL
 		u, err = url.Parse(link)
 		if err != nil {

@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -67,12 +68,34 @@ func ResolveHttp(ctx context.Context, client *http.Client, endpoint *url.URL, ms
 	if ageValue := resp.Header.Get("Age"); ageValue != "" {
 		ageValue, _, _ = strings.Cut(ageValue, ",")
 		age, _ := strconv.ParseUint(strings.TrimSpace(ageValue), 10, 64)
+		negative := response.Rcode == dnsmessage.RcodeNameError
+		if response.Rcode == dnsmessage.RcodeSuccess && len(query.Question) == 1 {
+			qtype := query.Question[0].Qtype
+			negative = !slices.ContainsFunc(response.Answer, func(rr dnsmessage.RR) bool {
+				return rr.Header().Rrtype == qtype || qtype == dnsmessage.TypeANY
+			})
+		}
+		if negative {
+			// RFC 2308: age the negative lifetime, not the SOA's original
+			// TTL alone. Leave MINIMUM (signed RDATA) untouched.
+			for _, rr := range response.Ns {
+				if soa, ok := rr.(*dnsmessage.SOA); ok {
+					if soa.Minttl >= 1<<31 {
+						soa.Hdr.Ttl = 0
+					} else if soa.Hdr.Ttl < 1<<31 {
+						soa.Hdr.Ttl = min(soa.Hdr.Ttl, soa.Minttl)
+					}
+				}
+			}
+		}
 		for _, rrs := range [][]dnsmessage.RR{response.Answer, response.Ns, response.Extra} {
 			for _, rr := range rrs {
 				if rr == nil || rr.Header().Rrtype == dnsmessage.TypeOPT {
 					continue
 				}
-				if uint64(rr.Header().Ttl) <= age {
+				// RFC 2181: high-bit TTLs are zero before applying Age;
+				// subtraction must not turn them into long-lived records.
+				if rr.Header().Ttl >= 1<<31 || uint64(rr.Header().Ttl) <= age {
 					rr.Header().Ttl = 0
 				} else {
 					rr.Header().Ttl -= uint32(age)

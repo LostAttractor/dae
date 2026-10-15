@@ -353,7 +353,7 @@ func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 	query := request.MessageCopy()
 	versions, protocols := upstream.SupportedNetworks()
 	var last error
-	for _, version := range versions {
+	for v, version := range versions {
 		ip := upstream.Ip4
 		if version == consts.IpVersionStr_6 {
 			ip = upstream.Ip6
@@ -362,7 +362,7 @@ func exchange(ctx context.Context, request *plugin.DNSExchange, upstream *policy
 		for i, protocol := range protocols {
 			operation := ctx
 			cancel := func() {}
-			if i+1 < len(protocols) {
+			if i+1 < len(protocols) || v+1 < len(versions) {
 				operation, cancel = context.WithTimeout(ctx, partialBudget(ctx))
 			}
 			started := time.Now()

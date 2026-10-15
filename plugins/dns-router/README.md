@@ -32,7 +32,8 @@ plugins {
 Request predicates: `qname`, `qtype`, `dip`, `sip`, `interface`. Response predicates:
 `qname`, `qtype`, `ip`, `upstream`. Interface-name rules track Linux link changes.
 Upstream scheme may be `udp`, `tcp`, `tcp+udp`, `tls`, `https`, `quic`, `h3` or
-`http3`. HTTPS/H3 preserve custom paths (including escaped separators) and
+`http3`. Upstream tags must be unique and cannot be `asis`, `accept`, `reject`,
+`<OR>` or `<AND>`. HTTPS/H3 preserve custom paths (including escaped separators) and
 query parameters, replacing only the `dns` parameter with the current query.
 Defaults are request `asis`, response
 `accept`; `reject` produces an empty response. Response rerouting is depth-bounded.
@@ -50,7 +51,13 @@ Dial services receive both the selected IP:port and the configured endpoint
 hostname. `domain()` rules match that hostname, not the client's DNS question;
 connections still dial the selected IP. Auxiliary family probes have an independent
 budget and TCP connection so probe cancellation cannot close the client's stream.
-Short deadlines reserve time for `tcp+udp` fallback and for answer delivery.
+Short deadlines reserve time for subsequent transports and IP addresses, so an
+unreachable IPv4 endpoint cannot consume the IPv6 fallback's entire budget.
+
+HTTPS/H3 subtract HTTP `Age` from effective DNS TTLs. Negative answers first
+limit the SOA TTL to SOA MINIMUM, leaving the SOA record data unchanged; high-bit
+TTLs are treated as zero before subtraction. Expired responses remain usable
+for the current exchange but cannot acquire a fresh lifetime in the cache.
 
 `asis` preserves invalid or uncorrelated wire without letting it drive response
 policy or family suppression. Correlated header-only errors use the original

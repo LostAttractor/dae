@@ -5,9 +5,12 @@ package mitm
 import (
 	"context"
 	"net"
+	"sync/atomic"
 
 	"github.com/daeuniverse/dae/component/plugin"
 )
+
+var dnsSerial atomic.Uint64
 
 // HandleDNS shares the plugin lifecycle with HTTP. The terminal is the core's
 // transparent relay; protocol-aware upstream querying belongs to plugins.
@@ -27,6 +30,11 @@ func (h *Host) HandleDNS(ctx context.Context, request *plugin.DNSExchange, termi
 	h.requests.Add(1)
 	h.mu.Unlock()
 	defer h.requests.Done()
+	// An unchanged cache instance can be shared with a new DNS chain. Keep
+	// their answers separate, including observers invoked by the finalizer.
+	previousContext := request.ContextKey
+	request.ContextKey = h.dnsContext + previousContext
+	defer func() { request.ContextKey = previousContext }()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(h.forceContext, cancel)

@@ -202,6 +202,10 @@ plugins {
 
 Router 提供策略、IP 版本偏好、UDP/TCP、DoT/DoH/DoQ/HTTP3 和传输回退。`asis` 调用后续处理器；Surge 显式服务器选择优先于后续通用策略。Cache 是独立有界 LRU，保存完整应答并递减 TTL，支持 SOA 负缓存及固定 TTL；签名/事务专属应答保守跳过缓存。
 
+未变化的 cache 实例跨重载保留条目和指标。宿主按有序插件实例隔离缓存：router 上游、Surge 资源或插件顺序变化后，新链不会命中旧策略的答案；排空中的旧宿主仍可使用自己的答案。旧条目仍受过期和容量限制，实例重建时才清空条目与计数。
+
+Router 为后续传输和 IP 地址保留查询预算，避免不可达的 IPv4 上游耗尽 IPv6 回退时间。HTTPS/HTTP3 应答会先确定有效 TTL，再扣除 HTTP `Age`，已过期的负应答不会重新进入缓存。上游标签必须唯一，不能使用 `asis`、`accept`、`reject`、`<OR>`、`<AND>`。
+
 `global.dns_resolver` 从首次查询起指定内部解析服务器。上游、路由和 IP 版本偏好配置在 router 插件中，`fixed_domain_ttl` 配置在 cache 插件中。查看插件使用 `dae plugins status`。更多见[插件配置](mitm-plugins.md)和[Surge Host](surge-module.md#dns-host-与-ip-目标重写)。
 
 ## TODO

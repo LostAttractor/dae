@@ -75,6 +75,13 @@ that data and adds invocation-scoped `DialContext`, `ListenPacket`, `Resolve` an
 `Client`. Handlers receive `*DNSExchange`; `Copy()` isolates query/routing changes
 while retaining the same services.
 
+During DNS handling and observation, the host scopes `ContextKey` to its ordered
+plugin instances. An unchanged chain shares that namespace across reload;
+replacing or reordering instances creates a new namespace. Reused caches cannot
+replay old-policy answers into the new chain, while draining hosts retain their
+own answers. Exact diagnostics use the same namespace. Treat `ContextKey` as
+opaque and preserve it in derived requests.
+
 `DNSPacket` is immutable and shared safely by copies. `DNSWire(bytes)` copies an
 exact received packet, including malformed/opaque bytes. `DNSMessage(message)`
 copies a local message. `MessageCopy()` returns an owned editable message, or nil

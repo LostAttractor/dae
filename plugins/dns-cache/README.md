@@ -49,7 +49,10 @@ using the delivered TTL and `global.dns_retention_window`; this does not renew t
 cached response's own TTL or receipt time.
 TTL aging uses the response's `ReceivedAt`. The core fills an omitted timestamp
 before observer delivery.
-Reload creates a fresh response cache; domain evidence persists independently.
+Unchanged instances retain their cache and counters across reload. The host's
+policy namespace separates answers when the ordered plugin instances change;
+draining hosts can still use their old answers. Old entries remain subject to
+the same expiration and capacity limits. Domain evidence persists independently.
 `dae plugins dns-cache status` reports entry count, byte usage, hits and misses.
 
 ## Prometheus metrics
@@ -72,7 +75,7 @@ keys bypass lookup; eligible keys without an entry are misses even when the
 response cannot be stored. Expiration includes lazy and worker cleanup, capacity
 includes entry and byte pressure, and replacing a key is not an eviction.
 Entries awaiting expiration cleanup remain included in the gauges.
-Counters reset with the cache on reload. Failed candidate preparation preserves
+Counters reset when the cache instance is reconstructed. Failed candidate preparation preserves
 the active instance's metrics; closing an instance removes its series.
 
 Run `go test ./plugins/dns-cache/...` from the repository root.

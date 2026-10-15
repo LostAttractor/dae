@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -67,6 +68,50 @@ func TestTCPFallbackReservesCallerBudget(t *testing.T) {
 	_, err = Exchange(ctx, q, upstream)
 	if err != nil || !tcp.Load() {
 		t.Fatalf("TCP fallback not reached: %v %v", tcp.Load(), err)
+	}
+}
+
+func TestAddressFallbackReservesCallerBudget(t *testing.T) {
+	for _, scheme := range []policy.UpstreamScheme{"udp", "tcp", "tcp+udp"} {
+		t.Run(string(scheme), func(t *testing.T) {
+			q := safetyRequest(dns.TypeA)
+			var attempts []string
+			q.DialContext = func(ctx context.Context, network, target, _ string) (net.Conn, error) {
+				attempts = append(attempts, network+" "+target)
+				if netip.MustParseAddrPort(target).Addr().Is4() {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				conn, peer := net.Pipe()
+				go func() {
+					defer peer.Close()
+					d := &dns.Conn{Conn: peer}
+					var query dns.Msg
+					if network == "tcp" {
+						m, err := d.ReadMsg()
+						if err == nil {
+							_ = d.WriteMsg(new(dns.Msg).SetReply(m))
+						}
+						return
+					}
+					wire := make([]byte, 4096)
+					n, err := peer.Read(wire)
+					if err == nil && query.Unpack(wire[:n]) == nil {
+						response, _ := new(dns.Msg).SetReply(&query).Pack()
+						_, _ = peer.Write(response)
+					}
+				}()
+				return conn, nil
+			}
+			upstream := &policy.Upstream{Scheme: scheme, Hostname: "dns.example", Port: 53,
+				Ip46: &netutils.Ip46{Ip4: netip.MustParseAddr("192.0.2.53"), Ip6: netip.MustParseAddr("2001:db8::53")}}
+			ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+			defer cancel()
+			response, err := Exchange(ctx, q, upstream)
+			if err != nil || response == nil {
+				t.Fatalf("reachable IPv6 fallback was starved: attempts=%v err=%v", attempts, err)
+			}
+		})
 	}
 }
 
@@ -182,6 +227,10 @@ func TestPreflightStaticRoutingAndDeferredResources(t *testing.T) {
 		body  string
 		valid bool
 	}{
+		{`upstream { local:'udp://192.0.2.53' local:'udp://192.0.2.54' }`, false},
+		{`upstream { asis:'udp://192.0.2.53' }`, false},
+		{`upstream { reject:'udp://192.0.2.53' }`, false},
+		{`upstream { accept:'udp://192.0.2.53' }`, false},
 		{`routing { request { fallback:missing } }`, false},
 		{`routing { request { qtype(BAD) -> asis } }`, false},
 		{`routing { response { invalid(test) -> accept } }`, false},

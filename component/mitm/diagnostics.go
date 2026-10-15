@@ -19,6 +19,12 @@ import (
 // capability. A missing capability is an explicit unknown execution boundary.
 func (h *Host) Explain(ctx context.Context, request api.ExplainRequest, dns bool) plugin.Explanation {
 	result := plugin.Explanation{Complete: true}
+	if dns {
+		if identity, ok := plugin.DiagnosticDNSRequest(ctx); ok {
+			identity.ContextKey = h.dnsContext + identity.ContextKey
+			ctx = plugin.WithDiagnosticDNSRequest(ctx, identity)
+		}
+	}
 	if !dns && h.options.DisableHTTP {
 		result.Steps = []api.ExplainStep{{ID: "http/disabled", Stage: "configuration", Expression: "HTTP interception", Status: "inactive", Match: "miss", Reason: "http_disabled"}}
 		return result

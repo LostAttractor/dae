@@ -25,6 +25,7 @@ type DNSRequest struct {
 	ServerAssigned bool
 	// ContextKey isolates policy, source, destination, process and mark. Caches
 	// must include it, the transport and all response-varying query fields.
+	// The host scopes it to the active plugin chain during handling and observation.
 	ContextKey string
 }
 
