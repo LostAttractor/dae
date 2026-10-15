@@ -9,7 +9,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -83,32 +82,6 @@ func Deduplicate(list []string) []string {
 		res = append(res, v)
 	}
 	return res
-}
-
-func Base64UrlDecode(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	saver := s
-	if len(s)%4 > 0 {
-		s += strings.Repeat("=", 4-len(s)%4)
-	}
-	raw, err := base64.URLEncoding.DecodeString(s)
-	if err != nil {
-		return saver, err
-	}
-	return string(raw), nil
-}
-
-func Base64StdDecode(s string) (string, error) {
-	s = strings.TrimSpace(s)
-	saver := s
-	if len(s)%4 > 0 {
-		s += strings.Repeat("=", 4-len(s)%4)
-	}
-	raw, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return saver, err
-	}
-	return string(raw), nil
 }
 
 func SetValue(values *url.Values, key string, value string) {
@@ -369,27 +342,6 @@ func MapKeys(m any) (keys []string, err error) {
 		keys = append(keys, k.String())
 	}
 	return keys, nil
-}
-
-func GetTagFromLinkLikePlaintext(link string) (tag string, afterTag string) {
-	before, after, found := strings.Cut(link, ":")
-	if !found {
-		return "", link
-	}
-	// If first colon is like "://" in "scheme://linkbody", no tag is present.
-	if strings.HasPrefix(after, "//") {
-		return "", link
-	}
-	// Else tag is the part before colon.
-	return before, after
-}
-
-func BoolToString(b bool) string {
-	if b {
-		return "1"
-	} else {
-		return "0"
-	}
 }
 
 func ConvergeAddr(addr netip.Addr) netip.Addr {

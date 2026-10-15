@@ -299,6 +299,21 @@ closed only after its last protocol host releases it and its worker exits.
 See [configuration](../../docs/zh/configuration/mitm-plugins.md) and
 [status fields](../../docs/en/configuration/api.md).
 
+## Interface observations
+
+`Services.Interfaces` is the host's shared interface monitor and link cache.
+Create a scope with `Services.Interfaces.NewScope()` to register interface
+callbacks, and close that scope during rollback or plugin cleanup. Scope closure
+removes its subscriptions and waits for dispatched callbacks; other plugins and
+control-plane generations continue using the source. Never close the borrowed
+source or register unscoped callbacks on it. Callbacks must finish promptly, and
+must not close their own scope or wait for synchronous callback registration.
+
+The source survives configuration reload. A plugin can keep its scope while its
+instance is reused or old requests drain. A change of source causes the host to
+prepare a new instance. Standalone factory callers may leave the service nil;
+plugins requiring live interface observations then own their monitor and close it.
+
 ## Persistent storage
 
 `Services.ResourceCacheDir` is the shared configuration-resource cache root, or

@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 )
 
 // Marshal assume all tokens should be legal, and does not prevent injection attacks.
@@ -63,7 +63,7 @@ func (m *Marshaller) marshalStringList(from reflect.Value, depth int, keyable bo
 	for i := 0; i < from.Len(); i++ {
 		str := from.Index(i)
 		if keyable {
-			tag, afterTag := common.GetTagFromLinkLikePlaintext(str.String())
+			tag, afterTag := proxylink.SplitTag(str.String())
 			if len(tag) > 0 {
 				m.writeLine(depth, tag+":"+strconv.Quote(afterTag))
 				continue

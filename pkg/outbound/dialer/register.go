@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/common/url"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 )
 
 type FromLinkCreator func(link string) (builder Builder, property *Property, err error)
@@ -23,7 +23,7 @@ func FromLinkRegister(name string, creator FromLinkCreator) {
 
 func NewFromLink(link string) (Builder, *Property, error) {
 	/// Get overwritten name.
-	overwrittenName, linklike := common.GetTagFromLinkLikePlaintext(link)
+	overwrittenName, linklike := proxylink.SplitTag(link)
 	linklike = strings.TrimSpace(linklike)
 	u, err := url.Parse(linklike)
 	if err != nil {

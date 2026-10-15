@@ -147,6 +147,16 @@ func closeConnAsync(conn net.Conn) {
 }
 
 func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
+	return resolveStream(stream, msg, false)
+}
+
+// ResolveStreamFiltered ignores malformed or unrelated complete frames until a
+// matching response arrives. The caller owns cancellation and closes the stream.
+func ResolveStreamFiltered(stream io.ReadWriter, msg *dnsmessage.Msg) error {
+	return resolveStream(stream, msg, true)
+}
+
+func resolveStream(stream io.ReadWriter, msg *dnsmessage.Msg, skipInvalid bool) error {
 	query := msg.Copy()
 	data, err := msg.Pack()
 	if err != nil {
@@ -168,26 +178,32 @@ func ResolveStream(stream io.ReadWriter, msg *dnsmessage.Msg) error {
 		return fmt.Errorf("failed to write DNS req: %w", io.ErrShortWrite)
 	}
 
-	lenBuf := pool.GetBuffer(2)
-	defer pool.PutBuffer(lenBuf)
-	// Read two byte length.
-	if _, err = io.ReadFull(stream, lenBuf); err != nil {
-		return fmt.Errorf("failed to read DNS resp payload length: %w", err)
+	for {
+		var prefix [2]byte
+		if _, err := io.ReadFull(stream, prefix[:]); err != nil {
+			return fmt.Errorf("read DNS response length: %w", err)
+		}
+		wire := pool.GetBuffer(int(binary.BigEndian.Uint16(prefix[:])))
+		_, err := io.ReadFull(stream, wire)
+		if err != nil {
+			pool.PutBuffer(wire)
+			return fmt.Errorf("read DNS response: %w", err)
+		}
+		var response dnsmessage.Msg
+		err = UnpackDnsMessage(wire, &response)
+		pool.PutBuffer(wire)
+		if err == nil {
+			err = ValidateDnsResponseAllowEmptyQuestion(query, &response, query.Id)
+		}
+		if err != nil {
+			if skipInvalid {
+				continue
+			}
+			return err
+		}
+		*msg = response
+		return nil
 	}
-	respBuf := pool.GetBuffer(int(binary.BigEndian.Uint16(lenBuf)))
-	defer pool.PutBuffer(respBuf)
-	if _, err = io.ReadFull(stream, respBuf); err != nil {
-		return fmt.Errorf("failed to read DNS resp payload: %w", err)
-	}
-	var response dnsmessage.Msg
-	if err = UnpackDnsMessage(respBuf, &response); err != nil {
-		return err
-	}
-	if err = ValidateDnsResponseAllowEmptyQuestion(query, &response, query.Id); err != nil {
-		return err
-	}
-	*msg = response
-	return nil
 }
 
 func ResolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg) error {

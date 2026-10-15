@@ -134,7 +134,7 @@ func (a *application) apply(ctx context.Context, next *config.Config, suspend, a
 	previous := a.plane.MITMHost()
 	var prepared control.PreparedMITM
 	load := func(client *http.Client) (control.PreparedMITM, error) {
-		return loadMITM(ctx, next, client, a.workerClient, plugins, previous, a.geoDirs)
+		return loadMITM(ctx, next, client, a.workerClient, plugins, previous, a.geoDirs, a.datapath)
 	}
 	takePrepared := func(*http.Client) (control.PreparedMITM, error) {
 		host := prepared

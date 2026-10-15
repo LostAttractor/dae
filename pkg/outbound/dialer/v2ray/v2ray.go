@@ -21,6 +21,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/transport/meek"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/tls"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/ws"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 )
 
 func init() {
@@ -303,9 +304,9 @@ func ParseVmessURL(link string) (*V2Ray, error) {
 		return nil, dialer.InvalidParameterErr
 	}
 	encoded, query, _ := strings.Cut(payload, "?")
-	raw, err := common.Base64StdDecode(encoded)
+	raw, err := proxylink.DecodeBase64(encoded)
 	if err != nil {
-		raw, err = common.Base64UrlDecode(encoded)
+		raw, err = proxylink.DecodeBase64URL(encoded)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: VMess payload encoding", dialer.InvalidParameterErr)

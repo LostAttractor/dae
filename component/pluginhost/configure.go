@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +23,7 @@ type configuredPlugin struct {
 	resources func(context.Context, plugin.Spec, plugin.Services) (plugin.Resources, error)
 }
 type instanceInput struct {
+	interfaces *network.InterfaceManager
 	config     any
 	resources  string
 	baseDir    string
@@ -125,8 +127,8 @@ func (c *Configuration) Prepare(ctx context.Context, services plugin.Services, p
 		if configuration == nil {
 			configuration = spec.Config
 		}
-		input := instanceInput{configuration, resources.Key, services.BaseDir, services.BodyMemory}
-		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.bodyMemory == input.bodyMemory && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
+		input := instanceInput{services.Interfaces, configuration, resources.Key, services.BaseDir, services.BodyMemory}
+		if existing := old[spec.ID]; existing != nil && existing.Type == spec.Type && existing.input.interfaces == input.interfaces && existing.input.bodyMemory == input.bodyMemory && existing.input.baseDir == input.baseDir && existing.input.resources == input.resources && reflect.DeepEqual(existing.input.config, input.config) && existing.Retain() {
 			instances = append(instances, PreparedInstance{existing, resources.Value})
 			continue
 		}

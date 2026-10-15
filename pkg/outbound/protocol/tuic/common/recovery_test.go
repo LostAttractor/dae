@@ -48,7 +48,7 @@ func TestRecoveryQUICFailureScope(t *testing.T) {
 }
 
 func TestRecoveryPoolPreservesHealthyMembersAndRejectsStaleFailures(t *testing.T) {
-	p := NewQUICPoolState()
+	p := netproxy.NewPoolState(netproxy.LayerQUIC)
 	a, b := p.NewResource(), p.NewResource()
 	p.Ready(a)
 	p.Ready(b)

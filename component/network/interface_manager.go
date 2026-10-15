@@ -35,6 +35,12 @@ type callbackDelivery struct {
 }
 
 type InterfaceManager struct {
+	// A scope borrows the source's monitor and cache, owning only subscriptions.
+	source        *InterfaceManager
+	registrations []*atomic.Bool
+	registering   sync.WaitGroup
+	scopes        map[*InterfaceManager]interfaceEvents
+
 	closeOnce sync.Once
 	stop      chan struct{}
 	done      chan struct{}
@@ -266,21 +272,17 @@ func (m *InterfaceManager) replaceLinks(links []netlink.Link) {
 	}
 	sortLinks(current)
 	callbacks := slices.Clone(m.callbacks)
-	onReset := m.onReset
-	onChange := m.onChange
+	reset := m.eventCallbacksLocked(true)
+	change := m.eventCallbacksLocked(false)
 	delivery := make([]func() error, 0, len(previous)+len(current)+2)
-	if onReset != nil {
-		delivery = append(delivery, voidCallback(onReset))
-	}
+	delivery = append(delivery, reset...)
 	for _, link := range previous {
 		delivery = append(delivery, lifecycleCallbacks(callbacks, unix.RTM_DELLINK, link)...)
 	}
 	for _, link := range current {
 		delivery = append(delivery, lifecycleCallbacks(callbacks, unix.RTM_NEWLINK, link)...)
 	}
-	if onChange != nil {
-		delivery = append(delivery, voidCallback(onChange))
-	}
+	delivery = append(delivery, change...)
 	done := make(chan error, 1)
 	hasDispatcher := m.deliveryCond != nil
 	if hasDispatcher {
@@ -300,7 +302,7 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 	attrs := update.Link.Attrs()
 	m.mu.Lock()
 	callbacks := slices.Clone(m.callbacks)
-	onChange := m.onChange
+	change := m.eventCallbacksLocked(false)
 	var previous netlink.Link
 	switch update.Header.Type {
 	case unix.RTM_NEWLINK:
@@ -331,9 +333,7 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 		}
 	}
 	delivery = append(delivery, lifecycleCallbacks(callbacks, update.Header.Type, update.Link)...)
-	if onChange != nil {
-		delivery = append(delivery, voidCallback(onChange))
-	}
+	delivery = append(delivery, change...)
 	done := make(chan error, 1)
 	hasDispatcher := m.deliveryCond != nil
 	if hasDispatcher {
@@ -347,6 +347,9 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 }
 
 func (m *InterfaceManager) NameByIndex(index int) string {
+	if m != nil && m.source != nil {
+		return m.source.NameByIndex(index)
+	}
 	if m == nil || index == 0 {
 		return ""
 	}
@@ -379,6 +382,9 @@ func (m *InterfaceManager) RegisterWithPatternSync(pattern string, initCallback 
 }
 
 func (m *InterfaceManager) register(name string, exact bool, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link), synchronous bool) (*atomic.Bool, error) {
+	if m.source != nil {
+		return m.registerScoped(name, exact, initCallback, newCallback, delCallback, synchronous)
+	}
 	if !exact {
 		if _, err := path.Match(name, ""); err != nil {
 			return nil, fmt.Errorf("invalid interface pattern %q: %w", name, err)
@@ -410,6 +416,9 @@ func (m *InterfaceManager) register(name string, exact bool, initCallback func(n
 			m.callbacks = append(m.callbacks, registered)
 		}
 		m.mu.Unlock()
+		if !synchronous {
+			return registration, fmt.Errorf("list interfaces for %q: %w", name, err)
+		}
 		return nil, fmt.Errorf("list interfaces for %q: %w", name, err)
 	}
 	sortLinks(links)
@@ -487,18 +496,15 @@ func (m *InterfaceManager) RegisterSyncCancelable(ifname string, initCallback fu
 	}
 	return sync.OnceFunc(func() {
 		m.disableRegistration(registration)
-		done := make(chan error, 1)
-		if !m.enqueueDelivery([]func() error{func() error { return nil }}, done) {
-			// Shutdown rejects new barriers while already dispatched callbacks
-			// are still draining. Join the dispatcher before releasing map ownership.
-			<-m.deliveryDone
-			return
-		}
-		<-done
+		m.waitCallbacks()
 	}), nil
 }
 
 func (m *InterfaceManager) disableRegistration(registration *atomic.Bool) {
+	if m.source != nil {
+		m.source.disableRegistration(registration)
+		return
+	}
 	registration.Store(false)
 	m.mu.Lock()
 	for i := range m.callbacks {
@@ -589,6 +595,10 @@ func voidCallback(callback func()) func() error {
 
 // SetChangeCallback sets the callback run after a link is added, deleted, or renamed.
 func (m *InterfaceManager) SetChangeCallback(callback func()) {
+	if m.source != nil {
+		m.setScopeEvent(callback, false)
+		return
+	}
 	m.mu.Lock()
 	m.onChange = callback
 	m.mu.Unlock()
@@ -596,13 +606,20 @@ func (m *InterfaceManager) SetChangeCallback(callback func()) {
 
 // SetResetCallback sets the callback run before links are rebuilt after a subscription failure.
 func (m *InterfaceManager) SetResetCallback(callback func()) {
+	if m.source != nil {
+		m.setScopeEvent(callback, true)
+		return
+	}
 	m.mu.Lock()
 	m.onReset = callback
 	m.mu.Unlock()
 }
 
-// Close stops the monitor and waits for any callback already in progress.
+// Close stops an owned monitor or cancels a borrowed scope, joining callbacks.
 func (m *InterfaceManager) Close() error {
+	if m.source != nil {
+		return m.closeScope()
+	}
 	m.stopSubscription()
 	<-m.done
 	return nil

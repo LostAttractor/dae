@@ -350,3 +350,38 @@ func TestUnpackDnsMessageWireBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveStreamInvalidFramePolicies(t *testing.T) {
+	query := new(dnsmessage.Msg).SetQuestion("example.test.", dnsmessage.TypeA)
+	reply := new(dnsmessage.Msg).SetReply(query)
+	unrelated := reply.Copy()
+	unrelated.Id++
+	var frames bytes.Buffer
+	for _, msg := range []*dnsmessage.Msg{unrelated, reply} {
+		wire, err := msg.Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := binary.Write(&frames, binary.BigEndian, uint16(len(wire))); err != nil {
+			t.Fatal(err)
+		}
+		frames.Write(wire)
+	}
+	for _, filtered := range []bool{false, true} {
+		request := query.Copy()
+		stream := &doqTestStream{response: bytes.NewReader(frames.Bytes())}
+		var err error
+		if filtered {
+			err = ResolveStreamFiltered(stream, request)
+		} else {
+			err = ResolveStream(stream, request)
+		}
+		if filtered {
+			if err != nil || !request.Response || request.Id != query.Id {
+				t.Fatalf("filtered response: %+v, %v", request, err)
+			}
+		} else if err == nil || request.Response || request.Id != query.Id {
+			t.Fatalf("strict response accepted/changed invalid reply: %+v, %v", request, err)
+		}
+	}
+}

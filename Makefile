@@ -212,7 +212,7 @@ config-parser-check: check-go-version
 check-boundaries: check-go-version
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./pkg/outbound/...) && \
 		printf '%s\n' "$$dependencies" | \
-		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/pkg\/outbound\// { print "Forbidden outbound dependency: " $$0; bad=1 } END { exit bad }'
+		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/pkg\/(outbound|proxylink)(\/|$$)/ { print "Forbidden outbound dependency: " $$0; bad=1 } END { exit bad }'
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./component/plugin/... ./component/pluginhost/... ./component/mitm ./control) && \
 		printf '%s\n' "$$dependencies" | \
 		awk '/^github.com\/daeuniverse\/dae\/plugins\// { print "Forbidden host dependency: " $$0; bad=1 } END { exit bad }'

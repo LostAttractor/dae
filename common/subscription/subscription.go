@@ -26,6 +26,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -66,9 +67,9 @@ func ResolveSubscriptionAsBase64(b []byte) (nodes []string) {
 
 func resolveSubscriptionAsBase64(b []byte) (nodes []string, err error) {
 	// base64 decode
-	raw, e := common.Base64StdDecode(string(b))
+	raw, e := proxylink.DecodeBase64(string(b))
 	if e != nil {
-		raw, _ = common.Base64UrlDecode(string(b))
+		raw, _ = proxylink.DecodeBase64URL(string(b))
 	}
 
 	// Check and preprocess without materializing an attacker-controlled number

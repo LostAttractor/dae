@@ -32,6 +32,8 @@ dae 以 eBPF 数据路径为基础，仅将代理流量、DNS 和明确规则命
 
 仓库边界不代替包的职责边界。`component/outbound` 管理出站选择和运行状态，依赖 `pkg/outbound` 的拨号能力；协议库不反向引用控制面。宿主通过 `component/plugin` 契约调用插件，具体实现只在入口组装。CLI 只依赖 API、轻量展示包和插件客户端，Web 通过 HTTP API 访问服务。依赖检查约束这些方向。
 
+`pkg/proxylink` 提供无运行时依赖的链接标签与 Base64 解析，供协议库、订阅和配置共用。出站协议库可以独立构造、拨号和关闭，依赖检查仅允许它引用明确列出的基础包。
+
 ## 插件
 
 MITM 是可选组件，自有业务插件的实现、测试和文档在 `plugins/` 维护。
@@ -40,6 +42,8 @@ MITM 是可选组件，自有业务插件的实现、测试和文档在 `plugins
 `make` 生成 `internal/compiledplugins/plugins_generated.go`，完整 Definition 表（静态校验、资源准备、工厂和命令）随启动和重载传递。
 本地选择和生成的注册表不纳入版本控制。插件报告类型、Schema 和客户端展示属于插件自己的 `api` / `client` 包，本体仅传递通用报告与服务。
 插件依赖[公开 API](../../../component/plugin/README.md)，宿主持有传输资源。
+
+进程 `Runtime` 持有共享的网卡监听器和接口名称缓存。各控制面及 DNS router 实例通过独立 scope 注册回调；scope 关闭会撤销并排空自己的订阅，源监听器在全部配置代退出后关闭。插件的 scope 可随未变化的实例跨 reload 复用，不绑定某个控制面的关闭时机。
 
 原生 [rules / DNAT](../configuration/destination-rules.md) 与 Surge `[Host]` 的字面 IP 条目共用拨号目标重写；域名条目通过 DNS 插件应答。
 

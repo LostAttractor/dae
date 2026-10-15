@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
@@ -63,11 +64,32 @@ type Runtime struct {
 	ingress           sync.WaitGroup
 	soMarkFromDae     uint32
 	outboundResources outbound.Resources
+	interfaces        *network.InterfaceManager
 }
 
 func NewRuntime() *Runtime {
 	return &Runtime{planes: make(map[uint32]*ControlPlane), shared: make(map[string]*ebpf.Map), udpEndpoints: new(UdpEndpointPool),
 		done: make(chan struct{}), errors: make(chan error, 1)}
+}
+
+// Interfaces returns the process-owned interface event source. Callers borrow
+// scopes; the source remains alive until every generation has drained.
+func (r *Runtime) Interfaces() (*network.InterfaceManager, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	select {
+	case <-r.done:
+		return nil, net.ErrClosed
+	default:
+	}
+	if r.interfaces == nil {
+		var err error
+		r.interfaces, err = network.NewInterfaceManager()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return r.interfaces, nil
 }
 
 func (r *Runtime) IsReload() bool {
@@ -252,6 +274,9 @@ func (r *Runtime) Close() error {
 			<-r.retired
 		}
 		<-aborted
+		if r.interfaces != nil {
+			r.closeErr = errors.Join(r.closeErr, r.interfaces.Close())
+		}
 		r.closeErr = errors.Join(r.closeErr, r.kernelLinks.Close())
 		r.tcpMonitor.close()
 		for _, m := range r.shared {

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"syscall"
 
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
@@ -181,36 +180,6 @@ func (t *dormantTransport) sleepLocked() {
 	runtime.Retire()
 }
 
-type dormantConn struct {
-	net.Conn
-	release func()
-}
-
-func (c *dormantConn) Close() error                     { defer c.release(); return c.Conn.Close() }
-func (c *dormantConn) CloseWrite() error                { return netproxy.CloseWrite(c.Conn) }
-func (c *dormantConn) DependencyLease() *netproxy.Lease { return netproxy.DependencyOf(c.Conn) }
-
-type dormantPacketConn struct {
-	net.PacketConn
-	release func()
-}
-
-type dormantSyscallConn struct {
-	*dormantConn
-	raw syscall.Conn
-}
-
-func (c *dormantSyscallConn) SyscallConn() (syscall.RawConn, error) { return c.raw.SyscallConn() }
-
-type dormantSyscallPacketConn struct {
-	*dormantPacketConn
-	raw syscall.Conn
-}
-
-func (c *dormantSyscallPacketConn) SyscallConn() (syscall.RawConn, error) { return c.raw.SyscallConn() }
-
-func (c *dormantPacketConn) Close() error { defer c.release(); return c.PacketConn.Close() }
-
 func (t *dormantTransport) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	runtime, err := t.acquire()
 	if err != nil {
@@ -221,11 +190,7 @@ func (t *dormantTransport) DialContext(ctx context.Context, network, address str
 		t.release()
 		return nil, err
 	}
-	tracked := &dormantConn{conn, sync.OnceFunc(t.release)}
-	if raw, ok := conn.(syscall.Conn); ok {
-		return &dormantSyscallConn{tracked, raw}, nil
-	}
-	return tracked, nil
+	return netproxy.TrackConn(conn, t.release), nil
 }
 
 func (t *dormantTransport) ListenPacket(ctx context.Context, address string) (net.PacketConn, error) {
@@ -238,11 +203,7 @@ func (t *dormantTransport) ListenPacket(ctx context.Context, address string) (ne
 		t.release()
 		return nil, err
 	}
-	tracked := &dormantPacketConn{conn, sync.OnceFunc(t.release)}
-	if raw, ok := conn.(syscall.Conn); ok {
-		return &dormantSyscallPacketConn{tracked, raw}, nil
-	}
-	return tracked, nil
+	return netproxy.TrackPacketConn(conn, t.release), nil
 }
 
 func (t *dormantTransport) Close() error {

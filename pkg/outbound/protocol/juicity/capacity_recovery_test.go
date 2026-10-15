@@ -31,7 +31,7 @@ func TestReplenishmentKeepsHealthyMemberAvailable(t *testing.T) {
 	r.current = r._insertAfterCurrent(member)
 	r.state.Ready(member.cli.resource)
 	healthy := r.Snapshot()
-	r.state.RequestCapacity()
+	r.state.RequestCapacity(nil)
 	started, release := make(chan struct{}), make(chan struct{})
 	failed := errors.New("replacement handshake failed")
 	done := make(chan error, 1)

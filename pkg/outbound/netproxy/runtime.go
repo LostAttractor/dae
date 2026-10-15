@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"sync"
-	"syscall"
 )
 
 // Runtime owns one fully constructed outbound chain. Retire rejects new work
@@ -29,50 +28,6 @@ type runtimeSession struct {
 }
 
 type runtimeDialer struct{ runtime *Runtime }
-
-type runtimeConn struct {
-	net.Conn
-	release func()
-}
-
-// NativeTCPConn exposes only a native TCP socket behind Runtime's lifetime
-// wrapper. Callers must still close the original connection to release its
-// owner. Protocol adapters are deliberately not unwrapped.
-func NativeTCPConn(conn net.Conn) *net.TCPConn {
-	switch c := conn.(type) {
-	case *net.TCPConn:
-		return c
-	case *runtimeSyscallConn:
-		return NativeTCPConn(c.Conn)
-	case *runtimeConn:
-		return NativeTCPConn(c.Conn)
-	default:
-		return nil
-	}
-}
-
-type runtimePacketConn struct {
-	net.PacketConn
-	release func()
-}
-
-type runtimeSyscallConn struct {
-	*runtimeConn
-	raw syscall.Conn
-}
-
-func (c *runtimeSyscallConn) SyscallConn() (syscall.RawConn, error) {
-	return c.raw.SyscallConn()
-}
-
-type runtimeSyscallPacketConn struct {
-	*runtimePacketConn
-	raw syscall.Conn
-}
-
-func (c *runtimeSyscallPacketConn) SyscallConn() (syscall.RawConn, error) {
-	return c.raw.SyscallConn()
-}
 
 func (s *runtimeSession) Connect(ctx context.Context) error {
 	r := s.runtime
@@ -104,11 +59,7 @@ func (d *runtimeDialer) DialContext(ctx context.Context, network, address string
 		r.release()
 		return nil, net.ErrClosed
 	}
-	tracked := &runtimeConn{Conn: conn, release: sync.OnceFunc(r.release)}
-	if raw, ok := conn.(syscall.Conn); ok {
-		return &runtimeSyscallConn{runtimeConn: tracked, raw: raw}, nil
-	}
-	return tracked, nil
+	return TrackConn(conn, r.release), nil
 }
 
 func (d *runtimeDialer) ListenPacket(ctx context.Context, address string) (net.PacketConn, error) {
@@ -126,23 +77,7 @@ func (d *runtimeDialer) ListenPacket(ctx context.Context, address string) (net.P
 		r.release()
 		return nil, net.ErrClosed
 	}
-	tracked := &runtimePacketConn{PacketConn: conn, release: sync.OnceFunc(r.release)}
-	if raw, ok := conn.(syscall.Conn); ok {
-		return &runtimeSyscallPacketConn{runtimePacketConn: tracked, raw: raw}, nil
-	}
-	return tracked, nil
-}
-
-func (c *runtimeConn) CloseWrite() error { return CloseWrite(c.Conn) }
-
-func (c *runtimeConn) Close() error {
-	defer c.release()
-	return c.Conn.Close()
-}
-
-func (c *runtimePacketConn) Close() error {
-	defer c.release()
-	return c.PacketConn.Close()
+	return TrackPacketConn(conn, r.release), nil
 }
 
 // NewRuntime transfers ownership of layer to a Runtime.
@@ -237,8 +172,3 @@ func (r *Runtime) Wait(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
-
-// Forward the established connection's owner-issued lifetime signal. Runtime
-// retirement only drains references; it never turns into a dependency abort.
-func (c *runtimeConn) DependencyLease() *Lease       { return DependencyOf(c.Conn) }
-func (c *runtimePacketConn) DependencyLease() *Lease { return DependencyOf(c.PacketConn) }

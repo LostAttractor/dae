@@ -24,7 +24,7 @@ func loadTestMITM(ctx context.Context, conf *config.Config, client, background *
 	if err != nil {
 		return nil, err
 	}
-	prepared, err := loadMITM(ctx, conf, client, background, plugins, nil, nil)
+	prepared, err := loadMITM(ctx, conf, client, background, plugins, nil, nil, nil)
 	return prepared.Host, err
 }
 

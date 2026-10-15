@@ -23,7 +23,7 @@ type clientRing struct {
 	newClient func(capabilityCallback func(n int64)) *clientImpl
 	reserved  int64
 	closed    bool
-	state     *common.QUICPoolState
+	state     *netproxy.PoolState
 }
 
 type clientRingNode struct {
@@ -39,7 +39,7 @@ func newClientRing(newClient func(capabilityCallback func(n int64)) *clientImpl,
 		ring:      list.New(),
 		newClient: newClient,
 		reserved:  reserved,
-		state:     common.NewQUICPoolState(),
+		state:     netproxy.NewPoolState(netproxy.LayerQUIC),
 	}
 }
 
@@ -144,7 +144,7 @@ func (r *clientRing) tryNext(f func(*clientRingNode) error) error {
 	if r.ctx.Err() != nil {
 		return common.ErrClientClosed
 	}
-	r.state.RequestCapacity()
+	r.state.RequestCapacity(nil)
 	return netproxy.WrapFailure(common.ErrHoldOn, netproxy.Failure{Scope: netproxy.ScopeOperation, Layer: netproxy.LayerQUIC, Phase: netproxy.OpOpenStream, Reason: netproxy.ReasonCapacity})
 }
 

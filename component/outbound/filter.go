@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/selector"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
@@ -26,6 +25,7 @@ import (
 	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 	"github.com/dlclark/regexp2"
 	log "github.com/sirupsen/logrus"
 )
@@ -228,7 +228,7 @@ func NewDialerSet(nodes []NodeDescriptor) (*DialerSet, error) {
 }
 
 func normalizeShadowsocksLink(link string) string {
-	name, link := common.GetTagFromLinkLikePlaintext(link)
+	name, link := proxylink.SplitTag(link)
 	links := strings.Split(link, "->")
 	for i := range links {
 		links[i] = normalizeShadowsocksLinkComponent(strings.TrimSpace(links[i]))

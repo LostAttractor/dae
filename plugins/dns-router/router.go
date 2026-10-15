@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/assets"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
@@ -24,6 +23,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/config"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 	policy "github.com/daeuniverse/dae/plugins/dns-router/policy"
 	"github.com/daeuniverse/dae/plugins/dns-router/transport"
 	dns "github.com/miekg/dns"
@@ -61,7 +61,7 @@ func parseSettings(spec plugin.Spec) (policy.Config, uint16, error) {
 		return conf, 0, errors.New("ipversion_prefer must be 0, 4 or 6")
 	}
 	for _, upstream := range conf.Upstream {
-		name, link := common.GetTagFromLinkLikePlaintext(string(upstream))
+		name, link := proxylink.SplitTag(string(upstream))
 		if name == "" {
 			return conf, 0, errors.New("DNS upstream requires a tag")
 		}
@@ -96,7 +96,12 @@ func prepare(ctx context.Context, conf policy.Config, prefer uint16, services pl
 	if err != nil {
 		return nil, err
 	}
-	interfaces, err := network.NewInterfaceManager()
+	var interfaces *network.InterfaceManager
+	if services.Interfaces != nil {
+		interfaces = services.Interfaces.NewScope()
+	} else {
+		interfaces, err = network.NewInterfaceManager()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +116,7 @@ func prepare(ctx context.Context, conf policy.Config, prefer uint16, services pl
 	}
 	r := &Router{policy: p, prefer: prefer, interfaces: interfaces, metrics: newRouterMetrics()}
 	for _, upstream := range conf.Upstream {
-		name, _ := common.GetTagFromLinkLikePlaintext(string(upstream))
+		name, _ := proxylink.SplitTag(string(upstream))
 		r.upstreamNames = append(r.upstreamNames, name)
 	}
 	if services.Metrics != nil {

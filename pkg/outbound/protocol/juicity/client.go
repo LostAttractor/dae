@@ -61,7 +61,7 @@ type clientImpl struct {
 	detachCallback func()
 	resource       netproxy.ResourceRef
 	lease          *netproxy.Lease
-	poolState      *common.QUICPoolState
+	poolState      *netproxy.PoolState
 }
 
 func (t *clientImpl) getQuicConn(ctx context.Context, dialer netproxy.Dialer, dialFn common.DialFunc) (*quic.Conn, error) {

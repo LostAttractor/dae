@@ -11,9 +11,9 @@ import (
 	"net/netip"
 	"net/url"
 
-	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 	dnsmessage "github.com/miekg/dns"
 )
 
@@ -44,7 +44,7 @@ func New(dns *Config, requestRules, responseRules []*config_parser.RoutingRule, 
 			return nil, fmt.Errorf("too many upstreams")
 		}
 
-		tag, link := common.GetTagFromLinkLikePlaintext(string(upstreamRaw))
+		tag, link := proxylink.SplitTag(string(upstreamRaw))
 		if tag == "" {
 			return nil, fmt.Errorf("%w: '%v' has no tag", ErrBadUpstreamFormat, upstreamRaw)
 		}

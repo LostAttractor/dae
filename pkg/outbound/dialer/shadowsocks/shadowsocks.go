@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/daeuniverse/dae/pkg/outbound/common"
 	"github.com/daeuniverse/dae/pkg/outbound/dialer"
 	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/dae/pkg/outbound/protocol"
@@ -17,6 +16,7 @@ import (
 	"github.com/daeuniverse/dae/pkg/outbound/transport/simpleobfs"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/tls"
 	"github.com/daeuniverse/dae/pkg/outbound/transport/ws"
+	"github.com/daeuniverse/dae/pkg/proxylink"
 )
 
 func init() {
@@ -142,7 +142,7 @@ func ParseSSURL(ssurl string) (data *Shadowsocks, err error) {
 			return nil, false
 		}
 		username := u.User.String()
-		username, _ = common.Base64UrlDecode(username)
+		username, _ = proxylink.DecodeBase64URL(username)
 		arr := strings.SplitN(username, ":", 2)
 		if len(arr) != 2 {
 			return nil, false
@@ -185,9 +185,9 @@ func ParseSSURL(ssurl string) (data *Shadowsocks, err error) {
 		} else {
 			l = t
 		}
-		l, err = common.Base64StdDecode(l)
+		l, err = proxylink.DecodeBase64(l)
 		if err != nil {
-			l, err = common.Base64UrlDecode(l)
+			l, err = proxylink.DecodeBase64URL(l)
 			if err != nil {
 				return
 			}

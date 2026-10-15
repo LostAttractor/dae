@@ -306,11 +306,8 @@ func TestH2RecoveryHealthySiblingKeepsReadinessAndCause(t *testing.T) {
 	if f := netproxy.ClassifyFailure(failed.Cause); f.Resource != old.ref {
 		t.Fatalf("lost concrete failed slot: %+v", f)
 	}
-	proxy.pool.stateMu.Lock()
-	proxy.pool.connecting++
-	proxy.pool.publishLocked(nil, "")
-	proxy.pool.connecting--
-	proxy.pool.stateMu.Unlock()
+	proxy.pool.state.BeginConnect()
+	proxy.pool.state.EndConnect(nil)
 	if e := proxy.pool.Snapshot(); !errors.Is(e.Cause, cause) || e.ReadinessVersion != before.ReadinessVersion {
 		t.Fatalf("begin reconnect erased cause/readiness: %+v", e)
 	}
@@ -363,12 +360,9 @@ func TestH2RecoveryDrainedRetirementDoesNotStartNewIncident(t *testing.T) {
 func TestH2RecoveryPassiveGoAwayObserverFragmentedAndBounded(t *testing.T) {
 	p := newH2ConnsPool(nil, "")
 	defer p.Close()
-	ref := netproxy.NewResourceRef()
+	ref := p.state.NewResource()
 	slot := &h2Conn{ref: ref, pool: p, lease: netproxy.NewLease(ref)}
-	p.stateMu.Lock()
-	p.members[ref] = true
-	p.publishLocked(nil, "")
-	p.stateMu.Unlock()
+	p.state.Ready(ref)
 	observed := &h2ObservedConn{slot: slot}
 	var wire bytes.Buffer
 	f := http2.NewFramer(&wire, nil)

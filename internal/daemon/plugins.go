@@ -52,7 +52,7 @@ func configurePlugins(conf *config.Config, definitions map[string]plugin.Definit
 	return pluginhost.Configure(definitions, configuredPluginSpecs(conf))
 }
 
-func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *pluginhost.Configuration, previous *mitm.Host, geoDirs []string) (control.PreparedMITM, error) {
+func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, background *http.Client, plugins *pluginhost.Configuration, previous *mitm.Host, geoDirs []string, runtime *control.Runtime) (control.PreparedMITM, error) {
 	m := conf.MITM
 	if len(conf.Plugins) == 0 && !(m.Enabled && m.CACert != "" && conf.Global.APIPort != 0) {
 		return control.PreparedMITM{}, nil
@@ -93,6 +93,12 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 	}
 
 	services := plugin.Services{BaseDir: base, PrepareClient: client, Logger: log.NewEntry(log.StandardLogger())}
+	if runtime != nil {
+		services.Interfaces, err = runtime.Interfaces()
+		if err != nil {
+			return control.PreparedMITM{}, err
+		}
+	}
 	if conf.Global.ResourceCache {
 		services.ResourceCacheDir = filepath.Join(base, "resources")
 	}

@@ -115,8 +115,7 @@ func TestHTTP1EagerConnectBuffersTunnelAndKeepsPayload(t *testing.T) {
 			if secure {
 				proxy.https = true
 				// The TLS preflight selected HTTP/1, which uses a fresh carrier per dial.
-				proxy.pool.http1 = true
-				proxy.pool.publishLocked(nil, "")
+				proxy.pool.state.Stateless(netproxy.LayerProxy)
 			}
 			defer proxy.Close()
 			payload := "GET /application HTTP/1.1\r\nHost: target.test\r\n\r\n"

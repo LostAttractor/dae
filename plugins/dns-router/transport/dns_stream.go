@@ -10,8 +10,6 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
-	"fmt"
-	"io"
 	"net/netip"
 
 	"github.com/daeuniverse/dae/common/netutils"
@@ -48,7 +46,7 @@ func exchangeTCP(ctx context.Context, dialer netproxy.Dialer, target netip.AddrP
 				}
 				return netutils.ResolveStream(secured, msg)
 			}
-			return exchangeStream(conn, msg)
+			return netutils.ResolveStreamFiltered(conn, msg)
 		})
 		// Only plain TCP query exchanges retry an interrupted connection. No
 		// retransmission occurs on a live stream, and DoT retains one attempt.
@@ -57,38 +55,4 @@ func exchangeTCP(ctx context.Context, dialer netproxy.Dialer, target netip.AddrP
 		}
 	}
 	return err
-}
-
-func exchangeStream(stream io.ReadWriter, msg *dns.Msg) error {
-	wire, err := msg.Pack()
-	if err != nil {
-		return err
-	}
-	if err := netutils.CheckDnsMessageSize(len(wire)); err != nil {
-		return err
-	}
-	frame := make([]byte, 2+len(wire))
-	binary.BigEndian.PutUint16(frame, uint16(len(wire)))
-	copy(frame[2:], wire)
-	if n, err := stream.Write(frame); err != nil {
-		return fmt.Errorf("write DNS query: %w", err)
-	} else if n != len(frame) {
-		return io.ErrShortWrite
-	}
-	for {
-		var prefix [2]byte
-		if _, err := io.ReadFull(stream, prefix[:]); err != nil {
-			return fmt.Errorf("read DNS response length: %w", err)
-		}
-		wire := make([]byte, binary.BigEndian.Uint16(prefix[:]))
-		if _, err := io.ReadFull(stream, wire); err != nil {
-			return fmt.Errorf("read DNS response: %w", err)
-		}
-		response := new(dns.Msg)
-		if netutils.UnpackDnsMessage(wire, response) != nil || netutils.ValidateDnsResponseAllowEmptyQuestion(msg, response, msg.Id) != nil {
-			continue
-		}
-		*msg = *response
-		return nil
-	}
 }

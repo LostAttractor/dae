@@ -98,7 +98,16 @@ func newControlPlaneCore(
 	isReload bool,
 ) (*controlPlaneCore, error) {
 	closed, toClose := context.WithCancel(context.Background())
-	ifmgr, err := network.NewInterfaceManager()
+	var ifmgr *network.InterfaceManager
+	var err error
+	if bpf.Runtime != nil {
+		ifmgr, err = bpf.Runtime.Interfaces()
+		if err == nil {
+			ifmgr = ifmgr.NewScope()
+		}
+	} else {
+		ifmgr, err = network.NewInterfaceManager()
+	}
 	if err != nil {
 		toClose()
 		return nil, fmt.Errorf("initialize interface manager: %w", err)

@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -86,6 +87,9 @@ type Spec struct {
 // Services is provided by the host to factories. Logger is non-nil and includes
 // the instance ID; PrepareClient is for preparation only, never background work.
 type Services struct {
+	// Interfaces is a borrowed host event source. Plugins own NewScope results
+	// and close those scopes, never the source. Nil supports standalone factories.
+	Interfaces *network.InterfaceManager
 	// Prepared contains the immutable value returned by Definition.Resources.
 	Prepared any
 	// ResourceCacheDir is empty when global resource caching is disabled.

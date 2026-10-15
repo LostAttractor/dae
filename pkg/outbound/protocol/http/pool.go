@@ -16,11 +16,11 @@ import (
 )
 
 type h2Conn struct {
+	stateMu      sync.Mutex // orders installation with passive drain/failure reports
 	raw          net.Conn
 	h2           *http2.ClientConn
 	observed     atomic.Pointer[http2.ClientConn]
 	terminal     atomic.Pointer[h2TerminalError]
-	drainCause   atomic.Pointer[h2TerminalError]
 	unattributed atomic.Bool
 	ref          netproxy.ResourceRef
 	lease        *netproxy.Lease
@@ -32,88 +32,28 @@ type h2Conn struct {
 type h2TerminalError struct{ cause error }
 
 type h2ConnsPool struct {
-	mu               sync.Mutex
-	conns            []*h2Conn
-	dialer           netproxy.Dialer
-	addr             string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	operations       sync.WaitGroup
-	closeOnce        sync.Once
-	closeErr         error
-	state            *netproxy.StateBroadcaster
-	stateMu          sync.Mutex
-	ref              netproxy.ResourceRef
-	members          map[netproxy.ResourceRef]bool
-	connecting       int
-	http1            bool
-	closed           bool
-	recoveryRequired atomic.Bool
-	desired          int
-	episode          uint64
-	cause            error
-	connectGate      chan struct{}
+	mu          sync.Mutex
+	conns       []*h2Conn
+	dialer      netproxy.Dialer
+	addr        string
+	ctx         context.Context
+	cancel      context.CancelFunc
+	operations  sync.WaitGroup
+	closeOnce   sync.Once
+	closeErr    error
+	state       *netproxy.PoolState
+	connectGate chan struct{}
 }
 
 func newH2ConnsPool(dialer netproxy.Dialer, addr string) *h2ConnsPool {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &h2ConnsPool{dialer: dialer, addr: addr, ctx: ctx, cancel: cancel, state: netproxy.NewStateBroadcaster(netproxy.SessionDisconnected), ref: netproxy.NewResourceRef(), members: make(map[netproxy.ResourceRef]bool), desired: 1, connectGate: make(chan struct{}, 1)}
-	p.publishLocked(nil, "")
+	p := &h2ConnsPool{dialer: dialer, addr: addr, ctx: ctx, cancel: cancel, state: netproxy.NewPoolState(netproxy.LayerH2), connectGate: make(chan struct{}, 1)}
 	return p
 }
 
 func (p *h2ConnsPool) Snapshot() netproxy.StateEvent { return p.state.Snapshot() }
 func (p *h2ConnsPool) WatchState(ctx context.Context) <-chan netproxy.StateEvent {
 	return p.state.WatchState(ctx)
-}
-
-func (p *h2ConnsPool) publishLocked(cause error, phase string) {
-	if cause != nil {
-		p.cause = cause
-	}
-	ready := 0
-	for _, usable := range p.members {
-		if usable {
-			ready++
-		}
-	}
-	state := netproxy.SessionDisconnected
-	if p.closed {
-		state = netproxy.SessionClosed
-	} else if p.http1 || ready > 0 {
-		state = netproxy.SessionConnected
-	} else if p.connecting > 0 {
-		state = netproxy.SessionConnecting
-	}
-	layer := netproxy.LayerH2
-	if p.http1 {
-		layer = netproxy.LayerProxy
-	}
-	p.recoveryRequired.Store(!p.closed && !p.http1 && ready < p.desired)
-	if !p.closed && (p.http1 || ready >= p.desired) {
-		p.cause = nil
-	}
-	if phase == "" && p.connecting > 0 {
-		phase = "connecting"
-	}
-	p.state.Publish(netproxy.StateEvent{State: state, Cause: p.cause, Resource: p.ref, EpisodeID: p.episode, Layer: layer, Accepting: !p.closed && (p.http1 || ready > 0), UsableCapacity: ready, RecoveryExecutor: netproxy.RecoveryDaemon, RecoveryPhase: phase, RecoveryRequired: p.recoveryRequired.Load()})
-}
-
-func (p *h2ConnsPool) change(slot *h2Conn, usable bool, cause error, phase string) {
-	p.stateMu.Lock()
-	defer p.stateMu.Unlock()
-	wasUsable, ok := p.members[slot.ref]
-	if !ok || p.closed {
-		return
-	}
-	if !usable && !wasUsable && netproxy.ClassifyFailure(cause).Origin == netproxy.OriginLocalCleanup {
-		return
-	}
-	p.members[slot.ref] = usable
-	if !usable && cause != nil && netproxy.ClassifyFailure(cause).Origin != netproxy.OriginLocalCleanup {
-		p.episode++
-	}
-	p.publishLocked(cause, phase)
 }
 
 func (p *h2ConnsPool) Connect(ctx context.Context) (err error) {
@@ -128,25 +68,14 @@ func (p *h2ConnsPool) Connect(ctx context.Context) (err error) {
 	case <-p.ctx.Done():
 		return net.ErrClosed
 	}
-	if p.Snapshot().State == netproxy.SessionConnected && !p.recoveryRequired.Load() {
+	if snapshot := p.Snapshot(); snapshot.Accepting && !snapshot.RecoveryRequired {
 		return nil
 	}
-	p.stateMu.Lock()
-	if p.closed {
-		p.stateMu.Unlock()
+	if !p.state.BeginConnect() {
 		return net.ErrClosed
 	}
-	p.connecting++
-	p.publishLocked(nil, "")
-	p.stateMu.Unlock()
-	defer func() {
-		p.stateMu.Lock()
-		p.connecting--
-		if !p.closed {
-			p.publishLocked(err, "")
-		}
-		p.stateMu.Unlock()
-	}()
+	defer func() { p.state.EndConnect(err) }()
+
 	raw, h2, err := p.getConn(ctx, false)
 	if err != nil {
 		return err
@@ -175,15 +104,7 @@ func (p *h2ConnsPool) getConn(ctx context.Context, reserve bool) (net.Conn, *htt
 	}
 	p.operations.Add(1)
 	defer p.operations.Done()
-	p.stateMu.Lock()
-	usable := 0
-	for _, ready := range p.members {
-		if ready {
-			usable++
-		}
-	}
-	needNew := !reserve && p.recoveryRequired.Load() && usable < p.desired
-	p.stateMu.Unlock()
+	needNew := !reserve && p.Snapshot().RecoveryRequired
 	for _, slot := range p.conns {
 		if needNew {
 			break
@@ -204,22 +125,13 @@ func (p *h2ConnsPool) getConn(ctx context.Context, reserve bool) (net.Conn, *htt
 	if reserve && p.Snapshot().State != netproxy.SessionConnected {
 		return nil, nil, netproxy.ErrNotConnected
 	}
-	p.stateMu.Lock()
-	http1 := p.http1
-	p.stateMu.Unlock()
-	if reserve && !http1 {
-		err := netproxy.WrapFailure(http2.ErrNoCachedConn, netproxy.Failure{Resource: p.ref, Scope: netproxy.ScopeOperation, Layer: netproxy.LayerH2, Phase: netproxy.OpOpenStream, Reason: netproxy.ReasonCapacity})
-		if p.recoveryRequired.CompareAndSwap(false, true) {
-			p.stateMu.Lock()
-			if !p.closed {
-				p.recoveryRequired.Store(true)
-				p.desired = max(p.desired, usable+1)
-				p.publishLocked(err, "capacity_wait")
-			}
-			p.stateMu.Unlock()
-		}
+	snapshot := p.Snapshot()
+	if reserve && snapshot.Layer != netproxy.LayerProxy {
+		err := netproxy.WrapFailure(http2.ErrNoCachedConn, netproxy.Failure{Resource: snapshot.Resource, Scope: netproxy.ScopeOperation, Layer: netproxy.LayerH2, Phase: netproxy.OpOpenStream, Reason: netproxy.ReasonCapacity})
+		p.state.RequestCapacity(err)
 		return nil, nil, err
 	}
+
 	dialCtx, cancel := netproxy.NewDialTimeoutContextFrom(ctx)
 	stopClose := context.AfterFunc(p.ctx, cancel)
 	defer stopClose()
@@ -240,16 +152,16 @@ func (p *h2ConnsPool) getConn(ctx context.Context, reserve bool) (net.Conn, *htt
 	}
 	switch nextProto {
 	case "", "http/1.1":
-		p.stateMu.Lock()
-		if !p.closed {
-			p.http1 = true
-			p.publishLocked(nil, "stateless")
-		}
-		p.stateMu.Unlock()
+		p.state.Stateless(netproxy.LayerProxy)
 		return raw, nil, nil
 	case "h2":
-		ref := netproxy.NewResourceRef()
-		ref.OwnerID = p.ref.OwnerID
+		ref := p.state.NewResource()
+		installed := false
+		defer func() {
+			if !installed {
+				p.state.Remove(ref)
+			}
+		}()
 		slot := &h2Conn{ref: ref, pool: p, lease: netproxy.NewLease(ref, netproxy.DependencyOf(raw))}
 		monitored := &h2ObservedConn{Conn: raw, slot: slot}
 		slot.raw = monitored
@@ -280,14 +192,15 @@ func (p *h2ConnsPool) getConn(ctx context.Context, reserve bool) (net.Conn, *htt
 			return nil, nil, netproxy.ErrNotConnected
 		}
 		p.conns = append(p.conns, slot)
-		p.stateMu.Lock()
-		p.members[ref] = !slot.draining.Load()
-		if drain := slot.drainCause.Load(); drain != nil {
-			p.publishLocked(drain.cause, "draining")
-		} else {
-			p.publishLocked(nil, "")
+		installed = true
+		// A passive GOAWAY can arrive during setup. Never make a draining
+		// connection available when publishing the completed handshake.
+		slot.stateMu.Lock()
+		if !slot.draining.Load() && !slot.failed.Load() {
+			p.state.Ready(ref)
 		}
-		p.stateMu.Unlock()
+		slot.stateMu.Unlock()
+
 		p.operations.Add(1)
 		p.mu.Unlock()
 		go func() {
@@ -337,9 +250,9 @@ func (p *h2ConnsPool) drainSlot(slot *h2Conn, err http2.GoAwayError) {
 		return
 	}
 	cause := netproxy.WrapFailure(err, netproxy.Failure{Resource: slot.ref, Scope: netproxy.ScopeOperation, Layer: netproxy.LayerH2, Origin: netproxy.OriginPeer, Reason: netproxy.ReasonRejected, Code: fmt.Sprint(uint32(err.ErrCode))})
-	slot.drainCause.Store(&h2TerminalError{cause: cause})
-	p.recoveryRequired.Store(true)
-	p.change(slot, false, cause, "draining")
+	slot.stateMu.Lock()
+	p.state.Unavailable(slot.ref, cause, "draining")
+	slot.stateMu.Unlock()
 }
 
 func (p *h2ConnsPool) failSlot(slot *h2Conn, cause error, op netproxy.Operation) {
@@ -374,7 +287,9 @@ func (p *h2ConnsPool) failSlot(slot *h2Conn, cause error, op netproxy.Operation)
 	} else {
 		slot.lease.Abort(cause)
 	}
-	p.change(slot, false, cause, "")
+	slot.stateMu.Lock()
+	p.state.Unavailable(slot.ref, cause, "")
+	slot.stateMu.Unlock()
 	go func() {
 		_ = slot.raw.Close()
 		p.mu.Lock()
@@ -385,9 +300,7 @@ func (p *h2ConnsPool) failSlot(slot *h2Conn, cause error, op netproxy.Operation)
 			}
 		}
 		p.mu.Unlock()
-		p.stateMu.Lock()
-		delete(p.members, slot.ref)
-		p.stateMu.Unlock()
+		p.state.Remove(slot.ref)
 	}()
 }
 
@@ -405,13 +318,7 @@ func (p *h2ConnsPool) refineFailure(slot *h2Conn, err error, op netproxy.Operati
 	failure.Resource, failure.Scope, failure.Layer, failure.Phase = slot.ref, netproxy.ScopeSharedResource, netproxy.LayerH2, op
 	cause := netproxy.WrapFailure(err, failure)
 	slot.terminal.Store(&h2TerminalError{cause: cause})
-	p.stateMu.Lock()
-	defer p.stateMu.Unlock()
-	// A late old stream may enrich its own returned error, never a recovered
-	// pool's state or the cause of a different slot's recovery episode.
-	if !p.closed && p.recoveryRequired.Load() && netproxy.ClassifyFailure(p.cause).Resource == slot.ref {
-		p.publishLocked(cause, "")
-	}
+	p.state.RefineFailure(slot.ref, cause)
 }
 
 func (p *h2ConnsPool) Close() error {
@@ -419,10 +326,7 @@ func (p *h2ConnsPool) Close() error {
 		p.mu.Lock()
 		p.cancel()
 		p.mu.Unlock()
-		p.stateMu.Lock()
-		p.closed = true
-		p.publishLocked(nil, "")
-		p.stateMu.Unlock()
+		p.state.Close()
 		p.operations.Wait()
 		p.mu.Lock()
 		slots := p.conns

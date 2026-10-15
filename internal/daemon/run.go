@@ -89,7 +89,7 @@ func Run(conf *config.Config, geoDirs []string, definitions map[string]plugin.De
 	var plane *control.ControlPlane
 	if err == nil {
 		plane, err = newControlPlane(loadCtx, datapath, conf, inputs, runtimeSettings, func(client *http.Client) (control.PreparedMITM, error) {
-			return loadMITM(loadCtx, conf, client, worker, plugins, nil, geoDirs)
+			return loadMITM(loadCtx, conf, client, worker, plugins, nil, geoDirs, datapath)
 		})
 	}
 	if err == nil && ctx.Err() != nil {
