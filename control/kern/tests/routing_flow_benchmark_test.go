@@ -58,6 +58,81 @@ func BenchmarkRoutingConditionalBlock(b *testing.B) {
 	}
 }
 
+// A single hit terminates routing; repeated hits form an AND chain so the
+// benchmark exercises every lookup. Misses traverse separate terminal rules.
+func BenchmarkRoutingLPM(b *testing.B) {
+	for _, count := range []int{1, 128} {
+		for _, kind := range []struct {
+			name      string
+			matchType consts.MatchType
+		}{
+			{"destination", consts.MatchType_IpSet},
+			{"source", consts.MatchType_SourceIpSet},
+			{"mac", consts.MatchType_Mac},
+		} {
+			for _, hit := range []bool{false, true} {
+				b.Run(fmt.Sprintf("%s/hit=%v/rules=%d", kind.name, hit, count), func(b *testing.B) {
+					obj, err := loadTestObjects(b)
+					if err != nil {
+						b.Fatal(err)
+					}
+					packet, _, tuple := routingFlowPacket(b, obj)
+					key := struct {
+						PrefixLen uint32
+						Address   [16]byte
+					}{PrefixLen: 128}
+					switch kind.matchType {
+					case consts.MatchType_IpSet:
+						key.Address = tuple.Dip.U6Addr8
+					case consts.MatchType_SourceIpSet:
+						key.Address = tuple.Sip.U6Addr8
+					case consts.MatchType_Mac:
+						copy(key.Address[10:], packet[6:12])
+					}
+					if hit {
+						if err := obj.UnusedLpmType.Update(key, uint32(1), ebpf.UpdateAny); err != nil {
+							b.Fatal(err)
+						}
+					}
+					// Prove the key matches before using AND, whose miss would
+					// otherwise skip to the same direct fallback and hide a bad fixture.
+					installRoutingFlow(b, obj, []bpftestMatchSet{
+						{Type: uint8(kind.matchType), Outbound: uint8(consts.OutboundBlock)},
+						{Type: uint8(consts.MatchType_Fallback)},
+					})
+					want := ^uint32(0)
+					if hit {
+						want = 2 // TC_ACT_SHOT
+					}
+					if status, _, _, err := runBpfProgram(obj.TproxyWanEgressL2, packet, nil); err != nil || status != want {
+						b.Fatalf("LPM fixture: status=%d want=%d err=%v", status, want, err)
+					}
+					rules := make([]bpftestMatchSet, count+1)
+					for i := range count {
+						rules[i] = bpftestMatchSet{Type: uint8(kind.matchType), Outbound: uint8(consts.OutboundBlock)}
+						if hit && count > 1 {
+							rules[i].Action = uint8(consts.MatchActionAnd)
+						} else if hit {
+							rules[i].Outbound = uint8(consts.OutboundDirect)
+						}
+					}
+					rules[count] = bpftestMatchSet{Type: uint8(consts.MatchType_Fallback)}
+					installRoutingFlow(b, obj, rules)
+					var runtimeTotal time.Duration
+					for b.Loop() {
+						status, duration, err := obj.TproxyWanEgressL2.Benchmark(packet, 1000, b.ResetTimer)
+						if err != nil || status != ^uint32(0) {
+							b.Fatalf("status=%d err=%v", status, err)
+						}
+						runtimeTotal += duration
+					}
+					b.ReportMetric(float64(runtimeTotal.Nanoseconds())/float64(b.N), "bpf-ns/op")
+				})
+			}
+		}
+	}
+}
+
 // The legacy fixture also runs against an object built before HTTP entry conditions.
 // Both blocks miss their domains, so timing excludes userspace handoff and
 // measures the cost of admission plus traversing or skipping capture rules.

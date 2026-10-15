@@ -6,11 +6,11 @@
 
 内核 fixture 构造集中在 `routing_test_helpers_test.go`，功能回归在 `routing_flow_test.go`，计时循环在 `routing_flow_benchmark_test.go`。`make ebpf-lint` 同时检查本项目的内核 C 文件和路由头文件。
 
-`BenchmarkRoutingFlow` 覆盖域名映射缺失、空位图、AND/OR 短路及普通顺序扫描。比较包处理性能时使用其 `bpf-ns/op` 指标；`ns/op` 包含批量调用开销。`BenchmarkUDPRoutingCache` 分开测冷路由与缓存命中。生成内核测试后可运行：
+`BenchmarkRoutingFlow` 覆盖域名映射缺失、空位图、AND/OR 短路及普通顺序扫描。`BenchmarkRoutingLPM` 覆盖目的 IP、源 IP、MAC 的单次和连续查询，用未命中的路由规则和连续命中的 AND 链分别测量两条路径，单条命中规则直接结束路由；计时前验证实际命中结果，避免意外短路掩盖查询成本。`BenchmarkRoutingConditionalBlock` 比较逐条条件与共享条件块，`BenchmarkHTTPClientAdmission` 比较 HTTP 准入允许和拒绝路径。比较包处理性能时使用 `bpf-ns/op` 指标；`ns/op` 包含批量调用开销。`BenchmarkUDPRoutingCache` 分开测冷路由与缓存命中。生成内核测试后可运行：
 
 ```sh
 go test -c -tags dae_bpf_tests -o /tmp/dae-kernel.test ./control/kern/tests
-sudo /tmp/dae-kernel.test -test.run '^$' -test.bench 'Benchmark(RoutingFlow|UDPRoutingCache)' -test.benchtime 30x -test.count 3
+sudo /tmp/dae-kernel.test -test.run '^$' -test.bench 'Benchmark(RoutingFlow|RoutingLPM|RoutingConditionalBlock|HTTPClientAdmission|UDPRoutingCache)' -test.benchtime 30x -test.count 3
 ```
 
 使用 `scripts/routing-program-metrics.go` 测量生产 ELF 的验证指令数、程序大小和加载时间，使用 `scripts/routing-map-memory.go` 测量内核实际 map 内存。两者均创建隔离 maps，不复用 daemon pins，也不挂载网络接口；使用当前 direnv 工具链编译后以 root 运行。加载成本、每包耗时和内存占用应分别测量。
