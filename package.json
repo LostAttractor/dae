@@ -1,5 +1,7 @@
 {
   "name": "dae",
+  "private": true,
+  "packageManager": "pnpm@12.11.2",
   "version": "1.0.0",
   "author": "Daeuniverse",
   "license": "Apache",
@@ -7,7 +9,7 @@
   "scripts": {
     "check-broken-link": "node hack/docs/check-links.mjs ./docs/ ./plugins/ pkg/outbound/README.md component/plugin/README.md 'README*.md'",
     "markdown-lint": "markdownlint --config .markdownlint.jsonc --rules ./node_modules/markdownlint-rule-enhanced-proper-names/src/enhanced-proper-names.js --rules ./node_modules/markdownlint-rule-no-trailing-slash-in-links/src/no-trailing-slash-in-links.js './docs/**/*.md' './plugins/**/*.md' pkg/outbound/README.md component/plugin/README.md 'README*.md'",
-    "markdown-lint-fix": "npm run markdown-lint -- --fix",
+    "markdown-lint-fix": "pnpm run markdown-lint --fix",
     "test-doc-tools": "node --test hack/docs/docs.test.mjs"
   },
   "dependencies": {
@@ -26,13 +28,6 @@
     ]
   },
   "engines": {
-    "node": ">=22"
-  },
-  "overrides": {
-    "markdownlint-cli": {
-      "js-yaml": "^5.4.1"
-    },
-    "smol-toml": "^1.9.0",
-    "katex": "^0.18.2"
+    "node": ">=22.13"
   }
 }

@@ -14,7 +14,9 @@ on:
       - 'component/plugin/README.md'
       - 'hack/docs/**'
       - 'package.json'
-      - 'package-lock.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'web/package.json'
       - '.autocorrectrc'
       - '.markdownlint.jsonc'
       - '.github/workflows/check-docs.yml'
@@ -29,23 +31,25 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6
       - name: Use Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '24.x'
-          cache: 'npm'
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - name: Install dependencies
         run: |
-          npm ci
+          pnpm install --frozen-lockfile
       - name: Test documentation tools
-        run: npm run test-doc-tools
+        run: pnpm run test-doc-tools
       - name: Lint Markdown files (markdownlint)
         run: |
-          npm run markdown-lint
+          pnpm run markdown-lint
       - name: Lint Markdown files (autocorrect)
         uses: huacnlee/autocorrect-action@main
         with:
           args: --lint ./docs/
       - name: Check broken link (including broken anchor)
         run: |
-          npm run check-broken-link
+          pnpm run check-broken-link

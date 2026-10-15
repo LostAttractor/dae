@@ -23,6 +23,8 @@ function fixture(t) {
     cpSync(join(root, path), join(cwd, path), { recursive: true });
   }
   symlinkSync(join(root, 'node_modules'), join(cwd, 'node_modules'), 'dir');
+  // Fixtures reuse installed packages; running scripts must not reinstall them.
+  writeFileSync(join(cwd, 'pnpm-workspace.yaml'), 'verifyDepsBeforeRun: false\n');
   mkdirSync(join(cwd, 'docs', 'nested'), { recursive: true });
   writeFileSync(join(cwd, 'README.md'), '# Documentation\n');
   writeFileSync(join(cwd, 'README.zh.md'), '# Documentation\n');
@@ -35,8 +37,8 @@ function fixture(t) {
   return cwd;
 }
 
-function npm(cwd, script) {
-  return run(cwd, 'npm', ['run', '--silent', script]);
+function pnpm(cwd, script) {
+  return run(cwd, 'pnpm', ['--silent', 'run', script]);
 }
 
 test('link checks preserve explicit IDs, generated IDs and cross-file validation', (t) => {
@@ -55,13 +57,13 @@ test('link checks preserve explicit IDs, generated IDs and cross-file validation
     '[Emphasis](docs/nested/target.md#emphasis)',
   ].join('\n') + '\n';
   writeFileSync(join(cwd, 'README.zh.md'), valid);
-  let result = npm(cwd, 'check-broken-link');
+  let result = pnpm(cwd, 'check-broken-link');
   assert.equal(result.status, 0, result.output);
   assert.equal(readFileSync(join(cwd, 'README.zh.md'), 'utf8'), valid);
 
   for (const target of ['target.md#missing', 'missing.md']) {
     writeFileSync(join(cwd, 'README.zh.md'), `# Broken\n\n[Link](docs/nested/${target})\n`);
-    result = npm(cwd, 'check-broken-link');
+    result = pnpm(cwd, 'check-broken-link');
     assert.equal(result.status, 1, result.output);
     assert.match(result.output, /missing/i);
   }
@@ -82,18 +84,18 @@ test('lint commands keep custom rules, recursive discovery and automatic fixes',
   const cwd = fixture(t);
   const path = join(cwd, 'docs', 'nested', 'guide.md');
   writeFileSync(path, '# Guide\n\ngithub and [link](https://example.com/).\n');
-  let result = npm(cwd, 'markdown-lint');
+  let result = pnpm(cwd, 'markdown-lint');
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /enhanced-proper-names/);
   assert.match(result.output, /no-trailing-slash-in-links/);
 
   writeFileSync(path, '# Guide\n\nGitHub is available.   \n');
-  result = npm(cwd, 'markdown-lint-fix');
+  result = pnpm(cwd, 'markdown-lint-fix');
   assert.equal(result.status, 0, result.output);
   assert.equal(readFileSync(path, 'utf8'), '# Guide\n\nGitHub is available.\n');
 
   writeFileSync(join(cwd, 'README.zh.md'), '# Guide\n\ngithub\n');
-  result = npm(cwd, 'markdown-lint');
+  result = pnpm(cwd, 'markdown-lint');
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /README.zh.md/);
 });
@@ -104,7 +106,7 @@ test('format and brace patterns in Markdown remain ordinary text', (t) => {
     '{'.repeat(10_000) + 'x' + '}'.repeat(10_000) + '\n%.1000000f\n```\n';
   writeFileSync(join(cwd, 'docs', 'patterns.md'), text);
   for (const script of ['check-broken-link', 'markdown-lint']) {
-    const result = npm(cwd, script);
+    const result = pnpm(cwd, script);
     assert.equal(result.status, 0, result.output);
   }
   assert.equal(readFileSync(join(cwd, 'docs', 'patterns.md'), 'utf8'), text);

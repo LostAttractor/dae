@@ -87,11 +87,12 @@ jobs:
         with:
           submodules: recursive
           ref: ${{ needs.prepare.outputs.commit }}
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - uses: actions/setup-go@v6
         with:
           cache-dependency-path: |

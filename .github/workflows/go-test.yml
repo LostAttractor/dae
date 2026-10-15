@@ -15,6 +15,9 @@ on:
       - "kern/headers"
       - ".gitmodules"
       - "third_party/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
@@ -41,6 +44,9 @@ on:
       - "kern/headers"
       - ".gitmodules"
       - "third_party/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/go-test.yml"
@@ -73,11 +79,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - name: Test Web independently of Go and native runtimes
         env:
           CHROMIUM: google-chrome
@@ -139,12 +146,13 @@ jobs:
             sed -i -E 's/^# ([a-z][a-z0-9_-]*:)/\1/' plugins.cfg
           fi
 
+      - uses: pnpm/action-setup@v6
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Build standalone Web assets
         run: make web

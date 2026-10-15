@@ -4,13 +4,18 @@
 
 - Go 1.27.2 or later, Make, and Git. QuickJS builds also need a C compiler with libc development headers.
 - Clang with the BPF backend and matching LLVM tools for eBPF generation. Clang 15+ is recommended; older versions emit a warning. CI tests Clang majors 15–23; release builds use Clang 23.
-- Node.js 22+ and npm to bundle the embedded Web interface and Recharts charts.
+- Node.js 22.13+ and pnpm to bundle the embedded Web interface and Recharts charts.
 - A target C compiler and sysroot when cross-compiling with cgo.
+
+The root documentation tools and `web/` share a pnpm workspace and root lockfile.
+The Nix shell provides Corepack's pnpm shim. On other systems with Corepack
+installed, run `corepack enable pnpm`; it uses the version pinned in the root
+`package.json`. Make installs dependencies with `pnpm install --frozen-lockfile`.
 
 Core, CLI, outbound protocols, the config parser and first-party plugins share
 the root `go.mod` and `go.sum`. They are developed and released together.
 `pkg/outbound` contains protocol and dialer implementations; `plugins/` contains
-Surge and the optional DNS cache/router. Normal development needs no workspace.
+Surge and the optional DNS cache/router. Normal Go development needs no `go.work`.
 
 Third-party forks remain pinned as Git submodules: `third_party/quic-go`,
 `third_party/quickjs-go`, and the eBPF headers in `kern/headers`. The root
@@ -138,7 +143,7 @@ make SURGE_RUNTIME=nodejs  # CGO_ENABLED defaults to 0
 The Node build adds the `surge_nodejs` Go build tag and excludes the QuickJS
 adapter and C sources. It skips initialization of the QuickJS submodule and
 requires Node.js 22.13+ on the deployment host. The QuickJS build excludes the
-Node adapter and needs no Node.js installation to run scripts. Node.js and npm
+Node adapter and needs no Node.js installation to run scripts. Node.js and pnpm
 are still used to bundle the Web interface during either build.
 
 There is no runtime configuration switch. Node builds accept `node_path` to

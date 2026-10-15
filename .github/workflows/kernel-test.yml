@@ -7,6 +7,7 @@ on:
       - "**/*.c"
       - "**/*.h"
       - "Makefile"
+      - "web/**"
       - ".github/actions/**"
       - "scripts/setup-zig.sh"
       - "scripts/zig-cc.sh"
@@ -16,6 +17,9 @@ on:
       - "plugins.cfg.*"
       - "plugins/**"
       - "pkg/config_parser/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
@@ -29,6 +33,7 @@ on:
       - "**/*.c"
       - "**/*.h"
       - "Makefile"
+      - "web/**"
       - ".github/actions/**"
       - "scripts/setup-zig.sh"
       - "scripts/zig-cc.sh"
@@ -38,6 +43,9 @@ on:
       - "plugins.cfg.*"
       - "plugins/**"
       - "pkg/config_parser/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "go.mod"
       - "go.sum"
       - ".gitmodules"
@@ -54,12 +62,13 @@ jobs:
     steps:
     - uses: actions/checkout@v5
 
+    - uses: pnpm/action-setup@v6
     - name: Set up Node.js
       uses: actions/setup-node@v5
       with:
         node-version: '22'
-        cache: npm
-        cache-dependency-path: web/package-lock.json
+        cache: pnpm
+        cache-dependency-path: pnpm-lock.yaml
 
     - name: Set up Go
       uses: actions/setup-go@v6

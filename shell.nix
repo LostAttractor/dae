@@ -20,6 +20,8 @@ in pkgs.mkShell ({
     git
     gnumake
     nodejs_22
+    # The pnpm shim selects package.json's packageManager version.
+    corepack
     binutils
     bpftools
     go_1_27

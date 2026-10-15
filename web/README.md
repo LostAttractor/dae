@@ -1,9 +1,15 @@
 # dae Web
 
 The browser application uses dae's HTTP API. This directory builds independently
-of the daemon and Go toolchain. It requires Node.js 22.12+, npm and Make.
+of the daemon and Go toolchain. It requires Node.js 22.13+, pnpm and Make.
 Application components use TypeScript/TSX. The Vite configuration, build tools
 and tests are TypeScript as well; Node scripts run through the pinned `tsx` loader.
+
+The repository root and `web/` share `pnpm-workspace.yaml` and `pnpm-lock.yaml`.
+Keep these files and the root `package.json` when building the frontend without
+the daemon. In the Nix development shell, pnpm is available through Corepack.
+On other systems with Corepack installed, run `corepack enable pnpm` once;
+the root `package.json` selects the pnpm version for local builds, CI and Docker.
 
 ## Local development
 
@@ -16,15 +22,15 @@ DAE_API_URL=http://192.168.1.1:2023
 From this directory, run:
 
 ```sh
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
 Open `http://127.0.0.1:5173/`. Vite serves source files and applies CSS updates
 immediately. React components use Fast Refresh where supported; changes to the
 application controllers reload the page. Editing frontend code does not rebuild
 or restart dae. `make dev` also installs the pinned dependencies before starting
-Vite. Use `npm run dev -- --port 5174` to select another local port.
+Vite. Use `pnpm run dev --port 5174` to select another local port.
 
 `DAE_API_URL` can also be set in the command environment, which takes precedence
 over `.env.local`. Use a literal IPv4 or bracketed IPv6 address, including the API
@@ -43,14 +49,14 @@ to dae. The development page links to the running instance for those checks;
 certificate downloads remain available locally. Development configuration is
 excluded from production bundles.
 
-Run `npm run typecheck` to check the browser and Node projects with TypeScript's
+Run `pnpm run typecheck` to check the browser and Node projects with TypeScript's
 strict mode. Vite handles transpilation and hot updates; production builds also
 run the type checker. `tsconfig.json` covers the browser and `tsconfig.node.json`
 covers tools and test fixtures.
 
 `src/api.generated.ts` is generated from `docs/api/openapi.json` and its local
 references. Components and test fixtures derive their API field types from it.
-After changing the API contract, run `npm run types:api`; `npm run types:check`
+After changing the API contract, run `pnpm run types:api`; `pnpm run types:check`
 checks that the generated file matches the contract. Generated types are checked
 in so the frontend build needs no Go toolchain or running daemon.
 
@@ -60,8 +66,9 @@ in so the frontend build needs no Go toolchain or running daemon.
 make
 ```
 
-`src/` contains the frontend source. Make installs the dependencies pinned in
-`package-lock.json` with `npm ci` when they change. The build replaces `dist/`
+`src/` contains the frontend source. Make runs `pnpm install --frozen-lockfile`
+against the root lockfile before each build, reusing already installed packages.
+The build replaces `dist/`
 with the public bundle, including `index.html`. Set `DIST=/absolute/output/path` to choose another
 build directory. Only deploy build output; development files stay outside it.
 
@@ -147,8 +154,8 @@ CSS scope and light/dark color values.
 The pinned CLI provides component references:
 
 ```sh
-npm run astryx -- component Button
-npm run astryx -- component TabList
+pnpm run astryx component Button
+pnpm run astryx component TabList
 ```
 
 `certificate.ts` runs the current browser's CA and interception challenges.
@@ -392,7 +399,7 @@ the daemon version.
 
 ## Browser checks
 
-With Node.js 22.12+ and Chromium installed:
+With Node.js 22.13+ and Chromium installed:
 
 ```sh
 make test
@@ -404,7 +411,7 @@ CHROMIUM=/path/to/chromium make test
 running the development-server and browser checks.
 Development-server checks use a minimal local API fixture to verify proxy
 boundaries, login cookies, downloads and CSS updates over Vite's HMR connection.
-Run these independently with `npm run test:dev`.
+Run these independently with `pnpm run test:dev`.
 
 The browser test builds the production bundle, then uses Node's built-ins, a local API
 fixture, and a temporary browser profile. Its protocol client uses Chromium's

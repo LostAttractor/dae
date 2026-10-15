@@ -23,6 +23,12 @@ Repeat with `SURGE_RUNTIME=nodejs` for the Node backend.
 [build guide](../user-guide/build-by-yourself.md) for parser generation,
 third-party forks and external plugin workspaces.
 
+For documentation changes, run `pnpm install --frozen-lockfile`,
+`pnpm run test-doc-tools`, `pnpm run markdown-lint` and
+`pnpm run check-broken-link` from the repository root. For frontend changes,
+run `make -C web test` with Chromium installed. Both use the root pnpm lockfile;
+commit manifest and lockfile changes together when changing dependencies.
+
 ## Pre-commit Hook
 
 This repo uses [pre-commit hook](https://github.com/pre-commit/pre-commit-hooks) to apply linting check prior to writing commit to local Git history. To set up pre-commit, do the followings:

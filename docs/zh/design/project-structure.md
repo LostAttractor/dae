@@ -26,7 +26,7 @@ dae 以 eBPF 数据路径为基础，仅将代理流量、DNS 和明确规则命
 
 ## 仓库与依赖边界
 
-自有 Go 代码使用根目录的 `go.mod` / `go.sum`，核心、CLI、协议库、解析器和业务插件在同一提交中维护，随 dae 统一发版。Web 保留独立的 npm 依赖与构建入口，通过 API 契约与 Go 代码协作。
+自有 Go 代码使用根目录的 `go.mod` / `go.sum`，核心、CLI、协议库、解析器和业务插件在同一提交中维护，随 dae 统一发版。根目录的文档工具与 `web/` 共用 pnpm workspace 和根 `pnpm-lock.yaml`，pnpm 版本由根 `package.json` 的 `packageManager` 固定。Web 保留独立构建入口，通过 API 契约与 Go 代码协作，不依赖 Go 工具链。第三方 submodule 不纳入 pnpm workspace。
 
 `third_party/quic-go`、`third_party/quickjs-go` 和 `kern/headers` 是固定提交的第三方依赖。fork 的上游同步与库内修改在独立仓库维护，主仓库更新引用并验证集成行为。日常自有代码开发不需要 `go.work`；外部插件或 fork 联调可使用本地 workspace。
 

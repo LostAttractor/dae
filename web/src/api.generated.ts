@@ -1,4 +1,4 @@
-// Generated from docs/api/openapi.json. Run npm run types:api to update.
+// Generated from docs/api/openapi.json. Run pnpm run types:api to update.
 export interface paths {
     "/api/certificate": {
         parameters: {

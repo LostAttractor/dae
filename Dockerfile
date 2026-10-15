@@ -5,8 +5,8 @@ FROM --platform=$BUILDPLATFORM ubuntu:24.04 AS builder
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-toolchain /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+RUN ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+    && corepack enable pnpm
 ARG LLVM_VERSION=23
 ENV PATH="/usr/local/go/bin:${PATH}" \
     CLANG=clang-${LLVM_VERSION} STRIP=llvm-strip-${LLVM_VERSION} LLVM_OBJDUMP=llvm-objdump-${LLVM_VERSION} \
@@ -22,6 +22,9 @@ COPY go.mod go.sum ./
 # Initialize submodules in the build context before running docker build.
 COPY third_party ./third_party
 RUN go mod download
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY web/package.json ./web/package.json
+RUN pnpm install --frozen-lockfile
 COPY . .
 ARG TARGETARCH
 ARG TARGETVARIANT
