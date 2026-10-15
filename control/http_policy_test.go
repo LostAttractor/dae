@@ -19,7 +19,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/pluginctx"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func TestHTTPPolicyOverridesRetainedOutbound(t *testing.T) {

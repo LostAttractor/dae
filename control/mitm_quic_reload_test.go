@@ -25,7 +25,7 @@ import (
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
 	"golang.org/x/sys/unix"

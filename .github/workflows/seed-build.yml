@@ -78,6 +78,8 @@ jobs:
       GOAMD64: ${{ matrix.goamd64 }}
       GORISCV64: ${{ matrix.goriscv64 }}
       GOFLAGS: -trimpath -modcacherw
+      GOWORK: 'off'
+      PLUGINS_CONFIG: plugins.cfg.example
       VERSION: ${{ needs.prepare.outputs.version }}
       OUTPUT: build/dae-${{ matrix.name }}
     steps:

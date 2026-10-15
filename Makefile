@@ -26,6 +26,7 @@ NOSTRIP ?= n
 STATIC ?= n
 GRPC_TRACE ?= n
 SURGE_RUNTIME ?= quickjs
+PLUGINS_CONFIG ?= plugins.cfg
 ifeq ($(SURGE_RUNTIME),nodejs)
 CGO_ENABLED ?= 0
 else ifeq ($(SURGE_RUNTIME),quickjs)
@@ -147,7 +148,7 @@ dae: check-go-arch check-go-version plugins ebpf web-assets
 # Refresh even after removing a plugin; run the generator on the build host.
 plugins: check-go-version
 	@unset GOOS GOARCH GOARM GOARM64 GOAMD64 GO386 GOMIPS GOMIPS64 GOPPC64 GORISCV64; \
-	GOWORK=off CGO_ENABLED=0 go run ./cmd/dae-plugin-gen
+	GOWORK=off CGO_ENABLED=0 go run ./cmd/dae-plugin-gen -config="$(PLUGINS_CONFIG)"
 
 ## Begin Git Submodules
 SUBMODULE_PATHS := $(shell sed -n 's/^[[:space:]]*path[[:space:]]*=[[:space:]]*//p' .gitmodules)
@@ -198,6 +199,23 @@ ebpf: check-go-version check-bpf-capacities submodule clean-ebpf
 
 test: plugins ebpf web-assets
 	go test $(GO_DEBUG_FLAGS) $(TEST_ARGS) -ldflags "$(BPF_GO_LDFLAGS)" -tags=$(GO_BUILD_TAGS),$(shell cat $(BUILD_TAGS_FILE)) ./...
+	$(MAKE) check-boundaries
+
+.PHONY: config-parser config-parser-check check-boundaries
+config-parser: check-go-version
+	python3 scripts/generate-config-parser.py
+
+config-parser-check: check-go-version
+	python3 scripts/generate-config-parser.py --check
+
+# Package boundaries remain independent of the repository's module boundary.
+check-boundaries: check-go-version
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./pkg/outbound/...) && \
+		printf '%s\n' "$$dependencies" | \
+		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/pkg\/outbound\// { print "Forbidden outbound dependency: " $$0; bad=1 } END { exit bad }'
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./component/plugin/... ./component/pluginhost/... ./component/mitm ./control) && \
+		printf '%s\n' "$$dependencies" | \
+		awk '/^github.com\/daeuniverse\/dae\/plugins\// { print "Forbidden host dependency: " $$0; bad=1 } END { exit bad }'
 
 ebpf-lint:
 	./scripts/checkpatch.pl --no-tree --strict --no-summary --show-types --color=always control/kern/tproxy.c $(wildcard control/kern/*.h kern/*.h) --ignore COMMIT_COMMENT_SYMBOL,NOT_UNIFIED_DIFF,COMMIT_LOG_LONG_LINE,LONG_LINE_COMMENT,VOLATILE,ASSIGN_IN_IF,PREFER_DEFINED_ATTRIBUTE_MACRO,CAMELCASE,LEADING_SPACE,OPEN_ENDED_LINE,SPACING,BLOCK_COMMENT_STYLE
@@ -249,7 +267,7 @@ client-test: check-go-version
 	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/...) && \
 		printf '%s\n' "$$dependencies" | \
 		awk '/^github.com\/daeuniverse\/dae\/component\// { print "Forbidden core client dependency: " $$0; bad=1 } END { exit bad }'
-	CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) ./api/... ./client/... ./component/mitm/surge/api ./component/mitm/surge/client ./cmd/dae-client
-	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/... ./component/mitm/surge/api ./component/mitm/surge/client ./cmd/dae-client) && \
+	CGO_ENABLED=0 go test $(GO_DEBUG_FLAGS) ./api/... ./client/... ./plugins/surge/api ./plugins/surge/client ./cmd/dae-client
+	@dependencies=$$(CGO_ENABLED=0 go list -deps ./api/... ./client/... ./plugins/surge/api ./plugins/surge/client ./cmd/dae-client) && \
 		printf '%s\n' "$$dependencies" | \
-		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/(api|client)\// && $$0 != "github.com/daeuniverse/dae/api" && $$0 != "github.com/daeuniverse/dae/cmd/dae-client" && $$0 != "github.com/daeuniverse/dae/pkg/clitable" && $$0 != "github.com/daeuniverse/dae/pkg/terminaltext" && $$0 != "github.com/daeuniverse/dae/component/mitm/surge/api" && $$0 != "github.com/daeuniverse/dae/component/mitm/surge/client" { print "Forbidden client dependency: " $$0; bad=1 } END { exit bad }'
+		awk '/^github.com\/daeuniverse\/dae\// && !/^github.com\/daeuniverse\/dae\/(api|client)\// && $$0 != "github.com/daeuniverse/dae/api" && $$0 != "github.com/daeuniverse/dae/cmd/dae-client" && $$0 != "github.com/daeuniverse/dae/pkg/clitable" && $$0 != "github.com/daeuniverse/dae/pkg/terminaltext" && $$0 != "github.com/daeuniverse/dae/plugins/surge/api" && $$0 != "github.com/daeuniverse/dae/plugins/surge/client" { print "Forbidden client dependency: " $$0; bad=1 } END { exit bad }'

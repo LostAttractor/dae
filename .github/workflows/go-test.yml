@@ -4,11 +4,12 @@ on:
   pull_request:
     paths:
       - "**/*.go"
-      - "component/mitm/surge/**/*.js"
+      - "plugins/**"
+      - "**/*.g4"
       - "client/**"
       - "web/**"
-      - "plugins.cfg.example"
-      - "docs/api/openapi.json"
+      - "plugins.cfg.*"
+      - "docs/api/**"
       - "**/*.c"
       - "**/*.h"
       - "kern/headers"
@@ -21,6 +22,7 @@ on:
       - ".github/actions/setup-llvm/**"
       - "scripts/setup-llvm.sh"
       - "scripts/update-http2.py"
+      - "scripts/generate-config-parser.py"
       - "scripts/http2/**"
       - "internal/http2/**"
   push:
@@ -28,11 +30,12 @@ on:
       - next
     paths:
       - "**/*.go"
-      - "component/mitm/surge/**/*.js"
+      - "plugins/**"
+      - "**/*.g4"
       - "client/**"
       - "web/**"
-      - "plugins.cfg.example"
-      - "docs/api/openapi.json"
+      - "plugins.cfg.*"
+      - "docs/api/**"
       - "**/*.c"
       - "**/*.h"
       - "kern/headers"
@@ -45,12 +48,41 @@ on:
       - ".github/actions/setup-llvm/**"
       - "scripts/setup-llvm.sh"
       - "scripts/update-http2.py"
+      - "scripts/generate-config-parser.py"
       - "scripts/http2/**"
       - "internal/http2/**"
 
 permissions: read-all
 
 jobs:
+  config-parser:
+    name: Config grammar and generated parser
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.2'
+      - name: Install parser generation runtime
+        run: sudo apt-get update && sudo apt-get install -y default-jre-headless
+      - name: Verify generated parser
+        run: make config-parser-check
+
+  web:
+    name: Web API contracts and browser tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Test Web independently of Go and native runtimes
+        env:
+          CHROMIUM: google-chrome
+        run: make -C web test
+
   http-protocols:
     name: HTTP protocol contracts (Go ${{ matrix.go }})
     runs-on: ubuntu-24.04
@@ -81,19 +113,31 @@ jobs:
         run: go test -race . ./http3 -count=1
 
   go-test:
-    name: Go Unit Test (${{ matrix.surge-runtime }})
+    name: Go Unit Test (${{ matrix.surge-runtime }}, ${{ matrix.plugins }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         surge-runtime: [quickjs, nodejs]
+        plugins: [example, all]
     env:
       SURGE_RUNTIME: ${{ matrix.surge-runtime }}
+      PLUGINS_CONFIG: plugins.cfg
+      GOWORK: 'off'
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           submodules: recursive
+
+      - name: Select compiled plugins
+        env:
+          PLUGIN_SELECTION: ${{ matrix.plugins }}
+        run: |
+          cp plugins.cfg.example plugins.cfg
+          if [ "$PLUGIN_SELECTION" = all ]; then
+            sed -i -E 's/^# ([a-z][a-z0-9_-]*:)/\1/' plugins.cfg
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -125,6 +169,10 @@ jobs:
       - name: Run tests
         run: CC="$CLANG" make test
 
+      - name: Test pinned QuickJS binding
+        if: matrix.surge-runtime == 'quickjs' && matrix.plugins == 'example'
+        run: CC="$CLANG" go test -race github.com/buke/quickjs-go/...
+
       - name: Check runtime dependency isolation
         shell: bash
         run: |
@@ -134,7 +182,7 @@ jobs:
             deps=$(CGO_ENABLED=0 go list -tags=surge_nodejs -deps -f '{{if or .CgoFiles (eq .ImportPath "github.com/buke/quickjs-go")}}{{.ImportPath}}{{end}}' .)
             test -z "$deps"
           else
-            deps=$(go list -deps ./component/mitm/surge)
+            deps=$(go list -deps ./plugins/surge)
             if [[ "$deps" == *'/internal/nodejs'* ]]; then
               echo 'QuickJS build includes the Node.js adapter' >&2
               exit 1

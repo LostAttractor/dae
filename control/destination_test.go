@@ -16,7 +16,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/routing"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func TestDestinationRewriteRoutesEffectiveAddress(t *testing.T) {

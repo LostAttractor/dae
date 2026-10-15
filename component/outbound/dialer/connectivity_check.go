@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 	log "github.com/sirupsen/logrus"
 )
 

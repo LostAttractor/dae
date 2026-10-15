@@ -22,7 +22,7 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	dnsmessage "github.com/miekg/dns"
 )
 

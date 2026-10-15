@@ -17,7 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
-	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
 const (

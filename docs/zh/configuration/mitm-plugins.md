@@ -1,6 +1,6 @@
 # 插件配置
 
-`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 证书、客户端开关和正文额度。默认构建包含 `surge`，支持 HTTP/DNS sgmodule；JavaScript 后端在编译时选择，默认为 QuickJS，也可用 `make SURGE_RUNTIME=nodejs` 选择 Node.js。其他插件在独立仓库维护，复制 [plugins.cfg.example](../../../plugins.cfg.example) 为本地 `plugins.cfg` 后加入 dae 编译。本地配置与生成的注册表由 Git 忽略；没有本地配置时使用示例中的选择。高级 DNS 路由和缓存已拆成两个可选插件，见 [DNS](dns.md)。
+`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 证书、客户端开关和正文额度。默认构建包含 `surge`，支持 HTTP/DNS sgmodule；JavaScript 后端在编译时选择，默认为 QuickJS，也可用 `make SURGE_RUNTIME=nodejs` 选择 Node.js。自有插件在 `plugins/` 目录维护，与核心共用 Go 模块和版本。复制 [plugins.cfg.example](../../../plugins.cfg.example) 为本地 `plugins.cfg` 选择编译内容，按需取消可选插件条目的注释。本地配置与生成的注册表由 Git 忽略；没有本地配置时使用示例中的选择。高级 DNS 路由和缓存是两个可选插件，见 [DNS](dns.md)。
 
 ```text
 mitm {
@@ -37,7 +37,7 @@ plugins {
 
 已经准入的 HTTPS/HTTP/2、HTTP/3 连接允许同端口的跨主机请求复用，包括单主机证书未覆盖的业务 authority。未命中任何 HTTP scope 的请求跳过全部插件请求/响应钩子，保留原 Alt-Svc。没有插件显式改写 URL 的 scheme/主机/端口时，所有 stream 保持原接入目标、出站、mark 和上游 TLS 身份，不因 authority 改变而重复 DNS/选路；由原入口按 HTTP authority 分发。仅 path/query 或 Host 头变化不改变网络目标。显式 URL 目标改写和插件主动请求才为新目标解析、选路并验证 TLS。`domain()` 路由匹配实际接入目标，不是逐 stream 业务 authority 的过滤器。插件收到的 `Flow.Host` 是业务 authority，不是独立认证证明；`Source/Destination` 保留捕获地址。端口变化和 HTTP/1 跨主机请求仍返回 421。
 
-TLS HTTP/2 统一按 HTTPS 处理：上游请求接口不暴露原始 `:scheme`，因此客户端发送 `:scheme=http` 时也不会仅因 scheme 不同而被拒绝，插件 URL 与转发仍使用 `https`。显式端口变化、非法 authority 和 scope 检查继续生效。详见 [HTTP/2 scheme 限制](mitm-certificates.md#http2-scheme-限制)。
+HTTP/2 入站保留原始 `:scheme`；与接入连接不一致时，在执行插件或选择上游前返回 421。TLS HTTP/2 中的 `:scheme=http` 不会被归一化为 HTTPS。显式端口变化、非法 authority 和 scope 检查继续生效。详见 [请求 scheme](mitm-certificates.md#请求-scheme)。
 
 下游握手仅签发本地单主机证书，没有上游探测、SAN 镜像或路由证书缓存；证书选择不依赖 scope、脚本阶段和 `PreserveRoute`。本地签发缓存最多 256 项，叶证书有效期不超过 24 小时和 CA 到期时间。真实转发仍验证上游接入点的证书名称、有效期和信任链；失败返回上游错误。本地响应零拨号，原目标 block 不阻止插件先生成本地响应或改写到允许的目标。无需新增配置或重建 CA。详见[证书与跨域连接复用：方案、边界和替代方案](mitm-certificates.md)。
 
@@ -81,7 +81,7 @@ Go 插件可以通过 `Services.Storage` 保存实例状态，提供 `Get`、`Pu
 
 `mitm_request_end.outcome` 区分 `completed`、`local_rejection`、`processing_error`、`transfer_error`、`aborted`、`canceled` 和 `upgrade`。`completed` 表示宿主 HTTP 处理完成，仍需检查 HTTP / gRPC 状态；写入字节数表示交给 HTTP 服务器的正文，不是客户端接收回执。gRPC 状态在正文 EOF 后读取，兼容普通 trailer 与 trailers-only 响应头；`missing` 表示没有最终状态，`invalid` 表示格式不合法。Upgrade 隧道不记录 HTTP 正文字节数。
 
-421 的 `reason` 区分 `scheme_mismatch`（接口保留的请求 scheme 与透明监听连接不一致）、`invalid_authority`（格式不合法）、`authority_port_mismatch`（端口不一致）和 `authority_mismatch`（该协议不支持跨主机）。不再因 SAN 未覆盖、证书快照或 scope 不匹配而拒绝跨域请求。上游自身仍可能返回 421，应结合 `outcome` 判断是否为本地拒绝。同一连接的日志 `host` 相同不代表每个请求的 `:authority` 相同，应比较 `connection_host` 和 `request_authority`；scheme 问题可比较 `connection_scheme` 与 `request_scheme`。TLS HTTP/2 的 `request_scheme=https` 来自连接，不能用于判断客户端原始 `:scheme` 是否相同。
+421 的 `reason` 区分 `scheme_mismatch`（接口保留的请求 scheme 与透明监听连接不一致）、`invalid_authority`（格式不合法）、`authority_port_mismatch`（端口不一致）和 `authority_mismatch`（该协议不支持跨主机）。不再因 SAN 未覆盖、证书快照或 scope 不匹配而拒绝跨域请求。上游自身仍可能返回 421，应结合 `outcome` 判断是否为本地拒绝。同一连接的日志 `host` 相同不代表每个请求的 `:authority` 相同，应比较 `connection_host` 和 `request_authority`；scheme 问题可比较 `connection_scheme` 与 `request_scheme`。HTTP/2 的 `request_scheme` 保留客户端原始 `:scheme`，可与 `connection_scheme` 对照。
 
 出现错误时记录操作时间，再正常重试一次，保留前后几分钟的完整日志。systemd 部署可使用：
 

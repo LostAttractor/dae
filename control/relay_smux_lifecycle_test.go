@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
-	outboundsmux "github.com/daeuniverse/outbound/transport/smux"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	outboundsmux "github.com/daeuniverse/dae/pkg/outbound/transport/smux"
 	"github.com/xtaci/smux"
 )
 

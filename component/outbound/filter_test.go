@@ -23,10 +23,10 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
-	outboundDirect "github.com/daeuniverse/outbound/protocol/direct"
-	"github.com/daeuniverse/outbound/transport/smux"
+	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	outboundDirect "github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
 	log "github.com/sirupsen/logrus"
 )
 

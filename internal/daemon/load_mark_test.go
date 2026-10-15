@@ -9,7 +9,7 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
 func TestNewControlPlaneHonorsCanceledContext(t *testing.T) {

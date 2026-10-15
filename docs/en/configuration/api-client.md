@@ -194,7 +194,7 @@ The port is bound once: `internal/apiserver` creates one TCP listener and `http.
 | `api/client` | Concurrent reusable HTTP/Unix client, authentication, JSON and typed errors |
 | `client/status` | Daemon snapshot rendering and generic plugin summaries, without runtime access |
 | `client/cli` | Shared API connection options, instance filtering and explicit plugin command registration |
-| `component/mitm/surge/api`, `component/mitm/surge/client` | Plugin-owned report schema, decoding, display and lightweight commands |
+| `plugins/surge/api`, `plugins/surge/client` | Plugin-owned report schema, decoding, display and lightweight commands |
 | `web` | Frontend source, browser requests and independent build |
 | `internal/webui` | Embedding and static serving of frontend build output |
 | `cmd/dae-client` | Independently buildable entry point |
@@ -203,7 +203,7 @@ The port is bound once: `internal/apiserver` creates one TCP listener and `http.
 
 Runtime and client code use `api` types directly. `internal/apiserver` owns the server-side protocol and transport without importing the control plane, clients or frontend. `handler.go` declares an access policy for each route; `access.go` gates Unix, LAN, device and key/session access; `auth.go` validates Bearer credentials; `session.go` handles login/logout and signed cookies; `request.go`, `device.go` and `selectors.go` validate and handle operations; `server.go` and `unix.go` own listener lifecycle. The control plane supplies the stores defined in `state.go`. `control` does not import UI packages; the daemon command layer composes the Web routes. Unix and TCP use the same API handler, and reloads drain old requests before retiring the control plane.
 
-The frontend boundary consists of its public build output and the HTTP API contract. `web/` builds without reading its parent directory, so it can later move into a separate repository or submodule while the embedding and routing code stays in dae.
+The frontend boundary consists of its public build output and the HTTP API contract. `web/` builds independently within this repository; Go owns embedding and routing. API contracts, clients and generated frontend types are updated and verified in the same change.
 
 `make client-test` runs tests with CGO disabled, checks OpenAPI against the Go wire types and rejects transitive imports of daemon implementation packages. CI runs it before installing clang or generating eBPF. TUI navigation, sorting, polling and presentation belong in client packages; only new runtime data or operations require daemon changes.
 

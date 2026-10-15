@@ -9,7 +9,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 // dormantTransport preserves a logical path while disposing of unused physical

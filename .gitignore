@@ -19,6 +19,7 @@ node_modules/
 venv
 /build/ebpf-audit/
 /build/ebpf-test/
+/build/tools/
 
 /dae-client
 /build/web/

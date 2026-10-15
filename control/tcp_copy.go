@@ -7,7 +7,7 @@ import (
 	"net"
 
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 // tcpCopyPair keeps the original endpoints for ownership and protocol errors,

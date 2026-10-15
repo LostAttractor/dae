@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
-	proxyhttp "github.com/daeuniverse/outbound/protocol/http"
+	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	proxyhttp "github.com/daeuniverse/dae/pkg/outbound/protocol/http"
 )
 
 type authProxyParent struct{}

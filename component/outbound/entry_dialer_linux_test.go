@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
+	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/miekg/dns"
 	"golang.org/x/sys/unix"
 )

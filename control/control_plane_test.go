@@ -27,8 +27,8 @@ import (
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/daeuniverse/outbound/netproxy"
-	outboundDirect "github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	outboundDirect "github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	"github.com/vishvananda/netlink"
 )
 

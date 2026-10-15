@@ -309,11 +309,13 @@ bitmap width and therefore per-IP memory cost.
 
 ## Optional plugins
 
-Use sibling modules through `go.work` and add their entries to `plugins.cfg`:
+DNS plugins live in this repository's `plugins/` directory and share its Go
+module. Copy `plugins.cfg.example` to a local `plugins.cfg` if needed, uncomment
+the following entries, and run `make`:
 
 ```text
-dns-cache:github.com/daeuniverse/dae-plugin-dns-cache
-dns-router:github.com/daeuniverse/dae-plugin-dns-router
+dns-cache:github.com/daeuniverse/dae/plugins/dns-cache
+dns-router:github.com/daeuniverse/dae/plugins/dns-router
 ```
 
 Recommended order: **cache → Surge Host → router → core relay**. Omit unused

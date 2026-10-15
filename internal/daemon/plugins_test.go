@@ -13,10 +13,10 @@ import (
 
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/mitm/ca"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	"github.com/daeuniverse/dae/plugins/surge"
 )
 
 func loadTestMITM(ctx context.Context, conf *config.Config, client, background *http.Client, definitions map[string]plugin.Definition) (*mitm.Host, error) {

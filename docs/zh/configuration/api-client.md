@@ -150,7 +150,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 - `api/client`：可并发复用的 Go 客户端，封装传输、鉴权、JSON 和错误，不导入 `control`、`common`、`config` 或 `component`。
 - `client/status`：本体状态快照和通用插件摘要的展示实现，不访问运行时；终端输出可写入任意 `io.Writer`。
 - `client/cli`：两种程序与插件共用的连接参数、实例筛选和命令注册接口；`cmd/dae-client` 是独立入口。
-- `component/mitm/surge/api`、`component/mitm/surge/client`：插件自己的报告类型、Schema、解析和展示；独立客户端入口显式注册其轻量命令包，不导入脚本运行时。
+- `plugins/surge/api`、`plugins/surge/client`：插件自己的报告类型、Schema、解析和展示；独立客户端入口显式注册其轻量命令包，不导入脚本运行时。
 - `web`：前端源码、浏览器请求层与独立构建入口，不读取父目录中的代码或文件。
 - `internal/webui`：只嵌入和托管前端构建产物；`cmd` 负责将静态资源与 API 挂载到现有端口，`control` 不导入 Web 或终端展示代码。
 - `internal/apiserver`：TCP/Unix 监听、HTTP 路由、鉴权、请求校验与重载等待；使用公开契约，通过存储接口访问运行时。
@@ -158,7 +158,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 运行时与客户端直接使用 `api` 类型。`internal/apiserver` 统一管理服务端协议与传输，不导入控制面、客户端或前端。`handler.go` 为每条路由声明访问策略，`access.go` 统一执行 Unix、LAN、设备及密钥/会话门禁，`auth.go` 校验 Bearer 凭据，`session.go` 处理登录、退出及签名 Cookie；`request.go`、`device.go` 与 `selectors.go` 校验和处理请求，`server.go` 与 `unix.go` 管理监听器生命周期；控制面实现 `state.go` 中的存储接口。展示所需的汇总、排序、交互状态、键位与刷新策略属于客户端。只有新增的运行时数据或操作才需要扩展守护进程 API。
 
-前端与 dae 的边界是公开构建产物和 HTTP API 契约。以后可将整个 `web/` 迁移为独立仓库或 submodule，嵌入、静态托管与端口分发代码继续留在 dae。
+前端与 dae 的边界是公开构建产物和 HTTP API 契约。`web/` 在同一仓库内保留独立构建，嵌入、静态托管与端口分发由 Go 宿主负责。API 契约、客户端和前端类型在同一个变更中更新并验证。
 
 `make client-test` 在关闭 CGO 的环境运行客户端测试，检查 OpenAPI 是否与契约一致，并检查传递依赖，阻止客户端引入守护进程实现。CI 在安装 clang 和构建 eBPF 之前执行此目标。
 

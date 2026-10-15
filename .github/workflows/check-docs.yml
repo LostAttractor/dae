@@ -9,6 +9,9 @@ on:
     paths:
       - 'README*.md'
       - 'docs/**'
+      - 'plugins/**/*.md'
+      - 'pkg/outbound/README.md'
+      - 'component/plugin/README.md'
       - 'hack/docs/**'
       - 'package.json'
       - 'package-lock.json'

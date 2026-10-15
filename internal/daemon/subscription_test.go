@@ -17,7 +17,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/subscription"
 	"github.com/daeuniverse/dae/config"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
 func TestResolveNodeDescriptorsRunsSubscriptionsConcurrentlyInOrder(t *testing.T) {

@@ -173,11 +173,11 @@ make MAX_DOMAIN_ROUTING_NUM=131072 MAX_UDP_ROUTING_CACHE_NUM=131072
 
 ## 可选 DNS 插件
 
-在 `plugins.cfg` 加入模块，并通过 `go.work` 引用对应兄弟仓库后运行 `make`：
+DNS 插件源码位于本仓库的 `plugins/`，与核心共用 Go 模块。若没有本地 `plugins.cfg`，先复制 `plugins.cfg.example`；取消以下条目的注释后运行 `make`：
 
 ```text
-dns-cache:github.com/daeuniverse/dae-plugin-dns-cache
-dns-router:github.com/daeuniverse/dae-plugin-dns-router
+dns-cache:github.com/daeuniverse/dae/plugins/dns-cache
+dns-router:github.com/daeuniverse/dae/plugins/dns-router
 ```
 
 推荐声明顺序为 **cache → Surge Host → router → 核心中继**，不使用的实例可以省略：

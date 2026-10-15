@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 type activityConn struct {

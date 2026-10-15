@@ -9,7 +9,7 @@ import (
 	"strconv"
 
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )

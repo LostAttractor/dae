@@ -28,8 +28,8 @@ import (
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/control"
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )

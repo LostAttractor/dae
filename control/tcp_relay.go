@@ -10,7 +10,7 @@ import (
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 type tcpRelay struct {

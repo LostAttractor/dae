@@ -13,7 +13,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
+	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
 
 // automaticSelection owns discovery demand. Its state and selection commits are

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func BenchmarkRelayIdleMemory(b *testing.B) {

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/daeuniverse/dae/common"
-	outbound "github.com/daeuniverse/outbound/common"
+	outbound "github.com/daeuniverse/dae/pkg/outbound/common"
 )
 
 // ResolverDialContext routes one DNS transport to a literal server address.

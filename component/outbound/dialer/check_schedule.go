@@ -8,8 +8,8 @@ package dialer
 import (
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
 
 const (

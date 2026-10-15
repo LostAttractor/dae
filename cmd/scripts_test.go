@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/api"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/plugins/surge"
 )
 
 func TestSurgeRunCommandSelection(t *testing.T) {

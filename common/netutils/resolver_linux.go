@@ -11,7 +11,7 @@ import (
 	"net"
 	"syscall"
 
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func newMarkedDialer(mark uint32) (*net.Dialer, error) {

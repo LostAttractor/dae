@@ -17,8 +17,8 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
-	outbound "github.com/daeuniverse/outbound/common"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	outbound "github.com/daeuniverse/dae/pkg/outbound/common"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	"golang.org/x/sys/unix"
 )
 

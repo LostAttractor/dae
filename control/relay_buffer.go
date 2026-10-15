@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
 const (

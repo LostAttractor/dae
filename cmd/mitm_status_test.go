@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/client/cli"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/plugins/surge"
 	"github.com/spf13/cobra"
 )
 

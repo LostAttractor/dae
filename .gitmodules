@@ -7,10 +7,3 @@
 [submodule "third_party/quic-go"]
 	path = third_party/quic-go
 	url = https://github.com/LostAttractor/quic-go.git
-[submodule "third_party/outbound"]
-	path = third_party/outbound
-	url = https://github.com/LostAttractor/outbound.git
-	branch = next
-[submodule "third_party/dae-config-dist"]
-	path = third_party/dae-config-dist
-	url = https://github.com/LostAttractor/dae-config-dist.git

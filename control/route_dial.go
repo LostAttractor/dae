@@ -13,8 +13,8 @@ import (
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
-	protocolDirect "github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	protocolDirect "github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
 type DialOption struct {

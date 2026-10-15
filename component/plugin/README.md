@@ -1,6 +1,7 @@
 # Go plugins
 
-Implement an independent Go module importing
+First-party implementations live under `plugins/` and share the root Go module.
+External plugins may use an independent Go module. Import
 `github.com/daeuniverse/dae/component/plugin` and export:
 
 ```go
@@ -24,6 +25,11 @@ Decode settings in `Configure` (`DecodeSettings` handles scalar fields), impleme
 are ignored by Git.
 See the [build guide](../../docs/en/user-guide/build-by-yourself.md#external-plugins)
 for dependencies and multiple plugins.
+
+The example enables Surge and lists optional first-party plugins as comments.
+Uncomment those entries in local `plugins.cfg` to include them in the build.
+Plugin API changes and first-party implementations are tested and released
+together. Host packages depend on this contract, not on concrete plugins.
 
 ## Configuration preflight and preparation
 
@@ -113,7 +119,7 @@ selected DNS IP for direct/proxy dialing; it never captures additional traffic.
 instance wins even when `use` is false, matching Host answer precedence.
 
 See [DNS configuration](../../docs/en/configuration/dns.md) for persistence,
-middleware ordering and the independent router/cache modules.
+middleware ordering and the router/cache plugins.
 
 ## HTTP contract
 
@@ -422,7 +428,7 @@ must be read-only. Types without a status renderer fall back to full JSON report
 a renderer failure also shows its raw reports and does not hide other types.
 `--json` prints the complete snapshot directly, including when combined with `-v`.
 These commands use the local Unix status socket and do not require `api_port`.
-See Surge's [command implementation](../mitm/surge/command_configure.go).
+See Surge's [command implementation](../../plugins/surge/command_configure.go).
 
 `services.TriggerScript(ctx, instance, request)` requests an existing task through
 the daemon API. A plugin implementing `ScriptTrigger` must return promptly, reject
@@ -473,5 +479,5 @@ show daemon state; detailed plugin reports are available through `plugins status
 `Definition.Commands` receives scoped host services. A plugin may expose a
 separate lightweight client package for API commands, registered explicitly by a
 standalone client through `cli.NewMITMCommand`. That package must not import its
-runtime implementation. Surge's [`api`](../mitm/surge/api) and
-[`client`](../mitm/surge/client) packages follow this boundary.
+runtime implementation. Surge's [`api`](../../plugins/surge/api) and
+[`client`](../../plugins/surge/client) packages follow this boundary.

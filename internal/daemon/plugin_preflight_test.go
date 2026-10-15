@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/daeuniverse/dae/common/netutils"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
+	"github.com/daeuniverse/dae/plugins/surge"
 )
 
 func TestPluginPreflightBeforeStartupResources(t *testing.T) {

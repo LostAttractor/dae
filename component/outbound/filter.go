@@ -23,9 +23,9 @@ import (
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	D "github.com/daeuniverse/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/transport/smux"
+	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/transport/smux"
 	"github.com/dlclark/regexp2"
 	log "github.com/sirupsen/logrus"
 )

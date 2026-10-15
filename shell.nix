@@ -23,6 +23,8 @@ in pkgs.mkShell ({
     binutils
     bpftools
     go_1_27
+    python3
+    jre_headless
     llvmPackages_latest.clang-unwrapped
     llvmPackages_latest.llvm
     llvmPackages_latest.bintools

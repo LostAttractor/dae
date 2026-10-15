@@ -1,5 +1,24 @@
 # 测试与性能测量
 
+进入 `nix-shell` 或 direnv 开发环境。若没有本地 `plugins.cfg`，先复制 `plugins.cfg.example`；取消本地配置中 DNS cache 和 router 条目的注释，以验证全部自有插件的编译选择。从仓库根目录运行：
+
+```sh
+make test
+make test SURGE_RUNTIME=nodejs
+make client-test
+make config-parser-check
+make -C web test
+```
+
+根测试覆盖核心、`pkg/outbound`、配置解析器和全部自有插件，包括 DNS cache、Surge 与 router 的组合用例。`make test` 同时检查协议库和宿主的依赖方向；`make client-test` 检查无 CGO 的 API/CLI 边界。第三方 fork 保持独立模块，使用单独的测试命令：
+
+```sh
+go test -race github.com/buke/quickjs-go/...
+(cd third_party/quic-go && GOWORK=off go test -race . ./http3)
+```
+
+Web 测试使用本地最小夹具和已安装的 Chromium；可用 `CHROMIUM` 指定浏览器路径。普通 Go 测试不替代需要 root 的 `make ebpf-test`。
+
 `scripts/runtime-ablation.py` 在临时副本和独立网络命名空间中执行 reload 消融：可通过 `--baseline` 传入源代码快照，对比接入循环额外复制的监听 FD 数量及配置发布开销；`extra-fds` 不含各版本都需要的原始 TCP/UDP 监听 socket 和 map 描述符。逐项移除代际、SYN、长期 TCP 状态、过期、消费、策略归属与关闭屏障，要求相应行为断言失败。日志、固定 CPU 的交错重复样本和统计保存在输出目录。运行前生成生产及内核测试 BPF 对象，需要 Go、Clang 和免密 sudo。
 
 `control/kern/tests` 的 C 用例各自加载独立 maps，避免前一个用例的路由、域名或连通性状态掩盖错误。Go 的捕获与缓存回归直接检查内核返回值和交接状态，不能仅以最终出站名为 direct 证明内核直通。
@@ -81,6 +100,6 @@ go test -tags=netgo,osusergo,trace ./control \
 `BenchmarkExchangeTCP` 通过 `net.Pipe` 完成一次 router 请求/响应，包括每查询 socket 和 worker 建立，衡量单次查询的管理成本。在包含 router 的工作区运行：
 
 ```sh
-go test ../dae-plugin-dns-router -run '^$' -bench '^BenchmarkExchangeTCP$' \
+go test ./plugins/dns-router -run '^$' -bench '^BenchmarkExchangeTCP$' \
   -benchmem -benchtime=300ms -count=5
 ```

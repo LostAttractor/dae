@@ -21,7 +21,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func TestMITMKernelRoutingReconstruction(t *testing.T) {

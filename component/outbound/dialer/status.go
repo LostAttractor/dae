@@ -11,7 +11,7 @@ import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/stats"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 type SelectionSnapshot struct {

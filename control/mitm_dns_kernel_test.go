@@ -14,9 +14,9 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm/certtest"
-	"github.com/daeuniverse/dae/component/mitm/surge"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
+	"github.com/daeuniverse/dae/plugins/surge"
 	dnsmessage "github.com/miekg/dns"
 )
 

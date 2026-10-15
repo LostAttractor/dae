@@ -6,7 +6,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/pkg/fastrand"
+	"github.com/daeuniverse/dae/pkg/outbound/pkg/fastrand"
 )
 
 func (g *DialerGroup) preferredRandomCandidates(networkType *common.NetworkType) []selectorCandidate {

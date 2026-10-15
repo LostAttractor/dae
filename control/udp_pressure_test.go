@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 type pressurePacketDialer struct {

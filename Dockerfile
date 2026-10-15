@@ -27,7 +27,7 @@ ARG TARGETARCH
 ARG TARGETVARIANT
 ARG VERSION=unstable-0.nogit
 RUN export GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" \
-    && make OUTPUT=dae VERSION="$VERSION" GOFLAGS="-buildvcs=false" STATIC=y \
+    && GOWORK=off make OUTPUT=dae VERSION="$VERSION" GOFLAGS="-buildvcs=false" STATIC=y PLUGINS_CONFIG=plugins.cfg.example \
     && scripts/check-static.sh dae
 
 FROM alpine

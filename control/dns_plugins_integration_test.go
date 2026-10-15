@@ -1,5 +1,3 @@
-//go:build dns_plugins_integration
-
 // SPDX-License-Identifier: AGPL-3.0-only
 
 package control
@@ -13,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	cache "github.com/daeuniverse/dae-plugin-dns-cache"
-	router "github.com/daeuniverse/dae-plugin-dns-router"
-	policy "github.com/daeuniverse/dae-plugin-dns-router/policy"
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/config_parser"
+	cache "github.com/daeuniverse/dae/plugins/dns-cache"
+	router "github.com/daeuniverse/dae/plugins/dns-router"
+	policy "github.com/daeuniverse/dae/plugins/dns-router/policy"
 	dns "github.com/miekg/dns"
 )
 

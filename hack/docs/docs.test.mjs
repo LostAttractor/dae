@@ -26,6 +26,10 @@ function fixture(t) {
   mkdirSync(join(cwd, 'docs', 'nested'), { recursive: true });
   writeFileSync(join(cwd, 'README.md'), '# Documentation\n');
   writeFileSync(join(cwd, 'README.zh.md'), '# Documentation\n');
+  for (const directory of ['plugins/fixture', 'pkg/outbound', 'component/plugin']) {
+    mkdirSync(join(cwd, directory), { recursive: true });
+    writeFileSync(join(cwd, directory, 'README.md'), '# Component\n');
+  }
   assert.equal(run(cwd, 'git', ['init', '--quiet']).status, 0);
   assert.equal(run(cwd, 'git', ['remote', 'add', 'origin', 'https://github.com/daeuniverse/dae']).status, 0);
   return cwd;

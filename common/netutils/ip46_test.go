@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	outboundcommon "github.com/daeuniverse/outbound/common"
+	outboundcommon "github.com/daeuniverse/dae/pkg/outbound/common"
 )
 
 func TestOutboundResolverUsesDefaultResolver(t *testing.T) {

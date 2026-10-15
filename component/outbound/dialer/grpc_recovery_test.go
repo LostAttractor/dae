@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
-	grpctransport "github.com/daeuniverse/outbound/transport/grpc"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	grpctransport "github.com/daeuniverse/dae/pkg/outbound/transport/grpc"
 	grpcapi "google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
 )

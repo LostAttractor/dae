@@ -8,7 +8,7 @@ package dialer
 import (
 	"github.com/daeuniverse/dae/api"
 	"github.com/daeuniverse/dae/common/selector"
-	D "github.com/daeuniverse/outbound/dialer"
+	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 )
 
 type Property struct {

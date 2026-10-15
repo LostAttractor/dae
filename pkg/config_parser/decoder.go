@@ -3,7 +3,7 @@
  * Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
  */
 
-// This file should trace https://github.com/daeuniverse/dae-config-dist/blob/main/dae_config.g4.
+// Keep decoding aligned with grammar/dae_config.g4.
 
 package config_parser
 
@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/daeuniverse/dae-config-dist/go/dae_config"
+	"github.com/daeuniverse/dae/pkg/config_parser/internal/dae_config"
 )
 
 type decoder struct {

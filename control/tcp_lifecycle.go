@@ -10,7 +10,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 

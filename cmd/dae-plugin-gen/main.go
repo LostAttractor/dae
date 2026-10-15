@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"go/format"
 	"os"
@@ -54,10 +55,9 @@ func generate(data []byte) ([]byte, error) {
 	return format.Source(out.Bytes())
 }
 
-func run() error {
-	source := configFile
+func run(source string) error {
 	data, err := os.ReadFile(source)
-	if errors.Is(err, os.ErrNotExist) {
+	if source == configFile && errors.Is(err, os.ErrNotExist) {
 		source = exampleFile
 		data, err = os.ReadFile(source)
 	}
@@ -75,7 +75,9 @@ func run() error {
 }
 
 func main() {
-	if err := run(); err != nil {
+	source := flag.String("config", configFile, "plugin selection file (missing plugins.cfg defaults to plugins.cfg.example)")
+	flag.Parse()
+	if err := run(*source); err != nil {
 		fmt.Fprintln(os.Stderr, "dae-plugin-gen:", err)
 		os.Exit(1)
 	}

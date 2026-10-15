@@ -23,7 +23,7 @@ import (
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/internal/apiserver"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func newAPITestPlane(t *testing.T, store *settings.Store) *ControlPlane {

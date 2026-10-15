@@ -13,13 +13,13 @@ import (
 func TestConfigSelection(t *testing.T) {
 	t.Chdir(t.TempDir())
 	for _, config := range []string{
-		"# types\nsurge:github.com/daeuniverse/dae/component/mitm/surge\n demo : example.com/dae-mitm-demo # comment\n",
+		"# types\nsurge:github.com/daeuniverse/dae/plugins/surge\n demo : example.com/dae-mitm-demo # comment\n",
 		"# empty selection\n",
 	} {
 		if err := os.WriteFile(configFile, []byte(config), 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := run(); err != nil {
+		if err := run(configFile); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(outputFile)
@@ -45,7 +45,7 @@ func TestLocalSelectionAndExampleDefault(t *testing.T) {
 	if err := os.WriteFile(exampleFile, example, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(); err != nil {
+	if err := run(configFile); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(configFile); !errors.Is(err, os.ErrNotExist) {
@@ -59,7 +59,7 @@ func TestLocalSelectionAndExampleDefault(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := run(); err != nil {
+		if err := run(configFile); err != nil {
 			t.Fatal(err)
 		}
 		want, err := generate(input)
@@ -85,7 +85,7 @@ func TestLocalSelectionAndExampleDefault(t *testing.T) {
 		if err := os.WriteFile(configFile, []byte(invalid), 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := run(); err == nil || !strings.Contains(err.Error(), configFile+": line") {
+		if err := run(configFile); err == nil || !strings.Contains(err.Error(), configFile+": line") {
 			t.Fatalf("invalid local selection fell back to example: %v", err)
 		}
 		after, err := os.ReadFile(outputFile)
@@ -100,5 +100,36 @@ func TestMalformedConfig(t *testing.T) {
 		if _, err := generate([]byte(input)); err == nil || !strings.Contains(err.Error(), "line 1:") {
 			t.Fatalf("expected line-numbered syntax error for %q, got %v", input, err)
 		}
+	}
+}
+
+func TestExplicitSelection(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for name, contents := range map[string]string{
+		configFile:   "local:example.com/local\n",
+		exampleFile:  "default:example.com/default\n",
+		"custom.cfg": "selected:example.com/selected\n",
+	} {
+		if err := os.WriteFile(name, []byte(contents), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run("custom.cfg"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(outputFile)
+	if err != nil || !bytes.Contains(before, []byte(`"example.com/selected"`)) || bytes.Contains(before, []byte(`"example.com/local"`)) {
+		t.Fatalf("explicit selection did not override local configuration: %s (%v)", before, err)
+	}
+	if err := run("missing.cfg"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing explicit selection did not fail: %v", err)
+	}
+	after, err := os.ReadFile(outputFile)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("missing explicit selection changed the registry: %v", err)
+	}
+	local, err := os.ReadFile(configFile)
+	if err != nil || string(local) != "local:example.com/local\n" {
+		t.Fatalf("explicit selection changed local configuration: %q (%v)", local, err)
 	}
 }

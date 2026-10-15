@@ -12,7 +12,7 @@ import (
 	"hash"
 	"io"
 
-	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"golang.org/x/crypto/hkdf"
 )
 

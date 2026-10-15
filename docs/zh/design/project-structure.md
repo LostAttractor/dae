@@ -11,7 +11,10 @@ dae 以 eBPF 数据路径为基础，仅将代理流量、DNS 和明确规则命
 | `control` | 控制面、TCP/UDP 转发、内核资源交接；eBPF 位于 `kern` |
 | `component/routing`、`outbound` | 路由规则、目的地址计划、出站选择 |
 | `component/network`、`sniffing` | 接口管理与协议嗅探 |
-| `component/mitm`、`component/pluginhost`、`component/plugin` | 协议连接宿主、独立插件实例/后台任务/存储/指标所有权、公开 API；`mitm/surge` 实现 sgmodule，`mitm/ca` 管理证书 |
+| `component/mitm`、`component/pluginhost`、`component/plugin` | 协议连接宿主、独立插件实例/后台任务/存储/指标所有权、公开 API；`mitm/ca` 管理证书 |
+| `plugins/surge`、`plugins/dns-cache`、`plugins/dns-router` | sgmodule、DNS 应答缓存和 DNS 解析策略及传输 |
+| `pkg/outbound` | 客户端协议、传输、拨号链和会话基础能力；不依赖 dae 控制面或业务插件 |
+| `pkg/config_parser` | 配置解析基础能力；`grammar` 保存语法，`internal/dae_config` 保存生成的 Go 解析器 |
 | `api`、`api/client` | 公开数据契约与独立 HTTP/Unix 客户端 |
 | `client/cli`、`client/status` | 终端命令与 API 状态展示 |
 | `web`、`internal/webui` | 独立前端源码与构建、产物嵌入及静态托管 |
@@ -21,10 +24,19 @@ dae 以 eBPF 数据路径为基础，仅将代理流量、DNS 和明确规则命
 
 出站运行时的状态和所有权见[出站连通性与故障转移](outbound-connectivity.md)，管理面的信任边界见[API 鉴权与访问控制](api-access-control.md)。
 
+## 仓库与依赖边界
+
+自有 Go 代码使用根目录的 `go.mod` / `go.sum`，核心、CLI、协议库、解析器和业务插件在同一提交中维护，随 dae 统一发版。Web 保留独立的 npm 依赖与构建入口，通过 API 契约与 Go 代码协作。
+
+`third_party/quic-go`、`third_party/quickjs-go` 和 `kern/headers` 是固定提交的第三方依赖。fork 的上游同步与库内修改在独立仓库维护，主仓库更新引用并验证集成行为。日常自有代码开发不需要 `go.work`；外部插件或 fork 联调可使用本地 workspace。
+
+仓库边界不代替包的职责边界。`component/outbound` 管理出站选择和运行状态，依赖 `pkg/outbound` 的拨号能力；协议库不反向引用控制面。宿主通过 `component/plugin` 契约调用插件，具体实现只在入口组装。CLI 只依赖 API、轻量展示包和插件客户端，Web 通过 HTTP API 访问服务。依赖检查约束这些方向。
+
 ## 插件
 
-MITM 是可选组件，业务插件的实现、测试和文档在独立仓库维护。
+MITM 是可选组件，自有业务插件的实现、测试和文档在 `plugins/` 维护。
 复制 [plugins.cfg.example](../../../plugins.cfg.example) 为本地 `plugins.cfg` 选择插件；没有本地配置时使用示例。
+示例默认仅启用 Surge，DNS cache 和 router 保留为注释，按需在本地配置中启用。编译选择不创建运行时实例，也不扩大流量捕获范围。
 `make` 生成 `internal/compiledplugins/plugins_generated.go`，完整 Definition 表（静态校验、资源准备、工厂和命令）随启动和重载传递。
 本地选择和生成的注册表不纳入版本控制。插件报告类型、Schema 和客户端展示属于插件自己的 `api` / `client` 包，本体仅传递通用报告与服务。
 插件依赖[公开 API](../../../component/plugin/README.md)，宿主持有传输资源。
@@ -59,7 +71,7 @@ MITM 是可选组件，业务插件的实现、测试和文档在独立仓库维
 | `control/domain_registry_lifecycle.go` | 一个后台循环应用活动、执行 GC/脏保存，关闭与 reload 继承 |
 | `control/domain_registry_disk.go` | 分组 gzip JSON 编解码、完整校验和原子发布 |
 
-用户态暂不设容量上限，内核是按完整 IP 状态聚合、排序后的有容量子集。详见[DNS 设计与 TODO](../configuration/dns.md)。高级解析策略与传输位于独立的 `dae-plugin-dns-router`，完整应答缓存位于 `dae-plugin-dns-cache`，均可选编译与配置。推荐插件顺序为 cache → Surge → router → 核心中继。
+用户态暂不设容量上限，内核是按完整 IP 状态聚合、排序后的有容量子集。详见[DNS 设计与 TODO](../configuration/dns.md)。高级解析策略与传输位于 `plugins/dns-router`，完整应答缓存位于 `plugins/dns-cache`，均可选编译与配置。推荐插件顺序为 cache → Surge → router → 核心中继。
 
 ### 传输生命周期
 

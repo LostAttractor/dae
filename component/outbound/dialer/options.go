@@ -10,7 +10,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/config"
-	D "github.com/daeuniverse/outbound/dialer"
+	D "github.com/daeuniverse/dae/pkg/outbound/dialer"
 )
 
 // GlobalOption contains validated configuration. Connectivity workers require

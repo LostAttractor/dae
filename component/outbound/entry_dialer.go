@@ -11,8 +11,8 @@ import (
 
 	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
 func (p *PathSpec) effectiveMark(option *dialer.GlobalOption) uint32 {

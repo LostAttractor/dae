@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 	dns "github.com/miekg/dns"
 )
 

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 // closeInBackground starts cleanup without making control-plane shutdown wait

@@ -16,7 +16,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	"golang.org/x/sys/unix"
 )
 

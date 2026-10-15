@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/daeuniverse/dae/client/cli"
-	surgeclient "github.com/daeuniverse/dae/component/mitm/surge/client"
+	surgeclient "github.com/daeuniverse/dae/plugins/surge/client"
 	"github.com/spf13/cobra"
 )
 

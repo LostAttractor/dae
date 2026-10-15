@@ -9,7 +9,7 @@ import (
 	"github.com/daeuniverse/dae/common/resource"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 )
 

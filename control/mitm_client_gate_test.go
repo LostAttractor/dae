@@ -31,7 +31,7 @@ import (
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/component/sniffing"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )

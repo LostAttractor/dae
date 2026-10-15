@@ -7,9 +7,14 @@
 - Node.js 22+ and npm to bundle the embedded Web interface and Recharts charts.
 - A target C compiler and sysroot when cross-compiling with cgo.
 
-Go dependencies are pinned as Git submodules under `third_party/`: `outbound`,
-`quic-go`, `dae-config-dist`, and `quickjs-go`. `go.mod` resolves these local
-copies; the config module lives at `third_party/dae-config-dist/go/dae_config`.
+Core, CLI, outbound protocols, the config parser and first-party plugins share
+the root `go.mod` and `go.sum`. They are developed and released together.
+`pkg/outbound` contains protocol and dialer implementations; `plugins/` contains
+Surge and the optional DNS cache/router. Normal development needs no workspace.
+
+Third-party forks remain pinned as Git submodules: `third_party/quic-go`,
+`third_party/quickjs-go`, and the eBPF headers in `kern/headers`. The root
+`go.mod` resolves the two Go forks to these local copies.
 
 The Surge plugin's default QuickJS-NG backend is compiled from C sources in `third_party/quickjs-go`, a fork of [buke/quickjs-go](https://github.com/buke/quickjs-go) containing the binding integration fixes. This backend requires `CGO_ENABLED=1`, including when Surge is compiled in but disabled in configuration. The Node.js backend builds without cgo. `netgo` and `osusergo` keep Go's DNS and user lookup implementations.
 
@@ -58,7 +63,7 @@ CI checks these separate scopes:
 
 | Workflow | Execution scope |
 | --- | --- |
-| Go Test | Native Linux x86_64: `make test` (`go test ./...`) for both QuickJS and Node, standalone API client tests, the API server without cgo, and backend dependency isolation. |
+| Go Test | Native Linux x86_64: `make test` (`go test ./...`) for QuickJS and Node with default and all-plugin selections, package boundaries, standalone API clients, the API server without cgo, backend isolation, pinned QuickJS/QUIC contracts, generated parser consistency and standalone Web tests. |
 | BPF Test | Clang 15–23 test executables are built on Ubuntu 24.04 and run natively on one Ubuntu 26.04 x86_64 runner, including BIG TCP and live bridge metadata. This is a compiler matrix, not a target-CPU or kernel-version matrix. |
 | eBPF Audit | Clang 23 objects are loaded and inspected in a Linux 6.18 VM; verifier and dump artifacts are retained. |
 | Kernel Test | Linux x86_64, Linux 6.18 VM: startup/verifier, netkit/veth and TCX integration, splice, and LAN/WAN IPv4/IPv6 TCP/UDP proxy paths. |
@@ -292,10 +297,10 @@ The Makefile supplies these settings. When invoking Go yourself, set them explic
 
 ```sh
 export CGO_ENABLED=1
-go test -tags=netgo,osusergo,grpcnotrace ./component/mitm/surge
+go test -tags=netgo,osusergo,grpcnotrace ./plugins/surge
 
 # Node backend, without QuickJS or cgo:
-CGO_ENABLED=0 go test -tags=surge_nodejs,netgo,osusergo,grpcnotrace ./component/mitm/surge/...
+CGO_ENABLED=0 go test -tags=surge_nodejs,netgo,osusergo,grpcnotrace ./plugins/surge/...
 ```
 
 ## Debug builds
@@ -394,13 +399,28 @@ candidate selection and the effect of omitted IPs on domain capture.
 
 ## External plugins
 
-Copy [`plugins.cfg.example`](../../../plugins.cfg.example) to `plugins.cfg`,
-add one `type:Go/import/path` line per plugin, then run `make` in dae.
+First-party plugins require no additional modules. Copy
+[`plugins.cfg.example`](../../../plugins.cfg.example) to `plugins.cfg` to choose
+the plugins compiled into the binary. Surge is enabled by default; DNS cache and
+router are commented out. Uncomment their entries in your local copy to build
+and test all first-party plugins:
+
+```sh
+make
+make test
+make test SURGE_RUNTIME=nodejs
+```
+
+For external plugins, add one `type:Go/import/path` line per plugin to
+`plugins.cfg`, then run `make` in dae.
 Without a local `plugins.cfg`, the build uses the example selection.
+`PLUGINS_CONFIG` selects a different file without changing the local selection.
+Missing nondefault selection files fail the build. Release and container builds
+use `plugins.cfg.example` with `GOWORK=off`.
 Each package exports `Plugin` (`plugin.Definition` with `Configure` and optional `Commands`); the output binary is `./dae`. `Configure` parses and validates settings once before network and resource preparation, returning a factory that prepares the runtime instance. For example:
 
 ```text
-surge:github.com/daeuniverse/dae/component/mitm/surge
+surge:github.com/daeuniverse/dae/plugins/surge
 bilijump:example.com/dae-mitm-bilijump
 demo:example.com/dae-mitm-demo
 ```
@@ -432,11 +452,28 @@ GOWORK="$PWD/go.work" make -C ../dae-mitm-bilijump test TEST_ARGS=-race
 `make plugins` only refreshes that registry; run it before direct `go build` or
 daemon tests, including on a fresh checkout. The registry belongs to the build
 composition package; command and daemon code receive its definitions.
-`plugins.cfg` and generated registries are ignored by Git; only the example
-configuration and generator are tracked. An existing local selection is never
+`plugins.cfg` and generated registries are ignored by Git; the example and
+all-plugin configurations and generator are tracked. An existing local selection is never
 overwritten by generation.
 See [instance configuration](../../zh/configuration/mitm-plugins.md) and the
 [plugin API](../../../component/plugin/README.md). DNS plugin examples are in [DNS configuration](../configuration/dns.md).
+
+## Config parser generation
+
+The grammar is `pkg/config_parser/grammar/dae_config.g4`; generated Go code and
+token metadata live in `pkg/config_parser/internal/dae_config`. Commit grammar
+changes and regenerated files together:
+
+```sh
+make config-parser
+make config-parser-check
+```
+
+Generation needs Python 3, Java and Go, supplied by `nix-shell`. The generator
+downloads ANTLR 4.13.1 into `build/tools`, verifies its pinned SHA-256 and uses
+the matching Go runtime from `go.mod`. The check target generates into a
+temporary directory and rejects stale output. Ordinary builds use the committed
+parser and require neither Java nor the ANTLR download.
 
 ## Run
 

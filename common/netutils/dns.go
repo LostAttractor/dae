@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	dnsmessage "github.com/miekg/dns"
 )
 

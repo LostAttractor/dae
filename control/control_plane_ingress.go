@@ -18,7 +18,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	"golang.org/x/sys/unix"
 )
 

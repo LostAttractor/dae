@@ -14,6 +14,15 @@ Before you start any Pull Request, `it is recommended that you create an issue` 
 
 `Pull Requests` can only be merged once all status checks are green.
 
+Core, CLI, outbound protocols, the parser and first-party plugins share the root
+Go module and release version. Include contract changes and their consumers in
+the same pull request. Copy `plugins.cfg.example` to a local `plugins.cfg` and
+uncomment the optional plugin entries to test the full selection with `make test`.
+Repeat with `SURGE_RUNTIME=nodejs` for the Node backend.
+`make client-test` checks lightweight client dependencies. See the
+[build guide](../user-guide/build-by-yourself.md) for parser generation,
+third-party forks and external plugin workspaces.
+
 ## Pre-commit Hook
 
 This repo uses [pre-commit hook](https://github.com/pre-commit/pre-commit-hooks) to apply linting check prior to writing commit to local Git history. To set up pre-commit, do the followings:

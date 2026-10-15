@@ -7,7 +7,7 @@ package config_parser
 
 import (
 	"github.com/antlr4-go/antlr/v4"
-	"github.com/daeuniverse/dae-config-dist/go/dae_config"
+	"github.com/daeuniverse/dae/pkg/config_parser/internal/dae_config"
 )
 
 func Parse(in string) (sections []*Section, err error) {

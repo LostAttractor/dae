@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 // Keep the accepted connection's lifetime across per-request route plans.

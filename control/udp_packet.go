@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
-	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 	log "github.com/sirupsen/logrus"
 )
 

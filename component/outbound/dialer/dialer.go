@@ -9,7 +9,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 // Dialer is a group-local member of a shared physical path. Properties and

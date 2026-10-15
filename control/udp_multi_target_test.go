@@ -11,10 +11,10 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/common/stats"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/protocol"
-	"github.com/daeuniverse/outbound/protocol/vless"
-	"github.com/daeuniverse/outbound/protocol/vmess"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/vless"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/vmess"
 )
 
 type udpMultiTargetParent struct{}

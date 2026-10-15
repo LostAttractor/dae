@@ -2,3 +2,4 @@
 docs/** @daeuniverse/docs
 CHANGELOGS.md @daeuniverse/docs @daeuniverse/release
 /.github/** @daeuniverse/infra
+/pkg/outbound/** @daeuniverse/core

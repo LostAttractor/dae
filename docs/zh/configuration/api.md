@@ -175,6 +175,6 @@ sudo curl --unix-socket /var/run/dae.sock http://localhost/api/operations/返回
 sudo curl --unix-socket /var/run/dae.sock http://localhost/api/resources
 ```
 
-刷新使用已接受的配置；配置文件修改仍需 `dae reload`。`202` 返回唯一操作 ID，任务在 HTTP 响应后继续执行，与 reload、suspend 串行发布。等待或运行中重复触发刷新返回 `409`。操作包含 `id`、`kind`、`state`（queued/running/completed/failed/canceled）、`trigger`（api/automatic/signal）、排队/开始/完成时间、`progress`、`result` 和 `error`。`GET /api/resources` 返回最近一次刷新的 `operation` 和下次检查时间 `next_check`；首次刷新前省略 `operation`。`result` 会说明因下载或校验失败而保留旧内容的资源组数量。自动检查间隔和回退规则见[资源缓存](cache-directory.md#全局资源缓存)。
+刷新使用已接受的配置；配置文件修改仍需 `dae reload`。`202` 返回唯一操作 ID，任务在 HTTP 响应后继续执行，与 reload、suspend 串行发布。等待或运行中重复触发刷新返回 `409`。操作包含 `id`、`kind`、`state`（queued/running/completed/failed/canceled）、`trigger`（`api` / `automatic` / `signal`）、排队/开始/完成时间、`progress`、`result` 和 `error`。`GET /api/resources` 返回最近一次刷新的 `operation` 和下次检查时间 `next_check`；首次刷新前省略 `operation`。`result` 会说明因下载或校验失败而保留旧内容的资源组数量。自动检查间隔和回退规则见[资源缓存](cache-directory.md#全局资源缓存)。
 
 `POST /api/operations` 接受 `{"kind":"reload"}`、`{"kind":"suspend"}` 或 `{"kind":"refresh"}`。reload/suspend 可附加 `"abort":true`；非零 `expected_pid` 要求 PID 与 API daemon 一致。队列最多容纳 16 项等待操作，满时返回 `409`。daemon 保留最近完成的 64 项操作和当前工作；`GET /api/operations/{id}` 对未知、过期或上次 daemon 的 ID 返回 `404`。CLI 超时只停止等待，不取消已受理的操作。本地 Unix 操作接口在控制平面替换期间持续可用。

@@ -1,0 +1,40 @@
+//go:build surge_nodejs
+
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package surge
+
+import (
+	"context"
+
+	surgeapi "github.com/daeuniverse/dae/plugins/surge/api"
+	"github.com/daeuniverse/dae/plugins/surge/internal/nodejs"
+)
+
+const compiledJSRuntime = "nodejs"
+
+type runtimeBackend struct{ pool *nodejs.Pool }
+
+func newRuntimeBackend(ctx context.Context, opts RuntimeOptions) (*runtimeBackend, error) {
+	pool, err := nodejs.NewPool(ctx, opts.NodePath, opts.MemoryLimit, opts.NodeWorkers, runtimeBootstrapSource)
+	if err != nil {
+		return nil, err
+	}
+	return &runtimeBackend{pool: pool}, nil
+}
+
+func (b *runtimeBackend) newVM(ctx context.Context) (scriptVM, error) { return b.pool.Acquire(ctx) }
+func (b *runtimeBackend) Warm(ctx context.Context) error              { return b.pool.Warm(ctx) }
+func (b *runtimeBackend) Close()                                      { b.pool.Close() }
+
+func (b *runtimeBackend) status() surgeapi.SurgeRuntimeStatus {
+	s := b.pool.Stats()
+	return surgeapi.SurgeRuntimeStatus{Backend: compiledJSRuntime, NodeJS: &surgeapi.NodeJSRuntimeStatus{
+		Active: s.Active, Idle: s.Idle, Limit: s.Limit,
+		Started: s.Started, Reused: s.Reused, StartFailures: s.StartFailures,
+		IdleReaped: s.IdleReaped, Discarded: s.Discarded,
+		RSSBytes: s.RSSBytes, PSSBytes: s.PSSBytes,
+		MemorySampledWorkers: s.MemorySampledWorkers, MemorySampledAt: s.MemorySampledAt,
+		IdleTimeoutSeconds: s.IdleTimeout.Seconds(),
+	}}
+}

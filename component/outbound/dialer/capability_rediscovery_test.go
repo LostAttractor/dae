@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
-	"github.com/daeuniverse/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
 )
 
 func TestFailureInvalidatesEveryCapabilityBeforeRediscovery(t *testing.T) {

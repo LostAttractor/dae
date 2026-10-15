@@ -11,8 +11,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/daeuniverse/outbound/netproxy"
-	"github.com/daeuniverse/outbound/pool"
+	"github.com/daeuniverse/dae/pkg/outbound/netproxy"
+	"github.com/daeuniverse/dae/pkg/outbound/pool"
 )
 
 type ConnSnifferInterface interface {

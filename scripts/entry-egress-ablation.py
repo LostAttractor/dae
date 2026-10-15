@@ -51,7 +51,7 @@ def main():
     discovery = "component/outbound/entry_discovery.go"
     families = "component/outbound/entry_families.go"
     label = "component/outbound/entry_dialer.go"
-    socket = "third_party/outbound/protocol/direct/dialer.go"
+    socket = "pkg/outbound/protocol/direct/dialer.go"
     source_files = [discovery, families, label, socket]
     tests = "^(TestEntryVariantsRequireDNSAndLocalFamily|TestEntryDiscoveryOnRealLocalRoute|TestEntryFamilyRouteAndInterface|TestEntryDiscoveryCacheIsolation|TestEntryDiscoveryCanceledBeforeStart|TestEntryVariantLabelsAndIdentity|TestEntrySockets|TestEntryDNSBindingAndFamilyRecovery|TestQUICProtocolsUseEntryResolverOnReconnect)$"
     benchmark = "BenchmarkEntryDiscovery"

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/outbound/protocol/direct"
+	"github.com/daeuniverse/dae/pkg/outbound/protocol/direct"
 )
 
 func setNetworkCheckLinks(t testing.TB, links ...string) {
