@@ -270,7 +270,7 @@ func TestHTTP3MITMTLSIdentity(t *testing.T) {
 	}
 }
 
-func TestHTTP3UpstreamHeaderTimeout(t *testing.T) {
+func TestHTTP3UpstreamRequestCancellation(t *testing.T) {
 	for _, delayedHeaders := range []bool{true, false} {
 		t.Run(fmt.Sprintf("delayed_headers=%t", delayedHeaders), func(t *testing.T) {
 			authority, roots := http3TestAuthority(t)
@@ -292,13 +292,18 @@ func TestHTTP3UpstreamHeaderTimeout(t *testing.T) {
 				conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 				return conn, upstream, err
 			})
-			transport.headerTimeout = 75 * time.Millisecond
 			defer transport.Close()
-			req, _ := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+			ctx := t.Context()
+			if delayedHeaders {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 75*time.Millisecond)
+				defer cancel()
+			}
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com/", nil)
 			resp, err := transport.RoundTrip(req)
 			if delayedHeaders {
 				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("missing header timeout: %v", err)
+					t.Fatalf("missing request cancellation: %v", err)
 				}
 				return
 			}
@@ -308,13 +313,13 @@ func TestHTTP3UpstreamHeaderTimeout(t *testing.T) {
 			defer resp.Body.Close()
 			body, err := io.ReadAll(resp.Body)
 			if err != nil || string(body) != "streamed body" {
-				t.Fatalf("header timeout leaked into body: %q, %v", body, err)
+				t.Fatalf("streamed response failed: %q, %v", body, err)
 			}
 		})
 	}
 }
 
-func TestHTTP3HeaderTimeoutExcludesUpload(t *testing.T) {
+func TestHTTP3SlowUploadAndEarlyResponse(t *testing.T) {
 	for _, earlyResponse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("early_response=%t", earlyResponse), func(t *testing.T) {
 			authority, roots := http3TestAuthority(t)
@@ -333,7 +338,6 @@ func TestHTTP3HeaderTimeoutExcludesUpload(t *testing.T) {
 				conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
 				return conn, upstream, err
 			})
-			transport.headerTimeout = 50 * time.Millisecond
 			defer transport.Close()
 			reader, writer := io.Pipe()
 			defer reader.Close()
@@ -345,7 +349,7 @@ func TestHTTP3HeaderTimeoutExcludesUpload(t *testing.T) {
 				case <-finished:
 					return
 				}
-				time.Sleep(3 * transport.headerTimeout)
+				time.Sleep(150 * time.Millisecond)
 				_, err := io.WriteString(writer, "slow upload")
 				_ = writer.Close()
 				written <- err
@@ -358,7 +362,7 @@ func TestHTTP3HeaderTimeoutExcludesUpload(t *testing.T) {
 			defer response.Body.Close()
 			body, err := io.ReadAll(response.Body)
 			if err != nil || string(body) != "slow upload" {
-				t.Fatalf("upload consumed header budget: body=%q err=%v", body, err)
+				t.Fatalf("slow upload failed: body=%q err=%v", body, err)
 			}
 			if err := <-written; err != nil {
 				t.Fatal(err)

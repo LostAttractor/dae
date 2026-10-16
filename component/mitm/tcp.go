@@ -94,7 +94,6 @@ func (h *Host) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) 
 	base := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 15 * time.Second,
-		ReadTimeout:       60 * time.Second,
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
@@ -106,7 +105,7 @@ func (h *Host) ServeConn(conn net.Conn, flow plugin.Flow, plan UpstreamPlanner) 
 		base.SetKeepAlivesEnabled(false)
 	}
 	if state != nil && state.NegotiatedProtocol == "h2" {
-		base.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 64, MaxReadFrameSize: 1 << 20}
+		base.HTTP2 = &http.HTTP2Config{MaxConcurrentStreams: 64, MaxReadFrameSize: 1 << 20, SendPingTimeout: 60 * time.Second}
 		base.HTTP2.CountError = func(kind string) {
 			logger.WithFields(logrus.Fields{"event": "mitm_http2_error", "reason": kind}).Debug("MITM client HTTP/2 error")
 		}

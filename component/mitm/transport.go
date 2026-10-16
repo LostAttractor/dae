@@ -5,10 +5,8 @@ package mitm
 import (
 	"context"
 	"crypto/tls"
-	"io"
 	"net"
 	"net/http"
-	"net/http/httptrace"
 	"sync"
 	"time"
 
@@ -22,7 +20,6 @@ func (h *Host) httpTransport(dial DialContext) *http.Transport {
 		ForceAttemptHTTP2:      true,
 		DisableCompression:     true,
 		TLSHandshakeTimeout:    10 * time.Second,
-		ResponseHeaderTimeout:  30 * time.Second,
 		IdleConnTimeout:        90 * time.Second,
 		MaxIdleConnsPerHost:    8,
 		MaxResponseHeaderBytes: 1 << 20,
@@ -48,8 +45,8 @@ func (h *Host) http3Transport(dial DialPacketContext) *http3Upstream {
 	}
 	closeCtx, cancel := context.WithCancel(context.Background())
 	upstream := &http3Upstream{
-		Transport: transport, headerTimeout: 30 * time.Second,
-		cancel: cancel, connections: make(map[*quic.Conn]struct{}),
+		Transport: transport,
+		cancel:    cancel, connections: make(map[*quic.Conn]struct{}),
 	}
 	transport.Dial = func(ctx context.Context, address string, tlsConfig *tls.Config, config *quic.Config) (*quic.Conn, error) {
 		upstream.mu.Lock()
@@ -112,18 +109,17 @@ func (h *Host) http3Transport(dial DialPacketContext) *http3Upstream {
 	return upstream
 }
 
-// HTTP/3's transport has no ResponseHeaderTimeout option. Keep the same header
-// budget as HTTP/1 and HTTP/2 without applying it to streaming response bodies.
+// Own every packet connection, including connections evicted after a stream
+// error. Request cancellation bounds active exchanges, including header waits.
 type http3Upstream struct {
 	*http3.Transport
-	headerTimeout time.Duration
-	packets       sync.WaitGroup
-	mu            sync.Mutex
-	connections   map[*quic.Conn]struct{}
-	closed        bool
-	cancel        context.CancelFunc
-	closeOnce     sync.Once
-	closeErr      error
+	packets     sync.WaitGroup
+	mu          sync.Mutex
+	connections map[*quic.Conn]struct{}
+	closed      bool
+	cancel      context.CancelFunc
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func (t *http3Upstream) Close() error {
@@ -145,54 +141,4 @@ func (t *http3Upstream) Close() error {
 		t.packets.Wait()
 	})
 	return t.closeErr
-}
-
-func (t *http3Upstream) RoundTrip(request *http.Request) (*http.Response, error) {
-	ctx, cancel := context.WithCancelCause(request.Context())
-	var mu sync.Mutex
-	var timer *time.Timer
-	finished := false
-	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
-		mu.Lock()
-		defer mu.Unlock()
-		// The request's header budget starts after its first complete upload.
-		// An early response can precede this callback; never arm a body timer.
-		if finished || info.Err != nil || timer != nil {
-			return
-		}
-		timer = time.AfterFunc(t.headerTimeout, func() {
-			mu.Lock()
-			defer mu.Unlock()
-			if !finished {
-				cancel(context.DeadlineExceeded)
-			}
-		})
-	}})
-	response, err := t.Transport.RoundTrip(request.WithContext(ctx))
-	mu.Lock()
-	finished = true
-	if timer != nil {
-		timer.Stop()
-	}
-	mu.Unlock()
-	if err != nil {
-		cause := context.Cause(ctx)
-		cancel(err)
-		if cause != nil {
-			return nil, cause
-		}
-		return nil, err
-	}
-	response.Body = &http3ResponseBody{ReadCloser: response.Body, cancel: cancel}
-	return response, nil
-}
-
-type http3ResponseBody struct {
-	io.ReadCloser
-	cancel context.CancelCauseFunc
-}
-
-func (b *http3ResponseBody) Close() error {
-	defer b.cancel(nil)
-	return b.ReadCloser.Close()
 }
