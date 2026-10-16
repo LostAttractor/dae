@@ -7,26 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/daeuniverse/dae/common/netutils"
 	"github.com/daeuniverse/dae/component/plugin"
 	dns "github.com/miekg/dns"
 )
-
-// Unpack accepts trailing bytes and some short sections. Such frames are still
-// relayed verbatim, but must not trigger plugins or publish registry evidence.
-func unpackDNSMessage(wire []byte) *dns.Msg {
-	m := new(dns.Msg)
-	if netutils.UnpackDnsMessage(wire, m) != nil {
-		return nil
-	}
-	return m
-}
-
-// Observe only correlated, complete IN address responses. The wire message is
-// never normalized or edited: DNSSEC, EDNS and upstream TTLs belong to endpoints.
-func observeDNSRegistry(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse) {
-	observeDNSRegistryAt(registry, match, request, response, time.Now())
-}
 
 func observeDNSRegistryAt(registry *DomainRegistry, match func(string) []uint32, request *plugin.DNSExchange, response *plugin.DNSResponse, deliveredAt time.Time) {
 	if registry == nil || match == nil || request == nil || response == nil {

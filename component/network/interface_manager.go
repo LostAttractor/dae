@@ -7,7 +7,6 @@ package network
 
 import (
 	"cmp"
-	"errors"
 	"fmt"
 	"net"
 	"path"
@@ -362,18 +361,6 @@ func (m *InterfaceManager) NameByIndex(index int) string {
 	return link.Attrs().Name
 }
 
-func (m *InterfaceManager) RegisterWithPattern(pattern string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) error {
-	var initial func(netlink.Link) error
-	if initCallback != nil {
-		initial = func(link netlink.Link) error {
-			initCallback(link)
-			return nil
-		}
-	}
-	_, err := m.register(pattern, false, initial, newCallback, delCallback, false)
-	return err
-}
-
 // RegisterWithPatternSync waits for every initial callback and returns its
 // first error. It must not be called from an interface callback.
 func (m *InterfaceManager) RegisterWithPatternSync(pattern string, initCallback func(netlink.Link) error, newCallback func(netlink.Link), delCallback func(netlink.Link)) error {
@@ -463,20 +450,6 @@ func (m *InterfaceManager) register(name string, exact bool, initCallback func(n
 		return nil, err
 	}
 	return registration, nil
-}
-
-func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Link), newCallback func(netlink.Link), delCallback func(netlink.Link)) {
-	var initial func(netlink.Link) error
-	if initCallback != nil {
-		initial = func(link netlink.Link) error {
-			initCallback(link)
-			return nil
-		}
-	}
-	if _, err := m.register(ifname, true, initial, newCallback, delCallback, false); err != nil && !errors.Is(err, net.ErrClosed) {
-		log.WithField("interface", ifname).WithError(err).
-			Warn("Initial interface lookup failed; waiting for a later interface update")
-	}
 }
 
 // RegisterSync is the exact-name variant of RegisterWithPatternSync.

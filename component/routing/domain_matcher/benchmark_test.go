@@ -6,238 +6,27 @@
 package domain_matcher
 
 import (
-	"fmt"
-	"hash/fnv"
-	"math/rand"
 	"testing"
 
-	"github.com/daeuniverse/dae/common/assets"
-
 	"github.com/daeuniverse/dae/common/consts"
-	"github.com/daeuniverse/dae/component/routing"
-	"github.com/daeuniverse/dae/pkg/config_parser"
-	"github.com/sirupsen/logrus"
 )
 
-var TestSample = []string{
-	"9game.cn",
-	"aliapp.org",
-	"alibaba-inc.com",
-	"alibaba.com",
-	"alibabacapital.com",
-	"alibabacorp.com",
-	"alibabadoctor.com",
-	"alibabafuturehotel.com",
-	"alibabagroup.com",
-	"alibabaplanet.com",
-	"alibabaued.com",
-	"alibabausercontent.com",
-	"alifanyi.com",
-	"alihealth.com.cn",
-	"alihealth.hk",
-	"aliimg.com",
-	"51y5.net",
-	"a.adtng.com",
-	"aaxads.com",
-	"addthisedge.com",
-	"adtrue.com",
-	"ad-srv.net",
-	"ad.api.moji.com",
-	"ad.wang502.com",
-	"adbutter.net",
-	"ads.trafficjunky.net",
-	"adtechus.com",
-	"adxprtz.com",
-	"cdn.advertserve.com",
-	"cdn.banclip.com",
-	"cfts1tifqr.com",
-	"contentabc.com",
-	"cretgate.com",
-	"ero-advertising.com",
-	"eroadvertising.com",
-	"exoclick.com",
-	"exosrv.com",
-	"go2.global",
-	"img-bss.csdn.net",
-	"imglnkc.com",
-	"imglnkd.com",
-	"innovid.com",
-	"ja2.gamersky.com",
-	"jl3.yjaxa.top",
-	"juicyads.com",
-	"kepler-37b.com",
-	"lqc006.com",
-	"moat.com",
-	"moatads.com",
-	"realsrv.com",
-	"s4yxaqyq95.com",
-	"shhs-ydd8x2.yjrmss.cn",
-	"static.javhd.com",
-	"tm-banners.gamingadult.com",
-	"trafficfactory.biz",
-	"tsyndicate.com",
-	"abchina.com",
-	"bankcomm.com",
-	"bankofbeijing.com.cn",
-	"bosc.cn",
-	"bsb.com.cn",
-	"ccb.com",
-	"cgbchina.com.cn",
-	"cib.com.cn",
-	"citibank.com.cn",
-	"cmbc.com.cn",
-	"hsbc.com.cn",
-	"hxb.com.cn",
-	"njcb.com.cn",
-	"psbc.com",
-	"spdb.com.cn",
-	"whccb.com",
-	"_https._tcp.mirrors.ustc.edu.cn",
-	"ipv4.master.test-ipv6.com",
-}
-
-type RoutingMatcherBuilder struct {
-	simulatedDomainSet []routing.DomainSet
-	Fallback           string
-
-	err error
-}
-
-func (b *RoutingMatcherBuilder) OutboundToId(outbound string) uint8 {
-	h := fnv.New64()
-	h.Write([]byte(outbound))
-	return uint8(h.Sum64() & 0xFF)
-}
-
-func (b *RoutingMatcherBuilder) AddDomain(f *config_parser.Function, key string, values []string, outbound *routing.Outbound) {
-	if b.err != nil {
-		return
-	}
-	switch consts.RoutingDomainKey(key) {
-	case consts.RoutingDomainKey_Regex,
-		consts.RoutingDomainKey_Full,
-		consts.RoutingDomainKey_Keyword,
-		consts.RoutingDomainKey_Suffix:
-	default:
-		b.err = fmt.Errorf("addDomain: unsupported key: %v", key)
-		return
-	}
-	b.simulatedDomainSet = append(b.simulatedDomainSet, routing.DomainSet{
-		Key:       consts.RoutingDomainKey(key),
-		RuleIndex: len(b.simulatedDomainSet),
-		Domains:   values,
-	})
-}
-
-func getDomain() (simulatedDomainSet []routing.DomainSet, err error) {
-	var rules []*config_parser.RoutingRule
-	sections, err := config_parser.Parse(`
-routing {
-	domain(suffix: test-ipv6.com)->direct
-	domain(geosite:bing)->us
-	domain(_https._tcp.mirrors.ustc.edu.cn)->us
-    domain(full:dns.google) -> direct
-	domain(geosite:category-ads-all) -> block
-    domain(geosite:cn) -> direct
-}`)
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range sections[0].Items {
-		rules = append(rules, item.Value.(*config_parser.RoutingRule))
-	}
-	if rules, err = routing.ApplyRulesOptimizers(rules,
-		&routing.AliasOptimizer{},
-		&routing.DatReaderOptimizer{LocationFinder: assets.NewLocationFinder(nil)},
-		&routing.MergeAndSortRulesOptimizer{},
-		&routing.DeduplicateParamsOptimizer{},
-	); err != nil {
-		return nil, fmt.Errorf("ApplyRulesOptimizers error:\n%w", err)
-	}
-	builder := RoutingMatcherBuilder{}
-	rb := routing.NewRulesBuilder()
-	rb.RegisterFunctionParser("domain", func(f *config_parser.Function, key string, paramValueGroup []string, overrideOutbound *routing.Outbound) (err error) {
-		builder.AddDomain(f, key, paramValueGroup, overrideOutbound)
-		return nil
-	})
-	if err = rb.Apply(rules); err != nil {
-		return nil, fmt.Errorf("Apply: %w", err)
-	}
-	return builder.simulatedDomainSet, nil
-}
-
-func BenchmarkBruteforce(b *testing.B) {
-	b.StopTimer()
-	logrus.SetLevel(logrus.WarnLevel)
-	simulatedDomainSet, err := getDomain()
-	if err != nil {
-		b.Fatal(err)
-	}
-	bf := NewBruteforce(consts.MaxMatchSetLen)
-	for _, domains := range simulatedDomainSet {
-		bf.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
-	}
-	if err = bf.Build(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-	runBenchmark(b, bf)
-}
-
-func BenchmarkGoRegexpNfa(b *testing.B) {
-	b.StopTimer()
-	logrus.SetLevel(logrus.WarnLevel)
-	simulatedDomainSet, err := getDomain()
-	if err != nil {
-		b.Fatal(err)
-	}
-	nfa := NewGoRegexpNfa(consts.MaxMatchSetLen)
-	for _, domains := range simulatedDomainSet {
-		nfa.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
-	}
-	if err = nfa.Build(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-	runBenchmark(b, nfa)
-}
-
 func BenchmarkAhocorasickSlimtrie(b *testing.B) {
-	b.StopTimer()
-	logrus.SetLevel(logrus.WarnLevel)
-	simulatedDomainSet, err := getDomain()
-	if err != nil {
+	matcher := NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
+	for _, domains := range domainMatcherTestSets {
+		matcher.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
+	}
+	if err := matcher.Build(); err != nil {
 		b.Fatal(err)
 	}
-	ahocorasick := NewAhocorasickSlimtrie(consts.MaxMatchSetLen)
-	for _, domains := range simulatedDomainSet {
-		ahocorasick.AddSet(domains.RuleIndex, domains.Domains, domains.Key)
-	}
-	if err = ahocorasick.Build(); err != nil {
-		b.Fatal(err)
-	}
-	b.StartTimer()
-	runBenchmark(b, ahocorasick)
-}
-
-func runBenchmark(b *testing.B, matcher routing.DomainMatcher) {
-	rand.Seed(100)
-	for b.Loop() {
-		sample := TestSample[rand.Intn(len(TestSample))]
-		choice := rand.Intn(10)
-		switch {
-		case choice < 4:
-			addN := rand.Intn(5)
-			buf := make([]byte, addN)
-			for i := range buf {
-				buf[i] = 'a' + byte(rand.Intn('z'-'a'))
+	for _, test := range domainMatcherTestCases {
+		b.Run(test.domain, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if got := matcher.MatchDomainBitmap(test.domain); got[0] != test.bits {
+					b.Fatalf("got %v, want first word %d", got, test.bits)
+				}
 			}
-			sample = string(buf) + "." + sample
-		case choice >= 4 && choice < 6:
-			k := rand.Intn(len(sample))
-			sample = sample[k:]
-		default:
-		}
-		matcher.MatchDomainBitmap(sample)
+		})
 	}
 }

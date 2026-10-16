@@ -38,10 +38,7 @@ func TestResolveUDPAddrContextLiterals(t *testing.T) {
 					t.Errorf("%s resolved to %s, want IP=%s zone=%q port=443", network, addr, test.ip, test.zone)
 				}
 			}
-			legacy, err := ResolveUDPAddrWithResolver(resolver, test.address)
-			if err != nil || legacy.Zone != test.zone {
-				t.Errorf("legacy resolver lost zone %q: address=%v error=%v", test.zone, legacy, err)
-			}
+
 		})
 	}
 }

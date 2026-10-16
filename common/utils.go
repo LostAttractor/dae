@@ -8,7 +8,6 @@ package common
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -22,22 +21,11 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
-	dnsmessage "github.com/miekg/dns"
-)
-
-var (
-	ErrOverlayHierarchicalKey = fmt.Errorf("overlay hierarchical key")
 )
 
 type UrlOrEmpty struct {
 	Url   *url.URL
 	Empty bool
-}
-
-func CloneStrings(slice []string) []string {
-	c := make([]string, len(slice))
-	copy(c, slice)
-	return c
 }
 
 func ARangeU32(n uint32) []uint32 {
@@ -51,19 +39,6 @@ func ARangeU32(n uint32) []uint32 {
 func Ipv6ByteSliceToUint32Array(_ip []byte) (ip [4]uint32) {
 	for j := 0; j < 16; j += 4 {
 		ip[j/4] = internal.NativeEndian.Uint32(_ip[j : j+4])
-	}
-	return ip
-}
-
-func Ipv6ByteSliceToUint8Array(_ip []byte) (ip [16]uint8) {
-	copy(ip[:], _ip)
-	return ip
-}
-
-func Ipv6Uint32ArrayToByteSlice(_ip [4]uint32) (ip []byte) {
-	ip = make([]byte, 16)
-	for j := range 4 {
-		internal.NativeEndian.PutUint32(ip[j*4:], _ip[j])
 	}
 	return ip
 }
@@ -82,13 +57,6 @@ func Deduplicate(list []string) []string {
 		res = append(res, v)
 	}
 	return res
-}
-
-func SetValue(values *url.Values, key string, value string) {
-	if value == "" {
-		return
-	}
-	values.Set(key, value)
 }
 
 func ParseMac(mac string) (addr [6]byte, err error) {
@@ -128,64 +96,6 @@ func ParsePortRange(pr string) (portRange [2]uint16, err error) {
 		portRange[1] = portRange[0]
 	}
 	return portRange, nil
-}
-
-func SetValueHierarchicalMap(m map[string]any, key string, val any) error {
-	keys := strings.Split(key, ".")
-	lastKey := keys[len(keys)-1]
-	keys = keys[:len(keys)-1]
-	p := &m
-	for _, key := range keys {
-		if v, ok := (*p)[key]; ok {
-			vv, ok := v.(map[string]any)
-			if !ok {
-				return ErrOverlayHierarchicalKey
-			}
-			p = &vv
-		} else {
-			(*p)[key] = make(map[string]any)
-			vv := (*p)[key].(map[string]any)
-			p = &vv
-		}
-	}
-	(*p)[lastKey] = val
-	return nil
-}
-
-func SetValueHierarchicalStruct(m any, key string, val string) error {
-	ifv, err := GetValueHierarchicalStruct(m, key)
-	if err != nil {
-		return err
-	}
-	if !FuzzyDecode(ifv.Addr().Interface(), val) {
-		return fmt.Errorf("type does not match: type \"%v\" and value \"%v\"", ifv.Kind(), val)
-	}
-	return nil
-}
-
-func GetValueHierarchicalStruct(m any, key string) (reflect.Value, error) {
-	ifv := reflect.Indirect(reflect.ValueOf(m))
-	ift := ifv.Type()
-	lastK := ""
-	for k := range strings.SplitSeq(key, ".") {
-		found := false
-		if ift.Kind() == reflect.Struct {
-			for i := range ifv.NumField() {
-				name, ok := ift.Field(i).Tag.Lookup("mapstructure")
-				if ok && name == k {
-					found = true
-					ifv = ifv.Field(i)
-					ift = ifv.Type()
-					lastK = k
-					break
-				}
-			}
-		}
-		if !found {
-			return reflect.Value{}, fmt.Errorf(`unexpected key "%v": "%v" (%v type) has no member "%v"`, key, lastK, ift.Kind().String(), k)
-		}
-	}
-	return ifv, nil
 }
 
 func FuzzyDecode(to any, val string) bool {
@@ -328,29 +238,6 @@ func EnsureFileInSubDir(filePath string, dir string) (err error) {
 	return nil
 }
 
-func MapKeys(m any) (keys []string, err error) {
-	v := reflect.ValueOf(m)
-	if v.Kind() != reflect.Map {
-		return nil, fmt.Errorf("MapKeys requires map[string]*")
-	}
-	if v.Type().Key().Kind() != reflect.String {
-		return nil, fmt.Errorf("MapKeys requires map[string]*")
-	}
-	_keys := v.MapKeys()
-	keys = make([]string, 0, len(_keys))
-	for _, k := range _keys {
-		keys = append(keys, k.String())
-	}
-	return keys, nil
-}
-
-func ConvergeAddr(addr netip.Addr) netip.Addr {
-	if addr.Is4In6() {
-		addr = netip.AddrFrom4(addr.As4())
-	}
-	return addr
-}
-
 func ConvergeAddrPort(addrPort netip.AddrPort) netip.AddrPort {
 	if addrPort.Addr().Is4In6() {
 		return netip.AddrPortFrom(netip.AddrFrom4(addrPort.Addr().As4()), addrPort.Port())
@@ -364,14 +251,6 @@ func NewGcm(key []byte) (cipher.AEAD, error) {
 		return nil, err
 	}
 	return cipher.NewGCM(block)
-}
-
-func AddrToDnsType(addr netip.Addr) uint16 {
-	if addr.Is4() {
-		return dnsmessage.TypeA
-	} else {
-		return dnsmessage.TypeAAAA
-	}
 }
 
 // Htons converts the unsigned short integer hostshort from host byte order to network byte order.
@@ -409,11 +288,6 @@ func ValidateSoMarkFromDae(mark uint32) error {
 	return nil
 }
 
-// Ntohs converts the unsigned short integer netshort from network byte order to host byte order.
-func Ntohs(i uint16) uint16 {
-	return Htons(i)
-}
-
 func IsValidHttpMethod(method string) bool {
 	switch method {
 	case "GET", "POST", "PUT", "PATCH", "DELETE", "COPY", "HEAD", "OPTIONS", "LINK", "UNLINK", "PURGE", "LOCK", "UNLOCK", "PROPFIND", "CONNECT", "TRACE":
@@ -421,25 +295,4 @@ func IsValidHttpMethod(method string) bool {
 	default:
 		return false
 	}
-}
-
-func StringSet(list []string) map[string]struct{} {
-	m := make(map[string]struct{})
-	for _, s := range list {
-		m[s] = struct{}{}
-	}
-	return m
-}
-
-func GenerateCertChainHash(rawCerts [][]byte) (chainHash []byte) {
-	for _, cert := range rawCerts {
-		certHash := sha256.Sum256(cert)
-		if chainHash == nil {
-			chainHash = certHash[:]
-		} else {
-			newHash := sha256.Sum256(append(chainHash, certHash[:]...))
-			chainHash = newHash[:]
-		}
-	}
-	return chainHash
 }

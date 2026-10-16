@@ -449,3 +449,32 @@ func TestWritePacketDeadlinePreservesSupportedSocket(t *testing.T) {
 	default:
 	}
 }
+
+func (p *UdpEndpointPool) remove(key netip.AddrPort, endpoint *UdpEndpoint) {
+	l, _ := p.UdpEndpointKeyLocker.Lock(key)
+	removed := p.removeLocked(key, endpoint)
+	if removed {
+		endpoint.retire()
+	}
+	p.UdpEndpointKeyLocker.Unlock(key, l)
+	endpoint.closeTrafficAccounting()
+	if removed {
+		_ = endpoint.Close()
+	}
+}
+
+func newUdpEndpoint(createOption *UdpEndpointOptions) *UdpEndpoint {
+	return &UdpEndpoint{
+		conn:       createOption.PacketConn,
+		handler:    createOption.Handler,
+		NatTimeout: createOption.NatTimeout,
+		dialer:     createOption.Dialer,
+		statsPath:  createOption.Path,
+	}
+}
+
+func (p *UdpEndpointPool) add(key netip.AddrPort, endpoint *UdpEndpoint) {
+	l, _ := p.UdpEndpointKeyLocker.Lock(key)
+	defer p.UdpEndpointKeyLocker.Unlock(key, l)
+	p.addLocked(key, endpoint)
+}

@@ -334,13 +334,7 @@ func resolveUDP(ctx context.Context, conn net.Conn, msg *dnsmessage.Msg, retryIn
 	return fmt.Errorf("DNS query timed out after %d attempts: %w", attempts, context.DeadlineExceeded)
 }
 
-func ResolveNetip(d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
-	defer cancel()
-	return ResolveNetipContext(ctx, d, dns, host, typ, network)
-}
-
-// ResolveNetipContext is ResolveNetip with caller-controlled cancellation.
+// ResolveNetipContext resolves address records with caller-controlled cancellation.
 // Canceling ctx also closes an established DNS connection, so a health-check
 // goroutine cannot remain stuck in a TCP/UDP read while its dialer is closing.
 func ResolveNetipContext(ctx context.Context, d netproxy.Dialer, dns netip.AddrPort, host string, typ uint16, network string) (addrs []netip.Addr, err error) {
@@ -376,50 +370,6 @@ func ResolveNetipContext(ctx context.Context, d netproxy.Dialer, dns netip.AddrP
 		addrs = append(addrs, ip)
 	}
 	return addrs, nil
-}
-
-func ResolveNS(d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
-	typ := dnsmessage.TypeNS
-	resources, err := resolve(d, dns, host, typ, network)
-	if err != nil {
-		return nil, err
-	}
-	for _, ans := range resources {
-		if ans.Header().Rrtype != typ {
-			continue
-		}
-		ns, ok := ans.(*dnsmessage.NS)
-		if !ok {
-			return nil, ErrBadDnsAns
-		}
-		records = append(records, ns.Ns)
-	}
-	return records, nil
-}
-
-func ResolveSOA(d netproxy.Dialer, dns netip.AddrPort, host string, network string) (records []string, err error) {
-	typ := dnsmessage.TypeSOA
-	resources, err := resolve(d, dns, host, typ, network)
-	if err != nil {
-		return nil, err
-	}
-	for _, ans := range resources {
-		if ans.Header().Rrtype != typ {
-			continue
-		}
-		ns, ok := ans.(*dnsmessage.SOA)
-		if !ok {
-			return nil, ErrBadDnsAns
-		}
-		records = append(records, ns.Ns)
-	}
-	return records, nil
-}
-
-func resolve(dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), consts.DefaultDialTimeout)
-	defer cancel()
-	return resolveContext(ctx, dialer, server, host, typ, network)
 }
 
 func resolveContext(ctx context.Context, dialer netproxy.Dialer, server netip.AddrPort, host string, typ uint16, network string) (ans []dnsmessage.RR, err error) {

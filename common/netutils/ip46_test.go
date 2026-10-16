@@ -30,7 +30,7 @@ func TestOutboundResolverUsesDefaultResolver(t *testing.T) {
 			return nil, errors.New("resolver dial intercepted")
 		},
 	}
-	if _, err := outboundcommon.ResolveUDPAddr("default-resolver-integration.invalid:53"); err == nil {
+	if _, err := outboundcommon.ResolveUDPAddrContext(t.Context(), net.DefaultResolver, "ip", "default-resolver-integration.invalid:53"); err == nil {
 		t.Fatal("outbound resolver unexpectedly succeeded")
 	}
 	if !dialed.Load() {
