@@ -12,10 +12,9 @@ import json
 import os
 import re
 import shutil
-import statistics
-import subprocess
 import tempfile
 from pathlib import Path
+from ablation import make_runner, medians, replace
 
 
 def main():
@@ -31,16 +30,7 @@ def main():
     output = Path(tempfile.mkdtemp(prefix="physinif-ablation-", dir=temp_root))
     print(f"Results: {output}", flush=True)
 
-    def run(command, log, expected_error=None):
-        result = subprocess.run(command, cwd=root, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        (output / log).write_text(result.stdout)
-        if expected_error is None:
-            if result.returncode:
-                raise RuntimeError(f"{log}: {result.stdout}")
-        elif result.returncode == 0 or expected_error not in result.stdout:
-            raise RuntimeError(f"mutation was not detected as expected: {log}: {result.stdout}")
-        return result.stdout
+    run = make_runner(root, output)
 
     # Each mutation removes one link in the provenance chain. Require a specific
     # assertion failure, so a verifier/build/privilege error cannot count as success.
@@ -77,9 +67,7 @@ def main():
         for file, old, new, count in changes:
             path = directory / file
             text = path.read_text()
-            if text.count(old) != count:
-                raise RuntimeError(f"stale mutation: {name}/{file}: {old}")
-            path.write_text(text.replace(old, new))
+            path.write_text(replace(text, old, new, count, context=f"{name}/{file}"))
         directories[name] = directory
 
     objects = {}
@@ -109,10 +97,8 @@ def main():
     source = root / "control/routing_input.go"
     text = source.read_text()
     old = "physinif: r.Physinif,"
-    if text.count(old) != 1:
-        raise RuntimeError("stale userspace propagation mutation")
     replacement = output / "routing_input.go"
-    replacement.write_text(text.replace(old, "physinif: 0,"))
+    replacement.write_text(replace(text, old, "physinif: 0,", context="userspace propagation"))
     overlay = output / "overlay.json"
     overlay.write_text(json.dumps({"Replace": {str(source): str(replacement)}}))
     run(["go", "test", "-overlay", str(overlay), "./control", "-run", "^TestDestinationRoutingPreservesIdentityAndUsesNewContext$"],
@@ -136,8 +122,7 @@ def main():
                 raise RuntimeError(f"missing benchmark samples: {name}: {text}")
     summary = {"kernel": os.uname().release, "cpu": cpu, "rounds": args.rounds,
                "samples_bpf_ns_per_packet": samples,
-               "medians": {name: {case: statistics.median(values) for case, values in cases.items()}
-                           for name, cases in samples.items()}}
+               "medians": medians(samples)}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2), flush=True)
 

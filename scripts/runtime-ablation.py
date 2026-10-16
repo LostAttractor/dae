@@ -12,16 +12,9 @@ import json
 import os
 import re
 import shutil
-import statistics
-import subprocess
 import tempfile
 from pathlib import Path
-
-
-def replace(text, old, new):
-    if text.count(old) != 1:
-        raise RuntimeError(f"stale mutation ({text.count(old)} matches): {old}")
-    return text.replace(old, new)
+from ablation import make_runner, medians, replace
 
 
 def main():
@@ -35,15 +28,7 @@ def main():
     output = Path(tempfile.mkdtemp(prefix="runtime-ablation-"))
     print(f"Results: {output}", flush=True)
 
-    def run(command, name, failure=None):
-        result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        (output / f"{name}.log").write_text(result.stdout)
-        if failure is None:
-            if result.returncode:
-                raise RuntimeError(f"{name}: {result.stdout}")
-        elif result.returncode == 0 or failure not in result.stdout:
-            raise RuntimeError(f"mutation did not fail the expected assertion: {name}: {result.stdout}")
-        return result.stdout
+    run = make_runner(root, output, suffix=".log")
 
     def build(name, sources, package="./control", tags="trace"):
         directory = output / name
@@ -145,8 +130,7 @@ def main():
                 metrics = {unit: float(value) for value, unit in re.findall(r"([0-9.]+)\s+(ns/op|B/op|allocs/op|extra-fds)", line)}
                 samples.setdefault(name, {}).setdefault(case, []).append(metrics)
     summary = {"kernel": os.uname().release, "cpu": cpu, "rounds": args.rounds, "samples": samples,
-        "medians": {name: {case: {unit: statistics.median(x[unit] for x in values) for unit in values[0]}
-            for case, values in cases.items()} for name, cases in samples.items()}}
+        "medians": medians(samples)}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary["medians"], indent=2), flush=True)
 

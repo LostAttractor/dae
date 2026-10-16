@@ -164,12 +164,17 @@ endif
 ## End Git Submodules
 
 ## Begin Ebpf
-clean-ebpf:
+.PHONY: clean-ebpf-production clean-ebpf-test
+clean-ebpf: clean-ebpf-production clean-ebpf-test
+
+clean-ebpf-production:
 	@rm -f $(BUILD_TAGS_FILE)
 	@rm -f control/bpf*bpf*.go && \
 		rm -f control/bpf*bpf*.o control/bpf*bpf*.o.gz
 	@rm -f trace/bpf_*bpf*.go && \
 		rm -f trace/bpf_*bpf*.o trace/bpf_*bpf*.o.gz
+
+clean-ebpf-test:
 	@rm -f control/kern/tests/bpftest_*bpf*.go && \
 		rm -f control/kern/tests/bpftest_*bpf*.o
 fmt: check-go-version submodule web-assets
@@ -183,7 +188,7 @@ ebpf: export BPF_TARGET := $(TARGET)
 ebpf: export BPF_TRACE_TARGET = $(GOARCH)
 # bpf2go uses -mod=mod, so generate BPF from dae's pinned module outside any
 # plugin workspace. The final Go build still uses the caller's workspace.
-ebpf: check-go-version check-bpf-capacities submodule clean-ebpf
+ebpf: check-go-version check-bpf-capacities submodule clean-ebpf-production
 	@unset GOOS && \
 	unset GOARCH && \
     unset GOARM && \
@@ -225,7 +230,7 @@ ebpf-test-build: export BPF_STRIP_FLAG := $(STRIP_FLAG)
 ebpf-test-build: export BPF_CFLAGS := $(BPF_CAPACITY_FLAGS) $(CFLAGS)
 ebpf-test-build: export BPF_TARGET := $(TARGET)
 ebpf-test-build: export BPF_TRACE_TARGET = $(GOARCH)
-ebpf-test-build: check-go-version check-bpf-capacities submodule clean-ebpf
+ebpf-test-build: check-go-version check-bpf-capacities submodule clean-ebpf-test
 	@goos=$$(go env GOOS); \
 	if [ "$$goos" != "linux" ]; then \
 		echo "ERROR: eBPF tests require Linux (found $$goos)." >&2; \

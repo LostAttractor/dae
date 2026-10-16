@@ -11,10 +11,9 @@ import hashlib
 import json
 import os
 import re
-import statistics
-import subprocess
 import tempfile
 from pathlib import Path
+from ablation import make_runner, medians, replace
 
 
 def main():
@@ -37,16 +36,7 @@ def main():
     privilege = [] if os.geteuid() == 0 else ["sudo", "-n"]
     print(f"Results: {output}", flush=True)
 
-    def run(command, log, expected=None):
-        result = subprocess.run(command, cwd=root, env=env, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
-        (output / log).write_text(result.stdout)
-        if expected is None:
-            if result.returncode:
-                raise RuntimeError(f"{log}: {result.stdout}")
-        elif result.returncode == 0 or expected not in result.stdout:
-            raise RuntimeError(f"mutation not detected by the expected assertion: {log}: {result.stdout}")
-        return result.stdout
+    run = make_runner(root, output, env=env, timeout=180)
 
     discovery = "component/outbound/entry_discovery.go"
     families = "component/outbound/entry_families.go"
@@ -147,9 +137,7 @@ def main():
                 texts[str(source.relative_to(root))] = previous.read_text() if previous.exists() else "package outbound\n"
         for file, old, new in changes:
             text = texts.get(file, (root / file).read_text())
-            if text.count(old) != 1:
-                raise RuntimeError(f"stale mutation: {name}/{file}: {old}")
-            texts[file] = text.replace(old, new)
+            texts[file] = replace(text, old, new, context=f"{name}/{file}")
         for file, text in texts.items():
             replacement = directory / file
             replacement.parent.mkdir(parents=True, exist_ok=True)
@@ -198,8 +186,7 @@ def main():
         "go": run(["go", "version"], "go-version.log").strip(),
         "gomaxprocs": 4, "rounds": args.rounds, "source_sha256": hashes,
         "detected_mutations": list(expected), "samples": samples,
-        "medians": {name: {case: {unit: statistics.median(values) for unit, values in metrics.items()}
-                           for case, metrics in cases.items()} for name, cases in samples.items()},
+        "medians": medians(samples),
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"Summary: {output / 'summary.json'}", flush=True)

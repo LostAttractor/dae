@@ -136,8 +136,9 @@ jobs:
             apt update
             apt install -y unzip
 
+            # Kernel and namespace tests include BPF, Kernel, Integration, TCX or TCFilters in their names.
             DAE_NETKIT_TEST=1 /host/dae/control.test \
-              -test.run '^(TestBPFStartupVerifierLoad|TestCreateNetkitPairIntegration|TestInternalLinkDatapathIntegration|TestKernelFeaturePreflightVethIntegration|TestVethAttachmentFailureCleanupIntegration|TestHostTCXAttachOrderAndCleanup|TestCleanupLegacyTCFiltersIntegration)$' \
+              -test.run '^Test.*(BPF|Kernel|Integration|TCX|TCFilters)' \
               -test.count=1
 
             /host/dae/control.test -test.run '^(TestNativeTCP|TestTCPMonitor|TestTCPWriteCounter|TestTCPIdleTimeout)' -test.count=1

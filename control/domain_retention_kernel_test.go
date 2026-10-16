@@ -39,6 +39,7 @@ func TestDomainRetentionKernelIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer collection.Close()
+	allowHTTPClientsForTest(t, collection)
 	state := &BPFState{bpfObjects: &bpfObjects{bpfMaps: bpfMaps{
 		RoutingMap: collection.Maps["routing_map"], RoutingProfileMap: collection.Maps["routing_profile_map"],
 		RoutingInterfaceMap: collection.Maps["routing_interface_map"], LpmArrayMap: collection.Maps["lpm_array_map"],
