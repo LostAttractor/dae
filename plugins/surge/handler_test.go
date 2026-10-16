@@ -255,7 +255,7 @@ abort = type=http-request,pattern=.,script-path=a.js
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "https://example.com/", nil))
 }
 
-func TestSurgeProxyLimitsBufferingConcurrency(t *testing.T) {
+func TestSurgeProxyAdmissionHonorsCancellation(t *testing.T) {
 	for _, test := range []struct {
 		name, option string
 		global       time.Duration
@@ -269,7 +269,9 @@ func TestSurgeProxyLimitsBufferingConcurrency(t *testing.T) {
 			engine.slots <- struct{}{}
 			engine.options.ScriptTimeout = test.global
 			body := &unreadBody{}
-			req := httptest.NewRequest("POST", "https://example.com/", nil)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+			defer cancel()
+			req := httptest.NewRequestWithContext(ctx, "POST", "https://example.com/", nil)
 			req.Body = body
 			start := time.Now()
 			if _, err := engine.processRequest(&plugin.Exchange{Request: req, Client: http.DefaultClient, SetReadDeadline: http.NewResponseController(httptest.NewRecorder()).SetReadDeadline}); err != context.DeadlineExceeded {

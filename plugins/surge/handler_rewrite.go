@@ -21,14 +21,6 @@ import (
 
 var errScriptAbort = errors.New("request aborted by script")
 
-// Only raised after SnapshotBody has captured a complete replay. A script's
-// processing deadline can then skip the script without losing upstream bytes.
-var errBufferedBodyTimeout = errors.New("buffered script body processing timed out")
-
-func replayableBodyTimeout(err error, parent context.Context) bool {
-	return errors.Is(err, errBufferedBodyTimeout) && parent.Err() == nil
-}
-
 func (e *Engine) matchScript(kind string, request *http.Request) (*Module, *Script) {
 	var sni string
 	if request.TLS != nil {
@@ -105,24 +97,25 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 	}
 	execution := e.traceScript(r, s)
 	defer func() { execution.finish(err) }()
-	ctx, cancel := context.WithTimeout(r.Context(), e.scriptTimeout(s))
-	defer cancel()
-	// Closing a server request body cannot interrupt an in-progress read.
-	// Handler clears this deadline before forwarding the remaining body.
-	deadline, _ := ctx.Deadline()
-	if setReadDeadline != nil {
-		_ = setReadDeadline(deadline)
-	}
-	release, err := e.acquire(ctx, "http-request")
-	if err != nil {
-		return nil, err
-	}
-	defer release()
 	message := requestMessage(r)
 	canReplaceBody := len(r.TransferEncoding) == 0 && !strings.EqualFold(r.Header.Get("Expect"), "100-continue")
+	var raw *membuffer.View
 	if s.RequiresBody && r.Body != nil {
-		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
-		if errors.Is(err, membuffer.ErrBudgetExhausted) || replayableBodyTimeout(err, r.Context()) {
+		raw, err = e.snapshotHTTPBody(r.Context(), &r.Body, e.scriptBodyLimit(s), setReadDeadline)
+		if errors.Is(err, membuffer.ErrBudgetExhausted) {
+			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
+			e.logRequest(r, fmt.Sprintf("Surge script %q skipped; forwarding original request", s.Name), err)
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), e.scriptTimeout(s))
+	defer cancel()
+	if raw != nil {
+		body, err := decodeBodyView(ctx, raw, r.Header.Get("Content-Encoding"), e.scriptBodyLimit(s), e.options.BodyMemory)
+		if errors.Is(err, membuffer.ErrBudgetExhausted) || errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r, fmt.Sprintf("Surge script %q skipped; forwarding original request", s.Name), err)
 			return nil, nil
@@ -203,18 +196,25 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		e.traceRequest(r.Request, "script_skip", "phase", "http-response", "reason", execution.reason)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(r.Request.Context(), e.scriptTimeout(s))
-	defer cancel()
-	release, err := e.acquire(ctx, "http-response")
-	if err != nil {
-		return err
-	}
-	defer release()
 	message := &Message{Status: r.StatusCode, Headers: r.Header}
 	hasBody := responseHasBody(r.Request.Method, r.StatusCode)
+	var raw *membuffer.View
 	if s.RequiresBody && hasBody && r.Body != nil {
-		body, err := e.bufferBody(ctx, &r.Body, r.Header, s)
-		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) || replayableBodyTimeout(err, r.Request.Context()) {
+		raw, err = e.snapshotHTTPBody(r.Request.Context(), &r.Body, e.scriptBodyLimit(s), nil)
+		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) {
+			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
+			e.logRequest(r.Request, fmt.Sprintf("Surge script %q skipped; forwarding original response", s.Name), err)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Request.Context(), e.scriptTimeout(s))
+	defer cancel()
+	if raw != nil {
+		body, err := decodeBodyView(ctx, raw, r.Header.Get("Content-Encoding"), e.scriptBodyLimit(s), e.options.BodyMemory)
+		if errors.Is(err, membuffer.ErrTooLarge) || errors.Is(err, membuffer.ErrBudgetExhausted) || errors.Is(err, context.DeadlineExceeded) && r.Request.Context().Err() == nil {
 			execution.outcome, execution.reason = "skipped", traceErrorReason(err)
 			e.logRequest(r.Request, fmt.Sprintf("Surge script %q skipped; forwarding original response", s.Name), err)
 			return nil
@@ -335,29 +335,11 @@ func (e *Engine) rewriteHeaders(kind string, request *http.Request, headers http
 	return nil
 }
 
-func (e *Engine) bufferBody(ctx context.Context, body *io.ReadCloser, header http.Header, s *Script) (*membuffer.View, error) {
-	limit := e.options.MaxBodySize
-	if s.MaxSize > 0 && s.MaxSize < limit {
-		limit = s.MaxSize
+func (e *Engine) scriptBodyLimit(s *Script) int64 {
+	if s.MaxSize > 0 {
+		return min(s.MaxSize, e.options.MaxBodySize)
 	}
-	original := *body
-	stop := context.AfterFunc(ctx, func() { _ = original.Close() })
-	// Keep the unread tail attached on overflow so response scripts can skip
-	// buffering without truncating the upstream response. Ownership stays with
-	// the exchange until the body is forwarded or replaced.
-	raw, err := plugin.SnapshotBody(body, limit, e.options.BodyMemory)
-	stop()
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, err
-	}
-	decoded, err := decodeBodyView(ctx, raw, header.Get("Content-Encoding"), limit, e.options.BodyMemory)
-	if errors.Is(err, context.DeadlineExceeded) {
-		return nil, fmt.Errorf("%w: %w", errBufferedBodyTimeout, err)
-	}
-	return decoded, err
+	return e.options.MaxBodySize
 }
 
 func requestMessage(r *http.Request) *Message {

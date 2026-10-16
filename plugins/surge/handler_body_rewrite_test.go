@@ -281,12 +281,20 @@ func TestProxyBodyRewriteDeadlinePreservesBodyAndReleasesSlot(t *testing.T) {
 	if !bytes.Equal(body, raw) || len(e.slots) != 0 {
 		t.Fatalf("deadline lost original body or execution slot: body=%q slots=%d", body, len(e.slots))
 	}
-	// Contention must expire without consuming the response body.
+	// Queueing obeys request cancellation and preserves the buffered response.
 	e.slots <- struct{}{}
 	tracked := &bodyRewriteTrackedReader{Reader: bytes.NewReader(raw)}
 	response.Body = tracked
-	if err := e.rewriteResponseBody(response); err != nil || tracked.readBytes != 0 || tracked.closed {
-		t.Fatalf("waiting for a slot consumed body: %v", err)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	response.Request = response.Request.WithContext(ctx)
+	if err := e.rewriteResponseBody(response); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("queue did not honor request cancellation: %v", err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	if !bytes.Equal(body, raw) {
+		t.Fatalf("queue cancellation lost body: %q", body)
 	}
 	<-e.slots
 }

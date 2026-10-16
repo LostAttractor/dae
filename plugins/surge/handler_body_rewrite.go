@@ -76,34 +76,11 @@ func (e *Engine) rewriteBody(kind string, request *http.Request, source *io.Read
 		e.traceRequest(request, "body_rewrite_skip", "reason", "body_limit")
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), e.options.ScriptTimeout)
-	defer cancel()
-	release, err := e.acquire(ctx, "body_rewrite")
-	if err != nil {
-		e.metrics.skip("body_rewrite", traceErrorReason(err))
-		e.traceRequest(request, "body_rewrite_skip", "reason", traceErrorReason(err))
-		e.logRequest(request, "Surge Body Rewrite skipped while waiting for execution slot", err)
-		return nil, nil
-	}
-	defer release()
-	if setReadDeadline != nil {
-		deadline, _ := ctx.Deadline()
-		_ = setReadDeadline(deadline)
-		defer setReadDeadline(time.Time{})
-	}
-
-	original := *source
-	stop := context.AfterFunc(ctx, func() {
-		if original != nil {
-			_ = original.Close()
-		}
-	})
-	raw, err := plugin.SnapshotBody(source, limit, e.options.BodyMemory)
-	stop()
+	raw, err := e.snapshotHTTPBody(request.Context(), source, limit, setReadDeadline)
 	if err != nil {
 		replay := errors.Is(err, membuffer.ErrBudgetExhausted) || !isRequest && errors.Is(err, membuffer.ErrTooLarge)
-		if ctx.Err() != nil {
-			err, replay = ctx.Err(), false
+		if request.Context().Err() != nil {
+			err, replay = request.Context().Err(), false
 		}
 		if !replay {
 			e.metrics.skip("body_rewrite", "read_failed")
@@ -115,6 +92,14 @@ func (e *Engine) rewriteBody(kind string, request *http.Request, source *io.Read
 		e.logRequest(request, "Surge Body Rewrite skipped; forwarding original body", err)
 		return nil, nil
 	}
+	defer raw.Close()
+	release, err := e.acquire(request.Context(), "body_rewrite")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(request.Context(), e.options.ScriptTimeout)
+	defer cancel()
 	body, err := decodeBodyView(ctx, raw, header.Get("Content-Encoding"), limit, e.options.BodyMemory)
 	if err != nil {
 		if err := request.Context().Err(); err != nil {
