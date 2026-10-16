@@ -22,7 +22,7 @@ func UnmarshalGeoIp(filepath, code string) (*GeoIP, error) {
 	case nil:
 		var geoip GeoIP
 		if err := proto.Unmarshal(geoipBytes, &geoip); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode GeoIP entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
 		}
 		return &geoip, nil
 
@@ -38,7 +38,7 @@ func UnmarshalGeoIp(filepath, code string) (*GeoIP, error) {
 		}
 		var geoipList GeoIPList
 		if err := proto.Unmarshal(geoipBytes, &geoipList); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode GeoIP entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
 		}
 		for _, geoip := range geoipList.GetEntry() {
 			if strings.EqualFold(code, geoip.GetCountryCode()) {
@@ -59,7 +59,7 @@ func UnmarshalGeoSite(filepath, code string) (*GeoSite, error) {
 	case nil:
 		var geosite GeoSite
 		if err := proto.Unmarshal(geositeBytes, &geosite); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode GeoSite entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
 		}
 		return &geosite, nil
 
@@ -75,7 +75,7 @@ func UnmarshalGeoSite(filepath, code string) (*GeoSite, error) {
 		}
 		var geositeList GeoSiteList
 		if err := proto.Unmarshal(geositeBytes, &geositeList); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode GeoSite entry %q from %q: invalid protobuf data (check file format and download integrity): %w", code, filepath, err)
 		}
 		for _, geosite := range geositeList.GetEntry() {
 			if strings.EqualFold(code, geosite.GetCountryCode()) {
