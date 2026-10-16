@@ -204,7 +204,7 @@ func (m *RoutingMatcher) evaluateSpans(spans []routingSpan, p routingInput) (rou
 			}
 			forced := must == predicateMatch || match.Flags&matchFlagMust != 0
 			if simulateKernel && !forced && p.dst.Port() == 53 && match.Flags&matchFlagBypass == 0 {
-				captureFlags |= 8
+				captureFlags |= captureDNS
 			}
 			return routingEvaluation{outbound: consts.OutboundIndex(match.Outbound), mark: match.Mark, must: forced, captureFlags: captureFlags}, nil
 		default:

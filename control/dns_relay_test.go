@@ -369,7 +369,7 @@ func TestDNSRelayTCPPipeline(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		defer accepted.Close()
-		done <- plane.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:1000"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: 8})
+		done <- plane.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:1000"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDNS})
 	}()
 	for i := range count {
 		if err := writeDNSFrame(client, dnsTestWire(t, dnsTestRequest(t, fmt.Sprintf("q%d.example.", i), uint16(i)))); err != nil {
@@ -495,7 +495,7 @@ func TestDNSDialPreservesIngressAndReroutesAssignedServer(t *testing.T) {
 			t.Fatalf("server route: %+v %v", option, err)
 		}
 	}
-	identity = routingResult{CaptureFlags: 8, Mark: 37, Outbound: uint8(consts.OutboundDirect)}
+	identity = routingResult{CaptureFlags: captureDNS, Mark: 37, Outbound: uint8(consts.OutboundDirect)}
 	request.OriginalDestination, request.Destination = netip.MustParseAddrPort("203.0.113.53:53"), netip.MustParseAddrPort("203.0.113.53:53")
 	option, err := c.dnsDialOption(context.Background(), "udp", request.Destination.String(), "", request, identity)
 	if err != nil || option.Mark != 37 || option.Outbound.Name != "direct" {

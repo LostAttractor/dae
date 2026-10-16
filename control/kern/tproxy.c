@@ -26,6 +26,7 @@
 extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 
 #include "bridge.h"
+#include "routing_abi.h"
 
 // #define __DEBUG_ROUTING
 // #define __PRINT_ROUTING_RESULT
@@ -52,7 +53,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 #define CLOCK_MONOTONIC 1
 
 /* Internal layout and metadata limits are not workload tuning parameters. */
-#define MAX_INTERFACE_NUM 256
 #define MAX_LPM_SIZE 2048000
 #define MAX_COOKIE_PID_PNAME_MAPPING_NUM 65536
 #define MAX_API_CLIENT_NUM 1024
@@ -90,18 +90,6 @@ extern void *bpf_cast_to_kern_ctx(void *ctx) __ksym;
 
 #define ipv6_optlen(p) (((p)+1) << 3)
 
-#define OUTBOUND_DIRECT 0
-#define OUTBOUND_BLOCK 1
-#define OUTBOUND_MUST_RULES 0xFC
-#define OUTBOUND_CONTROL_PLANE_ROUTING 0xFD
-
-#define ROUTE_RESULT_SKIPPED_NOALIVE 0x20000000000ULL
-#define ROUTE_RESULT_CAPTURE_SHIFT 42
-#define CAPTURE_HTTP 1
-#define CAPTURE_DESTINATION 2
-#define CAPTURE_HTTP_REQUEST 4
-#define CAPTURE_DNS 8
-
 #define TPROXY_MARK 0x8000000
 
 #define TIMEOUT_UDP_CONN_STATE 3e11 /* 300s */
@@ -119,14 +107,6 @@ struct outbound_connectivity_query {
 	__u8 outbound;
 	__u8 l4proto;
 	__u8 ipversion;
-};
-
-enum outbound_connectivity_state {
-	/* WARNING: explicit values must stay in sync with connectivity.go. */
-	OUTBOUND_CONNECTIVITY_ALIVE = 0,
-	OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT = 1,
-	OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK = 2,
-	OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF = 3,
 };
 
 struct {
@@ -390,7 +370,7 @@ struct {
 	__uint(max_entries, 1);
 } udp_routing_scratch_map SEC(".maps");
 
-#include "routing_abi.h"
+#include "routing_maps.h"
 
 struct ip_port_proto {
 	__u32 ip[4];
@@ -1191,7 +1171,7 @@ static __always_inline int do_tproxy_first_fragment(
 	} else {
 		params->l4proto_type = L4ProtoType_UDP;
 		if (is_utp(skb, l4proto, payload_offset, packet_end))
-			params->l4proto_type |= (1 << 2);
+			params->l4proto_type |= L4ProtoType_uTP;
 	}
 	if (skb->protocol == bpf_htons(ETH_P_IP))
 		params->ipversion_type = IpVersionType_4;
@@ -1214,7 +1194,7 @@ static __always_inline int do_tproxy_first_fragment(
 	    (route_result >> ROUTE_RESULT_CAPTURE_SHIFT))
 		return TCX_DROP;
 	__u8 outbound = route_result;
-	__u32 mark = route_result >> 8;
+	__u32 mark = route_result >> ROUTE_RESULT_MARK_SHIFT;
 
 	if (outbound == OUTBOUND_DIRECT) {
 		if (mark || skb->mark)
@@ -1417,7 +1397,7 @@ static __always_inline int do_tproxy_unfragmented(
 	params->dport = l4h->udph.dest;
 	params->l4proto_type = l4proto == IPPROTO_TCP ? L4ProtoType_TCP : L4ProtoType_UDP;
 	if (l4proto == IPPROTO_UDP && is_utp(skb, l4proto, offset, packet_end))
-		params->l4proto_type |= (1 << 2);
+		params->l4proto_type |= L4ProtoType_uTP;
 	params->ipversion_type =
 		protocol == bpf_htons(ETH_P_IP) ? IpVersionType_4 : IpVersionType_6;
 	params->has_pname = !!pid_pname;
@@ -1439,8 +1419,8 @@ static __always_inline int do_tproxy_unfragmented(
 	routing_result->route_epoch = route_epoch;
 	routing_result->profile_id = params->profile_id;
 	routing_result->outbound = route_ret;
-	routing_result->mark = route_ret >> 8;
-	routing_result->must = (route_ret >> 40) & 1;
+	routing_result->mark = route_ret >> ROUTE_RESULT_MARK_SHIFT;
+	routing_result->must = (route_ret >> ROUTE_RESULT_MUST_SHIFT) & 1;
 	routing_result->capture_flags = route_ret >> ROUTE_RESULT_CAPTURE_SHIFT;
 	routing_result->protocol = params->l4proto_type;
 	routing_result->dscp = tuples->dscp;

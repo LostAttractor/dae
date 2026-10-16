@@ -10,6 +10,7 @@ import (
 
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/routing"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"github.com/daeuniverse/dae/pkg/config_parser"
 )
 
@@ -30,18 +31,13 @@ func ParsePortRange(b []byte) (portStart, portEnd uint16) {
 	return portStart, portEnd
 }
 
-// Keep these bits in sync with MATCH_FLAG_* in kern/routing_abi.h.
 const (
-	matchFlagNot uint8 = 1 << iota
-	matchFlagMust
-	matchFlagSkipNoalive
+	matchFlagNot         uint8 = routingabi.MATCH_FLAG_NOT
+	matchFlagMust        uint8 = routingabi.MATCH_FLAG_MUST
+	matchFlagSkipNoalive uint8 = routingabi.MATCH_FLAG_SKIP_NOALIVE
+	matchCaptureShift          = routingabi.MATCH_CAPTURE_SHIFT
+	matchFlagBypass      uint8 = routingabi.MATCH_FLAG_BYPASS
 )
-
-// The three processing bits follow Not/Must/Skip; Action remains an independent byte.
-const matchCaptureShift = 3
-
-// Bypass rules terminate before automatic DNS capture, without changing must.
-const matchFlagBypass uint8 = 1 << 6
 
 func routingMatchFlags(not, must, skipNoalive bool) (flags uint8) {
 	if not {

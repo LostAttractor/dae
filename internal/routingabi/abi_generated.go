@@ -1,0 +1,61 @@
+// Code generated from routing_abi.h via bpf2go; DO NOT EDIT.
+
+package routingabi
+
+const (
+	CAPTURE_HTTP                            = 1
+	CAPTURE_DESTINATION                     = 2
+	CAPTURE_HTTP_REQUEST                    = 4
+	CAPTURE_DNS                             = 8
+	IpVersionType4                          = 1
+	IpVersionType6                          = 2
+	IpVersionTypeX                          = 3
+	L4ProtoTypeTCP                          = 1
+	L4ProtoTypeUDP                          = 2
+	L4ProtoTypeUTP                          = 4
+	L4ProtoTypeX                            = 7
+	MatchActionRoute                        = 0
+	MatchActionOr                           = 1
+	MatchActionAnd                          = 2
+	MatchActionMust                         = 3
+	MatchActionBump                         = 4
+	MatchActionCapture                      = 5
+	MatchActionFlowEnd                      = 6
+	MatchActionConditionalJump              = 7
+	MatchActionMatch                        = 8
+	MatchActionMiss                         = 9
+	MATCH_FLAG_NOT                          = 1
+	MATCH_FLAG_MUST                         = 2
+	MATCH_FLAG_SKIP_NOALIVE                 = 4
+	MATCH_CAPTURE_SHIFT                     = 3
+	MATCH_FLAG_BYPASS                       = 64
+	MatchTypeDomainSet                      = 0
+	MatchTypeIpSet                          = 1
+	MatchTypeSourceIpSet                    = 2
+	MatchTypePort                           = 3
+	MatchTypeSourcePort                     = 4
+	MatchTypeL4Proto                        = 5
+	MatchTypeIpVersion                      = 6
+	MatchTypeMac                            = 7
+	MatchTypeProcessName                    = 8
+	MatchTypeIfIndex                        = 9
+	MatchTypeDscp                           = 10
+	MatchTypeFallback                       = 11
+	MatchTypeHTTPClient                     = 12
+	OUTBOUND_CONNECTIVITY_ALIVE             = 0
+	OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT    = 1
+	OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK     = 2
+	OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF = 3
+	OUTBOUND_DIRECT                         = 0
+	OUTBOUND_BLOCK                          = 1
+	OUTBOUND_USER_DEFINED_MIN               = 2
+	OUTBOUND_MUST_RULES                     = 252
+	OUTBOUND_CONTROL_PLANE_ROUTING          = 253
+	OUTBOUND_LOGICAL_OR                     = 254
+	OUTBOUND_LOGICAL_AND                    = 255
+	ROUTE_RESULT_MARK_SHIFT                 = 8
+	ROUTE_RESULT_MUST_SHIFT                 = 40
+	ROUTE_RESULT_SKIPPED_NOALIVE            = 2199023255552
+	ROUTE_RESULT_CAPTURE_SHIFT              = 42
+	MAX_INTERFACE_NUM                       = 256
+)

@@ -4,7 +4,7 @@
 #ifndef DAE_ROUTING_H
 #define DAE_ROUTING_H
 
-#include "routing_abi.h"
+#include "routing_maps.h"
 
 /* Policy selection and evaluation. Packet parsing, connection ownership,
  * caching and forwarding belong to tproxy.c. The caller provides parsed
@@ -217,7 +217,7 @@ static __always_inline bool route_outbound_alive(const struct route_params *para
 /* Capture flags and connectivity evidence are appended when route() finishes. */
 static __always_inline __s64 route_result_encode(__u8 outbound, __u32 mark, bool must)
 {
-	return (__s64)outbound | ((__s64)mark << 8) | ((__s64)must << 40);
+	return (__s64)outbound | ((__s64)mark << ROUTE_RESULT_MARK_SHIFT) | ((__s64)must << ROUTE_RESULT_MUST_SHIFT);
 }
 
 /* Apply a matched terminal. Keep this global so actions are verified once,

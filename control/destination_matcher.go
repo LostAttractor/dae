@@ -4,6 +4,7 @@ package control
 
 import (
 	"fmt"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	"hash/maphash"
 	"math/rand/v2"
 	"net"
@@ -15,9 +16,10 @@ import (
 )
 
 const (
-	captureHTTP        uint8 = 1
-	captureDestination uint8 = 2
-	captureHTTPRequest uint8 = 4
+	captureHTTP        uint8 = routingabi.CAPTURE_HTTP
+	captureDestination uint8 = routingabi.CAPTURE_DESTINATION
+	captureHTTPRequest uint8 = routingabi.CAPTURE_HTTP_REQUEST
+	captureDNS         uint8 = routingabi.CAPTURE_DNS
 )
 
 // UDP lifetimes retain their predicate program across reloads and client-set

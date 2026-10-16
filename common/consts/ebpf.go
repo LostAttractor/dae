@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/dae/internal/routingabi"
 	internal "github.com/daeuniverse/dae/pkg/ebpf_internal"
 )
 
@@ -23,60 +24,52 @@ const (
 type MatchType uint8
 
 const (
-	MatchType_DomainSet MatchType = iota
-	MatchType_IpSet
-	MatchType_SourceIpSet
-	MatchType_Port
-	MatchType_SourcePort
-	MatchType_L4Proto
-	MatchType_IpVersion
-	MatchType_Mac
-	MatchType_ProcessName
-	MatchType_IfIndex
-	MatchType_Dscp
-	MatchType_Fallback
-	MatchType_HTTPClient
-	MatchType_MustRules
-
-	MatchType_Upstream
-	MatchType_QType
+	MatchType_DomainSet   MatchType = routingabi.MatchTypeDomainSet
+	MatchType_IpSet       MatchType = routingabi.MatchTypeIpSet
+	MatchType_SourceIpSet MatchType = routingabi.MatchTypeSourceIpSet
+	MatchType_Port        MatchType = routingabi.MatchTypePort
+	MatchType_SourcePort  MatchType = routingabi.MatchTypeSourcePort
+	MatchType_L4Proto     MatchType = routingabi.MatchTypeL4Proto
+	MatchType_IpVersion   MatchType = routingabi.MatchTypeIpVersion
+	MatchType_Mac         MatchType = routingabi.MatchTypeMac
+	MatchType_ProcessName MatchType = routingabi.MatchTypeProcessName
+	MatchType_IfIndex     MatchType = routingabi.MatchTypeIfIndex
+	MatchType_Dscp        MatchType = routingabi.MatchTypeDscp
+	MatchType_Fallback    MatchType = routingabi.MatchTypeFallback
+	MatchType_HTTPClient  MatchType = routingabi.MatchTypeHTTPClient
+	MatchType_MustRules   MatchType = routingabi.MatchTypeHTTPClient + 1
+	MatchType_Upstream    MatchType = routingabi.MatchTypeHTTPClient + 2
+	MatchType_QType       MatchType = routingabi.MatchTypeHTTPClient + 3
 )
 
 type OutboundIndex uint8
 
 // MatchAction is the instruction action, independent of routing outbound IDs.
-// Keep in sync with enum MatchAction in control/kern/routing_abi.h.
 type MatchAction uint8
 
 const (
-	MatchActionRoute MatchAction = iota
-	MatchActionOr
-	MatchActionAnd
-	MatchActionMust
-	MatchActionBump
-	MatchActionCapture
-	MatchActionFlowEnd
-	// Jump past the block on a definite miss; otherwise enter it.
-	// An ambiguous entry makes matching body rules ambiguous until block end.
-	MatchActionConditionalJump
-	// Boolean terminals used only by DestinationProgram's exact predicates.
-	MatchActionMatch
-	MatchActionMiss
+	MatchActionRoute           MatchAction = routingabi.MatchActionRoute
+	MatchActionOr              MatchAction = routingabi.MatchActionOr
+	MatchActionAnd             MatchAction = routingabi.MatchActionAnd
+	MatchActionMust            MatchAction = routingabi.MatchActionMust
+	MatchActionBump            MatchAction = routingabi.MatchActionBump
+	MatchActionCapture         MatchAction = routingabi.MatchActionCapture
+	MatchActionFlowEnd         MatchAction = routingabi.MatchActionFlowEnd
+	MatchActionConditionalJump MatchAction = routingabi.MatchActionConditionalJump
+	MatchActionMatch           MatchAction = routingabi.MatchActionMatch
+	MatchActionMiss            MatchAction = routingabi.MatchActionMiss
 )
 
 const (
-	OutboundDirect OutboundIndex = iota
-	OutboundBlock
-
-	OutboundUserDefinedMin
-
-	OutboundMustRules           OutboundIndex = 0xFC
-	OutboundControlPlaneRouting OutboundIndex = 0xFD
-	OutboundLogicalOr           OutboundIndex = 0xFE
-	OutboundLogicalAnd          OutboundIndex = 0xFF
-	OutboundLogicalMask         OutboundIndex = 0xFE
-
-	OutboundUserDefinedMax = OutboundMustRules - 1
+	OutboundDirect              OutboundIndex = routingabi.OUTBOUND_DIRECT
+	OutboundBlock               OutboundIndex = routingabi.OUTBOUND_BLOCK
+	OutboundUserDefinedMin      OutboundIndex = routingabi.OUTBOUND_USER_DEFINED_MIN
+	OutboundMustRules           OutboundIndex = routingabi.OUTBOUND_MUST_RULES
+	OutboundControlPlaneRouting OutboundIndex = routingabi.OUTBOUND_CONTROL_PLANE_ROUTING
+	OutboundLogicalOr           OutboundIndex = routingabi.OUTBOUND_LOGICAL_OR
+	OutboundLogicalAnd          OutboundIndex = routingabi.OUTBOUND_LOGICAL_AND
+	OutboundLogicalMask         OutboundIndex = routingabi.OUTBOUND_LOGICAL_OR
+	OutboundUserDefinedMax                    = OutboundMustRules - 1
 )
 
 func (i OutboundIndex) String() string {
@@ -126,18 +119,18 @@ func init() {
 type L4ProtoType uint8
 
 const (
-	L4ProtoType_TCP L4ProtoType = 0b001
-	L4ProtoType_UDP L4ProtoType = 0b010
-	L4ProtoType_uTP L4ProtoType = 0b100
-	L4ProtoType_X   L4ProtoType = 0b111
+	L4ProtoType_TCP L4ProtoType = routingabi.L4ProtoTypeTCP
+	L4ProtoType_UDP L4ProtoType = routingabi.L4ProtoTypeUDP
+	L4ProtoType_uTP L4ProtoType = routingabi.L4ProtoTypeUTP
+	L4ProtoType_X   L4ProtoType = routingabi.L4ProtoTypeX
 )
 
 type IpVersionType uint8
 
 const (
-	IpVersion_4 IpVersionType = 0b01
-	IpVersion_6 IpVersionType = 0b10
-	IpVersion_X IpVersionType = 0b11
+	IpVersion_4 IpVersionType = routingabi.IpVersionType4
+	IpVersion_6 IpVersionType = routingabi.IpVersionType6
+	IpVersion_X IpVersionType = routingabi.IpVersionTypeX
 )
 
 func IpVersionFromAddr(addr netip.Addr) (ipversion IpVersionType) {

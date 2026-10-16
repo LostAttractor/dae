@@ -82,7 +82,7 @@ func captureNames(flags uint8) []string {
 	for _, bit := range []struct {
 		mask uint8
 		name string
-	}{{captureHTTP, "http"}, {captureDestination, "destination"}, {captureHTTPRequest, "http_request"}, {8, "dns"}} {
+	}{{captureHTTP, "http"}, {captureDestination, "destination"}, {captureHTTPRequest, "http_request"}, {captureDNS, "dns"}} {
 		if flags&bit.mask != 0 {
 			names = append(names, bit.name)
 		}

@@ -16,18 +16,17 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/network"
 	"github.com/daeuniverse/dae/component/outbound"
+	"github.com/daeuniverse/dae/internal/routingabi"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
 	// Values stored in outbound_connectivity_map. They encode both the
 	// group's actual connectivity and the action for an unannotated rule.
-	// Keep the explicit values in sync with enum outbound_connectivity_state
-	// in control/kern/tproxy.c: this map is a Go/eBPF ABI boundary.
-	outboundConnectivityAlive           uint32 = 0
-	outboundConnectivityNoAliveDirect   uint32 = 1
-	outboundConnectivityNoAliveBlock    uint32 = 2
-	outboundConnectivityNoAliveTrySniff uint32 = 3
+	outboundConnectivityAlive           uint32 = routingabi.OUTBOUND_CONNECTIVITY_ALIVE
+	outboundConnectivityNoAliveDirect   uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_DIRECT
+	outboundConnectivityNoAliveBlock    uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_BLOCK
+	outboundConnectivityNoAliveTrySniff uint32 = routingabi.OUTBOUND_CONNECTIVITY_NOALIVE_TRY_SNIFF
 )
 
 func encodeOutboundConnectivity(alive bool, noConnectivityTrySniff bool, noConnectivityOutbound consts.OutboundIndex) uint32 {

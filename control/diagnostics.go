@@ -464,7 +464,7 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 		result.Notes = append(result.Notes, "No available outbound; kernel no-connectivity policy blocks this flow.")
 		return result, nil
 	}
-	if request.Kind == "dns" || evaluation.captureFlags&8 != 0 {
+	if request.Kind == "dns" || evaluation.captureFlags&captureDNS != 0 {
 		if evaluation.must {
 			result.Notes = append(result.Notes, "must bypasses DNS middleware.")
 		} else {

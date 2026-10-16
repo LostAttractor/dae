@@ -166,8 +166,8 @@ endif
 ## Begin Ebpf
 clean-ebpf:
 	@rm -f $(BUILD_TAGS_FILE)
-	@rm -f control/bpf_*bpf*.go && \
-		rm -f control/bpf_*bpf*.o control/bpf_*bpf*.o.gz
+	@rm -f control/bpf*bpf*.go && \
+		rm -f control/bpf*bpf*.o control/bpf*bpf*.o.gz
 	@rm -f trace/bpf_*bpf*.go && \
 		rm -f trace/bpf_*bpf*.o trace/bpf_*bpf*.o.gz
 	@rm -f control/kern/tests/bpftest_*bpf*.go && \

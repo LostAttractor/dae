@@ -167,7 +167,7 @@ func TestDNSRouterEndpointHostnameEnforcesBlock(t *testing.T) {
 			t.Fatalf("fixture route: %v %v", outbound, err)
 		}
 		for _, scheme := range []policy.UpstreamScheme{policy.UpstreamScheme_UDP, policy.UpstreamScheme_TCP} {
-			q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "test.example.", 1)), "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: 8})
+			q, _, err := c.dnsRequest(dnsTestWire(t, dnsTestRequest(t, "test.example.", 1)), "udp", source, netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDNS})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -226,7 +226,7 @@ func TestDNSPreferenceTCPCancellationPreservesClientStream(t *testing.T) {
 	go func() {
 		defer close(done)
 		defer accepted.Close()
-		_ = c.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:2345"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: 8})
+		_ = c.serveDNSTCP(accepted, netip.MustParseAddrPort("192.0.2.1:2345"), netip.MustParseAddrPort("192.0.2.53:53"), routingResult{CaptureFlags: captureDNS})
 	}()
 	t.Cleanup(func() { client.Close(); c.dnsRelay.Close(); <-done })
 	_ = client.SetDeadline(time.Now().Add(3 * time.Second))

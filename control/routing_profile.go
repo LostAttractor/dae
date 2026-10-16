@@ -5,8 +5,9 @@
 
 package control
 
-// Keep in sync with the internal MAX_INTERFACE_NUM in control/kern/tproxy.c.
-const maxRoutingInterfaces = 256
+import "github.com/daeuniverse/dae/internal/routingabi"
+
+const maxRoutingInterfaces = routingabi.MAX_INTERFACE_NUM
 
 type routingSpan struct {
 	Start uint32
