@@ -22,7 +22,9 @@ The maintained differences are:
   follows the same reader ownership rule as `Read`.
 - `nethttp.go` adapts handlers, response writers, public server configuration,
   and graceful shutdown to `net/http`. Its connection registration prevents
-  shutdown from missing a connection that is still being initialized.
+  shutdown from missing a connection that is still being initialized. Its
+  response writer exposes `RejectRequest` to send `REFUSED_STREAM` before
+  response headers when an upstream confirms that a request was not processed.
 
 The protocol parser retains its upstream validation and limits. The proxy
 chooses HTTP/1 framing in `component/mitm/request_trailer.go`; that policy does

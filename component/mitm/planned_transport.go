@@ -125,7 +125,10 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, err
 			body = &routeAttemptBody{ReadCloser: request.Body}
 			attempt.Body = body
 		}
-		response, err := pool.transport.RoundTrip(attempt)
+		response, err := pool.transport.RoundTrip(preserveRequestRejection(attempt, p.packet))
+		if p.packet {
+			err = preserveHTTP3Rejection(request, err)
+		}
 		_, dialFailed := errors.AsType[*upstreamDialError](err)
 		retry := err != nil && response == nil && dialFailed && plan.Next != nil &&
 			request.Context().Err() == nil && (body == nil || !body.read.Load())

@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -25,7 +27,12 @@ import (
 // Use a wire peer to reset before response headers. HTTPStreamer would flush
 // response headers before handing the stream to the test, making it too late
 // for the transport to retry H3_REQUEST_REJECTED.
-func retryTestHTTP3Peer(t *testing.T, cfg *tls.Config, code http3.ErrCode) (net.Addr, *atomic.Int32) {
+func retryTestHTTP3Peer(t *testing.T, cfg *tls.Config, code http3.ErrCode, payload string) (net.Addr, *atomic.Int32) {
+	t.Helper()
+	return rejectingHTTP3Peer(t, cfg, code, payload, 1)
+}
+
+func rejectingHTTP3Peer(t *testing.T, cfg *tls.Config, code http3.ErrCode, payload string, rejections int32) (net.Addr, *atomic.Int32) {
 	t.Helper()
 	cfg.NextProtos = []string{http3.NextProtoH3}
 	listener, err := quic.Listen(http3TestPacketConn(t), cfg, nil)
@@ -60,7 +67,7 @@ func retryTestHTTP3Peer(t *testing.T, cfg *tls.Config, code http3.ErrCode) (net.
 						return
 					}
 					_ = stream.SetDeadline(time.Now().Add(3 * time.Second))
-					wire, err := io.ReadAll(io.LimitReader(stream, 4096))
+					wire, err := io.ReadAll(io.LimitReader(stream, int64(len(payload)+4096)))
 					if err != nil {
 						return
 					}
@@ -83,10 +90,10 @@ func retryTestHTTP3Peer(t *testing.T, cfg *tls.Config, code http3.ErrCode) (net.
 						}
 						_, _ = io.CopyN(sink, reader, int64(length))
 					}
-					if upload.String() != "grpc-request" {
+					if upload.String() != payload {
 						t.Errorf("upstream received %q", upload.String())
 					}
-					if attempts.Add(1) == 1 {
+					if attempts.Add(1) <= rejections {
 						stream.CancelWrite(quic.StreamErrorCode(code))
 						continue
 					}
@@ -118,7 +125,7 @@ func TestHTTP3RequestRetry(t *testing.T) {
 			name := code.String() + "/" + mode
 			t.Run(name, func(t *testing.T) {
 				authority, roots := http3TestAuthority(t)
-				peer, attempts := retryTestHTTP3Peer(t, authority.TLSConfig("example.com"), code)
+				peer, attempts := retryTestHTTP3Peer(t, authority.TLSConfig("example.com"), code, "grpc-request")
 				p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("example.com")}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler {
 					return func(e *plugin.Exchange) (*http.Response, error) {
 						if mode != "passthrough" {
@@ -151,5 +158,32 @@ func TestHTTP3RequestRetry(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// After the upstream transport exhausts its retry, the downstream must still
+// receive a safe rejection, including when its own retry is also exhausted.
+func TestHTTP3RepeatedRequestRejection(t *testing.T) {
+	for _, rejections := range []int32{2, 4} {
+		t.Run(fmt.Sprint(rejections), func(t *testing.T) {
+			authority, roots := http3TestAuthority(t)
+			peer, attempts := rejectingHTTP3Peer(t, authority.TLSConfig("example.com"), http3.ErrCodeRequestRejected, "payload", rejections)
+			host := testHost(t, Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}})
+			client, _, _ := http3TestClient(t, host, roots, "example.com", peer)
+			response, err := client.Post("https://example.com/rpc", "application/grpc", strings.NewReader("payload"))
+			if response != nil {
+				response.Body.Close()
+			}
+			if rejections == 2 {
+				if err != nil || response == nil || response.StatusCode != 204 || attempts.Load() != 3 {
+					t.Fatalf("response=%v error=%v attempts=%d", response, err, attempts.Load())
+				}
+			} else {
+				rejection, ok := errors.AsType[*http3.Error](err)
+				if response != nil || !ok || !rejection.Remote || rejection.ErrorCode != http3.ErrCodeRequestRejected || attempts.Load() != 4 {
+					t.Fatalf("response=%v error=%v attempts=%d", response, err, attempts.Load())
+				}
+			}
+		})
 	}
 }

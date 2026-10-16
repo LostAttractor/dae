@@ -156,6 +156,21 @@ type netHTTPResponseWriter struct{ *ResponseWriter }
 
 func (w netHTTPResponseWriter) Header() http.Header { return http.Header(w.ResponseWriter.Header()) }
 func (w netHTTPResponseWriter) Flush()              { _ = w.ResponseWriter.FlushError() }
+
+// RejectRequest reports that the application has not processed this stream.
+// Callers must then abort the handler with http.ErrAbortHandler. Queueing this
+// reset first preserves REFUSED_STREAM when the server cleans up the handler.
+func (w netHTTPResponseWriter) RejectRequest() error {
+	rws := w.rws
+	if rws == nil || rws.wroteHeader {
+		return http.ErrNotSupported
+	}
+	return rws.conn.writeFrameFromHandler(FrameWriteRequest{
+		write:  StreamError{StreamID: rws.stream.id, Code: ErrCodeRefusedStream},
+		stream: rws.stream,
+	})
+}
+
 func (w netHTTPResponseWriter) Push(target string, opts *http.PushOptions) error {
 	var method string
 	var header Header

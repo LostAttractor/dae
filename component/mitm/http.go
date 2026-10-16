@@ -155,6 +155,10 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 				if errors.Is(err, plugin.ErrAbort) {
 					panic(http.ErrAbortHandler)
 				}
+				if _, rejected := errors.AsType[*requestNotProcessedError](err); rejected {
+					resetUnprocessedRequest(w)
+					panic(http.ErrAbortHandler)
+				}
 				if r.Context().Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 					connection, request := plugin.IDs(r.Context())
 					h.options.Logger.WithFields(logrus.Fields{

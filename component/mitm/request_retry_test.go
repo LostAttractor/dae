@@ -59,7 +59,10 @@ func retryTestPeer(t *testing.T, cfg *tls.Config, fault, payload string) (string
 					return
 				}
 				framer := http2.NewFramer(conn, conn)
-				if err := framer.WriteSettings(); err != nil {
+				if err := framer.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 1 << 20}); err != nil {
+					return
+				}
+				if err := framer.WriteWindowUpdate(0, 1<<20); err != nil {
 					return
 				}
 				var uploaded bytes.Buffer

@@ -97,6 +97,7 @@ ServeConn / ServePacketConn
 | `http_upstream.go` | 业务 authority 与网络目标分离、原计划固定 |
 | `planned_transport.go` | 计划边界检查、池复用、响应租用与清理 |
 | `request_trailer.go` | trailer 流式同步、转发时的空正文 framing |
+| `http_failure.go` | 上游未处理请求的拒绝信号 |
 
 上表路径均相对于 `component/mitm/`。控制平面的路由与租约归 `control/http_route_plan.go`、`control/mitm_lifecycle.go` 所有。
 
@@ -160,6 +161,13 @@ trailer 只在首次 EOF（读取或非阻塞确认）同步；插件修改后�
 Surge 的网络正文读取不消耗脚本执行预算，也不占用实例执行名额；
 正文读取完成并重新取得名额后，解码、改写和脚本执行才开始计时。
 正文大小、共享内存、并发执行和累计正则预算继续限制资源使用。
+
+转发只为流式请求保留最多 64 KiB 的重试副本，已有完整插件快照可以共享。
+HTTP/2 或 HTTP/3 transport 确认请求尚未处理且需要重试时，如果副本因超限、内存不足或上传未完成而不可用，
+将该决定传给下游：HTTP/2 使用 `REFUSED_STREAM`，HTTP/3 使用 `H3_REQUEST_REJECTED`。
+HTTP/3 transport 用尽内部重试后，远端返回的 `H3_REQUEST_REJECTED` 流错误也保留该信号。
+客户端能否重发取决于它是否保留正文及自己的重试策略；HTTP/1 没有等价的拒绝码，只能中断连接。
+无法确认上游是否已经处理的错误不会被转换为安全重试信号，以免重复提交。
 
 ## 运行日志
 

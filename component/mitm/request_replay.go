@@ -14,6 +14,7 @@ import (
 const requestReplayLimit = 64 << 10
 
 var errIncompleteUpload = errors.New("request body incomplete for retry")
+var errReplayLimit = errors.New("request body exceeds retry buffer")
 
 // Complete plugin buffers already have their own budget and size limit. Share
 // them regardless of size; apply the recording limit only to streaming input.
@@ -28,6 +29,10 @@ func prepareRequestReplay(r *http.Request, budget *membuffer.Budget) func() {
 		return view.Close
 	}
 	if r.ContentLength > requestReplayLimit {
+		// Keep a replay callback even when recording is deliberately disabled.
+		// A transport can then distinguish a safely rejected request from an
+		// ambiguous I/O failure without discarding its retry decision in text.
+		r.GetBody = func() (io.ReadCloser, error) { return nil, errReplayLimit }
 		return func() {}
 	}
 	replay := &requestReplay{buffer: membuffer.Buffer{Budget: budget, Limit: requestReplayLimit}, source: r.Body, readers: 1}

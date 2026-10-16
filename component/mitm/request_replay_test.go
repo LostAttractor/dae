@@ -93,7 +93,7 @@ func TestRequestReplayFallbackPreservesForwarding(t *testing.T) {
 		payload string
 		err     error
 	}{
-		{"known large", requestReplayLimit + 1, 2 << 20, strings.Repeat("a", requestReplayLimit+1), nil},
+		{"known large", requestReplayLimit + 1, 2 << 20, strings.Repeat("a", requestReplayLimit+1), errReplayLimit},
 		{"unknown large", -1, 2 << 20, strings.Repeat("b", requestReplayLimit+1), membuffer.ErrTooLarge},
 		{"memory pressure", -1, 1, "payload", membuffer.ErrBudgetExhausted},
 		{"empty without allocation", -1, 1, "", nil},
@@ -109,17 +109,16 @@ func TestRequestReplayFallbackPreservesForwarding(t *testing.T) {
 				t.Fatalf("corrupted forwarding: %q %v", got, err)
 			}
 			if tc.length > requestReplayLimit {
-				if r.GetBody != nil || budget.Status().Peak != 0 {
+				if budget.Status().Peak != 0 {
 					t.Fatal("buffered a known large body")
 				}
-			} else {
-				body, err := r.GetBody()
-				if !errors.Is(err, tc.err) {
-					t.Fatalf("retry: %v, want %v", err, tc.err)
-				}
-				if body != nil {
-					body.Close()
-				}
+			}
+			body, err := r.GetBody()
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("retry: %v, want %v", err, tc.err)
+			}
+			if body != nil {
+				body.Close()
 			}
 			release()
 			if budget.Status().Used != 0 || budget.Status().Peak > tc.budget {

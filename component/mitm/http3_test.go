@@ -77,6 +77,8 @@ func http3TestUpstream(t *testing.T, cfg *tls.Config, handler http.Handler) net.
 func http3TestClient(t *testing.T, host *Host, roots *x509.CertPool, name string, upstream net.Addr) (*http.Client, <-chan error, *atomic.Int32) {
 	t.Helper()
 	intercepted, clientPackets := http3TestPacketConn(t), http3TestPacketConn(t)
+	clientQUIC := &quic.Transport{Conn: clientPackets}
+	t.Cleanup(func() { _ = clientQUIC.Close() })
 	flow := plugin.Flow{Host: name, Port: 443}
 	flow.Source = netip.MustParseAddrPort(clientPackets.LocalAddr().String())
 	flow.Destination = netip.MustParseAddrPort(intercepted.LocalAddr().String())
@@ -102,7 +104,7 @@ func http3TestClient(t *testing.T, host *Host, roots *x509.CertPool, name string
 	transport := &http3.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: roots},
 		Dial: func(ctx context.Context, _ string, cfg *tls.Config, quicConfig *quic.Config) (*quic.Conn, error) {
-			return quic.Dial(ctx, clientPackets, intercepted.LocalAddr(), cfg, quicConfig)
+			return clientQUIC.Dial(ctx, intercepted.LocalAddr(), cfg, quicConfig)
 		},
 	}
 	t.Cleanup(func() { _ = transport.Close() })
