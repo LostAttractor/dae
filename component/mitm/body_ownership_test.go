@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
@@ -48,7 +48,7 @@ func TestRequestOwnershipEndsAfterUpstreamOrLocalResponse(t *testing.T) {
 					return next(e)
 				}
 			}}
-			h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{Plugin: p})
+			h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{Plugin: p})
 			upstreamCalls := 0
 			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				upstreamCalls++

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package mitmca
+package ca
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func (a *Authority) TLSConfig(host string) *tls.Config {
 			// validity belong to the single certificate-issuance boundary.
 			name := normalizeHost(hello.ServerName)
 			if name != host && !(name == "" && net.ParseIP(host) != nil) {
-				return nil, fmt.Errorf("mitm: TLS SNI differs from intercepted destination")
+				return nil, fmt.Errorf("certificate: TLS SNI differs from intercepted destination")
 			}
 			ctx := hello.Context()
 			if ctx == nil {

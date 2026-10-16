@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -20,7 +20,7 @@ func BenchmarkHTTPScopes(b *testing.B) {
 				plan.Scopes = append(plan.Scopes, plugin.HTTPScope{Scope: testScope(fmt.Sprintf("module%d.example", i))})
 			}
 			instance := Instance{Plugin: &testPlugin{plan: plan}}
-			options := Options{Authority: &mitmca.Authority{}}
+			options := Options{Authority: &localca.Authority{}}
 			b.Run("build", func(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {

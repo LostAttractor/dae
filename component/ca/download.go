@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package mitmca
+package ca
 
 import (
 	"bytes"
@@ -44,18 +44,18 @@ func MobileConfig(cert *x509.Certificate) []byte {
 <plist version="1.0"><dict>
 <key>PayloadType</key><string>Configuration</string>
 <key>PayloadVersion</key><integer>1</integer>
-<key>PayloadIdentifier</key><string>org.dae.mitm.%s</string>
+<key>PayloadIdentifier</key><string>org.dae.ca.%s</string>
 <key>PayloadUUID</key><string>%s</string>
 <key>PayloadDisplayName</key><string>%s</string>
-<key>PayloadDescription</key><string>Install this root certificate to use dae HTTPS modules on this device. Enable full trust separately in Certificate Trust Settings.</string>
+<key>PayloadDescription</key><string>Install this root certificate to use the dae HTTPS API and enabled HTTPS modules on this device. Enable full trust separately in Certificate Trust Settings.</string>
 <key>PayloadRemovalDisallowed</key><false/>
 <key>PayloadContent</key><array><dict>
 <key>PayloadType</key><string>com.apple.security.root</string>
 <key>PayloadVersion</key><integer>1</integer>
-<key>PayloadIdentifier</key><string>org.dae.mitm.%s.certificate</string>
+<key>PayloadIdentifier</key><string>org.dae.ca.%s.certificate</string>
 <key>PayloadUUID</key><string>%s</string>
 <key>PayloadDisplayName</key><string>%s</string>
-<key>PayloadCertificateFileName</key><string>dae-mitm-ca.cer</string>
+<key>PayloadCertificateFileName</key><string>dae-ca.cer</string>
 <key>PayloadContent</key><data>%s</data>
 </dict></array>
 </dict></plist>
@@ -69,7 +69,7 @@ func profileUUID(cert *x509.Certificate, label string) string {
 	// never for signatures or certificate verification.
 	h := sha1.New()
 	_, _ = h.Write([]byte{0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8})
-	_, _ = h.Write([]byte("org.dae.mitm." + label))
+	_, _ = h.Write([]byte("org.dae.ca." + label))
 	_, _ = h.Write(cert.Raw)
 	b := h.Sum(nil)[:16]
 	b[6], b[8] = b[6]&0x0f|0x50, b[8]&0x3f|0x80
@@ -90,9 +90,9 @@ func (a *Authority) Handler() http.Handler {
 		body        []byte
 	}
 	resources := map[string]resource{
-		"/ca.cer":          {"application/pkix-cert", "dae-mitm-ca.cer", bytes.Clone(cert.Raw)},
-		"/ca.pem":          {"application/x-pem-file", "dae-mitm-ca.pem", CertificatePEM(cert)},
-		"/ca.mobileconfig": {"application/x-apple-aspen-config", "dae-mitm-ca.mobileconfig", MobileConfig(cert)},
+		"/ca.cer":          {"application/pkix-cert", "dae-ca.cer", bytes.Clone(cert.Raw)},
+		"/ca.pem":          {"application/x-pem-file", "dae-ca.pem", CertificatePEM(cert)},
+		"/ca.mobileconfig": {"application/x-apple-aspen-config", "dae-ca.mobileconfig", MobileConfig(cert)},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

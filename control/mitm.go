@@ -9,8 +9,8 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/consts"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
@@ -52,7 +52,7 @@ func (c *ControlPlane) mitmMode(domain string, src, dst netip.AddrPort, result *
 	return mode
 }
 
-func (c *ControlPlane) mitmAuthority() *mitmca.Authority {
+func (c *ControlPlane) mitmAuthority() *localca.Authority {
 	if host := c.MITMHost(); host != nil {
 		return host.Authority()
 	}

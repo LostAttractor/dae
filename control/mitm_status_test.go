@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
-	mitmca "github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/internal/apiserver"
 )
 
@@ -22,10 +22,10 @@ func TestAPIPluginsFollowPublishedPlane(t *testing.T) {
 	server := &apiserver.Server{}
 	dir := t.TempDir()
 	cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-	if err := mitmca.Generate(cert, key, "status API", time.Hour); err != nil {
+	if err := localca.Generate(cert, key, "status API", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := mitmca.Load(cert, key)
+	authority, err := localca.Load(cert, key)
 	if err != nil {
 		t.Fatal(err)
 	}

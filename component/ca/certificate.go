@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package mitmca
+package ca
 
 import (
 	"context"
@@ -49,7 +49,7 @@ func (a *Authority) serverCertificate(ctx context.Context, host string) (*tls.Ce
 		}
 		now := time.Now()
 		if now.Before(a.certificate.NotBefore) || !now.Before(a.certificate.NotAfter) {
-			return nil, fmt.Errorf("MITM CA is outside its validity period")
+			return nil, fmt.Errorf("CA is outside its validity period")
 		}
 		a.mu.Lock()
 		if entry := a.cache[host]; entry != nil {
@@ -91,7 +91,7 @@ func (a *Authority) serverCertificate(ctx context.Context, host string) (*tls.Ce
 
 		// Random-key generation, signing and chain verification hold no cache lock.
 		// Only admitted hosts allocate an issuance record; waiters remain callers.
-		cert, err := a.signCertificate(host, now)
+		cert, err := a.signCertificate(host, now, leafLifetime)
 		a.mu.Lock()
 		if err == nil {
 			a.cache[host] = a.lru.PushFront(cachedCertificate{key: host, cert: cert})
@@ -111,7 +111,7 @@ func (a *Authority) serverCertificate(ctx context.Context, host string) (*tls.Ce
 	}
 }
 
-func (a *Authority) signCertificate(host string, now time.Time) (*tls.Certificate, error) {
+func (a *Authority) signCertificate(host string, now time.Time, lifetime time.Duration) (*tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func (a *Authority) signCertificate(host string, now time.Time) (*tls.Certificat
 	if err != nil {
 		return nil, err
 	}
-	notBefore, notAfter := now.Add(-5*time.Minute), now.Add(leafLifetime)
+	notBefore, notAfter := now.Add(-5*time.Minute), now.Add(lifetime)
 	if notBefore.Before(a.certificate.NotBefore) {
 		notBefore = a.certificate.NotBefore
 	}

@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	log "github.com/sirupsen/logrus"
@@ -389,7 +389,7 @@ if (typeof $request !== "undefined") {
 					t.Fatalf("capture did not populate persistent store: %v", err)
 				}
 				runtimeFakeClockTest(t, func(t *testing.T) {
-					host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}, HTTPClient: client}, mitm.Instance{ID: "task", Type: "surge", Plugin: e})
+					host, err := mitm.New(mitm.Options{Authority: &localca.Authority{}, HTTPClient: client}, mitm.Instance{ID: "task", Type: "surge", Plugin: e})
 					if err != nil {
 						t.Fatal(err)
 					}

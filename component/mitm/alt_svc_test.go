@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -88,7 +88,7 @@ func TestHandlerAltSvc(t *testing.T) {
 					}
 				},
 			}
-			h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "test", Type: "test", Plugin: p})
+			h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{ID: "test", Type: "test", Plugin: p})
 			handler, closeHandler := h.Handler(scheme, host, port, nil)
 			defer closeHandler()
 			request := httptest.NewRequest(http.MethodGet, scheme+"://"+net.JoinHostPort(host, strconv.Itoa(int(port)))+"/", nil)

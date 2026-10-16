@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/pluginhost"
 	"github.com/daeuniverse/dae/pkg/membuffer"
@@ -113,7 +113,7 @@ type Options struct {
 	DisableHTTP       bool
 	BufferMemoryLimit int64
 	BodyMemory        *membuffer.Budget
-	Authority         *mitmca.Authority
+	Authority         *localca.Authority
 	UpstreamTLSConfig *tls.Config
 	Logger            *logrus.Entry
 	DrainTimeout      time.Duration
@@ -246,7 +246,7 @@ func New(options Options, instances ...Instance) (*Host, error) {
 	return h, nil
 }
 
-func (h *Host) Authority() *mitmca.Authority { return h.options.Authority }
+func (h *Host) Authority() *localca.Authority { return h.options.Authority }
 
 // Plan returns the read-only construction result.
 func (h *Host) Plan() plugin.Plan { return h.plan }

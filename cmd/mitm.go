@@ -12,7 +12,7 @@ import (
 
 	"github.com/daeuniverse/dae/common"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/spf13/cobra"
 )
@@ -34,10 +34,10 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 			if validDays < 1 || validDays > 36500 {
 				return fmt.Errorf("--valid-days must be between 1 and 36500")
 			}
-			if err := mitmca.Generate(certPath, keyPath, commonName, time.Duration(validDays)*24*time.Hour); err != nil {
+			if err := localca.Generate(certPath, keyPath, commonName, time.Duration(validDays)*24*time.Hour); err != nil {
 				return err
 			}
-			cert, err := mitmca.ReadCertificate(certPath)
+			cert, err := localca.ReadCertificate(certPath)
 			if err != nil {
 				return err
 			}
@@ -51,7 +51,7 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 	ca.AddCommand(&cobra.Command{
 		Use: "info", Short: "Inspect the public CA and its SHA-256 fingerprint.", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cert, err := mitmca.ReadCertificate(certPath)
+			cert, err := localca.ReadCertificate(certPath)
 			if err != nil {
 				return err
 			}
@@ -62,18 +62,18 @@ func newMITMCommand(definitions map[string]plugin.Definition, services plugin.Co
 	export := &cobra.Command{
 		Use: "export", Short: "Export the public CA as PEM, DER or an iOS profile.", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cert, err := mitmca.ReadCertificate(certPath)
+			cert, err := localca.ReadCertificate(certPath)
 			if err != nil {
 				return err
 			}
 			var data []byte
 			switch format {
 			case "pem":
-				data = mitmca.CertificatePEM(cert)
+				data = localca.CertificatePEM(cert)
 			case "der":
 				data = cert.Raw
 			case "mobileconfig":
-				data = mitmca.MobileConfig(cert)
+				data = localca.MobileConfig(cert)
 			default:
 				return fmt.Errorf("unknown format %q (use pem, der or mobileconfig)", format)
 			}
@@ -116,6 +116,6 @@ func printMITMCAInfo(w io.Writer, cert *x509.Certificate) error {
 		status = "expired"
 	}
 	_, err := fmt.Fprintf(w, "Name: %s\nSerial: %s\nNot before: %s\nNot after: %s\nStatus: %s\nSHA-256: %s\n",
-		cert.Subject.CommonName, cert.SerialNumber.Text(16), cert.NotBefore.Format(time.RFC3339), cert.NotAfter.Format(time.RFC3339), status, mitmca.Fingerprint(cert))
+		cert.Subject.CommonName, cert.SerialNumber.Text(16), cert.NotBefore.Format(time.RFC3339), cert.NotAfter.Format(time.RFC3339), status, localca.Fingerprint(cert))
 	return err
 }

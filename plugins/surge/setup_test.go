@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
@@ -25,7 +25,7 @@ import (
 func TestLoadSurgeProxyDownloadsAndOfflineCache(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
-	if err := mitmca.Generate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"), "download test", time.Hour); err != nil {
+	if err := localca.Generate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"), "download test", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	var requests atomic.Int32
@@ -135,7 +135,7 @@ func TestLoadSurgeLocationLoadsScriptsAndPersistsStore(t *testing.T) {
 			modulePath := filepath.Join(resourceDir, "modules", "example.sgmodule")
 			scriptPath := filepath.Join(resourceDir, "modules", "scripts", "persist.js")
 			storePath := filepath.Join(envDir, "plugins", "test", "surge-store.json")
-			if err := mitmca.Generate(certPath, keyPath, "Surge location test", time.Hour); err != nil {
+			if err := localca.Generate(certPath, keyPath, "Surge location test", time.Hour); err != nil {
 				t.Fatal(err)
 			}
 			for _, dir := range []string{filepath.Dir(scriptPath), filepath.Dir(storePath)} {

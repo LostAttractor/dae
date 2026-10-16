@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/pkg/membuffer"
 )
@@ -294,7 +294,7 @@ func (b *unreadBody) Close() error             { return nil }
 
 func proxyTestHost(t *testing.T, engine *Engine) *mitm.Host {
 	t.Helper()
-	host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
+	host, err := mitm.New(mitm.Options{Authority: &localca.Authority{}}, mitm.Instance{ID: "surge", Type: "surge", Plugin: engine})
 	if err != nil {
 		t.Fatal(err)
 	}

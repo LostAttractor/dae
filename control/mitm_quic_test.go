@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/common"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -48,18 +48,18 @@ func (d *mitmQUICDialer) ListenPacket(ctx context.Context, target string) (net.P
 	return (&net.ListenConfig{}).ListenPacket(ctx, "udp4", "127.0.0.1:0")
 }
 
-func mitmQUICTestAuthority(t *testing.T) (*mitmca.Authority, *x509.CertPool) {
+func mitmQUICTestAuthority(t *testing.T) (*localca.Authority, *x509.CertPool) {
 	t.Helper()
 	dir := t.TempDir()
 	cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-	if err := mitmca.Generate(cert, key, "QUIC control integration", time.Hour); err != nil {
+	if err := localca.Generate(cert, key, "QUIC control integration", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := mitmca.Load(cert, key)
+	authority, err := localca.Load(cert, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := mitmca.ReadCertificate(cert)
+	root, err := localca.ReadCertificate(cert)
 	if err != nil {
 		t.Fatal(err)
 	}

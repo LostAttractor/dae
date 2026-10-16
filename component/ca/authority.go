@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package mitmca manages the local certificate authority used for HTTPS modules.
-package mitmca
+// Package ca manages the local certificate authority shared by API HTTPS and MITM.
+package ca
 
 import (
 	"container/list"

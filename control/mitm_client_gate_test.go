@@ -24,8 +24,8 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/outbound"
 	"github.com/daeuniverse/dae/component/outbound/dialer"
 	"github.com/daeuniverse/dae/component/plugin"
@@ -38,7 +38,7 @@ import (
 
 var mitmTestClients = []string{"-02:00:00:00:00:02", "02:00:00:00:00:01", "10.0.0.0/24"}
 
-func mitmClientTestHost(t *testing.T, authority *mitmca.Authority, upstreamTLS *tls.Config, observe func()) *mitm.Host {
+func mitmClientTestHost(t *testing.T, authority *localca.Authority, upstreamTLS *tls.Config, observe func()) *mitm.Host {
 	t.Helper()
 	extension := mitmRoutingPlugin("example.com")
 	extension.handle = func(e *plugin.Exchange, next plugin.Handler) (*http.Response, error) {
@@ -103,7 +103,7 @@ func TestMITMClientGateUsesRoutingMetadata(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plane := &ControlPlane{mitmHost: mitmClientTestHost(t, &mitmca.Authority{}, nil, nil), settings: store, mitmClients: clients}
+			plane := &ControlPlane{mitmHost: mitmClientTestHost(t, &localca.Authority{}, nil, nil), settings: store, mitmClients: clients}
 			result := &routingResult{Mac: test.mac, Mark: 37, Must: 1}
 			beforeResult := *result
 			source := netip.MustParseAddrPort(test.source)
@@ -231,14 +231,14 @@ func TestMITMClientTLSBypassReplaysClientHello(t *testing.T) {
 			}
 			dir := t.TempDir()
 			certPath, keyPath := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-			if err := mitmca.Generate(certPath, keyPath, "selected client CA", time.Hour); err != nil {
+			if err := localca.Generate(certPath, keyPath, "selected client CA", time.Hour); err != nil {
 				t.Fatal(err)
 			}
-			authority, err := mitmca.Load(certPath, keyPath)
+			authority, err := localca.Load(certPath, keyPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			ca, err := mitmca.ReadCertificate(certPath)
+			ca, err := localca.ReadCertificate(certPath)
 			if err != nil {
 				t.Fatal(err)
 			}

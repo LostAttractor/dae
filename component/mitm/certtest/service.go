@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
-	mitmca "github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -38,7 +38,7 @@ type challenge struct {
 
 type Service struct {
 	generation string
-	authority  *mitmca.Authority
+	authority  *localca.Authority
 	apiPort    uint16
 	targets    [2]netip.Addr
 	hosts      []netip.Addr
@@ -64,7 +64,7 @@ func ParseTargets(ip4, ip6 string) ([2]netip.Addr, error) {
 	return targets, nil
 }
 
-func New(authority *mitmca.Authority, apiPort uint16, targets [2]netip.Addr, addresses []net.Addr) (*Service, error) {
+func New(authority *localca.Authority, apiPort uint16, targets [2]netip.Addr, addresses []net.Addr) (*Service, error) {
 	s := &Service{generation: rand.Text(), authority: authority, apiPort: apiPort, targets: targets,
 		tests: make(map[string]*challenge)}
 	for _, address := range addresses {

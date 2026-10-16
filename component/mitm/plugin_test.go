@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -82,7 +82,7 @@ func TestPluginChainOrderAndScope(t *testing.T) {
 		}}
 		instances = append(instances, Instance{ID: name, Type: "test", Plugin: p})
 	}
-	h := testHost(t, Options{Authority: &mitmca.Authority{}}, instances...)
+	h := testHost(t, Options{Authority: &localca.Authority{}}, instances...)
 	chain := h.chain(plugin.Flow{Host: "api.example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
 		calls = append(calls, "upstream")
 		return response("ok"), nil
@@ -108,7 +108,7 @@ func TestPluginLocalResponse(t *testing.T) {
 	p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope("*")}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 		return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
 	}}
-	h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "local", Plugin: p})
+	h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{ID: "local", Plugin: p})
 	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
 		t.Error("local response reached upstream")
 		return nil, errors.New("unexpected upstream")
@@ -144,7 +144,7 @@ func TestPluginHandoffResetsReadDeadlineAndBindsResponse(t *testing.T) {
 			return response("local"), nil
 		}
 	}}
-	h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{Plugin: outer}, Instance{Plugin: inner})
+	h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{Plugin: outer}, Instance{Plugin: inner})
 	chain := h.chain(plugin.Flow{Host: "example.com", Port: 443}, func(*plugin.Exchange) (*http.Response, error) {
 		t.Fatal("local response reached upstream")
 		return nil, nil
@@ -261,7 +261,7 @@ func TestRequestAuthority(t *testing.T) {
 			p := &testPlugin{plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: testScope(test.host)}}}, wrap: func(plugin.Flow, plugin.Handler) plugin.Handler {
 				return func(*plugin.Exchange) (*http.Response, error) { return response("local"), nil }
 			}}
-			h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "test", Plugin: p})
+			h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{ID: "test", Plugin: p})
 			handler, closeTransport := h.Handler("http", test.host, 80, nil)
 			defer closeTransport()
 			w := httptest.NewRecorder()

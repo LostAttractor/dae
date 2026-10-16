@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/config"
 	"github.com/daeuniverse/dae/pkg/config_parser"
@@ -92,7 +92,7 @@ func TestLoadMITMRejectsUnknownSettings(t *testing.T) {
 func TestMITMInstancesDefaultStoreIsolation(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
-	if err := mitmca.Generate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"), "store test", time.Hour); err != nil {
+	if err := localca.Generate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"), "store test", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"first", "second"} {

@@ -5,14 +5,14 @@ package mitm
 import (
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
 func TestRequestRoutingScopeContract(t *testing.T) {
 	scope := testScope("-private.example", "*.example")
 	for _, preserve := range []bool{false, true} {
-		h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{ID: "test", Plugin: &testPlugin{
+		h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{ID: "test", Plugin: &testPlugin{
 			plan: plugin.Plan{Scopes: []plugin.HTTPScope{{Scope: scope, PreserveRoute: preserve}}},
 		}})
 		want := HTTPRequest
@@ -30,7 +30,7 @@ func TestOverlappingHTTPScopes(t *testing.T) {
 	pure := plugin.HTTPScope{Scope: testScope("*.example"), PreserveRoute: true}
 	request := plugin.HTTPScope{Scope: testScope("-private.example", "*.example")}
 	for _, scopes := range [][]plugin.HTTPScope{{pure, request}, {request, pure}} {
-		h := testHost(t, Options{Authority: &mitmca.Authority{}}, Instance{Plugin: &testPlugin{plan: plugin.Plan{Scopes: scopes}}})
+		h := testHost(t, Options{Authority: &localca.Authority{}}, Instance{Plugin: &testPlugin{plan: plugin.Plan{Scopes: scopes}}})
 		if h.Match("api.example", 443) != HTTPRequest {
 			t.Fatal("pure inspection overrode a request-transforming scope")
 		}

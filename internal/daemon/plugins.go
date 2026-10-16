@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 
 	"github.com/daeuniverse/dae/common"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/certtest"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/pluginhost"
@@ -64,10 +64,10 @@ func loadMITM(ctx context.Context, conf *config.Config, client *http.Client, bac
 		}
 		return filepath.Join(base, path)
 	}
-	var authority *mitmca.Authority
+	var authority *localca.Authority
 	var err error
 	if m.Enabled && m.CACert != "" {
-		authority, err = mitmca.Load(resolve(m.CACert), resolve(m.CAKey))
+		authority, err = localca.Load(resolve(m.CACert), resolve(m.CAKey))
 		if err != nil {
 			return control.PreparedMITM{}, fmt.Errorf("mitm CA: %w", err)
 		}

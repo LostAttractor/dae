@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/internal/pluginctx"
 	log "github.com/sirupsen/logrus"
@@ -98,7 +98,7 @@ func TestLocalPluginErrorIsNotAnUpstreamFailure(t *testing.T) {
 	logger.SetOutput(io.Discard)
 	logger.SetLevel(log.DebugLevel)
 	hook := logtest.NewLocal(logger)
-	h := testHost(t, Options{Authority: &mitmca.Authority{}, Logger: log.NewEntry(logger)}, Instance{Plugin: p})
+	h := testHost(t, Options{Authority: &localca.Authority{}, Logger: log.NewEntry(logger)}, Instance{Plugin: p})
 	handler := h.handlerForFlow("http", plugin.Flow{Host: "example.com", Port: 80}, roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("reached upstream after plugin error")
 		return nil, nil

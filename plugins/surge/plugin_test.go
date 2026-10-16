@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 )
 
 func TestSurgePluginsShareHostAndKeepIndependentState(t *testing.T) {
@@ -34,7 +34,7 @@ response=type=http-response,pattern=.,requires-body=1,script-path=response.js
 			"response": fmt.Sprintf(`$done({body:$response.body+"%s"});`, id),
 		})
 		e := moduleScopeEngine(t, m)
-		options.Authority = &mitmca.Authority{}
+		options.Authority = &localca.Authority{}
 		instances = append(instances, mitm.Instance{ID: id, Type: "surge", Plugin: e})
 	}
 	h, err := mitm.New(options, instances...)

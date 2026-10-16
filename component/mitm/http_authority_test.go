@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3"
@@ -258,7 +258,7 @@ func TestHTTPAuthorityAdmissionBoundaries(t *testing.T) {
 				{Host: "port.example", Ports: []uint16{8443}},
 				{Host: "scope.test", Ports: []uint16{443}},
 			}}}}, wrap: func(_ plugin.Flow, next plugin.Handler) plugin.Handler { return next }}
-			h := testHost(t, Options{Authority: &mitmca.Authority{}, Logger: logger}, Instance{Plugin: p})
+			h := testHost(t, Options{Authority: &localca.Authority{}, Logger: logger}, Instance{Plugin: p})
 			port := uint16(443)
 			if test.scheme == "http" {
 				port = 80

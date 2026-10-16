@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
@@ -36,7 +36,7 @@ func TestMITMCAGenerateInspectAndExport(t *testing.T) {
 	if _, err := runMITMCommand("ca", "generate", "--cert", certPath, "--key", keyPath); err == nil {
 		t.Fatal("CLI silently replaced existing CA")
 	}
-	cert, err := mitmca.ReadCertificate(certPath)
+	cert, err := localca.ReadCertificate(certPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestMITMCAGenerateInspectAndExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	output, err = runMITMCommand("ca", "info", "--cert", certPath)
-	if err != nil || !strings.Contains(output, "CLI test CA") || !strings.Contains(output, mitmca.Fingerprint(cert)) {
+	if err != nil || !strings.Contains(output, "CLI test CA") || !strings.Contains(output, localca.Fingerprint(cert)) {
 		t.Fatalf("info required private key or lacked metadata: %v\n%s", err, output)
 	}
 	output, err = runMITMCommand("ca", "export", "--cert", certPath, "--format", "der")
@@ -57,7 +57,7 @@ func TestMITMCAGenerateInspectAndExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile, err := os.ReadFile(exportPath)
-	if err != nil || !bytes.Equal(profile, mitmca.MobileConfig(cert)) {
+	if err != nil || !bytes.Equal(profile, localca.MobileConfig(cert)) {
 		t.Fatalf("profile export: %v", err)
 	}
 	if _, err := runMITMCommand("ca", "export", "--cert", certPath, "--output", exportPath); err == nil {
@@ -76,19 +76,19 @@ func TestMITMCAEnvironmentDirectoryDefaults(t *testing.T) {
 		t.Fatalf("generate with environment defaults: %v\n%s", err, output)
 	}
 	certPath, keyPath := filepath.Join(caDir, "mitm-ca.pem"), filepath.Join(caDir, "mitm-ca.key")
-	if _, err := mitmca.Load(certPath, keyPath); err != nil {
+	if _, err := localca.Load(certPath, keyPath); err != nil {
 		t.Fatalf("CA pair was not generated in environment directory: %v", err)
 	}
-	cert, err := mitmca.ReadCertificate(certPath)
+	cert, err := localca.ReadCertificate(certPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	output, err = runMITMCommand("ca", "info")
-	if err != nil || !strings.Contains(output, mitmca.Fingerprint(cert)) {
+	if err != nil || !strings.Contains(output, localca.Fingerprint(cert)) {
 		t.Fatalf("info did not use environment certificate: %v\n%s", err, output)
 	}
 	output, err = runMITMCommand("ca", "export")
-	if err != nil || !bytes.Equal([]byte(output), mitmca.CertificatePEM(cert)) {
+	if err != nil || !bytes.Equal([]byte(output), localca.CertificatePEM(cert)) {
 		t.Fatalf("export did not use environment certificate: %v", err)
 	}
 }
@@ -196,7 +196,7 @@ func TestMITMCAExplicitPathsOverrideEnvironmentDefaults(t *testing.T) {
 			if err != nil {
 				t.Fatalf("explicit path generation: %v\n%s", err, output)
 			}
-			if _, err := mitmca.Load(certPath, keyPath); err != nil {
+			if _, err := localca.Load(certPath, keyPath); err != nil {
 				t.Fatalf("explicit flags were rebased to environment directory: %v", err)
 			}
 			for _, entry := range []struct {

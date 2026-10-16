@@ -17,22 +17,22 @@ import (
 	"time"
 
 	"github.com/daeuniverse/dae/api"
-	mitmca "github.com/daeuniverse/dae/component/mitm/ca"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 )
 
-func testAuthority(t *testing.T) (*mitmca.Authority, *x509.CertPool) {
+func testAuthority(t *testing.T) (*localca.Authority, *x509.CertPool) {
 	t.Helper()
 	dir := t.TempDir()
 	cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-	if err := mitmca.Generate(cert, key, t.Name(), time.Hour); err != nil {
+	if err := localca.Generate(cert, key, t.Name(), time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := mitmca.Load(cert, key)
+	authority, err := localca.Load(cert, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := mitmca.ReadCertificate(cert)
+	root, err := localca.ReadCertificate(cert)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func testAuthority(t *testing.T) (*mitmca.Authority, *x509.CertPool) {
 	return authority, roots
 }
 
-func testService(t *testing.T, authority *mitmca.Authority, port uint16, addresses []net.Addr) *Service {
+func testService(t *testing.T, authority *localca.Authority, port uint16, addresses []net.Addr) *Service {
 	t.Helper()
 	targets, err := ParseTargets("", "")
 	if err != nil {

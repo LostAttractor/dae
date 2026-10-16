@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"testing"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/mitm/certtest"
 	"github.com/daeuniverse/dae/component/plugin"
 )
@@ -62,10 +62,10 @@ func rewriteTestPlugin(t *testing.T, targets map[string]string) *controlTestPlug
 	return p
 }
 
-func controlTestHost(t *testing.T, extension plugin.Plugin, authority *mitmca.Authority) *mitm.Host {
+func controlTestHost(t *testing.T, extension plugin.Plugin, authority *localca.Authority) *mitm.Host {
 	t.Helper()
 	if authority == nil && len(extension.Plan().Scopes) > 0 {
-		authority = &mitmca.Authority{}
+		authority = &localca.Authority{}
 	}
 	options := mitm.Options{Authority: authority}
 	if diagnostic, ok := extension.(*certtest.Service); ok {

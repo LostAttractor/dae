@@ -15,8 +15,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/daeuniverse/dae/api"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	surgeapi "github.com/daeuniverse/dae/plugins/surge/api"
 	dns "github.com/miekg/dns"
@@ -217,7 +217,7 @@ job=type=cron,cronexp="0 0 31 2 *",script-path=job.js`)
 		t.Fatal(err)
 	}
 	runtimeFakeClockTest(t, func(t *testing.T) {
-		host, err := mitm.New(mitm.Options{Authority: &mitmca.Authority{}, HTTPClient: http.DefaultClient}, mitm.Instance{ID: "personal", Type: "surge", Plugin: e})
+		host, err := mitm.New(mitm.Options{Authority: &localca.Authority{}, HTTPClient: http.DefaultClient}, mitm.Instance{ID: "personal", Type: "surge", Plugin: e})
 		if err != nil {
 			t.Fatal(err)
 		}

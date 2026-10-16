@@ -16,8 +16,8 @@ import (
 	"time"
 
 	apiclient "github.com/daeuniverse/dae/api/client"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/settings"
 	"github.com/daeuniverse/dae/internal/apiserver"
 )
@@ -156,10 +156,10 @@ func TestStatusAdministrationBoundary(t *testing.T) {
 func TestCertificateAPI(t *testing.T) {
 	dir := t.TempDir()
 	cert, key := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-	if err := mitmca.Generate(cert, key, "API certificate", time.Hour); err != nil {
+	if err := localca.Generate(cert, key, "API certificate", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := mitmca.Load(cert, key)
+	authority, err := localca.Load(cert, key)
 	if err != nil {
 		t.Fatal(err)
 	}

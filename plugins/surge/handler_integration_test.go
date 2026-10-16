@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/sirupsen/logrus"
 )
@@ -31,14 +31,14 @@ func integrationEngine(t *testing.T, scripts map[string]string, upstreamTLS *tls
 	t.Helper()
 	dir := t.TempDir()
 	certPath, keyPath := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-	if err := mitmca.Generate(certPath, keyPath, "proxy integration CA", time.Hour); err != nil {
+	if err := localca.Generate(certPath, keyPath, "proxy integration CA", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := mitmca.Load(certPath, keyPath)
+	authority, err := localca.Load(certPath, keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, err := mitmca.ReadCertificate(certPath)
+	cert, err := localca.ReadCertificate(certPath)
 	if err != nil {
 		t.Fatal(err)
 	}

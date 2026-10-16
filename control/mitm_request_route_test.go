@@ -19,18 +19,18 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/common/clientmatch"
 	"github.com/daeuniverse/dae/common/consts"
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	"github.com/daeuniverse/dae/component/settings"
 )
 
 func newHTTPRequestRouteTest(t *testing.T, routing string, extension plugin.Plugin, dial downloadTestDialer) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
 	t.Helper()
-	return newHTTPRequestRouteTestWithAuthority(t, routing, extension, dial, &mitmca.Authority{})
+	return newHTTPRequestRouteTestWithAuthority(t, routing, extension, dial, &localca.Authority{})
 }
 
-func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing string, extension plugin.Plugin, dial downloadTestDialer, authority *mitmca.Authority) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
+func newHTTPRequestRouteTestWithAuthority(t *testing.T, routing string, extension plugin.Plugin, dial downloadTestDialer, authority *localca.Authority) (*ControlPlane, *RoutingMatcherBuilder, *RouteParam) {
 	t.Helper()
 	host := controlTestHost(t, extension, authority)
 	prepared := prepareFlowRulesForTest(t, "", routing)

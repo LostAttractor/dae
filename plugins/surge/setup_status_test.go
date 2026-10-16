@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	localca "github.com/daeuniverse/dae/component/ca"
 	"github.com/daeuniverse/dae/component/mitm"
-	"github.com/daeuniverse/dae/component/mitm/ca"
 	"github.com/daeuniverse/dae/component/plugin"
 	log "github.com/sirupsen/logrus"
 )
@@ -83,7 +83,7 @@ func TestLoadDNSHostWithoutCompatibilityWarning(t *testing.T) {
 func TestLoadSurgeTraceParametersAndFailureSummary(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DAE_LOCATION_CACHE", dir)
-	if err := mitmca.Generate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"), "status test", time.Hour); err != nil {
+	if err := localca.Generate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"), "status test", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	for name, contents := range map[string]string{
