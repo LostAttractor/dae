@@ -77,3 +77,43 @@ func resetUnprocessedRequest(w http.ResponseWriter) {
 		w = wrapper.Unwrap()
 	}
 }
+
+type upstreamQUICDialError struct{ error }
+
+func (e *upstreamQUICDialError) Unwrap() error { return e.error }
+
+type http3ConnectionKey struct{}
+
+// Mark only the terminal failed attempt. Earlier failed dials may be joined
+// with a later stream error after route fallback; they must not close a healthy
+// downstream connection.
+type http3ConnectionFailure struct{ error }
+
+func (e *http3ConnectionFailure) Unwrap() error { return e.error }
+
+func markHTTP3ConnectionFailure(current, combined error) error {
+	_, packetDial := errors.AsType[*upstreamDialError](current)
+	_, quicDial := errors.AsType[*upstreamQUICDialError](current)
+	if packetDial || quicDial {
+		return &http3ConnectionFailure{combined}
+	}
+	return combined
+}
+
+// A local QUIC handshake must not conceal an unreachable upstream behind a
+// successful HTTP response. Only failures before an upstream HTTP exchange
+// close the downstream connection; stream failures retain their own scope.
+func closeFailedHTTP3Connection(r *http.Request, err error) bool {
+	if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if _, failed := errors.AsType[*http3ConnectionFailure](err); !failed {
+		return false
+	}
+	conn, _ := r.Context().Value(http3ConnectionKey{}).(*quic.Conn)
+	if conn == nil {
+		return false
+	}
+	_ = conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeInternalError), "upstream connection failed")
+	return true
+}

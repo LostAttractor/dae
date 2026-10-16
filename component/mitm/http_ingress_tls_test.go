@@ -84,6 +84,16 @@ func TestDomainFrontingRejectsInvalidUpstreamTLS(t *testing.T) {
 					r, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/", nil)
 					r.Host = "business.example"
 					resp, err := client.Do(r)
+					if protocol == "h3" {
+						if resp != nil {
+							resp.Body.Close()
+							t.Fatalf("invalid upstream TLS became HTTP %d", resp.StatusCode)
+						}
+						if err == nil || calls.Load() != 0 {
+							t.Fatalf("invalid upstream reached HTTP: error=%v calls=%d", err, calls.Load())
+						}
+						return
+					}
 					if err != nil {
 						t.Fatal(err)
 					}

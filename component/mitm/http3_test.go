@@ -232,12 +232,12 @@ func TestHTTP3MITMRejectsUntrustedUpstreamWithoutTCPFallback(t *testing.T) {
 	host := testHost(t, Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}})
 	client, _, tcpDials := http3TestClient(t, host, roots, "example.com", upstream)
 	resp, err := client.Get("https://example.com/")
-	if err != nil {
-		t.Fatal(err)
+	if resp != nil {
+		resp.Body.Close()
+		t.Fatalf("untrusted upstream produced an HTTP response: %d", resp.StatusCode)
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway || tcpDials.Load() != 0 {
-		t.Fatalf("status=%d TCP dials=%d", resp.StatusCode, tcpDials.Load())
+	if err == nil || tcpDials.Load() != 0 {
+		t.Fatalf("error=%v TCP dials=%d", err, tcpDials.Load())
 	}
 }
 

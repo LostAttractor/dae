@@ -84,6 +84,7 @@ func (h *Host) ServePacketConn(conn net.PacketConn, flow plugin.Flow, plan Upstr
 		MaxHeaderBytes: 1 << 20,
 		IdleTimeout:    90 * time.Second,
 		ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
+			ctx = context.WithValue(ctx, http3ConnectionKey{}, conn)
 			upstream := h.connectionTransport("https", flow, packetPlan, true)
 			auxiliary := h.plannedTransport(plan, false)
 			handler := h.handlerForFlow("https", flow, upstream, &http.Client{Transport: auxiliary})

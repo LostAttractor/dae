@@ -147,7 +147,11 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, err
 		p.release(pool)
 		failures = append(failures, err)
 		if !retry {
-			return response, errors.Join(failures...)
+			failure := errors.Join(failures...)
+			if p.packet {
+				failure = markHTTP3ConnectionFailure(err, failure)
+			}
+			return response, failure
 		}
 		plan, err = plan.Next()
 		if err == nil && (plan.Key == "" || p.packet && plan.DialPacket == nil || !p.packet && plan.Dial == nil) {
@@ -158,7 +162,12 @@ func (p *plannedTransport) RoundTrip(request *http.Request) (*http.Response, err
 				body.commit()
 				_ = body.Close()
 			}
-			return nil, errors.Join(append(failures, err)...)
+			failure := errors.Join(append(failures, err)...)
+			if p.packet {
+				// No route remains after attempts that all failed to connect.
+				failure = &http3ConnectionFailure{failure}
+			}
+			return nil, failure
 		}
 	}
 }

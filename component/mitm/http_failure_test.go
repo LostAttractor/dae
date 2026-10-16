@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/daeuniverse/dae/pkg/membuffer"
 	"github.com/daeuniverse/quic-go"
@@ -95,6 +96,62 @@ func TestHTTP1ReplayFailureIsNotUnprocessed(t *testing.T) {
 	_, err = attempt.GetBody()
 	if _, rejected := errors.AsType[*requestNotProcessedError](err); rejected || !errors.Is(err, errReplayLimit) {
 		t.Fatalf("ambiguous HTTP/1 retry became an unprocessed request: %v", err)
+	}
+}
+
+func TestHTTP3PacketDialFailureClosesDownstream(t *testing.T) {
+	authority, roots := http3TestAuthority(t)
+	host := testHost(t, Options{Authority: authority})
+	client, _, tcpDials := http3TestClient(t, host, roots, "example.com", nil)
+	response, err := client.Get("https://example.com/")
+	if response != nil {
+		response.Body.Close()
+		t.Fatalf("packet dial failure became HTTP %d", response.StatusCode)
+	}
+	if err == nil || tcpDials.Load() != 0 {
+		t.Fatalf("error=%v TCP dials=%d", err, tcpDials.Load())
+	}
+}
+
+func TestHTTP3BlackholeClosesDownstream(t *testing.T) {
+	t.Parallel()
+	authority, roots := http3TestAuthority(t)
+	blackhole := http3TestPacketConn(t)
+	host := testHost(t, Options{Authority: authority, UpstreamTLSConfig: &tls.Config{RootCAs: roots}})
+	client, _, tcpDials := http3TestClient(t, host, roots, "example.com", blackhole.LocalAddr())
+	client.Timeout = 35 * time.Second
+	response, err := client.Get("https://example.com/")
+	if response != nil {
+		response.Body.Close()
+		t.Fatalf("upstream blackhole became HTTP %d", response.StatusCode)
+	}
+	failure, ok := errors.AsType[*quic.ApplicationError](err)
+	if !ok || !failure.Remote || failure.ErrorCode != quic.ApplicationErrorCode(http3.ErrCodeInternalError) || tcpDials.Load() != 0 {
+		t.Fatalf("expected downstream QUIC failure, got %v; TCP dials=%d", err, tcpDials.Load())
+	}
+}
+
+func TestHTTP3ConnectionFailureScope(t *testing.T) {
+	dial := &upstreamDialError{errors.New("route unavailable")}
+	stream := &http3.Error{ErrorCode: http3.ErrCodeInternalError, Remote: true}
+	combined := errors.Join(dial, stream)
+	if _, marked := errors.AsType[*http3ConnectionFailure](markHTTP3ConnectionFailure(stream, combined)); marked {
+		t.Fatal("earlier failed dial promoted a later stream error to a connection failure")
+	}
+	if _, marked := errors.AsType[*http3ConnectionFailure](markHTTP3ConnectionFailure(dial, dial)); !marked {
+		t.Fatal("terminal failed dial lost its connection failure signal")
+	}
+	r, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/", nil)
+	// A nonnil placeholder catches accidental CloseWithError calls. Cancellation
+	// must return before inspecting or closing the shared downstream connection.
+	r = r.WithContext(context.WithValue(r.Context(), http3ConnectionKey{}, new(quic.Conn)))
+	if closeFailedHTTP3Connection(r, &http3ConnectionFailure{&upstreamQUICDialError{context.Canceled}}) {
+		t.Fatal("canceled shared dial closed the downstream connection")
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	if closeFailedHTTP3Connection(r.WithContext(ctx), markHTTP3ConnectionFailure(dial, dial)) {
+		t.Fatal("canceled request closed the downstream connection")
 	}
 }
 

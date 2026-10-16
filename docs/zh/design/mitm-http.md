@@ -97,7 +97,7 @@ ServeConn / ServePacketConn
 | `http_upstream.go` | 业务 authority 与网络目标分离、原计划固定 |
 | `planned_transport.go` | 计划边界检查、池复用、响应租用与清理 |
 | `request_trailer.go` | trailer 流式同步、转发时的空正文 framing |
-| `http_failure.go` | 上游未处理请求的拒绝信号 |
+| `http_failure.go` | 上游未处理请求的拒绝信号和 HTTP/3 建连失败传播 |
 
 上表路径均相对于 `component/mitm/`。控制平面的路由与租约归 `control/http_route_plan.go`、`control/mitm_lifecycle.go` 所有。
 
@@ -168,6 +168,11 @@ HTTP/2 或 HTTP/3 transport 确认请求尚未处理且需要重试时，如果�
 HTTP/3 transport 用尽内部重试后，远端返回的 `H3_REQUEST_REJECTED` 流错误也保留该信号。
 客户端能否重发取决于它是否保留正文及自己的重试策略；HTTP/1 没有等价的拒绝码，只能中断连接。
 无法确认上游是否已经处理的错误不会被转换为安全重试信号，以免重复提交。
+
+下游 QUIC 握手在本地完成。上游 packet 拨号或 QUIC/TLS 握手失败时，关闭该下游 QUIC 连接，
+使客户端收到传输失败，而非一个掩盖上游建连失败的 HTTP 502。
+客户端可以据此执行自己的协议回退；dae 不在后台自动把 UDP 路由切换成 TCP。
+已建立连接上的普通 HTTP 错误和流级错误仍按各自请求处理，不扩大为连接故障。
 
 ## 运行日志
 

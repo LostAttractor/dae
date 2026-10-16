@@ -80,7 +80,7 @@ func (h *Host) http3Transport(dial DialPacketContext) *http3Upstream {
 		if err != nil {
 			_ = quicTransport.Close()
 			_ = packets.Close()
-			return nil, err
+			return nil, &upstreamQUICDialError{err}
 		}
 		upstream.mu.Lock()
 		closed := upstream.closed

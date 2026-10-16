@@ -159,6 +159,9 @@ func (h *Host) handlerForFlow(scheme string, flow plugin.Flow, transport http.Ro
 					resetUnprocessedRequest(w)
 					panic(http.ErrAbortHandler)
 				}
+				if closeFailedHTTP3Connection(r, err) {
+					panic(http.ErrAbortHandler)
+				}
 				if r.Context().Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 					connection, request := plugin.IDs(r.Context())
 					h.options.Logger.WithFields(logrus.Fields{
