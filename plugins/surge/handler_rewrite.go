@@ -42,7 +42,7 @@ func (e *Engine) matchScript(kind string, request *http.Request) (*Module, *Scri
 				continue
 			}
 			for _, rawURL := range urls {
-				if s.Match(rawURL) {
+				if s.Match(request.Context(), rawURL) {
 					return m, s
 				}
 			}
@@ -73,6 +73,11 @@ func scriptMatchURLs(target *url.URL, host, sni string) []string {
 
 func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Response, err error) {
 	r, client, setReadDeadline := exchange.Request, exchange.Client, exchange.SetReadDeadline
+	finish, err := e.beginHTTPProcessing(r, "http-request")
+	if err != nil {
+		return nil, err
+	}
+	defer finish(&err)
 	r.Header.Set("Host", r.Host)
 	if err := e.rewriteHeaders("http-request", r, r.Header); err != nil {
 		return nil, err
@@ -91,6 +96,9 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 		return nil, err
 	}
 	module, s := e.matchScript("http-request", r)
+	if err := regexBudgetError(r.Context()); err != nil {
+		return nil, err
+	}
 	if s == nil {
 		e.traceRequest(r, "script_skip", "phase", "http-request", "reason", "no_match")
 		return nil, nil
@@ -169,6 +177,11 @@ func (e *Engine) processRequest(exchange *plugin.Exchange) (response *http.Respo
 }
 
 func (e *Engine) processResponse(r *http.Response, client *http.Client) (err error) {
+	finish, err := e.beginHTTPProcessing(r.Request, "http-response")
+	if err != nil {
+		return err
+	}
+	defer finish(&err)
 	if err := e.rewriteHeaders("http-response", r.Request, r.Header); err != nil {
 		return err
 	}
@@ -176,6 +189,9 @@ func (e *Engine) processResponse(r *http.Response, client *http.Client) (err err
 		return err
 	}
 	module, s := e.matchScript("http-response", r.Request)
+	if err := regexBudgetError(r.Request.Context()); err != nil {
+		return err
+	}
 	if s == nil {
 		e.traceRequest(r.Request, "script_skip", "phase", "http-response", "reason", "no_match")
 		return nil
@@ -275,12 +291,12 @@ func responseHasBody(method string, status int) bool {
 func (e *Engine) rewriteURL(r *http.Request) (*http.Response, error) {
 	for _, module := range e.options.Modules {
 		for i, rewrite := range module.URLRewrites {
-			if !rewrite.Match(r.URL.String()) {
+			if !rewrite.Match(r.Context(), r.URL.String()) {
 				continue
 			}
 			e.traceRequest(r, "url_rewrite_match", "module", module.Name, "rule", i+1, "action", rewrite.Type)
 			e.metrics.match("url_rewrite")
-			target, err := rewrite.Rewrite(r.URL.String())
+			target, err := rewrite.Rewrite(r.Context(), r.URL.String())
 			if err != nil {
 				return nil, err
 			}
@@ -307,10 +323,10 @@ func (e *Engine) rewriteURL(r *http.Request) (*http.Response, error) {
 func (e *Engine) rewriteHeaders(kind string, request *http.Request, headers http.Header) error {
 	for _, m := range e.options.Modules {
 		for i, rewrite := range m.HeaderRewrites {
-			if rewrite.Type == kind && rewrite.Match(request.URL.String()) {
+			if rewrite.Type == kind && rewrite.Match(request.Context(), request.URL.String()) {
 				e.traceRequest(request, "header_rewrite_match", "module", m.Name, "rule", i+1, "phase", kind, "action", rewrite.Action)
 				e.metrics.match("header_rewrite")
-				if err := rewrite.Apply(headers); err != nil {
+				if err := rewrite.Apply(request.Context(), headers); err != nil {
 					return err
 				}
 			}

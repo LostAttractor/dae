@@ -51,6 +51,9 @@ func NewEngine(o EngineOptions) (*Engine, error) {
 func newEngine(ctx context.Context, o EngineOptions) (_ *Engine, err error) {
 	o.Modules = slices.Clone(o.Modules)
 	for i, module := range o.Modules {
+		if module.regexRules() > maxModuleRegexRules {
+			return nil, fmt.Errorf("surge: module exceeds %d regular expression rules", maxModuleRegexRules)
+		}
 		scope, err := moduleScope(module.Hostnames)
 		if err != nil {
 			return nil, err

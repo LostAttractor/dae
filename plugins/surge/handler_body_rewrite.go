@@ -49,12 +49,15 @@ func (e *Engine) rewriteBody(kind string, request *http.Request, source *io.Read
 	var matches []matchedBodyRewrite
 	for _, module := range e.options.Modules {
 		for i, rule := range module.BodyRewrites {
-			if rule.Type == kind && rule.Match(request.URL.String()) {
+			if rule.Type == kind && rule.Match(request.Context(), request.URL.String()) {
 				matches = append(matches, matchedBodyRewrite{rule, module.Name, i + 1})
 				e.traceRequest(request, "body_rewrite_match", "module", module.Name, "rule", i+1, "phase", kind)
 				e.metrics.match("body_rewrite")
 			}
 		}
+	}
+	if err := regexBudgetError(request.Context()); err != nil {
+		return nil, err
 	}
 	if len(matches) == 0 {
 		return nil, nil
@@ -149,7 +152,7 @@ func (e *Engine) rewriteBody(kind string, request *http.Request, source *io.Read
 				e.traceRequest(request, "body_rewrite_end", "module", match.module, "rule", match.index, "outcome", "failed", "reason", traceErrorReason(err), "elapsed_ms", time.Since(started).Milliseconds())
 			}
 			e.logRequest(request, fmt.Sprintf("Surge Body Rewrite module=%q rule=%d failed; keeping previous body", match.module, match.index), err)
-			if ctx.Err() != nil {
+			if regexBudgetError(ctx) != nil {
 				break
 			}
 			continue

@@ -36,7 +36,7 @@ hostname = %APPEND% -ads.example.com, *.example.com
 	if !script.RequiresBody || !script.BinaryBodyMode || script.MaxSize != -1 || script.Timeout != 1500*time.Millisecond {
 		t.Fatalf("unexpected script: %+v", script)
 	}
-	if !script.Match("https://api.example.com/abc") || script.Match("https://api.example.com/ads/") {
+	if !script.Match(t.Context(), "https://api.example.com/abc") || script.Match(t.Context(), "https://api.example.com/ads/") {
 		t.Fatal("lookahead or comma-containing quantifier did not match correctly")
 	}
 	if !m.MatchHostname("API.EXAMPLE.COM.") || m.MatchHostname("ads.example.com") {
@@ -195,7 +195,7 @@ http-response ^https://api\.example header-replace-regex X-Version "v(\d+)" "rel
 	if len(m.URLRewrites) != 3 || len(m.HeaderRewrites) != 6 {
 		t.Fatalf("unexpected rewrites: %+v", m)
 	}
-	got, err := m.URLRewrites[0].Rewrite("https://old.example/path?q=1")
+	got, err := m.URLRewrites[0].Rewrite(t.Context(), "https://old.example/path?q=1")
 	if err != nil || got != "https://new.example/path?q=1" {
 		t.Fatalf("rewrite=(%q,%v)", got, err)
 	}
@@ -204,10 +204,10 @@ http-response ^https://api\.example header-replace-regex X-Version "v(\d+)" "rel
 	}
 	headers := http.Header{"X-Old": {"remove"}, "X-Present": {"old"}, "X-Version": {"v1", "v2"}}
 	for _, rule := range m.HeaderRewrites {
-		if !rule.Match("https://api.example/path") {
+		if !rule.Match(t.Context(), "https://api.example/path") {
 			t.Fatal("header URL did not match")
 		}
-		if err := rule.Apply(headers); err != nil {
+		if err := rule.Apply(t.Context(), headers); err != nil {
 			t.Fatal(err)
 		}
 	}

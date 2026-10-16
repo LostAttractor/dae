@@ -53,6 +53,8 @@ func (e *Engine) logRequest(r *http.Request, message string, err error) {
 // are copied into the automatic trace; detailed existing warnings remain intact.
 func traceErrorReason(err error) string {
 	switch {
+	case errors.Is(err, errRegexBudget):
+		return "regex_budget"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.Is(err, context.Canceled):

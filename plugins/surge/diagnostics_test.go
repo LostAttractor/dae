@@ -25,7 +25,7 @@ rewrite = type=http-request,pattern=^https://script\.test:8443/path,script-path=
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := &Engine{options: EngineOptions{Modules: []*Module{module}}}
+	engine := diagnosticTestEngine(module)
 	request := httptest.NewRequest(http.MethodGet, "https://192.0.2.1:8443/path", nil)
 	request.TLS = &tls.ConnectionState{ServerName: "script.test"}
 	if _, script := engine.matchScript("http-request", request); script == nil {
@@ -82,8 +82,8 @@ second = type=http-request, pattern=^https://example.com/new, script-path=second
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No runtime, metrics, transport or script source exists in this fixture.
-	engine := &Engine{options: EngineOptions{Modules: []*Module{module}}}
+	// No runtime, transport or script source exists in this fixture.
+	engine := diagnosticTestEngine(module)
 	request := api.ExplainRequest{Flow: api.DiagnosticFlow{Destination: api.DiagnosticTarget{Port: 443}, HTTP: &api.DiagnosticHTTP{URL: "https://example.com/old", Headers: map[string][]string{"X-Original": {"kept"}}}}}
 	before := map[string][]string{"X-Original": {"kept"}}
 	result := engine.Explain(t.Context(), request)
@@ -111,4 +111,10 @@ second = type=http-request, pattern=^https://example.com/new, script-path=second
 			t.Fatal("local response executed a script", step)
 		}
 	}
+}
+
+func diagnosticTestEngine(module *Module) *Engine {
+	e := &Engine{options: EngineOptions{Modules: []*Module{module}, ScriptTimeout: DefaultScriptTimeout}, slots: make(chan struct{}, 1)}
+	e.metrics = newEngineMetrics(e)
+	return e
 }

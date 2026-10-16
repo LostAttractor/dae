@@ -4,6 +4,7 @@
 package surge
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,7 +22,6 @@ import (
 const (
 	DefaultScriptTimeout       = 5 * time.Second
 	DefaultScriptMaxSize int64 = 1 << 20
-	regexTimeout               = 50 * time.Millisecond
 )
 
 // Module is an ordered collection of scripts and rewrite rules. Warnings
@@ -64,21 +64,25 @@ type Script struct {
 	schedule                                    cron.Schedule
 }
 
-func (s Script) Match(rawURL string) bool { return matchPattern(s.pattern, rawURL) }
+func (s Script) Match(ctx context.Context, rawURL string) bool {
+	return matchPattern(ctx, s.pattern, rawURL)
+}
 
 type URLRewrite struct {
 	Pattern, Replacement, Type string
 	pattern                    *regexp2.Regexp
 }
 
-func (r URLRewrite) Match(rawURL string) bool { return matchPattern(r.pattern, rawURL) }
+func (r URLRewrite) Match(ctx context.Context, rawURL string) bool {
+	return matchPattern(ctx, r.pattern, rawURL)
+}
 
 // Rewrite substitutes the first match, preserving the unmatched URL suffix.
-func (r URLRewrite) Rewrite(rawURL string) (string, error) {
+func (r URLRewrite) Rewrite(ctx context.Context, rawURL string) (string, error) {
 	if r.pattern == nil {
 		return rawURL, fmt.Errorf("URL rewrite is not compiled")
 	}
-	return r.pattern.Replace(rawURL, r.Replacement, -1, 1)
+	return replacePattern(ctx, r.pattern, rawURL, r.Replacement, 1)
 }
 
 type HeaderRewrite struct {
@@ -86,11 +90,13 @@ type HeaderRewrite struct {
 	pattern, valuePattern                            *regexp2.Regexp
 }
 
-func (r HeaderRewrite) Match(rawURL string) bool { return matchPattern(r.pattern, rawURL) }
+func (r HeaderRewrite) Match(ctx context.Context, rawURL string) bool {
+	return matchPattern(ctx, r.pattern, rawURL)
+}
 
 // Apply modifies a header after the caller has matched the direction and URL.
 // header-replace, like Surge, only changes an already present header field.
-func (r HeaderRewrite) Apply(header http.Header) error {
+func (r HeaderRewrite) Apply(ctx context.Context, header http.Header) error {
 	field := http.CanonicalHeaderKey(r.Field)
 	switch r.Action {
 	case "header-add":
@@ -107,7 +113,7 @@ func (r HeaderRewrite) Apply(header http.Header) error {
 		}
 		values := slices.Clone(header[field])
 		for i, value := range values {
-			replaced, err := r.valuePattern.Replace(value, r.Replacement, -1, -1)
+			replaced, err := replacePattern(ctx, r.valuePattern, value, r.Replacement, -1)
 			if err != nil {
 				return err
 			}
@@ -123,23 +129,6 @@ func (r HeaderRewrite) Apply(header http.Header) error {
 		return fmt.Errorf("unsupported header action %q", r.Action)
 	}
 	return nil
-}
-
-func compilePattern(pattern string) (*regexp2.Regexp, error) {
-	re, err := regexp2.Compile(pattern, regexp2.ECMAScript)
-	if err != nil {
-		return nil, err
-	}
-	re.MatchTimeout = regexTimeout
-	return re, nil
-}
-
-func matchPattern(pattern *regexp2.Regexp, value string) bool {
-	if pattern == nil {
-		return false
-	}
-	matched, err := pattern.MatchString(value)
-	return err == nil && matched
 }
 
 // matchConnection applies this module's allowlist without borrowing another

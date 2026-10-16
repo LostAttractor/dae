@@ -65,7 +65,7 @@ func TestBodyRewriteMinimalFilters(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			rule := module.BodyRewrites[i]
 			rule.jq = testJQPool(t)
-			if !rule.Match(test.url) || rule.Match("https://unrelated.example/") {
+			if !rule.Match(t.Context(), test.url) || rule.Match(t.Context(), "https://unrelated.example/") {
 				t.Fatal("URL pattern did not retain its scope")
 			}
 			body, err := rule.Apply(context.Background(), []byte(test.input), 1<<20, testBodyMemory)

@@ -18,11 +18,26 @@ import (
 
 // Explain only evaluates immutable matchers and edits private header/URL copies.
 // It deliberately never enters Wrap, script execution or cache lookup paths.
-func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.Explanation {
+func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) (result plugin.Explanation) {
+	ctx = withRegexBudget(ctx)
+	wait, cancel := context.WithTimeout(ctx, e.options.ScriptTimeout)
+	release, err := e.acquire(wait, "diagnostics")
+	cancel()
+	if err != nil {
+		return plugin.Explanation{Complete: false, Steps: []api.ExplainStep{{ID: "budget", Stage: "surge", Status: "unknown", Match: "unknown", Reason: traceErrorReason(err)}}}
+	}
+	defer release()
+	defer func() {
+		if err := regexBudgetError(ctx); err != nil {
+			result.Complete = false
+			result.Steps = append(result.Steps, api.ExplainStep{ID: "budget", Stage: "surge", Status: "unknown", Match: "unknown", Reason: traceErrorReason(err)})
+			e.metrics.skip("diagnostics", traceErrorReason(err))
+		}
+	}()
 	if input.Kind == "dns" {
 		return e.explainDNS(ctx, input)
 	}
-	result := plugin.Explanation{Complete: true}
+	result = plugin.Explanation{Complete: true}
 	if input.Flow.HTTP == nil {
 		result.Complete = false
 		result.Steps = append(result.Steps, api.ExplainStep{ID: "request", Stage: "surge", Expression: "HTTP request", Status: "unknown", Match: "unknown", Reason: "missing_http_request"})
@@ -48,7 +63,10 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 		if hit {
 			step.Match, step.Reason = "match", "pattern_match"
 		}
-		if result.Terminal {
+		if err := regexBudgetError(ctx); err != nil {
+			step.Status, step.Match, step.Reason = "unknown", "unknown", traceErrorReason(err)
+			result.Complete = false
+		} else if result.Terminal {
 			step.Status, step.Reason = "not_reached", "earlier_local_response"
 		} else if !result.Complete {
 			step.Status, step.Reason = "conditional", "earlier_dynamic_action"
@@ -65,17 +83,17 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 	headers.Set("Host", cmp.Or(value.Host, u.Host))
 	for _, module := range scoped.options.Modules {
 		for i, rule := range module.HeaderRewrites {
-			if ctx.Err() != nil {
+			if regexBudgetError(ctx) != nil {
 				result.Complete = false
 				return result
 			}
 			if rule.Type != "http-request" {
 				continue
 			}
-			hit := rule.Match(value.URL)
+			hit := rule.Match(ctx, value.URL)
 			step := appendStep(module, "request_header", i, rule.Pattern+" -> "+rule.Action+" "+rule.Field, hit)
 			if hit && result.Complete {
-				if err := rule.Apply(headers); err != nil {
+				if err := rule.Apply(ctx, headers); err != nil {
 					step.Reason, step.Status, result.Complete = "rewrite_error: "+err.Error(), "unknown", false
 				}
 			}
@@ -89,11 +107,11 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 	rewritten := false
 	for _, module := range scoped.options.Modules {
 		for i, rule := range module.URLRewrites {
-			if ctx.Err() != nil {
+			if regexBudgetError(ctx) != nil {
 				result.Complete = false
 				return result
 			}
-			hit := rule.Match(value.URL)
+			hit := rule.Match(ctx, value.URL)
 			step := appendStep(module, "url", i, rule.Pattern+" -> "+rule.Type+" "+rule.Replacement, hit)
 			if rewritten {
 				step.Status, step.Reason = "not_reached", "earlier_url_rule"
@@ -103,7 +121,7 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 				continue
 			}
 			rewritten = true
-			target, err := rule.Rewrite(value.URL)
+			target, err := rule.Rewrite(ctx, value.URL)
 			if err != nil {
 				step.Status, step.Reason, result.Complete = "unknown", "rewrite_error: "+err.Error(), false
 				continue
@@ -124,7 +142,11 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 	}
 	for _, module := range scoped.options.Modules {
 		for i, rule := range module.MapLocals {
-			hit := rule.Match(value.URL)
+			if regexBudgetError(ctx) != nil {
+				result.Complete = false
+				return result
+			}
+			hit := rule.Match(ctx, value.URL)
 			step := appendStep(module, "map_local", i, rule.Pattern, hit)
 			if hit && result.Complete && !result.Terminal {
 				step.Action, step.Reason = "local_response", fmt.Sprintf("local_status_%d", rule.Status)
@@ -134,7 +156,11 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 	}
 	for _, module := range scoped.options.Modules {
 		for i, rule := range module.BodyRewrites {
-			hit := rule.Match(value.URL)
+			if regexBudgetError(ctx) != nil {
+				result.Complete = false
+				return result
+			}
+			hit := rule.Match(ctx, value.URL)
 			step := appendStep(module, rule.Type+"_body", i, rule.Pattern, hit)
 			if hit && !result.Terminal {
 				step.Status, step.Reason = "unknown", "body_required"
@@ -155,11 +181,11 @@ func (e *Engine) Explain(ctx context.Context, input api.ExplainRequest) plugin.E
 	selected := make(map[string]bool)
 	for _, module := range scoped.options.Modules {
 		for i, script := range module.Scripts {
-			if ctx.Err() != nil {
+			if regexBudgetError(ctx) != nil {
 				result.Complete = false
 				return result
 			}
-			hit := slices.ContainsFunc(urls, script.Match)
+			hit := slices.ContainsFunc(urls, func(rawURL string) bool { return script.Match(ctx, rawURL) })
 			step := appendStep(module, script.Type, i, script.Name+": "+script.Pattern, hit)
 			if selected[script.Type] {
 				step.Status, step.Reason = "not_reached", "earlier_script"
@@ -204,7 +230,7 @@ func (e *Engine) explainDNS(ctx context.Context, input api.ExplainRequest) plugi
 		var matched *HostEntry
 		for _, module := range e.options.Modules {
 			for i := range module.DNSHosts {
-				if ctx.Err() != nil {
+				if regexBudgetError(ctx) != nil {
 					result.Complete = false
 					return result
 				}

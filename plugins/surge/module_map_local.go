@@ -3,6 +3,7 @@
 package surge
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"mime"
@@ -26,7 +27,9 @@ type MapLocal struct {
 	pattern                 *regexp2.Regexp
 }
 
-func (r MapLocal) Match(rawURL string) bool { return matchPattern(r.pattern, rawURL) }
+func (r MapLocal) Match(ctx context.Context, rawURL string) bool {
+	return matchPattern(ctx, r.pattern, rawURL)
+}
 
 func parseMapLocal(line string, warnings *[]string) (*MapLocal, error) {
 	end := strings.IndexAny(line, " \t")
@@ -169,7 +172,7 @@ func mapLocalParameters(source string) (map[string]string, error) {
 func (e *Engine) mapLocal(r *http.Request) (*http.Response, error) {
 	for _, m := range e.options.Modules {
 		for i, rule := range m.MapLocals {
-			if !rule.Match(r.URL.String()) {
+			if !rule.Match(r.Context(), r.URL.String()) {
 				continue
 			}
 			e.traceRequest(r, "map_local_match", "module", m.Name, "rule", i+1, "status", rule.Status)

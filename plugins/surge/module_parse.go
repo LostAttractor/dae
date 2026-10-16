@@ -16,6 +16,8 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
+const maxModuleRegexRules = 1024
+
 var moduleArgumentPattern = regexp.MustCompile(`\{\{\{([^{}]+)\}\}\}`)
 
 // Parse parses module text after replacing #!arguments placeholders with their
@@ -142,6 +144,9 @@ func Parse(source string, overrides map[string]string) (*Module, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("module line %d: %w", lineNumber, err)
+		}
+		if m.regexRules() > maxModuleRegexRules {
+			return nil, fmt.Errorf("module exceeds %d regular expression rules", maxModuleRegexRules)
 		}
 	}
 	for _, host := range m.DNSHosts {
@@ -489,4 +494,17 @@ func rewriteFields(source string) ([]string, error) {
 		}
 	}
 	return fields, nil
+}
+
+func (m *Module) regexRules() int {
+	n := len(m.Scripts) + len(m.URLRewrites) + len(m.HeaderRewrites) + len(m.MapLocals) + len(m.BodyRewrites)
+	for _, rule := range m.HeaderRewrites {
+		if rule.valuePattern != nil {
+			n++
+		}
+	}
+	for _, rule := range m.BodyRewrites {
+		n += len(rule.replacements)
+	}
+	return n
 }

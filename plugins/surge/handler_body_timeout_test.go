@@ -41,7 +41,7 @@ func TestSurgeBufferedBodyTimeoutReplay(t *testing.T) {
 				var e *Engine
 				if phase == "body-rewrite" {
 					e = bodyRewriteEngine(t, 1<<20, ".value = 2")
-					e.options.Modules[0].BodyRewrites[0].Match("https://example.test/data")
+					e.options.Modules[0].BodyRewrites[0].Match(t.Context(), "https://example.test/data")
 				} else {
 					e = testProxyEngine(t, "[Script]\ntest=type="+phase+",pattern=.,requires-body=true,script-path=test.js", `$done({body:"must not replace original"});`)
 					e.matchScript(phase, httptest.NewRequest(http.MethodGet, "https://example.test/data", nil))

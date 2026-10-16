@@ -81,6 +81,7 @@ func compileBodyReplacement(pattern, template string) (bodyReplacement, error) {
 }
 
 func (r BodyRewrite) replaceText(ctx context.Context, body []byte, limit int64, budget *membuffer.Budget) (*membuffer.View, error) {
+	ctx = withRegexBudget(ctx)
 	if !utf8.Valid(body) {
 		return nil, fmt.Errorf("Body Rewrite requires valid UTF-8")
 	}
@@ -112,14 +113,15 @@ func (r bodyReplacement) apply(ctx context.Context, body []byte, limit int64, bu
 	}
 	defer memory.Close()
 	text := bytes.Runes(body)
-	match, err := r.pattern.FindRunesMatch(text)
-	if err != nil || match == nil {
-		return nil, err
-	}
 	w := &bodyRewriteWriter{ctx: ctx, Limit: limit, Budget: budget}
 	defer w.Close()
 	end := 0
-	for match != nil {
+	matched := false
+	for match, err := range regexBudgetFor(ctx).matches(ctx, r.pattern, text, -1) {
+		if err != nil {
+			return nil, err
+		}
+		matched = true
 		if err := w.writeRunes(text[end:match.Index]); err != nil {
 			return nil, err
 		}
@@ -137,10 +139,9 @@ func (r bodyReplacement) apply(ctx context.Context, body []byte, limit int64, bu
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		match, err = r.pattern.FindNextMatch(match)
-		if err != nil {
-			return nil, err
-		}
+	}
+	if !matched {
+		return nil, nil
 	}
 	if err := w.writeRunes(text[end:]); err != nil {
 		return nil, err

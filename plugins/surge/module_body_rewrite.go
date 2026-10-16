@@ -23,7 +23,9 @@ type BodyRewrite struct {
 	replacements []bodyReplacement
 }
 
-func (r BodyRewrite) Match(rawURL string) bool { return matchPattern(r.pattern, rawURL) }
+func (r BodyRewrite) Match(ctx context.Context, rawURL string) bool {
+	return matchPattern(ctx, r.pattern, rawURL)
+}
 
 func parseBodyRewrite(line string, warnings *[]string) (*BodyRewrite, error) {
 	fields, err := rewriteFields(line)
@@ -48,6 +50,9 @@ func parseBodyRewrite(line string, warnings *[]string) (*BodyRewrite, error) {
 		return nil, fmt.Errorf("Body Rewrite URL pattern: %w", err)
 	}
 	if !jq {
+		if (len(fields)-2)/2+1 > maxModuleRegexRules {
+			return nil, fmt.Errorf("Body Rewrite exceeds %d regular expression rules", maxModuleRegexRules)
+		}
 		for i := 2; i < len(fields); i += 2 {
 			replacement, err := compileBodyReplacement(fields[i], fields[i+1])
 			if err != nil {
