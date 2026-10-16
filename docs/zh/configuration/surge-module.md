@@ -4,7 +4,7 @@
 
 ## 配置与运行
 
-先[生成 CA 并让客户端安装、信任证书](mitm-certificate.md)，在主配置中加入：
+在主配置中加入以下设置。dae 自动初始化持久化 CA；让客户端[安装并信任证书](certificate.md)后再将其加入 `client_source_address`：
 
 ```text
 global {
@@ -16,8 +16,6 @@ mitm {
   enabled: true
   # 替换为已信任 CA 的客户端 MAC；全部启用填写 'all'。
   client_source_address: '02:00:00:00:00:50'
-  ca_cert: 'mitm-ca.pem'
-  ca_key: 'mitm-ca.key'
 }
 plugins {
   surge {
@@ -40,7 +38,7 @@ plugins {
 | `file:///opt/dae/demo.sgmodule` | 绝对路径 |
 | `http://`、`https://` | 优先联网；`global.resource_cache` 开启时保存完整模块及依赖快照，失败时整体回退 |
 
-`ca_cert`、`ca_key` 的相对路径也使用 `DAE_LOCATION_CACHE`。脚本持久存储默认开启，自动保存到该目录下的 `plugins/<实例ID>/surge-store.json`。模块内相对脚本及 Map Local 文件相对模块目录或重定向后的最终 URL；远程模块不能读本地文件，HTTPS 下载不能降级 HTTP。`global.resource_cache` 默认开启，适用于所有 HTTP(S) 模块和依赖；本地文件始终读取当前内容。缓存按来源和显式参数区分，与名称无关；写入和目录规则见[缓存目录](cache-directory.md#全局资源缓存)。
+自定义 CA 使用顶层 `certificate`；其中 `ca_cert`、`ca_key` 的相对路径使用 `DAE_LOCATION_CACHE`。脚本持久存储默认开启，自动保存到该目录下的 `plugins/<实例ID>/surge-store.json`。模块内相对脚本及 Map Local 文件相对模块目录或重定向后的最终 URL；远程模块不能读本地文件，HTTPS 下载不能降级 HTTP。`global.resource_cache` 默认开启，适用于所有 HTTP(S) 模块和依赖；本地文件始终读取当前内容。缓存按来源和显式参数区分，与名称无关；写入和目录规则见[缓存目录](cache-directory.md#全局资源缓存)。
 
 模块及脚本属于受信任配置，能够通过 dae 访问本地网络；`http_policies` 是出站预加载声明，不是权限白名单。只加载可信来源。模块或依赖使用 HTTP 时，日志及模块状态会警告传输内容可能被篡改；HTTP 跳转 HTTPS 和缓存回退不会消除该警告。HTTPS 模块不能引用 HTTP 依赖，模块和依赖的 HTTPS 下载也不能重定向至 HTTP。HTTPS 保护传输过程，不保证模块作者或内容可信。
 
@@ -185,7 +183,7 @@ DNS 脚本的预算包含等待执行名额；`$httpClient` 保留原 DNS 客户
 client_source_address: '-02:00:00:00:00:10,all'
 ```
 
-也可在[全局页面/API](api.md)的 **HTTPS Modules** 区域设置当前设备开关，设备覆盖优先于配置。安装步骤见[证书文档](mitm-certificate.md)。
+也可在[全局页面/API](api.md)的 **HTTPS Modules** 区域设置当前设备开关，设备覆盖优先于配置。安装步骤见[证书文档](certificate.md)。
 
 只启用已信任 CA 的设备；dae 不探测信任状态，也不在 TLS 失败后重试透传。未启用的客户端沿原路由透传。未知 MAC 可在配置中用 IP/CIDR 匹配。
 

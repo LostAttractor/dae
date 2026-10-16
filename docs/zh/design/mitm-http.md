@@ -89,9 +89,9 @@ ServeConn / ServePacketConn
 
 | 文件 | 职责 |
 | --- | --- |
-| `ca/authority.go` | CA 文件生成、读取与加载 |
-| `ca/tls.go` | ClientHello SNI 与接入身份绑定 |
-| `ca/certificate.go` | 唯一签发入口、主机校验、CA 有效期、LRU、签名及本地约束验证 |
+| `../ca/authority.go` | CA 文件生成、读取与加载 |
+| `../ca/tls.go` | ClientHello SNI 与接入身份绑定 |
+| `../ca/certificate.go` | 唯一签发入口、主机校验、CA 有效期、LRU、签名及本地约束验证 |
 | `certificate.go` | 组合 CA TLS 配置、禁用下游 ticket、记录选证书诊断；不重复实现签发策略 |
 | `http_authority.go` | 请求准入和按 incoming authority 选择插件链 |
 | `http_upstream.go` | 业务 authority 与网络目标分离、原计划固定 |
@@ -131,7 +131,7 @@ ServeConn / ServePacketConn
 
 ### 证书
 
-`ca/authority.go` 负责 CA 文件；`ca/tls.go` 校验原目标/SNI；`ca/certificate.go` 负责单主机签发。
+`../ca/authority.go` 负责 CA 文件；`../ca/tls.go` 校验原目标/SNI；`../ca/certificate.go` 负责单主机签发。
 签发缓存最多 256 项 LRU，叶证书有效期不超过 24 小时和 CA 到期时间，签发和缓存命中均检查 CA 有效期。
 保留 DER 解析和本地 CA 名称约束验证。证书选择与插件 scope、脚本类型和 `PreserveRoute` 无关。
 

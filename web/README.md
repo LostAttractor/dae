@@ -44,7 +44,7 @@ the daemon sees the development server's network connection, so device identity
 and LAN permissions apply to the computer running Vite. Run Vite on the same
 LAN computer as the browser when using device self-service.
 
-Certificate trust and transparent MITM tests require a direct browser connection
+HTTPS acceptance and transparent MITM tests require a direct browser connection
 to dae. The development page links to the running instance for those checks;
 certificate downloads remain available locally. Development configuration is
 excluded from production bundles.
@@ -158,7 +158,7 @@ pnpm run astryx component Button
 pnpm run astryx component TabList
 ```
 
-`certificate.ts` runs the current browser's CA and interception challenges.
+`certificate.ts` runs the current browser's CA trust and interception challenges.
 
 **Setting → Explain** checks connection routing, DNS policy, cached domain records,
 outbound nodes and HTTP plugins. Results start with a plain-language conclusion,
@@ -224,7 +224,7 @@ appears in the footer when administrator status is available.
 
 **HTTPS Modules** shows its combined state in a badge beside the heading, such as
 **Disabled (Default)** or **Enabled (Custom)**. Certificate installation and
-browser verification sit inside this section.
+browser verification occupy a separate subsection and remain available without MITM or a device MAC.
 They default to expanded in windows at least 768px wide and 600px tall, and
 collapsed on smaller screens. Until the user toggles the section, this default
 adapts to viewport changes. A manual choice is retained until the page is reloaded;
@@ -265,16 +265,41 @@ its aggregate counters and nodes inside a height-limited, scrollable region.
 Polling preserves expanded groups, keyboard focus and the list's scroll position;
 collapsed groups do not retain their node rows.
 
-CA challenges use HTTPS on the API port; MITM challenges use virtual IP:443
-origins advertised by the API. The page's CSP permits the test endpoints and paths, with exact IPv4 hosts. IPv6
+CA verification sends a same-origin `POST /api/certificate/tests` to issue a
+temporary certificate and new key held only in memory. It then reads
+`/api/certificate/tests/{id}` over HTTPS on the same API port and checks the
+challenge ID and CA fingerprint. A proof requires this or a newer challenge
+certificate for the initiating source/router IP pair. Management certificates
+and older challenge connections receive `409` and close; the browser retries up
+to eight times within a shared ten-second deadline. A previously accepted
+management certificate warning cannot validate the temporary leaf. This works
+from HTTP and HTTPS pages, independently of device identity and MITM state.
+Success consumes the challenge; unfinished challenges expire after one minute.
+Each source IP may have at most 8 pending challenges, with a global limit of 64;
+excess requests return `429`. Certificate validity includes five extra minutes
+for client clock skew, capped by CA expiry, without extending the challenge deadline.
+Once none remain for the address pair, new connections use the original
+management certificate again. Clients sharing a source IP share this temporary
+selection; other source IPs are unaffected. The daemon initializes a persistent
+CA when needed. Management certificates and keys also persist; tests never
+rewrite them, and ordinary restarts reuse them while discarding all challenges.
+HTTP and HTTPS serve the same page and API; only the challenge's HTTPS GET permits
+the initiating HTTP setup page at the same IP and port to read across protocols.
+Ordinary `/api/certificate` metadata remains same-origin.
+
+MITM challenges use virtual IP:443 origins advertised by the API. The page's CSP permits the test endpoints and paths, with exact IPv4 hosts. IPv6
 uses a CSP host wildcard because Chromium rejects literal IPv6 host sources;
 the request helper and daemon still require the exact advertised endpoint. Requests omit credentials, reject
 redirects, disable caching and use ordinary browser TLS verification. A positive
 MITM result requires both a matching browser proof and the daemon's interception
 observation. Virtual targets have no upstream service; incomplete verification
 cannot distinguish bypass from unreachable traffic. Results apply only to
-this browser and reset on changes to device identity, MITM setting, CA or test
-generation. Verification failures are not assumed to mean the CA is uninstalled.
+this browser. CA changes reset both results; changes to device identity, MITM setting or test
+generation reset only interception results. Success does not prove system-wide
+CA installation. Verification failures are not assumed to mean the CA is
+uninstalled. Users relying on a management certificate exception may temporarily
+lose new HTTPS connections while a challenge is pending; the page offers an
+HTTP setup link to install and trust the CA.
 
 With `global.api_key` configured, the header login form exchanges the key for an
 HttpOnly, SameSite=Strict session cookie lasting seven days; the page never stores

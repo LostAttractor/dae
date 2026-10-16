@@ -4,7 +4,7 @@
 
 - [页面/API](configuration/api.md)：设备集合、手动节点选择和 MITM 开关。
 - [MITM 插件配置](configuration/mitm-plugins.md)：宿主与具名实例；内置 [Surge Module](configuration/surge-module.md) 的[支持范围](configuration/surge-module-support.md)。
-- [CA 与客户端安装](configuration/mitm-certificate.md)、[缓存和持久化目录](configuration/cache-directory.md)。
+- [CA 与客户端安装](configuration/certificate.md)、[缓存和持久化目录](configuration/cache-directory.md)。
 - [rules / DNAT](configuration/destination-rules.md)：通过连接过滤条件覆盖拨号 IP，无需修改 DNS 应答。
 
 项目设计见[项目结构](design/project-structure.md)、[出站连通性与故障转移](design/outbound-connectivity.md)、[MITM HTTP 转发与证书身份](design/mitm-http.md)和[API 鉴权与访问控制](design/api-access-control.md)。开发参考包括[测试与性能测量](development/testing-and-performance.md)和[外部插件契约](../../component/plugin/README.md)。

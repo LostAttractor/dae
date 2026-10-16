@@ -28,7 +28,7 @@ routing {
 }
 ```
 
-`global.api_port` 默认 `0`，不监听；非零时在所有路由器地址提供 HTTP 页面与 API，独立于 MITM 插件。用实际局域网 IP 访问，例如 `http://192.168.1.1:9080/`。不支持域名、反向代理或跨源浏览器请求；改变端口或路由器地址后需重载。
+`global.api_port` 默认 `0`，不监听；非零时在所有路由器地址提供 HTTP 页面与 API；同一端口也提供完整的 HTTPS 页面与 API，使用 daemon 的本地 CA 签发路由器 IP 证书。默认自动初始化持久化 CA，无需开启 MITM；自定义路径见[本地 CA](certificate.md)。安装并信任 CA 后可用 `https://192.168.1.1:9080/` 访问。用实际局域网 IP 访问，例如 `http://192.168.1.1:9080/`。不支持域名、反向代理或跨源浏览器请求；改变端口或路由器地址后需重载。
 
 ## 使用与持久化
 
@@ -44,7 +44,7 @@ routing {
 - **This Device**：设备可自行加入多个 `client(name)` MAC 集合，仍按路由顺序匹配。API 连接必须经过 `global.lan_interface` 的入口，且入口源 MAC 与直连 ARP/NDP 邻居一致；接口名支持通配符，更换 MAC 后需重新加入。未通过身份检查时返回 `403`，登录后的节点列表和公开证书下载仍可用。
 - **This Device Status**：当前访问设备的活动/累计连接、上下行流量、最近一分钟速率和实际使用的出站。按入口 MAC 汇总 IPv4/IPv6；无需管理员登录。统计口径为用户态上游连接，包含 splice 加速连接，不包含内核直通、本地 HTTP/DNS 响应和 daemon 自身的后台请求。累计值跨 reload 保留，进程重启归零。
 - **Global Status**：版本、运行时间、全局连接与流量、出站/节点状态、域名表和插件状态，沿用管理权限。配置密钥时登录后可见，退出或会话失效时清除展示的数据。
-- **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](mitm-certificate.md)。**Test Certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
+- **HTTPS Modules**：设备开关覆盖 `mitm.client_source_address`，包括显式关闭。开启前须[安装并信任 CA](certificate.md)。**Test Certificate** 分别测试当前浏览器接受 CA 和透明 MITM 链路，结果只代表该浏览器。
 
 设备与已授权的全局状态在页面可见时每两秒刷新，速率沿用五秒采样、最多一分钟的历史。后台标签页暂停轮询；请求失败会显示更新时间和重试状态。
 
@@ -52,11 +52,11 @@ routing {
 
 `global.api_key` 为可选项。留空时，已验证的 LAN 连接获得完整管理权限，包括 selector、全局状态、其他设备设置、探测、已配置的脚本任务和资源刷新。以太网入口要求源 MAC 与直连 ARP/NDP 邻居一致；`tailscale0`、TUN 等纯 IP 接口要求当前连接有 `global.lan_interface` 的有效入口记录，无需 MAC 或直连邻居。此边界信任从该接口进入的所有来源，包括其他 VPN 节点和隧道后方的路由子网；`lan_interface` 本身不提供加密或用户认证。
 
-权限分为普通 LAN 设备和管理员：配置 `api_key` 后，未登录的 LAN 设备只能读取自身设置、流量与连接上下文，以及修改自身集合和 MITM 设置、执行自身证书测试。全局状态、其他设备、节点、所有诊断与路由影响预览均要求管理员权限；无密钥时所有已验证 LAN 连接都是管理员。网页仅向管理员显示诊断和路由影响入口，退出登录或权限失效会清除已加载的诊断内容。证书下载和 CA 元数据保持公开。
+权限分为普通 LAN 设备和管理员：配置 `api_key` 后，未登录的 LAN 设备只能读取自身设置、流量与连接上下文，以及修改自身集合和 MITM 设置、执行自身 MITM 测试。全局状态、其他设备、节点、所有诊断与路由影响预览均要求管理员权限；无密钥时所有已验证 LAN 连接都是管理员。网页仅向管理员显示诊断和路由影响入口，退出登录或权限失效会清除已加载的诊断内容。证书下载和 CA 元数据保持公开。
 
-每个请求都会验证权限。私网源 IP、转发头或旧 Cookie 不能代替入口记录。无法验证时返回 `403`，无密钥模式不签发会话。配置密钥后，所有 TCP 管理请求必须通过密钥/会话认证，此认证独立于 LAN 身份。Unix socket 使用文件系统权限。HTTP 会向传输路径上的观察者暴露密钥和可复用会话，应通过可信网络或独立加密隧道访问；证书测试的 TLS 分支不提供 HTTPS 管理接口。
+每个请求都会验证权限。私网源 IP、转发头或旧 Cookie 不能代替入口记录。无法验证时返回 `403`，无密钥模式不签发会话。配置密钥后，所有 TCP 管理请求必须通过密钥/会话认证，此认证独立于 LAN 身份。Unix socket 使用文件系统权限。HTTP 会向传输路径上的观察者暴露密钥和可复用会话；安装并信任 CA 后，应使用同一端口的 HTTPS 管理接口。HTTP 与 HTTPS 共用权限校验。
 
-没有以太网身份时，页面显示当前 IP 连接和入口接口，可读取连接上下文；只读诊断另需管理员权限。设备流量、MAC 集合成员变更与比较、设备 MITM 设置和证书测试仍要求可验证的以太网 MAC；管理员登录不能补充该身份。
+没有以太网身份时，页面显示当前 IP 连接和入口接口，可读取连接上下文；只读诊断另需管理员权限。设备流量、MAC 集合成员变更与比较、设备 MITM 设置和 MITM 测试仍要求可验证的以太网 MAC；管理员登录不能补充该身份。
 
 入口记录包含 TCP 端点、链路类型、时间戳和接口索引，必须在 30 秒内且对应 LAN 钩子仍已挂载。新的数据路径代次使用空记录表，保留数据路径的重载保留入口记录。IPv6 链路本地端点的 zone 必须沿接收方向经 VLAN、网桥或 bond 对应到观测入口。例如 `enp1s0f0np0 → lan（VLAN）→ br-lan` 可保留 `lan_interface: lan`。以太网设备身份还要求回程路由直连，且入口 MAC 与该路由接口的 ARP/NDP 邻居一致。
 
@@ -86,18 +86,18 @@ routing {
 
 ## 证书与 MITM 测试
 
-启用页面及带 CA 的 MITM 后，CA 测试复用 `global.api_port`：HTTP 提供页面/API，TLS 分支只提供 CA 挑战。透明 MITM 测试使用虚拟目标的 443 端口，由 `global.api_mitm_test_ipv4`（默认 `203.0.113.254`）和 `global.api_mitm_test_ipv6`（默认 `2001:db8:ffff::254`）指定。两项测试均不增加监听端口，也不依赖上游服务。
+启用页面后，HTTP 和 HTTPS 在 `global.api_port` 上共用页面/API，CA 信任测试使用新签发的服务器证书和短期挑战，不要求 MITM 或设备 MAC。daemon 和当前设备均开启 MITM 后可进一步验证透明解密。透明 MITM 测试使用虚拟目标的 443 端口，由 `global.api_mitm_test_ipv4`（默认 `203.0.113.254`）和 `global.api_mitm_test_ipv6`（默认 `2001:db8:ffff::254`）指定。两项测试均不增加监听端口，也不依赖上游服务。
 
-展开 **HTTPS Modules → Certificate & browser verification**，点击 **Test Certificate** 后：
+展开 **Certificate & browser verification**，点击 **Test Certificate** 后：
 
-1. 浏览器访问精确直通的 CA 测试端点，以当前 CA 签发的路由器 IP 证书完成 TLS 并读取随机挑战响应。设备 MITM 尚未开启时也可测试。
-2. 设备已开启 MITM 且第一步通过时，请求与页面地址同族的虚拟 IP，经正常透明捕获、设备开关判断和 TLS 解密，由内置 `dae-certificate-test` 插件校验入口 MAC 并直接响应，不拨号上游。同一设备访问路由器和虚拟目标时选择不同源 IP 也可验证。
+1. 浏览器同源请求 `POST /api/certificate/tests`，签发仅存于内存的临时证书和新密钥，再通过同一端口的 HTTPS 读取 `/api/certificate/tests/{id}`。服务端只接受发起源 IP 到该路由器 IP 使用本次或更新挑战证书完成的握手；管理证书或更早挑战的连接返回 `409` 并关闭，由浏览器重试。浏览器核对挑战 ID 和 CA 指纹，成功后 **CA trust** 显示 **CA trusted by this browser**。无需先打开 HTTPS 页面或接受证书警告。
+2. 设备已开启 MITM 且第一步通过时，请求与页面地址同族的虚拟 IP，经正常透明捕获、设备开关判断和 TLS 解密，由内置 `dae-mitm-test` 插件校验入口 MAC 并直接响应，不拨号上游。同一设备访问路由器和虚拟目标时选择不同源 IP 也可验证。
 
 虚拟地址须未被占用、流量能够到达 dae，且位于本地子网和其他软件的 Fake IP 池之外；与本地子网重叠的配置会被拒绝。不要将虚拟地址配置到路由器网卡上。如果网络在流量到达 dae 前丢弃默认文档保留地址段，须调整目标地址或路由。捕获严格限定为两个 IP 的 443 端口，API 流量仍由内核直通，无关流量沿用普通路由语义。
 
-测试不修改设备开关。挑战一分钟过期，配置发布后旧挑战失效；页面在 CA、测试代次、设备身份或开关变化时清除旧结果。结果附有测试时间和 CA 指纹，不代表设备所有应用的信任状态。浏览器不能区分证书拒绝、网络不通和部分浏览器策略限制时显示 **Verification incomplete**。
+测试不修改持久化管理证书、CA、MITM 证书缓存或设备开关。同一源 IP 最多有 8 个未完成信任挑战，全局最多 64 个，超额返回 `429`。挑战期限为一分钟，临时证书有效期另留五分钟时钟偏差余量，不超过 CA 到期时间，也不延长挑战期限。信任证明成功后消费挑战，一分钟内未完成则过期；临时证书随挑战移除，该源 IP 与路由器 IP 之间没有剩余挑战后，新连接恢复原管理证书。共享源 IP 的客户端会临时使用同一组挑战证书，其他源 IP 不受影响。透明 MITM 挑战及观测每个已验证 MAC 最多保留 8 条、全局最多 256 条，一分钟后过期，超额创建返回 `503`。CA 更换使信任挑战失效，MITM 配置发布使拦截挑战失效。CA 指纹变化清除两项结果，MITM 测试代次、设备身份或开关变化只清除透明 MITM 结果。结果附有测试时间和 CA 指纹，只代表当前浏览器。先前对管理证书添加的“接受风险”例外不能让挑战证书通过；依赖该例外的用户在挑战有效期内可能无法新建 HTTPS 连接，可回到 HTTP 安装页安装并信任 CA。浏览器不能区分证书拒绝、网络不通和部分浏览器策略限制时显示 **Verification incomplete**。
 
-请通过路由器的 IPv4 或非链路本地 IPv6 字面地址访问页面，无需外部网站或 DNS 映射。测试端点只接受发起页面的精确 Origin；普通 `/api/` 继续要求同源。浏览器根据 `/api/certificate` 的 `test_mitm_origins` 校验虚拟目标。新挑战使用新的 TLS 连接，不能由缓存响应或普通 HTTPS 可达性替代 MITM 验证。虚拟目标没有上游服务，因此 MITM 验证未完成时不能区分绕过和网络不通。
+请通过路由器的 IPv4 或非链路本地 IPv6 字面地址访问页面，无需外部网站或 DNS 映射。MITM 挑战只接受发起页面的精确 HTTP 或 HTTPS Origin。仅证书挑战的 HTTPS GET 允许同一 IP、同一端口的发起 HTTP 安装页读取；元数据与其他 API 继续要求同源。浏览器根据 `/api/certificate` 的 `mitm_test_origins` 校验虚拟目标。CA 元数据禁止缓存，CA 身份更换后旧 TLS 连接不能读取新 CA 的元数据，相同 CA 的重载保留连接。MITM 挑战完成后关闭连接，不能由缓存响应或普通 HTTPS 可达性替代 MITM 验证。虚拟目标没有上游服务，因此 MITM 验证未完成时不能区分绕过和网络不通。
 
 ## 导出 MAC 集合
 
@@ -134,8 +134,8 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `GET /api/status` | 运行时完整状态；TCP 配置密钥时需要 API key/会话，未配置时校验 LAN 入口；Unix socket 使用文件系统权限 |
 | `GET /api/device` | 当前设备的 IP、MAC、集合（`name`、`description`、`joined`）和 MITM 状态（`enabled`、`override`、`ca_fingerprint`）；无法识别 MAC 时 `403` |
 | `GET /api/device/status` | 当前设备设置及按 MAC 归属的用户态上游运行统计；仅已识别的直连 LAN 设备 |
-| `POST /api/device/certificate-tests` | 空正文，创建浏览器证书测试挑战；返回 `201`，不改变 MITM 设置 |
-| `GET /api/device/certificate-tests/{id}` | 当前设备的测试观测；过期、配置已更新或其他设备的挑战返回 `404` |
+| `POST /api/device/mitm-tests` | 空正文，创建当前设备的透明 MITM 测试挑战；返回 `201`，不改变 MITM 设置 |
+| `GET /api/device/mitm-tests/{id}` | 当前设备的测试观测；过期、配置已更新或其他设备的挑战返回 `404` |
 | `PUT` / `DELETE /api/device/sets/{name}` | 加入 / 退出集合 |
 | `PUT /api/device/mitm` | `{"enabled":true}` 开启，`false` 关闭 |
 | `DELETE /api/device/mitm` | 恢复配置 |
@@ -146,7 +146,9 @@ POST、PUT 和 DELETE 请求需 `X-Dae-API: 1`。JSON 正文需 `Content-Type: a
 | `POST /api/plugins/{instance}/scripts/run` | 需要管理权限；`{"module":"tools","script":"demo.tool"}` 触发已有 cron/generic 任务；返回 `202`、本任务运行编号及受理状态 |
 | `POST /api/resources/refresh` | 需要管理权限；空正文，立即尝试刷新当前配置的订阅、模块与依赖；返回 `202` 和受理状态 |
 | `GET /api/resources` | 需要管理权限；最近一次 API/自动刷新状态和下次自动检查时间 |
-| `GET /api/certificate` | CA 名称、SHA-256 指纹、`test_available` 和可选 `test_generation`；不可用时 `404` |
+| `POST /api/certificate/tests` | 创建一分钟有效的 CA 信任挑战，签发内存临时证书；不修改管理证书，不要求 MAC 或 MITM |
+| `GET /api/certificate/tests/{id}` | 仅 HTTPS；挑战证书握手返回 `id`、`ca_fingerprint`、`expires_at` 并消费挑战，管理证书或旧挑战连接 `409` 后关闭，已消费或失效挑战 `404` |
+| `GET /api/certificate` | CA 名称、SHA-256 指纹，以及可选 `mitm_test_generation`、`mitm_test_origins`；不可用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 下载公开证书，无需识别 MAC |
 
 MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状态。CA 更换后 MITM 修改返回 `409`，需刷新页面，核对、安装并信任当前证书。

@@ -1,12 +1,10 @@
 # 插件配置
 
-`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 证书、客户端开关和正文额度。默认构建包含 `surge`，支持 HTTP/DNS sgmodule；JavaScript 后端在编译时选择，默认为 QuickJS，也可用 `make SURGE_RUNTIME=nodejs` 选择 Node.js。自有插件在 `plugins/` 目录维护，与核心共用 Go 模块和版本。复制 [plugins.cfg.example](../../../plugins.cfg.example) 为本地 `plugins.cfg` 选择编译内容，按需取消可选插件条目的注释。本地配置与生成的注册表由 Git 忽略；没有本地配置时使用示例中的选择。高级 DNS 路由和缓存是两个可选插件，见 [DNS](dns.md)。
+`plugins` 独立管理有序插件实例，`mitm` 管理 HTTP 开关、客户端准入和正文额度；顶层 `certificate` 管理 API HTTPS 与 MITM 共用的 CA。默认构建包含 `surge`，支持 HTTP/DNS sgmodule；JavaScript 后端在编译时选择，默认为 QuickJS，也可用 `make SURGE_RUNTIME=nodejs` 选择 Node.js。自有插件在 `plugins/` 目录维护，与核心共用 Go 模块和版本。复制 [plugins.cfg.example](../../../plugins.cfg.example) 为本地 `plugins.cfg` 选择编译内容，按需取消可选插件条目的注释。本地配置与生成的注册表由 Git 忽略；没有本地配置时使用示例中的选择。高级 DNS 路由和缓存是两个可选插件，见 [DNS](dns.md)。
 
 ```text
 mitm {
   enabled: true
-  ca_cert: 'mitm-ca.pem'
-  ca_key: 'mitm-ca.key'
   client_source_address: '02:00:00:00:00:50'
 }
 plugins {
@@ -25,7 +23,7 @@ plugins {
 
 启动和重载会先检查全部启用实例的类型是否已编译，再调用 `Configure` 解析并校验各实例配置，得到运行资源工厂，之后才准备订阅、eBPF、连通性检查及远程模块。例如，后面的 bilijump 未编译时会立即报错，不必等前面的 Surge 模块下载。普通 `dae reload` 会刷新插件声明的外部资源，比较有效配置和资源内容，只重建变化的实例；内置 Surge 会比较模块及其依赖脚本内容。刷新失败时使用完整有效缓存或拒绝重载，不将资源失败解释为删除实例。静态校验或资源准备失败会保持当前控制平面，见[插件 API](../../../component/plugin/README.md#configuration-preflight-and-preparation)。
 
-`ca_cert`、`ca_key`、`client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。仅贡献 DNS、IP Host 或路由的实例无需 CA；启用 HTTP scope 时要求 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；模块及依赖缓存位于 `resources/surge`，由 `global.resource_cache` 统一控制。
+`client_source_address` 放在 `mitm`；module、store 和 JS 限制放在 Surge 实例中。开启 MITM 时 daemon 自动准备持久化 CA；指定已有证书使用顶层 `certificate`，见[本地 CA](certificate.md)。仅使用 DNS、IP Host 或路由插件且未开启 API、MITM 时不创建 CA。客户端开关只控制 HTTP/MITM。相对路径以 `DAE_LOCATION_CACHE` 为基准；模块及依赖缓存位于 `resources/surge`，由 `global.resource_cache` 统一控制。
 
 `buffer_memory_limit` 放在宿主，默认 `268435456`（256 MiB），按进程共享受管理的正文缓冲额度。它覆盖正文快照、Surge 解压和改写输出，以及脚本 HTTP 响应和待交付的回调数据；转发未完成、只读借用或请求重试仍需保留的数据继续计入额度。分配前申请，扩容同时计算新旧两份容量；额度不足立即返回，不持有部分额度等待其他请求。Surge 跳过当前处理并转发原文，已成功应用的前序规则保留；脚本 HTTP 请求通过回调报告失败。
 
@@ -57,7 +55,7 @@ HTTP/3 使用现有 CA、客户端开关与插件 scope，无需新增配置。�
 
 `dae plugins status` 汇总所有已启用实例，`--verbose`（`-v`）聚合各插件的完整 status 输出。整次命令只查询 daemon 一次，`--instance ID` 筛选实例。没有自定义 status 的插件展示完整 JSON 报告；渲染失败时保留原始报告并继续显示其他插件，命令最终返回错误。`--json` 输出完整插件报告，优先于 `-v`。
 
-`dae plugins surge status` 查看 Surge 模块状态；外部插件可注册命令，例如 `dae plugins bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`。证书命令仍为 `dae mitm ca`。状态字段见[页面/API](api.md)，编译见[构建说明](../../en/user-guide/build-by-yourself.md#external-plugins)，编写插件见[插件 API](../../../component/plugin/README.md)。
+`dae plugins surge status` 查看 Surge 模块状态；外部插件可注册命令，例如 `dae plugins bilijump status --instance personal`。没有自定义 status 的插件也有通用 status 命令。命令通过 Unix socket 查询 daemon，无需开启 `api_port`。证书命令为 `dae ca`。状态字段见[页面/API](api.md)，编译见[构建说明](../../en/user-guide/build-by-yourself.md#external-plugins)，编写插件见[插件 API](../../../component/plugin/README.md)。
 
 插件也可以通过 `Services.Metrics` 注册 Prometheus 指标，与核心指标一起由 `global.metrics_port` 暴露。内置 Surge 和独立的 dns-cache、dns-router 已提供指标；宿主统一添加 `plugin_type`、`plugin_instance` 标签。指标随实例重建而重置，详见[指标与 PromQL 示例](metrics.md)。
 

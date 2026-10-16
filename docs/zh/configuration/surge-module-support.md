@@ -1,6 +1,6 @@
 # Surge Module 支持范围
 
-`surge` 插件以 Surge script 兼容为目标，重点是 MITM 请求/响应脚本及其配套模块能力。使用方法见[配置指南](surge-module.md)，证书与设备开关见[证书文档](mitm-certificate.md)。以下按 [Surge Module](https://manual.nssurge.com/profile/module.html)、[HTTP 处理](https://manual.nssurge.com/http/overview.html)和[脚本 API](https://manual.nssurge.com/scripting/api.html)整理；未列出的功能不视为支持，加载无警告不等于完整兼容。
+`surge` 插件以 Surge script 兼容为目标，重点是 MITM 请求/响应脚本及其配套模块能力。使用方法见[配置指南](surge-module.md)，证书与设备开关见[证书文档](certificate.md)。以下按 [Surge Module](https://manual.nssurge.com/profile/module.html)、[HTTP 处理](https://manual.nssurge.com/http/overview.html)和[脚本 API](https://manual.nssurge.com/scripting/api.html)整理；未列出的功能不视为支持，加载无警告不等于完整兼容。
 
 执行职责、内核直通及 rule/event 的限制见[脚本兼容边界](../development/surge-compatibility.md)。
 

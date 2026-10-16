@@ -4,14 +4,14 @@
 
 | 内容 | 默认位置 |
 | --- | --- |
-| CA 命令默认文件 | `/var/lib/dae/mitm-ca.pem`、`mitm-ca.key` |
+| 托管 CA 与 CA 命令默认文件 | `/var/lib/dae/pki/ca.pem`、`ca.key` |
 | [页面/API](api.md) 的设备集合、selector 选择与 MITM 开关 | `/var/lib/dae/runtime-state.json` |
 | Surge `file:相对路径` 模块、相对 `ca_cert`、`ca_key` | 相对于 `/var/lib/dae` |
 | Surge 脚本存储（默认启用） | `/var/lib/dae/plugins/<实例 ID>/surge-store.json` |
 | HTTP(S) 模块及依赖缓存 | `/var/lib/dae/resources/surge/` |
 | HTTP(S) 订阅缓存 | `/var/lib/dae/resources/subscriptions/` |
 
-目录包含 CA 私钥和脚本存储，不能整体当作临时缓存清空。dae 按需创建写入目录，不会为缓存自动创建 `/etc/dae`；CA 只由显式 [generate 命令](mitm-certificate.md)生成。已有文件可继续用绝对路径引用，无需重新生成 CA。
+目录包含 CA 私钥和脚本存储，不能整体当作临时缓存清空。dae 按需创建写入目录，不会为缓存自动创建 `/etc/dae`；API 或 MITM 首次需要 CA 时自动初始化 `pki`，也可用 [generate 命令](certificate.md)预生成。已有目录异常不会自动修复或更换身份；显式 CA 路径只读取，绝不自动覆盖。
 
 主配置仍由 `-c` 指定，`include` 和订阅 `file:nodes.sub` 相对主配置目录。模块 `file:modules/demo.sgmodule` 则相对 `DAE_LOCATION_CACHE`。绝对路径统一使用三个斜线，如 `file:///run/secrets/dae/nodes.sub`，不受这些目录设置影响；不接受 `file://相对路径`。
 
@@ -56,4 +56,4 @@ systemd.services.dae = {
 };
 ```
 
-systemd 会准备 `/var/lib/dae`。自定义目录时，终端命令也需指定相同环境变量，例如 `sudo env DAE_LOCATION_CACHE=/srv/dae dae mitm ca info`；服务环境不会自动传入终端，改变服务环境后需重启。参见 [NixOS dae 模块](https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/networking/dae.nix)、[systemd 目录设置](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectory=)和[完整 Surge 配置](surge-module.md#配置与运行)。
+systemd 会准备 `/var/lib/dae`。自定义目录时，终端命令也需指定相同环境变量，例如 `sudo env DAE_LOCATION_CACHE=/srv/dae dae ca info`；服务环境不会自动传入终端，改变服务环境后需重启。参见 [NixOS dae 模块](https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/networking/dae.nix)、[systemd 目录设置](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectory=)和[完整 Surge 配置](surge-module.md#配置与运行)。

@@ -11,7 +11,8 @@ dae 以 eBPF 数据路径为基础，仅将代理流量、DNS 和明确规则命
 | `control` | 控制面、TCP/UDP 转发、内核资源交接；eBPF 位于 `kern` |
 | `component/routing`、`outbound` | 路由规则、目的地址计划、出站选择 |
 | `component/network`、`sniffing` | 接口管理与协议嗅探 |
-| `component/mitm`、`component/pluginhost`、`component/plugin` | 协议连接宿主、独立插件实例/后台任务/存储/指标所有权、公开 API；`mitm/ca` 管理证书 |
+| `component/ca` | CA 读写、原子初始化、公开导出与叶证书缓存；daemon 管理其生命周期，API 和 MITM 共用 |
+| `component/mitm`、`component/pluginhost`、`component/plugin` | 协议连接宿主、独立插件实例/后台任务/存储/指标所有权、公开 API |
 | `plugins/surge`、`plugins/dns-cache`、`plugins/dns-router` | sgmodule、DNS 应答缓存和 DNS 解析策略及传输 |
 | `pkg/outbound` | 客户端协议、传输、拨号链和会话基础能力；不依赖 dae 控制面或业务插件 |
 | `pkg/config_parser` | 配置解析基础能力；`grammar` 保存语法，`internal/dae_config` 保存生成的 Go 解析器 |

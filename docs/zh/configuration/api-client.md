@@ -55,7 +55,7 @@ dae selector proxy --json
 
 本地 socket 权限仍为 `0600`，不依赖 `global.api_port`。两种命令入口均不自动提权；访问默认 socket 时使用 `sudo` 或已有的文件系统权限。
 
-TCP 需要启用 [API 配置](api.md)。daemon 配置密钥时需设置 `DAE_API_KEY`；未配置时，已验证 LAN 入口的客户端可以无凭据查询状态，WAN 或无法识别的客户端会被拒绝。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。守护进程直接提供 HTTP；客户端支持 HTTPS 传输，但这不会给守护进程增加 TLS 或反向代理支持。
+TCP 需要启用 [API 配置](api.md)。daemon 配置密钥时需设置 `DAE_API_KEY`；未配置时，已验证 LAN 入口的客户端可以无凭据查询状态，WAN 或无法识别的客户端会被拒绝。客户端忽略环境中的 HTTP 代理，不跟随重定向，避免改变设备身份或把密钥发往其他地址。守护进程在同一 API 端口直接提供 HTTP 和 HTTPS；使用 HTTPS 客户端前，应让其信任 daemon 的 CA。不支持反向代理。
 
 Go SDK 自建 transport，不依赖应用对 `http.DefaultTransport` 的修改。成功响应上限为 32 MiB，错误正文上限为 8 KiB；错误正文过长时仍可通过 `client.Error.StatusCode` 判断 HTTP 状态。
 
@@ -123,7 +123,7 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 流量图表在 Overview 有采样数据时按需加载。构建产物包含 gzip 文件，dae 根据客户端支持情况直接提供，无需运行时压缩。`assets/` 下文件名含内容哈希的 JS/CSS 使用一年期不可变缓存，HTML 与其他文件使用 `no-store`。发布时应一并部署所有分块及 gzip 文件，不得修改已有哈希文件名对应的内容；需要支持已打开页面在更新后继续加载图表时，应保留旧的哈希资源。
 
-页面仍通过 `http://路由器IP:<api_port>/` 访问，由 dae 的 API 端口提供，浏览器直接连接路由器，因此现有的同源校验与设备 MAC 识别继续有效。独立构建不意味着可通过 `file://`、任意跨源静态站点或普通反向代理访问设备接口。`X-Forwarded-For` 等头不会改变设备身份。
+页面通过 `http://路由器IP:<api_port>/` 或信任 CA 后的 `https://路由器IP:<api_port>/` 访问，由 dae 的 API 端口提供，浏览器直接连接路由器，因此现有的同源校验与设备 MAC 识别继续有效。独立构建不意味着可通过 `file://`、任意跨源静态站点或普通反向代理访问设备接口。`X-Forwarded-For` 等头不会改变设备身份。
 
 `make` 和 `make test` 会通过 `make web-assets` 构建前端，并以产物替换 `internal/webui/assets/`，随后编译 Go。构建产物由 Git 忽略，只编辑 `web/src/`。直接执行 `go build` 或 `internal/webui`、`cmd` 的测试时，除了守护进程原有的构建前置步骤，还需先运行 `make web-assets`。仅构建或测试独立客户端时无需此步骤。
 
@@ -182,17 +182,21 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 | `GET /api/operations/{id}` | `Operation` | 管理权限；按 ID 查询，未知或过期 ID 返回 `404` |
 | `GET /api/device` | `DeviceState` | 仅 TCP，需识别直连 LAN 设备 |
 | `GET /api/device/status` | `DeviceStatus` | 当前设备设置、用户态上游流量与连接、按网络/出站汇总；仅直连 LAN |
-| `POST /api/device/certificate-tests` | `201` + `CertificateTest` | 空正文；创建当前浏览器的短期证书测试挑战 |
-| `GET /api/device/certificate-tests/{id}` | `CertificateTest` | 查询本设备的测试观测；过期或配置更新后 `404` |
+| `POST /api/device/mitm-tests` | `201` + `MITMTest` | 空正文；创建当前浏览器的短期透明 MITM 挑战 |
+| `GET /api/device/mitm-tests/{id}` | `MITMTest` | 查询本设备的测试观测；过期或配置更新后 `404` |
 | `PUT` / `DELETE /api/device/sets/{name}` | `DeviceState` | 加入 / 退出集合，空正文 |
 | `PUT /api/device/mitm` | `DeviceState` | `{"enabled":true}` 或 `{"enabled":false}` |
 | `DELETE /api/device/mitm` | `DeviceState` | 空正文，恢复配置 |
-| `GET /api/certificate` | `Certificate` | 公开 CA 名称、指纹、`test_available`、可选 `test_generation`；未启用时 `404` |
+| `POST /api/certificate/tests` | `CertificateTest` | 创建 CA 信任挑战，签发内存临时证书；不修改管理证书，只支持 TCP API |
+| `GET /api/certificate/tests/{id}` | `CertificateTest` | 临时证书的 HTTPS 握手证明，成功后消费挑战；管理证书或旧挑战连接 `409` 后关闭并重试 |
+| `GET /api/certificate` | `Certificate` | 公开 CA 名称、指纹、可选 `mitm_test_generation` 和 `mitm_test_origins`；未启用时 `404` |
 | `GET /ca.pem`、`/ca.cer`、`/ca.mobileconfig` | 证书文件 | 公开；未启用时 `404` |
 
 资源刷新 SDK 为 `RefreshResources(ctx)`，返回 `Operation`，通过 `Operation(ctx, id)` 查询该次请求的完成情况。`ResourceRefreshStatus(ctx)` 返回最近一次刷新的 `operation` 和 `next_check`。通用提交方法为 `SubmitOperation(ctx, api.OperationRequest{Kind: "reload"})`；`Abort` 仅用于 reload/suspend，非零 `ExpectedPID` 要求 daemon PID 匹配。刷新只使用已接受配置中的资源，配置文件修改使用 `dae reload`；详见[资源刷新](api.md#资源刷新)。
 
-设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。证书测试 SDK 为 `StartCertificateTest(ctx)` 和 `CertificateTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `CertificateTestProof`，校验 `id`、`ca_fingerprint`、`stage`，同时确认同源查询的服务端观测。`test_generation` 变化时清除旧结果，不能把服务端观测直接解释为整个设备信任 CA。
+设备运行状态 SDK 为 `DeviceStatus(ctx)`，统计按 MAC 归属，`scope` 为 `userspace_upstream`。MITM 测试 SDK 为 `StartMITMTest(ctx)` 和 `MITMTest(ctx, id)`；SDK 只创建/查询挑战，实际 HTTPS 请求必须从要测试的浏览器发起。挑战响应为 `MITMTestProof`，校验 `id`、`ca_fingerprint`，同时确认同源查询的服务端观测。`mitm_test_generation` 变化时只清除 MITM 结果。
+
+CA 信任独立通过同源 `POST /api/certificate/tests` 创建挑战，再以同一 API 端口的 HTTPS GET `/api/certificate/tests/{id}` 校验 ID 和 CA 指纹。POST 签发仅存内存的临时证书和新密钥，不修改持久化管理证书。GET 要求该源 IP 与路由器 IP 使用本次或更新挑战证书的握手，管理证书或更早挑战的连接返回 `409` 后关闭；重试仍须由被测浏览器执行。证明成功后消费挑战，已消费或过期的 ID 返回 `404`。挑战一分钟过期；该地址对没有剩余挑战后，新连接恢复管理证书。共享源 IP 的连接会临时使用同一组挑战证书。不要求设备身份，仅 CA 指纹变化时清除结果。浏览器成功和服务端观测都不能证明整个设备信任 CA。
 
 统一探测接口使用 `ProbeRequest`，SDK 为 `Probe(ctx, api.ProbeRequest{Outbound: "group", NodeID: "..."})`。响应 `ProbeResponse` 包含 `outbound`、`node_ids`，`202` 表示已受理；排队或进行中的重复请求会合并。使用出站配置的 DNS 探测、超时和并发限制，支持所有已实例化的受检测出站，不接受任意 URL 或请求级配置覆盖。selector 的结果继续从 `/api/selectors` 获取，其他出站从 `/api/status` 查看健康与延迟。
 
@@ -200,7 +204,7 @@ web 构建产物 ─── internal/webui（嵌入与托管）─── cmd（�
 
 所有 PUT 和 DELETE 请求需 `X-Dae-API: 1`，SDK 会自动携带。MITM 修改需 `X-Dae-MITM: <当前 CA SHA-256 指纹>`。配置 `global.api_key` 时，TCP 管理请求（包括 LAN 上的 selector 查询）需 `Authorization: Bearer <api_key>` 或有效会话，缺失/错误凭据返回 `401`。Go SDK 使用 `client.Options.APIKey`。未配置密钥时，每个 TCP 管理请求均须通过 LAN 入口校验（以太网还需直连邻居校验，纯 IP 接口使用入口记录并允许隧道后方子网），否则返回 `403`；无需提供凭据。密钥模式下浏览器可使用 `PUT /api/session` 签发的七天会话 Cookie，`DELETE /api/session` 清除 Cookie；两个会话接口均使用空正文，成功返回 `204`，无密钥访问不签发会话。Unix 上能连接 socket 的进程拥有本地管理权限，但无法通过 socket 操作“当前 LAN 设备”。
 
-门禁在读取请求正文、检查功能状态及查询资源之前执行，并将本次请求验证出的身份传给处理函数。管理员凭据不替代设备身份；设备上下文和规则解释只要求已验证 LAN 入口，成员管理、MITM 和证书测试还要求非零单播以太网 MAC。缺失或错误的密钥/会话返回 `401` 并携带 `WWW-Authenticate: Bearer realm="dae"`；LAN 或设备身份不满足要求返回 `403`。已通过门禁的请求才会得到资源不存在的 `404`；其他设备的证书测试也返回 `404`，避免透露其存在。未知路由仍为 `404`，公开证书接口不要求身份。
+门禁在读取请求正文、检查功能状态及查询资源之前执行，并将本次请求验证出的身份传给处理函数。管理员凭据不替代设备身份；设备上下文和规则解释只要求已验证 LAN 入口，成员管理、MITM 和 MITM 测试还要求非零单播以太网 MAC。缺失或错误的密钥/会话返回 `401` 并携带 `WWW-Authenticate: Bearer realm="dae"`；LAN 或设备身份不满足要求返回 `403`。已通过门禁的请求才会得到资源不存在的 `404`；其他设备的 MITM 测试也返回 `404`，避免透露其存在。未知路由仍为 `404`，公开证书接口不要求身份。
 
 名称按 URL 路径段编码；正文默认限制为 1 KiB，规则解释和成员影响预览为 64 KiB。有 JSON 时需 `Content-Type: application/json`，其余请求正文必须为空。`/api/*` 不接受查询参数，浏览器必须同源，TCP 的 Host 必须是实际连接到的路由器 IP 和端口。GET 路由也支持 HEAD。
 
