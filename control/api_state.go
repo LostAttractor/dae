@@ -41,15 +41,13 @@ func (c *ControlPlane) selectorState(group *outbound.DialerGroup) api.SelectorSt
 	for _, d := range group.Dialers {
 		status := d.RuntimeStatus()
 		node := api.SelectorNode{
-			ID: d.StatsID(), Name: d.Name, Healthy: status.Healthy,
+			Health: nodeHealthStatus(d.ChecksConnectivity(), status),
+			ID:     d.StatsID(), Name: d.Name, Healthy: status.Healthy,
 			Egress:   d.Egress,
 			Checking: status.Checking, Tested: !status.CheckedAt.IsZero(),
 			Tracking: status.CheckEnabled, CheckedAt: status.CheckedAt,
 		}
-		if status.Dormant {
-			node.Healthy = status.ObservedHealthy
-		}
-		if node.Healthy && status.HasLatency {
+		if node.Health == api.NodeHealthHealthy && status.HasLatency {
 			ms := float64(status.Latency.Last) / float64(time.Millisecond)
 			node.LatencyMS = &ms
 		}

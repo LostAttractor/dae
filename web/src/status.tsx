@@ -10,6 +10,7 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { createView } from "./react-view.ts";
 import { bytes } from "./traffic-data.ts";
 import { TrafficPanel } from "./traffic.tsx";
+import { nodeHealthLabels } from "./health.ts";
 import { UpdatedAt } from "./updated.tsx";
 
 function ConnectionMetrics({ stats, total = false }: { stats: PathStats; total?: boolean }) {
@@ -32,14 +33,14 @@ function GroupEntry({ group }: { group: GroupStatus }) {
   return <Collapsible className="status-entry" data-name={group.name} isOpen={open} onOpenChange={setOpen} chevronPosition="start"
     trigger={<span className="status-section-label"><strong>{group.name}</strong><span className="count">{group.nodes.length} node{group.nodes.length === 1 ? "" : "s"}</span></span>}>
     <div className="status-group-details">
-      <p className="status-entry-description">{group.policy || group.target_kind} · {group.connectivity || "No connectivity checks"}</p>
+      <p className="status-entry-description">{group.policy || group.target_kind} · {group.health}</p>
       <ConnectionMetrics stats={group.stats} />
       {open && (group.nodes.length ? <div className="status-node-section">
         <h4>Nodes</h4>
         <div className="status-nodes" tabIndex={0} role="region" aria-label={`${group.name} nodes`}>
           <ul>{group.nodes.map((node, index) => <li key={index}>
             <span className="status-node-name">{node.name}</span>
-            <span className="status-node-state">{node.checks_connectivity ? node.healthy ? "Healthy" : "Unavailable" : "Not monitored"}</span>
+            <span className="status-node-state">{nodeHealthLabels[node.health]}</span>
             <span className="status-node-count">{node.stats.active_connections} active</span>
           </li>)}</ul>
         </div>

@@ -47,7 +47,7 @@ func recentSelections(group api.GroupStatus) []string {
 	}
 	var visible uint8
 	for network, id := range group.SelectedNodeIDs {
-		if id != "" || groupNetworkSupport(group.Nodes, api.NetworkIndex(network)) == api.NetworkSupportConfirmed {
+		if id != "" || group.NetworkSupport(api.NetworkIndex(network)) == api.NetworkSupportConfirmed {
 			visible |= 1 << network
 		}
 	}

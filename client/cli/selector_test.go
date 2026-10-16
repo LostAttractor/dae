@@ -13,6 +13,32 @@ import (
 	"github.com/daeuniverse/dae/api"
 )
 
+func TestSelectorCLIUsesCanonicalHealth(t *testing.T) {
+	for _, test := range []struct {
+		health api.NodeHealth
+		want   string
+	}{
+		{api.NodeHealthUnknown, "not tested"},
+		{api.NodeHealthHealthy, "healthy"},
+		{api.NodeHealthConfirming, "confirming failure"},
+		{api.NodeHealthUnhealthy, "unavailable"},
+	} {
+		t.Run(string(test.health), func(t *testing.T) {
+			var output bytes.Buffer
+			group := api.SelectorState{Name: "proxy", Nodes: []api.SelectorNode{{
+				ID: "node", Name: "candidate", Health: test.health,
+				Healthy: test.health != api.NodeHealthHealthy, Tested: true, Checking: true,
+			}}}
+			if err := printSelector(&output, group, false); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), test.want+" (checking)") {
+				t.Fatalf("canonical health hidden by readiness/check activity: %s", output.String())
+			}
+		})
+	}
+}
+
 func TestSelectorCLIListsSelectsAndResets(t *testing.T) {
 	t.Setenv("DAE_API_KEY", "selector-secret")
 	state := api.SelectorState{Name: "proxy/香港", NodeID: "one", DefaultNodeID: "one", Nodes: []api.SelectorNode{

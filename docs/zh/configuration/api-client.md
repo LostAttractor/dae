@@ -225,7 +225,7 @@ CA 信任独立通过同源 `POST /api/certificate/tests` 创建挑战，再以�
 
 ## 状态字段与版本兼容
 
-当前 `StatusSnapshot.schema` 为 `13`。顶层 `direct_fallback_connections` 是单一的 direct fallback 计数；`PathStats` 只包含活动/累计连接、流量总量及历史，不包含 fallback 字段。Prometheus 的 `dae_fallback_connections_total` 是一条无标签的进程级计数。域名表的 `limit: 0` 表示用户态无容量上限，`breakdown.gc` 是按时间回收的 pair 数量；内核 `candidates` 表示容量选择前的候选 IP 数量。顶层 `buffer_memory` 提供进程级 body buffer 内存预算，没有活动插件时仍提供。插件报告位于 `plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。状态顶层不再包含 `surge` 字段。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
+当前 `StatusSnapshot.schema` 为 `14`。顶层 `direct_fallback_connections` 是单一的 direct fallback 计数；`PathStats` 只包含活动/累计连接、流量总量及历史，不包含 fallback 字段。Prometheus 的 `dae_fallback_connections_total` 是一条无标签的进程级计数。域名表的 `limit: 0` 表示用户态无容量上限，`breakdown.gc` 是按时间回收的 pair 数量；内核 `candidates` 表示容量选择前的候选 IP 数量。顶层 `buffer_memory` 提供进程级 body buffer 内存预算，没有活动插件时仍提供。插件报告位于 `plugins[].details`；Surge 报告提供 `enabled` 与 `modules`，独立 Surge 命令按实例汇总这些报告。状态顶层不再包含 `surge` 字段。客户端忽略新增响应字段，拒绝不支持的 schema、null 响应、重复 JSON 键与类型错误；请求中的未知字段仍被拒绝。不兼容的状态结构调整必须增加 schema。状态端点为 `/api/status`。
 
 节点延迟统计只包含成功探测。自动组的 `selection` 提供本组角色（选中、监测、备用）、有效优先级、有符号评分、已验证的恢复时长和测量时间。CLI 在故障期间显示 `[degraded]`，首次恢复成功后显示 `[recover 5s/30s verified]`，进度仅在成功探测后推进。状态列同时显示正在验证、排队或恢复观察期间下次 recheck 的实际倒计时。节点 `dormant` 为真才表示物理休眠，在状态列显示一次，历史延迟附带样本年龄；备用路径仍可共享其他组的监测，`recovery` 报告实际检查与重试。详见[自动节点选择](outbound-selection.md)。
 

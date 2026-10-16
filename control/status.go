@@ -136,6 +136,7 @@ func nodeAnnotationStatus(group *outbound.DialerGroup, node *dialer.Dialer) *api
 func newNodeStatus(paths pathStatsIndex, group *outbound.DialerGroup, node *dialer.Dialer) api.NodeStatus {
 	runtime := node.RuntimeStatus()
 	status := api.NodeStatus{
+		Health:             nodeHealthStatus(node.ChecksConnectivity(), runtime),
 		Revision:           runtime.Revision,
 		ObservedSessionSeq: runtime.ObservedSessionSeq,
 		Recovery: api.RecoverySnapshot{
@@ -218,6 +219,7 @@ func newGroupStatus(paths pathStatsIndex, group *outbound.DialerGroup, critical,
 		}
 		status.Nodes = append(status.Nodes, newNodeStatus(paths, group, node))
 	}
+	status.Health = groupHealthStatus(status)
 	return status
 }
 

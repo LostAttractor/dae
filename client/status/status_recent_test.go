@@ -26,6 +26,7 @@ func recentTestGroup() api.GroupStatus {
 		Policy:             "min_moving_avg",
 		ChecksConnectivity: true,
 		Connectivity:       api.GroupStateAvailable,
+		Health:             api.GroupHealthHealthy,
 		SelectedNodeIDs:    api.NetworkValues[string]{"hk", "hk", "hk", "hk"},
 		Nodes:              []api.NodeStatus{{ID: "hk", Name: "HK-01", Support: support}, {ID: "sg", Name: "SG-02", Support: support}},
 		Availability: api.GroupAvailability{
@@ -196,6 +197,7 @@ func TestRecentUncheckedAndUnobservedGroups(t *testing.T) {
 	}
 	group = recentTestGroup()
 	group.Availability.Seen = false
+	group.Health = api.GroupHealthWarning
 	group.Connectivity = api.GroupStateChecking
 	group.SelectedNodeIDs = api.NetworkValues[string]{}
 	got = renderRecentGroups([]api.GroupStatus{group})
@@ -283,6 +285,7 @@ func TestRecentGroupColors(t *testing.T) {
 		{api.GroupStateUnavailable, "DEGRADED", text.FgRed},
 	} {
 		group.Connectivity, group.Critical = tc.state, true
+		group.Health = api.GroupHealth(strings.ToLower(tc.label))
 		var out strings.Builder
 		PrintRecent(&out, &api.StatusSnapshot{StartedAt: time.Now(), Groups: []api.GroupStatus{group}})
 		first, _, _ := strings.Cut(out.String(), "\n")

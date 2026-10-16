@@ -26,6 +26,15 @@
       }
     },
     "schemas": {
+      "NodeHealth": {
+        "type": "string",
+        "enum": ["unknown", "healthy", "confirming", "unhealthy"],
+        "description": "Canonical observation state shared by status and selectors. Probe activity and physical dormancy are separate."
+      },
+      "GroupHealth": {
+        "type": "string",
+        "enum": ["healthy", "warning", "degraded"]
+      },
       "Availability": {
         "properties": {
           "alive": {
@@ -336,6 +345,7 @@
       },
       "GroupStatus": {
         "properties": {
+          "health": { "$ref": "#/components/schemas/GroupHealth" },
           "availability": {
             "$ref": "#/components/schemas/GroupAvailability"
           },
@@ -399,6 +409,7 @@
           }
         },
         "required": [
+          "health",
           "name",
           "target_kind",
           "policy",
@@ -651,6 +662,7 @@
       },
       "NodeStatus": {
         "properties": {
+          "health": { "$ref": "#/components/schemas/NodeHealth" },
           "dormant": {
             "type": "boolean",
             "description": "The physical transport has been released and is not being recreated. Omitted when false; independent of group-local selection tracking."
@@ -742,6 +754,7 @@
           }
         },
         "required": [
+          "health",
           "id",
           "name",
           "subtag",
@@ -807,6 +820,7 @@
       },
       "SelectorNode": {
         "properties": {
+          "health": { "$ref": "#/components/schemas/NodeHealth" },
           "egress": { "$ref": "#/components/schemas/NodeEgress" },
           "checked_at": {
             "type": "string",
@@ -844,6 +858,7 @@
           }
         },
         "required": [
+          "health",
           "id",
           "name",
           "healthy",
@@ -1000,7 +1015,7 @@
             "type": "array"
           },
           "schema": {
-            "const": 13,
+            "const": 14,
             "format": "int64",
             "type": "integer"
           },
@@ -1325,7 +1340,7 @@
     }
   },
   "info": {
-    "description": "Status schema 13. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests, except HTTPS certificate challenge proofs may be read by the initiating HTTP setup page on the same IP and port; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
+    "description": "Status schema 14. Direct fallback connections are a single process-lifetime counter outside path statistics. Node latency includes successful probes only; selection reports degradation and scoring independently. Domain tables report distinct retained domain/IP counts, kernel candidates and time-based GC; limit zero denotes unbounded userspace retention. TCP uses the router literal IP and configured api_port. The mode-0600 Unix socket /var/run/dae.sock provides local administration. Device self-service requires a direct TCP LAN connection. Mutations require X-Dae-API: 1. No query parameters; request bodies are limited to 1 KiB. Same-origin browser requests, except HTTPS certificate challenge proofs may be read by the initiating HTTP setup page on the same IP and port; forwarding headers are not trusted. Successful operations return JSON, except certificate downloads and session changes (204). GET routes also accept HEAD. Counters are process-lifetime; poll with backoff on 503 during reload.",
     "title": "dae runtime API",
     "version": "1.0.0"
   },

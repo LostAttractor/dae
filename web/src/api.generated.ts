@@ -1366,6 +1366,8 @@ export interface components {
             /** Format: double */
             up_ratio: number;
         };
+        /** @enum {string} */
+        GroupHealth: "healthy" | "warning" | "degraded";
         GroupStateWindow: {
             /** @description For checked groups, 10 oldest-first buckets spanning the last hour (6 minutes each); the worst state in each bucket. Unchecked groups have no history. */
             states: ("unknown" | "available" | "unavailable")[];
@@ -1377,6 +1379,7 @@ export interface components {
             /** @enum {string} */
             connectivity?: "available" | "checking" | "unavailable";
             critical: boolean;
+            health: components["schemas"]["GroupHealth"];
             name: string;
             /** @description Network order: tcp4, tcp6, udp4, udp6. */
             networks: components["schemas"]["PathStats"][];
@@ -1444,6 +1447,11 @@ export interface components {
             ipversion: 0 | 4 | 6;
             mark: number;
         };
+        /**
+         * @description Canonical observation state shared by status and selectors. Probe activity and physical dormancy are separate.
+         * @enum {string}
+         */
+        NodeHealth: "unknown" | "healthy" | "confirming" | "unhealthy";
         NodeStatus: {
             address: string;
             annotation?: components["schemas"]["NodeAnnotationStatus"] | null;
@@ -1454,6 +1462,7 @@ export interface components {
             dormant?: boolean;
             egress?: components["schemas"]["NodeEgress"];
             failure?: components["schemas"]["FailureSnapshot"];
+            health: components["schemas"]["NodeHealth"];
             healthy: boolean;
             id: string;
             latency?: components["schemas"]["LatencyStats"] | null;
@@ -1646,6 +1655,7 @@ export interface components {
             /** @description A test is queued/running, or the monitored node awaits its initial check. Untested dormant nodes are not checking. */
             checking: boolean;
             egress?: components["schemas"]["NodeEgress"];
+            health: components["schemas"]["NodeHealth"];
             healthy: boolean;
             id: string;
             latency_ms?: number | null;
@@ -1711,7 +1721,7 @@ export interface components {
              * Format: int64
              * @constant
              */
-            schema: 13;
+            schema: 14;
             /** Format: date-time */
             started_at: string;
             stats: components["schemas"]["PathStats"];

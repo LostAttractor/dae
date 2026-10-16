@@ -17,6 +17,7 @@ func TestDormantStatusPreservesMeasuredLatency(t *testing.T) {
 	now := time.Now()
 	node := testNodeStatus(now)
 	node.Healthy = false
+	node.Health = api.NodeHealthUnhealthy
 	node.Dormant = true
 	node.SessionDetail.State = "disconnected"
 	node.Selection = &api.SelectionStatus{Tracking: "standby", Degraded: true,
@@ -34,13 +35,15 @@ func TestDormantStatusPreservesMeasuredLatency(t *testing.T) {
 	}
 	node.Dormant = false
 	node.Recovery = api.RecoverySnapshot{Action: "verify", Phase: api.RecoveryBackoff, RetryAt: now.Add(10 * time.Second)}
-	if got := compactNodeState(node, now); got != "fail (recheck in 10.0s)" {
+	if got := compactNodeState(node, now); got != "unavailable (recheck in 10.0s)" {
 		t.Fatalf("standby hid a shared worker's actual health and retry: %s", got)
 	}
 	if got := fmt.Sprint(nodeLatency(node)); got != "-" {
 		t.Fatalf("unhealthy checking path displayed historical latency as current: %s", got)
 	}
-	node.Healthy = true
+	// A dormant transport can be unavailable while its latest observation is healthy.
+	node.Healthy = false
+	node.Health = api.NodeHealthHealthy
 	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryReady}
 	if label := annotatedNodeLabel(node, 0); !strings.Contains(label, "[recover 5s/30s verified]") || strings.Contains(label, "[degraded]") {
 		t.Fatalf("verified recovery did not display the observation window: %s", label)

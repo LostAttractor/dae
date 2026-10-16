@@ -17,35 +17,21 @@ import (
 	"golang.org/x/term"
 )
 
-type healthStatus string
+type healthStatus = api.GroupHealth
 
 const (
-	healthHealthy  healthStatus = "healthy"
-	healthWarning  healthStatus = "warning"
-	healthDegraded healthStatus = "degraded"
+	healthHealthy  = api.GroupHealthHealthy
+	healthWarning  = api.GroupHealthWarning
+	healthDegraded = api.GroupHealthDegraded
 
-	nodeHealthUnknown    = "unknown"
+	nodeHealthUnknown    = "not tested"
 	nodeHealthHealthy    = "healthy"
-	nodeHealthConfirming = "confirming"
-	nodeHealthUnhealthy  = "fail"
+	nodeHealthConfirming = "confirming failure"
+	nodeHealthUnhealthy  = "unavailable"
 )
 
 func groupHealth(group api.GroupStatus) healthStatus {
-	if !group.ChecksConnectivity {
-		return healthHealthy
-	}
-	if group.Connectivity == api.GroupStateAvailable {
-		for network := range api.NetworkIndex(api.NetworkTypeCount) {
-			if groupNetworkSupport(group.Nodes, network) == api.NetworkSupportConfirmed && !groupNetworkRoutable(group, network) {
-				return healthWarning
-			}
-		}
-		return healthHealthy
-	}
-	if group.Connectivity == api.GroupStateChecking || !group.Critical {
-		return healthWarning
-	}
-	return healthDegraded
+	return group.Health
 }
 
 func statusHealth(groups []api.GroupStatus) healthStatus {
@@ -61,20 +47,24 @@ func statusHealth(groups []api.GroupStatus) healthStatus {
 	return health
 }
 
-func nodeHealth(status api.NodeStatus) string {
-	if !status.ChecksConnectivity {
+// NodeHealthLabel renders the canonical observation for status and selectors.
+func NodeHealthLabel(health api.NodeHealth) string {
+	switch health {
+	case api.NodeHealthUnknown:
 		return nodeHealthUnknown
-	}
-	if status.ConfirmingFailure {
-		return nodeHealthConfirming
-	}
-	if !status.Availability.Seen {
-		return nodeHealthUnknown
-	}
-	if status.Healthy {
+	case api.NodeHealthHealthy:
 		return nodeHealthHealthy
+	case api.NodeHealthConfirming:
+		return nodeHealthConfirming
+	case api.NodeHealthUnhealthy:
+		return nodeHealthUnhealthy
+	default:
+		return string(health)
 	}
-	return nodeHealthUnhealthy
+}
+
+func nodeHealth(status api.NodeStatus) string {
+	return NodeHealthLabel(status.Health)
 }
 
 func formatUptime(duration time.Duration) string {

@@ -155,6 +155,8 @@ MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状�
 
 `POST /api/probes` 是统一的主动连通性探测入口，适用于已实例化且启用连通性检测的出站（包括 selector、自动选择组和直接引用的节点）。使用已配置的 DNS 探测、超时和并发限制，不接受任意测试 URL 或请求级配置覆盖。`202` 仅表示已受理，排队或进行中的重复请求会合并；不创建持久化任务，也不改变节点选择或 `track_all`。selector 通过 `GET /api/selectors` 查询 `checking`、`tested`、`checked_at`、`healthy`、`latency_ms`，其他出站通过 `/api/status` 查看运行时健康和延迟。未知出站为 `404`、不属于该出站的节点为 `400`、无需检测的内置出站为 `409`。
 
+节点与 selector 节点的 `health` 由服务端统一计算：`unknown`（未检测或尚无观测）、`healthy`、`confirming`（失败确认中）、`unhealthy`。休眠节点保留最近的健康观测；`healthy` 布尔值仍表示当前运行时可用性。组的 `health` 为 `healthy`、`warning` 或 `degraded`。客户端直接渲染 `health`；`checking` 单独表示探测活动。
+
 `SelectorState.track_all` 是配置的只读值。仅显式 `selector(n)` 返回 `default_node_id`；裸 selector 省略此字段，客户端应据此隐藏默认标记与重置操作。
 
 `node_id` 是当前实际使用的运行时节点 ID。有保存偏好时，`overridden` 为 `true`，并返回 `saved_selection` 的 `name` 和 `status`（`matched`、`missing`、`ambiguous`）。后两种状态表示保留偏好并使用临时初始选择；客户端不能把当前 `node_id` 误当作新的保存偏好。
@@ -165,7 +167,7 @@ MITM 的 `override` 为 `null` 时继承配置。修改后重新查询对应状�
 
 Surge 的 `plugins[].details.notifications` 包含每个实例按脚本各保留的最近 50 条 `$notification.post` 通知，最新在前，没有通知时省略。脚本身份由 `module`、`script` 和 `script_type` 共同确定。字段为 `id`、`created_at`、`module`、`script`、`script_type`、`title`、`subtitle`、`body`，超长文本带 `truncated: true`。记录独立于日志级别和脚本成功与否，重载后清空。`dae plugins surge status` 默认每脚本显示 3 条；`surge status -v`、`plugins status -v` 和 JSON 返回全部保留记录。详见[近期通知](surge-module.md#近期通知)。
 
-daemon 的状态 schema 为 13，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且成功建立的连接；路径、组和节点统计不含 fallback 字段。域名表报告时间 GC 和内核候选数量，用户态 `limit: 0` 表示无容量上限。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。节点延迟只包含成功样本，自动组通过 `selection` 提供故障降级和选择评分。CLI 与 daemon 应使用同一版本。
+daemon 的状态 schema 为 14，通过 Unix socket `/var/run/dae.sock` 的 `/api/status` 提供，供 `dae status`、`dae plugins status` 和插件命令使用，无需开启 `global.api_port`。顶层 `direct_fallback_connections` 统计进程生命周期内因无可用节点而回退到 direct 且成功建立的连接；路径、组和节点统计不含 fallback 字段。域名表报告时间 GC 和内核候选数量，用户态 `limit: 0` 表示无容量上限。Registry 的 `used` 是域名–IP 配对数；`breakdown` 包含域名数 `domains`、去重地址数 `ips`、地址类型分布 `ipv4` / `ipv6` 和累计回收配对数 `gc`。`plugins` 列出实例 ID、类型、宿主生命周期状态和规则数量。可选 `details` 由插件定义，Surge 提供 `enabled`、`modules`。节点延迟只包含成功样本，自动组通过 `selection` 提供故障降级和选择评分。CLI 与 daemon 应使用同一版本。
 
 `dae plugins status --json` 输出进程级 `buffer_memory` 和完整 `plugins`，没有活动实例时仍保留内存统计；`dae plugins <类型> status --instance <ID>` 查询单个实例。插件自动状态排除配置凭据；通知字段保留脚本显式提交的文本，使用相同的管理访问权限。
 

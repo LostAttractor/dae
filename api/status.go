@@ -7,7 +7,7 @@ package api
 
 import "time"
 
-const StatusSchemaVersion = 13
+const StatusSchemaVersion = 14
 
 type NetworkValues[T any] [NetworkTypeCount]T
 
@@ -43,6 +43,7 @@ type TableUsageBreakdown struct {
 }
 
 type GroupStatus struct {
+	Health             GroupHealth              `json:"health"`
 	Name               string                   `json:"name"`
 	TargetKind         string                   `json:"target_kind"`
 	Policy             string                   `json:"policy"`
@@ -58,6 +59,7 @@ type GroupStatus struct {
 }
 
 type NodeStatus struct {
+	Health             NodeHealth                         `json:"health"`
 	Revision           uint64                             `json:"revision"`
 	ObservedSessionSeq uint64                             `json:"observed_session_seq"`
 	SessionDetail      *SessionStatus                     `json:"session_detail,omitempty"`
@@ -71,8 +73,8 @@ type NodeStatus struct {
 	Annotation         *NodeAnnotationStatus              `json:"annotation,omitempty"`
 	Egress             *NodeEgress                        `json:"egress,omitempty"`
 	ChecksConnectivity bool                               `json:"checks_connectivity"`
-	InitialCheckDone   bool                               `json:"-"` // Current runtime only, for startup logs.
-	Healthy            bool                               `json:"healthy"`
+	InitialCheckDone   bool                               `json:"-"`       // Current runtime only, for startup logs.
+	Healthy            bool                               `json:"healthy"` // Runtime readiness; render Health for the latest observation.
 	Dormant            bool                               `json:"dormant,omitzero"`
 	ConfirmingFailure  bool                               `json:"confirming_failure"`
 	Availability       Availability                       `json:"availability"`

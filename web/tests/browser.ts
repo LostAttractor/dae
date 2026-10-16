@@ -101,10 +101,10 @@ let renewAPILeaf: () => Promise<void>;
 
 function statusGroups(stats: FixtureStats): FixtureGroup[] {
   return [
-    { name: "direct", target_kind: "builtin", stats, nodes: [{ name: "direct", checks_connectivity: false, stats }] },
-    { name: "proxy_jp", policy: "min_moving_avg", connectivity: "available", stats, nodes: [
-      { name: "Tokyo premium → IPv6", checks_connectivity: true, healthy: true, stats },
-      { name: "Osaka backup", checks_connectivity: true, healthy: false, stats: { active_connections: 0 } },
+    { name: "direct", target_kind: "builtin", health: "healthy", stats, nodes: [{ name: "direct", checks_connectivity: false, health: "unknown", stats }] },
+    { name: "proxy_jp", policy: "min_moving_avg", health: "healthy", connectivity: "available", stats, nodes: [
+      { name: "Tokyo premium → IPv6", checks_connectivity: true, healthy: true, health: "healthy", stats },
+      { name: "Osaka backup", checks_connectivity: true, healthy: false, health: "unhealthy", stats: { active_connections: 0 } },
     ] },
   ];
 }
@@ -118,7 +118,7 @@ function lastRequest(): RecordedRequest {
 function resetFixture() {
   const nodes = Array.from({ length: 1000 }, (_, i) => ({
     id: `node-${i}`, name: i < 3 ? ["Hong Kong", "Tokyo", "Singapore"][i] : `Node ${i} · ${"Long subscription name ".repeat(4)}`,
-    healthy: i === 0, tested: i === 0, tracking: i === 0, checking: false,
+    health: i === 0 ? "healthy" as const : "unknown" as const, healthy: i === 0, tested: i === 0, tracking: i === 0, checking: false,
     ...(i === 0 ? { latency_ms: 28.5, checked_at: "2026-09-22T00:00:00Z" } : {}),
   }));
   fixture = {
@@ -1115,12 +1115,14 @@ try {
     assert.equal(await js('document.querySelectorAll(".selector-node:not([hidden])").length'), 1);
     await js('document.querySelector(".selector-node:not([hidden]) .test-node").click()');
     await ready();
-    assert.equal(await js('document.querySelector(".selector-node:not([hidden]) .node-health").textContent'), "Testing…");
+    assert.equal(await js('document.querySelector(".selector-node:not([hidden]) .node-latency").textContent'), "Testing…");
+    assert.equal(await js('document.querySelector(".selector-node:not([hidden]) .node-health").textContent'), "Not tested");
     assert.equal(await js('document.querySelector(".node-search input") === searchInput && searchInput.value === "Tokyo"'), true);
     fixture.selectors[0].nodes[1].checking = false;
     fixture.selectors[0].nodes[1].tested = true;
     fixture.selectors[0].nodes[1].healthy = true;
-    await until('document.querySelector(".selector-node:not([hidden]) .node-health").textContent === "Available"');
+    fixture.selectors[0].nodes[1].health = "healthy";
+    await until('document.querySelector(".selector-node:not([hidden]) .node-health").textContent === "Healthy"');
     await js('document.querySelector(".selector-node:not([hidden]) .select-node").click()');
     await ready();
     await until('document.querySelectorAll(".selector-node").length === 0');
@@ -1775,10 +1777,10 @@ try {
 
   await test("expanded outbound details preserve focus and scrolling across polls", async () => {
     fixture.groups = [
-      { name: "proxy_jp", policy: "min_moving_avg", connectivity: "available", stats: fixture.stats, nodes: Array.from({ length: 80 }, (_, index) => ({
-        name: `Japan premium dedicated connection ${index + 1} → lightsail [IPv6]`, checks_connectivity: true, healthy: true, stats: { active_connections: 0 },
+      { name: "proxy_jp", policy: "min_moving_avg", health: "healthy", connectivity: "available", stats: fixture.stats, nodes: Array.from({ length: 80 }, (_, index) => ({
+        name: `Japan premium dedicated connection ${index + 1} → lightsail [IPv6]`, checks_connectivity: true, healthy: true, health: "healthy", stats: { active_connections: 0 },
       })) },
-      { name: "direct", target_kind: "builtin", stats: fixture.stats, nodes: [] },
+      { name: "direct", target_kind: "builtin", health: "healthy", stats: fixture.stats, nodes: [] },
     ];
     await call("Emulation.setDeviceMetricsOverride", { width: 1366, height: 1000, deviceScaleFactor: 1, mobile: false });
     await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
@@ -1793,6 +1795,10 @@ try {
     assert.equal(await js('(() => { const list = document.querySelector("#global-groups .status-nodes"); return list.scrollHeight > list.clientHeight && list.clientHeight <= 320; })()'), true);
     assert.equal(await js('(() => { const device = document.querySelector("#device-status").getBoundingClientRect(); const global = document.querySelector("#global-status").getBoundingClientRect(); return device.bottom < global.top && device.left === global.left; })()'), true);
     await js('document.querySelector("#global-groups .status-nodes").scrollTop = 120');
+    fixture.groups[0].nodes[0].health = "unknown";
+    fixture.groups[0].nodes[1].health = "confirming";
+    await until('openGroup.querySelectorAll(".status-node-state")[0].textContent === "Not tested"');
+    assert.equal(await js('openGroup.querySelectorAll(".status-node-state")[1].textContent'), "Confirming failure");
     fixture.groups[0].nodes[20].stats.active_connections = 41;
     await until('openGroup.querySelectorAll(".status-nodes li")[20].textContent.includes("41 active")');
     assert.equal(await js('(openGroup.querySelector(".astryx-collapsible-trigger").getAttribute("aria-expanded") === "true") && document.activeElement === openGroup.querySelector(".astryx-collapsible-trigger")'), true);

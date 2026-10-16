@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/daeuniverse/dae/api"
+	"github.com/daeuniverse/dae/client/status"
 	"github.com/spf13/cobra"
 )
 
@@ -140,14 +141,9 @@ func printSelector(w io.Writer, group api.SelectorState, raw bool) error {
 		if node.ID == group.NodeID {
 			selected = "*"
 		}
-		state := "not tested"
-		switch {
-		case node.Checking:
-			state = "checking"
-		case node.Tested && node.Healthy:
-			state = "available"
-		case node.Tested:
-			state = "unavailable"
+		state := status.NodeHealthLabel(node.Health)
+		if node.Checking {
+			state += " (checking)"
 		}
 		if node.ID == group.DefaultNodeID {
 			state += ", default"

@@ -12,6 +12,7 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 	now := time.Unix(1800000000, 0)
 	node := testNodeStatus(now)
 	node.Healthy = false
+	node.Health = api.NodeHealthUnhealthy
 	node.Recovery = api.RecoverySnapshot{
 		Phase: api.RecoveryBackoff, Attempt: 2,
 		RetryAt: now.Add(1700 * time.Millisecond),
@@ -20,7 +21,7 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 	for _, verbose := range []bool{false, true} {
 		_, rows := nodeTable(group, verbose, now)
 		column := 2
-		want := "fail (retry #3 in 1.7s)"
+		want := "unavailable (retry #3 in 1.7s)"
 		if verbose {
 			column = 14
 			want = "retry #3 in 1.7s"
@@ -44,11 +45,17 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 		{true, true, "", api.RecoveryReady, "healthy", "\x1b[32m"},
 		{true, true, "verify", api.RecoveryVerifying, "healthy (verifying connectivity)", "\x1b[32m"},
 		{true, true, "verify", api.RecoveryBackoff, "healthy (recheck in 1.7s)", "\x1b[32m"},
-		{false, true, "connect", api.RecoveryBackoff, "fail (retry #3 in 1.7s)", "\x1b[31m"},
-		{false, false, "connect", api.RecoveryConnecting, "unknown (connecting #2)", "\x1b[33m"},
+		{false, true, "connect", api.RecoveryBackoff, "unavailable (retry #3 in 1.7s)", "\x1b[31m"},
+		{false, false, "connect", api.RecoveryConnecting, "not tested (connecting #2)", "\x1b[33m"},
 	} {
 		status := node
 		status.Healthy, status.Availability.Seen = test.healthy, test.seen
+		status.Health = api.NodeHealthUnhealthy
+		if !test.seen {
+			status.Health = api.NodeHealthUnknown
+		} else if test.healthy {
+			status.Health = api.NodeHealthHealthy
+		}
 		status.Recovery.Action, status.Recovery.Phase = test.action, test.phase
 		_, rows := nodeTable(api.GroupStatus{Nodes: []api.NodeStatus{status}}, false, now)
 		got := rows[0][2].(string)
@@ -73,7 +80,7 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 		t.Fatalf("unchecked recovery = %q", got)
 	}
 	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryBlocked, Action: "replenish", BlockedBy: "auth"}
-	if got := compactNodeState(node, now); got != "fail (blocked: auth; check configuration)" {
+	if got := compactNodeState(node, now); got != "unavailable (blocked: auth; check configuration)" {
 		t.Fatalf("blocked recovery = %q", got)
 	}
 	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryQueued, Action: "replenish", BlockedBy: "connectivity_slot"}
@@ -81,17 +88,19 @@ func TestStatusRecoveryUsesActualDeadlineAndExecutor(t *testing.T) {
 		t.Fatalf("capacity queue = %q", got)
 	}
 	node.Healthy = true
+	node.Health = api.NodeHealthHealthy
 	node.ConfirmingFailure = true
+	node.Health = api.NodeHealthConfirming
 	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryQueued, Action: "verify", BlockedBy: "failure_confirmation"}
-	if got := compactNodeState(node, now); got != "confirming (recheck queued)" {
+	if got := compactNodeState(node, now); got != "confirming failure (recheck queued)" {
 		t.Fatalf("pending failure confirmation was hidden: %q", got)
 	}
 	node.Recovery.BlockedBy = "connectivity_slot"
-	if got := compactNodeState(node, now); got != "confirming (queued for check slot)" {
+	if got := compactNodeState(node, now); got != "confirming failure (queued for check slot)" {
 		t.Fatalf("failure confirmation waiting for a slot was hidden: %q", got)
 	}
 	node.Recovery = api.RecoverySnapshot{Phase: api.RecoveryVerifying, Action: "verify"}
-	if got := compactNodeState(node, now); got != "confirming (verifying connectivity)" {
+	if got := compactNodeState(node, now); got != "confirming failure (verifying connectivity)" {
 		t.Fatalf("active failure confirmation was hidden: %q", got)
 	}
 }

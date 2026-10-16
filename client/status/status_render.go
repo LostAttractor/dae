@@ -74,7 +74,7 @@ func annotatedNodeLabel(status api.NodeStatus, index int) string {
 	label := nodeLabel(status, index)
 	if selection := status.Selection; selection != nil {
 		if selection.Degraded {
-			if status.Healthy && !status.ConfirmingFailure {
+			if status.Health == api.NodeHealthHealthy {
 				label += fmt.Sprintf(" [recover %s/%s verified]", selection.RecoveryElapsed.Round(time.Millisecond), selection.FailureRecovery)
 			} else {
 				label += " [degraded]"
@@ -108,37 +108,8 @@ func annotatedNodeLabel(status api.NodeStatus, index int) string {
 	return label + " [" + strings.Join(parts, ",") + "]"
 }
 
-func groupNetworkSupport(nodes []api.NodeStatus, network api.NetworkIndex) api.NetworkSupportState {
-	support := api.NetworkSupportUnsupported
-	for _, node := range nodes {
-		switch node.Support[network] {
-		case api.NetworkSupportConfirmed:
-			return api.NetworkSupportConfirmed
-		case api.NetworkSupportUnknown:
-			support = api.NetworkSupportUnknown
-		}
-	}
-	return support
-}
-
-func groupNetworkRoutable(group api.GroupStatus, network api.NetworkIndex) bool {
-	if group.SelectedNodeIDs[network] != "" {
-		return true
-	}
-	dynamicPolicy := group.Policy != "" && group.Policy != "fixed"
-	if !dynamicPolicy {
-		return false
-	}
-	for _, node := range group.Nodes {
-		if node.Healthy && node.Support[network] == api.NetworkSupportConfirmed {
-			return true
-		}
-	}
-	return false
-}
-
 func networkStatusRow(group api.GroupStatus, network api.NetworkIndex) table.Row {
-	support := groupNetworkSupport(group.Nodes, network)
+	support := group.NetworkSupport(network)
 	route := colorNetworkSupport(support)
 	selectedID := group.SelectedNodeIDs[network]
 	for index, node := range group.Nodes {
@@ -148,7 +119,7 @@ func networkStatusRow(group api.GroupStatus, network api.NetworkIndex) table.Row
 		}
 	}
 	if selectedID == "" && support == api.NetworkSupportConfirmed {
-		if groupNetworkRoutable(group, network) {
+		if group.NetworkRoutable(network) {
 			route = colorize("available", text.FgGreen)
 		} else {
 			route = colorize("down", text.FgRed)
@@ -333,7 +304,7 @@ func uncheckedNetworkRows(group api.GroupStatus) []table.Row {
 func checkedNetworkRows(group api.GroupStatus, verbose bool) []table.Row {
 	rows := make([]table.Row, 0, api.NetworkTypeCount)
 	for index := range api.NetworkIndex(api.NetworkTypeCount) {
-		support := groupNetworkSupport(group.Nodes, index)
+		support := group.NetworkSupport(index)
 		if !verbose && support != api.NetworkSupportConfirmed {
 			continue
 		}

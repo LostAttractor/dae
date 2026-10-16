@@ -29,7 +29,7 @@ func TestStatusWireRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":13`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
+	for _, field := range []string{`"last":30000000`, `"last_failure_duration":1000000000`, `"schema":14`, `"plugins":`, `"direct_fallback_connections":9007199254740993`} {
 		if !strings.Contains(string(payload), field) {
 			t.Fatalf("wire representation missing %s", field)
 		}

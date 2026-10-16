@@ -1,3 +1,4 @@
+import { nodeHealthLabels } from "./health.ts";
 import type { KeyboardEvent } from "react";
 import type { APIRequest, RunAction, SelectorNode, SelectorState, Page, SettingSection } from "./types.ts";
 
@@ -11,13 +12,8 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createView } from "./react-view.ts";
 
-const healthLabels = { empty: "No selected node", checking: "Testing…", unknown: "Not tested", healthy: "Available", unavailable: "Unavailable" };
-function healthState(node?: SelectorNode) {
-  if (!node) return "empty";
-  if (node.checking) return "checking";
-  if (!node.tested) return "unknown";
-  return node.healthy ? "healthy" : "unavailable";
-}
+const healthLabels = { empty: "No selected node", ...nodeHealthLabels };
+const healthState = (node?: SelectorNode) => node?.health ?? "empty";
 const latencyLabel = (node?: SelectorNode) => typeof node?.latency_ms === "number" && Number.isFinite(node.latency_ms) ? `${Math.round(node.latency_ms)} ms` : "";
 const checkedLabel = (node?: SelectorNode) => node?.checked_at ? `Last tested ${new Date(node.checked_at).toLocaleString()}` : "";
 const monitoringLabel = (node: SelectorNode) => node.tracking ? "Monitoring" : "On demand";
@@ -25,8 +21,8 @@ const nodeCount = (count: number) => `${count} node${count === 1 ? "" : "s"}`;
 
 function Health({ node }: { node?: SelectorNode }) {
   const state = healthState(node);
-  return <><Badge className="node-health" variant={state === "unavailable" ? "error" : "neutral"} label={healthLabels[state]} />
-    <span className="node-latency">{latencyLabel(node)}</span></>;
+  return <><Badge className="node-health" variant={state === "unhealthy" ? "error" : "neutral"} label={healthLabels[state]} />
+    <span className="node-latency">{node?.checking ? "Testing…" : latencyLabel(node)}</span></>;
 }
 
 // Popover geometry follows the visible viewport, including a mobile keyboard.

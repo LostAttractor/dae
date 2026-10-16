@@ -22,9 +22,9 @@ export interface DeferredRead {
 // Fixtures contain only fields exercised by the browser, derived from the API
 // schema so names and value types stay consistent with production responses.
 export type FixtureStats = Omit<PathStats, "history"> & { history: Partial<PathStats["history"]> };
-export type FixtureGroup = Pick<GroupStatus, "name"> & Partial<Pick<GroupStatus, "policy" | "connectivity" | "target_kind">> & {
+export type FixtureGroup = Pick<GroupStatus, "name" | "health"> & Partial<Pick<GroupStatus, "policy" | "connectivity" | "target_kind">> & {
   stats: Partial<FixtureStats>;
-  nodes: (Pick<Schema<"NodeStatus">, "name" | "checks_connectivity"> & {
+  nodes: (Pick<Schema<"NodeStatus">, "name" | "checks_connectivity" | "health"> & {
     healthy?: boolean;
     stats: Partial<FixtureStats>;
   })[];

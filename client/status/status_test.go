@@ -41,6 +41,7 @@ func testNodeStatus(now time.Time) api.NodeStatus {
 		ChecksConnectivity: true,
 		SessionDetail:      &api.SessionStatus{State: "connected"},
 		Healthy:            true,
+		Health:             api.NodeHealthHealthy,
 		Availability: api.Availability{
 			Seen:                 true,
 			Alive:                true,
@@ -178,8 +179,9 @@ func TestStartupNodeLogOnlyIncludesCompletedChecks(t *testing.T) {
 	pending, retained, failed := ready, ready, ready
 	pending.Name, pending.ID, pending.InitialCheckDone = "pending-path", "pending", false
 	pending.Availability.Seen = false
+	pending.Health = api.NodeHealthUnknown
 	retained.Name, retained.ID, retained.InitialCheckDone = "retained-path", "retained", false
-	failed.Name, failed.ID, failed.Healthy = "failed-path", "failed", false
+	failed.Name, failed.ID, failed.Healthy, failed.Health = "failed-path", "failed", false, api.NodeHealthUnhealthy
 	groups := []api.GroupStatus{
 		{Name: "proxy", CheckAsync: true, Nodes: []api.NodeStatus{pending, retained, ready, failed},
 			SelectedNodeIDs: api.NetworkValues[string]{ready.ID, ready.ID}},
@@ -187,12 +189,12 @@ func TestStartupNodeLogOnlyIncludesCompletedChecks(t *testing.T) {
 		{Name: "pending-only", Nodes: []api.NodeStatus{pending}},
 	}
 	got := RenderStartupNodes(groups)
-	for _, want := range []string{ready.Name, failed.Name, "fail", "10/20/30", "all tcp(*)", "p=2*", "+30ms", "check: async"} {
+	for _, want := range []string{ready.Name, failed.Name, "unavailable", "10/20/30", "all tcp(*)", "p=2*", "+30ms", "check: async"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("startup log is missing %q:\n%s", want, got)
 		}
 	}
-	for _, unwanted := range []string{pending.Name, retained.Name, "direct", "pending-only", "unknown", "UP/24H", "FAIL A/D", "CONNS", "TRAFFIC", "TOTAL", "\x1b"} {
+	for _, unwanted := range []string{pending.Name, retained.Name, "direct", "pending-only", "not tested", "UP/24H", "FAIL A/D", "CONNS", "TRAFFIC", "TOTAL", "\x1b"} {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("startup log contains %q:\n%s", unwanted, got)
 		}
@@ -238,16 +240,19 @@ func TestNodeStateUsesHealthWhenChecksEnabled(t *testing.T) {
 	withoutStatusColors(t)
 	node := testNodeStatus(time.Now())
 	node.Healthy = false
+	node.Health = api.NodeHealthUnhealthy
 	node.SessionDetail.State = "disconnected"
-	if got := compactNodeState(node, time.Now()); got != "fail" {
+	if got := compactNodeState(node, time.Now()); got != "unavailable" {
 		t.Fatalf("state = %q, want fail", got)
 	}
 	node.ChecksConnectivity = false
+	node.Health = api.NodeHealthUnknown
 	if got := compactNodeState(node, time.Now()); got != "disconnected" {
 		t.Fatalf("unchecked state = %q, want disconnected", got)
 	}
 	node.SessionDetail.State = "connecting"
 	node.Healthy = true
+	node.Health = api.NodeHealthHealthy
 	if got := compactNodeState(node, time.Now()); got != "connecting" {
 		t.Fatalf("state = %q, want connecting", got)
 	}
@@ -306,39 +311,24 @@ func TestNetworkStatusRowExplainsMissingSelection(t *testing.T) {
 	}
 }
 
-func TestHealthDerivedFromRawGroups(t *testing.T) {
-	available := testNodeStatus(time.Now())
-	available.Support[api.NetworkTCP6] = api.NetworkSupportUnsupported
-	down := testNodeStatus(time.Now())
-	down.ID = "down"
-	down.Healthy = false
-	down.Support[api.NetworkTCP4] = api.NetworkSupportUnsupported
-	tests := []struct {
-		group api.GroupStatus
-		want  healthStatus
-	}{
-		{group: api.GroupStatus{}, want: healthHealthy},
-		{group: api.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: api.GroupStateAvailable}, want: healthHealthy},
-		{group: api.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: api.GroupStateChecking}, want: healthWarning},
-		{group: api.GroupStatus{ChecksConnectivity: true, Connectivity: api.GroupStateUnavailable}, want: healthWarning},
-		{group: api.GroupStatus{ChecksConnectivity: true, Critical: true, Connectivity: api.GroupStateUnavailable}, want: healthDegraded},
-		{group: api.GroupStatus{ChecksConnectivity: true, Connectivity: api.GroupStateAvailable, Nodes: []api.NodeStatus{available, down}, SelectedNodeIDs: api.NetworkValues[string]{available.ID}}, want: healthWarning},
+func TestHealthUsesServerState(t *testing.T) {
+	groups := []api.GroupStatus{
+		{Health: api.GroupHealthWarning},
+		{Health: api.GroupHealthDegraded, Connectivity: api.GroupStateAvailable},
 	}
-	for _, test := range tests {
-		if got := groupHealth(test.group); got != test.want {
-			t.Errorf("groupHealth(%+v) = %q, want %q", test.group, got, test.want)
-		}
+	if got := statusHealth(groups); got != healthDegraded {
+		t.Fatalf("health = %q, want server-provided degraded", got)
 	}
-	if got := statusHealth([]api.GroupStatus{tests[2].group, tests[4].group}); got != healthDegraded {
-		t.Fatalf("status health = %q, want degraded", got)
+	if got := nodeHealth(api.NodeStatus{Health: api.NodeHealthUnknown, Healthy: true}); got != nodeHealthUnknown {
+		t.Fatalf("client overrode server observation: %q", got)
 	}
 }
 
 func TestStatusSummaryListsAffectedGroups(t *testing.T) {
 	withoutStatusColors(t)
 	snapshot := &api.StatusSnapshot{Groups: []api.GroupStatus{
-		{Name: "optional", ChecksConnectivity: true, Connectivity: api.GroupStateUnavailable},
-		{Name: "proxy", ChecksConnectivity: true, Critical: true, Connectivity: api.GroupStateUnavailable},
+		{Name: "optional", Health: api.GroupHealthWarning, ChecksConnectivity: true, Connectivity: api.GroupStateUnavailable},
+		{Name: "proxy", Health: api.GroupHealthDegraded, ChecksConnectivity: true, Critical: true, Connectivity: api.GroupStateUnavailable},
 	}}
 	want := "degraded (degraded groups: proxy; warning groups: optional)"
 	if got := statusSummary(snapshot); got != want {

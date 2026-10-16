@@ -5,10 +5,11 @@ package api
 import "time"
 
 type SelectorNode struct {
+	Health    NodeHealth  `json:"health"`
 	ID        string      `json:"id"`
 	Name      string      `json:"name"`
 	Egress    *NodeEgress `json:"egress,omitempty"`
-	Healthy   bool        `json:"healthy"`
+	Healthy   bool        `json:"healthy"` // Runtime readiness; render Health for the latest observation.
 	Checking  bool        `json:"checking"`
 	Tested    bool        `json:"tested"`
 	Tracking  bool        `json:"tracking"`
