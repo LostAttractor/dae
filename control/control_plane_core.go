@@ -112,7 +112,11 @@ func newControlPlaneCore(
 		toClose()
 		return nil, fmt.Errorf("initialize interface manager: %w", err)
 	}
-	netmon := network.NewHostNetworkMonitor()
+	netmon, err := network.NewHostNetworkMonitor(ifmgr)
+	if err != nil {
+		toClose()
+		return nil, errors.Join(fmt.Errorf("initialize host network monitor: %w", err), ifmgr.Close())
+	}
 	core := &controlPlaneCore{
 		kernelLinks:                 &bpf.kernelLinks,
 		bpf:                         bpf,

@@ -55,6 +55,7 @@ func (m *InterfaceManager) closeScope() error {
 		m.mu.Unlock()
 		m.source.mu.Lock()
 		delete(m.source.scopes, m)
+		m.source.closeChangesLocked(m)
 		m.source.mu.Unlock()
 		for _, registration := range registrations {
 			m.source.disableRegistration(registration)

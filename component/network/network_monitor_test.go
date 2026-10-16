@@ -281,7 +281,7 @@ func TestHostNetworkMonitorSnapshotDoesNotWaitForInitialization(t *testing.T) {
 	m := newHostNetworkMonitor(func() (HostNetworkSnapshot, error) {
 		<-release
 		return want, nil
-	}, nil, nil, nil, nil, nil, nil, time.Millisecond, time.Hour)
+	}, linkWatch{}, nil, nil, nil, nil, nil, time.Millisecond, time.Hour)
 	t.Cleanup(func() { _ = m.Close() })
 
 	if got := m.Snapshot(); got.Revision() != 0 {
@@ -319,7 +319,7 @@ func TestHostNetworkMonitorRetriesInitialFailure(t *testing.T) {
 			return HostNetworkSnapshot{}, errors.New("temporary dump failure")
 		}
 		return HostNetworkSnapshot{}, nil
-	}, nil, nil, nil, nil, nil, nil, time.Millisecond, time.Hour)
+	}, linkWatch{}, nil, nil, nil, nil, nil, time.Millisecond, time.Hour)
 	t.Cleanup(func() { _ = m.Close() })
 
 	if got := m.Snapshot(); got.Revision() != 0 {
@@ -354,7 +354,7 @@ func TestHostNetworkMonitorClosesDuringInitialFailure(t *testing.T) {
 		default:
 		}
 		return HostNetworkSnapshot{}, errors.New("persistent dump failure")
-	}, nil, nil, nil, nil, nil, nil, time.Millisecond, time.Hour)
+	}, linkWatch{}, nil, nil, nil, nil, nil, time.Millisecond, time.Hour)
 	<-called
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- m.Close() }()
@@ -378,7 +378,7 @@ func TestHostNetworkMonitorDebouncesAndPublishesChanges(t *testing.T) {
 		defer mu.RUnlock()
 		return current, nil
 	}
-	linkCh := make(chan netlink.LinkUpdate, 4)
+	linkCh := make(chan struct{}, 4)
 	addrCh := make(chan netlink.AddrUpdate, 4)
 	routeCh := make(chan netlink.RouteUpdate, 4)
 	ruleCh := make(chan struct{}, 4)
@@ -390,7 +390,7 @@ func TestHostNetworkMonitorDebouncesAndPublishesChanges(t *testing.T) {
 		close(routeCh)
 		close(ruleCh)
 	}()
-	m := newHostNetworkMonitor(snapshotFn, linkCh, addrCh, routeCh, ruleCh, subscriptionEnd, nil, 5*time.Millisecond, time.Hour)
+	m := newHostNetworkMonitor(snapshotFn, linkWatch{updates: linkCh}, addrCh, routeCh, ruleCh, subscriptionEnd, nil, 5*time.Millisecond, time.Hour)
 
 	deadline := time.Now().Add(time.Second)
 	for m.Snapshot().Revision() == 0 && time.Now().Before(deadline) {
@@ -403,7 +403,7 @@ func TestHostNetworkMonitorDebouncesAndPublishesChanges(t *testing.T) {
 	mu.Lock()
 	current.Interfaces[0].IPv4Source = "192.0.2.2"
 	mu.Unlock()
-	linkCh <- netlink.LinkUpdate{}
+	linkCh <- struct{}{}
 	addrCh <- netlink.AddrUpdate{}
 	routeCh <- netlink.RouteUpdate{}
 	ruleCh <- struct{}{}
@@ -449,13 +449,13 @@ func TestHostNetworkMonitorDebouncesAndPublishesChanges(t *testing.T) {
 }
 
 func TestHostNetworkMonitorResubscribesAfterChannelClosure(t *testing.T) {
-	first := make(chan netlink.LinkUpdate)
+	first := make(chan netlink.AddrUpdate)
 	close(first)
-	replacement := make(chan netlink.LinkUpdate, 1)
+	replacement := make(chan netlink.AddrUpdate, 1)
 	subscriptionEnd := make(chan struct{})
 	subscribed := make(chan struct{}, 1)
 	subscriptions := &hostNetworkSubscriptions{
-		link: func(done <-chan struct{}) (<-chan netlink.LinkUpdate, error) {
+		addr: func(done <-chan struct{}) (<-chan netlink.AddrUpdate, error) {
 			subscribed <- struct{}{}
 			go func() {
 				<-done
@@ -473,7 +473,7 @@ func TestHostNetworkMonitorResubscribesAfterChannelClosure(t *testing.T) {
 		defer mu.RUnlock()
 		return current, nil
 	}
-	m := newHostNetworkMonitor(snapshotFn, first, nil, nil, nil, subscriptionEnd, subscriptions,
+	m := newHostNetworkMonitor(snapshotFn, linkWatch{}, first, nil, nil, subscriptionEnd, subscriptions,
 		5*time.Millisecond, time.Hour)
 	t.Cleanup(func() { _ = m.Close() })
 	changes := make(chan HostNetworkSnapshot, 2)
@@ -482,12 +482,12 @@ func TestHostNetworkMonitorResubscribesAfterChannelClosure(t *testing.T) {
 	select {
 	case <-subscribed:
 	case <-time.After(2 * time.Second):
-		t.Fatal("link subscription was not restored")
+		t.Fatal("address subscription was not restored")
 	}
 	mu.Lock()
 	current.Interfaces[0].IPv4Source = "192.0.2.2"
 	mu.Unlock()
-	replacement <- netlink.LinkUpdate{}
+	replacement <- netlink.AddrUpdate{}
 
 	deadline := time.After(time.Second)
 	for {

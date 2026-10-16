@@ -35,3 +35,10 @@ func (m *InterfaceManager) Register(ifname string, initCallback func(netlink.Lin
 			Warn("Initial interface lookup failed; waiting for a later interface update")
 	}
 }
+
+// Tests that assert lifecycle effects wait for the ordered dispatcher.
+func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
+	if done := m.queueLinkUpdate(update); done != nil {
+		<-done
+	}
+}

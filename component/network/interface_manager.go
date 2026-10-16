@@ -39,6 +39,7 @@ type InterfaceManager struct {
 	registrations []*atomic.Bool
 	registering   sync.WaitGroup
 	scopes        map[*InterfaceManager]interfaceEvents
+	changes       map[chan struct{}]*InterfaceManager
 
 	closeOnce sync.Once
 	stop      chan struct{}
@@ -105,7 +106,12 @@ func (m *InterfaceManager) subscribe(subscribe linkSubscribeFunc) (chan netlink.
 }
 
 func (m *InterfaceManager) stopSubscription() {
-	m.closeOnce.Do(func() { close(m.stop) })
+	m.closeOnce.Do(func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		close(m.stop)
+		m.closeChangesLocked(nil)
+	})
 }
 
 func runCallbackDelivery(delivery *callbackDelivery) error {
@@ -210,7 +216,7 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, subscribe linkS
 					ch = nil
 					continue
 				}
-				m.handleLinkUpdate(update)
+				m.queueLinkUpdate(update)
 			case <-timer.C:
 				if ch == nil {
 					next, err := m.subscribe(subscribe)
@@ -243,12 +249,15 @@ func (m *InterfaceManager) monitor(ch <-chan netlink.LinkUpdate, subscribe linkS
 		case update, ok := <-ch:
 			if !ok {
 				ch = nil
+				m.mu.Lock()
+				m.notifyChangesLocked()
+				m.mu.Unlock()
 				if !rebuild() {
 					return
 				}
 				continue
 			}
-			m.handleLinkUpdate(update)
+			m.queueLinkUpdate(update)
 		}
 	}
 }
@@ -270,6 +279,7 @@ func (m *InterfaceManager) replaceLinks(links []netlink.Link) {
 		current = append(current, link)
 	}
 	sortLinks(current)
+	m.notifyChangesLocked()
 	callbacks := slices.Clone(m.callbacks)
 	reset := m.eventCallbacksLocked(true)
 	change := m.eventCallbacksLocked(false)
@@ -294,12 +304,18 @@ func (m *InterfaceManager) replaceLinks(links []netlink.Link) {
 	<-done
 }
 
-func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
+// Queue lifecycle delivery in arrival order, allowing the event source to keep
+// notifying snapshot observers while an attachment callback is still running.
+func (m *InterfaceManager) queueLinkUpdate(update netlink.LinkUpdate) <-chan error {
 	if update.Link == nil || update.Link.Attrs() == nil {
-		return
+		return nil
+	}
+	if update.Header.Type != unix.RTM_NEWLINK && update.Header.Type != unix.RTM_DELLINK {
+		return nil
 	}
 	attrs := update.Link.Attrs()
 	m.mu.Lock()
+	m.notifyChangesLocked()
 	callbacks := slices.Clone(m.callbacks)
 	change := m.eventCallbacksLocked(false)
 	var previous netlink.Link
@@ -309,7 +325,7 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 		if previous != nil && previous.Attrs().Name == attrs.Name {
 			m.links[attrs.Index] = update.Link
 			m.mu.Unlock()
-			return
+			return nil
 		}
 		m.links[attrs.Index] = update.Link
 	case unix.RTM_DELLINK:
@@ -320,7 +336,7 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 		delete(m.links, attrs.Index)
 	default:
 		m.mu.Unlock()
-		return
+		return nil
 	}
 	delivery := make([]func() error, 0, len(callbacks)+1)
 	if previous != nil && update.Header.Type == unix.RTM_NEWLINK {
@@ -342,7 +358,7 @@ func (m *InterfaceManager) handleLinkUpdate(update netlink.LinkUpdate) {
 	if !hasDispatcher {
 		m.enqueueDelivery(delivery, done)
 	}
-	<-done
+	return done
 }
 
 func (m *InterfaceManager) NameByIndex(index int) string {

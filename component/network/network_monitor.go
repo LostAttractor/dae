@@ -94,7 +94,6 @@ type hostNetworkData struct {
 type hostNetworkSnapshotFunc func() (HostNetworkSnapshot, error)
 
 type hostNetworkSubscriptions struct {
-	link  func(<-chan struct{}) (<-chan netlink.LinkUpdate, error)
 	addr  func(<-chan struct{}) (<-chan netlink.AddrUpdate, error)
 	route func(<-chan struct{}) (<-chan netlink.RouteUpdate, error)
 	rule  func(<-chan struct{}) (<-chan struct{}, error)
@@ -118,19 +117,16 @@ type HostNetworkMonitor struct {
 	subscriptionEnd chan struct{}
 }
 
-func NewHostNetworkMonitor() *HostNetworkMonitor {
+// NewHostNetworkMonitor borrows link invalidations from interfaces. Closing it
+// leaves the shared source and sibling generations alive.
+func NewHostNetworkMonitor(interfaces *InterfaceManager) (*HostNetworkMonitor, error) {
+	links, err := interfaces.watchChanges()
+	if err != nil {
+		return nil, err
+	}
 	subscriptionEnd := make(chan struct{})
 
 	subscriptions := &hostNetworkSubscriptions{
-		link: func(done <-chan struct{}) (<-chan netlink.LinkUpdate, error) {
-			ch := make(chan netlink.LinkUpdate, 16)
-			// reconcile performs the authoritative dump after subscriptions start.
-			// ListExisting would broadcast its dump request to other link subscribers.
-			err := netlink.LinkSubscribeWithOptions(ch, done, netlink.LinkSubscribeOptions{
-				ErrorCallback: hostNetworkEventError(done, "link"),
-			})
-			return ch, err
-		},
 		addr: func(done <-chan struct{}) (<-chan netlink.AddrUpdate, error) {
 			ch := make(chan netlink.AddrUpdate, 16)
 			err := netlink.AddrSubscribeWithOptions(ch, done, netlink.AddrSubscribeOptions{
@@ -149,8 +145,8 @@ func NewHostNetworkMonitor() *HostNetworkMonitor {
 			return subscribeRuleUpdates(done, hostNetworkEventError(done, "rule"))
 		},
 	}
-	return newHostNetworkMonitor(currentHostNetworkSnapshot, nil, nil, nil, nil, subscriptionEnd, subscriptions,
-		hostNetworkDebounceInterval, hostNetworkResyncInterval)
+	return newHostNetworkMonitor(currentHostNetworkSnapshot, links, nil, nil, nil, subscriptionEnd, subscriptions,
+		hostNetworkDebounceInterval, hostNetworkResyncInterval), nil
 }
 
 // Closing netlink sockets can report EAGAIN instead of a closed-socket error.
@@ -222,7 +218,7 @@ func receiveRuleUpdates(socket *nl.NetlinkSocket, done <-chan struct{}, updates 
 
 func newHostNetworkMonitor(
 	snapshotFn hostNetworkSnapshotFunc,
-	linkCh <-chan netlink.LinkUpdate,
+	links linkWatch,
 	addrCh <-chan netlink.AddrUpdate,
 	routeCh <-chan netlink.RouteUpdate,
 	ruleCh <-chan struct{},
@@ -242,7 +238,7 @@ func newHostNetworkMonitor(
 		resyncInterval:  resyncInterval,
 		subscriptionEnd: subscriptionEnd,
 	}
-	go m.run(linkCh, addrCh, routeCh, ruleCh)
+	go m.run(links, addrCh, routeCh, ruleCh)
 	return m
 }
 
@@ -287,13 +283,17 @@ func (m *HostNetworkMonitor) reconcile() error {
 }
 
 func (m *HostNetworkMonitor) run(
-	linkCh <-chan netlink.LinkUpdate,
+	links linkWatch,
 	addrCh <-chan netlink.AddrUpdate,
 	routeCh <-chan netlink.RouteUpdate,
 	ruleCh <-chan struct{},
 ) {
+	linkCh := links.updates
 	defer close(m.done)
 	defer func() {
+		if links.cancel != nil {
+			links.cancel()
+		}
 		if m.subscriptionEnd == nil {
 			return
 		}
@@ -374,16 +374,6 @@ func (m *HostNetworkMonitor) run(
 		if m.subscriptions == nil {
 			return
 		}
-		if linkCh == nil && m.subscriptions.link != nil {
-			next, err := m.subscriptions.link(m.subscriptionEnd)
-			linkCh = next
-			subscriptionResult("link", err)
-			if err != nil {
-				linkCh = nil
-			} else {
-				markDirty()
-			}
-		}
 		if addrCh == nil && m.subscriptions.addr != nil {
 			next, err := m.subscriptions.addr(m.subscriptionEnd)
 			addrCh = next
@@ -451,7 +441,6 @@ func (m *HostNetworkMonitor) run(
 		case _, ok := <-linkCh:
 			if !ok {
 				linkCh = nil
-				subscriptionClosed("link")
 			}
 			markDirty()
 		case _, ok := <-addrCh:

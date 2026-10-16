@@ -226,6 +226,11 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 		}()
 		return nil
 	}
+	watch, err := m.watchChanges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(watch.cancel)
 	updates := make(chan netlink.LinkUpdate)
 	var listCalls atomic.Int32
 	go m.monitor(updates, subscribe, func() ([]netlink.Link, error) {
@@ -235,6 +240,7 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 		return []netlink.Link{newLink}, nil
 	})
 	close(updates)
+	receiveLinkChange(t, watch, false)
 
 	select {
 	case <-subscribed:
@@ -251,6 +257,7 @@ func TestInterfaceManagerRetriesLinkListAfterResubscribe(t *testing.T) {
 			t.Fatalf("missing %q event", want)
 		}
 	}
+	receiveLinkChange(t, watch, false)
 	if got := listCalls.Load(); got != 2 {
 		t.Fatalf("LinkList calls = %d, want 2", got)
 	}
