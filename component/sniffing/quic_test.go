@@ -9,6 +9,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/daeuniverse/dae/component/sniffing/internal/quicutils"
@@ -99,22 +100,18 @@ func TestQuicReassemble(t *testing.T) {
 	sniffer := NewPacketSniffer(QuicStream2_1)
 	t.Cleanup(func() { _ = sniffer.Close() })
 	d, err := sniffer.SniffQuic()
-	if err != nil {
-		if sniffer.NeedMore() {
-			sniffer.AppendData(QuicStream2_2)
-			d, err = sniffer.SniffQuic()
-		} else {
-			t.Fatal(err)
-		}
+	if d != "" || !errors.Is(err, ErrNotFound) || !sniffer.NeedMore() {
+		t.Fatalf("incomplete Initial: domain=%q error=%v needMore=%v", d, err, sniffer.NeedMore())
 	}
+	sniffer.AppendData(QuicStream2_2)
+	d, err = sniffer.SniffQuic()
 	dumpCryptos(t, sniffer.quicCryptos)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d == "" {
-		t.Fatal("domain is empty")
+	if d != "i.ytimg.com" {
+		t.Fatalf("domain = %q, want i.ytimg.com", d)
 	}
-	t.Log(d)
 }
 func TestQuic(t *testing.T) {
 	oldLevel := log.GetLevel()
@@ -135,8 +132,7 @@ func TestQuic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d == "" {
-		t.Fatal("domain is empty")
+	if d != "i.ytimg.com" {
+		t.Fatalf("domain = %q, want i.ytimg.com", d)
 	}
-	t.Log(d)
 }

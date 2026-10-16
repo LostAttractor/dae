@@ -9,6 +9,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestSyntaxErrorsOmitConfigurationSecrets(t *testing.T) {
@@ -81,86 +84,55 @@ func TestSyntaxErrorsDoNotSuggestQuotingUnrelatedColons(t *testing.T) {
 
 func TestParse(t *testing.T) {
 	sections, err := Parse(`
-# gugu
-include {
-    another.conf
-}
-
 global {
-    # tproxy port to listen.
+    # Comments do not become configuration items.
     tproxy_port: 12345
-
-    # Node connectivity check url.
-    check_url: 'https://connectivitycheck.gstatic.com/generate_204'
-
-    # Now only support UDP and IP:Port.
-    # Please make sure DNS traffic will go through and be forwarded by dae.
-    dns_upstream: '1.1.1.1:53'
-
-    # Now only support one interface.
-    ingress_interface: docker0
+    lan_interface: br-lan, wg0
 }
-
-# subscription will be resolved as nodes and merged into node pool below.
-subscription {
-    https://LINK
-}
-
-node {
-    'ss://LINK'
-    'ssr://LINK'
-    'vmess://LINK'
-    'vless://LINK'
-    'trojan://LINK'
-    'trojan-go://LINK'
-    'socks5://LINK#name'
-    'http://LINK#name'
-    'https://LINK#name'
-}
-
 group {
-    my_group {
-        # Pass node links as input of lua script filter.
-        # gugu
-        filter: link(lua:filename.lua)
-
-        # Randomly select a node from the group for every connection.
-        policy: random
-    }
-
-    disney {
-        # Pass node names as input of keyword/regex filter.
-        filter: name(regex:'^.*hk.*$', keyword:'sg') && name(keyword:'disney')
-
-        # Select the node with min average of the last 10 latencies from the group for every connection.
-        policy: min_avg10
-    }
-
-    netflix {
-        # Pass node names as input of keyword filter.
-        filter: name(keyword:netflix)
-
-        # Select the first node from the group for every connection.
-        policy: fixed(0)
+    proxy {
+        filter: name(keyword: 'Hong Kong') [priority: 1]
+        policy: min_moving_avg
     }
 }
-
 routing {
-    sip(192.168.0.0/24) && !sip(192.168.0.252/30) -> direct
-
-    domain(geosite:category-ads) -> block
-    domain(geosite:disney) -> disney
-    domain(geosite:netflix) -> netflix
-    ip(geoip:cn) -> direct
-    domain(geosite:cn) -> direct
-    fallback: my_group
+    sip(192.0.2.0/24) && !dport(53) -> proxy(mark: 0x800)
+    fallback: direct
 }
 `)
 	if err != nil {
-		t.Fatalf("\n%v", err)
+		t.Fatal(err)
 	}
-	for _, section := range sections {
-		t.Logf("\n%v", section.String(false, false))
+	want := []*Section{
+		{Name: "global", Items: []*Item{
+			{Value: &Param{Key: "tproxy_port", Val: "12345", ValueList: []string{"12345"}}},
+			{Value: &Param{Key: "lan_interface", Val: "br-lan,wg0", ValueList: []string{"br-lan", "wg0"}}},
+		}},
+		{Name: "group", Items: []*Item{
+			{Value: &Section{Name: "proxy", Items: []*Item{
+				{Value: &ProxyPath{Stages: []*Param{{
+					Key: "filter",
+					AndFunctions: []*Function{{Name: "name", Params: []*Param{
+						{Key: "keyword", Val: "Hong Kong"},
+					}}},
+					Annotation: []*Param{{Key: "priority", Val: "1"}},
+				}}}},
+				{Value: &Param{Key: "policy", Val: "min_moving_avg", ValueList: []string{"min_moving_avg"}}},
+			}}},
+		}},
+		{Name: "routing", Items: []*Item{
+			{Value: &RoutingRule{
+				AndFunctions: []*Function{
+					{Name: "sip", Params: []*Param{{Val: "192.0.2.0/24"}}},
+					{Name: "dport", Not: true, Params: []*Param{{Val: "53"}}},
+				},
+				Outbound: Function{Name: "proxy", Params: []*Param{{Key: "mark", Val: "0x800"}}},
+			}},
+			{Value: &Param{Key: "fallback", Val: "direct", ValueList: []string{"direct"}}},
+		}},
+	}
+	if diff := cmp.Diff(want, sections, cmpopts.IgnoreFields(RoutingRule{}, "Sources")); diff != "" {
+		t.Fatalf("parsed configuration (-want +got):\n%s", diff)
 	}
 }
 

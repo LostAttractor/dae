@@ -7,6 +7,8 @@ package quicutils
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/hex"
 	"testing"
 
@@ -42,58 +44,98 @@ func TestDeriveKeys(t *testing.T) {
 	}
 }
 
-func TestKeys_HeaderProtection_(t *testing.T) {
-	// https://datatracker.ietf.org/doc/html/rfc9001#name-client-initial
-	keys, err := NewKeys(destConnId, Version_V1, common.NewGcm)
-	if err != nil {
-		t.Fatal("NewKeys", err)
-	}
-	defer keys.Close()
-
-	sample, _ := hex.DecodeString("d1b1c98dd7689fb8ec11d242b123dc9b")
-	flag := byte(0xc3)
-	packetNumber, _ := hex.DecodeString("00000002")
-	if packetNumber, err = keys.HeaderProtection_(sample, true, &flag, packetNumber); err != nil {
-		t.Fatal("HeaderProtection_", err)
-	}
-	if flag != 0xc0 {
-		t.Fatal("flag:", flag)
-	}
-	if !bytes.Equal(packetNumber, []byte{0x7b}) {
-		t.Fatalf("packetNumber: %x", packetNumber)
+func TestKeysHeaderProtection(t *testing.T) {
+	for _, test := range []struct {
+		name, connectionID, sample, packetNumber string
+		version                                  Version
+		flag, wantPacketNumber                   byte
+	}{
+		// RFC 9001 Appendix A.2 client Initial.
+		{"v1", "8394c8f03e515708", "d1b1c98dd7689fb8ec11d242b123dc9b", "00000002", Version_V1, 0xc3, 0x7b},
+		// Only the protected fields and sample from the draft Initial are needed.
+		{"draft", "7f9863b69d513af6a050f0272dfe4dd1", "f09bb7d134541f214437ebaac82ad304", "2cce1ec1", Version_Draft, 0xcf, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			connectionID, err := hex.DecodeString(test.connectionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sample, err := hex.DecodeString(test.sample)
+			if err != nil {
+				t.Fatal(err)
+			}
+			packetNumber, err := hex.DecodeString(test.packetNumber)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys, err := NewKeys(connectionID, test.version, common.NewGcm)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer keys.Close()
+			flag := test.flag
+			packetNumber, err = keys.HeaderProtection_(sample, true, &flag, packetNumber)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if flag != 0xc0 || !bytes.Equal(packetNumber, []byte{test.wantPacketNumber}) {
+				t.Fatalf("flag=%x packetNumber=%x, want c0 / %02x", flag, packetNumber, test.wantPacketNumber)
+			}
+		})
 	}
 }
 
-func TestKeys_PayloadDecrypt_(t *testing.T) {
-	destConnId, _ := hex.DecodeString("7f9863b69d513af6a050f0272dfe4dd1")
-	keys, err := NewKeys(destConnId, Version_Draft, common.NewGcm)
-	if err != nil {
-		t.Fatal("NewKeys", err)
-	}
-	defer keys.Close()
+func TestKeysPayloadDecrypt(t *testing.T) {
+	// Fixed client keys for destConnId. The peer uses only the standard AES-GCM
+	// implementation, independently of NewKeys and PayloadDecrypt.
+	for _, test := range []struct {
+		name    string
+		version Version
+		key, iv string
+	}{
+		{"draft", Version_Draft, "175257a31eb09dea9366d8bb79ad80ba", "6b26114b9cba2b63a9e8dd4f"},
+		{"v1", Version_V1, "1f369613dd76d5467730efcbe3b1a22d", "fa044b2f42a3fd3b46fb255c"},
+		{"v2", Version_V2, "8b1a0bc121284290a29e0971b5cd045d", "91f73e2351d8fa91660e909f"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key, err := hex.DecodeString(test.key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nonce, err := hex.DecodeString(test.iv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			block, err := aes.NewCipher(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			peer, err := cipher.NewGCM(block)
+			if err != nil {
+				t.Fatal(err)
+			}
+			packetNumber := []byte{1, 2}
+			nonce[len(nonce)-2] ^= 1
+			nonce[len(nonce)-1] ^= 2
+			header := []byte("authenticated header")
+			payload := []byte{Quic_FrameType_Crypto, 0, 3, 'a', 'b', 'c'}
+			ciphertext := peer.Seal(nil, nonce, payload, header)
 
-	data, _ := hex.DecodeString("cfff00001d107f9863b69d513af6a050f0272dfe4dd114cb9b88815f5c3e385f2a8756c2a76c61fe0a6ddf0041222cce1ec1f09bb7d134541f214437ebaac82ad3044e24abffb166407f6e8e41584fe9717fbec115d345c934408aa9314bb9e8a3487ea2c17a7ff02f65d3ed8f76a462034260bb41d6ef8f0fa78d6920074a10091f85d322c10f1f4eb7e207c2283c4df5857edea1279248ba03ba83c4727b759f564dcd4db3e6e11d40abce3d4362caf5ef592a3cde2d66acadc7428b5cccf28eb1461b0c3ca595ff7425f5898b95bf4917786a5f9ce7226dd0be61cff453bd74decfa057d3afaef136226e9ba23ad3e28da820a367b4788786efa97bf59033b87bc8a4555b86148cfde85ea16772eb1d81e14c9056f3f36a4f789bc608145712fa7cd28f93e76d3f90e80815e267aeefff2bc44299f8b65e3cf99816c96f33723d20565162cc843024bdbd83a90d2f")
-	header := data[:50]
-	potentialPacketNumber := header[len(header)-4:]
-	sample := data[50 : 50+16]
-	flag := &header[0]
-	var packetNumber []byte
-	if packetNumber, err = keys.HeaderProtection_(sample, true, flag, potentialPacketNumber); err != nil {
-		t.Fatal("HeaderProtection_", err)
+			keys, err := NewKeys(destConnId, test.version, common.NewGcm)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer keys.Close()
+			plaintext, err := keys.PayloadDecrypt([]byte("prefix:"), ciphertext, packetNumber, header)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := append([]byte("prefix:"), payload...)
+			if !bytes.Equal(plaintext, want) {
+				t.Fatalf("plaintext = %x, want %x", plaintext, want)
+			}
+		})
 	}
-	if *flag != 0b11000000 {
-		t.Fatalf("flag: %b", *flag)
-	}
-	if !bytes.Equal(packetNumber, []byte{1}) {
-		t.Fatal("packetNumber:", packetNumber)
-	}
-	header = data[:len(header)-4+len(packetNumber)]
-	payload := data[len(header):]
-	plaintext, err := keys.PayloadDecrypt(nil, payload, packetNumber, header)
-	if err != nil {
-		t.Fatal("PayloadDecryptFromPool:", err)
-	}
-	t.Log(hex.EncodeToString(plaintext))
 }
 
 func TestKeysPayloadDecryptRejectsInvalidTag(t *testing.T) {
