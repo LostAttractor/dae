@@ -49,9 +49,9 @@ def main():
         "no-read": [("tproxy.c", "is_wan ? 0 : skb_bridge_physinif(skb)", "0", 2)],
         "no-match": [("routing.h", "ctx->params->physinif == match_set->ifindex", "false", 1)],
         "no-zero-guard": [("routing.h", "if (match_set->ifindex &&", "if (", 1)],
-        "no-cache-store": [("tproxy.c", "decision->physinif = result->physinif;", "decision->physinif = 0;", 1)],
-        "no-cache-restore": [("tproxy.c", "result->physinif = decision->physinif;", "result->physinif = 0;", 1)],
-        "no-handoff": [("tproxy.c", "routing_result->physinif = params.physinif;", "routing_result->physinif = 0;", 1)],
+        "no-cache-store": [("tproxy.c", "value->result = *result;", "value->result = *result;\n\tvalue->result.physinif = 0;", 1)],
+        "no-cache-restore": [("tproxy.c", "*result = value->result;", "*result = value->result;\n\t\tresult->physinif = 0;", 1)],
+        "no-handoff": [("tproxy.c", "routing_result->physinif = params->physinif;", "routing_result->physinif = 0;", 1)],
         # Reconstruct the original four-helper reader for repeatable comparisons
         # after the optimization, without relying on a historical checkout.
         "probe-read": [
@@ -68,7 +68,8 @@ def main():
                 "no-handoff": "lost handoff identity"}
     if args.baseline_source:
         mutations["baseline"] = []
-    objects = {}
+    # Validate and prepare every mutation before spending time on compilation.
+    directories = {}
     for name, changes in mutations.items():
         source = args.baseline_source if name == "baseline" else root / "control/kern"
         directory = output / name
@@ -79,9 +80,14 @@ def main():
             if text.count(old) != count:
                 raise RuntimeError(f"stale mutation: {name}/{file}: {old}")
             path.write_text(text.replace(old, new))
+        directories[name] = directory
+
+    objects = {}
+    for name, directory in directories.items():
         obj = directory / "ablation.o"
         run([os.environ.get("CLANG", "clang"), "-O2", "-g", "-target", "bpfel", "-mcpu=v1",
-             "-Wall", "-Werror", "-c", str(directory / "tests/bpf_test.c"), "-o", str(obj)], f"{name}-compile.log")
+             "-Wall", "-Werror", "-I", str(root / "kern"),
+             "-c", str(directory / "tests/bpf_test.c"), "-o", str(obj)], f"{name}-compile.log")
         objects[name] = obj
 
     binary = output / "kern.test"
@@ -93,8 +99,10 @@ def main():
         return prefix + ["env", "GOMAXPROCS=1", f"DAE_BPF_TEST_OBJECT={objects[name]}", str(binary), *flags]
 
     for name in objects:
-        run(test_command(name, "-test.run=^TestBridgePhysinif$", "-test.v"),
-            f"{name}-functional.log", expected.get(name))
+        text = run(test_command(name, "-test.run=^TestBridgePhysinif$", "-test.v"),
+                   f"{name}-functional.log", expected.get(name))
+        if "--- SKIP:" in text:
+            raise RuntimeError(f"{name} skipped the required bridge check")
         print(f"{name}: {'detected' if name in expected else 'passed'}", flush=True)
 
     # Go overlay removes userspace identity propagation without editing the tree.

@@ -66,7 +66,7 @@ def main():
         "no-route-interface": [(families, "Mark: mark, Oif: iface", 'Mark: mark, Oif: ""')],
         "no-route-mark": [(families, "Mark: mark, Oif: iface", "Mark: 0, Oif: iface")],
         "no-source-ownership": [(families, "addr.IP.Equal(route.Src) && addr.Flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) == 0", "addr.IP != nil")],
-        "no-cache-interface": [(discovery, "host: entryHostname(path.Nodes[0].Property.Address), iface: path.Entry.Interface", "host: entryHostname(path.Nodes[0].Property.Address)")],
+        "no-cache-interface": [(discovery, "entryDiscoveryKey{host: entryHostname(path.Nodes[0].Property.Address), iface: path.Entry.Interface}", "entryDiscoveryKey{host: entryHostname(path.Nodes[0].Property.Address)}")],
         "no-cache-mark": [(discovery, "key.mark, key.markSet = *path.Entry.Mark, true", "key.mark, key.markSet = 0, false")],
         "label-single-stack": [(label, "if p.showIPVersion {", "if p.IPVersion != 0 {")],
         "no-socket-mark": [(socket, "\t\t\tif option.Mark != 0 {", "\t\t\tif false {")],
@@ -134,7 +134,8 @@ def main():
     if args.baseline_source:
         mutations["before"] = []
 
-    binaries = {}
+    # Check all replacements before compiling or running privileged fixtures.
+    prepared = {}
     hashes = {}
     for name, changes in mutations.items():
         directory = output / name
@@ -157,6 +158,10 @@ def main():
         overlay = directory / "overlay.json"
         overlay.write_text(json.dumps({"Replace": replacements}, indent=2))
         binary = directory / "outbound.test"
+        prepared[name] = (binary, overlay)
+
+    binaries = {}
+    for name, (binary, overlay) in prepared.items():
         run(["go", "test", "-c", "-overlay", str(overlay), "-o", str(binary), "./component/outbound"], f"{name}-build.log")
         binaries[name] = binary
         if name in expected or name == "full" or args.suite == "loopback-dns":
