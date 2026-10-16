@@ -388,8 +388,11 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 		}
 		return result, ctx.Err()
 	}
+	return c.explainFlow(ctx, request, s, input, missing, result)
+}
+
+func (c *ControlPlane) explainFlow(ctx context.Context, request api.ExplainRequest, s *diagnosticState, input routingInput, missing map[string]bool, result api.ExplainResult) (api.ExplainResult, error) {
 	result.Notes = append(result.Notes, "Fresh unfragmented flow at a configured dae hook; existing connection and UDP-source lifetimes may retain a prior decision.")
-	ingressDestination := input.dst
 	missing = cloneMissing(missing)
 	missing["mitm_client_identity"] = !s.mitmKnown
 	input.domain = "" // A supplied SNI is never kernel DNS evidence.
@@ -457,9 +460,17 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 	if decision.Verdict == "kernel_direct" || decision.Verdict == "drop" {
 		return result, nil
 	}
+	return c.explainHandoff(ctx, request, s, input, missing, evaluation, result)
+}
+
+func (c *ControlPlane) explainHandoff(ctx context.Context, request api.ExplainRequest, s *diagnosticState, input routingInput, missing map[string]bool, evaluation routingEvaluation, result api.ExplainResult) (api.ExplainResult, error) {
+	decision := &result.Decision
+	ingressDestination := input.dst
+	spans := s.matcher.profiles[input.profileID]
 	// The classifier rejects unavailable ordinary proxies immediately when
 	// configured to block. Capture and DNS run their own userspace decisions.
-	if input.kernel && input.dst.Port() != 53 && evaluation.captureFlags == 0 && evaluation.outbound >= consts.OutboundUserDefinedMin && evaluation.outbound < consts.OutboundMustRules && !s.usable[uint8(evaluation.outbound)] && c.noConnectivityOutbound == consts.OutboundBlock && !c.noConnectivityTrySniff {
+	handoff := c.diagnosticHandoffState(input, evaluation, s.usable[uint8(evaluation.outbound)])
+	if handoff == outboundConnectivityNoAliveBlock {
 		decision.Verdict = "drop"
 		result.Notes = append(result.Notes, "No available outbound; kernel no-connectivity policy blocks this flow.")
 		return result, nil
@@ -477,7 +488,7 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 		}
 	}
 	hostname := diagnosticHostname(request)
-	noSniff := input.kernel && input.dst.Port() != 53 && evaluation.captureFlags == 0 && evaluation.outbound >= consts.OutboundUserDefinedMin && evaluation.outbound < consts.OutboundMustRules && !s.usable[uint8(evaluation.outbound)] && !c.noConnectivityTrySniff
+	noSniff := handoff == outboundConnectivityNoAliveDirect
 	if noSniff {
 		hostname = ""
 		delete(missing, "hostname")
@@ -489,88 +500,20 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 			return result, ctx.Err()
 		}
 	}
-	targetRoute := evaluation.captureFlags&(captureDestination|captureHTTPRequest) != 0 || !input.kernel
+	facts := routeFacts{outbound: evaluation.outbound, capture: evaluation.captureFlags, destination: !input.kernel, mode: c.rerouteMode, dialOverride: c.dialTargetOverride}
+	targetRoute := planRoute(facts).target
 	if targetRoute {
-		for i, entry := range s.matcher.destinationProgram(input.profileID).predicates {
-			p := input
-			p.kernel, p.domain, p.domainBitmap, p.domainBumpBitmap, p.stage = false, hostname, nil, nil, routeFromIngress
-			matched, trace, needs, _, err := s.matcher.explainSpans(ctx, []routingSpan{entry.span}, p, missing, s.names, fmt.Sprintf("destination/%d", i))
-			if err != nil {
-				return result, err
-			}
-			for j := range trace {
-				for _, ip := range entry.targets {
-					port := entry.port
-					if port == 0 {
-						port = p.dst.Port()
-					}
-					trace[j].Targets = append(trace[j].Targets, netip.AddrPortFrom(ip, port).String())
-				}
-			}
-			result.Steps = append(result.Steps, trace...)
-			if len(needs) != 0 {
-				decision.Complete, decision.Missing = false, needs
-				return result, nil
-			}
-			if entry.domain && hostname == "" || !matched.matched {
-				continue
-			}
-			decision.Targets = nil
-			for _, ip := range entry.targets {
-				port := entry.port
-				if port == 0 {
-					port = input.dst.Port()
-				}
-				decision.Targets = append(decision.Targets, netip.AddrPortFrom(ip, port).String())
-			}
-			if len(entry.targets) != 1 {
-				decision.Complete, decision.Outbound = false, ""
-				result.Notes = append(result.Notes, "Random destination candidates are listed; no target was selected.")
-				return result, nil
-			}
-			input.dst = netip.MustParseAddrPort(decision.Targets[0])
-			break
+		if complete, err := c.explainDestination(ctx, s, &input, hostname, missing, &result); err != nil || !complete {
+			return result, err
 		}
 	}
-	valid := evaluation.outbound < consts.OutboundMustRules
-	reroute := targetRoute || !valid || c.rerouteMode == consts.RerouteMode_Force
-	preservesKernel := evaluation.captureFlags != 0 && valid && !targetRoute && evaluation.outbound == consts.OutboundDirect
-	if input.kernel && missing["hostname"] && !noSniff && !preservesKernel && (c.rerouteMode != consts.RerouteMode_None || c.dialTargetOverride || !valid) {
-		decision.Complete, decision.Outbound = false, ""
-		decision.Missing = append(decision.Missing, "hostname")
-		result.Notes = append(result.Notes, "Sniff-dependent routing requires an explicit SNI/HTTP context; an empty SNI declares its absence.")
+
+	plan, verified, needs := c.diagnosticRoutePlan(request, s, ingressDestination, hostname, noSniff, missing, facts)
+	if len(needs) != 0 {
+		decision.Complete, decision.Outbound, decision.Missing = false, "", needs
 		return result, nil
 	}
-	verified, verificationKnown := hostname != "" && c.sniffVerifyMode == consts.SniffVerifyMode_None, true
-	key := hostname + "."
-	if hostname != "" && c.sniffVerifyMode != consts.SniffVerifyMode_None {
-		verified = s.registered[key] && (c.sniffVerifyMode == consts.SniffVerifyMode_Loose || s.paired[key][ingressDestination.Addr()])
-		if c.sniffVerifyMode == consts.SniffVerifyMode_Loose && !s.registered[key] {
-			verified, verificationKnown = s.verifiedName, s.verifiedName
-		}
-	}
-	if request.Context.Origin == "daemon" {
-		verified, verificationKnown = hostname != "", true
-	}
-	covered := s.paired[key][ingressDestination.Addr()] && (s.domains[ingressDestination.Addr()].resident || domainBitmapAllZero(s.matcher.domainMatcher.MatchDomainBitmap(hostname)))
-	if c.rerouteMode == consts.RerouteMode_WhileNeed && hostname != "" && !covered {
-		reroute = true
-	}
-	if evaluation.captureFlags != 0 && valid && !targetRoute && (evaluation.outbound == consts.OutboundDirect || evaluation.outbound == consts.OutboundBlock) {
-		reroute = false
-	}
-	if reroute {
-		if !verificationKnown {
-			decision.Complete, decision.Outbound = false, ""
-			decision.Missing = []string{"hostname_verification"}
-			result.Notes = append(result.Notes, "Loose hostname verification needs resolver evidence; diagnostics does not query DNS.")
-			return result, nil
-		}
-		if !verified && evaluation.captureFlags != 0 && !targetRoute {
-			decision.Complete, decision.Outbound = false, ""
-			decision.Missing = []string{"trusted_hostname"}
-			return result, nil
-		}
+	if plan.action == routeMatch || plan.action == routeTarget {
 		input.kernel, input.domainBitmap, input.domainBumpBitmap = false, nil, nil
 		if verified || request.Context.Origin == "daemon" {
 			input.domain = hostname
@@ -581,11 +524,11 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 			domain := s.domains[input.dst.Addr()]
 			input = input.targetInput(input.domain, request.Context.Origin == "daemon", domain.bump, domain.routing)
 		}
-		var needs []string
-		evaluation, steps, needs, selected, err = s.matcher.explainSpans(ctx, spans, input, missing, s.names, "userspace")
+		next, steps, needs, selected, err := s.matcher.explainSpans(ctx, spans, input, missing, s.names, "userspace")
 		if err != nil {
 			return result, err
 		}
+		evaluation = next
 		result.Steps = append(result.Steps, steps...)
 		decision.RuleID, decision.Mark, decision.Must = selected, evaluation.mark, evaluation.must
 		decision.Outbound = s.names[uint8(evaluation.outbound)]
@@ -599,7 +542,7 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 		decision.Verdict = "drop"
 		return result, nil
 	}
-	if c.dialTargetOverride && verified && input.l4proto == consts.L4ProtoType_TCP && !targetRoute {
+	if plan.override && input.l4proto == consts.L4ProtoType_TCP && !targetRoute {
 		decision.Targets = []string{net.JoinHostPort(hostname, fmt.Sprint(input.dst.Port()))}
 		if host := c.MITMHost(); host != nil && host.UseDNSAddress(hostname, evaluation.outbound != consts.OutboundDirect) {
 			decision.Targets = []string{input.dst.String()}
@@ -617,6 +560,51 @@ func (c *ControlPlane) explainState(ctx context.Context, request api.ExplainRequ
 		}
 	}
 	return result, ctx.Err()
+}
+
+func (c *ControlPlane) explainDestination(ctx context.Context, s *diagnosticState, input *routingInput, hostname string, missing map[string]bool, result *api.ExplainResult) (bool, error) {
+	decision := &result.Decision
+	for i, entry := range s.matcher.destinationProgram(input.profileID).predicates {
+		p := *input
+		p.kernel, p.domain, p.domainBitmap, p.domainBumpBitmap, p.stage = false, hostname, nil, nil, routeFromIngress
+		matched, trace, needs, _, err := s.matcher.explainSpans(ctx, []routingSpan{entry.span}, p, missing, s.names, fmt.Sprintf("destination/%d", i))
+		if err != nil {
+			return false, err
+		}
+		for j := range trace {
+			for _, ip := range entry.targets {
+				port := entry.port
+				if port == 0 {
+					port = p.dst.Port()
+				}
+				trace[j].Targets = append(trace[j].Targets, netip.AddrPortFrom(ip, port).String())
+			}
+		}
+		result.Steps = append(result.Steps, trace...)
+		if len(needs) != 0 {
+			decision.Complete, decision.Missing = false, needs
+			return false, nil
+		}
+		if entry.domain && hostname == "" || !matched.matched {
+			continue
+		}
+		decision.Targets = nil
+		for _, ip := range entry.targets {
+			port := entry.port
+			if port == 0 {
+				port = input.dst.Port()
+			}
+			decision.Targets = append(decision.Targets, netip.AddrPortFrom(ip, port).String())
+		}
+		if len(entry.targets) != 1 {
+			decision.Complete, decision.Outbound = false, ""
+			result.Notes = append(result.Notes, "Random destination candidates are listed; no target was selected.")
+			return false, nil
+		}
+		input.dst = netip.MustParseAddrPort(decision.Targets[0])
+		break
+	}
+	return true, nil
 }
 
 func (c *ControlPlane) explainPlugins(ctx context.Context, request api.ExplainRequest, state *diagnosticState, result *api.ExplainResult, dns bool) bool {

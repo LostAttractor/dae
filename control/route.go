@@ -37,11 +37,14 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 			return nil, err
 		}
 	}
-	decision, valid := kernelRoute(p.routingResult)
-	targetRoute := p.destination.IsValid() || p.routingResult.CaptureFlags&(captureDestination|captureHTTPRequest) != 0
-	captured := p.routingResult.CaptureFlags != 0
-	// A pure HTTP capture does not invalidate a terminal kernel decision.
-	if !targetRoute && captured && valid && (decision.outbound == consts.OutboundDirect || decision.outbound == consts.OutboundBlock) {
+	decision, _ := kernelRoute(p.routingResult)
+	facts := routeFacts{
+		outbound: decision.outbound, capture: p.routingResult.CaptureFlags,
+		destination: p.destination.IsValid(), mode: c.rerouteMode,
+		verified: predicateUnknown, shouldReroute: predicateUnknown,
+		dialOverride: c.dialTargetOverride,
+	}
+	if planRoute(facts).preserve {
 		decision.apply(p.routingResult)
 		return c.selectDialOption(p, decision.outbound, decision.mark, false)
 	}
@@ -57,20 +60,22 @@ func (c *ControlPlane) RouteDialOption(ctx context.Context, p *RouteParam) (*Dia
 	if !verified {
 		domain = ""
 	}
-	if targetRoute {
+	facts.verified, facts.shouldReroute = routingTruth(verified), routingTruth(shouldReroute)
+	plan := planRoute(facts)
+	switch plan.action {
+	case routeTarget:
 		return c.routeDestination(p, domain)
-	}
-	if !valid || c.rerouteMode == consts.RerouteMode_Force || (c.rerouteMode == consts.RerouteMode_WhileNeed && shouldReroute) {
-		if captured && !verified {
-			return nil, fmt.Errorf("cannot preserve ambiguous DNS routing for %s without a trusted hostname", p.Dest.Addr())
-		}
+	case routeUntrusted:
+		return nil, fmt.Errorf("cannot preserve ambiguous DNS routing for %s without a trusted hostname", p.Dest.Addr())
+	case routeMatch:
 		decision.outbound, decision.mark, decision.must, err = c.Route(p.Src, p.Dest, domain, p.networkType.L4Proto.ToL4ProtoType(), p.routingResult)
 		if err != nil {
 			return nil, err
 		}
 	}
+
 	decision.apply(p.routingResult)
-	return c.selectDialOption(p, decision.outbound, decision.mark, verified && c.dialTargetOverride)
+	return c.selectDialOption(p, decision.outbound, decision.mark, plan.override)
 }
 
 // Route the selected target once, retaining immutable ingress identity.
