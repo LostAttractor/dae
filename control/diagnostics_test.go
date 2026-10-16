@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json/v2"
 	"net/netip"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -19,7 +18,6 @@ import (
 	"github.com/daeuniverse/dae/common/consts"
 	"github.com/daeuniverse/dae/component/mitm"
 	"github.com/daeuniverse/dae/component/plugin"
-	"github.com/daeuniverse/dae/component/settings"
 )
 
 func diagnosticPlane(t *testing.T, rules, controls string) *ControlPlane {
@@ -31,11 +29,7 @@ func diagnosticPlane(t *testing.T, rules, controls string) *ControlPlane {
 func diagnosticPreparedPlane(t *testing.T, prepared preparedRules) *ControlPlane {
 	t.Helper()
 	matcher, builder := routingMatcherForTest(t, prepared)
-	store, err := settings.Open(filepath.Join(t.TempDir(), "settings.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &ControlPlane{routingMatcher: matcher, routingState: builder.routingState, routingMatcherBuilder: builder, settings: store, routingGeneration: 7, sniffVerifyMode: consts.SniffVerifyMode_None, core: &controlPlaneCore{domainRegistry: newRoutingDomainRegistry()}}
+	return newControlPlaneTestBuilder(t).withSettings().withRouting(matcher, builder).build()
 }
 
 func diagnosticRequest() api.ExplainRequest {

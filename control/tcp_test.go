@@ -51,7 +51,7 @@ func (c *closeTrackingConn) Close() error {
 
 func TestStopAndAbortConnectionsClosesConcurrentSetups(t *testing.T) {
 	for range 1000 {
-		plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+		plane := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 		conn := newCloseTrackingConn()
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -82,7 +82,7 @@ func TestStopAndAbortConnectionsClosesConcurrentSetups(t *testing.T) {
 }
 
 func TestBeginTCPSetupAfterStopRejectsAdmission(t *testing.T) {
-	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+	plane := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 	t.Cleanup(func() { _ = plane.retireTraffic() })
 	plane.StopAndAbortConnections()
 	conn := newCloseTrackingConn()

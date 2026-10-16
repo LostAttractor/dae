@@ -453,7 +453,7 @@ func parseGroupOverrideOption(group config.Group, global config.Global) *dialer.
 }
 
 // closeOutbounds stops the connectivity checks of all outbound groups.
-func (c *ControlPlane) closeOutbounds() (err error) {
+func (c *planeOutbounds) closeOutbounds() (err error) {
 	if c.outboundReleases != nil {
 		for _, release := range c.outboundReleases {
 			err = errors.Join(err, release())
@@ -468,4 +468,10 @@ func closeDialerGroups(groups []*outbound.DialerGroup) (err error) {
 		err = errors.Join(err, g.Close())
 	}
 	return err
+}
+
+// Transfer both successful and partial builds before any possible return. Plugin
+// preparation can append targets after the initial connectivity checks.
+func (c *planeOutbounds) adoptOutbounds(builder *outboundBuilder) {
+	c.outbounds, c.outboundReleases, c.borrowedOutbounds = builder.outbounds, builder.releases, builder.borrowed
 }

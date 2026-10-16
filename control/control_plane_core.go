@@ -35,7 +35,7 @@ type controlPlaneCore struct {
 	quiesceErr  error
 
 	cleanupMu   sync.Mutex
-	deferFuncs  []func() error
+	cleanups    cleanupStack
 	bpf         *BPFState
 	wanBindings map[int]*wanBinding
 
@@ -146,7 +146,7 @@ func newControlPlaneCore(
 
 func (c *controlPlaneCore) addCleanup(cleanup func() error) {
 	c.cleanupMu.Lock()
-	c.deferFuncs = append(c.deferFuncs, cleanup)
+	c.cleanups.add(cleanup)
 	c.cleanupMu.Unlock()
 }
 
@@ -168,12 +168,7 @@ func (c *controlPlaneCore) takeCleanups() []func() error {
 	c.cleanupMu.Lock()
 	defer c.cleanupMu.Unlock()
 
-	cleanups := make([]func() error, 0, len(c.deferFuncs))
-	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
-		cleanups = append(cleanups, c.deferFuncs[i])
-	}
-	c.deferFuncs = nil
-	return cleanups
+	return c.cleanups.take()
 }
 
 // closeBpf releases only this generation's descriptors.

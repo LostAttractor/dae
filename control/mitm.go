@@ -15,7 +15,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *ControlPlane) MITMStatus() api.PluginStatus {
+func (c *planeHTTP) MITMStatus() api.PluginStatus {
 	host := c.MITMHost()
 	if host == nil {
 		return api.PluginStatus{BufferMemory: mitm.BodyBufferStatus()}

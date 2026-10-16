@@ -301,7 +301,7 @@ func TestDomainRegistrySaveFailureDoesNotPreventRetirement(t *testing.T) {
 	closed, cancel := context.WithCancel(t.Context())
 	core := &controlPlaneCore{closed: closed, close: cancel, ifmgr: ifmgr, domainRegistry: g}
 	core.addCleanup(g.Close)
-	old := newLifecycleTestControlPlane(new(UdpEndpointPool))
+	old := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 	old.core = core
 	if err := old.Close(); err != nil || !old.closedDone.Load() {
 		t.Fatalf("snapshot failure prevented safe retirement: %v", err)

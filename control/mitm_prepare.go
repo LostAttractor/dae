@@ -80,9 +80,7 @@ func (c *ControlPlane) prepareMITM(ctx context.Context, conf *config.Config, rul
 		err = outbounds.buildTargets(plan.RequiredOutbounds)
 	}
 	// Transfer partial construction too, so plane cleanup owns every transport.
-	c.outbounds = outbounds.outbounds
-	c.outboundReleases = outbounds.releases
-	c.borrowedOutbounds = outbounds.borrowed
+	c.adoptOutbounds(outbounds)
 	if err != nil {
 		return err
 	}

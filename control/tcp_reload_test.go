@@ -17,7 +17,7 @@ func TestTCPAbortReachesEveryReloadGeneration(t *testing.T) {
 	var finished []<-chan error
 	var previous *ControlPlane
 	for range 3 {
-		plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+		plane := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 		plane.tcpConnections.connections = &state.tcpConnections
 		t.Cleanup(func() { _ = plane.retireTraffic() })
 		if previous != nil {
@@ -62,8 +62,8 @@ func TestTCPAbortReachesEveryReloadGeneration(t *testing.T) {
 
 func TestUnactivatedCandidateDoesNotAbortSharedTCP(t *testing.T) {
 	state := NewRuntime()
-	active := newLifecycleTestControlPlane(new(UdpEndpointPool))
-	candidate := newLifecycleTestControlPlane(new(UdpEndpointPool))
+	active := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
+	candidate := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 	active.tcpConnections.connections = &state.tcpConnections
 	candidate.tcpConnections.connections = &state.tcpConnections
 	t.Cleanup(func() { _ = active.retireTraffic() })

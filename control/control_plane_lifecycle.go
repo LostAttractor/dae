@@ -114,11 +114,7 @@ func (c *ControlPlane) StopAndAbortConnections() {
 }
 
 func (c *ControlPlane) interruptTraffic() {
-	c.abortConnections.Store(true)
-	// Stop this generation's admission before aborting Runtime-owned sockets.
-	c.tcpConnections.abort()
-	c.cancelTCPSetups()
-	c.udpTaskPool.cancel()
+	c.interruptSetups()
 	c.dnsRelay.stop()
 	if host := c.MITMHost(); host != nil {
 		host.Abort()
@@ -129,11 +125,7 @@ func (c *ControlPlane) retireTraffic() error {
 	// Close generation admission. Established QUIC delivery continues through
 	// Runtime's current plane while MITM drains.
 	var ingressErr error
-	c.udpDraining.Store(true)
-	c.tcpConnections.stopAccepting()
-	c.cancelTCPSetups()
-	c.udpTaskPool.close()
-	c.tcpConnections.waitForSetups()
+	c.stopSetups()
 	if c.abortConnections.Load() {
 		// StopAndAbortConnections performs an initial sweep. Repeat after the
 		// task drain to catch an endpoint published by an already-accepted task.
@@ -167,10 +159,7 @@ func (c *ControlPlane) Close() (err error) {
 	if c.hostReconcileDone != nil {
 		<-c.hostReconcileDone
 	}
-	// Invoke defer funcs in reverse order.
-	for i := len(c.deferFuncs) - 1; i >= 0; i-- {
-		err = errors.Join(err, c.deferFuncs[i]())
-	}
+	err = errors.Join(err, c.cleanups.close())
 	err = errors.Join(err, c.core.closeLocked())
 	c.closeErr = err
 	c.closedDone.Store(true)

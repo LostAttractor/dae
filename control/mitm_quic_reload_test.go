@@ -57,7 +57,7 @@ func TestMITMQUICReloadKernelIntegration(t *testing.T) {
 				t.Cleanup(func() { _ = m.Close() })
 				maps[name] = m
 			}
-			plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+			plane := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 			t.Cleanup(plane.udpEndpoints.closeAll)
 			ifmgr, err := network.NewInterfaceManager()
 			if err != nil {

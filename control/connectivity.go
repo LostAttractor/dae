@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -263,4 +264,26 @@ func (c *ControlPlane) requestConnectivityRechecks() {
 			d.RequestConnectivityCheck()
 		}
 	}
+}
+
+func (c *ControlPlane) startConnectivity(startupCtx context.Context) error {
+	for _, group := range c.outbounds {
+		group.DeferStats()
+	}
+	if err := c.restoreRuntimeSettings(false); err != nil {
+		return err
+	}
+	c.watchConnectivity()
+	connectivityStarted := time.Now()
+	waiters, err := startConnectivityChecks(c.outbounds, c.outboundCheckAsync)
+	if err != nil {
+		return err
+	}
+	remaining := max(initialConnectivityTimeout-time.Since(connectivityStarted), 0)
+	if err := waitForStartupConnectivity(waiters, remaining, startupCtx.Done()); err != nil {
+		return err
+	}
+	log.WithField("duration", time.Since(connectivityStarted)).Debug("Initial connectivity checks finished")
+
+	return nil
 }

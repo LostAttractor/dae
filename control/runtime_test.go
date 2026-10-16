@@ -39,7 +39,7 @@ func TestRuntimeTCPHandoffAdmission(t *testing.T) {
 	r := NewRuntime()
 	r.shared["routing_tuples_map"] = m
 	t.Cleanup(func() { clear(r.planes); _ = r.Close() })
-	old, next := newLifecycleTestControlPlane(r.udpEndpoints), newLifecycleTestControlPlane(r.udpEndpoints)
+	old, next := newLifecycleTestControlPlane(t, r.udpEndpoints), newLifecycleTestControlPlane(t, r.udpEndpoints)
 	for i, plane := range []*ControlPlane{old, next} {
 		plane.routingGeneration = uint32(i + 1)
 		plane.tcpConnections.connections = &r.tcpConnections

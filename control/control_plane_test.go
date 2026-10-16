@@ -657,23 +657,13 @@ func TestDNSRelayDialPreservesNetworkAndMark(t *testing.T) {
 	}
 }
 
-func newLifecycleTestControlPlane(udpEndpoints *UdpEndpointPool) *ControlPlane {
-	ctx, cancel := context.WithCancel(context.Background())
-	tcpSetupCtx, cancelTCPSetups := context.WithCancel(ctx)
-	return &ControlPlane{
-		dnsRelay:        newDNSRelay(),
-		tcpConnections:  &tcpConnectionTracker{connections: new(tcpConnectionSet)},
-		udpTaskPool:     newUdpTaskPool[netip.AddrPort](),
-		udpEndpoints:    udpEndpoints,
-		ctx:             ctx,
-		cancel:          cancel,
-		tcpSetupCtx:     tcpSetupCtx,
-		cancelTCPSetups: cancelTCPSetups,
-	}
+func newLifecycleTestControlPlane(t testing.TB, udpEndpoints *UdpEndpointPool) *ControlPlane {
+	t.Helper()
+	return newControlPlaneTestBuilder(t).withLifecycle(udpEndpoints).build()
 }
 
 func TestControlPlaneRetireClosesAdmissionBeforeWaitAndDrainsUDPWithLiveContext(t *testing.T) {
-	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+	plane := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 
 	conn := newCloseTrackingConn()
 	if !plane.tcpConnections.beginSetup(conn) {
@@ -745,7 +735,7 @@ func TestControlPlaneRetireClosesAdmissionBeforeWaitAndDrainsUDPWithLiveContext(
 
 func TestControlPlaneNormalRetirePreservesEstablishedUDPEndpoint(t *testing.T) {
 	udpEndpoints := new(UdpEndpointPool)
-	plane := newLifecycleTestControlPlane(udpEndpoints)
+	plane := newLifecycleTestControlPlane(t, udpEndpoints)
 	key := testUdpKey(11002)
 	conn := newTestPacketConn(false)
 	endpoint := newUdpEndpoint(&UdpEndpointOptions{
@@ -772,7 +762,7 @@ func TestControlPlaneNormalRetirePreservesEstablishedUDPEndpoint(t *testing.T) {
 func TestControlPlaneAbortClosesUDPEndpointsCreatedDuringDrain(t *testing.T) {
 	udpEndpoints := new(UdpEndpointPool)
 	t.Cleanup(udpEndpoints.closeAll)
-	plane := newLifecycleTestControlPlane(udpEndpoints)
+	plane := newLifecycleTestControlPlane(t, udpEndpoints)
 	key := testUdpKey(11003)
 	oldConn := newTestPacketConn(false)
 	oldEndpoint := newUdpEndpoint(&UdpEndpointOptions{

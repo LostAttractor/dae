@@ -26,9 +26,9 @@ func newShutdownTestPlane(t *testing.T) *ControlPlane {
 	t.Cleanup(func() { _ = ifmgr.Close() })
 	coreCtx, cancelCore := context.WithCancel(t.Context())
 	t.Cleanup(cancelCore)
-	plane := newLifecycleTestControlPlane(new(UdpEndpointPool))
+	plane := newLifecycleTestControlPlane(t, new(UdpEndpointPool))
 	plane.core = &controlPlaneCore{closed: coreCtx, close: cancelCore, ifmgr: ifmgr}
-	plane.deferFuncs = append(plane.deferFuncs, plane.dnsRelay.Close)
+	plane.cleanups.add(plane.dnsRelay.Close)
 	t.Cleanup(func() {
 		plane.StopAndAbortConnections()
 		_ = plane.Close()
@@ -202,7 +202,7 @@ func TestRuntimeCloseJoinsIngress(t *testing.T) {
 func TestRuntimeShutdownCancelsAllUDPGenerationsBeforeSweeping(t *testing.T) {
 	r := NewRuntime()
 	for i := range 2 {
-		plane := newLifecycleTestControlPlane(r.udpEndpoints)
+		plane := newLifecycleTestControlPlane(t, r.udpEndpoints)
 		closed, cancel := context.WithCancel(t.Context())
 		plane.core = &controlPlaneCore{closed: closed, close: cancel}
 		plane.routingGeneration = uint32(i + 1)

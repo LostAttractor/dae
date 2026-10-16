@@ -12,7 +12,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *ControlPlane) MITMHost() *mitm.Host {
+func (c *planeHTTP) MITMHost() *mitm.Host {
 	c.mitmMu.RLock()
 	defer c.mitmMu.RUnlock()
 	return c.mitmHost
@@ -20,14 +20,14 @@ func (c *ControlPlane) MITMHost() *mitm.Host {
 
 // PrepareMITMSuccessor retains both instances and accepted routing resources
 // for suspend, without reopening external files.
-func (c *ControlPlane) PrepareMITMSuccessor() (PreparedMITM, error) {
+func (c *planeHTTP) PrepareMITMSuccessor() (PreparedMITM, error) {
 	host, err := c.MITMHost().PrepareSuccessor()
 	return PreparedMITM{Host: host, plan: c.mitmPlan}, err
 }
 
 // CanReplaceMITM checks all routing contributions, including complete capture
 // predicates and expanded external inputs. Equal plans need no kernel replacement.
-func (c *ControlPlane) CanReplaceMITM(prepared PreparedMITM) bool {
+func (c *planeHTTP) CanReplaceMITM(prepared PreparedMITM) bool {
 	return reflect.DeepEqual(c.mitmPlan, prepared.plan)
 }
 
@@ -75,9 +75,9 @@ func (c *ControlPlane) ReplaceMITM(prepared PreparedMITM) error {
 }
 
 // SetAPIKey is called after both API transports have drained.
-func (c *ControlPlane) SetAPIKey(key string) { c.apiKey = key }
+func (c *planeAPI) SetAPIKey(key string) { c.apiKey = key }
 
-func (c *ControlPlane) useDNSAddress(name string, proxy bool) bool {
+func (c *planeHTTP) useDNSAddress(name string, proxy bool) bool {
 	c.mitmMu.RLock()
 	defer c.mitmMu.RUnlock()
 	return c.mitmHost.UseDNSAddress(name, proxy)
