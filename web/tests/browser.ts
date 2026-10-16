@@ -1195,12 +1195,12 @@ try {
     assert.equal(await js('document.querySelector(".impact-content").textContent.includes("Uncertain")'), false);
     const shortRule = '.impact-content .trace-step:nth-child(2)';
     const longRule = '.impact-content .trace-step:nth-child(3)';
-    const geometry = () => js<{ height: number; offset: number; textHeight: number; lineHeight: number; glyphTop: number; glyphBottom: number }>(`(() => {
+    const geometry = () => js<{ height: number; offset: number; textHeight: number; lineHeight: number; fits: boolean; glyphTop: number; glyphBottom: number }>(`(() => {
       const button = document.querySelector(${JSON.stringify(shortRule + ' > button')}), expression = button.querySelector('.trace-expression');
       const rect = button.getBoundingClientRect(), text = expression.getBoundingClientRect(), range = document.createRange();
       range.selectNodeContents(expression);
       const glyph = range.getBoundingClientRect();
-      return { height: rect.height, offset: text.top - rect.top, textHeight: text.height, lineHeight: parseFloat(getComputedStyle(expression).lineHeight), glyphTop: glyph.top - text.top, glyphBottom: text.bottom - glyph.bottom };
+      return { height: rect.height, offset: text.top - rect.top, textHeight: text.height, lineHeight: parseFloat(getComputedStyle(expression).lineHeight), fits: expression.scrollWidth <= expression.clientWidth, glyphTop: glyph.top - text.top, glyphBottom: text.bottom - glyph.bottom };
     })()`);
     for (const width of [1280, 320]) {
       await call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
@@ -1210,9 +1210,16 @@ try {
       const before = await geometry();
       await setDisclosure(shortRule, true);
       const after = await geometry();
-      assert.ok(Math.abs(after.height - before.height) < 1, "a short rule keeps its title height");
-      assert.ok(Math.abs(after.offset - before.offset) < 1, "a short expression does not move upward");
-      assert.ok(after.textHeight < after.lineHeight * 2, "the short expression still occupies one line");
+      // A fallback monospace font can make even this short rule wrap at 320px.
+      if (before.fits) {
+        assert.ok(Math.abs(after.height - before.height) < 1, "a rule that fits keeps its title height");
+        assert.ok(after.textHeight < after.lineHeight * 2, "an expression that fits still occupies one line");
+      } else {
+        assert.ok(after.textHeight > before.textHeight, "a clipped expression wraps when expanded");
+        assert.ok(Math.abs((after.height - before.height) - (after.textHeight - before.textHeight)) < 1, "the title grows by the wrapped text height");
+      }
+      assert.ok(Math.abs(after.offset - before.offset) < 1, "the first line keeps its vertical position");
+      assert.ok(after.fits, "the expanded expression fits without horizontal overflow");
       assert.ok(after.glyphTop >= 0 && after.glyphBottom >= 0, "the text box contains the entire font height");
       assert.match(await js(`document.querySelector(${JSON.stringify(shortRule + ' .trace-step-content')}).innerText`), /rule still depends on its conditions[\s\S]*Before: false\s+After: true/);
       await setDisclosure(longRule, true);
