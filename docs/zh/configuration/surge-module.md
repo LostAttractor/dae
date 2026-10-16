@@ -220,7 +220,7 @@ HTTP 转发和脚本 `$httpClient` 共用请求路由：原主机及端口使用
 domain(httpbin.org) && l4proto(udp) && dport(443) -> block
 ```
 
-内核的域名捕获依赖已有 DNS 域名—IP 映射；缺少映射时不会通过捕获全部 TCP/UDP 或仅按 HTTPS 端口捕获来兜底，原本的 direct 流量继续在内核转发。已因其他规则进入用户态的连接仍可使用 SNI/Host。共享 IP 可能带入额外候选，最终匹配和普通出站路由仍受各自的 scope、域名验证策略约束；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 和 HTTP/3 允许同端口跨主机 authority 复用，普通转发保持原接入目标。TLS HTTP/2 收到 `:scheme=http` 时返回 421，详见 [请求 scheme](mitm-certificates.md#请求-scheme)。HTTP/3 暂不支持跨地址迁移、0-RTT、WebTransport/CONNECT-UDP。仅保留上游同主机、同端口的 H3 Alt-Svc 广告。WebSocket 只处理 HTTP/1 握手。
+内核的域名捕获依赖已有 DNS 域名—IP 映射；缺少映射时不会通过捕获全部 TCP/UDP 或仅按 HTTPS 端口捕获来兜底，原本的 direct 流量继续在内核转发。已因其他规则进入用户态的连接仍可使用 SNI/Host。共享 IP 可能带入额外候选，最终匹配和普通出站路由仍受各自的 scope、域名验证策略约束；无法嗅探主机名、ECH 或证书固定可能使处理失败。HTTP/2 和 HTTP/3 允许同端口跨主机 authority 复用，普通转发保持原接入目标。TLS HTTP/2 收到 `:scheme=http` 时返回 421，详见 [请求 scheme](../design/mitm-http.md#请求-scheme)。HTTP/3 暂不支持跨地址迁移、0-RTT、WebTransport/CONNECT-UDP。仅保留上游同主机、同端口的 H3 Alt-Svc 广告。WebSocket 只处理 HTTP/1 握手。
 
 ## 脚本 HTTP 请求
 

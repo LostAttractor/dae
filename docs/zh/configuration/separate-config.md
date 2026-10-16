@@ -39,24 +39,28 @@ global {
 }
 ```
 
+下例的 DNS 策略由可选的 `dns-router` 插件提供。构建前，若没有本地 `plugins.cfg`，先复制 `plugins.cfg.example`；取消 `dns-router:github.com/daeuniverse/dae/plugins/dns-router` 条目的注释，再运行 `make`。插件配置见 [DNS](dns.md#可选-dns-插件)。
+
 `config.d/dns.dae`:
 
 ```shell
 # config.d/dns.dae
-dns {
-    upstream {
-        alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google:53'
-    }
-    routing {
-        request {
-            qname(geosite:category-ads-all) -> reject
-            fallback: alidns
+plugins {
+    dns-router {
+        upstream {
+            alidns: 'udp://dns.alidns.com:53'
+            googledns: 'tcp+udp://dns.google:53'
         }
-        response {
-            upstream(googledns) -> accept
-            !qname(geosite:cn) && ip(geoip:private) -> googledns
-            fallback: accept
+        routing {
+            request {
+                qname(geosite:category-ads-all) -> reject
+                fallback: alidns
+            }
+            response {
+                upstream(googledns) -> accept
+                !qname(geosite:cn) && ip(geoip:private) -> googledns
+                fallback: accept
+            }
         }
     }
 }

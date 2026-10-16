@@ -1,6 +1,6 @@
-# MITM 证书与跨域连接复用
+# MITM HTTP 转发与证书身份
 
-## 设计结论
+## 连接目标与身份边界
 
 **无显式 URL 目标改写时，保持原连接的接入目标、路由和 TLS 身份。HTTP authority 只用于业务路由和插件匹配。**
 
@@ -134,8 +134,8 @@ ServeConn / ServePacketConn
 签发缓存最多 256 项 LRU，叶证书有效期不超过 24 小时和 CA 到期时间，签发和缓存命中均检查 CA 有效期。
 保留 DER 解析和本地 CA 名称约束验证。证书选择与插件 scope、脚本类型和 `PreserveRoute` 无关。
 
-上游预探测、SAN 镜像、路由证书缓存、singleflight 探测任务和请求侧叶证书快照均已删除。
-本地响应/改写不再承担原目标 TLS 探测开销。下游 session ticket 和 QUIC 0-RTT 目前仍关闭。
+下游签发只依赖本地 CA，不访问原目标；本地响应和目标改写无需原目标 TLS 探测。
+下游 session ticket 和 QUIC 0-RTT 关闭。
 
 ### 零长度正文与 trailer
 
@@ -161,4 +161,4 @@ trailer 只在首次 EOF（读取或非阻塞确认）同步；插件修改后�
 - `upstream_dial`：真实接入 `domain`、目的地址、出站和 mark。
 - `mitm_request_end`：状态、正文完整性和 gRPC 结果。
 
-421 原因和日志方法见[MITM 插件排查](mitm-plugins.md#排查偶发-http--grpc-失败)。
+421 原因和日志方法见[MITM 插件排查](../configuration/mitm-plugins.md#排查偶发-http--grpc-失败)。

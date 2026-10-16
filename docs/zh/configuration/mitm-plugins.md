@@ -37,9 +37,9 @@ plugins {
 
 已经准入的 HTTPS/HTTP/2、HTTP/3 连接允许同端口的跨主机请求复用，包括单主机证书未覆盖的业务 authority。未命中任何 HTTP scope 的请求跳过全部插件请求/响应钩子，保留原 Alt-Svc。没有插件显式改写 URL 的 scheme/主机/端口时，所有 stream 保持原接入目标、出站、mark 和上游 TLS 身份，不因 authority 改变而重复 DNS/选路；由原入口按 HTTP authority 分发。仅 path/query 或 Host 头变化不改变网络目标。显式 URL 目标改写和插件主动请求才为新目标解析、选路并验证 TLS。`domain()` 路由匹配实际接入目标，不是逐 stream 业务 authority 的过滤器。插件收到的 `Flow.Host` 是业务 authority，不是独立认证证明；`Source/Destination` 保留捕获地址。端口变化和 HTTP/1 跨主机请求仍返回 421。
 
-HTTP/2 入站保留原始 `:scheme`；与接入连接不一致时，在执行插件或选择上游前返回 421。TLS HTTP/2 中的 `:scheme=http` 不会被归一化为 HTTPS。显式端口变化、非法 authority 和 scope 检查继续生效。详见 [请求 scheme](mitm-certificates.md#请求-scheme)。
+HTTP/2 入站保留原始 `:scheme`；与接入连接不一致时，在执行插件或选择上游前返回 421。TLS HTTP/2 中的 `:scheme=http` 不会被归一化为 HTTPS。显式端口变化、非法 authority 和 scope 检查继续生效。详见 [请求 scheme](../design/mitm-http.md#请求-scheme)。
 
-下游握手仅签发本地单主机证书，没有上游探测、SAN 镜像或路由证书缓存；证书选择不依赖 scope、脚本阶段和 `PreserveRoute`。本地签发缓存最多 256 项，叶证书有效期不超过 24 小时和 CA 到期时间。真实转发仍验证上游接入点的证书名称、有效期和信任链；失败返回上游错误。本地响应零拨号，原目标 block 不阻止插件先生成本地响应或改写到允许的目标。无需新增配置或重建 CA。详见[证书与跨域连接复用：方案、边界和替代方案](mitm-certificates.md)。
+下游握手仅签发本地单主机证书，没有上游探测、SAN 镜像或路由证书缓存；证书选择不依赖 scope、脚本阶段和 `PreserveRoute`。本地签发缓存最多 256 项，叶证书有效期不超过 24 小时和 CA 到期时间。真实转发仍验证上游接入点的证书名称、有效期和信任链；失败返回上游错误。本地响应零拨号，原目标 block 不阻止插件先生成本地响应或改写到允许的目标。无需新增配置或重建 CA。详见[MITM HTTP 转发与证书身份](../design/mitm-http.md)。
 
 插件的每个 `Plan.Scopes` 项同时保存捕获范围与路由属性；默认在 HTTP 处理后确定路由，仅保持目标且始终转发的纯检查可声明 `PreserveRoute: true`。重叠范围中的请求处理优先。Surge 自动将含脚本、URL Rewrite 或 Map Local 的模块归入请求路由。请求型连接先通过 scope 与客户端准入，再执行 HTTP 规则，最后按有效目标决定出站、mark、must 和 block。原目标的 block 不会阻止已准入请求改写到允许的目标；新目标的 block 仍拒绝。纯检查保留已有内核路由；未准入连接执行普通路由。转发与脚本子请求共用按目标、节点、出站及 mark 隔离的连接池，流量统计归属实际上游连接。
 

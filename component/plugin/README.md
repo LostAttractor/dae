@@ -214,7 +214,7 @@ certificate probe or SAN mirror. Forwarding authenticates the actual ingress
 (or rewritten target) with normal upstream TLS verification. This authenticates
 the ingress, not each fronted business origin; `Flow.Host` is not independent
 proof of service identity. Downstream session tickets and 0-RTT remain disabled. See the
-[certificate design and tradeoffs](../../docs/zh/configuration/mitm-certificates.md).
+[certificate design and tradeoffs](../../docs/zh/design/mitm-http.md).
 
 HTTP/3 uses the same plugin contract and CA. `ServePacketConn` requires the
 original source and destination addresses and serves a fixed UDP association; `DialPacketContext` opens its upstream packet sockets through the

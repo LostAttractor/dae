@@ -129,7 +129,7 @@ DAE_WEB_ROOT=/opt/dae-web dae run -c /etc/dae/config.dae
 
 `dae plugins status`、`dae plugins <类型> status` 与独立客户端共用 API 连接配置和状态展示。可用 `--api`、`--timeout`、`DAE_API_ENDPOINT` 与 `DAE_API_KEY` 选择连接，`--instance` 按实例过滤。独立客户端提供 `plugins status` 和 `plugins surge status`，不加载运行时插件；前者可查看任意插件报告。`status` 和 `status --recent` 展示本体状态；脚本运行时和进程池统计通过 `plugins surge status` 或 `plugins status --verbose` 查看。报告命令的 `--json` 输出筛选后的完整实例数组，`status --json` 输出完整 daemon 快照。
 
-端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`cmd/api_server.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
+端口只监听一次：`internal/apiserver` 创建一个 TCP listener 和 `http.Server`，`internal/daemon/api.go` 用 `http.ServeMux` 按路径分发请求。`/api/` 进入 internal/apiserver 的 handler，三个证书下载路径也由 API 处理，其余路径进入静态文件 handler。浏览器的 `fetch("/api/...")` 自动沿用页面的协议、地址和端口，无需另起 Web 服务。Unix socket 只挂载 API handler，不提供页面。
 
 ## 代码边界
 

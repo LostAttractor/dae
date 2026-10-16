@@ -60,7 +60,7 @@
 | 范围 | 当前边界 |
 | --- | --- |
 | MITM 选项 | 仅解析 hostname；skip-server-cert-verify 等忽略，无 hostname-disabled、p12/Keystore。特殊主机占位符报错；非 443 TLS 端口须显式填写 |
-| 信任与协议 | 不探测客户端信任或在握手失败后透传；无自动 QUIC 阻断、h2c。HTTP/2/3 允许同端口跨主机 authority 复用；TLS HTTP/2 收到 `:scheme=http` 时返回 421，详见 [请求 scheme](mitm-certificates.md#请求-scheme)。HTTP/3 不支持跨地址迁移、0-RTT、跨主机/端口 Alt-Svc、WebTransport/CONNECT-UDP；上游仍使用 H3，不自动回退 TCP。CONNECT 返回 405，WebSocket 只处理 HTTP1 握手；无 `force-http-engine-hosts` / `always-raw-tcp-hosts` |
+| 信任与协议 | 不探测客户端信任或在握手失败后透传；无自动 QUIC 阻断、h2c。HTTP/2/3 允许同端口跨主机 authority 复用；TLS HTTP/2 收到 `:scheme=http` 时返回 421，详见 [请求 scheme](../design/mitm-http.md#请求-scheme)。HTTP/3 不支持跨地址迁移、0-RTT、跨主机/端口 Alt-Svc、WebTransport/CONNECT-UDP；上游仍使用 H3，不自动回退 TCP。CONNECT 返回 405，WebSocket 只处理 HTTP1 握手；无 `force-http-engine-hosts` / `always-raw-tcp-hosts` |
 | 路由类型 | 无 HTTP/IP/进程/端口/来源/规则集/SCRIPT 等模块规则；两字段 FINAL,DIRECT 加载失败。WILDCARD 无字符类，逻辑规则叶子限域名类型 |
 | 拒绝与选项 | REJECT 映射 dae block；无 DNS No Record、TCP RST、自适应拒绝或 REJECT-TINYGIF。extended-matching 使用当前目标的 DNS/可信域名上下文，不匹配 URL 路径；未知选项整条跳过 |
 | 优先级 | 目的地址规则 → flow → pre-matching 拒绝 → dae 显式规则 → 普通模块规则 → fallback。脚本、URL Rewrite、Map Local 范围先执行 HTTP 处理，再按最终目标运行该流程；原目标 block 不抢先终止已准入请求。纯检查保留有效原路由。302/307 返回客户端自行请求 |

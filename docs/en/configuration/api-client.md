@@ -184,7 +184,7 @@ The Web address remains `http://ROUTER_IP:<api_port>/`. The daemon serves these 
 
 `dae plugins status`, plugin status commands and the standalone client share API connection options and report rendering. Select the connection with `--api`, `--timeout`, `DAE_API_ENDPOINT` and `DAE_API_KEY`; filter reports with `--instance`. The standalone entry point explicitly registers Surge’s lightweight client package, providing `plugins status` for any plugin report and `plugins surge status` for Surge tables without loading runtime plugins. `status` and `status --recent` show daemon state; runtime and worker statistics appear in `plugins surge status` and `plugins status --verbose`. Report commands emit the filtered instance array with `--json`; `status --json` emits the complete daemon snapshot.
 
-The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `cmd/api_server.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the internal/apiserver handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
+The port is bound once: `internal/apiserver` creates one TCP listener and `http.Server`. In `internal/daemon/api.go`, `http.ServeMux` dispatches `/api/` and the three certificate download paths to the internal/apiserver handler, and all remaining paths to the static file handler. Browser calls such as `fetch("/api/...")` use the page's protocol, address and port, so no separate Web server is needed. The Unix socket mounts only the API handler and does not serve pages.
 
 ## Architecture
 

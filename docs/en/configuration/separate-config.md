@@ -39,24 +39,28 @@ global {
 }
 ```
 
+The DNS policy below requires the optional `dns-router` plugin. Before building, copy `plugins.cfg.example` to a local `plugins.cfg` if needed, uncomment `dns-router:github.com/daeuniverse/dae/plugins/dns-router`, and run `make`. See [DNS](dns.md#optional-plugins) for plugin configuration.
+
 `config.d/dns.dae`:
 
 ```shell
 # config.d/dns.dae
-dns {
-    upstream {
-        alidns: 'udp://dns.alidns.com:53'
-        googledns: 'tcp+udp://dns.google:53'
-    }
-    routing {
-        request {
-            qname(geosite:category-ads-all) -> reject
-            fallback: alidns
+plugins {
+    dns-router {
+        upstream {
+            alidns: 'udp://dns.alidns.com:53'
+            googledns: 'tcp+udp://dns.google:53'
         }
-        response {
-            upstream(googledns) -> accept
-            !qname(geosite:cn) && ip(geoip:private) -> googledns
-            fallback: accept
+        routing {
+            request {
+                qname(geosite:category-ads-all) -> reject
+                fallback: alidns
+            }
+            response {
+                upstream(googledns) -> accept
+                !qname(geosite:cn) && ip(geoip:private) -> googledns
+                fallback: accept
+            }
         }
     }
 }
