@@ -46,7 +46,7 @@ def main():
     # assertion failure, so a verifier/build/privilege error cannot count as success.
     mutations = {
         "full": [],
-        "no-read": [("tproxy.c", "is_wan ? 0 : skb_bridge_physinif(skb)", "0", 2)],
+        "no-read": [("tproxy.c", "is_wan ? 0 : skb_bridge_physinif(skb)", "0", 1)],
         "no-match": [("routing.h", "ctx->params->physinif == match_set->ifindex", "false", 1)],
         "no-zero-guard": [("routing.h", "if (match_set->ifindex &&", "if (", 1)],
         "no-cache-store": [("tproxy.c", "value->result = *result;", "value->result = *result;\n\tvalue->result.physinif = 0;", 1)],
